@@ -167,6 +167,7 @@ patientPortalRouter.post("/send-otp", otpSendLimiter, async (req, res) => {
   const sent = await sendPlainWhatsappText(
     phone,
     `${code} is your Care Diagnostics login code. It expires in 5 minutes. Never share this code.`,
+    "otp",
   );
   if (!sent.ok) {
     logger.warn({ phone: phone.slice(-4), error: sent.error, skipped: sent.skipped }, "patient OTP WhatsApp send failed");

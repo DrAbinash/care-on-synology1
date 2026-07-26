@@ -46,8 +46,8 @@ import { pacsEnterpriseRouter } from "./pacsEnterprise";
 import displayRouter from "./display";
 import queueDisplaySettingsRouter from "./queueDisplaySettings";
 import paymentDisplayRouter from "./paymentDisplay";
-import { whatsappRouter, whatsappWebhookRouter } from "./whatsapp";
-import { waChatbotRouter, waChatbotWebhookRouter } from "./waChatbot";
+import { whatsappRouter } from "./whatsapp";
+import { waChatbotRouter } from "./waChatbot";
 import { printersRouter } from "./printers";
 import { staffRouter } from "./staff";
 import hrFormsRouter, { staffScopedHrFormsHandler } from "./hr-forms";
@@ -87,6 +87,7 @@ import { vendorsRouter } from "./vendors";
 import { websiteRouter } from "./website";
 import { verifyRouter } from "./verify";
 import internalCronRouter from "./internal-cron";
+import internalAutomationsWhatsappRouter from "./internal-automations-whatsapp";
 import internalRadiologyRouter from "./internal-radiology";
 import dicomAgentRouter from "./dicom-agent";
 import { publicBookingRouter } from "./public-booking";
@@ -114,7 +115,7 @@ import radiologyQuickFindingsRouter from "./radiologyQuickFindings";
 import radiologyCatalogRouter from "./radiologyCatalog";
 import { db, clinicSettingsTable, ledgersTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
-import { backupLimiter, exportLimiter, adminMutationLimiter, standardUploadLimiter, loginLimiter, generalLimiter } from "../middleware/rateLimits";
+import { backupLimiter, exportLimiter, adminMutationLimiter, standardUploadLimiter, loginLimiter, generalLimiter, n8nAutomationLimiter } from "../middleware/rateLimits";
 import { activePluginRouter } from "../plugin-loader";
 import userPreferencesRouter from "./userPreferences";
 import barcodeResolverRouter from "./barcode-resolver";
@@ -251,6 +252,10 @@ router.use("/abdm/callback", abdmCallbackRouter);
 // Hit by a Replit Scheduled deployment (see scripts/src/trigger-cron.ts) so cron emails
 // keep firing on autoscale where in-process schedulers are disabled.
 router.use("/internal/cron", internalCronRouter);
+// n8n -> CARE WhatsApp automation triggers — auth via a dedicated
+// WHATSAPP_AUTOMATION_SECRET bearer token (separate from CRON_SECRET), rate
+// limited. See internal-automations-whatsapp.ts for the full contract.
+router.use("/internal/automations/whatsapp", n8nAutomationLimiter, internalAutomationsWhatsappRouter);
 // Internal RIS/PACS automation endpoints — auth via INTERNAL_API_KEY bearer token.
 // Called by Conquest PACS scripts and other server-to-server automations.
 // Internal backup download — streams pg_dump output for off-site replication.
@@ -301,10 +306,15 @@ router.use("/gateway", gatewayWebhookRouter);
 // route level; no sensitive staff data is accessible from these endpoints.
 router.use("/kiosk", kioskRouter);
 
-// WhatsApp Business webhook — public, validated by Meta's hub.verify_token.
-// GET: Meta verification challenge. POST: incoming messages + AI auto-reply.
-// Must be mounted BEFORE the staff-auth whatsapp router below.
-router.use("/whatsapp/webhook", whatsappWebhookRouter);
+// WhatsApp Business webhook is mounted directly on the Express app in
+// app.ts, BEFORE the global express.json() parser, so POST handlers can
+// verify Meta's x-hub-signature-256 HMAC against the exact raw request
+// bytes (see MetaWhatsAppCloudProvider.verifyWebhook). Routing it a second
+// time here — after express.json() has already consumed the body — would
+// either never be reached (app.ts's mount fully handles the request first)
+// or, if it somehow were, would verify against a re-serialized JSON.stringify
+// of the parsed body instead of the bytes Meta actually signed. Do not
+// re-add a mount for "/whatsapp/webhook" here.
 
 // Website router: GET endpoints are intentionally public so the clinic-site
 // frontend can fetch settings/pages/faqs/photos/popups without credentials.
@@ -970,10 +980,25 @@ router.use("/users", requireStaffAuth, userPreferencesRouter);
 router.use("/users", requireStaffAuth, requireStaffSubPermission("/settings", "users"), usersRouter);
 
 // ─── WhatsApp Chatbot module ───────────────────────────────────────────────────
-// Provider-agnostic WhatsApp chatbot: webhook receiver, bot engine,
-// conversation inbox, contacts, templates, audit logs.
-// Webhooks are mounted PUBLICLY before auth so WhatsApp providers can POST.
-router.use("/wa-chatbot/webhook", waChatbotWebhookRouter);
+// Staff-facing conversation inbox, contacts, templates, audit logs and
+// manual-send API — genuinely reusable and kept mounted.
+//
+// waChatbotWebhookRouter (the "/wa-chatbot/webhook/:provider" POST/GET
+// receiver defined alongside waChatbotRouter in ./waChatbot) is
+// deliberately NOT mounted here anymore. It was a second, divergent
+// inbound-message pipeline: its signature check re-serialized the
+// already-JSON-parsed body via JSON.stringify() before verifying, which
+// can never match Meta's HMAC over the original raw bytes, and its GET
+// verification read WHATSAPP_VERIFY_TOKEN from the environment directly
+// instead of the unified encrypted whatsapp_settings used everywhere
+// else. The one production webhook is now
+// "/api/whatsapp/webhook" (mounted in app.ts, before express.json(), so
+// it can verify against the true raw body) — its inbound handler already
+// delegates to the same WhatsAppBotEngine instance this module uses (see
+// the comment above sharedBotEngine in routes/whatsapp.ts), so no bot
+// behavior is lost by retiring this second route. No dependency on this
+// URL was found in the frontend or deployment docs; if a Meta app is
+// still configured to call it, repoint it at "/api/whatsapp/webhook".
 router.use("/wa-chatbot", requireStaffAuth, requireStaffSubPermission("/settings", "notifications"), waChatbotRouter);
 
 // ─── Banking module ────────────────────────────────────────────────────────────

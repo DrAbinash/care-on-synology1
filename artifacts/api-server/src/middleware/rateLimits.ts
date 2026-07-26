@@ -57,6 +57,18 @@ export const adminMutationLimiter = rateLimit({
   message: { error: "Too many admin requests. Please slow down." },
 });
 
+/** n8n → CARE internal automation triggers (/api/internal/automations/*).
+ *  Generous enough for a scheduler polling health every minute plus a few
+ *  daily dispatch triggers, tight enough to bound abuse of a bearer token
+ *  that leaked or was guessed. */
+export const n8nAutomationLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max: 60,
+  standardHeaders,
+  legacyHeaders,
+  message: { error: "Too many automation requests. Please slow down." },
+});
+
 /**
  * Returns true only when the request carries a bearer token that exactly
  * matches INTERNAL_API_KEY. Used to let trusted server-to-server callers

@@ -103,17 +103,30 @@ Gateway callbacks arrive at `/api/gateway-webhooks` and are signature-verified.
 
 ---
 
-## Messaging — WhatsApp / Evolution / n8n
+## Messaging — WhatsApp (Meta Cloud API) / n8n
+
+The **only supported production WhatsApp provider is the official Meta
+WhatsApp Business Cloud API** (`WHATSAPP_PROVIDER=meta`), configured through
+the unified Admin → Integrations → WhatsApp settings page (DB-backed,
+encrypted credentials) rather than environment variables where possible —
+env vars below are fallbacks/legacy only. `evolution` is **not** a valid
+`WHATSAPP_PROVIDER` value and was never implemented as a provider adapter
+(see `WhatsAppProviderFactory.ts`'s registry: `mock | meta | twilio |
+gupshup | wati | interakt`) — `EVOLUTION_API_URL` remains solely as an
+optional, deprecated reachability health-probe for a self-hosted Evolution
+API instance some deployments still run alongside CARE for other purposes;
+it has no connection to CARE's actual WhatsApp send/receive path.
 
 | Variable | Req | Secret | Notes |
 |---|---|---|---|
-| `WHATSAPP_PROVIDER` | ⬜ | — | `evolution` / `cloud` |
-| `EVOLUTION_API_URL` | ⬜ | — | Evolution API base (verifier: Messaging) |
-| `WHATSAPP_BASE_URL` / `_API_KEY` / `_API_SECRET` / `_APP_SECRET` | ⬜ | 🔑 | provider creds |
-| `WHATSAPP_ACCESS_TOKEN` / `_PHONE_NUMBER_ID` / `_BUSINESS_ACCOUNT_ID` | ⬜ | 🔑 | Cloud API |
-| `WHATSAPP_VERIFY_TOKEN` / `_WEBHOOK_SECRET` | ⬜ | 🔑 | webhook verification |
+| `WHATSAPP_PROVIDER` | ⬜ | — | `meta` (only supported production value) |
+| `WHATSAPP_AUTOMATION_SECRET` | ⬜ | 🔑 | bearer token for n8n's `/api/internal/automations/whatsapp/*` triggers (separate from `CRON_SECRET`) |
+| `WHATSAPP_BASE_URL` / `_API_KEY` / `_API_SECRET` / `_APP_SECRET` | ⬜ | 🔑 | env-var fallback only — prefer the unified settings page |
+| `WHATSAPP_ACCESS_TOKEN` / `_PHONE_NUMBER_ID` / `_BUSINESS_ACCOUNT_ID` | ⬜ | 🔑 | Cloud API — env-var fallback only |
+| `WHATSAPP_VERIFY_TOKEN` / `_WEBHOOK_SECRET` | ⬜ | 🔑 | webhook verification — env-var fallback only |
 | `WHATSAPP_DEFAULT_COUNTRY_CODE` | ⬜ | — | `91` |
 | `N8N_URL` | ⬜ | — | automations (verifier: Messaging/n8n) |
+| `EVOLUTION_API_URL` | ⬜ | — | **deprecated** — optional reachability probe only, not a WhatsApp provider (see above) |
 
 ---
 
@@ -134,4 +147,4 @@ Gateway callbacks arrive at `/api/gateway-webhooks` and are signature-verified.
 ---
 
 ## Undocumented-in-`.env.example` (flagged during audit — see OPEN_ISSUES)
-The following are read by code but were **absent** from `.env.example` before this pass and are now catalogued here: `AI_GATEWAY_URL`, `USG_AI_GATEWAY_URL`, `AI_EGRESS_ALLOWLIST`, `BACKUP_PASSPHRASE`, `BACKUP_TEMP_DIR`, `DISPLAY_ACCESS_TOKEN`, `BOUNDARY_API_KEY`, `ENABLE_SCHEDULERS`, all alternate payment providers (`RAZORPAY_*`, `CASHFREE_*`, `PHONEPE_*`, `PAYU_*`, `HDFC_*`, `BHARATPE_*`), most `WHATSAPP_*`, `EVOLUTION_API_URL`, `N8N_URL`, `CONQUEST_*`, `ORTHANC_AE_TITLE/IP/WORKLIST_DIR/CHANGES_POLLER/POLL_INTERVAL_MS`. None are required for a core deploy; add them only when enabling that integration.
+The following are read by code but were **absent** from `.env.example` before this pass and are now catalogued here: `AI_GATEWAY_URL`, `USG_AI_GATEWAY_URL`, `AI_EGRESS_ALLOWLIST`, `BACKUP_PASSPHRASE`, `BACKUP_TEMP_DIR`, `DISPLAY_ACCESS_TOKEN`, `BOUNDARY_API_KEY`, `ENABLE_SCHEDULERS`, all alternate payment providers (`RAZORPAY_*`, `CASHFREE_*`, `PHONEPE_*`, `PAYU_*`, `HDFC_*`, `BHARATPE_*`), most `WHATSAPP_*`, `WHATSAPP_AUTOMATION_SECRET`, `EVOLUTION_API_URL` (deprecated probe), `N8N_URL`, `CONQUEST_*`, `ORTHANC_AE_TITLE/IP/WORKLIST_DIR/CHANGES_POLLER/POLL_INTERVAL_MS`. None are required for a core deploy; add them only when enabling that integration.

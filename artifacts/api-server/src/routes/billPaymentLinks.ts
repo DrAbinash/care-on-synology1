@@ -129,7 +129,7 @@ billPaymentLinksRouter.post("/:id/send", async (req, res) => {
   if (!link.redirectUrl) { res.status(400).json({ error: "Link has no payment URL" }); return; }
   if (!link.sentTo) { res.status(400).json({ error: "No phone on file" }); return; }
   const body = `Payment link for your bill: pay ₹${toNum(link.amount)} securely here — ${link.redirectUrl}`;
-  const r = await sendPlainWhatsappText(link.sentTo, body);
+  const r = await sendPlainWhatsappText(link.sentTo, body, "payment_link");
   if (r.skipped) { res.status(503).json({ error: "WhatsApp disabled" }); return; }
   await db.update(billPaymentLinksTable).set({
     status: r.ok ? "sent" : link.status, providerMessageId: r.messageId ?? null, lastError: r.ok ? null : (r.error ?? "send failed"),

@@ -125,6 +125,10 @@ const GUARDED_SECRETS: ReadonlyArray<{ name: string; stillExposed: string }> = [
     name: "CRON_SECRET",
     stillExposed: "Scheduled-backup, restore-verification and money-trail triggers are blocked while weak.",
   },
+  {
+    name: "WHATSAPP_AUTOMATION_SECRET",
+    stillExposed: "n8n's WhatsApp automation triggers (/api/internal/automations/whatsapp/*) are blocked while weak.",
+  },
 ];
 
 /**

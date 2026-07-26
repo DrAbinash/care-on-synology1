@@ -20,6 +20,11 @@ export const waContactsTable = pgTable("wa_contacts", {
   staffUserId: integer("staff_user_id"),
   contactType: text("contact_type").notNull().default("unknown"), // patient / doctor / staff / admin / unknown
   consentStatus: text("consent_status").notNull().default("pending"), // pending / granted / denied
+  // When/how consentStatus last changed (STOP/START keyword, admin edit,
+  // etc.) — an audit trail for the "denied contacts never receive outbound
+  // messages" rule in whatsappEnqueue.ts.
+  consentUpdatedAt: timestamp("consent_updated_at", { withTimezone: true }),
+  consentSource: text("consent_source").notNull().default(""),
   language: text("language").notNull().default("en"),
   lastInteractionAt: timestamp("last_interaction_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -87,6 +92,11 @@ export const waTemplatesTable = pgTable("wa_templates", {
   body: text("body").notNull().default(""),
   status: text("status").notNull().default("pending"), // pending / approved / rejected
   useCase: text("use_case").notNull().default(""), // appointment_reminder / report_ready / bill_created / etc
+  // Unified WhatsApp Settings — section F (local version tracking, distinct
+  // from Meta's own approval status above).
+  localVersion: text("local_version").notNull().default("1"),
+  lastSynchronizedAt: timestamp("last_synchronized_at", { withTimezone: true }),
+  active: boolean("active").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   index("wa_tmpl_name_idx").on(t.templateName),

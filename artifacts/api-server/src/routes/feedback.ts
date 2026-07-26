@@ -118,7 +118,7 @@ export async function runFeedbackInvites(): Promise<{ skipped?: boolean; reason?
     }
     const link = `${base}/api/f/${token}`;
     const body = `Hello ${name || "there"}, thank you for choosing Care Diagnostics.${c.testName ? ` Your ${c.testName} report is ready.` : ""} Please share quick feedback (30 sec): ${link}`;
-    const r = await sendPlainWhatsappText(c.phone, body);
+    const r = await sendPlainWhatsappText(c.phone, body, "feedback_invite");
     if (r.skipped) { return { skipped: true, reason: "WhatsApp disabled", created, sent, failed }; }
     if (r.ok) { await db.update(feedbackRequestsTable).set({ status: "sent", sentAt: new Date(), providerMessageId: r.messageId ?? null }).where(eq(feedbackRequestsTable.id, requestId)); sent++; }
     else { await db.update(feedbackRequestsTable).set({ status: "sent", lastError: r.error ?? "send failed" }).where(eq(feedbackRequestsTable.id, requestId)); failed++; }

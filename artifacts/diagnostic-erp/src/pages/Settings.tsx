@@ -5493,6 +5493,19 @@ function WhatsappTab() {
 
   return (
     <div className="space-y-4">
+      {/* Shadow mode, test allowlist, quiet hours, daily limits, emergency
+          pause, webhook signature diagnostics, and the outbox health/retry
+          view live on the new unified page — this tab keeps Numbers, the
+          Cloud API credentials shortcut, AI Assistant config, and the Inbox,
+          none of which have been ported over yet. */}
+      <div className="rounded-lg border border-primary/30 bg-primary/5 p-3 flex items-center justify-between gap-3 flex-wrap">
+        <p className="text-sm text-muted-foreground">
+          Automation controls, shadow mode / test allowlist, emergency pause and outbox health now live on the unified WhatsApp Integration page.
+        </p>
+        <Link href="/admin/integrations/whatsapp">
+          <Button variant="outline" size="sm"><ExternalLink size={13} className="mr-1.5" />Open WhatsApp Integration settings</Button>
+        </Link>
+      </div>
       {/* Sub-tab bar */}
       <div className="flex gap-1 bg-muted p-1 rounded-lg w-fit">
         {WA_SUB_TABS.map(t => {
