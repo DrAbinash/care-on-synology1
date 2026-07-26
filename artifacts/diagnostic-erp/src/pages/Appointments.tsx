@@ -117,7 +117,7 @@ export default function Appointments() {
         resetForm();
         toast({ title: "Appointment booked" });
       },
-      onError: () => toast({ title: "Failed to create appointment", variant: "destructive" }),
+      onError: (e) => toast({ title: "Failed to create appointment", description: (e as Error).message, variant: "destructive" }),
     },
   });
 
@@ -129,7 +129,7 @@ export default function Appointments() {
         setStatusDialog(null);
         toast({ title: "Appointment updated" });
       },
-      onError: () => toast({ title: "Update failed", variant: "destructive" }),
+      onError: (e) => toast({ title: "Update failed", description: (e as Error).message, variant: "destructive" }),
     },
   });
 
