@@ -10,9 +10,10 @@ import { logger } from "../lib/logger";
 
 // The clinic does not generate its radiology reports from this app — the
 // in-app structured builder's own UI admits every finalize runs through the
-// "LEGACY path" (no ff_radiology_* flag is enabled in any seed), and the
-// "/pdf" endpoint on patient-reports is HTML wearing a PDF Content-Type.
-// Reports are composed in Word and exported to PDF/DOCX outside the app.
+// "LEGACY path" (no ff_radiology_* flag is enabled in any seed). (The "/pdf"
+// endpoint on patient-reports used to be HTML wearing a PDF Content-Type —
+// fixed since, it now renders via headless Chromium.) Reports are composed
+// in Word and exported to PDF/DOCX outside the app.
 //
 // Until today there was nowhere for that finished document to go: the only
 // external-report-attach path anywhere in the codebase

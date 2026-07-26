@@ -5,8 +5,9 @@
  * composed in Word and exported to PDF/DOCX outside it. Verified: every
  * finalize in RadiologyReportingWorkspace runs the "LEGACY path" (its own UI
  * says so — no ff_radiology_* structured-report flag is ever enabled in any
- * seed), and GET /api/patient-reports/:id/pdf sends Content-Type: text/html,
- * not a real PDF.
+ * seed). (GET /api/patient-reports/:id/pdf used to send Content-Type:
+ * text/html instead of a real PDF — fixed since; it now renders via headless
+ * Chromium the same way this file exports to Word.)
  *
  * This does not try to make the in-app builder trustworthy as a FINAL output.
  * It converts the same HTML the workspace already renders in its own Preview

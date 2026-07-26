@@ -6,11 +6,14 @@
  *
  * That image-selection UI (ReportImagePicker / ReportImagePanel /
  * reportImageRefs.ts — Tickets R1.1-R1.3) is real and persists selections to
- * the server, but buildPreviewHtml's own `imageRefs` param is fed from a
- * local `useState<ImageReference[]>([])` in RadiologyReportingWorkspace.tsx
- * that has no setter, so it is permanently empty — the selected images never
- * reached Preview, the legacy finalize HTML, or the Word export. This is the
- * first export path that actually fetches and embeds them.
+ * the server. When this file was written, buildPreviewHtml's own
+ * `imageRefs` param was fed from a dead `useState([])` in
+ * RadiologyReportingWorkspace.tsx with no setter, so the selected images
+ * never reached Preview, the legacy finalize HTML, or the Word export — this
+ * was the first export path that actually fetched and embedded them. That
+ * dead state has since been fixed (RadiologyReportingWorkspace.tsx now feeds
+ * all three from the same query this file uses), so all four surfaces show
+ * the same selected images today.
  */
 
 import { thumbnailRenderedUrl, type ReportImageRef } from "./reportImageRefs";
