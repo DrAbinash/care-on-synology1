@@ -2,6 +2,13 @@
 
 _Final stabilization audit (2026-07). "Status" = FIXED in this pass / DOCUMENTED (benign or infra-limited) / OPEN (tracked for after the pause)._
 
+> **Newer pass:** a second stabilization round (2026-07-26) covered backup
+> restorability, internal-endpoint auth, network exposure and the session idle
+> sweep. Its findings — including two items that are **still open and
+> owner-blocked** — are in
+> [`CARE_ERP_STABILIZATION_HANDOFF.md`](./CARE_ERP_STABILIZATION_HANDOFF.md).
+> Start there if you are picking this codebase up.
+
 ## Severity table
 
 | # | Issue | Severity | Component | File(s) | Risk | Fix | Status |
