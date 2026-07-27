@@ -615,6 +615,8 @@ export default function BillingDesk() {
   const [summaryCollapsed, setSummaryCollapsed] = useState(false);
   const [doctorCollapsed, setDoctorCollapsed]   = useState(false);
   const [paymentSplits, setPaymentSplits] = useState<PaySplit[]>([{ mode: "cash", amount: "" }]);
+  // Primary collect amount auto-copies net total until staff edits it (partial pay).
+  const paymentAmountTouched = useRef(false);
   const [lastBill, setLastBill]           = useState<LastBill | null>(null);
   // Real scannable QR (PNG data URL) generated via the qrcode library
   // whenever a new bill is saved. Falls back to the placeholder SVG until
@@ -1552,6 +1554,18 @@ export default function BillingDesk() {
   const balance     = Math.max(0, total - paidTotal);
   const paymentOverTotal = payNow && paidTotal > total + 0.01;
 
+  // Default collect amount = net total (full payment is the common case).
+  // Stops syncing once the cashier types a different value for partial pay.
+  useEffect(() => {
+    if (!payNow || paymentAmountTouched.current || total <= 0) return;
+    const synced = total.toFixed(2);
+    setPaymentSplits((prev) => {
+      const first = prev[0] ?? { mode: "cash", amount: "" };
+      if (first.amount === synced) return prev;
+      return [{ ...first, amount: synced }, ...prev.slice(1)];
+    });
+  }, [payNow, total]);
+
   // ── Test actions ────────────────────────────────────
   function addTest(t: Test) {
     if (selectedTests.find((s) => s.testId === t.id)) {
@@ -1803,6 +1817,7 @@ export default function BillingDesk() {
     setDiscountReason("");
     setDiscountNote("");
     setPayNow(true);
+    paymentAmountTouched.current = false;
     setPaymentSplits([{ mode: "cash", amount: "" }]);
     setLastBill(null);
     setSuggestion(null);
@@ -2644,7 +2659,16 @@ export default function BillingDesk() {
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <button
-                      onClick={() => setPayNow(!payNow)}
+                      onClick={() => {
+                        const next = !payNow;
+                        setPayNow(next);
+                        if (next && !paymentAmountTouched.current && total > 0) {
+                          setPaymentSplits((prev) => [
+                            { ...(prev[0] ?? { mode: "cash", amount: "" }), amount: total.toFixed(2) },
+                            ...prev.slice(1),
+                          ]);
+                        }
+                      }}
                       className={`relative inline-flex h-5 w-9 flex-shrink-0 rounded-full border-2 border-transparent transition-colors ${payNow ? "bg-[#2563eb]" : "bg-[#cbd5e1]"}`}
                     >
                       <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${payNow ? "translate-x-4" : "translate-x-0"}`} />
@@ -2665,6 +2689,7 @@ export default function BillingDesk() {
                       placeholder={total.toFixed(2)}
                       value={paymentSplits[0]?.amount ?? ""}
                       onChange={(e) => {
+                        paymentAmountTouched.current = true;
                         const raw = e.target.value;
                         const n = Number(raw);
                         const capped = raw !== "" && !Number.isNaN(n) && n > total
