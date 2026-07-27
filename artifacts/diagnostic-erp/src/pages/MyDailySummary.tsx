@@ -567,18 +567,47 @@ function MiniKpiFilled({ icon: Icon, label, value, sub, solid, onClick }: {
   );
 }
 
-// ─── Operator badge — bridges two KPI boxes that have a mathematical
-// relationship (e.g. A − B = C), so the reconciliation flow reads left to
-// right the same way the underlying formula works. Sits directly between
-// the two cards, overlapping half its width onto each side, so the row
-// reads as one continuous connected strip rather than separate boxes. ─────
-function FormulaOp({ op }: { op: "+" | "−" | "=" }) {
-  const styles = op === "=" ? "bg-[#1a3a5c] text-white" : "bg-white dark:bg-slate-900 text-[#1a3a5c] dark:text-white border-2 border-[#1a3a5c]";
+// ─── Compact deduction / adjustment cell for the strip under the hero KPIs.
+ // Deliberately quieter than MiniKpi so the eye lands on the four outcome
+ // cards first; these explain the steps into Collectible without crowding
+ // the top row with the full formula. ─────────────────────────────────────
+function DeductionCell({
+  sign,
+  label,
+  value,
+  sub,
+  accent,
+  onClick,
+}: {
+  sign: "+" | "−";
+  label: string;
+  value: string;
+  sub?: React.ReactNode;
+  accent: "green" | "pink" | "orange" | "amber";
+  onClick?: () => void;
+}) {
+  const accents = {
+    green:  { sign: "text-emerald-700 dark:text-emerald-400", ring: "hover:border-emerald-400" },
+    pink:   { sign: "text-rose-700 dark:text-rose-400",       ring: "hover:border-rose-400" },
+    orange: { sign: "text-orange-700 dark:text-orange-400",   ring: "hover:border-orange-400" },
+    amber:  { sign: "text-amber-700 dark:text-amber-400",     ring: "hover:border-amber-400" },
+  }[accent];
   return (
-    <div className="hidden sm:flex items-center justify-center flex-shrink-0 w-0 relative z-10">
-      <span className={`flex items-center justify-center w-8 h-8 rounded-full text-sm font-extrabold shadow-md -mx-4 ${styles}`}>
-        {op}
-      </span>
+    <div
+      onClick={onClick}
+      role={onClick ? "button" : undefined}
+      tabIndex={onClick ? 0 : undefined}
+      onKeyDown={onClick ? (e) => { if (e.key === "Enter" || e.key === " ") onClick(); } : undefined}
+      className={`rounded-xl border border-gray-200 dark:border-card-border bg-white dark:bg-card px-3.5 py-3 shadow-sm transition-all ${
+        onClick ? `cursor-pointer hover:shadow-md hover:-translate-y-0.5 ${accents.ring}` : ""
+      }`}
+    >
+      <div className="flex items-baseline gap-1.5 min-w-0">
+        <span className={`text-sm font-extrabold ${accents.sign}`}>{sign}</span>
+        <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 truncate">{label}</p>
+      </div>
+      <p className="mt-1.5 text-lg font-bold tabular-nums text-gray-900 dark:text-foreground leading-none">{value}</p>
+      {sub && <div className="mt-1.5 text-[11px] leading-snug text-gray-500 dark:text-gray-400">{sub}</div>}
     </div>
   );
 }
@@ -1001,9 +1030,10 @@ function UnifiedReconciliationPanel({
           </span>
         </div>
 
-        <ARow label="Cancelled Bills" value={s.cancelledOnMyBills} sign="−" indent highlight="red" />
+        <ARow label="Cancelled Bills" value={s.cancelledOnMyBills} sign="−" indent highlight="red"
+              note="of bills created in this period" />
         <ARow label="Refunds" value={totalRefunds} sign="−" indent highlight="red"
-              note={`Cash ${fmt(s.cashRefunded)} · Digital ${fmt(s.digitalRefunded)}`} />
+              note={`No-cancel ${fmt(s.refundsWithoutCancellationAmount)} · On cancelled ${fmt(Math.max(0, totalRefunds - s.refundsWithoutCancellationAmount))} · Cash ${fmt(s.cashRefunded)} · Digital ${fmt(s.digitalRefunded)}`} />
         <ARow label="Outstanding Dues" value={s.outstanding} sign="−" indent highlight="red" note="balance on today's bills" />
 
         <ASectionDivider color="blue" />
@@ -1969,21 +1999,30 @@ export default function MyDailySummary() {
 
       {/* ── Loading State ── */}
       {isLoading && (
-        <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-3 gap-3">
-          {Array.from({ length: 9 }).map((_, i) => (
-            <div key={i} className="h-20 bg-gray-100 dark:bg-muted/30 rounded-xl animate-pulse" />
-          ))}
+        <div className="space-y-3">
+          <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <div key={i} className="h-24 bg-gray-100 dark:bg-muted/30 rounded-xl animate-pulse" />
+            ))}
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <div key={`d-${i}`} className="h-20 bg-gray-100 dark:bg-muted/30 rounded-xl animate-pulse" />
+            ))}
+          </div>
         </div>
       )}
 
-      {/* ── KPI Cards — arranged as the actual reconciliation formula ──
-            Bills + Dues − Cancellations − Outstanding = Collectible
-            − Digital − Expenses = Expected Physical Cash
-            (formula verified against UnifiedReconciliationPanel above) */}
+      {/* ── KPI layout ─────────────────────────────────────────────────────
+            Hero (4 outcome cards) stays uncrowded. Deductions that feed
+            Collectible live in a quieter strip underneath so Cancelled Bills
+            and Refunds are both visible without packing the whole formula
+            into one 8-card row. Math is unchanged — see UnifiedReconciliationPanel. */}
       {s && (
         <>
           {(() => {
             const totalRefunds = s.cashRefunded + s.digitalRefunded;
+            const cancelLinkedRefunds = Math.max(0, totalRefunds - s.refundsWithoutCancellationAmount);
             // cancelledOnMyBills, not cancelledAmount — see UnifiedReconciliationPanel.
             const collectible = s.grossBilledIncludingCancelled + s.duesCollectedTotal
               - s.cancelledOnMyBills - totalRefunds - s.outstanding;
@@ -1991,39 +2030,118 @@ export default function MyDailySummary() {
             const avgBillValue = totalBillsCount > 0 ? s.grossBilledIncludingCancelled / totalBillsCount : 0;
             return (
               <>
-                {/* Row 1 — the money flow, left to right, exactly as it's calculated.
-                    CSS Grid with explicit 1fr columns for every card (equal width
-                    guaranteed) and auto-width columns for the operator badges
-                    between them — the row always fills 100% of the available
-                    width with no leftover gaps, on any screen size. */}
-                <div
-                  className="grid gap-0.5 items-stretch"
-                  style={{ gridTemplateColumns: "repeat(7, minmax(0, 1fr) auto) minmax(0, 1.3fr)" }}
-                >
-                  <MiniKpi icon={IndianRupee} label="Total Bills Generated" value={fmt(s.grossBilledIncludingCancelled)} sub={`${totalBillsCount} bills`} theme="indigo" onClick={() => setDrilldownType("totalBills")} />
-                  <FormulaOp op="+" />
-                  <MiniKpi icon={Receipt} label="Dues Collected" value={fmt(s.duesCollectedTotal)} sub={`${s.duesBillsCount} old bill${s.duesBillsCount !== 1 ? "s" : ""} settled`} theme="green" onClick={() => setDrilldownType("duesCollected")} />
-                  <FormulaOp op="−" />
-                  <MiniKpi icon={RotateCcw} label="Cancellations" value={fmt(s.cancelledOnMyBills)} sub={`${s.cancellationCount} bill${s.cancellationCount !== 1 ? "s" : ""} cancelled`} theme="pink" onClick={() => setDrilldownType("cancellations")} />
-                  <FormulaOp op="−" />
-                  <MiniKpi icon={Wallet} label="Outstanding / Dues" value={fmt(s.outstanding)} sub="Unpaid balance" theme="orange" onClick={() => setDrilldownType("outstandingDues")} />
-                  <FormulaOp op="=" />
-                  <MiniKpi icon={Calculator} label="Collectible Amount" value={fmt(collectible)} sub="What should be in hand + bank" theme="blue" onClick={() => setDrilldownType("collectibleAmount")} />
-                  <FormulaOp op="−" />
-                  <MiniKpiFilled icon={Smartphone} label="Net Digital Collection" value={fmt(s.netDigital)} sub={`Gross ${fmt(s.digitalCollection)} − Refunded ${fmt(s.digitalRefunded)}`} solid="teal" onClick={() => setDrilldownType("netDigitalCollection")} />
-                  <FormulaOp op="−" />
-                  <MiniKpiFilled icon={TrendingDown} label="Total Expenses" value={fmt(s.totalExpenses)} sub={`Cash ${fmt(s.cashExpenses)} / Digital ${fmt(s.digitalExpenses)}`} solid="red" onClick={() => setDrilldownType("totalExpenses")} />
-                  <FormulaOp op="=" />
-                  <MiniKpiFilled icon={Banknote} label="Expected Physical Cash" value={fmt(s.physicalCashInHand)} sub={`Cash ${fmt(s.cashCollection)} − Cash Exp ${fmt(s.cashExpenses)}`} solid="green" onClick={() => setDrilldownType("expectedPhysicalCash")} />
+                {/* Hero — outcomes only */}
+                <div className="grid grid-cols-2 xl:grid-cols-4 gap-3 items-stretch">
+                  <MiniKpi
+                    icon={IndianRupee}
+                    label="Total Bills Generated"
+                    value={fmt(s.grossBilledIncludingCancelled)}
+                    sub={`${totalBillsCount} bills`}
+                    theme="indigo"
+                    onClick={() => setDrilldownType("totalBills")}
+                  />
+                  <MiniKpi
+                    icon={Calculator}
+                    label="Collectible Amount"
+                    value={fmt(collectible)}
+                    sub="What should be in hand + bank"
+                    theme="blue"
+                    onClick={() => setDrilldownType("collectibleAmount")}
+                  />
+                  <MiniKpiFilled
+                    icon={Smartphone}
+                    label="Net Digital Collection"
+                    value={fmt(s.netDigital)}
+                    sub={`Gross ${fmt(s.digitalCollection)} − Refunded ${fmt(s.digitalRefunded)}`}
+                    solid="teal"
+                    onClick={() => setDrilldownType("netDigitalCollection")}
+                  />
+                  <MiniKpiFilled
+                    icon={Banknote}
+                    label="Expected Physical Cash"
+                    value={fmt(s.physicalCashInHand)}
+                    sub={`Cash ${fmt(s.cashCollection)} − Cash Exp ${fmt(s.cashExpenses)}`}
+                    solid="green"
+                    onClick={() => setDrilldownType("expectedPhysicalCash")}
+                  />
                 </div>
 
-                {/* Row 2 — supplementary metrics, evenly filled, no empty cells.
-                    CSS Grid with equal columns — same guarantee as Row 1. */}
-                <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 items-stretch">
+                {/* Deductions / adjustments into Collectible — separate Cancelled Bills vs Refunds */}
+                <div className="space-y-2">
+                  <p className="text-[11px] font-bold uppercase tracking-widest text-gray-400 dark:text-gray-500 px-0.5">
+                    Into collectible
+                    <span className="ml-2 font-medium normal-case tracking-normal text-gray-400">
+                      Bills + dues − cancelled − refunds − outstanding
+                    </span>
+                  </p>
+                  <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 items-stretch">
+                    <DeductionCell
+                      sign="+"
+                      label="Dues Collected"
+                      value={fmt(s.duesCollectedTotal)}
+                      sub={`${s.duesBillsCount} old bill${s.duesBillsCount !== 1 ? "s" : ""} settled`}
+                      accent="green"
+                      onClick={() => setDrilldownType("duesCollected")}
+                    />
+                    <DeductionCell
+                      sign="−"
+                      label="Cancelled Bills"
+                      value={fmt(s.cancelledOnMyBills)}
+                      sub="Of bills created in this period"
+                      accent="pink"
+                      onClick={() => setDrilldownType("cancellations")}
+                    />
+                    <DeductionCell
+                      sign="−"
+                      label="Refunds"
+                      value={fmt(totalRefunds)}
+                      sub={
+                        <div className="space-y-0.5">
+                          <button
+                            type="button"
+                            className="block w-full text-left hover:underline text-orange-700 dark:text-orange-400 font-medium"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setDrilldownType("refundsWithoutCancellation");
+                            }}
+                          >
+                            No cancellation {fmt(s.refundsWithoutCancellationAmount)}
+                            {s.refundsWithoutCancellationCount > 0
+                              ? ` · ${s.refundsWithoutCancellationCount}`
+                              : ""}
+                          </button>
+                          <button
+                            type="button"
+                            className="block w-full text-left hover:underline text-rose-700 dark:text-rose-400 font-medium"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setDrilldownType("cancellationCount");
+                            }}
+                          >
+                            On cancelled bills {fmt(cancelLinkedRefunds)}
+                            {s.cancellationCount > 0 ? ` · ${s.cancellationCount} cancel${s.cancellationCount !== 1 ? "s" : ""}` : ""}
+                          </button>
+                        </div>
+                      }
+                      accent="orange"
+                    />
+                    <DeductionCell
+                      sign="−"
+                      label="Outstanding / Dues"
+                      value={fmt(s.outstanding)}
+                      sub="Unpaid balance on period bills"
+                      accent="amber"
+                      onClick={() => setDrilldownType("outstandingDues")}
+                    />
+                  </div>
+                </div>
+
+                {/* Secondary metrics */}
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 items-stretch">
                   <MiniKpi icon={CheckCircle2} label="Total Received" value={fmt(s.totalReceived)} sub="All payments collected" theme="green" onClick={() => setDrilldownType("totalReceived")} />
                   <MiniKpi icon={Tag} label="Discounts Given" value={fmt(s.discountsGiven)} sub={s.grossBilling > 0 ? `${((s.discountsGiven / s.grossBilling) * 100).toFixed(1)}% of billing` : ""} theme="purple" onClick={() => setDrilldownType("discountsGiven")} />
-                  <MiniKpi icon={RefreshCw} label="Refunds (No Cancellation)" value={fmt(s.refundsWithoutCancellationAmount)} sub={s.refundsWithoutCancellationCount > 0 ? `${s.refundsWithoutCancellationCount} refund${s.refundsWithoutCancellationCount !== 1 ? "s" : ""}, no test cancelled` : "None"} theme="orange" onClick={() => setDrilldownType("refundsWithoutCancellation")} />
-                  <MiniKpi icon={XCircle} label="Cancellation Count" value={String(s.cancellationCount)} sub={s.cancellationCount > 0 ? `₹${s.cancelledAmount.toFixed(0)} written off` : "None"} theme="pink" onClick={() => setDrilldownType("cancellationCount")} />
+                  <MiniKpi icon={XCircle} label="Cancellation Count" value={String(s.cancellationCount)} sub={s.cancellationCount > 0 ? `${fmt(s.cancelledAmount)} written off today` : "None"} theme="pink" onClick={() => setDrilldownType("cancellationCount")} />
+                  <MiniKpiFilled icon={TrendingDown} label="Total Expenses" value={fmt(s.totalExpenses)} sub={`Cash ${fmt(s.cashExpenses)} / Digital ${fmt(s.digitalExpenses)}`} solid="red" onClick={() => setDrilldownType("totalExpenses")} />
                   <MiniKpi icon={IndianRupee} label="Average Bill Value" value={fmt(avgBillValue)} sub={`Across ${totalBillsCount} bill${totalBillsCount !== 1 ? "s" : ""}`} theme="slate" onClick={() => setDrilldownType("averageBillValue")} />
                 </div>
               </>

@@ -41,7 +41,7 @@ type DrilldownResponse = {
 export const DRILLDOWN_TITLES: Record<DrilldownType, string> = {
   totalBills: "Total Bills Generated",
   duesCollected: "Dues Collected",
-  cancellations: "Cancellations",
+  cancellations: "Cancelled Bills",
   outstandingDues: "Outstanding / Dues",
   collectibleAmount: "Collectible Amount",
   netDigitalCollection: "Net Digital Collection",
