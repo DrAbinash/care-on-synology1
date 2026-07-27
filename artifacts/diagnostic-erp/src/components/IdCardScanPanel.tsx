@@ -426,7 +426,7 @@ export default function IdCardScanPanel({
   autoCropEnabled = true,
   cropPadding = 12,
   jpegQuality = 92,
-  maxWidth = 1600,
+  maxWidth = 2000,
   autoRotate = false,
   autoCropOnLoad = true,
   docType = "id-card",
