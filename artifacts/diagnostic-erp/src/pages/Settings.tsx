@@ -309,6 +309,16 @@ export default function Settings() {
     }
   }, [allowedTabs, tab]);
 
+  // Form F links use #preferred-scanning-source — scroll once the Scanner tab is open.
+  useEffect(() => {
+    if (tab !== "scanner") return;
+    if (typeof window === "undefined" || window.location.hash !== "#preferred-scanning-source") return;
+    const t = window.setTimeout(() => {
+      document.getElementById("preferred-scanning-source")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 50);
+    return () => window.clearTimeout(t);
+  }, [tab]);
+
   return (
     <div className="pb-8">
       <PageHeader title="Settings" subtitle="User management, system configuration, and software documentation" />
