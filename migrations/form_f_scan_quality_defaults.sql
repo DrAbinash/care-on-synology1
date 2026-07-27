@@ -1,9 +1,13 @@
 -- Form F / ID-card scan quality: sharper JPEG + larger working width so OCR
 -- (Ollama / Gemini / Tesseract) gets more legible text from webcam captures.
-ALTER TABLE clinic_settings
+-- Safe to re-run: SET DEFAULT is idempotent; UPDATE only touches rows still on
+-- the old seed defaults (85 / 1200). Applied automatically by care-db-patch-v2
+-- (see HOW_TO_ADD_DB_MIGRATIONS.md — no manual psql on Synology deploy).
+
+ALTER TABLE IF EXISTS clinic_settings
   ALTER COLUMN jpeg_quality SET DEFAULT 92;
 
-ALTER TABLE clinic_settings
+ALTER TABLE IF EXISTS clinic_settings
   ALTER COLUMN max_scan_width SET DEFAULT 2000;
 
 -- Raise existing installs that still have the old weak seed defaults.
