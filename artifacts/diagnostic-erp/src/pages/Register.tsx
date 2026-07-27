@@ -68,7 +68,7 @@ export default function Register() {
 
   const { data: testsData } = useQuery<{ tests: CatalogTest[] }>({
     queryKey: ["tests-list-quick-register"],
-    queryFn: () => api.get("/api/tests?limit=500"),
+    queryFn: () => api.get("/api/tests?limit=500&sort=popular"),
   });
   const { data: doctors = [] } = useQuery<Doctor[]>({
     queryKey: ["doctors-list"],
