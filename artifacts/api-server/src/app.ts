@@ -7,7 +7,7 @@ import pinoHttp from "pino-http";
 import router from "./routes";
 import { logger } from "./lib/logger";
 import { errorHandler } from "./middleware/errorHandler";
-import { generalLimiter, dicomUploadLimiter } from "./middleware/rateLimits";
+import { dicomUploadLimiter } from "./middleware/rateLimits";
 import { dicomUploadsRouter } from "./routes/dicom-uploads";
 import { whatsappWebhookRouter } from "./routes/whatsapp";
 import { recordRequest } from "./lib/requestMetrics";
@@ -285,7 +285,11 @@ app.use("/api", (req: Request, res: Response, next: NextFunction) => {
   next();
 });
 
-app.use("/api", generalLimiter, router);
+// Global rate limiting is applied once inside routes/index.ts (generalLimiter).
+// Do not stack a second copy here — duplicate limiters double-count every /api
+// request and can 429 login even when the dedicated staff/patient login
+// limiters would still allow the attempt.
+app.use("/api", router);
 
 // Serve user-uploaded site assets (favicon, photos, hero images, etc.)
 // from data/uploads. Path matches what /api/website/photos returns.
