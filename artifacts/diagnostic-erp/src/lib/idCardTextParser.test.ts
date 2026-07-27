@@ -23,6 +23,20 @@ Address: H.No 12, Village Rampura, Dist Jaipur, Rajasthan - 302001
     expect(p.confidencePercent).toBeLessThan(95); // never auto-fill tier
   });
 
+  test("extracts C/O and father name without possessive", () => {
+    const raw = `
+GOVERNMENT OF INDIA
+AADHAAR
+Name: ANITA DEVI
+Father Name: RAM PRASAD
+C/O: SITA DEVI
+Address: Ward 3, Dist Ranchi, Jharkhand 834001
+`;
+    const p = parseIdCardText(raw);
+    expect(p.guardianName.toUpperCase()).toMatch(/RAM PRASAD|SITA DEVI/);
+    expect(p.address.toLowerCase()).toMatch(/ranchi/);
+  });
+
   test("returns empty-ish result for garbage text", () => {
     const p = parseIdCardText("abc\nxyz");
     expect(p.guardianName || p.address || p.idNumber).toBeFalsy();

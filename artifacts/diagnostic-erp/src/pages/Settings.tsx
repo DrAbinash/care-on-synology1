@@ -9009,8 +9009,8 @@ function ScannerSettingsTab() {
   const [autoRotate, setAutoRotate] = useState(false);
   const [archive, setArchive] = useState(true);
   const [padding, setPadding] = useState(12);
-  const [quality, setQuality] = useState(85);
-  const [maxWidth, setMaxWidth] = useState(1200);
+  const [quality, setQuality] = useState(92);
+  const [maxWidth, setMaxWidth] = useState(2000);
   
   // Wireless settings
   const [mobileScan, setMobileScan] = useState(true);
@@ -9036,8 +9036,8 @@ function ScannerSettingsTab() {
     setAutoRotate(settings.autoRotateScan === true);
     setArchive(settings.archiveImportedScans !== false);
     setPadding(Number(settings.cropPadding ?? 12));
-    setQuality(Number(settings.jpegQuality ?? 85));
-    setMaxWidth(Number(settings.maxScanWidth ?? 1200));
+    setQuality(Number(settings.jpegQuality ?? 92));
+    setMaxWidth(Number(settings.maxScanWidth ?? 2000));
     
     setMobileScan(settings.mobileScanEnabled !== false);
     setPhonePairing(settings.phonePairingEnabled !== false);
@@ -9365,7 +9365,9 @@ function ScannerSettingsTab() {
             />
             <label htmlFor="aadhaarQr" className="text-sm font-medium">
               Enable Aadhaar QR Code Extraction
-              <p className="text-xs text-muted-foreground font-normal">Decrypt secure QR codes printed on Aadhaar cards for 100% accurate demographic extraction.</p>
+              <p className="text-xs text-muted-foreground font-normal">
+                Reads legacy plain-XML Aadhaar QR codes (pre-~2019 cards). Newer UIDAI Secure QR is detected but not decoded yet — those fall back to OCR.
+              </p>
             </label>
           </div>
 
@@ -9391,8 +9393,8 @@ function ScannerSettingsTab() {
             setAutoRotate(settings.autoRotateScan === true);
             setArchive(settings.archiveImportedScans !== false);
             setPadding(Number(settings.cropPadding ?? 12));
-            setQuality(Number(settings.jpegQuality ?? 85));
-            setMaxWidth(Number(settings.maxScanWidth ?? 1200));
+            setQuality(Number(settings.jpegQuality ?? 92));
+            setMaxWidth(Number(settings.maxScanWidth ?? 2000));
             setMobileScan(settings.mobileScanEnabled !== false);
             setPhonePairing(settings.phonePairingEnabled !== false);
             setPreferredScanner(String(settings.preferredScanner ?? "camera"));

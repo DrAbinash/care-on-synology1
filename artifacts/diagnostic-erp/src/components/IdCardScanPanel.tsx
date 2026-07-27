@@ -148,24 +148,22 @@ const MODE_LABELS: Record<EnhancementMode, string> = {
   bw:           "B&W Scan",
 };
 
-/** Default enhancement mode per document type. ID cards open on **Original**
- *  (no processing) — the enhancement presets are opt-in from the mode row, so a
- *  clean scan is never altered unless staff choose to. */
+/** Default enhancement mode per document type. ID cards open on **Auto** —
+ *  light glare knock-down + text sharpen — because Form F's default capture
+ *  is webcam/TVS (laminated Aadhaar glare is common). Staff can still pick
+ *  Original or Document/Text from the mode row. */
 const DEFAULT_MODE_FOR_DOC: Record<ScanDocType, EnhancementMode> = {
-  "id-card": "original",
+  "id-card": "auto",
   receipt: "receipt",
   document: "document",
 };
 
-/** Which enhancement modes are offered per document type. ID cards are
- *  primarily captured via a flatbed scanner now (sharp, evenly lit, no glare
- *  or focus issues), so the 6 modes built for phone/webcam photos (glare,
- *  lighting casts, receipt-specific shadow removal, etc.) are just noise —
- *  reduced to Original (the scan as-is) and Document/Text (sharpen faint text
- *  on an old or faded physical card). Receipt/document scanning (Accounting,
- *  bill/bank capture) keeps the full set — those ARE mostly phone photos. */
+/** Which enhancement modes are offered per document type. ID cards are often
+ *  webcam/TVS photos of laminated cards (glare) or faded flatbed scans, so
+ *  keep the modes that help those cases — Original, Auto, Document/Text, and
+ *  Laminated. Receipt/document scanning keeps the full set. */
 const MODES_FOR_DOC: Record<ScanDocType, EnhancementMode[]> = {
-  "id-card": ["original", "document"],
+  "id-card": ["original", "auto", "document", "laminated"],
   receipt: Object.keys(MODE_LABELS) as EnhancementMode[],
   document: Object.keys(MODE_LABELS) as EnhancementMode[],
 };
