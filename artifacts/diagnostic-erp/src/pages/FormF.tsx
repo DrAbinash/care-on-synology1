@@ -50,6 +50,8 @@ type IdCardUploadResponse = {
   ocrError?: string | null;
   ocrOutcome?: OcrOutcome;
   recordId?: number;
+  isBlurred?: boolean;
+  blurScore?: number | null;
 };
 
 // Context-sensitive OCR messaging — replaces a single large red "OCR
@@ -948,6 +950,12 @@ export default function FormF() {
 
     const aiOcr = resp.ocr ?? null;
     const aiUsable = !!(aiOcr?.guardianName || aiOcr?.address || aiOcr?.idNumber);
+    if (resp.isBlurred) {
+      toast({
+        title: "Image looks blurry",
+        description: "OCR may be less accurate — retake with the card filling the frame and hold steady.",
+      });
+    }
     if (aiUsable && resp.ocrOutcome === "success") {
       setIdCardOcrResult(aiOcr);
       if (aiOcr?.guardianName) setIdCardExtractedName(aiOcr.guardianName);
@@ -2472,7 +2480,7 @@ export default function FormF() {
           // the crop re-encode) and a 1600px working width (was 1200), so a card
           // that fills only part of the frame still crops to a legible size.
           jpegQuality={fSettings?.jpegQuality ?? 92}
-          maxWidth={fSettings?.maxScanWidth ?? 1600}
+          maxWidth={fSettings?.maxScanWidth ?? 2000}
           // Auto-deskew OFF unless an admin turns it on — it mis-orients and
           // clips phone photos that come in sideways. Rotate Left/Right is manual.
           autoRotate={fSettings?.autoRotateScan === true}

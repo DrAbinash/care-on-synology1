@@ -48,6 +48,7 @@ describe("preprocessScanImage — EXIF orientation", () => {
     // it entirely once applied (metadata().orientation comes back undefined).
     expect([undefined, 1]).toContain(outputMeta.orientation);
     expect(result.appliedSteps).toContain("auto-orient");
+    expect(result.appliedSteps).toContain("sharpen");
   });
 
   it("leaves an already-upright image's dimensions alone", async () => {
