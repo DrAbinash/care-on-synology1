@@ -30,12 +30,11 @@ type CaptureMethod = "camera" | "bridge" | "mobile" | "upload";
 
 /** Coerce the clinic's "preferred scanning source" setting (a free-form
  *  string from clinic_settings — "bridge" | "camera" | "mobile", or unset) into
- *  a valid initial tab. Anything unrecognized falls back to "bridge" (the
- *  flatbed scanner) since it's the sharpest, most consistent capture with no
- *  focus/glare/orientation issues — not because it overrides the setting. */
+ *  a valid initial tab. Anything unrecognized falls back to "camera"
+ *  (webcam / TVS) — the default for clinics without a flatbed always online. */
 function resolveDefaultMethod(pref: string | undefined): CaptureMethod {
   if (pref === "camera" || pref === "bridge" || pref === "mobile") return pref;
-  return "bridge";
+  return "camera";
 }
 
 const ACCEPTED_UPLOAD_TYPES = ["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif", "application/pdf"];
@@ -53,9 +52,9 @@ export interface IdScanCapturePanelProps {
   /** Optional — show a "View saved records" affordance in the footer. */
   onViewSaved?: () => void;
   /** Clinic setting (Settings → Scanner → "Preferred Scanning Source") for
-   *  which capture method opens pre-selected: "bridge" (Flatbed Scanner),
-   *  "camera" (Webcam / TVS), or "mobile" (Phone). Any other value, or none,
-   *  falls back to "bridge". All methods remain one tap away regardless —
+   *  which capture method opens pre-selected: "camera" (Webcam / TVS),
+   *  "bridge" (Flatbed Scanner), or "mobile" (Phone). Any other value, or none,
+   *  falls back to "camera". All methods remain one tap away regardless —
    *  this only picks which tab is active when the panel first renders. */
   defaultMethod?: string;
 }
@@ -64,8 +63,8 @@ export default function IdScanCapturePanel({
   frontDone, backDone, busy = false, defaultMethod, onCapture, onError, onViewSaved,
 }: IdScanCapturePanelProps) {
   // Fallback camera device — a bound TVS PDS 8M if an admin has configured
-  // one, otherwise a generic webcam. Kept as a secondary method; a flatbed
-  // scan is sharper and needs no focus/lighting fuss, so it's the default.
+  // one, otherwise a generic webcam. Webcam/TVS is the default method unless
+  // Settings → Scanner sets Preferred Scanning Source to bridge or mobile.
   const tvsDeviceId = getPreferredTvsDeviceId();
   const tvsLabel = getPreferredTvsDeviceLabel();
   const cameraIsTvs = !!tvsDeviceId;
@@ -87,14 +86,8 @@ export default function IdScanCapturePanel({
   }, []);
   const bridgeOk = bridgeState === "ok";
 
-  // Default method comes from the clinic's "Preferred Scanning Source"
-  // setting (Settings → Scanner) — Scanner Bridge (flatbed) unless the clinic
-  // has configured Webcam/TVS or Mobile as primary instead. Whichever methods
-  // aren't the default remain one tap away as fallbacks. The header's
-  // "Primary Scanner" status reflects the CONFIGURED default specifically
-  // (not whichever tab happens to be selected right now), so staff can see at
-  // a glance whether their primary hardware is ready regardless of what
-  // they're currently browsing.
+  // Default method comes from Settings → Scanner → Preferred Scanning Source
+  // (camera / webcam by default). Other methods stay one tap away.
   const resolvedDefault = resolveDefaultMethod(defaultMethod);
   const [method, setMethod] = useState<CaptureMethod>(resolvedDefault);
   const [dragOver, setDragOver] = useState(false);
@@ -134,11 +127,10 @@ export default function IdScanCapturePanel({
     onCapture({ file, mimeType: file.type, source: "upload", filename: file.name, side });
   }
 
-  // Scanner listed first — it's the default/recommended method; the others
-  // are fallbacks for when the flatbed isn't available.
+  // Webcam first (default); flatbed / mobile / upload remain one tap away.
   const tabs: { key: CaptureMethod; label: string; icon: typeof Camera; dot?: boolean }[] = [
-    { key: "bridge", label: "Scanner", icon: ScanLine, dot: bridgeOk },
     { key: "camera", label: "Webcam", icon: Camera, dot: cameraReady },
+    { key: "bridge", label: "Scanner", icon: ScanLine, dot: bridgeOk },
     { key: "mobile", label: "Mobile", icon: Smartphone },
     { key: "upload", label: "Upload", icon: Upload },
   ];

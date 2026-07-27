@@ -279,7 +279,7 @@ export const clinicSettingsTable = pgTable("clinic_settings", {
   // Wireless scanning + pairing configurations
   mobileScanEnabled: boolean("mobile_scan_enabled").notNull().default(true),
   phonePairingEnabled: boolean("phone_pairing_enabled").notNull().default(true),
-  preferredScanner: text("preferred_scanner").notNull().default("mobile"), // mobile | bridge
+  preferredScanner: text("preferred_scanner").notNull().default("camera"), // camera | bridge | mobile
   requireDesktopConfirmation: boolean("require_desktop_confirmation").notNull().default(true),
   autoDeleteTempScans: boolean("auto_delete_temp_scans").notNull().default(true),
   ocrEnabled: boolean("ocr_enabled").notNull().default(true),
