@@ -9015,7 +9015,7 @@ function ScannerSettingsTab() {
   // Wireless settings
   const [mobileScan, setMobileScan] = useState(true);
   const [phonePairing, setPhonePairing] = useState(true);
-  const [preferredScanner, setPreferredScanner] = useState("mobile");
+  const [preferredScanner, setPreferredScanner] = useState("camera");
   const [requireConfirmation, setRequireConfirmation] = useState(true);
   const [autoDeleteTemp, setAutoDeleteTemp] = useState(true);
   const [ocrEnabled, setOcrEnabled] = useState(true);
@@ -9041,7 +9041,7 @@ function ScannerSettingsTab() {
     
     setMobileScan(settings.mobileScanEnabled !== false);
     setPhonePairing(settings.phonePairingEnabled !== false);
-    setPreferredScanner(String(settings.preferredScanner ?? "mobile"));
+    setPreferredScanner(String(settings.preferredScanner ?? "camera"));
     setRequireConfirmation(settings.requireDesktopConfirmation !== false);
     setAutoDeleteTemp(settings.autoDeleteTempScans !== false);
     setOcrEnabled(settings.ocrEnabled !== false);
@@ -9293,12 +9293,14 @@ function ScannerSettingsTab() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
+                  <SelectItem value="camera">Webcam / TVS PDS 8M (default)</SelectItem>
                   <SelectItem value="bridge">Flatbed Scanner / Scan Bridge</SelectItem>
-                  <SelectItem value="camera">Webcam / TVS PDS 8M</SelectItem>
                   <SelectItem value="mobile">Wireless Mobile Scan</SelectItem>
                 </SelectContent>
               </Select>
-              <p className="text-[11px] text-muted-foreground">Default capture method pre-selected on Form F's ID Scan panel.</p>
+              <p className="text-[11px] text-muted-foreground">
+                Default capture method on Form F&apos;s ID Scan panel. Change anytime — all methods stay available as tabs.
+              </p>
             </div>
             
             <div className="flex items-center gap-3 pt-6">
@@ -9393,7 +9395,7 @@ function ScannerSettingsTab() {
             setMaxWidth(Number(settings.maxScanWidth ?? 1200));
             setMobileScan(settings.mobileScanEnabled !== false);
             setPhonePairing(settings.phonePairingEnabled !== false);
-            setPreferredScanner(String(settings.preferredScanner ?? "mobile"));
+            setPreferredScanner(String(settings.preferredScanner ?? "camera"));
             setRequireConfirmation(settings.requireDesktopConfirmation !== false);
             setAutoDeleteTemp(settings.autoDeleteTempScans !== false);
             setOcrEnabled(settings.ocrEnabled !== false);

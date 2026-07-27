@@ -129,7 +129,7 @@ async function getOrCreate() {
       maxScanWidth: 1200,
       mobileScanEnabled: true,
       phonePairingEnabled: true,
-      preferredScanner: "mobile",
+      preferredScanner: "camera",
       requireDesktopConfirmation: true,
       autoDeleteTempScans: true,
       ocrEnabled: true,
@@ -339,9 +339,9 @@ clinicSettingsRouter.put("/", async (req, res) => {
   ] as const;
   
   if (body.preferredScanner !== undefined) {
-    if (body.preferredScanner !== "mobile" && body.preferredScanner !== "bridge") {
-      console.warn("[PUT /api/clinic-settings] rejected 400:", "preferredScanner must be mobile or bridge", "| received body keys:", Object.keys(body));
-      res.status(400).json({ error: "preferredScanner must be mobile or bridge" });
+    if (body.preferredScanner !== "mobile" && body.preferredScanner !== "bridge" && body.preferredScanner !== "camera") {
+      console.warn("[PUT /api/clinic-settings] rejected 400:", "preferredScanner must be camera, mobile, or bridge", "| received body keys:", Object.keys(body));
+      res.status(400).json({ error: "preferredScanner must be camera, mobile, or bridge" });
       return;
     }
     update.preferredScanner = body.preferredScanner;
