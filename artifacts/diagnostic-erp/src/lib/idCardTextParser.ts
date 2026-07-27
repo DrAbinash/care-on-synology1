@@ -73,7 +73,8 @@ export function parseIdCardText(rawText: string): ParsedIdCardText {
   // usually the card holder's own name on Aadhaar).
   const preferredNameRes = [
     /(?:father|husband|guardian)['’]?\s*(?:s\s*)?name\s*[:\-]?\s*(.+)$/i,
-    /(?:s\/o|w\/o|d\/o|so|wo|do)\s*[:\-]?\s*(.+)$/i,
+    /(?:father|husband)\s+name\s*[:\-]?\s*(.+)$/i,
+    /(?:s\/o|w\/o|d\/o|c\/o|so|wo|do|co)\s*[:\-]?\s*(.+)$/i,
   ];
   for (const re of preferredNameRes) {
     for (const line of lines) {

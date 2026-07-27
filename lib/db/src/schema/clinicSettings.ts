@@ -228,8 +228,8 @@ export const clinicSettingsTable = pgTable("clinic_settings", {
   autoRotateScan: boolean("auto_rotate_scan").notNull().default(false),
   archiveImportedScans: boolean("archive_imported_scans").notNull().default(true),
   cropPadding: integer("crop_padding").notNull().default(12),
-  jpegQuality: integer("jpeg_quality").notNull().default(85),
-  maxScanWidth: integer("max_scan_width").notNull().default(1200),
+  jpegQuality: integer("jpeg_quality").notNull().default(92),
+  maxScanWidth: integer("max_scan_width").notNull().default(2000),
 
   // ── Ollama Local Models (Phase 10C / 11) ──
   // Primary endpoint — set to Windows PC primary LAN IP: http://192.168.1.250:11434

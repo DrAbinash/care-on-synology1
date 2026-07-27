@@ -13,6 +13,8 @@ import { type OcrProviderChoice } from "./ocrProviderResolver";
  *     capture has a plain background around the document/card).
  *   - Normalize: stretches the contrast histogram, helping OCR read faint or
  *     low-contrast text/print.
+ *   - Mild sharpen: unsharp-mask so thin Aadhaar/PAN glyphs stay crisp after
+ *     JPEG re-encode (webcam captures benefit most).
  *   - Blur detection: Laplacian-variance sharpness score on the final image,
  *     returned to the caller so it can warn "too blurred" before accepting
  *     OCR output, and so the manual-verification step can be shown a
@@ -24,8 +26,8 @@ import { type OcrProviderChoice } from "./ocrProviderResolver";
  *     angle into a flat rectangle) require contour/corner detection that
  *     `sharp` does not provide — that class of correction needs a proper
  *     computer-vision library (e.g. OpenCV) and has not been implemented.
- *     Trim + normalize + auto-orient are real, working improvements; deskew/
- *     perspective-correction are not — do not claim otherwise downstream.
+ *     Trim + normalize + sharpen + auto-orient are real, working improvements;
+ *     deskew/perspective-correction are not — do not claim otherwise downstream.
  */
 export interface PreprocessResult {
   buffer: Buffer;
@@ -42,12 +44,12 @@ export interface PreprocessResult {
 export const SERVER_BLUR_WARNING_THRESHOLD = 60;
 
 export interface PreprocessOptions {
-  /** Downscale-if-larger-than, in pixels (width). Default 2000 — prevents an
-   * unnecessarily huge phone/camera capture (e.g. 12MP+) from bloating
-   * storage and slowing OCR/page-load; never enlarges a smaller image. */
+  /** Downscale-if-larger-than, in pixels (width). Default 2400 — keeps enough
+   * glyph detail for Indian ID cards after crop without bloating a 12MP phone
+   * capture into OCR latency. Never enlarges a smaller image. */
   maxWidth?: number;
-  /** JPEG re-encode quality, 1-100. Default 88 — a reasonable balance of
-   * file size vs. OCR-relevant detail; tune per deployment if needed. */
+  /** JPEG re-encode quality, 1-100. Default 92 — OCR accuracy prefers detail
+   * over a few KB of savings on ID-card payloads. */
   jpegQuality?: number;
 }
 
@@ -58,8 +60,8 @@ export async function preprocessScanImage(
 ): Promise<PreprocessResult> {
   const inputBuffer = Buffer.from(imageBase64, "base64");
   const appliedSteps: string[] = [];
-  const maxWidth = options.maxWidth ?? 2000;
-  const jpegQuality = options.jpegQuality ?? 88;
+  const maxWidth = options.maxWidth ?? 2400;
+  const jpegQuality = options.jpegQuality ?? 92;
 
   if (mimeType.includes("pdf")) {
     // Sharp cannot process PDFs; return as-is with a neutral (non-blurred)
@@ -71,10 +73,16 @@ export async function preprocessScanImage(
     const sharp = (await import("sharp")).default;
     let pipeline = sharp(inputBuffer).rotate(); // auto-orient via EXIF
     appliedSteps.push("auto-orient");
-    pipeline = pipeline.trim();
+    // Tolerate slightly noisy borders so trim still fires on flatbed mats /
+    // desk backgrounds without eating into the card itself.
+    pipeline = pipeline.trim({ threshold: 16 });
     appliedSteps.push("trim");
     pipeline = pipeline.normalize();
     appliedSteps.push("normalize");
+    // Mild unsharp — enough to recover thin printed digits after normalize +
+    // JPEG, not so strong that webcam noise becomes "text".
+    pipeline = pipeline.sharpen({ sigma: 0.8, m1: 0.6, m2: 0.3 });
+    appliedSteps.push("sharpen");
     pipeline = pipeline.resize({ width: maxWidth, withoutEnlargement: true });
     appliedSteps.push(`downscale-max-${maxWidth}px`);
 

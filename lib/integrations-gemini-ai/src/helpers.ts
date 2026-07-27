@@ -847,31 +847,35 @@ export interface IdCardOcrResult {
   };
 }
 
-const ID_CARD_OCR_PROMPT = `You are an Indian government ID document reading assistant. Examine this Aadhaar / Voter ID / Passport / Ration card / PAN / Driving License image and extract as many fields as possible.
+const ID_CARD_OCR_PROMPT = `You are an Indian government ID document reading assistant. Examine this Aadhaar / Voter ID / Passport / Ration card / PAN / Driving License image and extract identity fields.
 
 Rules:
-- Aadhaar cards often show: name, DOB, gender, Aadhaar number, address, and father's/husband's name. Some Aadhaar cards show "S/O" (son of), "D/O" (daughter of), "W/O" (wife of), or "C/O" (care of) followed by the guardian name.
-- Voter ID (EPIC) cards show: name, father's name, age, gender, and address.
-- Passports show: name, father's name, address, date of birth.
-- Ration cards show: head of family name, address, and member names.
-- If the card has both front and back visible in the same image, read both sides.
-- If text is blurry or partially cut off, do your best guess and mark confidence as "medium" or "low".
-- For guardianName: return the husband's name, father's name, or head of family name — whichever is explicitly shown. Use the field labeled "Father's Name", "Husband's Name", "S/O", "D/O", "W/O", or "C/O".
-- For address: return the COMPLETE residential address as one comma-separated line. Do NOT truncate.
-- For confidence: use "high" if text is fully legible, "medium" if some text is blurry or partially obscured, "low" if most text is unreadable.
-- For confidencePercent: give your own numeric self-assessment 0-100 of how confident you are in the extracted fields overall — roughly: 95-100 if every field you extracted is clearly, unambiguously legible; 80-94 if mostly legible with minor uncertainty on one or two fields; below 80 if you had to guess at significant portions of the text. This should be consistent with (but more granular than) the "confidence" field above.
+- Aadhaar cards often show a guardian/relation line: "S/O" (son of), "D/O" (daughter of), "W/O" (wife of), or "C/O" (care of) followed by a name. When present, that IS the guardianName to return — it is what a husband/father/guardian field on a compliance form needs, not the card's own primary name line. Also accept labels "Father's Name", "Husband's Name", "Father Name", "Husband Name". If no such relation line exists, return the card holder's own printed name instead.
+- For address: return the COMPLETE residential address as one comma-separated line. Do NOT truncate. Include village/dist/state/PIN when visible.
+- For dob: return YYYY-MM-DD when the full date is legible; leave empty if not. Prefer DOB over YOB when both appear.
+- For idNumber / aadhaarNumber: return digits/letters exactly as printed when readable. For Aadhaar, aadhaarNumber should be last 4 digits only for privacy; still put any other ID type's full number in idNumber if you can read it into rawText.
+- If text is blurry or partially cut off, do your best guess and score that field's confidence lower rather than omitting it.
+- Each confidence score under "fieldConfidence" is your own 0-100 self-assessment for that SPECIFIC field only: 95-100 clearly legible, 80-94 mostly legible with minor uncertainty, below 80 significant guessing. Fields not found get 0.
+- Also set overall "confidence" (high|medium|low) and "confidencePercent" (0-100) consistent with the name+address fieldConfidence average — those two fields matter most for Form F.
 
 Return ONLY valid JSON — no markdown fences, no explanation, no extra text.
 
 JSON schema:
 {
-  "guardianName": "string — husband's or father's full name as shown. If neither is shown, use guardian / head of family / S/O / D/O / W/O / C/O name. Empty string if not found.",
+  "guardianName": "string — husband's or father's / S/O / D/O / W/O / C/O / head-of-family name. Empty string if not found.",
   "address": "string — complete residential address, comma-separated, one line. Empty string if not found.",
   "documentType": "string — one of: Aadhaar, VoterID, Passport, RationCard, PAN, DrivingLicense, Other",
   "confidence": "string — one of: high, medium, low",
-  "confidencePercent": "number — your own 0-100 numeric confidence self-assessment, see the rule above",
+  "confidencePercent": "number — 0-100 overall (prefer average of name+address fieldConfidence when both > 0)",
+  "fieldConfidence": {
+    "name": 0,
+    "dateOfBirth": 0,
+    "gender": 0,
+    "address": 0,
+    "idNumber": 0
+  },
   "fullName": "string — the card holder's own name if visible. Empty string if not found.",
-  "dob": "string — date of birth if shown. Empty string if not found.",
+  "dob": "string — YYYY-MM-DD if shown. Empty string if not found.",
   "gender": "string — M/F/Other if shown. Empty string if not found.",
   "aadhaarNumber": "string — last 4 digits only for privacy, or empty string if not found.",
   "rawText": "string — all readable text from the image concatenated as a single string, in the order it appears."
@@ -946,18 +950,27 @@ export async function geminiOcrIdCard(
 
   const confidence = (parsed.confidence as IdCardOcrResult["confidence"]) ?? "low";
 
-  // Numeric confidence is never left unset — if the model didn't return a
-  // valid confidencePercent (older prompt version, malformed JSON, or a
-  // non-numeric value), fall back to a fixed mapping from the qualitative
-  // confidence band so the caller's tiering logic always has a number to
-  // compare against. These fallback values intentionally sit mid-band, not
-  // at the boundary, so a model that DOES return a number isn't silently
-  // overridden — only used when confidencePercent is genuinely absent/invalid.
+  // Prefer per-field scores (name+address) when the model returned them —
+  // same Form F tiering policy as Ollama. Fall back to overall
+  // confidencePercent, then qualitative band midpoints.
+  const fieldConfidence = parsed.fieldConfidence && typeof parsed.fieldConfidence === "object"
+    ? {
+        name: Number.isFinite(Number(parsed.fieldConfidence.name)) ? Math.max(0, Math.min(100, Math.round(Number(parsed.fieldConfidence.name)))) : undefined,
+        dateOfBirth: Number.isFinite(Number(parsed.fieldConfidence.dateOfBirth)) ? Math.max(0, Math.min(100, Math.round(Number(parsed.fieldConfidence.dateOfBirth)))) : undefined,
+        gender: Number.isFinite(Number(parsed.fieldConfidence.gender)) ? Math.max(0, Math.min(100, Math.round(Number(parsed.fieldConfidence.gender)))) : undefined,
+        address: Number.isFinite(Number(parsed.fieldConfidence.address)) ? Math.max(0, Math.min(100, Math.round(Number(parsed.fieldConfidence.address)))) : undefined,
+        idNumber: Number.isFinite(Number(parsed.fieldConfidence.idNumber)) ? Math.max(0, Math.min(100, Math.round(Number(parsed.fieldConfidence.idNumber)))) : undefined,
+      }
+    : undefined;
+  const relevantFieldScores = [fieldConfidence?.name, fieldConfidence?.address]
+    .filter((n): n is number => typeof n === "number" && n > 0);
   const QUALITATIVE_FALLBACK: Record<IdCardOcrResult["confidence"], number> = { high: 97, medium: 87, low: 55 };
   const rawPercent = Number(parsed.confidencePercent);
-  const confidencePercent = Number.isFinite(rawPercent)
-    ? Math.max(0, Math.min(100, Math.round(rawPercent)))
-    : QUALITATIVE_FALLBACK[confidence];
+  const confidencePercent = relevantFieldScores.length > 0
+    ? Math.round(relevantFieldScores.reduce((a, b) => a + b, 0) / relevantFieldScores.length)
+    : Number.isFinite(rawPercent)
+      ? Math.max(0, Math.min(100, Math.round(rawPercent)))
+      : QUALITATIVE_FALLBACK[confidence];
 
   return {
     guardianName,
@@ -971,5 +984,6 @@ export async function geminiOcrIdCard(
     gender: (parsed.gender ?? "").trim() || undefined,
     aadhaarNumber: aadhaarNumber || undefined,
     rawText: (parsed.rawText ?? "").trim() || undefined,
+    fieldConfidence,
   };
 }
