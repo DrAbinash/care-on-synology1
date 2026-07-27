@@ -16,6 +16,7 @@ import FormFSelfReferralOpdRegister from "@/components/FormFSelfReferralOpdRegis
 import IdScanCapturePanel from "@/components/IdScanCapturePanel";
 import { type ScanCaptureResult, type ScanSide } from "@/components/UnifiedScanCapture";
 import { decodeQrFromBlob } from "@/lib/aadhaarQr";
+import { runIdCardTesseractOcr } from "@/lib/idCardTesseractOcr";
 import { readStaffSession, normalizeRole, FULL_ACCESS_ROLES } from "@/lib/staffSession";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
@@ -41,9 +42,9 @@ function ocrConfidenceTier(confidencePercent: number | undefined): OcrConfidence
 // ── ID card OCR response shape (see /api/form-f/upload-id) ──
 type IdCardOcr = {
   guardianName?: string; address?: string; documentType?: string; confidence?: string; confidencePercent?: number;
-  ocrProvider?: "gemini" | "ollama"; dob?: string; yearOfBirth?: string; age?: number; gender?: string; idNumber?: string;
+  ocrProvider?: "gemini" | "ollama" | "tesseract"; dob?: string; yearOfBirth?: string; age?: number; gender?: string; idNumber?: string;
 };
-type OcrOutcome = "success" | "no_provider_configured" | "ollama_unreachable" | "ollama_model_not_vision_capable" | "ollama_model_not_configured";
+type OcrOutcome = "success" | "no_provider_configured" | "ollama_unreachable" | "ollama_model_not_vision_capable" | "ollama_model_not_configured" | "tesseract_fallback";
 type IdCardUploadResponse = {
   ocr?: IdCardOcr | null;
   ocrError?: string | null;
@@ -61,6 +62,8 @@ function ocrOutcomeToast(outcome: OcrOutcome | undefined, ocrError: string | nul
   switch (outcome) {
     case "success":
       return { title: "ID details extracted", description: "Please verify highlighted fields." };
+    case "tesseract_fallback":
+      return { title: "ID details extracted (offline OCR)", description: "Local AI was unavailable — used on-device Tesseract. Please verify carefully." };
     case "ollama_unreachable":
       return { title: "ID uploaded", description: "The local AI service is unavailable. Enter the details manually or retry." };
     case "ollama_model_not_vision_capable":
@@ -776,10 +779,7 @@ export default function FormF() {
   const [idCardExtractedAddress, setIdCardExtractedAddress] = useState("");
   const [idCardVerified, setIdCardVerified] = useState(false);
   const [idCardUploading, setIdCardUploading] = useState(false);
-  const [idCardOcrResult, setIdCardOcrResult] = useState<{
-    guardianName?: string; address?: string; documentType?: string; confidence?: string; confidencePercent?: number;
-    ocrProvider?: "gemini" | "ollama"; dob?: string; yearOfBirth?: string; age?: number; gender?: string; idNumber?: string;
-  } | null>(null);
+  const [idCardOcrResult, setIdCardOcrResult] = useState<IdCardOcr | null>(null);
   // Last uploaded ID image, kept so "Retry OCR" can re-run without asking
   // staff to re-scan/re-upload the physical card.
   const [lastIdImage, setLastIdImage] = useState<{ base64: string; mimeType: string } | null>(null);
@@ -924,27 +924,75 @@ export default function FormF() {
   // ── Runs OCR on an already-uploaded ID image and applies the result to
   // the review panel + (at high confidence) the form fields. Shared by the
   // initial scan/upload and the "Retry OCR" button, so both go through
-  // identical field-population logic. ──
+  // identical field-population logic.
+  //
+  // Fallback chain: AI (Ollama → Gemini via /api/form-f/upload-id) →
+  // on-device Tesseract.js when AI returns no usable fields or errors.
+  // Manual entry remains available either way. ──
   async function runIdCardOcr(base64: string, mimeType: string) {
-    const resp = await api.post<IdCardUploadResponse>("/api/form-f/upload-id", {
-      formFId: 0,
-      imageBase64: base64,
-      mimeType,
-    });
-    setIdCardOcrResult(resp.ocr ?? null);
-    if (resp.ocr?.guardianName) setIdCardExtractedName(resp.ocr.guardianName);
-    if (resp.ocr?.address) setIdCardExtractedAddress(resp.ocr.address);
-    // Auto-fill empty form fields from OCR only at the "auto" confidence
-    // tier (>=95%) — see ocrConfidenceTier(). Below that, staff must
-    // click "Use this" in the review panel; the `prev.field ||` guard
-    // still ensures we never overwrite anything already typed.
-    if (ocrConfidenceTier(resp.ocr?.confidencePercent) === "auto") {
-      setForm((prev) => ({
-        ...prev,
-        husbandFatherName: prev.husbandFatherName || resp.ocr?.guardianName || prev.husbandFatherName,
-        address: prev.address || resp.ocr?.address || prev.address,
-      }));
+    let resp: IdCardUploadResponse | null = null;
+    try {
+      resp = await api.post<IdCardUploadResponse>("/api/form-f/upload-id", {
+        formFId: 0,
+        imageBase64: base64,
+        mimeType,
+      });
+    } catch (e) {
+      // Network / 5xx — still try Tesseract below
+      resp = {
+        ocr: null,
+        ocrError: e instanceof Error ? e.message : "AI OCR request failed",
+        ocrOutcome: "ollama_unreachable",
+      };
     }
+
+    const aiOcr = resp.ocr ?? null;
+    const aiUsable = !!(aiOcr?.guardianName || aiOcr?.address || aiOcr?.idNumber);
+    if (aiUsable && resp.ocrOutcome === "success") {
+      setIdCardOcrResult(aiOcr);
+      if (aiOcr?.guardianName) setIdCardExtractedName(aiOcr.guardianName);
+      if (aiOcr?.address) setIdCardExtractedAddress(aiOcr.address);
+      if (ocrConfidenceTier(aiOcr?.confidencePercent) === "auto") {
+        setForm((prev) => ({
+          ...prev,
+          husbandFatherName: prev.husbandFatherName || aiOcr?.guardianName || prev.husbandFatherName,
+          address: prev.address || aiOcr?.address || prev.address,
+        }));
+      }
+      toast(ocrOutcomeToast("success", null));
+      return resp;
+    }
+
+    // AI failed or returned empty — automatic Tesseract fallback
+    try {
+      toast({ title: "Trying offline OCR…", description: "Local AI unavailable or empty — running Tesseract on this device." });
+      const tess = await runIdCardTesseractOcr(base64, mimeType);
+      if (tess) {
+        const ocr: IdCardOcr = {
+          guardianName: tess.guardianName || undefined,
+          address: tess.address || undefined,
+          documentType: tess.documentType,
+          confidence: tess.confidence,
+          confidencePercent: tess.confidencePercent,
+          ocrProvider: "tesseract",
+          dob: tess.dob || undefined,
+          gender: tess.gender || undefined,
+          idNumber: tess.idNumber || undefined,
+        };
+        setIdCardOcrResult(ocr);
+        if (ocr.guardianName) setIdCardExtractedName(ocr.guardianName);
+        if (ocr.address) setIdCardExtractedAddress(ocr.address);
+        // Tesseract never auto-fills (confidence capped < 95) — review panel only
+        toast(ocrOutcomeToast("tesseract_fallback", null));
+        return { ocr, ocrOutcome: "tesseract_fallback" as const, ocrError: null };
+      }
+    } catch (e) {
+      console.warn("[form-f] Tesseract fallback failed", e);
+    }
+
+    setIdCardOcrResult(aiOcr);
+    if (aiOcr?.guardianName) setIdCardExtractedName(aiOcr.guardianName);
+    if (aiOcr?.address) setIdCardExtractedAddress(aiOcr.address);
     toast(ocrOutcomeToast(resp.ocrOutcome, resp.ocrError));
     return resp;
   }
@@ -1999,7 +2047,14 @@ export default function FormF() {
                       </div>
                     )}
                     {idCardOcrResult?.ocrProvider && (
-                      <p className="text-[10px] text-blue-500">Extracted via {idCardOcrResult.ocrProvider === "ollama" ? "local AI (Ollama)" : "Gemini"}</p>
+                      <p className="text-[10px] text-blue-500">
+                        Extracted via{" "}
+                        {idCardOcrResult.ocrProvider === "ollama"
+                          ? "local AI (Ollama)"
+                          : idCardOcrResult.ocrProvider === "tesseract"
+                            ? "Tesseract (offline)"
+                            : "Gemini"}
+                      </p>
                     )}
                   </div>
                 )}
