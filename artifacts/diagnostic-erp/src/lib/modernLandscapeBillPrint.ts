@@ -71,7 +71,7 @@ export function buildModernLandscapeBillPrintHtml(opts: BuildPrintHtmlOpts): str
   const cancelled = (bill.order?.tests ?? []).filter((t) => (t.status ?? "active") === "cancelled");
   const billDigits = String(bill.billNumber).replace(/^BILL-?/i, "").replace(/-/g, "");
   const ageStr    = calcAge(bill.patient?.dateOfBirth, bill.patient?.ageValue, bill.patient?.ageUnit);
-  const ageGender = [ageStr, bill.patient?.gender].filter(Boolean).join(" · ");
+  const ageGender = [ageStr, bill.patient?.gender].filter(Boolean).join(" · ").toUpperCase();
   const created   = bill.createdAt ? new Date(bill.createdAt) : new Date();
   const dateStr   = created.toLocaleString("en-IN", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
   const isCancelled     = (bill.status ?? "") === "cancelled";
