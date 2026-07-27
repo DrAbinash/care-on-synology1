@@ -30,7 +30,6 @@ function ctx(overrides: Partial<OpsCtx> = {}): OpsCtx {
     publicBaseUrl: null,
     displayToken: "tok",
     n8nUrl: null,
-    evolutionUrl: null,
     paymentGatewayConfigured: null,
     storageDir: null,
     diskFree: null,
@@ -106,10 +105,6 @@ describe("Sync freshness vs last-DICOM — 'no recent study' is never a FAIL", (
 describe("Optional integrations — SKIPPED when unconfigured, not FAIL", () => {
   it("n8n unset → SKIPPED", async () => {
     const c = await run("integ.n8n", ctx({ n8nUrl: null }));
-    expect(c.status).toBe("SKIPPED");
-  });
-  it("Evolution unset → SKIPPED", async () => {
-    const c = await run("integ.evolution", ctx({ evolutionUrl: null }));
     expect(c.status).toBe("SKIPPED");
   });
   it("n8n configured + reachable → PASS", async () => {

@@ -242,7 +242,7 @@ services:
       # Neither of these was passed into the container before, so there was NO
       # way to run any scheduled job in production:
       #
-      #   ENABLE_SCHEDULERS — gates all 25 in-process cron timers (index.ts).
+      #   ENABLE_SCHEDULERS — gates all 26 in-process cron timers (index.ts).
       #     Unset = every timer is unregistered, including automated backups,
       #     the weekly restore-verification, and the backup dead-man alert.
       #     Set to 1 on exactly ONE always-on instance (this Synology stack) —

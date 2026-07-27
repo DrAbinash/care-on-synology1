@@ -523,7 +523,7 @@ Options (repository-standard flags):
 |---|---|
 | `--json` | Machine-readable JSON to stdout (for CI / scripts) |
 | `--base-url <url>` | API base to probe (default `http://localhost:$PORT`) |
-| `--include-optional` | Also run optional integration checks (n8n, Evolution, payment, public site) |
+| `--include-optional` | Also run optional integration checks (n8n, payment, public site) |
 | `--timeout <ms>` | Per-check timeout (default 5000) |
 | `--save-result` | Persist the run into `operational_health_runs` (history) |
 | `--transactional` | Also run the rollback-isolated create/read/update probe (never commits) |
@@ -543,7 +543,7 @@ PASS  Admin endpoint rejects anon    admin health endpoint correctly rejects ano
 PASS  Orthanc connectivity           Orthanc reachable, version 1.12.4 (8ms)
 WARN  Orthanc → ERP sync freshness   last successful sync was 37 min ago
 PASS  Queue USG                      queue/usg responds (200)
-SKIP  Evolution API                  Evolution API not configured (set EVOLUTION_API_URL to enable)
+SKIP  n8n                            n8n not configured (set N8N_URL to enable)
 Overall: WARNING
 Version: 2.0.0 (build 1) commit a1b2c3d4
 Duration: 840ms
@@ -584,7 +584,6 @@ These are checked **only when configured** (otherwise SKIPPED, never FAIL):
 | Variable | Enables the check for |
 |---|---|
 | `N8N_HEALTH_URL` (or `N8N_URL`) | n8n reachability |
-| `EVOLUTION_API_URL` | Evolution API reachability — **deprecated, unrelated to CARE's WhatsApp integration** (Meta Cloud API, configured via Admin → Integrations → WhatsApp); kept only as an optional legacy probe |
 | `PUBLIC_BASE_URL` (or `NETWORK_PUBLIC_DOMAIN`) | Public website / reverse proxy reachability |
 | `ORTHANC_URL` / `ORTHANC_INTERNAL_URL` (+ `ORTHANC_USERNAME`/`ORTHANC_PASSWORD`) | Orthanc `/system` connectivity + auth |
 | `OHIF_URL` | OHIF viewer reachability |

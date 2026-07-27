@@ -18,9 +18,21 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   MessageSquare, Users, LayoutDashboard, FileText, Settings2,
   Phone, Clock, ArrowLeftRight, Send, CheckCircle, AlertCircle,
-  Bot, User, X, Check
+  Bot, User, X, Check, ArrowLeft, RefreshCcw, ChevronRight, Inbox, MessageCircle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+
+// wa_outbox's own conversation log (whatsapp_conversations table), populated
+// by the primary /api/whatsapp/webhook -- a separate data store from
+// wa_conversations/wa_contacts below (ConversationsTab/ContactsTab), each
+// with its own staff UI; see routes/whatsapp.ts's comment above sharedBotEngine
+// for why these were never merged. Ported from the legacy Settings.tsx
+// WhatsApp tab's "Inbox" sub-tab so nothing was lost when that tab was removed.
+type WaConversation = {
+  id: number; phone: string; customerName: string;
+  direction: string; messageBody: string; waMessageId: string;
+  aiHandled: boolean; status: string; createdAt: string;
+};
 
 // ─── Dashboard Tab ──────────────────────────────────────────────────────
 function DashboardTab() {
@@ -357,6 +369,164 @@ function SettingsTab() {
   );
 }
 
+// ─── Webhook Inbox Tab (primary webhook's own conversation log) ────────────
+function WebhookInboxTab() {
+  const [selectedPhone, setSelectedPhone] = useState<string | null>(null);
+  const [replyText, setReplyText] = useState("");
+  const [replyErr, setReplyErr] = useState("");
+
+  const { data: convData, isLoading, refetch } = useQuery<{
+    conversations: WaConversation[]; total: number; page: number;
+  }>({
+    queryKey: ["wa-conversations"],
+    queryFn: () => api.get("/api/whatsapp/conversations"),
+    refetchInterval: 30_000,
+  });
+
+  const { data: threadMsgs = [], refetch: refetchThread } = useQuery<WaConversation[]>({
+    queryKey: ["wa-thread", selectedPhone],
+    queryFn: () => api.get(`/api/whatsapp/conversations/${encodeURIComponent(selectedPhone!)}`),
+    enabled: !!selectedPhone,
+    refetchInterval: 15_000,
+  });
+
+  const reply = useMutation({
+    mutationFn: ({ phone, message }: { phone: string; message: string }) =>
+      api.post(`/api/whatsapp/conversations/${encodeURIComponent(phone)}/reply`, { message }),
+    onSuccess: () => { setReplyText(""); setReplyErr(""); refetchThread(); },
+    onError: (e: Error) => setReplyErr(e.message || "Failed to send reply"),
+  });
+
+  // Group conversations by phone (show latest message per phone)
+  const threads = convData?.conversations
+    ? Object.values(
+        convData.conversations.reduce<Record<string, WaConversation>>((acc, m) => {
+          if (!acc[m.phone] || new Date(m.createdAt) > new Date(acc[m.phone].createdAt)) {
+            acc[m.phone] = m;
+          }
+          return acc;
+        }, {})
+      ).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+    : [];
+
+  const formatTime = (iso: string) => {
+    const d = new Date(iso);
+    const now = new Date();
+    const isToday = d.toDateString() === now.toDateString();
+    return isToday
+      ? d.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })
+      : d.toLocaleDateString("en-IN", { day: "numeric", month: "short" });
+  };
+
+  if (selectedPhone) {
+    const threadName = threadMsgs[0]?.customerName || selectedPhone;
+    return (
+      <div className="bg-card border border-card-border rounded-xl overflow-hidden flex flex-col" style={{ minHeight: 500 }}>
+        <div className="flex items-center gap-3 px-4 py-3 border-b border-card-border bg-muted/30">
+          <button onClick={() => setSelectedPhone(null)} className="text-muted-foreground hover:text-foreground">
+            <ArrowLeft size={16} />
+          </button>
+          <div className="w-8 h-8 rounded-full bg-green-100 flex items-center justify-center text-green-700 font-bold text-sm">
+            {(threadName[0] ?? "?").toUpperCase()}
+          </div>
+          <div>
+            <p className="font-medium text-sm">{threadName}</p>
+            <p className="text-xs text-muted-foreground flex items-center gap-1"><Phone size={10} /> {selectedPhone}</p>
+          </div>
+          <Button size="sm" variant="ghost" className="ml-auto" onClick={() => refetchThread()}>
+            <RefreshCcw size={13} />
+          </Button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-4 space-y-3" style={{ maxHeight: 380 }}>
+          {[...threadMsgs].reverse().map((m) => (
+            <div key={m.id} className={`flex ${m.direction === "outgoing" ? "justify-end" : "justify-start"}`}>
+              <div className={`max-w-[75%] rounded-2xl px-3 py-2 text-sm ${m.direction === "outgoing" ? "bg-primary text-primary-foreground rounded-br-sm" : "bg-muted rounded-bl-sm"}`}>
+                <p>{m.messageBody}</p>
+                <p className={`text-[10px] mt-0.5 ${m.direction === "outgoing" ? "text-primary-foreground/70" : "text-muted-foreground"}`}>
+                  {formatTime(m.createdAt)}
+                  {m.aiHandled && " · AI"}
+                </p>
+              </div>
+            </div>
+          ))}
+          {threadMsgs.length === 0 && <p className="text-center text-muted-foreground text-sm py-8">No messages</p>}
+        </div>
+
+        <div className="p-3 border-t border-card-border space-y-2">
+          <div className="flex gap-2">
+            <Input
+              value={replyText}
+              onChange={(e) => setReplyText(e.target.value)}
+              placeholder="Type a reply…"
+              className="flex-1"
+              onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && replyText.trim()) { e.preventDefault(); reply.mutate({ phone: selectedPhone, message: replyText.trim() }); } }}
+            />
+            <Button
+              type="button"
+              disabled={!replyText.trim() || reply.isPending}
+              onClick={() => reply.mutate({ phone: selectedPhone, message: replyText.trim() })}
+            >
+              <Send size={14} />
+            </Button>
+          </div>
+          {replyErr && <p className="text-xs text-destructive">{replyErr}</p>}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-card border border-card-border rounded-xl overflow-hidden">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-card-border">
+        <h3 className="font-semibold flex items-center gap-2"><Inbox size={15} /> Patient Inbox</h3>
+        <Button size="sm" variant="ghost" onClick={() => refetch()}><RefreshCcw size={13} /></Button>
+      </div>
+      {isLoading ? (
+        <div className="space-y-0">
+          {[...Array(5)].map((_, i) => <div key={i} className="h-16 bg-muted/30 border-b border-card-border animate-pulse" />)}
+        </div>
+      ) : threads.length === 0 ? (
+        <div className="py-16 text-center text-muted-foreground">
+          <MessageCircle size={36} className="mx-auto mb-3 opacity-30" />
+          <p className="text-sm">No conversations yet.</p>
+          <p className="text-xs mt-1">Incoming messages will appear here once the webhook is configured.</p>
+        </div>
+      ) : (
+        <div>
+          {threads.map((m) => (
+            <button
+              key={m.phone}
+              onClick={() => setSelectedPhone(m.phone)}
+              className="w-full flex items-center gap-3 px-4 py-3 border-b border-card-border hover:bg-muted/30 transition-colors text-left"
+            >
+              <div className="w-9 h-9 rounded-full bg-green-100 flex items-center justify-center text-green-700 font-bold text-sm flex-shrink-0">
+                {(m.customerName?.[0] ?? m.phone[0] ?? "?").toUpperCase()}
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="font-medium text-sm truncate">{m.customerName || m.phone}</p>
+                  <span className="text-[10px] text-muted-foreground flex-shrink-0">{formatTime(m.createdAt)}</span>
+                </div>
+                <p className="text-xs text-muted-foreground truncate mt-0.5">{m.messageBody}</p>
+              </div>
+              <div className="flex flex-col items-end gap-1 flex-shrink-0">
+                {m.direction === "incoming" && (
+                  <span className="w-2 h-2 rounded-full bg-green-500" title="Incoming" />
+                )}
+                {m.aiHandled && (
+                  <span title="AI handled"><Bot size={11} className="text-blue-500" /></span>
+                )}
+              </div>
+              <ChevronRight size={14} className="text-muted-foreground flex-shrink-0" />
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Main Page ─────────────────────────────────────────────────────────────────────────────
 export default function WhatsAppChatbotPage() {
   return (
@@ -368,12 +538,14 @@ export default function WhatsAppChatbotPage() {
         <TabsList>
           <TabsTrigger value="dashboard"><LayoutDashboard size={14} className="mr-1" /> Dashboard</TabsTrigger>
           <TabsTrigger value="conversations"><MessageSquare size={14} className="mr-1" /> Conversations</TabsTrigger>
+          <TabsTrigger value="webhook-inbox"><Inbox size={14} className="mr-1" /> Webhook Inbox</TabsTrigger>
           <TabsTrigger value="contacts"><Users size={14} className="mr-1" /> Contacts</TabsTrigger>
           <TabsTrigger value="logs"><FileText size={14} className="mr-1" /> Logs</TabsTrigger>
           <TabsTrigger value="settings"><Settings2 size={14} className="mr-1" /> Settings</TabsTrigger>
         </TabsList>
         <TabsContent value="dashboard" className="mt-4"><DashboardTab /></TabsContent>
         <TabsContent value="conversations" className="mt-4"><ConversationsTab /></TabsContent>
+        <TabsContent value="webhook-inbox" className="mt-4"><WebhookInboxTab /></TabsContent>
         <TabsContent value="contacts" className="mt-4"><ContactsTab /></TabsContent>
         <TabsContent value="logs" className="mt-4"><MessageLogsTab /></TabsContent>
         <TabsContent value="settings" className="mt-4"><SettingsTab /></TabsContent>

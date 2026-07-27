@@ -1,11 +1,14 @@
 // =============================================================================
-// WhatsApp Chatbot Routes
+// WhatsApp Chatbot Routes — staff API only
 //
-// Provider-agnostic webhook receiver and chatbot API. Integrates with the
-// WhatsAppService + WhatsAppBotEngine for automated patient engagement.
+// Conversation inbox, contacts, templates, audit logs and manual-send API
+// (mounted at /api/wa-chatbot, staff-auth gated) for the wa_conversations/
+// wa_contacts data store. There is no webhook receiver in this file — the
+// one production webhook is "/api/whatsapp/webhook" (routes/whatsapp.ts),
+// which already delegates to the same WhatsAppBotEngine for AI auto-replies.
 // =============================================================================
 
-import { Router, type IRouter, type Request, type Response } from "express";
+import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import {
   waContactsTable, waConversationsTable, waMessagesTable,
@@ -14,121 +17,10 @@ import {
 import { eq, desc, and, gte, sql } from "drizzle-orm";
 import { requireStaffPermission } from "../middleware/requireStaffAuth";
 import { getWhatsAppService } from "../services/whatsapp/WhatsAppService";
-import { WhatsAppBotEngine } from "../services/whatsapp/WhatsAppBotEngine";
-import type { ParsedIncomingMessage } from "../services/whatsapp/WhatsAppProvider";
 
 export const waChatbotRouter: IRouter = Router();
-// DEPRECATED / NOT MOUNTED — see routes/index.ts for why. Kept exported
-// (rather than deleted) only so nothing importing this module fails to
-// compile; no route in routes/index.ts or app.ts mounts it, so none of
-// the handlers below are reachable over HTTP. The single production
-// WhatsApp webhook is "/api/whatsapp/webhook" (routes/whatsapp.ts).
-export const waChatbotWebhookRouter: IRouter = Router();
 
 const service = getWhatsAppService();
-const botEngine = new WhatsAppBotEngine(service);
-
-// ── DEPRECATED — unreachable, see note above. Left in place for reference
-// only. (POST /api/wa-chatbot/webhook/:provider) ────────────────────
-waChatbotWebhookRouter.post("/:provider", async (req: Request, res: Response): Promise<void> => {
-  // Always respond 200 immediately to prevent provider retries
-  res.status(200).json({ status: "ok" });
-
-  const provider = String(req.params.provider || "mock").toLowerCase();
-  const rawBody = JSON.stringify(req.body);
-  const signature = req.headers["x-hub-signature-256"] as string || req.headers["x-signature"] as string || "";
-
-  try {
-    // Verify webhook signature
-    const verifyResult = await service.verifyWebhook(rawBody, signature);
-    if (!verifyResult.valid) {
-      await service.logAudit({ action: "webhook_rejected", provider, status: "rejected", details: "Invalid signature" });
-      return;
-    }
-
-    // Parse incoming messages
-    const messages = await service.parseIncomingMessages(rawBody);
-    if (messages.length === 0) return;
-
-    for (const msg of messages) {
-      if (!msg.from) continue;
-
-      // Get or create contact
-      const contact = await service.getOrCreateContact(msg.from, "");
-
-      // Get or create conversation
-      const conversation = await service.getOrCreateConversation(contact.id, contact.phone);
-
-      // Log incoming message
-      await service.logIncomingMessage(conversation.id, provider, msg);
-
-      // Skip bot processing if human handover
-      if (conversation.status === "human") {
-        await service.logAudit({ action: "message_human_queue", provider, phone: contact.phone, conversationId: conversation.id, status: "human_queued" });
-        continue;
-      }
-
-      // Process with bot engine
-      const reply = await botEngine.processMessage(contact, msg);
-
-      // Send reply if any
-      if (reply.text) {
-        let sendResult: { ok: boolean; providerMessageId?: string; error?: string };
-        if (reply.buttons && reply.buttons.length > 0) {
-          sendResult = await service.sendInteractive(contact.phone, reply.text, reply.buttons);
-        } else {
-          sendResult = await service.sendText(contact.phone, reply.text);
-        }
-
-        if (sendResult.ok) {
-          await service.logOutgoingMessage(conversation.id, provider, reply.text, sendResult.providerMessageId);
-        }
-      }
-
-      // Handle handover action
-      if (reply.action === "handover_human") {
-        await service.updateConversationStatus(conversation.id, "human");
-      }
-
-      // Audit log
-      await service.logAudit({
-        action: "bot_reply",
-        provider,
-        phone: contact.phone,
-        conversationId: conversation.id,
-        status: reply.text ? "replied" : "no_reply",
-        details: reply.text?.slice(0, 200),
-      });
-    }
-  } catch (err) {
-    await service.logAudit({
-      action: "webhook_error",
-      provider,
-      status: "error",
-      details: (err as Error).message,
-    });
-  }
-});
-
-// ─── GET webhook verification (Meta Cloud API subscription verification) ────────
-waChatbotWebhookRouter.get("/:provider", async (req: Request, res: Response): Promise<void> => {
-  const provider = String(req.params.provider || "mock").toLowerCase();
-  const mode = req.query["hub.mode"] as string;
-  const token = req.query["hub.verify_token"] as string;
-  const challenge = req.query["hub.challenge"] as string;
-
-  // For Meta Cloud API, verify token matches env var
-  if (mode === "subscribe" && token) {
-    const expectedToken = process.env.WHATSAPP_VERIFY_TOKEN || "";
-    if (expectedToken && token === expectedToken) {
-      res.status(200).send(String(challenge ?? ""));
-      return;
-    }
-  }
-
-  // Generic verification
-  res.status(403).json({ error: "Webhook verification failed" });
-});
 
 // ─── Staff API: Conversations ─────────────────────────────────────────────────
 waChatbotRouter.get("/conversations", requireStaffPermission("/settings"), async (req, res): Promise<void> => {

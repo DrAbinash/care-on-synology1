@@ -6,9 +6,9 @@ webhook endpoint, and one settings page. This guide covers first-time setup;
 for day-to-day config changes use the ERP itself (Admin → Integrations →
 WhatsApp).
 
-Evolution API is **not** a supported WhatsApp provider — see
-`CARE_ERP_ENVIRONMENT_MATRIX.md`'s deprecation note if you have an
-`EVOLUTION_API_URL` configured from a previous setup.
+Evolution API is **not** a supported WhatsApp provider and has no code
+presence in CARE ERP — any `EVOLUTION_API_URL` left over in your `.env` from
+a previous setup can simply be deleted; it is no longer read anywhere.
 
 ## 1. Meta-side setup (one-time, in Meta Business Manager)
 

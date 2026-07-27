@@ -25,7 +25,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useToast } from "@/hooks/use-toast";
 import {
   Save, RefreshCw, PlusCircle, Trash2, Send, ShieldAlert, ShieldCheck,
-  Activity, Webhook as WebhookIcon, Settings2, MessageSquare, KeyRound, PauseCircle, PlayCircle,
+  Activity, Webhook as WebhookIcon, Settings2, MessageSquare, KeyRound, PauseCircle, PlayCircle, Bot,
 } from "lucide-react";
 
 interface WaSettings {
@@ -69,11 +69,13 @@ interface WaSettings {
   emergencyPausedAt: string | null;
   transactionalMessagesAllowed: boolean;
   reminderMessagesAllowed: boolean;
-  marketingMessagesAllowed: boolean;
   stopStartHandlingEnabled: boolean;
   phiProtectionEnabled: boolean;
   secureReportLinkRequired: boolean;
   aiAssistantEnabled: boolean;
+  aiAssistantName: string;
+  aiSystemPrompt: string;
+  aiEscalationMessage: string;
 }
 
 interface WaNumber {
@@ -227,6 +229,7 @@ export default function WhatsAppIntegrationSettings() {
             <TabsTrigger value="webhook"><WebhookIcon className="h-4 w-4 mr-1" />Webhook</TabsTrigger>
             <TabsTrigger value="automation"><Settings2 className="h-4 w-4 mr-1" />Automation</TabsTrigger>
             <TabsTrigger value="safety"><ShieldCheck className="h-4 w-4 mr-1" />Consent &amp; Safety</TabsTrigger>
+            <TabsTrigger value="ai"><Bot className="h-4 w-4 mr-1" />AI Assistant</TabsTrigger>
             <TabsTrigger value="health"><Activity className="h-4 w-4 mr-1" />Health</TabsTrigger>
           </TabsList>
 
@@ -493,7 +496,6 @@ export default function WhatsAppIntegrationSettings() {
                   {([
                     ["transactionalMessagesAllowed", "Transactional messages (bills, reports, OTP)"],
                     ["reminderMessagesAllowed", "Reminder messages (appointments, dues)"],
-                    ["marketingMessagesAllowed", "Marketing messages"],
                     ["secureReportLinkRequired", "Require secure/tokenized report links"],
                   ] as const).map(([key, label]) => (
                     <div key={key} className="flex items-center justify-between">
@@ -510,6 +512,60 @@ export default function WhatsAppIntegrationSettings() {
                     <Switch checked disabled />
                   </div>
                 </div>
+                <Button onClick={() => save()} disabled={saveMutation.isPending}><Save className="h-4 w-4 mr-1" />Save</Button>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* ── AI Assistant (Gemini-powered auto-reply) ── */}
+          <TabsContent value="ai" className="space-y-4 mt-4">
+            <Card>
+              <CardHeader>
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <CardTitle>Meta AI Business Assistant</CardTitle>
+                    <CardDescription>
+                      When enabled, incoming WhatsApp messages from patients are automatically answered by an AI assistant
+                      powered by Gemini. Requires the Webhook tab to be configured first.
+                    </CardDescription>
+                  </div>
+                  <Switch checked={merged.aiAssistantEnabled ?? false} onCheckedChange={(v) => set("aiAssistantEnabled", v)} />
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {!s.webhookVerifyToken && (
+                  <p className="text-sm text-amber-600">Webhook is not configured yet — see the Webhook tab first so incoming messages reach the ERP.</p>
+                )}
+                <div>
+                  <label className="text-sm font-medium">Assistant name</label>
+                  <Input value={merged.aiAssistantName ?? ""} onChange={(e) => set("aiAssistantName", e.target.value)} placeholder="e.g. Care Diagnostics Assistant" />
+                </div>
+                <div>
+                  <label className="text-sm font-medium">Custom system prompt (optional)</label>
+                  <Textarea
+                    rows={8}
+                    className="font-mono text-xs"
+                    value={merged.aiSystemPrompt ?? ""}
+                    onChange={(e) => set("aiSystemPrompt", e.target.value)}
+                    placeholder={"Leave empty to use the auto-generated default (clinic name/address/phone/email, appointment/report/test-info handling, concise professional tone). Filling this in completely replaces the default — include all relevant clinic info here."}
+                  />
+                </div>
+                <div>
+                  <label className="text-sm font-medium">Escalation / hand-off message</label>
+                  <Textarea
+                    rows={3}
+                    value={merged.aiEscalationMessage ?? ""}
+                    onChange={(e) => set("aiEscalationMessage", e.target.value)}
+                    placeholder="I'm not sure about that one — let me connect you with our team. For urgent matters, please call us directly."
+                  />
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Shown when the AI can't answer from the Knowledge Base, or a patient chooses "Talk to Staff." Leave empty for the default.
+                  </p>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  The AI never shares specific patient data, diagnosis details, or makes medical decisions — it handles test/pricing/hours
+                  questions, appointment guidance, and report-readiness queries, then hands off anything else.
+                </p>
                 <Button onClick={() => save()} disabled={saveMutation.isPending}><Save className="h-4 w-4 mr-1" />Save</Button>
               </CardContent>
             </Card>

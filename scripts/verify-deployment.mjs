@@ -26,7 +26,7 @@
  *   VERIFY_API_URL (default http://localhost:8080)  VERIFY_WEB_URL (default http://localhost:${HOST_PORT:-8888})
  *   ORTHANC_INTERNAL_URL|ORTHANC_URL   OHIF_INTERNAL_URL|OHIF_URL
  *   OLLAMA_URL|OLLAMA_PRIMARY_URL|OLLAMA_FALLBACK_URL   OLLAMA_DEFAULT_MODEL (default qwen3:14b)
- *   AI_GATEWAY_URL   ICICI_SECRET_KEY/ICICI_MERCHANT_ID   EVOLUTION_API_URL   N8N_URL
+ *   AI_GATEWAY_URL   ICICI_SECRET_KEY/ICICI_MERCHANT_ID   N8N_URL
  *   VERIFY_SKIP_API=1  → downgrade API/web probes to SKIPPED (DB/config-only run)
  */
 
@@ -66,7 +66,6 @@ const CFG = {
   aiGateway: process.env.AI_GATEWAY_URL || "",
   iciciSecret: process.env.ICICI_SECRET_KEY || "",
   iciciMerchant: process.env.ICICI_MERCHANT_ID || "",
-  evolution: process.env.EVOLUTION_API_URL || "",
   n8n: process.env.N8N_URL || "",
 };
 
@@ -247,9 +246,11 @@ async function main() {
   else if (CFG.iciciMerchant || CFG.iciciSecret) add("Payments", "ICICI config", W, "partial ICICI config — merchant or secret missing", { remediation: "Set both ICICI_MERCHANT_ID and ICICI_SECRET_KEY" });
   else add("Payments", "ICICI config", S, "ICICI_SECRET_KEY not set");
 
-  // ── MESSAGING: Evolution / n8n ───────────────────────────────────────────────
-  if (!CFG.evolution) add("Messaging", "Evolution API (WhatsApp)", S, "EVOLUTION_API_URL not set");
-  else { const e = await httpProbe(CFG.evolution, { ms: 5000 }); add("Messaging", "Evolution API (WhatsApp)", e.status ? P : W, e.status ? `HTTP ${e.status}` : e.error); }
+  // ── MESSAGING: n8n ────────────────────────────────────────────────────────────
+  // WhatsApp itself (Meta Cloud API) is checked via
+  // GET /api/internal/automations/whatsapp/health (bearer-authed with
+  // WHATSAPP_AUTOMATION_SECRET), not from this script — see
+  // docs/WHATSAPP_CLOUD_API_SETUP.md.
   if (!CFG.n8n) add("Messaging", "n8n", S, "N8N_URL not set");
   else { const n = await httpProbe(CFG.n8n, { path: "/healthz", ms: 5000 }); add("Messaging", "n8n", n.ok ? P : W, n.ok ? "healthy" : `${n.error || "HTTP " + n.status}`); }
 

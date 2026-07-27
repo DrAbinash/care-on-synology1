@@ -762,7 +762,10 @@ async function handleIncomingImage(params: {
   if (numRole !== "form_f") {
     // Non-Form-F numbers: just log the image, no Form F processing
     if (numCfg) {
-      void sendTextMessageRaw(phone, "Thank you for your message. For ID card uploads related to Form F, please use our dedicated Form F number.", numCfg).catch(() => {});
+      await sendWhatsAppNow({
+        recipientPhone: phone, messagePurpose: "chatbot_reply", phoneNumberId: numCfg.phoneNumberId,
+        text: "Thank you for your message. For ID card uploads related to Form F, please use our dedicated Form F number.",
+      });
     }
     return;
   }
@@ -803,13 +806,13 @@ async function handleIncomingImage(params: {
     const replyBody = ocrResult.guardianName || ocrResult.address
       ? `Thank you! We received your ID card image and extracted the following details for your Form F record:\n• Guardian/Husband/Father: ${ocrResult.guardianName || "(not found)"}\n• Address: ${ocrResult.address || "(not found)"}\n\nOur staff will verify and confirm these details shortly.`
       : "Thank you for sharing your ID card image. We couldn't clearly read the details. Our staff will assist you at the center.";
-    void sendTextMessageRaw(phone, replyBody, numCfg).catch(() => {});
+    await sendWhatsAppNow({ recipientPhone: phone, messagePurpose: "chatbot_reply", phoneNumberId: numCfg.phoneNumberId, text: replyBody });
   } else {
     // Reply even when no patient found or no data extracted
     const replyBody = patient
       ? "Thank you for your ID card image. We couldn't extract the required details automatically. Our staff will assist you at the center."
       : "Thank you for your ID card image. We couldn't find a matching patient record. Please visit the center so our staff can verify and update your records.";
-    void sendTextMessageRaw(phone, replyBody, numCfg).catch(() => {});
+    await sendWhatsAppNow({ recipientPhone: phone, messagePurpose: "chatbot_reply", phoneNumberId: numCfg.phoneNumberId, text: replyBody });
   }
 }
 

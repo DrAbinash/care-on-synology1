@@ -67,7 +67,7 @@ pnpm operations:verify-deployment    # or: curl -fsS http://localhost:8080/api/h
 6. **Repoint the network** to the standby:
    - If the standby takes over the **same LAN IP** (primary fully dead): just move the IP / cable, users hit the same address.
    - If using **Cloudflare Tunnel / a public domain**: point the tunnel/`caredeoghar.com` at the standby.
-   - Update any **external service** env that lives elsewhere (Orthanc/OHIF/Ollama/Evolution) if their addresses differ on this site — reporting/billing work regardless; those are non-blocking.
+   - Update any **external service** env that lives elsewhere (Orthanc/OHIF/Ollama) if their addresses differ on this site — reporting/billing work regardless; those are non-blocking.
 
 7. Log in, open **Admin → Operational Health**, and run the **NAS validation checklist** (`CARE_ERP_NAS_VALIDATION_CHECKLIST.md`). If rows 1–3, 15–17 pass → you are live.
 

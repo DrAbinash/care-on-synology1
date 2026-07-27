@@ -51,6 +51,7 @@ export function startCronScheduler() {
   scheduleAuditLogPurge();
   schedulePacsPullerWatchdog();
   scheduleWhatsappReminders();
+  scheduleWhatsAppOutboxDispatch();
   scheduleRecall();
   scheduleFeedbackInvites();
   scheduleOpsAnomalyScan();
@@ -921,6 +922,32 @@ function scheduleWhatsappReminders() {
   });
 
   console.log("[cron] WhatsApp reminder scheduler started (checks every minute)");
+}
+
+// ── WhatsApp outbox dispatcher (in-process fallback) ─────────────────────────
+// n8n's POST /api/internal/automations/whatsapp/dispatch-outbox is the primary
+// drain path -- n8n is expected to call it every 1-5 minutes so retries and
+// quiet-hours-deferred wa_outbox rows actually go out (see that route's
+// comment; sendWhatsAppNow's inline attempt only covers the FIRST try). That
+// makes delivery of anything past the first attempt depend entirely on n8n
+// being configured and running, which this clinic may not always have set up.
+// This is a fallback, not a replacement: every 2 minutes, drain the same
+// outbox the same way. dispatchPendingWaOutbox claims rows via
+// `FOR UPDATE SKIP LOCKED`, so this running alongside (or instead of) n8n's
+// calls can never double-send the same row.
+function scheduleWhatsAppOutboxDispatch() {
+  cron.schedule("*/2 * * * *", async () => {
+    try {
+      const { dispatchPendingWaOutbox } = await import("./services/whatsapp/WhatsAppOutbox");
+      const result = await dispatchPendingWaOutbox({ limit: 20, workerId: "in-process-cron" });
+      if (result.claimed > 0) {
+        console.log(`[cron] WhatsApp outbox dispatch: claimed=${result.claimed} sent=${result.sent} failed=${result.failed} dead=${result.dead} suppressed=${result.suppressed}`);
+      }
+    } catch (err) {
+      console.error("[cron] WhatsApp outbox dispatch failed:", err);
+    }
+  });
+  console.log("[cron] WhatsApp outbox dispatch scheduler started (fallback, every 2 minutes)");
 }
 
 // Manual triggers used by the internal-cron endpoints (and callable in tests).

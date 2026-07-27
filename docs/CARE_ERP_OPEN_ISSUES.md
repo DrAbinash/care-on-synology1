@@ -32,7 +32,7 @@ _Final stabilization audit (2026-07). "Status" = FIXED in this pass / DOCUMENTED
 - **Signed-report immutability:** proven byte-identical across a full migration re-run (`pnpm db:smoke`).
 
 ## Infrastructure limitations (not code issues — expected in a sandbox / need the real LAN)
-- **Ollama** (`http://172.16.1.140:11434`), **Orthanc**, **OHIF**, **Evolution/n8n** are LAN/host services not reachable from a build sandbox; the verifier reports them WARNING/SKIPPED there. On the clinic network they resolve normally. Validate on the NAS with `pnpm operations:verify-deployment`.
+- **Ollama** (`http://172.16.1.140:11434`), **Orthanc**, **OHIF**, **n8n** are LAN/host services not reachable from a build sandbox; the verifier reports them WARNING/SKIPPED there. On the clinic network they resolve normally. Validate on the NAS with `pnpm operations:verify-deployment`.
 - `schema_deploy_state` / `schema_migration_lock` are created by `care-db-patch-v2` at deploy time (not by a migration), so a DB bootstrapped by any other path shows them absent until the first real deploy.
 
 ## OPEN (tracked for after the pause — none deployment-blocking)

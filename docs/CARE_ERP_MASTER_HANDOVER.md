@@ -32,7 +32,7 @@ node scripts/check-migration-order.cjs    # static migration-order preflight
 CI (`.github/workflows/ci.yml`) runs the typecheck, migration-order, grounding, full test suite and clean-boot smoke on every PR + integration-branch push, so these gates are enforced automatically now, not just locally.
 
 ## Architecture in one breath
-6 core containers — `care-db` → `care-db-patch-v2` (migrations) → `care-schema-verify` → `care-api` (Express, :8080) → `care-web` (nginx, :8888); `care-migrate` is manual-only. Orthanc/OHIF/Ollama/CARE-AI-Gateway/Evolution/n8n are **external** integrations wired by env vars (not compose services). Radiology + USG reporting is one canonical workspace (`RadiologyReportingWorkspace`); AI routes through the canonical provider layer (Ollama default `qwen3:14b`). PCPNDT/Form F is **fail-closed**. See the service map for detail.
+6 core containers — `care-db` → `care-db-patch-v2` (migrations) → `care-schema-verify` → `care-api` (Express, :8080) → `care-web` (nginx, :8888); `care-migrate` is manual-only. Orthanc/OHIF/Ollama/CARE-AI-Gateway/n8n are **external** integrations wired by env vars (not compose services). Radiology + USG reporting is one canonical workspace (`RadiologyReportingWorkspace`); AI routes through the canonical provider layer (Ollama default `qwen3:14b`). PCPNDT/Form F is **fail-closed**. See the service map for detail.
 
 ## Stabilization status
 - ✅ **Clean-database bootstrap proven** end-to-end against real Postgres (`pnpm db:smoke` → 23/23); the `feature_flags` clean-boot hard-stop and the `admin_sessions` order problem are fixed. **Both** the container path (`care-db-patch-v2`) and the manual `care-migrate` path now clean-boot an empty database.
