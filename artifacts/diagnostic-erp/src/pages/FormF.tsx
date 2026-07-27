@@ -779,10 +779,7 @@ export default function FormF() {
   const [idCardExtractedAddress, setIdCardExtractedAddress] = useState("");
   const [idCardVerified, setIdCardVerified] = useState(false);
   const [idCardUploading, setIdCardUploading] = useState(false);
-  const [idCardOcrResult, setIdCardOcrResult] = useState<{
-    guardianName?: string; address?: string; documentType?: string; confidence?: string; confidencePercent?: number;
-    ocrProvider?: "gemini" | "ollama"; dob?: string; yearOfBirth?: string; age?: number; gender?: string; idNumber?: string;
-  } | null>(null);
+  const [idCardOcrResult, setIdCardOcrResult] = useState<IdCardOcr | null>(null);
   // Last uploaded ID image, kept so "Retry OCR" can re-run without asking
   // staff to re-scan/re-upload the physical card.
   const [lastIdImage, setLastIdImage] = useState<{ base64: string; mimeType: string } | null>(null);
@@ -2050,7 +2047,14 @@ export default function FormF() {
                       </div>
                     )}
                     {idCardOcrResult?.ocrProvider && (
-                      <p className="text-[10px] text-blue-500">Extracted via {idCardOcrResult.ocrProvider === "ollama" ? "local AI (Ollama)" : "Gemini"}</p>
+                      <p className="text-[10px] text-blue-500">
+                        Extracted via{" "}
+                        {idCardOcrResult.ocrProvider === "ollama"
+                          ? "local AI (Ollama)"
+                          : idCardOcrResult.ocrProvider === "tesseract"
+                            ? "Tesseract (offline)"
+                            : "Gemini"}
+                      </p>
                     )}
                   </div>
                 )}
