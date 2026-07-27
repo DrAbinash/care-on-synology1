@@ -164,6 +164,8 @@ const TABS = [
   { id: "about", label: "About / Version", icon: Tag },
   { id: "appearance", label: "Appearance", icon: Palette },
   { id: "users", label: "Users", icon: Users },
+  { id: "scanner", label: "Scanner", icon: ScanLine },
+  { id: "form-f", label: "Form F Tests", icon: FileText },
   { id: "departments", label: "Departments", icon: Network },
   { id: "locations", label: "Locations", icon: Layers },
   { id: "branches", label: "Branches", icon: MapPin },
@@ -174,8 +176,6 @@ const TABS = [
   { id: "kiosk", label: "Self-Reg Kiosk", icon: QrCode },
   { id: "queue-settings", label: "Queue Settings", icon: ClipboardList },
   { id: "queue-display", label: "Queue Display (TV)", icon: Tv },
-  { id: "form-f", label: "Form F Tests", icon: FileText },
-  { id: "scanner", label: "Scanner", icon: ScanLine },
   { id: "email", label: "Email Notifications", icon: Mail },
   { id: "printers", label: "Printers", icon: Printer },
   { id: "billing-print", label: "Billing Print", icon: FileText },
@@ -271,6 +271,11 @@ export default function Settings() {
   }, [session]);
 
   const [tab, setTab] = useState<string>(() => {
+    // Deep-link: /settings?tab=scanner (and Form F "Scanner Settings" links)
+    if (typeof window !== "undefined") {
+      const fromQuery = new URLSearchParams(window.location.search).get("tab");
+      if (fromQuery && TABS.some((t) => t.id === fromQuery)) return fromQuery;
+    }
     const initialSession = readStaffSession();
     if (!initialSession) return "users";
     const initialAllowed = TABS.filter(t => {
@@ -287,6 +292,22 @@ export default function Settings() {
     });
     return initialAllowed[0]?.id ?? "password";
   });
+
+  // Keep URL query in sync so the Scanner tab is bookmarkable / shareable.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    if (url.searchParams.get("tab") === tab) return;
+    url.searchParams.set("tab", tab);
+    window.history.replaceState({}, "", `${url.pathname}?${url.searchParams.toString()}${url.hash}`);
+  }, [tab]);
+
+  // If ?tab= points at a tab the user cannot see, fall back to first allowed.
+  useEffect(() => {
+    if (!allowedTabs.some((t) => t.id === tab)) {
+      setTab(allowedTabs[0]?.id ?? "password");
+    }
+  }, [allowedTabs, tab]);
 
   return (
     <div className="pb-8">
@@ -9090,6 +9111,32 @@ function ScannerSettingsTab() {
 
   return (
     <div className="space-y-6 max-w-2xl">
+      {/* First card — Form F default capture method (most looked-for setting) */}
+      <div id="preferred-scanning-source" className="bg-card border border-border rounded-xl p-5 space-y-4">
+        <div>
+          <h3 className="font-semibold text-base">Preferred Scanning Source</h3>
+          <p className="text-sm text-muted-foreground mt-0.5">
+            Default capture method on Form F&apos;s ID Scan panel. Webcam is the product default; flatbed and mobile stay available as tabs.
+          </p>
+        </div>
+        <div className="space-y-1 max-w-md">
+          <label htmlFor="preferredScanner" className="text-sm font-medium">Default method</label>
+          <Select value={preferredScanner} onValueChange={setPreferredScanner}>
+            <SelectTrigger id="preferredScanner" className="h-9 bg-white dark:bg-background">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="camera">Webcam / TVS PDS 8M (default)</SelectItem>
+              <SelectItem value="bridge">Flatbed Scanner / Scan Bridge</SelectItem>
+              <SelectItem value="mobile">Wireless Mobile Scan</SelectItem>
+            </SelectContent>
+          </Select>
+          <p className="text-[11px] text-muted-foreground">
+            Save with the button at the bottom of this page.
+          </p>
+        </div>
+      </div>
+
       {/* Kiosk & Global Hospital Scanner Settings */}
       <div className="bg-card border border-border rounded-xl p-5 space-y-5">
         <div>
@@ -9285,37 +9332,18 @@ function ScannerSettingsTab() {
             </label>
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-1">
-              <label htmlFor="preferredScanner" className="text-sm font-medium">Preferred Scanning Source</label>
-              <Select value={preferredScanner} onValueChange={setPreferredScanner}>
-                <SelectTrigger id="preferredScanner" className="h-9 bg-white dark:bg-background">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="camera">Webcam / TVS PDS 8M (default)</SelectItem>
-                  <SelectItem value="bridge">Flatbed Scanner / Scan Bridge</SelectItem>
-                  <SelectItem value="mobile">Wireless Mobile Scan</SelectItem>
-                </SelectContent>
-              </Select>
-              <p className="text-[11px] text-muted-foreground">
-                Default capture method on Form F&apos;s ID Scan panel. Change anytime — all methods stay available as tabs.
-              </p>
-            </div>
-            
-            <div className="flex items-center gap-3 pt-6">
-              <input
-                id="requireConfirmation"
-                type="checkbox"
-                checked={requireConfirmation}
-                onChange={(e) => setRequireConfirmation(e.target.checked)}
-                className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
-              />
-              <label htmlFor="requireConfirmation" className="text-sm font-medium">
-                Require Desktop Approval
-                <p className="text-xs text-muted-foreground font-normal">Force user to verify and accept scanned images before attaching.</p>
-              </label>
-            </div>
+          <div className="flex items-center gap-3">
+            <input
+              id="requireConfirmation"
+              type="checkbox"
+              checked={requireConfirmation}
+              onChange={(e) => setRequireConfirmation(e.target.checked)}
+              className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
+            />
+            <label htmlFor="requireConfirmation" className="text-sm font-medium">
+              Require Desktop Approval
+              <p className="text-xs text-muted-foreground font-normal">Force user to verify and accept scanned images before attaching.</p>
+            </label>
           </div>
 
           <div className="flex items-center gap-3">

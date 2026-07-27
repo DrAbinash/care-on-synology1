@@ -323,6 +323,7 @@ const navItems: NavEntry[] = [
     label: "Settings",
     children: [
       { path: "/settings",                  icon: Settings2,      label: "General Settings" },
+      { path: "/settings/scanner",          icon: ScanLine,       label: "Scanner Settings", ownerOnly: true },
       { path: "/abdm-abha",                 icon: ShieldCheck,    label: "ABDM / ABHA", featureFlag: "ff_abdm_abha" },
       { path: "/knowledge-base",            icon: BookOpen,       label: "Knowledge Base" },
       { path: "/ai-caller-credentials",     icon: KeyRound,       label: "AI Caller Credentials", ownerOnly: true },

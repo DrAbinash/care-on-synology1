@@ -166,7 +166,7 @@ export default function IdScanCapturePanel({
             </span>
           </div>
           <div className="flex items-center gap-3 ml-8 mt-0.5">
-            <Link href="/settings/scanner" className="inline-flex items-center gap-1 text-[11px] text-violet-600 hover:text-violet-700 hover:underline">
+            <Link href="/settings?tab=scanner#preferred-scanning-source" className="inline-flex items-center gap-1 text-[11px] text-violet-600 hover:text-violet-700 hover:underline">
               <Settings2 size={11} /> Scanner Settings
             </Link>
             <span className="text-gray-300">·</span>

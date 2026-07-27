@@ -433,7 +433,7 @@ export default function UnifiedScanCapture({
               ) : (
                 <div className="rounded-lg border border-dashed p-3 text-[11px] text-muted-foreground">
                   TVS PDS 8M not configured on this workstation yet. An admin can bind it in{" "}
-                  <Link href="/settings/scanner" className="text-primary underline">Scanner Settings</Link>.
+                  <Link href="/settings?tab=scanner#preferred-scanning-source" className="text-primary underline">Scanner Settings</Link>.
                 </div>
               )}
 
