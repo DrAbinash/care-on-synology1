@@ -113,7 +113,7 @@ export default function ScannerSetupHelp({ online }: { online: boolean }) {
             </p>
 
             <div className="flex justify-between items-center pt-1 border-t">
-              <Link href="/settings/scanner" className="inline-flex items-center gap-1 text-xs text-violet-600 hover:underline">
+              <Link href="/settings?tab=scanner#preferred-scanning-source" className="inline-flex items-center gap-1 text-xs text-violet-600 hover:underline">
                 <Settings2 size={13} /> Scanner Settings
               </Link>
               <button type="button" onClick={() => setOpen(false)} className="text-xs px-3 py-1.5 rounded-md bg-violet-600 text-white hover:bg-violet-700">
