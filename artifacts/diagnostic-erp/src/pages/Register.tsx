@@ -1,57 +1,54 @@
-import { useState, useEffect, useRef } from "react";
+import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import {
-  useCreatePatient,
-  useCreateOrder,
-  useCreateBill,
-  useListTests,
-} from "@workspace/api-client-react";
 import { useLocation } from "wouter";
 import { api } from "@/lib/fetchApi";
+import { genUUID } from "@/lib/utils";
 import PageHeader from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Badge } from "@/components/ui/badge";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
-import { useForm } from "react-hook-form";
 import {
   User2, FlaskConical, Receipt, CheckCircle2, Plus, X, ChevronRight,
-  Search, IndianRupee, Tag, Zap,
+  Search, Tag, Zap,
 } from "lucide-react";
 import ScanIdButton from "@/components/ScanIdButton";
+import { RegisterPatientForm, type NewPatientData } from "@/components/RegisterPatientForm";
 import { useToast } from "@/hooks/use-toast";
-import { detectGenderFromName } from "@/lib/nameGender";
-
-function convertDateFormat(dateStr: string): string {
-  if (!dateStr) return "";
-  if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return dateStr;
-  const parts = dateStr.split("/");
-  if (parts.length === 3) {
-    const day = parts[0].padStart(2, '0');
-    const month = parts[1].padStart(2, '0');
-    const year = parts[2];
-    return `${year}-${month}-${day}`;
-  }
-  return dateStr;
-}
-
 
 type Doctor = { id: number; name: string; specialization: string };
+type CatalogTest = { id: number; name: string; price: string | number; category: string; code: string };
 type SelectedTest = { testId: number; name: string; price: number; category: string };
+type Patient = { id: number; patientId: string };
 
-const BLOOD_GROUPS = ["A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"];
 const PAYMENT_METHODS = ["cash", "card", "upi", "insurance", "cheque"];
 const inr = (n: number) => `₹${n.toLocaleString("en-IN", { minimumFractionDigits: 2 })}`;
 
 type Step = 1 | 2 | 3;
 
+const emptyPatient: NewPatientData = {
+  firstName: "",
+  lastName: "",
+  phone: "",
+  gender: "",
+  ageValue: "",
+  ageUnit: "years",
+  email: "",
+  address: "",
+};
+
+/**
+ * Quick Register — same backend contract as Billing Desk:
+ *   POST /api/patients → POST /api/orders → POST /api/bills (inline payments)
+ * Uses RegisterPatientForm + age→DOB conversion identical to BillingDesk.
+ */
 export default function Register() {
   const { toast } = useToast();
   const [, navigate] = useLocation();
   const [step, setStep] = useState<Step>(1);
+  const [newPatient, setNewPatient] = useState<NewPatientData>(emptyPatient);
   const [createdPatientId, setCreatedPatientId] = useState<number | null>(null);
   const [selectedTests, setSelectedTests] = useState<SelectedTest[]>([]);
   const [testSearch, setTestSearch] = useState("");
@@ -62,63 +59,101 @@ export default function Register() {
   const [createdBillId, setCreatedBillId] = useState<number | null>(null);
   const [notes, setNotes] = useState("");
   const [discountReason, setDiscountReason] = useState("");
-  const [discountSuggestion, setDiscountSuggestion] = useState<{ discount: number; rule: { id: number; name: string; reason: string | null } | null } | null>(null);
+  const [discountSuggestion, setDiscountSuggestion] = useState<{
+    discount: number;
+    rule: { id: number; name: string; reason: string | null } | null;
+  } | null>(null);
   const [loadingSuggestion, setLoadingSuggestion] = useState(false);
+  const [finalizing, setFinalizing] = useState(false);
 
-  const { data: testsData } = useListTests({});
+  const { data: testsData } = useQuery<{ tests: CatalogTest[] }>({
+    queryKey: ["tests-list-quick-register"],
+    queryFn: () => api.get("/api/tests?limit=500"),
+  });
   const { data: doctors = [] } = useQuery<Doctor[]>({
     queryKey: ["doctors-list"],
     queryFn: () => api.get("/api/doctors"),
   });
 
   const tests = testsData?.tests ?? [];
-  const filteredTests = tests.filter(t =>
+  const filteredTests = tests.filter((t) =>
     t.name.toLowerCase().includes(testSearch.toLowerCase()) ||
     t.category.toLowerCase().includes(testSearch.toLowerCase()) ||
-    t.code.toLowerCase().includes(testSearch.toLowerCase())
+    t.code.toLowerCase().includes(testSearch.toLowerCase()),
   );
 
-  const createPatient = useCreatePatient({ mutation: {} });
-  const createOrder = useCreateOrder({ mutation: {} });
-  const createBill = useCreateBill({ mutation: {} });
-  const addPayment = useMutation({
-    mutationFn: (body: Record<string, unknown>) => api.post("/api/payments", body),
+  // Same patient create path as BillingDesk.createPatientMut
+  const createPatientMut = useMutation({
+    mutationFn: (body: NewPatientData) => {
+      if (!body.gender) {
+        throw new Error("Please select sex before registering the patient.");
+      }
+      const rawAge = String(body.ageValue ?? "").trim();
+      const ageVal = rawAge === "" ? NaN : Number(rawAge);
+      const unit = body.ageUnit;
+      let dateOfBirth = "";
+      let ageValue: number | null = null;
+      let ageUnit: string | null = null;
+      if (!isNaN(ageVal) && ageVal > 0) {
+        ageValue = Math.round(ageVal);
+        ageUnit = unit;
+        if (unit === "years") {
+          dateOfBirth = `${new Date().getFullYear() - Math.round(ageVal)}-01-01`;
+        } else if (unit === "months") {
+          const d = new Date();
+          d.setMonth(d.getMonth() - Math.round(ageVal));
+          dateOfBirth = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+        } else {
+          const d = new Date();
+          d.setDate(d.getDate() - Math.round(ageVal));
+          dateOfBirth = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+        }
+      }
+      return api.post<Patient>("/api/patients", {
+        firstName: body.firstName,
+        lastName: body.lastName,
+        phone: body.phone,
+        gender: body.gender,
+        email: body.email || null,
+        address: body.address || null,
+        dateOfBirth,
+        ageValue,
+        ageUnit,
+      });
+    },
+    onSuccess: (p) => {
+      setCreatedPatientId(p.id);
+      setStep(2);
+      toast({ title: `Patient registered: ${p.patientId}` });
+    },
+    onError: (err: Error) => {
+      const msg = err.message || "";
+      if (msg.includes("409") || msg.includes("was just created") || msg.includes("duplicate")) {
+        const match = msg.match(/\(P-\d+\)/);
+        toast({
+          title: `Duplicate patient${match ? ` ${match[0]}` : ""}`,
+          description: "A patient with this name and phone already exists. Search for them on Billing Desk instead.",
+          variant: "destructive",
+        });
+      } else {
+        toast({ title: "Failed to register patient", description: msg, variant: "destructive" });
+      }
+    },
   });
-
-  const { register, handleSubmit, setValue, watch } = useForm({
-    defaultValues: { gender: "male", firstName: "", lastName: "", dateOfBirth: "", phone: "", email: "", address: "", bloodGroup: "" },
-  });
-
-  // Suggestion, not a decision: auto-fill Gender from First Name as it's
-  // typed, but stop the instant the user (or the ID scan) sets an explicit
-  // value so we never overwrite a real choice.
-  const genderTouched = useRef(false);
-  const firstNameValue = watch("firstName");
-  useEffect(() => {
-    if (genderTouched.current) return;
-    const suggested = detectGenderFromName(firstNameValue);
-    if (suggested) setValue("gender", suggested);
-  }, [firstNameValue, setValue]);
 
   const subtotal = selectedTests.reduce((s, t) => s + t.price, 0);
   const total = Math.max(0, subtotal - discount);
 
-  // Step 1: Patient Registration
-  const onPatientSubmit = handleSubmit(async (d) => {
-    const patient = await createPatient.mutateAsync({ data: d as Parameters<typeof createPatient.mutateAsync>[0]["data"] });
-    setCreatedPatientId(patient.id);
-    setStep(2);
-  });
-
-  // Step 2: Tests selection → Step 3
   const proceedToBilling = async () => {
     if (selectedTests.length === 0) return;
     setStep(3);
-    // Fetch applicable discount suggestion
     setLoadingSuggestion(true);
     try {
-      const result = await api.post<{ discount: number; rule: { id: number; name: string; reason: string | null } | null } | null>("/api/discounts/apply", {
-        tests: selectedTests.map(t => ({ testId: t.testId, category: t.category, price: t.price })),
+      const result = await api.post<{
+        discount: number;
+        rule: { id: number; name: string; reason: string | null } | null;
+      } | null>("/api/discounts/apply", {
+        tests: selectedTests.map((t) => ({ testId: t.testId, category: t.category, price: t.price })),
       });
       setDiscountSuggestion(result);
     } catch {
@@ -128,54 +163,76 @@ export default function Register() {
     }
   };
 
-  // Step 3: Create order + bill + payment
+  // Same order → bill (+ inline payments) path as BillingDesk.generateMut
   const finalize = async () => {
     if (!createdPatientId || selectedTests.length === 0) return;
+    if (discount > 0 && !discountReason.trim()) {
+      toast({
+        title: "Discount reason required",
+        description: "Enter a reason when giving a discount (same rule as Billing Desk).",
+        variant: "destructive",
+      });
+      return;
+    }
 
+    setFinalizing(true);
+    const clientRef = genUUID();
     try {
-      // Create order
-      const order = await createOrder.mutateAsync({
-        data: {
-          patientId: createdPatientId,
-          doctorId: selectedDoctorId ?? null,
-          notes: notes || null,
-          testIds: selectedTests.map(t => t.testId),
-        },
+      const order = await api.post<{ id: number; orderNumber: string }>("/api/orders", {
+        patientId: createdPatientId,
+        doctorId: selectedDoctorId ?? undefined,
+        notes: notes || undefined,
+        tests: selectedTests.map((t) => ({ testId: t.testId, price: t.price })),
+        clientRef,
       });
 
-      // Create bill
-      const bill = await createBill.mutateAsync({
-        data: {
-          orderId: order.id,
-          discount: discount > 0 ? discount : undefined,
-          dueDate: undefined,
-        },
-      });
+      const paymentRows = payNow && total > 0
+        ? [{ amount: total, method: paymentMethod }]
+        : [];
 
-      // If paying now
-      if (payNow && total > 0) {
-        await addPayment.mutateAsync({
-          billId: bill.id,
-          amount: total,
-          method: paymentMethod,
-        });
-      }
+      const bill = await api.post<{ id: number; billNumber: string }>("/api/bills", {
+        orderId: order.id,
+        clientRef,
+        discount,
+        discountReason: discount > 0 ? discountReason.trim() : null,
+        payments: paymentRows,
+      });
 
       setCreatedBillId(bill.id);
-      setStep(3);
+      toast({ title: `Bill ${bill.billNumber} created` });
     } catch (e) {
+      const msg = e instanceof Error ? e.message : "Could not create order/bill";
+      toast({ title: "Billing failed", description: msg, variant: "destructive" });
       console.error(e);
+    } finally {
+      setFinalizing(false);
     }
   };
 
-  const addTest = (test: { id: number; name: string; price: string | number; category: string }) => {
-    if (selectedTests.find(t => t.testId === test.id)) return;
-    setSelectedTests(prev => [...prev, { testId: test.id, name: test.name, price: Number(test.price), category: test.category }]);
+  const addTest = (test: CatalogTest) => {
+    if (selectedTests.find((t) => t.testId === test.id)) return;
+    setSelectedTests((prev) => [
+      ...prev,
+      { testId: test.id, name: test.name, price: Number(test.price), category: test.category },
+    ]);
     setTestSearch("");
   };
 
   const removeTest = (testId: number) => {
-    setSelectedTests(prev => prev.filter(t => t.testId !== testId));
+    setSelectedTests((prev) => prev.filter((t) => t.testId !== testId));
+  };
+
+  const resetAll = () => {
+    setStep(1);
+    setCreatedPatientId(null);
+    setCreatedBillId(null);
+    setSelectedTests([]);
+    setDiscount(0);
+    setDiscountReason("");
+    setPayNow(true);
+    setNewPatient(emptyPatient);
+    setNotes("");
+    setSelectedDoctorId(undefined);
   };
 
   const stepLabel = ["Patient Info", "Select Tests", "Billing & Payment"];
@@ -184,11 +241,10 @@ export default function Register() {
     <div className="pb-8">
       <PageHeader
         title="Quick Registration"
-        subtitle="Register patient, select tests and collect payment in one flow"
+        subtitle="Same patient → order → bill flow as Billing Desk, in three steps"
       />
 
       <div className="px-6 max-w-3xl mx-auto">
-        {/* Stepper */}
         {!createdBillId && (
           <div className="flex items-center mb-8">
             {stepLabel.map((label, i) => {
@@ -198,7 +254,7 @@ export default function Register() {
               return (
                 <div key={s} className="flex items-center flex-1 last:flex-none">
                   <div className={`flex items-center gap-2 ${active ? "text-primary" : done ? "text-green-600" : "text-muted-foreground"}`}>
-                    <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 
+                    <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0
                       ${active ? "bg-primary text-white" : done ? "bg-green-500 text-white" : "bg-muted text-muted-foreground"}`}>
                       {done ? "✓" : s}
                     </div>
@@ -213,9 +269,8 @@ export default function Register() {
           </div>
         )}
 
-        {/* Step 1: Patient Info */}
         {step === 1 && !createdBillId && (
-          <form onSubmit={onPatientSubmit} className="bg-card border border-card-border rounded-xl p-6 space-y-4 shadow-sm">
+          <div className="bg-card border border-card-border rounded-xl p-6 space-y-4 shadow-sm">
             <div className="flex items-center justify-between mb-2">
               <div className="flex items-center gap-2">
                 <User2 size={18} className="text-primary" />
@@ -223,88 +278,44 @@ export default function Register() {
               </div>
               <ScanIdButton
                 buttonLabel="Scan ID to Autofill"
-                onScanComplete={({ frontUrl, qrData, ocrResult }) => {
+                onScanComplete={({ qrData, ocrResult }) => {
                   const data = qrData || ocrResult;
-                  if (data) {
-                    if (data.name) {
-                      const parts = data.name.trim().split(" ");
-                      setValue("firstName", parts[0] || "");
-                      setValue("lastName", parts.slice(1).join(" ") || "");
-                    }
-                    if (data.dob) {
-                      setValue("dateOfBirth", convertDateFormat(data.dob));
-                    }
-                    if (data.gender) {
-                      genderTouched.current = true;
-                      setValue("gender", data.gender.toLowerCase() === "female" ? "female" : "male");
-                    }
-                    if (data.address) {
-                      setValue("address", data.address);
-                    }
-                    toast({ title: "Autofilled from Scan", description: `Parsed details for ${data.name || "patient"}` });
+                  if (!data) return;
+                  const next = { ...newPatient };
+                  if (data.name) {
+                    const parts = data.name.trim().split(/\s+/);
+                    next.firstName = parts[0] || "";
+                    next.lastName = parts.slice(1).join(" ") || "";
                   }
+                  if (data.gender) {
+                    next.gender = data.gender.toLowerCase() === "female" ? "female" : "male";
+                  }
+                  if (data.address) next.address = data.address;
+                  if (data.dob && /^\d{4}-\d{2}-\d{2}$/.test(data.dob)) {
+                    const birthYear = Number(data.dob.slice(0, 4));
+                    const years = new Date().getFullYear() - birthYear;
+                    if (years >= 0 && years < 130) {
+                      next.ageValue = String(years);
+                      next.ageUnit = "years";
+                    }
+                  }
+                  setNewPatient(next);
+                  toast({ title: "Autofilled from Scan", description: `Parsed details for ${data.name || "patient"}` });
                 }}
               />
             </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <Label>First Name *</Label>
-                <Input {...register("firstName", { required: true })} className="mt-1" />
-              </div>
-              <div>
-                <Label>Last Name *</Label>
-                <Input {...register("lastName", { required: true })} className="mt-1" />
-              </div>
-            </div>
-            <div className="grid grid-cols-3 gap-3">
-              <div>
-                <Label>Date of Birth *</Label>
-                <Input type="date" {...register("dateOfBirth", { required: true })} className="mt-1" />
-              </div>
-              <div>
-                <Label>Gender *</Label>
-                <Select defaultValue="male" onValueChange={(v) => { genderTouched.current = true; setValue("gender", v); }}>
-                  <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="male">Male</SelectItem>
-                    <SelectItem value="female">Female</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div>
-                <Label>Blood Group</Label>
-                <Select onValueChange={(v) => setValue("bloodGroup", v)}>
-                  <SelectTrigger className="mt-1"><SelectValue placeholder="Select" /></SelectTrigger>
-                  <SelectContent>
-                    {BLOOD_GROUPS.map(bg => <SelectItem key={bg} value={bg}>{bg}</SelectItem>)}
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <Label>Phone *</Label>
-                <Input {...register("phone", { required: true })} className="mt-1" />
-              </div>
-              <div>
-                <Label>Email</Label>
-                <Input type="email" {...register("email")} className="mt-1" />
-              </div>
-            </div>
-            <div>
-              <Label>Address</Label>
-              <Input {...register("address")} className="mt-1" />
-            </div>
-            <div className="flex justify-end pt-2">
-              <Button type="submit" disabled={createPatient.isPending}>
-                {createPatient.isPending ? "Saving…" : "Next: Select Tests"}
-                <ChevronRight size={15} className="ml-1" />
-              </Button>
-            </div>
-          </form>
+            <RegisterPatientForm
+              newPatient={newPatient}
+              onPatientChange={setNewPatient}
+              onSubmit={() => createPatientMut.mutate(newPatient)}
+              isLoading={createPatientMut.isPending}
+            />
+            <p className="text-[11px] text-muted-foreground">
+              Uses the same <code className="text-[10px]">POST /api/patients</code> path as Billing Desk.
+            </p>
+          </div>
         )}
 
-        {/* Step 2: Tests Selection */}
         {step === 2 && !createdBillId && (
           <div className="bg-card border border-card-border rounded-xl p-6 space-y-4 shadow-sm">
             <div className="flex items-center gap-2 mb-2">
@@ -312,7 +323,6 @@ export default function Register() {
               <h2 className="font-semibold text-base">Select Diagnostic Tests</h2>
             </div>
 
-            {/* Search & add */}
             <div className="relative">
               <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
               <Input
@@ -328,9 +338,10 @@ export default function Register() {
                 {filteredTests.length === 0 ? (
                   <p className="text-center py-4 text-sm text-muted-foreground">No tests found</p>
                 ) : (
-                  filteredTests.map(t => (
+                  filteredTests.map((t) => (
                     <button
                       key={t.id}
+                      type="button"
                       className="w-full text-left px-4 py-2.5 text-sm hover:bg-muted flex items-center justify-between border-b border-card-border last:border-0"
                       onClick={() => addTest(t)}
                     >
@@ -345,11 +356,10 @@ export default function Register() {
               </div>
             )}
 
-            {/* Selected tests */}
             {selectedTests.length > 0 ? (
               <div className="space-y-2">
                 <p className="text-xs font-semibold uppercase text-muted-foreground">Selected Tests</p>
-                {selectedTests.map(t => (
+                {selectedTests.map((t) => (
                   <div key={t.testId} className="flex items-center justify-between bg-muted/40 rounded-lg px-3 py-2">
                     <div>
                       <p className="text-sm font-medium">{t.name}</p>
@@ -357,7 +367,7 @@ export default function Register() {
                     </div>
                     <div className="flex items-center gap-3">
                       <span className="font-semibold text-sm">{inr(t.price)}</span>
-                      <button onClick={() => removeTest(t.testId)} className="text-muted-foreground hover:text-destructive">
+                      <button type="button" onClick={() => removeTest(t.testId)} className="text-muted-foreground hover:text-destructive">
                         <X size={14} />
                       </button>
                     </div>
@@ -374,7 +384,6 @@ export default function Register() {
               </div>
             )}
 
-            {/* Referring doctor */}
             <div>
               <Label>Referring Doctor (optional)</Label>
               <Select onValueChange={(v) => setSelectedDoctorId(v === "none" ? undefined : Number(v))}>
@@ -383,14 +392,16 @@ export default function Register() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="none">None</SelectItem>
-                  {doctors.map(d => <SelectItem key={d.id} value={String(d.id)}>{d.name} · {d.specialization}</SelectItem>)}
+                  {doctors.map((d) => (
+                    <SelectItem key={d.id} value={String(d.id)}>{d.name} · {d.specialization}</SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
 
             <div>
               <Label>Notes</Label>
-              <Input value={notes} onChange={e => setNotes(e.target.value)} className="mt-1" placeholder="Clinical notes or instructions" />
+              <Input value={notes} onChange={(e) => setNotes(e.target.value)} className="mt-1" placeholder="Clinical notes or instructions" />
             </div>
 
             <div className="flex justify-between pt-2">
@@ -403,7 +414,6 @@ export default function Register() {
           </div>
         )}
 
-        {/* Step 3: Billing & Payment */}
         {step === 3 && !createdBillId && (
           <div className="bg-card border border-card-border rounded-xl p-6 space-y-4 shadow-sm">
             <div className="flex items-center gap-2 mb-2">
@@ -412,7 +422,7 @@ export default function Register() {
             </div>
 
             <div className="bg-muted/40 rounded-lg p-4 space-y-2 text-sm">
-              {selectedTests.map(t => (
+              {selectedTests.map((t) => (
                 <div key={t.testId} className="flex justify-between">
                   <span className="text-muted-foreground">{t.name}</span>
                   <span>{inr(t.price)}</span>
@@ -424,7 +434,6 @@ export default function Register() {
               </div>
             </div>
 
-            {/* Discount Rule Suggestion */}
             {loadingSuggestion && (
               <div className="bg-blue-50 dark:bg-blue-950/20 border border-blue-200 rounded-lg px-4 py-2.5 flex items-center gap-2 text-sm text-blue-700">
                 <Zap size={14} className="animate-pulse" /> Checking applicable discount rules…
@@ -445,7 +454,10 @@ export default function Register() {
                   <button
                     type="button"
                     className="text-xs px-3 py-1.5 bg-green-600 text-white rounded-lg hover:bg-green-700 font-medium flex-shrink-0"
-                    onClick={() => { setDiscount(discountSuggestion.discount); setDiscountReason(discountSuggestion.rule?.reason ?? ""); }}
+                    onClick={() => {
+                      setDiscount(discountSuggestion.discount);
+                      setDiscountReason(discountSuggestion.rule?.reason ?? "");
+                    }}
                   >
                     Apply {inr(discountSuggestion.discount)}
                   </button>
@@ -460,16 +472,16 @@ export default function Register() {
                 min="0"
                 max={subtotal}
                 value={discount}
-                onChange={e => setDiscount(Number(e.target.value))}
+                onChange={(e) => setDiscount(Number(e.target.value))}
                 className="mt-1"
               />
             </div>
             {discount > 0 && (
               <div>
-                <Label>Discount Reason</Label>
+                <Label>Discount Reason *</Label>
                 <Input
                   value={discountReason}
-                  onChange={e => setDiscountReason(e.target.value)}
+                  onChange={(e) => setDiscountReason(e.target.value)}
                   className="mt-1"
                   placeholder="e.g., Senior citizen discount, Corporate tie-up"
                 />
@@ -487,7 +499,7 @@ export default function Register() {
                   type="checkbox"
                   id="pay-now"
                   checked={payNow}
-                  onChange={e => setPayNow(e.target.checked)}
+                  onChange={(e) => setPayNow(e.target.checked)}
                   className="rounded"
                 />
                 <label htmlFor="pay-now" className="text-sm font-medium cursor-pointer">Collect Payment Now</label>
@@ -500,7 +512,9 @@ export default function Register() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      {PAYMENT_METHODS.map(m => <SelectItem key={m} value={m} className="capitalize">{m}</SelectItem>)}
+                      {PAYMENT_METHODS.map((m) => (
+                        <SelectItem key={m} value={m} className="capitalize">{m}</SelectItem>
+                      ))}
                     </SelectContent>
                   </Select>
                 </div>
@@ -509,14 +523,16 @@ export default function Register() {
 
             <div className="flex justify-between pt-2">
               <Button type="button" variant="outline" onClick={() => setStep(2)}>← Back</Button>
-              <Button onClick={finalize} disabled={createOrder.isPending || createBill.isPending || addPayment.isPending}>
-                {createOrder.isPending || createBill.isPending ? "Creating…" : "Confirm & Generate Bill"}
+              <Button onClick={finalize} disabled={finalizing}>
+                {finalizing ? "Creating…" : "Confirm & Generate Bill"}
               </Button>
             </div>
+            <p className="text-[11px] text-muted-foreground">
+              Uses the same <code className="text-[10px]">POST /api/orders</code> + <code className="text-[10px]">POST /api/bills</code> (with <code className="text-[10px]">clientRef</code> + inline payments) as Billing Desk.
+            </p>
           </div>
         )}
 
-        {/* Success State */}
         {createdBillId && (
           <div className="bg-card border border-card-border rounded-xl p-8 text-center shadow-sm space-y-4">
             <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto">
@@ -532,16 +548,10 @@ export default function Register() {
               <Button variant="outline" onClick={() => navigate(`/billing/${createdBillId}`)}>
                 <Receipt size={14} className="mr-1" /> View Bill
               </Button>
-              <Button
-                onClick={() => {
-                  setStep(1);
-                  setCreatedPatientId(null);
-                  setCreatedBillId(null);
-                  setSelectedTests([]);
-                  setDiscount(0);
-                  setPayNow(true);
-                }}
-              >
+              <Button onClick={() => navigate("/")}>
+                Open Billing Desk
+              </Button>
+              <Button variant="secondary" onClick={resetAll}>
                 <Plus size={14} className="mr-1" /> Register Another
               </Button>
             </div>
