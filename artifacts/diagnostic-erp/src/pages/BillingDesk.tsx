@@ -438,7 +438,7 @@ export default function BillingDesk() {
   const [patientSearch, setPatientSearch] = useState("");
   const [selectedPatient, setSelectedPatient] = useState<Patient | null>(null);
   const [newPatient, setNewPatient] = useState({
-    firstName: "", lastName: "", phone: "", gender: "male",
+    firstName: "", lastName: "", phone: "", gender: "" as "" | "male" | "female",
     ageValue: "", ageUnit: "years" as "years" | "months" | "days",
     email: "", address: "", bloodGroup: "",
   });
@@ -615,6 +615,8 @@ export default function BillingDesk() {
   const [summaryCollapsed, setSummaryCollapsed] = useState(false);
   const [doctorCollapsed, setDoctorCollapsed]   = useState(false);
   const [paymentSplits, setPaymentSplits] = useState<PaySplit[]>([{ mode: "cash", amount: "" }]);
+  // Primary collect amount auto-copies net total until staff edits it (partial pay).
+  const paymentAmountTouched = useRef(false);
   const [lastBill, setLastBill]           = useState<LastBill | null>(null);
   // Real scannable QR (PNG data URL) generated via the qrcode library
   // whenever a new bill is saved. Falls back to the placeholder SVG until
@@ -1123,6 +1125,9 @@ export default function BillingDesk() {
   // ── Create mutations ───────────────────────────────
   const createPatientMut = useMutation({
     mutationFn: (body: typeof newPatient) => {
+      if (!body.gender) {
+        throw new Error("Please select sex before registering the patient.");
+      }
       // Only treat the age field as a real value when the user typed
       // something. Number("") is 0, which used to silently save
       // ageValue=0 + dateOfBirth="<currentYear>-01-01" — corrupting the
@@ -1163,7 +1168,7 @@ export default function BillingDesk() {
     },
     onSuccess: (p: Patient) => {
       setSelectedPatient(p);
-      setNewPatient({ firstName: "", lastName: "", phone: "", gender: "male", ageValue: "", ageUnit: "years", email: "", address: "", bloodGroup: "" });
+      setNewPatient({ firstName: "", lastName: "", phone: "", gender: "", ageValue: "", ageUnit: "years", email: "", address: "", bloodGroup: "" });
       toast({ title: `Patient registered: ${p.patientId}` });
     },
     onError: (err: Error) => {
@@ -1214,6 +1219,15 @@ export default function BillingDesk() {
     } catch (err) {
       console.error("[gateway] manual status check failed:", err);
     }
+  };
+
+  const handleGatewayChangePaymentMode = () => {
+    const billId = gatewayPaymentInfo?.billId ?? lastBill?.id;
+    setGatewayModalOpen(false);
+    setGatewayPaymentInfo(null);
+    setGatewayPaymentStatus("pending");
+    setGatewayPaymentError("");
+    if (billId) navigate(`/billing/${billId}`);
   };
 
   const queryClient = useQueryClient();
@@ -1538,6 +1552,19 @@ export default function BillingDesk() {
   const total       = Math.max(0, subtotal - discountAmt) + vipSurchargeAmt;
   const paidTotal   = payNow ? paymentSplits.reduce((s, p) => s + (Number(p.amount) || 0), 0) : 0;
   const balance     = Math.max(0, total - paidTotal);
+  const paymentOverTotal = payNow && paidTotal > total + 0.01;
+
+  // Default collect amount = net total (full payment is the common case).
+  // Stops syncing once the cashier types a different value for partial pay.
+  useEffect(() => {
+    if (!payNow || paymentAmountTouched.current || total <= 0) return;
+    const synced = total.toFixed(2);
+    setPaymentSplits((prev) => {
+      const first = prev[0] ?? { mode: "cash", amount: "" };
+      if (first.amount === synced) return prev;
+      return [{ ...first, amount: synced }, ...prev.slice(1)];
+    });
+  }, [payNow, total]);
 
   // ── Test actions ────────────────────────────────────
   function addTest(t: Test) {
@@ -1781,7 +1808,7 @@ export default function BillingDesk() {
   function resetAll() {
     setSelectedPatient(null);
     setPatientSearch("");
-    setNewPatient({ firstName: "", lastName: "", phone: "", gender: "male", ageValue: "", ageUnit: "years", email: "", address: "", bloodGroup: "" });
+    setNewPatient({ firstName: "", lastName: "", phone: "", gender: "", ageValue: "", ageUnit: "years", email: "", address: "", bloodGroup: "" });
     setDoctorId(null);
     setDoctorSearch("");
     setNotes("");
@@ -1790,6 +1817,7 @@ export default function BillingDesk() {
     setDiscountReason("");
     setDiscountNote("");
     setPayNow(true);
+    paymentAmountTouched.current = false;
     setPaymentSplits([{ mode: "cash", amount: "" }]);
     setLastBill(null);
     setSuggestion(null);
@@ -2631,7 +2659,16 @@ export default function BillingDesk() {
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <button
-                      onClick={() => setPayNow(!payNow)}
+                      onClick={() => {
+                        const next = !payNow;
+                        setPayNow(next);
+                        if (next && !paymentAmountTouched.current && total > 0) {
+                          setPaymentSplits((prev) => [
+                            { ...(prev[0] ?? { mode: "cash", amount: "" }), amount: total.toFixed(2) },
+                            ...prev.slice(1),
+                          ]);
+                        }
+                      }}
                       className={`relative inline-flex h-5 w-9 flex-shrink-0 rounded-full border-2 border-transparent transition-colors ${payNow ? "bg-[#2563eb]" : "bg-[#cbd5e1]"}`}
                     >
                       <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${payNow ? "translate-x-4" : "translate-x-0"}`} />
@@ -2647,10 +2684,19 @@ export default function BillingDesk() {
                     <Input
                       type="number"
                       min={0}
+                      max={total}
                       step="0.01"
                       placeholder={total.toFixed(2)}
                       value={paymentSplits[0]?.amount ?? ""}
-                      onChange={(e) => setPaymentSplits((prev) => prev.map((s, i) => i === 0 ? { ...s, amount: e.target.value } : s))}
+                      onChange={(e) => {
+                        paymentAmountTouched.current = true;
+                        const raw = e.target.value;
+                        const n = Number(raw);
+                        const capped = raw !== "" && !Number.isNaN(n) && n > total
+                          ? total.toFixed(2)
+                          : raw;
+                        setPaymentSplits((prev) => prev.map((s, i) => i === 0 ? { ...s, amount: capped } : s));
+                      }}
                       onFocus={() => setSummaryCollapsed(true)}
                       className="h-12 text-xl font-bold tracking-tight text-center border-[#2563eb]/40 focus:border-[#2563eb]"
                     />
@@ -2674,9 +2720,16 @@ export default function BillingDesk() {
                             </SelectContent>
                           </Select>
                           <Input
-                            type="number" min={0} step="0.01" placeholder="0.00"
+                            type="number" min={0} max={total} step="0.01" placeholder="0.00"
                             value={split.amount}
-                            onChange={(e) => setPaymentSplits((prev) => prev.map((s, i) => i === idx ? { ...s, amount: e.target.value } : s))}
+                            onChange={(e) => {
+                              const raw = e.target.value;
+                              const n = Number(raw);
+                              const capped = raw !== "" && !Number.isNaN(n) && n > total
+                                ? total.toFixed(2)
+                                : raw;
+                              setPaymentSplits((prev) => prev.map((s, i) => i === idx ? { ...s, amount: capped } : s));
+                            }}
                             className="h-8 text-xs"
                           />
                           <button
@@ -2698,9 +2751,14 @@ export default function BillingDesk() {
                     )}
 
                     {/* THIRD: Balance / Paid indicator */}
-                    {(balance > 0 || (paidTotal > 0 && total > 0)) && (
+                    {(balance > 0 || (paidTotal > 0 && total > 0) || paymentOverTotal) && (
                       <div className="rounded-lg border px-3 py-2">
-                        {balance > 0 ? (
+                        {paymentOverTotal ? (
+                          <div className="flex items-center justify-between">
+                            <span className="text-[12px] font-bold text-red-700">Exceeds net total</span>
+                            <span className="text-[18px] font-extrabold text-red-600 tabular-nums">{inr(paidTotal)}</span>
+                          </div>
+                        ) : balance > 0 ? (
                           <div className="flex items-center justify-between">
                             <span className="text-[12px] font-bold text-red-700">Balance Due</span>
                             <span className="text-[18px] font-extrabold text-red-600 tabular-nums animate-blink-fast">{inr(balance)}</span>
@@ -2788,6 +2846,7 @@ export default function BillingDesk() {
                   generateMut.isPending ||
                   !!lastBill ||
                   (discountAmt > 0 && !discountReason) ||
+                  paymentOverTotal ||
                   (needsFormF && !clinic?.formFBillingPrompt && (
                     (clinic?.formFGuardianRequired !== false && !husbandName.trim()) ||
                     (clinic?.formFAddressRequired !== false && !patientAddress.trim())
@@ -2838,7 +2897,8 @@ export default function BillingDesk() {
                     selectedTests.length === 0 ||
                     generateMut.isPending ||
                     !!lastBill ||
-                    (discountAmt > 0 && !discountReason)
+                    (discountAmt > 0 && !discountReason) ||
+                    paymentOverTotal
                   }
                   className="h-9 text-[11px] border-[#dde3ec] text-[#475569] hover:bg-[#eff6ff]"
                 >
@@ -3088,7 +3148,20 @@ export default function BillingDesk() {
             {gatewayPaymentStatus === "failed" && (
               <div className="text-red-600 text-sm">{gatewayPaymentError || "Payment failed"}</div>
             )}
-            <div className="flex gap-2 pt-2">
+            {gatewayPaymentStatus === "expired" && (
+              <div className="text-amber-700 text-sm">Payment link expired. Collect manually or retry online from the bill page.</div>
+            )}
+            <div className="flex flex-col gap-2 pt-2">
+              {(gatewayPaymentStatus === "failed" || gatewayPaymentStatus === "expired" || (gatewayPaymentStatus === "pending" && gatewayPaymentInfo)) && (
+                <Button
+                  variant="outline"
+                  className="w-full text-[#2563eb] border-[#2563eb]/40"
+                  onClick={handleGatewayChangePaymentMode}
+                >
+                  Change payment mode — collect Cash/UPI on bill
+                </Button>
+              )}
+              <div className="flex gap-2">
               <Button variant="outline" className="flex-1" onClick={() => setGatewayModalOpen(false)}>Close</Button>
               {gatewayPaymentStatus === "pending" && (
                 <Button
@@ -3101,6 +3174,7 @@ export default function BillingDesk() {
                   Check Status
                 </Button>
               )}
+              </div>
             </div>
           </div>
         </DialogContent>

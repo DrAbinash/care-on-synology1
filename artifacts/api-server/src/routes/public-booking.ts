@@ -23,6 +23,7 @@ import { buildPrintClinic } from "../lib/buildPrintClinic";
 import { recordPaymentDiagnostic, getRecentDiagnostics, getDiagnosticById, getLastSuccessAndFailure } from "../lib/payments/paymentDiagnostics";
 import { confirmBookingInternal } from "./online-bookings";
 import { autoVoucherForPayment } from "../lib/auto-voucher";
+import { getIciciPublicBaseUrl } from "../lib/payments/iciciPublicBaseUrl";
 
 export function validateSelfRegistration(params: {
   name: string;
@@ -1125,45 +1126,6 @@ function getIciciBase() {
 
 function getIciciPrefix() {
   return "";
-}
-
-function getIciciPublicBaseUrl(): string {
-  let base = (process.env.PUBLIC_BASE_URL || process.env.BASE_URL || "https://caredeoghar.com").trim();
-  const isProd = process.env.NODE_ENV === "production";
-  
-  // Normalize: remove trailing slash
-  base = base.replace(/\/+$/, "");
-
-  // Check if it's a local address/localhost/NAS IP etc. or incorrect subdomain
-  const isLocal = base.includes("localhost") || 
-                  base.includes("127.0.0.1") || 
-                  base.includes("192.168.") || 
-                  base.includes("172.1") || 
-                  base.includes("172.2") || 
-                  base.includes("172.3") || 
-                  base.includes("10.") || 
-                  base.includes("100.") || 
-                  base.includes("synology") || 
-                  base.includes("tailscale") || 
-                  base.includes(":8888") || 
-                  base.includes("/erp") || 
-                  base.includes("quickconnect.to") ||
-                  base.includes("erp.caredeoghar.com") ||
-                  base.includes("web.caredeoghar.com") ||
-                  base.includes("www.caredeoghar.com");
-
-  if (isProd && (isLocal || !base.startsWith("https://caredeoghar.com"))) {
-    base = "https://caredeoghar.com";
-  }
-
-  // Force https format
-  if (base.startsWith("http://")) {
-    base = base.replace("http://", "https://");
-  } else if (!base.startsWith("https://")) {
-    base = `https://${base}`;
-  }
-
-  return base;
 }
 
 function generateIciciSecureHash(params: Record<string, string>, secretKey: string): string {

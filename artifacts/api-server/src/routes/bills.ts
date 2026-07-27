@@ -549,6 +549,16 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
   const taxAmount = 0;
   const totalAmount = subtotal - discountAmt + taxAmount;
 
+  const inlinePayPreview = (inlinePayments as Array<{ amount: number; method?: string }>)
+    .filter((p) => Number.isFinite(p.amount) && p.amount > 0 && p.method !== "online");
+  const inlinePaidPreview = inlinePayPreview.reduce((s, p) => s + p.amount, 0);
+  if (inlinePaidPreview > totalAmount + 0.01) {
+    res.status(400).json({
+      error: `Payment total (₹${inlinePaidPreview.toFixed(2)}) cannot exceed bill net total (₹${totalAmount.toFixed(2)})`,
+    });
+    return;
+  }
+
   // Atomically: generate bill number, backfill order's ledgerId, bind patient
   // to ledger, and insert the bill row. Previously these were 3-4 sequential
   // writes outside any transaction — a mid-flight failure (e.g. unique-key
@@ -2233,6 +2243,7 @@ billsRouter.post("/:id/swap-test", async (req: StaffAuthRequest, res) => {
 
 // ─── ICICI Billing Desk Gateway Integration ────────────────────────────────────
 import { PaymentEngine } from "../lib/payments/PaymentEngine";
+import { getIciciPublicBaseUrl } from "../lib/payments/iciciPublicBaseUrl";
 import { paymentLogsTable } from "@workspace/db/schema";
 import crypto from "node:crypto";
 import { logger } from "../lib/logger";
@@ -2273,14 +2284,14 @@ billsRouter.post("/:id/initiate-gateway-payment", async (req: StaffAuthRequest, 
     : null;
 
   try {
-    const base = process.env.PUBLIC_BASE_URL || process.env.BASE_URL || "https://caredeoghar.com";
-    const returnUrl = `${base.replace(/\/$/, "")}/api/public/booking/icici-callback`;
+    const base = getIciciPublicBaseUrl();
+    const returnUrl = `${base}/api/public/booking/icici-callback`;
 
     // Fetch active gateway from settings
     const [settings] = await db.select().from(clinicSettingsTable).where(eq(clinicSettingsTable.id, 1)).limit(1);
     const activeGateway = settings?.activePaymentGateway || "icici";
 
-    // Initiate payment via payment engine
+    // Initiate payment via payment engine — same return URL normalization as webpage online booking
     const result = await PaymentEngine.initiatePayment(activeGateway, {
       bookingRef: txnRef,
       name: patientName,
@@ -2288,6 +2299,13 @@ billsRouter.post("/:id/initiate-gateway-payment", async (req: StaffAuthRequest, 
       email: patientEmail,
       amount: collectAmount,
       returnUrl,
+      reqHeaders: {
+        "x-forwarded-for": (req.headers["x-forwarded-for"] as string) || "",
+        "user-agent": (req.headers["user-agent"] as string) || "",
+        referer: (req.headers["referer"] as string) || (req.headers["referrer"] as string) || "",
+        origin: (req.headers["origin"] as string) || "",
+        "x-client-ip": req.ip || req.socket?.remoteAddress || "",
+      },
     });
 
     if (!result.success) {

@@ -15,9 +15,10 @@ import {
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
-import { ArrowLeft, Plus, Pencil, History, Clock, ShieldAlert, Trash2, AlertTriangle, ExternalLink, Printer, Ban, Undo2, XCircle, AlertCircle, Search, X, CheckSquare, Square, RotateCcw, Stethoscope } from "lucide-react";
+import { ArrowLeft, Plus, Pencil, History, Clock, ShieldAlert, Trash2, AlertTriangle, Printer, Ban, Undo2, XCircle, AlertCircle, Search, X, CheckSquare, Square, RotateCcw, Stethoscope } from "lucide-react";
 import { useForm } from "react-hook-form";
 import { useSuperAdmin, getSuperAdminToken } from "@/hooks/useSuperAdmin";
+import { getStoredUsbKey, onUsbKeyChange } from "@/lib/usbKey";
 import { readStaffSession, hasSubPermission } from "@/lib/staffSession";
 import { useToast } from "@/hooks/use-toast";
 import { getAutoBillPaperSize, getBillPaperSize, getBillPrintLayout, getLayoutStyles, setBillPaperSize } from "@/lib/billPrintLayout";
@@ -186,6 +187,12 @@ export default function BillDetail({ id }: { id: number }) {
   const ls = getLayoutStyles(billPrintLayout);
   const queryClient = useQueryClient();
   const superAdmin = useSuperAdmin();
+  const [usbKeyPresent, setUsbKeyPresent] = useState(() => getStoredUsbKey() !== null);
+  const showSuperAdminActions = superAdmin.isActive && usbKeyPresent;
+
+  useEffect(() => {
+    return onUsbKeyChange(() => setUsbKeyPresent(getStoredUsbKey() !== null));
+  }, []);
 
   useEffect(() => {
     if (paperMode === "manual") setBillPaperSize(paperSize);
@@ -924,17 +931,15 @@ export default function BillDetail({ id }: { id: number }) {
           </div>
         </div>
 
-        {superAdmin.isActive && (
+        {showSuperAdminActions && (
         <div className="border border-rose-200 dark:border-rose-900/50 rounded-xl p-4 bg-rose-50/50 dark:bg-rose-950/20">
           <div className="flex items-center gap-2 mb-3">
             <ShieldAlert size={15} className="text-rose-600 dark:text-rose-400" />
             <span className="text-xs font-semibold uppercase tracking-wide text-rose-700 dark:text-rose-400">Super Admin Actions</span>
-            {superAdmin.isActive && (
-              <span className="ml-auto flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 px-2 py-0.5 rounded-full">
+            <span className="ml-auto flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 px-2 py-0.5 rounded-full">
                 <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
                 {superAdmin.userName}
               </span>
-            )}
           </div>
           <p className="text-xs text-muted-foreground mb-3">
             Authenticated as <span className="font-semibold">{superAdmin.userName}</span>. These actions are irreversible and fully audited.
@@ -949,6 +954,7 @@ export default function BillDetail({ id }: { id: number }) {
           </div>
         </div>
         )}
+
         {reprintHistory.length > 0 && (
           <div className="border border-amber-200 dark:border-amber-800/60 rounded-xl p-4 bg-amber-50/40 dark:bg-amber-950/20">
             <div className="flex items-center gap-2 mb-3">
@@ -968,27 +974,6 @@ export default function BillDetail({ id }: { id: number }) {
           </div>
         )}
 
-        {!superAdmin.isActive && (
-          <div className="border border-dashed border-rose-200 dark:border-rose-900/50 rounded-xl p-4 bg-rose-50/30 dark:bg-rose-950/10">
-            <div className="flex items-center gap-2 mb-2">
-              <ShieldAlert size={15} className="text-rose-600 dark:text-rose-400" />
-              <span className="text-xs font-semibold uppercase tracking-wide text-rose-700 dark:text-rose-400">Super Admin Actions Locked</span>
-            </div>
-            <p className="text-xs text-muted-foreground mb-3">
-              Open the Super Admin Portal and generate a valid session token first. After the ERP receives the token, the delete and super-edit buttons will appear here.
-            </p>
-            <a
-              href="/super-admin-portal/"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex"
-            >
-              <Button size="sm" variant="outline" className="border-rose-300 text-rose-600 hover:bg-rose-50 dark:border-rose-700 dark:text-rose-400 dark:hover:bg-rose-950/30 whitespace-nowrap">
-                <ExternalLink size={13} className="mr-1.5" /> Open Super Admin Portal
-              </Button>
-            </a>
-          </div>
-        )}
       </div>
 
       {/* Receipt printing has moved out of the main DOM and into a popup
