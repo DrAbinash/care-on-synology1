@@ -568,9 +568,9 @@ function MiniKpiFilled({ icon: Icon, label, value, sub, solid, onClick }: {
 }
 
 // ─── Compact deduction / adjustment cell for the strip under the hero KPIs.
- // Deliberately quieter than MiniKpi so the eye lands on the four outcome
- // cards first; these explain the steps into Collectible without crowding
- // the top row with the full formula. ─────────────────────────────────────
+// Deliberately quieter than MiniKpi so the eye lands on the four outcome
+// cards first; these explain the steps into Collectible without crowding
+// the top row with the full formula. ─────────────────────────────────────
 function DeductionCell({
   sign,
   label,
