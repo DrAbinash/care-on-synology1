@@ -120,6 +120,7 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
       billNumber: billsTable.billNumber,
       totalAmount: billsTable.totalAmount,
       createdByName: billsTable.createdByName,
+      cancelledByName: billsTable.cancelledByName,
       cancelledAt: billsTable.cancelledAt,
     })
     .from(billsTable)
@@ -445,7 +446,7 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
   const staffSet = new Set<string>();
   for (const r of allBillRows) if (r.createdByName) staffSet.add(r.createdByName);
   for (const p of allPaymentRows) if (p.recordedByName) staffSet.add(p.recordedByName);
-  for (const r of cancelledByMeRows) if (r.createdByName) staffSet.add(r.createdByName);
+  for (const r of cancelledByMeRows) if (r.cancelledByName) staffSet.add(r.cancelledByName);
   const staffNames = Array.from(staffSet).sort();
 
   // ── Per-staff breakdown (only when viewing All Staff aggregate) ──
@@ -478,7 +479,7 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
     const staffSet = new Set<string>();
     for (const r of allBillRows) if (r.createdByName) staffSet.add(r.createdByName);
     for (const p of allPaymentRows) if (p.recordedByName) staffSet.add(p.recordedByName);
-    for (const r of cancelledByMeRows) if (r.createdByName) staffSet.add(r.createdByName);
+    for (const r of cancelledByMeRows) if (r.cancelledByName) staffSet.add(r.cancelledByName);
     const names = Array.from(staffSet).sort();
 
     // Expenses per person (cash + digital, only needed for all-staff mode)
@@ -509,7 +510,7 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
       const scancelled = sbills.filter((r) => r.status === "cancelled");
       const spayPos = allPaymentRows.filter((p) => p.recordedByName === name && Number(p.amount) > 0);
       const spayNeg = allPaymentRows.filter((p) => p.recordedByName === name && Number(p.amount) < 0);
-      const scancelledByMe = cancelledByMeRows.filter((r) => r.createdByName === name);
+      const scancelledByMe = cancelledByMeRows.filter((r) => r.cancelledByName === name);
 
       const sGrossBilled = sbills.reduce((s, r) => s + Number(r.totalAmount), 0);
       const sActiveBilling = sactive.reduce((s, r) => s + Number(r.totalAmount), 0);

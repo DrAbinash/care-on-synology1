@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
 import { readStaffSession, FULL_ACCESS_ROLES, normalizeRole } from "@/lib/staffSession";
@@ -1537,16 +1537,6 @@ export default function MyDailySummary() {
     try { window.localStorage.setItem(LS_STAFF_FILTER_KEY, name); } catch { /* ignore */ }
   }
 
-  // All staff names: merge registered users + data-derived names so inactive staff
-  // (or staff not yet in the users table) still appear in the filter.
-  const { data: allUsers = [] } = useQuery<{ id: number; name: string; role: string; isActive: boolean }[]>({
-    queryKey: ["users"],
-    queryFn: () => api.get("/api/users"),
-    enabled: isOwner,
-    staleTime: 5 * 60_000,
-  });
-  const activeStaff = allUsers.filter((u) => u.isActive).sort((a, b) => a.name.localeCompare(b.name));
-
   function setPreset(fromDaysAgo: number, toDaysAgo: number) {
     setFrom(daysAgoISO(fromDaysAgo));
     setTo(daysAgoISO(toDaysAgo));
@@ -1561,8 +1551,15 @@ export default function MyDailySummary() {
     ...FINANCIAL_QUERY_OPTIONS,
   });
 
-  // All staff names from the registered users table — always visible regardless of date range.
-  const staffFilterList = activeStaff.map((u) => u.name);
+  // Staff who had bills, payments, or cancellations in the selected date range.
+  const staffFilterList = data?.staffNames ?? [];
+
+  useEffect(() => {
+    if (!isSuperAdmin || !staffFilter.trim() || !data) return;
+    if (!data.staffNames.includes(staffFilter.trim())) {
+      saveStaffFilter("");
+    }
+  }, [isSuperAdmin, staffFilter, data]);
 
   // Drawer status — always fetches for the current logged-in user, not filtered staff.
   const drawerQ = useQuery<DrawerStatus>({
