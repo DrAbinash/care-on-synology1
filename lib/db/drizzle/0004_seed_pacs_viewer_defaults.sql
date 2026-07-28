@@ -21,7 +21,7 @@ INSERT INTO pacs_settings (key, value, category) VALUES
   ('dicom_web_base_url',     'http://172.16.1.139:8042/dicom-web', 'viewer'),
   ('ohif_study_url_template', '{OHIF_BASE_URL}/viewer?StudyInstanceUIDs={studyInstanceUID}', 'viewer'),
   ('viewer_mode',            'BOTH', 'viewer'),
-  ('default_viewer',         'OHIF', 'viewer'),
+  ('default_viewer',         'WEASIS', 'viewer'),
   ('ohif_enabled',           'true', 'viewer'),
   ('weasis_enabled',         'true', 'viewer'),
   ('viewer_open_mode',       'NEW_TAB', 'viewer'),

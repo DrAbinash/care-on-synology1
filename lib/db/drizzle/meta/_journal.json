@@ -78,6 +78,13 @@
       "when": 1782705414049,
       "tag": "0010_daily_summary_multi_time",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1782705414050,
+      "tag": "0011_default_viewer_weasis",
+      "breakpoints": true
     }
   ]
 }

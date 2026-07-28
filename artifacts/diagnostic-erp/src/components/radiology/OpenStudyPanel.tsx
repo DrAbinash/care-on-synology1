@@ -135,7 +135,7 @@ export default function OpenStudyPanel({ study, isAdmin, onLaunchStateChange }: 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [busy, result]);
 
-  const defaultViewer: ViewerType = settings["default_viewer"] === "WEASIS" ? "WEASIS" : "OHIF";
+  const defaultViewer: ViewerType = settings["default_viewer"] === "OHIF" ? "OHIF" : "WEASIS";
 
   function chooseMode(next: NetworkMode) {
     setMode(next);

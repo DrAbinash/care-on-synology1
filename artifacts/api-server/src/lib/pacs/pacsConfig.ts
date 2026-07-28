@@ -188,7 +188,7 @@ export async function getRadiologyConfig(): Promise<RadiologyConfig> {
       wadoUrl: getVal("weasis_wado_url", "viewer") || getVal("wado_uri_base_url", "viewer") || weasisWadoPublicUrlEnv || `${orthancBrowserBase}/wado`,
       launchTemplate: getVal("weasis_manifest_url_template", "viewer") || 'weasis://$dicom:get -w "{WADO_URL}" -r "studyUID={studyInstanceUID}"',
     },
-    default_viewer: getVal("default_viewer", "viewer") || "OHIF",
+    default_viewer: getVal("default_viewer", "viewer") || "WEASIS",
     viewer_mode: getVal("viewer_mode", "viewer") || "BOTH",
   };
 }

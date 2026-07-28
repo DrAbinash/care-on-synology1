@@ -492,7 +492,7 @@ export default function RadiologySettingsCenter() {
               <div className="space-y-2">
                 <label className="text-xs font-semibold">Default PACS Viewer</label>
                 <select
-                  value={settings.find(s => s.key === "default_viewer")?.value ?? "OHIF"}
+                  value={settings.find(s => s.key === "default_viewer")?.value ?? "WEASIS"}
                   onChange={(e) => upsertSetting.mutate({ key: "default_viewer", value: e.target.value, category: "viewer" })}
                   className="w-full h-9 text-sm border rounded-md px-2 bg-background"
                 >
@@ -543,7 +543,7 @@ export default function RadiologySettingsCenter() {
                     upsertSetting.mutate({ key: "weasis_wado_url",              value: `http://${lanIp}:8042/wado`,                             category: "viewer" });
                     upsertSetting.mutate({ key: "weasis_manifest_url_template", value: `weasis://$dicom:get -w "http://${lanIp}:8042/wado?requestType=WADO&studyUID={studyInstanceUID}&contentType=application/dicom"`, category: "viewer" });
                     upsertSetting.mutate({ key: "viewer_mode",                  value: "BOTH",                                                       category: "viewer" });
-                    upsertSetting.mutate({ key: "default_viewer",               value: "OHIF",                                                       category: "viewer" });
+                    upsertSetting.mutate({ key: "default_viewer",               value: "WEASIS",                                                       category: "viewer" });
                   }}
                 >
                   Fill In LAN IP…
