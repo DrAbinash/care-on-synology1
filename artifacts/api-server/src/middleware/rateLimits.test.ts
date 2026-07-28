@@ -81,6 +81,11 @@ describe("isDedicatedAuthLoginPath", () => {
     expect(isDedicatedAuthLoginPath(makePathReq("/api/portal/patient-login"))).toBe(true);
   });
 
+  test("matches WebAuthn authenticate paths", () => {
+    expect(isDedicatedAuthLoginPath(makePathReq("/api/auth/webauthn/authenticate/begin"))).toBe(true);
+    expect(isDedicatedAuthLoginPath(makePathReq("/auth/webauthn/authenticate/complete"))).toBe(true);
+  });
+
   test("ignores query strings", () => {
     expect(isDedicatedAuthLoginPath(makePathReq("/portal/staff-login?retry=1"))).toBe(true);
   });

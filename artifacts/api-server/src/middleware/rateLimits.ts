@@ -104,7 +104,8 @@ export function isDedicatedAuthLoginPath(req: import("express").Request): boolea
   const path = (req.originalUrl ?? req.url ?? req.path ?? "").split("?")[0] ?? "";
   return (
     path.endsWith("/portal/staff-login") ||
-    path.endsWith("/portal/patient-login")
+    path.endsWith("/portal/patient-login") ||
+    path.includes("/auth/webauthn/authenticate/")
   );
 }
 
