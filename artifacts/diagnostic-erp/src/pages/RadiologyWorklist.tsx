@@ -4,7 +4,7 @@ import { useLocation } from "wouter";
 import { api } from "@/lib/fetchApi";
 import { readStaffSession, ERP_SESSION_KEY, canAccess, normalizeRole, isFeatureEnabled } from "@/lib/staffSession";
 import { toUnifiedStatus, worklistRoleView, priorityInfo, type WorklistRoleView } from "@/lib/radiologyStatus";
-import { launchViewer } from "@/lib/viewerService";
+import { launchViewer, openWeasisLaunchRedirect, resolveActiveProfile } from "@/lib/viewerService";
 import { normalizeModality, isUltrasoundModality } from "@/lib/usgModality";
 import { DATE_PRESETS, toISTDateStr } from "@/lib/dateRangePresets";
 import PageHeader from "@/components/PageHeader";
@@ -633,6 +633,18 @@ export default function RadiologyWorklist() {
   // Phase E "Highlight Urgent / VIP studies" toggle (default ON when unset)
   const urgentHighlightOn = (pacsViewerSettings["urgent_highlight_enabled"] ?? "true") !== "false";
 
+  const [activeNetworkProfile, setActiveNetworkProfile] = useState<"LAN" | "TAILSCALE" | "PUBLIC" | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void resolveActiveProfile(pacsViewerSettings).then(({ profile }) => {
+      if (!cancelled) setActiveNetworkProfile(profile);
+    });
+    return () => { cancelled = true; };
+  }, [pacsViewerSettings]);
+
+  const preferWeasis =
+    pacsViewerSettings["default_viewer"] === "WEASIS" || activeNetworkProfile === "LAN";
+
   useEffect(() => {
     if (!isLoading && prevEntriesLen.current !== entries.length) {
       setLastRefresh(new Date());
@@ -1128,6 +1140,7 @@ export default function RadiologyWorklist() {
                       <th className="px-3 py-2 font-medium whitespace-nowrap">UHID</th>
                       <th className="px-3 py-2 font-medium whitespace-nowrap">Bill</th>
                       <th className="px-3 py-2 font-medium whitespace-nowrap">Mod</th>
+                      {col.studyDate && <th className="px-3 py-2 font-medium whitespace-nowrap tabular-nums">Study Date</th>}
                       <th className="px-3 py-2 font-medium whitespace-nowrap">Priority</th>
                       <th className="px-3 py-2 font-medium whitespace-nowrap">Status</th>
                       {col.measurements && <th className="px-2 py-2 font-medium whitespace-nowrap text-center">Meas.</th>}
@@ -1140,7 +1153,6 @@ export default function RadiologyWorklist() {
                       {col.radiologist && <th className="px-3 py-2 font-medium whitespace-nowrap">Radiologist</th>}
                       {col.lockStatus && <th className="px-3 py-2 font-medium whitespace-nowrap">Lock</th>}
                       {col.aiDraft && <th className="px-3 py-2 font-medium whitespace-nowrap">AI</th>}
-                      {col.studyDate && <th className="px-3 py-2 font-medium whitespace-nowrap text-right">Study Date</th>}
                       {col.createdAt && <th className="px-3 py-2 font-medium whitespace-nowrap text-right">Received</th>}
                       <th className="px-3 py-2 font-medium text-right whitespace-nowrap sticky right-0 z-20 bg-muted/50 border-l border-border">Actions</th>
                     </tr>
@@ -1169,6 +1181,11 @@ export default function RadiologyWorklist() {
                         <td className="px-3 py-2 whitespace-nowrap">
                           <Badge variant="outline" className="font-mono text-xs">{entry.modality}</Badge>
                         </td>
+                        {col.studyDate && (
+                        <td className="px-3 py-2 text-muted-foreground text-xs whitespace-nowrap tabular-nums">
+                          {entry.studyDate ?? "\u2014"}
+                        </td>
+                        )}
                         <td className="px-3 py-2 whitespace-nowrap">
                           {(() => { const pr = priorityInfo(entry.priority); return (
                             <span className={`inline-flex items-center px-1.5 py-0.5 rounded border text-[10px] font-semibold ${pr.color}`}>
@@ -1340,11 +1357,6 @@ export default function RadiologyWorklist() {
                           )}
                         </td>
                         )}
-                        {col.studyDate && (
-                        <td className="px-3 py-2 text-muted-foreground text-xs whitespace-nowrap text-right tabular-nums">
-                          {entry.studyDate ?? "\u2014"}
-                        </td>
-                        )}
                         {col.createdAt && (
                         <td className="px-3 py-2 text-muted-foreground text-xs whitespace-nowrap text-right tabular-nums">
                           {fmtDate(entry.createdAt)}
@@ -1352,29 +1364,55 @@ export default function RadiologyWorklist() {
                         )}
                         <td className="px-3 py-2.5 sticky right-0 z-10 bg-background border-l border-border shadow-[-4px_0_6px_-2px_rgba(0,0,0,0.08)]">
                           <div className="flex items-center justify-end gap-1 flex-wrap">
-                            {entry.id !== -1 && !isReceptionView && (
+                            {entry.id !== -1 && !isReceptionView && preferWeasis && (
                               <Button
                                 size="sm"
-                                variant="outline"
-                                className="h-7 px-2 text-xs"
-                                onClick={() => launchViewer(entry.studyInstanceUID, "WEASIS", pacsViewerSettings, toast)}
-                                title="Open in Weasis"
+                                variant="default"
+                                className="h-7 px-2 text-xs bg-emerald-600 hover:bg-emerald-700 text-white"
+                                onClick={() => void openWeasisLaunchRedirect(entry.studyInstanceUID!, toast)}
+                                title="Open in Weasis (preferred on clinic LAN)"
                               >
                                 <Tv2 className="h-3 w-3 mr-1" />
                                 Weasis
                               </Button>
                             )}
 
-                            {entry.id !== -1 && !isReceptionView && (
+                            {entry.id !== -1 && !isReceptionView && !preferWeasis && (
                               <Button
                                 size="sm"
-                                variant="outline"
-                                className="h-7 px-2 text-xs text-blue-700 border-blue-300 hover:bg-blue-50"
-                                onClick={() => launchViewer(entry.studyInstanceUID, "OHIF", pacsViewerSettings, toast)}
+                                variant="default"
+                                className="h-7 px-2 text-xs text-blue-700 bg-blue-50 border border-blue-300 hover:bg-blue-100"
+                                onClick={() => void launchViewer(entry.studyInstanceUID, "OHIF", pacsViewerSettings, toast)}
                                 title="Open in OHIF"
                               >
                                 <MonitorPlay className="h-3 w-3 mr-1" />
                                 OHIF
+                              </Button>
+                            )}
+
+                            {entry.id !== -1 && !isReceptionView && preferWeasis && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-7 px-2 text-xs text-blue-700 border-blue-300 hover:bg-blue-50"
+                                onClick={() => void launchViewer(entry.studyInstanceUID, "OHIF", pacsViewerSettings, toast)}
+                                title="Open in OHIF"
+                              >
+                                <MonitorPlay className="h-3 w-3 mr-1" />
+                                OHIF
+                              </Button>
+                            )}
+
+                            {entry.id !== -1 && !isReceptionView && !preferWeasis && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-7 px-2 text-xs"
+                                onClick={() => void openWeasisLaunchRedirect(entry.studyInstanceUID!, toast)}
+                                title="Open in Weasis"
+                              >
+                                <Tv2 className="h-3 w-3 mr-1" />
+                                Weasis
                               </Button>
                             )}
 

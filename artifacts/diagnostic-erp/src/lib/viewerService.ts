@@ -276,16 +276,30 @@ export async function openWeasisLaunchRedirect(
   studyInstanceUID: string,
   toast?: (options: { title: string; description?: string; variant?: "default" | "destructive" }) => void,
 ): Promise<void> {
+  const startTime = Date.now();
   const w = window.open("", "_blank");
   try {
-    const data = await api.get<{ weasisUrl: string }>(
+    const data = await api.get<{ weasisUrl: string | null; error?: string }>(
       `/api/radiology/studies/${encodeURIComponent(studyInstanceUID)}/weasis-launch`
     );
+    if (!data.weasisUrl) {
+      w?.close();
+      toast?.({
+        title: "Weasis not configured",
+        description: data.error ?? "Go to Radiology Settings → Viewer Settings and load clinic defaults.",
+        variant: "destructive",
+      });
+      recordFailedLaunch("Weasis Launch", studyInstanceUID, "not_configured");
+      return;
+    }
     if (w) w.location.href = data.weasisUrl;
     else window.open(data.weasisUrl);
+    const profile = (localStorage.getItem("pacs_detected_profile") || "LAN") as "LAN" | "TAILSCALE" | "PUBLIC";
+    recordSuccessfulLaunch(profile, "WEASIS", data.weasisUrl, Date.now() - startTime);
   } catch (err) {
     w?.close();
     toast?.({ title: "Failed to open Weasis", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
+    recordFailedLaunch("Weasis Launch", studyInstanceUID, "api_error");
   }
 }
 
@@ -332,6 +346,11 @@ export async function launchViewer(
 ): Promise<void> {
   if (!studyInstanceUID?.trim()) {
     toast({ title: "Study UID missing. Cannot open viewer.", variant: "destructive" });
+    return;
+  }
+
+  if (viewerType === "WEASIS") {
+    await openWeasisLaunchRedirect(studyInstanceUID, toast);
     return;
   }
 
