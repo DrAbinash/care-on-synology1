@@ -9070,7 +9070,7 @@ function ScannerSettingsTab() {
   // Wireless settings
   const [mobileScan, setMobileScan] = useState(true);
   const [phonePairing, setPhonePairing] = useState(true);
-  const [preferredScanner, setPreferredScanner] = useState("camera");
+  const [preferredScanner, setPreferredScanner] = useState("bridge");
   const [requireConfirmation, setRequireConfirmation] = useState(true);
   const [autoDeleteTemp, setAutoDeleteTemp] = useState(true);
   const [ocrEnabled, setOcrEnabled] = useState(true);
@@ -9096,7 +9096,7 @@ function ScannerSettingsTab() {
     
     setMobileScan(settings.mobileScanEnabled !== false);
     setPhonePairing(settings.phonePairingEnabled !== false);
-    setPreferredScanner(String(settings.preferredScanner ?? "camera"));
+    setPreferredScanner(String(settings.preferredScanner ?? "bridge"));
     setRequireConfirmation(settings.requireDesktopConfirmation !== false);
     setAutoDeleteTemp(settings.autoDeleteTempScans !== false);
     setOcrEnabled(settings.ocrEnabled !== false);
@@ -9150,7 +9150,7 @@ function ScannerSettingsTab() {
         <div>
           <h3 className="font-semibold text-base">Preferred Scanning Source</h3>
           <p className="text-sm text-muted-foreground mt-0.5">
-            Default capture method on Form F&apos;s ID Scan panel. Webcam is the product default; flatbed and mobile stay available as tabs.
+            Default capture method on Form F&apos;s ID Scan panel. Flatbed / ScanBridge is the default for on-prem clinics; webcam and mobile stay available as tabs.
           </p>
         </div>
         <div className="space-y-1 max-w-md">
@@ -9160,8 +9160,8 @@ function ScannerSettingsTab() {
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="camera">Webcam / TVS PDS 8M (default)</SelectItem>
-              <SelectItem value="bridge">Flatbed Scanner / Scan Bridge</SelectItem>
+              <SelectItem value="bridge">Flatbed Scanner / ScanBridge (default)</SelectItem>
+              <SelectItem value="camera">Webcam / TVS PDS 8M</SelectItem>
               <SelectItem value="mobile">Wireless Mobile Scan</SelectItem>
             </SelectContent>
           </Select>
@@ -9459,7 +9459,7 @@ function ScannerSettingsTab() {
             setMaxWidth(Number(settings.maxScanWidth ?? 2000));
             setMobileScan(settings.mobileScanEnabled !== false);
             setPhonePairing(settings.phonePairingEnabled !== false);
-            setPreferredScanner(String(settings.preferredScanner ?? "camera"));
+            setPreferredScanner(String(settings.preferredScanner ?? "bridge"));
             setRequireConfirmation(settings.requireDesktopConfirmation !== false);
             setAutoDeleteTemp(settings.autoDeleteTempScans !== false);
             setOcrEnabled(settings.ocrEnabled !== false);

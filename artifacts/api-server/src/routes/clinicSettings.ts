@@ -129,7 +129,7 @@ async function getOrCreate() {
       maxScanWidth: 2000,
       mobileScanEnabled: true,
       phonePairingEnabled: true,
-      preferredScanner: "camera",
+      preferredScanner: "bridge",
       requireDesktopConfirmation: true,
       autoDeleteTempScans: true,
       ocrEnabled: true,

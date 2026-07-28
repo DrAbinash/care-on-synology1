@@ -11,7 +11,7 @@ import {
   ArrowLeft
 } from "lucide-react";
 import QRCode from "qrcode";
-import { checkScanBridgeHealth, scanBridgeCapture, scanBridgeLatestScan } from "@/lib/scanBridgeClient";
+import { checkScanBridgeHealth, scanBridgeCaptureWithFallback, scanBridgeLatestScan } from "@/lib/scanBridgeClient";
 
 interface ScanIdButtonProps {
   onScanComplete: (data: {
@@ -194,7 +194,7 @@ export default function ScanIdButton({
     setScanning(true);
     setBridgeAction(mode);
     try {
-      const raw = mode === "direct" ? await scanBridgeCapture() : await scanBridgeLatestScan();
+      const raw = mode === "direct" ? await scanBridgeCaptureWithFallback() : await scanBridgeLatestScan();
       if (!raw.ok) throw new Error(raw.error || "Bridge returned error.");
 
       const res = await api.post<any>("/api/form-f/optimize-scan", {
