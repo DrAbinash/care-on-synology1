@@ -4961,21 +4961,29 @@ function BillingPrintTab() {
   const save = () => {
     if (!settings) return;
     import("@/lib/billPrintSettings").then(async (m) => {
-      // Local first (works offline, per-user override layer), then the
-      // clinic-wide server blob so every billing counter prints with the
-      // paper size/format configured and previewed here — not each
-      // browser's stale localStorage default (the rotated-bill bug).
-      m.saveBillPrintSettings(settings);
+      // Clinic-wide settings live on the server only. Writing them into this
+      // browser's localStorage created a per-user override layer that could
+      // beat the server blob (and made admin lock look broken on other
+      // counters that still had stale overrides).
+      if (settings.adminLock) {
+        m.clearBillPrintSettingsOverride();
+      }
       try {
         await api.put("/api/clinic-settings", { billPrintSettingsJson: JSON.stringify(settings) });
         qc.invalidateQueries({ queryKey: ["clinic-settings"] });
-        toast({ title: "Saved", description: "Billing print settings saved clinic-wide." });
+        toast({
+          title: "Saved",
+          description: settings.adminLock
+            ? "Billing print settings locked clinic-wide — all counters will use these settings."
+            : "Billing print settings saved clinic-wide. Turn on Admin Lock to prevent per-counter overrides.",
+        });
       } catch {
         toast({
           variant: "destructive",
-          title: "Saved on this device only",
-          description: "Could not reach the server — other billing counters may keep printing with their old settings.",
+          title: "Could not save",
+          description: "Could not reach the server — billing counters may keep printing with their old settings.",
         });
+        return;
       }
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
