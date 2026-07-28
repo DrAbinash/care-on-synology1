@@ -299,7 +299,7 @@ const DEFAULT_VIEWER_SETTINGS: Record<string, string> = {
   pacs_port: "4242",
   pacs_ae_title: "ORTHANC2",
   viewer_mode: "BOTH",
-  default_viewer: "OHIF",
+  default_viewer: "WEASIS",
   ohif_enabled: "true",
   weasis_enabled: "true",
 };

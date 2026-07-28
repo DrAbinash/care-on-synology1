@@ -1221,6 +1221,7 @@ export default function BillingDesk() {
     onSuccess: () => {
       setFormFPopupOpen(false);
       toast({ title: "Form F saved" });
+      finishBillSaveFlowRef.current();
     },
     onError: (err: Error) => {
       toast({ title: "Form F save failed", description: err.message, variant: "destructive" });
@@ -1258,6 +1259,8 @@ export default function BillingDesk() {
 
   const queryClient = useQueryClient();
   const printAfterSaveRef = useRef(false);
+  const saveAndNextRef = useRef(false);
+  const finishBillSaveFlowRef = useRef<() => void>(() => {});
   // Pre-load printer settings on mount so the auto-print path after "Save &
   // Print" doesn't have to wait on a network round-trip — it just reads from
   // the React Query cache. Refreshes silently in the background every 5 min.
@@ -1514,12 +1517,11 @@ export default function BillingDesk() {
         return;
       }
 
-      window.setTimeout(() => {
-        resetAll();
-      }, 3000);
+      finishBillSaveFlowRef.current();
     },
     onError: (err: Error) => {
       printAfterSaveRef.current = false;
+      saveAndNextRef.current = false;
       if (err instanceof QueuedForSyncError) {
         // Not a real failure from the user's point of view — the bill is
         // saved locally and will go out on its own. No receipt/token to show
@@ -1838,7 +1840,7 @@ export default function BillingDesk() {
   }, [keyboardNav]);
 
   // ── Reset ───────────────────────────────────────────
-  function resetAll() {
+  function resetAll(focusPatient = false) {
     setSelectedPatient(null);
     setPatientSearch("");
     setNewPatient({ firstName: "", lastName: "", phone: "", gender: "", ageValue: "", ageUnit: "years", email: "", address: "", bloodGroup: "" });
@@ -1846,6 +1848,7 @@ export default function BillingDesk() {
     setDoctorSearch("");
     setNotes("");
     setSelectedTests([]);
+    setSelectedPackages([]);
     setDiscountValue(0);
     setDiscountReason("");
     setDiscountNote("");
@@ -1859,6 +1862,49 @@ export default function BillingDesk() {
     setIsVipActive(false);
     setTestsCollapsed(false);
     setSummaryCollapsed(false);
+    setShowBillToast(false);
+    if (isStepped) {
+      setCurrentStep(1);
+      setStepCompleted(new Set());
+    }
+    if (focusPatient) {
+      window.setTimeout(() => {
+        const input = searchRef.current?.querySelector("input");
+        input?.focus();
+      }, 100);
+    }
+  }
+
+  finishBillSaveFlowRef.current = () => {
+    if (saveAndNextRef.current) {
+      saveAndNextRef.current = false;
+      resetAll(true);
+      return;
+    }
+    const delay = readAutoResetDelayMs();
+    if (delay === null) return;
+    if (delay === 0) {
+      resetAll(true);
+      return;
+    }
+    window.setTimeout(() => resetAll(true), delay);
+  };
+
+  function setPrimaryPaymentAmount(amount: number) {
+    paymentAmountTouched.current = true;
+    const capped = Math.min(Math.max(0, amount), total);
+    setPaymentSplits((prev) => [
+      { ...(prev[0] ?? { mode: "cash", amount: "" }), amount: capped > 0 ? capped.toFixed(2) : "" },
+      ...prev.slice(1),
+    ]);
+  }
+
+  function addSplitWithRemainder() {
+    setPaymentSplits((prev) => {
+      const paid = prev.reduce((s, p) => s + (Number(p.amount) || 0), 0);
+      const remainder = Math.max(0, total - paid);
+      return [...prev, { mode: "upi", amount: remainder > 0 ? remainder.toFixed(2) : "" }];
+    });
   }
 
   const canGenerate = !!selectedPatient && selectedTests.length > 0 && !(discountAmt > 0 && !discountReason);
@@ -1960,7 +2006,7 @@ export default function BillingDesk() {
             </PopoverContent>
           </Popover>
           <button
-            onClick={resetAll}
+            onClick={() => resetAll()}
             className="h-7 px-2 rounded text-[11px] font-semibold text-blue-100 hover:bg-white/15 flex items-center gap-1 transition-colors"
           >
             <RefreshCcw size={12} />
@@ -2733,21 +2779,22 @@ export default function BillingDesk() {
 
                 {payNow && (
                   <>
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-[10px] font-bold text-[#64748b] uppercase tracking-wide">Amount</span>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          paymentAmountTouched.current = false;
-                          setPaymentSplits((prev) => [
-                            { ...(prev[0] ?? { mode: "cash", amount: "" }), amount: total.toFixed(2) },
-                            ...prev.slice(1),
-                          ]);
-                        }}
-                        className="text-[10px] font-bold text-[#2563eb] hover:underline"
-                      >
-                        Full pay ({inr(total)})
-                      </button>
+                    <div className="flex flex-wrap gap-1.5">
+                      {[
+                        { label: "Exact", amount: total },
+                        ...(total >= 200 ? [{ label: "Half", amount: total / 2 }] : []),
+                        ...(total >= 500 ? [{ label: "₹500", amount: 500 }] : []),
+                        ...(total >= 1000 ? [{ label: "₹1000", amount: 1000 }] : []),
+                      ].map((chip) => (
+                        <button
+                          key={chip.label}
+                          type="button"
+                          onClick={() => setPrimaryPaymentAmount(chip.amount)}
+                          className="px-2.5 py-1 rounded-md border border-[#bfdbfe] bg-[#eff6ff] text-[10px] font-bold text-[#2563eb] hover:bg-[#dbeafe] transition-colors"
+                        >
+                          {chip.label}
+                        </button>
+                      ))}
                     </div>
                     {/* Primary amount input — FIRST (most-used action) */}
                     <Input
@@ -2812,7 +2859,7 @@ export default function BillingDesk() {
                     {/* SECOND: Split payment link */}
                     {paymentSplits.length < PAYMENT_MODES.length && (
                       <button
-                        onClick={() => setPaymentSplits((prev) => [...prev, { mode: "upi", amount: "" }])}
+                        onClick={addSplitWithRemainder}
                         className="text-[11px] font-semibold text-[#2563eb] hover:underline flex items-center gap-1"
                       >
                         <Plus size={11} /> Split payment
@@ -2936,6 +2983,38 @@ export default function BillingDesk() {
                   <><Printer size={20} className="mr-2" />Save &amp; Print</>
                 )}
               </Button>
+
+              {!lastBill && (
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    if (generatingRef.current || !!lastBillRef.current) return;
+                    generatingRef.current = true;
+                    printAfterSaveRef.current = false;
+                    saveAndNextRef.current = true;
+                    generateMut.mutate();
+                  }}
+                  disabled={
+                    !selectedPatient ||
+                    selectedTests.length === 0 ||
+                    generateMut.isPending ||
+                    (discountAmt > 0 && !discountReason) ||
+                    paymentOverTotal ||
+                    (needsFormF && !clinic?.formFBillingPrompt && (
+                      (clinic?.formFGuardianRequired !== false && !husbandName.trim()) ||
+                      (clinic?.formFAddressRequired !== false && !patientAddress.trim())
+                    )) ||
+                    (needsDicom && !dicomFieldsComplete)
+                  }
+                  className="w-full h-10 text-[13px] font-bold border-[#93c5fd] text-[#2563eb] hover:bg-[#eff6ff]"
+                >
+                  {generateMut.isPending && saveAndNextRef.current ? (
+                    <>Saving…</>
+                  ) : (
+                    <><ChevronRight size={16} className="mr-1" />Save &amp; Next</>
+                  )}
+                </Button>
+              )}
 
               <div className="grid grid-cols-3 gap-1.5">
                 <Button
@@ -3293,24 +3372,43 @@ type BillSearchResult = {
   phone: string | null;
 };
 
-function BillSearchBox() {
-  const [, navigate] = useLocation();
+type CollectBillTarget = {
+  id: number;
+  billNumber: string;
+  balanceAmount: number;
+  patientName?: string | null;
+};
+
+const AUTO_RESET_DELAY_KEY = "billingDeskAutoResetDelay";
+
+function readAutoResetDelayMs(): number | null {
+  if (typeof window === "undefined") return 3000;
+  const v = localStorage.getItem(AUTO_RESET_DELAY_KEY) ?? "3000";
+  if (v === "manual") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 3000;
+}
+
+function CollectPaymentDialog({
+  bill,
+  onClose,
+  onSuccess,
+}: {
+  bill: CollectBillTarget | null;
+  onClose: () => void;
+  onSuccess?: () => void;
+}) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
-  const [q, setQ] = useState("");
-  const [open, setOpen] = useState(false);
-  const [dueOnly, setDueOnly] = useState(true);
-  const [collectBill, setCollectBill] = useState<BillSearchResult | null>(null);
   const [collectAmount, setCollectAmount] = useState("");
   const [collectMethod, setCollectMethod] = useState("cash");
-  const ref = useRef<HTMLDivElement>(null);
 
-  const { data: results = [], isFetching } = useQuery<BillSearchResult[]>({
-    queryKey: ["bill-search", q, dueOnly],
-    queryFn: () => api.get(`/api/bills/search?q=${encodeURIComponent(q)}&dueOnly=${dueOnly ? 1 : 0}`),
-    enabled: q.trim().length >= 2,
-    staleTime: 5_000,
-  });
+  useEffect(() => {
+    if (bill) {
+      setCollectAmount(String(bill.balanceAmount));
+      setCollectMethod("cash");
+    }
+  }, [bill]);
 
   const collectMut = useMutation({
     mutationFn: (body: { billId: number; amount: number; method: string }) =>
@@ -3320,29 +3418,99 @@ function BillSearchBox() {
       queryClient.invalidateQueries({ queryKey: ["bill-search"] });
       queryClient.invalidateQueries({ queryKey: ["today-collections-panel"] });
       queryClient.invalidateQueries({ queryKey: ["bills"] });
-      setCollectBill(null);
-      setCollectAmount("");
-      setOpen(false);
-      setQ("");
+      queryClient.invalidateQueries({ queryKey: ["recent-bills-today"] });
+      onClose();
+      onSuccess?.();
     },
     onError: (err: Error) => {
       toast({ title: "Payment failed", description: err.message, variant: "destructive" });
     },
   });
 
-  function openCollectDialog(bill: BillSearchResult, e: React.MouseEvent) {
-    e.stopPropagation();
-    setCollectBill(bill);
-    setCollectAmount(String(bill.balanceAmount));
-    setCollectMethod("cash");
-  }
-
   function submitCollect(e: React.FormEvent) {
     e.preventDefault();
-    if (!collectBill) return;
+    if (!bill) return;
     const amount = Number(collectAmount);
-    if (!amount || amount <= 0 || amount > collectBill.balanceAmount) return;
-    collectMut.mutate({ billId: collectBill.id, amount, method: collectMethod });
+    if (!amount || amount <= 0 || amount > bill.balanceAmount) return;
+    collectMut.mutate({ billId: bill.id, amount, method: collectMethod });
+  }
+
+  return (
+    <Dialog open={!!bill} onOpenChange={(o) => { if (!o) onClose(); }}>
+      <DialogContent className="max-w-sm">
+        <DialogHeader>
+          <DialogTitle>Collect payment</DialogTitle>
+        </DialogHeader>
+        {bill && (
+          <form onSubmit={submitCollect} className="space-y-3">
+            <div className="text-sm">
+              <span className="font-mono font-bold text-primary">{bill.billNumber}</span>
+              {bill.patientName && (
+                <span className="text-muted-foreground"> · {bill.patientName}</span>
+              )}
+            </div>
+            <div>
+              <Label>Amount (₹)</Label>
+              <Input
+                type="number"
+                min={0.01}
+                max={bill.balanceAmount}
+                step="0.01"
+                value={collectAmount}
+                onChange={(e) => setCollectAmount(e.target.value)}
+                className="mt-1"
+              />
+              <p className="text-[10px] text-muted-foreground mt-1">Balance due: {inr(bill.balanceAmount)}</p>
+            </div>
+            <div>
+              <Label>Method</Label>
+              <Select value={collectMethod} onValueChange={setCollectMethod}>
+                <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {["cash", "upi", "card", "online", "insurance"].map((m) => (
+                    <SelectItem key={m} value={m} className="capitalize">{m.toUpperCase()}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex justify-end gap-2 pt-1">
+              <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
+              <Button type="submit" disabled={collectMut.isPending}>
+                {collectMut.isPending ? "Saving…" : "Record payment"}
+              </Button>
+            </div>
+          </form>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function BillSearchBox() {
+  const [, navigate] = useLocation();
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const [q, setQ] = useState("");
+  const [open, setOpen] = useState(false);
+  const [dueOnly, setDueOnly] = useState(true);
+  const [collectBill, setCollectBill] = useState<CollectBillTarget | null>(null);
+  const ref = useRef<HTMLDivElement>(null);
+
+  const { data: results = [], isFetching } = useQuery<BillSearchResult[]>({
+    queryKey: ["bill-search", q, dueOnly],
+    queryFn: () => api.get(`/api/bills/search?q=${encodeURIComponent(q)}&dueOnly=${dueOnly ? 1 : 0}`),
+    enabled: q.trim().length >= 2,
+    staleTime: 5_000,
+  });
+
+  function openCollectDialog(bill: BillSearchResult, e: React.MouseEvent) {
+    e.stopPropagation();
+    setCollectBill({
+      id: bill.id,
+      billNumber: bill.billNumber,
+      balanceAmount: bill.balanceAmount,
+      patientName: bill.patientName,
+    });
   }
 
   useEffect(() => {
@@ -3444,51 +3612,11 @@ function BillSearchBox() {
       )}
     </div>
 
-    <Dialog open={!!collectBill} onOpenChange={(o) => { if (!o) setCollectBill(null); }}>
-      <DialogContent className="max-w-sm">
-        <DialogHeader>
-          <DialogTitle>Collect payment</DialogTitle>
-        </DialogHeader>
-        {collectBill && (
-          <form onSubmit={submitCollect} className="space-y-3">
-            <div className="text-sm">
-              <span className="font-mono font-bold text-primary">{collectBill.billNumber}</span>
-              <span className="text-muted-foreground"> · {collectBill.patientName ?? "—"}</span>
-            </div>
-            <div>
-              <Label>Amount (₹)</Label>
-              <Input
-                type="number"
-                min={0.01}
-                max={collectBill.balanceAmount}
-                step="0.01"
-                value={collectAmount}
-                onChange={(e) => setCollectAmount(e.target.value)}
-                className="mt-1"
-              />
-              <p className="text-[10px] text-muted-foreground mt-1">Balance due: {inr(collectBill.balanceAmount)}</p>
-            </div>
-            <div>
-              <Label>Method</Label>
-              <Select value={collectMethod} onValueChange={setCollectMethod}>
-                <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {["cash", "upi", "card", "online", "insurance"].map((m) => (
-                    <SelectItem key={m} value={m} className="capitalize">{m.toUpperCase()}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="flex justify-end gap-2 pt-1">
-              <Button type="button" variant="outline" onClick={() => setCollectBill(null)}>Cancel</Button>
-              <Button type="submit" disabled={collectMut.isPending}>
-                {collectMut.isPending ? "Saving…" : "Record payment"}
-              </Button>
-            </div>
-          </form>
-        )}
-      </DialogContent>
-    </Dialog>
+    <CollectPaymentDialog
+      bill={collectBill}
+      onClose={() => setCollectBill(null)}
+      onSuccess={() => { setOpen(false); setQ(""); }}
+    />
     </>
   );
 }
@@ -3499,6 +3627,7 @@ function BillSearchBox() {
 // ──────────────────────────────────────────────────────
 function TodayCollectionsPanel() {
   const [, navigate] = useLocation();
+  const [collectBill, setCollectBill] = useState<CollectBillTarget | null>(null);
   // toLocaleDateString('en-CA') gives ISO-like format in local timezone
   const todayIso = new Date().toLocaleDateString("en-CA");
   // Server-side filter by today's date so the panel reliably shows all bills
@@ -3543,16 +3672,19 @@ function TodayCollectionsPanel() {
           sorted.map((b) => {
             const due = b.balanceAmount > 0 && b.status !== "cancelled";
             const time = new Date(b.createdAt).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" });
+            const patientName = b.patient ? `${b.patient.firstName} ${b.patient.lastName}` : null;
             return (
-              <button
+              <div
                 key={b.id}
-                type="button"
-                onClick={() => navigate(`/billing/${b.id}`)}
-                className={`w-full text-left px-3 py-1.5 transition-colors flex items-center gap-2 ${
+                className={`w-full px-3 py-1.5 transition-colors flex items-center gap-2 ${
                   due ? "hover:bg-orange-50 dark:hover:bg-orange-950/20" : "hover:bg-muted/40"
                 }`}
               >
-                <div className="flex-1 min-w-0">
+                <button
+                  type="button"
+                  onClick={() => navigate(`/billing/${b.id}`)}
+                  className="flex-1 min-w-0 text-left"
+                >
                   <div className="flex items-center gap-1.5">
                     <span className="font-mono text-[10px] font-extrabold text-primary truncate">{b.billNumber}</span>
                     {due ? (
@@ -3562,19 +3694,46 @@ function TodayCollectionsPanel() {
                     )}
                   </div>
                   <div className="text-[10px] text-slate-900 dark:text-slate-900 truncate">
-                    {b.patient ? `${b.patient.firstName} ${b.patient.lastName}` : "—"}
+                    {patientName ?? "—"}
                   </div>
+                  <div className="text-right text-[10px] mt-0.5">
+                    <span className="text-slate-900 dark:text-slate-900">{inr(b.totalAmount)}</span>
+                    {due && <span className="font-extrabold text-orange-900 ml-1">Bal {inr(b.balanceAmount)}</span>}
+                    <span className="text-[9px] text-slate-900 dark:text-slate-900 tabular-nums ml-1">{time}</span>
+                  </div>
+                </button>
+                <div className="flex flex-col gap-1 flex-shrink-0">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="h-6 text-[9px] px-1.5"
+                    onClick={() => navigate(`/billing/${b.id}`)}
+                  >
+                    Open
+                  </Button>
+                  {due && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      className="h-6 text-[9px] px-1.5 bg-orange-600 hover:bg-orange-700 text-white"
+                      onClick={() => setCollectBill({
+                        id: b.id,
+                        billNumber: b.billNumber,
+                        balanceAmount: b.balanceAmount,
+                        patientName,
+                      })}
+                    >
+                      Collect
+                    </Button>
+                  )}
                 </div>
-                <div className="text-right flex-shrink-0 text-[10px]">
-                  <div className="text-slate-900 dark:text-slate-900">{inr(b.totalAmount)}</div>
-                  {due && <div className="font-extrabold text-orange-900">Bal {inr(b.balanceAmount)}</div>}
-                  <div className="text-[9px] text-slate-900 dark:text-slate-900 tabular-nums">{time}</div>
-                </div>
-              </button>
+              </div>
             );
           })
         )}
       </div>
+      <CollectPaymentDialog bill={collectBill} onClose={() => setCollectBill(null)} />
     </div>
   );
 }
