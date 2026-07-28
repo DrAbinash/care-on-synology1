@@ -928,6 +928,10 @@ function BillingDeskLayoutCard() {
   const [showOptionalFields, setShowOptionalFields] = useState(() => isFeatureEnabled("billingDeskShowOptionalFields"));
   const [keyboardNav, setKeyboardNav] = useState(() => isFeatureEnabled("billingDeskKeyboardNav") !== false);
   const [autoFocusNext, setAutoFocusNext] = useState(() => isFeatureEnabled("billingDeskAutoFocus") !== false);
+  const [autoResetDelay, setAutoResetDelay] = useState(() => {
+    if (typeof window === "undefined") return "3000";
+    return localStorage.getItem("billingDeskAutoResetDelay") ?? "3000";
+  });
 
   // All toggle helpers follow the same pattern: update local state + write to
   // localStorage via setFeatureFlag (which now dispatches featureFlagsChanged,
@@ -1111,6 +1115,26 @@ function BillingDeskLayoutCard() {
           </span>
           <input type="checkbox" className="sr-only" checked={autoFocusNext} onChange={() => toggle("billingDeskAutoFocus", autoFocusNext, setAutoFocusNext)} />
         </label>
+        <div className="px-3 py-2 rounded-lg border border-card-border bg-muted/20 space-y-1.5">
+          <label htmlFor="billing-desk-auto-reset" className="text-sm font-medium">Auto-reset after save</label>
+          <div className="text-[11px] text-muted-foreground">How long before the desk clears for the next bill. Use <strong>Immediate</strong> for high-volume counters, or <strong>Manual</strong> when printing token/Form F.</div>
+          <select
+            id="billing-desk-auto-reset"
+            value={autoResetDelay}
+            onChange={(e) => {
+              const next = e.target.value;
+              setAutoResetDelay(next);
+              localStorage.setItem("billingDeskAutoResetDelay", next);
+              window.dispatchEvent(new Event("billingDeskPrefsChanged"));
+            }}
+            className="w-full h-9 text-sm border border-input rounded-md px-2 bg-background"
+          >
+            <option value="manual">Manual — click New</option>
+            <option value="0">Immediate — reset right after save</option>
+            <option value="3000">3 seconds (default)</option>
+            <option value="5000">5 seconds</option>
+          </select>
+        </div>
       </div>
 
       <p className="text-[11px] text-muted-foreground pt-1">
