@@ -445,6 +445,7 @@ export default function BillingDesk() {
   const [searchOpen, setSearchOpen] = useState(false);
   const searchRef  = useRef<HTMLDivElement>(null);
   const paymentRef = useRef<HTMLDivElement>(null);
+  const testSearchRef = useRef<HTMLInputElement>(null);
 
   // ── Doctor search state ─────────────────────────────
   const [doctorId, setDoctorId] = useState<number | null>(null);
@@ -520,12 +521,12 @@ export default function BillingDesk() {
     showQuickTestsSetting,
     showPackagesSetting,
     stickyBillSummary,
-    stickyPayment: _stickyPayment,
+    stickyPayment,
     denseTestList,
     largeFont,
     showOptionalFields,
-    keyboardNav: _keyboardNav,
-    autoFocusNext: _autoFocusNext,
+    keyboardNav,
+    autoFocusNext,
   } = {
     ...billingFlags,
     showQuickTestsSetting: billingFlags.showQuickTests,
@@ -544,6 +545,31 @@ export default function BillingDesk() {
       }, 300);
     }
   }, [isStepped, autoAdvance, currentStep]);
+
+  const prevPatientIdRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!selectedPatient) {
+      prevPatientIdRef.current = null;
+      return;
+    }
+    if (selectedPatient.id === prevPatientIdRef.current) return;
+    prevPatientIdRef.current = selectedPatient.id;
+    if (isStepped && autoAdvance && currentStep === 1) advanceStep();
+    if (autoFocusNext) {
+      window.setTimeout(() => testSearchRef.current?.focus(), 150);
+    }
+  }, [selectedPatient, isStepped, autoAdvance, currentStep, autoFocusNext, advanceStep]);
+
+  const prevDoctorIdRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (doctorId == null) {
+      prevDoctorIdRef.current = null;
+      return;
+    }
+    if (doctorId === prevDoctorIdRef.current) return;
+    prevDoctorIdRef.current = doctorId;
+    if (isStepped && autoAdvance && currentStep === 2) advanceStep();
+  }, [doctorId, isStepped, autoAdvance, currentStep, advanceStep]);
 
   const goToStep = (step: number) => {
     if (step <= currentStep || stepCompleted.has(step - 1)) {
@@ -1572,8 +1598,10 @@ export default function BillingDesk() {
       toast({ title: "Test already added" });
       return;
     }
+    const wasEmpty = selectedTests.length === 0;
     setSelectedTests((prev) => [...prev, { testId: t.id, name: t.name, code: t.code, price: t.price, category: t.category, source: "test" }]);
     setTestSearch("");
+    if (wasEmpty && isStepped && autoAdvance && currentStep === 3) advanceStep();
   }
 
   // ── Quick Test slot save / actions ──────────────────
@@ -1643,10 +1671,13 @@ export default function BillingDesk() {
     });
   }
 
-  function addPackage(pkg: Pkg) {
-    // Package effective price = MRP - %% - flat ₹.
+  function packageEffectivePrice(pkg: Pkg) {
     const afterPct = pkg.price - (pkg.price * (pkg.discountPct ?? 0)) / 100;
-    const effective = Math.max(0, afterPct - (pkg.discountAmount ?? 0));
+    return Math.max(0, afterPct - (pkg.discountAmount ?? 0));
+  }
+
+  function addPackage(pkg: Pkg) {
+    const effective = packageEffectivePrice(pkg);
     const count = pkg.tests.length || 1;
 
     // If any test inside this package carries its own discount override, honour
@@ -1672,9 +1703,11 @@ export default function BillingDesk() {
       toast({ title: "All tests in this package already added" });
       return;
     }
+    const wasEmpty = selectedTests.length === 0;
     setSelectedTests((prev) => [...prev, ...toAdd]);
     setSelectedPackages((prev) => [...prev, { packageId: pkg.id, name: pkg.name, testIds: toAdd.map((t) => t.testId) }]);
     toast({ title: `Package "${pkg.name}" added (${toAdd.length} tests)` });
+    if (wasEmpty && isStepped && autoAdvance && currentStep === 3) advanceStep();
   }
 
   function removeTest(testId: number) {
@@ -1742,6 +1775,7 @@ export default function BillingDesk() {
   // so double-clicks and rapid keyboard shortcuts can't slip through the gap.
   const generatingRef  = useRef(false);
   useEffect(() => {
+    if (!keyboardNav) return;
     function kbHandler(e: KeyboardEvent) {
       const tag = (e.target as HTMLElement)?.tagName;
       const inInput = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
@@ -1801,8 +1835,7 @@ export default function BillingDesk() {
     }
     document.addEventListener("keydown", kbHandler);
     return () => document.removeEventListener("keydown", kbHandler);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [keyboardNav]);
 
   // ── Reset ───────────────────────────────────────────
   function resetAll() {
@@ -2104,9 +2137,18 @@ export default function BillingDesk() {
             {recentPatientBill && !lastBill && (
               <div className="flex items-center gap-2 px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg text-sm">
                 <AlertTriangle size={14} className="text-amber-600 flex-shrink-0" />
-                <span className="text-amber-800 text-xs">
+                <span className="text-amber-800 text-xs flex-1">
                   Open bill <strong>{recentPatientBill.billNumber}</strong> already exists for this patient.
                 </span>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-[11px] border-amber-300 text-amber-800 hover:bg-amber-100 flex-shrink-0"
+                  onClick={() => navigate(`/billing/${recentPatientBill.id}`)}
+                >
+                  Open bill
+                </Button>
               </div>
             )}
 
@@ -2175,8 +2217,7 @@ export default function BillingDesk() {
                     Click a filled slot to select that doctor for this bill.
                     Click an empty (dashed) slot, or right-click any slot, to
                     assign/change which doctor lives there. */}
-                {showQuickTestsSetting && (
-                  <div className="grid grid-cols-4 gap-1.5">
+                <div className="grid grid-cols-4 gap-1.5">
                     {quickDoctorIds.map((docId, idx) => {
                       const doc = docId != null ? doctors.find((d) => d.id === docId) : null;
                       const isSelected = !!doc && doctorId === doc.id;
@@ -2227,7 +2268,6 @@ export default function BillingDesk() {
                       );
                     })}
                   </div>
-                )}
                 {/* Doctor search */}
                 <div ref={doctorRef} className="relative">
                   {doctorId && (
@@ -2340,6 +2380,7 @@ export default function BillingDesk() {
                   <div className="relative flex-1">
                     <Search size={12} className="absolute left-3 top-1/2 -translate-y-1/2 text-[#94a3b8]" />
                     <input
+                      ref={testSearchRef}
                       className="w-full h-8 pl-9 pr-3 text-sm border border-[#dde3ec] rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-[#2563eb]/30 focus:border-[#2563eb]"
                       placeholder="Search test by name or code…"
                       value={testSearch}
@@ -2423,7 +2464,7 @@ export default function BillingDesk() {
                             <div className="text-xs font-semibold text-[#1e3a5f] truncate">{pkg.name}</div>
                             <div className="text-[10px] text-[#94a3b8]">{pkg.tests.length} tests</div>
                           </div>
-                          <span className="text-sm font-bold text-[#1e3a5f] flex-shrink-0">{inr(pkg.discountPct)}</span>
+                          <span className="text-sm font-bold text-[#1e3a5f] flex-shrink-0">{inr(packageEffectivePrice(pkg))}</span>
                         </button>
                       ))}
                     </div>
@@ -2498,8 +2539,10 @@ export default function BillingDesk() {
               ))}
             </div>
 
+            {/* ── BILL SUMMARY + PAYMENT + SAVE (optional sticky block) ── */}
+            <div className={`mx-2.5 mt-2.5 flex-shrink-0 space-y-2.5 ${(stickyBillSummary || stickyPayment) ? "lg:sticky lg:top-0 lg:z-10" : ""}`}>
             {/* ── BILL SUMMARY + DISCOUNT + VIP ────────── */}
-            <div className={`${cardCls} mx-2.5 mt-2.5 flex-shrink-0`}>
+            <div className={cardCls}>
               {SHCollapsible(
                 "Bill Summary",
                 <Receipt size={11} />,
@@ -2521,7 +2564,17 @@ export default function BillingDesk() {
                     </span>
                     <button
                       className="text-emerald-700 font-bold hover:underline"
-                      onClick={() => { setDiscountType("amount"); setDiscountValue(suggestion.discount); setSuggestion(null); }}
+                      onClick={() => {
+                        setDiscountType("amount");
+                        setDiscountValue(suggestion.discount);
+                        if (suggestion.rule?.name) {
+                          setDiscountReason(suggestion.rule.name);
+                        } else {
+                          const r = discountReasons.find((dr) => dr.isActive);
+                          if (r) setDiscountReason(r.label);
+                        }
+                        setSuggestion(null);
+                      }}
                     >
                       Apply
                     </button>
@@ -2651,7 +2704,7 @@ export default function BillingDesk() {
             </div>
 
             {/* ── PAYMENT ──────────────────────────────── */}
-            <div className={`${cardCls} mx-2.5 mt-2.5 flex-shrink-0`}>
+            <div className={cardCls}>
               {SH("Payment", <CreditCard size={11} />, "indigo")}
               <div className="p-3 space-y-2.5" ref={paymentRef}>
 
@@ -2680,6 +2733,22 @@ export default function BillingDesk() {
 
                 {payNow && (
                   <>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[10px] font-bold text-[#64748b] uppercase tracking-wide">Amount</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          paymentAmountTouched.current = false;
+                          setPaymentSplits((prev) => [
+                            { ...(prev[0] ?? { mode: "cash", amount: "" }), amount: total.toFixed(2) },
+                            ...prev.slice(1),
+                          ]);
+                        }}
+                        className="text-[10px] font-bold text-[#2563eb] hover:underline"
+                      >
+                        Full pay ({inr(total)})
+                      </button>
+                    </div>
                     {/* Primary amount input — FIRST (most-used action) */}
                     <Input
                       type="number"
@@ -2832,7 +2901,7 @@ export default function BillingDesk() {
             </div>
 
             {/* ── SAVE & PRINT — most prominent action ─── */}
-            <div className="mx-2.5 mt-2.5 mb-2.5 flex-shrink-0 space-y-2">
+            <div className="mb-2.5 flex-shrink-0 space-y-2">
               <Button
                 onClick={() => {
                   if (generatingRef.current || !!lastBillRef.current) return;
@@ -2880,7 +2949,7 @@ export default function BillingDesk() {
                 <Button
                   variant="outline"
                   onClick={async () => { if (!lastBill) return; await printToken(lastBill, clinic); }}
-                  disabled={!lastBill || !lastBill.tokenNo}
+                  disabled={!lastBill || (!lastBill.tokenNo && (lastBill.testTokens?.length ?? 0) === 0)}
                   className="h-9 text-[11px] border-[#dde3ec] text-[#475569] hover:bg-[#eff6ff] hover:text-[#2563eb] hover:border-[#93c5fd]"
                 >
                   <Hash size={13} className="mr-1" />Token
@@ -2906,6 +2975,9 @@ export default function BillingDesk() {
                 </Button>
               </div>
             </div>
+            </div>{/* end sticky block */}
+
+            <TodayCollectionsPanel />
 
           </div>{/* end right scroll */}
         </div>
@@ -3223,9 +3295,14 @@ type BillSearchResult = {
 
 function BillSearchBox() {
   const [, navigate] = useLocation();
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
   const [q, setQ] = useState("");
   const [open, setOpen] = useState(false);
   const [dueOnly, setDueOnly] = useState(true);
+  const [collectBill, setCollectBill] = useState<BillSearchResult | null>(null);
+  const [collectAmount, setCollectAmount] = useState("");
+  const [collectMethod, setCollectMethod] = useState("cash");
   const ref = useRef<HTMLDivElement>(null);
 
   const { data: results = [], isFetching } = useQuery<BillSearchResult[]>({
@@ -3234,6 +3311,39 @@ function BillSearchBox() {
     enabled: q.trim().length >= 2,
     staleTime: 5_000,
   });
+
+  const collectMut = useMutation({
+    mutationFn: (body: { billId: number; amount: number; method: string }) =>
+      api.post("/api/payments", body),
+    onSuccess: () => {
+      toast({ title: "Payment recorded" });
+      queryClient.invalidateQueries({ queryKey: ["bill-search"] });
+      queryClient.invalidateQueries({ queryKey: ["today-collections-panel"] });
+      queryClient.invalidateQueries({ queryKey: ["bills"] });
+      setCollectBill(null);
+      setCollectAmount("");
+      setOpen(false);
+      setQ("");
+    },
+    onError: (err: Error) => {
+      toast({ title: "Payment failed", description: err.message, variant: "destructive" });
+    },
+  });
+
+  function openCollectDialog(bill: BillSearchResult, e: React.MouseEvent) {
+    e.stopPropagation();
+    setCollectBill(bill);
+    setCollectAmount(String(bill.balanceAmount));
+    setCollectMethod("cash");
+  }
+
+  function submitCollect(e: React.FormEvent) {
+    e.preventDefault();
+    if (!collectBill) return;
+    const amount = Number(collectAmount);
+    if (!amount || amount <= 0 || amount > collectBill.balanceAmount) return;
+    collectMut.mutate({ billId: collectBill.id, amount, method: collectMethod });
+  }
 
   useEffect(() => {
     function onClick(e: MouseEvent) {
@@ -3244,6 +3354,7 @@ function BillSearchBox() {
   }, []);
 
   return (
+    <>
     <div ref={ref} className="relative">
       <div className="relative">
         <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-900 dark:text-slate-900" />
@@ -3276,13 +3387,15 @@ function BillSearchBox() {
               <div className="px-4 py-6 text-xs text-slate-900 dark:text-slate-900 text-center">No bills found</div>
             ) : (
               results.map((r) => (
-                <button
+                <div
                   key={r.id}
-                  type="button"
-                  onClick={() => { setOpen(false); setQ(""); navigate(`/billing/${r.id}`); }}
-                  className="w-full text-left px-3 py-2 hover:bg-muted/50 transition-colors flex items-center gap-2"
+                  className="w-full px-3 py-2 hover:bg-muted/50 transition-colors flex items-center gap-2"
                 >
-                  <div className="flex-1 min-w-0">
+                  <button
+                    type="button"
+                    onClick={() => { setOpen(false); setQ(""); navigate(`/billing/${r.id}`); }}
+                    className="flex-1 min-w-0 text-left"
+                  >
                     <div className="flex items-center gap-2">
                       <span className="font-mono text-xs font-extrabold text-primary">{r.billNumber}</span>
                       {r.balanceAmount > 0 ? (
@@ -3295,20 +3408,88 @@ function BillSearchBox() {
                       {r.patientName ?? "—"}
                       <span className="text-slate-900 dark:text-slate-900"> · {r.patientId ?? ""} {r.phone ? `· ${r.phone}` : ""}</span>
                     </div>
-                  </div>
-                  <div className="text-right flex-shrink-0">
-                    <div className="text-xs text-slate-900 dark:text-slate-900">Total {inr(r.totalAmount)}</div>
-                    <div className={`text-sm font-extrabold ${r.balanceAmount > 0 ? "text-orange-900" : "text-green-600"}`}>
-                      Bal {inr(r.balanceAmount)}
+                    <div className="text-right mt-0.5">
+                      <span className="text-xs text-slate-900 dark:text-slate-900">Total {inr(r.totalAmount)} · </span>
+                      <span className={`text-sm font-extrabold ${r.balanceAmount > 0 ? "text-orange-900" : "text-green-600"}`}>
+                        Bal {inr(r.balanceAmount)}
+                      </span>
                     </div>
+                  </button>
+                  <div className="flex flex-col gap-1 flex-shrink-0">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="h-7 text-[10px] px-2"
+                      onClick={() => { setOpen(false); setQ(""); navigate(`/billing/${r.id}`); }}
+                    >
+                      Open
+                    </Button>
+                    {r.balanceAmount > 0 && r.status !== "cancelled" && (
+                      <Button
+                        type="button"
+                        size="sm"
+                        className="h-7 text-[10px] px-2 bg-orange-600 hover:bg-orange-700 text-white"
+                        onClick={(e) => openCollectDialog(r, e)}
+                      >
+                        Collect
+                      </Button>
+                    )}
                   </div>
-                </button>
+                </div>
               ))
             )}
           </div>
         </div>
       )}
     </div>
+
+    <Dialog open={!!collectBill} onOpenChange={(o) => { if (!o) setCollectBill(null); }}>
+      <DialogContent className="max-w-sm">
+        <DialogHeader>
+          <DialogTitle>Collect payment</DialogTitle>
+        </DialogHeader>
+        {collectBill && (
+          <form onSubmit={submitCollect} className="space-y-3">
+            <div className="text-sm">
+              <span className="font-mono font-bold text-primary">{collectBill.billNumber}</span>
+              <span className="text-muted-foreground"> · {collectBill.patientName ?? "—"}</span>
+            </div>
+            <div>
+              <Label>Amount (₹)</Label>
+              <Input
+                type="number"
+                min={0.01}
+                max={collectBill.balanceAmount}
+                step="0.01"
+                value={collectAmount}
+                onChange={(e) => setCollectAmount(e.target.value)}
+                className="mt-1"
+              />
+              <p className="text-[10px] text-muted-foreground mt-1">Balance due: {inr(collectBill.balanceAmount)}</p>
+            </div>
+            <div>
+              <Label>Method</Label>
+              <Select value={collectMethod} onValueChange={setCollectMethod}>
+                <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {["cash", "upi", "card", "online", "insurance"].map((m) => (
+                    <SelectItem key={m} value={m} className="capitalize">{m.toUpperCase()}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex justify-end gap-2 pt-1">
+              <Button type="button" variant="outline" onClick={() => setCollectBill(null)}>Cancel</Button>
+              <Button type="submit" disabled={collectMut.isPending}>
+                {collectMut.isPending ? "Saving…" : "Record payment"}
+              </Button>
+            </div>
+          </form>
+        )}
+      </DialogContent>
+    </Dialog>
+    </>
   );
 }
 
