@@ -3488,6 +3488,8 @@ function CollectPaymentDialog({
 
 function BillSearchBox() {
   const [, navigate] = useLocation();
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
   const [q, setQ] = useState("");
   const [open, setOpen] = useState(false);
   const [dueOnly, setDueOnly] = useState(true);
