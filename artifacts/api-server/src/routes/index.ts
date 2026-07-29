@@ -142,6 +142,7 @@ import { radiologyBrainIntelligenceRouter } from "./radiologyBrainIntelligence";
 import { radiologyTumorFollowupRouter } from "./radiologyTumorFollowup";
 import { radiologyAnnotationsRouter } from "./radiologyAnnotations";
 import { radiologyOllamaRouter } from "./radiologyOllama";
+import { aiPipelineHealthRouter } from "./aiPipelineHealth";
 import { radiologySnippetsRouter } from "./radiologySnippets";
 import { radiologyMyAnalyticsRouter } from "./radiologyMyAnalytics";
 import { bankingRouter, bankingWebhookRouter } from "./banking";
@@ -907,6 +908,9 @@ router.use("/ai-reporting", requireStaffAuth, aiReportingRouter);
 router.use("/ai-prompt-templates", requireStaffAuth, aiPromptTemplatesRouter);
 router.use("/ai-prompt-library", requireStaffAuth, aiPromptLibraryRouter);
 router.use("/ai-model-routing", requireStaffAuth, aiModelRoutesRouter);
+
+// Unified OCR + local-AI pipeline health / model registry / non-PHI smoke test
+router.use("/ai-pipeline", requireStaffAuth, aiPipelineHealthRouter);
 
 // AI Comparison Workspace
 router.use("/ai-comparison", requireStaffAuth, aiComparisonRouter);

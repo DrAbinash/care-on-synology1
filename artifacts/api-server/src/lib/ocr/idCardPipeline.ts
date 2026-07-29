@@ -1,6 +1,9 @@
 import { geminiOcrIdCard, type IdCardOcrResult } from "@workspace/integrations-gemini-ai";
+import { loadAiPipelineConfig } from "../aiPipeline/config";
 import { ollamaOcrIdCard } from "./idCardOcrOllama";
 import { type OcrProviderChoice } from "./ocrProviderResolver";
+import { orchestrateDocumentOcr } from "./ocrOrchestrator";
+import { idFieldsToOcrResult, parseIdCardTextServer } from "./idCardTextFromOcr";
 
 /**
  * Shared image pre-processing applied before OCR, reused by both the ID-card
@@ -135,18 +138,30 @@ export interface IdCardPipelineResult {
   blurScore: number;
   isBlurred: boolean;
   preprocessApplied: string[];
+  /** Set when PaddleOCR path ran — diagnostics for Form F /admin health. */
+  paddleMeta?: {
+    pathUsed: string;
+    meanConfidence?: number;
+    warnings: string[];
+    tesseractFallbackSuggested: boolean;
+  };
 }
 
 /**
- * Full ID-card OCR pipeline: pre-process, then dispatch to whichever
- * provider ocrProviderResolver.ts already decided on (Ollama or Gemini —
- * see resolveOcrProvider()'s Ollama-first/Gemini-fallback policy). This
- * function no longer picks a provider itself; it only executes against the
- * one it's handed, so preprocessing (EXIF-orient/trim/normalize/downscale)
- * is applied identically regardless of which provider runs the actual OCR
- * call. Manual verification of the extracted fields before they're saved
- * remains the caller's responsibility (Form F shows OCR output in editable
- * form fields rather than auto-committing it).
+ * Full ID-card OCR pipeline.
+ *
+ * Default (OCR_ENGINE=paddle): PaddleOCR worker → deterministic text parse.
+ * Does NOT send the image to an LLM when OCR text is sufficient.
+ *
+ * Fallback order when Paddle is unavailable / empty:
+ *   1) Vision LLM (Ollama / Gemini) if resolver provided one
+ *   2) Client Tesseract suggested via paddleMeta.tesseractFallbackSuggested
+ *
+ * Rollback: OCR_ENGINE=tesseract|vision skips Paddle and uses the legacy
+ * vision path only.
+ *
+ * Manual verification of extracted fields remains the caller's responsibility
+ * (Form F shows OCR output in editable fields — never auto-commits as final).
  */
 export async function runIdCardOcrPipeline(
   imageBase64: string,
@@ -155,14 +170,54 @@ export async function runIdCardOcrPipeline(
 ): Promise<IdCardPipelineResult> {
   const pre = await preprocessScanImage(imageBase64, mimeType);
   const processedBase64 = pre.buffer.toString("base64");
+  const cfg = loadAiPipelineConfig();
 
-  if (pre.isBlurred) {
-    // Still attempt OCR (a blur warning shouldn't silently withhold results —
-    // the caller decides whether to show/trust them), but the caller can use
-    // isBlurred to surface a "too blurred, consider retaking" message.
+  // ── Paddle-first path (production default) ──────────────────────────────
+  if (cfg.ocrEngine === "paddle") {
+    const orch = await orchestrateDocumentOcr({
+      buffer: pre.buffer,
+      mimeType: pre.mimeType,
+      filename: "id-card.jpg",
+      expectedKeywords: ["name", "address"],
+    });
+    if (orch.ok && orch.paddle?.text) {
+      const fields = parseIdCardTextServer(orch.paddle.text);
+      const ocrResult = idFieldsToOcrResult(fields, {
+        ocrProvider: "paddle",
+        meanConfidence: orch.paddle.mean_confidence,
+      });
+      ocrResult.rawText = orch.parsed?.normalizedText ?? orch.paddle.text;
+      return {
+        ocrResult,
+        blurScore: pre.blurScore,
+        isBlurred: pre.isBlurred,
+        preprocessApplied: pre.appliedSteps,
+        paddleMeta: {
+          pathUsed: orch.pathUsed,
+          meanConfidence: orch.paddle.mean_confidence,
+          warnings: orch.warnings,
+          tesseractFallbackSuggested: orch.tesseractFallbackSuggested,
+        },
+      };
+    }
+    // Paddle failed — fall through to vision if available
   }
 
   if (provider.provider === "none") {
+    // Preserve previous behavior: throw when nothing can run
+    if (cfg.ocrTesseractFallback) {
+      return {
+        ocrResult: null,
+        blurScore: pre.blurScore,
+        isBlurred: pre.isBlurred,
+        preprocessApplied: pre.appliedSteps,
+        paddleMeta: {
+          pathUsed: "none",
+          warnings: ["no_vision_provider", "suggest_client_tesseract"],
+          tesseractFallbackSuggested: true,
+        },
+      };
+    }
     throw new Error("No OCR provider available");
   }
 

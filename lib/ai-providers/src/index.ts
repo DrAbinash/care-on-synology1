@@ -81,10 +81,10 @@ export const BUILTIN_PROVIDER_CONFIGS: Record<string, AiProviderConfig> = {
     label: "Ollama (Local)",
     needsApiKey: false,
     needsEndpointUrl: true,
-    // Approved on-prem Ollama models. qwen3:14b is the default reporting model
-    // and MUST be listed first so it is the built-in fallback and the top of the
-    // model picker; gpt-oss:20b and gemma3:12b are the other two approved models.
-    defaultModels: ["qwen3:14b", "gpt-oss:20b", "gemma3:12b"],
+    // Routine default for the Windows OCR/AI worker: gemma3:4b.
+    // gemma3:12b is Deep/Large only. qwen3:14b / gpt-oss:20b remain approved
+    // for clinics that already standardized on them (stored settings win).
+    defaultModels: ["gemma3:4b", "gemma3:12b", "qwen3:14b", "gpt-oss:20b"],
     placeholder: "http://172.16.1.140:11434",
   },
 };
@@ -281,7 +281,7 @@ class OllamaProvider implements AiProvider {
         content.push({ type: "image_url", image_url: { url: `data:image/jpeg;base64,${img}` } });
       }
       const resp = await client.chat.completions.create({
-        model: opts.model || "qwen3:14b",
+        model: opts.model || "gemma3:4b",
         messages: [{ role: "user", content }],
         max_tokens: opts.maxTokens ?? 4096,
       });
@@ -303,7 +303,7 @@ class OllamaProvider implements AiProvider {
       const models = tagsData.models?.map((m) => m.name) ?? [];
       // Test chat completion with the selected model (fallback only when omitted)
       const chatResult = await this.query({
-        model: model || "qwen3:14b",
+        model: model || "gemma3:4b",
         prompt: "Reply with exactly the word: CONNECTED",
         images: [],
       });
