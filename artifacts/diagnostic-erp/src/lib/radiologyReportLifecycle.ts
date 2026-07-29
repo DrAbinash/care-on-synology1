@@ -61,6 +61,10 @@ export interface FinalizeReportContent {
   /** Optional page-specific audit payload (e.g. the Cockpit's AI-inspector
    *  summary) forwarded on the report-status call. */
   auditDetails?: unknown;
+  /** When 2+ active signatures exist, the workspace finalize dialog
+   *  collects an explicit signer id. When set, auto-sign uses it instead of
+   *  declining as ambiguous. */
+  signatureId?: number | null;
 }
 
 export interface FinalizeResult {
@@ -126,12 +130,24 @@ interface SignatureRow {
  * block the worklist flip; the caller surfaces `signed`/`signError`
  * truthfully instead.
  */
-async function autoSignReport(reportId: number): Promise<{ signed: boolean; signError: string | null }> {
+async function autoSignReport(
+  reportId: number,
+  preferredSignatureId?: number | null,
+): Promise<{ signed: boolean; signError: string | null }> {
   try {
     const signatures = await api.get<SignatureRow[]>("/api/signatures");
     const activeSignatures = signatures.filter((s) => s.isActive);
     if (activeSignatures.length === 0) {
       return { signed: false, signError: "No active signature is configured — sign this report from Report Hub." };
+    }
+    // Explicit picker from workspace finalize dialog (multi-signer clinics).
+    if (preferredSignatureId != null) {
+      const chosen = activeSignatures.find((s) => s.id === preferredSignatureId);
+      if (!chosen) {
+        return { signed: false, signError: "Selected signature is not active — choose another signer." };
+      }
+      await api.post(`/api/patient-reports/${reportId}/sign`, { signatureId: chosen.id });
+      return { signed: true, signError: null };
     }
     // R1.4 review finding: with 2+ active signatures on file (a locum
     // covering the solo radiologist, or a second radiologist joining the
@@ -244,7 +260,7 @@ export async function finalizeRadiologyReport(
     (reportRow.structuredFinal as Record<string, unknown>).signed === true,
   );
   if (reportId && !alreadySignedByD5) {
-    const outcome = await autoSignReport(reportId);
+    const outcome = await autoSignReport(reportId, content.signatureId);
     signed = outcome.signed;
     signError = outcome.signError;
   }

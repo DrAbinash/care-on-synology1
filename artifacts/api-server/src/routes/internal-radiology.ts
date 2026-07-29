@@ -839,6 +839,9 @@ router.post("/radiology/report-status", async (req, res) => {
     // REPORT_FINAL compliance gate below.
     pcpndtOverride?: boolean;
     pcpndtOverrideReason?: string;
+    /** Admin-only: allow REPORT_FINAL without a signed patient report row. */
+    softFinalOverride?: boolean;
+    softFinalReason?: string;
   };
 
   // Find worklist row
@@ -868,6 +871,45 @@ router.post("/radiology/report-status", async (req, res) => {
   if (!existing) {
     res.status(404).json({ error: "Worklist entry not found" });
     return;
+  }
+
+  // Soft Final (status-only REPORT_FINAL without a signed patient report) is
+  // admin/owner override only — radiologists must use workspace Finalize & Sign.
+  // Canonical finalizeRadiologyReport always sets deliveryStatus READY_TO_SEND
+  // (even when the patient-report row is skipped for unbilled studies).
+  // INTERNAL_API_KEY automation (no staffSession) is unchanged.
+  const ADMIN_SOFT_FINAL_ROLES = new Set(["admin", "super_admin", "owner"]);
+  const isCanonicalFinalize = b.deliveryStatus === "READY_TO_SEND";
+  if (
+    b.status === "REPORT_FINAL" &&
+    !b.reportId &&
+    !isCanonicalFinalize &&
+    (req as StaffAuthRequest).staffSession
+  ) {
+    const sessionRole = normalizeRole((req as StaffAuthRequest).staffSession?.role ?? "");
+    const softOverride = b.softFinalOverride === true;
+    if (!softOverride || !ADMIN_SOFT_FINAL_ROLES.has(sessionRole)) {
+      res.status(409).json({
+        error: "SOFT_FINAL_BLOCKED",
+        message:
+          "Marking a study Final without a signed report is blocked. Open the Reporting Workspace and use Finalize & Sign, or use Admin mark final with a reason.",
+      });
+      return;
+    }
+    const session = (req as StaffAuthRequest).staffSession;
+    await auditLog({
+      userId: session?.subjectId ?? null,
+      userName: session?.subjectName ?? "system",
+      role: sessionRole || "system",
+      action: "soft_final_override",
+      module: "radiology",
+      entityType: "radiology_worklist",
+      entityId: String(existing.id),
+      newValue: JSON.stringify({ accessionNumber: existing.accessionNumber }),
+      reason: typeof b.softFinalReason === "string" && b.softFinalReason.trim().length >= 3
+        ? b.softFinalReason.trim()
+        : "admin soft final (no signed reportId)",
+    });
   }
 
   // PCPNDT server-side finalize guard. The canonical Radiology Reporting

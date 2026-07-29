@@ -59,6 +59,13 @@ export const RADIOLOGY_FLAG_REGISTRY: RadiologyFlagEntry[] = [
     ownerSubsystem: "final structured",
   },
   {
+    key: "ff_radiology_quality_advisory",
+    defaultValue: false, dependsOn: ["ff_radiology_structured_d1_draft"], enableOrder: 4, wired: false,
+    purpose: "Show structured validation failures as advisory warnings in the Finalize dialog (Phase advisory before blocking structured_final). Client UI only today.",
+    rollbackEffect: "disable → finalize dialog keeps legacy warning text only; no data change",
+    ownerSubsystem: "report quality",
+  },
+  {
     key: "ff_radiology_structured_read",
     defaultValue: false, dependsOn: ["ff_radiology_structured_final"], enableOrder: 5, wired: true,
     purpose: "Ticket D6 — serve viewer/print/PDF/PACS surfaces from the D4 render of structured_json",

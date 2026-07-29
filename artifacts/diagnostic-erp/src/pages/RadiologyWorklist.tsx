@@ -676,15 +676,17 @@ export default function RadiologyWorklist() {
   });
 
   const markFinalMutation = useMutation({
-    mutationFn: (entry: WorklistEntry) =>
+    mutationFn: ({ entry, reason }: { entry: WorklistEntry; reason: string }) =>
       api.post("/api/internal/radiology/report-status", {
         accessionNumber: entry.accessionNumber,
         studyInstanceUID: entry.studyInstanceUID,
         status: "REPORT_FINAL",
         actor: "staff",
+        softFinalOverride: true,
+        softFinalReason: reason,
       }),
-    onSuccess: (_data, entry) => {
-      toast({ title: "Marked Final", description: `Study ${entry.accessionNumber} marked as final` });
+    onSuccess: (_data, { entry }) => {
+      toast({ title: "Admin mark final", description: `Study ${entry.accessionNumber} marked as final (override)` });
       void qc.invalidateQueries({ queryKey: ["radiology-pacs-worklist"] });
     },
     onError: (err) => {
@@ -1469,21 +1471,26 @@ export default function RadiologyWorklist() {
                               </Button>
                             )}
 
-                            {(entry.status === "REPORT_IN_PROGRESS" || entry.status === "AI_DRAFT_READY") && entry.id !== -1 && isRadView && (
+                            {/* Soft Final removed for radiologists — use Workspace Finalize & Sign.
+                                Owner/admin may override when an external report was produced outside the app. */}
+                            {(entry.status === "REPORT_IN_PROGRESS" || entry.status === "AI_DRAFT_READY") && entry.id !== -1 && isOwnerView && (
                               <Button
                                 size="sm"
                                 variant="outline"
-                                className="h-7 px-2 text-xs border-green-500 text-green-700 hover:bg-green-50"
+                                className="h-7 px-2 text-xs border-amber-500 text-amber-800 hover:bg-amber-50"
                                 onClick={() => {
-                                  if (confirm(`Mark study ${entry.accessionNumber} as FINAL?`)) {
-                                    markFinalMutation.mutate(entry);
+                                  const reason = window.prompt(
+                                    `Admin override: mark ${entry.accessionNumber} FINAL without workspace Finalize & Sign?\n\nEnter reason (external report attached / emergency):`,
+                                  );
+                                  if (reason && reason.trim().length >= 3) {
+                                    markFinalMutation.mutate({ entry, reason: reason.trim() });
                                   }
                                 }}
                                 disabled={markFinalMutation.isPending}
-                                title="Mark Final"
+                                title="Admin only — soft Final without signed report (audited)"
                               >
                                 <CheckCircle2 className="h-3 w-3 mr-1" />
-                                Final
+                                Admin Final
                               </Button>
                             )}
 
@@ -1493,7 +1500,7 @@ export default function RadiologyWorklist() {
                               </span>
                             )}
 
-                            {/* Phase C: Premium Report entry point (preview lives in Report Generator — not expanded here) */}
+                            {/* Print/layout mode lives in Report Generator — not a separate reporting path. */}
                             {entry.id !== -1 && isRadView && may("/radiology/report-generator") &&
                               (entry.reportId != null || entry.status === "REPORT_IN_PROGRESS" || entry.status === "REPORT_FINAL") && (
                               <Button
@@ -1501,10 +1508,10 @@ export default function RadiologyWorklist() {
                                 variant="outline"
                                 className="h-7 px-2 text-xs border-amber-500 text-amber-700 hover:bg-amber-50 dark:hover:bg-amber-950/20"
                                 onClick={() => navigate(`/radiology/report-generator/${entry.id}?premium=1`)}
-                                title="Open Premium Report Preview"
+                                title="Open print / layout preview (Premium)"
                               >
                                 <Gem className="h-3 w-3 mr-1" />
-                                Premium
+                                Print layout
                               </Button>
                             )}
 

@@ -27,6 +27,7 @@ import {
   type TranscriptionSession, type TranscribeCapabilities, type VoiceUserPrefs,
 } from "@/lib/voiceTranscription";
 import { readStaffSession, FULL_ACCESS_ROLES, normalizeRole } from "@/lib/staffSession";
+import PacsViewerSetupWizard from "@/components/radiology/PacsViewerSetupWizard";
 
 // Sub-panels imported or reconstructed for unified look
 import { ModalityPanel } from "@/pages/ModalityManagement";
@@ -483,6 +484,11 @@ export default function RadiologySettingsCenter() {
 
         {/* Tab content 4: Viewers */}
         <TabsContent value="viewers" className="space-y-4">
+          <PacsViewerSetupWizard
+            lanIpHint={settings.find((s) => s.key === "lan_host")?.value ?? ""}
+            setSetting={(key, value) => upsertSetting.mutate({ key, value, category: "viewer" })}
+            onSaved={() => void qc.invalidateQueries({ queryKey: ["pacs-settings"] })}
+          />
           <div className="rounded-xl border bg-card p-5 space-y-4">
             <h3 className="font-semibold text-sm flex items-center gap-2">
               <MonitorPlay size={16} className="text-primary" />

@@ -19,9 +19,8 @@
  *   PATCH /api/radiology-lesions/viewer-measurements/:id                 { status, value?, unit? }
  *   POST  /api/radiology-lesions/viewer-measurements/import-all          { ids }
  *
- * The intentionally non-functional "Locate on viewer" deep-link from the
- * Cockpit is dropped — it never worked (it just re-launched the study-level
- * viewer, never the exact series/SOP), so it is deliberately not ported here.
+ * The "Locate on viewer" action opens the study in OHIF (series UID is copied
+ * when available). Exact SOP-level highlight is still viewer-dependent.
  */
 
 import { getMeasurement } from "@workspace/measurements";
@@ -32,7 +31,8 @@ import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import CollapsibleSection from "@/components/radiology/CollapsibleSection";
 import { dedupeUnit } from "@/components/radiology/UsgMeasurementReviewPanel";
-import { Check, ArrowDownToLine, Ban, RotateCcw } from "lucide-react";
+import { Check, ArrowDownToLine, Ban, RotateCcw, ExternalLink } from "lucide-react";
+import { openOhifViewerPage } from "@/lib/viewerService";
 
 // ── Props ─────────────────────────────────────────────────────────────────────
 
@@ -42,6 +42,8 @@ export interface ViewerMeasurementsPanelProps {
   onInsertToFindings?: (line: string) => void;
   /** Insert a formatted measurement line into the report impression. */
   onInsertToImpression?: (line: string) => void;
+  /** Optional: open viewer focused on this measurement's series (best-effort). */
+  onLocateOnViewer?: (m: ViewerMeasurement) => void;
 }
 
 // ── Backend row type (viewer_measurements table $inferSelect, serialized) ──────
@@ -135,6 +137,7 @@ export default function ViewerMeasurementsPanel({
   studyInstanceUID,
   onInsertToFindings,
   onInsertToImpression,
+  onLocateOnViewer,
 }: ViewerMeasurementsPanelProps) {
   const { toast } = useToast();
   const qc = useQueryClient();
@@ -295,6 +298,28 @@ export default function ViewerMeasurementsPanel({
                     <RotateCcw className="h-2.5 w-2.5 mr-0.5" /> Restore
                   </Button>
                 )}
+
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-5 px-1.5 text-[9px]"
+                  title={m.seriesInstanceUID ? `Open viewer (series ${m.seriesInstanceUID.slice(0, 12)}…)` : "Open study in viewer"}
+                  onClick={() => {
+                    if (onLocateOnViewer) {
+                      onLocateOnViewer(m);
+                      return;
+                    }
+                    if (!studyInstanceUID) return;
+                    if (m.seriesInstanceUID) {
+                      try {
+                        void navigator.clipboard?.writeText(m.seriesInstanceUID);
+                      } catch { /* ignore */ }
+                    }
+                    openOhifViewerPage(studyInstanceUID);
+                  }}
+                >
+                  <ExternalLink className="h-2.5 w-2.5 mr-0.5" /> Locate
+                </Button>
 
                 {onInsertToFindings && (
                   <Button

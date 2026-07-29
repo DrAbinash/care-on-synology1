@@ -176,7 +176,7 @@ const navItems: NavEntry[] = [
       // the group header navigates to the first child (see Layout nav render),
       // which opens the existing Reporting Worklist / Workspace.
       { path: "/radiology/worklist",            icon: ScanSearch,     label: "Worklist Hub" },
-      { path: "/radiology/reporting-workspace", icon: FilePen,        label: "Reporting Workspace" },
+      // Reporting opens from the worklist (empty workspace redirects there).
       { path: "/radiology/report-builder",      icon: Combine,        label: "Report Builder" },
       { path: "/radiology/findings-manager",    icon: Library,        label: "Findings Library", ownerOnly: true },
       { path: "/radiology/operations-dashboard", icon: Gauge,          label: "Operations Dashboard" },
@@ -205,7 +205,7 @@ const navItems: NavEntry[] = [
         label: "USG Reporting",
         children: [
           { path: "/radiology/worklist?modality=USG",            icon: ScanSearch, label: "USG Worklist" },
-          { path: "/radiology/reporting-workspace?modality=USG", icon: FilePen,    label: "General USG Reporting" },
+          { path: "/radiology/worklist?modality=USG", icon: FilePen,    label: "General USG Reporting" },
           { path: "/fetal-usg",                                  icon: Baby,       label: "Fetal USG" },
           { path: "/fetal-echo",                                 icon: Baby,       label: "Fetal Echo" },
           { path: "/usg/doppler",                                icon: Activity,   label: "Doppler Reporting" },
