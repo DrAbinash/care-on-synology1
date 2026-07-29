@@ -55,11 +55,11 @@ export default function ScannerSettings() {
     queryKey: ["clinic-settings"],
     queryFn: () => api.get("/api/clinic-settings"),
   });
-  const [preferredScanner, setPreferredScanner] = useState<PreferredScanner>("camera");
+  const [preferredScanner, setPreferredScanner] = useState<PreferredScanner>("bridge");
   useEffect(() => {
     const v = clinicSettings?.preferredScanner;
     if (v === "camera" || v === "bridge" || v === "mobile") setPreferredScanner(v);
-    else if (clinicSettings) setPreferredScanner("camera");
+    else if (clinicSettings) setPreferredScanner("bridge");
   }, [clinicSettings]);
   const savePreferred = useMutation({
     mutationFn: (value: PreferredScanner) =>
@@ -187,8 +187,8 @@ export default function ScannerSettings() {
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="camera">Webcam / TVS PDS 8M (default)</SelectItem>
-              <SelectItem value="bridge">Flatbed Scanner / Scan Bridge</SelectItem>
+              <SelectItem value="bridge">Flatbed Scanner / ScanBridge (default)</SelectItem>
+              <SelectItem value="camera">Webcam / TVS PDS 8M</SelectItem>
               <SelectItem value="mobile">Wireless Mobile Scan</SelectItem>
             </SelectContent>
           </Select>
@@ -309,7 +309,7 @@ export default function ScannerSettings() {
       <div className="border rounded-xl p-5 space-y-2 bg-card">
         <h3 className="text-sm font-semibold">Reception scan options</h3>
         <p className="text-xs text-muted-foreground">
-          Form F opens the Preferred Scanning Source above (Webcam by default). Staff can still switch tabs to
+          Form F opens the Preferred Scanning Source above (Scanner / ScanBridge by default). Staff can still switch tabs to
           Existing Scanner, Mobile, or Upload. Advanced bridge/device diagnostics live only on this page —
           reception never sees bridge URLs, ports, or vendor adapter names.
         </p>

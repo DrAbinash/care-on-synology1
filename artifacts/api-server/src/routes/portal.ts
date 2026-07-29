@@ -1,6 +1,7 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import crypto from "node:crypto";
 import rateLimit from "express-rate-limit";
+import { staffLoginRateLimitKey, staffLoginResponseCountsTowardLimit } from "../lib/portalLoginLimiter";
 import bcrypt from "bcryptjs";
 import { db } from "@workspace/db";
 import {
@@ -112,17 +113,18 @@ const patientLoginLimiter = rateLimit({
 
 const staffLoginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 8,
+  max: 15,
   standardHeaders: true,
   legacyHeaders: false,
-  // Same reasoning as patientLoginLimiter above: this IP-based limiter is a
-  // second, coarser layer on top of the per-account lockout (which already
-  // tracks only genuine PIN failures via failedLoginAttempts/lockedUntil and
-  // exempts super_admin). Without skipSuccessfulRequests, a staff member
-  // simply logging in a few times in a row (new tab, session expired,
-  // switching devices on the same clinic network) could trip this limiter
-  // even with a correct PIN every time.
+  keyGenerator: staffLoginRateLimitKey,
+  // Same reasoning as patientLoginLimiter above: this limiter is a second,
+  // coarser layer on top of the per-account lockout (failedLoginAttempts/
+  // lockedUntil, super_admin exempt). skipSuccessfulRequests alone is not
+  // enough — 403 account-locked and LAN-only responses also have status >= 400
+  // and were consuming the shared IP quota, blocking unrelated staff on clinic
+  // WiFi with "Too many login attempts" on their first try.
   skipSuccessfulRequests: true,
+  requestWasSuccessful: (req, res) => !staffLoginResponseCountsTowardLimit(req, res),
   message: { error: "Too many login attempts. Please try again in 15 minutes." },
 });
 

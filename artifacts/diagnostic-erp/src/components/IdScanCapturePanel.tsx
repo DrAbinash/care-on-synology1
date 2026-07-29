@@ -30,11 +30,11 @@ type CaptureMethod = "camera" | "bridge" | "mobile" | "upload";
 
 /** Coerce the clinic's "preferred scanning source" setting (a free-form
  *  string from clinic_settings — "bridge" | "camera" | "mobile", or unset) into
- *  a valid initial tab. Anything unrecognized falls back to "camera"
- *  (webcam / TVS) — the default for clinics without a flatbed always online. */
+ *  a valid initial tab. Anything unrecognized falls back to "bridge"
+ *  (flatbed / ScanBridge — the original on-prem default). */
 function resolveDefaultMethod(pref: string | undefined): CaptureMethod {
   if (pref === "camera" || pref === "bridge" || pref === "mobile") return pref;
-  return "camera";
+  return "bridge";
 }
 
 const ACCEPTED_UPLOAD_TYPES = ["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif", "application/pdf"];
@@ -127,10 +127,10 @@ export default function IdScanCapturePanel({
     onCapture({ file, mimeType: file.type, source: "upload", filename: file.name, side });
   }
 
-  // Webcam first (default); flatbed / mobile / upload remain one tap away.
+  // Scanner (bridge) first — original on-prem default; webcam / mobile / upload one tap away.
   const tabs: { key: CaptureMethod; label: string; icon: typeof Camera; dot?: boolean }[] = [
-    { key: "camera", label: "Webcam", icon: Camera, dot: cameraReady },
     { key: "bridge", label: "Scanner", icon: ScanLine, dot: bridgeOk },
+    { key: "camera", label: "Webcam", icon: Camera, dot: cameraReady },
     { key: "mobile", label: "Mobile", icon: Smartphone },
     { key: "upload", label: "Upload", icon: Upload },
   ];
@@ -138,7 +138,7 @@ export default function IdScanCapturePanel({
   const showCapture = method !== "upload";
   const captureSource: ScanSource = method === "bridge" ? "bridge" : method === "mobile" ? "mobile" : cameraSource;
   const tileIcon = method === "mobile" ? Smartphone : Camera;
-  const tileDisabled = (method === "bridge" && !bridgeOk) || (method === "camera" && !cameraReady);
+  const tileDisabled = method === "camera" && !cameraReady;
   const captureLabel = method === "bridge" ? "Existing Scanner" : method === "mobile" ? "Mobile Phone" : cameraLabel;
 
   return (
@@ -209,14 +209,17 @@ export default function IdScanCapturePanel({
             <SectLabel>Capture with {captureLabel}</SectLabel>
             {tileDisabled ? (
               <p className="flex-1 text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2 py-1.5">
-                {method === "bridge"
-                  ? "Scanner Bridge not detected — start it, or use Mobile / Upload."
-                  : "Webcam needs HTTPS (or localhost) — use Scanner / Mobile / Upload."}
+                Webcam needs HTTPS (or localhost) — use Scanner / Mobile / Upload.
               </p>
             ) : (
               <div className="flex flex-col flex-1">
                 {method === "mobile" && (
                   <p className="text-[10px] text-gray-500 mb-1.5">Opens a QR / pings a paired phone — the capture lands here automatically.</p>
+                )}
+                {method === "bridge" && bridgeState !== "ok" && (
+                  <p className="text-[10px] text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2 py-1 mb-1.5">
+                    Scanner Bridge not detected — start it via Scanner Setup, or scan in Canon/your app and click Front/Back to import from the watch folder.
+                  </p>
                 )}
                 <div className="grid grid-cols-2 gap-2 flex-1">
                   <SideCaptureTile side="front" title="Front" subtitle="Front side" done={frontDone} busy={busy} disabled={tileDisabled} icon={tileIcon} autoStart={captureSource} onCapture={onCapture} onError={onError} />

@@ -34,7 +34,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { Camera, Scan, Smartphone, Upload, X, RefreshCcw, Loader2, ScanLine } from "lucide-react";
-import { checkScanBridgeHealth, scanBridgeCapture, type ScanBridgeState } from "@/lib/scanBridgeClient";
+import { checkScanBridgeHealth, scanBridgeCaptureWithFallback, scanBridgeOpenApp, type ScanBridgeState } from "@/lib/scanBridgeClient";
 import PlacementGuideOverlay from "@/components/PlacementGuideOverlay";
 import { computeBlurScore, getPreferredTvsDeviceId, getPreferredTvsDeviceLabel, BLUR_WARNING_THRESHOLD } from "@/lib/tvsDeviceProfile";
 import { classifyCameraError, isSecureCameraContext as checkSecureCameraContext, watchForDeviceDisconnect, type CameraDiagnostic } from "@/lib/cameraDiagnostics";
@@ -103,8 +103,8 @@ export default function UnifiedScanCapture({
   // ── Scanner Bridge health ──
   const [bridgeState, setBridgeState] = useState<ScanBridgeState>("not-running");
   const [bridgeBusy, setBridgeBusy] = useState(false);
+  // Poll bridge health while mounted (Form F bridge tiles + in-dialog status).
   useEffect(() => {
-    if (!open) return;
     let active = true;
     async function poll() {
       const health = await checkScanBridgeHealth();
@@ -118,8 +118,16 @@ export default function UnifiedScanCapture({
   async function handleBridgeCapture() {
     setBridgeBusy(true);
     try {
-      const raw = await scanBridgeCapture();
-      if (!raw.ok || !raw.imageBase64) throw new Error(raw.error || "Scan failed");
+      let raw = await scanBridgeCaptureWithFallback();
+      if (!raw.ok || !raw.imageBase64) {
+        if (raw.fallback === "folder-watch") {
+          const opened = await scanBridgeOpenApp();
+          if (opened.ok) {
+            throw new Error(`${raw.error || "Scan failed"}. Scanner software opened — scan the document, then click again to import.`);
+          }
+        }
+        throw new Error(raw.error || "Scan failed");
+      }
       const blob = base64ToBlob(raw.imageBase64, raw.mimeType || "image/jpeg");
       onCapture({ file: blob, mimeType: raw.mimeType || "image/jpeg", source: "bridge", filename: raw.filename, deviceLabel: "Workstation Scanner", side });
       setOpen(false);
@@ -440,7 +448,7 @@ export default function UnifiedScanCapture({
               <Button
                 variant="outline"
                 onClick={handleBridgeCapture}
-                disabled={bridgeBusy || bridgeState !== "ok"}
+                disabled={bridgeBusy}
                 className={`h-14 justify-start gap-3 hover:bg-muted/40 ${bridgeState === "ok" ? "border-green-200 bg-green-50/10" : ""}`}
               >
                 {bridgeBusy ? <Loader2 size={20} className="animate-spin" /> : <Scan size={20} className={bridgeState === "ok" ? "text-green-600" : "text-muted-foreground"} />}

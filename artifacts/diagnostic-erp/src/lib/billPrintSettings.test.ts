@@ -1,8 +1,10 @@
 import { describe, expect, test, afterEach, vi } from "vitest";
 import {
   GLOBAL_BILL_PRINT_DEFAULTS,
+  clearBillPrintSettingsOverride,
   loadBillPrintSettings,
   parseGlobalBillPrintSettings,
+  saveBillPrintSettings,
 } from "./billPrintSettings";
 
 // Regression coverage for the rotated-bill-print incident: bill print
@@ -96,6 +98,48 @@ describe("loadBillPrintSettings — clinic-wide global reaches the print sites",
     const merged = loadBillPrintSettings({ defaultPaperSize: "A4", adminLock: true });
     expect(merged.defaultPaperSize).toBe("A4");
     expect(merged.printMarginMm).toBeNull();
+  });
+
+  test("adminLock ON clears stale localStorage overrides on load", () => {
+    const userId = "7";
+    const store = stubWindow({
+      userId,
+      localData: {
+        [`diagnosticErp:billPrintSettings:${userId}`]: JSON.stringify({ defaultPaperSize: "A5-landscape" }),
+      },
+    });
+    loadBillPrintSettings({ defaultPaperSize: "A4", adminLock: true });
+    expect(store.has(`diagnosticErp:billPrintSettings:${userId}`)).toBe(false);
+  });
+
+  test("adminLock ON ignores role defaults so every counter matches", () => {
+    stubWindow({ userId: "9", role: "accounts" });
+    const merged = loadBillPrintSettings({
+      defaultPaperSize: "A4",
+      defaultPrintAction: "save-print",
+      adminLock: true,
+    });
+    expect(merged.defaultPrintAction).toBe("save-print");
+    expect(merged.defaultPaperSize).toBe("A4");
+  });
+
+  test("saveBillPrintSettings is a no-op when admin lock is on", () => {
+    const userId = "7";
+    const store = stubWindow({ userId });
+    saveBillPrintSettings({ defaultPaperSize: "A5-landscape" }, { adminLock: true });
+    expect(store.has(`diagnosticErp:billPrintSettings:${userId}`)).toBe(false);
+  });
+
+  test("clearBillPrintSettingsOverride removes only this user's key", () => {
+    const userId = "7";
+    const store = stubWindow({
+      userId,
+      localData: {
+        [`diagnosticErp:billPrintSettings:${userId}`]: JSON.stringify({ defaultPaperSize: "half-a4" }),
+      },
+    });
+    clearBillPrintSettingsOverride(userId);
+    expect(store.has(`diagnosticErp:billPrintSettings:${userId}`)).toBe(false);
   });
 
   test("layout & typography overrides flow through from the server global", () => {

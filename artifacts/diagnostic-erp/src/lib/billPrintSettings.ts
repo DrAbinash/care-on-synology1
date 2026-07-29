@@ -255,29 +255,60 @@ export function parseGlobalBillPrintSettings(json: string | null | undefined): P
   }
 }
 
+export function billPrintSettingsStorageKey(userId = getUserId()): string {
+  return userId ? LS_KEY(userId) : "diagnosticErp:billPrintSettings";
+}
+
+/** Drop this browser's per-user bill-print override (used when admin lock is on). */
+export function clearBillPrintSettingsOverride(userId = getUserId()): void {
+  try {
+    window.localStorage.removeItem(billPrintSettingsStorageKey(userId));
+  } catch {
+    // ignore
+  }
+}
+
 export function loadBillPrintSettings(global: Partial<BillPrintSettings> = {}): BillPrintSettings {
   const userId = getUserId();
   const role = getUserRole();
   const defaults = mergeDefaults(GLOBAL_BILL_PRINT_DEFAULTS, role);
   const merged = { ...defaults, ...global };
-  const key = userId ? LS_KEY(userId) : "diagnosticErp:billPrintSettings";
+  const key = billPrintSettingsStorageKey(userId);
+
+  // Admin lock = clinic-wide forced settings. Skip role defaults so every
+  // counter gets the exact blob the admin saved, not role-specific tweaks.
+  if (merged.adminLock) {
+    const locked = { ...GLOBAL_BILL_PRINT_DEFAULTS, ...global } as BillPrintSettings;
+    try {
+      if (window.localStorage.getItem(key)) {
+        window.localStorage.removeItem(key);
+      }
+    } catch {
+      // ignore
+    }
+    return locked;
+  }
+
   try {
     const raw = window.localStorage.getItem(key);
     if (!raw) return merged;
     const parsed = JSON.parse(raw);
-    // If adminLock is on globally, ignore local overrides
-    if (global.adminLock) return merged;
     return { ...merged, ...parsed };
   } catch {
     return merged;
   }
 }
 
-export function saveBillPrintSettings(settings: Partial<BillPrintSettings>): void {
-  const userId = getUserId();
-  const key = userId ? LS_KEY(userId) : "diagnosticErp:billPrintSettings";
+/** Persist a per-user override. Clinic-wide saves from Settings should NOT call this. */
+export function saveBillPrintSettings(
+  settings: Partial<BillPrintSettings>,
+  global: Partial<BillPrintSettings> = {},
+): void {
+  if (global.adminLock || settings.adminLock) return;
+
+  const key = billPrintSettingsStorageKey();
   try {
-    const existing = loadBillPrintSettings();
+    const existing = loadBillPrintSettings(global);
     const merged = { ...existing, ...settings };
     window.localStorage.setItem(key, JSON.stringify(merged));
   } catch {

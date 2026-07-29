@@ -725,6 +725,7 @@ export default function BillingDesk() {
     qrOnBillEnabled?: boolean;
     billShowCode?: boolean;
     billShowCategory?: boolean;
+    billPrintSettingsJson?: string | null;
   }>({
     queryKey: ["clinic-settings"],
     queryFn: () => api.get("/api/clinic-settings/branding"),
@@ -1408,7 +1409,7 @@ export default function BillingDesk() {
         printAfterSaveRef.current = false;
         const cachedClinic = queryClient.getQueryData<PrintClinic>([
           "clinic-settings",
-        ]);
+        ]) || (clinic as PrintClinic);
         const cachedPrinter =
           printerCfgCached ??
           queryClient.getQueryData<PrinterCfg>(["printer-settings"]);
