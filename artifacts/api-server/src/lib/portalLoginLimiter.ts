@@ -15,3 +15,4 @@ export function staffLoginRateLimitKey(req: Request): string {
 export function staffLoginResponseCountsTowardLimit(_req: Request, res: Response): boolean {
   return res.statusCode === 401;
 }
+
