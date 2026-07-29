@@ -363,7 +363,7 @@ export async function launchViewer(
   
   // Safety rule: One failed service must NOT switch the profile, but we check if the critical viewer base works
   const orthancOk = services.orthancHttp.status === "green";
-  const viewerOk = services.ohif.status === "green" || viewerType === "WEASIS"; // Weasis uses desktop local app
+  const viewerOk = services.ohif.status === "green";
 
   const isReachable = orthancOk && viewerOk;
   const launchUrl = viewerType === "OHIF" 

@@ -5,7 +5,7 @@ vi.mock("express-rate-limit", async (importOriginal) => {
   const actual = await importOriginal<typeof import("express-rate-limit")>();
   return {
     ...actual,
-    ipKeyGenerator: (req: { ip?: string }) => req.ip ?? "127.0.0.1",
+    ipKeyGenerator: (ip: string) => ip || "127.0.0.1",
     default: actual.default,
   };
 });

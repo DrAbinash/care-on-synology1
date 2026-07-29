@@ -6,7 +6,7 @@ import { ipKeyGenerator } from "express-rate-limit";
 export function staffLoginRateLimitKey(req: Request): string {
   const handle = String(req.body?.username ?? req.body?.email ?? "").trim().toLowerCase();
   if (handle) return `staff-login:${handle}`;
-  return ipKeyGenerator(req);
+  return ipKeyGenerator(req.ip ?? "");
 }
 
 /** Only genuine wrong-credential 401s consume the staff login quota.
