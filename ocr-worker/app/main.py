@@ -20,6 +20,12 @@ log = logging.getLogger("care.ocr_worker.api")
 
 
 def require_token(authorization: Annotated[str | None, Header()] = None, x_ocr_token: Annotated[str | None, Header()] = None) -> None:
+    """API-key gate for Synology → Windows worker. Never expose this port publicly."""
+    if CONFIG.require_auth and not CONFIG.auth_token:
+        raise HTTPException(
+            status_code=503,
+            detail="OCR_WORKER_TOKEN not configured — refuse unauthenticated OCR in production",
+        )
     if not CONFIG.auth_token:
         return
     provided = None
@@ -33,7 +39,18 @@ def require_token(authorization: Annotated[str | None, Header()] = None, x_ocr_t
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    log.info("Starting CARE OCR worker v%s (profile=%s device=%s)", __version__, CONFIG.ocr_profile, CONFIG.ocr_device)
+    log.info(
+        "Starting CARE OCR worker v%s (profile=%s device=%s require_auth=%s token_set=%s)",
+        __version__,
+        CONFIG.ocr_profile,
+        CONFIG.ocr_device,
+        CONFIG.require_auth,
+        bool(CONFIG.auth_token),
+    )
+    if CONFIG.require_auth and not CONFIG.auth_token:
+        log.error(
+            "OCR_WORKER_REQUIRE_AUTH=true but OCR_WORKER_TOKEN is empty — /ocr and /warmup will return 503"
+        )
     try:
         ENGINE.initialize(["fast", "accurate"])
         if CONFIG.warmup_on_start and ENGINE.ready:

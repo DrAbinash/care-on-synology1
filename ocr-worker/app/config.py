@@ -44,15 +44,19 @@ class WorkerConfig:
     worker_concurrency: int
     warmup_on_start: bool
     auth_token: str | None
+    # Production default: require API key on /ocr and /warmup (health stays open).
+    require_auth: bool
 
     @classmethod
     def from_env(cls) -> "WorkerConfig":
         profile = (os.environ.get("OCR_PROFILE") or "fast").strip().lower()
         if profile not in {"fast", "accurate"}:
             profile = "fast"
-        device = (os.environ.get("OCR_DEVICE") or "auto").strip().lower()
+        # Production default: CPU so Ollama owns the GPU on RTX 3050.
+        device = (os.environ.get("OCR_DEVICE") or "cpu").strip().lower()
         if device not in {"auto", "cpu", "gpu"}:
-            device = "auto"
+            device = "cpu"
+        token = (os.environ.get("OCR_WORKER_TOKEN") or "").strip() or None
         return cls(
             host=os.environ.get("OCR_WORKER_HOST", "0.0.0.0"),
             port=_int("OCR_WORKER_PORT", 8090),
@@ -62,7 +66,8 @@ class WorkerConfig:
             retry_accurate=_bool("OCR_RETRY_ACCURATE", True),
             worker_concurrency=max(1, _int("OCR_WORKER_CONCURRENCY", 1)),
             warmup_on_start=_bool("OCR_WARMUP_ON_START", True),
-            auth_token=(os.environ.get("OCR_WORKER_TOKEN") or "").strip() or None,
+            auth_token=token,
+            require_auth=_bool("OCR_WORKER_REQUIRE_AUTH", True),
         )
 
 

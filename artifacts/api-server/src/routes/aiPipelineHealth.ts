@@ -1,9 +1,10 @@
 /**
  * Unified AI/OCR pipeline health + diagnostics + non-PHI smoke test.
+ * Uses resolveLocalAiRuntime() — the same canonical config as Form F / Local AI.
  */
 
 import { Router } from "express";
-import { loadAiPipelineConfig } from "../lib/aiPipeline/config";
+import { resolveLocalAiRuntime } from "../lib/aiPipeline/runtimeConfig";
 import { buildModelRegistry, isLikelyTooLargeForRtx3050 } from "../lib/aiPipeline/modelRegistry";
 import { routeAiModel } from "../lib/aiPipeline/modelRouter";
 import { PROMPTS, PROMPT_VERSION } from "../lib/aiPipeline/prompts";
@@ -28,7 +29,7 @@ async function listOllamaModels(baseUrl: string): Promise<string[]> {
 }
 
 aiPipelineHealthRouter.get("/health", async (_req, res) => {
-  const cfg = loadAiPipelineConfig();
+  const cfg = await resolveLocalAiRuntime();
   const paddle = await fetchPaddleHealth();
   const ollamaProbe = await probeOllamaReachable(cfg.ollamaBaseUrl);
   const installed = ollamaProbe.reachable ? await listOllamaModels(cfg.ollamaBaseUrl) : [];
@@ -45,7 +46,7 @@ aiPipelineHealthRouter.get("/health", async (_req, res) => {
       k,
       {
         model,
-        installed: installed.length === 0 ? null : installed.some((m) => m === model || m.startsWith(model.split(":")[0]!)),
+        installed: installed.length === 0 ? null : installed.some((m) => m === model || m.startsWith(model + "-")),
         likelyTooLargeForRtx3050: isLikelyTooLargeForRtx3050(model),
       },
     ]),
@@ -55,6 +56,17 @@ aiPipelineHealthRouter.get("/health", async (_req, res) => {
     ok: true,
     pipelineVersion: cfg.pipelineVersion,
     promptVersion: PROMPT_VERSION,
+    canonicalRuntime: {
+      ollamaUrl: cfg.ollamaBaseUrl,
+      ollamaUrlSource: cfg.ollamaUrlSource,
+      aiMode: cfg.aiMode,
+      modelFast: cfg.modelFast,
+      modelStandard: cfg.modelStandard,
+      modelStandardSource: cfg.modelStandardSource,
+      modelLarge: cfg.modelLarge,
+      modelVision: cfg.modelVision,
+      ollamaEnabled: cfg.ollamaEnabled,
+    },
     ollama: {
       reachable: ollamaProbe.reachable,
       baseUrl: cfg.ollamaBaseUrl,
@@ -81,7 +93,9 @@ aiPipelineHealthRouter.get("/health", async (_req, res) => {
       ocrLowConfidenceThreshold: cfg.ocrLowConfidenceThreshold,
       ocrRetryAccurate: cfg.ocrRetryAccurate,
       ocrTesseractFallback: cfg.ocrTesseractFallback,
+      ocrVisionFallback: cfg.ocrVisionFallback,
       ocrWorkerUrl: cfg.ocrWorkerUrl,
+      ocrWorkerTokenConfigured: !!cfg.ocrWorkerToken,
       aiMode: cfg.aiMode,
       aiConcurrency: cfg.aiConcurrency,
       ocrWorkerConcurrency: cfg.ocrWorkerConcurrency,
@@ -90,15 +104,11 @@ aiPipelineHealthRouter.get("/health", async (_req, res) => {
   });
 });
 
-/** Non-PHI synthetic sample — OCR-only and optional draft routing metadata */
 aiPipelineHealthRouter.post("/test", async (req, res) => {
-  const cfg = loadAiPipelineConfig();
+  const cfg = await resolveLocalAiRuntime();
   const mode = String(req.body?.mode || cfg.aiMode).toUpperCase();
   const timings: Record<string, number> = {};
   const t0 = Date.now();
-
-  // Minimal non-PHI PNG (1x1 white) — worker preprocess may yield empty; we
-  // also accept a text-only dry-run when ?dryRun=1 or body.dryRun
   const dryRun = Boolean(req.body?.dryRun) || req.query.dryRun === "1";
 
   let ocrResult: Awaited<ReturnType<typeof runPaddleOcr>> | null = null;
@@ -107,7 +117,6 @@ aiPipelineHealthRouter.post("/test", async (req, res) => {
   if (!dryRun && cfg.ocrEngine === "paddle") {
     const tOcr = Date.now();
     try {
-      // Tiny valid PNG
       const png = Buffer.from(
         "iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAYAAACNMs+9AAAAFUlEQVR42mP8z8BQz0AEYBxVSF+FABJADveWkH6aAAAAAElFTkSuQmCC",
         "base64",
@@ -154,23 +163,15 @@ aiPipelineHealthRouter.post("/test", async (req, res) => {
     ollamaReachable: ollamaProbe.reachable,
   });
 
-  let draftValidation: { ok: boolean; error?: string } | null = null;
-  if (routing.useLlm && req.body?.runLlm === true) {
-    // Intentionally not auto-calling Ollama with PHI — only when explicitly requested
-    draftValidation = { ok: false, error: "set dry sample + admin confirm; use radiology Local AI test for live LLM" };
-  } else {
-    // Validate schema helper with a synthetic DRAFT
-    const v = validateDraftReport({
-      status: "DRAFT",
-      findings: parsed.sections.findings || "Liver appears normal.",
-      impression: parsed.sections.impression || "Normal study.",
-      advice: "",
-      warnings: ["AI output is DRAFT — radiologist approval required"],
-      uncertainty: [],
-      evidenceNotes: ["from OCR evidence only"],
-    });
-    draftValidation = v.ok ? { ok: true } : { ok: false, error: v.error };
-  }
+  const v = validateDraftReport({
+    status: "DRAFT",
+    findings: parsed.sections.findings || "Liver appears normal.",
+    impression: parsed.sections.impression || "Normal study.",
+    advice: "",
+    warnings: ["AI output is DRAFT — radiologist approval required"],
+    uncertainty: [],
+    evidenceNotes: ["from OCR evidence only"],
+  });
 
   timings.totalMs = Date.now() - t0;
   res.json({
@@ -195,8 +196,22 @@ aiPipelineHealthRouter.post("/test", async (req, res) => {
       warnings: routing.warnings,
       mode: routing.mode,
     },
+    draft: {
+      status: "DRAFT",
+      labeledDraft: true,
+      validation: v.ok ? { ok: true, status: "DRAFT" } : { ok: false, error: !v.ok ? v.error : undefined },
+    },
+    expectedModel: cfg.modelStandard,
+    selectedModel: routing.model,
+    canonicalRuntime: {
+      ollamaUrl: cfg.ollamaBaseUrl,
+      aiMode: cfg.aiMode,
+      modelFast: cfg.modelFast,
+      modelStandard: cfg.modelStandard,
+      modelLarge: cfg.modelLarge,
+      modelVision: cfg.modelVision,
+    },
     parsedSections: Object.keys(parsed.sections),
-    draftValidation,
     promptCatalog: Object.keys(PROMPTS),
     timings,
     note: "AI output is always DRAFT and requires radiologist approval. This endpoint uses non-PHI samples only.",
@@ -204,14 +219,22 @@ aiPipelineHealthRouter.post("/test", async (req, res) => {
 });
 
 aiPipelineHealthRouter.get("/models", async (_req, res) => {
-  const cfg = loadAiPipelineConfig();
+  const cfg = await resolveLocalAiRuntime();
   const installed = await listOllamaModels(cfg.ollamaBaseUrl);
   res.json({
-    registry: buildModelRegistry().map((e) => ({
-      ...e,
-      installed: installed.length === 0 ? null : installed.includes(e.ollamaName),
-      likelyTooLargeForRtx3050: isLikelyTooLargeForRtx3050(e.ollamaName),
-    })),
+    registry: buildModelRegistry().map((e) => {
+      const name =
+        e.id === "fast" ? cfg.modelFast
+          : e.id === "standard" ? cfg.modelStandard
+            : e.id === "large" ? cfg.modelLarge
+              : cfg.modelVision;
+      return {
+        ...e,
+        ollamaName: name,
+        installed: installed.length === 0 ? null : installed.includes(name),
+        likelyTooLargeForRtx3050: isLikelyTooLargeForRtx3050(name),
+      };
+    }),
     installed,
     defaults: {
       AI_MODEL_FAST: cfg.modelFast,
@@ -219,9 +242,10 @@ aiPipelineHealthRouter.get("/models", async (_req, res) => {
       AI_MODEL_LARGE: cfg.modelLarge,
       AI_MODEL_VISION: cfg.modelVision,
       AI_MODE: cfg.aiMode,
+      ollamaUrlSource: cfg.ollamaUrlSource,
+      modelStandardSource: cfg.modelStandardSource,
     },
   });
 });
 
-// silence unused import in case tree-shaken differently
 void parseJsonFromModel;

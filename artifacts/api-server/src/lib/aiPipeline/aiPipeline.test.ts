@@ -22,14 +22,24 @@ describe("aiPipeline config", () => {
     delete process.env.AI_MODE;
   });
 
-  it("defaults to paddle + gemma3:4b + AUTO", () => {
+  it("defaults to paddle + gemma3:4b + AUTO + production OCR flags", () => {
+    delete process.env.OCR_DEVICE;
+    delete process.env.OCR_VISION_FALLBACK;
+    delete process.env.OCR_PROFILE;
+    delete process.env.AI_CONCURRENCY;
+    delete process.env.AI_MODEL_STANDARD;
     const c = loadAiPipelineConfig(true);
     expect(c.ocrEngine).toBe("paddle");
+    expect(c.ocrDevice).toBe("cpu");
+    expect(c.ocrProfile).toBe("fast");
+    expect(c.ocrRetryAccurate).toBe(true);
+    expect(c.ocrTesseractFallback).toBe(true);
+    expect(c.ocrVisionFallback).toBe(false);
     expect(c.modelFast).toBe("gemma3:4b");
     expect(c.modelStandard).toBe("gemma3:4b");
     expect(c.modelLarge).toBe("gemma3:12b");
     expect(c.aiMode).toBe("AUTO");
-    expect(c.ocrTesseractFallback).toBe(true);
+    expect(c.aiConcurrency).toBe(1);
   });
 
   it("honors OCR_ENGINE=tesseract rollback", () => {

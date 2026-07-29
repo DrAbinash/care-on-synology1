@@ -1,7 +1,8 @@
 /**
  * Single backend source of truth for OCR + local-AI pipeline configuration.
- * Env vars win; clinic_settings / admin UI may override selected models at runtime
- * via getAiPipelineRuntimeConfig() callers — do not scatter process.env reads elsewhere.
+ * Environment variables are DEFAULTS only.
+ * Runtime resolution (clinic_settings overlay) lives in runtimeConfig.ts —
+ * call resolveLocalAiRuntime() from request paths. Do not scatter process.env.
  */
 
 export type OcrEngine = "paddle" | "tesseract" | "vision";
@@ -34,6 +35,8 @@ export interface AiPipelineConfig {
   ocrLowConfidenceThreshold: number;
   ocrRetryAccurate: boolean;
   ocrTesseractFallback: boolean;
+  /** When false (production default), Paddle failure does not call vision LLMs. */
+  ocrVisionFallback: boolean;
   ocrWorkerUrl: string;
   ocrWorkerToken: string | null;
   ocrWorkerConcurrency: number;
@@ -53,6 +56,7 @@ export interface AiPipelineConfig {
 
 let cached: AiPipelineConfig | null = null;
 
+/** Env-only defaults. Prefer resolveLocalAiRuntime() for live requests. */
 export function loadAiPipelineConfig(forceReload = false): AiPipelineConfig {
   if (cached && !forceReload) return cached;
 
@@ -63,9 +67,10 @@ export function loadAiPipelineConfig(forceReload = false): AiPipelineConfig {
   const profileRaw = strEnv("OCR_PROFILE", "fast").toLowerCase();
   const ocrProfile: OcrProfile = profileRaw === "accurate" ? "accurate" : "fast";
 
-  const deviceRaw = strEnv("OCR_DEVICE", "auto").toLowerCase();
+  // Production default: CPU for Paddle so Ollama can own the GPU (RTX 3050 8GB).
+  const deviceRaw = strEnv("OCR_DEVICE", "cpu").toLowerCase();
   const ocrDevice: OcrDevice =
-    deviceRaw === "cpu" || deviceRaw === "gpu" ? deviceRaw : "auto";
+    deviceRaw === "auto" || deviceRaw === "gpu" ? deviceRaw : "cpu";
 
   const modeRaw = strEnv("AI_MODE", "AUTO").toUpperCase();
   const aiMode: AiMode =
@@ -80,6 +85,7 @@ export function loadAiPipelineConfig(forceReload = false): AiPipelineConfig {
     ocrLowConfidenceThreshold: numEnv("OCR_LOW_CONFIDENCE_THRESHOLD", 0.8),
     ocrRetryAccurate: boolEnv("OCR_RETRY_ACCURATE", true),
     ocrTesseractFallback: boolEnv("OCR_TESSERACT_FALLBACK", true),
+    ocrVisionFallback: boolEnv("OCR_VISION_FALLBACK", false),
     ocrWorkerUrl: strEnv("OCR_WORKER_URL", "http://127.0.0.1:8090").replace(/\/$/, ""),
     ocrWorkerToken: strEnv("OCR_WORKER_TOKEN", "") || null,
     ocrWorkerConcurrency: Math.max(1, numEnv("OCR_WORKER_CONCURRENCY", 1)),

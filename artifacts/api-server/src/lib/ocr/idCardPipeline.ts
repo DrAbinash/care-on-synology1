@@ -1,5 +1,5 @@
 import { geminiOcrIdCard, type IdCardOcrResult } from "@workspace/integrations-gemini-ai";
-import { loadAiPipelineConfig } from "../aiPipeline/config";
+import { resolveLocalAiRuntime } from "../aiPipeline/runtimeConfig";
 import { ollamaOcrIdCard } from "./idCardOcrOllama";
 import { type OcrProviderChoice } from "./ocrProviderResolver";
 import { orchestrateDocumentOcr } from "./ocrOrchestrator";
@@ -170,7 +170,7 @@ export async function runIdCardOcrPipeline(
 ): Promise<IdCardPipelineResult> {
   const pre = await preprocessScanImage(imageBase64, mimeType);
   const processedBase64 = pre.buffer.toString("base64");
-  const cfg = loadAiPipelineConfig();
+  const cfg = await resolveLocalAiRuntime();
 
   // ── Paddle-first path (production default) ──────────────────────────────
   if (cfg.ocrEngine === "paddle") {
@@ -200,11 +200,24 @@ export async function runIdCardOcrPipeline(
         },
       };
     }
-    // Paddle failed — fall through to vision if available
+    // Paddle failed — vision LLM only when OCR_VISION_FALLBACK=true
+    if (!cfg.ocrVisionFallback) {
+      return {
+        ocrResult: null,
+        blurScore: pre.blurScore,
+        isBlurred: pre.isBlurred,
+        preprocessApplied: pre.appliedSteps,
+        paddleMeta: {
+          pathUsed: orch.pathUsed,
+          meanConfidence: orch.paddle?.mean_confidence,
+          warnings: [...orch.warnings, "vision_fallback_disabled"],
+          tesseractFallbackSuggested: cfg.ocrTesseractFallback,
+        },
+      };
+    }
   }
 
   if (provider.provider === "none") {
-    // Preserve previous behavior: throw when nothing can run
     if (cfg.ocrTesseractFallback) {
       return {
         ocrResult: null,
