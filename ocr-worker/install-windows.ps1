@@ -1,5 +1,5 @@
-# CARE OCR Worker — Windows 11 install (PowerShell, run as Administrator)
-# Target: Intel i9 + RTX 3050 8GB — Ollama on :11434, this worker on :8090
+# CARE OCR Worker - Windows 11 install (PowerShell, run as Administrator)
+# Target: Intel i9 + RTX 3050 8GB - Ollama on :11434, this worker on :8090
 #
 # Usage:
 #   Set-ExecutionPolicy -Scope Process Bypass
@@ -8,7 +8,7 @@
 #
 # Security:
 #   - Generates OCR_WORKER_TOKEN (required). Set the SAME value on Synology CARE API.
-#   - Never expose port 8090 to the public internet — LAN / Private firewall only.
+#   - Never expose port 8090 to the public internet - LAN / Private firewall only.
 #   - Registers a Task Scheduler job so the worker starts after reboot.
 
 $ErrorActionPreference = "Stop"
@@ -36,7 +36,7 @@ foreach ($pair in @(
   } catch {}
 }
 if (-not $pyCmd) {
-  Write-Error "Python 3.10–3.12 required. Install from https://www.python.org/downloads/ and re-run."
+  Write-Error "Python 3.10-3.12 required. Install from https://www.python.org/downloads/ and re-run."
 }
 
 if (-not (Test-Path ".venv")) {
@@ -58,11 +58,11 @@ try {
 } catch {}
 
 if ($hasNvidia) {
-  Write-Host "==> NVIDIA GPU detected — installing paddlepaddle-gpu (CUDA 11.8 wheel family)" -ForegroundColor Green
+  Write-Host "==> NVIDIA GPU detected - installing paddlepaddle-gpu (CUDA 11.8 wheel family)" -ForegroundColor Green
   Write-Host "    Production still defaults OCR_DEVICE=cpu so Ollama can own the GPU." -ForegroundColor Yellow
   Invoke-Expression "$pip install paddlepaddle-gpu==3.0.0 -i https://www.paddlepaddle.org.cn/packages/stable/cu118/"
 } else {
-  Write-Host "==> No nvidia-smi — installing CPU paddlepaddle" -ForegroundColor Yellow
+  Write-Host "==> No nvidia-smi - installing CPU paddlepaddle" -ForegroundColor Yellow
   Invoke-Expression "$pip install paddlepaddle==3.0.0 -i https://www.paddlepaddle.org.cn/packages/stable/cpu/"
 }
 
@@ -80,7 +80,7 @@ $envPath = Join-Path $Root ".env"
 if (-not (Test-Path $envPath)) {
   $token = New-OcrWorkerToken
   @"
-# LAN bind — do NOT publish 8090 to the internet / router WAN.
+# LAN bind - do NOT publish 8090 to the internet / router WAN.
 OCR_WORKER_HOST=0.0.0.0
 OCR_WORKER_PORT=8090
 OCR_PROFILE=fast
@@ -92,7 +92,7 @@ OCR_WARMUP_ON_START=true
 OCR_WORKER_REQUIRE_AUTH=true
 OCR_WORKER_TOKEN=$token
 "@ | Set-Content -Path $envPath -Encoding UTF8
-  Write-Host "Generated OCR_WORKER_TOKEN — copy into Synology CARE .env as OCR_WORKER_TOKEN" -ForegroundColor Green
+  Write-Host "Generated OCR_WORKER_TOKEN - copy into Synology CARE .env as OCR_WORKER_TOKEN" -ForegroundColor Green
   Write-Host "TOKEN=$token" -ForegroundColor Yellow
 } else {
   $raw = Get-Content $envPath -Raw
@@ -107,7 +107,7 @@ OCR_WORKER_TOKEN=$token
   }
 }
 
-# Firewall: allow inbound 8090 on Private (LAN) profile only — never Public.
+# Firewall: allow inbound 8090 on Private (LAN) profile only - never Public.
 Write-Host "==> Configuring Windows Firewall (Private profile only)"
 $port = 8090
 try {
@@ -120,20 +120,20 @@ try {
   New-NetFirewallRule -DisplayName $ruleName `
     -Direction Inbound -Action Allow -Protocol TCP -LocalPort $port `
     -Profile Private `
-    -Description "CARE PaddleOCR worker — trusted LAN only. Do not enable on Public profile." | Out-Null
+    -Description "CARE PaddleOCR worker - trusted LAN only. Do not enable on Public profile." | Out-Null
   Write-Host "Firewall rule '$ruleName' allows TCP $port on Private profile only." -ForegroundColor Green
 } catch {
   Write-Host "Firewall rule skipped (run as Administrator): $_" -ForegroundColor Yellow
 }
 
-# Task Scheduler — start after reboot / at logon
+# Task Scheduler - start after reboot / at logon
 Write-Host "==> Installing Task Scheduler job"
 & "$Root\install-task-scheduler.ps1"
 
 Write-Host ""
 Write-Host "Install complete." -ForegroundColor Green
 Write-Host "Start now:     .\start-windows.ps1"
-Write-Host "Or reboot — Task Scheduler starts CARE-OCR-Worker at logon."
+Write-Host "Or reboot - Task Scheduler starts CARE-OCR-Worker at logon."
 Write-Host "Health:        http://127.0.0.1:$port/health"
 Write-Host "Synology CARE: OCR_WORKER_URL=http://<this-pc-lan-ip>:$port"
 Write-Host "               OCR_WORKER_TOKEN=<same token as worker .env>"
