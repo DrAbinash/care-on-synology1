@@ -101,8 +101,9 @@ export default function CommissionGuide({ onBack }: { onBack: () => void }) {
         <Card id="flow" title="The journey of one referral" icon={ArrowRight}>
           <div className="space-y-3">
             <Step n={1} title="A patient arrives naming a referring doctor">
-              The order records that doctor. Every test on the order counts towards their commission.
-              A test later marked <Term>cancelled</Term> drops out entirely.
+              The order records that doctor. Commission is calculated only after the order is <Term>billed</Term> —
+              unbilled duplicate orders never appear on the report. A test later marked <Term>cancelled</Term> drops
+              out entirely, and a cancelled bill stops accruing as well.
             </Step>
             <Step n={2} title="Each test line is priced and rated">
               For every test, the system finds the slab that applies to <em>that</em> doctor and <em>that</em> test, then
@@ -208,9 +209,11 @@ export default function CommissionGuide({ onBack }: { onBack: () => void }) {
             <li><Term>Collected ≥ Commission</Term> — payable once you have collected at least what you would pay out.</li>
           </ul>
           <p>
-            A <Term>cancelled bill</Term> is never payable. If a bill is cancelled or refunded <em>after</em> the
-            commission had already become payable, it appears in the ledger's <Term>Reversed after eligibility</Term>{" "}
-            panel so you can recover it on the next payout.
+              A <Term>cancelled bill</Term> is never payable and does not generate commission rows. Unbilled orders
+              (including duplicate orders that were never billed) are excluded from the Referral Report and Doctor Ledger
+              entirely — they do not appear as On Hold lines. If a bill is cancelled or refunded <em>after</em> the
+              commission had already become payable, it appears in the ledger's <Term>Reversed after eligibility</Term>{" "}
+              panel so you can recover it on the next payout.
           </p>
         </Card>
 

@@ -29,6 +29,7 @@ import {
   calcTestCommission,
   applyDiscountDeduction,
   computeCommissionHold,
+  indexCommissionBillsByOrderId,
   NEEDS_REPORT_STATUS,
 } from "../lib/commissionCalc";
 import { auditFromRequest } from "../lib/audit";
@@ -631,11 +632,15 @@ router.get("/report", async (req, res) => {
   const orderIds = orders.map(o => o.id);
   const orderTests = orderIds.length ? await db.select().from(orderTestsTable).where(and(inArray(orderTestsTable.orderId, orderIds), ne(orderTestsTable.status, "cancelled"))) : [];
   const billsForOrders = orderIds.length ? await db.select().from(billsTable).where(inArray(billsTable.orderId, orderIds)) : [];
-  const discountedOrderIds = new Set(billsForOrders.filter(b => Number(b.discount) > 0).map(b => b.orderId));
+  // Billed + non-cancelled only — unbilled duplicate orders never enter this report.
+  const billByOrderId = indexCommissionBillsByOrderId(billsForOrders);
+  const discountedOrderIds = new Set(
+    [...billByOrderId.values()].filter(b => Number(b.discount) > 0).map(b => b.orderId).filter((id): id is number => id != null),
+  );
   // Map orderId → bill discount amount for the deduction logic.
   const billDiscountByOrderId = new Map<number, number>();
-  for (const b of billsForOrders) {
-    if (b.orderId != null) billDiscountByOrderId.set(b.orderId, Number(b.discount ?? 0));
+  for (const [oid, b] of billByOrderId) {
+    billDiscountByOrderId.set(oid, Number(b.discount ?? 0));
   }
 
   const tokens = orderIds.length
@@ -648,7 +653,7 @@ router.get("/report", async (req, res) => {
   const report = doctors
     .filter(d => !doctorId || d.id === Number(doctorId))
     .map(doctor => {
-      const doctorOrders = orders.filter(o => o.doctorId === doctor.id);
+      const doctorOrders = orders.filter(o => o.doctorId === doctor.id && billByOrderId.has(o.id));
       const rules = allRules.filter(r => r.doctorId === doctor.id);
       let totalRevenue = 0, totalCommission = 0, totalDiscountDeducted = 0;
       let testsFullPrice = 0, testsDiscounted = 0;
@@ -659,6 +664,7 @@ router.get("/report", async (req, res) => {
 
       for (const order of doctorOrders) {
         const tests = orderTests.filter(ot => ot.orderId === order.id);
+        if (tests.length === 0) continue;
         const isDisc = discountedOrderIds.has(order.id);
         let orderRevenue = 0, rawOrderCommission = 0, lastRule = "Default";
         for (const ot of tests) {
@@ -683,7 +689,7 @@ router.get("/report", async (req, res) => {
         doctorId: doctor.id,
         doctorName: doctor.name,
         specialization: doctor.specialization ?? "",
-        totalOrders: doctorOrders.length,
+        totalOrders: orderDetails.length,
         totalBilled: totalRevenue,
         commissionAmount: totalCommission,
         totalDiscountDeducted,
@@ -734,11 +740,14 @@ router.get("/report-detailed", async (req, res) => {
   const orders = await db.select().from(ordersTable).where(conditions.length ? and(...conditions) : undefined);
   const orderIds = orders.map(o => o.id);
   const orderTests = orderIds.length ? await db.select().from(orderTestsTable).where(and(inArray(orderTestsTable.orderId, orderIds), ne(orderTestsTable.status, "cancelled"))) : [];
-  // Fetch bills to get discount amounts per order.
-  const billsForOrders = orderIds.length ? await db.select({ orderId: billsTable.orderId, discount: billsTable.discount }).from(billsTable).where(inArray(billsTable.orderId, orderIds)) : [];
+  // Fetch bills to get discount amounts per order — billed + non-cancelled only.
+  const billsForOrders = orderIds.length
+    ? await db.select({ orderId: billsTable.orderId, discount: billsTable.discount, status: billsTable.status }).from(billsTable).where(inArray(billsTable.orderId, orderIds))
+    : [];
+  const billByOrderId = indexCommissionBillsByOrderId(billsForOrders);
   const billDiscountByOrderId = new Map<number, number>();
-  for (const b of billsForOrders) {
-    if (b.orderId != null) billDiscountByOrderId.set(b.orderId, Number(b.discount ?? 0));
+  for (const [oid, b] of billByOrderId) {
+    billDiscountByOrderId.set(oid, Number(b.discount ?? 0));
   }
 
   const tokens = orderIds.length
@@ -751,7 +760,7 @@ router.get("/report-detailed", async (req, res) => {
   const filteredDoctors = doctors.filter(d => !doctorId || d.id === Number(doctorId));
 
   const result = filteredDoctors.map(doctor => {
-    const doctorOrders = orders.filter(o => o.doctorId === doctor.id);
+    const doctorOrders = orders.filter(o => o.doctorId === doctor.id && billByOrderId.has(o.id));
     const rules = allRules.filter(r => r.doctorId === doctor.id);
 
     // Build flat test-level rows
@@ -765,6 +774,7 @@ router.get("/report-detailed", async (req, res) => {
 
     for (const order of doctorOrders) {
       const ots = orderTests.filter(ot => ot.orderId === order.id);
+      if (ots.length === 0) continue;
       for (const ot of ots) {
         const test = testMap.get(ot.testId);
         const { commission, ruleName, ruleType, ruleValue } = calcTestCommission(ot, test, rules, doctor, vipOrderTestIds, vipPct, outsourcedBasis);
@@ -945,15 +955,29 @@ export async function computeReferralReport(q: { from?: string; to?: string; doc
         .from(billsTable).where(inArray(billsTable.orderId, orderIds))
     : [];
 
+  // Billed + non-cancelled only. Unbilled duplicate orders must not generate
+  // commission rows (they previously appeared as held "Not billed" lines).
+  const billByOrderRaw = indexCommissionBillsByOrderId(billsForOrders);
   const billByOrderId = new Map<number, { billNumber: string; discount: number; subtotal: number; status: string | null; paid: number; balance: number }>();
-  for (const b of billsForOrders) {
-    if (b.orderId != null) billByOrderId.set(b.orderId, { billNumber: b.billNumber, discount: Number(b.discount ?? 0), subtotal: Number(b.subtotal ?? 0), status: b.status ?? null, paid: Number(b.paidAmount ?? 0), balance: Number(b.balanceAmount ?? 0) });
+  for (const [oid, b] of billByOrderRaw) {
+    billByOrderId.set(oid, {
+      billNumber: b.billNumber,
+      discount: Number(b.discount ?? 0),
+      subtotal: Number(b.subtotal ?? 0),
+      status: b.status ?? null,
+      paid: Number(b.paidAmount ?? 0),
+      balance: Number(b.balanceAmount ?? 0),
+    });
   }
 
-  const tokens = orderIds.length
+  // Drop unbilled / cancelled-bill-only orders before any commission maths.
+  const billedOrdersWithPatients = ordersWithPatients.filter(o => billByOrderId.has(o.orderId));
+  const billedOrderIds = billedOrdersWithPatients.map(o => o.orderId);
+
+  const tokens = billedOrderIds.length
     ? await db.select({ orderTestId: testTokensTable.orderTestId })
         .from(testTokensTable)
-        .where(and(inArray(testTokensTable.orderId, orderIds), sql`${testTokensTable.priority} > 0`))
+        .where(and(inArray(testTokensTable.orderId, billedOrderIds), sql`${testTokensTable.priority} > 0`))
     : [];
   const vipOrderTestIds = new Set(tokens.map(t => t.orderTestId).filter(Boolean) as number[]);
 
@@ -962,11 +986,12 @@ export async function computeReferralReport(q: { from?: string; to?: string; doc
   if (NEEDS_REPORT_STATUS(eligCfg.policy)) {
     const activeOrderTestIdsByOrder = new Map<number, number[]>();
     for (const ot of orderTests) {
+      if (!billByOrderId.has(ot.orderId)) continue;
       const arr = activeOrderTestIdsByOrder.get(ot.orderId) ?? [];
       arr.push(ot.id);
       activeOrderTestIdsByOrder.set(ot.orderId, arr);
     }
-    reportStatusByOrder = await fetchOrderReportStatus(orderIds, activeOrderTestIdsByOrder);
+    reportStatusByOrder = await fetchOrderReportStatus(billedOrderIds, activeOrderTestIdsByOrder);
   }
 
   const filteredDoctors = doctors.filter(d => !doctorId || d.id === Number(doctorId));
@@ -1026,7 +1051,7 @@ export async function computeReferralReport(q: { from?: string; to?: string; doc
   };
 
   const result = filteredDoctors.map(doctor => {
-    const doctorOrders = ordersWithPatients.filter(o => o.doctorId === doctor.id);
+    const doctorOrders = billedOrdersWithPatients.filter(o => o.doctorId === doctor.id);
     const rules = allRules.filter(r => r.doctorId === doctor.id);
 
     // Build per-order discount-adjusted commission ratio + eligibility hold
@@ -1054,7 +1079,11 @@ export async function computeReferralReport(q: { from?: string; to?: string; doc
     const rows: PatientRow[] = [];
     for (const order of doctorOrders) {
       const ots = orderTests.filter(ot => ot.orderId === order.orderId);
+      if (ots.length === 0) continue;
       const bill = billByOrderId.get(order.orderId);
+      // Bill is guaranteed by billedOrdersWithPatients filter; keep the guard
+      // so a future refactor cannot reintroduce unbilled rows.
+      if (!bill) continue;
       const ratio = orderAdjustRatio.get(order.orderId) ?? 1;
 
       for (const ot of ots) {
