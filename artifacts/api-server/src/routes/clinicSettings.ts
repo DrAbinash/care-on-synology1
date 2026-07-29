@@ -864,6 +864,29 @@ clinicSettingsRouter.post("/ollama", async (req, res) => {
   try {
     const rows = await db.update(clinicSettingsTable).set(update).where(eq(clinicSettingsTable.id, current.id)).returning();
     invalidateCached(CLINIC_SETTINGS_CACHE_KEY);
+
+    // Keep the single canonical Local AI config in sync with ai_provider_settings
+    // so Form F / generateAiForTask never diverge from Local AI UI.
+    try {
+      const { syncOllamaProviderSettings, invalidateLocalAiRuntimeCache } = await import("../lib/aiPipeline/runtimeConfig");
+      const saved = rows[0] as {
+        ollamaBaseUrl?: string | null;
+        ollamaModel?: string | null;
+        ollamaEnabled?: boolean | null;
+      } | null;
+      const mergedUrl = (saved?.ollamaBaseUrl ?? (update.ollamaBaseUrl as string | null | undefined) ?? current.ollamaBaseUrl) || null;
+      const mergedModel = (saved?.ollamaModel ?? (update.ollamaModel as string | null | undefined) ?? current.ollamaModel) || null;
+      const mergedEnabled = (saved?.ollamaEnabled ?? (update.ollamaEnabled as boolean | undefined) ?? current.ollamaEnabled) !== false;
+      await syncOllamaProviderSettings({
+        endpointUrl: mergedUrl,
+        defaultModel: mergedModel,
+        isEnabled: mergedEnabled,
+      });
+      invalidateLocalAiRuntimeCache();
+    } catch (syncErr) {
+      console.warn("[POST /api/clinic-settings/ollama] provider sync warning:", syncErr);
+    }
+
     res.json({ ok: true, settings: rows[0] ?? null });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);

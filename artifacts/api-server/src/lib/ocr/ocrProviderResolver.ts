@@ -1,33 +1,16 @@
 import {
-  loadProviderConfig,
   getProviderApiKey,
   resolveTaskRoute,
   classifyOllamaModelVisionByName,
   probeOllamaReachable,
   probeOllamaModelVision,
 } from "@workspace/ai-providers";
+import { resolveLocalAiRuntime } from "../aiPipeline/runtimeConfig";
 
 /**
  * Resolves which OCR provider a Form F ID-card scan should use, and why.
- * This is the piece that DIDN'T exist before this fix — @workspace/ai-providers'
- * generateAiForTask() resolves to exactly one named provider (explicit route,
- * else the admin's single global default) with no retry-on-failure, which is
- * correct for most AI tasks but wrong for OCR: an OCR feature that hard-fails
- * whenever the primary provider is briefly unreachable would block Form F
- * completion, which the ID-scan step must never do (manual entry always
- * remains available — see FormF.tsx).
- *
- * Policy (see task spec item 5):
- *   1. If an admin has explicitly routed the "id_card_ocr" task (Model
- *      Routing UI), honor that choice exactly — no silent fallback. An
- *      explicit route is a deliberate override; second-guessing it would
- *      surprise the admin who set it.
- *   2. Otherwise (the default state for every install until an admin visits
- *      that screen): prefer Ollama if it's enabled, has an endpoint
- *      configured, and its configured model appears vision-capable; verify
- *      it's actually reachable right now. Fall back to Gemini if Ollama
- *      isn't usable for any reason. Fall back to "none" (manual entry) if
- *      neither is usable.
+ * Ollama URL + vision model come from resolveLocalAiRuntime() — the same
+ * canonical config used by Local AI UI, diagnostics, and the AI pipeline.
  */
 
 export type OcrProviderChoice =
@@ -95,15 +78,19 @@ async function checkOllama(model: string | null | undefined, endpointUrl: string
 
 export async function resolveOcrProvider(): Promise<OcrProviderDiagnostics> {
   const route = await resolveTaskRoute("id_card_ocr");
-
-  const ollamaConfig = await loadProviderConfig("ollama");
+  const runtime = await resolveLocalAiRuntime();
   const geminiKey = (await getProviderApiKey("gemini").catch(() => null)) ?? process.env.AI_INTEGRATIONS_GEMINI_API_KEY ?? null;
 
+  // Canonical Ollama endpoint + vision model (not a separate ai_provider_settings read).
+  const ollamaEndpoint = runtime.ollamaEnabled ? runtime.ollamaBaseUrl : null;
+  const ollamaModel = runtime.modelVision || runtime.modelStandard;
+  const ollamaConfigured = !!ollamaEndpoint;
+
   const ollamaDiag: OcrProviderDiagnostics["ollama"] = {
-    configured: !!ollamaConfig?.hasEndpointUrl,
-    enabled: !!ollamaConfig?.isEnabled,
-    endpointUrl: ollamaConfig?.endpointUrl ?? null,
-    model: ollamaConfig?.defaultModel ?? null,
+    configured: ollamaConfigured,
+    enabled: runtime.ollamaEnabled && ollamaConfigured,
+    endpointUrl: ollamaEndpoint,
+    model: ollamaModel,
     visionClassification: "unknown",
     reachable: null,
   };
@@ -112,18 +99,18 @@ export async function resolveOcrProvider(): Promise<OcrProviderDiagnostics> {
   // ── Explicit admin-configured route: honor it exactly, no fallback ──
   if (route) {
     if (route.provider === "ollama") {
-      if (!ollamaConfig?.endpointUrl) {
+      if (!ollamaEndpoint) {
         return { explicitRoute: route, ollama: ollamaDiag, gemini: geminiDiag, chosen: { provider: "none", reason: "ollama_model_not_configured" } };
       }
-      const model = route.model || ollamaConfig.defaultModel || "";
-      const check = await checkOllama(model, ollamaConfig.endpointUrl);
+      const model = route.model || ollamaModel || "";
+      const check = await checkOllama(model, ollamaEndpoint);
       ollamaDiag.visionClassification = check.visionClassification;
       ollamaDiag.reachable = check.reachable;
       ollamaDiag.reachabilityError = check.reachabilityError;
       if (!check.usable) {
         return { explicitRoute: route, ollama: ollamaDiag, gemini: geminiDiag, chosen: { provider: "none", reason: check.disqualifyReason ?? "ollama_unreachable" } };
       }
-      return { explicitRoute: route, ollama: ollamaDiag, gemini: geminiDiag, chosen: { provider: "ollama", endpointUrl: ollamaConfig.endpointUrl, model } };
+      return { explicitRoute: route, ollama: ollamaDiag, gemini: geminiDiag, chosen: { provider: "ollama", endpointUrl: ollamaEndpoint, model } };
     }
     if (route.provider === "gemini") {
       if (!geminiKey) {
@@ -131,19 +118,16 @@ export async function resolveOcrProvider(): Promise<OcrProviderDiagnostics> {
       }
       return { explicitRoute: route, ollama: ollamaDiag, gemini: geminiDiag, chosen: { provider: "gemini", apiKey: geminiKey } };
     }
-    // Route points at a provider this feature doesn't support (openai/anthropic
-    // have no OCR implementation here yet) — fall through to auto policy
-    // rather than hard-failing on an admin misconfiguration.
   }
 
-  // ── Auto policy: Ollama-first, Gemini-fallback ──
-  if (ollamaConfig?.isEnabled && ollamaConfig.endpointUrl) {
-    const check = await checkOllama(ollamaConfig.defaultModel, ollamaConfig.endpointUrl);
+  // ── Auto policy: Ollama-first (canonical runtime), Gemini-fallback ──
+  if (runtime.ollamaEnabled && ollamaEndpoint) {
+    const check = await checkOllama(ollamaModel, ollamaEndpoint);
     ollamaDiag.visionClassification = check.visionClassification;
     ollamaDiag.reachable = check.reachable;
     ollamaDiag.reachabilityError = check.reachabilityError;
     if (check.usable) {
-      return { explicitRoute: route, ollama: ollamaDiag, gemini: geminiDiag, chosen: { provider: "ollama", endpointUrl: ollamaConfig.endpointUrl, model: ollamaConfig.defaultModel! } };
+      return { explicitRoute: route, ollama: ollamaDiag, gemini: geminiDiag, chosen: { provider: "ollama", endpointUrl: ollamaEndpoint, model: ollamaModel } };
     }
     if (geminiKey) {
       return { explicitRoute: route, ollama: ollamaDiag, gemini: geminiDiag, chosen: { provider: "gemini", apiKey: geminiKey } };

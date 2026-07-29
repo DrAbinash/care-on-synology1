@@ -820,10 +820,11 @@ export interface IdCardOcrResult {
   gender?: string;
   aadhaarNumber?: string;
   rawText?: string;
-  /** Which OCR provider actually produced this result — "gemini" or
-   * "ollama". Absent on results from code paths that predate the
-   * provider-abstraction fix (treat as "gemini" for backward compat). */
-  ocrProvider?: "gemini" | "ollama";
+  /** Which OCR provider actually produced this result — "gemini",
+   * "ollama", "paddle", or "tesseract". Absent on results from code paths
+   * that predate the provider-abstraction fix (treat as "gemini" for
+   * backward compat). */
+  ocrProvider?: "gemini" | "ollama" | "paddle" | "tesseract";
   /** Year of birth, when the model could only read a partial/approximate
    * DOB (common on worn/blurry cards) or the document only prints a year. */
   yearOfBirth?: string;
