@@ -340,16 +340,28 @@ export default function ReferralRegister({ onBack }: { onBack: () => void }) {
   };
 
   const exportCsv = () => {
+    const esc = (c: string | number) => `"${String(c).replace(/"/g, '""')}"`;
     const header = ["DATE", "PATIENT'S NAME", "TEST NAME", "AMOUNT", "REF. BY DOCTOR", "CATEGORY"];
-    const lines = [
-      header.join(","),
-      ...filtered.map((r) =>
-        [fmtDate(r.date), r.patientName, r.testName, r.amount.toFixed(2), r.doctorName, r.modality]
-          .map((c) => `"${String(c).replace(/"/g, '""')}"`)
-          .join(","),
-      ),
-    ];
-    saveAs(new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" }), `referral-register_${from}_to_${to}.csv`);
+    const lines: string[] = [header.join(",")];
+
+    if (view === "by-doctor") {
+      for (const g of byDoctor) {
+        for (const r of g.rows) {
+          lines.push([
+            fmtDate(r.date), r.patientName, r.testName, r.amount.toFixed(2), r.doctorName, r.modality,
+          ].map(esc).join(","));
+        }
+      }
+    } else {
+      for (const r of filtered) {
+        lines.push([
+          fmtDate(r.date), r.patientName, r.testName, r.amount.toFixed(2), r.doctorName, r.modality,
+        ].map(esc).join(","));
+      }
+    }
+
+    const suffix = view === "by-doctor" ? "_by-doctor" : "";
+    saveAs(new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" }), `referral-register_${from}_to_${to}${suffix}.csv`);
   };
 
   const exportExcel = async () => {
