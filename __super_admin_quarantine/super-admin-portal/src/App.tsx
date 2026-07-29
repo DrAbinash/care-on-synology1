@@ -21,6 +21,7 @@ import {
 import BooksManager from "./pages/Books";
 import CommissionRules from "./pages/CommissionRules";
 import ReferralReport from "./pages/ReferralReport";
+import ReferralRegister from "./pages/ReferralRegister";
 import RateAnalysis from "./pages/RateAnalysis";
 import CommissionGuide from "./pages/CommissionGuide";
 import DoctorLedger from "./pages/DoctorLedger";
@@ -402,12 +403,13 @@ function LoginScreen({
 }
 
 function ActiveSessionScreen({
-  session, onEject, onManageBooks, onReferralReport, onRateAnalysis, onCommissionGuide, onCommissionRules, onDoctorLedger, onMoneyTrailAudit, onDoctorManager, onBackups, onAuditTrail, onRolePermissions, onSystemHealth, onSecurityDashboard,
+  session, onEject, onManageBooks, onReferralReport, onReferralRegister, onRateAnalysis, onCommissionGuide, onCommissionRules, onDoctorLedger, onMoneyTrailAudit, onDoctorManager, onBackups, onAuditTrail, onRolePermissions, onSystemHealth, onSecurityDashboard,
 }: {
   session: Session;
   onEject: () => void;
   onManageBooks: () => void;
   onReferralReport: () => void;
+  onReferralRegister: () => void;
   onRateAnalysis: () => void;
   onCommissionGuide: () => void;
   onCommissionRules: () => void;
@@ -532,6 +534,10 @@ function ActiveSessionScreen({
               Referral Commission (Compliance)
             </p>
             <div className="grid grid-cols-1 gap-2">
+              <Button variant="outline" className="w-full justify-start" onClick={onReferralRegister}>
+                <ScrollText size={14} className="mr-2" />
+                Referral Register (Excel-style)
+              </Button>
               <Button variant="outline" className="w-full justify-start" onClick={onReferralReport}>
                 <HandCoins size={14} className="mr-2" />
                 Referral & Commission Report
@@ -655,8 +661,8 @@ function ActiveSessionScreen({
   );
 }
 
-type SaView = "home" | "books" | "referral-report" | "rate-analysis" | "commission-guide" | "commission-rules" | "doctor-ledger" | "money-trail-audit" | "doctor-manager" | "backups" | "audit-trail" | "role-permissions" | "system-health" | "security-dashboard" | "payment-settings" | "payment-debug";
-const HASH_VIEWS: SaView[] = ["books", "referral-report", "rate-analysis", "commission-guide", "commission-rules", "doctor-ledger", "money-trail-audit", "doctor-manager", "backups", "audit-trail", "role-permissions", "system-health", "security-dashboard", "payment-settings", "payment-debug"];
+type SaView = "home" | "books" | "referral-report" | "referral-register" | "rate-analysis" | "commission-guide" | "commission-rules" | "doctor-ledger" | "money-trail-audit" | "doctor-manager" | "backups" | "audit-trail" | "role-permissions" | "system-health" | "security-dashboard" | "payment-settings" | "payment-debug";
+const HASH_VIEWS: SaView[] = ["books", "referral-report", "referral-register", "rate-analysis", "commission-guide", "commission-rules", "doctor-ledger", "money-trail-audit", "doctor-manager", "backups", "audit-trail", "role-permissions", "system-health", "security-dashboard", "payment-settings", "payment-debug"];
 function viewFromHash(): SaView {
   const h = (window.location.hash || "").replace(/^#/, "");
   return (HASH_VIEWS as string[]).includes(h) ? (h as SaView) : "home";
@@ -769,6 +775,8 @@ function App() {
           <BooksManager token={session.token} onBack={() => setView("home")} />
         ) : view === "referral-report" ? (
           <ReferralReport onBack={() => setView("home")} />
+        ) : view === "referral-register" ? (
+          <ReferralRegister onBack={() => setView("home")} />
         ) : view === "commission-guide" ? (
           <CommissionGuide onBack={() => setView("home")} />
         ) : view === "rate-analysis" ? (
@@ -801,6 +809,7 @@ function App() {
             onEject={() => { setSession(null); setView("home"); }}
             onManageBooks={() => setView("books")}
             onReferralReport={() => setView("referral-report")}
+            onReferralRegister={() => setView("referral-register")}
             onRateAnalysis={() => setView("rate-analysis")}
             onCommissionGuide={() => setView("commission-guide")}
             onCommissionRules={() => setView("commission-rules")}
