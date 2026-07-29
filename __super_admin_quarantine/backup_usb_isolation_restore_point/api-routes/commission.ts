@@ -1356,4 +1356,152 @@ router.post("/whatsapp/send", async (req, res) => {
   });
 });
 
+// ─── WhatsApp / Email: send a doctor their Referral Register for a period ─────
+// Flat register (DATE · PATIENT · TEST · AMOUNT), not commission figures.
+// Same billed-only source as the on-screen Referral Register.
+router.post("/whatsapp/send-register", async (req, res) => {
+  const body = (req.body ?? {}) as {
+    doctorIds?: unknown; from?: string; to?: string;
+    detail?: string; channel?: string; dryRun?: boolean;
+  };
+  const doctorIds = Array.isArray(body.doctorIds)
+    ? body.doctorIds.map(Number).filter(n => Number.isInteger(n) && n > 0)
+    : [];
+  if (doctorIds.length === 0) {
+    res.status(400).json({ error: "doctorIds must be a non-empty array" });
+    return;
+  }
+  const detail: "summary" | "breakdown" = body.detail === "breakdown" ? "breakdown" : "summary";
+  const channel: "whatsapp" | "email" | "both" =
+    body.channel === "email" ? "email" : body.channel === "both" ? "both" : "whatsapp";
+  const dryRun = body.dryRun !== false;
+
+  const [clinic] = await db.select({ name: clinicSettingsTable.name }).from(clinicSettingsTable).limit(1);
+  const clinicName = clinic?.name || "Care Diagnostics";
+  const period = fmtPeriod(body.from, body.to);
+
+  const { report } = await computeReferralReport({ from: body.from, to: body.to });
+  const byDoctorId = new Map(report.map(d => [d.doctor.id, d]));
+
+  const contacts = await db
+    .select({ id: doctorsTable.id, name: doctorsTable.name, phone: doctorsTable.phone, email: doctorsTable.email })
+    .from(doctorsTable)
+    .where(inArray(doctorsTable.id, doctorIds));
+  const contactById = new Map(contacts.map(c => [c.id, c]));
+
+  const { sendPlainWhatsappText } = await import("./whatsapp");
+  let sendMail: ((opts: { to: string; subject: string; text: string }) => Promise<{ ok: boolean; error?: string }>) | null = null;
+  if (channel === "email" || channel === "both") {
+    try {
+      const { getTransporter, getEmailSettings } = await import("../email");
+      sendMail = async ({ to, subject, text }) => {
+        const s = await getEmailSettings();
+        const transport = await getTransporter();
+        if (!transport || !s) return { ok: false, error: "Email not configured" };
+        await transport.sendMail({
+          from: `"${s.fromName}" <${s.fromAddress}>`,
+          to,
+          subject,
+          text,
+        });
+        return { ok: true };
+      };
+    } catch {
+      sendMail = async () => ({ ok: false, error: "Email module unavailable" });
+    }
+  }
+
+  const results: {
+    doctorId: number; doctorName: string; phone: string | null; email: string | null;
+    amount: number; testCount: number; message: string;
+    whatsapp?: { ok: boolean; skipped?: boolean; error?: string; messageId?: string };
+    emailResult?: { ok: boolean; skipped?: boolean; error?: string };
+  }[] = [];
+
+  for (const id of doctorIds) {
+    const contact = contactById.get(id);
+    const doctorName = contact?.name ?? `#${id}`;
+    const phone = contact?.phone ?? null;
+    const email = contact?.email ?? null;
+    const entry = byDoctorId.get(id);
+
+    if (!entry || entry.rows.length === 0) {
+      results.push({
+        doctorId: id, doctorName, phone, email, amount: 0, testCount: 0, message: "",
+        whatsapp: channel !== "email" ? { ok: false, skipped: true, error: "No billed referrals in this period" } : undefined,
+        emailResult: channel !== "whatsapp" ? { ok: false, skipped: true, error: "No billed referrals in this period" } : undefined,
+      });
+      continue;
+    }
+
+    const amount = entry.totalRevenue;
+    const testCount = entry.rows.length;
+    const L: string[] = [];
+    L.push(`Dear Dr. ${doctorName.replace(/^Dr\.?\s*/i, "")},`);
+    L.push("");
+    L.push(`Your referral register for ${period}:`);
+    L.push(`*${testCount} test${testCount === 1 ? "" : "s"}* · *${fmtINR(amount)}* billed.`);
+    if (detail === "breakdown") {
+      L.push("");
+      L.push("DATE | PATIENT | TEST | AMOUNT");
+      const sorted = [...entry.rows].sort((a, b) => a.date.localeCompare(b.date));
+      for (const r of sorted.slice(0, 40)) {
+        const [y, m, d] = r.date.split("-");
+        const dd = `${d}/${m}/${y}`;
+        L.push(`${dd} | ${r.patientName} | ${r.testName} | ${fmtINR(r.price)}`);
+      }
+      if (sorted.length > 40) L.push(`…and ${sorted.length - 40} more (see clinic statement).`);
+    }
+    L.push("");
+    L.push(`- ${clinicName}`);
+    const message = L.join("\n");
+
+    let whatsapp: (typeof results)[number]["whatsapp"];
+    let emailResult: (typeof results)[number]["emailResult"];
+
+    if (channel === "whatsapp" || channel === "both") {
+      if (!phone) {
+        whatsapp = { ok: false, error: "No phone number on file" };
+      } else if (dryRun) {
+        whatsapp = { ok: true, skipped: true };
+      } else {
+        const sent = await sendPlainWhatsappText(phone, message);
+        whatsapp = { ok: sent.ok, skipped: sent.skipped, error: sent.error, messageId: sent.messageId };
+      }
+    }
+
+    if (channel === "email" || channel === "both") {
+      if (!email) {
+        emailResult = { ok: false, error: "No email on file" };
+      } else if (dryRun) {
+        emailResult = { ok: true, skipped: true };
+      } else if (!sendMail) {
+        emailResult = { ok: false, error: "Email not configured" };
+      } else {
+        const sent = await sendMail({
+          to: email,
+          subject: `Referral register — ${period}`,
+          text: message.replace(/\*/g, ""),
+        });
+        emailResult = sent;
+      }
+    }
+
+    results.push({ doctorId: id, doctorName, phone, email, amount, testCount, message, whatsapp, emailResult });
+  }
+
+  res.json({
+    dryRun,
+    detail,
+    channel,
+    period,
+    results,
+    sentWhatsapp: results.filter(r => r.whatsapp?.ok && !r.whatsapp.skipped).length,
+    sentEmail: results.filter(r => r.emailResult?.ok && !r.emailResult.skipped).length,
+    failed: results.filter(r =>
+      (r.whatsapp && !r.whatsapp.ok) || (r.emailResult && !r.emailResult.ok),
+    ).length,
+  });
+});
+
 export default router;

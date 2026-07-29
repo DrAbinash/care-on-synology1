@@ -20,3 +20,7 @@ Copy onto the pen drive (TOP level):
   Referral / ledger commission rows require a non-cancelled bill.
   Unbilled duplicate orders no longer appear as On Hold "Not billed" lines.
   Requires matching care-api deploy (commissionCalc helpers + reconcile cron).
+
+2026-07-29 — Referral Register extras:
+  Category/modality filter, month presets, compare-months view,
+  WhatsApp/Email send-register (POST /api/commission/whatsapp/send-register).

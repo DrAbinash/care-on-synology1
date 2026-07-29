@@ -47,7 +47,7 @@ WHAT'S NEW IN THIS BUILD
 Two USB files rebuilt (superadmin-api.js + superadmin-ui.js). Keep your
 existing superadmin.key / .pin.
 
-NEW in this build — billed-only referral commission:
+NEW in this build — billed-only commission + Referral Register extras:
 
   Referral Report, Rate Analysis, detailed/consolidated commission reports,
   and Doctor Ledger earned totals now use BILLED, NON-CANCELLED orders only.
@@ -59,6 +59,16 @@ NEW in this build — billed-only referral commission:
   - Cancelled bills still never generate payable commission.
   - Payment eligibility holds (Full Payment Collected, etc.) continue to
     apply only to orders that already have a live bill.
+
+  Referral Register (Excel-style) — Home → Referral Register:
+  - Columns: DATE | PATIENT'S NAME | TEST NAME | AMOUNT | REF. BY DOCTOR
+  - Filters: date range, referring doctor, test pick-list / name search,
+    patient/bill search, category/modality (USG · MRI · CT · X-Ray · Other)
+  - Month presets: This month · Last month · Custom dates
+  - Views: Flat list · Doctor-wise · Compare months (last vs this)
+  - Export: Excel · CSV · Print
+  - WhatsApp / Email: send a doctor their register (preview → confirm).
+    Amounts are billed test revenue, not commission.
 
 Also still included from earlier builds:
   - Expected / Discount / Actual commission breakdown
