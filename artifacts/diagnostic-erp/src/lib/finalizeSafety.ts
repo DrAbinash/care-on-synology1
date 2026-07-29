@@ -92,6 +92,14 @@ export function computeFinalizeSafety(input: FinalizeSafetyInput): FinalizeSafet
   return [...critical, ...warn];
 }
 
+/** True when critical findings require hard acknowledgment before finalize. */
+export function criticalFindingBlocksFinalize(input: FinalizeSafetyInput): boolean {
+  return (
+    (input.criticalHits.length > 0 && !input.criticalMarked) ||
+    (input.criticalHits.length > 0 && input.criticalMarked && !input.criticalCommunicated)
+  );
+}
+
 /** Render the issues as a block for the existing window.confirm dialog. Empty
  *  string when there is nothing to add, so the confirm text stays clean. */
 export function formatFinalizeSafety(issues: FinalizeSafetyIssue[]): string {

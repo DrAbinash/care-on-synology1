@@ -10,7 +10,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
-import { readStaffSession, normalizeRole } from "@/lib/staffSession";
+import { readStaffSession, normalizeRole, isOwnerRole, isFeatureEnabled } from "@/lib/staffSession";
 import { api } from "@/lib/fetchApi";
 import { queryAiReporting } from "@/lib/aiReportingClient";
 // Cockpit→Workspace merge: shared status/priority/role helpers (already used by
@@ -123,7 +123,12 @@ import "@/lib/copilotUsgAnomalyModule";
 import "@/lib/copilotCriticalModule"; // registers the critical-results safety module (MRI PR 3)
 import "@/lib/copilotRecommendationModule"; // registers the Clinical Recommendation Registry module (CDS PR)
 import { detectCriticalFindings } from "@/lib/criticalResults";
-import { computeFinalizeSafety, formatFinalizeSafety } from "@/lib/finalizeSafety";
+import { computeFinalizeSafety, formatFinalizeSafety, criticalFindingBlocksFinalize } from "@/lib/finalizeSafety";
+import { useFinalizeFlow } from "@/hooks/useFinalizeFlow";
+import FinalizeSignDialog from "@/components/radiology/FinalizeSignDialog";
+import {
+  loadReadingSession, toggleReadingSession, bumpSessionCompleted, type ReadingSessionState,
+} from "@/lib/readingSession";
 import { criticalWatchListFor } from "@/lib/radiologyMasterTemplates";
 import {
   combinationsForModality, buildCombination, combinationInserts, matchStudyCombination,
@@ -144,7 +149,6 @@ import {
   type RescueDraft,
 } from "@/lib/draftRescue";
 import { useRadiologyDraftId } from "@/hooks/useRadiologyDraftId";
-import { isOwnerRole } from "@/lib/staffSession";
 import {
   serializeReportSnapshot, isReportDirty, shouldOfferBackupRestore,
   restorableSelections, extractD1QuickSelections, toInstanceParams,
@@ -604,6 +608,19 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   // 300/min rate limit and 429 real saves).
   const session = useMemo(() => readStaffSession(), []);
   const previewRef = useRef<HTMLDivElement>(null);
+  const finalizeFlow = useFinalizeFlow();
+  const [readingSession, setReadingSession] = useState<ReadingSessionState>(() => loadReadingSession());
+  const finalizeSignerRef = useRef<{ signatureId: number | null; notifyReferring: boolean }>({
+    signatureId: null,
+    notifyReferring: false,
+  });
+
+  // Worklist-first: empty workspace (no study) redirects to the worklist.
+  useEffect(() => {
+    if (studyId == null || !Number.isFinite(studyId) || studyId <= 0) {
+      navigate("/radiology/worklist", { replace: true });
+    }
+  }, [studyId, navigate]);
 
   // ── Layout ────────────────────────────────────────────────────────────────
   const [rightTab, setRightTab] = useState<RightTab>("templates");
@@ -3703,7 +3720,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
       // critical-result handling), composed by the pure aggregator and surfaced
       // in this SAME confirm dialog. Advisory: it never blocks — clicking OK is
       // the radiologist's decision, exactly as before.
-      const safetyBlock = formatFinalizeSafety(computeFinalizeSafety({
+      const safetyInput = {
         checklistActive: !!activeProtocol,
         checklistPercent,
         checklistRemaining,
@@ -3711,16 +3728,49 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
         criticalHits,
         criticalMarked: isCritical,
         criticalCommunicated: checklistComm.phoned,
-      }));
+      };
+      const safetyBlock = formatFinalizeSafety(computeFinalizeSafety(safetyInput));
+      const criticalRequiresAck = criticalFindingBlocksFinalize(safetyInput);
       // Unbilled study: the report row cannot be created (test_id NOT NULL) —
       // say so BEFORE the radiologist commits, not after.
       const unbilledNote = entry.patientId && !entry.studyId
         ? "\nNote: no billed test is linked to this study — the worklist will be marked final, but no patient-facing report row can be created.\n"
         : "";
-      confirmed = window.confirm(
-        `Finalize and sign this report?\n\n${identity}\n\n${validationSummary}\n${warningBlock}${safetyBlock}${unbilledNote}\nAfter finalizing, editing is disabled.`,
-      );
+
+      // Structured quality advisory (analysis item 3): when the flag is on,
+      // surface structured validation failures more prominently in the dialog.
+      const qualityAdvisory = isFeatureEnabled("ff_radiology_quality_advisory");
+      const advisoryExtra = qualityAdvisory && blockingErrors.length > 0
+        ? `\nQuality advisory (non-blocking until structured_final is enabled):\n${blockingErrors.map((e, i) => `  ${i + 1}. ${e}`).join("\n")}\n`
+        : "";
+
+      let signatures: { id: number; name: string; isActive?: boolean }[] = [];
+      try {
+        const rows = await api.get<Array<{ id: number; name: string; isActive?: boolean }>>("/api/signatures");
+        signatures = (rows ?? []).filter((s) => s.isActive !== false).map((s) => ({ id: s.id, name: s.name }));
+      } catch {
+        signatures = [];
+      }
+
+      const promptResult = await finalizeFlow.promptFinalize({
+        identity,
+        validationSummary: validationSummary + advisoryExtra,
+        warningBlock,
+        safetyBlock,
+        unbilledNote,
+        signatures,
+        criticalRequiresAck,
+        criticalSummary: criticalHits.map((h) => h.label).join(", ") || criticalNote || undefined,
+      });
+      confirmed = promptResult.confirmed;
       if (!confirmed) return;
+      finalizeSignerRef.current = {
+        signatureId: promptResult.signatureId,
+        notifyReferring: promptResult.notifyReferring,
+      };
+      if (promptResult.criticalAcknowledged && !isCritical) {
+        setIsCritical(true);
+      }
     } finally {
       // The in-flight guard for phases 1–4; the signing block below manages
       // its own flag lifetime so a thrown error can't leave it stuck.
@@ -3795,6 +3845,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
           criticalNote,
           createdBy: session?.user.name ?? "Radiologist",
           actor: session?.user.name ?? "staff",
+          signatureId: finalizeSignerRef.current.signatureId,
           // F7 (Cockpit→Workspace merge): durable record of the quality
           // warnings that existed and how the critical finding (if any) was
           // communicated at the moment of signing. `auditDetails` is already
@@ -3804,6 +3855,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
             qualityIssues: quality.issues,
             measurementSafetyIssues: measurementSafetyIssues.map((i) => ({ severity: i.severity, message: i.message })),
             criticalFinding: isCritical ? { note: criticalNote, communication: checklistComm } : null,
+            notifyReferring: finalizeSignerRef.current.notifyReferring,
           },
         },
       );
@@ -3866,6 +3918,26 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
       // report/version metadata, preserve access to the signed report).
       void qc.invalidateQueries({ queryKey: ["workspace-final-report"] });
       void qc.invalidateQueries({ queryKey: ["radiology-existing-draft", studyId] });
+
+      // Critical finding: optional notify referring doctor (best-effort).
+      if (finalizeSignerRef.current.notifyReferring && (isCritical || criticalHits.length > 0) && reportId) {
+        void api.post(`/api/patient-reports/${reportId}/acknowledge-critical`, {
+          note: criticalNote || criticalHits.map((h) => h.label).join(", "),
+          notifyReferring: true,
+        }).catch(() => {
+          toast({
+            title: "Critical ack saved locally",
+            description: "Referring-doctor notify could not be sent — complete from Critical Findings / Report Hub.",
+            variant: "destructive",
+          });
+        });
+      }
+
+      // Reading session mode: auto-advance to next eligible study.
+      if (readingSession.enabled) {
+        setReadingSession((prev) => bumpSessionCompleted(prev));
+        window.setTimeout(() => nextStudy(), 400);
+      }
     } catch (err) {
       toast({
         title: "Finalize Failed",
@@ -4501,6 +4573,18 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
             </span>
           )}
         </div>
+        <Button
+          type="button"
+          size="sm"
+          variant={readingSession.enabled ? "default" : "outline"}
+          className="h-7 px-2 text-[10px] shrink-0"
+          title="Minimal chrome + auto-advance to next study after finalize"
+          onClick={() => setReadingSession((prev) => toggleReadingSession(prev))}
+        >
+          {readingSession.enabled
+            ? `Session · ${readingSession.completedInSession} done`
+            : "Reading session"}
+        </Button>
         <Badge
           className={`shrink-0 text-[10px] ${STATUS_CONFIG[reportStatus]?.color || ""}`}
         >
@@ -6797,6 +6881,13 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
           </div>
         </div>
       )}
+
+      <FinalizeSignDialog
+        open={finalizeFlow.open}
+        input={finalizeFlow.input}
+        onResolve={finalizeFlow.resolve}
+        onCancel={finalizeFlow.cancel}
+      />
     </div>
   );
 }

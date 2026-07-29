@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Zap, Settings2, Star, Ruler, Lightbulb, Search, SlidersHorizontal } from "lucide-react";
+import { Zap, Settings2, Star, Ruler, Lightbulb, Search, SlidersHorizontal, Check } from "lucide-react";
 import { Link } from "wouter";
 import type { Side } from "@/lib/sideSwap";
 import { parseProperties, type AbnormalityInstance } from "@/lib/abnormalityEngine";
@@ -503,33 +503,54 @@ export default function QuickFindingsPanel({
     const isFav = favoriteIds.has(f.id);
     const structured = isStructured(f);
     return (
-      <div className="flex flex-col">
-      <div className="flex items-center gap-0.5">
-        <Button
-          size="sm"
-          variant={selected ? "default" : "outline"}
+      <div className="flex flex-col min-w-0">
+      <div className="flex items-stretch gap-1">
+        <button
+          type="button"
           disabled={disabled}
           onClick={() => activateFinding(f)}
-          className="h-10 justify-start text-sm font-medium flex-1 min-w-0 px-3 gap-2"
+          className={[
+            "flex-1 min-w-0 rounded-lg border px-2.5 py-2 text-left transition-all duration-150",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/35",
+            selected
+              ? "border-primary bg-primary text-primary-foreground shadow-sm"
+              : "border-border/80 bg-card hover:border-primary/40 hover:bg-muted/50",
+          ].join(" ")}
           title={
             structured
               ? `${f.label} — set details${selected ? " (click to edit)" : ""}`
               : `${f.findingText || f.impressionText}${index !== undefined && index < 9 ? `  (Alt+${index + 1})` : ""}`
           }
         >
-          <Zap size={14} className={selected ? "" : "text-muted-foreground"} />
-          <span className="truncate">{f.label}</span>
-          {structured && <SlidersHorizontal size={12} className={`shrink-0 ${selected ? "" : "text-muted-foreground"}`} />}
+          <div className="flex items-center gap-1.5 min-w-0">
+            <span
+              className={[
+                "flex h-4 w-4 shrink-0 items-center justify-center rounded border",
+                selected
+                  ? "border-primary-foreground/70 bg-primary-foreground/15"
+                  : "border-muted-foreground/35 bg-background",
+              ].join(" ")}
+            >
+              {selected ? <Check size={10} strokeWidth={3} /> : <Zap size={10} className="text-muted-foreground" />}
+            </span>
+            <span className="truncate text-[12px] font-semibold leading-tight">{f.label}</span>
+            {structured && (
+              <SlidersHorizontal size={11} className={`shrink-0 ${selected ? "opacity-90" : "text-muted-foreground"}`} />
+            )}
+          </div>
           {(effectiveTabs.size > 1 || searchLower) && (
-            <span className="ml-auto text-[10px] text-muted-foreground shrink-0">{f.studyType}</span>
+            <div className={`mt-1 truncate text-[9px] ${selected ? "text-primary-foreground/75" : "text-muted-foreground"}`}>
+              {f.studyType}
+            </div>
           )}
-        </Button>
+        </button>
         <button
+          type="button"
           onClick={() => toggleFavorite.mutate({ findingId: f.id, add: !isFav })}
-          className={`shrink-0 p-1 ${isFav ? "text-amber-500" : "text-muted-foreground/40 hover:text-amber-500"}`}
+          className={`shrink-0 self-center rounded-md p-1.5 ${isFav ? "text-amber-500" : "text-muted-foreground/40 hover:text-amber-500 hover:bg-muted/40"}`}
           title={isFav ? "Remove from favorites" : "Pin to favorites"}
         >
-          <Star size={15} fill={isFav ? "currentColor" : "none"} />
+          <Star size={14} fill={isFav ? "currentColor" : "none"} />
         </button>
       </div>
       {selected && <PropertyChips f={f} />}
@@ -537,7 +558,7 @@ export default function QuickFindingsPanel({
         <button
           key={p.suggestedText}
           onClick={() => onAcceptLearnedSuggestion(p.suggestedText)}
-          className="ml-4 mb-1 text-[9px] text-left px-1.5 py-0.5 rounded border bg-sky-50 dark:bg-sky-950/20 border-sky-200 text-sky-700 dark:text-sky-300 hover:bg-sky-100"
+          className="ml-1 mb-1 text-[9px] text-left px-1.5 py-0.5 rounded border bg-sky-50 dark:bg-sky-950/20 border-sky-200 text-sky-700 dark:text-sky-300 hover:bg-sky-100"
           title={`You've added this ${p.occurrenceCount}× after ${f.label} — click to add it again`}
         >
           💡 You usually add: "{p.suggestedText}" — click to add
