@@ -1,0 +1,22 @@
+SUPER ADMIN PEN DRIVE — FRESH BUILD NOTES
+========================================
+
+Rebuild (from repo root):
+
+  # API + UI
+  node __super_admin_quarantine/build-plugin.mjs
+  # Or API-only then:
+  #   pnpm --filter @workspace/super-admin-portal run build
+  #   (portal must be reachable as a workspace package for catalog:/workspace:*)
+
+Copy onto the pen drive (TOP level):
+  superadmin-api.js
+  superadmin-ui.js
+  superadmin.key   (existing — do not regenerate unless rotating)
+  superadmin.pin   (existing — optional)
+  READ_ME_FIRST.txt
+
+2026-07-29 — billed-only commission:
+  Referral / ledger commission rows require a non-cancelled bill.
+  Unbilled duplicate orders no longer appear as On Hold "Not billed" lines.
+  Requires matching care-api deploy (commissionCalc helpers + reconcile cron).
