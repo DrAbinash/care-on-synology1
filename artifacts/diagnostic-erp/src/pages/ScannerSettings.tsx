@@ -22,7 +22,7 @@ import {
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { api } from "@/lib/fetchApi";
-import { CheckCircle2, XCircle, Loader2, RefreshCcw, ShieldCheck, Camera } from "lucide-react";
+import { CheckCircle2, XCircle, Loader2, RefreshCcw, ShieldCheck, Camera, Download } from "lucide-react";
 import {
   checkScanBridgeHealth,
   getScanBridgeSecret,
@@ -39,6 +39,9 @@ import {
   setPreferredTvsDevice,
 } from "@/lib/tvsDeviceProfile";
 import { classifyCameraError } from "@/lib/cameraDiagnostics";
+
+/** Same self-contained installer Form F's "Set up scanner" dialog offers. */
+const SCAN_BRIDGE_INSTALLER_URL = `${import.meta.env.BASE_URL}scanner/install-scan-bridge.ps1`;
 
 type PreferredScanner = "camera" | "bridge" | "mobile";
 
@@ -202,6 +205,23 @@ export default function ScannerSettings() {
             The Scanner Bridge is a small local app that runs on each reception workstation and lets the browser
             talk to a physically connected scanner (Canon flatbed/ADF, or the TVS PDS 8M). These settings are
             saved per-browser (this computer only) — every workstation configures its own.
+          </p>
+        </div>
+
+        <div className="rounded-lg border border-dashed bg-muted/30 p-3 space-y-2">
+          <p className="text-xs text-muted-foreground">
+            One-time setup on this PC: install Node.js LTS, then download and run the installer
+            (right-click → Run with PowerShell). Enter this ERP address when prompted. Same installer as Form F.
+          </p>
+          <a
+            href={SCAN_BRIDGE_INSTALLER_URL}
+            download="install-scan-bridge.ps1"
+            className="inline-flex items-center justify-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+          >
+            <Download size={16} /> Download installer (install-scan-bridge.ps1)
+          </a>
+          <p className="text-[10px] text-muted-foreground">
+            If Windows blocks it: right-click the file → Properties → tick Unblock → OK, then run it.
           </p>
         </div>
 
