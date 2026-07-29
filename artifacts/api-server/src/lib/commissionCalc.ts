@@ -244,6 +244,53 @@ export type EligibilityConfig = { policy: string; minAmount: number };
 export const NEEDS_REPORT_STATUS = (policy: string) =>
   policy === "report_finalized" || policy === "report_delivered";
 
+/**
+ * Referral commission reports / ledger / reconcile only consider orders that
+ * have a non-cancelled bill. Unbilled duplicate orders must never generate
+ * commission rows (they used to appear as held "Not billed" lines and inflate
+ * visit counts / revenue / total commission).
+ */
+export function isCommissionBillEligible(
+  bill: { status?: string | null } | null | undefined,
+): boolean {
+  if (!bill) return false;
+  return (bill.status ?? null) !== "cancelled";
+}
+
+/**
+ * When an order has multiple bill rows, prefer a non-cancelled bill. If every
+ * bill is cancelled (or there are none), return null so the order is excluded
+ * from commission entirely.
+ */
+export function pickCommissionBill<T extends { status?: string | null }>(
+  bills: T[],
+): T | null {
+  if (!bills.length) return null;
+  return bills.find((b) => (b.status ?? null) !== "cancelled") ?? null;
+}
+
+/**
+ * Index bills by orderId, keeping only orders with a non-cancelled bill.
+ * Later cancelled-only duplicates cannot overwrite an active bill out of the map.
+ */
+export function indexCommissionBillsByOrderId<
+  T extends { orderId: number | null; status?: string | null },
+>(bills: T[]): Map<number, T> {
+  const grouped = new Map<number, T[]>();
+  for (const b of bills) {
+    if (b.orderId == null) continue;
+    const arr = grouped.get(b.orderId) ?? [];
+    arr.push(b);
+    grouped.set(b.orderId, arr);
+  }
+  const out = new Map<number, T>();
+  for (const [orderId, list] of grouped) {
+    const picked = pickCommissionBill(list);
+    if (picked) out.set(orderId, picked);
+  }
+  return out;
+}
+
 export function computeCommissionHold(opts: {
   cfg: EligibilityConfig;
   hasBill: boolean;
@@ -255,6 +302,9 @@ export function computeCommissionHold(opts: {
   commissionAmount: number;
 }): { held: boolean; reason: string | null } {
   const rs = (n: number) => `Rs.${Math.round(n).toLocaleString("en-IN")}`;
+  // Defence in depth: callers should already skip these via
+  // isCommissionBillEligible / indexCommissionBillsByOrderId so they never
+  // reach report rows. Hold reasons remain for ledger edge cases / audit.
   if (opts.billStatus === "cancelled") return { held: true, reason: "Bill cancelled" };
   if (!opts.hasBill) return { held: true, reason: "Not billed" };
   switch (opts.cfg.policy) {

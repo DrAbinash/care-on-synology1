@@ -53,7 +53,7 @@ ${moduleMatches.slice(0, 20).join("\n")}
 - Partial test cancellation: cancelled tests excluded from billing and commissions
 - Test type split: inhouse vs outsourced
 - Outsourced labs CRUD and lab association for outsourced tests
-- Referral commission reports exclude cancelled tests
+- Referral commission reports use billed, non-cancelled orders only (unbilled duplicates never generate rows)
 
 ## Super-Admin Controls
 
