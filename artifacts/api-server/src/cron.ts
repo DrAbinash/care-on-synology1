@@ -29,6 +29,8 @@ import {
   calcTestCommission,
   applyDiscountDeduction,
   computeCommissionHold,
+  indexCommissionBillsByOrderId,
+  isCommissionBillEligible,
   NEEDS_REPORT_STATUS,
 } from "./lib/commissionCalc";
 
@@ -1092,8 +1094,16 @@ async function fireCommissionReconcile(): Promise<{ transitions: number }> {
   const doctorMap = new Map(doctors.map(d => [d.id, d]));
   const rulesByDoctor = new Map<number, (typeof commissionRulesTable.$inferSelect)[]>();
   for (const r of rules) { const a = rulesByDoctor.get(r.doctorId) ?? []; a.push(r); rulesByDoctor.set(r.doctorId, a); }
+  const billByOrderRaw = indexCommissionBillsByOrderId(bills);
   const billByOrder = new Map<number, { status: string | null; paid: string; balance: string; discount: number }>();
-  for (const b of bills) if (b.orderId != null) billByOrder.set(b.orderId, { status: b.status ?? null, paid: b.paid, balance: b.balance, discount: Number(b.discount ?? 0) });
+  for (const [oid, b] of billByOrderRaw) {
+    billByOrder.set(oid, {
+      status: b.status ?? null,
+      paid: b.paid,
+      balance: b.balance,
+      discount: Number(b.discount ?? 0),
+    });
+  }
   const vipIds = new Set(tokens.map(t => t.orderTestId).filter(Boolean) as number[]);
 
   let reportStatus = new Map<number, { finalized: boolean; delivered: boolean }>();
@@ -1124,12 +1134,15 @@ async function fireCommissionReconcile(): Promise<{ transitions: number }> {
     if (!doctor) continue;
     const ots = orderTests.filter(ot => ot.orderId === order.id);
     if (!ots.length) continue;
+    const bill = billByOrder.get(order.id);
+    // Unbilled / cancelled-bill-only orders never enter commission — same rule
+    // as Referral Report and Doctor Ledger (no status events for them either).
+    if (!isCommissionBillEligible(bill)) continue;
     const dRules = rulesByDoctor.get(order.doctorId) ?? [];
     let raw = 0;
     for (const ot of ots) {
       raw += calcTestCommission(ot, testMap.get(ot.testId), dRules, doctor, vipIds, vipPct, outsourcedBasis).commission;
     }
-    const bill = billByOrder.get(order.id);
     // Judge — and record — the NET commission, i.e. after the clinic's
     // bill-discount deduction. The Referral Report and the Doctor Ledger both
     // work in net; using gross here would make the "collected >= commission"
@@ -1139,7 +1152,7 @@ async function fireCommissionReconcile(): Promise<{ transitions: number }> {
     const rep = reportStatus.get(order.id);
     const { held, reason } = computeCommissionHold({
       cfg: { policy, minAmount },
-      hasBill: !!bill, billStatus: bill?.status ?? null,
+      hasBill: true, billStatus: bill?.status ?? null,
       paidAmount: Number(bill?.paid ?? 0), balanceAmount: Number(bill?.balance ?? 0),
       reportFinalized: rep?.finalized ?? false, reportDelivered: rep?.delivered ?? false,
       commissionAmount: netCommission,

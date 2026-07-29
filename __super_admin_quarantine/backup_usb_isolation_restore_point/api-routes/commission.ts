@@ -29,6 +29,7 @@ import {
   calcTestCommission,
   applyDiscountDeduction,
   computeCommissionHold,
+  indexCommissionBillsByOrderId,
   NEEDS_REPORT_STATUS,
 } from "../lib/commissionCalc";
 import { auditFromRequest } from "../lib/audit";
@@ -631,11 +632,15 @@ router.get("/report", async (req, res) => {
   const orderIds = orders.map(o => o.id);
   const orderTests = orderIds.length ? await db.select().from(orderTestsTable).where(and(inArray(orderTestsTable.orderId, orderIds), ne(orderTestsTable.status, "cancelled"))) : [];
   const billsForOrders = orderIds.length ? await db.select().from(billsTable).where(inArray(billsTable.orderId, orderIds)) : [];
-  const discountedOrderIds = new Set(billsForOrders.filter(b => Number(b.discount) > 0).map(b => b.orderId));
+  // Billed + non-cancelled only — unbilled duplicate orders never enter this report.
+  const billByOrderId = indexCommissionBillsByOrderId(billsForOrders);
+  const discountedOrderIds = new Set(
+    [...billByOrderId.values()].filter(b => Number(b.discount) > 0).map(b => b.orderId).filter((id): id is number => id != null),
+  );
   // Map orderId → bill discount amount for the deduction logic.
   const billDiscountByOrderId = new Map<number, number>();
-  for (const b of billsForOrders) {
-    if (b.orderId != null) billDiscountByOrderId.set(b.orderId, Number(b.discount ?? 0));
+  for (const [oid, b] of billByOrderId) {
+    billDiscountByOrderId.set(oid, Number(b.discount ?? 0));
   }
 
   const tokens = orderIds.length
@@ -648,7 +653,7 @@ router.get("/report", async (req, res) => {
   const report = doctors
     .filter(d => !doctorId || d.id === Number(doctorId))
     .map(doctor => {
-      const doctorOrders = orders.filter(o => o.doctorId === doctor.id);
+      const doctorOrders = orders.filter(o => o.doctorId === doctor.id && billByOrderId.has(o.id));
       const rules = allRules.filter(r => r.doctorId === doctor.id);
       let totalRevenue = 0, totalCommission = 0, totalDiscountDeducted = 0;
       let testsFullPrice = 0, testsDiscounted = 0;
@@ -659,6 +664,7 @@ router.get("/report", async (req, res) => {
 
       for (const order of doctorOrders) {
         const tests = orderTests.filter(ot => ot.orderId === order.id);
+        if (tests.length === 0) continue;
         const isDisc = discountedOrderIds.has(order.id);
         let orderRevenue = 0, rawOrderCommission = 0, lastRule = "Default";
         for (const ot of tests) {
@@ -683,7 +689,7 @@ router.get("/report", async (req, res) => {
         doctorId: doctor.id,
         doctorName: doctor.name,
         specialization: doctor.specialization ?? "",
-        totalOrders: doctorOrders.length,
+        totalOrders: orderDetails.length,
         totalBilled: totalRevenue,
         commissionAmount: totalCommission,
         totalDiscountDeducted,
@@ -734,11 +740,14 @@ router.get("/report-detailed", async (req, res) => {
   const orders = await db.select().from(ordersTable).where(conditions.length ? and(...conditions) : undefined);
   const orderIds = orders.map(o => o.id);
   const orderTests = orderIds.length ? await db.select().from(orderTestsTable).where(and(inArray(orderTestsTable.orderId, orderIds), ne(orderTestsTable.status, "cancelled"))) : [];
-  // Fetch bills to get discount amounts per order.
-  const billsForOrders = orderIds.length ? await db.select({ orderId: billsTable.orderId, discount: billsTable.discount }).from(billsTable).where(inArray(billsTable.orderId, orderIds)) : [];
+  // Fetch bills to get discount amounts per order — billed + non-cancelled only.
+  const billsForOrders = orderIds.length
+    ? await db.select({ orderId: billsTable.orderId, discount: billsTable.discount, status: billsTable.status }).from(billsTable).where(inArray(billsTable.orderId, orderIds))
+    : [];
+  const billByOrderId = indexCommissionBillsByOrderId(billsForOrders);
   const billDiscountByOrderId = new Map<number, number>();
-  for (const b of billsForOrders) {
-    if (b.orderId != null) billDiscountByOrderId.set(b.orderId, Number(b.discount ?? 0));
+  for (const [oid, b] of billByOrderId) {
+    billDiscountByOrderId.set(oid, Number(b.discount ?? 0));
   }
 
   const tokens = orderIds.length
@@ -751,7 +760,7 @@ router.get("/report-detailed", async (req, res) => {
   const filteredDoctors = doctors.filter(d => !doctorId || d.id === Number(doctorId));
 
   const result = filteredDoctors.map(doctor => {
-    const doctorOrders = orders.filter(o => o.doctorId === doctor.id);
+    const doctorOrders = orders.filter(o => o.doctorId === doctor.id && billByOrderId.has(o.id));
     const rules = allRules.filter(r => r.doctorId === doctor.id);
 
     // Build flat test-level rows
@@ -765,6 +774,7 @@ router.get("/report-detailed", async (req, res) => {
 
     for (const order of doctorOrders) {
       const ots = orderTests.filter(ot => ot.orderId === order.id);
+      if (ots.length === 0) continue;
       for (const ot of ots) {
         const test = testMap.get(ot.testId);
         const { commission, ruleName, ruleType, ruleValue } = calcTestCommission(ot, test, rules, doctor, vipOrderTestIds, vipPct, outsourcedBasis);
@@ -945,15 +955,29 @@ export async function computeReferralReport(q: { from?: string; to?: string; doc
         .from(billsTable).where(inArray(billsTable.orderId, orderIds))
     : [];
 
+  // Billed + non-cancelled only. Unbilled duplicate orders must not generate
+  // commission rows (they previously appeared as held "Not billed" lines).
+  const billByOrderRaw = indexCommissionBillsByOrderId(billsForOrders);
   const billByOrderId = new Map<number, { billNumber: string; discount: number; subtotal: number; status: string | null; paid: number; balance: number }>();
-  for (const b of billsForOrders) {
-    if (b.orderId != null) billByOrderId.set(b.orderId, { billNumber: b.billNumber, discount: Number(b.discount ?? 0), subtotal: Number(b.subtotal ?? 0), status: b.status ?? null, paid: Number(b.paidAmount ?? 0), balance: Number(b.balanceAmount ?? 0) });
+  for (const [oid, b] of billByOrderRaw) {
+    billByOrderId.set(oid, {
+      billNumber: b.billNumber,
+      discount: Number(b.discount ?? 0),
+      subtotal: Number(b.subtotal ?? 0),
+      status: b.status ?? null,
+      paid: Number(b.paidAmount ?? 0),
+      balance: Number(b.balanceAmount ?? 0),
+    });
   }
 
-  const tokens = orderIds.length
+  // Drop unbilled / cancelled-bill-only orders before any commission maths.
+  const billedOrdersWithPatients = ordersWithPatients.filter(o => billByOrderId.has(o.orderId));
+  const billedOrderIds = billedOrdersWithPatients.map(o => o.orderId);
+
+  const tokens = billedOrderIds.length
     ? await db.select({ orderTestId: testTokensTable.orderTestId })
         .from(testTokensTable)
-        .where(and(inArray(testTokensTable.orderId, orderIds), sql`${testTokensTable.priority} > 0`))
+        .where(and(inArray(testTokensTable.orderId, billedOrderIds), sql`${testTokensTable.priority} > 0`))
     : [];
   const vipOrderTestIds = new Set(tokens.map(t => t.orderTestId).filter(Boolean) as number[]);
 
@@ -962,11 +986,12 @@ export async function computeReferralReport(q: { from?: string; to?: string; doc
   if (NEEDS_REPORT_STATUS(eligCfg.policy)) {
     const activeOrderTestIdsByOrder = new Map<number, number[]>();
     for (const ot of orderTests) {
+      if (!billByOrderId.has(ot.orderId)) continue;
       const arr = activeOrderTestIdsByOrder.get(ot.orderId) ?? [];
       arr.push(ot.id);
       activeOrderTestIdsByOrder.set(ot.orderId, arr);
     }
-    reportStatusByOrder = await fetchOrderReportStatus(orderIds, activeOrderTestIdsByOrder);
+    reportStatusByOrder = await fetchOrderReportStatus(billedOrderIds, activeOrderTestIdsByOrder);
   }
 
   const filteredDoctors = doctors.filter(d => !doctorId || d.id === Number(doctorId));
@@ -1026,7 +1051,7 @@ export async function computeReferralReport(q: { from?: string; to?: string; doc
   };
 
   const result = filteredDoctors.map(doctor => {
-    const doctorOrders = ordersWithPatients.filter(o => o.doctorId === doctor.id);
+    const doctorOrders = billedOrdersWithPatients.filter(o => o.doctorId === doctor.id);
     const rules = allRules.filter(r => r.doctorId === doctor.id);
 
     // Build per-order discount-adjusted commission ratio + eligibility hold
@@ -1054,7 +1079,11 @@ export async function computeReferralReport(q: { from?: string; to?: string; doc
     const rows: PatientRow[] = [];
     for (const order of doctorOrders) {
       const ots = orderTests.filter(ot => ot.orderId === order.orderId);
+      if (ots.length === 0) continue;
       const bill = billByOrderId.get(order.orderId);
+      // Bill is guaranteed by billedOrdersWithPatients filter; keep the guard
+      // so a future refactor cannot reintroduce unbilled rows.
+      if (!bill) continue;
       const ratio = orderAdjustRatio.get(order.orderId) ?? 1;
 
       for (const ot of ots) {
@@ -1324,6 +1353,154 @@ router.post("/whatsapp/send", async (req, res) => {
     sent: results.filter(r => r.ok && !r.skipped).length,
     failed: results.filter(r => !r.ok).length,
     results,
+  });
+});
+
+// ─── WhatsApp / Email: send a doctor their Referral Register for a period ─────
+// Flat register (DATE · PATIENT · TEST · AMOUNT), not commission figures.
+// Same billed-only source as the on-screen Referral Register.
+router.post("/whatsapp/send-register", async (req, res) => {
+  const body = (req.body ?? {}) as {
+    doctorIds?: unknown; from?: string; to?: string;
+    detail?: string; channel?: string; dryRun?: boolean;
+  };
+  const doctorIds = Array.isArray(body.doctorIds)
+    ? body.doctorIds.map(Number).filter(n => Number.isInteger(n) && n > 0)
+    : [];
+  if (doctorIds.length === 0) {
+    res.status(400).json({ error: "doctorIds must be a non-empty array" });
+    return;
+  }
+  const detail: "summary" | "breakdown" = body.detail === "breakdown" ? "breakdown" : "summary";
+  const channel: "whatsapp" | "email" | "both" =
+    body.channel === "email" ? "email" : body.channel === "both" ? "both" : "whatsapp";
+  const dryRun = body.dryRun !== false;
+
+  const [clinic] = await db.select({ name: clinicSettingsTable.name }).from(clinicSettingsTable).limit(1);
+  const clinicName = clinic?.name || "Care Diagnostics";
+  const period = fmtPeriod(body.from, body.to);
+
+  const { report } = await computeReferralReport({ from: body.from, to: body.to });
+  const byDoctorId = new Map(report.map(d => [d.doctor.id, d]));
+
+  const contacts = await db
+    .select({ id: doctorsTable.id, name: doctorsTable.name, phone: doctorsTable.phone, email: doctorsTable.email })
+    .from(doctorsTable)
+    .where(inArray(doctorsTable.id, doctorIds));
+  const contactById = new Map(contacts.map(c => [c.id, c]));
+
+  const { sendPlainWhatsappText } = await import("./whatsapp");
+  let sendMail: ((opts: { to: string; subject: string; text: string }) => Promise<{ ok: boolean; error?: string }>) | null = null;
+  if (channel === "email" || channel === "both") {
+    try {
+      const { getTransporter, getEmailSettings } = await import("../email");
+      sendMail = async ({ to, subject, text }) => {
+        const s = await getEmailSettings();
+        const transport = await getTransporter();
+        if (!transport || !s) return { ok: false, error: "Email not configured" };
+        await transport.sendMail({
+          from: `"${s.fromName}" <${s.fromAddress}>`,
+          to,
+          subject,
+          text,
+        });
+        return { ok: true };
+      };
+    } catch {
+      sendMail = async () => ({ ok: false, error: "Email module unavailable" });
+    }
+  }
+
+  const results: {
+    doctorId: number; doctorName: string; phone: string | null; email: string | null;
+    amount: number; testCount: number; message: string;
+    whatsapp?: { ok: boolean; skipped?: boolean; error?: string; messageId?: string };
+    emailResult?: { ok: boolean; skipped?: boolean; error?: string };
+  }[] = [];
+
+  for (const id of doctorIds) {
+    const contact = contactById.get(id);
+    const doctorName = contact?.name ?? `#${id}`;
+    const phone = contact?.phone ?? null;
+    const email = contact?.email ?? null;
+    const entry = byDoctorId.get(id);
+
+    if (!entry || entry.rows.length === 0) {
+      results.push({
+        doctorId: id, doctorName, phone, email, amount: 0, testCount: 0, message: "",
+        whatsapp: channel !== "email" ? { ok: false, skipped: true, error: "No billed referrals in this period" } : undefined,
+        emailResult: channel !== "whatsapp" ? { ok: false, skipped: true, error: "No billed referrals in this period" } : undefined,
+      });
+      continue;
+    }
+
+    const amount = entry.totalRevenue;
+    const testCount = entry.rows.length;
+    const L: string[] = [];
+    L.push(`Dear Dr. ${doctorName.replace(/^Dr\.?\s*/i, "")},`);
+    L.push("");
+    L.push(`Your referral register for ${period}:`);
+    L.push(`*${testCount} test${testCount === 1 ? "" : "s"}* · *${fmtINR(amount)}* billed.`);
+    if (detail === "breakdown") {
+      L.push("");
+      L.push("DATE | PATIENT | TEST | AMOUNT");
+      const sorted = [...entry.rows].sort((a, b) => a.date.localeCompare(b.date));
+      for (const r of sorted.slice(0, 40)) {
+        const [y, m, d] = r.date.split("-");
+        const dd = `${d}/${m}/${y}`;
+        L.push(`${dd} | ${r.patientName} | ${r.testName} | ${fmtINR(r.price)}`);
+      }
+      if (sorted.length > 40) L.push(`…and ${sorted.length - 40} more (see clinic statement).`);
+    }
+    L.push("");
+    L.push(`- ${clinicName}`);
+    const message = L.join("\n");
+
+    let whatsapp: (typeof results)[number]["whatsapp"];
+    let emailResult: (typeof results)[number]["emailResult"];
+
+    if (channel === "whatsapp" || channel === "both") {
+      if (!phone) {
+        whatsapp = { ok: false, error: "No phone number on file" };
+      } else if (dryRun) {
+        whatsapp = { ok: true, skipped: true };
+      } else {
+        const sent = await sendPlainWhatsappText(phone, message);
+        whatsapp = { ok: sent.ok, skipped: sent.skipped, error: sent.error, messageId: sent.messageId };
+      }
+    }
+
+    if (channel === "email" || channel === "both") {
+      if (!email) {
+        emailResult = { ok: false, error: "No email on file" };
+      } else if (dryRun) {
+        emailResult = { ok: true, skipped: true };
+      } else if (!sendMail) {
+        emailResult = { ok: false, error: "Email not configured" };
+      } else {
+        const sent = await sendMail({
+          to: email,
+          subject: `Referral register — ${period}`,
+          text: message.replace(/\*/g, ""),
+        });
+        emailResult = sent;
+      }
+    }
+
+    results.push({ doctorId: id, doctorName, phone, email, amount, testCount, message, whatsapp, emailResult });
+  }
+
+  res.json({
+    dryRun,
+    detail,
+    channel,
+    period,
+    results,
+    sentWhatsapp: results.filter(r => r.whatsapp?.ok && !r.whatsapp.skipped).length,
+    sentEmail: results.filter(r => r.emailResult?.ok && !r.emailResult.skipped).length,
+    failed: results.filter(r =>
+      (r.whatsapp && !r.whatsapp.ok) || (r.emailResult && !r.emailResult.ok),
+    ).length,
   });
 });
 
