@@ -16,7 +16,7 @@ $ps = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
 $arg = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$StartScript`""
 
 $action = New-ScheduledTaskAction -Execute $ps -Argument $arg -WorkingDirectory $Root
-# At logon of the installing user — worker needs GPU/user session context for some drivers.
+# At logon of the installing user - worker needs GPU/user session context for some drivers.
 $trigger = New-ScheduledTaskTrigger -AtLogOn
 $settings = New-ScheduledTaskSettingsSet `
   -AllowStartIfOnBatteries `
