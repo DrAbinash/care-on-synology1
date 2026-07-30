@@ -123,6 +123,7 @@ const PERMISSION_ALIASES: Readonly<Record<string, string>> = {
   // Unified WhatsApp Cloud API settings — same permission the backend
   // requires for every mutating route under /api/whatsapp (requireStaffPermission("/settings")).
   "/admin/integrations/whatsapp": "/settings",
+  "/hope-connection": "/settings",
   "/dicom-studies": "/dicom-nodes",
   "/dicom-workflow": "/radiology",
   "/smart-radiology": "/radiology",
@@ -388,12 +389,9 @@ const FEATURE_FLAG_DEFAULTS: Record<string, boolean> = {
   annotationLayer: false,
   hideDeprecatedNav: false,
   // HOPE → CARE diagnostic referral inbox. The nav items (/hope-referrals,
-  // /diagnostic-integration) now gate on the SERVER flag ff_hope_care_referrals
-  // (toggle in Settings › Feature Flags), which matches the backend integration
-  // scheduler's own gate — so enabling it in one place reveals the inbox and
-  // activates the integration together. This client-only key is retained only
-  // for backward-compat with any browser that set it locally; it no longer
-  // gates the nav.
+  // /diagnostic-integration) gate on ff_hope_care_referrals once live.
+  // /hope-connection is owner-only setup (always visible to owners so they
+  // can provision the partner and flip the flag before go-live).
   hopeReferralsInbox: false,
   billingDeskStepped: false,
   // Billing Desk display preferences (all apply immediately without page refresh)
