@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Calendar, AlertCircle, RefreshCw } from "lucide-react";
-import { SummaryExportToolbar } from "@/components/SummaryExport";
+import { SummaryExportToolbar, formatExportAmount } from "@/components/SummaryExport";
 import type { ExportConfig } from "@/components/SummaryExport";
 import {
   useGetDashboardStats,
