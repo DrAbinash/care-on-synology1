@@ -6,7 +6,7 @@ import PageHeader from "@/components/PageHeader";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Link } from "wouter";
-import { SummaryExportToolbar } from "@/components/SummaryExport";
+import { SummaryExportToolbar, formatExportAmount } from "@/components/SummaryExport";
 import type { ExportConfig, ExportSection, ExportTable } from "@/components/SummaryExport";
 import { SummaryDrilldownModal, type DrilldownType } from "@/components/SummaryDrilldownModal";
 import { FINANCIAL_QUERY_OPTIONS } from "@/lib/queryConfig";
@@ -1631,15 +1631,12 @@ export default function MyDailySummary() {
     cheque: "Cheque", neft: "NEFT/RTGS", online: "Online",
   };
 
-  const inr = (n: number) =>
-    new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(n);
+  const amt = (n: number) => formatExportAmount(n);
 
   const exportConfig = useMemo<ExportConfig | null>(() => {
     if (!s || !data) return null;
 
     // Use the SAME formula as UnifiedReconciliationPanel — must match exactly.
-    // cancelledOnMyBills (not cancelledAmount) — see the comment on the
-    // matching calculation in UnifiedReconciliationPanel above.
     const totalRefunds     = s.cashRefunded + s.digitalRefunded;
     const collectible      = s.grossBilledIncludingCancelled
                            + s.duesCollectedTotal
@@ -1654,59 +1651,65 @@ export default function MyDailySummary() {
       ? ((s.discountsGiven / (s.grossBilledIncludingCancelled + s.discountsGiven)) * 100).toFixed(1) + "%"
       : "0.0%";
 
+    const digitalLines = Object.entries(data.byMethod)
+      .filter(([, v]) => Math.abs(v) > 0)
+      .sort(([, a], [, b]) => b - a)
+      .map(([method, value]) => [
+        method.charAt(0).toUpperCase() + method.slice(1),
+        amt(value),
+      ] as [string, string]);
+
     const sections: ExportSection[] = [
       {
         title: "Reconciliation Summary",
         metrics: [
-          ["Staff",                    data.staffName],
-          ["Period",                   from === to ? from : `${from} to ${to}`],
+          ["Staff", data.staffName],
+          ["Period", from === to ? from : `${from} to ${to}`],
           ["", ""],
-          ["── BILLING ──────────────────────", ""],
-          ["Gross Bills Generated",    inr(s.grossBilledIncludingCancelled)],
-          ["Discounts Given (info)",   `${inr(s.discountsGiven)} (${discountPct} of gross) — already in bill totals`],
-          ["Old Dues Collected",       inr(s.duesCollectedTotal)],
-          ["Total Revenue Activity",   inr(s.grossBilledIncludingCancelled + s.duesCollectedTotal)],
+          ["-- BILLING --", ""],
+          ["Gross Bills Generated", amt(s.grossBilledIncludingCancelled)],
+          ["Discounts Given (info)", `${amt(s.discountsGiven)} (${discountPct} of gross, already in bill totals)`],
+          ["Old Dues Collected", amt(s.duesCollectedTotal)],
+          ["Total Revenue Activity", amt(s.grossBilledIncludingCancelled + s.duesCollectedTotal)],
           ["", ""],
-          ["── DEDUCTIONS ───────────────────", ""],
-          ["Cancelled Bills",          inr(s.cancelledOnMyBills)],
-          ["Refunds (Cash)",           inr(s.cashRefunded)],
-          ["Refunds (Digital)",        inr(s.digitalRefunded)],
-          ["Total Refunds",            inr(totalRefunds)],
-          ["Outstanding Dues",         inr(s.outstanding)],
+          ["-- DEDUCTIONS --", ""],
+          ["Cancelled Bills", amt(s.cancelledOnMyBills)],
+          ["Refunds (Cash)", amt(s.cashRefunded)],
+          ["Refunds (Digital)", amt(s.digitalRefunded)],
+          ["Total Refunds", amt(totalRefunds)],
+          ["Outstanding Dues", amt(s.outstanding)],
           ["", ""],
-          ["── COLLECTION ───────────────────", ""],
-          ["Collectible Amount",       inr(collectible)],
-          ["Digital Collection (net)", inr(netDigital)],
-          ["Cash Expenses",            inr(s.cashExpenses)],
+          ["-- COLLECTION --", ""],
+          ["Collectible Amount", amt(collectible)],
+          ["Digital Collection (net)", amt(netDigital)],
+          ["Cash Expenses", amt(s.cashExpenses)],
           ["", ""],
-          ["── CASH RECONCILIATION ──────────", ""],
-          ["Expected Physical Cash",   inr(expectedCash)],
-          ["Actual Cash (payment records)", inr(s.physicalCashInHand)],
-          ["Variance",                 balanced ? "₹0 — Balanced ✓" : `${mismatch > 0 ? "+" : "−"}₹${Math.abs(mismatch).toFixed(0)} ${mismatch > 0 ? "(Surplus)" : "(Short)"}`],
-          ["", ""],
-          ["── ATTRIBUTION NOTE ─────────────", ""],
-          ["Cash accountability",      "Refunds & expenses attributed to the staff who performed them, not the bill creator"],
-        ],
-      },
-      {
-        title: "Digital Payment Breakdown",
-        metrics: [
-          ...Object.entries(data.byMethod)
-            .filter(([, v]) => Math.abs(v) > 0)
-            .sort(([, a], [, b]) => b - a)
-            .map(([method, value]) => [
-              method.charAt(0).toUpperCase() + method.slice(1),
-              inr(value),
-            ] as [string, string]),
-          ["Digital Refunds",      `−${inr(s.digitalRefunded)}`],
-          ["Net Digital",          inr(netDigital)],
+          ["-- CASH RECONCILIATION --", ""],
+          ["Cash Received", amt(s.cashIn)],
+          ["Less: Cash Refunded", amt(s.cashRefunded)],
+          ["Less: Cash Expenses", amt(s.cashExpenses)],
+          ["Expected Physical Cash", amt(s.physicalCashInHand)],
+          ["Billing cross-check", amt(expectedCash)],
+          ["Variance", balanced
+            ? "Rs.0 - Balanced OK"
+            : `${mismatch > 0 ? "+" : "-"}Rs.${Math.abs(mismatch).toLocaleString("en-IN")} ${mismatch > 0 ? "(Surplus)" : "(Short)"}`],
         ],
       },
     ];
 
+    if (digitalLines.length > 0) {
+      sections.push({
+        title: "Payment Method Breakdown",
+        metrics: [
+          ...digitalLines,
+          ["Digital Refunds", amt(-Math.abs(s.digitalRefunded))],
+          ["Net Digital", amt(netDigital)],
+        ],
+      });
+    }
+
     // Discount drill-down — owner only
     if (isOwner && data.discountBills.length > 0) {
-      // Per-staff
       const byStaffMap = new Map<string, number>();
       const byDoctorMap = new Map<string, number>();
       for (const b of data.discountBills) {
@@ -1716,65 +1719,62 @@ export default function MyDailySummary() {
         byDoctorMap.set(doc, (byDoctorMap.get(doc) ?? 0) + b.discountGiven);
       }
       sections.push({
-        title: `Discount Analysis — Total ${inr(s.discountsGiven)} (${discountPct})`,
+        title: `Discount Analysis (${amt(s.discountsGiven)}, ${discountPct})`,
         metrics: [
           ["", "BY STAFF"],
           ...Array.from(byStaffMap.entries())
             .sort((a, b) => b[1] - a[1])
-            .map(([name, amt]) => [name, inr(amt)] as [string, string]),
+            .map(([name, v]) => [name, amt(v)] as [string, string]),
           ["", ""],
           ["", "BY REFERRAL DOCTOR"],
           ...Array.from(byDoctorMap.entries())
             .sort((a, b) => b[1] - a[1])
-            .map(([doc, amt]) => [doc, inr(amt)] as [string, string]),
+            .map(([doc, v]) => [doc, amt(v)] as [string, string]),
         ],
       });
     }
 
     const tables: ExportTable[] = [];
 
-    // Discount bill list — owner only
     if (isOwner && data.discountBills.length > 0) {
       tables.push({
-        title: "Discounted Bills Detail",
-        headers: ["Bill #", "Patient", "Staff", "Referring Doctor", "Gross Amount", "Discount", "Net Amount", "Reason"],
+        title: "Discounted Bills",
+        headers: ["Bill #", "Patient", "Staff", "Gross", "Discount", "Net", "Reason"],
         rows: data.discountBills.map((b) => [
           b.billNumber,
           b.patientName,
-          b.createdByName ?? "—",
-          b.referringDoctor ?? "—",
-          inr(b.grossAmount),
-          inr(b.discountGiven),
-          inr(b.totalAmount),
-          b.discountReason ?? "—",
+          b.createdByName ?? "-",
+          amt(b.grossAmount),
+          amt(b.discountGiven),
+          amt(b.totalAmount),
+          [b.referringDoctor, b.discountReason].filter(Boolean).join(" / ") || "-",
         ]),
       });
     }
 
-    // Per-staff breakdown
     if (data.byStaff && data.byStaff.length > 0) {
       tables.push({
-        title: "Staff-wise Reconciliation",
-        headers: ["Staff", "Gross Billed", "Cancelled", "Outstanding", "Cash In", "Refunds (Cash)", "Cash Exp", "Expected Cash", "Net Digital", "Dues Collected", "Discounts"],
+        title: "Staff-wise Summary",
+        headers: ["Staff", "Gross", "Cancelled", "Outstanding", "Cash In", "Cash Ref", "Cash Exp", "Exp. Cash", "Net Digital", "Dues", "Discounts"],
         rows: data.byStaff.map((st) => [
           st.name,
-          inr(st.grossBilled),
-          inr(st.cancelled),
-          inr(st.outstanding),
-          inr(st.cashIn),
-          inr(st.cashRefunded),
-          inr(st.cashExpenses),
-          inr(st.physicalCashInHand),
-          inr(st.netDigital),
-          inr(st.duesCollected),
-          inr(st.discountsGiven),
+          amt(st.grossBilled),
+          amt(st.cancelled),
+          amt(st.outstanding),
+          amt(st.cashIn),
+          amt(st.cashRefunded),
+          amt(st.cashExpenses),
+          amt(st.physicalCashInHand),
+          amt(st.netDigital),
+          amt(st.duesCollected),
+          amt(st.discountsGiven),
         ]),
       });
     }
 
     return {
       title: "Daily Financial Reconciliation",
-      subtitle: `${data.staffName} • ${from === to ? from : `${from} → ${to}`}`,
+      subtitle: `${data.staffName} | ${from === to ? from : `${from} -> ${to}`}`,
       sections,
       tables,
     };
