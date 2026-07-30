@@ -143,6 +143,7 @@ function cssVar(value: string | undefined): string | undefined {
 const LABELS: Record<Language, Record<string, string>> = {
   en: {
     nowServing: "NOW SERVING",
+    upNext: "UP NEXT",
     waitingForNext: "Waiting for next token…",
     nextPatients: "NEXT PATIENTS",
     queueClear: "Queue is clear",
@@ -150,6 +151,7 @@ const LABELS: Record<Language, Record<string, string>> = {
   },
   hi: {
     nowServing: "अभी बुलाया जा रहा है",
+    upNext: "अगला",
     waitingForNext: "अगले टोकन की प्रतीक्षा है…",
     nextPatients: "अगले मरीज़",
     queueClear: "कतार खाली है",
@@ -334,6 +336,8 @@ export default function QueueDisplay({ roomKey: propRoomKey }: QueueDisplayProps
   const s = settings;
   const nextCount = s.nextPatientCount || 5;
   const nextList = next.slice(0, nextCount);
+  const upNext = !current && nextList.length > 0 ? nextList[0] : null;
+  const nextAfterUp = upNext ? nextList.slice(1) : nextList;
   const enabledInstructions = (s.instructionItems || []).filter((i) => i.enabled);
   const isLandscape = s.layoutOrientation === "landscape";
 
@@ -364,24 +368,37 @@ export default function QueueDisplay({ roomKey: propRoomKey }: QueueDisplayProps
         </div>
       )}
 
-      <header className="top">
-        {s.showLogo && s.logoUrl && <img src={s.logoUrl} className="logo" alt="" />}
-        <div>
-          {s.showDisplayName && <h1>{s.displayName}</h1>}
-          {s.showLocation && s.location && <p>{s.location}</p>}
-        </div>
+      <header className="brand-bar">
+        {s.showLogo && s.logoUrl && (
+          <img src={s.logoUrl} className="brand-logo" alt="" />
+        )}
+        {s.showDisplayName && s.displayName && (
+          <span className="brand-part brand-name">{s.displayName}</span>
+        )}
+        {s.showLocation && s.location && (
+          <>
+            {(s.showLogo && s.logoUrl) || (s.showDisplayName && s.displayName) ? (
+              <span className="brand-sep" aria-hidden="true">·</span>
+            ) : null}
+            <span className="brand-part brand-location">{s.location}</span>
+          </>
+        )}
+        {s.showRoomTitle && s.roomTitle && (
+          <>
+            {((s.showLogo && s.logoUrl) || (s.showDisplayName && s.displayName) || (s.showLocation && s.location)) ? (
+              <span className="brand-sep" aria-hidden="true">·</span>
+            ) : null}
+            <span className="brand-part brand-room">{s.roomTitle}</span>
+          </>
+        )}
       </header>
-
-      {s.showRoomTitle && (
-        <section className="room-title">
-          <h2>{s.roomTitle}</h2>
-        </section>
-      )}
 
       <div className="body">
         {s.showNowServing && (
-          <section className="now-card">
-            <div className="green-bar">{t(s.language, "nowServing")}</div>
+          <section className={`now-card${upNext ? " up-next-mode" : ""}`}>
+            <div className={`green-bar${upNext ? " up-next-bar" : ""}`}>
+              {upNext ? t(s.language, "upNext") : t(s.language, "nowServing")}
+            </div>
             {current ? (
               <>
                 <h3>#{current.tokenNo}</h3>
@@ -394,6 +411,12 @@ export default function QueueDisplay({ roomKey: propRoomKey }: QueueDisplayProps
                   {[roomKeyLabel(s.roomTitle), current.floorLabel].filter(Boolean).join(" · ")}
                 </div>
               </>
+            ) : upNext ? (
+              <>
+                <h3>#{upNext.tokenNo}</h3>
+                <h4>{upNext.patientLabel}</h4>
+                <p>{upNext.testName || t(s.language, "waitingForNext")}</p>
+              </>
             ) : (
               <div className="no-serving">{t(s.language, "waitingForNext")}</div>
             )}
@@ -403,10 +426,10 @@ export default function QueueDisplay({ roomKey: propRoomKey }: QueueDisplayProps
         {s.showNextPatients && (
           <section className="next-card">
             <div className="blue-bar">{t(s.language, "nextPatients")}</div>
-            {nextList.length === 0 ? (
+            {nextAfterUp.length === 0 ? (
               <div className="next-empty">{t(s.language, "queueClear")}</div>
             ) : (
-              nextList.map((p) => (
+              nextAfterUp.map((p) => (
                 <div className="next-row" key={p.id}>
                   <b>{p.tokenNo}</b>
                   <span>{p.patientLabel}</span>
@@ -504,12 +527,48 @@ const DISPLAY_CSS = `
 }
 .usg-display * { box-sizing: border-box; }
 .usg-display.kiosk-lock { user-select: none; -webkit-user-select: none; cursor: none; }
-.top { display: flex; align-items: center; gap: 1.6vw; justify-content: center; flex-shrink: 0; }
-.logo { width: 6vh; height: 6vh; object-fit: contain; border-radius: 8px; background: white; padding: 4px; }
-.top h1 { font-size: 3.4vh; margin: 0; color: var(--primary-color, #4ee24e); text-align: center; }
-.top p { font-size: 1.9vh; margin: 2px 0 0; text-align: center; opacity: 0.85; }
-.room-title { margin: 1.6vh 0 1.2vh; text-align: center; flex-shrink: 0; }
-.room-title h2 { font-size: 3vh; font-weight: 800; margin: 0; letter-spacing: 0.02em; }
+
+/* Single-line brand header — logo + clinic + location + room, one row */
+.brand-bar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: nowrap;
+  gap: 1.2vw;
+  flex-shrink: 0;
+  margin-bottom: 1.4vh;
+  padding: 0.6vh 1vw;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.brand-logo {
+  width: 5.2vh;
+  height: 5.2vh;
+  object-fit: contain;
+  border-radius: 8px;
+  background: white;
+  padding: 3px;
+  flex-shrink: 0;
+}
+.brand-part {
+  font-size: clamp(2.4vh, 3.2vw, 3.4vh);
+  font-weight: 800;
+  line-height: 1.1;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--text-color, white);
+}
+.brand-name { color: var(--primary-color, #4ee24e); }
+.brand-location { color: var(--text-color, white); opacity: 0.95; }
+.brand-room { color: var(--text-color, white); }
+.brand-sep {
+  font-size: clamp(2.2vh, 3vw, 3.2vh);
+  font-weight: 800;
+  opacity: 0.45;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
 .body { display: contents; }
 .now-card, .next-card, .qr-card, .announcement, footer {
   border-radius: 18px;
@@ -520,6 +579,8 @@ const DISPLAY_CSS = `
   flex-shrink: 0;
 }
 .green-bar { background: var(--primary-color, #03a814); font-size: 2.6vh; font-weight: 900; padding: 1.2vh; text-align: center; }
+.green-bar.up-next-bar { background: #2563eb; }
+.now-card.up-next-mode { border-color: #2563eb; }
 .blue-bar { background: var(--secondary-color, #075fe0); font-size: 2.3vh; font-weight: 900; padding: 1.2vh; text-align: center; }
 .now-card { background: white; color: #00143d; text-align: center; flex: 1.6; display: flex; flex-direction: column; justify-content: center; min-height: 0; }
 .now-card h3 { font-size: 9vh; margin: 1.4vh 0 0.2vh; line-height: 1; font-weight: 900; }
@@ -596,6 +657,11 @@ footer {
 }
 
 /* ── Landscape (1920x1080-style) layout — two-column body ────────────── */
+.usg-display.landscape .brand-bar {
+  justify-content: flex-start;
+  padding-left: 0.4vw;
+  margin-bottom: 1vh;
+}
 .usg-display.landscape .body {
   display: grid;
   grid-template-columns: 1.3fr 1fr;
