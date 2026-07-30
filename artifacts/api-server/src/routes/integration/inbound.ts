@@ -16,6 +16,7 @@ import { ingestReferral, type ReferralIngestInput } from "../../services/integra
 import { writeReferralEvent } from "../../services/integration/audit";
 import { assertTransition, isReferralStatus } from "../../services/integration/referralStateMachine";
 import type { ReferralStatus } from "@workspace/db";
+import { sendWhatsAppNow, type WaMessagePurpose } from "../../services/whatsapp/WhatsAppOutbox";
 
 export const integrationInboundRouter = Router();
 
@@ -226,4 +227,53 @@ integrationInboundRouter.post("/diagnostic-referrals/:uuid/acknowledge", require
   }
   await writeReferralEvent(db, { referralId: ref.id, eventType: "result.acknowledged", actorType: "partner", organisation: ref.sourceOrg, actorName: typeof acknowledgedBy === "string" ? acknowledgedBy : null, reason: typeof method === "string" ? method : null });
   res.json({ acknowledged: true });
+});
+
+// ── POST /whatsapp/messages — HOPE enqueues patient WhatsApp via CARE outbox ─
+const HOPE_WA_PURPOSES = [
+  "manual_staff_send", "appointment_reminder", "report_ready", "bill_created",
+] as const satisfies readonly WaMessagePurpose[];
+
+const HopeWhatsappSchema = z.object({
+  recipientPhone: z.string().trim().min(1),
+  messagePurpose: z.enum(HOPE_WA_PURPOSES),
+  text: z.string().trim().min(1).max(4096),
+  idempotencyKey: z.string().trim().optional(),
+  patientId: z.number().int().positive().optional().nullable(),
+  sourceOrg: z.string().trim().optional(),
+});
+
+integrationInboundRouter.post("/whatsapp/messages", requireIntegrationPartnerAuth("whatsapp:enqueue"), async (req: IntegrationPartnerAuthRequest, res) => {
+  const parsed = HopeWhatsappSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid payload", details: parsed.error.flatten() });
+    return;
+  }
+  const body = parsed.data;
+  const partnerOrg = req.integrationPartner!.sourceOrgCode.toUpperCase();
+  if (body.sourceOrg && body.sourceOrg.toUpperCase() !== partnerOrg) {
+    res.status(403).json({ error: `sourceOrg must match partner organisation '${partnerOrg}'` });
+    return;
+  }
+
+  const result = await sendWhatsAppNow({
+    recipientPhone: body.recipientPhone,
+    messagePurpose: body.messagePurpose,
+    text: body.text,
+    patientId: body.patientId ?? null,
+    idempotencyKey: body.idempotencyKey,
+    createdBy: `hope:${req.integrationPartner!.code}`,
+  });
+
+  if (!result.ok && !result.skipped) {
+    res.status(502).json({ ok: false, error: result.error ?? "WhatsApp enqueue failed", outboxId: result.outboxId });
+    return;
+  }
+  res.json({
+    ok: true,
+    skipped: result.skipped ?? false,
+    messageId: result.messageId ?? null,
+    outboxId: result.outboxId ?? null,
+    error: result.error ?? null,
+  });
 });
