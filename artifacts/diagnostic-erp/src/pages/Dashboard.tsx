@@ -807,8 +807,7 @@ export default function Dashboard() {
 
   const exportConfig = useMemo<ExportConfig | null>(() => {
     if (!overallSummary) return null;
-    const inr = (n: number) =>
-      new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(n);
+    const amt = formatExportAmount;
     return {
       title: "Dashboard — Financial Report",
       subtitle: from === to ? from : `${from} to ${to}`,
@@ -816,14 +815,14 @@ export default function Dashboard() {
         {
           title: "Financial Summary",
           metrics: [
-            ["Gross Billing", inr(overallSummary.grossBilling)],
-            ["Net Collection", inr(overallSummary.netCollection)],
-            ["Physical Cash in Hand", inr(overallSummary.physicalCashInHand)],
-            ["Digital Collection", inr(overallSummary.digitalCollection)],
-            ["Outstanding / Dues", inr(overallSummary.outstanding)],
-            ["Refunds & Cancellations", inr(overallSummary.refundsAndCancellations)],
-            ["Cash Expenses", inr(overallSummary.totalExpenses)],
-            ["Discounts Given", inr(overallSummary.discountsGiven)],
+            ["Gross Billing", amt(overallSummary.grossBilling)],
+            ["Net Collection", amt(overallSummary.netCollection)],
+            ["Physical Cash in Hand", amt(overallSummary.physicalCashInHand)],
+            ["Digital Collection", amt(overallSummary.digitalCollection)],
+            ["Outstanding / Dues", amt(overallSummary.outstanding)],
+            ["Refunds & Cancellations", amt(overallSummary.refundsAndCancellations)],
+            ["Cash Expenses", amt(overallSummary.totalExpenses)],
+            ["Discounts Given", amt(overallSummary.discountsGiven)],
             ["Pending Reports", String(overallSummary.pendingReports)],
           ],
         },
@@ -832,12 +831,12 @@ export default function Dashboard() {
         ...(staffRows.length > 0 ? [{
           title: "Staff Comparison",
           headers: ["Staff", "Bills", "Total Billing", "Received", "Cash", "Digital", "Discounts", "Cancels", "Net Cash"],
-          rows: staffRows.map((r) => [r.staffName, r.billCount, inr(r.totalBilling), inr(r.totalReceived), inr(r.cashCollection), inr(r.digitalCollection), inr(r.discountsGiven), r.cancellationCount, inr(r.netCashHandled)]),
+          rows: staffRows.map((r) => [r.staffName, r.billCount, amt(r.totalBilling), amt(r.totalReceived), amt(r.cashCollection), amt(r.digitalCollection), amt(r.discountsGiven), r.cancellationCount, amt(r.netCashHandled)]),
         }] : []),
         ...(modalityRows.length > 0 ? [{
           title: "Modality Summary",
           headers: ["Modality", "Tests", "Gross Billing", "Completed", "Pending"],
-          rows: modalityRows.map((r) => [r.modality, r.testCount, inr(r.grossBilling), r.completedReports, r.pendingReports]),
+          rows: modalityRows.map((r) => [r.modality, r.testCount, amt(r.grossBilling), r.completedReports, r.pendingReports]),
         }] : []),
       ],
     };
