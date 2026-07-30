@@ -1668,7 +1668,7 @@ export default function MyDailySummary() {
           ["", ""],
           ["-- BILLING --", ""],
           ["Gross Bills Generated", amt(s.grossBilledIncludingCancelled)],
-          ["Discounts Given (info)", `${amt(s.discountsGiven)} (${discountPct} of gross, already in bill totals)`],
+          ["Discounts Given (info)", `${amt(s.discountsGiven)} (${discountPct}, in totals)`],
           ["Old Dues Collected", amt(s.duesCollectedTotal)],
           ["Total Revenue Activity", amt(s.grossBilledIncludingCancelled + s.duesCollectedTotal)],
           ["", ""],

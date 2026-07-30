@@ -75,7 +75,7 @@ function isTotalRow(label: string) {
 function isDeductRow(label: string) {
   const l = label.toLowerCase();
   return l.startsWith("cancelled") || l.startsWith("refund") || l.startsWith("outstanding") ||
-         l.startsWith("digital collection") || l.startsWith("cash expenses");
+         l.startsWith("digital collection") || l.startsWith("cash expenses") || l.startsWith("less:");
 }
 function isInfoRow(label: string) {
   return label.toLowerCase().includes("discount") && label.toLowerCase().includes("info");
@@ -86,6 +86,12 @@ function isBalancedRow(label: string, value: string) {
 function isMismatchRow(label: string, value: string) {
   return label === "Variance" && !value.includes("Balanced");
 }
+
+/** Compact ledger width — label + value adjacent, not stretched across full page. */
+const LEDGER_SIGN_MM = 4;
+const LEDGER_VALUE_MM = 32;
+const LEDGER_LABEL_MM = 76;
+const LEDGER_TABLE_MM = LEDGER_SIGN_MM + LEDGER_LABEL_MM + LEDGER_VALUE_MM;
 
 // ─── Smart HTML builder (Print / Word / Email) ────────────────────────────────
 
@@ -138,31 +144,33 @@ function buildHTML(config: ExportConfig): string {
         : info      ? "#92400e"
         : "#111827";
 
+      const nowrapLabel = !info && safeLabel.length <= 22;
+
       return `<tr style="background:${rowBg}">
-        <td style="width:14px;text-align:center;color:${signColor};font-size:8px;font-weight:700;padding:1px 2px 1px 4px;border:none;vertical-align:top">${sign}</td>
+        <td style="width:12px;text-align:center;color:${signColor};font-size:8px;font-weight:700;padding:1px 2px;border:none;vertical-align:top">${sign}</td>
         <td style="font-size:8.5px;color:${info ? "#92400e" : deduct ? "#991b1b" : total || finalRow ? "#0f172a" : "#374151"};
-          font-weight:${total || finalRow ? "700" : "400"};padding:1px 4px 1px 6px;vertical-align:top;line-height:1.25">${safeLabel}</td>
+          font-weight:${total || finalRow ? "700" : "400"};padding:1px 6px 1px 4px;vertical-align:top;line-height:1.25;white-space:${nowrapLabel ? "nowrap" : "normal"}">${safeLabel}</td>
         <td style="font-size:${finalRow ? "10.5" : "8.5"}px;font-weight:${total || finalRow ? "700" : "600"};
-          color:${valueColor};text-align:right;font-variant-numeric:tabular-nums;padding:1px 6px 1px 4px;
+          color:${valueColor};text-align:right;font-variant-numeric:tabular-nums;padding:1px 4px 1px 0;
           white-space:nowrap;vertical-align:top">${safeValue}</td>
       </tr>`;
     }).join("");
   };
 
   const renderSectionBox = (sec: ExportSection): string => `
-    <div style="border:1px solid #cbd5e1;border-radius:4px;overflow:hidden;margin-bottom:8px;break-inside:avoid">
+    <div style="display:inline-block;vertical-align:top;width:${LEDGER_TABLE_MM}mm;max-width:100%;border:1px solid #cbd5e1;border-radius:4px;overflow:hidden;margin:0 8px 8px 0;break-inside:avoid">
       <div style="background:#1e293b;color:#fff;padding:4px 8px;font-size:9px;font-weight:700">${escHtml(sec.title)}</div>
       <table style="width:100%;border-collapse:collapse;table-layout:fixed">
         <colgroup>
-          <col style="width:14px">
-          <col>
-          <col style="width:108px">
+          <col style="width:${LEDGER_SIGN_MM}mm">
+          <col style="width:${LEDGER_LABEL_MM}mm">
+          <col style="width:${LEDGER_VALUE_MM}mm">
         </colgroup>
         <tbody>${renderSectionRows(sec)}</tbody>
       </table>
     </div>`;
 
-  const sectionsHTML = config.sections.map(renderSectionBox).join("");
+  const sectionsHTML = `<div style="line-height:0">${config.sections.map(renderSectionBox).join("")}</div>`;
 
   const tablesHTML = config.tables.map((t) => {
     const colCount = t.headers.length;
@@ -281,8 +289,6 @@ async function downloadPDF(config: ExportConfig, orientation: PaperOrientation):
   const pageW  = doc.internal.pageSize.getWidth();
   const pageH  = doc.internal.pageSize.getHeight();
   const margin = 10;
-  const valueW = orientation === "landscape" ? 42 : 38;
-  const labelW = pageW - margin * 2 - 5 - valueW;
   const ts     = new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
 
   doc.setFillColor(...PDF_NAVY);
@@ -305,7 +311,7 @@ async function downloadPDF(config: ExportConfig, orientation: PaperOrientation):
 
     const boxTop = y;
     doc.setFillColor(...PDF_NAVY);
-    doc.rect(margin, y, pageW - margin * 2, 5, "F");
+    doc.rect(margin, y, LEDGER_TABLE_MM, 5, "F");
     doc.setTextColor(255, 255, 255);
     doc.setFontSize(8);
     doc.setFont("helvetica", "bold");
@@ -372,6 +378,7 @@ async function downloadPDF(config: ExportConfig, orientation: PaperOrientation):
       startY: y,
       body: bodyRows,
       theme: "plain",
+      tableWidth: LEDGER_TABLE_MM,
       styles: {
         fontSize: 7.5,
         cellPadding: { top: 0.6, bottom: 0.6, left: 1.5, right: 1.5 },
@@ -379,11 +386,11 @@ async function downloadPDF(config: ExportConfig, orientation: PaperOrientation):
         valign: "middle",
       },
       columnStyles: {
-        0: { cellWidth: 5, halign: "center", fontSize: 7 },
-        1: { cellWidth: labelW },
-        2: { halign: "right", fontStyle: "bold", cellWidth: valueW, overflow: "visible" },
+        0: { cellWidth: LEDGER_SIGN_MM, halign: "center", fontSize: 7 },
+        1: { cellWidth: LEDGER_LABEL_MM },
+        2: { halign: "right", fontStyle: "bold", cellWidth: LEDGER_VALUE_MM, overflow: "visible" },
       },
-      margin: { left: margin, right: margin },
+      margin: { left: margin, right: pageW - margin - LEDGER_TABLE_MM },
       didParseCell(data) {
         const rs = rowStyles[data.row.index];
         if (!rs) return;
@@ -398,7 +405,7 @@ async function downloadPDF(config: ExportConfig, orientation: PaperOrientation):
     y = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY;
     doc.setDrawColor(...PDF_NAVY);
     doc.setLineWidth(0.35);
-    doc.rect(margin, boxTop, pageW - margin * 2, y - boxTop);
+    doc.rect(margin, boxTop, LEDGER_TABLE_MM, y - boxTop);
     y += 4;
   }
 
@@ -406,8 +413,9 @@ async function downloadPDF(config: ExportConfig, orientation: PaperOrientation):
     if (y > pageH - 30) { doc.addPage(); y = margin; }
 
     const boxTop = y;
+    const tableW = Math.min(pageW - margin * 2, orientation === "landscape" ? 260 : LEDGER_TABLE_MM + 40);
     doc.setFillColor(...PDF_NAVY);
-    doc.rect(margin, y, pageW - margin * 2, 5, "F");
+    doc.rect(margin, y, tableW, 5, "F");
     doc.setTextColor(255, 255, 255);
     doc.setFontSize(8);
     doc.setFont("helvetica", "bold");
@@ -422,6 +430,7 @@ async function downloadPDF(config: ExportConfig, orientation: PaperOrientation):
       head: [table.headers.map((h) => pdfSafeText(h))],
       body: table.rows.map((row) => row.map((cell) => pdfSafeText(String(cell)))),
       theme: "striped",
+      tableWidth: tableW,
       styles: { fontSize: 6.5, cellPadding: 1, overflow: "linebreak", valign: "middle" },
       headStyles: { fillColor: PDF_NAVY, textColor: [255, 255, 255], fontSize: 6.5, fontStyle: "bold" },
       didParseCell(data) {
@@ -430,13 +439,13 @@ async function downloadPDF(config: ExportConfig, orientation: PaperOrientation):
         const v = String(data.cell.raw ?? "");
         if (amountCol(header, v)) data.cell.styles.halign = "right";
       },
-      margin: { left: margin, right: margin },
+      margin: { left: margin, right: pageW - margin - tableW },
     });
 
     y = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY;
     doc.setDrawColor(...PDF_NAVY);
     doc.setLineWidth(0.35);
-    doc.rect(margin, boxTop, pageW - margin * 2, y - boxTop);
+    doc.rect(margin, boxTop, tableW, y - boxTop);
     y += 4;
   }
 
