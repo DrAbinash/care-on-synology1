@@ -298,6 +298,29 @@ export async function retireTemplateVersion(templateKey: string, version: number
 
 // ── Active selection (per copy type; standard keeps the R1.1 settings key) ──
 
+/** Phase E master switch (Radiology Settings → Premium Report). Kept in sync
+ *  with report_presentation_template so the legacy toggle and the R1.2 template
+ *  picker always agree. */
+export async function syncPremiumLayoutEnabled(enabled: boolean): Promise<void> {
+  const key = "premium_layout_enabled";
+  const category = "premium";
+  const newValue = enabled ? "true" : "false";
+  const [existing] = await db.select().from(pacsSettingsTable)
+    .where(and(eq(pacsSettingsTable.key, key), eq(pacsSettingsTable.category, category)))
+    .limit(1);
+  if (existing) {
+    if (existing.value !== newValue) {
+      await db.update(pacsSettingsTable).set({ value: newValue, updatedAt: new Date() })
+        .where(eq(pacsSettingsTable.id, existing.id));
+    }
+    return;
+  }
+  await db.insert(pacsSettingsTable).values({
+    key, value: newValue, category, isSecret: false,
+    createdAt: new Date(), updatedAt: new Date(),
+  });
+}
+
 export async function readActiveSelections(): Promise<Partial<Record<CopyType, string>>> {
   const keys = COPY_TYPES.map((c) => activeTemplateSettingKey(c));
   // Filter by category='report' to MATCH writeActiveSelection. pacs_settings
@@ -311,6 +334,15 @@ export async function readActiveSelections(): Promise<Partial<Record<CopyType, s
   for (const copyType of COPY_TYPES) {
     const value = rows.find((r) => r.key === activeTemplateSettingKey(copyType))?.value?.trim();
     if (value) out[copyType] = value;
+  }
+  // Legacy premium master switch — when explicitly ON and no standard template
+  // row exists yet, activate care-premium (R1.1 dormant-layout activation path).
+  if (!out.standard) {
+    const [premiumRow] = await db.select({ value: pacsSettingsTable.value })
+      .from(pacsSettingsTable)
+      .where(and(eq(pacsSettingsTable.key, "premium_layout_enabled"), eq(pacsSettingsTable.category, "premium")))
+      .limit(1);
+    if (premiumRow?.value === "true") out.standard = "care-premium";
   }
   return out;
 }
@@ -340,6 +372,9 @@ export async function writeActiveSelection(copyType: CopyType, templateKey: stri
       reason: "Report presentation template activated (R1.2)",
       changedBy: actor?.id ?? null, changedByName: actor?.name ?? "SYSTEM",
     }).catch(() => undefined);
+  }
+  if (copyType === "standard") {
+    await syncPremiumLayoutEnabled(templateKey === "care-premium").catch(() => undefined);
   }
 }
 

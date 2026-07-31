@@ -1315,6 +1315,13 @@ radiologyRouter.post("/pacs-settings", async (req, res) => {
     });
   }
 
+  // Premium Report master switch → canonical presentation template (R1.1/R1.2).
+  if (key === "premium_layout_enabled" && category === "premium" && oldValue !== newValue) {
+    const { writeActiveSelection } = await import("../lib/presentationTemplateStore.js");
+    const templateKey = newValue === "true" ? "care-premium" : "care-classic";
+    await writeActiveSelection("standard", templateKey, { id: changedBy, name: changedByName });
+  }
+
   res.json(row);
 });
 
