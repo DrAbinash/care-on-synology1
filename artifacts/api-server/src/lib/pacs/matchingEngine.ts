@@ -242,12 +242,18 @@ export function calculateMatchScore(dicom: DicomInput, bill: BilledTestInput): M
     }
   }
 
-  // Determine final score classification
-  let score: "GREEN" | "YELLOW" | "RED" = "RED";
+  // Determine final score classification.
+  // Accession is the work-id link key (MWL → modality → Orthanc return). When
+  // it matches exactly, NAME_MISMATCH is informational only — the bill/study
+  // identity is already proven. Modality mismatch stays critical.
+  const accessionMatched = reasons.some((r) => r.includes("Accession number matches exactly"));
   const hasCriticalWarnings = warnings.some(
-    (w) => w.startsWith("NAME_MISMATCH") || w.startsWith("MODALITY_MISMATCH"),
+    (w) =>
+      w.startsWith("MODALITY_MISMATCH") ||
+      (w.startsWith("NAME_MISMATCH") && !accessionMatched),
   );
 
+  let score: "GREEN" | "YELLOW" | "RED" = "RED";
   if (points >= 75 && !hasCriticalWarnings) {
     score = "GREEN";
   } else if (points >= 30 && !hasCriticalWarnings) {

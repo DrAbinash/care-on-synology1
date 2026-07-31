@@ -353,6 +353,10 @@ services:
       AI_TEMPERATURE_DRAFT: ${AI_TEMPERATURE_DRAFT:-0.1}
       ORTHANC_USERNAME: ${ORTHANC_USERNAME:-}
       ORTHANC_PASSWORD: ${ORTHANC_PASSWORD:-}
+      # Shared folder for Orthanc worklists plugin (.wl files). When set, billing
+      # auto-publishes ERP patient/doctor names + accession to the modality MWL.
+      # Mount the same host path into Orthanc's worklists Database directory.
+      ORTHANC_WORKLIST_DIR: ${ORTHANC_WORKLIST_DIR:-}
       PACS_PROVIDER: ${PACS_PROVIDER:-orthanc}
       PACS_VIEWER_TYPE: ${PACS_VIEWER_TYPE:-ohif}
       OHIF_URL: ${OHIF_URL:-}

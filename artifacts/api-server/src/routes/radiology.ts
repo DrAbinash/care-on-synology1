@@ -48,6 +48,7 @@ import { syncStudyToSite, getMultiSiteWorklist, getSites } from "../lib/multiSit
 import { decideRouting, getRoutingStats } from "../lib/dicomRoutingOptimizer";
 import { runMatchingEngineForWorklist } from "./internal-radiology";
 import { calculateMatchScore } from "../lib/pacs/matchingEngine";
+import { publishRadiologyStudyToMwl } from "../lib/pacs/publishRadiologyStudyToMwl";
 import { logger } from "../lib/logger";
 
 // Build an absolute https URL for share-link composition. Trusts the standard
@@ -192,6 +193,27 @@ export async function generateStudiesForOrder(opts: {
           });
         } catch {
           // Never block study creation on assignment failure
+        }
+
+        // ── Antigravity MWL path: ERP names + accession → modality ──
+        // Best-effort. Always inserts radiology_scheduled_procedures (queried by
+        // the Windows MWL agent). Writes Orthanc .wl when ORTHANC_WORKLIST_DIR
+        // is set. Return match uses accession (work id) + optional CARE-BILL.
+        try {
+          await publishRadiologyStudyToMwl({
+            accessionNumber: row.accessionNumber,
+            patientId: opts.patientId,
+            billId: opts.billId,
+            orderId: opts.orderId,
+            modality,
+            procedureName: ot.testName,
+            studyDescription: opts.dicomFields?.studyDescription ?? ot.testName,
+            referringDoctor: opts.dicomFields?.referringDoctor ?? row.referringDoctor ?? null,
+            bodyPart: opts.dicomFields?.bodyPart ?? null,
+            stationAeTitle: opts.dicomFields?.scheduledStationAETitle ?? null,
+          });
+        } catch {
+          // Never block study creation on MWL publish failure
         }
 
         out.push({ orderTestId: ot.orderTestId, testName: ot.testName, modality, accessionNumber: row.accessionNumber });

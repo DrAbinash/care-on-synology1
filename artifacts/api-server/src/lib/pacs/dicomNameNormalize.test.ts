@@ -56,4 +56,27 @@ describe("nameSimilarity / matching", () => {
     expect(result.score).toBe("GREEN");
     expect(result.reasons.some((r) => r.includes("Referring doctor"))).toBe(true);
   });
+
+  test("exact accession makes NAME_MISMATCH non-critical (work-id link)", () => {
+    const result = calculateMatchScore(
+      {
+        patientName: "COMPLETELY DIFFERENT PERSON",
+        modality: "MR",
+        accessionNumber: "ACC-2026-999",
+      },
+      {
+        id: 2,
+        patientId: 11,
+        patientName: "Ravi Kumar",
+        modality: "MRI",
+        accessionNumber: "ACC-2026-999",
+        testName: "MRI Brain",
+        patientUHID: "UHID1",
+        studyDate: "2026-07-31",
+      },
+    );
+    // Accession (+50) + modality (+10) + … — name warning may exist but score not forced RED.
+    expect(result.warnings.some((w) => w.startsWith("NAME_MISMATCH"))).toBe(true);
+    expect(result.score).not.toBe("RED");
+  });
 });
