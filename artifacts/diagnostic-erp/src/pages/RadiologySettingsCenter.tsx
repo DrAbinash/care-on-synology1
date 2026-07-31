@@ -1,6 +1,10 @@
 import { useState, useEffect } from "react";
 import { useLocation } from "wouter";
 import PresentationTemplateManager from "@/components/radiology/PresentationTemplateManager";
+import ReportLayoutQuickSelect, {
+  type ReportLayoutKey,
+  quickSelectLayoutKey,
+} from "@/components/radiology/ReportLayoutQuickSelect";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
 import { hostForProfile, orthancBaseForProfile, ohifBaseForProfile, publicBaseUrl } from "@/lib/networkProfiles";
@@ -174,11 +178,30 @@ export default function RadiologySettingsCenter() {
     const v = sv(key);
     return v === "" ? defaultOn : v === "true";
   };
+  /** R1.1 premium layout — active when the canonical template is care-premium
+   *  or the legacy master switch is explicitly ON. */
+  const premiumLayoutActive =
+    sv("report_presentation_template") === "care-premium" ||
+    sv("premium_layout_enabled") === "true";
+  const activeReportLayout = quickSelectLayoutKey(
+    sv("report_presentation_template") || (premiumLayoutActive ? "care-premium" : "care-classic"),
+  );
+  const setActiveReportLayout = (layout: ReportLayoutKey) => {
+    upsertSetting.mutate({
+      key: "premium_layout_enabled",
+      value: String(layout === "care-premium"),
+      category: "premium",
+      reason: layout === "care-premium" ? "Premium report layout activated" : "Premium report layout deactivated",
+    });
+  };
 
   const upsertSetting = useMutation({
     mutationFn: (body: object) => api.post("/api/radiology/pacs-settings", body),
-    onSuccess: () => {
+    onSuccess: (_data, variables) => {
       qc.invalidateQueries({ queryKey: ["pacs-settings"] });
+      if ((variables as { key?: string }).key === "premium_layout_enabled") {
+        qc.invalidateQueries({ queryKey: ["presentation-templates"] });
+      }
       toast({ title: "Configuration updated successfully" });
     },
     onError: (err: any) => toast({ title: "Failed to update configuration", description: err.message, variant: "destructive" }),
@@ -896,11 +919,17 @@ export default function RadiologySettingsCenter() {
           <div className="rounded-xl border bg-card p-5 space-y-3 max-w-3xl">
             <h3 className="text-sm font-bold">Premium Report Presentation</h3>
             <p className="text-xs text-muted-foreground">
-              Owner configuration for the preserved Premium Report module (opened via the "Premium Preview" button in the Reading Room and Worklist). These switches are stored as admin settings and applied by the Premium Report module.
+              Choose the clinic-wide report layout below. All print, PDF, and workspace preview surfaces use the same canonical server renderer. Radiologists can still compare layouts in the Reading Room preview without changing this default.
             </p>
+            <ReportLayoutQuickSelect
+              value={activeReportLayout}
+              activeKey={activeReportLayout}
+              disabled={!isAdmin}
+              onChange={setActiveReportLayout}
+              className="max-w-md"
+            />
             <div className="grid md:grid-cols-2 gap-2">
               {([
-                ["premium_layout_enabled", "Premium Report Layout", "Master switch for the premium presentation layer."],
                 ["premium_image_panel", "Image Panel", "Right-side representative DICOM images from Orthanc."],
                 ["premium_qr_verification", "QR Verification", "Printed QR code for report authenticity checks."],
                 ["premium_digital_signature", "Digital Signature", "Radiologist signature block on the final report."],
@@ -915,8 +944,11 @@ export default function RadiologySettingsCenter() {
                     <Label className="text-xs font-semibold">{label}</Label>
                     <p className="text-[11px] text-muted-foreground">{help}</p>
                   </div>
-                  <Switch checked={svOn(key)} disabled={!isAdmin}
-                    onCheckedChange={(v) => upsertSetting.mutate({ key, value: String(v), category: "premium" })} />
+                  <Switch
+                    checked={svOn(key, false)}
+                    disabled={!isAdmin}
+                    onCheckedChange={(v) => upsertSetting.mutate({ key, value: String(v), category: "premium" })}
+                  />
                 </div>
               ))}
             </div>

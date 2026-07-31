@@ -20,6 +20,11 @@ import { finalizeRadiologyReport, saveRadiologyDraft } from "@/lib/radiologyRepo
 import { exportRadiologyReportToWord, safeFileNamePart } from "@/lib/radiologyReportWordExport";
 import { exportRadiologyReportToPdf } from "@/lib/radiologyReportPdfExport";
 import { type ReportImageRef } from "@/lib/reportImageRefs";
+import ReportLayoutQuickSelect, {
+  type ReportLayoutKey,
+  quickSelectLayoutKey,
+  reportLayoutTemplateQuery,
+} from "@/components/radiology/ReportLayoutQuickSelect";
 import OpenStudyPanel from "@/components/radiology/OpenStudyPanel";
 import {
   ArrowLeft, ExternalLink, Sparkles, Save, CheckCircle2, AlertTriangle,
@@ -643,6 +648,16 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   // fetch fresh on every click, would then show something the on-screen
   // preview never displayed.
   const [previewRefreshToken, setPreviewRefreshToken] = useState(0);
+  // R1.1 — per-session layout preview (Classic vs Premium); print/preview
+  // use ?template= so radiologists can compare without changing clinic settings.
+  const { data: presentationTemplates } = useQuery<{ active: Partial<Record<string, string>> }>({
+    queryKey: ["presentation-templates"],
+    queryFn: () => api.get("/api/radiology/presentation-templates"),
+    staleTime: 60_000,
+  });
+  const clinicReportLayout = quickSelectLayoutKey(presentationTemplates?.active?.standard);
+  const [previewLayoutOverride, setPreviewLayoutOverride] = useState<ReportLayoutKey | null>(null);
+  const previewLayout = previewLayoutOverride ?? clinicReportLayout;
 
   // ── Template selection ────────────────────────────────────────────────────
   const [selectedTemplateId, setSelectedTemplateId] = useState<number | null>(null);
@@ -3253,10 +3268,11 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   // R1.1 — load the canonical server-rendered document for the preview panel.
   useEffect(() => {
     if (!previewMode) return;
+    const templateQs = reportLayoutTemplateQuery(previewLayout);
     const url = linkedReportId
-      ? `/api/patient-reports/${linkedReportId}/print?preview=true`
+      ? `/api/patient-reports/${linkedReportId}/print?preview=true&${templateQs}`
       : draftId
-        ? `/api/radiology/report-generator/drafts/${draftId}/print-preview`
+        ? `/api/radiology/report-generator/drafts/${draftId}/print-preview?${templateQs}`
         : null;
     if (!url) { setServerPreviewHtml(null); return; }
     let cancelled = false;
@@ -3264,7 +3280,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
       .then((html) => { if (!cancelled) setServerPreviewHtml(typeof html === "string" ? html : null); })
       .catch(() => { if (!cancelled) setServerPreviewHtml(null); });
     return () => { cancelled = true; };
-  }, [previewMode, draftId, linkedReportId, previewRefreshToken]);
+  }, [previewMode, draftId, linkedReportId, previewRefreshToken, previewLayout]);
 
   const { data: finalReport } = useQuery<FinalReportMeta & { id?: number; signedByName?: string | null }>({
     queryKey: ["workspace-final-report", linkedReportId],
@@ -4188,10 +4204,11 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
       toast({ title: "Popup blocked", description: "Allow popups for this site to print.", variant: "destructive" });
       return;
     }
+    const templateQs = reportLayoutTemplateQuery(previewLayout);
     const url = linkedReportId
-      ? `/api/patient-reports/${linkedReportId}/print`
+      ? `/api/patient-reports/${linkedReportId}/print?${templateQs}`
       : draftId
-        ? `/api/radiology/report-generator/drafts/${draftId}/print-preview?autoPrint=true`
+        ? `/api/radiology/report-generator/drafts/${draftId}/print-preview?autoPrint=true&${templateQs}`
         : null;
     if (url) {
       try {
@@ -5956,6 +5973,12 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
               <div className="border rounded-md bg-white">
                 <div className="flex items-center justify-between px-3 py-2 border-b flex-wrap gap-2">
                   <h3 className="text-sm font-semibold">Report Preview</h3>
+                  <ReportLayoutQuickSelect
+                    value={previewLayout}
+                    activeKey={presentationTemplates?.active?.standard}
+                    onChange={setPreviewLayoutOverride}
+                    className="max-w-xs"
+                  />
                   <div className="flex gap-1">
                     <Button
                       size="sm"
