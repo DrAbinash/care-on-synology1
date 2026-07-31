@@ -116,11 +116,12 @@ import {
   onUsbKeyChange,
   readKeyFile,
   isFsAccessSupported,
-  hasPairedPenDrive,
-  pairPenDrive,
+  hasPairedPenDriveSync,
+  preloadPairedDirHandle,
+  beginPairPenDrive,
   unpairPenDrive,
   tryReadKeyFromPairedDir,
-  ensurePairedDirPermission,
+  beginEnsurePairedDirPermission,
   tryReadUiFromPairedDir,
   tryReadApiFromPairedDir,
 } from "@/lib/usbKey";
@@ -642,10 +643,14 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const [usbKeyPresent, setUsbKeyPresent] = useState<boolean>(() => getStoredUsbKey() !== null);
   const [usbGateEnforced, setUsbGateEnforced] = useState<boolean>(true);
   const [pairDialog, setPairDialog] = useState<null | { busy: boolean; error: string | null; mode: "fs" | "file" }>(null);
+  // Cached pairing flag so Ctrl+Shift+K can open the folder picker on the
+  // same tick as the keydown (no IndexedDB await before showDirectoryPicker).
+  const [penDrivePaired, setPenDrivePaired] = useState<boolean>(() => hasPairedPenDriveSync() === true);
   const usbFileRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     void fetchUsbGateEnforced().then(setUsbGateEnforced);
+    void preloadPairedDirHandle().then((paired) => setPenDrivePaired(paired));
     const off = onUsbKeyChange(() => setUsbKeyPresent(getStoredUsbKey() !== null));
     return off;
   }, []);
@@ -772,11 +777,13 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     // user interaction after mount (click or keydown), silently try to
     // re-grant permission for the already-paired drive, then immediately tick
     // so the Super Admin link reappears without needing Ctrl+Shift+K again.
+    // beginEnsurePairedDirPermission uses the preloaded handle so
+    // requestPermission starts on the same tick as the gesture.
     let permissionGrantAttempted = false;
     const tryRegrant = () => {
       if (permissionGrantAttempted || stopped) return;
       permissionGrantAttempted = true;
-      void ensurePairedDirPermission().then((granted) => {
+      void beginEnsurePairedDirPermission().then((granted) => {
         if (granted && !stopped) void tick();
       });
     };
@@ -796,50 +803,74 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  // Hidden pairing trigger: Ctrl+Shift+K opens the one-time setup modal.
-  // Operators who don't know the combo can't see anything related to USB.
+  // Finish pairing after beginPairPenDrive() was started under a user gesture.
+  const finishPenDrivePair = async (pairPromise: Promise<void>) => {
+    try {
+      await pairPromise;
+      setPenDrivePaired(true);
+      const key = await tryReadKeyFromPairedDir();
+      if (!key) {
+        setPairDialog((p) => p ? { ...p, busy: false, error: "superadmin.key not found on the chosen folder." } : p);
+        return;
+      }
+      const ok = await verifyUsbKey(key);
+      if (!ok) {
+        setPairDialog((p) => p ? { ...p, busy: false, error: "Key file does not match the server secret." } : p);
+        return;
+      }
+      storeUsbKey(key);
+      setPairDialog(null);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Pairing failed.";
+      // AbortError = user closed the picker — keep the dialog for retry.
+      const cancelled = err instanceof DOMException && err.name === "AbortError";
+      setPairDialog((p) => p ? { ...p, busy: false, error: cancelled ? null : msg } : p);
+    }
+  };
+
+  // Hidden pairing trigger: Ctrl+Shift+K.
+  // First time (no paired folder yet): open the OS folder picker immediately
+  // on the keydown gesture. Later: show the pair/re-pair dialog.
   // Ctrl+Alt+U was the old combo but Chrome intercepts Ctrl+U (View Source)
   // at the browser level before JS can prevent it. Ctrl+Shift+K is safe on
   // all platforms (Chrome, Windows, Linux).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.ctrlKey && e.shiftKey && e.code === "KeyK") {
-        e.preventDefault();
-        setPairDialog({ busy: false, error: null, mode: isFsAccessSupported() ? "fs" : "file" });
+      if (!(e.ctrlKey && e.shiftKey && e.code === "KeyK")) return;
+      e.preventDefault();
+      if (!isFsAccessSupported()) {
+        setPairDialog({ busy: false, error: null, mode: "file" });
+        return;
       }
+      // First-time: start showDirectoryPicker on this keydown (gesture).
+      if (!penDrivePaired) {
+        const pairPromise = beginPairPenDrive();
+        setPairDialog({ busy: true, error: null, mode: "fs" });
+        void finishPenDrivePair(pairPromise);
+        return;
+      }
+      setPairDialog({ busy: false, error: null, mode: "fs" });
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
+    // Capture so radiology park-study (also Ctrl+Shift+K) does not win first.
+    window.addEventListener("keydown", onKey, { capture: true });
+    return () => window.removeEventListener("keydown", onKey, { capture: true });
+  }, [penDrivePaired]);
 
-  const onPairFs = async () => {
-    setPairDialog((p) => p ? { ...p, busy: true, error: null } : p);
-    try {
-      const alreadyPaired = await hasPairedPenDrive();
-      if (alreadyPaired) {
-        const ok = await ensurePairedDirPermission();
-        if (!ok) {
-          setPairDialog((p) => p ? { ...p, busy: false, error: "Permission denied. Try Re-pair." } : p);
-          return;
-        }
-      } else {
-        await pairPenDrive();
-      }
-      const key = await tryReadKeyFromPairedDir();
-      if (!key) { setPairDialog((p) => p ? { ...p, busy: false, error: "superadmin.key not found on the chosen folder." } : p); return; }
-      const ok = await verifyUsbKey(key);
-      if (!ok) { setPairDialog((p) => p ? { ...p, busy: false, error: "Key file does not match the server secret." } : p); return; }
-      storeUsbKey(key);
-      setPairDialog(null);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Pairing failed.";
-      setPairDialog((p) => p ? { ...p, busy: false, error: msg } : p);
+  const onPairFs = () => {
+    if (!isFsAccessSupported()) {
+      setPairDialog((p) => p ? { ...p, busy: false, error: "File System Access API not available." } : p);
+      return;
     }
+    // Start picker synchronously from the click — do not await IndexedDB first.
+    const pairPromise = beginPairPenDrive();
+    setPairDialog((p) => p ? { ...p, busy: true, error: null } : p);
+    void finishPenDrivePair(pairPromise);
   };
 
   const onUnpair = async () => {
     setPairDialog((p) => p ? { ...p, busy: true, error: null } : p);
     await unpairPenDrive();
+    setPenDrivePaired(false);
     setPairDialog((p) => p ? { ...p, busy: false, error: "Pen drive unpaired. Pair again to continue." } : p);
   };
 
@@ -1423,10 +1454,12 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             {pairDialog.mode === "fs" ? (
               <>
                 <p className="text-xs text-muted-foreground mb-4 leading-relaxed">
-                  Plug in the pen drive, then pick its root folder. The folder
-                  is remembered on this PC only — the Super Admin link will
-                  appear automatically while the drive is plugged in, and
-                  disappear when you remove it.
+                  Plug in the pen drive, then pick its root folder (must contain
+                  <code className="mx-1 px-1 rounded bg-muted">superadmin.key</code>).
+                  On first use, Ctrl+Shift+K opens the folder picker immediately.
+                  The folder is remembered on this PC — the Super Admin link
+                  appears while the drive is plugged in and disappears when you
+                  remove it.
                 </p>
                 <div className="flex gap-2">
                   <Button size="sm" onClick={onPairFs} disabled={pairDialog.busy} className="flex-1">
