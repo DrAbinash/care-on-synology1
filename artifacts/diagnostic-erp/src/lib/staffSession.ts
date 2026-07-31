@@ -138,6 +138,7 @@ const PERMISSION_ALIASES: Readonly<Record<string, string>> = {
   "/teaching-analytics": "/radiology",
   "/teaching-presentation": "/radiology",
   "/radiology/worklist": "/radiology",
+  "/radiology/open": "/radiology",
   // R1.4 review finding: RadiologyWorklist's "Report" button gates its
   // visibility with may("/radiology/report") — without this alias, the
   // bare literal "/radiology/report" is in neither PERMISSION_ALIASES nor

@@ -99,10 +99,11 @@ barrel/session touches are additive lines only.
 * **Migrate:** the idempotent SQL file is auto-discovered and applied by
   `docker/db-patch-entrypoint.sh` on the next deploy (validated by
   `scripts/check-migration-order.cjs`). Safe to run repeatedly.
-* **Enable:** provision a partner (`POST /api/integration/admin/partners`), set
-  `INTEGRATION_HOPE_CALLBACK_URL` / `INTEGRATION_HOPE_SIGNING_SECRET`, flip
-  `feature_flags.ff_hope_care_referrals` on, and set the `hopeReferralsInbox` client
-  flag for pilot staff. Nothing flows until all of these exist.
+* **Enable:** set `INTEGRATION_HOPE_CALLBACK_URL` /
+  `INTEGRATION_HOPE_SIGNING_SECRET` / `HOPE_PARTNER_KEY` (see
+  `deploy/synology/care.env`). On every Care API start the entrypoint + startup
+  bootstrap upsert the HOPE partner and enable `ff_hope_care_referrals`
+  automatically. Manual `POST /api/integration/admin/partners` is optional.
 * **Rollback:** flip the feature flag OFF (workers idle immediately) and/or deactivate
   the partner (inbound 401) — no schema change needed, no data loss. Removing the nav
   is a one-line revert. Tables are additive and forward-only (per repo policy); they
@@ -185,11 +186,17 @@ curl -XPOST $CARE/api/integration/v1/diagnostic-referrals -H "Authorization: Bea
 * The inbox `map-test` action persists mappings but a dedicated bulk mapping-admin UI
   is minimal (API is complete).
 
-## 11. Recommended next phase
+## 11. Shipped clinical follow-ons (finance still separate)
 
-**Phase 2:** Billing Desk auto-prefill (with sign-off), per-item `sample.collected` /
-`study.completed` status round-trips, inbound result PDF attachment, and a wired
-integration test DB. **Phase 3:** critical-result escalation timers, cancellation/
-amendment UI, and a failed-sync reconciliation dashboard. **Phase 4 (only after the
-core is stable):** patient WhatsApp booking link, prep instructions, appointment
-scheduling, price estimates, referral-leakage analytics.
+Later work (still **no** shared books / PAN / roles SSO):
+
+* IPD → Care referral emit (Hope)
+* Finalised report `pdfUrl` + Hope `patient_documents` landing
+* Partner `GET /api/integration/v1/catalogue` + Hope “Sync from CARE”
+* Diagnostics CARE status badges + critical-worklist report links
+* Care-attributed WhatsApp: prep on accept, report-ready on finalise
+* Public booking `?source=hope` server-side catalogue narrowing
+
+**Still deferred:** Billing Desk full auto-prefill; shared staff roles/SSO;
+cross-entity finance/MIS merges (never — Hope Hospital, Hope Medicals, Care
+remain three separate PANs).

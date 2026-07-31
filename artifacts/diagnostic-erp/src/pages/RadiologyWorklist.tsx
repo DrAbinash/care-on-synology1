@@ -486,7 +486,14 @@ export default function RadiologyWorklist() {
   const qc = useQueryClient();
 
   const session = readStaffSession();
-  const [search, setSearch] = useState("");
+  // Hope / partner deep-links may pass ?q=Patient+Name alongside ?modality=MR.
+  const [search, setSearch] = useState(() => {
+    try {
+      return new URLSearchParams(window.location.search).get("q") ?? "";
+    } catch {
+      return "";
+    }
+  });
   const [statusFilter, setStatusFilter] = useState("all");
 
   // ── Phase C: role-based view. Page ACCESS is still governed solely by the

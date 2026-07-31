@@ -1,11 +1,15 @@
 #!/usr/bin/env node
 /**
- * One-time (idempotent) Hope ↔ Care integration bootstrap for Synology.
+ * Idempotent Hope ↔ Care integration bootstrap for Synology.
  *
  * - Registers HOPE partner with API key from HOPE_PARTNER_KEY env (or .env)
  * - Enables ff_hope_care_referrals feature flag
  *
- * Run after deploy:
+ * AUTOMATIC: care-api runs this on every container start via
+ * docker/api-entrypoint.sh (and again from TypeScript in index.ts).
+ * You do NOT need to exec it by hand after deploy.
+ *
+ * Manual (optional):
  *   docker compose exec api node scripts/bootstrap-hope-care-integration.mjs
  *
  * Or locally with DATABASE_URL pointing at Care Postgres.
@@ -102,9 +106,7 @@ async function main() {
     );
     console.log("[bootstrap] Enabled ff_hope_care_referrals");
 
-    console.log("\n[bootstrap] Done. Verify:");
-    console.log("  Hope CARE_PARTNER_KEY matches intgk_… in hope.env");
-    console.log("  Hope CARE_CALLBACK_SECRET == Care INTEGRATION_HOPE_SIGNING_SECRET");
+    console.log("\n[bootstrap] Done.");
     console.log(`  Callback URL: ${callbackUrl}`);
   } finally {
     await client.end();

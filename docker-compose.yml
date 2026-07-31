@@ -281,6 +281,9 @@ services:
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-https://caredeoghar.com}
 
       # ── Hope Hospital integration ──────────────────────────────────────────
+      # When any of these are set, care-api entrypoint + startup bootstrap
+      # register the HOPE partner and enable ff_hope_care_referrals (idempotent).
+      # Template: deploy/synology/care.env (keys matched to Hope hope.env).
       INTEGRATION_HOPE_CALLBACK_URL: ${INTEGRATION_HOPE_CALLBACK_URL:-}
       INTEGRATION_HOPE_SIGNING_SECRET: ${INTEGRATION_HOPE_SIGNING_SECRET:-}
       HOPE_CARE_INTEGRATION_FORCE: ${HOPE_CARE_INTEGRATION_FORCE:-}

@@ -47,6 +47,7 @@ import { checkPcpndtFormFCompliance, PCPNDT_OVERRIDE_ROLES } from "../lib/pcpndt
 import { auditLog } from "../lib/audit";
 import { calculateMatchScore, type DicomInput, type BilledTestInput } from "../lib/pacs/matchingEngine";
 import { shouldFallbackToAccessionLookup, isWorklistUidRaceViolation } from "../lib/radiologyWorklistDedup";
+import { radiologyOpenFallbackPath, resolveRadiologyOpen } from "../lib/resolveRadiologyOpen";
 
 export async function runMatchingEngineForWorklist(worklistId: number): Promise<void> {
   const [row] = await db
@@ -1518,6 +1519,56 @@ router.get("/radiology/worklist", async (req, res) => {
     .limit(200);
 
   res.json(rows);
+});
+
+// GET /api/internal/radiology/resolve-open?orderId=&patientId=&modality=&patientName=
+// Deep-link helper for Hope (and other partners): map a CARE order/patient to
+// the Reporting Workspace worklist id. Falls back to a filtered worklist path
+// when the MRI/study has not arrived in PACS yet.
+router.get("/radiology/resolve-open", async (req, res) => {
+  const orderIdRaw = req.query.orderId;
+  const patientIdRaw = req.query.patientId;
+  const modality = typeof req.query.modality === "string" ? req.query.modality : null;
+  const patientName = typeof req.query.patientName === "string" ? req.query.patientName : null;
+
+  const orderId = orderIdRaw != null && orderIdRaw !== "" ? Number(orderIdRaw) : null;
+  const patientId = patientIdRaw != null && patientIdRaw !== "" ? Number(patientIdRaw) : null;
+
+  if ((orderId == null || !Number.isFinite(orderId)) && (patientId == null || !Number.isFinite(patientId))) {
+    res.status(400).json({
+      error: "Provide orderId and/or patientId",
+      fallbackPath: radiologyOpenFallbackPath({ modality, patientName }),
+    });
+    return;
+  }
+
+  try {
+    const target = await resolveRadiologyOpen({
+      orderId: orderId != null && Number.isFinite(orderId) ? orderId : null,
+      patientId: patientId != null && Number.isFinite(patientId) ? patientId : null,
+      modality,
+    });
+
+    if (!target) {
+      res.status(404).json({
+        error: "No radiology study ready for reporting yet",
+        fallbackPath: radiologyOpenFallbackPath({ modality, patientName }),
+      });
+      return;
+    }
+
+    res.json({
+      ...target,
+      reportPath: `/radiology/report/${target.worklistId}`,
+      fallbackPath: radiologyOpenFallbackPath({ modality: target.modality || modality, patientName }),
+    });
+  } catch (err) {
+    logger.error({ err, orderId, patientId, modality }, "resolve-open failed");
+    res.status(500).json({
+      error: "Failed to resolve radiology open target",
+      fallbackPath: radiologyOpenFallbackPath({ modality, patientName }),
+    });
+  }
 });
 
 // GET /api/internal/radiology/worklist/:id

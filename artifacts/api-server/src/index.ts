@@ -34,6 +34,7 @@ import { eq } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 import { validateRadiologyConfig } from "./lib/pacs/pacsConfig.js";
 import { shouldForceBootstrapReset } from "./lib/bootstrapAdmin.js";
+import { bootstrapHopeCareIntegration } from "./lib/bootstrapHopeCareIntegration.js";
 import { markStartupMigrationsSettled } from "./lib/startupState";
 
 // Bootstrap admin account for fresh production databases.
@@ -2843,6 +2844,28 @@ const server = app.listen({ port, exclusive: true }, () => {
   seedBootstrapAdminIfNeeded().catch((e) => {
     logger.error({ err: e }, "Failed to seed/update bootstrap admin — login may not work");
   });
+
+  // Hope ↔ Care partner + feature flag: auto on every API start when env is
+  // wired (HOPE_PARTNER_KEY / HOPE_CARE_INTEGRATION_FORCE / callback secret).
+  // Idempotent — replaces the manual
+  // `docker compose exec api node scripts/bootstrap-hope-care-integration.mjs`.
+  bootstrapHopeCareIntegration()
+    .then((r) => {
+      if (r.skipped) {
+        logger.info({ reason: r.reason }, "Hope↔Care bootstrap skipped");
+        return;
+      }
+      logger.info(
+        { partnerAction: r.partnerAction },
+        "Hope↔Care integration bootstrapped (HOPE partner + ff_hope_care_referrals)",
+      );
+    })
+    .catch((e) => {
+      logger.error(
+        { err: e },
+        "Hope↔Care bootstrap failed (non-fatal) — referrals may not flow until tables exist or env is fixed",
+      );
+    });
 
   // Seed OHIF_URL + WADO_URL and other configuration values from env into pacs_settings
   // so the centralized configuration service can read them from DB without needing hardcoded IP fallbacks.

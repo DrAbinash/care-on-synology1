@@ -120,8 +120,10 @@ COPY --from=api-build /repo/artifacts/api-server/dist             ./dist
 COPY --from=api-build /repo/artifacts/api-server/package.json     ./package.json
 COPY --from=api-build /api-deploy/node_modules                    ./node_modules
 COPY --from=api-build /repo/scripts/bootstrap-hope-care-integration.mjs ./scripts/bootstrap-hope-care-integration.mjs
+COPY --from=api-build /repo/docker/api-entrypoint.sh              ./docker/api-entrypoint.sh
 # Bake version.json into the image so /api/system/version can read it
 COPY --from=api-build /repo/version.json                          ./version.json
+RUN chmod +x ./docker/api-entrypoint.sh
 
 EXPOSE 8080
 
@@ -154,7 +156,8 @@ HEALTHCHECK --interval=15s --timeout=10s --start-period=60s --retries=5 \
   CMD curl -fsS http://localhost:8080/health || exit 1
 
 ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["node", "--enable-source-maps", "./dist/index.mjs"]
+# Runs Hope↔Care partner bootstrap (when env is set), then starts the API.
+CMD ["./docker/api-entrypoint.sh"]
 
 
 # -----------------------------------------------------------------------------
