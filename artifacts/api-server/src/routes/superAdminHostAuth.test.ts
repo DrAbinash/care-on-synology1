@@ -56,66 +56,38 @@ vi.mock("drizzle-orm", () => ({
 }));
 
 function mockRes() {
-  const res: any = {
+  const res: {
+    statusCode: number;
+    body: unknown;
+    status: (code: number) => typeof res;
+    json: (payload: unknown) => typeof res;
+  } = {
     statusCode: 200,
-    body: undefined as unknown,
+    body: undefined,
     status(code: number) { res.statusCode = code; return res; },
     json(payload: unknown) { res.body = payload; return res; },
   };
   return res;
 }
 
-describe("superAdminHostAuth login identity", () => {
+async function getLoginHandler() {
+  const { superAdminHostAuthRouter } = await import("./superAdminHostAuth");
+  const layer = (superAdminHostAuthRouter as unknown as {
+    stack: Array<{ route?: { path?: string; stack: Array<{ handle: (req: unknown, res: unknown) => Promise<void> }> } }>;
+  }).stack.find((l) => l.route?.path === "/login");
+  return layer!.route!.stack[layer!.route!.stack.length - 1]!.handle;
+}
+
+describe("superAdminHostAuth strict identity", () => {
   beforeEach(() => {
     vi.resetModules();
     vi.clearAllMocks();
     process.env["SUPER_ADMIN_USB_PIN"] = "9988";
-    process.env["BOOTSTRAP_ADMIN_NAME"] = "Dr Abinash Kumar";
     mockSelectChain.from.mockReturnValue(mockSelectChain);
     mockSelectChain.where.mockReturnValue(mockSelectChain);
   });
 
-  it("logs in with usbPin when name is empty by resolving sole super_admin", async () => {
-    const user = {
-      id: 1,
-      name: "Dr Abinash Kumar",
-      username: "abinash",
-      email: "abinashsingh@gmail.com",
-      role: "super_admin",
-      isActive: true,
-      pin: "x",
-      remoteLoginEnabled: false,
-    };
-    // findByIdentity("") → null; resolveUsbPin → sole super_admin query
-    mockSelectChain.limit
-      .mockResolvedValueOnce([]) // preferred name empty → null path skipped inside resolve; bootstrap find
-      .mockResolvedValueOnce([user]) // bootstrap name hit
-      .mockResolvedValueOnce([user]); // not used if bootstrap hits
-
-    // Actually resolveUsbPinSuperAdmin with preferredName undefined:
-    // findSuperAdminByIdentity(undefined) → null
-    // findSuperAdminByIdentity(bootstrap) → user
-    mockSelectChain.limit.mockReset();
-    mockSelectChain.limit
-      .mockResolvedValueOnce([]) // preferred empty
-      .mockResolvedValueOnce([user]); // bootstrap
-
-    const { superAdminHostAuthRouter } = await import("./superAdminHostAuth");
-    const layer = (superAdminHostAuthRouter as any).stack.find((l: any) => l.route?.path === "/login");
-    const handler = layer.route.stack[layer.route.stack.length - 1].handle;
-
-    const req: any = {
-      body: { name: "", usbPin: "9988" },
-      header: () => "usb-key",
-    };
-    const res = mockRes();
-    await handler(req, res);
-    expect(res.statusCode).toBe(200);
-    expect(res.body.userName).toBe("Dr Abinash Kumar");
-    expect(res.body.token).toBeTruthy();
-  });
-
-  it("accepts username abinash with usbPin", async () => {
+  it("logs in with exact display name + usbPin", async () => {
     const user = {
       id: 1,
       name: "Dr Abinash Kumar",
@@ -128,44 +100,35 @@ describe("superAdminHostAuth login identity", () => {
     };
     mockSelectChain.limit.mockResolvedValueOnce([user]);
 
-    const { superAdminHostAuthRouter } = await import("./superAdminHostAuth");
-    const layer = (superAdminHostAuthRouter as any).stack.find((l: any) => l.route?.path === "/login");
-    const handler = layer.route.stack[layer.route.stack.length - 1].handle;
-
-    const req: any = {
-      body: { name: "abinash", usbPin: "9988" },
-      header: () => "usb-key",
-    };
+    const handler = await getLoginHandler();
     const res = mockRes();
-    await handler(req, res);
+    await handler({ body: { name: "Dr Abinash Kumar", usbPin: "9988" }, header: () => "usb-key" }, res);
     expect(res.statusCode).toBe(200);
-    expect(res.body.userName).toBe("Dr Abinash Kumar");
+    expect((res.body as { userName: string }).userName).toBe("Dr Abinash Kumar");
   });
 
-  it("accepts numeric user id (legacy index association)", async () => {
-    const user = {
-      id: 7,
-      name: "Dr Abinash Kumar",
-      username: "abinash",
-      email: "abinashsingh@gmail.com",
-      role: "super_admin",
-      isActive: true,
-      pin: "x",
-      remoteLoginEnabled: false,
-    };
-    mockSelectChain.limit.mockResolvedValueOnce([user]);
+  it("rejects username alias even with valid usbPin", async () => {
+    mockSelectChain.limit.mockResolvedValueOnce([]); // no row for name=abinash
 
-    const { superAdminHostAuthRouter } = await import("./superAdminHostAuth");
-    const layer = (superAdminHostAuthRouter as any).stack.find((l: any) => l.route?.path === "/login");
-    const handler = layer.route.stack[layer.route.stack.length - 1].handle;
-
-    const req: any = {
-      body: { name: "7", usbPin: "9988" },
-      header: () => "usb-key",
-    };
+    const handler = await getLoginHandler();
     const res = mockRes();
-    await handler(req, res);
-    expect(res.statusCode).toBe(200);
-    expect(res.body.userName).toBe("Dr Abinash Kumar");
+    await handler({ body: { name: "abinash", usbPin: "9988" }, header: () => "usb-key" }, res);
+    expect(res.statusCode).toBe(401);
+  });
+
+  it("rejects empty name even with valid usbPin", async () => {
+    const handler = await getLoginHandler();
+    const res = mockRes();
+    await handler({ body: { name: "", usbPin: "9988" }, header: () => "usb-key" }, res);
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("rejects numeric user id", async () => {
+    mockSelectChain.limit.mockResolvedValueOnce([]);
+
+    const handler = await getLoginHandler();
+    const res = mockRes();
+    await handler({ body: { name: "7", usbPin: "9988" }, header: () => "usb-key" }, res);
+    expect(res.statusCode).toBe(401);
   });
 });

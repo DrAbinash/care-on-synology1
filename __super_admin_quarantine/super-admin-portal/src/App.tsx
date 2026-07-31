@@ -279,26 +279,17 @@ function LoginScreen({
     await doLogin(data.name, autoUsbPin ?? undefined);
   };
 
-  // Auto-login: usbPin from pen drive. Prefer superadmin.name, then known
-  // identities (display name / username). Empty name lets the host resolve
-  // the sole active super_admin — avoids the old "must type Dr Abinash Kumar
-  // exactly" failure.
+  // Auto-login: usbPin + EXACT display name only.
+  // Prefer superadmin.name on the pen drive; otherwise the configured owner
+  // display name. Never guess aliases (username/email/id) — Super Admin stays strict.
   useEffect(() => {
     if (!autoUsbPin || autoLoginState !== "idle") return;
     setAutoLoginState("attempting");
     void (async () => {
-      const fromDrive = await tryReadName();
-      const names = [
-        fromDrive,
-        "Dr Abinash Kumar",
-        "abinash",
-        "abinashsingh@gmail.com",
-        "", // host falls back to sole active super_admin / BOOTSTRAP_ADMIN_NAME
-      ].filter((n, i, arr) => n !== null && n !== undefined && arr.indexOf(n) === i) as string[];
-      for (const name of names) {
-        const ok = await doLogin(name, autoUsbPin);
-        if (ok) { setAutoLoginState("success"); return; }
-      }
+      const fromDrive = (await tryReadName())?.trim() || "";
+      const exactName = fromDrive || "Dr Abinash Kumar";
+      const ok = await doLogin(exactName, autoUsbPin);
+      if (ok) { setAutoLoginState("success"); return; }
       setAutoLoginState("failed");
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps

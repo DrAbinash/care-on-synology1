@@ -122,14 +122,15 @@ superAdminRouter.get("/usb/status", (_req, res): void => {
 // the OpenAPI spec), so we declare local schemas and use the same safeParse
 // pattern as the validated routes (appointments, expenses, etc.).
 const LoginBody = z.object({
-  name: z.string().trim().optional(),
+  // STRICT: display name always required (even with usbPin).
+  name: z.string().trim().min(1, "Name is required"),
   pin: z.string().trim().optional(),
   usbPin: z.string().trim().optional(),
 }).refine((data) => {
-  // If usbPin is not provided, both name and pin must be present
-  if (!data.usbPin) return (data.name && data.name.length > 0) && (data.pin && data.pin.length > 0);
+  // If usbPin is not provided, the database PIN is required.
+  if (!data.usbPin) return Boolean(data.pin && data.pin.length > 0);
   return true;
-}, { message: "Name and PIN are required when usbPin is not provided", path: ["name", "pin"] });
+}, { message: "PIN is required when usbPin is not provided", path: ["pin"] });
 
 const LogoutBody = z.object({
   token: z.string().min(1, "token is required"),
@@ -196,49 +197,14 @@ superAdminRouter.post("/login", loginLimiter, async (req, res): Promise<void> =>
   }
   const { name, pin, usbPin } = parsed.data;
 
-  // Identity: display name OR username OR email OR numeric user id (legacy).
-  // With a valid usbPin, also fall back to sole active super_admin /
-  // BOOTSTRAP_ADMIN_NAME so auto-login does not require an exact "Dr Abinash Kumar" string.
-  async function findByIdentity(needle: string | undefined) {
-    const n = (needle ?? "").trim();
-    if (!n) return null;
-    if (/^\d+$/.test(n)) {
-      const [byId] = await db.select().from(usersTable)
-        .where(and(eq(usersTable.id, Number(n)), eq(usersTable.isActive, true))).limit(1);
-      if (byId) return byId;
-    }
-    const [row] = await db.select().from(usersTable)
-      .where(and(
-        or(
-          sql`lower(${usersTable.name}) = lower(${n})`,
-          sql`lower(coalesce(${usersTable.username}, '')) = lower(${n})`,
-          sql`lower(${usersTable.email}) = lower(${n})`,
-        ),
-        eq(usersTable.isActive, true),
-      )).limit(1);
-    return row ?? null;
+  // STRICT: exact display-name match only (case-insensitive). No username /
+  // email / numeric-id aliases, and no "wrong name + usbPin" fallback.
+  if (!name || !name.trim()) {
+    res.status(400).json({ error: "Name is required" });
+    return;
   }
-
-  let user = await findByIdentity(name);
-
-  // Auto-login via usbPin from the pen drive — resolve user even when name is wrong/empty
-  const expectedUsbPin = getUsbPinEnv();
-  const usbPinOk = Boolean(
-    isUsbPinEnforced()
-    && usbPin
-    && expectedUsbPin
-    && Buffer.from(usbPin).length === Buffer.from(expectedUsbPin).length
-    && crypto.timingSafeEqual(Buffer.from(usbPin), Buffer.from(expectedUsbPin)),
-  );
-  if ((!user || user.role !== "super_admin") && usbPinOk) {
-    const bootstrapName = (process.env["BOOTSTRAP_ADMIN_NAME"] || "Dr Abinash Kumar").trim();
-    user = (await findByIdentity(bootstrapName))
-      ?? (await (async () => {
-        const supers = await db.select().from(usersTable)
-          .where(and(eq(usersTable.role, "super_admin"), eq(usersTable.isActive, true))).limit(2);
-        return supers.length === 1 ? supers[0]! : null;
-      })());
-  }
+  const [user] = await db.select().from(usersTable)
+    .where(and(sql`lower(${usersTable.name}) = lower(${name})`, eq(usersTable.isActive, true)));
 
   if (!user) { res.status(401).json({ error: "Invalid credentials" }); return; }
   if (user.role !== "super_admin") { res.status(403).json({ error: "Access denied — not a super admin" }); return; }

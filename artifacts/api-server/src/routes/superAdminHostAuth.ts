@@ -1,13 +1,16 @@
 /**
- * Host-side Super Admin auth endpoints that work BEFORE the USB plugin is
- * loaded. Registered ahead of the plugin gate in routes/index.ts so that
- * `/super-admin/login` never returns "Super Admin plugin is not loaded."
+ * Host-side Super Admin login that works BEFORE the USB plugin is loaded.
+ * Registered ahead of the plugin gate so `/super-admin/login` never returns
+ * "Super Admin plugin is not loaded."
  *
- * Identity matching (historical Replit bug):
- *   - Accept display name OR username (case-insensitive)
- *   - With a valid usbPin, if name is omitted / wrong, fall back to the sole
- *     active super_admin (or BOOTSTRAP_ADMIN_NAME) instead of requiring the
- *     exact string "Dr Abinash Kumar"
+ * Intentionally STRICT (same bar as the original plugin login):
+ *   - Exact display-name match only (case-insensitive trim)
+ *   - No username / email / numeric-id aliases
+ *   - No "wrong name + usbPin → still log in" fallback
+ *   - Name is always required, even when usbPin is present
+ *
+ * usbPin only skips the database PIN check after the name has already matched
+ * a super_admin row.
  */
 import { Router, type IRouter } from "express";
 import bcrypt from "bcryptjs";
@@ -15,7 +18,7 @@ import crypto from "node:crypto";
 import { z } from "zod/v4";
 import { db } from "@workspace/db";
 import { usersTable, superAdminSessionsTable } from "@workspace/db/schema";
-import { and, eq, or, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { loginLimiter } from "../middleware/rateLimits";
 import {
   getUsbKeyHeader,
@@ -27,13 +30,14 @@ import { logger } from "../lib/logger";
 export const superAdminHostAuthRouter: IRouter = Router();
 
 const LoginBody = z.object({
-  name: z.string().trim().optional(),
+  name: z.string().trim().min(1, "Name is required"),
   pin: z.string().trim().optional(),
   usbPin: z.string().trim().optional(),
 }).refine((data) => {
-  if (!data.usbPin) return Boolean(data.name?.length && data.pin?.length);
+  // Without usbPin, the database PIN is required.
+  if (!data.usbPin) return Boolean(data.pin?.length);
   return true;
-}, { message: "Name and PIN are required when usbPin is not provided", path: ["name"] });
+}, { message: "PIN is required when usbPin is not provided", path: ["pin"] });
 
 function generateToken(): string {
   return crypto.randomBytes(48).toString("hex");
@@ -69,52 +73,6 @@ function usbPinMatches(presented: string): boolean {
   return crypto.timingSafeEqual(pinBuf, expectedBuf);
 }
 
-type SaUser = typeof usersTable.$inferSelect;
-
-async function findSuperAdminByIdentity(name: string | undefined): Promise<SaUser | null> {
-  const needle = (name ?? "").trim();
-  if (!needle) return null;
-
-  // Numeric index / user id (legacy Replit behaviour: some clients sent the
-  // users.id instead of the display name).
-  if (/^\d+$/.test(needle)) {
-    const [byId] = await db.select().from(usersTable)
-      .where(and(eq(usersTable.id, Number(needle)), eq(usersTable.isActive, true)))
-      .limit(1);
-    if (byId) return byId;
-  }
-
-  const [byNameOrUser] = await db.select().from(usersTable)
-    .where(and(
-      or(
-        sql`lower(${usersTable.name}) = lower(${needle})`,
-        sql`lower(coalesce(${usersTable.username}, '')) = lower(${needle})`,
-        sql`lower(${usersTable.email}) = lower(${needle})`,
-      ),
-      eq(usersTable.isActive, true),
-    ))
-    .limit(1);
-  return byNameOrUser ?? null;
-}
-
-async function resolveUsbPinSuperAdmin(preferredName?: string): Promise<SaUser | null> {
-  const direct = await findSuperAdminByIdentity(preferredName);
-  if (direct && direct.role === "super_admin") return direct;
-
-  const bootstrapName = (process.env["BOOTSTRAP_ADMIN_NAME"] || "Dr Abinash Kumar").trim();
-  if (!preferredName || preferredName.trim().toLowerCase() !== bootstrapName.toLowerCase()) {
-    const boot = await findSuperAdminByIdentity(bootstrapName);
-    if (boot && boot.role === "super_admin") return boot;
-  }
-
-  // Sole active super_admin — avoids brittle exact-name auto-login.
-  const supers = await db.select().from(usersTable)
-    .where(and(eq(usersTable.role, "super_admin"), eq(usersTable.isActive, true)))
-    .limit(2);
-  if (supers.length === 1) return supers[0]!;
-  return null;
-}
-
 superAdminHostAuthRouter.post("/login", loginLimiter, async (req, res): Promise<void> => {
   const parsed = LoginBody.safeParse(req.body);
   if (!parsed.success) {
@@ -123,14 +81,10 @@ superAdminHostAuthRouter.post("/login", loginLimiter, async (req, res): Promise<
   }
   const { name, pin, usbPin } = parsed.data;
 
-  const pinOk = Boolean(usbPin && isUsbPinEnforced() && usbPinMatches(usbPin));
-
-  let user: SaUser | null = null;
-  if (pinOk) {
-    user = await resolveUsbPinSuperAdmin(name);
-  } else {
-    user = await findSuperAdminByIdentity(name);
-  }
+  // STRICT: exact display name only.
+  const [user] = await db.select().from(usersTable)
+    .where(and(sql`lower(${usersTable.name}) = lower(${name})`, eq(usersTable.isActive, true)))
+    .limit(1);
 
   if (!user) {
     res.status(401).json({ error: "Invalid credentials" });
@@ -156,8 +110,9 @@ superAdminHostAuthRouter.post("/login", loginLimiter, async (req, res): Promise<
     }
   }
 
+  // usbPin only replaces the DB PIN after the name already matched.
   let autoLogin = false;
-  if (pinOk) {
+  if (isUsbPinEnforced() && usbPin && usbPinMatches(usbPin)) {
     autoLogin = true;
     logger.info({ userId: user.id, userName: user.name }, "Auto-login via usbPin (host auth)");
   }
