@@ -66,6 +66,7 @@ import "@/lib/copilotUsgCompanionModule"; // registers the USG Companion Copilot
 import ViewerMeasurementsPanel, { useViewerMeasurements } from "@/components/radiology/ViewerMeasurementsPanel";
 import PreferencesPanel from "@/components/PreferencesPanel";
 import { isUltrasoundModality, isObstetricUsgStudy } from "@/lib/usgModality";
+import { templateCatalogModality, templateModalityMatches } from "@/lib/radiologyTemplateModality";
 import QuickFindingsPanel, {
   type QuickFinding, type QuickProtocol, type QuickClinicalHistoryChip, type QuickSelectData,
 } from "@/components/radiology/QuickFindingsPanel";
@@ -653,11 +654,11 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   // does an exact match against each template row's `modality` column
   // ("USG"/"MRI"/"CT"/"X-RAY", see modalityMap below), not the worklist's
   // "US"-bucket normalization.
-  const [modalityFilter, setModalityFilter] = useState<string>(
-    () => new URLSearchParams(window.location.search).get("modality") ?? "",
-  );
+  const [modalityFilter, setModalityFilter] = useState<string>(() => {
+    const fromUrl = new URLSearchParams(window.location.search).get("modality");
+    return fromUrl ? templateCatalogModality(fromUrl) : "";
+  });
 
-  // ── Report content ────────────────────────────────────────────────────────
   const [clinicalHistory, setClinicalHistory] = useState("");
   const [technique, setTechnique] = useState("");
   const [findingsMap, setFindingsMap] = useState<Record<string, { normal: boolean; text: string }>>({});
@@ -1670,6 +1671,14 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     const r = readRescueDraft();
     setRescueDraft(r && entry?.accessionNumber && r.accessionNumber === entry.accessionNumber && reportStatus !== "FINAL" ? r : null);
   }, [entry?.accessionNumber, reportStatus]);
+
+  // Pre-filter the template picker to the open study's modality (MR → MRI, etc.).
+  useEffect(() => {
+    if (!entry?.modality) return;
+    const fromUrl = new URLSearchParams(window.location.search).get("modality");
+    if (fromUrl) return;
+    setModalityFilter(templateCatalogModality(entry.modality));
+  }, [entry?.modality, studyId]);
 
   function restoreRescueDraft() {
     if (!rescueDraft) return;
@@ -2757,8 +2766,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     const studyKey = studyId ?? -1;
     if (autoTemplateForStudyRef.current === studyKey) return;
     autoTemplateForStudyRef.current = studyKey;
-    const modalityMap: Record<string, string> = { "X-RAY": "X-RAY", USG: "USG", MRI: "MRI", CT: "CT" };
-    const mod = modalityMap[entry.modality] || entry.modality;
+    const mod = templateCatalogModality(entry.modality);
     const bodyPart = (entry.studyDescription || "").toUpperCase();
     let match = templates.find((t) => t.modality === mod && bodyPart.includes(t.bodyPart));
     if (!match) match = templates.find((t) => t.modality === mod);
@@ -2833,7 +2841,9 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
 
   const filteredTemplates = useMemo(() => {
     let rows = templates;
-    if (modalityFilter) rows = rows.filter((t) => t.modality === modalityFilter);
+    if (modalityFilter) {
+      rows = rows.filter((t) => templateModalityMatches(modalityFilter, t.modality));
+    }
     if (templateSearch.trim()) {
       const q = templateSearch.toLowerCase();
       rows = rows.filter(
@@ -4345,12 +4355,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
               {masterTemplates
                 .filter((m) => {
                   if (!entry?.modality) return true;
-                  const em = entry.modality.toUpperCase();
-                  const mm = (m.modality || "").toUpperCase();
-                  if (mm === em) return true;
-                  if (em === "X-RAY" && mm === "XR") return true;
-                  if (isUltrasoundModality(entry.modality) && isUltrasoundModality(m.modality)) return true;
-                  return false;
+                  return templateModalityMatches(entry.modality, m.modality);
                 })
                 .slice(0, 12)
                 .map((m) => (
@@ -4391,7 +4396,10 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
             </button>
           ))}
           {filteredTemplates.length === 0 && (
-            <div className="text-xs text-muted-foreground text-center py-2">No templates found</div>
+            <div className="text-xs text-muted-foreground text-center py-3 space-y-1">
+              <div>No templates found{modalityFilter ? ` for ${modalityFilter}` : ""}.</div>
+              <div>Try the <button type="button" className="underline font-medium text-foreground" onClick={() => setRightTab("quickselect")}>Quick</button> tab for one-click findings, or tap <span className="font-medium">All</span> above to clear the modality filter.</div>
+            </div>
           )}
         </div>
 
