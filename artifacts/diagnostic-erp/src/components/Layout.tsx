@@ -706,7 +706,16 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             if (res.ok) {
               apiUploaded = true;
               console.log("Super Admin API plugin uploaded successfully");
+            } else {
+              const body = await res.json().catch(() => ({} as { error?: string }));
+              console.error(
+                "Super Admin API plugin upload failed:",
+                res.status,
+                body.error ?? res.statusText,
+              );
             }
+          } else if (!apiCode) {
+            console.warn("superadmin-api.js not readable from paired pen drive — API routes stay unloaded.");
           }
         } catch (err) {
           console.error("Error uploading API plugin:", err);
