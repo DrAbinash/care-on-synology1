@@ -38,9 +38,9 @@
  * quiet-hours screen dimming (CSS brightness, not a real power-off).
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "wouter";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { QRCodeSVG } from "qrcode.react";
 import { api } from "../api";
 import { resolveAssetUrl } from "../config";
@@ -222,10 +222,10 @@ export default function QueueDisplay({ roomKey: propRoomKey }: QueueDisplayProps
   const finalRoomKey = rawRoomKey.replace(/-?room$/, "") || rawRoomKey;
   const displayToken = search.get("displayToken") ?? "";
 
-  const qc = useQueryClient();
   const [now, setNow] = useState(new Date());
   const [streamLive, setStreamLive] = useState(false);
   const [tokenPulse, setTokenPulse] = useState(false);
+  const [queueData, setQueueData] = useState<DisplayPayload | null>(null);
 
   // ── Settings (presentation config) ────────────────────────────────────
   const { data: settings, isLoading: settingsLoading, isError: settingsError, error: settingsErrObj } = useQuery<QueueDisplaySettings>({
@@ -244,19 +244,43 @@ export default function QueueDisplay({ roomKey: propRoomKey }: QueueDisplayProps
     retry: 1,
   });
 
-  // ── Live queue data — reuses the existing display feed, unchanged ──────
-  const departments = settings?.departments ? settings.departments.split(",").map(d => d.trim()) : [];
+  // ── Live queue data — stable department list (clock re-renders must not
+  // recreate this array or the SSE connection drops every second).
+  const departmentsKey = settings?.departments?.trim() ?? "";
+  const departments = useMemo(
+    () => (departmentsKey ? departmentsKey.split(",").map((d) => d.trim()).filter(Boolean) : []),
+    [departmentsKey],
+  );
+  const ledgerId = settings?.ledgerId ?? 1;
 
-  const { data: queueData } = useQuery<DisplayPayload>({
-    queryKey: ["queue-display-feed", finalRoomKey, settings?.ledgerId, departments, displayToken],
-    enabled: !!settings,
-    queryFn: () => api.queueDisplay.queue(settings?.ledgerId ?? 1, displayToken, undefined, departments),
-    refetchInterval: 15_000, // spec: auto-refresh every 15s as a safety net
-  });
+  const fetchQueue = useCallback(async () => {
+    if (!settings) return null;
+    return api.queueDisplay.queue(ledgerId, displayToken, undefined, departments) as Promise<DisplayPayload>;
+  }, [settings, ledgerId, displayToken, departments]);
 
+  // Polling fallback — keeps Next Patients fresh even if SSE drops.
+  useEffect(() => {
+    if (!settings) return;
+    let cancelled = false;
+    const poll = () => {
+      fetchQueue()
+        .then((payload) => {
+          if (!cancelled && payload) setQueueData(payload);
+        })
+        .catch(() => { /* network blip — SSE or next poll will retry */ });
+    };
+    poll();
+    const interval = setInterval(poll, 5_000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [settings, fetchQueue]);
+
+  // SSE — one long-lived connection; updates state directly on each broadcast.
   useEffect(() => {
     if (!settings || typeof EventSource === "undefined") return;
-    const streamUrl = api.queueDisplay.queueStream(settings.ledgerId, displayToken, undefined, departments);
+    const streamUrl = api.queueDisplay.queueStream(ledgerId, displayToken, undefined, departments);
     let es: EventSource | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let closed = false;
@@ -269,10 +293,7 @@ export default function QueueDisplay({ roomKey: propRoomKey }: QueueDisplayProps
         if (!evt.data || evt.data.startsWith(":")) return;
         try {
           const payload = JSON.parse(evt.data) as DisplayPayload;
-          qc.setQueryData(
-            ["queue-display-feed", finalRoomKey, settings.ledgerId, departments, displayToken],
-            payload,
-          );
+          setQueueData(payload);
           setStreamLive(true);
         } catch { /* ignore malformed event */ }
       };
@@ -290,7 +311,7 @@ export default function QueueDisplay({ roomKey: propRoomKey }: QueueDisplayProps
       if (reconnectTimer) clearTimeout(reconnectTimer);
       es?.close();
     };
-  }, [settings, finalRoomKey, displayToken, departments, qc]);
+  }, [settings, ledgerId, displayToken, departmentsKey]);
 
   // Flatten across department cards (a single-room display usually has one).
   const queueSummary = useMemo(() => {
@@ -376,7 +397,7 @@ export default function QueueDisplay({ roomKey: propRoomKey }: QueueDisplayProps
     if (currentId === announcedRef.current.id || currentId === null) return;
     announcedRef.current = { id: currentId, ready: true };
     const utter = new SpeechSynthesisUtterance(
-      `Token number ${current?.tokenNo}. ${current?.patientLabel || ""}. Please proceed to ${settings.roomTitle || "the counter"}.`,
+      `Token ${formatTokenLabel({ tokenNo: current!.tokenNo, department: current!.department }, finalRoomKey)}. ${current?.patientLabel || ""}. Please proceed to ${settings.roomTitle || "the counter"}.`,
     );
     utter.lang = settings.language === "hi" ? "hi-IN" : "en-IN";
     window.speechSynthesis.cancel();
@@ -656,10 +677,6 @@ export default function QueueDisplay({ roomKey: propRoomKey }: QueueDisplayProps
       )}
     </div>
   );
-}
-
-function roomKeyLabel(roomTitle: string): string {
-  return roomTitle || "";
 }
 
 // Scoped CSS — kept in-file (no Tailwind dependency needed for a fixed
