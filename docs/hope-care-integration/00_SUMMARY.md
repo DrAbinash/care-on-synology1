@@ -99,10 +99,11 @@ barrel/session touches are additive lines only.
 * **Migrate:** the idempotent SQL file is auto-discovered and applied by
   `docker/db-patch-entrypoint.sh` on the next deploy (validated by
   `scripts/check-migration-order.cjs`). Safe to run repeatedly.
-* **Enable:** provision a partner (`POST /api/integration/admin/partners`), set
-  `INTEGRATION_HOPE_CALLBACK_URL` / `INTEGRATION_HOPE_SIGNING_SECRET`, flip
-  `feature_flags.ff_hope_care_referrals` on, and set the `hopeReferralsInbox` client
-  flag for pilot staff. Nothing flows until all of these exist.
+* **Enable:** set `INTEGRATION_HOPE_CALLBACK_URL` /
+  `INTEGRATION_HOPE_SIGNING_SECRET` / `HOPE_PARTNER_KEY` (see
+  `deploy/synology/care.env`). On every Care API start the entrypoint + startup
+  bootstrap upsert the HOPE partner and enable `ff_hope_care_referrals`
+  automatically. Manual `POST /api/integration/admin/partners` is optional.
 * **Rollback:** flip the feature flag OFF (workers idle immediately) and/or deactivate
   the partner (inbound 401) — no schema change needed, no data loss. Removing the nav
   is a one-line revert. Tables are additive and forward-only (per repo policy); they

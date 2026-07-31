@@ -1,11 +1,15 @@
 # Synology deploy — Hope Hospital + Care Diagnostics
 
-Both systems run on **NAS `192.168.1.137`**.
+Both systems run on **NAS `192.168.1.137`**. Copy the matching env once, then
+`docker compose up` — migrations **and** Hope↔Care partner wiring run
+automatically on Care API start (no manual bootstrap).
 
-| System | LAN URL | Copy env to |
-|--------|---------|-------------|
-| **Hope ERP** | http://192.168.1.137:7080/ | Hope repo root → `.env` |
-| **Care ERP** | http://192.168.1.137:8888/ (public: https://caredeoghar.com) | `care-on-synology1/` → `.env` |
+| System | LAN URL | Env file |
+|--------|---------|----------|
+| **Hope ERP** | http://192.168.1.137:7080/ | `deploy/synology/hope.env` → Hope repo `.env` |
+| **Care ERP** | http://192.168.1.137:8888/ (public: https://caredeoghar.com) | `deploy/synology/care.env` → Care repo `.env` |
+
+Partner key + callback signing secret are already matched across both files.
 
 ## 1. Hope Hospital
 
@@ -21,39 +25,36 @@ Login: `abinashsingh` / PIN from `INITIAL_ADMIN_PIN` (or boot log).
 
 ```bash
 cd /volume1/docker/care-on-synology1
-cp deploy/synology/care.env .env
+cp deploy/synology/care.env .env   # skip if .env already exists
+# or: bash deploy-synology.sh      # pulls, ensures .env, builds, starts
 docker compose up -d --build
 ```
 
-## 3. Wire Hope ↔ Care (one time)
+On every Care API start:
 
-After both databases are up:
+1. `care-db-patch-v2` applies migrations (as before)
+2. `docker/api-entrypoint.sh` + API startup bootstrap register the **HOPE**
+   partner and enable `ff_hope_care_referrals`
 
-```bash
-cd /volume1/docker/care-on-synology1
-docker compose exec api node scripts/bootstrap-hope-care-integration.mjs
-```
+No `docker compose exec … bootstrap-hope-care-integration.mjs` step.
 
-This enables the `ff_hope_care_referrals` flag and registers the **HOPE** partner key
-(already present in both `.env` files).
+## 3. Test catalogue (both systems)
 
-## 4. Test catalogue (both systems)
-
-The CSV does **not** auto-sync. Import in **both**:
+The CSV does **not** auto-sync. Import in **both** once:
 
 - **Hope:** Clinical Masters → CARE Catalogue → Upload CSV
 - **Care:** Tests → import the same `test-catalog-*.csv`
 
-## 5. Medicines (Hope Medicals only)
+## 4. Medicines (Hope Medicals only)
 
 Pharmacy stock lives under entity **Hope Medicals** (teal sidebar). It does not
 appear in Care ERP or hospital Materials — that is correct.
 
-## 6. Smoke test
+## 5. Smoke test
 
 1. Doctor saves OPD prescription with lab test (e.g. CBC).
 2. Care ERP → **HOPE Referrals** inbox shows the referral.
 3. After report finalisation in Care, result appears in Hope patient record.
 
-If referrals fail, try changing Hope `CARE_REFERRAL_URL` to
-`https://caredeoghar.com/api/integration/v1`.
+If referrals fail from inside Docker networking, set Hope
+`CARE_REFERRAL_URL=https://caredeoghar.com/api/integration/v1` and redeploy Hope.

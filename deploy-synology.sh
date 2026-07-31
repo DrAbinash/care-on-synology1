@@ -64,6 +64,33 @@ else
 fi
 ok "Version: Care ERP v${ERP_VERSION} build ${BUILD_NUMBER}"
 
+# ── Step 2b: Ensure .env (Hope↔Care keys included) ───────────────────────────
+# Operator should not have to invent secrets. If .env is missing, seed it from
+# the Synology template. If it exists but lacks Hope keys, append them so a
+# redeploy of an older .env still wires referrals automatically.
+if [ ! -f .env ]; then
+  if [ -f deploy/synology/care.env ]; then
+    cp deploy/synology/care.env .env
+    ok "Created .env from deploy/synology/care.env (Hope integration included)"
+  else
+    fail ".env missing and deploy/synology/care.env not found"
+  fi
+else
+  ensure_env_key() {
+    key="$1"
+    val="$2"
+    if ! grep -qE "^${key}=" .env 2>/dev/null; then
+      printf '\n%s=%s\n' "$key" "$val" >> .env
+      info "Appended missing ${key} to .env"
+    fi
+  }
+  ensure_env_key "INTEGRATION_HOPE_CALLBACK_URL" "http://192.168.1.137:7080/api/integration/care-callback"
+  ensure_env_key "INTEGRATION_HOPE_SIGNING_SECRET" "7ab91cf3b7a45c4a3b4a6a90aa63ed2be921abc77bbd007f0de60093ba895f0f"
+  ensure_env_key "HOPE_CARE_INTEGRATION_FORCE" "1"
+  ensure_env_key "HOPE_PARTNER_KEY" "intgk_8ffb1b9c5b982148cfbe89448064cc4986b172bea48fe73b0f622f4a192da7e7"
+  ok ".env present (Hope integration keys ensured)"
+fi
+
 # ── Step 3: Build and start ───────────────────────────────────────────────────
 info "Building and starting containers (this takes 3-5 minutes)..."
 echo ""
@@ -138,6 +165,7 @@ echo -e "  ERP Address : ${BOLD}http://192.168.1.137:8888${NC}"
 echo -e "  Version     : Care ERP v${ERP_VERSION} build ${BUILD_NUMBER}"
 echo -e "  Completed   : $(date '+%d %B %Y  %H:%M')"
 echo ""
+echo -e "  Hope↔Care   : partner + ff_hope_care_referrals auto on API start"
 echo -e "  ${YELLOW}If login doesn't work after 1 minute, run:${NC}"
-echo -e "  ${YELLOW}docker logs care-api --tail 20${NC}"
+echo -e "  ${YELLOW}docker logs care-api --tail 40${NC}"
 echo ""
