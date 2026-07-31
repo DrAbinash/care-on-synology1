@@ -43,6 +43,7 @@ import { useParams } from "wouter";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { QRCodeSVG } from "qrcode.react";
 import { api } from "../api";
+import { resolveAssetUrl } from "../config";
 import { useKioskMode } from "../hooks/useKioskMode";
 
 type InstructionItem = { id: string; icon: string; text: string; color: string; enabled: boolean };
@@ -112,6 +113,8 @@ type TokenEntry = {
   testName: string | null;
   floorLabel: string;
   priority: number;
+  department?: string;
+  roomNumber?: string;
   estimatedWaitMinutes?: number;
 };
 
@@ -179,6 +182,21 @@ function t(language: Language | undefined, key: keyof (typeof LABELS)["en"]): st
   return LABELS[language ?? "en"]?.[key] ?? LABELS.en[key];
 }
 
+/** Department prefix for signage tokens — USG-23, MRI-5, etc. */
+function tokenPrefix(department: string | undefined, roomKey: string): string {
+  const raw = (department || roomKey || "usg").toUpperCase().replace(/[-_\s]+/g, " ").trim();
+  if (/\bUSG\b/.test(raw) || raw.startsWith("USG")) return "USG";
+  if (/\bMRI\b/.test(raw) || raw.startsWith("MRI")) return "MRI";
+  if (/\bCT\b/.test(raw) || raw.startsWith("CT")) return "CT";
+  if (/\bX[- ]?RAY\b/.test(raw) || raw.includes("XRAY")) return "X-RAY";
+  const word = raw.replace(/\s+ROOM$/i, "").split(/\s+/)[0] ?? "TKN";
+  return word.slice(0, 8) || "TKN";
+}
+
+function formatTokenLabel(entry: { tokenNo: number; department?: string }, roomKey: string): string {
+  return `${tokenPrefix(entry.department, roomKey)}-${entry.tokenNo}`;
+}
+
 // "HH:MM" strings compared against the current time, handling ranges that
 // wrap past midnight (e.g. 22:00 → 06:00).
 function isWithinQuietHours(now: Date, start: string, end: string): boolean {
@@ -216,6 +234,14 @@ export default function QueueDisplay({ roomKey: propRoomKey }: QueueDisplayProps
     staleTime: 30_000,
     refetchInterval: 60_000, // pick up admin edits without a manual refresh
     retry: 2,
+  });
+
+  // Clinic website logo — fallback when queue-display row has no logoUrl yet.
+  const { data: siteSettings } = useQuery({
+    queryKey: ["site-settings-queue-logo"],
+    queryFn: () => api.settings(),
+    staleTime: 300_000,
+    retry: 1,
   });
 
   // ── Live queue data — reuses the existing display feed, unchanged ──────
@@ -269,10 +295,27 @@ export default function QueueDisplay({ roomKey: propRoomKey }: QueueDisplayProps
   // Flatten across department cards (a single-room display usually has one).
   const queueSummary = useMemo(() => {
     const cards = queueData?.departments ?? [];
-    const serving = cards.find((c) => c.nowServing)?.nowServing ?? null;
+    const servingCard = cards.find((c) => c.nowServing);
+    const serving = servingCard?.nowServing
+      ? {
+          ...servingCard.nowServing,
+          department: servingCard.department,
+          roomNumber: servingCard.roomNumber,
+          floorLabel: servingCard.nowServing.floorLabel || servingCard.floorLabel,
+        }
+      : null;
+    // Queue order: lowest token number first (matches physical queue / call order).
     const upcoming = cards
-      .flatMap((c) => c.waiting.map((w) => ({ ...w, roomNumber: c.roomNumber, floorLabel: w.floorLabel || c.floorLabel })))
-      .sort((a, b) => (b.priority - a.priority) || (a.tokenNo - b.tokenNo));
+      .flatMap((c) =>
+        c.waiting.map((w) => ({
+          ...w,
+          department: c.department,
+          roomNumber: c.roomNumber,
+          floorLabel: w.floorLabel || c.floorLabel,
+        })),
+      )
+      .filter((w) => w.id !== serving?.id)
+      .sort((a, b) => a.tokenNo - b.tokenNo || b.priority - a.priority);
     const totalWaiting = cards.reduce((n, c) => n + c.waitingCount, 0);
     const lastWait = upcoming.length > 0 ? upcoming[upcoming.length - 1]?.estimatedWaitMinutes : undefined;
     const floorHint = serving?.floorLabel || upcoming[0]?.floorLabel || cards[0]?.floorLabel || "";
@@ -398,9 +441,19 @@ export default function QueueDisplay({ roomKey: propRoomKey }: QueueDisplayProps
   const nextCount = s.nextPatientCount || 5;
   const nextList = next.slice(0, nextCount);
   const upNext = !current && nextList.length > 0 ? nextList[0] : null;
-  const nextAfterUp = upNext ? nextList.slice(1) : nextList;
+  // When someone is already serving, show the full live waiting list (12, 13, 14…).
+  // UP NEXT mode only splits the list when nobody has been called yet.
+  const nextForPanel = current ? nextList : (upNext ? nextList.slice(1) : nextList);
   const enabledInstructions = (s.instructionItems || []).filter((i) => i.enabled);
   const isLandscape = s.layoutOrientation === "landscape";
+  const logoSrc = s.logoUrl
+    ? resolveAssetUrl(s.logoUrl)
+    : siteSettings?.logoUrl
+      ? resolveAssetUrl(siteSettings.logoUrl)
+      : null;
+  const displayName = s.displayName || siteSettings?.siteTitle || "CARE DIAGNOSTICS";
+  const locationLabel = s.location || "Deoghar";
+  const roomLabel = s.roomTitle || `${finalRoomKey.toUpperCase()} ROOM`;
 
   return (
     <div
@@ -429,37 +482,33 @@ export default function QueueDisplay({ roomKey: propRoomKey }: QueueDisplayProps
         </div>
       )}
 
-      <header className="brand-bar">
-        <div className="brand-main">
-          {s.showLogo && s.logoUrl && (
-            <img src={s.logoUrl} className="brand-logo" alt="" />
+      <header className="top">
+        {s.showLogo && logoSrc && (
+          <img src={logoSrc} className="logo" alt="" />
+        )}
+        <div className="top-titles">
+          {s.showDisplayName && (
+            <h1>{displayName}</h1>
           )}
-          {s.showDisplayName && s.displayName && (
-            <span className="brand-part brand-name">{s.displayName}</span>
-          )}
-          {s.showLocation && s.location && (
-            <>
-              {(s.showLogo && s.logoUrl) || (s.showDisplayName && s.displayName) ? (
-                <span className="brand-sep" aria-hidden="true">·</span>
-              ) : null}
-              <span className="brand-part brand-location">{s.location}</span>
-            </>
-          )}
-          {s.showRoomTitle && s.roomTitle && (
-            <>
-              {((s.showLogo && s.logoUrl) || (s.showDisplayName && s.displayName) || (s.showLocation && s.location)) ? (
-                <span className="brand-sep" aria-hidden="true">·</span>
-              ) : null}
-              <span className="brand-part brand-room">{s.roomTitle}</span>
-            </>
+          {s.showLocation && (
+            <p>{locationLabel}</p>
           )}
         </div>
-        <div className="brand-meta">
-          <span className={`live-dot${streamLive ? " live" : ""}`} title={streamLive ? t(s.language, "live") : t(s.language, "reconnecting")}>
-            <span className="live-ping" />{streamLive ? t(s.language, "live") : t(s.language, "reconnecting")}
+        {s.showRoomTitle && (
+          <div className="room-badge">
+            <span className="room-icon" aria-hidden="true">🩺</span>
+            <span>{roomLabel}</span>
+          </div>
+        )}
+        <div className="top-clock">
+          <strong>{now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</strong>
+          <span>
+            {now.toLocaleDateString([], { day: "2-digit", month: "short", year: "numeric" })}
+            {" · "}
+            {now.toLocaleDateString([], { weekday: "long" })}
           </span>
-          <span className="brand-clock">
-            {now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+          <span className={`live-dot${streamLive ? " live" : ""}`}>
+            <span className="live-ping" />{streamLive ? t(s.language, "live") : t(s.language, "reconnecting")}
           </span>
         </div>
       </header>
@@ -468,7 +517,7 @@ export default function QueueDisplay({ roomKey: propRoomKey }: QueueDisplayProps
         <div className="queue-stats-bar">
           {current && (
             <span className="stat-chip stat-serving">
-              #{current.tokenNo} {t(s.language, "nowServing").toLowerCase()}
+              {formatTokenLabel(current, finalRoomKey)} {t(s.language, "nowServing").toLowerCase()}
             </span>
           )}
           {totalWaiting > 0 && (
@@ -492,29 +541,22 @@ export default function QueueDisplay({ roomKey: propRoomKey }: QueueDisplayProps
           <section className={`now-card${upNext ? " up-next-mode" : ""}${tokenPulse ? " token-pulse" : ""}`}>
             <div className={`green-bar${upNext ? " up-next-bar" : ""}`}>
               <span>{upNext ? t(s.language, "upNext") : t(s.language, "nowServing")}</span>
-              {s.language === "hi" && (
-                <small className="bar-sub">{upNext ? LABELS.en.upNext : LABELS.en.nowServing}</small>
-              )}
-              {s.language === "en" && (
-                <small className="bar-sub">{upNext ? LABELS.hi.upNext : LABELS.hi.nowServing}</small>
-              )}
             </div>
             {current ? (
               <>
-                <h3 className={tokenPulse ? "pulse" : ""}>#{current.tokenNo}</h3>
+                <h3 className={tokenPulse ? "pulse" : ""}>{formatTokenLabel(current, finalRoomKey)}</h3>
                 <h4>{current.patientLabel}</h4>
                 <p>
                   {current.testName && <>{current.testName}</>}
                   {current.priority > 0 && <span className="vip-badge">{t(s.language, "vip")}</span>}
                 </p>
-                <div className="proceed-cta">
-                  {t(s.language, "proceed")} <strong>{s.roomTitle || roomKeyLabel(s.roomTitle)}</strong>
-                  {current.floorLabel ? <> · {current.floorLabel}</> : null}
+                <div className="room-strip">
+                  📍 {[roomLabel, current.floorLabel].filter(Boolean).join(" · ")}
                 </div>
               </>
             ) : upNext ? (
               <>
-                <h3>#{upNext.tokenNo}</h3>
+                <h3>{formatTokenLabel(upNext, finalRoomKey)}</h3>
                 <h4>{upNext.patientLabel}</h4>
                 <p>{upNext.testName || ""}</p>
                 {s.showWaitEstimate && upNext.estimatedWaitMinutes ? (
@@ -532,14 +574,14 @@ export default function QueueDisplay({ roomKey: propRoomKey }: QueueDisplayProps
           <section className="next-card">
             <div className="blue-bar">
               {t(s.language, "nextPatients")}
-              {nextAfterUp.length > 0 && <span className="bar-count"> ({nextAfterUp.length})</span>}
+              {nextForPanel.length > 0 && <span className="bar-count"> ({nextForPanel.length})</span>}
             </div>
-            {nextAfterUp.length === 0 ? (
+            {nextForPanel.length === 0 ? (
               <div className="next-empty">{t(s.language, "queueClear")}</div>
             ) : (
-              nextAfterUp.map((p) => (
+              nextForPanel.map((p) => (
                 <div className="next-row" key={p.id}>
-                  <b>{p.tokenNo}</b>
+                  <div className="token-badge">{formatTokenLabel(p, finalRoomKey)}</div>
                   <span>
                     {p.patientLabel}
                     {p.priority > 0 && <span className="vip-badge inline">{t(s.language, "vip")}</span>}
@@ -555,10 +597,8 @@ export default function QueueDisplay({ roomKey: propRoomKey }: QueueDisplayProps
           </section>
         )}
 
+        <div className="right-col">
         {s.showQrBooking && (() => {
-          // Fall back to auto-generated QR pointing to the clinic's booking
-          // page (website + /book) when no QR image has been uploaded — the
-          // card previously vanished entirely, which read as "QR not showing".
           const fallbackTarget = s.website
             ? (s.website.startsWith("http") ? s.website : `https://${s.website}`).replace(/\/+$/, "") + "/book"
             : `${window.location.origin}/book`;
@@ -568,7 +608,7 @@ export default function QueueDisplay({ roomKey: propRoomKey }: QueueDisplayProps
               {s.qrSubheading && <h2>{s.qrSubheading}</h2>}
               {s.qrDescription && <p>{s.qrDescription}</p>}
               {s.qrImageUrl ? (
-                <img src={s.qrImageUrl} className="qr" alt="Booking QR code" />
+                <img src={resolveAssetUrl(s.qrImageUrl)} className="qr" alt="Booking QR code" />
               ) : (
                 <div className="qr qr-auto">
                   <QRCodeSVG value={fallbackTarget} size={256} level="M" includeMargin={false} />
@@ -589,10 +629,14 @@ export default function QueueDisplay({ roomKey: propRoomKey }: QueueDisplayProps
             ))}
           </section>
         )}
+        </div>
       </div>
 
       {s.showAnnouncement && s.announcementText && (
-        <section className="announcement">🔔 {s.announcementText}</section>
+        <section className="announcement-row">
+          <div className="announcement">🔔 {s.announcementText}</div>
+          <div className="thank-you">Thank You! <span aria-hidden="true">❤️</span></div>
+        </section>
       )}
 
       <footer>
@@ -639,39 +683,65 @@ const DISPLAY_CSS = `
 .usg-display * { box-sizing: border-box; }
 .usg-display.kiosk-lock { user-select: none; -webkit-user-select: none; cursor: none; }
 
-/* Single-line brand header — logo + clinic + location + room, one row */
-.brand-bar {
-  display: flex;
+/* Header — logo left, clinic centre, room badge, clock right (reference layout) */
+.top {
+  display: grid;
+  grid-template-columns: auto 1fr auto auto;
   align-items: center;
-  justify-content: space-between;
-  flex-wrap: nowrap;
-  gap: 1.2vw;
+  gap: 1.4vw;
   flex-shrink: 0;
   margin-bottom: 0.8vh;
-  padding: 0.6vh 1vw;
-  white-space: nowrap;
-  overflow: hidden;
+  padding: 0.4vh 0.2vw;
 }
-.brand-main {
+.logo {
+  width: 7vh;
+  height: 7vh;
+  object-fit: contain;
+  border-radius: 10px;
+  background: white;
+  padding: 5px;
+  flex-shrink: 0;
+}
+.top-titles { min-width: 0; text-align: left; }
+.top-titles h1 {
+  font-size: clamp(2.6vh, 3.4vw, 3.8vh);
+  margin: 0;
+  color: var(--primary-color, #4ee24e);
+  font-weight: 900;
+  letter-spacing: 0.02em;
+  line-height: 1.1;
+}
+.top-titles p {
+  font-size: 1.9vh;
+  margin: 0.2vh 0 0;
+  opacity: 0.9;
+  font-weight: 700;
+}
+.room-badge {
   display: flex;
   align-items: center;
-  justify-content: center;
-  gap: 1.2vw;
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
+  gap: 0.6vw;
+  font-size: clamp(2.4vh, 3vw, 3.4vh);
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
 }
-.brand-meta {
+.room-icon { font-size: 1.1em; }
+.top-clock {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  gap: 0.2vh;
-  flex-shrink: 0;
-  font-size: 1.5vh;
+  gap: 0.15vh;
+  font-size: 1.45vh;
   font-weight: 700;
-  opacity: 0.9;
+  opacity: 0.92;
+  flex-shrink: 0;
 }
-.brand-clock { font-variant-numeric: tabular-nums; letter-spacing: 0.04em; }
+.top-clock strong {
+  font-size: 2.2vh;
+  font-variant-numeric: tabular-nums;
+}
 .live-dot {
   display: flex;
   align-items: center;
@@ -720,35 +790,8 @@ const DISPLAY_CSS = `
 .stat-wait { color: var(--accent-color, #fde047); }
 .stat-floor { opacity: 0.9; }
 
-.brand-logo {
-  width: 5.2vh;
-  height: 5.2vh;
-  object-fit: contain;
-  border-radius: 8px;
-  background: white;
-  padding: 3px;
-  flex-shrink: 0;
-}
-.brand-part {
-  font-size: clamp(2.4vh, 3.2vw, 3.4vh);
-  font-weight: 800;
-  line-height: 1.1;
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
-  color: var(--text-color, white);
-}
-.brand-name { color: var(--primary-color, #4ee24e); }
-.brand-location { color: var(--text-color, white); opacity: 0.95; }
-.brand-room { color: var(--text-color, white); }
-.brand-sep {
-  font-size: clamp(2.2vh, 3vw, 3.2vh);
-  font-weight: 800;
-  opacity: 0.45;
-  line-height: 1;
-  flex-shrink: 0;
-}
-
 .body { display: contents; }
+.right-col { display: contents; }
 .now-card, .next-card, .qr-card, .announcement, footer {
   border-radius: 18px;
   border: 2px solid var(--secondary-color, #1687ff);
@@ -803,7 +846,7 @@ const DISPLAY_CSS = `
 .next-card { flex: 1.6; display: flex; flex-direction: column; min-height: 0; }
 .next-row {
   display: grid;
-  grid-template-columns: 5.5vh 1fr auto;
+  grid-template-columns: minmax(4.8em, 7vh) 1fr auto;
   align-items: center;
   gap: 1vw;
   background: white;
@@ -814,7 +857,19 @@ const DISPLAY_CSS = `
 }
 .next-row:last-child { border-bottom: none; }
 .next-empty { background: white; color: #64748b; text-align: center; padding: 3vh; font-size: 2vh; }
-.next-row b { background: var(--secondary-color, #075fe0); color: white; border-radius: 8px; padding: 0.6vh; text-align: center; font-size: 2vh; }
+.token-badge {
+  background: var(--secondary-color, #075fe0);
+  color: white;
+  border-radius: 8px;
+  padding: 0.55vh 0.5vw;
+  text-align: center;
+  font-size: clamp(1.5vh, 1.9vh, 2.2vh);
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  min-width: 3.2em;
+  line-height: 1.2;
+}
 .next-row span { font-weight: 800; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-transform: uppercase; }
 .next-row em { font-style: normal; text-align: right; opacity: 0.7; font-size: 1.6vh; white-space: nowrap; }
 .qr-card { text-align: center; padding: 1.6vh; flex: 2.4; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 0; }
@@ -844,7 +899,31 @@ const DISPLAY_CSS = `
 }
 .instruction span { font-size: 3.2vh; display: block; margin-bottom: 0.4vh; }
 .instruction p { font-size: 1.5vh; margin: 0; color: #e5e7eb; }
-.announcement { padding: 1.4vh; font-size: 2vh; font-weight: 800; color: var(--accent-color, #ffe600); text-align: center; flex-shrink: 0; }
+.announcement-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 1vw;
+  margin-bottom: 1vh;
+  flex-shrink: 0;
+}
+.announcement {
+  padding: 1.2vh 1.4vw;
+  font-size: 2vh;
+  font-weight: 800;
+  color: var(--accent-color, #ffe600);
+  text-align: left;
+  border-radius: 14px;
+  border: 2px solid var(--secondary-color, #1687ff);
+  background: var(--card-bg-color, #06224a);
+}
+.thank-you {
+  font-size: 2.4vh;
+  font-weight: 800;
+  font-style: italic;
+  white-space: nowrap;
+  padding: 0 0.5vw;
+}
 footer {
   display: flex;
   justify-content: space-around;
@@ -867,36 +946,43 @@ footer {
   flex-shrink: 0;
 }
 
-/* ── Landscape (1920x1080-style) layout — two-column body ────────────── */
-.usg-display.landscape .brand-bar {
-  justify-content: space-between;
-  padding-left: 0.4vw;
-  margin-bottom: 0.6vh;
-}
-.usg-display.landscape .brand-main { justify-content: flex-start; }
-.usg-display.landscape .queue-stats-bar { justify-content: flex-start; margin-bottom: 0.8vh; }
+/* ── Landscape — Now Serving | Next Patients | QR + instructions ─────── */
+.usg-display.landscape .top { margin-bottom: 0.6vh; }
+.usg-display.landscape .queue-stats-bar { justify-content: flex-start; margin-bottom: 0.6vh; }
 .usg-display.landscape .body {
   display: grid;
-  grid-template-columns: 1.3fr 1fr;
-  grid-template-rows: 1fr auto;
-  grid-template-areas: "now qr" "next instructions";
-  gap: 1.2vh 1.6vw;
+  grid-template-columns: 1.15fr 1fr 0.88fr;
+  grid-template-areas: "now next side";
+  gap: 1.2vh 1.4vw;
   flex: 1;
   min-height: 0;
 }
 .usg-display.landscape .now-card { grid-area: now; margin-bottom: 0; }
 .usg-display.landscape .next-card { grid-area: next; margin-bottom: 0; overflow: auto; }
-.usg-display.landscape .qr-card { grid-area: qr; margin-bottom: 0; }
-.usg-display.landscape .instruction-row {
-  grid-area: instructions;
+.usg-display.landscape .right-col {
+  grid-area: side;
   display: flex;
   flex-direction: column;
   gap: 1vh;
+  min-height: 0;
+  overflow: hidden;
+}
+.usg-display.landscape .qr-card { margin-bottom: 0; flex: 1; min-height: 0; }
+.usg-display.landscape .instruction-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8vh;
   margin-bottom: 0;
   overflow: auto;
 }
-.usg-display.landscape .instruction { display: flex; align-items: center; gap: 0.8vw; text-align: left; padding: 1vh 1vw; }
-.usg-display.landscape .instruction span { margin-bottom: 0; font-size: 2.4vh; }
+.usg-display.landscape .instruction {
+  display: flex;
+  align-items: center;
+  gap: 0.8vw;
+  text-align: left;
+  padding: 0.9vh 1vw;
+}
+.usg-display.landscape .instruction span { margin-bottom: 0; font-size: 2.2vh; }
 
 /* ── Branding / video interstitial — full-screen takeover ─────────────── */
 .media-break {
