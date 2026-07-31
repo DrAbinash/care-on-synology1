@@ -353,6 +353,11 @@ services:
       AI_TEMPERATURE_DRAFT: ${AI_TEMPERATURE_DRAFT:-0.1}
       ORTHANC_USERNAME: ${ORTHANC_USERNAME:-}
       ORTHANC_PASSWORD: ${ORTHANC_PASSWORD:-}
+      # Shared folder for Orthanc worklists plugin (.wl files). When set, billing
+      # auto-publishes ERP patient/doctor names + accession to the modality MWL.
+      # Mount the same host path into Orthanc's worklists Database directory.
+      # Shared with care-pacs Orthanc worklists plugin (host path must match).
+      ORTHANC_WORKLIST_DIR: ${ORTHANC_WORKLIST_DIR:-/orthanc-worklists}
       PACS_PROVIDER: ${PACS_PROVIDER:-orthanc}
       PACS_VIEWER_TYPE: ${PACS_VIEWER_TYPE:-ohif}
       OHIF_URL: ${OHIF_URL:-}
@@ -387,6 +392,9 @@ services:
       # Override BACKUP_HOST_DIR in .env only if your jobs use a different
       # destinationPath.
       - ${BACKUP_HOST_DIR:-/volume1/docker/backups}:/volume1/docker/backups
+      # Modality Worklist (.wl) — same host folder Orthanc worklists plugin reads.
+      # care-pacs mounts this at /var/lib/orthanc/worklists.
+      - ${ORTHANC_WORKLIST_HOST_DIR:-/volume1/docker/care-pacs/orthanc/worklists}:/orthanc-worklists
     healthcheck:
       # ── Liveness probe (process alive + port responding) ───────────────────
       # Hits GET /health — registered on the Express app with no auth, no

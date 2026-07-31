@@ -46,6 +46,7 @@ import { isUltrasoundModality, isObstetricUsgStudy } from "../lib/usgModality";
 import { checkPcpndtFormFCompliance, PCPNDT_OVERRIDE_ROLES } from "../lib/pcpndtCompliance";
 import { auditLog } from "../lib/audit";
 import { calculateMatchScore, type DicomInput, type BilledTestInput } from "../lib/pacs/matchingEngine";
+import { formatDicomPersonNameForDisplay } from "../lib/pacs/dicomNameNormalize";
 import { shouldFallbackToAccessionLookup, isWorklistUidRaceViolation } from "../lib/radiologyWorklistDedup";
 import { radiologyOpenFallbackPath, resolveRadiologyOpen } from "../lib/resolveRadiologyOpen";
 
@@ -79,6 +80,7 @@ export async function runMatchingEngineForWorklist(worklistId: number): Promise<
       modality: radiologyStudiesTable.modality,
       studyDescription: radiologyStudiesTable.studyDescription,
       studyDate: radiologyStudiesTable.studyDate,
+      referringDoctor: radiologyStudiesTable.referringDoctor,
       patientName: sql<string>`concat(${patientsTable.firstName}, ' ', ${patientsTable.lastName})`,
       patientUHID: patientsTable.patientId,
       age: sql<string>`concat(${patientsTable.ageValue}, ' ', ${patientsTable.ageUnit})`,
@@ -132,6 +134,7 @@ export async function runMatchingEngineForWorklist(worklistId: number): Promise<
     accessionNumber: study.accessionNumber,
     billNumber: study.billNumber,
     studyDate: study.studyDate,
+    referringDoctor: study.referringDoctor,
   };
 
   const matchResult = calculateMatchScore(dicomInput, billInput);
@@ -409,7 +412,10 @@ router.post("/radiology/studies", async (req, res) => {
 
     const rawStudyId = b.studyId;
     const patientId = (b.patientId !== undefined ? String(b.patientId) : "") || (b.PatientID !== undefined ? String(b.PatientID) : "");
-    const patientName = typeof b.patientName === "string" ? b.patientName.trim() : (typeof b.PatientName === "string" ? b.PatientName.trim() : "");
+    // Clean DICOM PN syntax (LAST^FIRST^^^MD → "First Last, MD") so worklist
+    // display and the billing match engine see the same readable form.
+    const patientNameRaw = typeof b.patientName === "string" ? b.patientName.trim() : (typeof b.PatientName === "string" ? b.PatientName.trim() : "");
+    const patientName = formatDicomPersonNameForDisplay(patientNameRaw) || patientNameRaw;
     const age = typeof b.age === "string" ? b.age.trim() || null : null;
     const sex = typeof b.sex === "string" ? b.sex.trim() || null : null;
     const modality = typeof b.modality === "string" ? b.modality.trim() || "OT" : (typeof b.ModalitiesInStudy === "string" ? b.ModalitiesInStudy.trim() || "OT" : "OT");
@@ -427,7 +433,10 @@ router.post("/radiology/studies", async (req, res) => {
     const aeTitle = typeof b.aeTitle === "string" ? b.aeTitle.trim() || null : null;
     const ipAddress = typeof b.ipAddress === "string" ? b.ipAddress.trim() || null : null;
     const port = typeof b.port === "number" ? b.port : null;
-    const referringDoctor = typeof b.referringDoctor === "string" ? b.referringDoctor.trim() || null : null;
+    const referringDoctorRaw = typeof b.referringDoctor === "string" ? b.referringDoctor.trim() || null : null;
+    const referringDoctor = referringDoctorRaw
+      ? (formatDicomPersonNameForDisplay(referringDoctorRaw) || referringDoctorRaw)
+      : null;
     const weasisUrl = typeof b.weasisUrl === "string" ? b.weasisUrl.trim() || null : null;
     const sourcePacs = typeof b.sourcePacs === "string" ? b.sourcePacs.trim() || null : null;
     const sourceAeTitle = typeof b.sourceAeTitle === "string" ? b.sourceAeTitle.trim() || null : null;
