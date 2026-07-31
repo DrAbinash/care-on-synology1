@@ -72,6 +72,7 @@ const Reports         = lazy(() => import("@/pages/Reports"));
 const ReportGenerator = lazy(() => import("@/pages/ReportGenerator"));
 const Inventory       = lazy(() => import("@/pages/Inventory"));
 const HopeReferrals   = lazy(() => import("@/pages/HopeReferrals"));
+const HopeHospitalConnection = lazy(() => import("@/pages/HopeHospitalConnection"));
 const IntegrationAdmin = lazy(() => import("@/pages/IntegrationAdmin"));
 const WhatsAppIntegrationSettings = lazy(() => import("@/pages/WhatsAppIntegrationSettings"));
 const Accounting      = lazy(() => import("@/pages/Accounting"));
@@ -374,6 +375,7 @@ function Router() {
               <Route path="/" component={BillingDesk} />
               <Route path="/dashboard" component={Dashboard} />
               <Route path="/hope-referrals" component={HopeReferrals} />
+              <Route path="/hope-connection" component={HopeHospitalConnection} />
               <Route path="/diagnostic-integration" component={IntegrationAdmin} />
               <Route path="/admin/integrations/whatsapp" component={WhatsAppIntegrationSettings} />
               <Route path="/diagnostics" component={Diagnostics} />
