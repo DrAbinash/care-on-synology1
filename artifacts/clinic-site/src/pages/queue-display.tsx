@@ -143,17 +143,35 @@ function cssVar(value: string | undefined): string | undefined {
 const LABELS: Record<Language, Record<string, string>> = {
   en: {
     nowServing: "NOW SERVING",
+    upNext: "UP NEXT",
     waitingForNext: "Waiting for next token…",
     nextPatients: "NEXT PATIENTS",
     queueClear: "Queue is clear",
     waitSuffix: "min wait",
+    proceed: "Please proceed to",
+    prepare: "Have your token ready — you will be called shortly",
+    queueStats: "in queue",
+    estWait: "Est. wait for last in list",
+    live: "Live",
+    reconnecting: "Updating…",
+    vip: "VIP",
+    position: "Position",
   },
   hi: {
     nowServing: "अभी बुलाया जा रहा है",
+    upNext: "अगला",
     waitingForNext: "अगले टोकन की प्रतीक्षा है…",
     nextPatients: "अगले मरीज़",
     queueClear: "कतार खाली है",
     waitSuffix: "मिनट प्रतीक्षा",
+    proceed: "कृपया आगे बढ़ें",
+    prepare: "अपना टोकन तैयार रखें — जल्द बुलाया जाएगा",
+    queueStats: "कतार में",
+    estWait: "अंतिम की अनुमानित प्रतीक्षा",
+    live: "लाइव",
+    reconnecting: "अपडेट…",
+    vip: "VIP",
+    position: "क्रम",
   },
 };
 
@@ -187,6 +205,9 @@ export default function QueueDisplay({ roomKey: propRoomKey }: QueueDisplayProps
   const displayToken = search.get("displayToken") ?? "";
 
   const qc = useQueryClient();
+  const [now, setNow] = useState(new Date());
+  const [streamLive, setStreamLive] = useState(false);
+  const [tokenPulse, setTokenPulse] = useState(false);
 
   // ── Settings (presentation config) ────────────────────────────────────
   const { data: settings, isLoading: settingsLoading, isError: settingsError, error: settingsErrObj } = useQuery<QueueDisplaySettings>({
@@ -210,35 +231,77 @@ export default function QueueDisplay({ roomKey: propRoomKey }: QueueDisplayProps
   useEffect(() => {
     if (!settings || typeof EventSource === "undefined") return;
     const streamUrl = api.queueDisplay.queueStream(settings.ledgerId, displayToken, undefined, departments);
-    const es = new EventSource(streamUrl);
-    es.onmessage = (evt) => {
-      if (!evt.data || evt.data.startsWith(":")) return;
-      try {
-        const payload = JSON.parse(evt.data) as DisplayPayload;
-        qc.setQueryData(
-          ["queue-display-feed", finalRoomKey, settings.ledgerId, departments, displayToken],
-          payload,
-        );
-      } catch { /* ignore malformed event */ }
+    let es: EventSource | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let closed = false;
+
+    const connect = () => {
+      if (closed) return;
+      es = new EventSource(streamUrl);
+      es.onopen = () => setStreamLive(true);
+      es.onmessage = (evt) => {
+        if (!evt.data || evt.data.startsWith(":")) return;
+        try {
+          const payload = JSON.parse(evt.data) as DisplayPayload;
+          qc.setQueryData(
+            ["queue-display-feed", finalRoomKey, settings.ledgerId, departments, displayToken],
+            payload,
+          );
+          setStreamLive(true);
+        } catch { /* ignore malformed event */ }
+      };
+      es.onerror = () => {
+        setStreamLive(false);
+        es?.close();
+        es = null;
+        if (!closed) reconnectTimer = setTimeout(connect, 5000);
+      };
     };
-    es.onerror = () => es.close();
-    return () => es.close();
+
+    connect();
+    return () => {
+      closed = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      es?.close();
+    };
   }, [settings, finalRoomKey, displayToken, departments, qc]);
 
   // Flatten across department cards (a single-room display usually has one).
-  const { current, next } = useMemo(() => {
+  const queueSummary = useMemo(() => {
     const cards = queueData?.departments ?? [];
     const serving = cards.find((c) => c.nowServing)?.nowServing ?? null;
-    const upcoming = cards.flatMap((c) => c.waiting.map((w) => ({ ...w, roomNumber: c.roomNumber })));
-    return { current: serving, next: upcoming };
+    const upcoming = cards
+      .flatMap((c) => c.waiting.map((w) => ({ ...w, roomNumber: c.roomNumber, floorLabel: w.floorLabel || c.floorLabel })))
+      .sort((a, b) => (b.priority - a.priority) || (a.tokenNo - b.tokenNo));
+    const totalWaiting = cards.reduce((n, c) => n + c.waitingCount, 0);
+    const lastWait = upcoming.length > 0 ? upcoming[upcoming.length - 1]?.estimatedWaitMinutes : undefined;
+    const floorHint = serving?.floorLabel || upcoming[0]?.floorLabel || cards[0]?.floorLabel || "";
+    return { current: serving, next: upcoming, totalWaiting, lastWait, floorHint };
   }, [queueData]);
 
-  // ── Live clock ───────────────────────────────────────────────────────
-  const [now, setNow] = useState(new Date());
+  const { current, next, totalWaiting, lastWait, floorHint } = queueSummary;
+
   useEffect(() => {
     const t = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(t);
   }, []);
+
+  // Pulse the token number briefly when now-serving changes (draws the eye).
+  const pulseRef = useRef<number | null>(null);
+  useEffect(() => {
+    const id = current?.id ?? null;
+    if (id === null || pulseRef.current === null) {
+      pulseRef.current = id;
+      return undefined;
+    }
+    if (id === pulseRef.current) {
+      return undefined;
+    }
+    pulseRef.current = id;
+    setTokenPulse(true);
+    const t = setTimeout(() => setTokenPulse(false), 4000);
+    return () => clearTimeout(t);
+  }, [current?.id]);
 
   // ── Kiosk-mode hardening — wake lock, fullscreen, watchdog, remote reload
   const [lastDataAt, setLastDataAt] = useState<number | null>(null);
@@ -334,6 +397,8 @@ export default function QueueDisplay({ roomKey: propRoomKey }: QueueDisplayProps
   const s = settings;
   const nextCount = s.nextPatientCount || 5;
   const nextList = next.slice(0, nextCount);
+  const upNext = !current && nextList.length > 0 ? nextList[0] : null;
+  const nextAfterUp = upNext ? nextList.slice(1) : nextList;
   const enabledInstructions = (s.instructionItems || []).filter((i) => i.enabled);
   const isLandscape = s.layoutOrientation === "landscape";
 
@@ -364,35 +429,98 @@ export default function QueueDisplay({ roomKey: propRoomKey }: QueueDisplayProps
         </div>
       )}
 
-      <header className="top">
-        {s.showLogo && s.logoUrl && <img src={s.logoUrl} className="logo" alt="" />}
-        <div>
-          {s.showDisplayName && <h1>{s.displayName}</h1>}
-          {s.showLocation && s.location && <p>{s.location}</p>}
+      <header className="brand-bar">
+        <div className="brand-main">
+          {s.showLogo && s.logoUrl && (
+            <img src={s.logoUrl} className="brand-logo" alt="" />
+          )}
+          {s.showDisplayName && s.displayName && (
+            <span className="brand-part brand-name">{s.displayName}</span>
+          )}
+          {s.showLocation && s.location && (
+            <>
+              {(s.showLogo && s.logoUrl) || (s.showDisplayName && s.displayName) ? (
+                <span className="brand-sep" aria-hidden="true">·</span>
+              ) : null}
+              <span className="brand-part brand-location">{s.location}</span>
+            </>
+          )}
+          {s.showRoomTitle && s.roomTitle && (
+            <>
+              {((s.showLogo && s.logoUrl) || (s.showDisplayName && s.displayName) || (s.showLocation && s.location)) ? (
+                <span className="brand-sep" aria-hidden="true">·</span>
+              ) : null}
+              <span className="brand-part brand-room">{s.roomTitle}</span>
+            </>
+          )}
+        </div>
+        <div className="brand-meta">
+          <span className={`live-dot${streamLive ? " live" : ""}`} title={streamLive ? t(s.language, "live") : t(s.language, "reconnecting")}>
+            <span className="live-ping" />{streamLive ? t(s.language, "live") : t(s.language, "reconnecting")}
+          </span>
+          <span className="brand-clock">
+            {now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+          </span>
         </div>
       </header>
 
-      {s.showRoomTitle && (
-        <section className="room-title">
-          <h2>{s.roomTitle}</h2>
-        </section>
+      {(totalWaiting > 0 || current) && (
+        <div className="queue-stats-bar">
+          {current && (
+            <span className="stat-chip stat-serving">
+              #{current.tokenNo} {t(s.language, "nowServing").toLowerCase()}
+            </span>
+          )}
+          {totalWaiting > 0 && (
+            <span className="stat-chip">
+              <strong>{totalWaiting}</strong> {t(s.language, "queueStats")}
+            </span>
+          )}
+          {s.showWaitEstimate && lastWait != null && lastWait > 0 && (
+            <span className="stat-chip stat-wait">
+              {t(s.language, "estWait")}: ~{lastWait} {t(s.language, "waitSuffix")}
+            </span>
+          )}
+          {floorHint && (
+            <span className="stat-chip stat-floor">📍 {floorHint}</span>
+          )}
+        </div>
       )}
 
       <div className="body">
         {s.showNowServing && (
-          <section className="now-card">
-            <div className="green-bar">{t(s.language, "nowServing")}</div>
+          <section className={`now-card${upNext ? " up-next-mode" : ""}${tokenPulse ? " token-pulse" : ""}`}>
+            <div className={`green-bar${upNext ? " up-next-bar" : ""}`}>
+              <span>{upNext ? t(s.language, "upNext") : t(s.language, "nowServing")}</span>
+              {s.language === "hi" && (
+                <small className="bar-sub">{upNext ? LABELS.en.upNext : LABELS.en.nowServing}</small>
+              )}
+              {s.language === "en" && (
+                <small className="bar-sub">{upNext ? LABELS.hi.upNext : LABELS.hi.nowServing}</small>
+              )}
+            </div>
             {current ? (
               <>
-                <h3>#{current.tokenNo}</h3>
+                <h3 className={tokenPulse ? "pulse" : ""}>#{current.tokenNo}</h3>
                 <h4>{current.patientLabel}</h4>
                 <p>
                   {current.testName && <>{current.testName}</>}
-                  {current.priority > 0 && <span> · VIP</span>}
+                  {current.priority > 0 && <span className="vip-badge">{t(s.language, "vip")}</span>}
                 </p>
-                <div className="room-strip">
-                  {[roomKeyLabel(s.roomTitle), current.floorLabel].filter(Boolean).join(" · ")}
+                <div className="proceed-cta">
+                  {t(s.language, "proceed")} <strong>{s.roomTitle || roomKeyLabel(s.roomTitle)}</strong>
+                  {current.floorLabel ? <> · {current.floorLabel}</> : null}
                 </div>
+              </>
+            ) : upNext ? (
+              <>
+                <h3>#{upNext.tokenNo}</h3>
+                <h4>{upNext.patientLabel}</h4>
+                <p>{upNext.testName || ""}</p>
+                {s.showWaitEstimate && upNext.estimatedWaitMinutes ? (
+                  <p className="wait-hint">~{upNext.estimatedWaitMinutes} {t(s.language, "waitSuffix")}</p>
+                ) : null}
+                <div className="proceed-cta prepare">{t(s.language, "prepare")}</div>
               </>
             ) : (
               <div className="no-serving">{t(s.language, "waitingForNext")}</div>
@@ -402,14 +530,20 @@ export default function QueueDisplay({ roomKey: propRoomKey }: QueueDisplayProps
 
         {s.showNextPatients && (
           <section className="next-card">
-            <div className="blue-bar">{t(s.language, "nextPatients")}</div>
-            {nextList.length === 0 ? (
+            <div className="blue-bar">
+              {t(s.language, "nextPatients")}
+              {nextAfterUp.length > 0 && <span className="bar-count"> ({nextAfterUp.length})</span>}
+            </div>
+            {nextAfterUp.length === 0 ? (
               <div className="next-empty">{t(s.language, "queueClear")}</div>
             ) : (
-              nextList.map((p) => (
+              nextAfterUp.map((p) => (
                 <div className="next-row" key={p.id}>
                   <b>{p.tokenNo}</b>
-                  <span>{p.patientLabel}</span>
+                  <span>
+                    {p.patientLabel}
+                    {p.priority > 0 && <span className="vip-badge inline">{t(s.language, "vip")}</span>}
+                  </span>
                   {s.showWaitEstimate && p.estimatedWaitMinutes ? (
                     <em>~{p.estimatedWaitMinutes} {t(s.language, "waitSuffix")}</em>
                   ) : (
@@ -504,12 +638,116 @@ const DISPLAY_CSS = `
 }
 .usg-display * { box-sizing: border-box; }
 .usg-display.kiosk-lock { user-select: none; -webkit-user-select: none; cursor: none; }
-.top { display: flex; align-items: center; gap: 1.6vw; justify-content: center; flex-shrink: 0; }
-.logo { width: 6vh; height: 6vh; object-fit: contain; border-radius: 8px; background: white; padding: 4px; }
-.top h1 { font-size: 3.4vh; margin: 0; color: var(--primary-color, #4ee24e); text-align: center; }
-.top p { font-size: 1.9vh; margin: 2px 0 0; text-align: center; opacity: 0.85; }
-.room-title { margin: 1.6vh 0 1.2vh; text-align: center; flex-shrink: 0; }
-.room-title h2 { font-size: 3vh; font-weight: 800; margin: 0; letter-spacing: 0.02em; }
+
+/* Single-line brand header — logo + clinic + location + room, one row */
+.brand-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: nowrap;
+  gap: 1.2vw;
+  flex-shrink: 0;
+  margin-bottom: 0.8vh;
+  padding: 0.6vh 1vw;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.brand-main {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1.2vw;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+.brand-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.2vh;
+  flex-shrink: 0;
+  font-size: 1.5vh;
+  font-weight: 700;
+  opacity: 0.9;
+}
+.brand-clock { font-variant-numeric: tabular-nums; letter-spacing: 0.04em; }
+.live-dot {
+  display: flex;
+  align-items: center;
+  gap: 0.4vw;
+  font-size: 1.3vh;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  opacity: 0.65;
+}
+.live-dot.live { opacity: 1; color: #4ade80; }
+.live-dot .live-ping {
+  width: 0.7vh;
+  height: 0.7vh;
+  border-radius: 50%;
+  background: currentColor;
+  display: inline-block;
+}
+.live-dot.live .live-ping {
+  animation: live-pulse 1.5s ease-in-out infinite;
+  box-shadow: 0 0 6px #4ade80;
+}
+@keyframes live-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(0.85); }
+}
+
+.queue-stats-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.8vw;
+  margin-bottom: 1vh;
+  flex-shrink: 0;
+}
+.stat-chip {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 999px;
+  padding: 0.5vh 1.2vw;
+  font-size: 1.55vh;
+  font-weight: 700;
+}
+.stat-chip strong { font-size: 1.8vh; margin-right: 0.2vw; }
+.stat-serving { background: rgba(74, 222, 128, 0.15); border-color: rgba(74, 222, 128, 0.4); color: #86efac; }
+.stat-wait { color: var(--accent-color, #fde047); }
+.stat-floor { opacity: 0.9; }
+
+.brand-logo {
+  width: 5.2vh;
+  height: 5.2vh;
+  object-fit: contain;
+  border-radius: 8px;
+  background: white;
+  padding: 3px;
+  flex-shrink: 0;
+}
+.brand-part {
+  font-size: clamp(2.4vh, 3.2vw, 3.4vh);
+  font-weight: 800;
+  line-height: 1.1;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--text-color, white);
+}
+.brand-name { color: var(--primary-color, #4ee24e); }
+.brand-location { color: var(--text-color, white); opacity: 0.95; }
+.brand-room { color: var(--text-color, white); }
+.brand-sep {
+  font-size: clamp(2.2vh, 3vw, 3.2vh);
+  font-weight: 800;
+  opacity: 0.45;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
 .body { display: contents; }
 .now-card, .next-card, .qr-card, .announcement, footer {
   border-radius: 18px;
@@ -519,13 +757,47 @@ const DISPLAY_CSS = `
   overflow: hidden;
   flex-shrink: 0;
 }
-.green-bar { background: var(--primary-color, #03a814); font-size: 2.6vh; font-weight: 900; padding: 1.2vh; text-align: center; }
+.green-bar { background: var(--primary-color, #03a814); font-size: 2.6vh; font-weight: 900; padding: 1.2vh; text-align: center; display: flex; flex-direction: column; gap: 0.2vh; }
+.green-bar .bar-sub, .blue-bar .bar-count { font-size: 1.4vh; font-weight: 600; opacity: 0.75; letter-spacing: 0.03em; }
+.blue-bar .bar-count { opacity: 0.85; }
+.green-bar.up-next-bar { background: #2563eb; }
+.now-card.up-next-mode { border-color: #2563eb; }
+.now-card.token-pulse { box-shadow: 0 0 0 3px rgba(74, 222, 128, 0.5); }
 .blue-bar { background: var(--secondary-color, #075fe0); font-size: 2.3vh; font-weight: 900; padding: 1.2vh; text-align: center; }
-.now-card { background: white; color: #00143d; text-align: center; flex: 1.6; display: flex; flex-direction: column; justify-content: center; min-height: 0; }
+.now-card { background: white; color: #00143d; text-align: center; flex: 1.6; display: flex; flex-direction: column; justify-content: center; min-height: 0; transition: box-shadow 0.3s ease; }
 .now-card h3 { font-size: 9vh; margin: 1.4vh 0 0.2vh; line-height: 1; font-weight: 900; }
-.now-card h4 { font-size: 3.6vh; margin: 0 0 1.2vh; font-weight: 800; text-transform: uppercase; }
-.now-card p { font-size: 1.9vh; font-weight: 700; min-height: 2.4vh; margin: 0 0 1vh; }
-.now-card p span { color: #d97706; margin-left: 10px; }
+.now-card h3.pulse { animation: token-flash 0.8s ease-in-out 3; }
+@keyframes token-flash {
+  0%, 100% { transform: scale(1); color: #00143d; }
+  50% { transform: scale(1.06); color: var(--primary-color, #03a814); }
+}
+.now-card h4 { font-size: 3.6vh; margin: 0 0 0.8vh; font-weight: 800; text-transform: uppercase; }
+.now-card p { font-size: 1.9vh; font-weight: 700; min-height: 2.4vh; margin: 0 0 0.6vh; }
+.now-card p.wait-hint { color: #2563eb; font-size: 2.2vh; margin-bottom: 0.8vh; }
+.proceed-cta {
+  background: var(--primary-color, #08a51a);
+  color: white;
+  font-size: 2.2vh;
+  font-weight: 900;
+  padding: 1.2vh 1.5vw;
+  margin-top: auto;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+.proceed-cta.prepare { background: #2563eb; font-size: 1.8vh; font-weight: 700; text-transform: none; }
+.vip-badge {
+  display: inline-block;
+  background: #d97706;
+  color: white;
+  font-size: 1.4vh;
+  font-weight: 900;
+  padding: 0.2vh 0.6vw;
+  border-radius: 6px;
+  margin-left: 0.5vw;
+  vertical-align: middle;
+}
+.vip-badge.inline { font-size: 1.2vh; margin-left: 0.4vw; }
+.now-card p span { color: inherit; margin-left: 0; }
 .no-serving { font-size: 3vh; font-weight: 700; color: #64748b; padding: 6vh 0; }
 .room-strip { background: var(--primary-color, #08a51a); color: white; font-size: 2.4vh; font-weight: 900; padding: 1.2vh; }
 .next-card { flex: 1.6; display: flex; flex-direction: column; min-height: 0; }
@@ -596,6 +868,13 @@ footer {
 }
 
 /* ── Landscape (1920x1080-style) layout — two-column body ────────────── */
+.usg-display.landscape .brand-bar {
+  justify-content: space-between;
+  padding-left: 0.4vw;
+  margin-bottom: 0.6vh;
+}
+.usg-display.landscape .brand-main { justify-content: flex-start; }
+.usg-display.landscape .queue-stats-bar { justify-content: flex-start; margin-bottom: 0.8vh; }
 .usg-display.landscape .body {
   display: grid;
   grid-template-columns: 1.3fr 1fr;
