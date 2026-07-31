@@ -186,11 +186,17 @@ curl -XPOST $CARE/api/integration/v1/diagnostic-referrals -H "Authorization: Bea
 * The inbox `map-test` action persists mappings but a dedicated bulk mapping-admin UI
   is minimal (API is complete).
 
-## 11. Recommended next phase
+## 11. Shipped clinical follow-ons (finance still separate)
 
-**Phase 2:** Billing Desk auto-prefill (with sign-off), per-item `sample.collected` /
-`study.completed` status round-trips, inbound result PDF attachment, and a wired
-integration test DB. **Phase 3:** critical-result escalation timers, cancellation/
-amendment UI, and a failed-sync reconciliation dashboard. **Phase 4 (only after the
-core is stable):** patient WhatsApp booking link, prep instructions, appointment
-scheduling, price estimates, referral-leakage analytics.
+Later work (still **no** shared books / PAN / roles SSO):
+
+* IPD → Care referral emit (Hope)
+* Finalised report `pdfUrl` + Hope `patient_documents` landing
+* Partner `GET /api/integration/v1/catalogue` + Hope “Sync from CARE”
+* Diagnostics CARE status badges + critical-worklist report links
+* Care-attributed WhatsApp: prep on accept, report-ready on finalise
+* Public booking `?source=hope` server-side catalogue narrowing
+
+**Still deferred:** Billing Desk full auto-prefill; shared staff roles/SSO;
+cross-entity finance/MIS merges (never — Hope Hospital, Hope Medicals, Care
+remain three separate PANs).
