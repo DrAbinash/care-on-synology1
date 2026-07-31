@@ -13,6 +13,7 @@ import {
   isFsAccessSupported,
   pairPenDrive,
   tryReadKey,
+  tryReadName,
   tryReadPin,
   unpairPenDrive,
   hasPairedDrive,
@@ -127,7 +128,7 @@ function UsbUnlockScreen({
       const text = await pairPenDrive();
       const err = await verifyAndStoreKey(text);
       if (err) { setError(err); return; }
-      // Try reading the PIN file from the paired drive
+      // Try reading the PIN file from the paired drive (name is optional).
       const pin = await tryReadPin();
       onUsbPin?.(pin);
       onUnlocked();
@@ -278,12 +279,22 @@ function LoginScreen({
     await doLogin(data.name, autoUsbPin ?? undefined);
   };
 
-  // Auto-login: if usbPin is available from the pen drive, try common names
+  // Auto-login: usbPin from pen drive. Prefer superadmin.name, then known
+  // identities (display name / username). Empty name lets the host resolve
+  // the sole active super_admin — avoids the old "must type Dr Abinash Kumar
+  // exactly" failure.
   useEffect(() => {
     if (!autoUsbPin || autoLoginState !== "idle") return;
     setAutoLoginState("attempting");
     void (async () => {
-      const names = ["Super Admin", "Admin", "Owner", "Manager"];
+      const fromDrive = await tryReadName();
+      const names = [
+        fromDrive,
+        "Dr Abinash Kumar",
+        "abinash",
+        "abinashsingh@gmail.com",
+        "", // host falls back to sole active super_admin / BOOTSTRAP_ADMIN_NAME
+      ].filter((n, i, arr) => n !== null && n !== undefined && arr.indexOf(n) === i) as string[];
       for (const name of names) {
         const ok = await doLogin(name, autoUsbPin);
         if (ok) { setAutoLoginState("success"); return; }

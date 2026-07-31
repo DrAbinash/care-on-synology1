@@ -277,12 +277,24 @@ function LoginScreen({
     await doLogin(data.name, autoUsbPin ?? undefined);
   };
 
-  // Auto-login: if usbPin is available from the pen drive, try common names
+  // Auto-login: usbPin from pen drive. Prefer superadmin.name, then known
+  // identities. Empty name lets the host resolve the sole active super_admin.
   useEffect(() => {
     if (!autoUsbPin || autoLoginState !== "idle") return;
     setAutoLoginState("attempting");
     void (async () => {
-      const names = ["Super Admin", "Admin", "Owner", "Manager"];
+      let fromDrive: string | null = null;
+      try {
+        const { tryReadName } = await import("./lib/usbPoller");
+        fromDrive = await tryReadName();
+      } catch { /* older poller without tryReadName */ }
+      const names = [
+        fromDrive,
+        "Dr Abinash Kumar",
+        "abinash",
+        "abinashsingh@gmail.com",
+        "",
+      ].filter((n, i, arr) => n !== null && n !== undefined && arr.indexOf(n) === i) as string[];
       for (const name of names) {
         const ok = await doLogin(name, autoUsbPin);
         if (ok) { setAutoLoginState("success"); return; }

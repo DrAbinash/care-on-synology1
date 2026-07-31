@@ -196,8 +196,49 @@ superAdminRouter.post("/login", loginLimiter, async (req, res): Promise<void> =>
   }
   const { name, pin, usbPin } = parsed.data;
 
-  const [user] = await db.select().from(usersTable)
-    .where(and(sql`lower(${usersTable.name}) = lower(${name})`, eq(usersTable.isActive, true)));
+  // Identity: display name OR username OR email OR numeric user id (legacy).
+  // With a valid usbPin, also fall back to sole active super_admin /
+  // BOOTSTRAP_ADMIN_NAME so auto-login does not require an exact "Dr Abinash Kumar" string.
+  async function findByIdentity(needle: string | undefined) {
+    const n = (needle ?? "").trim();
+    if (!n) return null;
+    if (/^\d+$/.test(n)) {
+      const [byId] = await db.select().from(usersTable)
+        .where(and(eq(usersTable.id, Number(n)), eq(usersTable.isActive, true))).limit(1);
+      if (byId) return byId;
+    }
+    const [row] = await db.select().from(usersTable)
+      .where(and(
+        or(
+          sql`lower(${usersTable.name}) = lower(${n})`,
+          sql`lower(coalesce(${usersTable.username}, '')) = lower(${n})`,
+          sql`lower(${usersTable.email}) = lower(${n})`,
+        ),
+        eq(usersTable.isActive, true),
+      )).limit(1);
+    return row ?? null;
+  }
+
+  let user = await findByIdentity(name);
+
+  // Auto-login via usbPin from the pen drive — resolve user even when name is wrong/empty
+  const expectedUsbPin = getUsbPinEnv();
+  const usbPinOk = Boolean(
+    isUsbPinEnforced()
+    && usbPin
+    && expectedUsbPin
+    && Buffer.from(usbPin).length === Buffer.from(expectedUsbPin).length
+    && crypto.timingSafeEqual(Buffer.from(usbPin), Buffer.from(expectedUsbPin)),
+  );
+  if ((!user || user.role !== "super_admin") && usbPinOk) {
+    const bootstrapName = (process.env["BOOTSTRAP_ADMIN_NAME"] || "Dr Abinash Kumar").trim();
+    user = (await findByIdentity(bootstrapName))
+      ?? (await (async () => {
+        const supers = await db.select().from(usersTable)
+          .where(and(eq(usersTable.role, "super_admin"), eq(usersTable.isActive, true))).limit(2);
+        return supers.length === 1 ? supers[0]! : null;
+      })());
+  }
 
   if (!user) { res.status(401).json({ error: "Invalid credentials" }); return; }
   if (user.role !== "super_admin") { res.status(403).json({ error: "Access denied — not a super admin" }); return; }
