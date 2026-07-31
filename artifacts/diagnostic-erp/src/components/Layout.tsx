@@ -177,7 +177,9 @@ const navItems: NavEntry[] = [
       // the group header navigates to the first child (see Layout nav render),
       // which opens the existing Reporting Worklist / Workspace.
       { path: "/radiology/worklist",            icon: ScanSearch,     label: "Worklist Hub" },
-      // Reporting opens from the worklist (empty workspace redirects there).
+      // Opens the canonical Reporting Workspace when a study is selected;
+      // without a study id it redirects to the worklist (see App.tsx route).
+      { path: "/radiology/reporting-workspace", icon: FilePen,        label: "Reporting Workspace" },
       { path: "/radiology/report-builder",      icon: Combine,        label: "Report Builder" },
       { path: "/radiology/findings-manager",    icon: Library,        label: "Findings Library", ownerOnly: true },
       { path: "/radiology/operations-dashboard", icon: Gauge,          label: "Operations Dashboard" },
