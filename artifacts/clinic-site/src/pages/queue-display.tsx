@@ -292,14 +292,15 @@ export default function QueueDisplay({ roomKey: propRoomKey }: QueueDisplayProps
     const id = current?.id ?? null;
     if (id === null || pulseRef.current === null) {
       pulseRef.current = id;
-      return;
+      return undefined;
     }
-    if (id !== pulseRef.current) {
-      pulseRef.current = id;
-      setTokenPulse(true);
-      const t = setTimeout(() => setTokenPulse(false), 4000);
-      return () => clearTimeout(t);
+    if (id === pulseRef.current) {
+      return undefined;
     }
+    pulseRef.current = id;
+    setTokenPulse(true);
+    const t = setTimeout(() => setTokenPulse(false), 4000);
+    return () => clearTimeout(t);
   }, [current?.id]);
 
   // ── Kiosk-mode hardening — wake lock, fullscreen, watchdog, remote reload
