@@ -280,6 +280,12 @@ services:
       OBJECT_STORAGE_DIR: ${OBJECT_STORAGE_DIR:-/app/data/object-storage}
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-https://caredeoghar.com}
 
+      # ── Hope Hospital integration ──────────────────────────────────────────
+      INTEGRATION_HOPE_CALLBACK_URL: ${INTEGRATION_HOPE_CALLBACK_URL:-}
+      INTEGRATION_HOPE_SIGNING_SECRET: ${INTEGRATION_HOPE_SIGNING_SECRET:-}
+      HOPE_CARE_INTEGRATION_FORCE: ${HOPE_CARE_INTEGRATION_FORCE:-}
+      HOPE_PARTNER_KEY: ${HOPE_PARTNER_KEY:-}
+
       ICICI_BASE_URL: ${ICICI_BASE_URL:-https://pgpay.icicibank.com}
       ICICI_URL_PREFIX: ${ICICI_URL_PREFIX:-/pg/api/v2}
       ICICI_MERCHANT_ID: ${ICICI_MERCHANT_ID:-100000000455452}

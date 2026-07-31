@@ -119,6 +119,7 @@ ENV BUILD_DATE=${BUILD_DATE}
 COPY --from=api-build /repo/artifacts/api-server/dist             ./dist
 COPY --from=api-build /repo/artifacts/api-server/package.json     ./package.json
 COPY --from=api-build /api-deploy/node_modules                    ./node_modules
+COPY --from=api-build /repo/scripts/bootstrap-hope-care-integration.mjs ./scripts/bootstrap-hope-care-integration.mjs
 # Bake version.json into the image so /api/system/version can read it
 COPY --from=api-build /repo/version.json                          ./version.json
 
