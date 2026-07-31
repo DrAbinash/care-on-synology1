@@ -26,6 +26,7 @@ import ReportLayoutQuickSelect, {
   reportLayoutTemplateQuery,
 } from "@/components/radiology/ReportLayoutQuickSelect";
 import OpenStudyPanel from "@/components/radiology/OpenStudyPanel";
+import ReferringDoctorQuickSelect from "@/components/ReferringDoctorQuickSelect";
 import {
   ArrowLeft, ExternalLink, Sparkles, Save, CheckCircle2, AlertTriangle,
   Printer, RefreshCw, Star, ClipboardList, Plus, Trash2, Eye,
@@ -5020,7 +5021,15 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                   <span className="text-muted-foreground">Study</span>
                   <span className="truncate">{entry.studyDescription || "—"}</span>
                   <span className="text-muted-foreground">Ref. Dr</span>
-                  <span className="truncate">{entry.referringDoctor || "—"}</span>
+                  <span className="truncate" title={entry.referringDoctor || undefined}>
+                    {entry.referringDoctor || "—"}
+                  </span>
+                  {/* Quick-select: most referrals are from a few doctors (Billing Desk slots + recent worklist). */}
+                  <ReferringDoctorQuickSelect
+                    worklistId={entry.id}
+                    currentName={entry.referringDoctor}
+                    disabled={reportStatus === "FINAL"}
+                  />
                   {/* B1: billing/patient cross-reference identifiers */}
                   <span className="text-muted-foreground">UHID</span>
                   <span className="font-mono truncate">{entry.uhid || "—"}</span>
