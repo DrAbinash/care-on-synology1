@@ -1,3 +1,10 @@
+import {
+  compactNameKey,
+  formatDicomPersonNameForDisplay,
+  nameComparisonKeys,
+  nameTokensForMatch,
+} from "./dicomNameNormalize";
+
 export interface DicomInput {
   patientName: string;
   dicomPatientId?: string | null;
@@ -24,6 +31,8 @@ export interface BilledTestInput {
   accessionNumber: string;
   billNumber?: string | null;
   studyDate?: string | null;
+  /** Referring physician from billed study / order doctor (optional soft match). */
+  referringDoctor?: string | null;
 }
 
 export interface MatchResult {
@@ -45,23 +54,67 @@ function levenshteinDistance(s1: string, s2: string): number {
     for (let i = 1; i <= m; i++) {
       const substitutionCost = s1[i - 1] === s2[j - 1] ? 0 : 1;
       d[i][j] = Math.min(
-        d[i - 1][j] + 1, // deletion
-        d[i][j - 1] + 1, // insertion
-        d[i - 1][j - 1] + substitutionCost // substitution
+        d[i - 1][j] + 1,
+        d[i][j - 1] + 1,
+        d[i - 1][j - 1] + substitutionCost,
       );
     }
   }
   return d[m][n];
 }
 
+/**
+ * Patient / doctor name similarity that tolerates:
+ * - DICOM carets (LAST^FIRST)
+ * - First/Last order swap (MRI vs ERP)
+ * - Titles (Dr) and degrees (MD, MBBS, …)
+ */
 export function nameSimilarity(n1: string, n2: string): number {
-  const s1 = n1.toLowerCase().replace(/[^a-z0-9]/g, "");
-  const s2 = n2.toLowerCase().replace(/[^a-z0-9]/g, "");
-  if (!s1 || !s2) return 0;
-  const dist = levenshteinDistance(s1, s2);
-  const maxLen = Math.max(s1.length, s2.length);
-  return 1 - dist / maxLen;
+  const keys1 = nameComparisonKeys(n1);
+  const keys2 = nameComparisonKeys(n2);
+  if (!keys1.length || !keys2.length) {
+    // Legacy fallback
+    const s1 = n1.toLowerCase().replace(/[^a-z0-9]/g, "");
+    const s2 = n2.toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (!s1 || !s2) return 0;
+    const dist = levenshteinDistance(s1, s2);
+    return 1 - dist / Math.max(s1.length, s2.length);
+  }
+
+  let best = 0;
+  for (const a of keys1) {
+    for (const b of keys2) {
+      if (a === b) return 1;
+      const dist = levenshteinDistance(a, b);
+      const sim = 1 - dist / Math.max(a.length, b.length);
+      if (sim > best) best = sim;
+    }
+  }
+
+  // Token-set overlap as a floor (same words, different middle names)
+  const t1 = new Set(nameTokensForMatch(n1));
+  const t2 = new Set(nameTokensForMatch(n2));
+  if (t1.size && t2.size) {
+    let overlap = 0;
+    for (const t of t1) if (t2.has(t)) overlap++;
+    const union = new Set([...t1, ...t2]).size;
+    const jaccard = overlap / union;
+    if (jaccard > best) best = jaccard;
+  }
+
+  return best;
 }
+
+/** Soft referring-doctor similarity (same cleaner as patient names). */
+export function referringDoctorSimilarity(
+  dicomRef: string | null | undefined,
+  billRef: string | null | undefined,
+): number {
+  if (!dicomRef?.trim() || !billRef?.trim()) return 0;
+  return nameSimilarity(dicomRef, billRef);
+}
+
+export { formatDicomPersonNameForDisplay, nameTokensForMatch, compactNameKey };
 
 export function calculateMatchScore(dicom: DicomInput, bill: BilledTestInput): MatchResult {
   const reasons: string[] = [];
@@ -89,7 +142,7 @@ export function calculateMatchScore(dicom: DicomInput, bill: BilledTestInput): M
     reasons.push("Patient ID matches internal database ID");
   }
 
-  // 3. Name Similarity matching
+  // 3. Name Similarity matching (DICOM-aware)
   const sim = nameSimilarity(dicom.patientName, bill.patientName);
   if (sim >= 0.85) {
     points += 20;
@@ -102,6 +155,15 @@ export function calculateMatchScore(dicom: DicomInput, bill: BilledTestInput): M
     warnings.push("NAME_MISMATCH: Patient name differs completely");
   }
 
+  // 3b. Referring doctor — soft bonus only (never forces RED by itself)
+  const refSim = referringDoctorSimilarity(dicom.referringDoctor, bill.referringDoctor);
+  if (refSim >= 0.85) {
+    points += 5;
+    reasons.push(`Referring doctor matches (${Math.round(refSim * 100)}%)`);
+  } else if (dicom.referringDoctor?.trim() && bill.referringDoctor?.trim() && refSim < 0.5) {
+    warnings.push("Referring doctor name differs after cleaning titles/degrees (non-blocking)");
+  }
+
   // 4. Modality Compatibility
   const dMod = (dicom.modality || "").toUpperCase();
   const bMod = (bill.modality || "").toUpperCase();
@@ -110,7 +172,7 @@ export function calculateMatchScore(dicom: DicomInput, bill: BilledTestInput): M
     MR: "MRI", MRI: "MRI",
     CT: "CT",
     US: "USG", USG: "USG",
-    MG: "MAMMO", MAMMO: "MAMMO"
+    MG: "MAMMO", MAMMO: "MAMMO",
   };
   const normalizedDMod = modMap[dMod] || dMod;
   const normalizedBMod = modMap[bMod] || bMod;
@@ -126,9 +188,9 @@ export function calculateMatchScore(dicom: DicomInput, bill: BilledTestInput): M
   const cleanDesc = (dicom.studyDescription || "").toLowerCase();
   const cleanTest = (bill.testName || "").toLowerCase();
   if (cleanDesc && cleanTest) {
-    const descWords = cleanDesc.split(/\s+/).filter(w => w.length > 2);
-    const testWords = cleanTest.split(/\s+/).filter(w => w.length > 2);
-    const overlap = descWords.filter(w => testWords.includes(w));
+    const descWords = cleanDesc.split(/\s+/).filter((w) => w.length > 2);
+    const testWords = cleanTest.split(/\s+/).filter((w) => w.length > 2);
+    const overlap = descWords.filter((w) => testWords.includes(w));
     if (overlap.length > 0) {
       points += 10;
       reasons.push("Study description matches billing test name keywords");
@@ -182,7 +244,9 @@ export function calculateMatchScore(dicom: DicomInput, bill: BilledTestInput): M
 
   // Determine final score classification
   let score: "GREEN" | "YELLOW" | "RED" = "RED";
-  const hasCriticalWarnings = warnings.some(w => w.startsWith("NAME_MISMATCH") || w.startsWith("MODALITY_MISMATCH"));
+  const hasCriticalWarnings = warnings.some(
+    (w) => w.startsWith("NAME_MISMATCH") || w.startsWith("MODALITY_MISMATCH"),
+  );
 
   if (points >= 75 && !hasCriticalWarnings) {
     score = "GREEN";
@@ -196,6 +260,6 @@ export function calculateMatchScore(dicom: DicomInput, bill: BilledTestInput): M
     score,
     points,
     reasons,
-    warnings
+    warnings,
   };
 }
