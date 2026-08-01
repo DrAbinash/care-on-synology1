@@ -186,12 +186,9 @@ export type BuildPrintHtmlOpts = {
   reportCollectionNote?: string | null;
   // When true, the footer sits a fixed ~3-4 lines below the content instead
   // of being pushed to the physical bottom of the A5 page via a flex-1
-  // spacer. Billing Desk relies on the flex-1 push (its A5 bills print on a
-  // fixed-length receipt sheet where a bottom-anchored footer is expected);
-  // short receipts printed from the online booking page / kiosk (usually
-  // 1-2 tests) look broken with that much forced blank space, so those
-  // callers opt into the compact gap instead. Defaults to false so Billing
-  // Desk's existing print output is unaffected.
+  // spacer. Billing Desk / Bill Detail pass this for short bills (≤4 tests)
+  // and kiosk/booking always opt in — avoids a huge blank middle on A5.
+  // Defaults to false; classic also auto-compacts when ≤4 active test lines.
   compactFooterGap?: boolean;
   // When true (with paperSize "A5"), the receipt keeps its compact A5 content
   // sizing but is printed on a physical A4 page — the A5-width slip is centred
@@ -202,6 +199,8 @@ export type BuildPrintHtmlOpts = {
   // a tidy, cuttable A5 receipt rather than being stretched to fill A4.
   // Defaults to false so Billing Desk's A5 output is unaffected.
   compactOnA4?: boolean;
+  /** Exact CSS @page size (from resolveBillPrintPageOpts). */
+  pageCssSize?: string;
   // Layout & typography overrides (Classic format only) — see
   // BillPrintSettings's matching print*Px/printMarginMm fields. Each is
   // undefined/null-safe: omit or pass null to fall back to the built-in
@@ -218,7 +217,7 @@ export type BuildPrintHtmlOpts = {
 };
 
 export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
-  const { bill, clinic, paperSize, orientation = "portrait", isBW, qrDataUrl, reprintBy, reprintReason, compactFooterGap = false, compactOnA4 = false } = opts;
+  const { bill, clinic, paperSize, orientation = "portrait", isBW, qrDataUrl, reprintBy, reprintReason, compactFooterGap = false, compactOnA4 = false, pageCssSize } = opts;
   const copies = Math.max(1, Math.min(2, Number(clinic?.billPrintCopies ?? 1) || 1));
   const showCode = clinic?.billShowCode !== false;
   const showCategory = clinic?.billShowCategory !== false;
@@ -230,6 +229,7 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
 
   const tests = (bill.order?.tests ?? []).filter((t) => (t.status ?? "active") !== "cancelled");
   const cancelled = (bill.order?.tests ?? []).filter((t) => (t.status ?? "active") === "cancelled");
+  const sparseBill = tests.length <= 4;
   const billDigits = String(bill.billNumber).replace(/^BILL-?/i, "").replace(/-/g, "");
   const ageStr = calcAge(bill.patient?.dateOfBirth, bill.patient?.ageValue, bill.patient?.ageUnit);
   const ageGender = [ageStr, bill.patient?.gender].filter(Boolean).join(" / ").toUpperCase();
@@ -266,8 +266,8 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
   // print*Px/printMarginMm). null/undefined = built-in tuned default, which
   // still varies by A5 vs A4 paper size; a non-null override applies fixed
   // regardless of paper size. ──
-  // A5: flex column layout pushes footer to bottom so short bills fill the page
-  const marginMm = opts.printMarginMm ?? (isA5 ? 10 : 8);
+  const useCompactFooter = compactFooterGap || sparseBill;
+  const marginMm = opts.printMarginMm ?? (isA5 ? 8 : 8);
   const pageMargin = `${marginMm}mm`;
   // Content-area height = page height minus top+bottom margin. Must track
   // `orientation` AND the actual configured margin — since A5 landscape's
@@ -336,7 +336,7 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
   const billedBySignatureUrl: string = session?.user?.signatureDataUrl ?? "";
 
   const page = (copyIdx: number) => `
-    <section class="receipt" style="${copyIdx > 0 ? "page-break-before:always;" : ""}${isA5 && !compactFooterGap ? `display:flex;flex-direction:column;min-height:${receiptMinHeight};` : ""}">
+    <section class="receipt" style="${copyIdx > 0 ? "page-break-before:always;" : ""}${isA5 && !useCompactFooter ? `display:flex;flex-direction:column;min-height:${receiptMinHeight};` : ""}">
 
       <!-- HEADER: logo + tagline left, clinic info right, vertically centered
            against each other so the shorter block doesn't visually float. -->
@@ -488,7 +488,7 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
            set — just a fixed ~3-4 line gap so a short receipt (1-2 tests,
            typical of online booking / kiosk) doesn't leave a huge blank
            middle before the footer. -->
-      ${isA5 ? (compactFooterGap ? `<div style="height:${Math.round(parseInt(footerPx, 10) * 1.4 * 3.5)}px"></div>` : '<div style="flex:1"></div>') : ""}
+      ${isA5 ? (useCompactFooter ? `<div style="height:${Math.round(parseInt(footerPx, 10) * 1.4 * 3.5)}px"></div>` : '<div style="flex:1"></div>') : ""}
 
       <!-- FOOTER -->
       <div style="margin-top:4px;border-top:2px solid #000;padding-top:6px;text-align:center;page-break-inside:avoid">
@@ -516,11 +516,15 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
 
   return `<!doctype html><html><head><meta charset="utf-8"><title>Bill ${esc(bill.billNumber)}</title>
 <style>
-  @page { size: ${a4Page ? "A4 portrait" : `${isA5 ? "A5" : "A4"} ${isA5 ? orientation : "portrait"}`}; margin: ${pageMargin}; }
+  @page { size: ${a4Page ? "A4 portrait" : (pageCssSize ?? `${isA5 ? "A5" : "A4"} ${isA5 ? orientation : "portrait"}`)}; margin: ${pageMargin}; }
   *, *::before, *::after { box-sizing: border-box; }
-  html, body { margin: 0; padding: 0; height: 100%; }
+  html, body { margin: 0; padding: 0; }
   body { background: #fff; color: #000; font-family: Arial, Helvetica, sans-serif; font-size: ${bodyPx}; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  .receipt { width: 100%; padding: 2mm 3mm; box-sizing: border-box;${a4Page ? " max-width: 148mm; margin-left: auto; margin-right: auto;" : ""} }
+  .receipt { width: 100%; max-width: 100%; padding: 1mm 0; box-sizing: border-box;${a4Page ? " max-width: 148mm; margin-left: auto; margin-right: auto;" : ""} }
+  @media print {
+    html, body { width: 100%; }
+    .receipt { width: 100% !important; max-width: 100% !important; }
+  }
   table { width: 100%; }
   .test-table tbody tr:nth-child(even) td { background: #f7f7f7; }
 </style></head><body>${pages}</body></html>`;
@@ -588,6 +592,8 @@ export function buildBillPrintHtml(opts: BuildPrintHtmlOpts): string {
       barcodeDataUrl: opts.barcodeDataUrl,
       customFooter: opts.customFooter,
       reportCollectionNote: opts.reportCollectionNote,
+      pageCssSize: opts.pageCssSize,
+      compactFooterGap: opts.compactFooterGap,
     });
   }
   // Classic format

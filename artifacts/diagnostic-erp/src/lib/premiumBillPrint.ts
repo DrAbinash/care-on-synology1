@@ -48,6 +48,8 @@ export type BuildPremiumBillOpts = {
   barcodeDataUrl?: string;
   customFooter?: string | null;
   reportCollectionNote?: string | null;
+  pageCssSize?: string;
+  compactFooterGap?: boolean;
 };
 
 function esc(s: string): string {
@@ -133,6 +135,8 @@ export function buildPremiumBillPrintHtml(opts: BuildPremiumBillOpts): string {
     barcodeDataUrl,
     customFooter,
     reportCollectionNote,
+    pageCssSize,
+    compactFooterGap = false,
   } = opts;
 
   const tests = (bill.order?.tests ?? []).filter((t) => (t.status ?? "active") !== "cancelled");
@@ -184,8 +188,10 @@ export function buildPremiumBillPrintHtml(opts: BuildPremiumBillOpts): string {
   const footerPx = isSparse ? "13px" : isCompact ? "10px" : "11px";
   const tinyPx = isSparse ? "11px" : isCompact ? "9px" : "10px";
   const qrSize = isSparse ? "95px" : isCompact ? "55px" : "72px";
-  const pageMargin = "10mm";
-  const pageMarginBottom = "10mm";
+  const marginMm = 8;
+  const pageMargin = `${marginMm}mm`;
+  const pageMarginBottom = `${marginMm}mm`;
+  const useCompactFooter = compactFooterGap || testCount <= 4;
   const sectionGap = isSparse ? "14px" : isCompact ? "4px" : "6px";
   const tableCellPad = isSparse ? "6px 8px" : isCompact ? "3px 5px" : "4px 6px";
   const paymentBoxPad = isSparse ? "8px 0" : "4px 0";
@@ -193,7 +199,9 @@ export function buildPremiumBillPrintHtml(opts: BuildPremiumBillOpts): string {
 
   const isA5 = paperSize === "A5-portrait" || paperSize === "A5-landscape";
   const paperSizeCss = getPaperSizeCss(paperSize);
-  const pageSizeStr = paperSizeCss.pageSize;
+  const pageSizeStr = pageCssSize ?? paperSizeCss.pageSize;
+  const pageHeightMm = paperSize === "A4" ? 297 : paperSize === "A5-landscape" ? 148 : 210;
+  const receiptMinHeight = useCompactFooter ? "auto" : `${pageHeightMm - marginMm * 2}mm`;
 
   // ── Billed-by name, their uploaded signature, & system info ──
   const premiumSession = (() => {
@@ -457,14 +465,10 @@ export function buildPremiumBillPrintHtml(opts: BuildPremiumBillOpts): string {
   .receipt {
     display: flex;
     flex-direction: column;
-    /* mm-based, not 100vh: vh in a print/pagination context is undefined-
-       behavior-prone across browser engines (some resolve it against a
-       much taller value than the physical page), which can silently spill
-       the footer onto a near-blank extra sheet — see the same class of bug
-       fixed in printBill.ts's classic format (receiptMinHeight). */
-    min-height: ${paperSizeCss.minHeight};
+    min-height: ${receiptMinHeight};
     width: 100%;
-    padding: 2mm 3mm;
+    max-width: 100%;
+    padding: 1mm 0;
     box-sizing: border-box;
     position: relative;
     z-index: 1;
@@ -495,8 +499,8 @@ export function buildPremiumBillPrintHtml(opts: BuildPremiumBillOpts): string {
   .page-break { page-break-before: always; }
   .header-repeat { display: none; }
   @media print {
-    html, body { margin: 0; padding: 0; color: #000 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-    .receipt { margin: 0; }
+    html, body { margin: 0; padding: 0; width: 100%; color: #000 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .receipt { margin: 0; width: 100% !important; max-width: 100% !important; }
     .receipt * { color: #000 !important; border-color: #000 !important; background: transparent !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     .receipt *::before, .receipt *::after { background: transparent !important; border-color: #000 !important; }
     img { -webkit-print-color-adjust: exact; print-color-adjust: exact; }

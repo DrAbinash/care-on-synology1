@@ -363,15 +363,79 @@ export function getAutoBillPaperSize(
 export function getPaperSizeCss(size: BillPaperSize): { pageSize: string; width: string; minHeight: string; maxHeight: string } {
   switch (size) {
     case "A5-landscape":
-      return { pageSize: "A5 landscape", width: "198mm", minHeight: "136mm", maxHeight: "136mm" };
+      return { pageSize: "A5 landscape", width: "198mm", minHeight: "132mm", maxHeight: "none" };
     case "A5-portrait":
-      return { pageSize: "A5 portrait", width: "136mm", minHeight: "198mm", maxHeight: "198mm" };
+      return { pageSize: "A5 portrait", width: "136mm", minHeight: "194mm", maxHeight: "none" };
     case "half-a4":
-      return { pageSize: "148mm 210mm", width: "148mm", minHeight: "198mm", maxHeight: "198mm" };
+      return { pageSize: "148mm 210mm", width: "148mm", minHeight: "194mm", maxHeight: "none" };
     case "A4":
     default:
       return { pageSize: "A4 portrait", width: "210mm", minHeight: "277mm", maxHeight: "none" };
   }
+}
+
+/** Resolved @page + body options shared by Billing Desk, Bill Detail, Settings preview. */
+export type BillPrintPageOpts = {
+  paperSize: "A4" | "A5";
+  orientation: "portrait" | "landscape";
+  /** Short A5 bills: avoid flex spacer that leaves a huge blank middle. */
+  compactFooterGap: boolean;
+  /** Exact CSS size for @page (half-a4, A5 landscape, etc.). */
+  pageCssSize: string;
+};
+
+/**
+ * Map clinic Billing Print settings + test count → paper/orientation the HTML
+ * renderer should declare. Always honours defaultPaperSize (including
+ * A5-landscape) — older call sites only passed A4/half-a4 as "forced", which
+ * made landscape trays print portrait jobs and the driver scaled/rotated them.
+ */
+export function resolveBillPrintPageOpts(
+  settings: Pick<BillPrintSettings, "defaultPaperSize" | "autoA4Threshold">,
+  testCount: number,
+): BillPrintPageOpts {
+  const effective = getAutoBillPaperSize(
+    testCount,
+    settings.defaultPaperSize,
+    settings.autoA4Threshold ?? 5,
+  );
+  if (effective === "A4") {
+    return {
+      paperSize: "A4",
+      orientation: "portrait",
+      compactFooterGap: false,
+      pageCssSize: "A4 portrait",
+    };
+  }
+  const orientation: "portrait" | "landscape" =
+    effective === "A5-landscape" ? "landscape" : "portrait";
+  const pageCssSize =
+    effective === "half-a4"
+      ? "148mm 210mm"
+      : effective === "A5-landscape"
+        ? "A5 landscape"
+        : "A5 portrait";
+  return {
+    paperSize: "A5",
+    orientation,
+    compactFooterGap: testCount <= 4,
+    pageCssSize,
+  };
+}
+
+/**
+ * Bill Detail reprint exposes an A4/A5 header toggle. When staff pick manual
+ * paper, honour it while keeping the clinic's A5 variant (landscape vs portrait).
+ */
+export function applyManualBillPaperOverride(
+  settings: Pick<BillPrintSettings, "defaultPaperSize">,
+  manualPaper: "A4" | "A5" | null | undefined,
+): Pick<BillPrintSettings, "defaultPaperSize"> {
+  if (!manualPaper) return settings;
+  if (manualPaper === "A4") return { defaultPaperSize: "A4" };
+  const size = settings.defaultPaperSize;
+  if (size === "A5-landscape" || size === "half-a4") return { defaultPaperSize: size };
+  return { defaultPaperSize: "A5-portrait" };
 }
 
 // ── Adaptive density class based on test count ──
