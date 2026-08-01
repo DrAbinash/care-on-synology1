@@ -118,6 +118,7 @@ import { eq } from "drizzle-orm";
 import { backupLimiter, exportLimiter, adminMutationLimiter, standardUploadLimiter, loginLimiter, generalLimiter, n8nAutomationLimiter } from "../middleware/rateLimits";
 import { activePluginRouter } from "../plugin-loader";
 import { superAdminHostAuthRouter } from "./superAdminHostAuth";
+import { superAdminBooksHostRouter } from "./superAdminBooksHost";
 import userPreferencesRouter from "./userPreferences";
 import barcodeResolverRouter from "./barcode-resolver";
 import { uploadsRouter } from "./uploads";
@@ -210,6 +211,9 @@ router.post("/super-admin/usb/verify", loginLimiter, (req, res): void => {
 //  - "Super Admin plugin is not loaded" blocking PIN/usbPin login
 //  - brittle exact display-name match ("Dr Abinash Kumar" only)
 router.use("/super-admin", superAdminHostAuthRouter);
+// Host-side assign-doctors (before plugin gate). Fixes USB plugin SQL that
+// referenced non-existent orders.appointment_id → Internal server error.
+router.use("/super-admin", superAdminBooksHostRouter);
 
 const SUPER_ADMIN_PREFIXES = [
   "/super-admin",
