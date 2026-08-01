@@ -247,16 +247,24 @@ function LoginScreen({
   onLockUsb: () => void;
   autoUsbPin?: string | null;
 }) {
-  const { register, handleSubmit, formState: { isSubmitting, errors } } = useForm<LoginForm>();
+  const { register, handleSubmit, setValue, formState: { isSubmitting, errors } } = useForm<LoginForm>({
+    defaultValues: { name: "Dr Abinash Kumar", pin: "" },
+  });
   const [apiError, setApiError] = useState<string | null>(null);
   const [showPin, setShowPin] = useState(false);
   const [autoLoginState, setAutoLoginState] = useState<AutoLoginState>("idle");
 
-  const doLogin = async (name: string, usbPin?: string) => {
+  // Only treat pen-drive PIN as authoritative while auto-login is still
+  // attempting. After failure the field must be editable and the typed DB PIN
+  // must be sent (usbPin mismatch is the usual auto-login failure mode).
+  const lockPinFromDrive = Boolean(autoUsbPin) && autoLoginState !== "failed";
+
+  const doLogin = async (name: string, opts?: { usbPin?: string; pin?: string }) => {
     setApiError(null);
     try {
       const body: Record<string, string> = { name };
-      if (usbPin) body.usbPin = usbPin;
+      if (opts?.usbPin) body.usbPin = opts.usbPin;
+      if (opts?.pin) body.pin = opts.pin;
       const res = await fetch(`${API_BASE}/super-admin/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...saUsbHeader() },
@@ -276,7 +284,11 @@ function LoginScreen({
   };
 
   const onSubmit = async (data: LoginForm) => {
-    await doLogin(data.name, autoUsbPin ?? undefined);
+    await doLogin(data.name, {
+      // After auto-login failed, do NOT resend the mismatched usbPin — send the typed PIN.
+      usbPin: lockPinFromDrive ? (autoUsbPin ?? undefined) : undefined,
+      pin: data.pin?.trim() || undefined,
+    });
   };
 
   // Auto-login: usbPin + EXACT display name only.
@@ -288,9 +300,11 @@ function LoginScreen({
     void (async () => {
       const fromDrive = (await tryReadName())?.trim() || "";
       const exactName = fromDrive || "Dr Abinash Kumar";
-      const ok = await doLogin(exactName, autoUsbPin);
+      setValue("name", exactName);
+      const ok = await doLogin(exactName, { usbPin: autoUsbPin });
       if (ok) { setAutoLoginState("success"); return; }
       setAutoLoginState("failed");
+      setApiError("Pen-drive PIN did not match the server. Type your Super Admin PIN below.");
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoUsbPin]);
@@ -323,7 +337,7 @@ function LoginScreen({
           )}
           {autoLoginState === "failed" && (
             <div className="mb-4 bg-destructive/10 border border-destructive/30 text-destructive text-xs rounded-lg px-3 py-2">
-              Auto-login failed. Please enter your name below.
+              Auto-login failed. Enter your Super Admin PIN below (USB key stays active).
             </div>
           )}
 
@@ -353,11 +367,12 @@ function LoginScreen({
                   <Input
                     id="pin"
                     type={showPin ? "text" : "password"}
-                    {...register("pin", { required: autoUsbPin ? false : "PIN is required" })}
+                    {...register("pin", { required: lockPinFromDrive ? false : "PIN is required" })}
                     className="pr-10 font-mono tracking-widest"
-                    placeholder={autoUsbPin ? "(auto-filled from pen drive)" : "4-digit PIN"}
+                    placeholder={lockPinFromDrive ? "(auto-filled from pen drive)" : "Enter Super Admin PIN"}
                     autoComplete="current-password"
-                    disabled={!!autoUsbPin}
+                    disabled={lockPinFromDrive}
+                    autoFocus={autoLoginState === "failed"}
                   />
                   <button
                     type="button"

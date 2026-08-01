@@ -238,6 +238,13 @@ services:
       SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET must be set in .env — use a 64-char random string}
       INTERNAL_API_KEY: ${INTERNAL_API_KEY:-}
 
+      # Super Admin USB pen-drive gate. Must be listed here — Compose does NOT
+      # auto-inject every .env key into the container. Without these, care-api
+      # sees empty SUPER_ADMIN_USB_* even when .env on disk is correct, so
+      # usb/verify and usbPin auto-login fail (PIN is required / invalid key).
+      SUPER_ADMIN_USB_KEY: ${SUPER_ADMIN_USB_KEY:-}
+      SUPER_ADMIN_USB_PIN: ${SUPER_ADMIN_USB_PIN:-}
+
       # ── Scheduled jobs ─────────────────────────────────────────────────────
       # Neither of these was passed into the container before, so there was NO
       # way to run any scheduled job in production:
