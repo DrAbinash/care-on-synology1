@@ -94,6 +94,18 @@ router.post("/rules", async (req, res) => {
     res.status(400).json({ error: "doctorId is required" });
     return;
   }
+  if (scope === "test" && (!testIds || testIds.length === 0)) {
+    res.status(400).json({
+      error: "Test-scoped rules must bind at least one catalogue test. Pick tests in the picker — a rule name alone (e.g. \"MRI BRAIN\") does not pay commission.",
+    });
+    return;
+  }
+  if (scope === "category" && (!categories || categories.length === 0)) {
+    res.status(400).json({
+      error: "Category-scoped rules must list at least one category.",
+    });
+    return;
+  }
   const ceilingErr = rateCeilingError(type, value, await commissionMaxPercent());
   if (ceilingErr) {
     res.status(400).json({ error: ceilingErr });
@@ -162,6 +174,35 @@ router.patch("/rules/:id", async (req, res) => {
   const [before] = await db.select().from(commissionRulesTable).where(eq(commissionRulesTable.id, id));
   if (!before) {
     res.status(404).json({ error: "Rule not found" });
+    return;
+  }
+  const nextScope = (updates.scope as string | undefined) ?? before.scope;
+  const nextTestIds = data.testIds !== undefined
+    ? (data.testIds ?? [])
+    : (() => {
+        try {
+          const parsed = before.testIds ? JSON.parse(before.testIds) : [];
+          return Array.isArray(parsed) ? parsed : [];
+        } catch { return []; }
+      })();
+  const nextCategories = data.categories !== undefined
+    ? (data.categories ?? [])
+    : (() => {
+        try {
+          const parsed = before.categories ? JSON.parse(before.categories) : [];
+          return Array.isArray(parsed) ? parsed : [];
+        } catch { return []; }
+      })();
+  if (nextScope === "test" && nextTestIds.length === 0) {
+    res.status(400).json({
+      error: "Test-scoped rules must bind at least one catalogue test. Pick tests in the picker — a rule name alone does not pay commission.",
+    });
+    return;
+  }
+  if (nextScope === "category" && nextCategories.length === 0) {
+    res.status(400).json({
+      error: "Category-scoped rules must list at least one category.",
+    });
     return;
   }
   // Check the rate that will be in force after the patch, which may come from

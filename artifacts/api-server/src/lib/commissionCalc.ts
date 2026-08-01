@@ -43,6 +43,7 @@ export type CalcDoctor = {
 export type CalcTest = {
   category: string | null;
   testType?: string | null;        // 'inhouse' | 'outsourced'
+  name?: string | null;            // catalogue name — used for rule-name fallback
 };
 
 export type CalcLine = {
@@ -80,6 +81,22 @@ export function safeParseArray<T = unknown>(s: string | null | undefined): T[] {
   }
 }
 
+/** Coerce JSON test id lists that may contain strings ("12") or numbers (12). */
+export function parseTestIdList(s: string | null | undefined): number[] {
+  return safeParseArray<unknown>(s)
+    .map((x) => (typeof x === "number" ? x : Number(x)))
+    .filter((n) => Number.isFinite(n) && n > 0);
+}
+
+/** Normalize rule/test labels for name-based fallback matching. */
+export function normalizeCommissionLabel(s: string): string {
+  return s
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 // A rule may be restricted to in-house or outsourced work. A rule that does not
 // match the line's kind is skipped at every rung of the ladder, so an
 // "Outsourced Pathology 20%" slab never pays out on in-house work and vice
@@ -97,23 +114,44 @@ export function ruleAppliesToKind(r: CalcRule, isOutsourced: boolean): boolean {
 // Precedence (must stay in lock-step with every report that displays the matched
 // rule's value/type — otherwise the UI shows a rule the calculation never used):
 //   1) exclusive test/category rule
-//   2) non-exclusive test/category rule
+//   2) non-exclusive test/category rule (by testId, then by exact rule name ↔ test name)
 //   3) catch-all (scope="all") rule
 // Returns undefined when nothing matches; the caller then falls back to the
 // doctor's profile default.
 //
 // `category` is the test's category, or null when the test row is unknown — in
 // which case category-scoped rules never match.
+// `testName` enables a safe fallback when a scope=test slab was named after the
+// catalogue test (e.g. "MRI BRAIN") but testIds were left empty or drifted.
 export function findMatchingRule(
   testId: number,
   category: string | null,
   rules: CalcRule[],
   isOutsourced = false,
+  testName: string | null = null,
 ): CalcRule | undefined {
-  const testMatch = (r: CalcRule) => !!r.testIds && safeParseArray<number>(r.testIds).includes(testId);
-  const catMatch = (r: CalcRule) =>
-    category !== null && !!r.categories && safeParseArray<string>(r.categories).includes(category || "");
-  const specific = (r: CalcRule) => (r.scope === "test" && testMatch(r)) || (r.scope === "category" && catMatch(r));
+  const idsOf = (r: CalcRule) => parseTestIdList(r.testIds);
+  const testMatch = (r: CalcRule) => idsOf(r).includes(testId);
+  const catNorm = category ? normalizeCommissionLabel(category) : null;
+  const catMatch = (r: CalcRule) => {
+    if (!catNorm || !r.categories) return false;
+    return safeParseArray<string>(r.categories).some(
+      (c) => normalizeCommissionLabel(c) === catNorm,
+    );
+  };
+  // Name fallback: only for scope=test slabs whose label exactly equals the
+  // catalogue test name after normalization. Never matches amount-labelled
+  // names like "CT 800" / "MRI 20%" against unrelated tests.
+  const testNameNorm = testName ? normalizeCommissionLabel(testName) : null;
+  const nameMatch = (r: CalcRule) => {
+    if (!testNameNorm || r.scope !== "test") return false;
+    const ruleNorm = normalizeCommissionLabel(r.name || "");
+    if (!ruleNorm || ruleNorm.length < 3) return false;
+    return ruleNorm === testNameNorm;
+  };
+  const specific = (r: CalcRule) =>
+    (r.scope === "test" && (testMatch(r) || nameMatch(r))) ||
+    (r.scope === "category" && catMatch(r));
   const usable = (r: CalcRule) => r.isActive && ruleAppliesToKind(r, isOutsourced);
 
   let matched = rules.find(r => usable(r) && r.isExclusive && specific(r));
@@ -164,7 +202,13 @@ export function calcTestCommission(
   // cap cannot be applied to some rules and forgotten on others.
   let ruleName: string, ruleType: string, ruleValue: number, ruleScope: RuleScope, raw: number;
 
-  const matched = findMatchingRule(ot.testId, test ? (test.category ?? "") : null, rules, isOutsourced);
+  const matched = findMatchingRule(
+    ot.testId,
+    test ? (test.category ?? "") : null,
+    rules,
+    isOutsourced,
+    test?.name ?? null,
+  );
   const defType = doctor.defaultCommissionType || "percentage";
   const defVal = Number(doctor.defaultCommission ?? 0);
 

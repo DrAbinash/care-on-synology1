@@ -16,6 +16,7 @@ import {
   ArrowLeft, Printer, Stethoscope, Users, FileText, IndianRupee, TrendingUp, Download, FileSpreadsheet, Percent, Clock, HelpCircle, MessageCircle, Send, Check, AlertTriangle, ChevronRight, ShieldCheck,
 } from "lucide-react";
 import { saAuthHeaders } from "@/lib/saApi";
+import { DoctorSearchSelect } from "@/components/DoctorSearchSelect";
 import { exportCommissionPdf } from "@/lib/exportCommissionPdf";
 import { exportCommissionExcel } from "@/lib/exportCommissionExcel";
 import { exportCommissionWord } from "@/lib/exportCommissionWord";
@@ -1174,17 +1175,16 @@ export default function ReferralReport({ onBack }: { onBack: () => void }) {
               </div>
               <div>
                 <Label className="text-xs">Referral Doctor</Label>
-                <Select onValueChange={v => setDoctorId(v === "all" ? null : Number(v))}>
-                  <SelectTrigger className="mt-1 w-56">
-                    <SelectValue placeholder="All Doctors" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All Doctors</SelectItem>
-                    {doctors.map(d => (
-                      <SelectItem key={d.id} value={String(d.id)}>{d.name}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <DoctorSearchSelect
+                  className="mt-1 w-72"
+                  doctors={doctors}
+                  value={doctorId}
+                  onChange={setDoctorId}
+                  allowAll
+                  allLabel="All Doctors"
+                  placeholder="Search doctors (e.g. abi)…"
+                  wide
+                />
               </div>
             </div>
             <div className="flex gap-2">
@@ -1357,6 +1357,32 @@ export default function ReferralReport({ onBack }: { onBack: () => void }) {
             </div>
           ))}
         </div>
+
+        {/* Wiring alert — Rate 0% / Commission ₹0 usually means no slab matched */}
+        {(() => {
+          const noneRows = report.flatMap((d) => d.rows.filter((r) => r.ruleScope === "none"));
+          if (noneRows.length === 0) return null;
+          const sampleTests = [...new Set(noneRows.map((r) => r.testName))].slice(0, 6);
+          return (
+            <div className="bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-xl p-4 flex items-start gap-3 text-sm text-amber-900 dark:text-amber-100">
+              <AlertTriangle size={18} className="shrink-0 mt-0.5 text-amber-600" />
+              <div className="space-y-1">
+                <p className="font-semibold">
+                  {noneRows.length} test line{noneRows.length === 1 ? "" : "s"} have no matching commission slab (shown as Rate 0%)
+                </p>
+                <p className="text-xs leading-relaxed opacity-90">
+                  Commission is calculated only from rules bound to this referring doctor.
+                  Test-scoped rules must pick catalogue tests in Commission Rules — a rule name like
+                  &ldquo;CT 800&rdquo; or &ldquo;MRI 20%&rdquo; alone does not pay. Open Commission Rules for each
+                  doctor, edit each Test-scoped slab, and tick the matching tests.
+                  {sampleTests.length > 0 && (
+                    <> Unmatched examples: {sampleTests.join(", ")}{sampleTests.length >= 6 ? "…" : ""}.</>
+                  )}
+                </p>
+              </div>
+            </div>
+          );
+        })()}
 
         {/* Report body */}
         {isLoading ? (
