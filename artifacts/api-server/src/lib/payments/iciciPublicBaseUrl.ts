@@ -5,11 +5,10 @@
  */
 export function getIciciPublicBaseUrl(): string {
   let base = (process.env.PUBLIC_BASE_URL || process.env.BASE_URL || "https://caredeoghar.com").trim();
-  const isProd = process.env.NODE_ENV === "production";
 
   base = base.replace(/\/+$/, "");
 
-  const isLocal =
+  const needsCanonical =
     base.includes("localhost") ||
     base.includes("127.0.0.1") ||
     base.includes("192.168.") ||
@@ -25,9 +24,10 @@ export function getIciciPublicBaseUrl(): string {
     base.includes("quickconnect.to") ||
     base.includes("erp.caredeoghar.com") ||
     base.includes("web.caredeoghar.com") ||
-    base.includes("www.caredeoghar.com");
+    base.includes("www.caredeoghar.com") ||
+    !base.startsWith("https://caredeoghar.com");
 
-  if (isProd && (isLocal || !base.startsWith("https://caredeoghar.com"))) {
+  if (needsCanonical) {
     base = "https://caredeoghar.com";
   }
 

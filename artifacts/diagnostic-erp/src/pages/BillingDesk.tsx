@@ -3271,6 +3271,19 @@ export default function BillingDesk() {
                     <img src={gatewayQrUrl} alt="Payment QR" className="w-40 h-40 mx-auto rounded-lg border" />
                     <button
                       type="button"
+                      onClick={() => {
+                        if (gatewayPaymentInfo?.redirectUrl) {
+                          window.location.href = gatewayPaymentInfo.redirectUrl;
+                        }
+                      }}
+                      className="mt-2 w-full rounded-lg px-4 py-2.5 text-sm font-bold text-white"
+                      style={{ background: "#FF6600" }}
+                    >
+                      Pay with ICICI Orange Pay →
+                    </button>
+                    <p className="text-[10px] text-[#94a3b8]">Same payment page as website online booking — scan QR or tap above.</p>
+                    <button
+                      type="button"
                       onClick={openGatewayQrOnSecondScreen}
                       className="mt-2 text-xs font-semibold text-[#2563eb] hover:underline flex items-center gap-1 mx-auto"
                     >
