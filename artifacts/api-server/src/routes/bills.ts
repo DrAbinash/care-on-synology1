@@ -616,6 +616,15 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
       clientRef: clientRef ?? null,
     }).returning();
 
+    await tx.insert(billAuditsTable).values({
+      billId: billRow.id,
+      editedBy: actorName || "system",
+      reason: "Bill created",
+      changeType: "bill_created",
+      oldValue: null,
+      newValue: `total=₹${totalAmount.toFixed(2)}; status=${billStatus}`,
+    });
+
     // Record each payment split atomically with the bill
     for (const p of validPayments) {
       await tx.insert(paymentsTable).values({
@@ -625,6 +634,14 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
         referenceNumber: p.referenceNumber ?? null,
         notes: p.notes ?? null,
         recordedByName: actorName || null,
+      });
+      await tx.insert(billAuditsTable).values({
+        billId: billRow.id,
+        editedBy: actorName || "system",
+        reason: "Payment collected",
+        changeType: "payment_collected",
+        oldValue: null,
+        newValue: `amount=₹${p.amount.toFixed(2)}; method=${p.method || "cash"}`,
       });
     }
 
@@ -1041,7 +1058,7 @@ billsRouter.post("/:id/cancel", requireStaffSubPermission("/billing", "delete"),
       billId: id,
       editedBy: performedBy,
       reason,
-      changeType: "cancelled",
+      changeType: "bill_cancelled",
       oldValue: bill.status,
       newValue: "cancelled",
     });
@@ -1103,7 +1120,7 @@ billsRouter.post("/:id/cancel", requireStaffSubPermission("/billing", "delete"),
           billId: id,
           editedBy: performedBy,
           reason,
-          changeType: "refund",
+          changeType: "refund_processed",
           oldValue: `paid=₹${currentPaid.toFixed(2)}`,
           newValue: `refund=₹${refundedAmount.toFixed(2)} via ${refundMethod} (auto on cancel)`,
         });
@@ -1277,7 +1294,7 @@ billsRouter.post("/:id/refund", requireStaffSubPermission("/billing", "refund"),
       billId: id,
       editedBy: performedBy,
       reason,
-      changeType: "refund",
+      changeType: "refund_processed",
       oldValue: `paid=₹${currentPaid.toFixed(2)}, refunded=₹${currentRefund.toFixed(2)}`,
       newValue: `refund=₹${amount.toFixed(2)} via ${method}; paid=₹${newPaid.toFixed(2)}, refunded=₹${newRefund.toFixed(2)}`,
     });
@@ -2188,7 +2205,7 @@ billsRouter.post("/:id/swap-test", async (req: StaffAuthRequest, res) => {
         billId: id,
         editedBy: performedBy,
         reason: reason.trim(),
-        changeType: "refund",
+        changeType: "refund_processed",
         oldValue: `paid=₹${paidAmount.toFixed(2)}`,
         newValue: `refund=₹${refundAmt.toFixed(2)} via ${method} (test swap)`,
       });
