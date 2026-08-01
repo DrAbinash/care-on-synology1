@@ -2260,7 +2260,8 @@ billsRouter.post("/:id/swap-test", async (req: StaffAuthRequest, res) => {
 
 // ─── ICICI Billing Desk Gateway Integration ────────────────────────────────────
 import { PaymentEngine } from "../lib/payments/PaymentEngine";
-import { getIciciPublicBaseUrl } from "../lib/payments/iciciPublicBaseUrl";
+import { initiateIciciOrangePayment } from "../lib/payments/initiateIciciOrangePayment";
+import { resolveActiveGateway } from "../lib/payments/resolveActiveGateway";
 import { paymentLogsTable } from "@workspace/db/schema";
 import crypto from "node:crypto";
 import { logger } from "../lib/logger";
@@ -2289,8 +2290,8 @@ billsRouter.post("/:id/initiate-gateway-payment", async (req: StaffAuthRequest, 
 
   const [patient] = await db.select().from(patientsTable).where(eq(patientsTable.id, bill.patientId)).limit(1);
   const patientName = patient ? `${patient.firstName} ${patient.lastName}`.trim() : "VALUED PATIENT";
-  const patientPhone = patient?.phone || "9973497200";
-  const patientEmail = patient?.email || "";
+  const patientPhone = (patient?.phone || "9973497200").trim();
+  const patientEmail = (patient?.email || "").trim();
 
   // Generate unique transaction reference
   const txnRef = `BILLPAY-${id}-${crypto.randomBytes(3).toString("hex").toUpperCase()}`;
@@ -2301,21 +2302,17 @@ billsRouter.post("/:id/initiate-gateway-payment", async (req: StaffAuthRequest, 
     : null;
 
   try {
-    const base = getIciciPublicBaseUrl();
-    const returnUrl = `${base}/api/public/booking/icici-callback`;
-
-    // Fetch active gateway from settings
     const [settings] = await db.select().from(clinicSettingsTable).where(eq(clinicSettingsTable.id, 1)).limit(1);
-    const activeGateway = settings?.activePaymentGateway || "icici";
+    const activeGateway = resolveActiveGateway(settings || {}) || settings?.activePaymentGateway || "icici";
 
-    // Initiate payment via payment engine — same return URL normalization as webpage online booking
-    const result = await PaymentEngine.initiatePayment(activeGateway, {
+    // Same ICICI initiate path + return URL as webpage online booking (icici-initiate).
+    const result = await initiateIciciOrangePayment({
       bookingRef: txnRef,
       name: patientName,
       phone: patientPhone,
       email: patientEmail,
       amount: collectAmount,
-      returnUrl,
+      activeGateway,
       reqHeaders: {
         "x-forwarded-for": (req.headers["x-forwarded-for"] as string) || "",
         "user-agent": (req.headers["user-agent"] as string) || "",
@@ -2326,7 +2323,7 @@ billsRouter.post("/:id/initiate-gateway-payment", async (req: StaffAuthRequest, 
     });
 
     if (!result.success) {
-      res.status(400).json({ error: "Could not initiate payment gateway", details: result.errorMessage });
+      res.status(400).json({ error: "Could not initiate ICICI payment. Please try again.", details: result.errorMessage });
       return;
     }
 
