@@ -632,7 +632,7 @@ app.get(/^\/super-admin-portal(\/.*)?$/, (_req: Request, res: Response) => {
             const nameInput = document.querySelector('#name, input[autocomplete="username"]');
             const typed = pinInput && typeof pinInput.value === "string" ? pinInput.value.trim() : "";
             if (!body.name && nameInput && nameInput.value) body.name = String(nameInput.value).trim();
-            // Old USB plugins often require `pin`. Host auth accepts `usbPin` for
+            // Old USB plugins often require pin. Host auth accepts usbPin for
             // pen-drive auto-login. Send both when we have a secret so either path works.
             const secret = typed || body.usbPin || body.pin || "";
             if (secret) {
