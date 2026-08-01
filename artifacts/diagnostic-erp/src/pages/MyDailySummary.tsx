@@ -30,6 +30,8 @@ type MyDailySummarySummary = {
   refundAmount: number;
   refundsWithoutCancellationAmount: number;
   refundsWithoutCancellationCount: number;
+  /** Refunds on bills created this period that are cancelled — excluded from collectible (already in cancelledOnMyBills). */
+  refundsOnCancelledBillsCreatedInPeriod: number;
   cancelledAmount: number;
   cashExpenses: number;
   digitalExpenses: number;
@@ -801,11 +803,20 @@ function UnifiedReconciliationPanel({
   // window's billing, yet was still subtracted as both a "cancellation"
   // and (via its auto-generated refund) a "refund" — a real incident that
   // produced a false "Short" mismatch alert for an old bill cancelled today.
+  //
+  // Same-day cancel+refund on bills created in this window: cancelledOnMyBills
+  // already removes the bill total; refundsOnCancelledBillsCreatedInPeriod
+  // (from API) is subtracted from totalRefunds so we do not double-hit.
+  // Cross-staff: refunds are attributed to whoever recorded them; billing
+  // metrics follow bill creator — individual staff views may still disagree
+  // when User B refunds User A's bill (clinic aggregate balances).
   const totalRefunds   = s.cashRefunded + s.digitalRefunded;
+  const refundsExcludedFromCollectible = s.refundsOnCancelledBillsCreatedInPeriod ?? 0;
+  const refundsForCollectible = Math.max(0, totalRefunds - refundsExcludedFromCollectible);
   const collectible    = s.grossBilledIncludingCancelled
                         + s.duesCollectedTotal
                         - s.cancelledOnMyBills
-                        - totalRefunds
+                        - refundsForCollectible
                         - s.outstanding;
   const netDigital     = s.digitalIn - s.digitalRefunded;
   const expectedCash   = collectible - netDigital - s.cashExpenses;
@@ -999,8 +1010,8 @@ function UnifiedReconciliationPanel({
 
         <ARow label="Cancelled Bills" value={s.cancelledOnMyBills} sign="−" indent highlight="red"
               note="of bills created in this period" />
-        <ARow label="Refunds" value={totalRefunds} sign="−" indent highlight="red"
-              note={`No-cancel ${fmt(s.refundsWithoutCancellationAmount)} · On cancelled ${fmt(Math.max(0, totalRefunds - s.refundsWithoutCancellationAmount))} · Cash ${fmt(s.cashRefunded)} · Digital ${fmt(s.digitalRefunded)}`} />
+        <ARow label="Refunds" value={refundsForCollectible} sign="−" indent highlight="red"
+              note={`Shown ${fmt(refundsForCollectible)} for collectible · Total refunds ${fmt(totalRefunds)} · No-cancel ${fmt(s.refundsWithoutCancellationAmount)} · On cancelled created today (excluded) ${fmt(refundsExcludedFromCollectible)} · Cash ${fmt(s.cashRefunded)} · Digital ${fmt(s.digitalRefunded)}`} />
         <ARow label="Outstanding Dues" value={s.outstanding} sign="−" indent highlight="red" note="balance on today's bills" />
 
         <ASectionDivider color="blue" />
@@ -1638,10 +1649,12 @@ export default function MyDailySummary() {
 
     // Use the SAME formula as UnifiedReconciliationPanel — must match exactly.
     const totalRefunds     = s.cashRefunded + s.digitalRefunded;
+    const refundsExcluded  = s.refundsOnCancelledBillsCreatedInPeriod ?? 0;
+    const refundsForCollectible = Math.max(0, totalRefunds - refundsExcluded);
     const collectible      = s.grossBilledIncludingCancelled
                            + s.duesCollectedTotal
                            - s.cancelledOnMyBills
-                           - totalRefunds
+                           - refundsForCollectible
                            - s.outstanding;
     const netDigital       = s.digitalIn - s.digitalRefunded;
     const expectedCash     = collectible - netDigital - s.cashExpenses;
@@ -1677,6 +1690,8 @@ export default function MyDailySummary() {
           ["Refunds (Cash)", amt(s.cashRefunded)],
           ["Refunds (Digital)", amt(s.digitalRefunded)],
           ["Total Refunds", amt(totalRefunds)],
+          ["Refunds excluded (cancelled bills created today)", amt(refundsExcluded)],
+          ["Refunds for collectible", amt(refundsForCollectible)],
           ["Outstanding Dues", amt(s.outstanding)],
           ["", ""],
           ["-- COLLECTION --", ""],
@@ -1974,16 +1989,17 @@ export default function MyDailySummary() {
       {/* ── KPI layout (presentation only — formulas unchanged) ───────────
             Primary: 5 always-visible cards in money-flow order.
             Details: remaining metrics behind a collapsible section.
-            Collectible math still uses cancelledOnMyBills + all refunds —
-            see UnifiedReconciliationPanel. */}
+            Collectible math matches UnifiedReconciliationPanel (refunds on
+            same-period cancelled bills excluded from double-subtract). */}
       {s && (
         <>
           {(() => {
             const totalRefunds = s.cashRefunded + s.digitalRefunded;
+            const refundsExcluded = s.refundsOnCancelledBillsCreatedInPeriod ?? 0;
+            const refundsForCollectible = Math.max(0, totalRefunds - refundsExcluded);
             const cancelLinkedRefunds = Math.max(0, totalRefunds - s.refundsWithoutCancellationAmount);
-            // cancelledOnMyBills, not cancelledAmount — see UnifiedReconciliationPanel.
             const collectible = s.grossBilledIncludingCancelled + s.duesCollectedTotal
-              - s.cancelledOnMyBills - totalRefunds - s.outstanding;
+              - s.cancelledOnMyBills - refundsForCollectible - s.outstanding;
             const totalBillsCount = (s.billCount ?? 0) + (s.cancelledByOthersCount ?? 0) + (s.cancelledBySelfCount ?? 0);
             const avgBillValue = totalBillsCount > 0 ? s.grossBilledIncludingCancelled / totalBillsCount : 0;
             return (

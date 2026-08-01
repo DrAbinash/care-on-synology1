@@ -6,6 +6,7 @@ import { FULL_ACCESS_ROLES } from "../middleware/requireStaffAuth";
 import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { getTransporter, getEmailSettings } from "../email";
 import { classifyPaymentMethod, isPhysicalCash, isDigitalSettlement } from "../lib/paymentMethodClassifier";
+import { computeRefundsOnCancelledBillsCreatedInPeriod } from "../lib/dailySummaryCollectible";
 
 export const myDailySummaryRouter = Router();
 
@@ -424,6 +425,14 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
     .filter((p) => p.billStatus !== "cancelled")
     .reduce((s, p) => s + Math.abs(Number(p.amount)), 0);
   const refundsWithoutCancellationCount = refundItems.filter((p) => p.billStatus !== "cancelled").length;
+  // Refunds on bills created in this period that are now cancelled — already
+  // removed from collectible via cancelledOnMyBills; exclude from refund
+  // deduction so same-day cancel+refund does not double-subtract.
+  const refundsOnCancelledBillsCreatedInPeriod = computeRefundsOnCancelledBillsCreatedInPeriod(
+    knownRefundItems,
+    start,
+    end,
+  );
   // Bills CANCELLED BY this staff (informational — accountability of canceller)
   const cancelledAmount = cancelledByMe.reduce((s, r) => s + Number(r.totalAmount), 0);
   // FIXED: cashCollection now subtracts cash refunds (was previously gross cash in)
@@ -585,6 +594,7 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
       refundAmount,
       refundsWithoutCancellationAmount,
       refundsWithoutCancellationCount,
+      refundsOnCancelledBillsCreatedInPeriod,
       cancelledAmount,
       cashExpenses,
       digitalExpenses,
