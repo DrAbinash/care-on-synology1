@@ -629,17 +629,16 @@ app.get(/^\/super-admin-portal(\/.*)?$/, (_req: Request, res: Response) => {
           if (url.includes("/super-admin/login") && init && typeof init.body === "string") {
             const body = JSON.parse(init.body);
             const pinInput = document.querySelector('input[type="password"], input[autocomplete="current-password"]');
+            const nameInput = document.querySelector('#name, input[autocomplete="username"]');
             const typed = pinInput && typeof pinInput.value === "string" ? pinInput.value.trim() : "";
-            // After auto-login failure, prefer the typed DB PIN over a mismatched usbPin.
-            if (typed && (autoLoginFailedVisible() || body.usbPin)) {
-              if (autoLoginFailedVisible()) {
-                body.pin = typed;
-                delete body.usbPin;
-                init = Object.assign({}, init, { body: JSON.stringify(body) });
-              } else if (!body.pin) {
-                body.pin = typed;
-                init = Object.assign({}, init, { body: JSON.stringify(body) });
-              }
+            if (!body.name && nameInput && nameInput.value) body.name = String(nameInput.value).trim();
+            // Old USB plugins often require `pin`. Host auth accepts `usbPin` for
+            // pen-drive auto-login. Send both when we have a secret so either path works.
+            const secret = typed || body.usbPin || body.pin || "";
+            if (secret) {
+              body.pin = String(secret);
+              body.usbPin = String(secret);
+              init = Object.assign({}, init, { body: JSON.stringify(body) });
             }
           }
         } catch (_) { /* never block login */ }

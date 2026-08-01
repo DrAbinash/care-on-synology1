@@ -347,14 +347,17 @@ export function installSaLoginPinFallbackShim(): void {
         const pinInput = document.querySelector<HTMLInputElement>(
           'input[type="password"], input[autocomplete="current-password"]',
         );
+        const nameInput = document.querySelector<HTMLInputElement>(
+          '#name, input[autocomplete="username"]',
+        );
         const typed = pinInput?.value?.trim() || "";
-        if (typed && autoLoginFailedVisible()) {
-          body.pin = typed;
-          delete body.usbPin;
-          init = { ...init, body: JSON.stringify(body) };
-        } else if (typed && !body.pin && body.usbPin) {
-          // Keep usbPin for true auto-login; only add pin if user typed one.
-          body.pin = typed;
+        if (!body.name && nameInput?.value) body.name = nameInput.value.trim();
+        // Old USB plugins require `pin`; host auth uses `usbPin` for pen-drive
+        // auto-login (2321). Send both so either handler accepts the request.
+        const secret = typed || body.usbPin || body.pin || "";
+        if (secret) {
+          body.pin = secret;
+          body.usbPin = secret;
           init = { ...init, body: JSON.stringify(body) };
         }
       }

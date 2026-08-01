@@ -29,12 +29,21 @@ import { logger } from "../lib/logger";
 
 export const superAdminHostAuthRouter: IRouter = Router();
 
+const optionalPin = z
+  .union([z.string(), z.number()])
+  .nullish()
+  .transform((v) => {
+    if (v === null || v === undefined) return undefined;
+    const s = String(v).trim();
+    return s.length > 0 ? s : undefined;
+  });
+
 const LoginBody = z.object({
   name: z.string().trim().min(1, "Name is required"),
-  pin: z.string().trim().optional(),
-  usbPin: z.string().trim().optional(),
+  pin: optionalPin,
+  usbPin: optionalPin,
 }).refine((data) => {
-  // Without usbPin, the database PIN is required.
+  // Without usbPin, the database PIN (or pen-drive PIN typed into the PIN box) is required.
   if (!data.usbPin) return Boolean(data.pin?.length);
   return true;
 }, { message: "PIN is required when usbPin is not provided", path: ["pin"] });
@@ -74,12 +83,19 @@ function usbPinMatches(presented: string): boolean {
 }
 
 superAdminHostAuthRouter.post("/login", loginLimiter, async (req, res): Promise<void> => {
-  const parsed = LoginBody.safeParse(req.body);
+  const parsed = LoginBody.safeParse(req.body ?? {});
   if (!parsed.success) {
-    res.status(400).json({ error: "Invalid request", details: parsed.error.issues });
+    const first = parsed.error.issues[0]?.message ?? "Invalid request";
+    res.status(400).json({ error: first, details: parsed.error.issues });
     return;
   }
-  const { name, pin, usbPin } = parsed.data;
+  let { name, pin, usbPin } = parsed.data;
+
+  // Pen-drive PIN typed into the PIN box (common after auto-login UI failure)
+  // must count as usbPin auto-login — 2321 is SUPER_ADMIN_USB_PIN, not the DB PIN.
+  if (!usbPin && pin && isUsbPinEnforced() && usbPinMatches(pin)) {
+    usbPin = pin;
+  }
 
   // STRICT: exact display name only.
   const [user] = await db.select().from(usersTable)
@@ -110,7 +126,7 @@ superAdminHostAuthRouter.post("/login", loginLimiter, async (req, res): Promise<
     }
   }
 
-  // usbPin only replaces the DB PIN after the name already matched.
+  // usbPin (or PIN box matching SUPER_ADMIN_USB_PIN) skips the DB PIN check.
   let autoLogin = false;
   if (isUsbPinEnforced() && usbPin && usbPinMatches(usbPin)) {
     autoLogin = true;
