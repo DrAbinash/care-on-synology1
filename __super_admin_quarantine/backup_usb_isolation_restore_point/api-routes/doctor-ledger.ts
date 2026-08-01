@@ -28,6 +28,8 @@ import {
 import {
   type EligibilityConfig,
   calcTestCommission,
+  buildTestNameAliasIndex,
+  rulesForDoctor,
   applyDiscountDeduction,
   computeCommissionHold,
   indexCommissionBillsByOrderId,
@@ -103,6 +105,7 @@ async function computeEarned(opts: { from?: string; to?: string; doctorId?: numb
   const allRules = await db.select().from(commissionRulesTable).orderBy(commissionRulesTable.id);
   const allTests = await db.select().from(testsTable);
   const testMap = new Map(allTests.map(t => [t.id, { id: t.id, name: t.name, category: t.category, price: Number(t.price), testType: t.testType }]));
+  const testAliasIndex = buildTestNameAliasIndex(allTests);
 
   const conditions = [];
   if (opts.doctorId) conditions.push(eq(ordersTable.doctorId, opts.doctorId));
@@ -177,7 +180,7 @@ async function computeEarned(opts: { from?: string; to?: string; doctorId?: numb
 
   return filteredDoctors.map(doctor => {
     const doctorOrders = orders.filter(o => o.doctorId === doctor.id && billByOrderId.has(o.id));
-    const rules = allRules.filter(r => r.doctorId === doctor.id);
+    const rules = rulesForDoctor(allRules, doctor.id);
     let totalRevenue = 0, totalCommission = 0, payableCommission = 0, heldCommission = 0;
     const orderRows: { orderId: number; orderNumber: string; date: string; revenue: number; commission: number; grossCommission: number; testCount: number; held: boolean; holdReason: string | null; frozen: boolean; payoutId: number | null; ruleSummary: string }[] = [];
     for (const order of doctorOrders) {
@@ -187,7 +190,7 @@ async function computeEarned(opts: { from?: string; to?: string; doctorId?: numb
       const ruleNames = new Set<string>();
       for (const ot of tests) {
         const test = testMap.get(ot.testId);
-        const { commission, ruleName, ruleType, ruleValue } = calcTestCommission(ot, test, rules, doctor, vipOrderTestIds, vipPct, outsourcedBasis);
+        const { commission, ruleName, ruleType, ruleValue } = calcTestCommission(ot, test, rules, doctor, vipOrderTestIds, vipPct, outsourcedBasis, testAliasIndex);
         r += Number(ot.price);
         rawC += commission;
         if (ruleName && ruleName !== "None") {

@@ -16,6 +16,14 @@ Copy onto the pen drive (TOP level):
   superadmin.pin   (existing — optional)
   READ_ME_FIRST.txt
 
+2026-08-01 — Referral report search + commission wiring:
+  Searchable/scrollable doctor picker on Referral Report + Commission Rules
+  (fixes list "not moving"). Matching hardened: coerce string testIds,
+  case-insensitive categories, rule-name↔test-name fallback (MRI BRAIN).
+  Global All Doctors slabs (doctor_id NULL) via existing scope UI.
+  Empty test-scoped rules rejected; report warns on Rate 0% / no slab.
+  Redeploy care-api AND copy rebuilt plugin files to the pen drive.
+
 2026-08-01 — Doctor Manager search + assign-doctors fix:
   Doctor Manager has a partial-word search box ("abi" → Abinash).
   Assign doctors Save no longer 500s (orders.appointment_id did not exist;

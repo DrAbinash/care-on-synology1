@@ -23,6 +23,8 @@ import {
   type CommissionRuleScope,
 } from "@workspace/api-client-react";
 import { saAuthHeaders } from "@/lib/saApi";
+import { DoctorSearchSelect } from "@/components/DoctorSearchSelect";
+import { doctorMatchesQuery } from "@/lib/doctorSearch";
 
 type SaDoctor = {
   id: number;
@@ -32,7 +34,7 @@ type SaDoctor = {
   defaultCommission: string | null;
   defaultCommissionType: string;
 };
-type SaTest = { id: number; name: string; category: string | null };
+type SaTest = { id: number; name: string; category: string | null; isActive?: boolean | null };
 
 const SA_DOCTORS_KEY = ["/api/super-admin/doctors-list"] as const;
 const SA_TESTS_KEY = ["/api/super-admin/tests-list"] as const;
@@ -107,7 +109,13 @@ function TestPicker({
               onChange={() => onChange(selected.filter((id) => id !== t.id).join(","))}
               className="rounded"
             />
-            <span className="font-semibold text-primary">{t.name}</span>
+            <span className="font-semibold text-primary">
+              {t.name}
+              <span className="ml-1 font-normal text-[10px] text-muted-foreground">#{t.id}</span>
+              {t.isActive === false && (
+                <span className="ml-1 text-[10px] uppercase text-amber-600">inactive</span>
+              )}
+            </span>
           </label>
         ))}
         {selectedTests.length > 0 && unselectedTests.length > 0 && (
@@ -120,7 +128,13 @@ function TestPicker({
               onChange={() => onChange([...selected, t.id].join(","))}
               className="rounded"
             />
-            {t.name}
+            <span>
+              {t.name}
+              <span className="ml-1 text-[10px] text-muted-foreground">#{t.id}</span>
+              {t.isActive === false && (
+                <span className="ml-1 text-[10px] uppercase text-amber-600">inactive</span>
+              )}
+            </span>
           </label>
         ))}
         {filtered.length === 0 && (
@@ -137,6 +151,7 @@ export default function CommissionRules({ onBack }: { onBack: () => void }) {
   const queryClient = useQueryClient();
 
   const [selectedDoctorId, setSelectedDoctorId] = useState<number | null>(null);
+  const [doctorCardQuery, setDoctorCardQuery] = useState("");
   const [ruleOpen, setRuleOpen] = useState(false);
   const [editRule, setEditRule] = useState<CommissionRule | null>(null);
   const [discountModeSaving, setDiscountModeSaving] = useState(false);
@@ -297,19 +312,35 @@ export default function CommissionRules({ onBack }: { onBack: () => void }) {
   };
 
   const onSave = handleSubmit((d) => {
+    // selectedDoctorId null = clinic-wide slab (All Doctors) — same Add Rule form,
+    // scope still All Tests / Categories / Specific Tests.
+    const boundTestIds = d.scope === "test"
+      ? (d.testIds || "").split(",").map((n) => Number(n)).filter((n) => Number.isFinite(n) && n > 0)
+      : [];
+    const boundCategories = d.scope === "category"
+      ? (d.categories || "").split(",").map((s) => s.trim()).filter(Boolean)
+      : [];
+    if (d.scope === "test" && boundTestIds.length === 0) {
+      toast({
+        title: "Pick at least one test",
+        description: "A test-scoped rule name alone (e.g. MRI BRAIN) does not pay commission — bind catalogue tests.",
+        variant: "destructive",
+      });
+      return;
+    }
+    if (d.scope === "category" && boundCategories.length === 0) {
+      toast({ title: "Enter at least one category", variant: "destructive" });
+      return;
+    }
     const body = {
-      doctorId: selectedDoctorId,
+      doctorId: selectedDoctorId, // null → global / all doctors
       name: d.name,
       type: d.type as "percentage" | "fixed",
       value: Number(d.value),
       scope: d.scope as "all" | "category" | "test",
       isExclusive: d.isExclusive === "true",
-      categories: d.scope === "category"
-        ? d.categories.split(",").map(s => s.trim()).filter(Boolean)
-        : [],
-      testIds: d.scope === "test"
-        ? d.testIds.split(",").map(n => Number(n)).filter(Boolean)
-        : [],
+      categories: boundCategories,
+      testIds: boundTestIds,
       // Not part of the generated OpenAPI body type; the server reads it off the
       // raw body and allow-lists it (same as isActive).
       appliesTo: d.appliesTo || "all",
@@ -408,7 +439,7 @@ export default function CommissionRules({ onBack }: { onBack: () => void }) {
             </Button>
             <h1 className="text-2xl font-bold">Commission Rules</h1>
             <p className="text-sm text-muted-foreground mt-1">
-              Per-doctor commission overrides for tests and categories
+              Global slabs for all doctors (same All Tests / Categories / Specific Tests scopes), plus per-doctor overrides
             </p>
           </div>
         </div>
@@ -602,15 +633,18 @@ export default function CommissionRules({ onBack }: { onBack: () => void }) {
 
         {/* Doctor selector + add button */}
         <div className="flex flex-wrap gap-3 items-center justify-between bg-card border border-border rounded-xl p-4">
-          <div className="w-72">
+          <div className="w-80">
             <Label className="text-xs">Doctor</Label>
-            <Select onValueChange={(v) => setSelectedDoctorId(v === "all" ? null : Number(v))}>
-              <SelectTrigger className="mt-1"><SelectValue placeholder="All Doctors" /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Doctors</SelectItem>
-                {doctors.map(d => <SelectItem key={d.id} value={String(d.id)}>{d.name}</SelectItem>)}
-              </SelectContent>
-            </Select>
+            <DoctorSearchSelect
+              className="mt-1"
+              doctors={doctors}
+              value={selectedDoctorId}
+              onChange={setSelectedDoctorId}
+              allowAll
+              allLabel="All Doctors"
+              placeholder="Search doctors (e.g. abi)…"
+              wide
+            />
           </div>
           <div className="flex flex-wrap gap-2 items-center">
             <input
@@ -626,18 +660,104 @@ export default function CommissionRules({ onBack }: { onBack: () => void }) {
             <Button variant="outline" size="sm" disabled={importing} onClick={() => fileInputRef.current?.click()} className="gap-1.5">
               <Upload size={14} /> {importing ? "Importing…" : "Import CSV"}
             </Button>
-            {selectedDoctorId && (
-              <Button onClick={() => { setEditRule(null); reset({ type: "percentage", scope: "all", isExclusive: "false", appliesTo: "all" }); setRuleOpen(true); }}>
-                <Plus size={14} className="mr-1" /> Add Rule
-              </Button>
-            )}
+            <Button
+              onClick={() => {
+                setEditRule(null);
+                reset({ type: "percentage", scope: "all", isExclusive: "false", appliesTo: "all", name: "", value: "", categories: "", testIds: "" });
+                setRuleOpen(true);
+              }}
+            >
+              <Plus size={14} className="mr-1" />
+              {selectedDoctorId == null ? "Add Global Rule" : "Add Rule"}
+            </Button>
           </div>
         </div>
 
-        {/* Doctor cards / rules table */}
+        {/* Global rules (All Doctors) + per-doctor cards, or one doctor's rules */}
         {!selectedDoctorId ? (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {doctors.map((d) => (
+          <div className="space-y-6">
+            <div className="space-y-3">
+              <div>
+                <h2 className="text-sm font-semibold">Global rules (all referring doctors)</h2>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Same Add Rule form as before — All Tests / Categories / Specific Tests.
+                  Example: MRI BRAIN ₹1,750 once here pays for every doctor. A per-doctor
+                  rule for the same test still overrides this.
+                </p>
+              </div>
+              {rules.filter((r) => r.doctorId == null).length === 0 ? (
+                <div className="text-center py-10 text-muted-foreground text-sm bg-card border border-border rounded-xl">
+                  No global rules yet. Click <strong>Add Global Rule</strong>.
+                </div>
+              ) : (
+                <div className="bg-card border border-border rounded-xl overflow-hidden">
+                  <table className="w-full text-sm">
+                    <thead className="bg-muted/50 border-b border-border">
+                      <tr>
+                        <th className="text-left px-4 py-3 text-xs font-semibold uppercase text-muted-foreground">Rule Name</th>
+                        <th className="text-left px-4 py-3 text-xs font-semibold uppercase text-muted-foreground">Value</th>
+                        <th className="text-left px-4 py-3 text-xs font-semibold uppercase text-muted-foreground">Scope</th>
+                        <th className="text-left px-4 py-3 text-xs font-semibold uppercase text-muted-foreground">Bound to</th>
+                        <th className="text-left px-4 py-3 text-xs font-semibold uppercase text-muted-foreground">Flags</th>
+                        <th className="px-4 py-3" />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rules.filter((r) => r.doctorId == null).map((rule) => {
+                        const boundIds = rule.testIds ?? [];
+                        const boundCats = rule.categories ?? [];
+                        const unboundTest = rule.scope === "test" && boundIds.length === 0;
+                        const unboundCat = rule.scope === "category" && boundCats.length === 0;
+                        const boundLabel = rule.scope === "all"
+                          ? "All tests"
+                          : rule.scope === "category"
+                            ? (boundCats.length ? boundCats.join(", ") : "⚠ no categories")
+                            : boundIds.length
+                              ? `${boundIds.length} test${boundIds.length === 1 ? "" : "s"}`
+                              : "⚠ no tests bound";
+                        return (
+                          <tr key={rule.id} className="border-b border-border last:border-0 hover:bg-muted/20">
+                            <td className="px-4 py-3 font-medium">{rule.name}</td>
+                            <td className="px-4 py-3">{rule.type === "percentage" ? `${rule.value}%` : inr(rule.value)}</td>
+                            <td className="px-4 py-3 capitalize text-muted-foreground">{rule.scope}</td>
+                            <td className={`px-4 py-3 text-xs ${(unboundTest || unboundCat) ? "text-amber-600 font-semibold" : "text-muted-foreground"}`}>{boundLabel}</td>
+                            <td className="px-4 py-3">
+                              <Badge className="bg-emerald-100 text-emerald-800 text-xs mr-1">All doctors</Badge>
+                              {rule.isExclusive && <Badge className="bg-purple-100 text-purple-700 text-xs mr-1">Exclusive</Badge>}
+                              {!rule.isActive && <Badge className="bg-gray-100 text-gray-500 text-xs">Inactive</Badge>}
+                              {(unboundTest || unboundCat) && <Badge className="bg-amber-100 text-amber-800 text-xs">Won&apos;t pay</Badge>}
+                            </td>
+                            <td className="px-4 py-3">
+                              <div className="flex gap-1 justify-end">
+                                <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => openEdit(rule)}>Edit</Button>
+                                <Button size="sm" variant="ghost" className="h-7 text-destructive hover:text-destructive" onClick={() => onDelete(rule.id)} disabled={deleteMutation.isPending}>
+                                  <Trash2 size={13} />
+                                </Button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-3">
+              <h2 className="text-sm font-semibold">Per-doctor overrides</h2>
+              <p className="text-xs text-muted-foreground">Only needed when one doctor differs from the global slabs.</p>
+            <div className="relative max-w-md">
+              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
+              <Input
+                value={doctorCardQuery}
+                onChange={(e) => setDoctorCardQuery(e.target.value)}
+                placeholder="Filter doctor cards (e.g. abi)…"
+                className="pl-9"
+              />
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {doctors.filter((d) => doctorMatchesQuery(d, doctorCardQuery)).map((d) => (
               <div
                 key={d.id}
                 className="bg-card border border-border rounded-xl p-5 cursor-pointer hover:shadow-md transition-shadow"
@@ -660,6 +780,11 @@ export default function CommissionRules({ onBack }: { onBack: () => void }) {
                 </div>
               </div>
             ))}
+            </div>
+            {doctors.filter((d) => doctorMatchesQuery(d, doctorCardQuery)).length === 0 && (
+              <div className="text-center py-10 text-sm text-muted-foreground">No doctors match that search.</div>
+            )}
+            </div>
           </div>
         ) : (
           <div className="space-y-3">
@@ -667,8 +792,9 @@ export default function CommissionRules({ onBack }: { onBack: () => void }) {
               ← Back to all doctors
             </Button>
             {rules.filter(r => r.doctorId === selectedDoctorId).length === 0 ? (
-              <div className="text-center py-12 text-muted-foreground text-sm bg-card border border-border rounded-xl">
-                No custom rules. Uses default commission from doctor profile.
+              <div className="text-center py-12 text-muted-foreground text-sm bg-card border border-border rounded-xl space-y-1">
+                <p>No doctor-specific overrides. Global All Doctors slabs still apply when configured.</p>
+                <p className="text-xs">Otherwise uses the default commission from this doctor&apos;s profile.</p>
               </div>
             ) : (
               <div className="bg-card border border-border rounded-xl overflow-hidden">
@@ -678,16 +804,32 @@ export default function CommissionRules({ onBack }: { onBack: () => void }) {
                       <th className="text-left px-4 py-3 text-xs font-semibold uppercase text-muted-foreground">Rule Name</th>
                       <th className="text-left px-4 py-3 text-xs font-semibold uppercase text-muted-foreground">Value</th>
                       <th className="text-left px-4 py-3 text-xs font-semibold uppercase text-muted-foreground">Scope</th>
+                      <th className="text-left px-4 py-3 text-xs font-semibold uppercase text-muted-foreground">Bound to</th>
                       <th className="text-left px-4 py-3 text-xs font-semibold uppercase text-muted-foreground">Flags</th>
                       <th className="px-4 py-3" />
                     </tr>
                   </thead>
                   <tbody>
-                    {rules.filter(r => r.doctorId === selectedDoctorId).map((rule) => (
+                    {rules.filter(r => r.doctorId === selectedDoctorId).map((rule) => {
+                      const boundIds = rule.testIds ?? [];
+                      const boundCats = rule.categories ?? [];
+                      const unboundTest = rule.scope === "test" && boundIds.length === 0;
+                      const unboundCat = rule.scope === "category" && boundCats.length === 0;
+                      const boundLabel = rule.scope === "all"
+                        ? "All tests"
+                        : rule.scope === "category"
+                          ? (boundCats.length ? boundCats.join(", ") : "⚠ no categories")
+                          : boundIds.length
+                            ? `${boundIds.length} test${boundIds.length === 1 ? "" : "s"}`
+                            : "⚠ no tests bound";
+                      return (
                       <tr key={rule.id} className="border-b border-border last:border-0 hover:bg-muted/20">
                         <td className="px-4 py-3 font-medium">{rule.name}</td>
                         <td className="px-4 py-3">{rule.type === "percentage" ? `${rule.value}%` : inr(rule.value)}</td>
                         <td className="px-4 py-3 capitalize text-muted-foreground">{rule.scope}</td>
+                        <td className={`px-4 py-3 text-xs ${(unboundTest || unboundCat) ? "text-amber-600 font-semibold" : "text-muted-foreground"}`}>
+                          {boundLabel}
+                        </td>
                         <td className="px-4 py-3">
                           {rule.isExclusive && <Badge className="bg-purple-100 text-purple-700 text-xs mr-1">Exclusive</Badge>}
                           {(() => {
@@ -697,6 +839,7 @@ export default function CommissionRules({ onBack }: { onBack: () => void }) {
                             return null;
                           })()}
                           {!rule.isActive && <Badge className="bg-gray-100 text-gray-500 text-xs">Inactive</Badge>}
+                          {(unboundTest || unboundCat) && <Badge className="bg-amber-100 text-amber-800 text-xs">Won&apos;t pay</Badge>}
                         </td>
                         <td className="px-4 py-3">
                           <div className="flex gap-1 justify-end">
@@ -712,7 +855,8 @@ export default function CommissionRules({ onBack }: { onBack: () => void }) {
                           </div>
                         </td>
                       </tr>
-                    ))}
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -724,7 +868,20 @@ export default function CommissionRules({ onBack }: { onBack: () => void }) {
       {/* Rule create / edit dialog */}
       <Dialog open={ruleOpen} onOpenChange={(o) => { setRuleOpen(o); if (!o) setEditRule(null); }}>
         <DialogContent className="max-w-md">
-          <DialogHeader><DialogTitle>{editRule ? "Edit" : "Add"} Commission Rule</DialogTitle></DialogHeader>
+          <DialogHeader>
+            <DialogTitle>
+              {editRule
+                ? "Edit Commission Rule"
+                : selectedDoctorId == null
+                  ? "Add Global Commission Rule (all doctors)"
+                  : "Add Commission Rule"}
+            </DialogTitle>
+          </DialogHeader>
+          {selectedDoctorId == null && !editRule && (
+            <p className="text-xs text-muted-foreground -mt-2">
+              Applies to every referring doctor. Scope is unchanged: All Tests, Specific Categories, or Specific Tests.
+            </p>
+          )}
           <form onSubmit={onSave} className="space-y-4">
             <div>
               <Label>Rule Name *</Label>
