@@ -65,7 +65,7 @@ describe("loadBillPrintSettings — clinic-wide global reaches the print sites",
     // No window at all (worst case: nothing cached locally) — the admin's
     // A4 choice must still win over the built-in default that caused the
     // rotated prints.
-    expect(GLOBAL_BILL_PRINT_DEFAULTS.defaultPaperSize).toBe("A5-landscape");
+    expect(GLOBAL_BILL_PRINT_DEFAULTS.defaultPaperSize).toBe("A5-portrait");
     const merged = loadBillPrintSettings({ defaultPaperSize: "A4" });
     expect(merged.defaultPaperSize).toBe("A4");
   });
@@ -73,7 +73,7 @@ describe("loadBillPrintSettings — clinic-wide global reaches the print sites",
   test("without a server global, built-in defaults apply unchanged", () => {
     const merged = loadBillPrintSettings();
     expect(merged.defaultPaperSize).toBe(GLOBAL_BILL_PRINT_DEFAULTS.defaultPaperSize);
-    expect(merged.defaultFormat).toBe("modern-landscape");
+    expect(merged.defaultFormat).toBe("classic");
   });
 
   test("per-user local override wins over the global when adminLock is OFF", () => {

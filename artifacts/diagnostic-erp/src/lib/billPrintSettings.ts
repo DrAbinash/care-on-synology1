@@ -125,14 +125,14 @@ export type BillPrintSettings = {
 };
 
 export const GLOBAL_BILL_PRINT_DEFAULTS: BillPrintSettings = {
-  defaultFormat: "modern-landscape",
+  defaultFormat: "classic",
   classicEnabled: true,
   premiumA5Enabled: true,
   designerAEnabled: true,
   designerBEnabled: true,
   designerCEnabled: true,
   autoA4Threshold: 5,
-  defaultPaperSize: "A5-landscape",
+  defaultPaperSize: "A5-portrait",
   defaultCopyType: "patient",
   showQrCode: true,
   showAmountInWords: false,
@@ -363,11 +363,11 @@ export function getAutoBillPaperSize(
 export function getPaperSizeCss(size: BillPaperSize): { pageSize: string; width: string; minHeight: string; maxHeight: string } {
   switch (size) {
     case "A5-landscape":
-      return { pageSize: "A5 landscape", width: "198mm", minHeight: "136mm", maxHeight: "136mm" };
+      return { pageSize: "A5 landscape", width: "198mm", minHeight: "132mm", maxHeight: "none" };
     case "A5-portrait":
-      return { pageSize: "A5 portrait", width: "136mm", minHeight: "198mm", maxHeight: "198mm" };
+      return { pageSize: "A5 portrait", width: "136mm", minHeight: "194mm", maxHeight: "none" };
     case "half-a4":
-      return { pageSize: "148mm 210mm", width: "148mm", minHeight: "198mm", maxHeight: "198mm" };
+      return { pageSize: "148mm 210mm", width: "148mm", minHeight: "194mm", maxHeight: "none" };
     case "A4":
     default:
       return { pageSize: "A4 portrait", width: "210mm", minHeight: "277mm", maxHeight: "none" };

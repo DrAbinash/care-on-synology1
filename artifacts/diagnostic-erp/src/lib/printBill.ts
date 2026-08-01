@@ -592,6 +592,8 @@ export function buildBillPrintHtml(opts: BuildPrintHtmlOpts): string {
       barcodeDataUrl: opts.barcodeDataUrl,
       customFooter: opts.customFooter,
       reportCollectionNote: opts.reportCollectionNote,
+      pageCssSize: opts.pageCssSize,
+      compactFooterGap: opts.compactFooterGap,
     });
   }
   // Classic format
