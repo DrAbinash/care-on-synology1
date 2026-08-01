@@ -1371,10 +1371,12 @@ export default function ReferralReport({ onBack }: { onBack: () => void }) {
                   {noneRows.length} test line{noneRows.length === 1 ? "" : "s"} have no matching commission slab (shown as Rate 0%)
                 </p>
                 <p className="text-xs leading-relaxed opacity-90">
-                  Commission is calculated only from rules bound to this referring doctor.
-                  Test-scoped rules must pick catalogue tests in Commission Rules — a rule name like
-                  &ldquo;CT 800&rdquo; or &ldquo;MRI 20%&rdquo; alone does not pay. Open Commission Rules for each
-                  doctor, edit each Test-scoped slab, and tick the matching tests.
+                  Commission is calculated from each referring doctor&apos;s own slabs.
+                  Bound test ids must match the catalogue row on the bill — duplicate
+                  names (e.g. two &ldquo;CT BRAIN&rdquo; rows) used to miss; that is now fixed by
+                  name-alias matching. Confirm the rule sits on <em>this</em> doctor
+                  (not only one profile), and that the billed test is in the slab&apos;s
+                  selected list (picker now shows #id).
                   {sampleTests.length > 0 && (
                     <> Unmatched examples: {sampleTests.join(", ")}{sampleTests.length >= 6 ? "…" : ""}.</>
                   )}

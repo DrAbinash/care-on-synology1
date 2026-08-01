@@ -4,6 +4,7 @@ import {
   findMatchingRule,
   normalizeCommissionLabel,
   parseTestIdList,
+  buildTestNameAliasIndex,
   type CalcRule,
 } from "./commissionCalc";
 
@@ -62,6 +63,34 @@ describe("findMatchingRule", () => {
     expect(findMatchingRule(55, "CT", amountRules, false, "CT CHEST")).toBeUndefined();
   });
 
+  it("matches duplicate catalogue rows that share a normalized name", () => {
+    // Picker bound active id=10; bill used inactive duplicate id=99 — same name.
+    const alias = buildTestNameAliasIndex([
+      { id: 10, name: "CT BRAIN" },
+      { id: 99, name: "CT BRAIN" },
+      { id: 50, name: "MRI WHOLE ABDOMEN" },
+    ]);
+    const rules = [baseRule({ name: "CT 800", scope: "test", testIds: "[10]", value: 800 })];
+    expect(findMatchingRule(99, "CT", rules, false, "CT BRAIN", alias)?.name).toBe("CT 800");
+    expect(findMatchingRule(50, "MRI", rules, false, "MRI WHOLE ABDOMEN", alias)).toBeUndefined();
+  });
+
+  it("matches MRI 20% style slabs via bound ids even when names differ", () => {
+    const alias = buildTestNameAliasIndex([
+      { id: 1, name: "MRCP" },
+      { id: 2, name: "MRI WHOLE ABDOMEN" },
+      { id: 3, name: "MRI UPPER ABDOMEN" },
+    ]);
+    const rules = [baseRule({
+      name: "MRI 20%",
+      scope: "test",
+      type: "percentage",
+      value: 20,
+      testIds: "[1,2,3]",
+    })];
+    expect(findMatchingRule(2, "MRI", rules, false, "MRI WHOLE ABDOMEN", alias)?.name).toBe("MRI 20%");
+  });
+
   it("uses catch-all when no specific slab matches", () => {
     const rules = [
       baseRule({ name: "CT 800", scope: "test", testIds: "[1]", value: 800 }),
@@ -96,5 +125,25 @@ describe("calcTestCommission wiring", () => {
     expect(result.ruleName).toBe("MRI BRAIN");
     expect(result.commission).toBe(1750);
     expect(result.ruleScope).toBe("test");
+  });
+
+  it("pays CT 800 when bill uses a duplicate CT BRAIN id", () => {
+    const alias = buildTestNameAliasIndex([
+      { id: 10, name: "CT BRAIN" },
+      { id: 99, name: "ct-brain" },
+    ]);
+    const rules = [baseRule({ name: "CT 800", scope: "test", testIds: "[10]", type: "fixed", value: 800 })];
+    const result = calcTestCommission(
+      { testId: 99, price: 4500 },
+      { category: "CT", name: "CT BRAIN" },
+      rules,
+      { defaultCommission: 0 },
+      undefined,
+      undefined,
+      "price",
+      alias,
+    );
+    expect(result.ruleName).toBe("CT 800");
+    expect(result.commission).toBe(800);
   });
 });

@@ -25,12 +25,14 @@ import {
   type RuleScope,
   type EligibilityConfig,
   safeParseArray,
+  parseTestIdList,
   findMatchingRule,
   calcTestCommission,
   applyDiscountDeduction,
   computeCommissionHold,
   indexCommissionBillsByOrderId,
   NEEDS_REPORT_STATUS,
+  buildTestNameAliasIndex,
 } from "../lib/commissionCalc";
 import { auditFromRequest } from "../lib/audit";
 
@@ -51,7 +53,8 @@ router.get("/rules", async (req, res) => {
     // safeParseArray, not JSON.parse: one rule with malformed JSON must not take
     // the whole rules list down.
     categories: safeParseArray<string>(r.categories),
-    testIds: safeParseArray<number>(r.testIds),
+    // Coerce stringly ids ("12") so the UI checkbox state and report matching agree.
+    testIds: parseTestIdList(r.testIds),
   })));
 });
 
@@ -663,6 +666,7 @@ router.get("/report", async (req, res) => {
   const allRules = await db.select().from(commissionRulesTable).orderBy(commissionRulesTable.id);
   const allTests = await db.select().from(testsTable);
   const testMap = new Map(allTests.map(t => [t.id, { id: t.id, name: t.name, category: t.category, price: Number(t.price), testType: t.testType }]));
+  const testAliasIndex = buildTestNameAliasIndex(allTests);
 
   const conditions = [];
   if (doctorId) conditions.push(eq(ordersTable.doctorId, Number(doctorId)));
@@ -710,7 +714,7 @@ router.get("/report", async (req, res) => {
         let orderRevenue = 0, rawOrderCommission = 0, lastRule = "Default";
         for (const ot of tests) {
           const test = testMap.get(ot.testId);
-          const { commission, ruleName } = calcTestCommission(ot, test, rules, doctor, vipOrderTestIds, vipPct, outsourcedBasis);
+          const { commission, ruleName } = calcTestCommission(ot, test, rules, doctor, vipOrderTestIds, vipPct, outsourcedBasis, testAliasIndex);
           orderRevenue += Number(ot.price);
           rawOrderCommission += commission;
           lastRule = ruleName;
@@ -772,6 +776,7 @@ router.get("/report-detailed", async (req, res) => {
   const allRules = await db.select().from(commissionRulesTable).orderBy(commissionRulesTable.id);
   const allTests = await db.select().from(testsTable);
   const testMap = new Map(allTests.map(t => [t.id, { id: t.id, name: t.name, category: t.category ?? "Other", price: Number(t.price), testType: t.testType }]));
+  const testAliasIndex = buildTestNameAliasIndex(allTests);
 
   const conditions = [];
   if (doctorId) conditions.push(eq(ordersTable.doctorId, Number(doctorId)));
@@ -818,7 +823,7 @@ router.get("/report-detailed", async (req, res) => {
       if (ots.length === 0) continue;
       for (const ot of ots) {
         const test = testMap.get(ot.testId);
-        const { commission, ruleName, ruleType, ruleValue } = calcTestCommission(ot, test, rules, doctor, vipOrderTestIds, vipPct, outsourcedBasis);
+        const { commission, ruleName, ruleType, ruleValue } = calcTestCommission(ot, test, rules, doctor, vipOrderTestIds, vipPct, outsourcedBasis, testAliasIndex);
         testRows.push({
           testId: ot.testId,
           testName: test?.name ?? "Unknown",
@@ -961,6 +966,7 @@ export async function computeReferralReport(q: { from?: string; to?: string; doc
   const allRules = await db.select().from(commissionRulesTable).orderBy(commissionRulesTable.id);
   const allTests = await db.select().from(testsTable);
   const testMap = new Map(allTests.map(t => [t.id, { id: t.id, name: t.name, category: t.category ?? "Other", price: Number(t.price), testType: t.testType, outsourcedLabId: t.outsourcedLabId }]));
+  const testAliasIndex = buildTestNameAliasIndex(allTests);
   const labs = await db.select({ id: outsourcedLabsTable.id, name: outsourcedLabsTable.name }).from(outsourcedLabsTable);
   const labNameById = new Map(labs.map(l => [l.id, l.name]));
 
@@ -1100,7 +1106,7 @@ export async function computeReferralReport(q: { from?: string; to?: string; doc
     const orderHold = new Map<number, { held: boolean; reason: string | null }>();
     for (const order of doctorOrders) {
       const ots = orderTests.filter(ot => ot.orderId === order.orderId);
-      const rawOrderComm = ots.reduce((s, ot) => s + calcTestCommission(ot, testMap.get(ot.testId), rules, doctor, vipOrderTestIds, vipPct, outsourcedBasis).commission, 0);
+      const rawOrderComm = ots.reduce((s, ot) => s + calcTestCommission(ot, testMap.get(ot.testId), rules, doctor, vipOrderTestIds, vipPct, outsourcedBasis, testAliasIndex).commission, 0);
       const bill = billByOrderId.get(order.orderId);
       const { net } = applyDiscountDeduction(rawOrderComm, bill?.discount ?? 0, commissionDiscountMode);
       orderAdjustRatio.set(order.orderId, rawOrderComm > 0 ? net / rawOrderComm : 1);
@@ -1135,7 +1141,7 @@ export async function computeReferralReport(q: { from?: string; to?: string; doc
         const {
           commission: rawComm, ruleName, ruleType, ruleValue, ruleScope,
           isOutsourced, outsourceCost, commissionBase, cappedToMargin, uncappedCommission,
-        } = calcTestCommission(ot, test, rules, doctor, vipOrderTestIds, vipPct, outsourcedBasis);
+        } = calcTestCommission(ot, test, rules, doctor, vipOrderTestIds, vipPct, outsourcedBasis, testAliasIndex);
         // commissionBase comes straight from the engine — it is the exact figure
         // the rate was applied to, after the VIP surcharge is stripped and, on
         // the margin basis, after the lab cost is taken off. Re-deriving it here

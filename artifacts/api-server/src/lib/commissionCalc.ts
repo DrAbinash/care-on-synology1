@@ -109,12 +109,49 @@ export function ruleAppliesToKind(r: CalcRule, isOutsourced: boolean): boolean {
   return true;
 }
 
+/** Map each catalogue test id → every id that shares its normalized name. */
+export function buildTestNameAliasIndex(
+  tests: { id: number; name: string | null | undefined }[],
+): Map<number, number[]> {
+  const byName = new Map<string, number[]>();
+  for (const t of tests) {
+    const k = normalizeCommissionLabel(t.name ?? "");
+    if (!k) continue;
+    const bucket = byName.get(k);
+    if (bucket) bucket.push(t.id);
+    else byName.set(k, [t.id]);
+  }
+  const byId = new Map<number, number[]>();
+  for (const t of tests) {
+    const k = normalizeCommissionLabel(t.name ?? "");
+    byId.set(t.id, k ? (byName.get(k) ?? [t.id]) : [t.id]);
+  }
+  return byId;
+}
+
+export function expandIdsByNameAlias(
+  ids: number[],
+  aliasIndex: Map<number, number[]> | null | undefined,
+): Set<number> {
+  const out = new Set<number>();
+  for (const id of ids) {
+    const aliases = aliasIndex?.get(id);
+    if (aliases && aliases.length > 0) {
+      for (const a of aliases) out.add(a);
+    } else {
+      out.add(id);
+    }
+  }
+  return out;
+}
+
 // Single source of truth for "which rule applies to this test line".
 //
 // Precedence (must stay in lock-step with every report that displays the matched
 // rule's value/type — otherwise the UI shows a rule the calculation never used):
 //   1) exclusive test/category rule
-//   2) non-exclusive test/category rule (by testId, then by exact rule name ↔ test name)
+//   2) non-exclusive test/category rule (by testId incl. duplicate-name aliases,
+//      then by exact rule name ↔ test name)
 //   3) catch-all (scope="all") rule
 // Returns undefined when nothing matches; the caller then falls back to the
 // doctor's profile default.
@@ -123,15 +160,25 @@ export function ruleAppliesToKind(r: CalcRule, isOutsourced: boolean): boolean {
 // which case category-scoped rules never match.
 // `testName` enables a safe fallback when a scope=test slab was named after the
 // catalogue test (e.g. "MRI BRAIN") but testIds were left empty or drifted.
+// `aliasIndex` expands both the billed test id and each rule's bound ids across
+// duplicate catalogue rows that share the same normalized name (common when
+// "CT BRAIN" exists twice — picker binds one id, billing uses the other).
 export function findMatchingRule(
   testId: number,
   category: string | null,
   rules: CalcRule[],
   isOutsourced = false,
   testName: string | null = null,
+  aliasIndex: Map<number, number[]> | null = null,
 ): CalcRule | undefined {
-  const idsOf = (r: CalcRule) => parseTestIdList(r.testIds);
-  const testMatch = (r: CalcRule) => idsOf(r).includes(testId);
+  const lineIds = expandIdsByNameAlias([testId], aliasIndex);
+  const testMatch = (r: CalcRule) => {
+    const bound = expandIdsByNameAlias(parseTestIdList(r.testIds), aliasIndex);
+    for (const id of lineIds) {
+      if (bound.has(id)) return true;
+    }
+    return false;
+  };
   const catNorm = category ? normalizeCommissionLabel(category) : null;
   const catMatch = (r: CalcRule) => {
     if (!catNorm || !r.categories) return false;
@@ -175,6 +222,8 @@ export function calcTestCommission(
   vipOrderTestIds?: Set<number>,
   vipPct?: number,
   outsourcedBasis: string = "price",
+  /** Duplicate catalogue rows sharing a normalized name (see buildTestNameAliasIndex). */
+  testAliasIndex?: Map<number, number[]> | null,
 ): CalcResult {
   // A line is outsourced when the catalogue says so, or when it carries a lab
   // cost snapshotted at order time. The snapshot is authoritative for the money:
@@ -208,6 +257,7 @@ export function calcTestCommission(
     rules,
     isOutsourced,
     test?.name ?? null,
+    testAliasIndex ?? null,
   );
   const defType = doctor.defaultCommissionType || "percentage";
   const defVal = Number(doctor.defaultCommission ?? 0);

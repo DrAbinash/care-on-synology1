@@ -34,7 +34,7 @@ type SaDoctor = {
   defaultCommission: string | null;
   defaultCommissionType: string;
 };
-type SaTest = { id: number; name: string; category: string | null };
+type SaTest = { id: number; name: string; category: string | null; isActive?: boolean | null };
 
 const SA_DOCTORS_KEY = ["/api/super-admin/doctors-list"] as const;
 const SA_TESTS_KEY = ["/api/super-admin/tests-list"] as const;
@@ -109,7 +109,13 @@ function TestPicker({
               onChange={() => onChange(selected.filter((id) => id !== t.id).join(","))}
               className="rounded"
             />
-            <span className="font-semibold text-primary">{t.name}</span>
+            <span className="font-semibold text-primary">
+              {t.name}
+              <span className="ml-1 font-normal text-[10px] text-muted-foreground">#{t.id}</span>
+              {t.isActive === false && (
+                <span className="ml-1 text-[10px] uppercase text-amber-600">inactive</span>
+              )}
+            </span>
           </label>
         ))}
         {selectedTests.length > 0 && unselectedTests.length > 0 && (
@@ -122,7 +128,13 @@ function TestPicker({
               onChange={() => onChange([...selected, t.id].join(","))}
               className="rounded"
             />
-            {t.name}
+            <span>
+              {t.name}
+              <span className="ml-1 text-[10px] text-muted-foreground">#{t.id}</span>
+              {t.isActive === false && (
+                <span className="ml-1 text-[10px] uppercase text-amber-600">inactive</span>
+              )}
+            </span>
           </label>
         ))}
         {filtered.length === 0 && (

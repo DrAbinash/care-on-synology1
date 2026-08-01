@@ -327,16 +327,18 @@ superAdminRouter.get("/doctors-list", requireSuperAdmin, async (_req, res): Prom
 });
 
 // ── GET /api/super-admin/tests-list — thin read for SA portal pages ───────────
+// Include inactive rows: bills often still point at retired duplicates, and the
+// commission picker must be able to bind (or at least see) those ids.
 superAdminRouter.get("/tests-list", requireSuperAdmin, async (_req, res): Promise<void> => {
   const tests = await db
     .select({
       id: testsTable.id,
       name: testsTable.name,
       category: testsTable.category,
+      isActive: testsTable.isActive,
     })
     .from(testsTable)
-    .where(eq(testsTable.isActive, true))
-    .orderBy(asc(testsTable.name));
+    .orderBy(asc(testsTable.name), asc(testsTable.id));
   res.json({ tests });
 });
 

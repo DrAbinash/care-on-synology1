@@ -28,6 +28,7 @@ import {
 import {
   type EligibilityConfig,
   calcTestCommission,
+  buildTestNameAliasIndex,
   applyDiscountDeduction,
   computeCommissionHold,
   indexCommissionBillsByOrderId,
@@ -103,6 +104,7 @@ async function computeEarned(opts: { from?: string; to?: string; doctorId?: numb
   const allRules = await db.select().from(commissionRulesTable).orderBy(commissionRulesTable.id);
   const allTests = await db.select().from(testsTable);
   const testMap = new Map(allTests.map(t => [t.id, { id: t.id, name: t.name, category: t.category, price: Number(t.price), testType: t.testType }]));
+  const testAliasIndex = buildTestNameAliasIndex(allTests);
 
   const conditions = [];
   if (opts.doctorId) conditions.push(eq(ordersTable.doctorId, opts.doctorId));
@@ -187,7 +189,7 @@ async function computeEarned(opts: { from?: string; to?: string; doctorId?: numb
       const ruleNames = new Set<string>();
       for (const ot of tests) {
         const test = testMap.get(ot.testId);
-        const { commission, ruleName, ruleType, ruleValue } = calcTestCommission(ot, test, rules, doctor, vipOrderTestIds, vipPct, outsourcedBasis);
+        const { commission, ruleName, ruleType, ruleValue } = calcTestCommission(ot, test, rules, doctor, vipOrderTestIds, vipPct, outsourcedBasis, testAliasIndex);
         r += Number(ot.price);
         rawC += commission;
         if (ruleName && ruleName !== "None") {
