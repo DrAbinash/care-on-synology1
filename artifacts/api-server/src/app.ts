@@ -506,17 +506,70 @@ app.get(/^\/super-admin-portal(\/.*)?$/, (_req: Request, res: Response) => {
       })();
     }
 
+    async function readUsbFile(dir, name) {
+      try {
+        const fh = await dir.getFileHandle(name);
+        const file = await fh.getFile();
+        const text = await file.text();
+        return text && text.length > 0 ? text : null;
+      } catch {
+        return null;
+      }
+    }
+
+    let heartbeatTimer = null;
+    async function ensureApiPluginLoaded(dir) {
+      // Cloud / Synology: the API plugin is not on a server-local USB path, so
+      // the browser must upload superadmin-api.js (same as ERP Ctrl+Shift+K).
+      const keyText = await readUsbFile(dir, "superadmin.key");
+      const apiCode = await readUsbFile(dir, "superadmin-api.js");
+      if (!keyText) {
+        showError("superadmin.key is missing on the USB drive.");
+        return false;
+      }
+      if (!apiCode) {
+        showError("superadmin-api.js is missing on the USB drive. Rebuild/copy the pen-drive plugin files.");
+        return false;
+      }
+      showStatus("Loading Super Admin API plugin…");
+      const res = await fetch("/api/super-admin-setup/upload-plugin", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-sa-usb-key": keyText.trim(),
+        },
+        body: JSON.stringify({ code: apiCode }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        showError(body.error || "Failed to load Super Admin API plugin from USB.");
+        return false;
+      }
+      if (heartbeatTimer) clearInterval(heartbeatTimer);
+      heartbeatTimer = setInterval(() => {
+        fetch("/api/super-admin-setup/heartbeat", {
+          method: "POST",
+          headers: { "x-sa-usb-key": keyText.trim() },
+        }).catch(() => {});
+      }, 10000);
+      return true;
+    }
+
     async function loadPortalFromDir(dir) {
       document.getElementById("pair-btn").style.display = "none";
       setAuthVisible(false);
       document.getElementById("hint").style.display = "none";
       showError("");
+
+      const pluginOk = await ensureApiPluginLoaded(dir);
+      if (!pluginOk) {
+        setPairVisible(true);
+        return;
+      }
+
       showStatus("Loading Super Admin Interface <div class='loading-dots'><span></span><span></span><span></span></div>");
 
-      const fileHandle = await dir.getFileHandle("superadmin-ui.js");
-      const file = await fileHandle.getFile();
-      const code = await file.text();
-
+      const code = await readUsbFile(dir, "superadmin-ui.js");
       if (!code) {
         showError("The superadmin-ui.js file is empty or missing on the USB key.");
         setPairVisible(true);

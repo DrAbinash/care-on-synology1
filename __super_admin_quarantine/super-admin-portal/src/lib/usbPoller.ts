@@ -167,3 +167,26 @@ export async function tryReadPin(): Promise<string | null> {
     return null;
   }
 }
+
+/**
+ * Optional `superadmin.name` on the pen drive — preferred identity for
+ * usbPin auto-login (avoids guessing "Super Admin" / exact display names).
+ */
+export async function tryReadName(): Promise<string | null> {
+  if (!isFsAccessSupported()) return null;
+  let dir: FsDirectoryHandle | undefined;
+  try { dir = await idbGet<FsDirectoryHandle>(IDB_HANDLE_KEY); } catch { return null; }
+  if (!dir) return null;
+  try {
+    if (typeof dir.queryPermission === "function") {
+      const perm = await dir.queryPermission({ mode: "read" });
+      if (perm !== "granted") return null;
+    }
+    const fileHandle = await dir.getFileHandle("superadmin.name");
+    const file = await fileHandle.getFile();
+    const text = (await file.text()).trim();
+    return text.length > 0 ? text : null;
+  } catch {
+    return null;
+  }
+}

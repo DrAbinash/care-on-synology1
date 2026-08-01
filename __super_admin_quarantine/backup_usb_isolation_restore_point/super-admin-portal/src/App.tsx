@@ -277,16 +277,19 @@ function LoginScreen({
     await doLogin(data.name, autoUsbPin ?? undefined);
   };
 
-  // Auto-login: if usbPin is available from the pen drive, try common names
+  // Auto-login: usbPin + EXACT display name only (no username/email/id guesses).
   useEffect(() => {
     if (!autoUsbPin || autoLoginState !== "idle") return;
     setAutoLoginState("attempting");
     void (async () => {
-      const names = ["Super Admin", "Admin", "Owner", "Manager"];
-      for (const name of names) {
-        const ok = await doLogin(name, autoUsbPin);
-        if (ok) { setAutoLoginState("success"); return; }
-      }
+      let fromDrive = "";
+      try {
+        const { tryReadName } = await import("./lib/usbPoller");
+        fromDrive = (await tryReadName())?.trim() || "";
+      } catch { /* older poller without tryReadName */ }
+      const exactName = fromDrive || "Dr Abinash Kumar";
+      const ok = await doLogin(exactName, autoUsbPin);
+      if (ok) { setAutoLoginState("success"); return; }
       setAutoLoginState("failed");
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps

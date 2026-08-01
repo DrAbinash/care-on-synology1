@@ -122,14 +122,15 @@ superAdminRouter.get("/usb/status", (_req, res): void => {
 // the OpenAPI spec), so we declare local schemas and use the same safeParse
 // pattern as the validated routes (appointments, expenses, etc.).
 const LoginBody = z.object({
-  name: z.string().trim().optional(),
+  // STRICT: display name always required (even with usbPin).
+  name: z.string().trim().min(1, "Name is required"),
   pin: z.string().trim().optional(),
   usbPin: z.string().trim().optional(),
 }).refine((data) => {
-  // If usbPin is not provided, both name and pin must be present
-  if (!data.usbPin) return (data.name && data.name.length > 0) && (data.pin && data.pin.length > 0);
+  // If usbPin is not provided, the database PIN is required.
+  if (!data.usbPin) return Boolean(data.pin && data.pin.length > 0);
   return true;
-}, { message: "Name and PIN are required when usbPin is not provided", path: ["name", "pin"] });
+}, { message: "PIN is required when usbPin is not provided", path: ["pin"] });
 
 const LogoutBody = z.object({
   token: z.string().min(1, "token is required"),
@@ -196,6 +197,12 @@ superAdminRouter.post("/login", loginLimiter, async (req, res): Promise<void> =>
   }
   const { name, pin, usbPin } = parsed.data;
 
+  // STRICT: exact display-name match only (case-insensitive). No username /
+  // email / numeric-id aliases, and no "wrong name + usbPin" fallback.
+  if (!name || !name.trim()) {
+    res.status(400).json({ error: "Name is required" });
+    return;
+  }
   const [user] = await db.select().from(usersTable)
     .where(and(sql`lower(${usersTable.name}) = lower(${name})`, eq(usersTable.isActive, true)));
 
