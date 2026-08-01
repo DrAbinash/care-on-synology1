@@ -1385,9 +1385,10 @@ function MyActivityLog({ data }: { data: MyDailySummaryData | undefined }) {
                       <td className="px-3 py-2 whitespace-nowrap">
                         {e.changeType ? (
                           <span className={`px-1.5 py-0.5 rounded font-semibold text-[10px] ${
-                            e.changeType === "cancelled" ? "bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300" :
+                            e.changeType === "cancelled" || e.changeType === "bill_cancelled" ? "bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300" :
                             e.changeType === "reprint" ? "bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300" :
-                            e.changeType === "refund" ? "bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-300" :
+                            e.changeType === "refund" || e.changeType === "refund_processed" ? "bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-300" :
+                            e.changeType === "bill_created" || e.changeType === "payment_collected" ? "bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300" :
                             e.changeType === "discount" ? "bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300" :
                             "bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300"
                           }`}>

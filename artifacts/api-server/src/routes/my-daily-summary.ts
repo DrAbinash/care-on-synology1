@@ -626,7 +626,11 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
       digitalIn,
       cashRefunded,
       digitalRefunded,
-      /** Clinic net cash = cash collected − cash refunded (doctor primary figure). */
+      /**
+       * Net Cash Available (doctor primary figure) — PHYSICAL CASH ONLY.
+       * = completed cash collections − completed cash refunds.
+       * UPI / card / bank / online / insurance are excluded (see digitalIn / digitalRefunded).
+       */
       netClinicCash: cashIn - cashRefunded,
       netDigital,
       cashCollection,
