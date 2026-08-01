@@ -4,6 +4,7 @@ import {
   clearBillPrintSettingsOverride,
   loadBillPrintSettings,
   parseGlobalBillPrintSettings,
+  resolveBillPrintPageOpts,
   saveBillPrintSettings,
 } from "./billPrintSettings";
 
@@ -64,7 +65,7 @@ describe("loadBillPrintSettings — clinic-wide global reaches the print sites",
     // No window at all (worst case: nothing cached locally) — the admin's
     // A4 choice must still win over the built-in default that caused the
     // rotated prints.
-    expect(GLOBAL_BILL_PRINT_DEFAULTS.defaultPaperSize).toBe("A5-portrait");
+    expect(GLOBAL_BILL_PRINT_DEFAULTS.defaultPaperSize).toBe("A5-landscape");
     const merged = loadBillPrintSettings({ defaultPaperSize: "A4" });
     expect(merged.defaultPaperSize).toBe("A4");
   });
@@ -72,7 +73,7 @@ describe("loadBillPrintSettings — clinic-wide global reaches the print sites",
   test("without a server global, built-in defaults apply unchanged", () => {
     const merged = loadBillPrintSettings();
     expect(merged.defaultPaperSize).toBe(GLOBAL_BILL_PRINT_DEFAULTS.defaultPaperSize);
-    expect(merged.defaultFormat).toBe("classic");
+    expect(merged.defaultFormat).toBe("modern-landscape");
   });
 
   test("per-user local override wins over the global when adminLock is OFF", () => {
@@ -155,5 +156,35 @@ describe("loadBillPrintSettings — clinic-wide global reaches the print sites",
     // accounts role default — untouched by the global
     expect(merged.defaultPrintAction).toBe("save-preview");
     expect(merged.defaultPaperSize).toBe("A4");
+  });
+});
+
+describe("resolveBillPrintPageOpts — paper size reaches the print HTML", () => {
+  test("A5-landscape setting yields landscape @page and compact footer for short bills", () => {
+    const opts = resolveBillPrintPageOpts({ defaultPaperSize: "A5-landscape", autoA4Threshold: 5 }, 1);
+    expect(opts.paperSize).toBe("A5");
+    expect(opts.orientation).toBe("landscape");
+    expect(opts.pageCssSize).toBe("A5 landscape");
+    expect(opts.compactFooterGap).toBe(true);
+  });
+
+  test("A5-portrait setting is not dropped by auto-threshold logic", () => {
+    const opts = resolveBillPrintPageOpts({ defaultPaperSize: "A5-portrait", autoA4Threshold: 5 }, 1);
+    expect(opts.orientation).toBe("portrait");
+    expect(opts.pageCssSize).toBe("A5 portrait");
+  });
+
+  test("many tests auto-switch to A4 when clinic uses auto paper (no fixed A5 size)", () => {
+    const opts = resolveBillPrintPageOpts(
+      { defaultPaperSize: "A5-portrait", autoA4Threshold: 3 },
+      6,
+    );
+    // A5-portrait is a fixed manual size — stays A5 even with many tests.
+    expect(opts.paperSize).toBe("A5");
+    const autoOpts = resolveBillPrintPageOpts(
+      { defaultPaperSize: "A4", autoA4Threshold: 3 },
+      6,
+    );
+    expect(autoOpts.paperSize).toBe("A4");
   });
 });

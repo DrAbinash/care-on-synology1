@@ -34,6 +34,7 @@ import {
   loadBillPrintSettings,
   parseGlobalBillPrintSettings,
   printLayoutOpts,
+  resolveBillPrintPageOpts,
   type BillPrintSettings,
 } from "@/lib/billPrintSettings";
 
@@ -276,10 +277,17 @@ export default function BillDetail({ id }: { id: number }) {
     // Clinic-wide server settings as the base (same as the BillingDesk print
     // paths) so a reprint honors the admin-configured format/layout too.
     const settings = loadBillPrintSettings(parseGlobalBillPrintSettings(clinic?.billPrintSettingsJson));
+    const pageOpts = resolveBillPrintPageOpts(
+      settings,
+      (bill.order?.tests ?? []).filter((t) => (t.status ?? "active") !== "cancelled").length,
+    );
     return buildBillPrintHtml({
       bill: bill as PrintBillData,
       clinic: clinic as PrintClinic,
-      paperSize: effectivePaperSize,
+      paperSize: pageOpts.paperSize,
+      orientation: pageOpts.orientation,
+      pageCssSize: pageOpts.pageCssSize,
+      compactFooterGap: pageOpts.compactFooterGap,
       isBW,
       qrDataUrl: billQrDataUrl,
       reprintBy: opts.reprintBy,

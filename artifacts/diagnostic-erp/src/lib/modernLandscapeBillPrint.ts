@@ -60,7 +60,7 @@ function calcAge(dob?: string | null, ageValue?: number | null, ageUnit?: string
 }
 
 export function buildModernLandscapeBillPrintHtml(opts: BuildPrintHtmlOpts): string {
-  const { bill, clinic, paperSize, orientation = "landscape", isBW, qrDataUrl, reprintBy, reprintReason } = opts;
+  const { bill, clinic, paperSize, orientation = "landscape", isBW, qrDataUrl, reprintBy, reprintReason, pageCssSize } = opts;
   const copies    = Math.max(1, Math.min(2, Number(clinic?.billPrintCopies ?? 1) || 1));
   const showCode  = clinic?.billShowCode  !== false;
   const showCat   = clinic?.billShowCategory !== false;
@@ -303,7 +303,7 @@ export function buildModernLandscapeBillPrintHtml(opts: BuildPrintHtmlOpts): str
   return `<!doctype html><html><head><meta charset="utf-8"><title>Bill ${esc(bill.billNumber)}</title>
 <style>
   /* Physical page — landscape by default, respect the caller's request. */
-  @page { size: ${isA5 ? "A5" : "A4"} ${orientation}; margin: ${pageMargin}; }
+  @page { size: ${pageCssSize ?? `${isA5 ? "A5" : "A4"} ${orientation}`}; margin: ${pageMargin}; }
   *, *::before, *::after { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; height: 100%; }
   body {

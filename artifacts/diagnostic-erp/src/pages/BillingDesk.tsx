@@ -8,7 +8,6 @@ import { enqueueBill, QueuedForSyncError } from "@/lib/offlineBillingQueue";
 import { readStaffSession, isFeatureEnabled, isOwnerRole } from "@/lib/staffSession";
 import { genUUID } from "@/lib/utils";
 import { getBillPaperSize } from "@/lib/billPrintLayout";
-import { getAutoBillPaperSize } from "@/lib/billPrintSettings";
 import {
   buildBillPrintHtml,
   printViaIframe,
@@ -19,6 +18,7 @@ import {
   loadBillPrintSettings,
   parseGlobalBillPrintSettings,
   printLayoutOpts,
+  resolveBillPrintPageOpts,
   type BillPrintSettings,
 } from "@/lib/billPrintSettings";
 import { useLocation } from "wouter";
@@ -948,15 +948,14 @@ export default function BillingDesk() {
                   // instead of always forcing A5 portrait — the auto
                   // A4-switch by test count still applies unless the user
                   // explicitly forced A4/half-A4.
-                  const forcedPaperSize = settings.defaultPaperSize === "A4" || settings.defaultPaperSize === "half-a4" ? settings.defaultPaperSize : undefined;
-                  const effectivePaperSize = getAutoBillPaperSize(updatedBill.order?.tests?.length || 1, forcedPaperSize, settings.autoA4Threshold ?? 5);
-                  const paperSize = (effectivePaperSize === "A4" ? "A4" : "A5") as "A4" | "A5";
-                  const orientation = paperSize === "A5" && settings.defaultPaperSize === "A5-landscape" ? "landscape" : "portrait";
+                  const pageOpts = resolveBillPrintPageOpts(settings, updatedBill.order?.tests?.length || 1);
                   const html = buildBillPrintHtml({
                     bill: billForPrint,
                     clinic: cachedClinic,
-                    paperSize,
-                    orientation,
+                    paperSize: pageOpts.paperSize,
+                    orientation: pageOpts.orientation,
+                    pageCssSize: pageOpts.pageCssSize,
+                    compactFooterGap: pageOpts.compactFooterGap,
                     isBW,
                     qrDataUrl: qrUrl as string,
                     format: settings.defaultFormat,
@@ -1468,15 +1467,14 @@ export default function BillingDesk() {
               tokenNo: lastBillLocal.tokenNo ?? null,
               testTokens: lastBillLocal.testTokens ?? null,
             };
-            const forcedPaperSize = settings.defaultPaperSize === "A4" || settings.defaultPaperSize === "half-a4" ? settings.defaultPaperSize : undefined;
-            const effectivePaperSize = getAutoBillPaperSize(lastBillLocal.tests.length, forcedPaperSize, settings.autoA4Threshold ?? 5);
-            const paperSize = (effectivePaperSize === "A4" ? "A4" : "A5") as "A4" | "A5";
-            const orientation = paperSize === "A5" && settings.defaultPaperSize === "A5-landscape" ? "landscape" : "portrait";
+            const pageOpts = resolveBillPrintPageOpts(settings, lastBillLocal.tests.length);
             const html = buildBillPrintHtml({
               bill: billForPrint,
               clinic: clinicForPrint,
-              paperSize,
-              orientation,
+              paperSize: pageOpts.paperSize,
+              orientation: pageOpts.orientation,
+              pageCssSize: pageOpts.pageCssSize,
+              compactFooterGap: pageOpts.compactFooterGap,
               isBW,
               qrDataUrl: qrUrl as string,
               format: settings.defaultFormat,

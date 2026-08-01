@@ -125,14 +125,14 @@ export type BillPrintSettings = {
 };
 
 export const GLOBAL_BILL_PRINT_DEFAULTS: BillPrintSettings = {
-  defaultFormat: "classic",
+  defaultFormat: "modern-landscape",
   classicEnabled: true,
   premiumA5Enabled: true,
   designerAEnabled: true,
   designerBEnabled: true,
   designerCEnabled: true,
   autoA4Threshold: 5,
-  defaultPaperSize: "A5-portrait",
+  defaultPaperSize: "A5-landscape",
   defaultCopyType: "patient",
   showQrCode: true,
   showAmountInWords: false,
@@ -372,6 +372,55 @@ export function getPaperSizeCss(size: BillPaperSize): { pageSize: string; width:
     default:
       return { pageSize: "A4 portrait", width: "210mm", minHeight: "277mm", maxHeight: "none" };
   }
+}
+
+/** Resolved @page + body options shared by Billing Desk, Bill Detail, Settings preview. */
+export type BillPrintPageOpts = {
+  paperSize: "A4" | "A5";
+  orientation: "portrait" | "landscape";
+  /** Short A5 bills: avoid flex spacer that leaves a huge blank middle. */
+  compactFooterGap: boolean;
+  /** Exact CSS size for @page (half-a4, A5 landscape, etc.). */
+  pageCssSize: string;
+};
+
+/**
+ * Map clinic Billing Print settings + test count → paper/orientation the HTML
+ * renderer should declare. Always honours defaultPaperSize (including
+ * A5-landscape) — older call sites only passed A4/half-a4 as "forced", which
+ * made landscape trays print portrait jobs and the driver scaled/rotated them.
+ */
+export function resolveBillPrintPageOpts(
+  settings: Pick<BillPrintSettings, "defaultPaperSize" | "autoA4Threshold">,
+  testCount: number,
+): BillPrintPageOpts {
+  const effective = getAutoBillPaperSize(
+    testCount,
+    settings.defaultPaperSize,
+    settings.autoA4Threshold ?? 5,
+  );
+  if (effective === "A4") {
+    return {
+      paperSize: "A4",
+      orientation: "portrait",
+      compactFooterGap: false,
+      pageCssSize: "A4 portrait",
+    };
+  }
+  const orientation: "portrait" | "landscape" =
+    effective === "A5-landscape" ? "landscape" : "portrait";
+  const pageCssSize =
+    effective === "half-a4"
+      ? "148mm 210mm"
+      : effective === "A5-landscape"
+        ? "A5 landscape"
+        : "A5 portrait";
+  return {
+    paperSize: "A5",
+    orientation,
+    compactFooterGap: testCount <= 4,
+    pageCssSize,
+  };
 }
 
 // ── Adaptive density class based on test count ──
