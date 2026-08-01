@@ -131,4 +131,25 @@ describe("superAdminHostAuth strict identity", () => {
     await handler({ body: { name: "7", usbPin: "9988" }, header: () => "usb-key" }, res);
     expect(res.statusCode).toBe(401);
   });
+
+  it("treats PIN box value matching SUPER_ADMIN_USB_PIN as usbPin auto-login", async () => {
+    const user = {
+      id: 1,
+      name: "Dr Abinash Kumar",
+      username: "abinash",
+      email: "abinashsingh@gmail.com",
+      role: "super_admin",
+      isActive: true,
+      pin: "$2a$12$notusedbecauseautologin",
+      remoteLoginEnabled: false,
+    };
+    mockSelectChain.limit.mockResolvedValueOnce([user]);
+
+    const handler = await getLoginHandler();
+    const res = mockRes();
+    // UI often sends pen-drive PIN (2321/9988) in `pin`, not `usbPin`
+    await handler({ body: { name: "Dr Abinash Kumar", pin: "9988" }, header: () => "usb-key" }, res);
+    expect(res.statusCode).toBe(200);
+    expect((res.body as { userName: string }).userName).toBe("Dr Abinash Kumar");
+  });
 });
