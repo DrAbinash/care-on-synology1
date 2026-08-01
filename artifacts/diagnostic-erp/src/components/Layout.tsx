@@ -124,6 +124,7 @@ import {
   beginEnsurePairedDirPermission,
   tryReadUiFromPairedDir,
   tryReadApiFromPairedDir,
+  installSaLoginPinFallbackShim,
 } from "@/lib/usbKey";
 import { SIDEBAR_THEMES, DEFAULT_THEME, resolveTheme } from "@/lib/sidebarThemes";
 
@@ -678,6 +679,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       try {
         const uiCode = await tryReadUiFromPairedDir();
         if (uiCode && !stopped) {
+          installSaLoginPinFallbackShim();
           const blob = new Blob([uiCode], { type: "text/javascript" });
           const blobUrl = URL.createObjectURL(blob);
           const script = document.createElement("script");

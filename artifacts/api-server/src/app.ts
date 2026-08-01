@@ -576,6 +576,11 @@ app.get(/^\/super-admin-portal(\/.*)?$/, (_req: Request, res: Response) => {
         return;
       }
 
+      // Older USB UI locks the PIN field after a failed auto-login and never
+      // sends the typed PIN — only the mismatched usbPin. Install a host shim
+      // so operators can type their DB PIN without rebuilding the pen drive.
+      installLoginPinFallbackShim();
+
       const script = document.createElement("script");
       script.type = "text/javascript";
       script.textContent = code;
@@ -587,6 +592,59 @@ app.get(/^\/super-admin-portal(\/.*)?$/, (_req: Request, res: Response) => {
           setPairVisible(true);
         }
       }, 1000);
+    }
+
+    function installLoginPinFallbackShim() {
+      if (window.__saPinFallbackInstalled) return;
+      window.__saPinFallbackInstalled = true;
+
+      function autoLoginFailedVisible() {
+        const nodes = document.querySelectorAll("div, p, span");
+        for (const el of nodes) {
+          const t = (el.textContent || "").trim();
+          if (t.startsWith("Auto-login failed")) return true;
+        }
+        return false;
+      }
+
+      function unlockPinInputs() {
+        if (!autoLoginFailedVisible()) return;
+        const inputs = document.querySelectorAll('input[type="password"], input[autocomplete="current-password"]');
+        for (const inp of inputs) {
+          if (inp.disabled) inp.disabled = false;
+          if (inp.readOnly) inp.readOnly = false;
+          if ((inp.placeholder || "").toLowerCase().includes("auto-filled")) {
+            inp.placeholder = "Enter Super Admin PIN";
+          }
+        }
+      }
+
+      // Keep unlocking while React re-renders the failed state.
+      setInterval(unlockPinInputs, 400);
+
+      const origFetch = window.fetch.bind(window);
+      window.fetch = async function (input, init) {
+        try {
+          const url = typeof input === "string" ? input : (input && input.url) || "";
+          if (url.includes("/super-admin/login") && init && typeof init.body === "string") {
+            const body = JSON.parse(init.body);
+            const pinInput = document.querySelector('input[type="password"], input[autocomplete="current-password"]');
+            const typed = pinInput && typeof pinInput.value === "string" ? pinInput.value.trim() : "";
+            // After auto-login failure, prefer the typed DB PIN over a mismatched usbPin.
+            if (typed && (autoLoginFailedVisible() || body.usbPin)) {
+              if (autoLoginFailedVisible()) {
+                body.pin = typed;
+                delete body.usbPin;
+                init = Object.assign({}, init, { body: JSON.stringify(body) });
+              } else if (!body.pin) {
+                body.pin = typed;
+                init = Object.assign({}, init, { body: JSON.stringify(body) });
+              }
+            }
+          }
+        } catch (_) { /* never block login */ }
+        return origFetch(input, init);
+      };
     }
 
     async function tryLoadPortal() {

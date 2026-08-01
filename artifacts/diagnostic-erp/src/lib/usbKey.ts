@@ -298,6 +298,73 @@ export async function ensurePairedDirPermission(): Promise<boolean> {
   return beginEnsurePairedDirPermission();
 }
 
+/**
+ * Older USB `superadmin-ui.js` locks the PIN field after failed auto-login and
+ * never posts the typed PIN. Install once per tab so ERP-embedded portal login
+ * still allows typing the DB PIN (no pen-drive rebuild required).
+ */
+export function installSaLoginPinFallbackShim(): void {
+  if (typeof window === "undefined") return;
+  const w = window as Window & { __saPinFallbackInstalled?: boolean };
+  if (w.__saPinFallbackInstalled) return;
+  w.__saPinFallbackInstalled = true;
+
+  const autoLoginFailedVisible = (): boolean => {
+    const nodes = document.querySelectorAll("div, p, span");
+    for (const el of nodes) {
+      const t = (el.textContent || "").trim();
+      if (t.startsWith("Auto-login failed")) return true;
+    }
+    return false;
+  };
+
+  const unlockPinInputs = (): void => {
+    if (!autoLoginFailedVisible()) return;
+    const inputs = document.querySelectorAll<HTMLInputElement>(
+      'input[type="password"], input[autocomplete="current-password"]',
+    );
+    for (const inp of inputs) {
+      if (inp.disabled) inp.disabled = false;
+      if (inp.readOnly) inp.readOnly = false;
+      if ((inp.placeholder || "").toLowerCase().includes("auto-filled")) {
+        inp.placeholder = "Enter Super Admin PIN";
+      }
+    }
+  };
+
+  window.setInterval(unlockPinInputs, 400);
+
+  const origFetch = window.fetch.bind(window);
+  window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    try {
+      const url = typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.href
+          : input.url;
+      if (url.includes("/super-admin/login") && init && typeof init.body === "string") {
+        const body = JSON.parse(init.body) as Record<string, string>;
+        const pinInput = document.querySelector<HTMLInputElement>(
+          'input[type="password"], input[autocomplete="current-password"]',
+        );
+        const typed = pinInput?.value?.trim() || "";
+        if (typed && autoLoginFailedVisible()) {
+          body.pin = typed;
+          delete body.usbPin;
+          init = { ...init, body: JSON.stringify(body) };
+        } else if (typed && !body.pin && body.usbPin) {
+          // Keep usbPin for true auto-login; only add pin if user typed one.
+          body.pin = typed;
+          init = { ...init, body: JSON.stringify(body) };
+        }
+      }
+    } catch {
+      /* never block login */
+    }
+    return origFetch(input, init);
+  };
+}
+
 export async function tryReadUiFromPairedDir(): Promise<string | null> {
   if (!isFsAccessSupported()) return null;
   let dir: FsDirectoryHandle | undefined;
