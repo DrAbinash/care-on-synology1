@@ -520,25 +520,41 @@ superAdminRouter.post("/books/:id/assign-doctors", requireSuperAdmin, async (req
   }
   const id = paramsParsed.data.id;
   const { doctorIds } = bodyParsed.data;
-  const [ledger] = await db.select().from(ledgersTable).where(eq(ledgersTable.id, id));
-  if (!ledger) {
-    res.status(404).json({ error: "Book not found" });
-    return;
+  try {
+    const [ledger] = await db.select().from(ledgersTable).where(eq(ledgersTable.id, id));
+    if (!ledger) {
+      res.status(404).json({ error: "Book not found" });
+      return;
+    }
+    await db.update(doctorsTable)
+      .set({ ledgerId: 1 })
+      .where(and(
+        eq(doctorsTable.ledgerId, id),
+        doctorIds.length > 0
+          ? sql`${doctorsTable.id} NOT IN (${sql.join(doctorIds.map((d: number) => sql`${d}`), sql`, `)})`
+          : sql`true`,
+      ));
+    if (doctorIds.length > 0) {
+      await db.update(doctorsTable).set({ ledgerId: id }).where(inArray(doctorsTable.id, doctorIds));
+      // Retroactively tag existing orders, bills, patients and appointments so
+      // the Books/Ledgers page counts match the newly-assigned doctor grouping.
+      // NOTE: `orders` has no appointment_id column — appointments are linked by
+      // doctor_id (and historically patient_id via orders). Updating by
+      // orders.appointment_id caused "Internal server error" on Save.
+      const idList = sql.join(doctorIds.map((d: number) => sql`${d}`), sql`, `);
+      await db.execute(sql`UPDATE orders SET ledger_id = ${id} WHERE doctor_id IN (${idList})`);
+      await db.execute(sql`UPDATE bills SET ledger_id = ${id} WHERE order_id IN (SELECT id FROM orders WHERE doctor_id IN (${idList}))`);
+      await db.execute(sql`UPDATE patients SET ledger_id = ${id} WHERE id IN (SELECT patient_id FROM orders WHERE doctor_id IN (${idList}))`);
+      await db.execute(sql`UPDATE appointments SET ledger_id = ${id} WHERE doctor_id IN (${idList})`);
+    }
+    res.json({ assigned: doctorIds.length });
+  } catch (err) {
+    logger.error({ err, bookId: id, doctorCount: doctorIds.length }, "assign-doctors failed");
+    res.status(500).json({
+      error: "Failed to assign doctors to book",
+      detail: err instanceof Error ? err.message : String(err),
+    });
   }
-  await db.update(doctorsTable)
-    .set({ ledgerId: 1 })
-    .where(and(eq(doctorsTable.ledgerId, id), doctorIds.length > 0 ? sql`${doctorsTable.id} NOT IN (${sql.join(doctorIds.map((d: number) => sql`${d}`), sql`, `)})` : sql`true`));
-  if (doctorIds.length > 0) {
-    await db.update(doctorsTable).set({ ledgerId: id }).where(inArray(doctorsTable.id, doctorIds));
-    // Retroactively tag existing orders, bills and patients so the
-    // Books/Ledgers page counts match the newly-assigned doctor grouping.
-    const idList = sql.join(doctorIds.map((d: number) => sql`${d}`), sql`, `);
-    await db.execute(sql`UPDATE orders SET ledger_id = ${id} WHERE doctor_id IN (${idList})`);
-    await db.execute(sql`UPDATE bills SET ledger_id = ${id} WHERE order_id IN (SELECT id FROM orders WHERE doctor_id IN (${idList}))`);
-    await db.execute(sql`UPDATE patients SET ledger_id = ${id} WHERE id IN (SELECT patient_id FROM orders WHERE doctor_id IN (${idList}))`);
-    await db.execute(sql`UPDATE appointments SET ledger_id = ${id} WHERE id IN (SELECT appointment_id FROM orders WHERE doctor_id IN (${idList}) AND appointment_id IS NOT NULL)`);
-  }
-  res.json({ assigned: doctorIds.length });
 });
 
 // ── POST /api/super-admin/books/:id/set-walk-in — mark as walk-in destination ─

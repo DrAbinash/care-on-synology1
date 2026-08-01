@@ -1,6 +1,8 @@
 /**
  * Partial-word doctor search — "abi" matches "DR.ABINASH KUMAR",
  * "ms jha" matches "ABHAY SINGH MS JHAJHA".
+ * Each whitespace-separated query token must appear somewhere in the
+ * haystack (name, specialization, or numeric id).
  */
 export function doctorMatchesQuery(
   doctor: { id: number; name: string; specialization?: string | null },
@@ -23,13 +25,4 @@ export function doctorMatchesQuery(
     .toLowerCase();
 
   return tokens.every((token) => haystack.includes(token));
-}
-
-/** Normalize labels for commission rule ↔ test name fallback matching. */
-export function normalizeLabel(s: string): string {
-  return s
-    .toUpperCase()
-    .replace(/[^A-Z0-9]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
 }

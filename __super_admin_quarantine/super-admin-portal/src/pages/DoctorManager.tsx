@@ -1,13 +1,14 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import {
-  ArrowLeft, Stethoscope, AlertTriangle, Trash2, Loader2, BookOpen,
+  ArrowLeft, Stethoscope, AlertTriangle, Trash2, Loader2, BookOpen, Search,
 } from "lucide-react";
 import { saAuthHeaders } from "@/lib/saApi";
+import { doctorMatchesQuery } from "@/lib/doctorSearch";
 
 type SaDoctor = {
   id: number;
@@ -29,6 +30,7 @@ export default function DoctorManager({ onBack }: { onBack: () => void }) {
 
   const [purgeTarget, setPurgeTarget] = useState<SaDoctor | null>(null);
   const [purgeConfirm, setPurgeConfirm] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
 
   const { data: doctorsData, isLoading: doctorsLoading } = useQuery({
     queryKey: SA_DOCTORS_KEY,
@@ -51,6 +53,10 @@ export default function DoctorManager({ onBack }: { onBack: () => void }) {
   const doctors = doctorsData?.doctors ?? [];
   const books = Array.isArray(booksData) ? booksData : [];
   const bookMap = new Map(books.map((b) => [b.id, b.name]));
+  const filteredDoctors = useMemo(
+    () => doctors.filter((d) => doctorMatchesQuery(d, searchQuery)),
+    [doctors, searchQuery],
+  );
 
   const purgeMutation = useMutation({
     mutationFn: async ({ doctorId, confirmPhrase }: { doctorId: number; confirmPhrase: string }) => {
@@ -116,6 +122,23 @@ export default function DoctorManager({ onBack }: { onBack: () => void }) {
           </div>
         </div>
 
+        {/* Partial-word search — "abi" matches "ABINASH" */}
+        <div className="relative mb-4">
+          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
+          <Input
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search doctors by name, specialty, or ID… (e.g. abi)"
+            className="pl-9"
+            aria-label="Search doctors"
+          />
+          {searchQuery.trim() && (
+            <p className="mt-1.5 text-[11px] text-muted-foreground">
+              Showing {filteredDoctors.length} of {doctors.length}
+            </p>
+          )}
+        </div>
+
         {/* Doctors list */}
         {doctorsLoading ? (
           <div className="flex items-center justify-center py-12 text-muted-foreground">
@@ -125,9 +148,13 @@ export default function DoctorManager({ onBack }: { onBack: () => void }) {
           <div className="text-center py-12 text-muted-foreground text-sm">
             No doctors found.
           </div>
+        ) : filteredDoctors.length === 0 ? (
+          <div className="text-center py-12 text-muted-foreground text-sm">
+            No doctors match &ldquo;{searchQuery.trim()}&rdquo;.
+          </div>
         ) : (
           <div className="space-y-3">
-            {doctors.map((d) => (
+            {filteredDoctors.map((d) => (
               <div
                 key={d.id}
                 className="bg-card border border-border rounded-xl p-4 flex items-center justify-between gap-4"
