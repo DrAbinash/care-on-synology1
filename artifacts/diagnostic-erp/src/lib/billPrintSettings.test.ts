@@ -1,6 +1,7 @@
 import { describe, expect, test, afterEach, vi } from "vitest";
 import {
   GLOBAL_BILL_PRINT_DEFAULTS,
+  applyManualBillPaperOverride,
   clearBillPrintSettingsOverride,
   loadBillPrintSettings,
   parseGlobalBillPrintSettings,
@@ -186,5 +187,27 @@ describe("resolveBillPrintPageOpts — paper size reaches the print HTML", () =>
       6,
     );
     expect(autoOpts.paperSize).toBe("A4");
+  });
+});
+
+describe("applyManualBillPaperOverride — Bill Detail reprint paper toggle", () => {
+  test("manual A4 forces A4 regardless of clinic A5-landscape", () => {
+    const merged = applyManualBillPaperOverride({ defaultPaperSize: "A5-landscape" }, "A4");
+    expect(merged.defaultPaperSize).toBe("A4");
+    const opts = resolveBillPrintPageOpts({ ...merged, autoA4Threshold: 5 }, 1);
+    expect(opts.pageCssSize).toBe("A4 portrait");
+  });
+
+  test("manual A5 keeps clinic landscape orientation", () => {
+    const merged = applyManualBillPaperOverride({ defaultPaperSize: "A5-landscape" }, "A5");
+    expect(merged.defaultPaperSize).toBe("A5-landscape");
+    const opts = resolveBillPrintPageOpts({ ...merged, autoA4Threshold: 5 }, 1);
+    expect(opts.pageCssSize).toBe("A5 landscape");
+    expect(opts.compactFooterGap).toBe(true);
+  });
+
+  test("null manual paper leaves clinic setting unchanged", () => {
+    expect(applyManualBillPaperOverride({ defaultPaperSize: "A5-landscape" }, null))
+      .toEqual({ defaultPaperSize: "A5-landscape" });
   });
 });

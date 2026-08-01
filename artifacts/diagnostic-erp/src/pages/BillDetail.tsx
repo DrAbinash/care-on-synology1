@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import QRCode from "qrcode";
 import { Link, useLocation } from "wouter";
 import { useGetBill, useCreatePayment, getGetBillQueryKey, getListBillsQueryKey, useListTests } from "@workspace/api-client-react";
@@ -34,6 +34,7 @@ import {
   loadBillPrintSettings,
   parseGlobalBillPrintSettings,
   printLayoutOpts,
+  applyManualBillPaperOverride,
   resolveBillPrintPageOpts,
   type BillPrintSettings,
 } from "@/lib/billPrintSettings";
@@ -277,10 +278,12 @@ export default function BillDetail({ id }: { id: number }) {
     // Clinic-wide server settings as the base (same as the BillingDesk print
     // paths) so a reprint honors the admin-configured format/layout too.
     const settings = loadBillPrintSettings(parseGlobalBillPrintSettings(clinic?.billPrintSettingsJson));
-    const pageOpts = resolveBillPrintPageOpts(
-      settings,
-      (bill.order?.tests ?? []).filter((t) => (t.status ?? "active") !== "cancelled").length,
-    );
+    const testCount = (bill.order?.tests ?? []).filter((t) => (t.status ?? "active") !== "cancelled").length;
+    const settingsForPrint = {
+      ...settings,
+      ...applyManualBillPaperOverride(settings, paperMode === "manual" ? paperSize : null),
+    };
+    const pageOpts = resolveBillPrintPageOpts(settingsForPrint, testCount);
     return buildBillPrintHtml({
       bill: bill as PrintBillData,
       clinic: clinic as PrintClinic,
@@ -292,7 +295,7 @@ export default function BillDetail({ id }: { id: number }) {
       qrDataUrl: billQrDataUrl,
       reprintBy: opts.reprintBy,
       reprintReason: opts.reprintReason,
-      format: settings.defaultFormat,
+      format: settingsForPrint.defaultFormat,
       showQr: settings.showQrCode,
       showAmountInWords: settings.showAmountInWords,
       showSignatureLine: settings.showSignatureLine,
@@ -305,9 +308,21 @@ export default function BillDetail({ id }: { id: number }) {
       showPatientInstructions: settings.showPatientInstructions,
       showSystemInfo: settings.showSystemInfo,
       showQueueToken: settings.showQueueTokenOnBill,
-      ...printLayoutOpts(settings),
+      ...printLayoutOpts(settingsForPrint),
     });
   };
+
+  const resolvedReprintPaper = useMemo(() => {
+    if (!bill) return "";
+    const settings = loadBillPrintSettings(parseGlobalBillPrintSettings(clinic?.billPrintSettingsJson));
+    const testCount = (bill.order?.tests ?? []).filter((t) => (t.status ?? "active") !== "cancelled").length;
+    const settingsForPrint = {
+      ...settings,
+      ...applyManualBillPaperOverride(settings, paperMode === "manual" ? paperSize : null),
+    };
+    const pageOpts = resolveBillPrintPageOpts(settingsForPrint, testCount);
+    return pageOpts.pageCssSize;
+  }, [bill, clinic?.billPrintSettingsJson, paperMode, paperSize]);
 
   // Re-print: open the popup SYNCHRONOUSLY in the click handler so the
   // browser doesn't strip user-activation by the time the reprint-log POST
@@ -353,7 +368,7 @@ export default function BillDetail({ id }: { id: number }) {
     }, 300);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bill, clinic, billQrDataUrl, effectivePaperSize, isBW]);
+  }, [bill, clinic, billQrDataUrl, paperMode, paperSize, isBW]);
 
   const { data: audits = [], refetch: refetchAudits } = useQuery<BillAudit[]>({
     queryKey: ["bill-audits", id],
@@ -1038,7 +1053,8 @@ export default function BillDetail({ id }: { id: number }) {
               </p>
             </div>
             <div className="text-xs text-muted-foreground">
-            Paper size: <strong>{paperMode === "manual" ? paperSize : `AUTO (${effectivePaperSize})`}</strong> · Change above the Re-print button.
+            Paper: <strong>{resolvedReprintPaper || (paperMode === "manual" ? paperSize : `AUTO (${effectivePaperSize})`)}</strong>
+            {paperMode === "manual" ? " (manual)" : " (clinic setting)"} · Change above the Re-print button.
             </div>
             <div className="flex justify-end gap-2 pt-2">
               <Button type="button" variant="outline" onClick={() => setReprintOpen(false)}>Cancel</Button>
