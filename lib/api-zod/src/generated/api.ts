@@ -3120,7 +3120,10 @@ export const ListCommissionRulesQueryParams = zod.object({
 
 export const ListCommissionRulesResponseItem = zod.object({
   id: zod.number(),
-  doctorId: zod.number(),
+  doctorId: zod
+    .number()
+    .nullable()
+    .describe("null = clinic-wide slab that applies to every referring doctor"),
   name: zod.string(),
   type: zod.enum(["percentage", "fixed"]),
   value: zod.number(),
@@ -3170,7 +3173,10 @@ export const UpdateCommissionRuleBody = zod.object({
 
 export const UpdateCommissionRuleResponse = zod.object({
   id: zod.number(),
-  doctorId: zod.number(),
+  doctorId: zod
+    .number()
+    .nullable()
+    .describe("null = clinic-wide slab that applies to every referring doctor"),
   name: zod.string(),
   type: zod.enum(["percentage", "fixed"]),
   value: zod.number(),

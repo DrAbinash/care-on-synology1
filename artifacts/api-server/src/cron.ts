@@ -33,6 +33,7 @@ import {
   isCommissionBillEligible,
   NEEDS_REPORT_STATUS,
   buildTestNameAliasIndex,
+  rulesForDoctor,
 } from "./lib/commissionCalc";
 
 let currentTask: ReturnType<typeof cron.schedule> | null = null;
@@ -1094,8 +1095,6 @@ async function fireCommissionReconcile(): Promise<{ transitions: number }> {
   const testMap = new Map(tests.map(t => [t.id, { category: t.category, testType: t.testType, name: t.name }]));
   const testAliasIndex = buildTestNameAliasIndex(tests);
   const doctorMap = new Map(doctors.map(d => [d.id, d]));
-  const rulesByDoctor = new Map<number, (typeof commissionRulesTable.$inferSelect)[]>();
-  for (const r of rules) { const a = rulesByDoctor.get(r.doctorId) ?? []; a.push(r); rulesByDoctor.set(r.doctorId, a); }
   const billByOrderRaw = indexCommissionBillsByOrderId(bills);
   const billByOrder = new Map<number, { status: string | null; paid: string; balance: string; discount: number }>();
   for (const [oid, b] of billByOrderRaw) {
@@ -1140,7 +1139,7 @@ async function fireCommissionReconcile(): Promise<{ transitions: number }> {
     // Unbilled / cancelled-bill-only orders never enter commission — same rule
     // as Referral Report and Doctor Ledger (no status events for them either).
     if (!isCommissionBillEligible(bill)) continue;
-    const dRules = rulesByDoctor.get(order.doctorId) ?? [];
+    const dRules = rulesForDoctor(rules, order.doctorId);
     let raw = 0;
     for (const ot of ots) {
       raw += calcTestCommission(ot, testMap.get(ot.testId), dRules, doctor, vipIds, vipPct, outsourcedBasis, testAliasIndex).commission;

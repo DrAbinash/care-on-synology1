@@ -33,6 +33,7 @@ import {
   indexCommissionBillsByOrderId,
   NEEDS_REPORT_STATUS,
   buildTestNameAliasIndex,
+  rulesForDoctor,
 } from "../lib/commissionCalc";
 import { auditFromRequest } from "../lib/audit";
 
@@ -93,10 +94,8 @@ router.post("/rules", async (req, res) => {
     return;
   }
   const { doctorId, name, type, value, scope, categories, testIds, isExclusive } = parsed.data;
-  if (doctorId == null) {
-    res.status(400).json({ error: "doctorId is required" });
-    return;
-  }
+  // doctorId null/undefined = clinic-wide slab (applies to every referring doctor).
+  const resolvedDoctorId = doctorId ?? null;
   if (scope === "test" && (!testIds || testIds.length === 0)) {
     res.status(400).json({
       error: "Test-scoped rules must bind at least one catalogue test. Pick tests in the picker — a rule name alone (e.g. \"MRI BRAIN\") does not pay commission.",
@@ -117,7 +116,7 @@ router.post("/rules", async (req, res) => {
   const [rule] = await db
     .insert(commissionRulesTable)
     .values({
-      doctorId,
+      doctorId: resolvedDoctorId,
       name,
       type,
       value: value.toString(),
@@ -133,8 +132,10 @@ router.post("/rules", async (req, res) => {
     module: "commission",
     entityType: "commission_rule",
     entityId: String(rule.id),
-    newValue: JSON.stringify({ doctorId, name, type, value, scope, appliesTo: rule.appliesTo, isExclusive: rule.isExclusive }),
-    reason: `Commission slab created: ${name} = ${type === "percentage" ? `${value}%` : `Rs.${value}`}`,
+    newValue: JSON.stringify({ doctorId: resolvedDoctorId, name, type, value, scope, appliesTo: rule.appliesTo, isExclusive: rule.isExclusive }),
+    reason: resolvedDoctorId == null
+      ? `Global commission slab created: ${name} = ${type === "percentage" ? `${value}%` : `Rs.${value}`}`
+      : `Commission slab created: ${name} = ${type === "percentage" ? `${value}%` : `Rs.${value}`}`,
   });
   res.status(201).json({ ...rule, value: Number(rule.value) });
 });
@@ -163,7 +164,8 @@ router.patch("/rules/:id", async (req, res) => {
   if (data.scope !== undefined) updates.scope = data.scope;
   if (data.categories !== undefined) updates.categories = data.categories ? JSON.stringify(data.categories) : null;
   if (data.testIds !== undefined) updates.testIds = data.testIds ? JSON.stringify(data.testIds) : null;
-  if (data.doctorId != null) updates.doctorId = data.doctorId;
+  // Explicit null clears doctorId → promote to global; number scopes to one doctor.
+  if (data.doctorId !== undefined) updates.doctorId = data.doctorId ?? null;
   if (data.isExclusive !== undefined) updates.isExclusive = data.isExclusive;
   // isActive / appliesTo are not part of the OpenAPI body schema; accept them
   // directly when provided
@@ -324,7 +326,12 @@ router.get("/rules/export", async (req, res) => {
   const rules = await db.select().from(commissionRulesTable).orderBy(desc(commissionRulesTable.createdAt));
 
   const rulesByDoctor = new Map<number, RuleInfo[]>();
+  const globalRules: RuleInfo[] = [];
   for (const r of rules) {
+    if (r.doctorId == null) {
+      globalRules.push(r);
+      continue;
+    }
     if (!rulesByDoctor.has(r.doctorId)) rulesByDoctor.set(r.doctorId, []);
     rulesByDoctor.get(r.doctorId)!.push(r);
   }
@@ -339,6 +346,19 @@ router.get("/rules/export", async (req, res) => {
   ].join(",");
 
   const lines = [CSV_HEADER.join(",")];
+
+  // Clinic-wide slabs first (doctorName = ALL DOCTORS).
+  if (wantDoctorId == null) {
+    for (const r of globalRules) {
+      lines.push(line(
+        "ALL DOCTORS", r.name, r.type, Number(r.value), r.scope,
+        safeParseArray<string>(r.categories).join(";"),
+        parseTestIdList(r.testIds).join(";"),
+        r.appliesTo ?? "all", r.isExclusive, r.isActive,
+      ));
+    }
+  }
+
   const doctorList = doctors
     .filter(d => wantDoctorId == null || d.id === wantDoctorId)
     .sort((a, b) => a.name.localeCompare(b.name));
@@ -349,7 +369,7 @@ router.get("/rules/export", async (req, res) => {
       lines.push(line(
         d.name, r.name, r.type, Number(r.value), r.scope,
         safeParseArray<string>(r.categories).join(";"),
-        safeParseArray<number>(r.testIds).join(";"),
+        parseTestIdList(r.testIds).join(";"),
         r.appliesTo ?? "all", r.isExclusive, r.isActive,
       ));
     }
@@ -424,7 +444,8 @@ router.post("/rules/import", async (req, res) => {
   // carries, and it is what an operator edits a row by.
   const existingRules = await db.select().from(commissionRulesTable);
   const existingByKey = new Map<string, (typeof commissionRulesTable.$inferSelect)[]>();
-  const ruleKey = (doctorId: number, name: string) => `${doctorId}\u0000${name.trim().toLowerCase()}`;
+  const ruleKey = (doctorId: number | null, name: string) =>
+    `${doctorId == null ? "global" : doctorId}\u0000${name.trim().toLowerCase()}`;
   for (const r of existingRules) {
     const k = ruleKey(r.doctorId, r.name);
     const arr = existingByKey.get(k) ?? [];
@@ -458,8 +479,9 @@ router.post("/rules/import", async (req, res) => {
     const scope = (at(idx.scope) || "all").toLowerCase();
 
     if (!doctorName) { errors.push({ line: lineNo, doctorName, error: "Missing doctorName" }); continue; }
-    const dId = doctorIdByName.get(doctorName.toLowerCase());
-    if (dId == null) { errors.push({ line: lineNo, doctorName, error: `No doctor matches "${doctorName}"` }); continue; }
+    const isGlobal = /^(all doctors|all|global|\*)$/i.test(doctorName.trim());
+    const dId = isGlobal ? null : doctorIdByName.get(doctorName.toLowerCase());
+    if (!isGlobal && dId == null) { errors.push({ line: lineNo, doctorName, error: `No doctor matches "${doctorName}"` }); continue; }
     if (!name) { errors.push({ line: lineNo, doctorName, error: "Missing rule name" }); continue; }
     if (type !== "percentage" && type !== "fixed") { errors.push({ line: lineNo, doctorName, error: `Invalid type "${type}" (expected percentage or fixed)` }); continue; }
     const value = Number(valueRaw);
@@ -480,6 +502,10 @@ router.post("/rules/import", async (req, res) => {
     // The export synthesises this exact row from doctors.defaultCommission, so
     // it is sent back where it came from and the round-trip is lossless.
     if (name.trim().toLowerCase() === PROFILE_DEFAULT_NAME.toLowerCase() && scope === "all") {
+      if (dId == null) {
+        errors.push({ line: lineNo, doctorName, error: "Profile Default rows must name a doctor, not ALL DOCTORS" });
+        continue;
+      }
       const prof = doctorProfileById.get(dId);
       const sameAsProfile = !!prof && Number(prof.value) === value && prof.type === type;
       const pdErr = ceilingUnless(sameAsProfile);
@@ -699,7 +725,7 @@ router.get("/report", async (req, res) => {
     .filter(d => !doctorId || d.id === Number(doctorId))
     .map(doctor => {
       const doctorOrders = orders.filter(o => o.doctorId === doctor.id && billByOrderId.has(o.id));
-      const rules = allRules.filter(r => r.doctorId === doctor.id);
+      const rules = rulesForDoctor(allRules, doctor.id);
       let totalRevenue = 0, totalCommission = 0, totalDiscountDeducted = 0;
       let testsFullPrice = 0, testsDiscounted = 0;
       let revenueFullPrice = 0, revenueDiscounted = 0;
@@ -807,7 +833,7 @@ router.get("/report-detailed", async (req, res) => {
 
   const result = filteredDoctors.map(doctor => {
     const doctorOrders = orders.filter(o => o.doctorId === doctor.id && billByOrderId.has(o.id));
-    const rules = allRules.filter(r => r.doctorId === doctor.id);
+    const rules = rulesForDoctor(allRules, doctor.id);
 
     // Build flat test-level rows
     type TestRow = {
@@ -1099,7 +1125,7 @@ export async function computeReferralReport(q: { from?: string; to?: string; doc
 
   const result = filteredDoctors.map(doctor => {
     const doctorOrders = billedOrdersWithPatients.filter(o => o.doctorId === doctor.id);
-    const rules = allRules.filter(r => r.doctorId === doctor.id);
+    const rules = rulesForDoctor(allRules, doctor.id);
 
     // Build per-order discount-adjusted commission ratio + eligibility hold
     const orderAdjustRatio = new Map<number, number>();

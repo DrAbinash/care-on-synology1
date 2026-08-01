@@ -5,6 +5,7 @@ import {
   normalizeCommissionLabel,
   parseTestIdList,
   buildTestNameAliasIndex,
+  rulesForDoctor,
   type CalcRule,
 } from "./commissionCalc";
 
@@ -145,5 +146,46 @@ describe("calcTestCommission wiring", () => {
     );
     expect(result.ruleName).toBe("CT 800");
     expect(result.commission).toBe(800);
+  });
+});
+
+describe("rulesForDoctor", () => {
+  it("returns doctor-specific rules before global (null doctorId) slabs", () => {
+    const all = [
+      { doctorId: null, name: "Global MRI" },
+      { doctorId: 5, name: "Dr override" },
+      { doctorId: 9, name: "Other doctor" },
+      { doctorId: null, name: "Global CT" },
+    ];
+    expect(rulesForDoctor(all, 5).map((r) => r.name)).toEqual([
+      "Dr override",
+      "Global MRI",
+      "Global CT",
+    ]);
+  });
+
+  it("returns only globals when the doctor has no overrides", () => {
+    const all = [
+      { doctorId: null, name: "Global" },
+      { doctorId: 2, name: "Someone else" },
+    ];
+    expect(rulesForDoctor(all, 7).map((r) => r.name)).toEqual(["Global"]);
+  });
+
+  it("lets a doctor-specific test slab win over a matching global via findMatchingRule order", () => {
+    const merged = rulesForDoctor(
+      [
+        { doctorId: null, name: "MRI BRAIN", scope: "test" as const, testIds: "[1]", type: "fixed" as const, value: 1750, categories: null, appliesTo: "all", isExclusive: false, isActive: true },
+        { doctorId: 3, name: "MRI BRAIN VIP", scope: "test" as const, testIds: "[1]", type: "fixed" as const, value: 2000, categories: null, appliesTo: "all", isExclusive: false, isActive: true },
+      ],
+      3,
+    );
+    expect(findMatchingRule(1, "MRI", merged)?.name).toBe("MRI BRAIN VIP");
+    expect(findMatchingRule(1, "MRI", rulesForDoctor(
+      [
+        { doctorId: null, name: "MRI BRAIN", scope: "test" as const, testIds: "[1]", type: "fixed" as const, value: 1750, categories: null, appliesTo: "all", isExclusive: false, isActive: true },
+      ],
+      3,
+    ))?.name).toBe("MRI BRAIN");
   });
 });

@@ -145,6 +145,25 @@ export function expandIdsByNameAlias(
   return out;
 }
 
+/**
+ * Rules that apply when calculating commission for one referring doctor.
+ * Doctor-specific slabs come first so findMatchingRule prefers them over
+ * clinic-wide (doctorId null) slabs at every precedence rung. That lets a
+ * clinic set "MRI BRAIN = ₹1750 for everyone" once, then override one doctor.
+ */
+export function rulesForDoctor<T extends { doctorId: number | null }>(
+  allRules: T[],
+  doctorId: number,
+): T[] {
+  const specific: T[] = [];
+  const global: T[] = [];
+  for (const r of allRules) {
+    if (r.doctorId == null) global.push(r);
+    else if (r.doctorId === doctorId) specific.push(r);
+  }
+  return [...specific, ...global];
+}
+
 // Single source of truth for "which rule applies to this test line".
 //
 // Precedence (must stay in lock-step with every report that displays the matched

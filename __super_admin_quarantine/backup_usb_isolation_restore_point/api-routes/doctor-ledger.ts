@@ -29,6 +29,7 @@ import {
   type EligibilityConfig,
   calcTestCommission,
   buildTestNameAliasIndex,
+  rulesForDoctor,
   applyDiscountDeduction,
   computeCommissionHold,
   indexCommissionBillsByOrderId,
@@ -179,7 +180,7 @@ async function computeEarned(opts: { from?: string; to?: string; doctorId?: numb
 
   return filteredDoctors.map(doctor => {
     const doctorOrders = orders.filter(o => o.doctorId === doctor.id && billByOrderId.has(o.id));
-    const rules = allRules.filter(r => r.doctorId === doctor.id);
+    const rules = rulesForDoctor(allRules, doctor.id);
     let totalRevenue = 0, totalCommission = 0, payableCommission = 0, heldCommission = 0;
     const orderRows: { orderId: number; orderNumber: string; date: string; revenue: number; commission: number; grossCommission: number; testCount: number; held: boolean; holdReason: string | null; frozen: boolean; payoutId: number | null; ruleSummary: string }[] = [];
     for (const order of doctorOrders) {
