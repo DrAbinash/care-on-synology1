@@ -197,6 +197,49 @@ function formatTokenLabel(entry: { tokenNo: number; department?: string }, roomK
   return `${tokenPrefix(entry.department, roomKey)}-${entry.tokenNo}`;
 }
 
+/** VIP first, then earlier estimated wait, then department + token (stable multi-dept order). */
+export function compareQueueEntries(
+  a: { tokenNo: number; priority: number; department?: string; estimatedWaitMinutes?: number },
+  b: { tokenNo: number; priority: number; department?: string; estimatedWaitMinutes?: number },
+): number {
+  if (b.priority !== a.priority) return b.priority - a.priority;
+  const wa = a.estimatedWaitMinutes ?? Number.POSITIVE_INFINITY;
+  const wb = b.estimatedWaitMinutes ?? Number.POSITIVE_INFINITY;
+  if (wa !== wb) return wa - wb;
+  const d = (a.department || "").localeCompare(b.department || "");
+  if (d !== 0) return d;
+  return a.tokenNo - b.tokenNo;
+}
+
+/** Typical per-slot minutes from server estimates (median of consecutive positive deltas). */
+export function medianWaitStep(
+  entries: { estimatedWaitMinutes?: number }[],
+): number {
+  const steps: number[] = [];
+  for (let i = 1; i < entries.length; i++) {
+    const prev = entries[i - 1]?.estimatedWaitMinutes;
+    const curr = entries[i]?.estimatedWaitMinutes;
+    if (
+      typeof prev === "number" &&
+      typeof curr === "number" &&
+      Number.isFinite(prev) &&
+      Number.isFinite(curr) &&
+      curr > prev
+    ) {
+      steps.push(curr - prev);
+    }
+  }
+  if (steps.length === 0) {
+    // Fall back to first positive estimate (≈ one service slot) or default 8.
+    const first = entries
+      .map((e) => e.estimatedWaitMinutes)
+      .find((n): n is number => typeof n === "number" && Number.isFinite(n) && n > 0);
+    return first ?? 8;
+  }
+  steps.sort((a, b) => a - b);
+  return Math.max(1, steps[Math.floor(steps.length / 2)] ?? 8);
+}
+
 // "HH:MM" strings compared against the current time, handling ranges that
 // wrap past midnight (e.g. 22:00 → 06:00).
 function isWithinQuietHours(now: Date, start: string, end: string): boolean {
@@ -313,7 +356,10 @@ export default function QueueDisplay({ roomKey: propRoomKey }: QueueDisplayProps
     };
   }, [settings, ledgerId, displayToken, departmentsKey]);
 
-  // Flatten across department cards (a single-room display usually has one).
+  // Flatten across department cards, then order for TV "next" as a single queue.
+  // Wait estimates are computed per-department on the server (position × avg).
+  // Sorting only by tokenNo breaks that: CT-1, ECG-1, MRI-1 all share token #1
+  // and wait times become non-monotonic (e.g. 18 min then 12 min).
   const queueSummary = useMemo(() => {
     const cards = queueData?.departments ?? [];
     const servingCard = cards.find((c) => c.nowServing);
@@ -325,7 +371,6 @@ export default function QueueDisplay({ roomKey: propRoomKey }: QueueDisplayProps
           floorLabel: servingCard.nowServing.floorLabel || servingCard.floorLabel,
         }
       : null;
-    // Queue order: lowest token number first (matches physical queue / call order).
     const upcoming = cards
       .flatMap((c) =>
         c.waiting.map((w) => ({
@@ -336,11 +381,20 @@ export default function QueueDisplay({ roomKey: propRoomKey }: QueueDisplayProps
         })),
       )
       .filter((w) => w.id !== serving?.id)
-      .sort((a, b) => a.tokenNo - b.tokenNo || b.priority - a.priority);
+      .sort(compareQueueEntries);
+    // Recompute wait minutes in display order so the list is strictly increasing
+    // and every row has a wait estimate (never fall back to test name in the UI).
+    const avgForReorder = medianWaitStep(upcoming) || 8;
+    const upcomingWithWait = upcoming.map((w, i) => ({
+      ...w,
+      estimatedWaitMinutes: Math.max(1, Math.round(avgForReorder * (i + 1))),
+    }));
     const totalWaiting = cards.reduce((n, c) => n + c.waitingCount, 0);
-    const lastWait = upcoming.length > 0 ? upcoming[upcoming.length - 1]?.estimatedWaitMinutes : undefined;
-    const floorHint = serving?.floorLabel || upcoming[0]?.floorLabel || cards[0]?.floorLabel || "";
-    return { current: serving, next: upcoming, totalWaiting, lastWait, floorHint };
+    const lastWait = upcomingWithWait.length > 0
+      ? upcomingWithWait[upcomingWithWait.length - 1]?.estimatedWaitMinutes
+      : undefined;
+    const floorHint = serving?.floorLabel || upcomingWithWait[0]?.floorLabel || cards[0]?.floorLabel || "";
+    return { current: serving, next: upcomingWithWait, totalWaiting, lastWait, floorHint };
   }, [queueData]);
 
   const { current, next, totalWaiting, lastWait, floorHint } = queueSummary;
@@ -580,7 +634,7 @@ export default function QueueDisplay({ roomKey: propRoomKey }: QueueDisplayProps
                 <h3>{formatTokenLabel(upNext, finalRoomKey)}</h3>
                 <h4>{upNext.patientLabel}</h4>
                 <p>{upNext.testName || ""}</p>
-                {s.showWaitEstimate && upNext.estimatedWaitMinutes ? (
+                {s.showWaitEstimate && upNext.estimatedWaitMinutes != null ? (
                   <p className="wait-hint">~{upNext.estimatedWaitMinutes} {t(s.language, "waitSuffix")}</p>
                 ) : null}
                 <div className="proceed-cta prepare">{t(s.language, "prepare")}</div>
@@ -607,10 +661,12 @@ export default function QueueDisplay({ roomKey: propRoomKey }: QueueDisplayProps
                     {p.patientLabel}
                     {p.priority > 0 && <span className="vip-badge inline">{t(s.language, "vip")}</span>}
                   </span>
-                  {s.showWaitEstimate && p.estimatedWaitMinutes ? (
-                    <em>~{p.estimatedWaitMinutes} {t(s.language, "waitSuffix")}</em>
+                  {s.showWaitEstimate ? (
+                    <em>~{p.estimatedWaitMinutes ?? "—"} {t(s.language, "waitSuffix")}</em>
+                  ) : p.testName ? (
+                    <em>{p.testName}</em>
                   ) : (
-                    <em>{p.testName || ""}</em>
+                    <em aria-hidden="true">&nbsp;</em>
                   )}
                 </div>
               ))
