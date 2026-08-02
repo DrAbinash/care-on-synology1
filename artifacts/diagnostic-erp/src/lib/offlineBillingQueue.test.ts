@@ -53,7 +53,7 @@ describe("replayQueue", () => {
   it("returns the queue unchanged when empty", async () => {
     const postFn = vi.fn();
     const result = await replayQueue([], postFn);
-    expect(result).toEqual({ queue: [], synced: 0 });
+    expect(result).toEqual({ queue: [], synced: 0, syncedBills: [] });
     expect(postFn).not.toHaveBeenCalled();
   });
 
@@ -65,9 +65,12 @@ describe("replayQueue", () => {
     });
 
     const queue = [bill("ref-1", "2026-01-01T00:00:00.000Z")];
-    const { queue: after, synced } = await replayQueue(queue, postFn as any);
+    const { queue: after, synced, syncedBills } = await replayQueue(queue, postFn as any);
 
     expect(synced).toBe(1);
+    expect(syncedBills).toEqual([
+      { clientRef: "ref-1", billId: 900, billNumber: "BILL-900", orderNumber: "ORD-501" },
+    ]);
     expect(after).toEqual([]);
     expect(postFn).toHaveBeenNthCalledWith(1, "/api/orders", expect.objectContaining({ patientId: 1, clientRef: "ref-1" }));
     expect(postFn).toHaveBeenNthCalledWith(2, "/api/bills", expect.objectContaining({ discount: 0, orderId: 501, clientRef: "ref-1" }));

@@ -2,9 +2,14 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import "@/styles/billingDeskModern.css"; // Modern Pro skin (presentation only)
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import QRCode from "qrcode";
-import { api, NetworkError } from "@/lib/fetchApi";
+import { api, isQueueableBillingError } from "@/lib/fetchApi";
 import { FINANCIAL_QUERY_OPTIONS } from "@/lib/queryConfig";
 import { enqueueBill, QueuedForSyncError } from "@/lib/offlineBillingQueue";
+import {
+  buildProvisionalBillPrintHtml,
+  formatProvisionalBillNumber,
+  type ProvisionalBillPrintSnapshot,
+} from "@/lib/provisionalBillReceipt";
 import { readStaffSession, isFeatureEnabled, isOwnerRole } from "@/lib/staffSession";
 import { genUUID } from "@/lib/utils";
 import { getBillPaperSize } from "@/lib/billPrintLayout";
@@ -45,6 +50,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { useToast } from "@/hooks/use-toast";
+import { useBillingOutageMode } from "@/hooks/useSyncStatus";
 import { RegisterPatientForm, type NewPatientData } from "@/components/RegisterPatientForm";
 import {
   Search,
@@ -1258,6 +1264,7 @@ export default function BillingDesk() {
   };
 
   const queryClient = useQueryClient();
+  const { showOutageBanner, pendingCount, apiReachable, isOnline } = useBillingOutageMode();
   const printAfterSaveRef = useRef(false);
   const saveAndNextRef = useRef(false);
   const finishBillSaveFlowRef = useRef<() => void>(() => {});
@@ -1340,14 +1347,42 @@ export default function BillingDesk() {
         const bill = await api.post<BillResponse>("/api/bills", { ...billBody, orderId: order.id });
         return bill;
       } catch (err) {
-        if (err instanceof NetworkError) {
+        if (isQueueableBillingError(err)) {
+          const doctor = doctors.find((d) => d.id === doctorId);
+          const snapshot: ProvisionalBillPrintSnapshot = {
+            clientRef,
+            provisionalBillNumber: formatProvisionalBillNumber(clientRef),
+            patient: {
+              firstName: selectedPatient.firstName,
+              lastName: selectedPatient.lastName,
+              patientId: selectedPatient.patientId,
+              phone: selectedPatient.phone ?? null,
+              gender: selectedPatient.gender ?? null,
+              dateOfBirth: selectedPatient.dateOfBirth ?? null,
+              ageValue: selectedPatient.ageValue ?? null,
+              ageUnit: selectedPatient.ageUnit ?? null,
+            },
+            doctorName: doctor?.name ?? null,
+            tests: selectedTests.map((t) => ({
+              name: t.name,
+              code: t.code,
+              price: t.price,
+              category: t.category,
+            })),
+            subtotal,
+            discount: discountAmt,
+            total,
+            payments: paymentSplits.filter((s) => Number(s.amount) > 0),
+          };
           enqueueBill({
             clientRef,
             orderBody,
             billBody,
+            provisionalBillNumber: snapshot.provisionalBillNumber,
+            printSnapshot: snapshot,
             ...(order ? { stage: "bill" as const, orderId: order.id, orderNumber: order.orderNumber } : {}),
           });
-          throw new QueuedForSyncError();
+          throw new QueuedForSyncError(snapshot);
         }
         throw err;
       }
@@ -1519,15 +1554,38 @@ export default function BillingDesk() {
       finishBillSaveFlowRef.current();
     },
     onError: (err: Error) => {
+      const wantedPrint = printAfterSaveRef.current;
       printAfterSaveRef.current = false;
       saveAndNextRef.current = false;
       if (err instanceof QueuedForSyncError) {
-        // Not a real failure from the user's point of view — the bill is
-        // saved locally and will go out on its own. No receipt/token to show
-        // yet (the real order/bill don't exist until it syncs), so reset the
-        // desk immediately rather than leaving a stale draft that could be
-        // resubmitted as a second, distinct queued entry.
-        toast({ title: "No connection — bill saved locally", description: "It'll sync automatically once the network is back. See the sync panel in the sidebar." });
+        const cachedClinic = queryClient.getQueryData<PrintClinic>(["clinic-settings"]) || (clinic as PrintClinic);
+        const cachedPrinter =
+          printerCfgCached ??
+          queryClient.getQueryData<PrinterCfg>(["printer-settings"]);
+        const settings = loadBillPrintSettings(parseGlobalBillPrintSettings(cachedClinic?.billPrintSettingsJson));
+        const shouldPrint =
+          wantedPrint || settings.directPrintAfterSave || settings.autoOpenPrintDialog;
+        if (shouldPrint) {
+          const isBW = (cachedPrinter as { billPrinterType?: string } | undefined)?.billPrinterType === "bw";
+          const html = buildProvisionalBillPrintHtml(
+            err.snapshot,
+            cachedClinic ?? {},
+            settings,
+            isBW,
+          );
+          if (settings.enablePreview) {
+            setPrintPreviewHtml(html);
+            setPrintPreviewOpen(true);
+          } else {
+            printViaIframe(html);
+          }
+        }
+        toast({
+          title: "No connection — bill saved locally",
+          description: shouldPrint
+            ? `Provisional receipt ${err.snapshot.provisionalBillNumber} printed. It will sync when the server is back — see the sidebar sync panel.`
+            : "It'll sync automatically once the network is back. See the sync panel in the sidebar.",
+        });
         resetAll();
         return;
       }
@@ -2013,6 +2071,17 @@ export default function BillingDesk() {
           </button>
         </div>
       </div>
+
+      {showOutageBanner && (
+        <div className="flex-shrink-0 rounded-none border-b border-amber-500/50 bg-amber-500/10 px-4 py-2 text-sm text-amber-800 dark:text-amber-200">
+          <strong>Billing server unreachable</strong>
+          {pendingCount > 0
+            ? ` — ${pendingCount} bill(s) queued. New bills get a provisional receipt (OFF-…) and sync automatically when the server is back.`
+            : " — You can still queue bills with a provisional receipt; they will sync when the server is back."}
+          {!isOnline && " (No network detected.)"}
+          {isOnline && !apiReachable && " (Network is up but the ERP server is not responding — e.g. NAS rebooting.)"}
+        </div>
+      )}
 
       {/* Duplicate-bill warning banner */}
       {showBillToast && lastBill && (

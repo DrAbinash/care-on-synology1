@@ -131,6 +131,29 @@ export class NetworkError extends Error {
   }
 }
 
+/**
+ * True when a billing save should queue locally instead of failing outright.
+ * Covers pure network failures AND gateway errors (502/503/504) common during
+ * NAS reboots when the reverse proxy answers but Docker services are still down.
+ */
+export function isQueueableBillingError(err: unknown): boolean {
+  if (err instanceof NetworkError) return true;
+  if (err instanceof Error) {
+    const m = err.message.toLowerCase();
+    return (
+      m.includes("502") ||
+      m.includes("503") ||
+      m.includes("504") ||
+      m.includes("bad gateway") ||
+      m.includes("service unavailable") ||
+      m.includes("gateway timeout") ||
+      m.includes("server not responding") ||
+      m.includes("server temporarily unavailable")
+    );
+  }
+  return false;
+}
+
 // After a NETWORK-level failure (no response at all), wait for connectivity
 // to return before burning the next retry — capped so a browser that
 // misreports navigator.onLine (common on LAN-only clinic PCs with no internet
@@ -206,6 +229,12 @@ async function fetchWithRetry(path: string, init?: RequestInit): Promise<Respons
       let parsed: { error?: string; message?: string } = {};
       try { parsed = JSON.parse(text); } catch { /* empty body or non-JSON error */ }
       const message = parsed.error || parsed.message || text || res.statusText;
+
+      // NAS reboot / container restart: reverse proxy often returns 502–504 while
+      // services are still starting. Treat like a network outage for offline billing.
+      if (res.status === 502 || res.status === 503 || res.status === 504) {
+        throw new NetworkError(`Server temporarily unavailable (${res.status})`);
+      }
 
       // A 401 expires the session when it comes from a genuine session
       // endpoint OR when the server explicitly signals the session is dead
