@@ -4,6 +4,14 @@
 import { api } from "./fetchApi";
 import type { ProvisionalBillPrintSnapshot } from "./provisionalBillReceipt";
 
+export type SyncedBillResult = {
+  clientRef: string;
+  billId: number;
+  billNumber: string;
+  provisionalBillNumber?: string;
+  orderNumber?: string;
+};
+
 /**
  * offlineBillingQueue.ts — durable local queue for bills that couldn't reach
  * the NAS (LAN drop, NAS reboot, switch failure — anything longer than the
@@ -40,6 +48,8 @@ export type QueuedBill = {
   orderNumber?: string;
   attempts: number;
   lastError?: string | null;
+  /** Optional snapshot for reprinting the provisional receipt from the sync panel. */
+  printSnapshot?: ProvisionalBillPrintSnapshot;
 };
 
 export class QueuedForSyncError extends Error {
@@ -78,10 +88,11 @@ export type PostFn = <T>(path: string, body: unknown) => Promise<T>;
 export async function replayQueue(
   queue: QueuedBill[],
   postFn: PostFn,
-): Promise<{ queue: QueuedBill[]; synced: number }> {
+): Promise<{ queue: QueuedBill[]; synced: number; syncedBills: SyncedBillResult[] }> {
   const replayOrder = sortQueueForReplay(queue).map((entry) => entry.clientRef);
   let working = sortQueueForReplay(queue);
   let synced = 0;
+  const syncedBills: SyncedBillResult[] = [];
 
   for (const clientRef of replayOrder) {
     const current = working.find((q) => q.clientRef === clientRef);
@@ -101,7 +112,18 @@ export async function replayQueue(
         working = updateInQueue(working, current.clientRef, { stage: "bill", orderId, orderNumber });
       }
 
-      await postFn("/api/bills", { ...current.billBody, orderId, clientRef: current.clientRef });
+      const billRes = await postFn<{ id: number; billNumber: string }>("/api/bills", {
+        ...current.billBody,
+        orderId,
+        clientRef: current.clientRef,
+      });
+      syncedBills.push({
+        clientRef: current.clientRef,
+        billId: billRes.id,
+        billNumber: billRes.billNumber,
+        provisionalBillNumber: current.provisionalBillNumber,
+        orderNumber,
+      });
       working = removeFromQueue(working, current.clientRef);
       synced++;
     } catch (err) {
@@ -113,7 +135,7 @@ export async function replayQueue(
     }
   }
 
-  return { queue: working, synced };
+  return { queue: working, synced, syncedBills };
 }
 
 // ─── Impure localStorage-backed wrapper (used by the real app) ────────────
@@ -152,11 +174,13 @@ export function enqueueBill(opts: {
   orderId?: number;
   orderNumber?: string;
   provisionalBillNumber?: string;
+  printSnapshot?: ProvisionalBillPrintSnapshot;
 }): QueuedBill {
   const entry: QueuedBill = {
     clientRef: opts.clientRef,
     queuedAt: new Date().toISOString(),
     provisionalBillNumber: opts.provisionalBillNumber,
+    printSnapshot: opts.printSnapshot,
     stage: opts.stage ?? "order",
     orderBody: opts.orderBody,
     billBody: opts.billBody,
@@ -181,17 +205,29 @@ export function discardQueuedBill(clientRef: string): void {
   writeQueue(removeFromQueue(readQueue(), clientRef));
 }
 
+import { dispatchOfflineBillsSynced } from "./offlineBillingSync";
+
 let flushInFlight = false;
 
-export async function flushQueuedBills(): Promise<{ synced: number; remaining: number; lastError: string | null }> {
-  if (flushInFlight) return { synced: 0, remaining: readQueue().length, lastError: null };
+export async function flushQueuedBills(): Promise<{
+  synced: number;
+  remaining: number;
+  lastError: string | null;
+  syncedBills: SyncedBillResult[];
+}> {
+  if (flushInFlight) {
+    return { synced: 0, remaining: readQueue().length, lastError: null, syncedBills: [] };
+  }
   flushInFlight = true;
   try {
     const before = readQueue();
-    if (before.length === 0) return { synced: 0, remaining: 0, lastError: null };
-    const { queue: after, synced } = await replayQueue(before, api.post);
+    if (before.length === 0) {
+      return { synced: 0, remaining: 0, lastError: null, syncedBills: [] };
+    }
+    const { queue: after, synced, syncedBills } = await replayQueue(before, api.post);
     writeQueue(after);
-    return { synced, remaining: after.length, lastError: after[0]?.lastError ?? null };
+    if (syncedBills.length > 0) dispatchOfflineBillsSynced(syncedBills);
+    return { synced, remaining: after.length, lastError: after[0]?.lastError ?? null, syncedBills };
   } finally {
     flushInFlight = false;
   }

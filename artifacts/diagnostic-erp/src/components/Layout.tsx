@@ -104,6 +104,7 @@ import { api } from "@/lib/fetchApi";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { SyncPanel, SyncBadge } from "@/components/SyncPanel";
+import { OfflineBillingSyncNotifier } from "@/components/OfflineBillingSyncNotifier";
 import { readStaffSession, clearStaffSession, canAccess, FULL_ACCESS_ROLES, isFeatureEnabled, normalizeRole } from "@/lib/staffSession";
 import { useUserTheme, clearUserTheme } from "@/lib/userTheme";
 import { ThemeSelector } from "@/components/ThemeSelector";
@@ -1224,6 +1225,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         {session && !sidebarCollapsed && (
           <div className="px-4 py-3 border-t" style={{ borderColor: "rgba(255,255,255,0.08)" }}>
             <SyncPanel />
+            <OfflineBillingSyncNotifier />
           </div>
         )}
 
