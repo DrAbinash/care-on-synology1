@@ -23,6 +23,8 @@
 
 import type { PrintBillData, PrintClinic, BuildPrintHtmlOpts } from "./printBill";
 import type { BillPaperSize } from "./billPrintSettings";
+import { buildDocumentHtml } from "./documentLayout/buildDocumentHtml";
+import { billPaperSizeToPrintPaper } from "./documentLayout/billPaper";
 
 // ── Shared utilities ───────────────────────────────────────────────────────────
 
@@ -114,7 +116,6 @@ interface PageData {
   billedByName: string;
   billedBySignatureUrl: string;
   useCompactFooter: boolean;
-  receiptMinHeight: string;
   sectionFlex: string;
   footerSpacer: string;
 }
@@ -127,7 +128,7 @@ function buildPageData(
   copyLabel: string,
   opts: BuildPrintHtmlOpts,
   copyIdx: number,
-  layoutOpts: { useCompactFooter: boolean; receiptMinHeight: string; footerSpacer: string },
+  layoutOpts: { useCompactFooter: boolean; footerSpacer: string },
 ): PageData {
   const tests = (bill.order?.tests ?? []).filter((t) => (t.status ?? "active") !== "cancelled");
   const cancelled = (bill.order?.tests ?? []).filter((t) => t.status === "cancelled");
@@ -156,9 +157,7 @@ function buildPageData(
   const billedByName: string = designerSession?.user?.name ?? "";
   const billedBySignatureUrl: string = designerSession?.user?.signatureDataUrl ?? "";
 
-  const sectionFlex = layoutOpts.useCompactFooter
-    ? ""
-    : `display:flex;flex-direction:column;min-height:${layoutOpts.receiptMinHeight};`;
+  const sectionFlex = "";
 
   return {
     bill, clinic, paperSize, isA4, isLandscape, qrDataUrl, copyLabel, opts,
@@ -166,7 +165,6 @@ function buildPageData(
     cashAmt, upiAmt, cardAmt, insAmt, chqAmt, onlineAmt,
     isUnconfirmedQr, patientName, patientAge, doctorName, billedByName, billedBySignatureUrl,
     useCompactFooter: layoutOpts.useCompactFooter,
-    receiptMinHeight: layoutOpts.receiptMinHeight,
     sectionFlex,
     footerSpacer: layoutOpts.footerSpacer,
   };
@@ -227,7 +225,7 @@ function renderLayoutA(d: PageData): string {
   const discNum = Number(bill.discount ?? 0);
 
   return `
-  <section style="width:100%;box-sizing:border-box;padding:${isA4 ? "16mm 18mm 12mm" : "8mm 10mm 6mm"};font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:${bodySize};color:#1a1a1a;line-height:${lineH};position:relative;${d.sectionFlex}">
+  <section style="width:100%;box-sizing:border-box;padding:0;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:${bodySize};color:#1a1a1a;line-height:${lineH};position:relative;${d.sectionFlex}">
     ${watermark}
 
     <!-- HEADER: Clinic Name + Bill Info -->
@@ -383,7 +381,7 @@ function renderLayoutB(d: PageData): string {
     </div>` : "";
 
   return `
-  <section style="width:100%;box-sizing:border-box;padding:${isA4 ? "14mm 16mm 10mm" : "7mm 9mm 5mm"};font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:${bodyPx};color:#1a1a1a;line-height:1.5;position:relative;${d.sectionFlex}">
+  <section style="width:100%;box-sizing:border-box;padding:0;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:${bodyPx};color:#1a1a1a;line-height:1.5;position:relative;${d.sectionFlex}">
     ${watermark}
 
     <!-- HEADER BAR -->
@@ -702,18 +700,12 @@ export function buildDesignerBillPrintHtml(
   const paperSizeStr = opts.paperSize; // "A4" | "A5"
   const isA4 = paperSizeStr === "A4";
   const isLandscape = !isA4 && opts.orientation === "landscape";
-  const paperSize: BillPaperSize = isA4 ? "A4" : (isLandscape ? "A5-landscape" : "A5-portrait");
-  const pageSize = pageCssSize ?? (isA4 ? "A4 portrait" : (isLandscape ? "A5 landscape" : "A5 portrait"));
-  const pageMargin = isA4 ? "10mm" : "8mm";
-  const marginMm = isA4 ? 10 : 8;
-  const pageHeightMm = isA4 ? 297 : (isLandscape ? 148 : 210);
+  const paperSize: BillPaperSize = isA4 ? "A4" : isLandscape ? "A5-landscape" : "A5-portrait";
+  const marginMm = isA4 ? 6 : 4;
   const tests = (bill.order?.tests ?? []).filter((t) => (t.status ?? "active") !== "cancelled");
   const useCompactFooter = compactFooterGap || tests.length <= 4;
-  const receiptMinHeight = useCompactFooter ? "auto" : `${pageHeightMm - marginMm * 2}mm`;
-  const footerSpacer = useCompactFooter
-    ? `<div style="height:28px"></div>`
-    : `<div style="flex:1"></div>`;
-  const layoutOpts = { useCompactFooter, receiptMinHeight, footerSpacer };
+  const footerSpacer = `<div style="height:4px"></div>`;
+  const layoutOpts = { useCompactFooter, footerSpacer };
 
   const copies = Math.max(1, Math.min(3, Number(clinic?.billPrintCopies ?? 1) || 1));
   const copyLabels = ["Patient Copy", "Office Copy", "Duplicate Copy"];
@@ -729,36 +721,19 @@ export function buildDesignerBillPrintHtml(
     }
   }
 
-  const pages = Array.from({ length: copies }, (_, i) => makePage(i)).join(
-    `<div style="page-break-before:always"></div>`,
-  );
+  const pages = Array.from({ length: copies }, (_, i) => ({
+    html: makePage(i),
+    className: "receipt",
+  }));
 
-  return `<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>Receipt ${esc(bill?.billNumber ?? "")}</title>
-  <style>
-    @page { size: ${pageSize}; margin: ${pageMargin}; }
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    html, body { margin: 0; padding: 0; }
-    body {
-      background: #fff;
-      color: #000;
-      font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
-      -webkit-print-color-adjust: exact;
-      print-color-adjust: exact;
-    }
-    section { page-break-inside: avoid; width: 100%; max-width: 100%; box-sizing: border-box; }
-    @media print {
-      html, body { width: 100%; }
-      section { width: 100% !important; max-width: 100% !important; page-break-after: always; }
-      section:last-child { page-break-after: avoid; }
-    }
-  </style>
-</head>
-<body>
-  ${pages}
-</body>
-</html>`;
+  return buildDocumentHtml({
+    title: `Receipt ${esc(bill?.billNumber ?? "")}`,
+    paper: billPaperSizeToPrintPaper(paperSize),
+    safePaddingMm: marginMm,
+    bodyFontFamily: "'Helvetica Neue', Helvetica, Arial, sans-serif",
+    extraStyles: `
+  section.receipt { width: 100%; }
+  .no-break { page-break-inside: avoid; }`,
+    pages,
+  });
 }

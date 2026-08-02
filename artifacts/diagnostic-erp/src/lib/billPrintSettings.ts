@@ -367,7 +367,7 @@ export function getPaperSizeCss(size: BillPaperSize): { pageSize: string; width:
     case "A5-portrait":
       return { pageSize: "A5 portrait", width: "136mm", minHeight: "194mm", maxHeight: "none" };
     case "half-a4":
-      return { pageSize: "148mm 210mm", width: "148mm", minHeight: "194mm", maxHeight: "none" };
+      return { pageSize: "210mm 148mm", width: "210mm", minHeight: "140mm", maxHeight: "none" };
     case "A4":
     default:
       return { pageSize: "A4 portrait", width: "210mm", minHeight: "277mm", maxHeight: "none" };
@@ -411,7 +411,7 @@ export function resolveBillPrintPageOpts(
     effective === "A5-landscape" ? "landscape" : "portrait";
   const pageCssSize =
     effective === "half-a4"
-      ? "148mm 210mm"
+      ? "210mm 148mm"
       : effective === "A5-landscape"
         ? "A5 landscape"
         : "A5 portrait";

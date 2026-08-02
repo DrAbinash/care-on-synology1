@@ -131,6 +131,13 @@ import { type BillFormat, type BillPaperSize } from "./billPrintSettings";
 import { buildPremiumBillPrintHtml } from "./premiumBillPrint";
 import { buildDesignerBillPrintHtml } from "./designerBillPrint";
 import { buildModernLandscapeBillPrintHtml } from "./modernLandscapeBillPrint";
+import { buildDocumentHtml } from "./documentLayout/buildDocumentHtml";
+import { resolveBillPrintPaperFromOpts } from "./documentLayout/billPaper";
+export {
+  printViaIframe,
+  openBlankPrintWindow,
+  writeAndPrint,
+} from "./documentLayout/printDelivery";
 
 export type BuildPrintHtmlOpts = {
   bill: PrintBillData;
@@ -267,18 +274,7 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
   // still varies by A5 vs A4 paper size; a non-null override applies fixed
   // regardless of paper size. ──
   const useCompactFooter = compactFooterGap || sparseBill;
-  const marginMm = opts.printMarginMm ?? (isA5 ? 8 : 8);
-  const pageMargin = `${marginMm}mm`;
-  // Content-area height = page height minus top+bottom margin. Must track
-  // `orientation` AND the actual configured margin — since A5 landscape's
-  // page height (148mm) is far shorter than portrait's (210mm), and a
-  // larger admin-configured margin shrinks the usable area further. Using a
-  // stale/mismatched min-height here overflows the printable area and
-  // forces the browser into "shrink to fit" (blurs the receipt) or spills
-  // content onto a silent extra page — see the max-height-free single-
-  // source-of-truth note below on why this is inline-only, never duplicated
-  // in the <style> block.
-  const receiptMinHeight = `${(isA5 ? (orientation === "landscape" ? 148 : 210) : 297) - marginMm * 2}mm`;
+  const marginMm = opts.printMarginMm ?? (isA5 ? 4 : 6);
   // Title ("INVOICE/RECEIPT") is the page's real anchor and must read as the
   // largest header element; clinic contact info (headerPx) is secondary and
   // was previously LARGER than the title, inverting the hierarchy.
@@ -336,8 +332,6 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
   const billedBySignatureUrl: string = session?.user?.signatureDataUrl ?? "";
 
   const page = (copyIdx: number) => `
-    <section class="receipt" style="${copyIdx > 0 ? "page-break-before:always;" : ""}${isA5 && !useCompactFooter ? `display:flex;flex-direction:column;min-height:${receiptMinHeight};` : ""}">
-
       <!-- HEADER: logo + tagline left, clinic info right, vertically centered
            against each other so the shorter block doesn't visually float. -->
       <table style="width:100%;border-collapse:collapse;margin-bottom:8px">
@@ -429,9 +423,9 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
       <!-- BOTTOM: QR + Payment details left, Totals right -->
       <table style="width:100%;border-collapse:separate;border-spacing:0;margin-top:8px;table-layout:fixed">
         <colgroup>
-          <col style="width:${qrEnabled && qrDataUrl ? "90px" : "0"}"/>
-          <col/>
-          <col style="width:${isA5 ? "170px" : "200px"}"/>
+          <col style="width:${qrEnabled && qrDataUrl ? "18%" : "0"}"/>
+          <col style="width:${qrEnabled && qrDataUrl ? "42%" : "58%"}"/>
+          <col style="width:40%"/>
         </colgroup>
         <tbody>
           <tr>
@@ -488,7 +482,7 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
            set — just a fixed ~3-4 line gap so a short receipt (1-2 tests,
            typical of online booking / kiosk) doesn't leave a huge blank
            middle before the footer. -->
-      ${isA5 ? (useCompactFooter ? `<div style="height:${Math.round(parseInt(footerPx, 10) * 1.4 * 3.5)}px"></div>` : '<div style="flex:1"></div>') : ""}
+      ${useCompactFooter ? `<div style="height:${Math.round(parseInt(footerPx, 10) * 1.4 * 2)}px"></div>` : `<div style="height:4px"></div>`}
 
       <!-- FOOTER -->
       <div style="margin-top:4px;border-top:2px solid #000;padding-top:6px;text-align:center;page-break-inside:avoid">
@@ -509,25 +503,33 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
             </td>
           </tr>
         </table>
-      </div>
-    </section>`;
+      </div>`;
 
-  const pages = Array.from({ length: copies }).map((_, i) => page(i)).join("");
+  const pages = Array.from({ length: copies }).map((_, i) => page(i));
 
-  return `<!doctype html><html><head><meta charset="utf-8"><title>Bill ${esc(bill.billNumber)}</title>
-<style>
-  @page { size: ${a4Page ? "A4 portrait" : (pageCssSize ?? `${isA5 ? "A5" : "A4"} ${isA5 ? orientation : "portrait"}`)}; margin: ${pageMargin}; }
-  *, *::before, *::after { box-sizing: border-box; }
-  html, body { margin: 0; padding: 0; }
-  body { background: #fff; color: #000; font-family: Arial, Helvetica, sans-serif; font-size: ${bodyPx}; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  .receipt { width: 100%; max-width: 100%; padding: 1mm 0; box-sizing: border-box;${a4Page ? " max-width: 148mm; margin-left: auto; margin-right: auto;" : ""} }
-  @media print {
-    html, body { width: 100%; }
-    .receipt { width: 100% !important; max-width: 100% !important; }
-  }
+  const paper = resolveBillPrintPaperFromOpts({
+    paperSize,
+    orientation,
+    pageCssSize,
+    compactOnA4: a4Page,
+  });
+
+  return buildDocumentHtml({
+    title: `Bill ${esc(bill.billNumber)}`,
+    paper,
+    safePaddingMm: marginMm,
+    compactSlipOnA4: a4Page,
+    bodyFontSize: bodyPx,
+    extraStyles: `
   table { width: 100%; }
   .test-table tbody tr:nth-child(even) td { background: #f7f7f7; }
-</style></head><body>${pages}</body></html>`;
+  .receipt-footer { page-break-inside: avoid; }`,
+    pages: pages.map((html, i) => ({
+      html,
+      className: "receipt",
+      style: i > 0 ? "" : "",
+    })),
+  });
 }
 
 // ── Wrapper that dispatches to a specific format renderer ─────────────────
@@ -598,75 +600,4 @@ export function buildBillPrintHtml(opts: BuildPrintHtmlOpts): string {
   }
   // Classic format
   return buildClassicBillPrintHtml(opts);
-}
-
-export function printViaIframe(html: string): void {
-  const existing = document.getElementById("__bill_print_iframe__");
-  if (existing) existing.remove();
-  const iframe = document.createElement("iframe");
-  iframe.id = "__bill_print_iframe__";
-  iframe.style.position = "fixed";
-  iframe.style.right = "0";
-  iframe.style.bottom = "0";
-  iframe.style.width = "0";
-  iframe.style.height = "0";
-  iframe.style.border = "0";
-  iframe.setAttribute("aria-hidden", "true");
-  document.body.appendChild(iframe);
-  const doc = iframe.contentDocument;
-  if (!doc) return;
-  doc.open();
-  doc.write(html);
-  doc.close();
-  let printed = false;
-  const doPrint = () => {
-    if (printed) return;
-    printed = true;
-    try {
-      iframe.contentWindow?.focus();
-      iframe.contentWindow?.print();
-    } catch { /* ignore */ }
-    setTimeout(() => { try { iframe.remove(); } catch { /* ignore */ } }, 1000);
-  };
-  iframe.onload = doPrint;
-  setTimeout(doPrint, 350);
-}
-
-export function openBlankPrintWindow(): Window | null {
-  const w = window.open("", "_blank", "width=520,height=720");
-  if (!w) return null;
-  try {
-    w.document.open();
-    w.document.write(
-      `<!doctype html><html><head><meta charset="utf-8"><title>Preparing receipt…</title></head><body style="font-family:Arial,sans-serif;padding:24px;color:#555">Preparing receipt…</body></html>`,
-    );
-    w.document.close();
-  } catch { /* ignore */ }
-  return w;
-}
-
-export function writeAndPrint(win: Window | null, html: string): void {
-  if (!win) {
-    const w = window.open("", "_blank", "width=520,height=720");
-    if (!w) { alert("Pop-up blocked. Please allow pop-ups for this site to print bills."); return; }
-    w.document.open();
-    w.document.write(html);
-    w.document.close();
-    w.onload = () => { w.focus(); w.print(); setTimeout(() => w.close(), 400); };
-    return;
-  }
-  try {
-    win.document.open();
-    win.document.write(html);
-    win.document.close();
-  } catch { /* ignore */ }
-  let printed = false;
-  const doPrint = () => {
-    if (printed) return;
-    printed = true;
-    try { win.focus(); win.print(); } catch { /* ignore */ }
-    setTimeout(() => { try { win.close(); } catch { /* ignore */ } }, 500);
-  };
-  win.onload = doPrint;
-  setTimeout(doPrint, 350);
 }
