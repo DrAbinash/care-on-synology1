@@ -32,7 +32,7 @@ Unless replacing it with a **demonstrably better implementation**:
 These must **always** be configurable via environment variables or admin settings UI:
 
 ❌ **DO NOT HARDCODE:**
-- LAN IP addresses (e.g., `192.168.1.137`)
+- LAN IP addresses (e.g., `172.16.1.139`)
 - Port numbers (e.g., `3000`, `5432`, `8042`)
 - API keys or credentials
 - DICOM viewer URLs (OHIF, Weasis)

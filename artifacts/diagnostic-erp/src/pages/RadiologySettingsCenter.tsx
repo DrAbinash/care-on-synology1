@@ -547,7 +547,7 @@ export default function RadiologySettingsCenter() {
 
             <div className="space-y-4 pt-4 border-t">
               {/* Quick-fill for clinic LAN — no IP is invented; asks for the
-                  real address instead of assuming 192.168.1.137, which is
+                  real address instead of assuming 172.16.1.139, which is
                   not correct for every deployment. */}
               <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 flex items-start gap-3">
                 <div className="flex-1 min-w-0">
@@ -559,7 +559,7 @@ export default function RadiologySettingsCenter() {
                 <button
                   className="flex-shrink-0 px-3 py-1.5 text-xs font-semibold bg-amber-600 hover:bg-amber-700 text-white rounded-md"
                   onClick={() => {
-                    const lanIp = window.prompt("Enter your clinic's LAN IP (e.g. 192.168.1.137) — never a Docker bridge IP like 172.17.x.x:");
+                    const lanIp = window.prompt("Enter your clinic's LAN IP (e.g. 172.16.1.139) — never a Docker bridge IP like 172.17.x.x:");
                     if (!lanIp) return;
                     if (isDockerBridgeIpLike(lanIp)) {
                       toast({ title: "That looks like a Docker bridge IP", description: "Use your real clinic LAN IP instead — browsers and Weasis cannot reach Docker-internal addresses.", variant: "destructive" });
@@ -1229,7 +1229,7 @@ function VoiceSettingsPanel({ settings, upsertSetting, isAdmin }: {
             <Input className="h-9 text-sm font-mono" disabled={!isAdmin} defaultValue={getRaw("voice_local_stt_url")}
               key={`lsu-${getRaw("voice_local_stt_url")}`}
               onBlur={(e) => { if (e.target.value.trim() !== getRaw("voice_local_stt_url")) set("voice_local_stt_url", e.target.value.trim()); }}
-              placeholder="http://192.168.1.137:9000 (empty = off)" />
+              placeholder="http://172.16.1.139:9000 (empty = off)" />
             <div className="flex gap-2">
               <select className="h-8 text-xs border rounded-md px-2 bg-background" disabled={!isAdmin}
                 value={getRaw("voice_local_stt_kind") === "whispercpp" ? "whispercpp" : "openai"}

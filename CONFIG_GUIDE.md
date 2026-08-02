@@ -75,7 +75,7 @@ SESSION_TIMEOUT_MINUTES=60
 ### CORS Configuration
 ```env
 # Allowed origins (comma-separated)
-CORS_ORIGINS=http://localhost:3000,http://localhost:5173,http://192.168.1.137:3001
+CORS_ORIGINS=http://localhost:3000,http://localhost:5173,http://172.16.1.139:3001
 
 # For production
 CORS_ORIGINS=https://your-domain.com,https://diagnostic-center.your-domain.com
@@ -95,7 +95,7 @@ ORTHANC_USERNAME=  # Leave empty if no auth
 ORTHANC_PASSWORD=
 
 # For production (Synology NAS)
-ORTHANC_HOST=192.168.1.137
+ORTHANC_HOST=172.16.1.139
 ORTHANC_PORT=8042
 ORTHANC_PROTOCOL=http
 ```
@@ -309,7 +309,7 @@ APM_SERVER_URL=http://localhost:8200
 ### Docker & Compose
 ```env
 # Synology NAS IP and ports
-NAS_IP=192.168.1.137
+NAS_IP=172.16.1.139
 NAS_API_PORT=3000
 NAS_DATABASE_PORT=5432
 
@@ -386,10 +386,10 @@ CORS_ORIGINS=http://localhost:3000,http://localhost:5173
 NODE_ENV=production
 DEBUG=false
 LOG_LEVEL=info
-DATABASE_URL=postgresql://user:secure-password@192.168.1.137:5432/care_erp
+DATABASE_URL=postgresql://user:secure-password@172.16.1.139:5432/care_erp
 API_PORT=3000
 API_HOST=0.0.0.0
-ORTHANC_HOST=192.168.1.137
+ORTHANC_HOST=172.16.1.139
 CORS_ORIGINS=https://your-domain.com
 # All sensitive keys must be set
 ```

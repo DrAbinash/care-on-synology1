@@ -2784,7 +2784,7 @@ router.get("/network/warnings", async (req, res) => {
     // Check for Docker Bridge IP leaks (shared, corrected helper — see
     // pacsConfig.ts; deliberately excludes the real clinic LAN 172.16.1.x)
     if (isDockerBridgeIp(cfg.orthanc.ip)) {
-      warnings.push("Orthanc IP uses a Docker bridge network address, unreachable by LAN workstations. Set ORTHANC_IP or ORTHANC_URL to the clinic's real LAN IP (e.g. 192.168.1.137) in .env.");
+      warnings.push("Orthanc IP uses a Docker bridge network address, unreachable by LAN workstations. Set ORTHANC_IP or ORTHANC_URL to the clinic's real LAN IP (e.g. 172.16.1.139) in .env.");
     }
     if (isDockerBridgeIp(cfg.conquest.ip)) {
       warnings.push("Conquest IP uses a Docker bridge network address, unreachable by LAN workstations. Set CONQUEST_HOST to the clinic's real LAN IP in .env.");

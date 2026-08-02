@@ -141,8 +141,8 @@ describe("settings verification (Phase 9)", () => {
 
   it("clean canonical settings produce no findings", () => {
     const findings = classifySettings([
-      { key: "ohif_base_url", category: "viewer", value: "http://192.168.1.137:3010" },
-      { key: "orthanc_ip", category: "orthanc", value: "192.168.1.137" },
+      { key: "ohif_base_url", category: "viewer", value: "http://172.16.1.139:3010" },
+      { key: "orthanc_ip", category: "orthanc", value: "172.16.1.139" },
     ]);
     expect(findings).toEqual([]);
   });

@@ -1,7 +1,7 @@
 async function main() {
   const studyId = "a85cb5ac-278e6746-89a125e7-dbd3e5ff-d049763a";
   try {
-    const res = await fetch(`http://192.168.1.137:8042/studies/${studyId}`, {
+    const res = await fetch(`http://172.16.1.139:8042/studies/${studyId}`, {
       headers: {
         "Authorization": "Basic " + Buffer.from("admin:").toString("base64")
       }
@@ -13,7 +13,7 @@ async function main() {
       // Let's fetch details of each series in this study
       for (const seriesId of study.Series) {
         console.log(`\n--- Fetching Series ${seriesId} ---`);
-        const seriesRes = await fetch(`http://192.168.1.137:8042/series/${seriesId}`, {
+        const seriesRes = await fetch(`http://172.16.1.139:8042/series/${seriesId}`, {
           headers: {
             "Authorization": "Basic " + Buffer.from("admin:").toString("base64")
           }
@@ -27,7 +27,7 @@ async function main() {
           // Let's get the first instance of this series to check SOPClassUID, Manufacturer, and other tags
           if (series.Instances?.length > 0) {
             const instId = series.Instances[0];
-            const instRes = await fetch(`http://192.168.1.137:8042/instances/${instId}/tags`, {
+            const instRes = await fetch(`http://172.16.1.139:8042/instances/${instId}/tags`, {
               headers: {
                 "Authorization": "Basic " + Buffer.from("admin:").toString("base64")
               }

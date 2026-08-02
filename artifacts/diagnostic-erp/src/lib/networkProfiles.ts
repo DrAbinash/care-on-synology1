@@ -26,7 +26,7 @@ function intVal(raw: unknown, fallback: number): number {
 /** Mutable runtime state. Do not export directly — use the accessors. */
 const state = {
   hosts: {
-    LAN: (env.VITE_NETWORK_LAN_HOST as string) || "192.168.1.137",
+    LAN: (env.VITE_NETWORK_LAN_HOST as string) || "172.16.1.139",
     TAILSCALE: (env.VITE_NETWORK_TAILSCALE_HOST as string) || "100.65.255.115",
     PUBLIC: (env.VITE_NETWORK_PUBLIC_DOMAIN as string) || "caredeoghar.com",
   } as Record<NetworkProfile, string>,

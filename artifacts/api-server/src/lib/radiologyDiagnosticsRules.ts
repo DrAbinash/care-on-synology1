@@ -146,7 +146,7 @@ export function analyzeConfiguredUrl(
   try {
     url = new URL(value);
   } catch {
-    issues.push({ code: "UNPARSEABLE", message: `${opts.role} URL "${value}" is not a valid URL`, fix: "Use a full URL including the scheme, e.g. http://192.168.1.137:3010." });
+    issues.push({ code: "UNPARSEABLE", message: `${opts.role} URL "${value}" is not a valid URL`, fix: "Use a full URL including the scheme, e.g. http://172.16.1.139:3010." });
     return issues;
   }
   if (url.protocol !== "http:" && url.protocol !== "https:") {
@@ -430,7 +430,7 @@ export function classifySettings(
             key: row.key,
             category: row.category,
             message: `"${row.key}" = "${value}" is not a valid http(s) URL`,
-            recommendation: "Enter a full URL including the scheme, e.g. http://192.168.1.137:8042.",
+            recommendation: "Enter a full URL including the scheme, e.g. http://172.16.1.139:8042.",
           });
         }
       }

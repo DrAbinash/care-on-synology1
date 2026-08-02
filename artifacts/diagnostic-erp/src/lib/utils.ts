@@ -10,7 +10,7 @@ export function cn(...inputs: ClassValue[]) {
  *
  * `crypto.randomUUID()` only exists in "secure contexts" (HTTPS or
  * localhost). Care ERP is often accessed over plain HTTP on the LAN
- * (e.g. http://192.168.1.137:8888), which is NOT a secure context in
+ * (e.g. http://172.16.1.139:8888), which is NOT a secure context in
  * Chrome/Edge/Firefox — so `crypto.randomUUID` is `undefined` there and
  * calling it throws "crypto.randomUUID is not a function".
  *
