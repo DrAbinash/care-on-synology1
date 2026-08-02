@@ -267,8 +267,16 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
   // still varies by A5 vs A4 paper size; a non-null override applies fixed
   // regardless of paper size. ──
   // A5: flex column layout pushes footer to bottom so short bills fill the page
-  const marginMm = opts.printMarginMm ?? (isA5 ? 10 : 8);
-  const pageMargin = `${marginMm}mm`;
+  // Keep the physical @page margin at zero and apply the requested safe area
+  // inside the receipt box. Chromium/Windows printer drivers can otherwise
+  // apply the CSS page margin and then add their own printable-area margin,
+  // causing the whole A5 receipt to be reduced and centred with large borders.
+  // 4 mm is a safe default for ordinary laser/inkjet printers; admins can still
+  // override it from Billing Print settings.
+  const marginMm = opts.printMarginMm ?? (isA5 ? 4 : 6);
+  const pageMargin = "0";
+  const physicalPageWidthMm = a4Page ? 210 : isA5 ? (orientation === "landscape" ? 210 : 148) : 210;
+  const physicalPageHeightMm = a4Page ? 297 : isA5 ? (orientation === "landscape" ? 148 : 210) : 297;
   // Content-area height = page height minus top+bottom margin. Must track
   // `orientation` AND the actual configured margin — since A5 landscape's
   // page height (148mm) is far shorter than portrait's (210mm), and a
@@ -278,7 +286,10 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
   // content onto a silent extra page — see the max-height-free single-
   // source-of-truth note below on why this is inline-only, never duplicated
   // in the <style> block.
-  const receiptMinHeight = `${(isA5 ? (orientation === "landscape" ? 148 : 210) : 297) - marginMm * 2}mm`;
+  // The receipt box itself is the exact physical page size. Its internal
+  // padding supplies the safe printable margin, so there is no second margin
+  // for Chromium to shrink around.
+  const receiptMinHeight = `${physicalPageHeightMm}mm`;
   // Title ("INVOICE/RECEIPT") is the page's real anchor and must read as the
   // largest header element; clinic contact info (headerPx) is secondary and
   // was previously LARGER than the title, inverting the hierarchy.
@@ -518,9 +529,21 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
 <style>
   @page { size: ${a4Page ? "A4 portrait" : `${isA5 ? "A5" : "A4"} ${isA5 ? orientation : "portrait"}`}; margin: ${pageMargin}; }
   *, *::before, *::after { box-sizing: border-box; }
-  html, body { margin: 0; padding: 0; height: 100%; }
+  html, body {
+    margin: 0 !important;
+    padding: 0 !important;
+    width: ${physicalPageWidthMm}mm;
+    min-height: ${physicalPageHeightMm}mm;
+  }
   body { background: #fff; color: #000; font-family: Arial, Helvetica, sans-serif; font-size: ${bodyPx}; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  .receipt { width: 100%; padding: 2mm 3mm; box-sizing: border-box;${a4Page ? " max-width: 148mm; margin-left: auto; margin-right: auto;" : ""} }
+  .receipt {
+    width: ${a4Page ? "148mm" : `${physicalPageWidthMm}mm`};
+    min-height: ${a4Page ? "210mm" : `${physicalPageHeightMm}mm`};
+    margin: ${a4Page ? "0 auto" : "0"};
+    padding: ${marginMm}mm;
+    box-sizing: border-box;
+    overflow: hidden;
+  }
   table { width: 100%; }
   .test-table tbody tr:nth-child(even) td { background: #f7f7f7; }
 </style></head><body>${pages}</body></html>`;
