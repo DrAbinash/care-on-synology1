@@ -152,6 +152,8 @@ export type BuildPrintHtmlOpts = {
   qrDataUrl: string;
   reprintBy?: string;
   reprintReason?: string;
+  /** Offline / NAS-down receipt — not yet on server; QR verification disabled. */
+  provisionalReceipt?: boolean;
   // Extended format support (new fields — backward compatible)
   format?: BillFormat;
   copyLabel?: string;
@@ -224,7 +226,7 @@ export type BuildPrintHtmlOpts = {
 };
 
 export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
-  const { bill, clinic, paperSize, orientation = "portrait", isBW, qrDataUrl, reprintBy, reprintReason, compactFooterGap = false, compactOnA4 = false, pageCssSize } = opts;
+  const { bill, clinic, paperSize, orientation = "portrait", isBW, qrDataUrl, reprintBy, reprintReason, compactFooterGap = false, compactOnA4 = false, pageCssSize, provisionalReceipt = false } = opts;
   const copies = Math.max(1, Math.min(2, Number(clinic?.billPrintCopies ?? 1) || 1));
   const showCode = clinic?.billShowCode !== false;
   const showCategory = clinic?.billShowCategory !== false;
@@ -367,6 +369,7 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
       <!-- Reprint marker — a flat, muted badge (not a rotated/dashed
            "stamp") stating who reprinted this copy and why, placed under
            the bill number rather than crowding the logo/header. -->
+      ${provisionalReceipt ? `<div style="display:block;background:#fef3c7;color:#92400e;border:2px solid #f59e0b;border-radius:4px;padding:4px 8px;font-size:${tinyPx};font-weight:800;letter-spacing:0.03em;margin-bottom:8px;text-align:center;text-transform:uppercase">Provisional Receipt — Server Offline · Will Sync Automatically · QR Valid After Sync</div>` : ""}
       ${reprintBy || reprintReason ? `<div style="display:inline-block;background:#f3f4f6;color:#4b5563;border:1px solid #d1d5db;border-radius:3px;padding:2px 8px;font-size:${tinyPx};font-weight:600;letter-spacing:0.02em;margin-bottom:8px">REPRINT${reprintBy ? ` &nbsp;&middot;&nbsp; ${esc(reprintBy)}` : ""}${reprintReason ? ` &nbsp;&middot;&nbsp; ${esc(reprintReason)}` : ""} &nbsp;&middot;&nbsp; ${esc(new Date().toLocaleDateString("en-IN"))}</div>` : ""}
 
       <!-- PATIENT + DATE (uniform font size) -->

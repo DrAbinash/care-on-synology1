@@ -50,7 +50,7 @@ function sessionField(key: "name" | "signatureDataUrl"): string {
 }
 
 export function buildModernLandscapeBillPrintHtml(opts: BuildPrintHtmlOpts): string {
-  const { bill, clinic, isBW, qrDataUrl, reprintBy, reprintReason } = opts;
+  const { bill, clinic, isBW, qrDataUrl, reprintBy, reprintReason, provisionalReceipt = false } = opts;
   const copies = Math.max(1, Math.min(2, Number(clinic?.billPrintCopies ?? 1) || 1));
   const showCode = clinic?.billShowCode !== false;
   const showCat = clinic?.billShowCategory !== false;
@@ -156,6 +156,8 @@ export function buildModernLandscapeBillPrintHtml(opts: BuildPrintHtmlOpts): str
           ${isCancelled ? "CANCELLED" : "Awaiting Payment"}
         </div>`
         : ""}
+
+      ${provisionalReceipt ? `<div style="background:#fef3c7;color:#92400e;border:2px solid #f59e0b;border-radius:4px;padding:4px 8px;font-size:${tinyPx};font-weight:800;margin-bottom:6px;text-align:center;text-transform:uppercase">Provisional — Offline · Sync Pending · QR After Sync</div>` : ""}
 
       <header style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;padding-bottom:6px;border-bottom:1.5px solid ${accent}">
         <div style="display:flex;gap:10px;align-items:center;min-width:0;flex:1">

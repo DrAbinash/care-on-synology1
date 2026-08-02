@@ -92,6 +92,7 @@ export function SyncPanel() {
           {queued.map((q) => (
             <div key={q.clientRef} className="flex items-center justify-between gap-2 text-white/70">
               <span className="truncate" title={q.lastError ?? undefined}>
+                {q.provisionalBillNumber ? `${q.provisionalBillNumber} · ` : ""}
                 {new Date(q.queuedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                 {q.lastError ? ` — ${q.lastError}` : " — waiting to sync"}
               </span>

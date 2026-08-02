@@ -2,6 +2,7 @@
 // pure, DOM-free functions below — stays importable under the repo's root
 // vitest config, which has no "@/" alias resolution configured.
 import { api } from "./fetchApi";
+import type { ProvisionalBillPrintSnapshot } from "./provisionalBillReceipt";
 
 /**
  * offlineBillingQueue.ts — durable local queue for bills that couldn't reach
@@ -30,6 +31,8 @@ export type QueuedBillStage = "order" | "bill";
 export type QueuedBill = {
   clientRef: string;
   queuedAt: string;
+  /** Shown on provisional receipt until sync assigns a real bill number. */
+  provisionalBillNumber?: string;
   stage: QueuedBillStage; // "order": nothing created yet. "bill": order already exists, only the bill remains.
   orderBody: Record<string, unknown>;
   billBody: Record<string, unknown>;
@@ -40,9 +43,12 @@ export type QueuedBill = {
 };
 
 export class QueuedForSyncError extends Error {
-  constructor() {
+  readonly snapshot: ProvisionalBillPrintSnapshot;
+
+  constructor(snapshot: ProvisionalBillPrintSnapshot) {
     super("No connection — bill saved locally and will sync automatically.");
     this.name = "QueuedForSyncError";
+    this.snapshot = snapshot;
   }
 }
 
@@ -145,10 +151,12 @@ export function enqueueBill(opts: {
   stage?: QueuedBillStage;
   orderId?: number;
   orderNumber?: string;
+  provisionalBillNumber?: string;
 }): QueuedBill {
   const entry: QueuedBill = {
     clientRef: opts.clientRef,
     queuedAt: new Date().toISOString(),
+    provisionalBillNumber: opts.provisionalBillNumber,
     stage: opts.stage ?? "order",
     orderBody: opts.orderBody,
     billBody: opts.billBody,
