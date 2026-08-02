@@ -156,8 +156,11 @@ export function buildModernLandscapeBillPrintHtml(opts: BuildPrintHtmlOpts): str
           ${isCancelled ? "CANCELLED" : "Awaiting Payment"}
         </div>`
         : ""}
+<<<<<<< HEAD
 
       ${provisionalReceipt ? `<div style="background:#fef3c7;color:#92400e;border:2px solid #f59e0b;border-radius:4px;padding:4px 8px;font-size:${tinyPx};font-weight:800;margin-bottom:6px;text-align:center;text-transform:uppercase">Provisional — Offline · Sync Pending · QR After Sync</div>` : ""}
+=======
+>>>>>>> origin/feature/website-login-redirection
 
       <header style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;padding-bottom:6px;border-bottom:1.5px solid ${accent}">
         <div style="display:flex;gap:10px;align-items:center;min-width:0;flex:1">
