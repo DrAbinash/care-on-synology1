@@ -105,6 +105,8 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { SyncPanel, SyncBadge } from "@/components/SyncPanel";
 import { OfflineBillingSyncNotifier } from "@/components/OfflineBillingSyncNotifier";
+import { LanModeBanner } from "@/components/LanModeBanner";
+import { isOnLanErpOrigin } from "@/lib/erpConnectivity";
 import { readStaffSession, clearStaffSession, canAccess, FULL_ACCESS_ROLES, isFeatureEnabled, normalizeRole } from "@/lib/staffSession";
 import { useUserTheme, clearUserTheme } from "@/lib/userTheme";
 import { ThemeSelector } from "@/components/ThemeSelector";
@@ -1398,14 +1400,15 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           </div>
         )}
 
-        {/* Offline indicator — shown when the browser loses network connectivity.
-            Data is still visible from the service-worker cache; writes are blocked. */}
-        {!isOnline && (
+        <LanModeBanner />
+
+        {/* No-internet warning — hidden on LAN ERP (NAS is reachable without internet). */}
+        {!isOnline && !isOnLanErpOrigin() && (
           <div className="flex items-center gap-2 bg-slate-800 dark:bg-slate-900 border-b border-slate-600 px-4 py-2 text-sm text-slate-100">
             <WifiOff size={14} className="shrink-0 text-slate-300" />
-            <span className="font-medium">You are offline.</span>
+            <span className="font-medium">No internet connection.</span>
             <span className="text-slate-300 text-xs hidden sm:inline">
-              Cached data is shown — changes will not save until the connection is restored.
+              If the clinic NAS is on, the app will switch to the local network automatically.
             </span>
           </div>
         )}

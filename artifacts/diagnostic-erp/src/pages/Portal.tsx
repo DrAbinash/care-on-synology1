@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/select";
 import { fetchApi, api } from "@/lib/fetchApi";
 import { writeStaffSession, firstPermissionedPath, firstAllowedPath, canAccess, normalizeRole, type StaffSession as ErpStaffSession } from "@/lib/staffSession";
+import { InstallAppHint } from "@/components/InstallAppHint";
 
 // =====================================================================
 // Types
@@ -670,6 +671,8 @@ function StaffLogin() {
           <p className="text-xs text-muted-foreground text-center mt-6">
             Forgot your PIN? Please contact your administrator.
           </p>
+
+          <InstallAppHint />
         </div>
       </div>
       {/* Version footer */}

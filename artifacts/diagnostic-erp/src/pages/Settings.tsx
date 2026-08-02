@@ -7,6 +7,7 @@ import { resolveBillPrintPageOpts } from "@/lib/billPrintSettings";
 import { api, fetchApi, getStaffToken } from "@/lib/fetchApi";
 import { useSuperAdmin, getSuperAdminToken } from "@/hooks/useSuperAdmin";
 import PageHeader from "@/components/PageHeader";
+import { PortalLoginBackgroundSettings } from "@/components/PortalLoginBackgroundSettings";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -171,7 +172,7 @@ const TABS = [
   { id: "locations", label: "Locations", icon: Layers },
   { id: "branches", label: "Branches", icon: MapPin },
   { id: "report-templates", label: "Report Templates", icon: FileCode },
-  { id: "portal", label: "Patient Portal", icon: Globe },
+  { id: "portal", label: "Portal & Login", icon: Globe },
   { id: "online-booking", label: "Online Booking", icon: CreditCard },
   { id: "mobile-app", label: "Mobile App", icon: Smartphone },
   { id: "kiosk", label: "Self-Reg Kiosk", icon: QrCode },
@@ -265,7 +266,7 @@ export default function Settings() {
       else if (t.id === "billing-print" || t.id === "discount-reasons" || t.id === "reprint-reasons" || t.id === "receipt-messages" || t.id === "footer-services" || t.id === "promotional-footer") action = "billing";
       else if (t.id === "printers" || t.id === "scanner") action = "devices";
       else if (t.id === "departments" || t.id === "locations" || t.id === "branches" || t.id === "report-templates") action = "infrastructure";
-      else if (t.id === "portal" || t.id === "online-booking" || t.id === "kiosk") action = "portals";
+      else if (t.id === "portal" || t.id === "online-booking" || t.id === "kiosk" || t.id === "queue-settings" || t.id === "queue-display") action = "portals";
 
       return hasSubPermission(session, "/settings", action);
     });
@@ -287,7 +288,7 @@ export default function Settings() {
       else if (t.id === "billing-print" || t.id === "discount-reasons" || t.id === "reprint-reasons" || t.id === "receipt-messages" || t.id === "footer-services" || t.id === "promotional-footer") action = "billing";
       else if (t.id === "printers" || t.id === "scanner") action = "devices";
       else if (t.id === "departments" || t.id === "locations" || t.id === "branches" || t.id === "report-templates") action = "infrastructure";
-      else if (t.id === "portal" || t.id === "online-booking" || t.id === "kiosk" || t.id === "queue-settings") action = "portals";
+      else if (t.id === "portal" || t.id === "online-booking" || t.id === "kiosk" || t.id === "queue-settings" || t.id === "queue-display") action = "portals";
 
       return hasSubPermission(initialSession, "/settings", action);
     });
@@ -1233,7 +1234,7 @@ function AppearanceTab() {
   });
 
   return (
-    <div className="max-w-2xl space-y-6">
+    <div className="max-w-3xl space-y-6">
       {/* My personal theme */}
       <div className="bg-card border border-card-border rounded-xl p-5 space-y-5">
         <div>
@@ -1267,6 +1268,9 @@ function AppearanceTab() {
 
       {/* Billing desk layout toggle */}
       <BillingDeskLayoutCard />
+
+      {/* Staff login / portal background (admin) */}
+      {isAdmin && <PortalLoginBackgroundSettings standalone />}
 
       {/* Clinic-wide default (admin only) */}
       {isAdmin && (
@@ -1758,25 +1762,14 @@ function PatientPortalTab() {
   });
   const [form, setForm] = useState<PortalConfig | null>(null);
   const [copied, setCopied] = useState(false);
-  const [bgUploadErr, setBgUploadErr] = useState("");
   useEffect(() => { if (data) setForm(data); }, [data]);
-
-  const onBackgroundChange = (file: File | null) => {
-    if (!file || !form) return;
-    setBgUploadErr("");
-    if (!file.type.startsWith("image/")) { setBgUploadErr("Please upload an image file"); return; }
-    // Raw byte limit here must stay <= the server's base64-length limit * 3/4
-    // (base64 inflates size by ~33%) — see clinicSettings.ts's
-    // portalBackgroundImageDataUrl check (4,000,000 chars → 3,000,000 bytes).
-    if (file.size > 3_000_000) { setBgUploadErr("Image too large (max ~3 MB). Use a smaller photo."); return; }
-    const reader = new FileReader();
-    reader.onload = () => setForm({ ...form, portalBackgroundImageDataUrl: String(reader.result) });
-    reader.readAsDataURL(file);
-  };
 
   const save = useMutation({
     mutationFn: (body: Partial<PortalConfig>) => api.put("/api/clinic-settings", body),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["clinic-settings"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["clinic-settings"] });
+      qc.invalidateQueries({ queryKey: ["portal-settings"] });
+    },
   });
 
   if (isLoading || !form) {
@@ -1892,50 +1885,10 @@ function PatientPortalTab() {
             </div>
           </div>
 
-          <div className="bg-card border border-card-border rounded-xl p-5 space-y-4">
-            <div>
-              <h3 className="font-bold flex items-center gap-2"><ImageIcon size={16} /> Background Image</h3>
-              <p className="text-xs text-muted-foreground">Shown behind the login/portal page instead of the plain default background. Recommended: a wide photo, &lt; 3 MB.</p>
-            </div>
-            <div className="border-2 border-dashed border-card-border rounded-lg p-4 flex items-center justify-center bg-muted/30 min-h-[140px]">
-              {form.portalBackgroundImageDataUrl ? (
-                <img src={form.portalBackgroundImageDataUrl} alt="Background preview" className="max-h-40 max-w-full object-contain rounded" />
-              ) : (
-                <div className="text-center text-muted-foreground text-sm">
-                  <ImageIcon size={32} className="mx-auto mb-2 opacity-30" />
-                  No background image set
-                </div>
-              )}
-            </div>
-            <input
-              type="file"
-              accept="image/*"
-              onChange={(e) => onBackgroundChange(e.target.files?.[0] ?? null)}
-              className="hidden"
-              id="portal-background-input"
-            />
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => { document.getElementById("portal-background-input")?.click(); }}
-              className="w-full"
-            >
-              <Upload size={14} className="mr-2" /> Choose Background Image
-            </Button>
-            {form.portalBackgroundImageDataUrl && (
-              <Button
-                variant="ghost"
-                className="w-full text-destructive hover:text-destructive"
-                onClick={() => setForm({ ...form, portalBackgroundImageDataUrl: null })}
-              >
-                <Trash2 size={14} className="mr-2" /> Remove Background Image
-              </Button>
-            )}
-            {bgUploadErr && <p className="text-xs text-destructive">{bgUploadErr}</p>}
-            <p className="text-[11px] text-muted-foreground leading-relaxed">
-              Click <strong>Save Changes</strong> below after choosing an image.
-            </p>
-          </div>
+          <PortalLoginBackgroundSettings
+            value={form.portalBackgroundImageDataUrl}
+            onChange={(portalBackgroundImageDataUrl) => setForm({ ...form, portalBackgroundImageDataUrl })}
+          />
 
           <div className="bg-card border border-card-border rounded-xl p-5 space-y-3">
             <div>

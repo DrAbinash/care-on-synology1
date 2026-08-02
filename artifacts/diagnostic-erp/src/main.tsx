@@ -2,6 +2,11 @@ import { createRoot } from "react-dom/client";
 import { setAuthTokenGetter } from "@workspace/api-client-react";
 import App from "./App";
 import { ERP_SESSION_KEY, type StaffSession } from "./lib/staffSession";
+import { runErpConnectivityBootstrap } from "./lib/erpConnectivity";
+import {
+  ConnectivityBootstrapSplash,
+  removeConnectivityBootstrapSplash,
+} from "./components/ConnectivityBootstrapSplash";
 import "./index.css";
 
 // Apply the persisted color scheme synchronously, before the first paint —
@@ -60,7 +65,21 @@ window.addEventListener("vite:preloadError", () => {
   }
 });
 
-createRoot(document.getElementById("root")!).render(<App />);
+async function boot() {
+  const rootEl = document.getElementById("root")!;
+  const root = createRoot(rootEl);
+  root.render(<ConnectivityBootstrapSplash />);
+
+  try {
+    await runErpConnectivityBootstrap();
+  } finally {
+    removeConnectivityBootstrapSplash();
+  }
+
+  root.render(<App />);
+}
+
+void boot();
 
 // Once the app has mounted successfully, clear the reload guard so a LATER
 // redeploy during this same browser session can still trigger one auto-reload

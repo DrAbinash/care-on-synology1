@@ -35,6 +35,8 @@ const state = {
   erpPort: intVal(env.VITE_ERP_HTTP_PORT, 8888),
 };
 
+const NETWORK_SETTINGS_CACHE_KEY = "erp_network_hosts_cache";
+
 /**
  * Hydrate hosts/ports from the admin PACS settings record.
  * Safe to call repeatedly; unknown/empty keys are ignored.
@@ -51,6 +53,29 @@ export function applyNetworkSettings(
   if (settings.orthanc_http_port) state.orthancHttpPort = intVal(settings.orthanc_http_port, state.orthancHttpPort);
   if (settings.ohif_http_port) state.ohifPort = intVal(settings.ohif_http_port, state.ohifPort);
   if (settings.erp_http_port) state.erpPort = intVal(settings.erp_http_port, state.erpPort);
+  try {
+    window.localStorage.setItem(NETWORK_SETTINGS_CACHE_KEY, JSON.stringify(settings));
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Restore last-known network hosts (used before LAN failover bootstrap). */
+export function hydrateNetworkSettingsFromCache(): void {
+  if (typeof window === "undefined") return;
+  try {
+    const raw = window.localStorage.getItem(NETWORK_SETTINGS_CACHE_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw) as Record<string, string>;
+    if (parsed.network_lan_host?.trim()) state.hosts.LAN = parsed.network_lan_host.trim();
+    if (parsed.network_tailscale_host?.trim()) state.hosts.TAILSCALE = parsed.network_tailscale_host.trim();
+    if (parsed.network_public_domain?.trim()) state.hosts.PUBLIC = parsed.network_public_domain.trim();
+    if (parsed.orthanc_http_port) state.orthancHttpPort = intVal(parsed.orthanc_http_port, state.orthancHttpPort);
+    if (parsed.ohif_http_port) state.ohifPort = intVal(parsed.ohif_http_port, state.ohifPort);
+    if (parsed.erp_http_port) state.erpPort = intVal(parsed.erp_http_port, state.erpPort);
+  } catch {
+    /* ignore */
+  }
 }
 
 /** Host (IP or bare domain) for a given network profile. */
@@ -93,6 +118,36 @@ export function ohifBaseForProfile(profile: NetworkProfile): string {
 /** Public site base, e.g. "https://<public-domain>". */
 export function publicBaseUrl(): string {
   return `https://${state.hosts.PUBLIC}`;
+}
+
+/** ERP SPA origin on LAN, e.g. "http://172.16.1.139:8888/erp". */
+export function erpLanOrigin(): string {
+  const basePath = String(env.BASE_URL || "/erp/").replace(/\/?$/, "/");
+  return `http://${state.hosts.LAN}:${state.erpPort}${basePath}`;
+}
+
+/** ERP SPA origin on the public domain, e.g. "https://caredeoghar.com/erp". */
+export function erpPublicOrigin(): string {
+  const basePath = String(env.BASE_URL || "/erp/").replace(/\/?$/, "/");
+  return `https://${state.hosts.PUBLIC}${basePath}`;
+}
+
+const PRIVATE_IP =
+  /^(127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|100\.|localhost$)/i;
+
+/** True when this hostname is a private/LAN address (not the public domain). */
+export function isLanHostname(hostname: string): boolean {
+  const h = hostname.trim().toLowerCase();
+  if (!h) return false;
+  if (h === state.hosts.LAN.toLowerCase()) return true;
+  return PRIVATE_IP.test(h);
+}
+
+/** True when the browser is on the clinic's public ERP domain. */
+export function isPublicErpHostname(hostname: string): boolean {
+  const h = hostname.trim().toLowerCase();
+  const pub = state.hosts.PUBLIC.toLowerCase();
+  return h === pub || h === `www.${pub}` || h === `erp.${pub}`;
 }
 
 /**
