@@ -175,6 +175,12 @@ describe("resolveBillPrintPageOpts — paper size reaches the print HTML", () =>
     expect(opts.pageCssSize).toBe("A5 portrait");
   });
 
+  test("half-a4 uses landscape half-sheet dimensions", () => {
+    const opts = resolveBillPrintPageOpts({ defaultPaperSize: "half-a4", autoA4Threshold: 5 }, 1);
+    expect(opts.pageCssSize).toBe("210mm 148mm");
+    expect(opts.orientation).toBe("portrait");
+  });
+
   test("many tests auto-switch to A4 when clinic uses auto paper (no fixed A5 size)", () => {
     const opts = resolveBillPrintPageOpts(
       { defaultPaperSize: "A5-portrait", autoA4Threshold: 3 },
