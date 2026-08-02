@@ -275,7 +275,7 @@ No other file needs to be changed.
 
 ```bash
 # SSH into Synology NAS
-ssh admin@192.168.1.137
+ssh admin@172.16.1.139
 
 # Navigate to project
 cd /volume1/care-erp  # or wherever the repo is
@@ -404,7 +404,7 @@ DB_BIND_ADDR=127.0.0.1      # interface the DB port binds to. Loopback by defaul
                             # to OLLAMA_URL, it never connects to Postgres.
 HOST_PORT=8888              # host port for the ERP web interface
 PUBLIC_BASE_URL=https://caredeoghar.com
-ORTHANC_URL=http://192.168.1.137:8042
+ORTHANC_URL=http://172.16.1.139:8042
 ENABLE_SCHEDULERS=1         # enable cron jobs (billing, PACS watchdog, etc.)
 
 # Schema architecture guards (see "Safety guards" above) — safe to leave at
@@ -421,7 +421,7 @@ SCHEMA_VERIFY_STRICT=false  # true = any schema drift blocks care-api startup
 ## Architecture overview
 
 ```
-Synology NAS (192.168.1.137)
+Synology NAS (172.16.1.139)
 ├── care-db          PostgreSQL 16           port 5400 (host, loopback-bound)
 ├── care-db-patch-v2 Migration runner        (runs once per deploy, exits)
 ├── care-api         Express.js API          port 8080 (internal)
@@ -434,8 +434,8 @@ Cloudflare Tunnel
 ├── caredeoghar.com       → Synology:8888 (ERP)
 └── webui.caredeoghar.com → Synology:3000 (Open WebUI)
 
-Orthanc PACS:  http://192.168.1.137:8042
-OHIF Viewer:   http://192.168.1.137:3010
+Orthanc PACS:  http://172.16.1.139:8042
+OHIF Viewer:   http://172.16.1.139:3010
 ```
 
 ---
@@ -450,7 +450,7 @@ own beyond what Docker's layer cache already handles quickly.
 
 ```bash
 # 1. SSH into the Synology NAS
-ssh admin@192.168.1.137
+ssh admin@172.16.1.139
 cd /volume1/care-erp   # or wherever the repo is checked out
 
 # 2. Pull the latest code

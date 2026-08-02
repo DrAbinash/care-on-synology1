@@ -4,7 +4,6 @@
  */
 
 import type { SyncedBillResult } from "./offlineBillingQueue";
-
 import { probeErpOrigin } from "./erpConnectivity";
 
 export const OFFLINE_BILLS_SYNCED_EVENT = "erp:offlineBillsSynced";

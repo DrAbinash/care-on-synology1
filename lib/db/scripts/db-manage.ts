@@ -45,7 +45,7 @@ if (existsSync(rootEnv)) {
 
 // Build DATABASE_URL from individual env vars if not set directly
 if (!process.env.DATABASE_URL) {
-  const host = process.env.DB_HOST ?? "192.168.1.137";
+  const host = process.env.DB_HOST ?? "172.16.1.139";
   const port = process.env.DB_HOST_PORT ?? "5400";
   const user = process.env.DB_USER ?? "erp";
   const pass = process.env.DB_PASSWORD ?? "changeme";

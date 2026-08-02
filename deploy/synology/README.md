@@ -1,13 +1,13 @@
 # Synology deploy — Hope Hospital + Care Diagnostics
 
-Both systems run on **NAS `192.168.1.137`**. Use **Container Manager** (no SSH /
+Both systems run on **NAS `172.16.1.139`**. Use **Container Manager** (no SSH /
 `docker compose` required). Migrations **and** Hope↔Care partner wiring run
 automatically on Care API start.
 
 | System | LAN URL | Project folder (typical) | Env template |
 |--------|---------|--------------------------|--------------|
-| **Hope ERP** | http://192.168.1.137:7080/ | `/volume1/docker/hope-erp` | `deploy/synology/hope.env` |
-| **Care ERP** | http://192.168.1.137:8888/ (https://caredeoghar.com) | `/volume1/docker/care-on-synology1` | `deploy/synology/care.env` |
+| **Hope ERP** | http://172.16.1.139:7080/ | `/volume1/docker/hope-erp` | `deploy/synology/hope.env` |
+| **Care ERP** | http://172.16.1.139:8888/ (https://caredeoghar.com) | `/volume1/docker/care-on-synology1` | `deploy/synology/care.env` |
 
 Partner key + callback signing secret are already matched across both templates.
 
@@ -33,7 +33,7 @@ templates — already matched):
 
 **Care `.env` must include:**
 ```
-INTEGRATION_HOPE_CALLBACK_URL=http://192.168.1.137:7080/api/integration/care-callback
+INTEGRATION_HOPE_CALLBACK_URL=http://172.16.1.139:7080/api/integration/care-callback
 INTEGRATION_HOPE_SIGNING_SECRET=7ab91cf3b7a45c4a3b4a6a90aa63ed2be921abc77bbd007f0de60093ba895f0f
 HOPE_CARE_INTEGRATION_FORCE=1
 HOPE_PARTNER_KEY=intgk_8ffb1b9c5b982148cfbe89448064cc4986b172bea48fe73b0f622f4a192da7e7
@@ -42,7 +42,7 @@ HOPE_PARTNER_KEY=intgk_8ffb1b9c5b982148cfbe89448064cc4986b172bea48fe73b0f622f4a1
 **Hope `.env` must include:**
 ```
 ENABLE_CARE_INTEGRATION=1
-CARE_REFERRAL_URL=http://192.168.1.137:8888/api/integration/v1
+CARE_REFERRAL_URL=http://172.16.1.139:8888/api/integration/v1
 CARE_PARTNER_KEY=intgk_8ffb1b9c5b982148cfbe89448064cc4986b172bea48fe73b0f622f4a192da7e7
 CARE_CALLBACK_SECRET=7ab91cf3b7a45c4a3b4a6a90aa63ed2be921abc77bbd007f0de60093ba895f0f
 CARE_BOOKING_URL=https://caredeoghar.com/book

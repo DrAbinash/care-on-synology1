@@ -51,12 +51,12 @@ _Generated from a full `process.env` / `import.meta.env` sweep of the codebase d
 |---|---|---|---|---|---|
 | `PACS_PROVIDER` | ⬜ | — | `orthanc` / `conquest` | `orthanc` | selects backend |
 | `PACS_VIEWER_TYPE` | ⬜ | — | `ohif` / `weasis` | `ohif` | viewer |
-| `ORTHANC_URL` | ⬜ | — | `http://192.168.1.137:8042` | empty | Orthanc (browser/Weasis reachable) |
+| `ORTHANC_URL` | ⬜ | — | `http://172.16.1.139:8042` | empty | Orthanc (browser/Weasis reachable) |
 | `ORTHANC_INTERNAL_URL` | ⬜ | — | `http://care-orthanc:8042` | `http://care-orthanc:8042` | container→container health probe |
 | `ORTHANC_USERNAME` / `ORTHANC_PASSWORD` | ⬜ | 🔑 | `admin` / … | empty | Orthanc auth |
 | `ALLOW_PRIVATE_IPS` | ⬜ | — | `true` | `true` | allow API to call LAN IPs (SSRF guard relaxed for PACS) |
-| `OHIF_URL` / `OHIF_INTERNAL_URL` | ⬜ | — | `http://192.168.1.137:3010` | empty | OHIF viewer |
-| `WADO_URL` / `WEASIS_WADO_PUBLIC_URL` | ⬜ | — | `http://192.168.1.137:8042/wado` | empty | WADO for viewers |
+| `OHIF_URL` / `OHIF_INTERNAL_URL` | ⬜ | — | `http://172.16.1.139:3010` | empty | OHIF viewer |
+| `WADO_URL` / `WEASIS_WADO_PUBLIC_URL` | ⬜ | — | `http://172.16.1.139:8042/wado` | empty | WADO for viewers |
 | `ORTHANC_AE_TITLE` / `ORTHANC_IP` / `ORTHANC_WORKLIST_DIR` | ⬜ | — | — | — | DICOM worklist / C-STORE |
 | `ORTHANC_CHANGES_POLLER` / `ORTHANC_POLL_INTERVAL_MS` | ⬜ | — | `true` / `5000` | — | change-feed poller |
 | `CONQUEST_URL` / `CONQUEST_HOST` / `CONQUEST_PORT` / `CONQUEST_AE_TITLE` | ⬜ | — | LAN | — | alt PACS |

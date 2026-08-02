@@ -44,7 +44,7 @@ describe("isDockerBridgeIp", () => {
   });
 
   test("does NOT flag standard private/LAN or public addresses", () => {
-    expect(isDockerBridgeIp("192.168.1.137")).toBe(false);
+    expect(isDockerBridgeIp("192.168.1.50")).toBe(false);
     expect(isDockerBridgeIp("10.0.0.5")).toBe(false);
     expect(isDockerBridgeIp("100.65.255.115")).toBe(false); // Tailscale
     expect(isDockerBridgeIp("caredeoghar.com")).toBe(false);

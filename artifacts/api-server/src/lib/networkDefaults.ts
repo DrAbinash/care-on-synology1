@@ -22,7 +22,7 @@ function intFromEnv(name: string, fallback: number): number {
 
 /** Clinic LAN address of the Synology NAS (Orthanc, OHIF, ERP all live here). */
 export const NETWORK_LAN_HOST =
-  process.env.NETWORK_LAN_HOST || "192.168.1.137";
+  process.env.NETWORK_LAN_HOST || "172.16.1.139";
 
 /** Tailscale VPN address of the same NAS, for remote reading from home. */
 export const NETWORK_TAILSCALE_HOST =

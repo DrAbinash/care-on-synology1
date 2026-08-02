@@ -64,7 +64,7 @@ DEPLOYMENT CHECKLIST
   [ ] Restart containers
   [ ] Monitor logs: docker-compose logs care-db-patch-v2
   [ ] Watch for: "✓ ALL MIGRATIONS COMPLETED SUCCESSFULLY"
-  [ ] Verify: http://192.168.1.137:3000/health returns {"status":"ok"}
+  [ ] Verify: http://172.16.1.139:3000/health returns {"status":"ok"}
   [ ] Test UI: Radiology → Reporting Workspace loads ✓
   [ ] Click Quick Select button: Works without error ✓
 
@@ -77,7 +77,7 @@ VERIFICATION (After Deployment)
     "SELECT COUNT(*) FROM radiology_quick_findings WHERE properties != '';"
   → Should return: 50+ (rows with properties set)
 
-  curl http://192.168.1.137:3000/health
+  curl http://172.16.1.139:3000/health
   → Should return: {"status":"ok","uptime":...}
 
 SAFETY PROPERTIES

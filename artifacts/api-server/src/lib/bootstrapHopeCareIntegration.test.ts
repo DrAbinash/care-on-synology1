@@ -28,7 +28,7 @@ describe("shouldBootstrapHopeCare", () => {
   test("runs when INTEGRATION_HOPE_CALLBACK_URL is set", () => {
     expect(
       shouldBootstrapHopeCare({
-        INTEGRATION_HOPE_CALLBACK_URL: "http://192.168.1.137:7080/api/integration/care-callback",
+        INTEGRATION_HOPE_CALLBACK_URL: "http://172.16.1.139:7080/api/integration/care-callback",
       }),
     ).toBe(true);
   });

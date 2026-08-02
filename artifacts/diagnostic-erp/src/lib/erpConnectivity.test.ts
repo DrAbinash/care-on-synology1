@@ -28,13 +28,13 @@ describe("erpConnectivity URL helpers", () => {
   });
 
   it("detects LAN hostname", () => {
-    (window as any).location.hostname = "192.168.1.139";
+    (window as any).location.hostname = "172.16.1.139";
     expect(currentConnectivityKind()).toBe("lan");
   });
 
   it("builds LAN failover URL preserving path and query", () => {
     const url = buildLanFailoverUrl();
-    expect(url).toMatch(/^http:\/\/192\.168\.\d+\.\d+:8888\/erp\/billing\?x=1$/);
+    expect(url).toBe("http://172.16.1.139:8888/erp/billing?x=1");
   });
 
   it("builds public ERP URL", () => {
