@@ -211,9 +211,7 @@ async function fetchWithRetry(path: string, init?: RequestInit): Promise<Respons
       }
       // Last attempt or non-transient: surface the original network error
       throw new NetworkError(
-        navigator.onLine
-          ? "Server not responding — please check your connection and try again."
-          : "No internet connection — waiting for network to return."
+        "Server not responding — if the internet is down, we will use the local NAS when possible."
       );
     }
 

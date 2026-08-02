@@ -5,6 +5,8 @@
 
 import type { SyncedBillResult } from "./offlineBillingQueue";
 
+import { probeErpOrigin } from "./erpConnectivity";
+
 export const OFFLINE_BILLS_SYNCED_EVENT = "erp:offlineBillsSynced";
 
 /** Poll interval while bills are waiting in the local queue. */
@@ -15,31 +17,8 @@ export const OFFLINE_QUEUE_IDLE_POLL_MS = 15_000;
 
 /** Lightweight probe — proves care-api is answering (not just DNS/LAN). */
 export async function probeBillingApi(timeoutMs = 4_000): Promise<boolean> {
-  try {
-    const controller = new AbortController();
-    const timer = window.setTimeout(() => controller.abort(), timeoutMs);
-    const token = (() => {
-      try {
-        const raw = window.localStorage.getItem("erp_session");
-        if (!raw) return null;
-        return JSON.parse(raw)?.token ?? null;
-      } catch {
-        return null;
-      }
-    })();
-    const headers: Record<string, string> = { "Content-Type": "application/json" };
-    if (token) headers.Authorization = `Bearer ${token}`;
-    const res = await fetch("/api/sync/status", {
-      method: "GET",
-      headers,
-      signal: controller.signal,
-      cache: "no-store",
-    });
-    window.clearTimeout(timer);
-    return res.ok;
-  } catch {
-    return false;
-  }
+  if (typeof window === "undefined") return false;
+  return probeErpOrigin(window.location.origin, timeoutMs);
 }
 
 export function dispatchOfflineBillsSynced(synced: SyncedBillResult[]): void {
