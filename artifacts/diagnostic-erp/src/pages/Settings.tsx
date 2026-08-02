@@ -3,6 +3,7 @@ import { Link } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import QRCode from "qrcode";
 import { buildBillPrintHtml, type PrintBillData, type PrintClinic } from "@/lib/printBill";
+import { resolveBillPrintPageOpts } from "@/lib/billPrintSettings";
 import { api, fetchApi, getStaffToken } from "@/lib/fetchApi";
 import { useSuperAdmin, getSuperAdminToken } from "@/hooks/useSuperAdmin";
 import PageHeader from "@/components/PageHeader";
@@ -4904,13 +4905,14 @@ function BillingPrintTab() {
   const deferredSettings = useDeferredValue(settings);
   const previewHtml = useMemo(() => {
     if (!deferredSettings) return "";
-    const orientation: "portrait" | "landscape" = deferredSettings.defaultPaperSize === "A5-landscape" ? "landscape" : "portrait";
-    const paperSize: "A4" | "A5" = deferredSettings.defaultPaperSize === "A4" ? "A4" : "A5";
+    const pageOpts = resolveBillPrintPageOpts(deferredSettings, BILL_PREVIEW_SAMPLE.order?.tests?.length ?? 1);
     return buildBillPrintHtml({
       bill: BILL_PREVIEW_SAMPLE,
       clinic: previewClinic ?? BILL_PREVIEW_FALLBACK_CLINIC,
-      paperSize,
-      orientation,
+      paperSize: pageOpts.paperSize,
+      orientation: pageOpts.orientation,
+      pageCssSize: pageOpts.pageCssSize,
+      compactFooterGap: pageOpts.compactFooterGap,
       isBW: effectivePreviewIsBW,
       qrDataUrl: previewQrUrl,
       format: deferredSettings.defaultFormat,

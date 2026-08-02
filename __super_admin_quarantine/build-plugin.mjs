@@ -111,7 +111,17 @@ async function buildPlugin() {
       outfile: path.resolve(__dirname, "dist/superadmin-api.js"),
       sourcemap: false,
       minify: true,
+      banner: {
+        js: `import { createRequire as __bannerCrReq } from 'node:module';
+import __bannerPath from 'node:path';
+import __bannerUrl from 'node:url';
+globalThis.require = __bannerCrReq(import.meta.url);
+globalThis.__filename = __bannerUrl.fileURLToPath(import.meta.url);
+globalThis.__dirname = __bannerPath.dirname(globalThis.__filename);
+`,
+      },
       external: [
+        // npm packages the care-api container already ships — resolved from node_modules.
         "express",
         "zod",
         "bcryptjs",
@@ -120,10 +130,8 @@ async function buildPlugin() {
         "node-cron",
         "nodemailer",
         "sharp",
-        "@workspace/db",
-        "@workspace/db/schema",
-        "@workspace/api-zod",
-        "@workspace/crypto",
+        "express-rate-limit",
+        // Node built-ins
         "node:crypto",
         "node:fs",
         "node:path",
@@ -134,8 +142,9 @@ async function buildPlugin() {
         "path",
         "url",
         "child_process",
-        "express-rate-limit"
-      ]
+        // @workspace/* MUST be bundled: those packages export .ts entrypoints and
+        // plain `import()` of the uploaded plugin cannot load them at runtime.
+      ],
     });
     console.log("[build-plugin] Backend plugin built at __super_admin_quarantine/dist/superadmin-api.js");
   } finally {

@@ -32,6 +32,8 @@ import {
   indexCommissionBillsByOrderId,
   isCommissionBillEligible,
   NEEDS_REPORT_STATUS,
+  buildTestNameAliasIndex,
+  rulesForDoctor,
 } from "./lib/commissionCalc";
 
 let currentTask: ReturnType<typeof cron.schedule> | null = null;
@@ -1084,16 +1086,15 @@ async function fireCommissionReconcile(): Promise<{ transitions: number }> {
   const [doctors, rules, tests, orderTests, bills, tokens, lastEvents] = await Promise.all([
     db.select().from(doctorsTable),
     db.select().from(commissionRulesTable).orderBy(commissionRulesTable.id),
-    db.select({ id: testsTable.id, category: testsTable.category, testType: testsTable.testType }).from(testsTable),
+    db.select({ id: testsTable.id, name: testsTable.name, category: testsTable.category, testType: testsTable.testType }).from(testsTable),
     db.select().from(orderTestsTable).where(and(inArray(orderTestsTable.orderId, orderIds), ne(orderTestsTable.status, "cancelled"))),
     db.select({ orderId: billsTable.orderId, status: billsTable.status, paid: billsTable.paidAmount, balance: billsTable.balanceAmount, discount: billsTable.discount }).from(billsTable).where(inArray(billsTable.orderId, orderIds)),
     db.select({ orderTestId: testTokensTable.orderTestId }).from(testTokensTable).where(and(inArray(testTokensTable.orderId, orderIds), sql`${testTokensTable.priority} > 0`)),
     db.select({ orderId: commissionStatusEventsTable.orderId, newStatus: commissionStatusEventsTable.newStatus, createdAt: commissionStatusEventsTable.createdAt }).from(commissionStatusEventsTable).where(inArray(commissionStatusEventsTable.orderId, orderIds)),
   ]);
-  const testMap = new Map(tests.map(t => [t.id, { category: t.category, testType: t.testType }]));
+  const testMap = new Map(tests.map(t => [t.id, { category: t.category, testType: t.testType, name: t.name }]));
+  const testAliasIndex = buildTestNameAliasIndex(tests);
   const doctorMap = new Map(doctors.map(d => [d.id, d]));
-  const rulesByDoctor = new Map<number, (typeof commissionRulesTable.$inferSelect)[]>();
-  for (const r of rules) { const a = rulesByDoctor.get(r.doctorId) ?? []; a.push(r); rulesByDoctor.set(r.doctorId, a); }
   const billByOrderRaw = indexCommissionBillsByOrderId(bills);
   const billByOrder = new Map<number, { status: string | null; paid: string; balance: string; discount: number }>();
   for (const [oid, b] of billByOrderRaw) {
@@ -1138,10 +1139,10 @@ async function fireCommissionReconcile(): Promise<{ transitions: number }> {
     // Unbilled / cancelled-bill-only orders never enter commission — same rule
     // as Referral Report and Doctor Ledger (no status events for them either).
     if (!isCommissionBillEligible(bill)) continue;
-    const dRules = rulesByDoctor.get(order.doctorId) ?? [];
+    const dRules = rulesForDoctor(rules, order.doctorId);
     let raw = 0;
     for (const ot of ots) {
-      raw += calcTestCommission(ot, testMap.get(ot.testId), dRules, doctor, vipIds, vipPct, outsourcedBasis).commission;
+      raw += calcTestCommission(ot, testMap.get(ot.testId), dRules, doctor, vipIds, vipPct, outsourcedBasis, testAliasIndex).commission;
     }
     // Judge — and record — the NET commission, i.e. after the clinic's
     // bill-discount deduction. The Referral Report and the Doctor Ledger both

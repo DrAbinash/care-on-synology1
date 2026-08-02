@@ -238,6 +238,13 @@ services:
       SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET must be set in .env — use a 64-char random string}
       INTERNAL_API_KEY: ${INTERNAL_API_KEY:-}
 
+      # Super Admin USB pen-drive gate. Must be listed here — Compose does NOT
+      # auto-inject every .env key into the container. Without these, care-api
+      # sees empty SUPER_ADMIN_USB_* even when .env on disk is correct, so
+      # usb/verify and usbPin auto-login fail (PIN is required / invalid key).
+      SUPER_ADMIN_USB_KEY: ${SUPER_ADMIN_USB_KEY:-}
+      SUPER_ADMIN_USB_PIN: ${SUPER_ADMIN_USB_PIN:-}
+
       # ── Scheduled jobs ─────────────────────────────────────────────────────
       # Neither of these was passed into the container before, so there was NO
       # way to run any scheduled job in production:
@@ -279,6 +286,15 @@ services:
 
       OBJECT_STORAGE_DIR: ${OBJECT_STORAGE_DIR:-/app/data/object-storage}
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-https://caredeoghar.com}
+
+      # ── Hope Hospital integration ──────────────────────────────────────────
+      # When any of these are set, care-api entrypoint + startup bootstrap
+      # register the HOPE partner and enable ff_hope_care_referrals (idempotent).
+      # Template: deploy/synology/care.env (keys matched to Hope hope.env).
+      INTEGRATION_HOPE_CALLBACK_URL: ${INTEGRATION_HOPE_CALLBACK_URL:-}
+      INTEGRATION_HOPE_SIGNING_SECRET: ${INTEGRATION_HOPE_SIGNING_SECRET:-}
+      HOPE_CARE_INTEGRATION_FORCE: ${HOPE_CARE_INTEGRATION_FORCE:-}
+      HOPE_PARTNER_KEY: ${HOPE_PARTNER_KEY:-}
 
       ICICI_BASE_URL: ${ICICI_BASE_URL:-https://pgpay.icicibank.com}
       ICICI_URL_PREFIX: ${ICICI_URL_PREFIX:-/pg/api/v2}
@@ -344,6 +360,11 @@ services:
       AI_TEMPERATURE_DRAFT: ${AI_TEMPERATURE_DRAFT:-0.1}
       ORTHANC_USERNAME: ${ORTHANC_USERNAME:-}
       ORTHANC_PASSWORD: ${ORTHANC_PASSWORD:-}
+      # Shared folder for Orthanc worklists plugin (.wl files). When set, billing
+      # auto-publishes ERP patient/doctor names + accession to the modality MWL.
+      # Mount the same host path into Orthanc's worklists Database directory.
+      # Shared with care-pacs Orthanc worklists plugin (host path must match).
+      ORTHANC_WORKLIST_DIR: ${ORTHANC_WORKLIST_DIR:-/orthanc-worklists}
       PACS_PROVIDER: ${PACS_PROVIDER:-orthanc}
       PACS_VIEWER_TYPE: ${PACS_VIEWER_TYPE:-ohif}
       OHIF_URL: ${OHIF_URL:-}
@@ -378,6 +399,9 @@ services:
       # Override BACKUP_HOST_DIR in .env only if your jobs use a different
       # destinationPath.
       - ${BACKUP_HOST_DIR:-/volume1/docker/backups}:/volume1/docker/backups
+      # Modality Worklist (.wl) — same host folder Orthanc worklists plugin reads.
+      # care-pacs mounts this at /var/lib/orthanc/worklists.
+      - ${ORTHANC_WORKLIST_HOST_DIR:-/volume1/docker/care-pacs/orthanc/worklists}:/orthanc-worklists
     healthcheck:
       # ── Liveness probe (process alive + port responding) ───────────────────
       # Hits GET /health — registered on the Express app with no auth, no

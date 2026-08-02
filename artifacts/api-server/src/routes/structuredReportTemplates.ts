@@ -439,6 +439,28 @@ const PRESETS = [
 ] as const;
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
+
+async function ensurePresetTemplatesSeeded(): Promise<number> {
+  const allPresets = [...PRESETS, ...USG_STRUCTURED_TEMPLATE_PRESETS];
+  let inserted = 0;
+  for (const preset of allPresets) {
+    const existing = await db.select({ id: structuredReportTemplatesTable.id })
+      .from(structuredReportTemplatesTable)
+      .where(and(
+        eq(structuredReportTemplatesTable.templateName, preset.templateName),
+        eq(structuredReportTemplatesTable.isPreset, true),
+      ))
+      .limit(1);
+    if (existing.length > 0) continue;
+    await db.insert(structuredReportTemplatesTable).values({
+      ...preset,
+      createdBy: "system",
+    });
+    inserted++;
+  }
+  return inserted;
+}
+
 structuredReportTemplatesRouter.get("/", async (req, res): Promise<void> => {
   const sReq = req as StaffAuthRequest;
   if (!sReq.staffSession) { res.status(401).json({ error: "Unauthorized" }); return; }
@@ -447,11 +469,23 @@ structuredReportTemplatesRouter.get("/", async (req, res): Promise<void> => {
   let query = db.select().from(structuredReportTemplatesTable).$dynamic();
   if (modality) query = query.where(eq(structuredReportTemplatesTable.modality, modality));
 
-  const rows = await query.orderBy(
+  let rows = await query.orderBy(
     structuredReportTemplatesTable.modality,
     structuredReportTemplatesTable.bodyPart,
     structuredReportTemplatesTable.templateName,
   );
+
+  // First load on a fresh DB: auto-seed built-in MRI/CT/USG presets so the
+  // Reporting Workspace Templates tab is never empty out of the box.
+  if (rows.length === 0 && !modality && !bodyPart) {
+    await ensurePresetTemplatesSeeded();
+    rows = await query.orderBy(
+      structuredReportTemplatesTable.modality,
+      structuredReportTemplatesTable.bodyPart,
+      structuredReportTemplatesTable.templateName,
+    );
+  }
+
   res.json(rows);
 });
 
@@ -534,22 +568,6 @@ structuredReportTemplatesRouter.post("/seed", async (req, res): Promise<void> =>
     res.status(403).json({ error: "Only admin can seed templates" }); return;
   }
 
-  const allPresets = [...PRESETS, ...USG_STRUCTURED_TEMPLATE_PRESETS];
-  let inserted = 0;
-  for (const preset of allPresets) {
-    const existing = await db.select({ id: structuredReportTemplatesTable.id })
-      .from(structuredReportTemplatesTable)
-      .where(and(
-        eq(structuredReportTemplatesTable.templateName, preset.templateName),
-        eq(structuredReportTemplatesTable.isPreset, true),
-      ))
-      .limit(1);
-    if (existing.length > 0) continue; // already seeded
-    await db.insert(structuredReportTemplatesTable).values({
-      ...preset,
-      createdBy: "system",
-    });
-    inserted++;
-  }
-  res.json({ inserted, total: allPresets.length });
+  const inserted = await ensurePresetTemplatesSeeded();
+  res.json({ inserted, total: PRESETS.length + USG_STRUCTURED_TEMPLATE_PRESETS.length });
 });

@@ -6,6 +6,8 @@ import { FULL_ACCESS_ROLES } from "../middleware/requireStaffAuth";
 import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { getTransporter, getEmailSettings } from "../email";
 import { classifyPaymentMethod, isPhysicalCash, isDigitalSettlement } from "../lib/paymentMethodClassifier";
+import { computeRefundsOnCancelledBillsCreatedInPeriod } from "../lib/dailySummaryCollectible";
+import { buildStaffActivityRows } from "../lib/staffActivityAttribution";
 
 export const myDailySummaryRouter = Router();
 
@@ -424,6 +426,14 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
     .filter((p) => p.billStatus !== "cancelled")
     .reduce((s, p) => s + Math.abs(Number(p.amount)), 0);
   const refundsWithoutCancellationCount = refundItems.filter((p) => p.billStatus !== "cancelled").length;
+  // Refunds on bills created in this period that are now cancelled — already
+  // removed from collectible via cancelledOnMyBills; exclude from refund
+  // deduction so same-day cancel+refund does not double-subtract.
+  const refundsOnCancelledBillsCreatedInPeriod = computeRefundsOnCancelledBillsCreatedInPeriod(
+    knownRefundItems,
+    start,
+    end,
+  );
   // Bills CANCELLED BY this staff (informational — accountability of canceller)
   const cancelledAmount = cancelledByMe.reduce((s, r) => s + Number(r.totalAmount), 0);
   // FIXED: cashCollection now subtracts cash refunds (was previously gross cash in)
@@ -452,6 +462,10 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
   // ── Per-staff breakdown (only when viewing All Staff aggregate) ──
   type StaffRow = {
     name: string;
+    billsCreated: number;
+    cashCollected: number;
+    billsCancelled: number;
+    cashRefunded: number;
     grossBilled: number;
     activeBilling: number;
     cancelled: number;
@@ -460,7 +474,6 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
     billCount: number;
     cashIn: number;
     digitalIn: number;
-    cashRefunded: number;
     digitalRefunded: number;
     netCash: number;
     netDigital: number;
@@ -504,68 +517,85 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
       digitalExpPerPerson[r.approved_by] = Number(r.digital);
     }
 
-    byStaff = staffNames.map((name) => {
-      const sbills = allBillRows.filter((r) => r.createdByName === name);
-      const sactive = sbills.filter((r) => r.status !== "cancelled");
-      const scancelled = sbills.filter((r) => r.status === "cancelled");
-      const spayPos = allPaymentRows.filter((p) => p.recordedByName === name && Number(p.amount) > 0);
-      const spayNeg = allPaymentRows.filter((p) => p.recordedByName === name && Number(p.amount) < 0);
-      const scancelledByMe = cancelledByMeRows.filter((r) => r.cancelledByName === name);
+    byStaff = (() => {
+      const activity = buildStaffActivityRows({
+        staffNames: names,
+        bills: allBillRows.map((r) => ({
+          createdByName: r.createdByName,
+          totalAmount: r.totalAmount,
+          status: r.status,
+        })),
+        cancelledByActor: cancelledByMeRows.map((r) => ({
+          cancelledByName: r.cancelledByName,
+          totalAmount: r.totalAmount,
+        })),
+        payments: allPaymentRows.map((p) => {
+          const cls = classifyPaymentMethod(p.method);
+          return {
+            recordedByName: p.recordedByName,
+            amount: p.amount,
+            method: p.method,
+            isCash: isPhysicalCash(p.method),
+            isDigital: isDigitalSettlement(p.method),
+            isKnown: cls.isKnown,
+          };
+        }),
+      });
 
-      const sGrossBilled = sbills.reduce((s, r) => s + Number(r.totalAmount), 0);
-      const sActiveBilling = sactive.reduce((s, r) => s + Number(r.totalAmount), 0);
-      const sCancelled = scancelled.reduce((s, r) => s + Number(r.totalAmount), 0);
-      const sOutstanding = sactive.reduce((s, r) => s + trueOutstanding(r), 0);
-      const sNetCollected = sActiveBilling - sOutstanding;
-      const sPayPosKnown = spayPos.filter((p) => classifyPaymentMethod(p.method).isKnown);
-      const sPayNegKnown = spayNeg.filter((p) => classifyPaymentMethod(p.method).isKnown);
-      const sCashIn = sPayPosKnown.reduce((s, p) => s + (isPhysicalCash(p.method) ? Number(p.amount) : 0), 0);
-      const sDigitalIn = sPayPosKnown.reduce((s, p) => s + (isDigitalSettlement(p.method) ? Number(p.amount) : 0), 0);
-      const sCashRef = sPayNegKnown.reduce((s, p) => s + (isPhysicalCash(p.method) ? Math.abs(Number(p.amount)) : 0), 0);
-      const sDigitalRef = sPayNegKnown.reduce((s, p) => s + (isDigitalSettlement(p.method) ? Math.abs(Number(p.amount)) : 0), 0);
-      const sNetCash = sCashIn - sCashRef;
-      const sNetDigital = sDigitalIn - sDigitalRef;
-      const sTotalRec = spayPos.reduce((s, p) => s + Number(p.amount), 0);
-      const sCashExp = cashExpPerPerson[name] ?? 0;
-      const sDigitalExp = digitalExpPerPerson[name] ?? 0;
-      const sTotalExp = sCashExp + sDigitalExp;
-      const sPhysCash = sNetCash - sCashExp;
-      // Dues collected belongs to the staff who RECORDED the dues payment (whose
-      // drawer received it today), not whoever created the original bill. This
-      // must be summed from the raw dues payment rows by recordedByName — the
-      // per-bill duesBills aggregate carries only the bill creator and can't
-      // attribute a bill whose dues were collected by several people. Using the
-      // recorder also keeps the all-staff breakdown consistent with the
-      // single-staff view (which filters dues by paymentsTable.recordedByName).
-      const sDues = duesPaymentRows
-        .filter((d) => d.recordedByName === name)
-        .reduce((s, d) => s + Number(d.paymentAmount), 0);
-      const sDiscounts = sactive.reduce((s, r) => s + Number(r.discount ?? 0), 0);
+      return activity.map((act) => {
+        const name = act.name;
+        const sbills = allBillRows.filter((r) => r.createdByName === name);
+        const sactive = sbills.filter((r) => r.status !== "cancelled");
+        const spayPos = allPaymentRows.filter((p) => p.recordedByName === name && Number(p.amount) > 0);
+        // Action-based: Bills Created stays on creator even after cancel (act.billsCreated).
+        // Bills Cancelled attributed to canceller (act.billsCancelled), NOT creator.
+        // Cash Collected / Cash Refunded attributed to payment/refund recorder.
+        const sOutstanding = sactive.reduce((s, r) => s + trueOutstanding(r), 0);
+        const sCashExp = cashExpPerPerson[name] ?? 0;
+        const sDigitalExp = digitalExpPerPerson[name] ?? 0;
+        const sTotalExp = sCashExp + sDigitalExp;
+        const sNetCash = act.cashCollected - act.cashRefunded;
+        const sNetDigital = act.digitalCollected - act.digitalRefunded;
+        const sDues = duesPaymentRows
+          .filter((d) => d.recordedByName === name)
+          .reduce((s, d) => s + Number(d.paymentAmount), 0);
+        const sDiscounts = sactive.reduce((s, r) => s + Number(r.discount ?? 0), 0);
+        const sActiveBilling = sactive.reduce((s, r) => s + Number(r.totalAmount), 0);
 
-      return {
-        name,
-        grossBilled: sGrossBilled,
-        activeBilling: sActiveBilling,
-        cancelled: sCancelled,
-        outstanding: sOutstanding,
-        netCollected: sNetCollected,
-        billCount: sactive.length,
-        cashIn: sCashIn,
-        digitalIn: sDigitalIn,
-        cashRefunded: sCashRef,
-        digitalRefunded: sDigitalRef,
-        netCash: sNetCash,
-        netDigital: sNetDigital,
-        totalReceived: sTotalRec,
-        cashExpenses: sCashExp,
-        digitalExpenses: sDigitalExp,
-        totalExpenses: sTotalExp,
-        physicalCashInHand: sPhysCash,
-        duesCollected: sDues,
-        discountsGiven: sDiscounts,
-        cancellationCount: scancelledByMe.length,
-      };
-    });
+        return {
+          name,
+          // Staff Activity primary columns (action-based, immutable per actor)
+          billsCreated: act.billsCreated,
+          cashCollected: act.cashCollected,
+          billsCancelled: act.billsCancelled,
+          cashRefunded: act.cashRefunded,
+          // Legacy aliases used by existing UI/export
+          grossBilled: act.billsCreated,
+          activeBilling: sActiveBilling,
+          cancelled: act.billsCancelled,
+          outstanding: sOutstanding,
+          // Do NOT redefine "net collected" as active−outstanding for staff activity —
+          // that wrongly zeroes User1 after User2 cancels. Keep field for compatibility
+          // but set to cash+digital collected (what this person took in).
+          netCollected: act.cashCollected + act.digitalCollected,
+          billCount: act.billCreateCount,
+          cashIn: act.cashCollected,
+          digitalIn: act.digitalCollected,
+          digitalRefunded: act.digitalRefunded,
+          netCash: sNetCash,
+          netDigital: sNetDigital,
+          totalReceived: spayPos.reduce((s, p) => s + Number(p.amount), 0),
+          cashExpenses: sCashExp,
+          digitalExpenses: sDigitalExp,
+          totalExpenses: sTotalExp,
+          // Not a personal drawer shortage — retained for day-close expense view only.
+          physicalCashInHand: sNetCash - sCashExp,
+          duesCollected: sDues,
+          discountsGiven: sDiscounts,
+          cancellationCount: act.cancellationCount,
+        };
+      });
+    })();
   }
 
   res.json({
@@ -585,6 +615,7 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
       refundAmount,
       refundsWithoutCancellationAmount,
       refundsWithoutCancellationCount,
+      refundsOnCancelledBillsCreatedInPeriod,
       cancelledAmount,
       cashExpenses,
       digitalExpenses,
@@ -595,6 +626,12 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
       digitalIn,
       cashRefunded,
       digitalRefunded,
+      /**
+       * Net Cash Available (doctor primary figure) — PHYSICAL CASH ONLY.
+       * = completed cash collections − completed cash refunds.
+       * UPI / card / bank / online / insurance are excluded (see digitalIn / digitalRefunded).
+       */
+      netClinicCash: cashIn - cashRefunded,
       netDigital,
       cashCollection,
       physicalCashInHand,

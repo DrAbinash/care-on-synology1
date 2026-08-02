@@ -4,7 +4,9 @@
 // Print-safe: only black ink, no background colors, no color text.
 
 import { type PrintBillData, type PrintClinic } from "./printBill";
-import { type BillPaperSize, getPaperSizeCss } from "./billPrintSettings";
+import { type BillPaperSize } from "./billPrintSettings";
+import { buildDocumentHtml } from "./documentLayout/buildDocumentHtml";
+import { billPaperSizeToPrintPaper } from "./documentLayout/billPaper";
 
 export type BuildPremiumBillOpts = {
   bill: PrintBillData;
@@ -48,6 +50,8 @@ export type BuildPremiumBillOpts = {
   barcodeDataUrl?: string;
   customFooter?: string | null;
   reportCollectionNote?: string | null;
+  pageCssSize?: string;
+  compactFooterGap?: boolean;
 };
 
 function esc(s: string): string {
@@ -133,6 +137,8 @@ export function buildPremiumBillPrintHtml(opts: BuildPremiumBillOpts): string {
     barcodeDataUrl,
     customFooter,
     reportCollectionNote,
+    pageCssSize,
+    compactFooterGap = false,
   } = opts;
 
   const tests = (bill.order?.tests ?? []).filter((t) => (t.status ?? "active") !== "cancelled");
@@ -184,16 +190,14 @@ export function buildPremiumBillPrintHtml(opts: BuildPremiumBillOpts): string {
   const footerPx = isSparse ? "13px" : isCompact ? "10px" : "11px";
   const tinyPx = isSparse ? "11px" : isCompact ? "9px" : "10px";
   const qrSize = isSparse ? "95px" : isCompact ? "55px" : "72px";
-  const pageMargin = "10mm";
-  const pageMarginBottom = "10mm";
+  const marginMm = paperSize === "A4" ? 6 : 4;
+  const useCompactFooter = compactFooterGap || testCount <= 4;
   const sectionGap = isSparse ? "14px" : isCompact ? "4px" : "6px";
   const tableCellPad = isSparse ? "6px 8px" : isCompact ? "3px 5px" : "4px 6px";
   const paymentBoxPad = isSparse ? "8px 0" : "4px 0";
   const sparseGap = isSparse ? "10px" : "0"; // extra gap between major sections in sparse mode
 
   const isA5 = paperSize === "A5-portrait" || paperSize === "A5-landscape";
-  const paperSizeCss = getPaperSizeCss(paperSize);
-  const pageSizeStr = paperSizeCss.pageSize;
 
   // ── Billed-by name, their uploaded signature, & system info ──
   const premiumSession = (() => {
@@ -437,73 +441,8 @@ export function buildPremiumBillPrintHtml(opts: BuildPremiumBillOpts): string {
   const footerGeneratedMargin = isSparse ? "6px" : isCompact ? "2px" : "4px";
   const footerSystemMargin = isSparse ? "4px" : isCompact ? "1px" : "2px";
 
-  // ── Main HTML ──
-  const html = `
-<!doctype html>
-<html>
-<head>
-<meta charset="utf-8">
-<title>Bill ${esc(bill.billNumber)}</title>
-<style>
-  @page { size: ${pageSizeStr}; margin: ${pageMargin} ${pageMargin} ${pageMarginBottom} ${pageMargin}; }
-  *, *::before, *::after { box-sizing: border-box; }
-  html, body { margin: 0; padding: 0; }
-  body {
-    background: #fff; color: #000;
-    font-family: Arial, Helvetica, sans-serif;
-    font-size: ${basePx};
-    -webkit-print-color-adjust: exact; print-color-adjust: exact;
-  }
-  .receipt {
-    display: flex;
-    flex-direction: column;
-    /* mm-based, not 100vh: vh in a print/pagination context is undefined-
-       behavior-prone across browser engines (some resolve it against a
-       much taller value than the physical page), which can silently spill
-       the footer onto a near-blank extra sheet — see the same class of bug
-       fixed in printBill.ts's classic format (receiptMinHeight). */
-    min-height: ${paperSizeCss.minHeight};
-    width: 100%;
-    padding: 2mm 3mm;
-    box-sizing: border-box;
-    position: relative;
-    z-index: 1;
-  }
-  .main-content {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-  }
-  .main-content.premium-sparse-mode {
-    gap: 10px;
-    justify-content: space-between;
-  }
-  .main-content.normal-mode {
-    gap: 6px;
-    justify-content: flex-start;
-  }
-  .main-content.compact-mode {
-    gap: 4px;
-    justify-content: flex-start;
-  }
-  .footer-panel {
-    margin-top: auto;
-    padding-bottom: 4mm;
-  }
-  .no-break { page-break-inside: avoid; }
-  .receipt table tr { page-break-inside: avoid; }
-  .page-break { page-break-before: always; }
-  .header-repeat { display: none; }
-  @media print {
-    html, body { margin: 0; padding: 0; color: #000 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-    .receipt { margin: 0; }
-    .receipt * { color: #000 !important; border-color: #000 !important; background: transparent !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-    .receipt *::before, .receipt *::after { background: transparent !important; border-color: #000 !important; }
-    img { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  }
-</style>
-</head>
-<body>
+  // ── Main body content (page shell from document layout engine) ──
+  const bodyContent = `
   ${watermarkStyle}
   <div class="receipt ${densityClass}">
     ${reprintNotice}
@@ -590,9 +529,9 @@ export function buildPremiumBillPrintHtml(opts: BuildPremiumBillOpts): string {
     <div class="payment-section no-break" style="padding: ${paymentBoxPad}; margin-bottom: ${sectionGap};">
       <table style="width:100%;border-collapse:separate;border-spacing:0;table-layout:fixed">
         <colgroup>
-          <col style="width:${qrBlock ? (isSparse ? "105px" : "80px") : "0"}"/>
-          <col/>
-          <col style="width:${isA5 ? (isSparse ? "155px" : "160px") : "220px"}"/>
+          <col style="width:${qrBlock ? "18%" : "0"}"/>
+          <col style="width:${qrBlock ? "42%" : "58%"}"/>
+          <col style="width:40%"/>
         </colgroup>
         <tbody>
           <tr>
@@ -669,9 +608,28 @@ export function buildPremiumBillPrintHtml(opts: BuildPremiumBillOpts): string {
       </tr>
     </table>
   </div>
-</div>
-</html>
-`;
+  </div>`;
 
-  return html;
+  const formatStyles = `
+  .receipt { width: 100%; position: relative; z-index: 1; }
+  .main-content { display: flex; flex-direction: column; }
+  .main-content.premium-sparse-mode { gap: 10px; }
+  .main-content.normal-mode { gap: 6px; }
+  .main-content.compact-mode { gap: 4px; }
+  .footer-panel { padding-bottom: 2mm; margin-top: 4px; }
+  .no-break { page-break-inside: avoid; }
+  .receipt table tr { page-break-inside: avoid; }
+  @media print {
+    .receipt * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    img { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  }`;
+
+  return buildDocumentHtml({
+    title: `Bill ${esc(bill.billNumber)}`,
+    paper: billPaperSizeToPrintPaper(paperSize),
+    safePaddingMm: marginMm,
+    bodyFontSize: basePx,
+    extraStyles: formatStyles,
+    pages: [{ html: bodyContent, className: "receipt" }],
+  });
 }

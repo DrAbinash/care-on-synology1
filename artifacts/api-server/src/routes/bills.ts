@@ -616,6 +616,15 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
       clientRef: clientRef ?? null,
     }).returning();
 
+    await tx.insert(billAuditsTable).values({
+      billId: billRow.id,
+      editedBy: actorName || "system",
+      reason: "Bill created",
+      changeType: "bill_created",
+      oldValue: null,
+      newValue: `total=₹${totalAmount.toFixed(2)}; status=${billStatus}`,
+    });
+
     // Record each payment split atomically with the bill
     for (const p of validPayments) {
       await tx.insert(paymentsTable).values({
@@ -625,6 +634,14 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
         referenceNumber: p.referenceNumber ?? null,
         notes: p.notes ?? null,
         recordedByName: actorName || null,
+      });
+      await tx.insert(billAuditsTable).values({
+        billId: billRow.id,
+        editedBy: actorName || "system",
+        reason: "Payment collected",
+        changeType: "payment_collected",
+        oldValue: null,
+        newValue: `amount=₹${p.amount.toFixed(2)}; method=${p.method || "cash"}`,
       });
     }
 
@@ -1041,7 +1058,7 @@ billsRouter.post("/:id/cancel", requireStaffSubPermission("/billing", "delete"),
       billId: id,
       editedBy: performedBy,
       reason,
-      changeType: "cancelled",
+      changeType: "bill_cancelled",
       oldValue: bill.status,
       newValue: "cancelled",
     });
@@ -1103,7 +1120,7 @@ billsRouter.post("/:id/cancel", requireStaffSubPermission("/billing", "delete"),
           billId: id,
           editedBy: performedBy,
           reason,
-          changeType: "refund",
+          changeType: "refund_processed",
           oldValue: `paid=₹${currentPaid.toFixed(2)}`,
           newValue: `refund=₹${refundedAmount.toFixed(2)} via ${refundMethod} (auto on cancel)`,
         });
@@ -1277,7 +1294,7 @@ billsRouter.post("/:id/refund", requireStaffSubPermission("/billing", "refund"),
       billId: id,
       editedBy: performedBy,
       reason,
-      changeType: "refund",
+      changeType: "refund_processed",
       oldValue: `paid=₹${currentPaid.toFixed(2)}, refunded=₹${currentRefund.toFixed(2)}`,
       newValue: `refund=₹${amount.toFixed(2)} via ${method}; paid=₹${newPaid.toFixed(2)}, refunded=₹${newRefund.toFixed(2)}`,
     });
@@ -2188,7 +2205,7 @@ billsRouter.post("/:id/swap-test", async (req: StaffAuthRequest, res) => {
         billId: id,
         editedBy: performedBy,
         reason: reason.trim(),
-        changeType: "refund",
+        changeType: "refund_processed",
         oldValue: `paid=₹${paidAmount.toFixed(2)}`,
         newValue: `refund=₹${refundAmt.toFixed(2)} via ${method} (test swap)`,
       });
@@ -2243,7 +2260,8 @@ billsRouter.post("/:id/swap-test", async (req: StaffAuthRequest, res) => {
 
 // ─── ICICI Billing Desk Gateway Integration ────────────────────────────────────
 import { PaymentEngine } from "../lib/payments/PaymentEngine";
-import { getIciciPublicBaseUrl } from "../lib/payments/iciciPublicBaseUrl";
+import { initiateIciciOrangePayment } from "../lib/payments/initiateIciciOrangePayment";
+import { resolveActiveGateway } from "../lib/payments/resolveActiveGateway";
 import { paymentLogsTable } from "@workspace/db/schema";
 import crypto from "node:crypto";
 import { logger } from "../lib/logger";
@@ -2272,8 +2290,8 @@ billsRouter.post("/:id/initiate-gateway-payment", async (req: StaffAuthRequest, 
 
   const [patient] = await db.select().from(patientsTable).where(eq(patientsTable.id, bill.patientId)).limit(1);
   const patientName = patient ? `${patient.firstName} ${patient.lastName}`.trim() : "VALUED PATIENT";
-  const patientPhone = patient?.phone || "9973497200";
-  const patientEmail = patient?.email || "";
+  const patientPhone = (patient?.phone || "9973497200").trim();
+  const patientEmail = (patient?.email || "").trim();
 
   // Generate unique transaction reference
   const txnRef = `BILLPAY-${id}-${crypto.randomBytes(3).toString("hex").toUpperCase()}`;
@@ -2284,21 +2302,17 @@ billsRouter.post("/:id/initiate-gateway-payment", async (req: StaffAuthRequest, 
     : null;
 
   try {
-    const base = getIciciPublicBaseUrl();
-    const returnUrl = `${base}/api/public/booking/icici-callback`;
-
-    // Fetch active gateway from settings
     const [settings] = await db.select().from(clinicSettingsTable).where(eq(clinicSettingsTable.id, 1)).limit(1);
-    const activeGateway = settings?.activePaymentGateway || "icici";
+    const activeGateway = resolveActiveGateway(settings || {}) || settings?.activePaymentGateway || "icici";
 
-    // Initiate payment via payment engine — same return URL normalization as webpage online booking
-    const result = await PaymentEngine.initiatePayment(activeGateway, {
+    // Same ICICI initiate path + return URL as webpage online booking (icici-initiate).
+    const result = await initiateIciciOrangePayment({
       bookingRef: txnRef,
       name: patientName,
       phone: patientPhone,
       email: patientEmail,
       amount: collectAmount,
-      returnUrl,
+      activeGateway,
       reqHeaders: {
         "x-forwarded-for": (req.headers["x-forwarded-for"] as string) || "",
         "user-agent": (req.headers["user-agent"] as string) || "",
@@ -2309,7 +2323,7 @@ billsRouter.post("/:id/initiate-gateway-payment", async (req: StaffAuthRequest, 
     });
 
     if (!result.success) {
-      res.status(400).json({ error: "Could not initiate payment gateway", details: result.errorMessage });
+      res.status(400).json({ error: "Could not initiate ICICI payment. Please try again.", details: result.errorMessage });
       return;
     }
 

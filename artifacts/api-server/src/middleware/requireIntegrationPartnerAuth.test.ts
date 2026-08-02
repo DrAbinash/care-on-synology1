@@ -18,9 +18,9 @@ vi.mock("@workspace/db", () => ({
 import { ALLOWED_INTEGRATION_PERMISSIONS, hashApiKey, generateIntegrationKey } from "./requireIntegrationPartnerAuth.js";
 
 describe("ALLOWED_INTEGRATION_PERMISSIONS (least privilege)", () => {
-  it("contains only diagnostic referral/result scopes", () => {
+  it("contains only diagnostic referral/result scopes and whatsapp enqueue", () => {
     for (const p of ALLOWED_INTEGRATION_PERMISSIONS) {
-      expect(p).toMatch(/^diagnostic_(referral|result):/);
+      expect(p).toMatch(/^(diagnostic_(referral|result):|whatsapp:enqueue)/);
     }
   });
   it("never grants any billing / money / destructive capability", () => {

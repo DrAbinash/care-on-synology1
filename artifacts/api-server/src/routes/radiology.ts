@@ -48,6 +48,7 @@ import { syncStudyToSite, getMultiSiteWorklist, getSites } from "../lib/multiSit
 import { decideRouting, getRoutingStats } from "../lib/dicomRoutingOptimizer";
 import { runMatchingEngineForWorklist } from "./internal-radiology";
 import { calculateMatchScore } from "../lib/pacs/matchingEngine";
+import { publishRadiologyStudyToMwl } from "../lib/pacs/publishRadiologyStudyToMwl";
 import { logger } from "../lib/logger";
 
 // Build an absolute https URL for share-link composition. Trusts the standard
@@ -192,6 +193,27 @@ export async function generateStudiesForOrder(opts: {
           });
         } catch {
           // Never block study creation on assignment failure
+        }
+
+        // ── Antigravity MWL path: ERP names + accession → modality ──
+        // Best-effort. Always inserts radiology_scheduled_procedures (queried by
+        // the Windows MWL agent). Writes Orthanc .wl when ORTHANC_WORKLIST_DIR
+        // is set. Return match uses accession (work id) + optional CARE-BILL.
+        try {
+          await publishRadiologyStudyToMwl({
+            accessionNumber: row.accessionNumber,
+            patientId: opts.patientId,
+            billId: opts.billId,
+            orderId: opts.orderId,
+            modality,
+            procedureName: ot.testName,
+            studyDescription: opts.dicomFields?.studyDescription ?? ot.testName,
+            referringDoctor: opts.dicomFields?.referringDoctor ?? row.referringDoctor ?? null,
+            bodyPart: opts.dicomFields?.bodyPart ?? null,
+            stationAeTitle: opts.dicomFields?.scheduledStationAETitle ?? null,
+          });
+        } catch {
+          // Never block study creation on MWL publish failure
         }
 
         out.push({ orderTestId: ot.orderTestId, testName: ot.testName, modality, accessionNumber: row.accessionNumber });
@@ -2525,6 +2547,101 @@ radiologyRouter.get("/pacs-worklist/:id/matching-candidates", async (req, res) =
     res.json({ success: true, candidates });
   } catch (err: any) {
     logger.error({ err }, "Error in matching-candidates");
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/radiology/frequent-referring-doctors
+ * Top referring-doctor names from recent worklist rows — the short list
+ * radiologists need as one-tap chips in Reporting Workspace.
+ */
+radiologyRouter.get("/frequent-referring-doctors", async (req, res) => {
+  try {
+    const limitRaw = Number(req.query.limit);
+    const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(Math.trunc(limitRaw), 1), 24) : 12;
+    const rows = await db.execute<{ name: string; count: string }>(sql`
+      SELECT trim(referring_doctor) AS name, COUNT(*)::text AS count
+        FROM radiology_worklist
+       WHERE referring_doctor IS NOT NULL
+         AND trim(referring_doctor) <> ''
+         AND created_at >= NOW() - INTERVAL '120 days'
+       GROUP BY trim(referring_doctor)
+       ORDER BY COUNT(*) DESC, trim(referring_doctor) ASC
+       LIMIT ${limit}
+    `);
+    const list = ((rows as unknown as { rows?: Array<{ name: string; count: string }> }).rows
+      ?? (rows as unknown as Array<{ name: string; count: string }>))
+      .map((r) => ({ name: r.name, count: Number(r.count) || 0 }))
+      .filter((r) => r.name);
+    res.json({ doctors: list });
+  } catch (err: any) {
+    logger.error({ err }, "frequent-referring-doctors failed");
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * PATCH /api/radiology/pacs-worklist/:id/referring-doctor
+ * One-tap referring-doctor fix from Reporting Workspace. Updates the worklist
+ * row and the linked radiology_studies row when present (report header + MWL).
+ */
+radiologyRouter.patch("/pacs-worklist/:id/referring-doctor", async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isFinite(id) || id <= 0) {
+      res.status(400).json({ error: "Invalid worklist id" });
+      return;
+    }
+    const raw = (req.body as { referringDoctor?: unknown } | undefined)?.referringDoctor;
+    if (typeof raw !== "string") {
+      res.status(400).json({ error: "referringDoctor string required (empty clears)" });
+      return;
+    }
+    const referringDoctor = raw.trim() || null;
+
+    const [worklistItem] = await db
+      .select({
+        id: radiologyWorklistTable.id,
+        studyId: radiologyWorklistTable.studyId,
+        accessionNumber: radiologyWorklistTable.accessionNumber,
+        referringDoctor: radiologyWorklistTable.referringDoctor,
+      })
+      .from(radiologyWorklistTable)
+      .where(eq(radiologyWorklistTable.id, id))
+      .limit(1);
+
+    if (!worklistItem) {
+      res.status(404).json({ error: "Worklist item not found" });
+      return;
+    }
+
+    await db
+      .update(radiologyWorklistTable)
+      .set({ referringDoctor, updatedAt: new Date() })
+      .where(eq(radiologyWorklistTable.id, id));
+
+    if (worklistItem.studyId) {
+      await db
+        .update(radiologyStudiesTable)
+        .set({ referringDoctor, updatedAt: new Date() })
+        .where(eq(radiologyStudiesTable.id, worklistItem.studyId));
+    }
+
+    await db.insert(radiologyAuditLogTable).values({
+      worklistId: id,
+      accessionNumber: worklistItem.accessionNumber,
+      action: "REFERRING_DOCTOR_SET",
+      actor: (req as StaffAuthRequest).staffSession?.subjectName || "staff",
+      details: JSON.stringify({
+        from: worklistItem.referringDoctor,
+        to: referringDoctor,
+      }),
+    });
+
+    res.json({ ok: true, referringDoctor });
+  } catch (err: any) {
+    logger.error({ err }, "Error setting referring doctor");
     res.status(500).json({ error: err.message });
   }
 });

@@ -30,6 +30,8 @@ type MyDailySummarySummary = {
   refundAmount: number;
   refundsWithoutCancellationAmount: number;
   refundsWithoutCancellationCount: number;
+  /** Refunds on bills created this period that are cancelled — excluded from collectible (already in cancelledOnMyBills). */
+  refundsOnCancelledBillsCreatedInPeriod: number;
   cancelledAmount: number;
   cashExpenses: number;
   digitalExpenses: number;
@@ -40,6 +42,8 @@ type MyDailySummarySummary = {
   digitalIn: number;
   cashRefunded: number;
   digitalRefunded: number;
+  /** Clinic net cash = cash collected − cash refunded. */
+  netClinicCash?: number;
   netDigital: number;
   cashCollection: number;
   physicalCashInHand: number;
@@ -180,6 +184,9 @@ type MyDailySummaryData = {
   }[];
   byStaff?: {
     name: string;
+    billsCreated?: number;
+    cashCollected?: number;
+    billsCancelled?: number;
     grossBilled: number;
     activeBilling: number;
     cancelled: number;
@@ -801,11 +808,20 @@ function UnifiedReconciliationPanel({
   // window's billing, yet was still subtracted as both a "cancellation"
   // and (via its auto-generated refund) a "refund" — a real incident that
   // produced a false "Short" mismatch alert for an old bill cancelled today.
+  //
+  // Same-day cancel+refund on bills created in this window: cancelledOnMyBills
+  // already removes the bill total; refundsOnCancelledBillsCreatedInPeriod
+  // (from API) is subtracted from totalRefunds so we do not double-hit.
+  // Cross-staff: refunds are attributed to whoever recorded them; billing
+  // metrics follow bill creator — individual staff views may still disagree
+  // when User B refunds User A's bill (clinic aggregate balances).
   const totalRefunds   = s.cashRefunded + s.digitalRefunded;
+  const refundsExcludedFromCollectible = s.refundsOnCancelledBillsCreatedInPeriod ?? 0;
+  const refundsForCollectible = Math.max(0, totalRefunds - refundsExcludedFromCollectible);
   const collectible    = s.grossBilledIncludingCancelled
                         + s.duesCollectedTotal
                         - s.cancelledOnMyBills
-                        - totalRefunds
+                        - refundsForCollectible
                         - s.outstanding;
   const netDigital     = s.digitalIn - s.digitalRefunded;
   const expectedCash   = collectible - netDigital - s.cashExpenses;
@@ -999,8 +1015,8 @@ function UnifiedReconciliationPanel({
 
         <ARow label="Cancelled Bills" value={s.cancelledOnMyBills} sign="−" indent highlight="red"
               note="of bills created in this period" />
-        <ARow label="Refunds" value={totalRefunds} sign="−" indent highlight="red"
-              note={`No-cancel ${fmt(s.refundsWithoutCancellationAmount)} · On cancelled ${fmt(Math.max(0, totalRefunds - s.refundsWithoutCancellationAmount))} · Cash ${fmt(s.cashRefunded)} · Digital ${fmt(s.digitalRefunded)}`} />
+        <ARow label="Refunds" value={refundsForCollectible} sign="−" indent highlight="red"
+              note={`Shown ${fmt(refundsForCollectible)} for collectible · Total refunds ${fmt(totalRefunds)} · No-cancel ${fmt(s.refundsWithoutCancellationAmount)} · On cancelled created today (excluded) ${fmt(refundsExcludedFromCollectible)} · Cash ${fmt(s.cashRefunded)} · Digital ${fmt(s.digitalRefunded)}`} />
         <ARow label="Outstanding Dues" value={s.outstanding} sign="−" indent highlight="red" note="balance on today's bills" />
 
         <ASectionDivider color="blue" />
@@ -1369,9 +1385,10 @@ function MyActivityLog({ data }: { data: MyDailySummaryData | undefined }) {
                       <td className="px-3 py-2 whitespace-nowrap">
                         {e.changeType ? (
                           <span className={`px-1.5 py-0.5 rounded font-semibold text-[10px] ${
-                            e.changeType === "cancelled" ? "bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300" :
+                            e.changeType === "cancelled" || e.changeType === "bill_cancelled" ? "bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300" :
                             e.changeType === "reprint" ? "bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300" :
-                            e.changeType === "refund" ? "bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-300" :
+                            e.changeType === "refund" || e.changeType === "refund_processed" ? "bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-300" :
+                            e.changeType === "bill_created" || e.changeType === "payment_collected" ? "bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300" :
                             e.changeType === "discount" ? "bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300" :
                             "bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300"
                           }`}>
@@ -1638,10 +1655,12 @@ export default function MyDailySummary() {
 
     // Use the SAME formula as UnifiedReconciliationPanel — must match exactly.
     const totalRefunds     = s.cashRefunded + s.digitalRefunded;
+    const refundsExcluded  = s.refundsOnCancelledBillsCreatedInPeriod ?? 0;
+    const refundsForCollectible = Math.max(0, totalRefunds - refundsExcluded);
     const collectible      = s.grossBilledIncludingCancelled
                            + s.duesCollectedTotal
                            - s.cancelledOnMyBills
-                           - totalRefunds
+                           - refundsForCollectible
                            - s.outstanding;
     const netDigital       = s.digitalIn - s.digitalRefunded;
     const expectedCash     = collectible - netDigital - s.cashExpenses;
@@ -1677,6 +1696,8 @@ export default function MyDailySummary() {
           ["Refunds (Cash)", amt(s.cashRefunded)],
           ["Refunds (Digital)", amt(s.digitalRefunded)],
           ["Total Refunds", amt(totalRefunds)],
+          ["Refunds excluded (cancelled bills created today)", amt(refundsExcluded)],
+          ["Refunds for collectible", amt(refundsForCollectible)],
           ["Outstanding Dues", amt(s.outstanding)],
           ["", ""],
           ["-- COLLECTION --", ""],
@@ -1754,20 +1775,16 @@ export default function MyDailySummary() {
 
     if (data.byStaff && data.byStaff.length > 0) {
       tables.push({
-        title: "Staff-wise Summary",
-        headers: ["Staff", "Gross", "Cancelled", "Outstanding", "Cash In", "Cash Ref", "Cash Exp", "Exp. Cash", "Net Digital", "Dues", "Discounts"],
+        title: "Staff Activity (action-based — not personal shortage)",
+        headers: ["Staff", "Bills Created", "Cash Collected", "Bills Cancelled", "Cash Refunded", "Digital Collected", "Digital Refunded"],
         rows: data.byStaff.map((st) => [
           st.name,
-          amt(st.grossBilled),
-          amt(st.cancelled),
-          amt(st.outstanding),
-          amt(st.cashIn),
+          amt(st.billsCreated ?? st.grossBilled),
+          amt(st.cashCollected ?? st.cashIn),
+          amt(st.billsCancelled ?? st.cancelled),
           amt(st.cashRefunded),
-          amt(st.cashExpenses),
-          amt(st.physicalCashInHand),
-          amt(st.netDigital),
-          amt(st.duesCollected),
-          amt(st.discountsGiven),
+          amt(st.digitalIn),
+          amt(st.digitalRefunded),
         ]),
       });
     }
@@ -1974,16 +1991,17 @@ export default function MyDailySummary() {
       {/* ── KPI layout (presentation only — formulas unchanged) ───────────
             Primary: 5 always-visible cards in money-flow order.
             Details: remaining metrics behind a collapsible section.
-            Collectible math still uses cancelledOnMyBills + all refunds —
-            see UnifiedReconciliationPanel. */}
+            Collectible math matches UnifiedReconciliationPanel (refunds on
+            same-period cancelled bills excluded from double-subtract). */}
       {s && (
         <>
           {(() => {
             const totalRefunds = s.cashRefunded + s.digitalRefunded;
+            const refundsExcluded = s.refundsOnCancelledBillsCreatedInPeriod ?? 0;
+            const refundsForCollectible = Math.max(0, totalRefunds - refundsExcluded);
             const cancelLinkedRefunds = Math.max(0, totalRefunds - s.refundsWithoutCancellationAmount);
-            // cancelledOnMyBills, not cancelledAmount — see UnifiedReconciliationPanel.
             const collectible = s.grossBilledIncludingCancelled + s.duesCollectedTotal
-              - s.cancelledOnMyBills - totalRefunds - s.outstanding;
+              - s.cancelledOnMyBills - refundsForCollectible - s.outstanding;
             const totalBillsCount = (s.billCount ?? 0) + (s.cancelledByOthersCount ?? 0) + (s.cancelledBySelfCount ?? 0);
             const avgBillValue = totalBillsCount > 0 ? s.grossBilledIncludingCancelled / totalBillsCount : 0;
             return (
@@ -2042,17 +2060,21 @@ export default function MyDailySummary() {
                       />
                     </div>
                     <FlowArrow />
-                    <div className="w-[calc(50%-0.375rem)] sm:w-[calc(33.333%-0.5rem)] xl:w-auto xl:flex-1 min-w-0">
+                    <div className="w-[calc(50%-0.375rem)] sm:w-[calc(33.333%-0.5rem)] xl:w-auto xl:flex-[1.35] min-w-0">
                       <MiniKpiFilled
                         icon={Banknote}
-                        label="Expected Physical Cash"
-                        value={fmt(s.physicalCashInHand)}
-                        sub={`Cash ${fmt(s.cashCollection)} − Cash Exp ${fmt(s.cashExpenses)}`}
+                        label="Net Cash Available"
+                        value={fmt(s.netClinicCash ?? (s.cashIn - s.cashRefunded))}
+                        sub={`Collected ${fmt(s.cashIn)} − Refunded ${fmt(s.cashRefunded)} · clinic drawer net`}
                         solid="green"
                         onClick={() => setDrilldownType("expectedPhysicalCash")}
                       />
                     </div>
                   </div>
+                  <p className="text-[11px] text-gray-500 dark:text-gray-400 px-0.5">
+                    After cash expenses: {fmt(s.physicalCashInHand)}
+                    {s.cashExpenses > 0 ? ` (expenses ${fmt(s.cashExpenses)})` : " (no cash expenses)"}
+                  </p>
                 </div>
 
                 {/* Financial Details — collapsible; all remaining metrics kept */}
@@ -2217,82 +2239,68 @@ export default function MyDailySummary() {
           {/* ── Post-Closure Activity Box ── */}
           {postClosureQ.data && <PostClosureActivityBox data={postClosureQ.data} />}
 
-          {/* ── Per-Staff Breakdown (All Staff / Total only) ── */}
+          {/* ── Staff Activity (action-based — not personal drawer shortage) ── */}
           {data?.byStaff && data.byStaff.length > 0 && (
             <div className="bg-white dark:bg-card border border-gray-200 dark:border-card-border rounded-xl shadow-sm overflow-hidden">
               <div className="px-4 py-3 border-b border-gray-100 dark:border-card-border bg-gray-50 dark:bg-muted/30">
                 <h3 className="text-sm font-bold text-gray-900 dark:text-foreground flex items-center gap-2">
-                  <Users size={14} className="text-emerald-600" /> Per-Staff Breakdown
+                  <Users size={14} className="text-emerald-600" /> Staff Activity
                 </h3>
-                <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">Billing + Cash details for each staff member (All Staff view)</p>
+                <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">
+                  Each action stays with the person who did it. Cancel/refund by someone else does not erase the original bill or collection.
+                  This is <strong>not</strong> a personal cash-shortage or amount-payable table.
+                </p>
               </div>
               <div className="overflow-x-auto">
                 <table className="w-full text-xs">
                   <thead className="bg-gray-50 dark:bg-muted/30 sticky top-0">
                     <tr>
                       <th className="px-3 py-2 text-left font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Staff</th>
-                      <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Gross Billed</th>
-                      <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Active</th>
-                      <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Cancelled</th>
-                      <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Outstanding</th>
-                      <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Net Collected</th>
-                      <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Bills</th>
-                      <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Cash In</th>
-                      <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Digital In</th>
-                      <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Net Cash</th>
-                      <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Net Digital</th>
-                      <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Total Received</th>
-                      <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Cash Exp</th>
-                      <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Phys. Cash</th>
-                      <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Dues</th>
-                      <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Disc.</th>
-                      <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Canc.</th>
+                      <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Bills Created</th>
+                      <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Cash Collected</th>
+                      <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Bills Cancelled</th>
+                      <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Cash Refunded</th>
+                      <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Digital Collected</th>
+                      <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Digital Refunded</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100 dark:divide-card-border">
-                    {data.byStaff.map((st) => (
-                      <tr key={st.name} className="hover:bg-emerald-50/40 dark:hover:bg-muted/20">
-                        <td className="px-3 py-2 font-semibold whitespace-nowrap text-gray-800 dark:text-gray-200">{st.name}</td>
-                        <td className="px-3 py-2 text-right tabular-nums text-gray-700 dark:text-gray-300">{fmt(st.grossBilled)}</td>
-                        <td className="px-3 py-2 text-right tabular-nums text-gray-700 dark:text-gray-300">{fmt(st.activeBilling)}</td>
-                        <td className="px-3 py-2 text-right tabular-nums text-red-600 dark:text-red-400">{st.cancelled > 0 ? fmt(st.cancelled) : "—"}</td>
-                        <td className="px-3 py-2 text-right tabular-nums text-amber-600 dark:text-amber-400">{st.outstanding > 0 ? fmt(st.outstanding) : "—"}</td>
-                        <td className="px-3 py-2 text-right tabular-nums font-semibold text-emerald-700 dark:text-emerald-400">{fmt(st.netCollected)}</td>
-                        <td className="px-3 py-2 text-right tabular-nums text-gray-500">{st.billCount}</td>
-                        <td className="px-3 py-2 text-right tabular-nums text-blue-700 dark:text-blue-400">{fmt(st.cashIn)}</td>
-                        <td className="px-3 py-2 text-right tabular-nums text-violet-700 dark:text-violet-400">{fmt(st.digitalIn)}</td>
-                        <td className="px-3 py-2 text-right tabular-nums font-semibold text-blue-700 dark:text-blue-400">{fmt(st.netCash)}</td>
-                        <td className="px-3 py-2 text-right tabular-nums font-semibold text-violet-700 dark:text-violet-400">{fmt(st.netDigital)}</td>
-                        <td className="px-3 py-2 text-right tabular-nums font-semibold text-green-700 dark:text-green-400">{fmt(st.totalReceived)}</td>
-                        <td className="px-3 py-2 text-right tabular-nums text-orange-600 dark:text-orange-400">{st.cashExpenses > 0 ? fmt(st.cashExpenses) : "—"}</td>
-                        <td className="px-3 py-2 text-right tabular-nums font-semibold text-blue-800 dark:text-blue-300">{fmt(st.physicalCashInHand)}</td>
-                        <td className="px-3 py-2 text-right tabular-nums text-teal-600 dark:text-teal-400">{st.duesCollected > 0 ? fmt(st.duesCollected) : "—"}</td>
-                        <td className="px-3 py-2 text-right tabular-nums text-slate-600 dark:text-slate-400">{st.discountsGiven > 0 ? fmt(st.discountsGiven) : "—"}</td>
-                        <td className="px-3 py-2 text-right tabular-nums text-red-500">{st.cancellationCount > 0 ? st.cancellationCount : "—"}</td>
-                      </tr>
-                    ))}
-                    {/* Total row */}
+                    {data.byStaff.map((st) => {
+                      const billsCreated = st.billsCreated ?? st.grossBilled;
+                      const cashCollected = st.cashCollected ?? st.cashIn;
+                      const billsCancelled = st.billsCancelled ?? st.cancelled;
+                      return (
+                        <tr key={st.name} className="hover:bg-emerald-50/40 dark:hover:bg-muted/20">
+                          <td className="px-3 py-2 font-semibold whitespace-nowrap text-gray-800 dark:text-gray-200">{st.name}</td>
+                          <td className="px-3 py-2 text-right tabular-nums text-gray-700 dark:text-gray-300">{fmt(billsCreated)}</td>
+                          <td className="px-3 py-2 text-right tabular-nums text-blue-700 dark:text-blue-400">{fmt(cashCollected)}</td>
+                          <td className="px-3 py-2 text-right tabular-nums text-red-600 dark:text-red-400">{billsCancelled > 0 ? fmt(billsCancelled) : "—"}</td>
+                          <td className="px-3 py-2 text-right tabular-nums text-orange-600 dark:text-orange-400">{st.cashRefunded > 0 ? fmt(st.cashRefunded) : "—"}</td>
+                          <td className="px-3 py-2 text-right tabular-nums text-violet-700 dark:text-violet-400">{st.digitalIn > 0 ? fmt(st.digitalIn) : "—"}</td>
+                          <td className="px-3 py-2 text-right tabular-nums text-violet-500 dark:text-violet-400">{st.digitalRefunded > 0 ? fmt(st.digitalRefunded) : "—"}</td>
+                        </tr>
+                      );
+                    })}
                     <tr className="bg-gray-100 dark:bg-gray-900/40 font-bold border-t-2 border-gray-200 dark:border-gray-700">
-                      <td className="px-3 py-2 whitespace-nowrap text-gray-900 dark:text-gray-100">TOTAL</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{fmt(data.byStaff.reduce((a, st) => a + st.grossBilled, 0))}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{fmt(data.byStaff.reduce((a, st) => a + st.activeBilling, 0))}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{fmt(data.byStaff.reduce((a, st) => a + st.cancelled, 0))}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{fmt(data.byStaff.reduce((a, st) => a + st.outstanding, 0))}</td>
-                      <td className="px-3 py-2 text-right tabular-nums text-emerald-700 dark:text-emerald-400">{fmt(data.byStaff.reduce((a, st) => a + st.netCollected, 0))}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{data.byStaff.reduce((a, st) => a + st.billCount, 0)}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{fmt(data.byStaff.reduce((a, st) => a + st.cashIn, 0))}</td>
+                      <td className="px-3 py-2 whitespace-nowrap text-gray-900 dark:text-gray-100">TOTAL (Clinic)</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{fmt(data.byStaff.reduce((a, st) => a + (st.billsCreated ?? st.grossBilled), 0))}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{fmt(data.byStaff.reduce((a, st) => a + (st.cashCollected ?? st.cashIn), 0))}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{fmt(data.byStaff.reduce((a, st) => a + (st.billsCancelled ?? st.cancelled), 0))}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{fmt(data.byStaff.reduce((a, st) => a + st.cashRefunded, 0))}</td>
                       <td className="px-3 py-2 text-right tabular-nums">{fmt(data.byStaff.reduce((a, st) => a + st.digitalIn, 0))}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{fmt(data.byStaff.reduce((a, st) => a + st.netCash, 0))}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{fmt(data.byStaff.reduce((a, st) => a + st.netDigital, 0))}</td>
-                      <td className="px-3 py-2 text-right tabular-nums text-green-700 dark:text-green-400">{fmt(data.byStaff.reduce((a, st) => a + st.totalReceived, 0))}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{fmt(data.byStaff.reduce((a, st) => a + st.cashExpenses, 0))}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{fmt(data.byStaff.reduce((a, st) => a + st.physicalCashInHand, 0))}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{fmt(data.byStaff.reduce((a, st) => a + st.duesCollected, 0))}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{fmt(data.byStaff.reduce((a, st) => a + st.discountsGiven, 0))}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{data.byStaff.reduce((a, st) => a + st.cancellationCount, 0)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{fmt(data.byStaff.reduce((a, st) => a + st.digitalRefunded, 0))}</td>
                     </tr>
                   </tbody>
                 </table>
+              </div>
+              <div className="px-4 py-2 bg-emerald-50/80 dark:bg-emerald-950/20 border-t border-emerald-100 dark:border-emerald-900 text-[12px]">
+                <span className="font-bold text-emerald-800 dark:text-emerald-300">Net Cash Available (clinic): </span>
+                <span className="tabular-nums font-extrabold text-emerald-900 dark:text-emerald-200">
+                  {fmt((s.netClinicCash ?? (s.cashIn - s.cashRefunded)))}
+                </span>
+                <span className="text-gray-500 dark:text-gray-400 ml-2">
+                  = Cash collected {fmt(s.cashIn)} − Cash refunded {fmt(s.cashRefunded)}
+                </span>
               </div>
             </div>
           )}

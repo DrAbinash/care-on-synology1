@@ -23,6 +23,8 @@
 
 import type { PrintBillData, PrintClinic, BuildPrintHtmlOpts } from "./printBill";
 import type { BillPaperSize } from "./billPrintSettings";
+import { buildDocumentHtml } from "./documentLayout/buildDocumentHtml";
+import { billPaperSizeToPrintPaper } from "./documentLayout/billPaper";
 
 // ── Shared utilities ───────────────────────────────────────────────────────────
 
@@ -98,6 +100,7 @@ interface PageData {
   clinic: PrintClinic;
   paperSize: BillPaperSize;
   isA4: boolean;
+  isLandscape: boolean;
   qrDataUrl: string;
   copyLabel: string;
   opts: BuildPrintHtmlOpts;
@@ -112,6 +115,9 @@ interface PageData {
   doctorName: string;
   billedByName: string;
   billedBySignatureUrl: string;
+  useCompactFooter: boolean;
+  sectionFlex: string;
+  footerSpacer: string;
 }
 
 function buildPageData(
@@ -122,11 +128,13 @@ function buildPageData(
   copyLabel: string,
   opts: BuildPrintHtmlOpts,
   copyIdx: number,
+  layoutOpts: { useCompactFooter: boolean; footerSpacer: string },
 ): PageData {
   const tests = (bill.order?.tests ?? []).filter((t) => (t.status ?? "active") !== "cancelled");
   const cancelled = (bill.order?.tests ?? []).filter((t) => t.status === "cancelled");
   const payments = bill.payments ?? [];
   const isA4 = paperSize === "A4";
+  const isLandscape = paperSize === "A5-landscape";
 
   const cashAmt = payments.filter((p) => ["cash"].includes((p.method ?? "").toLowerCase())).reduce((s, p) => s + Number(p.amount ?? 0), 0);
   const upiAmt = payments.filter((p) => ["upi"].includes((p.method ?? "").toLowerCase())).reduce((s, p) => s + Number(p.amount ?? 0), 0);
@@ -149,11 +157,16 @@ function buildPageData(
   const billedByName: string = designerSession?.user?.name ?? "";
   const billedBySignatureUrl: string = designerSession?.user?.signatureDataUrl ?? "";
 
+  const sectionFlex = "";
+
   return {
-    bill, clinic, paperSize, isA4, qrDataUrl, copyLabel, opts,
+    bill, clinic, paperSize, isA4, isLandscape, qrDataUrl, copyLabel, opts,
     tests, cancelled, payments,
     cashAmt, upiAmt, cardAmt, insAmt, chqAmt, onlineAmt,
     isUnconfirmedQr, patientName, patientAge, doctorName, billedByName, billedBySignatureUrl,
+    useCompactFooter: layoutOpts.useCompactFooter,
+    sectionFlex,
+    footerSpacer: layoutOpts.footerSpacer,
   };
 }
 
@@ -212,7 +225,7 @@ function renderLayoutA(d: PageData): string {
   const discNum = Number(bill.discount ?? 0);
 
   return `
-  <section style="width:100%;box-sizing:border-box;padding:${isA4 ? "16mm 18mm 12mm" : "8mm 10mm 6mm"};font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:${bodySize};color:#1a1a1a;line-height:${lineH};position:relative;min-height:${isA4 ? "277mm" : "198mm"};display:flex;flex-direction:column">
+  <section style="width:100%;box-sizing:border-box;padding:0;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:${bodySize};color:#1a1a1a;line-height:${lineH};position:relative;${d.sectionFlex}">
     ${watermark}
 
     <!-- HEADER: Clinic Name + Bill Info -->
@@ -302,7 +315,7 @@ function renderLayoutA(d: PageData): string {
     </div>
 
     <!-- Spacer -->
-    <div style="flex:1"></div>
+    ${d.footerSpacer}
 
     <!-- QR + FOOTER -->
     <div style="border-top:1px solid #e0e0e0;padding-top:${isA4 ? "12px" : "8px"};display:flex;justify-content:space-between;align-items:flex-end">
@@ -368,7 +381,7 @@ function renderLayoutB(d: PageData): string {
     </div>` : "";
 
   return `
-  <section style="width:100%;box-sizing:border-box;padding:${isA4 ? "14mm 16mm 10mm" : "7mm 9mm 5mm"};font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:${bodyPx};color:#1a1a1a;line-height:1.5;position:relative;min-height:${isA4 ? "277mm" : "198mm"};display:flex;flex-direction:column">
+  <section style="width:100%;box-sizing:border-box;padding:0;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:${bodyPx};color:#1a1a1a;line-height:1.5;position:relative;${d.sectionFlex}">
     ${watermark}
 
     <!-- HEADER BAR -->
@@ -455,7 +468,7 @@ function renderLayoutB(d: PageData): string {
     </div>
 
     <!-- Spacer -->
-    <div style="flex:1"></div>
+    ${d.footerSpacer}
 
     <!-- FOOTER -->
     <div style="border-top:1.5px solid #1a1a1a;padding-top:${isA4 ? "10px" : "7px"};margin-top:${gap};display:flex;justify-content:space-between;align-items:flex-end">
@@ -531,8 +544,10 @@ function renderLayoutC(d: PageData): string {
       ${isReprint ? "REPRINT" : "CARE DIAGNOSTICS"}
     </div>` : "";
 
+  const bodyFlex = d.useCompactFooter ? "" : "flex:1;";
+
   return `
-  <section style="width:100%;box-sizing:border-box;padding:${isA4 ? "0" : "0"};font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:${bodyPx};color:#1a1a1a;line-height:1.5;position:relative;min-height:${isA4 ? "277mm" : "198mm"};display:flex;flex-direction:column">
+  <section style="width:100%;box-sizing:border-box;padding:0;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:${bodyPx};color:#1a1a1a;line-height:1.5;position:relative;${d.sectionFlex}">
     ${watermark}
 
     <!-- TOP BAND -->
@@ -554,7 +569,7 @@ function renderLayoutC(d: PageData): string {
     </div>
 
     <!-- BODY -->
-    <div style="padding:${isA4 ? "10mm 14mm" : "6mm 9mm"};flex:1;display:flex;flex-direction:column">
+    <div style="padding:${isA4 ? "10mm 14mm" : "6mm 9mm"};${bodyFlex}display:flex;flex-direction:column">
 
       <!-- PATIENT + INVOICE META — 2 col -->
       <div style="display:flex;gap:${isA4 ? "20px" : "14px"};margin-bottom:${gap}">
@@ -649,7 +664,7 @@ function renderLayoutC(d: PageData): string {
       </div>
 
       <!-- Spacer -->
-      <div style="flex:1"></div>
+      ${d.footerSpacer}
 
       <!-- FOOTER -->
       <div style="border-top:1px solid #ddd;padding-top:${isA4 ? "10px" : "7px"}">
@@ -679,24 +694,25 @@ function renderLayoutC(d: PageData): string {
 export function buildDesignerBillPrintHtml(
   opts: BuildPrintHtmlOpts & { layout: "designer-a" | "designer-b" | "designer-c" },
 ): string {
-  const { bill, clinic, qrDataUrl } = opts;
+  const { bill, clinic, qrDataUrl, pageCssSize, compactFooterGap = false } = opts;
 
   // Map paperSize
   const paperSizeStr = opts.paperSize; // "A4" | "A5"
   const isA4 = paperSizeStr === "A4";
   const isLandscape = !isA4 && opts.orientation === "landscape";
-  const paperSize: BillPaperSize = isA4 ? "A4" : (isLandscape ? "A5-landscape" : "A5-portrait");
-  const pageSize = isA4 ? "A4 portrait" : (isLandscape ? "A5 landscape" : "A5 portrait");
-  const pageWidth = isA4 ? "210mm" : (isLandscape ? "210mm" : "148mm");
-  const pageHeight = isA4 ? "297mm" : (isLandscape ? "148mm" : "210mm");
-  const pageMargin = isA4 ? "10mm" : "6mm";
+  const paperSize: BillPaperSize = isA4 ? "A4" : isLandscape ? "A5-landscape" : "A5-portrait";
+  const marginMm = isA4 ? 6 : 4;
+  const tests = (bill.order?.tests ?? []).filter((t) => (t.status ?? "active") !== "cancelled");
+  const useCompactFooter = compactFooterGap || tests.length <= 4;
+  const footerSpacer = `<div style="height:4px"></div>`;
+  const layoutOpts = { useCompactFooter, footerSpacer };
 
   const copies = Math.max(1, Math.min(3, Number(clinic?.billPrintCopies ?? 1) || 1));
   const copyLabels = ["Patient Copy", "Office Copy", "Duplicate Copy"];
 
   function makePage(copyIdx: number): string {
     const copyLabel = copies > 1 ? (opts.copyLabel || copyLabels[copyIdx] || `Copy ${copyIdx + 1}`) : (opts.copyLabel || "");
-    const pd = buildPageData(bill!, clinic, paperSize, qrDataUrl, copyLabel, opts, copyIdx);
+    const pd = buildPageData(bill!, clinic, paperSize, qrDataUrl, copyLabel, opts, copyIdx, layoutOpts);
 
     switch (opts.layout) {
       case "designer-a": return renderLayoutA(pd);
@@ -705,36 +721,19 @@ export function buildDesignerBillPrintHtml(
     }
   }
 
-  const pages = Array.from({ length: copies }, (_, i) => makePage(i)).join(
-    `<div style="page-break-before:always"></div>`,
-  );
+  const pages = Array.from({ length: copies }, (_, i) => ({
+    html: makePage(i),
+    className: "receipt",
+  }));
 
-  return `<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>Receipt ${esc(bill?.billNumber ?? "")}</title>
-  <style>
-    @page { size: ${pageSize}; margin: ${pageMargin}; }
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    html, body { height: 100%; margin: 0; padding: 0; }
-    body {
-      background: #fff;
-      color: #000;
-      font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
-      -webkit-print-color-adjust: exact;
-      print-color-adjust: exact;
-    }
-    section { page-break-inside: avoid; }
-    @media print {
-      html, body { height: auto; }
-      section { page-break-after: always; }
-      section:last-child { page-break-after: avoid; }
-    }
-  </style>
-</head>
-<body>
-  ${pages}
-</body>
-</html>`;
+  return buildDocumentHtml({
+    title: `Receipt ${esc(bill?.billNumber ?? "")}`,
+    paper: billPaperSizeToPrintPaper(paperSize),
+    safePaddingMm: marginMm,
+    bodyFontFamily: "'Helvetica Neue', Helvetica, Arial, sans-serif",
+    extraStyles: `
+  section.receipt { width: 100%; }
+  .no-break { page-break-inside: avoid; }`,
+    pages,
+  });
 }

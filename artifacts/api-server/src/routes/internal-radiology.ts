@@ -46,7 +46,9 @@ import { isUltrasoundModality, isObstetricUsgStudy } from "../lib/usgModality";
 import { checkPcpndtFormFCompliance, PCPNDT_OVERRIDE_ROLES } from "../lib/pcpndtCompliance";
 import { auditLog } from "../lib/audit";
 import { calculateMatchScore, type DicomInput, type BilledTestInput } from "../lib/pacs/matchingEngine";
+import { formatDicomPersonNameForDisplay } from "../lib/pacs/dicomNameNormalize";
 import { shouldFallbackToAccessionLookup, isWorklistUidRaceViolation } from "../lib/radiologyWorklistDedup";
+import { radiologyOpenFallbackPath, resolveRadiologyOpen } from "../lib/resolveRadiologyOpen";
 
 export async function runMatchingEngineForWorklist(worklistId: number): Promise<void> {
   const [row] = await db
@@ -78,6 +80,7 @@ export async function runMatchingEngineForWorklist(worklistId: number): Promise<
       modality: radiologyStudiesTable.modality,
       studyDescription: radiologyStudiesTable.studyDescription,
       studyDate: radiologyStudiesTable.studyDate,
+      referringDoctor: radiologyStudiesTable.referringDoctor,
       patientName: sql<string>`concat(${patientsTable.firstName}, ' ', ${patientsTable.lastName})`,
       patientUHID: patientsTable.patientId,
       age: sql<string>`concat(${patientsTable.ageValue}, ' ', ${patientsTable.ageUnit})`,
@@ -131,6 +134,7 @@ export async function runMatchingEngineForWorklist(worklistId: number): Promise<
     accessionNumber: study.accessionNumber,
     billNumber: study.billNumber,
     studyDate: study.studyDate,
+    referringDoctor: study.referringDoctor,
   };
 
   const matchResult = calculateMatchScore(dicomInput, billInput);
@@ -408,7 +412,10 @@ router.post("/radiology/studies", async (req, res) => {
 
     const rawStudyId = b.studyId;
     const patientId = (b.patientId !== undefined ? String(b.patientId) : "") || (b.PatientID !== undefined ? String(b.PatientID) : "");
-    const patientName = typeof b.patientName === "string" ? b.patientName.trim() : (typeof b.PatientName === "string" ? b.PatientName.trim() : "");
+    // Clean DICOM PN syntax (LAST^FIRST^^^MD → "First Last, MD") so worklist
+    // display and the billing match engine see the same readable form.
+    const patientNameRaw = typeof b.patientName === "string" ? b.patientName.trim() : (typeof b.PatientName === "string" ? b.PatientName.trim() : "");
+    const patientName = formatDicomPersonNameForDisplay(patientNameRaw) || patientNameRaw;
     const age = typeof b.age === "string" ? b.age.trim() || null : null;
     const sex = typeof b.sex === "string" ? b.sex.trim() || null : null;
     const modality = typeof b.modality === "string" ? b.modality.trim() || "OT" : (typeof b.ModalitiesInStudy === "string" ? b.ModalitiesInStudy.trim() || "OT" : "OT");
@@ -426,7 +433,10 @@ router.post("/radiology/studies", async (req, res) => {
     const aeTitle = typeof b.aeTitle === "string" ? b.aeTitle.trim() || null : null;
     const ipAddress = typeof b.ipAddress === "string" ? b.ipAddress.trim() || null : null;
     const port = typeof b.port === "number" ? b.port : null;
-    const referringDoctor = typeof b.referringDoctor === "string" ? b.referringDoctor.trim() || null : null;
+    const referringDoctorRaw = typeof b.referringDoctor === "string" ? b.referringDoctor.trim() || null : null;
+    const referringDoctor = referringDoctorRaw
+      ? (formatDicomPersonNameForDisplay(referringDoctorRaw) || referringDoctorRaw)
+      : null;
     const weasisUrl = typeof b.weasisUrl === "string" ? b.weasisUrl.trim() || null : null;
     const sourcePacs = typeof b.sourcePacs === "string" ? b.sourcePacs.trim() || null : null;
     const sourceAeTitle = typeof b.sourceAeTitle === "string" ? b.sourceAeTitle.trim() || null : null;
@@ -1518,6 +1528,56 @@ router.get("/radiology/worklist", async (req, res) => {
     .limit(200);
 
   res.json(rows);
+});
+
+// GET /api/internal/radiology/resolve-open?orderId=&patientId=&modality=&patientName=
+// Deep-link helper for Hope (and other partners): map a CARE order/patient to
+// the Reporting Workspace worklist id. Falls back to a filtered worklist path
+// when the MRI/study has not arrived in PACS yet.
+router.get("/radiology/resolve-open", async (req, res) => {
+  const orderIdRaw = req.query.orderId;
+  const patientIdRaw = req.query.patientId;
+  const modality = typeof req.query.modality === "string" ? req.query.modality : null;
+  const patientName = typeof req.query.patientName === "string" ? req.query.patientName : null;
+
+  const orderId = orderIdRaw != null && orderIdRaw !== "" ? Number(orderIdRaw) : null;
+  const patientId = patientIdRaw != null && patientIdRaw !== "" ? Number(patientIdRaw) : null;
+
+  if ((orderId == null || !Number.isFinite(orderId)) && (patientId == null || !Number.isFinite(patientId))) {
+    res.status(400).json({
+      error: "Provide orderId and/or patientId",
+      fallbackPath: radiologyOpenFallbackPath({ modality, patientName }),
+    });
+    return;
+  }
+
+  try {
+    const target = await resolveRadiologyOpen({
+      orderId: orderId != null && Number.isFinite(orderId) ? orderId : null,
+      patientId: patientId != null && Number.isFinite(patientId) ? patientId : null,
+      modality,
+    });
+
+    if (!target) {
+      res.status(404).json({
+        error: "No radiology study ready for reporting yet",
+        fallbackPath: radiologyOpenFallbackPath({ modality, patientName }),
+      });
+      return;
+    }
+
+    res.json({
+      ...target,
+      reportPath: `/radiology/report/${target.worklistId}`,
+      fallbackPath: radiologyOpenFallbackPath({ modality: target.modality || modality, patientName }),
+    });
+  } catch (err) {
+    logger.error({ err, orderId, patientId, modality }, "resolve-open failed");
+    res.status(500).json({
+      error: "Failed to resolve radiology open target",
+      fallbackPath: radiologyOpenFallbackPath({ modality, patientName }),
+    });
+  }
 });
 
 // GET /api/internal/radiology/worklist/:id
