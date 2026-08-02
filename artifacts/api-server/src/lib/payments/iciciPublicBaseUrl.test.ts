@@ -18,7 +18,7 @@ describe("getIciciPublicBaseUrl — ICICI whitelisted domain", () => {
     vi.stubEnv("PUBLIC_BASE_URL", "https://www.caredeoghar.com");
     expect(getIciciPublicBaseUrl()).toBe("https://caredeoghar.com");
 
-    vi.stubEnv("PUBLIC_BASE_URL", "http://192.168.1.137:8888");
+    vi.stubEnv("PUBLIC_BASE_URL", "http://172.16.1.139:8888");
     expect(getIciciPublicBaseUrl()).toBe("https://caredeoghar.com");
   });
 

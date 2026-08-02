@@ -90,7 +90,7 @@ This document explains the key files that govern how Care ERP is developed, depl
 ### The Rule: Never Hardcode
 ```javascript
 // ❌ WRONG - This is in production code
-const ORTHANC_URL = "http://192.168.1.137:8042";
+const ORTHANC_URL = "http://172.16.1.139:8042";
 const API_PORT = 3000;
 const PAYMENT_KEY = "sk_live_...";
 

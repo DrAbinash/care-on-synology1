@@ -90,15 +90,15 @@ describe("probeHttp", () => {
 describe("readModeEndpoints — server-side mirror of the launcher keys", () => {
   it("reads LAN from the existing keys and remote modes from suffixed keys", () => {
     const rows = [
-      { key: "ohif_base_url", category: "viewer", value: "http://192.168.1.137:3010" },
-      { key: "weasis_wado_url", category: "viewer", value: "http://192.168.1.137:8042/wado" },
+      { key: "ohif_base_url", category: "viewer", value: "http://172.16.1.139:3010" },
+      { key: "weasis_wado_url", category: "viewer", value: "http://172.16.1.139:8042/wado" },
       { key: "ohif_base_url_tailscale", category: "viewer", value: "http://100.65.255.115:3010" },
       { key: "wado_base_url_cloudflare", category: "viewer", value: "https://pacs.clinic.com/wado" },
       { key: "ohif_base_url_cloudflare", category: "viewer", value: "https://pacs.clinic.com/ohif" },
     ];
     const eps = readModeEndpoints(rows);
-    expect(eps.LAN.viewerUrl).toBe("http://192.168.1.137:3010");
-    expect(eps.LAN.wadoUrl).toBe("http://192.168.1.137:8042/wado");
+    expect(eps.LAN.viewerUrl).toBe("http://172.16.1.139:3010");
+    expect(eps.LAN.wadoUrl).toBe("http://172.16.1.139:8042/wado");
     expect(eps.TAILSCALE.viewerUrl).toBe("http://100.65.255.115:3010");
     expect(eps.CLOUDFLARE.wadoUrl).toBe("https://pacs.clinic.com/wado");
     expect(eps.PUBLIC.viewerUrl).toBe("");
@@ -107,9 +107,9 @@ describe("readModeEndpoints — server-side mirror of the launcher keys", () => 
   it("legacy public_pacs_host still derives a PUBLIC viewer URL, and legacy wado_uri_base_url backs LAN WADO", () => {
     const eps = readModeEndpoints([
       { key: "public_pacs_host", category: "viewer", value: "pacs.clinic.com" },
-      { key: "wado_uri_base_url", category: "viewer", value: "http://192.168.1.137:8042/wado" },
+      { key: "wado_uri_base_url", category: "viewer", value: "http://172.16.1.139:8042/wado" },
     ]);
     expect(eps.PUBLIC.viewerUrl).toBe("https://pacs.clinic.com");
-    expect(eps.LAN.wadoUrl).toBe("http://192.168.1.137:8042/wado");
+    expect(eps.LAN.wadoUrl).toBe("http://172.16.1.139:8042/wado");
   });
 });

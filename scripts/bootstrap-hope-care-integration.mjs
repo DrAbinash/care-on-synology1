@@ -26,7 +26,7 @@ const ROOT = resolve(__dir, "..");
 const DEFAULT_PARTNER_KEY =
   "intgk_8ffb1b9c5b982148cfbe89448064cc4986b172bea48fe73b0f622f4a192da7e7";
 const DEFAULT_CALLBACK =
-  "http://192.168.1.137:7080/api/integration/care-callback";
+  "http://172.16.1.139:7080/api/integration/care-callback";
 
 const HOPE_PERMISSIONS = [
   "diagnostic_referral:create",

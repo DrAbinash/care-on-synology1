@@ -115,9 +115,9 @@ FINGERPRINT_BRIDGE_SECRET=<long-random-shared-secret>
 # bridge-service/.env
 BRIDGE_PORT=8765
 BRIDGE_VENDOR=mantra           # or zkteco / morpho once its adapter is implemented; mock for testing
-ERP_BASE_URL=http://192.168.1.137:8888
+ERP_BASE_URL=http://172.16.1.139:8888
 ERP_BRIDGE_SECRET=<same value as server FINGERPRINT_BRIDGE_SECRET>
-BRIDGE_ALLOW_ORIGINS=http://192.168.1.137:8888   # never "*"
+BRIDGE_ALLOW_ORIGINS=http://172.16.1.139:8888   # never "*"
 MANTRA_RD_BASE=http://127.0.0.1:11100            # mantra only
 ```
 Install the vendor RD service/SDK on that PC, then `npm start` in `bridge-service/`.
