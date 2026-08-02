@@ -1234,7 +1234,7 @@ function AppearanceTab() {
   });
 
   return (
-    <div className="max-w-2xl space-y-6">
+    <div className="max-w-3xl space-y-6">
       {/* My personal theme */}
       <div className="bg-card border border-card-border rounded-xl p-5 space-y-5">
         <div>
