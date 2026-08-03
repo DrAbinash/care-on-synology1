@@ -15,7 +15,7 @@ import {
 import { fetchApi, api } from "@/lib/fetchApi";
 import { writeStaffSession, firstPermissionedPath, firstAllowedPath, canAccess, normalizeRole, type StaffSession as ErpStaffSession } from "@/lib/staffSession";
 import { InstallAppHint } from "@/components/InstallAppHint";
-import { LanFailoverOffer } from "@/components/LanFailoverOffer";
+import { StaffLanLoginShortcuts } from "@/components/StaffLanLoginShortcuts";
 
 /**
  * Portal routes for wouter. In production the App router already has base=/erp,
@@ -616,7 +616,7 @@ function StaffLogin() {
             Sign in with your username and PIN.
           </p>
 
-          <LanFailoverOffer />
+          <StaffLanLoginShortcuts />
 
           <form
             onSubmit={(e) => { e.preventDefault(); setError(""); login.mutate({ username: username.trim().toLowerCase(), pin: pin.trim() }); }}

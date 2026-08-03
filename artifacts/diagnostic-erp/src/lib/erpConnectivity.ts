@@ -30,12 +30,17 @@ export const ERP_CONNECTIVITY_MODE_KEY = "erp_connectivity_mode";
 export const ERP_SESSION_HASH_PARAM = "_erp_sess";
 /** Set when public probe failed on a login page — show manual LAN link. */
 export const ERP_PUBLIC_PROBE_FAILED_KEY = "erp_public_probe_failed";
+/** Fired after a background login-page connectivity probe finishes. */
+export const ERP_CONNECTIVITY_PROBE_DONE_EVENT = "erp-connectivity-probe-done";
 
 /** Lightweight liveness — no DB, always 200 when nginx+api are up. */
 const HEALTH_PATH = "/health";
 const PROBE_TIMEOUT_MS = 4_000;
 const PROBE_RETRIES = 3;
 const PROBE_RETRY_DELAY_MS = 800;
+/** Login pages must not block on a slow public /health — one quick try only. */
+const LOGIN_PROBE_TIMEOUT_MS = 2_000;
+const LOGIN_PROBE_RETRIES = 1;
 
 export type ErpConnectivityMode =
   | "public"
@@ -106,9 +111,10 @@ export async function probeErpOrigin(origin: string, timeoutMs = PROBE_TIMEOUT_M
 export async function probeErpOriginWithRetries(
   origin: string,
   retries = PROBE_RETRIES,
+  timeoutMs = PROBE_TIMEOUT_MS,
 ): Promise<boolean> {
   for (let i = 0; i < retries; i++) {
-    if (await probeErpOrigin(origin)) return true;
+    if (await probeErpOrigin(origin, timeoutMs)) return true;
     if (i < retries - 1) await delay(PROBE_RETRY_DELAY_MS);
   }
   return false;
@@ -133,6 +139,34 @@ export function isLoginOrPortalPath(): boolean {
     path.includes("/portal/staff-login") ||
     path.includes("/portal/patient-login")
   );
+}
+
+/** Login/portal pages mount immediately — probe runs in the background. */
+export function shouldDeferConnectivityProbe(): boolean {
+  return isLoginOrPortalPath();
+}
+
+/** True on the public ERP domain (caredeoghar.com) — show LAN login shortcuts. */
+export function isOnPublicErpOrigin(): boolean {
+  return currentConnectivityKind() === "public";
+}
+
+/** LAN staff-login URL — the path confirmed working on clinic NAS (:8888). */
+export function buildLanStaffLoginUrl(lanHost?: string): string {
+  const root = erpLanOriginForHost(lanHost ?? preferredLanHost()).replace(/\/+$/, "");
+  return `${root}/portal/staff-login`;
+}
+
+/** All LAN staff-login URLs (primary + optional alt NAS IP). */
+export function buildLanStaffLoginOptions(): { host: string; url: string }[] {
+  const preferred = preferredLanHost();
+  return lanHostAlternates()
+    .map((host) => ({ host, url: buildLanStaffLoginUrl(host) }))
+    .sort((a, b) => {
+      if (a.host === preferred) return -1;
+      if (b.host === preferred) return 1;
+      return 0;
+    });
 }
 
 /** Build the LAN ERP URL for the current page (path + query preserved). */
@@ -227,14 +261,52 @@ function redirectToLanWithSession(lanHost?: string): void {
   window.location.replace(target);
 }
 
-/**
- * Run once before React mounts. May redirect to the LAN ERP URL.
- * Returns when the app should continue on the current origin.
- */
-export async function runErpConnectivityBootstrap(): Promise<void> {
+function notifyConnectivityProbeDone(): void {
+  try {
+    window.dispatchEvent(new CustomEvent(ERP_CONNECTIVITY_PROBE_DONE_EVENT));
+  } catch {
+    /* SSR */
+  }
+}
+
+/** Synchronous path repair + session hash — safe before first React paint. */
+export function runErpConnectivitySyncInit(): void {
   hydrateNetworkSettingsFromCache();
   repairDoubledErpPath();
   consumeSessionTransferHash();
+}
+
+async function runPublicConnectivityProbe(loginPage: boolean): Promise<void> {
+  const publicOk = await probeErpOriginWithRetries(
+    window.location.origin,
+    loginPage ? LOGIN_PROBE_RETRIES : PROBE_RETRIES,
+    loginPage ? LOGIN_PROBE_TIMEOUT_MS : PROBE_TIMEOUT_MS,
+  );
+  if (publicOk) {
+    window.sessionStorage.setItem(ERP_CONNECTIVITY_MODE_KEY, "public");
+    window.sessionStorage.removeItem(ERP_PUBLIC_PROBE_FAILED_KEY);
+    return;
+  }
+
+  if (loginPage) {
+    window.sessionStorage.setItem(ERP_PUBLIC_PROBE_FAILED_KEY, "1");
+    window.sessionStorage.setItem(ERP_CONNECTIVITY_MODE_KEY, "public_unavailable");
+    notifyConnectivityProbeDone();
+    return;
+  }
+
+  redirectToLanWithSession();
+  await new Promise(() => {
+    /* redirect in flight */
+  });
+}
+
+/**
+ * Run once before (or right after) React mounts. May redirect to the LAN ERP URL.
+ * Returns when the app should continue on the current origin.
+ */
+export async function runErpConnectivityBootstrap(): Promise<void> {
+  runErpConnectivitySyncInit();
 
   const kind = currentConnectivityKind();
   if (kind === "lan") {
@@ -247,25 +319,8 @@ export async function runErpConnectivityBootstrap(): Promise<void> {
     return;
   }
 
-  const publicOk = await probeErpOriginWithRetries(window.location.origin);
-  if (publicOk) {
-    window.sessionStorage.setItem(ERP_CONNECTIVITY_MODE_KEY, "public");
-    window.sessionStorage.removeItem(ERP_PUBLIC_PROBE_FAILED_KEY);
-    return;
-  }
-
-  // Login/portal: never hijack the URL — offer LAN links in the UI instead.
-  if (isLoginOrPortalPath()) {
-    window.sessionStorage.setItem(ERP_PUBLIC_PROBE_FAILED_KEY, "1");
-    window.sessionStorage.setItem(ERP_CONNECTIVITY_MODE_KEY, "public_unavailable");
-    return;
-  }
-
-  // Cannot probe HTTP LAN from HTTPS (mixed content) — redirect directly.
-  redirectToLanWithSession();
-  await new Promise(() => {
-    /* redirect in flight */
-  });
+  const loginPage = isLoginOrPortalPath();
+  await runPublicConnectivityProbe(loginPage);
 }
 
 /** True when the SPA is running on the LAN ERP URL. */

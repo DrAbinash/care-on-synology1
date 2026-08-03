@@ -2,7 +2,7 @@ import { createRoot } from "react-dom/client";
 import { setAuthTokenGetter } from "@workspace/api-client-react";
 import App from "./App";
 import { ERP_SESSION_KEY, type StaffSession } from "./lib/staffSession";
-import { runErpConnectivityBootstrap } from "./lib/erpConnectivity";
+import { runErpConnectivityBootstrap, runErpConnectivitySyncInit, shouldDeferConnectivityProbe } from "./lib/erpConnectivity";
 import {
   ConnectivityBootstrapSplash,
   removeConnectivityBootstrapSplash,
@@ -68,12 +68,20 @@ window.addEventListener("vite:preloadError", () => {
 async function boot() {
   const rootEl = document.getElementById("root")!;
   const root = createRoot(rootEl);
-  root.render(<ConnectivityBootstrapSplash />);
 
-  try {
-    await runErpConnectivityBootstrap();
-  } finally {
-    removeConnectivityBootstrapSplash();
+  runErpConnectivitySyncInit();
+  const deferProbe = shouldDeferConnectivityProbe();
+
+  if (!deferProbe) {
+    root.render(<ConnectivityBootstrapSplash />);
+    try {
+      await runErpConnectivityBootstrap();
+    } finally {
+      removeConnectivityBootstrapSplash();
+    }
+  } else {
+    // Login/portal: paint the form immediately; probe in background for LAN hints.
+    void runErpConnectivityBootstrap();
   }
 
   root.render(<App />);
