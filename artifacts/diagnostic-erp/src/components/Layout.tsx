@@ -435,6 +435,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   // restores exactly what the user had (a manual collapse is preserved), and
   // never leave it stuck collapsed once the workspace unmounts.
   const preViewerFocusCollapsed = useRef<boolean | null>(null);
+  const preWorkspaceFocusCollapsed = useRef<boolean | null>(null);
   useEffect(() => {
     const onViewerFocus = (e: Event) => {
       const on = Boolean((e as CustomEvent).detail);
@@ -449,8 +450,25 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         setSidebarCollapsed(restore);
       }
     };
+    const onWorkspaceFocus = (e: Event) => {
+      const on = Boolean((e as CustomEvent).detail);
+      if (on) {
+        setSidebarCollapsed((cur) => {
+          if (preWorkspaceFocusCollapsed.current === null) preWorkspaceFocusCollapsed.current = cur;
+          return true;
+        });
+      } else if (preWorkspaceFocusCollapsed.current !== null) {
+        const restore = preWorkspaceFocusCollapsed.current;
+        preWorkspaceFocusCollapsed.current = null;
+        setSidebarCollapsed(restore);
+      }
+    };
     window.addEventListener("care:viewer-focus", onViewerFocus);
-    return () => window.removeEventListener("care:viewer-focus", onViewerFocus);
+    window.addEventListener("care:workspace-focus", onWorkspaceFocus);
+    return () => {
+      window.removeEventListener("care:viewer-focus", onViewerFocus);
+      window.removeEventListener("care:workspace-focus", onWorkspaceFocus);
+    };
   }, []);
 
   // Pass the login-time DB value so the hook seeds localStorage on a fresh device.
