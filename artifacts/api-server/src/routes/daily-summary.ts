@@ -4,11 +4,12 @@ import {
   billsTable, paymentsTable, ordersTable, billAuditsTable, voucherAuditsTable,
   orderTestsTable, testsTable,
 } from "@workspace/db/schema";
-import { sql, and, eq, gte, lt, ne, isNull, or, isNotNull } from "drizzle-orm";
+import { sql, and, eq, gte, lt, ne, isNull, or, isNotNull, notInArray } from "drizzle-orm";
 import { patientsTable } from "@workspace/db/schema";
 
 import { todayIST } from "../lib/istDate";
 import { classifyPaymentMethod, isDigitalSettlement, isPhysicalCash } from "../lib/paymentMethodClassifier";
+import { BILL_AUDIT_OPERATIONAL_CHANGE_TYPES } from "../lib/staffActivityAttribution";
 
 export const dailySummaryRouter: IRouter = Router();
 
@@ -239,7 +240,11 @@ dailySummaryRouter.get("/", async (req, res) => {
   const byUser = Array.from(byUserMap.values()).sort((a, b) => b.received - a.received);
 
   // ── Audit logs (bill + voucher edits within this day) ─────────────────
-  const billAuditFilters = [gte(billAuditsTable.createdAt, dayStart), lt(billAuditsTable.createdAt, dayEnd)];
+  const billAuditFilters = [
+    gte(billAuditsTable.createdAt, dayStart),
+    lt(billAuditsTable.createdAt, dayEnd),
+    notInArray(billAuditsTable.changeType, [...BILL_AUDIT_OPERATIONAL_CHANGE_TYPES]),
+  ];
   if (staffName) billAuditFilters.push(eq(billAuditsTable.editedBy, staffName));
   const billEditsRaw = await db
     .select({

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildStaffActivityRows,
   netClinicCash,
+  BILL_AUDIT_OPERATIONAL_CHANGE_TYPES,
 } from "./staffActivityAttribution";
 
 function cashPay(name: string, amount: number) {
@@ -34,6 +35,14 @@ function cardPay(name: string, amount: number) {
     isKnown: true,
   };
 }
+
+describe("BILL_AUDIT_OPERATIONAL_CHANGE_TYPES", () => {
+  it("excludes bill_created and payment_collected from activity-log Bill Edits", () => {
+    expect(BILL_AUDIT_OPERATIONAL_CHANGE_TYPES).toContain("bill_created");
+    expect(BILL_AUDIT_OPERATIONAL_CHANGE_TYPES).toContain("payment_collected");
+    expect(BILL_AUDIT_OPERATIONAL_CHANGE_TYPES).toContain("referral");
+  });
+});
 
 describe("buildStaffActivityRows — User1 create/collect, User2 cancel/refund", () => {
   const bills = [

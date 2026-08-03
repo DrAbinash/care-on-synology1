@@ -1,13 +1,13 @@
 import { Router } from "express";
 import { db } from "@workspace/db";
 import { billsTable, paymentsTable, billAuditsTable, patientsTable, ordersTable, doctorsTable, voucherAuditsTable, expensesTable } from "@workspace/db/schema";
-import { sql, and, eq, gte, lt } from "drizzle-orm";
+import { sql, and, eq, gte, lt, notInArray } from "drizzle-orm";
 import { FULL_ACCESS_ROLES } from "../middleware/requireStaffAuth";
 import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { getTransporter, getEmailSettings } from "../email";
 import { classifyPaymentMethod, isPhysicalCash, isDigitalSettlement } from "../lib/paymentMethodClassifier";
 import { computeRefundsOnCancelledBillsCreatedInPeriod } from "../lib/dailySummaryCollectible";
-import { buildStaffActivityRows } from "../lib/staffActivityAttribution";
+import { buildStaffActivityRows, BILL_AUDIT_OPERATIONAL_CHANGE_TYPES } from "../lib/staffActivityAttribution";
 
 export const myDailySummaryRouter = Router();
 
@@ -237,6 +237,7 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
     .where(and(
       gte(billAuditsTable.createdAt, start),
       lt(billAuditsTable.createdAt, end),
+      notInArray(billAuditsTable.changeType, [...BILL_AUDIT_OPERATIONAL_CHANGE_TYPES]),
       ...(staffName !== null ? [eq(billAuditsTable.editedBy, staffName)] : []),
     ))
     .orderBy(sql`${billAuditsTable.createdAt} DESC`)
