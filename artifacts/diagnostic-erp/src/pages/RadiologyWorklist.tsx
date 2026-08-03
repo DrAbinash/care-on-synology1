@@ -56,6 +56,7 @@ type WorklistEntry = {
   deliveryStatus: string | null;
   uhid?: string | null;        // Phase C: ERP UHID via patients join
   billNumber?: string | null;  // Phase C: bill number via study→bill join
+  testName?: string | null;    // Catalog test from billing when study is linked
   priority?: string | null;    // Phase C: reuses radiology_studies.priority
   // R2.0 — canonical ultrasound integration: USG/Doppler measurement +
   // key-image counts and latest report-draft status, scalar-subqueried by
@@ -72,6 +73,11 @@ type WorklistEntry = {
   lockLastActivityAt?: string | null;
   lockWorkstation?: string | null;
 };
+
+function displayTestName(entry: Pick<WorklistEntry, "testName" | "studyDescription">): string {
+  const name = entry.testName?.trim() || entry.studyDescription?.trim();
+  return name || "\u2014";
+}
 
 const WORKLIST_COL_STORAGE_KEY = "radiologyWorklistColumnVisibility";
 
@@ -1149,6 +1155,7 @@ export default function RadiologyWorklist() {
                       <th className="px-3 py-2 font-medium whitespace-nowrap">UHID</th>
                       <th className="px-3 py-2 font-medium whitespace-nowrap">Bill</th>
                       <th className="px-3 py-2 font-medium whitespace-nowrap">Mod</th>
+                      <th className="px-3 py-2 font-medium whitespace-nowrap min-w-[140px]">Test Name</th>
                       {col.studyDate && <th className="px-3 py-2 font-medium whitespace-nowrap tabular-nums">Study Date</th>}
                       <th className="px-3 py-2 font-medium whitespace-nowrap">Priority</th>
                       <th className="px-3 py-2 font-medium whitespace-nowrap">Status</th>
@@ -1189,6 +1196,9 @@ export default function RadiologyWorklist() {
                         </td>
                         <td className="px-3 py-2 whitespace-nowrap">
                           <Badge variant="outline" className="font-mono text-xs">{entry.modality}</Badge>
+                        </td>
+                        <td className="px-3 py-2 text-xs max-w-[220px] truncate font-medium" title={displayTestName(entry)}>
+                          {displayTestName(entry)}
                         </td>
                         {col.studyDate && (
                         <td className="px-3 py-2 text-muted-foreground text-xs whitespace-nowrap tabular-nums">

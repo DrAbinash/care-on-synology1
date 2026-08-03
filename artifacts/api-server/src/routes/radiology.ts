@@ -465,6 +465,9 @@ radiologyRouter.get("/pacs-worklist", async (req, res) => {
         // linked study (radiology_studies.bill_id → bills.bill_number).
         uhid: patientsTable.patientId,
         billNumber: billsTable.billNumber,
+        // Catalog test name when worklist row is linked to a billed study
+        // (e.g. "MRI BRAIN PLAIN"); falls back to DICOM studyDescription in UI.
+        testName: testsTable.name,
         // Priority REUSES the existing radiology_studies.priority column
         // (stat | emergency | urgent | routine | vip) via the same join —
         // no new table or column created (schema-growth minimization).
@@ -496,6 +499,7 @@ radiologyRouter.get("/pacs-worklist", async (req, res) => {
       .leftJoin(patientsTable, eq(radiologyWorklistTable.patientId, patientsTable.id))
       .leftJoin(radiologyStudiesTable, eq(radiologyWorklistTable.studyId, radiologyStudiesTable.id))
       .leftJoin(billsTable, eq(radiologyStudiesTable.billId, billsTable.id))
+      .leftJoin(testsTable, eq(radiologyStudiesTable.testId, testsTable.id))
       .where(conds.length > 0 ? and(...conds) : undefined)
       .orderBy(desc(radiologyWorklistTable.createdAt))
       .limit(500);
@@ -517,6 +521,7 @@ radiologyRouter.get("/pacs-worklist", async (req, res) => {
         (r.patientName ?? "").toLowerCase().includes(s) ||
         (r.accessionNumber ?? "").toLowerCase().includes(s) ||
         (r.studyDescription ?? "").toLowerCase().includes(s) ||
+        ((r as any).testName ?? "").toLowerCase().includes(s) ||
         (r.referringDoctor ?? "").toLowerCase().includes(s) ||
         ((r as any).uhid ?? "").toLowerCase().includes(s) ||
         ((r as any).billNumber ?? "").toLowerCase().includes(s)
