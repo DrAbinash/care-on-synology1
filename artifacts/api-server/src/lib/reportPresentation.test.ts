@@ -309,7 +309,9 @@ describe("R1.3 — key-image badge", () => {
       resolvePresentationTemplate("care-premium"),
     );
     expect(html).not.toContain("key-image-badge");
-    expect(html).not.toContain("position: relative");
+    // Classic header accent uses position:relative on .hdr — only assert the
+    // key-image conditional block is absent (R1.1 compat: no .image-cell rule).
+    expect(html).not.toMatch(/\.image-cell \{ position: relative; \}/);
     // The conditional must contribute ZERO bytes when false — .image-cell's
     // closing brace is directly followed by .dicom-img, exactly as in R1.1.
     expect(html).toContain("    }\n    .dicom-img");

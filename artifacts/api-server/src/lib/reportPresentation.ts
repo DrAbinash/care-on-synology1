@@ -669,8 +669,8 @@ export function renderReportDocument(
           ${model.clinic.tagline && headerCfg.showTagline ? `<div class="tagline">${escapeHtml(model.clinic.tagline)}</div>` : ""}
         </div>
         ${headerCfg.showContact ? `<div class="contact">
-          ${[model.clinic.phone, model.clinic.email].filter(Boolean).map((v) => escapeHtml(v!)).join("<br/>")}
-          ${model.clinic.website ? `<br/>${escapeHtml(model.clinic.website)}` : ""}
+          ${[model.clinic.phone, model.clinic.email].filter(Boolean).map((v) => escapeHtml(v!)).join(" • ")}<br/>
+          ${model.clinic.website ? `${escapeHtml(model.clinic.website)}` : ""}
         </div>` : ""}
       </div>
     </div>
