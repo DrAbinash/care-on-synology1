@@ -174,6 +174,7 @@ import { DATE_PRESETS, toISTDateStr } from "@/lib/dateRangePresets";
 // hook executes through THIS page's adapter → the M1.5 command dispatcher).
 import { useVoiceSession, type VoiceExecutionResult } from "@/hooks/useVoiceSession";
 import VoiceCommandBar from "@/components/radiology/VoiceCommandBar";
+import ReportingWorkspaceChrome, { WORKSPACE_CHROME_COLLAPSED_KEY } from "@/components/radiology/ReportingWorkspaceChrome";
 import { normalizeDictationText, describeIntent, type ParsedVoiceCommand, type ViewerOp } from "@/lib/voiceCommandGrammar";
 import { voiceKeyAction } from "@/lib/voiceSessionState";
 import {
@@ -777,6 +778,31 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     if (viewerFocusRef.current) {
       try { window.dispatchEvent(new CustomEvent("care:viewer-focus", { detail: false })); } catch { /* noop */ }
     }
+  }, []);
+
+  // ── Reporting focus chrome — collapse the bulky header/queue toolbar so the
+  // Clinical History → Findings editor gets maximum vertical space. Persisted
+  // per browser; defaults to collapsed on first visit.
+  const [chromeCollapsed, setChromeCollapsed] = useState(() => {
+    try { return localStorage.getItem(WORKSPACE_CHROME_COLLAPSED_KEY) !== "0"; } catch { return true; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem(WORKSPACE_CHROME_COLLAPSED_KEY, chromeCollapsed ? "1" : "0"); } catch { /* noop */ }
+  }, [chromeCollapsed]);
+  const collapseReportingChrome = useCallback(() => setChromeCollapsed(true), []);
+  const enterReportingFocusMode = useCallback(() => {
+    setChromeCollapsed(true);
+    leftPanelRef.current?.collapse();
+    rightPanelRef.current?.collapse();
+    updateModeLayout(layoutMode, { leftCollapsed: true, rightCollapsed: true });
+    try { window.dispatchEvent(new CustomEvent("care:workspace-focus", { detail: true })); } catch { /* noop */ }
+  }, [layoutMode]);
+  // Minimise the app navigation sidebar while the radiologist is reporting.
+  useEffect(() => {
+    try { window.dispatchEvent(new CustomEvent("care:workspace-focus", { detail: true })); } catch { /* noop */ }
+    return () => {
+      try { window.dispatchEvent(new CustomEvent("care:workspace-focus", { detail: false })); } catch { /* noop */ }
+    };
   }, []);
 
   // Reposition the two resizable panels whenever the mode changes (imperative
@@ -4555,7 +4581,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   };
 
   return (
-    <div className="flex flex-col" style={{ height: "calc(100vh - 48px)" }}>
+    <div className="flex flex-col" style={{ height: chromeCollapsed ? "calc(100vh - 36px)" : "calc(100vh - 48px)" }}>
       {/* Phase P3 — feature-flagged AI draft panel. Renders nothing unless AI is
           enabled AND visible for this radiologist (pilot/production); default OFF.
           Accept inserts into the EXISTING findings editor (setRawFindings), which
@@ -4567,327 +4593,71 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
         onInsertText={(text) => setRawFindings((prev) => appendToFindings(prev, text))}
       />
 
-      {/* ── Compact header ─────────────────────────────────────────────────── */}
-      <div className="shrink-0 flex items-center flex-wrap gap-x-3 gap-y-1 px-3 py-2 border-b bg-white">
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-7 gap-1 text-xs shrink-0"
-          onClick={() => {
-            // Explicit exit — release our lock when safe (expiry covers the rest).
-            studyLock.release(studyId);
-            navigate("/radiology/worklist");
-          }}
-        >
-          <ArrowLeft size={13} /> Worklist
-        </Button>
-        {/* Always-visible patient banner — this header sits outside the
-            editor's scrollable region (see the CENTER column below), so it
-            and the bottom action bar are both effectively "sticky" without
-            needing position:sticky — the same guarantee requested for a
-            pinned patient banner + Sign/Finalize control while scrolling
-            through long Findings/Impression text. */}
-        <div className="flex-1 min-w-0 flex items-baseline gap-2">
-          <span className="font-semibold text-sm shrink-0">Radiology Reporting Workspace</span>
-          {entry && (
-            <span className="text-xs text-muted-foreground truncate">
-              {entry.patientName}
-              {(entry.age || entry.sex) && ` · ${[entry.age, entry.sex].filter(Boolean).join("/")}`}
-              {" · "}
-              {entry.accessionNumber}
-              {entry.modality && ` · ${entry.modality}`}
-            </span>
-          )}
-        </div>
-        <Button
-          type="button"
-          size="sm"
-          variant={readingSession.enabled ? "default" : "outline"}
-          className="h-7 px-2 text-[10px] shrink-0"
-          title="Minimal chrome + auto-advance to next study after finalize"
-          onClick={() => setReadingSession((prev) => toggleReadingSession(prev))}
-        >
-          {readingSession.enabled
-            ? `Session · ${readingSession.completedInSession} done`
-            : "Reading session"}
-        </Button>
-        <Badge
-          className={`shrink-0 text-[10px] ${STATUS_CONFIG[reportStatus]?.color || ""}`}
-        >
-          {STATUS_CONFIG[reportStatus]?.label || reportStatus}
-        </Badge>
-        {/* MRI PR 5 — offline indicator: Save/Finalize pause while offline;
-            work stays backed up locally. */}
-        {!isOnline && (
-          <Badge
-            className="shrink-0 text-[10px] bg-red-100 text-red-700 border-red-200"
-            title="You are offline — Save and Finalize are paused. Your work is backed up locally and will save when you reconnect."
-          >
-            Offline
-          </Badge>
-        )}
-        {/* M1.4 — draft-load + dirty state, always truthful */}
-        {!!studyId && isLoadingExistingDraft && (
-          <span className="shrink-0 text-[10px] text-muted-foreground">Loading draft…</span>
-        )}
-        {!!studyId && !isLoadingExistingDraft && !existingDraft && !lastSavedAt && (
-          <span className="shrink-0 text-[10px] text-muted-foreground">No saved draft</span>
-        )}
-        {dirty ? (
-          <Badge variant="outline" className="shrink-0 text-[10px] bg-amber-50 text-amber-800 border-amber-300">
-            Unsaved changes
-          </Badge>
-        ) : lastSavedAt ? (
-          <span className="shrink-0 text-[10px] text-muted-foreground">
-            Saved {lastSavedAt.toLocaleTimeString()}
-          </span>
-        ) : null}
-        <div className="flex items-center gap-1.5 shrink-0">
-          <Switch
-            id="structured"
-            checked={useStructured}
-            onCheckedChange={setUseStructured}
-            disabled={isLocked}
-          />
-          <Label htmlFor="structured" className="text-xs cursor-pointer select-none">
-            Structured
-          </Label>
-        </div>
-        {/* ── Workspace layout mode (Phase 2) — extends the single left-panel
-            collapse icon this used to be into 4 full layout modes. Controls
-            embedded-viewer visibility + column proportions; persisted per
-            radiologist. The left/right collapse buttons beside it are an
-            orthogonal, per-panel manual override available in any mode. ── */}
-        <div className="flex items-center gap-0.5 shrink-0 rounded-md border p-0.5 bg-muted/30" role="radiogroup" aria-label="Workspace layout mode" data-testid="layout-mode-selector">
-          {LAYOUT_MODE_OPTIONS.map((opt) => (
-            <button
-              key={opt.mode}
-              type="button"
-              role="radio"
-              aria-checked={layoutMode === opt.mode}
-              title={opt.title}
-              data-testid={`layout-mode-${opt.mode}`}
-              onClick={() => setLayoutMode(opt.mode)}
-              className={`flex items-center gap-1 px-1.5 py-1 rounded text-[10px] font-medium transition-colors ${
-                layoutMode === opt.mode
-                  ? "bg-primary text-primary-foreground"
-                  : "text-muted-foreground hover:bg-muted hover:text-foreground"
-              }`}
-            >
-              {opt.icon}
-              <span className="hidden lg:inline">{opt.label}</span>
-            </button>
-          ))}
-        </div>
-        <button
-          type="button"
-          title={`${isLeftPanelCollapsed ? "Expand" : "Collapse"} patient panel (Alt+[)`}
-          data-testid="toggle-left-panel"
-          onClick={() => { if (isLeftPanelCollapsed) leftPanelRef.current?.expand(); else leftPanelRef.current?.collapse(); }}
-          className="shrink-0 p-1.5 rounded-md text-muted-foreground hover:bg-muted transition-colors"
-        >
-          {isLeftPanelCollapsed ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={15} />}
-        </button>
-        <button
-          type="button"
-          title={`${isRightPanelCollapsed ? "Expand" : "Collapse"} tool drawer (Alt+])`}
-          data-testid="toggle-right-panel"
-          onClick={() => { if (isRightPanelCollapsed) rightPanelRef.current?.expand(); else rightPanelRef.current?.collapse(); }}
-          className="shrink-0 p-1.5 rounded-md text-muted-foreground hover:bg-muted transition-colors"
-        >
-          {isRightPanelCollapsed ? <PanelRightOpen size={15} /> : <PanelRightClose size={15} />}
-        </button>
-      </div>
-
-      {/* ── M1.5 — workflow status bar (Phase 10) ──────────────────────────── */}
-      <div className="shrink-0 flex items-center gap-2 px-3 py-1 border-b bg-muted/20 text-[11px] flex-wrap" data-testid="workflow-status-bar">
-        <span className="text-muted-foreground" data-testid="queue-position">
-          Study {workflow.position.index >= 0 ? `${workflow.position.index + 1} of ${workflow.position.total}` : `— of ${workflow.position.total}`}
-        </span>
-        <span className="text-green-700">✓ {workflow.completedCount} completed</span>
-        <span className={workflow.parkedCount > 0 ? "text-amber-700" : "text-muted-foreground"}>⏸ {workflow.parkedCount} parked</span>
-        {workflow.isParked(studyId) && (
-          <Badge className="bg-amber-100 text-amber-800 border-amber-300 text-[10px] py-0" data-testid="parked-badge">
-            PARKED{(() => { const r = workflow.parked.find((p) => p.id === studyId)?.reason; return r ? ` — ${r}` : ""; })()}
-          </Badge>
-        )}
-        {dirty && <span className="text-amber-700">● unsaved</span>}
-        {saving && <span className="text-blue-700">Saving…</span>}
-        {finalizing && <span className="text-blue-700">Finalizing…</span>}
-        {workflow.transitioning && <span className="text-blue-700">Switching study…</span>}
-        {/* M1.6A — lock ownership, always visible and truthful */}
-        {studyLock.status !== "idle" && studyLock.status !== "not-found" && studyLock.status !== "completed" && (
-          <span
-            data-testid="lock-status"
-            className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 border text-[10px] font-semibold ${
-              studyLock.status === "mine" ? "bg-green-100 text-green-800 border-green-300"
-              : studyLock.status === "locked-by-other" ? "bg-red-100 text-red-800 border-red-300"
-              : studyLock.status === "claiming" ? "bg-slate-100 text-slate-700 border-slate-300"
-              : "bg-amber-100 text-amber-800 border-amber-300"
-            }`}
-            title={studyLock.expiresAt ? `Lock expires ${new Date(studyLock.expiresAt).toLocaleTimeString()} (heartbeat keeps it alive)` : undefined}
-          >
-            <Lock size={9} /> {lockStatusMessage(studyLock.status, studyLock.ownerName)}
-          </span>
-        )}
-        <span className="text-muted-foreground" data-testid="viewer-status">
-          Viewer:{" "}
-          {viewerLaunch.busy
-            ? "connecting…"
-            : viewerLaunch.lastResult?.success && viewerLaunch.lastResult.selectedNetworkMode
-              ? `connected via ${viewerLaunch.lastResult.selectedNetworkMode}`
-              : viewerLaunch.lastResult && !viewerLaunch.lastResult.success
-                ? "launch failed"
-                : "—"}
-        </span>
-        <div className="ml-auto flex items-center gap-1 flex-wrap">
-          {/* M1.6A/M1.6B1 — assignment-aware queue scope (+ By Radiologist) */}
-          <select
-            className="h-6 text-[10px] border rounded-md px-1 bg-background text-muted-foreground"
-            value={queueScope}
-            data-testid="queue-scope"
-            onChange={(e) => changeQueueScope(parseQueueScope(e.target.value))}
-            title="Queue scope: which studies Next/Previous and the queue list cover"
-          >
-            {(Object.keys(QUEUE_SCOPE_LABELS) as Array<keyof typeof QUEUE_SCOPE_LABELS>).map((s) => (
-              <option key={s} value={s}>{QUEUE_SCOPE_LABELS[s]}</option>
-            ))}
-            {radiologists.length > 0 && (
-              <optgroup label="By radiologist">
-                {radiologists.map((r) => (
-                  <option key={r.id} value={`rad:${r.id}`}>{r.name}</option>
-                ))}
-              </optgroup>
-            )}
-          </select>
-          {/* A1: find-and-jump filters (search + modality) over the jump list */}
-          <Input
-            value={queueFilterText}
-            onChange={(e) => setQueueFilterText(e.target.value)}
-            placeholder="Find in queue…"
-            className="h-6 w-[120px] text-[10px] px-1.5"
-            data-testid="queue-filter-text"
-            title="Filter the queue jump list by patient / accession / modality"
-          />
-          <select
-            className="h-6 text-[10px] border rounded-md px-1 bg-background text-muted-foreground"
-            value={queueModalityFilter}
-            data-testid="queue-filter-modality"
-            onChange={(e) => setQueueModalityFilter(e.target.value)}
-            title="Filter the queue jump list by modality"
-          >
-            <option value="all">All</option>
-            <option value="US">US</option>
-            <option value="CT">CT</option>
-            <option value="MR">MR</option>
-            <option value="CR">CR</option>
-            <option value="DX">DX</option>
-          </select>
-          {/* Date-range filter over the jump list — same presets as PACS Worklist */}
-          <CalendarDays size={11} className="text-muted-foreground shrink-0" />
-          <Input
-            type="date"
-            value={queueDateFrom}
-            onChange={(e) => setQueueDateFrom(e.target.value)}
-            className="h-6 w-[90px] text-[10px] px-1"
-            data-testid="queue-filter-date-from"
-            title="Filter the queue jump list from this date"
-          />
-          <Input
-            type="date"
-            value={queueDateTo}
-            onChange={(e) => setQueueDateTo(e.target.value)}
-            className="h-6 w-[90px] text-[10px] px-1"
-            data-testid="queue-filter-date-to"
-            title="Filter the queue jump list up to this date"
-          />
-          {DATE_PRESETS.map((p) => (
-            <Button
-              key={p.label}
-              type="button"
-              size="sm"
-              variant="outline"
-              className="h-6 text-[10px] px-1.5"
-              onClick={() => setQueueDatePreset(p.from(), p.to())}
-              title={`Filter queue to ${p.label}`}
-            >
-              {p.label}
-            </Button>
-          ))}
-          {(queueDateFrom || queueDateTo) && (
-            <Button
-              size="sm"
-              variant="ghost"
-              className="h-6 text-[10px] px-1"
-              onClick={() => setQueueDatePreset("", "")}
-              title="Clear date filter"
-              data-testid="queue-filter-date-clear"
-            >
-              <X size={10} />
-            </Button>
-          )}
-          {/* Jump to a specific queue row — →current ✓done ⏸parked 🔒locked */}
-          <select
-            className="h-6 max-w-[260px] text-[10px] border rounded-md px-1 bg-background text-muted-foreground"
-            value=""
-            data-testid="queue-jump"
-            onChange={(e) => {
-              const id = Number(e.target.value);
-              if (!id) return;
-              const row = workflow.queue.find((s) => s.id === id);
-              if (!row || row.id === studyId) return;
-              if (!guardedLeave()) return;
-              goToStudy(row);
-            }}
-            title="Jump to a study in the queue"
-          >
-            <option value="">
-              Queue ({jumpQueue.length === workflow.position.total
-                ? workflow.position.total
-                : `${jumpQueue.length}/${workflow.position.total}`})…
-            </option>
-            {jumpQueue.map((s) => {
-              const ind = workflow.indicators.find((i) => i.id === s.id);
-              const prefix = ind?.current ? "→ " : ind?.completed ? "✓ " : ind?.parked ? "⏸ " : ind?.lockedByOther ? "🔒 " : "";
-              return (
-                <option key={s.id} value={s.id}>
-                  {prefix}{s.patientName} · {s.modality} · {s.accessionNumber}
-                </option>
-              );
-            })}
-          </select>
-          <Button size="sm" variant="outline" className="h-6 text-[10px] gap-0.5 px-1.5"
-            onClick={() => previousStudy()} disabled={workflow.historyDepth === 0 || workflow.transitioning}
-            title="Previous study (Ctrl+Shift+P)" data-testid="btn-previous-study">
-            <ChevronLeft size={11} /> Prev
-          </Button>
-          <Button size="sm" variant="outline" className="h-6 text-[10px] gap-0.5 px-1.5"
-            onClick={() => nextStudy()} disabled={workflow.transitioning}
-            title="Next eligible study (Ctrl+Shift+N)" data-testid="btn-next-study">
-            Next <ChevronRight size={11} />
-          </Button>
-          <Button size="sm" variant="outline" className="h-6 text-[10px] gap-0.5 px-1.5"
-            onClick={() => parkCurrentStudy()} disabled={!entry || workflow.transitioning}
-            title={workflow.isParked(studyId) ? "Unpark this study" : "Park this study and move on (Ctrl+Shift+K)"}
-            data-testid="btn-park-study">
-            <PauseCircle size={11} /> {workflow.isParked(studyId) ? "Unpark" : "Park"}
-          </Button>
-          <Button size="sm" variant="ghost" className="h-6 text-[10px] gap-0.5 px-1.5"
-            onClick={() => refreshQueueAndCurrent()} disabled={workflow.queueRefreshing}
-            title="Refresh the queue and this study's status" data-testid="btn-refresh-queue">
-            <RefreshCw size={11} className={workflow.queueRefreshing ? "animate-spin" : ""} /> Refresh
-          </Button>
-          <Button size="sm" variant="ghost" className="h-6 text-[10px] px-1.5"
-            onClick={() => reloadCurrentStudy()} disabled={!studyId}
-            title="Reload this study from the server (unsaved changes prompt first)" data-testid="btn-reload-study">
-            Reload
-          </Button>
-        </div>
-      </div>
-
-      {/* ── M1.6B2 — voice command bar (hidden entirely when disabled; the
-          workspace never depends on voice — keyboard/mouse stay canonical) ── */}
-      {voiceSettings.enabled && <VoiceCommandBar voice={voice} />}
+      <ReportingWorkspaceChrome
+        collapsed={chromeCollapsed}
+        onCollapsedChange={setChromeCollapsed}
+        onEnterFocusMode={enterReportingFocusMode}
+        onBackToWorklist={() => {
+          studyLock.release(studyId);
+          navigate("/radiology/worklist");
+        }}
+        patientBanner={entry
+          ? `${entry.patientName}${(entry.age || entry.sex) ? ` · ${[entry.age, entry.sex].filter(Boolean).join("/")}` : ""} · ${entry.accessionNumber}${entry.modality ? ` · ${entry.modality}` : ""}`
+          : undefined}
+        reportStatusLabel={STATUS_CONFIG[reportStatus]?.label || reportStatus}
+        reportStatusClass={STATUS_CONFIG[reportStatus]?.color || ""}
+        isOnline={isOnline}
+        isLoadingDraft={!!studyId && isLoadingExistingDraft}
+        hasExistingDraft={!!existingDraft}
+        dirty={dirty}
+        lastSavedAt={lastSavedAt}
+        useStructured={useStructured}
+        onStructuredChange={setUseStructured}
+        structuredDisabled={isLocked}
+        layoutMode={layoutMode}
+        layoutModeOptions={LAYOUT_MODE_OPTIONS}
+        onLayoutModeChange={(mode) => setLayoutMode(mode as WorkspaceLayoutMode)}
+        isLeftPanelCollapsed={isLeftPanelCollapsed}
+        isRightPanelCollapsed={isRightPanelCollapsed}
+        onToggleLeftPanel={() => { if (isLeftPanelCollapsed) leftPanelRef.current?.expand(); else leftPanelRef.current?.collapse(); }}
+        onToggleRightPanel={() => { if (isRightPanelCollapsed) rightPanelRef.current?.expand(); else rightPanelRef.current?.collapse(); }}
+        readingSessionEnabled={readingSession.enabled}
+        readingSessionDone={readingSession.completedInSession}
+        onToggleReadingSession={() => setReadingSession((prev) => toggleReadingSession(prev))}
+        workflow={workflow}
+        studyId={studyId ?? 0}
+        parkedReason={workflow.parked.find((p) => p.id === studyId)?.reason ?? undefined}
+        saving={saving}
+        finalizing={finalizing}
+        studyLock={studyLock}
+        viewerBusy={viewerLaunch.busy}
+        viewerConnected={!!(viewerLaunch.lastResult?.success && viewerLaunch.lastResult.selectedNetworkMode)}
+        viewerNetworkMode={viewerLaunch.lastResult?.selectedNetworkMode ?? undefined}
+        queueScope={queueScope}
+        onQueueScopeChange={(scope) => changeQueueScope(parseQueueScope(String(scope)))}
+        radiologists={radiologists}
+        queueFilterText={queueFilterText}
+        onQueueFilterTextChange={setQueueFilterText}
+        queueModalityFilter={queueModalityFilter}
+        onQueueModalityFilterChange={setQueueModalityFilter}
+        queueDateFrom={queueDateFrom}
+        queueDateTo={queueDateTo}
+        onQueueDatePreset={setQueueDatePreset}
+        jumpQueue={jumpQueue}
+        onJumpStudy={(id) => {
+          const row = workflow.queue.find((s) => s.id === id);
+          if (!row || row.id === studyId) return;
+          if (!guardedLeave()) return;
+          goToStudy(row);
+        }}
+        onPreviousStudy={() => previousStudy()}
+        onNextStudy={() => nextStudy()}
+        onParkStudy={() => parkCurrentStudy()}
+        onRefreshQueue={() => refreshQueueAndCurrent()}
+        onReloadStudy={() => reloadCurrentStudy()}
+        hasEntry={!!entry}
+        voiceBar={voiceSettings.enabled ? <VoiceCommandBar voice={voice} /> : undefined}
+      />
 
       {/* ── 3-column body — resizable via drag (react-resizable-panels), plus
           collapsible left/right panels. Widths + collapse state persist per
@@ -5162,7 +4932,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
         >
 
           {/* Scrollable editor area */}
-          <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4">
+          <div className={`flex-1 overflow-y-auto flex flex-col ${chromeCollapsed ? "p-2 gap-2" : "p-4 gap-4"}`}>
 
             {/* R2.0 — Pregnancy Dashboard strip: silent (renders nothing) for
                 every non-obstetric study; only fetches when isUltrasound. */}
@@ -5464,6 +5234,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
               <Textarea
                 value={clinicalHistory}
                 onChange={(e) => setClinicalHistory(e.target.value)}
+                onFocus={collapseReportingChrome}
                 placeholder="Enter clinical history..."
                 className="min-h-[56px] text-sm resize-none"
                 disabled={isLocked}
