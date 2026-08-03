@@ -2,11 +2,13 @@ import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import {
   buildLanFailoverOptions,
   buildLanFailoverUrl,
+  buildLanStaffLoginUrl,
   buildPublicErpUrl,
   currentConnectivityKind,
   getErpBasePath,
   getLastWorkingLanHost,
   isLoginOrPortalPath,
+  shouldDeferConnectivityProbe,
 } from "./erpConnectivity";
 
 describe("erpConnectivity URL helpers", () => {
@@ -67,9 +69,19 @@ describe("erpConnectivity URL helpers", () => {
     expect(base.endsWith("/")).toBe(true);
   });
 
-  it("treats /erp/login as a login path (no auto-redirect)", () => {
+  it("treats /erp/login as a login path", () => {
     (window as any).location.pathname = "/erp/login";
     expect(isLoginOrPortalPath()).toBe(true);
+  });
+
+  it("never blocks boot on connectivity probe", () => {
+    expect(shouldDeferConnectivityProbe()).toBe(true);
+  });
+
+  it("builds LAN staff-login URLs for each NAS host", () => {
+    const url = buildLanStaffLoginUrl();
+    expect(url).toContain("172.16.1.139:8888");
+    expect(url).toMatch(/\/portal\/staff-login$/);
   });
 
   it("does not treat /erp/billing as a login path", () => {
