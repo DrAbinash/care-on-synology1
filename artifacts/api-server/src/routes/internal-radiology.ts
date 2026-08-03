@@ -1584,8 +1584,20 @@ router.get("/radiology/resolve-open", async (req, res) => {
 router.get("/radiology/worklist/:id", async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) { res.status(400).json({ error: "Invalid id" }); return; }
-  const [row] = await db.select().from(radiologyWorklistTable).where(eq(radiologyWorklistTable.id, id));
+  let [row] = await db.select().from(radiologyWorklistTable).where(eq(radiologyWorklistTable.id, id));
   if (!row) { res.status(404).json({ error: "Not found" }); return; }
+
+  if (row.patientId && !row.studyId) {
+    try {
+      const { autoLinkBilledStudyForWorklist } = await import("../lib/pacs/worklistBillingLink");
+      const link = await autoLinkBilledStudyForWorklist(id, "worklist-entry-load");
+      if (link.linked && link.studyId) {
+        row = { ...row, studyId: link.studyId };
+      }
+    } catch {
+      /* non-blocking */
+    }
+  }
 
   let pacsArchiveStatus = "none";
   let pacsArchiveResponse = null;

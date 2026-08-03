@@ -95,7 +95,7 @@ export interface TemplateDefinition {
     margins: string;
   };
   header: { show: boolean; showLogo: boolean; showTagline: boolean; showContact: boolean; style: "banded" | "underlined" };
-  patientBlock: { style: "grid" | "table" };
+  patientBlock: { style: "grid" | "table" | "stacked" };
   studyTitle: { style: "bar" | "plain" };
   signature: { show: boolean; showImage: boolean };
   footer: { show: boolean };
@@ -274,8 +274,8 @@ export function validateTemplateDefinition(def: unknown): TemplateValidationIssu
   if (typeof d.header === "object" && d.header != null && !["banded", "underlined"].includes((d.header as Record<string, unknown>).style as string)) {
     issues.push({ path: "header.style", message: "header style must be banded|underlined" });
   }
-  if (typeof d.patientBlock === "object" && d.patientBlock != null && !["grid", "table"].includes((d.patientBlock as Record<string, unknown>).style as string)) {
-    issues.push({ path: "patientBlock.style", message: "patient block style must be grid|table" });
+  if (typeof d.patientBlock === "object" && d.patientBlock != null && !["grid", "table", "stacked"].includes((d.patientBlock as Record<string, unknown>).style as string)) {
+    issues.push({ path: "patientBlock.style", message: "patient block style must be grid|table|stacked" });
   }
   if (typeof d.studyTitle === "object" && d.studyTitle != null && !["bar", "plain"].includes((d.studyTitle as Record<string, unknown>).style as string)) {
     issues.push({ path: "studyTitle.style", message: "study title style must be bar|plain" });

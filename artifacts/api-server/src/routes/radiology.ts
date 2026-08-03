@@ -2651,6 +2651,28 @@ radiologyRouter.patch("/pacs-worklist/:id/referring-doctor", async (req, res) =>
   }
 });
 
+// POST /api/radiology/pacs-worklist/:id/auto-link-billed-study — link worklist to billed radiology_studies when patient is billed but study_id is null
+radiologyRouter.post("/pacs-worklist/:id/auto-link-billed-study", async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) {
+      res.status(400).json({ error: "Invalid ID" });
+      return;
+    }
+    const { autoLinkBilledStudyForWorklist } = await import("../lib/pacs/worklistBillingLink");
+    const actor = (req as { staffSession?: { subjectName?: string } }).staffSession?.subjectName || "staff";
+    const result = await autoLinkBilledStudyForWorklist(id, actor);
+    if (result.linked && result.studyId) {
+      const { runMatchingEngineForWorklist } = await import("./internal-radiology");
+      try { await runMatchingEngineForWorklist(id); } catch { /* non-blocking */ }
+    }
+    res.json({ success: result.linked, ...result });
+  } catch (err: unknown) {
+    logger.error({ err }, "Error in auto-link-billed-study");
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
 // POST /api/radiology/pacs-worklist/:id/link-study — manually bind a studyId to worklist row
 radiologyRouter.post("/pacs-worklist/:id/link-study", async (req, res) => {
   try {
