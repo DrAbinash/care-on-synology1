@@ -47,6 +47,35 @@ export function getErpBasePath(): string {
   return base.endsWith("/") ? base : `${base}/`;
 }
 
+/** Path inside the ERP SPA (no /erp prefix), e.g. "/login" or "/billing". */
+export function erpPathFromBrowser(): string {
+  const basePath = getErpBasePath().replace(/\/$/, "");
+  let path = window.location.pathname;
+  if (basePath && basePath !== "/" && path.startsWith(basePath)) {
+    path = path.slice(basePath.length) || "/";
+  }
+  if (!path.startsWith("/")) path = `/${path}`;
+  return path;
+}
+
+/**
+ * Fix URLs like /erp/erp/login left by older LAN redirects or doubled wouter
+ * base prefixes — rewrite the browser bar without a full reload.
+ */
+export function repairDoubledErpPath(): void {
+  const basePath = getErpBasePath().replace(/\/$/, "");
+  if (!basePath || basePath === "/") return;
+  const doubled = `${basePath}${basePath}`;
+  const path = window.location.pathname;
+  if (!path.startsWith(doubled)) return;
+  const fixed = `${basePath}${path.slice(doubled.length) || "/"}`;
+  window.history.replaceState(
+    null,
+    "",
+    fixed + window.location.search + window.location.hash,
+  );
+}
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
@@ -109,12 +138,9 @@ export function isLoginOrPortalPath(): boolean {
 export function buildLanFailoverUrl(lanHost?: string): string {
   const host = lanHost ?? preferredLanHost();
   const lanRoot = erpLanOriginForHost(host).replace(/\/+$/, "");
-  const basePath = getErpBasePath().replace(/\/$/, "");
-  let path = window.location.pathname;
-  if (!path.startsWith(basePath)) {
-    path = `${basePath}${path.startsWith("/") ? path : `/${path}`}`;
-  }
-  return `${lanRoot}${path}${window.location.search}`;
+  const path = erpPathFromBrowser();
+  const suffix = path === "/" ? "/" : path;
+  return `${lanRoot}${suffix}${window.location.search}`;
 }
 
 /** All LAN URLs staff can try (primary + optional alt NAS IP). */
@@ -128,12 +154,9 @@ export function buildLanFailoverOptions(): { host: string; url: string }[] {
 /** Build the public ERP URL for the current page. */
 export function buildPublicErpUrl(): string {
   const pubRoot = erpPublicOrigin().replace(/\/+$/, "");
-  const basePath = getErpBasePath().replace(/\/$/, "");
-  let path = window.location.pathname;
-  if (!path.startsWith(basePath)) {
-    path = `${basePath}${path.startsWith("/") ? path : `/${path}`}`;
-  }
-  return `${pubRoot}${path}${window.location.search}`;
+  const path = erpPathFromBrowser();
+  const suffix = path === "/" ? "/" : path;
+  return `${pubRoot}${suffix}${window.location.search}`;
 }
 
 function encodeSessionForHash(raw: string): string {
@@ -197,6 +220,7 @@ function redirectToLanWithSession(lanHost?: string): void {
  */
 export async function runErpConnectivityBootstrap(): Promise<void> {
   hydrateNetworkSettingsFromCache();
+  repairDoubledErpPath();
   consumeSessionTransferHash();
 
   const kind = currentConnectivityKind();
