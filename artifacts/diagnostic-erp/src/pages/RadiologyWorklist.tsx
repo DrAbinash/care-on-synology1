@@ -4,7 +4,8 @@ import { useLocation } from "wouter";
 import { api } from "@/lib/fetchApi";
 import { readStaffSession, ERP_SESSION_KEY, canAccess, normalizeRole, isFeatureEnabled } from "@/lib/staffSession";
 import { toUnifiedStatus, worklistRoleView, priorityInfo, type WorklistRoleView } from "@/lib/radiologyStatus";
-import { launchViewer, openWeasisLaunchRedirect, resolveActiveProfile } from "@/lib/viewerService";
+import { launchViewer, recordFailedLaunch, recordSuccessfulLaunch, resolveActiveProfile } from "@/lib/viewerService";
+import { launchRadiologyStudy } from "@/lib/studyLaunchService";
 import { normalizeModality, isUltrasoundModality } from "@/lib/usgModality";
 import { DATE_PRESETS, toISTDateStr } from "@/lib/dateRangePresets";
 import PageHeader from "@/components/PageHeader";
@@ -115,6 +116,47 @@ const WORKLIST_MODALITY_COLORS: Record<string, string> = {
 function worklistModalityBadgeClass(modality: string): string {
   const key = modality?.toUpperCase() ?? "OT";
   return WORKLIST_MODALITY_COLORS[key] ?? "bg-muted/60 text-muted-foreground border-border";
+}
+
+function canLaunchViewer(entry: Pick<WorklistEntry, "studyInstanceUID" | "accessionNumber">): boolean {
+  return Boolean(entry.studyInstanceUID?.trim() || entry.accessionNumber?.trim());
+}
+
+function formatWorklistUhid(entry: Pick<WorklistEntry, "uhid" | "dicomPatientId">): string | null {
+  return entry.uhid?.trim() || entry.dicomPatientId?.trim() || null;
+}
+
+type WorklistActionBtnProps = {
+  icon: React.ComponentType<{ className?: string }>;
+  label: string;
+  onClick: () => void;
+  disabled?: boolean;
+  title?: string;
+  tone?: "weasis" | "ohif" | "report" | "ai" | "neutral" | "cc" | "warn";
+};
+
+function WorklistActionBtn({ icon: Icon, label, onClick, disabled, title, tone = "neutral" }: WorklistActionBtnProps) {
+  const tones: Record<NonNullable<WorklistActionBtnProps["tone"]>, string> = {
+    weasis: "border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100 dark:bg-emerald-950/30 dark:text-emerald-300 dark:border-emerald-800",
+    ohif: "border-blue-300 bg-blue-50 text-blue-800 hover:bg-blue-100 dark:bg-blue-950/30 dark:text-blue-300 dark:border-blue-800",
+    report: "border-indigo-500 bg-indigo-600 text-white hover:bg-indigo-700 dark:border-indigo-600",
+    ai: "border-violet-300 bg-violet-50 text-violet-800 hover:bg-violet-100 dark:bg-violet-950/30 dark:text-violet-300",
+    cc: "border-teal-300 bg-teal-50 text-teal-800 hover:bg-teal-100 dark:bg-teal-950/30 dark:text-teal-300",
+    warn: "border-amber-400 bg-amber-50 text-amber-800 hover:bg-amber-100 dark:bg-amber-950/30 dark:text-amber-300",
+    neutral: "border-border bg-background text-foreground hover:bg-muted/60",
+  };
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={title ?? label}
+      className={`inline-flex flex-col items-center justify-center gap-0.5 rounded-lg border px-1 py-1.5 w-[58px] h-[48px] text-[9px] font-semibold leading-tight transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${tones[tone]}`}
+    >
+      <Icon className="h-3.5 w-3.5 shrink-0" />
+      <span className="text-center leading-none">{label}</span>
+    </button>
+  );
 }
 
 const WORKLIST_TH = "px-3 py-2.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground whitespace-nowrap";
@@ -699,6 +741,57 @@ export default function RadiologyWorklist() {
   const preferWeasis =
     pacsViewerSettings["default_viewer"] === "WEASIS" || activeNetworkProfile === "LAN";
 
+  async function launchWorklistWeasis(entry: WorklistEntry) {
+    if (!canLaunchViewer(entry)) {
+      toast({
+        title: "Cannot open Weasis",
+        description: "This study has no DICOM Study UID or accession number yet.",
+        variant: "destructive",
+      });
+      return;
+    }
+    const openTarget = window.open("about:blank", "_blank");
+    try {
+      const res = await launchRadiologyStudy(
+        {
+          studyInstanceUID: entry.studyInstanceUID,
+          accessionNumber: entry.accessionNumber,
+          worklistId: entry.id,
+          viewer: "WEASIS",
+          requestedMode: "AUTO",
+        },
+        pacsViewerSettings,
+        {
+          openTarget,
+          pageIsHttps: window.location.protocol === "https:",
+          recordSuccess: recordSuccessfulLaunch,
+          recordFailure: recordFailedLaunch,
+        },
+      );
+      if (!res.success) {
+        openTarget?.close();
+        // Fallback: server-built weasis:// URL (still needs StudyInstanceUID)
+        if (entry.studyInstanceUID?.trim()) {
+          const { openWeasisLaunchRedirect } = await import("@/lib/viewerService");
+          await openWeasisLaunchRedirect(entry.studyInstanceUID, toast);
+          return;
+        }
+        toast({
+          title: "Failed to open Weasis",
+          description: res.diagnostics.slice(-2).join(" · ") || res.errorCode || "Check Radiology Settings → Viewers.",
+          variant: "destructive",
+        });
+      }
+    } catch (err) {
+      openTarget?.close();
+      toast({
+        title: "Failed to open Weasis",
+        description: err instanceof Error ? err.message : String(err),
+        variant: "destructive",
+      });
+    }
+  }
+
   useEffect(() => {
     if (!isLoading && prevEntriesLen.current !== entries.length) {
       setLastRefresh(new Date());
@@ -917,10 +1010,28 @@ export default function RadiologyWorklist() {
       <PageHeader title="Worklist Hub" subtitle="Study queue, PACS worklist, and modality worklist in one place" />
 
       <Tabs defaultValue="pacs-worklist" className="space-y-4">
-        <TabsList className="flex flex-wrap h-auto gap-1">
-          <TabsTrigger value="study-queue"><ClipboardList size={14} className="mr-1.5" />RIS Study Queue (Billing Orders)</TabsTrigger>
-          <TabsTrigger value="pacs-worklist"><ScanSearch size={14} className="mr-1.5" />PACS Worklist / DICOM Received Studies</TabsTrigger>
-          <TabsTrigger value="mwl"><CalendarDays size={14} className="mr-1.5" />MWL (Modality Worklist)</TabsTrigger>
+        <TabsList className="grid w-full grid-cols-1 sm:grid-cols-3 h-auto gap-1.5 p-1.5 bg-muted/40 rounded-xl border border-border/60">
+          <TabsTrigger
+            value="study-queue"
+            className="flex items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium transition-all data-[state=active]:bg-background data-[state=active]:shadow-sm data-[state=active]:border data-[state=active]:border-border/60"
+          >
+            <ClipboardList size={15} />
+            <span className="text-center leading-tight">RIS Study Queue</span>
+          </TabsTrigger>
+          <TabsTrigger
+            value="pacs-worklist"
+            className="flex items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium transition-all data-[state=active]:bg-background data-[state=active]:shadow-sm data-[state=active]:border data-[state=active]:border-border/60"
+          >
+            <ScanSearch size={15} />
+            <span className="text-center leading-tight">PACS Worklist</span>
+          </TabsTrigger>
+          <TabsTrigger
+            value="mwl"
+            className="flex items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium transition-all data-[state=active]:bg-background data-[state=active]:shadow-sm data-[state=active]:border data-[state=active]:border-border/60"
+          >
+            <CalendarDays size={15} />
+            <span className="text-center leading-tight">MWL</span>
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="study-queue">
@@ -1191,8 +1302,7 @@ export default function RadiologyWorklist() {
                   <thead>
                     <tr className="bg-muted/40 text-left border-b">
                       {showSentinel && <th className={`${WORKLIST_TH} text-orange-600`}>⚠ Debug</th>}
-                      <th className={`${WORKLIST_TH} min-w-[150px] sticky left-0 z-30 bg-muted/40 border-r border-border/50`}>Patient</th>
-                      <th className={WORKLIST_TH}>UHID</th>
+                      <th className={`${WORKLIST_TH} min-w-[160px] sticky left-0 z-30 bg-muted/40 border-r border-border/50`}>Patient</th>
                       <th className={WORKLIST_TH}>Bill</th>
                       <th className={`${WORKLIST_TH} min-w-[180px]`}>Study</th>
                       {col.studyDate && <th className={`${WORKLIST_TH} tabular-nums`}>Study Date</th>}
@@ -1223,21 +1333,24 @@ export default function RadiologyWorklist() {
                             {entry.id === -1 ? "SENTINEL" : "real"}
                           </td>
                         )}
-                        <td className={`${WORKLIST_TD} min-w-[150px] sticky left-0 z-10 bg-background group-hover:bg-muted/25 border-r border-border/40`}>
+                        <td className={`${WORKLIST_TD} min-w-[160px] sticky left-0 z-10 bg-background group-hover:bg-muted/25 border-r border-border/40`}>
                           {(() => {
                             const ageSex = formatWorklistAgeSex(entry);
+                            const uhid = formatWorklistUhid(entry);
                             return (
                               <div className="flex flex-col gap-0.5">
                                 <span className="font-semibold text-sm leading-snug text-foreground">{entry.patientName}</span>
                                 {ageSex && (
                                   <span className="text-[11px] text-muted-foreground leading-tight">{ageSex}</span>
                                 )}
+                                {uhid && (
+                                  <span className="font-mono text-[10px] text-muted-foreground/90 leading-tight" title={entry.dicomPatientId ?? undefined}>
+                                    UHID {uhid}
+                                  </span>
+                                )}
                               </div>
                             );
                           })()}
-                        </td>
-                        <td className={`${WORKLIST_TD} font-mono text-xs text-muted-foreground whitespace-nowrap`} title={entry.dicomPatientId ?? undefined}>
-                          {entry.uhid ?? entry.dicomPatientId ?? "\u2014"}
                         </td>
                         <td className={`${WORKLIST_TD} font-mono text-xs whitespace-nowrap`}>
                           {entry.billNumber ? (
@@ -1439,120 +1552,73 @@ export default function RadiologyWorklist() {
                           {fmtDate(entry.createdAt)}
                         </td>
                         )}
-                        <td className={`${WORKLIST_TD} sticky right-0 z-10 bg-background group-hover:bg-muted/25 border-l border-border/50 shadow-[-4px_0_6px_-2px_rgba(0,0,0,0.06)]`}>
-                          <div className="flex items-center justify-end gap-1 flex-wrap">
-                            {entry.id !== -1 && !isReceptionView && preferWeasis && (
-                              <Button
-                                size="sm"
-                                variant="default"
-                                className="h-7 px-2 text-xs bg-emerald-600 hover:bg-emerald-700 text-white"
-                                onClick={() => void openWeasisLaunchRedirect(entry.studyInstanceUID!, toast)}
-                                title="Open in Weasis (preferred on clinic LAN)"
-                              >
-                                <Tv2 className="h-3 w-3 mr-1" />
-                                Weasis
-                              </Button>
-                            )}
-
-                            {entry.id !== -1 && !isReceptionView && !preferWeasis && (
-                              <Button
-                                size="sm"
-                                variant="default"
-                                className="h-7 px-2 text-xs text-blue-700 bg-blue-50 border border-blue-300 hover:bg-blue-100"
-                                onClick={() => void launchViewer(entry.studyInstanceUID, "OHIF", pacsViewerSettings, toast)}
-                                title="Open in OHIF"
-                              >
-                                <MonitorPlay className="h-3 w-3 mr-1" />
-                                OHIF
-                              </Button>
-                            )}
-
-                            {entry.id !== -1 && !isReceptionView && preferWeasis && (
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                className="h-7 px-2 text-xs text-blue-700 border-blue-300 hover:bg-blue-50"
-                                onClick={() => void launchViewer(entry.studyInstanceUID, "OHIF", pacsViewerSettings, toast)}
-                                title="Open in OHIF"
-                              >
-                                <MonitorPlay className="h-3 w-3 mr-1" />
-                                OHIF
-                              </Button>
-                            )}
-
-                            {entry.id !== -1 && !isReceptionView && !preferWeasis && (
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                className="h-7 px-2 text-xs"
-                                onClick={() => void openWeasisLaunchRedirect(entry.studyInstanceUID!, toast)}
-                                title="Open in Weasis"
-                              >
-                                <Tv2 className="h-3 w-3 mr-1" />
-                                Weasis
-                              </Button>
+                        <td className={`${WORKLIST_TD} sticky right-0 z-10 bg-background group-hover:bg-muted/25 border-l border-border/50 shadow-[-4px_0_8px_-4px_rgba(0,0,0,0.08)] min-w-[200px]`}>
+                          <div className="flex flex-wrap items-stretch justify-end gap-1 max-w-[320px] ml-auto">
+                            {entry.id !== -1 && !isReceptionView && (
+                              <>
+                                <WorklistActionBtn
+                                  icon={Tv2}
+                                  label="Weasis"
+                                  tone={preferWeasis ? "weasis" : "neutral"}
+                                  disabled={!canLaunchViewer(entry)}
+                                  title={canLaunchViewer(entry) ? "Open in Weasis" : "Study UID missing — cannot launch Weasis"}
+                                  onClick={() => void launchWorklistWeasis(entry)}
+                                />
+                                <WorklistActionBtn
+                                  icon={MonitorPlay}
+                                  label="OHIF"
+                                  tone={!preferWeasis ? "ohif" : "neutral"}
+                                  disabled={!canLaunchViewer(entry)}
+                                  title={canLaunchViewer(entry) ? "Open in OHIF" : "Study UID missing — cannot launch OHIF"}
+                                  onClick={() => void launchViewer(entry.studyInstanceUID, "OHIF", pacsViewerSettings, toast)}
+                                />
+                              </>
                             )}
 
                             {entry.status !== "REPORT_FINAL" && entry.status !== "DELIVERED" && entry.id !== -1 && isRadView && (
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                className="h-7 px-2 text-xs"
-                                onClick={() => aiDraftMutation.mutate(entry)}
+                              <WorklistActionBtn
+                                icon={Sparkles}
+                                label="AI"
+                                tone="ai"
                                 disabled={aiDraftMutation.isPending}
                                 title="Generate AI Draft"
-                              >
-                                <Sparkles className="h-3 w-3 mr-1" />
-                                AI
-                              </Button>
+                                onClick={() => aiDraftMutation.mutate(entry)}
+                              />
                             )}
 
                             {entry.id !== -1 && isOwnerView && (
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                className="h-7 px-2 text-xs border-emerald-500 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/20"
-                                onClick={() => navigate(`/radiology/command-center/${entry.id}`)}
+                              <WorklistActionBtn
+                                icon={Activity}
+                                label="Command"
+                                tone="cc"
                                 title="Open in Command Center"
-                              >
-                                <Activity className="h-3 w-3 mr-1" />
-                                Command Center
-                              </Button>
+                                onClick={() => navigate(`/radiology/command-center/${entry.id}`)}
+                              />
                             )}
 
-                            {/* R1.4 — the primary "Report" action now opens the
-                                CANONICAL Reporting Workspace (/radiology/report/:studyId),
-                                not the deprecated Cockpit. Previously this was the
-                                ONLY "start reporting" entry point on the whole
-                                Worklist, and it sent every radiologist to a page
-                                carrying zero R1.3 image-panel/R1.2 template/M1.4
-                                validation support — that work was reachable only
-                                by typing the canonical URL by hand. */}
                             {entry.id !== -1 && isRadView && may("/radiology/report") && (
-                              <Button
-                                size="sm"
-                                className="h-7 px-2 text-xs bg-indigo-600 hover:bg-indigo-700 text-white"
+                              <WorklistActionBtn
+                                icon={Stethoscope}
+                                label="Report"
+                                tone="report"
+                                title="Open in the Reporting Workspace"
                                 onClick={() =>
                                   navigate(
                                     isFeatureEnabled("ff_radiology_usg_workspace") && isUltrasoundModality(entry.modality)
-                                      ? `/radiology/usg/${entry.id}`        // dedicated USG shell (flag on)
-                                      : `/radiology/report/${entry.id}`,    // canonical workspace (default)
+                                      ? `/radiology/usg/${entry.id}`
+                                      : `/radiology/report/${entry.id}`,
                                   )
                                 }
-                                title="Open in the Reporting Workspace"
-                              >
-                                <Stethoscope className="h-3 w-3 mr-1" />
-                                Report
-                              </Button>
+                              />
                             )}
 
-                            {/* Soft Final removed for radiologists — use Workspace Finalize & Sign.
-                                Owner/admin may override when an external report was produced outside the app. */}
                             {(entry.status === "REPORT_IN_PROGRESS" || entry.status === "AI_DRAFT_READY") && entry.id !== -1 && isOwnerView && (
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                className="h-7 px-2 text-xs border-amber-500 text-amber-800 hover:bg-amber-50"
+                              <WorklistActionBtn
+                                icon={CheckCircle2}
+                                label="Final"
+                                tone="warn"
+                                disabled={markFinalMutation.isPending}
+                                title="Admin only — mark FINAL without signed report (audited)"
                                 onClick={() => {
                                   const reason = window.prompt(
                                     `Admin override: mark ${entry.accessionNumber} FINAL without workspace Finalize & Sign?\n\nEnter reason (external report attached / emergency):`,
@@ -1561,57 +1627,42 @@ export default function RadiologyWorklist() {
                                     markFinalMutation.mutate({ entry, reason: reason.trim() });
                                   }
                                 }}
-                                disabled={markFinalMutation.isPending}
-                                title="Admin only — soft Final without signed report (audited)"
-                              >
-                                <CheckCircle2 className="h-3 w-3 mr-1" />
-                                Admin Final
-                              </Button>
+                              />
                             )}
 
                             {entry.status === "REPORT_FINAL" && (
-                              <span className="text-xs text-green-700 font-medium flex items-center gap-1">
-                                <CheckCircle2 className="h-3 w-3" /> Finalized
+                              <span className="inline-flex flex-col items-center justify-center gap-0.5 rounded-lg border border-green-300 bg-green-50 text-green-800 w-[58px] h-[48px] text-[9px] font-semibold dark:bg-green-950/30 dark:text-green-300 dark:border-green-800">
+                                <CheckCircle2 className="h-3.5 w-3.5" />
+                                Final
                               </span>
                             )}
 
-                            {/* Print/layout mode lives in Report Generator — not a separate reporting path. */}
                             {entry.id !== -1 && isRadView && may("/radiology/report-generator") &&
                               (entry.reportId != null || entry.status === "REPORT_IN_PROGRESS" || entry.status === "REPORT_FINAL") && (
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                className="h-7 px-2 text-xs border-amber-500 text-amber-700 hover:bg-amber-50 dark:hover:bg-amber-950/20"
-                                onClick={() => navigate(`/radiology/report-generator/${entry.id}?premium=1`)}
+                              <WorklistActionBtn
+                                icon={Gem}
+                                label="Layout"
+                                tone="warn"
                                 title="Open print / layout preview (Premium)"
-                              >
-                                <Gem className="h-3 w-3 mr-1" />
-                                Print layout
-                              </Button>
+                                onClick={() => navigate(`/radiology/report-generator/${entry.id}?premium=1`)}
+                              />
                             )}
 
-                            {/* Phase C: one-click print of the saved report (all roles incl. reception) */}
                             {entry.id !== -1 && entry.reportId != null && (
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                className="h-7 px-2 text-xs"
-                                onClick={() => void openPrintReport(entry.reportId!)}
+                              <WorklistActionBtn
+                                icon={Printer}
+                                label="Print"
+                                tone="neutral"
                                 title="Print / Share report"
-                              >
-                                <Printer className="h-3 w-3 mr-1" />
-                                Print
-                              </Button>
+                                onClick={() => void openPrintReport(entry.reportId!)}
+                              />
                             )}
 
-                            {/* Attach the final report as produced in Word (PDF/DOCX) — the
-                                clinic's actual reporting workflow, distinct from this app's
-                                own structured builder above. */}
                             {entry.id !== -1 && entry.studyId != null && (
                               attachingStudyId === entry.studyId ? (
-                                <div className="flex items-center justify-center gap-1.5 h-7 px-2 text-xs text-muted-foreground">
-                                  <Loader2 size={13} className="animate-spin text-primary" />
-                                  <span>Attaching...</span>
+                                <div className="inline-flex flex-col items-center justify-center gap-0.5 rounded-lg border border-border bg-muted/30 w-[58px] h-[48px] text-[9px] text-muted-foreground">
+                                  <Loader2 size={14} className="animate-spin text-primary" />
+                                  Wait
                                 </div>
                               ) : (
                                 <>
@@ -1622,16 +1673,13 @@ export default function RadiologyWorklist() {
                                     className="hidden"
                                     onChange={(e) => handleAttachReport(entry.studyId as number, e)}
                                   />
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    className="h-7 px-2 text-xs"
-                                    onClick={() => document.getElementById(`attach-report-${entry.studyId}`)?.click()}
+                                  <WorklistActionBtn
+                                    icon={FileUp}
+                                    label="Attach"
+                                    tone="neutral"
                                     title="Attach the final report (Word/PDF) produced outside this app"
-                                  >
-                                    <FileUp className="h-3 w-3 mr-1" />
-                                    Attach Report
-                                  </Button>
+                                    onClick={() => document.getElementById(`attach-report-${entry.studyId}`)?.click()}
+                                  />
                                 </>
                               )
                             )}

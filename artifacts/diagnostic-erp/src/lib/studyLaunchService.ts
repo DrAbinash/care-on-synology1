@@ -772,7 +772,11 @@ export async function launchRadiologyStudy(
 
   const start = (deps.now ?? Date.now)();
   try {
-    if (deps.openTarget) {
+    const isProtocol = plan.finalLaunchUrl.startsWith("weasis://");
+    if (isProtocol) {
+      const { openCustomProtocolUrl } = await import("./viewerService");
+      openCustomProtocolUrl(plan.finalLaunchUrl, deps.openTarget ?? undefined);
+    } else if (deps.openTarget) {
       deps.openTarget.location.href = plan.finalLaunchUrl;
     } else if (typeof window !== "undefined") {
       const w = window.open(plan.finalLaunchUrl, "_blank");

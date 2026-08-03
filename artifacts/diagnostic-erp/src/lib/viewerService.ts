@@ -272,18 +272,42 @@ export function recordFailedLaunch(stage: string, url: string, status: string) {
  * The tab is opened synchronously before the await so popup blockers don't
  * treat it as an unsolicited popup.
  */
+function triggerProtocolHandler(url: string, placeholder?: Window | null): void {
+  try {
+    placeholder?.close();
+  } catch {
+    /* already closed */
+  }
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.style.display = "none";
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  const iframe = document.createElement("iframe");
+  iframe.style.display = "none";
+  document.body.appendChild(iframe);
+  iframe.src = url;
+  window.setTimeout(() => iframe.remove(), 2000);
+}
+
+/** Launch a custom protocol URL (e.g. weasis://) from an async handler. */
+export function openCustomProtocolUrl(url: string, placeholder?: Window | null): void {
+  triggerProtocolHandler(url, placeholder);
+}
+
 export async function openWeasisLaunchRedirect(
   studyInstanceUID: string,
   toast?: (options: { title: string; description?: string; variant?: "default" | "destructive" }) => void,
 ): Promise<void> {
   const startTime = Date.now();
-  const w = window.open("", "_blank");
+  const placeholder = window.open("about:blank", "_blank");
   try {
     const data = await api.get<{ weasisUrl: string | null; error?: string }>(
       `/api/radiology/studies/${encodeURIComponent(studyInstanceUID)}/weasis-launch`
     );
     if (!data.weasisUrl) {
-      w?.close();
+      placeholder?.close();
       toast?.({
         title: "Weasis not configured",
         description: data.error ?? "Go to Radiology Settings → Viewer Settings and load clinic defaults.",
@@ -292,12 +316,11 @@ export async function openWeasisLaunchRedirect(
       recordFailedLaunch("Weasis Launch", studyInstanceUID, "not_configured");
       return;
     }
-    if (w) w.location.href = data.weasisUrl;
-    else window.open(data.weasisUrl);
+    triggerProtocolHandler(data.weasisUrl, placeholder);
     const profile = (localStorage.getItem("pacs_detected_profile") || "LAN") as "LAN" | "TAILSCALE" | "PUBLIC";
     recordSuccessfulLaunch(profile, "WEASIS", data.weasisUrl, Date.now() - startTime);
   } catch (err) {
-    w?.close();
+    placeholder?.close();
     toast?.({ title: "Failed to open Weasis", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
     recordFailedLaunch("Weasis Launch", studyInstanceUID, "api_error");
   }
