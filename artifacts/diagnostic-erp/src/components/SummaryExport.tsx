@@ -3,6 +3,7 @@ import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import * as XLSX from "xlsx";
 import { loadSummaryPdfOrientation, persistSummaryPdfOrientation, type PaperOrientation } from "@/lib/paperSize";
+import type { SimpleLedgerRow } from "@/lib/reconciliationLedger";
 import { api } from "@/lib/fetchApi";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -36,7 +37,13 @@ export type ExportConfig = {
   subtitle: string;
   sections: ExportSection[];
   tables: ExportTable[];
+  /** Handwritten-style one-page ledger (optional — enables Simple export buttons). */
+  simpleLedger?: SimpleLedgerRow[];
+  clinicName?: string;
+  logoDataUrl?: string | null;
 };
+
+export type ExportMode = "full" | "simple";
 
 /** ASCII-safe INR for PDF/print (jsPDF standard fonts cannot render Rs symbol). */
 export function formatExportAmount(n: number): string {
@@ -129,9 +136,87 @@ function isFullWidthSection(sec: ExportSection): boolean {
   return sec.layout === "full" || /cash reconciliation/i.test(sec.title);
 }
 
+function renderReportHeader(config: ExportConfig, ts: string, compact = false): string {
+  const logo = config.logoDataUrl
+    ? `<img src="${escHtml(config.logoDataUrl)}" alt="" style="height:${compact ? "28px" : "36px"};max-width:100px;object-fit:contain;margin-right:8px;border-radius:4px;background:#fff;padding:2px" />`
+    : "";
+  const brand = escHtml(config.clinicName ?? "Care Diagnostics ERP");
+  return `
+  <div style="background:linear-gradient(135deg,#0f172a 0%,#1e3a5f 100%);color:white;padding:${compact ? "8px 10px" : "10px 12px"};border-radius:6px 6px 0 0;border:2px solid #0f172a;border-bottom:none">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+      <div style="display:flex;align-items:center;gap:4px;min-width:0">
+        ${logo}
+        <div>
+          <div style="font-size:${compact ? "13px" : "15px"};font-weight:900;letter-spacing:.2px">${escHtml(config.title)}</div>
+          <div style="font-size:9px;opacity:.95;margin-top:1px;font-weight:700">${escHtml(config.subtitle)}</div>
+        </div>
+      </div>
+      <div style="text-align:right;opacity:.9;font-size:7px;line-height:1.35;font-weight:600;flex-shrink:0">
+        <div>${brand}</div>
+        <div>${escHtml(ts)}</div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function simpleRowStyle(kind: SimpleLedgerRow["kind"]): { bg: string; border: string; labelWeight: string; valueWeight: string; valueSize: string } {
+  switch (kind) {
+    case "meta": return { bg: "#f8fafc", border: "1px solid #e2e8f0", labelWeight: "600", valueWeight: "700", valueSize: "9px" };
+    case "add": return { bg: "#ecfdf5", border: "1px solid #a7f3d0", labelWeight: "600", valueWeight: "700", valueSize: "9.5px" };
+    case "subtract": return { bg: "#fef2f2", border: "1px solid #fecaca", labelWeight: "600", valueWeight: "700", valueSize: "9.5px" };
+    case "subtotal": return { bg: "#e2e8f0", border: "2px solid #64748b", labelWeight: "800", valueWeight: "800", valueSize: "10px" };
+    case "total": return { bg: "#0f172a", border: "3px solid #0f172a", labelWeight: "900", valueWeight: "900", valueSize: "12px" };
+    case "note": return { bg: "#fffbeb", border: "1px solid #fde68a", labelWeight: "600", valueWeight: "600", valueSize: "8px" };
+    default: return { bg: "#fff", border: "1px solid #e2e8f0", labelWeight: "500", valueWeight: "700", valueSize: "9.5px" };
+  }
+}
+
+function buildSimpleHTML(config: ExportConfig): string {
+  const ts = new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
+  const rows = config.simpleLedger ?? [];
+  const body = rows.map((row) => {
+    if (row.kind === "blank") {
+      return `<tr><td colspan="2" style="height:4px;border:none;padding:0"></td></tr>`;
+    }
+    const st = simpleRowStyle(row.kind);
+    const isTotal = row.kind === "total";
+    const detail = row.detail
+      ? `<div style="font-size:7px;color:${isTotal ? "#cbd5e1" : "#92400e"};margin-top:1px">${escHtml(pdfSafeText(row.detail))}</div>`
+      : "";
+    return `<tr style="background:${st.bg}">
+      <td style="padding:3px 8px;border:${st.border};color:${isTotal ? "#fff" : "#1e293b"};font-weight:${st.labelWeight};font-size:9px;vertical-align:middle;width:62%">${escHtml(pdfSafeText(row.label))}${detail}</td>
+      <td style="padding:3px 8px;border:${st.border};color:${isTotal ? "#86efac" : "#0f172a"};font-weight:${st.valueWeight};font-size:${st.valueSize};text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums;vertical-align:middle">${escHtml(pdfSafeText(row.value))}</td>
+    </tr>`;
+  }).join("");
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>${escHtml(config.title)} — Simple</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: Georgia, 'Times New Roman', serif; margin: 0; padding: 12px; color: #111827; background: #fff; }
+    @media print {
+      body { padding: 0; }
+      @page { margin: 8mm; size: A4 portrait; }
+    }
+  </style>
+</head>
+<body>
+  ${renderReportHeader(config, ts, true)}
+  <div style="border:2px solid #0f172a;border-top:none;padding:10px;border-radius:0 0 6px 6px;max-width:520px;margin:0 auto">
+    <table style="width:100%;border-collapse:collapse">${body}</table>
+  </div>
+  <p style="text-align:center;font-size:7px;color:#64748b;margin-top:8px">Formula: Bills + Old Dues − (Cancel+Refund+Outstanding) − Digital = Cash in counter</p>
+</body>
+</html>`;
+}
+
 // ─── Smart HTML builder (Print / Word / Email) ────────────────────────────────
 
-function buildHTML(config: ExportConfig): string {
+function buildHTML(config: ExportConfig, mode: ExportMode = "full"): string {
+  if (mode === "simple") return buildSimpleHTML(config);
   const ts = new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
 
   const renderSectionRows = (sec: ExportSection): string => {
@@ -258,18 +343,7 @@ function buildHTML(config: ExportConfig): string {
   </style>
 </head>
 <body>
-  <div style="background:linear-gradient(135deg,#0f172a 0%,#1e3a5f 100%);color:white;padding:10px 12px;border-radius:6px 6px 0 0;border:2px solid #0f172a;border-bottom:none">
-    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
-      <div>
-        <div style="font-size:15px;font-weight:900;letter-spacing:.2px">${escHtml(config.title)}</div>
-        <div style="font-size:9.5px;opacity:.95;margin-top:2px;font-weight:700">${escHtml(config.subtitle)}</div>
-      </div>
-      <div style="text-align:right;opacity:.9;font-size:7.5px;line-height:1.35;font-weight:600">
-        <div>Care Diagnostics ERP</div>
-        <div>${escHtml(ts)}</div>
-      </div>
-    </div>
-  </div>
+  ${renderReportHeader(config, ts)}
   <div style="border:2px solid #0f172a;border-top:none;padding:8px;border-radius:0 0 6px 6px;margin-bottom:8px;background:#f1f5f9">
     ${sectionsHTML}
   </div>
@@ -284,8 +358,8 @@ function buildHTML(config: ExportConfig): string {
 
 // ─── Print ────────────────────────────────────────────────────────────────────
 
-function doPrint(config: ExportConfig) {
-  const html = buildHTML(config);
+function doPrint(config: ExportConfig, mode: ExportMode = "full") {
+  const html = buildHTML(config, mode);
   const w = window.open("", "_blank");
   if (!w) { alert("Please allow pop-ups to use Print."); return; }
   w.document.write(html);
@@ -423,7 +497,11 @@ function drawPdfSectionBox(
   return finalY - boxTop;
 }
 
-async function downloadPDF(config: ExportConfig, orientation: PaperOrientation): Promise<void> {
+async function downloadPDF(config: ExportConfig, orientation: PaperOrientation, mode: ExportMode = "full"): Promise<void> {
+  if (mode === "simple") {
+    await downloadSimplePDF(config);
+    return;
+  }
   const doc = new jsPDF({ orientation, unit: "mm", format: "a4" });
   const pageW  = doc.internal.pageSize.getWidth();
   const pageH  = doc.internal.pageSize.getHeight();
@@ -435,16 +513,20 @@ async function downloadPDF(config: ExportConfig, orientation: PaperOrientation):
 
   doc.setFillColor(...PDF_NAVY);
   doc.rect(0, 0, pageW, 18, "F");
+  if (config.logoDataUrl) {
+    try { doc.addImage(config.logoDataUrl, "PNG", margin, 2, 14, 14); } catch { /* ignore */ }
+  }
+  const titleX = config.logoDataUrl ? margin + 16 : margin;
   doc.setTextColor(255, 255, 255);
   doc.setFontSize(12);
   doc.setFont("helvetica", "bold");
-  doc.text(pdfSafeText(config.title), margin, 9);
+  doc.text(pdfSafeText(config.title), titleX, 9);
   doc.setFontSize(8);
   doc.setFont("helvetica", "normal");
-  doc.text(pdfSafeText(config.subtitle), margin, 14.5);
+  doc.text(pdfSafeText(config.subtitle), titleX, 14.5);
   doc.setFontSize(6);
   doc.text(pdfSafeText(ts), pageW - margin, 9, { align: "right" });
-  doc.text("Care Diagnostics ERP", pageW - margin, 14, { align: "right" });
+  doc.text(pdfSafeText(config.clinicName ?? "Care Diagnostics ERP"), pageW - margin, 14, { align: "right" });
 
   let y = 22;
   let pendingHalf: ExportSection | null = null;
@@ -541,10 +623,129 @@ async function downloadPDF(config: ExportConfig, orientation: PaperOrientation):
   doc.save(sanitizeFilename(config.title) + ".pdf");
 }
 
+async function downloadSimplePDF(config: ExportConfig): Promise<void> {
+  const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+  const pageW = doc.internal.pageSize.getWidth();
+  const margin = 14;
+  const cardW = Math.min(120, pageW - margin * 2);
+  const x = (pageW - cardW) / 2;
+  const ts = new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
+  let y = margin;
+
+  if (config.logoDataUrl) {
+    try {
+      doc.addImage(config.logoDataUrl, "PNG", x, y, 14, 14);
+      y += 16;
+    } catch { /* ignore broken logo */ }
+  }
+
+  doc.setFillColor(...PDF_NAVY);
+  doc.rect(x, y, cardW, 14, "F");
+  doc.setTextColor(255, 255, 255);
+  doc.setFontSize(11);
+  doc.setFont("helvetica", "bold");
+  doc.text(pdfSafeText(config.title), x + 3, y + 6);
+  doc.setFontSize(7.5);
+  doc.setFont("helvetica", "normal");
+  doc.text(pdfSafeText(config.subtitle), x + 3, y + 11);
+  y += 16;
+
+  const rows = config.simpleLedger ?? [];
+  const bodyRows: string[][] = [];
+  const rowStyles: PdfRowStyle[] = [];
+
+  for (const row of rows) {
+    if (row.kind === "blank") {
+      bodyRows.push(["", ""]);
+      rowStyles.push({});
+      continue;
+    }
+    const isTotal = row.kind === "total";
+    const isSub = row.kind === "subtotal";
+    const isSubtr = row.kind === "subtract";
+    const isNote = row.kind === "note";
+    const label = row.detail ? `${row.label}\n(${row.detail})` : row.label;
+    bodyRows.push([pdfSafeText(label), pdfSafeText(row.value)]);
+    rowStyles.push({
+      fillColor: isTotal ? PDF_NAVY
+        : isSub ? [226, 232, 240]
+        : isSubtr ? [254, 226, 226]
+        : isNote ? [255, 251, 235]
+        : row.kind === "add" ? [220, 252, 231]
+        : undefined,
+      textColor: isTotal ? [134, 239, 172] : isNote ? PDF_AMB : PDF_DARK,
+      fontStyle: isTotal || isSub ? "bold" : "normal",
+      fontSize: isTotal ? 10 : isSub ? 8.5 : 7.5,
+    });
+  }
+
+  autoTable(doc, {
+    startY: y,
+    body: bodyRows,
+    theme: "grid",
+    tableWidth: cardW,
+    styles: {
+      fontSize: 7.5,
+      cellPadding: { top: 1.2, bottom: 1.2, left: 2.5, right: 2.5 },
+      overflow: "linebreak",
+      valign: "middle",
+      lineColor: [100, 116, 139],
+      lineWidth: 0.2,
+    },
+    columnStyles: {
+      0: { cellWidth: cardW * 0.62 },
+      1: { halign: "right", fontStyle: "bold", cellWidth: cardW * 0.38 },
+    },
+    margin: { left: x, right: pageW - x - cardW },
+    didParseCell(data) {
+      const rs = rowStyles[data.row.index];
+      if (!rs) return;
+      if (rs.fillColor) data.cell.styles.fillColor = rs.fillColor;
+      if (rs.textColor) data.cell.styles.textColor = rs.textColor;
+      if (rs.fontStyle) data.cell.styles.fontStyle = rs.fontStyle;
+      if (rs.fontSize) data.cell.styles.fontSize = rs.fontSize;
+      if (data.row.index < rowStyles.length && rowStyles[data.row.index] && rows[data.row.index]?.kind === "total") {
+        if (data.column.index === 0) data.cell.styles.textColor = [255, 255, 255];
+      }
+    },
+  });
+
+  const footY = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 4;
+  doc.setFontSize(6);
+  doc.setTextColor(...PDF_GRY);
+  doc.text(
+    pdfSafeText("Bills + Old Dues - (Cancel+Refund+Outstanding) - Digital = Cash in counter"),
+    pageW / 2,
+    footY,
+    { align: "center" },
+  );
+  doc.text(pdfSafeText(`${config.clinicName ?? "Care Diagnostics ERP"}  |  ${ts}`), pageW / 2, footY + 4, { align: "center" });
+
+  doc.save(sanitizeFilename(config.title) + "_Simple.pdf");
+}
+
 // ─── Excel ────────────────────────────────────────────────────────────────────
 
-function downloadExcel(config: ExportConfig) {
+function downloadExcel(config: ExportConfig, mode: ExportMode = "full") {
   const wb = XLSX.utils.book_new();
+
+  if (mode === "simple" && config.simpleLedger?.length) {
+    const rows: (string | number)[][] = [
+      [config.title],
+      [config.subtitle],
+      [`Generated: ${new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}`],
+      [],
+      ["Label", "Amount"],
+      ...config.simpleLedger
+        .filter((r) => r.kind !== "blank")
+        .map((r) => [r.detail ? `${r.label} (${r.detail})` : r.label, r.value]),
+    ];
+    const ws = XLSX.utils.aoa_to_sheet(rows);
+    ws["!cols"] = [{ wch: 42 }, { wch: 24 }];
+    XLSX.utils.book_append_sheet(wb, ws, "Simple Ledger");
+    XLSX.writeFile(wb, sanitizeFilename(config.title) + "_Simple.xlsx");
+    return;
+  }
 
   // Summary sheet — parse section headers and blank rows for visual structure
   const summaryRows: (string | number)[][] = [
@@ -599,13 +800,13 @@ function downloadExcel(config: ExportConfig) {
 
 // ─── Word ─────────────────────────────────────────────────────────────────────
 
-function downloadWord(config: ExportConfig) {
-  const html = buildHTML(config);
+function downloadWord(config: ExportConfig, mode: ExportMode = "full") {
+  const html = buildHTML(config, mode);
   const blob = new Blob([html], { type: "application/msword; charset=utf-8" });
   const url  = URL.createObjectURL(blob);
   const a    = document.createElement("a");
   a.href     = url;
-  a.download = sanitizeFilename(config.title) + ".doc";
+  a.download = sanitizeFilename(config.title) + (mode === "simple" ? "_Simple" : "") + ".doc";
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
@@ -618,17 +819,13 @@ async function sendSummaryEmail(
   config: ExportConfig,
   to: string,
   endpoint: string,
+  mode: ExportMode = "full",
 ): Promise<{ ok: boolean; error?: string }> {
   try {
-    // Use the shared authenticated api client — it attaches the staff
-    // Bearer token from localStorage. A raw fetch() here only sends cookies,
-    // but this app authenticates via Authorization header, so every request
-    // through plain fetch() was rejected with 401 regardless of who was
-    // logged in (including superadmin).
     return await api.post<{ ok: boolean; error?: string }>(endpoint, {
       to,
-      subject: `${config.title} — ${config.subtitle}`,
-      htmlBody: buildHTML(config),
+      subject: `${config.title}${mode === "simple" ? " (Simple)" : ""} — ${config.subtitle}`,
+      htmlBody: buildHTML(config, mode),
     });
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : "Network error" };
@@ -661,15 +858,16 @@ export function SummaryExportToolbar({
   );
 
   if (!config) return null;
+  const hasSimple = (config.simpleLedger?.length ?? 0) > 0;
 
   function handleSetOrientation(o: PaperOrientation) {
     persistSummaryPdfOrientation(o);
     setPdfOrientation(o);
   }
 
-  async function handlePDF() {
+  async function handlePDF(mode: ExportMode = "full") {
     setPdfBusy(true);
-    try { await downloadPDF(config!, pdfOrientation); }
+    try { await downloadPDF(config!, pdfOrientation, mode); }
     finally { setPdfBusy(false); }
   }
 
@@ -697,7 +895,7 @@ export function SummaryExportToolbar({
         {/* Print */}
         <Button variant="outline" size="sm"
           className={`${h} ${px} ${txSz} gap-1 border-slate-600/40 text-slate-200 bg-slate-700/50 hover:bg-slate-600`}
-          onClick={() => doPrint(config)}>
+          onClick={() => doPrint(config, "full")}>
           <Printer size={icSz} /> Print
         </Button>
 
@@ -705,7 +903,7 @@ export function SummaryExportToolbar({
         <div className={`flex items-center rounded-md border border-slate-600/40 overflow-hidden ${h}`}>
           <Button variant="ghost" size="sm"
             className={`h-full rounded-none ${px} ${txSz} gap-1 border-r border-slate-600/40 text-slate-200 hover:bg-slate-600`}
-            onClick={handlePDF} disabled={pdfBusy}>
+            onClick={() => void handlePDF("full")} disabled={pdfBusy}>
             {pdfBusy
               ? <Loader2 size={icSz} className="animate-spin" />
               : <FileText size={icSz} />}
@@ -732,16 +930,42 @@ export function SummaryExportToolbar({
         {/* Excel/CSV */}
         <Button variant="outline" size="sm"
           className={`${h} ${px} ${txSz} gap-1 border-slate-600/40 text-slate-200 bg-slate-700/50 hover:bg-slate-600`}
-          onClick={() => downloadExcel(config)}>
+          onClick={() => downloadExcel(config, "full")}>
           <FileSpreadsheet size={icSz} /> Excel
         </Button>
 
         {/* Word */}
         <Button variant="outline" size="sm"
           className={`${h} ${px} ${txSz} gap-1 border-slate-600/40 text-slate-200 bg-slate-700/50 hover:bg-slate-600`}
-          onClick={() => downloadWord(config)}>
+          onClick={() => downloadWord(config, "full")}>
           <FileType size={icSz} /> Word
         </Button>
+
+        {hasSimple && (
+          <>
+            <span className={`${txSz} text-slate-400 px-1`}>|</span>
+            <Button variant="outline" size="sm"
+              className={`${h} ${px} ${txSz} gap-1 border-amber-600/50 text-amber-100 bg-amber-900/40 hover:bg-amber-800/60`}
+              onClick={() => doPrint(config, "simple")} title="Handwritten-style one-page ledger">
+              <Printer size={icSz} /> Simple
+            </Button>
+            <Button variant="outline" size="sm"
+              className={`${h} ${px} ${txSz} gap-1 border-amber-600/50 text-amber-100 bg-amber-900/40 hover:bg-amber-800/60`}
+              onClick={() => void handlePDF("simple")} disabled={pdfBusy} title="One-page PDF ledger">
+              <FileText size={icSz} /> Simple PDF
+            </Button>
+            <Button variant="outline" size="sm"
+              className={`${h} ${px} ${txSz} gap-1 border-amber-600/50 text-amber-100 bg-amber-900/40 hover:bg-amber-800/60`}
+              onClick={() => downloadExcel(config, "simple")} title="Simple Excel ledger">
+              <FileSpreadsheet size={icSz} /> Simple XL
+            </Button>
+            <Button variant="outline" size="sm"
+              className={`${h} ${px} ${txSz} gap-1 border-amber-600/50 text-amber-100 bg-amber-900/40 hover:bg-amber-800/60`}
+              onClick={() => downloadWord(config, "simple")} title="Simple Word ledger">
+              <FileType size={icSz} /> Simple Doc
+            </Button>
+          </>
+        )}
 
         {/* Email */}
         <Button variant="outline" size="sm"
