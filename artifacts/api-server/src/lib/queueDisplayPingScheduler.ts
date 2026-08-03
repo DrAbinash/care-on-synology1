@@ -27,6 +27,7 @@ import { db } from "@workspace/db";
 import { testTokensTable, patientsTable, queueDisplaySettingsTable } from "@workspace/db/schema";
 import { and, asc, desc, eq, inArray, isNull, or } from "drizzle-orm";
 import { getWhatsAppService } from "../services/whatsapp/WhatsAppService";
+import { resolveQueueDisplayDepartments } from "./queueDisplayDepartments";
 
 // Keyed by `${date}:${tokenId}` so a restart just means a token might be
 // pinged again — never a crash, never a duplicate financial/audit record.
@@ -81,7 +82,7 @@ export async function runPatientPingSweep(): Promise<{ pinged: number }> {
   let pinged = 0;
 
   for (const room of rooms) {
-    const departments = room.departments ? room.departments.split(",").map((s) => s.trim()).filter(Boolean) : [];
+    const departments = resolveQueueDisplayDepartments(room.roomKey, room.departments);
     const conds = [
       eq(testTokensTable.tokenDate, date),
       eq(testTokensTable.status, "waiting"),
