@@ -135,10 +135,10 @@ describe("premium layout (Phase 7)", () => {
     expect(html).toContain("page-break-after: avoid");
   });
 
-  it("classic template keeps the inline image grid and 4-column demographics", () => {
+  it("classic template keeps the inline image grid and stacked demographics", () => {
     const html = renderReportDocument(baseModel({ keyImages: images }), resolvePresentationTemplate("care-classic"));
     expect(html).toContain("image-panel-inline");
-    expect(html).toContain("patient-grid");
+    expect(html).toContain("patient-stacked");
     expect(html).not.toContain("float: right; width: 62mm");
   });
 
