@@ -4,6 +4,7 @@ import {
   buildPublicErpUrl,
   currentConnectivityKind,
   getErpBasePath,
+  isLoginOrPortalPath,
 } from "./erpConnectivity";
 
 describe("erpConnectivity URL helpers", () => {
@@ -15,6 +16,16 @@ describe("erpConnectivity URL helpers", () => {
         search: "?x=1",
         hash: "",
         origin: "https://caredeoghar.com",
+      },
+      localStorage: {
+        getItem: () => null,
+        setItem: () => {},
+        removeItem: () => {},
+      },
+      sessionStorage: {
+        getItem: () => null,
+        setItem: () => {},
+        removeItem: () => {},
       },
     });
   });
@@ -46,5 +57,15 @@ describe("erpConnectivity URL helpers", () => {
     const base = getErpBasePath();
     expect(base.startsWith("/")).toBe(true);
     expect(base.endsWith("/")).toBe(true);
+  });
+
+  it("treats /erp/login as a login path (no auto-redirect)", () => {
+    (window as any).location.pathname = "/erp/login";
+    expect(isLoginOrPortalPath()).toBe(true);
+  });
+
+  it("does not treat /erp/billing as a login path", () => {
+    (window as any).location.pathname = "/erp/billing";
+    expect(isLoginOrPortalPath()).toBe(false);
   });
 });

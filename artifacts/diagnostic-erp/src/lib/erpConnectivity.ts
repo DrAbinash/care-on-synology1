@@ -7,23 +7,34 @@
  * the login session so counters do not need to switch URLs manually.
  *
  * HTTPS pages cannot probe HTTP LAN URLs (mixed content), so failover is:
- *   public /api/healthz fails → redirect to LAN origin (same path).
+ *   public /health fails (after retries) → redirect to LAN origin (same path).
+ *
+ * Login/portal pages never auto-redirect — staff choose the LAN link manually
+ * so a flaky probe or wrong cached IP cannot block sign-in.
  */
 
 import { ERP_SESSION_KEY } from "./staffSession";
 import {
-  erpLanOrigin,
+  erpLanOriginForHost,
   erpPublicOrigin,
   hydrateNetworkSettingsFromCache,
   isLanHostname,
   isPublicErpHostname,
+  lanHostAlternates,
+  preferredLanHost,
+  recordWorkingLanHost,
 } from "./networkProfiles";
 
 export const ERP_CONNECTIVITY_MODE_KEY = "erp_connectivity_mode";
 export const ERP_SESSION_HASH_PARAM = "_erp_sess";
+/** Set when public probe failed on a login page — show manual LAN link. */
+export const ERP_PUBLIC_PROBE_FAILED_KEY = "erp_public_probe_failed";
 
-const HEALTH_PATH = "/api/healthz";
-const PROBE_TIMEOUT_MS = 4_500;
+/** Lightweight liveness — no DB, always 200 when nginx+api are up. */
+const HEALTH_PATH = "/health";
+const PROBE_TIMEOUT_MS = 4_000;
+const PROBE_RETRIES = 3;
+const PROBE_RETRY_DELAY_MS = 800;
 
 export type ErpConnectivityMode =
   | "public"
@@ -36,7 +47,11 @@ export function getErpBasePath(): string {
   return base.endsWith("/") ? base : `${base}/`;
 }
 
-/** Probe whether an ERP origin answers /api/healthz. */
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+/** Probe whether an ERP origin answers /health (process liveness, not DB). */
 export async function probeErpOrigin(origin: string, timeoutMs = PROBE_TIMEOUT_MS): Promise<boolean> {
   const root = origin.replace(/\/+$/, "");
   try {
@@ -48,10 +63,25 @@ export async function probeErpOrigin(origin: string, timeoutMs = PROBE_TIMEOUT_M
       signal: controller.signal,
     });
     window.clearTimeout(timer);
+    // /health is 200 when the process is alive. Any HTTP response means the
+    // origin is reachable — do NOT treat 503 from /api/healthz (DB starting)
+    // as "public site down".
     return res.ok;
   } catch {
     return false;
   }
+}
+
+/** Retry the public probe — avoids redirecting on a single slow packet. */
+export async function probeErpOriginWithRetries(
+  origin: string,
+  retries = PROBE_RETRIES,
+): Promise<boolean> {
+  for (let i = 0; i < retries; i++) {
+    if (await probeErpOrigin(origin)) return true;
+    if (i < retries - 1) await delay(PROBE_RETRY_DELAY_MS);
+  }
+  return false;
 }
 
 export function currentConnectivityKind(): ErpConnectivityMode | "other" {
@@ -62,15 +92,37 @@ export function currentConnectivityKind(): ErpConnectivityMode | "other" {
   return "other";
 }
 
+/** True on staff login / portal entry routes — never auto-redirect here. */
+export function isLoginOrPortalPath(): boolean {
+  const path = window.location.pathname.replace(/\/+$/, "") || "/";
+  const base = getErpBasePath().replace(/\/$/, "");
+  if (path === "/login" || path === "/portal") return true;
+  if (path === `${base}/login` || path === `${base}/portal`) return true;
+  if (path.endsWith("/login")) return true;
+  return (
+    path.includes("/portal/staff-login") ||
+    path.includes("/portal/patient-login")
+  );
+}
+
 /** Build the LAN ERP URL for the current page (path + query preserved). */
-export function buildLanFailoverUrl(): string {
-  const lanRoot = erpLanOrigin().replace(/\/+$/, "");
+export function buildLanFailoverUrl(lanHost?: string): string {
+  const host = lanHost ?? preferredLanHost();
+  const lanRoot = erpLanOriginForHost(host).replace(/\/+$/, "");
   const basePath = getErpBasePath().replace(/\/$/, "");
   let path = window.location.pathname;
   if (!path.startsWith(basePath)) {
     path = `${basePath}${path.startsWith("/") ? path : `/${path}`}`;
   }
   return `${lanRoot}${path}${window.location.search}`;
+}
+
+/** All LAN URLs staff can try (primary + optional alt NAS IP). */
+export function buildLanFailoverOptions(): { host: string; url: string }[] {
+  return lanHostAlternates().map((host) => ({
+    host,
+    url: buildLanFailoverUrl(host),
+  }));
 }
 
 /** Build the public ERP URL for the current page. */
@@ -124,8 +176,8 @@ export function consumeSessionTransferHash(): boolean {
   return true;
 }
 
-function redirectToLanWithSession(): void {
-  let target = buildLanFailoverUrl();
+function redirectToLanWithSession(lanHost?: string): void {
+  let target = buildLanFailoverUrl(lanHost);
   try {
     const session = window.localStorage.getItem(ERP_SESSION_KEY);
     if (session) {
@@ -135,6 +187,7 @@ function redirectToLanWithSession(): void {
     /* ignore */
   }
   window.sessionStorage.setItem(ERP_CONNECTIVITY_MODE_KEY, "lan");
+  window.sessionStorage.removeItem(ERP_PUBLIC_PROBE_FAILED_KEY);
   window.location.replace(target);
 }
 
@@ -148,16 +201,26 @@ export async function runErpConnectivityBootstrap(): Promise<void> {
 
   const kind = currentConnectivityKind();
   if (kind === "lan") {
+    recordWorkingLanHost(window.location.hostname);
     window.sessionStorage.setItem(ERP_CONNECTIVITY_MODE_KEY, "lan");
+    window.sessionStorage.removeItem(ERP_PUBLIC_PROBE_FAILED_KEY);
     return;
   }
   if (kind !== "public") {
     return;
   }
 
-  const publicOk = await probeErpOrigin(window.location.origin);
+  const publicOk = await probeErpOriginWithRetries(window.location.origin);
   if (publicOk) {
     window.sessionStorage.setItem(ERP_CONNECTIVITY_MODE_KEY, "public");
+    window.sessionStorage.removeItem(ERP_PUBLIC_PROBE_FAILED_KEY);
+    return;
+  }
+
+  // Login/portal: never hijack the URL — offer LAN links in the UI instead.
+  if (isLoginOrPortalPath()) {
+    window.sessionStorage.setItem(ERP_PUBLIC_PROBE_FAILED_KEY, "1");
+    window.sessionStorage.setItem(ERP_CONNECTIVITY_MODE_KEY, "public_unavailable");
     return;
   }
 
@@ -176,4 +239,13 @@ export function isOnLanErpOrigin(): boolean {
 /** Public ERP origin for optional fail-back (card payments / ICICI). */
 export function getPublicErpOrigin(): string {
   return erpPublicOrigin();
+}
+
+/** True when bootstrap detected public outage on a login page. */
+export function shouldOfferLanFailover(): boolean {
+  try {
+    return window.sessionStorage.getItem(ERP_PUBLIC_PROBE_FAILED_KEY) === "1";
+  } catch {
+    return false;
+  }
 }
