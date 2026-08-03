@@ -273,10 +273,17 @@ export function recordFailedLaunch(stage: string, url: string, status: string) {
  * treat it as an unsolicited popup.
  */
 function triggerProtocolHandler(url: string, placeholder?: Window | null): void {
-  try {
-    placeholder?.close();
-  } catch {
-    /* already closed */
+  if (placeholder) {
+    try {
+      placeholder.location.href = url;
+    } catch {
+      /* cross-origin or protocol navigation */
+    }
+    try {
+      placeholder.close();
+    } catch {
+      /* already closed */
+    }
   }
   const anchor = document.createElement("a");
   anchor.href = url;

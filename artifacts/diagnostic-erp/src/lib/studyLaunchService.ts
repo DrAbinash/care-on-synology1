@@ -730,6 +730,33 @@ export async function planStudyLaunch(
  * pre-opened window (or open one), record stats, invalidate the route cache
  * on failure. The ONLY place launch side effects live.
  */
+function openProtocolLaunchUrl(url: string, placeholder?: Window | null): void {
+  if (placeholder) {
+    try {
+      placeholder.location.href = url;
+    } catch {
+      /* cross-origin or protocol navigation */
+    }
+    try {
+      placeholder.close();
+    } catch {
+      /* already closed */
+    }
+  }
+  if (typeof document === "undefined") return;
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.style.display = "none";
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  const iframe = document.createElement("iframe");
+  iframe.style.display = "none";
+  document.body.appendChild(iframe);
+  iframe.src = url;
+  window.setTimeout(() => iframe.remove(), 2000);
+}
+
 export async function launchRadiologyStudy(
   input: StudyLaunchInput,
   settings: Record<string, string>,
@@ -774,8 +801,7 @@ export async function launchRadiologyStudy(
   try {
     const isProtocol = plan.finalLaunchUrl.startsWith("weasis://");
     if (isProtocol) {
-      const { openCustomProtocolUrl } = await import("./viewerService");
-      openCustomProtocolUrl(plan.finalLaunchUrl, deps.openTarget ?? undefined);
+      openProtocolLaunchUrl(plan.finalLaunchUrl, deps.openTarget ?? undefined);
     } else if (deps.openTarget) {
       deps.openTarget.location.href = plan.finalLaunchUrl;
     } else if (typeof window !== "undefined") {
