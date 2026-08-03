@@ -7,7 +7,7 @@
  * the login session so counters do not need to switch URLs manually.
  *
  * HTTPS pages cannot probe HTTP LAN URLs (mixed content), so failover is:
- *   public /health fails (after retries) → redirect to LAN origin (same path).
+ *   ERP shell probe fails → show manual LAN links (never auto-redirect).
  *
  * Login/portal pages never auto-redirect — staff choose the LAN link manually
  * so a flaky probe or wrong cached IP cannot block sign-in.
@@ -33,8 +33,13 @@ export const ERP_PUBLIC_PROBE_FAILED_KEY = "erp_public_probe_failed";
 /** Fired after a background login-page connectivity probe finishes. */
 export const ERP_CONNECTIVITY_PROBE_DONE_EVENT = "erp-connectivity-probe-done";
 
-/** Lightweight liveness — no DB, always 200 when nginx+api are up. */
-const HEALTH_PATH = "/health";
+/** Probe the ERP SPA shell — same path Synology/nginx always expose as /erp/. */
+function erpShellProbeUrl(origin: string): string {
+  const root = origin.replace(/\/+$/, "");
+  const shell = `${getErpBasePath()}index.html`.replace(/\/{2,}/g, "/");
+  return `${root}${shell}`;
+}
+
 const PROBE_TIMEOUT_MS = 4_000;
 const PROBE_RETRIES = 3;
 const PROBE_RETRY_DELAY_MS = 800;
@@ -86,22 +91,25 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
-/** Probe whether an ERP origin answers /health (process liveness, not DB). */
+/** Probe whether the ERP SPA shell is reachable on this origin. */
 export async function probeErpOrigin(origin: string, timeoutMs = PROBE_TIMEOUT_MS): Promise<boolean> {
-  const root = origin.replace(/\/+$/, "");
+  const url = erpShellProbeUrl(origin);
   try {
     const controller = new AbortController();
     const timer = window.setTimeout(() => controller.abort(), timeoutMs);
-    const res = await fetch(`${root}${HEALTH_PATH}`, {
-      method: "GET",
+    const res = await fetch(url, {
+      method: "HEAD",
       cache: "no-store",
       signal: controller.signal,
     });
     window.clearTimeout(timer);
-    // /health is 200 when the process is alive. Any HTTP response means the
-    // origin is reachable — do NOT treat 503 from /api/healthz (DB starting)
-    // as "public site down".
-    return res.ok;
+    if (res.ok) return true;
+    // Some proxies disallow HEAD — fall back to a tiny GET.
+    if (res.status === 405 || res.status === 501) {
+      const getRes = await fetch(url, { method: "GET", cache: "no-store" });
+      return getRes.ok;
+    }
+    return false;
   } catch {
     return false;
   }
@@ -143,7 +151,7 @@ export function isLoginOrPortalPath(): boolean {
 
 /** Login/portal pages mount immediately — probe runs in the background. */
 export function shouldDeferConnectivityProbe(): boolean {
-  return isLoginOrPortalPath();
+  return true;
 }
 
 /** True on the public ERP domain (caredeoghar.com) — show LAN login shortcuts. */
@@ -206,10 +214,6 @@ export function buildPublicErpUrl(): string {
   return `${pubRoot}${suffix}${window.location.search}`;
 }
 
-function encodeSessionForHash(raw: string): string {
-  return encodeURIComponent(btoa(unescape(encodeURIComponent(raw))));
-}
-
 function decodeSessionFromHash(encoded: string): string | null {
   try {
     return decodeURIComponent(escape(atob(decodeURIComponent(encoded))));
@@ -246,21 +250,6 @@ export function consumeSessionTransferHash(): boolean {
   return true;
 }
 
-function redirectToLanWithSession(lanHost?: string): void {
-  let target = buildLanFailoverUrl(lanHost);
-  try {
-    const session = window.localStorage.getItem(ERP_SESSION_KEY);
-    if (session) {
-      target += `#${ERP_SESSION_HASH_PARAM}=${encodeSessionForHash(session)}`;
-    }
-  } catch {
-    /* ignore */
-  }
-  window.sessionStorage.setItem(ERP_CONNECTIVITY_MODE_KEY, "lan");
-  window.sessionStorage.removeItem(ERP_PUBLIC_PROBE_FAILED_KEY);
-  window.location.replace(target);
-}
-
 function notifyConnectivityProbeDone(): void {
   try {
     window.dispatchEvent(new CustomEvent(ERP_CONNECTIVITY_PROBE_DONE_EVENT));
@@ -285,25 +274,21 @@ async function runPublicConnectivityProbe(loginPage: boolean): Promise<void> {
   if (publicOk) {
     window.sessionStorage.setItem(ERP_CONNECTIVITY_MODE_KEY, "public");
     window.sessionStorage.removeItem(ERP_PUBLIC_PROBE_FAILED_KEY);
-    return;
-  }
-
-  if (loginPage) {
-    window.sessionStorage.setItem(ERP_PUBLIC_PROBE_FAILED_KEY, "1");
-    window.sessionStorage.setItem(ERP_CONNECTIVITY_MODE_KEY, "public_unavailable");
     notifyConnectivityProbeDone();
     return;
   }
 
-  redirectToLanWithSession();
-  await new Promise(() => {
-    /* redirect in flight */
-  });
+  // Never auto-redirect off caredeoghar.com — a bad probe (e.g. /health not
+  // proxied on the public reverse proxy) used to hijack every page load. Staff
+  // pick the LAN URL manually when the banner/links appear.
+  window.sessionStorage.setItem(ERP_PUBLIC_PROBE_FAILED_KEY, "1");
+  window.sessionStorage.setItem(ERP_CONNECTIVITY_MODE_KEY, "public_unavailable");
+  notifyConnectivityProbeDone();
 }
 
 /**
- * Run once before (or right after) React mounts. May redirect to the LAN ERP URL.
- * Returns when the app should continue on the current origin.
+ * Run once after React mounts (background). Never redirects — only sets
+ * session flags so the UI can offer manual LAN links when needed.
  */
 export async function runErpConnectivityBootstrap(): Promise<void> {
   runErpConnectivitySyncInit();
@@ -319,8 +304,7 @@ export async function runErpConnectivityBootstrap(): Promise<void> {
     return;
   }
 
-  const loginPage = isLoginOrPortalPath();
-  await runPublicConnectivityProbe(loginPage);
+  await runPublicConnectivityProbe(isLoginOrPortalPath());
 }
 
 /** True when the SPA is running on the LAN ERP URL. */

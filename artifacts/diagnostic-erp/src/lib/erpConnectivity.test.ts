@@ -69,9 +69,12 @@ describe("erpConnectivity URL helpers", () => {
     expect(base.endsWith("/")).toBe(true);
   });
 
-  it("treats /erp/login as a login path (no auto-redirect)", () => {
+  it("treats /erp/login as a login path", () => {
     (window as any).location.pathname = "/erp/login";
     expect(isLoginOrPortalPath()).toBe(true);
+  });
+
+  it("never blocks boot on connectivity probe", () => {
     expect(shouldDeferConnectivityProbe()).toBe(true);
   });
 

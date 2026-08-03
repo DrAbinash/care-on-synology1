@@ -2,11 +2,7 @@ import { createRoot } from "react-dom/client";
 import { setAuthTokenGetter } from "@workspace/api-client-react";
 import App from "./App";
 import { ERP_SESSION_KEY, type StaffSession } from "./lib/staffSession";
-import { runErpConnectivityBootstrap, runErpConnectivitySyncInit, shouldDeferConnectivityProbe } from "./lib/erpConnectivity";
-import {
-  ConnectivityBootstrapSplash,
-  removeConnectivityBootstrapSplash,
-} from "./components/ConnectivityBootstrapSplash";
+import { runErpConnectivityBootstrap, runErpConnectivitySyncInit } from "./lib/erpConnectivity";
 import "./index.css";
 
 // Apply the persisted color scheme synchronously, before the first paint —
@@ -65,29 +61,15 @@ window.addEventListener("vite:preloadError", () => {
   }
 });
 
-async function boot() {
-  const rootEl = document.getElementById("root")!;
-  const root = createRoot(rootEl);
-
+function boot() {
   runErpConnectivitySyncInit();
-  const deferProbe = shouldDeferConnectivityProbe();
-
-  if (!deferProbe) {
-    root.render(<ConnectivityBootstrapSplash />);
-    try {
-      await runErpConnectivityBootstrap();
-    } finally {
-      removeConnectivityBootstrapSplash();
-    }
-  } else {
-    // Login/portal: paint the form immediately; probe in background for LAN hints.
-    void runErpConnectivityBootstrap();
-  }
-
-  root.render(<App />);
+  const rootEl = document.getElementById("root")!;
+  createRoot(rootEl).render(<App />);
+  // Background only — must never block paint or redirect off caredeoghar.com.
+  void runErpConnectivityBootstrap();
 }
 
-void boot();
+boot();
 
 // Once the app has mounted successfully, clear the reload guard so a LATER
 // redeploy during this same browser session can still trigger one auto-reload
