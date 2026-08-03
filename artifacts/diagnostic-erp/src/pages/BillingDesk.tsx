@@ -50,7 +50,6 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { useToast } from "@/hooks/use-toast";
-import { useBillingOutageMode } from "@/hooks/useSyncStatus";
 import { RegisterPatientForm, type NewPatientData } from "@/components/RegisterPatientForm";
 import {
   Search,
@@ -1264,7 +1263,6 @@ export default function BillingDesk() {
   };
 
   const queryClient = useQueryClient();
-  const { showOutageBanner, pendingCount, apiReachable, isOnline } = useBillingOutageMode();
   const printAfterSaveRef = useRef(false);
   const saveAndNextRef = useRef(false);
   const finishBillSaveFlowRef = useRef<() => void>(() => {});
@@ -2072,16 +2070,7 @@ export default function BillingDesk() {
         </div>
       </div>
 
-      {showOutageBanner && (
-        <div className="flex-shrink-0 rounded-none border-b border-amber-500/50 bg-amber-500/10 px-4 py-2 text-sm text-amber-800 dark:text-amber-200">
-          <strong>Billing server unreachable</strong>
-          {pendingCount > 0
-            ? ` — ${pendingCount} bill(s) queued. New bills get a provisional receipt (OFF-…) and sync automatically when the server is back.`
-            : " — You can still queue bills with a provisional receipt; they will sync when the server is back."}
-          {!isOnline && " (No network detected.)"}
-          {isOnline && !apiReachable && " (Network is up but the ERP server is not responding — e.g. NAS rebooting.)"}
-        </div>
-      )}
+      {/* Billing outage details are shown in the global ConnectivityStatusBanner. */}
 
       {/* Duplicate-bill warning banner */}
       {showBillToast && lastBill && (

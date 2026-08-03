@@ -7580,7 +7580,7 @@ function DisplaysOverview({
   activeRoomKey,
   onSelectRoom,
 }: {
-  rooms?: { roomKey: string; roomTitle: string; online: boolean; lastSeenAt: number | null }[];
+  rooms?: { roomKey: string; roomTitle: string; online: boolean; lastSeenAt: number | null; staffAlertEnabled?: boolean }[];
   activeRoomKey: string;
   onSelectRoom: (roomKey: string) => void;
 }) {
@@ -7608,6 +7608,11 @@ function DisplaysOverview({
             <span className={`w-2 h-2 rounded-full shrink-0 ${r.online ? "bg-emerald-500" : "bg-red-500"}`} />
             <span className="font-medium">{r.roomTitle || r.roomKey.toUpperCase()}</span>
             <span className="text-muted-foreground">{r.online ? "online" : fmtLastSeen(r.lastSeenAt)}</span>
+            {!r.online && r.staffAlertEnabled && (
+              <span className="text-amber-700 dark:text-amber-300" title="Staff WhatsApp alert enabled for this TV">
+                ⚠ alert
+              </span>
+            )}
           </button>
         ))}
       </div>
@@ -7627,7 +7632,7 @@ function QueueDisplaySettingsTab() {
   // List of all configured displays (MRI, CT, X-Ray, USG, Reception, etc.)
   // — fully dynamic, no fixed list. Doctors add rooms from here; each gets
   // its own independent settings row and its own /display/:roomKey URL.
-  const { data: rooms } = useQuery<{ roomKey: string; roomTitle: string; displayName: string; online: boolean; lastSeenAt: number | null }[]>({
+  const { data: rooms } = useQuery<{ roomKey: string; roomTitle: string; displayName: string; online: boolean; lastSeenAt: number | null; staffAlertEnabled?: boolean }[]>({
     queryKey: ["queue-display-rooms"],
     queryFn: () => api.get("/api/settings/queue-display"),
     refetchInterval: 30_000, // keep the Displays Overview online/offline status fresh
@@ -8020,7 +8025,7 @@ function QueueDisplaySettingsTab() {
                 );
               })()}
               <p className="text-[11px] text-muted-foreground mt-1.5">
-                Picked from actual test departments, so this can never silently mismatch what tokens are tagged with. None selected = show every department on this TV.
+                Picked from actual test departments, so this can never silently mismatch what tokens are tagged with. None selected auto-fills from the room key (e.g. usg → USG); reception shows all departments.
               </p>
             </div>
           </SettingsCard>

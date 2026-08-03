@@ -1587,10 +1587,12 @@ router.get("/radiology/worklist/:id", async (req, res) => {
   let [row] = await db.select().from(radiologyWorklistTable).where(eq(radiologyWorklistTable.id, id));
   if (!row) { res.status(404).json({ error: "Not found" }); return; }
 
+  let autoLinkMeta: { linked: boolean; studyId?: number; matchPoints?: number; matchScore?: string; reason?: string } | null = null;
   if (row.patientId && !row.studyId) {
     try {
       const { autoLinkBilledStudyForWorklist } = await import("../lib/pacs/worklistBillingLink");
       const link = await autoLinkBilledStudyForWorklist(id, "worklist-entry-load");
+      autoLinkMeta = link;
       if (link.linked && link.studyId) {
         row = { ...row, studyId: link.studyId };
       }
@@ -1651,6 +1653,7 @@ router.get("/radiology/worklist/:id", async (req, res) => {
     priority,
     billNumber,
     uhid,
+    autoLinkMeta,
   });
 });
 

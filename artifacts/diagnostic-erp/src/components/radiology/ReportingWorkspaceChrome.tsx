@@ -397,7 +397,7 @@ export default function ReportingWorkspaceChrome(props: ReportingWorkspaceChrome
         <button type="button" title={props.isRightPanelCollapsed ? "Expand tools" : "Collapse tools"} data-testid="toggle-right-panel" onClick={props.onToggleRightPanel} className="shrink-0 p-1.5 rounded-md text-muted-foreground hover:bg-muted">
           {props.isRightPanelCollapsed ? <PanelRightOpen size={15} /> : <PanelRightClose size={15} />}
         </button>
-        <Button type="button" size="sm" variant="outline" className="h-7 text-[10px] gap-1 px-2 shrink-0" onClick={onEnterFocusMode} title="Collapse toolbar and side panels for maximum report space">
+        <Button type="button" size="sm" variant="outline" className="h-7 text-[10px] gap-1 px-2 shrink-0" onClick={onEnterFocusMode} title="Collapse toolbar and side panels for maximum report space (Ctrl+Shift+F)">
           <Maximize2 size={12} /> Focus
         </Button>
         <Button type="button" size="sm" variant="ghost" className="h-7 w-7 p-0 shrink-0" onClick={() => onCollapsedChange(true)} title="Collapse toolbar">

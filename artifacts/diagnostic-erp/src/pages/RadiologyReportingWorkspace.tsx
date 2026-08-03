@@ -226,6 +226,13 @@ type WorklistEntry = {
   priority?: string | null;
   createdAt: string;
   updatedAt: string;
+  autoLinkMeta?: {
+    linked: boolean;
+    studyId?: number;
+    matchPoints?: number;
+    matchScore?: string;
+    reason?: string;
+  } | null;
 };
 
 type StructuredTemplate = {
@@ -797,6 +804,19 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     updateModeLayout(layoutMode, { leftCollapsed: true, rightCollapsed: true });
     try { window.dispatchEvent(new CustomEvent("care:workspace-focus", { detail: true })); } catch { /* noop */ }
   }, [layoutMode]);
+  // Worklist → workspace handoff: ?focus=1 collapses chrome for immediate dictation.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("focus") !== "1") return;
+    enterReportingFocusMode();
+    params.delete("focus");
+    const qs = params.toString();
+    window.history.replaceState(
+      null,
+      "",
+      window.location.pathname + (qs ? `?${qs}` : "") + window.location.hash,
+    );
+  }, [studyId, enterReportingFocusMode]);
   // Minimise the app navigation sidebar while the radiologist is reporting.
   useEffect(() => {
     try { window.dispatchEvent(new CustomEvent("care:workspace-focus", { detail: true })); } catch { /* noop */ }
@@ -1692,6 +1712,19 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     queryFn: () => api.get<WorklistEntry>(`/api/internal/radiology/worklist/${studyId}`),
     enabled: !!studyId,
   });
+
+  const autoLinkNotifiedRef = useRef<number | null>(null);
+  useEffect(() => {
+    const meta = entry?.autoLinkMeta;
+    if (!meta || !studyId) return;
+    if (meta.reason !== "auto-linked to billed study") return;
+    if (autoLinkNotifiedRef.current === studyId) return;
+    autoLinkNotifiedRef.current = studyId;
+    toast({
+      title: "Billed study linked",
+      description: `Auto-linked to study #${meta.studyId}${meta.matchScore ? ` (${meta.matchScore} match)` : ""}.`,
+    });
+  }, [entry?.autoLinkMeta, studyId, toast]);
 
   // MRI PR 5 — participate in the 401 session-expiry rescue (reuses draftRescue,
   // the exact mechanism the Command Center uses). If the JWT expires mid-dictation
@@ -3263,6 +3296,11 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
         setLayoutMode(showEmbeddedViewer ? "reportFocus" : "split");
         return;
       }
+      if (shortcut === "focus-mode") {
+        e.preventDefault();
+        enterReportingFocusMode();
+        return;
+      }
       e.preventDefault();
       const command =
         shortcut === "quickselect" ? "focus-quick-search"
@@ -4255,6 +4293,34 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     w.document.close();
     w.focus();
     setTimeout(() => { w.print(); w.close(); }, 250);
+  }
+
+  /** Draft preview without the large DRAFT watermark — layout check before sign. */
+  async function printReportLikeFinal() {
+    if (linkedReportId) {
+      return printReport();
+    }
+    const w = window.open("", "_blank");
+    if (!w) {
+      toast({ title: "Popup blocked", description: "Allow popups for this site to print.", variant: "destructive" });
+      return;
+    }
+    if (!draftId) {
+      w.close();
+      toast({ title: "Save draft first", description: "Print-like-final needs a saved draft.", variant: "destructive" });
+      return;
+    }
+    const templateQs = reportLayoutTemplateQuery(previewLayout);
+    const url = `/api/radiology/report-generator/drafts/${draftId}/print-preview?autoPrint=true&likeFinal=true&${templateQs}`;
+    try {
+      const html = await api.get<string>(url);
+      w.document.write(html);
+      w.document.close();
+      w.focus();
+    } catch {
+      w.close();
+      toast({ title: "Print preview failed", variant: "destructive" });
+    }
   }
 
   // Was posting to /api/whatsapp/send-report, which does not exist — every
@@ -6259,6 +6325,11 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                   <Button size="sm" variant="outline" className="justify-start gap-2" onClick={() => void printReport()}>
                     <Printer size={13} /> Print / Save as PDF
                   </Button>
+                  {!linkedReportId && draftId && (
+                    <Button size="sm" variant="outline" className="justify-start gap-2" onClick={() => void printReportLikeFinal()}>
+                      <Printer size={13} /> Print like final (no draft watermark)
+                    </Button>
+                  )}
                 </div>
                 <p className="text-[10px] text-muted-foreground">
                   Tip: the “Preview” button in the report toolbar toggles the same in-page canonical preview.
