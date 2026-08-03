@@ -79,6 +79,47 @@ function displayTestName(entry: Pick<WorklistEntry, "testName" | "studyDescripti
   return name || "\u2014";
 }
 
+function formatWorklistAgeSex(entry: Pick<WorklistEntry, "age" | "sex">): string | null {
+  const parts = [entry.age, entry.sex].filter(Boolean);
+  return parts.length > 0 ? parts.join(" \u00b7 ") : null;
+}
+
+function formatWorklistStudyDate(raw: string | null | undefined): string {
+  if (!raw) return "\u2014";
+  const digits = raw.replace(/\D/g, "");
+  if (digits.length >= 8) {
+    const y = digits.slice(0, 4);
+    const m = digits.slice(4, 6);
+    const day = digits.slice(6, 8);
+    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const mi = parseInt(m, 10) - 1;
+    if (mi >= 0 && mi < 12) return `${parseInt(day, 10)} ${months[mi]} ${y}`;
+    return `${y}-${m}-${day}`;
+  }
+  return raw;
+}
+
+const WORKLIST_MODALITY_COLORS: Record<string, string> = {
+  CT: "bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/40 dark:text-blue-300 dark:border-blue-800",
+  MR: "bg-purple-50 text-purple-700 border-purple-200 dark:bg-purple-950/40 dark:text-purple-300 dark:border-purple-800",
+  MRI: "bg-purple-50 text-purple-700 border-purple-200 dark:bg-purple-950/40 dark:text-purple-300 dark:border-purple-800",
+  CR: "bg-green-50 text-green-700 border-green-200 dark:bg-green-950/40 dark:text-green-300 dark:border-green-800",
+  DX: "bg-green-50 text-green-700 border-green-200 dark:bg-green-950/40 dark:text-green-300 dark:border-green-800",
+  US: "bg-cyan-50 text-cyan-700 border-cyan-200 dark:bg-cyan-950/40 dark:text-cyan-300 dark:border-cyan-800",
+  USG: "bg-cyan-50 text-cyan-700 border-cyan-200 dark:bg-cyan-950/40 dark:text-cyan-300 dark:border-cyan-800",
+  NM: "bg-orange-50 text-orange-700 border-orange-200 dark:bg-orange-950/40 dark:text-orange-300 dark:border-orange-800",
+  PT: "bg-red-50 text-red-700 border-red-200 dark:bg-red-950/40 dark:text-red-300 dark:border-red-800",
+  XA: "bg-indigo-50 text-indigo-700 border-indigo-200 dark:bg-indigo-950/40 dark:text-indigo-300 dark:border-indigo-800",
+};
+
+function worklistModalityBadgeClass(modality: string): string {
+  const key = modality?.toUpperCase() ?? "OT";
+  return WORKLIST_MODALITY_COLORS[key] ?? "bg-muted/60 text-muted-foreground border-border";
+}
+
+const WORKLIST_TH = "px-3 py-2.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground whitespace-nowrap";
+const WORKLIST_TD = "px-3 py-2.5 align-top";
+
 const WORKLIST_COL_STORAGE_KEY = "radiologyWorklistColumnVisibility";
 
 type WorklistOptionalColumn =
@@ -1145,74 +1186,91 @@ export default function RadiologyWorklist() {
                 </Button>
               </div>
             ) : (
-              <div className="overflow-x-auto rounded-lg border">
+              <div className="overflow-x-auto rounded-lg border shadow-sm">
                 <table className="w-full text-sm">
                   <thead>
-                    <tr className="bg-muted/50 text-left text-xs">
-                      {showSentinel && <th className="px-3 py-2 font-medium whitespace-nowrap text-orange-600">⚠ Debug</th>}
-                      <th className="px-3 py-2 font-medium whitespace-nowrap">Patient</th>
-                      <th className="px-3 py-2 font-medium whitespace-nowrap">Age/Sex</th>
-                      <th className="px-3 py-2 font-medium whitespace-nowrap">UHID</th>
-                      <th className="px-3 py-2 font-medium whitespace-nowrap">Bill</th>
-                      <th className="px-3 py-2 font-medium whitespace-nowrap">Mod</th>
-                      <th className="px-3 py-2 font-medium whitespace-nowrap min-w-[140px]">Test Name</th>
-                      {col.studyDate && <th className="px-3 py-2 font-medium whitespace-nowrap tabular-nums">Study Date</th>}
-                      <th className="px-3 py-2 font-medium whitespace-nowrap">Priority</th>
-                      <th className="px-3 py-2 font-medium whitespace-nowrap">Status</th>
-                      {col.measurements && <th className="px-2 py-2 font-medium whitespace-nowrap text-center">Meas.</th>}
-                      {col.images && <th className="px-2 py-2 font-medium whitespace-nowrap text-center">Img</th>}
-                      {col.usgReport && <th className="px-2 py-2 font-medium whitespace-nowrap">USG Rpt</th>}
-                      {col.studyDescription && <th className="px-3 py-2 font-medium whitespace-nowrap max-w-[160px]">Study Desc</th>}
-                      {col.refDoctor && <th className="px-3 py-2 font-medium whitespace-nowrap">Ref. Dr</th>}
-                      {col.accession && <th className="px-3 py-2 font-medium whitespace-nowrap">Accession</th>}
-                      {col.sourceAe && <th className="px-3 py-2 font-medium whitespace-nowrap">Source AE</th>}
-                      {col.radiologist && <th className="px-3 py-2 font-medium whitespace-nowrap">Radiologist</th>}
-                      {col.lockStatus && <th className="px-3 py-2 font-medium whitespace-nowrap">Lock</th>}
-                      {col.aiDraft && <th className="px-3 py-2 font-medium whitespace-nowrap">AI</th>}
-                      {col.createdAt && <th className="px-3 py-2 font-medium whitespace-nowrap text-right">Received</th>}
-                      <th className="px-3 py-2 font-medium text-right whitespace-nowrap sticky right-0 z-20 bg-muted/50 border-l border-border">Actions</th>
+                    <tr className="bg-muted/40 text-left border-b">
+                      {showSentinel && <th className={`${WORKLIST_TH} text-orange-600`}>⚠ Debug</th>}
+                      <th className={`${WORKLIST_TH} min-w-[150px] sticky left-0 z-30 bg-muted/40 border-r border-border/50`}>Patient</th>
+                      <th className={WORKLIST_TH}>UHID</th>
+                      <th className={WORKLIST_TH}>Bill</th>
+                      <th className={`${WORKLIST_TH} min-w-[180px]`}>Study</th>
+                      {col.studyDate && <th className={`${WORKLIST_TH} tabular-nums`}>Study Date</th>}
+                      <th className={WORKLIST_TH}>Priority</th>
+                      <th className={WORKLIST_TH}>Status</th>
+                      {col.measurements && <th className={`${WORKLIST_TH} text-center`}>Meas.</th>}
+                      {col.images && <th className={`${WORKLIST_TH} text-center`}>Img</th>}
+                      {col.usgReport && <th className={WORKLIST_TH}>USG Rpt</th>}
+                      {col.studyDescription && <th className={`${WORKLIST_TH} max-w-[160px]`}>Study Desc</th>}
+                      {col.refDoctor && <th className={WORKLIST_TH}>Ref. Dr</th>}
+                      {col.accession && <th className={WORKLIST_TH}>Accession</th>}
+                      {col.sourceAe && <th className={WORKLIST_TH}>Source AE</th>}
+                      {col.radiologist && <th className={WORKLIST_TH}>Radiologist</th>}
+                      {col.lockStatus && <th className={WORKLIST_TH}>Lock</th>}
+                      {col.aiDraft && <th className={WORKLIST_TH}>AI</th>}
+                      {col.createdAt && <th className={`${WORKLIST_TH} text-right`}>Received</th>}
+                      <th className={`${WORKLIST_TH} text-right sticky right-0 z-30 bg-muted/40 border-l border-border/50`}>Actions</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y">
+                  <tbody className="divide-y divide-border/60">
                     {tableRows.map((entry) => (
                       <tr
                         key={entry.id}
-                        className={`hover:bg-muted/30 transition-colors ${entry.id === -1 ? "bg-orange-50 dark:bg-orange-950/20" : (urgentHighlightOn && priorityInfo(entry.priority).highlight) ? "bg-red-50/50 dark:bg-red-950/10" : ""}`}
+                        className={`group hover:bg-muted/25 transition-colors ${entry.id === -1 ? "bg-orange-50 dark:bg-orange-950/20" : (urgentHighlightOn && priorityInfo(entry.priority).highlight) ? "bg-red-50/50 dark:bg-red-950/10" : ""}`}
                       >
                         {showSentinel && (
-                          <td className="px-3 py-2.5 text-xs text-orange-600 font-mono">
+                          <td className={`${WORKLIST_TD} text-xs text-orange-600 font-mono`}>
                             {entry.id === -1 ? "SENTINEL" : "real"}
                           </td>
                         )}
-                        <td className="px-3 py-2.5 font-medium whitespace-nowrap">{entry.patientName}</td>
-                        <td className="px-3 py-2.5 text-xs text-muted-foreground whitespace-nowrap">
-                          {[entry.age, entry.sex].filter(Boolean).join(" / ") || "\u2014"}
+                        <td className={`${WORKLIST_TD} min-w-[150px] sticky left-0 z-10 bg-background group-hover:bg-muted/25 border-r border-border/40`}>
+                          {(() => {
+                            const ageSex = formatWorklistAgeSex(entry);
+                            return (
+                              <div className="flex flex-col gap-0.5">
+                                <span className="font-semibold text-sm leading-snug text-foreground">{entry.patientName}</span>
+                                {ageSex && (
+                                  <span className="text-[11px] text-muted-foreground leading-tight">{ageSex}</span>
+                                )}
+                              </div>
+                            );
+                          })()}
                         </td>
-                        <td className="px-3 py-2.5 font-mono text-xs text-muted-foreground whitespace-nowrap" title={entry.dicomPatientId ?? undefined}>
+                        <td className={`${WORKLIST_TD} font-mono text-xs text-muted-foreground whitespace-nowrap`} title={entry.dicomPatientId ?? undefined}>
                           {entry.uhid ?? entry.dicomPatientId ?? "\u2014"}
                         </td>
-                        <td className="px-3 py-2.5 font-mono text-xs whitespace-nowrap">
-                          {entry.billNumber ?? "\u2014"}
+                        <td className={`${WORKLIST_TD} font-mono text-xs whitespace-nowrap`}>
+                          {entry.billNumber ? (
+                            <span className="inline-flex items-center rounded border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-[11px] font-medium text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-300">
+                              {entry.billNumber}
+                            </span>
+                          ) : (
+                            <span className="text-muted-foreground">{"\u2014"}</span>
+                          )}
                         </td>
-                        <td className="px-3 py-2 whitespace-nowrap">
-                          <Badge variant="outline" className="font-mono text-xs">{entry.modality}</Badge>
-                        </td>
-                        <td className="px-3 py-2 text-xs max-w-[220px] truncate font-medium" title={displayTestName(entry)}>
-                          {displayTestName(entry)}
+                        <td className={`${WORKLIST_TD} min-w-[180px] max-w-[280px]`}>
+                          <div className="flex flex-col gap-1.5">
+                            <span className="text-sm font-medium leading-snug line-clamp-2" title={displayTestName(entry)}>
+                              {displayTestName(entry)}
+                            </span>
+                            <Badge variant="outline" className={`w-fit font-mono text-[10px] px-1.5 py-0 ${worklistModalityBadgeClass(entry.modality)}`}>
+                              {entry.modality}
+                            </Badge>
+                          </div>
                         </td>
                         {col.studyDate && (
-                        <td className="px-3 py-2 text-muted-foreground text-xs whitespace-nowrap tabular-nums">
-                          {entry.studyDate ?? "\u2014"}
+                        <td className={`${WORKLIST_TD} text-muted-foreground text-xs whitespace-nowrap tabular-nums`}>
+                          {formatWorklistStudyDate(entry.studyDate)}
                         </td>
                         )}
-                        <td className="px-3 py-2 whitespace-nowrap">
+                        <td className={`${WORKLIST_TD} whitespace-nowrap`}>
                           {(() => { const pr = priorityInfo(entry.priority); return (
                             <span className={`inline-flex items-center px-1.5 py-0.5 rounded border text-[10px] font-semibold ${pr.color}`}>
                               {pr.label}
                             </span>
                           ); })()}
                         </td>
-                        <td className="px-3 py-2 whitespace-nowrap">
+                        <td className={`${WORKLIST_TD} whitespace-nowrap`}>
                           <StatusBadge status={entry.status} deliveryStatus={entry.deliveryStatus} />
                           {entry.status !== "REPORT_FINAL" && entry.status !== "DELIVERED" && (() => {
                             const threshold = Number(pacsViewerSettings["radiology_aging_alert_hours"] ?? "4") || 4;
@@ -1381,7 +1439,7 @@ export default function RadiologyWorklist() {
                           {fmtDate(entry.createdAt)}
                         </td>
                         )}
-                        <td className="px-3 py-2.5 sticky right-0 z-10 bg-background border-l border-border shadow-[-4px_0_6px_-2px_rgba(0,0,0,0.08)]">
+                        <td className={`${WORKLIST_TD} sticky right-0 z-10 bg-background group-hover:bg-muted/25 border-l border-border/50 shadow-[-4px_0_6px_-2px_rgba(0,0,0,0.06)]`}>
                           <div className="flex items-center justify-end gap-1 flex-wrap">
                             {entry.id !== -1 && !isReceptionView && preferWeasis && (
                               <Button
