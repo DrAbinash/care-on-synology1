@@ -75,3 +75,18 @@ export function buildStaffActivityRows(opts: {
 export function netClinicCash(cashCollected: number, cashRefunded: number): number {
   return cashCollected - cashRefunded;
 }
+
+/**
+ * Bill audit changeTypes that are operational events (create/pay/cancel/refund),
+ * not document edits. Excluded from "Bill Edits" in My Activity Log / Control Logs.
+ * PR #358 added bill_created + payment_collected for cash reconciliation — those
+ * must not flood the edits tab.
+ */
+export const BILL_AUDIT_OPERATIONAL_CHANGE_TYPES = [
+  "bill_created",
+  "payment_collected",
+  "referral",
+  "bill_cancelled",
+  "refund_processed",
+  "tests_cancelled_cascade",
+] as const;
