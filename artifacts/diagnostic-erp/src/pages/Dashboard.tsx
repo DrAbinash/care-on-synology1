@@ -814,6 +814,7 @@ export default function Dashboard() {
       sections: [
         {
           title: "Financial Summary",
+          layout: "full",
           metrics: [
             ["Gross Billing", amt(overallSummary.grossBilling)],
             ["Net Collection", amt(overallSummary.netCollection)],

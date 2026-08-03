@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Link } from "wouter";
 import { SummaryExportToolbar, formatExportAmount } from "@/components/SummaryExport";
 import type { ExportConfig, ExportSection, ExportTable } from "@/components/SummaryExport";
+import { buildReconciliationLedger, simpleLedgerRows } from "@/lib/reconciliationLedger";
 import { SummaryDrilldownModal, type DrilldownType } from "@/components/SummaryDrilldownModal";
 import { FINANCIAL_QUERY_OPTIONS } from "@/lib/queryConfig";
 import {
@@ -788,12 +789,16 @@ function UnifiedReconciliationPanel({
   discountBills,
   isOwner,
   exportConfig,
+  staffName,
+  periodLabel,
 }: {
   summary: MyDailySummarySummary;
   byMethod: Record<string, number>;
   discountBills: MyDailySummaryData["discountBills"];
   isOwner: boolean;
   exportConfig: ExportConfig | null;
+  staffName: string;
+  periodLabel: string;
 }) {
   const [digitalExpanded, setDigitalExpanded] = useState(false);
   const [discountExpanded, setDiscountExpanded] = useState(false);
@@ -829,6 +834,24 @@ function UnifiedReconciliationPanel({
   // The billing-side calculation and the payment-side calculation converge here.
   const mismatch       = expectedCash - s.physicalCashInHand;
   const balanced       = Math.abs(mismatch) <= 0.01;
+
+  const simpleLedger = useMemo(() => buildReconciliationLedger({
+    staffName,
+    periodLabel,
+    grossBilledIncludingCancelled: s.grossBilledIncludingCancelled,
+    oldDuesCollected: s.duesCollectedTotal,
+    cancelledOnMyBills: s.cancelledOnMyBills,
+    cashRefunded: s.cashRefunded,
+    digitalRefunded: s.digitalRefunded,
+    refundsOnCancelledBillsCreatedInPeriod: s.refundsOnCancelledBillsCreatedInPeriod,
+    outstanding: s.outstanding,
+    digitalIn: s.digitalIn,
+    cashIn: s.cashIn,
+    cashExpenses: s.cashExpenses,
+    physicalCashInHand: s.physicalCashInHand,
+  }), [s, staffName, periodLabel]);
+
+  const [simpleExpanded, setSimpleExpanded] = useState(false);
 
   // ── Digital method split for the collapsible row ──────────────────────────
   const digitalMethods = Object.entries(byMethod)
@@ -1098,6 +1121,51 @@ function UnifiedReconciliationPanel({
           </div>
         </div>
 
+      </div>
+
+      {/* ── Simple handwritten-style ledger (print / export via Simple buttons) ── */}
+      <div className="border-t border-gray-200 dark:border-card-border">
+        <button
+          type="button"
+          className="w-full px-4 py-2 flex items-center justify-between text-left bg-amber-50/60 dark:bg-amber-950/20 hover:bg-amber-50 dark:hover:bg-amber-950/30"
+          onClick={() => setSimpleExpanded((e) => !e)}
+        >
+          <span className="text-[11px] font-bold text-amber-800 dark:text-amber-300 uppercase tracking-wide">
+            Simple Ledger (handwritten formula)
+          </span>
+          {simpleExpanded ? <ChevronUp size={12} className="text-amber-600" /> : <ChevronDown size={12} className="text-amber-600" />}
+        </button>
+        {simpleExpanded && (
+          <div className="px-4 py-3 bg-white dark:bg-card space-y-1.5 text-[12px] font-mono">
+            <div className="flex justify-between"><span>Bills (after discount)</span><span className="font-bold tabular-nums">{fmt(simpleLedger.grossBills)}</span></div>
+            <div className="flex justify-between text-emerald-700 dark:text-emerald-400"><span>+ Old dues collected</span><span className="font-bold tabular-nums">{fmt(simpleLedger.oldDuesCollected)}</span></div>
+            <div className="border-t border-dashed border-gray-300 my-1" />
+            <div className="flex justify-between font-bold bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded"><span>TOTAL</span><span className="tabular-nums">{fmt(simpleLedger.revenueTotal)}</span></div>
+            <div className="flex justify-between text-red-700 dark:text-red-400">
+              <span>− Cancel / Refund / Outstanding</span>
+              <span className="font-bold tabular-nums">{fmt(simpleLedger.deductionsTotal)}</span>
+            </div>
+            <div className="text-[10px] text-gray-500 pl-2">
+              ({fmt(simpleLedger.cancelled)} + {fmt(simpleLedger.refundsForCollectible)} + {fmt(simpleLedger.outstanding)})
+            </div>
+            <div className="flex justify-between font-bold bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded"><span>COLLECTIBLE</span><span className="tabular-nums">{fmt(simpleLedger.collectible)}</span></div>
+            <div className="flex justify-between text-blue-700 dark:text-blue-400"><span>− UPI / Digital (net)</span><span className="font-bold tabular-nums">{fmt(simpleLedger.digitalNet)}</span></div>
+            <div className="border-t-2 border-slate-800 dark:border-slate-200 my-1" />
+            <div className="flex justify-between font-extrabold text-base bg-slate-900 text-emerald-300 px-2 py-1 rounded">
+              <span>CASH IN COUNTER</span>
+              <span className="tabular-nums">{fmt(simpleLedger.physicalCashInHand)}</span>
+            </div>
+            <p className="text-[10px] text-gray-500 pt-1">
+              Cashbox: {fmt(simpleLedger.cashReceived)} − {fmt(simpleLedger.cashRefunded)} − {fmt(simpleLedger.cashExpenses)} = {fmt(simpleLedger.physicalCashInHand)}
+            </p>
+            {Math.abs(simpleLedger.commonStaffMistake - simpleLedger.physicalCashInHand) > 0.01 && (
+              <div className="mt-2 rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-950/30 px-2 py-1.5 text-[10px] text-amber-900 dark:text-amber-200">
+                <strong>Common mistake:</strong> Cash+Digital−Refund−Outstanding = {fmt(simpleLedger.commonStaffMistake)} — this is <em>not</em> cash in counter.
+                Outstanding is unpaid bill balance; do not subtract it again after totalling collections.
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* ── Attribution footnote ── */}
@@ -1568,6 +1636,12 @@ export default function MyDailySummary() {
     ...FINANCIAL_QUERY_OPTIONS,
   });
 
+  const { data: clinicSettings } = useQuery<{ name?: string; logoDataUrl?: string | null }>({
+    queryKey: ["clinic-settings-export"],
+    queryFn: () => api.get("/api/clinic-settings"),
+    staleTime: 5 * 60_000,
+  });
+
   // Staff who had bills, payments, or cancellations in the selected date range.
   const staffFilterList = data?.staffNames ?? [];
 
@@ -1680,56 +1754,64 @@ export default function MyDailySummary() {
 
     const sections: ExportSection[] = [
       {
-        title: "Reconciliation Summary",
+        title: "Billing (Income)",
+        layout: "half",
         metrics: [
-          ["Staff", data.staffName],
-          ["Period", from === to ? from : `${from} to ${to}`],
-          ["", ""],
-          ["-- BILLING --", ""],
           ["Gross Bills Generated", amt(s.grossBilledIncludingCancelled)],
-          ["Discounts Given (info)", `${amt(s.discountsGiven)} (${discountPct}, in totals)`],
+          ["Discounts Given", `${amt(s.discountsGiven)} (${discountPct})`],
           ["Old Dues Collected", amt(s.duesCollectedTotal)],
           ["Total Revenue Activity", amt(s.grossBilledIncludingCancelled + s.duesCollectedTotal)],
-          ["", ""],
-          ["-- DEDUCTIONS --", ""],
+        ],
+      },
+      {
+        title: "Deductions (Expense)",
+        layout: "half",
+        metrics: [
           ["Cancelled Bills", amt(s.cancelledOnMyBills)],
           ["Refunds (Cash)", amt(s.cashRefunded)],
           ["Refunds (Digital)", amt(s.digitalRefunded)],
           ["Total Refunds", amt(totalRefunds)],
-          ["Refunds excluded (cancelled bills created today)", amt(refundsExcluded)],
-          ["Refunds for collectible", amt(refundsForCollectible)],
           ["Outstanding Dues", amt(s.outstanding)],
-          ["", ""],
-          ["-- COLLECTION --", ""],
+        ],
+      },
+      {
+        title: "Collection",
+        layout: "half",
+        metrics: [
           ["Collectible Amount", amt(collectible)],
           ["Digital Collection (net)", amt(netDigital)],
           ["Cash Expenses", amt(s.cashExpenses)],
-          ["", ""],
-          ["-- CASH RECONCILIATION --", ""],
-          ["Cash Received", amt(s.cashIn)],
-          ["Less: Cash Refunded", amt(s.cashRefunded)],
-          ["Less: Cash Expenses", amt(s.cashExpenses)],
-          ["Expected Physical Cash", amt(s.physicalCashInHand)],
-          ["Billing cross-check", amt(expectedCash)],
-          ["Variance", balanced
-            ? "Rs.0 - Balanced OK"
-            : `${mismatch > 0 ? "+" : "-"}Rs.${Math.abs(mismatch).toLocaleString("en-IN")} ${mismatch > 0 ? "(Surplus)" : "(Short)"}`],
         ],
       },
     ];
 
     if (digitalLines.length > 0) {
       sections.push({
-        title: "Payment Method Breakdown",
+        title: "Payment Methods",
+        layout: "half",
         metrics: [
           ...digitalLines,
-          ["Digital Refunds", amt(-Math.abs(s.digitalRefunded))],
           ["Net Digital", amt(netDigital)],
         ],
       });
     }
 
-    // Discount drill-down — owner only
+    sections.push({
+      title: "Cash Reconciliation",
+      layout: "full",
+      metrics: [
+        ["Cash Received", amt(s.cashIn)],
+        ["Less: Cash Refunded", amt(s.cashRefunded)],
+        ["Less: Cash Expenses", amt(s.cashExpenses)],
+        ["Expected Physical Cash", amt(s.physicalCashInHand)],
+        ["Billing cross-check", amt(expectedCash)],
+        ["Variance", balanced
+          ? "Rs.0 - Balanced OK"
+          : `${mismatch > 0 ? "+" : "-"}Rs.${Math.abs(mismatch).toLocaleString("en-IN")} ${mismatch > 0 ? "(Surplus)" : "(Short)"}`],
+      ],
+    });
+
+    // Discount drill-down — owner only (condensed side-by-side with payment methods when possible)
     if (isOwner && data.discountBills.length > 0) {
       const byStaffMap = new Map<string, number>();
       const byDoctorMap = new Map<string, number>();
@@ -1739,18 +1821,15 @@ export default function MyDailySummary() {
         const doc = b.referringDoctor ?? "No referral";
         byDoctorMap.set(doc, (byDoctorMap.get(doc) ?? 0) + b.discountGiven);
       }
+      const topStaff = Array.from(byStaffMap.entries()).sort((a, b) => b[1] - a[1]).slice(0, 3);
+      const topDoctor = Array.from(byDoctorMap.entries()).sort((a, b) => b[1] - a[1]).slice(0, 3);
       sections.push({
-        title: `Discount Analysis (${amt(s.discountsGiven)}, ${discountPct})`,
+        title: `Discounts (${discountPct})`,
+        layout: "half",
         metrics: [
-          ["", "BY STAFF"],
-          ...Array.from(byStaffMap.entries())
-            .sort((a, b) => b[1] - a[1])
-            .map(([name, v]) => [name, amt(v)] as [string, string]),
-          ["", ""],
-          ["", "BY REFERRAL DOCTOR"],
-          ...Array.from(byDoctorMap.entries())
-            .sort((a, b) => b[1] - a[1])
-            .map(([doc, v]) => [doc, amt(v)] as [string, string]),
+          ...topStaff.map(([name, v]) => [`Staff: ${name}`, amt(v)] as [string, string]),
+          ...topDoctor.map(([doc, v]) => [`Doctor: ${doc}`, amt(v)] as [string, string]),
+          ["Total Discounts", amt(s.discountsGiven)],
         ],
       });
     }
@@ -1794,8 +1873,28 @@ export default function MyDailySummary() {
       subtitle: `${data.staffName} | ${from === to ? from : `${from} -> ${to}`}`,
       sections,
       tables,
+      clinicName: clinicSettings?.name ?? "Care Diagnostics ERP",
+      logoDataUrl: clinicSettings?.logoDataUrl ?? null,
+      simpleLedger: simpleLedgerRows(
+        buildReconciliationLedger({
+          staffName: data.staffName,
+          periodLabel: from === to ? from : `${from} to ${to}`,
+          grossBilledIncludingCancelled: s.grossBilledIncludingCancelled,
+          oldDuesCollected: s.duesCollectedTotal,
+          cancelledOnMyBills: s.cancelledOnMyBills,
+          cashRefunded: s.cashRefunded,
+          digitalRefunded: s.digitalRefunded,
+          refundsOnCancelledBillsCreatedInPeriod: s.refundsOnCancelledBillsCreatedInPeriod,
+          outstanding: s.outstanding,
+          digitalIn: s.digitalIn,
+          cashIn: s.cashIn,
+          cashExpenses: s.cashExpenses,
+          physicalCashInHand: s.physicalCashInHand,
+        }),
+        amt,
+      ),
     };
-  }, [s, data, from, to, isOwner]);
+  }, [s, data, from, to, isOwner, clinicSettings?.name, clinicSettings?.logoDataUrl]);
 
   return (
     <div className="space-y-5">
@@ -2231,6 +2330,8 @@ export default function MyDailySummary() {
             discountBills={data.discountBills}
             isOwner={isOwner}
             exportConfig={exportConfig}
+            staffName={data.staffName}
+            periodLabel={from === to ? from : `${from} → ${to}`}
           />
 
           {/* ── Drawer Close Status Card ── */}
