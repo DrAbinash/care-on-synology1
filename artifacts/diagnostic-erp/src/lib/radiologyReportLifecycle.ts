@@ -193,15 +193,33 @@ export async function finalizeRadiologyReport(
 
   if (study.patientId) {
     let prefill: FromStudyPrefill | null = null;
-    if (study.studyId) {
+    let resolvedStudyId = study.studyId ?? null;
+
+    // When the patient is billed but PACS intake never linked study_id, try
+    // to auto-link before creating the patient_reports row.
+    if (!resolvedStudyId && study.worklistId) {
       try {
-        prefill = await api.get<FromStudyPrefill>(`/api/patient-reports/from-study/${study.studyId}`);
+        const link = await api.post<{ success: boolean; studyId?: number }>(
+          `/api/radiology/pacs-worklist/${study.worklistId}/auto-link-billed-study`,
+          {},
+        );
+        if (link.success && link.studyId) {
+          resolvedStudyId = link.studyId;
+        }
+      } catch {
+        /* best-effort — finalize still proceeds */
+      }
+    }
+
+    if (resolvedStudyId) {
+      try {
+        prefill = await api.get<FromStudyPrefill>(`/api/patient-reports/from-study/${resolvedStudyId}`);
       } catch {
         prefill = null;
       }
     }
     if (!prefill?.testId) {
-      reportCreationSkipped = study.studyId
+      reportCreationSkipped = resolvedStudyId
         ? "the study's billed test could not be resolved (from-study lookup)"
         : "no billed test is linked to this study";
     } else {

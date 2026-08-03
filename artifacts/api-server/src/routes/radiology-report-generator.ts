@@ -49,11 +49,12 @@ import {
   mriProtocolQualityResultsTable,
   reportFindingInstancesTable,
   pacsSettingsTable,
+  testsTable,
 } from "@workspace/db/schema";
 import { eq, and, desc, isNull, asc, ilike, or, inArray, sql } from "drizzle-orm";
 import { requireAdminRole, type StaffAuthRequest } from "../middleware/requireStaffAuth";
 import {
-  escapeHtml, renderReportDocument,
+  escapeHtml, renderReportDocument, formatReportDate,
   type ReportDocumentModel, type ReportKeyImageModel,
 } from "../lib/reportPresentation";
 import { resolveTemplateForRender } from "../lib/presentationTemplateStore";
@@ -1798,6 +1799,38 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
     : [undefined];
   const [clinic] = await db.select().from(clinicSettingsTable).limit(1);
 
+  let catalogTestName: string | null = null;
+  let patientUhid: string | null = null;
+  if (worklist?.studyId) {
+    const [linked] = await db
+      .select({
+        testName: testsTable.name,
+        uhid: patientsTable.patientId,
+      })
+      .from(radiologyStudiesTable)
+      .leftJoin(testsTable, eq(testsTable.id, radiologyStudiesTable.testId))
+      .leftJoin(patientsTable, eq(patientsTable.id, radiologyStudiesTable.patientId))
+      .where(eq(radiologyStudiesTable.id, worklist.studyId))
+      .limit(1);
+    catalogTestName = linked?.testName ?? null;
+    patientUhid = linked?.uhid ?? null;
+  } else if (worklist?.patientId) {
+    const [pat] = await db
+      .select({ uhid: patientsTable.patientId })
+      .from(patientsTable)
+      .where(eq(patientsTable.id, worklist.patientId))
+      .limit(1);
+    patientUhid = pat?.uhid ?? null;
+  }
+
+  const studyTitle = (
+    draft.studyName?.trim()
+    || catalogTestName?.trim()
+    || worklist?.studyDescription?.trim()
+    || `${draft.modality ?? worklist?.modality ?? ""} Study`.trim()
+  ).toUpperCase();
+  const formattedStudyDate = formatReportDate(worklist?.studyDate ?? null);
+
   // Body: findings sections + impression + recommendation from the draft row
   // (presentation of existing content only — no clinical wording is altered).
   const esc = (s: string | null | undefined) => escapeHtml(s ?? "");
@@ -1833,12 +1866,12 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
 
   const model: ReportDocumentModel = {
     reportNumber: `DRAFT-${draft.id}`,
-    studyTitle: draft.studyName || worklist?.studyDescription || `${draft.modality ?? ""} Study`.trim(),
+    studyTitle,
     typeLabel: "RADIOLOGY",
     statusLabel: (draft.status ?? "DRAFT").toUpperCase(),
     clinic: {
       name: clinic?.name ?? "Care Diagnostics",
-      tagline: clinic?.tagline ?? "",
+      tagline: clinic?.tagline ?? "Diagnostic & Pathology Services",
       address: clinic?.address ?? "",
       phone: clinic?.phone ?? "",
       email: clinic?.email ?? "",
@@ -1848,11 +1881,12 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
     patientRows: [
       { label: "Patient", value: worklist?.patientName ?? "" },
       { label: "Age / Sex", value: [worklist?.age, worklist?.sex].filter(Boolean).join(" / ") },
-      { label: "Accession No.", value: worklist?.accessionNumber ?? "" },
-      { label: "Study Date", value: worklist?.studyDate ?? "" },
-      { label: "Modality", value: draft.modality ?? worklist?.modality ?? "" },
+      { label: "UHID", value: patientUhid ?? "" },
+      { label: "Study Date", value: formattedStudyDate },
       { label: "Referring Doctor", value: worklist?.referringDoctor ?? "" },
-      { label: "Status", value: "DRAFT — NOT SIGNED" },
+      { label: "Accession No.", value: worklist?.accessionNumber ?? "" },
+      { label: "Test", value: catalogTestName ?? draft.studyName ?? "" },
+      { label: "Modality", value: draft.modality ?? worklist?.modality ?? "" },
     ],
     bodyHtml,
     keyImages,
