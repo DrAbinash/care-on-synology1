@@ -1,7 +1,9 @@
 import { WifiOff, ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import {
   buildLanFailoverOptions,
+  getLastWorkingLanHost,
   shouldOfferLanFailover,
 } from "@/lib/erpConnectivity";
 
@@ -14,6 +16,7 @@ export function LanFailoverOffer() {
   if (!shouldOfferLanFailover()) return null;
 
   const options = buildLanFailoverOptions();
+  const lastWorking = getLastWorkingLanHost();
 
   return (
     <div className="mb-4 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-950 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-100">
@@ -24,6 +27,12 @@ export function LanFailoverOffer() {
             <strong>Cannot reach caredeoghar.com from this computer.</strong>{" "}
             If the clinic NAS is on, open the local network version below (cash and UPI work; card payments need the public site).
           </p>
+          {lastWorking && (
+            <p className="text-xs text-amber-800/90 dark:text-amber-200/90">
+              Last working URL on this PC:{" "}
+              <span className="font-mono">{lastWorking}</span>
+            </p>
+          )}
           <div className="flex flex-wrap gap-2">
             {options.map(({ host, url }) => (
               <Button
@@ -38,6 +47,11 @@ export function LanFailoverOffer() {
               >
                 <ExternalLink size={12} />
                 Open via {host}
+                {host === lastWorking && (
+                  <Badge variant="secondary" className="ml-1 h-4 px-1 text-[9px]">
+                    last worked
+                  </Badge>
+                )}
               </Button>
             ))}
           </div>

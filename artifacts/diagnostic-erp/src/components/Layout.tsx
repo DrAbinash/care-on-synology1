@@ -105,7 +105,7 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { SyncPanel, SyncBadge } from "@/components/SyncPanel";
 import { OfflineBillingSyncNotifier } from "@/components/OfflineBillingSyncNotifier";
-import { LanModeBanner } from "@/components/LanModeBanner";
+import { ConnectivityStatusBanner } from "@/components/ConnectivityStatusBanner";
 import { isOnLanErpOrigin } from "@/lib/erpConnectivity";
 import { readStaffSession, clearStaffSession, canAccess, FULL_ACCESS_ROLES, isFeatureEnabled, normalizeRole } from "@/lib/staffSession";
 import { useUserTheme, clearUserTheme } from "@/lib/userTheme";
@@ -1418,7 +1418,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           </div>
         )}
 
-        <LanModeBanner />
+        <ConnectivityStatusBanner />
 
         {/* No-internet warning — hidden on LAN ERP (NAS is reachable without internet). */}
         {!isOnline && !isOnLanErpOrigin() && (

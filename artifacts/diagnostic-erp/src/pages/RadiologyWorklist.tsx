@@ -21,7 +21,7 @@ import {
   Search, Filter, Clock, CheckCheck, AlertCircle, MonitorPlay, Tv2,
   ClipboardList, CalendarDays, ShieldCheck, ShieldOff, Database,
   ChevronDown, ChevronUp, Eye, MessageSquare, ThumbsUp, ThumbsDown, Trash2,
-  X, Activity, Stethoscope, Printer, Gem, FileUp, Loader2, Columns2,
+  X, Activity, Stethoscope, Printer, Gem, FileUp, Loader2, Columns2, Maximize2,
 } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
@@ -568,6 +568,13 @@ const SENTINEL_ROW: WorklistEntry = {
   createdAt: new Date().toISOString(),
   updatedAt: new Date().toISOString(),
 };
+
+function reportingWorkspacePath(entry: Pick<WorklistEntry, "id" | "modality">, focus = false): string {
+  const base = isFeatureEnabled("ff_radiology_usg_workspace") && isUltrasoundModality(entry.modality)
+    ? `/radiology/usg/${entry.id}`
+    : `/radiology/report/${entry.id}`;
+  return focus ? `${base}?focus=1` : base;
+}
 
 export default function RadiologyWorklist() {
   const [, navigate] = useLocation();
@@ -1602,13 +1609,17 @@ export default function RadiologyWorklist() {
                                 label="Report"
                                 tone="report"
                                 title="Open in the Reporting Workspace"
-                                onClick={() =>
-                                  navigate(
-                                    isFeatureEnabled("ff_radiology_usg_workspace") && isUltrasoundModality(entry.modality)
-                                      ? `/radiology/usg/${entry.id}`
-                                      : `/radiology/report/${entry.id}`,
-                                  )
-                                }
+                                onClick={() => navigate(reportingWorkspacePath(entry))}
+                              />
+                            )}
+
+                            {entry.id !== -1 && isRadView && may("/radiology/report") && (
+                              <WorklistActionBtn
+                                icon={Maximize2}
+                                label="Focus"
+                                tone="report"
+                                title="Open Reporting Workspace in focus mode (maximized editor)"
+                                onClick={() => navigate(reportingWorkspacePath(entry, true))}
                               />
                             )}
 

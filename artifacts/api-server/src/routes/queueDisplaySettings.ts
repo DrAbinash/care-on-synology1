@@ -192,6 +192,7 @@ queueDisplaySettingsRouter.get("/", requireStaffAuth, async (req, res): Promise<
       displayName: r.displayName,
       lastSeenAt: displayHeartbeatTracker.getLastSeen(r.roomKey),
       online: displayHeartbeatTracker.isOnline(r.roomKey),
+      staffAlertEnabled: r.staffAlertEnabled,
     })));
   } catch (err) {
     req.log?.error?.({ err }, "queue-display-settings LIST error");
@@ -401,7 +402,16 @@ queueDisplaySettingsRouter.patch("/:roomKey", requireStaffAuth, async (req, res)
   update.updatedAt = new Date();
 
   try {
-    await getOrCreate(roomKey); // ensure row exists
+    const existing = await getOrCreate(roomKey); // ensure row exists
+    // Persist inferred departments on admin save — blank must not mean "every
+    // department" on modality-specific TVs (e.g. roomKey "usg" → USG only).
+    const nextDepartments = update.departments !== undefined
+      ? String(update.departments).trim()
+      : existing.departments.trim();
+    if (!nextDepartments) {
+      const inferred = inferDepartmentFromRoomKey(roomKey);
+      if (inferred) update.departments = inferred;
+    }
     const [saved] = await db
       .update(queueDisplaySettingsTable)
       .set(update)

@@ -1,9 +1,11 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import {
+  buildLanFailoverOptions,
   buildLanFailoverUrl,
   buildPublicErpUrl,
   currentConnectivityKind,
   getErpBasePath,
+  getLastWorkingLanHost,
   isLoginOrPortalPath,
 } from "./erpConnectivity";
 
@@ -73,5 +75,12 @@ describe("erpConnectivity URL helpers", () => {
   it("does not treat /erp/billing as a login path", () => {
     (window as any).location.pathname = "/erp/billing";
     expect(isLoginOrPortalPath()).toBe(false);
+  });
+
+  it("sorts LAN failover options with preferred host first", () => {
+    (window as any).localStorage.getItem = () => "172.16.1.139";
+    expect(getLastWorkingLanHost()).toBe("172.16.1.139");
+    const options = buildLanFailoverOptions();
+    expect(options[0]?.host).toBe("172.16.1.139");
   });
 });

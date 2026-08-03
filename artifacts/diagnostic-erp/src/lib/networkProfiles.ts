@@ -180,6 +180,20 @@ export function recordWorkingLanHost(host: string): void {
   }
 }
 
+/** Last LAN host that worked on this workstation, or null if never recorded. */
+export function getLastWorkingLanHost(): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const last = window.localStorage.getItem(LAST_WORKING_LAN_HOST_KEY)?.trim();
+    if (last && lanHostAlternates().some((a) => a.toLowerCase() === last.toLowerCase())) {
+      return last;
+    }
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
 /** Best LAN host for failover on this workstation. */
 export function preferredLanHost(): string {
   try {

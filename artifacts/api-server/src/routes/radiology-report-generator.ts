@@ -1864,11 +1864,13 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
   let keyImages: ReportKeyImageModel[] = [];
   try { keyImages = await resolveDraftKeyImages(id); } catch { keyImages = []; }
 
+  const likeFinal = req.query.likeFinal === "true";
+
   const model: ReportDocumentModel = {
-    reportNumber: `DRAFT-${draft.id}`,
+    reportNumber: likeFinal ? `PREVIEW-${draft.id}` : `DRAFT-${draft.id}`,
     studyTitle,
     typeLabel: "RADIOLOGY",
-    statusLabel: (draft.status ?? "DRAFT").toUpperCase(),
+    statusLabel: likeFinal ? "PREVIEW" : (draft.status ?? "DRAFT").toUpperCase(),
     clinic: {
       name: clinic?.name ?? "Care Diagnostics",
       tagline: clinic?.tagline ?? "Diagnostic & Pathology Services",
@@ -1890,12 +1892,14 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
     ],
     bodyHtml,
     keyImages,
-    stamp: { kind: "draft", label: "DRAFT (not signed)" },
+    stamp: likeFinal
+      ? { kind: "pending", label: "PREVIEW (unsigned)" }
+      : { kind: "draft", label: "DRAFT (not signed)" },
     signatures: [],
     showQrPlaceholder: false,
     footerNote: clinic?.footerNote ?? "",
     generatedAtLabel: new Date().toLocaleString("en-IN"),
-    draftWatermark: true,
+    draftWatermark: !likeFinal,
     autoPrint: req.query.autoPrint === "true",
   };
 

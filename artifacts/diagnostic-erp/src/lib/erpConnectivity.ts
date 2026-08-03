@@ -17,6 +17,7 @@ import { ERP_SESSION_KEY } from "./staffSession";
 import {
   erpLanOriginForHost,
   erpPublicOrigin,
+  getLastWorkingLanHost as getLastWorkingLanHostFromProfiles,
   hydrateNetworkSettingsFromCache,
   isLanHostname,
   isPublicErpHostname,
@@ -145,10 +146,22 @@ export function buildLanFailoverUrl(lanHost?: string): string {
 
 /** All LAN URLs staff can try (primary + optional alt NAS IP). */
 export function buildLanFailoverOptions(): { host: string; url: string }[] {
-  return lanHostAlternates().map((host) => ({
+  const preferred = preferredLanHost();
+  const options = lanHostAlternates().map((host) => ({
     host,
     url: buildLanFailoverUrl(host),
   }));
+  // Surface the last working NAS IP first on this workstation.
+  return options.sort((a, b) => {
+    if (a.host === preferred) return -1;
+    if (b.host === preferred) return 1;
+    return 0;
+  });
+}
+
+/** Last LAN host that worked on this PC (for login-page hint). */
+export function getLastWorkingLanHost(): string | null {
+  return getLastWorkingLanHostFromProfiles();
 }
 
 /** Build the public ERP URL for the current page. */
