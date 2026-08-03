@@ -48,6 +48,12 @@ describe("erpConnectivity URL helpers", () => {
     expect(url).toBe("http://172.16.1.139:8888/erp/billing?x=1");
   });
 
+  it("does not double /erp when building LAN login URL", () => {
+    (window as any).location.pathname = "/erp/login";
+    (window as any).location.search = "";
+    expect(buildLanFailoverUrl()).toBe("http://172.16.1.139:8888/erp/login");
+  });
+
   it("builds public ERP URL", () => {
     const url = buildPublicErpUrl();
     expect(url).toBe("https://caredeoghar.com/erp/billing?x=1");
