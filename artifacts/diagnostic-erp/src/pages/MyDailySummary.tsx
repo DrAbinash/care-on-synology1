@@ -1680,56 +1680,64 @@ export default function MyDailySummary() {
 
     const sections: ExportSection[] = [
       {
-        title: "Reconciliation Summary",
+        title: "Billing (Income)",
+        layout: "half",
         metrics: [
-          ["Staff", data.staffName],
-          ["Period", from === to ? from : `${from} to ${to}`],
-          ["", ""],
-          ["-- BILLING --", ""],
           ["Gross Bills Generated", amt(s.grossBilledIncludingCancelled)],
-          ["Discounts Given (info)", `${amt(s.discountsGiven)} (${discountPct}, in totals)`],
+          ["Discounts Given", `${amt(s.discountsGiven)} (${discountPct})`],
           ["Old Dues Collected", amt(s.duesCollectedTotal)],
           ["Total Revenue Activity", amt(s.grossBilledIncludingCancelled + s.duesCollectedTotal)],
-          ["", ""],
-          ["-- DEDUCTIONS --", ""],
+        ],
+      },
+      {
+        title: "Deductions (Expense)",
+        layout: "half",
+        metrics: [
           ["Cancelled Bills", amt(s.cancelledOnMyBills)],
           ["Refunds (Cash)", amt(s.cashRefunded)],
           ["Refunds (Digital)", amt(s.digitalRefunded)],
           ["Total Refunds", amt(totalRefunds)],
-          ["Refunds excluded (cancelled bills created today)", amt(refundsExcluded)],
-          ["Refunds for collectible", amt(refundsForCollectible)],
           ["Outstanding Dues", amt(s.outstanding)],
-          ["", ""],
-          ["-- COLLECTION --", ""],
+        ],
+      },
+      {
+        title: "Collection",
+        layout: "half",
+        metrics: [
           ["Collectible Amount", amt(collectible)],
           ["Digital Collection (net)", amt(netDigital)],
           ["Cash Expenses", amt(s.cashExpenses)],
-          ["", ""],
-          ["-- CASH RECONCILIATION --", ""],
-          ["Cash Received", amt(s.cashIn)],
-          ["Less: Cash Refunded", amt(s.cashRefunded)],
-          ["Less: Cash Expenses", amt(s.cashExpenses)],
-          ["Expected Physical Cash", amt(s.physicalCashInHand)],
-          ["Billing cross-check", amt(expectedCash)],
-          ["Variance", balanced
-            ? "Rs.0 - Balanced OK"
-            : `${mismatch > 0 ? "+" : "-"}Rs.${Math.abs(mismatch).toLocaleString("en-IN")} ${mismatch > 0 ? "(Surplus)" : "(Short)"}`],
         ],
       },
     ];
 
     if (digitalLines.length > 0) {
       sections.push({
-        title: "Payment Method Breakdown",
+        title: "Payment Methods",
+        layout: "half",
         metrics: [
           ...digitalLines,
-          ["Digital Refunds", amt(-Math.abs(s.digitalRefunded))],
           ["Net Digital", amt(netDigital)],
         ],
       });
     }
 
-    // Discount drill-down — owner only
+    sections.push({
+      title: "Cash Reconciliation",
+      layout: "full",
+      metrics: [
+        ["Cash Received", amt(s.cashIn)],
+        ["Less: Cash Refunded", amt(s.cashRefunded)],
+        ["Less: Cash Expenses", amt(s.cashExpenses)],
+        ["Expected Physical Cash", amt(s.physicalCashInHand)],
+        ["Billing cross-check", amt(expectedCash)],
+        ["Variance", balanced
+          ? "Rs.0 - Balanced OK"
+          : `${mismatch > 0 ? "+" : "-"}Rs.${Math.abs(mismatch).toLocaleString("en-IN")} ${mismatch > 0 ? "(Surplus)" : "(Short)"}`],
+      ],
+    });
+
+    // Discount drill-down — owner only (condensed side-by-side with payment methods when possible)
     if (isOwner && data.discountBills.length > 0) {
       const byStaffMap = new Map<string, number>();
       const byDoctorMap = new Map<string, number>();
@@ -1739,18 +1747,15 @@ export default function MyDailySummary() {
         const doc = b.referringDoctor ?? "No referral";
         byDoctorMap.set(doc, (byDoctorMap.get(doc) ?? 0) + b.discountGiven);
       }
+      const topStaff = Array.from(byStaffMap.entries()).sort((a, b) => b[1] - a[1]).slice(0, 3);
+      const topDoctor = Array.from(byDoctorMap.entries()).sort((a, b) => b[1] - a[1]).slice(0, 3);
       sections.push({
-        title: `Discount Analysis (${amt(s.discountsGiven)}, ${discountPct})`,
+        title: `Discounts (${discountPct})`,
+        layout: "half",
         metrics: [
-          ["", "BY STAFF"],
-          ...Array.from(byStaffMap.entries())
-            .sort((a, b) => b[1] - a[1])
-            .map(([name, v]) => [name, amt(v)] as [string, string]),
-          ["", ""],
-          ["", "BY REFERRAL DOCTOR"],
-          ...Array.from(byDoctorMap.entries())
-            .sort((a, b) => b[1] - a[1])
-            .map(([doc, v]) => [doc, amt(v)] as [string, string]),
+          ...topStaff.map(([name, v]) => [`Staff: ${name}`, amt(v)] as [string, string]),
+          ...topDoctor.map(([doc, v]) => [`Doctor: ${doc}`, amt(v)] as [string, string]),
+          ["Total Discounts", amt(s.discountsGiven)],
         ],
       });
     }
