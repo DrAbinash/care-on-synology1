@@ -15,6 +15,7 @@ import {
 import { fetchApi, api } from "@/lib/fetchApi";
 import { writeStaffSession, firstPermissionedPath, firstAllowedPath, canAccess, normalizeRole, type StaffSession as ErpStaffSession } from "@/lib/staffSession";
 import { InstallAppHint } from "@/components/InstallAppHint";
+import { LanFailoverOffer } from "@/components/LanFailoverOffer";
 
 // =====================================================================
 // Types
@@ -602,6 +603,8 @@ function StaffLogin() {
           <p className="text-muted-foreground text-sm text-center mb-6">
             Sign in with your username and PIN.
           </p>
+
+          <LanFailoverOffer />
 
           <form
             onSubmit={(e) => { e.preventDefault(); setError(""); login.mutate({ username: username.trim().toLowerCase(), pin: pin.trim() }); }}
