@@ -148,6 +148,7 @@ import {
   type StudyCombination,
 } from "@/lib/studyCombinations";
 import ComparisonPanel, { type SelectedPrior } from "@/components/radiology/ComparisonPanel";
+import PriorComparisonToolbar from "@/components/radiology/PriorComparisonToolbar";
 import { useCopilotPrefs } from "@/hooks/useCopilotPrefs";
 import { useCopilotLearning } from "@/hooks/useCopilotLearning";
 import { isLearnableAddition } from "@/lib/learningEngine";
@@ -5431,6 +5432,20 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                   Re-apply defaults
                 </Button>
               </div>
+            )}
+
+            {/* Prior comparison — quick insert in main column (not buried in Prior tab) */}
+            {!isLocked && entry?.patientId && (
+              <PriorComparisonToolbar
+                patientId={entry.patientId}
+                excludeStudyId={entry.studyId ?? undefined}
+                modality={entry.modality ?? ""}
+                studyDescription={entry.studyDescription ?? ""}
+                comparisonMissing={comparisonSectionMissing}
+                disabled={isLocked}
+                onInsertFindings={comparisonInsertFindings}
+                onOpenPriorTab={() => setRightTab("prior")}
+              />
             )}
 
             {/* Clinical History — collapsible (Phase 3), layout remembered per browser */}
