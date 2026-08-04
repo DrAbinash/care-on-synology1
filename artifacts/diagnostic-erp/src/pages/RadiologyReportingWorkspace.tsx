@@ -73,6 +73,11 @@ import ViewerMeasurementsPanel, { useViewerMeasurements } from "@/components/rad
 import PreferencesPanel from "@/components/PreferencesPanel";
 import { isUltrasoundModality, isObstetricUsgStudy } from "@/lib/usgModality";
 import { templateCatalogModality, templateModalityMatches } from "@/lib/radiologyTemplateModality";
+import {
+  pickStructuredTemplate,
+  studyRegionToBodyPart,
+  templateRegionMismatch,
+} from "@/lib/pickStructuredTemplate";
 import QuickFindingsPanel, {
   type QuickFinding, type QuickProtocol, type QuickClinicalHistoryChip, type QuickSelectData,
 } from "@/components/radiology/QuickFindingsPanel";
@@ -2841,10 +2846,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     const studyKey = studyId ?? -1;
     if (autoTemplateForStudyRef.current === studyKey) return;
     autoTemplateForStudyRef.current = studyKey;
-    const mod = templateCatalogModality(entry.modality);
-    const bodyPart = (entry.studyDescription || "").toUpperCase();
-    let match = templates.find((t) => t.modality === mod && bodyPart.includes(t.bodyPart));
-    if (!match) match = templates.find((t) => t.modality === mod);
+    const match = pickStructuredTemplate(templates, entry.modality, entry.studyDescription);
     if (match && match.id !== selectedTemplateId) {
       templateApplySourceRef.current = "auto";
       setSelectedTemplateId(match.id);
@@ -2855,6 +2857,32 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     () => templates.find((t) => t.id === selectedTemplateId) ?? null,
     [templates, selectedTemplateId]
   );
+
+  const templateMismatch = useMemo(
+    () => templateRegionMismatch(studyRegion, selectedTemplate?.bodyPart ?? null),
+    [studyRegion, selectedTemplate?.bodyPart],
+  );
+
+  const applyCorrectStructuredTemplate = useCallback(() => {
+    if (!entry || templates.length === 0) return;
+    let match = pickStructuredTemplate(templates, entry.modality, entry.studyDescription);
+    if (!match && studyRegion) {
+      const bodyPart = studyRegionToBodyPart(studyRegion);
+      const mod = templateCatalogModality(entry.modality);
+      if (bodyPart) {
+        match = templates.find(
+          (t) => templateCatalogModality(t.modality) === mod && t.bodyPart === bodyPart,
+        ) ?? null;
+      }
+    }
+    if (!match) {
+      toast({ title: "No matching template", description: "Pick a template from the Templates tab.", variant: "destructive" });
+      return;
+    }
+    templateApplySourceRef.current = "manual";
+    setSelectedTemplateId(match.id);
+    toast({ title: "Template applied", description: match.templateName });
+  }, [entry, templates, studyRegion, toast]);
 
   // Load template content when selected. Auto-selection must never clobber a
   // hydrated draft or typed text (the draft/template queries race — whichever
@@ -5520,6 +5548,26 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                 </div>
               )}
 
+              {templateMismatch && (
+                <div className="flex flex-wrap items-center gap-2 p-2 rounded-md border border-amber-300 bg-amber-50 text-[11px] text-amber-900">
+                  <AlertTriangle size={14} className="shrink-0" />
+                  <span>
+                    Findings template ({selectedTemplate?.templateName ?? "unknown"}) does not match study region
+                    ({studyRegion}). Brain sections will not apply to a spine study.
+                  </span>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="h-6 text-[10px] ml-auto"
+                    disabled={isLocked}
+                    onClick={applyCorrectStructuredTemplate}
+                  >
+                    Load {studyRegion} template
+                  </Button>
+                </div>
+              )}
+
               {useStructured ? (
                 <div className="flex flex-col gap-2">
                   {Object.entries(findingsMap).map(([label, item]) => (
@@ -5538,13 +5586,30 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                         />
                         <Label
                           htmlFor={`norm-${label}`}
-                          className="text-xs font-semibold cursor-pointer"
+                          className="text-xs font-semibold cursor-pointer flex-1"
                         >
                           {label}
                         </Label>
-                        <span className="text-[10px] text-muted-foreground ml-auto">
+                        <span className="text-[10px] text-muted-foreground">
                           {item.normal ? "Normal" : "Abnormal"}
                         </span>
+                        {!isLocked && (
+                          <button
+                            type="button"
+                            className="text-muted-foreground hover:text-destructive p-0.5 rounded"
+                            title={`Remove "${label}" section`}
+                            aria-label={`Remove ${label} section`}
+                            onClick={() => {
+                              setFindingsMap((prev) => {
+                                const next = { ...prev };
+                                delete next[label];
+                                return next;
+                              });
+                            }}
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        )}
                       </div>
                       {!item.normal && (
                         <Textarea
