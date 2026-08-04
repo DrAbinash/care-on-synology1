@@ -13,8 +13,13 @@ import {
 } from "@/components/ui/dialog";
 import {
   Printer, FileText, FileSpreadsheet, FileType, Mail, Loader2,
-  CheckCircle2, AlertCircle,
+  CheckCircle2, AlertCircle, ChevronDown,
 } from "lucide-react";
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem,
+  DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem,
+  DropdownMenuSeparator, DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
@@ -136,27 +141,83 @@ function isFullWidthSection(sec: ExportSection): boolean {
   return sec.layout === "full" || /cash reconciliation/i.test(sec.title);
 }
 
+/** Word ignores CSS on data-URL images — fixed HTML width/height attributes are required. */
+const HTML_LOGO_PX = 32;
+
+function renderLogoImg(dataUrl: string, px = HTML_LOGO_PX): string {
+  const src = escHtml(dataUrl);
+  return `<img src="${src}" alt="" width="${px}" height="${px}"
+    style="display:block;width:${px}px;height:${px}px;max-width:${px}px;max-height:${px}px;object-fit:contain;border-radius:3px;background:#fff;padding:1px" />`;
+}
+
 function renderReportHeader(config: ExportConfig, ts: string, compact = false): string {
-  const logo = config.logoDataUrl
-    ? `<img src="${escHtml(config.logoDataUrl)}" alt="" style="height:${compact ? "28px" : "36px"};max-width:100px;object-fit:contain;margin-right:8px;border-radius:4px;background:#fff;padding:2px" />`
+  const logoPx = compact ? 28 : HTML_LOGO_PX;
+  const logoCell = config.logoDataUrl
+    ? `<td style="width:${logoPx + 4}px;vertical-align:middle;padding:0 6px 0 0">
+        ${renderLogoImg(config.logoDataUrl, logoPx)}
+      </td>`
     : "";
   const brand = escHtml(config.clinicName ?? "Care Diagnostics ERP");
+  const titleSize = compact ? "13px" : "15px";
+  const pad = compact ? "8px 10px" : "10px 12px";
   return `
-  <div style="background:linear-gradient(135deg,#0f172a 0%,#1e3a5f 100%);color:white;padding:${compact ? "8px 10px" : "10px 12px"};border-radius:6px 6px 0 0;border:2px solid #0f172a;border-bottom:none">
-    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
-      <div style="display:flex;align-items:center;gap:4px;min-width:0">
-        ${logo}
-        <div>
-          <div style="font-size:${compact ? "13px" : "15px"};font-weight:900;letter-spacing:.2px">${escHtml(config.title)}</div>
-          <div style="font-size:9px;opacity:.95;margin-top:1px;font-weight:700">${escHtml(config.subtitle)}</div>
-        </div>
-      </div>
-      <div style="text-align:right;opacity:.9;font-size:7px;line-height:1.35;font-weight:600;flex-shrink:0">
-        <div>${brand}</div>
-        <div>${escHtml(ts)}</div>
-      </div>
-    </div>
-  </div>`;
+  <!--[if mso]><table cellpadding="0" cellspacing="0" width="100%"><tr><td><![endif]-->
+  <div style="background:linear-gradient(135deg,#0f172a 0%,#1e3a5f 100%);color:white;padding:${pad};border-radius:6px 6px 0 0;border:2px solid #0f172a;border-bottom:none">
+    <table cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse">
+      <tr>
+        ${logoCell}
+        <td style="vertical-align:middle">
+          <div style="font-size:${titleSize};font-weight:900;letter-spacing:.2px;line-height:1.2">${escHtml(config.title)}</div>
+          <div style="font-size:9px;opacity:.95;margin-top:2px;font-weight:700">${escHtml(config.subtitle)}</div>
+        </td>
+        <td style="text-align:right;vertical-align:middle;white-space:nowrap;padding-left:8px;opacity:.9;font-size:7px;line-height:1.35;font-weight:600">
+          <div>${brand}</div>
+          <div>${escHtml(ts)}</div>
+        </td>
+      </tr>
+    </table>
+  </div>
+  <!--[if mso]></td></tr></table><![endif]-->`;
+}
+
+type LogoImageMeta = { width: number; height: number; format: "PNG" | "JPEG" };
+
+function loadLogoMeta(dataUrl: string): Promise<LogoImageMeta | null> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const format: "PNG" | "JPEG" =
+        /^data:image\/jpe?g/i.test(dataUrl) ? "JPEG" : "PNG";
+      resolve({ width: img.naturalWidth, height: img.naturalHeight, format });
+    };
+    img.onerror = () => resolve(null);
+    img.src = dataUrl;
+  });
+}
+
+function fitLogoMm(naturalW: number, naturalH: number, maxW: number, maxH: number): { w: number; h: number } {
+  if (naturalW <= 0 || naturalH <= 0) return { w: maxW, h: maxH };
+  const scale = Math.min(maxW / naturalW, maxH / naturalH);
+  return { w: naturalW * scale, h: naturalH * scale };
+}
+
+async function drawPdfLogo(
+  doc: jsPDF,
+  dataUrl: string,
+  x: number,
+  y: number,
+  maxW: number,
+  maxH: number,
+): Promise<{ w: number; h: number } | null> {
+  const meta = await loadLogoMeta(dataUrl);
+  if (!meta) return null;
+  const { w, h } = fitLogoMm(meta.width, meta.height, maxW, maxH);
+  try {
+    doc.addImage(dataUrl, meta.format, x, y + (maxH - h) / 2, w, h);
+    return { w, h };
+  } catch {
+    return null;
+  }
 }
 
 function simpleRowStyle(kind: SimpleLedgerRow["kind"]): { bg: string; border: string; labelWeight: string; valueWeight: string; valueSize: string } {
@@ -510,13 +571,18 @@ async function downloadPDF(config: ExportConfig, orientation: PaperOrientation, 
   const ts     = new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
   const fullW  = pageW - margin * 2;
   const halfW  = (fullW - gap) / 2;
+  const headerH = 18;
+  const logoMaxH = 12;
+  const logoMaxW = 28;
 
   doc.setFillColor(...PDF_NAVY);
-  doc.rect(0, 0, pageW, 18, "F");
+  doc.rect(0, 0, pageW, headerH, "F");
+
+  let titleX = margin;
   if (config.logoDataUrl) {
-    try { doc.addImage(config.logoDataUrl, "PNG", margin, 2, 14, 14); } catch { /* ignore */ }
+    const placed = await drawPdfLogo(doc, config.logoDataUrl, margin, 3, logoMaxW, logoMaxH);
+    if (placed) titleX = margin + placed.w + 2.5;
   }
-  const titleX = config.logoDataUrl ? margin + 16 : margin;
   doc.setTextColor(255, 255, 255);
   doc.setFontSize(12);
   doc.setFont("helvetica", "bold");
@@ -631,12 +697,12 @@ async function downloadSimplePDF(config: ExportConfig): Promise<void> {
   const x = (pageW - cardW) / 2;
   const ts = new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
   let y = margin;
+  const logoMaxH = 12;
+  const logoMaxW = 28;
 
   if (config.logoDataUrl) {
-    try {
-      doc.addImage(config.logoDataUrl, "PNG", x, y, 14, 14);
-      y += 16;
-    } catch { /* ignore broken logo */ }
+    const placed = await drawPdfLogo(doc, config.logoDataUrl, x, y, logoMaxW, logoMaxH);
+    if (placed) y += placed.h + 2;
   }
 
   doc.setFillColor(...PDF_NAVY);
@@ -888,91 +954,82 @@ export function SummaryExportToolbar({
   const icSz  = compact ? 11      : 13;
   const px    = compact ? "px-2"  : "px-2.5";
 
+  const pdfBtnClass = compact
+    ? `h-full rounded-none ${px} ${txSz} gap-1 text-white bg-blue-600 hover:bg-blue-500 font-semibold`
+    : `${h} ${px} ${txSz} gap-1.5 text-white bg-blue-600 hover:bg-blue-500 font-semibold shadow-sm`;
+
   return (
     <>
-      <div className="flex flex-wrap items-center gap-1">
+      <div className="flex items-center gap-1">
 
-        {/* Print */}
-        <Button variant="outline" size="sm"
-          className={`${h} ${px} ${txSz} gap-1 border-slate-600/40 text-slate-200 bg-slate-700/50 hover:bg-slate-600`}
-          onClick={() => doPrint(config, "full")}>
-          <Printer size={icSz} /> Print
-        </Button>
-
-        {/* PDF + orientation toggle */}
-        <div className={`flex items-center rounded-md border border-slate-600/40 overflow-hidden ${h}`}>
+        {/* Primary PDF — always visible */}
+        <div className={`flex items-center overflow-hidden rounded-md border ${compact ? "border-slate-600/40 h-6" : "border-blue-700 h-8"}`}>
           <Button variant="ghost" size="sm"
-            className={`h-full rounded-none ${px} ${txSz} gap-1 border-r border-slate-600/40 text-slate-200 hover:bg-slate-600`}
+            className={pdfBtnClass}
             onClick={() => void handlePDF("full")} disabled={pdfBusy}>
             {pdfBusy
               ? <Loader2 size={icSz} className="animate-spin" />
               : <FileText size={icSz} />}
             PDF
           </Button>
-          <button type="button"
-            className={`${px} h-full ${txSz} font-medium transition-colors border-r border-slate-600/40
-              ${pdfOrientation === "landscape"
-                ? "bg-blue-600 text-white"
-                : "bg-slate-700/50 text-slate-400 hover:bg-slate-600"}`}
-            onClick={() => handleSetOrientation("landscape")} title="Landscape">
-            ⟺
-          </button>
-          <button type="button"
-            className={`${px} h-full ${txSz} font-medium transition-colors
-              ${pdfOrientation === "portrait"
-                ? "bg-blue-600 text-white"
-                : "bg-slate-700/50 text-slate-400 hover:bg-slate-600"}`}
-            onClick={() => handleSetOrientation("portrait")} title="Portrait">
-            ⟟
-          </button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button type="button"
+                className={`flex items-center justify-center border-l ${compact ? "h-6 w-6 border-slate-600/40 bg-blue-600 text-white hover:bg-blue-500" : "h-8 w-7 border-blue-700 bg-blue-600 text-white hover:bg-blue-500"}`}
+                aria-label="More export options">
+                <ChevronDown size={compact ? 10 : 12} />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-52">
+              <DropdownMenuLabel className="text-[10px] text-muted-foreground font-normal">
+                PDF layout
+              </DropdownMenuLabel>
+              <DropdownMenuRadioGroup
+                value={pdfOrientation}
+                onValueChange={(v) => handleSetOrientation(v as PaperOrientation)}>
+                <DropdownMenuRadioItem value="landscape" className="text-xs">
+                  Landscape (recommended)
+                </DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="portrait" className="text-xs">
+                  Portrait
+                </DropdownMenuRadioItem>
+              </DropdownMenuRadioGroup>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem className="text-xs gap-2" onClick={() => doPrint(config, "full")}>
+                <Printer size={13} /> Print
+              </DropdownMenuItem>
+              <DropdownMenuItem className="text-xs gap-2" onClick={() => downloadWord(config, "full")}>
+                <FileType size={13} /> Word (.doc)
+              </DropdownMenuItem>
+              <DropdownMenuItem className="text-xs gap-2" onClick={() => downloadExcel(config, "full")}>
+                <FileSpreadsheet size={13} /> Excel (.xlsx)
+              </DropdownMenuItem>
+              <DropdownMenuItem className="text-xs gap-2" onClick={openEmail}>
+                <Mail size={13} /> Email
+              </DropdownMenuItem>
+              {hasSimple && (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuLabel className="text-[10px] text-amber-700 font-semibold">
+                    Simple ledger
+                  </DropdownMenuLabel>
+                  <DropdownMenuItem className="text-xs gap-2" onClick={() => doPrint(config, "simple")}>
+                    <Printer size={13} /> Simple Print
+                  </DropdownMenuItem>
+                  <DropdownMenuItem className="text-xs gap-2" onClick={() => void handlePDF("simple")} disabled={pdfBusy}>
+                    <FileText size={13} /> Simple PDF
+                  </DropdownMenuItem>
+                  <DropdownMenuItem className="text-xs gap-2" onClick={() => downloadExcel(config, "simple")}>
+                    <FileSpreadsheet size={13} /> Simple Excel
+                  </DropdownMenuItem>
+                  <DropdownMenuItem className="text-xs gap-2" onClick={() => downloadWord(config, "simple")}>
+                    <FileType size={13} /> Simple Word
+                  </DropdownMenuItem>
+                </>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
-
-        {/* Excel/CSV */}
-        <Button variant="outline" size="sm"
-          className={`${h} ${px} ${txSz} gap-1 border-slate-600/40 text-slate-200 bg-slate-700/50 hover:bg-slate-600`}
-          onClick={() => downloadExcel(config, "full")}>
-          <FileSpreadsheet size={icSz} /> Excel
-        </Button>
-
-        {/* Word */}
-        <Button variant="outline" size="sm"
-          className={`${h} ${px} ${txSz} gap-1 border-slate-600/40 text-slate-200 bg-slate-700/50 hover:bg-slate-600`}
-          onClick={() => downloadWord(config, "full")}>
-          <FileType size={icSz} /> Word
-        </Button>
-
-        {hasSimple && (
-          <>
-            <span className={`${txSz} text-slate-400 px-1`}>|</span>
-            <Button variant="outline" size="sm"
-              className={`${h} ${px} ${txSz} gap-1 border-amber-600/50 text-amber-100 bg-amber-900/40 hover:bg-amber-800/60`}
-              onClick={() => doPrint(config, "simple")} title="Handwritten-style one-page ledger">
-              <Printer size={icSz} /> Simple
-            </Button>
-            <Button variant="outline" size="sm"
-              className={`${h} ${px} ${txSz} gap-1 border-amber-600/50 text-amber-100 bg-amber-900/40 hover:bg-amber-800/60`}
-              onClick={() => void handlePDF("simple")} disabled={pdfBusy} title="One-page PDF ledger">
-              <FileText size={icSz} /> Simple PDF
-            </Button>
-            <Button variant="outline" size="sm"
-              className={`${h} ${px} ${txSz} gap-1 border-amber-600/50 text-amber-100 bg-amber-900/40 hover:bg-amber-800/60`}
-              onClick={() => downloadExcel(config, "simple")} title="Simple Excel ledger">
-              <FileSpreadsheet size={icSz} /> Simple XL
-            </Button>
-            <Button variant="outline" size="sm"
-              className={`${h} ${px} ${txSz} gap-1 border-amber-600/50 text-amber-100 bg-amber-900/40 hover:bg-amber-800/60`}
-              onClick={() => downloadWord(config, "simple")} title="Simple Word ledger">
-              <FileType size={icSz} /> Simple Doc
-            </Button>
-          </>
-        )}
-
-        {/* Email */}
-        <Button variant="outline" size="sm"
-          className={`${h} ${px} ${txSz} gap-1 border-slate-600/40 text-slate-200 bg-slate-700/50 hover:bg-slate-600`}
-          onClick={openEmail}>
-          <Mail size={icSz} /> Email
-        </Button>
 
       </div>
 
