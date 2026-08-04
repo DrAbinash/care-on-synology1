@@ -63,6 +63,7 @@ import ObDashboardStrip from "@/components/radiology/ObDashboardStrip";
 // existing engines (study recognition, template, protocol, measurements,
 // comparison, Copilot) into a pre-report snapshot inside THIS workspace.
 import UsgCompanionPanel from "@/components/radiology/UsgCompanionPanel";
+import ReportingShortcutHelp from "@/components/radiology/ReportingShortcutHelp";
 import type { CompanionCopilotContext } from "@/lib/usgCompanionTypes";
 import type { PopulateBlock as CompanionPopulateBlock, AutoPopulatePlan } from "@/lib/usgCompanionAutoPopulate";
 import ModuleErrorBoundary from "@/components/ModuleErrorBoundary";
@@ -650,6 +651,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   // parent-driven: it renders one of master/personal/packs/knowledge by activePanel).
   const [knowledgeSubPanel, setKnowledgeSubPanel] = useState<"knowledge" | "personal" | "master" | "packs">("knowledge");
   const [previewMode, setPreviewMode] = useState(false);
+  const [shortcutHelpOpen, setShortcutHelpOpen] = useState(false);
   // R1.1 — the preview shows the CANONICAL server-rendered document (shared
   // presentation layer) whenever a saved draft/report exists; the client-side
   // assembly remains only as the unsaved-draft fallback.
@@ -2387,6 +2389,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     setProtocolReplacePrompt(null);
     autoProtocolForStudyRef.current = null;
     setPreviewMode(false); // transient UI must not carry across patients
+    setShortcutHelpOpen(false);
     // Re-arm the once-per-study machine-hydration guards (M1.5): REVISITING a
     // study (Previous / return-to-parked) must hydrate and restore selections
     // again after this reset — the M1.4 refs otherwise stay armed for the
@@ -3341,6 +3344,20 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
         return;
       }
       if (paletteOpen) return;
+
+      // ? — keyboard shortcut reference (outside text fields only).
+      const helpTag = (e.target as { tagName?: string } | null)?.tagName?.toUpperCase() ?? "";
+      if (e.key === "?" && !e.ctrlKey && !e.metaKey && !e.altKey && helpTag !== "INPUT" && helpTag !== "TEXTAREA") {
+        e.preventDefault();
+        setShortcutHelpOpen((o) => !o);
+        return;
+      }
+      if (shortcutHelpOpen && e.key === "Escape") {
+        e.preventDefault();
+        setShortcutHelpOpen(false);
+        return;
+      }
+      if (shortcutHelpOpen) return;
 
       // PR #80 Part 12 — Tab accepts the Copilot's inline next-sentence
       // completion, GitHub-Copilot-style, but ONLY when the Findings editor is
@@ -6942,6 +6959,8 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
           </div>
         </div>
       )}
+
+      <ReportingShortcutHelp open={shortcutHelpOpen} onClose={() => setShortcutHelpOpen(false)} />
 
       <FinalizeSignDialog
         open={finalizeFlow.open}
