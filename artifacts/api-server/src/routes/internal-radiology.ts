@@ -49,6 +49,7 @@ import { calculateMatchScore, type DicomInput, type BilledTestInput } from "../l
 import { formatDicomPersonNameForDisplay } from "../lib/pacs/dicomNameNormalize";
 import { shouldFallbackToAccessionLookup, isWorklistUidRaceViolation } from "../lib/radiologyWorklistDedup";
 import { radiologyOpenFallbackPath, resolveRadiologyOpen } from "../lib/resolveRadiologyOpen";
+import { runDicomIntakeAutomation } from "../lib/pacs/dicomIntakeAutomation";
 
 export async function runMatchingEngineForWorklist(worklistId: number): Promise<void> {
   const [row] = await db
@@ -522,6 +523,10 @@ router.post("/radiology/studies", async (req, res) => {
       patientId: radiologyStudiesTable.patientId,
       studyDate: radiologyStudiesTable.studyDate,
       bodyPart: radiologyStudiesTable.bodyPart,
+      orderTestId: radiologyStudiesTable.orderTestId,
+      billId: radiologyStudiesTable.billId,
+      department: radiologyStudiesTable.department,
+      startedAt: radiologyStudiesTable.startedAt,
     };
 
     let rStudy: any = undefined;
@@ -612,6 +617,7 @@ router.post("/radiology/studies", async (req, res) => {
     }
 
     let resolvedStudyId: number | null = rStudy ? rStudy.id : null;
+    const previousStudyStatus: string | null = rStudy?.status ?? null;
 
     if (rStudy) {
       const updates: Partial<typeof radiologyStudiesTable.$inferInsert> = {
@@ -619,6 +625,10 @@ router.post("/radiology/studies", async (req, res) => {
         status: "acquired",
         acquiredAt: new Date(),
       };
+
+      if (!rStudy.startedAt && rStudy.status === "scheduled") {
+        updates.startedAt = new Date();
+      }
 
       if (studyInstanceUID && !rStudy.studyInstanceUid) {
         updates.studyInstanceUid = studyInstanceUID;
@@ -819,6 +829,20 @@ router.post("/radiology/studies", async (req, res) => {
       await runMatchingEngineForWorklist(row.id);
     } catch (matchErr) {
       logger.error({ err: matchErr, worklistId: row.id }, "Intake matching engine execution failed");
+    }
+
+    // Wire Orthanc arrival → queue token done + MWL cleanup + live UI refresh
+    if (rStudy) {
+      runDicomIntakeAutomation({
+        worklistId: row.id,
+        accessionNumber: rStudy.accessionNumber || accessionNumber,
+        orderTestId: rStudy.orderTestId,
+        billId: rStudy.billId,
+        department: rStudy.department,
+        previousStudyStatus,
+      }).catch((err: unknown) => {
+        logger.warn({ err, worklistId: row.id }, "dicom-intake automation failed silently");
+      });
     }
 
     logger.info({ worklistId: row.id, accessionNumber }, "POST /api/internal/radiology/studies success");
