@@ -14,6 +14,7 @@ import { tcpProbe } from "../lib/pacs/providers.js";
 import { testNodeConnection } from "../services/dicom-pull-agent/dimse-agent";
 import { getRadiologyConfig, validateRadiologyConfig, isDockerBridgeIp } from "../lib/pacs/pacsConfig.js";
 import { writeWorklistFile, removeWorklistFile, syncWorklistForStatus, isMwlEnabled, MWL_TERMINAL_STATUSES } from "../lib/pacs/mwlWorklistWriter.js";
+import { getMwlDeploymentStatus } from "../lib/pacs/mwlDeploymentStatus.js";
 import { NETWORK_LAN_HOST, DEFAULT_OHIF_BASE_URL, DEFAULT_WADO_URL, OHIF_HTTP_PORT } from "../lib/networkDefaults";
 import { fetchPrintImageBytes, PRINT_MAX_IMAGE_BYTES } from "../lib/reportImages";
 import { buildPrintClinic } from "../lib/buildPrintClinic";
@@ -976,6 +977,16 @@ router.post("/mwl-worklist/sync", async (_req, res) => {
     }
   }
   res.json({ total: rows.length, written, removed });
+});
+
+// GET /api/radiology/mwl-status — deployment health for Settings → DICOM & MWL tab
+router.get("/mwl-status", async (_req, res) => {
+  try {
+    const status = await getMwlDeploymentStatus();
+    res.json(status);
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
 });
 
 // ─── DICOM Q/R QUERY ─────────────────────────────────────────────────────────

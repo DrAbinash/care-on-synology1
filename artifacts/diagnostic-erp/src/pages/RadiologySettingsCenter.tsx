@@ -48,6 +48,7 @@ import {
 } from "@/components/smartRadiology/SmartRadiologyCards";
 import { RisMonitorCommandGrid } from "@/components/risMonitoring/RisMonitorCards";
 import ViewerNetworkRoutesCard from "@/components/radiology/ViewerNetworkRoutesCard";
+import { MwlStatusPanel } from "@/components/radiology/MwlStatusPanel";
 
 type Setting = { id: number; key: string; value: string | null; category: string; isSecret: boolean };
 type ServiceHealth = { name: string; endpoint: string; status: "green" | "yellow" | "red"; details: string };
@@ -118,6 +119,7 @@ export default function RadiologySettingsCenter() {
   });
 
   const [valResults, setValResults] = useState<Array<{ name: string; status: "PASS" | "WARNING" | "FAIL"; message: string }> | null>(null);
+  const [mwlSyncing, setMwlSyncing] = useState(false);
   const [isValidating, setIsValidating] = useState(false);
   const [changeReason, setChangeReason] = useState("");
 
@@ -679,55 +681,45 @@ export default function RadiologySettingsCenter() {
 
         {/* Tab content 5: DICOM & MWL */}
         <TabsContent value="mwl" className="space-y-4">
+          <MwlStatusPanel
+            isAdmin={isAdmin}
+            syncing={mwlSyncing}
+            onSync={async () => {
+              setMwlSyncing(true);
+              try {
+                const r = await api.post<{ total: number; written: number; removed: number }>("/api/radiology/mwl-worklist/sync", {});
+                toast({ title: "MWL sync complete", description: `${r.written} written, ${r.removed} removed (${r.total} procedures)` });
+                void qc.invalidateQueries({ queryKey: ["mwl-deployment-status"] });
+              } catch (e: unknown) {
+                toast({ title: "MWL sync failed", description: e instanceof Error ? e.message : "Error", variant: "destructive" });
+              } finally {
+                setMwlSyncing(false);
+              }
+            }}
+          />
           <div className="grid lg:grid-cols-2 gap-6">
             <div className="space-y-6">
               <div className="rounded-xl border bg-card p-5 space-y-3">
                 <h3 className="font-semibold text-sm flex items-center gap-2">
                   <Wrench size={16} className="text-primary" />
-                  MWL Config
+                  How it works
                 </h3>
                 <div className="flex items-start gap-2 text-xs text-muted-foreground">
                   <Info size={14} className="mt-0.5 shrink-0 text-primary" />
                   <p>
-                    The Modality Worklist AE Title &amp; port are configured on the <strong>Windows MWL agent</strong>
-                    itself (see the DICOM Agent setup guide below), not stored here. The ERP serves scheduled
-                    procedures to that agent over <code className="font-mono">GET /api/internal/radiology/mwl</code>.
+                    <strong>Bill USG</strong> → ERP writes patient name + accession to a shared folder →
+                    <strong> USG machine C-FINDs</strong> the worklist → technologist selects patient (no re-typing) →
+                    scan ends → <strong>Orthanc</strong> → ERP matches accession → queue completes + reporting worklist updates.
                   </p>
                 </div>
-              </div>
-              <div className="rounded-xl border bg-card p-5 space-y-4">
-                <h3 className="font-semibold text-sm flex items-center gap-2">
-                  <Radio size={16} className="text-primary" />
-                  DICOM Puller scheduler
-                </h3>
-                <p className="text-xs text-muted-foreground">
-                  The cron puller runs queries on configured DICOM nodes. Select node pull settings under PACS Servers.
+                <p className="text-[11px] text-muted-foreground">
+                  Alternative: Windows MWL agent queries <code className="font-mono bg-muted px-1 rounded">GET /api/internal/radiology/mwl</code> — see Agent Setup panel →
                 </p>
-                <div className="flex items-center justify-between p-3 rounded-lg border bg-muted/40">
-                  <div className="space-y-0.5">
-                    <span className="text-xs font-semibold">Auto-puller Service Daemon</span>
-                    <p className="text-[11px] text-muted-foreground">Configure node pull schedules under PACS Servers. Use Sync below to refresh MWL files.</p>
-                  </div>
-                  <Badge variant="outline" className="text-muted-foreground border-border">See PACS Servers</Badge>
-                </div>
-                <Button
-                  className="w-full"
-                  variant="outline"
-                  disabled={!isAdmin}
-                  onClick={async () => {
-                    try {
-                      const r = await api.post<{ total: number; written: number; removed: number }>("/api/radiology/mwl-worklist/sync", {});
-                      toast({ title: "MWL sync complete", description: `${r.written} written, ${r.removed} removed (${r.total} procedures)` });
-                    } catch (e: unknown) {
-                      toast({ title: "MWL sync failed", description: e instanceof Error ? e.message : "Error", variant: "destructive" });
-                    }
-                  }}
-                >
-                  Sync MWL worklist files now
-                </Button>
+                <p className="text-[11px] text-muted-foreground">
+                  DICOM auto-puller schedules are configured under <strong>PACS Servers</strong>.
+                </p>
               </div>
             </div>
-
             <div className="space-y-6">
               <AgentSetupPanel />
             </div>
