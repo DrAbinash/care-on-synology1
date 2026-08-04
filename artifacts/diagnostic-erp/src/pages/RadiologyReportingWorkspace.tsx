@@ -2385,6 +2385,8 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     lastInsertedTechniqueRef.current = null;
     setProtocolReplacePrompt(null);
     autoProtocolForStudyRef.current = null;
+    startReportUndoRef.current = null;
+    setCanUndoStartReport(false);
     setPreviewMode(false); // transient UI must not carry across patients
     // Re-arm the once-per-study machine-hydration guards (M1.5): REVISITING a
     // study (Previous / return-to-parked) must hydrate and restore selections
@@ -2906,6 +2908,106 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     applyStudyRegionDefaults(studyRegion, { fullReplace: true });
   }
 
+  /** Snapshot captured immediately before Start Report — powers one-click undo. */
+  type StartReportUndo = {
+    clinicalHistory: string;
+    technique: string;
+    rawFindings: string;
+    impression: string[];
+    recommendation: string;
+    findingsMap: Record<string, { normal: boolean; text: string }>;
+    selectedTemplateId: number | null;
+    activeProtocolId: number | null;
+    useStructured: boolean;
+  };
+  const startReportUndoRef = useRef<StartReportUndo | null>(null);
+  const [canUndoStartReport, setCanUndoStartReport] = useState(false);
+
+  function undoStartReport() {
+    const snap = startReportUndoRef.current;
+    if (!snap) return;
+    setClinicalHistory(snap.clinicalHistory);
+    setTechnique(snap.technique);
+    setRawFindings(snap.rawFindings);
+    setImpression(snap.impression);
+    setRecommendation(snap.recommendation);
+    setFindingsMap(snap.findingsMap);
+    setSelectedTemplateId(snap.selectedTemplateId);
+    setUseStructured(snap.useStructured);
+    const proto = snap.activeProtocolId
+      ? (quickSelectData?.protocols ?? []).find((p) => p.id === snap.activeProtocolId) ?? null
+      : null;
+    setActiveProtocol(proto);
+    lastInsertedTechniqueRef.current = proto?.techniqueText ?? null;
+    startReportUndoRef.current = null;
+    setCanUndoStartReport(false);
+    toast({ title: "Start report undone" });
+  }
+
+  /** One-click bootstrap: region protocol + structured template + all normals. */
+  function handleStartReport() {
+    if (isLocked || !studyRegion) return;
+    startReportUndoRef.current = {
+      clinicalHistory,
+      technique,
+      rawFindings,
+      impression: [...impression],
+      recommendation,
+      findingsMap: { ...findingsMap },
+      selectedTemplateId,
+      activeProtocolId: activeProtocol?.id ?? null,
+      useStructured,
+    };
+    setCanUndoStartReport(true);
+
+    const protocol = pickQuickProtocol(quickSelectData?.protocols ?? [], studyRegion);
+    if (protocol) applyProtocol(protocol, true);
+
+    let match = entry
+      ? pickStructuredTemplate(templates, entry.modality, entry.studyDescription)
+      : null;
+    if (!match && entry && studyRegion) {
+      const bodyPart = studyRegionToBodyPart(studyRegion);
+      const mod = templateCatalogModality(entry.modality);
+      if (bodyPart) {
+        match = templates.find(
+          (t) => templateCatalogModality(t.modality) === mod && t.bodyPart === bodyPart,
+        ) ?? null;
+      }
+    }
+
+    if (match) {
+      templateApplySourceRef.current = "manual";
+      setSelectedTemplateId(match.id);
+      const sections = parseSectionsJson(match.sectionsJson);
+      const map: Record<string, { normal: boolean; text: string }> = {};
+      for (const item of sections.findingsItems) {
+        map[item.label] = { normal: true, text: item.normal };
+      }
+      setUseStructured(true);
+      setTechnique(protocol?.techniqueText?.trim() || sections.technique || "");
+      if (protocol?.techniqueText) lastInsertedTechniqueRef.current = protocol.techniqueText;
+      setFindingsMap(map);
+      setRawFindings(match.defaultFindings || "");
+      setImpression(match.defaultImpression ? [match.defaultImpression] : []);
+      const baseRec = "Please correlate with clinical findings.";
+      setRecommendation(protocol?.recommendationText
+        ? mergeBlock(baseRec, protocol.recommendationText)
+        : baseRec);
+    } else if (protocol) {
+      if (protocol.normalText) setRawFindings(mergeBlock("", protocol.normalText));
+      if (protocol.recommendationText) {
+        setRecommendation((prev) => mergeBlock(prev.trim() ? prev : "Please correlate with clinical findings.", protocol.recommendationText));
+      }
+    }
+
+    requestBaselineRecapture();
+    toast({
+      title: "Report started",
+      description: `${protocol?.name ?? "Protocol"} · ${match?.templateName ?? "template"} · normals applied`,
+    });
+  }
+
   useEffect(() => {
     if (!entry || templates.length === 0) return;
     const studyKey = studyId ?? -1;
@@ -2948,6 +3050,16 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     () => templateRegionMismatch(studyRegion, selectedTemplate?.bodyPart ?? null),
     [studyRegion, selectedTemplate?.bodyPart],
   );
+
+  const reportNeedsStart = useMemo(() => {
+    if (!studyRegion || isLocked) return false;
+    const findingsEmpty = useStructured
+      ? Object.values(findingsMap).every((v) => !v.text.trim() || v.normal)
+      : !rawFindings.trim();
+    const noWork = !technique.trim() && findingsEmpty && !impression.some((l) => l.trim());
+    return noWork || templateMismatch || (!activeProtocol && availableProtocols.length > 0);
+  }, [studyRegion, isLocked, useStructured, findingsMap, rawFindings, technique, impression,
+    templateMismatch, activeProtocol, availableProtocols.length]);
 
   const applyCorrectStructuredTemplate = useCallback(() => {
     if (!entry || templates.length === 0) return;
@@ -5368,6 +5480,40 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                     Fill remaining normals
                   </Button>
                 )}
+              </div>
+            )}
+
+            {/* One-click Start Report — primary action when study is not bootstrapped */}
+            {!isLocked && reportNeedsStart && studyRegion && (
+              <div
+                className="flex flex-wrap items-center gap-2 p-3 rounded-lg border-2 border-primary/40 bg-primary/5 shrink-0"
+                data-testid="start-report-banner"
+              >
+                <Zap size={18} className="text-primary shrink-0" />
+                <div className="flex-1 min-w-[180px]">
+                  <p className="text-sm font-semibold text-foreground">Ready to report — {studyRegion}</p>
+                  <p className="text-[11px] text-muted-foreground">
+                    One click applies protocol, template, and all normal findings. You can undo immediately.
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  size="sm"
+                  className="h-8 text-xs font-semibold gap-1"
+                  onClick={handleStartReport}
+                  data-testid="btn-start-report"
+                >
+                  <Zap size={14} /> Start Report
+                </Button>
+              </div>
+            )}
+
+            {canUndoStartReport && !isLocked && (
+              <div className="flex items-center gap-2 p-2 rounded-md bg-blue-50 border border-blue-200 text-blue-800 text-xs shrink-0">
+                <span className="flex-1">Report bootstrapped — undo restores your previous text.</span>
+                <Button size="sm" variant="outline" className="h-6 text-[10px]" onClick={undoStartReport}>
+                  Undo start
+                </Button>
               </div>
             )}
 
