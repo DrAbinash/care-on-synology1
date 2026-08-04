@@ -10,6 +10,7 @@ import { SummaryExportToolbar, formatExportAmount } from "@/components/SummaryEx
 import type { ExportConfig, ExportSection, ExportTable } from "@/components/SummaryExport";
 import { buildReconciliationLedger, simpleLedgerRows } from "@/lib/reconciliationLedger";
 import { SummaryDrilldownModal, type DrilldownType } from "@/components/SummaryDrilldownModal";
+import BillingVsPacsKpi from "@/components/BillingVsPacsKpi";
 import { FINANCIAL_QUERY_OPTIONS } from "@/lib/queryConfig";
 import {
   IndianRupee, Wallet, Banknote, Smartphone, TrendingDown, RotateCcw,
@@ -2077,6 +2078,9 @@ export default function MyDailySummary() {
           </p>
         )}
       </div>
+
+      {/* ── Imaging billed vs PACS (uses date range above; clinic-wide) ── */}
+      <BillingVsPacsKpi from={from} to={to} />
 
       {/* ── Loading State ── */}
       {isLoading && (
