@@ -81,6 +81,7 @@ import {
 } from "@/lib/pickStructuredTemplate";
 import { pickQuickProtocol } from "@/lib/pickQuickProtocol";
 import { buildUnifiedInboxExtras, mergeCopilotItems } from "@/lib/unifiedCopilotInbox";
+import { pickDefaultRightTab, saveRightTab } from "@/lib/pickDefaultRightTab";
 import QuickFindingsPanel, {
   type QuickFinding, type QuickProtocol, type QuickClinicalHistoryChip, type QuickSelectData,
 } from "@/components/radiology/QuickFindingsPanel";
@@ -647,7 +648,8 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   }, [studyId, navigate]);
 
   // ── Layout ────────────────────────────────────────────────────────────────
-  const [rightTab, setRightTab] = useState<RightTab>("templates");
+  const [rightTab, setRightTab] = useState<RightTab>("quickselect");
+  const defaultRightTabForStudyRef = useRef<number | null>(null);
   // Which sub-panel the embedded Knowledge tab shows (RadiologyKnowledgePanel is
   // parent-driven: it renders one of master/personal/packs/knowledge by activePanel).
   const [knowledgeSubPanel, setKnowledgeSubPanel] = useState<"knowledge" | "personal" | "master" | "packs">("knowledge");
@@ -2399,6 +2401,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     hydratedDraftForStudyRef.current = null;
     selectionsRestoredForDraftRef.current = null;
     autoTemplateForStudyRef.current = null;
+    defaultRightTabForStudyRef.current = null;
   }
   const activeStudyRef = useRef<number | undefined>(studyId);
   useEffect(() => {
@@ -4753,6 +4756,28 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   const copilotAlerts = copilotPanelReport.items.filter(
     (i) => !copilotEffectiveDismissed.has(i.id) && (i.severity === "critical" || i.severity === "warning"),
   ).length;
+
+  // Once per study: open the most useful right tab (Copilot alerts → Measure → Prior → saved → Quick).
+  useEffect(() => {
+    if (!entry || studyId == null) return;
+    if (defaultRightTabForStudyRef.current === studyId) return;
+    defaultRightTabForStudyRef.current = studyId;
+    const pendingMeas = viewerMeasurementRows.filter((m) => m.status === "pending").length;
+    setRightTab(pickDefaultRightTab({
+      copilotEnabled: copilotPrefs.enabled,
+      copilotAlertCount: copilotAlerts,
+      priorReportsTotal,
+      pendingViewerMeasurements: pendingMeas,
+      modality: entry.modality,
+    }));
+  }, [entry, studyId, copilotPrefs.enabled, copilotAlerts, priorReportsTotal, viewerMeasurementRows]);
+
+  // Remember last-used tab per modality bucket for the next study.
+  useEffect(() => {
+    if (!entry?.modality) return;
+    saveRightTab(entry.modality, rightTab);
+  }, [rightTab, entry?.modality]);
+
   const RIGHT_TABS = [
     ...(copilotPrefs.enabled ? [{ id: "copilot", label: "Copilot", icon: <Sparkles size={14} />, badge: copilotInboxCount }] : []),
     { id: "quickselect", label: "Quick", icon: <Zap size={14} /> },
