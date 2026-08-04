@@ -64,6 +64,7 @@ import ObDashboardStrip from "@/components/radiology/ObDashboardStrip";
 // comparison, Copilot) into a pre-report snapshot inside THIS workspace.
 import UsgCompanionPanel from "@/components/radiology/UsgCompanionPanel";
 import ReportingShortcutHelp from "@/components/radiology/ReportingShortcutHelp";
+import MriReadinessStrip from "@/components/radiology/MriReadinessStrip";
 import type { CompanionCopilotContext } from "@/lib/usgCompanionTypes";
 import type { PopulateBlock as CompanionPopulateBlock, AutoPopulatePlan } from "@/lib/usgCompanionAutoPopulate";
 import ModuleErrorBoundary from "@/components/ModuleErrorBoundary";
@@ -2786,6 +2787,10 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     [entry?.modality],
   );
   const companionEligible = isUltrasound || isCtModality;
+  const isMriModality = useMemo(
+    () => (entry?.modality ?? "").trim().toUpperCase().startsWith("MR"),
+    [entry?.modality],
+  );
 
   // PCPNDT gate (roadmap §1.4 step 2 — docs/usg-reporting/
   // pcpndt-canonical-roadmap.md). The server-side finalize gates
@@ -5676,6 +5681,23 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                 disabled={isLocked}
                 onInsertFindings={comparisonInsertFindings}
                 onOpenPriorTab={() => setRightTab("prior")}
+              />
+            )}
+
+            {/* MRI readiness — compact checklist (USG/CT use Companion panel instead) */}
+            {!isLocked && isMriModality && !companionEligible && (
+              <MriReadinessStrip
+                studyRegion={studyRegion}
+                protocolName={activeProtocol?.name ?? null}
+                protocolApplied={!!activeProtocol}
+                templateName={selectedTemplate?.templateName ?? null}
+                templateMismatch={templateMismatch}
+                priorCount={priorReportsTotal}
+                pendingMeasurements={viewerMeasurementRows.filter((m) => m.status === "pending").length}
+                checklistPercent={activeProtocol ? checklistPercent : null}
+                qualityScore={quality.score}
+                disabled={isLocked}
+                onOpenTab={(tab) => setRightTab(tab as RightTab)}
               />
             )}
 
