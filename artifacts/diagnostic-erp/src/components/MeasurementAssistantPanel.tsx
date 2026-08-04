@@ -1,8 +1,9 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { isUltrasoundModality } from "@/lib/usgModality";
+import { studyRegionToMeasurementType } from "@/lib/studyRegionToMeasurementType";
 import {
   Ruler, AlertTriangle, TrendingUp, TrendingDown, Minus, Check,
   ChevronDown, RotateCcw, Save, History, Sparkles, Volume2
@@ -39,6 +40,8 @@ interface Props {
   onMeasurementsChange?: (compiledText: string, calculations: Record<string, any>) => void;
   voiceTextCommand?: string;
   initialValues?: Record<string, string>;
+  /** Auto-select measurement template from workspace study region (e.g. LS Spine → MRI_SPINE). */
+  studyRegionHint?: string | null;
 }
 
 const STUDY_TYPES: Array<{ key: string; label: string; modality: string; bodyPart: string }> = [
@@ -183,10 +186,20 @@ function wordToNum(word: string): string {
 }
 
 export default function MeasurementAssistantPanel({
-  patientId, studyId, orderId, modality, bodyPart, onMeasurementsChange, voiceTextCommand, initialValues
+  patientId, studyId, orderId, modality, bodyPart, onMeasurementsChange, voiceTextCommand, initialValues, studyRegionHint,
 }: Props) {
   const { toast } = useToast();
   const [selectedStudyType, setSelectedStudyType] = useState<string>("");
+  const regionAutoSetRef = useRef(false);
+
+  useEffect(() => {
+    const mapped = studyRegionToMeasurementType(studyRegionHint, modality);
+    if (!mapped) return;
+    if (!selectedStudyType || regionAutoSetRef.current) {
+      setSelectedStudyType(mapped);
+      regionAutoSetRef.current = true;
+    }
+  }, [studyRegionHint, modality, selectedStudyType]);
   const [values, setValues] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
