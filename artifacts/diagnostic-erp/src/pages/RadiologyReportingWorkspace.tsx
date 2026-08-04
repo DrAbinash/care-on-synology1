@@ -154,6 +154,7 @@ import {
 } from "@/lib/studyCombinations";
 import ComparisonPanel, { type SelectedPrior } from "@/components/radiology/ComparisonPanel";
 import PriorComparisonToolbar from "@/components/radiology/PriorComparisonToolbar";
+import ViewerMeasurementsBanner from "@/components/radiology/ViewerMeasurementsBanner";
 import { useCopilotPrefs } from "@/hooks/useCopilotPrefs";
 import { useCopilotLearning } from "@/hooks/useCopilotLearning";
 import { isLearnableAddition } from "@/lib/learningEngine";
@@ -5719,6 +5720,18 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                 qualityScore={quality.score}
                 disabled={isLocked}
                 onOpenTab={(tab) => setRightTab(tab as RightTab)}
+              />
+            )}
+
+            {/* Viewer measurements — pending import banner in main column */}
+            {!isLocked && entry?.studyInstanceUID && (
+              <ViewerMeasurementsBanner
+                studyInstanceUID={entry.studyInstanceUID}
+                disabled={isLocked}
+                onInsertAll={(lines) => {
+                  setRawFindings((prev) => lines.reduce((acc, line) => mergeBlock(acc, line), prev));
+                }}
+                onOpenMeasureTab={() => setRightTab("measurements")}
               />
             )}
 
