@@ -50,6 +50,7 @@ import { runMatchingEngineForWorklist } from "./internal-radiology";
 import { calculateMatchScore } from "../lib/pacs/matchingEngine";
 import { publishRadiologyStudyToMwl } from "../lib/pacs/publishRadiologyStudyToMwl";
 import { logger } from "../lib/logger";
+import { radiologyBroadcaster, type RadiologyUpdateEvent } from "../lib/radiologyBroadcast";
 
 // Build an absolute https URL for share-link composition. Trusts the standard
 // reverse-proxy headers `x-forwarded-proto` / `x-forwarded-host`. The proxy
@@ -400,6 +401,39 @@ radiologyRouter.get("/pacs-worklist/count", async (req, res) => {
   const totalRows = parseInt(rows[0]?.n ?? "0", 10);
   req.log.info({ totalRows }, "[pacs-worklist/count] DB row count");
   res.json({ totalRows });
+});
+
+// GET /api/radiology/pacs-worklist-stream — SSE push when PACS intake arrives
+// (EventSource cannot send Authorization; pass ?staffToken= from localStorage).
+radiologyRouter.get("/pacs-worklist-stream", async (req, res): Promise<void> => {
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.setHeader("Content-Encoding", "identity");
+  res.flushHeaders();
+
+  const writeEvent = (data: object): void => {
+    try {
+      res.write(`data: ${JSON.stringify(data)}\n\n`);
+    } catch { /* client disconnected */ }
+  };
+
+  writeEvent({ type: "connected", ts: Date.now() });
+
+  const heartbeat = setInterval(() => {
+    try { res.write(": heartbeat\n\n"); } catch { /* ignore */ }
+  }, 25_000);
+
+  const onUpdate = (evt: RadiologyUpdateEvent): void => {
+    writeEvent({ type: "refresh", worklistId: evt.worklistId, ts: evt.ts });
+  };
+  radiologyBroadcaster.on("radiology-update", onUpdate);
+
+  req.on("close", () => {
+    clearInterval(heartbeat);
+    radiologyBroadcaster.off("radiology-update", onUpdate);
+  });
 });
 
 // GET /api/radiology/pacs-worklist?status=&modality=&search=

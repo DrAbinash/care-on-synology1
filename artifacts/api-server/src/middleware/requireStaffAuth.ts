@@ -56,7 +56,8 @@ export async function requireStaffAuth(
   next: NextFunction,
 ): Promise<void> {
   const auth = req.headers.authorization ?? "";
-  const token = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
+  const queryToken = typeof req.query.staffToken === "string" ? req.query.staffToken.trim() : "";
+  const token = (auth.startsWith("Bearer ") ? auth.slice(7).trim() : "") || queryToken;
 
   if (!token) {
     res.status(401).json({ error: "Staff authentication required" });

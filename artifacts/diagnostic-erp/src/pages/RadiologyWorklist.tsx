@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
-import { api } from "@/lib/fetchApi";
+import { api, getStaffToken } from "@/lib/fetchApi";
 import { readStaffSession, ERP_SESSION_KEY, canAccess, normalizeRole, isFeatureEnabled } from "@/lib/staffSession";
 import { toUnifiedStatus, worklistRoleView, priorityInfo, type WorklistRoleView } from "@/lib/radiologyStatus";
 import { launchViewer, recordFailedLaunch, recordSuccessfulLaunch, resolveActiveProfile } from "@/lib/viewerService";
@@ -669,6 +669,25 @@ export default function RadiologyWorklist() {
     gcTime: 0,
     refetchInterval: 30_000,
   });
+
+  // Live refresh when Orthanc pushes a study (SSE; falls back to 30s poll above).
+  useEffect(() => {
+    const token = getStaffToken();
+    if (!token) return;
+    const base = (import.meta as { env: { BASE_URL?: string } }).env.BASE_URL || "/";
+    const url = `${base}api/radiology/pacs-worklist-stream?staffToken=${encodeURIComponent(token)}`.replace(/\/+/g, "/").replace(":/", "://");
+    let es: EventSource | null = null;
+    try {
+      es = new EventSource(url);
+      es.onmessage = () => {
+        void refetch();
+        void qc.invalidateQueries({ queryKey: ["radiology-pacs-worklist-count"] });
+      };
+    } catch {
+      /* SSE unavailable — 30s poll remains */
+    }
+    return () => { es?.close(); };
+  }, [refetch, qc]);
 
   // DB total count — separate query, no filters, for debug panel
   const { data: countData } = useQuery<{ totalRows: number }>({
