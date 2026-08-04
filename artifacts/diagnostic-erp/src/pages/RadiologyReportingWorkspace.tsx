@@ -3051,16 +3051,6 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     [studyRegion, selectedTemplate?.bodyPart],
   );
 
-  const reportNeedsStart = useMemo(() => {
-    if (!studyRegion || isLocked) return false;
-    const findingsEmpty = useStructured
-      ? Object.values(findingsMap).every((v) => !v.text.trim() || v.normal)
-      : !rawFindings.trim();
-    const noWork = !technique.trim() && findingsEmpty && !impression.some((l) => l.trim());
-    return noWork || templateMismatch || (!activeProtocol && availableProtocols.length > 0);
-  }, [studyRegion, isLocked, useStructured, findingsMap, rawFindings, technique, impression,
-    templateMismatch, activeProtocol, availableProtocols.length]);
-
   const applyCorrectStructuredTemplate = useCallback(() => {
     if (!entry || templates.length === 0) return;
     let match = pickStructuredTemplate(templates, entry.modality, entry.studyDescription);
@@ -3165,6 +3155,16 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   // M1.6A — the editing gate: a finalized report OR a study actively locked
   // by another user is read-only. All existing disabled= paths hang off this.
   const isLocked = statusLocked || lockedByOther;
+
+  const reportNeedsStart = useMemo(() => {
+    if (!studyRegion) return false;
+    const findingsEmpty = useStructured
+      ? Object.values(findingsMap).every((v) => !v.text.trim() || v.normal)
+      : !rawFindings.trim();
+    const noWork = !technique.trim() && findingsEmpty && !impression.some((l) => l.trim());
+    return noWork || templateMismatch || (!activeProtocol && availableProtocols.length > 0);
+  }, [studyRegion, useStructured, findingsMap, rawFindings, technique, impression,
+    templateMismatch, activeProtocol, availableProtocols.length]);
 
   // ── M1.4 — derived workflow state ─────────────────────────────────────────
 
