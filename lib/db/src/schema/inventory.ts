@@ -65,6 +65,27 @@ export const inventoryReorderRequestsTable = pgTable("inventory_reorder_requests
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });
 
+/** Staff demand — request supplies from store (approve → issue stock-out). */
+export const inventoryDemandRequestsTable = pgTable("inventory_demand_requests", {
+  id: serial("id").primaryKey(),
+  itemId: integer("item_id").references(() => inventoryItemsTable.id, { onDelete: "set null" }),
+  itemName: text("item_name").notNull(),
+  quantity: numeric("quantity", { precision: 10, scale: 2 }).notNull(),
+  unit: text("unit").notNull().default("pcs"),
+  department: text("department"),
+  urgency: text("urgency").notNull().default("normal"), // normal | urgent
+  notes: text("notes"),
+  status: text("status").notNull().default("pending"), // pending | approved | issued | rejected | cancelled
+  requestedBy: text("requested_by").notNull(),
+  requestedById: integer("requested_by_id"),
+  reviewedBy: text("reviewed_by"),
+  reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
+  issuedAt: timestamp("issued_at", { withTimezone: true }),
+  rejectionReason: text("rejection_reason"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
+});
+
 export const inventoryTransactionsTable = pgTable("inventory_transactions", {
   id: serial("id").primaryKey(),
   itemId: integer("item_id").notNull().references(() => inventoryItemsTable.id),
@@ -102,6 +123,7 @@ export type InventoryTransaction = typeof inventoryTransactionsTable.$inferSelec
 export type InventoryConsumptionRule = typeof inventoryConsumptionRulesTable.$inferSelect;
 export type InventoryBatch = typeof inventoryBatchesTable.$inferSelect;
 export type InventoryReorderRequest = typeof inventoryReorderRequestsTable.$inferSelect;
+export type InventoryDemandRequest = typeof inventoryDemandRequestsTable.$inferSelect;
 export type InsertInventoryItem = z.infer<typeof insertInventoryItemSchema>;
 export type InsertInventoryTransaction = z.infer<typeof insertInventoryTransactionSchema>;
 export type InsertConsumptionRule = z.infer<typeof insertConsumptionRuleSchema>;

@@ -7,7 +7,8 @@ import {
   testsTable,
   vendorsTable,
 } from "@workspace/db/schema";
-import { eq, desc, lt, and, inArray, sql } from "drizzle-orm";
+import { eq, desc, lte, and, inArray, sql } from "drizzle-orm";
+import { buildLowStockSummary } from "../lib/inventoryLowStockSummary";
 import {
   ListInventoryItemsByVendorParams,
   CreateInventoryItemBody,
@@ -54,18 +55,23 @@ router.get("/items-by-vendor/:vendorId", async (req, res) => {
   res.json(items.map(toNum));
 });
 
-// Low stock items
+// Low stock items (at or below min, includes zero)
 router.get("/low-stock", async (_req, res) => {
-  const rows = await db
-    .select()
-    .from(inventoryItemsTable)
-    .where(
-      and(
-        eq(inventoryItemsTable.isActive, true),
-        lt(inventoryItemsTable.currentStock, inventoryItemsTable.minStock)
-      )
-    );
-  res.json(rows.map(toNum));
+  const summary = await buildLowStockSummary(500);
+  res.json(summary.items.map((i) => ({
+    id: i.id,
+    name: i.name,
+    unit: i.unit,
+    category: i.category,
+    currentStock: i.currentStock,
+    minStock: i.minStock,
+    isActive: true,
+  })));
+});
+
+// Stock health summary for dashboards
+router.get("/low-stock-summary", async (_req, res) => {
+  res.json(await buildLowStockSummary(20));
 });
 
 // Create item

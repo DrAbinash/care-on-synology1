@@ -21,6 +21,7 @@ import {
   Package, Trash2, History, SlidersHorizontal, Pencil,
   LayoutGrid, Table as TableIcon, Download, FileSpreadsheet,
   FileText, FileType, Truck, Phone, Mail, MapPin, Eye,
+  ClipboardList, ShoppingCart,
 } from "lucide-react";
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
@@ -34,6 +35,8 @@ import { useToast } from "@/hooks/use-toast";
 import { buildCsv, downloadCsv, parseCsv } from "@/lib/csv";
 import { Upload, ScanLine } from "lucide-react";
 import PurchaseInvoiceScannerPanel from "@/components/PurchaseInvoiceScannerPanel";
+import InventoryDemandPanel from "@/components/InventoryDemandPanel";
+import InventoryReorderPanel from "@/components/InventoryReorderPanel";
 
 type Item = {
   id: number; name: string; unit: string; category: string;
@@ -225,6 +228,17 @@ export default function Inventory() {
     queryKey: ["inventory-low"],
     queryFn: () => api.get("/api/inventory/low-stock"),
   });
+
+  const { data: pendingDemands = [] } = useQuery<{ id: number }[]>({
+    queryKey: ["/api/inventory/demands", "pending"],
+    queryFn: () => api.get("/api/inventory/demands?status=pending"),
+  });
+
+  const { data: reorderSuggestions = [] } = useQuery<{ id: number }[]>({
+    queryKey: ["/api/inventory/reorder/requests"],
+    queryFn: () => api.get("/api/inventory/reorder/requests?status=suggested"),
+  });
+
   const { data: rules = [] } = useQuery<ConsumptionRule[]>({
     queryKey: ["consumption-rules"],
     queryFn: () => api.get("/api/inventory/consumption-rules"),
@@ -547,6 +561,20 @@ export default function Inventory() {
                 <span className="ml-2 bg-red-500 text-white rounded-full text-xs px-1.5 py-0.5">{lowStock.length}</span>
               )}
             </TabsTrigger>
+            <TabsTrigger value="demands">
+              <ClipboardList size={13} className="mr-1" />
+              Staff Demands
+              {pendingDemands.length > 0 && (
+                <span className="ml-2 bg-violet-500 text-white rounded-full text-xs px-1.5 py-0.5">{pendingDemands.length}</span>
+              )}
+            </TabsTrigger>
+            <TabsTrigger value="reorders">
+              <ShoppingCart size={13} className="mr-1" />
+              Reorders
+              {reorderSuggestions.length > 0 && (
+                <span className="ml-2 bg-amber-500 text-white rounded-full text-xs px-1.5 py-0.5">{reorderSuggestions.length}</span>
+              )}
+            </TabsTrigger>
             <TabsTrigger value="rules">Consumption Rules</TabsTrigger>
             <TabsTrigger value="vendors">
               Vendors
@@ -788,6 +816,16 @@ export default function Inventory() {
                 ))}
               </div>
             )}
+          </TabsContent>
+
+          {/* ── Staff Demands Tab ── */}
+          <TabsContent value="demands" className="space-y-4">
+            <InventoryDemandPanel items={items} />
+          </TabsContent>
+
+          {/* ── Reorders Tab ── */}
+          <TabsContent value="reorders" className="space-y-4">
+            <InventoryReorderPanel />
           </TabsContent>
 
           {/* ── Consumption Rules Tab ── */}

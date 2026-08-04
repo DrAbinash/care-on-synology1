@@ -11,6 +11,7 @@ import type { ExportConfig, ExportSection, ExportTable } from "@/components/Summ
 import { buildReconciliationLedger, simpleLedgerRows } from "@/lib/reconciliationLedger";
 import { SummaryDrilldownModal, type DrilldownType } from "@/components/SummaryDrilldownModal";
 import BillingVsPacsKpi from "@/components/BillingVsPacsKpi";
+import LowStockKpi from "@/components/LowStockKpi";
 import { FINANCIAL_QUERY_OPTIONS } from "@/lib/queryConfig";
 import {
   IndianRupee, Wallet, Banknote, Smartphone, TrendingDown, RotateCcw,
@@ -2081,6 +2082,9 @@ export default function MyDailySummary() {
 
       {/* ── Imaging billed vs PACS (uses date range above; clinic-wide) ── */}
       <BillingVsPacsKpi from={from} to={to} />
+
+      {/* ── Low stock alert (live clinic-wide) ── */}
+      <LowStockKpi />
 
       {/* ── Loading State ── */}
       {isLoading && (

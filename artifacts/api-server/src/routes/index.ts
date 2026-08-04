@@ -8,6 +8,7 @@ import { ordersRouter } from "./orders";
 import { billsRouter, paymentsRouter } from "./bills";
 import { reportsRouter } from "./reports";
 import inventoryRouter from "./inventory";
+import inventoryDemandsRouter from "./inventoryDemands";
 import inventoryBatchesRouter from "./inventoryBatches";
 import { purchaseInvoicesRouter } from "./purchaseInvoices";
 import accountingRouter from "./accounting";
@@ -430,7 +431,8 @@ router.use("/measurement-registry", requireStaffAuth, requireAdminRole, measurem
 // self-validation + coverage scan of existing report parameter labels).
 router.use("/pathology-registry", requireStaffAuth, requireAdminRole, pathologyRegistryRouter);
 
-// Inventory — /inventory permission
+// Inventory — /inventory permission (demands router first — /demands before /:id)
+router.use("/inventory", requireStaffAuth, requireStaffPermission("/inventory"), inventoryDemandsRouter);
 router.use("/inventory", requireStaffAuth, requireStaffPermission("/inventory"), inventoryRouter);
 // Reagent batch/lot + expiry + auto-reorder — additive, same /inventory prefix + guards.
 router.use("/inventory", requireStaffAuth, requireStaffPermission("/inventory"), inventoryBatchesRouter);
