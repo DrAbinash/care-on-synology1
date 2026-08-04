@@ -981,6 +981,14 @@ radiologyRouter.post("/:id/report", async (req, res) => {
   }
 
   const [row] = await db.update(radiologyStudiesTable).set(updates).where(eq(radiologyStudiesTable.id, id)).returning();
+  if (body.stage === "final" && existing.testId) {
+    const { hookConsumeOnStudyFinalized } = await import("../lib/inventoryConsumption");
+    hookConsumeOnStudyFinalized({
+      id: row.id,
+      testId: existing.testId,
+      finalReportedBy: body.reportedBy ?? null,
+    });
+  }
   res.json(row);
 });
 

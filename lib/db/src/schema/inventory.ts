@@ -21,6 +21,7 @@ export const inventoryItemsTable = pgTable("inventory_items", {
   autoReorderEnabled: boolean("auto_reorder_enabled").notNull().default(false),
   storageTemp: text("storage_temp"),
   openStabilityDays: integer("open_stability_days"),
+  barcode: text("barcode"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });

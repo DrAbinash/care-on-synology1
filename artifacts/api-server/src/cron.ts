@@ -63,6 +63,7 @@ export function startCronScheduler() {
   scheduleAuditChainVerify();
   scheduleAiSchedulerModes();
   scheduleQueueDisplayAlerts();
+  scheduleInventoryLowStockAlerts();
 
   // Start the in-process DIMSE pull agent if enabled.
   // When ENABLE_DICOM_PULL_AGENT is set, the agent polls for pull jobs and
@@ -1573,6 +1574,18 @@ function scheduleQueueDisplayAlerts() {
     }
   });
   console.log("[cron] Queue display patient-ping + offline-alert scheduler started (runs every 2 minutes)");
+}
+
+function scheduleInventoryLowStockAlerts() {
+  cron.schedule("0 */6 * * *", async () => {
+    try {
+      const { runScheduledLowStockAlert } = await import("./lib/inventoryLowStockAlerts");
+      await runScheduledLowStockAlert();
+    } catch (err) {
+      console.error("[cron] Low stock alert failed:", err);
+    }
+  });
+  console.log("[cron] Inventory low-stock alert scheduler started (every 6 hours)");
 }
 
 async function checkQueueDisplayOfflineAlerts() {

@@ -234,9 +234,14 @@ router.patch("/items/:id/reorder-config", async (req, res) => {
 // items at/below their reorder point. Idempotent: the partial unique index keeps
 // at most one open request per item, so re-scanning never duplicates.
 router.post("/reorder/scan", async (req: StaffAuthRequest, res) => {
-  const items = await db.select().from(inventoryItemsTable).where(eq(inventoryItemsTable.isActive, true));
+  const autoOnly = req.query.scope === "auto";
+  const items = await db
+    .select()
+    .from(inventoryItemsTable)
+    .where(eq(inventoryItemsTable.isActive, true));
   let created = 0, considered = 0;
   for (const it of items) {
+    if (autoOnly && !it.autoReorderEnabled) continue;
     const item = { reorderPoint: it.reorderPoint == null ? null : n(it.reorderPoint), reorderQuantity: it.reorderQuantity == null ? null : n(it.reorderQuantity), minStock: n(it.minStock), autoReorderEnabled: it.autoReorderEnabled };
     const stock = n(it.currentStock);
     if (!needsReorder(item, stock)) continue;

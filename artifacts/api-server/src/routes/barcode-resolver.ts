@@ -18,6 +18,7 @@ import {
   samplesTable, ordersTable, orderTestsTable, testsTable,
   patientsTable, doctorsTable, billsTable, patientReportsTable,
   reportDeliveryLogsTable, radiologyStudiesTable, radiologyWorklistTable,
+  inventoryItemsTable,
 } from "@workspace/db/schema";
 import { eq, desc } from "drizzle-orm";
 import { requireStaffAuth } from "../middleware/requireStaffAuth";
@@ -29,6 +30,43 @@ router.use(requireStaffAuth);
 router.get("/:code", async (req, res) => {
   const code = (req.params.code ?? "").trim();
   if (!code) { res.status(400).json({ error: "Code is required" }); return; }
+
+  // 0. Inventory item (INV-123 or custom barcode)
+  const invMatch = /^INV-(\d+)$/i.exec(code);
+  if (invMatch) {
+    const [item] = await db.select().from(inventoryItemsTable).where(eq(inventoryItemsTable.id, Number(invMatch[1]))).limit(1);
+    if (item) {
+      return res.json({
+        type: "inventory",
+        code,
+        item: {
+          id: item.id,
+          name: item.name,
+          unit: item.unit,
+          category: item.category,
+          currentStock: Number(item.currentStock),
+          minStock: Number(item.minStock),
+          barcode: item.barcode,
+        },
+      });
+    }
+  }
+  const [invByBarcode] = await db.select().from(inventoryItemsTable).where(eq(inventoryItemsTable.barcode, code)).limit(1);
+  if (invByBarcode) {
+    return res.json({
+      type: "inventory",
+      code,
+      item: {
+        id: invByBarcode.id,
+        name: invByBarcode.name,
+        unit: invByBarcode.unit,
+        category: invByBarcode.category,
+        currentStock: Number(invByBarcode.currentStock),
+        minStock: Number(invByBarcode.minStock),
+        barcode: invByBarcode.barcode,
+      },
+    });
+  }
 
   // 1. Try sample barcode exact match (most common for scan station).
   const [sample] = await db.select().from(samplesTable).where(eq(samplesTable.barcode, code));

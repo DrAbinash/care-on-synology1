@@ -26,6 +26,7 @@ import {
 } from "@workspace/db/schema";
 import { sendReportEmail } from "../email";
 import { requireStaffAuth, type StaffAuthRequest } from "../middleware/requireStaffAuth";
+import { hookConsumeOnReportVerified } from "../lib/inventoryConsumption";
 import { renderHtmlToPdf } from "../lib/htmlToPdf";
 import { isObstetricUsgStudy } from "../lib/usgModality";
 import { checkPcpndtFormFCompliance, PCPNDT_OVERRIDE_ROLES } from "../lib/pcpndtCompliance";
@@ -673,6 +674,11 @@ async function performStructuredVerify(
       });
 
       return updatedRow;
+    });
+    hookConsumeOnReportVerified({
+      id: updated.id,
+      testId: updated.testId,
+      verifiedByName: session.subjectName,
     });
     return {
       status: 200,
@@ -2230,6 +2236,12 @@ patientReportsRouter.post("/:id/verify", async (req, res) => {
     verifierNotes: typeof b.verifierNotes === "string" ? b.verifierNotes : null,
     status: "verified",
   }).where(eq(patientReportsTable.id, id)).returning();
+
+  hookConsumeOnReportVerified({
+    id: row.id,
+    testId: row.testId,
+    verifiedByName: row.verifiedByName,
+  });
 
   // Auto-WhatsApp delivery on verify (Feature 3) — best-effort, never blocks
   // the verify response. Honours whatsapp_settings.autoSendOnVerify.
