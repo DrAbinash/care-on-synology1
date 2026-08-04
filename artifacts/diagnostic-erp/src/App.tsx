@@ -61,6 +61,7 @@ const MeasurementRegistryManager = lazy(() => import("@/pages/MeasurementRegistr
 const PathologyRegistry = lazy(() => import("@/pages/PathologyRegistry"));
 const Patients        = lazy(() => import("@/pages/Patients"));
 const PatientDetail   = lazy(() => import("@/pages/PatientDetail"));
+const PatientTimeline = lazy(() => import("@/pages/PatientTimeline"));
 const Tests           = lazy(() => import("@/pages/Tests"));
 const Orders          = lazy(() => import("@/pages/Orders"));
 const OrderDetail     = lazy(() => import("@/pages/OrderDetail"));
@@ -383,6 +384,7 @@ function Router() {
               <Route path="/measurement-registry" component={MeasurementRegistryManager} />
               <Route path="/pathology-registry" component={PathologyRegistry} />
               <Route path="/patients" component={Patients} />
+              <Route path="/patients/:id/timeline" component={PatientTimeline} />
               <Route path="/patients/:id">
                 {(params) => <PatientDetail id={Number(params.id)} />}
               </Route>

@@ -106,6 +106,7 @@ import { Button } from "@/components/ui/button";
 import { SyncPanel, SyncBadge } from "@/components/SyncPanel";
 import { OfflineBillingSyncNotifier } from "@/components/OfflineBillingSyncNotifier";
 import { ConnectivityStatusBanner } from "@/components/ConnectivityStatusBanner";
+import GlobalCommandPalette from "@/components/GlobalCommandPalette";
 import { isOnLanErpOrigin } from "@/lib/erpConnectivity";
 import { readStaffSession, clearStaffSession, canAccess, FULL_ACCESS_ROLES, isFeatureEnabled, normalizeRole } from "@/lib/staffSession";
 import { useUserTheme, clearUserTheme } from "@/lib/userTheme";
@@ -1404,6 +1405,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
 
             {/* Right controls */}
             <div className="flex items-center gap-0.5 shrink-0">
+              <GlobalCommandPalette />
               <FullscreenToggle />
               <ThemeSelector />
             </div>
@@ -1413,6 +1415,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         {/* Desktop top-right control bar — thin strip, compact icons */}
         {!isMobile && (
           <div className="flex items-center justify-end gap-1 px-3 py-0.5 border-b border-border/40 bg-card/50">
+            <GlobalCommandPalette />
             <FullscreenToggle />
             <ThemeSelector />
           </div>

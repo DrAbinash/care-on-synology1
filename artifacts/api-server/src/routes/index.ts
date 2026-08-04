@@ -2,6 +2,7 @@ import { Router, type IRouter } from "express";
 import healthRouter from "./health";
 import systemRouter from "./system";
 import { patientsRouter } from "./patients";
+import patientTimelineRouter from "./patientTimeline";
 import { doctorsRouter } from "./doctors";
 import { testsRouter } from "./tests";
 import { ordersRouter } from "./orders";
@@ -351,6 +352,7 @@ router.use("/integration/v1", integrationInboundRouter);
 
 // Patient data — /patients permission
 router.use("/patients", requireStaffAuth, requireStaffPermission("/patients"), patientsRouter);
+router.use("/patients", requireStaffAuth, requireStaffPermission("/patients"), patientTimelineRouter);
 
 // Doctor catalogue: any authenticated staff can READ (Billing Desk's
 // referring-doctor picker and Register.tsx both need the doctor list, same
