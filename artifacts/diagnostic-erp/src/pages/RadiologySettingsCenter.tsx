@@ -186,26 +186,38 @@ export default function RadiologySettingsCenter() {
   const activeReportLayout = quickSelectLayoutKey(
     sv("report_presentation_template") || (premiumLayoutActive ? "care-premium" : "care-classic"),
   );
-  const setActiveReportLayout = (layout: ReportLayoutKey) => {
-    upsertSetting.mutate({
-      key: "premium_layout_enabled",
-      value: String(layout === "care-premium"),
-      category: "premium",
-      reason: layout === "care-premium" ? "Premium report layout activated" : "Premium report layout deactivated",
-    });
-  };
 
   const upsertSetting = useMutation({
-    mutationFn: (body: object) => api.post("/api/radiology/pacs-settings", body),
+    mutationFn: (body: object) => api.post("/api/radiology/pacs-settings", {
+      ...body,
+      ...(changeReason.trim() ? { reason: changeReason.trim() } : {}),
+    }),
     onSuccess: (_data, variables) => {
       qc.invalidateQueries({ queryKey: ["pacs-settings"] });
-      if ((variables as { key?: string }).key === "premium_layout_enabled") {
+      if ((variables as { key?: string }).key === "premium_layout_enabled"
+        || (variables as { key?: string }).key === "report_presentation_template") {
         qc.invalidateQueries({ queryKey: ["presentation-templates"] });
       }
       toast({ title: "Configuration updated successfully" });
     },
     onError: (err: any) => toast({ title: "Failed to update configuration", description: err.message, variant: "destructive" }),
   });
+
+  const setActiveReportLayout = (layout: ReportLayoutKey) => {
+    const reason = layout === "care-premium" ? "Premium report layout activated" : "Classic report layout activated";
+    upsertSetting.mutate({
+      key: "report_presentation_template",
+      value: layout,
+      category: "premium",
+      reason,
+    });
+    upsertSetting.mutate({
+      key: "premium_layout_enabled",
+      value: String(layout === "care-premium"),
+      category: "premium",
+      reason,
+    });
+  };
 
   // Mutation to update clinic settings
   const updateClinicSettings = useMutation({
@@ -336,6 +348,23 @@ export default function RadiologySettingsCenter() {
           <TabsTrigger value="advanced"><ShieldAlert size={14} className="mr-1.5" />Advanced</TabsTrigger>
         </TabsList>
 
+        {isAdmin && (
+          <div className="rounded-lg border bg-muted/30 p-3 flex flex-wrap items-end gap-3">
+            <div className="flex-1 min-w-[240px]">
+              <Label className="text-xs font-semibold">Change reason (optional — appears in History tab)</Label>
+              <Input
+                className="h-8 mt-1 text-sm"
+                value={changeReason}
+                onChange={(e) => setChangeReason(e.target.value)}
+                placeholder="e.g. Updated OHIF URL after NAS migration"
+              />
+            </div>
+            <p className="text-[11px] text-muted-foreground max-w-md">
+              Applied to the next PACS/viewer/premium setting you save on this page.
+            </p>
+          </div>
+        )}
+
         {/* Tab content 1: Network Profiles */}
         {/* ── Phase E: GENERAL — plain-language everyday options ── */}
         <TabsContent value="general" className="space-y-4">
@@ -379,6 +408,18 @@ export default function RadiologySettingsCenter() {
                 disabled={!isAdmin}
               />
               <p className="text-[11px] text-muted-foreground">A red "waiting" badge appears on Worklist studies that haven't been finalized within this many hours — helps reception spot studies stuck in the queue.</p>
+            </div>
+          </div>
+          <div className="rounded-xl border bg-card p-4 space-y-2 max-w-2xl">
+            <h4 className="text-xs font-bold uppercase tracking-wide text-muted-foreground">Related admin pages</h4>
+            <div className="flex flex-wrap gap-2 text-sm">
+              <a href="/settings/radiology-quick-select" className="text-primary hover:underline">USG Quick Select</a>
+              <span className="text-muted-foreground">·</span>
+              <a href="/radiology/hl7-settings" className="text-primary hover:underline">HL7 / ORM settings</a>
+              <span className="text-muted-foreground">·</span>
+              <a href="/radiology/structured-report-templates" className="text-primary hover:underline">Structured templates</a>
+              <span className="text-muted-foreground">·</span>
+              <a href="/radiology/normal-templates" className="text-primary hover:underline">Normal one-click templates</a>
             </div>
           </div>
         </TabsContent>
@@ -665,10 +706,25 @@ export default function RadiologySettingsCenter() {
                 <div className="flex items-center justify-between p-3 rounded-lg border bg-muted/40">
                   <div className="space-y-0.5">
                     <span className="text-xs font-semibold">Auto-puller Service Daemon</span>
-                    <p className="text-[11px] text-muted-foreground">Triggers matching C-MOVE commands to conquest destination</p>
+                    <p className="text-[11px] text-muted-foreground">Configure node pull schedules under PACS Servers. Use Sync below to refresh MWL files.</p>
                   </div>
-                  <Badge variant="outline" className="text-green-600 border-green-200">Active</Badge>
+                  <Badge variant="outline" className="text-muted-foreground border-border">See PACS Servers</Badge>
                 </div>
+                <Button
+                  className="w-full"
+                  variant="outline"
+                  disabled={!isAdmin}
+                  onClick={async () => {
+                    try {
+                      const r = await api.post<{ total: number; written: number; removed: number }>("/api/radiology/mwl-worklist/sync", {});
+                      toast({ title: "MWL sync complete", description: `${r.written} written, ${r.removed} removed (${r.total} procedures)` });
+                    } catch (e: unknown) {
+                      toast({ title: "MWL sync failed", description: e instanceof Error ? e.message : "Error", variant: "destructive" });
+                    }
+                  }}
+                >
+                  Sync MWL worklist files now
+                </Button>
               </div>
             </div>
 
@@ -825,12 +881,16 @@ export default function RadiologySettingsCenter() {
                 </p>
                 <Button
                   className="w-full justify-center h-9"
-                  onClick={() => {
-                    toast({ title: "Sync triggered" });
-                    api.post("/api/sync/trigger", {});
+                  onClick={async () => {
+                    try {
+                      const r = await api.post<{ total: number; written: number; removed: number }>("/api/radiology/mwl-worklist/sync", {});
+                      toast({ title: "MWL sync complete", description: `${r.written} written, ${r.removed} removed` });
+                    } catch (e: unknown) {
+                      toast({ title: "MWL sync failed", description: e instanceof Error ? e.message : "Error", variant: "destructive" });
+                    }
                   }}
                 >
-                  Trigger Sync Now
+                  Sync MWL Worklist Now
                 </Button>
               </div>
             </div>

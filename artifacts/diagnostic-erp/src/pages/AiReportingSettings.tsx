@@ -327,7 +327,7 @@ export function AiReportingPanel() {
     setLocalAiProbing(true);
     try {
       const r = await api.post<{ results: { url: string; reachable: boolean }[]; recommendedUrl: string | null }>(
-        "/api/radiology/ollama/probe", {}
+        "/api/radiology-ollama/probe", {}
       );
       setLocalAiProbeResult(r.results);
       if (r.recommendedUrl) {
@@ -344,7 +344,7 @@ export function AiReportingPanel() {
     setLocalAiTestStatus("testing"); setLocalAiTestMsg("");
     try {
       const r = await api.post<{ ok: boolean; error?: string; models?: string[] }>(
-        "/api/radiology/ollama/test",
+        "/api/radiology-ollama/test",
         { baseUrl: localAi.primaryUrl, model: localAi.model, allowLocal: localAi.localOnly }
       );
       if (r.ok) {

@@ -2,7 +2,6 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { useListPatients, useListOrders, useGetOrder } from "@workspace/api-client-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
-import { useLocation } from "wouter";
 import PageHeader from "@/components/PageHeader";
 import ReportPrintSettingsDialog from "@/components/ReportPrintSettingsDialog";
 import {
@@ -39,7 +38,7 @@ import {
   XCircle,
   ScanLine,
 } from "lucide-react";
-import { Link } from "wouter";
+import { Link, useLocation } from "wouter";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { Mic, MicOff, Sparkles, Image as ImageIcon, GraduationCap, BookOpen } from "lucide-react";
@@ -53,6 +52,7 @@ import {
   Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList,
 } from "@/components/ui/command";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import ReportTemplatesManager from "@/components/ReportTemplatesManager";
 import type { SpeechRecognitionLike } from "@/types/speech";
 
 type ReportTemplate = {
@@ -314,6 +314,19 @@ const FLAG_PRINT: Record<FindingFlag, string> = {
 };
 
 export default function ReportGenerator() {
+  const [, setLocation] = useLocation();
+  const [mainView, setMainView] = useState<"generate" | "templates">(() => {
+    if (typeof window !== "undefined") {
+      return new URLSearchParams(window.location.search).get("view") === "templates" ? "templates" : "generate";
+    }
+    return "generate";
+  });
+
+  const switchView = (view: "generate" | "templates") => {
+    setMainView(view);
+    setLocation(view === "templates" ? "/report-generator?view=templates" : "/report-generator");
+  };
+
   const [patientId, setPatientId] = useState<number | null>(null);
   const [orderId, setOrderId] = useState<number | null>(null);
   const [findings, setFindings] = useState<TestFinding[]>([]);
@@ -910,6 +923,36 @@ export default function ReportGenerator() {
       <div className="pb-10">
         <PageHeader title="Report Generator" subtitle="Create formatted diagnostic reports" />
 
+        <div className="px-6 mb-4 flex gap-2 border-b border-border">
+          <button
+            type="button"
+            onClick={() => switchView("generate")}
+            className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
+              mainView === "generate"
+                ? "border-primary text-primary"
+                : "border-transparent text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            Generate Report
+          </button>
+          <button
+            type="button"
+            onClick={() => switchView("templates")}
+            className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
+              mainView === "templates"
+                ? "border-primary text-primary"
+                : "border-transparent text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            Manage Templates
+          </button>
+        </div>
+
+        {mainView === "templates" ? (
+          <div className="px-6">
+            <ReportTemplatesManager embedded />
+          </div>
+        ) : (
         <div className="px-6 space-y-5">
           <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
 
@@ -1537,6 +1580,7 @@ export default function ReportGenerator() {
             </div>
           </div>
         </div>
+        )}
       </div>
 
       {/* Hidden file input used by Upload dialog */}

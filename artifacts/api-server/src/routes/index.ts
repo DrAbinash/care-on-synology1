@@ -649,7 +649,7 @@ router.use(
   },
   testCategoriesRouter,
 );
-router.use("/report-templates", requireStaffAuth, requireStaffSubPermission("/settings", "infrastructure"), reportTemplatesRouter);
+router.use("/report-templates", requireStaffAuth, requireStaffPermission("/report-generator"), reportTemplatesRouter);
 router.use("/knowledge-base", requireStaffAuth, requireStaffSubPermission("/settings", "infrastructure"), knowledgeBaseRouter);
 router.use("/ai-caller-credentials", aiCallerCredentialsRouter);
 // External AI-caller-authenticated path — deliberately NOT behind
