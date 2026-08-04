@@ -79,6 +79,7 @@ import {
   templateRegionMismatch,
 } from "@/lib/pickStructuredTemplate";
 import { pickQuickProtocol } from "@/lib/pickQuickProtocol";
+import { buildUnifiedInboxExtras, mergeCopilotItems } from "@/lib/unifiedCopilotInbox";
 import QuickFindingsPanel, {
   type QuickFinding, type QuickProtocol, type QuickClinicalHistoryChip, type QuickSelectData,
 } from "@/components/radiology/QuickFindingsPanel";
@@ -4707,19 +4708,35 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   // RENDER
   // ══════════════════════════════════════════════════════════════════════════
 
+  const unifiedInboxExtras = useMemo(
+    () => buildUnifiedInboxExtras({
+      measurementSafetyIssues,
+      comparisonSectionMissing,
+      checklistRemaining,
+      qualityIssues: quality.issues,
+    }),
+    [measurementSafetyIssues, comparisonSectionMissing, checklistRemaining, quality.issues],
+  );
+
   // Live items only count when auto-analyse is on; the whole tab hides when the
   // radiologist disables the Copilot (Settings in the panel header).
-  // Panel = deterministic items (when live-analyse is on) + any AI items the
-  // radiologist explicitly asked for. Quality always reflects the core engine.
-  const copilotPanelReport = {
+  // Panel = deterministic items (when live-analyse is on) + unified inbox extras
+  // (measurement safety, prior comparison, checklist, quality) + AI items.
+  const copilotPanelReport = useMemo(() => ({
     ...copilotReport,
-    items: [...(copilotPrefs.autoAnalyze ? copilotReport.items : []), ...aiCopilotItems],
-  };
+    items: mergeCopilotItems(
+      [...(copilotPrefs.autoAnalyze ? copilotReport.items : []), ...aiCopilotItems],
+      unifiedInboxExtras,
+    ),
+  }), [copilotReport, copilotPrefs.autoAnalyze, aiCopilotItems, unifiedInboxExtras]);
+  const copilotInboxCount = copilotPanelReport.items.filter(
+    (i) => !copilotEffectiveDismissed.has(i.id),
+  ).length;
   const copilotAlerts = copilotPanelReport.items.filter(
-    (i) => !copilotDismissed.has(i.id) && (i.severity === "critical" || i.severity === "warning"),
+    (i) => !copilotEffectiveDismissed.has(i.id) && (i.severity === "critical" || i.severity === "warning"),
   ).length;
   const RIGHT_TABS = [
-    ...(copilotPrefs.enabled ? [{ id: "copilot", label: "Copilot", icon: <Sparkles size={14} />, badge: copilotAlerts }] : []),
+    ...(copilotPrefs.enabled ? [{ id: "copilot", label: "Copilot", icon: <Sparkles size={14} />, badge: copilotInboxCount }] : []),
     { id: "quickselect", label: "Quick", icon: <Zap size={14} /> },
     { id: "library", label: "Library", icon: <Library size={14} /> },
     { id: "templates", label: "Templates", icon: <LayoutTemplate size={14} /> },
@@ -5312,6 +5329,32 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                 </Button>
                 <Button size="sm" variant="ghost" className="h-6 text-[10px]" onClick={dismissRescueDraft}>
                   Dismiss
+                </Button>
+              </div>
+            )}
+
+            {/* Unified Copilot inbox — one place for all advisory items */}
+            {!isLocked && copilotPrefs.enabled && copilotInboxCount > 0 && rightTab !== "copilot" && (
+              <div
+                className="flex flex-wrap items-center gap-2 p-2 rounded-md border border-indigo-200 bg-indigo-50/80 text-indigo-900 text-xs shrink-0"
+                data-testid="copilot-inbox-banner"
+              >
+                <Sparkles size={14} className="shrink-0 text-indigo-600" />
+                <span className="flex-1">
+                  <span className="font-semibold">{copilotInboxCount} Copilot item{copilotInboxCount > 1 ? "s" : ""}</span>
+                  {copilotAlerts > 0 && (
+                    <span className="text-indigo-700"> · {copilotAlerts} need attention</span>
+                  )}
+                  <span className="text-indigo-700/80"> — measurements, priors, checklist, and quality in one inbox.</span>
+                </span>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-6 text-[10px] border-indigo-300"
+                  onClick={() => setRightTab("copilot")}
+                >
+                  Open Copilot
                 </Button>
               </div>
             )}
@@ -6601,56 +6644,14 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                     </div>
                   )}
                 </div>
-                {/* F3 (Cockpit→Workspace merge): real-time missed-finding nudges */}
+                {/* Live clinical nudges now live in the unified Copilot tab */}
                 {coPilotSuggestions.length > 0 && (
-                  <div className="mx-2 mt-2 space-y-1.5 shrink-0">
-                    {coPilotSuggestions.map((s) => (
-                      <div
-                        key={s.id}
-                        className={`p-2 rounded-md border text-[11px] space-y-1 ${
-                          s.severity === "critical" ? "bg-red-50 border-red-200"
-                          : s.severity === "warning" ? "bg-amber-50 border-amber-200"
-                          : "bg-muted/30 border-border"
-                        }`}
-                      >
-                        <div className="flex justify-between items-start gap-2">
-                          <span className="font-semibold">{s.title}</span>
-                          <Badge variant="outline" className="text-[8px] uppercase px-1 py-0 shrink-0">{s.severity}</Badge>
-                        </div>
-                        <p className="text-[10px] text-muted-foreground">{s.message}</p>
-                        <div className="flex gap-2 justify-end pt-1 border-t border-border/60">
-                          {s.actionableText && (
-                            <Button
-                              size="sm"
-                              className="h-6 text-[9px] px-2"
-                              disabled={isLocked}
-                              onClick={() => {
-                                if (s.actionMacro === "insertForaminalPlaceholder") {
-                                  setRawFindings((prev) => prev + "\n\nNEURAL FORAMINA:\n- Exiting nerve roots show no significant foraminal narrowing.");
-                                } else if (s.actionMacro === "addSpectroscopyRecommendation") {
-                                  setRecommendation((prev) => prev + " Recommend advanced MR Spectroscopy correlation.");
-                                } else if (s.actionMacro === "addAngioRecommendation") {
-                                  setRecommendation((prev) => prev + " Recommend MRA or CTA evaluation of intracranial circulation.");
-                                } else {
-                                  setRawFindings((prev) => (prev ? prev + " " + s.actionableText : s.actionableText!));
-                                }
-                                setDismissedCoPilotIds((prev) => new Set(prev).add(s.id));
-                              }}
-                            >
-                              Apply Advice
-                            </Button>
-                          )}
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            className="h-6 text-[9px] px-2 text-muted-foreground"
-                            onClick={() => setDismissedCoPilotIds((prev) => new Set(prev).add(s.id))}
-                          >
-                            Dismiss
-                          </Button>
-                        </div>
-                      </div>
-                    ))}
+                  <div className="mx-2 mt-2 p-2 rounded-md border bg-indigo-50/50 text-[10px] text-indigo-800 shrink-0">
+                    {coPilotSuggestions.length} live finding nudge{coPilotSuggestions.length > 1 ? "s" : ""} moved to the{" "}
+                    <button type="button" className="underline font-medium" onClick={() => setRightTab("copilot")}>
+                      Copilot
+                    </button>{" "}
+                    inbox — one place for all advisories.
                   </div>
                 )}
                 <RadiologyCopilotPanel
