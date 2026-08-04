@@ -73,6 +73,12 @@ import ViewerMeasurementsPanel, { useViewerMeasurements } from "@/components/rad
 import PreferencesPanel from "@/components/PreferencesPanel";
 import { isUltrasoundModality, isObstetricUsgStudy } from "@/lib/usgModality";
 import { templateCatalogModality, templateModalityMatches } from "@/lib/radiologyTemplateModality";
+import {
+  pickStructuredTemplate,
+  studyRegionToBodyPart,
+  templateRegionMismatch,
+} from "@/lib/pickStructuredTemplate";
+import { pickQuickProtocol } from "@/lib/pickQuickProtocol";
 import QuickFindingsPanel, {
   type QuickFinding, type QuickProtocol, type QuickClinicalHistoryChip, type QuickSelectData,
 } from "@/components/radiology/QuickFindingsPanel";
@@ -2375,6 +2381,10 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     setReportCreationSkipped(null);
     setShowDiagnostics(false);
     setRegionOverride(null); // manual region override must not leak across studies
+    setActiveProtocol(null);
+    lastInsertedTechniqueRef.current = null;
+    setProtocolReplacePrompt(null);
+    autoProtocolForStudyRef.current = null;
     setPreviewMode(false); // transient UI must not carry across patients
     // Re-arm the once-per-study machine-hydration guards (M1.5): REVISITING a
     // study (Previous / return-to-parked) must hydrate and restore selections
@@ -2832,29 +2842,133 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   // auto match on every change, instantly reverting any template the
   // radiologist picked by hand. It now fires once; manual choices stick.
   const autoTemplateForStudyRef = useRef<number | null>(null);
+  const autoProtocolForStudyRef = useRef<number | null>(null);
   // "auto" = machine-initiated apply (mount/study match) → fills ONLY empty
   // fields and stays clean; "manual" = explicit user click in the Templates
   // tab → full apply (pre-M1.4 behavior) and counts as an unsaved edit.
   const templateApplySourceRef = useRef<"auto" | "manual">("auto");
+
+  /** Apply the default protocol + structured template for a study region.
+   *  `fullReplace` overwrites technique/findings (region override / re-apply). */
+  const applyStudyRegionDefaults = useCallback((region: string | null, opts?: { fullReplace?: boolean }) => {
+    if (!region) return;
+    const protocol = pickQuickProtocol(quickSelectData?.protocols ?? [], region);
+    if (protocol) {
+      if (opts?.fullReplace) applyProtocol(protocol, true);
+      else requestProtocolChange(protocol);
+    } else if (opts?.fullReplace) {
+      setActiveProtocol(null);
+      lastInsertedTechniqueRef.current = null;
+    }
+    if (!entry || templates.length === 0) return;
+    let match = pickStructuredTemplate(templates, entry.modality, entry.studyDescription);
+    if (!match) {
+      const bodyPart = studyRegionToBodyPart(region);
+      const mod = templateCatalogModality(entry.modality);
+      if (bodyPart) {
+        match = templates.find(
+          (t) => templateCatalogModality(t.modality) === mod && t.bodyPart === bodyPart,
+        ) ?? null;
+      }
+    }
+    if (!match) return;
+    templateApplySourceRef.current = opts?.fullReplace ? "manual" : "auto";
+    setSelectedTemplateId(match.id);
+    if (opts?.fullReplace) {
+      toast({ title: "Study setup applied", description: `${protocol?.name ?? "Protocol"} · ${match.templateName}` });
+    }
+  }, [entry, templates, quickSelectData, toast]);
+
+  function handleRegionOverrideSelect(nextValue: string) {
+    if (isLocked) return;
+    const targetRegion = nextValue || null;
+    if (!targetRegion || targetRegion === studyRegion) return;
+    const hasContent = technique.trim().length > 0
+      || rawFindings.trim().length > 0
+      || Object.keys(findingsMap).length > 0
+      || impression.some((l) => l.trim());
+    if (hasContent) {
+      if (!window.confirm(
+        "Changing the study region reloads the default protocol and structured template. "
+        + "Current technique and findings will be replaced. Continue?",
+      )) return;
+    }
+    setRegionOverride(targetRegion === autoStudyRegion ? null : targetRegion);
+    applyStudyRegionDefaults(targetRegion, { fullReplace: true });
+  }
+
+  function handleReapplyStudyDefaults() {
+    if (isLocked || !studyRegion) return;
+    if (!window.confirm(
+      "Reload the default protocol and structured template for this study region? "
+      + "Technique and findings will be replaced.",
+    )) return;
+    applyStudyRegionDefaults(studyRegion, { fullReplace: true });
+  }
+
   useEffect(() => {
     if (!entry || templates.length === 0) return;
     const studyKey = studyId ?? -1;
     if (autoTemplateForStudyRef.current === studyKey) return;
     autoTemplateForStudyRef.current = studyKey;
-    const mod = templateCatalogModality(entry.modality);
-    const bodyPart = (entry.studyDescription || "").toUpperCase();
-    let match = templates.find((t) => t.modality === mod && bodyPart.includes(t.bodyPart));
-    if (!match) match = templates.find((t) => t.modality === mod);
+    let match = pickStructuredTemplate(templates, entry.modality, entry.studyDescription);
+    if (!match && studyRegion) {
+      const bodyPart = studyRegionToBodyPart(studyRegion);
+      const mod = templateCatalogModality(entry.modality);
+      if (bodyPart) {
+        match = templates.find(
+          (t) => templateCatalogModality(t.modality) === mod && t.bodyPart === bodyPart,
+        ) ?? null;
+      }
+    }
     if (match && match.id !== selectedTemplateId) {
       templateApplySourceRef.current = "auto";
       setSelectedTemplateId(match.id);
     }
-  }, [entry, templates, selectedTemplateId, studyId]);
+  }, [entry, templates, selectedTemplateId, studyId, studyRegion]);
+
+  // Auto-apply the region's default protocol once per study (after draft hydration).
+  useEffect(() => {
+    if (!entry || !quickSelectData || isLoadingExistingDraft) return;
+    const studyKey = studyId ?? -1;
+    if (autoProtocolForStudyRef.current === studyKey) return;
+    if (existingDraft && hydratedDraftForStudyRef.current !== studyKey) return;
+    autoProtocolForStudyRef.current = studyKey;
+    if (technique.trim() || activeProtocol) return;
+    const protocol = pickQuickProtocol(quickSelectData.protocols, studyRegion);
+    if (protocol) applyProtocol(protocol, true);
+  }, [entry, quickSelectData, isLoadingExistingDraft, existingDraft, studyId, studyRegion, technique, activeProtocol]);
 
   const selectedTemplate = useMemo(
     () => templates.find((t) => t.id === selectedTemplateId) ?? null,
     [templates, selectedTemplateId]
   );
+
+  const templateMismatch = useMemo(
+    () => templateRegionMismatch(studyRegion, selectedTemplate?.bodyPart ?? null),
+    [studyRegion, selectedTemplate?.bodyPart],
+  );
+
+  const applyCorrectStructuredTemplate = useCallback(() => {
+    if (!entry || templates.length === 0) return;
+    let match = pickStructuredTemplate(templates, entry.modality, entry.studyDescription);
+    if (!match && studyRegion) {
+      const bodyPart = studyRegionToBodyPart(studyRegion);
+      const mod = templateCatalogModality(entry.modality);
+      if (bodyPart) {
+        match = templates.find(
+          (t) => templateCatalogModality(t.modality) === mod && t.bodyPart === bodyPart,
+        ) ?? null;
+      }
+    }
+    if (!match) {
+      toast({ title: "No matching template", description: "Pick a template from the Templates tab.", variant: "destructive" });
+      return;
+    }
+    templateApplySourceRef.current = "manual";
+    setSelectedTemplateId(match.id);
+    toast({ title: "Template applied", description: match.templateName });
+  }, [entry, templates, studyRegion, toast]);
 
   // Load template content when selected. Auto-selection must never clobber a
   // hydrated draft or typed text (the draft/template queries race — whichever
@@ -5257,6 +5371,68 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
               </div>
             )}
 
+            {/* Study setup — region, protocol, template; manual override + re-apply */}
+            {!isLocked && availableRegions.length > 0 && (
+              <div
+                className="flex flex-wrap items-center gap-2 p-2 rounded-md border bg-slate-50/80 dark:bg-slate-900/40 text-[11px] shrink-0"
+                data-testid="study-setup-bar"
+              >
+                <span className="font-semibold text-muted-foreground uppercase text-[9px] tracking-wide">Study setup</span>
+                <label className="inline-flex items-center gap-1">
+                  <span className="text-muted-foreground">Region</span>
+                  <select
+                    aria-label="Study region"
+                    className="h-6 text-[10px] rounded border bg-background px-1 max-w-[140px]"
+                    value={studyRegion ?? ""}
+                    onChange={(e) => handleRegionOverrideSelect(e.target.value)}
+                  >
+                    {!studyRegion && <option value="">— none —</option>}
+                    {availableRegions.map((r) => (
+                      <option key={r} value={r}>{r}</option>
+                    ))}
+                  </select>
+                  {regionOverride != null && regionOverride !== autoStudyRegion && (
+                    <button
+                      type="button"
+                      className="text-amber-600 underline text-[10px]"
+                      title={`Auto-detected: ${autoStudyRegion ?? "none"}`}
+                      onClick={() => setRegionOverride(null)}
+                    >
+                      reset
+                    </button>
+                  )}
+                </label>
+                <span className="text-muted-foreground">
+                  Protocol:{" "}
+                  <span className={activeProtocol ? "text-foreground font-medium" : "text-amber-600"}>
+                    {activeProtocol?.name ?? (availableProtocols[0]?.name ? `${availableProtocols[0].name} (not applied)` : "none")}
+                  </span>
+                </span>
+                <span className="text-muted-foreground">
+                  Template:{" "}
+                  <span className={selectedTemplate ? "text-foreground font-medium" : "text-amber-600"}>
+                    {selectedTemplate?.templateName ?? "none"}
+                  </span>
+                </span>
+                {(templateMismatch || !activeProtocol) && studyRegion && (
+                  <span className="inline-flex items-center gap-0.5 text-amber-600">
+                    <AlertTriangle size={11} />
+                    {templateMismatch ? "template mismatch" : "protocol not applied"}
+                  </span>
+                )}
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-6 text-[10px] ml-auto"
+                  disabled={!studyRegion}
+                  onClick={handleReapplyStudyDefaults}
+                >
+                  Re-apply defaults
+                </Button>
+              </div>
+            )}
+
             {/* Clinical History — collapsible (Phase 3), layout remembered per browser */}
             <CollapsibleSection
               layoutKey="radiology_report_layout"
@@ -5418,42 +5594,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                 </div>
               </div>
 
-              {/* Manual study-region override — the quick findings / protocols /
-                  clinical-history chips shown are driven by the auto-detected
-                  study region, which is only as reliable as the PACS/billing
-                  labelling. This lets the radiologist FORCE the correct region
-                  when a study is mislabelled or misrouted. */}
-              {availableRegions.length > 0 && (
-                <div className="flex items-center gap-1.5 flex-wrap text-[10px]">
-                  <span className="text-muted-foreground font-medium">Study region:</span>
-                  <select
-                    aria-label="Force study region"
-                    title="Force the study region — use when the technician/billing desk labelled the study wrong or auto-detection misfired. Controls which quick findings, protocols and clinical-history chips appear."
-                    className="h-5 text-[10px] rounded border bg-background px-1"
-                    value={studyRegion ?? ""}
-                    disabled={isLocked}
-                    onChange={(e) => setRegionOverride(e.target.value || null)}
-                  >
-                    {!studyRegion && <option value="">— none detected —</option>}
-                    {availableRegions.map((r) => (
-                      <option key={r} value={r}>{r}</option>
-                    ))}
-                  </select>
-                  {regionOverride != null && regionOverride !== autoStudyRegion && (
-                    <span className="inline-flex items-center gap-0.5 text-amber-600" title={`Auto-detected region: ${autoStudyRegion ?? "none"}`}>
-                      <AlertTriangle size={10} /> forced
-                      <button
-                        type="button"
-                        className="underline ml-0.5 disabled:opacity-50"
-                        onClick={() => setRegionOverride(null)}
-                        disabled={isLocked}
-                      >
-                        reset
-                      </button>
-                    </span>
-                  )}
-                </div>
-              )}
+              {/* Study region is controlled from the Study setup bar above. */}
 
               {/* Quick Findings (Phase 6) — prominent study-specific chips in
                   the main report column. Clicking a chip flips its anatomical
@@ -5520,6 +5661,26 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                 </div>
               )}
 
+              {templateMismatch && (
+                <div className="flex flex-wrap items-center gap-2 p-2 rounded-md border border-amber-300 bg-amber-50 text-[11px] text-amber-900">
+                  <AlertTriangle size={14} className="shrink-0" />
+                  <span>
+                    Findings template ({selectedTemplate?.templateName ?? "unknown"}) does not match study region
+                    ({studyRegion}). Brain sections will not apply to a spine study.
+                  </span>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="h-6 text-[10px] ml-auto"
+                    disabled={isLocked}
+                    onClick={applyCorrectStructuredTemplate}
+                  >
+                    Load {studyRegion} template
+                  </Button>
+                </div>
+              )}
+
               {useStructured ? (
                 <div className="flex flex-col gap-2">
                   {Object.entries(findingsMap).map(([label, item]) => (
@@ -5538,13 +5699,30 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                         />
                         <Label
                           htmlFor={`norm-${label}`}
-                          className="text-xs font-semibold cursor-pointer"
+                          className="text-xs font-semibold cursor-pointer flex-1"
                         >
                           {label}
                         </Label>
-                        <span className="text-[10px] text-muted-foreground ml-auto">
+                        <span className="text-[10px] text-muted-foreground">
                           {item.normal ? "Normal" : "Abnormal"}
                         </span>
+                        {!isLocked && (
+                          <button
+                            type="button"
+                            className="text-muted-foreground hover:text-destructive p-0.5 rounded"
+                            title={`Remove "${label}" section`}
+                            aria-label={`Remove ${label} section`}
+                            onClick={() => {
+                              setFindingsMap((prev) => {
+                                const next = { ...prev };
+                                delete next[label];
+                                return next;
+                              });
+                            }}
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        )}
                       </div>
                       {!item.normal && (
                         <Textarea
