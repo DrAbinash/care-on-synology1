@@ -2111,7 +2111,7 @@ export default function MyDailySummary() {
                   <p className="text-[11px] font-bold uppercase tracking-widest text-gray-400 dark:text-gray-500 px-0.5">
                     Money flow
                     <span className="ml-2 font-medium normal-case tracking-normal text-gray-400">
-                      Bills → Collectible → Outstanding → Digital → Expected cash
+                      Bills → Outstanding → Collectible → Digital → Expected cash
                     </span>
                   </p>
                   <div className="flex flex-wrap xl:flex-nowrap items-stretch gap-3">
@@ -2126,17 +2126,6 @@ export default function MyDailySummary() {
                       />
                     </div>
                     <FlowArrow />
-                    <div className="w-[calc(50%-0.375rem)] sm:w-[calc(33.333%-0.5rem)] xl:w-auto xl:flex-[1.15] min-w-0">
-                      <MiniKpiFilled
-                        icon={Calculator}
-                        label="Collectible Amount"
-                        value={fmt(collectible)}
-                        sub="What should be in hand + bank"
-                        solid="blue"
-                        onClick={() => setDrilldownType("collectibleAmount")}
-                      />
-                    </div>
-                    <FlowArrow />
                     <div className="w-[calc(50%-0.375rem)] sm:w-[calc(33.333%-0.5rem)] xl:w-auto xl:flex-1 min-w-0">
                       <MiniKpi
                         icon={Wallet}
@@ -2145,6 +2134,17 @@ export default function MyDailySummary() {
                         sub="Unpaid balance"
                         theme="orange"
                         onClick={() => setDrilldownType("outstandingDues")}
+                      />
+                    </div>
+                    <FlowArrow />
+                    <div className="w-[calc(50%-0.375rem)] sm:w-[calc(33.333%-0.5rem)] xl:w-auto xl:flex-[1.15] min-w-0">
+                      <MiniKpiFilled
+                        icon={Calculator}
+                        label="Collectible Amount"
+                        value={fmt(collectible)}
+                        sub="What should be in hand + bank"
+                        solid="blue"
+                        onClick={() => setDrilldownType("collectibleAmount")}
                       />
                     </div>
                     <FlowArrow />
