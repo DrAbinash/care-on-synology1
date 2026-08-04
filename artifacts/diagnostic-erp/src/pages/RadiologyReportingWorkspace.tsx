@@ -6770,6 +6770,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                   orderId={entry?.id ?? undefined}
                   modality={entry?.modality ?? undefined}
                   bodyPart={entry?.studyDescription ?? undefined}
+                  studyRegionHint={studyRegion}
                   onMeasurementsChange={handleMeasurementsApplied} // D2: auto-bridge calcs → Findings/Impression
                   voiceTextCommand={lastVoiceCommand} // D3: autofill fields from dictated numbers
                 />
