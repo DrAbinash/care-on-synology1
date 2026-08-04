@@ -1,6 +1,7 @@
 import { useState, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
+import OpsHealthStrip from "@/components/OpsHealthStrip";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
@@ -888,6 +889,7 @@ export default function Dashboard() {
       />
 
       <div className="px-4 xl:px-6 space-y-5">
+        <OpsHealthStrip />
 
         {/* ── KPI cards (5 columns on xl) ─────────────────────────────────── */}
         <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3">

@@ -8,6 +8,8 @@
     "build": "node ./build.mjs",
     "build:deploy": "node ./scripts/build-deploy.mjs",
     "start": "node --enable-source-maps ./dist/index.mjs",
+    "worker:start": "node --enable-source-maps ./dist/worker.mjs",
+    "worker:dev": "pnpm run build && cross-env NODE_ENV=development pnpm run worker:start",
     "smoke": "node ./dist/smoke-cli.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test:validation": "node ./scripts/validation-tests.mjs"

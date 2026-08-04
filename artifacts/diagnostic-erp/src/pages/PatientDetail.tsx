@@ -14,7 +14,7 @@ import {
 } from "@/components/ui/dialog";
 import {
   ArrowLeft, User, Phone, MapPin, Droplet, Sparkles,
-  Copy, CheckCheck, MessageSquare, FileText, Upload, X, ShieldCheck, ShieldOff, ClipboardList,
+  Copy, CheckCheck, MessageSquare, FileText, Upload, X, ShieldCheck, ShieldOff, ClipboardList, Clock,
 } from "lucide-react";
 
 type AIType = "clinical-note" | "patient-message";
@@ -142,6 +142,11 @@ export default function PatientDetail({ id }: { id: number }) {
         subtitle={patient.patientId}
         actions={
           <div className="flex items-center gap-2">
+            <Link href={`/patients/${id}/timeline`} asChild>
+              <Button size="sm" variant="outline">
+                <Clock size={14} className="mr-1.5" />Timeline
+              </Button>
+            </Link>
             <Button size="sm" variant="outline" onClick={() => { setMsgType("followup"); generateAI("patient-message", "followup"); }}>
               <MessageSquare size={14} className="mr-1.5" />AI Message
             </Button>
