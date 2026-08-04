@@ -83,6 +83,7 @@ import {
 import { pickQuickProtocol } from "@/lib/pickQuickProtocol";
 import { buildUnifiedInboxExtras, mergeCopilotItems } from "@/lib/unifiedCopilotInbox";
 import { pickDefaultRightTab, saveRightTab } from "@/lib/pickDefaultRightTab";
+import { generateLocalImpression } from "@/lib/generateLocalImpression";
 import QuickFindingsPanel, {
   type QuickFinding, type QuickProtocol, type QuickClinicalHistoryChip, type QuickSelectData,
 } from "@/components/radiology/QuickFindingsPanel";
@@ -3816,6 +3817,26 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     setImpression((prev) => prev.filter((_, i) => i !== index));
   }
 
+  function handleGenerateImpression(useAi = false) {
+    if (isLocked) return;
+    if (useAi) {
+      aiImpressionMutation.mutate();
+      setRightTab("ai");
+      return;
+    }
+    const lines = generateLocalImpression(
+      useStructured ? findingsAsText() : rawFindings,
+      useStructured ? findingsMap : undefined,
+    );
+    if (lines.length === 0) {
+      toast({ title: "No findings to summarize", description: "Add findings first.", variant: "destructive" });
+      return;
+    }
+    if (impression.some((l) => l.trim()) && !window.confirm("Replace current impression with generated summary?")) return;
+    setImpression(lines);
+    toast({ title: "Impression generated", description: `${lines.length} point${lines.length > 1 ? "s" : ""} from findings` });
+  }
+
   const aiImpressionMutation = useMutation({
     mutationFn: async () => {
       if (!entry) throw new Error("No study loaded");
@@ -6055,13 +6076,21 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                 <div className="flex gap-1">
                   <Button
                     size="sm"
+                    variant="default"
+                    className="h-6 text-[10px] gap-1"
+                    onClick={() => handleGenerateImpression(false)}
+                    disabled={isLocked}
+                    title="Instant summary from your findings (no AI)"
+                  >
+                    <ClipboardList size={10} /> Generate
+                  </Button>
+                  <Button
+                    size="sm"
                     variant="outline"
                     className="h-6 text-[10px] gap-1"
-                    onClick={() => {
-                      aiImpressionMutation.mutate();
-                      setRightTab("ai");
-                    }}
+                    onClick={() => handleGenerateImpression(true)}
                     disabled={aiLoading || isLocked}
+                    title="AI-polished impression"
                   >
                     {aiLoading ? (
                       <RefreshCw size={10} className="animate-spin" />
