@@ -1,0 +1,8 @@
+{
+  "_comment": "Merge into care-pacs orthanc.json. Mount host worklists folder to Database path.",
+  "Worklists": {
+    "Enable": true,
+    "Database": "/var/lib/orthanc/worklists"
+  },
+  "_docker_compose_volume_example": "/volume1/docker/care-pacs/orthanc/worklists:/var/lib/orthanc/worklists"
+}
