@@ -9,6 +9,7 @@ import { classifyPaymentMethod, isPhysicalCash, isDigitalSettlement } from "../l
 import { computeRefundsOnCancelledBillsCreatedInPeriod } from "../lib/dailySummaryCollectible";
 import { buildStaffActivityRows, BILL_AUDIT_OPERATIONAL_CHANGE_TYPES } from "../lib/staffActivityAttribution";
 import { buildBillingVsPacsSummary } from "../lib/pacs/billingVsPacsSummary";
+import { buildLowStockSummary } from "../lib/inventoryLowStockSummary";
 
 export const myDailySummaryRouter = Router();
 
@@ -1154,5 +1155,15 @@ myDailySummaryRouter.get("/billing-vs-pacs", async (req: StaffAuthRequest, res) 
   } catch (err) {
     req.log.error({ err, from, to }, "billing-vs-pacs summary failed");
     return res.status(500).json({ error: "Failed to load imaging reconciliation summary" });
+  }
+});
+
+// GET /low-stock — clinic-wide stock alert summary for Daily Summary KPI
+myDailySummaryRouter.get("/low-stock", async (_req, res) => {
+  try {
+    const summary = await buildLowStockSummary(15);
+    return res.json(summary);
+  } catch (err) {
+    return res.status(500).json({ error: "Failed to load low stock summary" });
   }
 });
