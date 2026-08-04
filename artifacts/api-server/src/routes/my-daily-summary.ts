@@ -8,6 +8,7 @@ import { getTransporter, getEmailSettings } from "../email";
 import { classifyPaymentMethod, isPhysicalCash, isDigitalSettlement } from "../lib/paymentMethodClassifier";
 import { computeRefundsOnCancelledBillsCreatedInPeriod } from "../lib/dailySummaryCollectible";
 import { buildStaffActivityRows, BILL_AUDIT_OPERATIONAL_CHANGE_TYPES } from "../lib/staffActivityAttribution";
+import { buildBillingVsPacsSummary } from "../lib/pacs/billingVsPacsSummary";
 
 export const myDailySummaryRouter = Router();
 
@@ -1132,4 +1133,26 @@ myDailySummaryRouter.get("/drilldown", async (req: StaffAuthRequest, res) => {
     from, to, staffName: staffName ?? "All Staff",
     ...result,
   });
+});
+
+// GET /billing-vs-pacs — clinic-wide billed vs PACS intake by modality (date range)
+myDailySummaryRouter.get("/billing-vs-pacs", async (req: StaffAuthRequest, res) => {
+  const today = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+  const from = typeof req.query.from === "string" ? req.query.from : today;
+  const to = typeof req.query.to === "string" ? req.query.to : from;
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) {
+    return res.status(400).json({ error: "Invalid date format — use YYYY-MM-DD" });
+  }
+  if (from > to) {
+    return res.status(400).json({ error: "from must be on or before to" });
+  }
+
+  try {
+    const summary = await buildBillingVsPacsSummary(from, to);
+    return res.json(summary);
+  } catch (err) {
+    req.log.error({ err, from, to }, "billing-vs-pacs summary failed");
+    return res.status(500).json({ error: "Failed to load imaging reconciliation summary" });
+  }
 });
