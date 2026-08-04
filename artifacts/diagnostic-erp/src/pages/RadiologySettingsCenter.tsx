@@ -715,6 +715,9 @@ export default function RadiologySettingsCenter() {
                 <p className="text-[11px] text-muted-foreground">
                   Alternative: Windows MWL agent queries <code className="font-mono bg-muted px-1 rounded">GET /api/internal/radiology/mwl</code> — see Agent Setup panel →
                 </p>
+                <p className="text-[11px] text-muted-foreground">
+                  DICOM auto-puller schedules are configured under <strong>PACS Servers</strong>.
+                </p>
               </div>
             </div>
             <div className="space-y-6">
