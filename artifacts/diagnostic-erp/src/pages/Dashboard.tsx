@@ -110,6 +110,8 @@ type OverallSummary = {
   totalReceived: number;
   digitalCollection: number;
   cashCollection: number;
+  cashRefunded?: number;
+  cashExpenses?: number;
   totalExpenses: number;
   discountsGiven: number;
   netCollection: number;
@@ -612,18 +614,18 @@ function ReconciliationFlow({ s }: { s: OverallSummary }) {
         <h3 className="text-sm font-bold text-gray-900 dark:text-foreground flex items-center gap-2">
           <BarChart3 size={14} className="text-blue-600" /> Daily Financial Reconciliation
         </h3>
-        <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Step-by-step cash flow verification</p>
+        <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Payment-axis cash flow (money that moved)</p>
       </div>
       <div className="p-4 space-y-0">
-        <RecRow label="Gross Billing" value={s.grossBilling} type="start" />
-        <RecRow label="− Outstanding / Dues" value={s.outstanding} type="deduct" />
-        <RecRow label="− Refunds & Cancellations" value={s.refundsAndCancellations} type="deduct"
-          note={`₹${s.refundAmount.toFixed(0)} refunds + ₹${s.cancelledAmount.toFixed(0)} cancelled`} />
-        <RecRow label="− Cash Expenses" value={s.totalExpenses} type="deduct" />
+        <RecRow label="Payments Received" value={s.totalReceived} type="start" />
+        <RecRow label="− Refunds" value={s.refundAmount} type="deduct" />
+        <RecRow label="− Expenses" value={s.totalExpenses} type="deduct" />
         <div className="my-2 border-t-2 border-green-200 dark:border-green-800" />
         <RecRow label="= Net Collection" value={s.netCollection} type="result" />
         <div className="my-2 border-t border-dashed border-gray-200 dark:border-gray-700" />
-        <RecRow label="− Digital Collection" value={s.digitalCollection} type="deduct" />
+        <RecRow label="Cash In" value={s.cashCollection} type="start" />
+        <RecRow label="− Cash Refunded" value={s.cashRefunded ?? 0} type="deduct" />
+        <RecRow label="− Cash Expenses" value={s.cashExpenses ?? 0} type="deduct" />
         <div className="my-2 border-t-2 border-blue-200 dark:border-blue-800" />
         <RecRow label="= Physical Cash in Hand" value={s.physicalCashInHand} type="final" />
         <div className="mt-4 grid grid-cols-2 gap-2">
@@ -636,6 +638,9 @@ function ReconciliationFlow({ s }: { s: OverallSummary }) {
             <p className="text-base font-bold text-blue-800 dark:text-blue-200">{fmt(s.physicalCashInHand)}</p>
           </div>
         </div>
+        <p className="text-[10px] text-muted-foreground mt-3">
+          Billing {fmt(s.grossBilling)} · Outstanding {fmt(s.outstanding)} · Cancelled {fmt(s.cancelledAmount)} (context only — not subtracted again into net)
+        </p>
       </div>
     </div>
   );

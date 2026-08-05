@@ -105,12 +105,19 @@ export function simpleLedgerRows(ledger: ReconciliationLedger, amt: (n: number) 
     { label: "COLLECTIBLE", value: amt(ledger.collectible), kind: "subtotal" },
     { label: "", value: "", kind: "blank" },
     { label: "− UPI / Digital (net)", value: amt(ledger.digitalNet), kind: "subtract" },
+    { label: "− Cash Expenses", value: amt(ledger.cashExpenses), kind: "subtract" },
     { label: "CASH IN COUNTER", value: amt(ledger.physicalCashInHand), kind: "total" },
     { label: "", value: "", kind: "blank" },
     {
       label: "Cashbox check",
       value: `${amt(ledger.cashReceived)} − ${amt(ledger.cashRefunded)} − ${amt(ledger.cashExpenses)} = ${amt(ledger.physicalCashInHand)}`,
       kind: "note",
+    },
+    {
+      label: "Expected from billing",
+      value: amt(ledger.expectedCash),
+      kind: "note",
+      detail: `Collectible − Digital net − Cash expenses${Math.abs(ledger.mismatch) > 0.01 ? ` · variance ${amt(ledger.mismatch)}` : ""}`,
     },
     {
       label: ledger.balanced ? "Status" : "Variance",

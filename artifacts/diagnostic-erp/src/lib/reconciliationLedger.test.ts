@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildReconciliationLedger } from "./reconciliationLedger";
+import { buildReconciliationLedger, simpleLedgerRows } from "./reconciliationLedger";
 
 /** Sanjeev 2026-08-02 numbers from owner report */
 const SANJEEV = {
@@ -33,5 +33,13 @@ describe("buildReconciliationLedger", () => {
     const l = buildReconciliationLedger(SANJEEV);
     expect(l.commonStaffMistake).toBe(136_700);
     expect(l.commonStaffMistake).not.toBe(l.physicalCashInHand);
+  });
+
+  it("subtracts cash expenses before cash in counter", () => {
+    const l = buildReconciliationLedger({ ...SANJEEV, cashExpenses: 500, physicalCashInHand: 92_450 });
+    expect(l.expectedCash).toBe(139_400 - 46_450 - 500);
+    expect(l.balanced).toBe(true);
+    const rows = simpleLedgerRows(l, (n) => String(n));
+    expect(rows.some((r) => r.label === "− Cash Expenses" && r.value === "500")).toBe(true);
   });
 });
