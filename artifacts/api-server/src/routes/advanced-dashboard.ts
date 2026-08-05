@@ -205,19 +205,23 @@ advancedDashboardRouter.get("/", async (req: StaffAuthRequest, res) => {
     refund_amount: string;
     digital_collection: string;
     cash_collection: string;
+    cash_refunded: string;
   }>(sql`
     SELECT
       COALESCE(SUM(amount::numeric) FILTER (WHERE amount::numeric > 0), 0)::text AS total_received,
       COALESCE(SUM(ABS(amount::numeric)) FILTER (WHERE amount::numeric < 0), 0)::text AS refund_amount,
       COALESCE(SUM(amount::numeric) FILTER (WHERE amount::numeric > 0 AND LOWER(method) IN ('upi','card','online','bank','cheque','neft','rtgs')), 0)::text AS digital_collection,
-      COALESCE(SUM(amount::numeric) FILTER (WHERE amount::numeric > 0 AND LOWER(method) = 'cash'), 0)::text AS cash_collection
+      COALESCE(SUM(amount::numeric) FILTER (WHERE amount::numeric > 0 AND LOWER(method) = 'cash'), 0)::text AS cash_collection,
+      COALESCE(SUM(ABS(amount::numeric)) FILTER (WHERE amount::numeric < 0 AND LOWER(method) = 'cash'), 0)::text AS cash_refunded
     FROM payments
     WHERE created_at >= ${start} AND created_at <= ${end}
     ${staffFilter ? sql`AND recorded_by_name = ${staffFilter}` : sql``}
   `);
 
-  const expensesAggRaw = await db.execute<{ total_expenses: string }>(sql`
-    SELECT COALESCE(SUM(amount::numeric), 0)::text AS total_expenses
+  const expensesAggRaw = await db.execute<{ total_expenses: string; cash_expenses: string }>(sql`
+    SELECT
+      COALESCE(SUM(amount::numeric), 0)::text AS total_expenses,
+      COALESCE(SUM(amount::numeric) FILTER (WHERE LOWER(COALESCE(payment_mode, 'cash')) = 'cash'), 0)::text AS cash_expenses
     FROM expenses
     WHERE expense_date >= ${from} AND expense_date <= ${to}
     ${staffFilter ? sql`AND approved_by = ${staffFilter}` : sql``}
@@ -238,10 +242,18 @@ advancedDashboardRouter.get("/", async (req: StaffAuthRequest, res) => {
   const refundAmount = Number(paymentsAggRaw.rows[0]?.refund_amount ?? 0);
   const digitalCollection = Number(paymentsAggRaw.rows[0]?.digital_collection ?? 0);
   const cashCollection = Number(paymentsAggRaw.rows[0]?.cash_collection ?? 0);
+  const cashRefunded = Number(paymentsAggRaw.rows[0]?.cash_refunded ?? 0);
   const totalExpenses = Number(expensesAggRaw.rows[0]?.total_expenses ?? 0);
+  const cashExpenses = Number(expensesAggRaw.rows[0]?.cash_expenses ?? 0);
   const refundsAndCancellations = refundAmount + cancelledAmount;
-  const netCollection = grossBilling - outstanding - refundsAndCancellations - totalExpenses;
-  const physicalCashInHand = netCollection - digitalCollection;
+  // Payment-axis math (RPT-03 fix): grossBilling already EXCLUDES cancelled
+  // bills (see billsAggRaw's `status <> 'cancelled'` filter above), so
+  // subtracting cancelledAmount again via refundsAndCancellations
+  // double-counted the same money and could push totals negative when a
+  // bill was both cancelled and refunded in-range. Net collection must be
+  // computed from payments actually received/refunded, not billed amounts.
+  const netCollection = totalReceived - refundAmount - totalExpenses;
+  const physicalCashInHand = cashCollection - cashRefunded - cashExpenses;
 
   const overallSummary = {
     grossBilling,

@@ -80,38 +80,44 @@ describe("verifyHdfcWebhookSignature", () => {
   const secretKey = "test-hdfc-secret";
   const orderId = "OB202607FEDCBA";
   const status = "SUCCESS";
+  const amount = "1000.00";
 
-  function sign(mId = merchantId, oId = orderId, st = status, key = secretKey): string {
-    return crypto.createHash("sha256").update(`${mId}|${oId}|${st}|${key}`).digest("hex");
+  function sign(mId = merchantId, oId = orderId, st = status, amt = amount, key = secretKey): string {
+    return crypto.createHash("sha256").update(`${mId}|${oId}|${st}|${amt}|${key}`).digest("hex");
   }
 
   test("accepts a correctly-signed payload", () => {
     const receivedSignature = sign();
-    expect(verifyHdfcWebhookSignature({ orderId, status, receivedSignature, merchantId, secretKey })).toBe(true);
+    expect(verifyHdfcWebhookSignature({ orderId, status, amount, receivedSignature, merchantId, secretKey })).toBe(true);
   });
 
   test("REGRESSION: rejects a forged payload with the signature field simply omitted", () => {
-    expect(verifyHdfcWebhookSignature({ orderId, status, receivedSignature: undefined, merchantId, secretKey })).toBe(false);
-    expect(verifyHdfcWebhookSignature({ orderId, status, receivedSignature: "", merchantId, secretKey })).toBe(false);
+    expect(verifyHdfcWebhookSignature({ orderId, status, amount, receivedSignature: undefined, merchantId, secretKey })).toBe(false);
+    expect(verifyHdfcWebhookSignature({ orderId, status, amount, receivedSignature: "", merchantId, secretKey })).toBe(false);
   });
 
   test("rejects when merchantId is not configured", () => {
     const receivedSignature = sign();
-    expect(verifyHdfcWebhookSignature({ orderId, status, receivedSignature, merchantId: "", secretKey })).toBe(false);
+    expect(verifyHdfcWebhookSignature({ orderId, status, amount, receivedSignature, merchantId: "", secretKey })).toBe(false);
   });
 
   test("rejects when secretKey is not configured", () => {
     const receivedSignature = sign();
-    expect(verifyHdfcWebhookSignature({ orderId, status, receivedSignature, merchantId, secretKey: "" })).toBe(false);
+    expect(verifyHdfcWebhookSignature({ orderId, status, amount, receivedSignature, merchantId, secretKey: "" })).toBe(false);
   });
 
   test("rejects a tampered status (attacker flips FAILED to SUCCESS post-signing)", () => {
     const receivedSignature = sign(merchantId, orderId, "FAILED");
-    expect(verifyHdfcWebhookSignature({ orderId, status: "SUCCESS", receivedSignature, merchantId, secretKey })).toBe(false);
+    expect(verifyHdfcWebhookSignature({ orderId, status: "SUCCESS", amount, receivedSignature, merchantId, secretKey })).toBe(false);
   });
 
   test("rejects a signature computed with the wrong secret", () => {
-    const receivedSignature = sign(merchantId, orderId, status, "wrong-secret");
-    expect(verifyHdfcWebhookSignature({ orderId, status, receivedSignature, merchantId, secretKey })).toBe(false);
+    const receivedSignature = sign(merchantId, orderId, status, amount, "wrong-secret");
+    expect(verifyHdfcWebhookSignature({ orderId, status, amount, receivedSignature, merchantId, secretKey })).toBe(false);
+  });
+
+  test("SECURITY FIX: rejects a tampered amount (attacker replays webhook with a different amount)", () => {
+    const receivedSignature = sign(merchantId, orderId, status, "1000.00");
+    expect(verifyHdfcWebhookSignature({ orderId, status, amount: "1.00", receivedSignature, merchantId, secretKey })).toBe(false);
   });
 });

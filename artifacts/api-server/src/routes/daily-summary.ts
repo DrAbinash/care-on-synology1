@@ -13,6 +13,34 @@ import { BILL_AUDIT_OPERATIONAL_CHANGE_TYPES } from "../lib/staffActivityAttribu
 
 export const dailySummaryRouter: IRouter = Router();
 
+/**
+ * Payment-axis cash math (RPT-03 fix), extracted as a pure function so the
+ * arithmetic can be unit-tested without a database connection — see
+ * daily-summary.cashMath.test.ts.
+ *
+ * Previously netCollection/physicalCashInHand mixed the bill axis
+ * (totalBilling/outstanding, which already EXCLUDES cancelled bills) with a
+ * second subtraction of cancelledBills, and also subtracted totalRefunded —
+ * a bill that was cancelled AND refunded the same day had its amount removed
+ * twice, understating cash and sometimes going negative. Cash math must be
+ * computed from money that actually moved (payments/refunds/expenses), not
+ * from billed amounts. totalReceived already includes old-dues payments
+ * collected today, so no separate addition is needed.
+ */
+export function computeDailySummaryCashMath(inputs: {
+  totalReceived: number;
+  totalRefunded: number;
+  expenses: number;
+  cashCollection: number;
+  cashRefunded: number;
+  cashExpenses: number;
+}): { netCollection: number; physicalCashInHand: number } {
+  return {
+    netCollection: inputs.totalReceived - inputs.totalRefunded - inputs.expenses,
+    physicalCashInHand: inputs.cashCollection - inputs.cashRefunded - inputs.cashExpenses,
+  };
+}
+
 function dayBoundsIST(dateStr: string): { start: Date; end: Date } {
   return {
     start: new Date(`${dateStr}T00:00:00+05:30`),
@@ -134,8 +162,40 @@ dailySummaryRouter.get("/", async (req, res) => {
   const knownReceived = totalReceived - suspensePaymentAmount;
   const cashCollection = knownReceived - digitalCollection;
   const expenses = expenseRows.rows.reduce((s, r) => s + Number(r.total), 0);
-  const netCollection = totalBilling - outstanding - totalRefunded - cancelledBills.reduce((s, r) => s + Number(r.totalAmount), 0) - expenses;
-  const physicalCashInHand = netCollection - digitalCollection;
+
+  // Expenses split by payment_mode: cash vs digital. Delegates to the
+  // shared classifier's cash check (Approved Fix #5), with the same
+  // explicit missing-value exception as day-close.ts's splitCashExpenses:
+  // expenses.payment_mode is NOT NULL DEFAULT 'cash' in the schema, so a
+  // missing/blank value here means cash, not "unknown" — see day-close.ts
+  // for the full rationale.
+  const isCashExpenseMode = (mode: string | null | undefined) => {
+    const trimmed = (mode ?? "").trim();
+    if (!trimmed) return true;
+    return isPhysicalCash(trimmed);
+  };
+  const cashExpenses = expenseRows.rows
+    .filter((r) => isCashExpenseMode(r.payment_mode))
+    .reduce((s, r) => s + Number(r.total), 0);
+  const digitalExpenses = expenses - cashExpenses;
+
+  // ── Payment-axis cash math (RPT-03 fix) ────────────────────────────────
+  // The previous formula mixed the bill axis (totalBilling/outstanding,
+  // which already EXCLUDES cancelled bills) with a second subtraction of
+  // cancelledBills, and also subtracted totalRefunded — a bill that is
+  // cancelled AND refunded the same day had its amount removed twice,
+  // understating cash and sometimes going negative. Cash math must be
+  // computed from money that actually moved (payments/refunds/expenses),
+  // exactly mirroring the per-staff formula in my-daily-summary.ts, not
+  // from billed amounts. totalReceived already includes old-dues payments
+  // collected today, so no separate addition is needed here.
+  const cashRefunded = refundItems.reduce(
+    (s, p) => s + (isPhysicalCash(p.method) ? Math.abs(Number(p.amount)) : 0),
+    0,
+  );
+  const { netCollection, physicalCashInHand } = computeDailySummaryCashMath({
+    totalReceived, totalRefunded, expenses, cashCollection, cashRefunded, cashExpenses,
+  });
   const refundsAndCancellations = totalRefunded + cancelledBills.reduce((s, r) => s + Number(r.totalAmount), 0);
   const discountsGiven = activeBills.reduce((s, r) => s + Number(r.discount ?? 0), 0);
 
@@ -164,22 +224,6 @@ dailySummaryRouter.get("/", async (req, res) => {
   const sameDayRefunds = refundItems
     .filter((p) => p.billId === null || todayBillIdSet.has(p.billId!))
     .reduce((s, p) => s + Math.abs(Number(p.amount)), 0);
-
-  // Expenses split by payment_mode: cash vs digital. Delegates to the
-  // shared classifier's cash check (Approved Fix #5), with the same
-  // explicit missing-value exception as day-close.ts's splitCashExpenses:
-  // expenses.payment_mode is NOT NULL DEFAULT 'cash' in the schema, so a
-  // missing/blank value here means cash, not "unknown" — see day-close.ts
-  // for the full rationale.
-  const isCashExpenseMode = (mode: string | null | undefined) => {
-    const trimmed = (mode ?? "").trim();
-    if (!trimmed) return true;
-    return isPhysicalCash(trimmed);
-  };
-  const cashExpenses = expenseRows.rows
-    .filter((r) => isCashExpenseMode(r.payment_mode))
-    .reduce((s, r) => s + Number(r.total), 0);
-  const digitalExpenses = expenses - cashExpenses;
 
   // Net Digital Collection = digital collected - digital refunds (digital refunds by method).
   // Same shared classifier used above — fixes the identical exact-match bug
@@ -284,6 +328,11 @@ dailySummaryRouter.get("/", async (req, res) => {
       outstanding,
       refundsAndCancellations,
       expenses,
+      // Payment-axis inputs to netCollection/physicalCashInHand — exposed so
+      // the UI's displayed formula strings match what the server actually
+      // computed (see RPT-03 fix above).
+      totalReceived,
+      cashRefunded,
       netCollection,
       digitalCollection,
       cashCollection,
