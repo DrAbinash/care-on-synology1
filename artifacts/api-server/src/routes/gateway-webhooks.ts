@@ -67,13 +67,30 @@ export function verifyIciciWebhookSignature(body: Record<string, string>, secret
   return expected === secureHash;
 }
 
-/** HDFC SmartGateway SHA256 webhook signature check. */
+/**
+ * HDFC SmartGateway SHA256 webhook signature check.
+ *
+ * SECURITY FIX: the signed string previously omitted `amount`, so a hash
+ * computed over merchantId|orderId|status|secret was equally valid for ANY
+ * amount value in the request body — an attacker who observed (or guessed)
+ * one genuine webhook for an orderId could replay it with a modified amount
+ * and the signature would still verify. `amount` is now part of the signed
+ * payload so tampering with it invalidates the signature, matching the ICICI
+ * check above (full-body HMAC) which already binds amount.
+ */
 export function verifyHdfcWebhookSignature(
-  params: { orderId: string; status: string; receivedSignature: string | undefined | null; merchantId: string | undefined | null; secretKey: string | undefined | null },
+  params: {
+    orderId: string;
+    status: string;
+    amount: string;
+    receivedSignature: string | undefined | null;
+    merchantId: string | undefined | null;
+    secretKey: string | undefined | null;
+  },
 ): boolean {
-  const { orderId, status, receivedSignature, merchantId, secretKey } = params;
+  const { orderId, status, amount, receivedSignature, merchantId, secretKey } = params;
   if (!receivedSignature || !merchantId || !secretKey) return false;
-  const signatureInput = `${merchantId}|${orderId}|${status}|${secretKey}`;
+  const signatureInput = `${merchantId}|${orderId}|${status}|${amount}|${secretKey}`;
   const expected = crypto.createHash("sha256").update(signatureInput).digest("hex");
   return expected === receivedSignature;
 }
@@ -372,7 +389,7 @@ gatewayWebhookRouter.post("/hdfc-webhook", async (req, res): Promise<void> => {
 
   const secretKey = process.env.HDFC_SECRET_KEY || "";
 
-  if (!verifyHdfcWebhookSignature({ orderId, status, receivedSignature, merchantId, secretKey })) {
+  if (!verifyHdfcWebhookSignature({ orderId, status, amount: rawAmount, receivedSignature, merchantId, secretKey })) {
     logger.warn(
       { orderId, hasSignature: Boolean(receivedSignature), hasMerchantId: Boolean(merchantId), hasSecretKey: Boolean(secretKey) },
       "[hdfc-webhook] Signature missing or invalid — rejecting (cannot verify authenticity)",
