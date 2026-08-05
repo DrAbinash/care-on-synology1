@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { writeFileSync, existsSync, mkdirSync, copyFileSync } from "fs";
+import { writeFileSync, existsSync, mkdirSync, readFileSync } from "fs";
+import { execFileSync } from "child_process";
 import { generateReportPDF, DEFAULT_PRINT_SETTINGS } from "./reportPdfGenerator";
+import { CARE_LETTERHEAD_LOGO_DATA_URL, CARE_LETTERHEAD_LOGO_SIZE } from "./careLetterheadLogo";
 
 describe("letter-pad PDF preview artifact", () => {
   it("builds a letter-pad style PDF without browser download", () => {
@@ -21,19 +23,48 @@ describe("letter-pad PDF preview artifact", () => {
         reportTitle: "MRI LUMBOSACRAL (LS) SPINE",
         accessionNumber: "ACC123",
       },
-      DEFAULT_PRINT_SETTINGS,
+      {
+        ...DEFAULT_PRINT_SETTINGS,
+        // Stale clinic/settings logos must NOT replace the letter-pad brand.
+        header: {
+          ...DEFAULT_PRINT_SETTINGS.header,
+          logo: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+        },
+      },
       {
         name: "CARE DIAGNOSTICS",
-        address: "Near Bajla Mahila College, St. Francis School Road, Castair's Town, DEOGHAR-814 112 (JHARKHAND)",
-        phone: "75490 99099, 99734 97200",
+        address: "WRONG ADDRESS THAT MUST NOT PRINT",
+        phone: "0000000000",
         email: "care.deoghar@gmail.com",
+        logoDataUrl: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
       },
       { save: false },
     );
     mkdirSync("/opt/cursor/artifacts", { recursive: true });
     const out = "/opt/cursor/artifacts/letterpad-sample.pdf";
-    writeFileSync(out, Buffer.from(doc.output("arraybuffer")));
+    const bytes = Buffer.from(doc.output("arraybuffer"));
+    writeFileSync(out, bytes);
     expect(existsSync(out)).toBe(true);
     expect(doc.getNumberOfPages()).toBeGreaterThanOrEqual(1);
+
+    // Extract text layer (avoids false hits inside embedded PNG binary).
+    const text = execFileSync("pdftotext", ["-layout", out, "-"], { encoding: "utf8" });
+    expect(text).toContain("DEOGHAR-814 112");
+    expect(text).toContain("75490 99099");
+    expect(text).toContain("St. Francis School Road");
+    expect(text).not.toContain("WRONG ADDRESS");
+    expect(text).not.toContain("0000000000");
+
+    // Bundled brand PNG must be present and sized for letter-pad aspect.
+    expect(CARE_LETTERHEAD_LOGO_SIZE.width).toBe(1556);
+    expect(CARE_LETTERHEAD_LOGO_SIZE.height).toBe(530);
+    expect(CARE_LETTERHEAD_LOGO_DATA_URL.startsWith("data:image/png;base64,")).toBe(true);
+    expect(bytes.length).toBeGreaterThan(80_000);
+
+    // Public PNG and embedded data URL stay in sync.
+    const publicPng = readFileSync(
+      new URL("../../public/care-diagnostics-letterhead-logo.png", import.meta.url),
+    );
+    expect(CARE_LETTERHEAD_LOGO_DATA_URL).toContain(publicPng.toString("base64").slice(0, 80));
   });
 });

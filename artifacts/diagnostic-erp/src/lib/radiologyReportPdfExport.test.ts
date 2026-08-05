@@ -36,7 +36,11 @@ describe("buildFindingsText", () => {
     expect(text).toBe("LUNG FIELDS: —");
   });
 
-  it("joins multiple regions with newlines, in map insertion order", () => {
+  it("joins multiple regions with a blank line between them, in map insertion order", () => {
+    // Blank-line separation between anatomical sections (letter-pad
+    // readability) was made intentional in fe271c84 (#399), which changed
+    // the join separator from "\n" to "\n\n" but left this assertion on the
+    // old single-newline behavior — updated here to match current intent.
     const text = buildFindingsText({
       useStructured: true,
       findingsMap: {
@@ -45,7 +49,7 @@ describe("buildFindingsText", () => {
       },
       rawFindings: "",
     });
-    expect(text).toBe("LUNG FIELDS: Normal.\nHEART: Cardiomegaly.");
+    expect(text).toBe("LUNG FIELDS: Normal.\n\nHEART: Cardiomegaly.");
   });
 
   it("respects title_case heading formatting", () => {
