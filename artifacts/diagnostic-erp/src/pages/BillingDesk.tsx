@@ -108,12 +108,12 @@ type Patient = {
 };
 
 type Doctor = { id: number; name: string; specialization: string; billCount?: number };
-type Test   = { id: number; name: string; code: string; price: number; category: string; isActive?: boolean; testType?: string | null; outsourcedLabId?: number | null };
+type Test   = { id: number; name: string; code: string; price: number; category: string; duration?: string; isActive?: boolean; testType?: string | null; outsourcedLabId?: number | null };
 // Tests embedded in a package carry their per-package discount overrides.
 type PkgTest = Test & { discountPct?: number; discountAmount?: number };
 type Pkg    = { id: number; packageCode: string; name: string; price: number; discountPct: number; discountAmount?: number; isActive?: boolean; tests: PkgTest[] };
 
-type SelectedTest = { testId: number; name: string; code: string; price: number; category: string; source: "test" | "package" };
+type SelectedTest = { testId: number; name: string; code: string; price: number; category: string; duration?: string; source: "test" | "package" };
 type SelectedPackage = { packageId: number; name: string; testIds: number[] };
 type PaySplit = { mode: string; amount: string };
 type LastBill = {
@@ -728,6 +728,7 @@ export default function BillingDesk() {
     quickTestIds?: string;
     billPrintCopies?: number;
     qrOnBillEnabled?: boolean;
+    showTatOnBill?: boolean;
     billShowCode?: boolean;
     billShowCategory?: boolean;
     billPrintSettingsJson?: string | null;
@@ -919,7 +920,7 @@ export default function BillingDesk() {
                   tests: updatedBill.order?.tests?.map((t: any) => ({
                     price: t.price,
                     status: t.status || "active",
-                    test: t.test ? { name: t.test.name, code: t.test.code ?? "", category: t.test.category } : { name: t.displayName || "Test", code: "", category: "" },
+                    test: t.test ? { name: t.test.name, code: t.test.code ?? "", category: t.test.category, duration: (t.test as { duration?: string }).duration ?? "" } : { name: t.displayName || "Test", code: "", category: "", duration: "" },
                   })) || [],
                 },
                 payments: updatedBill.payments.map((p: any) => ({
@@ -965,6 +966,7 @@ export default function BillingDesk() {
                     qrDataUrl: qrUrl as string,
                     format: settings.defaultFormat,
                     showQr: settings.showQrCode,
+                    showTat: settings.showTatOnBill,
                     showAmountInWords: settings.showAmountInWords,
                     showSignatureLine: settings.showSignatureLine,
                     showComputerGenerated: settings.showComputerGenerated,
@@ -1366,6 +1368,7 @@ export default function BillingDesk() {
               code: t.code,
               price: t.price,
               category: t.category,
+              duration: t.duration,
             })),
             subtotal,
             discount: discountAmt,
@@ -1490,7 +1493,7 @@ export default function BillingDesk() {
                 tests: lastBillLocal.tests.map((t) => ({
                   price: t.price,
                   status: "active",
-                  test: { name: t.name, code: t.code ?? "", category: t.category },
+                  test: { name: t.name, code: t.code ?? "", category: t.category, duration: t.duration ?? "" },
                 })),
               },
               payments: lastBillLocal.payments.map((p) => ({
@@ -1512,6 +1515,7 @@ export default function BillingDesk() {
               qrDataUrl: qrUrl as string,
               format: settings.defaultFormat,
               showQr: settings.showQrCode,
+              showTat: settings.showTatOnBill,
               showAmountInWords: settings.showAmountInWords,
               showSignatureLine: settings.showSignatureLine,
               showComputerGenerated: settings.showComputerGenerated,
@@ -1656,7 +1660,7 @@ export default function BillingDesk() {
       return;
     }
     const wasEmpty = selectedTests.length === 0;
-    setSelectedTests((prev) => [...prev, { testId: t.id, name: t.name, code: t.code, price: t.price, category: t.category, source: "test" }]);
+    setSelectedTests((prev) => [...prev, { testId: t.id, name: t.name, code: t.code, price: t.price, category: t.category, duration: t.duration, source: "test" }]);
     setTestSearch("");
     if (wasEmpty && isStepped && autoAdvance && currentStep === 3) advanceStep();
   }
@@ -1755,7 +1759,7 @@ export default function BillingDesk() {
     const existingIds = new Set(selectedTests.map((s) => s.testId));
     const toAdd: SelectedTest[] = pkg.tests
       .filter((t) => !existingIds.has(t.id))
-      .map((t) => ({ testId: t.id, name: t.name, code: t.code, price: computeLinePrice(t), category: t.category, source: "package" as const }));
+      .map((t) => ({ testId: t.id, name: t.name, code: t.code, price: computeLinePrice(t), category: t.category, duration: (t as { duration?: string }).duration, source: "package" as const }));
     if (toAdd.length === 0) {
       toast({ title: "All tests in this package already added" });
       return;

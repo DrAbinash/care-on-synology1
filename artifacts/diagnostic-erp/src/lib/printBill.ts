@@ -28,7 +28,7 @@ export type PrintBillData = {
       price: number | string;
       status?: string | null;
       displayName?: string | null;
-      test?: { code?: string | null; name?: string | null; category?: string | null } | null;
+      test?: { code?: string | null; name?: string | null; category?: string | null; duration?: string | null } | null;
     }>;
   } | null;
   payments?: Array<{
@@ -56,6 +56,7 @@ export type PrintClinic = {
   billShowCode?: boolean;
   billShowCategory?: boolean;
   qrOnBillEnabled?: boolean;
+  showTatOnBill?: boolean;
   // Clinic-wide Billing Print settings blob (JSON of Partial<BillPrintSettings>)
   // from /api/clinic-settings/branding — parse with parseGlobalBillPrintSettings
   // and pass to loadBillPrintSettings so prints honor the admin's paper size.
@@ -158,6 +159,8 @@ export type BuildPrintHtmlOpts = {
   format?: BillFormat;
   copyLabel?: string;
   showQr?: boolean;
+  /** Show test catalog duration as a TAT column (clinic Show TAT on Bill). */
+  showTat?: boolean;
   showAmountInWords?: boolean;
   showSignatureLine?: boolean;
   showComputerGenerated?: boolean;
@@ -230,7 +233,10 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
   const copies = Math.max(1, Math.min(2, Number(clinic?.billPrintCopies ?? 1) || 1));
   const showCode = clinic?.billShowCode !== false;
   const showCategory = clinic?.billShowCategory !== false;
-  const qrEnabled = clinic?.qrOnBillEnabled !== false;
+  // Billing Print "Show QR" + Clinic QR gate must both allow it (classic used
+  // to ignore the Billing Print toggle — confusing when both settings existed).
+  const qrEnabled = (opts.showQr !== false) && clinic?.qrOnBillEnabled !== false;
+  const showTat = (opts.showTat ?? clinic?.showTatOnBill) === true;
   const isA5 = paperSize === "A5";
   // Compact A5 slip printed on a physical A4 sheet (patient copies). Content
   // sizing stays A5; only the physical page and the slip's max width change.
@@ -289,20 +295,22 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
   const footerPx = `${opts.printFooterFontPx ?? 11}px`;
   const tinyPx = `${opts.printTinyFontPx ?? 10}px`;
 
-  const colCount = 3 + (showCode ? 1 : 0) + (showCategory ? 1 : 0);
+  const colCount = 3 + (showCode ? 1 : 0) + (showCategory ? 1 : 0) + (showTat ? 1 : 0);
 
   // ── Test rows ──
   const testRows = tests.map((t, i) => {
     const code = t.test?.code ?? "";
     const name = t.displayName ?? t.test?.name ?? "";
     const cat = t.test?.category ?? "";
+    const tat = (t.test?.duration ?? "").trim();
     const codeFontSize = `${Math.round(parseInt(tablePx, 10) * 0.9)}px`;
     return `<tr>
-      <td style="padding:6px 8px;border:1px solid #000;font-size:${tablePx};text-align:center">${i + 1}</td>
+      <td style="padding:6px 8px;border:1px solid #000;text-align:center;font-size:${tablePx}">${i + 1}</td>
       ${showCode ? `<td style="padding:6px 8px;border:1px solid #000;font-family:monospace;font-size:${codeFontSize}">${esc(code)}</td>` : ""}
-      <td style="padding:6px 8px;border:1px solid #000;font-size:${tablePx}">${esc(name)}</td>
+      <td style="padding:6px 8px;border:1px solid #000;font-size:${tablePx};font-weight:600">${esc(name)}</td>
       ${showCategory ? `<td style="padding:6px 8px;border:1px solid #000;font-size:${tablePx};color:#555">${esc(cat)}</td>` : ""}
-      <td style="padding:6px 8px;border:1px solid #000;text-align:right;font-weight:700;font-size:${tablePx}">₹${fmt(t.price)}</td>
+      ${showTat ? `<td style="padding:6px 8px;border:1px solid #000;font-size:${tablePx};color:#555;white-space:nowrap">${esc(tat || "—")}</td>` : ""}
+      <td style="padding:6px 8px;border:1px solid #000;text-align:right;font-size:${tablePx};font-weight:700;white-space:nowrap">₹${fmt(t.price)}</td>
     </tr>`;
   }).join("");
 
@@ -414,6 +422,7 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
             ${showCode ? `<th style="padding:6px 8px;border:1px solid #000;background:#f0f0f0;text-align:left;font-weight:800">CODE</th>` : ""}
             <th style="padding:6px 8px;border:1px solid #000;background:#f0f0f0;text-align:left;font-weight:800">TEST NAME</th>
             ${showCategory ? `<th style="padding:6px 8px;border:1px solid #000;background:#f0f0f0;text-align:left;font-weight:800">CATEGORY</th>` : ""}
+            ${showTat ? `<th style="padding:6px 8px;border:1px solid #000;background:#f0f0f0;text-align:left;font-weight:800">TAT</th>` : ""}
             <th style="padding:6px 8px;border:1px solid #000;background:#f0f0f0;text-align:right;font-weight:800">AMOUNT (₹)</th>
           </tr>
         </thead>

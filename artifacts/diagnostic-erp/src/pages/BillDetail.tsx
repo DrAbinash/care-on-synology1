@@ -297,6 +297,7 @@ export default function BillDetail({ id }: { id: number }) {
       reprintReason: opts.reprintReason,
       format: settingsForPrint.defaultFormat,
       showQr: settings.showQrCode,
+      showTat: settings.showTatOnBill,
       showAmountInWords: settings.showAmountInWords,
       showSignatureLine: settings.showSignatureLine,
       showComputerGenerated: settings.showComputerGenerated,

@@ -18,6 +18,7 @@ export function buildPrintClinic(s: typeof clinicSettingsTable.$inferSelect) {
     billShowCode: s.billShowCode,
     billShowCategory: s.billShowCategory,
     qrOnBillEnabled: s.qrOnBillEnabled,
+    showTatOnBill: s.showTatOnBill,
     billPrintSettingsJson: s.billPrintSettingsJson ?? "{}",
     receiptThankYouMessage: s.receiptThankYouMessage,
     receiptCollectionMessage: s.receiptCollectionMessage,

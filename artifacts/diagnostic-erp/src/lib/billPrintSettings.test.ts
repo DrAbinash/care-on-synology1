@@ -62,11 +62,12 @@ describe("parseGlobalBillPrintSettings — server blob can never break printing"
 });
 
 describe("loadBillPrintSettings — clinic-wide global reaches the print sites", () => {
-  test("REGRESSION: server global paper size overrides the built-in A5-portrait default", () => {
+  test("REGRESSION: server global paper size overrides the built-in A5-landscape default", () => {
     // No window at all (worst case: nothing cached locally) — the admin's
     // A4 choice must still win over the built-in default that caused the
     // rotated prints.
-    expect(GLOBAL_BILL_PRINT_DEFAULTS.defaultPaperSize).toBe("A5-portrait");
+    expect(GLOBAL_BILL_PRINT_DEFAULTS.defaultPaperSize).toBe("A5-landscape");
+    expect(GLOBAL_BILL_PRINT_DEFAULTS.defaultFormat).toBe("modern-landscape");
     const merged = loadBillPrintSettings({ defaultPaperSize: "A4" });
     expect(merged.defaultPaperSize).toBe("A4");
   });
@@ -74,7 +75,8 @@ describe("loadBillPrintSettings — clinic-wide global reaches the print sites",
   test("without a server global, built-in defaults apply unchanged", () => {
     const merged = loadBillPrintSettings();
     expect(merged.defaultPaperSize).toBe(GLOBAL_BILL_PRINT_DEFAULTS.defaultPaperSize);
-    expect(merged.defaultFormat).toBe("classic");
+    expect(merged.defaultFormat).toBe("modern-landscape");
+    expect(merged.showTatOnBill).toBe(false);
   });
 
   test("per-user local override wins over the global when adminLock is OFF", () => {
@@ -181,18 +183,15 @@ describe("resolveBillPrintPageOpts — paper size reaches the print HTML", () =>
     expect(opts.orientation).toBe("portrait");
   });
 
-  test("many tests auto-switch to A4 when clinic uses auto paper (no fixed A5 size)", () => {
-    const opts = resolveBillPrintPageOpts(
-      { defaultPaperSize: "A5-portrait", autoA4Threshold: 3 },
-      6,
-    );
-    // A5-portrait is a fixed manual size — stays A5 even with many tests.
-    expect(opts.paperSize).toBe("A5");
-    const autoOpts = resolveBillPrintPageOpts(
-      { defaultPaperSize: "A4", autoA4Threshold: 3 },
-      6,
-    );
-    expect(autoOpts.paperSize).toBe("A4");
+  test("A4 short bills use compact footer so content is not half-blank", () => {
+    const opts = resolveBillPrintPageOpts({ defaultPaperSize: "A4", autoA4Threshold: 8 }, 3);
+    expect(opts.paperSize).toBe("A4");
+    expect(opts.compactFooterGap).toBe(true);
+  });
+
+  test("A4 long bills keep full footer spacing", () => {
+    const opts = resolveBillPrintPageOpts({ defaultPaperSize: "A4", autoA4Threshold: 8 }, 12);
+    expect(opts.compactFooterGap).toBe(false);
   });
 });
 
