@@ -811,6 +811,11 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   useEffect(() => {
     try { localStorage.setItem(WORKSPACE_CHROME_COLLAPSED_KEY, chromeCollapsed ? "1" : "0"); } catch { /* noop */ }
   }, [chromeCollapsed]);
+  // When the top chrome is collapsed (writing focus), also collapse the bulky
+  // left demographics block so the embedded viewer gets that vertical space.
+  useEffect(() => {
+    if (chromeCollapsed && showEmbeddedViewer) setViewerFocus(true);
+  }, [chromeCollapsed, showEmbeddedViewer, setViewerFocus]);
   const collapseReportingChrome = useCallback(() => setChromeCollapsed(true), []);
   const enterReportingFocusMode = useCallback(() => {
     setChromeCollapsed(true);
@@ -4960,7 +4965,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   };
 
   return (
-    <div className="flex flex-col" style={{ height: chromeCollapsed ? "calc(100vh - 36px)" : "calc(100vh - 48px)" }}>
+    <div className="flex flex-col" style={{ height: "100vh" }}>
       {/* Phase P3 — feature-flagged AI draft panel. Renders nothing unless AI is
           enabled AND visible for this radiologist (pilot/production); default OFF.
           Accept inserts into the EXISTING findings editor (setRawFindings), which
@@ -5035,7 +5040,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
         onRefreshQueue={() => refreshQueueAndCurrent()}
         onReloadStudy={() => reloadCurrentStudy()}
         hasEntry={!!entry}
-        voiceBar={voiceSettings.enabled ? <VoiceCommandBar voice={voice} /> : undefined}
+        voiceBar={voiceSettings.enabled ? <VoiceCommandBar voice={voice} embedded /> : undefined}
       />
 
       {/* ── 3-column body — resizable via drag (react-resizable-panels), plus
@@ -5132,8 +5137,8 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
               </button>
             </div>
           ) : (
-          /* Study info */
-          <div className="shrink-0 p-3 border-b">
+          /* Study info — denser when writing chrome is collapsed */
+          <div className={`shrink-0 border-b ${chromeCollapsed ? "p-2" : "p-3"}`}>
             {entryLoading && (
               <div className="text-xs text-muted-foreground py-2">Loading study...</div>
             )}
@@ -5311,7 +5316,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
         >
 
           {/* Scrollable editor area */}
-          <div className={`flex-1 overflow-y-auto flex flex-col ${chromeCollapsed ? "p-2 gap-2" : "p-4 gap-4"}`}>
+          <div className={`flex-1 overflow-y-auto flex flex-col ${chromeCollapsed ? "p-1.5 gap-1.5" : "p-3 gap-3"}`}>
 
             {/* R2.0 — Pregnancy Dashboard strip: silent (renders nothing) for
                 every non-obstetric study; only fetches when isUltrasound. */}
@@ -5518,16 +5523,18 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
             {/* Unified Copilot inbox — one place for all advisory items */}
             {!isLocked && copilotPrefs.enabled && copilotInboxCount > 0 && rightTab !== "copilot" && (
               <div
-                className="flex flex-wrap items-center gap-2 p-2 rounded-md border border-indigo-200 bg-indigo-50/80 text-indigo-900 text-xs shrink-0"
+                className={`flex flex-wrap items-center gap-2 rounded-md border border-indigo-200 bg-indigo-50/80 text-indigo-900 text-xs shrink-0 ${chromeCollapsed ? "px-2 py-1" : "p-2"}`}
                 data-testid="copilot-inbox-banner"
               >
                 <Sparkles size={14} className="shrink-0 text-indigo-600" />
-                <span className="flex-1">
+                <span className="flex-1 min-w-0 truncate">
                   <span className="font-semibold">{copilotInboxCount} Copilot item{copilotInboxCount > 1 ? "s" : ""}</span>
                   {copilotAlerts > 0 && (
                     <span className="text-indigo-700"> · {copilotAlerts} need attention</span>
                   )}
-                  <span className="text-indigo-700/80"> — measurements, priors, checklist, and quality in one inbox.</span>
+                  {!chromeCollapsed && (
+                    <span className="text-indigo-700/80"> — measurements, priors, checklist, and quality in one inbox.</span>
+                  )}
                 </span>
                 <Button
                   type="button"
@@ -5633,7 +5640,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
             {/* Study setup — region, protocol, template; manual override + re-apply */}
             {!isLocked && availableRegions.length > 0 && (
               <div
-                className="flex flex-wrap items-center gap-2 p-2 rounded-md border bg-slate-50/80 dark:bg-slate-900/40 text-[11px] shrink-0"
+                className={`flex flex-wrap items-center gap-2 rounded-md border bg-slate-50/80 dark:bg-slate-900/40 text-[11px] shrink-0 ${chromeCollapsed ? "px-1.5 py-1" : "p-2"}`}
                 data-testid="study-setup-bar"
               >
                 <span className="font-semibold text-muted-foreground uppercase text-[9px] tracking-wide">Study setup</span>

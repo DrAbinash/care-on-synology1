@@ -60,7 +60,7 @@ export default function MriReadinessStrip({
 
   return (
     <div
-      className="flex flex-wrap items-center gap-2 p-2 rounded-md border border-violet-200 bg-violet-50/70 text-[11px] shrink-0"
+      className="flex flex-wrap items-center gap-1.5 px-1.5 py-1 rounded-md border border-violet-200 bg-violet-50/70 text-[11px] shrink-0"
       data-testid="mri-readiness-strip"
     >
       <Activity size={14} className="text-violet-600 shrink-0" />

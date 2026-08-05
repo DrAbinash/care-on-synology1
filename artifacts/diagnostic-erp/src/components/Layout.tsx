@@ -436,6 +436,9 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   // never leave it stuck collapsed once the workspace unmounts.
   const preViewerFocusCollapsed = useRef<boolean | null>(null);
   const preWorkspaceFocusCollapsed = useRef<boolean | null>(null);
+  // Reporting workspace emits care:workspace-focus — hide the empty desktop
+  // top strip (Search / fullscreen / theme) so report writing gets that row back.
+  const [workspaceFocusActive, setWorkspaceFocusActive] = useState(false);
   useEffect(() => {
     const onViewerFocus = (e: Event) => {
       const on = Boolean((e as CustomEvent).detail);
@@ -452,6 +455,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     };
     const onWorkspaceFocus = (e: Event) => {
       const on = Boolean((e as CustomEvent).detail);
+      setWorkspaceFocusActive(on);
       if (on) {
         setSidebarCollapsed((cur) => {
           if (preWorkspaceFocusCollapsed.current === null) preWorkspaceFocusCollapsed.current = cur;
@@ -1410,8 +1414,9 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           </header>
         )}
 
-        {/* Desktop top-right control bar — thin strip, compact icons */}
-        {!isMobile && (
+        {/* Desktop top-right control bar — hide while reporting to reclaim
+            the empty horizontal strip above the writing column. */}
+        {!isMobile && !workspaceFocusActive && (
           <div className="flex items-center justify-end gap-1 px-3 py-0.5 border-b border-border/40 bg-card/50">
             <FullscreenToggle />
             <ThemeSelector />

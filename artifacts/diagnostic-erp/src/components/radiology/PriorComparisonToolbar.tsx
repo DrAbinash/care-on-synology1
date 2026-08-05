@@ -84,7 +84,7 @@ export default function PriorComparisonToolbar({
 
   return (
     <div
-      className="flex flex-wrap items-center gap-2 p-2 rounded-md border border-sky-200 bg-sky-50/80 text-[11px] shrink-0"
+      className="flex flex-wrap items-center gap-1.5 px-1.5 py-1 rounded-md border border-sky-200 bg-sky-50/80 text-[11px] shrink-0"
       data-testid="prior-comparison-toolbar"
     >
       <GitCompare size={14} className="text-sky-600 shrink-0" />

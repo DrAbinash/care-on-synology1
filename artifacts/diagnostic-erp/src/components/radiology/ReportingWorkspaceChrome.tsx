@@ -289,12 +289,12 @@ export default function ReportingWorkspaceChrome(props: ReportingWorkspaceChrome
   if (collapsed) {
     return (
       <div className="shrink-0 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80" data-testid="workspace-chrome-collapsed">
-        <div className="flex items-center gap-2 px-2 py-1 min-h-9">
+        <div className="flex items-center gap-1.5 px-2 py-0.5 min-h-8">
           <Button variant="ghost" size="sm" className="h-7 w-7 p-0 shrink-0" onClick={onBackToWorklist} title="Back to worklist">
             <ArrowLeft size={14} />
           </Button>
-          <div className="min-w-0 flex-1 flex items-center gap-2 text-[11px]">
-            <span className="font-semibold truncate max-w-[180px] sm:max-w-[260px]" title={patientBanner}>{patientBanner || "Reporting"}</span>
+          <div className="min-w-0 flex items-center gap-1.5 text-[11px] shrink">
+            <span className="font-semibold truncate max-w-[140px] sm:max-w-[220px]" title={patientBanner}>{patientBanner || "Reporting"}</span>
             <span className="text-muted-foreground shrink-0" data-testid="queue-position">
               {workflow.position.index >= 0 ? `${workflow.position.index + 1}/${workflow.position.total}` : `—/${workflow.position.total}`}
             </span>
@@ -302,12 +302,13 @@ export default function ReportingWorkspaceChrome(props: ReportingWorkspaceChrome
             {props.dirty && <span className="text-amber-600 shrink-0" title="Unsaved changes">●</span>}
             {props.saving && <span className="text-blue-600 shrink-0">Saving…</span>}
             {showLock && (
-              <span className="text-[10px] text-muted-foreground truncate hidden md:inline" title={lockStatusMessage(lockStatus, props.studyLock.ownerName)}>
+              <span className="text-[10px] text-muted-foreground truncate hidden lg:inline max-w-[10rem]" title={lockStatusMessage(lockStatus, props.studyLock.ownerName)}>
                 <Lock size={9} className="inline mr-0.5" />
-                {lockStatusMessage(lockStatus, props.studyLock.ownerName)}
+                {lockStatus === "connection-lost" ? "Lock may expire" : lockStatusMessage(lockStatus, props.studyLock.ownerName)}
               </span>
             )}
           </div>
+          {voiceBar ? <div className="min-w-0 flex-1 overflow-hidden">{voiceBar}</div> : <div className="flex-1" />}
           <WorkflowNavButtons {...props} />
           <QueueFiltersPopover {...props} />
           <DropdownMenu>
@@ -340,7 +341,6 @@ export default function ReportingWorkspaceChrome(props: ReportingWorkspaceChrome
             <ChevronDown size={14} />
           </Button>
         </div>
-        {voiceBar}
       </div>
     );
   }
@@ -405,22 +405,22 @@ export default function ReportingWorkspaceChrome(props: ReportingWorkspaceChrome
         </Button>
       </div>
 
-      {/* Queue workflow — one compact row */}
-      <div className="flex items-center gap-2 px-2 py-1 bg-muted/15 text-[11px] flex-wrap" data-testid="workflow-status-bar">
-        <span className="text-muted-foreground font-medium" data-testid="queue-position">
+      {/* Queue workflow + voice — one row; voice fills the former dead middle */}
+      <div className="flex items-center gap-2 px-2 py-1 bg-muted/15 text-[11px]" data-testid="workflow-status-bar">
+        <span className="text-muted-foreground font-medium shrink-0" data-testid="queue-position">
           Study {workflow.position.index >= 0 ? `${workflow.position.index + 1} of ${workflow.position.total}` : `— of ${workflow.position.total}`}
         </span>
-        <span className="text-green-700">✓ {workflow.completedCount}</span>
-        <span className={workflow.parkedCount > 0 ? "text-amber-700" : "text-muted-foreground"}>⏸ {workflow.parkedCount}</span>
+        <span className="text-green-700 shrink-0">✓ {workflow.completedCount}</span>
+        <span className={`shrink-0 ${workflow.parkedCount > 0 ? "text-amber-700" : "text-muted-foreground"}`}>⏸ {workflow.parkedCount}</span>
         {workflow.isParked(studyId) && (
-          <Badge className="bg-amber-100 text-amber-800 border-amber-300 text-[10px] py-0" data-testid="parked-badge">
+          <Badge className="bg-amber-100 text-amber-800 border-amber-300 text-[10px] py-0 shrink-0" data-testid="parked-badge">
             PARKED{props.parkedReason ? ` — ${props.parkedReason}` : ""}
           </Badge>
         )}
-        {props.finalizing && <span className="text-blue-700">Finalizing…</span>}
-        {workflow.transitioning && <span className="text-blue-700">Switching…</span>}
+        {props.finalizing && <span className="text-blue-700 shrink-0">Finalizing…</span>}
+        {workflow.transitioning && <span className="text-blue-700 shrink-0">Switching…</span>}
         {showLock && (
-          <span data-testid="lock-status" className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 border text-[10px] font-semibold ${
+          <span data-testid="lock-status" className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 border text-[10px] font-semibold shrink-0 max-w-[10rem] truncate ${
             lockStatus === "mine" ? "bg-green-100 text-green-800 border-green-300"
             : lockStatus === "locked-by-other" ? "bg-red-100 text-red-800 border-red-300"
             : "bg-amber-100 text-amber-800 border-amber-300"
@@ -428,7 +428,14 @@ export default function ReportingWorkspaceChrome(props: ReportingWorkspaceChrome
             <Lock size={9} /> {lockStatusMessage(lockStatus, props.studyLock.ownerName)}
           </span>
         )}
-        <div className="ml-auto flex items-center gap-1.5 flex-wrap">
+        {voiceBar ? (
+          <div className="min-w-0 flex-1 overflow-hidden" data-testid="chrome-expanded-voice">
+            {voiceBar}
+          </div>
+        ) : (
+          <div className="flex-1 min-w-0" />
+        )}
+        <div className="flex items-center gap-1.5 shrink-0">
           <WorkflowNavButtons {...props} />
           <QueueFiltersPopover {...props} />
           <DropdownMenu>
@@ -449,7 +456,6 @@ export default function ReportingWorkspaceChrome(props: ReportingWorkspaceChrome
           </DropdownMenu>
         </div>
       </div>
-      {voiceBar}
     </div>
   );
 }
