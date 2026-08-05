@@ -28,10 +28,16 @@ import {
   RefreshCcw, FileCode, Send, QrCode, Palette, Bot, Inbox, ChevronRight,
   ArrowLeft, Phone, Layers, AlertTriangle, ScanLine, Receipt, Keyboard, Brain,
   Sparkles, Construction, GraduationCap, Tv, GripVertical, ScrollText, Flag,
-  Smartphone, RectangleVertical, RectangleHorizontal, Clock,
+  Smartphone, RectangleVertical, RectangleHorizontal, Clock, Plug, Radio, Cpu, Server, ArrowRight,
 } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
+import {
+  INTEGRATIONS_OPS_LINKS,
+  RADIOLOGY_AI_LINKS,
+  RADIOLOGY_INFRA_LINKS,
+  type SettingsHubLink,
+} from "@/lib/settingsHubCatalog";
 
 type AppUser = {
   id: number; name: string; email: string; role: string;
@@ -119,10 +125,12 @@ const DEFAULT_PERMISSIONS: Record<string, string[]> = {
 const MODULE_SUB_PERMISSIONS: Record<string, { id: string; label: string }[]> = {
   "/settings": [
     { id: "clinic", label: "Clinic Info" },
+    { id: "integrations", label: "Integrations & Ops" },
     { id: "users", label: "Users Management" },
     { id: "security", label: "Security & FIDO2" },
     { id: "backup", label: "Backup & Replication" },
     { id: "radiology", label: "Radiology Config" },
+    { id: "radiology-tools", label: "Radiology Tools" },
     { id: "appearance", label: "Appearance & Themes" },
     { id: "notifications", label: "Email & WhatsApp" },
     { id: "billing", label: "Billing Settings" },
@@ -163,6 +171,7 @@ const MODULE_SUB_PERMISSIONS: Record<string, { id: string; label: string }[]> = 
 
 const TABS = [
   { id: "clinic", label: "Clinic Info", icon: Building2 },
+  { id: "integrations", label: "Integrations & Ops", icon: Plug },
   { id: "about", label: "About / Version", icon: Tag },
   { id: "appearance", label: "Appearance", icon: Palette },
   { id: "users", label: "Users", icon: Users },
@@ -186,7 +195,8 @@ const TABS = [
   { id: "discount-reasons", label: "Discount Reasons", icon: Tag },
   { id: "reprint-reasons", label: "Edit/Modify/Reprint Reasons", icon: Printer },
   { id: "backup", label: "Backup", icon: Database },
-  { id: "radiology", label: "Radiology", icon: ScanLine },
+  { id: "radiology-tools", label: "Radiology Tools", icon: ScanLine },
+  { id: "radiology", label: "Radiology Flags", icon: ScanLine },
   { id: "manual", label: "User Manual", icon: FileDown },
   { id: "security", label: "Security", icon: ShieldCheck },
   { id: "audit-log", label: "Audit Log", icon: ScrollText },
@@ -275,6 +285,8 @@ export default function Settings() {
       else if (t.id === "printers" || t.id === "scanner") action = "devices";
       else if (t.id === "departments" || t.id === "locations" || t.id === "branches") action = "infrastructure";
       else if (t.id === "portal" || t.id === "online-booking" || t.id === "kiosk" || t.id === "queue-settings" || t.id === "queue-display") action = "portals";
+      else if (t.id === "integrations") action = "clinic";
+      else if (t.id === "radiology-tools") action = "radiology";
 
       return hasSubPermission(session, "/settings", action);
     });
@@ -350,6 +362,7 @@ export default function Settings() {
           })}
         </div>
         {tab === "clinic" && <ClinicInfoTab />}
+        {tab === "integrations" && <IntegrationsOpsHubTab />}
         {tab === "appearance" && <AppearanceTab />}
         {tab === "users" && <UsersTab qc={qc} />}
         {tab === "departments" && <DepartmentsTab />}
@@ -383,6 +396,7 @@ export default function Settings() {
         {tab === "discount-reasons" && <DiscountReasonsTab />}
         {tab === "reprint-reasons" && <ReprintReasonsTab />}
         {tab === "backup" && <BackupTab />}
+        {tab === "radiology-tools" && <RadiologyToolsHubTab />}
         {tab === "radiology" && <RadiologySettingsTab />}
         {tab === "manual" && <ManualTab />}
         {tab === "about" && <AboutTab />}
@@ -390,6 +404,89 @@ export default function Settings() {
         {tab === "audit-log" && <AuditLogTab />}
         {tab === "feature-flags" && <FeatureFlagsTab />}
         {tab === "password" && <ChangePasswordTab />}
+      </div>
+    </div>
+  );
+}
+
+function SettingsHubCardGrid({ links }: { links: SettingsHubLink[] }) {
+  return (
+    <div className="grid sm:grid-cols-2 gap-3">
+      {links.map((item) => (
+        <Link
+          key={item.path}
+          href={item.path}
+          className="group rounded-xl border border-card-border bg-card p-4 hover:border-primary/40 hover:bg-muted/30 transition-colors"
+          data-testid={`settings-hub-link-${item.path.replace(/\W+/g, "-")}`}
+        >
+          <div className="flex items-start justify-between gap-2">
+            <h3 className="font-semibold text-sm">{item.title}</h3>
+            <ArrowRight size={14} className="text-muted-foreground group-hover:text-primary shrink-0 mt-0.5" />
+          </div>
+          <p className="text-xs text-muted-foreground mt-1.5 leading-relaxed">{item.description}</p>
+          {item.alsoIn && (
+            <p className="text-[11px] text-blue-700 dark:text-blue-300 mt-2">Also in: {item.alsoIn}</p>
+          )}
+        </Link>
+      ))}
+    </div>
+  );
+}
+
+/** Non-radiology admin pages formerly on the left sidebar. */
+function IntegrationsOpsHubTab() {
+  return (
+    <div className="max-w-4xl space-y-5">
+      <div className="rounded-xl border border-blue-200 bg-blue-50/70 dark:bg-blue-950/20 dark:border-blue-800 px-4 py-3 text-sm text-blue-900 dark:text-blue-200 leading-relaxed">
+        <strong>Integrations &amp; Ops</strong> collects Hope Connection, Reception Command Center,
+        Diagnostic Integration, Knowledge Base, and AI Caller Credentials — moved out of the left
+        sidebar so the rail stays operational. Routes are unchanged; open a card to use the full page.
+      </div>
+      <div className="bg-card border border-card-border rounded-xl p-5 space-y-4">
+        <div>
+          <h2 className="font-bold text-lg flex items-center gap-2"><Plug size={16} /> Partner &amp; front-desk integrations</h2>
+          <p className="text-sm text-muted-foreground mt-1">Non-radiology connection and reception tools.</p>
+        </div>
+        <SettingsHubCardGrid links={INTEGRATIONS_OPS_LINKS} />
+      </div>
+    </div>
+  );
+}
+
+/** Radiology infra + AI admin pages formerly duplicated under Radiology & Settings nav. */
+function RadiologyToolsHubTab() {
+  return (
+    <div className="max-w-4xl space-y-5">
+      <div className="rounded-xl border border-blue-200 bg-blue-50/70 dark:bg-blue-950/20 dark:border-blue-800 px-4 py-3 text-sm text-blue-900 dark:text-blue-200 leading-relaxed">
+        Radiology admin tools (DICOM, network, AI assistants, HL7, knowledge packs) live here and in{" "}
+        <Link href="/settings/radiology" className="font-semibold underline underline-offset-2">Radiology Settings Center</Link>.
+        Prefer the Settings Center for PACS/viewer/MWL configuration; use these cards for deep tools.
+      </div>
+      <div className="bg-card border border-card-border rounded-xl p-5 space-y-4">
+        <div>
+          <h2 className="font-bold text-lg flex items-center gap-2"><Server size={16} /> Infrastructure · DICOM · Network</h2>
+          <p className="text-sm text-muted-foreground mt-1">PACS nodes, modalities, agents, HL7, and knowledge packs.</p>
+        </div>
+        <SettingsHubCardGrid links={RADIOLOGY_INFRA_LINKS} />
+      </div>
+      <div className="bg-card border border-card-border rounded-xl p-5 space-y-4">
+        <div>
+          <h2 className="font-bold text-lg flex items-center gap-2"><Cpu size={16} /> AI · Assistants · Teaching</h2>
+          <p className="text-sm text-muted-foreground mt-1">Reporting AI tools formerly listed under Advanced Radiology Tools.</p>
+        </div>
+        <SettingsHubCardGrid links={RADIOLOGY_AI_LINKS} />
+      </div>
+      <div className="bg-card border border-card-border rounded-xl p-4 flex flex-wrap items-center justify-between gap-3">
+        <p className="text-sm text-muted-foreground">Device productivity toggles (quick-add, macros, AI flags) remain on the Radiology Flags tab.</p>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => {
+            try { window.dispatchEvent(new CustomEvent("care:settings-tab", { detail: "radiology" })); } catch { /* noop */ }
+          }}
+        >
+          Open Radiology Flags
+        </Button>
       </div>
     </div>
   );
@@ -1502,6 +1599,28 @@ function ClinicInfoTab() {
             data-testid="goto-billing-print-settings"
           >
             Open Billing Print settings
+          </button>
+        </div>
+
+        <div className="bg-card border border-card-border rounded-xl p-5 space-y-3">
+          <div>
+            <h2 className="font-bold text-lg flex items-center gap-2">🔌 Integrations &amp; Ops</h2>
+            <p className="text-sm text-muted-foreground">
+              Hope Connection, Reception Command Center, Diagnostic Integration, Knowledge Base, and AI Caller Credentials.
+            </p>
+          </div>
+          <div className="rounded-lg border border-blue-200 bg-blue-50 dark:bg-blue-950/30 dark:border-blue-800 px-4 py-3 text-sm text-blue-800 dark:text-blue-300 leading-relaxed">
+            These tools moved out of the left sidebar into <strong>Settings → Integrations &amp; Ops</strong>.
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              try { window.dispatchEvent(new CustomEvent("care:settings-tab", { detail: "integrations" })); } catch { /* noop */ }
+            }}
+            className="inline-flex items-center justify-center rounded-lg bg-primary text-primary-foreground text-sm font-semibold px-4 py-2.5 hover:opacity-90 transition-opacity"
+            data-testid="goto-integrations-settings"
+          >
+            Open Integrations &amp; Ops
           </button>
         </div>
 
@@ -6648,6 +6767,16 @@ function RadiologySettingsTab() {
         <span>Looking for PACS, Orthanc, OHIF, Weasis, DICOM, or worklist settings? Those live on the dedicated <strong>Radiology Settings</strong> page.</span>
         <span className="shrink-0 text-blue-600 dark:text-blue-400 font-medium">Open →</span>
       </Link>
+      <button
+        type="button"
+        onClick={() => {
+          try { window.dispatchEvent(new CustomEvent("care:settings-tab", { detail: "radiology-tools" })); } catch { /* noop */ }
+        }}
+        className="w-full flex items-center justify-between gap-3 rounded-xl border bg-card border-card-border p-3 text-sm hover:bg-muted/40 transition-colors text-left"
+      >
+        <span>AI assistants, HL7, Watchdog, DICOM Agent, Network Control, and Knowledge Packs are listed under <strong>Radiology Tools</strong>.</span>
+        <span className="shrink-0 text-primary font-medium">Open →</span>
+      </button>
       <div className="bg-card border border-card-border rounded-xl p-5 space-y-4">
         <div>
           <h2 className="font-bold text-lg flex items-center gap-2"><ScanLine size={16} /> Radiology Productivity Tools</h2>

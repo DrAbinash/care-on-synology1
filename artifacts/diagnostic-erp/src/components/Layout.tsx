@@ -156,12 +156,12 @@ const isLeafActive = (path: string, location: string) => {
 
 // Sidebar layout — flat items + collapsible groups. Routes/permissions are
 // unchanged; only the visual grouping is consolidated to reduce clutter.
+// Admin/integration/radiology-config pages live under Settings (hub tabs /
+// Radiology Settings Center) so the left rail stays operational.
 const navItems: NavEntry[] = [
   { path: "/", icon: Zap, label: "Billing Desk" },
   { path: "/my-daily-summary", icon: BarChart2, label: "My Daily Summary" },
-  { path: "/hope-connection", icon: Building2, label: "Hope Connection", ownerOnly: true },
   { path: "/hope-referrals", icon: Inbox, label: "HOPE Referrals", featureFlag: "ff_hope_care_referrals" },
-  { path: "/diagnostic-integration", icon: Plug, label: "Diagnostic Integration", ownerOnly: true, featureFlag: "ff_hope_care_referrals" },
   {
     id: "billing-grp",
     icon: Receipt,
@@ -228,23 +228,11 @@ const navItems: NavEntry[] = [
         ],
       },
       { path: "/radiology/voice-dictation",   icon: Mic,            label: "Voice Dictation" },
-      { path: "/radiology/advanced-tools",    icon: Cpu,            label: "Advanced Tools",        ownerOnly: true },
-      // Hidden items kept for gradual rollout / bookmark preservation
-      { path: "/radiology/ai-reporting-settings", icon: BrainCircuit, label: "AI Reporting",          ownerOnly: true, featureFlag: "hideDeprecatedNav" },
-      { path: "/radiology/ai-prompt-manager",   icon: BookOpen,       label: "AI Prompt Manager",     ownerOnly: true, featureFlag: "hideDeprecatedNav" },
-      { path: "/radiology/ai-comparison",       icon: Terminal,       label: "AI Comparison",         ownerOnly: true, featureFlag: "hideDeprecatedNav" },
-      { path: "/radiology/missed-finding-detector", icon: AlertTriangle, label: "Missed Finding Detector", ownerOnly: true, featureFlag: "hideDeprecatedNav" },
-      { path: "/radiology/image-review",            icon: Eye,            label: "Image Review Assistant",  ownerOnly: true, featureFlag: "hideDeprecatedNav" },
-      { path: "/radiology/provider-fallback",          icon: ShieldCheck,    label: "Provider Fallback",       ownerOnly: true, featureFlag: "hideDeprecatedNav" },
-      { path: "/teaching-cases",                   icon: GraduationCap,    label: "Teaching Files",          ownerOnly: true, featureFlag: "hideDeprecatedNav" },
-      { path: "/radiology/ai-extraction-review",  icon: Microscope,   label: "AI Extraction Review",  ownerOnly: true, featureFlag: "hideDeprecatedNav" },
-      { path: "/radiology/modality-management",   icon: Monitor,      label: "Modality Management",   ownerOnly: true, featureFlag: "hideDeprecatedNav" },
-      { path: "/radiology/dicom-agent-dashboard", icon: Server,       label: "DICOM Agent",           ownerOnly: true, featureFlag: "hideDeprecatedNav" },
-      { path: "/radiology/watchdog",              icon: ShieldAlert,  label: "Watchdog",              ownerOnly: true, featureFlag: "hideDeprecatedNav" },
+      // Advanced Tools / AI / DICOM admin pages moved to Settings → Radiology
+      // Tools and Radiology Settings Center (routes unchanged for bookmarks).
     ],
   },
   { path: "/day-close", icon: Lock, label: "Day Close", ownerOnly: true },
-  { path: "/reception-command-center", icon: Inbox, label: "Reception Command Center" },
   { path: "/patients", icon: Users, label: "Patients" },
   { path: "/register", icon: UserPlus, label: "Quick Register" },
   { path: "/appointments", icon: CalendarDays, label: "Appointments" },
@@ -331,14 +319,13 @@ const navItems: NavEntry[] = [
     icon: Settings2,
     label: "Settings",
     children: [
+      // General Settings hosts Integrations (Hope / Reception / Diagnostic) and
+      // Radiology Tools hub tabs — see Settings.tsx. Dedicated Radiology
+      // Settings Center remains the PACS/DICOM/AI configuration hub.
       { path: "/settings",                  icon: Settings2,      label: "General Settings" },
+      { path: "/settings/radiology",        icon: Radio,          label: "Radiology Settings", ownerOnly: true },
       { path: "/settings/scanner",          icon: ScanLine,       label: "Scanner Settings", ownerOnly: true },
       { path: "/abdm-abha",                 icon: ShieldCheck,    label: "ABDM / ABHA", featureFlag: "ff_abdm_abha" },
-      { path: "/knowledge-base",            icon: BookOpen,       label: "Knowledge Base" },
-      { path: "/ai-caller-credentials",     icon: KeyRound,       label: "AI Caller Credentials", ownerOnly: true },
-      { path: "/settings/radiology", icon: Radio,          label: "Radiology Settings", ownerOnly: true },
-      { path: "/settings/radiology-quick-select", icon: Zap, label: "Quick Select Buttons", ownerOnly: true },
-      { path: "/settings/radiology/knowledge-packs", icon: Package, label: "Knowledge Packs", ownerOnly: true },
       { path: "/tests",                     icon: FlaskConical,   label: "Test Catalog" },
       { path: "/pathology-registry",        icon: TestTube,       label: "Pathology Registry", ownerOnly: true },
       { path: "/outsourced-labs",           icon: Building2,      label: "Outsourced Labs" },
@@ -349,21 +336,6 @@ const navItems: NavEntry[] = [
       { path: "/referrals",                 icon: Stethoscope,    label: "Doctors" },
       { path: "/backup-replication",        icon: DatabaseBackup, label: "Backup & Replication", ownerOnly: true },
       { path: "/system-update",             icon: Download,       label: "System Update" },
-      // Radiology admin items moved from main sidebar (hidden via feature flag)
-      { path: "/radiology/network-control-center", icon: Network,        label: "Network Control Center", ownerOnly: true, featureFlag: "hideDeprecatedNav" },
-      { path: "/dicom-nodes",                     icon: Network,        label: "DICOM Nodes",         ownerOnly: true, featureFlag: "hideDeprecatedNav" },
-      { path: "/radiology/modality-management",   icon: Monitor,        label: "Modality Management", ownerOnly: true, featureFlag: "hideDeprecatedNav" },
-      { path: "/radiology/dicom-agent-dashboard", icon: Server,         label: "DICOM Agent",         ownerOnly: true, featureFlag: "hideDeprecatedNav" },
-      { path: "/radiology/watchdog",              icon: ShieldAlert,    label: "Watchdog",            ownerOnly: true, featureFlag: "hideDeprecatedNav" },
-      { path: "/radiology/ai-reporting-settings", icon: BrainCircuit,   label: "AI Reporting",        ownerOnly: true, featureFlag: "hideDeprecatedNav" },
-      { path: "/radiology/ai-prompt-manager",   icon: BookOpen,       label: "AI Prompt Manager",   ownerOnly: true, featureFlag: "hideDeprecatedNav" },
-      { path: "/radiology/ai-comparison",       icon: Terminal,       label: "AI Comparison",       ownerOnly: true, featureFlag: "hideDeprecatedNav" },
-      { path: "/radiology/missed-finding-detector", icon: AlertTriangle, label: "Missed Finding Detector", ownerOnly: true, featureFlag: "hideDeprecatedNav" },
-      { path: "/radiology/image-review",            icon: Eye,            label: "Image Review Assistant",  ownerOnly: true, featureFlag: "hideDeprecatedNav" },
-      { path: "/radiology/provider-fallback",          icon: ShieldCheck,    label: "Provider Fallback",       ownerOnly: true, featureFlag: "hideDeprecatedNav" },
-      { path: "/teaching-cases",                   icon: GraduationCap,    label: "Teaching Files",          ownerOnly: true, featureFlag: "hideDeprecatedNav" },
-      { path: "/radiology/hl7-settings",          icon: Database,       label: "HL7 Settings",        ownerOnly: true, featureFlag: "hideDeprecatedNav" },
-      { path: "/radiology/advanced-tools",        icon: Cpu,            label: "Advanced Radiol Tools", ownerOnly: true, featureFlag: "hideDeprecatedNav" },
     ],
   },
 ];
@@ -581,9 +553,11 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     return canAccess(session, pathOnly(n.path)) ? [n] : [];
   });
 
-  // Auto-expand any group containing the active route; let user toggle others.
-  // The "Imaging" group is always default-open so DICOM Nodes / PACS Viewer
-  // remain visible at a glance — they're easy to overlook when nested.
+  // Accordion: only one top-level module group open at a time. Nested
+  // subgroups (e.g. USG Reporting) keep their own open state.
+  const TOP_LEVEL_GROUP_IDS = navItems.filter(isGroup).map((g) => g.id);
+
+  // Auto-expand the group containing the active route; collapse sibling modules.
   const groupHasActiveDescendant = (n: NavGroup) =>
     n.children.some((c) => childLeaves(c).some((leaf) => isLeafActive(leaf.path, location)));
   const initialOpen: Record<string, boolean> = {};
@@ -593,13 +567,23 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     }
   }
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>(initialOpen);
-  // Re-expand active group on navigation.
+  const openTopLevelExclusive = (groupId: string, open: boolean) => {
+    setOpenGroups((prev) => {
+      const next = { ...prev };
+      for (const id of TOP_LEVEL_GROUP_IDS) {
+        if (id !== groupId) next[id] = false;
+      }
+      next[groupId] = open;
+      return next;
+    });
+  };
+  // On navigation: open only the active module group (accordion).
   useEffect(() => {
     setOpenGroups((prev) => {
       const next = { ...prev };
       for (const n of navItems) {
         if (!isGroup(n)) continue;
-        if (groupHasActiveDescendant(n)) next[n.id] = true;
+        next[n.id] = groupHasActiveDescendant(n);
       }
       return next;
     });
@@ -1098,9 +1082,10 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                     // lands on its first real leaf, not a dead click.
                     const defaultPath = children[0] ? childLeaves(children[0])[0]?.path : undefined;
                     if (defaultPath) {
+                      openTopLevelExclusive(id, true);
                       navigate(defaultPath);
                     } else {
-                      setOpenGroups((prev) => ({ ...prev, [id]: !open }));
+                      openTopLevelExclusive(id, !open);
                     }
                   }}
                   className={cn(
@@ -1124,7 +1109,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                     className={cn("transition-transform duration-150", open && "rotate-90")}
                     onClick={(e) => {
                       e.stopPropagation();
-                      setOpenGroups((prev) => ({ ...prev, [id]: !open }));
+                      openTopLevelExclusive(id, !open);
                     }}
                   />
                 </button>
@@ -1357,7 +1342,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                 <div key={id}>
                   <button
                     type="button"
-                    onClick={() => setOpenGroups((prev) => ({ ...prev, [id]: !open }))}
+                    onClick={() => openTopLevelExclusive(id, !open)}
                     className={cn(
                       "w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all cursor-pointer",
                       groupActive ? "text-white" : "text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-white/10",
