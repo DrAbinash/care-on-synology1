@@ -1970,14 +1970,9 @@ export default function FormF() {
                 <span className="text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded-full font-semibold">Type these fields</span>
               </div>
               <div className="space-y-2">
-                {/* ID-capture — a compact, full-width inline scanner panel
-                    (status + method switch on one row, capture / upload side by
-                    side). It delegates every capture to the shared
-                    UnifiedScanCapture engine, tagged by side: Front runs OCR
-                    (camera/upload pass through the crop/enhance editor first),
-                    Back is cropped/enhanced then stored image-only. The
-                    Husband/Father Name field it feeds via OCR sits lower down,
-                    next to Full Address. */}
+                {/* ID capture — Front / Back open one chooser (scanner, upload,
+                    webcam, phone). Front runs OCR after crop/enhance; Back is
+                    cropped/enhanced then stored image-only. */}
                 <div className="flex flex-col gap-2">
                   <IdScanCapturePanel
                     frontDone={!!idCardFrontUrl}
