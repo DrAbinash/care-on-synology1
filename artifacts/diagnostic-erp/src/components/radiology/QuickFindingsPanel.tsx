@@ -513,8 +513,8 @@ export default function QuickFindingsPanel({
             "flex-1 min-w-0 rounded-lg border px-2.5 py-2 text-left transition-all duration-150",
             "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/35",
             selected
-              ? "border-primary bg-primary text-primary-foreground shadow-sm"
-              : "border-border/80 bg-card hover:border-primary/40 hover:bg-muted/50",
+              ? "border-amber-500 bg-amber-600 text-white shadow-sm shadow-amber-500/20"
+              : "border-amber-200/70 bg-card hover:border-amber-400 hover:bg-amber-50/70",
           ].join(" ")}
           title={
             structured
@@ -572,6 +572,13 @@ export default function QuickFindingsPanel({
 
   return (
     <div className="flex flex-col gap-2 p-2 h-full overflow-hidden">
+      <div className="shrink-0 flex items-center gap-1.5 rounded-lg border border-amber-200/80 bg-gradient-to-r from-amber-50 to-orange-50/60 px-2 py-1.5">
+        <span className="flex h-5 w-5 items-center justify-center rounded-md bg-amber-500 text-white shadow-sm">
+          <Zap size={11} />
+        </span>
+        <span className="text-[10px] font-semibold uppercase tracking-wide text-amber-950">Quick Add</span>
+        <span className="text-[9px] text-amber-800/70">Alt+1–9 · / to search</span>
+      </div>
       {/* Universal search */}
       <div className="relative shrink-0">
         <Search size={12} className="absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground" />
@@ -580,7 +587,7 @@ export default function QuickFindingsPanel({
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder='Search buttons & measurements…  ( / )'
-          className="h-7 pl-7 text-[11px]"
+          className="h-7 pl-7 text-[11px] border-amber-200/60 focus-visible:ring-amber-400/40"
           data-qs-search
         />
       </div>

@@ -346,9 +346,9 @@ export default function ReportingWorkspaceChrome(props: ReportingWorkspaceChrome
   }
 
   return (
-    <div className="shrink-0 border-b bg-white" data-testid="workspace-chrome-expanded">
+    <div className="shrink-0 border-b bg-background" data-testid="workspace-chrome-expanded">
       {/* Primary header — single tight row */}
-      <div className="flex items-center gap-2 px-2 py-1.5 border-b bg-white flex-wrap">
+      <div className="flex items-center gap-2 px-2 py-1.5 border-b bg-gradient-to-r from-sky-50/80 via-background to-violet-50/60 dark:from-sky-950/20 dark:via-background dark:to-violet-950/20 flex-wrap">
         <Button variant="ghost" size="sm" className="h-7 gap-1 text-xs shrink-0" onClick={onBackToWorklist}>
           <ArrowLeft size={13} /> Worklist
         </Button>

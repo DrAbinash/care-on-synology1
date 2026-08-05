@@ -40,10 +40,22 @@ interface Props {
   /** Small extra element rendered on the header row (e.g. dictation button) */
   headerExtra?: ReactNode;
   defaultCollapsed?: boolean;
+  /** Optional accent — left color tick on the section header (e.g. "teal", "amber"). */
+  accent?: "teal" | "slate" | "amber" | "violet" | "emerald" | "rose" | "sky";
   children: ReactNode;
 }
 
-export default function CollapsibleSection({ layoutKey, id, title, headerExtra, defaultCollapsed = false, children }: Props) {
+const ACCENT_DOT: Record<NonNullable<Props["accent"]>, string> = {
+  teal: "bg-teal-500",
+  slate: "bg-slate-400",
+  amber: "bg-amber-500",
+  violet: "bg-violet-500",
+  emerald: "bg-emerald-500",
+  rose: "bg-rose-500",
+  sky: "bg-sky-500",
+};
+
+export default function CollapsibleSection({ layoutKey, id, title, headerExtra, defaultCollapsed = false, accent, children }: Props) {
   const [collapsed, setCollapsed] = useState<boolean>(() => {
     const saved = readLayout(layoutKey)[id];
     return typeof saved === "boolean" ? saved : defaultCollapsed;
@@ -60,9 +72,10 @@ export default function CollapsibleSection({ layoutKey, id, title, headerExtra, 
       <div className="flex items-center justify-between">
         <button
           onClick={toggle}
-          className="flex items-center gap-1 text-xs font-semibold hover:text-primary transition-colors"
+          className="flex items-center gap-1.5 text-xs font-semibold hover:text-primary transition-colors"
           title={collapsed ? "Expand" : "Collapse"}
         >
+          {accent && <span className={`w-1.5 h-3 rounded-full shrink-0 ${ACCENT_DOT[accent]}`} aria-hidden />}
           {collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
           {title}
         </button>
