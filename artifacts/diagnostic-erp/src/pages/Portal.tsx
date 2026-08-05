@@ -261,21 +261,34 @@ function PortalLanding() {
   if (isLoading) return <CenteredSpinner />;
 
   if (!settings?.enabled) {
+    // Keep the landing art fully visible — login lives as small corner tabs
+    // instead of a centered "Portal Not Available" modal that covers the page.
     return (
-      <div className="min-h-screen flex items-center justify-center p-4">
-        <div className="bg-white dark:bg-slate-900 border rounded-2xl p-8 max-w-md text-center shadow-lg">
-          <AlertCircle size={48} className="mx-auto text-amber-500 mb-3" />
-          <h1 className="text-xl font-bold mb-2">Portal Not Available</h1>
-          <p className="text-muted-foreground text-sm">
-            The patient portal is currently disabled. Please contact reception for assistance.
+      <div className="min-h-screen relative" data-testid="portal-disabled-landing">
+        <div className="fixed bottom-4 right-4 z-30 flex flex-col items-end gap-1.5 max-w-[min(100vw-2rem,16rem)]">
+          <p className="text-[10px] font-medium text-white/95 drop-shadow-sm bg-black/45 px-2 py-0.5 rounded-md backdrop-blur-sm">
+            * Portal for Patient NA
           </p>
-          <div className="mt-5 flex gap-2 justify-center">
-            <Button asChild>
-              <Link to={portalRoute("/portal/patient-login")}>Patient Login</Link>
-            </Button>
-            <Button variant="outline" asChild>
-              <Link to={portalRoute("/portal/staff-login")}>Staff Login</Link>
-            </Button>
+          <div
+            className="flex overflow-hidden rounded-lg border border-white/40 bg-white/95 dark:bg-slate-900/95 shadow-lg backdrop-blur-sm"
+            role="tablist"
+            aria-label="Portal login"
+          >
+            <Link
+              href={portalRoute("/portal/patient-login")}
+              className="px-3.5 py-2 text-xs font-semibold text-primary hover:bg-primary/10 transition-colors"
+              data-testid="portal-tab-patient"
+            >
+              Patient Login
+            </Link>
+            <div className="w-px bg-border self-stretch" aria-hidden />
+            <Link
+              href={portalRoute("/portal/staff-login")}
+              className="px-3.5 py-2 text-xs font-semibold text-foreground hover:bg-muted/80 transition-colors"
+              data-testid="portal-tab-staff"
+            >
+              Staff Login
+            </Link>
           </div>
         </div>
       </div>

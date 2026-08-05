@@ -797,6 +797,11 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   useEffect(() => {
     if (!showEmbeddedViewer) setViewerFocus(false);
   }, [showEmbeddedViewer, setViewerFocus]);
+  // Prefer maximised OHIF while reporting: collapse bulky left demographics
+  // whenever the embedded viewer is on screen (writing + images together).
+  useEffect(() => {
+    if (showEmbeddedViewer) setViewerFocus(true);
+  }, [showEmbeddedViewer, setViewerFocus]);
   // Restore the app sidebar if we unmount (navigate away) while focused.
   useEffect(() => () => {
     if (viewerFocusRef.current) {
@@ -3716,9 +3721,15 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
       const fileName = `${safeFileNamePart(entry?.patientName || "patient")}_${safeFileNamePart(entry?.accessionNumber || "report")}`;
       await exportRadiologyReportToWord(previewHtml, fileName);
     } catch (err) {
+      const raw = err instanceof Error ? err.message : "Could not build the Word document";
+      const description = /failed to fetch dynamically imported module|loading chunk|importing a module script failed/i.test(raw)
+        ? "Word export script could not load (stale page or tunnel error). Reload this page and try again."
+        : /<!doctype|<html|cloudflare|tunnel error/i.test(raw)
+          ? "ERP server unreachable. Retry when the tunnel/NAS is up, or use LAN."
+          : raw.length > 220 ? `${raw.slice(0, 220)}…` : raw;
       toast({
         title: "Export failed",
-        description: err instanceof Error ? err.message : "Could not build the Word document",
+        description,
         variant: "destructive",
       });
     } finally {
@@ -3768,9 +3779,15 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
         clinic: clinicSettings ?? null,
       });
     } catch (err) {
+      const raw = err instanceof Error ? err.message : "Could not build the PDF";
+      const description = /failed to fetch dynamically imported module|loading chunk/i.test(raw)
+        ? "PDF export script could not load. Reload this page and try again."
+        : /<!doctype|<html|cloudflare|tunnel error/i.test(raw)
+          ? "ERP server unreachable. Retry when the tunnel/NAS is up, or use LAN."
+          : raw.length > 220 ? `${raw.slice(0, 220)}…` : raw;
       toast({
         title: "Export failed",
-        description: err instanceof Error ? err.message : "Could not build the PDF",
+        description,
         variant: "destructive",
       });
     } finally {

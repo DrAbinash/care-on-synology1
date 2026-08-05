@@ -52,6 +52,17 @@ export default defineConfig({
       output: {
         manualChunks(id) {
           if (!id.includes("node_modules")) return;
+          // Stable names for lazy export libs — anonymous index-*.js chunks
+          // break Word export when Cloudflare/tunnel serves HTML for a stale hash.
+          if (id.includes("/docx/") || id.endsWith("/docx") || id.includes("\\docx\\")) {
+            return "vendor-docx";
+          }
+          if (id.includes("file-saver")) {
+            return "vendor-filesaver";
+          }
+          if (id.includes("jspdf")) {
+            return "vendor-jspdf";
+          }
           if (id.includes("recharts") || id.includes("d3-") || id.includes("d3/")) {
             return "vendor-charts";
           }
