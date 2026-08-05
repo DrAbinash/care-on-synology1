@@ -35,6 +35,8 @@ type MyDailySummarySummary = {
   refundsWithoutCancellationCount: number;
   /** Refunds on bills created this period that are cancelled — excluded from collectible (already in cancelledOnMyBills). */
   refundsOnCancelledBillsCreatedInPeriod: number;
+  /** Server-computed collectible — prefer over local recompute. */
+  collectible?: number;
   cancelledAmount: number;
   cashExpenses: number;
   digitalExpenses: number;
@@ -825,11 +827,12 @@ function UnifiedReconciliationPanel({
   const totalRefunds   = s.cashRefunded + s.digitalRefunded;
   const refundsExcludedFromCollectible = s.refundsOnCancelledBillsCreatedInPeriod ?? 0;
   const refundsForCollectible = Math.max(0, totalRefunds - refundsExcludedFromCollectible);
-  const collectible    = s.grossBilledIncludingCancelled
+  const collectibleLocal = s.grossBilledIncludingCancelled
                         + s.duesCollectedTotal
                         - s.cancelledOnMyBills
                         - refundsForCollectible
                         - s.outstanding;
+  const collectible    = s.collectible ?? collectibleLocal;
   const netDigital     = s.digitalIn - s.digitalRefunded;
   const expectedCash   = collectible - netDigital - s.cashExpenses;
   // expectedCash ≡ s.physicalCashInHand = cashIn − cashRefunded − cashExpenses
@@ -1044,12 +1047,15 @@ function UnifiedReconciliationPanel({
               note={
                 refundsExcludedFromCollectible > 0
                   ? `Money given back today, excluding ${fmt(refundsExcludedFromCollectible)} already counted under Cancelled Bills`
-                  : "Money given back to patients today"
+                  : "Money given back today (includes refunds on old bills cancelled today)"
               } />
         <ARow label="Outstanding Dues" value={s.outstanding} sign="−" indent highlight="red" note="balance on today's bills" />
 
         <ASectionDivider color="blue" />
         <ARow label="Collectible Amount" value={collectible} sign="=" bold highlight="blue" />
+        <p className="px-3 pb-1 text-[10px] text-muted-foreground leading-snug">
+          Billing follows who created the bill; cash and refunds follow who recorded them. Individual staff views can differ — clinic total should still balance.
+        </p>
 
         {/* ══ SECTION C: COLLECTION SPLIT ════════════════════════════════════ */}
         <div className="px-3 pt-2 pb-0.5">
@@ -1737,11 +1743,12 @@ export default function MyDailySummary() {
     const totalRefunds     = s.cashRefunded + s.digitalRefunded;
     const refundsExcluded  = s.refundsOnCancelledBillsCreatedInPeriod ?? 0;
     const refundsForCollectible = Math.max(0, totalRefunds - refundsExcluded);
-    const collectible      = s.grossBilledIncludingCancelled
+    const collectibleLocal = s.grossBilledIncludingCancelled
                            + s.duesCollectedTotal
                            - s.cancelledOnMyBills
                            - refundsForCollectible
                            - s.outstanding;
+    const collectible      = s.collectible ?? collectibleLocal;
     const netDigital       = s.digitalIn - s.digitalRefunded;
     const expectedCash     = collectible - netDigital - s.cashExpenses;
     const mismatch         = expectedCash - s.physicalCashInHand;
@@ -1928,11 +1935,11 @@ export default function MyDailySummary() {
         <div className="bg-white dark:bg-card border border-blue-200 dark:border-blue-800 rounded-xl p-4 shadow-sm space-y-4">
           <div className="flex items-center gap-2">
             <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
-            <h3 className="text-sm font-bold text-gray-800 dark:text-gray-100">Open Window (Live)</h3>
+            <h3 className="text-sm font-bold text-gray-800 dark:text-gray-100">Since last close (Live)</h3>
             <span className="text-xs text-gray-500 dark:text-gray-400">
               {myPreviewQ.data.coveredFromTs
-                ? `${new Date(myPreviewQ.data.coveredFromTs).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit", day: "numeric", month: "short" })} — now`
-                : "Since start — now"}
+                ? `${new Date(myPreviewQ.data.coveredFromTs).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit", day: "numeric", month: "short" })} — now · not calendar Today (IST)`
+                : "Since start — now · not calendar Today (IST)"}
             </span>
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
@@ -2111,8 +2118,9 @@ export default function MyDailySummary() {
             const refundsExcluded = s.refundsOnCancelledBillsCreatedInPeriod ?? 0;
             const refundsForCollectible = Math.max(0, totalRefunds - refundsExcluded);
             const cancelLinkedRefunds = Math.max(0, totalRefunds - s.refundsWithoutCancellationAmount);
-            const collectible = s.grossBilledIncludingCancelled + s.duesCollectedTotal
+            const collectibleLocal = s.grossBilledIncludingCancelled + s.duesCollectedTotal
               - s.cancelledOnMyBills - refundsForCollectible - s.outstanding;
+            const collectible = s.collectible ?? collectibleLocal;
             const totalBillsCount = (s.billCount ?? 0) + (s.cancelledByOthersCount ?? 0) + (s.cancelledBySelfCount ?? 0);
             const avgBillValue = totalBillsCount > 0 ? s.grossBilledIncludingCancelled / totalBillsCount : 0;
             return (

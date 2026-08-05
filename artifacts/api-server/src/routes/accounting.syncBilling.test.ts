@@ -58,7 +58,22 @@ vi.mock("@workspace/db/schema", () => ({
 
 vi.mock("@workspace/integrations-gemini-ai", () => ({ geminiParseBankStatement: vi.fn() }));
 vi.mock("../lib/accounting/reportBuilders", () => ({ buildTrialBalance: vi.fn(), buildProfitLoss: vi.fn(), buildBalanceSheet: vi.fn() }));
-vi.mock("../lib/auto-voucher", () => ({ autoVoucherForPayment: vi.fn() }));
+vi.mock("../lib/auto-voucher", () => ({
+  autoVoucherForPayment: vi.fn(),
+  resolveMethodAccount: (method: string) => {
+    const m = (method || "").toLowerCase();
+    if (m === "cash" || !m) return { name: "Cash in Hand", type: "cash", tallyGroup: "Cash-in-Hand" };
+    if (m.includes("online") || m === "upi" || m === "card") return { name: "Online Collections", type: "bank", tallyGroup: "Bank Accounts" };
+    if (m === "insurance") return { name: "Insurance Collections", type: "bank", tallyGroup: "Bank Accounts" };
+    return { name: "Unclassified Collections (Needs Review)", type: "bank", tallyGroup: "Bank Accounts" };
+  },
+  ensureAccount: async (name: string) => {
+    if (name.includes("Cash")) return "1";
+    if (name.includes("Insurance")) return "4";
+    if (name.includes("Unclassified")) return "5";
+    return "2";
+  },
+}));
 vi.mock("../lib/audit", () => ({ auditFromRequest: vi.fn(async (_r: unknown, p: Record<string, unknown>) => { auditCalls.push(p); }) }));
 vi.mock("../middleware/requireStaffAuth", () => ({
   requireAdminRole: Object.assign((_r: unknown, _s: unknown, next: () => void) => next(), { __adminGate: true }),

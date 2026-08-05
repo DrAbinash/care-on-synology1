@@ -136,6 +136,8 @@ export async function sendDailySummaryEmail(params: {
   unclassifiedCollected: number;
   discountsGiven: number;
   refundsAndCancellations: number;
+  refundAmount?: number;
+  cancelledBillAmount?: number;
   averageBillValue: number;
   newPatients: number;
   totalOutstandingDues: number;
@@ -187,7 +189,8 @@ export async function sendDailySummaryEmail(params: {
     ["Bills Pending / Partial", String(params.pendingBills)],
     ["Bills Edited", String(params.billsEdited)],
     ["Discounts Given", inr(params.discountsGiven)],
-    ["Refunds & Cancellations", inr(params.refundsAndCancellations)],
+    ["Refunds (money returned)", inr(params.refundAmount ?? params.refundsAndCancellations)],
+    ["Cancelled Bills (info)", inr(params.cancelledBillAmount ?? 0)],
     ["Expenses (Cash)", inr(params.cashExpenses)],
     ["Expenses (Digital)", inr(params.digitalExpenses)],
   ];
