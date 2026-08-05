@@ -12,7 +12,7 @@
 
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
-import { CARE_LETTERHEAD_LOGO_DATA_URL } from "./careLetterheadLogo";
+import { CARE_LETTERHEAD_LOGO_DATA_URL, CARE_LETTERHEAD_LOGO_SIZE } from "./careLetterheadLogo";
 
 export type PrintSettings = {
   paperSize: "A4" | "A5" | "Letter";
@@ -178,10 +178,10 @@ const FONT_SIZES = {
 };
 
 const CARE_LETTER_COLORS: Array<[number, number, number]> = [
-  [220, 38, 38],   // C — red
+  [220, 38, 38],   // C — red (brand bubble letter)
   [22, 163, 74],   // A — green
   [37, 99, 235],   // R — blue
-  [249, 115, 22],  // E — orange (letter-pad brand)
+  [249, 115, 22],  // E — orange
 ];
 
 const DEFAULT_ADDRESS =
@@ -357,58 +357,55 @@ export function generateReportPDF(
   let y = m.top;
 
   // ── LETTER-PAD HEADER (matches Care Diagnostics pre-printed pad) ──
-  // Brand logo (heart + CARE wordmark) → address underline → phone/email.
+  // Official brand strip: hands+heart | CARE (bubble colors) | DIAGNOSTICS,
+  // then address underline + phone/email. Do NOT use clinic.logoDataUrl here —
+  // Clinic Info uploads are often a different/old icon and were replacing the
+  // real letter-pad CARE mark (same-to-same mismatch vs the printed pad).
   if (settings.header.enabled) {
-    const logoSrc =
-      settings.header.logo
-      || clinic?.logoDataUrl
-      || CARE_LETTERHEAD_LOGO_DATA_URL;
     const centerX = pageW / 2;
     let headerBottom = y;
-
-    // Prefer the real letter-pad logo strip (heart | CARE / DIAGNOSTICS).
-    // Aspect ~2.81:1 — keep height compact so the report body still fits one page.
     let logoDrawn = false;
-    if (logoSrc) {
-      try {
-        const logoH = 20; // mm
-        const logoW = Math.min(contentW * 0.72, logoH * (562 / 200));
-        const logoX = centerX - logoW / 2;
-        const fmtImg = logoSrc.includes("image/jpeg") || logoSrc.includes("image/jpg") ? "JPEG" : "PNG";
-        doc.addImage(logoSrc, fmtImg, logoX, y, logoW, logoH);
-        headerBottom = y + logoH + 2;
-        logoDrawn = true;
-      } catch {
-        logoDrawn = false;
-      }
+
+    try {
+      const aspect = CARE_LETTERHEAD_LOGO_SIZE.width / CARE_LETTERHEAD_LOGO_SIZE.height;
+      // Match printed pad prominence: wide brand strip, not a tiny icon.
+      const logoH = 28; // mm
+      const logoW = Math.min(contentW * 0.9, logoH * aspect);
+      const logoX = centerX - logoW / 2;
+      doc.addImage(CARE_LETTERHEAD_LOGO_DATA_URL, "PNG", logoX, y, logoW, logoH);
+      headerBottom = y + logoH + 1.5;
+      logoDrawn = true;
+    } catch {
+      logoDrawn = false;
     }
 
-    // Fallback wordmark if the image cannot render (corrupt clinic logo, etc.)
+    // Fallback wordmark if the bundled PNG cannot render (corrupt build, etc.)
     if (!logoDrawn) {
       doc.setFont(font, "bold");
-      doc.setFontSize(fs.header);
+      doc.setFontSize(22);
       const care = "CARE";
-      const diag = " DIAGNOSTICS";
-      const careW = doc.getTextWidth(care);
-      const diagW = doc.getTextWidth(diag);
-      let cx = centerX - (careW + diagW) / 2;
+      let cx = centerX - doc.getTextWidth(care) / 2;
+      const careY = y + 10;
       for (let i = 0; i < care.length; i++) {
         doc.setTextColor(...CARE_LETTER_COLORS[i]!);
         const ch = care[i]!;
-        doc.text(ch, cx, y + 8);
+        doc.text(ch, cx, careY);
         cx += doc.getTextWidth(ch);
       }
+      doc.setFontSize(11);
       doc.setTextColor(15, 23, 70);
-      doc.text(diag, cx, y + 8);
-      headerBottom = y + 12;
+      doc.text("DIAGNOSTICS", centerX, careY + 6, { align: "center" });
+      headerBottom = careY + 9;
     }
 
     doc.setFont(font, "normal");
     doc.setFontSize(7.2);
     doc.setTextColor(20, 20, 20);
-    const address = (clinic?.address || DEFAULT_ADDRESS).trim();
+    // Prefer the printed letter-pad address line; clinic address often differs
+    // in formatting (Subhash Chowk vs St. Francis School Road wording).
+    const address = DEFAULT_ADDRESS;
     const addrLines = doc.splitTextToSize(address, contentW) as string[];
-    let ay = headerBottom + 1.5;
+    let ay = headerBottom + 1.2;
     for (const line of addrLines) {
       doc.text(line, centerX, ay, { align: "center" });
       ay += 3.1;
@@ -419,8 +416,10 @@ export function generateReportPDF(
     const underlineW = Math.min(contentW * 0.95, 170);
     doc.line(centerX - underlineW / 2, ay - 0.8, centerX + underlineW / 2, ay - 0.8);
 
-    const phones = clinic?.phone ? `Phone: ${clinic.phone}` : "Phone: 75490 99099, 99734 97200";
-    const email = clinic?.email ? `Email: ${clinic.email}` : "Email: care.deoghar@gmail.com";
+    const phones = "Phone: 75490 99099, 99734 97200";
+    const email = clinic?.email?.trim()
+      ? `Email: ${clinic.email.trim()}`
+      : "Email: care.deoghar@gmail.com";
     doc.setFontSize(7.2);
     doc.text(`${phones}, ${email}`, centerX, ay + 3.0, { align: "center" });
     y = ay + 5.5;
