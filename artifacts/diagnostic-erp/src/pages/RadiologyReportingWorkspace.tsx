@@ -778,9 +778,11 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   // Clicking into the embedded WADO/OHIF viewer maximises image space: the
   // patient-demographics block (top of this left panel) collapses to a slim
   // strip, and the app's blue navigation sidebar minimises (via the decoupled
-  // `care:viewer-focus` event that Layout listens for). Clicking back into the
-  // report editor — or the strip's "Show details" — restores both. A ref backs
-  // the boolean so the toggler is stable and never fires a redundant event.
+  // `care:viewer-focus` event that Layout listens for).
+  //
+  // Stay in viewer-focus while writing the report — clicking Findings / quick
+  // select must NOT expand demographics and shrink OHIF. Exit only via the
+  // strip's "Show details" (or when the embedded viewer is hidden by layout).
   const [viewerFocusMode, setViewerFocusMode] = useState(false);
   const viewerFocusRef = useRef(false);
   const setViewerFocus = useCallback((on: boolean) => {
@@ -811,11 +813,11 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   useEffect(() => {
     try { localStorage.setItem(WORKSPACE_CHROME_COLLAPSED_KEY, chromeCollapsed ? "1" : "0"); } catch { /* noop */ }
   }, [chromeCollapsed]);
-  // When the top chrome is collapsed (writing focus), also collapse the bulky
-  // left demographics block so the embedded viewer gets that vertical space.
+  // Prefer maximised OHIF while reporting: collapse bulky left demographics
+  // whenever the embedded viewer is on screen (writing + images together).
   useEffect(() => {
-    if (chromeCollapsed && showEmbeddedViewer) setViewerFocus(true);
-  }, [chromeCollapsed, showEmbeddedViewer, setViewerFocus]);
+    if (showEmbeddedViewer) setViewerFocus(true);
+  }, [showEmbeddedViewer, setViewerFocus]);
   const collapseReportingChrome = useCallback(() => setChromeCollapsed(true), []);
   const enterReportingFocusMode = useCallback(() => {
     setChromeCollapsed(true);
@@ -5304,15 +5306,15 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
 
         {/* ── CENTER: Report editor + action bar — the workspace's primary
             working area; gets the remaining space and never shrinks below a
-            clinically usable width. Clicking back into the editor exits
-            viewer-focus mode (restores the demographics + app sidebar). ── */}
+            clinically usable width. Editing findings must keep OHIF maximised
+            (viewer-focus stays on); use "Show details" on the left strip to
+            expand demographics deliberately. ── */}
         <ResizablePanel
           id="workspace-center"
           order={2}
           minSize={20}
           style={{ minWidth: CENTER_MIN_PX, minHeight: isMobile ? 320 : undefined }}
           className="flex flex-col overflow-hidden min-w-0"
-          onMouseDownCapture={() => setViewerFocus(false)}
         >
 
           {/* Scrollable editor area */}
