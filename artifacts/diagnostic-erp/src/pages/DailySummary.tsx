@@ -49,6 +49,8 @@ type DailySummaryData = {
     outstanding: number;
     refundsAndCancellations: number;
     expenses: number;
+    totalReceived?: number;
+    cashRefunded?: number;
     netCollection: number;
     digitalCollection: number;
     cashCollection?: number;
@@ -429,7 +431,7 @@ export default function DailySummary() {
     cashExpenses:        summary.cashExpenses ?? expenseTotal,
     digitalExpenses:     summary.digitalExpenses ?? 0,
     totalExpenses:       expenseTotal,
-    cashCollection:      summary.cashCollection ?? (netCollection + expenseTotal + (summary.totalRefunded ?? 0) - summary.digitalCollection),
+    cashCollection:      summary.cashCollection ?? 0,
     digitalCollection:   digitalCollection,
     netDigitalCollection: summary.netDigitalCollection ?? digitalCollection,
     // Expected Physical Cash formula:
@@ -462,9 +464,13 @@ export default function DailySummary() {
   const refundsFormula = `Refunds / Cancellations = ${inr(summary.refundsAndCancellations)}`;
   const expensesFormula = `Expenses = ${inr(expenseTotal)}`;
   const discountsFormula = `Discounts Given Today = ${inr(discountsGiven)}`;
-  const totalReceivedFormula = `Total Received Today = ${inr(summary.totalBilling)} − ${inr(summary.outstanding)} − ${inr(summary.refundsAndCancellations)} − ${inr(expenseTotal)} = ${inr(netCollection)}`;
+  // Payment-axis formula (money actually received/refunded), not the bill
+  // axis — a bill cancelled and refunded the same day must not be
+  // subtracted twice. Mirrors the server calculation in daily-summary.ts.
+  const totalReceivedAmt = summary.totalReceived ?? (netCollection + (summary.totalRefunded ?? 0) + expenseTotal);
+  const totalReceivedFormula = `Total Received Today = ${inr(totalReceivedAmt)} − ${inr(summary.totalRefunded ?? 0)} − ${inr(expenseTotal)} = ${inr(netCollection)}`;
   const digitalFormula = `Digital Collection = UPI + Card + other bank/digital modes = ${inr(digitalCollection)}`;
-  const physicalFormula = `Physical Cash in Hand = ${inr(netCollection)} − ${inr(digitalCollection)} = ${inr(physicalCash)}`;
+  const physicalFormula = `Physical Cash in Hand = ${inr(rec.cashCollection)} − ${inr(summary.cashRefunded ?? 0)} − ${inr(rec.cashExpenses)} = ${inr(physicalCash)}`;
 
   return (
     <div className="p-4 sm:p-6 space-y-4 sm:space-y-6 max-w-5xl mx-auto">
