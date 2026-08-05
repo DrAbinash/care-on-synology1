@@ -70,6 +70,8 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Install poppler-utils (pdftotext — used by PDF-export text-layer assertions)
+        run: sudo apt-get update && sudo apt-get install -y poppler-utils
       - name: Clean-boot + upgrade-safety migration smoke
         run: pnpm db:smoke
       - name: Bootstrap the test database (full migration path)
