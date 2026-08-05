@@ -6,7 +6,7 @@ import { FULL_ACCESS_ROLES } from "../middleware/requireStaffAuth";
 import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { getTransporter, getEmailSettings } from "../email";
 import { classifyPaymentMethod, isPhysicalCash, isDigitalSettlement } from "../lib/paymentMethodClassifier";
-import { computeRefundsOnCancelledBillsCreatedInPeriod } from "../lib/dailySummaryCollectible";
+import { computeRefundsOnCancelledBillsCreatedInPeriod, computeCollectibleForReconciliation } from "../lib/dailySummaryCollectible";
 import { buildStaffActivityRows, BILL_AUDIT_OPERATIONAL_CHANGE_TYPES } from "../lib/staffActivityAttribution";
 import { buildBillingVsPacsSummary } from "../lib/pacs/billingVsPacsSummary";
 import { buildLowStockSummary } from "../lib/inventoryLowStockSummary";
@@ -1033,7 +1033,12 @@ myDailySummaryRouter.get("/drilldown", async (req: StaffAuthRequest, res) => {
       // Rather than inventing a fake per-record table, show the same
       // component breakdown transparently as its own small table.
       const cashPayments = await db
-        .select({ amount: paymentsTable.amount, method: paymentsTable.method })
+        .select({
+          amount: paymentsTable.amount,
+          method: paymentsTable.method,
+          billStatus: billsTable.status,
+          billCreatedAt: billsTable.createdAt,
+        })
         .from(paymentsTable)
         .innerJoin(billsTable, eq(paymentsTable.billId, billsTable.id))
         .where(and(
@@ -1076,19 +1081,51 @@ myDailySummaryRouter.get("/drilldown", async (req: StaffAuthRequest, res) => {
           ],
         };
       } else {
+        // Same formula as the headline "Collectible Amount" KPI on the
+        // summary route above (computeCollectibleForReconciliation): must
+        // include Old Dues Collected and subtract Refunds (excluding
+        // refunds already accounted for via cancelled-bill removal, so a
+        // same-day cancel+refund does not double-subtract).
+        const duesPaymentRowsForCollectible = await db
+          .select({ paymentAmount: paymentsTable.amount })
+          .from(paymentsTable)
+          .innerJoin(billsTable, eq(paymentsTable.billId, billsTable.id))
+          .where(and(
+            gte(paymentsTable.createdAt, start),
+            lt(paymentsTable.createdAt, end),
+            lt(billsTable.createdAt, start),
+            sql`${paymentsTable.amount}::numeric > 0`,
+            ...(staffName !== null ? [eq(paymentsTable.recordedByName, staffName)] : []),
+          ));
+        const duesCollectedTotal = duesPaymentRowsForCollectible.reduce((s, r) => s + Number(r.paymentAmount), 0);
+        const refundsOnCancelledBillsCreatedInPeriod = computeRefundsOnCancelledBillsCreatedInPeriod(
+          cashPayments.map((p) => ({ amount: p.amount, billStatus: p.billStatus, billCreatedAt: p.billCreatedAt })),
+          start,
+          end,
+        );
+        const collectibleAmount = computeCollectibleForReconciliation({
+          grossBilledIncludingCancelled: billsIncl,
+          duesCollectedTotal,
+          cancelledOnMyBills: cancelledOnBills,
+          cashRefunded,
+          digitalRefunded,
+          refundsOnCancelledBillsCreatedInPeriod,
+          outstanding: outstandingBills,
+        });
+        const refundsForCollectible = Math.max(0, cashRefunded + digitalRefunded - refundsOnCancelledBillsCreatedInPeriod);
         result = {
           label: "Collectible Amount — Breakdown",
           columns: ["Component", "Amount"],
           rows: [
-            ["Total Bills Generated", billsIncl],
+            ["Total Bills Generated (incl. cancelled)", billsIncl],
+            ["+ Old Dues Collected", duesCollectedTotal],
             ["− Cancelled Bills", -cancelledOnBills],
+            ["− Refunds (excl. same-period cancel+refund)", -refundsForCollectible],
             ["− Outstanding / Dues", -outstandingBills],
-            ["= Collectible Amount", billsIncl - cancelledOnBills - outstandingBills],
+            ["= Collectible Amount", collectibleAmount],
           ],
         };
       }
-      // Suppress unused-var lint for digitalIn/digitalRefunded when only one branch used them
-      void digitalIn; void digitalRefunded;
       break;
     }
 
