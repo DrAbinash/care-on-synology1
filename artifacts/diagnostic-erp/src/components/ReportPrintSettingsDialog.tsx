@@ -145,6 +145,14 @@ export default function ReportPrintSettingsDialog({
             {s.footer.enabled && (
               <div className="space-y-2">
                 <Textarea rows={3} value={s.footer.disclaimer} onChange={(e) => update({ footer: { ...s.footer, disclaimer: e.target.value } })} />
+                <div className="space-y-1">
+                  <Label className="text-[10px] text-muted-foreground">Services bar (letter pad)</Label>
+                  <Input
+                    value={s.footer.servicesBar ?? ""}
+                    onChange={(e) => update({ footer: { ...s.footer, servicesBar: e.target.value } })}
+                    placeholder="CT | USG | PATHOLAB | …"
+                  />
+                </div>
                 <div className="flex gap-2 items-center">
                   <Switch checked={s.footer.showPageNumber} onCheckedChange={(v) => update({ footer: { ...s.footer, showPageNumber: v } })} />
                   <Label className="text-[10px] text-muted-foreground">Show Page Number</Label>

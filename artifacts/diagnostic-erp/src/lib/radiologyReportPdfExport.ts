@@ -38,11 +38,13 @@ export function buildFindingsText(opts: {
   const hc = opts.headingCase ?? "all_caps";
   return Object.entries(opts.findingsMap)
     .map(([label, item]) => {
-      const raw = item.text.trim();
+      const raw = item.text.trim().replace(/\s+/g, " ");
       const sentence = raw || (item.normal ? "Normal." : "—");
+      // Blank line between anatomical sections — letter-pad readability
       return `${fmtHeading(label, hc)}: ${sentence}`;
     })
-    .join("\n");
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 function blobToDataUrl(blob: Blob): Promise<string> {

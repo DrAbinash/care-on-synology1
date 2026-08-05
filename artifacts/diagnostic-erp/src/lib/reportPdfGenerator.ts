@@ -1,13 +1,13 @@
 /**
- * Unified Radiology Report PDF Generator
+ * Unified Radiology Report PDF Generator — Care Diagnostics letter-pad layout.
  *
- * Shared across all reporting pages (USG, Fetal, Echo, Radiology, Doppler, etc.)
- * Provides configurable print settings: font, margins, header, footer, disclaimer, paper size.
+ * Matches the clinic's pre-printed letterhead style: logo + CARE DIAGNOSTICS
+ * header, two-column patient block (no "Patient Demographics" label), centered
+ * underlined study title, bold/underlined section headings, right-aligned
+ * signature (doctor name in red), blue services bar, and medico-legal disclaimer.
  *
- * Usage:
- *   import { generateReportPDF, type PrintSettings, type ReportData } from "@/lib/reportPdfGenerator";
- *   const settings = loadPrintSettings();
- *   generateReportPDF(reportData, settings, clinicInfo);
+ * Fonts stay slightly smaller than typical Word output so a full MRI report
+ * fits one A4 page while keeping readable line spacing.
  */
 
 import { jsPDF } from "jspdf";
@@ -35,12 +35,12 @@ export type PrintSettings = {
     enabled: boolean;
     disclaimer: string;
     showPageNumber: boolean;
+    /** Dark blue services strip under the signature (letter-pad style). */
+    servicesBar: string;
   };
   watermark: string;
   watermarkOpacity: number;
-  /** Report section layout order — list which sections appear and in what order */
   layout: Array<"patientBox" | "clinicalHistory" | "technique" | "comparison" | "measurements" | "findings" | "keyImages" | "impression" | "recommendation">;
-  /** Per-section visibility toggles */
   show: {
     patientBox: boolean;
     clinicalHistory: boolean;
@@ -52,7 +52,6 @@ export type PrintSettings = {
     impression: boolean;
     recommendation: boolean;
   };
-  /** Digital signature block at the bottom of the report */
   signature: {
     enabled: boolean;
     name: string;
@@ -67,24 +66,27 @@ export type PrintSettings = {
 export const DEFAULT_PRINT_SETTINGS: PrintSettings = {
   paperSize: "A4",
   orientation: "portrait",
-  fontSize: "medium",
+  fontSize: "small",
   fontFamily: "helvetica",
-  margins: { top: 15, bottom: 20, left: 15, right: 15 },
+  margins: { top: 10, bottom: 28, left: 14, right: 14 },
   header: {
     enabled: true,
     title: "CARE DIAGNOSTICS",
     logo: null,
     showDate: true,
-    showAccession: true,
+    showAccession: false,
   },
   footer: {
     enabled: true,
-    disclaimer: "This report is for diagnostic purposes only. Please correlate with clinical findings.",
-    showPageNumber: true,
+    disclaimer:
+      "Radiological diagnosis is not always conclusive & often vary with clinical course. Please correlate clinically. This report is not for medico-legal purpose.",
+    showPageNumber: false,
+    servicesBar:
+      "MULTI SLICE CT SCAN  |  3D/4D ULTRASOUND  |  PATHOLAB  |  DIGITAL X-RAY  |  EEG  |  ECG  |  TMT  |  OPG  |  MAMMOGRAPHY  |  3T MRI",
   },
   watermark: "",
   watermarkOpacity: 0.1,
-  layout: ["patientBox", "clinicalHistory", "technique", "comparison", "measurements", "findings", "keyImages", "impression", "recommendation"],
+  layout: ["patientBox", "clinicalHistory", "technique", "comparison", "measurements", "findings", "impression", "recommendation", "keyImages"],
   show: {
     patientBox: true,
     clinicalHistory: true,
@@ -92,14 +94,14 @@ export const DEFAULT_PRINT_SETTINGS: PrintSettings = {
     comparison: true,
     measurements: true,
     findings: true,
-    keyImages: true,
+    keyImages: false,
     impression: true,
     recommendation: true,
   },
   signature: {
     enabled: true,
     name: "Dr. Sugandha Priyadarshini",
-    qualification: "MBBS, MD(Radiology)",
+    qualification: "MBBS, MD (Radiodiagnosis), DNB (I)",
     registrationNo: "",
     imageDataUrl: null,
     showQualification: true,
@@ -110,9 +112,18 @@ export const DEFAULT_PRINT_SETTINGS: PrintSettings = {
 export function loadPrintSettings(): PrintSettings {
   try {
     const raw = localStorage.getItem("radiology_print_settings");
-    if (!raw) return DEFAULT_PRINT_SETTINGS;
+    if (!raw) return { ...DEFAULT_PRINT_SETTINGS, footer: { ...DEFAULT_PRINT_SETTINGS.footer }, header: { ...DEFAULT_PRINT_SETTINGS.header }, show: { ...DEFAULT_PRINT_SETTINGS.show }, signature: { ...DEFAULT_PRINT_SETTINGS.signature }, margins: { ...DEFAULT_PRINT_SETTINGS.margins } };
     const parsed = JSON.parse(raw) as Partial<PrintSettings>;
-    return { ...DEFAULT_PRINT_SETTINGS, ...parsed };
+    return {
+      ...DEFAULT_PRINT_SETTINGS,
+      ...parsed,
+      margins: { ...DEFAULT_PRINT_SETTINGS.margins, ...(parsed.margins ?? {}) },
+      header: { ...DEFAULT_PRINT_SETTINGS.header, ...(parsed.header ?? {}) },
+      footer: { ...DEFAULT_PRINT_SETTINGS.footer, ...(parsed.footer ?? {}) },
+      show: { ...DEFAULT_PRINT_SETTINGS.show, ...(parsed.show ?? {}) },
+      signature: { ...DEFAULT_PRINT_SETTINGS.signature, ...(parsed.signature ?? {}) },
+      layout: parsed.layout ?? DEFAULT_PRINT_SETTINGS.layout,
+    };
   } catch {
     return DEFAULT_PRINT_SETTINGS;
   }
@@ -154,17 +165,167 @@ export type ReportData = {
   printedBy?: string;
 };
 
+/** Slightly compact sizes so a full MRI report fits one A4 page with air between lines. */
 const FONT_SIZES = {
-  small: { body: 9, heading: 12, title: 14, patient: 9, header: 10, footer: 8, disclaimer: 8 },
-  medium: { body: 10, heading: 13, title: 15, patient: 10, header: 11, footer: 9, disclaimer: 8 },
-  large: { body: 11, heading: 14, title: 16, patient: 11, header: 12, footer: 9, disclaimer: 8 },
+  small: { body: 8.5, heading: 9.5, title: 11.5, patient: 9, header: 16, footer: 7, disclaimer: 6.5, line: 3.6 },
+  medium: { body: 9.5, heading: 10.5, title: 12.5, patient: 9.5, header: 17, footer: 7.5, disclaimer: 7, line: 4.0 },
+  large: { body: 10.5, heading: 11.5, title: 13.5, patient: 10.5, header: 18, footer: 8, disclaimer: 7.5, line: 4.4 },
 };
+
+const CARE_LETTER_COLORS: Array<[number, number, number]> = [
+  [220, 38, 38],   // C — red
+  [22, 163, 74],   // A — green
+  [37, 99, 235],   // R — blue
+  [124, 58, 237],  // E — violet
+];
+
+const DEFAULT_ADDRESS =
+  "Near Bajla Mahila College, St. Francis School Road, Castair's Town, DEOGHAR-814 112 (JHARKHAND)";
+
+function formatReportDateShort(raw: string | null | undefined): string {
+  if (!raw) return "";
+  const digits = raw.replace(/\D/g, "");
+  if (digits.length >= 8) {
+    return `${digits.slice(6, 8)}/${digits.slice(4, 6)}/${digits.slice(0, 4)}`;
+  }
+  try {
+    const d = new Date(raw);
+    if (!Number.isNaN(d.getTime())) {
+      const dd = String(d.getDate()).padStart(2, "0");
+      const mm = String(d.getMonth() + 1).padStart(2, "0");
+      return `${dd}/${mm}/${d.getFullYear()}`;
+    }
+  } catch { /* fall through */ }
+  return raw;
+}
+
+function ageSexLine(age?: string, sex?: string): string {
+  const a = (age || "").trim();
+  const s = (sex || "").trim().toUpperCase();
+  if (a && s) return `${a} / ${s}`;
+  return a || s || "";
+}
+
+function drawSectionHeading(
+  doc: jsPDF,
+  text: string,
+  x: number,
+  y: number,
+  font: string,
+  size: number,
+): number {
+  doc.setFont(font, "bold");
+  doc.setFontSize(size);
+  doc.setTextColor(0, 0, 0);
+  doc.text(text, x, y);
+  const w = doc.getTextWidth(text);
+  doc.setDrawColor(0);
+  doc.setLineWidth(0.35);
+  doc.line(x, y + 0.7, x + w, y + 0.7);
+  return y + size * 0.42 + 1.2;
+}
+
+function drawWrappedBody(
+  doc: jsPDF,
+  text: string,
+  x: number,
+  y: number,
+  maxW: number,
+  font: string,
+  size: number,
+  lineH: number,
+): number {
+  doc.setFont(font, "normal");
+  doc.setFontSize(size);
+  doc.setTextColor(20, 20, 20);
+  const lines = doc.splitTextToSize(text, maxW) as string[];
+  for (const line of lines) {
+    doc.text(line, x, y);
+    y += lineH;
+  }
+  return y;
+}
+
+/** Findings may contain "LABEL: body" lines — bold the label like the letter pad. */
+function drawFindingsBlock(
+  doc: jsPDF,
+  findings: string,
+  x: number,
+  y: number,
+  maxW: number,
+  font: string,
+  bodySize: number,
+  lineH: number,
+): number {
+  const paragraphs = findings.split(/\n+/).map((p) => p.trim()).filter(Boolean);
+  for (const para of paragraphs) {
+    const m = para.match(/^([A-Z][A-Z0-9 /&().-]{1,48}):\s*([\s\S]*)$/);
+    if (m) {
+      const label = `${m[1]}:`;
+      const rest = m[2].trim();
+      doc.setFont(font, "bold");
+      doc.setFontSize(bodySize);
+      doc.setTextColor(0, 0, 0);
+      doc.text(label, x, y);
+      const labelW = doc.getTextWidth(label) + 1.2;
+      doc.setFont(font, "normal");
+      if (rest) {
+        const lines = doc.splitTextToSize(rest, Math.max(20, maxW - labelW)) as string[];
+        doc.text(lines[0] ?? "", x + labelW, y);
+        y += lineH;
+        for (let i = 1; i < lines.length; i++) {
+          doc.text(lines[i], x, y);
+          y += lineH;
+        }
+      } else {
+        y += lineH;
+      }
+    } else {
+      y = drawWrappedBody(doc, para, x, y, maxW, font, bodySize, lineH);
+    }
+    y += lineH * 0.35;
+  }
+  return y;
+}
+
+function drawNumberedImpression(
+  doc: jsPDF,
+  impression: string,
+  x: number,
+  y: number,
+  maxW: number,
+  font: string,
+  bodySize: number,
+  lineH: number,
+): number {
+  const rawLines = impression.split(/\n+/).map((l) => l.trim()).filter(Boolean);
+  const items = rawLines.map((l, i) => {
+    if (/^\d+[.)]\s*/.test(l)) return l.replace(/^\d+[.)]\s*/, "");
+    return l;
+  });
+  items.forEach((item, i) => {
+    const prefix = `${i + 1}. `;
+    doc.setFont(font, "normal");
+    doc.setFontSize(bodySize);
+    const lines = doc.splitTextToSize(item, maxW - doc.getTextWidth(prefix)) as string[];
+    doc.text(prefix, x, y);
+    doc.text(lines[0] ?? "", x + doc.getTextWidth(prefix), y);
+    y += lineH;
+    for (let j = 1; j < lines.length; j++) {
+      doc.text(lines[j], x + doc.getTextWidth(prefix), y);
+      y += lineH;
+    }
+    y += lineH * 0.25;
+  });
+  return y;
+}
 
 export function generateReportPDF(
   report: ReportData,
   settings: PrintSettings,
   clinic: PrintClinic,
-): void {
+  opts?: { save?: boolean },
+): jsPDF {
   const fmt = settings.paperSize;
   const sizes: Record<string, number[]> = {
     A4: [210, 297],
@@ -185,172 +346,191 @@ export function generateReportPDF(
   const contentW = pageW - m.left - m.right;
   const fs = FONT_SIZES[settings.fontSize];
   const font = settings.fontFamily;
+  const lineH = fs.line;
   doc.setFont(font);
 
   let y = m.top;
 
-  // ── HEADER ──
+  // ── LETTER-PAD HEADER ──
   if (settings.header.enabled) {
-    const headerH = 8;
-    doc.setFontSize(fs.header);
-    doc.setFont(font, "bold");
-    const clinicName = settings.header.title || clinic?.name || "CARE DIAGNOSTICS";
-    doc.text(clinicName, pageW / 2, y + 4, { align: "center" });
-
-    if (clinic?.tagline) {
-      doc.setFont(font, "normal");
-      doc.setFontSize(fs.header - 1);
-      doc.text(clinic.tagline, pageW / 2, y + 7, { align: "center" });
-    }
-
-    if (clinic?.logoDataUrl) {
+    const logoSrc = settings.header.logo || clinic?.logoDataUrl || null;
+    const logoSize = 22;
+    if (logoSrc) {
       try {
-        doc.addImage(clinic.logoDataUrl, "PNG", m.left, y, 14, 14);
+        const fmtImg = logoSrc.includes("image/jpeg") ? "JPEG" : "PNG";
+        doc.addImage(logoSrc, fmtImg, m.left, y, logoSize, logoSize);
       } catch { /* ignore broken logo */ }
     }
 
-    doc.setFontSize(fs.header - 2);
-    doc.setFont(font, "normal");
-    const addr = clinic?.address ?? "";
-    if (addr) {
-      doc.text(addr, pageW / 2, y + 11, { align: "center", maxWidth: contentW });
+    const centerX = pageW / 2;
+    // CARE in brand colours + DIAGNOSTICS in black
+    doc.setFont(font, "bold");
+    doc.setFontSize(fs.header);
+    const care = "CARE";
+    const diag = " DIAGNOSTICS";
+    const careW = doc.getTextWidth(care);
+    const diagW = doc.getTextWidth(diag);
+    let cx = centerX - (careW + diagW) / 2;
+    for (let i = 0; i < care.length; i++) {
+      doc.setTextColor(...CARE_LETTER_COLORS[i]!);
+      const ch = care[i]!;
+      doc.text(ch, cx, y + 8);
+      cx += doc.getTextWidth(ch);
     }
-    const contact = [clinic?.phone, clinic?.email].filter(Boolean).join("  \u00b7  ");
-    if (contact) {
-      doc.text(contact, pageW / 2, y + 15, { align: "center" });
-    }
+    doc.setTextColor(15, 15, 15);
+    doc.text(diag, cx, y + 8);
 
-    doc.setDrawColor(200);
-    doc.setLineWidth(0.3);
-    doc.line(m.left, y + 18, pageW - m.right, y + 18);
-    y += 22;
+    doc.setFont(font, "normal");
+    doc.setFontSize(7.5);
+    doc.setTextColor(40, 40, 40);
+    const address = (clinic?.address || DEFAULT_ADDRESS).trim();
+    const addrLines = doc.splitTextToSize(address, contentW - (logoSrc ? logoSize + 4 : 0)) as string[];
+    let ay = y + 12;
+    for (const line of addrLines) {
+      doc.text(line, centerX, ay, { align: "center" });
+      ay += 3.2;
+    }
+    // Underline under address
+    doc.setDrawColor(30);
+    doc.setLineWidth(0.4);
+    const underlineW = Math.min(contentW * 0.92, 160);
+    doc.line(centerX - underlineW / 2, ay - 1, centerX + underlineW / 2, ay - 1);
+
+    const phones = clinic?.phone ? `Phone: ${clinic.phone}` : "Phone: 75490 99099, 99734 97200";
+    const email = clinic?.email ? `Email: ${clinic.email}` : "Email: care.deoghar@gmail.com";
+    doc.setFontSize(7.5);
+    doc.text(`${phones}, ${email}`, centerX, ay + 3.2, { align: "center" });
+    y = Math.max(y + logoSize + 2, ay + 6);
   } else {
     y += 2;
   }
 
-  // ── TITLE ──
-  const title = report.reportTitle || "Radiology Report";
-  doc.setFontSize(fs.title);
-  doc.setFont(font, "bold");
-  doc.text(title, pageW / 2, y + 3, { align: "center" });
-  y += 8;
+  // ── PATIENT BLOCK (letter pad — no "Patient Demographics" heading) ──
+  if (settings.show.patientBox) {
+    doc.setFontSize(fs.patient);
+    doc.setTextColor(0, 0, 0);
+    const leftX = m.left;
+    const rightX = pageW / 2 + 4;
+    const name = (report.patientName || "").trim().toUpperCase();
+    const refBy = (report.referringDoctor || "").trim().toUpperCase();
+    const ageSex = ageSexLine(report.age, report.sex).toUpperCase();
+    const dateStr = formatReportDateShort(report.studyDate);
 
-  // ── LAYOUT-DRIVEN SECTIONS ──
+    doc.setFont(font, "bold");
+    doc.text("NAME:", leftX, y);
+    doc.setFont(font, "normal");
+    doc.text(name || "—", leftX + doc.getTextWidth("NAME: ") + 1, y);
+
+    doc.setFont(font, "bold");
+    doc.text("AGE/SEX:", rightX, y);
+    doc.setFont(font, "normal");
+    doc.text(ageSex || "—", rightX + doc.getTextWidth("AGE/SEX: ") + 1, y);
+    y += lineH + 0.8;
+
+    doc.setFont(font, "bold");
+    doc.text("REFD. BY:", leftX, y);
+    doc.setFont(font, "bold");
+    doc.text(refBy || "—", leftX + doc.getTextWidth("REFD. BY: ") + 1, y);
+
+    if (settings.header.showDate !== false) {
+      doc.setFont(font, "bold");
+      doc.text("DATE:", rightX, y);
+      doc.setFont(font, "normal");
+      doc.text(dateStr || "—", rightX + doc.getTextWidth("DATE: ") + 1, y);
+    }
+    y += lineH + 1.5;
+
+    // Double rule (letter-pad style)
+    doc.setDrawColor(0);
+    doc.setLineWidth(0.55);
+    doc.line(m.left, y, pageW - m.right, y);
+    doc.setLineWidth(0.25);
+    doc.line(m.left, y + 1.1, pageW - m.right, y + 1.1);
+    y += 5;
+  }
+
+  // ── STUDY TITLE (centered, underlined) ──
+  const title = (report.reportTitle || "Radiology Report").trim().toUpperCase();
+  doc.setFont(font, "bold");
+  doc.setFontSize(fs.title);
+  doc.setTextColor(0, 0, 0);
+  doc.text(title, pageW / 2, y, { align: "center" });
+  const titleW = doc.getTextWidth(title);
+  doc.setLineWidth(0.45);
+  doc.line(pageW / 2 - titleW / 2, y + 0.9, pageW / 2 + titleW / 2, y + 0.9);
+  y += lineH + 2.5;
+
+  const contentBottom = pageH - m.bottom - 18;
+
+  const ensureSpace = (needed: number) => {
+    if (y + needed > contentBottom) {
+      doc.addPage();
+      y = m.top;
+    }
+  };
+
   for (const section of settings.layout) {
     if (!settings.show[section]) continue;
-
-    const addPageIfNeeded = (neededHeight: number) => {
-      if (y + neededHeight > pageH - m.bottom - 10) {
-        doc.addPage();
-        y = m.top;
-      }
-    };
+    if (section === "patientBox") continue; // already drawn above title
 
     switch (section) {
-      case "patientBox": {
-        if (!report.patientName && !report.age && !report.sex && !report.accessionNumber && !report.studyDate && !report.referringDoctor && !report.modality && !report.bodyPart) break;
-        doc.setFontSize(fs.patient);
-        doc.setFont(font, "bold");
-        doc.text("Patient Demographics", m.left, y + 3);
-        doc.setFont(font, "normal");
-        const boxLines: string[] = [];
-        if (report.patientName) boxLines.push(`Patient: ${report.patientName}`);
-        if (report.age || report.sex) boxLines.push(`${report.age ?? ""} ${report.sex ?? ""}`.trim());
-        if (report.accessionNumber && settings.header.showAccession) boxLines.push(`Accession: ${report.accessionNumber}`);
-        if (report.studyDate && settings.header.showDate) boxLines.push(`Date: ${report.studyDate}`);
-        if (report.referringDoctor) boxLines.push(`Referring Doctor: ${report.referringDoctor}`);
-        if (report.modality) boxLines.push(`Modality: ${report.modality}`);
-        if (report.bodyPart) boxLines.push(`Body Part: ${report.bodyPart}`);
-        const boxText = boxLines.join("  \u00b7  ");
-        doc.text(boxText, m.left, y + 8, { maxWidth: contentW });
-        y += 14;
-        doc.setDrawColor(200);
-        doc.line(m.left, y, pageW - m.right, y);
-        y += 4;
-        break;
-      }
       case "clinicalHistory": {
-        if (!report.clinicalHistory) break;
-        const lines = doc.splitTextToSize(report.clinicalHistory, contentW);
-        addPageIfNeeded(10 + lines.length * (fs.body * 0.4));
-        doc.setFontSize(fs.heading);
-        doc.setFont(font, "bold");
-        doc.text("Clinical History:", m.left, y + 3);
-        doc.setFont(font, "normal");
-        doc.setFontSize(fs.body);
-        doc.text(lines, m.left, y + 7);
-        y += 7 + lines.length * (fs.body * 0.4);
-        y += 4;
+        if (!report.clinicalHistory?.trim()) break;
+        ensureSpace(12);
+        y = drawSectionHeading(doc, "CLINICAL HISTORY:", m.left, y, font, fs.heading);
+        y = drawWrappedBody(doc, report.clinicalHistory.trim(), m.left, y, contentW, font, fs.body, lineH);
+        y += lineH * 0.55;
         break;
       }
       case "technique": {
-        if (!report.technique) break;
-        const lines = doc.splitTextToSize(report.technique, contentW);
-        addPageIfNeeded(10 + lines.length * (fs.body * 0.4));
-        doc.setFontSize(fs.heading);
-        doc.setFont(font, "bold");
-        doc.text("Technique:", m.left, y + 3);
-        doc.setFont(font, "normal");
-        doc.setFontSize(fs.body);
-        doc.text(lines, m.left, y + 7);
-        y += 7 + lines.length * (fs.body * 0.4);
-        y += 4;
+        if (!report.technique?.trim()) break;
+        ensureSpace(12);
+        y = drawSectionHeading(doc, "TECHNIQUE:", m.left, y, font, fs.heading);
+        y = drawWrappedBody(doc, report.technique.trim(), m.left, y, contentW, font, fs.body, lineH);
+        y += lineH * 0.55;
         break;
       }
       case "comparison": {
-        if (!report.comparison) break;
-        const lines = doc.splitTextToSize(report.comparison, contentW);
-        addPageIfNeeded(10 + lines.length * (fs.body * 0.4));
-        doc.setFontSize(fs.heading);
-        doc.setFont(font, "bold");
-        doc.text("Comparison:", m.left, y + 3);
-        doc.setFont(font, "normal");
-        doc.setFontSize(fs.body);
-        doc.text(lines, m.left, y + 7);
-        y += 7 + lines.length * (fs.body * 0.4);
-        y += 4;
+        if (!report.comparison?.trim()) break;
+        ensureSpace(12);
+        y = drawSectionHeading(doc, "COMPARISON:", m.left, y, font, fs.heading);
+        y = drawWrappedBody(doc, report.comparison.trim(), m.left, y, contentW, font, fs.body, lineH);
+        y += lineH * 0.55;
         break;
       }
       case "measurements": {
         if (!report.measurements || report.measurements.length === 0) break;
-        addPageIfNeeded(40);
+        ensureSpace(28);
+        y = drawSectionHeading(doc, "MEASUREMENTS:", m.left, y, font, fs.heading);
         autoTable(doc, {
           startY: y,
           head: [["Measurement", "Value"]],
-          body: report.measurements.map((m) => [m.label, m.value]),
-          styles: { fontSize: fs.body, font: font, cellPadding: 1.5 },
-          headStyles: { fillColor: [240, 240, 240], textColor: [0, 0, 0], fontStyle: "bold" },
+          body: report.measurements.map((row) => [row.label, row.value]),
+          styles: { fontSize: fs.body - 0.5, font, cellPadding: 1.1 },
+          headStyles: { fillColor: [241, 245, 249], textColor: [0, 0, 0], fontStyle: "bold" },
           margin: { left: m.left, right: m.right },
           tableWidth: "auto",
         });
-        y = (doc as any).lastAutoTable?.finalY ?? y + 30;
-        y += 4;
+        y = ((doc as unknown as { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY ?? y + 20) + 3;
         break;
       }
       case "findings": {
-        if (!report.findings) break;
-        const lines = doc.splitTextToSize(report.findings, contentW);
-        addPageIfNeeded(10 + lines.length * (fs.body * 0.4));
-        doc.setFontSize(fs.heading);
-        doc.setFont(font, "bold");
-        doc.text("Findings:", m.left, y + 3);
-        doc.setFont(font, "normal");
-        doc.setFontSize(fs.body);
-        doc.text(lines, m.left, y + 7);
-        y += 7 + lines.length * (fs.body * 0.4);
-        y += 4;
+        if (!report.findings?.trim()) break;
+        ensureSpace(16);
+        y = drawSectionHeading(doc, "FINDINGS:", m.left, y, font, fs.heading);
+        y = drawFindingsBlock(doc, report.findings.trim(), m.left, y, contentW, font, fs.body, lineH);
+        y += lineH * 0.4;
         break;
       }
       case "keyImages": {
         if (!report.keyImages || report.keyImages.length === 0) break;
-        const imgWidth = (contentW - 8) / 2;
-        const imgHeight = 35;
+        const imgWidth = (contentW - 6) / 2;
+        const imgHeight = 28;
         let imgX = m.left;
         let imgY = y;
-        for (let i = 0; i < report.keyImages.length; i++) {
-          const img = report.keyImages[i];
+        for (const img of report.keyImages) {
           if (!img) continue;
-          if (imgY + imgHeight > pageH - m.bottom - 15) {
+          if (imgY + imgHeight > contentBottom) {
             doc.addPage();
             imgY = m.top;
             imgX = m.left;
@@ -358,113 +538,102 @@ export function generateReportPDF(
           try {
             const ext = img.startsWith("data:image/jpeg") ? "JPEG" : "PNG";
             doc.addImage(img, ext, imgX, imgY, imgWidth, imgHeight);
-            imgX += imgWidth + 4;
+            imgX += imgWidth + 3;
             if (imgX + imgWidth > pageW - m.right) {
               imgX = m.left;
-              imgY += imgHeight + 4;
+              imgY += imgHeight + 3;
             }
           } catch { /* skip broken image */ }
         }
-        y = imgY + imgHeight + 6;
+        y = imgY + imgHeight + 4;
         break;
       }
       case "impression": {
-        if (!report.impression) break;
-        const lines = doc.splitTextToSize(report.impression, contentW);
-        addPageIfNeeded(10 + lines.length * (fs.body * 0.4));
-        doc.setFontSize(fs.heading);
-        doc.setFont(font, "bold");
-        doc.text("Impression:", m.left, y + 3);
-        doc.setFont(font, "normal");
-        doc.setFontSize(fs.body);
-        doc.text(lines, m.left, y + 7);
-        y += 7 + lines.length * (fs.body * 0.4);
-        y += 4;
+        if (!report.impression?.trim()) break;
+        ensureSpace(14);
+        y = drawSectionHeading(doc, "IMPRESSION:", m.left, y, font, fs.heading);
+        y = drawNumberedImpression(doc, report.impression.trim(), m.left, y, contentW, font, fs.body, lineH);
+        y += lineH * 0.4;
         break;
       }
       case "recommendation": {
-        if (!report.recommendation) break;
-        const lines = doc.splitTextToSize(report.recommendation, contentW);
-        addPageIfNeeded(10 + lines.length * (fs.body * 0.4));
-        doc.setFontSize(fs.heading);
-        doc.setFont(font, "bold");
-        doc.text("Recommendation:", m.left, y + 3);
-        doc.setFont(font, "normal");
-        doc.setFontSize(fs.body);
-        doc.text(lines, m.left, y + 7);
-        y += 7 + lines.length * (fs.body * 0.4);
-        y += 4;
+        if (!report.recommendation?.trim()) break;
+        ensureSpace(12);
+        y = drawSectionHeading(doc, "RECOMMENDATION:", m.left, y, font, fs.heading);
+        y = drawWrappedBody(doc, report.recommendation.trim(), m.left, y, contentW, font, fs.body, lineH);
+        y += lineH * 0.4;
         break;
       }
     }
   }
 
-  // ── SIGNATURE BLOCK ──
+  // ── SIGNATURE (right, doctor name in red) — sits under report body, not
+  // forced to the page foot (that left a large empty dead zone on short reports).
   if (settings.signature.enabled) {
     const sig = settings.signature;
-    const sigHeight = 25;
-    if (y + sigHeight > pageH - m.bottom - 10) {
-      doc.addPage();
-      y = m.top;
-    }
+    ensureSpace(28);
+    y += 10;
+    const sigRight = pageW - m.right;
 
-    // Signature line
-    doc.setDrawColor(100);
-    doc.setLineWidth(0.3);
-    const lineY = y + 12;
-    const lineWidth = 60;
-    doc.line(pageW - m.right - lineWidth, lineY, pageW - m.right, lineY);
-
-    // Signature image if available
     if (sig.imageDataUrl) {
       try {
-        const imgW = 30;
-        const imgH = 15;
-        doc.addImage(sig.imageDataUrl, "PNG", pageW - m.right - lineWidth, y - 2, imgW, imgH);
-      } catch { /* skip broken signature image */ }
+        doc.addImage(sig.imageDataUrl, "PNG", sigRight - 54, y, 36, 14);
+        y += 12;
+      } catch { /* skip */ }
+    } else {
+      y += 6;
     }
 
-    // Name (bold)
-    doc.setFontSize(fs.body);
     doc.setFont(font, "bold");
-    doc.text(sig.name, pageW - m.right, lineY + 4, { align: "right" });
+    doc.setFontSize(fs.body + 0.5);
+    doc.setTextColor(185, 28, 28);
+    doc.text(sig.name, sigRight, y, { align: "right" });
+    y += lineH;
 
-    // Qualification & Registration
+    doc.setTextColor(20, 20, 20);
+    doc.setFont(font, "normal");
+    doc.setFontSize(fs.body - 0.5);
     const details: string[] = [];
     if (sig.showQualification && sig.qualification) details.push(sig.qualification);
     if (sig.showRegistrationNo && sig.registrationNo) details.push(`Reg. No: ${sig.registrationNo}`);
-
-    if (details.length > 0) {
-      doc.setFontSize(fs.body - 1);
-      doc.setFont(font, "normal");
-      doc.text(details.join(" | "), pageW - m.right, lineY + 8, { align: "right" });
+    if (details.length) {
+      doc.text(details.join(", "), sigRight, y, { align: "right" });
+      y += lineH;
     }
-
-    y += sigHeight;
   }
 
-  // ── FOOTER / DISCLAIMER ──
-  const footerY = pageH - m.bottom;
-  if (settings.footer.enabled) {
-    doc.setDrawColor(200);
-    doc.line(m.left, footerY - 6, pageW - m.right, footerY - 6);
-    doc.setFontSize(fs.disclaimer);
-    doc.setFont(font, "italic");
-    const discLines = doc.splitTextToSize(settings.footer.disclaimer, contentW);
-    doc.text(discLines, m.left, footerY - 2);
-    if (settings.footer.showPageNumber) {
+  // ── SERVICES BAR + DISCLAIMER (every page) ──
+  const pageCount = doc.getNumberOfPages();
+  for (let i = 1; i <= pageCount; i++) {
+    doc.setPage(i);
+    const barH = 7;
+    const barY = pageH - m.bottom + 2;
+    if (settings.footer.enabled && settings.footer.servicesBar) {
+      doc.setFillColor(15, 45, 110);
+      doc.rect(0, barY, pageW, barH, "F");
+      doc.setFont(font, "bold");
+      doc.setFontSize(5.8);
+      doc.setTextColor(255, 255, 255);
+      doc.text(settings.footer.servicesBar, pageW / 2, barY + 4.5, { align: "center", maxWidth: pageW - 8 });
+    }
+    if (settings.footer.enabled && settings.footer.disclaimer) {
       doc.setFont(font, "normal");
-      const pageCount = doc.getNumberOfPages();
-      for (let i = 1; i <= pageCount; i++) {
-        doc.setPage(i);
-        doc.text(`Page ${i} of ${pageCount}`, pageW - m.right, footerY - 2, { align: "right" });
-      }
+      doc.setFontSize(fs.disclaimer);
+      doc.setTextColor(30, 30, 30);
+      const discY = barY + barH + 3.2;
+      const discLines = doc.splitTextToSize(settings.footer.disclaimer, contentW) as string[];
+      doc.text(discLines, m.left, discY);
+    }
+    if (settings.footer.enabled && settings.footer.showPageNumber) {
+      doc.setFont(font, "normal");
+      doc.setFontSize(fs.disclaimer);
+      doc.setTextColor(80, 80, 80);
+      doc.text(`Page ${i} of ${pageCount}`, pageW - m.right, pageH - 3, { align: "right" });
     }
   }
 
   // ── WATERMARK ──
   if (settings.watermark) {
-    const pageCount = doc.getNumberOfPages();
     for (let i = 1; i <= pageCount; i++) {
       doc.setPage(i);
       doc.setFontSize(40);
@@ -475,9 +644,11 @@ export function generateReportPDF(
     }
   }
 
-  // ── SAVE ──
   const filename = (report.accessionNumber || report.patientName || "report")
     .replace(/[^a-zA-Z0-9\-_]/g, "_")
     .toLowerCase();
-  doc.save(`${filename}.pdf`);
+  if (opts?.save !== false) {
+    doc.save(`${filename}.pdf`);
+  }
+  return doc;
 }
