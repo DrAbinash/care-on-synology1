@@ -20,7 +20,7 @@ import {
   Network, Server, MonitorPlay, Radio, BrainCircuit,
   Wrench, Activity, ShieldAlert,
   RefreshCw, Save,
-  Zap, ShieldCheck, PlayCircle, Info, Palette, Mic, Waves
+  Zap, ShieldCheck, PlayCircle, Info, Palette, Mic, Waves, Cpu
 } from "lucide-react";
 import type { UseMutationResult } from "@tanstack/react-query";
 // M1.6B2/B3 — voice layer settings (same pacs_settings persistence as this
@@ -1128,6 +1128,53 @@ export default function RadiologySettingsCenter() {
               Advanced PACS Hardening
             </h3>
             <RisMonitorCommandGrid />
+          </div>
+
+          <div className="rounded-xl border bg-card p-5 space-y-3">
+            <h3 className="font-semibold text-sm flex items-center gap-2">
+              <Cpu size={16} className="text-primary" />
+              Radiology admin tools (moved from sidebar)
+            </h3>
+            <p className="text-xs text-muted-foreground">
+              Deep tools keep their routes; discovery is here and under Settings → Radiology Tools.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {[
+                { href: "/radiology/advanced-tools", label: "Advanced Tools catalog" },
+                { href: "/radiology/network-control-center", label: "Network Control" },
+                { href: "/dicom-nodes", label: "DICOM Nodes" },
+                { href: "/radiology/modality-management", label: "Modalities" },
+                { href: "/radiology/dicom-agent-dashboard", label: "DICOM Agent" },
+                { href: "/radiology/watchdog", label: "Watchdog" },
+                { href: "/radiology/hl7-settings", label: "HL7 Settings" },
+                { href: "/radiology/ai-reporting-settings", label: "AI Reporting" },
+                { href: "/radiology/ai-prompt-manager", label: "AI Prompt Manager" },
+                { href: "/radiology/ai-comparison", label: "AI Comparison" },
+                { href: "/radiology/missed-finding-detector", label: "Missed Finding Detector" },
+                { href: "/radiology/image-review", label: "Image Review" },
+                { href: "/radiology/provider-fallback", label: "Provider Fallback" },
+                { href: "/settings/radiology/knowledge-packs", label: "Knowledge Packs" },
+                { href: "/teaching-cases", label: "Teaching Files" },
+              ].map((item) => (
+                <Button
+                  key={item.href}
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-xs"
+                  onClick={() => navigate(item.href)}
+                >
+                  {item.label}
+                </Button>
+              ))}
+            </div>
+            <Button
+              size="sm"
+              variant="secondary"
+              className="h-8"
+              onClick={() => navigate("/settings?tab=radiology-tools")}
+            >
+              Open Settings → Radiology Tools hub
+            </Button>
           </div>
 
           <div className="rounded-xl border bg-card p-5 space-y-4">
