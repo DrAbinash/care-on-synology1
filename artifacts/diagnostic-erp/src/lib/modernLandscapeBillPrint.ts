@@ -55,6 +55,7 @@ export function buildModernLandscapeBillPrintHtml(opts: BuildPrintHtmlOpts): str
   const showCode = clinic?.billShowCode !== false;
   const showCat = clinic?.billShowCategory !== false;
   const qrEnabled = clinic?.qrOnBillEnabled !== false && (opts.showQr ?? true);
+  const showTat = (opts.showTat ?? clinic?.showTatOnBill) === true;
 
   const tests = (bill.order?.tests ?? []).filter((t) => (t.status ?? "active") !== "cancelled");
   const cancelled = (bill.order?.tests ?? []).filter((t) => (t.status ?? "active") === "cancelled");
@@ -112,10 +113,12 @@ export function buildModernLandscapeBillPrintHtml(opts: BuildPrintHtmlOpts): str
     const name = t.displayName ?? t.test?.name ?? "—";
     const code = t.test?.code ?? "";
     const cat = t.test?.category ?? "";
+    const tat = (t.test?.duration ?? "").trim();
     return `<tr>
       <td style="padding:4px 6px;text-align:right;color:#64748b;font-variant-numeric:tabular-nums;width:6%">${i + 1}</td>
-      ${showCode ? `<td style="padding:4px 6px;font-family:ui-monospace,Menlo,monospace;font-size:${Math.max(9, parseInt(tablePx, 10) - 1)}px;color:#334155;white-space:nowrap;width:14%">${esc(code)}</td>` : ""}
+      ${showCode ? `<td style="padding:4px 6px;font-family:ui-monospace,Menlo,monospace;font-size:${Math.max(9, parseInt(tablePx, 10) - 1)}px;color:#334155;white-space:nowrap;width:12%">${esc(code)}</td>` : ""}
       <td style="padding:4px 6px;color:#0f172a">${esc(name)}${showCat && cat ? `<span style="color:#94a3b8;font-size:${tinyPx};margin-left:6px">${esc(cat)}</span>` : ""}</td>
+      ${showTat ? `<td style="padding:4px 6px;color:#64748b;font-size:${tinyPx};white-space:nowrap;width:12%">${esc(tat || "—")}</td>` : ""}
       <td style="padding:4px 6px;text-align:right;font-variant-numeric:tabular-nums;font-weight:600;color:#0f172a;white-space:nowrap;width:18%">₹${fmt(t.price)}</td>
     </tr>`;
   };
@@ -205,14 +208,18 @@ export function buildModernLandscapeBillPrintHtml(opts: BuildPrintHtmlOpts): str
 
       ${queueTokenBlock}
 
-      <div style="display:flex;gap:12px;padding-top:6px;height:calc(100% - 0px)">
+      <!-- Content-sized middle row (no height:100%) — stretching to fill the
+           fixed page box left a large blank band between the table and the
+           totals/footer on short bills, which looked unprofessional. -->
+      <div style="display:flex;gap:12px;padding-top:6px;align-items:flex-start">
         <div style="flex:1;min-width:0">
           <table style="width:100%;border-collapse:collapse;font-size:${tablePx}">
             <thead>
               <tr style="border-bottom:1.5px solid ${accent}">
                 <th style="padding:3px 6px;text-align:right;color:${accent};font-weight:700;font-size:${tinyPx};width:6%">#</th>
-                ${showCode ? `<th style="padding:3px 6px;text-align:left;color:${accent};font-weight:700;font-size:${tinyPx};width:14%">CODE</th>` : ""}
+                ${showCode ? `<th style="padding:3px 6px;text-align:left;color:${accent};font-weight:700;font-size:${tinyPx};width:12%">CODE</th>` : ""}
                 <th style="padding:3px 6px;text-align:left;color:${accent};font-weight:700;font-size:${tinyPx}">TEST NAME</th>
+                ${showTat ? `<th style="padding:3px 6px;text-align:left;color:${accent};font-weight:700;font-size:${tinyPx};width:12%">TAT</th>` : ""}
                 <th style="padding:3px 6px;text-align:right;color:${accent};font-weight:700;font-size:${tinyPx};width:18%">AMOUNT</th>
               </tr>
             </thead>

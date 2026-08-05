@@ -75,6 +75,8 @@ export type BillPrintSettings = {
 
   // Display toggles
   showQrCode: boolean;
+  /** When true, printed bills show each test's catalog duration as a TAT column. */
+  showTatOnBill: boolean;
   showAmountInWords: boolean;
   showSignatureLine: boolean;
   showComputerGenerated: boolean;
@@ -125,16 +127,19 @@ export type BillPrintSettings = {
 };
 
 export const GLOBAL_BILL_PRINT_DEFAULTS: BillPrintSettings = {
-  defaultFormat: "classic",
+  // Dense A5-landscape receipt — fills the page professionally; avoids the
+  // half-blank A4 look of Classic on full A4 paper for typical short bills.
+  defaultFormat: "modern-landscape",
   classicEnabled: true,
   premiumA5Enabled: true,
   designerAEnabled: true,
   designerBEnabled: true,
   designerCEnabled: true,
-  autoA4Threshold: 5,
-  defaultPaperSize: "A5-portrait",
+  autoA4Threshold: 8,
+  defaultPaperSize: "A5-landscape",
   defaultCopyType: "patient",
   showQrCode: true,
+  showTatOnBill: false,
   showAmountInWords: false,
   showSignatureLine: true,
   showComputerGenerated: true,
@@ -343,11 +348,15 @@ export function printLayoutOpts(settings: BillPrintSettings) {
 export function getEffectiveFormat(global: Partial<BillPrintSettings>, userOverride: Partial<BillPrintSettings> = {}): BillFormat {
   const merged = loadBillPrintSettings(global);
   const eff = { ...merged, ...userOverride };
+  if (eff.defaultFormat === "modern-landscape") return "modern-landscape";
+  if (eff.defaultFormat === "designer-a" && eff.designerAEnabled !== false) return "designer-a";
+  if (eff.defaultFormat === "designer-b" && eff.designerBEnabled !== false) return "designer-b";
+  if (eff.defaultFormat === "designer-c" && eff.designerCEnabled !== false) return "designer-c";
   if (eff.defaultFormat === "premium-a5" && eff.premiumA5Enabled) return "premium-a5";
   if (eff.defaultFormat === "classic" && eff.classicEnabled) return "classic";
   if (eff.premiumA5Enabled) return "premium-a5";
   if (eff.classicEnabled) return "classic";
-  return "classic";
+  return "modern-landscape";
 }
 
 // ── Paper size helpers ──
@@ -403,7 +412,9 @@ export function resolveBillPrintPageOpts(
     return {
       paperSize: "A4",
       orientation: "portrait",
-      compactFooterGap: false,
+      // Short A4 bills still look sparse if we leave a huge flex gap — keep
+      // the footer tight so content reads as one professional block.
+      compactFooterGap: testCount <= 8,
       pageCssSize: "A4 portrait",
     };
   }

@@ -329,6 +329,16 @@ export default function Settings() {
     return () => window.clearTimeout(t);
   }, [tab]);
 
+  // Clinic Info "Open Billing Print" and similar deep-links.
+  useEffect(() => {
+    const onTab = (e: Event) => {
+      const id = String((e as CustomEvent).detail || "");
+      if (TABS.some((t) => t.id === id)) setTab(id);
+    };
+    window.addEventListener("care:settings-tab", onTab);
+    return () => window.removeEventListener("care:settings-tab", onTab);
+  }, []);
+
   return (
     <div className="pb-8">
       <PageHeader title="Settings" subtitle="User management, system configuration, and software documentation" />
@@ -336,7 +346,7 @@ export default function Settings() {
         <div className="flex flex-wrap gap-1 bg-muted p-1 rounded-xl mb-6 w-fit">
           {allowedTabs.map(t => {
             const Icon = t.icon;
-            return <button key={t.id} onClick={() => setTab(t.id)} className={`flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg transition-all ${tab === t.id ? "bg-card shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"}`}><Icon size={14} />{t.label}</button>;
+            return <button key={t.id} data-testid={`settings-tab-${t.id}`} onClick={() => setTab(t.id)} className={`flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg transition-all ${tab === t.id ? "bg-card shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"}`}><Icon size={14} />{t.label}</button>;
           })}
         </div>
         {tab === "clinic" && <ClinicInfoTab />}
@@ -785,7 +795,6 @@ type ClinicSettings = {
 import { SIDEBAR_THEMES as SIDEBAR_THEME_PRESETS, parseCustomHex, buildCustomTheme } from "@/lib/sidebarThemes";
 import { useUserTheme } from "@/lib/userTheme";
 import { readStaffSession, isFeatureEnabled, setFeatureFlag, hasSubPermission } from "@/lib/staffSession";
-import { getBillPrintLayout, setBillPrintLayout, BILL_LAYOUTS, type BillLayout } from "@/lib/billPrintLayout";
 
 function ThemeGrid({
   themes,
@@ -1331,7 +1340,6 @@ function ClinicInfoTab() {
   });
   const [form, setForm] = useState<ClinicSettings | null>(null);
   const [uploadErr, setUploadErr] = useState("");
-  const [billLayout, setBillLayoutLocal] = useState<BillLayout>(() => getBillPrintLayout());
 
   const current = form ?? settings ?? null;
 
@@ -1474,227 +1482,42 @@ function ClinicInfoTab() {
           </p>
         </div>
 
-        <div className="bg-card border border-card-border rounded-xl p-5 space-y-4">
+        <div className="bg-card border border-card-border rounded-xl p-5 space-y-3">
           <div>
-            <h2 className="font-bold text-lg flex items-center gap-2">🖨️ Bill Print Copies</h2>
-            <p className="text-sm text-muted-foreground">How many copies of each bill to print per print job. Use 2 if you keep one for the patient and one for the clinic file.</p>
+            <h2 className="font-bold text-lg flex items-center gap-2">🖨️ Billing Print · QR · TAT</h2>
+            <p className="text-sm text-muted-foreground">
+              Paper size, layout, QR verification, TAT column, and what appears on the receipt are all configured in one place.
+            </p>
           </div>
-          <div className="grid grid-cols-2 gap-3">
-            {[1, 2].map((n) => {
-              const active = (current.billPrintCopies ?? 1) === n;
-              return (
-                <button
-                  key={n}
-                  type="button"
-                  onClick={() => setForm({ ...current, billPrintCopies: n })}
-                  className={`px-4 py-3 rounded-lg border text-sm font-medium transition-colors ${active ? "bg-blue-50 border-blue-400 text-blue-700 dark:bg-blue-950/30 dark:border-blue-700 dark:text-blue-300" : "bg-muted/30 border-card-border text-muted-foreground hover:bg-muted/50"}`}
-                >
-                  {n} {n === 1 ? "Copy" : "Copies"}
-                </button>
-              );
-            })}
-          </div>
-          <p className="text-[11px] text-muted-foreground leading-relaxed">
-            Click <strong>Save Changes</strong> after choosing to apply.
-          </p>
-        </div>
-
-        <div className="bg-card border border-card-border rounded-xl p-5 space-y-4">
-          <div>
-            <h2 className="font-bold text-lg flex items-center gap-2">⏱️ Show TAT on Bill</h2>
-            <p className="text-sm text-muted-foreground">When enabled, the printed bill shows a "TAT" (turnaround time) column with each test's expected duration.</p>
+          <div className="rounded-lg border border-blue-200 bg-blue-50 dark:bg-blue-950/30 dark:border-blue-800 px-4 py-3 text-sm text-blue-800 dark:text-blue-300 leading-relaxed">
+            Open <strong>Settings → Billing Print</strong> for format, A5 landscape (recommended), QR, TAT, columns, and live preview.
+            Clinic Info keeps logo, address, and identity only.
           </div>
           <button
             type="button"
-            onClick={() => setForm({ ...current, showTatOnBill: !current.showTatOnBill })}
-            className={`w-full flex items-center justify-between px-4 py-3 rounded-lg border transition-colors ${current.showTatOnBill ? "bg-green-50 border-green-300 dark:bg-green-950/30 dark:border-green-800" : "bg-muted/30 border-card-border"}`}
+            onClick={() => {
+              try { window.dispatchEvent(new CustomEvent("care:settings-tab", { detail: "billing-print" })); } catch { /* noop */ }
+            }}
+            className="inline-flex items-center justify-center rounded-lg bg-primary text-primary-foreground text-sm font-semibold px-4 py-2.5 hover:opacity-90 transition-opacity"
+            data-testid="goto-billing-print-settings"
           >
-            <span className="text-sm font-medium">{current.showTatOnBill ? "Enabled" : "Disabled"}</span>
-            <span className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${current.showTatOnBill ? "bg-green-500" : "bg-muted-foreground/40"}`}>
-              <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${current.showTatOnBill ? "translate-x-5" : "translate-x-1"}`} />
-            </span>
+            Open Billing Print settings
           </button>
-          <p className="text-[11px] text-muted-foreground leading-relaxed">
-            Click <strong>Save Changes</strong> after toggling to apply.
-          </p>
         </div>
 
         <div className="bg-card border border-card-border rounded-xl p-5 space-y-4">
           <div>
-            <h2 className="font-bold text-lg flex items-center gap-2">📄 Bill Print Format</h2>
-            <p className="text-sm text-muted-foreground">Control what appears on the printed bill receipt — paper size, columns, and layout.</p>
-          </div>
-          {/* Paper size / orientation is configured in Settings → Billing Print
-              (with a live preview) — that is the setting the printed bill
-              actually uses. Nothing here controls paper size; this card only
-              deals with columns/requirements below. */}
-          <div className="rounded-lg border border-blue-200 bg-blue-50 dark:bg-blue-950/30 dark:border-blue-800 px-4 py-3 text-sm text-blue-800 dark:text-blue-300">
-            Paper size &amp; orientation (A5 portrait/landscape, half A4, A4) now live under{" "}
-            <strong>Settings → Billing Print → Paper &amp; Copy</strong>, with a live preview. Set it there.
-          </div>
-          {/* Show test code */}
-          <div>
-            <p className="text-sm font-medium mb-1">Show Test Code Column</p>
-            <button
-              type="button"
-              onClick={() => setForm({ ...current, billShowCode: !(current.billShowCode ?? true) })}
-              className={`w-full flex items-center justify-between px-4 py-3 rounded-lg border transition-colors ${(current.billShowCode ?? true) ? "bg-green-50 border-green-300 dark:bg-green-950/30 dark:border-green-800" : "bg-muted/30 border-card-border"}`}
-            >
-              <span className="text-sm font-medium">{(current.billShowCode ?? true) ? "Shown" : "Hidden"}</span>
-              <span className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${(current.billShowCode ?? true) ? "bg-green-500" : "bg-muted-foreground/40"}`}>
-                <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${(current.billShowCode ?? true) ? "translate-x-5" : "translate-x-1"}`} />
-              </span>
-            </button>
-          </div>
-          {/* Show category */}
-          <div>
-            <p className="text-sm font-medium mb-1">Show Category Column</p>
-            <button
-              type="button"
-              onClick={() => setForm({ ...current, billShowCategory: !(current.billShowCategory ?? true) })}
-              className={`w-full flex items-center justify-between px-4 py-3 rounded-lg border transition-colors ${(current.billShowCategory ?? true) ? "bg-green-50 border-green-300 dark:bg-green-950/30 dark:border-green-800" : "bg-muted/30 border-card-border"}`}
-            >
-              <span className="text-sm font-medium">{(current.billShowCategory ?? true) ? "Shown" : "Hidden"}</span>
-              <span className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${(current.billShowCategory ?? true) ? "bg-green-500" : "bg-muted-foreground/40"}`}>
-                <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${(current.billShowCategory ?? true) ? "translate-x-5" : "translate-x-1"}`} />
-              </span>
-            </button>
-          </div>
-          {/* Phone number required for patient registration */}
-          <div>
-            <p className="text-sm font-medium mb-1">Require Phone Number</p>
-            <p className="text-xs text-muted-foreground mb-2">When on, phone number is mandatory to register a patient on the Patients page. Kiosk and online booking self-registration always require a phone number regardless of this setting.</p>
-            <button
-              type="button"
-              onClick={() => setForm({ ...current, patientPhoneRequired: !(current.patientPhoneRequired ?? true) })}
-              className={`w-full flex items-center justify-between px-4 py-3 rounded-lg border transition-colors ${(current.patientPhoneRequired ?? true) ? "bg-green-50 border-green-300 dark:bg-green-950/30 dark:border-green-800" : "bg-muted/30 border-card-border"}`}
-            >
-              <span className="text-sm font-medium">{(current.patientPhoneRequired ?? true) ? "Required" : "Optional"}</span>
-              <span className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${(current.patientPhoneRequired ?? true) ? "bg-green-500" : "bg-muted-foreground/40"}`}>
-                <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${(current.patientPhoneRequired ?? true) ? "translate-x-5" : "translate-x-1"}`} />
-              </span>
-            </button>
-          </div>
-          {/* Receipt Layout Style */}
-          <div>
-            <p className="text-sm font-medium mb-1">Receipt Layout Style</p>
-            <p className="text-xs text-muted-foreground mb-3">Choose how the printed bill looks. Saved instantly on this device — no Save required.</p>
-            <div className="grid grid-cols-3 gap-3">
-              {BILL_LAYOUTS.map((preset) => {
-                const active = billLayout === preset.id;
-                return (
-                  <button
-                    key={preset.id}
-                    type="button"
-                    onClick={() => { setBillLayoutLocal(preset.id); setBillPrintLayout(preset.id); }}
-                    className={`rounded-lg border p-2 text-left transition-all ${active ? "border-blue-400 ring-2 ring-blue-200 dark:ring-blue-900" : "border-card-border hover:border-muted-foreground/40"}`}
-                  >
-                    {/* Mini dummy bill preview */}
-                    <div className="w-full rounded overflow-hidden border border-border mb-2" style={{ background: "#fff", fontFamily: "Arial, sans-serif", fontSize: "4px", lineHeight: 1.4, color: "#222" }}>
-                      {/* Header bar */}
-                      <div style={{
-                        borderBottom: preset.id === "classic" ? "2px solid #1e40af" : preset.id === "compact" ? "2px solid #111" : "1px solid #888",
-                        padding: "4px 5px 3px",
-                        display: "flex", alignItems: "flex-start", gap: 3, justifyContent: "space-between",
-                      }}>
-                        <div>
-                          <div style={{ fontSize: "6px", fontWeight: 800, color: preset.id === "classic" ? "#1e40af" : "#111" }}>CARE DIAGNOSTICS</div>
-                          <div style={{ fontSize: "4px", color: "#666" }}>Subhash Chowk, Castair's Town, Near Bajla Mahila College</div>
-                          <div style={{ fontSize: "4px", color: "#666" }}>Ph: 9973497200</div>
-                        </div>
-                        <div style={{ width: 12, height: 12, background: "#f0f0f0", border: "1px solid #ccc", borderRadius: 1, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 3, color: "#999" }}>QR</div>
-                      </div>
-                      {/* Bill title + patient */}
-                      <div style={{ padding: "2px 5px", borderBottom: "1px solid #e2e8f0" }}>
-                        <div style={{ fontSize: "5px", fontWeight: 700, letterSpacing: "0.5px" }}>INVOICE / RECEIPT</div>
-                        <div style={{ fontSize: "4px", color: "#444" }}>AJMAL KHAN · 38 YRS / M</div>
-                        <div style={{ fontSize: "4px", color: "#666" }}>Ref: Self / Walk-in · Bill: 2026050206</div>
-                      </div>
-                      {/* Tests table */}
-                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "4px" }}>
-                        <thead>
-                          <tr style={{
-                            background: preset.id === "classic" ? "#1e40af" : preset.id === "compact" ? "#f0f0f0" : "transparent",
-                            color: preset.id === "classic" ? "#fff" : "#111",
-                            borderBottom: preset.id === "minimal" ? "1px solid #888" : "none",
-                          }}>
-                            <th style={{ padding: "2px 4px", textAlign: "left", fontWeight: 600 }}>#</th>
-                            <th style={{ padding: "2px 4px", textAlign: "left", fontWeight: 600 }}>Test Name</th>
-                            <th style={{ padding: "2px 4px", textAlign: "right", fontWeight: 600 }}>Amount</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {["USG WHOLE ABDOMEN", "BLOOD COUNT"].map((name, i) => (
-                            <tr key={name} style={{
-                              background: preset.id === "classic" ? (i % 2 === 0 ? "#f8fafc" : "#fff") : "#fff",
-                              borderBottom: preset.id === "minimal" ? "1px solid #eee" : preset.id === "compact" ? "1px solid #bbb" : "1px solid #e2e8f0",
-                            }}>
-                              <td style={{ padding: "1.5px 4px" }}>{i + 1}</td>
-                              <td style={{ padding: "1.5px 4px", fontWeight: 600 }}>{name}</td>
-                              <td style={{ padding: "1.5px 4px", textAlign: "right" }}>₹{i === 0 ? "1,500" : "350"}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                      {/* Total row */}
-                      <div style={{ display: "flex", justifyContent: "flex-end", padding: "2px 4px" }}>
-                        <table style={{ fontSize: "4px", borderCollapse: "collapse" }}>
-                          <tbody>
-                            <tr>
-                              <td style={{ padding: "1px 4px", color: "#666" }}>Subtotal</td>
-                              <td style={{ padding: "1px 4px", textAlign: "right" }}>₹1,850.00</td>
-                            </tr>
-                            <tr style={{
-                              background: preset.id === "classic" ? "#1e40af" : preset.id === "compact" ? "#e8e8e8" : "transparent",
-                              color: preset.id === "classic" ? "#fff" : "#111",
-                              fontWeight: 700,
-                              borderTop: preset.id === "minimal" ? "1.5px solid #555" : preset.id === "compact" ? "1px solid #999" : "none",
-                            }}>
-                              <td style={{ padding: "2px 4px" }}>Total</td>
-                              <td style={{ padding: "2px 4px", textAlign: "right" }}>₹1,850.00</td>
-                            </tr>
-                            <tr>
-                              <td style={{ padding: "1px 4px", color: "#16a34a" }}>Paid</td>
-                              <td style={{ padding: "1px 4px", textAlign: "right", color: "#16a34a" }}>₹1,850.00</td>
-                            </tr>
-                            <tr style={{ fontWeight: 700, color: "#16a34a", borderTop: "1px solid #ddd" }}>
-                              <td style={{ padding: "1.5px 4px" }}>Balance</td>
-                              <td style={{ padding: "1.5px 4px", textAlign: "right" }}>₹0.00</td>
-                            </tr>
-                          </tbody>
-                        </table>
-                      </div>
-                      {/* Footer */}
-                      <div style={{ borderTop: "1px dashed #ccc", padding: "2px 4px", textAlign: "center", color: "#999", fontSize: "3.5px" }}>
-                        Thank you for choosing our services. · Computer-generated invoice.
-                      </div>
-                    </div>
-                    <div className={`text-xs font-semibold ${active ? "text-blue-700 dark:text-blue-300" : "text-foreground"}`}>{preset.label}</div>
-                    <div className="text-[10px] text-muted-foreground leading-snug mt-0.5">{preset.description}</div>
-                    {active && <div className="mt-1 text-[10px] font-semibold text-blue-600 dark:text-blue-400">✓ Active</div>}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-          <p className="text-[11px] text-muted-foreground leading-relaxed">
-            Layout applies immediately to new prints. Click <strong>Save Changes</strong> after adjusting paper size / columns.
-          </p>
-        </div>
-
-        <div className="bg-card border border-card-border rounded-xl p-5 space-y-4">
-          <div>
-            <h2 className="font-bold text-lg flex items-center gap-2">🔳 Print QR on Bill</h2>
-            <p className="text-sm text-muted-foreground">When enabled, every printed bill receipt embeds a small "Scan to verify" QR code linking to the bill verification page. This replaces the old separate "QR Bill" print button.</p>
+            <h2 className="font-bold text-lg flex items-center gap-2">📞 Patient Phone Requirement</h2>
+            <p className="text-sm text-muted-foreground">When on, phone number is mandatory to register a patient on the Patients page. Kiosk and online booking self-registration always require a phone number regardless of this setting.</p>
           </div>
           <button
             type="button"
-            onClick={() => setForm({ ...current, qrOnBillEnabled: !(current.qrOnBillEnabled ?? true) })}
-            className={`w-full flex items-center justify-between px-4 py-3 rounded-lg border transition-colors ${(current.qrOnBillEnabled ?? true) ? "bg-green-50 border-green-300 dark:bg-green-950/30 dark:border-green-800" : "bg-muted/30 border-card-border"}`}
+            onClick={() => setForm({ ...current, patientPhoneRequired: !(current.patientPhoneRequired ?? true) })}
+            className={`w-full flex items-center justify-between px-4 py-3 rounded-lg border transition-colors ${(current.patientPhoneRequired ?? true) ? "bg-green-50 border-green-300 dark:bg-green-950/30 dark:border-green-800" : "bg-muted/30 border-card-border"}`}
           >
-            <span className="text-sm font-medium">{(current.qrOnBillEnabled ?? true) ? "Enabled" : "Disabled"}</span>
-            <span className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${(current.qrOnBillEnabled ?? true) ? "bg-green-500" : "bg-muted-foreground/40"}`}>
-              <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${(current.qrOnBillEnabled ?? true) ? "translate-x-5" : "translate-x-1"}`} />
+            <span className="text-sm font-medium">{(current.patientPhoneRequired ?? true) ? "Required" : "Optional"}</span>
+            <span className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${(current.patientPhoneRequired ?? true) ? "bg-green-500" : "bg-muted-foreground/40"}`}>
+              <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${(current.patientPhoneRequired ?? true) ? "translate-x-5" : "translate-x-1"}`} />
             </span>
           </button>
           <p className="text-[11px] text-muted-foreground leading-relaxed">
@@ -4619,8 +4442,8 @@ const BILL_PREVIEW_SAMPLE: PrintBillData = {
   order: {
     doctor: { name: "Dr. S. Sharma" },
     tests: [
-      { price: 700, status: "active", test: { code: "USG001", name: "Whole Abdomen USG", category: "Radiology" } },
-      { price: 400, status: "active", test: { code: "CBC001", name: "Complete Blood Count", category: "Pathology" } },
+      { price: 700, status: "active", test: { code: "USG001", name: "Whole Abdomen USG", category: "Radiology", duration: "Same day" } },
+      { price: 400, status: "active", test: { code: "CBC001", name: "Complete Blood Count", category: "Pathology", duration: "4 hrs" } },
     ],
   },
   payments: [{ method: "upi", amount: 1000, referenceNumber: "UPI-1234567890" }],
@@ -4636,6 +4459,7 @@ const BILL_PREVIEW_FALLBACK_CLINIC: PrintClinic = {
   billShowCode: true,
   billShowCategory: true,
   qrOnBillEnabled: true,
+  showTatOnBill: false,
 };
 
 // ── Billing Print tab helpers — MODULE scope on purpose ──────────────────────
@@ -4825,6 +4649,12 @@ function BillingPrintTab() {
   const [saved, setSaved] = useState(false);
   const { toast } = useToast();
 
+  // Clinic columns formerly edited under Clinic Info — now owned here so QR /
+  // TAT / columns / copies stay in one place and stay wired to print.
+  const [billPrintCopies, setBillPrintCopies] = useState(1);
+  const [billShowCode, setBillShowCode] = useState(true);
+  const [billShowCategory, setBillShowCategory] = useState(true);
+
   // ── Live preview ──
   const [previewVisible, setPreviewVisible] = useState(true);
   const [previewBW, setPreviewBW] = useState<boolean | null>(null); // null = follow the real Printers-tab setting
@@ -4863,12 +4693,23 @@ function BillingPrintTab() {
   // in flight; it catches up as soon as React is idle. No visible lag on
   // typed changes, no jank when dragging.
   const deferredSettings = useDeferredValue(settings);
+  const deferredShowCode = useDeferredValue(billShowCode);
+  const deferredShowCategory = useDeferredValue(billShowCategory);
+  const deferredCopies = useDeferredValue(billPrintCopies);
   const previewHtml = useMemo(() => {
     if (!deferredSettings) return "";
     const pageOpts = resolveBillPrintPageOpts(deferredSettings, BILL_PREVIEW_SAMPLE.order?.tests?.length ?? 1);
+    const clinicForPreview: PrintClinic = {
+      ...(previewClinic ?? BILL_PREVIEW_FALLBACK_CLINIC),
+      qrOnBillEnabled: deferredSettings.showQrCode !== false,
+      showTatOnBill: deferredSettings.showTatOnBill === true,
+      billShowCode: deferredShowCode,
+      billShowCategory: deferredShowCategory,
+      billPrintCopies: deferredCopies,
+    };
     return buildBillPrintHtml({
       bill: BILL_PREVIEW_SAMPLE,
-      clinic: previewClinic ?? BILL_PREVIEW_FALLBACK_CLINIC,
+      clinic: clinicForPreview,
       paperSize: pageOpts.paperSize,
       orientation: pageOpts.orientation,
       pageCssSize: pageOpts.pageCssSize,
@@ -4877,6 +4718,7 @@ function BillingPrintTab() {
       qrDataUrl: previewQrUrl,
       format: deferredSettings.defaultFormat,
       showQr: deferredSettings.showQrCode,
+      showTat: deferredSettings.showTatOnBill,
       showAmountInWords: deferredSettings.showAmountInWords,
       showSignatureLine: deferredSettings.showSignatureLine,
       showComputerGenerated: deferredSettings.showComputerGenerated,
@@ -4898,7 +4740,7 @@ function BillingPrintTab() {
       printFooterFontPx: deferredSettings.printFooterFontPx,
       printTinyFontPx: deferredSettings.printTinyFontPx,
     });
-  }, [deferredSettings, previewClinic, previewQrUrl, effectivePreviewIsBW]);
+  }, [deferredSettings, previewClinic, previewQrUrl, effectivePreviewIsBW, deferredShowCode, deferredShowCategory, deferredCopies]);
 
   // Initialize once the clinic-wide server blob is known (success OR error —
   // on error we degrade to defaults + this browser's local overrides, same as
@@ -4910,7 +4752,20 @@ function BillingPrintTab() {
     if (!clinicFetched && !clinicError) return;
     settingsInitialized.current = true;
     import("@/lib/billPrintSettings").then((m) => {
-      setSettings(m.loadBillPrintSettings(m.parseGlobalBillPrintSettings(previewClinic?.billPrintSettingsJson)));
+      const global = m.parseGlobalBillPrintSettings(previewClinic?.billPrintSettingsJson);
+      // Prefer blob TAT when set; otherwise honor legacy Clinic Info column.
+      if (typeof global.showTatOnBill !== "boolean" && previewClinic?.showTatOnBill === true) {
+        global.showTatOnBill = true;
+      }
+      // QR: Billing Print toggle AND clinic gate — seed from both so the
+      // unified toggle matches what print actually does.
+      if (previewClinic?.qrOnBillEnabled === false) {
+        global.showQrCode = false;
+      }
+      setSettings(m.loadBillPrintSettings(global));
+      setBillPrintCopies(Math.min(2, Math.max(1, Number(previewClinic?.billPrintCopies) || 1)));
+      setBillShowCode(previewClinic?.billShowCode !== false);
+      setBillShowCategory(previewClinic?.billShowCategory !== false);
       setLoading(false);
     });
   }, [clinicFetched, clinicError, previewClinic]);
@@ -4931,13 +4786,23 @@ function BillingPrintTab() {
         m.clearBillPrintSettingsOverride();
       }
       try {
-        await api.put("/api/clinic-settings", { billPrintSettingsJson: JSON.stringify(settings) });
+        // Keep clinic columns in sync with the unified Billing Print toggles
+        // so classic/modern printers, branding endpoints, and legacy Clinic
+        // Info fields never disagree.
+        await api.put("/api/clinic-settings", {
+          billPrintSettingsJson: JSON.stringify(settings),
+          qrOnBillEnabled: settings.showQrCode !== false,
+          showTatOnBill: settings.showTatOnBill === true,
+          billPrintCopies,
+          billShowCode,
+          billShowCategory,
+        });
         qc.invalidateQueries({ queryKey: ["clinic-settings"] });
         toast({
           title: "Saved",
           description: settings.adminLock
             ? "Billing print settings locked clinic-wide — all counters will use these settings."
-            : "Billing print settings saved clinic-wide. Turn on Admin Lock to prevent per-counter overrides.",
+            : "Billing print · QR · TAT saved clinic-wide. Turn on Admin Lock to prevent per-counter overrides.",
         });
       } catch {
         toast({
@@ -4975,9 +4840,18 @@ function BillingPrintTab() {
       <div className="rounded-xl border border-blue-200 bg-blue-50/60 dark:bg-blue-950/20 dark:border-blue-800 px-4 py-3 text-xs text-blue-900 dark:text-blue-200 leading-relaxed">
         <strong>Recommended for most Indian diagnostic centres:</strong> Format{" "}
         <em>Modern — A5 Landscape</em> · Paper <em>A5 Landscape</em> · Direct Print After Save <em>on</em>{" "}
-        (below). Designed for Epson/HP ink printers on half-A4 paper — dense, one-page bill,
-        cleanly-inked accent color, no wasted ink or blank margins. Watch the Live Preview on the right
-        while you tune.
+        (below). Dense one-page bill — avoids the half-blank A4 look. Watch the Live Preview on the right
+        while you tune.{" "}
+        {(settings.defaultFormat !== "modern-landscape" || settings.defaultPaperSize !== "A5-landscape") && (
+          <button
+            type="button"
+            className="ml-1 underline font-semibold hover:no-underline"
+            onClick={() => update({ defaultFormat: "modern-landscape", defaultPaperSize: "A5-landscape", autoA4Threshold: 8 })}
+            data-testid="apply-recommended-bill-layout"
+          >
+            Apply recommended layout
+          </button>
+        )}
       </div>
 
       {/* SECTION 1 — Essentials: what the bill looks like AND what paper it prints on */}
@@ -5007,11 +4881,11 @@ function BillingPrintTab() {
           <div className="flex items-center gap-2">
             <input
               type="number" min={1} max={20}
-              value={(settings as any).autoA4Threshold ?? 5}
+              value={(settings as any).autoA4Threshold ?? 8}
               onChange={(e) => update({ autoA4Threshold: Math.max(1, Math.min(20, Number(e.target.value))) } as any)}
               className="w-16 h-7 text-xs border border-input rounded-md px-2 bg-background"
             />
-            <span className="text-xs text-muted-foreground">investigations (default 5)</span>
+            <span className="text-xs text-muted-foreground">investigations (default 8) — keeps short bills on A5 so they don&apos;t leave a half-blank A4 page</span>
           </div>
         </div>
         <details className="text-xs text-muted-foreground">
@@ -5033,9 +4907,12 @@ function BillingPrintTab() {
         </div>
       </SectionCard>
 
-      <SectionCard title="What appears on the printed bill" subtitle="Optional elements. Each toggle updates the Live Preview immediately.">
+      <SectionCard title="What appears on the printed bill" subtitle="QR, TAT, columns, and optional footer elements. Each toggle updates the Live Preview immediately. Formerly split across Clinic Info and Billing Print — now one place.">
         <div className="grid grid-cols-2 gap-3">
-          <BillPrintToggleRow label="Show QR Code" value={settings.showQrCode} onChange={(v) => update({ showQrCode: v })} />
+          <BillPrintToggleRow label="Show QR Code (scan to verify)" value={settings.showQrCode} onChange={(v) => { update({ showQrCode: v }); setSaved(false); }} />
+          <BillPrintToggleRow label="Show TAT (turnaround) column" value={settings.showTatOnBill} onChange={(v) => { update({ showTatOnBill: v }); setSaved(false); }} />
+          <BillPrintToggleRow label="Show Code Column" value={billShowCode} onChange={(v) => { setBillShowCode(v); setSaved(false); }} />
+          <BillPrintToggleRow label="Show Category Column" value={billShowCategory} onChange={(v) => { setBillShowCategory(v); setSaved(false); }} />
           <BillPrintToggleRow label="Show Amount in Words" value={settings.showAmountInWords} onChange={(v) => update({ showAmountInWords: v })} />
           <BillPrintToggleRow label="Show Signature Line" value={settings.showSignatureLine} onChange={(v) => update({ showSignatureLine: v })} />
           <BillPrintToggleRow label="Show Computer Generated Note" value={settings.showComputerGenerated} onChange={(v) => update({ showComputerGenerated: v })} />
@@ -5048,8 +4925,28 @@ function BillingPrintTab() {
           <BillPrintToggleRow label="Show System Information" value={settings.showSystemInfo} onChange={(v) => update({ showSystemInfo: v })} />
           <BillPrintToggleRow label="Show Queue Token Box" value={settings.showQueueTokenOnBill} onChange={(v) => update({ showQueueTokenOnBill: v })} />
         </div>
+        <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <p className="text-xs font-medium text-muted-foreground mb-1">Physical copies per print</p>
+            <div className="flex items-center gap-2">
+              <input
+                type="number"
+                min={1}
+                max={2}
+                value={billPrintCopies}
+                onChange={(e) => {
+                  setBillPrintCopies(Math.min(2, Math.max(1, Number(e.target.value) || 1)));
+                  setSaved(false);
+                }}
+                className="w-16 h-8 text-sm border border-input rounded-md px-2 bg-background"
+                data-testid="bill-print-copies"
+              />
+              <span className="text-xs text-muted-foreground">1 = patient only · 2 = patient + office</span>
+            </div>
+          </div>
+        </div>
         <p className="text-[11px] text-muted-foreground leading-relaxed mt-1">
-          Adds a large "QUEUE TOKEN #NN" box near the top of the bill, separate from the per-test department token list (which always prints when present). Off by default to avoid a redundant box on billing-counter receipts.
+          TAT uses each test&apos;s catalog duration. Queue Token Box is separate from the per-test department token list (which always prints when present). Off by default to avoid a redundant box on billing-counter receipts.
         </p>
       </SectionCard>
 
@@ -5066,8 +4963,8 @@ function BillingPrintTab() {
           <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => update(LAYOUT_PRESETS.comfortable)}>Comfortable (larger)</Button>
         </div>
         <NumberOverrideField
-          label="Page Margin" unit="mm" min={2} max={25} sliderDefault={10}
-          value={settings.printMarginMm} defaultLabel="10mm (A5) / 8mm (A4)"
+          label="Page Margin" unit="mm" min={2} max={25} sliderDefault={4}
+          value={settings.printMarginMm} defaultLabel="4mm (A5) / 6mm (A4)"
           onChange={(v) => update({ printMarginMm: v })}
         />
         <div className="grid grid-cols-2 gap-x-4 gap-y-2">

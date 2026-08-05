@@ -198,6 +198,37 @@ describe("document layout engine — bill renderers", () => {
     expect(html).toContain("height: 148mm");
   });
 
+  test("modern landscape does not stretch the middle row to full page height", () => {
+    // height:100% / calc(100%) on the table+totals flex row left a blank
+    // band on short bills; content must hug and leave the footer tight.
+    const html = buildModernLandscapeBillPrintHtml(baseOpts());
+    expect(html).not.toMatch(/padding-top:6px;height:\s*calc\(100%/);
+    expect(html).not.toMatch(/padding-top:6px;height:\s*100%/);
+    expect(html).toContain("padding-top:6px;align-items:flex-start");
+  });
+
+  test("TAT column appears when showTat is on", () => {
+    const html = buildModernLandscapeBillPrintHtml(
+      baseOpts({
+        showTat: true,
+        bill: sampleBill(1, {
+          order: {
+            doctor: { name: "Dr. Test" },
+            tests: [
+              {
+                price: 500,
+                status: "active",
+                test: { code: "CBC", name: "CBC", category: "Pathology", duration: "4 hrs" },
+              },
+            ],
+          },
+        }),
+      }),
+    );
+    expect(html).toContain(">TAT<");
+    expect(html).toContain("4 hrs");
+  });
+
   test("A5 portrait page box does not exceed 148mm x 210mm", () => {
     const html = buildBillPrintHtml({
       ...baseOpts({ format: "classic" }),
