@@ -1039,9 +1039,13 @@ function UnifiedReconciliationPanel({
         </div>
 
         <ARow label="Cancelled Bills" value={s.cancelledOnMyBills} sign="−" indent highlight="red"
-              note="of bills created in this period" />
+              note="Today's bills that were cancelled (old bills cancelled today are not listed here)" />
         <ARow label="Refunds" value={refundsForCollectible} sign="−" indent highlight="red"
-              note={`Shown ${fmt(refundsForCollectible)} for collectible · Total refunds ${fmt(totalRefunds)} · No-cancel ${fmt(s.refundsWithoutCancellationAmount)} · On cancelled created today (excluded) ${fmt(refundsExcludedFromCollectible)} · Cash ${fmt(s.cashRefunded)} · Digital ${fmt(s.digitalRefunded)}`} />
+              note={
+                refundsExcludedFromCollectible > 0
+                  ? `Money given back today, excluding ${fmt(refundsExcludedFromCollectible)} already counted under Cancelled Bills`
+                  : "Money given back to patients today"
+              } />
         <ARow label="Outstanding Dues" value={s.outstanding} sign="−" indent highlight="red" note="balance on today's bills" />
 
         <ASectionDivider color="blue" />
