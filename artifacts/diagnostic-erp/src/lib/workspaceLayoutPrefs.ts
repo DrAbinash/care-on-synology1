@@ -18,7 +18,8 @@ export const WORKSPACE_LAYOUT_MODES: readonly WorkspaceLayoutMode[] = [
   "dualScreen",
 ];
 
-export const DEFAULT_LAYOUT_MODE: WorkspaceLayoutMode = "split";
+/** First visit defaults to Report Focus so the writing column owns the screen. */
+export const DEFAULT_LAYOUT_MODE: WorkspaceLayoutMode = "reportFocus";
 
 // ── Column-width constraints (percentage of the 3-column body) ─────────────
 // Kept wide enough to be useful, tight enough that no column can crush

@@ -778,9 +778,11 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   // Clicking into the embedded WADO/OHIF viewer maximises image space: the
   // patient-demographics block (top of this left panel) collapses to a slim
   // strip, and the app's blue navigation sidebar minimises (via the decoupled
-  // `care:viewer-focus` event that Layout listens for). Clicking back into the
-  // report editor — or the strip's "Show details" — restores both. A ref backs
-  // the boolean so the toggler is stable and never fires a redundant event.
+  // `care:viewer-focus` event that Layout listens for).
+  //
+  // Stay in viewer-focus while writing the report — clicking Findings / quick
+  // select must NOT expand demographics and shrink OHIF. Exit only via the
+  // strip's "Show details" (or when the embedded viewer is hidden by layout).
   const [viewerFocusMode, setViewerFocusMode] = useState(false);
   const viewerFocusRef = useRef(false);
   const setViewerFocus = useCallback((on: boolean) => {
@@ -811,6 +813,11 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   useEffect(() => {
     try { localStorage.setItem(WORKSPACE_CHROME_COLLAPSED_KEY, chromeCollapsed ? "1" : "0"); } catch { /* noop */ }
   }, [chromeCollapsed]);
+  // Prefer maximised OHIF while reporting: collapse bulky left demographics
+  // whenever the embedded viewer is on screen (writing + images together).
+  useEffect(() => {
+    if (showEmbeddedViewer) setViewerFocus(true);
+  }, [showEmbeddedViewer, setViewerFocus]);
   const collapseReportingChrome = useCallback(() => setChromeCollapsed(true), []);
   const enterReportingFocusMode = useCallback(() => {
     setChromeCollapsed(true);
@@ -4960,7 +4967,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   };
 
   return (
-    <div className="flex flex-col" style={{ height: chromeCollapsed ? "calc(100vh - 36px)" : "calc(100vh - 48px)" }}>
+    <div className="flex flex-col" style={{ height: "100vh" }}>
       {/* Phase P3 — feature-flagged AI draft panel. Renders nothing unless AI is
           enabled AND visible for this radiologist (pilot/production); default OFF.
           Accept inserts into the EXISTING findings editor (setRawFindings), which
@@ -5035,7 +5042,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
         onRefreshQueue={() => refreshQueueAndCurrent()}
         onReloadStudy={() => reloadCurrentStudy()}
         hasEntry={!!entry}
-        voiceBar={voiceSettings.enabled ? <VoiceCommandBar voice={voice} /> : undefined}
+        voiceBar={voiceSettings.enabled ? <VoiceCommandBar voice={voice} embedded /> : undefined}
       />
 
       {/* ── 3-column body — resizable via drag (react-resizable-panels), plus
@@ -5132,8 +5139,8 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
               </button>
             </div>
           ) : (
-          /* Study info */
-          <div className="shrink-0 p-3 border-b">
+          /* Study info — denser when writing chrome is collapsed */
+          <div className={`shrink-0 border-b ${chromeCollapsed ? "p-2" : "p-3"}`}>
             {entryLoading && (
               <div className="text-xs text-muted-foreground py-2">Loading study...</div>
             )}
@@ -5299,19 +5306,19 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
 
         {/* ── CENTER: Report editor + action bar — the workspace's primary
             working area; gets the remaining space and never shrinks below a
-            clinically usable width. Clicking back into the editor exits
-            viewer-focus mode (restores the demographics + app sidebar). ── */}
+            clinically usable width. Editing findings must keep OHIF maximised
+            (viewer-focus stays on); use "Show details" on the left strip to
+            expand demographics deliberately. ── */}
         <ResizablePanel
           id="workspace-center"
           order={2}
           minSize={20}
           style={{ minWidth: CENTER_MIN_PX, minHeight: isMobile ? 320 : undefined }}
           className="flex flex-col overflow-hidden min-w-0"
-          onMouseDownCapture={() => setViewerFocus(false)}
         >
 
           {/* Scrollable editor area */}
-          <div className={`flex-1 overflow-y-auto flex flex-col ${chromeCollapsed ? "p-2 gap-2" : "p-4 gap-4"}`}>
+          <div className={`flex-1 overflow-y-auto flex flex-col ${chromeCollapsed ? "p-1.5 gap-1.5" : "p-3 gap-3"}`}>
 
             {/* R2.0 — Pregnancy Dashboard strip: silent (renders nothing) for
                 every non-obstetric study; only fetches when isUltrasound. */}
@@ -5518,16 +5525,18 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
             {/* Unified Copilot inbox — one place for all advisory items */}
             {!isLocked && copilotPrefs.enabled && copilotInboxCount > 0 && rightTab !== "copilot" && (
               <div
-                className="flex flex-wrap items-center gap-2 p-2 rounded-md border border-indigo-200 bg-indigo-50/80 text-indigo-900 text-xs shrink-0"
+                className={`flex flex-wrap items-center gap-2 rounded-md border border-indigo-200 bg-indigo-50/80 text-indigo-900 text-xs shrink-0 ${chromeCollapsed ? "px-2 py-1" : "p-2"}`}
                 data-testid="copilot-inbox-banner"
               >
                 <Sparkles size={14} className="shrink-0 text-indigo-600" />
-                <span className="flex-1">
+                <span className="flex-1 min-w-0 truncate">
                   <span className="font-semibold">{copilotInboxCount} Copilot item{copilotInboxCount > 1 ? "s" : ""}</span>
                   {copilotAlerts > 0 && (
                     <span className="text-indigo-700"> · {copilotAlerts} need attention</span>
                   )}
-                  <span className="text-indigo-700/80"> — measurements, priors, checklist, and quality in one inbox.</span>
+                  {!chromeCollapsed && (
+                    <span className="text-indigo-700/80"> — measurements, priors, checklist, and quality in one inbox.</span>
+                  )}
                 </span>
                 <Button
                   type="button"
@@ -5633,7 +5642,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
             {/* Study setup — region, protocol, template; manual override + re-apply */}
             {!isLocked && availableRegions.length > 0 && (
               <div
-                className="flex flex-wrap items-center gap-2 p-2 rounded-md border bg-slate-50/80 dark:bg-slate-900/40 text-[11px] shrink-0"
+                className={`flex flex-wrap items-center gap-2 rounded-md border bg-slate-50/80 dark:bg-slate-900/40 text-[11px] shrink-0 ${chromeCollapsed ? "px-1.5 py-1" : "p-2"}`}
                 data-testid="study-setup-bar"
               >
                 <span className="font-semibold text-muted-foreground uppercase text-[9px] tracking-wide">Study setup</span>
