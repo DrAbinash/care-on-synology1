@@ -369,10 +369,10 @@ export function generateReportPDF(
     try {
       const aspect = CARE_LETTERHEAD_LOGO_SIZE.width / CARE_LETTERHEAD_LOGO_SIZE.height;
       // Match printed pad prominence: wide brand strip, not a tiny icon.
-      const logoH = 28; // mm
-      const logoW = Math.min(contentW * 0.9, logoH * aspect);
+      const logoH = 30; // mm — keep crisp; source PNG is the official mark
+      const logoW = Math.min(contentW * 0.92, logoH * aspect);
       const logoX = centerX - logoW / 2;
-      doc.addImage(CARE_LETTERHEAD_LOGO_DATA_URL, "PNG", logoX, y, logoW, logoH);
+      doc.addImage(CARE_LETTERHEAD_LOGO_DATA_URL, "PNG", logoX, y, logoW, logoH, undefined, "NONE");
       headerBottom = y + logoH + 1.5;
       logoDrawn = true;
     } catch {

@@ -56,8 +56,8 @@ describe("letter-pad PDF preview artifact", () => {
     expect(text).not.toContain("0000000000");
 
     // Bundled brand PNG must be present and sized for letter-pad aspect.
-    expect(CARE_LETTERHEAD_LOGO_SIZE.width).toBe(1200);
-    expect(CARE_LETTERHEAD_LOGO_SIZE.height).toBe(409);
+    expect(CARE_LETTERHEAD_LOGO_SIZE.width).toBe(1556);
+    expect(CARE_LETTERHEAD_LOGO_SIZE.height).toBe(530);
     expect(CARE_LETTERHEAD_LOGO_DATA_URL.startsWith("data:image/png;base64,")).toBe(true);
     expect(bytes.length).toBeGreaterThan(80_000);
 
