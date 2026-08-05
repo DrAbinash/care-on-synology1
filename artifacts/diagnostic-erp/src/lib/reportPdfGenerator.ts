@@ -12,6 +12,7 @@
 
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
+import { CARE_LETTERHEAD_LOGO_DATA_URL } from "./careLetterheadLogo";
 
 export type PrintSettings = {
   paperSize: "A4" | "A5" | "Letter";
@@ -63,12 +64,17 @@ export type PrintSettings = {
   };
 };
 
+const DEFAULT_SERVICES_ROW1 =
+  "MULTI SLICE CT SCAN  |  3D/4D ULTRA SOUND  |  COLOUR DOPPLER  |  MAMMOGRAPHY  |  ECHO  |  DIGITAL X-RAY  |  ECG/EEG";
+const DEFAULT_SERVICES_ROW2 =
+  "PATHOLAB  |  OPG  |  TMT  |  NCV/EMG  |  ELASTOGRAPHY/FIBROSCAN  |  UPPER GI ENDOSCOPY  |  HSG  |  BARIUM STUDY  |  TVS";
+
 export const DEFAULT_PRINT_SETTINGS: PrintSettings = {
   paperSize: "A4",
   orientation: "portrait",
   fontSize: "small",
   fontFamily: "helvetica",
-  margins: { top: 10, bottom: 28, left: 14, right: 14 },
+  margins: { top: 8, bottom: 30, left: 14, right: 14 },
   header: {
     enabled: true,
     title: "CARE DIAGNOSTICS",
@@ -79,10 +85,9 @@ export const DEFAULT_PRINT_SETTINGS: PrintSettings = {
   footer: {
     enabled: true,
     disclaimer:
-      "Radiological diagnosis is not always conclusive & often vary with clinical course. Please correlate clinically. This report is not for medico-legal purpose.",
+      "Radiological diagnosis is not always conclusive & often vary with clinical course of the disease or response to treatment. This report is not for medico-legal purpose.",
     showPageNumber: false,
-    servicesBar:
-      "MULTI SLICE CT SCAN  |  3D/4D ULTRASOUND  |  PATHOLAB  |  DIGITAL X-RAY  |  EEG  |  ECG  |  TMT  |  OPG  |  MAMMOGRAPHY  |  3T MRI",
+    servicesBar: `${DEFAULT_SERVICES_ROW1}\n${DEFAULT_SERVICES_ROW2}`,
   },
   watermark: "",
   watermarkOpacity: 0.1,
@@ -176,7 +181,7 @@ const CARE_LETTER_COLORS: Array<[number, number, number]> = [
   [220, 38, 38],   // C — red
   [22, 163, 74],   // A — green
   [37, 99, 235],   // R — blue
-  [124, 58, 237],  // E — violet
+  [249, 115, 22],  // E — orange (letter-pad brand)
 ];
 
 const DEFAULT_ADDRESS =
@@ -351,56 +356,74 @@ export function generateReportPDF(
 
   let y = m.top;
 
-  // ── LETTER-PAD HEADER ──
+  // ── LETTER-PAD HEADER (matches Care Diagnostics pre-printed pad) ──
+  // Brand logo (heart + CARE wordmark) → address underline → phone/email.
   if (settings.header.enabled) {
-    const logoSrc = settings.header.logo || clinic?.logoDataUrl || null;
-    const logoSize = 22;
+    const logoSrc =
+      settings.header.logo
+      || clinic?.logoDataUrl
+      || CARE_LETTERHEAD_LOGO_DATA_URL;
+    const centerX = pageW / 2;
+    let headerBottom = y;
+
+    // Prefer the real letter-pad logo strip (heart | CARE / DIAGNOSTICS).
+    // Aspect ~2.81:1 — keep height compact so the report body still fits one page.
+    let logoDrawn = false;
     if (logoSrc) {
       try {
-        const fmtImg = logoSrc.includes("image/jpeg") ? "JPEG" : "PNG";
-        doc.addImage(logoSrc, fmtImg, m.left, y, logoSize, logoSize);
-      } catch { /* ignore broken logo */ }
+        const logoH = 20; // mm
+        const logoW = Math.min(contentW * 0.72, logoH * (562 / 200));
+        const logoX = centerX - logoW / 2;
+        const fmtImg = logoSrc.includes("image/jpeg") || logoSrc.includes("image/jpg") ? "JPEG" : "PNG";
+        doc.addImage(logoSrc, fmtImg, logoX, y, logoW, logoH);
+        headerBottom = y + logoH + 2;
+        logoDrawn = true;
+      } catch {
+        logoDrawn = false;
+      }
     }
 
-    const centerX = pageW / 2;
-    // CARE in brand colours + DIAGNOSTICS in black
-    doc.setFont(font, "bold");
-    doc.setFontSize(fs.header);
-    const care = "CARE";
-    const diag = " DIAGNOSTICS";
-    const careW = doc.getTextWidth(care);
-    const diagW = doc.getTextWidth(diag);
-    let cx = centerX - (careW + diagW) / 2;
-    for (let i = 0; i < care.length; i++) {
-      doc.setTextColor(...CARE_LETTER_COLORS[i]!);
-      const ch = care[i]!;
-      doc.text(ch, cx, y + 8);
-      cx += doc.getTextWidth(ch);
+    // Fallback wordmark if the image cannot render (corrupt clinic logo, etc.)
+    if (!logoDrawn) {
+      doc.setFont(font, "bold");
+      doc.setFontSize(fs.header);
+      const care = "CARE";
+      const diag = " DIAGNOSTICS";
+      const careW = doc.getTextWidth(care);
+      const diagW = doc.getTextWidth(diag);
+      let cx = centerX - (careW + diagW) / 2;
+      for (let i = 0; i < care.length; i++) {
+        doc.setTextColor(...CARE_LETTER_COLORS[i]!);
+        const ch = care[i]!;
+        doc.text(ch, cx, y + 8);
+        cx += doc.getTextWidth(ch);
+      }
+      doc.setTextColor(15, 23, 70);
+      doc.text(diag, cx, y + 8);
+      headerBottom = y + 12;
     }
-    doc.setTextColor(15, 15, 15);
-    doc.text(diag, cx, y + 8);
 
     doc.setFont(font, "normal");
-    doc.setFontSize(7.5);
-    doc.setTextColor(40, 40, 40);
+    doc.setFontSize(7.2);
+    doc.setTextColor(20, 20, 20);
     const address = (clinic?.address || DEFAULT_ADDRESS).trim();
-    const addrLines = doc.splitTextToSize(address, contentW - (logoSrc ? logoSize + 4 : 0)) as string[];
-    let ay = y + 12;
+    const addrLines = doc.splitTextToSize(address, contentW) as string[];
+    let ay = headerBottom + 1.5;
     for (const line of addrLines) {
       doc.text(line, centerX, ay, { align: "center" });
-      ay += 3.2;
+      ay += 3.1;
     }
-    // Underline under address
-    doc.setDrawColor(30);
-    doc.setLineWidth(0.4);
-    const underlineW = Math.min(contentW * 0.92, 160);
-    doc.line(centerX - underlineW / 2, ay - 1, centerX + underlineW / 2, ay - 1);
+    // Underline under address (letter-pad rule)
+    doc.setDrawColor(20);
+    doc.setLineWidth(0.35);
+    const underlineW = Math.min(contentW * 0.95, 170);
+    doc.line(centerX - underlineW / 2, ay - 0.8, centerX + underlineW / 2, ay - 0.8);
 
     const phones = clinic?.phone ? `Phone: ${clinic.phone}` : "Phone: 75490 99099, 99734 97200";
     const email = clinic?.email ? `Email: ${clinic.email}` : "Email: care.deoghar@gmail.com";
-    doc.setFontSize(7.5);
-    doc.text(`${phones}, ${email}`, centerX, ay + 3.2, { align: "center" });
-    y = Math.max(y + logoSize + 2, ay + 6);
+    doc.setFontSize(7.2);
+    doc.text(`${phones}, ${email}`, centerX, ay + 3.0, { align: "center" });
+    y = ay + 5.5;
   } else {
     y += 2;
   }
@@ -602,27 +625,35 @@ export function generateReportPDF(
     }
   }
 
-  // ── SERVICES BAR + DISCLAIMER (every page) ──
+  // ── SERVICES BAR + DISCLAIMER (every page) — letter-pad two-row navy strip ──
   const pageCount = doc.getNumberOfPages();
   for (let i = 1; i <= pageCount; i++) {
     doc.setPage(i);
-    const barH = 7;
-    const barY = pageH - m.bottom + 2;
-    if (settings.footer.enabled && settings.footer.servicesBar) {
+    const serviceLines = (settings.footer.servicesBar || "")
+      .split(/\n+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const barH = serviceLines.length > 1 ? 10 : 7;
+    const barY = pageH - m.bottom + 1;
+    if (settings.footer.enabled && serviceLines.length > 0) {
       doc.setFillColor(15, 45, 110);
       doc.rect(0, barY, pageW, barH, "F");
       doc.setFont(font, "bold");
-      doc.setFontSize(5.8);
+      doc.setFontSize(5.4);
       doc.setTextColor(255, 255, 255);
-      doc.text(settings.footer.servicesBar, pageW / 2, barY + 4.5, { align: "center", maxWidth: pageW - 8 });
+      const rowGap = serviceLines.length > 1 ? 3.6 : 0;
+      const startY = barY + (serviceLines.length > 1 ? 3.6 : 4.5);
+      serviceLines.forEach((line, idx) => {
+        doc.text(line, pageW / 2, startY + idx * rowGap, { align: "center", maxWidth: pageW - 6 });
+      });
     }
     if (settings.footer.enabled && settings.footer.disclaimer) {
       doc.setFont(font, "normal");
-      doc.setFontSize(fs.disclaimer);
+      doc.setFontSize(fs.disclaimer - 0.3);
       doc.setTextColor(30, 30, 30);
-      const discY = barY + barH + 3.2;
+      const discY = barY + barH + 3.0;
       const discLines = doc.splitTextToSize(settings.footer.disclaimer, contentW) as string[];
-      doc.text(discLines, m.left, discY);
+      doc.text(discLines, pageW / 2, discY, { align: "center" });
     }
     if (settings.footer.enabled && settings.footer.showPageNumber) {
       doc.setFont(font, "normal");
