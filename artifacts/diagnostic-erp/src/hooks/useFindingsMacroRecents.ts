@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
-import { pushRecent } from "@/lib/commandPalette";
+import { pushRecent } from "../lib/commandPalette";
 
 /**
  * Recently used Chocolate Box tiles + template macros (findings column).
  * Client-only localStorage — same pattern as useRadiologyPalettePrefs.
+ *
+ * Use relative imports so root Vitest (no @/ alias) can load this module.
  */
 
 const RECENT_KEY = "radiology.findings.macro_recent.v1";

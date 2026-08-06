@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { chocolateMacroId, templateMacroId } from "./useFindingsMacroRecents";
-import { pushRecent } from "@/lib/commandPalette";
+import { pushRecent } from "../lib/commandPalette";
 
 describe("findings macro recent ids", () => {
   it("builds stable chocolate / template ids", () => {
