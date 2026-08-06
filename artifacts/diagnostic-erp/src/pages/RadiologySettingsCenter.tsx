@@ -423,11 +423,8 @@ export default function RadiologySettingsCenter() {
               ))}
             </div>
             <div className="flex flex-wrap gap-2 pt-1">
-              <Button type="button" size="sm" variant="outline" className="h-7 text-[11px]" onClick={() => navigate("/settings?tab=radiology-tools")}>
-                Radiology Tools hub
-              </Button>
               <Button type="button" size="sm" variant="outline" className="h-7 text-[11px]" onClick={() => navigate("/settings?tab=radiology")}>
-                Device Flags (browser)
+                ERP Settings → Radiology
               </Button>
               <Button type="button" size="sm" variant="outline" className="h-7 text-[11px]" onClick={() => navigate("/settings?tab=feature-flags")}>
                 Server Feature Flags
@@ -1238,7 +1235,7 @@ export default function RadiologySettingsCenter() {
               size="sm"
               variant="secondary"
               className="h-8"
-              onClick={() => navigate("/settings?tab=radiology-tools")}
+              onClick={() => navigate("/settings?tab=radiology")}
             >
               Open Settings → Radiology Tools hub
             </Button>
