@@ -3,6 +3,7 @@ import { db, featureFlagsTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { requireStaffAuth, requireAdminRole, type StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { invalidateFeatureFlagCache } from "../lib/featureFlags";
+import { RADIOLOGY_FLAG_REGISTRY } from "../lib/radiologyFeatureFlagRegistry";
 
 // Ticket T0.1 — server-side feature flag backbone. GET is available to any
 // authenticated staff member (the frontend hydrates ff_radiology_* keys on
@@ -11,11 +12,19 @@ import { invalidateFeatureFlagCache } from "../lib/featureFlags";
 // the precedent in routes/radiologyQuickFindings.ts.
 const router = Router();
 
+const WIRED_BY_KEY = new Map(RADIOLOGY_FLAG_REGISTRY.map((e) => [e.key, e.wired]));
+
+function isWired(key: string): boolean {
+  // Non-radiology flags (or unknown keys) stay toggleable.
+  if (!WIRED_BY_KEY.has(key)) return true;
+  return WIRED_BY_KEY.get(key) === true;
+}
+
 router.use(requireStaffAuth);
 
 router.get("/", async (_req, res) => {
   const rows = await db.select().from(featureFlagsTable).orderBy(featureFlagsTable.key);
-  res.json(rows);
+  res.json(rows.map((r) => ({ ...r, wired: isWired(r.key) })));
 });
 
 router.patch("/:key", requireAdminRole, async (req: StaffAuthRequest, res) => {
@@ -23,6 +32,13 @@ router.patch("/:key", requireAdminRole, async (req: StaffAuthRequest, res) => {
   const { enabled } = req.body ?? {};
   if (typeof enabled !== "boolean") {
     res.status(400).json({ error: "enabled must be a boolean" });
+    return;
+  }
+
+  if (enabled && !isWired(key)) {
+    res.status(400).json({
+      error: `Flag "${key}" is not wired — enabling it has no product effect yet. See Flight Deck → Ops Flags.`,
+    });
     return;
   }
 
@@ -43,7 +59,7 @@ router.patch("/:key", requireAdminRole, async (req: StaffAuthRequest, res) => {
     .returning();
 
   invalidateFeatureFlagCache();
-  res.json(updated);
+  res.json({ ...updated, wired: isWired(key) });
 });
 
 export default router;

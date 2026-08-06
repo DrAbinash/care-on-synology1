@@ -7,7 +7,7 @@ import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/com
 import {
   Radio, Layers, Tv2, FileText, Settings, Activity, FilePen, ShieldAlert,
   ListChecks, Heart, Baby, Globe, Server, TrendingUp, Terminal,
-  GraduationCap, Search, Zap, Clock, Sparkles, CheckCircle2, Mic,
+  GraduationCap, Search, Clock, Sparkles, CheckCircle2, Mic,
   Sliders, ShieldCheck, Database, LayoutGrid, ArrowRight, ShieldAlert as AdminIcon
 } from "lucide-react";
 
@@ -37,12 +37,11 @@ export default function Radiology() {
       icon: Activity,
       items: [
         {
-          name: "Radiology Command Center",
-          path: "/radiology/command-center",
-          description: "Legacy single-screen workstation (deprecated in M1.1 — use the Reporting Workspace). Still fully functional.",
-          icon: Layers,
-          badge: "Legacy",
-          openInCommandCenter: true
+          name: "Reporting Workspace",
+          path: "/radiology/reporting-workspace",
+          description: "THE canonical radiology reporting page: embedded viewer, Quick Select, templates, finalize, print/PDF.",
+          icon: FileText,
+          badge: "Recommended"
         },
         {
           name: "Radiology Worklist Hub",
@@ -68,13 +67,6 @@ export default function Radiology() {
           description: "View and prioritize acquired studies awaiting dictation or formal report drafting.",
           icon: Clock
         },
-        {
-          name: "Today's Studies Legacy Hub",
-          path: "/radiology/legacy",
-          description: "Access today's schedule, standard editor workspace, and filmCD tracking logs.",
-          icon: Activity,
-          badge: "Legacy"
-        }
       ]
     },
     {
@@ -87,12 +79,6 @@ export default function Radiology() {
           path: "/pacs",
           description: "Launch standard browser-based zero-footprint viewer. Ideal for basic cross-sectional studies review.",
           icon: Tv2
-        },
-        {
-          name: "Weasis Native Launcher",
-          path: "/radiology/legacy",
-          description: "Native protocol launcher helper. Supports multi-planar reconstructions and image comparisons.",
-          icon: Zap
         },
         {
           name: "Viewer Settings & Diagnostics",
@@ -140,16 +126,24 @@ export default function Radiology() {
       icon: Sliders,
       items: [
         {
-          name: "Reporting Workspace",
-          path: "/radiology/reporting-workspace",
-          description: "THE canonical radiology reporting page (M1.1): embedded viewer, Quick Select structured findings, templates, finalize.",
-          icon: FileText,
-          badge: "Recommended"
+          name: "Radiology Command Center",
+          path: "/radiology/command-center",
+          description: "Legacy single-screen workstation (deprecated — use Reporting Workspace). Owner/admin only.",
+          icon: Layers,
+          badge: "Legacy",
+          openInCommandCenter: true
+        },
+        {
+          name: "Today's Studies Legacy Hub",
+          path: "/radiology/legacy",
+          description: "Access today's schedule, standard editor workspace, and filmCD tracking logs.",
+          icon: Activity,
+          badge: "Legacy"
         },
         {
           name: "Legacy Report Generator",
-          path: "/report-generator",
-          description: "ERP original report text editor interface.",
+          path: "/radiology/report-generator",
+          description: "Deprecated layout/macros editor — prefer Reporting Workspace print tab.",
           icon: FilePen,
           badge: "Legacy"
         },

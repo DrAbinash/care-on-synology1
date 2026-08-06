@@ -1057,8 +1057,9 @@ export default function FormF() {
       // at all.
       if (qr.format === "unsupported") {
         toast({
-          title: "QR code detected but not readable",
-          description: "This looks like a newer Aadhaar Secure QR format, which isn't decoded yet — falling back to crop + OCR instead.",
+          title: "Newer Aadhaar Secure QR detected",
+          description: "UIDAI Secure QR (post-~2019) isn't decoded yet — using crop + OCR, then edit fields manually if needed. Legacy XML QR cards still decode instantly.",
+          variant: "destructive",
         });
       }
 

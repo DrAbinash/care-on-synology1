@@ -214,7 +214,7 @@ const navItems: NavEntry[] = [
         label: "USG Reporting",
         children: [
           { path: "/radiology/worklist?modality=USG",            icon: ScanSearch, label: "USG Worklist" },
-          { path: "/radiology/worklist?modality=USG", icon: FilePen,    label: "General USG Reporting" },
+          { path: "/radiology/reporting-workspace?modality=USG", icon: FilePen,    label: "General USG Reporting" },
           { path: "/fetal-usg",                                  icon: Baby,       label: "Fetal USG" },
           { path: "/fetal-echo",                                 icon: Baby,       label: "Fetal Echo" },
           { path: "/usg/doppler",                                icon: Activity,   label: "Doppler Reporting" },
@@ -224,7 +224,8 @@ const navItems: NavEntry[] = [
           // display's "Now Serving" card actually reads) — previously only
           // reachable via the unrelated top-level "Queue Tokens" nav item.
           { path: "/queue?department=USG",                       icon: Ticket,     label: "USG Queue / Call Next" },
-          { path: "/settings/radiology-quick-select",            icon: Settings2,  label: "USG Settings" },
+          { path: "/settings/radiology-quick-select",            icon: Settings2,  label: "Quick Select Settings" },
+          { path: "/radiology/usg-admin-settings",               icon: Settings2,  label: "USG Admin Settings" },
         ],
       },
       { path: "/radiology/voice-dictation",   icon: Mic,            label: "Voice Dictation" },

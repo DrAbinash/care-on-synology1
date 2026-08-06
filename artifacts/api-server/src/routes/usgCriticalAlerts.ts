@@ -27,6 +27,7 @@ import {
 } from "@workspace/db/schema";
 import { eq, desc, and, sql, inArray, gte } from "drizzle-orm";
 import { logger } from "../lib/logger";
+import { getEmailSettings, getTransporter } from "../email";
 
 const router = Router();
 
@@ -38,10 +39,43 @@ function staffOf(req: Request): { subjectId?: number; subjectName?: string; role
 // Escalation timer in minutes (configurable via query or env; default 30)
 const ESCALATION_MINUTES = 30;
 
-// Placeholder notification hooks — no real sending unless credentials configured.
-async function notifyEscalation(_alertId: number, _channels: string[]) {
-  // Future: integrate WhatsApp Business API, SMS gateway, email SMTP here.
-  logger.info({ alertId: _alertId, channels: _channels }, "Escalation notification placeholder");
+/** Real delivery attempt — currently email to clinic admin when SMTP is configured.
+ *  Returns whether a channel confirmed send so escalationSent is never a false positive. */
+async function notifyEscalation(
+  alertId: number,
+  channels: string[],
+  meta: { escalatedTo: string; findingSummary?: string | null },
+): Promise<{ sent: boolean; detail: string }> {
+  const wantEmail = channels.length === 0 || channels.some((c) => /email|push|mail/i.test(c));
+  if (!wantEmail) {
+    return { sent: false, detail: `unsupported channels: ${channels.join(",")}` };
+  }
+
+  try {
+    const s = await getEmailSettings();
+    const transport = await getTransporter();
+    if (!s?.adminEmail || !transport) {
+      logger.info({ alertId, channels }, "USG critical escalation: SMTP/admin email not configured");
+      return { sent: false, detail: "SMTP or admin email not configured" };
+    }
+    await transport.sendMail({
+      from: `"${s.fromName || "Care Diagnostics"}" <${s.fromAddress || s.smtpUser}>`,
+      to: s.adminEmail,
+      subject: `[USG CRITICAL] Alert #${alertId} escalated to ${meta.escalatedTo}`,
+      html: `<div style="font-family:sans-serif;max-width:560px">
+        <h2 style="color:#b91c1c;margin:0 0 8px">USG Critical Finding Escalated</h2>
+        <p><strong>Alert ID:</strong> ${alertId}</p>
+        <p><strong>Escalated to:</strong> ${meta.escalatedTo}</p>
+        ${meta.findingSummary ? `<p><strong>Finding:</strong> ${meta.findingSummary}</p>` : ""}
+        <p style="font-size:12px;color:#64748b">Sent by Care Diagnostics ERP · ${new Date().toLocaleString("en-IN")}</p>
+      </div>`,
+    });
+    logger.info({ alertId, channels, to: s.adminEmail }, "USG critical escalation email sent");
+    return { sent: true, detail: "email" };
+  } catch (err) {
+    logger.warn({ err, alertId }, "USG critical escalation email failed");
+    return { sent: false, detail: err instanceof Error ? err.message : "send failed" };
+  }
 }
 
 // ── GET /alerts ────────────────────────────────────────────────────
@@ -175,16 +209,28 @@ router.post("/alerts/:id/resolve", async (req, res) => {
 router.post("/alerts/:id/escalate", async (req, res) => {
   const id = Number(req.params.id);
   const b = (req.body ?? {}) as { escalatedTo?: string; channels?: string[] };
+  const escalatedTo = b.escalatedTo ?? staffOf(req).subjectName ?? "staff";
+  const channels = b.channels ?? ["email"];
+
+  const [existing] = await db.select().from(criticalFindingsAlertsTable)
+    .where(and(
+      eq(criticalFindingsAlertsTable.id, id),
+      inArray(criticalFindingsAlertsTable.modality, ["US", "USG"]),
+    ))
+    .limit(1);
+  if (!existing) { res.status(404).json({ error: "Not found or not a USG alert" }); return; }
+
+  const notify = await notifyEscalation(id, channels, {
+    escalatedTo,
+    findingSummary: existing.description ?? existing.findingType ?? null,
+  });
+
   const [row] = await db.update(criticalFindingsAlertsTable)
     .set({
       status: "escalated",
-      escalatedTo: b.escalatedTo ?? staffOf(req).subjectName ?? "staff",
-      // notifyEscalation() below is a placeholder — it never confirms real
-      // delivery over any channel (see its own comment) — so this must stay
-      // false. Recording the escalation itself (status/escalatedTo) is an
-      // honest manual event; claiming a notification was sent when nothing
-      // dispatched is not.
-      escalationSent: false,
+      escalatedTo,
+      // Driven by real delivery result — never hardcode true.
+      escalationSent: notify.sent,
     })
     .where(and(
       eq(criticalFindingsAlertsTable.id, id),
@@ -193,15 +239,13 @@ router.post("/alerts/:id/escalate", async (req, res) => {
     .returning();
   if (!row) { res.status(404).json({ error: "Not found or not a USG alert" }); return; }
 
-  void notifyEscalation(id, b.channels ?? ["push"]);
-
   void db.insert(usgAuditLogTable).values({
     entityType: "critical_alert", entityId: id, action: "critical_escalate",
     performedBy: staffOf(req).subjectName ?? "staff", performedById: staffOf(req).subjectId ?? null,
-    details: JSON.stringify({ escalatedTo: b.escalatedTo }),
+    details: JSON.stringify({ escalatedTo, notify }),
   }).catch(() => { /* noop */ });
 
-  res.json(row);
+  res.json({ ...row, notifyDetail: notify.detail });
 });
 
 // ── GET /productivity ────────────────────────────────────────────────────

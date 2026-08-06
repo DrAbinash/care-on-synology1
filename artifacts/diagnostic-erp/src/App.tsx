@@ -428,10 +428,10 @@ function Router() {
               {/* Hope OPD / partner deep-link → Reporting Workspace (or MRI worklist). */}
               <Route path="/radiology/open" component={RadiologyOpenRedirect} />
               <Route path="/radiology/report-generator">
-                {() => <RadiologyReportGen />}
+                {() => <OwnerOnlyPreserved><RadiologyReportGen /></OwnerOnlyPreserved>}
               </Route>
               <Route path="/radiology/report-generator/:studyId">
-                {(params) => <RadiologyReportGen studyId={Number(params.studyId)} />}
+                {(params) => <OwnerOnlyPreserved><RadiologyReportGen studyId={Number(params.studyId)} /></OwnerOnlyPreserved>}
               </Route>
               <Route path="/radiology/report-builder" component={RadiologyReportBuilder} />
               <Route path="/radiology/findings-manager" component={RadiologyFindingsManager} />
