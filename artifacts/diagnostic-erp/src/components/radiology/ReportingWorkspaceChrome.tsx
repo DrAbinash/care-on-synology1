@@ -23,6 +23,20 @@ import {
   PanelRightClose, PanelRightOpen, PauseCircle, RefreshCw, SlidersHorizontal, X,
 } from "lucide-react";
 
+/** Primary modality buckets shown as dedicated chrome buttons. */
+export const QUEUE_MODALITY_PRIMARY = [
+  { value: "US", label: "USG" },
+  { value: "MR", label: "MRI" },
+] as const;
+
+/** Remaining modalities live in the third-button dropdown. */
+export const QUEUE_MODALITY_REST = [
+  { value: "CT", label: "CT" },
+  { value: "CR", label: "CR / X-ray" },
+  { value: "DX", label: "DX" },
+  { value: "all", label: "All modalities" },
+] as const;
+
 export const WORKSPACE_CHROME_COLLAPSED_KEY = "radiology_workspace_chrome_collapsed";
 
 export type LayoutModeOption = {
@@ -118,6 +132,67 @@ export type ReportingWorkspaceChromeProps = {
   voiceBar?: ReactNode;
 };
 
+function QueueModalityButtons(props: Pick<ReportingWorkspaceChromeProps, "queueModalityFilter" | "onQueueModalityFilterChange">) {
+  const active = props.queueModalityFilter;
+  const restActive = QUEUE_MODALITY_REST.some((m) => m.value === active);
+  const restLabel = QUEUE_MODALITY_REST.find((m) => m.value === active)?.label
+    ?? (active !== "US" && active !== "MR" && active !== "all" ? active : "More");
+
+  const btn = (selected: boolean) =>
+    `h-7 px-2 text-[10px] font-semibold border transition-colors ${
+      selected
+        ? "bg-primary text-primary-foreground border-primary"
+        : "bg-background text-muted-foreground border-border hover:bg-muted"
+    }`;
+
+  return (
+    <div className="flex items-center gap-0.5 shrink-0" role="group" aria-label="Study modality filter" data-testid="queue-modality-buttons">
+      {QUEUE_MODALITY_PRIMARY.map((m) => (
+        <Button
+          key={m.value}
+          type="button"
+          size="sm"
+          variant="outline"
+          className={btn(active === m.value)}
+          data-testid={`queue-modality-${m.value}`}
+          aria-pressed={active === m.value}
+          onClick={() => props.onQueueModalityFilterChange(m.value)}
+        >
+          {m.label}
+        </Button>
+      ))}
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className={`${btn(restActive)} gap-0.5`}
+            data-testid="queue-modality-rest"
+            aria-pressed={restActive}
+            title="Other modalities"
+          >
+            {restLabel}
+            <ChevronDown size={11} />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="w-40">
+          {QUEUE_MODALITY_REST.map((m) => (
+            <DropdownMenuItem
+              key={m.value}
+              data-testid={`queue-modality-rest-${m.value}`}
+              className={active === m.value ? "bg-muted font-semibold" : ""}
+              onClick={() => props.onQueueModalityFilterChange(m.value)}
+            >
+              {m.label}
+            </DropdownMenuItem>
+          ))}
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>
+  );
+}
+
 function activeFilterCount(props: ReportingWorkspaceChromeProps): number {
   let n = 0;
   if (props.queueFilterText.trim()) n++;
@@ -184,9 +259,9 @@ function QueueFiltersPopover(props: ReportingWorkspaceChromeProps) {
             onChange={(e) => props.onQueueModalityFilterChange(e.target.value)}
           >
             <option value="all">All modalities</option>
-            <option value="US">US</option>
+            <option value="US">USG</option>
+            <option value="MR">MRI</option>
             <option value="CT">CT</option>
-            <option value="MR">MR</option>
             <option value="CR">CR</option>
             <option value="DX">DX</option>
           </select>
@@ -309,6 +384,10 @@ export default function ReportingWorkspaceChrome(props: ReportingWorkspaceChrome
             )}
           </div>
           {voiceBar ? <div className="min-w-0 flex-1 overflow-hidden">{voiceBar}</div> : <div className="flex-1" />}
+          <QueueModalityButtons
+            queueModalityFilter={props.queueModalityFilter}
+            onQueueModalityFilterChange={props.onQueueModalityFilterChange}
+          />
           <WorkflowNavButtons {...props} />
           <QueueFiltersPopover {...props} />
           <DropdownMenu>
@@ -436,6 +515,10 @@ export default function ReportingWorkspaceChrome(props: ReportingWorkspaceChrome
           <div className="flex-1 min-w-0" />
         )}
         <div className="flex items-center gap-1.5 shrink-0">
+          <QueueModalityButtons
+            queueModalityFilter={props.queueModalityFilter}
+            onQueueModalityFilterChange={props.onQueueModalityFilterChange}
+          />
           <WorkflowNavButtons {...props} />
           <QueueFiltersPopover {...props} />
           <DropdownMenu>
