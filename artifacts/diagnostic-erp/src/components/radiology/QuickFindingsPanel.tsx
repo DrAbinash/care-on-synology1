@@ -20,7 +20,7 @@ import { matchStudyRegion } from "@/lib/studyRegion";
  *   Study tabs (multi-select, merge) — Ctrl+1..9
  *   ★ Favorites strip                — per-radiologist, always first
  *   Suggested strip                  — related findings for current selection
- *   Finding buttons                  — Alt+1..9 toggles the Nth visible
+ *   Finding buttons                  — Alt+1..9 owned by parent workspace strip
  *   Measurements                     — click → type value → inserted
  *
  * Insert/remove safety is owned by the parent (the workspace keeps a map of
@@ -364,7 +364,8 @@ export default function QuickFindingsPanel({
   // ── Keyboard workflow ──────────────────────────────────────────────────────
   //   /        focus search (when not typing in a field)
   //   Ctrl+1-9 toggle Nth study tab
-  //   Alt+1-9  toggle Nth visible finding button (favorites strip counts first)
+  //   Alt+1-9  owned by RadiologyReportingWorkspace (main Quick Findings strip,
+  //            ★ favorites first) so hotkeys work even when this panel is closed.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       const target = e.target as HTMLElement | null;
@@ -383,13 +384,6 @@ export default function QuickFindingsPanel({
         if (tab) {
           e.preventDefault();
           toggleTab(tab.name);
-        }
-      } else if (e.altKey && !e.ctrlKey) {
-        const ordered = [...favoriteFindings, ...mainFindings];
-        const f = ordered[n - 1];
-        if (f && !disabled) {
-          e.preventDefault();
-          activateFinding(f);
         }
       }
     }
@@ -519,7 +513,7 @@ export default function QuickFindingsPanel({
           title={
             structured
               ? `${f.label} — set details${selected ? " (click to edit)" : ""}`
-              : `${f.findingText || f.impressionText}${index !== undefined && index < 9 ? `  (Alt+${index + 1})` : ""}`
+              : (f.findingText || f.impressionText || f.label)
           }
         >
           <div className="flex items-center gap-1.5 min-w-0">
@@ -577,7 +571,7 @@ export default function QuickFindingsPanel({
           <Zap size={11} />
         </span>
         <span className="text-[10px] font-semibold uppercase tracking-wide text-amber-950">Quick Add</span>
-        <span className="text-[9px] text-amber-800/70">Alt+1–9 · / to search</span>
+        <span className="text-[9px] text-amber-800/70">Alt+1–9 on strip · / to search</span>
       </div>
       {/* Universal search */}
       <div className="relative shrink-0">
