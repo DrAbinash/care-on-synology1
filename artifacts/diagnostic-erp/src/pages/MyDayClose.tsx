@@ -337,7 +337,7 @@ export default function MyDayClose() {
         <CardContent>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
             <div>
-              <div className="text-muted-foreground text-xs">From</div>
+              <div className="text-muted-foreground text-xs">Since last close</div>
               <div className="font-medium">{fmtIst(previewQ.data?.coveredFromTs ?? null)}</div>
             </div>
             <div>

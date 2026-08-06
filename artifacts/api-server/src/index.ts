@@ -1290,6 +1290,7 @@ async function runStartupMigrations(): Promise<void> {
       ALTER TABLE clinic_settings ADD COLUMN IF NOT EXISTS form_f_billing_prompt BOOLEAN NOT NULL DEFAULT FALSE;
       ALTER TABLE clinic_settings ADD COLUMN IF NOT EXISTS form_f_address_required BOOLEAN NOT NULL DEFAULT TRUE;
       ALTER TABLE clinic_settings ADD COLUMN IF NOT EXISTS form_f_guardian_required BOOLEAN NOT NULL DEFAULT TRUE;
+      ALTER TABLE clinic_settings ADD COLUMN IF NOT EXISTS cancel_requires_refund BOOLEAN NOT NULL DEFAULT FALSE;
       ALTER TABLE portal_sessions ADD COLUMN IF NOT EXISTS ip_address TEXT;
       ALTER TABLE portal_sessions ADD COLUMN IF NOT EXISTS user_agent TEXT;
       ALTER TABLE portal_sessions ADD COLUMN IF NOT EXISTS last_activity_at TIMESTAMPTZ NOT NULL DEFAULT NOW();

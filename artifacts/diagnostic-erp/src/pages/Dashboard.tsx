@@ -618,7 +618,7 @@ function ReconciliationFlow({ s }: { s: OverallSummary }) {
       </div>
       <div className="p-4 space-y-0">
         <RecRow label="Payments Received" value={s.totalReceived} type="start" />
-        <RecRow label="− Refunds" value={s.refundAmount} type="deduct" />
+        <RecRow label="− Refunds (money returned)" value={s.refundAmount} type="deduct" />
         <RecRow label="− Expenses" value={s.totalExpenses} type="deduct" />
         <div className="my-2 border-t-2 border-green-200 dark:border-green-800" />
         <RecRow label="= Net Collection" value={s.netCollection} type="result" />
@@ -827,7 +827,8 @@ export default function Dashboard() {
             ["Physical Cash in Hand", amt(overallSummary.physicalCashInHand)],
             ["Digital Collection", amt(overallSummary.digitalCollection)],
             ["Outstanding / Dues", amt(overallSummary.outstanding)],
-            ["Refunds & Cancellations", amt(overallSummary.refundsAndCancellations)],
+            ["Refunds (money returned)", amt(overallSummary.refundAmount)],
+            ["Cancelled Bills (info)", amt(overallSummary.cancelledAmount)],
             ["Cash Expenses", amt(overallSummary.totalExpenses)],
             ["Discounts Given", amt(overallSummary.discountsGiven)],
             ["Pending Reports", String(overallSummary.pendingReports)],

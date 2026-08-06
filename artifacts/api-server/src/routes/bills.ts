@@ -1047,6 +1047,24 @@ billsRouter.post("/:id/cancel", requireStaffSubPermission("/billing", "delete"),
       throw Object.assign(new Error("Bill is already cancelled"), { httpStatus: 409 });
     }
 
+    // Optional clinic policy: cancel of a paid bill must include autoRefund.
+    const autoRefundPreview = z.object({
+      autoRefund: z.object({ method: z.string().min(1) }).optional(),
+    }).safeParse(req.body);
+    const hasAutoRefund = !!(autoRefundPreview.success && autoRefundPreview.data.autoRefund);
+    if (Number(bill.paidAmount) > 0.0001 && !hasAutoRefund) {
+      const [settings] = await tx
+        .select({ cancelRequiresRefund: clinicSettingsTable.cancelRequiresRefund })
+        .from(clinicSettingsTable)
+        .limit(1);
+      if (settings?.cancelRequiresRefund) {
+        throw Object.assign(
+          new Error("This clinic requires a refund when cancelling a paid bill. Use Refund & Cancel (or pass autoRefund)."),
+          { httpStatus: 400 },
+        );
+      }
+    }
+
     const [updated] = await tx.update(billsTable).set({
       status: "cancelled",
       cancelledAt: new Date(),

@@ -678,10 +678,15 @@ export default function DayClose() {
 
       {/* Open window summary */}
       <Card>
-        <CardHeader><CardTitle className="text-base">Open Window</CardTitle></CardHeader>
+        <CardHeader>
+          <CardTitle className="text-base">Open Window</CardTitle>
+          <p className="text-xs text-muted-foreground font-normal mt-1">
+            Rolling window since the last day-close — not the same as Daily Summary&apos;s calendar Today (IST).
+          </p>
+        </CardHeader>
         <CardContent className="space-y-3">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
-            <div><div className="text-muted-foreground">From</div><div className="font-medium">{fmtIst(previewQ.data?.coveredFromTs ?? null)}</div></div>
+            <div><div className="text-muted-foreground">Since last close</div><div className="font-medium">{fmtIst(previewQ.data?.coveredFromTs ?? null)}</div></div>
             <div><div className="text-muted-foreground">Now (IST)</div><div className="font-medium">{fmtIst(previewQ.data?.coveredToTs ?? null)}</div></div>
             <div><div className="text-muted-foreground">Bills</div><div className="font-medium">{previewQ.data?.billsCount ?? 0}</div></div>
             <div><div className="text-muted-foreground">Payments</div><div className="font-medium">{previewQ.data?.paymentsCount ?? 0}</div></div>

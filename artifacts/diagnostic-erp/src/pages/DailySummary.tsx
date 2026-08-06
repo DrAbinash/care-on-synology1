@@ -450,25 +450,26 @@ export default function DailySummary() {
   ];
 
   const consolidatedRows = [
-    { label: "Total Received Today", value: netCollection },
+    { label: "Net Collection Today", value: netCollection },
     { label: "Digital Collection", value: digitalCollection },
     { label: "Physical Cash in Hand", value: physicalCash },
     { label: "Outstanding / Dues", value: summary.outstanding },
-    { label: "Refunds / Cancellations", value: summary.refundsAndCancellations },
+    { label: "Refunds (money returned)", value: summary.totalRefunded ?? 0 },
+    { label: "Cancelled Bills (info)", value: Math.max(0, summary.refundsAndCancellations - (summary.totalRefunded ?? 0)) },
     { label: "Discounts Given", value: discountsGiven },
     { label: "Expenses", value: expenseTotal },
   ];
 
   const totalBillingFormula = `Total Billing = ${inr(summary.totalBilling)}`;
   const outstandingFormula = `Outstanding / Dues = ${inr(summary.outstanding)}`;
-  const refundsFormula = `Refunds / Cancellations = ${inr(summary.refundsAndCancellations)}`;
+  const refundsFormula = `Refunds (money returned) = ${inr(summary.totalRefunded ?? 0)}`;
   const expensesFormula = `Expenses = ${inr(expenseTotal)}`;
   const discountsFormula = `Discounts Given Today = ${inr(discountsGiven)}`;
   // Payment-axis formula (money actually received/refunded), not the bill
   // axis — a bill cancelled and refunded the same day must not be
   // subtracted twice. Mirrors the server calculation in daily-summary.ts.
   const totalReceivedAmt = summary.totalReceived ?? (netCollection + (summary.totalRefunded ?? 0) + expenseTotal);
-  const totalReceivedFormula = `Total Received Today = ${inr(totalReceivedAmt)} − ${inr(summary.totalRefunded ?? 0)} − ${inr(expenseTotal)} = ${inr(netCollection)}`;
+  const totalReceivedFormula = `Net Collection = ${inr(totalReceivedAmt)} − ${inr(summary.totalRefunded ?? 0)} − ${inr(expenseTotal)} = ${inr(netCollection)}`;
   const digitalFormula = `Digital Collection = UPI + Card + other bank/digital modes = ${inr(digitalCollection)}`;
   const physicalFormula = `Physical Cash in Hand = ${inr(rec.cashCollection)} − ${inr(summary.cashRefunded ?? 0)} − ${inr(rec.cashExpenses)} = ${inr(physicalCash)}`;
 
@@ -522,7 +523,7 @@ export default function DailySummary() {
           <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
             <SummaryCard icon={<TrendingUp size={14} className="text-green-600" />} label="Total Billing" value={inr(summary.totalBilling)} sub={totalBillingFormula} accent="bg-green-50 dark:bg-green-950/30 border-green-200 dark:border-green-800" />
             <SummaryCard icon={<Receipt size={14} className="text-amber-600" />} label="Outstanding / Dues" value={inr(summary.outstanding)} sub={outstandingFormula} accent="bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-800" />
-            <SummaryCard icon={<RotateCcw size={14} className="text-rose-600" />} label="Refunds / Cancellations" value={inr(summary.refundsAndCancellations)} sub={refundsFormula} accent="bg-rose-50 dark:bg-rose-950/30 border-rose-200 dark:border-rose-800" />
+            <SummaryCard icon={<RotateCcw size={14} className="text-rose-600" />} label="Refunds (money returned)" value={inr(summary.totalRefunded ?? 0)} sub={refundsFormula} accent="bg-rose-50 dark:bg-rose-950/30 border-rose-200 dark:border-rose-800" />
             <SummaryCard icon={<TrendingDown size={14} className="text-red-500" />} label="Expenses" value={inr(expenseTotal)} sub={expensesFormula} accent="bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-800" />
             <SummaryCard icon={<Wallet size={14} className="text-blue-600" />} label="Net Collection Today" value={inr(netCollection)} sub={totalReceivedFormula} accent="bg-blue-50 dark:bg-blue-950/30 border-blue-200 dark:border-blue-800" tooltip="Payments received − Refunds − Expenses (payment axis)" />
             <SummaryCard icon={<Smartphone size={14} className="text-violet-600" />} label="Digital Collection" value={inr(digitalCollection)} sub={digitalFormula} accent="bg-card border-card-border" />
@@ -584,7 +585,7 @@ export default function DailySummary() {
             <div className="px-4 py-2.5 bg-gradient-to-r from-primary/10 to-primary/5 border-b-2 border-card-border flex items-center gap-2">
               <Wallet size={16} className="text-primary" />
               <span className="text-sm font-bold tracking-wide uppercase">Bottom Line</span>
-              <span className="ml-auto text-[11px] text-muted-foreground font-medium">As on {date}</span>
+              <span className="ml-auto text-[11px] text-muted-foreground font-medium">Today (IST) · {date}</span>
             </div>
             <table className="w-full text-sm">
               <tbody>
@@ -601,7 +602,7 @@ export default function DailySummary() {
                   <td className="px-4 py-2 text-right font-semibold tabular-nums">{inr(totalReceivedAmt)}</td>
                 </tr>
                 <tr className="border-b border-card-border/60">
-                  <td className="px-4 py-2 text-muted-foreground flex items-center gap-2"><RotateCcw size={13} className="text-rose-600" /> − Refunds</td>
+                  <td className="px-4 py-2 text-muted-foreground flex items-center gap-2"><RotateCcw size={13} className="text-rose-600" /> − Refunds (money returned)</td>
                   <td className="px-4 py-2 text-right font-semibold tabular-nums text-rose-700 dark:text-rose-500">− {inr(summary.totalRefunded ?? 0)}</td>
                 </tr>
                 <tr className="border-b-2 border-foreground/40">
@@ -637,7 +638,7 @@ export default function DailySummary() {
             <div className="px-4 py-2 bg-muted/30 border-t border-card-border text-[11px] text-muted-foreground flex flex-wrap gap-x-4 gap-y-1">
               <span>Discounts Given Today: <strong className="text-foreground">{inr(discountsGiven)}</strong></span>
               <span>Bills: <strong className="text-foreground">{summary.billCount}</strong></span>
-              <span>Cancelled (info): <strong className="text-foreground">{inr(summary.refundsAndCancellations - (summary.totalRefunded ?? 0))}</strong></span>
+              <span>Cancelled bills (info): <strong className="text-foreground">{inr(Math.max(0, summary.refundsAndCancellations - (summary.totalRefunded ?? 0)))}</strong></span>
               {totalEdits > 0 && <span>Edits Logged: <strong className="text-foreground">{totalEdits}</strong></span>}
             </div>
           </div>
