@@ -23,8 +23,14 @@ function isWired(key: string): boolean {
 router.use(requireStaffAuth);
 
 router.get("/", async (_req, res) => {
-  const rows = await db.select().from(featureFlagsTable).orderBy(featureFlagsTable.key);
-  res.json(rows.map((r) => ({ ...r, wired: isWired(r.key) })));
+  try {
+    const rows = await db.select().from(featureFlagsTable).orderBy(featureFlagsTable.key);
+    res.json(rows.map((r) => ({ ...r, wired: isWired(r.key) })));
+  } catch (err) {
+    // Layout hydrates flags on every page — a missing table must not 500 the ERP shell.
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: message, message });
+  }
 });
 
 router.patch("/:key", requireAdminRole, async (req: StaffAuthRequest, res) => {

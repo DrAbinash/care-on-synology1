@@ -134,7 +134,17 @@ export function sanitizeApiErrorMessage(text: string, status: number, statusText
   }
   try {
     const parsed = JSON.parse(trimmed) as { error?: string; message?: string };
-    return parsed.error || parsed.message || statusText || `Request failed (${status})`;
+    const err = (parsed.error || "").trim();
+    const detail = (parsed.message || "").trim();
+    // Many API routes return { error: "Internal server error", message: "<real cause>" }.
+    // Prefer the real cause so staff/toasts are actionable instead of opaque.
+    const generic =
+      !err ||
+      /^internal server error$/i.test(err) ||
+      /^error$/i.test(err) ||
+      /^request failed$/i.test(err);
+    if (generic && detail) return detail;
+    return err || detail || statusText || `Request failed (${status})`;
   } catch {
     return trimmed.length > 240 ? `${trimmed.slice(0, 240)}…` : trimmed;
   }
