@@ -110,6 +110,8 @@ type OverallSummary = {
   totalReceived: number;
   digitalCollection: number;
   cashCollection: number;
+  cashRefunded?: number;
+  cashExpenses?: number;
   totalExpenses: number;
   discountsGiven: number;
   netCollection: number;
@@ -622,8 +624,8 @@ function ReconciliationFlow({ s }: { s: OverallSummary }) {
         <RecRow label="= Net Collection" value={s.netCollection} type="result" />
         <div className="my-2 border-t border-dashed border-gray-200 dark:border-gray-700" />
         <RecRow label="Cash In" value={s.cashCollection} type="start" />
-        <RecRow label="− Cash Refunded" value={(s as { cashRefunded?: number }).cashRefunded ?? 0} type="deduct" />
-        <RecRow label="− Cash Expenses" value={(s as { cashExpenses?: number }).cashExpenses ?? 0} type="deduct" />
+        <RecRow label="− Cash Refunded" value={s.cashRefunded ?? 0} type="deduct" />
+        <RecRow label="− Cash Expenses" value={s.cashExpenses ?? 0} type="deduct" />
         <div className="my-2 border-t-2 border-blue-200 dark:border-blue-800" />
         <RecRow label="= Physical Cash in Hand" value={s.physicalCashInHand} type="final" />
         <div className="mt-4 grid grid-cols-2 gap-2">
@@ -637,7 +639,7 @@ function ReconciliationFlow({ s }: { s: OverallSummary }) {
           </div>
         </div>
         <p className="text-[10px] text-muted-foreground mt-3">
-          Billing {fmt(s.grossBilling)} · Outstanding {fmt(s.outstanding)} · Cancelled {fmt(s.cancelledAmount)} (context only)
+          Billing {fmt(s.grossBilling)} · Outstanding {fmt(s.outstanding)} · Cancelled {fmt(s.cancelledAmount)} (context only — not subtracted again into net)
         </p>
       </div>
     </div>

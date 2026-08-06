@@ -525,7 +525,7 @@ export default function DailySummary() {
             <SummaryCard icon={<Receipt size={14} className="text-amber-600" />} label="Outstanding / Dues" value={inr(summary.outstanding)} sub={outstandingFormula} accent="bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-800" />
             <SummaryCard icon={<RotateCcw size={14} className="text-rose-600" />} label="Refunds (money returned)" value={inr(summary.totalRefunded ?? 0)} sub={refundsFormula} accent="bg-rose-50 dark:bg-rose-950/30 border-rose-200 dark:border-rose-800" />
             <SummaryCard icon={<TrendingDown size={14} className="text-red-500" />} label="Expenses" value={inr(expenseTotal)} sub={expensesFormula} accent="bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-800" />
-            <SummaryCard icon={<Wallet size={14} className="text-blue-600" />} label="Net Collection Today" value={inr(netCollection)} sub={totalReceivedFormula} accent="bg-blue-50 dark:bg-blue-950/30 border-blue-200 dark:border-blue-800" tooltip="Payments received − Refunds − Expenses" />
+            <SummaryCard icon={<Wallet size={14} className="text-blue-600" />} label="Net Collection Today" value={inr(netCollection)} sub={totalReceivedFormula} accent="bg-blue-50 dark:bg-blue-950/30 border-blue-200 dark:border-blue-800" tooltip="Payments received − Refunds − Expenses (payment axis)" />
             <SummaryCard icon={<Smartphone size={14} className="text-violet-600" />} label="Digital Collection" value={inr(digitalCollection)} sub={digitalFormula} accent="bg-card border-card-border" />
             <SummaryCard icon={<Banknote size={14} className="text-green-700" />} label="Physical Cash in Hand" value={inr(physicalCash)} sub={physicalFormula} accent="bg-card border-card-border" />
             <SummaryCard icon={<ArrowDownCircle size={14} className="text-purple-600" />} label="Discounts Given Today" value={inr(discountsGiven)} sub={discountsFormula} accent="bg-purple-50 dark:bg-purple-950/30 border-purple-200 dark:border-purple-800" />
@@ -579,7 +579,8 @@ export default function DailySummary() {
           )}
 
           {/* ── Bottom Line — payment-axis (money that actually moved).
-                Billing / outstanding / cancelled are context only. ── */}
+                Billing / outstanding / cancelled are context only; net and
+                physical cash come from payments − refunds − expenses. ── */}
           <div className="rounded-xl border-2 border-card-border bg-gradient-to-br from-card to-muted/30 overflow-hidden shadow-sm">
             <div className="px-4 py-2.5 bg-gradient-to-r from-primary/10 to-primary/5 border-b-2 border-card-border flex items-center gap-2">
               <Wallet size={16} className="text-primary" />
