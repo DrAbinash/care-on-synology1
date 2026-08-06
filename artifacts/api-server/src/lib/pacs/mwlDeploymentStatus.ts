@@ -221,55 +221,68 @@ export async function getMwlDeploymentStatus(): Promise<MwlDeploymentStatus> {
     ));
   }
 
-  // 7 — DB procedures today
+  // 7 — DB procedures today (schema-lag safe: missing table must not 500 the panel)
   const today = new Date();
   const ymd = `${today.getFullYear()}${String(today.getMonth() + 1).padStart(2, "0")}${String(today.getDate()).padStart(2, "0")}`;
 
-  const [statsRows, recentRows] = await Promise.all([
-    db
-      .select({ status: radiologyScheduledProceduresTable.status, count: sql<number>`count(*)::int` })
-      .from(radiologyScheduledProceduresTable)
-      .groupBy(radiologyScheduledProceduresTable.status),
-    db
-      .select({
-        accessionNumber: radiologyScheduledProceduresTable.accessionNumber,
-        patientName: radiologyScheduledProceduresTable.patientName,
-        modality: radiologyScheduledProceduresTable.modality,
-        status: radiologyScheduledProceduresTable.status,
-        scheduledDate: radiologyScheduledProceduresTable.scheduledDate,
-      })
-      .from(radiologyScheduledProceduresTable)
-      .where(
-        andActiveToday(ymd),
-      )
-      .orderBy(desc(radiologyScheduledProceduresTable.updatedAt))
-      .limit(8),
-  ]);
+  let procedureStats: Record<string, number> = {};
+  let recentActive: MwlRecentProcedure[] = [];
+  try {
+    const [statsRows, recentRows] = await Promise.all([
+      db
+        .select({ status: radiologyScheduledProceduresTable.status, count: sql<number>`count(*)::int` })
+        .from(radiologyScheduledProceduresTable)
+        .groupBy(radiologyScheduledProceduresTable.status),
+      db
+        .select({
+          accessionNumber: radiologyScheduledProceduresTable.accessionNumber,
+          patientName: radiologyScheduledProceduresTable.patientName,
+          modality: radiologyScheduledProceduresTable.modality,
+          status: radiologyScheduledProceduresTable.status,
+          scheduledDate: radiologyScheduledProceduresTable.scheduledDate,
+        })
+        .from(radiologyScheduledProceduresTable)
+        .where(
+          andActiveToday(ymd),
+        )
+        .orderBy(desc(radiologyScheduledProceduresTable.updatedAt))
+        .limit(8),
+    ]);
 
-  const procedureStats: Record<string, number> = {};
-  for (const r of statsRows) procedureStats[r.status ?? "UNKNOWN"] = r.count;
+    for (const r of statsRows) procedureStats[r.status ?? "UNKNOWN"] = r.count;
 
-  const activeToday = (procedureStats.SCHEDULED ?? 0) + (procedureStats.SENT_TO_MWL ?? 0);
-  checks.push(check(
-    "db_procedures",
-    "Scheduled procedures in ERP",
-    activeToday > 0 ? "pass" : "warn",
-    activeToday > 0
-      ? `${activeToday} active today (SCHEDULED/SENT_TO_MWL); ${wlFileCount} .wl on disk`
-      : "No active MWL rows today — bill a USG/MRI/CT test to test the flow",
-    activeToday > 0 ? undefined : "Create a bill with a radiology test; the ERP auto-publishes to radiology_scheduled_procedures.",
-  ));
+    const activeToday = (procedureStats.SCHEDULED ?? 0) + (procedureStats.SENT_TO_MWL ?? 0);
+    checks.push(check(
+      "db_procedures",
+      "Scheduled procedures in ERP",
+      activeToday > 0 ? "pass" : "warn",
+      activeToday > 0
+        ? `${activeToday} active today (SCHEDULED/SENT_TO_MWL); ${wlFileCount} .wl on disk`
+        : "No active MWL rows today — bill a USG/MRI/CT test to test the flow",
+      activeToday > 0 ? undefined : "Create a bill with a radiology test; the ERP auto-publishes to radiology_scheduled_procedures.",
+    ));
 
-  const recentActive: MwlRecentProcedure[] = [];
-  for (const row of recentRows) {
-    recentActive.push({
-      accessionNumber: row.accessionNumber,
-      patientName: row.patientName,
-      modality: row.modality,
-      status: row.status,
-      scheduledDate: row.scheduledDate,
-      hasWlFile: dir ? await wlFileExists(dir, row.accessionNumber) : false,
-    });
+    for (const row of recentRows) {
+      recentActive.push({
+        accessionNumber: row.accessionNumber,
+        patientName: row.patientName,
+        modality: row.modality,
+        status: row.status,
+        scheduledDate: row.scheduledDate,
+        hasWlFile: dir ? await wlFileExists(dir, row.accessionNumber) : false,
+      });
+    }
+  } catch (dbErr) {
+    const detail = dbErr instanceof Error ? dbErr.message : String(dbErr);
+    checks.push(check(
+      "db_procedures",
+      "Scheduled procedures in ERP",
+      "fail",
+      `Could not read radiology_scheduled_procedures: ${detail}`,
+      "Run pending migrations so radiology_scheduled_procedures exists, then reload this panel.",
+    ));
+    recentActive = [];
+    procedureStats = {};
   }
 
   const criticalIds = new Set(["env_dir", "dir_writable", "dump2dcm"]);

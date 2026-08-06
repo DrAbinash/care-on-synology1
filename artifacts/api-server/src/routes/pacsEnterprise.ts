@@ -961,22 +961,27 @@ router.post("/mwl-procedures", async (req, res) => {
 // enabling the feature, and reconciliation if files drift. Removes terminal
 // procedures' files, (re)writes active ones.
 router.post("/mwl-worklist/sync", async (_req, res) => {
-  if (!isMwlEnabled()) {
-    res.status(503).json({ error: "Modality worklist is not configured. Set ORTHANC_WORKLIST_DIR and mount a folder shared with Orthanc (worklists plugin)." });
-    return;
-  }
-  const rows = await db.select().from(radiologyScheduledProceduresTable).limit(5000);
-  let written = 0;
-  let removed = 0;
-  for (const row of rows) {
-    if (MWL_TERMINAL_STATUSES.has((row.status || "").toUpperCase())) {
-      await removeWorklistFile(row.accessionNumber);
-      removed++;
-    } else if (await writeWorklistFile(row)) {
-      written++;
+  try {
+    if (!isMwlEnabled()) {
+      res.status(503).json({ error: "Modality worklist is not configured. Set ORTHANC_WORKLIST_DIR and mount a folder shared with Orthanc (worklists plugin)." });
+      return;
     }
+    const rows = await db.select().from(radiologyScheduledProceduresTable).limit(5000);
+    let written = 0;
+    let removed = 0;
+    for (const row of rows) {
+      if (MWL_TERMINAL_STATUSES.has((row.status || "").toUpperCase())) {
+        await removeWorklistFile(row.accessionNumber);
+        removed++;
+      } else if (await writeWorklistFile(row)) {
+        written++;
+      }
+    }
+    res.json({ total: rows.length, written, removed });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: message, message });
   }
-  res.json({ total: rows.length, written, removed });
 });
 
 // GET /api/radiology/mwl-status — deployment health for Settings → DICOM & MWL tab
