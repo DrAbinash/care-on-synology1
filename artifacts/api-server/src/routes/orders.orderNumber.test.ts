@@ -15,9 +15,12 @@ const careOrder = readFileSync(
 );
 
 describe("order number allocation", () => {
-  it("uses numeric ::int MAX of trailing digits, not text MAX(SUBSTRING)", () => {
+  it("uses split_part + ::int MAX (never bound substring-from, which is regex in PG)", () => {
+    expect(src).toContain("split_part(order_number, '-', 3)");
     expect(src).toContain("::int");
-    expect(src).toContain("regexp_replace");
+    // Bound `substring(… from ${n})` is interpreted as regex substring in Postgres
+    // and stuck prod on ORD-202608-0013 even after the first numeric-MAX fix.
+    expect(src).not.toMatch(/substring\(order_number from \$\{/);
     expect(src).not.toMatch(/MAX\(SUBSTRING\(order_number FROM/);
   });
 
