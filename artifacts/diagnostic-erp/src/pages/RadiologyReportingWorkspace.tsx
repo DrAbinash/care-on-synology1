@@ -65,6 +65,11 @@ import ObDashboardStrip from "@/components/radiology/ObDashboardStrip";
 import UsgCompanionPanel from "@/components/radiology/UsgCompanionPanel";
 import ReportingShortcutHelp from "@/components/radiology/ReportingShortcutHelp";
 import MriReadinessStrip from "@/components/radiology/MriReadinessStrip";
+import {
+  chocolateMacroId,
+  templateMacroId,
+  useFindingsMacroRecents,
+} from "@/hooks/useFindingsMacroRecents";
 import type { CompanionCopilotContext } from "@/lib/usgCompanionTypes";
 import type { PopulateBlock as CompanionPopulateBlock, AutoPopulatePlan } from "@/lib/usgCompanionAutoPopulate";
 import ModuleErrorBoundary from "@/components/ModuleErrorBoundary";
@@ -1806,6 +1811,22 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     staleTime: 5 * 60_000,
   });
 
+  // ★ Favorites — same queryKey as QuickFindingsPanel (react-query de-dupes).
+  // Used to pin favorites first on the main-column Quick Findings strip and
+  // for Alt+1–9 ordering (favorites first, then remaining region findings).
+  const { data: favoriteRows = [] } = useQuery<Array<{ id: number; findingId: number; sortOrder: number }>>({
+    queryKey: ["radiology-quick-favorites"],
+    queryFn: () => api.get("/api/radiology/quick-select/favorites"),
+    staleTime: 60_000,
+  });
+  const favoriteFindingIds = useMemo(
+    () => favoriteRows.map((f) => f.findingId),
+    [favoriteRows],
+  );
+  const favoriteIdSet = useMemo(() => new Set(favoriteFindingIds), [favoriteFindingIds]);
+
+  const { recent: macroRecentIds, markRecent: markMacroRecent } = useFindingsMacroRecents();
+
   // Finding definitions by id — the Smart Findings engine looks up a selected
   // finding's anatomical section, conflict group and render templates here.
   const findingById = useMemo(
@@ -1866,6 +1887,22 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
       .sort((a, b) => a.sortOrder - b.sortOrder || a.label.localeCompare(b.label)),
     [quickSelectData, studyRegion],
   );
+
+  // Quick Findings strip order: ★ favorites (server sort) first, then the rest.
+  const stripOrderedFindings = useMemo(() => {
+    if (favoriteFindingIds.length === 0) return regionFindings;
+    const byId = new Map(regionFindings.map((f) => [f.id, f]));
+    const favs: QuickFinding[] = [];
+    const seen = new Set<number>();
+    for (const id of favoriteFindingIds) {
+      const f = byId.get(id);
+      if (f) {
+        favs.push(f);
+        seen.add(id);
+      }
+    }
+    return [...favs, ...regionFindings.filter((f) => !seen.has(f.id))];
+  }, [regionFindings, favoriteFindingIds]);
 
   // Item 2 — grouped options for the Findings "add from list" dropdown. Quick
   // chips cannot hold every finding for a busy study (the user's own point:
@@ -2806,6 +2843,41 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     [entry?.modality],
   );
 
+  // Per-modality accent for study setup bar + chrome chip.
+  const modalityAccent = useMemo(() => {
+    if (isMriModality) {
+      return {
+        label: "MRI",
+        className: "bg-indigo-100 text-indigo-800 border-indigo-200 dark:bg-indigo-950/40 dark:text-indigo-200 dark:border-indigo-800",
+        setupBar: "border-indigo-300/80 bg-gradient-to-r from-indigo-50 to-violet-50/50 dark:from-indigo-950/40 dark:to-violet-950/20",
+        setupLabel: "text-indigo-700 dark:text-indigo-300",
+      };
+    }
+    if (isUltrasound) {
+      return {
+        label: "USG",
+        className: "bg-teal-100 text-teal-800 border-teal-200 dark:bg-teal-950/40 dark:text-teal-200 dark:border-teal-800",
+        setupBar: "border-teal-300/80 bg-gradient-to-r from-teal-50 to-cyan-50/50 dark:from-teal-950/40 dark:to-cyan-950/20",
+        setupLabel: "text-teal-700 dark:text-teal-300",
+      };
+    }
+    if (isCtModality) {
+      return {
+        label: "CT",
+        className: "bg-slate-200 text-slate-800 border-slate-300 dark:bg-slate-800/60 dark:text-slate-200 dark:border-slate-600",
+        setupBar: "border-slate-300 bg-gradient-to-r from-slate-100 to-slate-50 dark:from-slate-900/50 dark:to-slate-950/30",
+        setupLabel: "text-slate-700 dark:text-slate-300",
+      };
+    }
+    const raw = (entry?.modality ?? "").trim().toUpperCase() || "Study";
+    return {
+      label: raw.slice(0, 8),
+      className: "bg-sky-100 text-sky-800 border-sky-200 dark:bg-sky-950/40 dark:text-sky-200 dark:border-sky-800",
+      setupBar: "border-slate-200 dark:border-slate-700 bg-gradient-to-r from-slate-50 to-sky-50/40 dark:from-slate-900/40 dark:to-sky-950/20",
+      setupLabel: "text-sky-700 dark:text-sky-400",
+    };
+  }, [isMriModality, isUltrasound, isCtModality, entry?.modality]);
+
   // PCPNDT gate (roadmap §1.4 step 2 — docs/usg-reporting/
   // pcpndt-canonical-roadmap.md). The server-side finalize gates
   // (patient-reports.ts, internal-radiology.ts) now run the real shared
@@ -3072,6 +3144,36 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     () => templates.find((t) => t.id === selectedTemplateId) ?? null,
     [templates, selectedTemplateId]
   );
+
+  // Recent Chocolate Box + template macros for the Findings "Recent" row.
+  const recentMacroButtons = useMemo(() => {
+    type RecentBtn = { id: string; label: string; kind: "choc" | "tpl"; text: string; macroKey?: string };
+    const out: RecentBtn[] = [];
+    const seen = new Set<string>();
+    const chocByLabel = new Map((chocolateBoxSet?.tiles ?? []).map((t) => [t.label, t]));
+    const tplMacros = selectedTemplate ? parseMacrosJson(selectedTemplate.macrosJson) : [];
+    const tplByKey = new Map(tplMacros.map((m) => [m.key, m]));
+    for (const id of macroRecentIds) {
+      if (out.length >= 5) break;
+      if (id.startsWith("choc:")) {
+        const rest = id.slice(5);
+        const colon = rest.indexOf(":");
+        if (colon < 0) continue;
+        const label = rest.slice(colon + 1);
+        const tile = chocByLabel.get(label);
+        if (!tile || seen.has(`choc:${tile.label}`)) continue;
+        seen.add(`choc:${tile.label}`);
+        out.push({ id, label: tile.label, kind: "choc", text: tile.text });
+      } else if (id.startsWith("tpl:")) {
+        const key = id.slice(4);
+        const m = tplByKey.get(key);
+        if (!m || seen.has(`tpl:${m.key}`)) continue;
+        seen.add(`tpl:${m.key}`);
+        out.push({ id, label: m.label, kind: "tpl", text: m.text, macroKey: m.key });
+      }
+    }
+    return out;
+  }, [macroRecentIds, chocolateBoxSet, selectedTemplate]);
 
   const templateMismatch = useMemo(
     () => templateRegionMismatch(studyRegion, selectedTemplate?.bodyPart ?? null),
@@ -3531,6 +3633,19 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
         else voice.cancel();
         return;
       }
+      // Alt+1–9 — Quick Findings strip (★ favorites first). Owned here so
+      // hotkeys work even when the right Quick panel is closed.
+      if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+        const n = Number(e.key);
+        if (Number.isInteger(n) && n >= 1 && n <= 9) {
+          const f = stripOrderedFindings[n - 1];
+          if (f && !isLocked) {
+            e.preventDefault();
+            handleFindingClick(f);
+            return;
+          }
+        }
+      }
       const shortcut = matchWorkspaceShortcut({
         key: e.key, ctrlKey: e.ctrlKey, metaKey: e.metaKey, altKey: e.altKey, shiftKey: e.shiftKey,
         target: e.target as { tagName?: string } | null,
@@ -3809,6 +3924,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
       ref_doctor: entry?.referringDoctor || "",
     };
     const resolved = resolvePlaceholders(macro.text, ctx);
+    markMacroRecent(templateMacroId(macro.key));
     setRawFindings((prev) => prev + (prev ? "\n\n" : "") + resolved);
     toast({ title: `Inserted: ${macro.label}` });
   }
@@ -4981,6 +5097,26 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
       chip: "bg-blue-100 text-blue-700 border-blue-200 dark:bg-blue-900/50 dark:text-blue-300 dark:border-blue-800",
       text: "text-blue-900 dark:text-blue-200",
     },
+    library: {
+      card: "border-teal-300 bg-teal-50 dark:border-teal-800 dark:bg-teal-950/30",
+      chip: "bg-teal-100 text-teal-700 border-teal-200 dark:bg-teal-900/50 dark:text-teal-300 dark:border-teal-800",
+      text: "text-teal-900 dark:text-teal-200",
+    },
+    measurements: {
+      card: "border-cyan-300 bg-cyan-50 dark:border-cyan-800 dark:bg-cyan-950/30",
+      chip: "bg-cyan-100 text-cyan-700 border-cyan-200 dark:bg-cyan-900/50 dark:text-cyan-300 dark:border-cyan-800",
+      text: "text-cyan-900 dark:text-cyan-200",
+    },
+    prior: {
+      card: "border-slate-300 bg-slate-50 dark:border-slate-700 dark:bg-slate-900/40",
+      chip: "bg-slate-100 text-slate-700 border-slate-200 dark:bg-slate-800/50 dark:text-slate-300 dark:border-slate-700",
+      text: "text-slate-900 dark:text-slate-200",
+    },
+    followup: {
+      card: "border-emerald-300 bg-emerald-50 dark:border-emerald-800 dark:bg-emerald-950/30",
+      chip: "bg-emerald-100 text-emerald-700 border-emerald-200 dark:bg-emerald-900/50 dark:text-emerald-300 dark:border-emerald-800",
+      text: "text-emerald-900 dark:text-emerald-200",
+    },
   };
 
   return (
@@ -5009,6 +5145,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
           : undefined}
         reportStatusLabel={STATUS_CONFIG[reportStatus]?.label || reportStatus}
         reportStatusClass={STATUS_CONFIG[reportStatus]?.color || ""}
+        modalityAccent={entry ? { label: modalityAccent.label, className: modalityAccent.className } : null}
         isOnline={isOnline}
         isLoadingDraft={!!studyId && isLoadingExistingDraft}
         hasExistingDraft={!!existingDraft}
@@ -5625,20 +5762,22 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
             {/* One-click Start Report — primary action when study is not bootstrapped */}
             {!isLocked && reportNeedsStart && studyRegion && (
               <div
-                className="flex flex-wrap items-center gap-2 p-3 rounded-lg border-2 border-primary/40 bg-primary/5 shrink-0"
+                className="flex flex-wrap items-center gap-2 p-3 rounded-lg border-2 border-amber-400/50 bg-gradient-to-r from-amber-50 via-orange-50/80 to-amber-50/40 dark:from-amber-950/40 dark:via-orange-950/20 dark:to-amber-950/30 shadow-sm shrink-0"
                 data-testid="start-report-banner"
               >
-                <Zap size={18} className="text-primary shrink-0" />
+                <div className="w-9 h-9 rounded-lg bg-amber-500/15 flex items-center justify-center shrink-0">
+                  <Zap size={18} className="text-amber-600 dark:text-amber-400" />
+                </div>
                 <div className="flex-1 min-w-[180px]">
-                  <p className="text-sm font-semibold text-foreground">Ready to report — {studyRegion}</p>
-                  <p className="text-[11px] text-muted-foreground">
+                  <p className="text-sm font-semibold text-amber-950 dark:text-amber-100">Ready to report — {studyRegion}</p>
+                  <p className="text-[11px] text-amber-800/80 dark:text-amber-200/70">
                     One click applies protocol, template, and all normal findings. You can undo immediately.
                   </p>
                 </div>
                 <Button
                   type="button"
                   size="sm"
-                  className="h-8 text-xs font-semibold gap-1"
+                  className="h-8 text-xs font-semibold gap-1 bg-amber-600 hover:bg-amber-700 text-white border-0"
                   onClick={handleStartReport}
                   data-testid="btn-start-report"
                 >
@@ -5659,10 +5798,15 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
             {/* Study setup — region, protocol, template; manual override + re-apply */}
             {!isLocked && availableRegions.length > 0 && (
               <div
-                className={`flex flex-wrap items-center gap-2 rounded-md border bg-slate-50/80 dark:bg-slate-900/40 text-[11px] shrink-0 ${chromeCollapsed ? "px-1.5 py-1" : "p-2"}`}
+                className={`flex flex-wrap items-center gap-2 rounded-md border text-[11px] shrink-0 ${modalityAccent.setupBar} ${chromeCollapsed ? "px-1.5 py-1" : "p-2"}`}
                 data-testid="study-setup-bar"
               >
-                <span className="font-semibold text-muted-foreground uppercase text-[9px] tracking-wide">Study setup</span>
+                <span className={`inline-flex items-center gap-1 font-semibold uppercase text-[9px] tracking-wide ${modalityAccent.setupLabel}`}>
+                  <span className={`rounded border px-1 py-0 text-[9px] font-bold normal-case tracking-normal ${modalityAccent.className}`}>
+                    {modalityAccent.label}
+                  </span>
+                  Study setup
+                </span>
                 <label className="inline-flex items-center gap-1">
                   <span className="text-muted-foreground">Region</span>
                   <select
@@ -5766,6 +5910,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
               layoutKey="radiology_report_layout"
               id="clinical_history"
               title="Clinical History"
+              accent="teal"
               headerExtra={
                 <VoiceDictationButton
                   onInsert={(t) => setClinicalHistory((p) => p + t)}
@@ -5789,10 +5934,10 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                         onClick={() => toggleClinicalHistoryChip(chip)}
                         title={chip.insertedText}
                         aria-pressed={active}
-                        className={`text-[10px] font-medium px-2 py-0.5 rounded-full border transition-colors disabled:opacity-50 ${
+                        className={`text-[10px] font-medium px-2 py-0.5 rounded-full border shadow-sm transition-all disabled:opacity-50 ${
                           active
-                            ? "bg-primary text-primary-foreground border-primary"
-                            : "bg-background text-muted-foreground border-border hover:bg-muted/50 hover:text-foreground"
+                            ? "bg-teal-600 text-white border-teal-600 shadow-teal-500/20"
+                            : "bg-teal-50/90 text-teal-900 border-teal-200/80 hover:-translate-y-0.5 hover:border-teal-400 hover:bg-teal-100"
                         }`}
                       >
                         {chip.displayLabel}
@@ -5816,6 +5961,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
               layoutKey="radiology_report_layout"
               id="technique"
               title="Technique"
+              accent="sky"
               headerExtra={
                 <div className="flex items-center gap-1">
                   {/* Protocol control beside Technique — the SAME selection and
@@ -5865,7 +6011,10 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
             {/* Findings */}
             <div className="flex flex-col gap-2">
               <div className="flex items-center justify-between">
-                <Label className="text-xs font-semibold">Findings / Observation</Label>
+                <Label className="text-xs font-semibold flex items-center gap-1.5">
+                  <span className="w-1.5 h-3 rounded-full bg-amber-500 shrink-0" aria-hidden />
+                  Findings / Observation
+                </Label>
                 <div className="flex items-center gap-1">
                   {/* Item 2 — full-list Findings dropdown (like the Technique
                       protocol dropdown). Quick chips cannot hold every finding
@@ -5930,29 +6079,77 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                   structured mode), or appends to free text — the SAME
                   handleQuickToggle the right Quick panel uses. No AI, instant. */}
               {regionFindings.length > 0 && (
-                <div className="flex flex-col gap-1 p-1.5 rounded-md border bg-muted/20" data-testid="quick-findings-strip">
-                  <span className="text-[9px] font-semibold uppercase text-muted-foreground px-1">
-                    Quick Findings — click to add / remove · ⣿ opens a quick details prompt
-                  </span>
-                  <div className="flex flex-wrap gap-1">
-                    {regionFindings.map((f) => {
+                <div
+                  className="flex flex-col gap-1.5 p-2 rounded-xl border border-amber-200/80 bg-gradient-to-br from-amber-50 via-orange-50/50 to-background shadow-sm ring-1 ring-amber-100/50"
+                  data-testid="quick-findings-strip"
+                >
+                  <div className="flex items-center gap-1.5 px-0.5 flex-wrap">
+                    <span className="flex h-5 w-5 items-center justify-center rounded-md bg-amber-500 text-white shadow-sm shadow-amber-500/30">
+                      <Zap className="h-3 w-3" />
+                    </span>
+                    <span className="text-[9px] font-semibold uppercase tracking-wide text-amber-950">
+                      Quick Findings
+                    </span>
+                    {favoriteIdSet.size > 0 && (
+                      <span className="inline-flex items-center gap-0.5 text-[9px] text-amber-800/80">
+                        <Star size={9} className="fill-amber-500 text-amber-500" /> favorites first
+                      </span>
+                    )}
+                    <span className="text-[9px] text-amber-800/70">
+                      click to add / remove · ⣿ opens details
+                    </span>
+                    {rightTab === "quickselect" && (
+                      <span
+                        className="ml-auto inline-flex items-center gap-1 rounded-md border border-amber-300/80 bg-amber-100/80 px-1.5 py-0.5 text-[9px] font-medium text-amber-950"
+                        data-testid="alt-hotkey-legend"
+                        title="Alt+1–9 toggles the Nth chip below (★ favorites first)"
+                      >
+                        <kbd className="rounded border border-amber-400/60 bg-white/80 px-1 font-mono text-[8px]">Alt</kbd>
+                        +1–9
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {stripOrderedFindings.map((f, qi) => {
                       const selected = selectedQuickIds.has(f.id);
                       const structured = findingQuestions(f).length > 0;
+                      const isFav = favoriteIdSet.has(f.id);
+                      const hues = [
+                        "border-sky-200 bg-sky-50 text-sky-900 hover:border-sky-400 hover:bg-sky-100",
+                        "border-violet-200 bg-violet-50 text-violet-900 hover:border-violet-400 hover:bg-violet-100",
+                        "border-emerald-200 bg-emerald-50 text-emerald-900 hover:border-emerald-400 hover:bg-emerald-100",
+                        "border-rose-200 bg-rose-50 text-rose-900 hover:border-rose-400 hover:bg-rose-100",
+                        "border-amber-200 bg-amber-50 text-amber-950 hover:border-amber-400 hover:bg-amber-100",
+                        "border-teal-200 bg-teal-50 text-teal-900 hover:border-teal-400 hover:bg-teal-100",
+                      ];
+                      const hue = hues[qi % hues.length];
+                      const altHint = qi < 9 ? `Alt+${qi + 1}` : undefined;
                       return (
                         <button
                           key={f.id}
                           type="button"
                           disabled={isLocked}
                           onClick={() => handleFindingClick(f)}
-                          title={structured ? `${f.label} — set details` : (f.findingText || f.impressionText || f.label)}
+                          title={
+                            structured
+                              ? `${f.label} — set details${altHint ? ` (${altHint})` : ""}`
+                              : `${f.findingText || f.impressionText || f.label}${altHint ? ` (${altHint})` : ""}`
+                          }
                           aria-pressed={selected}
-                          className={`text-[10px] font-medium px-2 py-0.5 rounded-full border transition-colors disabled:opacity-50 ${
+                          className={`text-[10px] font-medium px-2.5 py-1 rounded-full border shadow-sm transition-all disabled:opacity-50 inline-flex items-center gap-1 ${
                             selected
-                              ? "bg-primary text-primary-foreground border-primary"
-                              : "bg-background text-muted-foreground border-border hover:bg-muted/50 hover:text-foreground"
+                              ? "bg-amber-600 text-white border-amber-600 shadow-amber-500/25"
+                              : isFav
+                                ? "border-amber-400 bg-amber-50 text-amber-950 ring-1 ring-amber-200/80 hover:-translate-y-0.5 hover:shadow-md"
+                                : `${hue} hover:-translate-y-0.5 hover:shadow-md`
                           }`}
                         >
-                          {f.label}{structured && <span className="ml-1 opacity-70">⣿</span>}
+                          {isFav && <Star size={9} className={selected ? "fill-white text-white" : "fill-amber-500 text-amber-500"} />}
+                          {f.label}
+                          {structured && <span className="opacity-70">⣿</span>}
+                          {altHint && rightTab === "quickselect" && (
+                            <kbd className={`text-[8px] font-mono opacity-70 ${selected ? "text-white/80" : ""}`}>{qi + 1}</kbd>
+                          )}
                         </button>
                       );
                     })}
@@ -5967,23 +6164,63 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                   auto-selects the first [bracketed] variable for immediate
                   overwrite (see insertAtCursor in lib/findingsMacros.ts). */}
               {!useStructured && chocolateBoxSet && (
-                <div className="flex flex-wrap gap-1 p-1.5 rounded-md border bg-muted/20">
-                  <span className="text-[9px] font-semibold uppercase text-muted-foreground self-center px-1">
+                <div className="flex flex-wrap gap-1.5 p-2 rounded-xl border border-sky-200/70 bg-gradient-to-br from-sky-50/90 via-violet-50/40 to-background shadow-sm">
+                  <span className="text-[9px] font-semibold uppercase tracking-wide text-sky-800 self-center px-1">
                     {chocolateBoxSet.label} quick tiles
                   </span>
-                  {chocolateBoxSet.tiles.map((tile) => (
+                  {chocolateBoxSet.tiles.map((tile, ti) => {
+                    const tileHues = [
+                      "border-sky-200 bg-sky-50 text-sky-900 hover:border-sky-400 hover:bg-sky-100",
+                      "border-violet-200 bg-violet-50 text-violet-900 hover:border-violet-400 hover:bg-violet-100",
+                      "border-cyan-200 bg-cyan-50 text-cyan-900 hover:border-cyan-400 hover:bg-cyan-100",
+                      "border-fuchsia-200 bg-fuchsia-50 text-fuchsia-900 hover:border-fuchsia-400 hover:bg-fuchsia-100",
+                    ];
+                    return (
                     <Button
                       key={tile.label}
                       type="button"
                       size="sm"
                       variant="outline"
-                      className="h-5 text-[10px] px-1.5"
+                      className={`h-6 text-[10px] px-2 shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md ${tileHues[ti % tileHues.length]}`}
                       disabled={isLocked}
-                      onClick={() =>
-                        insertAtCursor(findingsTextareaRef.current?.el ?? null, rawFindings, tile.text, setRawFindings)
-                      }
+                      onClick={() => {
+                        markMacroRecent(chocolateMacroId(chocolateBoxSet.key, tile.label));
+                        insertAtCursor(findingsTextareaRef.current?.el ?? null, rawFindings, tile.text, setRawFindings);
+                      }}
                     >
                       {tile.label}
+                    </Button>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Recent macros — last used Chocolate Box / template macros */}
+              {!useStructured && !isLocked && recentMacroButtons.length > 0 && (
+                <div
+                  className="flex flex-wrap items-center gap-1.5 px-1"
+                  data-testid="recent-macros-row"
+                >
+                  <span className="text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    Recent
+                  </span>
+                  {recentMacroButtons.map((btn) => (
+                    <Button
+                      key={btn.id}
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="h-6 text-[10px] px-2 border-slate-200 bg-background hover:border-sky-300 hover:bg-sky-50"
+                      onClick={() => {
+                        if (btn.kind === "choc" && chocolateBoxSet) {
+                          markMacroRecent(chocolateMacroId(chocolateBoxSet.key, btn.label));
+                          insertAtCursor(findingsTextareaRef.current?.el ?? null, rawFindings, btn.text, setRawFindings);
+                        } else if (btn.kind === "tpl" && btn.macroKey) {
+                          applyMacro({ key: btn.macroKey, label: btn.label, text: btn.text });
+                        }
+                      }}
+                    >
+                      {btn.label}
                     </Button>
                   ))}
                 </div>
@@ -6012,28 +6249,62 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
               {useStructured ? (
                 <div className="flex flex-col gap-2">
                   {Object.entries(findingsMap).map(([label, item]) => (
-                    <div key={label} className="flex flex-col gap-1 border rounded-md p-2.5 bg-white">
+                    <div key={label} className="flex flex-col gap-1 border border-slate-200/80 rounded-md p-2.5 bg-card shadow-sm">
                       <div className="flex items-center gap-2">
-                        <Checkbox
-                          id={`norm-${label}`}
-                          checked={item.normal}
-                          onCheckedChange={(checked) =>
-                            setFindingsMap((prev) => ({
-                              ...prev,
-                              [label]: { ...prev[label], normal: checked === true },
-                            }))
-                          }
-                          disabled={isLocked}
-                        />
-                        <Label
-                          htmlFor={`norm-${label}`}
-                          className="text-xs font-semibold cursor-pointer flex-1"
-                        >
+                        <Label className="text-xs font-semibold flex-1 min-w-0 truncate" title={label}>
                           {label}
                         </Label>
-                        <span className="text-[10px] text-muted-foreground">
-                          {item.normal ? "Normal" : "Abnormal"}
-                        </span>
+                        <div
+                          className="inline-flex rounded-md border border-border overflow-hidden shrink-0"
+                          role="group"
+                          aria-label={`${label} normal or abnormal`}
+                        >
+                          <button
+                            type="button"
+                            disabled={isLocked}
+                            aria-pressed={item.normal}
+                            className={`h-6 px-2 text-[10px] font-semibold transition-colors disabled:opacity-50 ${
+                              item.normal
+                                ? "bg-emerald-600 text-white"
+                                : "bg-background text-muted-foreground hover:bg-emerald-50 hover:text-emerald-800"
+                            }`}
+                            onClick={() => {
+                              const baseline = currentBaseline().find((b) => b.label === label)?.normal ?? item.text;
+                              setFindingsMap((prev) => ({
+                                ...prev,
+                                [label]: { normal: true, text: baseline },
+                              }));
+                            }}
+                          >
+                            Normal
+                          </button>
+                          <button
+                            type="button"
+                            disabled={isLocked}
+                            aria-pressed={!item.normal}
+                            className={`h-6 px-2 text-[10px] font-semibold border-l border-border transition-colors disabled:opacity-50 ${
+                              !item.normal
+                                ? "bg-rose-600 text-white"
+                                : "bg-background text-muted-foreground hover:bg-rose-50 hover:text-rose-800"
+                            }`}
+                            onClick={() => {
+                              const baseline = currentBaseline().find((b) => b.label === label)?.normal;
+                              setFindingsMap((prev) => {
+                                const cur = prev[label];
+                                const nextText =
+                                  cur.normal && baseline != null && cur.text.trim() === baseline.trim()
+                                    ? ""
+                                    : cur.text;
+                                return {
+                                  ...prev,
+                                  [label]: { normal: false, text: nextText },
+                                };
+                              });
+                            }}
+                          >
+                            Abnormal
+                          </button>
+                        </div>
                         {!isLocked && (
                           <button
                             type="button"
@@ -6068,7 +6339,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                         />
                       )}
                       {item.normal && (
-                        <div className="text-xs text-muted-foreground pl-6 truncate">{item.text}</div>
+                        <div className="text-xs text-muted-foreground truncate">{item.text}</div>
                       )}
                     </div>
                   ))}
@@ -6111,12 +6382,15 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
             {/* Impression */}
             <div className="flex flex-col gap-2">
               <div className="flex items-center justify-between">
-                <Label className="text-xs font-semibold">Impression</Label>
+                <Label className="text-xs font-semibold flex items-center gap-1.5">
+                  <span className="w-1.5 h-3 rounded-full bg-violet-500 shrink-0" aria-hidden />
+                  Impression
+                </Label>
                 <div className="flex gap-1">
                   <Button
                     size="sm"
-                    variant="default"
-                    className="h-6 text-[10px] gap-1"
+                    variant="outline"
+                    className="h-6 text-[10px] gap-1 border-violet-200 bg-violet-50/80 text-violet-900 hover:bg-violet-100 hover:border-violet-300"
                     onClick={() => handleGenerateImpression(false)}
                     disabled={isLocked}
                     title="Instant summary from your findings (no AI)"
@@ -6126,7 +6400,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                   <Button
                     size="sm"
                     variant="outline"
-                    className="h-6 text-[10px] gap-1"
+                    className="h-6 text-[10px] gap-1 border-purple-200 bg-purple-50/60 text-purple-900 hover:bg-purple-100"
                     onClick={() => handleGenerateImpression(true)}
                     disabled={aiLoading || isLocked}
                     title="AI-polished impression"
@@ -6218,6 +6492,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
               layoutKey="radiology_report_layout"
               id="recommendation"
               title="Recommendation / Advice"
+              accent="emerald"
             >
               {/* Item 1 — quick-select "chocolate box" chips for Recommendation,
                   like the other sections. Admin-editable from Radiology Settings
@@ -6231,7 +6506,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                       disabled={isLocked}
                       title={chip}
                       onClick={() => setRecommendation((prev) => mergeBlock(prev, chip))}
-                      className="text-[10px] font-medium px-2 py-0.5 rounded-full border bg-background text-muted-foreground border-border hover:bg-muted/50 hover:text-foreground transition-colors disabled:opacity-50 max-w-[220px] truncate"
+                      className="text-[10px] font-medium px-2.5 py-0.5 rounded-full border border-emerald-300/80 bg-gradient-to-r from-emerald-50 to-teal-50 text-emerald-950 shadow-sm transition-all hover:-translate-y-0.5 hover:border-emerald-500 hover:from-emerald-100 hover:to-teal-100 hover:shadow-md disabled:opacity-50 max-w-[220px] truncate"
                     >
                       {chip}
                     </button>
@@ -6330,8 +6605,8 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
 
             {/* Report preview */}
             {previewMode && (
-              <div className="border rounded-md bg-white">
-                <div className="flex items-center justify-between px-3 py-2 border-b flex-wrap gap-2">
+              <div className="border rounded-md bg-card shadow-sm">
+                <div className="flex items-center justify-between px-3 py-2 border-b bg-gradient-to-r from-slate-50/80 to-sky-50/40 flex-wrap gap-2">
                   <h3 className="text-sm font-semibold">Report Preview</h3>
                   <ReportLayoutQuickSelect
                     value={previewLayout}
@@ -6477,14 +6752,14 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
               to stack all six into ~6 rows (~250px tall) and crowd out the
               editor above it — scroll horizontally instead, a single
               predictable-height row. ──────────────────────────────────── */}
-          <div className={`shrink-0 border-t bg-white px-3 py-2 flex items-center gap-2 ${
+          <div className={`shrink-0 border-t bg-gradient-to-r from-background via-sky-50/40 to-background px-3 py-2 flex items-center gap-2 ${
             isMobile ? "overflow-x-auto flex-nowrap [&>*]:shrink-0" : "flex-wrap"
           }`}>
             {!isLocked && (
               <Button
                 size="sm"
                 variant="outline"
-                className="h-8 text-xs gap-1.5"
+                className="h-8 text-xs gap-1.5 border-sky-200 bg-sky-50/70 text-sky-950 hover:bg-sky-100"
                 onClick={() => void saveDraft()}
                 disabled={saving}
                 title="Save draft (Ctrl+S)"
@@ -6679,7 +6954,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
               weight (Phase 5). Tooltip + aria-label carry the tab name;
               the active tab's name also appears in the strip below so a
               dozen icons stay identifiable without full-width cards. */}
-          <div className="shrink-0 flex flex-wrap items-center gap-1 p-1.5 border-b bg-muted/10" data-testid="right-drawer-ribbon">
+          <div className="shrink-0 flex flex-wrap items-center gap-1 p-1.5 border-b bg-gradient-to-r from-muted/20 via-sky-50/30 to-violet-50/20" data-testid="right-drawer-ribbon">
             {RIGHT_TABS.map((tab) => {
               const active = rightTab === tab.id;
               const accent = HERO_ACCENT[tab.id];
@@ -6692,12 +6967,12 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                   aria-pressed={active}
                   data-testid={`right-tab-${tab.id}`}
                   onClick={() => setRightTab(tab.id as RightTab)}
-                  className={`relative flex h-8 w-8 shrink-0 items-center justify-center rounded-md border transition-colors ${
+                  className={`relative flex h-8 w-8 shrink-0 items-center justify-center rounded-md border shadow-sm transition-all ${
                     active
                       ? accent
-                        ? `${accent.chip} border-current`
+                        ? `${accent.card} ${accent.text} ring-1 ring-current/20`
                         : "bg-primary/10 border-primary/40 text-primary"
-                      : "border-transparent text-muted-foreground hover:bg-muted hover:text-foreground"
+                      : "border-transparent bg-background/60 text-muted-foreground hover:bg-muted hover:text-foreground"
                   }`}
                 >
                   {tab.icon}
@@ -6719,7 +6994,11 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
               <PanelRightClose size={14} />
             </button>
           </div>
-          <div className="shrink-0 px-2 py-1 border-b bg-muted/5 text-[11px] font-semibold text-foreground/80 flex items-center gap-1.5">
+          <div className={`shrink-0 px-2 py-1.5 border-b text-[11px] font-semibold flex items-center gap-1.5 ${
+            HERO_ACCENT[rightTab]
+              ? `${HERO_ACCENT[rightTab].card} ${HERO_ACCENT[rightTab].text}`
+              : "bg-muted/5 text-foreground/80"
+          }`}>
             {RIGHT_TABS.find((t) => t.id === rightTab)?.icon}
             {RIGHT_TABS.find((t) => t.id === rightTab)?.label}
           </div>
