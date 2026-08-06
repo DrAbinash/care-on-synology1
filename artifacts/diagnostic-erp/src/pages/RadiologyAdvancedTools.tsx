@@ -499,7 +499,7 @@ function statusBadgeColor(status: FeatureStatus): string {
 export default function RadiologyAdvancedTools() {
   const [, navigate] = useLocation();
   const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState<FeatureStatus | "All">("All");
+  const [statusFilter, setStatusFilter] = useState<FeatureStatus | "All">("Active");
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
   const filtered = FEATURES.filter((f) => {
@@ -523,8 +523,17 @@ export default function RadiologyAdvancedTools() {
     <div className="space-y-6 p-6">
       <PageHeader
         title="Advanced Radiology Tools"
-        subtitle="Non-daily-use, experimental, and legacy radiology features. All existing routes are preserved — nothing has been deleted."
+        subtitle="Catalog of experimental, legacy, and optional pages. Daily work is Worklist + Reporting Workspace — most of this list is optional."
       />
+
+      <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
+        Prefer <button type="button" className="font-semibold underline" onClick={() => navigate("/radiology/worklist")}>Worklist</button>
+        {" · "}
+        <button type="button" className="font-semibold underline" onClick={() => navigate("/radiology/reporting-workspace")}>Reporting Workspace</button>
+        {" · "}
+        <button type="button" className="font-semibold underline" onClick={() => navigate("/settings/radiology")}>Settings Center</button>
+        . Routes below are kept for bookmarks; they are not the recommended daily path.
+      </div>
 
       {/* Search & Filters */}
       <div className="flex flex-col sm:flex-row gap-3">
