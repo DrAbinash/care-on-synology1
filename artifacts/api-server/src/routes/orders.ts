@@ -15,25 +15,37 @@ import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
 
 export const ordersRouter = Router();
 
+/**
+ * Next ORD-YYYYMM-#### for the current calendar month.
+ * Uses NUMERIC max of the trailing digits (not text MAX) so mixed padding
+ * like …-12 vs …-0013 cannot stick the sequence on a duplicate.
+ * Callers must hold `pg_advisory_xact_lock(hashtext('care_erp_order_number'))`
+ * on the same `dbHandle` transaction.
+ */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function generateOrderNumber(dbHandle: any = db): Promise<string> {
-  // CONCURRENCY FIX: previously `COUNT(*)+1` computed OUTSIDE any lock, so
-  // two overlapping POST /api/orders calls (a busy billing desk's normal
-  // case) could both read the same count and generate the SAME order_number,
-  // then one insert would fail with a raw 23505 unique-violation surfacing
-  // as an opaque 500. Callers now take the `care_erp_order_number` advisory
-  // lock (same pattern as generateBillNumber's `care_erp_bill_number` lock
-  // in bills.ts) and pass their locked `tx` handle here so this read is
-  // serialized against every other concurrent order-number allocation.
+export async function generateOrderNumber(dbHandle: any = db): Promise<string> {
   const date = new Date();
   const prefix = `ORD-${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, "0")}`;
+  // regexp_replace → digits only, then ::int MAX. Text MAX(SUBSTRING(...)) is
+  // wrong when any row has a different zero-pad width ('12' > '0013' as text),
+  // which left production repeatedly inserting ORD-…-0013 → unique_violation 500.
   const [row] = await dbHandle
-    .select({ maxNum: sql<string | null>`MAX(SUBSTRING(order_number FROM ${prefix.length + 2}))` })
+    .select({
+      maxNum: sql<number | null>`MAX(
+        NULLIF(regexp_replace(substring(order_number from ${prefix.length + 2}), '[^0-9]', '', 'g'), '')::int
+      )`,
+    })
     .from(ordersTable)
     .where(sql`order_number LIKE ${prefix + "-%"}`);
-  const maxNum = row?.maxNum ? Number(row.maxNum) : 0;
+  const maxNum = row?.maxNum != null ? Number(row.maxNum) : 0;
   const num = (Number.isFinite(maxNum) ? maxNum : 0) + 1;
   return `${prefix}-${String(num).padStart(4, "0")}`;
+}
+
+function isUniqueViolation(err: unknown): boolean {
+  const e = err as { code?: string; cause?: { code?: string }; message?: string } | null;
+  return e?.code === "23505" || e?.cause?.code === "23505"
+    || /duplicate key value violates unique constraint/i.test(e?.message ?? "");
 }
 
 // Preloaded rows a caller may already hold (e.g. POST / just validated the
@@ -300,41 +312,63 @@ ordersRouter.post("/", async (req: StaffAuthRequest, res) => {
   // order_number allocation across concurrent POSTs (same pattern as
   // bills.ts's care_erp_bill_number lock) so two overlapping requests can
   // never compute the same order_number and collide on the unique index.
-  const { order, orderTestRows } = await db.transaction(async (tx) => {
-    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('care_erp_order_number'))`);
-    const orderNumber = await generateOrderNumber(tx);
-    const [orderRow] = await tx.insert(ordersTable).values({
-      orderNumber,
-      patientId,
-      doctorId: doctorId ?? null,
-      totalAmount: String(totalAmount),
-      notes: notes ?? null,
-      status: "pending",
-      ledgerId,
-      // Store clientRef so subsequent retries return this same order
-      clientRef: clientRef ?? null,
-    }).returning();
+  // Retry a few times on 23505 in case legacy mixed-pad rows still race the
+  // numeric MAX (should be rare after generateOrderNumber uses ::int).
+  let order: typeof ordersTable.$inferSelect | undefined;
+  let orderTestRows: (typeof orderTestsTable.$inferSelect)[] = [];
+  let lastUniqueErr: unknown;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      const result = await db.transaction(async (tx) => {
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('care_erp_order_number'))`);
+        const orderNumber = await generateOrderNumber(tx);
+        const [orderRow] = await tx.insert(ordersTable).values({
+          orderNumber,
+          patientId,
+          doctorId: doctorId ?? null,
+          totalAmount: String(totalAmount),
+          notes: notes ?? null,
+          status: "pending",
+          ledgerId,
+          // Store clientRef so subsequent retries return this same order
+          clientRef: clientRef ?? null,
+        }).returning();
 
-    let insertedTests: (typeof orderTestsTable.$inferSelect)[] = [];
-    if (lineItems.length > 0) {
-      // Resolve outsource cost for each test to store in order_tests — reuses
-      // the test rows already fetched for validation instead of re-querying.
-      insertedTests = await tx.insert(orderTestsTable).values(
-        lineItems.map((t) => {
-          const test = testMap.get(t.testId);
-          const oc = test?.outsourceCost != null ? String(test.outsourceCost) : null;
-          return {
-            orderId: orderRow.id,
-            testId: t.testId,
-            price: t.price,
-            outsourceCost: oc,
-          };
-        })
-      ).returning();
+        let insertedTests: (typeof orderTestsTable.$inferSelect)[] = [];
+        if (lineItems.length > 0) {
+          // Resolve outsource cost for each test to store in order_tests — reuses
+          // the test rows already fetched for validation instead of re-querying.
+          insertedTests = await tx.insert(orderTestsTable).values(
+            lineItems.map((t) => {
+              const test = testMap.get(t.testId);
+              const oc = test?.outsourceCost != null ? String(test.outsourceCost) : null;
+              return {
+                orderId: orderRow.id,
+                testId: t.testId,
+                price: t.price,
+                outsourceCost: oc,
+              };
+            })
+          ).returning();
+        }
+
+        return { order: orderRow, orderTestRows: insertedTests };
+      });
+      order = result.order;
+      orderTestRows = result.orderTestRows;
+      lastUniqueErr = undefined;
+      break;
+    } catch (err) {
+      if (!isUniqueViolation(err)) throw err;
+      lastUniqueErr = err;
+      req.log?.warn?.({ attempt, err }, "order_number unique violation — retrying allocation");
     }
-
-    return { order: orderRow, orderTestRows: insertedTests };
-  });
+  }
+  if (!order) {
+    const message = lastUniqueErr instanceof Error ? lastUniqueErr.message : "Could not allocate a unique order number";
+    res.status(500).json({ error: message, message });
+    return;
+  }
 
   // Build the response through buildOrder — the single owner of this
   // endpoint family's response shape — feeding it the rows already in hand
