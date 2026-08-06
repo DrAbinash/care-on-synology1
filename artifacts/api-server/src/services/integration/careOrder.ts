@@ -15,13 +15,13 @@ import {
   testsTable,
 } from "@workspace/db";
 import type { Tx } from "./db";
+import { generateOrderNumber } from "../../routes/orders";
 
-async function generateOrderNumber(tx: Tx): Promise<string> {
-  const count = await tx.select({ count: sql<number>`count(*)` }).from(ordersTable);
-  const num = Number(count[0]?.count ?? 0) + 1;
-  const date = new Date();
-  const prefix = `ORD-${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, "0")}`;
-  return `${prefix}-${String(num).padStart(4, "0")}`;
+async function allocateOrderNumber(tx: Tx): Promise<string> {
+  // Same numeric-max allocator as POST /api/orders (imported) so Hope referrals
+  // cannot mint a colliding ORD-YYYYMM-#### via the old count(*)+1 path.
+  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('care_erp_order_number'))`);
+  return generateOrderNumber(tx);
 }
 
 export interface AcceptLine {
@@ -77,7 +77,7 @@ export async function createOrAppendCareOrder(
     let attempt = 0;
     // eslint-disable-next-line no-constant-condition
     while (true) {
-      orderNumber = await generateOrderNumber(tx);
+      orderNumber = await allocateOrderNumber(tx);
       try {
         const [order] = await tx.insert(ordersTable).values({
           orderNumber,
