@@ -15,10 +15,14 @@ const careOrder = readFileSync(
 );
 
 describe("order number allocation", () => {
-  it("uses numeric ::int MAX of trailing digits, not text MAX(SUBSTRING)", () => {
+  it("uses split_part + ::int MAX (never bound substring-from, which is regex in PG)", () => {
+    expect(src).toContain("split_part(order_number, '-', 3)");
     expect(src).toContain("::int");
-    expect(src).toContain("regexp_replace");
-    expect(src).not.toMatch(/MAX\(SUBSTRING\(order_number FROM/);
+    // Executable SQL must not bind substring-from (regex overload). Comments may
+    // mention the pitfall — strip them before asserting.
+    const codeOnly = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+    expect(codeOnly).not.toMatch(/substring\s*\(\s*order_number\s+from/i);
+    expect(codeOnly).not.toMatch(/MAX\s*\(\s*SUBSTRING\s*\(\s*order_number/i);
   });
 
   it("serializes allocation with the care_erp_order_number advisory lock", () => {

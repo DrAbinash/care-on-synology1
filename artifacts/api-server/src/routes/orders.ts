@@ -26,13 +26,19 @@ export const ordersRouter = Router();
 export async function generateOrderNumber(dbHandle: any = db): Promise<string> {
   const date = new Date();
   const prefix = `ORD-${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, "0")}`;
-  // regexp_replace → digits only, then ::int MAX. Text MAX(SUBSTRING(...)) is
-  // wrong when any row has a different zero-pad width ('12' > '0013' as text),
-  // which left production repeatedly inserting ORD-…-0013 → unique_violation 500.
+  // CRITICAL: do NOT use `substring(order_number from ${n})` with a Drizzle
+  // bound param. Postgres treats `substring(text from $1)` as the REGEX form
+  // when $1 is text-typed, so `from 12` becomes "match pattern '12'" and MAX
+  // collapses to 12 → next number always ORD-…-0013 (prod 500 storm after #413).
+  // split_part(…, '-', 3) is unambiguous for ORD-YYYYMM-####.
   const [row] = await dbHandle
     .select({
       maxNum: sql<number | null>`MAX(
-        NULLIF(regexp_replace(substring(order_number from ${prefix.length + 2}), '[^0-9]', '', 'g'), '')::int
+        CASE
+          WHEN split_part(order_number, '-', 3) ~ '^[0-9]+$'
+          THEN split_part(order_number, '-', 3)::int
+          ELSE NULL
+        END
       )`,
     })
     .from(ordersTable)
@@ -43,9 +49,16 @@ export async function generateOrderNumber(dbHandle: any = db): Promise<string> {
 }
 
 function isUniqueViolation(err: unknown): boolean {
-  const e = err as { code?: string; cause?: { code?: string }; message?: string } | null;
-  return e?.code === "23505" || e?.cause?.code === "23505"
-    || /duplicate key value violates unique constraint/i.test(e?.message ?? "");
+  let cur: unknown = err;
+  for (let i = 0; i < 5 && cur && typeof cur === "object"; i++) {
+    const e = cur as { code?: string; message?: string; cause?: unknown };
+    if (e.code === "23505") return true;
+    if (/duplicate key value violates unique constraint|orders_order_number_unique/i.test(e.message ?? "")) {
+      return true;
+    }
+    cur = e.cause;
+  }
+  return false;
 }
 
 // Preloaded rows a caller may already hold (e.g. POST / just validated the
