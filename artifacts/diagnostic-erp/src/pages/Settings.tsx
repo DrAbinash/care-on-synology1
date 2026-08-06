@@ -850,6 +850,7 @@ type ClinicSettings = {
   billShowCode?: boolean;
   billShowCategory?: boolean;
   dayCloseAutoPrint?: boolean;
+  cancelRequiresRefund?: boolean;
   patientPhoneRequired?: boolean;
   // V3: Receipt messages
   receiptThankYouMessage?: string;
@@ -1548,6 +1549,20 @@ function ClinicInfoTab() {
               </span>
             </button>
             <p className="text-xs text-muted-foreground mt-1">When enabled, closing the day prints a summary slip on the bill printer right after save.</p>
+          </div>
+          <div>
+            <Label>Cancel paid bill requires refund</Label>
+            <button
+              type="button"
+              onClick={() => setForm({ ...current, cancelRequiresRefund: !(current.cancelRequiresRefund ?? false) })}
+              className={`mt-1 w-full flex items-center justify-between px-4 py-3 rounded-lg border transition-colors ${(current.cancelRequiresRefund ?? false) ? "bg-green-50 border-green-300 dark:bg-green-950/30 dark:border-green-800" : "bg-muted/30 border-card-border"}`}
+            >
+              <span className="text-sm font-medium">{(current.cancelRequiresRefund ?? false) ? "Required" : "Optional (Cancel Only allowed)"}</span>
+              <span className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${(current.cancelRequiresRefund ?? false) ? "bg-green-500" : "bg-muted-foreground/40"}`}>
+                <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${(current.cancelRequiresRefund ?? false) ? "translate-x-5" : "translate-x-1"}`} />
+              </span>
+            </button>
+            <p className="text-xs text-muted-foreground mt-1">When required, staff must use Refund &amp; Cancel for paid bills — Cancel Only is blocked so cash cannot stay in the drawer unmarked.</p>
           </div>
         </div>
         <div className="flex justify-end gap-2 pt-2 border-t border-card-border">

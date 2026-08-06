@@ -83,6 +83,7 @@ async function getOrCreate() {
       dayCloseAutoPrint: true,
       commissionDiscountMode: "none",
       expenseSelfApprovalAllowed: true,
+      cancelRequiresRefund: false,
       lanOnlyLogin: false,
       lanAllowedIps: "[]",
       fido2Enabled: false,
@@ -316,7 +317,9 @@ clinicSettingsRouter.put("/", async (req, res) => {
     // Refactored fields
     "enableCardPayment", "enableQrPayment", "enableVipBooking", "enablePaymentLogos", "enablePaymentTimer",
     // Expense approval separation
-    "expenseSelfApprovalAllowed"
+    "expenseSelfApprovalAllowed",
+    // Cancel of paid bill requires refund
+    "cancelRequiresRefund",
   ] as const;
   
   const textFields = [

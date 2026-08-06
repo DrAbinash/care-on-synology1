@@ -148,6 +148,10 @@ export const clinicSettingsTable = pgTable("clinic_settings", {
   // free text set by whoever creates the expense. Admin can flip this off once
   // there is enough staff for the creator/approver split to be practical.
   expenseSelfApprovalAllowed: boolean("expense_self_approval_allowed").notNull().default(true),
+  // When true, cancelling a bill that still has paidAmount > 0 requires an
+  // auto-refund in the same request (Cancel Only is blocked). Default false
+  // preserves today's cancel-without-refund behaviour.
+  cancelRequiresRefund: boolean("cancel_requires_refund").notNull().default(false),
   // Network access control — when enabled, non-admin staff can only log in from
   // the hospital LAN (private RFC-1918 IP ranges). Extra trusted IPs can be added
   // as a JSON array of strings in lanAllowedIps.

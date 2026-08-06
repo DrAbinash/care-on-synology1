@@ -68,6 +68,7 @@ type DeleteForm = {
 type CancelForm = {
   performedBy: string;
   reason: string;
+  autoRefund?: { method: string };
 };
 
 type RefundForm = {
@@ -217,6 +218,13 @@ export default function BillDetail({ id }: { id: number }) {
     queryFn: () => api.get("/api/clinic-settings/branding"),
     staleTime: 5 * 60_000,
   });
+
+  const { data: clinicPolicy } = useQuery<{ cancelRequiresRefund?: boolean }>({
+    queryKey: ["clinic-settings-policy"],
+    queryFn: () => api.get("/api/clinic-settings"),
+    staleTime: 60_000,
+  });
+  const cancelRequiresRefund = clinicPolicy?.cancelRequiresRefund === true;
 
   const { data: printerSettings } = useQuery<{ billPrinterType?: string }>({
     queryKey: ["printer-settings"],
@@ -537,10 +545,21 @@ export default function BillDetail({ id }: { id: number }) {
   });
 
   const onCancelRefundSubmit = handleCR(async (d) => {
+    const paid = Number(bill?.paidAmount ?? 0);
+    const refundAmt = Number(d.refundAmount);
+    // Full paid amount → single atomic cancel+autoRefund. Partial → refund then cancel.
+    if (paid > 0.0001 && Math.abs(refundAmt - paid) < 0.02) {
+      cancelBill.mutate({
+        performedBy: d.performedBy.trim(),
+        reason: d.reason.trim(),
+        autoRefund: { method: d.refundMethod },
+      });
+      return;
+    }
     await refundBill.mutateAsync({
       performedBy: d.performedBy.trim(),
       reason: d.reason.trim(),
-      amount: Number(d.refundAmount),
+      amount: refundAmt,
       method: d.refundMethod,
     });
     cancelBill.mutate({ performedBy: d.performedBy.trim(), reason: d.reason.trim() });
@@ -1355,9 +1374,13 @@ export default function BillDetail({ id }: { id: number }) {
             <button
               type="button"
               onClick={() => setRefundTab("cancel")}
-              className={`flex-1 text-sm font-medium px-3 py-1.5 rounded-md transition-colors ${
+              disabled={cancelRequiresRefund && Number(bill.paidAmount) > 0}
+              className={`flex-1 text-sm font-medium px-3 py-1.5 rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
                 refundTab === "cancel" ? "bg-card shadow-sm" : "text-muted-foreground hover:text-foreground"
               }`}
+              title={cancelRequiresRefund && Number(bill.paidAmount) > 0
+                ? "Clinic policy requires Refund & Cancel for paid bills"
+                : "Cancel without returning money (cash stays in drawer)"}
             >
               <Ban size={13} className="inline mr-1" />
               Cancel Only
@@ -1497,9 +1520,18 @@ export default function BillDetail({ id }: { id: number }) {
               <div className="bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 rounded-lg p-3 flex gap-2 text-xs text-amber-800 dark:text-amber-300">
                 <AlertTriangle size={14} className="shrink-0 mt-0.5" />
                 <span>
-                  Cancelling marks this bill as void. Existing payments stay recorded — use "Refund &amp; Cancel" above if money needs to be returned.
+                  <strong>Cancel Only</strong> voids the bill but does <strong>not</strong> return money.
+                  Cash/UPI already collected stays in today&apos;s drawer. Use <strong>Refund &amp; Cancel</strong> if the patient should get money back.
+                  {Number(bill.paidAmount) > 0 && (
+                    <> Paid so far: {formatCurrency(bill.paidAmount)}.</>
+                  )}
                 </span>
               </div>
+              {cancelRequiresRefund && Number(bill.paidAmount) > 0 && (
+                <div className="bg-red-50 border border-red-200 rounded-lg p-2.5 text-xs text-red-700">
+                  Clinic policy requires a refund when cancelling a paid bill. Switch to the Refund &amp; Cancel tab.
+                </div>
+              )}
               <div>
                 <Label>Cancellation Reason <span className="text-red-500">*</span></Label>
                 <textarea
@@ -1523,8 +1555,8 @@ export default function BillDetail({ id }: { id: number }) {
               )}
               <div className="flex justify-end gap-2 pt-2">
                 <Button type="button" variant="outline" onClick={() => setRefundOpen(false)}>Close</Button>
-                <Button type="submit" disabled={cancelBill.isPending} className="bg-red-600 hover:bg-red-700 text-white">
-                  {cancelBill.isPending ? "Cancelling…" : "Cancel Bill"}
+                <Button type="submit" disabled={cancelBill.isPending || (cancelRequiresRefund && Number(bill.paidAmount) > 0)} className="bg-red-600 hover:bg-red-700 text-white">
+                  {cancelBill.isPending ? "Cancelling…" : "Cancel Bill (no refund)"}
                 </Button>
               </div>
             </form>

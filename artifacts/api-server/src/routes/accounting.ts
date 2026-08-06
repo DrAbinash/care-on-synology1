@@ -7,7 +7,7 @@ import { apiError, apiErrorFromZod } from "../lib/api-error";
 import { geminiParseBankStatement, type BankTransaction } from "@workspace/integrations-gemini-ai";
 import { todayIST, dateToISTString } from "../lib/istDate";
 import { auditFromRequest } from "../lib/audit";
-import { autoVoucherForPayment } from "../lib/auto-voucher";
+import { autoVoucherForPayment, resolveMethodAccount, ensureAccount } from "../lib/auto-voucher";
 import { requireAdminRole, type StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { buildTrialBalance, buildProfitLoss, buildBalanceSheet, type AmountMap } from "../lib/accounting/reportBuilders";
 import { preprocessScanImage } from "../lib/ocr/idCardPipeline";
@@ -1185,12 +1185,22 @@ router.post("/sync-billing", requireAdminRole, async (req, res) => {
   const dryRun = req.body?.dryRun === true || req.query?.dryRun === "true";
 
   const allAccounts = await db.select().from(accountsTable);
-  const cashAcc  = allAccounts.find(a => a.tallyGroup === "Cash-in-Hand" || a.type === "cash");
-  const bankAcc  = allAccounts.find(a => a.tallyGroup === "Bank Accounts" || a.type === "bank");
-  const revAcc   = allAccounts.find(a => a.tallyGroup === "Direct Income"  || a.type === "income");
+  const revAcc = allAccounts.find(a => a.tallyGroup === "Direct Income" || a.type === "income");
 
-  if (!cashAcc || !revAcc) {
-    return res.status(400).json({ error: "Required accounts (cash, income) not found. Run setup-defaults first." });
+  if (!revAcc) {
+    return res.status(400).json({ error: "Required income account not found. Run setup-defaults first." });
+  }
+
+  // Ensure method accounts exist via the same resolver as live auto-voucher
+  // (insurance / Online (…) / unclassified — never silent cash fallthrough).
+  const methodAccCache = new Map<string, string>();
+  async function debitAccountIdForMethod(method: string): Promise<string> {
+    const def = resolveMethodAccount(method);
+    const cached = methodAccCache.get(def.name);
+    if (cached) return cached;
+    const id = await ensureAccount(def.name, def.type, def.tallyGroup);
+    methodAccCache.set(def.name, id);
+    return id;
   }
 
   const payments = await db.select({ p: paymentsTable, b: billsTable })
@@ -1264,8 +1274,7 @@ router.post("/sync-billing", requireAdminRole, async (req, res) => {
 
   let created = 0;
   for (const item of toCreate) {
-    const isBankMethod = ["upi", "card", "credit_card", "debit_card", "neft", "rtgs", "imps", "bank_transfer", "cheque"].includes(item.method) || item.method.startsWith("online");
-    const debitAcc = isBankMethod && bankAcc ? bankAcc : cashAcc;
+    const debitAccId = await debitAccountIdForMethod(item.method);
     const monthKey = item.date.slice(0, 7).replace("-", "");
     if (!monthCounts.has(monthKey)) {
       // Seed from the highest number ISSUED, not a row count — a count seed
@@ -1282,7 +1291,7 @@ router.post("/sync-billing", requireAdminRole, async (req, res) => {
       voucherNumber,
       type:            "receipt",
       date:            item.date,
-      debitAccountId:  String(debitAcc.id),
+      debitAccountId:  debitAccId,
       creditAccountId: String(revAcc.id),
       amount:          item.amount,
       particular:      `Payment received — ${item.billNumber}`,

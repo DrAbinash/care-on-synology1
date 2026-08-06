@@ -9,7 +9,7 @@ import {
 } from "@workspace/api-zod";
 import { geminiOcrBill } from "@workspace/integrations-gemini-ai";
 import { getProviderApiKey } from "@workspace/ai-providers";
-import { autoVoucherForExpense } from "../lib/auto-voucher";
+import { autoVoucherForExpense, correctExpenseVoucher } from "../lib/auto-voucher";
 import { preprocessScanImage } from "../lib/ocr/idCardPipeline";
 import { auditFromRequest } from "../lib/audit";
 import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
@@ -227,18 +227,13 @@ router.patch("/:id", async (req, res) => {
     .returning();
   if (!expense) return res.status(404).json({ error: "Expense not found" });
 
-  // Amount / payment-mode edits are recorded in the tamper-evident audit trail
-  // rather than auto-posting another voucher. The previous behaviour fired a
-  // second FULL-amount payment voucher on every edit while leaving the original
-  // PV in place, so a ₹1000→₹1200 edit left ₹2200 in the ledger (double-count).
-  // The ledger correction (reverse the original PV + post the corrected amount)
-  // needs a reversing-voucher path against the locked vouchers table and is a
-  // separate change; capturing the edit here means the discrepancy is never
-  // silent in the meantime.
+  // Amount / payment-mode edits: reverse the original PV and post the corrected
+  // amount so the ledger matches the expense row (no silent double-count).
   const session = (req as StaffAuthRequest).staffSession;
   const amountChanged = bodyParsed.data.amount !== undefined && Number(bodyParsed.data.amount) !== Number(before.amount);
   const modeChanged   = bodyParsed.data.paymentMode !== undefined && bodyParsed.data.paymentMode !== before.paymentMode;
-  if (amountChanged || modeChanged) {
+  const categoryChanged = bodyParsed.data.category !== undefined && bodyParsed.data.category !== before.category;
+  if (amountChanged || modeChanged || categoryChanged) {
     await auditFromRequest(req, {
       userId: session?.subjectId ?? null,
       userName: session?.subjectName ?? "staff",
@@ -247,11 +242,19 @@ router.patch("/:id", async (req, res) => {
       module: "accounting",
       entityType: "expense",
       entityId: before.expenseId,
-      oldValue: JSON.stringify({ amount: before.amount, paymentMode: before.paymentMode }),
-      newValue: JSON.stringify({ amount: expense.amount, paymentMode: expense.paymentMode }),
+      oldValue: JSON.stringify({ amount: before.amount, paymentMode: before.paymentMode, category: before.category }),
+      newValue: JSON.stringify({ amount: expense.amount, paymentMode: expense.paymentMode, category: expense.category }),
       reason: (typeof req.body?.reason === "string" && req.body.reason.trim())
-        || "expense edited (ledger voucher correction pending)",
+        || "expense edited — ledger voucher reversed and reposted",
     });
+    correctExpenseVoucher({
+      expenseId: expense.expenseId,
+      amount: Number(expense.amount),
+      paymentMode: expense.paymentMode || "cash",
+      category: expense.category,
+      description: expense.description,
+      performedBy: session?.subjectName ?? expense.approvedBy ?? null,
+    }).catch(() => {/* already logged inside */});
   }
 
   return res.json(toNum(expense as unknown as Record<string, unknown>));

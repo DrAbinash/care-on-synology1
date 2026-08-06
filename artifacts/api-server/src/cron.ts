@@ -1322,10 +1322,11 @@ export async function runDailySummary(force = false) {
 async function fireDailySummary(opts: { scheduled: boolean; force?: boolean; slot?: string }) {
   try {
     const now = new Date();
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
-    const todayEnd = new Date();
-    todayEnd.setHours(23, 59, 59, 999);
+    // IST calendar day — same bounds as Daily Summary / My Daily Summary
+    // (not server-local midnight, which drifts for Synology hosts on UTC).
+    const dateStr = todayIST(now);
+    const todayStart = new Date(`${dateStr}T00:00:00+05:30`);
+    const todayEnd = new Date(`${dateStr}T23:59:59.999+05:30`);
     const inToday = (col: any) => and(gte(col, todayStart), lte(col, todayEnd));
 
     const [bills, payments, audits, expenses, newPatients, orderTestRows] = await Promise.all([
@@ -1362,8 +1363,14 @@ async function fireDailySummary(opts: { scheduled: boolean; force?: boolean; slo
 
     const nonCancelledBills = bills.filter(b => b.status !== "cancelled");
     const discountsGiven = bills.reduce((s, b) => s + Number(b.discount || 0), 0);
-    const refundsAndCancellations =
-      bills.filter(b => b.status === "cancelled").reduce((s, b) => s + Number(b.refundAmount || 0), 0);
+    const refundAmount = payments
+      .filter((p) => Number(p.amount) < 0)
+      .reduce((s, p) => s + Math.abs(Number(p.amount)), 0);
+    const cancelledBillAmount = bills
+      .filter((b) => b.status === "cancelled")
+      .reduce((s, b) => s + Number(b.totalAmount || 0), 0);
+    // Kept for email template compat — prefer separate refunds/cancelled rows.
+    const refundsAndCancellations = refundAmount;
     const averageBillValue = nonCancelledBills.length > 0
       ? nonCancelledBills.reduce((s, b) => s + Number(b.totalAmount), 0) / nonCancelledBills.length
       : 0;
@@ -1371,7 +1378,10 @@ async function fireDailySummary(opts: { scheduled: boolean; force?: boolean; slo
     let cashExpenses = 0, digitalExpenses = 0;
     for (const e of expenses) {
       const amt = Number(e.amount);
-      if (isPhysicalCash(e.paymentMode)) cashExpenses += amt;
+      // Blank payment_mode → cash (same as day-close splitCashExpenses /
+      // autoVoucherForExpense). isPhysicalCash("") is false / unknown.
+      const mode = (e.paymentMode ?? "").toString().trim();
+      if (!mode || isPhysicalCash(mode)) cashExpenses += amt;
       else digitalExpenses += amt;
     }
 
@@ -1451,6 +1461,8 @@ async function fireDailySummary(opts: { scheduled: boolean; force?: boolean; slo
       unclassifiedCollected,
       discountsGiven,
       refundsAndCancellations,
+      refundAmount,
+      cancelledBillAmount,
       averageBillValue,
       newPatients: newPatients.length,
       totalOutstandingDues: Number(totalOutstandingDues || 0),
