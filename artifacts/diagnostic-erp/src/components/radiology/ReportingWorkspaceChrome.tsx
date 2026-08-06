@@ -130,6 +130,8 @@ export type ReportingWorkspaceChromeProps = {
   onReloadStudy: () => void;
   hasEntry: boolean;
   voiceBar?: ReactNode;
+  /** Compact modality chip (MRI / USG / CT) — shown in collapsed + expanded chrome. */
+  modalityAccent?: { label: string; className: string } | null;
 };
 
 function QueueModalityButtons(props: Pick<ReportingWorkspaceChromeProps, "queueModalityFilter" | "onQueueModalityFilterChange">) {
@@ -363,13 +365,33 @@ export default function ReportingWorkspaceChrome(props: ReportingWorkspaceChrome
 
   if (collapsed) {
     return (
-      <div className="shrink-0 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80" data-testid="workspace-chrome-collapsed">
+      <div
+        className="shrink-0 border-b bg-gradient-to-r from-teal-50/50 via-amber-50/40 to-violet-50/50 dark:from-teal-950/20 dark:via-amber-950/15 dark:to-violet-950/20 backdrop-blur supports-[backdrop-filter]:bg-background/80"
+        data-testid="workspace-chrome-collapsed"
+      >
+        {/* Section hue legend — keeps Clinical / Findings / Impression / Advice scannable in focus mode */}
+        <div
+          className="flex h-1 w-full"
+          aria-hidden
+          data-testid="chrome-section-hues"
+        >
+          <span className="flex-1 bg-teal-500/80" title="Clinical History" />
+          <span className="flex-1 bg-sky-500/80" title="Technique" />
+          <span className="flex-1 bg-amber-500/80" title="Findings" />
+          <span className="flex-1 bg-violet-500/80" title="Impression" />
+          <span className="flex-1 bg-emerald-500/80" title="Recommendation" />
+        </div>
         <div className="flex items-center gap-1.5 px-2 py-0.5 min-h-8">
           <Button variant="ghost" size="sm" className="h-7 w-7 p-0 shrink-0" onClick={onBackToWorklist} title="Back to worklist">
             <ArrowLeft size={14} />
           </Button>
           <div className="min-w-0 flex items-center gap-1.5 text-[11px] shrink">
             <span className="font-semibold truncate max-w-[140px] sm:max-w-[220px]" title={patientBanner}>{patientBanner || "Reporting"}</span>
+            {props.modalityAccent && (
+              <Badge className={`shrink-0 text-[9px] py-0 h-4 border ${props.modalityAccent.className}`} data-testid="chrome-modality-badge">
+                {props.modalityAccent.label}
+              </Badge>
+            )}
             <span className="text-muted-foreground shrink-0" data-testid="queue-position">
               {workflow.position.index >= 0 ? `${workflow.position.index + 1}/${workflow.position.total}` : `—/${workflow.position.total}`}
             </span>
@@ -425,9 +447,9 @@ export default function ReportingWorkspaceChrome(props: ReportingWorkspaceChrome
   }
 
   return (
-    <div className="shrink-0 border-b bg-white" data-testid="workspace-chrome-expanded">
+    <div className="shrink-0 border-b bg-background" data-testid="workspace-chrome-expanded">
       {/* Primary header — single tight row */}
-      <div className="flex items-center gap-2 px-2 py-1.5 border-b bg-white flex-wrap">
+      <div className="flex items-center gap-2 px-2 py-1.5 border-b bg-gradient-to-r from-sky-50/80 via-background to-violet-50/60 dark:from-sky-950/20 dark:via-background dark:to-violet-950/20 flex-wrap">
         <Button variant="ghost" size="sm" className="h-7 gap-1 text-xs shrink-0" onClick={onBackToWorklist}>
           <ArrowLeft size={13} /> Worklist
         </Button>
@@ -441,6 +463,11 @@ export default function ReportingWorkspaceChrome(props: ReportingWorkspaceChrome
           {props.readingSessionEnabled ? `Session · ${props.readingSessionDone}` : "Session"}
         </Button>
         <Badge className={`shrink-0 text-[10px] ${reportStatusClass}`}>{reportStatusLabel}</Badge>
+        {props.modalityAccent && (
+          <Badge className={`shrink-0 text-[10px] border ${props.modalityAccent.className}`} data-testid="chrome-modality-badge">
+            {props.modalityAccent.label}
+          </Badge>
+        )}
         {!props.isOnline && <Badge className="shrink-0 text-[10px] bg-red-100 text-red-700 border-red-200">Offline</Badge>}
         {props.dirty ? (
           <Badge variant="outline" className="shrink-0 text-[10px] bg-amber-50 text-amber-800 border-amber-300">Unsaved</Badge>

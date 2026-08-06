@@ -13,6 +13,13 @@ const SHORTCUT_GROUPS: Array<{ title: string; rows: Array<{ keys: string; action
     ],
   },
   {
+    title: "Quick Findings",
+    rows: [
+      { keys: "Alt + 1–9", action: "Toggle Nth finding (★ favorites first)" },
+      { keys: "Ctrl + 1–9", action: "Toggle study tab in Quick panel" },
+    ],
+  },
+  {
     title: "Queue",
     rows: [
       { keys: "Ctrl + Shift + N", action: "Next study" },

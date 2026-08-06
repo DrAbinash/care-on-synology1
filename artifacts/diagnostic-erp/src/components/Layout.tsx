@@ -190,13 +190,18 @@ const navItems: NavEntry[] = [
         label: "USG",
         children: [
           { path: "/radiology/worklist?modality=USG",            icon: ScanSearch, label: "USG Worklist" },
-          { path: "/radiology/reporting-workspace?modality=USG", icon: FilePen,    label: "USG Reporting" },
+          { path: "/radiology/reporting-workspace?modality=USG", icon: FilePen,    label: "General USG Reporting" },
           { path: "/fetal-usg",                                  icon: Baby,       label: "Fetal USG" },
           { path: "/fetal-echo",                                 icon: Baby,       label: "Fetal Echo" },
-          { path: "/usg/doppler",                                icon: Activity,   label: "Doppler" },
-          { path: "/queue?department=USG",                       icon: Ticket,     label: "USG Queue" },
-          { path: "/settings/radiology-quick-select",            icon: Settings2,  label: "Quick Select", ownerOnly: true },
-          { path: "/radiology/usg-admin-settings",               icon: Settings2,  label: "USG Admin", ownerOnly: true },
+          { path: "/usg/doppler",                                icon: Activity,   label: "Doppler Reporting" },
+          // Deep-links into the generic Queue page pre-filtered to USG so
+          // staff working only this nav section can find the "Call" button
+          // that flips a waiting token to "serving" (what the USG TV
+          // display's "Now Serving" card actually reads) — previously only
+          // reachable via the unrelated top-level "Queue Tokens" nav item.
+          { path: "/queue?department=USG",                       icon: Ticket,     label: "USG Queue / Call Next" },
+          { path: "/settings/radiology-quick-select",            icon: Settings2,  label: "Quick Select Settings", ownerOnly: true },
+          { path: "/radiology/usg-admin-settings",               icon: Settings2,  label: "USG Admin Settings", ownerOnly: true },
         ],
       },
       // Owner-only leftovers — not needed in a radiologist's daily rail.

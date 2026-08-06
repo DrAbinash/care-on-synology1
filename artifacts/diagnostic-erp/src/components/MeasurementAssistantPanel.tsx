@@ -482,26 +482,28 @@ export default function MeasurementAssistantPanel({
   }).length;
 
   return (
-    <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden text-slate-100">
-      <div className="px-4 py-2 bg-slate-950 border-b border-slate-800 flex items-center justify-between">
+    <div className="bg-background border border-cyan-200/70 rounded-xl overflow-hidden text-foreground shadow-sm">
+      <div className="px-4 py-2 bg-gradient-to-r from-cyan-50 to-sky-50/80 border-b border-cyan-100 flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <Ruler size={14} className="text-indigo-400" />
-          <span className="text-xs font-semibold uppercase tracking-wide text-slate-300">Measurement Assistant</span>
+          <span className="flex h-6 w-6 items-center justify-center rounded-md bg-cyan-500 text-white shadow-sm">
+            <Ruler size={13} />
+          </span>
+          <span className="text-xs font-semibold uppercase tracking-wide text-cyan-950">Measurement Assistant</span>
           {abnormalCount > 0 && (
-            <span className="text-[9px] bg-red-950 text-red-400 px-1.5 py-0.5 rounded-full font-medium">
+            <span className="text-[9px] bg-red-100 text-red-700 px-1.5 py-0.5 rounded-full font-medium border border-red-200">
               {abnormalCount} abnormal
             </span>
           )}
         </div>
         {patientId && (
-          <Button size="sm" variant="ghost" className="h-6 text-xs text-slate-400 hover:text-slate-200" onClick={() => setShowHistory(!showHistory)}>
+          <Button size="sm" variant="ghost" className="h-6 text-xs text-muted-foreground hover:text-foreground" onClick={() => setShowHistory(!showHistory)}>
             <History size={11} className="mr-1" /> {showHistory ? "Form" : "History"}
           </Button>
         )}
       </div>
 
       {/* Study type selector */}
-      <div className="px-3 py-2 border-b border-slate-800 bg-slate-950/40">
+      <div className="px-3 py-2 border-b border-border/60 bg-muted/20">
         <div className="flex items-center gap-1.5 flex-wrap">
           {STUDY_TYPES.map((st) => (
             <button
@@ -509,8 +511,8 @@ export default function MeasurementAssistantPanel({
               onClick={() => setSelectedStudyType(selectedStudyType === st.key ? "" : st.key)}
               className={`text-[10px] px-2 py-0.5 rounded-full border transition-colors ${
                 selectedStudyType === st.key
-                  ? "bg-indigo-600 text-white border-indigo-600"
-                  : "border-slate-800 text-slate-400 hover:border-indigo-500/50"
+                  ? "bg-cyan-600 text-white border-cyan-600 shadow-sm"
+                  : "border-border bg-background text-muted-foreground hover:border-cyan-400 hover:bg-cyan-50"
               }`}
             >
               {st.label}
@@ -523,22 +525,22 @@ export default function MeasurementAssistantPanel({
         {showHistory ? (
           <div className="space-y-2">
             {loadingHistory ? (
-              <div className="text-center py-4 text-xs text-slate-500">Loading history...</div>
+              <div className="text-center py-4 text-xs text-muted-foreground">Loading history...</div>
             ) : history.length === 0 ? (
-              <div className="text-center py-4 text-xs text-slate-500">No saved measurements.</div>
+              <div className="text-center py-4 text-xs text-muted-foreground">No saved measurements.</div>
             ) : (
               history.map((m) => (
-                <div key={m.id} className="border border-slate-800 rounded-lg p-2 text-xs space-y-0.5 bg-slate-950/30">
+                <div key={m.id} className="border border-border rounded-lg p-2 text-xs space-y-0.5 bg-card">
                   <div className="flex items-center justify-between">
                     <span className="font-medium">{m.label}</span>
                     <div className="flex items-center gap-1">
-                      <span className="font-mono text-slate-300">{m.value}{m.unit ? ` ${m.unit}` : ""}</span>
-                      {m.isAbnormal === true && <span className="text-[9px] bg-red-950 text-red-400 px-1 rounded">Abnormal</span>}
-                      {m.isAbnormal === false && <span className="text-[9px] bg-emerald-950 text-emerald-400 px-1 rounded">Normal</span>}
+                      <span className="font-mono text-foreground/80">{m.value}{m.unit ? ` ${m.unit}` : ""}</span>
+                      {m.isAbnormal === true && <span className="text-[9px] bg-red-100 text-red-700 px-1 rounded border border-red-200">Abnormal</span>}
+                      {m.isAbnormal === false && <span className="text-[9px] bg-emerald-100 text-emerald-700 px-1 rounded border border-emerald-200">Normal</span>}
                     </div>
                   </div>
                   {(m.normalRangeLow != null || m.normalRangeHigh != null) && (
-                    <div className="text-[10px] text-slate-500">
+                    <div className="text-[10px] text-muted-foreground">
                       Normal: {m.normalRangeLow ?? "—"} – {m.normalRangeHigh ?? "—"} {m.unit}
                     </div>
                   )}
@@ -547,16 +549,16 @@ export default function MeasurementAssistantPanel({
             )}
           </div>
         ) : !selectedStudyType ? (
-          <div className="text-center py-6 text-xs text-slate-500">
+          <div className="text-center py-6 text-xs text-muted-foreground">
             Select a study type above to load the measurement template.
           </div>
         ) : (
           <div className="space-y-3">
             {/* Real-time smart calculations panel */}
             {Object.keys(smartCalculations).length > 0 && (
-              <div className="bg-indigo-950/30 border border-indigo-800/50 rounded-lg p-2.5 text-xs text-indigo-300 space-y-1 font-mono">
+              <div className="bg-cyan-50/80 border border-cyan-200 rounded-lg p-2.5 text-xs text-cyan-950 space-y-1 font-mono">
                 <div className="font-semibold flex items-center gap-1 text-[11px] mb-1">
-                  <Sparkles className="h-3.5 w-3.5 animate-pulse text-indigo-400" /> Real-time Smart Metrics:
+                  <Sparkles className="h-3.5 w-3.5 animate-pulse text-cyan-600" /> Real-time Smart Metrics:
                 </div>
                 {smartCalculations.tumorVolume && <div>Tumor Volume: {smartCalculations.tumorVolume} cc</div>}
                 {smartCalculations.hematomaVolume && <div>Hematoma Volume (ABC/2): {smartCalculations.hematomaVolume} cc</div>}
@@ -566,7 +568,7 @@ export default function MeasurementAssistantPanel({
                 {smartCalculations.slipPct && <div>Vertebral Slip: {smartCalculations.slipPct}% ({smartCalculations.slipGrade})</div>}
                 {smartCalculations.ri && <div>RI: {smartCalculations.ri} | PI: {smartCalculations.pi} | S/D: {smartCalculations.sd}</div>}
                 {smartCalculations.adcValue !== undefined && (
-                  <div className={smartCalculations.adcRestricted ? "text-red-400 font-bold" : smartCalculations.adcBorderline ? "text-amber-400" : "text-emerald-400"}>
+                  <div className={smartCalculations.adcRestricted ? "text-red-600 font-bold" : smartCalculations.adcBorderline ? "text-amber-700" : "text-emerald-700"}>
                     ADC: {smartCalculations.adcValue} ×10⁻³ mm²/s — {smartCalculations.adcInterpretation}
                   </div>
                 )}
@@ -575,36 +577,36 @@ export default function MeasurementAssistantPanel({
 
             {/* DWI/ADC Calculator — MRI Brain only */}
             {selectedStudyType === "MRI_BRAIN" && (
-              <div className="bg-purple-950/20 border border-purple-800/40 rounded-lg p-2.5 space-y-2">
-                <div className="text-[10px] font-bold text-purple-300 uppercase tracking-wider flex items-center gap-1">
-                  <Sparkles size={10} className="text-purple-400" />
+              <div className="bg-violet-50/70 border border-violet-200 rounded-lg p-2.5 space-y-2">
+                <div className="text-[10px] font-bold text-violet-800 uppercase tracking-wider flex items-center gap-1">
+                  <Sparkles size={10} className="text-violet-500" />
                   DWI / ADC Calculator
                 </div>
                 <div className="grid grid-cols-3 gap-2">
                   <div>
-                    <div className="text-[9px] text-slate-500 mb-1">S₀ (b=0 signal)</div>
+                    <div className="text-[9px] text-muted-foreground mb-1">S₀ (b=0 signal)</div>
                     <Input
                       value={adcB0}
                       onChange={(e) => setAdcB0(e.target.value)}
-                      className="h-6 text-xs font-mono bg-slate-950 border-slate-700 text-slate-200"
+                      className="h-6 text-xs font-mono bg-background"
                       placeholder="e.g. 800"
                     />
                   </div>
                   <div>
-                    <div className="text-[9px] text-slate-500 mb-1">S_b (high b signal)</div>
+                    <div className="text-[9px] text-muted-foreground mb-1">S_b (high b signal)</div>
                     <Input
                       value={adcB1000}
                       onChange={(e) => setAdcB1000(e.target.value)}
-                      className="h-6 text-xs font-mono bg-slate-950 border-slate-700 text-slate-200"
+                      className="h-6 text-xs font-mono bg-background"
                       placeholder="e.g. 200"
                     />
                   </div>
                   <div>
-                    <div className="text-[9px] text-slate-500 mb-1">b-value (s/mm²)</div>
+                    <div className="text-[9px] text-muted-foreground mb-1">b-value (s/mm²)</div>
                     <Input
                       value={adcBValue}
                       onChange={(e) => setAdcBValue(e.target.value)}
-                      className="h-6 text-xs font-mono bg-slate-950 border-slate-700 text-slate-200"
+                      className="h-6 text-xs font-mono bg-background"
                       placeholder="1000"
                     />
                   </div>
@@ -612,21 +614,21 @@ export default function MeasurementAssistantPanel({
                 {smartCalculations.adcValue !== undefined ? (
                   <div className={`text-xs font-mono font-bold px-2 py-1 rounded border ${
                     smartCalculations.adcRestricted
-                      ? "text-red-300 bg-red-950/40 border-red-800/40"
+                      ? "text-red-700 bg-red-50 border-red-200"
                       : smartCalculations.adcBorderline
-                      ? "text-amber-300 bg-amber-950/30 border-amber-800/40"
-                      : "text-emerald-300 bg-emerald-950/30 border-emerald-800/40"
+                      ? "text-amber-800 bg-amber-50 border-amber-200"
+                      : "text-emerald-800 bg-emerald-50 border-emerald-200"
                   }`}>
                     ADC = {smartCalculations.adcValue} ×10⁻³ mm²/s
                     <div className="text-[9px] font-normal mt-0.5 opacity-80">
                       {smartCalculations.adcInterpretation}
                     </div>
-                    <div className="text-[8px] font-normal text-slate-500 mt-0.5">
+                    <div className="text-[8px] font-normal text-muted-foreground mt-0.5">
                       Normal: GM ~0.8 · WM ~0.7 · Restricted &lt;0.6 · CSF ~3.0
                     </div>
                   </div>
                 ) : (
-                  <div className="text-[9px] text-slate-500">
+                  <div className="text-[9px] text-muted-foreground">
                     Enter S₀ and S_b signal intensities from your DWI sequence to calculate ADC.
                     Formula: ADC = −ln(S_b / S₀) / b-value
                   </div>
@@ -641,9 +643,9 @@ export default function MeasurementAssistantPanel({
                 return (
                   <div key={field.label} className="flex items-center gap-2">
                     <div className="flex-1 min-w-0">
-                      <div className="text-[11px] font-medium text-slate-300 truncate">{field.label}</div>
+                      <div className="text-[11px] font-medium text-foreground truncate">{field.label}</div>
                       {(field.normalRangeLow !== undefined || field.normalRangeHigh !== undefined) && (
-                        <div className="text-[9px] text-slate-500">
+                        <div className="text-[9px] text-muted-foreground">
                           Normal: {field.normalRangeLow ?? "—"}–{field.normalRangeHigh ?? "—"} {field.unit}
                         </div>
                       )}
@@ -652,12 +654,12 @@ export default function MeasurementAssistantPanel({
                       <Input
                         value={val}
                         onChange={(e) => setValues((prev) => ({ ...prev, [field.label]: e.target.value }))}
-                        className={`h-7 w-20 text-xs text-right font-mono bg-slate-950 border-slate-800 text-slate-200 ${
-                          status === "abnormal" ? "border-red-600 text-red-400 bg-red-950/30" : status === "normal" ? "border-emerald-600" : ""
+                        className={`h-7 w-20 text-xs text-right font-mono bg-background ${
+                          status === "abnormal" ? "border-red-400 text-red-700 bg-red-50" : status === "normal" ? "border-emerald-400" : ""
                         }`}
                         placeholder="—"
                       />
-                      <span className="text-[10px] text-slate-500 w-8 flex-shrink-0">{field.unit}</span>
+                      <span className="text-[10px] text-muted-foreground w-8 flex-shrink-0">{field.unit}</span>
                       <div className="w-4 flex-shrink-0">
                         {status === "normal" && <Check size={12} className="text-emerald-500" />}
                         {status === "abnormal" && <AlertTriangle size={12} className="text-red-500" />}
@@ -667,11 +669,11 @@ export default function MeasurementAssistantPanel({
                 );
               })}
 
-              <div className="flex gap-2 pt-2 border-t border-slate-800">
-                <Button size="sm" className="text-xs h-7 flex-1 bg-indigo-600 hover:bg-indigo-700 text-white" onClick={handleSave} disabled={saving || !patientId}>
+              <div className="flex gap-2 pt-2 border-t border-border">
+                <Button size="sm" className="text-xs h-7 flex-1 bg-cyan-600 hover:bg-cyan-700 text-white" onClick={handleSave} disabled={saving || !patientId}>
                   <Save size={12} className="mr-1" /> {saving ? "Saving..." : "Save Measurements"}
                 </Button>
-                <Button size="sm" variant="outline" className="text-xs h-7 border-slate-800 hover:bg-slate-950 text-slate-400" onClick={() => setValues({})}>
+                <Button size="sm" variant="outline" className="text-xs h-7" onClick={() => setValues({})}>
                   <RotateCcw size={12} />
                 </Button>
               </div>
