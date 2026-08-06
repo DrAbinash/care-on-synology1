@@ -86,7 +86,27 @@ export default function RadiologySettingsCenter() {
   const [, navigate] = useLocation();
   const isAdmin = FULL_ACCESS_ROLES.has(normalizeRole(readStaffSession()?.user.role ?? ""));
 
-  const [activeTab, setActiveTab] = useState("network");
+  const SETTINGS_TABS = [
+    "general", "network", "modalities", "pacs", "pacs-advanced", "viewers", "mwl",
+    "reporting", "usg-extraction", "style", "premium", "voice", "diagnostics", "history", "advanced",
+  ] as const;
+
+  const [activeTab, setActiveTab] = useState(() => {
+    try {
+      const t = new URLSearchParams(window.location.search).get("tab");
+      if (t && (SETTINGS_TABS as readonly string[]).includes(t)) return t;
+    } catch { /* ignore */ }
+    return "general";
+  });
+
+  function goTab(tab: string) {
+    setActiveTab(tab);
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.set("tab", tab);
+      window.history.replaceState({}, "", url.toString());
+    } catch { /* ignore */ }
+  }
   const [detectedProfile, setDetectedProfile] = useState<"LAN" | "TAILSCALE" | "PUBLIC">("PUBLIC");
   const [profileOverride, setProfileOverride] = useState<"auto" | "LAN" | "TAILSCALE" | "PUBLIC">(() => {
     return (localStorage.getItem("pacs_network_profile") as any) || "auto";
@@ -283,7 +303,7 @@ export default function RadiologySettingsCenter() {
     <div className="p-4 md:p-6 space-y-6">
       <PageHeader
         title="Radiology Settings Center"
-        subtitle="Unified console for PACS, Modalities, Viewers, AI Clinical Assistant, and diagnostics"
+        subtitle="Admin hub for PACS, viewers, MWL, report style, voice, and USG — start on the General tab"
         actions={
           <Button variant="outline" size="sm" onClick={() => { refetchSettings(); refetchClinic(); refetchHealth(); }}>
             <RefreshCw size={14} className="mr-1.5" /> Reload Config
@@ -331,7 +351,7 @@ export default function RadiologySettingsCenter() {
       </div>
 
       {/* Navigation tabs */}
-      <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
+      <Tabs value={activeTab} onValueChange={goTab} className="space-y-4">
         <TabsList className="flex flex-wrap h-auto gap-1 bg-muted p-1 rounded-lg">
           <TabsTrigger value="general"><ShieldCheck size={14} className="mr-1.5" />General</TabsTrigger>
           <TabsTrigger value="network"><Network size={14} className="mr-1.5" />Profiles</TabsTrigger>
@@ -370,6 +390,50 @@ export default function RadiologySettingsCenter() {
         {/* Tab content 1: Network Profiles */}
         {/* ── Phase E: GENERAL — plain-language everyday options ── */}
         <TabsContent value="general" className="space-y-4">
+          <div className="rounded-xl border bg-card p-5 space-y-3" data-testid="radiology-settings-overview">
+            <div>
+              <h3 className="text-sm font-bold">Radiology Settings Center — start here</h3>
+              <p className="text-xs text-muted-foreground mt-1">
+                This is the main admin hub for PACS, viewers, MWL, report style, voice, and USG extraction.
+                Browser-only productivity toggles live under Settings → Radiology Flags; server roadmap switches under Feature Flags.
+              </p>
+            </div>
+            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              {([
+                { tab: "network", title: "Network profiles", desc: "LAN / Tailscale / Public routing for Orthanc & viewers" },
+                { tab: "pacs", title: "PACS servers", desc: "Orthanc / Conquest endpoints and AE titles" },
+                { tab: "viewers", title: "Viewers", desc: "OHIF & Weasis launch URLs and diagnostics" },
+                { tab: "mwl", title: "DICOM & MWL", desc: "Modality worklist sync and status" },
+                { tab: "style", title: "Report style", desc: "Letterhead, fonts, and print chrome" },
+                { tab: "voice", title: "Voice", desc: "Dictation provider and radiologist prefs" },
+                { tab: "usg-extraction", title: "USG extraction", desc: "Measurement / SR extraction for ultrasound" },
+                { tab: "reporting", title: "AI & templates", desc: "AI reporting panels and template helpers" },
+                { tab: "diagnostics", title: "Diagnostics", desc: "Live health checks for PACS services" },
+              ] as const).map((card) => (
+                <button
+                  key={card.tab}
+                  type="button"
+                  onClick={() => goTab(card.tab)}
+                  className="text-left rounded-lg border bg-muted/20 hover:bg-muted/50 p-3 transition-colors"
+                  data-testid={`radiology-settings-goto-${card.tab}`}
+                >
+                  <div className="text-xs font-semibold">{card.title}</div>
+                  <div className="text-[11px] text-muted-foreground mt-0.5 leading-snug">{card.desc}</div>
+                </button>
+              ))}
+            </div>
+            <div className="flex flex-wrap gap-2 pt-1">
+              <Button type="button" size="sm" variant="outline" className="h-7 text-[11px]" onClick={() => navigate("/settings?tab=radiology")}>
+                ERP Settings → Radiology
+              </Button>
+              <Button type="button" size="sm" variant="outline" className="h-7 text-[11px]" onClick={() => navigate("/settings?tab=feature-flags")}>
+                Server Feature Flags
+              </Button>
+              <Button type="button" size="sm" variant="outline" className="h-7 text-[11px]" onClick={() => navigate("/radiology/reporting-workspace")}>
+                Open Reporting Workspace
+              </Button>
+            </div>
+          </div>
           <div className="rounded-xl border bg-card p-5 space-y-4 max-w-2xl">
             <h3 className="text-sm font-bold">General Radiology Options</h3>
             <p className="text-xs text-muted-foreground">Everyday behavior of the Radiology module. Safe to change; takes effect immediately for new page loads.</p>
@@ -1171,7 +1235,7 @@ export default function RadiologySettingsCenter() {
               size="sm"
               variant="secondary"
               className="h-8"
-              onClick={() => navigate("/settings?tab=radiology-tools")}
+              onClick={() => navigate("/settings?tab=radiology")}
             >
               Open Settings → Radiology Tools hub
             </Button>

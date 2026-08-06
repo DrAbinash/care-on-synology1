@@ -129,8 +129,7 @@ const MODULE_SUB_PERMISSIONS: Record<string, { id: string; label: string }[]> = 
     { id: "users", label: "Users Management" },
     { id: "security", label: "Security & FIDO2" },
     { id: "backup", label: "Backup & Replication" },
-    { id: "radiology", label: "Radiology Config" },
-    { id: "radiology-tools", label: "Radiology Tools" },
+    { id: "radiology", label: "Radiology" },
     { id: "appearance", label: "Appearance & Themes" },
     { id: "notifications", label: "Email & WhatsApp" },
     { id: "billing", label: "Billing Settings" },
@@ -169,40 +168,61 @@ const MODULE_SUB_PERMISSIONS: Record<string, { id: string; label: string }[]> = 
   ],
 };
 
-const TABS = [
-  { id: "clinic", label: "Clinic Info", icon: Building2 },
-  { id: "integrations", label: "Integrations & Ops", icon: Plug },
-  { id: "about", label: "About / Version", icon: Tag },
-  { id: "appearance", label: "Appearance", icon: Palette },
-  { id: "users", label: "Users", icon: Users },
-  { id: "scanner", label: "Scanner", icon: ScanLine },
-  { id: "form-f", label: "Form F Tests", icon: FileText },
-  { id: "departments", label: "Departments", icon: Network },
-  { id: "locations", label: "Locations", icon: Layers },
-  { id: "branches", label: "Branches", icon: MapPin },
-  { id: "portal", label: "Portal & Login", icon: Globe },
-  { id: "online-booking", label: "Online Booking", icon: CreditCard },
-  { id: "mobile-app", label: "Mobile App", icon: Smartphone },
-  { id: "kiosk", label: "Self-Reg Kiosk", icon: QrCode },
-  { id: "queue-settings", label: "Queue Settings", icon: ClipboardList },
-  { id: "queue-display", label: "Queue Display (TV)", icon: Tv },
-  { id: "email", label: "Email Notifications", icon: Mail },
-  { id: "printers", label: "Printers", icon: Printer },
-  { id: "billing-print", label: "Billing Print", icon: FileText },
-  { id: "receipt-messages", label: "Receipt Messages", icon: MessageCircle },
-  { id: "footer-services", label: "Footer Services", icon: Layers },
-  { id: "promotional-footer", label: "Promotional Footer", icon: Tag },
-  { id: "discount-reasons", label: "Discount Reasons", icon: Tag },
-  { id: "reprint-reasons", label: "Edit/Modify/Reprint Reasons", icon: Printer },
-  { id: "backup", label: "Backup", icon: Database },
-  { id: "radiology-tools", label: "Radiology Tools", icon: ScanLine },
-  { id: "radiology", label: "Radiology Flags", icon: ScanLine },
-  { id: "manual", label: "User Manual", icon: FileDown },
-  { id: "security", label: "Security", icon: ShieldCheck },
-  { id: "audit-log", label: "Audit Log", icon: ScrollText },
-  { id: "feature-flags", label: "Feature Flags", icon: Flag },
-  { id: "password", label: "Change Password", icon: KeyRound },
+type SettingsTabDef = {
+  id: string;
+  label: string;
+  icon: React.ComponentType<{ size?: number }>;
+  /** Visual group label in the Settings tab strip (Radiology was easy to miss among 30 flat tabs). */
+  group: "Clinic" | "Radiology" | "People" | "Portals" | "Billing" | "Devices" | "System";
+};
+
+const TABS: SettingsTabDef[] = [
+  { id: "clinic", label: "Clinic Info", icon: Building2, group: "Clinic" },
+  { id: "integrations", label: "Integrations & Ops", icon: Plug, group: "Clinic" },
+  { id: "about", label: "About / Version", icon: Tag, group: "Clinic" },
+  { id: "appearance", label: "Appearance", icon: Palette, group: "Clinic" },
+  // Radiology — early in the strip so it is not buried after Backup among 30 tabs.
+  { id: "radiology", label: "Radiology", icon: Radio, group: "Radiology" },
+  { id: "users", label: "Users", icon: Users, group: "People" },
+  { id: "security", label: "Security", icon: ShieldCheck, group: "People" },
+  { id: "password", label: "Change Password", icon: KeyRound, group: "People" },
+  { id: "portal", label: "Portal & Login", icon: Globe, group: "Portals" },
+  { id: "online-booking", label: "Online Booking", icon: CreditCard, group: "Portals" },
+  { id: "mobile-app", label: "Mobile App", icon: Smartphone, group: "Portals" },
+  { id: "kiosk", label: "Self-Reg Kiosk", icon: QrCode, group: "Portals" },
+  { id: "queue-settings", label: "Queue Settings", icon: ClipboardList, group: "Portals" },
+  { id: "queue-display", label: "Queue Display (TV)", icon: Tv, group: "Portals" },
+  { id: "billing-print", label: "Billing Print", icon: FileText, group: "Billing" },
+  { id: "receipt-messages", label: "Receipt Messages", icon: MessageCircle, group: "Billing" },
+  { id: "footer-services", label: "Footer Services", icon: Layers, group: "Billing" },
+  { id: "promotional-footer", label: "Promotional Footer", icon: Tag, group: "Billing" },
+  { id: "discount-reasons", label: "Discount Reasons", icon: Tag, group: "Billing" },
+  { id: "reprint-reasons", label: "Edit/Modify/Reprint Reasons", icon: Printer, group: "Billing" },
+  { id: "email", label: "Email Notifications", icon: Mail, group: "Billing" },
+  { id: "printers", label: "Printers", icon: Printer, group: "Devices" },
+  { id: "scanner", label: "Scanner", icon: ScanLine, group: "Devices" },
+  { id: "form-f", label: "Form F Tests", icon: FileText, group: "Devices" },
+  { id: "departments", label: "Departments", icon: Network, group: "System" },
+  { id: "locations", label: "Locations", icon: Layers, group: "System" },
+  { id: "branches", label: "Branches", icon: MapPin, group: "System" },
+  { id: "backup", label: "Backup", icon: Database, group: "System" },
+  { id: "audit-log", label: "Audit Log", icon: ScrollText, group: "System" },
+  { id: "feature-flags", label: "Feature Flags (Server)", icon: Flag, group: "System" },
+  { id: "manual", label: "User Manual", icon: FileDown, group: "System" },
 ];
+
+/** Old tab ids that still appear in bookmarks / event deep-links. */
+const SETTINGS_TAB_ALIASES: Record<string, string> = {
+  "radiology-tools": "radiology",
+  whatsapp: "integrations",
+};
+
+function resolveSettingsTabId(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  if (SETTINGS_TAB_ALIASES[raw]) return SETTINGS_TAB_ALIASES[raw];
+  if (TABS.some((t) => t.id === raw)) return raw;
+  return null;
+}
 
 const MANUAL_SECTIONS: ManualSection[] = [
   { title: "Getting Started", icon: BookOpen, points: ["Use the Dashboard to review daily counts, revenue, and pending work.", "Register patients first, then create test orders, then generate bills.", "Use the Billing module to record payments and monitor balances."] },
@@ -286,7 +306,6 @@ export default function Settings() {
       else if (t.id === "departments" || t.id === "locations" || t.id === "branches") action = "infrastructure";
       else if (t.id === "portal" || t.id === "online-booking" || t.id === "kiosk" || t.id === "queue-settings" || t.id === "queue-display") action = "portals";
       else if (t.id === "integrations") action = "clinic";
-      else if (t.id === "radiology-tools") action = "radiology";
 
       return hasSubPermission(session, "/settings", action);
     });
@@ -295,8 +314,8 @@ export default function Settings() {
   const [tab, setTab] = useState<string>(() => {
     // Deep-link: /settings?tab=scanner (and Form F "Scanner Settings" links)
     if (typeof window !== "undefined") {
-      const fromQuery = new URLSearchParams(window.location.search).get("tab");
-      if (fromQuery && TABS.some((t) => t.id === fromQuery)) return fromQuery;
+      const fromQuery = resolveSettingsTabId(new URLSearchParams(window.location.search).get("tab"));
+      if (fromQuery) return fromQuery;
     }
     const initialSession = readStaffSession();
     if (!initialSession) return "users";
@@ -309,6 +328,7 @@ export default function Settings() {
       else if (t.id === "printers" || t.id === "scanner") action = "devices";
       else if (t.id === "departments" || t.id === "locations" || t.id === "branches") action = "infrastructure";
       else if (t.id === "portal" || t.id === "online-booking" || t.id === "kiosk" || t.id === "queue-settings" || t.id === "queue-display") action = "portals";
+      else if (t.id === "integrations") action = "clinic";
 
       return hasSubPermission(initialSession, "/settings", action);
     });
@@ -344,22 +364,50 @@ export default function Settings() {
   // Clinic Info "Open Billing Print" and similar deep-links.
   useEffect(() => {
     const onTab = (e: Event) => {
-      const id = String((e as CustomEvent).detail || "");
-      if (TABS.some((t) => t.id === id)) setTab(id);
+      const id = resolveSettingsTabId(String((e as CustomEvent).detail || ""));
+      if (id) setTab(id);
     };
     window.addEventListener("care:settings-tab", onTab);
     return () => window.removeEventListener("care:settings-tab", onTab);
   }, []);
 
+  const groupedAllowedTabs = useMemo(() => {
+    const groups: Array<{ group: SettingsTabDef["group"]; tabs: SettingsTabDef[] }> = [];
+    for (const t of allowedTabs) {
+      const last = groups[groups.length - 1];
+      if (last && last.group === t.group) last.tabs.push(t);
+      else groups.push({ group: t.group, tabs: [t] });
+    }
+    return groups;
+  }, [allowedTabs]);
+
   return (
     <div className="pb-8">
-      <PageHeader title="Settings" subtitle="User management, system configuration, and software documentation" />
+      <PageHeader title="Settings" subtitle="Clinic, Radiology, billing, portals, and system configuration" />
       <div className="px-6">
-        <div className="flex flex-wrap gap-1 bg-muted p-1 rounded-xl mb-6 w-fit">
-          {allowedTabs.map(t => {
-            const Icon = t.icon;
-            return <button key={t.id} data-testid={`settings-tab-${t.id}`} onClick={() => setTab(t.id)} className={`flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg transition-all ${tab === t.id ? "bg-card shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"}`}><Icon size={14} />{t.label}</button>;
-          })}
+        <div className="flex flex-wrap items-center gap-1 bg-muted p-1 rounded-xl mb-6 w-fit max-w-full" data-testid="settings-tab-strip">
+          {groupedAllowedTabs.map((g, gi) => (
+            <React.Fragment key={g.group}>
+              {gi > 0 && <span className="mx-1 h-6 w-px bg-border shrink-0" aria-hidden />}
+              <span className="px-1.5 text-[9px] font-bold uppercase tracking-wide text-muted-foreground/80 select-none">{g.group}</span>
+              {g.tabs.map((t) => {
+                const Icon = t.icon;
+                return (
+                  <button
+                    key={t.id}
+                    data-testid={`settings-tab-${t.id}`}
+                    onClick={() => setTab(t.id)}
+                    className={`flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-lg transition-all ${
+                      tab === t.id ? "bg-card shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    <Icon size={14} />
+                    {t.label}
+                  </button>
+                );
+              })}
+            </React.Fragment>
+          ))}
         </div>
         {tab === "clinic" && <ClinicInfoTab />}
         {tab === "integrations" && <IntegrationsOpsHubTab />}
@@ -396,7 +444,6 @@ export default function Settings() {
         {tab === "discount-reasons" && <DiscountReasonsTab />}
         {tab === "reprint-reasons" && <ReprintReasonsTab />}
         {tab === "backup" && <BackupTab />}
-        {tab === "radiology-tools" && <RadiologyToolsHubTab />}
         {tab === "radiology" && <RadiologySettingsTab />}
         {tab === "manual" && <ManualTab />}
         {tab === "about" && <AboutTab />}
@@ -453,19 +500,44 @@ function IntegrationsOpsHubTab() {
   );
 }
 
-/** Radiology infra + AI admin pages formerly duplicated under Radiology & Settings nav. */
-function RadiologyToolsHubTab() {
+/** Radiology infra + AI admin pages formerly duplicated under Radiology & Settings nav.
+ *  Merged into the single Settings → Radiology tab (RadiologySettingsTab). */
+function RadiologyToolsHubPanel() {
   return (
-    <div className="max-w-4xl space-y-5">
-      <div className="rounded-xl border border-blue-200 bg-blue-50/70 dark:bg-blue-950/20 dark:border-blue-800 px-4 py-3 text-sm text-blue-900 dark:text-blue-200 leading-relaxed">
-        Radiology admin tools (DICOM, network, AI assistants, HL7, knowledge packs) live here and in{" "}
-        <Link href="/settings/radiology" className="font-semibold underline underline-offset-2">Radiology Settings Center</Link>.
-        Prefer the Settings Center for PACS/viewer/MWL configuration; use these cards for deep tools.
+    <div className="space-y-5">
+      <div className="grid gap-3 sm:grid-cols-3">
+        <Link
+          href="/settings/radiology"
+          className="rounded-xl border border-blue-200 bg-blue-50/80 dark:bg-blue-950/30 dark:border-blue-800 p-4 hover:bg-blue-100/80 transition-colors"
+          data-testid="settings-radiology-open-center"
+        >
+          <div className="text-sm font-bold text-blue-950 dark:text-blue-100">Radiology Settings Center</div>
+          <p className="text-xs text-blue-900/80 dark:text-blue-200/80 mt-1 leading-relaxed">
+            PACS, Orthanc, OHIF/Weasis, MWL, report style, voice, USG extraction — the real admin hub.
+          </p>
+          <span className="inline-flex items-center gap-1 text-xs font-semibold text-blue-700 dark:text-blue-300 mt-2">Open →</span>
+        </Link>
+        <Link
+          href="/settings/radiology-quick-select"
+          className="rounded-xl border bg-card border-card-border p-4 hover:bg-muted/40 transition-colors"
+        >
+          <div className="text-sm font-bold">Quick Select Settings</div>
+          <p className="text-xs text-muted-foreground mt-1 leading-relaxed">Finding chips / macros used in Reporting Workspace.</p>
+          <span className="inline-flex items-center gap-1 text-xs font-semibold text-primary mt-2">Open →</span>
+        </Link>
+        <Link
+          href="/radiology/usg-admin-settings"
+          className="rounded-xl border bg-card border-card-border p-4 hover:bg-muted/40 transition-colors"
+        >
+          <div className="text-sm font-bold">USG Admin Settings</div>
+          <p className="text-xs text-muted-foreground mt-1 leading-relaxed">Ultrasound extraction, SR, and companion admin.</p>
+          <span className="inline-flex items-center gap-1 text-xs font-semibold text-primary mt-2">Open →</span>
+        </Link>
       </div>
       <div className="bg-card border border-card-border rounded-xl p-5 space-y-4">
         <div>
           <h2 className="font-bold text-lg flex items-center gap-2"><Server size={16} /> Infrastructure · DICOM · Network</h2>
-          <p className="text-sm text-muted-foreground mt-1">PACS nodes, modalities, agents, HL7, and knowledge packs.</p>
+          <p className="text-sm text-muted-foreground mt-1">Deep tools: PACS nodes, modalities, agents, HL7, and knowledge packs.</p>
         </div>
         <SettingsHubCardGrid links={RADIOLOGY_INFRA_LINKS} />
       </div>
@@ -475,18 +547,6 @@ function RadiologyToolsHubTab() {
           <p className="text-sm text-muted-foreground mt-1">Reporting AI tools formerly listed under Advanced Radiology Tools.</p>
         </div>
         <SettingsHubCardGrid links={RADIOLOGY_AI_LINKS} />
-      </div>
-      <div className="bg-card border border-card-border rounded-xl p-4 flex flex-wrap items-center justify-between gap-3">
-        <p className="text-sm text-muted-foreground">Device productivity toggles (quick-add, macros, AI flags) remain on the Radiology Flags tab.</p>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => {
-            try { window.dispatchEvent(new CustomEvent("care:settings-tab", { detail: "radiology" })); } catch { /* noop */ }
-          }}
-        >
-          Open Radiology Flags
-        </Button>
       </div>
     </div>
   );
@@ -6790,29 +6850,24 @@ function RadiologySettingsTab() {
     { id: "radiologyMacroEngine", label: "Personal Macro Engine", desc: "Shortcuts like /normalbrain, /l4l5disc, /fazekas2 for instant insertion", value: macroEngine, set: setMacroEngine },
   ];
 
+  const [showExperimentalFlags, setShowExperimentalFlags] = useState(false);
+
   return (
-    <div className="max-w-2xl space-y-6">
-      <Link
-        href="/settings/radiology"
-        className="flex items-center justify-between gap-3 rounded-xl border bg-blue-50 dark:bg-blue-950/20 border-blue-200 dark:border-blue-800 p-3 text-sm hover:bg-blue-100 dark:hover:bg-blue-900/30 transition-colors"
-      >
-        <span>Looking for PACS, Orthanc, OHIF, Weasis, DICOM, or worklist settings? Those live on the dedicated <strong>Radiology Settings</strong> page.</span>
-        <span className="shrink-0 text-blue-600 dark:text-blue-400 font-medium">Open →</span>
-      </Link>
-      <button
-        type="button"
-        onClick={() => {
-          try { window.dispatchEvent(new CustomEvent("care:settings-tab", { detail: "radiology-tools" })); } catch { /* noop */ }
-        }}
-        className="w-full flex items-center justify-between gap-3 rounded-xl border bg-card border-card-border p-3 text-sm hover:bg-muted/40 transition-colors text-left"
-      >
-        <span>AI assistants, HL7, Watchdog, DICOM Agent, Network Control, and Knowledge Packs are listed under <strong>Radiology Tools</strong>.</span>
-        <span className="shrink-0 text-primary font-medium">Open →</span>
-      </button>
-      <div className="bg-card border border-card-border rounded-xl p-5 space-y-4">
+    <div className="max-w-4xl space-y-6">
+      <div className="rounded-xl border bg-card border-card-border p-4 space-y-1">
+        <h2 className="font-bold text-lg flex items-center gap-2"><Radio size={18} /> Radiology</h2>
+        <p className="text-sm text-muted-foreground">
+          Main ERP Settings home for radiology. Use the Settings Center for PACS/viewer config; the cards for deep tools;
+          device flags below are browser-local productivity toggles (not clinic-wide).
+        </p>
+      </div>
+
+      <RadiologyToolsHubPanel />
+
+      <div className="border-t pt-4 space-y-6">
         <div>
-          <h2 className="font-bold text-lg flex items-center gap-2"><ScanLine size={16} /> Radiology Productivity Tools</h2>
-          <p className="text-sm text-muted-foreground mt-1">Enable or disable productivity features in the Radiology Report workspace. All are local to this device and stored in browser preferences.</p>
+          <h2 className="font-bold text-lg flex items-center gap-2"><ScanLine size={16} /> Device productivity flags</h2>
+          <p className="text-sm text-muted-foreground mt-1">Stored in this browser only — not the same as server Feature Flags or Radiology Settings Center.</p>
         </div>
         <div className="space-y-2">
           {toggles.map((t) => (
@@ -6832,8 +6887,21 @@ function RadiologySettingsTab() {
             </label>
           ))}
         </div>
-      </div>
 
+      <div className="rounded-xl border border-amber-200 bg-amber-50/60 dark:bg-amber-950/20 dark:border-amber-800 p-4 space-y-3">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-semibold text-amber-950 dark:text-amber-100">Experimental / roadmap toggles</h3>
+            <p className="text-xs text-amber-900/80 dark:text-amber-200/80 mt-1">
+              Dozens of browser-local flags from earlier roadmap phases. Many are unwired or partial — they do not replace Radiology Settings Center or server Feature Flags.
+            </p>
+          </div>
+          <Button type="button" size="sm" variant="outline" className="h-8 shrink-0" onClick={() => setShowExperimentalFlags((v) => !v)}>
+            {showExperimentalFlags ? "Hide experimental" : "Show experimental"}
+          </Button>
+        </div>
+        {showExperimentalFlags && (
+          <div className="space-y-6 pt-1">
       {/* Phase 3: Advanced Productivity */}
       <div className="bg-card border border-card-border rounded-xl p-5 space-y-4">
         <div>
@@ -7080,6 +7148,10 @@ function RadiologySettingsTab() {
         </div>
       </div>
 
+          </div>
+        )}
+      </div>
+
       {/* Keyboard shortcuts reference */}
       <div className="bg-card border border-card-border rounded-xl p-5 space-y-4">
         <div>
@@ -7112,6 +7184,7 @@ function RadiologySettingsTab() {
             <span className="font-mono text-xs text-muted-foreground">Ctrl + Shift + M</span>
           </div>
         </div>
+      </div>
       </div>
     </div>
   );

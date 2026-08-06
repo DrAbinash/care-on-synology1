@@ -74,7 +74,6 @@ import {
   ActivitySquare,
   ClipboardCheck,
   Microscope,
-  Mic,
   Eye,
   ScanLine,
   Workflow,
@@ -90,8 +89,6 @@ import {
   Baby,
   GraduationCap,
   Gauge,
-  Combine,
-  Library,
 } from "lucide-react";
 import { useState, useEffect, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -179,39 +176,18 @@ const navItems: NavEntry[] = [
     icon: Radio,
     label: "Radiology & Imaging",
     children: [
-      // Worklist Hub is the default landing for "Radiology & Imaging" — clicking
-      // the group header navigates to the first child (see Layout nav render),
-      // which opens the existing Reporting Worklist / Workspace.
-      { path: "/radiology/worklist",            icon: ScanSearch,     label: "Worklist Hub" },
-      // Opens the canonical Reporting Workspace when a study is selected;
-      // without a study id it redirects to the worklist (see App.tsx route).
+      // Daily path only — extra AI/admin/legacy pages live under Settings → Radiology
+      // or /radiology hub → Advanced (routes unchanged; bookmarks still work).
+      { path: "/radiology/worklist",            icon: ScanSearch,     label: "Worklist" },
       { path: "/radiology/reporting-workspace", icon: FilePen,        label: "Reporting Workspace" },
-      { path: "/radiology/report-builder",      icon: Combine,        label: "Report Builder" },
-      { path: "/radiology/findings-manager",    icon: Library,        label: "Findings Library", ownerOnly: true },
-      { path: "/radiology/operations-dashboard", icon: Gauge,          label: "Operations Dashboard" },
-      { path: "/radiology/operational-health",   icon: Activity,       label: "Operational Health", ownerOnly: true },
-      { path: "/radiology/my-analytics",         icon: BarChart3,      label: "My Analytics" },
-      { path: "/radiology/my-collection",       icon: ShieldAlert,    label: "DICOM Match Center" },
-      { path: "/pacs",                        icon: Monitor,        label: "PACS Viewer" },
-      { path: "/radiology/normal-templates",   icon: ClipboardCheck, label: "Normal Templates" },
+      { path: "/report-delivery",               icon: Send,           label: "Report Delivery" },
       { path: "/radiology/critical-findings",   icon: AlertCircle,    label: "Critical Findings" },
-      { path: "/teleradiology",               icon: Globe,          label: "Teleradiology" },
-      { path: "/echo",                        icon: Heart,          label: "Echo Cardiology" },
-      // PR B — USG Platform Consolidation: a nested submenu (not a second
-      // sidebar entry) around the SAME canonical RadiologyReportingWorkspace
-      // and the SAME Radiology Worklist, configured/pre-filtered for
-      // ultrasound. Fetal USG and Fetal Echo move in here from the flat list
-      // below (routes unchanged — /fetal-usg, /fetal-echo — so bookmarks and
-      // deep links still resolve identically). Doppler Reporting is newly
-      // exposed here (see docs/usg-reporting/platform-consolidation-pr-b.md
-      // §16 — UsgDopplerReporting.tsx is mature, real CRUD, previously had
-      // zero nav entry point). "General USG Reporting" and "USG Worklist"
-      // reuse the existing workspace/worklist pages with a `?modality=USG`
-      // query param — no new workspace or worklist component was created.
+      { path: "/pacs",                          icon: Monitor,        label: "PACS Viewer" },
+      { path: "/echo",                          icon: Heart,          label: "Echo" },
       {
         id: "usg-reporting-grp",
         icon: Baby,
-        label: "USG Reporting",
+        label: "USG",
         children: [
           { path: "/radiology/worklist?modality=USG",            icon: ScanSearch, label: "USG Worklist" },
           { path: "/radiology/reporting-workspace?modality=USG", icon: FilePen,    label: "General USG Reporting" },
@@ -224,13 +200,14 @@ const navItems: NavEntry[] = [
           // display's "Now Serving" card actually reads) — previously only
           // reachable via the unrelated top-level "Queue Tokens" nav item.
           { path: "/queue?department=USG",                       icon: Ticket,     label: "USG Queue / Call Next" },
-          { path: "/settings/radiology-quick-select",            icon: Settings2,  label: "Quick Select Settings" },
-          { path: "/radiology/usg-admin-settings",               icon: Settings2,  label: "USG Admin Settings" },
+          { path: "/settings/radiology-quick-select",            icon: Settings2,  label: "Quick Select Settings", ownerOnly: true },
+          { path: "/radiology/usg-admin-settings",               icon: Settings2,  label: "USG Admin Settings", ownerOnly: true },
         ],
       },
-      { path: "/radiology/voice-dictation",   icon: Mic,            label: "Voice Dictation" },
-      // Advanced Tools / AI / DICOM admin pages moved to Settings → Radiology
-      // Tools and Radiology Settings Center (routes unchanged for bookmarks).
+      // Owner-only leftovers — not needed in a radiologist's daily rail.
+      { path: "/radiology/operations-dashboard", icon: Gauge,       label: "Ops Dashboard", ownerOnly: true },
+      { path: "/radiology/my-collection",        icon: ShieldAlert, label: "DICOM Match", ownerOnly: true },
+      { path: "/teleradiology",                  icon: Globe,       label: "Teleradiology", ownerOnly: true },
     ],
   },
   { path: "/day-close", icon: Lock, label: "Day Close", ownerOnly: true },
@@ -324,7 +301,7 @@ const navItems: NavEntry[] = [
       // Radiology Tools hub tabs — see Settings.tsx. Dedicated Radiology
       // Settings Center remains the PACS/DICOM/AI configuration hub.
       { path: "/settings",                  icon: Settings2,      label: "General Settings" },
-      { path: "/settings/radiology",        icon: Radio,          label: "Radiology Settings", ownerOnly: true },
+      { path: "/settings/radiology",        icon: Radio,          label: "Radiology Settings Center", ownerOnly: true },
       { path: "/settings/scanner",          icon: ScanLine,       label: "Scanner Settings", ownerOnly: true },
       { path: "/abdm-abha",                 icon: ShieldCheck,    label: "ABDM / ABHA", featureFlag: "ff_abdm_abha" },
       { path: "/tests",                     icon: FlaskConical,   label: "Test Catalog" },
