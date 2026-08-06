@@ -119,7 +119,7 @@ async function settleBill(opts: {
   gatewayName: string;
   patientName?: string | null;
   performedBy?: string;
-}): Promise<{ settled: boolean; alreadySettled: boolean }> {
+}): Promise<{ settled: boolean; alreadySettled: boolean; paymentId: number | null }> {
   const { billId, amount, method, merchantRef, gatewayTxnId, gatewayName, patientName, performedBy = "Gateway Webhook" } = opts;
 
   const referenceNumber = merchantRef || gatewayTxnId;
@@ -132,7 +132,7 @@ async function settleBill(opts: {
       .where(eq(billsTable.id, billId))
       .for("update")
       .limit(1);
-    if (!bill) return { settled: false, alreadySettled: false };
+    if (!bill) return { settled: false, alreadySettled: false, paymentId: null };
 
     // Idempotency guard — don't double-post the same gateway transaction,
     // whichever path (webhook/callback/poll) or era (pre/post-F1 keying)
@@ -153,10 +153,10 @@ async function settleBill(opts: {
       )
       .limit(1);
 
-    if (existing) return { settled: false, alreadySettled: true };
+    if (existing) return { settled: false, alreadySettled: true, paymentId: existing.id };
 
     // Insert payment row
-    await tx.insert(paymentsTable).values({
+    const [inserted] = await tx.insert(paymentsTable).values({
       billId,
       amount: amount.toFixed(2),
       method,
@@ -165,7 +165,7 @@ async function settleBill(opts: {
       settlementStatus: "captured",
       notes: `Settled via ${gatewayName} S2S webhook. Ref: ${referenceNumber}${gatewayTxnId ? ` / gateway txn ${gatewayTxnId}` : ""}`,
       recordedByName: performedBy,
-    });
+    }).returning({ id: paymentsTable.id });
 
     const newPaid = Number(bill.paidAmount) + amount;
     // FIX: subtract existing refund_amount so balance = total − paid − refund
@@ -184,7 +184,7 @@ async function settleBill(opts: {
       })
       .where(eq(billsTable.id, billId));
 
-    return { settled: true, alreadySettled: false };
+    return { settled: true, alreadySettled: false, paymentId: inserted?.id ?? null };
   });
 }
 
@@ -296,7 +296,7 @@ gatewayWebhookRouter.post("/icici-webhook", async (req, res): Promise<void> => {
       logger.warn({ merchantTxnNo }, "[icici-webhook] Cannot parse billId from BILLPAY ref");
       return;
     }
-    const { settled, alreadySettled } = await settleBill({
+    const { settled, alreadySettled, paymentId } = await settleBill({
       billId,
       amount,
       method: "Online (ICICI Orange Pay)",
@@ -315,6 +315,7 @@ gatewayWebhookRouter.post("/icici-webhook", async (req, res): Promise<void> => {
           billNumber: bill.billNumber,
           patientName: null,
           performedBy: "ICICI S2S Webhook",
+          paymentId: paymentId ?? undefined,
         }).catch(() => {});
       }
       logger.info({ billId, amount, merchantTxnNo }, "[icici-webhook] Bill settled via S2S");
@@ -427,7 +428,7 @@ gatewayWebhookRouter.post("/hdfc-webhook", async (req, res): Promise<void> => {
       logger.warn({ orderId }, "[hdfc-webhook] Cannot parse billId from BILLPAY ref");
       return;
     }
-    const { settled, alreadySettled } = await settleBill({
+    const { settled, alreadySettled, paymentId } = await settleBill({
       billId,
       amount,
       method: "Online (HDFC SmartGateway)",
@@ -446,6 +447,7 @@ gatewayWebhookRouter.post("/hdfc-webhook", async (req, res): Promise<void> => {
           billNumber: bill.billNumber,
           patientName: null,
           performedBy: "HDFC S2S Webhook",
+          paymentId: paymentId ?? undefined,
         }).catch(() => {});
       }
       logger.info({ billId, amount, orderId }, "[hdfc-webhook] Bill settled via S2S");
@@ -555,7 +557,7 @@ gatewayWebhookRouter.post("/reconcile", requireStaffAuth, async (req, res): Prom
 
     // Payment confirmed — settle
     if (type === "bill" && billId) {
-      const { settled, alreadySettled } = await settleBill({
+      const { settled, alreadySettled, paymentId } = await settleBill({
         billId,
         amount,
         method: `Online (${provider.displayName})`,
@@ -573,6 +575,7 @@ gatewayWebhookRouter.post("/reconcile", requireStaffAuth, async (req, res): Prom
           billNumber,
           patientName,
           performedBy: "Manual Reconciliation",
+          paymentId: paymentId ?? undefined,
         }).catch(() => {});
       }
 

@@ -450,25 +450,26 @@ export default function DailySummary() {
   ];
 
   const consolidatedRows = [
-    { label: "Total Received Today", value: netCollection },
+    { label: "Net Collection Today", value: netCollection },
     { label: "Digital Collection", value: digitalCollection },
     { label: "Physical Cash in Hand", value: physicalCash },
     { label: "Outstanding / Dues", value: summary.outstanding },
-    { label: "Refunds / Cancellations", value: summary.refundsAndCancellations },
+    { label: "Refunds (money returned)", value: summary.totalRefunded ?? 0 },
+    { label: "Cancelled Bills (info)", value: Math.max(0, summary.refundsAndCancellations - (summary.totalRefunded ?? 0)) },
     { label: "Discounts Given", value: discountsGiven },
     { label: "Expenses", value: expenseTotal },
   ];
 
   const totalBillingFormula = `Total Billing = ${inr(summary.totalBilling)}`;
   const outstandingFormula = `Outstanding / Dues = ${inr(summary.outstanding)}`;
-  const refundsFormula = `Refunds / Cancellations = ${inr(summary.refundsAndCancellations)}`;
+  const refundsFormula = `Refunds (money returned) = ${inr(summary.totalRefunded ?? 0)}`;
   const expensesFormula = `Expenses = ${inr(expenseTotal)}`;
   const discountsFormula = `Discounts Given Today = ${inr(discountsGiven)}`;
   // Payment-axis formula (money actually received/refunded), not the bill
   // axis — a bill cancelled and refunded the same day must not be
   // subtracted twice. Mirrors the server calculation in daily-summary.ts.
   const totalReceivedAmt = summary.totalReceived ?? (netCollection + (summary.totalRefunded ?? 0) + expenseTotal);
-  const totalReceivedFormula = `Total Received Today = ${inr(totalReceivedAmt)} − ${inr(summary.totalRefunded ?? 0)} − ${inr(expenseTotal)} = ${inr(netCollection)}`;
+  const totalReceivedFormula = `Net Collection = ${inr(totalReceivedAmt)} − ${inr(summary.totalRefunded ?? 0)} − ${inr(expenseTotal)} = ${inr(netCollection)}`;
   const digitalFormula = `Digital Collection = UPI + Card + other bank/digital modes = ${inr(digitalCollection)}`;
   const physicalFormula = `Physical Cash in Hand = ${inr(rec.cashCollection)} − ${inr(summary.cashRefunded ?? 0)} − ${inr(rec.cashExpenses)} = ${inr(physicalCash)}`;
 
@@ -522,9 +523,9 @@ export default function DailySummary() {
           <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
             <SummaryCard icon={<TrendingUp size={14} className="text-green-600" />} label="Total Billing" value={inr(summary.totalBilling)} sub={totalBillingFormula} accent="bg-green-50 dark:bg-green-950/30 border-green-200 dark:border-green-800" />
             <SummaryCard icon={<Receipt size={14} className="text-amber-600" />} label="Outstanding / Dues" value={inr(summary.outstanding)} sub={outstandingFormula} accent="bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-800" />
-            <SummaryCard icon={<RotateCcw size={14} className="text-rose-600" />} label="Refunds / Cancellations" value={inr(summary.refundsAndCancellations)} sub={refundsFormula} accent="bg-rose-50 dark:bg-rose-950/30 border-rose-200 dark:border-rose-800" />
+            <SummaryCard icon={<RotateCcw size={14} className="text-rose-600" />} label="Refunds (money returned)" value={inr(summary.totalRefunded ?? 0)} sub={refundsFormula} accent="bg-rose-50 dark:bg-rose-950/30 border-rose-200 dark:border-rose-800" />
             <SummaryCard icon={<TrendingDown size={14} className="text-red-500" />} label="Expenses" value={inr(expenseTotal)} sub={expensesFormula} accent="bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-800" />
-            <SummaryCard icon={<Wallet size={14} className="text-blue-600" />} label="Total Received Today (Cash+Digital)" value={inr(netCollection)} sub={totalReceivedFormula} accent="bg-blue-50 dark:bg-blue-950/30 border-blue-200 dark:border-blue-800" tooltip="Total Billing − Dues − Refunds − Expenses" />
+            <SummaryCard icon={<Wallet size={14} className="text-blue-600" />} label="Net Collection Today" value={inr(netCollection)} sub={totalReceivedFormula} accent="bg-blue-50 dark:bg-blue-950/30 border-blue-200 dark:border-blue-800" tooltip="Payments received − Refunds − Expenses (payment axis)" />
             <SummaryCard icon={<Smartphone size={14} className="text-violet-600" />} label="Digital Collection" value={inr(digitalCollection)} sub={digitalFormula} accent="bg-card border-card-border" />
             <SummaryCard icon={<Banknote size={14} className="text-green-700" />} label="Physical Cash in Hand" value={inr(physicalCash)} sub={physicalFormula} accent="bg-card border-card-border" />
             <SummaryCard icon={<ArrowDownCircle size={14} className="text-purple-600" />} label="Discounts Given Today" value={inr(discountsGiven)} sub={discountsFormula} accent="bg-purple-50 dark:bg-purple-950/30 border-purple-200 dark:border-purple-800" />
@@ -577,51 +578,67 @@ export default function DailySummary() {
             </div>
           )}
 
-          {/* ── Bottom Line — clean styled table that matches the operator's
-                handwritten template (Total Billing − Outstanding − Refunds −
-                Expense = Total Received; Digital subtracted to give Physical
-                Cash in Hand). ───────────────────────────────────────────── */}
+          {/* ── Bottom Line — payment-axis (money that actually moved).
+                Billing / outstanding / cancelled are context only; net and
+                physical cash come from payments − refunds − expenses. ── */}
           <div className="rounded-xl border-2 border-card-border bg-gradient-to-br from-card to-muted/30 overflow-hidden shadow-sm">
             <div className="px-4 py-2.5 bg-gradient-to-r from-primary/10 to-primary/5 border-b-2 border-card-border flex items-center gap-2">
               <Wallet size={16} className="text-primary" />
               <span className="text-sm font-bold tracking-wide uppercase">Bottom Line</span>
-              <span className="ml-auto text-[11px] text-muted-foreground font-medium">As on {date}</span>
+              <span className="ml-auto text-[11px] text-muted-foreground font-medium">Today (IST) · {date}</span>
             </div>
             <table className="w-full text-sm">
               <tbody>
                 <tr className="border-b border-card-border/60">
-                  <td className="px-4 py-2 text-muted-foreground flex items-center gap-2"><TrendingUp size={13} className="text-green-600" /> Total Billing <span className="text-[10px] font-mono text-muted-foreground/70">(X)</span></td>
+                  <td className="px-4 py-2 text-muted-foreground flex items-center gap-2"><TrendingUp size={13} className="text-slate-500" /> Total Billing <span className="text-[10px] text-muted-foreground/70">(context)</span></td>
                   <td className="px-4 py-2 text-right font-semibold tabular-nums">{inr(summary.totalBilling)}</td>
                 </tr>
                 <tr className="border-b border-card-border/60">
-                  <td className="px-4 py-2 text-muted-foreground flex items-center gap-2"><Receipt size={13} className="text-amber-600" /> Outstanding / Dues <span className="text-[10px] font-mono text-muted-foreground/70">(− Y)</span></td>
-                  <td className="px-4 py-2 text-right font-semibold tabular-nums text-amber-700 dark:text-amber-500">− {inr(summary.outstanding)}</td>
+                  <td className="px-4 py-2 text-muted-foreground flex items-center gap-2"><Receipt size={13} className="text-amber-600" /> Outstanding / Dues <span className="text-[10px] text-muted-foreground/70">(context)</span></td>
+                  <td className="px-4 py-2 text-right font-semibold tabular-nums text-amber-700 dark:text-amber-500">{inr(summary.outstanding)}</td>
+                </tr>
+                <tr className="border-b border-card-border/60 bg-muted/20">
+                  <td className="px-4 py-2 text-muted-foreground flex items-center gap-2"><Wallet size={13} className="text-blue-600" /> Payments Received</td>
+                  <td className="px-4 py-2 text-right font-semibold tabular-nums">{inr(totalReceivedAmt)}</td>
                 </tr>
                 <tr className="border-b border-card-border/60">
-                  <td className="px-4 py-2 text-muted-foreground flex items-center gap-2"><RotateCcw size={13} className="text-rose-600" /> Refunds / Cancellations <span className="text-[10px] font-mono text-muted-foreground/70">(− Z)</span></td>
-                  <td className="px-4 py-2 text-right font-semibold tabular-nums text-rose-700 dark:text-rose-500">− {inr(summary.refundsAndCancellations)}</td>
+                  <td className="px-4 py-2 text-muted-foreground flex items-center gap-2"><RotateCcw size={13} className="text-rose-600" /> − Refunds (money returned)</td>
+                  <td className="px-4 py-2 text-right font-semibold tabular-nums text-rose-700 dark:text-rose-500">− {inr(summary.totalRefunded ?? 0)}</td>
                 </tr>
                 <tr className="border-b-2 border-foreground/40">
-                  <td className="px-4 py-2 text-muted-foreground flex items-center gap-2"><TrendingDown size={13} className="text-red-500" /> Expenses <span className="text-[10px] font-mono text-muted-foreground/70">(− A)</span></td>
+                  <td className="px-4 py-2 text-muted-foreground flex items-center gap-2"><TrendingDown size={13} className="text-red-500" /> − Expenses</td>
                   <td className="px-4 py-2 text-right font-semibold tabular-nums text-red-700 dark:text-red-500">− {inr(expenseTotal)}</td>
                 </tr>
                 <tr className="bg-blue-50/70 dark:bg-blue-950/30 border-b-2 border-foreground/40">
-                  <td className="px-4 py-2.5 font-bold flex items-center gap-2"><Wallet size={14} className="text-blue-700" /> Total Received Today <span className="text-[10px] font-mono text-blue-700/80 dark:text-blue-400/80">(B = X − Y − Z − A)</span></td>
+                  <td className="px-4 py-2.5 font-bold flex items-center gap-2"><Wallet size={14} className="text-blue-700" /> = Net Collection</td>
                   <td className="px-4 py-2.5 text-right font-bold tabular-nums text-blue-800 dark:text-blue-300 text-base">{inr(netCollection)}</td>
                 </tr>
+                <tr className="border-b border-card-border/60 bg-muted/20">
+                  <td className="px-4 py-2 text-muted-foreground flex items-center gap-2"><Banknote size={13} className="text-green-600" /> Cash In</td>
+                  <td className="px-4 py-2 text-right font-semibold tabular-nums">{inr(rec.cashCollection)}</td>
+                </tr>
+                <tr className="border-b border-card-border/60">
+                  <td className="px-4 py-2 text-muted-foreground flex items-center gap-2"><RotateCcw size={13} className="text-rose-600" /> − Cash Refunded</td>
+                  <td className="px-4 py-2 text-right font-semibold tabular-nums text-rose-700 dark:text-rose-500">− {inr(summary.cashRefunded ?? 0)}</td>
+                </tr>
                 <tr className="border-b-2 border-foreground/40">
-                  <td className="px-4 py-2 text-muted-foreground flex items-center gap-2"><Smartphone size={13} className="text-violet-600" /> Digital Collection <span className="text-[10px] font-mono text-muted-foreground/70">(− C)</span></td>
-                  <td className="px-4 py-2 text-right font-semibold tabular-nums text-violet-700 dark:text-violet-400">− {inr(digitalCollection)}</td>
+                  <td className="px-4 py-2 text-muted-foreground flex items-center gap-2"><TrendingDown size={13} className="text-red-500" /> − Cash Expenses</td>
+                  <td className="px-4 py-2 text-right font-semibold tabular-nums text-red-700 dark:text-red-500">− {inr(rec.cashExpenses)}</td>
                 </tr>
                 <tr className="bg-green-50/70 dark:bg-green-950/30">
-                  <td className="px-4 py-3 font-bold flex items-center gap-2"><Banknote size={15} className="text-green-700" /> Physical Cash in Hand <span className="text-[10px] font-mono text-green-700/80 dark:text-green-400/80">(B − C)</span></td>
+                  <td className="px-4 py-3 font-bold flex items-center gap-2"><Banknote size={15} className="text-green-700" /> = Physical Cash in Hand</td>
                   <td className="px-4 py-3 text-right font-extrabold tabular-nums text-green-800 dark:text-green-300 text-lg">{inr(physicalCash)}</td>
+                </tr>
+                <tr className="border-t border-card-border/60">
+                  <td className="px-4 py-2 text-muted-foreground flex items-center gap-2"><Smartphone size={13} className="text-violet-600" /> Digital Collection (gross)</td>
+                  <td className="px-4 py-2 text-right font-semibold tabular-nums text-violet-700 dark:text-violet-400">{inr(digitalCollection)}</td>
                 </tr>
               </tbody>
             </table>
             <div className="px-4 py-2 bg-muted/30 border-t border-card-border text-[11px] text-muted-foreground flex flex-wrap gap-x-4 gap-y-1">
               <span>Discounts Given Today: <strong className="text-foreground">{inr(discountsGiven)}</strong></span>
               <span>Bills: <strong className="text-foreground">{summary.billCount}</strong></span>
+              <span>Cancelled bills (info): <strong className="text-foreground">{inr(Math.max(0, summary.refundsAndCancellations - (summary.totalRefunded ?? 0)))}</strong></span>
               {totalEdits > 0 && <span>Edits Logged: <strong className="text-foreground">{totalEdits}</strong></span>}
             </div>
           </div>

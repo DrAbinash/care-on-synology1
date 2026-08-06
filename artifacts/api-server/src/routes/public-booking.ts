@@ -1411,7 +1411,7 @@ async function handleIciciCallback(req: any, res: any, queryOrBody: Record<strin
             .limit(1);
 
           if (!existingPayment) {
-            await tx.insert(paymentsTable).values({
+            const [insertedPay] = await tx.insert(paymentsTable).values({
               billId,
               amount: collectAmount.toFixed(2),
               method: `Online (${provider.displayName})`,
@@ -1420,7 +1420,7 @@ async function handleIciciCallback(req: any, res: any, queryOrBody: Record<strin
               settlementStatus: "captured",
               notes: `Paid online via ${provider.displayName}. txnID: ${txnID || ""}`,
               recordedByName: "Super Admin",
-            });
+            }).returning({ id: paymentsTable.id });
 
             const newPaid = Number(bill.paidAmount) + collectAmount;
             const refundAmount = Number(bill.refundAmount || 0);
@@ -1440,6 +1440,7 @@ async function handleIciciCallback(req: any, res: any, queryOrBody: Record<strin
               billNumber: bill.billNumber,
               patientName: logRecord ? logRecord.patientName : "Billing Desk Online",
               performedBy: "Super Admin",
+              paymentId: insertedPay?.id,
             }).catch(() => {});
           }
         });
