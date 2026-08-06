@@ -82,7 +82,7 @@ export default function Radiology() {
         },
         {
           name: "Viewer Settings & Diagnostics",
-          path: "/radiology/pacs-settings",
+          path: "/settings/radiology?tab=viewers",
           description: "Verify configured viewer URLs and test active launching triggers with sample study UIDs.",
           icon: Sliders
         }
@@ -204,10 +204,17 @@ export default function Radiology() {
       icon: Settings,
       items: [
         {
-          name: "PACS Server Integration",
-          path: "/radiology/pacs-settings",
-          description: "Setup server AE Titles, WADO endpoints, and central database connection parameters.",
+          name: "Radiology Settings Center",
+          path: "/settings/radiology",
+          description: "THE admin hub: network profiles, PACS/Orthanc, OHIF/Weasis, MWL, report style, voice, USG extraction.",
           icon: Settings,
+          badge: "Admin Only"
+        },
+        {
+          name: "PACS Server Integration",
+          path: "/settings/radiology?tab=pacs",
+          description: "Setup server AE Titles, WADO endpoints, and central database connection parameters.",
+          icon: Server,
           badge: "Admin Only"
         },
         {
@@ -219,7 +226,7 @@ export default function Radiology() {
         },
         {
           name: "Modality Station Directory",
-          path: "/radiology/modality-management",
+          path: "/settings/radiology?tab=modalities",
           description: "Manage hospital modality devices (MRI, CT, US) allowed to query MWL.",
           icon: Tv2,
           badge: "Admin Only"
@@ -233,7 +240,7 @@ export default function Radiology() {
         },
         {
           name: "ERP Modality Worklist Sync",
-          path: "/radiology/mwl-manager",
+          path: "/settings/radiology?tab=mwl",
           description: "Verify Orthanc database state parity with ERP study schedule list.",
           icon: ListChecks,
           badge: "Admin Only"

@@ -324,7 +324,7 @@ const navItems: NavEntry[] = [
       // Radiology Tools hub tabs — see Settings.tsx. Dedicated Radiology
       // Settings Center remains the PACS/DICOM/AI configuration hub.
       { path: "/settings",                  icon: Settings2,      label: "General Settings" },
-      { path: "/settings/radiology",        icon: Radio,          label: "Radiology Settings", ownerOnly: true },
+      { path: "/settings/radiology",        icon: Radio,          label: "Radiology Settings Center", ownerOnly: true },
       { path: "/settings/scanner",          icon: ScanLine,       label: "Scanner Settings", ownerOnly: true },
       { path: "/abdm-abha",                 icon: ShieldCheck,    label: "ABDM / ABHA", featureFlag: "ff_abdm_abha" },
       { path: "/tests",                     icon: FlaskConical,   label: "Test Catalog" },

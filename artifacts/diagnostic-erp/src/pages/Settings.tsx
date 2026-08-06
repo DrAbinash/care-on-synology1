@@ -129,7 +129,7 @@ const MODULE_SUB_PERMISSIONS: Record<string, { id: string; label: string }[]> = 
     { id: "users", label: "Users Management" },
     { id: "security", label: "Security & FIDO2" },
     { id: "backup", label: "Backup & Replication" },
-    { id: "radiology", label: "Radiology Config" },
+    { id: "radiology", label: "Radiology Device Flags" },
     { id: "radiology-tools", label: "Radiology Tools" },
     { id: "appearance", label: "Appearance & Themes" },
     { id: "notifications", label: "Email & WhatsApp" },
@@ -196,11 +196,11 @@ const TABS = [
   { id: "reprint-reasons", label: "Edit/Modify/Reprint Reasons", icon: Printer },
   { id: "backup", label: "Backup", icon: Database },
   { id: "radiology-tools", label: "Radiology Tools", icon: ScanLine },
-  { id: "radiology", label: "Radiology Flags", icon: ScanLine },
+  { id: "radiology", label: "Radiology Device Flags", icon: ScanLine },
   { id: "manual", label: "User Manual", icon: FileDown },
   { id: "security", label: "Security", icon: ShieldCheck },
   { id: "audit-log", label: "Audit Log", icon: ScrollText },
-  { id: "feature-flags", label: "Feature Flags", icon: Flag },
+  { id: "feature-flags", label: "Feature Flags (Server)", icon: Flag },
   { id: "password", label: "Change Password", icon: KeyRound },
 ];
 
@@ -458,9 +458,11 @@ function RadiologyToolsHubTab() {
   return (
     <div className="max-w-4xl space-y-5">
       <div className="rounded-xl border border-blue-200 bg-blue-50/70 dark:bg-blue-950/20 dark:border-blue-800 px-4 py-3 text-sm text-blue-900 dark:text-blue-200 leading-relaxed">
-        Radiology admin tools (DICOM, network, AI assistants, HL7, knowledge packs) live here and in{" "}
-        <Link href="/settings/radiology" className="font-semibold underline underline-offset-2">Radiology Settings Center</Link>.
-        Prefer the Settings Center for PACS/viewer/MWL configuration; use these cards for deep tools.
+        Start with the{" "}
+        <Link href="/settings/radiology" className="font-semibold underline underline-offset-2">Radiology Settings Center</Link>
+        {" "}for PACS, Orthanc, OHIF/Weasis, MWL, report style, and voice. The cards below are deep tools (DICOM agent, AI assistants, HL7, knowledge packs).
+        Browser-only productivity toggles are on{" "}
+        <button type="button" className="font-semibold underline underline-offset-2" onClick={() => { try { window.dispatchEvent(new CustomEvent("care:settings-tab", { detail: "radiology" })); } catch { /* noop */ } }}>Radiology Device Flags</button>.
       </div>
       <div className="bg-card border border-card-border rounded-xl p-5 space-y-4">
         <div>
@@ -6790,13 +6792,15 @@ function RadiologySettingsTab() {
     { id: "radiologyMacroEngine", label: "Personal Macro Engine", desc: "Shortcuts like /normalbrain, /l4l5disc, /fazekas2 for instant insertion", value: macroEngine, set: setMacroEngine },
   ];
 
+  const [showExperimentalFlags, setShowExperimentalFlags] = useState(false);
+
   return (
     <div className="max-w-2xl space-y-6">
       <Link
         href="/settings/radiology"
         className="flex items-center justify-between gap-3 rounded-xl border bg-blue-50 dark:bg-blue-950/20 border-blue-200 dark:border-blue-800 p-3 text-sm hover:bg-blue-100 dark:hover:bg-blue-900/30 transition-colors"
       >
-        <span>Looking for PACS, Orthanc, OHIF, Weasis, DICOM, or worklist settings? Those live on the dedicated <strong>Radiology Settings</strong> page.</span>
+        <span>Looking for PACS, Orthanc, OHIF, Weasis, DICOM, MWL, report style, or voice? Open the <strong>Radiology Settings Center</strong> — the real admin hub (owner/admin).</span>
         <span className="shrink-0 text-blue-600 dark:text-blue-400 font-medium">Open →</span>
       </Link>
       <button
@@ -6834,6 +6838,20 @@ function RadiologySettingsTab() {
         </div>
       </div>
 
+      <div className="rounded-xl border border-amber-200 bg-amber-50/60 dark:bg-amber-950/20 dark:border-amber-800 p-4 space-y-3">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-semibold text-amber-950 dark:text-amber-100">Experimental / roadmap toggles</h3>
+            <p className="text-xs text-amber-900/80 dark:text-amber-200/80 mt-1">
+              Dozens of browser-local flags from earlier roadmap phases. Many are unwired or partial — they do not replace Radiology Settings Center or server Feature Flags.
+            </p>
+          </div>
+          <Button type="button" size="sm" variant="outline" className="h-8 shrink-0" onClick={() => setShowExperimentalFlags((v) => !v)}>
+            {showExperimentalFlags ? "Hide experimental" : "Show experimental"}
+          </Button>
+        </div>
+        {showExperimentalFlags && (
+          <div className="space-y-6 pt-1">
       {/* Phase 3: Advanced Productivity */}
       <div className="bg-card border border-card-border rounded-xl p-5 space-y-4">
         <div>
@@ -7078,6 +7096,10 @@ function RadiologySettingsTab() {
             </label>
           ))}
         </div>
+      </div>
+
+          </div>
+        )}
       </div>
 
       {/* Keyboard shortcuts reference */}
