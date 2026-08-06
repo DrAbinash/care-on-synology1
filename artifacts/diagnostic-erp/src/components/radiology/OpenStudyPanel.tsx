@@ -117,6 +117,7 @@ export default function OpenStudyPanel({ study, isAdmin, onLaunchStateChange }: 
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<StudyLaunchResult | null>(null);
   const [showDiag, setShowDiag] = useState(false);
+  const [showNetwork, setShowNetwork] = useState(false);
   const [pacsCheck, setPacsCheck] = useState<LaunchDiagnosticsResponse | null>(null);
   const [pacsChecking, setPacsChecking] = useState(false);
 
@@ -228,18 +229,31 @@ export default function OpenStudyPanel({ study, isAdmin, onLaunchStateChange }: 
           <MonitorPlay size={12} /> Weasis
         </Button>
         <div className="ml-auto flex items-center gap-1">
-          <Route size={12} className="text-muted-foreground" />
-          <Select value={mode} onValueChange={(v) => chooseMode(v as NetworkMode)}>
-            <SelectTrigger className="h-7 w-[118px] text-xs" data-testid="network-mode-select">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="AUTO">AUTO</SelectItem>
-              {CONCRETE_MODES.map((m) => (
-                <SelectItem key={m} value={m}>{MODE_LABEL[m]}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className="h-7 px-1.5 text-[10px] gap-0.5 text-muted-foreground"
+            onClick={() => setShowNetwork((v) => !v)}
+            title="Network route (default AUTO — silent probe)"
+            data-testid="btn-toggle-network"
+          >
+            <Route size={12} />
+            {mode === "AUTO" ? "AUTO" : MODE_LABEL[mode as ConcreteMode] ?? mode}
+          </Button>
+          {showNetwork && (
+            <Select value={mode} onValueChange={(v) => chooseMode(v as NetworkMode)}>
+              <SelectTrigger className="h-7 w-[118px] text-xs" data-testid="network-mode-select">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="AUTO">AUTO (silent)</SelectItem>
+                {CONCRETE_MODES.map((m) => (
+                  <SelectItem key={m} value={m}>{MODE_LABEL[m]}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
         </div>
       </div>
 

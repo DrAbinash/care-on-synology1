@@ -78,7 +78,7 @@ import "@/lib/copilotUsgCompanionModule"; // registers the USG Companion Copilot
 // measurement import queue — self-hides when the study has none.
 import ViewerMeasurementsPanel, { useViewerMeasurements } from "@/components/radiology/ViewerMeasurementsPanel";
 import PreferencesPanel from "@/components/PreferencesPanel";
-import { isUltrasoundModality, isObstetricUsgStudy } from "@/lib/usgModality";
+import { isUltrasoundModality, isObstetricUsgStudy, normalizeModality } from "@/lib/usgModality";
 import { templateCatalogModality, templateModalityMatches } from "@/lib/radiologyTemplateModality";
 import {
   pickStructuredTemplate,
@@ -187,7 +187,7 @@ import { useStudyLock } from "@/hooks/useStudyLock";
 import { lockStatusMessage, QUEUE_SCOPE_LABELS, parseQueueScope, assignmentCategoryOf, type QueueScope } from "@/lib/studyLockState";
 import type { StudyLaunchResult } from "@/lib/studyLaunchService";
 import { ChevronLeft, ChevronRight, PauseCircle, Lock, TrendingUp, TrendingDown, Minus, CalendarDays, Library } from "lucide-react";
-import { DATE_PRESETS, toISTDateStr } from "@/lib/dateRangePresets";
+import { todayISO, daysAgoISO } from "@/lib/dateRangePresets";
 // M1.6B2 — the ONE voice pipeline (providers/grammar/safety live in libs; the
 // hook executes through THIS page's adapter → the M1.5 command dispatcher).
 import { useVoiceSession, type VoiceExecutionResult } from "@/hooks/useVoiceSession";
@@ -1044,53 +1044,51 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     try { window.localStorage.setItem("radiology_queue_scope", next); } catch { /* private mode */ }
   }
 
-  // ── M1.5 — workflow controller (queue, history, parked, transitions) ─────
-  const workflow = useReportingWorkflow(studyId, {
-    scope: queueScope,
-    myUserId: session?.user.id ?? null,
-    myName: session?.user.name ?? null,
-  });
-
-  // ── A1 (Cockpit→Workspace merge): free-text + modality filter over the JUMP
-  // dropdown only. Deliberately NOT applied to Next/Previous/park — those stay
-  // scope-based so the CURRENT study never drops out of the queue (which would
-  // corrupt position/history). This just lets a radiologist find-and-jump to a
-  // study by patient/accession/modality without leaving the report. State is
-  // distinct from the template `modalityFilter` (which filters the picker).
+  // ── Queue modality + date filters (chrome USG / MRI / More buttons) ─────
+  // Default: MRI + Today+Yesterday so the reporting queue opens on the
+  // typical MRI reading slice. URL `?modality=` (e.g. USG nav) overrides.
   const [queueFilterText, setQueueFilterText] = useState("");
-  const [queueModalityFilter, setQueueModalityFilter] = useState("all");
-  // Date-range filter over the jump list — same IST-calendar-day presets as
-  // the PACS Worklist page (Today/Yesterday/Day Before/This Week/This Month).
-  const [queueDateFrom, setQueueDateFrom] = useState("");
-  const [queueDateTo, setQueueDateTo] = useState("");
+  const [queueModalityFilter, setQueueModalityFilter] = useState(() => {
+    try {
+      const fromUrl = new URLSearchParams(window.location.search).get("modality");
+      if (fromUrl) {
+        const n = normalizeModality(fromUrl);
+        if (n === "US" || n.startsWith("US")) return "US";
+        if (n === "MR" || n.startsWith("MR") || n === "MRI") return "MR";
+        if (n.startsWith("CT")) return "CT";
+        if (n === "CR" || n === "DX" || n === "X-RAY" || n === "XR") return n === "DX" ? "DX" : "CR";
+      }
+    } catch { /* ignore */ }
+    return "MR";
+  });
+  const [queueDateFrom, setQueueDateFrom] = useState(() => daysAgoISO(1));
+  const [queueDateTo, setQueueDateTo] = useState(() => todayISO());
   function setQueueDatePreset(from: string, to: string) {
     setQueueDateFrom(from);
     setQueueDateTo(to);
   }
+
+  // ── M1.5 — workflow controller (queue, history, parked, transitions) ─────
+  // Modality + date narrow Next/Previous/position to the selected study bucket.
+  const workflow = useReportingWorkflow(studyId, {
+    scope: queueScope,
+    myUserId: session?.user.id ?? null,
+    myName: session?.user.name ?? null,
+    modalityFilter: queueModalityFilter,
+    dateFrom: queueDateFrom,
+    dateTo: queueDateTo,
+  });
+
+  // Free-text filter over the JUMP dropdown only (queue is already
+  // modality/date filtered above). Distinct from template `modalityFilter`.
   const jumpQueue = useMemo(() => {
     const q = queueFilterText.trim().toLowerCase();
-    const mod = queueModalityFilter;
+    if (!q) return workflow.queue;
     return workflow.queue.filter((s) => {
-      if (mod !== "all") {
-        const m = (s.modality ?? "").toUpperCase();
-        const matchesModality = mod === "US"
-          ? isUltrasoundModality(s.modality)
-          : m.startsWith(mod);
-        if (!matchesModality) return false;
-      }
-      if (queueDateFrom || queueDateTo) {
-        const d = s.createdAt ? toISTDateStr(s.createdAt) : null;
-        if (!d) return false;
-        if (queueDateFrom && d < queueDateFrom) return false;
-        if (queueDateTo && d > queueDateTo) return false;
-      }
-      if (q) {
-        const hay = `${s.patientName ?? ""} ${s.modality ?? ""} ${s.accessionNumber ?? ""}`.toLowerCase();
-        if (!hay.includes(q)) return false;
-      }
-      return true;
+      const hay = `${s.patientName ?? ""} ${s.modality ?? ""} ${s.accessionNumber ?? ""}`.toLowerCase();
+      return hay.includes(q);
     });
-  }, [workflow.queue, queueFilterText, queueModalityFilter, queueDateFrom, queueDateTo]);
+  }, [workflow.queue, queueFilterText]);
 
   // Claim the current study on entry (visible in the status bar — never
   // silent), heartbeat while held, stop after finalize. Server expiry stays

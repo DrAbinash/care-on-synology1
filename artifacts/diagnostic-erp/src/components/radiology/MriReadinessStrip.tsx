@@ -43,9 +43,11 @@ export default function MriReadinessStrip({
       action: () => onOpenTab("templates"),
     },
     {
-      ok: priorCount === 0 || priorCount > 0,
+      ok: true,
       warn: priorCount > 0,
-      label: priorCount > 0 ? `${priorCount} prior report${priorCount > 1 ? "s" : ""}` : "No priors",
+      label: priorCount > 0
+        ? `${priorCount} prior report${priorCount > 1 ? "s" : ""} — review`
+        : "No priors on file",
       action: () => onOpenTab("prior"),
     },
     {

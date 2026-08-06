@@ -83,10 +83,18 @@ const FEATURES: RadiologyFeature[] = [
   {
     name: "Command Center",
     route: "/radiology/command-center",
-    purpose: "Real-time KPI dashboard: daily volume, TAT, AI usage, quality scores, anomalies.",
-    status: "Active",
+    purpose: "Legacy single-screen workstation (deprecated — use Reporting Workspace). Owner/admin only.",
+    status: "Deprecated",
     adminOnly: true,
     icon: Activity,
+  },
+  {
+    name: "Report Generator (Legacy)",
+    route: "/radiology/report-generator",
+    purpose: "Deprecated layout/macros editor — prefer Reporting Workspace print tab. Owner/admin only.",
+    status: "Deprecated",
+    adminOnly: true,
+    icon: FileText,
   },
   {
     name: "PACS Settings",

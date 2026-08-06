@@ -3946,6 +3946,7 @@ function AuditLogTab() {
 type FeatureFlagRow = {
   key: string; enabled: boolean; description: string;
   updatedBy: string | null; updatedAt: string;
+  wired?: boolean;
 };
 
 function FeatureFlagsTab() {
@@ -3973,9 +3974,8 @@ function FeatureFlagsTab() {
       <div className="bg-card border border-card-border rounded-xl p-4">
         <h2 className="font-bold text-lg flex items-center gap-2"><Flag size={16} /> Feature Flags</h2>
         <p className="text-sm text-muted-foreground mt-1">
-          Server-side switches for the Radiology Implementation Roadmap. Every flag below is dark by default —
-          turning one on changes real backend behavior for every radiologist, not just this browser. See the
-          roadmap document for each flag's rollout plan and rollback-by-flip guarantee.
+          Server-side switches for the Radiology Implementation Roadmap. Flags marked <strong>Not wired</strong> have no
+          product effect yet — enabling them is blocked. See Flight Deck → Ops Flags for the registry.
         </p>
       </div>
 
@@ -3986,31 +3986,48 @@ function FeatureFlagsTab() {
               <tr className="border-b border-card-border bg-muted/40">
                 <th className="text-left px-4 py-3 text-xs font-semibold uppercase text-muted-foreground">Flag</th>
                 <th className="text-left px-4 py-3 text-xs font-semibold uppercase text-muted-foreground">Description</th>
+                <th className="text-left px-4 py-3 text-xs font-semibold uppercase text-muted-foreground">Wiring</th>
                 <th className="text-left px-4 py-3 text-xs font-semibold uppercase text-muted-foreground">Last changed</th>
                 <th className="text-right px-4 py-3 text-xs font-semibold uppercase text-muted-foreground">Enabled</th>
               </tr>
             </thead>
             <tbody>
               {isLoading ? (
-                <tr><td colSpan={4} className="px-4 py-10 text-center text-muted-foreground">Loading feature flags…</td></tr>
+                <tr><td colSpan={5} className="px-4 py-10 text-center text-muted-foreground">Loading feature flags…</td></tr>
               ) : flags.length === 0 ? (
-                <tr><td colSpan={4} className="px-4 py-10 text-center text-muted-foreground">No feature flags found.</td></tr>
-              ) : flags.map((f) => (
-                <tr key={f.key} className="border-b border-card-border/60 hover:bg-muted/30">
+                <tr><td colSpan={5} className="px-4 py-10 text-center text-muted-foreground">No feature flags found.</td></tr>
+              ) : flags.map((f) => {
+                const wired = f.wired !== false;
+                return (
+                <tr key={f.key} className={`border-b border-card-border/60 hover:bg-muted/30 ${!wired ? "opacity-70" : ""}`}>
                   <td className="px-4 py-3 font-mono text-xs">{f.key}</td>
                   <td className="px-4 py-3 text-muted-foreground max-w-md">{f.description}</td>
+                  <td className="px-4 py-3 whitespace-nowrap">
+                    {wired ? (
+                      <span className="text-[10px] font-semibold uppercase text-emerald-700 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded">Wired</span>
+                    ) : (
+                      <span className="text-[10px] font-semibold uppercase text-amber-800 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded" title="Enabling has no product effect">Not wired</span>
+                    )}
+                  </td>
                   <td className="px-4 py-3 text-muted-foreground whitespace-nowrap">
                     {f.updatedBy ? `${f.updatedBy} · ${new Date(f.updatedAt).toLocaleString("en-IN")}` : "—"}
                   </td>
                   <td className="px-4 py-3 text-right">
                     <Toggle
                       checked={f.enabled}
-                      onChange={(v) => toggle.mutate({ key: f.key, enabled: v })}
+                      onChange={(v) => {
+                        if (!wired && v) {
+                          toast({ title: "Flag not wired", description: "This switch has no product effect yet.", variant: "destructive" });
+                          return;
+                        }
+                        toggle.mutate({ key: f.key, enabled: v });
+                      }}
                       label={`Toggle ${f.key}`}
                     />
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
