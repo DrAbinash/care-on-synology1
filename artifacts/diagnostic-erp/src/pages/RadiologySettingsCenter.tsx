@@ -20,7 +20,7 @@ import {
   Network, Server, MonitorPlay, Radio, BrainCircuit,
   Wrench, Activity, ShieldAlert,
   RefreshCw, Save,
-  Zap, ShieldCheck, PlayCircle, Info, Palette, Mic, Waves, Cpu
+  Zap, ShieldCheck, PlayCircle, Info, Palette, Mic, Waves, Cpu, BookOpen
 } from "lucide-react";
 import type { UseMutationResult } from "@tanstack/react-query";
 // M1.6B2/B3 — voice layer settings (same pacs_settings persistence as this
@@ -87,7 +87,7 @@ export default function RadiologySettingsCenter() {
   const isAdmin = FULL_ACCESS_ROLES.has(normalizeRole(readStaffSession()?.user.role ?? ""));
 
   const SETTINGS_TABS = [
-    "general", "network", "modalities", "pacs", "pacs-advanced", "viewers", "mwl",
+    "general", "reading-suite", "network", "modalities", "pacs", "pacs-advanced", "viewers", "mwl",
     "reporting", "usg-extraction", "style", "premium", "voice", "diagnostics", "history", "advanced",
   ] as const;
 
@@ -354,6 +354,7 @@ export default function RadiologySettingsCenter() {
       <Tabs value={activeTab} onValueChange={goTab} className="space-y-4">
         <TabsList className="flex flex-wrap h-auto gap-1 bg-muted p-1 rounded-lg">
           <TabsTrigger value="general"><ShieldCheck size={14} className="mr-1.5" />General</TabsTrigger>
+          <TabsTrigger value="reading-suite"><BookOpen size={14} className="mr-1.5" />Reading Suite</TabsTrigger>
           <TabsTrigger value="network"><Network size={14} className="mr-1.5" />Profiles</TabsTrigger>
           <TabsTrigger value="modalities"><Server size={14} className="mr-1.5" />Modalities</TabsTrigger>
           <TabsTrigger value="pacs"><Radio size={14} className="mr-1.5" />PACS Servers</TabsTrigger>
@@ -459,9 +460,9 @@ export default function RadiologySettingsCenter() {
             <div className="flex items-center justify-between border rounded-lg p-3">
               <div>
                 <Label className="text-xs font-semibold">Lock report after Final sign-off</Label>
-                <p className="text-[11px] text-muted-foreground">Finalized reports are locked in the Reading Room (Save/Finalize disabled after sign-off). Keep ON; owner amendments go through preserved owner tools.</p>
+                <p className="text-[11px] text-muted-foreground">Moved to <button type="button" className="underline text-primary" onClick={() => goTab("reading-suite")}>Reading Suite</button> — default OFF for trial.</p>
               </div>
-              <Switch checked={svOn("report_final_lock")} disabled={!isAdmin}
+              <Switch checked={svOn("report_final_lock", false)} disabled={!isAdmin}
                 onCheckedChange={(v) => upsertSetting.mutate({ key: "report_final_lock", value: String(v), category: "radiology" })} />
             </div>
             <div className="space-y-1">
@@ -486,6 +487,94 @@ export default function RadiologySettingsCenter() {
               <a href="/radiology/structured-report-templates" className="text-primary hover:underline">Structured templates</a>
               <span className="text-muted-foreground">·</span>
               <a href="/radiology/normal-templates" className="text-primary hover:underline">Normal one-click templates</a>
+            </div>
+          </div>
+        </TabsContent>
+
+        <TabsContent value="reading-suite" className="space-y-4" data-testid="reading-suite-tab">
+          <div className="rounded-xl border bg-card p-5 space-y-2 max-w-3xl">
+            <h3 className="text-sm font-bold flex items-center gap-2">
+              <BookOpen size={16} className="text-sky-600" /> Reading Suite
+            </h3>
+            <p className="text-xs text-muted-foreground">
+              One place for Worklist + Reporting Workspace behaviour. Trial defaults favour speed over hard locks —
+              tighten these when you go live with a multi-reader roster.
+            </p>
+          </div>
+
+          <div className="rounded-xl border bg-card p-5 space-y-4 max-w-3xl">
+            <h4 className="text-xs font-bold uppercase tracking-wide text-muted-foreground">Permissions &amp; safety</h4>
+            <div className="flex items-center justify-between border rounded-lg p-3">
+              <div>
+                <Label className="text-xs font-semibold">Lock report after Final sign-off</Label>
+                <p className="text-[11px] text-muted-foreground">
+                  OFF (trial default): you can keep editing after Finalize. ON: Final/Amended reports become read-only in the workspace.
+                </p>
+              </div>
+              <Switch checked={svOn("report_final_lock", false)} disabled={!isAdmin}
+                onCheckedChange={(v) => upsertSetting.mutate({ key: "report_final_lock", value: String(v), category: "radiology" })} />
+            </div>
+            <div className="flex items-center justify-between border rounded-lg p-3">
+              <div>
+                <Label className="text-xs font-semibold">Relax concurrent study locks</Label>
+                <p className="text-[11px] text-muted-foreground">
+                  ON (trial default): owners/radiologists can keep typing even if another session holds the study lock.
+                  Turn OFF for strict single-reader safety.
+                </p>
+              </div>
+              <Switch checked={svOn("report_relax_study_locks", true)} disabled={!isAdmin}
+                onCheckedChange={(v) => upsertSetting.mutate({ key: "report_relax_study_locks", value: String(v), category: "radiology" })} />
+            </div>
+          </div>
+
+          <div className="rounded-xl border bg-card p-5 space-y-4 max-w-3xl">
+            <h4 className="text-xs font-bold uppercase tracking-wide text-muted-foreground">Worklist queue</h4>
+            <div className="flex items-center justify-between border rounded-lg p-3">
+              <div>
+                <Label className="text-xs font-semibold">Highlight Urgent / VIP studies</Label>
+                <p className="text-[11px] text-muted-foreground">Tints STAT / EMERGENCY / URGENT / VIP rows on the Worklist.</p>
+              </div>
+              <Switch checked={svOn("urgent_highlight_enabled")} disabled={!isAdmin}
+                onCheckedChange={(v) => upsertSetting.mutate({ key: "urgent_highlight_enabled", value: String(v), category: "radiology" })} />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">Aging alert after (hours)</Label>
+              <Input
+                type="number" min={1} max={72} className="h-8 text-sm w-32"
+                placeholder="4"
+                defaultValue={sv("radiology_aging_alert_hours", "4")}
+                onBlur={(e) => upsertSetting.mutate({ key: "radiology_aging_alert_hours", value: e.target.value.trim() || "4", category: "radiology" })}
+                disabled={!isAdmin}
+              />
+              <p className="text-[11px] text-muted-foreground">Red “waiting” badge on studies not finalized within this window.</p>
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              Modality quick filter (USG / MRI / More) lives on the <button type="button" className="underline text-primary" onClick={() => navigate("/radiology/worklist")}>Worklist</button>, not the reporting editor.
+            </p>
+          </div>
+
+          <div className="rounded-xl border bg-card p-5 space-y-3 max-w-3xl">
+            <h4 className="text-xs font-bold uppercase tracking-wide text-muted-foreground">Reporting content &amp; tools</h4>
+            <div className="grid sm:grid-cols-2 gap-2 text-sm">
+              {[
+                { href: "/settings/radiology-quick-select", label: "Quick Select (findings & protocols)" },
+                { href: "/radiology/structured-report-templates", label: "Structured templates" },
+                { href: "/radiology/normal-templates", label: "Normal one-click templates" },
+                { href: "/radiology/ai-reporting-settings", label: "AI reporting" },
+                { href: "/radiology/usg-admin-settings", label: "USG extraction admin" },
+                { href: "/settings/radiology/knowledge-packs", label: "Knowledge packs" },
+                { href: "/radiology/reporting-workspace", label: "Open Reporting Workspace" },
+                { href: "/radiology/worklist", label: "Open Worklist" },
+              ].map((l) => (
+                <button
+                  key={l.href}
+                  type="button"
+                  className="text-left rounded-lg border px-3 py-2 hover:bg-muted/50 text-primary"
+                  onClick={() => navigate(l.href)}
+                >
+                  {l.label}
+                </button>
+              ))}
             </div>
           </div>
         </TabsContent>

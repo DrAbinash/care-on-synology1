@@ -2322,13 +2322,10 @@ function isUniqueViolation(err: unknown): boolean {
  *  is part of what was signed: reject further mutation (the workspace panel
  *  is already read-only at that point; this closes the API path too). */
 async function imageRefsLocked(draftId: number): Promise<boolean> {
-  const [draft] = await db
-    .select({ finalReportId: radiologyReportDraftsTable.finalReportId, status: radiologyReportDraftsTable.status })
-    .from(radiologyReportDraftsTable)
-    .where(eq(radiologyReportDraftsTable.id, draftId))
-    .limit(1);
-  if (!draft) return false; // unknown draft: legacy behavior (no new gate)
-  return draft.finalReportId != null || draft.status === "FINAL";
+  // Trial mode: allow image edits even after finalize. Hard lock can return later
+  // via Reading Suite settings; the UI already gates editing with report_final_lock.
+  void draftId;
+  return false;
 }
 const LOCKED_MSG = "Report finalized — its images can no longer be modified";
 

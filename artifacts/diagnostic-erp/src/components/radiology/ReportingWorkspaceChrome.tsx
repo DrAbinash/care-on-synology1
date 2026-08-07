@@ -2,6 +2,9 @@
  * Collapsible top chrome for the Radiology Reporting Workspace.
  * Focus mode hides the bulky header + queue toolbar so the report editor
  * (Clinical History → Findings) gets maximum vertical space.
+ *
+ * Modality USG/MRI/More lives on the Worklist — not here.
+ * Patient switching is a compact Today/Yesterday dropdown.
  */
 
 import type { ReactNode } from "react";
@@ -14,30 +17,26 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { DATE_PRESETS } from "@/lib/dateRangePresets";
+import { daysAgoISO, todayISO } from "@/lib/dateRangePresets";
 import { QUEUE_SCOPE_LABELS, lockStatusMessage, type QueueScope } from "@/lib/studyLockState";
 import type { StudyLockStatus } from "@/hooks/useStudyLock";
 import {
   ArrowLeft, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Lock,
   Maximize2, MoreHorizontal, PanelLeftClose, PanelLeftOpen,
-  PanelRightClose, PanelRightOpen, PauseCircle, RefreshCw, SlidersHorizontal, X,
+  PanelRightClose, PanelRightOpen, PauseCircle, RefreshCw, SlidersHorizontal, Users, X,
 } from "lucide-react";
 
-/** Primary modality buckets shown as dedicated chrome buttons. */
-export const QUEUE_MODALITY_PRIMARY = [
-  { value: "US", label: "USG" },
-  { value: "MR", label: "MRI" },
-] as const;
-
-/** Remaining modalities live in the third-button dropdown. */
-export const QUEUE_MODALITY_REST = [
-  { value: "CT", label: "CT" },
-  { value: "CR", label: "CR / X-ray" },
-  { value: "DX", label: "DX" },
-  { value: "all", label: "All modalities" },
-] as const;
+/** @deprecated Prefer QueueModalityFilter on the worklist — kept for any leftover imports. */
+export { QUEUE_MODALITY_PRIMARY, QUEUE_MODALITY_REST } from "@/components/radiology/QueueModalityFilter";
 
 export const WORKSPACE_CHROME_COLLAPSED_KEY = "radiology_workspace_chrome_collapsed";
+
+/** Compact day window for the workspace patient picker (today / yesterday only). */
+export const WORKSPACE_DAY_PRESETS = [
+  { id: "today", label: "Today", from: () => todayISO(), to: () => todayISO() },
+  { id: "yesterday", label: "Yesterday", from: () => daysAgoISO(1), to: () => daysAgoISO(1) },
+  { id: "today_yesterday", label: "Today + Yesterday", from: () => daysAgoISO(1), to: () => todayISO() },
+] as const;
 
 export type LayoutModeOption = {
   mode: string;
@@ -134,63 +133,59 @@ export type ReportingWorkspaceChromeProps = {
   modalityAccent?: { label: string; className: string } | null;
 };
 
-function QueueModalityButtons(props: Pick<ReportingWorkspaceChromeProps, "queueModalityFilter" | "onQueueModalityFilterChange">) {
-  const active = props.queueModalityFilter;
-  const restActive = QUEUE_MODALITY_REST.some((m) => m.value === active);
-  const restLabel = QUEUE_MODALITY_REST.find((m) => m.value === active)?.label
-    ?? (active !== "US" && active !== "MR" && active !== "all" ? active : "More");
+function activeDayPresetId(from: string, to: string): string {
+  for (const p of WORKSPACE_DAY_PRESETS) {
+    if (p.from() === from && p.to() === to) return p.id;
+  }
+  return "";
+}
 
-  const btn = (selected: boolean) =>
-    `h-7 px-2 text-[10px] font-semibold border transition-colors ${
-      selected
-        ? "bg-primary text-primary-foreground border-primary"
-        : "bg-background text-muted-foreground border-border hover:bg-muted"
-    }`;
+function CompactPatientPicker(props: ReportingWorkspaceChromeProps) {
+  const dayId = activeDayPresetId(props.queueDateFrom, props.queueDateTo);
+  const dayLabel = WORKSPACE_DAY_PRESETS.find((p) => p.id === dayId)?.label
+    ?? (props.queueDateFrom || props.queueDateTo ? "Custom" : "Today + Yesterday");
 
   return (
-    <div className="flex items-center gap-0.5 shrink-0" role="group" aria-label="Study modality filter" data-testid="queue-modality-buttons">
-      {QUEUE_MODALITY_PRIMARY.map((m) => (
-        <Button
-          key={m.value}
-          type="button"
-          size="sm"
-          variant="outline"
-          className={btn(active === m.value)}
-          data-testid={`queue-modality-${m.value}`}
-          aria-pressed={active === m.value}
-          onClick={() => props.onQueueModalityFilterChange(m.value)}
-        >
-          {m.label}
-        </Button>
-      ))}
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            className={`${btn(restActive)} gap-0.5`}
-            data-testid="queue-modality-rest"
-            aria-pressed={restActive}
-            title="Other modalities"
-          >
-            {restLabel}
-            <ChevronDown size={11} />
-          </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="w-40">
-          {QUEUE_MODALITY_REST.map((m) => (
-            <DropdownMenuItem
-              key={m.value}
-              data-testid={`queue-modality-rest-${m.value}`}
-              className={active === m.value ? "bg-muted font-semibold" : ""}
-              onClick={() => props.onQueueModalityFilterChange(m.value)}
-            >
-              {m.label}
-            </DropdownMenuItem>
-          ))}
-        </DropdownMenuContent>
-      </DropdownMenu>
+    <div className="flex items-center gap-1 shrink-0" data-testid="compact-patient-picker">
+      <select
+        className="h-7 max-w-[7.5rem] text-[10px] border rounded-md px-1.5 bg-background"
+        aria-label="Queue day"
+        data-testid="queue-day-preset"
+        value={dayId || "today_yesterday"}
+        onChange={(e) => {
+          const p = WORKSPACE_DAY_PRESETS.find((x) => x.id === e.target.value);
+          if (p) props.onQueueDatePreset(p.from(), p.to());
+        }}
+      >
+        {WORKSPACE_DAY_PRESETS.map((p) => (
+          <option key={p.id} value={p.id}>{p.label}</option>
+        ))}
+      </select>
+      <select
+        className="h-7 min-w-[8rem] max-w-[14rem] text-[10px] border rounded-md px-1.5 bg-background"
+        value=""
+        data-testid="queue-jump"
+        aria-label="Select patient"
+        onChange={(e) => {
+          const id = Number(e.target.value);
+          if (id) props.onJumpStudy(id);
+        }}
+      >
+        <option value="">
+          {props.patientBanner
+            ? `${props.patientBanner.slice(0, 28)}${props.patientBanner.length > 28 ? "…" : ""}`
+            : `Patients (${props.jumpQueue.length}) — ${dayLabel}`}
+        </option>
+        {props.jumpQueue.map((s) => {
+          const ind = props.workflow.indicators.find((i) => i.id === s.id);
+          const prefix = ind?.current ? "→ " : ind?.completed ? "✓ " : ind?.parked ? "⏸ " : ind?.lockedByOther ? "🔒 " : "";
+          return (
+            <option key={s.id} value={s.id}>
+              {prefix}{s.patientName} · {s.modality} · {s.accessionNumber}
+            </option>
+          );
+        })}
+      </select>
     </div>
   );
 }
@@ -199,7 +194,6 @@ function activeFilterCount(props: ReportingWorkspaceChromeProps): number {
   let n = 0;
   if (props.queueFilterText.trim()) n++;
   if (props.queueModalityFilter !== "all") n++;
-  if (props.queueDateFrom || props.queueDateTo) n++;
   if (props.queueScope !== "mine") n++;
   return n;
 }
@@ -220,8 +214,13 @@ function QueueFiltersPopover(props: ReportingWorkspaceChromeProps) {
           Filters{filters > 0 ? ` (${filters})` : ""}
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="end" className="w-80 p-3 space-y-3">
-        <div className="text-xs font-semibold">Queue filters</div>
+      <PopoverContent align="end" className="w-72 p-3 space-y-3">
+        <div className="text-xs font-semibold flex items-center gap-1">
+          <Users size={12} /> Queue filters
+        </div>
+        <p className="text-[10px] text-muted-foreground">
+          Day and patient are in the toolbar. Modality filter belongs on the Worklist (USG / MRI / More).
+        </p>
         <div className="space-y-1.5">
           <Label className="text-[10px] text-muted-foreground">Scope</Label>
           <select
@@ -247,83 +246,25 @@ function QueueFiltersPopover(props: ReportingWorkspaceChromeProps) {
           <Input
             value={props.queueFilterText}
             onChange={(e) => props.onQueueFilterTextChange(e.target.value)}
-            placeholder="Patient, accession, modality…"
+            placeholder="Patient, accession…"
             className="h-8 text-xs"
             data-testid="queue-filter-text"
           />
         </div>
-        <div className="space-y-1.5">
-          <Label className="text-[10px] text-muted-foreground">Modality</Label>
-          <select
-            className="h-8 w-full text-xs border rounded-md px-2 bg-background"
-            value={props.queueModalityFilter}
-            data-testid="queue-filter-modality"
-            onChange={(e) => props.onQueueModalityFilterChange(e.target.value)}
-          >
-            <option value="all">All modalities</option>
-            <option value="US">USG</option>
-            <option value="MR">MRI</option>
-            <option value="CT">CT</option>
-            <option value="CR">CR</option>
-            <option value="DX">DX</option>
-          </select>
-        </div>
-        <div className="space-y-1.5">
-          <Label className="text-[10px] text-muted-foreground">Date range</Label>
-          <select
-            className="h-8 w-full text-xs border rounded-md px-2 bg-background mb-1.5"
-            defaultValue=""
-            onChange={(e) => {
-              const idx = Number(e.target.value);
-              if (!Number.isFinite(idx) || idx < 0) return;
-              const p = DATE_PRESETS[idx];
-              if (p) props.onQueueDatePreset(p.from(), p.to());
-              e.target.value = "";
+        {(props.queueFilterText || props.queueScope !== "mine") && (
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className="h-7 text-[10px] w-full"
+            onClick={() => {
+              props.onQueueFilterTextChange("");
+              props.onQueueScopeChange("mine");
             }}
           >
-            <option value="">Quick preset…</option>
-            {DATE_PRESETS.map((p, i) => (
-              <option key={p.label} value={i}>{p.label}</option>
-            ))}
-          </select>
-          <div className="flex items-center gap-1.5">
-            <Input type="date" value={props.queueDateFrom} onChange={(e) => props.onQueueDatePreset(e.target.value, props.queueDateTo)} className="h-8 text-xs flex-1" data-testid="queue-filter-date-from" />
-            <span className="text-muted-foreground text-xs">–</span>
-            <Input type="date" value={props.queueDateTo} onChange={(e) => props.onQueueDatePreset(props.queueDateFrom, e.target.value)} className="h-8 text-xs flex-1" data-testid="queue-filter-date-to" />
-            {(props.queueDateFrom || props.queueDateTo) && (
-              <Button type="button" size="icon" variant="ghost" className="h-8 w-8 shrink-0" onClick={() => props.onQueueDatePreset("", "")} data-testid="queue-filter-date-clear">
-                <X size={12} />
-              </Button>
-            )}
-          </div>
-        </div>
-        <div className="space-y-1.5">
-          <Label className="text-[10px] text-muted-foreground">Jump to study</Label>
-          <select
-            className="h-8 w-full text-xs border rounded-md px-2 bg-background"
-            value=""
-            data-testid="queue-jump"
-            onChange={(e) => {
-              const id = Number(e.target.value);
-              if (id) props.onJumpStudy(id);
-            }}
-          >
-            <option value="">
-              Queue ({props.jumpQueue.length === props.workflow.position.total
-                ? props.workflow.position.total
-                : `${props.jumpQueue.length}/${props.workflow.position.total}`})…
-            </option>
-            {props.jumpQueue.map((s) => {
-              const ind = props.workflow.indicators.find((i) => i.id === s.id);
-              const prefix = ind?.current ? "→ " : ind?.completed ? "✓ " : ind?.parked ? "⏸ " : ind?.lockedByOther ? "🔒 " : "";
-              return (
-                <option key={s.id} value={s.id}>
-                  {prefix}{s.patientName} · {s.modality} · {s.accessionNumber}
-                </option>
-              );
-            })}
-          </select>
-        </div>
+            <X size={11} className="mr-1" /> Clear extra filters
+          </Button>
+        )}
       </PopoverContent>
     </Popover>
   );
@@ -369,7 +310,6 @@ export default function ReportingWorkspaceChrome(props: ReportingWorkspaceChrome
         className="shrink-0 border-b bg-gradient-to-r from-teal-50/50 via-amber-50/40 to-violet-50/50 dark:from-teal-950/20 dark:via-amber-950/15 dark:to-violet-950/20 backdrop-blur supports-[backdrop-filter]:bg-background/80"
         data-testid="workspace-chrome-collapsed"
       >
-        {/* Section hue legend — keeps Clinical / Findings / Impression / Advice scannable in focus mode */}
         <div
           className="flex h-1 w-full"
           aria-hidden
@@ -386,7 +326,6 @@ export default function ReportingWorkspaceChrome(props: ReportingWorkspaceChrome
             <ArrowLeft size={14} />
           </Button>
           <div className="min-w-0 flex items-center gap-1.5 text-[11px] shrink">
-            <span className="font-semibold truncate max-w-[140px] sm:max-w-[220px]" title={patientBanner}>{patientBanner || "Reporting"}</span>
             {props.modalityAccent && (
               <Badge className={`shrink-0 text-[9px] py-0 h-4 border ${props.modalityAccent.className}`} data-testid="chrome-modality-badge">
                 {props.modalityAccent.label}
@@ -406,10 +345,7 @@ export default function ReportingWorkspaceChrome(props: ReportingWorkspaceChrome
             )}
           </div>
           {voiceBar ? <div className="min-w-0 flex-1 overflow-hidden">{voiceBar}</div> : <div className="flex-1" />}
-          <QueueModalityButtons
-            queueModalityFilter={props.queueModalityFilter}
-            onQueueModalityFilterChange={props.onQueueModalityFilterChange}
-          />
+          <CompactPatientPicker {...props} />
           <WorkflowNavButtons {...props} />
           <QueueFiltersPopover {...props} />
           <DropdownMenu>
@@ -448,7 +384,6 @@ export default function ReportingWorkspaceChrome(props: ReportingWorkspaceChrome
 
   return (
     <div className="shrink-0 border-b bg-background" data-testid="workspace-chrome-expanded">
-      {/* Primary header — single tight row */}
       <div className="flex items-center gap-2 px-2 py-1.5 border-b bg-gradient-to-r from-sky-50/80 via-background to-violet-50/60 dark:from-sky-950/20 dark:via-background dark:to-violet-950/20 flex-wrap">
         <Button variant="ghost" size="sm" className="h-7 gap-1 text-xs shrink-0" onClick={onBackToWorklist}>
           <ArrowLeft size={13} /> Worklist
@@ -511,7 +446,6 @@ export default function ReportingWorkspaceChrome(props: ReportingWorkspaceChrome
         </Button>
       </div>
 
-      {/* Queue workflow + voice — one row; voice fills the former dead middle */}
       <div className="flex items-center gap-2 px-2 py-1 bg-muted/15 text-[11px]" data-testid="workflow-status-bar">
         <span className="text-muted-foreground font-medium shrink-0" data-testid="queue-position">
           Study {workflow.position.index >= 0 ? `${workflow.position.index + 1} of ${workflow.position.total}` : `— of ${workflow.position.total}`}
@@ -542,10 +476,7 @@ export default function ReportingWorkspaceChrome(props: ReportingWorkspaceChrome
           <div className="flex-1 min-w-0" />
         )}
         <div className="flex items-center gap-1.5 shrink-0">
-          <QueueModalityButtons
-            queueModalityFilter={props.queueModalityFilter}
-            onQueueModalityFilterChange={props.onQueueModalityFilterChange}
-          />
+          <CompactPatientPicker {...props} />
           <WorkflowNavButtons {...props} />
           <QueueFiltersPopover {...props} />
           <DropdownMenu>

@@ -31,6 +31,7 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { MwlPanel } from "@/pages/MwlDashboard";
 import { MwlStatusPanel } from "@/components/radiology/MwlStatusPanel";
+import QueueModalityFilter from "@/components/radiology/QueueModalityFilter";
 
 type WorklistEntry = {
   id: number;
@@ -1155,16 +1156,11 @@ export default function RadiologyWorklist() {
                   ))}
                 </SelectContent>
               </Select>
-              <Select value={modalityFilter} onValueChange={setModalityFilter}>
-                <SelectTrigger className="w-[130px]">
-                  <SelectValue placeholder="Modality" />
-                </SelectTrigger>
-                <SelectContent>
-                  {MODALITY_OPTIONS.map((m) => (
-                    <SelectItem key={m} value={m}>{m === "all" ? "All Modalities" : m}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <QueueModalityFilter
+                value={modalityFilter}
+                onChange={setModalityFilter}
+                size="md"
+              />
               <Select value={lockFilter} onValueChange={setLockFilter}>
                 <SelectTrigger className="w-[150px]">
                   <SelectValue placeholder="Lock Status" />
