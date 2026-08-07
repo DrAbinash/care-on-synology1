@@ -11,6 +11,7 @@ import type { ExportConfig, ExportSection, ExportTable } from "@/components/Summ
 import { buildReconciliationLedger, simpleLedgerRows } from "@/lib/reconciliationLedger";
 import { SummaryDrilldownModal, type DrilldownType } from "@/components/SummaryDrilldownModal";
 import BillingVsPacsKpi from "@/components/BillingVsPacsKpi";
+import ModalityBillingKpi from "@/components/ModalityBillingKpi";
 import LowStockKpi from "@/components/LowStockKpi";
 import { FINANCIAL_QUERY_OPTIONS } from "@/lib/queryConfig";
 import {
@@ -2090,6 +2091,9 @@ export default function MyDailySummary() {
           </p>
         )}
       </div>
+
+      {/* ── Imaging billed counts — openable by modality (uses date range) ── */}
+      <ModalityBillingKpi from={from} to={to} />
 
       {/* ── Imaging billed vs PACS (uses date range above; clinic-wide) ── */}
       <BillingVsPacsKpi from={from} to={to} />
