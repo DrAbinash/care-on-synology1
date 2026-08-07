@@ -154,6 +154,35 @@ async function looksLikeLegacyEnvelope(filePath: string): Promise<boolean> {
   }
 }
 
+/**
+ * True when a decrypted openssl artifact looks like usable SQL (pg_dump-ish).
+ * Wrong AES-CBC passphrases often still exit 0 and emit binary garbage — without
+ * this check we would hand that garbage to psql / report the wrong keySource.
+ */
+async function looksLikeSqlDump(filePath: string): Promise<boolean> {
+  let handle;
+  try {
+    handle = await fs.open(filePath, "r");
+    const buf = Buffer.alloc(512);
+    const { bytesRead } = await handle.read(buf, 0, 512, 0);
+    if (bytesRead === 0) return false;
+    // Reject high-bit / NUL-heavy binary (typical wrong-key CBC output).
+    let weird = 0;
+    for (let i = 0; i < bytesRead; i++) {
+      const c = buf[i]!;
+      if (c === 0 || c > 0x7f) weird++;
+    }
+    if (weird > bytesRead / 8) return false;
+    const head = buf.subarray(0, bytesRead).toString("utf8");
+    return /^\s*(--|\/\*|SET |BEGIN|CREATE|DROP|INSERT|COPY|ALTER|SELECT|\\\\restrict)/i.test(head)
+      || /CREATE\s+TABLE/i.test(head);
+  } catch {
+    return false;
+  } finally {
+    await handle?.close().catch(() => {});
+  }
+}
+
 export interface DecryptOutcome {
   /** Path to usable plaintext SQL — equals the input when it was never encrypted. */
   sqlPath: string;
@@ -189,10 +218,14 @@ export async function decryptBackupToSql(
         ["enc", "-d", "-aes-256-cbc", "-pbkdf2", "-pass", "env:CARE_BACKUP_PASS", "-in", filePath, "-out", out],
         key.passphrase,
       );
-      if (res.code === 0) {
+      if (res.code === 0 && await looksLikeSqlDump(out)) {
         return { sqlPath: out, format: "openssl-aes-256-cbc", keySource: key.source, producedTempFile: true };
       }
-      errors.push(`${key.source}: ${res.stderr.trim() || `exit ${res.code}`}`);
+      if (res.code === 0) {
+        errors.push(`${key.source}: openssl exited 0 but output is not SQL (wrong passphrase?)`);
+      } else {
+        errors.push(`${key.source}: ${res.stderr.trim() || `exit ${res.code}`}`);
+      }
       await fs.unlink(out).catch(() => {});
     }
     throw new Error(
