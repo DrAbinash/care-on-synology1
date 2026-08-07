@@ -32,6 +32,7 @@ import {
   removeBlock as _removeBlock,
   mergeImpression as _mergeImpression,
   removeImpression as _removeImpression,
+  stripNormalImpressionLines as _stripNormalImpressionLines,
 } from "./quickFindingsMerge";
 
 export const RENDER_ENGINE_VERSION = "1.0.0";
@@ -59,6 +60,8 @@ export {
   removeBlock,
   mergeImpression,
   removeImpression,
+  stripNormalImpressionLines,
+  isNormalImpressionLine,
 } from "./quickFindingsMerge";
 
 // ── Orchestration (Ticket F1b) ──────────────────────────────────────────────
@@ -102,6 +105,10 @@ export function applyRenderedTransition(
   if (next) {
     if (next.finding) rawFindings = _mergeBlock(rawFindings, next.finding);
     if (next.impression) impression = _mergeImpression(impression, next.impression);
+    // Any abnormal contribution (finding or impression) clears leftover normal-study lines.
+    if (next.finding || next.impression) {
+      impression = _stripNormalImpressionLines(impression, { onlyIfAbnormal: true });
+    }
     if (next.technique) technique = _mergeBlock(technique, next.technique);
     if (next.recommendation) recommendation = _mergeBlock(recommendation, next.recommendation);
   }

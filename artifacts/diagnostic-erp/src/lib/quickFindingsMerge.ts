@@ -46,3 +46,38 @@ export function removeImpression(lines: string[], line: string): string[] {
   if (idx === -1) return lines;
   return [...lines.slice(0, idx), ...lines.slice(idx + 1)];
 }
+
+/** Heuristic: template / protocol “normal study” impression lines. */
+const NORMAL_IMPRESSION_RE =
+  /\b(no significant (abnormality|intracranial|pathology)|within normal limits|unremarkable|appears? normal|normal (mri|ct|usg|ultrasound|study|brain|scan)|no (focal|acute|significant) (lesion|abnormality)|all imaged structures are within normal)\b/i;
+
+export function isNormalImpressionLine(line: string): boolean {
+  const t = line.trim();
+  if (!t) return false;
+  return NORMAL_IMPRESSION_RE.test(t);
+}
+
+/**
+ * When an abnormal impression is added, drop leftover normal-study lines so
+ * the Impression section does not keep “Normal MRI Brain…” next to pathology.
+ * Exact template defaults can also be passed via `knownNormals`.
+ */
+export function stripNormalImpressionLines(
+  lines: string[],
+  opts?: { knownNormals?: string[]; onlyIfAbnormal?: boolean },
+): string[] {
+  const known = new Set(
+    (opts?.knownNormals ?? []).map((s) => s.trim()).filter(Boolean),
+  );
+  const hasAbnormal = lines.some((l) => {
+    const t = l.trim();
+    return t && !known.has(t) && !isNormalImpressionLine(t);
+  });
+  if (opts?.onlyIfAbnormal && !hasAbnormal) return lines;
+  return lines.filter((l) => {
+    const t = l.trim();
+    if (!t) return false;
+    if (known.has(t)) return false;
+    return !isNormalImpressionLine(t);
+  });
+}

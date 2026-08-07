@@ -92,11 +92,14 @@ import { generateLocalImpression } from "@/lib/generateLocalImpression";
 import QuickFindingsPanel, {
   type QuickFinding, type QuickProtocol, type QuickClinicalHistoryChip, type QuickSelectData,
 } from "@/components/radiology/QuickFindingsPanel";
+import StudyLocalFindingEditDialog, {
+  type StudyLocalTextOverride,
+} from "@/components/radiology/StudyLocalFindingEditDialog";
 import { matchStudyRegion } from "@/lib/studyRegion";
 import { hasPhrase, appendClinicalPhrase, removeClinicalPhrase } from "@/lib/clinicalHistoryText";
 import {
   renderAbnormality, type AbnormalityInstance, type RenderedAbnormality, type Side,
-  mergeBlock, mergeImpression, EMPTY_INSTANCE,
+  mergeBlock, mergeImpression, stripNormalImpressionLines, EMPTY_INSTANCE,
   applyRenderedTransition, toggleQuickSelection, setQuickInstance, deleteQuickInstance,
   seedQuickInstance, patchQuickInstance,
 } from "@/lib/renderEngine";
@@ -203,6 +206,7 @@ import type { EmbeddedViewerHandle } from "@/components/EmbeddedWadoViewer";
 import { AiDraftPanel } from "@/components/ai/AiDraftPanel";
 import FindingsLibraryPanel from "@/components/radiology/FindingsLibraryPanel";
 import { appendToFindings } from "@/lib/aiDraftBinding";
+import { prefetchMriStudies, prefetchNextMriStudy } from "@/lib/mriStudyPrefetch";
 
 // ════════════════════════════════════════════════════════════════════════════
 // TYPES
@@ -1139,6 +1143,17 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     staleTime: 5 * 60_000,
   });
   const clinicVoiceSettings = useMemo(() => parseVoiceSettings(pacsSettingsRows), [pacsSettingsRows]);
+  /** Trial-friendly: finalized reports stay editable unless explicitly locked in Reading Suite settings. */
+  const reportFinalLock = useMemo(() => {
+    const row = pacsSettingsRows?.find((s) => s.key === "report_final_lock");
+    return row?.value === "true";
+  }, [pacsSettingsRows]);
+  /** Soften concurrent-edit locks for owners during trial when setting is off. */
+  const relaxStudyLocks = useMemo(() => {
+    const row = pacsSettingsRows?.find((s) => s.key === "report_relax_study_locks");
+    // Default ON (relaxed) when unset — trial mode.
+    return row?.value !== "false";
+  }, [pacsSettingsRows]);
   // M1.6B3 — the caller's own overrides layered over the clinic defaults
   // (tighten-only merge rules live in lib/voiceTranscription).
   const { data: voiceUserPrefsRaw } = useQuery<unknown>({
@@ -1170,6 +1185,9 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   // Phase 4: one structured instance per selected abnormality.
   const [quickInstances, setQuickInstances] = useState<Map<number, AbnormalityInstance>>(new Map());
   const insertedTextRef = useRef<Map<number, RenderedAbnormality>>(new Map());
+  /** Study-only text overrides from double-click edit (never PATCH the catalog). */
+  const studyTextOverridesRef = useRef<Map<number, StudyLocalTextOverride>>(new Map());
+  const [studyLocalEdit, setStudyLocalEdit] = useState<QuickFinding | null>(null);
   // Learning Engine (Phase 5): remembers the last selected finding so any
   // manually-added recommendation text at finalize time can be attributed
   // to it and offered as a suggestion next time. Suggestion-only — never
@@ -1272,6 +1290,15 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
    *  Both return the identical RenderedAbnormality shape, so the downstream
    *  Smart Findings Engine is untouched. */
   function renderFinding(f: QuickFinding, inst: AbnormalityInstance): RenderedAbnormality {
+    const override = studyTextOverridesRef.current.get(f.id);
+    if (override) {
+      return {
+        finding: override.finding,
+        impression: override.impression,
+        technique: override.technique,
+        recommendation: override.recommendation,
+      };
+    }
     const values = structuredValuesRef.current.get(f.id);
     if (values && findingQuestions(f).length > 0) {
       const g = generateStructuredFinding(f, values);
@@ -1280,6 +1307,24 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     return renderAbnormality(f, inst);
   }
 
+  /** Double-click Quick Select → edit text for THIS study only, then insert. */
+  function handleEditBeforeInsert(f: QuickFinding) {
+    if (isLocked) return;
+    setStudyLocalEdit(f);
+  }
+
+  function applyStudyLocalEdit(override: StudyLocalTextOverride) {
+    const f = studyLocalEdit;
+    if (!f) return;
+    studyTextOverridesRef.current.set(f.id, override);
+    setStudyLocalEdit(null);
+    if (!selectedQuickIds.has(f.id)) {
+      handleQuickToggle(f, true);
+    } else {
+      applyManyRendered([{ id: f.id, next: renderForReport(f, quickInstances.get(f.id) ?? EMPTY_INSTANCE) }]);
+      if (smartModeActive()) applySmartFinding(f, quickInstances.get(f.id) ?? EMPTY_INSTANCE, true);
+    }
+  }
   /** The loaded template's ordered {label, normal} baseline sections. */
   function currentBaseline(): Array<{ label: string; normal: string }> {
     return selectedTemplate ? parseSectionsJson(selectedTemplate.sectionsJson).findingsItems : [];
@@ -1393,6 +1438,10 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     ];
     for (const cid of evictIds) changes.push({ id: cid, next: null });
     applyManyRendered(changes);
+    // Selecting any abnormality clears leftover template “normal study” impression.
+    if (nowSelected) {
+      setImpression((prev) => stripNormalImpressionLines(prev));
+    }
 
     // Structured findings: apply each finding's section contribution.
     if (smartModeActive()) {
@@ -1463,10 +1512,9 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     else structuredValuesRef.current.delete(f.id);
   }
 
-  /** Auto-fill Technique from the study tab — only when Technique is empty,
-   *  so an already-written technique is never overwritten. */
+  /** Auto-fill Technique from a study tab — merges so Brain + Orbit add up. */
   function handleAutoTechnique(text: string) {
-    setTechnique((prev) => (prev.trim() ? prev : text));
+    setTechnique((prev) => mergeBlock(prev, text));
   }
 
   /** One-click baseline normals — dedupe-merged, never duplicated. */
@@ -1492,39 +1540,33 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   // stash the pending protocol here and show a Replace / Keep / Cancel prompt.
   const [protocolReplacePrompt, setProtocolReplacePrompt] = useState<QuickProtocol | null>(null);
 
-  /** Apply a protocol's side effects. `replaceTechnique` gates the (possibly
-   *  destructive) Technique overwrite; Recommendation is always a safe merge. */
+  /** Apply a protocol's side effects. Technique merges by default so multi-region
+   *  studies (Brain + Orbit) accumulate; `replaceTechnique` is for explicit re-apply. */
   function applyProtocol(protocol: QuickProtocol | null, replaceTechnique: boolean) {
     setActiveProtocol(protocol);
     if (!protocol) return;
     if (protocol.recommendationText) setRecommendation((prev) => mergeBlock(prev, protocol.recommendationText));
-    if (protocol.techniqueText && replaceTechnique) {
-      setTechnique(protocol.techniqueText);
-      lastInsertedTechniqueRef.current = protocol.techniqueText;
+    if (protocol.techniqueText) {
+      if (replaceTechnique) {
+        setTechnique(protocol.techniqueText);
+        lastInsertedTechniqueRef.current = protocol.techniqueText;
+      } else {
+        setTechnique((prev) => mergeBlock(prev, protocol.techniqueText));
+        lastInsertedTechniqueRef.current = protocol.techniqueText;
+      }
     }
   }
 
   /** Shared entry point for BOTH protocol dropdowns (right Quick panel and the
-   *  one beside Technique). They write the SAME activeProtocol state and route
-   *  through the SAME insertion logic — no duplicate selection value, no
-   *  duplicate insertion path. Prompts before replacing manually-edited
-   *  Technique text (Phase 8 safety rule). */
+   *  one beside Technique). Merges technique text — never replaces silently —
+   *  so selecting Orbit after Brain keeps both techniques. */
   function requestProtocolChange(protocol: QuickProtocol | null) {
-    // Clearing the protocol, or one with no technique text, never risks a
-    // manual-edit overwrite — apply immediately.
-    if (!protocol || !protocol.techniqueText) {
-      applyProtocol(protocol, false);
+    if (!protocol) {
+      applyProtocol(null, false);
       return;
     }
-    const current = technique.trim();
-    const lastInserted = (lastInsertedTechniqueRef.current ?? "").trim();
-    const manuallyEdited = current !== "" && current !== lastInserted;
-    if (manuallyEdited) {
-      setProtocolReplacePrompt(protocol); // ask Replace / Keep Current Text / Cancel
-      return;
-    }
-    // Technique is empty or still exactly the last protocol's text — safe to fill.
-    applyProtocol(protocol, true);
+    // Trial-friendly: always merge technique (no Replace / Keep prompt).
+    applyProtocol(protocol, false);
   }
 
   function handleInsertProtocolNormals() {
@@ -1699,6 +1741,21 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     toast({ title: "Remaining systems set to normal", description: "Edited sections were not changed." });
   }
 
+  /** Reset EVERY structured section to template normal (spine-friendly one-click). */
+  function fillAllNormals() {
+    const sections = selectedTemplate ? parseSectionsJson(selectedTemplate.sectionsJson) : null;
+    if (!sections?.findingsItems.length) return;
+    if (!window.confirm("Set all anatomy sections to normal? Edited section text will be replaced.")) return;
+    const map: Record<string, { normal: boolean; text: string }> = {};
+    for (const item of sections.findingsItems) {
+      map[item.label] = { normal: true, text: item.normal };
+    }
+    setFindingsMap(map);
+    if (selectedTemplate?.defaultFindings) setRawFindings(selectedTemplate.defaultFindings);
+    if (selectedTemplate?.defaultImpression) setImpression([selectedTemplate.defaultImpression]);
+    toast({ title: "All sections set to normal" });
+  }
+
   // ── Local unsaved-draft protection ────────────────────────────────────────
   // Backs up the typed report to this browser's localStorage every ~2s so a
   // crash, accidental tab close, or temporary API failure never loses work.
@@ -1851,39 +1908,37 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     [availableRegions, entry?.modality, entry?.studyDescription],
   );
 
-  // Manual override — lets the radiologist FORCE the study region (and therefore
-  // which quick findings / protocols / clinical-history chips appear) when the
-  // technician/billing desk labelled the study wrong or the auto-match misfired.
-  // Reset whenever the open study changes (below) so it never leaks across
-  // patients. `null` = follow the auto-resolved region.
-  const [regionOverride, setRegionOverride] = useState<string | null>(null);
-  const studyRegion = regionOverride ?? autoStudyRegion;
+  // Manual multi-region override — Brain + Orbit etc. add up. `null` follows auto.
+  const [regionOverrides, setRegionOverrides] = useState<string[] | null>(null);
+  const studyRegions = useMemo(() => {
+    if (regionOverrides && regionOverrides.length > 0) return regionOverrides;
+    return autoStudyRegion ? [autoStudyRegion] : [];
+  }, [regionOverrides, autoStudyRegion]);
+  /** Primary region (first selected) — drives default template / protocol pick. */
+  const studyRegion = studyRegions[0] ?? null;
 
-  // Protocols for this study region — the SAME list the Quick panel shows.
+  // Protocols for ALL selected regions — Brain + Orbit both contribute.
   const availableProtocols = useMemo(
     () => (quickSelectData?.protocols ?? [])
-      .filter((p) => p.isActive && !!studyRegion && p.studyType === studyRegion)
+      .filter((p) => p.isActive && studyRegions.includes(p.studyType))
       .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name)),
-    [quickSelectData, studyRegion],
+    [quickSelectData, studyRegions],
   );
 
-  // Up to 10 active clinical-history chips for this study region.
-  // All active clinical-history chips for this study region — no cap; the strip
-  // wraps to as many rows as needed (they are quick-insert workhorses).
+  // Clinical-history chips across selected regions.
   const clinicalHistoryChips = useMemo(
     () => (quickSelectData?.clinicalHistory ?? [])
-      .filter((c) => c.isActive && !!studyRegion && c.studyType === studyRegion)
+      .filter((c) => c.isActive && studyRegions.includes(c.studyType))
       .sort((a, b) => a.sortOrder - b.sortOrder || a.displayLabel.localeCompare(b.displayLabel)),
-    [quickSelectData, studyRegion],
+    [quickSelectData, studyRegions],
   );
 
-  // Study-specific findings for the prominent in-column "Quick Findings" strip
-  // (Phase 6). Same list the right Quick panel shows, wired to the same toggle.
+  // Quick findings for all selected regions (Brain + Orbit both show).
   const regionFindings = useMemo(
     () => (quickSelectData?.findings ?? [])
-      .filter((f) => f.isActive && !!studyRegion && f.studyType === studyRegion)
+      .filter((f) => f.isActive && studyRegions.includes(f.studyType))
       .sort((a, b) => a.sortOrder - b.sortOrder || a.label.localeCompare(b.label)),
-    [quickSelectData, studyRegion],
+    [quickSelectData, studyRegions],
   );
 
   // Quick Findings strip order: ★ favorites (server sort) first, then the rest.
@@ -2436,7 +2491,9 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     setStructuredFinalInfo(null); setFinalizedReportId(null);
     setReportCreationSkipped(null);
     setShowDiagnostics(false);
-    setRegionOverride(null); // manual region override must not leak across studies
+    setRegionOverrides(null); // manual region override must not leak across studies
+    studyTextOverridesRef.current = new Map();
+    setStudyLocalEdit(null);
     setActiveProtocol(null);
     lastInsertedTechniqueRef.current = null;
     setProtocolReplacePrompt(null);
@@ -2580,6 +2637,16 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
       const sv = (s.params as { __structured?: unknown }).__structured;
       if (sv && typeof sv === "object" && !Array.isArray(sv)) {
         structuredValuesRef.current.set(s.findingId, sv as Record<string, string>);
+      }
+      const to = (s.params as { __textOverride?: unknown }).__textOverride;
+      if (to && typeof to === "object" && !Array.isArray(to)) {
+        const o = to as Partial<StudyLocalTextOverride>;
+        studyTextOverridesRef.current.set(s.findingId, {
+          finding: typeof o.finding === "string" ? o.finding : "",
+          impression: typeof o.impression === "string" ? o.impression : "",
+          technique: typeof o.technique === "string" ? o.technique : "",
+          recommendation: typeof o.recommendation === "string" ? o.recommendation : "",
+        });
       }
     }
   }
@@ -2841,6 +2908,52 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     [entry?.modality],
   );
 
+  const { data: mriWarmStatus } = useQuery<{
+    running: boolean;
+    lastWarmed: number;
+    candidates: number;
+    lastRunAt: string | null;
+    orthancReachable: boolean | null;
+  }>({
+    queryKey: ["mri-warm-cache-status"],
+    queryFn: () => api.get("/api/radiology/mri-warm-cache/status"),
+    enabled: isMriModality,
+    staleTime: 30_000,
+    refetchInterval: isMriModality ? 60_000 : false,
+  });
+
+  const mriWarmHint = useMemo(() => {
+    if (!isMriModality) return null;
+    if (mriWarmStatus?.running) {
+      return {
+        label: "MRI warming…",
+        title: "Orthanc warm cache is running — opens should get faster shortly",
+        className: "bg-amber-50 text-amber-800 border-amber-200",
+      };
+    }
+    if (mriWarmStatus?.orthancReachable === false) {
+      return {
+        label: "MRI cache off",
+        title: "Orthanc unreachable — MRI warm cache paused",
+        className: "bg-red-50 text-red-700 border-red-200",
+      };
+    }
+    if (mriWarmStatus && (mriWarmStatus.lastWarmed > 0 || mriWarmStatus.candidates > 0)) {
+      return {
+        label: `Warm ${mriWarmStatus.lastWarmed}/${mriWarmStatus.candidates}`,
+        title: mriWarmStatus.lastRunAt
+          ? `Last MRI warm ${new Date(mriWarmStatus.lastRunAt).toLocaleString()}`
+          : "MRI studies pre-touched in Orthanc for faster opens",
+        className: "bg-indigo-50 text-indigo-800 border-indigo-200",
+      };
+    }
+    return {
+      label: "MRI cache",
+      title: "MRI warm cache enabled — today/yesterday studies pre-load in Orthanc",
+      className: "bg-indigo-50/80 text-indigo-700 border-indigo-200",
+    };
+  }, [isMriModality, mriWarmStatus]);
+
   // Per-modality accent for study setup bar + chrome chip.
   const modalityAccent = useMemo(() => {
     if (isMriModality) {
@@ -2978,28 +3091,29 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     }
   }, [entry, templates, quickSelectData, toast]);
 
-  function handleRegionOverrideSelect(nextValue: string) {
+  /** Toggle a study region (multi-select). Adding Orbit after Brain merges technique. */
+  function handleRegionToggle(regionName: string) {
     if (isLocked) return;
-    const targetRegion = nextValue || null;
-    if (!targetRegion || targetRegion === studyRegion) return;
-    const hasContent = technique.trim().length > 0
-      || rawFindings.trim().length > 0
-      || Object.keys(findingsMap).length > 0
-      || impression.some((l) => l.trim());
-    if (hasContent) {
-      if (!window.confirm(
-        "Changing the study region reloads the default protocol and structured template. "
-        + "Current technique and findings will be replaced. Continue?",
-      )) return;
+    const current = new Set(studyRegions);
+    if (current.has(regionName)) {
+      if (current.size <= 1) return; // keep at least one region
+      current.delete(regionName);
+      setRegionOverrides([...current]);
+      return;
     }
-    setRegionOverride(targetRegion === autoStudyRegion ? null : targetRegion);
-    applyStudyRegionDefaults(targetRegion, { fullReplace: true });
+    current.add(regionName);
+    setRegionOverrides([...current]);
+    // Merge that region's default protocol technique — do not wipe Brain text.
+    const protocol = pickQuickProtocol(quickSelectData?.protocols ?? [], regionName);
+    if (protocol) applyProtocol(protocol, false);
+    const tab = quickSelectData?.tabs?.find((t) => t.name === regionName);
+    if (tab?.techniqueText) handleAutoTechnique(tab.techniqueText);
   }
 
   function handleReapplyStudyDefaults() {
     if (isLocked || !studyRegion) return;
     if (!window.confirm(
-      "Reload the default protocol and structured template for this study region? "
+      "Reload the default protocol and structured template for the primary study region? "
       + "Technique and findings will be replaced.",
     )) return;
     applyStudyRegionDefaults(studyRegion, { fullReplace: true });
@@ -3278,10 +3392,12 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     return Array.from(set).sort();
   }, [templates]);
 
-  const statusLocked = STATUS_CONFIG[reportStatus]?.locked ?? false;
-  // M1.6A — the editing gate: a finalized report OR a study actively locked
-  // by another user is read-only. All existing disabled= paths hang off this.
-  const isLocked = statusLocked || lockedByOther;
+  const statusWouldLock = STATUS_CONFIG[reportStatus]?.locked ?? false;
+  const statusLocked = statusWouldLock && reportFinalLock;
+  // Editing gate: only lock FINAL when Reading Suite "lock after final" is ON.
+  // Locked-by-other still blocks unless trial relax is on (owners can always override).
+  const lockedByOtherEffective = lockedByOther && !relaxStudyLocks && !isOwnerRole(session);
+  const isLocked = statusLocked || lockedByOtherEffective;
 
   const reportNeedsStart = useMemo(() => {
     if (!studyRegion) return false;
@@ -3866,6 +3982,43 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     staleTime: 5 * 60_000,
   });
 
+  // Warm MRI DICOMweb for the reporting queue (today/yesterday / last ~20) so
+  // OHIF opens faster. Server-side Orthanc warmer runs in parallel; this hits
+  // the browser DICOMweb path the embedded viewer uses.
+  useEffect(() => {
+    const base = pdfViewerLaunch?.dicomWebBaseUrl;
+    if (!base) return;
+    const mriUids = workflow.queue
+      .filter((s) => {
+        const m = normalizeModality(s.modality ?? "");
+        return m === "MR" || m.startsWith("MR");
+      })
+      .map((s) => s.studyInstanceUID)
+      .filter((uid): uid is string => !!uid);
+    if (mriUids.length > 0) {
+      prefetchMriStudies(mriUids.map((uid) => ({ studyInstanceUID: uid, dicomWebBaseUrl: base })));
+    } else if (entry?.studyInstanceUID) {
+      const m = normalizeModality(entry.modality ?? "");
+      if (m === "MR" || m.startsWith("MR")) {
+        prefetchMriStudies([{ studyInstanceUID: entry.studyInstanceUID, dicomWebBaseUrl: base }]);
+      }
+    }
+  }, [pdfViewerLaunch?.dicomWebBaseUrl, workflow.queue, entry?.studyInstanceUID, entry?.modality]);
+
+  // Prefetch the next MR study in the queue when the current one is open.
+  useEffect(() => {
+    const base = pdfViewerLaunch?.dicomWebBaseUrl;
+    if (!base || !studyId) return;
+    const idx = workflow.queue.findIndex((s) => s.id === studyId);
+    if (idx < 0) return;
+    const next = workflow.queue[idx + 1];
+    if (!next?.studyInstanceUID) return;
+    const m = normalizeModality(next.modality ?? "");
+    if (m === "MR" || m.startsWith("MR")) {
+      prefetchNextMriStudy({ studyInstanceUID: next.studyInstanceUID, dicomWebBaseUrl: base });
+    }
+  }, [pdfViewerLaunch?.dicomWebBaseUrl, workflow.queue, studyId]);
+
   async function handleExportPdf() {
     setExportingPdf(true);
     try {
@@ -4056,7 +4209,12 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
       // findings[] (Ticket A3.1) serializes the current Quick Select
       // selection; A3.2 persists it to report_finding_instances, which is
       // what the selection restore above reads back.
-      const savedFindings = deriveQuickSelectFindings(selectedQuickIds, quickInstances, structuredValuesRef.current);
+      const savedFindings = deriveQuickSelectFindings(
+        selectedQuickIds,
+        quickInstances,
+        structuredValuesRef.current,
+        studyTextOverridesRef.current,
+      );
       // MRI PR 5 — a transient network blip retries with backoff before it
       // becomes a "Save Failed" toast; non-transient errors still fail fast.
       const res = await retryWithBackoff(() => saveRadiologyDraft<{ success: boolean; draft: { id: number } & Record<string, unknown> }>(
@@ -5144,6 +5302,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
         reportStatusLabel={STATUS_CONFIG[reportStatus]?.label || reportStatus}
         reportStatusClass={STATUS_CONFIG[reportStatus]?.color || ""}
         modalityAccent={entry ? { label: modalityAccent.label, className: modalityAccent.className } : null}
+        statusHint={mriWarmHint}
         isOnline={isOnline}
         isLoadingDraft={!!studyId && isLoadingExistingDraft}
         hasExistingDraft={!!existingDraft}
@@ -5441,6 +5600,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
               studyId={entry?.studyId ?? null}
               studyInstanceUID={entry?.studyInstanceUID ?? null}
               disabled={isLocked}
+              onEnsureDraft={isLocked ? undefined : () => saveDraft()}
             />
             {/* Print-from-workspace bridge: a SEPARATE, unpersisted selection
                 for the clinic's glossy-photo printer — independent of what's
@@ -5524,14 +5684,20 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
             )}
 
             {/* Finalized banner */}
-            {statusLocked && (
+            {statusWouldLock && statusLocked && (
               <div className="flex items-center gap-2 p-2 rounded-md bg-green-50 border border-green-200 text-green-800 text-xs font-medium shrink-0">
-                <CheckCircle2 size={14} /> Report is finalized. Editing is disabled.
+                <CheckCircle2 size={14} /> Report is finalized. Editing is disabled (Reading Suite → Lock after Final is ON).
+              </div>
+            )}
+            {statusWouldLock && !statusLocked && (
+              <div className="flex items-center gap-2 p-2 rounded-md bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-medium shrink-0" data-testid="finalized-editable-banner">
+                <CheckCircle2 size={14} />
+                <span className="flex-1">Finalized — still editable (trial mode). Turn on “Lock after Final” in Reading Suite settings when you want hard lock.</span>
               </div>
             )}
 
             {/* M1.6A — locked by another radiologist: read-only view */}
-            {!statusLocked && lockedByOther && (
+            {!statusLocked && lockedByOtherEffective && (
               <div className="flex items-center gap-2 p-2 rounded-md bg-red-50 border border-red-200 text-red-800 text-xs font-medium shrink-0">
                 <Lock size={14} className="shrink-0" />
                 <span className="flex-1">
@@ -5553,6 +5719,12 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                     Admin override
                   </Button>
                 )}
+              </div>
+            )}
+            {!statusLocked && lockedByOther && !lockedByOtherEffective && (
+              <div className="flex items-center gap-2 p-2 rounded-md bg-amber-50 border border-amber-200 text-amber-900 text-xs shrink-0">
+                <Lock size={14} className="shrink-0" />
+                Opened by {studyLock.ownerName ?? "another user"} — trial mode lets you keep editing. Use Worklist carefully to avoid overwriting.
               </div>
             )}
 
@@ -5749,10 +5921,17 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                   </Button>
                 )}
                 {useStructured && selectedTemplate && (
-                  <Button size="sm" variant="outline" className="h-6 text-[10px]" onClick={fillRemainingNormals}
-                    title="Set every section you haven't edited to its normal text — edited sections are never changed">
-                    Fill remaining normals
-                  </Button>
+                  <>
+                    <Button size="sm" variant="outline" className="h-6 text-[10px]" onClick={fillRemainingNormals}
+                      title="Set every section you haven't edited to its normal text — edited sections are never changed">
+                      Fill remaining normals
+                    </Button>
+                    <Button size="sm" variant="outline" className="h-6 text-[10px]" onClick={fillAllNormals}
+                      data-testid="btn-fill-all-normals"
+                      title="Reset every anatomy section to template normal (asks first)">
+                      All normals
+                    </Button>
+                  </>
                 )}
               </div>
             )}
@@ -5805,25 +5984,36 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                   </span>
                   Study setup
                 </span>
-                <label className="inline-flex items-center gap-1">
-                  <span className="text-muted-foreground">Region</span>
-                  <select
-                    aria-label="Study region"
-                    className="h-6 text-[10px] rounded border bg-background px-1 max-w-[140px]"
-                    value={studyRegion ?? ""}
-                    onChange={(e) => handleRegionOverrideSelect(e.target.value)}
-                  >
-                    {!studyRegion && <option value="">— none —</option>}
-                    {availableRegions.map((r) => (
-                      <option key={r} value={r}>{r}</option>
-                    ))}
-                  </select>
-                  {regionOverride != null && regionOverride !== autoStudyRegion && (
+                <label className="inline-flex items-center gap-1 flex-wrap">
+                  <span className="text-muted-foreground">Regions</span>
+                  <div className="inline-flex flex-wrap gap-0.5" role="group" aria-label="Study regions (multi-select)" data-testid="study-region-chips">
+                    {availableRegions.map((r) => {
+                      const on = studyRegions.includes(r);
+                      return (
+                        <button
+                          key={r}
+                          type="button"
+                          disabled={isLocked}
+                          aria-pressed={on}
+                          title={on ? `Remove ${r}` : `Add ${r} (technique merges)`}
+                          className={`h-6 px-1.5 text-[10px] rounded border font-medium transition-colors ${
+                            on
+                              ? "bg-primary text-primary-foreground border-primary"
+                              : "bg-background text-muted-foreground border-border hover:bg-muted"
+                          }`}
+                          onClick={() => handleRegionToggle(r)}
+                        >
+                          {r}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {regionOverrides != null && (
                     <button
                       type="button"
                       className="text-amber-600 underline text-[10px]"
                       title={`Auto-detected: ${autoStudyRegion ?? "none"}`}
-                      onClick={() => setRegionOverride(null)}
+                      onClick={() => setRegionOverrides(null)}
                     >
                       reset
                     </button>
@@ -6541,6 +6731,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                     studyId={entry?.studyId ?? null}
                     studyInstanceUID={entry?.studyInstanceUID ?? null}
                     disabled={isLocked}
+                    onEnsureDraft={isLocked ? undefined : () => saveDraft()}
                   />
                   {/* Print-from-workspace bridge: a SEPARATE, unpersisted
                       selection for the clinic's glossy-photo printer —
@@ -7031,6 +7222,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                 selectedIds={selectedQuickIds}
                 onToggle={handleQuickToggle}
                 onFindingClick={handleFindingClick}
+                onEditBeforeInsert={handleEditBeforeInsert}
                 onMeasurement={handleSmartMeasurement}
                 side={quickSide}
                 onSideChange={setQuickSide}
@@ -7452,6 +7644,15 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
           onApply={applyStructuredDialog}
           onRemove={() => removeStructuredFinding(structuredDialog.finding)}
           onCancel={() => setStructuredDialog(null)}
+        />
+      )}
+
+      {studyLocalEdit && (
+        <StudyLocalFindingEditDialog
+          finding={studyLocalEdit}
+          initial={studyTextOverridesRef.current.get(studyLocalEdit.id) ?? null}
+          onApply={applyStudyLocalEdit}
+          onCancel={() => setStudyLocalEdit(null)}
         />
       )}
 

@@ -1384,6 +1384,27 @@ radiologyRouter.get("/pacs-settings", async (_req, res) => {
   res.json(rows);
 });
 
+// ── MRI warm cache (Reporting Workspace speed) ─────────────────────────────
+radiologyRouter.get("/mri-warm-cache/status", async (_req, res) => {
+  try {
+    const { getMriWarmCacheStatus } = await import("../lib/pacs/mriStudyWarmer");
+    res.json(getMriWarmCacheStatus());
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : "status unavailable" });
+  }
+});
+
+radiologyRouter.post("/mri-warm-cache/run", async (req, res) => {
+  try {
+    const { runMriWarmCache } = await import("../lib/pacs/mriStudyWarmer");
+    const force = (req.body as { force?: boolean } | undefined)?.force !== false;
+    const status = await runMriWarmCache({ force });
+    res.json(status);
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : "warm run failed" });
+  }
+});
+
 // POST /api/radiology/pacs-settings  (upsert by key+category)
 radiologyRouter.post("/pacs-settings", async (req, res) => {
   const staffReq = req as StaffAuthRequest;

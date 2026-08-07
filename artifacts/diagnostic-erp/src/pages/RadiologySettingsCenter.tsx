@@ -20,7 +20,7 @@ import {
   Network, Server, MonitorPlay, Radio, BrainCircuit,
   Wrench, Activity, ShieldAlert,
   RefreshCw, Save,
-  Zap, ShieldCheck, PlayCircle, Info, Palette, Mic, Waves, Cpu
+  Zap, ShieldCheck, PlayCircle, Info, Palette, Mic, Waves, Cpu, BookOpen
 } from "lucide-react";
 import type { UseMutationResult } from "@tanstack/react-query";
 // M1.6B2/B3 — voice layer settings (same pacs_settings persistence as this
@@ -80,6 +80,114 @@ function isDockerBridgeIpLike(value: string): boolean {
   return true;
 }
 
+type MriWarmStatus = {
+  enabled: boolean;
+  mode: string;
+  lastN: number;
+  running: boolean;
+  lastRunAt: string | null;
+  lastDurationMs: number | null;
+  lastWarmed: number;
+  lastFailed: number;
+  lastSkipped: number;
+  lastError: string | null;
+  candidates: number;
+  orthancReachable: boolean | null;
+};
+
+
+function SpineFormatUpgradePanel({ disabled }: { disabled?: boolean }) {
+  const { toast } = useToast();
+  const upgrade = useMutation({
+    mutationFn: () =>
+      api.post<{ ok: boolean; inserted: number; upgraded: number; findingsRemapped: number; message: string }>(
+        "/api/structured-report-templates/upgrade-spine-formats",
+        {},
+      ),
+    onSuccess: (res) => {
+      toast({
+        title: "Spine formats",
+        description: res.message
+          || `Inserted ${res.inserted}, upgraded ${res.upgraded}, remapped ${res.findingsRemapped}.`,
+      });
+    },
+    onError: (err: Error) =>
+      toast({ title: "Spine upgrade failed", description: err.message, variant: "destructive" }),
+  });
+
+  return (
+    <div className="rounded-lg border bg-muted/20 p-3 space-y-2 text-[11px]" data-testid="spine-format-upgrade">
+      <p className="text-muted-foreground">
+        Applies denser Cervical / Dorsal / LS anatomy sections to clinic presets and remaps Quick Select
+        labels that still point at old bundled sections (e.g. “C2-C3 to C6-C7” → per-level / {"{level}"}).
+      </p>
+      <Button
+        type="button"
+        size="sm"
+        variant="outline"
+        className="h-7 text-[10px]"
+        disabled={disabled || upgrade.isPending}
+        onClick={() => upgrade.mutate()}
+        data-testid="btn-upgrade-spine-formats"
+      >
+        <RefreshCw size={11} className={`mr-1 ${upgrade.isPending ? "animate-spin" : ""}`} />
+        {upgrade.isPending ? "Upgrading…" : "Upgrade spine formats now"}
+      </Button>
+    </div>
+  );
+}
+
+function MriWarmCacheStatusPanel() {
+  const { toast } = useToast();
+  const { data, refetch, isFetching } = useQuery<MriWarmStatus>({
+    queryKey: ["mri-warm-cache-status"],
+    queryFn: () => api.get("/api/radiology/mri-warm-cache/status"),
+    refetchInterval: 30_000,
+  });
+  const runNow = useMutation({
+    mutationFn: () => api.post("/api/radiology/mri-warm-cache/run", { force: true }),
+    onSuccess: () => {
+      void refetch();
+      toast({ title: "MRI warm cache run started" });
+    },
+    onError: (err: Error) => toast({ title: "Warm cache failed", description: err.message, variant: "destructive" }),
+  });
+
+  return (
+    <div className="rounded-lg border bg-muted/20 p-3 space-y-2 text-[11px]" data-testid="mri-warm-cache-status">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="font-semibold text-xs">Status</span>
+        {data?.running ? (
+          <Badge className="bg-amber-100 text-amber-800 border-amber-300">Running…</Badge>
+        ) : data?.orthancReachable === false ? (
+          <Badge className="bg-red-100 text-red-800 border-red-300">Orthanc unreachable</Badge>
+        ) : (
+          <Badge className="bg-emerald-100 text-emerald-800 border-emerald-300">Idle</Badge>
+        )}
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="h-7 text-[10px] ml-auto"
+          disabled={runNow.isPending || data?.running}
+          onClick={() => runNow.mutate()}
+        >
+          <RefreshCw size={11} className={`mr-1 ${isFetching || runNow.isPending ? "animate-spin" : ""}`} />
+          Warm now
+        </Button>
+      </div>
+      <p className="text-muted-foreground">
+        Last run: {data?.lastRunAt ? new Date(data.lastRunAt).toLocaleString() : "—"}
+        {data?.lastDurationMs != null ? ` · ${Math.round(data.lastDurationMs / 1000)}s` : ""}
+        {" · "}warmed {data?.lastWarmed ?? 0}/{data?.candidates ?? 0}
+        {(data?.lastSkipped ?? 0) > 0 ? ` · ${data?.lastSkipped} not in Orthanc yet` : ""}
+        {(data?.lastFailed ?? 0) > 0 ? ` · ${data?.lastFailed} failed` : ""}
+      </p>
+      {data?.lastError && <p className="text-red-700">{data.lastError}</p>}
+    </div>
+  );
+}
+
 export default function RadiologySettingsCenter() {
   const { toast } = useToast();
   const qc = useQueryClient();
@@ -87,7 +195,7 @@ export default function RadiologySettingsCenter() {
   const isAdmin = FULL_ACCESS_ROLES.has(normalizeRole(readStaffSession()?.user.role ?? ""));
 
   const SETTINGS_TABS = [
-    "general", "network", "modalities", "pacs", "pacs-advanced", "viewers", "mwl",
+    "general", "reading-suite", "network", "modalities", "pacs", "pacs-advanced", "viewers", "mwl",
     "reporting", "usg-extraction", "style", "premium", "voice", "diagnostics", "history", "advanced",
   ] as const;
 
@@ -354,6 +462,7 @@ export default function RadiologySettingsCenter() {
       <Tabs value={activeTab} onValueChange={goTab} className="space-y-4">
         <TabsList className="flex flex-wrap h-auto gap-1 bg-muted p-1 rounded-lg">
           <TabsTrigger value="general"><ShieldCheck size={14} className="mr-1.5" />General</TabsTrigger>
+          <TabsTrigger value="reading-suite"><BookOpen size={14} className="mr-1.5" />Reading Suite</TabsTrigger>
           <TabsTrigger value="network"><Network size={14} className="mr-1.5" />Profiles</TabsTrigger>
           <TabsTrigger value="modalities"><Server size={14} className="mr-1.5" />Modalities</TabsTrigger>
           <TabsTrigger value="pacs"><Radio size={14} className="mr-1.5" />PACS Servers</TabsTrigger>
@@ -459,9 +568,9 @@ export default function RadiologySettingsCenter() {
             <div className="flex items-center justify-between border rounded-lg p-3">
               <div>
                 <Label className="text-xs font-semibold">Lock report after Final sign-off</Label>
-                <p className="text-[11px] text-muted-foreground">Finalized reports are locked in the Reading Room (Save/Finalize disabled after sign-off). Keep ON; owner amendments go through preserved owner tools.</p>
+                <p className="text-[11px] text-muted-foreground">Moved to <button type="button" className="underline text-primary" onClick={() => goTab("reading-suite")}>Reading Suite</button> — default OFF for trial.</p>
               </div>
-              <Switch checked={svOn("report_final_lock")} disabled={!isAdmin}
+              <Switch checked={svOn("report_final_lock", false)} disabled={!isAdmin}
                 onCheckedChange={(v) => upsertSetting.mutate({ key: "report_final_lock", value: String(v), category: "radiology" })} />
             </div>
             <div className="space-y-1">
@@ -486,6 +595,146 @@ export default function RadiologySettingsCenter() {
               <a href="/radiology/structured-report-templates" className="text-primary hover:underline">Structured templates</a>
               <span className="text-muted-foreground">·</span>
               <a href="/radiology/normal-templates" className="text-primary hover:underline">Normal one-click templates</a>
+            </div>
+          </div>
+        </TabsContent>
+
+        <TabsContent value="reading-suite" className="space-y-4" data-testid="reading-suite-tab">
+          <div className="rounded-xl border bg-card p-5 space-y-2 max-w-3xl">
+            <h3 className="text-sm font-bold flex items-center gap-2">
+              <BookOpen size={16} className="text-sky-600" /> Reading Suite
+            </h3>
+            <p className="text-xs text-muted-foreground">
+              One place for Worklist + Reporting Workspace behaviour. Trial defaults favour speed over hard locks —
+              tighten these when you go live with a multi-reader roster.
+            </p>
+          </div>
+
+          <div className="rounded-xl border bg-card p-5 space-y-4 max-w-3xl">
+            <h4 className="text-xs font-bold uppercase tracking-wide text-muted-foreground">Permissions &amp; safety</h4>
+            <div className="flex items-center justify-between border rounded-lg p-3">
+              <div>
+                <Label className="text-xs font-semibold">Lock report after Final sign-off</Label>
+                <p className="text-[11px] text-muted-foreground">
+                  OFF (trial default): you can keep editing after Finalize. ON: Final/Amended reports become read-only in the workspace.
+                </p>
+              </div>
+              <Switch checked={svOn("report_final_lock", false)} disabled={!isAdmin}
+                onCheckedChange={(v) => upsertSetting.mutate({ key: "report_final_lock", value: String(v), category: "radiology" })} />
+            </div>
+            <div className="flex items-center justify-between border rounded-lg p-3">
+              <div>
+                <Label className="text-xs font-semibold">Relax concurrent study locks</Label>
+                <p className="text-[11px] text-muted-foreground">
+                  ON (trial default): owners/radiologists can keep typing even if another session holds the study lock.
+                  Turn OFF for strict single-reader safety.
+                </p>
+              </div>
+              <Switch checked={svOn("report_relax_study_locks", true)} disabled={!isAdmin}
+                onCheckedChange={(v) => upsertSetting.mutate({ key: "report_relax_study_locks", value: String(v), category: "radiology" })} />
+            </div>
+          </div>
+
+          <div className="rounded-xl border bg-card p-5 space-y-4 max-w-3xl">
+            <h4 className="text-xs font-bold uppercase tracking-wide text-muted-foreground">Worklist queue</h4>
+            <div className="flex items-center justify-between border rounded-lg p-3">
+              <div>
+                <Label className="text-xs font-semibold">Highlight Urgent / VIP studies</Label>
+                <p className="text-[11px] text-muted-foreground">Tints STAT / EMERGENCY / URGENT / VIP rows on the Worklist.</p>
+              </div>
+              <Switch checked={svOn("urgent_highlight_enabled")} disabled={!isAdmin}
+                onCheckedChange={(v) => upsertSetting.mutate({ key: "urgent_highlight_enabled", value: String(v), category: "radiology" })} />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">Aging alert after (hours)</Label>
+              <Input
+                type="number" min={1} max={72} className="h-8 text-sm w-32"
+                placeholder="4"
+                defaultValue={sv("radiology_aging_alert_hours", "4")}
+                onBlur={(e) => upsertSetting.mutate({ key: "radiology_aging_alert_hours", value: e.target.value.trim() || "4", category: "radiology" })}
+                disabled={!isAdmin}
+              />
+              <p className="text-[11px] text-muted-foreground">Red “waiting” badge on studies not finalized within this window.</p>
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              Modality quick filter (USG / MRI / More) lives on the <button type="button" className="underline text-primary" onClick={() => navigate("/radiology/worklist")}>Worklist</button>, not the reporting editor.
+            </p>
+          </div>
+
+          <div className="rounded-xl border bg-card p-5 space-y-4 max-w-3xl">
+            <h4 className="text-xs font-bold uppercase tracking-wide text-muted-foreground">MRI study warm cache</h4>
+            <p className="text-[11px] text-muted-foreground">
+              Speeds up Reporting Workspace MRI opens by touching today+yesterday (or last N) MR studies in Orthanc
+              every ~10 minutes, and by prefetching DICOMweb metadata in the browser when the queue loads.
+              Pixel data stays in Orthanc — nothing heavy is stored in the ERP database.
+            </p>
+            <div className="flex items-center justify-between border rounded-lg p-3">
+              <div>
+                <Label className="text-xs font-semibold">Enable MRI warm cache</Label>
+                <p className="text-[11px] text-muted-foreground">ON (trial default). Disable if Orthanc load is a concern overnight.</p>
+              </div>
+              <Switch checked={svOn("mri_warm_cache_enabled", true)} disabled={!isAdmin}
+                onCheckedChange={(v) => upsertSetting.mutate({ key: "mri_warm_cache_enabled", value: String(v), category: "radiology" })} />
+            </div>
+            <div className="grid sm:grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <Label className="text-xs">Selection mode</Label>
+                <select
+                  className="h-8 w-full text-xs border rounded-md px-2 bg-background"
+                  disabled={!isAdmin}
+                  value={sv("mri_warm_cache_mode", "today_yesterday")}
+                  onChange={(e) => upsertSetting.mutate({ key: "mri_warm_cache_mode", value: e.target.value, category: "radiology" })}
+                >
+                  <option value="today_yesterday">Today + Yesterday (auto-refresh daily)</option>
+                  <option value="last_n">Last N MRI cases</option>
+                </select>
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs">Last N (when mode = Last N)</Label>
+                <Input
+                  type="number" min={5} max={50} className="h-8 text-sm w-32"
+                  placeholder="20"
+                  defaultValue={sv("mri_warm_cache_last_n", "20")}
+                  onBlur={(e) => upsertSetting.mutate({ key: "mri_warm_cache_last_n", value: e.target.value.trim() || "20", category: "radiology" })}
+                  disabled={!isAdmin}
+                />
+              </div>
+            </div>
+            <MriWarmCacheStatusPanel />
+          </div>
+
+          <div className="rounded-xl border bg-card p-5 space-y-4 max-w-3xl">
+            <h4 className="text-xs font-bold uppercase tracking-wide text-muted-foreground">Spine format upgrade</h4>
+            <p className="text-[11px] text-muted-foreground">
+              Expands Cervical / Dorsal / LS structured templates to per-level anatomy (C2–C7, T1–T12, L1–S1)
+              and remaps Quick Select sections that still point at old bundled labels like “C2-C3 to C6-C7”.
+              Safe to run more than once — only upgrades when the new preset has more sections.
+            </p>
+            <SpineFormatUpgradePanel disabled={!isAdmin} />
+          </div>
+
+          <div className="rounded-xl border bg-card p-5 space-y-3 max-w-3xl">
+            <h4 className="text-xs font-bold uppercase tracking-wide text-muted-foreground">Reporting content &amp; tools</h4>
+            <div className="grid sm:grid-cols-2 gap-2 text-sm">
+              {[
+                { href: "/settings/radiology-quick-select", label: "Quick Select (findings & protocols)" },
+                { href: "/radiology/structured-report-templates", label: "Structured templates" },
+                { href: "/radiology/normal-templates", label: "Normal one-click templates" },
+                { href: "/radiology/ai-reporting-settings", label: "AI reporting" },
+                { href: "/radiology/usg-admin-settings", label: "USG extraction admin" },
+                { href: "/settings/radiology/knowledge-packs", label: "Knowledge packs" },
+                { href: "/radiology/reporting-workspace", label: "Open Reporting Workspace" },
+                { href: "/radiology/worklist", label: "Open Worklist" },
+              ].map((l) => (
+                <button
+                  key={l.href}
+                  type="button"
+                  className="text-left rounded-lg border px-3 py-2 hover:bg-muted/50 text-primary"
+                  onClick={() => navigate(l.href)}
+                >
+                  {l.label}
+                </button>
+              ))}
             </div>
           </div>
         </TabsContent>

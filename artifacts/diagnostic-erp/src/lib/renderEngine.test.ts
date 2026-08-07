@@ -41,6 +41,8 @@ describe("renderEngine — re-exports quickFindingsMerge's public surface as ide
     expect(RenderEngine.removeBlock).toBe(QuickFindingsMerge.removeBlock);
     expect(RenderEngine.mergeImpression).toBe(QuickFindingsMerge.mergeImpression);
     expect(RenderEngine.removeImpression).toBe(QuickFindingsMerge.removeImpression);
+    expect(RenderEngine.stripNormalImpressionLines).toBe(QuickFindingsMerge.stripNormalImpressionLines);
+    expect(RenderEngine.isNormalImpressionLine).toBe(QuickFindingsMerge.isNormalImpressionLine);
   });
 });
 
@@ -156,6 +158,20 @@ describe("applyRenderedTransition — pure equivalent of applyRendered (Ticket F
     expect(result.impression).toEqual(["Unrelated existing impression."]);
     expect(result.technique).toBe("Unrelated technique text.");
     expect(result.recommendation).toBe("Unrelated recommendation text.");
+  });
+
+  it("strips normal-study impression lines when an abnormal finding is added", () => {
+    const state = {
+      ...EMPTY_STATE,
+      impression: ["Normal MRI Brain study. No significant intracranial abnormality."],
+    };
+    const next = rendered({
+      finding: "Mild ethmoid sinus mucosal thickening.",
+      impression: "Mild ethmoid sinusitis.",
+    });
+    const result = RenderEngine.applyRenderedTransition(state, undefined, next);
+    expect(result.impression).toEqual(["Mild ethmoid sinusitis."]);
+    expect(result.impression.some((l) => /no significant/i.test(l))).toBe(false);
   });
 });
 
