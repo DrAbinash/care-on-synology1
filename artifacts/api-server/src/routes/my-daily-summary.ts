@@ -9,6 +9,11 @@ import { classifyPaymentMethod, isPhysicalCash, isDigitalSettlement } from "../l
 import { computeRefundsOnCancelledBillsCreatedInPeriod, computeCollectibleForReconciliation } from "../lib/dailySummaryCollectible";
 import { buildStaffActivityRows, BILL_AUDIT_OPERATIONAL_CHANGE_TYPES } from "../lib/staffActivityAttribution";
 import { buildBillingVsPacsSummary } from "../lib/pacs/billingVsPacsSummary";
+import {
+  buildModalityBillingSummary,
+  listModalityBills,
+} from "../lib/pacs/modalityBillingSummary";
+import { resolveModalityQuery } from "../lib/pacs/imagingModalityBucket";
 import { buildLowStockSummary } from "../lib/inventoryLowStockSummary";
 
 export const myDailySummaryRouter = Router();
@@ -1201,6 +1206,57 @@ myDailySummaryRouter.get("/billing-vs-pacs", async (req: StaffAuthRequest, res) 
   } catch (err) {
     req.log.error({ err, from, to }, "billing-vs-pacs summary failed");
     return res.status(500).json({ error: "Failed to load imaging reconciliation summary" });
+  }
+});
+
+// GET /modality-billing — clinic-wide MRI/CT/USG/X-Ray billed counts (bill date)
+myDailySummaryRouter.get("/modality-billing", async (req: StaffAuthRequest, res) => {
+  const today = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+  const from = typeof req.query.from === "string" ? req.query.from : today;
+  const to = typeof req.query.to === "string" ? req.query.to : from;
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) {
+    return res.status(400).json({ error: "Invalid date format — use YYYY-MM-DD" });
+  }
+  if (from > to) {
+    return res.status(400).json({ error: "from must be on or before to" });
+  }
+
+  try {
+    const summary = await buildModalityBillingSummary(from, to);
+    return res.json(summary);
+  } catch (err) {
+    req.log.error({ err, from, to }, "modality-billing summary failed");
+    return res.status(500).json({ error: "Failed to load modality billing summary" });
+  }
+});
+
+// GET /modality-bills — bills containing a modality in the date range (drill-down)
+myDailySummaryRouter.get("/modality-bills", async (req: StaffAuthRequest, res) => {
+  const today = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+  const from = typeof req.query.from === "string" ? req.query.from : today;
+  const to = typeof req.query.to === "string" ? req.query.to : from;
+  const modalityRaw = typeof req.query.modality === "string" ? req.query.modality : "";
+  const modality = resolveModalityQuery(modalityRaw);
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) {
+    return res.status(400).json({ error: "Invalid date format — use YYYY-MM-DD" });
+  }
+  if (from > to) {
+    return res.status(400).json({ error: "from must be on or before to" });
+  }
+  if (!modality) {
+    return res.status(400).json({
+      error: "Invalid modality — use MRI, CT, CT Scan, USG, X-Ray, or OPG",
+    });
+  }
+
+  try {
+    const result = await listModalityBills(from, to, modality);
+    return res.json(result);
+  } catch (err) {
+    req.log.error({ err, from, to, modality }, "modality-bills drilldown failed");
+    return res.status(500).json({ error: "Failed to load modality bills" });
   }
 });
 
