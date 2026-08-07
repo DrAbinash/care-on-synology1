@@ -32,6 +32,14 @@ export type StyleSetting = {
   signaturePosition: string;
   imagePlacement: string;
   studyTitleStyle: string;
+  logoScale: string;
+  clinicNameScale: string;
+  addressScale: string;
+  nameAlign: string;
+  addressAlign: string;
+  headerRuleEnabled: boolean;
+  headerRuleThickness: string;
+  headerRuleColor: string;
   showRadiologistName: boolean;
   showDegree: boolean;
   showRegNumber: boolean;
@@ -74,6 +82,14 @@ const PRESETS: Record<string, Partial<StyleSetting>> = {
     signaturePosition: "right",
     imagePlacement: "inline",
     studyTitleStyle: "underlined",
+    logoScale: "large",
+    clinicNameScale: "large",
+    addressScale: "large",
+    nameAlign: "left",
+    addressAlign: "center",
+    headerRuleEnabled: true,
+    headerRuleThickness: "medium",
+    headerRuleColor: "accent",
     showRadiologistName: true,
     showDegree: true,
     showRegNumber: true,
@@ -102,6 +118,14 @@ const PRESETS: Record<string, Partial<StyleSetting>> = {
     signaturePosition: "right",
     imagePlacement: "inline",
     studyTitleStyle: "plain",
+    logoScale: "standard",
+    clinicNameScale: "standard",
+    addressScale: "standard",
+    nameAlign: "left",
+    addressAlign: "right",
+    headerRuleEnabled: true,
+    headerRuleThickness: "thin",
+    headerRuleColor: "slate",
     showRadiologistName: true,
     showDegree: true,
     showRegNumber: false,
@@ -130,6 +154,14 @@ const PRESETS: Record<string, Partial<StyleSetting>> = {
     signaturePosition: "right",
     imagePlacement: "end",
     studyTitleStyle: "underlined",
+    logoScale: "xlarge",
+    clinicNameScale: "xlarge",
+    addressScale: "large",
+    nameAlign: "left",
+    addressAlign: "center",
+    headerRuleEnabled: true,
+    headerRuleThickness: "thick",
+    headerRuleColor: "navy",
     showRadiologistName: true,
     showDegree: true,
     showRegNumber: true,
@@ -158,6 +190,14 @@ const PRESETS: Record<string, Partial<StyleSetting>> = {
     signaturePosition: "center",
     imagePlacement: "inline",
     studyTitleStyle: "plain",
+    logoScale: "large",
+    clinicNameScale: "large",
+    addressScale: "large",
+    nameAlign: "center",
+    addressAlign: "center",
+    headerRuleEnabled: true,
+    headerRuleThickness: "medium",
+    headerRuleColor: "black",
     showRadiologistName: true,
     showDegree: true,
     showRegNumber: true,
@@ -189,6 +229,14 @@ export function RadiologyStylePanel() {
         signaturePosition: styleSetting.signaturePosition || "right",
         imagePlacement: styleSetting.imagePlacement || "inline",
         studyTitleStyle: styleSetting.studyTitleStyle || "underlined",
+        logoScale: styleSetting.logoScale || "large",
+        clinicNameScale: styleSetting.clinicNameScale || "large",
+        addressScale: styleSetting.addressScale || "large",
+        nameAlign: styleSetting.nameAlign || "left",
+        addressAlign: styleSetting.addressAlign || "center",
+        headerRuleEnabled: styleSetting.headerRuleEnabled !== false,
+        headerRuleThickness: styleSetting.headerRuleThickness || "medium",
+        headerRuleColor: styleSetting.headerRuleColor || "accent",
       });
     }
   }, [styleSetting]);
@@ -489,14 +537,14 @@ export function RadiologyStylePanel() {
 
           <hr className="border-slate-100 dark:border-slate-900" />
 
-          {/* Section 3: Letterhead, logo, images, paper */}
+          {/* Section 3: Letterhead — logo, name, address, rule */}
           <div className="space-y-4">
             <h4 className="font-bold text-slate-800 dark:text-slate-200">
-              3. Logo, Signature &amp; DICOM Image Placement
+              3. Letterhead — Logo, Clinic Name, Address &amp; Header Line
             </h4>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
               <div className="space-y-2">
-                <Label htmlFor="logo-position">Logo Location in Header</Label>
+                <Label htmlFor="logo-position">Logo Location</Label>
                 <Select
                   value={formState.logoPosition || "left"}
                   onValueChange={(v) => handleFieldChange("logoPosition", v)}
@@ -508,6 +556,140 @@ export function RadiologyStylePanel() {
                     <SelectItem value="left">Left</SelectItem>
                     <SelectItem value="center">Center</SelectItem>
                     <SelectItem value="right">Right</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="logo-scale">Logo Size</Label>
+                <Select
+                  value={formState.logoScale || "large"}
+                  onValueChange={(v) => handleFieldChange("logoScale", v)}
+                >
+                  <SelectTrigger id="logo-scale">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="standard">Standard</SelectItem>
+                    <SelectItem value="large">Large</SelectItem>
+                    <SelectItem value="xlarge">Extra Large</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="clinic-name-scale">Clinic Name Size</Label>
+                <Select
+                  value={formState.clinicNameScale || "large"}
+                  onValueChange={(v) => handleFieldChange("clinicNameScale", v)}
+                >
+                  <SelectTrigger id="clinic-name-scale">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="standard">Standard</SelectItem>
+                    <SelectItem value="large">Large</SelectItem>
+                    <SelectItem value="xlarge">Extra Large</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="name-align">Clinic Name Alignment</Label>
+                <Select
+                  value={formState.nameAlign || "left"}
+                  onValueChange={(v) => handleFieldChange("nameAlign", v)}
+                >
+                  <SelectTrigger id="name-align">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="left">Left</SelectItem>
+                    <SelectItem value="center">Center</SelectItem>
+                    <SelectItem value="right">Right</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="address-scale">Address / Contact Size</Label>
+                <Select
+                  value={formState.addressScale || "large"}
+                  onValueChange={(v) => handleFieldChange("addressScale", v)}
+                >
+                  <SelectTrigger id="address-scale">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="standard">Standard</SelectItem>
+                    <SelectItem value="large">Large</SelectItem>
+                    <SelectItem value="xlarge">Extra Large</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="address-align">Address Alignment</Label>
+                <Select
+                  value={formState.addressAlign || "center"}
+                  onValueChange={(v) => handleFieldChange("addressAlign", v)}
+                >
+                  <SelectTrigger id="address-align">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="left">Left</SelectItem>
+                    <SelectItem value="center">Center</SelectItem>
+                    <SelectItem value="right">Right</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="flex items-center space-x-2 pt-6">
+                <Switch
+                  id="header-rule-enabled"
+                  checked={formState.headerRuleEnabled !== false}
+                  onCheckedChange={(v) => handleFieldChange("headerRuleEnabled", v)}
+                />
+                <Label htmlFor="header-rule-enabled" className="text-xs">
+                  Line under header (before study name)
+                </Label>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="header-rule-thickness">Header Line Thickness</Label>
+                <Select
+                  value={formState.headerRuleThickness || "medium"}
+                  onValueChange={(v) => handleFieldChange("headerRuleThickness", v)}
+                  disabled={formState.headerRuleEnabled === false}
+                >
+                  <SelectTrigger id="header-rule-thickness">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="thin">Thin (1px)</SelectItem>
+                    <SelectItem value="medium">Medium (2px)</SelectItem>
+                    <SelectItem value="thick">Thick (3px)</SelectItem>
+                    <SelectItem value="extra">Extra thick (5px)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="header-rule-color">Header Line Color</Label>
+                <Select
+                  value={formState.headerRuleColor || "accent"}
+                  onValueChange={(v) => handleFieldChange("headerRuleColor", v)}
+                  disabled={formState.headerRuleEnabled === false}
+                >
+                  <SelectTrigger id="header-rule-color">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="accent">Accent (brand)</SelectItem>
+                    <SelectItem value="black">Black</SelectItem>
+                    <SelectItem value="slate">Slate grey</SelectItem>
+                    <SelectItem value="navy">Navy</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -669,6 +851,14 @@ export function RadiologyStylePanel() {
                   signaturePosition: styleSetting.signaturePosition || "right",
                   imagePlacement: styleSetting.imagePlacement || "inline",
                   studyTitleStyle: styleSetting.studyTitleStyle || "underlined",
+                  logoScale: styleSetting.logoScale || "large",
+                  clinicNameScale: styleSetting.clinicNameScale || "large",
+                  addressScale: styleSetting.addressScale || "large",
+                  nameAlign: styleSetting.nameAlign || "left",
+                  addressAlign: styleSetting.addressAlign || "center",
+                  headerRuleEnabled: styleSetting.headerRuleEnabled !== false,
+                  headerRuleThickness: styleSetting.headerRuleThickness || "medium",
+                  headerRuleColor: styleSetting.headerRuleColor || "accent",
                 })
               }
             >

@@ -2609,18 +2609,10 @@ async function renderReportVersionHtml(reportId: number, autoPrint: boolean, use
     };
   }
 
-  // Build style overrides from institutional Style settings (headings,
-  // underline, line gap, fonts, logo/signature/DICOM placement, findings bold).
+  // Build style overrides. pacs letterhead scale is the baseline; institutional
+  // Style settings are appended LAST so logo/name/address sizes, alignment and
+  // the header rule from Radiology Settings → Style always win.
   let customStyles = "";
-  if (instStyle) {
-    customStyles = buildInstitutionalStyleCss(instStyle);
-  }
-
-  // Letterhead sizing (pacs_settings key/value; presentation-only). Read the
-  // three scale keys and append the sizing overrides so they win over the
-  // template seed via `!important` + cascade order. Defaults ship "large" so
-  // header/logo/address/footer are bigger out of the box; the draft preview
-  // path reads the SAME keys so drafts and finals match. Never blocks printing.
   try {
     const scaleRows = await db.select({ key: pacsSettingsTable.key, value: pacsSettingsTable.value })
       .from(pacsSettingsTable)
@@ -2635,8 +2627,10 @@ async function renderReportVersionHtml(reportId: number, autoPrint: boolean, use
       footerScale: scaleVal(REPORT_FOOTER_SCALE_KEY),
     });
   } catch {
-    // pacs_settings unreadable → apply the (bigger) defaults anyway
     customStyles += buildLetterheadScaleCss();
+  }
+  if (instStyle) {
+    customStyles += buildInstitutionalStyleCss(instStyle);
   }
 
   // D8 — visual safeguards for the served version (empty strings when the

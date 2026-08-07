@@ -397,6 +397,22 @@ export const radiologyInstitutionalStylesTable = pgTable(
     imagePlacement: text("image_placement").notNull().default("inline"),
     /** Study title decoration: plain | underlined | bar */
     studyTitleStyle: text("study_title_style").notNull().default("underlined"),
+    /** Logo box size: standard | large | xlarge */
+    logoScale: text("logo_scale").notNull().default("large"),
+    /** Clinic name font size tier: standard | large | xlarge */
+    clinicNameScale: text("clinic_name_scale").notNull().default("large"),
+    /** Address / contact font size tier: standard | large | xlarge */
+    addressScale: text("address_scale").notNull().default("large"),
+    /** Clinic name text alignment in the header: left | center | right */
+    nameAlign: text("name_align").notNull().default("left"),
+    /** Address / contact alignment: left | center | right */
+    addressAlign: text("address_align").notNull().default("center"),
+    /** Draw a rule line under the letterhead (before study title). */
+    headerRuleEnabled: boolean("header_rule_enabled").notNull().default(true),
+    /** Rule thickness: thin | medium | thick | extra */
+    headerRuleThickness: text("header_rule_thickness").notNull().default("medium"),
+    /** Rule color key: accent | black | slate | navy */
+    headerRuleColor: text("header_rule_color").notNull().default("accent"),
     showRadiologistName: boolean("show_radiologist_name").notNull().default(true),
     showDegree: boolean("show_degree").notNull().default(true),
     showRegNumber: boolean("show_reg_number").notNull().default(true),

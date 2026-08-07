@@ -1925,11 +1925,8 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
   }
   const template = applyInstitutionalTemplateOverrides(baseTemplate, instStyle);
 
-  // Letterhead sizing (pacs_settings key/value; presentation-only) — the SAME
-  // three keys the finalized render path (patient-reports.ts) reads, so the
-  // draft preview and the final report size the header/logo/address/footer
-  // identically. Never blocks the preview: falls back to the (bigger) defaults.
-  let customCss = buildInstitutionalStyleCss(instStyle);
+  // pacs letterhead scale first; institutional Style settings last so they win.
+  let customCss = "";
   try {
     const scaleRows = await db.select({ key: pacsSettingsTable.key, value: pacsSettingsTable.value })
       .from(pacsSettingsTable)
@@ -1946,6 +1943,7 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
   } catch {
     customCss += buildLetterheadScaleCss();
   }
+  customCss += buildInstitutionalStyleCss(instStyle);
 
   res.setHeader("Content-Type", "text/html; charset=utf-8");
   res.setHeader("Cache-Control", "no-store");

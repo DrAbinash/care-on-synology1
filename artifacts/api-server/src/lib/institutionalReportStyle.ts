@@ -4,13 +4,27 @@
  *
  * Presentation only: produces a customCss fragment and shallow template
  * overrides (logo / signature / DICOM placement, fonts, heading decoration,
- * line gap, findings emphasis). Never touches clinical wording.
+ * line gap, findings emphasis, letterhead sizes, header rule). Never touches
+ * clinical wording.
  */
 
 import type { RenderableTemplate } from "./reportPresentation";
+import {
+  coerceHeaderScale,
+  coerceLogoScale,
+  HEADER_CONTACT_PX,
+  HEADER_NAME_PX,
+  HEADER_TAGLINE_PX,
+  LOGO_PX,
+  type HeaderScale,
+  type LogoScale,
+} from "./reportLetterheadScale";
 
 export const LOGO_POSITIONS = ["left", "center", "right"] as const;
 export type LogoPosition = (typeof LOGO_POSITIONS)[number];
+
+export const TEXT_ALIGNS = ["left", "center", "right"] as const;
+export type TextAlign = (typeof TEXT_ALIGNS)[number];
 
 export const SIGNATURE_POSITIONS = ["left", "center", "right"] as const;
 export type SignaturePosition = (typeof SIGNATURE_POSITIONS)[number];
@@ -32,6 +46,12 @@ export type FontSizePreset = (typeof FONT_SIZE_PRESETS)[number];
 
 export const STUDY_TITLE_STYLES = ["plain", "underlined", "bar"] as const;
 export type StudyTitleStyle = (typeof STUDY_TITLE_STYLES)[number];
+
+export const HEADER_RULE_THICKNESSES = ["thin", "medium", "thick", "extra"] as const;
+export type HeaderRuleThickness = (typeof HEADER_RULE_THICKNESSES)[number];
+
+export const HEADER_RULE_COLORS = ["accent", "black", "slate", "navy"] as const;
+export type HeaderRuleColor = (typeof HEADER_RULE_COLORS)[number];
 
 /** Short keys stored in DB → CSS font-family stacks (approved / safe). */
 export const REPORT_FONT_KEYS = {
@@ -61,12 +81,24 @@ export interface InstitutionalReportStyle {
   signaturePosition?: string | null;
   imagePlacement?: string | null;
   studyTitleStyle?: string | null;
+  logoScale?: string | null;
+  clinicNameScale?: string | null;
+  addressScale?: string | null;
+  nameAlign?: string | null;
+  addressAlign?: string | null;
+  headerRuleEnabled?: boolean | null;
+  headerRuleThickness?: string | null;
+  headerRuleColor?: string | null;
   showDigitalSignature?: boolean | null;
   showQrVerification?: boolean | null;
 }
 
 export function coerceLogoPosition(raw: unknown): LogoPosition {
   return LOGO_POSITIONS.includes(raw as LogoPosition) ? (raw as LogoPosition) : "left";
+}
+
+export function coerceTextAlign(raw: unknown, fallback: TextAlign = "left"): TextAlign {
+  return TEXT_ALIGNS.includes(raw as TextAlign) ? (raw as TextAlign) : fallback;
 }
 
 export function coerceSignaturePosition(raw: unknown): SignaturePosition {
@@ -105,6 +137,16 @@ export function resolveFontFamilyCss(raw: unknown): string {
   return REPORT_FONT_KEYS[coerceFontFamilyKey(raw)];
 }
 
+export function coerceHeaderRuleThickness(raw: unknown): HeaderRuleThickness {
+  return HEADER_RULE_THICKNESSES.includes(raw as HeaderRuleThickness)
+    ? (raw as HeaderRuleThickness)
+    : "medium";
+}
+
+export function coerceHeaderRuleColor(raw: unknown): HeaderRuleColor {
+  return HEADER_RULE_COLORS.includes(raw as HeaderRuleColor) ? (raw as HeaderRuleColor) : "accent";
+}
+
 const FONT_PX: Record<FontSizePreset, string> = {
   small: "11px",
   standard: "13px",
@@ -123,7 +165,6 @@ const LINE_HEIGHT: Record<SpacingPreset, string> = {
   comfortable: "1.7",
 };
 
-/** Gap between consecutive body lines / paragraphs. */
 const LINE_GAP: Record<SpacingPreset, string> = {
   compact: "2px",
   standard: "8px",
@@ -134,6 +175,20 @@ const SECTION_GAP: Record<SpacingPreset, string> = {
   compact: "6px",
   standard: "12px",
   comfortable: "18px",
+};
+
+const RULE_PX: Record<HeaderRuleThickness, number> = {
+  thin: 1,
+  medium: 2,
+  thick: 3,
+  extra: 5,
+};
+
+const RULE_COLOR: Record<HeaderRuleColor, string> = {
+  accent: "#1e1b4b",
+  black: "#111111",
+  slate: "#64748b",
+  navy: "#1e3a8a",
 };
 
 function headingDecorationCss(style: HeadingStyle, selector: string): string {
@@ -207,27 +262,82 @@ function logoPositionCss(pos: LogoPosition): string {
         text-align: center !important;
         gap: 8px !important;
       }
-      .hdr-inner .hdr-brand { flex: 0 1 auto !important; text-align: center !important; }
+      .hdr-inner .hdr-brand { flex: 0 1 auto !important; }
       .hdr-inner .contact {
         margin-left: 0 !important;
-        text-align: center !important;
+        margin-right: 0 !important;
         width: 100%;
       }`;
     case "right":
       return `
       .hdr-inner { flex-direction: row-reverse !important; }
-      .hdr-inner .hdr-brand { text-align: right !important; }
       .hdr-inner .contact {
         margin-left: 0 !important;
         margin-right: auto !important;
-        text-align: left !important;
       }`;
     case "left":
     default:
       return `
       .hdr-inner { flex-direction: row !important; }
-      .hdr-inner .contact { margin-left: auto !important; text-align: right !important; }`;
+      .hdr-inner .contact { margin-left: auto !important; margin-right: 0 !important; }`;
   }
+}
+
+function nameAlignCss(align: TextAlign): string {
+  return `
+      .hdr-inner .hdr-brand { text-align: ${align} !important; }
+      .hdr-inner .name, .hdr-inner .tagline { text-align: ${align} !important; }`;
+}
+
+function addressAlignCss(align: TextAlign): string {
+  return `
+      .hdr-inner .contact { text-align: ${align} !important; }
+      .hdr-address-bar { text-align: ${align} !important; }`;
+}
+
+function letterheadSizeCss(
+  logoScale: LogoScale,
+  nameScale: HeaderScale,
+  addressScale: HeaderScale,
+): string {
+  const logoPx = LOGO_PX[logoScale];
+  const namePx = HEADER_NAME_PX[nameScale];
+  const contactPx = HEADER_CONTACT_PX[addressScale];
+  const taglinePx = HEADER_TAGLINE_PX[nameScale];
+  const addressBarPx = HEADER_CONTACT_PX[addressScale];
+  const contactLineHeight = addressScale === "standard" ? 1.4 : 1.5;
+  return `
+      /* Letterhead sizes (Style settings) */
+      .hdr img.logo { width: ${logoPx}px !important; height: ${logoPx}px !important; }
+      .hdr .name { font-size: ${namePx}px !important; }
+      .hdr .tagline { font-size: ${taglinePx}px !important; }
+      .hdr .contact { font-size: ${contactPx}px !important; line-height: ${contactLineHeight} !important; }
+      .hdr-address-bar { font-size: ${addressBarPx}px !important; line-height: ${contactLineHeight} !important; }`;
+}
+
+function headerRuleCss(
+  enabled: boolean,
+  thickness: HeaderRuleThickness,
+  colorKey: HeaderRuleColor,
+): string {
+  if (!enabled) {
+    return `
+      .hdr { border-bottom: none !important; }
+      .hdr-rule { display: none !important; }
+      .hdr-address-bar { border-bottom: none !important; }`;
+  }
+  const px = RULE_PX[thickness];
+  const color = RULE_COLOR[colorKey];
+  return `
+      .hdr { border-bottom: none !important; }
+      .hdr-address-bar { border-bottom: none !important; }
+      .hdr-rule {
+        display: block !important;
+        border: none !important;
+        border-top: ${px}px solid ${color} !important;
+        margin: 4px 0 10px !important;
+        height: 0 !important;
+      }`;
 }
 
 function signaturePositionCss(pos: SignaturePosition): string {
@@ -277,8 +387,16 @@ export function buildInstitutionalStyleCss(style: InstitutionalReportStyle | nul
   const subheading = coerceHeadingStyle(style.subheadingStyle ?? style.headingStyle);
   const studyTitle = coerceStudyTitleStyle(style.studyTitleStyle);
   const logoPos = coerceLogoPosition(style.logoPosition);
+  const nameAlign = coerceTextAlign(style.nameAlign, logoPos === "center" ? "center" : "left");
+  const addressAlign = coerceTextAlign(style.addressAlign, "center");
   const sigPos = coerceSignaturePosition(style.signaturePosition);
   const abnormal = coerceAbnormalEmphasis(style.abnormalEmphasis);
+  const logoScale = coerceLogoScale(style.logoScale);
+  const nameScale = coerceHeaderScale(style.clinicNameScale);
+  const addressScale = coerceHeaderScale(style.addressScale);
+  const ruleEnabled = style.headerRuleEnabled !== false;
+  const ruleThickness = coerceHeaderRuleThickness(style.headerRuleThickness);
+  const ruleColor = coerceHeaderRuleColor(style.headerRuleColor);
   const marginVal = MARGIN_CSS[style.margins ?? "standard"] ?? MARGIN_CSS.standard;
   const fs = FONT_PX[fontSize];
   const lineHt = LINE_HEIGHT[spacing];
@@ -293,7 +411,7 @@ export function buildInstitutionalStyleCss(style: InstitutionalReportStyle | nul
         font-size: ${fs} !important;
         line-height: ${lineHt} !important;
       }
-      .hdr .name, .hdr .tagline, .hdr .contact,
+      .hdr .name, .hdr .tagline, .hdr .contact, .hdr-address-bar,
       .patient-section, .study-title-bar, .section-heading,
       .impression, .sigbox, .ftr, .image-panel {
         font-family: ${fontFamily} !important;
@@ -310,6 +428,10 @@ export function buildInstitutionalStyleCss(style: InstitutionalReportStyle | nul
       ${headingDecorationCss(subheading, ".image-panel-heading, .body h3, .body h4, .subheading")}
       ${studyTitleCss(studyTitle)}
       ${logoPositionCss(logoPos)}
+      ${nameAlignCss(nameAlign)}
+      ${addressAlignCss(addressAlign)}
+      ${letterheadSizeCss(logoScale, nameScale, addressScale)}
+      ${headerRuleCss(ruleEnabled, ruleThickness, ruleColor)}
       ${signaturePositionCss(sigPos)}
       ${findingsEmphasisCss(abnormal)}
     `;
@@ -334,7 +456,6 @@ export function applyInstitutionalTemplateOverrides(
   if (!style) return template;
 
   const imagePlacement = coerceImagePlacement(style.imagePlacement);
-  // "end" means after findings in normal document flow (= inline for renderer).
   const layoutPlacement = imagePlacement === "side-panel" ? "side-panel" : "inline";
 
   const next: RenderableTemplate = {
@@ -381,7 +502,6 @@ export function applyInstitutionalTemplateOverrides(
     bodyLineHeight: LINE_HEIGHT[coerceSpacing(style.lineGap ?? style.spacing)],
   };
 
-  // When imagePlacement is "end", force images after body (inline panel, not side).
   if (imagePlacement === "end") {
     next.layout = { ...next.layout, imagePlacement: "inline" };
     next.imagePanelCfg = { ...next.imagePanelCfg!, placement: "inline" };
@@ -412,6 +532,14 @@ export const DEFAULT_INSTITUTIONAL_STYLE = {
   signaturePosition: "right",
   imagePlacement: "inline",
   studyTitleStyle: "underlined",
+  logoScale: "large",
+  clinicNameScale: "large",
+  addressScale: "large",
+  nameAlign: "left",
+  addressAlign: "center",
+  headerRuleEnabled: true,
+  headerRuleThickness: "medium",
+  headerRuleColor: "accent",
   showRadiologistName: true,
   showDegree: true,
   showRegNumber: true,

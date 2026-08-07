@@ -501,10 +501,17 @@ export function renderReportDocument(
     .hdr-inner.logo-pos-right .contact { margin-left: 0; margin-right: auto; text-align: left; }
     .hdr-address-bar {
       font-size: 9.5px; color: #475569; text-align: center;
-      border-bottom: 1px solid ${pal.sectionBorder};
-      padding: 4px 12px 6px; margin-bottom: 8px;
+      border-bottom: none;
+      padding: 4px 12px 6px; margin-bottom: 0;
       line-height: 1.45;
     }
+    .hdr-rule {
+      border: none;
+      border-top: 2px solid ${pal.accent};
+      margin: 2px 0 10px;
+      height: 0;
+    }
+    .hdr-rule.hdr-rule-hidden { display: none; }
     .hdr img.logo { width: 64px; height: 64px; object-fit: contain; }
     .hdr .hdr-brand { flex: 1; }
     .hdr .name { ${slotCss(ty.header)} line-height: 1.1; }
@@ -698,7 +705,8 @@ export function renderReportDocument(
         </div>` : ""}
       </div>
     </div>
-    ${!banded && model.clinic.address ? `<div class="hdr-address-bar">${escapeHtml(model.clinic.address)}</div>` : ""}` : ""}
+    ${model.clinic.address ? `<div class="hdr-address-bar">${escapeHtml(model.clinic.address)}</div>` : ""}
+    <hr class="hdr-rule" />` : ""}
     <span class="reportno">Report #: ${escapeHtml(model.reportNumber)}</span>
     <div class="study-title-bar">${escapeHtml(model.studyTitle)}</div>
     <div class="patient-section">

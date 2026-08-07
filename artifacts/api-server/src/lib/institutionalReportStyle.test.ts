@@ -65,6 +65,14 @@ describe("institutionalReportStyle", () => {
       abnormalEmphasis: "bold_both",
       studyTitleStyle: "underlined",
       margins: "narrow",
+      logoScale: "xlarge",
+      clinicNameScale: "xlarge",
+      addressScale: "standard",
+      nameAlign: "right",
+      addressAlign: "left",
+      headerRuleEnabled: true,
+      headerRuleThickness: "extra",
+      headerRuleColor: "navy",
     });
     expect(css).toContain("Georgia");
     expect(css).toContain("font-size: 15px");
@@ -75,6 +83,18 @@ describe("institutionalReportStyle", () => {
     expect(css).toContain("text-decoration: underline");
     expect(css).toContain(".image-panel-heading");
     expect(css).toContain("font-weight: 500"); // plain subheading
+    expect(css).toContain("width: 104px"); // xlarge logo
+    expect(css).toContain("font-size: 34px"); // xlarge clinic name
+    expect(css).toContain("border-top: 5px solid #1e3a8a"); // extra navy rule
+    expect(css).toMatch(/\.hdr-inner \.hdr-brand \{ text-align: right/);
+    expect(css).toMatch(/\.hdr-address-bar \{ text-align: left/);
+  });
+
+  it("hides header rule when disabled", () => {
+    const css = buildInstitutionalStyleCss({
+      headerRuleEnabled: false,
+    });
+    expect(css).toContain(".hdr-rule { display: none");
   });
 
   it("returns empty CSS when style is null", () => {
