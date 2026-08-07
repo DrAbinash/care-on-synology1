@@ -48,6 +48,7 @@ import { syncStudyToSite, getMultiSiteWorklist, getSites } from "../lib/multiSit
 import { decideRouting, getRoutingStats } from "../lib/dicomRoutingOptimizer";
 import { runMatchingEngineForWorklist } from "./internal-radiology";
 import { calculateMatchScore } from "../lib/pacs/matchingEngine";
+import { DEFAULT_INSTITUTIONAL_STYLE } from "../lib/institutionalReportStyle.js";
 import { publishRadiologyStudyToMwl } from "../lib/pacs/publishRadiologyStudyToMwl";
 import { logger } from "../lib/logger";
 import { radiologyBroadcaster, type RadiologyUpdateEvent } from "../lib/radiologyBroadcast";
@@ -2907,25 +2908,7 @@ radiologyRouter.get("/institutional-style", async (req, res) => {
     if (!style) {
       res.json({
         id: 1,
-        presetName: "Care Diagnostics Default",
-        sectionOrder: "Technique,Findings,Impression",
-        showClinicalHistory: true,
-        showComparison: true,
-        showRecommendation: true,
-        showCriticalCommunication: true,
-        showMeasurements: true,
-        headingStyle: "underlined",
-        abnormalEmphasis: "bold_abnormal",
-        spacing: "standard",
-        printLayout: "letterhead",
-        margins: "standard",
-        fontSize: "standard",
-        showRadiologistName: true,
-        showDegree: true,
-        showRegNumber: true,
-        showDigitalSignature: true,
-        showTimestamp: true,
-        showQrVerification: true,
+        ...DEFAULT_INSTITUTIONAL_STYLE,
       });
       return;
     }
@@ -2954,11 +2937,18 @@ radiologyRouter.put("/institutional-style", async (req, res) => {
       showCriticalCommunication: body.showCriticalCommunication !== false,
       showMeasurements: body.showMeasurements !== false,
       headingStyle: body.headingStyle || "underlined",
+      subheadingStyle: body.subheadingStyle || body.headingStyle || "underlined",
       abnormalEmphasis: body.abnormalEmphasis || "bold_abnormal",
       spacing: body.spacing || "standard",
+      lineGap: body.lineGap || body.spacing || "standard",
       printLayout: body.printLayout || "letterhead",
       margins: body.margins || "standard",
       fontSize: body.fontSize || "standard",
+      fontFamily: body.fontFamily || "arial",
+      logoPosition: body.logoPosition || "left",
+      signaturePosition: body.signaturePosition || "right",
+      imagePlacement: body.imagePlacement || "inline",
+      studyTitleStyle: body.studyTitleStyle || "underlined",
       showRadiologistName: body.showRadiologistName !== false,
       showDegree: body.showDegree !== false,
       showRegNumber: body.showRegNumber !== false,

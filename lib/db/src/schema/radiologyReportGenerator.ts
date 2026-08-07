@@ -378,11 +378,25 @@ export const radiologyInstitutionalStylesTable = pgTable(
     showCriticalCommunication: boolean("show_critical_communication").notNull().default(true),
     showMeasurements: boolean("show_measurements").notNull().default(true),
     headingStyle: text("heading_style").notNull().default("underlined"), // plain | bold | underlined | bold_underlined
+    /** Subheadings / image-panel headings; falls back to headingStyle when unset historically. */
+    subheadingStyle: text("subheading_style").notNull().default("underlined"),
     abnormalEmphasis: text("abnormal_emphasis").notNull().default("bold_abnormal"), // none | bold_abnormal | bold_impression | bold_both
     spacing: text("spacing").notNull().default("standard"), // compact | standard | comfortable
+    /** Gap between consecutive body lines (aliases spacing when not customized). */
+    lineGap: text("line_gap").notNull().default("standard"), // compact | standard | comfortable
     printLayout: text("print_layout").notNull().default("letterhead"), // a4_plain | letterhead | half_page | screen_only
     margins: text("margins").notNull().default("standard"), // narrow | standard | wide | custom
     fontSize: text("font_size").notNull().default("standard"), // small | standard | large
+    /** Short key into REPORT_FONT_KEYS (arial | times | georgia | …). */
+    fontFamily: text("font_family").notNull().default("arial"),
+    /** Letterhead logo placement: left | center | right */
+    logoPosition: text("logo_position").notNull().default("left"),
+    /** Signature block alignment: left | center | right */
+    signaturePosition: text("signature_position").notNull().default("right"),
+    /** DICOM / key-image placement: inline | side-panel | end */
+    imagePlacement: text("image_placement").notNull().default("inline"),
+    /** Study title decoration: plain | underlined | bar */
+    studyTitleStyle: text("study_title_style").notNull().default("underlined"),
     showRadiologistName: boolean("show_radiologist_name").notNull().default(true),
     showDegree: boolean("show_degree").notNull().default(true),
     showRegNumber: boolean("show_reg_number").notNull().default(true),

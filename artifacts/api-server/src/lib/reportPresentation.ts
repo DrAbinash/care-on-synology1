@@ -348,9 +348,22 @@ export interface TemplateRenderExtensions {
   templateVersion?: number;
   copyType?: string;
   page?: { size: "A4" | "A5" | "Letter"; orientation: "portrait" | "landscape"; margins: string };
-  headerCfg?: { show: boolean; showLogo: boolean; showTagline: boolean; showContact: boolean; style: "banded" | "underlined" };
+  headerCfg?: {
+    show: boolean;
+    showLogo: boolean;
+    showTagline: boolean;
+    showContact: boolean;
+    style: "banded" | "underlined";
+    /** Clinic Style settings / template override for logo placement in the letterhead. */
+    logoPosition?: "left" | "center" | "right";
+  };
   studyTitleCfg?: { style: "bar" | "plain" };
-  signatureCfg?: { show: boolean; showImage: boolean };
+  signatureCfg?: {
+    show: boolean;
+    showImage: boolean;
+    /** Horizontal alignment of the signature block(s). */
+    align?: "left" | "center" | "right";
+  };
   footerCfg?: { show: boolean };
   imagePanelCfg?: { placement: "inline" | "side-panel"; panelWidthMm: number };
   watermarkCfg?: { enabled: boolean; text: string };
@@ -392,6 +405,10 @@ export function renderReportDocument(
   const headerCfg = template.headerCfg ?? { show: true, showLogo: true, showTagline: true, showContact: true, style: banded ? "banded" as const : "underlined" as const };
   const signatureCfg = template.signatureCfg ?? { show: true, showImage: true };
   const footerCfg = template.footerCfg ?? { show: true };
+  const logoPosition = headerCfg.logoPosition ?? "left";
+  const signatureAlign = signatureCfg.align ?? "right";
+  const sigJustify =
+    signatureAlign === "left" ? "flex-start" : signatureAlign === "center" ? "center" : "flex-end";
   const panelWidthMm = template.imagePanelCfg?.panelWidthMm ?? 64;
   const orphans = template.pageBreaks?.orphans ?? 3;
   const widows = template.pageBreaks?.widows ?? 3;
@@ -476,6 +493,12 @@ export function renderReportDocument(
       border-radius: 0 3px 3px 0;
     }
     .hdr-inner { display: flex; align-items: center; gap: 14px; width: 100%; padding-left: 8px; }
+    .hdr-inner.logo-pos-center { flex-direction: column; align-items: center; text-align: center; gap: 8px; }
+    .hdr-inner.logo-pos-center .hdr-brand { flex: 0 1 auto; text-align: center; }
+    .hdr-inner.logo-pos-center .contact { margin-left: 0; text-align: center; width: 100%; }
+    .hdr-inner.logo-pos-right { flex-direction: row-reverse; }
+    .hdr-inner.logo-pos-right .hdr-brand { text-align: right; }
+    .hdr-inner.logo-pos-right .contact { margin-left: 0; margin-right: auto; text-align: left; }
     .hdr-address-bar {
       font-size: 9.5px; color: #475569; text-align: center;
       border-bottom: 1px solid ${pal.sectionBorder};
@@ -483,6 +506,7 @@ export function renderReportDocument(
       line-height: 1.45;
     }
     .hdr img.logo { width: 64px; height: 64px; object-fit: contain; }
+    .hdr .hdr-brand { flex: 1; }
     .hdr .name { ${slotCss(ty.header)} line-height: 1.1; }
     .hdr .tagline { font-size: 10px; color: ${!banded ? "#475569" : pal.accent}; margin-top: 2px; letter-spacing: 0.06em; }
     .hdr .contact { margin-left: auto; text-align: right; font-size: 10px; color: ${!banded ? "#475569" : pal.headerText + "cc"}; line-height: 1.4; }
@@ -633,7 +657,7 @@ export function renderReportDocument(
     }
 
     /* ── Footer + signatures slots ── */
-    .sigs { display: flex; gap: 30px; justify-content: flex-end; margin-top: 26px; break-inside: avoid; clear: both; }
+    .sigs { display: flex; gap: 30px; justify-content: ${sigJustify}; margin-top: 26px; break-inside: avoid; clear: both; }
     .sigbox { ${slotCss(ty.signature)} width: 200px; text-align: center; }
     .sigbox .sigimg { height: 50px; display: flex; align-items: flex-end; justify-content: center; }
     .sigbox .sigimg img { max-height: 50px; max-width: 180px; object-fit: contain; }
@@ -662,9 +686,9 @@ export function renderReportDocument(
     ${draftWatermark}
     ${templateWatermark}
     ${headerCfg.show ? `<div class="hdr">
-      <div class="hdr-inner">
+      <div class="hdr-inner logo-pos-${logoPosition}">
         ${model.clinic.logoDataUrl && headerCfg.showLogo ? `<img class="logo" src="${model.clinic.logoDataUrl}" alt="logo"/>` : ""}
-        <div style="flex:1;">
+        <div class="hdr-brand">
           <div class="name">${escapeHtml(model.clinic.name)}</div>
           ${model.clinic.tagline && headerCfg.showTagline ? `<div class="tagline">${escapeHtml(model.clinic.tagline)}</div>` : ""}
         </div>

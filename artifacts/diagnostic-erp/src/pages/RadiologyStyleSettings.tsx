@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Palette, CheckCircle, Save, RotateCcw } from "lucide-react";
+import { Palette, Save, RotateCcw } from "lucide-react";
 
 export type StyleSetting = {
   id: number;
@@ -20,11 +20,18 @@ export type StyleSetting = {
   showCriticalCommunication: boolean;
   showMeasurements: boolean;
   headingStyle: string;
+  subheadingStyle: string;
   abnormalEmphasis: string;
   spacing: string;
+  lineGap: string;
   printLayout: string;
   margins: string;
   fontSize: string;
+  fontFamily: string;
+  logoPosition: string;
+  signaturePosition: string;
+  imagePlacement: string;
+  studyTitleStyle: string;
   showRadiologistName: boolean;
   showDegree: boolean;
   showRegNumber: boolean;
@@ -32,6 +39,18 @@ export type StyleSetting = {
   showTimestamp: boolean;
   showQrVerification: boolean;
 };
+
+const FONT_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: "arial", label: "Arial" },
+  { value: "helvetica", label: "Helvetica" },
+  { value: "segoe", label: "Segoe UI" },
+  { value: "georgia", label: "Georgia" },
+  { value: "times", label: "Times New Roman" },
+  { value: "palatino", label: "Palatino" },
+  { value: "verdana", label: "Verdana" },
+  { value: "tahoma", label: "Tahoma" },
+  { value: "courier", label: "Courier New" },
+];
 
 const PRESETS: Record<string, Partial<StyleSetting>> = {
   "Care Diagnostics Default": {
@@ -43,11 +62,18 @@ const PRESETS: Record<string, Partial<StyleSetting>> = {
     showCriticalCommunication: true,
     showMeasurements: true,
     headingStyle: "underlined",
+    subheadingStyle: "underlined",
     abnormalEmphasis: "bold_abnormal",
     spacing: "standard",
+    lineGap: "standard",
     printLayout: "letterhead",
     margins: "standard",
     fontSize: "standard",
+    fontFamily: "arial",
+    logoPosition: "left",
+    signaturePosition: "right",
+    imagePlacement: "inline",
+    studyTitleStyle: "underlined",
     showRadiologistName: true,
     showDegree: true,
     showRegNumber: true,
@@ -64,11 +90,18 @@ const PRESETS: Record<string, Partial<StyleSetting>> = {
     showCriticalCommunication: true,
     showMeasurements: false,
     headingStyle: "bold",
+    subheadingStyle: "bold",
     abnormalEmphasis: "bold_both",
     spacing: "compact",
+    lineGap: "compact",
     printLayout: "half_page",
     margins: "narrow",
     fontSize: "small",
+    fontFamily: "arial",
+    logoPosition: "left",
+    signaturePosition: "right",
+    imagePlacement: "inline",
+    studyTitleStyle: "plain",
     showRadiologistName: true,
     showDegree: true,
     showRegNumber: false,
@@ -85,11 +118,18 @@ const PRESETS: Record<string, Partial<StyleSetting>> = {
     showCriticalCommunication: true,
     showMeasurements: true,
     headingStyle: "bold_underlined",
+    subheadingStyle: "underlined",
     abnormalEmphasis: "bold_impression",
     spacing: "comfortable",
+    lineGap: "comfortable",
     printLayout: "letterhead",
     margins: "standard",
     fontSize: "standard",
+    fontFamily: "times",
+    logoPosition: "left",
+    signaturePosition: "right",
+    imagePlacement: "end",
+    studyTitleStyle: "underlined",
     showRadiologistName: true,
     showDegree: true,
     showRegNumber: true,
@@ -106,18 +146,25 @@ const PRESETS: Record<string, Partial<StyleSetting>> = {
     showCriticalCommunication: true,
     showMeasurements: true,
     headingStyle: "plain",
+    subheadingStyle: "plain",
     abnormalEmphasis: "none",
     spacing: "standard",
+    lineGap: "standard",
     printLayout: "a4_plain",
     margins: "standard",
     fontSize: "standard",
+    fontFamily: "arial",
+    logoPosition: "center",
+    signaturePosition: "center",
+    imagePlacement: "inline",
+    studyTitleStyle: "plain",
     showRadiologistName: true,
     showDegree: true,
     showRegNumber: true,
     showDigitalSignature: true,
     showTimestamp: true,
     showQrVerification: true,
-  }
+  },
 };
 
 export function RadiologyStylePanel() {
@@ -133,7 +180,16 @@ export function RadiologyStylePanel() {
 
   useEffect(() => {
     if (styleSetting) {
-      setFormState(styleSetting);
+      setFormState({
+        ...styleSetting,
+        subheadingStyle: styleSetting.subheadingStyle || styleSetting.headingStyle || "underlined",
+        lineGap: styleSetting.lineGap || styleSetting.spacing || "standard",
+        fontFamily: styleSetting.fontFamily || "arial",
+        logoPosition: styleSetting.logoPosition || "left",
+        signaturePosition: styleSetting.signaturePosition || "right",
+        imagePlacement: styleSetting.imagePlacement || "inline",
+        studyTitleStyle: styleSetting.studyTitleStyle || "underlined",
+      });
     }
   }, [styleSetting]);
 
@@ -142,29 +198,36 @@ export function RadiologyStylePanel() {
       api.put("/api/radiology/institutional-style", values),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["institutional-style"] });
-      toast({ title: "Institutional Report Style Saved Successfully", description: "All new report previews and exports will adopt this layout." });
+      toast({
+        title: "Report Output Style Saved",
+        description: "Print, PDF, and workspace previews will use these settings.",
+      });
     },
     onError: (err: any) => {
       toast({ variant: "destructive", title: "Failed to Update Settings", description: err.message });
-    }
+    },
   });
 
   const handleApplyPreset = (presetKey: string) => {
     const preset = PRESETS[presetKey];
     if (preset) {
-      setFormState(prev => ({
+      setFormState((prev) => ({
         ...prev,
         ...preset,
-        presetName: presetKey
+        presetName: presetKey,
       }));
       toast({ title: `Preset Applied: ${presetKey}`, description: "Click Save Changes to apply hospital-wide." });
     }
   };
 
   const handleFieldChange = (field: keyof StyleSetting, value: any) => {
-    setFormState(prev => ({
+    setFormState((prev) => ({
       ...prev,
-      [field]: value
+      [field]: value,
+      // Keep lineGap in sync when spacing is changed and user hasn't set a distinct gap yet.
+      ...(field === "spacing" && (!prev.lineGap || prev.lineGap === prev.spacing)
+        ? { lineGap: value }
+        : {}),
     }));
   };
 
@@ -179,25 +242,27 @@ export function RadiologyStylePanel() {
           <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
             <div>
               <CardTitle className="text-lg flex items-center gap-2">
-                <Palette className="h-5 w-5 text-indigo-500" /> Institutional Style Customizer
+                <Palette className="h-5 w-5 text-indigo-500" /> Report Output Style
               </CardTitle>
               <CardDescription>
-                Configure the typography, layout order, abnormal findings emphasis, and print margins.
+                Control letterhead logo placement, fonts, heading underline, line gaps, DICOM image
+                location, signature alignment, and findings emphasis for radiology print/PDF output.
               </CardDescription>
             </div>
             <div className="flex gap-2">
-              <Select
-                value={formState.presetName || ""}
-                onValueChange={handleApplyPreset}
-              >
+              <Select value={formState.presetName || ""} onValueChange={handleApplyPreset}>
                 <SelectTrigger className="w-[200px]">
                   <SelectValue placeholder="Load Quick Preset" />
                 </SelectTrigger>
                 <SelectContent>
-                  {Object.keys(PRESETS).map(key => (
-                    <SelectItem key={key} value={key}>{key}</SelectItem>
+                  {Object.keys(PRESETS).map((key) => (
+                    <SelectItem key={key} value={key}>
+                      {key}
+                    </SelectItem>
                   ))}
-                  <SelectItem value="Custom" disabled>Custom / Modifications</SelectItem>
+                  <SelectItem value="Custom" disabled>
+                    Custom / Modifications
+                  </SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -206,7 +271,7 @@ export function RadiologyStylePanel() {
         <CardContent className="p-6 space-y-6 text-sm">
           {/* Section 1: Ordering & Inclusion */}
           <div className="space-y-4">
-            <h4 className="font-bold text-slate-800 dark:text-slate-200">1. Report Section Order & Inclusion</h4>
+            <h4 className="font-bold text-slate-800 dark:text-slate-200">1. Report Section Order &amp; Inclusion</h4>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label htmlFor="section-order">Section Order (Comma separated)</Label>
@@ -225,7 +290,9 @@ export function RadiologyStylePanel() {
                     checked={!!formState.showClinicalHistory}
                     onCheckedChange={(v) => handleFieldChange("showClinicalHistory", v)}
                   />
-                  <Label htmlFor="show-clinical-history" className="text-xs">Clinical History</Label>
+                  <Label htmlFor="show-clinical-history" className="text-xs">
+                    Clinical History
+                  </Label>
                 </div>
                 <div className="flex items-center space-x-2">
                   <Switch
@@ -233,7 +300,9 @@ export function RadiologyStylePanel() {
                     checked={!!formState.showComparison}
                     onCheckedChange={(v) => handleFieldChange("showComparison", v)}
                   />
-                  <Label htmlFor="show-comparison" className="text-xs">Comparison</Label>
+                  <Label htmlFor="show-comparison" className="text-xs">
+                    Comparison
+                  </Label>
                 </div>
                 <div className="flex items-center space-x-2">
                   <Switch
@@ -241,7 +310,9 @@ export function RadiologyStylePanel() {
                     checked={!!formState.showRecommendation}
                     onCheckedChange={(v) => handleFieldChange("showRecommendation", v)}
                   />
-                  <Label htmlFor="show-recommendation" className="text-xs">Recommendation</Label>
+                  <Label htmlFor="show-recommendation" className="text-xs">
+                    Recommendation
+                  </Label>
                 </div>
                 <div className="flex items-center space-x-2">
                   <Switch
@@ -249,7 +320,9 @@ export function RadiologyStylePanel() {
                     checked={!!formState.showCriticalCommunication}
                     onCheckedChange={(v) => handleFieldChange("showCriticalCommunication", v)}
                   />
-                  <Label htmlFor="show-critical-communication" className="text-xs">Critical Alerts</Label>
+                  <Label htmlFor="show-critical-communication" className="text-xs">
+                    Critical Alerts
+                  </Label>
                 </div>
                 <div className="flex items-center space-x-2">
                   <Switch
@@ -257,7 +330,9 @@ export function RadiologyStylePanel() {
                     checked={!!formState.showMeasurements}
                     onCheckedChange={(v) => handleFieldChange("showMeasurements", v)}
                   />
-                  <Label htmlFor="show-measurements" className="text-xs">Measurements</Label>
+                  <Label htmlFor="show-measurements" className="text-xs">
+                    Measurements
+                  </Label>
                 </div>
               </div>
             </div>
@@ -265,116 +340,246 @@ export function RadiologyStylePanel() {
 
           <hr className="border-slate-100 dark:border-slate-900" />
 
-          {/* Section 2: Heading Styles & Formatting */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            <div className="space-y-2">
-              <Label htmlFor="heading-style">Heading Style</Label>
-              <Select
-                value={formState.headingStyle || "plain"}
-                onValueChange={(v) => handleFieldChange("headingStyle", v)}
-              >
-                <SelectTrigger id="heading-style">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="plain">Plain Text</SelectItem>
-                  <SelectItem value="bold">Bold Headings</SelectItem>
-                  <SelectItem value="underlined">Underlined Headings</SelectItem>
-                  <SelectItem value="bold_underlined">Bold &amp; Underlined</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+          {/* Section 2: Typography & spacing */}
+          <div className="space-y-4">
+            <h4 className="font-bold text-slate-800 dark:text-slate-200">2. Typography, Headings &amp; Spacing</h4>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              <div className="space-y-2">
+                <Label htmlFor="font-family">Report Font</Label>
+                <Select
+                  value={formState.fontFamily || "arial"}
+                  onValueChange={(v) => handleFieldChange("fontFamily", v)}
+                >
+                  <SelectTrigger id="font-family">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {FONT_OPTIONS.map((f) => (
+                      <SelectItem key={f.value} value={f.value}>
+                        {f.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="abnormal-emphasis">Abnormal Findings Emphasis</Label>
-              <Select
-                value={formState.abnormalEmphasis || "none"}
-                onValueChange={(v) => handleFieldChange("abnormalEmphasis", v)}
-              >
-                <SelectTrigger id="abnormal-emphasis">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="none">No Bold / Standard Wording</SelectItem>
-                  <SelectItem value="bold_abnormal">Bold Abnormal Findings Only</SelectItem>
-                  <SelectItem value="bold_impression">Bold Impression Points Only</SelectItem>
-                  <SelectItem value="bold_both">Bold Abnormalities &amp; Impression</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+              <div className="space-y-2">
+                <Label htmlFor="font-size">Font Size</Label>
+                <Select
+                  value={formState.fontSize || "standard"}
+                  onValueChange={(v) => handleFieldChange("fontSize", v)}
+                >
+                  <SelectTrigger id="font-size">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="small">Small (10–11pt)</SelectItem>
+                    <SelectItem value="standard">Standard (12–13pt)</SelectItem>
+                    <SelectItem value="large">Large (14–15pt)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="spacing">Report Spacing</Label>
-              <Select
-                value={formState.spacing || "standard"}
-                onValueChange={(v) => handleFieldChange("spacing", v)}
-              >
-                <SelectTrigger id="spacing">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="compact">Compact / Tight gaps</SelectItem>
-                  <SelectItem value="standard">Standard spacing</SelectItem>
-                  <SelectItem value="comfortable">Comfortable / Relaxed gaps</SelectItem>
-                </SelectContent>
-              </Select>
+              <div className="space-y-2">
+                <Label htmlFor="line-gap">Gap Between Lines</Label>
+                <Select
+                  value={formState.lineGap || formState.spacing || "standard"}
+                  onValueChange={(v) => handleFieldChange("lineGap", v)}
+                >
+                  <SelectTrigger id="line-gap">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="compact">Tight (compact)</SelectItem>
+                    <SelectItem value="standard">Standard</SelectItem>
+                    <SelectItem value="comfortable">Relaxed (comfortable)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="heading-style">Section Heading Style</Label>
+                <Select
+                  value={formState.headingStyle || "plain"}
+                  onValueChange={(v) => handleFieldChange("headingStyle", v)}
+                >
+                  <SelectTrigger id="heading-style">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="plain">Plain (no underline)</SelectItem>
+                    <SelectItem value="bold">Bold Headings</SelectItem>
+                    <SelectItem value="underlined">Underlined Headings</SelectItem>
+                    <SelectItem value="bold_underlined">Bold &amp; Underlined</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="subheading-style">Subheading Style</Label>
+                <Select
+                  value={formState.subheadingStyle || formState.headingStyle || "underlined"}
+                  onValueChange={(v) => handleFieldChange("subheadingStyle", v)}
+                >
+                  <SelectTrigger id="subheading-style">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="plain">Plain (no underline)</SelectItem>
+                    <SelectItem value="bold">Bold</SelectItem>
+                    <SelectItem value="underlined">Underlined</SelectItem>
+                    <SelectItem value="bold_underlined">Bold &amp; Underlined</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="study-title-style">Study Title Style</Label>
+                <Select
+                  value={formState.studyTitleStyle || "underlined"}
+                  onValueChange={(v) => handleFieldChange("studyTitleStyle", v)}
+                >
+                  <SelectTrigger id="study-title-style">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="plain">Plain (no underline)</SelectItem>
+                    <SelectItem value="underlined">Underlined</SelectItem>
+                    <SelectItem value="bar">Accent bar</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="abnormal-emphasis">Findings Emphasis (Bold)</Label>
+                <Select
+                  value={formState.abnormalEmphasis || "none"}
+                  onValueChange={(v) => handleFieldChange("abnormalEmphasis", v)}
+                >
+                  <SelectTrigger id="abnormal-emphasis">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">No Bold / Standard Wording</SelectItem>
+                    <SelectItem value="bold_abnormal">Bold Abnormal Findings Only</SelectItem>
+                    <SelectItem value="bold_impression">Bold Impression Points Only</SelectItem>
+                    <SelectItem value="bold_both">Bold Abnormalities &amp; Impression</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="spacing">Section Spacing</Label>
+                <Select
+                  value={formState.spacing || "standard"}
+                  onValueChange={(v) => handleFieldChange("spacing", v)}
+                >
+                  <SelectTrigger id="spacing">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="compact">Compact / Tight gaps</SelectItem>
+                    <SelectItem value="standard">Standard spacing</SelectItem>
+                    <SelectItem value="comfortable">Comfortable / Relaxed gaps</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
           </div>
 
           <hr className="border-slate-100 dark:border-slate-900" />
 
-          {/* Section 3: Paper Size, Margins & Typography */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            <div className="space-y-2">
-              <Label htmlFor="print-layout">Paper &amp; Print Layout</Label>
-              <Select
-                value={formState.printLayout || "letterhead"}
-                onValueChange={(v) => handleFieldChange("printLayout", v)}
-              >
-                <SelectTrigger id="print-layout">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="a4_plain">A4 Plain Paper (Include Headers)</SelectItem>
-                  <SelectItem value="letterhead">Hospital Letterhead (Leaves Top Gap)</SelectItem>
-                  <SelectItem value="half_page">Half-page Compact Layout</SelectItem>
-                  <SelectItem value="screen_only">Screen-only Preview</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+          {/* Section 3: Letterhead, logo, images, paper */}
+          <div className="space-y-4">
+            <h4 className="font-bold text-slate-800 dark:text-slate-200">
+              3. Logo, Signature &amp; DICOM Image Placement
+            </h4>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              <div className="space-y-2">
+                <Label htmlFor="logo-position">Logo Location in Header</Label>
+                <Select
+                  value={formState.logoPosition || "left"}
+                  onValueChange={(v) => handleFieldChange("logoPosition", v)}
+                >
+                  <SelectTrigger id="logo-position">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="left">Left</SelectItem>
+                    <SelectItem value="center">Center</SelectItem>
+                    <SelectItem value="right">Right</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="margins">Margins</Label>
-              <Select
-                value={formState.margins || "standard"}
-                onValueChange={(v) => handleFieldChange("margins", v)}
-              >
-                <SelectTrigger id="margins">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="narrow">Narrow (0.5 in)</SelectItem>
-                  <SelectItem value="standard">Standard (1.0 in)</SelectItem>
-                  <SelectItem value="wide">Wide (1.5 in)</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+              <div className="space-y-2">
+                <Label htmlFor="signature-position">Signature Location</Label>
+                <Select
+                  value={formState.signaturePosition || "right"}
+                  onValueChange={(v) => handleFieldChange("signaturePosition", v)}
+                >
+                  <SelectTrigger id="signature-position">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="left">Left</SelectItem>
+                    <SelectItem value="center">Center</SelectItem>
+                    <SelectItem value="right">Right</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="font-size">Font Sizing</Label>
-              <Select
-                value={formState.fontSize || "standard"}
-                onValueChange={(v) => handleFieldChange("fontSize", v)}
-              >
-                <SelectTrigger id="font-size">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="small">Small (10pt)</SelectItem>
-                  <SelectItem value="standard">Standard (12pt)</SelectItem>
-                  <SelectItem value="large">Large (14pt)</SelectItem>
-                </SelectContent>
-              </Select>
+              <div className="space-y-2">
+                <Label htmlFor="image-placement">DICOM / Key Image Location</Label>
+                <Select
+                  value={formState.imagePlacement || "inline"}
+                  onValueChange={(v) => handleFieldChange("imagePlacement", v)}
+                >
+                  <SelectTrigger id="image-placement">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="inline">Inline with findings</SelectItem>
+                    <SelectItem value="side-panel">Side panel (right)</SelectItem>
+                    <SelectItem value="end">After findings (end of report)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="print-layout">Paper &amp; Print Layout</Label>
+                <Select
+                  value={formState.printLayout || "letterhead"}
+                  onValueChange={(v) => handleFieldChange("printLayout", v)}
+                >
+                  <SelectTrigger id="print-layout">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="a4_plain">A4 Plain Paper (Include Headers)</SelectItem>
+                    <SelectItem value="letterhead">Hospital Letterhead (Leaves Top Gap)</SelectItem>
+                    <SelectItem value="half_page">Half-page Compact Layout</SelectItem>
+                    <SelectItem value="screen_only">Screen-only Preview</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="margins">Margins</Label>
+                <Select
+                  value={formState.margins || "standard"}
+                  onValueChange={(v) => handleFieldChange("margins", v)}
+                >
+                  <SelectTrigger id="margins">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="narrow">Narrow (0.5 in)</SelectItem>
+                    <SelectItem value="standard">Standard (1.0 in)</SelectItem>
+                    <SelectItem value="wide">Wide (1.5 in)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
           </div>
 
@@ -382,7 +587,7 @@ export function RadiologyStylePanel() {
 
           {/* Section 4: Signature Blocks */}
           <div className="space-y-4">
-            <h4 className="font-bold text-slate-800 dark:text-slate-200">2. Signatures &amp; Footer Layout</h4>
+            <h4 className="font-bold text-slate-800 dark:text-slate-200">4. Signature &amp; Footer Fields</h4>
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-4">
               <div className="flex items-center space-x-2">
                 <Switch
@@ -390,7 +595,9 @@ export function RadiologyStylePanel() {
                   checked={!!formState.showRadiologistName}
                   onCheckedChange={(v) => handleFieldChange("showRadiologistName", v)}
                 />
-                <Label htmlFor="show-rad-name" className="text-xs">Rad Name</Label>
+                <Label htmlFor="show-rad-name" className="text-xs">
+                  Rad Name
+                </Label>
               </div>
               <div className="flex items-center space-x-2">
                 <Switch
@@ -398,7 +605,9 @@ export function RadiologyStylePanel() {
                   checked={!!formState.showDegree}
                   onCheckedChange={(v) => handleFieldChange("showDegree", v)}
                 />
-                <Label htmlFor="show-degree" className="text-xs">Degrees</Label>
+                <Label htmlFor="show-degree" className="text-xs">
+                  Degrees
+                </Label>
               </div>
               <div className="flex items-center space-x-2">
                 <Switch
@@ -406,7 +615,9 @@ export function RadiologyStylePanel() {
                   checked={!!formState.showRegNumber}
                   onCheckedChange={(v) => handleFieldChange("showRegNumber", v)}
                 />
-                <Label htmlFor="show-reg" className="text-xs">Reg Number</Label>
+                <Label htmlFor="show-reg" className="text-xs">
+                  Reg Number
+                </Label>
               </div>
               <div className="flex items-center space-x-2">
                 <Switch
@@ -414,7 +625,9 @@ export function RadiologyStylePanel() {
                   checked={!!formState.showDigitalSignature}
                   onCheckedChange={(v) => handleFieldChange("showDigitalSignature", v)}
                 />
-                <Label htmlFor="show-digital" className="text-xs">Digital Signature</Label>
+                <Label htmlFor="show-digital" className="text-xs">
+                  Digital Signature
+                </Label>
               </div>
               <div className="flex items-center space-x-2">
                 <Switch
@@ -422,7 +635,9 @@ export function RadiologyStylePanel() {
                   checked={!!formState.showTimestamp}
                   onCheckedChange={(v) => handleFieldChange("showTimestamp", v)}
                 />
-                <Label htmlFor="show-timestamp" className="text-xs">Timestamp</Label>
+                <Label htmlFor="show-timestamp" className="text-xs">
+                  Timestamp
+                </Label>
               </div>
               <div className="flex items-center space-x-2">
                 <Switch
@@ -430,19 +645,32 @@ export function RadiologyStylePanel() {
                   checked={!!formState.showQrVerification}
                   onCheckedChange={(v) => handleFieldChange("showQrVerification", v)}
                 />
-                <Label htmlFor="show-qr" className="text-xs">QR Verification</Label>
+                <Label htmlFor="show-qr" className="text-xs">
+                  QR Verification
+                </Label>
               </div>
             </div>
           </div>
 
           <hr className="border-slate-100 dark:border-slate-900" />
 
-          {/* Save / Reset actions */}
           <div className="flex justify-end gap-3 pt-2">
             <Button
               variant="outline"
               className="gap-2"
-              onClick={() => styleSetting && setFormState(styleSetting)}
+              onClick={() =>
+                styleSetting &&
+                setFormState({
+                  ...styleSetting,
+                  subheadingStyle: styleSetting.subheadingStyle || styleSetting.headingStyle || "underlined",
+                  lineGap: styleSetting.lineGap || styleSetting.spacing || "standard",
+                  fontFamily: styleSetting.fontFamily || "arial",
+                  logoPosition: styleSetting.logoPosition || "left",
+                  signaturePosition: styleSetting.signaturePosition || "right",
+                  imagePlacement: styleSetting.imagePlacement || "inline",
+                  studyTitleStyle: styleSetting.studyTitleStyle || "underlined",
+                })
+              }
             >
               <RotateCcw className="h-4 w-4" /> Reset Settings
             </Button>

@@ -64,6 +64,10 @@ import {
   REPORT_LOGO_SCALE_KEY,
   REPORT_FOOTER_SCALE_KEY,
 } from "../lib/reportLetterheadScale";
+import {
+  applyInstitutionalTemplateOverrides,
+  buildInstitutionalStyleCss,
+} from "../lib/institutionalReportStyle";
 import { resolveDraftKeyImages } from "../lib/reportImages";
 import { isFeatureEnabledServer } from "../lib/featureFlags";
 import { checkWriteLock } from "../lib/studyLocks";
@@ -845,7 +849,7 @@ function escHtml(v: string): string {
       let result = text;
       for (const term of terms) {
         const re = new RegExp(`\\b(${term}s?)\\b(?![^<]*>)(?![^<>]*<\\/[b|strong])`, "gi");
-        result = result.replace(re, "<strong>$1</strong>");
+        result = result.replace(re, '<strong class="findings-abnormal abnormal-term">$1</strong>');
       }
       return result;
     }
@@ -1905,16 +1909,27 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
 
   // R1.2 — drafts follow the LATEST ACTIVE version (no freeze until signed);
   // ?template=key[@version] previews any template against the draft.
-  const template = await resolveTemplateForRender({
+  const baseTemplate = await resolveTemplateForRender({
     explicit: typeof req.query.template === "string" ? req.query.template : null,
     copyType: "standard",
   });
+
+  // Apply the same institutional Style settings the finalized print path uses
+  // (logo/signature/DICOM placement, fonts, heading underline, line gaps).
+  let instStyle: typeof radiologyInstitutionalStylesTable.$inferSelect | null = null;
+  try {
+    const [style] = await db.select().from(radiologyInstitutionalStylesTable).limit(1);
+    if (style) instStyle = style;
+  } catch {
+    instStyle = null;
+  }
+  const template = applyInstitutionalTemplateOverrides(baseTemplate, instStyle);
 
   // Letterhead sizing (pacs_settings key/value; presentation-only) — the SAME
   // three keys the finalized render path (patient-reports.ts) reads, so the
   // draft preview and the final report size the header/logo/address/footer
   // identically. Never blocks the preview: falls back to the (bigger) defaults.
-  let letterheadCss = "";
+  let customCss = buildInstitutionalStyleCss(instStyle);
   try {
     const scaleRows = await db.select({ key: pacsSettingsTable.key, value: pacsSettingsTable.value })
       .from(pacsSettingsTable)
@@ -1923,18 +1938,18 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
         eq(pacsSettingsTable.category, "report"),
       ));
     const scaleVal = (k: string) => scaleRows.find((row) => row.key === k)?.value;
-    letterheadCss = buildLetterheadScaleCss({
+    customCss += buildLetterheadScaleCss({
       headerScale: scaleVal(REPORT_HEADER_SCALE_KEY),
       logoScale: scaleVal(REPORT_LOGO_SCALE_KEY),
       footerScale: scaleVal(REPORT_FOOTER_SCALE_KEY),
     });
   } catch {
-    letterheadCss = buildLetterheadScaleCss();
+    customCss += buildLetterheadScaleCss();
   }
 
   res.setHeader("Content-Type", "text/html; charset=utf-8");
   res.setHeader("Cache-Control", "no-store");
-  res.send(renderReportDocument(model, template, { customCss: letterheadCss }));
+  res.send(renderReportDocument(model, template, { customCss }));
 });
 
 // POST /key-images — multipart upload
