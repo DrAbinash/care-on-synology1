@@ -293,7 +293,8 @@ export function RadiologyStylePanel() {
                 <Palette className="h-5 w-5 text-indigo-500" /> Report Output Style
               </CardTitle>
               <CardDescription>
-                Control letterhead logo placement, fonts, heading underline, line gaps, DICOM image
+                Control letterhead logo size and side, clinic name/address size and alignment,
+                the rule line under the header, fonts, heading underline, line gaps, DICOM image
                 location, signature alignment, and findings emphasis for radiology print/PDF output.
               </CardDescription>
             </div>
