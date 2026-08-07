@@ -131,6 +131,8 @@ export type ReportingWorkspaceChromeProps = {
   voiceBar?: ReactNode;
   /** Compact modality chip (MRI / USG / CT) — shown in collapsed + expanded chrome. */
   modalityAccent?: { label: string; className: string } | null;
+  /** Optional extra status chip (e.g. MRI warm-cache hint). */
+  statusHint?: { label: string; title?: string; className?: string } | null;
 };
 
 function activeDayPresetId(from: string, to: string): string {
@@ -331,6 +333,15 @@ export default function ReportingWorkspaceChrome(props: ReportingWorkspaceChrome
                 {props.modalityAccent.label}
               </Badge>
             )}
+            {props.statusHint && (
+              <Badge
+                className={`shrink-0 text-[9px] py-0 h-4 border ${props.statusHint.className ?? "bg-slate-100 text-slate-700 border-slate-200"}`}
+                title={props.statusHint.title}
+                data-testid="chrome-status-hint"
+              >
+                {props.statusHint.label}
+              </Badge>
+            )}
             <span className="text-muted-foreground shrink-0" data-testid="queue-position">
               {workflow.position.index >= 0 ? `${workflow.position.index + 1}/${workflow.position.total}` : `—/${workflow.position.total}`}
             </span>
@@ -401,6 +412,15 @@ export default function ReportingWorkspaceChrome(props: ReportingWorkspaceChrome
         {props.modalityAccent && (
           <Badge className={`shrink-0 text-[10px] border ${props.modalityAccent.className}`} data-testid="chrome-modality-badge">
             {props.modalityAccent.label}
+          </Badge>
+        )}
+        {props.statusHint && (
+          <Badge
+            className={`shrink-0 text-[10px] border ${props.statusHint.className ?? "bg-slate-100 text-slate-700 border-slate-200"}`}
+            title={props.statusHint.title}
+            data-testid="chrome-status-hint"
+          >
+            {props.statusHint.label}
           </Badge>
         )}
         {!props.isOnline && <Badge className="shrink-0 text-[10px] bg-red-100 text-red-700 border-red-200">Offline</Badge>}

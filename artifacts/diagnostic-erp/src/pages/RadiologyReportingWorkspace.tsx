@@ -1741,6 +1741,21 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     toast({ title: "Remaining systems set to normal", description: "Edited sections were not changed." });
   }
 
+  /** Reset EVERY structured section to template normal (spine-friendly one-click). */
+  function fillAllNormals() {
+    const sections = selectedTemplate ? parseSectionsJson(selectedTemplate.sectionsJson) : null;
+    if (!sections?.findingsItems.length) return;
+    if (!window.confirm("Set all anatomy sections to normal? Edited section text will be replaced.")) return;
+    const map: Record<string, { normal: boolean; text: string }> = {};
+    for (const item of sections.findingsItems) {
+      map[item.label] = { normal: true, text: item.normal };
+    }
+    setFindingsMap(map);
+    if (selectedTemplate?.defaultFindings) setRawFindings(selectedTemplate.defaultFindings);
+    if (selectedTemplate?.defaultImpression) setImpression([selectedTemplate.defaultImpression]);
+    toast({ title: "All sections set to normal" });
+  }
+
   // ── Local unsaved-draft protection ────────────────────────────────────────
   // Backs up the typed report to this browser's localStorage every ~2s so a
   // crash, accidental tab close, or temporary API failure never loses work.
@@ -2892,6 +2907,52 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     () => (entry?.modality ?? "").trim().toUpperCase().startsWith("MR"),
     [entry?.modality],
   );
+
+  const { data: mriWarmStatus } = useQuery<{
+    running: boolean;
+    lastWarmed: number;
+    candidates: number;
+    lastRunAt: string | null;
+    orthancReachable: boolean | null;
+  }>({
+    queryKey: ["mri-warm-cache-status"],
+    queryFn: () => api.get("/api/radiology/mri-warm-cache/status"),
+    enabled: isMriModality,
+    staleTime: 30_000,
+    refetchInterval: isMriModality ? 60_000 : false,
+  });
+
+  const mriWarmHint = useMemo(() => {
+    if (!isMriModality) return null;
+    if (mriWarmStatus?.running) {
+      return {
+        label: "MRI warming…",
+        title: "Orthanc warm cache is running — opens should get faster shortly",
+        className: "bg-amber-50 text-amber-800 border-amber-200",
+      };
+    }
+    if (mriWarmStatus?.orthancReachable === false) {
+      return {
+        label: "MRI cache off",
+        title: "Orthanc unreachable — MRI warm cache paused",
+        className: "bg-red-50 text-red-700 border-red-200",
+      };
+    }
+    if (mriWarmStatus && (mriWarmStatus.lastWarmed > 0 || mriWarmStatus.candidates > 0)) {
+      return {
+        label: `Warm ${mriWarmStatus.lastWarmed}/${mriWarmStatus.candidates}`,
+        title: mriWarmStatus.lastRunAt
+          ? `Last MRI warm ${new Date(mriWarmStatus.lastRunAt).toLocaleString()}`
+          : "MRI studies pre-touched in Orthanc for faster opens",
+        className: "bg-indigo-50 text-indigo-800 border-indigo-200",
+      };
+    }
+    return {
+      label: "MRI cache",
+      title: "MRI warm cache enabled — today/yesterday studies pre-load in Orthanc",
+      className: "bg-indigo-50/80 text-indigo-700 border-indigo-200",
+    };
+  }, [isMriModality, mriWarmStatus]);
 
   // Per-modality accent for study setup bar + chrome chip.
   const modalityAccent = useMemo(() => {
@@ -5241,6 +5302,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
         reportStatusLabel={STATUS_CONFIG[reportStatus]?.label || reportStatus}
         reportStatusClass={STATUS_CONFIG[reportStatus]?.color || ""}
         modalityAccent={entry ? { label: modalityAccent.label, className: modalityAccent.className } : null}
+        statusHint={mriWarmHint}
         isOnline={isOnline}
         isLoadingDraft={!!studyId && isLoadingExistingDraft}
         hasExistingDraft={!!existingDraft}
@@ -5859,10 +5921,17 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                   </Button>
                 )}
                 {useStructured && selectedTemplate && (
-                  <Button size="sm" variant="outline" className="h-6 text-[10px]" onClick={fillRemainingNormals}
-                    title="Set every section you haven't edited to its normal text — edited sections are never changed">
-                    Fill remaining normals
-                  </Button>
+                  <>
+                    <Button size="sm" variant="outline" className="h-6 text-[10px]" onClick={fillRemainingNormals}
+                      title="Set every section you haven't edited to its normal text — edited sections are never changed">
+                      Fill remaining normals
+                    </Button>
+                    <Button size="sm" variant="outline" className="h-6 text-[10px]" onClick={fillAllNormals}
+                      data-testid="btn-fill-all-normals"
+                      title="Reset every anatomy section to template normal (asks first)">
+                      All normals
+                    </Button>
+                  </>
                 )}
               </div>
             )}

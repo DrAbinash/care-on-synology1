@@ -95,6 +95,48 @@ type MriWarmStatus = {
   orthancReachable: boolean | null;
 };
 
+
+function SpineFormatUpgradePanel({ disabled }: { disabled?: boolean }) {
+  const { toast } = useToast();
+  const upgrade = useMutation({
+    mutationFn: () =>
+      api.post<{ ok: boolean; inserted: number; upgraded: number; findingsRemapped: number; message: string }>(
+        "/api/structured-report-templates/upgrade-spine-formats",
+        {},
+      ),
+    onSuccess: (res) => {
+      toast({
+        title: "Spine formats",
+        description: res.message
+          || `Inserted ${res.inserted}, upgraded ${res.upgraded}, remapped ${res.findingsRemapped}.`,
+      });
+    },
+    onError: (err: Error) =>
+      toast({ title: "Spine upgrade failed", description: err.message, variant: "destructive" }),
+  });
+
+  return (
+    <div className="rounded-lg border bg-muted/20 p-3 space-y-2 text-[11px]" data-testid="spine-format-upgrade">
+      <p className="text-muted-foreground">
+        Applies denser Cervical / Dorsal / LS anatomy sections to clinic presets and remaps Quick Select
+        labels that still point at old bundled sections (e.g. “C2-C3 to C6-C7” → per-level / {"{level}"}).
+      </p>
+      <Button
+        type="button"
+        size="sm"
+        variant="outline"
+        className="h-7 text-[10px]"
+        disabled={disabled || upgrade.isPending}
+        onClick={() => upgrade.mutate()}
+        data-testid="btn-upgrade-spine-formats"
+      >
+        <RefreshCw size={11} className={`mr-1 ${upgrade.isPending ? "animate-spin" : ""}`} />
+        {upgrade.isPending ? "Upgrading…" : "Upgrade spine formats now"}
+      </Button>
+    </div>
+  );
+}
+
 function MriWarmCacheStatusPanel() {
   const { toast } = useToast();
   const { data, refetch, isFetching } = useQuery<MriWarmStatus>({
@@ -659,6 +701,16 @@ export default function RadiologySettingsCenter() {
               </div>
             </div>
             <MriWarmCacheStatusPanel />
+          </div>
+
+          <div className="rounded-xl border bg-card p-5 space-y-4 max-w-3xl">
+            <h4 className="text-xs font-bold uppercase tracking-wide text-muted-foreground">Spine format upgrade</h4>
+            <p className="text-[11px] text-muted-foreground">
+              Expands Cervical / Dorsal / LS structured templates to per-level anatomy (C2–C7, T1–T12, L1–S1)
+              and remaps Quick Select sections that still point at old bundled labels like “C2-C3 to C6-C7”.
+              Safe to run more than once — only upgrades when the new preset has more sections.
+            </p>
+            <SpineFormatUpgradePanel disabled={!isAdmin} />
           </div>
 
           <div className="rounded-xl border bg-card p-5 space-y-3 max-w-3xl">

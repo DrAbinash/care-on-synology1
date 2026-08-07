@@ -615,8 +615,15 @@ export default function QuickFindingsPanel({
         <span className="flex h-5 w-5 items-center justify-center rounded-md bg-amber-500 text-white shadow-sm">
           <Zap size={11} />
         </span>
-        <span className="text-[10px] font-semibold uppercase tracking-wide text-amber-950">Quick Add</span>
-        <span className="text-[9px] text-amber-800/70">Alt+1–9 on strip · / to search</span>
+        <div className="min-w-0 flex-1">
+          <span className="text-[10px] font-semibold uppercase tracking-wide text-amber-950">Quick Add</span>
+          <span className="text-[9px] text-amber-800/70 ml-1.5">Alt+1–9 · / search</span>
+          {onEditBeforeInsert && (
+            <p className="text-[9px] text-amber-900/60 leading-tight mt-0.5" data-testid="quick-dblclick-hint">
+              Double-click a finding to edit text for this study only
+            </p>
+          )}
+        </div>
       </div>
       {/* Universal search */}
       <div className="relative shrink-0">
