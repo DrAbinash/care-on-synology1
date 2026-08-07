@@ -512,11 +512,16 @@ async function upgradePresetTemplateSections(): Promise<number> {
     const oldCount = countFindingsItems(existing.sectionsJson);
     const newCount = countFindingsItems(preset.sectionsJson);
     if (newCount <= oldCount) continue;
+    // USG presets omit defaultImpression; MRI/CT presets include it.
+    const impression =
+      "defaultImpression" in preset
+        ? ((preset as { defaultImpression?: string | null }).defaultImpression ?? null)
+        : null;
     await db.update(structuredReportTemplatesTable)
       .set({
         sectionsJson: preset.sectionsJson,
         defaultFindings: preset.defaultFindings ?? null,
-        defaultImpression: preset.defaultImpression ?? null,
+        defaultImpression: impression,
         macrosJson: preset.macrosJson ?? null,
         updatedAt: new Date(),
         updatedBy: "system-spine-format-upgrade",
