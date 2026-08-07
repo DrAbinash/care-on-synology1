@@ -69,6 +69,11 @@ import {
   REPORT_FOOTER_SCALE_KEY,
 } from "../lib/reportLetterheadScale";
 import {
+  applyInstitutionalTemplateOverrides,
+  buildInstitutionalStyleCss,
+  DEFAULT_INSTITUTIONAL_STYLE,
+} from "../lib/institutionalReportStyle";
+import {
   materializeFindings,
   CatalogStoreFindingResolver,
   type MaterializationOutput,
@@ -2507,32 +2512,31 @@ async function renderReportVersionHtml(reportId: number, autoPrint: boolean, use
         } else {
           const PRESETS: Record<string, any> = {
             "Care Diagnostics Default": {
+              ...DEFAULT_INSTITUTIONAL_STYLE,
               presetName: "Care Diagnostics Default",
-              sectionOrder: "Technique,Findings,Impression",
-              showClinicalHistory: true, showComparison: true, showRecommendation: true, showCriticalCommunication: true, showMeasurements: true,
-              headingStyle: "underlined", abnormalEmphasis: "bold_abnormal", spacing: "standard", printLayout: "letterhead", margins: "standard", fontSize: "standard",
-              showRadiologistName: true, showDegree: true, showRegNumber: true, showDigitalSignature: true, showTimestamp: true, showQrVerification: true,
             },
             "Compact Radiology": {
+              ...DEFAULT_INSTITUTIONAL_STYLE,
               presetName: "Compact Radiology",
               sectionOrder: "Technique,Findings,Impression",
               showClinicalHistory: false, showComparison: false, showRecommendation: true, showCriticalCommunication: true, showMeasurements: false,
-              headingStyle: "bold", abnormalEmphasis: "bold_both", spacing: "compact", printLayout: "half_page", margins: "narrow", fontSize: "small",
+              headingStyle: "bold", subheadingStyle: "bold", abnormalEmphasis: "bold_both", spacing: "compact", lineGap: "compact",
+              printLayout: "half_page", margins: "narrow", fontSize: "small",
+              logoPosition: "left", signaturePosition: "right", imagePlacement: "inline", studyTitleStyle: "plain",
               showRadiologistName: true, showDegree: true, showRegNumber: false, showDigitalSignature: true, showTimestamp: false, showQrVerification: false,
             },
             "Formal Letterpad": {
+              ...DEFAULT_INSTITUTIONAL_STYLE,
               presetName: "Formal Letterpad",
-              sectionOrder: "Technique,Findings,Impression",
-              showClinicalHistory: true, showComparison: true, showRecommendation: true, showCriticalCommunication: true, showMeasurements: true,
-              headingStyle: "bold_underlined", abnormalEmphasis: "bold_impression", spacing: "comfortable", printLayout: "letterhead", margins: "standard", fontSize: "standard",
-              showRadiologistName: true, showDegree: true, showRegNumber: true, showDigitalSignature: true, showTimestamp: true, showQrVerification: true,
+              headingStyle: "bold_underlined", subheadingStyle: "underlined", abnormalEmphasis: "bold_impression",
+              spacing: "comfortable", lineGap: "comfortable", studyTitleStyle: "underlined",
+              logoPosition: "left", signaturePosition: "right", imagePlacement: "inline",
             },
             "Plain A4": {
+              ...DEFAULT_INSTITUTIONAL_STYLE,
               presetName: "Plain A4",
-              sectionOrder: "Technique,Findings,Impression",
-              showClinicalHistory: true, showComparison: true, showRecommendation: true, showCriticalCommunication: true, showMeasurements: true,
-              headingStyle: "plain", abnormalEmphasis: "none", spacing: "standard", printLayout: "a4_plain", margins: "standard", fontSize: "standard",
-              showRadiologistName: true, showDegree: true, showRegNumber: true, showDigitalSignature: true, showTimestamp: true, showQrVerification: true,
+              headingStyle: "plain", subheadingStyle: "plain", abnormalEmphasis: "none",
+              printLayout: "a4_plain", studyTitleStyle: "plain",
             }
           };
           const matchedPreset = PRESETS[r.stylePresetUsed];
@@ -2605,40 +2609,10 @@ async function renderReportVersionHtml(reportId: number, autoPrint: boolean, use
     };
   }
 
-  // Build style overrides
+  // Build style overrides. pacs letterhead scale is the baseline; institutional
+  // Style settings are appended LAST so logo/name/address sizes, alignment and
+  // the header rule from Radiology Settings → Style always win.
   let customStyles = "";
-  if (instStyle) {
-    const fs = instStyle.fontSize === "small" ? "11px" : instStyle.fontSize === "large" ? "15px" : "13px";
-    const marginVal = instStyle.margins === "narrow" ? "14mm 10mm" : instStyle.margins === "wide" ? "20mm 25mm" : "14mm";
-    const spacingVal = instStyle.spacing === "compact" ? "2px" : instStyle.spacing === "comfortable" ? "18px" : "10px";
-    const lineHt = instStyle.spacing === "compact" ? "1.2" : instStyle.spacing === "comfortable" ? "1.7" : "1.45";
-
-    customStyles = `
-      @page { size: A4; margin: ${marginVal}; }
-      body { font-size: ${fs} !important; line-height: ${lineHt} !important; }
-      .body p, .body div { margin-bottom: ${spacingVal} !important; }
-    `;
-
-    // R1.4 — "Screen-only Preview" USED to add `@media print { display:none }`
-    // here, which silently rendered a BLANK PAGE on every real Print/Save-as-
-    // PDF click for any draft/pending report (or any report requested with
-    // ?useUpdatedStyle=true) — invisible on screen (the on-screen preview
-    // looked completely normal), only discovered the moment someone actually
-    // printed. Printing and PDF export are a hard requirement of the
-    // production workflow, so this layout option no longer blanks output;
-    // it now prints like every other layout.
-    if (instStyle.printLayout === "half_page") {
-      customStyles += `
-        body { height: 50% !important; border: 1px dashed #ccc !important; padding: 10px !important; }
-      `;
-    }
-  }
-
-  // Letterhead sizing (pacs_settings key/value; presentation-only). Read the
-  // three scale keys and append the sizing overrides so they win over the
-  // template seed via `!important` + cascade order. Defaults ship "large" so
-  // header/logo/address/footer are bigger out of the box; the draft preview
-  // path reads the SAME keys so drafts and finals match. Never blocks printing.
   try {
     const scaleRows = await db.select({ key: pacsSettingsTable.key, value: pacsSettingsTable.value })
       .from(pacsSettingsTable)
@@ -2653,8 +2627,10 @@ async function renderReportVersionHtml(reportId: number, autoPrint: boolean, use
       footerScale: scaleVal(REPORT_FOOTER_SCALE_KEY),
     });
   } catch {
-    // pacs_settings unreadable → apply the (bigger) defaults anyway
     customStyles += buildLetterheadScaleCss();
+  }
+  if (instStyle) {
+    customStyles += buildInstitutionalStyleCss(instStyle);
   }
 
   // D8 — visual safeguards for the served version (empty strings when the
@@ -2744,7 +2720,8 @@ async function renderReportVersionHtml(reportId: number, autoPrint: boolean, use
   // frozen signed identity of THIS revision → copy-type active selection →
   // standard active selection → care-classic. Never throws; a resolution
   // problem can never stop a report from printing.
-  const template = await resolveTemplateForRender({ explicit: templateId, reportId, copyType });
+  const baseTemplate = await resolveTemplateForRender({ explicit: templateId, reportId, copyType });
+  const template = applyInstitutionalTemplateOverrides(baseTemplate, instStyle);
   return renderReportDocument(model, template, { customCss: customStyles });
 }
 

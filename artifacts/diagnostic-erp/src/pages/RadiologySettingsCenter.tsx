@@ -1083,8 +1083,9 @@ export default function RadiologySettingsCenter() {
           <div className="rounded-xl border bg-card p-5 space-y-3 max-w-3xl">
             <h3 className="text-sm font-bold">Report Letterhead Size</h3>
             <p className="text-xs text-muted-foreground">
-              Enlarge the report header, clinic logo, clinic name/address block and the footer.
-              These sizing overrides apply on top of the selected report template and affect both draft previews and finalized reports.
+              Baseline sizes for header, logo and footer. For logo left/right, clinic name/address
+              alignment, and the line under the header, use the <strong>Style</strong> tab — those
+              Style settings override these sizes on print and PDF.
             </p>
             <div className="grid sm:grid-cols-3 gap-4">
               <div className="space-y-2">

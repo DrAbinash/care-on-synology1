@@ -611,11 +611,26 @@ async function runStartupMigrations(): Promise<void> {
         show_critical_communication BOOLEAN NOT NULL DEFAULT TRUE,
         show_measurements BOOLEAN NOT NULL DEFAULT TRUE,
         heading_style TEXT NOT NULL DEFAULT 'underlined',
+        subheading_style TEXT NOT NULL DEFAULT 'underlined',
         abnormal_emphasis TEXT NOT NULL DEFAULT 'bold_abnormal',
         spacing TEXT NOT NULL DEFAULT 'standard',
+        line_gap TEXT NOT NULL DEFAULT 'standard',
         print_layout TEXT NOT NULL DEFAULT 'letterhead',
         margins TEXT NOT NULL DEFAULT 'standard',
         font_size TEXT NOT NULL DEFAULT 'standard',
+        font_family TEXT NOT NULL DEFAULT 'arial',
+        logo_position TEXT NOT NULL DEFAULT 'left',
+        signature_position TEXT NOT NULL DEFAULT 'right',
+        image_placement TEXT NOT NULL DEFAULT 'inline',
+        study_title_style TEXT NOT NULL DEFAULT 'underlined',
+        logo_scale TEXT NOT NULL DEFAULT 'large',
+        clinic_name_scale TEXT NOT NULL DEFAULT 'large',
+        address_scale TEXT NOT NULL DEFAULT 'large',
+        name_align TEXT NOT NULL DEFAULT 'left',
+        address_align TEXT NOT NULL DEFAULT 'center',
+        header_rule_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        header_rule_thickness TEXT NOT NULL DEFAULT 'medium',
+        header_rule_color TEXT NOT NULL DEFAULT 'accent',
         show_radiologist_name BOOLEAN NOT NULL DEFAULT TRUE,
         show_degree BOOLEAN NOT NULL DEFAULT TRUE,
         show_reg_number BOOLEAN NOT NULL DEFAULT TRUE,
@@ -626,15 +641,37 @@ async function runStartupMigrations(): Promise<void> {
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
 
+      ALTER TABLE radiology_institutional_styles ADD COLUMN IF NOT EXISTS subheading_style TEXT NOT NULL DEFAULT 'underlined';
+      ALTER TABLE radiology_institutional_styles ADD COLUMN IF NOT EXISTS line_gap TEXT NOT NULL DEFAULT 'standard';
+      ALTER TABLE radiology_institutional_styles ADD COLUMN IF NOT EXISTS font_family TEXT NOT NULL DEFAULT 'arial';
+      ALTER TABLE radiology_institutional_styles ADD COLUMN IF NOT EXISTS logo_position TEXT NOT NULL DEFAULT 'left';
+      ALTER TABLE radiology_institutional_styles ADD COLUMN IF NOT EXISTS signature_position TEXT NOT NULL DEFAULT 'right';
+      ALTER TABLE radiology_institutional_styles ADD COLUMN IF NOT EXISTS image_placement TEXT NOT NULL DEFAULT 'inline';
+      ALTER TABLE radiology_institutional_styles ADD COLUMN IF NOT EXISTS study_title_style TEXT NOT NULL DEFAULT 'underlined';
+      ALTER TABLE radiology_institutional_styles ADD COLUMN IF NOT EXISTS logo_scale TEXT NOT NULL DEFAULT 'large';
+      ALTER TABLE radiology_institutional_styles ADD COLUMN IF NOT EXISTS clinic_name_scale TEXT NOT NULL DEFAULT 'large';
+      ALTER TABLE radiology_institutional_styles ADD COLUMN IF NOT EXISTS address_scale TEXT NOT NULL DEFAULT 'large';
+      ALTER TABLE radiology_institutional_styles ADD COLUMN IF NOT EXISTS name_align TEXT NOT NULL DEFAULT 'left';
+      ALTER TABLE radiology_institutional_styles ADD COLUMN IF NOT EXISTS address_align TEXT NOT NULL DEFAULT 'center';
+      ALTER TABLE radiology_institutional_styles ADD COLUMN IF NOT EXISTS header_rule_enabled BOOLEAN NOT NULL DEFAULT TRUE;
+      ALTER TABLE radiology_institutional_styles ADD COLUMN IF NOT EXISTS header_rule_thickness TEXT NOT NULL DEFAULT 'medium';
+      ALTER TABLE radiology_institutional_styles ADD COLUMN IF NOT EXISTS header_rule_color TEXT NOT NULL DEFAULT 'accent';
+
       INSERT INTO radiology_institutional_styles (
         id, preset_name, section_order, show_clinical_history, show_comparison,
         show_recommendation, show_critical_communication, show_measurements,
-        heading_style, abnormal_emphasis, spacing, print_layout, margins, font_size,
+        heading_style, subheading_style, abnormal_emphasis, spacing, line_gap, print_layout, margins, font_size,
+        font_family, logo_position, signature_position, image_placement, study_title_style,
+        logo_scale, clinic_name_scale, address_scale, name_align, address_align,
+        header_rule_enabled, header_rule_thickness, header_rule_color,
         show_radiologist_name, show_degree, show_reg_number, show_digital_signature,
         show_timestamp, show_qr_verification
       ) VALUES (
         1, 'Care Diagnostics Default', 'Technique,Findings,Impression', true, true,
-        true, true, true, 'underlined', 'bold_abnormal', 'standard', 'letterhead', 'standard', 'standard',
+        true, true, true, 'underlined', 'underlined', 'bold_abnormal', 'standard', 'standard', 'letterhead', 'standard', 'standard',
+        'arial', 'left', 'right', 'inline', 'underlined',
+        'large', 'large', 'large', 'left', 'center',
+        true, 'medium', 'accent',
         true, true, true, true, true, true
       ) ON CONFLICT (id) DO NOTHING;
 
