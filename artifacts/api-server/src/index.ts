@@ -2839,6 +2839,14 @@ const server = app.listen({ port, exclusive: true }, () => {
     logger.error({ err }, "Failed to start Orthanc changes poller");
   });
 
+  // MRI Reporting Workspace speed: periodically touch today+yesterday (or last
+  // N) MR studies in Orthanc so DICOMweb/OHIF opens from warm OS/Orthanc cache.
+  import("./lib/pacs/mriStudyWarmer").then((mod) => {
+    mod.startMriStudyWarmer();
+  }).catch((err) => {
+    logger.error({ err }, "Failed to start MRI study warmer");
+  });
+
   // seedBootstrapAdmin: run immediately and await — if the admin row is missing
   // the system is unusable. Log the error clearly but do not crash (the row may
   // have been manually deleted; the rest of the API still works).

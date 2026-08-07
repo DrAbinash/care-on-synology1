@@ -92,6 +92,9 @@ import { generateLocalImpression } from "@/lib/generateLocalImpression";
 import QuickFindingsPanel, {
   type QuickFinding, type QuickProtocol, type QuickClinicalHistoryChip, type QuickSelectData,
 } from "@/components/radiology/QuickFindingsPanel";
+import StudyLocalFindingEditDialog, {
+  type StudyLocalTextOverride,
+} from "@/components/radiology/StudyLocalFindingEditDialog";
 import { matchStudyRegion } from "@/lib/studyRegion";
 import { hasPhrase, appendClinicalPhrase, removeClinicalPhrase } from "@/lib/clinicalHistoryText";
 import {
@@ -203,6 +206,7 @@ import type { EmbeddedViewerHandle } from "@/components/EmbeddedWadoViewer";
 import { AiDraftPanel } from "@/components/ai/AiDraftPanel";
 import FindingsLibraryPanel from "@/components/radiology/FindingsLibraryPanel";
 import { appendToFindings } from "@/lib/aiDraftBinding";
+import { prefetchMriStudies, prefetchNextMriStudy } from "@/lib/mriStudyPrefetch";
 
 // ════════════════════════════════════════════════════════════════════════════
 // TYPES
@@ -1181,6 +1185,9 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   // Phase 4: one structured instance per selected abnormality.
   const [quickInstances, setQuickInstances] = useState<Map<number, AbnormalityInstance>>(new Map());
   const insertedTextRef = useRef<Map<number, RenderedAbnormality>>(new Map());
+  /** Study-only text overrides from double-click edit (never PATCH the catalog). */
+  const studyTextOverridesRef = useRef<Map<number, StudyLocalTextOverride>>(new Map());
+  const [studyLocalEdit, setStudyLocalEdit] = useState<QuickFinding | null>(null);
   // Learning Engine (Phase 5): remembers the last selected finding so any
   // manually-added recommendation text at finalize time can be attributed
   // to it and offered as a suggestion next time. Suggestion-only — never
@@ -1283,6 +1290,15 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
    *  Both return the identical RenderedAbnormality shape, so the downstream
    *  Smart Findings Engine is untouched. */
   function renderFinding(f: QuickFinding, inst: AbnormalityInstance): RenderedAbnormality {
+    const override = studyTextOverridesRef.current.get(f.id);
+    if (override) {
+      return {
+        finding: override.finding,
+        impression: override.impression,
+        technique: override.technique,
+        recommendation: override.recommendation,
+      };
+    }
     const values = structuredValuesRef.current.get(f.id);
     if (values && findingQuestions(f).length > 0) {
       const g = generateStructuredFinding(f, values);
@@ -1291,6 +1307,24 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     return renderAbnormality(f, inst);
   }
 
+  /** Double-click Quick Select → edit text for THIS study only, then insert. */
+  function handleEditBeforeInsert(f: QuickFinding) {
+    if (isLocked) return;
+    setStudyLocalEdit(f);
+  }
+
+  function applyStudyLocalEdit(override: StudyLocalTextOverride) {
+    const f = studyLocalEdit;
+    if (!f) return;
+    studyTextOverridesRef.current.set(f.id, override);
+    setStudyLocalEdit(null);
+    if (!selectedQuickIds.has(f.id)) {
+      handleQuickToggle(f, true);
+    } else {
+      applyManyRendered([{ id: f.id, next: renderForReport(f, quickInstances.get(f.id) ?? EMPTY_INSTANCE) }]);
+      if (smartModeActive()) applySmartFinding(f, quickInstances.get(f.id) ?? EMPTY_INSTANCE, true);
+    }
+  }
   /** The loaded template's ordered {label, normal} baseline sections. */
   function currentBaseline(): Array<{ label: string; normal: string }> {
     return selectedTemplate ? parseSectionsJson(selectedTemplate.sectionsJson).findingsItems : [];
@@ -2443,6 +2477,8 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     setReportCreationSkipped(null);
     setShowDiagnostics(false);
     setRegionOverrides(null); // manual region override must not leak across studies
+    studyTextOverridesRef.current = new Map();
+    setStudyLocalEdit(null);
     setActiveProtocol(null);
     lastInsertedTechniqueRef.current = null;
     setProtocolReplacePrompt(null);
@@ -2586,6 +2622,16 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
       const sv = (s.params as { __structured?: unknown }).__structured;
       if (sv && typeof sv === "object" && !Array.isArray(sv)) {
         structuredValuesRef.current.set(s.findingId, sv as Record<string, string>);
+      }
+      const to = (s.params as { __textOverride?: unknown }).__textOverride;
+      if (to && typeof to === "object" && !Array.isArray(to)) {
+        const o = to as Partial<StudyLocalTextOverride>;
+        studyTextOverridesRef.current.set(s.findingId, {
+          finding: typeof o.finding === "string" ? o.finding : "",
+          impression: typeof o.impression === "string" ? o.impression : "",
+          technique: typeof o.technique === "string" ? o.technique : "",
+          recommendation: typeof o.recommendation === "string" ? o.recommendation : "",
+        });
       }
     }
   }
@@ -3875,6 +3921,43 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     staleTime: 5 * 60_000,
   });
 
+  // Warm MRI DICOMweb for the reporting queue (today/yesterday / last ~20) so
+  // OHIF opens faster. Server-side Orthanc warmer runs in parallel; this hits
+  // the browser DICOMweb path the embedded viewer uses.
+  useEffect(() => {
+    const base = pdfViewerLaunch?.dicomWebBaseUrl;
+    if (!base) return;
+    const mriUids = workflow.queue
+      .filter((s) => {
+        const m = normalizeModality(s.modality ?? "");
+        return m === "MR" || m.startsWith("MR");
+      })
+      .map((s) => s.studyInstanceUID)
+      .filter((uid): uid is string => !!uid);
+    if (mriUids.length > 0) {
+      prefetchMriStudies(mriUids.map((uid) => ({ studyInstanceUID: uid, dicomWebBaseUrl: base })));
+    } else if (entry?.studyInstanceUID) {
+      const m = normalizeModality(entry.modality ?? "");
+      if (m === "MR" || m.startsWith("MR")) {
+        prefetchMriStudies([{ studyInstanceUID: entry.studyInstanceUID, dicomWebBaseUrl: base }]);
+      }
+    }
+  }, [pdfViewerLaunch?.dicomWebBaseUrl, workflow.queue, entry?.studyInstanceUID, entry?.modality]);
+
+  // Prefetch the next MR study in the queue when the current one is open.
+  useEffect(() => {
+    const base = pdfViewerLaunch?.dicomWebBaseUrl;
+    if (!base || !studyId) return;
+    const idx = workflow.queue.findIndex((s) => s.id === studyId);
+    if (idx < 0) return;
+    const next = workflow.queue[idx + 1];
+    if (!next?.studyInstanceUID) return;
+    const m = normalizeModality(next.modality ?? "");
+    if (m === "MR" || m.startsWith("MR")) {
+      prefetchNextMriStudy({ studyInstanceUID: next.studyInstanceUID, dicomWebBaseUrl: base });
+    }
+  }, [pdfViewerLaunch?.dicomWebBaseUrl, workflow.queue, studyId]);
+
   async function handleExportPdf() {
     setExportingPdf(true);
     try {
@@ -4065,7 +4148,12 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
       // findings[] (Ticket A3.1) serializes the current Quick Select
       // selection; A3.2 persists it to report_finding_instances, which is
       // what the selection restore above reads back.
-      const savedFindings = deriveQuickSelectFindings(selectedQuickIds, quickInstances, structuredValuesRef.current);
+      const savedFindings = deriveQuickSelectFindings(
+        selectedQuickIds,
+        quickInstances,
+        structuredValuesRef.current,
+        studyTextOverridesRef.current,
+      );
       // MRI PR 5 — a transient network blip retries with backoff before it
       // becomes a "Save Failed" toast; non-transient errors still fail fast.
       const res = await retryWithBackoff(() => saveRadiologyDraft<{ success: boolean; draft: { id: number } & Record<string, unknown> }>(
@@ -7065,6 +7153,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                 selectedIds={selectedQuickIds}
                 onToggle={handleQuickToggle}
                 onFindingClick={handleFindingClick}
+                onEditBeforeInsert={handleEditBeforeInsert}
                 onMeasurement={handleSmartMeasurement}
                 side={quickSide}
                 onSideChange={setQuickSide}
@@ -7486,6 +7575,15 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
           onApply={applyStructuredDialog}
           onRemove={() => removeStructuredFinding(structuredDialog.finding)}
           onCancel={() => setStructuredDialog(null)}
+        />
+      )}
+
+      {studyLocalEdit && (
+        <StudyLocalFindingEditDialog
+          finding={studyLocalEdit}
+          initial={studyTextOverridesRef.current.get(studyLocalEdit.id) ?? null}
+          onApply={applyStudyLocalEdit}
+          onCancel={() => setStudyLocalEdit(null)}
         />
       )}
 

@@ -80,6 +80,72 @@ function isDockerBridgeIpLike(value: string): boolean {
   return true;
 }
 
+type MriWarmStatus = {
+  enabled: boolean;
+  mode: string;
+  lastN: number;
+  running: boolean;
+  lastRunAt: string | null;
+  lastDurationMs: number | null;
+  lastWarmed: number;
+  lastFailed: number;
+  lastSkipped: number;
+  lastError: string | null;
+  candidates: number;
+  orthancReachable: boolean | null;
+};
+
+function MriWarmCacheStatusPanel() {
+  const { toast } = useToast();
+  const { data, refetch, isFetching } = useQuery<MriWarmStatus>({
+    queryKey: ["mri-warm-cache-status"],
+    queryFn: () => api.get("/api/radiology/mri-warm-cache/status"),
+    refetchInterval: 30_000,
+  });
+  const runNow = useMutation({
+    mutationFn: () => api.post("/api/radiology/mri-warm-cache/run", { force: true }),
+    onSuccess: () => {
+      void refetch();
+      toast({ title: "MRI warm cache run started" });
+    },
+    onError: (err: Error) => toast({ title: "Warm cache failed", description: err.message, variant: "destructive" }),
+  });
+
+  return (
+    <div className="rounded-lg border bg-muted/20 p-3 space-y-2 text-[11px]" data-testid="mri-warm-cache-status">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="font-semibold text-xs">Status</span>
+        {data?.running ? (
+          <Badge className="bg-amber-100 text-amber-800 border-amber-300">Running…</Badge>
+        ) : data?.orthancReachable === false ? (
+          <Badge className="bg-red-100 text-red-800 border-red-300">Orthanc unreachable</Badge>
+        ) : (
+          <Badge className="bg-emerald-100 text-emerald-800 border-emerald-300">Idle</Badge>
+        )}
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="h-7 text-[10px] ml-auto"
+          disabled={runNow.isPending || data?.running}
+          onClick={() => runNow.mutate()}
+        >
+          <RefreshCw size={11} className={`mr-1 ${isFetching || runNow.isPending ? "animate-spin" : ""}`} />
+          Warm now
+        </Button>
+      </div>
+      <p className="text-muted-foreground">
+        Last run: {data?.lastRunAt ? new Date(data.lastRunAt).toLocaleString() : "—"}
+        {data?.lastDurationMs != null ? ` · ${Math.round(data.lastDurationMs / 1000)}s` : ""}
+        {" · "}warmed {data?.lastWarmed ?? 0}/{data?.candidates ?? 0}
+        {(data?.lastSkipped ?? 0) > 0 ? ` · ${data?.lastSkipped} not in Orthanc yet` : ""}
+        {(data?.lastFailed ?? 0) > 0 ? ` · ${data?.lastFailed} failed` : ""}
+      </p>
+      {data?.lastError && <p className="text-red-700">{data.lastError}</p>}
+    </div>
+  );
+}
+
 export default function RadiologySettingsCenter() {
   const { toast } = useToast();
   const qc = useQueryClient();
@@ -551,6 +617,48 @@ export default function RadiologySettingsCenter() {
             <p className="text-[11px] text-muted-foreground">
               Modality quick filter (USG / MRI / More) lives on the <button type="button" className="underline text-primary" onClick={() => navigate("/radiology/worklist")}>Worklist</button>, not the reporting editor.
             </p>
+          </div>
+
+          <div className="rounded-xl border bg-card p-5 space-y-4 max-w-3xl">
+            <h4 className="text-xs font-bold uppercase tracking-wide text-muted-foreground">MRI study warm cache</h4>
+            <p className="text-[11px] text-muted-foreground">
+              Speeds up Reporting Workspace MRI opens by touching today+yesterday (or last N) MR studies in Orthanc
+              every ~10 minutes, and by prefetching DICOMweb metadata in the browser when the queue loads.
+              Pixel data stays in Orthanc — nothing heavy is stored in the ERP database.
+            </p>
+            <div className="flex items-center justify-between border rounded-lg p-3">
+              <div>
+                <Label className="text-xs font-semibold">Enable MRI warm cache</Label>
+                <p className="text-[11px] text-muted-foreground">ON (trial default). Disable if Orthanc load is a concern overnight.</p>
+              </div>
+              <Switch checked={svOn("mri_warm_cache_enabled", true)} disabled={!isAdmin}
+                onCheckedChange={(v) => upsertSetting.mutate({ key: "mri_warm_cache_enabled", value: String(v), category: "radiology" })} />
+            </div>
+            <div className="grid sm:grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <Label className="text-xs">Selection mode</Label>
+                <select
+                  className="h-8 w-full text-xs border rounded-md px-2 bg-background"
+                  disabled={!isAdmin}
+                  value={sv("mri_warm_cache_mode", "today_yesterday")}
+                  onChange={(e) => upsertSetting.mutate({ key: "mri_warm_cache_mode", value: e.target.value, category: "radiology" })}
+                >
+                  <option value="today_yesterday">Today + Yesterday (auto-refresh daily)</option>
+                  <option value="last_n">Last N MRI cases</option>
+                </select>
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs">Last N (when mode = Last N)</Label>
+                <Input
+                  type="number" min={5} max={50} className="h-8 text-sm w-32"
+                  placeholder="20"
+                  defaultValue={sv("mri_warm_cache_last_n", "20")}
+                  onBlur={(e) => upsertSetting.mutate({ key: "mri_warm_cache_last_n", value: e.target.value.trim() || "20", category: "radiology" })}
+                  disabled={!isAdmin}
+                />
+              </div>
+            </div>
+            <MriWarmCacheStatusPanel />
           </div>
 
           <div className="rounded-xl border bg-card p-5 space-y-3 max-w-3xl">

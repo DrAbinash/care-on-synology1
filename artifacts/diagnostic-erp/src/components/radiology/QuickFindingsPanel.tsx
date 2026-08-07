@@ -3,13 +3,14 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Zap, Settings2, Star, Ruler, Lightbulb, Search, SlidersHorizontal, Check } from "lucide-react";
+import { Zap, Settings2, Star, Ruler, Lightbulb, Search, SlidersHorizontal, Check, Plus, Pencil } from "lucide-react";
 import { Link } from "wouter";
 import type { Side } from "@/lib/sideSwap";
 import { parseProperties, type AbnormalityInstance } from "@/lib/abnormalityEngine";
 import { parseQuestions } from "@/lib/structuredFindings";
 import { computeChecklistStatus, summarizeChecklist, parseChecklist } from "@/lib/checklistEngine";
 import { matchStudyRegion } from "@/lib/studyRegion";
+import WorkspaceQuickFindingEditor from "./WorkspaceQuickFindingEditor";
 
 /**
  * QuickFindingsPanel — Smart Reporting side panel (Phase 2).
@@ -119,6 +120,8 @@ interface Props {
    *  its click here (to open the compact dialog) instead of toggling directly.
    *  Findings without questions still toggle immediately (fewest clicks). */
   onFindingClick?: (finding: QuickFinding) => void;
+  /** Double-click: edit finding/impression text for THIS STUDY only before insert. */
+  onEditBeforeInsert?: (finding: QuickFinding) => void;
   onMeasurement?: (templateText: string, value: string) => void;
   side: Side;
   onSideChange: (side: Side) => void;
@@ -158,7 +161,7 @@ const SIDES: Array<{ value: Side; label: string }> = [
 ];
 
 export default function QuickFindingsPanel({
-  selectedIds, onToggle, onFindingClick, onMeasurement, side, onSideChange, disabled, initialStudyHint, isAdmin,
+  selectedIds, onToggle, onFindingClick, onEditBeforeInsert, onMeasurement, side, onSideChange, disabled, initialStudyHint, isAdmin,
   instances, onUpdateInstance, onAutoTechnique, onInsertNormals,
   activeProtocolId, onProtocolChange, onChecklistChange, onAcceptLearnedSuggestion,
   onFindingsLoaded, externalSearch,
@@ -166,6 +169,8 @@ export default function QuickFindingsPanel({
   const qc = useQueryClient();
   const searchRef = useRef<HTMLInputElement>(null);
   const [search, setSearch] = useState("");
+  const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [catalogEditor, setCatalogEditor] = useState<QuickFinding | null | "new">(null);
 
   /** A finding declaring questions needs details before it renders. */
   const isStructured = (f: QuickFinding) => parseQuestions(f.questionsJson).length > 0;
@@ -175,6 +180,27 @@ export default function QuickFindingsPanel({
     if (isStructured(f) && onFindingClick) onFindingClick(f);
     else onToggle(f, !selectedIds.has(f.id));
   };
+
+  /** Debounce single-click so double-click can open study-local edit instead. */
+  function handleFindingPointer(f: QuickFinding) {
+    if (clickTimerRef.current) {
+      clearTimeout(clickTimerRef.current);
+      clickTimerRef.current = null;
+    }
+    clickTimerRef.current = setTimeout(() => {
+      clickTimerRef.current = null;
+      activateFinding(f);
+    }, 280);
+  }
+
+  function handleFindingDoubleClick(f: QuickFinding) {
+    if (clickTimerRef.current) {
+      clearTimeout(clickTimerRef.current);
+      clickTimerRef.current = null;
+    }
+    if (onEditBeforeInsert) onEditBeforeInsert(f);
+    else activateFinding(f);
+  }
 
   // M1.6B2 — adopt a voice-driven search term (one adoption per seq bump).
   const externalSearchSeqRef = useRef(0);
@@ -502,7 +528,11 @@ export default function QuickFindingsPanel({
         <button
           type="button"
           disabled={disabled}
-          onClick={() => activateFinding(f)}
+          onClick={() => handleFindingPointer(f)}
+          onDoubleClick={(e) => {
+            e.preventDefault();
+            handleFindingDoubleClick(f);
+          }}
           className={[
             "flex-1 min-w-0 rounded-lg border px-2.5 py-2 text-left transition-all duration-150",
             "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/35",
@@ -511,10 +541,13 @@ export default function QuickFindingsPanel({
               : "border-amber-200/70 bg-card hover:border-amber-400 hover:bg-amber-50/70",
           ].join(" ")}
           title={
-            structured
-              ? `${f.label} — set details${selected ? " (click to edit)" : ""}`
-              : (f.findingText || f.impressionText || f.label)
+            onEditBeforeInsert
+              ? `${f.label} — click to insert · double-click to edit for this study`
+              : structured
+                ? `${f.label} — set details${selected ? " (click to edit)" : ""}`
+                : (f.findingText || f.impressionText || f.label)
           }
+          data-testid={`quick-finding-${f.id}`}
         >
           <div className="flex items-center gap-1.5 min-w-0">
             <span
@@ -538,6 +571,18 @@ export default function QuickFindingsPanel({
             </div>
           )}
         </button>
+        {isAdmin && (
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => setCatalogEditor(f)}
+            className="shrink-0 self-center rounded-md p-1.5 text-muted-foreground/50 hover:text-primary hover:bg-muted/40"
+            title="Edit catalog button (all studies)"
+            data-testid={`quick-finding-edit-catalog-${f.id}`}
+          >
+            <Pencil size={12} />
+          </button>
+        )}
         <button
           type="button"
           onClick={() => toggleFavorite.mutate({ findingId: f.id, add: !isFav })}
@@ -757,9 +802,29 @@ export default function QuickFindingsPanel({
       </div>
 
       {isAdmin && (
-        <Link href="/settings/radiology-quick-select" className="shrink-0 text-[10px] text-muted-foreground hover:text-primary underline inline-flex items-center gap-1 px-1">
-          <Settings2 size={10} /> Manage buttons
-        </Link>
+        <div className="shrink-0 flex items-center gap-2 px-1">
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => setCatalogEditor("new")}
+            className="text-[10px] text-primary hover:underline inline-flex items-center gap-1"
+            data-testid="quick-finding-add"
+          >
+            <Plus size={10} /> Add button
+          </button>
+          <Link href="/settings/radiology-quick-select" className="text-[10px] text-muted-foreground hover:text-primary underline inline-flex items-center gap-1">
+            <Settings2 size={10} /> Full settings
+          </Link>
+        </div>
+      )}
+
+      {catalogEditor !== null && (
+        <WorkspaceQuickFindingEditor
+          finding={catalogEditor === "new" ? null : catalogEditor}
+          tabs={activeTabs}
+          defaultStudyType={[...effectiveTabs][0] ?? activeTabs[0]?.name ?? ""}
+          onClose={() => setCatalogEditor(null)}
+        />
       )}
     </div>
   );
