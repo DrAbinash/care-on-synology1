@@ -103,7 +103,7 @@ export function buildModernLandscapeBillPrintHtml(opts: BuildPrintHtmlOpts): str
   const tinyPx = `${opts.printTinyFontPx ?? 10}px`;
 
   const logoImg = clinic?.logoDataUrl
-    ? `<img src="${clinic.logoDataUrl}" alt="" style="height:44px;max-width:120px;object-fit:contain;display:block"/>`
+    ? `<img src="${clinic.logoDataUrl}" alt="" style="height:72px;max-width:180px;object-fit:contain;display:block"/>`
     : "";
 
   const billedByName = sessionField("name");
@@ -162,25 +162,24 @@ export function buildModernLandscapeBillPrintHtml(opts: BuildPrintHtmlOpts): str
 
       ${provisionalReceipt ? `<div style="background:#fef3c7;color:#92400e;border:2px solid #f59e0b;border-radius:4px;padding:4px 8px;font-size:${tinyPx};font-weight:800;margin-bottom:6px;text-align:center;text-transform:uppercase">Provisional — Offline · Sync Pending · QR After Sync</div>` : ""}
 
-      <header style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;padding-bottom:4px;border-bottom:1.5px solid ${accent}">
-        <div style="display:flex;gap:8px;align-items:center;min-width:0;flex:1">
+      <header style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;padding-bottom:6px;border-bottom:1.5px solid ${accent}">
+        <div style="min-width:0;flex:1;max-width:62%">
           ${logoImg}
-          <div style="min-width:0">
-            <div style="font-size:${titleSize};font-weight:800;color:${accent};line-height:1.1">${esc(clinic?.name ?? "")}</div>
-            <div style="font-size:${bodyPx};color:#334155;line-height:1.25;margin-top:1px">${esc(clinic?.tagline ?? "")}</div>
-            <div style="font-size:${headerPx};color:#64748b;line-height:1.35;margin-top:2px">${esc(clinic?.address ?? "")}</div>
-            <div style="font-size:${headerPx};color:#64748b">
-              ${clinic?.phone ? `☏ ${esc(clinic.phone)}` : ""}
-              ${clinic?.email ? ` · ✉ ${esc(clinic.email)}` : ""}
-              ${clinic?.website ? ` · ${esc(clinic.website)}` : ""}
-            </div>
+          <div style="font-size:${titleSize};font-weight:800;color:${accent};line-height:1.15;margin-top:${logoImg ? "4px" : "0"}">${esc(clinic?.name ?? "")}</div>
+          ${clinic?.tagline ? `<div style="font-size:${bodyPx};color:#334155;line-height:1.25;margin-top:1px">${esc(clinic.tagline)}</div>` : ""}
+          ${clinic?.address ? `<div style="font-size:${headerPx};color:#64748b;line-height:1.35;margin-top:3px">${esc(clinic.address)}</div>` : ""}
+          <div style="font-size:${headerPx};color:#64748b;line-height:1.35;margin-top:1px">
+            ${clinic?.phone ? `☏ ${esc(clinic.phone)}` : ""}
+            ${clinic?.email ? `${clinic?.phone ? " · " : ""}✉ ${esc(clinic.email)}` : ""}
+            ${clinic?.website ? `${clinic?.phone || clinic?.email ? " · " : ""}${esc(clinic.website)}` : ""}
+            ${clinic?.gstin ? `${clinic?.phone || clinic?.email || clinic?.website ? " · " : ""}GSTIN: ${esc(clinic.gstin)}` : ""}
           </div>
         </div>
-        <div style="text-align:right;flex-shrink:0">
+        <div style="text-align:right;flex-shrink:0;min-width:28%">
           <div style="font-size:${titleSize};font-weight:800;color:${accent};letter-spacing:1px;text-transform:uppercase">Invoice</div>
-          <div style="font-size:${bodyPx};color:#64748b;margin-top:2px">Bill No.</div>
+          <div style="font-size:${bodyPx};color:#64748b;margin-top:4px">Bill No.</div>
           <div style="font-size:${patientSz};font-weight:700;font-variant-numeric:tabular-nums">${esc(billDigits)}</div>
-          <div style="font-size:${headerPx};color:#334155;margin-top:2px">${esc(dateStr)}</div>
+          <div style="font-size:${headerPx};color:#334155;margin-top:3px">${esc(dateStr)}</div>
           ${copyLabel ? `<div style="font-size:${tinyPx};color:${accent};margin-top:2px;font-weight:600;text-transform:uppercase">${esc(copyLabel)} COPY</div>` : ""}
           ${reprintBy || reprintReason ? `<div style="display:inline-block;background:#f1f5f9;color:#475569;border:1px solid #cbd5e1;border-radius:3px;padding:1px 6px;font-size:${tinyPx};font-weight:600;margin-top:3px">REPRINT${reprintBy ? ` · ${esc(reprintBy)}` : ""}${reprintReason ? ` · ${esc(reprintReason)}` : ""}</div>` : ""}
         </div>
