@@ -128,9 +128,7 @@ function fmt(n: number | string): string {
   return Number(n).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
-import { type BillFormat, type BillPaperSize } from "./billPrintSettings";
-import { buildPremiumBillPrintHtml } from "./premiumBillPrint";
-import { buildDesignerBillPrintHtml } from "./designerBillPrint";
+import { type BillFormat, normalizeBillFormat } from "./billPrintSettings";
 import { buildModernLandscapeBillPrintHtml } from "./modernLandscapeBillPrint";
 import { buildDocumentHtml } from "./documentLayout/buildDocumentHtml";
 import { resolveBillPrintPaperFromOpts } from "./documentLayout/billPaper";
@@ -542,71 +540,13 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
 }
 
 // ── Wrapper that dispatches to a specific format renderer ─────────────────
-// Backward compatible: if `format` is not specified, uses classic (the
-// original behavior). "modern-landscape" is the recommended A5-landscape
-// format for Epson/ink printers — see modernLandscapeBillPrint.ts.
+// Supported layouts: Modern (recommended) and Classic. Retired Premium /
+// Designer ids normalize to Modern. Omitting `format` keeps classic for
+// older call sites that never passed one.
 export function buildBillPrintHtml(opts: BuildPrintHtmlOpts): string {
-  const { format = "classic" } = opts;
-
-  // ── Modern A5-Landscape (recommended for ink printers) ──
+  const format = opts.format == null ? "classic" : normalizeBillFormat(opts.format);
   if (format === "modern-landscape") {
     return buildModernLandscapeBillPrintHtml(opts);
   }
-
-  // ── Designer layouts A / B / C ──
-  if (format === "designer-a" || format === "designer-b" || format === "designer-c") {
-    return buildDesignerBillPrintHtml({ ...opts, layout: format });
-  }
-  if (format === "premium-a5") {
-    // Map old paperSize to new BillPaperSize, honoring landscape when requested.
-    const paperSize: BillPaperSize =
-      opts.paperSize === "A5" ? (opts.orientation === "landscape" ? "A5-landscape" : "A5-portrait") : "A4";
-    return buildPremiumBillPrintHtml({
-      bill: opts.bill,
-      clinic: opts.clinic,
-      paperSize,
-      isBW: opts.isBW,
-      qrDataUrl: opts.qrDataUrl,
-      reprintBy: opts.reprintBy,
-      reprintReason: opts.reprintReason,
-      copyLabel: opts.copyLabel,
-      showQr: opts.showQr ?? (opts.clinic?.qrOnBillEnabled !== false),
-      showAmountInWords: opts.showAmountInWords ?? false,
-      showSignatureLine: opts.showSignatureLine ?? true,
-      showComputerGenerated: opts.showComputerGenerated ?? true,
-      showReportMessage: opts.showReportMessage ?? true,
-      showServiceFooter: opts.showServiceFooter ?? true,
-      showBrandingFooter: opts.showBrandingFooter ?? true,
-      showBarcode: opts.showBarcode ?? false,
-      showWatermark: opts.showWatermark ?? false,
-      showPatientInstructions: opts.showPatientInstructions ?? false,
-      showSystemInfo: opts.showSystemInfo ?? false,
-      // V3 toggles (default OFF, driven by clinic settings)
-      showReceiptThankYou: opts.showReceiptThankYou ?? opts.clinic?.receiptThankYouMessage !== undefined,
-      showReceiptCollection: opts.showReceiptCollection ?? opts.clinic?.receiptCollectionMessage !== undefined,
-      showReceiptQrMessage: opts.showReceiptQrMessage ?? opts.clinic?.receiptQrMessage !== undefined,
-      showReceiptPromotional: opts.showReceiptPromotional ?? opts.clinic?.receiptPromotionalMessage !== undefined,
-      showVerifiedBadge: opts.showVerifiedBadge ?? opts.clinic?.showVerifiedBadge ?? false,
-      showFollowUpMessage: opts.showFollowUpMessage ?? opts.clinic?.showFollowUpMessage ?? false,
-      showPatientSince: opts.showPatientSince ?? opts.clinic?.showPatientSince ?? false,
-      showPromotionalFooter: opts.showPromotionalFooter ?? opts.clinic?.showPromotionalFooter ?? false,
-      showAuditInfoOnPatientCopy: opts.showAuditInfoOnPatientCopy ?? opts.clinic?.showAuditInfoOnPatientCopy ?? false,
-      // V3 additional footer messages
-      showWorkingHours: opts.showWorkingHours ?? opts.clinic?.showWorkingHours ?? false,
-      showHomeCollection: opts.showHomeCollection ?? opts.clinic?.showHomeCollection ?? false,
-      showEmergency: opts.showEmergency ?? opts.clinic?.showEmergency ?? false,
-      showReferralProgram: opts.showReferralProgram ?? opts.clinic?.showReferralProgram ?? false,
-      showHealthPackages: opts.showHealthPackages ?? opts.clinic?.showHealthPackages ?? false,
-      showAccreditation: opts.showAccreditation ?? opts.clinic?.showAccreditation ?? false,
-      showWhatsAppBooking: opts.showWhatsAppBooking ?? opts.clinic?.showWhatsAppBooking ?? false,
-      showCustomFooterMessage: opts.showCustomFooterMessage ?? opts.clinic?.showCustomFooterMessage ?? false,
-      barcodeDataUrl: opts.barcodeDataUrl,
-      customFooter: opts.customFooter,
-      reportCollectionNote: opts.reportCollectionNote,
-      pageCssSize: opts.pageCssSize,
-      compactFooterGap: opts.compactFooterGap,
-    });
-  }
-  // Classic format
   return buildClassicBillPrintHtml(opts);
 }

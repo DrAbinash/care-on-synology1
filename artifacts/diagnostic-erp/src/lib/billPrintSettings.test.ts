@@ -4,6 +4,7 @@ import {
   applyManualBillPaperOverride,
   clearBillPrintSettingsOverride,
   loadBillPrintSettings,
+  normalizeBillFormat,
   parseGlobalBillPrintSettings,
   resolveBillPrintPageOpts,
   saveBillPrintSettings,
@@ -151,6 +152,16 @@ describe("loadBillPrintSettings — clinic-wide global reaches the print sites",
     expect(merged.printMarginMm).toBe(2);
     expect(merged.printTitleFontPx).toBe(22);
     expect(merged.printBodyFontPx).toBeNull();
+  });
+
+  test("retired premium/designer formats normalize to modern-landscape", () => {
+    expect(normalizeBillFormat("premium-a5")).toBe("modern-landscape");
+    expect(normalizeBillFormat("designer-a")).toBe("modern-landscape");
+    expect(normalizeBillFormat("designer-b")).toBe("modern-landscape");
+    expect(normalizeBillFormat("designer-c")).toBe("modern-landscape");
+    expect(normalizeBillFormat("classic")).toBe("classic");
+    expect(normalizeBillFormat("modern-landscape")).toBe("modern-landscape");
+    expect(loadBillPrintSettings({ defaultFormat: "designer-a" as any }).defaultFormat).toBe("modern-landscape");
   });
 
   test("role defaults still apply underneath the global (fields the global doesn't set)", () => {

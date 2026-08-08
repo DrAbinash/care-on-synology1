@@ -179,16 +179,18 @@ describe("document layout engine — bill renderers", () => {
     expect(html).not.toContain("90px");
   });
 
-  test("premium and designer formats use zero @page margin", () => {
+  test("retired premium/designer format ids remap to modern landscape", () => {
     for (const format of ["premium-a5", "designer-a", "designer-b", "designer-c"] as const) {
       const html = buildBillPrintHtml({
-        ...baseOpts({ format }),
+        ...baseOpts({ format: format as any }),
         paperSize: "A5",
         orientation: "landscape",
         pageCssSize: "A5 landscape",
       });
       expect(html).toMatch(/@page\s*\{[^}]*margin:\s*0/);
       expect(html).toContain("care-doc-page");
+      // Modern landscape marker (shared page shell + modern header structure)
+      expect(html).toContain("210mm");
     }
   });
 
