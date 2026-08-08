@@ -342,37 +342,34 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
   const billedBySignatureUrl: string = session?.user?.signatureDataUrl ?? "";
 
   const page = (copyIdx: number) => `
-      <!-- HEADER: logo + tagline left, clinic info right, vertically centered
-           against each other so the shorter block doesn't visually float. -->
+      <!-- HEADER: larger logo + clinic address stacked on the left;
+           Invoice / Bill No. on the right. -->
       <table style="width:100%;border-collapse:collapse;margin-bottom:5px">
         <tr>
-          <td style="vertical-align:middle;padding:0;width:45%">
-            ${clinic?.logoDataUrl ? `<img src="${clinic.logoDataUrl}" alt="logo" style="max-height:100px;max-width:210px;object-fit:contain;display:block;margin-bottom:3px"/>` : ""}
+          <td style="vertical-align:top;padding:0;width:62%">
+            ${clinic?.logoDataUrl ? `<img src="${clinic.logoDataUrl}" alt="logo" style="max-height:120px;max-width:240px;object-fit:contain;display:block;margin-bottom:4px"/>` : ""}
+            ${clinic?.name ? `<div style="font-size:${titleSize};font-weight:800;line-height:1.15;color:#000;margin-bottom:2px">${esc(clinic.name)}</div>` : ""}
             <div style="font-size:${bodyPx};color:#333;font-weight:700;line-height:1.2">${esc(clinic?.tagline || "DIAGNOSTIC & PATHOLOGY SERVICES")}</div>
+            ${clinic?.address ? `<div style="font-size:${headerPx};color:#555;font-weight:600;line-height:1.4;margin-top:4px">${esc(clinic.address.replace(/\s*\n\s*/g, ", ").trim())}</div>` : ""}
+            <div style="font-size:${headerPx};color:#555;font-weight:600;line-height:1.4;margin-top:1px">
+              ${clinic?.phone ? `PH: ${esc(clinic.phone)}` : ""}
+              ${clinic?.email ? `${clinic?.phone ? " · " : ""}EMAIL: ${esc(clinic.email)}` : ""}
+            </div>
+            ${clinic?.website || clinic?.gstin ? `<div style="font-size:${headerPx};color:#555;font-weight:600;line-height:1.4">
+              ${clinic?.website ? esc(clinic.website) : ""}
+              ${clinic?.gstin ? `${clinic?.website ? " · " : ""}GSTIN: ${esc(clinic.gstin)}` : ""}
+            </div>` : ""}
           </td>
-          <td style="vertical-align:middle;text-align:right;padding:0;font-size:${headerPx};line-height:1.45;color:#555;font-weight:600">
-            ${clinic?.address ? `<div>${esc(clinic.address.replace(/\s*\n\s*/g, ", ").trim())}</div>` : ""}
-            <div>PH: ${esc(clinic?.phone ?? "")}</div>
-            <div>EMAIL: ${esc(clinic?.email ?? "")}</div>
-            ${clinic?.website ? `<div>${esc(clinic.website)}</div>` : ""}
-            ${clinic?.gstin ? `<div style="margin-top:1px;font-weight:800">GSTIN: ${esc(clinic.gstin)}</div>` : ""}
+          <td style="vertical-align:top;text-align:right;padding:0;width:38%">
+            <div style="font-size:${titleSize};font-weight:800;letter-spacing:1.2px;text-transform:uppercase">${isCancelled ? "CANCELLED" : isUnconfirmedQr ? "AWAITING PAYMENT" : "INVOICE"}</div>
+            <div style="font-size:${headerPx};color:#555;font-weight:600;margin-top:6px">BILL NO.</div>
+            <div style="font-size:${titleSize};font-weight:800;line-height:1.15">${esc(billDigits)}</div>
+            <div style="font-size:${headerPx};color:#555;font-weight:600;margin-top:4px">${esc(created.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }).toUpperCase())} · ${esc(created.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: true }).toUpperCase())}</div>
           </td>
         </tr>
       </table>
 
-      <!-- TITLE LINE with bill number on the right -->
-      <div style="border-top:2px solid #000;border-bottom:2px solid #000;padding:3px 0;margin-bottom:5px">
-        <table style="width:100%;border-collapse:collapse">
-          <tr>
-            <td style="padding:0;vertical-align:middle">
-              <div style="font-size:${titleSize};font-weight:800;letter-spacing:1.2px;text-transform:uppercase">${isCancelled ? "CANCELLED" : isUnconfirmedQr ? "Confirmed on confirmation of Payment" : "INVOICE / RECEIPT"}</div>
-            </td>
-            <td style="padding:0;vertical-align:middle;text-align:right;white-space:nowrap">
-              <div style="font-size:${titleSize};font-weight:800">BILL NO: ${esc(billDigits)}</div>
-            </td>
-          </tr>
-        </table>
-      </div>
+      <div style="border-top:2px solid #000;border-bottom:2px solid #000;padding:2px 0;margin-bottom:5px"></div>
 
       <!-- Reprint marker — a flat, muted badge (not a rotated/dashed
            "stamp") stating who reprinted this copy and why, placed under
