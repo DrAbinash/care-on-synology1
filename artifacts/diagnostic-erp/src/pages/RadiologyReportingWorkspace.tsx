@@ -652,12 +652,9 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     notifyReferring: false,
   });
 
-  // Worklist-first: empty workspace (no study) redirects to the worklist.
-  useEffect(() => {
-    if (studyId == null || !Number.isFinite(studyId) || studyId <= 0) {
-      navigate("/radiology/worklist", { replace: true });
-    }
-  }, [studyId, navigate]);
+  // Empty Reporting Workspace (sidebar → /radiology/reporting-workspace with
+  // no study id) stays here so nav does not bounce to the Worklist hub.
+  // Radiologists pick a patient from the chrome queue / Patients dropdown.
 
   // ── Layout ────────────────────────────────────────────────────────────────
   const [rightTab, setRightTab] = useState<RightTab>("quickselect");
@@ -5293,7 +5290,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
         onCollapsedChange={setChromeCollapsed}
         onEnterFocusMode={enterReportingFocusMode}
         onBackToWorklist={() => {
-          studyLock.release(studyId);
+          if (studyId != null) studyLock.release(studyId);
           navigate("/radiology/worklist");
         }}
         patientBanner={entry
@@ -5398,7 +5395,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
               </button>
               {entryLoading && <div className="text-xs text-muted-foreground">Loading study...</div>}
               {!entryLoading && !entry && (
-                <div className="text-xs text-muted-foreground">No study loaded. Open from worklist.</div>
+                <div className="text-xs text-muted-foreground">No study loaded. Pick a patient above.</div>
               )}
               {entry && (
                 <div className="flex flex-col gap-1.5" data-testid="left-panel-compact-summary">
@@ -5457,7 +5454,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
             )}
             {!entryLoading && !entry && (
               <div className="text-xs text-muted-foreground py-2">
-                No study loaded. Open from worklist.
+                No study loaded. Pick a patient from the queue above, or open one from the Worklist.
               </div>
             )}
             {entry && (
@@ -5631,6 +5628,29 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
 
           {/* Scrollable editor area */}
           <div className={`flex-1 overflow-y-auto flex flex-col ${chromeCollapsed ? "p-1.5 gap-1.5" : "p-3 gap-3"}`}>
+
+            {(studyId == null || !Number.isFinite(studyId) || studyId <= 0) && (
+              <div
+                className="rounded-lg border border-dashed border-border bg-muted/20 px-4 py-8 text-center"
+                data-testid="reporting-workspace-empty"
+              >
+                <div className="text-sm font-semibold text-foreground">Reporting Workspace</div>
+                <p className="mt-1 text-xs text-muted-foreground max-w-md mx-auto">
+                  Select a patient from the queue above to start reporting
+                  {jumpQueue.length > 0 ? ` (${jumpQueue.length} in the current day/modality filter)` : ""}.
+                  Or open a study from the Worklist.
+                </p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="mt-3 h-8 text-xs"
+                  onClick={() => navigate("/radiology/worklist")}
+                >
+                  Open Worklist
+                </Button>
+              </div>
+            )}
 
             {/* R2.0 — Pregnancy Dashboard strip: silent (renders nothing) for
                 every non-obstetric study; only fetches when isUltrasound. */}
