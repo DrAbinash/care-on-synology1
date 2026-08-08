@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { matchStudyRegion } from "./studyRegion";
+import { filterRegionNamesForModality, matchStudyRegion } from "./studyRegion";
 
 // Region names in display (sortOrder) order — generic modality-neutral regions
 // sort before the modality-prefixed CT tabs, exactly as radiology_study_tabs is
@@ -41,5 +41,30 @@ describe("matchStudyRegion — most-specific (longest) wins", () => {
   it("breaks ties by display order (first / lowest sortOrder among equal length)", () => {
     // Two equally-long region names both substring-match → the earlier one wins.
     expect(matchStudyRegion("scan AA BB extra", ["AA", "BB"])).toBe("AA");
+  });
+});
+
+describe("filterRegionNamesForModality", () => {
+  const MIXED = [
+    "Brain",
+    "Cervical Spine",
+    "CT Brain Plain",
+    "CT Cervical Spine",
+    "X-Ray Chest PA",
+    "X-Ray Ankle",
+    "USG Abdomen",
+  ];
+
+  it("keeps generic MRI regions and drops CT / X-Ray / USG tabs", () => {
+    expect(filterRegionNamesForModality(MIXED, "MR")).toEqual(["Brain", "Cervical Spine"]);
+    expect(filterRegionNamesForModality(MIXED, "MRI")).toEqual(["Brain", "Cervical Spine"]);
+  });
+
+  it("keeps only CT-prefixed tabs for CT studies", () => {
+    expect(filterRegionNamesForModality(MIXED, "CT")).toEqual(["CT Brain Plain", "CT Cervical Spine"]);
+  });
+
+  it("keeps only X-Ray tabs for CR/DX", () => {
+    expect(filterRegionNamesForModality(MIXED, "CR")).toEqual(["X-Ray Chest PA", "X-Ray Ankle"]);
   });
 });

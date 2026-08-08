@@ -28,6 +28,7 @@ import {
   buildImageRefPayload, MAX_REPORT_IMAGES, nextDisplayOrder, thumbnailRenderedUrl,
   type ReportImageRef,
 } from "@/lib/reportImageRefs";
+import { BROWSER_DICOMWEB_BASE } from "@/lib/browserDicomWeb";
 
 interface LaunchData {
   ohifUrl?: string | null;
@@ -73,14 +74,16 @@ export default function ReportImagePicker({
     setEffectiveDraftId(draftId);
   }, [draftId]);
 
-  // Same launch contract the embedded viewer uses — one cache entry.
-  const { data: launchData } = useQuery<LaunchData>({
+  // Launch contract still used for OHIF deep-links elsewhere; series browsing
+  // always goes through the ERP DICOMweb proxy (same-origin + Orthanc auth).
+  // Direct Orthanc :8042 from the SPA fails with CORS while OHIF (iframe) works.
+  useQuery<LaunchData>({
     queryKey: ["viewer-launch", studyInstanceUID],
     queryFn: () => api.get(`/api/radiology/studies/${encodeURIComponent(studyInstanceUID!)}/ohif-launch`),
     enabled: !!studyInstanceUID,
     staleTime: 5 * 60_000,
   });
-  const dicomWebBase = launchData?.dicomWebBaseUrl ?? null;
+  const dicomWebBase = studyInstanceUID ? BROWSER_DICOMWEB_BASE : null;
 
   const { data: refs = [] } = useQuery<ReportImageRef[]>({
     queryKey: ["report-image-references", effectiveDraftId],
@@ -261,7 +264,9 @@ export default function ReportImagePicker({
                 </div>
               ))}
               {series.length === 0 && (
-                <p className="text-[11px] text-muted-foreground">No series visible via DICOMweb from this browser.</p>
+                <p className="text-[11px] text-muted-foreground">
+                  No series returned from PACS yet. Expand again after the study has been received, or open OHIF above to confirm the study is online.
+                </p>
               )}
             </div>
           )}

@@ -9,7 +9,7 @@ import type { Side } from "@/lib/sideSwap";
 import { parseProperties, type AbnormalityInstance } from "@/lib/abnormalityEngine";
 import { parseQuestions } from "@/lib/structuredFindings";
 import { computeChecklistStatus, summarizeChecklist, parseChecklist } from "@/lib/checklistEngine";
-import { matchStudyRegion } from "@/lib/studyRegion";
+import { filterRegionNamesForModality, matchStudyRegion } from "@/lib/studyRegion";
 import WorkspaceQuickFindingEditor from "./WorkspaceQuickFindingEditor";
 
 /**
@@ -241,7 +241,13 @@ export default function QuickFindingsPanel({
     onSuccess: () => qc.invalidateQueries({ queryKey: ["radiology-quick-favorites"] }),
   });
 
-  const activeTabs = useMemo(() => (data?.tabs ?? []).filter((t) => t.isActive), [data]);
+  const activeTabs = useMemo(() => {
+    const tabs = (data?.tabs ?? []).filter((t) => t.isActive);
+    // Hint is `${modality} ${studyDescription}` — first token is DICOM modality.
+    const modalityToken = (initialStudyHint ?? "").trim().split(/\s+/)[0] ?? "";
+    const allowed = new Set(filterRegionNamesForModality(tabs.map((t) => t.name), modalityToken));
+    return tabs.filter((t) => allowed.has(t.name));
+  }, [data, initialStudyHint]);
   const findingsById = useMemo(
     () => new Map((data?.findings ?? []).map((f) => [f.id, f])),
     [data],

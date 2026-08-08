@@ -95,7 +95,7 @@ import QuickFindingsPanel, {
 import StudyLocalFindingEditDialog, {
   type StudyLocalTextOverride,
 } from "@/components/radiology/StudyLocalFindingEditDialog";
-import { matchStudyRegion } from "@/lib/studyRegion";
+import { filterRegionNamesForModality, matchStudyRegion } from "@/lib/studyRegion";
 import { hasPhrase, appendClinicalPhrase, removeClinicalPhrase } from "@/lib/clinicalHistoryText";
 import {
   renderAbnormality, type AbnormalityInstance, type RenderedAbnormality, type Side,
@@ -1886,16 +1886,16 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     [quickSelectData],
   );
 
-  // All active study-region tab names (ordered) — the option list for the
-  // manual region override below.
-  const availableRegions = useMemo(
-    () => (quickSelectData?.tabs ?? [])
+  // Active study-region tab names for THIS modality only (MRI setup must not
+  // list CT / X-Ray tabs). Ordered for the manual multi-select chips.
+  const availableRegions = useMemo(() => {
+    const all = (quickSelectData?.tabs ?? [])
       .filter((t) => t.isActive)
       .slice()
       .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name))
-      .map((t) => t.name),
-    [quickSelectData],
-  );
+      .map((t) => t.name);
+    return filterRegionNamesForModality(all, entry?.modality);
+  }, [quickSelectData, entry?.modality]);
 
   // The region resolved from the study's modality + description (matchStudyRegion:
   // longest matching tab name wins). This is only as good as the PACS/billing
@@ -3108,12 +3108,18 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   }
 
   function handleReapplyStudyDefaults() {
-    if (isLocked || !studyRegion) return;
+    if (isLocked || studyRegions.length === 0) return;
+    const multi = studyRegions.length > 1;
     if (!window.confirm(
-      "Reload the default protocol and structured template for the primary study region? "
-      + "Technique and findings will be replaced.",
+      multi
+        ? `Reload defaults for ${studyRegions.join(" + ")}? Technique texts will be merged into one field; findings follow the primary region template.`
+        : "Reload the default protocol and structured template for this study region? "
+          + "Technique and findings will be replaced.",
     )) return;
-    applyStudyRegionDefaults(studyRegion, { fullReplace: true });
+    // First region replaces Technique; further regions merge (Brain + Cervical).
+    studyRegions.forEach((region, i) => {
+      applyStudyRegionDefaults(region, { fullReplace: i === 0 });
+    });
   }
 
   /** Snapshot captured immediately before Start Report — powers one-click undo. */
@@ -3168,8 +3174,29 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     };
     setCanUndoStartReport(true);
 
-    const protocol = pickQuickProtocol(quickSelectData?.protocols ?? [], studyRegion);
-    if (protocol) applyProtocol(protocol, true);
+    // Multi-region (Brain + Cervical): accumulate technique texts into one field.
+    const primaryProtocol = studyRegion
+      ? pickQuickProtocol(quickSelectData?.protocols ?? [], studyRegion)
+      : null;
+    let mergedTechnique = "";
+    for (const region of studyRegions) {
+      const protocol = pickQuickProtocol(quickSelectData?.protocols ?? [], region);
+      if (protocol?.techniqueText) mergedTechnique = mergeBlock(mergedTechnique, protocol.techniqueText);
+      const tab = quickSelectData?.tabs?.find((t) => t.name === region);
+      if (tab?.techniqueText) mergedTechnique = mergeBlock(mergedTechnique, tab.techniqueText);
+    }
+    if (primaryProtocol) {
+      applyProtocol(primaryProtocol, true);
+      // Secondary regions: merge recommendation/normals without wiping technique.
+      for (const region of studyRegions.slice(1)) {
+        const protocol = pickQuickProtocol(quickSelectData?.protocols ?? [], region);
+        if (protocol) applyProtocol(protocol, false);
+      }
+    }
+    if (mergedTechnique) {
+      setTechnique(mergedTechnique);
+      lastInsertedTechniqueRef.current = mergedTechnique;
+    }
 
     let match = entry
       ? pickStructuredTemplate(templates, entry.modality, entry.studyDescription)
@@ -3193,26 +3220,28 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
         map[item.label] = { normal: true, text: item.normal };
       }
       setUseStructured(true);
-      setTechnique(protocol?.techniqueText?.trim() || sections.technique || "");
-      if (protocol?.techniqueText) lastInsertedTechniqueRef.current = protocol.techniqueText;
+      // Prefer merged multi-region technique; fall back to template technique.
+      const techniqueText = mergedTechnique.trim() || sections.technique || "";
+      setTechnique(techniqueText);
+      if (techniqueText) lastInsertedTechniqueRef.current = techniqueText;
       setFindingsMap(map);
       setRawFindings(match.defaultFindings || "");
       setImpression(match.defaultImpression ? [match.defaultImpression] : []);
       const baseRec = "Please correlate with clinical findings.";
-      setRecommendation(protocol?.recommendationText
-        ? mergeBlock(baseRec, protocol.recommendationText)
+      setRecommendation(primaryProtocol?.recommendationText
+        ? mergeBlock(baseRec, primaryProtocol.recommendationText)
         : baseRec);
-    } else if (protocol) {
-      if (protocol.normalText) setRawFindings(mergeBlock("", protocol.normalText));
-      if (protocol.recommendationText) {
-        setRecommendation((prev) => mergeBlock(prev.trim() ? prev : "Please correlate with clinical findings.", protocol.recommendationText));
+    } else if (primaryProtocol) {
+      if (primaryProtocol.normalText) setRawFindings(mergeBlock("", primaryProtocol.normalText));
+      if (primaryProtocol.recommendationText) {
+        setRecommendation((prev) => mergeBlock(prev.trim() ? prev : "Please correlate with clinical findings.", primaryProtocol.recommendationText));
       }
     }
 
     requestBaselineRecapture();
     toast({
       title: "Report started",
-      description: `${protocol?.name ?? "Protocol"} · ${match?.templateName ?? "template"} · normals applied`,
+      description: `${studyRegions.join(" + ") || primaryProtocol?.name || "Protocol"} · ${match?.templateName ?? "template"} · normals applied`,
     });
   }
 
@@ -6007,26 +6036,58 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                 <label className="inline-flex items-center gap-1 flex-wrap">
                   <span className="text-muted-foreground">Regions</span>
                   <div className="inline-flex flex-wrap gap-0.5" role="group" aria-label="Study regions (multi-select)" data-testid="study-region-chips">
-                    {availableRegions.map((r) => {
-                      const on = studyRegions.includes(r);
+                    {(() => {
+                      const REGION_CHIP_LIMIT = 6;
+                      const primary = availableRegions.slice(0, REGION_CHIP_LIMIT);
+                      const overflow = availableRegions.slice(REGION_CHIP_LIMIT);
+                      const extraSelected = studyRegions.filter((r) => !primary.includes(r));
+                      const visible = [...primary, ...extraSelected];
                       return (
-                        <button
-                          key={r}
-                          type="button"
-                          disabled={isLocked}
-                          aria-pressed={on}
-                          title={on ? `Remove ${r}` : `Add ${r} (technique merges)`}
-                          className={`h-6 px-1.5 text-[10px] rounded border font-medium transition-colors ${
-                            on
-                              ? "bg-primary text-primary-foreground border-primary"
-                              : "bg-background text-muted-foreground border-border hover:bg-muted"
-                          }`}
-                          onClick={() => handleRegionToggle(r)}
-                        >
-                          {r}
-                        </button>
+                        <>
+                          {visible.map((r) => {
+                            const on = studyRegions.includes(r);
+                            return (
+                              <button
+                                key={r}
+                                type="button"
+                                disabled={isLocked}
+                                aria-pressed={on}
+                                title={on ? `Remove ${r}` : `Add ${r} (technique merges)`}
+                                className={`h-6 px-1.5 text-[10px] rounded border font-medium transition-colors ${
+                                  on
+                                    ? "bg-primary text-primary-foreground border-primary"
+                                    : "bg-background text-muted-foreground border-border hover:bg-muted"
+                                }`}
+                                onClick={() => handleRegionToggle(r)}
+                              >
+                                {r}
+                              </button>
+                            );
+                          })}
+                          {overflow.length > 0 && (
+                            <select
+                              aria-label="More study regions"
+                              title="Add another region — its technique merges into Technique"
+                              className="h-6 max-w-[9rem] text-[10px] rounded border bg-background px-1"
+                              value=""
+                              disabled={isLocked}
+                              onChange={(e) => {
+                                const name = e.target.value;
+                                if (name) handleRegionToggle(name);
+                                e.currentTarget.value = "";
+                              }}
+                            >
+                              <option value="">More regions…</option>
+                              {overflow.map((r) => (
+                                <option key={r} value={r}>
+                                  {studyRegions.includes(r) ? "✓ " : "+ "}{r}
+                                </option>
+                              ))}
+                            </select>
+                          )}
+                        </>
                       );
-                    })}
+                    })()}
                   </div>
                   {regionOverrides != null && (
                     <button
@@ -6317,8 +6378,8 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                       </span>
                     )}
                   </div>
-                  <div className="flex flex-wrap gap-1.5">
-                    {stripOrderedFindings.map((f, qi) => {
+                  <div className="flex flex-wrap gap-1.5 items-center">
+                    {stripOrderedFindings.slice(0, 6).map((f, qi) => {
                       const selected = selectedQuickIds.has(f.id);
                       const structured = findingQuestions(f).length > 0;
                       const isFav = favoriteIdSet.has(f.id);
@@ -6331,7 +6392,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                         "border-teal-200 bg-teal-50 text-teal-900 hover:border-teal-400 hover:bg-teal-100",
                       ];
                       const hue = hues[qi % hues.length];
-                      const altHint = qi < 9 ? `Alt+${qi + 1}` : undefined;
+                      const altHint = `Alt+${qi + 1}`;
                       return (
                         <button
                           key={f.id}
@@ -6340,8 +6401,8 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                           onClick={() => handleFindingClick(f)}
                           title={
                             structured
-                              ? `${f.label} — set details${altHint ? ` (${altHint})` : ""}`
-                              : `${f.findingText || f.impressionText || f.label}${altHint ? ` (${altHint})` : ""}`
+                              ? `${f.label} — set details (${altHint})`
+                              : `${f.findingText || f.impressionText || f.label} (${altHint})`
                           }
                           aria-pressed={selected}
                           className={`text-[10px] font-medium px-2.5 py-1 rounded-full border shadow-sm transition-all disabled:opacity-50 inline-flex items-center gap-1 ${
@@ -6355,12 +6416,34 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                           {isFav && <Star size={9} className={selected ? "fill-white text-white" : "fill-amber-500 text-amber-500"} />}
                           {f.label}
                           {structured && <span className="opacity-70">⣿</span>}
-                          {altHint && rightTab === "quickselect" && (
+                          {rightTab === "quickselect" && (
                             <kbd className={`text-[8px] font-mono opacity-70 ${selected ? "text-white/80" : ""}`}>{qi + 1}</kbd>
                           )}
                         </button>
                       );
                     })}
+                    {stripOrderedFindings.length > 6 && (
+                      <select
+                        aria-label="More quick findings"
+                        title="Add a finding from the rest of the list"
+                        className="h-7 max-w-[11rem] text-[10px] rounded-full border border-amber-300 bg-amber-50/80 px-2"
+                        value=""
+                        disabled={isLocked}
+                        data-testid="quick-findings-overflow"
+                        onChange={(e) => {
+                          const f = findingById.get(Number(e.target.value));
+                          if (f) handleFindingClick(f);
+                          e.currentTarget.value = "";
+                        }}
+                      >
+                        <option value="">+ {stripOrderedFindings.length - 6} more…</option>
+                        {stripOrderedFindings.slice(6).map((f) => (
+                          <option key={f.id} value={f.id}>
+                            {selectedQuickIds.has(f.id) ? "✓ " : ""}{f.label}
+                          </option>
+                        ))}
+                      </select>
+                    )}
                   </div>
                 </div>
               )}
