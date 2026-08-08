@@ -333,7 +333,7 @@ const DRAWER_STATUS_CONFIG: Record<DrawerStatusKey, {
 
 // ─── Drawer Status Card ───────────────────────────────────────────────────────
 
-function DrawerStatusCard({ status }: { status: DrawerStatus }) {
+function DrawerStatusCard({ status, isOwner }: { status: DrawerStatus; isOwner: boolean }) {
   const cfg = DRAWER_STATUS_CONFIG[status.drawerStatus] ?? DRAWER_STATUS_CONFIG.open;
   const StatusIcon = cfg.icon;
   const isClosed = status.drawerStatus !== "open" && status.drawerStatus !== "reopened";
@@ -482,11 +482,13 @@ function DrawerStatusCard({ status }: { status: DrawerStatus }) {
               <Lock size={12} /> Drawer Closed
             </Button>
           )}
-          <Link href="/day-close">
-            <Button size="sm" variant="outline" className="text-xs flex items-center gap-1.5">
-              View Full Day Close <ChevronRight size={12} />
-            </Button>
-          </Link>
+          {isOwner && (
+            <Link href="/day-close">
+              <Button size="sm" variant="outline" className="text-xs flex items-center gap-1.5">
+                View Full Day Close <ChevronRight size={12} />
+              </Button>
+            </Link>
+          )}
         </div>
       </div>
     </div>
@@ -1917,6 +1919,17 @@ export default function MyDailySummary() {
         subtitle={data ? `${data.staffName} • ${from === to ? from : `${from} → ${to}`}` : "Personal financial summary"}
         actions={
           <div className="flex items-center gap-2 flex-wrap">
+            <Link href="/my-day-close">
+              <Button
+                size="sm"
+                className="h-8 bg-blue-700 hover:bg-blue-800 text-white text-xs font-semibold flex items-center gap-1.5"
+              >
+                <Lock size={13} />
+                {drawerQ.data && drawerQ.data.drawerStatus !== "open" && drawerQ.data.drawerStatus !== "reopened"
+                  ? "My Day Close"
+                  : "Close My Drawer"}
+              </Button>
+            </Link>
             <SummaryExportToolbar
               config={exportConfig}
               emailEndpoint="/api/dashboard/my-daily-summary/send-email"
@@ -1934,14 +1947,19 @@ export default function MyDailySummary() {
       {/* ── Day Close Open Window Quick View ── */}
       {myPreviewQ.data && (
         <div className="bg-white dark:bg-card border border-blue-200 dark:border-blue-800 rounded-xl p-4 shadow-sm space-y-4">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
             <h3 className="text-sm font-bold text-gray-800 dark:text-gray-100">Since last close (Live)</h3>
-            <span className="text-xs text-gray-500 dark:text-gray-400">
+            <span className="text-xs text-gray-500 dark:text-gray-400 flex-1 min-w-[12rem]">
               {myPreviewQ.data.coveredFromTs
                 ? `${new Date(myPreviewQ.data.coveredFromTs).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit", day: "numeric", month: "short" })} — now · not calendar Today (IST)`
                 : "Since start — now · not calendar Today (IST)"}
             </span>
+            <Link href="/my-day-close">
+              <Button size="sm" className="h-8 bg-blue-700 hover:bg-blue-800 text-white text-xs font-semibold flex items-center gap-1.5 shrink-0">
+                <Lock size={12} /> Close My Drawer
+              </Button>
+            </Link>
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
             <div className="bg-blue-50 dark:bg-blue-950/30 rounded-lg p-2.5">
@@ -2359,7 +2377,7 @@ export default function MyDailySummary() {
           />
 
           {/* ── Drawer Close Status Card ── */}
-          {drawerQ.data && <DrawerStatusCard status={drawerQ.data} />}
+          {drawerQ.data && <DrawerStatusCard status={drawerQ.data} isOwner={isOwner} />}
 
           {/* ── Post-Closure Activity Box ── */}
           {postClosureQ.data && <PostClosureActivityBox data={postClosureQ.data} />}
