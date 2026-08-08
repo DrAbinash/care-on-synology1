@@ -10,6 +10,7 @@ import {
   GetPatientHistoryParams,
 } from "@workspace/api-zod";
 import { requireStaffSubPermission } from "../middleware/requireStaffAuth";
+import { isClinicPatientPhoneRequired, phoneLooksPresent } from "../lib/patientPhoneRequired";
 
 export const patientsRouter = Router();
 
@@ -144,6 +145,15 @@ patientsRouter.post("/", requireStaffSubPermission("/patients", "create"), async
   // Require at least one name field to be filled
   if (!firstName && !lastName) {
     res.status(400).json({ error: "At least a first name or last name is required." });
+    return;
+  }
+
+  // Settings → Clinic Info → Patient Phone Requirement (Bill Desk / Patients / Quick Register).
+  // Kiosk & online booking enforce phone on their own paths and ignore this flag.
+  if ((await isClinicPatientPhoneRequired()) && !phoneLooksPresent(phone)) {
+    res.status(400).json({
+      error: "Patient phone number is required. Turn off Patient Phone Requirement in Settings → Clinic Info to allow registration without a phone.",
+    });
     return;
   }
 
@@ -304,6 +314,17 @@ patientsRouter.put("/:id", requireStaffSubPermission("/patients", "edit"), async
   if (photo.value !== undefined) updateValues.photoDataUrl = photo.value;
   if (Object.keys(updateValues).length === 0) {
     res.status(400).json({ error: "No fields to update" });
+    return;
+  }
+  // Clearing / omitting a usable phone is blocked when the clinic requires it.
+  if (
+    Object.prototype.hasOwnProperty.call(updateValues, "phone")
+    && (await isClinicPatientPhoneRequired())
+    && !phoneLooksPresent(updateValues.phone as string | null | undefined)
+  ) {
+    res.status(400).json({
+      error: "Patient phone number is required. Turn off Patient Phone Requirement in Settings → Clinic Info to clear it.",
+    });
     return;
   }
   const [updated] = await db
