@@ -1,6 +1,8 @@
 // Bill receipt printing — A5 thermal receipt optimised for Indian diagnostic centres.
 // Matches the physical receipt layout from the reference image.
 
+import { resolveBillLogoHeightPx } from "./billPrintSettings";
+
 export type PrintBillData = {
   billNumber: string;
   subtotal: number | string;
@@ -211,11 +213,12 @@ export type BuildPrintHtmlOpts = {
   compactOnA4?: boolean;
   /** Exact CSS @page size (from resolveBillPrintPageOpts). */
   pageCssSize?: string;
-  // Layout & typography overrides (Classic format only) — see
-  // BillPrintSettings's matching print*Px/printMarginMm fields. Each is
-  // undefined/null-safe: omit or pass null to fall back to the built-in
-  // A5/A4-tuned default for that element.
+  // Layout & typography overrides — see BillPrintSettings's matching
+  // print*Px/printMarginMm fields. Each is undefined/null-safe: omit or
+  // pass null to fall back to the built-in format default for that element.
+  // printLogoHeightPx applies to Modern and Classic layouts.
   printMarginMm?: number | null;
+  printLogoHeightPx?: number | null;
   printTitleFontPx?: number | null;
   printPatientNameFontPx?: number | null;
   printBodyFontPx?: number | null;
@@ -292,6 +295,11 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
   const totalPx = `${opts.printTotalFontPx ?? 13}px`;
   const footerPx = `${opts.printFooterFontPx ?? 11}px`;
   const tinyPx = `${opts.printTinyFontPx ?? 10}px`;
+  const logoH = resolveBillLogoHeightPx(opts.printLogoHeightPx, 120);
+  const logoMaxW = Math.round(logoH * 2.0);
+  const logoImgHtml = clinic?.logoDataUrl
+    ? `<img src="${clinic.logoDataUrl}" alt="logo" style="max-height:${logoH}px;max-width:${logoMaxW}px;object-fit:contain;display:block;margin-bottom:4px"/>`
+    : "";
 
   const colCount = 3 + (showCode ? 1 : 0) + (showCategory ? 1 : 0) + (showTat ? 1 : 0);
 
@@ -345,7 +353,7 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
       <table style="width:100%;border-collapse:collapse;margin-bottom:5px">
         <tr>
           <td style="vertical-align:top;padding:0;width:62%">
-            ${clinic?.logoDataUrl ? `<img src="${clinic.logoDataUrl}" alt="logo" style="max-height:120px;max-width:240px;object-fit:contain;display:block;margin-bottom:4px"/>` : ""}
+            ${logoImgHtml}
             ${clinic?.name ? `<div style="font-size:${titleSize};font-weight:800;line-height:1.15;color:#000;margin-bottom:2px">${esc(clinic.name)}</div>` : ""}
             <div style="font-size:${bodyPx};color:#333;font-weight:700;line-height:1.2">${esc(clinic?.tagline || "DIAGNOSTIC & PATHOLOGY SERVICES")}</div>
             ${clinic?.address ? `<div style="font-size:${headerPx};color:#555;font-weight:600;line-height:1.4;margin-top:4px">${esc(clinic.address.replace(/\s*\n\s*/g, ", ").trim())}</div>` : ""}
