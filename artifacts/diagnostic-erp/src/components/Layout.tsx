@@ -158,6 +158,8 @@ const isLeafActive = (path: string, location: string) => {
 const navItems: NavEntry[] = [
   { path: "/", icon: Zap, label: "Billing Desk" },
   { path: "/my-daily-summary", icon: BarChart2, label: "My Daily Summary" },
+  // Per-user drawer close — top-level so cashiers find it (not buried under Administration).
+  { path: "/my-day-close", icon: Lock, label: "My Day Close" },
   { path: "/hope-referrals", icon: Inbox, label: "HOPE Referrals", featureFlag: "ff_hope_care_referrals" },
   {
     id: "billing-grp",
@@ -283,7 +285,6 @@ const navItems: NavEntry[] = [
       { path: "/recall", icon: Bell, label: "Recall & Follow-up", featureFlag: "ff_recall_engine" },
       { path: "/feedback", icon: Star, label: "Feedback / NPS", featureFlag: "ff_feedback_nps" },
       { path: "/expenses", icon: TrendingDown, label: "Expenses" },
-      { path: "/my-day-close", icon: Clock, label: "My Day Close" },
       { path: "/accounting", icon: BookOpen, label: "Accounting" },
       { path: "/banking", icon: Landmark, label: "Banking" },
       { path: "/books-sanity", icon: ShieldCheck, label: "Books Sanity (CA)", ownerOnly: true },

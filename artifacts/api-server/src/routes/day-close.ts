@@ -517,12 +517,15 @@ dayCloseRouter.get("/", requireOwnerOrAdmin, async (req, res) => {
 });
 
 // Single closure detail (enriched with report data if missing from DB).
-dayCloseRouter.get("/:id", requireOwnerOrAdmin, async (req, res) => {
+// IMPORTANT: this parametric route is registered before /my-preview,
+// /my-drawer-status, /my-list, etc. Non-numeric ids must fall through with
+// next("route") — otherwise cashiers get 403 from requireOwnerOrAdmin when
+// calling their own My Day Close endpoints (Express matches /:id first).
+dayCloseRouter.get("/:id", (req, res, next) => {
+  if (!Number.isInteger(Number(req.params.id))) return next("route");
+  return requireOwnerOrAdmin(req, res, next);
+}, async (req, res) => {
   const id = Number(req.params.id);
-  if (!Number.isInteger(id)) {
-    res.status(400).json({ error: "Invalid id" });
-    return;
-  }
   const [row] = await db.select().from(dayClosuresTable).where(eq(dayClosuresTable.id, id)).limit(1);
   if (!row) {
     res.status(404).json({ error: "Not found" });
@@ -564,12 +567,11 @@ dayCloseRouter.get("/:id", requireOwnerOrAdmin, async (req, res) => {
 
 // Re-open a closed day. SUPER-ADMIN role (regular ERP staff session) ONLY.
 const ReopenBody = z.object({ reason: z.string().min(3).max(2000) });
-dayCloseRouter.post("/:id/reopen", requireSuperAdminStaff, async (req, res) => {
+dayCloseRouter.post("/:id/reopen", (req, res, next) => {
+  if (!Number.isInteger(Number(req.params.id))) return next("route");
+  return requireSuperAdminStaff(req, res, next);
+}, async (req, res) => {
   const id = Number(req.params.id);
-  if (!Number.isInteger(id)) {
-    res.status(400).json({ error: "Invalid id" });
-    return;
-  }
   const parsed = ReopenBody.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "Reason is required (min 3 chars)" });

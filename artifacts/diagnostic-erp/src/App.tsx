@@ -261,7 +261,7 @@ const queryClient = new QueryClient({
 });
 
 const ERP_NAV_ORDER = [
-  "/", "/dashboard", "/my-daily-summary", "/reception-command-center", "/daily-summary", "/patients", "/register", "/appointments", "/queue", "/online-bookings",
+  "/", "/dashboard", "/my-daily-summary", "/my-day-close", "/reception-command-center", "/daily-summary", "/patients", "/register", "/appointments", "/queue", "/online-bookings",
   "/radiology", "/radiology/legacy", "/radiology/worklist", "/radiology/open", "/radiology/report-generator", "/radiology/report-builder", "/radiology/findings-manager", "/radiology/reporting-workspace", "/radiology/advanced-tools", "/radiology/pacs-dashboard", "/radiology/operational-health", "/radiology/pacs-settings", "/radiology/network-control-center", "/radiology/pacs-logs",
   "/radiology/dicom-agent-dashboard", "/radiology/modality-management",
   "/radiology/agent-setup", "/radiology/ai-reporting-settings", "/radiology/ai-prompt-templates", "/radiology/ai-model-routing", "/radiology/structured-report-templates", "/radiology/ai-audit-log",
