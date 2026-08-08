@@ -22,6 +22,43 @@
  * preferring it is strictly more specific and does not regress the single-match
  * cases (e.g. MRI "Brain" still resolves to "Brain").
  */
+
+/** Classify a study-tab name into a modality family for Study Setup filtering. */
+export function regionTabModalityFamily(name: string): "CT" | "XR" | "US" | "GENERIC" {
+  const upper = name.trim().toUpperCase();
+  if (/^(CT|HRCT)\b/.test(upper)) return "CT";
+  if (/^X-RAY\b/.test(upper)) return "XR";
+  if (/^(USG|US)\b/.test(upper)) return "US";
+  return "GENERIC";
+}
+
+/**
+ * Filter study-tab / region names for the open study's modality so MRI Study
+ * Setup does not show CT / X-Ray / USG chips (and vice versa).
+ */
+export function filterRegionNamesForModality(
+  names: string[],
+  modality: string | null | undefined,
+): string[] {
+  const m = (modality ?? "").trim().toUpperCase();
+  if (!m) return names;
+  const isMr = m === "MR" || m.startsWith("MR");
+  const isCt = m === "CT" || m.startsWith("CT");
+  const isUs = m === "US" || m.startsWith("US");
+  const isXr =
+    m === "CR" || m === "DX" || m === "XR" || m === "XA" || m === "RF"
+    || m.includes("X-RAY") || m.includes("XRAY");
+
+  return names.filter((name) => {
+    const family = regionTabModalityFamily(name);
+    if (isMr) return family === "GENERIC";
+    if (isCt) return family === "CT";
+    if (isXr) return family === "XR";
+    if (isUs) return family === "US" || family === "GENERIC";
+    return true;
+  });
+}
+
 export function matchStudyRegion(
   hint: string | null | undefined,
   orderedRegionNames: string[],

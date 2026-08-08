@@ -726,18 +726,148 @@ router.get("/studies/:studyInstanceUID/ohif-launch", async (req, res) => {
     accessionNumber,
   });
 
+  // Browser QIDO/WADO for Report Images must use a same-origin or OHIF-proxied
+  // base — never Orthanc :8042 directly (CORS + Basic auth block the SPA).
+  // Prefer configured viewer dicom_web_base_url, then OHIF /dicom-web, then
+  // the ERP staff proxy (always works from the SPA with session cookies).
+  const viewerSettings = await getViewerSettings();
+  const browserDicomWeb =
+    (viewerSettings.dicom_web_base_url || "").replace(/\/+$/, "")
+    || (ohifBase ? `${ohifBase.replace(/\/+$/, "")}/dicom-web` : "")
+    || "/api/radiology/dicom-web";
+
   res.json({
     studyInstanceUID,
     patientName,
     accessionNumber,
     viewerType: "OHIF",
     ohifUrl,
-    dicomWebBaseUrl: dicomWebUrl,
+    dicomWebBaseUrl: browserDicomWeb || dicomWebUrl,
+    /** Server-side Orthanc DICOMweb (not for browser fetch). */
+    orthancDicomWebUrl: dicomWebUrl,
     pacsType,
     requestedLevel,
     launchLevel,
   });
 });
+
+// ─── Browser DICOMweb proxy (Report Images / Print Images) ───────────────────
+// OHIF loads images inside its own origin via nginx → Orthanc. The SPA cannot
+// QIDO Orthanc :8042 (CORS / auth). These routes re-expose the subset of
+// DICOMweb the image pickers need, authenticated as staff, using server-side
+// Orthanc credentials.
+
+async function orthancDicomWebFetch(pathAndQuery: string, accept: string): Promise<Response | null> {
+  const cfg = await getRadiologyConfig();
+  const base =
+    process.env.ORTHANC_INTERNAL_URL?.replace(/\/+$/, "")
+    || cfg.orthanc.dicomWebUrl?.replace(/\/dicom-web\/?$/, "")
+    || "";
+  if (!base) return null;
+  const headers: Record<string, string> = { Accept: accept };
+  const user = process.env.ORTHANC_USERNAME || "";
+  const pass = process.env.ORTHANC_PASSWORD || "";
+  if (user && pass) headers.Authorization = "Basic " + Buffer.from(`${user}:${pass}`).toString("base64");
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 12_000);
+  try {
+    return await fetch(`${base}/dicom-web${pathAndQuery}`, { headers, signal: controller.signal });
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+router.get("/dicom-web/studies/:studyInstanceUID/series", async (req, res) => {
+  const { studyInstanceUID } = req.params;
+  if (!LAUNCH_UID.test(studyInstanceUID)) {
+    res.status(400).json({ error: "invalid StudyInstanceUID" });
+    return;
+  }
+  const upstream = await orthancDicomWebFetch(
+    `/studies/${encodeURIComponent(studyInstanceUID)}/series`,
+    "application/dicom+json",
+  );
+  if (!upstream) {
+    res.status(502).json({ error: "Orthanc DICOMweb unreachable" });
+    return;
+  }
+  const body = Buffer.from(await upstream.arrayBuffer());
+  res.status(upstream.status).type(upstream.headers.get("content-type") || "application/dicom+json").send(body);
+});
+
+router.get("/dicom-web/studies/:studyInstanceUID/series/:seriesInstanceUID/instances", async (req, res) => {
+  const { studyInstanceUID, seriesInstanceUID } = req.params;
+  if (!LAUNCH_UID.test(studyInstanceUID) || !LAUNCH_UID.test(seriesInstanceUID)) {
+    res.status(400).json({ error: "invalid UID" });
+    return;
+  }
+  const upstream = await orthancDicomWebFetch(
+    `/studies/${encodeURIComponent(studyInstanceUID)}/series/${encodeURIComponent(seriesInstanceUID)}/instances`,
+    "application/dicom+json",
+  );
+  if (!upstream) {
+    res.status(502).json({ error: "Orthanc DICOMweb unreachable" });
+    return;
+  }
+  const body = Buffer.from(await upstream.arrayBuffer());
+  res.status(upstream.status).type(upstream.headers.get("content-type") || "application/dicom+json").send(body);
+});
+
+router.get(
+  "/dicom-web/studies/:studyInstanceUID/series/:seriesInstanceUID/instances/:sopInstanceUID/rendered",
+  async (req, res) => {
+    const { studyInstanceUID, seriesInstanceUID, sopInstanceUID } = req.params;
+    if (!LAUNCH_UID.test(studyInstanceUID) || !LAUNCH_UID.test(seriesInstanceUID) || !LAUNCH_UID.test(sopInstanceUID)) {
+      res.status(400).json({ error: "invalid UID" });
+      return;
+    }
+    const qs = new URLSearchParams();
+    if (typeof req.query.quality === "string") qs.set("quality", req.query.quality);
+    if (typeof req.query.viewport === "string") qs.set("viewport", req.query.viewport);
+    const suffix = qs.toString() ? `?${qs}` : "";
+    const upstream = await orthancDicomWebFetch(
+      `/studies/${encodeURIComponent(studyInstanceUID)}/series/${encodeURIComponent(seriesInstanceUID)}/instances/${encodeURIComponent(sopInstanceUID)}/rendered${suffix}`,
+      "image/jpeg",
+    );
+    if (!upstream) {
+      res.status(502).json({ error: "Orthanc DICOMweb unreachable" });
+      return;
+    }
+    const body = Buffer.from(await upstream.arrayBuffer());
+    res.status(upstream.status).type(upstream.headers.get("content-type") || "image/jpeg").send(body);
+  },
+);
+
+router.get(
+  "/dicom-web/studies/:studyInstanceUID/series/:seriesInstanceUID/instances/:sopInstanceUID/frames/:frame/rendered",
+  async (req, res) => {
+    const { studyInstanceUID, seriesInstanceUID, sopInstanceUID, frame } = req.params;
+    if (!LAUNCH_UID.test(studyInstanceUID) || !LAUNCH_UID.test(seriesInstanceUID) || !LAUNCH_UID.test(sopInstanceUID)) {
+      res.status(400).json({ error: "invalid UID" });
+      return;
+    }
+    if (!/^\d{1,6}$/.test(frame)) {
+      res.status(400).json({ error: "invalid frame" });
+      return;
+    }
+    const qs = new URLSearchParams();
+    if (typeof req.query.quality === "string") qs.set("quality", req.query.quality);
+    if (typeof req.query.viewport === "string") qs.set("viewport", req.query.viewport);
+    const suffix = qs.toString() ? `?${qs}` : "";
+    const upstream = await orthancDicomWebFetch(
+      `/studies/${encodeURIComponent(studyInstanceUID)}/series/${encodeURIComponent(seriesInstanceUID)}/instances/${encodeURIComponent(sopInstanceUID)}/frames/${frame}/rendered${suffix}`,
+      "image/jpeg",
+    );
+    if (!upstream) {
+      res.status(502).json({ error: "Orthanc DICOMweb unreachable" });
+      return;
+    }
+    const body = Buffer.from(await upstream.arrayBuffer());
+    res.status(upstream.status).type(upstream.headers.get("content-type") || "image/jpeg").send(body);
+  },
+);
 
 // ─── M1.2 — READ-ONLY LAUNCH DIAGNOSTICS ─────────────────────────────────────
 // The browser cannot ask the PACS whether a StudyInstanceUID exists (QIDO is
