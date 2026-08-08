@@ -5207,8 +5207,8 @@ function BillingPrintTab() {
           onChange={(v) => update({ printMarginMm: v })}
         />
         <NumberOverrideField
-          label="Clinic Logo Height" unit="px" min={24} max={160} sliderDefault={44}
-          value={settings.printLogoHeightPx} defaultLabel="44px (Modern) / 100px (Classic)"
+          label="Clinic Logo Height" unit="px" min={24} max={160} sliderDefault={72}
+          value={settings.printLogoHeightPx} defaultLabel="72px (Modern) / 120px (Classic)"
           onChange={(v) => update({ printLogoHeightPx: v })}
         />
         <div className="grid grid-cols-2 gap-x-4 gap-y-2">
