@@ -27,21 +27,22 @@ export const PAGE_SPECS: Record<PrintPaper, PageSpec> = {
     widthMm: 210,
     heightMm: 148,
     pageSizeCss: "210mm 148mm",
-    defaultSafePaddingMm: 4,
+    // Dense default for Epson A5 ink trays — avoids large empty side bands.
+    defaultSafePaddingMm: 2,
   },
   "A5-portrait": {
     paper: "A5-portrait",
     widthMm: 148,
     heightMm: 210,
     pageSizeCss: "148mm 210mm",
-    defaultSafePaddingMm: 4,
+    defaultSafePaddingMm: 2,
   },
   "half-a4": {
     paper: "half-a4",
     widthMm: 210,
     heightMm: 148,
     pageSizeCss: "210mm 148mm",
-    defaultSafePaddingMm: 4,
+    defaultSafePaddingMm: 2,
   },
   A4: {
     paper: "A4",
@@ -66,8 +67,6 @@ export function resolvePageLayout(
   safePaddingMmOverride?: number | null,
 ): ResolvedPageLayout {
   const spec = PAGE_SPECS[paper];
-  const isA5Family = paper !== "A4";
-  const fallback = isA5Family ? 4 : 6;
   const safePaddingMm =
     safePaddingMmOverride != null && safePaddingMmOverride >= 0
       ? safePaddingMmOverride

@@ -372,14 +372,16 @@ export function getAutoBillPaperSize(
 export function getPaperSizeCss(size: BillPaperSize): { pageSize: string; width: string; minHeight: string; maxHeight: string } {
   switch (size) {
     case "A5-landscape":
-      return { pageSize: "A5 landscape", width: "198mm", minHeight: "132mm", maxHeight: "none" };
+      // Full physical page — do not subtract margins here (safe padding is applied
+      // by the document layout engine). Narrow widths caused empty side bands.
+      return { pageSize: "A5 landscape", width: "210mm", minHeight: "148mm", maxHeight: "none" };
     case "A5-portrait":
-      return { pageSize: "A5 portrait", width: "136mm", minHeight: "194mm", maxHeight: "none" };
+      return { pageSize: "A5 portrait", width: "148mm", minHeight: "210mm", maxHeight: "none" };
     case "half-a4":
-      return { pageSize: "210mm 148mm", width: "210mm", minHeight: "140mm", maxHeight: "none" };
+      return { pageSize: "210mm 148mm", width: "210mm", minHeight: "148mm", maxHeight: "none" };
     case "A4":
     default:
-      return { pageSize: "A4 portrait", width: "210mm", minHeight: "277mm", maxHeight: "none" };
+      return { pageSize: "A4 portrait", width: "210mm", minHeight: "297mm", maxHeight: "none" };
   }
 }
 

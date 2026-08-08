@@ -190,7 +190,7 @@ export function buildPremiumBillPrintHtml(opts: BuildPremiumBillOpts): string {
   const footerPx = isSparse ? "13px" : isCompact ? "10px" : "11px";
   const tinyPx = isSparse ? "11px" : isCompact ? "9px" : "10px";
   const qrSize = isSparse ? "95px" : isCompact ? "55px" : "72px";
-  const marginMm = paperSize === "A4" ? 6 : 4;
+  const marginMm = paperSize === "A4" ? 6 : 2;
   const useCompactFooter = compactFooterGap || testCount <= 4;
   const sectionGap = isSparse ? "14px" : isCompact ? "4px" : "6px";
   const tableCellPad = isSparse ? "6px 8px" : isCompact ? "3px 5px" : "4px 6px";
