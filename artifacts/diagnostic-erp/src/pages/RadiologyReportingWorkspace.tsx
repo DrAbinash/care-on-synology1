@@ -99,7 +99,7 @@ import { matchStudyRegion } from "@/lib/studyRegion";
 import { hasPhrase, appendClinicalPhrase, removeClinicalPhrase } from "@/lib/clinicalHistoryText";
 import {
   renderAbnormality, type AbnormalityInstance, type RenderedAbnormality, type Side,
-  mergeBlock, mergeImpression, stripNormalImpressionLines, EMPTY_INSTANCE,
+  mergeBlock, removeBlock, mergeImpression, stripNormalImpressionLines, EMPTY_INSTANCE,
   applyRenderedTransition, toggleQuickSelection, setQuickInstance, deleteQuickInstance,
   seedQuickInstance, patchQuickInstance,
 } from "@/lib/renderEngine";
@@ -566,10 +566,9 @@ const PALETTE_SETTINGS: PaletteItem[] = [
 
 // Item 1 — default Recommendation / Advice quick chips, used when the
 // admin-editable `report_recommendation_chips` pacs setting is unset or
-// malformed. Clicking a chip merges its text into the Recommendation field.
+// malformed. Clicking a chip toggles its text in/out of Recommendation.
 const DEFAULT_RECOMMENDATION_CHIPS: string[] = [
   "Clinical correlation is recommended.",
-  "Please correlate with clinical and laboratory findings.",
   "Correlation with previous imaging is advised.",
   "Follow-up imaging is advised as clinically indicated.",
   "Contrast-enhanced study is suggested for further characterisation.",
@@ -577,6 +576,41 @@ const DEFAULT_RECOMMENDATION_CHIPS: string[] = [
   "Specialist / surgical consultation is recommended.",
   "No further imaging is required at present.",
 ];
+
+/** Near-duplicate phrases auto-inserted by Start Report / older chip sets —
+ *  removing the primary chip also clears these so they are not stuck. */
+const RECOMMENDATION_CHIP_ALIASES: Record<string, string[]> = {
+  "Clinical correlation is recommended.": [
+    "Please correlate with clinical and laboratory findings.",
+    "Please correlate with clinical findings.",
+    "Clinical correlation advised.",
+    "Clinical correlation is advised.",
+  ],
+  "Follow-up imaging is advised as clinically indicated.": [
+    "Follow-up imaging is recommended as clinically indicated.",
+    "Follow up imaging is advised as clinically indicated.",
+  ],
+};
+
+function toggleRecommendationChip(existing: string, chip: string): string {
+  const trimmed = chip.trim();
+  if (!trimmed) return existing;
+  const aliases = RECOMMENDATION_CHIP_ALIASES[trimmed] ?? [];
+  const present = existing.includes(trimmed) || aliases.some((a) => existing.includes(a));
+  if (present) {
+    let next = removeBlock(existing, trimmed);
+    for (const a of aliases) next = removeBlock(next, a);
+    return next;
+  }
+  return mergeBlock(existing, trimmed);
+}
+
+function recommendationChipActive(existing: string, chip: string): boolean {
+  const trimmed = chip.trim();
+  if (!trimmed) return false;
+  if (existing.includes(trimmed)) return true;
+  return (RECOMMENDATION_CHIP_ALIASES[trimmed] ?? []).some((a) => existing.includes(a));
+}
 
 // AI-draft-vs-final diff, embedded as a workspace tab (previously only the
 // standalone ReportDiffViewer page). Reuses the existing
@@ -6682,23 +6716,40 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
               title="Recommendation / Advice"
               accent="emerald"
             >
-              {/* Item 1 — quick-select "chocolate box" chips for Recommendation,
-                  like the other sections. Admin-editable from Radiology Settings
-                  (report_recommendation_chips). Clicking merges the text in. */}
+              {/* Recommendation chips toggle in/out (click again removes). */}
               {recommendationChips.length > 0 && (
-                <div className="flex flex-wrap gap-1 mb-1.5" data-testid="recommendation-chips">
-                  {recommendationChips.map((chip, i) => (
+                <div className="flex flex-wrap gap-1 mb-1.5 items-center" data-testid="recommendation-chips">
+                  {recommendationChips.map((chip, i) => {
+                    const active = recommendationChipActive(recommendation, chip);
+                    return (
+                      <button
+                        key={i}
+                        type="button"
+                        disabled={isLocked}
+                        aria-pressed={active}
+                        title={active ? `Remove: ${chip}` : `Add: ${chip}`}
+                        onClick={() => setRecommendation((prev) => toggleRecommendationChip(prev, chip))}
+                        className={`text-[10px] font-medium px-2.5 py-0.5 rounded-full border shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md disabled:opacity-50 max-w-[220px] truncate ${
+                          active
+                            ? "border-emerald-600 bg-emerald-600 text-white"
+                            : "border-emerald-300/80 bg-gradient-to-r from-emerald-50 to-teal-50 text-emerald-950 hover:border-emerald-500 hover:from-emerald-100 hover:to-teal-100"
+                        }`}
+                      >
+                        {active ? "✓ " : ""}{chip}
+                      </button>
+                    );
+                  })}
+                  {recommendation.trim() && !isLocked && (
                     <button
-                      key={i}
                       type="button"
-                      disabled={isLocked}
-                      title={chip}
-                      onClick={() => setRecommendation((prev) => mergeBlock(prev, chip))}
-                      className="text-[10px] font-medium px-2.5 py-0.5 rounded-full border border-emerald-300/80 bg-gradient-to-r from-emerald-50 to-teal-50 text-emerald-950 shadow-sm transition-all hover:-translate-y-0.5 hover:border-emerald-500 hover:from-emerald-100 hover:to-teal-100 hover:shadow-md disabled:opacity-50 max-w-[220px] truncate"
+                      className="text-[10px] text-muted-foreground underline px-1"
+                      title="Clear the Recommendation field"
+                      data-testid="recommendation-clear"
+                      onClick={() => setRecommendation("")}
                     >
-                      {chip}
+                      Clear all
                     </button>
-                  ))}
+                  )}
                 </div>
               )}
               <Textarea
