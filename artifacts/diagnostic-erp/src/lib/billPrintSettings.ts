@@ -439,12 +439,15 @@ export function resolveBillPrintPageOpts(
 /**
  * Bill Detail reprint exposes an A4/A5 header toggle. When staff pick manual
  * paper, honour it while keeping the clinic's A5 variant (landscape vs portrait).
+ * Admin Lock ignores the manual toggle so every counter / reprint matches the
+ * clinic-wide paper setting.
  */
 export function applyManualBillPaperOverride(
-  settings: Pick<BillPrintSettings, "defaultPaperSize">,
+  settings: Pick<BillPrintSettings, "defaultPaperSize" | "adminLock">,
   manualPaper: "A4" | "A5" | null | undefined,
 ): Pick<BillPrintSettings, "defaultPaperSize"> {
-  if (!manualPaper) return settings;
+  if (settings.adminLock) return { defaultPaperSize: settings.defaultPaperSize };
+  if (!manualPaper) return { defaultPaperSize: settings.defaultPaperSize };
   if (manualPaper === "A4") return { defaultPaperSize: "A4" };
   const size = settings.defaultPaperSize;
   if (size === "A5-landscape" || size === "half-a4") return { defaultPaperSize: size };

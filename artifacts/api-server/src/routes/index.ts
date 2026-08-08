@@ -572,7 +572,15 @@ router.get("/clinic-settings/branding", async (_req, res) => {
     // Schema may be ahead of the database (missing columns). Return safe defaults.
   }
   if (!row) {
-    res.json({ name: "Care Diagnostics", tagline: "", address: "", registeredAddress: "", phone: "", email: "", website: "", gstin: "", logoDataUrl: null, footerNote: "", billPrintCopies: 1, billDefaultPaperSize: "A5", billShowCode: false, billShowCategory: false, qrOnBillEnabled: true, showTatOnBill: false, dayCloseAutoPrint: true, quickTestIds: "[null,null,null,null,null,null]", formFTestIds: "[]", formFBillingPrompt: false, formFAddressRequired: true, formFGuardianRequired: true });
+    res.json({
+      name: "Care Diagnostics", tagline: "", address: "", registeredAddress: "", phone: "", email: "", website: "", gstin: "",
+      logoDataUrl: null, footerNote: "", billPrintCopies: 1, billDefaultPaperSize: "A5",
+      billPrintSettingsJson: "{}",
+      billShowCode: false, billShowCategory: false, qrOnBillEnabled: true, showTatOnBill: false,
+      dayCloseAutoPrint: true, quickTestIds: "[null,null,null,null,null,null]", formFTestIds: "[]",
+      formFBillingPrompt: false, formFAddressRequired: true, formFGuardianRequired: true,
+      patientPhoneRequired: true,
+    });
     return;
   }
   res.json({
@@ -590,6 +598,10 @@ router.get("/clinic-settings/branding", async (_req, res) => {
     portalWelcomeMessage: row.portalWelcomeMessage ?? "",
     billPrintCopies: row.billPrintCopies ?? 1,
     billDefaultPaperSize: row.billDefaultPaperSize ?? "A5",
+    // Required for Admin Lock / clinic-wide bill print — Billing Desk and Bill
+    // Detail load clinic data from this public branding route (not the auth
+    // GET /clinic-settings). Without this field, adminLock never reaches counters.
+    billPrintSettingsJson: row.billPrintSettingsJson ?? "{}",
     billShowCode: row.billShowCode ?? false,
     billShowCategory: row.billShowCategory ?? false,
     qrOnBillEnabled: row.qrOnBillEnabled ?? true,
@@ -600,6 +612,7 @@ router.get("/clinic-settings/branding", async (_req, res) => {
     formFBillingPrompt: row.formFBillingPrompt ?? false,
     formFAddressRequired: row.formFAddressRequired ?? true,
     formFGuardianRequired: row.formFGuardianRequired ?? true,
+    patientPhoneRequired: row.patientPhoneRequired ?? true,
   });
 });
 
