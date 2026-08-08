@@ -74,6 +74,12 @@ export default function Register() {
     queryKey: ["doctors-list"],
     queryFn: () => api.get("/api/doctors"),
   });
+  const { data: clinicBranding } = useQuery<{ patientPhoneRequired?: boolean }>({
+    queryKey: ["clinic-settings"],
+    queryFn: () => api.get("/api/clinic-settings/branding"),
+    staleTime: 5 * 60_000,
+  });
+  const patientPhoneRequired = clinicBranding?.patientPhoneRequired ?? true;
 
   const tests = testsData?.tests ?? [];
   const filteredTests = tests.filter((t) =>
@@ -307,7 +313,18 @@ export default function Register() {
             <RegisterPatientForm
               newPatient={newPatient}
               onPatientChange={setNewPatient}
-              onSubmit={() => createPatientMut.mutate(newPatient)}
+              phoneRequired={patientPhoneRequired}
+              onSubmit={() => {
+                if (patientPhoneRequired && !String(newPatient.phone ?? "").trim()) {
+                  toast({
+                    title: "Phone number required",
+                    description: "Turn off Patient Phone Requirement in Settings → Clinic Info to allow registration without a phone.",
+                    variant: "destructive",
+                  });
+                  return;
+                }
+                createPatientMut.mutate(newPatient);
+              }}
               isLoading={createPatientMut.isPending}
             />
             <p className="text-[11px] text-muted-foreground">

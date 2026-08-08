@@ -732,10 +732,12 @@ export default function BillingDesk() {
     billShowCode?: boolean;
     billShowCategory?: boolean;
     billPrintSettingsJson?: string | null;
+    patientPhoneRequired?: boolean;
   }>({
     queryKey: ["clinic-settings"],
     queryFn: () => api.get("/api/clinic-settings/branding"),
   });
+  const patientPhoneRequired = clinic?.patientPhoneRequired ?? true;
 
   // VIP surcharge % — same clinic setting Online Booking uses (Settings →
   // Online Booking → VIP Priority Booking Premium). Kept as its own query
@@ -2227,9 +2229,18 @@ export default function BillingDesk() {
                       onPatientChange={(data) =>
                         setNewPatient(data as typeof newPatient)
                       }
+                      phoneRequired={patientPhoneRequired}
                       onSubmit={() => {
-                        // Only a name is required — lastName, phone, age are optional
+                        // Name + sex always; phone follows Settings → Patient Phone Requirement
                         if (!newPatient.firstName.trim() && !newPatient.lastName.trim()) return;
+                        if (patientPhoneRequired && !String(newPatient.phone ?? "").trim()) {
+                          toast({
+                            title: "Phone number required",
+                            description: "Turn off Patient Phone Requirement in Settings → Clinic Info to allow walk-ins without a phone.",
+                            variant: "destructive",
+                          });
+                          return;
+                        }
                         createPatientMut.mutate(newPatient);
                       }}
                       isLoading={createPatientMut.isPending}

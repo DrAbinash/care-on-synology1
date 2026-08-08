@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/select";
 import { UserPlus } from "lucide-react";
 import { detectGenderFromName } from "@/lib/nameGender";
+import { patientPhoneMeetsRequirement } from "@/lib/patientPhoneRequired";
 
 export interface NewPatientData {
   firstName: string;
@@ -30,6 +31,8 @@ interface RegisterPatientFormProps {
   onPatientChange: (data: NewPatientData) => void;
   onSubmit: () => void;
   isLoading?: boolean;
+  /** From Settings → Clinic Info → Patient Phone Requirement (default true). */
+  phoneRequired?: boolean;
 }
 
 export function RegisterPatientForm({
@@ -37,9 +40,11 @@ export function RegisterPatientForm({
   onPatientChange,
   onSubmit,
   isLoading = false,
+  phoneRequired = true,
 }: RegisterPatientFormProps) {
   const hasName = !!(newPatient.firstName?.trim() || newPatient.lastName?.trim());
-  const isFormValid = hasName && !!newPatient.gender && !isLoading;
+  const phoneOk = patientPhoneMeetsRequirement(newPatient.phone, phoneRequired);
+  const isFormValid = hasName && !!newPatient.gender && phoneOk && !isLoading;
 
   const [nameText, setNameText] = useState(`${newPatient.firstName} ${newPatient.lastName}`.trim());
   const lastSyncedName = useRef(nameText);
@@ -163,14 +168,22 @@ export function RegisterPatientForm({
 
       <div className="flex flex-wrap gap-2">
         <div className="flex-1 min-w-[120px] space-y-0.5">
-          <Label className="text-xs font-extrabold">Phone <span className="text-[10px] font-normal text-slate-400">(optional)</span></Label>
+          <Label className="text-xs font-extrabold">
+            Phone{phoneRequired ? " *" : ""}{" "}
+            {!phoneRequired && (
+              <span className="text-[10px] font-normal text-slate-400">(optional)</span>
+            )}
+          </Label>
           <Input
             value={newPatient.phone}
             onChange={(e) =>
               onPatientChange({ ...newPatient, phone: e.target.value })
             }
-            placeholder="Mobile (optional for walk-in)"
+            placeholder={phoneRequired ? "Mobile number" : "Mobile (optional for walk-in)"}
             className="h-8 text-xs"
+            required={phoneRequired}
+            inputMode="tel"
+            data-testid="register-patient-phone"
           />
         </div>
         <div className="flex-1 min-w-[140px] space-y-0.5">

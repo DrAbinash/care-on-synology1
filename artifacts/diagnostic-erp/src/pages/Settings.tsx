@@ -1702,7 +1702,7 @@ function ClinicInfoTab() {
         <div className="bg-card border border-card-border rounded-xl p-5 space-y-4">
           <div>
             <h2 className="font-bold text-lg flex items-center gap-2">📞 Patient Phone Requirement</h2>
-            <p className="text-sm text-muted-foreground">When on, phone number is mandatory to register a patient on the Patients page. Kiosk and online booking self-registration always require a phone number regardless of this setting.</p>
+            <p className="text-sm text-muted-foreground">When on, phone number is mandatory to register a patient on Bill Desk, Quick Register, and the Patients page. Kiosk and online booking self-registration always require a phone number regardless of this setting.</p>
           </div>
           <button
             type="button"
