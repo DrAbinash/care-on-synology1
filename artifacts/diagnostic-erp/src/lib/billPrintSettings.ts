@@ -104,6 +104,8 @@ export type BillPrintSettings = {
   // rather than a single global "density" so a clinic can tune exactly the
   // one thing that's wrong for their printer without fighting a preset.
   printMarginMm: number | null;
+  /** Clinic logo height on the printed bill (px). null = format built-in default. */
+  printLogoHeightPx: number | null;
   printTitleFontPx: number | null;
   printPatientNameFontPx: number | null;
   printBodyFontPx: number | null;
@@ -149,6 +151,7 @@ export const GLOBAL_BILL_PRINT_DEFAULTS: BillPrintSettings = {
   showSystemInfo: false,
   showQueueTokenOnBill: false,
   printMarginMm: null,
+  printLogoHeightPx: null,
   printTitleFontPx: null,
   printPatientNameFontPx: null,
   printBodyFontPx: null,
@@ -337,6 +340,7 @@ export function mergeDefaults(base: BillPrintSettings, role: UserRole | null): B
 export function printLayoutOpts(settings: BillPrintSettings) {
   return {
     printMarginMm: settings.printMarginMm,
+    printLogoHeightPx: settings.printLogoHeightPx,
     printTitleFontPx: settings.printTitleFontPx,
     printPatientNameFontPx: settings.printPatientNameFontPx,
     printBodyFontPx: settings.printBodyFontPx,
@@ -346,6 +350,15 @@ export function printLayoutOpts(settings: BillPrintSettings) {
     printFooterFontPx: settings.printFooterFontPx,
     printTinyFontPx: settings.printTinyFontPx,
   };
+}
+
+/** Resolve logo height (px) for a bill format; clamps to a printable range. */
+export function resolveBillLogoHeightPx(
+  overridePx: number | null | undefined,
+  formatDefaultPx: number,
+): number {
+  const raw = overridePx != null && Number.isFinite(overridePx) ? Number(overridePx) : formatDefaultPx;
+  return Math.max(24, Math.min(160, Math.round(raw)));
 }
 
 // ── Helper to get current effective format ──

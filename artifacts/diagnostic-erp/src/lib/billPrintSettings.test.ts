@@ -6,6 +6,8 @@ import {
   loadBillPrintSettings,
   normalizeBillFormat,
   parseGlobalBillPrintSettings,
+  printLayoutOpts,
+  resolveBillLogoHeightPx,
   resolveBillPrintPageOpts,
   saveBillPrintSettings,
 } from "./billPrintSettings";
@@ -148,10 +150,20 @@ describe("loadBillPrintSettings — clinic-wide global reaches the print sites",
   });
 
   test("layout & typography overrides flow through from the server global", () => {
-    const merged = loadBillPrintSettings({ printMarginMm: 2, printTitleFontPx: 22 });
+    const merged = loadBillPrintSettings({ printMarginMm: 2, printTitleFontPx: 22, printLogoHeightPx: 72 });
     expect(merged.printMarginMm).toBe(2);
     expect(merged.printTitleFontPx).toBe(22);
+    expect(merged.printLogoHeightPx).toBe(72);
     expect(merged.printBodyFontPx).toBeNull();
+    expect(printLayoutOpts(merged).printLogoHeightPx).toBe(72);
+  });
+
+  test("resolveBillLogoHeightPx uses format default when unset and clamps range", () => {
+    expect(resolveBillLogoHeightPx(null, 44)).toBe(44);
+    expect(resolveBillLogoHeightPx(undefined, 100)).toBe(100);
+    expect(resolveBillLogoHeightPx(72, 44)).toBe(72);
+    expect(resolveBillLogoHeightPx(10, 44)).toBe(24);
+    expect(resolveBillLogoHeightPx(200, 44)).toBe(160);
   });
 
   test("retired premium/designer formats normalize to modern-landscape", () => {

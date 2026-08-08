@@ -1,6 +1,8 @@
 // Bill receipt printing — A5 thermal receipt optimised for Indian diagnostic centres.
 // Matches the physical receipt layout from the reference image.
 
+import { resolveBillLogoHeightPx } from "./billPrintSettings";
+
 export type PrintBillData = {
   billNumber: string;
   subtotal: number | string;
@@ -211,11 +213,12 @@ export type BuildPrintHtmlOpts = {
   compactOnA4?: boolean;
   /** Exact CSS @page size (from resolveBillPrintPageOpts). */
   pageCssSize?: string;
-  // Layout & typography overrides (Classic format only) — see
-  // BillPrintSettings's matching print*Px/printMarginMm fields. Each is
-  // undefined/null-safe: omit or pass null to fall back to the built-in
-  // A5/A4-tuned default for that element.
+  // Layout & typography overrides — see BillPrintSettings's matching
+  // print*Px/printMarginMm fields. Each is undefined/null-safe: omit or
+  // pass null to fall back to the built-in format default for that element.
+  // printLogoHeightPx applies to Modern and Classic layouts.
   printMarginMm?: number | null;
+  printLogoHeightPx?: number | null;
   printTitleFontPx?: number | null;
   printPatientNameFontPx?: number | null;
   printBodyFontPx?: number | null;
@@ -292,6 +295,11 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
   const totalPx = `${opts.printTotalFontPx ?? 13}px`;
   const footerPx = `${opts.printFooterFontPx ?? 11}px`;
   const tinyPx = `${opts.printTinyFontPx ?? 10}px`;
+  const logoH = resolveBillLogoHeightPx(opts.printLogoHeightPx, 100);
+  const logoMaxW = Math.round(logoH * 2.1);
+  const logoImgHtml = clinic?.logoDataUrl
+    ? `<img src="${clinic.logoDataUrl}" alt="logo" style="max-height:${logoH}px;max-width:${logoMaxW}px;object-fit:contain;display:block;margin-bottom:3px"/>`
+    : "";
 
   const colCount = 3 + (showCode ? 1 : 0) + (showCategory ? 1 : 0) + (showTat ? 1 : 0);
 
@@ -344,9 +352,14 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
            Invoice / Bill No. on the right. -->
       <table style="width:100%;border-collapse:collapse;margin-bottom:5px">
         <tr>
+<<<<<<< HEAD
           <td style="vertical-align:top;padding:0;width:62%">
             ${clinic?.logoDataUrl ? `<img src="${clinic.logoDataUrl}" alt="logo" style="max-height:120px;max-width:240px;object-fit:contain;display:block;margin-bottom:4px"/>` : ""}
             ${clinic?.name ? `<div style="font-size:${titleSize};font-weight:800;line-height:1.15;color:#000;margin-bottom:2px">${esc(clinic.name)}</div>` : ""}
+=======
+          <td style="vertical-align:middle;padding:0;width:45%">
+            ${logoImgHtml}
+>>>>>>> 8ab4e7f6 (Add bill print logo height control in Settings)
             <div style="font-size:${bodyPx};color:#333;font-weight:700;line-height:1.2">${esc(clinic?.tagline || "DIAGNOSTIC & PATHOLOGY SERVICES")}</div>
             ${clinic?.address ? `<div style="font-size:${headerPx};color:#555;font-weight:600;line-height:1.4;margin-top:4px">${esc(clinic.address.replace(/\s*\n\s*/g, ", ").trim())}</div>` : ""}
             <div style="font-size:${headerPx};color:#555;font-weight:600;line-height:1.4;margin-top:1px">
@@ -548,5 +561,65 @@ export function buildBillPrintHtml(opts: BuildPrintHtmlOpts): string {
   if (format === "modern-landscape") {
     return buildModernLandscapeBillPrintHtml(opts);
   }
+<<<<<<< HEAD
+=======
+
+  // ── Designer layouts A / B / C ──
+  if (format === "designer-a" || format === "designer-b" || format === "designer-c") {
+    return buildDesignerBillPrintHtml({ ...opts, layout: format });
+  }
+  if (format === "premium-a5") {
+    // Map old paperSize to new BillPaperSize, honoring landscape when requested.
+    const paperSize: BillPaperSize =
+      opts.paperSize === "A5" ? (opts.orientation === "landscape" ? "A5-landscape" : "A5-portrait") : "A4";
+    return buildPremiumBillPrintHtml({
+      bill: opts.bill,
+      clinic: opts.clinic,
+      paperSize,
+      isBW: opts.isBW,
+      qrDataUrl: opts.qrDataUrl,
+      reprintBy: opts.reprintBy,
+      reprintReason: opts.reprintReason,
+      copyLabel: opts.copyLabel,
+      showQr: opts.showQr ?? (opts.clinic?.qrOnBillEnabled !== false),
+      showAmountInWords: opts.showAmountInWords ?? false,
+      showSignatureLine: opts.showSignatureLine ?? true,
+      showComputerGenerated: opts.showComputerGenerated ?? true,
+      showReportMessage: opts.showReportMessage ?? true,
+      showServiceFooter: opts.showServiceFooter ?? true,
+      showBrandingFooter: opts.showBrandingFooter ?? true,
+      showBarcode: opts.showBarcode ?? false,
+      showWatermark: opts.showWatermark ?? false,
+      showPatientInstructions: opts.showPatientInstructions ?? false,
+      showSystemInfo: opts.showSystemInfo ?? false,
+      // V3 toggles (default OFF, driven by clinic settings)
+      showReceiptThankYou: opts.showReceiptThankYou ?? opts.clinic?.receiptThankYouMessage !== undefined,
+      showReceiptCollection: opts.showReceiptCollection ?? opts.clinic?.receiptCollectionMessage !== undefined,
+      showReceiptQrMessage: opts.showReceiptQrMessage ?? opts.clinic?.receiptQrMessage !== undefined,
+      showReceiptPromotional: opts.showReceiptPromotional ?? opts.clinic?.receiptPromotionalMessage !== undefined,
+      showVerifiedBadge: opts.showVerifiedBadge ?? opts.clinic?.showVerifiedBadge ?? false,
+      showFollowUpMessage: opts.showFollowUpMessage ?? opts.clinic?.showFollowUpMessage ?? false,
+      showPatientSince: opts.showPatientSince ?? opts.clinic?.showPatientSince ?? false,
+      showPromotionalFooter: opts.showPromotionalFooter ?? opts.clinic?.showPromotionalFooter ?? false,
+      showAuditInfoOnPatientCopy: opts.showAuditInfoOnPatientCopy ?? opts.clinic?.showAuditInfoOnPatientCopy ?? false,
+      // V3 additional footer messages
+      showWorkingHours: opts.showWorkingHours ?? opts.clinic?.showWorkingHours ?? false,
+      showHomeCollection: opts.showHomeCollection ?? opts.clinic?.showHomeCollection ?? false,
+      showEmergency: opts.showEmergency ?? opts.clinic?.showEmergency ?? false,
+      showReferralProgram: opts.showReferralProgram ?? opts.clinic?.showReferralProgram ?? false,
+      showHealthPackages: opts.showHealthPackages ?? opts.clinic?.showHealthPackages ?? false,
+      showAccreditation: opts.showAccreditation ?? opts.clinic?.showAccreditation ?? false,
+      showWhatsAppBooking: opts.showWhatsAppBooking ?? opts.clinic?.showWhatsAppBooking ?? false,
+      showCustomFooterMessage: opts.showCustomFooterMessage ?? opts.clinic?.showCustomFooterMessage ?? false,
+      barcodeDataUrl: opts.barcodeDataUrl,
+      customFooter: opts.customFooter,
+      reportCollectionNote: opts.reportCollectionNote,
+      pageCssSize: opts.pageCssSize,
+      compactFooterGap: opts.compactFooterGap,
+      printLogoHeightPx: opts.printLogoHeightPx,
+    });
+  }
+  // Classic format
+>>>>>>> 8ab4e7f6 (Add bill print logo height control in Settings)
   return buildClassicBillPrintHtml(opts);
 }

@@ -4810,24 +4810,25 @@ const NumberOverrideField = ({
 const LAYOUT_PRESETS = {
   /** Epson A5 ink — minimal side padding so the slip fills the tray. */
   epsonDense: {
-    printMarginMm: 2,
+    printMarginMm: 2, printLogoHeightPx: 40,
     printTitleFontPx: 16, printPatientNameFontPx: 12, printBodyFontPx: 12,
     printHeaderFontPx: 9,  printTableFontPx: 10, printTotalFontPx: 11,
     printFooterFontPx: 9,  printTinyFontPx: 8,
   },
   compact: {
-    printMarginMm: 2,
+    printMarginMm: 2, printLogoHeightPx: 40,
     printTitleFontPx: 16, printPatientNameFontPx: 12, printBodyFontPx: 12,
     printHeaderFontPx: 9,  printTableFontPx: 10, printTotalFontPx: 11,
     printFooterFontPx: 9,  printTinyFontPx: 8,
   },
   normal: {
-    printMarginMm: null, printTitleFontPx: null, printPatientNameFontPx: null,
+    printMarginMm: null, printLogoHeightPx: null,
+    printTitleFontPx: null, printPatientNameFontPx: null,
     printBodyFontPx: null, printHeaderFontPx: null, printTableFontPx: null,
     printTotalFontPx: null, printFooterFontPx: null, printTinyFontPx: null,
   },
   comfortable: {
-    printMarginMm: 8,
+    printMarginMm: 8, printLogoHeightPx: 96,
     printTitleFontPx: 22, printPatientNameFontPx: 18, printBodyFontPx: 15,
     printHeaderFontPx: 12, printTableFontPx: 14, printTotalFontPx: 15,
     printFooterFontPx: 12, printTinyFontPx: 11,
@@ -4955,6 +4956,7 @@ function BillingPrintTab() {
       showSystemInfo: deferredSettings.showSystemInfo,
       showQueueToken: deferredSettings.showQueueTokenOnBill,
       printMarginMm: deferredSettings.printMarginMm,
+      printLogoHeightPx: deferredSettings.printLogoHeightPx,
       printTitleFontPx: deferredSettings.printTitleFontPx,
       printPatientNameFontPx: deferredSettings.printPatientNameFontPx,
       printBodyFontPx: deferredSettings.printBodyFontPx,
@@ -5203,6 +5205,11 @@ function BillingPrintTab() {
           label="Page Margin" unit="mm" min={2} max={25} sliderDefault={2}
           value={settings.printMarginMm} defaultLabel="2mm (A5) / 6mm (A4)"
           onChange={(v) => update({ printMarginMm: v })}
+        />
+        <NumberOverrideField
+          label="Clinic Logo Height" unit="px" min={24} max={160} sliderDefault={44}
+          value={settings.printLogoHeightPx} defaultLabel="44px (Modern) / 100px (Classic)"
+          onChange={(v) => update({ printLogoHeightPx: v })}
         />
         <div className="grid grid-cols-2 gap-x-4 gap-y-2">
           <NumberOverrideField
