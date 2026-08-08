@@ -17,20 +17,27 @@
 // looked perfect. Always pass the server global here so the effective paper
 // size is the one the clinic actually configured.
 
-export type BillFormat = "classic" | "modern-landscape" | "premium-a5" | "designer-a" | "designer-b" | "designer-c";
-// Ordered by recommendation, most-recommended first — "modern-landscape" is
-// the purpose-built A5-landscape layout for Epson-style ink printers (most
-// clinics' primary workflow); the older formats are kept for backward
-// compatibility so existing counters that already picked one keep printing
-// exactly the same bill.
+export type BillFormat = "classic" | "modern-landscape";
+/** Formats that may still appear in older clinic_settings JSON blobs. */
+export type LegacyBillFormat =
+  | BillFormat
+  | "premium-a5"
+  | "designer-a"
+  | "designer-b"
+  | "designer-c";
+
+// Only Modern + Classic are offered in Settings. Older Premium/Designer
+// values stored in clinic JSON are remapped via normalizeBillFormat().
 export const BILL_FORMATS: { id: BillFormat; label: string }[] = [
   { id: "modern-landscape", label: "Modern — A5 Landscape (Recommended)" },
-  { id: "classic",          label: "Classic (Legacy)" },
-  { id: "premium-a5",       label: "Premium A5 (Legacy)" },
-  { id: "designer-a",       label: "Designer A — Minimal Premium" },
-  { id: "designer-b",       label: "Designer B — Modern Diagnostic" },
-  { id: "designer-c",       label: "Designer C — Corporate Healthcare" },
+  { id: "classic",          label: "Classic" },
 ];
+
+/** Map any stored format (including retired Premium/Designer ids) to a supported one. */
+export function normalizeBillFormat(raw: unknown): BillFormat {
+  if (raw === "classic") return "classic";
+  return "modern-landscape";
+}
 
 export type BillPaperSize = "A5-landscape" | "A5-portrait" | "half-a4" | "A4";
 export const BILL_PAPER_SIZES: { id: BillPaperSize; label: string }[] = [
@@ -57,13 +64,8 @@ export const PRINT_ACTIONS: { id: PrintAction; label: string }[] = [
 export type UserRole = "reception" | "accounts" | "admin" | "supervisor" | "billing" | "lab" | "manager";
 
 export type BillPrintSettings = {
-  // Format
+  // Format — Modern (recommended) or Classic only
   defaultFormat: BillFormat;
-  classicEnabled: boolean;
-  premiumA5Enabled: boolean;
-  designerAEnabled: boolean;
-  designerBEnabled: boolean;
-  designerCEnabled: boolean;
   // Auto paper size threshold: switch from A5 → A4 when tests >= this value
   autoA4Threshold: number;
 
@@ -130,11 +132,6 @@ export const GLOBAL_BILL_PRINT_DEFAULTS: BillPrintSettings = {
   // Dense A5-landscape receipt — fills the page professionally; avoids the
   // half-blank A4 look of Classic on full A4 paper for typical short bills.
   defaultFormat: "modern-landscape",
-  classicEnabled: true,
-  premiumA5Enabled: true,
-  designerAEnabled: true,
-  designerBEnabled: true,
-  designerCEnabled: true,
   autoA4Threshold: 8,
   defaultPaperSize: "A5-landscape",
   defaultCopyType: "patient",
@@ -273,6 +270,13 @@ export function clearBillPrintSettingsOverride(userId = getUserId()): void {
   }
 }
 
+function finalizeBillPrintSettings(settings: BillPrintSettings): BillPrintSettings {
+  return {
+    ...settings,
+    defaultFormat: normalizeBillFormat(settings.defaultFormat),
+  };
+}
+
 export function loadBillPrintSettings(global: Partial<BillPrintSettings> = {}): BillPrintSettings {
   const userId = getUserId();
   const role = getUserRole();
@@ -291,16 +295,16 @@ export function loadBillPrintSettings(global: Partial<BillPrintSettings> = {}): 
     } catch {
       // ignore
     }
-    return locked;
+    return finalizeBillPrintSettings(locked);
   }
 
   try {
     const raw = window.localStorage.getItem(key);
-    if (!raw) return merged;
+    if (!raw) return finalizeBillPrintSettings(merged);
     const parsed = JSON.parse(raw);
-    return { ...merged, ...parsed };
+    return finalizeBillPrintSettings({ ...merged, ...parsed });
   } catch {
-    return merged;
+    return finalizeBillPrintSettings(merged);
   }
 }
 
@@ -348,15 +352,7 @@ export function printLayoutOpts(settings: BillPrintSettings) {
 export function getEffectiveFormat(global: Partial<BillPrintSettings>, userOverride: Partial<BillPrintSettings> = {}): BillFormat {
   const merged = loadBillPrintSettings(global);
   const eff = { ...merged, ...userOverride };
-  if (eff.defaultFormat === "modern-landscape") return "modern-landscape";
-  if (eff.defaultFormat === "designer-a" && eff.designerAEnabled !== false) return "designer-a";
-  if (eff.defaultFormat === "designer-b" && eff.designerBEnabled !== false) return "designer-b";
-  if (eff.defaultFormat === "designer-c" && eff.designerCEnabled !== false) return "designer-c";
-  if (eff.defaultFormat === "premium-a5" && eff.premiumA5Enabled) return "premium-a5";
-  if (eff.defaultFormat === "classic" && eff.classicEnabled) return "classic";
-  if (eff.premiumA5Enabled) return "premium-a5";
-  if (eff.classicEnabled) return "classic";
-  return "modern-landscape";
+  return normalizeBillFormat(eff.defaultFormat);
 }
 
 // ── Paper size helpers ──

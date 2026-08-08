@@ -4828,11 +4828,7 @@ const LAYOUT_PRESETS = {
 
 const billFormats: { id: string; label: string }[] = [
   { id: "modern-landscape", label: "Modern — A5 Landscape (Recommended)" },
-  { id: "classic",     label: "Classic (Legacy)" },
-  { id: "premium-a5", label: "Premium A5 (Legacy)" },
-  { id: "designer-a", label: "Designer Layout A — Minimal Premium" },
-  { id: "designer-b", label: "Designer Layout B — Modern Diagnostic" },
-  { id: "designer-c", label: "Designer Layout C — Corporate Healthcare" },
+  { id: "classic", label: "Classic" },
 ];
 const billPaperSizes: { id: string; label: string }[] = [
   { id: "A5-portrait", label: "A5 Portrait" },
@@ -5106,16 +5102,6 @@ function BillingPrintTab() {
             <span className="text-xs text-muted-foreground">investigations (default 8) — keeps short bills on A5 so they don&apos;t leave a half-blank A4 page</span>
           </div>
         </div>
-        <details className="text-xs text-muted-foreground">
-          <summary className="cursor-pointer font-medium hover:text-foreground">Enable / disable older layouts (advanced)</summary>
-          <div className="grid grid-cols-2 gap-3 mt-2">
-            <BillPrintToggleRow label="Enable Classic (legacy)" value={settings.classicEnabled} onChange={(v) => update({ classicEnabled: v })} />
-            <BillPrintToggleRow label="Enable Premium A5 (legacy)" value={settings.premiumA5Enabled} onChange={(v) => update({ premiumA5Enabled: v })} />
-            <BillPrintToggleRow label="Enable Designer A" value={(settings as any).designerAEnabled !== false} onChange={(v) => update({ designerAEnabled: v } as any)} />
-            <BillPrintToggleRow label="Enable Designer B" value={(settings as any).designerBEnabled !== false} onChange={(v) => update({ designerBEnabled: v } as any)} />
-            <BillPrintToggleRow label="Enable Designer C" value={(settings as any).designerCEnabled !== false} onChange={(v) => update({ designerCEnabled: v } as any)} />
-          </div>
-        </details>
         <div className="rounded-lg border border-amber-200 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-800 px-4 py-3 text-xs text-amber-800 dark:text-amber-300 leading-relaxed">
           <strong>Printer prints with big blank margins?</strong> This setting only decides the size
           the bill is <em>designed</em> for — your browser's print dialog also needs the matching
