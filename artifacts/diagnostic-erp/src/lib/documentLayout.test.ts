@@ -89,7 +89,7 @@ describe("document layout engine — page specifications", () => {
   });
 
   test("internal safe padding defaults: 4mm A5 family, 6mm A4", () => {
-    expect(resolvePageLayout("A5-landscape").safePaddingMm).toBe(4);
+    expect(resolvePageLayout("A5-landscape").safePaddingMm).toBe(2);
     expect(resolvePageLayout("A4").safePaddingMm).toBe(6);
   });
 
@@ -202,9 +202,9 @@ describe("document layout engine — bill renderers", () => {
     // height:100% / calc(100%) on the table+totals flex row left a blank
     // band on short bills; content must hug and leave the footer tight.
     const html = buildModernLandscapeBillPrintHtml(baseOpts());
-    expect(html).not.toMatch(/padding-top:6px;height:\s*calc\(100%/);
-    expect(html).not.toMatch(/padding-top:6px;height:\s*100%/);
-    expect(html).toContain("padding-top:6px;align-items:flex-start");
+    expect(html).not.toMatch(/padding-top:\d+px;height:\s*calc\(100%/);
+    expect(html).not.toMatch(/padding-top:\d+px;height:\s*100%/);
+    expect(html).toContain("padding-top:4px;align-items:flex-start");
   });
 
   test("TAT column appears when showTat is on", () => {

@@ -102,8 +102,8 @@ const copies = [
   { label: "Duplicate Copy", copyLabel: "DUPLICATE COPY", showAudit: true },
 ];
 const paperSizes = [
-  { label: "A5-Portrait", size: "A5-portrait" as const, width: "136mm" },
-  { label: "A5-Landscape", size: "A5-landscape" as const, width: "198mm" },
+  { label: "A5-Portrait", size: "A5-portrait" as const, width: "148mm" },
+  { label: "A5-Landscape", size: "A5-landscape" as const, width: "210mm" },
 ];
 
 const generated: string[] = [];

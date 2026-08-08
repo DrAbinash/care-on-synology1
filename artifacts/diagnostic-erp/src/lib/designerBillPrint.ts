@@ -701,7 +701,7 @@ export function buildDesignerBillPrintHtml(
   const isA4 = paperSizeStr === "A4";
   const isLandscape = !isA4 && opts.orientation === "landscape";
   const paperSize: BillPaperSize = isA4 ? "A4" : isLandscape ? "A5-landscape" : "A5-portrait";
-  const marginMm = isA4 ? 6 : 4;
+  const marginMm = isA4 ? 6 : 2;
   const tests = (bill.order?.tests ?? []).filter((t) => (t.status ?? "active") !== "cancelled");
   const useCompactFooter = compactFooterGap || tests.length <= 4;
   const footerSpacer = `<div style="height:4px"></div>`;

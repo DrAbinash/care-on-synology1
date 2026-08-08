@@ -4800,8 +4800,15 @@ const NumberOverrideField = ({
 // fine-tune the sliders. "Normal" clears every override back to null (the
 // built-in size, which is already tuned separately per paper size).
 const LAYOUT_PRESETS = {
+  /** Epson A5 ink — minimal side padding so the slip fills the tray. */
+  epsonDense: {
+    printMarginMm: 2,
+    printTitleFontPx: 16, printPatientNameFontPx: 12, printBodyFontPx: 12,
+    printHeaderFontPx: 9,  printTableFontPx: 10, printTotalFontPx: 11,
+    printFooterFontPx: 9,  printTinyFontPx: 8,
+  },
   compact: {
-    printMarginMm: 5,
+    printMarginMm: 2,
     printTitleFontPx: 16, printPatientNameFontPx: 12, printBodyFontPx: 12,
     printHeaderFontPx: 9,  printTableFontPx: 10, printTotalFontPx: 11,
     printFooterFontPx: 9,  printTinyFontPx: 8,
@@ -4812,7 +4819,7 @@ const LAYOUT_PRESETS = {
     printTotalFontPx: null, printFooterFontPx: null, printTinyFontPx: null,
   },
   comfortable: {
-    printMarginMm: 12,
+    printMarginMm: 8,
     printTitleFontPx: 22, printPatientNameFontPx: 18, printBodyFontPx: 15,
     printHeaderFontPx: 12, printTableFontPx: 14, printTotalFontPx: 15,
     printFooterFontPx: 12, printTinyFontPx: 11,
@@ -5169,13 +5176,14 @@ function BillingPrintTab() {
             "Normal" clears every override back to null (built-in defaults). */}
         <div className="flex items-center gap-2 flex-wrap pb-3 mb-1 border-b border-border/50">
           <span className="text-xs font-medium text-muted-foreground">Quick preset:</span>
+          <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => update(LAYOUT_PRESETS.epsonDense)}>Epson dense (A5 ink)</Button>
           <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => update(LAYOUT_PRESETS.compact)}>Compact</Button>
           <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => update(LAYOUT_PRESETS.normal)}>Normal (built-in default)</Button>
           <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => update(LAYOUT_PRESETS.comfortable)}>Comfortable (larger)</Button>
         </div>
         <NumberOverrideField
-          label="Page Margin" unit="mm" min={2} max={25} sliderDefault={4}
-          value={settings.printMarginMm} defaultLabel="4mm (A5) / 6mm (A4)"
+          label="Page Margin" unit="mm" min={2} max={25} sliderDefault={2}
+          value={settings.printMarginMm} defaultLabel="2mm (A5) / 6mm (A4)"
           onChange={(v) => update({ printMarginMm: v })}
         />
         <div className="grid grid-cols-2 gap-x-4 gap-y-2">

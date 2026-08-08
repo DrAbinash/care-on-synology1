@@ -115,11 +115,11 @@ export function buildModernLandscapeBillPrintHtml(opts: BuildPrintHtmlOpts): str
     const cat = t.test?.category ?? "";
     const tat = (t.test?.duration ?? "").trim();
     return `<tr>
-      <td style="padding:4px 6px;text-align:right;color:#64748b;font-variant-numeric:tabular-nums;width:6%">${i + 1}</td>
-      ${showCode ? `<td style="padding:4px 6px;font-family:ui-monospace,Menlo,monospace;font-size:${Math.max(9, parseInt(tablePx, 10) - 1)}px;color:#334155;white-space:nowrap;width:12%">${esc(code)}</td>` : ""}
-      <td style="padding:4px 6px;color:#0f172a">${esc(name)}${showCat && cat ? `<span style="color:#94a3b8;font-size:${tinyPx};margin-left:6px">${esc(cat)}</span>` : ""}</td>
-      ${showTat ? `<td style="padding:4px 6px;color:#64748b;font-size:${tinyPx};white-space:nowrap;width:12%">${esc(tat || "—")}</td>` : ""}
-      <td style="padding:4px 6px;text-align:right;font-variant-numeric:tabular-nums;font-weight:600;color:#0f172a;white-space:nowrap;width:18%">₹${fmt(t.price)}</td>
+      <td style="padding:2px 4px;text-align:right;color:#64748b;font-variant-numeric:tabular-nums;width:6%">${i + 1}</td>
+      ${showCode ? `<td style="padding:2px 4px;font-family:ui-monospace,Menlo,monospace;font-size:${Math.max(9, parseInt(tablePx, 10) - 1)}px;color:#334155;white-space:nowrap;width:12%">${esc(code)}</td>` : ""}
+      <td style="padding:2px 4px;color:#0f172a">${esc(name)}${showCat && cat ? `<span style="color:#94a3b8;font-size:${tinyPx};margin-left:6px">${esc(cat)}</span>` : ""}</td>
+      ${showTat ? `<td style="padding:2px 4px;color:#64748b;font-size:${tinyPx};white-space:nowrap;width:12%">${esc(tat || "—")}</td>` : ""}
+      <td style="padding:2px 4px;text-align:right;font-variant-numeric:tabular-nums;font-weight:600;color:#0f172a;white-space:nowrap;width:18%">₹${fmt(t.price)}</td>
     </tr>`;
   };
 
@@ -162,8 +162,8 @@ export function buildModernLandscapeBillPrintHtml(opts: BuildPrintHtmlOpts): str
 
       ${provisionalReceipt ? `<div style="background:#fef3c7;color:#92400e;border:2px solid #f59e0b;border-radius:4px;padding:4px 8px;font-size:${tinyPx};font-weight:800;margin-bottom:6px;text-align:center;text-transform:uppercase">Provisional — Offline · Sync Pending · QR After Sync</div>` : ""}
 
-      <header style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;padding-bottom:6px;border-bottom:1.5px solid ${accent}">
-        <div style="display:flex;gap:10px;align-items:center;min-width:0;flex:1">
+      <header style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;padding-bottom:4px;border-bottom:1.5px solid ${accent}">
+        <div style="display:flex;gap:8px;align-items:center;min-width:0;flex:1">
           ${logoImg}
           <div style="min-width:0">
             <div style="font-size:${titleSize};font-weight:800;color:${accent};line-height:1.1">${esc(clinic?.name ?? "")}</div>
@@ -186,7 +186,7 @@ export function buildModernLandscapeBillPrintHtml(opts: BuildPrintHtmlOpts): str
         </div>
       </header>
 
-      <div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;padding:6px 0;border-bottom:1px solid #e2e8f0;flex-wrap:wrap">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;padding:4px 0;border-bottom:1px solid #e2e8f0;flex-wrap:wrap">
         <div style="min-width:0;flex:1">
           <div style="font-size:${tinyPx};color:#94a3b8;text-transform:uppercase;margin-bottom:1px">Patient</div>
           <div style="font-size:${patientSz};font-weight:700;line-height:1.15">
@@ -211,29 +211,29 @@ export function buildModernLandscapeBillPrintHtml(opts: BuildPrintHtmlOpts): str
       <!-- Content-sized middle row (no height:100%) — stretching to fill the
            fixed page box left a large blank band between the table and the
            totals/footer on short bills, which looked unprofessional. -->
-      <div style="display:flex;gap:12px;padding-top:6px;align-items:flex-start">
+      <div style="display:flex;gap:8px;padding-top:4px;align-items:flex-start">
         <div style="flex:1;min-width:0">
           <table style="width:100%;border-collapse:collapse;font-size:${tablePx}">
             <thead>
               <tr style="border-bottom:1.5px solid ${accent}">
-                <th style="padding:3px 6px;text-align:right;color:${accent};font-weight:700;font-size:${tinyPx};width:6%">#</th>
-                ${showCode ? `<th style="padding:3px 6px;text-align:left;color:${accent};font-weight:700;font-size:${tinyPx};width:12%">CODE</th>` : ""}
-                <th style="padding:3px 6px;text-align:left;color:${accent};font-weight:700;font-size:${tinyPx}">TEST NAME</th>
-                ${showTat ? `<th style="padding:3px 6px;text-align:left;color:${accent};font-weight:700;font-size:${tinyPx};width:12%">TAT</th>` : ""}
-                <th style="padding:3px 6px;text-align:right;color:${accent};font-weight:700;font-size:${tinyPx};width:18%">AMOUNT</th>
+                <th style="padding:2px 4px;text-align:right;color:${accent};font-weight:700;font-size:${tinyPx};width:6%">#</th>
+                ${showCode ? `<th style="padding:2px 4px;text-align:left;color:${accent};font-weight:700;font-size:${tinyPx};width:12%">CODE</th>` : ""}
+                <th style="padding:2px 4px;text-align:left;color:${accent};font-weight:700;font-size:${tinyPx}">TEST NAME</th>
+                ${showTat ? `<th style="padding:2px 4px;text-align:left;color:${accent};font-weight:700;font-size:${tinyPx};width:12%">TAT</th>` : ""}
+                <th style="padding:2px 4px;text-align:right;color:${accent};font-weight:700;font-size:${tinyPx};width:18%">AMOUNT</th>
               </tr>
             </thead>
             <tbody>${tests.map(testRow).join("")}</tbody>
           </table>
           ${cancelledFooter}
           ${bill.testTokens?.length
-            ? `<div style="margin-top:6px;font-size:${tinyPx};color:#64748b">
+            ? `<div style="margin-top:4px;font-size:${tinyPx};color:#64748b">
               ${bill.testTokens.map((t) => `<span style="display:inline-block;background:#f1f5f9;border-radius:3px;padding:1px 6px;margin-right:4px">${esc(t.department)}: Token #${esc(String(t.tokenNo))}${t.roomNumber ? ` · ${esc(t.roomNumber)}` : ""}</span>`).join("")}
             </div>`
             : ""}
         </div>
 
-        <aside style="width:32%;flex-shrink:0;display:flex;flex-direction:column;gap:6px">
+        <aside style="width:28%;flex-shrink:0;display:flex;flex-direction:column;gap:4px">
           <div style="page-break-inside:avoid">
             <table style="width:100%;border-collapse:collapse">
               ${totalsRow("Subtotal", `₹${fmt(bill.subtotal)}`)}
@@ -242,7 +242,7 @@ export function buildModernLandscapeBillPrintHtml(opts: BuildPrintHtmlOpts): str
               ${totalsRow("Paid", `₹${fmt(paidAmt)}`)}
               ${paidRows.join("")}
             </table>
-            <div style="margin-top:6px;padding:8px 10px;background:${balBg};border:1.5px solid ${balColor};border-radius:6px;display:flex;justify-content:space-between;align-items:baseline">
+            <div style="margin-top:4px;padding:6px 8px;background:${balBg};border:1.5px solid ${balColor};border-radius:6px;display:flex;justify-content:space-between;align-items:baseline">
               <span style="font-size:${totalPx};font-weight:700;color:${balColor};text-transform:uppercase">Balance Due</span>
               <span style="font-size:${parseInt(totalPx, 10) + 6}px;font-weight:800;color:${balColor};font-variant-numeric:tabular-nums">
                 ${isUnconfirmedQr ? "Pending" : `₹${fmt(balAmt)}`}
@@ -250,8 +250,8 @@ export function buildModernLandscapeBillPrintHtml(opts: BuildPrintHtmlOpts): str
             </div>
           </div>
           ${qrEnabled && qrDataUrl
-            ? `<div style="display:flex;gap:8px;align-items:center;padding-top:4px">
-              <img src="${qrDataUrl}" alt="Verify" style="width:56px;height:56px;border:1px solid #e2e8f0;padding:2px;background:#fff"/>
+            ? `<div style="display:flex;gap:6px;align-items:center;padding-top:2px">
+              <img src="${qrDataUrl}" alt="Verify" style="width:52px;height:52px;border:1px solid #e2e8f0;padding:2px;background:#fff"/>
               <div style="font-size:${tinyPx};color:#64748b;line-height:1.3">
                 <div style="color:${accent};font-weight:700;text-transform:uppercase">Scan to verify</div>
                 <div>Confirms this bill was issued by ${esc(clinic?.name ?? "the clinic")}.</div>
@@ -261,7 +261,7 @@ export function buildModernLandscapeBillPrintHtml(opts: BuildPrintHtmlOpts): str
         </aside>
       </div>
 
-      <footer style="margin-top:6px;padding-top:6px;border-top:1px solid ${accent};display:flex;justify-content:space-between;align-items:flex-end;gap:12px">
+      <footer style="margin-top:4px;padding-top:4px;border-top:1px solid ${accent};display:flex;justify-content:space-between;align-items:flex-end;gap:8px">
         <div style="flex-shrink:0">
           ${opts.showSignatureLine !== false
             ? billedBySigUrl

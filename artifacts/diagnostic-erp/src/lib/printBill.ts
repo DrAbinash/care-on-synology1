@@ -282,7 +282,7 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
   // still varies by A5 vs A4 paper size; a non-null override applies fixed
   // regardless of paper size. ──
   const useCompactFooter = compactFooterGap || sparseBill;
-  const marginMm = opts.printMarginMm ?? (isA5 ? 4 : 6);
+  const marginMm = opts.printMarginMm ?? (isA5 ? 2 : 6);
   // Title ("INVOICE/RECEIPT") is the page's real anchor and must read as the
   // largest header element; clinic contact info (headerPx) is secondary and
   // was previously LARGER than the title, inverting the hierarchy.
@@ -305,12 +305,12 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
     const tat = (t.test?.duration ?? "").trim();
     const codeFontSize = `${Math.round(parseInt(tablePx, 10) * 0.9)}px`;
     return `<tr>
-      <td style="padding:6px 8px;border:1px solid #000;text-align:center;font-size:${tablePx}">${i + 1}</td>
-      ${showCode ? `<td style="padding:6px 8px;border:1px solid #000;font-family:monospace;font-size:${codeFontSize}">${esc(code)}</td>` : ""}
-      <td style="padding:6px 8px;border:1px solid #000;font-size:${tablePx};font-weight:600">${esc(name)}</td>
-      ${showCategory ? `<td style="padding:6px 8px;border:1px solid #000;font-size:${tablePx};color:#555">${esc(cat)}</td>` : ""}
-      ${showTat ? `<td style="padding:6px 8px;border:1px solid #000;font-size:${tablePx};color:#555;white-space:nowrap">${esc(tat || "—")}</td>` : ""}
-      <td style="padding:6px 8px;border:1px solid #000;text-align:right;font-size:${tablePx};font-weight:700;white-space:nowrap">₹${fmt(t.price)}</td>
+      <td style="padding:3px 5px;border:1px solid #000;text-align:center;font-size:${tablePx}">${i + 1}</td>
+      ${showCode ? `<td style="padding:3px 5px;border:1px solid #000;font-family:monospace;font-size:${codeFontSize}">${esc(code)}</td>` : ""}
+      <td style="padding:3px 5px;border:1px solid #000;font-size:${tablePx};font-weight:600">${esc(name)}</td>
+      ${showCategory ? `<td style="padding:3px 5px;border:1px solid #000;font-size:${tablePx};color:#555">${esc(cat)}</td>` : ""}
+      ${showTat ? `<td style="padding:3px 5px;border:1px solid #000;font-size:${tablePx};color:#555;white-space:nowrap">${esc(tat || "—")}</td>` : ""}
+      <td style="padding:3px 5px;border:1px solid #000;text-align:right;font-size:${tablePx};font-weight:700;white-space:nowrap">₹${fmt(t.price)}</td>
     </tr>`;
   }).join("");
 
@@ -344,7 +344,7 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
   const page = (copyIdx: number) => `
       <!-- HEADER: logo + tagline left, clinic info right, vertically centered
            against each other so the shorter block doesn't visually float. -->
-      <table style="width:100%;border-collapse:collapse;margin-bottom:8px">
+      <table style="width:100%;border-collapse:collapse;margin-bottom:5px">
         <tr>
           <td style="vertical-align:middle;padding:0;width:45%">
             ${clinic?.logoDataUrl ? `<img src="${clinic.logoDataUrl}" alt="logo" style="max-height:100px;max-width:210px;object-fit:contain;display:block;margin-bottom:3px"/>` : ""}
@@ -361,7 +361,7 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
       </table>
 
       <!-- TITLE LINE with bill number on the right -->
-      <div style="border-top:2px solid #000;border-bottom:2px solid #000;padding:4px 0;margin-bottom:8px">
+      <div style="border-top:2px solid #000;border-bottom:2px solid #000;padding:3px 0;margin-bottom:5px">
         <table style="width:100%;border-collapse:collapse">
           <tr>
             <td style="padding:0;vertical-align:middle">
@@ -415,15 +415,15 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
       </div>` : ""}
 
       <!-- TEST TABLE with borders -->
-      <table class="test-table" style="width:100%;border-collapse:collapse;font-size:${tablePx};margin-bottom:8px">
+      <table class="test-table" style="width:100%;border-collapse:collapse;font-size:${tablePx};margin-bottom:5px">
         <thead>
           <tr>
-            <th style="padding:6px 8px;border:1px solid #000;background:#f0f0f0;text-align:center;font-weight:800">#</th>
-            ${showCode ? `<th style="padding:6px 8px;border:1px solid #000;background:#f0f0f0;text-align:left;font-weight:800">CODE</th>` : ""}
-            <th style="padding:6px 8px;border:1px solid #000;background:#f0f0f0;text-align:left;font-weight:800">TEST NAME</th>
-            ${showCategory ? `<th style="padding:6px 8px;border:1px solid #000;background:#f0f0f0;text-align:left;font-weight:800">CATEGORY</th>` : ""}
-            ${showTat ? `<th style="padding:6px 8px;border:1px solid #000;background:#f0f0f0;text-align:left;font-weight:800">TAT</th>` : ""}
-            <th style="padding:6px 8px;border:1px solid #000;background:#f0f0f0;text-align:right;font-weight:800">AMOUNT (₹)</th>
+            <th style="padding:3px 5px;border:1px solid #000;background:#f0f0f0;text-align:center;font-weight:800">#</th>
+            ${showCode ? `<th style="padding:3px 5px;border:1px solid #000;background:#f0f0f0;text-align:left;font-weight:800">CODE</th>` : ""}
+            <th style="padding:3px 5px;border:1px solid #000;background:#f0f0f0;text-align:left;font-weight:800">TEST NAME</th>
+            ${showCategory ? `<th style="padding:3px 5px;border:1px solid #000;background:#f0f0f0;text-align:left;font-weight:800">CATEGORY</th>` : ""}
+            ${showTat ? `<th style="padding:3px 5px;border:1px solid #000;background:#f0f0f0;text-align:left;font-weight:800">TAT</th>` : ""}
+            <th style="padding:3px 5px;border:1px solid #000;background:#f0f0f0;text-align:right;font-weight:800">AMOUNT (₹)</th>
           </tr>
         </thead>
         <tbody>
@@ -433,7 +433,7 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
       ${cancelledRow}
 
       <!-- BOTTOM: QR + Payment details left, Totals right -->
-      <table style="width:100%;border-collapse:separate;border-spacing:0;margin-top:8px;table-layout:fixed">
+      <table style="width:100%;border-collapse:separate;border-spacing:0;margin-top:5px;table-layout:fixed">
         <colgroup>
           <col style="width:${qrEnabled && qrDataUrl ? "18%" : "0"}"/>
           <col style="width:${qrEnabled && qrDataUrl ? "42%" : "58%"}"/>
