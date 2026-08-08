@@ -7,6 +7,7 @@
  */
 
 import type { BuildPrintHtmlOpts } from "./printBill";
+import { resolveBillLogoHeightPx } from "./billPrintSettings";
 import { buildDocumentHtml } from "./documentLayout/buildDocumentHtml";
 import { resolveBillPrintPaperFromOpts } from "./documentLayout/billPaper";
 
@@ -102,8 +103,10 @@ export function buildModernLandscapeBillPrintHtml(opts: BuildPrintHtmlOpts): str
   const footerPx = `${opts.printFooterFontPx ?? 11}px`;
   const tinyPx = `${opts.printTinyFontPx ?? 10}px`;
 
+  const logoH = resolveBillLogoHeightPx(opts.printLogoHeightPx, 72);
+  const logoMaxW = Math.round(logoH * 2.5);
   const logoImg = clinic?.logoDataUrl
-    ? `<img src="${clinic.logoDataUrl}" alt="" style="height:72px;max-width:180px;object-fit:contain;display:block"/>`
+    ? `<img src="${clinic.logoDataUrl}" alt="" style="height:${logoH}px;max-width:${logoMaxW}px;object-fit:contain;display:block"/>`
     : "";
 
   const billedByName = sessionField("name");

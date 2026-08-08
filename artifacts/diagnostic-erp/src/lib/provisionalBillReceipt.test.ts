@@ -46,6 +46,7 @@ describe("buildProvisionalBillPrintHtml", () => {
         showSystemInfo: false,
         showQueueTokenOnBill: false,
         printMarginMm: null,
+        printLogoHeightPx: null,
         printTitleFontPx: null,
         printPatientNameFontPx: null,
         printBodyFontPx: null,
