@@ -765,6 +765,8 @@ export default function BillingDesk() {
   const [formFPopupHusband, setFormFPopupHusband] = useState("");
   const [formFPopupAddress, setFormFPopupAddress] = useState("");
   const formFPopupPendingPrintRef = useRef(false);
+  /** Prevents double auto-reset when save success + dialog close both fire. */
+  const formFPopupFlowFinishedRef = useRef(false);
 
   // ── Print preview dialog ──
   const [printPreviewOpen, setPrintPreviewOpen] = useState(false);
@@ -1223,14 +1225,21 @@ export default function BillingDesk() {
     },
   });
 
-  // Form F save mutation — used by the Form F dialog popup
+  const finishFormFPopupFlow = () => {
+    if (formFPopupFlowFinishedRef.current) return;
+    formFPopupFlowFinishedRef.current = true;
+    finishBillSaveFlowRef.current();
+  };
+
+  // Form F save mutation — post-bill popup updates patient guardian/address.
+  // Uses /bills (billing permission), not full Form F /save (PCPNDT record).
   const formFSaveMut = useMutation({
-    mutationFn: (body: { billNumber: string; husbandName: string; address: string }) =>
-      api.post("/api/form-f/save", body),
+    mutationFn: (body: { billNumber: string; husbandFatherName: string; address: string }) =>
+      api.patch("/api/bills/form-f-patient-data", body),
     onSuccess: () => {
       setFormFPopupOpen(false);
-      toast({ title: "Form F saved" });
-      finishBillSaveFlowRef.current();
+      toast({ title: "Form F details saved" });
+      finishFormFPopupFlow();
     },
     onError: (err: Error) => {
       toast({ title: "Form F save failed", description: err.message, variant: "destructive" });
@@ -1551,6 +1560,7 @@ export default function BillingDesk() {
         setFormFPopupHusband("");
         setFormFPopupAddress(selectedPatient?.address ?? "");
         formFPopupPendingPrintRef.current = printAfterSaveRef.current;
+        formFPopupFlowFinishedRef.current = false;
         setFormFPopupOpen(true);
         return;
       }
@@ -3251,7 +3261,14 @@ export default function BillingDesk() {
       </Dialog>
 
       {/* Form F Billing Popup */}
-      <Dialog open={formFPopupOpen} onOpenChange={setFormFPopupOpen}>
+      <Dialog
+        open={formFPopupOpen}
+        onOpenChange={(open) => {
+          setFormFPopupOpen(open);
+          // Dismiss without save — still finish the bill flow (auto-reset).
+          if (!open) finishFormFPopupFlow();
+        }}
+      >
         <DialogContent className="max-w-sm">
           <DialogHeader>
             <DialogTitle>Form F — Required Fields</DialogTitle>
@@ -3282,7 +3299,7 @@ export default function BillingDesk() {
                 if (!formFPopupBillNumber || !formFPopupHusband.trim()) return;
                 formFSaveMut.mutate({
                   billNumber: formFPopupBillNumber,
-                  husbandName: formFPopupHusband.trim(),
+                  husbandFatherName: formFPopupHusband.trim(),
                   address: formFPopupAddress.trim(),
                 });
               }}

@@ -2,7 +2,7 @@ import { Router } from "express";
 import { db } from "@workspace/db";
 import { billsTable, paymentsTable, billAuditsTable, patientsTable, ordersTable, doctorsTable, voucherAuditsTable, expensesTable } from "@workspace/db/schema";
 import { sql, and, eq, gte, lt, notInArray } from "drizzle-orm";
-import { FULL_ACCESS_ROLES } from "../middleware/requireStaffAuth";
+import { FULL_ACCESS_ROLES, requireAdminRole } from "../middleware/requireStaffAuth";
 import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { getTransporter, getEmailSettings } from "../email";
 import { classifyPaymentMethod, isPhysicalCash, isDigitalSettlement } from "../lib/paymentMethodClassifier";
@@ -1188,7 +1188,8 @@ myDailySummaryRouter.get("/drilldown", async (req: StaffAuthRequest, res) => {
 });
 
 // GET /billing-vs-pacs — clinic-wide billed vs PACS intake by modality (date range)
-myDailySummaryRouter.get("/billing-vs-pacs", async (req: StaffAuthRequest, res) => {
+// Admin/super_admin only — not shown on normal staff Daily Summary.
+myDailySummaryRouter.get("/billing-vs-pacs", requireAdminRole, async (req: StaffAuthRequest, res) => {
   const today = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
   const from = typeof req.query.from === "string" ? req.query.from : today;
   const to = typeof req.query.to === "string" ? req.query.to : from;
@@ -1210,7 +1211,7 @@ myDailySummaryRouter.get("/billing-vs-pacs", async (req: StaffAuthRequest, res) 
 });
 
 // GET /modality-billing — clinic-wide MRI/CT/USG/X-Ray billed counts (bill date)
-myDailySummaryRouter.get("/modality-billing", async (req: StaffAuthRequest, res) => {
+myDailySummaryRouter.get("/modality-billing", requireAdminRole, async (req: StaffAuthRequest, res) => {
   const today = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
   const from = typeof req.query.from === "string" ? req.query.from : today;
   const to = typeof req.query.to === "string" ? req.query.to : from;
@@ -1232,7 +1233,7 @@ myDailySummaryRouter.get("/modality-billing", async (req: StaffAuthRequest, res)
 });
 
 // GET /modality-bills — bills containing a modality in the date range (drill-down)
-myDailySummaryRouter.get("/modality-bills", async (req: StaffAuthRequest, res) => {
+myDailySummaryRouter.get("/modality-bills", requireAdminRole, async (req: StaffAuthRequest, res) => {
   const today = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
   const from = typeof req.query.from === "string" ? req.query.from : today;
   const to = typeof req.query.to === "string" ? req.query.to : from;
@@ -1261,7 +1262,7 @@ myDailySummaryRouter.get("/modality-bills", async (req: StaffAuthRequest, res) =
 });
 
 // GET /low-stock — clinic-wide stock alert summary for Daily Summary KPI
-myDailySummaryRouter.get("/low-stock", async (_req, res) => {
+myDailySummaryRouter.get("/low-stock", requireAdminRole, async (_req, res) => {
   try {
     const summary = await buildLowStockSummary(15);
     return res.json(summary);

@@ -2092,14 +2092,14 @@ export default function MyDailySummary() {
         )}
       </div>
 
-      {/* ── Imaging billed counts — openable by modality (uses date range) ── */}
-      <ModalityBillingKpi from={from} to={to} />
-
-      {/* ── Imaging billed vs PACS (uses date range above; clinic-wide) ── */}
-      <BillingVsPacsKpi from={from} to={to} />
-
-      {/* ── Low stock alert (live clinic-wide) ── */}
-      <LowStockKpi />
+      {/* Clinic-wide imaging / inventory KPIs — admin & super_admin only */}
+      {isOwner && (
+        <>
+          <ModalityBillingKpi from={from} to={to} />
+          <BillingVsPacsKpi from={from} to={to} />
+          <LowStockKpi />
+        </>
+      )}
 
       {/* ── Loading State ── */}
       {isLoading && (
