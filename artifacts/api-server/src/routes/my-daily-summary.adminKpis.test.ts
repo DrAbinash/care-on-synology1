@@ -13,9 +13,12 @@ import { myDailySummaryRouter } from "./my-daily-summary";
 import { requireAdminRole } from "../middleware/requireStaffAuth";
 
 function routeStack(path: string, method: "get" | "post" = "get") {
-  const layer = myDailySummaryRouter.stack.find(
-    (l) => l.route && l.route.path === path && (l.route.methods as Record<string, boolean>)[method],
-  );
+  // Express 5 typings omit Route.methods; runtime still has it (same pattern as featureFlags.test).
+  const layer = myDailySummaryRouter.stack.find((l) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const route = (l as any).route;
+    return route && route.path === path && !!route.methods?.[method];
+  });
   expect(layer?.route, `route ${method.toUpperCase()} ${path}`).toBeTruthy();
   return layer!.route!.stack;
 }
