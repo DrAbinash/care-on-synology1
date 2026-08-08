@@ -1,12 +1,12 @@
 /**
  * dateRangePresets.ts
  *
- * Shared quick-select date-range helpers (Today / Yesterday / Day Before /
- * This Week / This Month) used by any list/queue that filters rows by their
- * received/created timestamp. All dates are computed and compared as IST
- * calendar days ("YYYY-MM-DD" strings) so the presets line up with the same
- * "day" the rest of the ERP (My Daily Summary, day-close) uses, regardless
- * of the browser's local timezone.
+ * Shared quick-select date-range helpers (Today / Yesterday /
+ * Today + Yesterday / This Week / This Month) used by any list/queue that
+ * filters rows by their received/created timestamp. All dates are computed
+ * and compared as IST calendar days ("YYYY-MM-DD" strings) so the presets
+ * line up with the same "day" the rest of the ERP (My Daily Summary,
+ * day-close) uses, regardless of the browser's local timezone.
  */
 
 export function todayISO(): string {
@@ -57,7 +57,6 @@ export const DATE_PRESETS = [
   { label: "Yesterday", from: () => daysAgoISO(1), to: () => daysAgoISO(1) },
   /** Reporting Workspace default — last two IST calendar days. */
   { label: "Today + Yesterday", from: () => daysAgoISO(1), to: () => todayISO() },
-  { label: "Day Before", from: () => daysAgoISO(2), to: () => daysAgoISO(2) },
   { label: "This Week", from: () => startOfWeekISO(), to: () => todayISO() },
   { label: "This Month", from: () => startOfMonthISO(), to: () => todayISO() },
 ];
