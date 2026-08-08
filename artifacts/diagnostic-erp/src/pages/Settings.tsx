@@ -4715,11 +4715,19 @@ const SelectCard = ({ label, options, value, onChange }: { label: string; option
 
 // Named BillPrintToggleRow (not ToggleRow) — a different module-level
 // ToggleRow with {label, checked} props already exists further down.
-const BillPrintToggleRow = ({ label, value, onChange }: { label: string; value: boolean; onChange: (v: boolean) => void }) => (
+const BillPrintToggleRow = ({
+  label, value, onChange, disabled,
+}: {
+  label: string;
+  value: boolean;
+  onChange: (v: boolean) => void;
+  disabled?: boolean;
+}) => (
   <button
     type="button"
-    onClick={() => onChange(!value)}
-    className={`w-full flex items-center justify-between px-4 py-3 rounded-lg border transition-colors ${value ? "bg-green-50 border-green-300 dark:bg-green-950/30 dark:border-green-800" : "bg-muted/30 border-card-border"}`}
+    disabled={disabled}
+    onClick={() => { if (!disabled) onChange(!value); }}
+    className={`w-full flex items-center justify-between px-4 py-3 rounded-lg border transition-colors disabled:opacity-60 disabled:cursor-not-allowed ${value ? "bg-green-50 border-green-300 dark:bg-green-950/30 dark:border-green-800" : "bg-muted/30 border-card-border"}`}
   >
     <span className="text-sm font-medium">{label}</span>
     <span className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${value ? "bg-green-500" : "bg-muted-foreground/40"}`}>
@@ -4866,6 +4874,8 @@ function BillingPrintTab() {
   const [loading, setLoading] = useState(true);
   const [saved, setSaved] = useState(false);
   const { toast } = useToast();
+  const session = useMemo(() => readStaffSession(), []);
+  const isAdminUser = session?.user?.role === "admin" || session?.user?.role === "super_admin";
 
   // Clinic columns formerly edited under Clinic Info — now owned here so QR /
   // TAT / columns / copies stay in one place and stay wired to print.
@@ -4993,8 +5003,20 @@ function BillingPrintTab() {
     setSaved(false);
   }, []);
 
+  // When Admin Lock is on, only admin/super_admin may change Billing Print
+  // settings — every other role sees a read-only clinic-wide config.
+  const settingsReadOnly = !!(settings?.adminLock) && !isAdminUser;
+
   const save = () => {
     if (!settings) return;
+    if (settingsReadOnly) {
+      toast({
+        variant: "destructive",
+        title: "Admin Lock is on",
+        description: "Only an admin can change Billing Print settings while Admin Lock is enabled.",
+      });
+      return;
+    }
     import("@/lib/billPrintSettings").then(async (m) => {
       // Clinic-wide settings live on the server only. Writing them into this
       // browser's localStorage created a per-user override layer that could
@@ -5052,7 +5074,17 @@ function BillingPrintTab() {
 
   return (
     <div className={`grid gap-4 items-start ${previewVisible ? "xl:grid-cols-[1fr_360px]" : "grid-cols-1"}`}>
-    <div className="space-y-4">
+    <div className={`space-y-4 ${settingsReadOnly ? "pointer-events-none opacity-70" : ""}`}>
+      {settings.adminLock && (
+        <div
+          className="rounded-xl border border-amber-300 bg-amber-50/80 dark:bg-amber-950/30 dark:border-amber-800 px-4 py-3 text-xs text-amber-950 dark:text-amber-100 leading-relaxed pointer-events-auto"
+          data-testid="bill-print-admin-lock-banner"
+        >
+          <strong>Admin Lock is on.</strong> Every billing counter and reprint uses these clinic-wide
+          settings — per-user overrides and manual paper toggles are ignored.
+          {!isAdminUser && " Only an admin can change or unlock these settings."}
+        </div>
+      )}
       {/* One "recommended for A5-landscape ink" callout at the top of the tab
           so a new admin knows the right combination in one glance. */}
       <div className="rounded-xl border border-blue-200 bg-blue-50/60 dark:bg-blue-950/20 dark:border-blue-800 px-4 py-3 text-xs text-blue-900 dark:text-blue-200 leading-relaxed">
@@ -5248,14 +5280,19 @@ function BillingPrintTab() {
           <BillPrintToggleRow label="Also auto-download a PDF copy" value={settings.autoDownloadPdf} onChange={(v) => update({ autoDownloadPdf: v })} />
           <BillPrintToggleRow label="Fast Billing Mode (minimal prompts)" value={settings.fastBillingMode} onChange={(v) => update({ fastBillingMode: v })} />
         </div>
-        <div className="mt-2 pt-3 border-t border-border/50">
-          <BillPrintToggleRow label="Admin Lock — apply these settings to every counter (users can't override)" value={settings.adminLock} onChange={(v) => update({ adminLock: v })} />
+        <div className="mt-2 pt-3 border-t border-border/50 pointer-events-auto">
+          <BillPrintToggleRow
+            label="Admin Lock — apply these settings to every counter (users can't override)"
+            value={settings.adminLock}
+            disabled={!isAdminUser}
+            onChange={(v) => update({ adminLock: v })}
+          />
         </div>
       </SectionCard>
 
-      <div className="flex justify-end gap-2 pt-2">
-        <Button variant="outline" onClick={reset}>Reset</Button>
-        <Button onClick={save} className={saved ? "bg-green-600 hover:bg-green-700" : ""}>
+      <div className="flex justify-end gap-2 pt-2 pointer-events-auto">
+        <Button variant="outline" onClick={reset} disabled={settingsReadOnly}>Reset</Button>
+        <Button onClick={save} disabled={settingsReadOnly} className={saved ? "bg-green-600 hover:bg-green-700" : ""}>
           {saved ? (
             <span className="flex items-center gap-1.5"><Check size={16} /> Saved</span>
           ) : (

@@ -7,6 +7,7 @@ import {
   CLINIC_COMMISSION_FIELDS,
   stripFields,
 } from "../middleware/commissionVisibility";
+import { FULL_ACCESS_ROLES, normalizeRole, type StaffAuthRequest } from "../middleware/requireStaffAuth";
 
 const CLINIC_SETTINGS_CACHE_KEY = "clinic-settings:v1";
 
@@ -568,8 +569,9 @@ clinicSettingsRouter.put("/", async (req, res) => {
       res.status(400).json({ error: "billPrintSettingsJson must be a JSON string (max 8KB)" });
       return;
     }
+    let parsed: Record<string, unknown>;
     try {
-      const parsed = JSON.parse(body.billPrintSettingsJson);
+      parsed = JSON.parse(body.billPrintSettingsJson);
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
         console.warn("[PUT /api/clinic-settings] rejected 400:", "billPrintSettingsJson must be a JSON object", "| received body keys:", Object.keys(body));
         res.status(400).json({ error: "billPrintSettingsJson must be a JSON object" });
@@ -579,6 +581,24 @@ clinicSettingsRouter.put("/", async (req, res) => {
       console.warn("[PUT /api/clinic-settings] rejected 400:", "billPrintSettingsJson must be valid JSON", "| received body keys:", Object.keys(body));
       res.status(400).json({ error: "billPrintSettingsJson must be valid JSON" });
       return;
+    }
+    // Admin Lock: once ON, only admin/super_admin may change the blob (or unlock).
+    let existingLock = false;
+    try {
+      const existingBlob = (current as { billPrintSettingsJson?: string | null }).billPrintSettingsJson;
+      if (existingBlob) {
+        const existing = JSON.parse(existingBlob) as { adminLock?: boolean };
+        existingLock = existing?.adminLock === true;
+      }
+    } catch { /* ignore corrupt existing */ }
+    if (existingLock) {
+      const role = normalizeRole((req as StaffAuthRequest).staffSession?.role || "");
+      if (!FULL_ACCESS_ROLES.has(role)) {
+        res.status(403).json({
+          error: "Billing print settings are Admin Locked. Only an admin can change or unlock them.",
+        });
+        return;
+      }
     }
     update.billPrintSettingsJson = body.billPrintSettingsJson;
   }

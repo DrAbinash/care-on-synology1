@@ -197,14 +197,14 @@ describe("resolveBillPrintPageOpts — paper size reaches the print HTML", () =>
 
 describe("applyManualBillPaperOverride — Bill Detail reprint paper toggle", () => {
   test("manual A4 forces A4 regardless of clinic A5-landscape", () => {
-    const merged = applyManualBillPaperOverride({ defaultPaperSize: "A5-landscape" }, "A4");
+    const merged = applyManualBillPaperOverride({ defaultPaperSize: "A5-landscape", adminLock: false }, "A4");
     expect(merged.defaultPaperSize).toBe("A4");
     const opts = resolveBillPrintPageOpts({ ...merged, autoA4Threshold: 5 }, 1);
     expect(opts.pageCssSize).toBe("A4 portrait");
   });
 
   test("manual A5 keeps clinic landscape orientation", () => {
-    const merged = applyManualBillPaperOverride({ defaultPaperSize: "A5-landscape" }, "A5");
+    const merged = applyManualBillPaperOverride({ defaultPaperSize: "A5-landscape", adminLock: false }, "A5");
     expect(merged.defaultPaperSize).toBe("A5-landscape");
     const opts = resolveBillPrintPageOpts({ ...merged, autoA4Threshold: 5 }, 1);
     expect(opts.pageCssSize).toBe("A5 landscape");
@@ -212,7 +212,12 @@ describe("applyManualBillPaperOverride — Bill Detail reprint paper toggle", ()
   });
 
   test("null manual paper leaves clinic setting unchanged", () => {
-    expect(applyManualBillPaperOverride({ defaultPaperSize: "A5-landscape" }, null))
+    expect(applyManualBillPaperOverride({ defaultPaperSize: "A5-landscape", adminLock: false }, null))
       .toEqual({ defaultPaperSize: "A5-landscape" });
+  });
+
+  test("adminLock ignores manual paper so every counter matches clinic setting", () => {
+    const merged = applyManualBillPaperOverride({ defaultPaperSize: "A5-landscape", adminLock: true }, "A4");
+    expect(merged.defaultPaperSize).toBe("A5-landscape");
   });
 });

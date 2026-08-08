@@ -197,12 +197,6 @@ export default function BillDetail({ id }: { id: number }) {
     return onUsbKeyChange(() => setUsbKeyPresent(getStoredUsbKey() !== null));
   }, []);
 
-  useEffect(() => {
-    if (paperMode === "manual") setBillPaperSize(paperSize);
-  }, [paperMode, paperSize]);
-  const autoPaperSize = getAutoBillPaperSize((bill?.order?.tests?.length ?? 0), paperMode === "manual" ? paperSize : undefined);
-  const effectivePaperSize = paperMode === "manual" ? paperSize : autoPaperSize;
-
   // Clinic settings for the printed receipt header
   const { data: clinic } = useQuery<{
     name: string; tagline: string; address: string; email: string; phone: string;
@@ -218,6 +212,22 @@ export default function BillDetail({ id }: { id: number }) {
     queryFn: () => api.get("/api/clinic-settings/branding"),
     staleTime: 5 * 60_000,
   });
+
+  const billPrintSettings = useMemo(
+    () => loadBillPrintSettings(parseGlobalBillPrintSettings(clinic?.billPrintSettingsJson)),
+    [clinic?.billPrintSettingsJson],
+  );
+  const paperLocked = billPrintSettings.adminLock === true;
+
+  useEffect(() => {
+    if (paperLocked) {
+      setPaperMode("auto");
+      return;
+    }
+    if (paperMode === "manual") setBillPaperSize(paperSize);
+  }, [paperLocked, paperMode, paperSize]);
+  const autoPaperSize = getAutoBillPaperSize((bill?.order?.tests?.length ?? 0), paperMode === "manual" && !paperLocked ? paperSize : undefined);
+  const effectivePaperSize = paperMode === "manual" && !paperLocked ? paperSize : autoPaperSize;
 
   const { data: clinicPolicy } = useQuery<{ cancelRequiresRefund?: boolean }>({
     queryKey: ["clinic-settings-policy"],
@@ -285,11 +295,11 @@ export default function BillDetail({ id }: { id: number }) {
     if (!bill) return null;
     // Clinic-wide server settings as the base (same as the BillingDesk print
     // paths) so a reprint honors the admin-configured format/layout too.
-    const settings = loadBillPrintSettings(parseGlobalBillPrintSettings(clinic?.billPrintSettingsJson));
+    const settings = billPrintSettings;
     const testCount = (bill.order?.tests ?? []).filter((t) => (t.status ?? "active") !== "cancelled").length;
     const settingsForPrint = {
       ...settings,
-      ...applyManualBillPaperOverride(settings, paperMode === "manual" ? paperSize : null),
+      ...applyManualBillPaperOverride(settings, paperMode === "manual" && !settings.adminLock ? paperSize : null),
     };
     const pageOpts = resolveBillPrintPageOpts(settingsForPrint, testCount);
     return buildBillPrintHtml({
@@ -323,15 +333,15 @@ export default function BillDetail({ id }: { id: number }) {
 
   const resolvedReprintPaper = useMemo(() => {
     if (!bill) return "";
-    const settings = loadBillPrintSettings(parseGlobalBillPrintSettings(clinic?.billPrintSettingsJson));
+    const settings = billPrintSettings;
     const testCount = (bill.order?.tests ?? []).filter((t) => (t.status ?? "active") !== "cancelled").length;
     const settingsForPrint = {
       ...settings,
-      ...applyManualBillPaperOverride(settings, paperMode === "manual" ? paperSize : null),
+      ...applyManualBillPaperOverride(settings, paperMode === "manual" && !settings.adminLock ? paperSize : null),
     };
     const pageOpts = resolveBillPrintPageOpts(settingsForPrint, testCount);
     return pageOpts.pageCssSize;
-  }, [bill, clinic?.billPrintSettingsJson, paperMode, paperSize]);
+  }, [bill, billPrintSettings, paperMode, paperSize]);
 
   // Re-print: open the popup SYNCHRONOUSLY in the click handler so the
   // browser doesn't strip user-activation by the time the reprint-log POST
@@ -727,18 +737,29 @@ export default function BillDetail({ id }: { id: number }) {
                 </div>
               )}
             </div>
-            <div className="flex items-center gap-1 border border-border rounded-md px-1 py-0.5 text-xs">
+            <div
+              className="flex items-center gap-1 border border-border rounded-md px-1 py-0.5 text-xs"
+              title={paperLocked ? "Paper size locked by Admin Lock in Billing Print settings" : undefined}
+            >
               <span className="text-muted-foreground px-1">Paper:</span>
-              <button
-                type="button"
-                onClick={() => { setPaperMode("manual"); setPaperSize("A4"); }}
-                className={`px-2 py-0.5 rounded ${paperSize === "A4" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"}`}
-              >A4</button>
-              <button
-                type="button"
-                onClick={() => { setPaperMode("manual"); setPaperSize("A5"); }}
-                className={`px-2 py-0.5 rounded ${paperSize === "A5" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"}`}
-              >A5</button>
+              {paperLocked ? (
+                <span className="px-2 py-0.5 rounded bg-muted text-muted-foreground font-medium">
+                  Locked ({resolvedReprintPaper || billPrintSettings.defaultPaperSize})
+                </span>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => { setPaperMode("manual"); setPaperSize("A4"); }}
+                    className={`px-2 py-0.5 rounded ${paperSize === "A4" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"}`}
+                  >A4</button>
+                  <button
+                    type="button"
+                    onClick={() => { setPaperMode("manual"); setPaperSize("A5"); }}
+                    className={`px-2 py-0.5 rounded ${paperSize === "A5" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"}`}
+                  >A5</button>
+                </>
+              )}
             </div>
             {canReprint && (
               <Button size="sm" variant="outline" onClick={() => { setReprintReason(""); setReprintNote(""); setReprintOpen(true); }}>
@@ -1073,8 +1094,12 @@ export default function BillDetail({ id }: { id: number }) {
               </p>
             </div>
             <div className="text-xs text-muted-foreground">
-            Paper: <strong>{resolvedReprintPaper || (paperMode === "manual" ? paperSize : `AUTO (${effectivePaperSize})`)}</strong>
-            {paperMode === "manual" ? " (manual)" : " (clinic setting)"} · Change above the Re-print button.
+            Paper: <strong>{resolvedReprintPaper || (paperMode === "manual" && !paperLocked ? paperSize : `AUTO (${effectivePaperSize})`)}</strong>
+            {paperLocked
+              ? " (admin locked — all counters use clinic Billing Print settings)"
+              : paperMode === "manual"
+                ? " (manual)"
+                : " (clinic setting) · Change above the Re-print button."}
             </div>
             <div className="flex justify-end gap-2 pt-2">
               <Button type="button" variant="outline" onClick={() => setReprintOpen(false)}>Cancel</Button>
