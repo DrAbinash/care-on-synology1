@@ -7,7 +7,7 @@ import pinoHttp from "pino-http";
 import router from "./routes";
 import { logger } from "./lib/logger";
 import { errorHandler } from "./middleware/errorHandler";
-import { generalLimiter, dicomUploadLimiter } from "./middleware/rateLimits";
+import { dicomUploadLimiter } from "./middleware/rateLimits";
 import { dicomUploadsRouter } from "./routes/dicom-uploads";
 import { whatsappWebhookRouter } from "./routes/whatsapp";
 import { recordRequest } from "./lib/requestMetrics";
@@ -285,7 +285,11 @@ app.use("/api", (req: Request, res: Response, next: NextFunction) => {
   next();
 });
 
-app.use("/api", generalLimiter, router);
+// Global rate limiting is applied once inside routes/index.ts (generalLimiter).
+// Do not stack a second copy here — duplicate limiters double-count every /api
+// request and can 429 login even when the dedicated staff/patient login
+// limiters would still allow the attempt.
+app.use("/api", router);
 
 // Serve user-uploaded site assets (favicon, photos, hero images, etc.)
 // from data/uploads. Path matches what /api/website/photos returns.
@@ -406,7 +410,9 @@ app.get(/^\/super-admin-portal(\/.*)?$/, (_req: Request, res: Response) => {
       <div class="icon">🔑</div>
       <h1 id="title">Super Admin Portal</h1>
       <p id="desc">Please connect your Super Admin USB drive to authorize this session.</p>
+      <button id="pair-btn" style="display: none; margin-bottom: 0.75rem;">Select USB Drive Folder</button>
       <button id="auth-btn" style="display: none;">Authorize USB Drive</button>
+      <p id="hint" style="display: none; font-size: 0.75rem; color: #64748b; margin: 1rem 0 0 0;">Tip: Ctrl+Shift+K also opens the folder picker.</p>
       <p id="err"></p>
     </div>
   </div>
@@ -415,6 +421,10 @@ app.get(/^\/super-admin-portal(\/.*)?$/, (_req: Request, res: Response) => {
     const IDB_NAME = "sa_usb_v1";
     const IDB_STORE = "handles";
     const IDB_HANDLE_KEY = "pen_drive_root";
+
+    // In-memory cache so permission prompts can start on the same user-gesture
+    // tick (IndexedDB await would drop Chromium's transient activation).
+    let cachedDir = null;
 
     function openIdb() {
       return new Promise((resolve, reject) => {
@@ -443,83 +453,300 @@ app.get(/^\/super-admin-portal(\/.*)?$/, (_req: Request, res: Response) => {
       }
     }
 
+    async function idbPut(key, value) {
+      const db = await openIdb();
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(IDB_STORE, "readwrite");
+        tx.objectStore(IDB_STORE).put(value, key);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+    }
+
     function showStatus(text) {
       document.getElementById("desc").innerHTML = text;
     }
 
     function showError(msg) {
       const el = document.getElementById("err");
-      el.textContent = msg;
-      el.style.display = "block";
+      el.textContent = msg || "";
+      el.style.display = msg ? "block" : "none";
+    }
+
+    function setPairVisible(show) {
+      document.getElementById("pair-btn").style.display = show ? "inline-block" : "none";
+      document.getElementById("hint").style.display = show ? "block" : "none";
+    }
+
+    function setAuthVisible(show) {
+      document.getElementById("auth-btn").style.display = show ? "inline-block" : "none";
+    }
+
+    function fsAccessSupported() {
+      return typeof window.showDirectoryPicker === "function" && typeof indexedDB !== "undefined";
+    }
+
+    /**
+     * Start the folder picker on the current user gesture (no await before
+     * showDirectoryPicker). Persists the handle when superadmin.key is present.
+     */
+    function beginPairPenDrive() {
+      if (!fsAccessSupported()) {
+        return Promise.reject(new Error("This browser cannot browse folders. Use Chrome/Edge, or pair from the ERP (Ctrl+Shift+K)."));
+      }
+      const picker = window.showDirectoryPicker({ mode: "read" });
+      return (async () => {
+        const handle = await picker;
+        await handle.getFileHandle("superadmin.key");
+        // Also required for Zero-Trace portal boot.
+        await handle.getFileHandle("superadmin-ui.js");
+        await idbPut(IDB_HANDLE_KEY, handle);
+        cachedDir = handle;
+        return handle;
+      })();
+    }
+
+    async function readUsbFile(dir, name) {
+      try {
+        const fh = await dir.getFileHandle(name);
+        const file = await fh.getFile();
+        const text = await file.text();
+        return text && text.length > 0 ? text : null;
+      } catch {
+        return null;
+      }
+    }
+
+    let heartbeatTimer = null;
+    async function ensureApiPluginLoaded(dir) {
+      // Cloud / Synology: the API plugin is not on a server-local USB path, so
+      // the browser must upload superadmin-api.js (same as ERP Ctrl+Shift+K).
+      const keyText = await readUsbFile(dir, "superadmin.key");
+      const apiCode = await readUsbFile(dir, "superadmin-api.js");
+      if (!keyText) {
+        showError("superadmin.key is missing on the USB drive.");
+        return false;
+      }
+      if (!apiCode) {
+        showError("superadmin-api.js is missing on the USB drive. Rebuild/copy the pen-drive plugin files.");
+        return false;
+      }
+      showStatus("Loading Super Admin API plugin…");
+      const res = await fetch("/api/super-admin-setup/upload-plugin", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-sa-usb-key": keyText.trim(),
+        },
+        body: JSON.stringify({ code: apiCode }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        showError(body.error || "Failed to load Super Admin API plugin from USB.");
+        return false;
+      }
+      if (heartbeatTimer) clearInterval(heartbeatTimer);
+      heartbeatTimer = setInterval(() => {
+        fetch("/api/super-admin-setup/heartbeat", {
+          method: "POST",
+          headers: { "x-sa-usb-key": keyText.trim() },
+        }).catch(() => {});
+      }, 10000);
+      return true;
+    }
+
+    async function loadPortalFromDir(dir) {
+      document.getElementById("pair-btn").style.display = "none";
+      setAuthVisible(false);
+      document.getElementById("hint").style.display = "none";
+      showError("");
+
+      const pluginOk = await ensureApiPluginLoaded(dir);
+      if (!pluginOk) {
+        setPairVisible(true);
+        return;
+      }
+
+      showStatus("Loading Super Admin Interface <div class='loading-dots'><span></span><span></span><span></span></div>");
+
+      const code = await readUsbFile(dir, "superadmin-ui.js");
+      if (!code) {
+        showError("The superadmin-ui.js file is empty or missing on the USB key.");
+        setPairVisible(true);
+        return;
+      }
+
+      // Older USB UI locks the PIN field after a failed auto-login and never
+      // sends the typed PIN — only the mismatched usbPin. Install a host shim
+      // so operators can type their DB PIN without rebuilding the pen drive.
+      installLoginPinFallbackShim();
+
+      const script = document.createElement("script");
+      script.type = "text/javascript";
+      script.textContent = code;
+      document.body.appendChild(script);
+
+      setTimeout(() => {
+        if (!window.SuperAdminPortal) {
+          showError("UI script executed but SuperAdminPortal component was not found.");
+          setPairVisible(true);
+        }
+      }, 1000);
+    }
+
+    function installLoginPinFallbackShim() {
+      if (window.__saPinFallbackInstalled) return;
+      window.__saPinFallbackInstalled = true;
+
+      function autoLoginFailedVisible() {
+        const nodes = document.querySelectorAll("div, p, span");
+        for (const el of nodes) {
+          const t = (el.textContent || "").trim();
+          if (t.startsWith("Auto-login failed")) return true;
+        }
+        return false;
+      }
+
+      function unlockPinInputs() {
+        if (!autoLoginFailedVisible()) return;
+        const inputs = document.querySelectorAll('input[type="password"], input[autocomplete="current-password"]');
+        for (const inp of inputs) {
+          if (inp.disabled) inp.disabled = false;
+          if (inp.readOnly) inp.readOnly = false;
+          if ((inp.placeholder || "").toLowerCase().includes("auto-filled")) {
+            inp.placeholder = "Enter Super Admin PIN";
+          }
+        }
+      }
+
+      // Keep unlocking while React re-renders the failed state.
+      setInterval(unlockPinInputs, 400);
+
+      const origFetch = window.fetch.bind(window);
+      window.fetch = async function (input, init) {
+        try {
+          const url = typeof input === "string" ? input : (input && input.url) || "";
+          if (url.includes("/super-admin/login") && init && typeof init.body === "string") {
+            const body = JSON.parse(init.body);
+            const pinInput = document.querySelector('input[type="password"], input[autocomplete="current-password"]');
+            const nameInput = document.querySelector('#name, input[autocomplete="username"]');
+            const typed = pinInput && typeof pinInput.value === "string" ? pinInput.value.trim() : "";
+            if (!body.name && nameInput && nameInput.value) body.name = String(nameInput.value).trim();
+            // Old USB plugins often require pin. Host auth accepts usbPin for
+            // pen-drive auto-login. Send both when we have a secret so either path works.
+            const secret = typed || body.usbPin || body.pin || "";
+            if (secret) {
+              body.pin = String(secret);
+              body.usbPin = String(secret);
+              init = Object.assign({}, init, { body: JSON.stringify(body) });
+            }
+          }
+        } catch (_) { /* never block login */ }
+        return origFetch(input, init);
+      };
     }
 
     async function tryLoadPortal() {
       try {
-        const dir = await idbGet(IDB_HANDLE_KEY);
+        const dir = cachedDir || await idbGet(IDB_HANDLE_KEY);
+        cachedDir = dir || null;
         if (!dir) {
-          showError("No paired USB key found in this browser. Please pair your pen drive in the ERP sidebar settings (Ctrl+Shift+K).");
+          showStatus("Plug in the Super Admin USB drive, then select its root folder (the one with <code style='color:#fbbf24'>superadmin.key</code>).");
+          setPairVisible(true);
+          setAuthVisible(false);
+          showError("");
           return;
         }
 
-        // Check permission
-        const perm = await dir.queryPermission({ mode: "read" });
+        // Prefer requestPermission path via Authorize button when needed.
+        let perm = "prompt";
+        try {
+          perm = await dir.queryPermission({ mode: "read" });
+        } catch (_) { /* older handles */ }
+
         if (perm !== "granted") {
-          document.getElementById("auth-btn").style.display = "inline-block";
-          showStatus("Click below to authorize read access to your USB drive.");
+          setPairVisible(true);
+          setAuthVisible(true);
+          showStatus("Click Authorize to allow read access, or Select USB Drive Folder to re-pair.");
           return;
         }
 
-        document.getElementById("auth-btn").style.display = "none";
-        document.getElementById("err").style.display = "none";
-        showStatus("Loading Super Admin Interface <div class='loading-dots'><span></span><span></span><span></span></div>");
-
-        // Read superadmin-ui.js
-        const fileHandle = await dir.getFileHandle("superadmin-ui.js");
-        const file = await fileHandle.getFile();
-        const code = await file.text();
-
-        if (!code) {
-          showError("The superadmin-ui.js file is empty or missing on the USB key.");
-          return;
-        }
-
-        // Execute code
-        const script = document.createElement("script");
-        script.type = "text/javascript";
-        script.textContent = code;
-        document.body.appendChild(script);
-
-        // Mount check
-        setTimeout(() => {
-          if (!window.SuperAdminPortal) {
-            showError("UI script executed but SuperAdminPortal component was not found.");
-          }
-        }, 1000);
-
+        await loadPortalFromDir(dir);
       } catch (err) {
         showError(err.message || "Failed to load portal from USB.");
+        setPairVisible(true);
       }
     }
 
-    document.getElementById("auth-btn").addEventListener("click", async () => {
+    async function runPairFlow(pairPromise) {
+      showError("");
+      showStatus("Waiting for folder selection…");
+      document.getElementById("pair-btn").disabled = true;
       try {
-        const dir = await idbGet(IDB_HANDLE_KEY);
-        if (!dir) {
-          showError("No paired USB key found.");
-          return;
-        }
-        const next = await dir.requestPermission({ mode: "read" });
-        if (next === "granted") {
-          document.getElementById("auth-btn").style.display = "none";
-          document.getElementById("err").style.display = "none";
-          await tryLoadPortal();
-        } else {
-          showError("Permission denied. Access to the USB drive is required.");
-        }
+        const handle = await pairPromise;
+        await loadPortalFromDir(handle);
       } catch (err) {
-        showError(err.message || "Permission request failed.");
+        if (err && err.name === "AbortError") {
+          showStatus("Folder selection cancelled. Plug in the drive and try again.");
+        } else {
+          const msg = (err && err.message) || "Could not read USB drive.";
+          if (String(msg).includes("superadmin.key") || String(msg).includes("superadmin-ui.js")) {
+            showError("Chosen folder must contain superadmin.key and superadmin-ui.js.");
+          } else {
+            showError(msg);
+          }
+          showStatus("Plug in the Super Admin USB drive, then select its root folder.");
+        }
+        setPairVisible(true);
+      } finally {
+        document.getElementById("pair-btn").disabled = false;
       }
+    }
+
+    document.getElementById("pair-btn").addEventListener("click", () => {
+      // Start picker synchronously from the click gesture.
+      const pairPromise = beginPairPenDrive();
+      void runPairFlow(pairPromise);
     });
+
+    document.getElementById("auth-btn").addEventListener("click", () => {
+      const dir = cachedDir;
+      if (!dir) {
+        showError("No paired USB key found. Use Select USB Drive Folder first.");
+        setPairVisible(true);
+        return;
+      }
+      if (typeof dir.requestPermission !== "function") {
+        showError("Permission API unavailable. Use Select USB Drive Folder to re-pair.");
+        return;
+      }
+      // Start permission request on this click (no IndexedDB await first).
+      const permPromise = dir.requestPermission({ mode: "read" });
+      void (async () => {
+        try {
+          const next = await permPromise;
+          if (next === "granted") {
+            await loadPortalFromDir(dir);
+          } else {
+            showError("Permission denied. Access to the USB drive is required.");
+          }
+        } catch (err) {
+          showError((err && err.message) || "Permission request failed.");
+        }
+      })();
+    });
+
+    // Same hidden combo as the ERP — works on this bootstrap page too.
+    window.addEventListener("keydown", (e) => {
+      if (!(e.ctrlKey && e.shiftKey && e.code === "KeyK")) return;
+      e.preventDefault();
+      if (!fsAccessSupported()) {
+        showError("Folder picker not supported in this browser. Use Chrome or Edge.");
+        return;
+      }
+      const pairPromise = beginPairPenDrive();
+      void runPairFlow(pairPromise);
+    }, true);
 
     // Auto-load on mount
     tryLoadPortal();

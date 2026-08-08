@@ -122,14 +122,15 @@ superAdminRouter.get("/usb/status", (_req, res): void => {
 // the OpenAPI spec), so we declare local schemas and use the same safeParse
 // pattern as the validated routes (appointments, expenses, etc.).
 const LoginBody = z.object({
-  name: z.string().trim().optional(),
+  // STRICT: display name always required (even with usbPin).
+  name: z.string().trim().min(1, "Name is required"),
   pin: z.string().trim().optional(),
   usbPin: z.string().trim().optional(),
 }).refine((data) => {
-  // If usbPin is not provided, both name and pin must be present
-  if (!data.usbPin) return (data.name && data.name.length > 0) && (data.pin && data.pin.length > 0);
+  // If usbPin is not provided, the database PIN is required.
+  if (!data.usbPin) return Boolean(data.pin && data.pin.length > 0);
   return true;
-}, { message: "Name and PIN are required when usbPin is not provided", path: ["name", "pin"] });
+}, { message: "PIN is required when usbPin is not provided", path: ["pin"] });
 
 const LogoutBody = z.object({
   token: z.string().min(1, "token is required"),
@@ -196,6 +197,12 @@ superAdminRouter.post("/login", loginLimiter, async (req, res): Promise<void> =>
   }
   const { name, pin, usbPin } = parsed.data;
 
+  // STRICT: exact display-name match only (case-insensitive). No username /
+  // email / numeric-id aliases, and no "wrong name + usbPin" fallback.
+  if (!name || !name.trim()) {
+    res.status(400).json({ error: "Name is required" });
+    return;
+  }
   const [user] = await db.select().from(usersTable)
     .where(and(sql`lower(${usersTable.name}) = lower(${name})`, eq(usersTable.isActive, true)));
 
@@ -320,16 +327,18 @@ superAdminRouter.get("/doctors-list", requireSuperAdmin, async (_req, res): Prom
 });
 
 // ── GET /api/super-admin/tests-list — thin read for SA portal pages ───────────
+// Include inactive rows: bills often still point at retired duplicates, and the
+// commission picker must be able to bind (or at least see) those ids.
 superAdminRouter.get("/tests-list", requireSuperAdmin, async (_req, res): Promise<void> => {
   const tests = await db
     .select({
       id: testsTable.id,
       name: testsTable.name,
       category: testsTable.category,
+      isActive: testsTable.isActive,
     })
     .from(testsTable)
-    .where(eq(testsTable.isActive, true))
-    .orderBy(asc(testsTable.name));
+    .orderBy(asc(testsTable.name), asc(testsTable.id));
   res.json({ tests });
 });
 
@@ -511,25 +520,41 @@ superAdminRouter.post("/books/:id/assign-doctors", requireSuperAdmin, async (req
   }
   const id = paramsParsed.data.id;
   const { doctorIds } = bodyParsed.data;
-  const [ledger] = await db.select().from(ledgersTable).where(eq(ledgersTable.id, id));
-  if (!ledger) {
-    res.status(404).json({ error: "Book not found" });
-    return;
+  try {
+    const [ledger] = await db.select().from(ledgersTable).where(eq(ledgersTable.id, id));
+    if (!ledger) {
+      res.status(404).json({ error: "Book not found" });
+      return;
+    }
+    await db.update(doctorsTable)
+      .set({ ledgerId: 1 })
+      .where(and(
+        eq(doctorsTable.ledgerId, id),
+        doctorIds.length > 0
+          ? sql`${doctorsTable.id} NOT IN (${sql.join(doctorIds.map((d: number) => sql`${d}`), sql`, `)})`
+          : sql`true`,
+      ));
+    if (doctorIds.length > 0) {
+      await db.update(doctorsTable).set({ ledgerId: id }).where(inArray(doctorsTable.id, doctorIds));
+      // Retroactively tag existing orders, bills, patients and appointments so
+      // the Books/Ledgers page counts match the newly-assigned doctor grouping.
+      // NOTE: `orders` has no appointment_id column — appointments are linked by
+      // doctor_id (and historically patient_id via orders). Updating by
+      // orders.appointment_id caused "Internal server error" on Save.
+      const idList = sql.join(doctorIds.map((d: number) => sql`${d}`), sql`, `);
+      await db.execute(sql`UPDATE orders SET ledger_id = ${id} WHERE doctor_id IN (${idList})`);
+      await db.execute(sql`UPDATE bills SET ledger_id = ${id} WHERE order_id IN (SELECT id FROM orders WHERE doctor_id IN (${idList}))`);
+      await db.execute(sql`UPDATE patients SET ledger_id = ${id} WHERE id IN (SELECT patient_id FROM orders WHERE doctor_id IN (${idList}))`);
+      await db.execute(sql`UPDATE appointments SET ledger_id = ${id} WHERE doctor_id IN (${idList})`);
+    }
+    res.json({ assigned: doctorIds.length });
+  } catch (err) {
+    logger.error({ err, bookId: id, doctorCount: doctorIds.length }, "assign-doctors failed");
+    res.status(500).json({
+      error: "Failed to assign doctors to book",
+      detail: err instanceof Error ? err.message : String(err),
+    });
   }
-  await db.update(doctorsTable)
-    .set({ ledgerId: 1 })
-    .where(and(eq(doctorsTable.ledgerId, id), doctorIds.length > 0 ? sql`${doctorsTable.id} NOT IN (${sql.join(doctorIds.map((d: number) => sql`${d}`), sql`, `)})` : sql`true`));
-  if (doctorIds.length > 0) {
-    await db.update(doctorsTable).set({ ledgerId: id }).where(inArray(doctorsTable.id, doctorIds));
-    // Retroactively tag existing orders, bills and patients so the
-    // Books/Ledgers page counts match the newly-assigned doctor grouping.
-    const idList = sql.join(doctorIds.map((d: number) => sql`${d}`), sql`, `);
-    await db.execute(sql`UPDATE orders SET ledger_id = ${id} WHERE doctor_id IN (${idList})`);
-    await db.execute(sql`UPDATE bills SET ledger_id = ${id} WHERE order_id IN (SELECT id FROM orders WHERE doctor_id IN (${idList}))`);
-    await db.execute(sql`UPDATE patients SET ledger_id = ${id} WHERE id IN (SELECT patient_id FROM orders WHERE doctor_id IN (${idList}))`);
-    await db.execute(sql`UPDATE appointments SET ledger_id = ${id} WHERE id IN (SELECT appointment_id FROM orders WHERE doctor_id IN (${idList}) AND appointment_id IS NOT NULL)`);
-  }
-  res.json({ assigned: doctorIds.length });
 });
 
 // ── POST /api/super-admin/books/:id/set-walk-in — mark as walk-in destination ─

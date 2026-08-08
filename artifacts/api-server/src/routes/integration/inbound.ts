@@ -7,7 +7,13 @@ import { Router } from "express";
 import { z } from "zod";
 import { eq } from "drizzle-orm";
 import { db } from "@workspace/db";
-import { diagnosticReferralsTable, diagnosticReferralItemsTable, externalResultLinksTable } from "@workspace/db";
+import {
+  diagnosticReferralsTable,
+  diagnosticReferralItemsTable,
+  externalResultLinksTable,
+  testsTable,
+  packagesTable,
+} from "@workspace/db";
 import {
   requireIntegrationPartnerAuth,
   type IntegrationPartnerAuthRequest,
@@ -16,6 +22,7 @@ import { ingestReferral, type ReferralIngestInput } from "../../services/integra
 import { writeReferralEvent } from "../../services/integration/audit";
 import { assertTransition, isReferralStatus } from "../../services/integration/referralStateMachine";
 import type { ReferralStatus } from "@workspace/db";
+import { sendWhatsAppNow, type WaMessagePurpose } from "../../services/whatsapp/WhatsAppOutbox";
 
 export const integrationInboundRouter = Router();
 
@@ -41,6 +48,8 @@ const CreateReferralSchema = z.object({
     org: z.string().trim().min(1),
     patientId: z.string().trim().min(1),
     encounterId: z.string().trim().optional().nullable(),
+    /** Optional clinical context label — Care does not bill differently for OPD vs IPD. */
+    encounterType: z.enum(["opd", "ipd"]).optional().nullable(),
     prescriptionId: z.string().trim().optional().nullable(),
     user: z.string().trim().optional().nullable(),
   }),
@@ -93,6 +102,9 @@ integrationInboundRouter.post("/diagnostic-referrals", requireIntegrationPartner
     return;
   }
 
+  const encounterNote = b.source.encounterType
+    ? `[${b.source.encounterType.toUpperCase()}]`
+    : null;
   const input: ReferralIngestInput = {
     referralUuid: b.referralUuid ?? null,
     idempotencyKey: b.idempotencyKey ?? null,
@@ -128,7 +140,7 @@ integrationInboundRouter.post("/diagnostic-referrals", requireIntegrationPartner
     consentStatus: b.consent?.status ?? null,
     consentMetadata: b.consent?.metadata ?? null,
     attachments: b.attachments ?? [],
-    notes: b.notes ?? null,
+    notes: [encounterNote, b.notes].filter(Boolean).join(" ").trim() || null,
     items: b.tests.map((t) => ({ testCode: t.code ?? null, testName: t.name, modality: t.modality ?? null, category: t.category ?? null })),
     partnerId: partner.id,
   };
@@ -226,4 +238,96 @@ integrationInboundRouter.post("/diagnostic-referrals/:uuid/acknowledge", require
   }
   await writeReferralEvent(db, { referralId: ref.id, eventType: "result.acknowledged", actorType: "partner", organisation: ref.sourceOrg, actorName: typeof acknowledgedBy === "string" ? acknowledgedBy : null, reason: typeof method === "string" ? method : null });
   res.json({ acknowledged: true });
+});
+
+// ── GET /catalogue — partner pull of Care active tests/packages (read-only) ─
+// Prices are Care's own catalogue — Hope must not treat them as Hope Hospital /
+// Hope Medicals billing rates. No finance coupling.
+integrationInboundRouter.get("/catalogue", requireIntegrationPartnerAuth("diagnostic_referral:read"), async (_req: IntegrationPartnerAuthRequest, res) => {
+  const tests = await db
+    .select({
+      code: testsTable.code,
+      name: testsTable.name,
+      category: testsTable.category,
+      department: testsTable.department,
+      price: testsTable.price,
+      duration: testsTable.duration,
+      roomNumber: testsTable.roomNumber,
+      description: testsTable.description,
+      isActive: testsTable.isActive,
+    })
+    .from(testsTable)
+    .where(eq(testsTable.isActive, true));
+  const packages = await db
+    .select({
+      code: packagesTable.packageCode,
+      name: packagesTable.name,
+      price: packagesTable.price,
+      description: packagesTable.description,
+      isActive: packagesTable.isActive,
+    })
+    .from(packagesTable)
+    .where(eq(packagesTable.isActive, true));
+  res.json({
+    contractVersion: CONTRACT_VERSION,
+    sourceOrg: "CARE",
+    note: "Care Diagnostics catalogue only — billing remains on Care books.",
+    tests,
+    packages,
+    exportedAt: new Date().toISOString(),
+  });
+});
+
+// ── POST /whatsapp/messages — HOPE enqueues patient WhatsApp via CARE outbox ─
+// prep_instructions is accepted from Hope but mapped to manual_staff_send so we
+// do not need a new WhatsApp settings toggle (still Care-attributed Meta traffic).
+const HOPE_WA_PURPOSES = [
+  "manual_staff_send", "appointment_reminder", "report_ready", "bill_created", "prep_instructions",
+] as const;
+
+const HopeWhatsappSchema = z.object({
+  recipientPhone: z.string().trim().min(1),
+  messagePurpose: z.enum(HOPE_WA_PURPOSES),
+  text: z.string().trim().min(1).max(4096),
+  idempotencyKey: z.string().trim().optional(),
+  patientId: z.number().int().positive().optional().nullable(),
+  sourceOrg: z.string().trim().optional(),
+});
+
+integrationInboundRouter.post("/whatsapp/messages", requireIntegrationPartnerAuth("whatsapp:enqueue"), async (req: IntegrationPartnerAuthRequest, res) => {
+  const parsed = HopeWhatsappSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid payload", details: parsed.error.flatten() });
+    return;
+  }
+  const body = parsed.data;
+  const partnerOrg = req.integrationPartner!.sourceOrgCode.toUpperCase();
+  if (body.sourceOrg && body.sourceOrg.toUpperCase() !== partnerOrg) {
+    res.status(403).json({ error: `sourceOrg must match partner organisation '${partnerOrg}'` });
+    return;
+  }
+
+  const purpose: WaMessagePurpose =
+    body.messagePurpose === "prep_instructions" ? "manual_staff_send" : body.messagePurpose;
+
+  const result = await sendWhatsAppNow({
+    recipientPhone: body.recipientPhone,
+    messagePurpose: purpose,
+    text: body.text,
+    patientId: body.patientId ?? null,
+    idempotencyKey: body.idempotencyKey,
+    createdBy: `hope:${req.integrationPartner!.code}`,
+  });
+
+  if (!result.ok && !result.skipped) {
+    res.status(502).json({ ok: false, error: result.error ?? "WhatsApp enqueue failed", outboxId: result.outboxId });
+    return;
+  }
+  res.json({
+    ok: true,
+    skipped: result.skipped ?? false,
+    messageId: result.messageId ?? null,
+    outboxId: result.outboxId ?? null,
+    error: result.error ?? null,
+  });
 });

@@ -272,20 +272,64 @@ export function recordFailedLaunch(stage: string, url: string, status: string) {
  * The tab is opened synchronously before the await so popup blockers don't
  * treat it as an unsolicited popup.
  */
+function triggerProtocolHandler(url: string, placeholder?: Window | null): void {
+  if (placeholder) {
+    try {
+      placeholder.location.href = url;
+    } catch {
+      /* cross-origin or protocol navigation */
+    }
+    try {
+      placeholder.close();
+    } catch {
+      /* already closed */
+    }
+  }
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.style.display = "none";
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  const iframe = document.createElement("iframe");
+  iframe.style.display = "none";
+  document.body.appendChild(iframe);
+  iframe.src = url;
+  window.setTimeout(() => iframe.remove(), 2000);
+}
+
+/** Launch a custom protocol URL (e.g. weasis://) from an async handler. */
+export function openCustomProtocolUrl(url: string, placeholder?: Window | null): void {
+  triggerProtocolHandler(url, placeholder);
+}
+
 export async function openWeasisLaunchRedirect(
   studyInstanceUID: string,
   toast?: (options: { title: string; description?: string; variant?: "default" | "destructive" }) => void,
 ): Promise<void> {
-  const w = window.open("", "_blank");
+  const startTime = Date.now();
+  const placeholder = window.open("about:blank", "_blank");
   try {
-    const data = await api.get<{ weasisUrl: string }>(
+    const data = await api.get<{ weasisUrl: string | null; error?: string }>(
       `/api/radiology/studies/${encodeURIComponent(studyInstanceUID)}/weasis-launch`
     );
-    if (w) w.location.href = data.weasisUrl;
-    else window.open(data.weasisUrl);
+    if (!data.weasisUrl) {
+      placeholder?.close();
+      toast?.({
+        title: "Weasis not configured",
+        description: data.error ?? "Go to Radiology Settings → Viewer Settings and load clinic defaults.",
+        variant: "destructive",
+      });
+      recordFailedLaunch("Weasis Launch", studyInstanceUID, "not_configured");
+      return;
+    }
+    triggerProtocolHandler(data.weasisUrl, placeholder);
+    const profile = (localStorage.getItem("pacs_detected_profile") || "LAN") as "LAN" | "TAILSCALE" | "PUBLIC";
+    recordSuccessfulLaunch(profile, "WEASIS", data.weasisUrl, Date.now() - startTime);
   } catch (err) {
-    w?.close();
+    placeholder?.close();
     toast?.({ title: "Failed to open Weasis", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
+    recordFailedLaunch("Weasis Launch", studyInstanceUID, "api_error");
   }
 }
 
@@ -335,6 +379,11 @@ export async function launchViewer(
     return;
   }
 
+  if (viewerType === "WEASIS") {
+    await openWeasisLaunchRedirect(studyInstanceUID, toast);
+    return;
+  }
+
   const startTime = Date.now();
   const { profile, reason } = await resolveActiveProfile(settings);
   const host = hostForProfile(profile as NetworkProfile);
@@ -344,7 +393,7 @@ export async function launchViewer(
   
   // Safety rule: One failed service must NOT switch the profile, but we check if the critical viewer base works
   const orthancOk = services.orthancHttp.status === "green";
-  const viewerOk = services.ohif.status === "green" || viewerType === "WEASIS"; // Weasis uses desktop local app
+  const viewerOk = services.ohif.status === "green";
 
   const isReachable = orthancOk && viewerOk;
   const launchUrl = viewerType === "OHIF" 

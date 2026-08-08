@@ -5,7 +5,9 @@ import { doctorsTable } from "./doctors";
 
 export const commissionRulesTable = pgTable("commission_rules", {
   id: serial("id").primaryKey(),
-  doctorId: integer("doctor_id").notNull().references(() => doctorsTable.id),
+  // null = clinic-wide / global slab that applies to every referring doctor
+  // (doctor-specific slabs still win when both match — see rulesForDoctor).
+  doctorId: integer("doctor_id").references(() => doctorsTable.id),
   name: text("name").notNull(),
   type: text("type").notNull().default("percentage"), // 'percentage' | 'fixed'
   value: numeric("value", { precision: 10, scale: 2 }).notNull(),

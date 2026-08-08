@@ -28,7 +28,7 @@ export type PrintBillData = {
       price: number | string;
       status?: string | null;
       displayName?: string | null;
-      test?: { code?: string | null; name?: string | null; category?: string | null } | null;
+      test?: { code?: string | null; name?: string | null; category?: string | null; duration?: string | null } | null;
     }>;
   } | null;
   payments?: Array<{
@@ -56,6 +56,7 @@ export type PrintClinic = {
   billShowCode?: boolean;
   billShowCategory?: boolean;
   qrOnBillEnabled?: boolean;
+  showTatOnBill?: boolean;
   // Clinic-wide Billing Print settings blob (JSON of Partial<BillPrintSettings>)
   // from /api/clinic-settings/branding — parse with parseGlobalBillPrintSettings
   // and pass to loadBillPrintSettings so prints honor the admin's paper size.
@@ -127,10 +128,15 @@ function fmt(n: number | string): string {
   return Number(n).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
-import { type BillFormat, type BillPaperSize } from "./billPrintSettings";
-import { buildPremiumBillPrintHtml } from "./premiumBillPrint";
-import { buildDesignerBillPrintHtml } from "./designerBillPrint";
+import { type BillFormat, normalizeBillFormat } from "./billPrintSettings";
 import { buildModernLandscapeBillPrintHtml } from "./modernLandscapeBillPrint";
+import { buildDocumentHtml } from "./documentLayout/buildDocumentHtml";
+import { resolveBillPrintPaperFromOpts } from "./documentLayout/billPaper";
+export {
+  printViaIframe,
+  openBlankPrintWindow,
+  writeAndPrint,
+} from "./documentLayout/printDelivery";
 
 export type BuildPrintHtmlOpts = {
   bill: PrintBillData;
@@ -145,10 +151,14 @@ export type BuildPrintHtmlOpts = {
   qrDataUrl: string;
   reprintBy?: string;
   reprintReason?: string;
+  /** Offline / NAS-down receipt — not yet on server; QR verification disabled. */
+  provisionalReceipt?: boolean;
   // Extended format support (new fields — backward compatible)
   format?: BillFormat;
   copyLabel?: string;
   showQr?: boolean;
+  /** Show test catalog duration as a TAT column (clinic Show TAT on Bill). */
+  showTat?: boolean;
   showAmountInWords?: boolean;
   showSignatureLine?: boolean;
   showComputerGenerated?: boolean;
@@ -186,12 +196,9 @@ export type BuildPrintHtmlOpts = {
   reportCollectionNote?: string | null;
   // When true, the footer sits a fixed ~3-4 lines below the content instead
   // of being pushed to the physical bottom of the A5 page via a flex-1
-  // spacer. Billing Desk relies on the flex-1 push (its A5 bills print on a
-  // fixed-length receipt sheet where a bottom-anchored footer is expected);
-  // short receipts printed from the online booking page / kiosk (usually
-  // 1-2 tests) look broken with that much forced blank space, so those
-  // callers opt into the compact gap instead. Defaults to false so Billing
-  // Desk's existing print output is unaffected.
+  // spacer. Billing Desk / Bill Detail pass this for short bills (≤4 tests)
+  // and kiosk/booking always opt in — avoids a huge blank middle on A5.
+  // Defaults to false; classic also auto-compacts when ≤4 active test lines.
   compactFooterGap?: boolean;
   // When true (with paperSize "A5"), the receipt keeps its compact A5 content
   // sizing but is printed on a physical A4 page — the A5-width slip is centred
@@ -202,6 +209,8 @@ export type BuildPrintHtmlOpts = {
   // a tidy, cuttable A5 receipt rather than being stretched to fill A4.
   // Defaults to false so Billing Desk's A5 output is unaffected.
   compactOnA4?: boolean;
+  /** Exact CSS @page size (from resolveBillPrintPageOpts). */
+  pageCssSize?: string;
   // Layout & typography overrides (Classic format only) — see
   // BillPrintSettings's matching print*Px/printMarginMm fields. Each is
   // undefined/null-safe: omit or pass null to fall back to the built-in
@@ -218,11 +227,14 @@ export type BuildPrintHtmlOpts = {
 };
 
 export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
-  const { bill, clinic, paperSize, orientation = "portrait", isBW, qrDataUrl, reprintBy, reprintReason, compactFooterGap = false, compactOnA4 = false } = opts;
+  const { bill, clinic, paperSize, orientation = "portrait", isBW, qrDataUrl, reprintBy, reprintReason, compactFooterGap = false, compactOnA4 = false, pageCssSize, provisionalReceipt = false } = opts;
   const copies = Math.max(1, Math.min(2, Number(clinic?.billPrintCopies ?? 1) || 1));
   const showCode = clinic?.billShowCode !== false;
   const showCategory = clinic?.billShowCategory !== false;
-  const qrEnabled = clinic?.qrOnBillEnabled !== false;
+  // Billing Print "Show QR" + Clinic QR gate must both allow it (classic used
+  // to ignore the Billing Print toggle — confusing when both settings existed).
+  const qrEnabled = (opts.showQr !== false) && clinic?.qrOnBillEnabled !== false;
+  const showTat = (opts.showTat ?? clinic?.showTatOnBill) === true;
   const isA5 = paperSize === "A5";
   // Compact A5 slip printed on a physical A4 sheet (patient copies). Content
   // sizing stays A5; only the physical page and the slip's max width change.
@@ -230,6 +242,7 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
 
   const tests = (bill.order?.tests ?? []).filter((t) => (t.status ?? "active") !== "cancelled");
   const cancelled = (bill.order?.tests ?? []).filter((t) => (t.status ?? "active") === "cancelled");
+  const sparseBill = tests.length <= 4;
   const billDigits = String(bill.billNumber).replace(/^BILL-?/i, "").replace(/-/g, "");
   const ageStr = calcAge(bill.patient?.dateOfBirth, bill.patient?.ageValue, bill.patient?.ageUnit);
   const ageGender = [ageStr, bill.patient?.gender].filter(Boolean).join(" / ").toUpperCase();
@@ -266,19 +279,8 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
   // print*Px/printMarginMm). null/undefined = built-in tuned default, which
   // still varies by A5 vs A4 paper size; a non-null override applies fixed
   // regardless of paper size. ──
-  // A5: flex column layout pushes footer to bottom so short bills fill the page
-  const marginMm = opts.printMarginMm ?? (isA5 ? 10 : 8);
-  const pageMargin = `${marginMm}mm`;
-  // Content-area height = page height minus top+bottom margin. Must track
-  // `orientation` AND the actual configured margin — since A5 landscape's
-  // page height (148mm) is far shorter than portrait's (210mm), and a
-  // larger admin-configured margin shrinks the usable area further. Using a
-  // stale/mismatched min-height here overflows the printable area and
-  // forces the browser into "shrink to fit" (blurs the receipt) or spills
-  // content onto a silent extra page — see the max-height-free single-
-  // source-of-truth note below on why this is inline-only, never duplicated
-  // in the <style> block.
-  const receiptMinHeight = `${(isA5 ? (orientation === "landscape" ? 148 : 210) : 297) - marginMm * 2}mm`;
+  const useCompactFooter = compactFooterGap || sparseBill;
+  const marginMm = opts.printMarginMm ?? (isA5 ? 2 : 6);
   // Title ("INVOICE/RECEIPT") is the page's real anchor and must read as the
   // largest header element; clinic contact info (headerPx) is secondary and
   // was previously LARGER than the title, inverting the hierarchy.
@@ -291,20 +293,22 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
   const footerPx = `${opts.printFooterFontPx ?? 11}px`;
   const tinyPx = `${opts.printTinyFontPx ?? 10}px`;
 
-  const colCount = 3 + (showCode ? 1 : 0) + (showCategory ? 1 : 0);
+  const colCount = 3 + (showCode ? 1 : 0) + (showCategory ? 1 : 0) + (showTat ? 1 : 0);
 
   // ── Test rows ──
   const testRows = tests.map((t, i) => {
     const code = t.test?.code ?? "";
     const name = t.displayName ?? t.test?.name ?? "";
     const cat = t.test?.category ?? "";
+    const tat = (t.test?.duration ?? "").trim();
     const codeFontSize = `${Math.round(parseInt(tablePx, 10) * 0.9)}px`;
     return `<tr>
-      <td style="padding:6px 8px;border:1px solid #000;font-size:${tablePx};text-align:center">${i + 1}</td>
-      ${showCode ? `<td style="padding:6px 8px;border:1px solid #000;font-family:monospace;font-size:${codeFontSize}">${esc(code)}</td>` : ""}
-      <td style="padding:6px 8px;border:1px solid #000;font-size:${tablePx}">${esc(name)}</td>
-      ${showCategory ? `<td style="padding:6px 8px;border:1px solid #000;font-size:${tablePx};color:#555">${esc(cat)}</td>` : ""}
-      <td style="padding:6px 8px;border:1px solid #000;text-align:right;font-weight:700;font-size:${tablePx}">₹${fmt(t.price)}</td>
+      <td style="padding:3px 5px;border:1px solid #000;text-align:center;font-size:${tablePx}">${i + 1}</td>
+      ${showCode ? `<td style="padding:3px 5px;border:1px solid #000;font-family:monospace;font-size:${codeFontSize}">${esc(code)}</td>` : ""}
+      <td style="padding:3px 5px;border:1px solid #000;font-size:${tablePx};font-weight:600">${esc(name)}</td>
+      ${showCategory ? `<td style="padding:3px 5px;border:1px solid #000;font-size:${tablePx};color:#555">${esc(cat)}</td>` : ""}
+      ${showTat ? `<td style="padding:3px 5px;border:1px solid #000;font-size:${tablePx};color:#555;white-space:nowrap">${esc(tat || "—")}</td>` : ""}
+      <td style="padding:3px 5px;border:1px solid #000;text-align:right;font-size:${tablePx};font-weight:700;white-space:nowrap">₹${fmt(t.price)}</td>
     </tr>`;
   }).join("");
 
@@ -336,43 +340,39 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
   const billedBySignatureUrl: string = session?.user?.signatureDataUrl ?? "";
 
   const page = (copyIdx: number) => `
-    <section class="receipt" style="${copyIdx > 0 ? "page-break-before:always;" : ""}${isA5 && !compactFooterGap ? `display:flex;flex-direction:column;min-height:${receiptMinHeight};` : ""}">
-
-      <!-- HEADER: logo + tagline left, clinic info right, vertically centered
-           against each other so the shorter block doesn't visually float. -->
-      <table style="width:100%;border-collapse:collapse;margin-bottom:8px">
+      <!-- HEADER: larger logo + clinic address stacked on the left;
+           Invoice / Bill No. on the right. -->
+      <table style="width:100%;border-collapse:collapse;margin-bottom:5px">
         <tr>
-          <td style="vertical-align:middle;padding:0;width:45%">
-            ${clinic?.logoDataUrl ? `<img src="${clinic.logoDataUrl}" alt="logo" style="max-height:100px;max-width:210px;object-fit:contain;display:block;margin-bottom:3px"/>` : ""}
+          <td style="vertical-align:top;padding:0;width:62%">
+            ${clinic?.logoDataUrl ? `<img src="${clinic.logoDataUrl}" alt="logo" style="max-height:120px;max-width:240px;object-fit:contain;display:block;margin-bottom:4px"/>` : ""}
+            ${clinic?.name ? `<div style="font-size:${titleSize};font-weight:800;line-height:1.15;color:#000;margin-bottom:2px">${esc(clinic.name)}</div>` : ""}
             <div style="font-size:${bodyPx};color:#333;font-weight:700;line-height:1.2">${esc(clinic?.tagline || "DIAGNOSTIC & PATHOLOGY SERVICES")}</div>
+            ${clinic?.address ? `<div style="font-size:${headerPx};color:#555;font-weight:600;line-height:1.4;margin-top:4px">${esc(clinic.address.replace(/\s*\n\s*/g, ", ").trim())}</div>` : ""}
+            <div style="font-size:${headerPx};color:#555;font-weight:600;line-height:1.4;margin-top:1px">
+              ${clinic?.phone ? `PH: ${esc(clinic.phone)}` : ""}
+              ${clinic?.email ? `${clinic?.phone ? " · " : ""}EMAIL: ${esc(clinic.email)}` : ""}
+            </div>
+            ${clinic?.website || clinic?.gstin ? `<div style="font-size:${headerPx};color:#555;font-weight:600;line-height:1.4">
+              ${clinic?.website ? esc(clinic.website) : ""}
+              ${clinic?.gstin ? `${clinic?.website ? " · " : ""}GSTIN: ${esc(clinic.gstin)}` : ""}
+            </div>` : ""}
           </td>
-          <td style="vertical-align:middle;text-align:right;padding:0;font-size:${headerPx};line-height:1.45;color:#555;font-weight:600">
-            ${clinic?.address ? `<div>${esc(clinic.address.replace(/\s*\n\s*/g, ", ").trim())}</div>` : ""}
-            <div>PH: ${esc(clinic?.phone ?? "")}</div>
-            <div>EMAIL: ${esc(clinic?.email ?? "")}</div>
-            ${clinic?.website ? `<div>${esc(clinic.website)}</div>` : ""}
-            ${clinic?.gstin ? `<div style="margin-top:1px;font-weight:800">GSTIN: ${esc(clinic.gstin)}</div>` : ""}
+          <td style="vertical-align:top;text-align:right;padding:0;width:38%">
+            <div style="font-size:${titleSize};font-weight:800;letter-spacing:1.2px;text-transform:uppercase">${isCancelled ? "CANCELLED" : isUnconfirmedQr ? "AWAITING PAYMENT" : "INVOICE"}</div>
+            <div style="font-size:${headerPx};color:#555;font-weight:600;margin-top:6px">BILL NO.</div>
+            <div style="font-size:${titleSize};font-weight:800;line-height:1.15">${esc(billDigits)}</div>
+            <div style="font-size:${headerPx};color:#555;font-weight:600;margin-top:4px">${esc(created.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }).toUpperCase())} · ${esc(created.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: true }).toUpperCase())}</div>
           </td>
         </tr>
       </table>
 
-      <!-- TITLE LINE with bill number on the right -->
-      <div style="border-top:2px solid #000;border-bottom:2px solid #000;padding:4px 0;margin-bottom:8px">
-        <table style="width:100%;border-collapse:collapse">
-          <tr>
-            <td style="padding:0;vertical-align:middle">
-              <div style="font-size:${titleSize};font-weight:800;letter-spacing:1.2px;text-transform:uppercase">${isCancelled ? "CANCELLED" : isUnconfirmedQr ? "Confirmed on confirmation of Payment" : "INVOICE / RECEIPT"}</div>
-            </td>
-            <td style="padding:0;vertical-align:middle;text-align:right;white-space:nowrap">
-              <div style="font-size:${titleSize};font-weight:800">BILL NO: ${esc(billDigits)}</div>
-            </td>
-          </tr>
-        </table>
-      </div>
+      <div style="border-top:2px solid #000;border-bottom:2px solid #000;padding:2px 0;margin-bottom:5px"></div>
 
       <!-- Reprint marker — a flat, muted badge (not a rotated/dashed
            "stamp") stating who reprinted this copy and why, placed under
            the bill number rather than crowding the logo/header. -->
+      ${provisionalReceipt ? `<div style="display:block;background:#fef3c7;color:#92400e;border:2px solid #f59e0b;border-radius:4px;padding:4px 8px;font-size:${tinyPx};font-weight:800;letter-spacing:0.03em;margin-bottom:8px;text-align:center;text-transform:uppercase">Provisional Receipt — Server Offline · Will Sync Automatically · QR Valid After Sync</div>` : ""}
       ${reprintBy || reprintReason ? `<div style="display:inline-block;background:#f3f4f6;color:#4b5563;border:1px solid #d1d5db;border-radius:3px;padding:2px 8px;font-size:${tinyPx};font-weight:600;letter-spacing:0.02em;margin-bottom:8px">REPRINT${reprintBy ? ` &nbsp;&middot;&nbsp; ${esc(reprintBy)}` : ""}${reprintReason ? ` &nbsp;&middot;&nbsp; ${esc(reprintReason)}` : ""} &nbsp;&middot;&nbsp; ${esc(new Date().toLocaleDateString("en-IN"))}</div>` : ""}
 
       <!-- PATIENT + DATE (uniform font size) -->
@@ -410,14 +410,15 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
       </div>` : ""}
 
       <!-- TEST TABLE with borders -->
-      <table class="test-table" style="width:100%;border-collapse:collapse;font-size:${tablePx};margin-bottom:8px">
+      <table class="test-table" style="width:100%;border-collapse:collapse;font-size:${tablePx};margin-bottom:5px">
         <thead>
           <tr>
-            <th style="padding:6px 8px;border:1px solid #000;background:#f0f0f0;text-align:center;font-weight:800">#</th>
-            ${showCode ? `<th style="padding:6px 8px;border:1px solid #000;background:#f0f0f0;text-align:left;font-weight:800">CODE</th>` : ""}
-            <th style="padding:6px 8px;border:1px solid #000;background:#f0f0f0;text-align:left;font-weight:800">TEST NAME</th>
-            ${showCategory ? `<th style="padding:6px 8px;border:1px solid #000;background:#f0f0f0;text-align:left;font-weight:800">CATEGORY</th>` : ""}
-            <th style="padding:6px 8px;border:1px solid #000;background:#f0f0f0;text-align:right;font-weight:800">AMOUNT (₹)</th>
+            <th style="padding:3px 5px;border:1px solid #000;background:#f0f0f0;text-align:center;font-weight:800">#</th>
+            ${showCode ? `<th style="padding:3px 5px;border:1px solid #000;background:#f0f0f0;text-align:left;font-weight:800">CODE</th>` : ""}
+            <th style="padding:3px 5px;border:1px solid #000;background:#f0f0f0;text-align:left;font-weight:800">TEST NAME</th>
+            ${showCategory ? `<th style="padding:3px 5px;border:1px solid #000;background:#f0f0f0;text-align:left;font-weight:800">CATEGORY</th>` : ""}
+            ${showTat ? `<th style="padding:3px 5px;border:1px solid #000;background:#f0f0f0;text-align:left;font-weight:800">TAT</th>` : ""}
+            <th style="padding:3px 5px;border:1px solid #000;background:#f0f0f0;text-align:right;font-weight:800">AMOUNT (₹)</th>
           </tr>
         </thead>
         <tbody>
@@ -427,11 +428,11 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
       ${cancelledRow}
 
       <!-- BOTTOM: QR + Payment details left, Totals right -->
-      <table style="width:100%;border-collapse:separate;border-spacing:0;margin-top:8px;table-layout:fixed">
+      <table style="width:100%;border-collapse:separate;border-spacing:0;margin-top:5px;table-layout:fixed">
         <colgroup>
-          <col style="width:${qrEnabled && qrDataUrl ? "90px" : "0"}"/>
-          <col/>
-          <col style="width:${isA5 ? "170px" : "200px"}"/>
+          <col style="width:${qrEnabled && qrDataUrl ? "18%" : "0"}"/>
+          <col style="width:${qrEnabled && qrDataUrl ? "42%" : "58%"}"/>
+          <col style="width:40%"/>
         </colgroup>
         <tbody>
           <tr>
@@ -488,7 +489,7 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
            set — just a fixed ~3-4 line gap so a short receipt (1-2 tests,
            typical of online booking / kiosk) doesn't leave a huge blank
            middle before the footer. -->
-      ${isA5 ? (compactFooterGap ? `<div style="height:${Math.round(parseInt(footerPx, 10) * 1.4 * 3.5)}px"></div>` : '<div style="flex:1"></div>') : ""}
+      ${useCompactFooter ? `<div style="height:${Math.round(parseInt(footerPx, 10) * 1.4 * 2)}px"></div>` : `<div style="height:4px"></div>`}
 
       <!-- FOOTER -->
       <div style="margin-top:4px;border-top:2px solid #000;padding-top:6px;text-align:center;page-break-inside:avoid">
@@ -509,158 +510,43 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
             </td>
           </tr>
         </table>
-      </div>
-    </section>`;
+      </div>`;
 
-  const pages = Array.from({ length: copies }).map((_, i) => page(i)).join("");
+  const pages = Array.from({ length: copies }).map((_, i) => page(i));
 
-  return `<!doctype html><html><head><meta charset="utf-8"><title>Bill ${esc(bill.billNumber)}</title>
-<style>
-  @page { size: ${a4Page ? "A4 portrait" : `${isA5 ? "A5" : "A4"} ${isA5 ? orientation : "portrait"}`}; margin: ${pageMargin}; }
-  *, *::before, *::after { box-sizing: border-box; }
-  html, body { margin: 0; padding: 0; height: 100%; }
-  body { background: #fff; color: #000; font-family: Arial, Helvetica, sans-serif; font-size: ${bodyPx}; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  .receipt { width: 100%; padding: 2mm 3mm; box-sizing: border-box;${a4Page ? " max-width: 148mm; margin-left: auto; margin-right: auto;" : ""} }
+  const paper = resolveBillPrintPaperFromOpts({
+    paperSize,
+    orientation,
+    pageCssSize,
+    compactOnA4: a4Page,
+  });
+
+  return buildDocumentHtml({
+    title: `Bill ${esc(bill.billNumber)}`,
+    paper,
+    safePaddingMm: marginMm,
+    compactSlipOnA4: a4Page,
+    bodyFontSize: bodyPx,
+    extraStyles: `
   table { width: 100%; }
   .test-table tbody tr:nth-child(even) td { background: #f7f7f7; }
-</style></head><body>${pages}</body></html>`;
+  .receipt-footer { page-break-inside: avoid; }`,
+    pages: pages.map((html, i) => ({
+      html,
+      className: "receipt",
+      style: i > 0 ? "" : "",
+    })),
+  });
 }
 
 // ── Wrapper that dispatches to a specific format renderer ─────────────────
-// Backward compatible: if `format` is not specified, uses classic (the
-// original behavior). "modern-landscape" is the recommended A5-landscape
-// format for Epson/ink printers — see modernLandscapeBillPrint.ts.
+// Supported layouts: Modern (recommended) and Classic. Retired Premium /
+// Designer ids normalize to Modern. Omitting `format` keeps classic for
+// older call sites that never passed one.
 export function buildBillPrintHtml(opts: BuildPrintHtmlOpts): string {
-  const { format = "classic" } = opts;
-
-  // ── Modern A5-Landscape (recommended for ink printers) ──
+  const format = opts.format == null ? "classic" : normalizeBillFormat(opts.format);
   if (format === "modern-landscape") {
     return buildModernLandscapeBillPrintHtml(opts);
   }
-
-  // ── Designer layouts A / B / C ──
-  if (format === "designer-a" || format === "designer-b" || format === "designer-c") {
-    return buildDesignerBillPrintHtml({ ...opts, layout: format });
-  }
-  if (format === "premium-a5") {
-    // Map old paperSize to new BillPaperSize, honoring landscape when requested.
-    const paperSize: BillPaperSize =
-      opts.paperSize === "A5" ? (opts.orientation === "landscape" ? "A5-landscape" : "A5-portrait") : "A4";
-    return buildPremiumBillPrintHtml({
-      bill: opts.bill,
-      clinic: opts.clinic,
-      paperSize,
-      isBW: opts.isBW,
-      qrDataUrl: opts.qrDataUrl,
-      reprintBy: opts.reprintBy,
-      reprintReason: opts.reprintReason,
-      copyLabel: opts.copyLabel,
-      showQr: opts.showQr ?? (opts.clinic?.qrOnBillEnabled !== false),
-      showAmountInWords: opts.showAmountInWords ?? false,
-      showSignatureLine: opts.showSignatureLine ?? true,
-      showComputerGenerated: opts.showComputerGenerated ?? true,
-      showReportMessage: opts.showReportMessage ?? true,
-      showServiceFooter: opts.showServiceFooter ?? true,
-      showBrandingFooter: opts.showBrandingFooter ?? true,
-      showBarcode: opts.showBarcode ?? false,
-      showWatermark: opts.showWatermark ?? false,
-      showPatientInstructions: opts.showPatientInstructions ?? false,
-      showSystemInfo: opts.showSystemInfo ?? false,
-      // V3 toggles (default OFF, driven by clinic settings)
-      showReceiptThankYou: opts.showReceiptThankYou ?? opts.clinic?.receiptThankYouMessage !== undefined,
-      showReceiptCollection: opts.showReceiptCollection ?? opts.clinic?.receiptCollectionMessage !== undefined,
-      showReceiptQrMessage: opts.showReceiptQrMessage ?? opts.clinic?.receiptQrMessage !== undefined,
-      showReceiptPromotional: opts.showReceiptPromotional ?? opts.clinic?.receiptPromotionalMessage !== undefined,
-      showVerifiedBadge: opts.showVerifiedBadge ?? opts.clinic?.showVerifiedBadge ?? false,
-      showFollowUpMessage: opts.showFollowUpMessage ?? opts.clinic?.showFollowUpMessage ?? false,
-      showPatientSince: opts.showPatientSince ?? opts.clinic?.showPatientSince ?? false,
-      showPromotionalFooter: opts.showPromotionalFooter ?? opts.clinic?.showPromotionalFooter ?? false,
-      showAuditInfoOnPatientCopy: opts.showAuditInfoOnPatientCopy ?? opts.clinic?.showAuditInfoOnPatientCopy ?? false,
-      // V3 additional footer messages
-      showWorkingHours: opts.showWorkingHours ?? opts.clinic?.showWorkingHours ?? false,
-      showHomeCollection: opts.showHomeCollection ?? opts.clinic?.showHomeCollection ?? false,
-      showEmergency: opts.showEmergency ?? opts.clinic?.showEmergency ?? false,
-      showReferralProgram: opts.showReferralProgram ?? opts.clinic?.showReferralProgram ?? false,
-      showHealthPackages: opts.showHealthPackages ?? opts.clinic?.showHealthPackages ?? false,
-      showAccreditation: opts.showAccreditation ?? opts.clinic?.showAccreditation ?? false,
-      showWhatsAppBooking: opts.showWhatsAppBooking ?? opts.clinic?.showWhatsAppBooking ?? false,
-      showCustomFooterMessage: opts.showCustomFooterMessage ?? opts.clinic?.showCustomFooterMessage ?? false,
-      barcodeDataUrl: opts.barcodeDataUrl,
-      customFooter: opts.customFooter,
-      reportCollectionNote: opts.reportCollectionNote,
-    });
-  }
-  // Classic format
   return buildClassicBillPrintHtml(opts);
-}
-
-export function printViaIframe(html: string): void {
-  const existing = document.getElementById("__bill_print_iframe__");
-  if (existing) existing.remove();
-  const iframe = document.createElement("iframe");
-  iframe.id = "__bill_print_iframe__";
-  iframe.style.position = "fixed";
-  iframe.style.right = "0";
-  iframe.style.bottom = "0";
-  iframe.style.width = "0";
-  iframe.style.height = "0";
-  iframe.style.border = "0";
-  iframe.setAttribute("aria-hidden", "true");
-  document.body.appendChild(iframe);
-  const doc = iframe.contentDocument;
-  if (!doc) return;
-  doc.open();
-  doc.write(html);
-  doc.close();
-  let printed = false;
-  const doPrint = () => {
-    if (printed) return;
-    printed = true;
-    try {
-      iframe.contentWindow?.focus();
-      iframe.contentWindow?.print();
-    } catch { /* ignore */ }
-    setTimeout(() => { try { iframe.remove(); } catch { /* ignore */ } }, 1000);
-  };
-  iframe.onload = doPrint;
-  setTimeout(doPrint, 350);
-}
-
-export function openBlankPrintWindow(): Window | null {
-  const w = window.open("", "_blank", "width=520,height=720");
-  if (!w) return null;
-  try {
-    w.document.open();
-    w.document.write(
-      `<!doctype html><html><head><meta charset="utf-8"><title>Preparing receipt…</title></head><body style="font-family:Arial,sans-serif;padding:24px;color:#555">Preparing receipt…</body></html>`,
-    );
-    w.document.close();
-  } catch { /* ignore */ }
-  return w;
-}
-
-export function writeAndPrint(win: Window | null, html: string): void {
-  if (!win) {
-    const w = window.open("", "_blank", "width=520,height=720");
-    if (!w) { alert("Pop-up blocked. Please allow pop-ups for this site to print bills."); return; }
-    w.document.open();
-    w.document.write(html);
-    w.document.close();
-    w.onload = () => { w.focus(); w.print(); setTimeout(() => w.close(), 400); };
-    return;
-  }
-  try {
-    win.document.open();
-    win.document.write(html);
-    win.document.close();
-  } catch { /* ignore */ }
-  let printed = false;
-  const doPrint = () => {
-    if (printed) return;
-    printed = true;
-    try { win.focus(); win.print(); } catch { /* ignore */ }
-    setTimeout(() => { try { win.close(); } catch { /* ignore */ } }, 500);
-  };
-  win.onload = doPrint;
-  setTimeout(doPrint, 350);
 }

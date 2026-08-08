@@ -128,7 +128,7 @@ export async function getRadiologyConfig(): Promise<RadiologyConfig> {
     logger.warn(
       { ohifPublicUrlEnv },
       "OHIF_URL is set to a Docker bridge IP — browsers cannot reach it. " +
-      "Set OHIF_URL to your LAN IP (e.g. http://192.168.1.137:3010), Tailscale IP " +
+      "Set OHIF_URL to your LAN IP (e.g. http://172.16.1.139:3010), Tailscale IP " +
       "(e.g. http://100.65.255.115:3010), or your Cloudflare/public domain instead.",
     );
     ohifPublicUrlEnv = undefined;
@@ -143,7 +143,7 @@ export async function getRadiologyConfig(): Promise<RadiologyConfig> {
     logger.warn(
       { weasisWadoPublicUrlEnv },
       "WEASIS_WADO_PUBLIC_URL is set to a Docker bridge IP — local Weasis installs cannot reach it. " +
-      "Set WEASIS_WADO_PUBLIC_URL to your LAN IP (e.g. http://192.168.1.137:8042/wado), Tailscale IP, " +
+      "Set WEASIS_WADO_PUBLIC_URL to your LAN IP (e.g. http://172.16.1.139:8042/wado), Tailscale IP, " +
       "or public domain instead.",
     );
     weasisWadoPublicUrlEnv = undefined;
@@ -188,7 +188,7 @@ export async function getRadiologyConfig(): Promise<RadiologyConfig> {
       wadoUrl: getVal("weasis_wado_url", "viewer") || getVal("wado_uri_base_url", "viewer") || weasisWadoPublicUrlEnv || `${orthancBrowserBase}/wado`,
       launchTemplate: getVal("weasis_manifest_url_template", "viewer") || 'weasis://$dicom:get -w "{WADO_URL}" -r "studyUID={studyInstanceUID}"',
     },
-    default_viewer: getVal("default_viewer", "viewer") || "OHIF",
+    default_viewer: getVal("default_viewer", "viewer") || "WEASIS",
     viewer_mode: getVal("viewer_mode", "viewer") || "BOTH",
   };
 }
@@ -201,13 +201,13 @@ export async function validateRadiologyConfig(): Promise<string[]> {
   // itself — see isDockerBridgeIp above — so this never false-flags the real
   // clinic LAN address 172.16.1.x as a bridge IP, unlike the previous check).
   if (isDockerBridgeIp(cfg.orthanc.ip)) {
-    warnings.push("Orthanc IP uses a Docker bridge network address, unreachable by LAN workstations. Set ORTHANC_IP or ORTHANC_URL to the clinic's real LAN IP (e.g. 192.168.1.137) in .env.");
+    warnings.push("Orthanc IP uses a Docker bridge network address, unreachable by LAN workstations. Set ORTHANC_IP or ORTHANC_URL to the clinic's real LAN IP (e.g. 172.16.1.139) in .env.");
   }
   if (isDockerBridgeIp(cfg.conquest.ip)) {
     warnings.push("Conquest IP uses a Docker bridge network address, unreachable by LAN workstations. Set CONQUEST_HOST to the clinic's real LAN IP in .env.");
   }
   if (isDockerBridgeIp(cfg.ohif.baseUrl)) {
-    warnings.push("OHIF Base URL uses a Docker bridge IP — browser clients will fail to launch OHIF. Set OHIF_URL in .env (or the OHIF Base URL field in PACS Settings) to a LAN IP (http://192.168.1.137:3010), Tailscale IP (http://100.65.255.115:3010), or your public domain.");
+    warnings.push("OHIF Base URL uses a Docker bridge IP — browser clients will fail to launch OHIF. Set OHIF_URL in .env (or the OHIF Base URL field in PACS Settings) to a LAN IP (http://172.16.1.139:3010), Tailscale IP (http://100.65.255.115:3010), or your public domain.");
   }
   if (isDockerBridgeIp(cfg.weasis.wadoUrl)) {
     warnings.push("Weasis WADO endpoint uses a Docker bridge IP — local Weasis installations cannot read scans. Set WEASIS_WADO_PUBLIC_URL in .env (or the Weasis WADO field in PACS Settings) to a LAN IP, Tailscale IP, or public domain.");

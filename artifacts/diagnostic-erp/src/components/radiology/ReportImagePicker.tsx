@@ -12,6 +12,9 @@
  * ReportImagePanel (drag reorder, captions, key-image toggle, per-image
  * server-built viewer launch); this component keeps the series browser and
  * selection toggling.
+ *
+ * Trial simplify: expanding the picker auto-creates a draft via onEnsureDraft
+ * so the radiologist never sees “Save the draft once…”.
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -25,6 +28,7 @@ import {
   buildImageRefPayload, MAX_REPORT_IMAGES, nextDisplayOrder, thumbnailRenderedUrl,
   type ReportImageRef,
 } from "@/lib/reportImageRefs";
+import { BROWSER_DICOMWEB_BASE } from "@/lib/browserDicomWeb";
 
 interface LaunchData {
   ohifUrl?: string | null;
@@ -47,11 +51,14 @@ export default function ReportImagePicker({
   studyId,
   studyInstanceUID,
   disabled,
+  onEnsureDraft,
 }: {
   draftId: number | null;
   studyId?: number | null;
   studyInstanceUID: string | null;
   disabled?: boolean;
+  /** Auto-create/save a draft so image selection works without a separate Save click. */
+  onEnsureDraft?: () => Promise<number | null>;
 }) {
   const { toast } = useToast();
   const qc = useQueryClient();
@@ -60,31 +67,38 @@ export default function ReportImagePicker({
   const [openSeries, setOpenSeries] = useState<string | null>(null);
   const [instances, setInstances] = useState<InstanceEntry[]>([]);
   const [loadingInstances, setLoadingInstances] = useState(false);
+  const [ensuringDraft, setEnsuringDraft] = useState(false);
+  const [effectiveDraftId, setEffectiveDraftId] = useState<number | null>(draftId);
 
-  // Same launch contract the embedded viewer uses — one cache entry.
-  const { data: launchData } = useQuery<LaunchData>({
+  useEffect(() => {
+    setEffectiveDraftId(draftId);
+  }, [draftId]);
+
+  // Launch contract still used for OHIF deep-links elsewhere; series browsing
+  // always goes through the ERP DICOMweb proxy (same-origin + Orthanc auth).
+  // Direct Orthanc :8042 from the SPA fails with CORS while OHIF (iframe) works.
+  useQuery<LaunchData>({
     queryKey: ["viewer-launch", studyInstanceUID],
     queryFn: () => api.get(`/api/radiology/studies/${encodeURIComponent(studyInstanceUID!)}/ohif-launch`),
     enabled: !!studyInstanceUID,
     staleTime: 5 * 60_000,
   });
-  const dicomWebBase = launchData?.dicomWebBaseUrl ?? null;
+  const dicomWebBase = studyInstanceUID ? BROWSER_DICOMWEB_BASE : null;
 
   const { data: refs = [] } = useQuery<ReportImageRef[]>({
-    queryKey: ["report-image-references", draftId],
-    queryFn: () => api.get(`/api/radiology/report-generator/image-references?draftId=${draftId}`),
-    enabled: !!draftId,
+    queryKey: ["report-image-references", effectiveDraftId],
+    queryFn: () => api.get(`/api/radiology/report-generator/image-references?draftId=${effectiveDraftId}`),
+    enabled: !!effectiveDraftId,
   });
 
   const addRef = useMutation({
     mutationFn: (body: Record<string, unknown>) => api.post("/api/radiology/report-generator/image-references", body),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ["report-image-references", draftId] }),
-    // R1.3 — includes the server's duplicate-prevention 409 ("already attached").
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ["report-image-references", effectiveDraftId] }),
     onError: (err: Error) => toast({ title: "Could not add image", description: err.message, variant: "destructive" }),
   });
   const removeRef = useMutation({
     mutationFn: (id: number) => api.delete(`/api/radiology/report-generator/image-references/${id}`),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ["report-image-references", draftId] }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ["report-image-references", effectiveDraftId] }),
   });
 
   const loadSeries = useCallback(async () => {
@@ -106,6 +120,20 @@ export default function ReportImagePicker({
   }, [dicomWebBase, studyInstanceUID]);
 
   useEffect(() => { if (expanded) void loadSeries(); }, [expanded, loadSeries]);
+
+  async function handleToggleExpand() {
+    const next = !expanded;
+    setExpanded(next);
+    if (!next || effectiveDraftId || disabled) return;
+    if (!onEnsureDraft) return;
+    setEnsuringDraft(true);
+    try {
+      const id = await onEnsureDraft();
+      if (id) setEffectiveDraftId(id);
+    } finally {
+      setEnsuringDraft(false);
+    }
+  }
 
   const openSeriesInstances = useCallback(async (seriesUid: string) => {
     if (!dicomWebBase || !studyInstanceUID) return;
@@ -133,7 +161,7 @@ export default function ReportImagePicker({
   }, [dicomWebBase, studyInstanceUID]);
 
   function selectInstance(seriesEntry: SeriesEntry, inst: InstanceEntry) {
-    if (!draftId || !studyInstanceUID) return;
+    if (!effectiveDraftId || !studyInstanceUID) return;
     const already = refs.find((r) => r.sopInstanceUid === inst.uid);
     if (already) { removeRef.mutate(already.id); return; }
     if (refs.length >= MAX_REPORT_IMAGES) {
@@ -142,7 +170,7 @@ export default function ReportImagePicker({
     }
     try {
       addRef.mutate(buildImageRefPayload({
-        draftId,
+        draftId: effectiveDraftId,
         studyId: studyId ?? undefined,
         studyInstanceUID,
         seriesInstanceUID: seriesEntry.uid,
@@ -160,35 +188,42 @@ export default function ReportImagePicker({
       <button
         type="button"
         className="w-full flex items-center gap-2 px-3 py-2 text-left"
-        onClick={() => setExpanded((v) => !v)}
+        onClick={() => void handleToggleExpand()}
         data-testid="picker-toggle"
       >
         <Images size={14} className="text-primary shrink-0" />
         <span className="text-xs font-semibold flex-1">Report images</span>
         {refs.length > 0 && <Badge variant="outline" className="text-[10px]">{refs.length} selected</Badge>}
+        {ensuringDraft && <Loader2 size={12} className="animate-spin text-muted-foreground" />}
         {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
       </button>
 
       {expanded && (
         <div className="px-3 pb-3 space-y-3">
-          {/* R1.3 — selected references: THE reusable enterprise image panel
-              (drag reorder, captions, key-image toggle, per-image launch). */}
-          {draftId && (
-            <ReportImagePanel draftId={draftId} dicomWebBase={dicomWebBase} disabled={disabled} />
+          {effectiveDraftId && (
+            <ReportImagePanel draftId={effectiveDraftId} dicomWebBase={dicomWebBase} disabled={disabled} />
           )}
 
-          {!draftId && (
-            <p className="text-[11px] text-muted-foreground">Save the draft once to enable image selection.</p>
+          {ensuringDraft && (
+            <p className="text-[11px] text-muted-foreground flex items-center gap-1">
+              <Loader2 size={11} className="animate-spin" /> Preparing image selection…
+            </p>
           )}
-          {draftId && !studyInstanceUID && (
+          {!ensuringDraft && !effectiveDraftId && (
+            <p className="text-[11px] text-muted-foreground">
+              {onEnsureDraft
+                ? "Could not prepare a draft — check connection and retry."
+                : "Open a study to select images."}
+            </p>
+          )}
+          {effectiveDraftId && !studyInstanceUID && (
             <p className="text-[11px] text-muted-foreground">No StudyInstanceUID on this study — images unavailable.</p>
           )}
-          {draftId && studyInstanceUID && !dicomWebBase && (
+          {effectiveDraftId && studyInstanceUID && !dicomWebBase && (
             <p className="text-[11px] text-muted-foreground">DICOMweb endpoint not configured — check viewer settings.</p>
           )}
 
-          {/* Series browser */}
-          {draftId && studyInstanceUID && dicomWebBase && !disabled && (
+          {effectiveDraftId && studyInstanceUID && dicomWebBase && !disabled && (
             <div className="space-y-1.5" data-testid="series-browser">
               {series.map((s) => (
                 <div key={s.uid} className="rounded-md border overflow-hidden">
@@ -229,7 +264,9 @@ export default function ReportImagePicker({
                 </div>
               ))}
               {series.length === 0 && (
-                <p className="text-[11px] text-muted-foreground">No series visible via DICOMweb from this browser.</p>
+                <p className="text-[11px] text-muted-foreground">
+                  No series returned from PACS yet. Expand again after the study has been received, or open OHIF above to confirm the study is online.
+                </p>
               )}
             </div>
           )}

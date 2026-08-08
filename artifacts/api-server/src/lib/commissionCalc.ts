@@ -43,6 +43,7 @@ export type CalcDoctor = {
 export type CalcTest = {
   category: string | null;
   testType?: string | null;        // 'inhouse' | 'outsourced'
+  name?: string | null;            // catalogue name — used for rule-name fallback
 };
 
 export type CalcLine = {
@@ -80,6 +81,22 @@ export function safeParseArray<T = unknown>(s: string | null | undefined): T[] {
   }
 }
 
+/** Coerce JSON test id lists that may contain strings ("12") or numbers (12). */
+export function parseTestIdList(s: string | null | undefined): number[] {
+  return safeParseArray<unknown>(s)
+    .map((x) => (typeof x === "number" ? x : Number(x)))
+    .filter((n) => Number.isFinite(n) && n > 0);
+}
+
+/** Normalize rule/test labels for name-based fallback matching. */
+export function normalizeCommissionLabel(s: string): string {
+  return s
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 // A rule may be restricted to in-house or outsourced work. A rule that does not
 // match the line's kind is skipped at every rung of the ladder, so an
 // "Outsourced Pathology 20%" slab never pays out on in-house work and vice
@@ -92,28 +109,115 @@ export function ruleAppliesToKind(r: CalcRule, isOutsourced: boolean): boolean {
   return true;
 }
 
+/** Map each catalogue test id → every id that shares its normalized name. */
+export function buildTestNameAliasIndex(
+  tests: { id: number; name: string | null | undefined }[],
+): Map<number, number[]> {
+  const byName = new Map<string, number[]>();
+  for (const t of tests) {
+    const k = normalizeCommissionLabel(t.name ?? "");
+    if (!k) continue;
+    const bucket = byName.get(k);
+    if (bucket) bucket.push(t.id);
+    else byName.set(k, [t.id]);
+  }
+  const byId = new Map<number, number[]>();
+  for (const t of tests) {
+    const k = normalizeCommissionLabel(t.name ?? "");
+    byId.set(t.id, k ? (byName.get(k) ?? [t.id]) : [t.id]);
+  }
+  return byId;
+}
+
+export function expandIdsByNameAlias(
+  ids: number[],
+  aliasIndex: Map<number, number[]> | null | undefined,
+): Set<number> {
+  const out = new Set<number>();
+  for (const id of ids) {
+    const aliases = aliasIndex?.get(id);
+    if (aliases && aliases.length > 0) {
+      for (const a of aliases) out.add(a);
+    } else {
+      out.add(id);
+    }
+  }
+  return out;
+}
+
+/**
+ * Rules that apply when calculating commission for one referring doctor.
+ * Doctor-specific slabs come first so findMatchingRule prefers them over
+ * clinic-wide (doctorId null) slabs at every precedence rung. That lets a
+ * clinic set "MRI BRAIN = ₹1750 for everyone" once, then override one doctor.
+ */
+export function rulesForDoctor<T extends { doctorId: number | null }>(
+  allRules: T[],
+  doctorId: number,
+): T[] {
+  const specific: T[] = [];
+  const global: T[] = [];
+  for (const r of allRules) {
+    if (r.doctorId == null) global.push(r);
+    else if (r.doctorId === doctorId) specific.push(r);
+  }
+  return [...specific, ...global];
+}
+
 // Single source of truth for "which rule applies to this test line".
 //
 // Precedence (must stay in lock-step with every report that displays the matched
 // rule's value/type — otherwise the UI shows a rule the calculation never used):
 //   1) exclusive test/category rule
-//   2) non-exclusive test/category rule
+//   2) non-exclusive test/category rule (by testId incl. duplicate-name aliases,
+//      then by exact rule name ↔ test name)
 //   3) catch-all (scope="all") rule
 // Returns undefined when nothing matches; the caller then falls back to the
 // doctor's profile default.
 //
 // `category` is the test's category, or null when the test row is unknown — in
 // which case category-scoped rules never match.
+// `testName` enables a safe fallback when a scope=test slab was named after the
+// catalogue test (e.g. "MRI BRAIN") but testIds were left empty or drifted.
+// `aliasIndex` expands both the billed test id and each rule's bound ids across
+// duplicate catalogue rows that share the same normalized name (common when
+// "CT BRAIN" exists twice — picker binds one id, billing uses the other).
 export function findMatchingRule(
   testId: number,
   category: string | null,
   rules: CalcRule[],
   isOutsourced = false,
+  testName: string | null = null,
+  aliasIndex: Map<number, number[]> | null = null,
 ): CalcRule | undefined {
-  const testMatch = (r: CalcRule) => !!r.testIds && safeParseArray<number>(r.testIds).includes(testId);
-  const catMatch = (r: CalcRule) =>
-    category !== null && !!r.categories && safeParseArray<string>(r.categories).includes(category || "");
-  const specific = (r: CalcRule) => (r.scope === "test" && testMatch(r)) || (r.scope === "category" && catMatch(r));
+  const lineIds = expandIdsByNameAlias([testId], aliasIndex);
+  const testMatch = (r: CalcRule) => {
+    const bound = expandIdsByNameAlias(parseTestIdList(r.testIds), aliasIndex);
+    for (const id of lineIds) {
+      if (bound.has(id)) return true;
+    }
+    return false;
+  };
+  const catNorm = category ? normalizeCommissionLabel(category) : null;
+  const catMatch = (r: CalcRule) => {
+    if (!catNorm || !r.categories) return false;
+    return safeParseArray<string>(r.categories).some(
+      (c) => normalizeCommissionLabel(c) === catNorm,
+    );
+  };
+  // Name fallback: only for scope=test slabs whose label exactly equals the
+  // catalogue test name after normalization. Never matches amount-labelled
+  // names like "CT 800" / "MRI 20%" against unrelated tests.
+  const testNameNorm = testName ? normalizeCommissionLabel(testName) : null;
+  const nameMatch = (r: CalcRule) => {
+    if (!testNameNorm || r.scope !== "test") return false;
+    const ruleNorm = normalizeCommissionLabel(r.name || "");
+    if (!ruleNorm || ruleNorm.length < 3) return false;
+    return ruleNorm === testNameNorm;
+  };
+  const specific = (r: CalcRule) =>
+    (r.scope === "test" && (testMatch(r) || nameMatch(r))) ||
+    (r.scope === "category" && catMatch(r));
   const usable = (r: CalcRule) => r.isActive && ruleAppliesToKind(r, isOutsourced);
 
   let matched = rules.find(r => usable(r) && r.isExclusive && specific(r));
@@ -137,6 +241,8 @@ export function calcTestCommission(
   vipOrderTestIds?: Set<number>,
   vipPct?: number,
   outsourcedBasis: string = "price",
+  /** Duplicate catalogue rows sharing a normalized name (see buildTestNameAliasIndex). */
+  testAliasIndex?: Map<number, number[]> | null,
 ): CalcResult {
   // A line is outsourced when the catalogue says so, or when it carries a lab
   // cost snapshotted at order time. The snapshot is authoritative for the money:
@@ -164,7 +270,14 @@ export function calcTestCommission(
   // cap cannot be applied to some rules and forgotten on others.
   let ruleName: string, ruleType: string, ruleValue: number, ruleScope: RuleScope, raw: number;
 
-  const matched = findMatchingRule(ot.testId, test ? (test.category ?? "") : null, rules, isOutsourced);
+  const matched = findMatchingRule(
+    ot.testId,
+    test ? (test.category ?? "") : null,
+    rules,
+    isOutsourced,
+    test?.name ?? null,
+    testAliasIndex ?? null,
+  );
   const defType = doctor.defaultCommissionType || "percentage";
   const defVal = Number(doctor.defaultCommission ?? 0);
 
@@ -244,6 +357,53 @@ export type EligibilityConfig = { policy: string; minAmount: number };
 export const NEEDS_REPORT_STATUS = (policy: string) =>
   policy === "report_finalized" || policy === "report_delivered";
 
+/**
+ * Referral commission reports / ledger / reconcile only consider orders that
+ * have a non-cancelled bill. Unbilled duplicate orders must never generate
+ * commission rows (they used to appear as held "Not billed" lines and inflate
+ * visit counts / revenue / total commission).
+ */
+export function isCommissionBillEligible(
+  bill: { status?: string | null } | null | undefined,
+): boolean {
+  if (!bill) return false;
+  return (bill.status ?? null) !== "cancelled";
+}
+
+/**
+ * When an order has multiple bill rows, prefer a non-cancelled bill. If every
+ * bill is cancelled (or there are none), return null so the order is excluded
+ * from commission entirely.
+ */
+export function pickCommissionBill<T extends { status?: string | null }>(
+  bills: T[],
+): T | null {
+  if (!bills.length) return null;
+  return bills.find((b) => (b.status ?? null) !== "cancelled") ?? null;
+}
+
+/**
+ * Index bills by orderId, keeping only orders with a non-cancelled bill.
+ * Later cancelled-only duplicates cannot overwrite an active bill out of the map.
+ */
+export function indexCommissionBillsByOrderId<
+  T extends { orderId: number | null; status?: string | null },
+>(bills: T[]): Map<number, T> {
+  const grouped = new Map<number, T[]>();
+  for (const b of bills) {
+    if (b.orderId == null) continue;
+    const arr = grouped.get(b.orderId) ?? [];
+    arr.push(b);
+    grouped.set(b.orderId, arr);
+  }
+  const out = new Map<number, T>();
+  for (const [orderId, list] of grouped) {
+    const picked = pickCommissionBill(list);
+    if (picked) out.set(orderId, picked);
+  }
+  return out;
+}
+
 export function computeCommissionHold(opts: {
   cfg: EligibilityConfig;
   hasBill: boolean;
@@ -255,6 +415,9 @@ export function computeCommissionHold(opts: {
   commissionAmount: number;
 }): { held: boolean; reason: string | null } {
   const rs = (n: number) => `Rs.${Math.round(n).toLocaleString("en-IN")}`;
+  // Defence in depth: callers should already skip these via
+  // isCommissionBillEligible / indexCommissionBillsByOrderId so they never
+  // reach report rows. Hold reasons remain for ledger edge cases / audit.
   if (opts.billStatus === "cancelled") return { held: true, reason: "Bill cancelled" };
   if (!opts.hasBill) return { held: true, reason: "Not billed" };
   switch (opts.cfg.policy) {

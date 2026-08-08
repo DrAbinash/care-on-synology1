@@ -5,19 +5,19 @@ import { buildOhifLaunchUrl } from "./pacsEnterprise";
 // level the configured template can express, degrading SOP → series → study.
 // These tests pin the degradation ladder and the encoding discipline.
 
-const base = { ohifBase: "http://192.168.1.137:3010", studyTemplate: null, studyInstanceUID: "1.2.840.10" };
+const base = { ohifBase: "http://172.16.1.139:3010", studyTemplate: null, studyInstanceUID: "1.2.840.10" };
 
 describe("buildOhifLaunchUrl — default (no template)", () => {
   it("study level", () => {
     expect(buildOhifLaunchUrl(base)).toEqual({
-      ohifUrl: "http://192.168.1.137:3010/viewer?StudyInstanceUIDs=1.2.840.10",
+      ohifUrl: "http://172.16.1.139:3010/viewer?StudyInstanceUIDs=1.2.840.10",
       launchLevel: "study",
     });
   });
 
   it("series level appends the standard OHIF series filter", () => {
     expect(buildOhifLaunchUrl({ ...base, seriesInstanceUID: "1.2.840.20" })).toEqual({
-      ohifUrl: "http://192.168.1.137:3010/viewer?StudyInstanceUIDs=1.2.840.10&SeriesInstanceUIDs=1.2.840.20",
+      ohifUrl: "http://172.16.1.139:3010/viewer?StudyInstanceUIDs=1.2.840.10&SeriesInstanceUIDs=1.2.840.20",
       launchLevel: "series",
     });
   });
@@ -39,7 +39,7 @@ describe("buildOhifLaunchUrl — admin template", () => {
       studyTemplate: "{OHIF_BASE_URL}/viewer?StudyInstanceUIDs={studyInstanceUID}",
       seriesInstanceUID: "1.2.840.20",
     });
-    expect(ohifUrl).toBe("http://192.168.1.137:3010/viewer?StudyInstanceUIDs=1.2.840.10&SeriesInstanceUIDs=1.2.840.20");
+    expect(ohifUrl).toBe("http://172.16.1.139:3010/viewer?StudyInstanceUIDs=1.2.840.10&SeriesInstanceUIDs=1.2.840.20");
     expect(launchLevel).toBe("series");
   });
 
@@ -50,7 +50,7 @@ describe("buildOhifLaunchUrl — admin template", () => {
       seriesInstanceUID: "1.2.840.20",
       sopInstanceUID: "1.2.840.30",
     });
-    expect(ohifUrl).toBe("http://192.168.1.137:3010/v?study=1.2.840.10&series=1.2.840.20&sop=1.2.840.30");
+    expect(ohifUrl).toBe("http://172.16.1.139:3010/v?study=1.2.840.10&series=1.2.840.20&sop=1.2.840.30");
     expect(launchLevel).toBe("sop");
   });
 
@@ -61,7 +61,7 @@ describe("buildOhifLaunchUrl — admin template", () => {
       seriesInstanceUID: "1.2.840.20",
       sopInstanceUID: "1.2.840.30",
     });
-    expect(ohifUrl).toBe("http://192.168.1.137:3010/open/1.2.840.10");
+    expect(ohifUrl).toBe("http://172.16.1.139:3010/open/1.2.840.10");
     expect(launchLevel).toBe("study");
   });
 

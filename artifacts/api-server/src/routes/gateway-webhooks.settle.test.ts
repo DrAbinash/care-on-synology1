@@ -36,7 +36,13 @@ vi.mock("@workspace/db", () => {
     insert: (table: { __name?: string }) => ({
       values: (vals: Record<string, unknown>) => {
         if (table.__name === "payments") insertedPayments.push(vals);
-        return Promise.resolve([]);
+        const result = [{ id: insertedPayments.length || 1 }];
+        const thenable = Promise.resolve(result) as Promise<typeof result> & {
+          returning: () => Promise<typeof result>;
+        };
+        // Production settleBill uses .returning({ id }) after .values(...)
+        thenable.returning = async () => result;
+        return thenable;
       },
     }),
     update: (table: { __name?: string }) => ({

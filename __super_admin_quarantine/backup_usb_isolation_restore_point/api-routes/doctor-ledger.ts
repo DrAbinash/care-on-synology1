@@ -28,8 +28,11 @@ import {
 import {
   type EligibilityConfig,
   calcTestCommission,
+  buildTestNameAliasIndex,
+  rulesForDoctor,
   applyDiscountDeduction,
   computeCommissionHold,
+  indexCommissionBillsByOrderId,
   NEEDS_REPORT_STATUS,
 } from "../lib/commissionCalc";
 
@@ -102,6 +105,7 @@ async function computeEarned(opts: { from?: string; to?: string; doctorId?: numb
   const allRules = await db.select().from(commissionRulesTable).orderBy(commissionRulesTable.id);
   const allTests = await db.select().from(testsTable);
   const testMap = new Map(allTests.map(t => [t.id, { id: t.id, name: t.name, category: t.category, price: Number(t.price), testType: t.testType }]));
+  const testAliasIndex = buildTestNameAliasIndex(allTests);
 
   const conditions = [];
   if (opts.doctorId) conditions.push(eq(ordersTable.doctorId, opts.doctorId));
@@ -122,13 +126,20 @@ async function computeEarned(opts: { from?: string; to?: string; doctorId?: numb
   const vipOrderTestIds = new Set(tokens.map(t => t.orderTestId).filter(Boolean) as number[]);
 
   // Bill payment state per order (for payment-based eligibility policies).
+  // Billed + non-cancelled only — unbilled duplicates never enter earned totals.
   const billsForOrders = orderIds.length
     ? await db.select({ orderId: billsTable.orderId, status: billsTable.status, paidAmount: billsTable.paidAmount, balanceAmount: billsTable.balanceAmount, discount: billsTable.discount })
         .from(billsTable).where(inArray(billsTable.orderId, orderIds))
     : [];
+  const billByOrderRaw = indexCommissionBillsByOrderId(billsForOrders);
   const billByOrderId = new Map<number, { status: string | null; paid: number; balance: number; discount: number }>();
-  for (const b of billsForOrders) {
-    if (b.orderId != null) billByOrderId.set(b.orderId, { status: b.status ?? null, paid: Number(b.paidAmount ?? 0), balance: Number(b.balanceAmount ?? 0), discount: Number(b.discount ?? 0) });
+  for (const [oid, b] of billByOrderRaw) {
+    billByOrderId.set(oid, {
+      status: b.status ?? null,
+      paid: Number(b.paidAmount ?? 0),
+      balance: Number(b.balanceAmount ?? 0),
+      discount: Number(b.discount ?? 0),
+    });
   }
 
   // Report finalized/delivered per order — only fetched for the report_* policies.
@@ -136,11 +147,15 @@ async function computeEarned(opts: { from?: string; to?: string; doctorId?: numb
   if (NEEDS_REPORT_STATUS(cfg.policy)) {
     const activeOrderTestIdsByOrder = new Map<number, number[]>();
     for (const ot of orderTests) {
+      if (!billByOrderId.has(ot.orderId)) continue;
       const arr = activeOrderTestIdsByOrder.get(ot.orderId) ?? [];
       arr.push(ot.id);
       activeOrderTestIdsByOrder.set(ot.orderId, arr);
     }
-    reportStatusByOrder = await fetchOrderReportStatus(orderIds, activeOrderTestIdsByOrder);
+    reportStatusByOrder = await fetchOrderReportStatus(
+      [...billByOrderId.keys()],
+      activeOrderTestIdsByOrder,
+    );
   }
 
   // Orders already settled by a recorded payout. Their commission is read from
@@ -164,8 +179,8 @@ async function computeEarned(opts: { from?: string; to?: string; doctorId?: numb
   const filteredDoctors = opts.doctorId ? doctors.filter(d => d.id === opts.doctorId) : doctors;
 
   return filteredDoctors.map(doctor => {
-    const doctorOrders = orders.filter(o => o.doctorId === doctor.id);
-    const rules = allRules.filter(r => r.doctorId === doctor.id);
+    const doctorOrders = orders.filter(o => o.doctorId === doctor.id && billByOrderId.has(o.id));
+    const rules = rulesForDoctor(allRules, doctor.id);
     let totalRevenue = 0, totalCommission = 0, payableCommission = 0, heldCommission = 0;
     const orderRows: { orderId: number; orderNumber: string; date: string; revenue: number; commission: number; grossCommission: number; testCount: number; held: boolean; holdReason: string | null; frozen: boolean; payoutId: number | null; ruleSummary: string }[] = [];
     for (const order of doctorOrders) {
@@ -175,7 +190,7 @@ async function computeEarned(opts: { from?: string; to?: string; doctorId?: numb
       const ruleNames = new Set<string>();
       for (const ot of tests) {
         const test = testMap.get(ot.testId);
-        const { commission, ruleName, ruleType, ruleValue } = calcTestCommission(ot, test, rules, doctor, vipOrderTestIds, vipPct, outsourcedBasis);
+        const { commission, ruleName, ruleType, ruleValue } = calcTestCommission(ot, test, rules, doctor, vipOrderTestIds, vipPct, outsourcedBasis, testAliasIndex);
         r += Number(ot.price);
         rawC += commission;
         if (ruleName && ruleName !== "None") {
@@ -183,6 +198,7 @@ async function computeEarned(opts: { from?: string; to?: string; doctorId?: numb
         }
       }
       const bill = billByOrderId.get(order.id);
+      if (!bill) continue;
       // Net of the bill-discount deduction — same NET the Referral Report pays.
       const { net: liveNet } = applyDiscountDeduction(rawC, bill?.discount ?? 0, discountMode);
       const rep = reportStatusByOrder.get(order.id);
@@ -230,7 +246,7 @@ async function computeEarned(opts: { from?: string; to?: string; doctorId?: numb
       totalCommission,        // gross — all orders in window (reference)
       payableCommission,      // eligible now — this is what's owed / due
       heldCommission,         // held pending the eligibility condition
-      orderCount: doctorOrders.length,
+      orderCount: orderRows.length,
       orders: orderRows.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()),
     };
   });

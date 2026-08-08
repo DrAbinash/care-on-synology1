@@ -100,3 +100,11 @@ Thumbs.db
 .pgtest/
 .pnpm-store/
 .schema-verify-results.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+ocr-worker/.venv/
+ocr-worker/.env
+

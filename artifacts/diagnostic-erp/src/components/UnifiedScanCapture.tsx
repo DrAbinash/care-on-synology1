@@ -34,7 +34,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { Camera, Scan, Smartphone, Upload, X, RefreshCcw, Loader2, ScanLine } from "lucide-react";
-import { checkScanBridgeHealth, scanBridgeCapture, type ScanBridgeState } from "@/lib/scanBridgeClient";
+import { checkScanBridgeHealth, scanBridgeCaptureWithFallback, scanBridgeOpenApp, type ScanBridgeState } from "@/lib/scanBridgeClient";
 import PlacementGuideOverlay from "@/components/PlacementGuideOverlay";
 import { computeBlurScore, getPreferredTvsDeviceId, getPreferredTvsDeviceLabel, BLUR_WARNING_THRESHOLD } from "@/lib/tvsDeviceProfile";
 import { classifyCameraError, isSecureCameraContext as checkSecureCameraContext, watchForDeviceDisconnect, type CameraDiagnostic } from "@/lib/cameraDiagnostics";
@@ -73,6 +73,8 @@ export interface UnifiedScanCaptureProps {
    *  "upload"/"bridge" need no viewfinder, so they run without opening the
    *  dialog at all; "webcam"/"tvs"/"mobile" open the dialog on that view. */
   autoStart?: ScanSource;
+  /** When opening the method chooser, highlight this option first (clinic default). */
+  preferredSource?: ScanSource;
   onCapture: (result: ScanCaptureResult) => void;
   onError?: (message: string) => void;
 }
@@ -93,18 +95,22 @@ export default function UnifiedScanCapture({
   side = "front",
   renderTrigger,
   autoStart,
+  preferredSource,
   onCapture,
   onError,
 }: UnifiedScanCaptureProps) {
   const { toast } = useToast();
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<"select" | "webcam" | "tvs" | "mobile">("select");
+  // Native file pickers steal focus; Radix Dialog would otherwise dismiss itself
+  // before the user chooses a file or cancels. Hold the dialog open until then.
+  const pickingFileRef = useRef(false);
 
   // ── Scanner Bridge health ──
   const [bridgeState, setBridgeState] = useState<ScanBridgeState>("not-running");
   const [bridgeBusy, setBridgeBusy] = useState(false);
+  // Poll bridge health while mounted (Form F bridge tiles + in-dialog status).
   useEffect(() => {
-    if (!open) return;
     let active = true;
     async function poll() {
       const health = await checkScanBridgeHealth();
@@ -118,8 +124,16 @@ export default function UnifiedScanCapture({
   async function handleBridgeCapture() {
     setBridgeBusy(true);
     try {
-      const raw = await scanBridgeCapture();
-      if (!raw.ok || !raw.imageBase64) throw new Error(raw.error || "Scan failed");
+      let raw = await scanBridgeCaptureWithFallback();
+      if (!raw.ok || !raw.imageBase64) {
+        if (raw.fallback === "folder-watch") {
+          const opened = await scanBridgeOpenApp();
+          if (opened.ok) {
+            throw new Error(`${raw.error || "Scan failed"}. Scanner software opened — scan the document, then click again to import.`);
+          }
+        }
+        throw new Error(raw.error || "Scan failed");
+      }
       const blob = base64ToBlob(raw.imageBase64, raw.mimeType || "image/jpeg");
       onCapture({ file: blob, mimeType: raw.mimeType || "image/jpeg", source: "bridge", filename: raw.filename, deviceLabel: "Workstation Scanner", side });
       setOpen(false);
@@ -134,7 +148,19 @@ export default function UnifiedScanCapture({
 
   // ── Upload ──
   const fileInputRef = useRef<HTMLInputElement>(null);
+  function openFilePicker() {
+    pickingFileRef.current = true;
+    // After the OS picker closes (choose or cancel), clear the guard once the
+    // window regains focus. Change events for a chosen file also clear it.
+    const clearGuard = () => {
+      window.setTimeout(() => { pickingFileRef.current = false; }, 400);
+      window.removeEventListener("focus", clearGuard);
+    };
+    window.addEventListener("focus", clearGuard);
+    fileInputRef.current?.click();
+  }
   function handleFileChosen(file: File | null) {
+    pickingFileRef.current = false;
     if (!file) return;
     if (!ACCEPTED_UPLOAD_TYPES.includes(file.type)) {
       const msg = "Unsupported file type. Use JPEG, PNG, WebP, HEIC, or PDF.";
@@ -368,10 +394,17 @@ export default function UnifiedScanCapture({
   // need no viewfinder so they run without opening the dialog; the camera/mobile
   // methods open the dialog and the effect below launches the right view.
   function launch() {
-    if (autoStart === "upload") { fileInputRef.current?.click(); return; }
+    if (autoStart === "upload") { openFilePicker(); return; }
     if (autoStart === "bridge") { void handleBridgeCapture(); return; }
     setOpen(true);
     setMode("select");
+  }
+
+  function handleDialogOpenChange(nextOpen: boolean) {
+    // Stay open while the native file picker is up — do not auto-close.
+    if (!nextOpen && pickingFileRef.current) return;
+    if (!nextOpen) resetAndClose();
+    else setOpen(true);
   }
 
   useEffect(() => {
@@ -392,7 +425,10 @@ export default function UnifiedScanCapture({
         type="file"
         accept={ACCEPTED_UPLOAD_TYPES.join(",")}
         className="hidden"
-        onChange={(e) => handleFileChosen(e.target.files?.[0] ?? null)}
+        onChange={(e) => {
+          handleFileChosen(e.target.files?.[0] ?? null);
+          e.target.value = "";
+        }}
       />
 
       {renderTrigger ? (
@@ -403,8 +439,14 @@ export default function UnifiedScanCapture({
         </Button>
       )}
 
-      <Dialog open={open} onOpenChange={(v) => { if (!v) resetAndClose(); else setOpen(true); }}>
-        <DialogContent className="max-w-md">
+      <Dialog open={open} onOpenChange={handleDialogOpenChange}>
+        <DialogContent
+          className="max-w-md"
+          onPointerDownOutside={(e) => { if (pickingFileRef.current) e.preventDefault(); }}
+          onInteractOutside={(e) => { if (pickingFileRef.current) e.preventDefault(); }}
+          onFocusOutside={(e) => { if (pickingFileRef.current) e.preventDefault(); }}
+          onEscapeKeyDown={(e) => { if (pickingFileRef.current) e.preventDefault(); }}
+        >
           <DialogHeader>
             <DialogTitle className="flex items-center gap-1.5">
               <Scan size={18} className="text-primary" /> {triggerLabel}
@@ -413,16 +455,41 @@ export default function UnifiedScanCapture({
 
           {mode === "select" && (
             <div className="grid grid-cols-1 gap-2.5 pt-2">
+              <p className="text-xs text-muted-foreground -mt-1 mb-0.5">
+                Choose how to capture — this stays open until you finish or cancel.
+              </p>
               {cameraDiagnostic && (
                 <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800">
                   {cameraDiagnostic.message}
                 </div>
               )}
+              {/* Preferred clinic method first when set */}
+              {preferredSource === "bridge" && (
+                <Button
+                  variant="outline"
+                  onClick={handleBridgeCapture}
+                  disabled={bridgeBusy}
+                  className="h-14 justify-start gap-3 border-primary/30 bg-primary/5 hover:bg-primary/10"
+                >
+                  {bridgeBusy ? <Loader2 size={20} className="animate-spin" /> : <Scan size={20} className={bridgeState === "ok" ? "text-green-600" : "text-primary"} />}
+                  <div className="text-left">
+                    <div className="font-semibold text-sm flex items-center gap-1.5">
+                      Flatbed Scanner
+                      <span className="text-[9px] font-medium uppercase tracking-wide text-primary bg-primary/10 px-1.5 py-0.5 rounded">Default</span>
+                      <div className={`w-1.5 h-1.5 rounded-full ${bridgeState === "ok" ? "bg-green-500 animate-pulse" : "bg-gray-400"}`} />
+                    </div>
+                    <div className="text-[10px] text-muted-foreground">
+                      {bridgeState === "ok" ? "Ready — Canon / workstation scanner" : bridgeState === "not-running" ? "Not detected — check Scanner Bridge is running" : "Blocked — check Scanner Settings"}
+                    </div>
+                  </div>
+                </Button>
+              )}
+
               {tvsDeviceId ? (
                 <Button
                   variant="outline"
                   onClick={() => startCameraStream("tvs", tvsDeviceId)}
-                  className="h-14 justify-start gap-3 border-primary/30 bg-primary/5 hover:bg-primary/10"
+                  className={`h-14 justify-start gap-3 ${preferredSource === "tvs" || preferredSource === "webcam" ? "border-primary/30 bg-primary/5 hover:bg-primary/10" : "hover:bg-muted/40"}`}
                 >
                   <ScanLine size={20} className="text-primary shrink-0" />
                   <div className="text-left">
@@ -433,41 +500,50 @@ export default function UnifiedScanCapture({
               ) : (
                 <div className="rounded-lg border border-dashed p-3 text-[11px] text-muted-foreground">
                   TVS PDS 8M not configured on this workstation yet. An admin can bind it in{" "}
-                  <Link href="/settings/scanner" className="text-primary underline">Scanner Settings</Link>.
+                  <Link href="/settings?tab=scanner#preferred-scanning-source" className="text-primary underline">Scanner Settings</Link>.
                 </div>
               )}
 
-              <Button
-                variant="outline"
-                onClick={handleBridgeCapture}
-                disabled={bridgeBusy || bridgeState !== "ok"}
-                className={`h-14 justify-start gap-3 hover:bg-muted/40 ${bridgeState === "ok" ? "border-green-200 bg-green-50/10" : ""}`}
-              >
-                {bridgeBusy ? <Loader2 size={20} className="animate-spin" /> : <Scan size={20} className={bridgeState === "ok" ? "text-green-600" : "text-muted-foreground"} />}
-                <div className="text-left">
-                  <div className="font-semibold text-sm flex items-center gap-1.5">
-                    Existing Scanner
-                    <div className={`w-1.5 h-1.5 rounded-full ${bridgeState === "ok" ? "bg-green-500 animate-pulse" : "bg-gray-400"}`} />
+              {preferredSource !== "bridge" && (
+                <Button
+                  variant="outline"
+                  onClick={handleBridgeCapture}
+                  disabled={bridgeBusy}
+                  className={`h-14 justify-start gap-3 hover:bg-muted/40 ${bridgeState === "ok" ? "border-green-200 bg-green-50/10" : ""}`}
+                >
+                  {bridgeBusy ? <Loader2 size={20} className="animate-spin" /> : <Scan size={20} className={bridgeState === "ok" ? "text-green-600" : "text-muted-foreground"} />}
+                  <div className="text-left">
+                    <div className="font-semibold text-sm flex items-center gap-1.5">
+                      Flatbed Scanner
+                      <div className={`w-1.5 h-1.5 rounded-full ${bridgeState === "ok" ? "bg-green-500 animate-pulse" : "bg-gray-400"}`} />
+                    </div>
+                    <div className="text-[10px] text-muted-foreground">
+                      {bridgeState === "ok" ? "Ready — Canon / workstation scanner" : bridgeState === "not-running" ? "Not detected — check Scanner Bridge is running" : "Blocked — check Scanner Settings"}
+                    </div>
                   </div>
-                  <div className="text-[10px] text-muted-foreground">
-                    {bridgeState === "ok" ? "Ready — Canon / workstation scanner" : bridgeState === "not-running" ? "Not detected — check Scanner Bridge is running" : "Blocked — check Scanner Settings"}
-                  </div>
-                </div>
-              </Button>
+                </Button>
+              )}
 
-              <Button variant="outline" onClick={() => fileInputRef.current?.click()} className="h-14 justify-start gap-3 hover:bg-muted/40">
+              <Button variant="outline" onClick={openFilePicker} className="h-14 justify-start gap-3 hover:bg-muted/40">
                 <Upload size={20} className="text-muted-foreground shrink-0" />
                 <div className="text-left">
                   <div className="font-semibold text-sm">Upload Image or PDF</div>
-                  <div className="text-[10px] text-muted-foreground">Select a file from this computer</div>
+                  <div className="text-[10px] text-muted-foreground">Stays open until you choose a file or cancel</div>
                 </div>
               </Button>
 
-              <Button variant="outline" onClick={startMobileSession} className="h-14 justify-start gap-3 border-dashed hover:bg-muted/40">
+              <Button
+                variant="outline"
+                onClick={startMobileSession}
+                className={`h-14 justify-start gap-3 border-dashed hover:bg-muted/40 ${preferredSource === "mobile" ? "border-primary/30 bg-primary/5" : ""}`}
+              >
                 <Smartphone size={20} className="text-muted-foreground shrink-0" />
                 <div className="text-left">
                   <div className="font-semibold text-sm flex items-center gap-1.5">
                     Mobile Scan
+                    {preferredSource === "mobile" && (
+                      <span className="text-[9px] font-medium uppercase tracking-wide text-primary bg-primary/10 px-1.5 py-0.5 rounded">Default</span>
+                    )}
                     {pairedPhone?.paired && <div className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />}
                   </div>
                   <div className="text-[10px] text-muted-foreground">
@@ -479,10 +555,19 @@ export default function UnifiedScanCapture({
               </Button>
 
               {isSecureCameraContext && cameras.length > 0 && (
-                <Button variant="outline" onClick={() => startCameraStream("webcam")} className="h-14 justify-start gap-3 hover:bg-muted/40">
+                <Button
+                  variant="outline"
+                  onClick={() => startCameraStream("webcam")}
+                  className={`h-14 justify-start gap-3 hover:bg-muted/40 ${preferredSource === "webcam" ? "border-primary/30 bg-primary/5" : ""}`}
+                >
                   <Camera size={20} className="text-muted-foreground shrink-0" />
                   <div className="text-left">
-                    <div className="font-semibold text-sm">Webcam</div>
+                    <div className="font-semibold text-sm flex items-center gap-1.5">
+                      Webcam
+                      {preferredSource === "webcam" && !tvsDeviceId && (
+                        <span className="text-[9px] font-medium uppercase tracking-wide text-primary bg-primary/10 px-1.5 py-0.5 rounded">Default</span>
+                      )}
+                    </div>
                     <div className="text-[10px] text-muted-foreground">{cameras.length} camera{cameras.length !== 1 ? "s" : ""} detected on this workstation</div>
                   </div>
                 </Button>

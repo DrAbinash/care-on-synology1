@@ -107,21 +107,20 @@ describe("Anthropic — selected model reaches the client unchanged", () => {
 });
 
 describe("Ollama — selected model reaches the client unchanged", () => {
-  const okTags = { ok: true, json: async () => ({ models: [{ name: "qwen3:14b" }, { name: "gpt-oss:20b" }] }) };
+  const okTags = { ok: true, json: async () => ({ models: [{ name: "gemma3:4b" }, { name: "gemma3:12b" }, { name: "qwen3:14b" }] }) };
   beforeEach(() => { vi.stubGlobal("fetch", vi.fn(async () => okTags as unknown as Response)); });
 
-  it("passes the submitted model VERBATIM and not the gpt-oss:20b probe", async () => {
+  it("passes the submitted model VERBATIM and not the fallback probe", async () => {
     const p = await createAiProvider("ollama", undefined, "http://172.16.1.140:11434");
     const r = await p!.testConnection("qwen3:14b");
     expect(r.ok).toBe(true);
     expect(openaiCreate).toHaveBeenCalledWith(expect.objectContaining({ model: "qwen3:14b" }));
-    expect(openaiCreate).not.toHaveBeenCalledWith(expect.objectContaining({ model: "gpt-oss:20b" }));
+    expect(openaiCreate).not.toHaveBeenCalledWith(expect.objectContaining({ model: "gemma3:4b" }));
   });
-  it("uses the qwen3:14b default probe ONLY when no model is supplied", async () => {
-    // qwen3:14b is the approved default reporting model — the built-in fallback
-    // when neither an explicit model nor a stored provider default is set.
+  it("uses the gemma3:4b default probe ONLY when no model is supplied", async () => {
+    // gemma3:4b is the routine default for the Windows OCR/AI worker.
     const p = await createAiProvider("ollama", undefined, "http://172.16.1.140:11434");
     await p!.testConnection();
-    expect(openaiCreate).toHaveBeenCalledWith(expect.objectContaining({ model: "qwen3:14b" }));
+    expect(openaiCreate).toHaveBeenCalledWith(expect.objectContaining({ model: "gemma3:4b" }));
   });
 });

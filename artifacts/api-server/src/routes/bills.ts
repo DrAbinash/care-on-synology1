@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db, billsTable, paymentsTable, ordersTable, patientsTable } from "@workspace/db";
-import { billAuditsTable, superAdminSessionsTable, ledgersTable } from "@workspace/db/schema";
+import { billAuditsTable, superAdminSessionsTable, ledgersTable, formFRecordsTable } from "@workspace/db/schema";
 import { sendBillEditEmail, sendBillReprintEmail } from "../email";
 import { isValidUsbKey, isUsbGateEnforced, getUsbKeyHeader } from "../middleware/requireSuperAdminUsb";
 import { auditFromRequest } from "../lib/audit";
@@ -616,19 +616,38 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
       clientRef: clientRef ?? null,
     }).returning();
 
+    await tx.insert(billAuditsTable).values({
+      billId: billRow.id,
+      editedBy: actorName || "system",
+      reason: "Bill created",
+      changeType: "bill_created",
+      oldValue: null,
+      newValue: `total=₹${totalAmount.toFixed(2)}; status=${billStatus}`,
+    });
+
     // Record each payment split atomically with the bill
+    const insertedPayments: Array<{ amount: number; method?: string; paymentId: number }> = [];
     for (const p of validPayments) {
-      await tx.insert(paymentsTable).values({
+      const [insertedPaymentRow] = await tx.insert(paymentsTable).values({
         billId: billRow.id,
         amount: p.amount.toFixed(2),
         method: p.method || "cash",
         referenceNumber: p.referenceNumber ?? null,
         notes: p.notes ?? null,
         recordedByName: actorName || null,
+      }).returning();
+      insertedPayments.push({ amount: p.amount, method: p.method, paymentId: insertedPaymentRow.id });
+      await tx.insert(billAuditsTable).values({
+        billId: billRow.id,
+        editedBy: actorName || "system",
+        reason: "Payment collected",
+        changeType: "payment_collected",
+        oldValue: null,
+        newValue: `amount=₹${p.amount.toFixed(2)}; method=${p.method || "cash"}`,
       });
     }
 
-    return { bill: billRow, pat: patRow, validPayments };
+    return { bill: billRow, pat: patRow, validPayments: insertedPayments };
   });
 
   const txnDoneAt = Date.now();
@@ -691,6 +710,7 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
       billNumber: bill.billNumber,
       patientName,
       performedBy: actorName || null,
+      paymentId: p.paymentId,
     }).catch(() => {/* already logged inside */});
   }
 
@@ -748,6 +768,83 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
   // `studies` is now created asynchronously (see fire-and-forget above); the
   // key stays in the response for shape compatibility, but no client reads it.
   res.status(201).json({ ...built, token: tokenInfo, testTokens, studies: [], needsFormFData, needsOnlinePayment, onlineAmount });
+});
+
+// PATCH /form-f-patient-data — Billing Desk Form F popup after bill create.
+// Lives on /bills (billing permission) so counters without /form-f module
+// access can still save guardian + address from the post-bill dialog.
+billsRouter.patch("/form-f-patient-data", async (req: StaffAuthRequest, res) => {
+  try {
+    const body = req.body ?? {};
+    const billNumber = String(body.billNumber ?? "").trim();
+    const address = String(body.address ?? "").trim();
+    const husbandFatherName = String(body.husbandFatherName ?? body.husbandName ?? "").trim();
+
+    if (!billNumber) {
+      res.status(400).json({ error: "billNumber is required" });
+      return;
+    }
+    if (!husbandFatherName) {
+      res.status(400).json({ error: "Husband / Father name is required", field: "husbandFatherName" });
+      return;
+    }
+
+    const [bill] = await db
+      .select()
+      .from(billsTable)
+      .where(eq(billsTable.billNumber, billNumber))
+      .limit(1);
+
+    if (!bill) {
+      res.status(404).json({ error: "Bill not found" });
+      return;
+    }
+
+    if (bill.patientId) {
+      if (address) {
+        await db.update(patientsTable).set({ address }).where(eq(patientsTable.id, bill.patientId));
+      }
+
+      const [existing] = await db
+        .select({ id: formFRecordsTable.id })
+        .from(formFRecordsTable)
+        .where(
+          or(
+            eq(formFRecordsTable.billId, bill.id),
+            eq(formFRecordsTable.billNumber, billNumber),
+          ),
+        )
+        .orderBy(desc(formFRecordsTable.createdAt))
+        .limit(1);
+
+      if (existing) {
+        await db
+          .update(formFRecordsTable)
+          .set({ husbandFatherName, ...(address ? { address } : {}) })
+          .where(eq(formFRecordsTable.id, existing.id));
+      } else {
+        const [patient] = await db
+          .select({ firstName: patientsTable.firstName, lastName: patientsTable.lastName })
+          .from(patientsTable)
+          .where(eq(patientsTable.id, bill.patientId))
+          .limit(1);
+        const patientName = [patient?.firstName, patient?.lastName].filter(Boolean).join(" ").trim();
+        await db.insert(formFRecordsTable).values({
+          billId: bill.id,
+          billNumber,
+          patientId: bill.patientId,
+          patientName,
+          husbandFatherName,
+          address,
+        });
+      }
+    }
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("[bills] form-f-patient-data error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
 });
 
 billsRouter.get("/:id", async (req, res) => {
@@ -1027,6 +1124,24 @@ billsRouter.post("/:id/cancel", requireStaffSubPermission("/billing", "delete"),
       throw Object.assign(new Error("Bill is already cancelled"), { httpStatus: 409 });
     }
 
+    // Optional clinic policy: cancel of a paid bill must include autoRefund.
+    const autoRefundPreview = z.object({
+      autoRefund: z.object({ method: z.string().min(1) }).optional(),
+    }).safeParse(req.body);
+    const hasAutoRefund = !!(autoRefundPreview.success && autoRefundPreview.data.autoRefund);
+    if (Number(bill.paidAmount) > 0.0001 && !hasAutoRefund) {
+      const [settings] = await tx
+        .select({ cancelRequiresRefund: clinicSettingsTable.cancelRequiresRefund })
+        .from(clinicSettingsTable)
+        .limit(1);
+      if (settings?.cancelRequiresRefund) {
+        throw Object.assign(
+          new Error("This clinic requires a refund when cancelling a paid bill. Use Refund & Cancel (or pass autoRefund)."),
+          { httpStatus: 400 },
+        );
+      }
+    }
+
     const [updated] = await tx.update(billsTable).set({
       status: "cancelled",
       cancelledAt: new Date(),
@@ -1041,7 +1156,7 @@ billsRouter.post("/:id/cancel", requireStaffSubPermission("/billing", "delete"),
       billId: id,
       editedBy: performedBy,
       reason,
-      changeType: "cancelled",
+      changeType: "bill_cancelled",
       oldValue: bill.status,
       newValue: "cancelled",
     });
@@ -1078,6 +1193,7 @@ billsRouter.post("/:id/cancel", requireStaffSubPermission("/billing", "delete"),
     }).safeParse(req.body);
     let refundedAmount = 0;
     let refundMethod: string | null = null;
+    let cancelRefundPaymentId: number | null = null;
     if (autoRefundParsed.success && autoRefundParsed.data.autoRefund) {
       const currentPaid = Number(bill.paidAmount);
       if (currentPaid > 0.0001) {
@@ -1085,14 +1201,15 @@ billsRouter.post("/:id/cancel", requireStaffSubPermission("/billing", "delete"),
         refundedAmount = Math.round(currentPaid * 100) / 100;
         const currentRefund = Number(bill.refundAmount);
         const newRefund = Math.round((currentRefund + refundedAmount) * 100) / 100;
-        await tx.insert(paymentsTable).values({
+        const [cancelRefundRow] = await tx.insert(paymentsTable).values({
           billId: id,
           amount: String(-refundedAmount),
           method: refundMethod,
           referenceNumber: null,
           notes: `REFUND on cancellation: ${reason}`,
           recordedByName: performedBy,
-        });
+        }).returning();
+        cancelRefundPaymentId = cancelRefundRow.id;
         // FIX: totalAmount is NEVER mutated — cancelled bill's balance is always 0.
         await tx.update(billsTable).set({
           paidAmount: "0.00",
@@ -1103,14 +1220,14 @@ billsRouter.post("/:id/cancel", requireStaffSubPermission("/billing", "delete"),
           billId: id,
           editedBy: performedBy,
           reason,
-          changeType: "refund",
+          changeType: "refund_processed",
           oldValue: `paid=₹${currentPaid.toFixed(2)}`,
           newValue: `refund=₹${refundedAmount.toFixed(2)} via ${refundMethod} (auto on cancel)`,
         });
       }
     }
 
-    return { updated, oldStatus: bill.status, cascadedTestCount: cascadedTests.length, refundedAmount, refundMethod };
+    return { updated, oldStatus: bill.status, cascadedTestCount: cascadedTests.length, refundedAmount, refundMethod, cancelRefundPaymentId };
   }).catch((err: Error & { httpStatus?: number }) => {
     if (err.httpStatus) {
       res.status(err.httpStatus).json({ error: err.message });
@@ -1119,7 +1236,7 @@ billsRouter.post("/:id/cancel", requireStaffSubPermission("/billing", "delete"),
     throw err;
   });
   if (!txResult) return;
-  const { updated, oldStatus, cascadedTestCount, refundedAmount, refundMethod } = txResult;
+  const { updated, oldStatus, cascadedTestCount, refundedAmount, refundMethod, cancelRefundPaymentId } = txResult;
 
   // Auto-generate refund voucher when an auto-refund happened on cancellation.
   if (refundedAmount > 0 && refundMethod) {
@@ -1135,6 +1252,7 @@ billsRouter.post("/:id/cancel", requireStaffSubPermission("/billing", "delete"),
         billNumber: updated.billNumber,
         patientName: patForVoucher ? `${patForVoucher.firstName} ${patForVoucher.lastName}`.trim() : null,
         performedBy,
+        paymentId: cancelRefundPaymentId,
       }).catch(() => {});
     } catch { /* never block */ }
   }
@@ -1256,14 +1374,14 @@ billsRouter.post("/:id/refund", requireStaffSubPermission("/billing", "refund"),
 
     // Insert the refund as a negative-amount payment row so it shows up inline
     // in the payment history alongside regular payments.
-    await tx.insert(paymentsTable).values({
+    const [refundPaymentRow] = await tx.insert(paymentsTable).values({
       billId: id,
       amount: String(-amount),
       method,
       referenceNumber: null,
       notes: `REFUND: ${reason}`,
       recordedByName: performedBy,
-    });
+    }).returning();
 
     // totalAmount intentionally excluded — must not be mutated by a refund.
     const [updated] = await tx.update(billsTable).set({
@@ -1277,12 +1395,12 @@ billsRouter.post("/:id/refund", requireStaffSubPermission("/billing", "refund"),
       billId: id,
       editedBy: performedBy,
       reason,
-      changeType: "refund",
+      changeType: "refund_processed",
       oldValue: `paid=₹${currentPaid.toFixed(2)}, refunded=₹${currentRefund.toFixed(2)}`,
       newValue: `refund=₹${amount.toFixed(2)} via ${method}; paid=₹${newPaid.toFixed(2)}, refunded=₹${newRefund.toFixed(2)}`,
     });
 
-    return { updated, currentPaid, currentRefund, newPaid, newRefund };
+    return { updated, currentPaid, currentRefund, newPaid, newRefund, refundPaymentId: refundPaymentRow.id };
   }).catch((err: Error & { httpStatus?: number }) => {
     if (err.httpStatus) {
       res.status(err.httpStatus).json({ error: err.message });
@@ -1291,7 +1409,7 @@ billsRouter.post("/:id/refund", requireStaffSubPermission("/billing", "refund"),
     throw err;
   });
   if (!result) return;
-  const { updated, currentPaid, currentRefund, newPaid, newRefund } = result;
+  const { updated, currentPaid, currentRefund, newPaid, newRefund, refundPaymentId } = result;
 
   // Auto-generate refund voucher — async, never blocks response
   try {
@@ -1306,6 +1424,7 @@ billsRouter.post("/:id/refund", requireStaffSubPermission("/billing", "refund"),
       billNumber: updated.billNumber,
       patientName: patForVoucher ? `${patForVoucher.firstName} ${patForVoucher.lastName}`.trim() : null,
       performedBy,
+      paymentId: refundPaymentId,
     }).catch(() => {/* already logged inside */});
   } catch { /* never block */ }
 
@@ -1825,6 +1944,7 @@ billsRouter.post("/:id/cancel-refund-tests", async (req: StaffAuthRequest, res) 
 
     let refundedAmount = 0;
     let refundRecorded = false;
+    let refundPaymentId: number | null = null;
 
     // If overpaid after removing tests, auto-refund the excess
     if (oldPaid > newTotal + 0.0001) {
@@ -1835,14 +1955,15 @@ billsRouter.post("/:id/cancel-refund-tests", async (req: StaffAuthRequest, res) 
       const newBalance = Math.max(0, Math.round((newTotal - newPaid - newRefund) * 100) / 100);
       const newStatus = newPaid <= 0 ? "pending" : newPaid < newTotal ? "partial" : "paid";
 
-      await tx.insert(paymentsTable).values({
+      const [refundRow] = await tx.insert(paymentsTable).values({
         billId: id,
         amount: String(-refundedAmount),
         method,
         referenceNumber: null,
         notes: `REFUND (test cancel): ${reason}`,
         recordedByName: actor,
-      });
+      }).returning();
+      refundPaymentId = refundRow.id;
 
       await tx.update(billsTable).set({
         subtotal: String(Math.round(newSubtotal * 100) / 100),
@@ -1881,14 +2002,14 @@ billsRouter.post("/:id/cancel-refund-tests", async (req: StaffAuthRequest, res) 
       newValue: `subtotal=₹${newSubtotal.toFixed(2)}, total=₹${newTotal.toFixed(2)}, paid=₹${updated.paidAmount}${refundRecorded ? `, refunded=₹${refundedAmount.toFixed(2)}` : ""}`,
     });
 
-    return { updated, targets, refundedAmount, refundRecorded, refundMethod: refundMethod ?? "cash" };
+    return { updated, targets, refundedAmount, refundRecorded, refundMethod: refundMethod ?? "cash", refundPaymentId };
   }).catch((err: Error & { httpStatus?: number }) => {
     if (err.httpStatus) { res.status(err.httpStatus).json({ error: err.message }); return null; }
     throw err;
   });
 
   if (!txResult) return;
-  const { updated, targets, refundedAmount, refundRecorded, refundMethod: method } = txResult;
+  const { updated, targets, refundedAmount, refundRecorded, refundMethod: method, refundPaymentId } = txResult;
 
   // Voucher + email
   if (refundRecorded && refundedAmount > 0) {
@@ -1901,6 +2022,7 @@ billsRouter.post("/:id/cancel-refund-tests", async (req: StaffAuthRequest, res) 
         billNumber: updated.billNumber,
         patientName: patForVoucher ? `${patForVoucher.firstName} ${patForVoucher.lastName}`.trim() : null,
         performedBy: actor,
+        paymentId: refundPaymentId,
       }).catch(() => {});
     } catch { /* never block */ }
   }
@@ -2019,6 +2141,7 @@ paymentsRouter.post("/", async (req, res) => {
       billNumber: billForVoucher.billNumber,
       patientName: patientRow ? `${patientRow.firstName} ${patientRow.lastName}`.trim() : null,
       performedBy: actorName || null,
+      paymentId: payment.id,
     }).catch(() => {/* already logged inside */});
   }
 
@@ -2127,17 +2250,17 @@ billsRouter.post("/:id/swap-test", async (req: StaffAuthRequest, res) => {
     });
 
     // 8) If price increased, record a payment (auto-collect extra)
-    let extraPayment: { amount: number; method: string } | null = null;
+    let extraPayment: { amount: number; method: string; paymentId: number } | null = null;
     if (priceDiff > 0.01) {
       const method = (req.body.extraPaymentMethod as string) || "cash";
-      extraPayment = { amount: priceDiff, method };
-      await tx.insert(paymentsTable).values({
+      const [extraPaymentRow] = await tx.insert(paymentsTable).values({
         billId: id,
         amount: priceDiff.toFixed(2),
         method,
         notes: `Extra charge for test swap: ${oldTestName} → ${newTest.name}`,
         recordedByName: performedBy,
-      });
+      }).returning();
+      extraPayment = { amount: priceDiff, method, paymentId: extraPaymentRow.id };
       const newPaid = Math.round((paidAmount + priceDiff) * 100) / 100;
       const newBalAfterPay = Math.max(0, newTotal - newPaid - refundAmount);
       const newStatAfterPay = newBalAfterPay <= 0.01 && newPaid > 0 ? "paid" : newPaid > 0 ? "partial" : "pending";
@@ -2159,18 +2282,18 @@ billsRouter.post("/:id/swap-test", async (req: StaffAuthRequest, res) => {
     }
 
     // 9) If price decreased, record a refund
-    let refundInfo: { amount: number; method: string } | null = null;
+    let refundInfo: { amount: number; method: string; paymentId: number } | null = null;
     if (priceDiff < -0.01) {
       const refundAmt = Math.abs(priceDiff);
       const method = (req.body.refundMethod as string) || "cash";
-      refundInfo = { amount: refundAmt, method };
-      await tx.insert(paymentsTable).values({
+      const [refundRow] = await tx.insert(paymentsTable).values({
         billId: id,
         amount: `-${refundAmt.toFixed(2)}`,
         method,
         notes: `Refund for test swap: ${oldTestName} → ${newTest.name}`,
         recordedByName: performedBy,
-      });
+      }).returning();
+      refundInfo = { amount: refundAmt, method, paymentId: refundRow.id };
       const currentRefund = Number(bill.refundAmount);
       const newRefund = Math.round((currentRefund + refundAmt) * 100) / 100;
       const newPaidAfterRefund = Math.max(0, Math.round((paidAmount - refundAmt) * 100) / 100);
@@ -2188,7 +2311,7 @@ billsRouter.post("/:id/swap-test", async (req: StaffAuthRequest, res) => {
         billId: id,
         editedBy: performedBy,
         reason: reason.trim(),
-        changeType: "refund",
+        changeType: "refund_processed",
         oldValue: `paid=₹${paidAmount.toFixed(2)}`,
         newValue: `refund=₹${refundAmt.toFixed(2)} via ${method} (test swap)`,
       });
@@ -2219,6 +2342,7 @@ billsRouter.post("/:id/swap-test", async (req: StaffAuthRequest, res) => {
           billNumber: billForVoucher.billNumber,
           patientName: patientRow ? `${patientRow.firstName} ${patientRow.lastName}`.trim() : null,
           performedBy: performedBy || null,
+          paymentId: info.paymentId,
         }).catch(() => {});
       }
     }
@@ -2243,7 +2367,8 @@ billsRouter.post("/:id/swap-test", async (req: StaffAuthRequest, res) => {
 
 // ─── ICICI Billing Desk Gateway Integration ────────────────────────────────────
 import { PaymentEngine } from "../lib/payments/PaymentEngine";
-import { getIciciPublicBaseUrl } from "../lib/payments/iciciPublicBaseUrl";
+import { initiateIciciOrangePayment } from "../lib/payments/initiateIciciOrangePayment";
+import { resolveActiveGateway } from "../lib/payments/resolveActiveGateway";
 import { paymentLogsTable } from "@workspace/db/schema";
 import crypto from "node:crypto";
 import { logger } from "../lib/logger";
@@ -2272,8 +2397,8 @@ billsRouter.post("/:id/initiate-gateway-payment", async (req: StaffAuthRequest, 
 
   const [patient] = await db.select().from(patientsTable).where(eq(patientsTable.id, bill.patientId)).limit(1);
   const patientName = patient ? `${patient.firstName} ${patient.lastName}`.trim() : "VALUED PATIENT";
-  const patientPhone = patient?.phone || "9973497200";
-  const patientEmail = patient?.email || "";
+  const patientPhone = (patient?.phone || "9973497200").trim();
+  const patientEmail = (patient?.email || "").trim();
 
   // Generate unique transaction reference
   const txnRef = `BILLPAY-${id}-${crypto.randomBytes(3).toString("hex").toUpperCase()}`;
@@ -2284,21 +2409,17 @@ billsRouter.post("/:id/initiate-gateway-payment", async (req: StaffAuthRequest, 
     : null;
 
   try {
-    const base = getIciciPublicBaseUrl();
-    const returnUrl = `${base}/api/public/booking/icici-callback`;
-
-    // Fetch active gateway from settings
     const [settings] = await db.select().from(clinicSettingsTable).where(eq(clinicSettingsTable.id, 1)).limit(1);
-    const activeGateway = settings?.activePaymentGateway || "icici";
+    const activeGateway = resolveActiveGateway(settings || {}) || settings?.activePaymentGateway || "icici";
 
-    // Initiate payment via payment engine — same return URL normalization as webpage online booking
-    const result = await PaymentEngine.initiatePayment(activeGateway, {
+    // Same ICICI initiate path + return URL as webpage online booking (icici-initiate).
+    const result = await initiateIciciOrangePayment({
       bookingRef: txnRef,
       name: patientName,
       phone: patientPhone,
       email: patientEmail,
       amount: collectAmount,
-      returnUrl,
+      activeGateway,
       reqHeaders: {
         "x-forwarded-for": (req.headers["x-forwarded-for"] as string) || "",
         "user-agent": (req.headers["user-agent"] as string) || "",
@@ -2309,7 +2430,7 @@ billsRouter.post("/:id/initiate-gateway-payment", async (req: StaffAuthRequest, 
     });
 
     if (!result.success) {
-      res.status(400).json({ error: "Could not initiate payment gateway", details: result.errorMessage });
+      res.status(400).json({ error: "Could not initiate ICICI payment. Please try again.", details: result.errorMessage });
       return;
     }
 
@@ -2430,7 +2551,7 @@ billsRouter.get("/gateway-payment-status/:txnRef", async (req, res): Promise<voi
 
         if (!existingPayment) {
           const collectAmount = Number(logRecord.amount);
-          await tx.insert(paymentsTable).values({
+          const [insertedPayment] = await tx.insert(paymentsTable).values({
             billId,
             amount: collectAmount.toFixed(2),
             method: `Online (${provider.displayName})`,
@@ -2438,7 +2559,7 @@ billsRouter.get("/gateway-payment-status/:txnRef", async (req, res): Promise<voi
             settlementStatus: "captured",
             notes: `Paid online via ${provider.displayName} at Billing Desk.`,
             recordedByName: "Super Admin",
-          });
+          }).returning();
 
           const newPaid = Number(bill.paidAmount) + collectAmount;
           const refundAmount = Number(bill.refundAmount || 0);
@@ -2458,6 +2579,7 @@ billsRouter.get("/gateway-payment-status/:txnRef", async (req, res): Promise<voi
             billNumber: bill.billNumber,
             patientName: logRecord.patientName,
             performedBy: "Super Admin",
+            paymentId: insertedPayment.id,
           }).catch(() => {});
         }
       });

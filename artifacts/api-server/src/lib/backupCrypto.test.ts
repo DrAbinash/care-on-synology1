@@ -113,9 +113,12 @@ describe("encrypt → decrypt round trip (the proof a backup is restorable)", ()
     const enc = tmp("rotated.sql.enc");
     await encryptBackupFile(src, enc, { passphrase: "old-session", source: "SESSION_SECRET" });
 
+    // Prefer BACKUP_PASSPHRASE first in candidates — openssl AES-CBC can exit 0
+    // on a wrong passphrase (padding luck). decryptBackupToSql must reject
+    // non-SQL output and fall through to SESSION_SECRET.
     const out = await decryptBackupToSql(enc, TEST_DIR, { BACKUP_PASSPHRASE: "brand-new", SESSION_SECRET: "old-session" });
-    expect(out.keySource).toBe("SESSION_SECRET");
     expect(await fs.readFile(out.sqlPath, "utf-8")).toBe(SQL);
+    expect(out.keySource).toBe("SESSION_SECRET");
   });
 
   test("a wrong passphrase fails loudly instead of yielding garbage that would be fed to psql", async () => {

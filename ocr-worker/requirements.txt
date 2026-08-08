@@ -1,0 +1,12 @@
+# CARE OCR Worker — PaddleOCR 3.x (PP-OCRv5) sidecar for Windows AI PC
+# Install: see install-windows.ps1
+fastapi>=0.115.0,<1
+uvicorn[standard]>=0.32.0,<1
+pydantic>=2.7.0,<3
+python-multipart>=0.0.9
+Pillow>=10.0.0
+numpy>=1.24.0
+# PaddlePaddle: install the matching wheel for your Python + CUDA/CPU first
+# (see install-windows.ps1). Then:
+paddleocr>=3.0.0,<4
+pypdfium2>=4.30.0

@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { db } from "@workspace/db";
 import { structuredReportTemplatesTable } from "@workspace/db";
-import { eq, and } from "drizzle-orm";
+import { eq, and, sql } from "drizzle-orm";
 import { type StaffAuthRequest, FULL_ACCESS_ROLES } from "../middleware/requireStaffAuth";
 import { USG_STRUCTURED_TEMPLATE_PRESETS } from "../lib/usgReportTemplates";
 
@@ -92,17 +92,21 @@ const PRESETS = [
     sectionsJson: JSON.stringify({
       technique: "MRI Lumbo-sacral Spine: T1W and T2W sagittal, T2W axial at disc levels.",
       findingsItems: [
-        { label: "Alignment & Curvature", normal: "Normal lumbar lordosis maintained. No scoliosis." },
+        { label: "Alignment & Curvature", normal: "Normal lumbar lordosis maintained. No scoliosis or listhesis." },
         { label: "L1-L2", normal: "Normal disc height and signal. No disc herniation. Neural foramina patent. No spinal canal stenosis." },
-        { label: "L2-L3", normal: "Normal disc height and signal. No disc herniation. Neural foramina patent." },
-        { label: "L3-L4", normal: "Normal disc height and signal. No disc herniation. Neural foramina patent." },
-        { label: "L4-L5", normal: "Normal disc height and signal. No disc herniation. Neural foramina patent." },
-        { label: "L5-S1", normal: "Normal disc height and signal. No disc herniation. Neural foramina patent." },
+        { label: "L2-L3", normal: "Normal disc height and signal. No disc herniation. Neural foramina patent. No spinal canal stenosis." },
+        { label: "L3-L4", normal: "Normal disc height and signal. No disc herniation. Neural foramina patent. No spinal canal stenosis." },
+        { label: "L4-L5", normal: "Normal disc height and signal. No disc herniation. Neural foramina patent. No spinal canal stenosis." },
+        { label: "L5-S1", normal: "Normal disc height and signal. No disc herniation. Neural foramina patent. No spinal canal stenosis." },
         { label: "Vertebral Bodies", normal: "Normal height, signal and morphology throughout. No marrow infiltration or compression fracture." },
+        { label: "Facet Joints", normal: "Facet joints are unremarkable at the imaged levels. No significant arthropathy." },
+        { label: "Ligamentum Flavum", normal: "No significant ligamentum flavum hypertrophy." },
+        { label: "Spinal Canal", normal: "Spinal canal of adequate dimensions at all levels. No significant central stenosis." },
         { label: "Cord / Cauda Equina", normal: "Cord terminates at L1-L2 level. Normal signal. Cauda equina nerve roots appear normal." },
+        { label: "Paraspinal Soft Tissues", normal: "Paraspinal soft tissues are unremarkable. No collection or mass." },
       ],
     }),
-    defaultFindings: "Lumbar lordosis is preserved. Vertebral body heights and marrow signal are maintained throughout. Disc heights and signal intensity are preserved at all levels. No disc herniation, bulge or extrusion. Neural foramina are patent bilaterally at all levels. Spinal canal of adequate dimensions. Cauda equina nerve roots appear normal.",
+    defaultFindings: "Lumbar lordosis is preserved. Vertebral body heights and marrow signal are maintained throughout. Disc heights and signal intensity are preserved at all levels. No disc herniation, bulge or extrusion. Facet joints and ligamentum flavum are unremarkable. Neural foramina are patent bilaterally at all levels. Spinal canal of adequate dimensions. Cauda equina nerve roots appear normal. Paraspinal soft tissues are unremarkable.",
     defaultImpression: "Normal MRI Lumbo-sacral Spine. No disc herniation, nerve root compression or spinal canal stenosis.",
     macrosJson: JSON.stringify([
       { key: "disc_prolapse", label: "Disc Prolapse/HNP", text: "Posterior disc prolapse/herniation at [LEVEL] causing [mild/moderate/severe] [central/paracentral/foraminal] canal stenosis with [RIGHT/LEFT/bilateral] nerve root compression." },
@@ -119,13 +123,22 @@ const PRESETS = [
     sectionsJson: JSON.stringify({
       technique: "MRI Cervical Spine: T1W and T2W sagittal, T2W axial at disc levels.",
       findingsItems: [
-        { label: "Alignment & Curvature", normal: "Normal cervical lordosis. No subluxation." },
-        { label: "C2-C3 to C6-C7", normal: "Normal disc heights and signal. No herniation. Neural foramina patent. No cord compression." },
-        { label: "Vertebral Bodies", normal: "Normal height and marrow signal. No fracture or infiltration." },
-        { label: "Spinal Cord", normal: "Normal calibre and signal throughout. No myelopathic signal." },
+        { label: "Alignment & Curvature", normal: "Normal cervical lordosis. No subluxation or listhesis." },
+        { label: "Craniovertebral Junction", normal: "Normal. No Chiari malformation or craniovertebral junction anomaly." },
+        { label: "C2-C3", normal: "Normal disc height and signal. No disc herniation. Neural foramina patent. No cord compression." },
+        { label: "C3-C4", normal: "Normal disc height and signal. No disc herniation. Neural foramina patent. No cord compression." },
+        { label: "C4-C5", normal: "Normal disc height and signal. No disc herniation. Neural foramina patent. No cord compression." },
+        { label: "C5-C6", normal: "Normal disc height and signal. No disc herniation. Neural foramina patent. No cord compression." },
+        { label: "C6-C7", normal: "Normal disc height and signal. No disc herniation. Neural foramina patent. No cord compression." },
+        { label: "C7-T1", normal: "Normal disc height and signal. No disc herniation. Neural foramina patent." },
+        { label: "Vertebral Bodies", normal: "Normal height and marrow signal. No fracture, infiltration or significant spondylosis." },
+        { label: "Facet Joints / Uncovertebral", normal: "Facet and uncovertebral joints are unremarkable. No significant arthropathy." },
+        { label: "Spinal Canal", normal: "Spinal canal of adequate dimensions. No significant central stenosis." },
+        { label: "Spinal Cord", normal: "Normal calibre and signal throughout. No myelopathic signal change." },
+        { label: "Paraspinal Soft Tissues", normal: "Paraspinal soft tissues are unremarkable." },
       ],
     }),
-    defaultFindings: "Cervical lordosis maintained. Vertebral body heights and marrow signal normal. Disc heights and T2 signal preserved. No disc herniation or significant spondylotic change. Neural foramina patent bilaterally. Spinal cord normal in calibre and signal. No myelopathic signal change.",
+    defaultFindings: "Cervical lordosis maintained. Craniovertebral junction normal. Vertebral body heights and marrow signal normal. Disc heights and T2 signal preserved at C2-C3 through C7-T1. No disc herniation or significant spondylotic change. Facet/uncovertebral joints unremarkable. Neural foramina patent bilaterally. Spinal canal adequate. Spinal cord normal in calibre and signal. No myelopathic signal change. Paraspinal soft tissues unremarkable.",
     defaultImpression: "Normal MRI Cervical Spine. No cord compression or significant spondylosis.",
     macrosJson: JSON.stringify([
       { key: "myelopathy", label: "Cervical Myelopathy", text: "T2 hyperintense signal within the spinal cord at [LEVEL], consistent with myelopathic change secondary to [canal stenosis/disc herniation]." },
@@ -141,16 +154,31 @@ const PRESETS = [
     sectionsJson: JSON.stringify({
       technique: "MRI Dorsal (Thoracic) Spine: T1W and T2W sagittal, axial at selected levels.",
       findingsItems: [
-        { label: "Alignment", normal: "Normal dorsal kyphosis. No scoliosis." },
-        { label: "Vertebral Bodies", normal: "Normal height, signal and morphology. No compression fracture or infiltration." },
-        { label: "Discs", normal: "Preserved disc heights and signal at all levels. No herniation." },
-        { label: "Spinal Cord", normal: "Normal calibre and signal throughout." },
+        { label: "Alignment & Curvature", normal: "Normal dorsal kyphosis. No scoliosis or listhesis." },
+        { label: "T1-T2", normal: "Normal disc height and signal. No disc herniation. Neural foramina patent." },
+        { label: "T2-T3", normal: "Normal disc height and signal. No disc herniation. Neural foramina patent." },
+        { label: "T3-T4", normal: "Normal disc height and signal. No disc herniation. Neural foramina patent." },
+        { label: "T4-T5", normal: "Normal disc height and signal. No disc herniation. Neural foramina patent." },
+        { label: "T5-T6", normal: "Normal disc height and signal. No disc herniation. Neural foramina patent." },
+        { label: "T6-T7", normal: "Normal disc height and signal. No disc herniation. Neural foramina patent." },
+        { label: "T7-T8", normal: "Normal disc height and signal. No disc herniation. Neural foramina patent." },
+        { label: "T8-T9", normal: "Normal disc height and signal. No disc herniation. Neural foramina patent." },
+        { label: "T9-T10", normal: "Normal disc height and signal. No disc herniation. Neural foramina patent." },
+        { label: "T10-T11", normal: "Normal disc height and signal. No disc herniation. Neural foramina patent." },
+        { label: "T11-T12", normal: "Normal disc height and signal. No disc herniation. Neural foramina patent." },
+        { label: "Vertebral Bodies", normal: "Normal height, signal and morphology. No compression fracture or marrow infiltration." },
+        { label: "Facet Joints", normal: "Facet joints are unremarkable at the imaged levels." },
+        { label: "Spinal Canal", normal: "Spinal canal of adequate dimensions. No significant stenosis or epidural mass." },
+        { label: "Spinal Cord", normal: "Normal calibre and signal throughout the thoracic cord. No syrinx or myelopathic focus." },
+        { label: "Posterior Elements", normal: "Posterior elements are intact. No significant facet arthropathy." },
+        { label: "Paraspinal Soft Tissues", normal: "Paraspinal soft tissues are unremarkable. No collection or mass." },
       ],
     }),
-    defaultFindings: "Normal dorsal kyphosis. Vertebral body heights and marrow signal are maintained. Disc heights and signal preserved. No disc herniation. Spinal cord normal in calibre and signal. No epidural collection or mass.",
-    defaultImpression: "Normal MRI Dorsal Spine. No focal pathology identified.",
+    defaultFindings: "Normal dorsal kyphosis. Vertebral body heights and marrow signal are maintained. Disc heights and signal are preserved from T1-T2 through T11-T12 with no herniation. Facet joints unremarkable. Spinal canal adequate. Spinal cord normal in calibre and signal. Posterior elements intact. No epidural collection or paraspinal mass.",
+    defaultImpression: "Normal MRI Dorsal Spine. No focal disc herniation, cord compression or marrow pathology.",
     macrosJson: JSON.stringify([
       { key: "compression_fracture", label: "Compression Fracture", text: "Wedge compression fracture of [VERTEBRAL LEVEL] with [X]% loss of height. [Acute / Subacute / Chronic] based on signal characteristics." },
+      { key: "disc_herniation", label: "Thoracic Disc Herniation", text: "Posterior disc herniation at [LEVEL] causing [mild/moderate/severe] canal stenosis with [cord contact / cord compression]." },
     ]),
     isPreset: true,
   },
@@ -169,6 +197,9 @@ const PRESETS = [
         { label: "L4-L5", normal: "Normal disc height and signal. No disc herniation. Neural foramina patent." },
         { label: "L5-S1", normal: "Normal disc height and signal. No disc herniation. Neural foramina patent." },
         { label: "Lumbar Vertebral Bodies", normal: "Normal height, signal and morphology. No marrow infiltration or compression fracture." },
+        { label: "Facet Joints", normal: "Facet joints are unremarkable at the imaged levels. No significant arthropathy." },
+        { label: "Ligamentum Flavum", normal: "No significant ligamentum flavum hypertrophy." },
+        { label: "Spinal Canal", normal: "Spinal canal of adequate dimensions at all lumbar levels. No significant central stenosis." },
         { label: "Conus & Cauda Equina", normal: "Conus medullaris terminates at the L1-L2 level with normal signal. Cauda equina nerve roots appear normal." },
         { label: "Screening — Craniovertebral Junction", normal: "Normal. No Chiari malformation or abnormal signal." },
         { label: "Screening — Cervical Spine", normal: "Normal alignment and vertebral marrow signal. No significant disc herniation or cord compression on screening sagittals." },
@@ -179,7 +210,7 @@ const PRESETS = [
         { label: "Paraspinal Soft Tissues", normal: "Unremarkable." },
       ],
     }),
-    defaultFindings: "Lumbar lordosis is preserved. Vertebral body heights and marrow signal are maintained. Disc heights and signal are preserved at all lumbosacral levels with no herniation or canal stenosis. Neural foramina are patent bilaterally. Conus and cauda equina are normal. Whole spine screening sagittals of the cervical and dorsal spine show normal alignment, marrow signal and cord signal, with no significant disc herniation or cord compression.",
+    defaultFindings: "Lumbar lordosis is preserved. Vertebral body heights and marrow signal are maintained. Disc heights and signal are preserved at all lumbosacral levels with no herniation or canal stenosis. Facet joints and ligamentum flavum are unremarkable. Neural foramina are patent bilaterally. Conus and cauda equina are normal. Whole spine screening sagittals of the cervical and dorsal spine show normal alignment, marrow signal and cord signal, with no significant disc herniation or cord compression.",
     defaultImpression: "Normal MRI Lumbo-sacral Spine. Whole spine screening is unremarkable — no cord compression, significant disc herniation or marrow abnormality.",
     macrosJson: JSON.stringify([
       { key: "disc_prolapse", label: "Disc Prolapse/HNP", text: "Posterior disc prolapse/herniation at [LEVEL] causing [mild/moderate/severe] [central/paracentral/foraminal] canal stenosis with [RIGHT/LEFT/bilateral] nerve root compression." },
@@ -198,10 +229,16 @@ const PRESETS = [
       technique: "MRI Cervical Spine with whole spine screening: T1W and T2W sagittal of the cervical spine with axial T2W at the disc levels, together with sagittal T1W/T2W screening sequences of the dorsal and lumbosacral spine.",
       findingsItems: [
         { label: "Alignment & Curvature", normal: "Normal cervical lordosis. No subluxation or listhesis." },
-        { label: "C2-C3 to C6-C7", normal: "Normal disc heights and signal at all cervical levels. No disc herniation or significant spondylotic change. Neural foramina patent. No cord compression." },
-        { label: "C7-D1", normal: "Normal disc height and signal. No herniation. Neural foramen patent." },
-        { label: "Vertebral Bodies", normal: "Normal height and marrow signal. No fracture or infiltration." },
         { label: "Craniovertebral Junction", normal: "Normal. No Chiari malformation or abnormal signal." },
+        { label: "C2-C3", normal: "Normal disc height and signal. No disc herniation. Neural foramina patent. No cord compression." },
+        { label: "C3-C4", normal: "Normal disc height and signal. No disc herniation. Neural foramina patent. No cord compression." },
+        { label: "C4-C5", normal: "Normal disc height and signal. No disc herniation. Neural foramina patent. No cord compression." },
+        { label: "C5-C6", normal: "Normal disc height and signal. No disc herniation. Neural foramina patent. No cord compression." },
+        { label: "C6-C7", normal: "Normal disc height and signal. No disc herniation. Neural foramina patent. No cord compression." },
+        { label: "C7-T1", normal: "Normal disc height and signal. No herniation. Neural foramina patent." },
+        { label: "Vertebral Bodies", normal: "Normal height and marrow signal. No fracture or infiltration." },
+        { label: "Facet Joints / Uncovertebral", normal: "Facet and uncovertebral joints are unremarkable." },
+        { label: "Spinal Canal", normal: "Spinal canal of adequate dimensions. No significant central stenosis." },
         { label: "Spinal Cord", normal: "Normal calibre and signal. No myelopathic signal change." },
         { label: "Screening — Dorsal Spine", normal: "Normal alignment and vertebral marrow signal. No significant disc herniation or cord compression on screening sagittals." },
         { label: "Screening — Lumbosacral Spine", normal: "Normal alignment and vertebral marrow signal. No significant disc herniation. Conus and cauda equina normal on screening sagittals." },
@@ -211,7 +248,7 @@ const PRESETS = [
         { label: "Paraspinal Soft Tissues", normal: "Unremarkable." },
       ],
     }),
-    defaultFindings: "Cervical lordosis is maintained. Vertebral body heights and marrow signal are normal. Disc heights and T2 signal are preserved with no herniation or significant spondylotic change. Neural foramina are patent bilaterally. Cervical cord is normal in calibre and signal. Whole spine screening sagittals of the dorsal and lumbosacral spine show normal alignment, marrow signal and cord signal, with no significant disc herniation or cord compression.",
+    defaultFindings: "Cervical lordosis is maintained. Craniovertebral junction normal. Vertebral body heights and marrow signal are normal. Disc heights and T2 signal are preserved at C2-C3 through C7-T1 with no herniation or significant spondylotic change. Neural foramina are patent bilaterally. Cervical cord is normal in calibre and signal. Whole spine screening sagittals of the dorsal and lumbosacral spine show normal alignment, marrow signal and cord signal, with no significant disc herniation or cord compression.",
     defaultImpression: "Normal MRI Cervical Spine. Whole spine screening is unremarkable — no cord compression, significant disc herniation or marrow abnormality.",
     macrosJson: JSON.stringify([
       { key: "myelopathy", label: "Cervical Myelopathy", text: "T2 hyperintense signal within the spinal cord at [LEVEL], consistent with myelopathic change secondary to [canal stenosis/disc herniation]." },
@@ -439,6 +476,158 @@ const PRESETS = [
 ] as const;
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
+
+function countFindingsItems(sectionsJson: string | null | undefined): number {
+  if (!sectionsJson) return 0;
+  try {
+    const parsed = JSON.parse(sectionsJson) as { findingsItems?: unknown[] };
+    return Array.isArray(parsed.findingsItems) ? parsed.findingsItems.length : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Upgrade existing *preset* rows whose anatomy sections lag the code PRESETS
+ * (e.g. old cervical had 4 bundled sections; new has per-level C2–C7).
+ * Only touches is_preset=true rows and only when the new preset has MORE
+ * findingsItems — never shrinks a clinic-customized denser template.
+ */
+async function upgradePresetTemplateSections(): Promise<number> {
+  const allPresets = [...PRESETS, ...USG_STRUCTURED_TEMPLATE_PRESETS];
+  let upgraded = 0;
+  for (const preset of allPresets) {
+    const [existing] = await db
+      .select({
+        id: structuredReportTemplatesTable.id,
+        sectionsJson: structuredReportTemplatesTable.sectionsJson,
+      })
+      .from(structuredReportTemplatesTable)
+      .where(and(
+        eq(structuredReportTemplatesTable.templateName, preset.templateName),
+        eq(structuredReportTemplatesTable.isPreset, true),
+      ))
+      .limit(1);
+    if (!existing) continue;
+    const oldCount = countFindingsItems(existing.sectionsJson);
+    const newCount = countFindingsItems(preset.sectionsJson);
+    if (newCount <= oldCount) continue;
+    // USG presets omit defaultImpression; MRI/CT presets include it.
+    const impression =
+      "defaultImpression" in preset
+        ? ((preset as { defaultImpression?: string | null }).defaultImpression ?? null)
+        : null;
+    await db.update(structuredReportTemplatesTable)
+      .set({
+        sectionsJson: preset.sectionsJson,
+        defaultFindings: preset.defaultFindings ?? null,
+        defaultImpression: impression,
+        macrosJson: preset.macrosJson ?? null,
+        updatedAt: new Date(),
+        updatedBy: "system-spine-format-upgrade",
+      })
+      .where(eq(structuredReportTemplatesTable.id, existing.id));
+    upgraded++;
+  }
+  return upgraded;
+}
+
+/**
+ * Remap Quick Select anatomical_section labels that still point at old bundled
+ * spine sections (e.g. "C2-C3 to C6-C7") onto per-level / {level} targets.
+ */
+async function upgradeSpineFindingSections(): Promise<number> {
+  let remapped = 0;
+  try {
+    const r1 = await db.execute(sql`
+      UPDATE radiology_quick_findings
+      SET anatomical_section = '{level}',
+          updated_at = NOW()
+      WHERE study_type = 'Cervical Spine'
+        AND anatomical_section IN ('C2-C3 to C6-C7', 'C7-D1', 'C7-T1')
+        AND (
+          properties LIKE '%level%'
+          OR questions_json LIKE '%"key":"level"%'
+          OR questions_json LIKE '%"key": "level"%'
+          OR label IN ('Disc Bulge', 'Canal Stenosis', 'Foraminal Narrowing')
+        )
+    `);
+    remapped += Number((r1 as { rowCount?: number })?.rowCount ?? 0);
+
+    const r2 = await db.execute(sql`
+      UPDATE radiology_quick_findings
+      SET anatomical_section = REPLACE(
+            UPPER(SUBSTRING(label FROM '([Cc][0-9]+-[CcTtDd][0-9]+)')),
+            '-D', '-T'
+          ),
+          updated_at = NOW()
+      WHERE study_type = 'Cervical Spine'
+        AND anatomical_section IN ('C2-C3 to C6-C7', 'C7-D1', 'C7-T1')
+        AND label ~* '^[Cc][0-9]+-[CcTtDd][0-9]+'
+        AND SUBSTRING(label FROM '([Cc][0-9]+-[CcTtDd][0-9]+)') IS NOT NULL
+    `);
+    remapped += Number((r2 as { rowCount?: number })?.rowCount ?? 0);
+
+    const r3 = await db.execute(sql`
+      UPDATE radiology_quick_findings
+      SET anatomical_section = 'C7-T1', updated_at = NOW()
+      WHERE study_type = 'Cervical Spine'
+        AND anatomical_section IN ('C7-D1', 'C7-D1 disc')
+    `);
+    remapped += Number((r3 as { rowCount?: number })?.rowCount ?? 0);
+
+    const r4 = await db.execute(sql`
+      UPDATE radiology_quick_findings
+      SET anatomical_section = CASE anatomical_section
+        WHEN 'Spinal Canal Stenosis' THEN 'Spinal Canal'
+        WHEN 'Facet Arthropathy' THEN 'Facet Joints'
+        WHEN 'Ligamentum Flavum Hypertrophy' THEN 'Ligamentum Flavum'
+        ELSE anatomical_section
+      END,
+      updated_at = NOW()
+      WHERE study_type IN ('LS Spine', 'Lumbar Spine')
+        AND anatomical_section IN (
+          'Spinal Canal Stenosis',
+          'Facet Arthropathy',
+          'Ligamentum Flavum Hypertrophy'
+        )
+    `);
+    remapped += Number((r4 as { rowCount?: number })?.rowCount ?? 0);
+  } catch {
+    /* non-fatal */
+  }
+  return remapped;
+}
+
+async function ensurePresetTemplatesSeeded(): Promise<number> {
+  const allPresets = [...PRESETS, ...USG_STRUCTURED_TEMPLATE_PRESETS];
+  let inserted = 0;
+  for (const preset of allPresets) {
+    const existing = await db.select({ id: structuredReportTemplatesTable.id })
+      .from(structuredReportTemplatesTable)
+      .where(and(
+        eq(structuredReportTemplatesTable.templateName, preset.templateName),
+        eq(structuredReportTemplatesTable.isPreset, true),
+      ))
+      .limit(1);
+    if (existing.length > 0) continue;
+    await db.insert(structuredReportTemplatesTable).values({
+      ...preset,
+      createdBy: "system",
+    });
+    inserted++;
+  }
+  return inserted;
+}
+
+/** Seed missing + upgrade lagging spine/brain presets. Safe to call often. */
+export async function syncStructuredReportPresets(): Promise<{ inserted: number; upgraded: number; findingsRemapped: number }> {
+  const inserted = await ensurePresetTemplatesSeeded();
+  const upgraded = await upgradePresetTemplateSections();
+  const findingsRemapped = await upgradeSpineFindingSections();
+  return { inserted, upgraded, findingsRemapped };
+}
+
 structuredReportTemplatesRouter.get("/", async (req, res): Promise<void> => {
   const sReq = req as StaffAuthRequest;
   if (!sReq.staffSession) { res.status(401).json({ error: "Unauthorized" }); return; }
@@ -447,12 +636,59 @@ structuredReportTemplatesRouter.get("/", async (req, res): Promise<void> => {
   let query = db.select().from(structuredReportTemplatesTable).$dynamic();
   if (modality) query = query.where(eq(structuredReportTemplatesTable.modality, modality));
 
-  const rows = await query.orderBy(
+  // Keep clinic presets in sync with code (spine per-level expansion, etc.).
+  try { await syncStructuredReportPresets(); } catch { /* non-fatal */ }
+
+  let rows = await query.orderBy(
     structuredReportTemplatesTable.modality,
     structuredReportTemplatesTable.bodyPart,
     structuredReportTemplatesTable.templateName,
   );
+
+  // First load on a fresh DB: auto-seed built-in MRI/CT/USG presets so the
+  // Reporting Workspace Templates tab is never empty out of the box.
+  if (rows.length === 0 && !modality && !bodyPart) {
+    await ensurePresetTemplatesSeeded();
+    rows = await query.orderBy(
+      structuredReportTemplatesTable.modality,
+      structuredReportTemplatesTable.bodyPart,
+      structuredReportTemplatesTable.templateName,
+    );
+  }
+
   res.json(rows);
+});
+
+/** POST /api/structured-report-templates/seed — load built-in presets AND
+ *  upgrade lagging spine/brain anatomy sections (idempotent). */
+structuredReportTemplatesRouter.post("/seed", async (req, res): Promise<void> => {
+  const sReq = req as StaffAuthRequest;
+  if (!sReq.staffSession || !FULL_ACCESS_ROLES.has(sReq.staffSession.role)) {
+    res.status(403).json({ error: "Only admin can seed templates" }); return;
+  }
+
+  const result = await syncStructuredReportPresets();
+  res.json({
+    ...result,
+    total: PRESETS.length + USG_STRUCTURED_TEMPLATE_PRESETS.length,
+  });
+});
+
+/** POST /api/structured-report-templates/upgrade-spine-formats —
+ *  Force the spine anatomy expansion upgrade (Reading Suite button). */
+structuredReportTemplatesRouter.post("/upgrade-spine-formats", async (req, res): Promise<void> => {
+  const sReq = req as StaffAuthRequest;
+  if (!sReq.staffSession || !FULL_ACCESS_ROLES.has(sReq.staffSession.role)) {
+    res.status(403).json({ error: "Only admin can upgrade templates" }); return;
+  }
+  const result = await syncStructuredReportPresets();
+  res.json({
+    ok: true,
+    ...result,
+    message: result.upgraded > 0 || result.findingsRemapped > 0
+      ? `Upgraded ${result.upgraded} template(s); remapped ${result.findingsRemapped} Quick Select section(s).`
+      : "Spine formats already up to date.",
+  });
 });
 
 structuredReportTemplatesRouter.get("/:id", async (req, res): Promise<void> => {
@@ -522,34 +758,3 @@ structuredReportTemplatesRouter.delete("/:id", async (req, res): Promise<void> =
   res.json({ ok: true });
 });
 
-/** POST /api/structured-report-templates/seed — load built-in presets:
- *  the MRI/CT/X-ray/USG/Doppler structured presets above, plus the 13 USG
- *  auto-generate skeletons from lib/usgReportTemplates.ts (modality "USG",
- *  studyType = UsgTemplateId). Once seeded, the rows here — not the code —
- *  are what /api/usg-reports renders from; edits apply on the next
- *  auto-generate/regenerate. Idempotent: existing preset names are skipped. */
-structuredReportTemplatesRouter.post("/seed", async (req, res): Promise<void> => {
-  const sReq = req as StaffAuthRequest;
-  if (!sReq.staffSession || !FULL_ACCESS_ROLES.has(sReq.staffSession.role)) {
-    res.status(403).json({ error: "Only admin can seed templates" }); return;
-  }
-
-  const allPresets = [...PRESETS, ...USG_STRUCTURED_TEMPLATE_PRESETS];
-  let inserted = 0;
-  for (const preset of allPresets) {
-    const existing = await db.select({ id: structuredReportTemplatesTable.id })
-      .from(structuredReportTemplatesTable)
-      .where(and(
-        eq(structuredReportTemplatesTable.templateName, preset.templateName),
-        eq(structuredReportTemplatesTable.isPreset, true),
-      ))
-      .limit(1);
-    if (existing.length > 0) continue; // already seeded
-    await db.insert(structuredReportTemplatesTable).values({
-      ...preset,
-      createdBy: "system",
-    });
-    inserted++;
-  }
-  res.json({ inserted, total: allPresets.length });
-});

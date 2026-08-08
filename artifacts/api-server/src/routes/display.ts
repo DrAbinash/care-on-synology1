@@ -199,7 +199,9 @@ async function fetchQueueData(opts: {
         roomNumber: tokens[0]?.roomNumber ?? "",
         floorLabel: tokens[0]?.floorLabel ?? "",
         nowServing: serving ?? null,
-        waiting: waiting.slice(0, 8).map((t, i) => ({ ...t, estimatedWaitMinutes: Math.round(avgMinutes * (i + 1)) })),
+        // Cap high enough for landscape "Next Patients" (settings allow up to ~15).
+        // Previously sliced at 8, so boards with nextPatientCount > 8 looked incomplete.
+        waiting: waiting.slice(0, 20).map((t, i) => ({ ...t, estimatedWaitMinutes: Math.round(avgMinutes * (i + 1)) })),
         waitingCount: waiting.length,
       };
     }).sort((a, b) => a.department.localeCompare(b.department)),

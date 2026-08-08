@@ -21,10 +21,15 @@ import { writeReferralEvent } from "./audit";
 import { enqueueOutboxEvent } from "./outbox";
 import { assertTransition, isReferralStatus, canTransition } from "./referralStateMachine";
 import type { ReferralStatus } from "@workspace/db";
+import { sendWhatsAppNow } from "../whatsapp/WhatsAppOutbox";
+
+function carePublicBaseUrl(): string {
+  return (process.env.PUBLIC_BASE_URL || process.env.APP_PUBLIC_URL || process.env.SITE_URL || "")
+    .replace(/\/+$/, "");
+}
 
 export async function reconcileResults(opts: { limit?: number } = {}): Promise<{ scanned: number; emitted: number; critical: number }> {
   const limit = opts.limit ?? 50;
-  // Referrals with a CARE order that are still in fulfilment.
   const refs = await db
     .select()
     .from(diagnosticReferralsTable)
@@ -48,16 +53,11 @@ export async function reconcileResults(opts: { limit?: number } = {}): Promise<{
     for (const it of items) if (it.careOrderTestId) itemByOrderTest.set(it.careOrderTestId, it.id);
 
     for (const rep of reports) {
-      // Idempotency guard — skip if already linked/emitted.
       const [linked] = await db.select({ id: externalResultLinksTable.id }).from(externalResultLinksTable).where(and(eq(externalResultLinksTable.referralId, ref.id), eq(externalResultLinksTable.careReportId, rep.id))).limit(1);
       if (linked) continue;
 
       const referralItemId = rep.orderTestId ? itemByOrderTest.get(rep.orderTestId) ?? null : null;
 
-      // Phase 3: an AMENDMENT is a fresh signed patient_reports row (new id), so
-      // the idempotency guard above never matches it. Detect it via the
-      // amendment linkage table and emit diagnostic_report.amended (not
-      // finalised) so HOPE supersedes the prior version instead of duplicating.
       const [amendment] = await db
         .select()
         .from(patientReportAmendmentsTable)
@@ -72,6 +72,18 @@ export async function reconcileResults(opts: { limit?: number } = {}): Promise<{
           .limit(1);
         originalReportNumber = orig?.reportNumber ?? null;
       }
+
+      // Mint public token so HOPE can download the PDF (dynamic import avoids cycles).
+      let reportToken: string | null = rep.publicToken ?? null;
+      try {
+        const { ensurePublicToken } = await import("../../routes/patient-reports.js");
+        reportToken = (await ensurePublicToken(rep.id)) ?? reportToken;
+      } catch (err) {
+        console.warn("[integration] ensurePublicToken failed:", (err as Error)?.message);
+      }
+      const base = carePublicBaseUrl();
+      const pdfUrl = reportToken && base ? `${base}/api/p/r/${encodeURIComponent(reportToken)}/pdf` : null;
+      const reportPageUrl = reportToken && base ? `${base}/p/r/${encodeURIComponent(reportToken)}` : null;
 
       await db.transaction(async (tx) => {
         const [link] = await tx.insert(externalResultLinksTable).values({
@@ -89,7 +101,7 @@ export async function reconcileResults(opts: { limit?: number } = {}): Promise<{
           finalisingDoctor: rep.verifiedByName ?? rep.signedByName ?? null,
           reportRef: rep.reportNumber,
         }).returning({ id: externalResultLinksTable.id }).catch(() => [undefined as unknown as { id: number }]);
-        if (!link) return; // unique race — another worker linked it
+        if (!link) return;
 
         const finalisedEvent = await enqueueOutboxEvent(tx, {
           eventType: amendment ? "diagnostic_report.amended" : "diagnostic_report.finalised",
@@ -100,11 +112,8 @@ export async function reconcileResults(opts: { limit?: number } = {}): Promise<{
             reportNumber: rep.reportNumber, resultType: rep.type, reportStatus: amendment ? "amended" : rep.status,
             isCritical: rep.isCritical, finalisedAt: rep.verifiedAt ?? rep.updatedAt, finalisingDoctor: rep.verifiedByName ?? rep.signedByName ?? null,
             title: rep.title, impression: rep.impression ?? null,
-            // Phase 2: a tokenized public report reference (when one exists), so
-            // HOPE can deep-link the finalised report from the patient record.
-            reportRef: rep.reportNumber, reportToken: rep.publicToken ?? null,
-            // Phase 3: amendment provenance — lets HOPE supersede the prior
-            // version and surface the mandatory amendment reason (medico-legal).
+            reportRef: rep.reportNumber, reportToken,
+            pdfUrl, reportUrl: reportPageUrl,
             ...(amendment ? {
               amended: true,
               supersedesReportNumber: originalReportNumber,
@@ -117,13 +126,16 @@ export async function reconcileResults(opts: { limit?: number } = {}): Promise<{
         await tx.update(externalResultLinksTable).set({ emittedOutboxId: finalisedEvent.id }).where(eq(externalResultLinksTable.id, link.id));
 
         if (rep.isCritical) {
-          // A critical result gets its OWN event — a normal "report ready" is
-          // not sufficient (brief §13).
           await enqueueOutboxEvent(tx, {
             eventType: "diagnostic_result.critical",
             idempotencyKey: `diagnostic_result.critical:${ref.referralUuid}:${rep.id}`,
             correlationId: ref.referralUuid, aggregateId: ref.referralUuid, partnerId: ref.createdByPartnerId ?? null,
-            payload: { referralUuid: ref.referralUuid, careReportId: rep.id, reportNumber: rep.reportNumber, criticalNote: rep.criticalNote ?? null, resultLinkId: link.id, finalisingDoctor: rep.verifiedByName ?? null },
+            payload: {
+              referralUuid: ref.referralUuid, careReportId: rep.id, reportNumber: rep.reportNumber,
+              criticalNote: rep.criticalNote ?? null, resultLinkId: link.id,
+              finalisingDoctor: rep.verifiedByName ?? null,
+              pdfUrl, reportUrl: reportPageUrl, reportToken,
+            },
           });
           await writeReferralEvent(tx, { referralId: ref.id, itemId: referralItemId, eventType: "result.critical", actorType: "system", organisation: "CARE", reason: rep.criticalNote ?? "critical_result" });
         }
@@ -131,16 +143,46 @@ export async function reconcileResults(opts: { limit?: number } = {}): Promise<{
         if (referralItemId) {
           await tx.update(diagnosticReferralItemsTable).set({ itemStatus: "reported" }).where(eq(diagnosticReferralItemsTable.id, referralItemId));
         }
-        await writeReferralEvent(tx, { referralId: ref.id, itemId: referralItemId, eventType: amendment ? "report.amended" : "report.finalised", actorType: "system", organisation: "CARE", payload: { careReportId: rep.id, reportNumber: rep.reportNumber, isCritical: rep.isCritical, ...(amendment ? { supersedesReportNumber: originalReportNumber, amendmentSequence: amendment.sequenceNumber } : {}) } });
+        await writeReferralEvent(tx, {
+          referralId: ref.id, itemId: referralItemId,
+          eventType: amendment ? "report.amended" : "report.finalised",
+          actorType: "system", organisation: "CARE",
+          payload: {
+            careReportId: rep.id, reportNumber: rep.reportNumber, isCritical: rep.isCritical, pdfUrl,
+            ...(amendment ? { supersedesReportNumber: originalReportNumber, amendmentSequence: amendment.sequenceNumber } : {}),
+          },
+        });
       });
+
+      // Care-attributed WhatsApp only (Care Meta / Care books — never Hope Hospital or Medicals).
+      if (ref.patientPhone && !amendment) {
+        const link = reportPageUrl || pdfUrl;
+        const text = [
+          `Care Diagnostics: your report${rep.title ? ` (${rep.title})` : ""} is ready.`,
+          link ? `View/download: ${link}` : null,
+          "This message is from Care Diagnostics (separate from Hope Hospital).",
+        ].filter(Boolean).join("\n");
+        try {
+          await sendWhatsAppNow({
+            recipientPhone: ref.patientPhone,
+            messagePurpose: "report_ready",
+            text,
+            patientId: ref.carePatientId ?? null,
+            reportId: rep.id,
+            idempotencyKey: `hope-referral-report-ready:${ref.referralUuid}:${rep.id}`,
+            createdBy: "hope-care-integration",
+          });
+        } catch (waErr) {
+          console.warn("[integration] report_ready WhatsApp failed:", (waErr as Error)?.message);
+        }
+      }
+
       emitted++;
       if (rep.isCritical) critical++;
     }
 
-    // Advance the referral header toward REPORTED (guarded).
     if (isReferralStatus(ref.status)) {
-      const anyDelivered = reports.some((r) => r.status === "delivered");
-      const target: ReferralStatus = anyDelivered ? "REPORTED" : "REPORTED";
+      const target: ReferralStatus = "REPORTED";
       if (canTransition(ref.status as ReferralStatus, target) && ref.status !== target) {
         await db.transaction(async (tx) => {
           try {

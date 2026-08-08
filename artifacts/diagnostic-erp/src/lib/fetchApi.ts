@@ -105,9 +105,49 @@ const MAX_DELAY_MS  = 8000; // cap at 8s
 function isTransientError(err: unknown, status?: number): boolean {
   // Network-level failure (no response): TypeError from fetch()
   if (err instanceof TypeError) return true;
-  // Server-side transient: gateway errors and service unavailable
+  // Server-side transient: gateway errors and Cloudflare tunnel outages
   if (status === 502 || status === 503 || status === 504) return true;
+  if (status === 521 || status === 522 || status === 523) return true;
   return false;
+}
+
+/** Never surface raw Cloudflare/HTML gateway pages in toasts. */
+export function sanitizeApiErrorMessage(text: string, status: number, statusText: string): string {
+  const trimmed = (text || "").trim();
+  if (!trimmed) return statusText || `Request failed (${status})`;
+  const lower = trimmed.toLowerCase();
+  const looksHtml =
+    /^<!doctype/i.test(trimmed) ||
+    /^<html/i.test(trimmed) ||
+    lower.includes("cloudflare") ||
+    lower.includes("cf-ray") ||
+    lower.includes("tunnel error") ||
+    lower.includes("sparrow.cloudflare");
+  if (looksHtml) {
+    if (status === 521 || status === 522 || status === 523) {
+      return `ERP server unreachable via tunnel (${status}). Check Cloudflare tunnel / NAS, then retry.`;
+    }
+    if (status === 502 || status === 503 || status === 504) {
+      return `Server temporarily unavailable (${status})`;
+    }
+    return `Server error (${status}). The ERP returned a gateway page instead of data — reload or use LAN.`;
+  }
+  try {
+    const parsed = JSON.parse(trimmed) as { error?: string; message?: string };
+    const err = (parsed.error || "").trim();
+    const detail = (parsed.message || "").trim();
+    // Many API routes return { error: "Internal server error", message: "<real cause>" }.
+    // Prefer the real cause so staff/toasts are actionable instead of opaque.
+    const generic =
+      !err ||
+      /^internal server error$/i.test(err) ||
+      /^error$/i.test(err) ||
+      /^request failed$/i.test(err);
+    if (generic && detail) return detail;
+    return err || detail || statusText || `Request failed (${status})`;
+  } catch {
+    return trimmed.length > 240 ? `${trimmed.slice(0, 240)}…` : trimmed;
+  }
 }
 
 function retryDelay(attempt: number): number {
@@ -129,6 +169,33 @@ export class NetworkError extends Error {
     super(message);
     this.name = "NetworkError";
   }
+}
+
+/**
+ * True when a billing save should queue locally instead of failing outright.
+ * Covers pure network failures AND gateway errors (502/503/504) common during
+ * NAS reboots when the reverse proxy answers but Docker services are still down.
+ */
+export function isQueueableBillingError(err: unknown): boolean {
+  if (err instanceof NetworkError) return true;
+  if (err instanceof Error) {
+    const m = err.message.toLowerCase();
+    return (
+      m.includes("502") ||
+      m.includes("503") ||
+      m.includes("504") ||
+      m.includes("521") ||
+      m.includes("522") ||
+      m.includes("523") ||
+      m.includes("bad gateway") ||
+      m.includes("service unavailable") ||
+      m.includes("gateway timeout") ||
+      m.includes("server not responding") ||
+      m.includes("server temporarily unavailable") ||
+      m.includes("unreachable via tunnel")
+    );
+  }
+  return false;
 }
 
 // After a NETWORK-level failure (no response at all), wait for connectivity
@@ -188,9 +255,7 @@ async function fetchWithRetry(path: string, init?: RequestInit): Promise<Respons
       }
       // Last attempt or non-transient: surface the original network error
       throw new NetworkError(
-        navigator.onLine
-          ? "Server not responding — please check your connection and try again."
-          : "No internet connection — waiting for network to return."
+        "Server not responding — if the internet is down, we will use the local NAS when possible."
       );
     }
 
@@ -203,9 +268,14 @@ async function fetchWithRetry(path: string, init?: RequestInit): Promise<Respons
       }
 
       const text = await res.text();
-      let parsed: { error?: string; message?: string } = {};
-      try { parsed = JSON.parse(text); } catch { /* empty body or non-JSON error */ }
-      const message = parsed.error || parsed.message || text || res.statusText;
+      const message = sanitizeApiErrorMessage(text, res.status, res.statusText);
+
+      // NAS reboot / container restart / Cloudflare tunnel down: reverse proxy
+      // often returns 502–504 or 521–523 while services are still starting.
+      if (res.status === 502 || res.status === 503 || res.status === 504
+        || res.status === 521 || res.status === 522 || res.status === 523) {
+        throw new NetworkError(`Server temporarily unavailable (${res.status})`);
+      }
 
       // A 401 expires the session when it comes from a genuine session
       // endpoint OR when the server explicitly signals the session is dead

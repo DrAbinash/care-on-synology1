@@ -49,11 +49,12 @@ import {
   mriProtocolQualityResultsTable,
   reportFindingInstancesTable,
   pacsSettingsTable,
+  testsTable,
 } from "@workspace/db/schema";
 import { eq, and, desc, isNull, asc, ilike, or, inArray, sql } from "drizzle-orm";
 import { requireAdminRole, type StaffAuthRequest } from "../middleware/requireStaffAuth";
 import {
-  escapeHtml, renderReportDocument,
+  escapeHtml, renderReportDocument, formatReportDate,
   type ReportDocumentModel, type ReportKeyImageModel,
 } from "../lib/reportPresentation";
 import { resolveTemplateForRender } from "../lib/presentationTemplateStore";
@@ -63,6 +64,10 @@ import {
   REPORT_LOGO_SCALE_KEY,
   REPORT_FOOTER_SCALE_KEY,
 } from "../lib/reportLetterheadScale";
+import {
+  applyInstitutionalTemplateOverrides,
+  buildInstitutionalStyleCss,
+} from "../lib/institutionalReportStyle";
 import { resolveDraftKeyImages } from "../lib/reportImages";
 import { isFeatureEnabledServer } from "../lib/featureFlags";
 import { checkWriteLock } from "../lib/studyLocks";
@@ -844,7 +849,7 @@ function escHtml(v: string): string {
       let result = text;
       for (const term of terms) {
         const re = new RegExp(`\\b(${term}s?)\\b(?![^<]*>)(?![^<>]*<\\/[b|strong])`, "gi");
-        result = result.replace(re, "<strong>$1</strong>");
+        result = result.replace(re, '<strong class="findings-abnormal abnormal-term">$1</strong>');
       }
       return result;
     }
@@ -1798,6 +1803,38 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
     : [undefined];
   const [clinic] = await db.select().from(clinicSettingsTable).limit(1);
 
+  let catalogTestName: string | null = null;
+  let patientUhid: string | null = null;
+  if (worklist?.studyId) {
+    const [linked] = await db
+      .select({
+        testName: testsTable.name,
+        uhid: patientsTable.patientId,
+      })
+      .from(radiologyStudiesTable)
+      .leftJoin(testsTable, eq(testsTable.id, radiologyStudiesTable.testId))
+      .leftJoin(patientsTable, eq(patientsTable.id, radiologyStudiesTable.patientId))
+      .where(eq(radiologyStudiesTable.id, worklist.studyId))
+      .limit(1);
+    catalogTestName = linked?.testName ?? null;
+    patientUhid = linked?.uhid ?? null;
+  } else if (worklist?.patientId) {
+    const [pat] = await db
+      .select({ uhid: patientsTable.patientId })
+      .from(patientsTable)
+      .where(eq(patientsTable.id, worklist.patientId))
+      .limit(1);
+    patientUhid = pat?.uhid ?? null;
+  }
+
+  const studyTitle = (
+    draft.studyName?.trim()
+    || catalogTestName?.trim()
+    || worklist?.studyDescription?.trim()
+    || `${draft.modality ?? worklist?.modality ?? ""} Study`.trim()
+  ).toUpperCase();
+  const formattedStudyDate = formatReportDate(worklist?.studyDate ?? null);
+
   // Body: findings sections + impression + recommendation from the draft row
   // (presentation of existing content only — no clinical wording is altered).
   const esc = (s: string | null | undefined) => escapeHtml(s ?? "");
@@ -1831,14 +1868,16 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
   let keyImages: ReportKeyImageModel[] = [];
   try { keyImages = await resolveDraftKeyImages(id); } catch { keyImages = []; }
 
+  const likeFinal = req.query.likeFinal === "true";
+
   const model: ReportDocumentModel = {
-    reportNumber: `DRAFT-${draft.id}`,
-    studyTitle: draft.studyName || worklist?.studyDescription || `${draft.modality ?? ""} Study`.trim(),
+    reportNumber: likeFinal ? `PREVIEW-${draft.id}` : `DRAFT-${draft.id}`,
+    studyTitle,
     typeLabel: "RADIOLOGY",
-    statusLabel: (draft.status ?? "DRAFT").toUpperCase(),
+    statusLabel: likeFinal ? "PREVIEW" : (draft.status ?? "DRAFT").toUpperCase(),
     clinic: {
       name: clinic?.name ?? "Care Diagnostics",
-      tagline: clinic?.tagline ?? "",
+      tagline: clinic?.tagline ?? "Diagnostic & Pathology Services",
       address: clinic?.address ?? "",
       phone: clinic?.phone ?? "",
       email: clinic?.email ?? "",
@@ -1848,35 +1887,46 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
     patientRows: [
       { label: "Patient", value: worklist?.patientName ?? "" },
       { label: "Age / Sex", value: [worklist?.age, worklist?.sex].filter(Boolean).join(" / ") },
-      { label: "Accession No.", value: worklist?.accessionNumber ?? "" },
-      { label: "Study Date", value: worklist?.studyDate ?? "" },
-      { label: "Modality", value: draft.modality ?? worklist?.modality ?? "" },
+      { label: "UHID", value: patientUhid ?? "" },
+      { label: "Study Date", value: formattedStudyDate },
       { label: "Referring Doctor", value: worklist?.referringDoctor ?? "" },
-      { label: "Status", value: "DRAFT — NOT SIGNED" },
+      { label: "Accession No.", value: worklist?.accessionNumber ?? "" },
+      { label: "Test", value: catalogTestName ?? draft.studyName ?? "" },
+      { label: "Modality", value: draft.modality ?? worklist?.modality ?? "" },
     ],
     bodyHtml,
     keyImages,
-    stamp: { kind: "draft", label: "DRAFT (not signed)" },
+    stamp: likeFinal
+      ? { kind: "pending", label: "PREVIEW (unsigned)" }
+      : { kind: "draft", label: "DRAFT (not signed)" },
     signatures: [],
     showQrPlaceholder: false,
     footerNote: clinic?.footerNote ?? "",
     generatedAtLabel: new Date().toLocaleString("en-IN"),
-    draftWatermark: true,
+    draftWatermark: !likeFinal,
     autoPrint: req.query.autoPrint === "true",
   };
 
   // R1.2 — drafts follow the LATEST ACTIVE version (no freeze until signed);
   // ?template=key[@version] previews any template against the draft.
-  const template = await resolveTemplateForRender({
+  const baseTemplate = await resolveTemplateForRender({
     explicit: typeof req.query.template === "string" ? req.query.template : null,
     copyType: "standard",
   });
 
-  // Letterhead sizing (pacs_settings key/value; presentation-only) — the SAME
-  // three keys the finalized render path (patient-reports.ts) reads, so the
-  // draft preview and the final report size the header/logo/address/footer
-  // identically. Never blocks the preview: falls back to the (bigger) defaults.
-  let letterheadCss = "";
+  // Apply the same institutional Style settings the finalized print path uses
+  // (logo/signature/DICOM placement, fonts, heading underline, line gaps).
+  let instStyle: typeof radiologyInstitutionalStylesTable.$inferSelect | null = null;
+  try {
+    const [style] = await db.select().from(radiologyInstitutionalStylesTable).limit(1);
+    if (style) instStyle = style;
+  } catch {
+    instStyle = null;
+  }
+  const template = applyInstitutionalTemplateOverrides(baseTemplate, instStyle);
+
+  // pacs letterhead scale first; institutional Style settings last so they win.
+  let customCss = "";
   try {
     const scaleRows = await db.select({ key: pacsSettingsTable.key, value: pacsSettingsTable.value })
       .from(pacsSettingsTable)
@@ -1885,18 +1935,19 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
         eq(pacsSettingsTable.category, "report"),
       ));
     const scaleVal = (k: string) => scaleRows.find((row) => row.key === k)?.value;
-    letterheadCss = buildLetterheadScaleCss({
+    customCss += buildLetterheadScaleCss({
       headerScale: scaleVal(REPORT_HEADER_SCALE_KEY),
       logoScale: scaleVal(REPORT_LOGO_SCALE_KEY),
       footerScale: scaleVal(REPORT_FOOTER_SCALE_KEY),
     });
   } catch {
-    letterheadCss = buildLetterheadScaleCss();
+    customCss += buildLetterheadScaleCss();
   }
+  customCss += buildInstitutionalStyleCss(instStyle);
 
   res.setHeader("Content-Type", "text/html; charset=utf-8");
   res.setHeader("Cache-Control", "no-store");
-  res.send(renderReportDocument(model, template, { customCss: letterheadCss }));
+  res.send(renderReportDocument(model, template, { customCss }));
 });
 
 // POST /key-images — multipart upload
@@ -2284,13 +2335,10 @@ function isUniqueViolation(err: unknown): boolean {
  *  is part of what was signed: reject further mutation (the workspace panel
  *  is already read-only at that point; this closes the API path too). */
 async function imageRefsLocked(draftId: number): Promise<boolean> {
-  const [draft] = await db
-    .select({ finalReportId: radiologyReportDraftsTable.finalReportId, status: radiologyReportDraftsTable.status })
-    .from(radiologyReportDraftsTable)
-    .where(eq(radiologyReportDraftsTable.id, draftId))
-    .limit(1);
-  if (!draft) return false; // unknown draft: legacy behavior (no new gate)
-  return draft.finalReportId != null || draft.status === "FINAL";
+  // Trial mode: allow image edits even after finalize. Hard lock can return later
+  // via Reading Suite settings; the UI already gates editing with report_final_lock.
+  void draftId;
+  return false;
 }
 const LOCKED_MSG = "Report finalized — its images can no longer be modified";
 

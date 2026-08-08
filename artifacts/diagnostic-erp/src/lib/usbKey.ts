@@ -27,6 +27,10 @@ const IDB_NAME = "sa_usb_v1";
 const IDB_STORE = "handles";
 const IDB_HANDLE_KEY = "pen_drive_root";
 
+/** In-memory cache so gesture handlers can call requestPermission / know
+ *  pairing state without an IndexedDB await that would drop user activation. */
+let cachedDirHandle: FsDirectoryHandle | null | undefined = undefined;
+
 // ── In-tab key (sessionStorage) ────────────────────────────────────────────
 
 export function getStoredUsbKey(): string | null {
@@ -154,27 +158,76 @@ async function idbDelete(key: string): Promise<void> {
   });
 }
 
+/** Warm the in-memory directory-handle cache (call once on app mount). */
+export async function preloadPairedDirHandle(): Promise<boolean> {
+  try {
+    cachedDirHandle = (await idbGet<FsDirectoryHandle>(IDB_HANDLE_KEY)) ?? null;
+  } catch {
+    cachedDirHandle = null;
+  }
+  return cachedDirHandle != null;
+}
+
+/**
+ * Synchronous pairing check from the in-memory cache.
+ * Returns `null` until {@link preloadPairedDirHandle} (or a pair/unpair) has run.
+ */
+export function hasPairedPenDriveSync(): boolean | null {
+  if (cachedDirHandle === undefined) return null;
+  return cachedDirHandle != null;
+}
+
 /** Whether a pen-drive directory has been paired in this browser profile. */
 export async function hasPairedPenDrive(): Promise<boolean> {
-  try { return Boolean(await idbGet(IDB_HANDLE_KEY)); } catch { return false; }
+  if (cachedDirHandle !== undefined) return cachedDirHandle != null;
+  try {
+    cachedDirHandle = (await idbGet<FsDirectoryHandle>(IDB_HANDLE_KEY)) ?? null;
+    return cachedDirHandle != null;
+  } catch {
+    cachedDirHandle = null;
+    return false;
+  }
+}
+
+/**
+ * Start the directory picker **synchronously** from a user-gesture handler
+ * (keydown / click). Chromium's File System Access API requires transient
+ * user activation — any `await` before `showDirectoryPicker()` drops the
+ * gesture and the picker never opens (the "first Ctrl+Shift+K does nothing"
+ * failure mode).
+ *
+ * Call this directly inside the event handler, then await the returned
+ * promise for validation / IndexedDB persistence.
+ */
+export function beginPairPenDrive(): Promise<void> {
+  const w = window as unknown as ShowDirectoryPickerWindow;
+  if (!w.showDirectoryPicker) {
+    return Promise.reject(new Error("File System Access API not supported in this browser"));
+  }
+  // CRITICAL: invoke the picker before any await.
+  const picker = w.showDirectoryPicker({ mode: "read" });
+  return (async () => {
+    const handle = await picker;
+    // Sanity-check: superadmin.key must exist in the chosen dir right now.
+    await handle.getFileHandle("superadmin.key");
+    await idbPut(IDB_HANDLE_KEY, handle);
+    cachedDirHandle = handle;
+  })();
 }
 
 /**
  * Open the directory picker so the operator can pair their pen drive root.
- * Throws if the browser doesn't support FS Access or the user cancels.
+ * Prefer {@link beginPairPenDrive} from click/keydown handlers so the picker
+ * is not blocked by a prior await.
  */
 export async function pairPenDrive(): Promise<void> {
-  const w = window as unknown as ShowDirectoryPickerWindow;
-  if (!w.showDirectoryPicker) throw new Error("File System Access API not supported in this browser");
-  const handle = await w.showDirectoryPicker({ mode: "read" });
-  // Sanity-check: superadmin.key must exist in the chosen dir right now.
-  await handle.getFileHandle("superadmin.key");
-  await idbPut(IDB_HANDLE_KEY, handle);
+  await beginPairPenDrive();
 }
 
 /** Forget the paired pen drive (e.g. operator wants to re-pair). */
 export async function unpairPenDrive(): Promise<void> {
   try { await idbDelete(IDB_HANDLE_KEY); } catch { /* ignore */ }
+  cachedDirHandle = null;
   clearUsbKey();
 }
 
@@ -212,19 +265,107 @@ export async function tryReadKeyFromPairedDir(): Promise<string | null> {
  * gesture (e.g. the hidden pairing combo handler may call this after a fresh
  * page load if Chrome dropped the persisted grant). Returns true if granted.
  */
-export async function ensurePairedDirPermission(): Promise<boolean> {
-  if (!isFsAccessSupported()) return false;
-  let dir: FsDirectoryHandle | undefined;
-  try { dir = await idbGet<FsDirectoryHandle>(IDB_HANDLE_KEY); } catch { return false; }
-  if (!dir) return false;
+/**
+ * Request read permission on the cached paired directory **from a user
+ * gesture**, without an IndexedDB round-trip first. Returns a promise; the
+ * permission prompt is started synchronously when a cached handle exists.
+ */
+export function beginEnsurePairedDirPermission(): Promise<boolean> {
+  if (!isFsAccessSupported()) return Promise.resolve(false);
+  const dir = cachedDirHandle;
+  if (!dir) return Promise.resolve(false);
   try {
-    const cur = (await dir.queryPermission?.({ mode: "read" })) ?? "prompt";
-    if (cur === "granted") return true;
-    const next = (await dir.requestPermission?.({ mode: "read" })) ?? "prompt";
-    return next === "granted";
+    if (typeof dir.requestPermission === "function") {
+      return dir.requestPermission({ mode: "read" })
+        .then((next) => next === "granted")
+        .catch(() => false);
+    }
+    if (typeof dir.queryPermission === "function") {
+      return dir.queryPermission({ mode: "read" })
+        .then((cur) => cur === "granted")
+        .catch(() => false);
+    }
+    return Promise.resolve(false);
   } catch {
-    return false;
+    return Promise.resolve(false);
   }
+}
+
+export async function ensurePairedDirPermission(): Promise<boolean> {
+  if (cachedDirHandle === undefined) {
+    await preloadPairedDirHandle();
+  }
+  return beginEnsurePairedDirPermission();
+}
+
+/**
+ * Older USB `superadmin-ui.js` locks the PIN field after failed auto-login and
+ * never posts the typed PIN. Install once per tab so ERP-embedded portal login
+ * still allows typing the DB PIN (no pen-drive rebuild required).
+ */
+export function installSaLoginPinFallbackShim(): void {
+  if (typeof window === "undefined") return;
+  const w = window as Window & { __saPinFallbackInstalled?: boolean };
+  if (w.__saPinFallbackInstalled) return;
+  w.__saPinFallbackInstalled = true;
+
+  const autoLoginFailedVisible = (): boolean => {
+    const nodes = document.querySelectorAll("div, p, span");
+    for (const el of nodes) {
+      const t = (el.textContent || "").trim();
+      if (t.startsWith("Auto-login failed")) return true;
+    }
+    return false;
+  };
+
+  const unlockPinInputs = (): void => {
+    if (!autoLoginFailedVisible()) return;
+    const inputs = document.querySelectorAll<HTMLInputElement>(
+      'input[type="password"], input[autocomplete="current-password"]',
+    );
+    for (const inp of inputs) {
+      if (inp.disabled) inp.disabled = false;
+      if (inp.readOnly) inp.readOnly = false;
+      if ((inp.placeholder || "").toLowerCase().includes("auto-filled")) {
+        inp.placeholder = "Enter Super Admin PIN";
+      }
+    }
+  };
+
+  window.setInterval(unlockPinInputs, 400);
+
+  const origFetch = window.fetch.bind(window);
+  window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    try {
+      const url = typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.href
+          : input.url;
+      if (url.includes("/super-admin/login") && init && typeof init.body === "string") {
+        const body = JSON.parse(init.body) as Record<string, string>;
+        const pinInput = document.querySelector<HTMLInputElement>(
+          'input[type="password"], input[autocomplete="current-password"]',
+        );
+        const nameInput = document.querySelector<HTMLInputElement>(
+          '#name, input[autocomplete="username"]',
+        );
+        const typed = pinInput?.value?.trim() || "";
+        if (!body.name && nameInput?.value) body.name = nameInput.value.trim();
+        // Old USB plugins require `pin`; host auth uses `usbPin` for pen-drive
+        // auto-login (2321). Send both so either handler accepts the request.
+        const secret = typed || body.usbPin || body.pin || "";
+        if (secret) {
+          body.pin = secret;
+          body.usbPin = secret;
+          init = { ...init, body: JSON.stringify(body) };
+        }
+      }
+    } catch {
+      /* never block login */
+    }
+    return origFetch(input, init);
+  };
 }
 
 export async function tryReadUiFromPairedDir(): Promise<string | null> {

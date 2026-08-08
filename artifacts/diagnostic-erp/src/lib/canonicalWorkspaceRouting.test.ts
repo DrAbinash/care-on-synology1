@@ -231,7 +231,8 @@ describe("M1.6A — study locking stays canonical", () => {
   });
 
   it("assignment-aware scope filters run through the workflow controller", () => {
-    expect(workspace).toContain('data-testid="queue-scope"');
+    const chrome = read("components/radiology/ReportingWorkspaceChrome.tsx");
+    expect(chrome).toContain('data-testid="queue-scope"');
     const hook = read("hooks/useReportingWorkflow.ts");
     expect(hook).toContain("filterQueueByScope");
   });
@@ -300,7 +301,8 @@ describe("M1.6B1 — assignment management stays canonical", () => {
 
   it("the By-Radiologist scope parses through the ONE scope parser", () => {
     const workspace = read("pages/RadiologyReportingWorkspace.tsx");
+    const chrome = read("components/radiology/ReportingWorkspaceChrome.tsx");
     expect(workspace).toContain("parseQueueScope");
-    expect(workspace).toContain('optgroup label="By radiologist"');
+    expect(chrome).toContain('optgroup label="By radiologist"');
   });
 });

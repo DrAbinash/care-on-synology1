@@ -7,7 +7,8 @@ import {
   testsTable,
   vendorsTable,
 } from "@workspace/db/schema";
-import { eq, desc, lt, and, inArray, sql } from "drizzle-orm";
+import { eq, desc, lte, and, inArray, sql, or } from "drizzle-orm";
+import { buildLowStockSummary } from "../lib/inventoryLowStockSummary";
 import {
   ListInventoryItemsByVendorParams,
   CreateInventoryItemBody,
@@ -26,6 +27,7 @@ import {
   DeleteInventoryConsumptionRulesByTestParams,
   DeleteInventoryConsumptionRuleParams,
 } from "@workspace/api-zod";
+import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
 
 const router = Router();
 
@@ -54,18 +56,41 @@ router.get("/items-by-vendor/:vendorId", async (req, res) => {
   res.json(items.map(toNum));
 });
 
-// Low stock items
+// Low stock items (at or below min, includes zero)
 router.get("/low-stock", async (_req, res) => {
-  const rows = await db
-    .select()
-    .from(inventoryItemsTable)
-    .where(
-      and(
-        eq(inventoryItemsTable.isActive, true),
-        lt(inventoryItemsTable.currentStock, inventoryItemsTable.minStock)
-      )
-    );
-  res.json(rows.map(toNum));
+  const summary = await buildLowStockSummary(500);
+  res.json(summary.items.map((i) => ({
+    id: i.id,
+    name: i.name,
+    unit: i.unit,
+    category: i.category,
+    currentStock: i.currentStock,
+    minStock: i.minStock,
+    isActive: true,
+  })));
+});
+
+// Stock health summary for dashboards
+router.get("/low-stock-summary", async (_req, res) => {
+  res.json(await buildLowStockSummary(20));
+});
+
+// Lookup item by barcode / INV-{id} scanner code
+router.get("/by-barcode/:code", async (req, res) => {
+  const code = (req.params.code ?? "").trim();
+  if (!code) { res.status(400).json({ error: "code required" }); return; }
+
+  let item: typeof inventoryItemsTable.$inferSelect | undefined;
+  const invMatch = /^INV-(\d+)$/i.exec(code);
+  if (invMatch) {
+    const [row] = await db.select().from(inventoryItemsTable).where(eq(inventoryItemsTable.id, Number(invMatch[1]))).limit(1);
+    item = row;
+  } else {
+    const [row] = await db.select().from(inventoryItemsTable).where(eq(inventoryItemsTable.barcode, code)).limit(1);
+    item = row;
+  }
+  if (!item) { res.status(404).json({ error: "Item not found" }); return; }
+  res.json(toNum(item as Record<string, unknown>));
 });
 
 // Create item
@@ -77,6 +102,9 @@ router.post("/", async (req, res) => {
   }
   const { name, unit, category, currentStock, minStock, costPrice, preferredVendorId } = bodyParsed.data;
   const vid = preferredVendorId == null || preferredVendorId === "" ? null : Number(preferredVendorId);
+  const barcodeInput = typeof (req.body as { barcode?: string }).barcode === "string"
+    ? (req.body as { barcode?: string }).barcode!.trim() || null
+    : null;
   const [item] = await db
     .insert(inventoryItemsTable)
     .values({
@@ -87,9 +115,18 @@ router.post("/", async (req, res) => {
       minStock: minStock != null ? String(minStock) : "0",
       costPrice: costPrice != null ? String(costPrice) : "0",
       preferredVendorId: Number.isFinite(vid as number) ? (vid as number) : null,
+      barcode: barcodeInput,
     })
     .returning();
-  res.status(201).json(toNum(item));
+  if (item && !barcodeInput) {
+    const [withBarcode] = await db.update(inventoryItemsTable)
+      .set({ barcode: `INV-${item.id}` })
+      .where(eq(inventoryItemsTable.id, item.id))
+      .returning();
+    res.status(201).json(toNum(withBarcode as Record<string, unknown>));
+    return;
+  }
+  res.status(201).json(toNum(item as Record<string, unknown>));
 });
 
 // Update item
@@ -123,6 +160,10 @@ router.patch("/:id", async (req, res) => {
       const n = Number(v);
       updates.preferredVendorId = Number.isFinite(n) ? n : null;
     }
+  }
+  const rawBarcode = (req.body as { barcode?: string | null }).barcode;
+  if (rawBarcode !== undefined) {
+    updates.barcode = rawBarcode?.trim() ? rawBarcode.trim() : null;
   }
   const [item] = await db.update(inventoryItemsTable).set(updates).where(eq(inventoryItemsTable.id, id)).returning();
   if (!item) {
@@ -183,7 +224,7 @@ router.post("/:id/stock-in", async (req, res) => {
 });
 
 // Stock out
-router.post("/:id/stock-out", async (req, res) => {
+router.post("/:id/stock-out", async (req: StaffAuthRequest, res) => {
   const paramsParsed = InventoryStockOutParams.safeParse(req.params);
   const bodyParsed = InventoryStockOutBody.safeParse(req.body);
   if (!paramsParsed.success || !bodyParsed.success) {
@@ -199,6 +240,7 @@ router.post("/:id/stock-out", async (req, res) => {
   const id = paramsParsed.data.id;
   const { quantity, reason, reference, performedBy } = bodyParsed.data;
   const qty = Number(quantity);
+  const actor = req.staffSession?.subjectName ?? performedBy ?? null;
   const [existing] = await db.select().from(inventoryItemsTable).where(eq(inventoryItemsTable.id, id));
   if (!existing) {
     res.status(404).json({ error: "Item not found" });
@@ -209,12 +251,16 @@ router.post("/:id/stock-out", async (req, res) => {
     res.status(400).json({ error: "Insufficient stock" });
     return;
   }
-  const after = before - qty;
-  await db.update(inventoryItemsTable).set({ currentStock: after.toString() }).where(eq(inventoryItemsTable.id, id));
-  const [txn] = await db.insert(inventoryTransactionsTable).values({
-    itemId: id, type: "out", quantity: qty.toString(), stockBefore: before.toString(), stockAfter: after.toString(),
-    reason: reason ?? null, reference: reference ?? null, performedBy: performedBy ?? null,
-  }).returning();
+  const after = Math.round((before - qty) * 100) / 100;
+  const txn = await db.transaction(async (tx) => {
+    await tx.update(inventoryItemsTable).set({ currentStock: after.toString() }).where(eq(inventoryItemsTable.id, id));
+    const [inserted] = await tx.insert(inventoryTransactionsTable).values({
+      itemId: id, type: "out", quantity: qty.toString(), stockBefore: before.toString(), stockAfter: after.toString(),
+      reason: reason ?? null, reference: reference ?? null, performedBy: actor,
+    }).returning();
+    return inserted;
+  });
+  void import("../lib/inventoryLowStockAlerts").then((m) => m.maybeSendLowStockAlerts("stock-out"));
   res.status(201).json({ transaction: txn, newStock: after });
 });
 
@@ -531,6 +577,7 @@ function toNum(item: Record<string, unknown>) {
     currentStock: Number(item.currentStock),
     minStock: Number(item.minStock),
     costPrice: Number(item.costPrice),
+    trackExpiry: Boolean(item.trackExpiry),
   };
 }
 

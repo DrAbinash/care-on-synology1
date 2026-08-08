@@ -255,25 +255,73 @@ export default function OcrCapturePanel({
         toast({ title: "OCR test passed", description: `${resp.ocr.documentType} — ${resp.ocr.confidence} confidence` });
         onCapture({ imageUrl: dataUrl, ocr: resp.ocr, ocrLog: [...ocrLog, { stage: "result", status: "ok", message: "Test complete", detail: JSON.stringify(resp.ocr) }] });
       } else {
-        logEntry("backend", "warn", "OCR returned empty", "Backend received the image but Gemini could not extract text. Try a clearer image, or use Tesseract fallback.");
-        setTestResult("fail");
-        toast({ title: "OCR test: empty result", description: "Try Tesseract fallback or a clearer image", variant: "destructive" });
+        logEntry("backend", "warn", "AI OCR empty — auto Tesseract fallback", "Backend received the image but AI returned no fields");
+        await runTesseractOcrFromDataUrl(dataUrl);
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : "OCR test failed";
-      logEntry("backend", "error", "Backend OCR error", msg);
-      setTestResult("fail");
-      toast({ title: "OCR test failed", description: msg, variant: "destructive" });
+      logEntry("backend", "error", "Backend OCR error — trying Tesseract", msg);
+      try {
+        const video = videoRef.current;
+        const canvas = canvasRef.current;
+        if (video && canvas && video.videoWidth > 0) {
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+          canvas.getContext("2d")?.drawImage(video, 0, 0);
+          await runTesseractOcrFromDataUrl(canvas.toDataURL("image/jpeg", 0.92));
+        } else {
+          setTestResult("fail");
+          toast({ title: "OCR test failed", description: msg, variant: "destructive" });
+        }
+      } catch {
+        setTestResult("fail");
+        toast({ title: "OCR test failed", description: msg, variant: "destructive" });
+      }
     } finally {
       setTesting(false);
     }
   }
 
-  // ── 6. Tesseract OCR fallback ──
+  // Shared Tesseract path used by the manual button and auto-fallback
+  async function runTesseractOcrFromDataUrl(dataUrl: string) {
+    logEntry("tesseract", "info", "Starting Tesseract.js fallback...");
+    setTesseractLoading(true);
+    try {
+      const { runIdCardTesseractOcr } = await import("@/lib/idCardTesseractOcr");
+      const tess = await runIdCardTesseractOcr(dataUrl, "image/jpeg", (pct) => {
+        logEntry("tesseract", "info", "Recognizing text...", `${pct}%`);
+      });
+      if (!tess) {
+        logEntry("tesseract", "warn", "Tesseract returned no usable fields");
+        setTestResult("fail");
+        toast({ title: "Tesseract OCR: empty", description: "Could not extract name/address. Enter manually.", variant: "destructive" });
+        return;
+      }
+      setTesseractReady(true);
+      const tesseractResult: OcrResult = {
+        guardianName: tess.guardianName,
+        address: tess.address,
+        documentType: tess.documentType,
+        confidence: tess.confidence,
+      };
+      logEntry("tesseract", "ok", "OCR complete", `${tess.rawText.length} chars extracted`);
+      setTestResult("ok");
+      toast({ title: "Tesseract OCR done", description: `Extracted ${tess.rawText.length} chars. Please verify results.` });
+      onCapture({ imageUrl: dataUrl, ocr: tesseractResult, ocrLog: [...ocrLog, { stage: "result", status: "ok", message: "Tesseract OCR complete", detail: tess.rawText.slice(0, 200) }] });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Tesseract failed";
+      logEntry("tesseract", "error", "Tesseract OCR failed", msg);
+      setTestResult("fail");
+      toast({ title: "Tesseract OCR failed", description: msg, variant: "destructive" });
+    } finally {
+      setTesseractLoading(false);
+    }
+  }
+
+  // ── 6. Tesseract OCR fallback (manual button) ──
   async function runTesseractOcr() {
     clearLog();
     setTesting(true);
-    logEntry("tesseract", "info", "Starting Tesseract.js fallback...");
     try {
       const video = videoRef.current;
       const canvas = canvasRef.current;
@@ -289,52 +337,9 @@ export default function OcrCapturePanel({
       ctx.drawImage(video, 0, 0);
       const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
       logEntry("tesseract", "ok", "Frame captured for Tesseract", `${canvas.width}x${canvas.height}`);
-
-      // Dynamically import tesseract.js
-      const { createWorker, createScheduler } = await import("tesseract.js");
-      setTesseractLoading(true);
-      logEntry("tesseract", "info", "Loading Tesseract.js engine...", "Downloading English training data (~4MB)");
-
-      const scheduler = createScheduler();
-      const worker = await createWorker("eng", 1, {
-        logger: (m: { status: string; progress: number }) => {
-          if (m.status === "recognizing text") {
-            logEntry("tesseract", "info", "Recognizing text...", `${Math.round(m.progress * 100)}%`);
-          }
-        },
-      });
-      scheduler.addWorker(worker);
-      setTesseractReady(true);
-      logEntry("tesseract", "ok", "Tesseract engine ready", "eng.traineddata loaded");
-
-      const result = await scheduler.addJob("recognize", dataUrl);
-      logEntry("tesseract", "ok", "OCR complete", `${result.data.text.length} chars extracted`);
-      await scheduler.terminate();
-
-      // Try to extract name and address heuristically
-      const rawText = result.data.text;
-      const lines = rawText.split(/\n+/).filter((l) => l.trim().length > 3);
-      const nameLine = lines.find((l) => /father|husband|guardian|name/i.test(l)) || "";
-      const addressLine = lines.find((l) => /address|village|district|state|pin/i.test(l)) || "";
-      const name = nameLine.replace(/.*?:\s*/, "").replace(/Father|Husband|Guardian|Name/i, "").trim();
-      const address = addressLine.replace(/.*?:\s*/, "").replace(/Address/i, "").trim();
-
-      const tesseractResult: OcrResult = {
-        guardianName: name,
-        address: address,
-        documentType: "Other",
-        confidence: "medium",
-      };
-
-      toast({ title: "Tesseract OCR done", description: `Extracted ${rawText.length} chars. Please verify results.` });
-      onCapture({ imageUrl: dataUrl, ocr: tesseractResult, ocrLog: [...ocrLog, { stage: "result", status: "ok", message: "Tesseract OCR complete", detail: rawText.slice(0, 200) }] });
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "Tesseract failed";
-      logEntry("tesseract", "error", "Tesseract OCR failed", msg);
-      toast({ title: "Tesseract OCR failed", description: msg, variant: "destructive" });
+      await runTesseractOcrFromDataUrl(dataUrl);
     } finally {
       setTesting(false);
-      setTesseractLoading(false);
     }
   }
 

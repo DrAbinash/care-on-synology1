@@ -11,7 +11,7 @@ import {
   ArrowLeft
 } from "lucide-react";
 import QRCode from "qrcode";
-import { checkScanBridgeHealth, scanBridgeCapture, scanBridgeLatestScan } from "@/lib/scanBridgeClient";
+import { checkScanBridgeHealth, scanBridgeCaptureWithFallback, scanBridgeLatestScan } from "@/lib/scanBridgeClient";
 
 interface ScanIdButtonProps {
   onScanComplete: (data: {
@@ -194,7 +194,7 @@ export default function ScanIdButton({
     setScanning(true);
     setBridgeAction(mode);
     try {
-      const raw = mode === "direct" ? await scanBridgeCapture() : await scanBridgeLatestScan();
+      const raw = mode === "direct" ? await scanBridgeCaptureWithFallback() : await scanBridgeLatestScan();
       if (!raw.ok) throw new Error(raw.error || "Bridge returned error.");
 
       const res = await api.post<any>("/api/form-f/optimize-scan", {
@@ -272,8 +272,42 @@ export default function ScanIdButton({
                 imageBase64: base64,
                 mimeType: file.type,
               });
-              if (ocrRes.ocr) setSessionOcrResult(ocrRes.ocr);
-            } catch { /* ignore OCR error */ }
+              if (ocrRes.ocr?.guardianName || ocrRes.ocr?.address) {
+                setSessionOcrResult(ocrRes.ocr);
+              } else {
+                // AI empty/failed — same Tesseract fallback as Form F
+                const { runIdCardTesseractOcr } = await import("@/lib/idCardTesseractOcr");
+                const tess = await runIdCardTesseractOcr(base64, file.type);
+                if (tess) {
+                  setSessionOcrResult({
+                    guardianName: tess.guardianName,
+                    address: tess.address,
+                    documentType: tess.documentType,
+                    confidence: tess.confidence,
+                    confidencePercent: tess.confidencePercent,
+                    ocrProvider: "tesseract",
+                    dob: tess.dob,
+                    gender: tess.gender,
+                    idNumber: tess.idNumber,
+                  });
+                }
+              }
+            } catch {
+              try {
+                const { runIdCardTesseractOcr } = await import("@/lib/idCardTesseractOcr");
+                const tess = await runIdCardTesseractOcr(base64, file.type);
+                if (tess) {
+                  setSessionOcrResult({
+                    guardianName: tess.guardianName,
+                    address: tess.address,
+                    documentType: tess.documentType,
+                    confidence: tess.confidence,
+                    confidencePercent: tess.confidencePercent,
+                    ocrProvider: "tesseract",
+                  });
+                }
+              } catch { /* ignore OCR error */ }
+            }
           }
         } else {
           setBackPreview(`/uploads/${res.storagePath}`);

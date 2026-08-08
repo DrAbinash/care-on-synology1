@@ -434,10 +434,11 @@ function isTestCategoryEnabled(category: string, department: string, services: R
 }
 
 // GET /api/public/booking/tests
-publicBookingRouter.get("/tests", async (_req, res): Promise<void> => {
+publicBookingRouter.get("/tests", async (req, res): Promise<void> => {
   res.setHeader("Cache-Control", "no-store");
   const settings = await getSettings();
-  
+  const sourceHope = String(req.query.source || "").toLowerCase() === "hope";
+
   const onlineBookingEnabled = !!settings?.onlineBookingEnabled;
   let allowedTestIds: number[] = [];
   try {
@@ -446,6 +447,17 @@ publicBookingRouter.get("/tests", async (_req, res): Promise<void> => {
       allowedTestIds = parsed.filter((v: unknown) => typeof v === "number" && Number.isInteger(v) && v > 0);
     }
   } catch { /* ignore */ }
+
+  // Hope partner page: when Hope curation is configured, serve only that subset.
+  // Empty Hope list keeps the global whitelist (fail-open for unset curation).
+  if (sourceHope) {
+    try {
+      const parsed = JSON.parse(settings?.hopeBookingAllowedTestIds || "[]");
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        allowedTestIds = parsed.filter((v: unknown) => typeof v === "number" && Number.isInteger(v) && v > 0);
+      }
+    } catch { /* ignore */ }
+  }
 
   let allowedPackageIds: number[] = [];
   try {
@@ -505,9 +517,10 @@ publicBookingRouter.get("/tests", async (_req, res): Promise<void> => {
 });
 
 // GET /api/public/booking/packages
-publicBookingRouter.get("/packages", async (_req, res): Promise<void> => {
+publicBookingRouter.get("/packages", async (req, res): Promise<void> => {
   res.setHeader("Cache-Control", "no-store");
   const settings = await getSettings();
+  const sourceHope = String(req.query.source || "").toLowerCase() === "hope";
 
   const onlineBookingEnabled = !!settings?.onlineBookingEnabled;
   let allowedPkgIds: number[] = [];
@@ -517,6 +530,16 @@ publicBookingRouter.get("/packages", async (_req, res): Promise<void> => {
       allowedPkgIds = parsed.filter((v: unknown) => typeof v === "number" && Number.isInteger(v) && v > 0);
     }
   } catch { /* ignore */ }
+
+  // Hope partner curation — when configured, narrow packages to Hope allowlist.
+  if (sourceHope) {
+    try {
+      const parsed = JSON.parse(settings?.hopeBookingAllowedPackageIds || "[]");
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        allowedPkgIds = parsed.filter((v: unknown) => typeof v === "number" && Number.isInteger(v) && v > 0);
+      }
+    } catch { /* ignore */ }
+  }
 
   let allowedTestIds: number[] = [];
   try {
@@ -1388,7 +1411,7 @@ async function handleIciciCallback(req: any, res: any, queryOrBody: Record<strin
             .limit(1);
 
           if (!existingPayment) {
-            await tx.insert(paymentsTable).values({
+            const [insertedPay] = await tx.insert(paymentsTable).values({
               billId,
               amount: collectAmount.toFixed(2),
               method: `Online (${provider.displayName})`,
@@ -1397,7 +1420,7 @@ async function handleIciciCallback(req: any, res: any, queryOrBody: Record<strin
               settlementStatus: "captured",
               notes: `Paid online via ${provider.displayName}. txnID: ${txnID || ""}`,
               recordedByName: "Super Admin",
-            });
+            }).returning({ id: paymentsTable.id });
 
             const newPaid = Number(bill.paidAmount) + collectAmount;
             const refundAmount = Number(bill.refundAmount || 0);
@@ -1417,6 +1440,7 @@ async function handleIciciCallback(req: any, res: any, queryOrBody: Record<strin
               billNumber: bill.billNumber,
               patientName: logRecord ? logRecord.patientName : "Billing Desk Online",
               performedBy: "Super Admin",
+              paymentId: insertedPay?.id,
             }).catch(() => {});
           }
         });

@@ -276,4 +276,46 @@ describe("PUT /api/clinic-settings — billPrintSettingsJson (clinic-wide Billin
     expect(res.statusCode).toBe(400);
     expect(res.body.error).toMatch(/max 8KB/);
   });
+
+  test("Admin Lock ON rejects non-admin PUT of billPrintSettingsJson", async () => {
+    currentRow = {
+      id: 1,
+      name: "Care Diagnostics",
+      billPrintSettingsJson: JSON.stringify({ adminLock: true, defaultPaperSize: "A5-landscape" }),
+    };
+    const { default: clinicSettingsRouter } = await import("./clinicSettings");
+    const handler = getPutHandler(clinicSettingsRouter);
+    const res = makeRes();
+    await handler(
+      {
+        body: { billPrintSettingsJson: JSON.stringify({ adminLock: false, defaultPaperSize: "A4" }) },
+        staffSession: { role: "reception", subjectId: 2, subjectName: "Counter", permissions: [], maxDiscount: null, id: 1 },
+      },
+      res,
+    );
+    expect(res.statusCode).toBe(403);
+    expect(res.body.error).toMatch(/Admin Locked/i);
+    expect(updateSetCalls).toHaveLength(0);
+  });
+
+  test("Admin Lock ON still allows admin to change / unlock", async () => {
+    currentRow = {
+      id: 1,
+      name: "Care Diagnostics",
+      billPrintSettingsJson: JSON.stringify({ adminLock: true, defaultPaperSize: "A5-landscape" }),
+    };
+    const { default: clinicSettingsRouter } = await import("./clinicSettings");
+    const handler = getPutHandler(clinicSettingsRouter);
+    const blob = JSON.stringify({ adminLock: false, defaultPaperSize: "A4" });
+    const res = makeRes();
+    await handler(
+      {
+        body: { billPrintSettingsJson: blob },
+        staffSession: { role: "admin", subjectId: 1, subjectName: "Admin", permissions: [], maxDiscount: null, id: 1 },
+      },
+      res,
+    );
+    expect(res.statusCode).toBe(200);
+    expect(updateSetCalls[0].billPrintSettingsJson).toBe(blob);
+  });
 });

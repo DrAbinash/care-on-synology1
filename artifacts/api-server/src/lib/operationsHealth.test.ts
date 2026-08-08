@@ -92,9 +92,9 @@ describe("redactSecrets — no secrets ever reach the browser/terminal", () => {
     expect(redactSecrets("Basic ZXJwOmNoYW5nZW1l")).not.toContain("ZXJwOmNoYW5nZW1l");
   });
   it("scrubs inline user:pass@host credentials but keeps the host", () => {
-    const out = redactSecrets("http://admin:topsecret@192.168.1.137:8042/system");
+    const out = redactSecrets("http://admin:topsecret@172.16.1.139:8042/system");
     expect(out).not.toContain("topsecret");
-    expect(out).toContain("192.168.1.137");
+    expect(out).toContain("172.16.1.139");
   });
   it("leaves ordinary text untouched", () => {
     expect(redactSecrets("Orthanc reachable (34ms), version 1.12.4")).toBe("Orthanc reachable (34ms), version 1.12.4");

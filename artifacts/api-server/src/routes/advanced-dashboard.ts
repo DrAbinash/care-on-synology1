@@ -1,8 +1,11 @@
 import { Router } from "express";
 import { db } from "@workspace/db";
-import { sql } from "drizzle-orm";
+import { paymentsTable } from "@workspace/db/schema";
+import { sql, and, gte, lte, eq } from "drizzle-orm";
 import { FULL_ACCESS_ROLES, requireStaffAuth } from "../middleware/requireStaffAuth";
 import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
+import { isDigitalSettlement, isPhysicalCash } from "../lib/paymentMethodClassifier";
+import { computeDailySummaryCashMath } from "./daily-summary";
 
 export const advancedDashboardRouter = Router();
 
@@ -57,25 +60,75 @@ advancedDashboardRouter.get("/", async (req: StaffAuthRequest, res) => {
     ORDER BY COALESCE(SUM(total_amount::numeric) FILTER (WHERE status <> 'cancelled'), 0) DESC
   `);
 
-  // ── 2. Payments grouped by staff ─────────────────────────────────────────
-  const staffPaymentsRaw = await db.execute<{
-    staff_name: string;
-    total_received: string;
-    cash_collection: string;
-    digital_collection: string;
-    refund_amount: string;
-  }>(sql`
-    SELECT
-      COALESCE(recorded_by_name, 'Unknown') AS staff_name,
-      COALESCE(SUM(amount::numeric) FILTER (WHERE amount::numeric > 0), 0)::text                                                                         AS total_received,
-      COALESCE(SUM(amount::numeric) FILTER (WHERE amount::numeric > 0 AND LOWER(method) = 'cash'), 0)::text                                              AS cash_collection,
-      COALESCE(SUM(amount::numeric) FILTER (WHERE amount::numeric > 0 AND LOWER(method) IN ('upi','card','online','bank','cheque','neft','rtgs')), 0)::text AS digital_collection,
-      COALESCE(SUM(ABS(amount::numeric)) FILTER (WHERE amount::numeric < 0), 0)::text                                                                    AS refund_amount
-    FROM payments
-    WHERE created_at >= ${start} AND created_at <= ${end}
-    ${staffFilter ? sql`AND recorded_by_name = ${staffFilter}` : sql``}
-    GROUP BY COALESCE(recorded_by_name, 'Unknown')
-  `);
+  // ── 2. Payments grouped by staff (classifier — same as Daily Summary) ──
+  // Naive SQL LOWER(method)='cash' / IN ('upi','online',…) misses gateway
+  // strings like "Online (ICICI Orange Pay)" and mis-buckets insurance.
+  const paymentFilters = [
+    gte(paymentsTable.createdAt, start),
+    lte(paymentsTable.createdAt, end),
+  ];
+  if (staffFilter) paymentFilters.push(eq(paymentsTable.recordedByName, staffFilter));
+
+  const allPayments = await db
+    .select({
+      amount: paymentsTable.amount,
+      method: paymentsTable.method,
+      recordedByName: paymentsTable.recordedByName,
+    })
+    .from(paymentsTable)
+    .where(and(...paymentFilters));
+
+  type PayAgg = {
+    totalReceived: number;
+    cashCollection: number;
+    digitalCollection: number;
+    refundAmount: number;
+    cashRefunded: number;
+  };
+  const payByStaff = new Map<string, PayAgg>();
+  const ensurePay = (name: string): PayAgg => {
+    const key = (name && name.trim()) || "Unknown";
+    if (!payByStaff.has(key)) {
+      payByStaff.set(key, {
+        totalReceived: 0,
+        cashCollection: 0,
+        digitalCollection: 0,
+        refundAmount: 0,
+        cashRefunded: 0,
+      });
+    }
+    return payByStaff.get(key)!;
+  };
+  let overallTotalReceived = 0;
+  let overallRefundAmount = 0;
+  let overallDigitalCollection = 0;
+  let overallCashCollection = 0;
+  let overallCashRefunded = 0;
+
+  for (const p of allPayments) {
+    const amt = Number(p.amount);
+    const staff = ensurePay(p.recordedByName ?? "Unknown");
+    if (amt > 0) {
+      staff.totalReceived += amt;
+      overallTotalReceived += amt;
+      if (isPhysicalCash(p.method)) {
+        staff.cashCollection += amt;
+        overallCashCollection += amt;
+      } else if (isDigitalSettlement(p.method)) {
+        staff.digitalCollection += amt;
+        overallDigitalCollection += amt;
+      }
+      // unrecognized → suspense (excluded from cash/digital, same as daily-summary)
+    } else if (amt < 0) {
+      const abs = Math.abs(amt);
+      staff.refundAmount += abs;
+      overallRefundAmount += abs;
+      if (isPhysicalCash(p.method)) {
+        staff.cashRefunded += abs;
+        overallCashRefunded += abs;
+      }
+    }
+  }
 
   // ── 3. Bill audit counts by staff ────────────────────────────────────────
   const billAuditRaw = await db.execute<{ staff_name: string; edit_count: string }>(sql`
@@ -95,13 +148,16 @@ advancedDashboardRouter.get("/", async (req: StaffAuthRequest, res) => {
     GROUP BY COALESCE(edited_by, 'Unknown')
   `);
 
-  // ── 5. Cash expenses attributed to staff (via approved_by) ───────────────
+  // ── 5. Cash expenses by staff — created_at (same axis as Daily Summary /
+  // day-close). expense_date is editable and would move cash across days.
   const cashExpRaw = await db.execute<{ staff_name: string; cash_expenses: string }>(sql`
     SELECT
       COALESCE(approved_by, 'Unknown') AS staff_name,
-      COALESCE(SUM(amount::numeric) FILTER (WHERE LOWER(payment_mode) = 'cash'), 0)::text AS cash_expenses
+      COALESCE(SUM(amount::numeric) FILTER (
+        WHERE LOWER(COALESCE(NULLIF(TRIM(payment_mode), ''), 'cash')) = 'cash'
+      ), 0)::text AS cash_expenses
     FROM expenses
-    WHERE expense_date >= ${from} AND expense_date <= ${to}
+    WHERE created_at >= ${start} AND created_at <= ${end}
     ${staffFilter ? sql`AND approved_by = ${staffFilter}` : sql``}
     GROUP BY COALESCE(approved_by, 'Unknown')
   `);
@@ -116,6 +172,7 @@ advancedDashboardRouter.get("/", async (req: StaffAuthRequest, res) => {
     digitalCollection: number;
     discountsGiven: number;
     refundAmount: number;
+    cashRefunded: number;
     cancellationCount: number;
     cancelledAmount: number;
     billEditCount: number;
@@ -137,6 +194,7 @@ advancedDashboardRouter.get("/", async (req: StaffAuthRequest, res) => {
         digitalCollection: 0,
         discountsGiven: 0,
         refundAmount: 0,
+        cashRefunded: 0,
         cancellationCount: 0,
         cancelledAmount: 0,
         billEditCount: 0,
@@ -156,12 +214,13 @@ advancedDashboardRouter.get("/", async (req: StaffAuthRequest, res) => {
     s.cancellationCount = Number(r.cancellation_count);
     s.cancelledAmount = Number(r.cancelled_amount);
   }
-  for (const r of staffPaymentsRaw.rows) {
-    const s = ensureStaff(r.staff_name);
-    s.totalReceived = Number(r.total_received);
-    s.cashCollection = Number(r.cash_collection);
-    s.digitalCollection = Number(r.digital_collection);
-    s.refundAmount = Number(r.refund_amount);
+  for (const [name, pay] of payByStaff) {
+    const s = ensureStaff(name);
+    s.totalReceived = pay.totalReceived;
+    s.cashCollection = pay.cashCollection;
+    s.digitalCollection = pay.digitalCollection;
+    s.refundAmount = pay.refundAmount;
+    s.cashRefunded = pay.cashRefunded;
   }
   for (const r of billAuditRaw.rows) {
     const s = ensureStaff(r.staff_name);
@@ -176,7 +235,8 @@ advancedDashboardRouter.get("/", async (req: StaffAuthRequest, res) => {
     s.cashExpenses = Number(r.cash_expenses);
   }
   for (const s of staffMap.values()) {
-    s.netCashHandled = s.cashCollection - s.cashExpenses;
+    // Same drawer formula as Daily Summary / My Daily Summary
+    s.netCashHandled = s.cashCollection - s.cashRefunded - s.cashExpenses;
   }
 
   const staffComparison = Array.from(staffMap.values()).sort(
@@ -200,26 +260,14 @@ advancedDashboardRouter.get("/", async (req: StaffAuthRequest, res) => {
     ${staffFilter ? sql`AND created_by_name = ${staffFilter}` : sql``}
   `);
 
-  const paymentsAggRaw = await db.execute<{
-    total_received: string;
-    refund_amount: string;
-    digital_collection: string;
-    cash_collection: string;
-  }>(sql`
+  const expensesAggRaw = await db.execute<{ total_expenses: string; cash_expenses: string }>(sql`
     SELECT
-      COALESCE(SUM(amount::numeric) FILTER (WHERE amount::numeric > 0), 0)::text AS total_received,
-      COALESCE(SUM(ABS(amount::numeric)) FILTER (WHERE amount::numeric < 0), 0)::text AS refund_amount,
-      COALESCE(SUM(amount::numeric) FILTER (WHERE amount::numeric > 0 AND LOWER(method) IN ('upi','card','online','bank','cheque','neft','rtgs')), 0)::text AS digital_collection,
-      COALESCE(SUM(amount::numeric) FILTER (WHERE amount::numeric > 0 AND LOWER(method) = 'cash'), 0)::text AS cash_collection
-    FROM payments
-    WHERE created_at >= ${start} AND created_at <= ${end}
-    ${staffFilter ? sql`AND recorded_by_name = ${staffFilter}` : sql``}
-  `);
-
-  const expensesAggRaw = await db.execute<{ total_expenses: string }>(sql`
-    SELECT COALESCE(SUM(amount::numeric), 0)::text AS total_expenses
+      COALESCE(SUM(amount::numeric), 0)::text AS total_expenses,
+      COALESCE(SUM(amount::numeric) FILTER (
+        WHERE LOWER(COALESCE(NULLIF(TRIM(payment_mode), ''), 'cash')) = 'cash'
+      ), 0)::text AS cash_expenses
     FROM expenses
-    WHERE expense_date >= ${from} AND expense_date <= ${to}
+    WHERE created_at >= ${start} AND created_at <= ${end}
     ${staffFilter ? sql`AND approved_by = ${staffFilter}` : sql``}
   `);
 
@@ -234,14 +282,22 @@ advancedDashboardRouter.get("/", async (req: StaffAuthRequest, res) => {
   const outstanding = Number(billsAggRaw.rows[0]?.outstanding ?? 0);
   const cancelledAmount = Number(billsAggRaw.rows[0]?.cancelled_amount ?? 0);
   const discountsGiven = Number(billsAggRaw.rows[0]?.discounts_given ?? 0);
-  const totalReceived = Number(paymentsAggRaw.rows[0]?.total_received ?? 0);
-  const refundAmount = Number(paymentsAggRaw.rows[0]?.refund_amount ?? 0);
-  const digitalCollection = Number(paymentsAggRaw.rows[0]?.digital_collection ?? 0);
-  const cashCollection = Number(paymentsAggRaw.rows[0]?.cash_collection ?? 0);
+  const totalReceived = overallTotalReceived;
+  const refundAmount = overallRefundAmount;
+  const digitalCollection = overallDigitalCollection;
+  const cashCollection = overallCashCollection;
+  const cashRefunded = overallCashRefunded;
   const totalExpenses = Number(expensesAggRaw.rows[0]?.total_expenses ?? 0);
+  const cashExpenses = Number(expensesAggRaw.rows[0]?.cash_expenses ?? 0);
   const refundsAndCancellations = refundAmount + cancelledAmount;
-  const netCollection = grossBilling - outstanding - refundsAndCancellations - totalExpenses;
-  const physicalCashInHand = netCollection - digitalCollection;
+  const { netCollection, physicalCashInHand } = computeDailySummaryCashMath({
+    totalReceived,
+    totalRefunded: refundAmount,
+    expenses: totalExpenses,
+    cashCollection,
+    cashRefunded,
+    cashExpenses,
+  });
 
   const overallSummary = {
     grossBilling,
@@ -252,7 +308,9 @@ advancedDashboardRouter.get("/", async (req: StaffAuthRequest, res) => {
     totalReceived,
     digitalCollection,
     cashCollection,
+    cashRefunded,
     totalExpenses,
+    cashExpenses,
     discountsGiven,
     netCollection,
     physicalCashInHand,

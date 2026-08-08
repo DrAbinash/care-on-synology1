@@ -71,7 +71,7 @@ function bucketMethod(method: string): keyof Omit<MethodTotals, "total" | "count
   return "other";
 }
 
-type TestSummary = { testId: number; testName: string; category: string; count: number; total: number };
+type TestSummary = { testId: number; testName: string; category: string; count: number; total: number; grossTotal: number };
 
 // ── Pure, exported, unit-testable core logic ────────────────────────────────
 // Extracted so the critical business rules (cash-only physical drawer, no
@@ -227,6 +227,7 @@ async function summarizeWindow(from: Date | null, to: Date) {
       id: billsTable.id,
       billNumber: billsTable.billNumber,
       totalAmount: billsTable.totalAmount,
+      subtotal: billsTable.subtotal,
       paidAmount: billsTable.paidAmount,
       balanceAmount: billsTable.balanceAmount,
       refundAmount: billsTable.refundAmount,
@@ -289,8 +290,26 @@ async function summarizeWindow(from: Date | null, to: Date) {
   applyCashExpenses(classified, cashExpensesByApprover);
 
   // Aggregate test-wise collections
+  //
+  // DISCOUNT ALLOCATION FIX: order_tests.price is the GROSS catalog line
+  // price and never reflects a bill-level discount, so summing it directly
+  // (as this used to do) always overstated testSummary vs. what was actually
+  // billed/collected — e.g. a ₹1,000 test with a ₹200 bill discount showed
+  // ₹1,000 here while the bill (and daily-summary totalBilling) recorded
+  // ₹800. Each bill's discount (+ tax) is now allocated proportionally
+  // across its own line items via scale = totalAmount / subtotal, so
+  // Σ testSummary[].total reconciles with Σ billRows[].totalAmount for the
+  // same window. grossTotal (pre-discount) is kept alongside for transparency.
   const testMap = new Map<number, TestSummary>();
-  const activeBillIds = billRows.filter((b) => b.status !== "cancelled").map((b) => b.id);
+  const activeBills = billRows.filter((b) => b.status !== "cancelled");
+  const activeBillIds = activeBills.map((b) => b.id);
+  const billScaleByOrderId = new Map<number, number>();
+  for (const b of activeBills) {
+    if (b.orderId == null) continue;
+    const subtotal = n(b.subtotal);
+    const scale = subtotal > 0.0001 ? n(b.totalAmount) / subtotal : 1;
+    billScaleByOrderId.set(b.orderId, scale);
+  }
   if (activeBillIds.length > 0) {
     const orderIds = new Set<number>();
     for (const b of billRows) {
@@ -303,6 +322,7 @@ async function summarizeWindow(from: Date | null, to: Date) {
           testName: sql<string>`COALESCE(${orderTestsTable.displayName}, ${testsTable.name}, 'Unknown')`,
           category: sql<string>`COALESCE(${testsTable.category}, 'General')`,
           price: orderTestsTable.price,
+          orderId: orderTestsTable.orderId,
         })
         .from(orderTestsTable)
         .leftJoin(testsTable, eq(orderTestsTable.testId, testsTable.id))
@@ -314,11 +334,14 @@ async function summarizeWindow(from: Date | null, to: Date) {
       for (const t of testRows) {
         const id = n(t.testId);
         if (!testMap.has(id)) {
-          testMap.set(id, { testId: id, testName: t.testName, category: t.category, count: 0, total: 0 });
+          testMap.set(id, { testId: id, testName: t.testName, category: t.category, count: 0, total: 0, grossTotal: 0 });
         }
         const ts = testMap.get(id)!;
+        const grossPrice = n(t.price);
+        const scale = billScaleByOrderId.get(t.orderId) ?? 1;
         ts.count += 1;
-        ts.total += n(t.price);
+        ts.grossTotal += grossPrice;
+        ts.total += grossPrice * scale;
       }
     }
   }
@@ -494,12 +517,15 @@ dayCloseRouter.get("/", requireOwnerOrAdmin, async (req, res) => {
 });
 
 // Single closure detail (enriched with report data if missing from DB).
-dayCloseRouter.get("/:id", requireOwnerOrAdmin, async (req, res) => {
+// IMPORTANT: this parametric route is registered before /my-preview,
+// /my-drawer-status, /my-list, etc. Non-numeric ids must fall through with
+// next("route") — otherwise cashiers get 403 from requireOwnerOrAdmin when
+// calling their own My Day Close endpoints (Express matches /:id first).
+dayCloseRouter.get("/:id", (req, res, next) => {
+  if (!Number.isInteger(Number(req.params.id))) return next("route");
+  return requireOwnerOrAdmin(req, res, next);
+}, async (req, res) => {
   const id = Number(req.params.id);
-  if (!Number.isInteger(id)) {
-    res.status(400).json({ error: "Invalid id" });
-    return;
-  }
   const [row] = await db.select().from(dayClosuresTable).where(eq(dayClosuresTable.id, id)).limit(1);
   if (!row) {
     res.status(404).json({ error: "Not found" });
@@ -541,12 +567,11 @@ dayCloseRouter.get("/:id", requireOwnerOrAdmin, async (req, res) => {
 
 // Re-open a closed day. SUPER-ADMIN role (regular ERP staff session) ONLY.
 const ReopenBody = z.object({ reason: z.string().min(3).max(2000) });
-dayCloseRouter.post("/:id/reopen", requireSuperAdminStaff, async (req, res) => {
+dayCloseRouter.post("/:id/reopen", (req, res, next) => {
+  if (!Number.isInteger(Number(req.params.id))) return next("route");
+  return requireSuperAdminStaff(req, res, next);
+}, async (req, res) => {
   const id = Number(req.params.id);
-  if (!Number.isInteger(id)) {
-    res.status(400).json({ error: "Invalid id" });
-    return;
-  }
   const parsed = ReopenBody.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "Reason is required (min 3 chars)" });

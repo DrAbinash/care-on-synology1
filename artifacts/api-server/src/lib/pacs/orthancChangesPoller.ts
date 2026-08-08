@@ -46,6 +46,7 @@ import { pacsSettingsTable, pacsLogsTable } from "@workspace/db/schema";
 import { and, eq } from "drizzle-orm";
 import { logger } from "../logger";
 import { isUltrasoundModality } from "../usgModality";
+import { formatDicomPersonNameForDisplay } from "./dicomNameNormalize";
 
 const CURSOR_KEY = "orthanc_changes_cursor";
 const CURSOR_CATEGORY = "orthanc";
@@ -196,10 +197,10 @@ async function logPacsEvent(
 
 // ── DICOM helpers ─────────────────────────────────────────────────────────────
 
-// DICOM PN "Last^First^Middle^Prefix^Suffix" → readable "Last First Middle".
+// DICOM PN "Last^First^Middle^Prefix^Suffix" → display "First Middle Last, MD".
+// Degrees / titles are preserved cleanly; matching uses a separate normalizer.
 function normalizePersonName(raw: string | null | undefined): string {
-  if (!raw) return "";
-  return raw.replace(/\^+/g, " ").replace(/\s+/g, " ").trim();
+  return formatDicomPersonNameForDisplay(raw);
 }
 
 // ModalitiesInStudy can be a single value ("US") or a multi-value string

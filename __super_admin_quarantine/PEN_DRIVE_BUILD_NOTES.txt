@@ -1,0 +1,41 @@
+SUPER ADMIN PEN DRIVE — FRESH BUILD NOTES
+========================================
+
+Rebuild (from repo root):
+
+  # API + UI
+  node __super_admin_quarantine/build-plugin.mjs
+  # Or API-only then:
+  #   pnpm --filter @workspace/super-admin-portal run build
+  #   (portal must be reachable as a workspace package for catalog:/workspace:*)
+
+Copy onto the pen drive (TOP level):
+  superadmin-api.js
+  superadmin-ui.js
+  superadmin.key   (existing — do not regenerate unless rotating)
+  superadmin.pin   (existing — optional)
+  READ_ME_FIRST.txt
+
+2026-08-01 — Referral report search + commission wiring:
+  Searchable/scrollable doctor picker on Referral Report + Commission Rules
+  (fixes list "not moving"). Matching hardened: coerce string testIds,
+  case-insensitive categories, rule-name↔test-name fallback (MRI BRAIN).
+  Global All Doctors slabs (doctor_id NULL) via existing scope UI.
+  Empty test-scoped rules rejected; report warns on Rate 0% / no slab.
+  Redeploy care-api AND copy rebuilt plugin files to the pen drive.
+
+2026-08-01 — Doctor Manager search + assign-doctors fix:
+  Doctor Manager has a partial-word search box ("abi" → Abinash).
+  Assign doctors Save no longer 500s (orders.appointment_id did not exist;
+  appointments are retagged by doctor_id). Rebuild both plugin files and
+  copy onto the pen drive. care-api also hosts a fixed assign-doctors
+  override so Save works after API rebuild even before USB API refresh.
+
+2026-07-29 — billed-only commission:
+  Referral / ledger commission rows require a non-cancelled bill.
+  Unbilled duplicate orders no longer appear as On Hold "Not billed" lines.
+  Requires matching care-api deploy (commissionCalc helpers + reconcile cron).
+
+2026-07-29 — Referral Register extras:
+  Category/modality filter, month presets, compare-months view,
+  WhatsApp/Email send-register (POST /api/commission/whatsapp/send-register).

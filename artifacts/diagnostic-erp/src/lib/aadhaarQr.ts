@@ -98,15 +98,44 @@ function isLegacyAadhaarXml(text: string): boolean {
   return text.includes("PrintLetterBarcodeData") || text.trim().startsWith("<?xml");
 }
 
-/** Decode a QR code from raw image pixel data (already drawn to a canvas). Returns "none" if no QR is found at all. */
+/** Decode a QR code from raw image pixel data (already drawn to a canvas).
+ *  Tries multiple scales + both polarities — laminated Aadhaar QR often needs
+ *  inversion or a downscale before jsQR locks on. Returns "none" if no QR. */
 export function decodeQrFromImageData(imageData: ImageData): AadhaarQrDecodeResult {
-  const code = jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: "dontInvert" });
-  if (!code?.data) return { format: "none" };
+  const attempts: ImageData[] = [imageData];
 
-  if (isLegacyAadhaarXml(code.data)) {
-    return { format: "legacy-xml", fields: parseLegacyXmlFields(code.data) };
+  // Downscales help dense Secure/legacy QR modules when the card is large.
+  for (const factor of [0.75, 0.5]) {
+    const w = Math.max(1, Math.round(imageData.width * factor));
+    const h = Math.max(1, Math.round(imageData.height * factor));
+    if (w < 120 || h < 120) continue;
+    const canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) continue;
+    const src = document.createElement("canvas");
+    src.width = imageData.width;
+    src.height = imageData.height;
+    const sctx = src.getContext("2d");
+    if (!sctx) continue;
+    sctx.putImageData(imageData, 0, 0);
+    ctx.drawImage(src, 0, 0, w, h);
+    attempts.push(ctx.getImageData(0, 0, w, h));
   }
-  return { format: "unsupported", rawSample: code.data.slice(0, 40) };
+
+  for (const attempt of attempts) {
+    const code = jsQR(attempt.data, attempt.width, attempt.height, {
+      inversionAttempts: "attemptBoth",
+    });
+    if (!code?.data) continue;
+    if (isLegacyAadhaarXml(code.data)) {
+      return { format: "legacy-xml", fields: parseLegacyXmlFields(code.data) };
+    }
+    // Prefer reporting unsupported over continuing — a QR was found.
+    return { format: "unsupported", rawSample: code.data.slice(0, 40) };
+  }
+  return { format: "none" };
 }
 
 /** Convenience wrapper: decode a QR code from an already-captured image Blob. */

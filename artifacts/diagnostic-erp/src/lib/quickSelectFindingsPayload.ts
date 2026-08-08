@@ -14,15 +14,22 @@ import { EMPTY_INSTANCE, type AbnormalityInstance } from "./abnormalityEngine";
  * and validates the field but never writes it to any column.
  */
 
+export interface StudyTextOverridePayload {
+  finding: string;
+  impression: string;
+  technique: string;
+  recommendation: string;
+}
+
 export interface QuickSelectFindingPayload {
   findingId: number;
-  // The 5-field abnormality instance, optionally carrying the Structured Finding
-  // Assistant's collected dropdown values under a reserved `__structured` key.
-  // The whole object is stored verbatim in the finding's persisted params, so a
-  // reloaded draft can regenerate the identical structured text; consumers that
-  // only expect the instance fields (toInstanceParams, the materializer) ignore
-  // the extra key.
-  params: AbnormalityInstance | (AbnormalityInstance & { __structured: Record<string, string> });
+  // The 5-field abnormality instance, optionally carrying:
+  //   __structured  — Structured Finding Assistant dropdown values
+  //   __textOverride — study-local double-click edit (this report only)
+  // The whole object is stored verbatim in the finding's persisted params.
+  params:
+    | AbnormalityInstance
+    | (AbnormalityInstance & { __structured?: Record<string, string>; __textOverride?: StudyTextOverridePayload });
 }
 
 /**
@@ -38,14 +45,17 @@ export function deriveQuickSelectFindings(
   selectedQuickIds: Iterable<number>,
   quickInstances: Map<number, AbnormalityInstance>,
   structuredValues?: Map<number, Record<string, string>>,
+  textOverrides?: Map<number, StudyTextOverridePayload>,
 ): QuickSelectFindingPayload[] {
   return Array.from(selectedQuickIds).map((findingId) => {
     const base = quickInstances.get(findingId) ?? EMPTY_INSTANCE;
     const sv = structuredValues?.get(findingId);
-    // Only the reserved key is added, and only when structured values exist —
-    // a non-structured finding's params are byte-for-byte what they were before.
-    return sv && Object.keys(sv).length > 0
-      ? { findingId, params: { ...base, __structured: sv } }
+    const to = textOverrides?.get(findingId);
+    const extras: { __structured?: Record<string, string>; __textOverride?: StudyTextOverridePayload } = {};
+    if (sv && Object.keys(sv).length > 0) extras.__structured = sv;
+    if (to) extras.__textOverride = to;
+    return Object.keys(extras).length > 0
+      ? { findingId, params: { ...base, ...extras } }
       : { findingId, params: base };
   });
 }

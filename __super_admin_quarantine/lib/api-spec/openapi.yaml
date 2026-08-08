@@ -3185,6 +3185,8 @@ components:
           type: integer
         doctorId:
           type: integer
+          nullable: true
+          description: null = clinic-wide slab that applies to every referring doctor
         name:
           type: string
         type:

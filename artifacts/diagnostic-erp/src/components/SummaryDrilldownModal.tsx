@@ -41,7 +41,7 @@ type DrilldownResponse = {
 export const DRILLDOWN_TITLES: Record<DrilldownType, string> = {
   totalBills: "Total Bills Generated",
   duesCollected: "Dues Collected",
-  cancellations: "Cancellations",
+  cancellations: "Cancellations (₹)",
   outstandingDues: "Outstanding / Dues",
   collectibleAmount: "Collectible Amount",
   netDigitalCollection: "Net Digital Collection",
@@ -51,7 +51,7 @@ export const DRILLDOWN_TITLES: Record<DrilldownType, string> = {
   discountsGiven: "Discounts Given",
   cancellationCount: "Cancellation Count",
   averageBillValue: "Average Bill Value",
-  refundsWithoutCancellation: "Refunds (No Cancellation)",
+  refundsWithoutCancellation: "Refunds",
 };
 
 // Columns known to hold a currency amount — right-aligned + ₹-formatted for

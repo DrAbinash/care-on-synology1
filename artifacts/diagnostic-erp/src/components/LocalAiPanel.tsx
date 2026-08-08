@@ -57,7 +57,7 @@ interface ActionResult {
 const ACTIONS = [
   {
     id: "generate-draft",
-    endpoint: "/api/radiology/ollama/draft",
+    endpoint: "/api/radiology-ollama/draft",
     label: "Generate AI Draft",
     icon: BrainCircuit,
     color: "text-orange-400",
@@ -68,7 +68,7 @@ const ACTIONS = [
   },
   {
     id: "improve",
-    endpoint: "/api/radiology/ollama/improve",
+    endpoint: "/api/radiology-ollama/improve",
     label: "Improve Report",
     icon: WandSparkles,
     color: "text-amber-400",
@@ -79,7 +79,7 @@ const ACTIONS = [
   },
   {
     id: "impression-from-findings",
-    endpoint: "/api/radiology/ollama/impression-from-findings",
+    endpoint: "/api/radiology-ollama/impression-from-findings",
     label: "Findings → Impression",
     icon: Repeat2,
     color: "text-purple-400",
@@ -90,7 +90,7 @@ const ACTIONS = [
   },
   {
     id: "care-format",
-    endpoint: "/api/radiology/ollama/format-care-style",
+    endpoint: "/api/radiology-ollama/format-care-style",
     label: "Care Format",
     icon: FileDown,
     color: "text-cyan-400",
@@ -101,7 +101,7 @@ const ACTIONS = [
   },
   {
     id: "grammar",
-    endpoint: "/api/radiology/ollama/grammar",
+    endpoint: "/api/radiology-ollama/grammar",
     label: "Grammar Cleanup",
     icon: SpellCheck,
     color: "text-green-400",
@@ -120,7 +120,7 @@ export default function LocalAiPanel({ study, currentFindings, onInsertFindings,
 
   const { data: status, isLoading: statusLoading, refetch: refetchStatus } = useQuery<OllamaStatus>({
     queryKey: ["ollama-status"],
-    queryFn: () => api.get<OllamaStatus>("/api/radiology/ollama/status"),
+    queryFn: () => api.get<OllamaStatus>("/api/radiology-ollama/status"),
     refetchInterval: 30000,
     staleTime: 20000,
   });

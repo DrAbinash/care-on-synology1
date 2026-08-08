@@ -408,7 +408,7 @@ export async function runViewerDiagnostics(io: DiagnosticsIO = defaultDiagnostic
   const ohifProbeUrl = process.env.OHIF_INTERNAL_URL || cfg.ohif.baseUrl;
   if (!cfg.ohif.baseUrl) {
     checks.push(check("viewer.ohif_reachable", "OHIF viewer", "FAIL", "OHIF base URL is not configured", {
-      fix: "Set the OHIF Base URL in Radiology Settings → Viewers (e.g. http://192.168.1.137:3010).",
+      fix: "Set the OHIF Base URL in Radiology Settings → Viewers (e.g. http://172.16.1.139:3010).",
     }));
   } else {
     const ohif = await probeHttp(io, ohifProbeUrl);

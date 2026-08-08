@@ -24,18 +24,22 @@ import { readStaffSession } from "@/lib/staffSession";
 import { api } from "@/lib/fetchApi";
 import SpinalMeasurementPanel from "@/components/SpinalMeasurementPanel";
 import ReportPrintSettingsDialog from "@/components/ReportPrintSettingsDialog";
+import ReportLayoutQuickSelect, {
+  type ReportLayoutKey,
+  quickSelectLayoutKey,
+  reportLayoutTemplateQuery,
+} from "@/components/radiology/ReportLayoutQuickSelect";
 import { useQuery as usePremiumPreviewQuery } from "@tanstack/react-query";
 
-/** R1.1 — premium preview through the shared server presentation layer
- *  (replaces the retired client-only PremiumReportViewer). */
-function PremiumServerPreview({ draftId }: { draftId: number }) {
+/** R1.1 — server preview through the shared presentation layer. */
+function ServerLayoutPreview({ draftId, layout }: { draftId: number; layout: ReportLayoutKey }) {
   const { data: html } = usePremiumPreviewQuery<string>({
-    queryKey: ["draft-print-preview", draftId, "care-premium"],
-    queryFn: () => api.get<string>(`/api/radiology/report-generator/drafts/${draftId}/print-preview?template=care-premium`),
+    queryKey: ["draft-print-preview", draftId, layout],
+    queryFn: () => api.get<string>(`/api/radiology/report-generator/drafts/${draftId}/print-preview?${reportLayoutTemplateQuery(layout)}`),
   });
   return html
-    ? <iframe title="Premium report preview" srcDoc={html} className="w-full h-full border-none" sandbox="allow-same-origin" />
-    : <div className="h-full flex items-center justify-center text-xs text-muted-foreground">Rendering premium preview…</div>;
+    ? <iframe title="Report preview" srcDoc={html} className="w-full h-full border-none" sandbox="allow-same-origin" />
+    : <div className="h-full flex items-center justify-center text-xs text-muted-foreground">Rendering preview…</div>;
 }
 import {
   generateReportPDF, loadPrintSettings, savePrintSettings, type PrintSettings,
@@ -220,9 +224,17 @@ export default function RadiologyReportGenerator({ studyId }: { studyId?: number
 
   // Preview & draft
   const [previewHtml, setPreviewHtml] = useState("");
-  const [premiumMode, setPremiumMode] = useState<boolean>(() => {
-    // Phase C: unified worklist "Premium" button deep-links with ?premium=1.
-    try { return new URLSearchParams(window.location.search).get("premium") === "1"; } catch { return false; }
+  const [previewLayout, setPreviewLayout] = useState<ReportLayoutKey>(() => {
+    try {
+      return new URLSearchParams(window.location.search).get("premium") === "1" ? "care-premium" : "care-classic";
+    } catch {
+      return "care-classic";
+    }
+  });
+  const { data: presentationTemplates } = useQuery<{ active: Partial<Record<string, string>> }>({
+    queryKey: ["presentation-templates"],
+    queryFn: () => api.get("/api/radiology/presentation-templates"),
+    staleTime: 60_000,
   });
   // Draft identity (Radiology Roadmap Ticket A3.0) — extracted into a shared
   // hook so this page and RadiologyReportingWorkspace.tsx share one
@@ -2093,36 +2105,24 @@ export default function RadiologyReportGenerator({ studyId }: { studyId?: number
             </div>
           </div>
 
-          {/* ── RIGHT: Preview (Standard or Premium) ── */}
+          {/* ── RIGHT: Preview (Classic or Premium) ── */}
           <div className="xl:sticky xl:top-4 space-y-2">
-            {/* Toggle bar */}
-            <div className="flex items-center gap-2 px-1">
-              <button
-                className={`flex-1 py-1.5 text-xs font-semibold rounded-l-md border transition-colors ${!premiumMode ? "bg-primary text-primary-foreground border-primary" : "bg-muted text-muted-foreground border-border hover:bg-muted/80"}`}
-                onClick={() => setPremiumMode(false)}
-              >Standard Preview</button>
-              <button
-                className={`flex-1 py-1.5 text-xs font-semibold rounded-r-md border transition-colors ${premiumMode ? "bg-slate-900 text-amber-400 border-amber-600" : "bg-muted text-muted-foreground border-border hover:bg-muted/80"}`}
-                onClick={() => setPremiumMode(true)}
-              >✦ Premium Preview</button>
-            </div>
+            <ReportLayoutQuickSelect
+              value={previewLayout}
+              activeKey={presentationTemplates?.active?.standard}
+              onChange={setPreviewLayout}
+              className="px-1"
+            />
 
-            {premiumMode ? (
-              /* PREMIUM MODE — R1.1: the former client-only PremiumReportViewer
-                 (browser-direct Orthanc, never wired to delivery) is merged
-                 into the ONE server presentation layer. This iframe shows the
-                 exact premium document every delivery surface can produce. */
+            {draftId ? (
               <div style={{ height: "680px" }} className="rounded-lg border overflow-hidden bg-white">
-                {draftId ? (
-                  <PremiumServerPreview draftId={draftId} />
-                ) : (
-                  <div className="h-full flex items-center justify-center text-xs text-muted-foreground p-6 text-center">
-                    Save the draft once to render the premium preview (server-side, identical to print/PDF).
-                  </div>
-                )}
+                <ServerLayoutPreview draftId={draftId} layout={previewLayout} />
+              </div>
+            ) : previewLayout === "care-premium" ? (
+              <div style={{ height: "680px" }} className="rounded-lg border overflow-hidden bg-white flex items-center justify-center text-xs text-muted-foreground p-6 text-center">
+                Save the draft once to render the premium preview (server-side, identical to print/PDF).
               </div>
             ) : (
-              /* STANDARD MODE */
               <div className="rounded-lg border bg-white dark:bg-card shadow-sm">
                 <div className="flex items-center justify-between px-4 py-3 border-b no-print">
                   <span className="text-sm font-semibold flex items-center gap-2">

@@ -6,7 +6,8 @@ import { fileURLToPath } from "node:url";
 // USG Companion Workspace contract (P0/P1) — same source-reading style as
 // canonicalWorkspaceRouting.test.ts. Proves the dedicated USG shell is a TENANT
 // of the canonical platform: it reuses the one lifecycle + PCPNDT gate, invents
-// no parallel transport, and stays behind its feature flag.
+// no parallel transport, stays behind its feature flag, and is NOT forked from
+// the worklist (Start Report always opens Reporting Workspace).
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (rel: string) => readFileSync(join(SRC, rel), "utf8");
@@ -64,9 +65,14 @@ describe("USG shell — flag gating & routing", () => {
     expect(page).toContain("/radiology/report/");
   });
 
-  it("the worklist only routes US studies to the shell when the flag is on", () => {
-    expect(worklist).toContain('isFeatureEnabled("ff_radiology_usg_workspace")');
-    expect(worklist).toContain("/radiology/usg/");
+  it("the worklist opens every modality on the canonical report path (no USG shell fork)", () => {
+    // P0: one open-report path. USG Companion stays at /radiology/usg/:studyId
+    // behind the flag for deep links, but Start Report from the worklist always
+    // goes to Reporting Workspace — Companion widgets live there when needed.
+    expect(worklist).toContain("function reportingWorkspacePath");
+    expect(worklist).toContain("`/radiology/report/${entry.id}`");
+    expect(worklist).not.toContain('isFeatureEnabled("ff_radiology_usg_workspace")');
+    expect(worklist).not.toContain("`/radiology/usg/${entry.id}`");
   });
 });
 

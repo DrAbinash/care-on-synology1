@@ -1,16 +1,26 @@
 import { useSyncStatus } from "@/hooks/useSyncStatus";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
 import { getQueuedBills, discardQueuedBill, type QueuedBill } from "@/lib/offlineBillingQueue";
-import { RefreshCw, CloudOff, CheckCircle2, ChevronDown, ChevronUp, X } from "lucide-react";
+import { buildProvisionalBillPrintHtml } from "@/lib/provisionalBillReceipt";
+import { printViaIframe, type PrintClinic } from "@/lib/printBill";
+import {
+  loadBillPrintSettings,
+  parseGlobalBillPrintSettings,
+} from "@/lib/billPrintSettings";
+import { RefreshCw, CloudOff, CheckCircle2, ChevronDown, ChevronUp, X, Printer } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useCallback, useEffect, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 
 export function SyncPanel() {
   const isOnline = useOnlineStatus();
-  const { pendingCount, lastSyncedAt, isSyncing, lastError, triggerSync } = useSyncStatus();
+  const { pendingCount, lastSyncedAt, isSyncing, lastError, triggerSync, apiReachable } = useSyncStatus();
+  const queryClient = useQueryClient();
   const [justTriggered, setJustTriggered] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [queued, setQueued] = useState<QueuedBill[]>([]);
+
+  const canSync = apiReachable && !isSyncing && !justTriggered;
 
   // Re-read the queue's contents whenever its length changes (a bill got
   // queued or flushed) or the disclosure opens — pendingCount already tracks
@@ -30,22 +40,46 @@ export function SyncPanel() {
     setQueued(getQueuedBills());
   }, []);
 
+  const handleReprint = useCallback((entry: QueuedBill) => {
+    if (!entry.printSnapshot) return;
+    const cachedClinic =
+      queryClient.getQueryData<PrintClinic>(["clinic-settings"]) ?? ({} as PrintClinic);
+    const cachedPrinter = queryClient.getQueryData<{ billPrinterType?: string }>(["printer-settings"]);
+    const settings = loadBillPrintSettings(
+      parseGlobalBillPrintSettings(cachedClinic?.billPrintSettingsJson),
+    );
+    const isBW = cachedPrinter?.billPrinterType === "bw";
+    const html = buildProvisionalBillPrintHtml(
+      entry.printSnapshot,
+      cachedClinic,
+      settings,
+      isBW,
+    );
+    printViaIframe(html);
+  }, [queryClient]);
+
   const lastSyncText = lastSyncedAt
     ? new Date(lastSyncedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
     : "Never";
+
+  const connectionLabel = !isOnline
+    ? "Offline"
+    : apiReachable
+      ? "Server connected"
+      : "Server unreachable";
 
   return (
     <div className="space-y-1 text-[11px]">
       {/* Row 1: status + sync button */}
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-1.5">
-          {isOnline ? (
+          {apiReachable ? (
             <CheckCircle2 size={11} className="text-emerald-500 shrink-0" />
           ) : (
             <CloudOff size={11} className="text-slate-400 shrink-0" />
           )}
-          <span className={isOnline ? "text-emerald-300" : "text-slate-400"}>
-            {isOnline ? "Cloud connected" : "Offline"}
+          <span className={apiReachable ? "text-emerald-300" : "text-slate-400"}>
+            {connectionLabel}
           </span>
           {pendingCount > 0 && (
             <button
@@ -59,10 +93,10 @@ export function SyncPanel() {
         </div>
         <button
           onClick={handleSync}
-          disabled={!isOnline || isSyncing || justTriggered}
+          disabled={!canSync}
           className={cn(
             "flex items-center gap-1 rounded px-2 py-0.5 text-[10px] font-semibold transition-colors",
-            !isOnline || isSyncing || justTriggered
+            !canSync
               ? "bg-white/10 text-white/40 cursor-not-allowed"
               : "bg-white/15 text-white hover:bg-white/25 active:bg-white/20"
           )}
@@ -92,18 +126,30 @@ export function SyncPanel() {
           {queued.map((q) => (
             <div key={q.clientRef} className="flex items-center justify-between gap-2 text-white/70">
               <span className="truncate" title={q.lastError ?? undefined}>
+                {q.provisionalBillNumber ? `${q.provisionalBillNumber} · ` : ""}
                 {new Date(q.queuedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                 {q.lastError ? ` — ${q.lastError}` : " — waiting to sync"}
               </span>
-              {q.lastError && (
-                <button
-                  onClick={() => handleDiscard(q.clientRef)}
-                  className="shrink-0 text-white/40 hover:text-red-300"
-                  title="Discard this queued bill — it will not be retried"
-                >
-                  <X size={10} />
-                </button>
-              )}
+              <div className="flex shrink-0 items-center gap-1">
+                {q.printSnapshot && (
+                  <button
+                    onClick={() => handleReprint(q)}
+                    className="text-white/40 hover:text-white/80"
+                    title="Reprint provisional receipt"
+                  >
+                    <Printer size={10} />
+                  </button>
+                )}
+                {q.lastError && (
+                  <button
+                    onClick={() => handleDiscard(q.clientRef)}
+                    className="text-white/40 hover:text-red-300"
+                    title="Discard this queued bill — it will not be retried"
+                  >
+                    <X size={10} />
+                  </button>
+                )}
+              </div>
             </div>
           ))}
         </div>

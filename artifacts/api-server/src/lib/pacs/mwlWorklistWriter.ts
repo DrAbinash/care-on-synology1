@@ -44,6 +44,10 @@ export interface MwlProcedure {
   scheduledTime?: string | null; // HHMMSS
   stationAeTitle?: string | null;
   bodyPartExamined?: string | null;
+  /** Free-text comments shown on many consoles; we stash CARE bill/order ids here. */
+  comments?: string | null;
+  sourceBillId?: string | null;
+  sourceOrderId?: string | null;
 }
 
 /** The shared worklist folder, or null when the feature isn't configured. */
@@ -61,8 +65,29 @@ export function isMwlEnabled(): boolean {
 function esc(v: string | null | undefined): string {
   return (v ?? "").replace(/[\\\]\r\n\t]/g, " ").replace(/\s+/g, " ").trim();
 }
+/**
+ * DICOM Person Name for MWL: Family^Given.
+ * ERP stores "Given Family" (or already-caret PN) — convert so the modality
+ * copies a standard PN that comes back matchable by accession + cleaned name.
+ */
 function toPn(name: string | null | undefined): string {
-  return esc(name) || "ANONYMOUS";
+  const cleaned = esc(name);
+  if (!cleaned) return "ANONYMOUS";
+  if (cleaned.includes("^")) return cleaned;
+  const parts = cleaned.split(/\s+/).filter(Boolean);
+  if (parts.length === 1) return parts[0];
+  const given = parts.slice(0, -1).join(" ");
+  const family = parts[parts.length - 1];
+  return `${family}^${given}`;
+}
+
+function buildComments(p: MwlProcedure): string {
+  const bits: string[] = [];
+  if (p.comments) bits.push(esc(p.comments));
+  if (p.sourceBillId) bits.push(`CARE-BILL:${esc(p.sourceBillId)}`);
+  if (p.sourceOrderId) bits.push(`CARE-ORDER:${esc(p.sourceOrderId)}`);
+  bits.push(`CARE-ACC:${esc(p.accessionNumber)}`);
+  return bits.filter(Boolean).join(" | ");
 }
 function digits(v: string | null | undefined): string {
   return (v ?? "").replace(/[^0-9]/g, "");
@@ -78,6 +103,7 @@ function fileFor(accession: string): string | null {
 function buildDump(p: MwlProcedure): string {
   const modality = esc(p.modality).toUpperCase() || "OT";
   const desc = esc(p.studyDescription || p.procedureName || "");
+  const comments = buildComments(p);
   return [
     `(0008,0005) CS [ISO_IR 100]`,
     `(0008,0050) SH [${esc(p.accessionNumber)}]`,
@@ -90,6 +116,8 @@ function buildDump(p: MwlProcedure): string {
     `(0008,0090) PN [${toPn(p.referringDoctor)}]`,
     `(0018,0015) CS [${esc(p.bodyPartExamined)}]`,
     `(0040,1001) SH [${esc(p.accessionNumber)}]`,
+    // Work / bill ids — modality may copy into study; Care matches primarily on accession.
+    `(0040,1400) LT [${comments}]`,
     `(0040,0100) SQ`,
     `  (fffe,e000) na`,
     `    (0008,0060) CS [${modality}]`,
@@ -102,6 +130,11 @@ function buildDump(p: MwlProcedure): string {
     `(fffe,e0dd) na`,
     ``,
   ].join("\n");
+}
+
+/** Exported for unit tests — DICOM PN formatting used on the wire to modalities. */
+export function formatMwlPersonName(name: string | null | undefined): string {
+  return toPn(name);
 }
 
 function runDump2Dcm(dumpText: string, outPath: string): Promise<boolean> {

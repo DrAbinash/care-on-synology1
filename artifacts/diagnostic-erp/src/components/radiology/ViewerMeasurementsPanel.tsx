@@ -19,20 +19,19 @@
  *   PATCH /api/radiology-lesions/viewer-measurements/:id                 { status, value?, unit? }
  *   POST  /api/radiology-lesions/viewer-measurements/import-all          { ids }
  *
- * The intentionally non-functional "Locate on viewer" deep-link from the
- * Cockpit is dropped — it never worked (it just re-launched the study-level
- * viewer, never the exact series/SOP), so it is deliberately not ported here.
+ * The "Locate on viewer" action opens the study in OHIF (series UID is copied
+ * when available). Exact SOP-level highlight is still viewer-dependent.
  */
 
-import { getMeasurement } from "@workspace/measurements";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import CollapsibleSection from "@/components/radiology/CollapsibleSection";
-import { dedupeUnit } from "@/components/radiology/UsgMeasurementReviewPanel";
-import { Check, ArrowDownToLine, Ban, RotateCcw } from "lucide-react";
+import { formatViewerMeasurementLabel, formatViewerMeasurementLine } from "@/lib/formatViewerMeasurementLine";
+import { Check, ArrowDownToLine, Ban, RotateCcw, ExternalLink } from "lucide-react";
+import { openOhifViewerPage } from "@/lib/viewerService";
 
 // ── Props ─────────────────────────────────────────────────────────────────────
 
@@ -42,6 +41,8 @@ export interface ViewerMeasurementsPanelProps {
   onInsertToFindings?: (line: string) => void;
   /** Insert a formatted measurement line into the report impression. */
   onInsertToImpression?: (line: string) => void;
+  /** Optional: open viewer focused on this measurement's series (best-effort). */
+  onLocateOnViewer?: (m: ViewerMeasurement) => void;
 }
 
 // ── Backend row type (viewer_measurements table $inferSelect, serialized) ──────
@@ -73,18 +74,8 @@ export interface ViewerMeasurement {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────────
 
-// "<label>: <value> <unit>" — unit dropped when already present in value
-// (dedupeUnit is shared with UsgMeasurementReviewPanel, not re-implemented here).
-// When the row carries a canonical Universal Measurement Registry id, the
-// report line uses the registry's display name (e.g. "Common Bile Duct
-// Diameter: 7 mm") instead of the bare caliper kind ("linear: 7 mm").
 function formatMeasurementLine(m: ViewerMeasurement): string {
-  const registryName = m.measurementId ? getMeasurement(m.measurementId)?.displayName : undefined;
-  const type = (registryName || m.measurementType || "Measurement").trim();
-  const value = (m.value ?? "").trim();
-  const unit = dedupeUnit(value, (m.unit ?? "").trim());
-  const valuePart = [value, unit].filter(Boolean).join(" ").trim();
-  return valuePart ? `${type}: ${valuePart}` : type;
+  return formatViewerMeasurementLine(m);
 }
 
 function confidencePercent(confidence: number | null): number | null {
@@ -135,6 +126,7 @@ export default function ViewerMeasurementsPanel({
   studyInstanceUID,
   onInsertToFindings,
   onInsertToImpression,
+  onLocateOnViewer,
 }: ViewerMeasurementsPanelProps) {
   const { toast } = useToast();
   const qc = useQueryClient();
@@ -227,8 +219,8 @@ export default function ViewerMeasurementsPanel({
             >
               <div className="flex items-start justify-between gap-2">
                 <div className="flex flex-col min-w-0">
-                  <span className="font-semibold truncate" title={`${m.measurementType} (${m.viewerName})`}>
-                    {m.measurementType || "Measurement"}
+                  <span className="font-semibold truncate" title={formatViewerMeasurementLabel(m)}>
+                    {formatViewerMeasurementLabel(m)}
                     {m.viewerName ? <span className="text-muted-foreground font-normal"> ({m.viewerName})</span> : null}
                   </span>
                   <span className="text-[10px] text-muted-foreground truncate">
@@ -295,6 +287,28 @@ export default function ViewerMeasurementsPanel({
                     <RotateCcw className="h-2.5 w-2.5 mr-0.5" /> Restore
                   </Button>
                 )}
+
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-5 px-1.5 text-[9px]"
+                  title={m.seriesInstanceUID ? `Open viewer (series ${m.seriesInstanceUID.slice(0, 12)}…)` : "Open study in viewer"}
+                  onClick={() => {
+                    if (onLocateOnViewer) {
+                      onLocateOnViewer(m);
+                      return;
+                    }
+                    if (!studyInstanceUID) return;
+                    if (m.seriesInstanceUID) {
+                      try {
+                        void navigator.clipboard?.writeText(m.seriesInstanceUID);
+                      } catch { /* ignore */ }
+                    }
+                    openOhifViewerPage(studyInstanceUID);
+                  }}
+                >
+                  <ExternalLink className="h-2.5 w-2.5 mr-0.5" /> Locate
+                </Button>
 
                 {onInsertToFindings && (
                   <Button

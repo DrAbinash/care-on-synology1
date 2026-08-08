@@ -1,6 +1,9 @@
 import { geminiOcrIdCard, type IdCardOcrResult } from "@workspace/integrations-gemini-ai";
+import { resolveLocalAiRuntime } from "../aiPipeline/runtimeConfig";
 import { ollamaOcrIdCard } from "./idCardOcrOllama";
 import { type OcrProviderChoice } from "./ocrProviderResolver";
+import { orchestrateDocumentOcr } from "./ocrOrchestrator";
+import { idFieldsToOcrResult, parseIdCardTextServer } from "./idCardTextFromOcr";
 
 /**
  * Shared image pre-processing applied before OCR, reused by both the ID-card
@@ -13,6 +16,8 @@ import { type OcrProviderChoice } from "./ocrProviderResolver";
  *     capture has a plain background around the document/card).
  *   - Normalize: stretches the contrast histogram, helping OCR read faint or
  *     low-contrast text/print.
+ *   - Mild sharpen: unsharp-mask so thin Aadhaar/PAN glyphs stay crisp after
+ *     JPEG re-encode (webcam captures benefit most).
  *   - Blur detection: Laplacian-variance sharpness score on the final image,
  *     returned to the caller so it can warn "too blurred" before accepting
  *     OCR output, and so the manual-verification step can be shown a
@@ -24,8 +29,8 @@ import { type OcrProviderChoice } from "./ocrProviderResolver";
  *     angle into a flat rectangle) require contour/corner detection that
  *     `sharp` does not provide — that class of correction needs a proper
  *     computer-vision library (e.g. OpenCV) and has not been implemented.
- *     Trim + normalize + auto-orient are real, working improvements; deskew/
- *     perspective-correction are not — do not claim otherwise downstream.
+ *     Trim + normalize + sharpen + auto-orient are real, working improvements;
+ *     deskew/perspective-correction are not — do not claim otherwise downstream.
  */
 export interface PreprocessResult {
   buffer: Buffer;
@@ -42,12 +47,12 @@ export interface PreprocessResult {
 export const SERVER_BLUR_WARNING_THRESHOLD = 60;
 
 export interface PreprocessOptions {
-  /** Downscale-if-larger-than, in pixels (width). Default 2000 — prevents an
-   * unnecessarily huge phone/camera capture (e.g. 12MP+) from bloating
-   * storage and slowing OCR/page-load; never enlarges a smaller image. */
+  /** Downscale-if-larger-than, in pixels (width). Default 2400 — keeps enough
+   * glyph detail for Indian ID cards after crop without bloating a 12MP phone
+   * capture into OCR latency. Never enlarges a smaller image. */
   maxWidth?: number;
-  /** JPEG re-encode quality, 1-100. Default 88 — a reasonable balance of
-   * file size vs. OCR-relevant detail; tune per deployment if needed. */
+  /** JPEG re-encode quality, 1-100. Default 92 — OCR accuracy prefers detail
+   * over a few KB of savings on ID-card payloads. */
   jpegQuality?: number;
 }
 
@@ -58,8 +63,8 @@ export async function preprocessScanImage(
 ): Promise<PreprocessResult> {
   const inputBuffer = Buffer.from(imageBase64, "base64");
   const appliedSteps: string[] = [];
-  const maxWidth = options.maxWidth ?? 2000;
-  const jpegQuality = options.jpegQuality ?? 88;
+  const maxWidth = options.maxWidth ?? 2400;
+  const jpegQuality = options.jpegQuality ?? 92;
 
   if (mimeType.includes("pdf")) {
     // Sharp cannot process PDFs; return as-is with a neutral (non-blurred)
@@ -71,10 +76,16 @@ export async function preprocessScanImage(
     const sharp = (await import("sharp")).default;
     let pipeline = sharp(inputBuffer).rotate(); // auto-orient via EXIF
     appliedSteps.push("auto-orient");
-    pipeline = pipeline.trim();
+    // Tolerate slightly noisy borders so trim still fires on flatbed mats /
+    // desk backgrounds without eating into the card itself.
+    pipeline = pipeline.trim({ threshold: 16 });
     appliedSteps.push("trim");
     pipeline = pipeline.normalize();
     appliedSteps.push("normalize");
+    // Mild unsharp — enough to recover thin printed digits after normalize +
+    // JPEG, not so strong that webcam noise becomes "text".
+    pipeline = pipeline.sharpen({ sigma: 0.8, m1: 0.6, m2: 0.3 });
+    appliedSteps.push("sharpen");
     pipeline = pipeline.resize({ width: maxWidth, withoutEnlargement: true });
     appliedSteps.push(`downscale-max-${maxWidth}px`);
 
@@ -127,18 +138,30 @@ export interface IdCardPipelineResult {
   blurScore: number;
   isBlurred: boolean;
   preprocessApplied: string[];
+  /** Set when PaddleOCR path ran — diagnostics for Form F /admin health. */
+  paddleMeta?: {
+    pathUsed: string;
+    meanConfidence?: number;
+    warnings: string[];
+    tesseractFallbackSuggested: boolean;
+  };
 }
 
 /**
- * Full ID-card OCR pipeline: pre-process, then dispatch to whichever
- * provider ocrProviderResolver.ts already decided on (Ollama or Gemini —
- * see resolveOcrProvider()'s Ollama-first/Gemini-fallback policy). This
- * function no longer picks a provider itself; it only executes against the
- * one it's handed, so preprocessing (EXIF-orient/trim/normalize/downscale)
- * is applied identically regardless of which provider runs the actual OCR
- * call. Manual verification of the extracted fields before they're saved
- * remains the caller's responsibility (Form F shows OCR output in editable
- * form fields rather than auto-committing it).
+ * Full ID-card OCR pipeline.
+ *
+ * Default (OCR_ENGINE=paddle): PaddleOCR worker → deterministic text parse.
+ * Does NOT send the image to an LLM when OCR text is sufficient.
+ *
+ * Fallback order when Paddle is unavailable / empty:
+ *   1) Vision LLM (Ollama / Gemini) if resolver provided one
+ *   2) Client Tesseract suggested via paddleMeta.tesseractFallbackSuggested
+ *
+ * Rollback: OCR_ENGINE=tesseract|vision skips Paddle and uses the legacy
+ * vision path only.
+ *
+ * Manual verification of extracted fields remains the caller's responsibility
+ * (Form F shows OCR output in editable fields — never auto-commits as final).
  */
 export async function runIdCardOcrPipeline(
   imageBase64: string,
@@ -147,14 +170,67 @@ export async function runIdCardOcrPipeline(
 ): Promise<IdCardPipelineResult> {
   const pre = await preprocessScanImage(imageBase64, mimeType);
   const processedBase64 = pre.buffer.toString("base64");
+  const cfg = await resolveLocalAiRuntime();
 
-  if (pre.isBlurred) {
-    // Still attempt OCR (a blur warning shouldn't silently withhold results —
-    // the caller decides whether to show/trust them), but the caller can use
-    // isBlurred to surface a "too blurred, consider retaking" message.
+  // ── Paddle-first path (production default) ──────────────────────────────
+  if (cfg.ocrEngine === "paddle") {
+    const orch = await orchestrateDocumentOcr({
+      buffer: pre.buffer,
+      mimeType: pre.mimeType,
+      filename: "id-card.jpg",
+      expectedKeywords: ["name", "address"],
+    });
+    if (orch.ok && orch.paddle?.text) {
+      const fields = parseIdCardTextServer(orch.paddle.text);
+      const ocrResult = idFieldsToOcrResult(fields, {
+        ocrProvider: "paddle",
+        meanConfidence: orch.paddle.mean_confidence,
+      });
+      ocrResult.rawText = orch.parsed?.normalizedText ?? orch.paddle.text;
+      return {
+        ocrResult,
+        blurScore: pre.blurScore,
+        isBlurred: pre.isBlurred,
+        preprocessApplied: pre.appliedSteps,
+        paddleMeta: {
+          pathUsed: orch.pathUsed,
+          meanConfidence: orch.paddle.mean_confidence,
+          warnings: orch.warnings,
+          tesseractFallbackSuggested: orch.tesseractFallbackSuggested,
+        },
+      };
+    }
+    // Paddle failed — vision LLM only when OCR_VISION_FALLBACK=true
+    if (!cfg.ocrVisionFallback) {
+      return {
+        ocrResult: null,
+        blurScore: pre.blurScore,
+        isBlurred: pre.isBlurred,
+        preprocessApplied: pre.appliedSteps,
+        paddleMeta: {
+          pathUsed: orch.pathUsed,
+          meanConfidence: orch.paddle?.mean_confidence,
+          warnings: [...orch.warnings, "vision_fallback_disabled"],
+          tesseractFallbackSuggested: cfg.ocrTesseractFallback,
+        },
+      };
+    }
   }
 
   if (provider.provider === "none") {
+    if (cfg.ocrTesseractFallback) {
+      return {
+        ocrResult: null,
+        blurScore: pre.blurScore,
+        isBlurred: pre.isBlurred,
+        preprocessApplied: pre.appliedSteps,
+        paddleMeta: {
+          pathUsed: "none",
+          warnings: ["no_vision_provider", "suggest_client_tesseract"],
+          tesseractFallbackSuggested: true,
+        },
+      };
+    }
     throw new Error("No OCR provider available");
   }
 

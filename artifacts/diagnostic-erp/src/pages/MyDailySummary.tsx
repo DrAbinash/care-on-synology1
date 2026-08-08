@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
 import { readStaffSession, FULL_ACCESS_ROLES, normalizeRole } from "@/lib/staffSession";
@@ -6,9 +6,13 @@ import PageHeader from "@/components/PageHeader";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Link } from "wouter";
-import { SummaryExportToolbar } from "@/components/SummaryExport";
+import { SummaryExportToolbar, formatExportAmount } from "@/components/SummaryExport";
 import type { ExportConfig, ExportSection, ExportTable } from "@/components/SummaryExport";
+import { buildReconciliationLedger, simpleLedgerRows } from "@/lib/reconciliationLedger";
 import { SummaryDrilldownModal, type DrilldownType } from "@/components/SummaryDrilldownModal";
+import BillingVsPacsKpi from "@/components/BillingVsPacsKpi";
+import ModalityBillingKpi from "@/components/ModalityBillingKpi";
+import LowStockKpi from "@/components/LowStockKpi";
 import { FINANCIAL_QUERY_OPTIONS } from "@/lib/queryConfig";
 import {
   IndianRupee, Wallet, Banknote, Smartphone, TrendingDown, RotateCcw,
@@ -30,6 +34,10 @@ type MyDailySummarySummary = {
   refundAmount: number;
   refundsWithoutCancellationAmount: number;
   refundsWithoutCancellationCount: number;
+  /** Refunds on bills created this period that are cancelled — excluded from collectible (already in cancelledOnMyBills). */
+  refundsOnCancelledBillsCreatedInPeriod: number;
+  /** Server-computed collectible — prefer over local recompute. */
+  collectible?: number;
   cancelledAmount: number;
   cashExpenses: number;
   digitalExpenses: number;
@@ -40,6 +48,8 @@ type MyDailySummarySummary = {
   digitalIn: number;
   cashRefunded: number;
   digitalRefunded: number;
+  /** Clinic net cash = cash collected − cash refunded. */
+  netClinicCash?: number;
   netDigital: number;
   cashCollection: number;
   physicalCashInHand: number;
@@ -180,6 +190,9 @@ type MyDailySummaryData = {
   }[];
   byStaff?: {
     name: string;
+    billsCreated?: number;
+    cashCollected?: number;
+    billsCancelled?: number;
     grossBilled: number;
     activeBilling: number;
     cancelled: number;
@@ -320,7 +333,7 @@ const DRAWER_STATUS_CONFIG: Record<DrawerStatusKey, {
 
 // ─── Drawer Status Card ───────────────────────────────────────────────────────
 
-function DrawerStatusCard({ status }: { status: DrawerStatus }) {
+function DrawerStatusCard({ status, isOwner }: { status: DrawerStatus; isOwner: boolean }) {
   const cfg = DRAWER_STATUS_CONFIG[status.drawerStatus] ?? DRAWER_STATUS_CONFIG.open;
   const StatusIcon = cfg.icon;
   const isClosed = status.drawerStatus !== "open" && status.drawerStatus !== "reopened";
@@ -469,11 +482,13 @@ function DrawerStatusCard({ status }: { status: DrawerStatus }) {
               <Lock size={12} /> Drawer Closed
             </Button>
           )}
-          <Link href="/day-close">
-            <Button size="sm" variant="outline" className="text-xs flex items-center gap-1.5">
-              View Full Day Close <ChevronRight size={12} />
-            </Button>
-          </Link>
+          {isOwner && (
+            <Link href="/day-close">
+              <Button size="sm" variant="outline" className="text-xs flex items-center gap-1.5">
+                View Full Day Close <ChevronRight size={12} />
+              </Button>
+            </Link>
+          )}
         </div>
       </div>
     </div>
@@ -531,17 +546,18 @@ function MiniKpi({ icon: Icon, label, value, sub, theme, onClick }: {
 }
 
 // ─── Solid-filled KPI — reserved for the numbers that matter most at a
-// glance (Expected Physical Cash, Total Expenses, Net Digital Collection).
-// Deliberately louder than MiniKpi so the eye lands here first, with the
-// exact same padding/radius/shadow discipline as every other card. ────────
+// glance (Expected Physical Cash, Total Expenses, Net Digital Collection,
+// Collectible Amount). Deliberately louder than MiniKpi so the eye lands
+// here first, with the exact same padding/radius/shadow discipline. ───────
 function MiniKpiFilled({ icon: Icon, label, value, sub, solid, onClick }: {
   icon: React.ElementType; label: string; value: string | number; sub?: string;
-  solid: "green" | "red" | "teal"; onClick?: () => void;
+  solid: "green" | "red" | "teal" | "blue"; onClick?: () => void;
 }) {
   const styles = {
     green: "bg-gradient-to-br from-emerald-600 to-emerald-700",
     red:   "bg-gradient-to-br from-rose-600 to-rose-700",
     teal:  "bg-gradient-to-br from-teal-600 to-cyan-700",
+    blue:  "bg-gradient-to-br from-blue-600 to-indigo-700",
   }[solid];
   return (
     <div
@@ -567,17 +583,12 @@ function MiniKpiFilled({ icon: Icon, label, value, sub, solid, onClick }: {
   );
 }
 
-// ─── Operator badge — bridges two KPI boxes that have a mathematical
-// relationship (e.g. A − B = C), so the reconciliation flow reads left to
-// right the same way the underlying formula works. Sits directly between
-// the two cards, overlapping half its width onto each side, so the row
-// reads as one continuous connected strip rather than separate boxes. ─────
-function FormulaOp({ op }: { op: "+" | "−" | "=" }) {
-  const styles = op === "=" ? "bg-[#1a3a5c] text-white" : "bg-white dark:bg-slate-900 text-[#1a3a5c] dark:text-white border-2 border-[#1a3a5c]";
+// ─── Subtle flow arrow between primary KPI cards ─────────────────────────
+function FlowArrow() {
   return (
-    <div className="hidden sm:flex items-center justify-center flex-shrink-0 w-0 relative z-10">
-      <span className={`flex items-center justify-center w-8 h-8 rounded-full text-sm font-extrabold shadow-md -mx-4 ${styles}`}>
-        {op}
+    <div className="hidden xl:flex items-center justify-center flex-shrink-0 w-0 relative z-10 self-center">
+      <span className="flex items-center justify-center w-7 h-7 rounded-full bg-white dark:bg-card border border-gray-200 dark:border-card-border text-gray-400 shadow-sm -mx-3.5">
+        <ArrowRight size={13} strokeWidth={2.5} />
       </span>
     </div>
   );
@@ -785,12 +796,16 @@ function UnifiedReconciliationPanel({
   discountBills,
   isOwner,
   exportConfig,
+  staffName,
+  periodLabel,
 }: {
   summary: MyDailySummarySummary;
   byMethod: Record<string, number>;
   discountBills: MyDailySummaryData["discountBills"];
   isOwner: boolean;
   exportConfig: ExportConfig | null;
+  staffName: string;
+  periodLabel: string;
 }) {
   const [digitalExpanded, setDigitalExpanded] = useState(false);
   const [discountExpanded, setDiscountExpanded] = useState(false);
@@ -805,18 +820,46 @@ function UnifiedReconciliationPanel({
   // window's billing, yet was still subtracted as both a "cancellation"
   // and (via its auto-generated refund) a "refund" — a real incident that
   // produced a false "Short" mismatch alert for an old bill cancelled today.
+  //
+  // Same-day cancel+refund on bills created in this window: cancelledOnMyBills
+  // already removes the bill total; refundsOnCancelledBillsCreatedInPeriod
+  // (from API) is subtracted from totalRefunds so we do not double-hit.
+  // Cross-staff: refunds are attributed to whoever recorded them; billing
+  // metrics follow bill creator — individual staff views may still disagree
+  // when User B refunds User A's bill (clinic aggregate balances).
   const totalRefunds   = s.cashRefunded + s.digitalRefunded;
-  const collectible    = s.grossBilledIncludingCancelled
+  const refundsExcludedFromCollectible = s.refundsOnCancelledBillsCreatedInPeriod ?? 0;
+  const refundsForCollectible = Math.max(0, totalRefunds - refundsExcludedFromCollectible);
+  const collectibleLocal = s.grossBilledIncludingCancelled
                         + s.duesCollectedTotal
                         - s.cancelledOnMyBills
-                        - totalRefunds
+                        - refundsForCollectible
                         - s.outstanding;
+  const collectible    = s.collectible ?? collectibleLocal;
   const netDigital     = s.digitalIn - s.digitalRefunded;
   const expectedCash   = collectible - netDigital - s.cashExpenses;
   // expectedCash ≡ s.physicalCashInHand = cashIn − cashRefunded − cashExpenses
   // The billing-side calculation and the payment-side calculation converge here.
   const mismatch       = expectedCash - s.physicalCashInHand;
   const balanced       = Math.abs(mismatch) <= 0.01;
+
+  const simpleLedger = useMemo(() => buildReconciliationLedger({
+    staffName,
+    periodLabel,
+    grossBilledIncludingCancelled: s.grossBilledIncludingCancelled,
+    oldDuesCollected: s.duesCollectedTotal,
+    cancelledOnMyBills: s.cancelledOnMyBills,
+    cashRefunded: s.cashRefunded,
+    digitalRefunded: s.digitalRefunded,
+    refundsOnCancelledBillsCreatedInPeriod: s.refundsOnCancelledBillsCreatedInPeriod,
+    outstanding: s.outstanding,
+    digitalIn: s.digitalIn,
+    cashIn: s.cashIn,
+    cashExpenses: s.cashExpenses,
+    physicalCashInHand: s.physicalCashInHand,
+  }), [s, staffName, periodLabel]);
+
+  const [simpleExpanded, setSimpleExpanded] = useState(false);
 
   // ── Digital method split for the collapsible row ──────────────────────────
   const digitalMethods = Object.entries(byMethod)
@@ -1001,13 +1044,21 @@ function UnifiedReconciliationPanel({
           </span>
         </div>
 
-        <ARow label="Cancelled Bills" value={s.cancelledOnMyBills} sign="−" indent highlight="red" />
-        <ARow label="Refunds" value={totalRefunds} sign="−" indent highlight="red"
-              note={`Cash ${fmt(s.cashRefunded)} · Digital ${fmt(s.digitalRefunded)}`} />
+        <ARow label="Cancelled Bills" value={s.cancelledOnMyBills} sign="−" indent highlight="red"
+              note="Today's bills that were cancelled (old bills cancelled today are not listed here)" />
+        <ARow label="Refunds" value={refundsForCollectible} sign="−" indent highlight="red"
+              note={
+                refundsExcludedFromCollectible > 0
+                  ? `Money given back today, excluding ${fmt(refundsExcludedFromCollectible)} already counted under Cancelled Bills`
+                  : "Money given back today (includes refunds on old bills cancelled today)"
+              } />
         <ARow label="Outstanding Dues" value={s.outstanding} sign="−" indent highlight="red" note="balance on today's bills" />
 
         <ASectionDivider color="blue" />
         <ARow label="Collectible Amount" value={collectible} sign="=" bold highlight="blue" />
+        <p className="px-3 pb-1 text-[10px] text-muted-foreground leading-snug">
+          Billing follows who created the bill; cash and refunds follow who recorded them. Individual staff views can differ — clinic total should still balance.
+        </p>
 
         {/* ══ SECTION C: COLLECTION SPLIT ════════════════════════════════════ */}
         <div className="px-3 pt-2 pb-0.5">
@@ -1085,6 +1136,51 @@ function UnifiedReconciliationPanel({
           </div>
         </div>
 
+      </div>
+
+      {/* ── Simple handwritten-style ledger (print / export via Simple buttons) ── */}
+      <div className="border-t border-gray-200 dark:border-card-border">
+        <button
+          type="button"
+          className="w-full px-4 py-2 flex items-center justify-between text-left bg-amber-50/60 dark:bg-amber-950/20 hover:bg-amber-50 dark:hover:bg-amber-950/30"
+          onClick={() => setSimpleExpanded((e) => !e)}
+        >
+          <span className="text-[11px] font-bold text-amber-800 dark:text-amber-300 uppercase tracking-wide">
+            Simple Ledger (handwritten formula)
+          </span>
+          {simpleExpanded ? <ChevronUp size={12} className="text-amber-600" /> : <ChevronDown size={12} className="text-amber-600" />}
+        </button>
+        {simpleExpanded && (
+          <div className="px-4 py-3 bg-white dark:bg-card space-y-1.5 text-[12px] font-mono">
+            <div className="flex justify-between"><span>Bills (after discount)</span><span className="font-bold tabular-nums">{fmt(simpleLedger.grossBills)}</span></div>
+            <div className="flex justify-between text-emerald-700 dark:text-emerald-400"><span>+ Old dues collected</span><span className="font-bold tabular-nums">{fmt(simpleLedger.oldDuesCollected)}</span></div>
+            <div className="border-t border-dashed border-gray-300 my-1" />
+            <div className="flex justify-between font-bold bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded"><span>TOTAL</span><span className="tabular-nums">{fmt(simpleLedger.revenueTotal)}</span></div>
+            <div className="flex justify-between text-red-700 dark:text-red-400">
+              <span>− Cancel / Refund / Outstanding</span>
+              <span className="font-bold tabular-nums">{fmt(simpleLedger.deductionsTotal)}</span>
+            </div>
+            <div className="text-[10px] text-gray-500 pl-2">
+              ({fmt(simpleLedger.cancelled)} + {fmt(simpleLedger.refundsForCollectible)} + {fmt(simpleLedger.outstanding)})
+            </div>
+            <div className="flex justify-between font-bold bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded"><span>COLLECTIBLE</span><span className="tabular-nums">{fmt(simpleLedger.collectible)}</span></div>
+            <div className="flex justify-between text-blue-700 dark:text-blue-400"><span>− UPI / Digital (net)</span><span className="font-bold tabular-nums">{fmt(simpleLedger.digitalNet)}</span></div>
+            <div className="border-t-2 border-slate-800 dark:border-slate-200 my-1" />
+            <div className="flex justify-between font-extrabold text-base bg-slate-900 text-emerald-300 px-2 py-1 rounded">
+              <span>CASH IN COUNTER</span>
+              <span className="tabular-nums">{fmt(simpleLedger.physicalCashInHand)}</span>
+            </div>
+            <p className="text-[10px] text-gray-500 pt-1">
+              Cashbox: {fmt(simpleLedger.cashReceived)} − {fmt(simpleLedger.cashRefunded)} − {fmt(simpleLedger.cashExpenses)} = {fmt(simpleLedger.physicalCashInHand)}
+            </p>
+            {Math.abs(simpleLedger.commonStaffMistake - simpleLedger.physicalCashInHand) > 0.01 && (
+              <div className="mt-2 rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-950/30 px-2 py-1.5 text-[10px] text-amber-900 dark:text-amber-200">
+                <strong>Common mistake:</strong> Cash+Digital−Refund−Outstanding = {fmt(simpleLedger.commonStaffMistake)} — this is <em>not</em> cash in counter.
+                Outstanding is unpaid bill balance; do not subtract it again after totalling collections.
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* ── Attribution footnote ── */}
@@ -1372,9 +1468,10 @@ function MyActivityLog({ data }: { data: MyDailySummaryData | undefined }) {
                       <td className="px-3 py-2 whitespace-nowrap">
                         {e.changeType ? (
                           <span className={`px-1.5 py-0.5 rounded font-semibold text-[10px] ${
-                            e.changeType === "cancelled" ? "bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300" :
+                            e.changeType === "cancelled" || e.changeType === "bill_cancelled" ? "bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300" :
                             e.changeType === "reprint" ? "bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300" :
-                            e.changeType === "refund" ? "bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-300" :
+                            e.changeType === "refund" || e.changeType === "refund_processed" ? "bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-300" :
+                            e.changeType === "bill_created" || e.changeType === "payment_collected" ? "bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300" :
                             e.changeType === "discount" ? "bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300" :
                             "bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300"
                           }`}>
@@ -1533,21 +1630,12 @@ export default function MyDailySummary() {
     : "";
   const [staffFilter, setStaffFilter] = useState(initialFilter);
   const [drilldownType, setDrilldownType] = useState<DrilldownType | null>(null);
+  const [financialDetailsOpen, setFinancialDetailsOpen] = useState(false);
 
   function saveStaffFilter(name: string) {
     setStaffFilter(name);
     try { window.localStorage.setItem(LS_STAFF_FILTER_KEY, name); } catch { /* ignore */ }
   }
-
-  // All staff names: merge registered users + data-derived names so inactive staff
-  // (or staff not yet in the users table) still appear in the filter.
-  const { data: allUsers = [] } = useQuery<{ id: number; name: string; role: string; isActive: boolean }[]>({
-    queryKey: ["users"],
-    queryFn: () => api.get("/api/users"),
-    enabled: isOwner,
-    staleTime: 5 * 60_000,
-  });
-  const activeStaff = allUsers.filter((u) => u.isActive).sort((a, b) => a.name.localeCompare(b.name));
 
   function setPreset(fromDaysAgo: number, toDaysAgo: number) {
     setFrom(daysAgoISO(fromDaysAgo));
@@ -1563,8 +1651,21 @@ export default function MyDailySummary() {
     ...FINANCIAL_QUERY_OPTIONS,
   });
 
-  // All staff names from the registered users table — always visible regardless of date range.
-  const staffFilterList = activeStaff.map((u) => u.name);
+  const { data: clinicSettings } = useQuery<{ name?: string; logoDataUrl?: string | null }>({
+    queryKey: ["clinic-settings-export"],
+    queryFn: () => api.get("/api/clinic-settings"),
+    staleTime: 5 * 60_000,
+  });
+
+  // Staff who had bills, payments, or cancellations in the selected date range.
+  const staffFilterList = data?.staffNames ?? [];
+
+  useEffect(() => {
+    if (!isSuperAdmin || !staffFilter.trim() || !data) return;
+    if (!data.staffNames.includes(staffFilter.trim())) {
+      saveStaffFilter("");
+    }
+  }, [isSuperAdmin, staffFilter, data]);
 
   // Drawer status — always fetches for the current logged-in user, not filtered staff.
   const drawerQ = useQuery<DrawerStatus>({
@@ -1636,21 +1737,21 @@ export default function MyDailySummary() {
     cheque: "Cheque", neft: "NEFT/RTGS", online: "Online",
   };
 
-  const inr = (n: number) =>
-    new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(n);
+  const amt = (n: number) => formatExportAmount(n);
 
   const exportConfig = useMemo<ExportConfig | null>(() => {
     if (!s || !data) return null;
 
     // Use the SAME formula as UnifiedReconciliationPanel — must match exactly.
-    // cancelledOnMyBills (not cancelledAmount) — see the comment on the
-    // matching calculation in UnifiedReconciliationPanel above.
     const totalRefunds     = s.cashRefunded + s.digitalRefunded;
-    const collectible      = s.grossBilledIncludingCancelled
+    const refundsExcluded  = s.refundsOnCancelledBillsCreatedInPeriod ?? 0;
+    const refundsForCollectible = Math.max(0, totalRefunds - refundsExcluded);
+    const collectibleLocal = s.grossBilledIncludingCancelled
                            + s.duesCollectedTotal
                            - s.cancelledOnMyBills
-                           - totalRefunds
+                           - refundsForCollectible
                            - s.outstanding;
+    const collectible      = s.collectible ?? collectibleLocal;
     const netDigital       = s.digitalIn - s.digitalRefunded;
     const expectedCash     = collectible - netDigital - s.cashExpenses;
     const mismatch         = expectedCash - s.physicalCashInHand;
@@ -1659,59 +1760,75 @@ export default function MyDailySummary() {
       ? ((s.discountsGiven / (s.grossBilledIncludingCancelled + s.discountsGiven)) * 100).toFixed(1) + "%"
       : "0.0%";
 
+    const digitalLines = Object.entries(data.byMethod)
+      .filter(([, v]) => Math.abs(v) > 0)
+      .sort(([, a], [, b]) => b - a)
+      .map(([method, value]) => [
+        method.charAt(0).toUpperCase() + method.slice(1),
+        amt(value),
+      ] as [string, string]);
+
     const sections: ExportSection[] = [
       {
-        title: "Reconciliation Summary",
+        title: "Billing (Income)",
+        layout: "half",
         metrics: [
-          ["Staff",                    data.staffName],
-          ["Period",                   from === to ? from : `${from} to ${to}`],
-          ["", ""],
-          ["── BILLING ──────────────────────", ""],
-          ["Gross Bills Generated",    inr(s.grossBilledIncludingCancelled)],
-          ["Discounts Given (info)",   `${inr(s.discountsGiven)} (${discountPct} of gross) — already in bill totals`],
-          ["Old Dues Collected",       inr(s.duesCollectedTotal)],
-          ["Total Revenue Activity",   inr(s.grossBilledIncludingCancelled + s.duesCollectedTotal)],
-          ["", ""],
-          ["── DEDUCTIONS ───────────────────", ""],
-          ["Cancelled Bills",          inr(s.cancelledOnMyBills)],
-          ["Refunds (Cash)",           inr(s.cashRefunded)],
-          ["Refunds (Digital)",        inr(s.digitalRefunded)],
-          ["Total Refunds",            inr(totalRefunds)],
-          ["Outstanding Dues",         inr(s.outstanding)],
-          ["", ""],
-          ["── COLLECTION ───────────────────", ""],
-          ["Collectible Amount",       inr(collectible)],
-          ["Digital Collection (net)", inr(netDigital)],
-          ["Cash Expenses",            inr(s.cashExpenses)],
-          ["", ""],
-          ["── CASH RECONCILIATION ──────────", ""],
-          ["Expected Physical Cash",   inr(expectedCash)],
-          ["Actual Cash (payment records)", inr(s.physicalCashInHand)],
-          ["Variance",                 balanced ? "₹0 — Balanced ✓" : `${mismatch > 0 ? "+" : "−"}₹${Math.abs(mismatch).toFixed(0)} ${mismatch > 0 ? "(Surplus)" : "(Short)"}`],
-          ["", ""],
-          ["── ATTRIBUTION NOTE ─────────────", ""],
-          ["Cash accountability",      "Refunds & expenses attributed to the staff who performed them, not the bill creator"],
+          ["Gross Bills Generated", amt(s.grossBilledIncludingCancelled)],
+          ["Discounts Given", `${amt(s.discountsGiven)} (${discountPct})`],
+          ["Old Dues Collected", amt(s.duesCollectedTotal)],
+          ["Total Revenue Activity", amt(s.grossBilledIncludingCancelled + s.duesCollectedTotal)],
         ],
       },
       {
-        title: "Digital Payment Breakdown",
+        title: "Deductions (Expense)",
+        layout: "half",
         metrics: [
-          ...Object.entries(data.byMethod)
-            .filter(([, v]) => Math.abs(v) > 0)
-            .sort(([, a], [, b]) => b - a)
-            .map(([method, value]) => [
-              method.charAt(0).toUpperCase() + method.slice(1),
-              inr(value),
-            ] as [string, string]),
-          ["Digital Refunds",      `−${inr(s.digitalRefunded)}`],
-          ["Net Digital",          inr(netDigital)],
+          ["Cancelled Bills", amt(s.cancelledOnMyBills)],
+          ["Refunds (Cash)", amt(s.cashRefunded)],
+          ["Refunds (Digital)", amt(s.digitalRefunded)],
+          ["Total Refunds", amt(totalRefunds)],
+          ["Outstanding Dues", amt(s.outstanding)],
+        ],
+      },
+      {
+        title: "Collection",
+        layout: "half",
+        metrics: [
+          ["Collectible Amount", amt(collectible)],
+          ["Digital Collection (net)", amt(netDigital)],
+          ["Cash Expenses", amt(s.cashExpenses)],
         ],
       },
     ];
 
-    // Discount drill-down — owner only
+    if (digitalLines.length > 0) {
+      sections.push({
+        title: "Payment Methods",
+        layout: "half",
+        metrics: [
+          ...digitalLines,
+          ["Net Digital", amt(netDigital)],
+        ],
+      });
+    }
+
+    sections.push({
+      title: "Cash Reconciliation",
+      layout: "full",
+      metrics: [
+        ["Cash Received", amt(s.cashIn)],
+        ["Less: Cash Refunded", amt(s.cashRefunded)],
+        ["Less: Cash Expenses", amt(s.cashExpenses)],
+        ["Expected Physical Cash", amt(s.physicalCashInHand)],
+        ["Billing cross-check", amt(expectedCash)],
+        ["Variance", balanced
+          ? "Rs.0 - Balanced OK"
+          : `${mismatch > 0 ? "+" : "-"}Rs.${Math.abs(mismatch).toLocaleString("en-IN")} ${mismatch > 0 ? "(Surplus)" : "(Short)"}`],
+      ],
+    });
+
+    // Discount drill-down — owner only (condensed side-by-side with payment methods when possible)
     if (isOwner && data.discountBills.length > 0) {
-      // Per-staff
       const byStaffMap = new Map<string, number>();
       const byDoctorMap = new Map<string, number>();
       for (const b of data.discountBills) {
@@ -1720,70 +1837,80 @@ export default function MyDailySummary() {
         const doc = b.referringDoctor ?? "No referral";
         byDoctorMap.set(doc, (byDoctorMap.get(doc) ?? 0) + b.discountGiven);
       }
+      const topStaff = Array.from(byStaffMap.entries()).sort((a, b) => b[1] - a[1]).slice(0, 3);
+      const topDoctor = Array.from(byDoctorMap.entries()).sort((a, b) => b[1] - a[1]).slice(0, 3);
       sections.push({
-        title: `Discount Analysis — Total ${inr(s.discountsGiven)} (${discountPct})`,
+        title: `Discounts (${discountPct})`,
+        layout: "half",
         metrics: [
-          ["", "BY STAFF"],
-          ...Array.from(byStaffMap.entries())
-            .sort((a, b) => b[1] - a[1])
-            .map(([name, amt]) => [name, inr(amt)] as [string, string]),
-          ["", ""],
-          ["", "BY REFERRAL DOCTOR"],
-          ...Array.from(byDoctorMap.entries())
-            .sort((a, b) => b[1] - a[1])
-            .map(([doc, amt]) => [doc, inr(amt)] as [string, string]),
+          ...topStaff.map(([name, v]) => [`Staff: ${name}`, amt(v)] as [string, string]),
+          ...topDoctor.map(([doc, v]) => [`Doctor: ${doc}`, amt(v)] as [string, string]),
+          ["Total Discounts", amt(s.discountsGiven)],
         ],
       });
     }
 
     const tables: ExportTable[] = [];
 
-    // Discount bill list — owner only
     if (isOwner && data.discountBills.length > 0) {
       tables.push({
-        title: "Discounted Bills Detail",
-        headers: ["Bill #", "Patient", "Staff", "Referring Doctor", "Gross Amount", "Discount", "Net Amount", "Reason"],
+        title: "Discounted Bills",
+        headers: ["Bill #", "Patient", "Staff", "Gross", "Discount", "Net", "Reason"],
         rows: data.discountBills.map((b) => [
           b.billNumber,
           b.patientName,
-          b.createdByName ?? "—",
-          b.referringDoctor ?? "—",
-          inr(b.grossAmount),
-          inr(b.discountGiven),
-          inr(b.totalAmount),
-          b.discountReason ?? "—",
+          b.createdByName ?? "-",
+          amt(b.grossAmount),
+          amt(b.discountGiven),
+          amt(b.totalAmount),
+          [b.referringDoctor, b.discountReason].filter(Boolean).join(" / ") || "-",
         ]),
       });
     }
 
-    // Per-staff breakdown
     if (data.byStaff && data.byStaff.length > 0) {
       tables.push({
-        title: "Staff-wise Reconciliation",
-        headers: ["Staff", "Gross Billed", "Cancelled", "Outstanding", "Cash In", "Refunds (Cash)", "Cash Exp", "Expected Cash", "Net Digital", "Dues Collected", "Discounts"],
+        title: "Staff Activity (action-based — not personal shortage)",
+        headers: ["Staff", "Bills Created", "Cash Collected", "Bills Cancelled", "Cash Refunded", "Digital Collected", "Digital Refunded"],
         rows: data.byStaff.map((st) => [
           st.name,
-          inr(st.grossBilled),
-          inr(st.cancelled),
-          inr(st.outstanding),
-          inr(st.cashIn),
-          inr(st.cashRefunded),
-          inr(st.cashExpenses),
-          inr(st.physicalCashInHand),
-          inr(st.netDigital),
-          inr(st.duesCollected),
-          inr(st.discountsGiven),
+          amt(st.billsCreated ?? st.grossBilled),
+          amt(st.cashCollected ?? st.cashIn),
+          amt(st.billsCancelled ?? st.cancelled),
+          amt(st.cashRefunded),
+          amt(st.digitalIn),
+          amt(st.digitalRefunded),
         ]),
       });
     }
 
     return {
       title: "Daily Financial Reconciliation",
-      subtitle: `${data.staffName} • ${from === to ? from : `${from} → ${to}`}`,
+      subtitle: `${data.staffName} | ${from === to ? from : `${from} -> ${to}`}`,
       sections,
       tables,
+      clinicName: clinicSettings?.name ?? "Care Diagnostics ERP",
+      logoDataUrl: clinicSettings?.logoDataUrl ?? null,
+      simpleLedger: simpleLedgerRows(
+        buildReconciliationLedger({
+          staffName: data.staffName,
+          periodLabel: from === to ? from : `${from} to ${to}`,
+          grossBilledIncludingCancelled: s.grossBilledIncludingCancelled,
+          oldDuesCollected: s.duesCollectedTotal,
+          cancelledOnMyBills: s.cancelledOnMyBills,
+          cashRefunded: s.cashRefunded,
+          digitalRefunded: s.digitalRefunded,
+          refundsOnCancelledBillsCreatedInPeriod: s.refundsOnCancelledBillsCreatedInPeriod,
+          outstanding: s.outstanding,
+          digitalIn: s.digitalIn,
+          cashIn: s.cashIn,
+          cashExpenses: s.cashExpenses,
+          physicalCashInHand: s.physicalCashInHand,
+        }),
+        amt,
+      ),
     };
-  }, [s, data, from, to, isOwner]);
+  }, [s, data, from, to, isOwner, clinicSettings?.name, clinicSettings?.logoDataUrl]);
 
   return (
     <div className="space-y-5">
@@ -1792,6 +1919,17 @@ export default function MyDailySummary() {
         subtitle={data ? `${data.staffName} • ${from === to ? from : `${from} → ${to}`}` : "Personal financial summary"}
         actions={
           <div className="flex items-center gap-2 flex-wrap">
+            <Link href="/my-day-close">
+              <Button
+                size="sm"
+                className="h-8 bg-blue-700 hover:bg-blue-800 text-white text-xs font-semibold flex items-center gap-1.5"
+              >
+                <Lock size={13} />
+                {drawerQ.data && drawerQ.data.drawerStatus !== "open" && drawerQ.data.drawerStatus !== "reopened"
+                  ? "My Day Close"
+                  : "Close My Drawer"}
+              </Button>
+            </Link>
             <SummaryExportToolbar
               config={exportConfig}
               emailEndpoint="/api/dashboard/my-daily-summary/send-email"
@@ -1809,14 +1947,19 @@ export default function MyDailySummary() {
       {/* ── Day Close Open Window Quick View ── */}
       {myPreviewQ.data && (
         <div className="bg-white dark:bg-card border border-blue-200 dark:border-blue-800 rounded-xl p-4 shadow-sm space-y-4">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
-            <h3 className="text-sm font-bold text-gray-800 dark:text-gray-100">Open Window (Live)</h3>
-            <span className="text-xs text-gray-500 dark:text-gray-400">
+            <h3 className="text-sm font-bold text-gray-800 dark:text-gray-100">Since last close (Live)</h3>
+            <span className="text-xs text-gray-500 dark:text-gray-400 flex-1 min-w-[12rem]">
               {myPreviewQ.data.coveredFromTs
-                ? `${new Date(myPreviewQ.data.coveredFromTs).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit", day: "numeric", month: "short" })} — now`
-                : "Since start — now"}
+                ? `${new Date(myPreviewQ.data.coveredFromTs).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit", day: "numeric", month: "short" })} — now · not calendar Today (IST)`
+                : "Since start — now · not calendar Today (IST)"}
             </span>
+            <Link href="/my-day-close">
+              <Button size="sm" className="h-8 bg-blue-700 hover:bg-blue-800 text-white text-xs font-semibold flex items-center gap-1.5 shrink-0">
+                <Lock size={12} /> Close My Drawer
+              </Button>
+            </Link>
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
             <div className="bg-blue-50 dark:bg-blue-950/30 rounded-lg p-2.5">
@@ -1967,64 +2110,203 @@ export default function MyDailySummary() {
         )}
       </div>
 
+      {/* Clinic-wide imaging / inventory KPIs — admin & super_admin only */}
+      {isOwner && (
+        <>
+          <ModalityBillingKpi from={from} to={to} />
+          <BillingVsPacsKpi from={from} to={to} />
+          <LowStockKpi />
+        </>
+      )}
+
       {/* ── Loading State ── */}
       {isLoading && (
-        <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-3 gap-3">
-          {Array.from({ length: 9 }).map((_, i) => (
-            <div key={i} className="h-20 bg-gray-100 dark:bg-muted/30 rounded-xl animate-pulse" />
+        <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3">
+          {Array.from({ length: 5 }).map((_, i) => (
+            <div key={i} className="h-24 bg-gray-100 dark:bg-muted/30 rounded-xl animate-pulse" />
           ))}
         </div>
       )}
 
-      {/* ── KPI Cards — arranged as the actual reconciliation formula ──
-            Bills + Dues − Cancellations − Outstanding = Collectible
-            − Digital − Expenses = Expected Physical Cash
-            (formula verified against UnifiedReconciliationPanel above) */}
+      {/* ── KPI layout (presentation only — formulas unchanged) ───────────
+            Primary: 5 always-visible cards in money-flow order.
+            Details: remaining metrics behind a collapsible section.
+            Collectible math matches UnifiedReconciliationPanel (refunds on
+            same-period cancelled bills excluded from double-subtract). */}
       {s && (
         <>
           {(() => {
             const totalRefunds = s.cashRefunded + s.digitalRefunded;
-            // cancelledOnMyBills, not cancelledAmount — see UnifiedReconciliationPanel.
-            const collectible = s.grossBilledIncludingCancelled + s.duesCollectedTotal
-              - s.cancelledOnMyBills - totalRefunds - s.outstanding;
+            const refundsExcluded = s.refundsOnCancelledBillsCreatedInPeriod ?? 0;
+            const refundsForCollectible = Math.max(0, totalRefunds - refundsExcluded);
+            const cancelLinkedRefunds = Math.max(0, totalRefunds - s.refundsWithoutCancellationAmount);
+            const collectibleLocal = s.grossBilledIncludingCancelled + s.duesCollectedTotal
+              - s.cancelledOnMyBills - refundsForCollectible - s.outstanding;
+            const collectible = s.collectible ?? collectibleLocal;
             const totalBillsCount = (s.billCount ?? 0) + (s.cancelledByOthersCount ?? 0) + (s.cancelledBySelfCount ?? 0);
             const avgBillValue = totalBillsCount > 0 ? s.grossBilledIncludingCancelled / totalBillsCount : 0;
             return (
               <>
-                {/* Row 1 — the money flow, left to right, exactly as it's calculated.
-                    CSS Grid with explicit 1fr columns for every card (equal width
-                    guaranteed) and auto-width columns for the operator badges
-                    between them — the row always fills 100% of the available
-                    width with no leftover gaps, on any screen size. */}
-                <div
-                  className="grid gap-0.5 items-stretch"
-                  style={{ gridTemplateColumns: "repeat(7, minmax(0, 1fr) auto) minmax(0, 1.3fr)" }}
-                >
-                  <MiniKpi icon={IndianRupee} label="Total Bills Generated" value={fmt(s.grossBilledIncludingCancelled)} sub={`${totalBillsCount} bills`} theme="indigo" onClick={() => setDrilldownType("totalBills")} />
-                  <FormulaOp op="+" />
-                  <MiniKpi icon={Receipt} label="Dues Collected" value={fmt(s.duesCollectedTotal)} sub={`${s.duesBillsCount} old bill${s.duesBillsCount !== 1 ? "s" : ""} settled`} theme="green" onClick={() => setDrilldownType("duesCollected")} />
-                  <FormulaOp op="−" />
-                  <MiniKpi icon={RotateCcw} label="Cancellations" value={fmt(s.cancelledOnMyBills)} sub={`${s.cancellationCount} bill${s.cancellationCount !== 1 ? "s" : ""} cancelled`} theme="pink" onClick={() => setDrilldownType("cancellations")} />
-                  <FormulaOp op="−" />
-                  <MiniKpi icon={Wallet} label="Outstanding / Dues" value={fmt(s.outstanding)} sub="Unpaid balance" theme="orange" onClick={() => setDrilldownType("outstandingDues")} />
-                  <FormulaOp op="=" />
-                  <MiniKpi icon={Calculator} label="Collectible Amount" value={fmt(collectible)} sub="What should be in hand + bank" theme="blue" onClick={() => setDrilldownType("collectibleAmount")} />
-                  <FormulaOp op="−" />
-                  <MiniKpiFilled icon={Smartphone} label="Net Digital Collection" value={fmt(s.netDigital)} sub={`Gross ${fmt(s.digitalCollection)} − Refunded ${fmt(s.digitalRefunded)}`} solid="teal" onClick={() => setDrilldownType("netDigitalCollection")} />
-                  <FormulaOp op="−" />
-                  <MiniKpiFilled icon={TrendingDown} label="Total Expenses" value={fmt(s.totalExpenses)} sub={`Cash ${fmt(s.cashExpenses)} / Digital ${fmt(s.digitalExpenses)}`} solid="red" onClick={() => setDrilldownType("totalExpenses")} />
-                  <FormulaOp op="=" />
-                  <MiniKpiFilled icon={Banknote} label="Expected Physical Cash" value={fmt(s.physicalCashInHand)} sub={`Cash ${fmt(s.cashCollection)} − Cash Exp ${fmt(s.cashExpenses)}`} solid="green" onClick={() => setDrilldownType("expectedPhysicalCash")} />
+                {/* Primary KPIs — money flow at a glance.
+                    Mobile/tablet: equal grid. Desktop: flow strip with arrows. */}
+                <div className="space-y-2">
+                  <p className="text-[11px] font-bold uppercase tracking-widest text-gray-400 dark:text-gray-500 px-0.5">
+                    Money flow
+                    <span className="ml-2 font-medium normal-case tracking-normal text-gray-400">
+                      Bills → Outstanding → Collectible → Digital → Expected cash
+                    </span>
+                  </p>
+                  <div className="flex flex-wrap xl:flex-nowrap items-stretch gap-3">
+                    <div className="w-[calc(50%-0.375rem)] sm:w-[calc(33.333%-0.5rem)] xl:w-auto xl:flex-1 min-w-0">
+                      <MiniKpi
+                        icon={IndianRupee}
+                        label="Total Bills Generated"
+                        value={fmt(s.grossBilledIncludingCancelled)}
+                        sub={`${totalBillsCount} bills`}
+                        theme="indigo"
+                        onClick={() => setDrilldownType("totalBills")}
+                      />
+                    </div>
+                    <FlowArrow />
+                    <div className="w-[calc(50%-0.375rem)] sm:w-[calc(33.333%-0.5rem)] xl:w-auto xl:flex-1 min-w-0">
+                      <MiniKpi
+                        icon={Wallet}
+                        label="Outstanding / Dues"
+                        value={fmt(s.outstanding)}
+                        sub="Unpaid balance"
+                        theme="orange"
+                        onClick={() => setDrilldownType("outstandingDues")}
+                      />
+                    </div>
+                    <FlowArrow />
+                    <div className="w-[calc(50%-0.375rem)] sm:w-[calc(33.333%-0.5rem)] xl:w-auto xl:flex-[1.15] min-w-0">
+                      <MiniKpiFilled
+                        icon={Calculator}
+                        label="Collectible Amount"
+                        value={fmt(collectible)}
+                        sub="What should be in hand + bank"
+                        solid="blue"
+                        onClick={() => setDrilldownType("collectibleAmount")}
+                      />
+                    </div>
+                    <FlowArrow />
+                    <div className="w-[calc(50%-0.375rem)] sm:w-[calc(33.333%-0.5rem)] xl:w-auto xl:flex-1 min-w-0">
+                      <MiniKpiFilled
+                        icon={Smartphone}
+                        label="Net Digital Collection"
+                        value={fmt(s.netDigital)}
+                        sub={`Gross ${fmt(s.digitalCollection)} − Refunded ${fmt(s.digitalRefunded)}`}
+                        solid="teal"
+                        onClick={() => setDrilldownType("netDigitalCollection")}
+                      />
+                    </div>
+                    <FlowArrow />
+                    <div className="w-[calc(50%-0.375rem)] sm:w-[calc(33.333%-0.5rem)] xl:w-auto xl:flex-[1.35] min-w-0">
+                      <MiniKpiFilled
+                        icon={Banknote}
+                        label="Net Cash Available"
+                        value={fmt(s.netClinicCash ?? (s.cashIn - s.cashRefunded))}
+                        sub={`Collected ${fmt(s.cashIn)} − Refunded ${fmt(s.cashRefunded)} · clinic drawer net`}
+                        solid="green"
+                        onClick={() => setDrilldownType("expectedPhysicalCash")}
+                      />
+                    </div>
+                  </div>
+                  <p className="text-[11px] text-gray-500 dark:text-gray-400 px-0.5">
+                    After cash expenses: {fmt(s.physicalCashInHand)}
+                    {s.cashExpenses > 0 ? ` (expenses ${fmt(s.cashExpenses)})` : " (no cash expenses)"}
+                  </p>
                 </div>
 
-                {/* Row 2 — supplementary metrics, evenly filled, no empty cells.
-                    CSS Grid with equal columns — same guarantee as Row 1. */}
-                <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 items-stretch">
-                  <MiniKpi icon={CheckCircle2} label="Total Received" value={fmt(s.totalReceived)} sub="All payments collected" theme="green" onClick={() => setDrilldownType("totalReceived")} />
-                  <MiniKpi icon={Tag} label="Discounts Given" value={fmt(s.discountsGiven)} sub={s.grossBilling > 0 ? `${((s.discountsGiven / s.grossBilling) * 100).toFixed(1)}% of billing` : ""} theme="purple" onClick={() => setDrilldownType("discountsGiven")} />
-                  <MiniKpi icon={RefreshCw} label="Refunds (No Cancellation)" value={fmt(s.refundsWithoutCancellationAmount)} sub={s.refundsWithoutCancellationCount > 0 ? `${s.refundsWithoutCancellationCount} refund${s.refundsWithoutCancellationCount !== 1 ? "s" : ""}, no test cancelled` : "None"} theme="orange" onClick={() => setDrilldownType("refundsWithoutCancellation")} />
-                  <MiniKpi icon={XCircle} label="Cancellation Count" value={String(s.cancellationCount)} sub={s.cancellationCount > 0 ? `₹${s.cancelledAmount.toFixed(0)} written off` : "None"} theme="pink" onClick={() => setDrilldownType("cancellationCount")} />
-                  <MiniKpi icon={IndianRupee} label="Average Bill Value" value={fmt(avgBillValue)} sub={`Across ${totalBillsCount} bill${totalBillsCount !== 1 ? "s" : ""}`} theme="slate" onClick={() => setDrilldownType("averageBillValue")} />
+                {/* Financial Details — collapsible; all remaining metrics kept */}
+                <div className="rounded-xl border border-gray-200 dark:border-card-border bg-white dark:bg-card shadow-sm overflow-hidden">
+                  <button
+                    type="button"
+                    onClick={() => setFinancialDetailsOpen((o) => !o)}
+                    className="w-full flex items-center justify-between gap-3 px-4 py-3 text-left hover:bg-gray-50 dark:hover:bg-muted/20 transition-colors"
+                    aria-expanded={financialDetailsOpen}
+                  >
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-gray-800 dark:text-foreground">Financial Details</p>
+                      <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">
+                        Received, discounts, refunds, cancellations, dues, expenses &amp; average bill
+                      </p>
+                    </div>
+                    {financialDetailsOpen
+                      ? <ChevronUp size={18} className="text-gray-400 shrink-0" />
+                      : <ChevronDown size={18} className="text-gray-400 shrink-0" />}
+                  </button>
+
+                  {financialDetailsOpen && (
+                    <div className="border-t border-gray-100 dark:border-card-border p-3">
+                      <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-3 items-stretch">
+                        <MiniKpi
+                          icon={CheckCircle2}
+                          label="Total Received"
+                          value={fmt(s.totalReceived)}
+                          sub="All payments collected"
+                          theme="green"
+                          onClick={() => setDrilldownType("totalReceived")}
+                        />
+                        <MiniKpi
+                          icon={Tag}
+                          label="Discounts Given"
+                          value={fmt(s.discountsGiven)}
+                          sub={s.grossBilling > 0 ? `${((s.discountsGiven / s.grossBilling) * 100).toFixed(1)}% of billing` : ""}
+                          theme="purple"
+                          onClick={() => setDrilldownType("discountsGiven")}
+                        />
+                        <MiniKpi
+                          icon={RefreshCw}
+                          label="Refunds"
+                          value={fmt(totalRefunds)}
+                          sub={`No-cancel ${fmt(s.refundsWithoutCancellationAmount)} · On cancelled ${fmt(cancelLinkedRefunds)}`}
+                          theme="orange"
+                          onClick={() => setDrilldownType("refundsWithoutCancellation")}
+                        />
+                        <MiniKpi
+                          icon={XCircle}
+                          label="Cancellation Count"
+                          value={String(s.cancellationCount)}
+                          sub={s.cancellationCount > 0 ? `${fmt(s.cancelledAmount)} written off today` : "None"}
+                          theme="pink"
+                          onClick={() => setDrilldownType("cancellationCount")}
+                        />
+                        <MiniKpi
+                          icon={RotateCcw}
+                          label="Cancellations (₹)"
+                          value={fmt(s.cancelledOnMyBills)}
+                          sub="Of bills created in this period"
+                          theme="pink"
+                          onClick={() => setDrilldownType("cancellations")}
+                        />
+                        <MiniKpi
+                          icon={Receipt}
+                          label="Dues Collected"
+                          value={fmt(s.duesCollectedTotal)}
+                          sub={`${s.duesBillsCount} old bill${s.duesBillsCount !== 1 ? "s" : ""} settled`}
+                          theme="green"
+                          onClick={() => setDrilldownType("duesCollected")}
+                        />
+                        <MiniKpiFilled
+                          icon={TrendingDown}
+                          label="Total Expenses"
+                          value={fmt(s.totalExpenses)}
+                          sub={`Cash ${fmt(s.cashExpenses)} / Digital ${fmt(s.digitalExpenses)}`}
+                          solid="red"
+                          onClick={() => setDrilldownType("totalExpenses")}
+                        />
+                        <MiniKpi
+                          icon={IndianRupee}
+                          label="Average Bill Value"
+                          value={fmt(avgBillValue)}
+                          sub={`Across ${totalBillsCount} bill${totalBillsCount !== 1 ? "s" : ""}`}
+                          theme="slate"
+                          onClick={() => setDrilldownType("averageBillValue")}
+                        />
+                      </div>
+                    </div>
+                  )}
                 </div>
               </>
             );
@@ -2090,90 +2372,78 @@ export default function MyDailySummary() {
             discountBills={data.discountBills}
             isOwner={isOwner}
             exportConfig={exportConfig}
+            staffName={data.staffName}
+            periodLabel={from === to ? from : `${from} → ${to}`}
           />
 
           {/* ── Drawer Close Status Card ── */}
-          {drawerQ.data && <DrawerStatusCard status={drawerQ.data} />}
+          {drawerQ.data && <DrawerStatusCard status={drawerQ.data} isOwner={isOwner} />}
 
           {/* ── Post-Closure Activity Box ── */}
           {postClosureQ.data && <PostClosureActivityBox data={postClosureQ.data} />}
 
-          {/* ── Per-Staff Breakdown (All Staff / Total only) ── */}
+          {/* ── Staff Activity (action-based — not personal drawer shortage) ── */}
           {data?.byStaff && data.byStaff.length > 0 && (
             <div className="bg-white dark:bg-card border border-gray-200 dark:border-card-border rounded-xl shadow-sm overflow-hidden">
               <div className="px-4 py-3 border-b border-gray-100 dark:border-card-border bg-gray-50 dark:bg-muted/30">
                 <h3 className="text-sm font-bold text-gray-900 dark:text-foreground flex items-center gap-2">
-                  <Users size={14} className="text-emerald-600" /> Per-Staff Breakdown
+                  <Users size={14} className="text-emerald-600" /> Staff Activity
                 </h3>
-                <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">Billing + Cash details for each staff member (All Staff view)</p>
+                <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">
+                  Each action stays with the person who did it. Cancel/refund by someone else does not erase the original bill or collection.
+                  This is <strong>not</strong> a personal cash-shortage or amount-payable table.
+                </p>
               </div>
               <div className="overflow-x-auto">
                 <table className="w-full text-xs">
                   <thead className="bg-gray-50 dark:bg-muted/30 sticky top-0">
                     <tr>
                       <th className="px-3 py-2 text-left font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Staff</th>
-                      <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Gross Billed</th>
-                      <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Active</th>
-                      <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Cancelled</th>
-                      <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Outstanding</th>
-                      <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Net Collected</th>
-                      <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Bills</th>
-                      <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Cash In</th>
-                      <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Digital In</th>
-                      <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Net Cash</th>
-                      <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Net Digital</th>
-                      <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Total Received</th>
-                      <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Cash Exp</th>
-                      <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Phys. Cash</th>
-                      <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Dues</th>
-                      <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Disc.</th>
-                      <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Canc.</th>
+                      <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Bills Created</th>
+                      <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Cash Collected</th>
+                      <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Bills Cancelled</th>
+                      <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Cash Refunded</th>
+                      <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Digital Collected</th>
+                      <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Digital Refunded</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100 dark:divide-card-border">
-                    {data.byStaff.map((st) => (
-                      <tr key={st.name} className="hover:bg-emerald-50/40 dark:hover:bg-muted/20">
-                        <td className="px-3 py-2 font-semibold whitespace-nowrap text-gray-800 dark:text-gray-200">{st.name}</td>
-                        <td className="px-3 py-2 text-right tabular-nums text-gray-700 dark:text-gray-300">{fmt(st.grossBilled)}</td>
-                        <td className="px-3 py-2 text-right tabular-nums text-gray-700 dark:text-gray-300">{fmt(st.activeBilling)}</td>
-                        <td className="px-3 py-2 text-right tabular-nums text-red-600 dark:text-red-400">{st.cancelled > 0 ? fmt(st.cancelled) : "—"}</td>
-                        <td className="px-3 py-2 text-right tabular-nums text-amber-600 dark:text-amber-400">{st.outstanding > 0 ? fmt(st.outstanding) : "—"}</td>
-                        <td className="px-3 py-2 text-right tabular-nums font-semibold text-emerald-700 dark:text-emerald-400">{fmt(st.netCollected)}</td>
-                        <td className="px-3 py-2 text-right tabular-nums text-gray-500">{st.billCount}</td>
-                        <td className="px-3 py-2 text-right tabular-nums text-blue-700 dark:text-blue-400">{fmt(st.cashIn)}</td>
-                        <td className="px-3 py-2 text-right tabular-nums text-violet-700 dark:text-violet-400">{fmt(st.digitalIn)}</td>
-                        <td className="px-3 py-2 text-right tabular-nums font-semibold text-blue-700 dark:text-blue-400">{fmt(st.netCash)}</td>
-                        <td className="px-3 py-2 text-right tabular-nums font-semibold text-violet-700 dark:text-violet-400">{fmt(st.netDigital)}</td>
-                        <td className="px-3 py-2 text-right tabular-nums font-semibold text-green-700 dark:text-green-400">{fmt(st.totalReceived)}</td>
-                        <td className="px-3 py-2 text-right tabular-nums text-orange-600 dark:text-orange-400">{st.cashExpenses > 0 ? fmt(st.cashExpenses) : "—"}</td>
-                        <td className="px-3 py-2 text-right tabular-nums font-semibold text-blue-800 dark:text-blue-300">{fmt(st.physicalCashInHand)}</td>
-                        <td className="px-3 py-2 text-right tabular-nums text-teal-600 dark:text-teal-400">{st.duesCollected > 0 ? fmt(st.duesCollected) : "—"}</td>
-                        <td className="px-3 py-2 text-right tabular-nums text-slate-600 dark:text-slate-400">{st.discountsGiven > 0 ? fmt(st.discountsGiven) : "—"}</td>
-                        <td className="px-3 py-2 text-right tabular-nums text-red-500">{st.cancellationCount > 0 ? st.cancellationCount : "—"}</td>
-                      </tr>
-                    ))}
-                    {/* Total row */}
+                    {data.byStaff.map((st) => {
+                      const billsCreated = st.billsCreated ?? st.grossBilled;
+                      const cashCollected = st.cashCollected ?? st.cashIn;
+                      const billsCancelled = st.billsCancelled ?? st.cancelled;
+                      return (
+                        <tr key={st.name} className="hover:bg-emerald-50/40 dark:hover:bg-muted/20">
+                          <td className="px-3 py-2 font-semibold whitespace-nowrap text-gray-800 dark:text-gray-200">{st.name}</td>
+                          <td className="px-3 py-2 text-right tabular-nums text-gray-700 dark:text-gray-300">{fmt(billsCreated)}</td>
+                          <td className="px-3 py-2 text-right tabular-nums text-blue-700 dark:text-blue-400">{fmt(cashCollected)}</td>
+                          <td className="px-3 py-2 text-right tabular-nums text-red-600 dark:text-red-400">{billsCancelled > 0 ? fmt(billsCancelled) : "—"}</td>
+                          <td className="px-3 py-2 text-right tabular-nums text-orange-600 dark:text-orange-400">{st.cashRefunded > 0 ? fmt(st.cashRefunded) : "—"}</td>
+                          <td className="px-3 py-2 text-right tabular-nums text-violet-700 dark:text-violet-400">{st.digitalIn > 0 ? fmt(st.digitalIn) : "—"}</td>
+                          <td className="px-3 py-2 text-right tabular-nums text-violet-500 dark:text-violet-400">{st.digitalRefunded > 0 ? fmt(st.digitalRefunded) : "—"}</td>
+                        </tr>
+                      );
+                    })}
                     <tr className="bg-gray-100 dark:bg-gray-900/40 font-bold border-t-2 border-gray-200 dark:border-gray-700">
-                      <td className="px-3 py-2 whitespace-nowrap text-gray-900 dark:text-gray-100">TOTAL</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{fmt(data.byStaff.reduce((a, st) => a + st.grossBilled, 0))}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{fmt(data.byStaff.reduce((a, st) => a + st.activeBilling, 0))}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{fmt(data.byStaff.reduce((a, st) => a + st.cancelled, 0))}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{fmt(data.byStaff.reduce((a, st) => a + st.outstanding, 0))}</td>
-                      <td className="px-3 py-2 text-right tabular-nums text-emerald-700 dark:text-emerald-400">{fmt(data.byStaff.reduce((a, st) => a + st.netCollected, 0))}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{data.byStaff.reduce((a, st) => a + st.billCount, 0)}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{fmt(data.byStaff.reduce((a, st) => a + st.cashIn, 0))}</td>
+                      <td className="px-3 py-2 whitespace-nowrap text-gray-900 dark:text-gray-100">TOTAL (Clinic)</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{fmt(data.byStaff.reduce((a, st) => a + (st.billsCreated ?? st.grossBilled), 0))}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{fmt(data.byStaff.reduce((a, st) => a + (st.cashCollected ?? st.cashIn), 0))}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{fmt(data.byStaff.reduce((a, st) => a + (st.billsCancelled ?? st.cancelled), 0))}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{fmt(data.byStaff.reduce((a, st) => a + st.cashRefunded, 0))}</td>
                       <td className="px-3 py-2 text-right tabular-nums">{fmt(data.byStaff.reduce((a, st) => a + st.digitalIn, 0))}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{fmt(data.byStaff.reduce((a, st) => a + st.netCash, 0))}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{fmt(data.byStaff.reduce((a, st) => a + st.netDigital, 0))}</td>
-                      <td className="px-3 py-2 text-right tabular-nums text-green-700 dark:text-green-400">{fmt(data.byStaff.reduce((a, st) => a + st.totalReceived, 0))}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{fmt(data.byStaff.reduce((a, st) => a + st.cashExpenses, 0))}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{fmt(data.byStaff.reduce((a, st) => a + st.physicalCashInHand, 0))}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{fmt(data.byStaff.reduce((a, st) => a + st.duesCollected, 0))}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{fmt(data.byStaff.reduce((a, st) => a + st.discountsGiven, 0))}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{data.byStaff.reduce((a, st) => a + st.cancellationCount, 0)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{fmt(data.byStaff.reduce((a, st) => a + st.digitalRefunded, 0))}</td>
                     </tr>
                   </tbody>
                 </table>
+              </div>
+              <div className="px-4 py-2 bg-emerald-50/80 dark:bg-emerald-950/20 border-t border-emerald-100 dark:border-emerald-900 text-[12px]">
+                <span className="font-bold text-emerald-800 dark:text-emerald-300">Net Cash Available (clinic): </span>
+                <span className="tabular-nums font-extrabold text-emerald-900 dark:text-emerald-200">
+                  {fmt((s.netClinicCash ?? (s.cashIn - s.cashRefunded)))}
+                </span>
+                <span className="text-gray-500 dark:text-gray-400 ml-2">
+                  = Cash collected {fmt(s.cashIn)} − Cash refunded {fmt(s.cashRefunded)}
+                </span>
               </div>
             </div>
           )}

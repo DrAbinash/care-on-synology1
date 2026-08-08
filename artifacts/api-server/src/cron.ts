@@ -29,7 +29,11 @@ import {
   calcTestCommission,
   applyDiscountDeduction,
   computeCommissionHold,
+  indexCommissionBillsByOrderId,
+  isCommissionBillEligible,
   NEEDS_REPORT_STATUS,
+  buildTestNameAliasIndex,
+  rulesForDoctor,
 } from "./lib/commissionCalc";
 
 let currentTask: ReturnType<typeof cron.schedule> | null = null;
@@ -59,6 +63,7 @@ export function startCronScheduler() {
   scheduleAuditChainVerify();
   scheduleAiSchedulerModes();
   scheduleQueueDisplayAlerts();
+  scheduleInventoryLowStockAlerts();
 
   // Start the in-process DIMSE pull agent if enabled.
   // When ENABLE_DICOM_PULL_AGENT is set, the agent polls for pull jobs and
@@ -1082,18 +1087,25 @@ async function fireCommissionReconcile(): Promise<{ transitions: number }> {
   const [doctors, rules, tests, orderTests, bills, tokens, lastEvents] = await Promise.all([
     db.select().from(doctorsTable),
     db.select().from(commissionRulesTable).orderBy(commissionRulesTable.id),
-    db.select({ id: testsTable.id, category: testsTable.category, testType: testsTable.testType }).from(testsTable),
+    db.select({ id: testsTable.id, name: testsTable.name, category: testsTable.category, testType: testsTable.testType }).from(testsTable),
     db.select().from(orderTestsTable).where(and(inArray(orderTestsTable.orderId, orderIds), ne(orderTestsTable.status, "cancelled"))),
     db.select({ orderId: billsTable.orderId, status: billsTable.status, paid: billsTable.paidAmount, balance: billsTable.balanceAmount, discount: billsTable.discount }).from(billsTable).where(inArray(billsTable.orderId, orderIds)),
     db.select({ orderTestId: testTokensTable.orderTestId }).from(testTokensTable).where(and(inArray(testTokensTable.orderId, orderIds), sql`${testTokensTable.priority} > 0`)),
     db.select({ orderId: commissionStatusEventsTable.orderId, newStatus: commissionStatusEventsTable.newStatus, createdAt: commissionStatusEventsTable.createdAt }).from(commissionStatusEventsTable).where(inArray(commissionStatusEventsTable.orderId, orderIds)),
   ]);
-  const testMap = new Map(tests.map(t => [t.id, { category: t.category, testType: t.testType }]));
+  const testMap = new Map(tests.map(t => [t.id, { category: t.category, testType: t.testType, name: t.name }]));
+  const testAliasIndex = buildTestNameAliasIndex(tests);
   const doctorMap = new Map(doctors.map(d => [d.id, d]));
-  const rulesByDoctor = new Map<number, (typeof commissionRulesTable.$inferSelect)[]>();
-  for (const r of rules) { const a = rulesByDoctor.get(r.doctorId) ?? []; a.push(r); rulesByDoctor.set(r.doctorId, a); }
+  const billByOrderRaw = indexCommissionBillsByOrderId(bills);
   const billByOrder = new Map<number, { status: string | null; paid: string; balance: string; discount: number }>();
-  for (const b of bills) if (b.orderId != null) billByOrder.set(b.orderId, { status: b.status ?? null, paid: b.paid, balance: b.balance, discount: Number(b.discount ?? 0) });
+  for (const [oid, b] of billByOrderRaw) {
+    billByOrder.set(oid, {
+      status: b.status ?? null,
+      paid: b.paid,
+      balance: b.balance,
+      discount: Number(b.discount ?? 0),
+    });
+  }
   const vipIds = new Set(tokens.map(t => t.orderTestId).filter(Boolean) as number[]);
 
   let reportStatus = new Map<number, { finalized: boolean; delivered: boolean }>();
@@ -1124,12 +1136,15 @@ async function fireCommissionReconcile(): Promise<{ transitions: number }> {
     if (!doctor) continue;
     const ots = orderTests.filter(ot => ot.orderId === order.id);
     if (!ots.length) continue;
-    const dRules = rulesByDoctor.get(order.doctorId) ?? [];
+    const bill = billByOrder.get(order.id);
+    // Unbilled / cancelled-bill-only orders never enter commission — same rule
+    // as Referral Report and Doctor Ledger (no status events for them either).
+    if (!isCommissionBillEligible(bill)) continue;
+    const dRules = rulesForDoctor(rules, order.doctorId);
     let raw = 0;
     for (const ot of ots) {
-      raw += calcTestCommission(ot, testMap.get(ot.testId), dRules, doctor, vipIds, vipPct, outsourcedBasis).commission;
+      raw += calcTestCommission(ot, testMap.get(ot.testId), dRules, doctor, vipIds, vipPct, outsourcedBasis, testAliasIndex).commission;
     }
-    const bill = billByOrder.get(order.id);
     // Judge — and record — the NET commission, i.e. after the clinic's
     // bill-discount deduction. The Referral Report and the Doctor Ledger both
     // work in net; using gross here would make the "collected >= commission"
@@ -1139,7 +1154,7 @@ async function fireCommissionReconcile(): Promise<{ transitions: number }> {
     const rep = reportStatus.get(order.id);
     const { held, reason } = computeCommissionHold({
       cfg: { policy, minAmount },
-      hasBill: !!bill, billStatus: bill?.status ?? null,
+      hasBill: true, billStatus: bill?.status ?? null,
       paidAmount: Number(bill?.paid ?? 0), balanceAmount: Number(bill?.balance ?? 0),
       reportFinalized: rep?.finalized ?? false, reportDelivered: rep?.delivered ?? false,
       commissionAmount: netCommission,
@@ -1307,10 +1322,11 @@ export async function runDailySummary(force = false) {
 async function fireDailySummary(opts: { scheduled: boolean; force?: boolean; slot?: string }) {
   try {
     const now = new Date();
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
-    const todayEnd = new Date();
-    todayEnd.setHours(23, 59, 59, 999);
+    // IST calendar day — same bounds as Daily Summary / My Daily Summary
+    // (not server-local midnight, which drifts for Synology hosts on UTC).
+    const dateStr = todayIST(now);
+    const todayStart = new Date(`${dateStr}T00:00:00+05:30`);
+    const todayEnd = new Date(`${dateStr}T23:59:59.999+05:30`);
     const inToday = (col: any) => and(gte(col, todayStart), lte(col, todayEnd));
 
     const [bills, payments, audits, expenses, newPatients, orderTestRows] = await Promise.all([
@@ -1347,8 +1363,14 @@ async function fireDailySummary(opts: { scheduled: boolean; force?: boolean; slo
 
     const nonCancelledBills = bills.filter(b => b.status !== "cancelled");
     const discountsGiven = bills.reduce((s, b) => s + Number(b.discount || 0), 0);
-    const refundsAndCancellations =
-      bills.filter(b => b.status === "cancelled").reduce((s, b) => s + Number(b.refundAmount || 0), 0);
+    const refundAmount = payments
+      .filter((p) => Number(p.amount) < 0)
+      .reduce((s, p) => s + Math.abs(Number(p.amount)), 0);
+    const cancelledBillAmount = bills
+      .filter((b) => b.status === "cancelled")
+      .reduce((s, b) => s + Number(b.totalAmount || 0), 0);
+    // Kept for email template compat — prefer separate refunds/cancelled rows.
+    const refundsAndCancellations = refundAmount;
     const averageBillValue = nonCancelledBills.length > 0
       ? nonCancelledBills.reduce((s, b) => s + Number(b.totalAmount), 0) / nonCancelledBills.length
       : 0;
@@ -1356,7 +1378,10 @@ async function fireDailySummary(opts: { scheduled: boolean; force?: boolean; slo
     let cashExpenses = 0, digitalExpenses = 0;
     for (const e of expenses) {
       const amt = Number(e.amount);
-      if (isPhysicalCash(e.paymentMode)) cashExpenses += amt;
+      // Blank payment_mode → cash (same as day-close splitCashExpenses /
+      // autoVoucherForExpense). isPhysicalCash("") is false / unknown.
+      const mode = (e.paymentMode ?? "").toString().trim();
+      if (!mode || isPhysicalCash(mode)) cashExpenses += amt;
       else digitalExpenses += amt;
     }
 
@@ -1436,6 +1461,8 @@ async function fireDailySummary(opts: { scheduled: boolean; force?: boolean; slo
       unclassifiedCollected,
       discountsGiven,
       refundsAndCancellations,
+      refundAmount,
+      cancelledBillAmount,
       averageBillValue,
       newPatients: newPatients.length,
       totalOutstandingDues: Number(totalOutstandingDues || 0),
@@ -1559,6 +1586,18 @@ function scheduleQueueDisplayAlerts() {
     }
   });
   console.log("[cron] Queue display patient-ping + offline-alert scheduler started (runs every 2 minutes)");
+}
+
+function scheduleInventoryLowStockAlerts() {
+  cron.schedule("0 */6 * * *", async () => {
+    try {
+      const { runScheduledLowStockAlert } = await import("./lib/inventoryLowStockAlerts");
+      await runScheduledLowStockAlert();
+    } catch (err) {
+      console.error("[cron] Low stock alert failed:", err);
+    }
+  });
+  console.log("[cron] Inventory low-stock alert scheduler started (every 6 hours)");
 }
 
 async function checkQueueDisplayOfflineAlerts() {

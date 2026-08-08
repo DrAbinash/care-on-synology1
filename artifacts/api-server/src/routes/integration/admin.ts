@@ -27,6 +27,29 @@ import { escalateCriticalResults } from "../../services/integration/criticalEsca
 export const integrationAdminRouter = Router();
 const staffName = (req: StaffAuthRequest) => req.staffSession?.subjectName ?? "admin";
 
+/** Plain-language labels for the admin UI (doctor-friendly). */
+export const INTEGRATION_PERMISSION_LABELS: Record<string, { label: string; hint: string }> = {
+  "diagnostic_referral:create": { label: "Receive lab orders from Hope", hint: "Hope can send prescribed investigations to CARE." },
+  "diagnostic_referral:update": { label: "Update referrals from Hope", hint: "Hope can amend a pending referral." },
+  "diagnostic_referral:cancel": { label: "Cancel referrals from Hope", hint: "Hope can cancel a referral before it is fulfilled." },
+  "diagnostic_referral:read": { label: "Read referral status", hint: "Hope can query referral progress." },
+  "diagnostic_result:acknowledge": { label: "Acknowledge critical results", hint: "Hope clinicians can ack critical values back to CARE." },
+  "whatsapp:enqueue": { label: "Send WhatsApp from Hope Hospital", hint: "Hope uses CARE's WhatsApp number for follow-ups & billing (one bill, no duplicate API)." },
+};
+
+export const HOPE_DEFAULT_PERMISSIONS = [...ALLOWED_INTEGRATION_PERMISSIONS];
+
+integrationAdminRouter.get("/permissions", (_req, res) => {
+  res.json({
+    permissions: [...ALLOWED_INTEGRATION_PERMISSIONS].map((id) => ({
+      id,
+      label: INTEGRATION_PERMISSION_LABELS[id]?.label ?? id,
+      hint: INTEGRATION_PERMISSION_LABELS[id]?.hint ?? "",
+    })),
+    hopeDefaults: HOPE_DEFAULT_PERMISSIONS,
+  });
+});
+
 // ── Partners ─────────────────────────────────────────────────────────────────
 integrationAdminRouter.get("/partners", async (_req, res) => {
   const rows = await db.select().from(integrationPartnersTable).orderBy(desc(integrationPartnersTable.createdAt));
@@ -44,7 +67,7 @@ const CreatePartnerSchema = z.object({
 integrationAdminRouter.post("/partners", async (req: StaffAuthRequest, res) => {
   const parsed = CreatePartnerSchema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ error: "Invalid body", details: parsed.error.issues }); return; }
-  const perms = (parsed.data.permissions ?? [...ALLOWED_INTEGRATION_PERMISSIONS]).filter((p) => ALLOWED_INTEGRATION_PERMISSIONS.has(p));
+  const perms = (parsed.data.permissions ?? HOPE_DEFAULT_PERMISSIONS).filter((p) => ALLOWED_INTEGRATION_PERMISSIONS.has(p));
   const rawKey = generateIntegrationKey();
   try {
     const [partner] = await db.insert(integrationPartnersTable).values({

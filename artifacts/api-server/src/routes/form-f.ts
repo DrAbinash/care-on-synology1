@@ -6,7 +6,8 @@ import { whatsappConversationsTable, whatsappSettingsTable, usgMeasurementsTable
 import { dateToISTString } from "../lib/istDate";
 import { type IdCardOcrResult } from "@workspace/integrations-gemini-ai";
 import { runIdCardOcrPipeline, SERVER_BLUR_WARNING_THRESHOLD } from "../lib/ocr/idCardPipeline";
-import { resolveOcrProvider, maskEndpointUrl, type OcrUnavailableReason } from "../lib/ocr/ocrProviderResolver";
+import { resolveOcrProvider, maskEndpointUrl, type OcrUnavailableReason, type OcrProviderChoice } from "../lib/ocr/ocrProviderResolver";
+import { getProviderApiKey } from "@workspace/ai-providers";
 import { requireStaffPermission, requireAdminRole, type StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { sendTextMessageRaw, resolveNumber, normalizePhone } from "./whatsapp";
 import { auditFromRequest } from "../lib/audit";
@@ -1036,6 +1037,7 @@ formFRouter.post("/upload-id", requireStaffPermission("/form-f"), async (req, re
     let ocrOutcome: "success" | OcrUnavailableReason = "no_provider_configured";
     let blurScore: number | null = null;
     let isBlurred = false;
+    let usedProviderLabel: "ollama" | "gemini" | "none" = "none";
     ocrLog.push({ stage: "provider", status: "info", message: "Resolving OCR provider...", detail: "Checking AI Provider Settings (Ollama-first, Gemini-fallback)" });
     const resolution = await resolveOcrProvider();
     const provider = resolution.chosen;
@@ -1045,6 +1047,7 @@ formFRouter.post("/upload-id", requireStaffPermission("/form-f"), async (req, re
       ocrError = describeOcrUnavailable(provider.reason, resolution);
       ocrLog.push({ stage: "provider", status: "error", message: "No usable OCR provider", detail: ocrError });
     } else {
+      usedProviderLabel = provider.provider;
       ocrLog.push({
         stage: "provider", status: "ok",
         message: `Using ${provider.provider === "ollama" ? "Ollama" : "Gemini"} for OCR`,
@@ -1063,14 +1066,44 @@ formFRouter.post("/upload-id", requireStaffPermission("/form-f"), async (req, re
         // whether each field was found, matching the existing convention.
         ocrLog.push({ stage: provider.provider, status: "ok", message: `${provider.provider === "ollama" ? "Ollama" : "Gemini"} OCR completed`, detail: `documentType: ${ocrResult?.documentType}, confidence: ${ocrResult?.confidence}, name: ${ocrResult?.guardianName ? "found" : "empty"}, address: ${ocrResult?.address ? "found" : "empty"}, extras: ${ocrResult?.dob ? "dob " : ""}${ocrResult?.gender ? "gender " : ""}${ocrResult?.idNumber ? "idNumber" : ""}` });
       } catch (e) {
-        // The chosen provider failed AT CALL TIME (as opposed to being
-        // disqualified up front by resolveOcrProvider) — e.g. Ollama was
-        // reachable during the probe but the request itself timed out, or
-        // Gemini's API returned an error. Report this distinctly from the
-        // "no provider configured" family since a provider WAS available.
-        ocrOutcome = provider.provider === "ollama" ? "ollama_unreachable" : "no_provider_configured";
+        // Chosen provider failed AT CALL TIME (e.g. Ollama timed out after
+        // the reachability probe). If we started on Ollama, try Gemini once
+        // before giving up — mirrors the resolve-time Ollama→Gemini policy
+        // for call-time failures. Client still has Tesseract as last resort.
         ocrError = e instanceof Error ? e.message : `${provider.provider} OCR failed`;
         ocrLog.push({ stage: provider.provider, status: "error", message: `${provider.provider === "ollama" ? "Ollama" : "Gemini"} OCR failed`, detail: ocrError });
+
+        let retried = false;
+        if (provider.provider === "ollama") {
+          const geminiKey = (await getProviderApiKey("gemini").catch(() => null))
+            ?? process.env.AI_INTEGRATIONS_GEMINI_API_KEY
+            ?? null;
+          if (geminiKey) {
+            const geminiChoice: OcrProviderChoice = { provider: "gemini", apiKey: geminiKey };
+            ocrLog.push({ stage: "provider", status: "info", message: "Falling back to Gemini after Ollama call failure" });
+            try {
+              const pipeline = await runIdCardOcrPipeline(base64, mimeType, geminiChoice);
+              ocrResult = pipeline.ocrResult;
+              blurScore = pipeline.blurScore;
+              isBlurred = pipeline.isBlurred;
+              ocrOutcome = "success";
+              usedProviderLabel = "gemini";
+              retried = true;
+              ocrError = null;
+              ocrLog.push({
+                stage: "gemini", status: "ok",
+                message: "Gemini OCR completed (fallback after Ollama failure)",
+                detail: `documentType: ${ocrResult?.documentType}, confidence: ${ocrResult?.confidence}, name: ${ocrResult?.guardianName ? "found" : "empty"}, address: ${ocrResult?.address ? "found" : "empty"}`,
+              });
+            } catch (e2) {
+              ocrError = e2 instanceof Error ? e2.message : "Gemini OCR failed";
+              ocrLog.push({ stage: "gemini", status: "error", message: "Gemini fallback also failed", detail: ocrError });
+            }
+          }
+        }
+        if (!retried) {
+          ocrOutcome = provider.provider === "ollama" ? "ollama_unreachable" : "no_provider_configured";
+        }
       }
     }
 
@@ -1080,7 +1113,7 @@ formFRouter.post("/upload-id", requireStaffPermission("/form-f"), async (req, re
       ocrError,
       ocrOutcome,
       ocrLog,
-      ocrStage: ocrResult ? `${provider.provider}_success` : `${provider.provider}_failed`,
+      ocrStage: ocrResult ? `${usedProviderLabel}_success` : `${usedProviderLabel === "none" ? provider.provider : usedProviderLabel}_failed`,
       suggestedAction: ocrResult ? "accept_or_verify" : "manual_entry",
       blurScore,
       isBlurred,

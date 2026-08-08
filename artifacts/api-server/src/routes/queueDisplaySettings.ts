@@ -31,6 +31,10 @@ import multer from "multer";
 import { displayCommandBroadcaster, type DisplayCommand } from "../lib/displayCommandBroadcast";
 import { displayHeartbeatTracker } from "../lib/displayHeartbeatTracker";
 import { buildPingMessage } from "../lib/queueDisplayPingScheduler";
+import {
+  inferDepartmentFromRoomKey,
+  resolveQueueDisplayDepartments,
+} from "../lib/queueDisplayDepartments";
 import { getWhatsAppService } from "../services/whatsapp/WhatsAppService";
 
 export const queueDisplaySettingsRouter: IRouter = Router();
@@ -141,15 +145,35 @@ function serialize(row: typeof queueDisplaySettingsTable.$inferSelect) {
     staffAlertPhone: row.staffAlertPhone,
     staffAlertAfterMinutes: row.staffAlertAfterMinutes,
     ledgerId: row.ledgerId,
-    departments: row.departments,
+    // Effective filter — blank DB value + roomKey "usg" must not mean "every department".
+    departments: resolveQueueDisplayDepartments(row.roomKey, row.departments).join(","),
   };
 }
 
 async function getOrCreate(roomKey: string) {
   const rows = await db.select().from(queueDisplaySettingsTable).where(eq(queueDisplaySettingsTable.roomKey, roomKey)).limit(1);
-  if (rows[0]) return rows[0];
+  if (rows[0]) {
+    // Self-heal legacy rows that left departments blank — those TVs showed MRI/CT/etc.
+    if (!rows[0].departments.trim()) {
+      const inferred = inferDepartmentFromRoomKey(roomKey);
+      if (inferred) {
+        const [healed] = await db
+          .update(queueDisplaySettingsTable)
+          .set({ departments: inferred, updatedAt: new Date() })
+          .where(eq(queueDisplaySettingsTable.id, rows[0].id))
+          .returning();
+        if (healed) return healed;
+      }
+    }
+    return rows[0];
+  }
   const roomTitle = roomKey.toUpperCase().replace(/[-_]/g, " ") + (roomKey.toLowerCase().endsWith("room") ? "" : " ROOM");
-  const [created] = await db.insert(queueDisplaySettingsTable).values({ roomKey, roomTitle }).returning();
+  const inferred = inferDepartmentFromRoomKey(roomKey);
+  const [created] = await db.insert(queueDisplaySettingsTable).values({
+    roomKey,
+    roomTitle,
+    ...(inferred ? { departments: inferred } : {}),
+  }).returning();
   return created;
 }
 
@@ -168,6 +192,7 @@ queueDisplaySettingsRouter.get("/", requireStaffAuth, async (req, res): Promise<
       displayName: r.displayName,
       lastSeenAt: displayHeartbeatTracker.getLastSeen(r.roomKey),
       online: displayHeartbeatTracker.isOnline(r.roomKey),
+      staffAlertEnabled: r.staffAlertEnabled,
     })));
   } catch (err) {
     req.log?.error?.({ err }, "queue-display-settings LIST error");
@@ -377,7 +402,16 @@ queueDisplaySettingsRouter.patch("/:roomKey", requireStaffAuth, async (req, res)
   update.updatedAt = new Date();
 
   try {
-    await getOrCreate(roomKey); // ensure row exists
+    const existing = await getOrCreate(roomKey); // ensure row exists
+    // Persist inferred departments on admin save — blank must not mean "every
+    // department" on modality-specific TVs (e.g. roomKey "usg" → USG only).
+    const nextDepartments = update.departments !== undefined
+      ? String(update.departments).trim()
+      : existing.departments.trim();
+    if (!nextDepartments) {
+      const inferred = inferDepartmentFromRoomKey(roomKey);
+      if (inferred) update.departments = inferred;
+    }
     const [saved] = await db
       .update(queueDisplaySettingsTable)
       .set(update)

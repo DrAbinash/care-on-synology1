@@ -583,7 +583,7 @@ export default function DicomViewer() {
   const settings = settingsQuery.data ?? {};
 
   const viewerMode = settings["viewer_mode"] ?? "BOTH";
-  const defaultViewer = settings["default_viewer"] ?? "OHIF";
+  const defaultViewer = settings["default_viewer"] ?? "WEASIS";
   const ohifEnabled = settings["ohif_enabled"] !== "false";
   const weasisEnabled = settings["weasis_enabled"] !== "false";
   const openMode = settings["viewer_open_mode"] ?? "NEW_TAB";
