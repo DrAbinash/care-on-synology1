@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db, billsTable, paymentsTable, ordersTable, patientsTable } from "@workspace/db";
-import { billAuditsTable, superAdminSessionsTable, ledgersTable } from "@workspace/db/schema";
+import { billAuditsTable, superAdminSessionsTable, ledgersTable, formFRecordsTable } from "@workspace/db/schema";
 import { sendBillEditEmail, sendBillReprintEmail } from "../email";
 import { isValidUsbKey, isUsbGateEnforced, getUsbKeyHeader } from "../middleware/requireSuperAdminUsb";
 import { auditFromRequest } from "../lib/audit";
@@ -768,6 +768,83 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
   // `studies` is now created asynchronously (see fire-and-forget above); the
   // key stays in the response for shape compatibility, but no client reads it.
   res.status(201).json({ ...built, token: tokenInfo, testTokens, studies: [], needsFormFData, needsOnlinePayment, onlineAmount });
+});
+
+// PATCH /form-f-patient-data — Billing Desk Form F popup after bill create.
+// Lives on /bills (billing permission) so counters without /form-f module
+// access can still save guardian + address from the post-bill dialog.
+billsRouter.patch("/form-f-patient-data", async (req: StaffAuthRequest, res) => {
+  try {
+    const body = req.body ?? {};
+    const billNumber = String(body.billNumber ?? "").trim();
+    const address = String(body.address ?? "").trim();
+    const husbandFatherName = String(body.husbandFatherName ?? body.husbandName ?? "").trim();
+
+    if (!billNumber) {
+      res.status(400).json({ error: "billNumber is required" });
+      return;
+    }
+    if (!husbandFatherName) {
+      res.status(400).json({ error: "Husband / Father name is required", field: "husbandFatherName" });
+      return;
+    }
+
+    const [bill] = await db
+      .select()
+      .from(billsTable)
+      .where(eq(billsTable.billNumber, billNumber))
+      .limit(1);
+
+    if (!bill) {
+      res.status(404).json({ error: "Bill not found" });
+      return;
+    }
+
+    if (bill.patientId) {
+      if (address) {
+        await db.update(patientsTable).set({ address }).where(eq(patientsTable.id, bill.patientId));
+      }
+
+      const [existing] = await db
+        .select({ id: formFRecordsTable.id })
+        .from(formFRecordsTable)
+        .where(
+          or(
+            eq(formFRecordsTable.billId, bill.id),
+            eq(formFRecordsTable.billNumber, billNumber),
+          ),
+        )
+        .orderBy(desc(formFRecordsTable.createdAt))
+        .limit(1);
+
+      if (existing) {
+        await db
+          .update(formFRecordsTable)
+          .set({ husbandFatherName, ...(address ? { address } : {}) })
+          .where(eq(formFRecordsTable.id, existing.id));
+      } else {
+        const [patient] = await db
+          .select({ firstName: patientsTable.firstName, lastName: patientsTable.lastName })
+          .from(patientsTable)
+          .where(eq(patientsTable.id, bill.patientId))
+          .limit(1);
+        const patientName = [patient?.firstName, patient?.lastName].filter(Boolean).join(" ").trim();
+        await db.insert(formFRecordsTable).values({
+          billId: bill.id,
+          billNumber,
+          patientId: bill.patientId,
+          patientName,
+          husbandFatherName,
+          address,
+        });
+      }
+    }
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("[bills] form-f-patient-data error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
 });
 
 billsRouter.get("/:id", async (req, res) => {
