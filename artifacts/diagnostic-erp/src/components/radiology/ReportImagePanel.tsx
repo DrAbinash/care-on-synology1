@@ -158,7 +158,12 @@ export default function ReportImagePanel({
       {refsQuery.isError && (
         <div className="flex items-center gap-2 rounded-md border border-destructive/40 bg-destructive/5 p-2" data-testid="panel-error">
           <AlertTriangle size={12} className="text-destructive shrink-0" />
-          <span className="text-[11px] text-destructive flex-1">Could not load report images.</span>
+          <span className="text-[11px] text-destructive flex-1">
+            Could not load report images.
+            {refsQuery.error instanceof Error && refsQuery.error.message
+              ? ` ${refsQuery.error.message}`
+              : ""}
+          </span>
           <Button size="sm" variant="outline" className="h-6 px-2 text-[10px]" onClick={() => void refsQuery.refetch()}>
             <RefreshCw size={10} className="mr-1" /> Retry
           </Button>

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { api } from "@/lib/fetchApi";
+import { BROWSER_DICOMWEB_BASE } from "@/lib/browserDicomWeb";
 import { isFeatureEnabled } from "@/lib/staffSession";
 
 /**
@@ -78,13 +78,7 @@ export default function UsgCinePanel({
 
   // Reuse the canonical launch endpoint (same query key as the embedded viewer,
   // so the two share one cached fetch when mounted together).
-  const { data: launch } = useQuery<ViewerLaunch>({
-    queryKey: ["viewer-launch", studyInstanceUID],
-    queryFn: () => api.get(`/api/radiology/studies/${encodeURIComponent(studyInstanceUID!)}/ohif-launch`),
-    enabled,
-    staleTime: 5 * 60_000,
-  });
-  const dicomWebBase = launch?.dicomWebBaseUrl ?? null;
+  const dicomWebBase = studyInstanceUID ? BROWSER_DICOMWEB_BASE : null;
 
   const keyFramesQ = useQuery<{ keyFrames: KeyFrame[] }>({
     queryKey: ["usg-cine-keyframes", studyInstanceUID],

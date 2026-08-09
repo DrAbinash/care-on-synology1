@@ -691,7 +691,7 @@ router.get("/studies/:studyInstanceUID/ohif-launch", async (req, res) => {
       viewerType: "OHIF",
       error: "Viewer settings are not configured. Go to PACS / DICOM Settings → Viewer Settings and click Load Clinic Viewer Defaults.",
       ohifUrl: null,
-      dicomWebBaseUrl: dicomWebUrl || null,
+      dicomWebBaseUrl: "/api/radiology/dicom-web",
       pacsType,
       requestedLevel,
       launchLevel: null,
@@ -726,15 +726,10 @@ router.get("/studies/:studyInstanceUID/ohif-launch", async (req, res) => {
     accessionNumber,
   });
 
-  // Browser QIDO/WADO for Report Images must use a same-origin or OHIF-proxied
-  // base — never Orthanc :8042 directly (CORS + Basic auth block the SPA).
-  // Prefer configured viewer dicom_web_base_url, then OHIF /dicom-web, then
-  // the ERP staff proxy (always works from the SPA with session cookies).
-  const viewerSettings = await getViewerSettings();
-  const browserDicomWeb =
-    (viewerSettings.dicom_web_base_url || "").replace(/\/+$/, "")
-    || (ohifBase ? `${ohifBase.replace(/\/+$/, "")}/dicom-web` : "")
-    || "/api/radiology/dicom-web";
+  // Browser QIDO/WADO must always use the ERP same-origin proxy — never a LAN
+  // OHIF/Orthanc URL (CORS + mixed-content block remote/Tailscale clients).
+  // The server reaches Orthanc internally; the SPA only needs session cookies.
+  const browserDicomWeb = "/api/radiology/dicom-web";
 
   res.json({
     studyInstanceUID,
