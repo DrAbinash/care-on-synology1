@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { api } from "@/lib/fetchApi";
 import { BROWSER_DICOMWEB_BASE } from "@/lib/browserDicomWeb";
 import { isFeatureEnabled } from "@/lib/staffSession";
 
@@ -25,7 +26,6 @@ import { isFeatureEnabled } from "@/lib/staffSession";
  */
 
 interface KeyFrame { id: number; sopInstanceUID: string | null; frameNumber: number; label: string; source: string | null }
-interface ViewerLaunch { dicomWebBaseUrl?: string | null; ohifUrl?: string | null }
 
 interface CinePlan {
   canPlay: boolean;
