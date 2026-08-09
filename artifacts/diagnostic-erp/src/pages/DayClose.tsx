@@ -17,6 +17,7 @@ import { readStaffSession } from "@/lib/staffSession";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from "@/components/ui/dialog";
+import StaffDayCloseDialog, { type StaffWindowBill } from "@/components/StaffDayCloseDialog";
 
 type MethodTotals = { cash: number; upi: number; card: number; cheque: number; other: number; total: number; count: number };
 type StaffRow = MethodTotals & { userId: number | null; userName: string };
@@ -84,6 +85,8 @@ type Closure = {
   testSummary?: TestSummary[];
   expenseDetails?: ExpenseDetail[];
   refundDetails?: RefundDetail[];
+  // Bills made inside this closure's window (added for the detail dialog).
+  bills?: StaffWindowBill[];
   status: "closed" | "reopened";
   reopenedAt: string | null; reopenedByName: string; reopenReason: string;
 };
@@ -108,6 +111,17 @@ type StaffCloseDetail = {
   reopenedByName: string | null;
   reopenedAt: string | null;
   reopenReason: string | null;
+  // Bills the staff member made inside this closure's window.
+  bills?: StaffWindowBill[];
+};
+
+type PostClosureActivity = {
+  closedAt: string | null;
+  closureId?: number;
+  bills: { id: number; billNumber: string; totalAmount: number; paidAmount: number; status: string; createdAt: string }[];
+  payments: { id: number; billId: number; amount: number; method: string; createdAt: string }[];
+  billTotal: number;
+  paymentTotal: number;
 };
 
 type ClinicLite = { name?: string; dayCloseAutoPrint?: boolean };
@@ -401,6 +415,7 @@ export default function DayClose() {
 
   // Staff drawer actions
   const [staffDetailId, setStaffDetailId] = useState<number | null>(null);
+  const [staffCloseUser, setStaffCloseUser] = useState<string | null>(null);
   const [approveOpen, setApproveOpen] = useState<StaffUserStatus | null>(null);
   const [approveNote, setApproveNote] = useState("");
   const [staffReopenOpen, setStaffReopenOpen] = useState<StaffUserStatus | null>(null);
@@ -426,6 +441,27 @@ export default function DayClose() {
     queryKey: ["staff-close-detail", staffDetailId],
     queryFn: () => api.get<StaffCloseDetail>(`/api/day-close/staff-close-detail/${staffDetailId}`),
     enabled: staffDetailId !== null,
+  });
+
+  // Post-closure activity for the staff member whose closure detail is open —
+  // bills/payments they made AFTER their latest drawer close. Only fetched
+  // when the viewed closure is that user's latest (otherwise "latest close"
+  // on the server refers to a different window).
+  const detailIsLatestForUser = staffDetailQ.data
+    ? staffStatusQ.data?.users.some((u) => u.userName === staffDetailQ.data!.userName && u.closureId === staffDetailQ.data!.id) === true
+    : false;
+  const staffPostClosureQ = useQuery<PostClosureActivity>({
+    queryKey: ["staff-post-closure-activity", staffDetailQ.data?.userName],
+    queryFn: () => api.get<PostClosureActivity>(`/api/day-close/staff-post-closure-activity/${encodeURIComponent(staffDetailQ.data!.userName)}`),
+    enabled: detailIsLatestForUser,
+  });
+
+  // The overall-closure detail dialog needs the enriched row (with the window's
+  // bills) — the list endpoint returns rows without them.
+  const overallDetailQ = useQuery<Closure>({
+    queryKey: ["day-close-detail", detailOpen?.id],
+    queryFn: () => api.get<Closure>(`/api/day-close/${detailOpen!.id}`),
+    enabled: detailOpen !== null,
   });
 
   useEffect(() => {
@@ -638,6 +674,13 @@ export default function DayClose() {
                             </td>
                             <td className="px-3 py-2 text-right">
                               <div className="flex items-center justify-end gap-1">
+                                {(!u.isClosed || u.drawerStatus === "reopened") && (
+                                  <Button size="sm" variant="ghost" className="h-7 px-2 text-xs text-blue-700 hover:text-blue-800 dark:text-blue-400"
+                                    title={`Close ${u.userName}'s day on their behalf (cash handover)`}
+                                    onClick={() => setStaffCloseUser(u.userName)}>
+                                    <Lock size={12} className="mr-1" /> Close
+                                  </Button>
+                                )}
                                 {u.closureId && (
                                   <Button size="sm" variant="ghost" className="h-7 px-2 text-xs"
                                     onClick={() => setStaffDetailId(u.closureId)}>
@@ -1067,6 +1110,44 @@ export default function DayClose() {
               )}
 
               {detailOpen.varianceNote && <div className="p-2 bg-amber-50 dark:bg-amber-950/30 border rounded text-xs"><strong>Note:</strong> {detailOpen.varianceNote}</div>}
+
+              {/* Bills made inside this closure's window */}
+              {overallDetailQ.data?.bills && overallDetailQ.data.bills.length > 0 && (
+                <>
+                  <div className="font-semibold text-xs text-muted-foreground uppercase border-b pb-1">
+                    Bills Made ({overallDetailQ.data.bills.length})
+                  </div>
+                  <div className="overflow-y-auto max-h-56 rounded border border-card-border">
+                    <table className="w-full text-xs">
+                      <thead className="bg-muted/40 sticky top-0">
+                        <tr className="text-muted-foreground">
+                          <th className="text-left px-2 py-1 font-semibold">Bill #</th>
+                          <th className="text-left px-2 py-1 font-semibold">Patient</th>
+                          <th className="text-left px-2 py-1 font-semibold">By</th>
+                          <th className="text-right px-2 py-1 font-semibold">Total</th>
+                          <th className="text-right px-2 py-1 font-semibold">Paid</th>
+                          <th className="text-left px-2 py-1 font-semibold">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-card-border">
+                        {overallDetailQ.data.bills.map((b) => (
+                          <tr key={b.id}>
+                            <td className="px-2 py-1 font-semibold whitespace-nowrap">{b.billNumber}</td>
+                            <td className="px-2 py-1 max-w-[120px] truncate">{b.patientName}</td>
+                            <td className="px-2 py-1 text-muted-foreground">{b.createdByName || "—"}</td>
+                            <td className="px-2 py-1 text-right tabular-nums">{inr(b.totalAmount)}</td>
+                            <td className="px-2 py-1 text-right tabular-nums text-green-700 dark:text-green-400">{inr(b.paidAmount)}</td>
+                            <td className="px-2 py-1 capitalize">{b.status}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              )}
+              {detailOpen && overallDetailQ.isLoading && (
+                <p className="text-xs text-muted-foreground">Loading bills made in this window…</p>
+              )}
               {detailOpen.status === "reopened" && (
                 <div className="p-2 bg-red-50 dark:bg-red-950/30 border border-red-300 rounded text-xs">
                   <strong>Re-opened</strong> by {detailOpen.reopenedByName} on {fmtIst(detailOpen.reopenedAt)}<br/>
@@ -1170,6 +1251,58 @@ export default function DayClose() {
                     <strong>Handover:</strong> {d.notes}
                   </div>
                 )}
+
+                {/* Bills made inside this closure's window */}
+                {d.bills && d.bills.length > 0 && (
+                  <div>
+                    <div className="font-semibold text-xs text-muted-foreground uppercase border-b pb-1">
+                      Bills Made ({d.bills.length})
+                    </div>
+                    <div className="overflow-y-auto max-h-48 rounded border border-card-border">
+                      <table className="w-full text-xs">
+                        <thead className="bg-muted/40 sticky top-0">
+                          <tr>
+                            <th className="text-left px-2 py-1 font-semibold">Bill #</th>
+                            <th className="text-left px-2 py-1 font-semibold">Patient</th>
+                            <th className="text-right px-2 py-1 font-semibold">Total</th>
+                            <th className="text-right px-2 py-1 font-semibold">Paid</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-card-border">
+                          {d.bills.map((b) => (
+                            <tr key={b.id}>
+                              <td className="px-2 py-1 font-semibold">{b.billNumber}</td>
+                              <td className="px-2 py-1 max-w-[130px] truncate">{b.patientName}</td>
+                              <td className="px-2 py-1 text-right tabular-nums">{inr(b.totalAmount)}</td>
+                              <td className="px-2 py-1 text-right tabular-nums text-green-700 dark:text-green-400">{inr(b.paidAmount)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {/* Bills/payments made AFTER this close (only when viewing the latest closure) */}
+                {detailIsLatestForUser && staffPostClosureQ.data && staffPostClosureQ.data.bills.length > 0 && (
+                  <div className="p-2 bg-amber-50 dark:bg-amber-950/30 border border-amber-300 dark:border-amber-700 rounded text-xs space-y-1.5">
+                    <p className="font-bold text-amber-800 dark:text-amber-300 uppercase flex items-center gap-1">
+                      <AlertTriangle size={11} /> After this close — {staffPostClosureQ.data.bills.length} new bill
+                      {staffPostClosureQ.data.bills.length !== 1 ? "s" : ""} ({inr(staffPostClosureQ.data.billTotal)})
+                    </p>
+                    <div className="divide-y divide-amber-200 dark:divide-amber-800">
+                      {staffPostClosureQ.data.bills.map((b) => (
+                        <div key={b.id} className="flex justify-between py-1">
+                          <span className="font-semibold">{b.billNumber}</span>
+                          <span className="tabular-nums">{inr(b.totalAmount)}</span>
+                        </div>
+                      ))}
+                    </div>
+                    <p className="text-[10px] text-amber-700 dark:text-amber-400">
+                      These count toward the next window, not this closure.
+                    </p>
+                  </div>
+                )}
                 {d.approvedByName && (
                   <div className="p-2 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 rounded text-xs">
                     <strong>Mismatch approved</strong> by {d.approvedByName} on {fmtIst(d.approvedAt)}<br/>
@@ -1230,6 +1363,13 @@ export default function DayClose() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Admin-initiated per-staff close (cash handover, one by one) */}
+      <StaffDayCloseDialog
+        userName={staffCloseUser}
+        open={staffCloseUser !== null}
+        onOpenChange={(o) => !o && setStaffCloseUser(null)}
+      />
 
       {/* Staff drawer reopen (super-admin only) */}
       <Dialog open={!!staffReopenOpen} onOpenChange={(o) => !o && setStaffReopenOpen(null)}>

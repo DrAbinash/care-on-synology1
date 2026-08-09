@@ -9,6 +9,7 @@
 import type { BuildPrintHtmlOpts } from "./printBill";
 import { resolveBillLogoHeightPx } from "./billPrintSettings";
 import { buildDocumentHtml } from "./documentLayout/buildDocumentHtml";
+import type { PrintPaper } from "./documentLayout/pageSpec";
 
 function esc(s: string): string {
   return String(s).replace(/[&<>"']/g, (c) =>
@@ -179,8 +180,9 @@ export function buildModernLandscapeBillPrintHtml(opts: BuildPrintHtmlOpts): str
         </div>
         <div style="text-align:right;flex-shrink:0;min-width:28%">
           <div style="font-size:${titleSize};font-weight:800;color:${accent};letter-spacing:1px;text-transform:uppercase">Invoice</div>
-          <div style="font-size:${bodyPx};color:#64748b;margin-top:4px">Bill No.</div>
-          <div style="font-size:${patientSz};font-weight:700;font-variant-numeric:tabular-nums">${esc(billDigits)}</div>
+          <div style="font-size:${bodyPx};color:#64748b;margin-top:4px;white-space:nowrap">
+            Bill No. <span style="font-size:${patientSz};font-weight:700;color:#0f172a;font-variant-numeric:tabular-nums">${esc(billDigits)}</span>
+          </div>
           <div style="font-size:${headerPx};color:#334155;margin-top:3px">${esc(dateStr)}</div>
           ${copyLabel ? `<div style="font-size:${tinyPx};color:${accent};margin-top:2px;font-weight:600;text-transform:uppercase">${esc(copyLabel)} COPY</div>` : ""}
           ${reprintBy || reprintReason ? `<div style="display:inline-block;background:#f1f5f9;color:#475569;border:1px solid #cbd5e1;border-radius:3px;padding:1px 6px;font-size:${tinyPx};font-weight:600;margin-top:3px">REPRINT${reprintBy ? ` · ${esc(reprintBy)}` : ""}${reprintReason ? ` · ${esc(reprintReason)}` : ""}</div>` : ""}
@@ -288,12 +290,17 @@ export function buildModernLandscapeBillPrintHtml(opts: BuildPrintHtmlOpts): str
       ? [opts.copyLabel === "office" ? "OFFICE" : "PATIENT", "OFFICE"]
       : [opts.copyLabel === "office" ? "OFFICE" : opts.copyLabel === "patient" ? "PATIENT" : ""];
 
+  // Modern landscape is always 210mm wide; legacy portrait pageCssSize must not
+  // shrink the page box (see coercePaperSizeForFormat in billPrintSettings).
   const paper: PrintPaper = opts.paperSize === "A4" ? "A4" : "A5-landscape";
+  // Epson/ink trays often have a ~3mm unprintable top band — 8mm keeps the
+  // header clear of the physical edge without wasting much of the slip.
+  const marginMm = opts.printMarginMm ?? 8;
 
   return buildDocumentHtml({
     title: `Bill ${esc(bill.billNumber)}`,
     paper,
-    safePaddingMm: opts.printMarginMm,
+    safePaddingMm: marginMm,
     bodyFontFamily:
       '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
     bodyFontSize: bodyPx,

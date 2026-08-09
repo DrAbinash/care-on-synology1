@@ -129,7 +129,7 @@ import {
 } from "@/lib/usbKey";
 import { SIDEBAR_THEMES, DEFAULT_THEME, resolveTheme } from "@/lib/sidebarThemes";
 
-type NavLeaf = { path: string; icon: typeof Zap; label: string; ownerOnly?: boolean; featureFlag?: string };
+type NavLeaf = { path: string; icon: typeof Zap; label: string; ownerOnly?: boolean; staffOnly?: boolean; featureFlag?: string };
 // A subgroup nests one level inside a top-level NavGroup (e.g. "USG Reporting ▼"
 // inside "Radiology & Imaging") — modality-specific submenus without a second
 // top-level entry per modality. Subgroups don't nest further.
@@ -159,7 +159,9 @@ const navItems: NavEntry[] = [
   { path: "/", icon: Zap, label: "Billing Desk" },
   { path: "/my-daily-summary", icon: BarChart2, label: "My Daily Summary" },
   // Per-user drawer close — top-level so cashiers find it (not buried under Administration).
-  { path: "/my-day-close", icon: Lock, label: "My Day Close" },
+  // Owners don't hand over cash to themselves, so for admin/super_admin this is
+  // replaced by the all-staff "Day Close" entry below.
+  { path: "/my-day-close", icon: Lock, label: "My Day Close", staffOnly: true },
   { path: "/hope-referrals", icon: Inbox, label: "HOPE Referrals", featureFlag: "ff_hope_care_referrals" },
   {
     id: "billing-grp",
@@ -212,7 +214,7 @@ const navItems: NavEntry[] = [
       { path: "/teleradiology",                  icon: Globe,       label: "Teleradiology", ownerOnly: true },
     ],
   },
-  { path: "/day-close", icon: Lock, label: "Day Close", ownerOnly: true },
+  { path: "/day-close", icon: Lock, label: "Day Close (All Staff)", ownerOnly: true },
   { path: "/patients", icon: Users, label: "Patients" },
   { path: "/register", icon: UserPlus, label: "Quick Register" },
   { path: "/appointments", icon: CalendarDays, label: "Appointments" },
@@ -512,6 +514,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   // would treat it as "not part of the permission system → always allowed").
   const leafAllowed = (leaf: NavLeaf) => {
     if (leaf.ownerOnly && !isOwner) return false;
+    if (leaf.staffOnly && isOwner) return false;
     if (leaf.featureFlag && !isFeatureEnabled(leaf.featureFlag)) return false;
     return canAccess(session, pathOnly(leaf.path));
   };
@@ -528,6 +531,9 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     }
     // Owner-only items are only visible to admin / super_admin.
     if (n.ownerOnly && !FULL_ACCESS_ROLES.has(normalizeRole(session?.user.role ?? ""))) return [];
+    // Staff-only items are hidden from admin / super_admin (who get the
+    // all-staff variant instead — e.g. Day Close).
+    if (n.staffOnly && isOwner) return [];
     if (n.featureFlag && !isFeatureEnabled(n.featureFlag)) return [];
     return canAccess(session, pathOnly(n.path)) ? [n] : [];
   });
