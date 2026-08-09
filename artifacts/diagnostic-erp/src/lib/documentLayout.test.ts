@@ -88,8 +88,8 @@ describe("document layout engine — page specifications", () => {
     }
   });
 
-  test("internal safe padding defaults: 4mm A5 family, 6mm A4", () => {
-    expect(resolvePageLayout("A5-landscape").safePaddingMm).toBe(2);
+  test("internal safe padding defaults: 8mm A5 family, 6mm A4", () => {
+    expect(resolvePageLayout("A5-landscape").safePaddingMm).toBe(8);
     expect(resolvePageLayout("A4").safePaddingMm).toBe(6);
   });
 
@@ -117,6 +117,13 @@ describe("document layout engine — bill renderers", () => {
     expect(html).toContain('class="care-doc-page receipt"');
     expect(html).not.toMatch(/min-height:\s*\d+mm/);
     expect(html).not.toContain("height: 100%");
+  });
+
+  test("bill number renders on the same line as Bill No.", () => {
+    const html = buildModernLandscapeBillPrintHtml(baseOpts());
+    expect(html).toContain("Bill No. <span");
+    expect(html).toContain("2026001");
+    expect(html).not.toMatch(/Bill No\.<\/div>\s*<div[^>]*>2026001/);
   });
 
   test.each([1, 5, 10])("%i-test bill renders without flex page spacer", (count) => {
