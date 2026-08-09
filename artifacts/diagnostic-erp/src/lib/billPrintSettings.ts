@@ -39,6 +39,21 @@ export function normalizeBillFormat(raw: unknown): BillFormat {
   return "modern-landscape";
 }
 
+/**
+ * Modern — A5 Landscape bills must declare a 210 mm-wide page. When paper is
+ * left on A5 Portrait the HTML is only 148 mm wide and the printer centres it
+ * on a landscape tray — large blank bands on the left and right.
+ */
+export function coercePaperSizeForFormat(
+  format: BillFormat | LegacyBillFormat | undefined,
+  paperSize: BillPaperSize,
+): BillPaperSize {
+  if (normalizeBillFormat(format) !== "modern-landscape") return paperSize;
+  if (paperSize === "A4") return "A4";
+  if (paperSize === "A5-landscape" || paperSize === "half-a4") return paperSize;
+  return "A5-landscape";
+}
+
 export type BillPaperSize = "A5-landscape" | "A5-portrait" | "half-a4" | "A4";
 export const BILL_PAPER_SIZES: { id: BillPaperSize; label: string }[] = [
   { id: "A5-portrait", label: "A5 Portrait" },
@@ -60,6 +75,36 @@ export const PRINT_ACTIONS: { id: PrintAction; label: string }[] = [
   { id: "save-preview", label: "Save & Preview" },
   { id: "save-only", label: "Save Only" },
 ];
+
+/** How Billing Desk should deliver a receipt after save. */
+export type BillPrintDelivery = "print" | "preview-only" | "preview-and-print" | "skip";
+
+/**
+ * Decide whether to open the in-app preview, the browser print dialog, or both.
+ * Explicit Save & Print always reaches the printer; enablePreview may also show
+ * the in-app preview first.
+ */
+export function resolveBillPrintDelivery(
+  settings: Pick<BillPrintSettings, "enablePreview" | "directPrintAfterSave" | "autoOpenPrintDialog">,
+  intent: "save-print" | "save-only" | "background",
+): BillPrintDelivery {
+  if (intent === "save-only") return "skip";
+
+  const shouldPrint =
+    intent === "save-print" ||
+    settings.directPrintAfterSave ||
+    settings.autoOpenPrintDialog;
+
+  if (!shouldPrint) {
+    return settings.enablePreview ? "preview-only" : "skip";
+  }
+
+  if (intent === "save-print") {
+    return settings.enablePreview ? "preview-and-print" : "print";
+  }
+
+  return settings.enablePreview ? "preview-only" : "print";
+}
 
 export type UserRole = "reception" | "accounts" | "admin" | "supervisor" | "billing" | "lab" | "manager";
 
@@ -378,6 +423,15 @@ export function getAutoBillPaperSize(
   return testCount > threshold ? "A4" : "A5-portrait";
 }
 
+/** Pixel dimensions for on-screen bill previews (96 dpi, matches Settings live preview). */
+export function billPreviewPaperPx(pageOpts: BillPrintPageOpts): { w: number; h: number } {
+  if (pageOpts.paperSize === "A4") return { w: 794, h: 1123 };
+  if (pageOpts.orientation === "landscape" || pageOpts.pageCssSize.includes("210mm 148mm")) {
+    return { w: 794, h: 559 };
+  }
+  return { w: 559, h: 794 };
+}
+
 export function getPaperSizeCss(size: BillPaperSize): { pageSize: string; width: string; minHeight: string; maxHeight: string } {
   switch (size) {
     case "A5-landscape":
@@ -411,12 +465,13 @@ export type BillPrintPageOpts = {
  * made landscape trays print portrait jobs and the driver scaled/rotated them.
  */
 export function resolveBillPrintPageOpts(
-  settings: Pick<BillPrintSettings, "defaultPaperSize" | "autoA4Threshold">,
+  settings: Pick<BillPrintSettings, "defaultPaperSize" | "autoA4Threshold" | "defaultFormat">,
   testCount: number,
 ): BillPrintPageOpts {
+  const paperSize = coercePaperSizeForFormat(settings.defaultFormat, settings.defaultPaperSize);
   const effective = getAutoBillPaperSize(
     testCount,
-    settings.defaultPaperSize,
+    paperSize,
     settings.autoA4Threshold ?? 5,
   );
   if (effective === "A4") {

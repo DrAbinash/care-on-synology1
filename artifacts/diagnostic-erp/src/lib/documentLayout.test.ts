@@ -119,6 +119,15 @@ describe("document layout engine — bill renderers", () => {
     expect(html).not.toContain("height: 100%");
   });
 
+  test("modern landscape stays 210mm wide even when pageCssSize says portrait", () => {
+    const html = buildModernLandscapeBillPrintHtml(
+      baseOpts({ pageCssSize: "A5 portrait", orientation: "portrait" }),
+    );
+    expect(html).toContain("width: 210mm");
+    expect(html).toContain("height: 148mm");
+    expect(html).not.toContain("width: 148mm");
+  });
+
   test("bill number renders on the same line as Bill No.", () => {
     const html = buildModernLandscapeBillPrintHtml(baseOpts());
     expect(html).toContain("Bill No. <span");
@@ -266,7 +275,7 @@ describe("document layout engine — bill renderers", () => {
 });
 
 describe("print delivery module", () => {
-  test("exports iframe and popup helpers without Electron APIs", async () => {
+  test("exports popup helpers without Electron APIs or hidden iframe print path", async () => {
     const mod = await import("./documentLayout/printDelivery");
     expect(typeof mod.printViaIframe).toBe("function");
     expect(typeof mod.writeAndPrint).toBe("function");
@@ -279,5 +288,7 @@ describe("print delivery module", () => {
     );
     expect(src).not.toContain("webContents");
     expect(src).not.toContain("printToPDF");
+    expect(src).not.toContain("__care_print_iframe__");
+    expect(src).toContain("writeAndPrint(null, html)");
   });
 });

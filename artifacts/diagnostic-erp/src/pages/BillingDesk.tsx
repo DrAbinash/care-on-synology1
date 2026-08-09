@@ -15,7 +15,8 @@ import { genUUID } from "@/lib/utils";
 import { getBillPaperSize } from "@/lib/billPrintLayout";
 import {
   buildBillPrintHtml,
-  printViaIframe,
+  openBlankPrintWindow,
+  writeAndPrint,
   type PrintBillData,
   type PrintClinic,
 } from "@/lib/printBill";
@@ -23,7 +24,10 @@ import {
   loadBillPrintSettings,
   parseGlobalBillPrintSettings,
   printLayoutOpts,
+  resolveBillPrintDelivery,
   resolveBillPrintPageOpts,
+  billPreviewPaperPx,
+  type BillPrintDelivery,
   type BillPrintSettings,
 } from "@/lib/billPrintSettings";
 import { useLocation } from "wouter";
@@ -244,6 +248,28 @@ function openPrintWindow(html: string) {
     w.print();
     setTimeout(() => w.close(), 400);
   };
+}
+
+function deliverBillReceipt(
+  html: string,
+  delivery: BillPrintDelivery,
+  popup: Window | null,
+  preview: {
+    setHtml: (html: string) => void;
+    setOpen: (open: boolean) => void;
+    setPaperPx?: (px: { w: number; h: number }) => void;
+    paperPx?: { w: number; h: number };
+  },
+) {
+  if (delivery === "skip") return;
+  if (delivery === "preview-only" || delivery === "preview-and-print") {
+    preview.setHtml(html);
+    if (preview.paperPx && preview.setPaperPx) preview.setPaperPx(preview.paperPx);
+    preview.setOpen(true);
+  }
+  if (delivery === "print" || delivery === "preview-and-print") {
+    writeAndPrint(popup, html);
+  }
 }
 
 function buildBillVerifyUrl(billNumber: string) {
@@ -771,6 +797,7 @@ export default function BillingDesk() {
   // ── Print preview dialog ──
   const [printPreviewOpen, setPrintPreviewOpen] = useState(false);
   const [printPreviewHtml, setPrintPreviewHtml] = useState("");
+  const [printPreviewPaperPx, setPrintPreviewPaperPx] = useState({ w: 794, h: 559 });
 
   // ── Gateway Payment Dialog ──
   const [gatewayModalOpen, setGatewayModalOpen] = useState(false);
@@ -984,12 +1011,13 @@ export default function BillingDesk() {
                     showQueueToken: settings.showQueueTokenOnBill,
                     ...printLayoutOpts(settings),
                   });
-                  if (settings.enablePreview) {
-                    setPrintPreviewHtml(html);
-                    setPrintPreviewOpen(true);
-                  } else if (settings.directPrintAfterSave || settings.autoOpenPrintDialog) {
-                    printViaIframe(html);
-                  }
+                  const delivery = resolveBillPrintDelivery(settings, "background");
+                  deliverBillReceipt(html, delivery, null, {
+                    setHtml: setPrintPreviewHtml,
+                    setOpen: setPrintPreviewOpen,
+                    setPaperPx: setPrintPreviewPaperPx,
+                    paperPx: billPreviewPaperPx(pageOpts),
+                  });
                   if ((lastBillLocalRef.current?.testTokens?.length ?? 0) > 0 || lastBillLocalRef.current?.tokenNo != null) {
                     window.setTimeout(() => {
                       if (lastBillLocalRef.current) {
@@ -1278,6 +1306,8 @@ export default function BillingDesk() {
   const queryClient = useQueryClient();
   const printAfterSaveRef = useRef(false);
   const saveAndNextRef = useRef(false);
+  /** Popup opened synchronously on Save & Print so async save can still print. */
+  const printPopupRef = useRef<Window | null>(null);
   const finishBillSaveFlowRef = useRef<() => void>(() => {});
   // Pre-load printer settings on mount so the auto-print path after "Save &
   // Print" doesn't have to wait on a network round-trip — it just reads from
@@ -1540,12 +1570,15 @@ export default function BillingDesk() {
               showQueueToken: settings.showQueueTokenOnBill,
               ...printLayoutOpts(settings),
             });
-            if (settings.enablePreview) {
-              setPrintPreviewHtml(html);
-              setPrintPreviewOpen(true);
-            } else if (settings.directPrintAfterSave || settings.autoOpenPrintDialog) {
-              printViaIframe(html);
-            }
+            const delivery = resolveBillPrintDelivery(settings, "save-print");
+            const popup = printPopupRef.current;
+            printPopupRef.current = null;
+            deliverBillReceipt(html, delivery, popup, {
+              setHtml: setPrintPreviewHtml,
+              setOpen: setPrintPreviewOpen,
+              setPaperPx: setPrintPreviewPaperPx,
+              paperPx: billPreviewPaperPx(pageOpts),
+            });
             if ((lastBillLocal.testTokens?.length ?? 0) > 0 || lastBillLocal.tokenNo != null) {
               window.setTimeout(() => {
                 void printToken(lastBillLocal, clinicForPrint as ClinicLite).catch(() => { /* best-effort */ });
@@ -1587,12 +1620,19 @@ export default function BillingDesk() {
             settings,
             isBW,
           );
-          if (settings.enablePreview) {
-            setPrintPreviewHtml(html);
-            setPrintPreviewOpen(true);
-          } else {
-            printViaIframe(html);
-          }
+          const delivery = resolveBillPrintDelivery(
+            settings,
+            wantedPrint ? "save-print" : "background",
+          );
+          const popup = wantedPrint ? printPopupRef.current : null;
+          if (wantedPrint) printPopupRef.current = null;
+          const pageOpts = resolveBillPrintPageOpts(settings, err.snapshot.tests.length);
+          deliverBillReceipt(html, delivery, popup, {
+            setHtml: setPrintPreviewHtml,
+            setOpen: setPrintPreviewOpen,
+            setPaperPx: setPrintPreviewPaperPx,
+            paperPx: billPreviewPaperPx(pageOpts),
+          });
         }
         toast({
           title: "No connection — bill saved locally",
@@ -1604,6 +1644,12 @@ export default function BillingDesk() {
         return;
       }
       toast({ title: err.message || "Failed to generate bill", variant: "destructive" });
+      try {
+        printPopupRef.current?.close?.();
+      } catch {
+        /* ignore */
+      }
+      printPopupRef.current = null;
     },
     onSettled: () => {
       // Release the synchronous guard so the desk is ready for a new bill.
@@ -1891,6 +1937,8 @@ export default function BillingDesk() {
         e.preventDefault();
         if (canGenerateRef.current && !lastBillRef.current && !generatingRef.current) {
           generatingRef.current = true;
+          printPopupRef.current?.close?.();
+          printPopupRef.current = openBlankPrintWindow();
           printAfterSaveRef.current = true;
           generateMut.mutate();
         }
@@ -3035,6 +3083,8 @@ export default function BillingDesk() {
                 onClick={() => {
                   if (generatingRef.current || !!lastBillRef.current) return;
                   generatingRef.current = true;
+                  printPopupRef.current?.close?.();
+                  printPopupRef.current = openBlankPrintWindow();
                   printAfterSaveRef.current = true;
                   generateMut.mutate();
                 }}
@@ -3442,18 +3492,36 @@ export default function BillingDesk() {
               Print Preview
               <div className="ml-auto flex gap-2">
                 <Button size="sm" variant="outline" onClick={() => setPrintPreviewOpen(false)}>Close</Button>
-                <Button size="sm" onClick={() => { printViaIframe(printPreviewHtml); setPrintPreviewOpen(false); }}>
+                <Button size="sm" onClick={() => { writeAndPrint(null, printPreviewHtml); setPrintPreviewOpen(false); }}>
                   <Printer size={14} className="mr-1" /> Print
                 </Button>
               </div>
             </DialogTitle>
           </DialogHeader>
-          <div className="flex-1 overflow-auto p-4 bg-gray-100 rounded-lg">
-            <iframe
-              title="Print Preview"
-              srcDoc={printPreviewHtml}
-              style={{ width: "100%", height: "100%", border: "1px solid #ddd", background: "#fff" }}
-            />
+          <div className="flex-1 overflow-auto p-4 bg-gray-100 rounded-lg flex items-start justify-center">
+            {(() => {
+              const previewBoxWidth = Math.min(720, Math.max(320, printPreviewPaperPx.w));
+              const previewScale = previewBoxWidth / printPreviewPaperPx.w;
+              const previewBoxHeight = Math.round(printPreviewPaperPx.h * previewScale);
+              return (
+                <div
+                  style={{ width: previewBoxWidth, height: previewBoxHeight, overflow: "hidden" }}
+                  className="border border-slate-300 bg-white shadow-sm"
+                >
+                  <iframe
+                    title="Print Preview"
+                    srcDoc={printPreviewHtml}
+                    style={{
+                      width: printPreviewPaperPx.w,
+                      height: printPreviewPaperPx.h,
+                      border: "none",
+                      transform: `scale(${previewScale})`,
+                      transformOrigin: "top left",
+                    }}
+                  />
+                </div>
+              );
+            })()}
           </div>
         </DialogContent>
       </Dialog>

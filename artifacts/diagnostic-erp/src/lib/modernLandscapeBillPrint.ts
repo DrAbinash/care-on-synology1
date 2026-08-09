@@ -9,7 +9,7 @@
 import type { BuildPrintHtmlOpts } from "./printBill";
 import { resolveBillLogoHeightPx } from "./billPrintSettings";
 import { buildDocumentHtml } from "./documentLayout/buildDocumentHtml";
-import { resolveBillPrintPaperFromOpts } from "./documentLayout/billPaper";
+import type { PrintPaper } from "./documentLayout/pageSpec";
 
 function esc(s: string): string {
   return String(s).replace(/[&<>"']/g, (c) =>
@@ -290,7 +290,9 @@ export function buildModernLandscapeBillPrintHtml(opts: BuildPrintHtmlOpts): str
       ? [opts.copyLabel === "office" ? "OFFICE" : "PATIENT", "OFFICE"]
       : [opts.copyLabel === "office" ? "OFFICE" : opts.copyLabel === "patient" ? "PATIENT" : ""];
 
-  const paper = resolveBillPrintPaperFromOpts(opts);
+  // Modern landscape is always 210mm wide; legacy portrait pageCssSize must not
+  // shrink the page box (see coercePaperSizeForFormat in billPrintSettings).
+  const paper: PrintPaper = opts.paperSize === "A4" ? "A4" : "A5-landscape";
   // Epson/ink trays often have a ~3mm unprintable top band — 8mm keeps the
   // header clear of the physical edge without wasting much of the slip.
   const marginMm = opts.printMarginMm ?? 8;
