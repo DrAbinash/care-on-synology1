@@ -283,7 +283,7 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
   // still varies by A5 vs A4 paper size; a non-null override applies fixed
   // regardless of paper size. ──
   const useCompactFooter = compactFooterGap || sparseBill;
-  const marginMm = opts.printMarginMm ?? (isA5 ? 2 : 6);
+  const marginMm = opts.printMarginMm ?? (isA5 ? 8 : 6);
   // Title ("INVOICE/RECEIPT") is the page's real anchor and must read as the
   // largest header element; clinic contact info (headerPx) is secondary and
   // was previously LARGER than the title, inverting the hierarchy.
@@ -368,8 +368,9 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
           </td>
           <td style="vertical-align:top;text-align:right;padding:0;width:38%">
             <div style="font-size:${titleSize};font-weight:800;letter-spacing:1.2px;text-transform:uppercase">${isCancelled ? "CANCELLED" : isUnconfirmedQr ? "AWAITING PAYMENT" : "INVOICE"}</div>
-            <div style="font-size:${headerPx};color:#555;font-weight:600;margin-top:6px">BILL NO.</div>
-            <div style="font-size:${titleSize};font-weight:800;line-height:1.15">${esc(billDigits)}</div>
+            <div style="font-size:${headerPx};color:#555;font-weight:600;margin-top:6px;white-space:nowrap">
+              BILL NO. <span style="font-size:${titleSize};font-weight:800;color:#000">${esc(billDigits)}</span>
+            </div>
             <div style="font-size:${headerPx};color:#555;font-weight:600;margin-top:4px">${esc(created.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }).toUpperCase())} · ${esc(created.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: true }).toUpperCase())}</div>
           </td>
         </tr>

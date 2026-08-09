@@ -27,22 +27,22 @@ export const PAGE_SPECS: Record<PrintPaper, PageSpec> = {
     widthMm: 210,
     heightMm: 148,
     pageSizeCss: "210mm 148mm",
-    // Dense default for Epson A5 ink trays — avoids large empty side bands.
-    defaultSafePaddingMm: 2,
+    // Clear Epson's typical ~3mm unprintable top band; still leaves room for content.
+    defaultSafePaddingMm: 8,
   },
   "A5-portrait": {
     paper: "A5-portrait",
     widthMm: 148,
     heightMm: 210,
     pageSizeCss: "148mm 210mm",
-    defaultSafePaddingMm: 2,
+    defaultSafePaddingMm: 8,
   },
   "half-a4": {
     paper: "half-a4",
     widthMm: 210,
     heightMm: 148,
     pageSizeCss: "210mm 148mm",
-    defaultSafePaddingMm: 2,
+    defaultSafePaddingMm: 8,
   },
   A4: {
     paper: "A4",
