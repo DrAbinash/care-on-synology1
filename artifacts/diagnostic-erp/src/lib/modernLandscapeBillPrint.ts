@@ -9,7 +9,6 @@
 import type { BuildPrintHtmlOpts } from "./printBill";
 import { resolveBillLogoHeightPx } from "./billPrintSettings";
 import { buildDocumentHtml } from "./documentLayout/buildDocumentHtml";
-import { resolveBillPrintPaperFromOpts } from "./documentLayout/billPaper";
 
 function esc(s: string): string {
   return String(s).replace(/[&<>"']/g, (c) =>
@@ -289,7 +288,7 @@ export function buildModernLandscapeBillPrintHtml(opts: BuildPrintHtmlOpts): str
       ? [opts.copyLabel === "office" ? "OFFICE" : "PATIENT", "OFFICE"]
       : [opts.copyLabel === "office" ? "OFFICE" : opts.copyLabel === "patient" ? "PATIENT" : ""];
 
-  const paper = resolveBillPrintPaperFromOpts(opts);
+  const paper: PrintPaper = opts.paperSize === "A4" ? "A4" : "A5-landscape";
 
   return buildDocumentHtml({
     title: `Bill ${esc(bill.billNumber)}`,

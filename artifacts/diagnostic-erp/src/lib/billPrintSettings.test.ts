@@ -3,6 +3,7 @@ import {
   GLOBAL_BILL_PRINT_DEFAULTS,
   applyManualBillPaperOverride,
   clearBillPrintSettingsOverride,
+  coercePaperSizeForFormat,
   loadBillPrintSettings,
   normalizeBillFormat,
   parseGlobalBillPrintSettings,
@@ -220,7 +221,30 @@ describe("resolveBillPrintDelivery", () => {
   });
 });
 
+describe("coercePaperSizeForFormat", () => {
+  test("modern-landscape upgrades A5-portrait to A5-landscape", () => {
+    expect(coercePaperSizeForFormat("modern-landscape", "A5-portrait")).toBe("A5-landscape");
+  });
+
+  test("modern-landscape keeps A4 and half-a4", () => {
+    expect(coercePaperSizeForFormat("modern-landscape", "A4")).toBe("A4");
+    expect(coercePaperSizeForFormat("modern-landscape", "half-a4")).toBe("half-a4");
+  });
+
+  test("classic format does not override paper size", () => {
+    expect(coercePaperSizeForFormat("classic", "A5-portrait")).toBe("A5-portrait");
+  });
+});
+
 describe("resolveBillPrintPageOpts — paper size reaches the print HTML", () => {
+  test("modern-landscape + A5-portrait setting still resolves to landscape @page", () => {
+    const opts = resolveBillPrintPageOpts(
+      { defaultPaperSize: "A5-portrait", autoA4Threshold: 8, defaultFormat: "modern-landscape" },
+      1,
+    );
+    expect(opts.orientation).toBe("landscape");
+    expect(opts.pageCssSize).toBe("A5 landscape");
+  });
   test("A5-landscape setting yields landscape @page and compact footer for short bills", () => {
     const opts = resolveBillPrintPageOpts({ defaultPaperSize: "A5-landscape", autoA4Threshold: 5 }, 1);
     expect(opts.paperSize).toBe("A5");
@@ -230,7 +254,10 @@ describe("resolveBillPrintPageOpts — paper size reaches the print HTML", () =>
   });
 
   test("A5-portrait setting is not dropped by auto-threshold logic", () => {
-    const opts = resolveBillPrintPageOpts({ defaultPaperSize: "A5-portrait", autoA4Threshold: 5 }, 1);
+    const opts = resolveBillPrintPageOpts(
+      { defaultPaperSize: "A5-portrait", autoA4Threshold: 5, defaultFormat: "classic" },
+      1,
+    );
     expect(opts.orientation).toBe("portrait");
     expect(opts.pageCssSize).toBe("A5 portrait");
   });

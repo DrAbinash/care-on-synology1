@@ -119,6 +119,15 @@ describe("document layout engine — bill renderers", () => {
     expect(html).not.toContain("height: 100%");
   });
 
+  test("modern landscape stays 210mm wide even when pageCssSize says portrait", () => {
+    const html = buildModernLandscapeBillPrintHtml(
+      baseOpts({ pageCssSize: "A5 portrait", orientation: "portrait" }),
+    );
+    expect(html).toContain("width: 210mm");
+    expect(html).toContain("height: 148mm");
+    expect(html).not.toContain("width: 148mm");
+  });
+
   test.each([1, 5, 10])("%i-test bill renders without flex page spacer", (count) => {
     const html = buildModernLandscapeBillPrintHtml(
       baseOpts({ bill: sampleBill(count) }),
