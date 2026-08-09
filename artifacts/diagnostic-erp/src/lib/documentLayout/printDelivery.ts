@@ -1,13 +1,12 @@
 /**
  * Shared browser print delivery for all CARE ERP documents.
- * - Hidden iframe for normal direct-print flows
- * - Popup window for user-activation-sensitive reprints (Bill Detail)
+ * Uses a popup window so `window.print()` reliably opens the browser dialog
+ * (hidden 0×0 iframes are blocked by Chromium and leave bills stuck on
+ * in-app preview only).
  *
  * Both paths wait for document readiness, images, and fonts before printing
  * exactly once. No Electron APIs.
  */
-
-const IFRAME_ID = "__care_print_iframe__";
 
 function waitForImages(doc: Document): Promise<void> {
   const images = Array.from(doc.images);
@@ -64,50 +63,7 @@ async function prepareAndPrint(target: Window, cleanup: () => void): Promise<voi
   }
 }
 
-/**
- * Print via a hidden iframe (Billing Desk, Kiosk, Bill Detail ?print=1).
- */
-export function printViaIframe(html: string): void {
-  const existing = document.getElementById(IFRAME_ID);
-  if (existing) existing.remove();
-
-  const iframe = document.createElement("iframe");
-  iframe.id = IFRAME_ID;
-  iframe.style.cssText =
-    "position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden";
-  iframe.setAttribute("aria-hidden", "true");
-  document.body.appendChild(iframe);
-
-  const win = iframe.contentWindow;
-  const doc = iframe.contentDocument;
-  if (!win || !doc) {
-    alert("Unable to prepare print preview. Please try again or allow iframes.");
-    iframe.remove();
-    return;
-  }
-
-  let printed = false;
-  const doPrint = () => {
-    if (printed) return;
-    printed = true;
-    void prepareAndPrint(win, () => {
-      try {
-        iframe.remove();
-      } catch {
-        /* ignore */
-      }
-    });
-  };
-
-  doc.open();
-  doc.write(html);
-  doc.close();
-  iframe.onload = doPrint;
-  // Fallback if onload does not fire (some browsers with doc.write).
-  setTimeout(doPrint, 500);
-}
-
-/** Open a blank popup synchronously from a user click (reprint flow). */
+/** Open a blank popup synchronously from a user click (Save & Print / reprint). */
 export function openBlankPrintWindow(): Window | null {
   const w = window.open("", "_blank", "width=520,height=720");
   if (!w) return null;
@@ -124,8 +80,9 @@ export function openBlankPrintWindow(): Window | null {
 }
 
 /**
- * Write HTML into a popup and print (Bill Detail reprint).
- * If `win` is null, opens a new popup (may be blocked).
+ * Write HTML into a popup and print.
+ * Pass a window opened synchronously on the user's click when printing after
+ * an async save — otherwise pop-ups may be blocked and print() may not run.
  */
 export function writeAndPrint(win: Window | null, html: string): void {
   let target = win;
@@ -160,4 +117,12 @@ export function writeAndPrint(win: Window | null, html: string): void {
   }
   target.onload = doPrint;
   setTimeout(doPrint, 500);
+}
+
+/**
+ * Print bill/receipt HTML. Opens a popup (same as writeAndPrint) — kept for
+ * call-site compatibility after the hidden-iframe path was removed.
+ */
+export function printViaIframe(html: string): void {
+  writeAndPrint(null, html);
 }

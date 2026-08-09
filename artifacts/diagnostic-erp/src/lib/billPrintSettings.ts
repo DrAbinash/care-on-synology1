@@ -61,6 +61,36 @@ export const PRINT_ACTIONS: { id: PrintAction; label: string }[] = [
   { id: "save-only", label: "Save Only" },
 ];
 
+/** How Billing Desk should deliver a receipt after save. */
+export type BillPrintDelivery = "print" | "preview-only" | "preview-and-print" | "skip";
+
+/**
+ * Decide whether to open the in-app preview, the browser print dialog, or both.
+ * Explicit Save & Print always reaches the printer; enablePreview may also show
+ * the in-app preview first.
+ */
+export function resolveBillPrintDelivery(
+  settings: Pick<BillPrintSettings, "enablePreview" | "directPrintAfterSave" | "autoOpenPrintDialog">,
+  intent: "save-print" | "save-only" | "background",
+): BillPrintDelivery {
+  if (intent === "save-only") return "skip";
+
+  const shouldPrint =
+    intent === "save-print" ||
+    settings.directPrintAfterSave ||
+    settings.autoOpenPrintDialog;
+
+  if (!shouldPrint) {
+    return settings.enablePreview ? "preview-only" : "skip";
+  }
+
+  if (intent === "save-print") {
+    return settings.enablePreview ? "preview-and-print" : "print";
+  }
+
+  return settings.enablePreview ? "preview-only" : "print";
+}
+
 export type UserRole = "reception" | "accounts" | "admin" | "supervisor" | "billing" | "lab" | "manager";
 
 export type BillPrintSettings = {

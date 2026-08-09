@@ -8,6 +8,7 @@ import {
   parseGlobalBillPrintSettings,
   printLayoutOpts,
   resolveBillLogoHeightPx,
+  resolveBillPrintDelivery,
   resolveBillPrintPageOpts,
   saveBillPrintSettings,
 } from "./billPrintSettings";
@@ -182,6 +183,40 @@ describe("loadBillPrintSettings — clinic-wide global reaches the print sites",
     // accounts role default — untouched by the global
     expect(merged.defaultPrintAction).toBe("save-preview");
     expect(merged.defaultPaperSize).toBe("A4");
+  });
+});
+
+describe("resolveBillPrintDelivery", () => {
+  const base = {
+    enablePreview: false,
+    directPrintAfterSave: true,
+    autoOpenPrintDialog: true,
+  };
+
+  test("explicit Save & Print always reaches the printer", () => {
+    expect(resolveBillPrintDelivery({ ...base, enablePreview: true }, "save-print")).toBe(
+      "preview-and-print",
+    );
+    expect(resolveBillPrintDelivery({ ...base, enablePreview: false }, "save-print")).toBe("print");
+  });
+
+  test("enablePreview without explicit save-print shows preview only", () => {
+    expect(resolveBillPrintDelivery({ ...base, enablePreview: true }, "background")).toBe(
+      "preview-only",
+    );
+  });
+
+  test("save-only skips delivery", () => {
+    expect(resolveBillPrintDelivery(base, "save-only")).toBe("skip");
+  });
+
+  test("background with printing disabled and no preview skips", () => {
+    expect(
+      resolveBillPrintDelivery(
+        { enablePreview: false, directPrintAfterSave: false, autoOpenPrintDialog: false },
+        "background",
+      ),
+    ).toBe("skip");
   });
 });
 
