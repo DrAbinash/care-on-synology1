@@ -2367,7 +2367,7 @@ billsRouter.post("/:id/swap-test", async (req: StaffAuthRequest, res) => {
 
 // ─── ICICI Billing Desk Gateway Integration ────────────────────────────────────
 import { PaymentEngine } from "../lib/payments/PaymentEngine";
-import { initiateIciciOrangePayment } from "../lib/payments/initiateIciciOrangePayment";
+import { initiateIciciOrangePayment, buildIciciOrangePayQrUrl } from "../lib/payments/initiateIciciOrangePayment";
 import { resolveActiveGateway } from "../lib/payments/resolveActiveGateway";
 import { paymentLogsTable } from "@workspace/db/schema";
 import crypto from "node:crypto";
@@ -2434,18 +2434,38 @@ billsRouter.post("/:id/initiate-gateway-payment", async (req: StaffAuthRequest, 
       return;
     }
 
-    // Save expiryTime to the log we just generated in PaymentEngine.initiatePayment
-    if (expiryTime) {
-      await db.update(paymentLogsTable)
-        .set({ requestPayload: JSON.stringify({ expiryTime: expiryTime.toISOString(), expiryMinutes }) })
-        .where(eq(paymentLogsTable.bookingRef, txnRef));
+    // Persist redirectUrl + expiry so the public QR bridge
+    // (GET /api/public/booking/icici-pay/:txnRef) can send phones onto the
+    // ICICI HPP after they first land on caredeoghar.com (domain whitelist).
+    let existingPayload: Record<string, unknown> = {};
+    try {
+      const [row] = await db.select({ requestPayload: paymentLogsTable.requestPayload })
+        .from(paymentLogsTable)
+        .where(eq(paymentLogsTable.bookingRef, txnRef))
+        .limit(1);
+      if (row?.requestPayload) existingPayload = JSON.parse(row.requestPayload);
+    } catch {
+      existingPayload = {};
     }
+    await db.update(paymentLogsTable)
+      .set({
+        requestPayload: JSON.stringify({
+          ...existingPayload,
+          redirectUrl: result.redirectUrl,
+          ...(expiryTime ? { expiryTime: expiryTime.toISOString(), expiryMinutes } : {}),
+        }),
+      })
+      .where(eq(paymentLogsTable.bookingRef, txnRef));
+
+    const qrPayUrl = buildIciciOrangePayQrUrl(txnRef);
 
     res.json({
       success: true,
       txnRef,
       amount: collectAmount,
       redirectUrl: result.redirectUrl,
+      /** Encode this in the customer QR — caredeoghar.com bridge, not raw ICICI. */
+      qrPayUrl,
       tranCtx: result.rawResponse?.tranCtx,
       expiryTime,
     });

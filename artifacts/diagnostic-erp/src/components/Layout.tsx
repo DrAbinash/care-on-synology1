@@ -184,6 +184,7 @@ const navItems: NavEntry[] = [
       // or /radiology hub → Advanced (routes unchanged; bookmarks still work).
       { path: "/radiology/worklist",            icon: ScanSearch,     label: "Worklist" },
       { path: "/radiology/reporting-workspace", icon: FilePen,        label: "Reporting Workspace" },
+      { path: "/radiology/legacy-workspace",   icon: FilePen,        label: "Legacy Workspace (old)", ownerOnly: true },
       { path: "/report-delivery",               icon: Send,           label: "Report Delivery" },
       { path: "/radiology/critical-findings",   icon: AlertCircle,    label: "Critical Findings" },
       { path: "/pacs",                          icon: Monitor,        label: "PACS Viewer" },

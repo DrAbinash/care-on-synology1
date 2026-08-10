@@ -130,8 +130,9 @@ export default function PaymentQrDisplay() {
   }, [counterKey, displayToken]);
 
   // Generate the scannable QR client-side from whatever qrData the backend
-  // is currently relaying (Bill Desk's redirectUrl — the real ICICI hosted
-  // payment page URL, not a bare token).
+  // is currently relaying (prefer caredeoghar.com ICICI bridge URL from
+  // Bill Desk — not the raw pgpay.icicibank.com HPP, which fails domain
+  // validation when phones open it without visiting caredeoghar.com first).
   useEffect(() => {
     if (!state.active || !state.qrData) { setQrImageUrl(""); return; }
     let cancelled = false;
