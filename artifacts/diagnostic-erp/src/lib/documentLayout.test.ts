@@ -121,7 +121,8 @@ describe("document layout engine — bill renderers", () => {
 
   test("bill number renders on the same line as Bill No.", () => {
     const html = buildModernLandscapeBillPrintHtml(baseOpts());
-    expect(html).toContain("Bill No. <span");
+    // New layout: Bill No. and number are inline within a highlighted box
+    expect(html).toContain("Bill No.</span>");
     expect(html).toContain("2026001");
     expect(html).not.toMatch(/Bill No\.<\/div>\s*<div[^>]*>2026001/);
   });
@@ -213,7 +214,7 @@ describe("document layout engine — bill renderers", () => {
     const html = buildModernLandscapeBillPrintHtml(baseOpts());
     expect(html).not.toMatch(/padding-top:\d+px;height:\s*calc\(100%/);
     expect(html).not.toMatch(/padding-top:\d+px;height:\s*100%/);
-    expect(html).toContain("padding-top:4px;align-items:flex-start");
+    expect(html).toContain("padding-top:3mm;align-items:flex-start");
   });
 
   test("TAT column appears when showTat is on", () => {
