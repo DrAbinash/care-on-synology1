@@ -158,6 +158,24 @@ describe("document layout engine — bill renderers (unified Classic)", () => {
     expect(off).not.toContain("Token #");
   });
 
+  test("same room shows one token (deduped by department+room)", () => {
+    const html = buildBillPrintHtml(baseOpts({
+      showQueueToken: true,
+      bill: sampleBill(3, {
+        testTokens: [
+          { department: "Pathology", roomNumber: "7", tokenNo: 5 },
+          { department: "Pathology", roomNumber: "7", tokenNo: 5 }, // Same room, same token
+          { department: "Radiology", roomNumber: "2", tokenNo: 3 },
+        ],
+      }),
+    }));
+    // Count occurrences of each token line
+    const pathologyMatches = html.match(/<strong>Pathology<\/strong>/g) ?? [];
+    const radiologyMatches = html.match(/<strong>Radiology<\/strong>/g) ?? [];
+    expect(pathologyMatches.length).toBe(1); // One token for Pathology Room 7
+    expect(radiologyMatches.length).toBe(1); // One token for Radiology Room 2
+  });
+
   test("large amounts and long names", () => {
     const html = buildBillPrintHtml(
       baseOpts({

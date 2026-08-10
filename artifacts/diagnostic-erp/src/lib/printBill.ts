@@ -406,10 +406,20 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
         <div style="font-size:${tinyPx};font-weight:800;color:#0c4a6e;letter-spacing:0.5px">QUEUE TOKEN</div>
         <div style="font-size:${parseInt(titleSize, 10) + 10}px;font-weight:900;color:#0c4a6e;line-height:1.1">#${esc(String(bill.tokenNo))}</div>
       </div>` : ""}
-      ${opts.showQueueToken && bill.testTokens && bill.testTokens.length > 0 ? `
+      ${opts.showQueueToken && bill.testTokens && bill.testTokens.length > 0 ? (() => {
+        // Dedupe by (department, roomNumber) — one room gets one token
+        const seen = new Set<string>();
+        const deduped = bill.testTokens.filter((tt) => {
+          const key = `${tt.department}::${tt.roomNumber}`;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+        return `
       <div style="font-size:${tinyPx};margin-bottom:6px">
-        ${bill.testTokens.map((tt) => `<div><strong>${esc(tt.department)}</strong>: Token #${esc(String(tt.tokenNo))}${tt.roomNumber ? ` &middot; Room ${esc(tt.roomNumber)}` : ""}</div>`).join("")}
-      </div>` : ""}
+        ${deduped.map((tt) => `<div><strong>${esc(tt.department)}</strong>: Token #${esc(String(tt.tokenNo))}${tt.roomNumber ? ` &middot; Room ${esc(tt.roomNumber)}` : ""}</div>`).join("")}
+      </div>`;
+      })() : ""}
 
       <!-- TEST TABLE with borders -->
       <table class="test-table" style="width:100%;border-collapse:collapse;font-size:${tablePx};margin-bottom:5px">
