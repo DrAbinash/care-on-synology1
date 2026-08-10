@@ -130,8 +130,6 @@ function fmt(n: number | string): string {
   return Number(n).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
-import { type BillFormat, normalizeBillFormat } from "./billPrintSettings";
-import { buildModernLandscapeBillPrintHtml } from "./modernLandscapeBillPrint";
 import { buildDocumentHtml } from "./documentLayout/buildDocumentHtml";
 import { resolveBillPrintPaperFromOpts } from "./documentLayout/billPaper";
 export {
@@ -403,17 +401,12 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
       <!-- HORIZONTAL RULE -->
       <div style="border-bottom:1px solid #000;margin-bottom:6px"></div>
 
-      <!-- QUEUE TOKEN(S) — shown when this bill produced a daily queue token
-           (self-registration via kiosk / online booking, or a walk-in bill
-           routed through a department queue). Gated on showQueueToken so
-           billing-counter receipts don't show a redundant big token box on
-           top of the per-test department token list below. -->
       ${opts.showQueueToken && bill.tokenNo ? `
       <div style="text-align:center;background:#eff6ff;border:2px dashed #0c4a6e;border-radius:6px;padding:4px 8px;margin-bottom:6px">
         <div style="font-size:${tinyPx};font-weight:800;color:#0c4a6e;letter-spacing:0.5px">QUEUE TOKEN</div>
         <div style="font-size:${parseInt(titleSize, 10) + 10}px;font-weight:900;color:#0c4a6e;line-height:1.1">#${esc(String(bill.tokenNo))}</div>
       </div>` : ""}
-      ${bill.testTokens && bill.testTokens.length > 0 ? `
+      ${opts.showQueueToken && bill.testTokens && bill.testTokens.length > 0 ? `
       <div style="font-size:${tinyPx};margin-bottom:6px">
         ${bill.testTokens.map((tt) => `<div><strong>${esc(tt.department)}</strong>: Token #${esc(String(tt.tokenNo))}${tt.roomNumber ? ` &middot; Room ${esc(tt.roomNumber)}` : ""}</div>`).join("")}
       </div>` : ""}
@@ -548,14 +541,9 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
   });
 }
 
-// ── Wrapper that dispatches to a specific format renderer ─────────────────
-// Supported layouts: Modern (recommended) and Classic. Retired Premium /
-// Designer ids normalize to Modern. Omitting `format` keeps classic for
-// older call sites that never passed one.
+// ── Unified bill print renderer ───────────────────────────────────────────
+// Single optimized template for all bill printing — the Classic layout,
+// tuned for A5 landscape on Epson L130 and similar ink tank printers.
 export function buildBillPrintHtml(opts: BuildPrintHtmlOpts): string {
-  const format = opts.format == null ? "classic" : normalizeBillFormat(opts.format);
-  if (format === "modern-landscape") {
-    return buildModernLandscapeBillPrintHtml(opts);
-  }
   return buildClassicBillPrintHtml(opts);
 }

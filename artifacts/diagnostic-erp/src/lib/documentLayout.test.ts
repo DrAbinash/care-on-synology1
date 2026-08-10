@@ -1,6 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { buildBillPrintHtml, type PrintBillData, type PrintClinic } from "./printBill";
-import { buildModernLandscapeBillPrintHtml } from "./modernLandscapeBillPrint";
+import { buildBillPrintHtml, buildClassicBillPrintHtml, type PrintBillData, type PrintClinic } from "./printBill";
 import {
   PAGE_SPECS,
   documentLayoutCssForPaper,
@@ -62,7 +61,6 @@ function baseOpts(overrides: Record<string, unknown> = {}) {
     pageCssSize: "A5 landscape",
     isBW: false,
     qrDataUrl: "data:image/png;base64,qr",
-    format: "modern-landscape" as const,
     showQr: true,
     showSignatureLine: true,
     ...overrides,
@@ -110,62 +108,58 @@ describe("document layout engine — page specifications", () => {
   });
 });
 
-describe("document layout engine — bill renderers", () => {
-  test("modern landscape uses shared @page dimensions", () => {
-    const html = buildModernLandscapeBillPrintHtml(baseOpts());
+describe("document layout engine — bill renderers (unified Classic)", () => {
+  test("uses shared @page dimensions for A5 landscape", () => {
+    const html = buildBillPrintHtml(baseOpts());
     expect(html).toContain("@page { size: 210mm 148mm; margin: 0; }");
     expect(html).toContain('class="care-doc-page receipt"');
-    expect(html).not.toMatch(/min-height:\s*\d+mm/);
-    expect(html).not.toContain("height: 100%");
   });
 
   test("bill number renders on the same line as Bill No.", () => {
-    const html = buildModernLandscapeBillPrintHtml(baseOpts());
-    // New layout: Bill No. and number are inline within a highlighted box
-    expect(html).toContain("Bill No.</span>");
+    const html = buildBillPrintHtml(baseOpts());
+    // Classic layout: BILL NO. and number are inline
+    expect(html).toContain("BILL NO. <span");
     expect(html).toContain("2026001");
-    expect(html).not.toMatch(/Bill No\.<\/div>\s*<div[^>]*>2026001/);
   });
 
-  test.each([1, 5, 10])("%i-test bill renders without flex page spacer", (count) => {
-    const html = buildModernLandscapeBillPrintHtml(
-      baseOpts({ bill: sampleBill(count) }),
-    );
-    expect(html).not.toContain('style="flex:1"');
+  test.each([1, 5, 10])("%i-test bill renders correctly", (count) => {
+    const html = buildBillPrintHtml(baseOpts({ bill: sampleBill(count) }));
     expect(html).toContain("Magnetic Resonance");
+    expect(html).toContain("care-doc-page");
   });
 
   test("QR enabled and disabled", () => {
-    const on = buildModernLandscapeBillPrintHtml(baseOpts({ showQr: true, qrDataUrl: "data:x" }));
-    const off = buildModernLandscapeBillPrintHtml(baseOpts({ showQr: false, qrDataUrl: "" }));
+    const on = buildBillPrintHtml(baseOpts({ showQr: true, qrDataUrl: "data:x" }));
+    const off = buildBillPrintHtml(baseOpts({ showQr: false, qrDataUrl: "" }));
     expect(on).toContain("Scan to verify");
     expect(off).not.toContain("Scan to verify");
   });
 
-  test("signature toggle", () => {
-    const on = buildModernLandscapeBillPrintHtml(baseOpts({ showSignatureLine: true }));
-    const off = buildModernLandscapeBillPrintHtml(baseOpts({ showSignatureLine: false }));
-    expect(on).toContain("Authorised Signature");
-    expect(off).not.toContain("border-bottom:1px solid #94a3b8");
+  test("signature line renders", () => {
+    const html = buildBillPrintHtml(baseOpts());
+    expect(html).toContain("Authorised Signature");
   });
 
   test("reprint marker", () => {
-    const html = buildModernLandscapeBillPrintHtml(
+    const html = buildBillPrintHtml(
       baseOpts({ reprintBy: "Admin", reprintReason: "Lost copy" }),
     );
     expect(html).toContain("REPRINT");
     expect(html).toContain("Lost copy");
   });
 
-  test("queue token on and off", () => {
-    const on = buildModernLandscapeBillPrintHtml(baseOpts({ showQueueToken: true }));
-    const off = buildModernLandscapeBillPrintHtml(baseOpts({ showQueueToken: false }));
+  test("queue token box toggles with showQueueToken", () => {
+    const on = buildBillPrintHtml(baseOpts({ showQueueToken: true }));
+    const off = buildBillPrintHtml(baseOpts({ showQueueToken: false }));
+    // Big QUEUE TOKEN box only shows when showQueueToken is true
     expect(on).toContain("QUEUE TOKEN");
     expect(off).not.toContain("QUEUE TOKEN");
+    // Per-test department tokens also hidden when showQueueToken is false
+    expect(off).not.toContain("Token #");
   });
 
   test("large amounts and long names", () => {
-    const html = buildModernLandscapeBillPrintHtml(
+    const html = buildBillPrintHtml(
       baseOpts({
         bill: sampleBill(1, {
           totalAmount: 9999999.99,
@@ -179,16 +173,14 @@ describe("document layout engine — bill renderers", () => {
   });
 
   test("classic format uses engine and percentage columns", () => {
-    const html = buildBillPrintHtml({
-      ...baseOpts({ format: "classic", orientation: "landscape" }),
-    });
+    const html = buildBillPrintHtml(baseOpts());
     expect(html).toContain("@page { size: 210mm 148mm; margin: 0; }");
     expect(html).toContain('width:18%');
     expect(html).not.toContain("90px");
   });
 
-  test("retired premium/designer format ids remap to modern landscape", () => {
-    for (const format of ["premium-a5", "designer-a", "designer-b", "designer-c"] as const) {
+  test("retired format ids all map to unified template", () => {
+    for (const format of ["classic", "modern-landscape", "premium-a5", "designer-a", "designer-b", "designer-c"] as const) {
       const html = buildBillPrintHtml({
         ...baseOpts({ format: format as any }),
         paperSize: "A5",
@@ -197,28 +189,18 @@ describe("document layout engine — bill renderers", () => {
       });
       expect(html).toMatch(/@page\s*\{[^}]*margin:\s*0/);
       expect(html).toContain("care-doc-page");
-      // Modern landscape marker (shared page shell + modern header structure)
       expect(html).toContain("210mm");
     }
   });
 
   test("A5 landscape page box does not exceed 210mm x 148mm", () => {
-    const html = buildModernLandscapeBillPrintHtml(baseOpts());
+    const html = buildBillPrintHtml(baseOpts());
     expect(html).toContain("width: 210mm");
     expect(html).toContain("height: 148mm");
   });
 
-  test("modern landscape does not stretch the middle row to full page height", () => {
-    // height:100% / calc(100%) on the table+totals flex row left a blank
-    // band on short bills; content must hug and leave the footer tight.
-    const html = buildModernLandscapeBillPrintHtml(baseOpts());
-    expect(html).not.toMatch(/padding-top:\d+px;height:\s*calc\(100%/);
-    expect(html).not.toMatch(/padding-top:\d+px;height:\s*100%/);
-    expect(html).toContain("padding-top:3mm;align-items:flex-start");
-  });
-
   test("TAT column appears when showTat is on", () => {
-    const html = buildModernLandscapeBillPrintHtml(
+    const html = buildBillPrintHtml(
       baseOpts({
         showTat: true,
         bill: sampleBill(1, {
@@ -241,7 +223,7 @@ describe("document layout engine — bill renderers", () => {
 
   test("A5 portrait page box does not exceed 148mm x 210mm", () => {
     const html = buildBillPrintHtml({
-      ...baseOpts({ format: "classic" }),
+      ...baseOpts(),
       orientation: "portrait",
       pageCssSize: "A5 portrait",
     });
@@ -251,7 +233,7 @@ describe("document layout engine — bill renderers", () => {
 
   test("A4 page box does not exceed 210mm x 297mm", () => {
     const html = buildBillPrintHtml({
-      ...baseOpts({ format: "classic" }),
+      ...baseOpts(),
       paperSize: "A4",
       pageCssSize: "A4 portrait",
     });

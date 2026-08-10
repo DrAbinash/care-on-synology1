@@ -4835,10 +4835,6 @@ const LAYOUT_PRESETS = {
   },
 } as const;
 
-const billFormats: { id: string; label: string }[] = [
-  { id: "modern-landscape", label: "Modern — A5 Landscape (Recommended)" },
-  { id: "classic", label: "Classic" },
-];
 const billPaperSizes: { id: string; label: string }[] = [
   { id: "A5-portrait", label: "A5 Portrait" },
   { id: "A5-landscape", label: "A5 Landscape" },
