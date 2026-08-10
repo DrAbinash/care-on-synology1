@@ -420,7 +420,7 @@ export default function Kiosk() {
     // Kiosk self-registration receipts always show the queue token box —
     // that's the entire point of a kiosk print (unlike billing-counter
     // receipts, where it's an opt-in setting; see showQueueTokenOnBill).
-    const html = buildBillPrintHtml({ bill, clinic, paperSize: "A5", isBW: false, qrDataUrl: receiptQrDataUrl, format: "classic", compactFooterGap: true, showQueueToken: true });
+    const html = buildBillPrintHtml({ bill, clinic, paperSize: "A5", isBW: false, qrDataUrl: receiptQrDataUrl, compactFooterGap: true, showQueueToken: true });
     printViaIframe(html);
   }
 

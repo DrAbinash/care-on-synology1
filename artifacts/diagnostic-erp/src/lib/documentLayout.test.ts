@@ -258,10 +258,10 @@ describe("document layout engine — bill renderers (unified Classic)", () => {
     expect(html).toContain("totals-grid");
   });
 
-  test("retired format ids all map to unified template", () => {
-    for (const format of ["classic", "modern-landscape", "premium-a5", "designer-a", "designer-b", "designer-c"] as const) {
+  test("retired format ids all render with the unified template", () => {
+    for (const _legacy of ["classic", "modern-landscape", "premium-a5", "designer-a", "designer-b", "designer-c"] as const) {
       const html = buildBillPrintHtml({
-        ...baseOpts({ format: format as any }),
+        ...baseOpts(),
         paperSize: "A5",
         orientation: "landscape",
         pageCssSize: "A5 landscape",

@@ -193,8 +193,6 @@ export type BuildPrintHtmlOpts = {
   reprintReason?: string;
   /** Offline / NAS-down receipt — not yet on server; QR verification disabled. */
   provisionalReceipt?: boolean;
-  // Extended format support (new fields — backward compatible)
-  format?: string;
   copyLabel?: string;
   showQr?: boolean;
   /** Show test catalog duration as a TAT column (clinic Show TAT on Bill). */
@@ -254,7 +252,7 @@ export type BuildPrintHtmlOpts = {
   // Layout & typography overrides — see BillPrintSettings's matching
   // print*Px/printMarginMm fields. Each is undefined/null-safe: omit or
   // pass null to fall back to the built-in format default for that element.
-  // printLogoHeightPx applies to Modern and Classic layouts.
+  // printLogoHeightPx applies to the bill header logo.
   printMarginMm?: number | null;
   printLogoHeightPx?: number | null;
   /** Header layout: "right" (default) = address/phone/website under Bill No. on the

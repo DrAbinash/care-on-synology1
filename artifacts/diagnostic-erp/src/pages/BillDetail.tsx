@@ -313,7 +313,6 @@ export default function BillDetail({ id }: { id: number }) {
       qrDataUrl: billQrDataUrl,
       reprintBy: opts.reprintBy,
       reprintReason: opts.reprintReason,
-      format: settingsForPrint.defaultFormat,
       showQr: settings.showQrCode,
       showTat: settings.showTatOnBill,
       showAmountInWords: settings.showAmountInWords,

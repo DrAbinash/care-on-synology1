@@ -4941,7 +4941,6 @@ function BillingPrintTab() {
       compactFooterGap: pageOpts.compactFooterGap,
       isBW: effectivePreviewIsBW,
       qrDataUrl: previewQrUrl,
-      format: deferredSettings.defaultFormat,
       headerLayout: deferredSettings.headerLayout,
       showQr: deferredSettings.showQrCode,
       showTat: deferredSettings.showTatOnBill,

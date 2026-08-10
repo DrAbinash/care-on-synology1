@@ -3,7 +3,6 @@ import {
   GLOBAL_BILL_PRINT_DEFAULTS,
   applyManualBillPaperOverride,
   clearBillPrintSettingsOverride,
-  coercePaperSizeForFormat,
   loadBillPrintSettings,
   normalizeBillFormat,
   parseGlobalBillPrintSettings,
@@ -72,7 +71,7 @@ describe("loadBillPrintSettings — clinic-wide global reaches the print sites",
     // A4 choice must still win over the built-in default that caused the
     // rotated prints.
     expect(GLOBAL_BILL_PRINT_DEFAULTS.defaultPaperSize).toBe("A5-landscape");
-    expect(GLOBAL_BILL_PRINT_DEFAULTS.defaultFormat).toBe("modern-landscape");
+    expect(GLOBAL_BILL_PRINT_DEFAULTS.defaultFormat).toBe("classic");
     const merged = loadBillPrintSettings({ defaultPaperSize: "A4" });
     expect(merged.defaultPaperSize).toBe("A4");
   });
@@ -80,7 +79,7 @@ describe("loadBillPrintSettings — clinic-wide global reaches the print sites",
   test("without a server global, built-in defaults apply unchanged", () => {
     const merged = loadBillPrintSettings();
     expect(merged.defaultPaperSize).toBe(GLOBAL_BILL_PRINT_DEFAULTS.defaultPaperSize);
-    expect(merged.defaultFormat).toBe("modern-landscape");
+    expect(merged.defaultFormat).toBe("classic");
     expect(merged.showTatOnBill).toBe(false);
   });
 
@@ -168,14 +167,23 @@ describe("loadBillPrintSettings — clinic-wide global reaches the print sites",
     expect(resolveBillLogoHeightPx(200, 44)).toBe(160);
   });
 
-  test("retired premium/designer formats normalize to modern-landscape", () => {
-    expect(normalizeBillFormat("premium-a5")).toBe("modern-landscape");
-    expect(normalizeBillFormat("designer-a")).toBe("modern-landscape");
-    expect(normalizeBillFormat("designer-b")).toBe("modern-landscape");
-    expect(normalizeBillFormat("designer-c")).toBe("modern-landscape");
+  test("retired premium/designer/modern formats normalize to classic", () => {
+    expect(normalizeBillFormat("premium-a5")).toBe("classic");
+    expect(normalizeBillFormat("designer-a")).toBe("classic");
+    expect(normalizeBillFormat("designer-b")).toBe("classic");
+    expect(normalizeBillFormat("designer-c")).toBe("classic");
     expect(normalizeBillFormat("classic")).toBe("classic");
-    expect(normalizeBillFormat("modern-landscape")).toBe("modern-landscape");
-    expect(loadBillPrintSettings({ defaultFormat: "designer-a" as any }).defaultFormat).toBe("modern-landscape");
+    expect(normalizeBillFormat("modern-landscape")).toBe("classic");
+    expect(loadBillPrintSettings({ defaultFormat: "designer-a" as any }).defaultFormat).toBe("classic");
+  });
+
+  test("legacy modern-landscape + A5-portrait migrates paper to A5-landscape on load", () => {
+    const merged = loadBillPrintSettings({
+      defaultFormat: "modern-landscape" as any,
+      defaultPaperSize: "A5-portrait",
+    });
+    expect(merged.defaultFormat).toBe("classic");
+    expect(merged.defaultPaperSize).toBe("A5-landscape");
   });
 
   test("role defaults still apply underneath the global (fields the global doesn't set)", () => {
@@ -221,27 +229,13 @@ describe("resolveBillPrintDelivery", () => {
   });
 });
 
-describe("coercePaperSizeForFormat", () => {
-  test("modern-landscape upgrades A5-portrait to A5-landscape", () => {
-    expect(coercePaperSizeForFormat("modern-landscape", "A5-portrait")).toBe("A5-landscape");
-  });
-
-  test("modern-landscape keeps A4 and half-a4", () => {
-    expect(coercePaperSizeForFormat("modern-landscape", "A4")).toBe("A4");
-    expect(coercePaperSizeForFormat("modern-landscape", "half-a4")).toBe("half-a4");
-  });
-
-  test("classic format does not override paper size", () => {
-    expect(coercePaperSizeForFormat("classic", "A5-portrait")).toBe("A5-portrait");
-  });
-});
-
 describe("resolveBillPrintPageOpts — paper size reaches the print HTML", () => {
-  test("modern-landscape + A5-portrait setting still resolves to landscape @page", () => {
-    const opts = resolveBillPrintPageOpts(
-      { defaultPaperSize: "A5-portrait", autoA4Threshold: 8, defaultFormat: "modern-landscape" },
-      1,
-    );
+  test("legacy modern-landscape + A5-portrait migrates to landscape @page", () => {
+    const settings = loadBillPrintSettings({
+      defaultFormat: "modern-landscape" as any,
+      defaultPaperSize: "A5-portrait",
+    });
+    const opts = resolveBillPrintPageOpts(settings, 1);
     expect(opts.orientation).toBe("landscape");
     expect(opts.pageCssSize).toBe("A5 landscape");
   });
@@ -255,7 +249,7 @@ describe("resolveBillPrintPageOpts — paper size reaches the print HTML", () =>
 
   test("A5-portrait setting is not dropped by auto-threshold logic", () => {
     const opts = resolveBillPrintPageOpts(
-      { defaultPaperSize: "A5-portrait", autoA4Threshold: 5, defaultFormat: "classic" },
+      { defaultPaperSize: "A5-portrait", autoA4Threshold: 5 },
       1,
     );
     expect(opts.orientation).toBe("portrait");
