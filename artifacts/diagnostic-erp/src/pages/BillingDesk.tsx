@@ -193,26 +193,34 @@ async function openOnSecondMonitor(url: string, windowName: string): Promise<voi
       const details = await wm();
       const other = details.screens.find(
         (s) => s.availLeft !== details.currentScreen.availLeft || s.availTop !== details.currentScreen.availTop
-      ) ?? details.screens[0];
-      const win = window.open(
-        url,
-        windowName,
-        `left=${other.availLeft},top=${other.availTop},width=${other.availWidth},height=${other.availHeight}`
       );
-      if (win) {
-        win.addEventListener("load", () => {
-          try { win.document.documentElement.requestFullscreen?.(); } catch { /* best effort */ }
-        });
-        return;
+      // Only place off-primary when a real second screen exists — otherwise
+      // opening at screen.width puts the window off-screen (looks like a flash).
+      if (other && details.screens.length > 1) {
+        const win = window.open(
+          url,
+          windowName,
+          `left=${other.availLeft},top=${other.availTop},width=${other.availWidth},height=${other.availHeight}`
+        );
+        if (win) {
+          win.addEventListener("load", () => {
+            try { win.document.documentElement.requestFullscreen?.(); } catch { /* best effort */ }
+          });
+          return;
+        }
       }
     } catch {
-      // Permission denied or API unavailable this call — fall through to heuristic.
+      // Permission denied or API unavailable this call — fall through.
     }
   }
 
-  // Fallback: place just past the primary screen's right edge.
-  const left = window.screen.width;
-  window.open(url, windowName, `left=${left},top=0,width=1024,height=900`);
+  // Single-monitor / HTTP fallback: open a durable, visible popup on THIS
+  // screen (not past the right edge — that looked like the QR “vanished”).
+  const width = Math.min(520, window.screen.availWidth - 40);
+  const height = Math.min(780, window.screen.availHeight - 40);
+  const left = Math.max(0, Math.round((window.screen.availWidth - width) / 2));
+  const top = Math.max(0, Math.round((window.screen.availHeight - height) / 2));
+  window.open(url, windowName, `left=${left},top=${top},width=${width},height=${height}`);
 }
 
 // ──────────────────────────────────────────────────────
@@ -805,6 +813,8 @@ export default function BillingDesk() {
     txnRef: string;
     amount: number;
     redirectUrl: string;
+    /** caredeoghar.com bridge URL for QR — avoids ICICI Domain Validation Fail */
+    qrPayUrl?: string;
     tranCtx?: string;
     expiryTime?: string;
     billId: number;
@@ -817,12 +827,10 @@ export default function BillingDesk() {
   useEffect(() => {
     if (!gatewayPaymentInfo) { setGatewayQrUrl(""); return; }
     let cancelled = false;
-    // redirectUrl is the full ICICI hosted-payment-page URL (tranCtx already
-    // embedded as a query param by the backend) — the same value Online
-    // Booking (book.tsx) and Kiosk Mode (Kiosk.tsx) already navigate to
-    // successfully. tranCtx alone is a bare opaque token, not a URL; a QR
-    // encoding it just displays text instead of opening the gateway.
-    const qrData = gatewayPaymentInfo.redirectUrl;
+    // Prefer the caredeoghar.com QR bridge (bank-whitelisted domain). Encoding
+    // the raw ICICI HPP URL in the QR causes "Domain Validation Fail" on phones;
+    // Orange Pay button works because it navigates from caredeoghar.com first.
+    const qrData = gatewayPaymentInfo.qrPayUrl || gatewayPaymentInfo.redirectUrl;
     QRCode.toDataURL(qrData, {
       errorCorrectionLevel: "M",
       margin: 1,
@@ -867,7 +875,7 @@ export default function BillingDesk() {
     if (pushedShowTxnRef.current === gatewayPaymentInfo.txnRef) return;
     pushedShowTxnRef.current = gatewayPaymentInfo.txnRef;
     api.post(`/api/payment-display/${encodeURIComponent(paymentCounterKey)}/show`, {
-      qrData: gatewayPaymentInfo.redirectUrl,
+      qrData: gatewayPaymentInfo.qrPayUrl || gatewayPaymentInfo.redirectUrl,
       amount: gatewayPaymentInfo.amount,
       txnRef: gatewayPaymentInfo.txnRef,
       patientName: selectedPatient ? `${selectedPatient.firstName} ${selectedPatient.lastName ?? ""}`.trim() : undefined,
@@ -888,15 +896,19 @@ export default function BillingDesk() {
     }).catch(() => { /* best-effort */ });
   }, [gatewayPaymentInfo, gatewayPaymentStatus, paymentCounterKey]);
 
-  // Return the customer display to its idle screen once the dialog closes
-  // (success, manual cancel, or auto-close after success) — skips the
-  // spurious clear that would otherwise fire on first mount.
+  // Return the customer display to its idle screen once the dialog closes.
+  // After a successful payment, keep the "Payment Received" screen up for
+  // several seconds so the patient can see confirmation (was clearing instantly).
   const gatewayModalWasOpenRef = useRef(false);
   useEffect(() => {
     if (gatewayModalOpen) { gatewayModalWasOpenRef.current = true; return; }
     if (!gatewayModalWasOpenRef.current) return;
-    api.post(`/api/payment-display/${encodeURIComponent(paymentCounterKey)}/clear`, {}).catch(() => {});
-  }, [gatewayModalOpen, paymentCounterKey]);
+    const delayMs = gatewayPaymentStatus === "success" ? 12_000 : 0;
+    const t = window.setTimeout(() => {
+      api.post(`/api/payment-display/${encodeURIComponent(paymentCounterKey)}/clear`, {}).catch(() => {});
+    }, delayMs);
+    return () => window.clearTimeout(t);
+  }, [gatewayModalOpen, paymentCounterKey, gatewayPaymentStatus]);
 
   // Same-PC fallback: opens the customer display's durable URL in a window
   // positioned on a second monitor cable-connected to THIS workstation. For
@@ -1031,7 +1043,7 @@ export default function BillingDesk() {
             }
 
             resetAll();
-          }, 2000);
+          }, 10000);
         } else if (res.status === "failed") {
           setGatewayPaymentStatus("failed");
           setGatewayPaymentError(res.error || "Payment failed");
@@ -1460,6 +1472,7 @@ export default function BillingDesk() {
             txnRef: string;
             amount: number;
             redirectUrl: string;
+            qrPayUrl?: string;
             tranCtx?: string;
             expiryTime?: string;
           }>(`/api/bills/${bill.id}/initiate-gateway-payment`, {
@@ -3412,8 +3425,15 @@ export default function BillingDesk() {
                     <button
                       type="button"
                       onClick={() => {
-                        if (gatewayPaymentInfo?.redirectUrl) {
-                          window.location.href = gatewayPaymentInfo.redirectUrl;
+                        // Open via caredeoghar.com bridge when available so domain
+                        // validation passes; keep Bill Desk open in a lasting popup
+                        // (navigating the staff tab away used to feel like a flash).
+                        const payUrl = gatewayPaymentInfo?.qrPayUrl || gatewayPaymentInfo?.redirectUrl;
+                        if (!payUrl) return;
+                        const w = window.open(payUrl, "icici_orange_pay", "noopener,noreferrer,width=480,height=780");
+                        if (!w) {
+                          // Popup blocked — fall back to same-tab navigation.
+                          window.location.href = payUrl;
                         }
                       }}
                       className="mt-2 w-full rounded-lg px-4 py-2.5 text-sm font-bold text-white"
@@ -3421,7 +3441,7 @@ export default function BillingDesk() {
                     >
                       Pay with ICICI Orange Pay →
                     </button>
-                    <p className="text-[10px] text-[#94a3b8]">Same payment page as website online booking — scan QR or tap above.</p>
+                    <p className="text-[10px] text-[#94a3b8]">Scan QR on phone (opens caredeoghar.com → Orange Pay) or tap above. QR stays until payment finishes.</p>
                     <button
                       type="button"
                       onClick={openGatewayQrOnSecondScreen}
