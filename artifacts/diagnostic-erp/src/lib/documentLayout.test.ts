@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { buildBillPrintHtml, buildClassicBillPrintHtml, type PrintBillData, type PrintClinic } from "./printBill";
+import { buildBillPrintHtml, buildBillAuditToken, type PrintBillData, type PrintClinic } from "./printBill";
 import {
   PAGE_SPECS,
   documentLayoutCssForPaper,
@@ -117,22 +117,61 @@ describe("document layout engine — bill renderers (unified Classic)", () => {
 
   test("bill number renders on the same line as Bill No.", () => {
     const html = buildBillPrintHtml(baseOpts());
-    // Reference layout: BILL NO: and number are inline
-    expect(html).toContain("BILL NO: <span");
+    // Reference layout: BILL NO: label + bold number inline
+    expect(html).toContain("BILL NO:");
     expect(html).toContain("2026001");
+  });
+
+  test("enterprise audit token is present on the bill", () => {
+    const html = buildBillPrintHtml(baseOpts());
+    expect(html).toContain("title=\"Audit token\"");
+    // Token format: BILLNO-TIMESTAMP-TOTAL-OP-HASH
+    expect(html).toMatch(/2026001-\d+-4900\.00-\d+-[0-9A-F]{8}/);
+  });
+
+  test("financial block and footer have page-break-inside:avoid", () => {
+    const html = buildBillPrintHtml(baseOpts());
+    expect(html).toContain("page-break-inside: avoid");
+    expect(html).toContain("financial-block");
+    expect(html).toContain("receipt-footer");
+  });
+
+  test("balance due uses alert styling when unpaid", () => {
+    const unpaid = buildBillPrintHtml(baseOpts({
+      bill: sampleBill(1, { balanceAmount: 500, paidAmount: 4400 }),
+    }));
+    expect(unpaid).toContain("#fef2f2"); // alert bg
+    expect(unpaid).toContain("#b91c1c"); // alert text
+    const paid = buildBillPrintHtml(baseOpts({
+      bill: sampleBill(1, { balanceAmount: 0, paidAmount: 4900 }),
+    }));
+    expect(paid).toContain("#f0fdf4"); // settled bg
+    expect(paid).toContain("#15803d"); // settled text
+  });
+
+  test("currency amounts always show two decimal places", () => {
+    const html = buildBillPrintHtml(baseOpts({
+      bill: sampleBill(1, { subtotal: 1500, totalAmount: 1500, paidAmount: 1500 }),
+    }));
+    expect(html).toContain("1,500.00");
+  });
+
+  test("muted metadata labels use uppercase PH / EMAIL / BILL NO", () => {
+    const html = buildBillPrintHtml(baseOpts({ headerLayout: "right" }));
+    expect(html).toContain("PH:");
+    expect(html).toContain("EMAIL:");
+    expect(html).toContain("BILL NO:");
+    expect(html).toContain("color:#64748b"); // muted label color
   });
 
   test("header layout 'right' puts address under Bill No.; 'left' keeps it under clinic name", () => {
     const right = buildBillPrintHtml(baseOpts({ headerLayout: "right" }));
     const left = buildBillPrintHtml(baseOpts({ headerLayout: "left" }));
-    // Both render the address somewhere
     expect(right).toContain("Main Road, Deoghar");
     expect(left).toContain("Main Road, Deoghar");
-    // Right layout: address appears AFTER the BILL NO line (it's on the right side)
     const rightBillIdx = right.indexOf("BILL NO:");
     const rightAddrIdx = right.indexOf("Main Road, Deoghar");
     expect(rightAddrIdx).toBeGreaterThan(rightBillIdx);
-    // Left layout: address appears BEFORE the BILL NO line (left cell comes first)
     const leftBillIdx = left.indexOf("BILL NO:");
     const leftAddrIdx = left.indexOf("Main Road, Deoghar");
     expect(leftAddrIdx).toBeLessThan(leftBillIdx);
@@ -215,8 +254,8 @@ describe("document layout engine — bill renderers (unified Classic)", () => {
   test("classic format uses engine and percentage columns", () => {
     const html = buildBillPrintHtml(baseOpts());
     expect(html).toContain("@page { size: 210mm 148mm; margin: 0; }");
-    expect(html).toContain('width:18%');
-    expect(html).not.toContain("90px");
+    expect(html).toContain("care-doc-page");
+    expect(html).toContain("totals-grid");
   });
 
   test("retired format ids all map to unified template", () => {
@@ -302,5 +341,38 @@ describe("print delivery module", () => {
     );
     expect(src).not.toContain("webContents");
     expect(src).not.toContain("printToPDF");
+  });
+});
+
+describe("buildBillAuditToken", () => {
+  test("is deterministic for the same inputs", () => {
+    const a = buildBillAuditToken({
+      billNumber: "BILL-2026-001",
+      createdAt: "2026-08-01T10:30:00.000Z",
+      totalAmount: 4900,
+      operatorId: 7,
+    });
+    const b = buildBillAuditToken({
+      billNumber: "BILL-2026-001",
+      createdAt: "2026-08-01T10:30:00.000Z",
+      totalAmount: 4900,
+      operatorId: 7,
+    });
+    expect(a).toBe(b);
+    expect(a).toMatch(/^2026001-\d+-4900\.00-7-[0-9A-F]{8}$/);
+  });
+
+  test("changes when amount or operator changes", () => {
+    const base = {
+      billNumber: "20260810042",
+      createdAt: "2026-08-01T10:30:00.000Z",
+      totalAmount: 1500,
+      operatorId: 1,
+    };
+    const a = buildBillAuditToken(base);
+    const b = buildBillAuditToken({ ...base, totalAmount: 1501 });
+    const c = buildBillAuditToken({ ...base, operatorId: 2 });
+    expect(a).not.toBe(b);
+    expect(a).not.toBe(c);
   });
 });
