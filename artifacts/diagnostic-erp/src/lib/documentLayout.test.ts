@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { buildBillPrintHtml, buildBillAuditToken, type PrintBillData, type PrintClinic } from "./printBill";
+import { buildBillPrintHtml, buildBillAuditToken, buildBillAuditHash, buildBillVerifyUrl, type PrintBillData, type PrintClinic } from "./printBill";
 import {
   PAGE_SPECS,
   documentLayoutCssForPaper,
@@ -376,5 +376,36 @@ describe("buildBillAuditToken", () => {
     const c = buildBillAuditToken({ ...base, operatorId: 2 });
     expect(a).not.toBe(b);
     expect(a).not.toBe(c);
+  });
+
+  test("buildBillAuditHash is the trailing FNV-1a hex of the audit token", () => {
+    const opts = {
+      billNumber: "BILL-2026-001",
+      createdAt: "2026-08-01T10:30:00.000Z",
+      totalAmount: 4900,
+      operatorId: "Reception Desk",
+    };
+    const token = buildBillAuditToken(opts);
+    const hash = buildBillAuditHash(opts);
+    expect(hash).toMatch(/^[0-9A-F]{8}$/);
+    expect(token.endsWith(`-${hash}`)).toBe(true);
+  });
+
+  test("buildBillVerifyUrl appends ?hash= FNV-1a query param", () => {
+    const url = buildBillVerifyUrl({
+      billNumber: "BILL-2026-001",
+      createdAt: "2026-08-01T10:30:00.000Z",
+      totalAmount: 4900,
+      operatorId: "Abinash",
+      origin: "https://caredeoghar.com",
+    });
+    expect(url).toMatch(/^https:\/\/caredeoghar\.com\/api\/verify\/bill\/BILL-2026-001\?hash=[0-9A-F]{8}$/);
+    const hash = new URL(url).searchParams.get("hash");
+    expect(hash).toBe(buildBillAuditHash({
+      billNumber: "BILL-2026-001",
+      createdAt: "2026-08-01T10:30:00.000Z",
+      totalAmount: 4900,
+      operatorId: "Abinash",
+    }));
   });
 });

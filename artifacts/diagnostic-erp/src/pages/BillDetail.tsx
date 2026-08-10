@@ -24,6 +24,7 @@ import { useToast } from "@/hooks/use-toast";
 import { getAutoBillPaperSize, getBillPaperSize, getBillPrintLayout, getLayoutStyles, setBillPaperSize } from "@/lib/billPrintLayout";
 import {
   buildBillPrintHtml,
+  buildBillVerifyUrl,
   openBlankPrintWindow,
   writeAndPrint,
   printViaIframe,
@@ -251,19 +252,20 @@ export default function BillDetail({ id }: { id: number }) {
 
   // Inline QR for the printed receipt — shares the same encoding as
   // BillingDesk so the verify URL stays consistent across surfaces.
-  const buildBillVerifyUrl = (billNumber: string) =>
-    // Public api-server route — works in dev (proxied /api) and production
-    // (unified serve). See artifacts/api-server/src/routes/verify.ts.
-    `${window.location.origin}/api/verify/bill/${encodeURIComponent(billNumber)}`;
-
   // Real scannable QR (PNG data URL) generated via the qrcode library
-  // when the bill loads. Empty string until generation completes; the
-  // <img> below skips rendering until the data URL is ready.
+  // when the bill loads. Empty string until generation completes.
   const [billQrDataUrl, setBillQrDataUrl] = useState<string>("");
   useEffect(() => {
     if (!bill?.billNumber) { setBillQrDataUrl(""); return; }
     let cancelled = false;
-    QRCode.toDataURL(buildBillVerifyUrl(bill.billNumber), {
+    const creatorName = (bill as { createdByName?: string | null }).createdByName;
+    const verifyUrl = buildBillVerifyUrl({
+      billNumber: bill.billNumber,
+      createdAt: bill.createdAt,
+      totalAmount: bill.totalAmount,
+      operatorId: (creatorName && String(creatorName).trim()) || "0",
+    });
+    QRCode.toDataURL(verifyUrl, {
       errorCorrectionLevel: "M",
       margin: 1,
       width: 256,
@@ -272,7 +274,7 @@ export default function BillDetail({ id }: { id: number }) {
       .then((url) => { if (!cancelled) setBillQrDataUrl(url); })
       .catch(() => { if (!cancelled) setBillQrDataUrl(""); });
     return () => { cancelled = true; };
-  }, [bill?.billNumber]);
+  }, [bill?.billNumber, bill?.createdAt, bill?.totalAmount, (bill as { createdByName?: string | null } | undefined)?.createdByName]);
 
   // Note: the previous in-page hidden-DOM print pipeline has been replaced
   // with a popup-window template (buildBillPrintHtml). The reprint flow now

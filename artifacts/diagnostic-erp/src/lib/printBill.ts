@@ -13,6 +13,8 @@ export type PrintBillData = {
   balanceAmount: number | string;
   status?: string;
   createdAt?: string;
+  /** Staff who created the bill — used as OPERATOR_ID in the audit / QR hash. */
+  createdByName?: string | null;
   patient?: {
     firstName: string;
     lastName: string;
@@ -140,18 +142,22 @@ function metaValue(text: string, size: string, weight = 700): string {
   return `<span style="font-size:${size};font-weight:${weight};color:#0f172a">${esc(text)}</span>`;
 }
 
-/**
- * Lightweight on-page audit token: BILL_NO-TIMESTAMP-TOTAL-OPERATOR_ID.
- * Deterministic FNV-1a hex of that payload — tamper-evident for manual audit
- * without needing a crypto library in the print path.
- */
-export function buildBillAuditToken(opts: {
+export type BillAuditHashInput = {
   billNumber: string;
   createdAt?: string | Date | null;
   totalAmount: number | string;
+  /** Prefer stable creator name (matches bills.created_by_name) over session id. */
   operatorId?: string | number | null;
-}): string {
-  const billNo = String(opts.billNumber).replace(/^BILL-?/i, "").replace(/-/g, "");
+};
+
+/** Normalize bill number digits the same way the verify endpoint does. */
+export function normalizeBillDigits(billNumber: string): string {
+  return String(billNumber).replace(/^BILL-?/i, "").replace(/-/g, "");
+}
+
+/** Canonical payload: BILL_NO-TIMESTAMP-TOTAL-OPERATOR_ID. */
+export function buildBillAuditPayload(opts: BillAuditHashInput): string {
+  const billNo = normalizeBillDigits(opts.billNumber);
   const ts = (() => {
     const d = opts.createdAt ? new Date(opts.createdAt) : new Date();
     if (isNaN(d.getTime())) return "0";
@@ -159,15 +165,48 @@ export function buildBillAuditToken(opts: {
   })();
   const total = Number(opts.totalAmount || 0).toFixed(2);
   const op = String(opts.operatorId ?? "0");
-  const payload = `${billNo}-${ts}-${total}-${op}`;
-  // FNV-1a 32-bit → 8-char hex
+  return `${billNo}-${ts}-${total}-${op}`;
+}
+
+/** 32-bit FNV-1a → uppercase 8-char hex (must match api-server billAuditHash). */
+export function fnv1a32Hex(payload: string): string {
   let h = 0x811c9dc5;
   for (let i = 0; i < payload.length; i++) {
     h ^= payload.charCodeAt(i);
     h = Math.imul(h, 0x01000193);
   }
-  const hash = (h >>> 0).toString(16).padStart(8, "0").toUpperCase();
-  return `${payload}-${hash}`;
+  return (h >>> 0).toString(16).padStart(8, "0").toUpperCase();
+}
+
+/** FNV-1a hash only — encoded as the QR `?hash=` query parameter. */
+export function buildBillAuditHash(opts: BillAuditHashInput): string {
+  return fnv1a32Hex(buildBillAuditPayload(opts));
+}
+
+/**
+ * Lightweight on-page audit token: BILL_NO-TIMESTAMP-TOTAL-OPERATOR_ID-HASH.
+ * Deterministic FNV-1a — tamper-evident for manual audit without a crypto lib.
+ */
+export function buildBillAuditToken(opts: BillAuditHashInput): string {
+  const payload = buildBillAuditPayload(opts);
+  return `${payload}-${fnv1a32Hex(payload)}`;
+}
+
+/**
+ * Public bill-verification URL embedded in the printed QR.
+ * Format: `{origin}/api/verify/bill/{billNo}?hash={fnv1a}`
+ * (on caredeoghar.com this is https://caredeoghar.com/api/verify/bill/…?hash=…).
+ */
+export function buildBillVerifyUrl(
+  opts: BillAuditHashInput & { origin?: string },
+): string {
+  const origin =
+    opts.origin ??
+    (typeof window !== "undefined" && window.location?.origin
+      ? window.location.origin
+      : "");
+  const hash = buildBillAuditHash(opts);
+  return `${origin}/api/verify/bill/${encodeURIComponent(String(opts.billNumber))}?hash=${encodeURIComponent(hash)}`;
 }
 
 import { buildDocumentHtml } from "./documentLayout/buildDocumentHtml";
@@ -362,7 +401,14 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
   })();
   const billedByName: string = session?.user?.name ?? "";
   const billedBySignatureUrl: string = session?.user?.signatureDataUrl ?? "";
-  const operatorId: string | number = session?.user?.id ?? "0";
+  // Prefer the bill's stored creator (matches DB verification) over the
+  // reprinting user's session — keeps QR hash and printed audit token aligned
+  // with /api/verify/bill/:id?hash=…
+  const operatorId: string | number =
+    (bill.createdByName && String(bill.createdByName).trim()) ||
+    billedByName ||
+    session?.user?.id ||
+    "0";
 
   const auditToken = buildBillAuditToken({
     billNumber: bill.billNumber,
