@@ -12,6 +12,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
 import { readStaffSession, normalizeRole, isOwnerRole, isFeatureEnabled } from "@/lib/staffSession";
 import { api } from "@/lib/fetchApi";
+import { BROWSER_DICOMWEB_BASE } from "@/lib/browserDicomWeb";
 import { queryAiReporting } from "@/lib/aiReportingClient";
 // Cockpit→Workspace merge: shared status/priority/role helpers (already used by
 // RadiologyWorklist and the deprecated Cockpit) — reused, not duplicated.
@@ -824,6 +825,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   // select must NOT expand demographics and shrink OHIF. Exit only via the
   // strip's "Show details" (or when the embedded viewer is hidden by layout).
   const [viewerFocusMode, setViewerFocusMode] = useState(false);
+  const [viewerColumnExpanded, setViewerColumnExpanded] = useState(false);
   const viewerFocusRef = useRef(false);
   const setViewerFocus = useCallback((on: boolean) => {
     if (viewerFocusRef.current === on) return;
@@ -835,7 +837,10 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   // Focus / Dual Screen) so the demographics + app sidebar can never get stuck
   // collapsed with no viewer to justify it.
   useEffect(() => {
-    if (!showEmbeddedViewer) setViewerFocus(false);
+    if (!showEmbeddedViewer) {
+      setViewerFocus(false);
+      setViewerColumnExpanded(false);
+    }
   }, [showEmbeddedViewer, setViewerFocus]);
   // Prefer maximised OHIF while reporting: collapse bulky left demographics
   // whenever the embedded viewer is on screen (writing + images together).
@@ -4035,19 +4040,12 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     queryFn: () => api.get("/api/clinic-settings/branding"),
     staleTime: 5 * 60_000,
   });
-  const { data: pdfViewerLaunch } = useQuery<{ dicomWebBaseUrl?: string | null }>({
-    queryKey: ["viewer-launch", entry?.studyInstanceUID],
-    queryFn: () => api.get(`/api/radiology/studies/${encodeURIComponent(entry!.studyInstanceUID!)}/ohif-launch`),
-    enabled: !!entry?.studyInstanceUID,
-    staleTime: 5 * 60_000,
-  });
 
   // Warm MRI DICOMweb for the reporting queue (today/yesterday / last ~20) so
   // OHIF opens faster. Server-side Orthanc warmer runs in parallel; this hits
   // the browser DICOMweb path the embedded viewer uses.
   useEffect(() => {
-    const base = pdfViewerLaunch?.dicomWebBaseUrl;
-    if (!base) return;
+    const base = BROWSER_DICOMWEB_BASE;
     const mriUids = workflow.queue
       .filter((s) => {
         const m = normalizeModality(s.modality ?? "");
@@ -4063,12 +4061,12 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
         prefetchMriStudies([{ studyInstanceUID: entry.studyInstanceUID, dicomWebBaseUrl: base }]);
       }
     }
-  }, [pdfViewerLaunch?.dicomWebBaseUrl, workflow.queue, entry?.studyInstanceUID, entry?.modality]);
+  }, [workflow.queue, entry?.studyInstanceUID, entry?.modality]);
 
   // Prefetch the next MR study in the queue when the current one is open.
   useEffect(() => {
-    const base = pdfViewerLaunch?.dicomWebBaseUrl;
-    if (!base || !studyId) return;
+    const base = BROWSER_DICOMWEB_BASE;
+    if (!studyId) return;
     const idx = workflow.queue.findIndex((s) => s.id === studyId);
     if (idx < 0) return;
     const next = workflow.queue[idx + 1];
@@ -4077,7 +4075,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     if (m === "MR" || m.startsWith("MR")) {
       prefetchNextMriStudy({ studyInstanceUID: next.studyInstanceUID, dicomWebBaseUrl: base });
     }
-  }, [pdfViewerLaunch?.dicomWebBaseUrl, workflow.queue, studyId]);
+  }, [workflow.queue, studyId]);
 
   async function handleExportPdf() {
     setExportingPdf(true);
@@ -4100,7 +4098,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
         recommendation,
         studyName: selectedTemplate?.templateName || entry?.studyDescription || "Radiology Report",
         headingCase,
-        dicomWebBase: pdfViewerLaunch?.dicomWebBaseUrl ?? null,
+        dicomWebBase: BROWSER_DICOMWEB_BASE,
         imageRefs,
         clinic: clinicSettings ?? null,
       });
@@ -5616,12 +5614,14 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
               for maximum image room) — onMouseDownCapture so it engages even
               though the viewer's own pan handler also consumes the event. */}
           {showEmbeddedViewer ? (
-            <div className="flex-1 overflow-hidden" onMouseDownCapture={() => setViewerFocus(true)} data-testid="embedded-viewer-wrap">
+            <div className="flex-1 min-h-0 overflow-hidden flex flex-col" onMouseDownCapture={() => setViewerFocus(true)} data-testid="embedded-viewer-wrap">
               {entry?.studyInstanceUID ? (
                 <EmbeddedWadoViewer
                   ref={embeddedViewerRef}
                   studyInstanceUID={entry.studyInstanceUID}
                   accessionNumber={entry.accessionNumber}
+                  columnExpanded={viewerColumnExpanded}
+                  onColumnExpandedChange={setViewerColumnExpanded}
                 />
               ) : (
                 <div className="h-full flex flex-col items-center justify-center gap-3 p-4 text-center">
@@ -5653,7 +5653,9 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
           )}
 
           {/* R1.1 — selected report images: persisted as DICOM references,
-              rendered into every artifact by the shared presentation layer. */}
+              rendered into every artifact by the shared presentation layer.
+              Hidden while the viewer column is expanded so OHIF gets max height. */}
+          {!viewerColumnExpanded && (
           <div className="shrink-0 p-2 border-t overflow-y-auto max-h-64 space-y-2">
             <ReportImagePicker
               draftId={draftId}
@@ -5670,6 +5672,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
               disabled={isLocked}
             />
           </div>
+          )}
         </>
         )}
         </ResizablePanel>

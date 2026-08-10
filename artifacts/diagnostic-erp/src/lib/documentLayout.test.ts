@@ -328,7 +328,7 @@ describe("document layout engine — bill renderers (unified Classic)", () => {
 });
 
 describe("print delivery module", () => {
-  test("exports iframe and popup helpers without Electron APIs", async () => {
+  test("exports popup helpers without Electron APIs or hidden iframe print path", async () => {
     const mod = await import("./documentLayout/printDelivery");
     expect(typeof mod.printViaIframe).toBe("function");
     expect(typeof mod.writeAndPrint).toBe("function");
@@ -341,6 +341,8 @@ describe("print delivery module", () => {
     );
     expect(src).not.toContain("webContents");
     expect(src).not.toContain("printToPDF");
+    expect(src).not.toContain("__care_print_iframe__");
+    expect(src).toContain("writeAndPrint(null, html)");
   });
 });
 

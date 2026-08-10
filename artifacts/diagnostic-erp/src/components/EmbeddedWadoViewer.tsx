@@ -7,6 +7,7 @@ import {
   ZoomIn, ZoomOut, RotateCcw, Sun, Moon, ChevronLeft, ChevronRight,
   Layers, Maximize2, Minimize2, AlertTriangle, RefreshCw, ExternalLink,
 } from "lucide-react";
+import { BROWSER_DICOMWEB_BASE } from "@/lib/browserDicomWeb";
 import { planStudyLaunch, localStorageRouteCache, type StudyLaunchResult } from "@/lib/studyLaunchService";
 
 interface Series {
@@ -74,7 +75,10 @@ export interface EmbeddedViewerHandle {
 const EmbeddedWadoViewer = forwardRef<EmbeddedViewerHandle, {
   studyInstanceUID: string | null;
   accessionNumber?: string | null;
-}>(function EmbeddedWadoViewer({ studyInstanceUID, accessionNumber }, ref) {
+  /** Fill the left column (hide report images below) — distinct from fullscreen overlay. */
+  columnExpanded?: boolean;
+  onColumnExpandedChange?: (expanded: boolean) => void;
+}>(function EmbeddedWadoViewer({ studyInstanceUID, accessionNumber, columnExpanded = false, onColumnExpandedChange }, ref) {
   if (!studyInstanceUID) {
     return (
       <div className="flex flex-col items-center justify-center py-8 gap-2 text-muted-foreground text-sm">
@@ -84,15 +88,25 @@ const EmbeddedWadoViewer = forwardRef<EmbeddedViewerHandle, {
     );
   }
 
-  return <ViewerContent studyInstanceUID={studyInstanceUID} accessionNumber={accessionNumber} controlRef={ref} />;
+  return (
+    <ViewerContent
+      studyInstanceUID={studyInstanceUID}
+      accessionNumber={accessionNumber}
+      controlRef={ref}
+      columnExpanded={columnExpanded}
+      onColumnExpandedChange={onColumnExpandedChange}
+    />
+  );
 });
 
 export default EmbeddedWadoViewer;
 
-function ViewerContent({ studyInstanceUID, accessionNumber, controlRef }: {
+function ViewerContent({ studyInstanceUID, accessionNumber, controlRef, columnExpanded, onColumnExpandedChange }: {
   studyInstanceUID: string;
   accessionNumber?: string | null;
   controlRef?: ForwardedRef<EmbeddedViewerHandle>;
+  columnExpanded?: boolean;
+  onColumnExpandedChange?: (expanded: boolean) => void;
 }) {
   const [selectedSeriesUID, setSelectedSeriesUID] = useState<string | null>(null);
   const [selectedInstIdx, setSelectedInstIdx] = useState(0);
@@ -156,8 +170,8 @@ function ViewerContent({ studyInstanceUID, accessionNumber, controlRef }: {
   // back to the legacy static LAN URL.
   const bestOhifUrl = embedPlan?.finalLaunchUrl ?? launchData?.ohifUrl ?? null;
 
-  // Fetch series from DICOMweb
-  const dicomWebBase = launchData?.dicomWebBaseUrl;
+  // Same-origin ERP proxy — works on LAN, Tailscale, and public HTTPS alike.
+  const dicomWebBase = BROWSER_DICOMWEB_BASE;
 
   const fetchSeries = useCallback(async () => {
     if (!dicomWebBase || !studyInstanceUID) return;
@@ -259,15 +273,17 @@ function ViewerContent({ studyInstanceUID, accessionNumber, controlRef }: {
     try { localStorage.setItem(VIEW_MODE_KEY, m); } catch { /* private mode */ }
   };
 
+  const toggleColumnExpanded = () => onColumnExpandedChange?.(!columnExpanded);
+
   return (
-    <div className={`flex flex-col rounded-lg border overflow-hidden ${isExpanded ? "fixed inset-4 z-50 bg-background shadow-2xl" : "relative h-full"}`}>
-      {/* Header — double-click anywhere on the bar toggles the enlarged view.
-          (Double-clicks INSIDE the OHIF iframe belong to OHIF itself — it
-          uses them to maximize its own viewports — and cannot reach us.) */}
+    <div className={`flex flex-col rounded-lg border overflow-hidden min-h-0 ${isExpanded ? "fixed inset-4 z-50 bg-background shadow-2xl" : "relative h-full"}`}>
+      {/* Header — Maximize fills the left column (hides report images below).
+          Double-click toggles fullscreen overlay. Clicks inside the OHIF
+          iframe cannot reach us. */}
       <div
-        className="flex items-center justify-between gap-2 px-3 py-2 bg-muted/50 border-b flex-wrap cursor-pointer select-none"
+        className="flex items-center justify-between gap-2 px-3 py-2 bg-muted/50 border-b flex-wrap cursor-pointer select-none shrink-0"
         onDoubleClick={() => setIsExpanded((v) => !v)}
-        title={isExpanded ? "Double-click to restore" : "Double-click to enlarge"}
+        title={isExpanded ? "Double-click to exit fullscreen" : columnExpanded ? "Double-click for fullscreen" : "Maximize fills panel · double-click for fullscreen"}
         data-testid="viewer-header"
       >
         <div className="flex items-center gap-2 text-xs min-w-0">
@@ -303,8 +319,15 @@ function ViewerContent({ studyInstanceUID, accessionNumber, controlRef }: {
               <ExternalLink className="h-3.5 w-3.5" />
             </Button>
           )}
-          <Button size="sm" variant="ghost" className="h-7 w-7 p-0" onClick={() => setIsExpanded((v) => !v)} title={isExpanded ? "Collapse" : "Expand"}>
-            {isExpanded ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-7 w-7 p-0"
+            onClick={() => (isExpanded ? setIsExpanded(false) : toggleColumnExpanded())}
+            title={isExpanded ? "Exit fullscreen" : columnExpanded ? "Restore report images panel" : "Fill panel (hide report images below)"}
+            data-testid="viewer-column-expand"
+          >
+            {(isExpanded || columnExpanded) ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
           </Button>
         </div>
       </div>
@@ -315,14 +338,14 @@ function ViewerContent({ studyInstanceUID, accessionNumber, controlRef }: {
            and embeds whichever configured route is actually reachable AND
            https-compatible with this page. ───────────────────────────────── */
         embedPlan === undefined ? (
-          <div className="flex-1 min-h-[420px] flex items-center justify-center gap-2 bg-black text-white/50 text-sm">
+          <div className="flex-1 min-h-0 flex items-center justify-center gap-2 bg-black text-white/50 text-sm">
             <RefreshCw className="h-4 w-4 animate-spin" /> Detecting best viewer route…
           </div>
         ) : embedPlan?.success && embedPlan.finalLaunchUrl ? (
           <iframe
             title="OHIF viewer"
             src={embedPlan.finalLaunchUrl}
-            className="flex-1 w-full min-h-[420px] border-0 bg-black"
+            className="flex-1 w-full min-h-0 h-full border-0 bg-black"
             allow="fullscreen"
             data-testid="ohif-embed"
           />
@@ -330,7 +353,7 @@ function ViewerContent({ studyInstanceUID, accessionNumber, controlRef }: {
           /* Every configured OHIF route is plain http, and this page is https
              — the browser refuses to frame an http endpoint inside an https
              page, no matter which network the client is actually on. */
-          <div className="flex-1 min-h-[420px] flex flex-col items-center justify-center gap-2 p-4 text-center bg-black text-white/60 text-sm">
+          <div className="flex-1 min-h-0 flex flex-col items-center justify-center gap-2 p-4 text-center bg-black text-white/60 text-sm">
             <AlertTriangle className="h-8 w-8" />
             <p className="font-medium">OHIF cannot be embedded here</p>
             <p className="text-xs text-white/40 max-w-xs">
@@ -353,12 +376,12 @@ function ViewerContent({ studyInstanceUID, accessionNumber, controlRef }: {
           <iframe
             title="OHIF viewer"
             src={bestOhifUrl}
-            className="flex-1 w-full min-h-[420px] border-0 bg-black"
+            className="flex-1 w-full min-h-0 h-full border-0 bg-black"
             allow="fullscreen"
             data-testid="ohif-embed"
           />
         ) : (
-          <div className="flex-1 min-h-[420px] flex flex-col items-center justify-center gap-2 p-4 text-center bg-black text-white/60 text-sm">
+          <div className="flex-1 min-h-0 flex flex-col items-center justify-center gap-2 p-4 text-center bg-black text-white/60 text-sm">
             <AlertTriangle className="h-8 w-8" />
             <p className="font-medium">OHIF viewer is not configured</p>
             <p className="text-xs text-white/40 max-w-xs">

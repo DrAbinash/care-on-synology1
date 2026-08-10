@@ -535,8 +535,46 @@ dayCloseRouter.get("/:id", (req, res, next) => {
   const existing = row as Record<string, unknown>;
   const hasReport = n(existing.totalBilled) !== 0 || n(existing.totalRefunds) !== 0 || n(existing.totalExpenses) !== 0 || (Array.isArray(existing.testSummary) && (existing.testSummary as unknown[]).length > 0);
 
+  // Bills made inside this closure's window — shown in the detail dialog so
+  // the owner can see exactly which bills a close covered.
+  const billFrom = row.coveredFromTs ? new Date(row.coveredFromTs) : null;
+  const billTo = new Date(row.coveredToTs);
+  const windowBills = await db
+    .select({
+      id: billsTable.id,
+      billNumber: billsTable.billNumber,
+      totalAmount: billsTable.totalAmount,
+      paidAmount: billsTable.paidAmount,
+      balanceAmount: billsTable.balanceAmount,
+      status: billsTable.status,
+      createdAt: billsTable.createdAt,
+      createdByName: billsTable.createdByName,
+      patientName: sql<string>`COALESCE(${patientsTable.firstName} || ' ' || COALESCE(${patientsTable.lastName}, ''), 'Unknown')`,
+    })
+    .from(billsTable)
+    .leftJoin(patientsTable, eq(billsTable.patientId, patientsTable.id))
+    .where(
+      billFrom
+        ? and(gt(billsTable.createdAt, billFrom), lte(billsTable.createdAt, billTo))
+        : lte(billsTable.createdAt, billTo),
+    )
+    .orderBy(desc(billsTable.createdAt))
+    .limit(300);
+
+  const bills = windowBills.map((b) => ({
+    id: b.id,
+    billNumber: b.billNumber ?? String(b.id),
+    patientName: b.patientName,
+    totalAmount: n(b.totalAmount),
+    paidAmount: n(b.paidAmount),
+    balanceAmount: n(b.balanceAmount),
+    status: b.status ?? "pending",
+    createdByName: b.createdByName ?? "",
+    createdAt: b.createdAt ? new Date(b.createdAt).toISOString() : "",
+  }));
+
   if (hasReport) {
-    res.json(row);
+    res.json({ ...row, bills });
     return;
   }
 
@@ -560,6 +598,7 @@ dayCloseRouter.get("/:id", (req, res, next) => {
       totalAmount: b.totalAmount,
       refundAmount: b.refundAmount,
     })),
+    bills,
   };
 
   res.json(enriched);
@@ -1086,7 +1125,10 @@ dayCloseRouter.get("/staff-status", async (req, res) => {
   res.json({ users, lastOverallClose: lastOverall });
 });
 
-// Get full detail for a single user closure (admin).
+// Get full detail for a single user closure (admin), including the bills the
+// staff member made inside that closure's window — recomputed from the
+// persisted coveredFromTs → coveredToTs range so the admin can see exactly
+// which bills the counted cash covered.
 dayCloseRouter.get("/staff-close-detail/:id", requireOwnerOrAdmin, async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id)) { res.status(400).json({ error: "Invalid id" }); return; }
@@ -1096,7 +1138,150 @@ dayCloseRouter.get("/staff-close-detail/:id", requireOwnerOrAdmin, async (req, r
     .where(eq(userDayClosuresTable.id, id))
     .limit(1);
   if (!row) { res.status(404).json({ error: "Not found" }); return; }
-  res.json(row);
+
+  const from = row.coveredFromTs ? new Date(row.coveredFromTs) : null;
+  const to = new Date(row.coveredToTs);
+  const windowSummary = await summarizeUserWindow(row.userName, from, to);
+  res.json({ ...row, bills: windowSummary.bills });
+});
+
+// ── Admin-initiated per-staff close (cash handover one by one) ──────────────
+
+// Preview another staff member's open window (owner/admin). Same shape as
+// /my-preview — used by the Day Close page's per-staff close dialog.
+dayCloseRouter.get("/staff-preview/:userName", requireOwnerOrAdmin, async (req, res) => {
+  const userName = decodeURIComponent(String(req.params.userName ?? "")).trim();
+  if (!userName) { res.status(400).json({ error: "userName required" }); return; }
+
+  const from = await userWindowBoundary(userName);
+  const to = new Date();
+  const s = await summarizeUserWindow(userName, from, to);
+
+  res.json({
+    userName,
+    coveredFromTs: from,
+    coveredToTs: to,
+    expected: s.totals,
+    billsCount: s.billsCount,
+    paymentsCount: s.totals.count,
+    totalBilled: s.totalBilled,
+    totalDue: s.totalDue,
+    cashExpenses: s.cashExpenses,
+    suspenseTotal: s.suspenseTotal,
+    suspenseCount: s.suspenseItems.length,
+    suspenseItems: s.suspenseItems,
+    bills: s.bills,
+  });
+});
+
+// Close a staff member's day on their behalf (owner/admin) — the physical
+// handover flow: the cashier hands cash to the owner one at a time, and the
+// owner records the counted amounts here. The closure row is attributed to
+// the staff member (so their window advances exactly as a self-close would),
+// while the audit log records the admin who performed it.
+const AdminStaffCloseBody = UserCloseBody.extend({
+  userName: z.string().trim().min(1).max(200),
+});
+dayCloseRouter.post("/staff-close", requireOwnerOrAdmin, async (req, res) => {
+  const parsed = AdminStaffCloseBody.safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ error: "Invalid request body" }); return; }
+  const { userName, actuals, varianceNote, notes, denominations } = parsed.data;
+
+  const session = (req as StaffAuthRequest).staffSession;
+  const adminName = session?.subjectName ?? "Admin";
+  const adminRole = session?.role ?? "admin";
+  const adminId = session?.subjectId ?? null;
+
+  const inserted = await db.transaction(async (tx) => {
+    // Same per-user advisory lock shape as /my-close so an admin close can
+    // never race with the staff member's own close.
+    const lockId = BigInt(
+      Math.abs(userName.split("").reduce((a, c) => ((a * 31 + c.charCodeAt(0)) | 0), 0)),
+    );
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(${lockId})`);
+
+    const from = await userWindowBoundary(userName);
+    const to = new Date();
+    const s = await summarizeUserWindow(userName, from, to);
+
+    const totalExpected = s.totals.total;
+    const totalActual = actuals.cash + actuals.upi + actuals.card + actuals.cheque + actuals.other;
+    const variance = totalActual - totalExpected;
+    const denominationTotal = denominations ? calcDenominationTotal(denominations) : null;
+    const drawerStatus = variance === 0 ? "balanced" : "mismatch";
+
+    const istDate = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit",
+    }).format(to);
+
+    // userId resolved from the staff directory when the name matches, so the
+    // row links the same way a self-close does.
+    const [staffRow] = await tx
+      .select({ id: usersTable.id })
+      .from(usersTable)
+      .where(eq(usersTable.name, userName))
+      .limit(1);
+
+    const [row] = await tx
+      .insert(userDayClosuresTable)
+      .values({
+        userId: staffRow?.id ?? null,
+        userName,
+        closureDate: istDate,
+        closedAt: to,
+        coveredFromTs: from,
+        coveredToTs: to,
+        expectedCash: String(s.totals.cash),
+        expectedUpi: String(s.totals.upi),
+        expectedCard: String(s.totals.card),
+        expectedCheque: String(s.totals.cheque),
+        expectedOther: String(s.totals.other),
+        totalExpected: String(totalExpected),
+        totalBilled: String(s.totalBilled),
+        totalDue: String(s.totalDue),
+        billsCount: s.billsCount,
+        paymentsCount: s.totals.count,
+        actualCash: String(actuals.cash),
+        actualUpi: String(actuals.upi),
+        actualCard: String(actuals.card),
+        actualCheque: String(actuals.cheque),
+        actualOther: String(actuals.other),
+        totalActual: String(totalActual),
+        variance: String(variance),
+        varianceNote,
+        notes,
+        denominations: denominations ?? null,
+        denominationTotal: denominationTotal !== null ? String(denominationTotal) : null,
+        drawerStatus,
+      })
+      .returning();
+
+    await tx.insert(drawerAuditLogTable).values({
+      userClosureId: row.id,
+      action: drawerStatus === "mismatch" ? "mismatch_detected" : "closed",
+      userId: adminId,
+      userName: adminName,
+      userRole: adminRole,
+      expectedTotal: String(totalExpected),
+      actualTotal: String(totalActual),
+      variance: String(variance),
+      reason: [`Closed by ${adminName} on behalf of ${userName} (cash handover)`, varianceNote].filter(Boolean).join(" — "),
+    });
+
+    return { row, bills: s.bills, suspenseTotal: s.suspenseTotal, suspenseItems: s.suspenseItems };
+  });
+
+  req.log?.info(
+    { closureId: inserted.row.id, userName, closedByAdmin: adminName, variance: inserted.row.variance, drawerStatus: inserted.row.drawerStatus },
+    "Staff day closed by admin (handover)",
+  );
+  res.status(201).json({
+    ...inserted.row,
+    bills: inserted.bills,
+    suspenseTotal: inserted.suspenseTotal,
+    suspenseCount: inserted.suspenseItems.length,
+    suspenseItems: inserted.suspenseItems,
+  });
 });
 
 // Approve a mismatch — admin/owner only.
