@@ -217,6 +217,9 @@ export type BuildPrintHtmlOpts = {
   // printLogoHeightPx applies to Modern and Classic layouts.
   printMarginMm?: number | null;
   printLogoHeightPx?: number | null;
+  /** Header layout: "right" (default) = address/phone/website under Bill No. on the
+   * right side, bigger logo on the left; "left" = address under the clinic name. */
+  headerLayout?: "left" | "right" | null;
   printTitleFontPx?: number | null;
   printPatientNameFontPx?: number | null;
   printBodyFontPx?: number | null;
@@ -293,7 +296,10 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
   const totalPx = `${opts.printTotalFontPx ?? 13}px`;
   const footerPx = `${opts.printFooterFontPx ?? 11}px`;
   const tinyPx = `${opts.printTinyFontPx ?? 10}px`;
-  const logoH = resolveBillLogoHeightPx(opts.printLogoHeightPx, 120);
+  // "right" = reference layout: address block under Bill No. on the right,
+  // bigger logo filling the left so both sides read at par.
+  const addressRight = (opts.headerLayout ?? "right") === "right";
+  const logoH = resolveBillLogoHeightPx(opts.printLogoHeightPx, addressRight ? 140 : 120);
   const logoMaxW = Math.round(logoH * 2.0);
   const logoImgHtml = clinic?.logoDataUrl
     ? `<img src="${clinic.logoDataUrl}" alt="logo" style="max-height:${logoH}px;max-width:${logoMaxW}px;object-fit:contain;display:block;margin-bottom:4px"/>`
@@ -346,30 +352,43 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
   const billedBySignatureUrl: string = session?.user?.signatureDataUrl ?? "";
 
   const page = (copyIdx: number) => `
-      <!-- HEADER: larger logo + clinic address stacked on the left;
-           Invoice / Bill No. on the right. -->
+      <!-- HEADER: logo + clinic name on the left; Invoice / Bill No. on the
+           right. With headerLayout "right" (default), the address / phone /
+           website block also sits on the right under the bill number, and the
+           logo is larger so the two sides balance. The date lives only in the
+           patient row below — printing it here too looked duplicated. -->
       <table style="width:100%;border-collapse:collapse;margin-bottom:5px">
         <tr>
-          <td style="vertical-align:top;padding:0;width:62%">
+          <td style="vertical-align:top;padding:0;width:${addressRight ? "50%" : "62%"}">
             ${logoImgHtml}
             ${clinic?.name ? `<div style="font-size:${titleSize};font-weight:800;line-height:1.15;color:#000;margin-bottom:2px">${esc(clinic.name)}</div>` : ""}
             <div style="font-size:${bodyPx};color:#333;font-weight:700;line-height:1.2">${esc(clinic?.tagline || "DIAGNOSTIC & PATHOLOGY SERVICES")}</div>
-            ${clinic?.address ? `<div style="font-size:${headerPx};color:#555;font-weight:600;line-height:1.4;margin-top:4px">${esc(clinic.address.replace(/\s*\n\s*/g, ", ").trim())}</div>` : ""}
-            <div style="font-size:${headerPx};color:#555;font-weight:600;line-height:1.4;margin-top:1px">
+            ${!addressRight && clinic?.address ? `<div style="font-size:${headerPx};color:#555;font-weight:600;line-height:1.4;margin-top:4px">${esc(clinic.address.replace(/\s*\n\s*/g, ", ").trim())}</div>` : ""}
+            ${!addressRight ? `<div style="font-size:${headerPx};color:#555;font-weight:600;line-height:1.4;margin-top:1px">
               ${clinic?.phone ? `PH: ${esc(clinic.phone)}` : ""}
               ${clinic?.email ? `${clinic?.phone ? " · " : ""}EMAIL: ${esc(clinic.email)}` : ""}
-            </div>
-            ${clinic?.website || clinic?.gstin ? `<div style="font-size:${headerPx};color:#555;font-weight:600;line-height:1.4">
+            </div>` : ""}
+            ${!addressRight && (clinic?.website || clinic?.gstin) ? `<div style="font-size:${headerPx};color:#555;font-weight:600;line-height:1.4">
               ${clinic?.website ? esc(clinic.website) : ""}
               ${clinic?.gstin ? `${clinic?.website ? " · " : ""}GSTIN: ${esc(clinic.gstin)}` : ""}
             </div>` : ""}
           </td>
-          <td style="vertical-align:top;text-align:right;padding:0;width:38%">
+          <td style="vertical-align:top;text-align:right;padding:0;width:${addressRight ? "50%" : "38%"}">
             <div style="font-size:${titleSize};font-weight:800;letter-spacing:1.2px;text-transform:uppercase">${isCancelled ? "CANCELLED" : isUnconfirmedQr ? "AWAITING PAYMENT" : "INVOICE"}</div>
             <div style="font-size:${headerPx};color:#555;font-weight:600;margin-top:6px;white-space:nowrap">
-              BILL NO. <span style="font-size:${titleSize};font-weight:800;color:#000">${esc(billDigits)}</span>
+              BILL NO: <span style="font-size:${titleSize};font-weight:800;color:#000">${esc(billDigits)}</span>
             </div>
-            <div style="font-size:${headerPx};color:#555;font-weight:600;margin-top:4px">${esc(created.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }).toUpperCase())} · ${esc(created.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: true }).toUpperCase())}</div>
+            ${addressRight && clinic?.address
+              ? clinic.address.split(/\s*\n\s*/).filter(Boolean).map((line) => `<div style="font-size:${headerPx};color:#555;font-weight:600;line-height:1.4;margin-top:1px">${esc(line.trim())}</div>`).join("")
+              : ""}
+            ${addressRight && (clinic?.phone || clinic?.email) ? `<div style="font-size:${headerPx};color:#555;font-weight:600;line-height:1.4;margin-top:1px">
+              ${clinic?.phone ? `PH: ${esc(clinic.phone)}` : ""}
+              ${clinic?.email ? `${clinic?.phone ? " · " : ""}EMAIL: ${esc(clinic.email)}` : ""}
+            </div>` : ""}
+            ${addressRight && (clinic?.website || clinic?.gstin) ? `<div style="font-size:${headerPx};color:#555;font-weight:600;line-height:1.4">
+              ${clinic?.website ? esc(clinic.website) : ""}
+              ${clinic?.gstin ? `${clinic?.website ? " · " : ""}GSTIN: ${esc(clinic.gstin)}` : ""}
+            </div>` : ""}
           </td>
         </tr>
       </table>

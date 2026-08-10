@@ -117,9 +117,31 @@ describe("document layout engine — bill renderers (unified Classic)", () => {
 
   test("bill number renders on the same line as Bill No.", () => {
     const html = buildBillPrintHtml(baseOpts());
-    // Classic layout: BILL NO. and number are inline
-    expect(html).toContain("BILL NO. <span");
+    // Reference layout: BILL NO: and number are inline
+    expect(html).toContain("BILL NO: <span");
     expect(html).toContain("2026001");
+  });
+
+  test("header layout 'right' puts address under Bill No.; 'left' keeps it under clinic name", () => {
+    const right = buildBillPrintHtml(baseOpts({ headerLayout: "right" }));
+    const left = buildBillPrintHtml(baseOpts({ headerLayout: "left" }));
+    // Both render the address somewhere
+    expect(right).toContain("Main Road, Deoghar");
+    expect(left).toContain("Main Road, Deoghar");
+    // Right layout: address appears AFTER the BILL NO line (it's on the right side)
+    const rightBillIdx = right.indexOf("BILL NO:");
+    const rightAddrIdx = right.indexOf("Main Road, Deoghar");
+    expect(rightAddrIdx).toBeGreaterThan(rightBillIdx);
+    // Left layout: address appears BEFORE the BILL NO line (left cell comes first)
+    const leftBillIdx = left.indexOf("BILL NO:");
+    const leftAddrIdx = left.indexOf("Main Road, Deoghar");
+    expect(leftAddrIdx).toBeLessThan(leftBillIdx);
+  });
+
+  test("date renders exactly once on the bill", () => {
+    const html = buildBillPrintHtml(baseOpts());
+    const matches = html.match(/01 AUG 2026/g) ?? [];
+    expect(matches.length).toBe(1);
   });
 
   test.each([1, 5, 10])("%i-test bill renders correctly", (count) => {

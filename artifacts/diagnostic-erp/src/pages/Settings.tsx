@@ -4835,6 +4835,10 @@ const LAYOUT_PRESETS = {
   },
 } as const;
 
+const headerLayouts: { id: string; label: string }[] = [
+  { id: "right", label: "Address on right (under Bill No.)" },
+  { id: "left", label: "Address on left (under clinic name)" },
+];
 const billPaperSizes: { id: string; label: string }[] = [
   { id: "A5-portrait", label: "A5 Portrait" },
   { id: "A5-landscape", label: "A5 Landscape" },
@@ -4938,6 +4942,7 @@ function BillingPrintTab() {
       isBW: effectivePreviewIsBW,
       qrDataUrl: previewQrUrl,
       format: deferredSettings.defaultFormat,
+      headerLayout: deferredSettings.headerLayout,
       showQr: deferredSettings.showQrCode,
       showTat: deferredSettings.showTatOnBill,
       showAmountInWords: deferredSettings.showAmountInWords,
@@ -5082,15 +5087,15 @@ function BillingPrintTab() {
       {/* One "recommended for A5-landscape ink" callout at the top of the tab
           so a new admin knows the right combination in one glance. */}
       <div className="rounded-xl border border-blue-200 bg-blue-50/60 dark:bg-blue-950/20 dark:border-blue-800 px-4 py-3 text-xs text-blue-900 dark:text-blue-200 leading-relaxed">
-        <strong>Recommended for most Indian diagnostic centres:</strong> Format{" "}
-        <em>Modern — A5 Landscape</em> · Paper <em>A5 Landscape</em> · Direct Print After Save <em>on</em>{" "}
+        <strong>Recommended for most Indian diagnostic centres:</strong> Header{" "}
+        <em>Address on right</em> · Paper <em>A5 Landscape</em> · Direct Print After Save <em>on</em>{" "}
         (below). Dense one-page bill — avoids the half-blank A4 look. Watch the Live Preview on the right
         while you tune.{" "}
-        {(settings.defaultFormat !== "modern-landscape" || settings.defaultPaperSize !== "A5-landscape") && (
+        {settings.defaultPaperSize !== "A5-landscape" && (
           <button
             type="button"
             className="ml-1 underline font-semibold hover:no-underline"
-            onClick={() => update({ defaultFormat: "modern-landscape", defaultPaperSize: "A5-landscape", autoA4Threshold: 8 })}
+            onClick={() => update({ defaultPaperSize: "A5-landscape", autoA4Threshold: 8 })}
             data-testid="apply-recommended-bill-layout"
           >
             Apply recommended layout
@@ -5101,10 +5106,10 @@ function BillingPrintTab() {
       {/* SECTION 1 — Essentials: what the bill looks like AND what paper it prints on */}
       <SectionCard title="Format &amp; Paper" subtitle="The two decisions that determine everything else. Pick a layout, pick your paper.">
         <SelectCard
-          label="Bill layout"
-          options={billFormats}
-          value={settings.defaultFormat}
-          onChange={(v) => update({ defaultFormat: v as any })}
+          label="Header layout"
+          options={headerLayouts}
+          value={settings.headerLayout ?? "right"}
+          onChange={(v) => update({ headerLayout: v as any })}
         />
         <SelectCard
           label="Paper size &amp; orientation"
@@ -5333,7 +5338,7 @@ function BillingPrintTab() {
           </div>
         </div>
         <p className="text-[11px] text-center text-muted-foreground">
-          {billFormats.find((f) => f.id === settings.defaultFormat)?.label ?? settings.defaultFormat}
+          {headerLayouts.find((f) => f.id === (settings.headerLayout ?? "right"))?.label ?? ""}
           {" · "}
           {billPaperSizes.find((p) => p.id === settings.defaultPaperSize)?.label ?? settings.defaultPaperSize}
         </p>

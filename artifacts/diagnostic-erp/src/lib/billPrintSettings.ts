@@ -106,6 +106,9 @@ export type BillPrintSettings = {
   printMarginMm: number | null;
   /** Clinic logo height on the printed bill (px). null = format built-in default. */
   printLogoHeightPx: number | null;
+  /** Header layout: "right" = address/phone/website under Bill No. (reference style);
+   * "left" = address block under the clinic name (classic style). */
+  headerLayout: "left" | "right" | null;
   printTitleFontPx: number | null;
   printPatientNameFontPx: number | null;
   printBodyFontPx: number | null;
@@ -152,6 +155,7 @@ export const GLOBAL_BILL_PRINT_DEFAULTS: BillPrintSettings = {
   showQueueTokenOnBill: false,
   printMarginMm: null,
   printLogoHeightPx: null,
+  headerLayout: "right",
   printTitleFontPx: null,
   printPatientNameFontPx: null,
   printBodyFontPx: null,
@@ -341,6 +345,7 @@ export function printLayoutOpts(settings: BillPrintSettings) {
   return {
     printMarginMm: settings.printMarginMm,
     printLogoHeightPx: settings.printLogoHeightPx,
+    headerLayout: settings.headerLayout,
     printTitleFontPx: settings.printTitleFontPx,
     printPatientNameFontPx: settings.printPatientNameFontPx,
     printBodyFontPx: settings.printBodyFontPx,
