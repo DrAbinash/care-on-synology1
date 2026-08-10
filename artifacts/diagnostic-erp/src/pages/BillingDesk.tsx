@@ -1405,6 +1405,8 @@ export default function BillingDesk() {
       type BillResponse = {
         id: number;
         billNumber: string;
+        createdAt?: string;
+        createdByName?: string | null;
         token?: { tokenNo: number; tokenDate: string } | null;
         testTokens?: Array<{ orderTestId: number; testName: string; department: string; roomNumber: string; floorLabel: string; tokenNo: number }>;
         needsFormFData?: boolean;
