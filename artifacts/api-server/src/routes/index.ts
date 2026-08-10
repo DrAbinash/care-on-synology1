@@ -2,12 +2,14 @@ import { Router, type IRouter } from "express";
 import healthRouter from "./health";
 import systemRouter from "./system";
 import { patientsRouter } from "./patients";
+import patientTimelineRouter from "./patientTimeline";
 import { doctorsRouter } from "./doctors";
 import { testsRouter } from "./tests";
 import { ordersRouter } from "./orders";
 import { billsRouter, paymentsRouter } from "./bills";
 import { reportsRouter } from "./reports";
 import inventoryRouter from "./inventory";
+import inventoryDemandsRouter from "./inventoryDemands";
 import inventoryBatchesRouter from "./inventoryBatches";
 import { purchaseInvoicesRouter } from "./purchaseInvoices";
 import accountingRouter from "./accounting";
@@ -117,6 +119,8 @@ import { db, clinicSettingsTable, ledgersTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { backupLimiter, exportLimiter, adminMutationLimiter, standardUploadLimiter, loginLimiter, generalLimiter, n8nAutomationLimiter } from "../middleware/rateLimits";
 import { activePluginRouter } from "../plugin-loader";
+import { superAdminHostAuthRouter } from "./superAdminHostAuth";
+import { superAdminBooksHostRouter } from "./superAdminBooksHost";
 import userPreferencesRouter from "./userPreferences";
 import barcodeResolverRouter from "./barcode-resolver";
 import { uploadsRouter } from "./uploads";
@@ -142,6 +146,7 @@ import { radiologyBrainIntelligenceRouter } from "./radiologyBrainIntelligence";
 import { radiologyTumorFollowupRouter } from "./radiologyTumorFollowup";
 import { radiologyAnnotationsRouter } from "./radiologyAnnotations";
 import { radiologyOllamaRouter } from "./radiologyOllama";
+import { aiPipelineHealthRouter } from "./aiPipelineHealth";
 import { radiologySnippetsRouter } from "./radiologySnippets";
 import { radiologyMyAnalyticsRouter } from "./radiologyMyAnalytics";
 import { bankingRouter, bankingWebhookRouter } from "./banking";
@@ -203,6 +208,14 @@ router.post("/super-admin/usb/verify", loginLimiter, (req, res): void => {
   }
   res.json({ ok: true, enforced: isUsbGateEnforced() });
 });
+
+// Host-side login (before plugin gate). Fixes:
+//  - "Super Admin plugin is not loaded" blocking PIN/usbPin login
+//  - brittle exact display-name match ("Dr Abinash Kumar" only)
+router.use("/super-admin", superAdminHostAuthRouter);
+// Host-side assign-doctors (before plugin gate). Fixes USB plugin SQL that
+// referenced non-existent orders.appointment_id → Internal server error.
+router.use("/super-admin", superAdminBooksHostRouter);
 
 const SUPER_ADMIN_PREFIXES = [
   "/super-admin",
@@ -339,6 +352,7 @@ router.use("/integration/v1", integrationInboundRouter);
 
 // Patient data — /patients permission
 router.use("/patients", requireStaffAuth, requireStaffPermission("/patients"), patientsRouter);
+router.use("/patients", requireStaffAuth, requireStaffPermission("/patients"), patientTimelineRouter);
 
 // Doctor catalogue: any authenticated staff can READ (Billing Desk's
 // referring-doctor picker and Register.tsx both need the doctor list, same
@@ -419,7 +433,8 @@ router.use("/measurement-registry", requireStaffAuth, requireAdminRole, measurem
 // self-validation + coverage scan of existing report parameter labels).
 router.use("/pathology-registry", requireStaffAuth, requireAdminRole, pathologyRegistryRouter);
 
-// Inventory — /inventory permission
+// Inventory — /inventory permission (demands router first — /demands before /:id)
+router.use("/inventory", requireStaffAuth, requireStaffPermission("/inventory"), inventoryDemandsRouter);
 router.use("/inventory", requireStaffAuth, requireStaffPermission("/inventory"), inventoryRouter);
 // Reagent batch/lot + expiry + auto-reorder — additive, same /inventory prefix + guards.
 router.use("/inventory", requireStaffAuth, requireStaffPermission("/inventory"), inventoryBatchesRouter);
@@ -557,7 +572,15 @@ router.get("/clinic-settings/branding", async (_req, res) => {
     // Schema may be ahead of the database (missing columns). Return safe defaults.
   }
   if (!row) {
-    res.json({ name: "Care Diagnostics", tagline: "", address: "", registeredAddress: "", phone: "", email: "", website: "", gstin: "", logoDataUrl: null, footerNote: "", billPrintCopies: 1, billDefaultPaperSize: "A5", billShowCode: false, billShowCategory: false, qrOnBillEnabled: true, showTatOnBill: false, dayCloseAutoPrint: true, quickTestIds: "[null,null,null,null,null,null]", formFTestIds: "[]", formFBillingPrompt: false, formFAddressRequired: true, formFGuardianRequired: true });
+    res.json({
+      name: "Care Diagnostics", tagline: "", address: "", registeredAddress: "", phone: "", email: "", website: "", gstin: "",
+      logoDataUrl: null, footerNote: "", billPrintCopies: 1, billDefaultPaperSize: "A5",
+      billPrintSettingsJson: "{}",
+      billShowCode: false, billShowCategory: false, qrOnBillEnabled: true, showTatOnBill: false,
+      dayCloseAutoPrint: true, quickTestIds: "[null,null,null,null,null,null]", formFTestIds: "[]",
+      formFBillingPrompt: false, formFAddressRequired: true, formFGuardianRequired: true,
+      patientPhoneRequired: true,
+    });
     return;
   }
   res.json({
@@ -575,6 +598,10 @@ router.get("/clinic-settings/branding", async (_req, res) => {
     portalWelcomeMessage: row.portalWelcomeMessage ?? "",
     billPrintCopies: row.billPrintCopies ?? 1,
     billDefaultPaperSize: row.billDefaultPaperSize ?? "A5",
+    // Required for Admin Lock / clinic-wide bill print — Billing Desk and Bill
+    // Detail load clinic data from this public branding route (not the auth
+    // GET /clinic-settings). Without this field, adminLock never reaches counters.
+    billPrintSettingsJson: row.billPrintSettingsJson ?? "{}",
     billShowCode: row.billShowCode ?? false,
     billShowCategory: row.billShowCategory ?? false,
     qrOnBillEnabled: row.qrOnBillEnabled ?? true,
@@ -585,6 +612,7 @@ router.get("/clinic-settings/branding", async (_req, res) => {
     formFBillingPrompt: row.formFBillingPrompt ?? false,
     formFAddressRequired: row.formFAddressRequired ?? true,
     formFGuardianRequired: row.formFGuardianRequired ?? true,
+    patientPhoneRequired: row.patientPhoneRequired ?? true,
   });
 });
 
@@ -638,7 +666,7 @@ router.use(
   },
   testCategoriesRouter,
 );
-router.use("/report-templates", requireStaffAuth, requireStaffSubPermission("/settings", "infrastructure"), reportTemplatesRouter);
+router.use("/report-templates", requireStaffAuth, requireStaffPermission("/report-generator"), reportTemplatesRouter);
 router.use("/knowledge-base", requireStaffAuth, requireStaffSubPermission("/settings", "infrastructure"), knowledgeBaseRouter);
 router.use("/ai-caller-credentials", aiCallerCredentialsRouter);
 // External AI-caller-authenticated path — deliberately NOT behind
@@ -907,6 +935,9 @@ router.use("/ai-reporting", requireStaffAuth, aiReportingRouter);
 router.use("/ai-prompt-templates", requireStaffAuth, aiPromptTemplatesRouter);
 router.use("/ai-prompt-library", requireStaffAuth, aiPromptLibraryRouter);
 router.use("/ai-model-routing", requireStaffAuth, aiModelRoutesRouter);
+
+// Unified OCR + local-AI pipeline health / model registry / non-PHI smoke test
+router.use("/ai-pipeline", requireStaffAuth, aiPipelineHealthRouter);
 
 // AI Comparison Workspace
 router.use("/ai-comparison", requireStaffAuth, aiComparisonRouter);

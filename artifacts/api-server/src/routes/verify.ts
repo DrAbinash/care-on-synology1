@@ -1,22 +1,26 @@
 import { Router } from "express";
 import { db, billsTable, patientsTable, clinicSettingsTable, orderTestsTable, testsTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
+import { buildBillAuditHash } from "../lib/billAuditHash";
 
 export const verifyRouter = Router();
 
 // Public bill verification endpoint. The QR code printed on every bill
 // (when clinic.qrOnBillEnabled is on) encodes the URL
-//   https://<host>/api/verify/bill/<billNumber>
+//   https://<host>/api/verify/bill/<billNumber>?hash=<fnv1a>
 // pointing here. Anyone scanning the QR (regulator, patient, auditor) gets
 // a self-contained read-only HTML page proving the bill exists in the
-// database and showing its key totals + status. No PHI beyond what is
-// already on the printed receipt is returned. No auth — that's the point.
+// database and showing its key totals + status. The ?hash= query param is
+// the FNV-1a of BILL_NO-TIMESTAMP-TOTAL-OPERATOR_ID; mismatch means the
+// physical QR / printed layout was altered after generation.
 verifyRouter.get("/bill/:billNumber", async (req, res) => {
   const billNumber = String(req.params.billNumber || "").trim();
   if (!billNumber || billNumber.length > 64) {
     res.status(400).type("text/html").send(renderInvalid("Invalid bill number"));
     return;
   }
+
+  const printedHash = String(req.query.hash ?? "").trim().toUpperCase();
 
   const [billRow] = await db
     .select({
@@ -27,6 +31,7 @@ verifyRouter.get("/bill/:billNumber", async (req, res) => {
       balanceAmount: billsTable.balanceAmount,
       status: billsTable.status,
       createdAt: billsTable.createdAt,
+      createdByName: billsTable.createdByName,
       cancelledAt: billsTable.cancelledAt,
       orderId: billsTable.orderId,
       patientId: billsTable.patientId,
@@ -43,13 +48,35 @@ verifyRouter.get("/bill/:billNumber", async (req, res) => {
     return;
   }
 
-  // Increment both analytics counters in one update
-  await db.update(billsTable)
-    .set({
-      qrScanCount: (billRow.qrScanCount ?? 0) + 1,
-      receiptVerificationCount: (billRow.receiptVerificationCount ?? 0) + 1,
-    })
-    .where(eq(billsTable.id, billRow.id));
+  // Recompute FNV-1a from official DB fields and compare to the QR hash.
+  const expectedHash = buildBillAuditHash({
+    billNumber: billRow.billNumber,
+    createdAt: billRow.createdAt,
+    totalAmount: billRow.totalAmount,
+    operatorId: (billRow.createdByName && String(billRow.createdByName).trim()) || "0",
+  });
+
+  const hashMatches = !!printedHash && printedHash === expectedHash;
+
+  // Increment analytics only for genuine (hash-matched) scans — a forged QR
+  // that guesses a real bill number should not inflate verification counts.
+  if (hashMatches) {
+    await db.update(billsTable)
+      .set({
+        qrScanCount: (billRow.qrScanCount ?? 0) + 1,
+        receiptVerificationCount: (billRow.receiptVerificationCount ?? 0) + 1,
+      })
+      .where(eq(billsTable.id, billRow.id));
+  }
+
+  if (!hashMatches) {
+    res.status(400).type("text/html").send(renderTampered({
+      billNumber: billRow.billNumber,
+      expectedHash,
+      printedHash: printedHash || "(missing)",
+    }));
+    return;
+  }
 
   // Get patient details
   const [patient] = await db
@@ -149,10 +176,11 @@ function renderVerified(b: {
     b.status === "paid" ? "ok" :
     b.status === "partial" ? "warn" :
     b.status === "cancelled" ? "bad" : "warn";
-  const statusLabel =
-    b.status === "cancelled" ? "❌ Cancelled" :
-    b.status === "paid" ? "✅ Verified — Paid" :
-    "✅ Verified";
+  const statusLabel = "✅ VERIFIED GENUINE RECEIPT";
+  const payLabel =
+    b.status === "cancelled" ? "Cancelled" :
+    b.status === "paid" ? "Paid" :
+    b.status === "partial" ? "Partial" : String(b.status);
   const testRows = b.tests && b.tests.length > 0
     ? b.tests.map((t, i) => `<tr><td style="text-align:left">${i + 1}. ${esc(t.name ?? "Unnamed")}</td><td style="text-align:right">${inr(Number(t.price || 0))}</td></tr>`).join("")
     : "";
@@ -166,14 +194,14 @@ function renderVerified(b: {
       ${b.logoDataUrl ? `<div style="text-align:center;margin-bottom:12px"><img src="${b.logoDataUrl}" alt="logo" style="max-height:48px;max-width:160px;object-fit:contain"/></div>` : ""}
       <span class="badge ${statusClass}">${statusLabel}</span>
       <h1>${esc(b.clinicName)}</h1>
-      <div class="muted">This bill was issued by ${esc(b.clinicName)} and is recorded in their system.</div>
+      <div class="muted">This bill was issued by ${esc(b.clinicName)} and is recorded in their system. Anti-tamper hash matched.</div>
       <table>
         <tr><td>Bill Number</td><td>${esc(b.billNumber)}</td></tr>
         <tr><td>Patient</td><td>${esc(b.patientName)}</td></tr>
         ${b.patientCode ? `<tr><td>Patient ID</td><td>${esc(b.patientCode)}</td></tr>` : ""}
         ${b.patientSince ? `<tr><td>Patient Since</td><td>${esc(b.patientSince)}</td></tr>` : ""}
         <tr><td>Issued</td><td>${esc(b.issued)}</td></tr>
-        <tr><td>Status</td><td style="text-transform:capitalize">${esc(b.status)}</td></tr>
+        <tr><td>Status</td><td style="text-transform:capitalize">${esc(payLabel)}</td></tr>
         <tr><td>Paid</td><td>${inr(b.paid)}</td></tr>
         <tr><td>Balance</td><td>${inr(b.balance)}</td></tr>
         <tr class="total"><td>Total Amount</td><td>${inr(b.total)}</td></tr>
@@ -183,6 +211,23 @@ function renderVerified(b: {
       <div class="footer">Verified at ${esc(new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" }))} IST</div>
     </div></div>
   </body></html>`;
+}
+
+function renderTampered(opts: { billNumber: string; expectedHash: string; printedHash: string }) {
+  return `<!doctype html><html lang="en"><head>
+    <meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+    <title>Security Breach — Bill ${esc(opts.billNumber)}</title><style>${SHELL_CSS}</style>
+  </head><body><div class="wrap"><div class="card">
+    <span class="badge bad">❌ SECURITY BREACH</span>
+    <h1>Receipt integrity check failed</h1>
+    <div class="muted" style="margin-top:10px;line-height:1.5;font-size:14px;color:#7f1d1d">
+      The physical QR code or printed text layout has been altered after system generation.
+    </div>
+    <div class="muted" style="margin-top:14px">
+      Bill <strong>${esc(opts.billNumber)}</strong> exists in our records, but the anti-tamper hash on the scanned QR does not match the database.
+    </div>
+    <div class="footer">Checked at ${esc(new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" }))} IST</div>
+  </div></div></body></html>`;
 }
 
 function renderNotFound(billNumber: string) {

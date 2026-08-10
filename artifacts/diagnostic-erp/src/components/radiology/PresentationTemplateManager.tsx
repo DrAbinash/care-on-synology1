@@ -20,6 +20,10 @@ import {
   LayoutTemplate, Eye, Copy, PenSquare, Archive, Upload, Download,
   RotateCcw, ChevronDown, ChevronRight, X, Check,
 } from "lucide-react";
+import ReportLayoutQuickSelect, {
+  type ReportLayoutKey,
+  quickSelectLayoutKey,
+} from "@/components/radiology/ReportLayoutQuickSelect";
 
 type CopyType = "standard" | "patient" | "referrer";
 
@@ -175,6 +179,17 @@ export default function PresentationTemplateManager({ isAdmin }: { isAdmin: bool
         Versioned templates for every rendered surface. Published versions are immutable — editing creates a new
         version; finalized reports keep rendering the version they were signed under.
       </p>
+
+      <div className="space-y-1.5">
+        <label className="text-[11px] font-medium text-muted-foreground">Quick layout (standard copy)</label>
+        <ReportLayoutQuickSelect
+          value={quickSelectLayoutKey(data?.active?.standard)}
+          activeKey={data?.active?.standard}
+          disabled={!isAdmin || activate.isPending}
+          onChange={(layout: ReportLayoutKey) => activate.mutate({ templateKey: layout, copyType: "standard" })}
+          className="max-w-md"
+        />
+      </div>
 
       {/* Active selection per copy type */}
       <div className="grid md:grid-cols-3 gap-3" data-testid="active-selectors">

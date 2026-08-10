@@ -18,6 +18,7 @@ async function buildAll() {
   await esbuild({
     entryPoints: [
       path.resolve(artifactDir, "src/index.ts"),
+      path.resolve(artifactDir, "src/worker.ts"),
       // Deployment smoke-test CLI — bundled here so it is a self-contained
       // dist/smoke-cli.mjs runnable with plain `node` inside the api container
       // (no tsx / no separate install), reusing the same @workspace/db bundle.

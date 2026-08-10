@@ -61,6 +61,7 @@ const MeasurementRegistryManager = lazy(() => import("@/pages/MeasurementRegistr
 const PathologyRegistry = lazy(() => import("@/pages/PathologyRegistry"));
 const Patients        = lazy(() => import("@/pages/Patients"));
 const PatientDetail   = lazy(() => import("@/pages/PatientDetail"));
+const PatientTimeline = lazy(() => import("@/pages/PatientTimeline"));
 const Tests           = lazy(() => import("@/pages/Tests"));
 const Orders          = lazy(() => import("@/pages/Orders"));
 const OrderDetail     = lazy(() => import("@/pages/OrderDetail"));
@@ -72,6 +73,7 @@ const Reports         = lazy(() => import("@/pages/Reports"));
 const ReportGenerator = lazy(() => import("@/pages/ReportGenerator"));
 const Inventory       = lazy(() => import("@/pages/Inventory"));
 const HopeReferrals   = lazy(() => import("@/pages/HopeReferrals"));
+const HopeHospitalConnection = lazy(() => import("@/pages/HopeHospitalConnection"));
 const IntegrationAdmin = lazy(() => import("@/pages/IntegrationAdmin"));
 const WhatsAppIntegrationSettings = lazy(() => import("@/pages/WhatsAppIntegrationSettings"));
 const Accounting      = lazy(() => import("@/pages/Accounting"));
@@ -112,11 +114,13 @@ const QueuePage       = lazy(() => import("@/pages/Queue"));
 const Radiology       = lazy(() => import("@/pages/Radiology"));
 const RadiologyLegacy = lazy(() => import("@/pages/RadiologyLegacy"));
 const RadiologyWorklist = lazy(() => import("@/pages/RadiologyWorklist"));
+const RadiologyOpenRedirect = lazy(() => import("@/pages/RadiologyOpenRedirect"));
 const RadiologyReportEditor = lazy(() => import("@/pages/RadiologyReportEditor"));
 const RadiologyReportGen = lazy(() => import("@/pages/RadiologyReportGenerator"));
 const RadiologyReportBuilder = lazy(() => import("@/pages/RadiologyReportBuilder"));
 const RadiologyFindingsManager = lazy(() => import("@/pages/RadiologyFindingsManager"));
 const RadiologyReportingWorkspace = lazy(() => import("@/pages/RadiologyReportingWorkspace"));
+const RadiologyReportingWorkspaceLegacy = lazy(() => import("@/pages/RadiologyReportingWorkspace.legacy"));
 const UsgCompanionWorkspace = lazy(() => import("@/pages/UsgCompanionWorkspace"));
 const PacsDashboard         = lazy(() => import("@/pages/PacsDashboard"));
 const RadiologySettingsCenter = lazy(() => import("@/pages/RadiologySettingsCenter"));
@@ -258,8 +262,8 @@ const queryClient = new QueryClient({
 });
 
 const ERP_NAV_ORDER = [
-  "/", "/dashboard", "/my-daily-summary", "/reception-command-center", "/daily-summary", "/patients", "/register", "/appointments", "/queue", "/online-bookings",
-  "/radiology", "/radiology/legacy", "/radiology/worklist", "/radiology/report-generator", "/radiology/report-builder", "/radiology/findings-manager", "/radiology/reporting-workspace", "/radiology/advanced-tools", "/radiology/pacs-dashboard", "/radiology/operational-health", "/radiology/pacs-settings", "/radiology/network-control-center", "/radiology/pacs-logs",
+  "/", "/dashboard", "/my-daily-summary", "/my-day-close", "/reception-command-center", "/daily-summary", "/patients", "/register", "/appointments", "/queue", "/online-bookings",
+  "/radiology", "/radiology/legacy", "/radiology/worklist", "/radiology/open", "/radiology/report-generator", "/radiology/report-builder", "/radiology/findings-manager", "/radiology/reporting-workspace", "/radiology/advanced-tools", "/radiology/pacs-dashboard", "/radiology/operational-health", "/radiology/pacs-settings", "/radiology/network-control-center", "/radiology/pacs-logs",
   "/radiology/dicom-agent-dashboard", "/radiology/modality-management",
   "/radiology/agent-setup", "/radiology/ai-reporting-settings", "/radiology/ai-prompt-templates", "/radiology/ai-model-routing", "/radiology/structured-report-templates", "/radiology/ai-audit-log",
   "/radiology/viewer", "/radiology/archive-lifecycle", "/radiology/watchdog", "/radiology/ai-inference-settings", "/radiology/hl7-settings", "/teleradiology",
@@ -374,12 +378,14 @@ function Router() {
               <Route path="/" component={BillingDesk} />
               <Route path="/dashboard" component={Dashboard} />
               <Route path="/hope-referrals" component={HopeReferrals} />
+              <Route path="/hope-connection" component={HopeHospitalConnection} />
               <Route path="/diagnostic-integration" component={IntegrationAdmin} />
               <Route path="/admin/integrations/whatsapp" component={WhatsAppIntegrationSettings} />
               <Route path="/diagnostics" component={Diagnostics} />
               <Route path="/measurement-registry" component={MeasurementRegistryManager} />
               <Route path="/pathology-registry" component={PathologyRegistry} />
               <Route path="/patients" component={Patients} />
+              <Route path="/patients/:id/timeline" component={PatientTimeline} />
               <Route path="/patients/:id">
                 {(params) => <PatientDetail id={Number(params.id)} />}
               </Route>
@@ -420,11 +426,13 @@ function Router() {
               <Route path="/radiology/cockpit" component={RedirectToWorkspace} />
               <Route path="/radiology/my-collection" component={MyCollection} />
               <Route path="/radiology/worklist" component={RadiologyWorklist} />
+              {/* Hope OPD / partner deep-link → Reporting Workspace (or MRI worklist). */}
+              <Route path="/radiology/open" component={RadiologyOpenRedirect} />
               <Route path="/radiology/report-generator">
-                {() => <RadiologyReportGen />}
+                {() => <OwnerOnlyPreserved><RadiologyReportGen /></OwnerOnlyPreserved>}
               </Route>
               <Route path="/radiology/report-generator/:studyId">
-                {(params) => <RadiologyReportGen studyId={Number(params.studyId)} />}
+                {(params) => <OwnerOnlyPreserved><RadiologyReportGen studyId={Number(params.studyId)} /></OwnerOnlyPreserved>}
               </Route>
               <Route path="/radiology/report-builder" component={RadiologyReportBuilder} />
               <Route path="/radiology/findings-manager" component={RadiologyFindingsManager} />
@@ -471,6 +479,12 @@ function Router() {
               </Route>
               <Route path="/radiology/reporting-workspace/:studyId">
                 {(params) => <RadiologyReportingWorkspace studyId={Number(params.studyId)} />}
+              </Route>
+              <Route path="/radiology/legacy-workspace">
+                {() => <RadiologyReportingWorkspaceLegacy />}
+              </Route>
+              <Route path="/radiology/legacy-workspace/:studyId">
+                {(params) => <RadiologyReportingWorkspaceLegacy studyId={Number(params.studyId)} />}
               </Route>
               <Route path="/radiology/unified-report/:worklistId">
                 {(params) => <RadiologyReportingWorkspace studyId={Number(params.worklistId)} />}

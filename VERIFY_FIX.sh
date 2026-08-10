@@ -164,10 +164,10 @@ echo "STEP 5: Check API health"
 echo "════════════════════════════════════════════════════════"
 
 if command -v curl &> /dev/null; then
-  if curl -s http://192.168.1.137:3000/health 2>/dev/null | grep -q "ok\|true"; then
+  if curl -s http://172.16.1.139:3000/health 2>/dev/null | grep -q "ok\|true"; then
     pass "API health check passed"
   else
-    warn "Could not reach API at http://192.168.1.137:3000/health"
+    warn "Could not reach API at http://172.16.1.139:3000/health"
   fi
 else
   warn "curl command not found (skipping health check)"

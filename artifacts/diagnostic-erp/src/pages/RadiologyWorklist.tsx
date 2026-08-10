@@ -1,10 +1,11 @@
 import { useState, useEffect, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
-import { api } from "@/lib/fetchApi";
-import { readStaffSession, ERP_SESSION_KEY, canAccess, normalizeRole, isFeatureEnabled } from "@/lib/staffSession";
+import { api, getStaffToken } from "@/lib/fetchApi";
+import { readStaffSession, ERP_SESSION_KEY, canAccess, normalizeRole } from "@/lib/staffSession";
 import { toUnifiedStatus, worklistRoleView, priorityInfo, type WorklistRoleView } from "@/lib/radiologyStatus";
-import { launchViewer } from "@/lib/viewerService";
+import { launchViewer, recordFailedLaunch, recordSuccessfulLaunch, resolveActiveProfile } from "@/lib/viewerService";
+import { launchRadiologyStudy } from "@/lib/studyLaunchService";
 import { normalizeModality, isUltrasoundModality } from "@/lib/usgModality";
 import { DATE_PRESETS, toISTDateStr } from "@/lib/dateRangePresets";
 import PageHeader from "@/components/PageHeader";
@@ -20,14 +21,17 @@ import {
   Search, Filter, Clock, CheckCheck, AlertCircle, MonitorPlay, Tv2,
   ClipboardList, CalendarDays, ShieldCheck, ShieldOff, Database,
   ChevronDown, ChevronUp, Eye, MessageSquare, ThumbsUp, ThumbsDown, Trash2,
-  X, Activity, Stethoscope, Printer, Gem, FileUp, Loader2,
+  X, Activity, Stethoscope, Printer, Gem, FileUp, Loader2, Columns2, Maximize2,
 } from "lucide-react";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { MwlPanel } from "@/pages/MwlDashboard";
+import { MwlStatusPanel } from "@/components/radiology/MwlStatusPanel";
+import QueueModalityFilter from "@/components/radiology/QueueModalityFilter";
 
 type WorklistEntry = {
   id: number;
@@ -55,6 +59,7 @@ type WorklistEntry = {
   deliveryStatus: string | null;
   uhid?: string | null;        // Phase C: ERP UHID via patients join
   billNumber?: string | null;  // Phase C: bill number via study→bill join
+  testName?: string | null;    // Catalog test from billing when study is linked
   priority?: string | null;    // Phase C: reuses radiology_studies.priority
   // R2.0 — canonical ultrasound integration: USG/Doppler measurement +
   // key-image counts and latest report-draft status, scalar-subqueried by
@@ -71,6 +76,158 @@ type WorklistEntry = {
   lockLastActivityAt?: string | null;
   lockWorkstation?: string | null;
 };
+
+function displayTestName(entry: Pick<WorklistEntry, "testName" | "studyDescription">): string {
+  const name = entry.testName?.trim() || entry.studyDescription?.trim();
+  return name || "\u2014";
+}
+
+function formatWorklistAgeSex(entry: Pick<WorklistEntry, "age" | "sex">): string | null {
+  const parts = [entry.age, entry.sex].filter(Boolean);
+  return parts.length > 0 ? parts.join(" \u00b7 ") : null;
+}
+
+function formatWorklistStudyDate(raw: string | null | undefined): string {
+  if (!raw) return "\u2014";
+  const digits = raw.replace(/\D/g, "");
+  if (digits.length >= 8) {
+    const y = digits.slice(0, 4);
+    const m = digits.slice(4, 6);
+    const day = digits.slice(6, 8);
+    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const mi = parseInt(m, 10) - 1;
+    if (mi >= 0 && mi < 12) return `${parseInt(day, 10)} ${months[mi]} ${y}`;
+    return `${y}-${m}-${day}`;
+  }
+  return raw;
+}
+
+const WORKLIST_MODALITY_COLORS: Record<string, string> = {
+  CT: "bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/40 dark:text-blue-300 dark:border-blue-800",
+  MR: "bg-purple-50 text-purple-700 border-purple-200 dark:bg-purple-950/40 dark:text-purple-300 dark:border-purple-800",
+  MRI: "bg-purple-50 text-purple-700 border-purple-200 dark:bg-purple-950/40 dark:text-purple-300 dark:border-purple-800",
+  CR: "bg-green-50 text-green-700 border-green-200 dark:bg-green-950/40 dark:text-green-300 dark:border-green-800",
+  DX: "bg-green-50 text-green-700 border-green-200 dark:bg-green-950/40 dark:text-green-300 dark:border-green-800",
+  US: "bg-cyan-50 text-cyan-700 border-cyan-200 dark:bg-cyan-950/40 dark:text-cyan-300 dark:border-cyan-800",
+  USG: "bg-cyan-50 text-cyan-700 border-cyan-200 dark:bg-cyan-950/40 dark:text-cyan-300 dark:border-cyan-800",
+  NM: "bg-orange-50 text-orange-700 border-orange-200 dark:bg-orange-950/40 dark:text-orange-300 dark:border-orange-800",
+  PT: "bg-red-50 text-red-700 border-red-200 dark:bg-red-950/40 dark:text-red-300 dark:border-red-800",
+  XA: "bg-indigo-50 text-indigo-700 border-indigo-200 dark:bg-indigo-950/40 dark:text-indigo-300 dark:border-indigo-800",
+};
+
+function worklistModalityBadgeClass(modality: string): string {
+  const key = modality?.toUpperCase() ?? "OT";
+  return WORKLIST_MODALITY_COLORS[key] ?? "bg-muted/60 text-muted-foreground border-border";
+}
+
+function canLaunchViewer(entry: Pick<WorklistEntry, "studyInstanceUID" | "accessionNumber">): boolean {
+  return Boolean(entry.studyInstanceUID?.trim() || entry.accessionNumber?.trim());
+}
+
+function formatWorklistUhid(entry: Pick<WorklistEntry, "uhid" | "dicomPatientId">): string | null {
+  return entry.uhid?.trim() || entry.dicomPatientId?.trim() || null;
+}
+
+type WorklistActionBtnProps = {
+  icon: React.ComponentType<{ className?: string }>;
+  label: string;
+  onClick: () => void;
+  disabled?: boolean;
+  title?: string;
+  tone?: "weasis" | "ohif" | "report" | "ai" | "neutral" | "cc" | "warn";
+};
+
+function WorklistActionBtn({ icon: Icon, label, onClick, disabled, title, tone = "neutral" }: WorklistActionBtnProps) {
+  const tones: Record<NonNullable<WorklistActionBtnProps["tone"]>, string> = {
+    weasis: "border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100 dark:bg-emerald-950/30 dark:text-emerald-300 dark:border-emerald-800",
+    ohif: "border-blue-300 bg-blue-50 text-blue-800 hover:bg-blue-100 dark:bg-blue-950/30 dark:text-blue-300 dark:border-blue-800",
+    report: "border-indigo-500 bg-indigo-600 text-white hover:bg-indigo-700 dark:border-indigo-600",
+    ai: "border-violet-300 bg-violet-50 text-violet-800 hover:bg-violet-100 dark:bg-violet-950/30 dark:text-violet-300",
+    cc: "border-teal-300 bg-teal-50 text-teal-800 hover:bg-teal-100 dark:bg-teal-950/30 dark:text-teal-300",
+    warn: "border-amber-400 bg-amber-50 text-amber-800 hover:bg-amber-100 dark:bg-amber-950/30 dark:text-amber-300",
+    neutral: "border-border bg-background text-foreground hover:bg-muted/60",
+  };
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={title ?? label}
+      className={`inline-flex flex-col items-center justify-center gap-0.5 rounded-lg border px-1 py-1 w-[52px] h-[40px] text-[9px] font-semibold leading-tight transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${tones[tone]}`}
+    >
+      <Icon className="h-3.5 w-3.5 shrink-0" />
+      <span className="text-center leading-none">{label}</span>
+    </button>
+  );
+}
+
+const WORKLIST_TH = "px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground whitespace-nowrap";
+const WORKLIST_TD = "px-2 py-1.5 align-top text-[12px]";
+
+const WORKLIST_COL_STORAGE_KEY = "radiologyWorklistColumnVisibility";
+
+type WorklistOptionalColumn =
+  | "measurements" | "images" | "usgReport" | "studyDescription"
+  | "refDoctor" | "accession" | "sourceAe" | "studyDate" | "createdAt"
+  | "radiologist" | "lockStatus" | "aiDraft";
+
+type WorklistColumnVisibility = Record<WorklistOptionalColumn, boolean>;
+
+const WORKLIST_COL_DEFAULTS: WorklistColumnVisibility = {
+  measurements: false,
+  images: false,
+  usgReport: false,
+  studyDescription: false,
+  refDoctor: true,
+  accession: true,
+  sourceAe: false,
+  studyDate: true,
+  createdAt: true,
+  radiologist: true,
+  lockStatus: true,
+  aiDraft: false,
+};
+
+/** When the worklist is opened for USG, surface USG-specific columns by default. */
+const WORKLIST_COL_USG_DEFAULTS: WorklistColumnVisibility = {
+  ...WORKLIST_COL_DEFAULTS,
+  measurements: true,
+  images: true,
+  usgReport: true,
+  aiDraft: true,
+  sourceAe: true,
+};
+
+const WORKLIST_COL_LABELS: Record<WorklistOptionalColumn, string> = {
+  measurements: "Measurements",
+  images: "Images",
+  usgReport: "USG Report",
+  studyDescription: "Study Description",
+  refDoctor: "Ref. Doctor",
+  accession: "Accession No",
+  sourceAe: "Source AE",
+  studyDate: "Study Date",
+  createdAt: "Created At",
+  radiologist: "Radiologist",
+  lockStatus: "Lock Status",
+  aiDraft: "AI Draft",
+};
+
+function loadWorklistColumnVisibility(modalityHint?: string): WorklistColumnVisibility {
+  const usg = modalityHint ? isUltrasoundModality(modalityHint) || normalizeModality(modalityHint) === "US" : false;
+  const base = usg ? WORKLIST_COL_USG_DEFAULTS : WORKLIST_COL_DEFAULTS;
+  try {
+    const raw = localStorage.getItem(WORKLIST_COL_STORAGE_KEY);
+    if (!raw) return { ...base };
+    return { ...base, ...(JSON.parse(raw) as Partial<WorklistColumnVisibility>) };
+  } catch {
+    return { ...base };
+  }
+}
+
+function saveWorklistColumnVisibility(cols: WorklistColumnVisibility) {
+  localStorage.setItem(WORKLIST_COL_STORAGE_KEY, JSON.stringify(cols));
+}
 
 const STATUS_CONFIG: Record<string, { label: string; color: string; icon: React.ReactNode }> = {
   STUDY_RECEIVED: { label: "Received", color: "bg-blue-100 text-blue-800 border-blue-200", icon: <Clock className="h-3 w-3" /> },
@@ -306,7 +463,7 @@ function PacsDebugPanel({
     ? session.token.slice(0, 12) + "…"
     : "none";
 
-  const [expanded, setExpanded] = useState(true);
+  const [expanded, setExpanded] = useState(false);
 
   return (
     <div className="rounded-lg border-2 border-blue-400 bg-blue-50 dark:bg-blue-950/40 dark:border-blue-600 overflow-hidden">
@@ -426,13 +583,26 @@ const SENTINEL_ROW: WorklistEntry = {
   updatedAt: new Date().toISOString(),
 };
 
+/** Single open-report path — Reporting Workspace for every modality (USG Companion is embedded there). */
+function reportingWorkspacePath(entry: Pick<WorklistEntry, "id">, focus = false): string {
+  const base = `/radiology/report/${entry.id}`;
+  return focus ? `${base}?focus=1` : base;
+}
+
 export default function RadiologyWorklist() {
   const [, navigate] = useLocation();
   const { toast } = useToast();
   const qc = useQueryClient();
 
   const session = readStaffSession();
-  const [search, setSearch] = useState("");
+  // Hope / partner deep-links may pass ?q=Patient+Name alongside ?modality=MR.
+  const [search, setSearch] = useState(() => {
+    try {
+      return new URLSearchParams(window.location.search).get("q") ?? "";
+    } catch {
+      return "";
+    }
+  });
   const [statusFilter, setStatusFilter] = useState("all");
 
   // ── Phase C: role-based view. Page ACCESS is still governed solely by the
@@ -473,7 +643,34 @@ export default function RadiologyWorklist() {
   const [showWorkload, setShowWorkload] = useState(false);
   const [feedbackEntry, setFeedbackEntry] = useState<number | null>(null);
   const [feedbackText, setFeedbackText] = useState("");
+  const [columnVisibility, setColumnVisibility] = useState<WorklistColumnVisibility>(() =>
+    loadWorklistColumnVisibility(new URLSearchParams(window.location.search).get("modality") ?? undefined),
+  );
+
+  // When filtering to USG, ensure USG ops columns are visible (without wiping user prefs permanently).
+  useEffect(() => {
+    if (modalityFilter === "US" || isUltrasoundModality(modalityFilter)) {
+      setColumnVisibility((prev) => ({
+        ...prev,
+        measurements: true,
+        images: true,
+        usgReport: true,
+        aiDraft: true,
+        sourceAe: true,
+      }));
+    }
+  }, [modalityFilter]);
   const prevEntriesLen = useRef(-1);
+
+  function toggleColumn(col: WorklistOptionalColumn) {
+    setColumnVisibility((prev) => {
+      const next = { ...prev, [col]: !prev[col] };
+      saveWorklistColumnVisibility(next);
+      return next;
+    });
+  }
+
+  const col = columnVisibility;
 
   const { data: entries = [], isLoading, isError, error, refetch } = useQuery<WorklistEntry[]>({
     queryKey: ["radiology-pacs-worklist"],
@@ -501,6 +698,25 @@ export default function RadiologyWorklist() {
     gcTime: 0,
     refetchInterval: 30_000,
   });
+
+  // Live refresh when Orthanc pushes a study (SSE; falls back to 30s poll above).
+  useEffect(() => {
+    const token = getStaffToken();
+    if (!token) return;
+    const base = (import.meta as { env: { BASE_URL?: string } }).env.BASE_URL || "/";
+    const url = `${base}api/radiology/pacs-worklist-stream?staffToken=${encodeURIComponent(token)}`.replace(/\/+/g, "/").replace(":/", "://");
+    let es: EventSource | null = null;
+    try {
+      es = new EventSource(url);
+      es.onmessage = () => {
+        void refetch();
+        void qc.invalidateQueries({ queryKey: ["radiology-pacs-worklist-count"] });
+      };
+    } catch {
+      /* SSE unavailable — 30s poll remains */
+    }
+    return () => { es?.close(); };
+  }, [refetch, qc]);
 
   // DB total count — separate query, no filters, for debug panel
   const { data: countData } = useQuery<{ totalRows: number }>({
@@ -568,6 +784,69 @@ export default function RadiologyWorklist() {
   // Phase E "Highlight Urgent / VIP studies" toggle (default ON when unset)
   const urgentHighlightOn = (pacsViewerSettings["urgent_highlight_enabled"] ?? "true") !== "false";
 
+  const [activeNetworkProfile, setActiveNetworkProfile] = useState<"LAN" | "TAILSCALE" | "PUBLIC" | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void resolveActiveProfile(pacsViewerSettings).then(({ profile }) => {
+      if (!cancelled) setActiveNetworkProfile(profile);
+    });
+    return () => { cancelled = true; };
+  }, [pacsViewerSettings]);
+
+  const preferWeasis =
+    pacsViewerSettings["default_viewer"] === "WEASIS" || activeNetworkProfile === "LAN";
+
+  async function launchWorklistWeasis(entry: WorklistEntry) {
+    if (!canLaunchViewer(entry)) {
+      toast({
+        title: "Cannot open Weasis",
+        description: "This study has no DICOM Study UID or accession number yet.",
+        variant: "destructive",
+      });
+      return;
+    }
+    const openTarget = window.open("about:blank", "_blank");
+    try {
+      const res = await launchRadiologyStudy(
+        {
+          studyInstanceUID: entry.studyInstanceUID,
+          accessionNumber: entry.accessionNumber,
+          worklistId: entry.id,
+          viewer: "WEASIS",
+          requestedMode: "AUTO",
+        },
+        pacsViewerSettings,
+        {
+          openTarget,
+          pageIsHttps: window.location.protocol === "https:",
+          recordSuccess: recordSuccessfulLaunch,
+          recordFailure: recordFailedLaunch,
+        },
+      );
+      if (!res.success) {
+        openTarget?.close();
+        // Fallback: server-built weasis:// URL (still needs StudyInstanceUID)
+        if (entry.studyInstanceUID?.trim()) {
+          const { openWeasisLaunchRedirect } = await import("@/lib/viewerService");
+          await openWeasisLaunchRedirect(entry.studyInstanceUID, toast);
+          return;
+        }
+        toast({
+          title: "Failed to open Weasis",
+          description: res.diagnostics.slice(-2).join(" · ") || res.errorCode || "Check Radiology Settings → Viewers.",
+          variant: "destructive",
+        });
+      }
+    } catch (err) {
+      openTarget?.close();
+      toast({
+        title: "Failed to open Weasis",
+        description: err instanceof Error ? err.message : String(err),
+        variant: "destructive",
+      });
+    }
+  }
+
   useEffect(() => {
     if (!isLoading && prevEntriesLen.current !== entries.length) {
       setLastRefresh(new Date());
@@ -599,15 +878,17 @@ export default function RadiologyWorklist() {
   });
 
   const markFinalMutation = useMutation({
-    mutationFn: (entry: WorklistEntry) =>
+    mutationFn: ({ entry, reason }: { entry: WorklistEntry; reason: string }) =>
       api.post("/api/internal/radiology/report-status", {
         accessionNumber: entry.accessionNumber,
         studyInstanceUID: entry.studyInstanceUID,
         status: "REPORT_FINAL",
         actor: "staff",
+        softFinalOverride: true,
+        softFinalReason: reason,
       }),
-    onSuccess: (_data, entry) => {
-      toast({ title: "Marked Final", description: `Study ${entry.accessionNumber} marked as final` });
+    onSuccess: (_data, { entry }) => {
+      toast({ title: "Admin mark final", description: `Study ${entry.accessionNumber} marked as final (override)` });
       void qc.invalidateQueries({ queryKey: ["radiology-pacs-worklist"] });
     },
     onError: (err) => {
@@ -623,8 +904,12 @@ export default function RadiologyWorklist() {
     mutationFn: ({ studyId, filePath, fileName }: { studyId: number; filePath: string; fileName: string }) =>
       api.post("/api/radiology/report-attachments", { studyId, filePath, fileName }),
     onSuccess: () => {
-      toast({ title: "Report attached" });
+      toast({
+        title: "Report attached",
+        description: "Stored on the study. Open Report Delivery to print/share — attach is not yet mirrored into the patient portal.",
+      });
       setAttachingStudyId(null);
+      void qc.invalidateQueries({ queryKey: ["radiology-pacs-worklist"] });
     },
     onError: (e: Error) => {
       toast({ title: "Failed to attach report", description: e.message, variant: "destructive" });
@@ -706,20 +991,6 @@ export default function RadiologyWorklist() {
     ...filtered,
   ];
 
-  function openWeasis(entry: WorklistEntry) {
-    const template = pacsViewerSettings["weasis_manifest_url_template"];
-    if (template && entry.studyInstanceUID) {
-      window.open(template.replace(/\{studyInstanceUID\}/g, entry.studyInstanceUID), "_blank");
-      return;
-    }
-    const url = entry.weasisUrl;
-    if (!url) {
-      toast({ title: "Weasis URL not available", description: "Configure Weasis Manifest URL Template in PACS Settings → Viewer Settings.", variant: "destructive" });
-      return;
-    }
-    window.open(url, "_blank");
-  }
-
   // /api/patient-reports/:id/print is staff-authed (Authorization: Bearer
   // <token>, checked only on the request header — this app has no cookie
   // fallback), so a plain window.open(url) navigation can never carry it and
@@ -798,10 +1069,28 @@ export default function RadiologyWorklist() {
       <PageHeader title="Worklist Hub" subtitle="Study queue, PACS worklist, and modality worklist in one place" />
 
       <Tabs defaultValue="pacs-worklist" className="space-y-4">
-        <TabsList className="flex flex-wrap h-auto gap-1">
-          <TabsTrigger value="study-queue"><ClipboardList size={14} className="mr-1.5" />RIS Study Queue (Billing Orders)</TabsTrigger>
-          <TabsTrigger value="pacs-worklist"><ScanSearch size={14} className="mr-1.5" />PACS Worklist / DICOM Received Studies</TabsTrigger>
-          <TabsTrigger value="mwl"><CalendarDays size={14} className="mr-1.5" />MWL (Modality Worklist)</TabsTrigger>
+        <TabsList className="grid w-full grid-cols-1 sm:grid-cols-3 h-auto gap-1.5 p-1.5 bg-muted/40 rounded-xl border border-border/60">
+          <TabsTrigger
+            value="study-queue"
+            className="flex items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium transition-all data-[state=active]:bg-background data-[state=active]:shadow-sm data-[state=active]:border data-[state=active]:border-border/60"
+          >
+            <ClipboardList size={15} />
+            <span className="text-center leading-tight">RIS Study Queue</span>
+          </TabsTrigger>
+          <TabsTrigger
+            value="pacs-worklist"
+            className="flex items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium transition-all data-[state=active]:bg-background data-[state=active]:shadow-sm data-[state=active]:border data-[state=active]:border-border/60"
+          >
+            <ScanSearch size={15} />
+            <span className="text-center leading-tight">PACS Worklist</span>
+          </TabsTrigger>
+          <TabsTrigger
+            value="mwl"
+            className="flex items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium transition-all data-[state=active]:bg-background data-[state=active]:shadow-sm data-[state=active]:border data-[state=active]:border-border/60"
+          >
+            <CalendarDays size={15} />
+            <span className="text-center leading-tight">MWL</span>
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="study-queue">
@@ -844,41 +1133,10 @@ export default function RadiologyWorklist() {
               </div>
             </div>
 
-            {/* Date range — quick presets + custom from/to, IST calendar day */}
-            <div className="flex flex-wrap items-center gap-2">
-              <CalendarDays className="h-4 w-4 text-muted-foreground flex-shrink-0" />
-              <Input
-                type="date"
-                value={dateFrom}
-                onChange={(e) => setDateFrom(e.target.value)}
-                className="h-9 w-[150px] text-sm"
-              />
-              <span className="text-muted-foreground text-sm">→</span>
-              <Input
-                type="date"
-                value={dateTo}
-                onChange={(e) => setDateTo(e.target.value)}
-                className="h-9 w-[150px] text-sm"
-              />
-              <div className="flex gap-1.5 flex-wrap">
-                {DATE_PRESETS.map((p) => (
-                  <Button
-                    key={p.label}
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="h-8 text-xs px-3"
-                    onClick={() => setDatePreset(p.from(), p.to())}
-                  >
-                    {p.label}
-                  </Button>
-                ))}
-              </div>
-            </div>
-
-            {/* Filters — all default to ALL */}
-            <div className="flex flex-wrap gap-2 items-center">
-              <div className="relative flex-1 min-w-[180px]">
+            {/* Filters + date range (dates aligned right) */}
+            <div className="flex flex-wrap items-center gap-2 justify-between">
+              <div className="flex flex-wrap gap-2 items-center flex-1 min-w-0">
+              <div className="relative flex-1 min-w-[180px] max-w-md">
                 <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
                 <Input
                   className="pl-8"
@@ -898,16 +1156,11 @@ export default function RadiologyWorklist() {
                   ))}
                 </SelectContent>
               </Select>
-              <Select value={modalityFilter} onValueChange={setModalityFilter}>
-                <SelectTrigger className="w-[130px]">
-                  <SelectValue placeholder="Modality" />
-                </SelectTrigger>
-                <SelectContent>
-                  {MODALITY_OPTIONS.map((m) => (
-                    <SelectItem key={m} value={m}>{m === "all" ? "All Modalities" : m}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <QueueModalityFilter
+                value={modalityFilter}
+                onChange={setModalityFilter}
+                size="md"
+              />
               <Select value={lockFilter} onValueChange={setLockFilter}>
                 <SelectTrigger className="w-[150px]">
                   <SelectValue placeholder="Lock Status" />
@@ -919,6 +1172,42 @@ export default function RadiologyWorklist() {
                   <SelectItem value="locked">🔴 Locked by Others</SelectItem>
                 </SelectContent>
               </Select>
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button variant="outline" size="sm" className="h-9 gap-1.5">
+                    <Columns2 className="h-4 w-4" />
+                    Columns
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent align="start" className="w-56 p-2">
+                  <p className="text-xs font-semibold text-muted-foreground px-2 py-1">Show columns</p>
+                  <div className="max-h-64 overflow-y-auto space-y-0.5">
+                    {(Object.keys(WORKLIST_COL_LABELS) as WorklistOptionalColumn[]).map((key) => (
+                      <label key={key} className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-muted/50 cursor-pointer text-sm">
+                        <input
+                          type="checkbox"
+                          className="h-3.5 w-3.5"
+                          checked={col[key]}
+                          onChange={() => toggleColumn(key)}
+                        />
+                        {WORKLIST_COL_LABELS[key]}
+                      </label>
+                    ))}
+                  </div>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="w-full mt-1 h-7 text-xs"
+                    onClick={() => {
+                      setColumnVisibility({ ...WORKLIST_COL_DEFAULTS });
+                      saveWorklistColumnVisibility({ ...WORKLIST_COL_DEFAULTS });
+                    }}
+                  >
+                    Reset to defaults
+                  </Button>
+                </PopoverContent>
+              </Popover>
               {(statusFilter !== "all" || modalityFilter !== "all" || lockFilter !== "all" || search || dateFrom || dateTo) && (
                 <Button
                   variant="ghost"
@@ -929,10 +1218,41 @@ export default function RadiologyWorklist() {
                   Clear filters
                 </Button>
               )}
+              </div>
+              <div className="flex flex-wrap items-center gap-2 ml-auto">
+                <CalendarDays className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+                <Input
+                  type="date"
+                  value={dateFrom}
+                  onChange={(e) => setDateFrom(e.target.value)}
+                  className="h-9 w-[140px] text-sm"
+                />
+                <span className="text-muted-foreground text-sm">→</span>
+                <Input
+                  type="date"
+                  value={dateTo}
+                  onChange={(e) => setDateTo(e.target.value)}
+                  className="h-9 w-[140px] text-sm"
+                />
+                <div className="flex gap-1 flex-wrap">
+                  {DATE_PRESETS.map((p) => (
+                    <Button
+                      key={p.label}
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-8 text-xs px-2.5"
+                      onClick={() => setDatePreset(p.from(), p.to())}
+                    >
+                      {p.label}
+                    </Button>
+                  ))}
+                </div>
+              </div>
             </div>
 
-            {/* Status chips */}
-            <div className="flex gap-2 flex-wrap">
+            {/* Status chips + DICOM intake shortcut */}
+            <div className="flex gap-2 flex-wrap items-center">
               {Object.entries(STATUS_CONFIG).map(([key, cfg]) => {
                 const count = entries.filter((e) => e.status === key).length;
                 if (count === 0) return null;
@@ -946,6 +1266,18 @@ export default function RadiologyWorklist() {
                   </button>
                 );
               })}
+              {entries.filter((e) => e.status === "STUDY_RECEIVED").length > 0 && (
+                <button
+                  type="button"
+                  data-testid="dicom-intake-filter"
+                  onClick={() => setStatusFilter(statusFilter === "STUDY_RECEIVED" ? "all" : "STUDY_RECEIVED")}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold border border-sky-300 bg-sky-50 text-sky-900"
+                  title="DICOM intake — studies just received from PACS/modality"
+                >
+                  <Database className="h-3 w-3" />
+                  Intake queue ({entries.filter((e) => e.status === "STUDY_RECEIVED").length})
+                </button>
+              )}
             </div>
 
             {/* M1.6B1 — live radiologist workload (reuses worklist data only) */}
@@ -1031,79 +1363,112 @@ export default function RadiologyWorklist() {
                 </Button>
               </div>
             ) : (
-              <div className="overflow-x-auto rounded-lg border">
+              <div className="overflow-x-auto rounded-lg border shadow-sm">
                 <table className="w-full text-sm">
                   <thead>
-                    <tr className="bg-muted/50 text-left">
-                      {showSentinel && <th className="px-3 py-2.5 font-medium whitespace-nowrap text-orange-600">⚠ Debug</th>}
-                      <th className="px-3 py-2.5 font-medium whitespace-nowrap">Patient Name</th>
-                      <th className="px-3 py-2.5 font-medium whitespace-nowrap">Age/Sex</th>
-                      <th className="px-3 py-2.5 font-medium whitespace-nowrap">UHID</th>
-                      <th className="px-3 py-2.5 font-medium whitespace-nowrap">Bill No</th>
-                      <th className="px-3 py-2.5 font-medium whitespace-nowrap">Modality</th>
-                      {/* R2.0 — canonical ultrasound integration: USG/Doppler measurement + key-image counts and report-draft status, folded into the ONE worklist. */}
-                      <th className="px-3 py-2.5 font-medium whitespace-nowrap text-center">Measurements</th>
-                      <th className="px-3 py-2.5 font-medium whitespace-nowrap text-center">Images</th>
-                      <th className="px-3 py-2.5 font-medium whitespace-nowrap">USG Report</th>
-                      <th className="px-3 py-2.5 font-medium whitespace-nowrap">Priority</th>
-                      <th className="px-3 py-2.5 font-medium whitespace-nowrap">Study Description</th>
-                      <th className="px-3 py-2.5 font-medium whitespace-nowrap">Ref. Doctor</th>
-                      <th className="px-3 py-2.5 font-medium whitespace-nowrap">Accession No</th>
-                      <th className="px-3 py-2.5 font-medium whitespace-nowrap">Study Date</th>
-                      <th className="px-3 py-2.5 font-medium whitespace-nowrap">Source AE</th>
-                      <th className="px-3 py-2.5 font-medium whitespace-nowrap">Created At</th>
-                      <th className="px-3 py-2.5 font-medium whitespace-nowrap">Status</th>
-                      <th className="px-3 py-2.5 font-medium whitespace-nowrap">Radiologist</th>
-                      <th className="px-3 py-2.5 font-medium whitespace-nowrap">Lock Status</th>
-                      <th className="px-3 py-2.5 font-medium whitespace-nowrap">AI Draft</th>
-                      {/* Sticky last column — with 20 columns in this table, Actions
-                          (Weasis/OHIF viewer buttons) sat far off the right edge of
-                          the viewport with no visible scroll affordance, making the
-                          viewer links effectively undiscoverable. Pinning it to the
-                          scroll container's right edge keeps it always visible. */}
-                      <th className="px-3 py-2.5 font-medium text-right whitespace-nowrap sticky right-0 z-20 bg-muted/50 border-l border-border">Actions</th>
+                    <tr className="bg-muted/40 text-left border-b">
+                      {showSentinel && <th className={`${WORKLIST_TH} text-orange-600`}>⚠ Debug</th>}
+                      <th className={`${WORKLIST_TH} min-w-[160px] sticky left-0 z-30 bg-muted/40 border-r border-border/50`}>Patient</th>
+                      <th className={WORKLIST_TH}>Bill</th>
+                      <th className={`${WORKLIST_TH} min-w-[180px]`}>Study</th>
+                      {col.studyDate && <th className={`${WORKLIST_TH} tabular-nums`}>Study Date</th>}
+                      <th className={WORKLIST_TH}>Priority</th>
+                      <th className={WORKLIST_TH}>Status</th>
+                      {col.measurements && <th className={`${WORKLIST_TH} text-center`}>Meas.</th>}
+                      {col.images && <th className={`${WORKLIST_TH} text-center`}>Img</th>}
+                      {col.usgReport && <th className={WORKLIST_TH}>USG Rpt</th>}
+                      {col.studyDescription && <th className={`${WORKLIST_TH} max-w-[160px]`}>Study Desc</th>}
+                      {col.refDoctor && <th className={WORKLIST_TH}>Ref. Dr</th>}
+                      {col.accession && <th className={WORKLIST_TH}>Accession</th>}
+                      {col.sourceAe && <th className={WORKLIST_TH}>Source AE</th>}
+                      {col.radiologist && <th className={WORKLIST_TH}>Radiologist</th>}
+                      {col.lockStatus && <th className={WORKLIST_TH}>Lock</th>}
+                      {col.aiDraft && <th className={WORKLIST_TH}>AI</th>}
+                      {col.createdAt && <th className={`${WORKLIST_TH} text-right`}>Received</th>}
+                      <th className={`${WORKLIST_TH} text-right sticky right-0 z-30 bg-muted/40 border-l border-border/50`}>Actions</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y">
+                  <tbody className="divide-y divide-border/60">
                     {tableRows.map((entry) => (
                       <tr
                         key={entry.id}
-                        className={`hover:bg-muted/30 transition-colors ${entry.id === -1 ? "bg-orange-50 dark:bg-orange-950/20" : (urgentHighlightOn && priorityInfo(entry.priority).highlight) ? "bg-red-50/50 dark:bg-red-950/10" : ""}`}
+                        className={`group hover:bg-muted/25 transition-colors ${entry.id === -1 ? "bg-orange-50 dark:bg-orange-950/20" : (urgentHighlightOn && priorityInfo(entry.priority).highlight) ? "bg-red-50/50 dark:bg-red-950/10" : ""}`}
                       >
                         {showSentinel && (
-                          <td className="px-3 py-2.5 text-xs text-orange-600 font-mono">
+                          <td className={`${WORKLIST_TD} text-xs text-orange-600 font-mono`}>
                             {entry.id === -1 ? "SENTINEL" : "real"}
                           </td>
                         )}
-                        <td className="px-3 py-2.5 font-medium whitespace-nowrap">{entry.patientName}</td>
-                        <td className="px-3 py-2.5 text-xs text-muted-foreground whitespace-nowrap">
-                          {[entry.age, entry.sex].filter(Boolean).join(" / ") || "\u2014"}
+                        <td className={`${WORKLIST_TD} min-w-[160px] sticky left-0 z-10 bg-background group-hover:bg-muted/25 border-r border-border/40`}>
+                          {(() => {
+                            const ageSex = formatWorklistAgeSex(entry);
+                            const uhid = formatWorklistUhid(entry);
+                            return (
+                              <div className="flex flex-col gap-0.5">
+                                <span className="font-semibold text-sm leading-snug text-foreground">{entry.patientName}</span>
+                                {ageSex && (
+                                  <span className="text-[11px] text-muted-foreground leading-tight">{ageSex}</span>
+                                )}
+                                {uhid && (
+                                  <span className="font-mono text-[10px] text-muted-foreground/90 leading-tight" title={entry.dicomPatientId ?? undefined}>
+                                    UHID {uhid}
+                                  </span>
+                                )}
+                              </div>
+                            );
+                          })()}
                         </td>
-                        <td className="px-3 py-2.5 font-mono text-xs text-muted-foreground whitespace-nowrap" title={entry.dicomPatientId ?? undefined}>
-                          {entry.uhid ?? entry.dicomPatientId ?? "\u2014"}
+                        <td className={`${WORKLIST_TD} font-mono text-xs whitespace-nowrap`}>
+                          {entry.billNumber ? (
+                            <span className="inline-flex items-center rounded border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-[11px] font-medium text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-300">
+                              {entry.billNumber}
+                            </span>
+                          ) : (
+                            <span className="text-muted-foreground">{"\u2014"}</span>
+                          )}
                         </td>
-                        <td className="px-3 py-2.5 font-mono text-xs whitespace-nowrap">
-                          {entry.billNumber ?? "\u2014"}
+                        <td className={`${WORKLIST_TD} min-w-[180px] max-w-[280px]`}>
+                          <div className="flex flex-col gap-1.5">
+                            <span className="text-sm font-medium leading-snug line-clamp-2" title={displayTestName(entry)}>
+                              {displayTestName(entry)}
+                            </span>
+                            <Badge variant="outline" className={`w-fit font-mono text-[10px] px-1.5 py-0 ${worklistModalityBadgeClass(entry.modality)}`}>
+                              {entry.modality}
+                            </Badge>
+                          </div>
                         </td>
-                        <td className="px-3 py-2.5 whitespace-nowrap">
-                          <Badge variant="outline" className="font-mono text-xs">{entry.modality}</Badge>
+                        {col.studyDate && (
+                        <td className={`${WORKLIST_TD} text-muted-foreground text-xs whitespace-nowrap tabular-nums`}>
+                          {formatWorklistStudyDate(entry.studyDate)}
                         </td>
-                        {/* R2.0 — Measurements: clickable count badge → canonical Reporting
-                            Workspace (preferred) or the standalone USG measurements review
-                            page as a fallback when the study isn't linked yet. Non-US rows
-                            (and the sentinel row) keep the column but show an em-dash so the
-                            table doesn't shift. */}
-                        <td className="px-3 py-2.5 whitespace-nowrap text-center">
+                        )}
+                        <td className={`${WORKLIST_TD} whitespace-nowrap`}>
+                          {(() => { const pr = priorityInfo(entry.priority); return (
+                            <span className={`inline-flex items-center px-1.5 py-0.5 rounded border text-[10px] font-semibold ${pr.color}`}>
+                              {pr.label}
+                            </span>
+                          ); })()}
+                        </td>
+                        <td className={`${WORKLIST_TD} whitespace-nowrap`}>
+                          <StatusBadge status={entry.status} deliveryStatus={entry.deliveryStatus} />
+                          {entry.status !== "REPORT_FINAL" && entry.status !== "DELIVERED" && (() => {
+                            const threshold = Number(pacsViewerSettings["radiology_aging_alert_hours"] ?? "4") || 4;
+                            const hrs = agingHours(entry.createdAt);
+                            if (hrs < threshold) return null;
+                            return (
+                              <span
+                                title={`Waiting ${hrs.toFixed(1)}h since received — configurable in Radiology Settings`}
+                                className="ml-1 inline-flex items-center px-1.5 py-0.5 rounded border text-[10px] font-semibold bg-red-50 text-red-700 border-red-200 dark:bg-red-950/30 dark:text-red-400 dark:border-red-900"
+                              >
+                                {hrs >= 24 ? `${Math.floor(hrs / 24)}d` : `${Math.floor(hrs)}h`}
+                              </span>
+                            );
+                          })()}
+                        </td>
+                        {col.measurements && (
+                        <td className="px-2 py-2 whitespace-nowrap text-center">
                           {entry.id !== -1 && isUltrasoundModality(entry.modality) ? (() => {
                             const count = entry.usgMeasurementCount ?? 0;
-                            // entry.id is the worklist row's own id — the same
-                            // id the "Report" button below uses and the same
-                            // id RadiologyReportingWorkspace's studyId prop
-                            // expects (GET /api/internal/radiology/worklist/:id).
-                            // entry.studyId is a DIFFERENT, often-null id
-                            // (radiology_studies.id, the RIS billing-side FK) —
-                            // using it here opened the wrong study or a blank
-                            // workspace whenever it happened to be set.
                             const target = entry.id != null
                               ? `/radiology/report/${entry.id}`
                               : entry.studyInstanceUID
@@ -1130,8 +1495,9 @@ export default function RadiologyWorklist() {
                             <span className="text-xs text-muted-foreground">—</span>
                           )}
                         </td>
-                        {/* R2.0 — Images: USG key-image count. */}
-                        <td className="px-3 py-2.5 whitespace-nowrap text-center">
+                        )}
+                        {col.images && (
+                        <td className="px-2 py-2 whitespace-nowrap text-center">
                           {entry.id !== -1 && isUltrasoundModality(entry.modality) ? (
                             <UsgCountBadge
                               count={entry.usgKeyImageCount ?? 0}
@@ -1141,65 +1507,46 @@ export default function RadiologyWorklist() {
                             <span className="text-xs text-muted-foreground">—</span>
                           )}
                         </td>
-                        {/* R2.0 — USG Report: latest usg_report_drafts status for this worklist row. */}
-                        <td className="px-3 py-2.5 whitespace-nowrap">
+                        )}
+                        {col.usgReport && (
+                        <td className="px-2 py-2 whitespace-nowrap">
                           {entry.id !== -1 && isUltrasoundModality(entry.modality) ? (
                             <UsgReportStatusBadge status={entry.usgReportStatus} />
                           ) : (
                             <span className="text-xs text-muted-foreground">—</span>
                           )}
                         </td>
-                        <td className="px-3 py-2.5 whitespace-nowrap">
-                          {(() => { const pr = priorityInfo(entry.priority); return (
-                            <span className={`inline-flex items-center px-1.5 py-0.5 rounded border text-[10px] font-semibold ${pr.color}`}>
-                              {pr.label}
-                            </span>
-                          ); })()}
-                        </td>
-                        <td className="px-3 py-2.5 max-w-[200px] truncate" title={entry.studyDescription ?? ""}>
+                        )}
+                        {col.studyDescription && (
+                        <td className="px-3 py-2 max-w-[160px] truncate text-xs" title={entry.studyDescription ?? ""}>
                           {entry.studyDescription || "\u2014"}
                         </td>
-                        <td className="px-3 py-2.5 text-xs whitespace-nowrap max-w-[140px] truncate" title={entry.referringDoctor ?? ""}>
+                        )}
+                        {col.refDoctor && (
+                        <td className="px-3 py-2 text-xs whitespace-nowrap max-w-[120px] truncate" title={entry.referringDoctor ?? ""}>
                           {entry.referringDoctor ?? "\u2014"}
                         </td>
-                        <td className="px-3 py-2.5 font-mono text-xs whitespace-nowrap">{entry.accessionNumber}</td>
-                        <td className="px-3 py-2.5 text-muted-foreground whitespace-nowrap">
-                          {entry.studyDate ?? "\u2014"}
-                        </td>
-                        <td className="px-3 py-2.5 text-muted-foreground text-xs whitespace-nowrap">
+                        )}
+                        {col.accession && (
+                        <td className="px-3 py-2 font-mono text-xs whitespace-nowrap">{entry.accessionNumber}</td>
+                        )}
+                        {col.sourceAe && (
+                        <td className="px-3 py-2 text-muted-foreground text-xs whitespace-nowrap">
                           {entry.sourceAeTitle ?? entry.aeTitle ?? "\u2014"}
                         </td>
-                        <td className="px-3 py-2.5 text-muted-foreground text-xs whitespace-nowrap">
-                          {fmtDate(entry.createdAt)}
-                        </td>
-                        <td className="px-3 py-2.5 whitespace-nowrap">
-                          <StatusBadge status={entry.status} deliveryStatus={entry.deliveryStatus} />
-                          {entry.status !== "REPORT_FINAL" && entry.status !== "DELIVERED" && (() => {
-                            const threshold = Number(pacsViewerSettings["radiology_aging_alert_hours"] ?? "4") || 4;
-                            const hrs = agingHours(entry.createdAt);
-                            if (hrs < threshold) return null;
-                            return (
-                              <span
-                                title={`Waiting ${hrs.toFixed(1)}h since received — configurable in Radiology Settings`}
-                                className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded border text-[10px] font-semibold bg-red-50 text-red-700 border-red-200 dark:bg-red-950/30 dark:text-red-400 dark:border-red-900"
-                              >
-                                {hrs >= 24 ? `${Math.floor(hrs / 24)}d` : `${Math.floor(hrs)}h`} waiting
-                              </span>
-                            );
-                          })()}
-                        </td>
-                        <td className="px-3 py-2.5 text-xs whitespace-nowrap max-w-[120px] truncate" title={entry.assignedRadiologist ?? ""}>
+                        )}
+                        {col.radiologist && (
+                        <td className="px-3 py-2 text-xs whitespace-nowrap max-w-[100px] truncate" title={entry.assignedRadiologist ?? ""}>
                           {entry.assignedRadiologist ?? "\u2014"}
                         </td>
-                        <td className="px-3 py-2.5 whitespace-nowrap">
+                        )}
+                        {col.lockStatus && (
+                        <td className="px-3 py-2 whitespace-nowrap">
                           <div className="flex flex-col gap-1">
                             <LockBadge entry={entry} currentUserId={session?.user?.id} />
-                            {/* M1.6B1 — assignment control: organizational
-                                ownership, distinct from the lock above. The
-                                server enforces who may assign/reassign. */}
                             {entry.id !== -1 && (
                               <select
-                                className="h-6 max-w-[150px] text-[10px] border rounded px-1 bg-background text-muted-foreground"
+                                className="h-6 max-w-[130px] text-[10px] border rounded px-1 bg-background text-muted-foreground"
                                 value={(entry as { assignedRadiologistId?: number | null }).assignedRadiologistId ?? ""}
                                 disabled={assignMutation.isPending || entry.status === "REPORT_FINAL" || entry.status === "DELIVERED"}
                                 title={(() => {
@@ -1228,7 +1575,9 @@ export default function RadiologyWorklist() {
                             )}
                           </div>
                         </td>
-                        <td className="px-3 py-2.5 whitespace-nowrap">
+                        )}
+                        {col.aiDraft && (
+                        <td className="px-3 py-2 whitespace-nowrap">
                           {entry.id === -1 ? (
                             <span className="text-xs text-muted-foreground">—</span>
                           ) : (
@@ -1263,148 +1612,127 @@ export default function RadiologyWorklist() {
                             </div>
                           )}
                         </td>
-                        <td className="px-3 py-2.5 sticky right-0 z-10 bg-background border-l border-border shadow-[-4px_0_6px_-2px_rgba(0,0,0,0.08)]">
-                          <div className="flex items-center justify-end gap-1 flex-wrap">
+                        )}
+                        {col.createdAt && (
+                        <td className="px-3 py-2 text-muted-foreground text-xs whitespace-nowrap text-right tabular-nums">
+                          {fmtDate(entry.createdAt)}
+                        </td>
+                        )}
+                        <td className={`${WORKLIST_TD} sticky right-0 z-10 bg-background group-hover:bg-muted/25 border-l border-border/50 shadow-[-4px_0_8px_-4px_rgba(0,0,0,0.08)] min-w-[200px]`}>
+                          <div className="flex flex-wrap items-stretch justify-end gap-1 max-w-[320px] ml-auto">
                             {entry.id !== -1 && !isReceptionView && (
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                className="h-7 px-2 text-xs"
-                                onClick={() => launchViewer(entry.studyInstanceUID, "WEASIS", pacsViewerSettings, toast)}
-                                title="Open in Weasis"
-                              >
-                                <Tv2 className="h-3 w-3 mr-1" />
-                                Weasis
-                              </Button>
-                            )}
-
-                            {entry.id !== -1 && !isReceptionView && (
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                className="h-7 px-2 text-xs text-blue-700 border-blue-300 hover:bg-blue-50"
-                                onClick={() => launchViewer(entry.studyInstanceUID, "OHIF", pacsViewerSettings, toast)}
-                                title="Open in OHIF"
-                              >
-                                <MonitorPlay className="h-3 w-3 mr-1" />
-                                OHIF
-                              </Button>
+                              <>
+                                <WorklistActionBtn
+                                  icon={Tv2}
+                                  label="Weasis"
+                                  tone={preferWeasis ? "weasis" : "neutral"}
+                                  disabled={!canLaunchViewer(entry)}
+                                  title={canLaunchViewer(entry) ? "Open in Weasis" : "Study UID missing — cannot launch Weasis"}
+                                  onClick={() => void launchWorklistWeasis(entry)}
+                                />
+                                <WorklistActionBtn
+                                  icon={MonitorPlay}
+                                  label="OHIF"
+                                  tone={!preferWeasis ? "ohif" : "neutral"}
+                                  disabled={!canLaunchViewer(entry)}
+                                  title={canLaunchViewer(entry) ? "Open in OHIF" : "Study UID missing — cannot launch OHIF"}
+                                  onClick={() => void launchViewer(entry.studyInstanceUID, "OHIF", pacsViewerSettings, toast)}
+                                />
+                              </>
                             )}
 
                             {entry.status !== "REPORT_FINAL" && entry.status !== "DELIVERED" && entry.id !== -1 && isRadView && (
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                className="h-7 px-2 text-xs"
-                                onClick={() => aiDraftMutation.mutate(entry)}
+                              <WorklistActionBtn
+                                icon={Sparkles}
+                                label="AI"
+                                tone="ai"
                                 disabled={aiDraftMutation.isPending}
                                 title="Generate AI Draft"
-                              >
-                                <Sparkles className="h-3 w-3 mr-1" />
-                                AI
-                              </Button>
+                                onClick={() => aiDraftMutation.mutate(entry)}
+                              />
                             )}
 
                             {entry.id !== -1 && isOwnerView && (
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                className="h-7 px-2 text-xs border-emerald-500 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/20"
-                                onClick={() => navigate(`/radiology/command-center/${entry.id}`)}
+                              <WorklistActionBtn
+                                icon={Activity}
+                                label="Command"
+                                tone="cc"
                                 title="Open in Command Center"
-                              >
-                                <Activity className="h-3 w-3 mr-1" />
-                                Command Center
-                              </Button>
+                                onClick={() => navigate(`/radiology/command-center/${entry.id}`)}
+                              />
                             )}
 
-                            {/* R1.4 — the primary "Report" action now opens the
-                                CANONICAL Reporting Workspace (/radiology/report/:studyId),
-                                not the deprecated Cockpit. Previously this was the
-                                ONLY "start reporting" entry point on the whole
-                                Worklist, and it sent every radiologist to a page
-                                carrying zero R1.3 image-panel/R1.2 template/M1.4
-                                validation support — that work was reachable only
-                                by typing the canonical URL by hand. */}
                             {entry.id !== -1 && isRadView && may("/radiology/report") && (
-                              <Button
-                                size="sm"
-                                className="h-7 px-2 text-xs bg-indigo-600 hover:bg-indigo-700 text-white"
-                                onClick={() =>
-                                  navigate(
-                                    isFeatureEnabled("ff_radiology_usg_workspace") && isUltrasoundModality(entry.modality)
-                                      ? `/radiology/usg/${entry.id}`        // dedicated USG shell (flag on)
-                                      : `/radiology/report/${entry.id}`,    // canonical workspace (default)
-                                  )
-                                }
+                              <WorklistActionBtn
+                                icon={Stethoscope}
+                                label="Report"
+                                tone="report"
                                 title="Open in the Reporting Workspace"
-                              >
-                                <Stethoscope className="h-3 w-3 mr-1" />
-                                Report
-                              </Button>
+                                onClick={() => navigate(reportingWorkspacePath(entry))}
+                              />
                             )}
 
-                            {(entry.status === "REPORT_IN_PROGRESS" || entry.status === "AI_DRAFT_READY") && entry.id !== -1 && isRadView && (
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                className="h-7 px-2 text-xs border-green-500 text-green-700 hover:bg-green-50"
+                            {entry.id !== -1 && isRadView && may("/radiology/report") && (
+                              <WorklistActionBtn
+                                icon={Maximize2}
+                                label="Focus"
+                                tone="report"
+                                title="Open Reporting Workspace in focus mode (maximized editor)"
+                                onClick={() => navigate(reportingWorkspacePath(entry, true))}
+                              />
+                            )}
+
+                            {(entry.status === "REPORT_IN_PROGRESS" || entry.status === "AI_DRAFT_READY") && entry.id !== -1 && isOwnerView && (
+                              <WorklistActionBtn
+                                icon={CheckCircle2}
+                                label="Final"
+                                tone="warn"
+                                disabled={markFinalMutation.isPending}
+                                title="Admin only — mark FINAL without signed report (audited)"
                                 onClick={() => {
-                                  if (confirm(`Mark study ${entry.accessionNumber} as FINAL?`)) {
-                                    markFinalMutation.mutate(entry);
+                                  const reason = window.prompt(
+                                    `Admin override: mark ${entry.accessionNumber} FINAL without workspace Finalize & Sign?\n\nEnter reason (external report attached / emergency):`,
+                                  );
+                                  if (reason && reason.trim().length >= 3) {
+                                    markFinalMutation.mutate({ entry, reason: reason.trim() });
                                   }
                                 }}
-                                disabled={markFinalMutation.isPending}
-                                title="Mark Final"
-                              >
-                                <CheckCircle2 className="h-3 w-3 mr-1" />
-                                Final
-                              </Button>
+                              />
                             )}
 
                             {entry.status === "REPORT_FINAL" && (
-                              <span className="text-xs text-green-700 font-medium flex items-center gap-1">
-                                <CheckCircle2 className="h-3 w-3" /> Finalized
+                              <span className="inline-flex flex-col items-center justify-center gap-0.5 rounded-lg border border-green-300 bg-green-50 text-green-800 w-[52px] h-[40px] text-[9px] font-semibold dark:bg-green-950/30 dark:text-green-300 dark:border-green-800">
+                                <CheckCircle2 className="h-3.5 w-3.5" />
+                                Final
                               </span>
                             )}
 
-                            {/* Phase C: Premium Report entry point (preview lives in Report Generator — not expanded here) */}
-                            {entry.id !== -1 && isRadView && may("/radiology/report-generator") &&
+                            {entry.id !== -1 && isRadView &&
                               (entry.reportId != null || entry.status === "REPORT_IN_PROGRESS" || entry.status === "REPORT_FINAL") && (
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                className="h-7 px-2 text-xs border-amber-500 text-amber-700 hover:bg-amber-50 dark:hover:bg-amber-950/20"
-                                onClick={() => navigate(`/radiology/report-generator/${entry.id}?premium=1`)}
-                                title="Open Premium Report Preview"
-                              >
-                                <Gem className="h-3 w-3 mr-1" />
-                                Premium
-                              </Button>
+                              <WorklistActionBtn
+                                icon={Gem}
+                                label="Print UI"
+                                tone="warn"
+                                title="Open Reporting Workspace print / layout tab"
+                                onClick={() => navigate(`/radiology/report/${entry.id}?tab=print`)}
+                              />
                             )}
 
-                            {/* Phase C: one-click print of the saved report (all roles incl. reception) */}
                             {entry.id !== -1 && entry.reportId != null && (
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                className="h-7 px-2 text-xs"
-                                onClick={() => void openPrintReport(entry.reportId!)}
+                              <WorklistActionBtn
+                                icon={Printer}
+                                label="Print"
+                                tone="neutral"
                                 title="Print / Share report"
-                              >
-                                <Printer className="h-3 w-3 mr-1" />
-                                Print
-                              </Button>
+                                onClick={() => void openPrintReport(entry.reportId!)}
+                              />
                             )}
 
-                            {/* Attach the final report as produced in Word (PDF/DOCX) — the
-                                clinic's actual reporting workflow, distinct from this app's
-                                own structured builder above. */}
                             {entry.id !== -1 && entry.studyId != null && (
                               attachingStudyId === entry.studyId ? (
-                                <div className="flex items-center justify-center gap-1.5 h-7 px-2 text-xs text-muted-foreground">
-                                  <Loader2 size={13} className="animate-spin text-primary" />
-                                  <span>Attaching...</span>
+                                <div className="inline-flex flex-col items-center justify-center gap-0.5 rounded-lg border border-border bg-muted/30 w-[52px] h-[40px] text-[9px] text-muted-foreground">
+                                  <Loader2 size={14} className="animate-spin text-primary" />
+                                  Wait
                                 </div>
                               ) : (
                                 <>
@@ -1415,16 +1743,13 @@ export default function RadiologyWorklist() {
                                     className="hidden"
                                     onChange={(e) => handleAttachReport(entry.studyId as number, e)}
                                   />
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    className="h-7 px-2 text-xs"
-                                    onClick={() => document.getElementById(`attach-report-${entry.studyId}`)?.click()}
+                                  <WorklistActionBtn
+                                    icon={FileUp}
+                                    label="Attach"
+                                    tone="neutral"
                                     title="Attach the final report (Word/PDF) produced outside this app"
-                                  >
-                                    <FileUp className="h-3 w-3 mr-1" />
-                                    Attach Report
-                                  </Button>
+                                    onClick={() => document.getElementById(`attach-report-${entry.studyId}`)?.click()}
+                                  />
                                 </>
                               )
                             )}
@@ -1470,15 +1795,35 @@ export default function RadiologyWorklist() {
               <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
               <div>
                 <span className="font-semibold">Safety: </span>
-                AI drafts are never automatically marked as final. A radiologist must review and explicitly save the final report.
-                Automated email delivery is not enabled — status is set to READY_TO_SEND only.
+                AI drafts are never automatically marked as final. Prefer{" "}
+                <button type="button" className="underline font-medium" onClick={() => navigate("/radiology/reporting-workspace")}>
+                  Reporting Workspace
+                </button>{" "}
+                finalize for portal/WhatsApp delivery. External Word/PDF attach stores on the study only — use{" "}
+                <button type="button" className="underline font-medium" onClick={() => navigate("/report-delivery")}>
+                  Report Delivery
+                </button>{" "}
+                to print/share. Automated email delivery is not enabled (READY_TO_SEND only).
               </div>
             </div>
           </div>
         </TabsContent>
 
         <TabsContent value="mwl">
-          <MwlPanel />
+          <div className="space-y-3">
+            <MwlStatusPanel
+              isAdmin={["admin", "super_admin", "owner"].includes(normalizeRole(session?.user?.role || ""))}
+              onSync={() => {
+                void api.post("/api/radiology/mwl-worklist/sync", {}).then(() => {
+                  toast({ title: "MWL sync requested" });
+                  void qc.invalidateQueries({ queryKey: ["mwl-deployment-status"] });
+                }).catch((e: unknown) => {
+                  toast({ title: "MWL sync failed", description: e instanceof Error ? e.message : "Error", variant: "destructive" });
+                });
+              }}
+            />
+            <MwlPanel />
+          </div>
         </TabsContent>
       </Tabs>
 

@@ -303,5 +303,7 @@ export async function registerPatientSelfFlow(params: RegisterPatientSelfFlowPar
     tokenNo,
     tokenDate,
     testTokens,
+    createdAt: billRow.createdAt,
+    createdByName: billRow.createdByName,
   };
 }

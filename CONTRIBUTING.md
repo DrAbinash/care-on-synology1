@@ -84,7 +84,7 @@ Feature: Add DICOM download to reception command center
 3. Document in CONTRIBUTING.md
 
 ### No Hardcoded:
-- ❌ `const ip = "192.168.1.137"`
+- ❌ `const ip = "172.16.1.139"`
 - ✅ `const ip = process.env.ORTHANC_HOST || 'localhost'`
 
 ---

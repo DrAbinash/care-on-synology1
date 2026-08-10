@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "vitest";
-import { hasValidInternalApiKey } from "./rateLimits";
+import { hasValidInternalApiKey, isDedicatedAuthLoginPath } from "./rateLimits";
 
 // Fix: DICOM auto-pull / internal radiology intake (POST /api/internal/radiology/*)
 // was intermittently 429'd because it shared the same public generalLimiter
@@ -59,5 +59,39 @@ describe("hasValidInternalApiKey", () => {
     process.env["INTERNAL_API_KEY"] = "secret-dicom-key-123";
     const req = makeReq({ authorization: "Bearer " });
     expect(hasValidInternalApiKey(req)).toBe(false);
+  });
+});
+
+function makePathReq(path: string): import("express").Request {
+  return {
+    path,
+    originalUrl: path,
+    url: path,
+  } as unknown as import("express").Request;
+}
+
+describe("isDedicatedAuthLoginPath", () => {
+  test("matches staff login POST path", () => {
+    expect(isDedicatedAuthLoginPath(makePathReq("/portal/staff-login"))).toBe(true);
+    expect(isDedicatedAuthLoginPath(makePathReq("/api/portal/staff-login"))).toBe(true);
+  });
+
+  test("matches patient login POST path", () => {
+    expect(isDedicatedAuthLoginPath(makePathReq("/portal/patient-login"))).toBe(true);
+    expect(isDedicatedAuthLoginPath(makePathReq("/api/portal/patient-login"))).toBe(true);
+  });
+
+  test("matches WebAuthn authenticate paths", () => {
+    expect(isDedicatedAuthLoginPath(makePathReq("/api/auth/webauthn/authenticate/begin"))).toBe(true);
+    expect(isDedicatedAuthLoginPath(makePathReq("/auth/webauthn/authenticate/complete"))).toBe(true);
+  });
+
+  test("ignores query strings", () => {
+    expect(isDedicatedAuthLoginPath(makePathReq("/portal/staff-login?retry=1"))).toBe(true);
+  });
+
+  test("does not match unrelated portal routes", () => {
+    expect(isDedicatedAuthLoginPath(makePathReq("/portal/settings"))).toBe(false);
+    expect(isDedicatedAuthLoginPath(makePathReq("/portal/me"))).toBe(false);
   });
 });

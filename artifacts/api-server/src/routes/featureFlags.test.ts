@@ -87,6 +87,19 @@ describe("GET /api/feature-flags", () => {
     expect(res.body).toHaveLength(2);
     expect(res.body.every((f: { enabled: boolean }) => f.enabled === false)).toBe(true);
   });
+
+  test("annotates each flag with a wired boolean from the radiology registry", async () => {
+    const { default: featureFlagsRouter } = await import("./featureFlags");
+    const handler = getRouteHandler(featureFlagsRouter, "get", "/");
+    const res = makeRes();
+    await handler({}, res);
+    const byKey = Object.fromEntries(
+      (res.body as Array<{ key: string; wired: boolean }>).map((f) => [f.key, f.wired]),
+    );
+    // structured_core is wired; render_v2 is explicitly not.
+    expect(byKey.ff_radiology_structured_core).toBe(true);
+    expect(byKey.ff_radiology_render_v2).toBe(false);
+  });
 });
 
 describe("PATCH /api/feature-flags/:key", () => {
@@ -111,6 +124,34 @@ describe("PATCH /api/feature-flags/:key", () => {
     // The cache must be invalidated so the very next isFeatureEnabledServer()
     // call in this same process reads the fresh value.
     expect(invalidateFeatureFlagCache).toHaveBeenCalledTimes(1);
+  });
+
+  test("rejects enabling an unwired radiology flag with 400, never touches the DB", async () => {
+    selectOneResult = [{ key: "ff_radiology_render_v2", enabled: false, description: "y", updatedBy: null, updatedAt: "2026-01-01T00:00:00.000Z" }];
+    updatedRow = selectOneResult[0];
+    const { default: featureFlagsRouter } = await import("./featureFlags");
+    const handler = getRouteHandler(featureFlagsRouter, "patch", "/:key");
+    const req = { params: { key: "ff_radiology_render_v2" }, body: { enabled: true }, staffSession: { subjectName: "Dr. Admin" } };
+    const res = makeRes();
+    await handler(req, res);
+
+    expect(res.statusCode).toBe(400);
+    expect(String(res.body?.error ?? "")).toMatch(/not wired/i);
+    expect(updateSetCalls).toHaveLength(0);
+    expect(invalidateFeatureFlagCache).not.toHaveBeenCalled();
+  });
+
+  test("allows disabling an unwired flag (cleanup) without error", async () => {
+    selectOneResult = [{ key: "ff_radiology_render_v2", enabled: true, description: "y", updatedBy: null, updatedAt: "2026-01-01T00:00:00.000Z" }];
+    updatedRow = selectOneResult[0];
+    const { default: featureFlagsRouter } = await import("./featureFlags");
+    const handler = getRouteHandler(featureFlagsRouter, "patch", "/:key");
+    const req = { params: { key: "ff_radiology_render_v2" }, body: { enabled: false }, staffSession: { subjectName: "Dr. Admin" } };
+    const res = makeRes();
+    await handler(req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(updateSetCalls[0]).toMatchObject({ enabled: false });
   });
 
   test("rejects a non-boolean enabled value with 400, never touches the DB", async () => {

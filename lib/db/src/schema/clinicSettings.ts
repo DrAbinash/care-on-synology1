@@ -148,6 +148,10 @@ export const clinicSettingsTable = pgTable("clinic_settings", {
   // free text set by whoever creates the expense. Admin can flip this off once
   // there is enough staff for the creator/approver split to be practical.
   expenseSelfApprovalAllowed: boolean("expense_self_approval_allowed").notNull().default(true),
+  // When true, cancelling a bill that still has paidAmount > 0 requires an
+  // auto-refund in the same request (Cancel Only is blocked). Default false
+  // preserves today's cancel-without-refund behaviour.
+  cancelRequiresRefund: boolean("cancel_requires_refund").notNull().default(false),
   // Network access control — when enabled, non-admin staff can only log in from
   // the hospital LAN (private RFC-1918 IP ranges). Extra trusted IPs can be added
   // as a JSON array of strings in lanAllowedIps.
@@ -174,8 +178,8 @@ export const clinicSettingsTable = pgTable("clinic_settings", {
   // When true, husband/father name is required in the Form F billing desk popup and form.
   formFGuardianRequired: boolean("form_f_guardian_required").notNull().default(true),
   // When true (default — matches existing behavior), phone number is a required
-  // field on the Patients page's Add/Edit Patient forms. When false, staff can
-  // register patients there without a phone number. Kiosk and online-booking
+  // field on Bill Desk / Quick Register / Patients Add-Edit forms. When false,
+  // staff can register walk-ins without a phone. Kiosk and online-booking
   // self-registration ALWAYS require a phone regardless of this setting —
   // patients registering themselves must be reachable.
   patientPhoneRequired: boolean("patient_phone_required").notNull().default(true),
@@ -228,8 +232,8 @@ export const clinicSettingsTable = pgTable("clinic_settings", {
   autoRotateScan: boolean("auto_rotate_scan").notNull().default(false),
   archiveImportedScans: boolean("archive_imported_scans").notNull().default(true),
   cropPadding: integer("crop_padding").notNull().default(12),
-  jpegQuality: integer("jpeg_quality").notNull().default(85),
-  maxScanWidth: integer("max_scan_width").notNull().default(1200),
+  jpegQuality: integer("jpeg_quality").notNull().default(92),
+  maxScanWidth: integer("max_scan_width").notNull().default(2000),
 
   // ── Ollama Local Models (Phase 10C / 11) ──
   // Primary endpoint — set to Windows PC primary LAN IP: http://192.168.1.250:11434
@@ -279,7 +283,7 @@ export const clinicSettingsTable = pgTable("clinic_settings", {
   // Wireless scanning + pairing configurations
   mobileScanEnabled: boolean("mobile_scan_enabled").notNull().default(true),
   phonePairingEnabled: boolean("phone_pairing_enabled").notNull().default(true),
-  preferredScanner: text("preferred_scanner").notNull().default("mobile"), // mobile | bridge
+  preferredScanner: text("preferred_scanner").notNull().default("bridge"), // camera | bridge | mobile
   requireDesktopConfirmation: boolean("require_desktop_confirmation").notNull().default(true),
   autoDeleteTempScans: boolean("auto_delete_temp_scans").notNull().default(true),
   ocrEnabled: boolean("ocr_enabled").notNull().default(true),

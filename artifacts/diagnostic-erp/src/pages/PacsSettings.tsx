@@ -725,7 +725,7 @@ export default function PacsSettings({ embedded = false }: { embedded?: boolean 
                 options={["WEASIS", "OHIF", "BOTH"]} value={viewerMap["viewer_mode"] ?? "BOTH"}
                 onSave={(v) => saveViewerKey("viewer_mode", v)} disabled={!isAdmin} />
               <ViewerField label="Default Viewer" description="Primary viewer button" type="select"
-                options={["OHIF", "WEASIS"]} value={viewerMap["default_viewer"] ?? "OHIF"}
+                options={["OHIF", "WEASIS"]} value={viewerMap["default_viewer"] ?? "WEASIS"}
                 onSave={(v) => saveViewerKey("default_viewer", v)} disabled={!isAdmin} />
               <ViewerField label="OHIF Enabled" type="select" options={["true", "false"]}
                 value={viewerMap["ohif_enabled"] ?? "true"} onSave={(v) => saveViewerKey("ohif_enabled", v)} disabled={!isAdmin} />

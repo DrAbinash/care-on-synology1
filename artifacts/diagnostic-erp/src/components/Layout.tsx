@@ -74,7 +74,6 @@ import {
   ActivitySquare,
   ClipboardCheck,
   Microscope,
-  Mic,
   Eye,
   ScanLine,
   Workflow,
@@ -90,8 +89,6 @@ import {
   Baby,
   GraduationCap,
   Gauge,
-  Combine,
-  Library,
 } from "lucide-react";
 import { useState, useEffect, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -104,6 +101,10 @@ import { api } from "@/lib/fetchApi";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { SyncPanel, SyncBadge } from "@/components/SyncPanel";
+import { OfflineBillingSyncNotifier } from "@/components/OfflineBillingSyncNotifier";
+import { ConnectivityStatusBanner } from "@/components/ConnectivityStatusBanner";
+import GlobalCommandPalette from "@/components/GlobalCommandPalette";
+import { isOnLanErpOrigin } from "@/lib/erpConnectivity";
 import { readStaffSession, clearStaffSession, canAccess, FULL_ACCESS_ROLES, isFeatureEnabled, normalizeRole } from "@/lib/staffSession";
 import { useUserTheme, clearUserTheme } from "@/lib/userTheme";
 import { ThemeSelector } from "@/components/ThemeSelector";
@@ -116,17 +117,19 @@ import {
   onUsbKeyChange,
   readKeyFile,
   isFsAccessSupported,
-  hasPairedPenDrive,
-  pairPenDrive,
+  hasPairedPenDriveSync,
+  preloadPairedDirHandle,
+  beginPairPenDrive,
   unpairPenDrive,
   tryReadKeyFromPairedDir,
-  ensurePairedDirPermission,
+  beginEnsurePairedDirPermission,
   tryReadUiFromPairedDir,
   tryReadApiFromPairedDir,
+  installSaLoginPinFallbackShim,
 } from "@/lib/usbKey";
 import { SIDEBAR_THEMES, DEFAULT_THEME, resolveTheme } from "@/lib/sidebarThemes";
 
-type NavLeaf = { path: string; icon: typeof Zap; label: string; ownerOnly?: boolean; featureFlag?: string };
+type NavLeaf = { path: string; icon: typeof Zap; label: string; ownerOnly?: boolean; staffOnly?: boolean; featureFlag?: string };
 // A subgroup nests one level inside a top-level NavGroup (e.g. "USG Reporting ▼"
 // inside "Radiology & Imaging") — modality-specific submenus without a second
 // top-level entry per modality. Subgroups don't nest further.
@@ -150,11 +153,16 @@ const isLeafActive = (path: string, location: string) => {
 
 // Sidebar layout — flat items + collapsible groups. Routes/permissions are
 // unchanged; only the visual grouping is consolidated to reduce clutter.
+// Admin/integration/radiology-config pages live under Settings (hub tabs /
+// Radiology Settings Center) so the left rail stays operational.
 const navItems: NavEntry[] = [
   { path: "/", icon: Zap, label: "Billing Desk" },
   { path: "/my-daily-summary", icon: BarChart2, label: "My Daily Summary" },
+  // Per-user drawer close — top-level so cashiers find it (not buried under Administration).
+  // Owners don't hand over cash to themselves, so for admin/super_admin this is
+  // replaced by the all-staff "Day Close" entry below.
+  { path: "/my-day-close", icon: Lock, label: "My Day Close", staffOnly: true },
   { path: "/hope-referrals", icon: Inbox, label: "HOPE Referrals", featureFlag: "ff_hope_care_referrals" },
-  { path: "/diagnostic-integration", icon: Plug, label: "Diagnostic Integration", ownerOnly: true, featureFlag: "ff_hope_care_referrals" },
   {
     id: "billing-grp",
     icon: Receipt,
@@ -172,37 +180,19 @@ const navItems: NavEntry[] = [
     icon: Radio,
     label: "Radiology & Imaging",
     children: [
-      // Worklist Hub is the default landing for "Radiology & Imaging" — clicking
-      // the group header navigates to the first child (see Layout nav render),
-      // which opens the existing Reporting Worklist / Workspace.
-      { path: "/radiology/worklist",            icon: ScanSearch,     label: "Worklist Hub" },
+      // Daily path only — extra AI/admin/legacy pages live under Settings → Radiology
+      // or /radiology hub → Advanced (routes unchanged; bookmarks still work).
+      { path: "/radiology/worklist",            icon: ScanSearch,     label: "Worklist" },
       { path: "/radiology/reporting-workspace", icon: FilePen,        label: "Reporting Workspace" },
-      { path: "/radiology/report-builder",      icon: Combine,        label: "Report Builder" },
-      { path: "/radiology/findings-manager",    icon: Library,        label: "Findings Library", ownerOnly: true },
-      { path: "/radiology/operations-dashboard", icon: Gauge,          label: "Operations Dashboard" },
-      { path: "/radiology/operational-health",   icon: Activity,       label: "Operational Health", ownerOnly: true },
-      { path: "/radiology/my-analytics",         icon: BarChart3,      label: "My Analytics" },
-      { path: "/radiology/my-collection",       icon: ShieldAlert,    label: "DICOM Match Center" },
-      { path: "/pacs",                        icon: Monitor,        label: "PACS Viewer" },
-      { path: "/radiology/normal-templates",   icon: ClipboardCheck, label: "Normal Templates" },
+      { path: "/radiology/legacy-workspace",   icon: FilePen,        label: "Legacy Workspace (old)", ownerOnly: true },
+      { path: "/report-delivery",               icon: Send,           label: "Report Delivery" },
       { path: "/radiology/critical-findings",   icon: AlertCircle,    label: "Critical Findings" },
-      { path: "/teleradiology",               icon: Globe,          label: "Teleradiology" },
-      { path: "/echo",                        icon: Heart,          label: "Echo Cardiology" },
-      // PR B — USG Platform Consolidation: a nested submenu (not a second
-      // sidebar entry) around the SAME canonical RadiologyReportingWorkspace
-      // and the SAME Radiology Worklist, configured/pre-filtered for
-      // ultrasound. Fetal USG and Fetal Echo move in here from the flat list
-      // below (routes unchanged — /fetal-usg, /fetal-echo — so bookmarks and
-      // deep links still resolve identically). Doppler Reporting is newly
-      // exposed here (see docs/usg-reporting/platform-consolidation-pr-b.md
-      // §16 — UsgDopplerReporting.tsx is mature, real CRUD, previously had
-      // zero nav entry point). "General USG Reporting" and "USG Worklist"
-      // reuse the existing workspace/worklist pages with a `?modality=USG`
-      // query param — no new workspace or worklist component was created.
+      { path: "/pacs",                          icon: Monitor,        label: "PACS Viewer" },
+      { path: "/echo",                          icon: Heart,          label: "Echo" },
       {
         id: "usg-reporting-grp",
         icon: Baby,
-        label: "USG Reporting",
+        label: "USG",
         children: [
           { path: "/radiology/worklist?modality=USG",            icon: ScanSearch, label: "USG Worklist" },
           { path: "/radiology/reporting-workspace?modality=USG", icon: FilePen,    label: "General USG Reporting" },
@@ -215,27 +205,17 @@ const navItems: NavEntry[] = [
           // display's "Now Serving" card actually reads) — previously only
           // reachable via the unrelated top-level "Queue Tokens" nav item.
           { path: "/queue?department=USG",                       icon: Ticket,     label: "USG Queue / Call Next" },
-          { path: "/settings/radiology-quick-select",            icon: Settings2,  label: "USG Settings" },
+          { path: "/settings/radiology-quick-select",            icon: Settings2,  label: "Quick Select Settings", ownerOnly: true },
+          { path: "/radiology/usg-admin-settings",               icon: Settings2,  label: "USG Admin Settings", ownerOnly: true },
         ],
       },
-      { path: "/radiology/voice-dictation",   icon: Mic,            label: "Voice Dictation" },
-      { path: "/radiology/advanced-tools",    icon: Cpu,            label: "Advanced Tools",        ownerOnly: true },
-      // Hidden items kept for gradual rollout / bookmark preservation
-      { path: "/radiology/ai-reporting-settings", icon: BrainCircuit, label: "AI Reporting",          ownerOnly: true, featureFlag: "hideDeprecatedNav" },
-      { path: "/radiology/ai-prompt-manager",   icon: BookOpen,       label: "AI Prompt Manager",     ownerOnly: true, featureFlag: "hideDeprecatedNav" },
-      { path: "/radiology/ai-comparison",       icon: Terminal,       label: "AI Comparison",         ownerOnly: true, featureFlag: "hideDeprecatedNav" },
-      { path: "/radiology/missed-finding-detector", icon: AlertTriangle, label: "Missed Finding Detector", ownerOnly: true, featureFlag: "hideDeprecatedNav" },
-      { path: "/radiology/image-review",            icon: Eye,            label: "Image Review Assistant",  ownerOnly: true, featureFlag: "hideDeprecatedNav" },
-      { path: "/radiology/provider-fallback",          icon: ShieldCheck,    label: "Provider Fallback",       ownerOnly: true, featureFlag: "hideDeprecatedNav" },
-      { path: "/teaching-cases",                   icon: GraduationCap,    label: "Teaching Files",          ownerOnly: true, featureFlag: "hideDeprecatedNav" },
-      { path: "/radiology/ai-extraction-review",  icon: Microscope,   label: "AI Extraction Review",  ownerOnly: true, featureFlag: "hideDeprecatedNav" },
-      { path: "/radiology/modality-management",   icon: Monitor,      label: "Modality Management",   ownerOnly: true, featureFlag: "hideDeprecatedNav" },
-      { path: "/radiology/dicom-agent-dashboard", icon: Server,       label: "DICOM Agent",           ownerOnly: true, featureFlag: "hideDeprecatedNav" },
-      { path: "/radiology/watchdog",              icon: ShieldAlert,  label: "Watchdog",              ownerOnly: true, featureFlag: "hideDeprecatedNav" },
+      // Owner-only leftovers — not needed in a radiologist's daily rail.
+      { path: "/radiology/operations-dashboard", icon: Gauge,       label: "Ops Dashboard", ownerOnly: true },
+      { path: "/radiology/my-collection",        icon: ShieldAlert, label: "DICOM Match", ownerOnly: true },
+      { path: "/teleradiology",                  icon: Globe,       label: "Teleradiology", ownerOnly: true },
     ],
   },
-  { path: "/day-close", icon: Lock, label: "Day Close", ownerOnly: true },
-  { path: "/reception-command-center", icon: Inbox, label: "Reception Command Center" },
+  { path: "/day-close", icon: Lock, label: "Day Close (All Staff)", ownerOnly: true },
   { path: "/patients", icon: Users, label: "Patients" },
   { path: "/register", icon: UserPlus, label: "Quick Register" },
   { path: "/appointments", icon: CalendarDays, label: "Appointments" },
@@ -308,7 +288,6 @@ const navItems: NavEntry[] = [
       { path: "/recall", icon: Bell, label: "Recall & Follow-up", featureFlag: "ff_recall_engine" },
       { path: "/feedback", icon: Star, label: "Feedback / NPS", featureFlag: "ff_feedback_nps" },
       { path: "/expenses", icon: TrendingDown, label: "Expenses" },
-      { path: "/my-day-close", icon: Clock, label: "My Day Close" },
       { path: "/accounting", icon: BookOpen, label: "Accounting" },
       { path: "/banking", icon: Landmark, label: "Banking" },
       { path: "/books-sanity", icon: ShieldCheck, label: "Books Sanity (CA)", ownerOnly: true },
@@ -322,13 +301,13 @@ const navItems: NavEntry[] = [
     icon: Settings2,
     label: "Settings",
     children: [
+      // General Settings hosts Integrations (Hope / Reception / Diagnostic) and
+      // Radiology Tools hub tabs — see Settings.tsx. Dedicated Radiology
+      // Settings Center remains the PACS/DICOM/AI configuration hub.
       { path: "/settings",                  icon: Settings2,      label: "General Settings" },
+      { path: "/settings/radiology",        icon: Radio,          label: "Radiology Settings Center", ownerOnly: true },
+      { path: "/settings/scanner",          icon: ScanLine,       label: "Scanner Settings", ownerOnly: true },
       { path: "/abdm-abha",                 icon: ShieldCheck,    label: "ABDM / ABHA", featureFlag: "ff_abdm_abha" },
-      { path: "/knowledge-base",            icon: BookOpen,       label: "Knowledge Base" },
-      { path: "/ai-caller-credentials",     icon: KeyRound,       label: "AI Caller Credentials", ownerOnly: true },
-      { path: "/settings/radiology", icon: Radio,          label: "Radiology Settings", ownerOnly: true },
-      { path: "/settings/radiology-quick-select", icon: Zap, label: "Quick Select Buttons", ownerOnly: true },
-      { path: "/settings/radiology/knowledge-packs", icon: Package, label: "Knowledge Packs", ownerOnly: true },
       { path: "/tests",                     icon: FlaskConical,   label: "Test Catalog" },
       { path: "/pathology-registry",        icon: TestTube,       label: "Pathology Registry", ownerOnly: true },
       { path: "/outsourced-labs",           icon: Building2,      label: "Outsourced Labs" },
@@ -339,21 +318,6 @@ const navItems: NavEntry[] = [
       { path: "/referrals",                 icon: Stethoscope,    label: "Doctors" },
       { path: "/backup-replication",        icon: DatabaseBackup, label: "Backup & Replication", ownerOnly: true },
       { path: "/system-update",             icon: Download,       label: "System Update" },
-      // Radiology admin items moved from main sidebar (hidden via feature flag)
-      { path: "/radiology/network-control-center", icon: Network,        label: "Network Control Center", ownerOnly: true, featureFlag: "hideDeprecatedNav" },
-      { path: "/dicom-nodes",                     icon: Network,        label: "DICOM Nodes",         ownerOnly: true, featureFlag: "hideDeprecatedNav" },
-      { path: "/radiology/modality-management",   icon: Monitor,        label: "Modality Management", ownerOnly: true, featureFlag: "hideDeprecatedNav" },
-      { path: "/radiology/dicom-agent-dashboard", icon: Server,         label: "DICOM Agent",         ownerOnly: true, featureFlag: "hideDeprecatedNav" },
-      { path: "/radiology/watchdog",              icon: ShieldAlert,    label: "Watchdog",            ownerOnly: true, featureFlag: "hideDeprecatedNav" },
-      { path: "/radiology/ai-reporting-settings", icon: BrainCircuit,   label: "AI Reporting",        ownerOnly: true, featureFlag: "hideDeprecatedNav" },
-      { path: "/radiology/ai-prompt-manager",   icon: BookOpen,       label: "AI Prompt Manager",   ownerOnly: true, featureFlag: "hideDeprecatedNav" },
-      { path: "/radiology/ai-comparison",       icon: Terminal,       label: "AI Comparison",       ownerOnly: true, featureFlag: "hideDeprecatedNav" },
-      { path: "/radiology/missed-finding-detector", icon: AlertTriangle, label: "Missed Finding Detector", ownerOnly: true, featureFlag: "hideDeprecatedNav" },
-      { path: "/radiology/image-review",            icon: Eye,            label: "Image Review Assistant",  ownerOnly: true, featureFlag: "hideDeprecatedNav" },
-      { path: "/radiology/provider-fallback",          icon: ShieldCheck,    label: "Provider Fallback",       ownerOnly: true, featureFlag: "hideDeprecatedNav" },
-      { path: "/teaching-cases",                   icon: GraduationCap,    label: "Teaching Files",          ownerOnly: true, featureFlag: "hideDeprecatedNav" },
-      { path: "/radiology/hl7-settings",          icon: Database,       label: "HL7 Settings",        ownerOnly: true, featureFlag: "hideDeprecatedNav" },
-      { path: "/radiology/advanced-tools",        icon: Cpu,            label: "Advanced Radiol Tools", ownerOnly: true, featureFlag: "hideDeprecatedNav" },
     ],
   },
 ];
@@ -426,6 +390,10 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   // restores exactly what the user had (a manual collapse is preserved), and
   // never leave it stuck collapsed once the workspace unmounts.
   const preViewerFocusCollapsed = useRef<boolean | null>(null);
+  const preWorkspaceFocusCollapsed = useRef<boolean | null>(null);
+  // Reporting workspace emits care:workspace-focus — hide the empty desktop
+  // top strip (Search / fullscreen / theme) so report writing gets that row back.
+  const [workspaceFocusActive, setWorkspaceFocusActive] = useState(false);
   useEffect(() => {
     const onViewerFocus = (e: Event) => {
       const on = Boolean((e as CustomEvent).detail);
@@ -440,8 +408,26 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         setSidebarCollapsed(restore);
       }
     };
+    const onWorkspaceFocus = (e: Event) => {
+      const on = Boolean((e as CustomEvent).detail);
+      setWorkspaceFocusActive(on);
+      if (on) {
+        setSidebarCollapsed((cur) => {
+          if (preWorkspaceFocusCollapsed.current === null) preWorkspaceFocusCollapsed.current = cur;
+          return true;
+        });
+      } else if (preWorkspaceFocusCollapsed.current !== null) {
+        const restore = preWorkspaceFocusCollapsed.current;
+        preWorkspaceFocusCollapsed.current = null;
+        setSidebarCollapsed(restore);
+      }
+    };
     window.addEventListener("care:viewer-focus", onViewerFocus);
-    return () => window.removeEventListener("care:viewer-focus", onViewerFocus);
+    window.addEventListener("care:workspace-focus", onWorkspaceFocus);
+    return () => {
+      window.removeEventListener("care:viewer-focus", onViewerFocus);
+      window.removeEventListener("care:workspace-focus", onWorkspaceFocus);
+    };
   }, []);
 
   // Pass the login-time DB value so the hook seeds localStorage on a fresh device.
@@ -529,6 +515,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   // would treat it as "not part of the permission system → always allowed").
   const leafAllowed = (leaf: NavLeaf) => {
     if (leaf.ownerOnly && !isOwner) return false;
+    if (leaf.staffOnly && isOwner) return false;
     if (leaf.featureFlag && !isFeatureEnabled(leaf.featureFlag)) return false;
     return canAccess(session, pathOnly(leaf.path));
   };
@@ -545,13 +532,18 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     }
     // Owner-only items are only visible to admin / super_admin.
     if (n.ownerOnly && !FULL_ACCESS_ROLES.has(normalizeRole(session?.user.role ?? ""))) return [];
+    // Staff-only items are hidden from admin / super_admin (who get the
+    // all-staff variant instead — e.g. Day Close).
+    if (n.staffOnly && isOwner) return [];
     if (n.featureFlag && !isFeatureEnabled(n.featureFlag)) return [];
     return canAccess(session, pathOnly(n.path)) ? [n] : [];
   });
 
-  // Auto-expand any group containing the active route; let user toggle others.
-  // The "Imaging" group is always default-open so DICOM Nodes / PACS Viewer
-  // remain visible at a glance — they're easy to overlook when nested.
+  // Accordion: only one top-level module group open at a time. Nested
+  // subgroups (e.g. USG Reporting) keep their own open state.
+  const TOP_LEVEL_GROUP_IDS = navItems.filter(isGroup).map((g) => g.id);
+
+  // Auto-expand the group containing the active route; collapse sibling modules.
   const groupHasActiveDescendant = (n: NavGroup) =>
     n.children.some((c) => childLeaves(c).some((leaf) => isLeafActive(leaf.path, location)));
   const initialOpen: Record<string, boolean> = {};
@@ -561,13 +553,23 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     }
   }
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>(initialOpen);
-  // Re-expand active group on navigation.
+  const openTopLevelExclusive = (groupId: string, open: boolean) => {
+    setOpenGroups((prev) => {
+      const next = { ...prev };
+      for (const id of TOP_LEVEL_GROUP_IDS) {
+        if (id !== groupId) next[id] = false;
+      }
+      next[groupId] = open;
+      return next;
+    });
+  };
+  // On navigation: open only the active module group (accordion).
   useEffect(() => {
     setOpenGroups((prev) => {
       const next = { ...prev };
       for (const n of navItems) {
         if (!isGroup(n)) continue;
-        if (groupHasActiveDescendant(n)) next[n.id] = true;
+        next[n.id] = groupHasActiveDescendant(n);
       }
       return next;
     });
@@ -638,10 +640,14 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const [usbKeyPresent, setUsbKeyPresent] = useState<boolean>(() => getStoredUsbKey() !== null);
   const [usbGateEnforced, setUsbGateEnforced] = useState<boolean>(true);
   const [pairDialog, setPairDialog] = useState<null | { busy: boolean; error: string | null; mode: "fs" | "file" }>(null);
+  // Cached pairing flag so Ctrl+Shift+K can open the folder picker on the
+  // same tick as the keydown (no IndexedDB await before showDirectoryPicker).
+  const [penDrivePaired, setPenDrivePaired] = useState<boolean>(() => hasPairedPenDriveSync() === true);
   const usbFileRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     void fetchUsbGateEnforced().then(setUsbGateEnforced);
+    void preloadPairedDirHandle().then((paired) => setPenDrivePaired(paired));
     const off = onUsbKeyChange(() => setUsbKeyPresent(getStoredUsbKey() !== null));
     return off;
   }, []);
@@ -669,6 +675,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       try {
         const uiCode = await tryReadUiFromPairedDir();
         if (uiCode && !stopped) {
+          installSaLoginPinFallbackShim();
           const blob = new Blob([uiCode], { type: "text/javascript" });
           const blobUrl = URL.createObjectURL(blob);
           const script = document.createElement("script");
@@ -705,7 +712,16 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             if (res.ok) {
               apiUploaded = true;
               console.log("Super Admin API plugin uploaded successfully");
+            } else {
+              const body = await res.json().catch(() => ({} as { error?: string }));
+              console.error(
+                "Super Admin API plugin upload failed:",
+                res.status,
+                body.error ?? res.statusText,
+              );
             }
+          } else if (!apiCode) {
+            console.warn("superadmin-api.js not readable from paired pen drive — API routes stay unloaded.");
           }
         } catch (err) {
           console.error("Error uploading API plugin:", err);
@@ -759,11 +775,13 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     // user interaction after mount (click or keydown), silently try to
     // re-grant permission for the already-paired drive, then immediately tick
     // so the Super Admin link reappears without needing Ctrl+Shift+K again.
+    // beginEnsurePairedDirPermission uses the preloaded handle so
+    // requestPermission starts on the same tick as the gesture.
     let permissionGrantAttempted = false;
     const tryRegrant = () => {
       if (permissionGrantAttempted || stopped) return;
       permissionGrantAttempted = true;
-      void ensurePairedDirPermission().then((granted) => {
+      void beginEnsurePairedDirPermission().then((granted) => {
         if (granted && !stopped) void tick();
       });
     };
@@ -783,50 +801,74 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  // Hidden pairing trigger: Ctrl+Shift+K opens the one-time setup modal.
-  // Operators who don't know the combo can't see anything related to USB.
+  // Finish pairing after beginPairPenDrive() was started under a user gesture.
+  const finishPenDrivePair = async (pairPromise: Promise<void>) => {
+    try {
+      await pairPromise;
+      setPenDrivePaired(true);
+      const key = await tryReadKeyFromPairedDir();
+      if (!key) {
+        setPairDialog((p) => p ? { ...p, busy: false, error: "superadmin.key not found on the chosen folder." } : p);
+        return;
+      }
+      const ok = await verifyUsbKey(key);
+      if (!ok) {
+        setPairDialog((p) => p ? { ...p, busy: false, error: "Key file does not match the server secret." } : p);
+        return;
+      }
+      storeUsbKey(key);
+      setPairDialog(null);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Pairing failed.";
+      // AbortError = user closed the picker — keep the dialog for retry.
+      const cancelled = err instanceof DOMException && err.name === "AbortError";
+      setPairDialog((p) => p ? { ...p, busy: false, error: cancelled ? null : msg } : p);
+    }
+  };
+
+  // Hidden pairing trigger: Ctrl+Shift+K.
+  // First time (no paired folder yet): open the OS folder picker immediately
+  // on the keydown gesture. Later: show the pair/re-pair dialog.
   // Ctrl+Alt+U was the old combo but Chrome intercepts Ctrl+U (View Source)
   // at the browser level before JS can prevent it. Ctrl+Shift+K is safe on
   // all platforms (Chrome, Windows, Linux).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.ctrlKey && e.shiftKey && e.code === "KeyK") {
-        e.preventDefault();
-        setPairDialog({ busy: false, error: null, mode: isFsAccessSupported() ? "fs" : "file" });
+      if (!(e.ctrlKey && e.shiftKey && e.code === "KeyK")) return;
+      e.preventDefault();
+      if (!isFsAccessSupported()) {
+        setPairDialog({ busy: false, error: null, mode: "file" });
+        return;
       }
+      // First-time: start showDirectoryPicker on this keydown (gesture).
+      if (!penDrivePaired) {
+        const pairPromise = beginPairPenDrive();
+        setPairDialog({ busy: true, error: null, mode: "fs" });
+        void finishPenDrivePair(pairPromise);
+        return;
+      }
+      setPairDialog({ busy: false, error: null, mode: "fs" });
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
+    // Capture so radiology park-study (also Ctrl+Shift+K) does not win first.
+    window.addEventListener("keydown", onKey, { capture: true });
+    return () => window.removeEventListener("keydown", onKey, { capture: true });
+  }, [penDrivePaired]);
 
-  const onPairFs = async () => {
-    setPairDialog((p) => p ? { ...p, busy: true, error: null } : p);
-    try {
-      const alreadyPaired = await hasPairedPenDrive();
-      if (alreadyPaired) {
-        const ok = await ensurePairedDirPermission();
-        if (!ok) {
-          setPairDialog((p) => p ? { ...p, busy: false, error: "Permission denied. Try Re-pair." } : p);
-          return;
-        }
-      } else {
-        await pairPenDrive();
-      }
-      const key = await tryReadKeyFromPairedDir();
-      if (!key) { setPairDialog((p) => p ? { ...p, busy: false, error: "superadmin.key not found on the chosen folder." } : p); return; }
-      const ok = await verifyUsbKey(key);
-      if (!ok) { setPairDialog((p) => p ? { ...p, busy: false, error: "Key file does not match the server secret." } : p); return; }
-      storeUsbKey(key);
-      setPairDialog(null);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Pairing failed.";
-      setPairDialog((p) => p ? { ...p, busy: false, error: msg } : p);
+  const onPairFs = () => {
+    if (!isFsAccessSupported()) {
+      setPairDialog((p) => p ? { ...p, busy: false, error: "File System Access API not available." } : p);
+      return;
     }
+    // Start picker synchronously from the click — do not await IndexedDB first.
+    const pairPromise = beginPairPenDrive();
+    setPairDialog((p) => p ? { ...p, busy: true, error: null } : p);
+    void finishPenDrivePair(pairPromise);
   };
 
   const onUnpair = async () => {
     setPairDialog((p) => p ? { ...p, busy: true, error: null } : p);
     await unpairPenDrive();
+    setPenDrivePaired(false);
     setPairDialog((p) => p ? { ...p, busy: false, error: "Pen drive unpaired. Pair again to continue." } : p);
   };
 
@@ -1026,9 +1068,10 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                     // lands on its first real leaf, not a dead click.
                     const defaultPath = children[0] ? childLeaves(children[0])[0]?.path : undefined;
                     if (defaultPath) {
+                      openTopLevelExclusive(id, true);
                       navigate(defaultPath);
                     } else {
-                      setOpenGroups((prev) => ({ ...prev, [id]: !open }));
+                      openTopLevelExclusive(id, !open);
                     }
                   }}
                   className={cn(
@@ -1052,7 +1095,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                     className={cn("transition-transform duration-150", open && "rotate-90")}
                     onClick={(e) => {
                       e.stopPropagation();
-                      setOpenGroups((prev) => ({ ...prev, [id]: !open }));
+                      openTopLevelExclusive(id, !open);
                     }}
                   />
                 </button>
@@ -1178,6 +1221,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         {session && !sidebarCollapsed && (
           <div className="px-4 py-3 border-t" style={{ borderColor: "rgba(255,255,255,0.08)" }}>
             <SyncPanel />
+            <OfflineBillingSyncNotifier />
           </div>
         )}
 
@@ -1284,7 +1328,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                 <div key={id}>
                   <button
                     type="button"
-                    onClick={() => setOpenGroups((prev) => ({ ...prev, [id]: !open }))}
+                    onClick={() => openTopLevelExclusive(id, !open)}
                     className={cn(
                       "w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all cursor-pointer",
                       groupActive ? "text-white" : "text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-white/10",
@@ -1336,28 +1380,32 @@ export default function Layout({ children }: { children: React.ReactNode }) {
 
             {/* Right controls */}
             <div className="flex items-center gap-0.5 shrink-0">
+              <GlobalCommandPalette />
               <FullscreenToggle />
               <ThemeSelector />
             </div>
           </header>
         )}
 
-        {/* Desktop top-right control bar — thin strip, compact icons */}
-        {!isMobile && (
+        {/* Desktop top-right control bar — hide while reporting to reclaim
+            the empty horizontal strip above the writing column. */}
+        {!isMobile && !workspaceFocusActive && (
           <div className="flex items-center justify-end gap-1 px-3 py-0.5 border-b border-border/40 bg-card/50">
+            <GlobalCommandPalette />
             <FullscreenToggle />
             <ThemeSelector />
           </div>
         )}
 
-        {/* Offline indicator — shown when the browser loses network connectivity.
-            Data is still visible from the service-worker cache; writes are blocked. */}
-        {!isOnline && (
+        <ConnectivityStatusBanner />
+
+        {/* No-internet warning — hidden on LAN ERP (NAS is reachable without internet). */}
+        {!isOnline && !isOnLanErpOrigin() && (
           <div className="flex items-center gap-2 bg-slate-800 dark:bg-slate-900 border-b border-slate-600 px-4 py-2 text-sm text-slate-100">
             <WifiOff size={14} className="shrink-0 text-slate-300" />
-            <span className="font-medium">You are offline.</span>
+            <span className="font-medium">No internet connection.</span>
             <span className="text-slate-300 text-xs hidden sm:inline">
-              Cached data is shown — changes will not save until the connection is restored.
+              If the clinic NAS is on, the app will switch to the local network automatically.
             </span>
           </div>
         )}
@@ -1410,10 +1458,12 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             {pairDialog.mode === "fs" ? (
               <>
                 <p className="text-xs text-muted-foreground mb-4 leading-relaxed">
-                  Plug in the pen drive, then pick its root folder. The folder
-                  is remembered on this PC only — the Super Admin link will
-                  appear automatically while the drive is plugged in, and
-                  disappear when you remove it.
+                  Plug in the pen drive, then pick its root folder (must contain
+                  <code className="mx-1 px-1 rounded bg-muted">superadmin.key</code>).
+                  On first use, Ctrl+Shift+K opens the folder picker immediately.
+                  The folder is remembered on this PC — the Super Admin link
+                  appears while the drive is plugged in and disappears when you
+                  remove it.
                 </p>
                 <div className="flex gap-2">
                   <Button size="sm" onClick={onPairFs} disabled={pairDialog.busy} className="flex-1">

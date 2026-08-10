@@ -23,6 +23,8 @@ import { buildPrintClinic } from "../lib/buildPrintClinic";
 import { recordPaymentDiagnostic, getRecentDiagnostics, getDiagnosticById, getLastSuccessAndFailure } from "../lib/payments/paymentDiagnostics";
 import { confirmBookingInternal } from "./online-bookings";
 import { autoVoucherForPayment } from "../lib/auto-voucher";
+import { getIciciPublicBaseUrl } from "../lib/payments/iciciPublicBaseUrl";
+import { assembleIciciRedirectUrl } from "../lib/payments/initiateIciciOrangePayment";
 
 export function validateSelfRegistration(params: {
   name: string;
@@ -433,10 +435,11 @@ function isTestCategoryEnabled(category: string, department: string, services: R
 }
 
 // GET /api/public/booking/tests
-publicBookingRouter.get("/tests", async (_req, res): Promise<void> => {
+publicBookingRouter.get("/tests", async (req, res): Promise<void> => {
   res.setHeader("Cache-Control", "no-store");
   const settings = await getSettings();
-  
+  const sourceHope = String(req.query.source || "").toLowerCase() === "hope";
+
   const onlineBookingEnabled = !!settings?.onlineBookingEnabled;
   let allowedTestIds: number[] = [];
   try {
@@ -445,6 +448,17 @@ publicBookingRouter.get("/tests", async (_req, res): Promise<void> => {
       allowedTestIds = parsed.filter((v: unknown) => typeof v === "number" && Number.isInteger(v) && v > 0);
     }
   } catch { /* ignore */ }
+
+  // Hope partner page: when Hope curation is configured, serve only that subset.
+  // Empty Hope list keeps the global whitelist (fail-open for unset curation).
+  if (sourceHope) {
+    try {
+      const parsed = JSON.parse(settings?.hopeBookingAllowedTestIds || "[]");
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        allowedTestIds = parsed.filter((v: unknown) => typeof v === "number" && Number.isInteger(v) && v > 0);
+      }
+    } catch { /* ignore */ }
+  }
 
   let allowedPackageIds: number[] = [];
   try {
@@ -504,9 +518,10 @@ publicBookingRouter.get("/tests", async (_req, res): Promise<void> => {
 });
 
 // GET /api/public/booking/packages
-publicBookingRouter.get("/packages", async (_req, res): Promise<void> => {
+publicBookingRouter.get("/packages", async (req, res): Promise<void> => {
   res.setHeader("Cache-Control", "no-store");
   const settings = await getSettings();
+  const sourceHope = String(req.query.source || "").toLowerCase() === "hope";
 
   const onlineBookingEnabled = !!settings?.onlineBookingEnabled;
   let allowedPkgIds: number[] = [];
@@ -516,6 +531,16 @@ publicBookingRouter.get("/packages", async (_req, res): Promise<void> => {
       allowedPkgIds = parsed.filter((v: unknown) => typeof v === "number" && Number.isInteger(v) && v > 0);
     }
   } catch { /* ignore */ }
+
+  // Hope partner curation — when configured, narrow packages to Hope allowlist.
+  if (sourceHope) {
+    try {
+      const parsed = JSON.parse(settings?.hopeBookingAllowedPackageIds || "[]");
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        allowedPkgIds = parsed.filter((v: unknown) => typeof v === "number" && Number.isInteger(v) && v > 0);
+      }
+    } catch { /* ignore */ }
+  }
 
   let allowedTestIds: number[] = [];
   try {
@@ -1127,45 +1152,6 @@ function getIciciPrefix() {
   return "";
 }
 
-function getIciciPublicBaseUrl(): string {
-  let base = (process.env.PUBLIC_BASE_URL || process.env.BASE_URL || "https://caredeoghar.com").trim();
-  const isProd = process.env.NODE_ENV === "production";
-  
-  // Normalize: remove trailing slash
-  base = base.replace(/\/+$/, "");
-
-  // Check if it's a local address/localhost/NAS IP etc. or incorrect subdomain
-  const isLocal = base.includes("localhost") || 
-                  base.includes("127.0.0.1") || 
-                  base.includes("192.168.") || 
-                  base.includes("172.1") || 
-                  base.includes("172.2") || 
-                  base.includes("172.3") || 
-                  base.includes("10.") || 
-                  base.includes("100.") || 
-                  base.includes("synology") || 
-                  base.includes("tailscale") || 
-                  base.includes(":8888") || 
-                  base.includes("/erp") || 
-                  base.includes("quickconnect.to") ||
-                  base.includes("erp.caredeoghar.com") ||
-                  base.includes("web.caredeoghar.com") ||
-                  base.includes("www.caredeoghar.com");
-
-  if (isProd && (isLocal || !base.startsWith("https://caredeoghar.com"))) {
-    base = "https://caredeoghar.com";
-  }
-
-  // Force https format
-  if (base.startsWith("http://")) {
-    base = base.replace("http://", "https://");
-  } else if (!base.startsWith("https://")) {
-    base = `https://${base}`;
-  }
-
-  return base;
-}
-
 function generateIciciSecureHash(params: Record<string, string>, secretKey: string): string {
   const keys = Object.keys(params).sort();
   const hashText = keys.map((k) => params[k]).join("");
@@ -1426,7 +1412,7 @@ async function handleIciciCallback(req: any, res: any, queryOrBody: Record<strin
             .limit(1);
 
           if (!existingPayment) {
-            await tx.insert(paymentsTable).values({
+            const [insertedPay] = await tx.insert(paymentsTable).values({
               billId,
               amount: collectAmount.toFixed(2),
               method: `Online (${provider.displayName})`,
@@ -1435,7 +1421,7 @@ async function handleIciciCallback(req: any, res: any, queryOrBody: Record<strin
               settlementStatus: "captured",
               notes: `Paid online via ${provider.displayName}. txnID: ${txnID || ""}`,
               recordedByName: "Super Admin",
-            });
+            }).returning({ id: paymentsTable.id });
 
             const newPaid = Number(bill.paidAmount) + collectAmount;
             const refundAmount = Number(bill.refundAmount || 0);
@@ -1455,6 +1441,7 @@ async function handleIciciCallback(req: any, res: any, queryOrBody: Record<strin
               billNumber: bill.billNumber,
               patientName: logRecord ? logRecord.patientName : "Billing Desk Online",
               performedBy: "Super Admin",
+              paymentId: insertedPay?.id,
             }).catch(() => {});
           }
         });
@@ -1537,6 +1524,98 @@ publicBookingRouter.get("/icici-callback", async (req, res): Promise<void> => {
 publicBookingRouter.post("/icici-callback", async (req, res): Promise<void> => {
   const merged = { ...(req.query as Record<string, string>), ...(req.body as Record<string, string>) };
   await handleIciciCallback(req, res, merged);
+});
+
+/**
+ * QR bridge — phones scan a caredeoghar.com URL (bank-whitelisted domain),
+ * then we send them to the ICICI hosted payment page. Encoding the raw ICICI
+ * HPP URL in the QR causes "Domain Validation Fail" on many phone browsers;
+ * the Orange Pay button works because it navigates from caredeoghar.com first.
+ *
+ * Serves a short HTML page (meta-refresh + JS + tap button) so camera-QR apps
+ * that don't follow bare 302s still land on payment.
+ */
+publicBookingRouter.get("/icici-pay/:txnRef", async (req, res): Promise<void> => {
+  const txnRef = String(req.params.txnRef || "").trim();
+  if (!txnRef || txnRef.length > 80 || !/^[A-Za-z0-9._-]+$/.test(txnRef)) {
+    res.status(400).type("html").send("<!doctype html><title>Invalid</title><p>Invalid payment link.</p>");
+    return;
+  }
+
+  const [logRecord] = await db.select()
+    .from(paymentLogsTable)
+    .where(eq(paymentLogsTable.bookingRef, txnRef))
+    .limit(1);
+
+  if (!logRecord) {
+    res.status(404).type("html").send("<!doctype html><title>Not found</title><p>Payment session not found. Ask the counter to start payment again.</p>");
+    return;
+  }
+
+  if (logRecord.status === "success") {
+    res.type("html").send("<!doctype html><title>Paid</title><p style='font-family:sans-serif;padding:24px'>This payment is already complete. You can close this page.</p>");
+    return;
+  }
+  if (logRecord.status === "failed" || logRecord.status === "expired") {
+    res.status(410).type("html").send("<!doctype html><title>Expired</title><p style='font-family:sans-serif;padding:24px'>This payment link is no longer valid. Ask the counter to retry.</p>");
+    return;
+  }
+
+  let redirectUrl = "";
+  try {
+    const reqPayload = JSON.parse(logRecord.requestPayload || "{}") as { redirectUrl?: string; expiryTime?: string };
+    if (reqPayload.expiryTime && new Date(reqPayload.expiryTime) < new Date()) {
+      res.status(410).type("html").send("<!doctype html><title>Expired</title><p style='font-family:sans-serif;padding:24px'>This payment link has expired. Ask the counter to retry.</p>");
+      return;
+    }
+    if (typeof reqPayload.redirectUrl === "string" && /^https?:\/\//i.test(reqPayload.redirectUrl)) {
+      redirectUrl = reqPayload.redirectUrl;
+    }
+  } catch { /* fall through */ }
+
+  if (!redirectUrl) {
+    try {
+      const resp = JSON.parse(logRecord.responsePayload || "{}") as { redirectURI?: string; tranCtx?: string };
+      if (resp.redirectURI && resp.tranCtx) {
+        redirectUrl = assembleIciciRedirectUrl(resp.redirectURI, resp.tranCtx);
+      }
+    } catch { /* ignore */ }
+  }
+
+  if (!redirectUrl || !/^https?:\/\//i.test(redirectUrl)) {
+    res.status(502).type("html").send("<!doctype html><title>Unavailable</title><p style='font-family:sans-serif;padding:24px'>Payment page is not ready. Ask the counter to retry Online Payment.</p>");
+    return;
+  }
+
+  // Escape for HTML attribute / JS string
+  const safeHref = redirectUrl.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+  const safeJs = JSON.stringify(redirectUrl);
+
+  res
+    .status(200)
+    .type("html")
+    .setHeader("Cache-Control", "no-store")
+    .send(`<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<meta http-equiv="refresh" content="0;url=${safeHref}"/>
+<title>Care Diagnostics — Secure Payment</title>
+<style>
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#fff7ed;color:#0f172a}
+  .card{max-width:360px;padding:28px 22px;text-align:center}
+  h1{font-size:20px;margin:0 0 8px}
+  p{font-size:14px;color:#64748b;margin:0 0 18px;line-height:1.4}
+  a.btn{display:inline-block;background:#FF6600;color:#fff;font-weight:700;text-decoration:none;padding:12px 20px;border-radius:10px;font-size:15px}
+</style>
+</head><body>
+<div class="card">
+  <h1>Opening ICICI Orange Pay…</h1>
+  <p>If nothing happens, tap the button below to continue securely.</p>
+  <a class="btn" href="${safeHref}" rel="noopener">Continue to payment</a>
+</div>
+<script>location.replace(${safeJs});</script>
+</body></html>`);
 });
 
 // ── POST /api/public/booking/create-order (Razorpay ─ kept for backwards compat) ──

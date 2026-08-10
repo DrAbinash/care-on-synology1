@@ -51,8 +51,8 @@ describe("thumbnailRenderedUrl", () => {
   const ref = { studyInstanceUid: "1.1", seriesInstanceUid: "1.2", sopInstanceUid: "1.3" };
 
   it("builds the rendered URL on the SAME DICOMweb base the viewer uses", () => {
-    expect(thumbnailRenderedUrl("http://192.168.1.137:8042/dicom-web/", ref, 96))
-      .toBe("http://192.168.1.137:8042/dicom-web/studies/1.1/series/1.2/instances/1.3/rendered?quality=80&viewport=96,96");
+    expect(thumbnailRenderedUrl("http://172.16.1.139:8042/dicom-web/", ref, 96))
+      .toBe("http://172.16.1.139:8042/dicom-web/studies/1.1/series/1.2/instances/1.3/rendered?quality=80&viewport=96,96");
     expect(thumbnailRenderedUrl("http://x/dicom-web", { ...ref, frameNumber: 2 }))
       .toContain("/frames/2/rendered");
   });
@@ -64,7 +64,7 @@ describe("thumbnailRenderedUrl", () => {
 
 describe("ohifUrlForRef (Phase 11) + nextDisplayOrder", () => {
   it("only http(s) launch URLs pass through — no raw/empty targets", () => {
-    expect(ohifUrlForRef("http://192.168.1.137:3010/viewer?StudyInstanceUIDs=1.2")).toContain("/viewer");
+    expect(ohifUrlForRef("http://172.16.1.139:3010/viewer?StudyInstanceUIDs=1.2")).toContain("/viewer");
     expect(ohifUrlForRef("weasis://x")).toBeNull();
     expect(ohifUrlForRef(null)).toBeNull();
     expect(ohifUrlForRef("")).toBeNull();

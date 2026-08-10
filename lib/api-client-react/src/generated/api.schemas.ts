@@ -642,7 +642,8 @@ export const CommissionRuleScope = {
 
 export interface CommissionRule {
   id: number;
-  doctorId: number;
+  /** null = clinic-wide slab that applies to every referring doctor */
+  doctorId: number | null;
   name: string;
   type: CommissionRuleType;
   value: number;

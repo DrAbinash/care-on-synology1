@@ -11,12 +11,13 @@ import {
 } from "@/components/ui/select";
 import { UserPlus } from "lucide-react";
 import { detectGenderFromName } from "@/lib/nameGender";
+import { patientPhoneMeetsRequirement } from "@/lib/patientPhoneRequired";
 
 export interface NewPatientData {
   firstName: string;
   lastName: string;
   phone: string;
-  gender: "male" | "female";
+  gender: "male" | "female" | "";
   ageValue: string | number;
   ageUnit: "years" | "months" | "days";
   email?: string;
@@ -30,6 +31,8 @@ interface RegisterPatientFormProps {
   onPatientChange: (data: NewPatientData) => void;
   onSubmit: () => void;
   isLoading?: boolean;
+  /** From Settings → Clinic Info → Patient Phone Requirement (default true). */
+  phoneRequired?: boolean;
 }
 
 export function RegisterPatientForm({
@@ -37,45 +40,45 @@ export function RegisterPatientForm({
   onPatientChange,
   onSubmit,
   isLoading = false,
+  phoneRequired = true,
 }: RegisterPatientFormProps) {
-  // Only a name is required. Single-word names like "Ramesh" fill firstName only
-  // and leave lastName empty — that must not block registration.
-  // Phone, age, and sex are strongly encouraged but not required to submit.
   const hasName = !!(newPatient.firstName?.trim() || newPatient.lastName?.trim());
-  const isFormValid = hasName && !isLoading;
+  const phoneOk = patientPhoneMeetsRequirement(newPatient.phone, phoneRequired);
+  const isFormValid = hasName && !!newPatient.gender && phoneOk && !isLoading;
 
-  // The Name textbox shows exactly what the user is typing — including a
-  // trailing space while they're in the middle of typing a surname. This is
-  // intentionally NOT derived from firstName/lastName on every render (that
-  // was the bug: reconstructing "firstName + lastName" and trimming it
-  // erased any space the instant it was typed, making the spacebar appear
-  // broken). It's reset from the parent only when the parent's name changes
-  // out from under us (e.g. clearing the form after registration).
   const [nameText, setNameText] = useState(`${newPatient.firstName} ${newPatient.lastName}`.trim());
   const lastSyncedName = useRef(nameText);
-  // Suggestion, not a decision: auto-fill Sex from the name as it's typed,
-  // but stop the instant the user picks Sex themselves so we never
-  // overwrite an explicit choice. Resets whenever the form is reset for a
-  // new patient (detected the same way nameText's own sync does, below).
   const genderTouched = useRef(false);
+  const patientRef = useRef(newPatient);
+  patientRef.current = newPatient;
+
   useEffect(() => {
     const parentName = `${newPatient.firstName} ${newPatient.lastName}`.trim();
-    // Only overwrite local text if the parent's name changed for a reason
-    // OTHER than our own onChange below (e.g. form reset, patient search
-    // picked a different record) — otherwise this would fight the user's
-    // typing the same way the old derived-value bug did.
     if (parentName !== lastSyncedName.current) {
       setNameText(parentName);
       lastSyncedName.current = parentName;
-      if (!parentName) genderTouched.current = false; // form reset — allow auto-detect again
+      if (!parentName) {
+        genderTouched.current = false;
+      }
     }
   }, [newPatient.firstName, newPatient.lastName]);
 
+  // Auto-detect sex from the full name as it is typed (same pattern as kiosk /
+  // self-registration). Default gender is empty — not "male" — so a successful
+  // suggestion is always visible to staff.
+  useEffect(() => {
+    if (genderTouched.current) return;
+    const trimmed = nameText.trim();
+    if (!trimmed) return;
+    const suggested = detectGenderFromName(trimmed);
+    if (suggested && suggested !== patientRef.current.gender) {
+      onPatientChange({ ...patientRef.current, gender: suggested });
+    }
+  }, [nameText, onPatientChange]);
+
   return (
     <div className="space-y-3">
-      {/* LINE 1: Name / Age / Sex */}
       <div className="flex flex-wrap gap-2">
-        {/* Name */}
         <div className="flex-1 min-w-[140px] space-y-0.5">
           <Label className="text-xs font-extrabold">Name *</Label>
           <Input
@@ -88,12 +91,10 @@ export function RegisterPatientForm({
               const first = parts[0] || "";
               const last = parts.slice(1).join(" ") || "";
               lastSyncedName.current = trimmed;
-              const suggested = !genderTouched.current ? detectGenderFromName(first) : null;
               onPatientChange({
                 ...newPatient,
                 firstName: first,
                 lastName: last,
-                ...(suggested ? { gender: suggested } : {}),
               });
             }}
             placeholder="Full name (e.g. Rohit Kumar)"
@@ -101,7 +102,6 @@ export function RegisterPatientForm({
           />
         </div>
 
-        {/* Age with dropdown — widened per Dr. Abinash's request for easier entry/reading */}
         <div className="w-[165px] space-y-0.5">
           <Label className="text-xs font-extrabold">Age</Label>
           <div className="flex gap-1">
@@ -140,11 +140,10 @@ export function RegisterPatientForm({
           </div>
         </div>
 
-        {/* Sex — reduced width, it's just a 1-word dropdown */}
         <div className="w-[78px] space-y-0.5">
-          <Label className="text-xs font-extrabold">Sex</Label>
+          <Label className="text-xs font-extrabold">Sex *</Label>
           <Select
-            value={newPatient.gender}
+            value={newPatient.gender || undefined}
             onValueChange={(v) => {
               genderTouched.current = true;
               onPatientChange({
@@ -154,7 +153,7 @@ export function RegisterPatientForm({
             }}
           >
             <SelectTrigger className="h-8 text-xs px-2">
-              <SelectValue />
+              <SelectValue placeholder="—" />
             </SelectTrigger>
             <SelectContent>
               {GENDERS.map((g) => (
@@ -167,21 +166,24 @@ export function RegisterPatientForm({
         </div>
       </div>
 
-      {/* LINE 2: Phone + Address — combined into one row to save vertical
-          space on small screens. Address becomes a single-line input here
-          (was a 3-row textarea); full multi-line address can still be
-          edited later from the patient's profile if ever needed. Both
-          fields remain optional, matching prior behavior. */}
       <div className="flex flex-wrap gap-2">
         <div className="flex-1 min-w-[120px] space-y-0.5">
-          <Label className="text-xs font-extrabold">Phone <span className="text-[10px] font-normal text-slate-400">(optional)</span></Label>
+          <Label className="text-xs font-extrabold">
+            Phone{phoneRequired ? " *" : ""}{" "}
+            {!phoneRequired && (
+              <span className="text-[10px] font-normal text-slate-400">(optional)</span>
+            )}
+          </Label>
           <Input
             value={newPatient.phone}
             onChange={(e) =>
               onPatientChange({ ...newPatient, phone: e.target.value })
             }
-            placeholder="Mobile (optional for walk-in)"
+            placeholder={phoneRequired ? "Mobile number" : "Mobile (optional for walk-in)"}
             className="h-8 text-xs"
+            required={phoneRequired}
+            inputMode="tel"
+            data-testid="register-patient-phone"
           />
         </div>
         <div className="flex-1 min-w-[140px] space-y-0.5">
@@ -197,7 +199,6 @@ export function RegisterPatientForm({
         </div>
       </div>
 
-      {/* Submit Button */}
       <Button
         onClick={onSubmit}
         disabled={!isFormValid}

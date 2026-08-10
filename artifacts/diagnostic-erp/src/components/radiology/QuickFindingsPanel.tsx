@@ -3,13 +3,14 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Zap, Settings2, Star, Ruler, Lightbulb, Search, SlidersHorizontal } from "lucide-react";
+import { Zap, Settings2, Star, Ruler, Lightbulb, Search, SlidersHorizontal, Check, Plus, Pencil } from "lucide-react";
 import { Link } from "wouter";
 import type { Side } from "@/lib/sideSwap";
 import { parseProperties, type AbnormalityInstance } from "@/lib/abnormalityEngine";
 import { parseQuestions } from "@/lib/structuredFindings";
 import { computeChecklistStatus, summarizeChecklist, parseChecklist } from "@/lib/checklistEngine";
-import { matchStudyRegion } from "@/lib/studyRegion";
+import { filterRegionNamesForModality, matchStudyRegion } from "@/lib/studyRegion";
+import WorkspaceQuickFindingEditor from "./WorkspaceQuickFindingEditor";
 
 /**
  * QuickFindingsPanel — Smart Reporting side panel (Phase 2).
@@ -20,7 +21,7 @@ import { matchStudyRegion } from "@/lib/studyRegion";
  *   Study tabs (multi-select, merge) — Ctrl+1..9
  *   ★ Favorites strip                — per-radiologist, always first
  *   Suggested strip                  — related findings for current selection
- *   Finding buttons                  — Alt+1..9 toggles the Nth visible
+ *   Finding buttons                  — Alt+1..9 owned by parent workspace strip
  *   Measurements                     — click → type value → inserted
  *
  * Insert/remove safety is owned by the parent (the workspace keeps a map of
@@ -119,6 +120,8 @@ interface Props {
    *  its click here (to open the compact dialog) instead of toggling directly.
    *  Findings without questions still toggle immediately (fewest clicks). */
   onFindingClick?: (finding: QuickFinding) => void;
+  /** Double-click: edit finding/impression text for THIS STUDY only before insert. */
+  onEditBeforeInsert?: (finding: QuickFinding) => void;
   onMeasurement?: (templateText: string, value: string) => void;
   side: Side;
   onSideChange: (side: Side) => void;
@@ -158,7 +161,7 @@ const SIDES: Array<{ value: Side; label: string }> = [
 ];
 
 export default function QuickFindingsPanel({
-  selectedIds, onToggle, onFindingClick, onMeasurement, side, onSideChange, disabled, initialStudyHint, isAdmin,
+  selectedIds, onToggle, onFindingClick, onEditBeforeInsert, onMeasurement, side, onSideChange, disabled, initialStudyHint, isAdmin,
   instances, onUpdateInstance, onAutoTechnique, onInsertNormals,
   activeProtocolId, onProtocolChange, onChecklistChange, onAcceptLearnedSuggestion,
   onFindingsLoaded, externalSearch,
@@ -166,6 +169,8 @@ export default function QuickFindingsPanel({
   const qc = useQueryClient();
   const searchRef = useRef<HTMLInputElement>(null);
   const [search, setSearch] = useState("");
+  const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [catalogEditor, setCatalogEditor] = useState<QuickFinding | null | "new">(null);
 
   /** A finding declaring questions needs details before it renders. */
   const isStructured = (f: QuickFinding) => parseQuestions(f.questionsJson).length > 0;
@@ -175,6 +180,27 @@ export default function QuickFindingsPanel({
     if (isStructured(f) && onFindingClick) onFindingClick(f);
     else onToggle(f, !selectedIds.has(f.id));
   };
+
+  /** Debounce single-click so double-click can open study-local edit instead. */
+  function handleFindingPointer(f: QuickFinding) {
+    if (clickTimerRef.current) {
+      clearTimeout(clickTimerRef.current);
+      clickTimerRef.current = null;
+    }
+    clickTimerRef.current = setTimeout(() => {
+      clickTimerRef.current = null;
+      activateFinding(f);
+    }, 280);
+  }
+
+  function handleFindingDoubleClick(f: QuickFinding) {
+    if (clickTimerRef.current) {
+      clearTimeout(clickTimerRef.current);
+      clickTimerRef.current = null;
+    }
+    if (onEditBeforeInsert) onEditBeforeInsert(f);
+    else activateFinding(f);
+  }
 
   // M1.6B2 — adopt a voice-driven search term (one adoption per seq bump).
   const externalSearchSeqRef = useRef(0);
@@ -215,7 +241,13 @@ export default function QuickFindingsPanel({
     onSuccess: () => qc.invalidateQueries({ queryKey: ["radiology-quick-favorites"] }),
   });
 
-  const activeTabs = useMemo(() => (data?.tabs ?? []).filter((t) => t.isActive), [data]);
+  const activeTabs = useMemo(() => {
+    const tabs = (data?.tabs ?? []).filter((t) => t.isActive);
+    // Hint is `${modality} ${studyDescription}` — first token is DICOM modality.
+    const modalityToken = (initialStudyHint ?? "").trim().split(/\s+/)[0] ?? "";
+    const allowed = new Set(filterRegionNamesForModality(tabs.map((t) => t.name), modalityToken));
+    return tabs.filter((t) => allowed.has(t.name));
+  }, [data, initialStudyHint]);
   const findingsById = useMemo(
     () => new Map((data?.findings ?? []).map((f) => [f.id, f])),
     [data],
@@ -364,7 +396,8 @@ export default function QuickFindingsPanel({
   // ── Keyboard workflow ──────────────────────────────────────────────────────
   //   /        focus search (when not typing in a field)
   //   Ctrl+1-9 toggle Nth study tab
-  //   Alt+1-9  toggle Nth visible finding button (favorites strip counts first)
+  //   Alt+1-9  owned by RadiologyReportingWorkspace (main Quick Findings strip,
+  //            ★ favorites first) so hotkeys work even when this panel is closed.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       const target = e.target as HTMLElement | null;
@@ -383,13 +416,6 @@ export default function QuickFindingsPanel({
         if (tab) {
           e.preventDefault();
           toggleTab(tab.name);
-        }
-      } else if (e.altKey && !e.ctrlKey) {
-        const ordered = [...favoriteFindings, ...mainFindings];
-        const f = ordered[n - 1];
-        if (f && !disabled) {
-          e.preventDefault();
-          activateFinding(f);
         }
       }
     }
@@ -503,33 +529,73 @@ export default function QuickFindingsPanel({
     const isFav = favoriteIds.has(f.id);
     const structured = isStructured(f);
     return (
-      <div className="flex flex-col">
-      <div className="flex items-center gap-0.5">
-        <Button
-          size="sm"
-          variant={selected ? "default" : "outline"}
-          disabled={disabled}
-          onClick={() => activateFinding(f)}
-          className="h-10 justify-start text-sm font-medium flex-1 min-w-0 px-3 gap-2"
-          title={
-            structured
-              ? `${f.label} — set details${selected ? " (click to edit)" : ""}`
-              : `${f.findingText || f.impressionText}${index !== undefined && index < 9 ? `  (Alt+${index + 1})` : ""}`
-          }
-        >
-          <Zap size={14} className={selected ? "" : "text-muted-foreground"} />
-          <span className="truncate">{f.label}</span>
-          {structured && <SlidersHorizontal size={12} className={`shrink-0 ${selected ? "" : "text-muted-foreground"}`} />}
-          {(effectiveTabs.size > 1 || searchLower) && (
-            <span className="ml-auto text-[10px] text-muted-foreground shrink-0">{f.studyType}</span>
-          )}
-        </Button>
+      <div className="flex flex-col min-w-0">
+      <div className="flex items-stretch gap-1">
         <button
+          type="button"
+          disabled={disabled}
+          onClick={() => handleFindingPointer(f)}
+          onDoubleClick={(e) => {
+            e.preventDefault();
+            handleFindingDoubleClick(f);
+          }}
+          className={[
+            "flex-1 min-w-0 rounded-lg border px-2.5 py-2 text-left transition-all duration-150",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/35",
+            selected
+              ? "border-amber-500 bg-amber-600 text-white shadow-sm shadow-amber-500/20"
+              : "border-amber-200/70 bg-card hover:border-amber-400 hover:bg-amber-50/70",
+          ].join(" ")}
+          title={
+            onEditBeforeInsert
+              ? `${f.label} — click to insert · double-click to edit for this study`
+              : structured
+                ? `${f.label} — set details${selected ? " (click to edit)" : ""}`
+                : (f.findingText || f.impressionText || f.label)
+          }
+          data-testid={`quick-finding-${f.id}`}
+        >
+          <div className="flex items-center gap-1.5 min-w-0">
+            <span
+              className={[
+                "flex h-4 w-4 shrink-0 items-center justify-center rounded border",
+                selected
+                  ? "border-primary-foreground/70 bg-primary-foreground/15"
+                  : "border-muted-foreground/35 bg-background",
+              ].join(" ")}
+            >
+              {selected ? <Check size={10} strokeWidth={3} /> : <Zap size={10} className="text-muted-foreground" />}
+            </span>
+            <span className="truncate text-[12px] font-semibold leading-tight">{f.label}</span>
+            {structured && (
+              <SlidersHorizontal size={11} className={`shrink-0 ${selected ? "opacity-90" : "text-muted-foreground"}`} />
+            )}
+          </div>
+          {(effectiveTabs.size > 1 || searchLower) && (
+            <div className={`mt-1 truncate text-[9px] ${selected ? "text-primary-foreground/75" : "text-muted-foreground"}`}>
+              {f.studyType}
+            </div>
+          )}
+        </button>
+        {isAdmin && (
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => setCatalogEditor(f)}
+            className="shrink-0 self-center rounded-md p-1.5 text-muted-foreground/50 hover:text-primary hover:bg-muted/40"
+            title="Edit catalog button (all studies)"
+            data-testid={`quick-finding-edit-catalog-${f.id}`}
+          >
+            <Pencil size={12} />
+          </button>
+        )}
+        <button
+          type="button"
           onClick={() => toggleFavorite.mutate({ findingId: f.id, add: !isFav })}
-          className={`shrink-0 p-1 ${isFav ? "text-amber-500" : "text-muted-foreground/40 hover:text-amber-500"}`}
+          className={`shrink-0 self-center rounded-md p-1.5 ${isFav ? "text-amber-500" : "text-muted-foreground/40 hover:text-amber-500 hover:bg-muted/40"}`}
           title={isFav ? "Remove from favorites" : "Pin to favorites"}
         >
-          <Star size={15} fill={isFav ? "currentColor" : "none"} />
+          <Star size={14} fill={isFav ? "currentColor" : "none"} />
         </button>
       </div>
       {selected && <PropertyChips f={f} />}
@@ -537,7 +603,7 @@ export default function QuickFindingsPanel({
         <button
           key={p.suggestedText}
           onClick={() => onAcceptLearnedSuggestion(p.suggestedText)}
-          className="ml-4 mb-1 text-[9px] text-left px-1.5 py-0.5 rounded border bg-sky-50 dark:bg-sky-950/20 border-sky-200 text-sky-700 dark:text-sky-300 hover:bg-sky-100"
+          className="ml-1 mb-1 text-[9px] text-left px-1.5 py-0.5 rounded border bg-sky-50 dark:bg-sky-950/20 border-sky-200 text-sky-700 dark:text-sky-300 hover:bg-sky-100"
           title={`You've added this ${p.occurrenceCount}× after ${f.label} — click to add it again`}
         >
           💡 You usually add: "{p.suggestedText}" — click to add
@@ -551,6 +617,20 @@ export default function QuickFindingsPanel({
 
   return (
     <div className="flex flex-col gap-2 p-2 h-full overflow-hidden">
+      <div className="shrink-0 flex items-center gap-1.5 rounded-lg border border-amber-200/80 bg-gradient-to-r from-amber-50 to-orange-50/60 px-2 py-1.5">
+        <span className="flex h-5 w-5 items-center justify-center rounded-md bg-amber-500 text-white shadow-sm">
+          <Zap size={11} />
+        </span>
+        <div className="min-w-0 flex-1">
+          <span className="text-[10px] font-semibold uppercase tracking-wide text-amber-950">Quick Add</span>
+          <span className="text-[9px] text-amber-800/70 ml-1.5">Alt+1–9 · / search</span>
+          {onEditBeforeInsert && (
+            <p className="text-[9px] text-amber-900/60 leading-tight mt-0.5" data-testid="quick-dblclick-hint">
+              Double-click a finding to edit text for this study only
+            </p>
+          )}
+        </div>
+      </div>
       {/* Universal search */}
       <div className="relative shrink-0">
         <Search size={12} className="absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground" />
@@ -559,7 +639,7 @@ export default function QuickFindingsPanel({
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder='Search buttons & measurements…  ( / )'
-          className="h-7 pl-7 text-[11px]"
+          className="h-7 pl-7 text-[11px] border-amber-200/60 focus-visible:ring-amber-400/40"
           data-qs-search
         />
       </div>
@@ -735,9 +815,29 @@ export default function QuickFindingsPanel({
       </div>
 
       {isAdmin && (
-        <Link href="/settings/radiology-quick-select" className="shrink-0 text-[10px] text-muted-foreground hover:text-primary underline inline-flex items-center gap-1 px-1">
-          <Settings2 size={10} /> Manage buttons
-        </Link>
+        <div className="shrink-0 flex items-center gap-2 px-1">
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => setCatalogEditor("new")}
+            className="text-[10px] text-primary hover:underline inline-flex items-center gap-1"
+            data-testid="quick-finding-add"
+          >
+            <Plus size={10} /> Add button
+          </button>
+          <Link href="/settings/radiology-quick-select" className="text-[10px] text-muted-foreground hover:text-primary underline inline-flex items-center gap-1">
+            <Settings2 size={10} /> Full settings
+          </Link>
+        </div>
+      )}
+
+      {catalogEditor !== null && (
+        <WorkspaceQuickFindingEditor
+          finding={catalogEditor === "new" ? null : catalogEditor}
+          tabs={activeTabs}
+          defaultStudyType={[...effectiveTabs][0] ?? activeTabs[0]?.name ?? ""}
+          onClose={() => setCatalogEditor(null)}
+        />
       )}
     </div>
   );

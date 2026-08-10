@@ -30,6 +30,7 @@ import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { Printer, ChevronDown, ChevronRight, Loader2, X } from "lucide-react";
 import { thumbnailRenderedUrl } from "@/lib/reportImageRefs";
+import { BROWSER_DICOMWEB_BASE } from "@/lib/browserDicomWeb";
 import { healthDotClass, healthTooltip, type BridgeHealth } from "@/lib/printBridgeHealth";
 
 const MAX_PRINT_IMAGES = 100; // mirrors the server route's own cap
@@ -91,15 +92,15 @@ export default function PrintImagePicker({
   const [activeJobKey, setActiveJobKey] = useState<string | null>(null);
   const jobToastRef = useRef<{ id: string; update: (p: Record<string, unknown>) => void } | null>(null);
 
-  // Same launch contract + React Query cache key ReportImagePicker uses —
-  // mounting both components costs one network fetch, not two.
-  const { data: launchData } = useQuery<LaunchData>({
+  // Keep launch query warm (shared with ReportImagePicker / OHIF). Series
+  // browsing uses the ERP DICOMweb proxy — not Orthanc :8042 from the browser.
+  useQuery<LaunchData>({
     queryKey: ["viewer-launch", studyInstanceUID],
     queryFn: () => api.get(`/api/radiology/studies/${encodeURIComponent(studyInstanceUID!)}/ohif-launch`),
     enabled: !!studyInstanceUID,
     staleTime: 5 * 60_000,
   });
-  const dicomWebBase = launchData?.dicomWebBaseUrl ?? null;
+  const dicomWebBase = studyInstanceUID ? BROWSER_DICOMWEB_BASE : null;
 
   // Live printer/bridge reachability — polls regardless of expanded state so
   // the collapsed header's dot stays current, at a cadence light enough that
@@ -392,7 +393,9 @@ export default function PrintImagePicker({
                 </div>
               ))}
               {series.length === 0 && (
-                <p className="text-[11px] text-muted-foreground">No series visible via DICOMweb from this browser.</p>
+                <p className="text-[11px] text-muted-foreground">
+                  No series returned from PACS yet. Confirm the study is online in OHIF, then expand again.
+                </p>
               )}
             </div>
           )}

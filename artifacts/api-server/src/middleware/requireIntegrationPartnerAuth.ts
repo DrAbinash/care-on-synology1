@@ -31,6 +31,7 @@ export const ALLOWED_INTEGRATION_PERMISSIONS = new Set([
   "diagnostic_referral:cancel",
   "diagnostic_referral:read",
   "diagnostic_result:acknowledge",
+  "whatsapp:enqueue",
 ]);
 
 export function hashApiKey(rawKey: string): string {

@@ -143,6 +143,17 @@ export default function ScanStation() {
     return m ? m[1] : null;
   }
 
+  function extractBillVerifyHash(raw: string): string | null {
+    try {
+      const u = new URL(raw, window.location.origin);
+      const h = u.searchParams.get("hash");
+      return h ? h.trim() : null;
+    } catch {
+      const m = raw.match(/[?&]hash=([A-Fa-f0-9]+)/);
+      return m ? m[1] : null;
+    }
+  }
+
   // Clear current results
   const handleClear = useCallback(() => {
     setSample(null);
@@ -186,8 +197,11 @@ export default function ScanStation() {
       const billNo = extractBillNumber(trimmed) || (trimmed.startsWith("BILL:") ? trimmed.slice(5) : (/^\d{10,}$/.test(trimmed) ? trimmed : null));
       
       if (billNo && kioskModeEnabled) {
-        // Fetch verification details locally for display
-        const res = await api.get<any>(`/api/verify/bill/${encodeURIComponent(billNo)}`);
+        // Fetch verification details locally for display — forward ?hash= so
+        // the anti-tamper check runs the same as a phone camera scan.
+        const hash = extractBillVerifyHash(trimmed);
+        const qs = hash ? `?hash=${encodeURIComponent(hash)}` : "";
+        const res = await api.get<any>(`/api/verify/bill/${encodeURIComponent(billNo)}${qs}`);
         setKioskResult({
           type: "bill",
           code: billNo,
@@ -205,7 +219,14 @@ export default function ScanStation() {
         setLoading(false);
         setBuffer("");
         if (inputRef.current) inputRef.current.value = "";
-        const verifyUrl = `${window.location.origin}/api/verify/bill/${encodeURIComponent(directBillNo)}`;
+        // Prefer the scanned URL as-is so ?hash= survives; fall back to rebuilt.
+        const verifyUrl = /^https?:\/\//i.test(trimmed)
+          ? trimmed
+          : (() => {
+              const hash = extractBillVerifyHash(trimmed);
+              const qs = hash ? `?hash=${encodeURIComponent(hash)}` : "";
+              return `${window.location.origin}/api/verify/bill/${encodeURIComponent(directBillNo)}${qs}`;
+            })();
         window.open(verifyUrl, "_blank", "noopener,noreferrer");
         setTimeout(() => inputRef.current?.focus(), 50);
         return;

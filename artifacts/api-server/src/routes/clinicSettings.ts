@@ -7,6 +7,7 @@ import {
   CLINIC_COMMISSION_FIELDS,
   stripFields,
 } from "../middleware/commissionVisibility";
+import { FULL_ACCESS_ROLES, normalizeRole, type StaffAuthRequest } from "../middleware/requireStaffAuth";
 
 const CLINIC_SETTINGS_CACHE_KEY = "clinic-settings:v1";
 
@@ -83,6 +84,7 @@ async function getOrCreate() {
       dayCloseAutoPrint: true,
       commissionDiscountMode: "none",
       expenseSelfApprovalAllowed: true,
+      cancelRequiresRefund: false,
       lanOnlyLogin: false,
       lanAllowedIps: "[]",
       fido2Enabled: false,
@@ -125,11 +127,11 @@ async function getOrCreate() {
       autoRotateScan: false,
       archiveImportedScans: true,
       cropPadding: 12,
-      jpegQuality: 85,
-      maxScanWidth: 1200,
+      jpegQuality: 92,
+      maxScanWidth: 2000,
       mobileScanEnabled: true,
       phonePairingEnabled: true,
-      preferredScanner: "mobile",
+      preferredScanner: "bridge",
       requireDesktopConfirmation: true,
       autoDeleteTempScans: true,
       ocrEnabled: true,
@@ -316,7 +318,9 @@ clinicSettingsRouter.put("/", async (req, res) => {
     // Refactored fields
     "enableCardPayment", "enableQrPayment", "enableVipBooking", "enablePaymentLogos", "enablePaymentTimer",
     // Expense approval separation
-    "expenseSelfApprovalAllowed"
+    "expenseSelfApprovalAllowed",
+    // Cancel of paid bill requires refund
+    "cancelRequiresRefund",
   ] as const;
   
   const textFields = [
@@ -339,9 +343,9 @@ clinicSettingsRouter.put("/", async (req, res) => {
   ] as const;
   
   if (body.preferredScanner !== undefined) {
-    if (body.preferredScanner !== "mobile" && body.preferredScanner !== "bridge") {
-      console.warn("[PUT /api/clinic-settings] rejected 400:", "preferredScanner must be mobile or bridge", "| received body keys:", Object.keys(body));
-      res.status(400).json({ error: "preferredScanner must be mobile or bridge" });
+    if (body.preferredScanner !== "mobile" && body.preferredScanner !== "bridge" && body.preferredScanner !== "camera") {
+      console.warn("[PUT /api/clinic-settings] rejected 400:", "preferredScanner must be camera, mobile, or bridge", "| received body keys:", Object.keys(body));
+      res.status(400).json({ error: "preferredScanner must be camera, mobile, or bridge" });
       return;
     }
     update.preferredScanner = body.preferredScanner;
@@ -565,8 +569,9 @@ clinicSettingsRouter.put("/", async (req, res) => {
       res.status(400).json({ error: "billPrintSettingsJson must be a JSON string (max 8KB)" });
       return;
     }
+    let parsed: Record<string, unknown>;
     try {
-      const parsed = JSON.parse(body.billPrintSettingsJson);
+      parsed = JSON.parse(body.billPrintSettingsJson);
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
         console.warn("[PUT /api/clinic-settings] rejected 400:", "billPrintSettingsJson must be a JSON object", "| received body keys:", Object.keys(body));
         res.status(400).json({ error: "billPrintSettingsJson must be a JSON object" });
@@ -576,6 +581,24 @@ clinicSettingsRouter.put("/", async (req, res) => {
       console.warn("[PUT /api/clinic-settings] rejected 400:", "billPrintSettingsJson must be valid JSON", "| received body keys:", Object.keys(body));
       res.status(400).json({ error: "billPrintSettingsJson must be valid JSON" });
       return;
+    }
+    // Admin Lock: once ON, only admin/super_admin may change the blob (or unlock).
+    let existingLock = false;
+    try {
+      const existingBlob = (current as { billPrintSettingsJson?: string | null }).billPrintSettingsJson;
+      if (existingBlob) {
+        const existing = JSON.parse(existingBlob) as { adminLock?: boolean };
+        existingLock = existing?.adminLock === true;
+      }
+    } catch { /* ignore corrupt existing */ }
+    if (existingLock) {
+      const role = normalizeRole((req as StaffAuthRequest).staffSession?.role || "");
+      if (!FULL_ACCESS_ROLES.has(role)) {
+        res.status(403).json({
+          error: "Billing print settings are Admin Locked. Only an admin can change or unlock them.",
+        });
+        return;
+      }
     }
     update.billPrintSettingsJson = body.billPrintSettingsJson;
   }
@@ -864,6 +887,29 @@ clinicSettingsRouter.post("/ollama", async (req, res) => {
   try {
     const rows = await db.update(clinicSettingsTable).set(update).where(eq(clinicSettingsTable.id, current.id)).returning();
     invalidateCached(CLINIC_SETTINGS_CACHE_KEY);
+
+    // Keep the single canonical Local AI config in sync with ai_provider_settings
+    // so Form F / generateAiForTask never diverge from Local AI UI.
+    try {
+      const { syncOllamaProviderSettings, invalidateLocalAiRuntimeCache } = await import("../lib/aiPipeline/runtimeConfig");
+      const saved = rows[0] as {
+        ollamaBaseUrl?: string | null;
+        ollamaModel?: string | null;
+        ollamaEnabled?: boolean | null;
+      } | null;
+      const mergedUrl = (saved?.ollamaBaseUrl ?? (update.ollamaBaseUrl as string | null | undefined) ?? current.ollamaBaseUrl) || null;
+      const mergedModel = (saved?.ollamaModel ?? (update.ollamaModel as string | null | undefined) ?? current.ollamaModel) || null;
+      const mergedEnabled = (saved?.ollamaEnabled ?? (update.ollamaEnabled as boolean | undefined) ?? current.ollamaEnabled) !== false;
+      await syncOllamaProviderSettings({
+        endpointUrl: mergedUrl,
+        defaultModel: mergedModel,
+        isEnabled: mergedEnabled,
+      });
+      invalidateLocalAiRuntimeCache();
+    } catch (syncErr) {
+      console.warn("[POST /api/clinic-settings/ollama] provider sync warning:", syncErr);
+    }
+
     res.json({ ok: true, settings: rows[0] ?? null });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);

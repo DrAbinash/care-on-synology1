@@ -2,16 +2,22 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import "@/styles/billingDeskModern.css"; // Modern Pro skin (presentation only)
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import QRCode from "qrcode";
-import { api, NetworkError } from "@/lib/fetchApi";
+import { api, isQueueableBillingError } from "@/lib/fetchApi";
 import { FINANCIAL_QUERY_OPTIONS } from "@/lib/queryConfig";
 import { enqueueBill, QueuedForSyncError } from "@/lib/offlineBillingQueue";
+import {
+  buildProvisionalBillPrintHtml,
+  formatProvisionalBillNumber,
+  type ProvisionalBillPrintSnapshot,
+} from "@/lib/provisionalBillReceipt";
 import { readStaffSession, isFeatureEnabled, isOwnerRole } from "@/lib/staffSession";
 import { genUUID } from "@/lib/utils";
 import { getBillPaperSize } from "@/lib/billPrintLayout";
-import { getAutoBillPaperSize } from "@/lib/billPrintSettings";
 import {
   buildBillPrintHtml,
-  printViaIframe,
+  buildBillVerifyUrl as buildBillVerifyUrlFromAudit,
+  openBlankPrintWindow,
+  writeAndPrint,
   type PrintBillData,
   type PrintClinic,
 } from "@/lib/printBill";
@@ -19,6 +25,10 @@ import {
   loadBillPrintSettings,
   parseGlobalBillPrintSettings,
   printLayoutOpts,
+  resolveBillPrintDelivery,
+  resolveBillPrintPageOpts,
+  billPreviewPaperPx,
+  type BillPrintDelivery,
   type BillPrintSettings,
 } from "@/lib/billPrintSettings";
 import { useLocation } from "wouter";
@@ -103,12 +113,12 @@ type Patient = {
 };
 
 type Doctor = { id: number; name: string; specialization: string; billCount?: number };
-type Test   = { id: number; name: string; code: string; price: number; category: string; isActive?: boolean; testType?: string | null; outsourcedLabId?: number | null };
+type Test   = { id: number; name: string; code: string; price: number; category: string; duration?: string; isActive?: boolean; testType?: string | null; outsourcedLabId?: number | null };
 // Tests embedded in a package carry their per-package discount overrides.
 type PkgTest = Test & { discountPct?: number; discountAmount?: number };
 type Pkg    = { id: number; packageCode: string; name: string; price: number; discountPct: number; discountAmount?: number; isActive?: boolean; tests: PkgTest[] };
 
-type SelectedTest = { testId: number; name: string; code: string; price: number; category: string; source: "test" | "package" };
+type SelectedTest = { testId: number; name: string; code: string; price: number; category: string; duration?: string; source: "test" | "package" };
 type SelectedPackage = { packageId: number; name: string; testIds: number[] };
 type PaySplit = { mode: string; amount: string };
 type LastBill = {
@@ -121,6 +131,8 @@ type LastBill = {
   discount: number;
   total: number;
   payments: PaySplit[];
+  createdAt?: string | null;
+  createdByName?: string | null;
   tokenNo?: number | null;
   tokenDate?: string | null;
   // Per-department queue tokens issued by the bill creation flow. Populated
@@ -184,26 +196,34 @@ async function openOnSecondMonitor(url: string, windowName: string): Promise<voi
       const details = await wm();
       const other = details.screens.find(
         (s) => s.availLeft !== details.currentScreen.availLeft || s.availTop !== details.currentScreen.availTop
-      ) ?? details.screens[0];
-      const win = window.open(
-        url,
-        windowName,
-        `left=${other.availLeft},top=${other.availTop},width=${other.availWidth},height=${other.availHeight}`
       );
-      if (win) {
-        win.addEventListener("load", () => {
-          try { win.document.documentElement.requestFullscreen?.(); } catch { /* best effort */ }
-        });
-        return;
+      // Only place off-primary when a real second screen exists — otherwise
+      // opening at screen.width puts the window off-screen (looks like a flash).
+      if (other && details.screens.length > 1) {
+        const win = window.open(
+          url,
+          windowName,
+          `left=${other.availLeft},top=${other.availTop},width=${other.availWidth},height=${other.availHeight}`
+        );
+        if (win) {
+          win.addEventListener("load", () => {
+            try { win.document.documentElement.requestFullscreen?.(); } catch { /* best effort */ }
+          });
+          return;
+        }
       }
     } catch {
-      // Permission denied or API unavailable this call — fall through to heuristic.
+      // Permission denied or API unavailable this call — fall through.
     }
   }
 
-  // Fallback: place just past the primary screen's right edge.
-  const left = window.screen.width;
-  window.open(url, windowName, `left=${left},top=0,width=1024,height=900`);
+  // Single-monitor / HTTP fallback: open a durable, visible popup on THIS
+  // screen (not past the right edge — that looked like the QR “vanished”).
+  const width = Math.min(520, window.screen.availWidth - 40);
+  const height = Math.min(780, window.screen.availHeight - 40);
+  const left = Math.max(0, Math.round((window.screen.availWidth - width) / 2));
+  const top = Math.max(0, Math.round((window.screen.availHeight - height) / 2));
+  window.open(url, windowName, `left=${left},top=${top},width=${width},height=${height}`);
 }
 
 // ──────────────────────────────────────────────────────
@@ -241,10 +261,58 @@ function openPrintWindow(html: string) {
   };
 }
 
-function buildBillVerifyUrl(billNumber: string) {
-  // Points at the public api-server endpoint so the QR works in both dev
-  // (where /api is proxied) and production (single-process unified serve).
-  return `${window.location.origin}/api/verify/bill/${encodeURIComponent(billNumber)}`;
+function deliverBillReceipt(
+  html: string,
+  delivery: BillPrintDelivery,
+  popup: Window | null,
+  preview: {
+    setHtml: (html: string) => void;
+    setOpen: (open: boolean) => void;
+    setPaperPx?: (px: { w: number; h: number }) => void;
+    paperPx?: { w: number; h: number };
+  },
+) {
+  if (delivery === "skip") return;
+  if (delivery === "preview-only" || delivery === "preview-and-print") {
+    preview.setHtml(html);
+    if (preview.paperPx && preview.setPaperPx) preview.setPaperPx(preview.paperPx);
+    preview.setOpen(true);
+  }
+  if (delivery === "print" || delivery === "preview-and-print") {
+    writeAndPrint(popup, html);
+  }
+}
+
+function sessionOperatorName(): string {
+  try {
+    if (typeof window === "undefined") return "";
+    const raw = window.localStorage.getItem("erp_session");
+    if (!raw) return "";
+    const parsed = JSON.parse(raw);
+    return String(parsed.user?.name ?? "").trim();
+  } catch {
+    return "";
+  }
+}
+
+/** QR payload: /api/verify/bill/{billNo}?hash={fnv1a} — hash matches printed audit token. */
+function buildBillVerifyUrl(bill: {
+  billNumber: string;
+  createdAt?: string | null;
+  totalAmount?: number | string;
+  total?: number | string;
+  createdByName?: string | null;
+}) {
+  const operatorId =
+    (bill.createdByName && String(bill.createdByName).trim()) ||
+    sessionOperatorName() ||
+    "0";
+  return buildBillVerifyUrlFromAudit({
+    billNumber: bill.billNumber,
+    createdAt: bill.createdAt,
+    totalAmount: bill.totalAmount ?? bill.total ?? 0,
+    operatorId,
+  });
 }
 
 // Lightweight placeholder used as a fallback before the async QR has been
@@ -438,13 +506,14 @@ export default function BillingDesk() {
   const [patientSearch, setPatientSearch] = useState("");
   const [selectedPatient, setSelectedPatient] = useState<Patient | null>(null);
   const [newPatient, setNewPatient] = useState({
-    firstName: "", lastName: "", phone: "", gender: "male",
+    firstName: "", lastName: "", phone: "", gender: "" as "" | "male" | "female",
     ageValue: "", ageUnit: "years" as "years" | "months" | "days",
     email: "", address: "", bloodGroup: "",
   });
   const [searchOpen, setSearchOpen] = useState(false);
   const searchRef  = useRef<HTMLDivElement>(null);
   const paymentRef = useRef<HTMLDivElement>(null);
+  const testSearchRef = useRef<HTMLInputElement>(null);
 
   // ── Doctor search state ─────────────────────────────
   const [doctorId, setDoctorId] = useState<number | null>(null);
@@ -520,12 +589,12 @@ export default function BillingDesk() {
     showQuickTestsSetting,
     showPackagesSetting,
     stickyBillSummary,
-    stickyPayment: _stickyPayment,
+    stickyPayment,
     denseTestList,
     largeFont,
     showOptionalFields,
-    keyboardNav: _keyboardNav,
-    autoFocusNext: _autoFocusNext,
+    keyboardNav,
+    autoFocusNext,
   } = {
     ...billingFlags,
     showQuickTestsSetting: billingFlags.showQuickTests,
@@ -544,6 +613,31 @@ export default function BillingDesk() {
       }, 300);
     }
   }, [isStepped, autoAdvance, currentStep]);
+
+  const prevPatientIdRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!selectedPatient) {
+      prevPatientIdRef.current = null;
+      return;
+    }
+    if (selectedPatient.id === prevPatientIdRef.current) return;
+    prevPatientIdRef.current = selectedPatient.id;
+    if (isStepped && autoAdvance && currentStep === 1) advanceStep();
+    if (autoFocusNext) {
+      window.setTimeout(() => testSearchRef.current?.focus(), 150);
+    }
+  }, [selectedPatient, isStepped, autoAdvance, currentStep, autoFocusNext, advanceStep]);
+
+  const prevDoctorIdRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (doctorId == null) {
+      prevDoctorIdRef.current = null;
+      return;
+    }
+    if (doctorId === prevDoctorIdRef.current) return;
+    prevDoctorIdRef.current = doctorId;
+    if (isStepped && autoAdvance && currentStep === 2) advanceStep();
+  }, [doctorId, isStepped, autoAdvance, currentStep, advanceStep]);
 
   const goToStep = (step: number) => {
     if (step <= currentStep || stepCompleted.has(step - 1)) {
@@ -615,6 +709,8 @@ export default function BillingDesk() {
   const [summaryCollapsed, setSummaryCollapsed] = useState(false);
   const [doctorCollapsed, setDoctorCollapsed]   = useState(false);
   const [paymentSplits, setPaymentSplits] = useState<PaySplit[]>([{ mode: "cash", amount: "" }]);
+  // Primary collect amount auto-copies net total until staff edits it (partial pay).
+  const paymentAmountTouched = useRef(false);
   const [lastBill, setLastBill]           = useState<LastBill | null>(null);
   // Real scannable QR (PNG data URL) generated via the qrcode library
   // whenever a new bill is saved. Falls back to the placeholder SVG until
@@ -624,7 +720,7 @@ export default function BillingDesk() {
   useEffect(() => {
     if (!lastBill) { setBillQrDataUrl(""); return; }
     let cancelled = false;
-    QRCode.toDataURL(buildBillVerifyUrl(lastBill.billNumber), {
+    QRCode.toDataURL(buildBillVerifyUrl(lastBill), {
       errorCorrectionLevel: "M",
       margin: 1,
       width: 256,
@@ -695,12 +791,16 @@ export default function BillingDesk() {
     quickTestIds?: string;
     billPrintCopies?: number;
     qrOnBillEnabled?: boolean;
+    showTatOnBill?: boolean;
     billShowCode?: boolean;
     billShowCategory?: boolean;
+    billPrintSettingsJson?: string | null;
+    patientPhoneRequired?: boolean;
   }>({
     queryKey: ["clinic-settings"],
     queryFn: () => api.get("/api/clinic-settings/branding"),
   });
+  const patientPhoneRequired = clinic?.patientPhoneRequired ?? true;
 
   // VIP surcharge % — same clinic setting Online Booking uses (Settings →
   // Online Booking → VIP Priority Booking Premium). Kept as its own query
@@ -728,10 +828,13 @@ export default function BillingDesk() {
   const [formFPopupHusband, setFormFPopupHusband] = useState("");
   const [formFPopupAddress, setFormFPopupAddress] = useState("");
   const formFPopupPendingPrintRef = useRef(false);
+  /** Prevents double auto-reset when save success + dialog close both fire. */
+  const formFPopupFlowFinishedRef = useRef(false);
 
   // ── Print preview dialog ──
   const [printPreviewOpen, setPrintPreviewOpen] = useState(false);
   const [printPreviewHtml, setPrintPreviewHtml] = useState("");
+  const [printPreviewPaperPx, setPrintPreviewPaperPx] = useState({ w: 794, h: 559 });
 
   // ── Gateway Payment Dialog ──
   const [gatewayModalOpen, setGatewayModalOpen] = useState(false);
@@ -739,6 +842,8 @@ export default function BillingDesk() {
     txnRef: string;
     amount: number;
     redirectUrl: string;
+    /** caredeoghar.com bridge URL for QR — avoids ICICI Domain Validation Fail */
+    qrPayUrl?: string;
     tranCtx?: string;
     expiryTime?: string;
     billId: number;
@@ -751,12 +856,10 @@ export default function BillingDesk() {
   useEffect(() => {
     if (!gatewayPaymentInfo) { setGatewayQrUrl(""); return; }
     let cancelled = false;
-    // redirectUrl is the full ICICI hosted-payment-page URL (tranCtx already
-    // embedded as a query param by the backend) — the same value Online
-    // Booking (book.tsx) and Kiosk Mode (Kiosk.tsx) already navigate to
-    // successfully. tranCtx alone is a bare opaque token, not a URL; a QR
-    // encoding it just displays text instead of opening the gateway.
-    const qrData = gatewayPaymentInfo.redirectUrl;
+    // Prefer the caredeoghar.com QR bridge (bank-whitelisted domain). Encoding
+    // the raw ICICI HPP URL in the QR causes "Domain Validation Fail" on phones;
+    // Orange Pay button works because it navigates from caredeoghar.com first.
+    const qrData = gatewayPaymentInfo.qrPayUrl || gatewayPaymentInfo.redirectUrl;
     QRCode.toDataURL(qrData, {
       errorCorrectionLevel: "M",
       margin: 1,
@@ -801,7 +904,7 @@ export default function BillingDesk() {
     if (pushedShowTxnRef.current === gatewayPaymentInfo.txnRef) return;
     pushedShowTxnRef.current = gatewayPaymentInfo.txnRef;
     api.post(`/api/payment-display/${encodeURIComponent(paymentCounterKey)}/show`, {
-      qrData: gatewayPaymentInfo.redirectUrl,
+      qrData: gatewayPaymentInfo.qrPayUrl || gatewayPaymentInfo.redirectUrl,
       amount: gatewayPaymentInfo.amount,
       txnRef: gatewayPaymentInfo.txnRef,
       patientName: selectedPatient ? `${selectedPatient.firstName} ${selectedPatient.lastName ?? ""}`.trim() : undefined,
@@ -822,15 +925,19 @@ export default function BillingDesk() {
     }).catch(() => { /* best-effort */ });
   }, [gatewayPaymentInfo, gatewayPaymentStatus, paymentCounterKey]);
 
-  // Return the customer display to its idle screen once the dialog closes
-  // (success, manual cancel, or auto-close after success) — skips the
-  // spurious clear that would otherwise fire on first mount.
+  // Return the customer display to its idle screen once the dialog closes.
+  // After a successful payment, keep the "Payment Received" screen up for
+  // several seconds so the patient can see confirmation (was clearing instantly).
   const gatewayModalWasOpenRef = useRef(false);
   useEffect(() => {
     if (gatewayModalOpen) { gatewayModalWasOpenRef.current = true; return; }
     if (!gatewayModalWasOpenRef.current) return;
-    api.post(`/api/payment-display/${encodeURIComponent(paymentCounterKey)}/clear`, {}).catch(() => {});
-  }, [gatewayModalOpen, paymentCounterKey]);
+    const delayMs = gatewayPaymentStatus === "success" ? 12_000 : 0;
+    const t = window.setTimeout(() => {
+      api.post(`/api/payment-display/${encodeURIComponent(paymentCounterKey)}/clear`, {}).catch(() => {});
+    }, delayMs);
+    return () => window.clearTimeout(t);
+  }, [gatewayModalOpen, paymentCounterKey, gatewayPaymentStatus]);
 
   // Same-PC fallback: opens the customer display's durable URL in a window
   // positioned on a second monitor cable-connected to THIS workstation. For
@@ -870,6 +977,7 @@ export default function BillingDesk() {
                 paidAmount: paid,
                 balanceAmount: Math.max(0, Number(updatedBill.totalAmount) - paid),
                 createdAt: updatedBill.createdAt,
+                createdByName: updatedBill.createdByName ?? null,
                 patient: {
                   firstName: updatedBill.patient.firstName,
                   lastName: updatedBill.patient.lastName,
@@ -885,7 +993,7 @@ export default function BillingDesk() {
                   tests: updatedBill.order?.tests?.map((t: any) => ({
                     price: t.price,
                     status: t.status || "active",
-                    test: t.test ? { name: t.test.name, code: t.test.code ?? "", category: t.test.category } : { name: t.displayName || "Test", code: "", category: "" },
+                    test: t.test ? { name: t.test.name, code: t.test.code ?? "", category: t.test.category, duration: (t.test as { duration?: string }).duration ?? "" } : { name: t.displayName || "Test", code: "", category: "", duration: "" },
                   })) || [],
                 },
                 payments: updatedBill.payments.map((p: any) => ({
@@ -906,7 +1014,12 @@ export default function BillingDesk() {
               const cachedPrinter = printerCfgCached ?? queryClient.getQueryData<PrinterCfg>(["printer-settings"]);
               const isBW = (cachedPrinter as { billPrinterType?: string } | undefined)?.billPrinterType === "bw";
               
-              QRCode.toDataURL(buildBillVerifyUrl(updatedBill.billNumber), {
+              QRCode.toDataURL(buildBillVerifyUrl({
+                billNumber: updatedBill.billNumber,
+                createdAt: updatedBill.createdAt,
+                totalAmount: updatedBill.totalAmount,
+                createdByName: updatedBill.createdByName,
+              }), {
                 errorCorrectionLevel: "M",
                 margin: 1,
                 width: 256,
@@ -919,19 +1032,18 @@ export default function BillingDesk() {
                   // instead of always forcing A5 portrait — the auto
                   // A4-switch by test count still applies unless the user
                   // explicitly forced A4/half-A4.
-                  const forcedPaperSize = settings.defaultPaperSize === "A4" || settings.defaultPaperSize === "half-a4" ? settings.defaultPaperSize : undefined;
-                  const effectivePaperSize = getAutoBillPaperSize(updatedBill.order?.tests?.length || 1, forcedPaperSize, settings.autoA4Threshold ?? 5);
-                  const paperSize = (effectivePaperSize === "A4" ? "A4" : "A5") as "A4" | "A5";
-                  const orientation = paperSize === "A5" && settings.defaultPaperSize === "A5-landscape" ? "landscape" : "portrait";
+                  const pageOpts = resolveBillPrintPageOpts(settings, updatedBill.order?.tests?.length || 1);
                   const html = buildBillPrintHtml({
                     bill: billForPrint,
                     clinic: cachedClinic,
-                    paperSize,
-                    orientation,
+                    paperSize: pageOpts.paperSize,
+                    orientation: pageOpts.orientation,
+                    pageCssSize: pageOpts.pageCssSize,
+                    compactFooterGap: pageOpts.compactFooterGap,
                     isBW,
                     qrDataUrl: qrUrl as string,
-                    format: settings.defaultFormat,
                     showQr: settings.showQrCode,
+                    showTat: settings.showTatOnBill,
                     showAmountInWords: settings.showAmountInWords,
                     showSignatureLine: settings.showSignatureLine,
                     showComputerGenerated: settings.showComputerGenerated,
@@ -945,12 +1057,13 @@ export default function BillingDesk() {
                     showQueueToken: settings.showQueueTokenOnBill,
                     ...printLayoutOpts(settings),
                   });
-                  if (settings.enablePreview) {
-                    setPrintPreviewHtml(html);
-                    setPrintPreviewOpen(true);
-                  } else if (settings.directPrintAfterSave || settings.autoOpenPrintDialog) {
-                    printViaIframe(html);
-                  }
+                  const delivery = resolveBillPrintDelivery(settings, "background");
+                  deliverBillReceipt(html, delivery, null, {
+                    setHtml: setPrintPreviewHtml,
+                    setOpen: setPrintPreviewOpen,
+                    setPaperPx: setPrintPreviewPaperPx,
+                    paperPx: billPreviewPaperPx(pageOpts),
+                  });
                   if ((lastBillLocalRef.current?.testTokens?.length ?? 0) > 0 || lastBillLocalRef.current?.tokenNo != null) {
                     window.setTimeout(() => {
                       if (lastBillLocalRef.current) {
@@ -964,7 +1077,7 @@ export default function BillingDesk() {
             }
 
             resetAll();
-          }, 2000);
+          }, 10000);
         } else if (res.status === "failed") {
           setGatewayPaymentStatus("failed");
           setGatewayPaymentError(res.error || "Payment failed");
@@ -1123,6 +1236,9 @@ export default function BillingDesk() {
   // ── Create mutations ───────────────────────────────
   const createPatientMut = useMutation({
     mutationFn: (body: typeof newPatient) => {
+      if (!body.gender) {
+        throw new Error("Please select sex before registering the patient.");
+      }
       // Only treat the age field as a real value when the user typed
       // something. Number("") is 0, which used to silently save
       // ageValue=0 + dateOfBirth="<currentYear>-01-01" — corrupting the
@@ -1163,7 +1279,7 @@ export default function BillingDesk() {
     },
     onSuccess: (p: Patient) => {
       setSelectedPatient(p);
-      setNewPatient({ firstName: "", lastName: "", phone: "", gender: "male", ageValue: "", ageUnit: "years", email: "", address: "", bloodGroup: "" });
+      setNewPatient({ firstName: "", lastName: "", phone: "", gender: "", ageValue: "", ageUnit: "years", email: "", address: "", bloodGroup: "" });
       toast({ title: `Patient registered: ${p.patientId}` });
     },
     onError: (err: Error) => {
@@ -1183,13 +1299,21 @@ export default function BillingDesk() {
     },
   });
 
-  // Form F save mutation — used by the Form F dialog popup
+  const finishFormFPopupFlow = () => {
+    if (formFPopupFlowFinishedRef.current) return;
+    formFPopupFlowFinishedRef.current = true;
+    finishBillSaveFlowRef.current();
+  };
+
+  // Form F save mutation — post-bill popup updates patient guardian/address.
+  // Uses /bills (billing permission), not full Form F /save (PCPNDT record).
   const formFSaveMut = useMutation({
-    mutationFn: (body: { billNumber: string; husbandName: string; address: string }) =>
-      api.post("/api/form-f/save", body),
+    mutationFn: (body: { billNumber: string; husbandFatherName: string; address: string }) =>
+      api.patch("/api/bills/form-f-patient-data", body),
     onSuccess: () => {
       setFormFPopupOpen(false);
-      toast({ title: "Form F saved" });
+      toast({ title: "Form F details saved" });
+      finishFormFPopupFlow();
     },
     onError: (err: Error) => {
       toast({ title: "Form F save failed", description: err.message, variant: "destructive" });
@@ -1216,8 +1340,21 @@ export default function BillingDesk() {
     }
   };
 
+  const handleGatewayChangePaymentMode = () => {
+    const billId = gatewayPaymentInfo?.billId ?? lastBill?.id;
+    setGatewayModalOpen(false);
+    setGatewayPaymentInfo(null);
+    setGatewayPaymentStatus("pending");
+    setGatewayPaymentError("");
+    if (billId) navigate(`/billing/${billId}`);
+  };
+
   const queryClient = useQueryClient();
   const printAfterSaveRef = useRef(false);
+  const saveAndNextRef = useRef(false);
+  /** Popup opened synchronously on Save & Print so async save can still print. */
+  const printPopupRef = useRef<Window | null>(null);
+  const finishBillSaveFlowRef = useRef<() => void>(() => {});
   // Pre-load printer settings on mount so the auto-print path after "Save &
   // Print" doesn't have to wait on a network round-trip — it just reads from
   // the React Query cache. Refreshes silently in the background every 5 min.
@@ -1280,6 +1417,8 @@ export default function BillingDesk() {
       type BillResponse = {
         id: number;
         billNumber: string;
+        createdAt?: string;
+        createdByName?: string | null;
         token?: { tokenNo: number; tokenDate: string } | null;
         testTokens?: Array<{ orderTestId: number; testName: string; department: string; roomNumber: string; floorLabel: string; tokenNo: number }>;
         needsFormFData?: boolean;
@@ -1297,14 +1436,43 @@ export default function BillingDesk() {
         const bill = await api.post<BillResponse>("/api/bills", { ...billBody, orderId: order.id });
         return bill;
       } catch (err) {
-        if (err instanceof NetworkError) {
+        if (isQueueableBillingError(err)) {
+          const doctor = doctors.find((d) => d.id === doctorId);
+          const snapshot: ProvisionalBillPrintSnapshot = {
+            clientRef,
+            provisionalBillNumber: formatProvisionalBillNumber(clientRef),
+            patient: {
+              firstName: selectedPatient.firstName,
+              lastName: selectedPatient.lastName,
+              patientId: selectedPatient.patientId,
+              phone: selectedPatient.phone ?? null,
+              gender: selectedPatient.gender ?? null,
+              dateOfBirth: selectedPatient.dateOfBirth ?? null,
+              ageValue: selectedPatient.ageValue ?? null,
+              ageUnit: selectedPatient.ageUnit ?? null,
+            },
+            doctorName: doctor?.name ?? null,
+            tests: selectedTests.map((t) => ({
+              name: t.name,
+              code: t.code,
+              price: t.price,
+              category: t.category,
+              duration: t.duration,
+            })),
+            subtotal,
+            discount: discountAmt,
+            total,
+            payments: paymentSplits.filter((s) => Number(s.amount) > 0),
+          };
           enqueueBill({
             clientRef,
             orderBody,
             billBody,
+            provisionalBillNumber: snapshot.provisionalBillNumber,
+            printSnapshot: snapshot,
             ...(order ? { stage: "bill" as const, orderId: order.id, orderNumber: order.orderNumber } : {}),
           });
-          throw new QueuedForSyncError();
+          throw new QueuedForSyncError(snapshot);
         }
         throw err;
       }
@@ -1322,6 +1490,8 @@ export default function BillingDesk() {
         discount: discountAmt,
         total,
         payments: paymentSplits.filter((p) => Number(p.amount) > 0),
+        createdAt: bill.createdAt ?? new Date().toISOString(),
+        createdByName: bill.createdByName ?? (sessionOperatorName() || null),
         tokenNo: bill.token?.tokenNo ?? null,
         tokenDate: bill.token?.tokenDate ?? null,
         testTokens: bill.testTokens ?? [],
@@ -1340,6 +1510,7 @@ export default function BillingDesk() {
             txnRef: string;
             amount: number;
             redirectUrl: string;
+            qrPayUrl?: string;
             tranCtx?: string;
             expiryTime?: string;
           }>(`/api/bills/${bill.id}/initiate-gateway-payment`, {
@@ -1365,7 +1536,7 @@ export default function BillingDesk() {
         printAfterSaveRef.current = false;
         const cachedClinic = queryClient.getQueryData<PrintClinic>([
           "clinic-settings",
-        ]);
+        ]) || (clinic as PrintClinic);
         const cachedPrinter =
           printerCfgCached ??
           queryClient.getQueryData<PrinterCfg>(["printer-settings"]);
@@ -1379,7 +1550,7 @@ export default function BillingDesk() {
               return;
             }
           }
-          void QRCode.toDataURL(buildBillVerifyUrl(lastBillLocal.billNumber), {
+          void QRCode.toDataURL(buildBillVerifyUrl(lastBillLocal), {
             errorCorrectionLevel: "M",
             margin: 1,
             width: 256,
@@ -1398,7 +1569,8 @@ export default function BillingDesk() {
               totalAmount: lastBillLocal.total,
               paidAmount: paid,
               balanceAmount: Math.max(0, lastBillLocal.total - paid),
-              createdAt: new Date().toISOString(),
+              createdAt: lastBillLocal.createdAt ?? new Date().toISOString(),
+              createdByName: lastBillLocal.createdByName ?? null,
               patient: {
                 firstName: lastBillLocal.patient.firstName,
                 lastName: lastBillLocal.patient.lastName,
@@ -1414,7 +1586,7 @@ export default function BillingDesk() {
                 tests: lastBillLocal.tests.map((t) => ({
                   price: t.price,
                   status: "active",
-                  test: { name: t.name, code: t.code ?? "", category: t.category },
+                  test: { name: t.name, code: t.code ?? "", category: t.category, duration: t.duration ?? "" },
                 })),
               },
               payments: lastBillLocal.payments.map((p) => ({
@@ -1424,19 +1596,18 @@ export default function BillingDesk() {
               tokenNo: lastBillLocal.tokenNo ?? null,
               testTokens: lastBillLocal.testTokens ?? null,
             };
-            const forcedPaperSize = settings.defaultPaperSize === "A4" || settings.defaultPaperSize === "half-a4" ? settings.defaultPaperSize : undefined;
-            const effectivePaperSize = getAutoBillPaperSize(lastBillLocal.tests.length, forcedPaperSize, settings.autoA4Threshold ?? 5);
-            const paperSize = (effectivePaperSize === "A4" ? "A4" : "A5") as "A4" | "A5";
-            const orientation = paperSize === "A5" && settings.defaultPaperSize === "A5-landscape" ? "landscape" : "portrait";
+            const pageOpts = resolveBillPrintPageOpts(settings, lastBillLocal.tests.length);
             const html = buildBillPrintHtml({
               bill: billForPrint,
               clinic: clinicForPrint,
-              paperSize,
-              orientation,
+              paperSize: pageOpts.paperSize,
+              orientation: pageOpts.orientation,
+              pageCssSize: pageOpts.pageCssSize,
+              compactFooterGap: pageOpts.compactFooterGap,
               isBW,
               qrDataUrl: qrUrl as string,
-              format: settings.defaultFormat,
               showQr: settings.showQrCode,
+              showTat: settings.showTatOnBill,
               showAmountInWords: settings.showAmountInWords,
               showSignatureLine: settings.showSignatureLine,
               showComputerGenerated: settings.showComputerGenerated,
@@ -1450,12 +1621,15 @@ export default function BillingDesk() {
               showQueueToken: settings.showQueueTokenOnBill,
               ...printLayoutOpts(settings),
             });
-            if (settings.enablePreview) {
-              setPrintPreviewHtml(html);
-              setPrintPreviewOpen(true);
-            } else if (settings.directPrintAfterSave || settings.autoOpenPrintDialog) {
-              printViaIframe(html);
-            }
+            const delivery = resolveBillPrintDelivery(settings, "save-print");
+            const popup = printPopupRef.current;
+            printPopupRef.current = null;
+            deliverBillReceipt(html, delivery, popup, {
+              setHtml: setPrintPreviewHtml,
+              setOpen: setPrintPreviewOpen,
+              setPaperPx: setPrintPreviewPaperPx,
+              paperPx: billPreviewPaperPx(pageOpts),
+            });
             if ((lastBillLocal.testTokens?.length ?? 0) > 0 || lastBillLocal.tokenNo != null) {
               window.setTimeout(() => {
                 void printToken(lastBillLocal, clinicForPrint as ClinicLite).catch(() => { /* best-effort */ });
@@ -1470,27 +1644,63 @@ export default function BillingDesk() {
         setFormFPopupHusband("");
         setFormFPopupAddress(selectedPatient?.address ?? "");
         formFPopupPendingPrintRef.current = printAfterSaveRef.current;
+        formFPopupFlowFinishedRef.current = false;
         setFormFPopupOpen(true);
         return;
       }
 
-      window.setTimeout(() => {
-        resetAll();
-      }, 3000);
+      finishBillSaveFlowRef.current();
     },
     onError: (err: Error) => {
+      const wantedPrint = printAfterSaveRef.current;
       printAfterSaveRef.current = false;
+      saveAndNextRef.current = false;
       if (err instanceof QueuedForSyncError) {
-        // Not a real failure from the user's point of view — the bill is
-        // saved locally and will go out on its own. No receipt/token to show
-        // yet (the real order/bill don't exist until it syncs), so reset the
-        // desk immediately rather than leaving a stale draft that could be
-        // resubmitted as a second, distinct queued entry.
-        toast({ title: "No connection — bill saved locally", description: "It'll sync automatically once the network is back. See the sync panel in the sidebar." });
+        const cachedClinic = queryClient.getQueryData<PrintClinic>(["clinic-settings"]) || (clinic as PrintClinic);
+        const cachedPrinter =
+          printerCfgCached ??
+          queryClient.getQueryData<PrinterCfg>(["printer-settings"]);
+        const settings = loadBillPrintSettings(parseGlobalBillPrintSettings(cachedClinic?.billPrintSettingsJson));
+        const shouldPrint =
+          wantedPrint || settings.directPrintAfterSave || settings.autoOpenPrintDialog;
+        if (shouldPrint) {
+          const isBW = (cachedPrinter as { billPrinterType?: string } | undefined)?.billPrinterType === "bw";
+          const html = buildProvisionalBillPrintHtml(
+            err.snapshot,
+            cachedClinic ?? {},
+            settings,
+            isBW,
+          );
+          const delivery = resolveBillPrintDelivery(
+            settings,
+            wantedPrint ? "save-print" : "background",
+          );
+          const popup = wantedPrint ? printPopupRef.current : null;
+          if (wantedPrint) printPopupRef.current = null;
+          const pageOpts = resolveBillPrintPageOpts(settings, err.snapshot.tests.length);
+          deliverBillReceipt(html, delivery, popup, {
+            setHtml: setPrintPreviewHtml,
+            setOpen: setPrintPreviewOpen,
+            setPaperPx: setPrintPreviewPaperPx,
+            paperPx: billPreviewPaperPx(pageOpts),
+          });
+        }
+        toast({
+          title: "No connection — bill saved locally",
+          description: shouldPrint
+            ? `Provisional receipt ${err.snapshot.provisionalBillNumber} printed. It will sync when the server is back — see the sidebar sync panel.`
+            : "It'll sync automatically once the network is back. See the sync panel in the sidebar.",
+        });
         resetAll();
         return;
       }
       toast({ title: err.message || "Failed to generate bill", variant: "destructive" });
+      try {
+        printPopupRef.current?.close?.();
+      } catch {
+        /* ignore */
+      }
+      printPopupRef.current = null;
     },
     onSettled: () => {
       // Release the synchronous guard so the desk is ready for a new bill.
@@ -1538,6 +1748,19 @@ export default function BillingDesk() {
   const total       = Math.max(0, subtotal - discountAmt) + vipSurchargeAmt;
   const paidTotal   = payNow ? paymentSplits.reduce((s, p) => s + (Number(p.amount) || 0), 0) : 0;
   const balance     = Math.max(0, total - paidTotal);
+  const paymentOverTotal = payNow && paidTotal > total + 0.01;
+
+  // Default collect amount = net total (full payment is the common case).
+  // Stops syncing once the cashier types a different value for partial pay.
+  useEffect(() => {
+    if (!payNow || paymentAmountTouched.current || total <= 0) return;
+    const synced = total.toFixed(2);
+    setPaymentSplits((prev) => {
+      const first = prev[0] ?? { mode: "cash", amount: "" };
+      if (first.amount === synced) return prev;
+      return [{ ...first, amount: synced }, ...prev.slice(1)];
+    });
+  }, [payNow, total]);
 
   // ── Test actions ────────────────────────────────────
   function addTest(t: Test) {
@@ -1545,8 +1768,10 @@ export default function BillingDesk() {
       toast({ title: "Test already added" });
       return;
     }
-    setSelectedTests((prev) => [...prev, { testId: t.id, name: t.name, code: t.code, price: t.price, category: t.category, source: "test" }]);
+    const wasEmpty = selectedTests.length === 0;
+    setSelectedTests((prev) => [...prev, { testId: t.id, name: t.name, code: t.code, price: t.price, category: t.category, duration: t.duration, source: "test" }]);
     setTestSearch("");
+    if (wasEmpty && isStepped && autoAdvance && currentStep === 3) advanceStep();
   }
 
   // ── Quick Test slot save / actions ──────────────────
@@ -1616,10 +1841,13 @@ export default function BillingDesk() {
     });
   }
 
-  function addPackage(pkg: Pkg) {
-    // Package effective price = MRP - %% - flat ₹.
+  function packageEffectivePrice(pkg: Pkg) {
     const afterPct = pkg.price - (pkg.price * (pkg.discountPct ?? 0)) / 100;
-    const effective = Math.max(0, afterPct - (pkg.discountAmount ?? 0));
+    return Math.max(0, afterPct - (pkg.discountAmount ?? 0));
+  }
+
+  function addPackage(pkg: Pkg) {
+    const effective = packageEffectivePrice(pkg);
     const count = pkg.tests.length || 1;
 
     // If any test inside this package carries its own discount override, honour
@@ -1640,14 +1868,16 @@ export default function BillingDesk() {
     const existingIds = new Set(selectedTests.map((s) => s.testId));
     const toAdd: SelectedTest[] = pkg.tests
       .filter((t) => !existingIds.has(t.id))
-      .map((t) => ({ testId: t.id, name: t.name, code: t.code, price: computeLinePrice(t), category: t.category, source: "package" as const }));
+      .map((t) => ({ testId: t.id, name: t.name, code: t.code, price: computeLinePrice(t), category: t.category, duration: (t as { duration?: string }).duration, source: "package" as const }));
     if (toAdd.length === 0) {
       toast({ title: "All tests in this package already added" });
       return;
     }
+    const wasEmpty = selectedTests.length === 0;
     setSelectedTests((prev) => [...prev, ...toAdd]);
     setSelectedPackages((prev) => [...prev, { packageId: pkg.id, name: pkg.name, testIds: toAdd.map((t) => t.testId) }]);
     toast({ title: `Package "${pkg.name}" added (${toAdd.length} tests)` });
+    if (wasEmpty && isStepped && autoAdvance && currentStep === 3) advanceStep();
   }
 
   function removeTest(testId: number) {
@@ -1715,6 +1945,7 @@ export default function BillingDesk() {
   // so double-clicks and rapid keyboard shortcuts can't slip through the gap.
   const generatingRef  = useRef(false);
   useEffect(() => {
+    if (!keyboardNav) return;
     function kbHandler(e: KeyboardEvent) {
       const tag = (e.target as HTMLElement)?.tagName;
       const inInput = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
@@ -1727,8 +1958,11 @@ export default function BillingDesk() {
         if (m) {
           e.preventDefault();
           e.stopPropagation();
+          // Prefer the scanned URL as-is so the anti-tamper ?hash= survives.
+          const verifyUrl = /^https?:\/\//i.test(val.trim())
+            ? val.trim()
+            : `${window.location.origin}/api/verify/bill/${encodeURIComponent(m[1])}${val.includes("hash=") ? val.slice(val.indexOf("?")) : ""}`;
           el.value = "";
-          const verifyUrl = `${window.location.origin}/api/verify/bill/${encodeURIComponent(m[1])}`;
           window.open(verifyUrl, "_blank", "noopener,noreferrer");
           return;
         }
@@ -1757,6 +1991,8 @@ export default function BillingDesk() {
         e.preventDefault();
         if (canGenerateRef.current && !lastBillRef.current && !generatingRef.current) {
           generatingRef.current = true;
+          printPopupRef.current?.close?.();
+          printPopupRef.current = openBlankPrintWindow();
           printAfterSaveRef.current = true;
           generateMut.mutate();
         }
@@ -1774,22 +2010,23 @@ export default function BillingDesk() {
     }
     document.addEventListener("keydown", kbHandler);
     return () => document.removeEventListener("keydown", kbHandler);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [keyboardNav]);
 
   // ── Reset ───────────────────────────────────────────
-  function resetAll() {
+  function resetAll(focusPatient = false) {
     setSelectedPatient(null);
     setPatientSearch("");
-    setNewPatient({ firstName: "", lastName: "", phone: "", gender: "male", ageValue: "", ageUnit: "years", email: "", address: "", bloodGroup: "" });
+    setNewPatient({ firstName: "", lastName: "", phone: "", gender: "", ageValue: "", ageUnit: "years", email: "", address: "", bloodGroup: "" });
     setDoctorId(null);
     setDoctorSearch("");
     setNotes("");
     setSelectedTests([]);
+    setSelectedPackages([]);
     setDiscountValue(0);
     setDiscountReason("");
     setDiscountNote("");
     setPayNow(true);
+    paymentAmountTouched.current = false;
     setPaymentSplits([{ mode: "cash", amount: "" }]);
     setLastBill(null);
     setSuggestion(null);
@@ -1798,6 +2035,49 @@ export default function BillingDesk() {
     setIsVipActive(false);
     setTestsCollapsed(false);
     setSummaryCollapsed(false);
+    setShowBillToast(false);
+    if (isStepped) {
+      setCurrentStep(1);
+      setStepCompleted(new Set());
+    }
+    if (focusPatient) {
+      window.setTimeout(() => {
+        const input = searchRef.current?.querySelector("input");
+        input?.focus();
+      }, 100);
+    }
+  }
+
+  finishBillSaveFlowRef.current = () => {
+    if (saveAndNextRef.current) {
+      saveAndNextRef.current = false;
+      resetAll(true);
+      return;
+    }
+    const delay = readAutoResetDelayMs();
+    if (delay === null) return;
+    if (delay === 0) {
+      resetAll(true);
+      return;
+    }
+    window.setTimeout(() => resetAll(true), delay);
+  };
+
+  function setPrimaryPaymentAmount(amount: number) {
+    paymentAmountTouched.current = true;
+    const capped = Math.min(Math.max(0, amount), total);
+    setPaymentSplits((prev) => [
+      { ...(prev[0] ?? { mode: "cash", amount: "" }), amount: capped > 0 ? capped.toFixed(2) : "" },
+      ...prev.slice(1),
+    ]);
+  }
+
+  function addSplitWithRemainder() {
+    setPaymentSplits((prev) => {
+      const paid = prev.reduce((s, p) => s + (Number(p.amount) || 0), 0);
+      const remainder = Math.max(0, total - paid);
+      return [...prev, { mode: "upi", amount: remainder > 0 ? remainder.toFixed(2) : "" }];
+    });
   }
 
   const canGenerate = !!selectedPatient && selectedTests.length > 0 && !(discountAmt > 0 && !discountReason);
@@ -1899,7 +2179,7 @@ export default function BillingDesk() {
             </PopoverContent>
           </Popover>
           <button
-            onClick={resetAll}
+            onClick={() => resetAll()}
             className="h-7 px-2 rounded text-[11px] font-semibold text-blue-100 hover:bg-white/15 flex items-center gap-1 transition-colors"
           >
             <RefreshCcw size={12} />
@@ -1907,6 +2187,8 @@ export default function BillingDesk() {
           </button>
         </div>
       </div>
+
+      {/* Billing outage details are shown in the global ConnectivityStatusBanner. */}
 
       {/* Duplicate-bill warning banner */}
       {showBillToast && lastBill && (
@@ -2059,9 +2341,18 @@ export default function BillingDesk() {
                       onPatientChange={(data) =>
                         setNewPatient(data as typeof newPatient)
                       }
+                      phoneRequired={patientPhoneRequired}
                       onSubmit={() => {
-                        // Only a name is required — lastName, phone, age are optional
+                        // Name + sex always; phone follows Settings → Patient Phone Requirement
                         if (!newPatient.firstName.trim() && !newPatient.lastName.trim()) return;
+                        if (patientPhoneRequired && !String(newPatient.phone ?? "").trim()) {
+                          toast({
+                            title: "Phone number required",
+                            description: "Turn off Patient Phone Requirement in Settings → Clinic Info to allow walk-ins without a phone.",
+                            variant: "destructive",
+                          });
+                          return;
+                        }
                         createPatientMut.mutate(newPatient);
                       }}
                       isLoading={createPatientMut.isPending}
@@ -2076,9 +2367,18 @@ export default function BillingDesk() {
             {recentPatientBill && !lastBill && (
               <div className="flex items-center gap-2 px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg text-sm">
                 <AlertTriangle size={14} className="text-amber-600 flex-shrink-0" />
-                <span className="text-amber-800 text-xs">
+                <span className="text-amber-800 text-xs flex-1">
                   Open bill <strong>{recentPatientBill.billNumber}</strong> already exists for this patient.
                 </span>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-[11px] border-amber-300 text-amber-800 hover:bg-amber-100 flex-shrink-0"
+                  onClick={() => navigate(`/billing/${recentPatientBill.id}`)}
+                >
+                  Open bill
+                </Button>
               </div>
             )}
 
@@ -2147,8 +2447,7 @@ export default function BillingDesk() {
                     Click a filled slot to select that doctor for this bill.
                     Click an empty (dashed) slot, or right-click any slot, to
                     assign/change which doctor lives there. */}
-                {showQuickTestsSetting && (
-                  <div className="grid grid-cols-4 gap-1.5">
+                <div className="grid grid-cols-4 gap-1.5">
                     {quickDoctorIds.map((docId, idx) => {
                       const doc = docId != null ? doctors.find((d) => d.id === docId) : null;
                       const isSelected = !!doc && doctorId === doc.id;
@@ -2199,7 +2498,6 @@ export default function BillingDesk() {
                       );
                     })}
                   </div>
-                )}
                 {/* Doctor search */}
                 <div ref={doctorRef} className="relative">
                   {doctorId && (
@@ -2312,6 +2610,7 @@ export default function BillingDesk() {
                   <div className="relative flex-1">
                     <Search size={12} className="absolute left-3 top-1/2 -translate-y-1/2 text-[#94a3b8]" />
                     <input
+                      ref={testSearchRef}
                       className="w-full h-8 pl-9 pr-3 text-sm border border-[#dde3ec] rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-[#2563eb]/30 focus:border-[#2563eb]"
                       placeholder="Search test by name or code…"
                       value={testSearch}
@@ -2395,7 +2694,7 @@ export default function BillingDesk() {
                             <div className="text-xs font-semibold text-[#1e3a5f] truncate">{pkg.name}</div>
                             <div className="text-[10px] text-[#94a3b8]">{pkg.tests.length} tests</div>
                           </div>
-                          <span className="text-sm font-bold text-[#1e3a5f] flex-shrink-0">{inr(pkg.discountPct)}</span>
+                          <span className="text-sm font-bold text-[#1e3a5f] flex-shrink-0">{inr(packageEffectivePrice(pkg))}</span>
                         </button>
                       ))}
                     </div>
@@ -2470,8 +2769,10 @@ export default function BillingDesk() {
               ))}
             </div>
 
+            {/* ── BILL SUMMARY + PAYMENT + SAVE (optional sticky block) ── */}
+            <div className={`mx-2.5 mt-2.5 flex-shrink-0 space-y-2.5 ${(stickyBillSummary || stickyPayment) ? "lg:sticky lg:top-0 lg:z-10" : ""}`}>
             {/* ── BILL SUMMARY + DISCOUNT + VIP ────────── */}
-            <div className={`${cardCls} mx-2.5 mt-2.5 flex-shrink-0`}>
+            <div className={cardCls}>
               {SHCollapsible(
                 "Bill Summary",
                 <Receipt size={11} />,
@@ -2493,7 +2794,17 @@ export default function BillingDesk() {
                     </span>
                     <button
                       className="text-emerald-700 font-bold hover:underline"
-                      onClick={() => { setDiscountType("amount"); setDiscountValue(suggestion.discount); setSuggestion(null); }}
+                      onClick={() => {
+                        setDiscountType("amount");
+                        setDiscountValue(suggestion.discount);
+                        if (suggestion.rule?.name) {
+                          setDiscountReason(suggestion.rule.name);
+                        } else {
+                          const r = discountReasons.find((dr) => dr.isActive);
+                          if (r) setDiscountReason(r.label);
+                        }
+                        setSuggestion(null);
+                      }}
                     >
                       Apply
                     </button>
@@ -2623,7 +2934,7 @@ export default function BillingDesk() {
             </div>
 
             {/* ── PAYMENT ──────────────────────────────── */}
-            <div className={`${cardCls} mx-2.5 mt-2.5 flex-shrink-0`}>
+            <div className={cardCls}>
               {SH("Payment", <CreditCard size={11} />, "indigo")}
               <div className="p-3 space-y-2.5" ref={paymentRef}>
 
@@ -2631,7 +2942,16 @@ export default function BillingDesk() {
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <button
-                      onClick={() => setPayNow(!payNow)}
+                      onClick={() => {
+                        const next = !payNow;
+                        setPayNow(next);
+                        if (next && !paymentAmountTouched.current && total > 0) {
+                          setPaymentSplits((prev) => [
+                            { ...(prev[0] ?? { mode: "cash", amount: "" }), amount: total.toFixed(2) },
+                            ...prev.slice(1),
+                          ]);
+                        }
+                      }}
                       className={`relative inline-flex h-5 w-9 flex-shrink-0 rounded-full border-2 border-transparent transition-colors ${payNow ? "bg-[#2563eb]" : "bg-[#cbd5e1]"}`}
                     >
                       <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${payNow ? "translate-x-4" : "translate-x-0"}`} />
@@ -2643,14 +2963,40 @@ export default function BillingDesk() {
 
                 {payNow && (
                   <>
+                    <div className="flex flex-wrap gap-1.5">
+                      {[
+                        { label: "Exact", amount: total },
+                        ...(total >= 200 ? [{ label: "Half", amount: total / 2 }] : []),
+                        ...(total >= 500 ? [{ label: "₹500", amount: 500 }] : []),
+                        ...(total >= 1000 ? [{ label: "₹1000", amount: 1000 }] : []),
+                      ].map((chip) => (
+                        <button
+                          key={chip.label}
+                          type="button"
+                          onClick={() => setPrimaryPaymentAmount(chip.amount)}
+                          className="px-2.5 py-1 rounded-md border border-[#bfdbfe] bg-[#eff6ff] text-[10px] font-bold text-[#2563eb] hover:bg-[#dbeafe] transition-colors"
+                        >
+                          {chip.label}
+                        </button>
+                      ))}
+                    </div>
                     {/* Primary amount input — FIRST (most-used action) */}
                     <Input
                       type="number"
                       min={0}
+                      max={total}
                       step="0.01"
                       placeholder={total.toFixed(2)}
                       value={paymentSplits[0]?.amount ?? ""}
-                      onChange={(e) => setPaymentSplits((prev) => prev.map((s, i) => i === 0 ? { ...s, amount: e.target.value } : s))}
+                      onChange={(e) => {
+                        paymentAmountTouched.current = true;
+                        const raw = e.target.value;
+                        const n = Number(raw);
+                        const capped = raw !== "" && !Number.isNaN(n) && n > total
+                          ? total.toFixed(2)
+                          : raw;
+                        setPaymentSplits((prev) => prev.map((s, i) => i === 0 ? { ...s, amount: capped } : s));
+                      }}
                       onFocus={() => setSummaryCollapsed(true)}
                       className="h-12 text-xl font-bold tracking-tight text-center border-[#2563eb]/40 focus:border-[#2563eb]"
                     />
@@ -2674,9 +3020,16 @@ export default function BillingDesk() {
                             </SelectContent>
                           </Select>
                           <Input
-                            type="number" min={0} step="0.01" placeholder="0.00"
+                            type="number" min={0} max={total} step="0.01" placeholder="0.00"
                             value={split.amount}
-                            onChange={(e) => setPaymentSplits((prev) => prev.map((s, i) => i === idx ? { ...s, amount: e.target.value } : s))}
+                            onChange={(e) => {
+                              const raw = e.target.value;
+                              const n = Number(raw);
+                              const capped = raw !== "" && !Number.isNaN(n) && n > total
+                                ? total.toFixed(2)
+                                : raw;
+                              setPaymentSplits((prev) => prev.map((s, i) => i === idx ? { ...s, amount: capped } : s));
+                            }}
                             className="h-8 text-xs"
                           />
                           <button
@@ -2690,7 +3043,7 @@ export default function BillingDesk() {
                     {/* SECOND: Split payment link */}
                     {paymentSplits.length < PAYMENT_MODES.length && (
                       <button
-                        onClick={() => setPaymentSplits((prev) => [...prev, { mode: "upi", amount: "" }])}
+                        onClick={addSplitWithRemainder}
                         className="text-[11px] font-semibold text-[#2563eb] hover:underline flex items-center gap-1"
                       >
                         <Plus size={11} /> Split payment
@@ -2698,9 +3051,14 @@ export default function BillingDesk() {
                     )}
 
                     {/* THIRD: Balance / Paid indicator */}
-                    {(balance > 0 || (paidTotal > 0 && total > 0)) && (
+                    {(balance > 0 || (paidTotal > 0 && total > 0) || paymentOverTotal) && (
                       <div className="rounded-lg border px-3 py-2">
-                        {balance > 0 ? (
+                        {paymentOverTotal ? (
+                          <div className="flex items-center justify-between">
+                            <span className="text-[12px] font-bold text-red-700">Exceeds net total</span>
+                            <span className="text-[18px] font-extrabold text-red-600 tabular-nums">{inr(paidTotal)}</span>
+                          </div>
+                        ) : balance > 0 ? (
                           <div className="flex items-center justify-between">
                             <span className="text-[12px] font-bold text-red-700">Balance Due</span>
                             <span className="text-[18px] font-extrabold text-red-600 tabular-nums animate-blink-fast">{inr(balance)}</span>
@@ -2774,11 +3132,13 @@ export default function BillingDesk() {
             </div>
 
             {/* ── SAVE & PRINT — most prominent action ─── */}
-            <div className="mx-2.5 mt-2.5 mb-2.5 flex-shrink-0 space-y-2">
+            <div className="mb-2.5 flex-shrink-0 space-y-2">
               <Button
                 onClick={() => {
                   if (generatingRef.current || !!lastBillRef.current) return;
                   generatingRef.current = true;
+                  printPopupRef.current?.close?.();
+                  printPopupRef.current = openBlankPrintWindow();
                   printAfterSaveRef.current = true;
                   generateMut.mutate();
                 }}
@@ -2788,6 +3148,7 @@ export default function BillingDesk() {
                   generateMut.isPending ||
                   !!lastBill ||
                   (discountAmt > 0 && !discountReason) ||
+                  paymentOverTotal ||
                   (needsFormF && !clinic?.formFBillingPrompt && (
                     (clinic?.formFGuardianRequired !== false && !husbandName.trim()) ||
                     (clinic?.formFAddressRequired !== false && !patientAddress.trim())
@@ -2809,6 +3170,38 @@ export default function BillingDesk() {
                 )}
               </Button>
 
+              {!lastBill && (
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    if (generatingRef.current || !!lastBillRef.current) return;
+                    generatingRef.current = true;
+                    printAfterSaveRef.current = false;
+                    saveAndNextRef.current = true;
+                    generateMut.mutate();
+                  }}
+                  disabled={
+                    !selectedPatient ||
+                    selectedTests.length === 0 ||
+                    generateMut.isPending ||
+                    (discountAmt > 0 && !discountReason) ||
+                    paymentOverTotal ||
+                    (needsFormF && !clinic?.formFBillingPrompt && (
+                      (clinic?.formFGuardianRequired !== false && !husbandName.trim()) ||
+                      (clinic?.formFAddressRequired !== false && !patientAddress.trim())
+                    )) ||
+                    (needsDicom && !dicomFieldsComplete)
+                  }
+                  className="w-full h-10 text-[13px] font-bold border-[#93c5fd] text-[#2563eb] hover:bg-[#eff6ff]"
+                >
+                  {generateMut.isPending && saveAndNextRef.current ? (
+                    <>Saving…</>
+                  ) : (
+                    <><ChevronRight size={16} className="mr-1" />Save &amp; Next</>
+                  )}
+                </Button>
+              )}
+
               <div className="grid grid-cols-3 gap-1.5">
                 <Button
                   variant="outline"
@@ -2821,7 +3214,7 @@ export default function BillingDesk() {
                 <Button
                   variant="outline"
                   onClick={async () => { if (!lastBill) return; await printToken(lastBill, clinic); }}
-                  disabled={!lastBill || !lastBill.tokenNo}
+                  disabled={!lastBill || (!lastBill.tokenNo && (lastBill.testTokens?.length ?? 0) === 0)}
                   className="h-9 text-[11px] border-[#dde3ec] text-[#475569] hover:bg-[#eff6ff] hover:text-[#2563eb] hover:border-[#93c5fd]"
                 >
                   <Hash size={13} className="mr-1" />Token
@@ -2838,7 +3231,8 @@ export default function BillingDesk() {
                     selectedTests.length === 0 ||
                     generateMut.isPending ||
                     !!lastBill ||
-                    (discountAmt > 0 && !discountReason)
+                    (discountAmt > 0 && !discountReason) ||
+                    paymentOverTotal
                   }
                   className="h-9 text-[11px] border-[#dde3ec] text-[#475569] hover:bg-[#eff6ff]"
                 >
@@ -2846,6 +3240,9 @@ export default function BillingDesk() {
                 </Button>
               </div>
             </div>
+            </div>{/* end sticky block */}
+
+            <TodayCollectionsPanel />
 
           </div>{/* end right scroll */}
         </div>
@@ -2968,7 +3365,14 @@ export default function BillingDesk() {
       </Dialog>
 
       {/* Form F Billing Popup */}
-      <Dialog open={formFPopupOpen} onOpenChange={setFormFPopupOpen}>
+      <Dialog
+        open={formFPopupOpen}
+        onOpenChange={(open) => {
+          setFormFPopupOpen(open);
+          // Dismiss without save — still finish the bill flow (auto-reset).
+          if (!open) finishFormFPopupFlow();
+        }}
+      >
         <DialogContent className="max-w-sm">
           <DialogHeader>
             <DialogTitle>Form F — Required Fields</DialogTitle>
@@ -2999,7 +3403,7 @@ export default function BillingDesk() {
                 if (!formFPopupBillNumber || !formFPopupHusband.trim()) return;
                 formFSaveMut.mutate({
                   billNumber: formFPopupBillNumber,
-                  husbandName: formFPopupHusband.trim(),
+                  husbandFatherName: formFPopupHusband.trim(),
                   address: formFPopupAddress.trim(),
                 });
               }}
@@ -3061,6 +3465,26 @@ export default function BillingDesk() {
                     <img src={gatewayQrUrl} alt="Payment QR" className="w-40 h-40 mx-auto rounded-lg border" />
                     <button
                       type="button"
+                      onClick={() => {
+                        // Open via caredeoghar.com bridge when available so domain
+                        // validation passes; keep Bill Desk open in a lasting popup
+                        // (navigating the staff tab away used to feel like a flash).
+                        const payUrl = gatewayPaymentInfo?.qrPayUrl || gatewayPaymentInfo?.redirectUrl;
+                        if (!payUrl) return;
+                        const w = window.open(payUrl, "icici_orange_pay", "noopener,noreferrer,width=480,height=780");
+                        if (!w) {
+                          // Popup blocked — fall back to same-tab navigation.
+                          window.location.href = payUrl;
+                        }
+                      }}
+                      className="mt-2 w-full rounded-lg px-4 py-2.5 text-sm font-bold text-white"
+                      style={{ background: "#FF6600" }}
+                    >
+                      Pay with ICICI Orange Pay →
+                    </button>
+                    <p className="text-[10px] text-[#94a3b8]">Scan QR on phone (opens caredeoghar.com → Orange Pay) or tap above. QR stays until payment finishes.</p>
+                    <button
+                      type="button"
                       onClick={openGatewayQrOnSecondScreen}
                       className="mt-2 text-xs font-semibold text-[#2563eb] hover:underline flex items-center gap-1 mx-auto"
                     >
@@ -3088,7 +3512,20 @@ export default function BillingDesk() {
             {gatewayPaymentStatus === "failed" && (
               <div className="text-red-600 text-sm">{gatewayPaymentError || "Payment failed"}</div>
             )}
-            <div className="flex gap-2 pt-2">
+            {gatewayPaymentStatus === "expired" && (
+              <div className="text-amber-700 text-sm">Payment link expired. Collect manually or retry online from the bill page.</div>
+            )}
+            <div className="flex flex-col gap-2 pt-2">
+              {(gatewayPaymentStatus === "failed" || gatewayPaymentStatus === "expired" || (gatewayPaymentStatus === "pending" && gatewayPaymentInfo)) && (
+                <Button
+                  variant="outline"
+                  className="w-full text-[#2563eb] border-[#2563eb]/40"
+                  onClick={handleGatewayChangePaymentMode}
+                >
+                  Change payment mode — collect Cash/UPI on bill
+                </Button>
+              )}
+              <div className="flex gap-2">
               <Button variant="outline" className="flex-1" onClick={() => setGatewayModalOpen(false)}>Close</Button>
               {gatewayPaymentStatus === "pending" && (
                 <Button
@@ -3101,6 +3538,7 @@ export default function BillingDesk() {
                   Check Status
                 </Button>
               )}
+              </div>
             </div>
           </div>
         </DialogContent>
@@ -3115,18 +3553,36 @@ export default function BillingDesk() {
               Print Preview
               <div className="ml-auto flex gap-2">
                 <Button size="sm" variant="outline" onClick={() => setPrintPreviewOpen(false)}>Close</Button>
-                <Button size="sm" onClick={() => { printViaIframe(printPreviewHtml); setPrintPreviewOpen(false); }}>
+                <Button size="sm" onClick={() => { writeAndPrint(null, printPreviewHtml); setPrintPreviewOpen(false); }}>
                   <Printer size={14} className="mr-1" /> Print
                 </Button>
               </div>
             </DialogTitle>
           </DialogHeader>
-          <div className="flex-1 overflow-auto p-4 bg-gray-100 rounded-lg">
-            <iframe
-              title="Print Preview"
-              srcDoc={printPreviewHtml}
-              style={{ width: "100%", height: "100%", border: "1px solid #ddd", background: "#fff" }}
-            />
+          <div className="flex-1 overflow-auto p-4 bg-gray-100 rounded-lg flex items-start justify-center">
+            {(() => {
+              const previewBoxWidth = Math.min(720, Math.max(320, printPreviewPaperPx.w));
+              const previewScale = previewBoxWidth / printPreviewPaperPx.w;
+              const previewBoxHeight = Math.round(printPreviewPaperPx.h * previewScale);
+              return (
+                <div
+                  style={{ width: previewBoxWidth, height: previewBoxHeight, overflow: "hidden" }}
+                  className="border border-slate-300 bg-white shadow-sm"
+                >
+                  <iframe
+                    title="Print Preview"
+                    srcDoc={printPreviewHtml}
+                    style={{
+                      width: printPreviewPaperPx.w,
+                      height: printPreviewPaperPx.h,
+                      border: "none",
+                      transform: `scale(${previewScale})`,
+                      transformOrigin: "top left",
+                    }}
+                  />
+                </div>
+              );
+            })()}
           </div>
         </DialogContent>
       </Dialog>
@@ -3147,11 +3603,128 @@ type BillSearchResult = {
   phone: string | null;
 };
 
+type CollectBillTarget = {
+  id: number;
+  billNumber: string;
+  balanceAmount: number;
+  patientName?: string | null;
+};
+
+const AUTO_RESET_DELAY_KEY = "billingDeskAutoResetDelay";
+
+function readAutoResetDelayMs(): number | null {
+  if (typeof window === "undefined") return 3000;
+  const v = localStorage.getItem(AUTO_RESET_DELAY_KEY) ?? "3000";
+  if (v === "manual") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 3000;
+}
+
+function CollectPaymentDialog({
+  bill,
+  onClose,
+  onSuccess,
+}: {
+  bill: CollectBillTarget | null;
+  onClose: () => void;
+  onSuccess?: () => void;
+}) {
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const [collectAmount, setCollectAmount] = useState("");
+  const [collectMethod, setCollectMethod] = useState("cash");
+
+  useEffect(() => {
+    if (bill) {
+      setCollectAmount(String(bill.balanceAmount));
+      setCollectMethod("cash");
+    }
+  }, [bill]);
+
+  const collectMut = useMutation({
+    mutationFn: (body: { billId: number; amount: number; method: string }) =>
+      api.post("/api/payments", body),
+    onSuccess: () => {
+      toast({ title: "Payment recorded" });
+      queryClient.invalidateQueries({ queryKey: ["bill-search"] });
+      queryClient.invalidateQueries({ queryKey: ["today-collections-panel"] });
+      queryClient.invalidateQueries({ queryKey: ["bills"] });
+      queryClient.invalidateQueries({ queryKey: ["recent-bills-today"] });
+      onClose();
+      onSuccess?.();
+    },
+    onError: (err: Error) => {
+      toast({ title: "Payment failed", description: err.message, variant: "destructive" });
+    },
+  });
+
+  function submitCollect(e: React.FormEvent) {
+    e.preventDefault();
+    if (!bill) return;
+    const amount = Number(collectAmount);
+    if (!amount || amount <= 0 || amount > bill.balanceAmount) return;
+    collectMut.mutate({ billId: bill.id, amount, method: collectMethod });
+  }
+
+  return (
+    <Dialog open={!!bill} onOpenChange={(o) => { if (!o) onClose(); }}>
+      <DialogContent className="max-w-sm">
+        <DialogHeader>
+          <DialogTitle>Collect payment</DialogTitle>
+        </DialogHeader>
+        {bill && (
+          <form onSubmit={submitCollect} className="space-y-3">
+            <div className="text-sm">
+              <span className="font-mono font-bold text-primary">{bill.billNumber}</span>
+              {bill.patientName && (
+                <span className="text-muted-foreground"> · {bill.patientName}</span>
+              )}
+            </div>
+            <div>
+              <Label>Amount (₹)</Label>
+              <Input
+                type="number"
+                min={0.01}
+                max={bill.balanceAmount}
+                step="0.01"
+                value={collectAmount}
+                onChange={(e) => setCollectAmount(e.target.value)}
+                className="mt-1"
+              />
+              <p className="text-[10px] text-muted-foreground mt-1">Balance due: {inr(bill.balanceAmount)}</p>
+            </div>
+            <div>
+              <Label>Method</Label>
+              <Select value={collectMethod} onValueChange={setCollectMethod}>
+                <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {["cash", "upi", "card", "online", "insurance"].map((m) => (
+                    <SelectItem key={m} value={m} className="capitalize">{m.toUpperCase()}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex justify-end gap-2 pt-1">
+              <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
+              <Button type="submit" disabled={collectMut.isPending}>
+                {collectMut.isPending ? "Saving…" : "Record payment"}
+              </Button>
+            </div>
+          </form>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function BillSearchBox() {
   const [, navigate] = useLocation();
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
   const [q, setQ] = useState("");
   const [open, setOpen] = useState(false);
   const [dueOnly, setDueOnly] = useState(true);
+  const [collectBill, setCollectBill] = useState<CollectBillTarget | null>(null);
   const ref = useRef<HTMLDivElement>(null);
 
   const { data: results = [], isFetching } = useQuery<BillSearchResult[]>({
@@ -3160,6 +3733,16 @@ function BillSearchBox() {
     enabled: q.trim().length >= 2,
     staleTime: 5_000,
   });
+
+  function openCollectDialog(bill: BillSearchResult, e: React.MouseEvent) {
+    e.stopPropagation();
+    setCollectBill({
+      id: bill.id,
+      billNumber: bill.billNumber,
+      balanceAmount: bill.balanceAmount,
+      patientName: bill.patientName,
+    });
+  }
 
   useEffect(() => {
     function onClick(e: MouseEvent) {
@@ -3170,6 +3753,7 @@ function BillSearchBox() {
   }, []);
 
   return (
+    <>
     <div ref={ref} className="relative">
       <div className="relative">
         <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-900 dark:text-slate-900" />
@@ -3202,13 +3786,15 @@ function BillSearchBox() {
               <div className="px-4 py-6 text-xs text-slate-900 dark:text-slate-900 text-center">No bills found</div>
             ) : (
               results.map((r) => (
-                <button
+                <div
                   key={r.id}
-                  type="button"
-                  onClick={() => { setOpen(false); setQ(""); navigate(`/billing/${r.id}`); }}
-                  className="w-full text-left px-3 py-2 hover:bg-muted/50 transition-colors flex items-center gap-2"
+                  className="w-full px-3 py-2 hover:bg-muted/50 transition-colors flex items-center gap-2"
                 >
-                  <div className="flex-1 min-w-0">
+                  <button
+                    type="button"
+                    onClick={() => { setOpen(false); setQ(""); navigate(`/billing/${r.id}`); }}
+                    className="flex-1 min-w-0 text-left"
+                  >
                     <div className="flex items-center gap-2">
                       <span className="font-mono text-xs font-extrabold text-primary">{r.billNumber}</span>
                       {r.balanceAmount > 0 ? (
@@ -3221,20 +3807,48 @@ function BillSearchBox() {
                       {r.patientName ?? "—"}
                       <span className="text-slate-900 dark:text-slate-900"> · {r.patientId ?? ""} {r.phone ? `· ${r.phone}` : ""}</span>
                     </div>
-                  </div>
-                  <div className="text-right flex-shrink-0">
-                    <div className="text-xs text-slate-900 dark:text-slate-900">Total {inr(r.totalAmount)}</div>
-                    <div className={`text-sm font-extrabold ${r.balanceAmount > 0 ? "text-orange-900" : "text-green-600"}`}>
-                      Bal {inr(r.balanceAmount)}
+                    <div className="text-right mt-0.5">
+                      <span className="text-xs text-slate-900 dark:text-slate-900">Total {inr(r.totalAmount)} · </span>
+                      <span className={`text-sm font-extrabold ${r.balanceAmount > 0 ? "text-orange-900" : "text-green-600"}`}>
+                        Bal {inr(r.balanceAmount)}
+                      </span>
                     </div>
+                  </button>
+                  <div className="flex flex-col gap-1 flex-shrink-0">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="h-7 text-[10px] px-2"
+                      onClick={() => { setOpen(false); setQ(""); navigate(`/billing/${r.id}`); }}
+                    >
+                      Open
+                    </Button>
+                    {r.balanceAmount > 0 && r.status !== "cancelled" && (
+                      <Button
+                        type="button"
+                        size="sm"
+                        className="h-7 text-[10px] px-2 bg-orange-600 hover:bg-orange-700 text-white"
+                        onClick={(e) => openCollectDialog(r, e)}
+                      >
+                        Collect
+                      </Button>
+                    )}
                   </div>
-                </button>
+                </div>
               ))
             )}
           </div>
         </div>
       )}
     </div>
+
+    <CollectPaymentDialog
+      bill={collectBill}
+      onClose={() => setCollectBill(null)}
+      onSuccess={() => { setOpen(false); setQ(""); }}
+    />
+    </>
   );
 }
 
@@ -3244,6 +3858,7 @@ function BillSearchBox() {
 // ──────────────────────────────────────────────────────
 function TodayCollectionsPanel() {
   const [, navigate] = useLocation();
+  const [collectBill, setCollectBill] = useState<CollectBillTarget | null>(null);
   // toLocaleDateString('en-CA') gives ISO-like format in local timezone
   const todayIso = new Date().toLocaleDateString("en-CA");
   // Server-side filter by today's date so the panel reliably shows all bills
@@ -3288,16 +3903,19 @@ function TodayCollectionsPanel() {
           sorted.map((b) => {
             const due = b.balanceAmount > 0 && b.status !== "cancelled";
             const time = new Date(b.createdAt).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" });
+            const patientName = b.patient ? `${b.patient.firstName} ${b.patient.lastName}` : null;
             return (
-              <button
+              <div
                 key={b.id}
-                type="button"
-                onClick={() => navigate(`/billing/${b.id}`)}
-                className={`w-full text-left px-3 py-1.5 transition-colors flex items-center gap-2 ${
+                className={`w-full px-3 py-1.5 transition-colors flex items-center gap-2 ${
                   due ? "hover:bg-orange-50 dark:hover:bg-orange-950/20" : "hover:bg-muted/40"
                 }`}
               >
-                <div className="flex-1 min-w-0">
+                <button
+                  type="button"
+                  onClick={() => navigate(`/billing/${b.id}`)}
+                  className="flex-1 min-w-0 text-left"
+                >
                   <div className="flex items-center gap-1.5">
                     <span className="font-mono text-[10px] font-extrabold text-primary truncate">{b.billNumber}</span>
                     {due ? (
@@ -3307,19 +3925,46 @@ function TodayCollectionsPanel() {
                     )}
                   </div>
                   <div className="text-[10px] text-slate-900 dark:text-slate-900 truncate">
-                    {b.patient ? `${b.patient.firstName} ${b.patient.lastName}` : "—"}
+                    {patientName ?? "—"}
                   </div>
+                  <div className="text-right text-[10px] mt-0.5">
+                    <span className="text-slate-900 dark:text-slate-900">{inr(b.totalAmount)}</span>
+                    {due && <span className="font-extrabold text-orange-900 ml-1">Bal {inr(b.balanceAmount)}</span>}
+                    <span className="text-[9px] text-slate-900 dark:text-slate-900 tabular-nums ml-1">{time}</span>
+                  </div>
+                </button>
+                <div className="flex flex-col gap-1 flex-shrink-0">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="h-6 text-[9px] px-1.5"
+                    onClick={() => navigate(`/billing/${b.id}`)}
+                  >
+                    Open
+                  </Button>
+                  {due && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      className="h-6 text-[9px] px-1.5 bg-orange-600 hover:bg-orange-700 text-white"
+                      onClick={() => setCollectBill({
+                        id: b.id,
+                        billNumber: b.billNumber,
+                        balanceAmount: b.balanceAmount,
+                        patientName,
+                      })}
+                    >
+                      Collect
+                    </Button>
+                  )}
                 </div>
-                <div className="text-right flex-shrink-0 text-[10px]">
-                  <div className="text-slate-900 dark:text-slate-900">{inr(b.totalAmount)}</div>
-                  {due && <div className="font-extrabold text-orange-900">Bal {inr(b.balanceAmount)}</div>}
-                  <div className="text-[9px] text-slate-900 dark:text-slate-900 tabular-nums">{time}</div>
-                </div>
-              </button>
+              </div>
             );
           })
         )}
       </div>
+      <CollectPaymentDialog bill={collectBill} onClose={() => setCollectBill(null)} />
     </div>
   );
 }

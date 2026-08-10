@@ -14,6 +14,23 @@ import {
 } from "@/components/ui/select";
 import { fetchApi, api } from "@/lib/fetchApi";
 import { writeStaffSession, firstPermissionedPath, firstAllowedPath, canAccess, normalizeRole, type StaffSession as ErpStaffSession } from "@/lib/staffSession";
+import { InstallAppHint } from "@/components/InstallAppHint";
+import { StaffLanLoginShortcuts } from "@/components/StaffLanLoginShortcuts";
+
+/**
+ * Portal routes for wouter. In production the App router already has base=/erp,
+ * so paths must be "/login", "/portal/staff-login", etc. — never "/erp/login"
+ * or navigation becomes /erp/erp/login in the browser (broken login on LAN).
+ * In dev (BASE_URL=/), the /erp/* route aliases in App.tsx still apply.
+ */
+function portalRoute(path: string): string {
+  const normalized = path.startsWith("/") ? path : `/${path}`;
+  const base = String((import.meta as { env: { BASE_URL?: string } }).env.BASE_URL || "/").replace(/\/$/, "");
+  if (!base || base === "/") {
+    return normalized.startsWith("/erp") ? normalized : `/erp${normalized}`;
+  }
+  return normalized;
+}
 
 // =====================================================================
 // Types
@@ -238,27 +255,40 @@ function PortalLanding() {
 
   // Auto-redirect if already logged in as patient
   useEffect(() => {
-    if (readPatientSession()) navigate(window.location.pathname.startsWith("/erp") ? "/erp/portal/patient" : "/portal/patient");
+    if (readPatientSession()) navigate(portalRoute("/portal/patient"));
   }, [navigate]);
 
   if (isLoading) return <CenteredSpinner />;
 
   if (!settings?.enabled) {
+    // Keep the landing art fully visible — login lives as small corner tabs
+    // instead of a centered "Portal Not Available" modal that covers the page.
     return (
-      <div className="min-h-screen flex items-center justify-center p-4">
-        <div className="bg-white dark:bg-slate-900 border rounded-2xl p-8 max-w-md text-center shadow-lg">
-          <AlertCircle size={48} className="mx-auto text-amber-500 mb-3" />
-          <h1 className="text-xl font-bold mb-2">Portal Not Available</h1>
-          <p className="text-muted-foreground text-sm">
-            The patient portal is currently disabled. Please contact reception for assistance.
+      <div className="min-h-screen relative" data-testid="portal-disabled-landing">
+        <div className="fixed bottom-4 right-4 z-30 flex flex-col items-end gap-1.5 max-w-[min(100vw-2rem,16rem)]">
+          <p className="text-[10px] font-medium text-white/95 drop-shadow-sm bg-black/45 px-2 py-0.5 rounded-md backdrop-blur-sm">
+            * Portal for Patient NA
           </p>
-          <div className="mt-5 flex gap-2 justify-center">
-            <Button asChild>
-              <Link to={window.location.pathname.startsWith("/erp") ? "/erp/portal/patient-login" : "/portal/patient-login"}>Patient Login</Link>
-            </Button>
-            <Button variant="outline" asChild>
-              <Link to={window.location.pathname.startsWith("/erp") ? "/erp/portal/staff-login" : "/portal/staff-login"}>Staff Login</Link>
-            </Button>
+          <div
+            className="flex overflow-hidden rounded-lg border border-white/40 bg-white/95 dark:bg-slate-900/95 shadow-lg backdrop-blur-sm"
+            role="tablist"
+            aria-label="Portal login"
+          >
+            <Link
+              href={portalRoute("/portal/patient-login")}
+              className="px-3.5 py-2 text-xs font-semibold text-primary hover:bg-primary/10 transition-colors"
+              data-testid="portal-tab-patient"
+            >
+              Patient Login
+            </Link>
+            <div className="w-px bg-border self-stretch" aria-hidden />
+            <Link
+              href={portalRoute("/portal/staff-login")}
+              className="px-3.5 py-2 text-xs font-semibold text-foreground hover:bg-muted/80 transition-colors"
+              data-testid="portal-tab-staff"
+            >
+              Staff Login
+            </Link>
           </div>
         </div>
       </div>
@@ -270,7 +300,6 @@ function PortalLanding() {
   // (sticky strip at top) is reused on the inner login screens but the
   // landing page now leads with a hero block.
   const clinicName = settings.heading || settings.centerName || "Patient Portal";
-  const pathPrefix = window.location.pathname.startsWith("/erp") ? "/erp" : "";
 
   return (
     <>
@@ -302,7 +331,7 @@ function PortalLanding() {
         <div className="grid md:grid-cols-2 gap-5 max-w-3xl mx-auto">
           <button
             type="button"
-            onClick={() => navigate(`${pathPrefix}/portal/patient-login`)}
+            onClick={() => navigate(portalRoute("/portal/patient-login"))}
             className="group bg-white dark:bg-slate-900 border-2 border-slate-200 dark:border-slate-700 hover:border-blue-500 dark:hover:border-blue-400 rounded-2xl p-6 text-left shadow-sm hover:shadow-xl transition-all"
           >
             <div className="h-11 w-11 rounded-xl bg-blue-100 dark:bg-blue-950 group-hover:bg-blue-500 flex items-center justify-center mb-3 transition-colors">
@@ -319,7 +348,7 @@ function PortalLanding() {
 
           <button
             type="button"
-            onClick={() => navigate(`${pathPrefix}/portal/staff-login`)}
+            onClick={() => navigate(portalRoute("/portal/staff-login"))}
             className="group bg-white dark:bg-slate-900 border-2 border-slate-200 dark:border-slate-700 hover:border-indigo-500 dark:hover:border-indigo-400 rounded-2xl p-6 text-left shadow-sm hover:shadow-xl transition-all"
           >
             <div className="h-11 w-11 rounded-xl bg-indigo-100 dark:bg-indigo-950 group-hover:bg-indigo-500 flex items-center justify-center mb-3 transition-colors">
@@ -384,14 +413,12 @@ function PatientLogin() {
     queryFn: () => api.get("/api/portal/settings"),
   });
 
-  const isErp = window.location.pathname.startsWith("/erp");
-
   const login = useMutation({
     mutationFn: (body: { phone: string; dateOfBirth: string }) =>
       api.post<PatientSession>("/api/portal/patient-login", body),
     onSuccess: (s) => {
       localStorage.setItem(PATIENT_KEY, JSON.stringify(s));
-      navigate(isErp ? "/erp/portal/patient" : "/portal/patient");
+      navigate(portalRoute("/portal/patient"));
     },
     onError: (e: Error) => setError(e.message),
   });
@@ -403,7 +430,7 @@ function PatientLogin() {
       <PortalHeader
         settings={settings}
         right={
-          <Link href={isErp ? "/erp/portal" : "/portal"} className="text-sm text-muted-foreground hover:text-foreground inline-flex items-center gap-1">
+          <Link href={portalRoute("/portal")} className="text-sm text-muted-foreground hover:text-foreground inline-flex items-center gap-1">
             <ArrowLeft size={14} /> Back
           </Link>
         }
@@ -587,7 +614,7 @@ function StaffLogin() {
       <PortalHeader
         settings={settings}
         right={
-          <Link href={window.location.pathname.startsWith("/erp") ? "/erp/portal" : "/portal"} className="text-sm text-muted-foreground hover:text-foreground inline-flex items-center gap-1">
+          <Link href={portalRoute("/portal")} className="text-sm text-muted-foreground hover:text-foreground inline-flex items-center gap-1">
             <ArrowLeft size={14} /> Back
           </Link>
         }
@@ -601,6 +628,8 @@ function StaffLogin() {
           <p className="text-muted-foreground text-sm text-center mb-6">
             Sign in with your username and PIN.
           </p>
+
+          <StaffLanLoginShortcuts />
 
           <form
             onSubmit={(e) => { e.preventDefault(); setError(""); login.mutate({ username: username.trim().toLowerCase(), pin: pin.trim() }); }}
@@ -670,6 +699,8 @@ function StaffLogin() {
           <p className="text-xs text-muted-foreground text-center mt-6">
             Forgot your PIN? Please contact your administrator.
           </p>
+
+          <InstallAppHint />
         </div>
       </div>
       {/* Version footer */}

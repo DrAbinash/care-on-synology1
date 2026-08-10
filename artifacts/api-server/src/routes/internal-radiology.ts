@@ -46,7 +46,10 @@ import { isUltrasoundModality, isObstetricUsgStudy } from "../lib/usgModality";
 import { checkPcpndtFormFCompliance, PCPNDT_OVERRIDE_ROLES } from "../lib/pcpndtCompliance";
 import { auditLog } from "../lib/audit";
 import { calculateMatchScore, type DicomInput, type BilledTestInput } from "../lib/pacs/matchingEngine";
+import { formatDicomPersonNameForDisplay } from "../lib/pacs/dicomNameNormalize";
 import { shouldFallbackToAccessionLookup, isWorklistUidRaceViolation } from "../lib/radiologyWorklistDedup";
+import { radiologyOpenFallbackPath, resolveRadiologyOpen } from "../lib/resolveRadiologyOpen";
+import { runDicomIntakeAutomation } from "../lib/pacs/dicomIntakeAutomation";
 
 export async function runMatchingEngineForWorklist(worklistId: number): Promise<void> {
   const [row] = await db
@@ -78,6 +81,7 @@ export async function runMatchingEngineForWorklist(worklistId: number): Promise<
       modality: radiologyStudiesTable.modality,
       studyDescription: radiologyStudiesTable.studyDescription,
       studyDate: radiologyStudiesTable.studyDate,
+      referringDoctor: radiologyStudiesTable.referringDoctor,
       patientName: sql<string>`concat(${patientsTable.firstName}, ' ', ${patientsTable.lastName})`,
       patientUHID: patientsTable.patientId,
       age: sql<string>`concat(${patientsTable.ageValue}, ' ', ${patientsTable.ageUnit})`,
@@ -131,6 +135,7 @@ export async function runMatchingEngineForWorklist(worklistId: number): Promise<
     accessionNumber: study.accessionNumber,
     billNumber: study.billNumber,
     studyDate: study.studyDate,
+    referringDoctor: study.referringDoctor,
   };
 
   const matchResult = calculateMatchScore(dicomInput, billInput);
@@ -408,7 +413,10 @@ router.post("/radiology/studies", async (req, res) => {
 
     const rawStudyId = b.studyId;
     const patientId = (b.patientId !== undefined ? String(b.patientId) : "") || (b.PatientID !== undefined ? String(b.PatientID) : "");
-    const patientName = typeof b.patientName === "string" ? b.patientName.trim() : (typeof b.PatientName === "string" ? b.PatientName.trim() : "");
+    // Clean DICOM PN syntax (LAST^FIRST^^^MD → "First Last, MD") so worklist
+    // display and the billing match engine see the same readable form.
+    const patientNameRaw = typeof b.patientName === "string" ? b.patientName.trim() : (typeof b.PatientName === "string" ? b.PatientName.trim() : "");
+    const patientName = formatDicomPersonNameForDisplay(patientNameRaw) || patientNameRaw;
     const age = typeof b.age === "string" ? b.age.trim() || null : null;
     const sex = typeof b.sex === "string" ? b.sex.trim() || null : null;
     const modality = typeof b.modality === "string" ? b.modality.trim() || "OT" : (typeof b.ModalitiesInStudy === "string" ? b.ModalitiesInStudy.trim() || "OT" : "OT");
@@ -426,7 +434,10 @@ router.post("/radiology/studies", async (req, res) => {
     const aeTitle = typeof b.aeTitle === "string" ? b.aeTitle.trim() || null : null;
     const ipAddress = typeof b.ipAddress === "string" ? b.ipAddress.trim() || null : null;
     const port = typeof b.port === "number" ? b.port : null;
-    const referringDoctor = typeof b.referringDoctor === "string" ? b.referringDoctor.trim() || null : null;
+    const referringDoctorRaw = typeof b.referringDoctor === "string" ? b.referringDoctor.trim() || null : null;
+    const referringDoctor = referringDoctorRaw
+      ? (formatDicomPersonNameForDisplay(referringDoctorRaw) || referringDoctorRaw)
+      : null;
     const weasisUrl = typeof b.weasisUrl === "string" ? b.weasisUrl.trim() || null : null;
     const sourcePacs = typeof b.sourcePacs === "string" ? b.sourcePacs.trim() || null : null;
     const sourceAeTitle = typeof b.sourceAeTitle === "string" ? b.sourceAeTitle.trim() || null : null;
@@ -512,6 +523,10 @@ router.post("/radiology/studies", async (req, res) => {
       patientId: radiologyStudiesTable.patientId,
       studyDate: radiologyStudiesTable.studyDate,
       bodyPart: radiologyStudiesTable.bodyPart,
+      orderTestId: radiologyStudiesTable.orderTestId,
+      billId: radiologyStudiesTable.billId,
+      department: radiologyStudiesTable.department,
+      startedAt: radiologyStudiesTable.startedAt,
     };
 
     let rStudy: any = undefined;
@@ -602,6 +617,7 @@ router.post("/radiology/studies", async (req, res) => {
     }
 
     let resolvedStudyId: number | null = rStudy ? rStudy.id : null;
+    const previousStudyStatus: string | null = rStudy?.status ?? null;
 
     if (rStudy) {
       const updates: Partial<typeof radiologyStudiesTable.$inferInsert> = {
@@ -609,6 +625,10 @@ router.post("/radiology/studies", async (req, res) => {
         status: "acquired",
         acquiredAt: new Date(),
       };
+
+      if (!rStudy.startedAt && rStudy.status === "scheduled") {
+        updates.startedAt = new Date();
+      }
 
       if (studyInstanceUID && !rStudy.studyInstanceUid) {
         updates.studyInstanceUid = studyInstanceUID;
@@ -811,6 +831,20 @@ router.post("/radiology/studies", async (req, res) => {
       logger.error({ err: matchErr, worklistId: row.id }, "Intake matching engine execution failed");
     }
 
+    // Wire Orthanc arrival → queue token done + MWL cleanup + live UI refresh
+    if (rStudy) {
+      runDicomIntakeAutomation({
+        worklistId: row.id,
+        accessionNumber: rStudy.accessionNumber || accessionNumber,
+        orderTestId: rStudy.orderTestId,
+        billId: rStudy.billId,
+        department: rStudy.department,
+        previousStudyStatus,
+      }).catch((err: unknown) => {
+        logger.warn({ err, worklistId: row.id }, "dicom-intake automation failed silently");
+      });
+    }
+
     logger.info({ worklistId: row.id, accessionNumber }, "POST /api/internal/radiology/studies success");
     res.status(201).json({ success: true, worklistId: row.id });
     return;
@@ -839,6 +873,9 @@ router.post("/radiology/report-status", async (req, res) => {
     // REPORT_FINAL compliance gate below.
     pcpndtOverride?: boolean;
     pcpndtOverrideReason?: string;
+    /** Admin-only: allow REPORT_FINAL without a signed patient report row. */
+    softFinalOverride?: boolean;
+    softFinalReason?: string;
   };
 
   // Find worklist row
@@ -868,6 +905,45 @@ router.post("/radiology/report-status", async (req, res) => {
   if (!existing) {
     res.status(404).json({ error: "Worklist entry not found" });
     return;
+  }
+
+  // Soft Final (status-only REPORT_FINAL without a signed patient report) is
+  // admin/owner override only — radiologists must use workspace Finalize & Sign.
+  // Canonical finalizeRadiologyReport always sets deliveryStatus READY_TO_SEND
+  // (even when the patient-report row is skipped for unbilled studies).
+  // INTERNAL_API_KEY automation (no staffSession) is unchanged.
+  const ADMIN_SOFT_FINAL_ROLES = new Set(["admin", "super_admin", "owner"]);
+  const isCanonicalFinalize = b.deliveryStatus === "READY_TO_SEND";
+  if (
+    b.status === "REPORT_FINAL" &&
+    !b.reportId &&
+    !isCanonicalFinalize &&
+    (req as StaffAuthRequest).staffSession
+  ) {
+    const sessionRole = normalizeRole((req as StaffAuthRequest).staffSession?.role ?? "");
+    const softOverride = b.softFinalOverride === true;
+    if (!softOverride || !ADMIN_SOFT_FINAL_ROLES.has(sessionRole)) {
+      res.status(409).json({
+        error: "SOFT_FINAL_BLOCKED",
+        message:
+          "Marking a study Final without a signed report is blocked. Open the Reporting Workspace and use Finalize & Sign, or use Admin mark final with a reason.",
+      });
+      return;
+    }
+    const session = (req as StaffAuthRequest).staffSession;
+    await auditLog({
+      userId: session?.subjectId ?? null,
+      userName: session?.subjectName ?? "system",
+      role: sessionRole || "system",
+      action: "soft_final_override",
+      module: "radiology",
+      entityType: "radiology_worklist",
+      entityId: String(existing.id),
+      newValue: JSON.stringify({ accessionNumber: existing.accessionNumber }),
+      reason: typeof b.softFinalReason === "string" && b.softFinalReason.trim().length >= 3
+        ? b.softFinalReason.trim()
+        : "admin soft final (no signed reportId)",
+    });
   }
 
   // PCPNDT server-side finalize guard. The canonical Radiology Reporting
@@ -1478,12 +1554,76 @@ router.get("/radiology/worklist", async (req, res) => {
   res.json(rows);
 });
 
+// GET /api/internal/radiology/resolve-open?orderId=&patientId=&modality=&patientName=
+// Deep-link helper for Hope (and other partners): map a CARE order/patient to
+// the Reporting Workspace worklist id. Falls back to a filtered worklist path
+// when the MRI/study has not arrived in PACS yet.
+router.get("/radiology/resolve-open", async (req, res) => {
+  const orderIdRaw = req.query.orderId;
+  const patientIdRaw = req.query.patientId;
+  const modality = typeof req.query.modality === "string" ? req.query.modality : null;
+  const patientName = typeof req.query.patientName === "string" ? req.query.patientName : null;
+
+  const orderId = orderIdRaw != null && orderIdRaw !== "" ? Number(orderIdRaw) : null;
+  const patientId = patientIdRaw != null && patientIdRaw !== "" ? Number(patientIdRaw) : null;
+
+  if ((orderId == null || !Number.isFinite(orderId)) && (patientId == null || !Number.isFinite(patientId))) {
+    res.status(400).json({
+      error: "Provide orderId and/or patientId",
+      fallbackPath: radiologyOpenFallbackPath({ modality, patientName }),
+    });
+    return;
+  }
+
+  try {
+    const target = await resolveRadiologyOpen({
+      orderId: orderId != null && Number.isFinite(orderId) ? orderId : null,
+      patientId: patientId != null && Number.isFinite(patientId) ? patientId : null,
+      modality,
+    });
+
+    if (!target) {
+      res.status(404).json({
+        error: "No radiology study ready for reporting yet",
+        fallbackPath: radiologyOpenFallbackPath({ modality, patientName }),
+      });
+      return;
+    }
+
+    res.json({
+      ...target,
+      reportPath: `/radiology/report/${target.worklistId}`,
+      fallbackPath: radiologyOpenFallbackPath({ modality: target.modality || modality, patientName }),
+    });
+  } catch (err) {
+    logger.error({ err, orderId, patientId, modality }, "resolve-open failed");
+    res.status(500).json({
+      error: "Failed to resolve radiology open target",
+      fallbackPath: radiologyOpenFallbackPath({ modality, patientName }),
+    });
+  }
+});
+
 // GET /api/internal/radiology/worklist/:id
 router.get("/radiology/worklist/:id", async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) { res.status(400).json({ error: "Invalid id" }); return; }
-  const [row] = await db.select().from(radiologyWorklistTable).where(eq(radiologyWorklistTable.id, id));
+  let [row] = await db.select().from(radiologyWorklistTable).where(eq(radiologyWorklistTable.id, id));
   if (!row) { res.status(404).json({ error: "Not found" }); return; }
+
+  let autoLinkMeta: { linked: boolean; studyId?: number; matchPoints?: number; matchScore?: string; reason?: string } | null = null;
+  if (row.patientId && !row.studyId) {
+    try {
+      const { autoLinkBilledStudyForWorklist } = await import("../lib/pacs/worklistBillingLink");
+      const link = await autoLinkBilledStudyForWorklist(id, "worklist-entry-load");
+      autoLinkMeta = link;
+      if (link.linked && link.studyId) {
+        row = { ...row, studyId: link.studyId };
+      }
+    } catch {
+      /* non-blocking */
+    }
+  }
 
   let pacsArchiveStatus = "none";
   let pacsArchiveResponse = null;
@@ -1537,6 +1677,7 @@ router.get("/radiology/worklist/:id", async (req, res) => {
     priority,
     billNumber,
     uhid,
+    autoLinkMeta,
   });
 });
 

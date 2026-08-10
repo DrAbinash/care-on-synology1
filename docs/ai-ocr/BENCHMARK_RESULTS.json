@@ -1,0 +1,33 @@
+{
+  "generatedAt": "2026-07-29T17:20:07Z",
+  "environment": "cloud-agent-linux-cpu (no RTX 3050 / no local Ollama)",
+  "note": "No accuracy % invented. Clean printed synthetic non-PHI sample. Gemma timings not run \u2014 Ollama unavailable in this environment.",
+  "results": [
+    {
+      "sample": "clean-printed-id.png",
+      "engine": "paddle",
+      "profile": "fast",
+      "ocrMs": 304.5,
+      "meanConfidence": 0.9936317669020759,
+      "pathUsed": "paddle:fast",
+      "empty": false,
+      "device": "cpu",
+      "charCount": 202,
+      "ok": true
+    },
+    {
+      "sample": "clean-printed-id.png",
+      "engine": "paddle",
+      "profile": "accurate",
+      "ocrMs": 1219.1,
+      "meanConfidence": 0.9944109982914395,
+      "pathUsed": "paddle:accurate",
+      "empty": false,
+      "device": "cpu",
+      "charCount": 202,
+      "ok": true
+    }
+  ],
+  "ollama": "unavailable",
+  "gpu": "cpu-only paddle (gpu_available=false)"
+}

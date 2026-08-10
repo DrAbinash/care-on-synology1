@@ -71,6 +71,81 @@ const SECTION_LABELS: Record<string, string> = {
   receptionist: "Receptionist",
 };
 
+/** Admin diagnostics for PaddleOCR worker + Ollama (staff-auth API). */
+function PipelineDiagnosticsPanel() {
+  const { toast } = useToast();
+  const [busy, setBusy] = useState(false);
+  const [health, setHealth] = useState<Record<string, unknown> | null>(null);
+  const [testOut, setTestOut] = useState<Record<string, unknown> | null>(null);
+
+  const refresh = async () => {
+    setBusy(true);
+    try {
+      const h = await api.get<Record<string, unknown>>("/api/ai-pipeline/health");
+      setHealth(h);
+    } catch (e) {
+      toast({ title: "Pipeline health failed", description: String(e), variant: "destructive" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const runTest = async () => {
+    setBusy(true);
+    try {
+      const r = await api.post<Record<string, unknown>>("/api/ai-pipeline/test", { dryRun: true, mode: "OCR_ONLY" });
+      setTestOut(r);
+      toast({ title: "Pipeline test complete", description: "Non-PHI OCR-only dry run" });
+    } catch (e) {
+      toast({ title: "Pipeline test failed", description: String(e), variant: "destructive" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const ollama = (health?.ollama ?? null) as { reachable?: boolean; installedModels?: string[]; selected?: Record<string, string> } | null;
+  const paddle = (health?.paddle ?? null) as {
+    ok?: boolean; paddle_loaded?: boolean; device_actual?: string; gpu_available?: boolean;
+    profiles_ready?: string[]; active_jobs?: number; last_error?: string | null;
+  } | null;
+
+  return (
+    <div className="rounded-lg border bg-muted/20 p-3 space-y-2">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-xs font-semibold">OCR / AI Pipeline Diagnostics</p>
+        <div className="flex gap-1.5">
+          <Button type="button" size="sm" variant="outline" className="h-7 text-[10px]" disabled={busy} onClick={() => void refresh()}>
+            {busy ? <RefreshCw size={10} className="animate-spin" /> : <Wifi size={10} />} Refresh
+          </Button>
+          <Button type="button" size="sm" variant="outline" className="h-7 text-[10px]" disabled={busy} onClick={() => void runTest()}>
+            <TestTube2 size={10} /> Test (OCR only)
+          </Button>
+        </div>
+      </div>
+      {health && (
+        <div className="grid grid-cols-2 gap-2 text-[10px]">
+          <div className={`rounded border px-2 py-1.5 ${ollama?.reachable ? "border-green-300 bg-green-50 dark:bg-green-950/20" : "border-red-300 bg-red-50 dark:bg-red-950/20"}`}>
+            <p className="font-semibold">Ollama</p>
+            <p>{ollama?.reachable ? "reachable" : "unreachable"} · {(ollama?.installedModels ?? []).length} models</p>
+            <p className="font-mono truncate">std: {ollama?.selected?.standard ?? "—"}</p>
+          </div>
+          <div className={`rounded border px-2 py-1.5 ${paddle?.ok ? "border-green-300 bg-green-50 dark:bg-green-950/20" : "border-amber-300 bg-amber-50 dark:bg-amber-950/20"}`}>
+            <p className="font-semibold">PaddleOCR worker</p>
+            <p>{paddle?.paddle_loaded ? "loaded" : "not loaded"} · device {paddle?.device_actual ?? "?"}</p>
+            <p>GPU {paddle?.gpu_available ? "yes" : "no"} · jobs {paddle?.active_jobs ?? 0}</p>
+          </div>
+        </div>
+      )}
+      {testOut && (
+        <pre className="text-[10px] bg-background border rounded p-2 overflow-auto max-h-40">{JSON.stringify(testOut, null, 2)}</pre>
+      )}
+      <p className="text-[10px] text-muted-foreground">
+        AI drafts are never final medical reports — radiologist approval required. Set OCR_WORKER_URL on the Synology API to the Windows PC (:8090).
+      </p>
+    </div>
+  );
+}
+
 // ─── ProviderCard ─────────────────────────────────────────────────────────────
 function ProviderCard({
   name,
@@ -236,7 +311,7 @@ export function AiReportingPanel() {
   const [localAi, setLocalAi] = useState({
     primaryUrl: "http://192.168.1.250:11434",
     fallbackUrl: "http://172.16.1.140:11434",
-    model: "medgemma:27b",
+    model: "gemma3:4b",
     enabled: false,
     localOnly: true,
     timeoutSeconds: 30,
@@ -252,7 +327,7 @@ export function AiReportingPanel() {
     setLocalAiProbing(true);
     try {
       const r = await api.post<{ results: { url: string; reachable: boolean }[]; recommendedUrl: string | null }>(
-        "/api/radiology/ollama/probe", {}
+        "/api/radiology-ollama/probe", {}
       );
       setLocalAiProbeResult(r.results);
       if (r.recommendedUrl) {
@@ -269,7 +344,7 @@ export function AiReportingPanel() {
     setLocalAiTestStatus("testing"); setLocalAiTestMsg("");
     try {
       const r = await api.post<{ ok: boolean; error?: string; models?: string[] }>(
-        "/api/radiology/ollama/test",
+        "/api/radiology-ollama/test",
         { baseUrl: localAi.primaryUrl, model: localAi.model, allowLocal: localAi.localOnly }
       );
       if (r.ok) {
@@ -654,17 +729,37 @@ export function AiReportingPanel() {
 
             <div className="space-y-1.5">
               <label className="text-xs font-semibold text-muted-foreground">Default Model</label>
+              <select
+                value={localAi.model}
+                onChange={(e) => setLocalAi((s) => ({ ...s, model: e.target.value }))}
+                className="w-full h-9 px-3 text-xs rounded-lg border bg-background font-mono"
+              >
+                <option value="gemma3:4b">gemma3:4b — routine FAST/STANDARD (recommended)</option>
+                <option value="gemma3:12b">gemma3:12b — DEEP only (slower on RTX 3050 8GB)</option>
+                <option value="qwen3:14b">qwen3:14b — approved alternate</option>
+                <option value="gpt-oss:20b">gpt-oss:20b — approved alternate</option>
+              </select>
               <input
                 type="text"
                 value={localAi.model}
                 onChange={(e) => setLocalAi((s) => ({ ...s, model: e.target.value }))}
-                placeholder="medgemma:27b"
+                placeholder="gemma3:4b"
                 className="w-full h-9 px-3 text-xs rounded-lg border bg-background font-mono"
               />
+              {/12b|14b|20b|27b|70b/i.test(localAi.model) && (
+                <p className="text-[10px] text-amber-700 dark:text-amber-400 flex items-start gap-1">
+                  <AlertTriangle size={11} className="mt-0.5 shrink-0" />
+                  Large models may be slow or OOM on RTX 3050 8 GB. Prefer gemma3:4b for routine OCR cleanup and drafting. AI output is always a DRAFT requiring radiologist approval.
+                </p>
+              )}
               <p className="text-[10px] text-muted-foreground">
-                Recommended: <code className="bg-muted px-1 rounded">medgemma:27b</code> (best medical) · <code className="bg-muted px-1 rounded">gemma4:12b</code> (faster) · <code className="bg-muted px-1 rounded">qwen3:14b</code> (formatting)
+                Modes: AUTO / FAST / STANDARD use <code className="bg-muted px-1 rounded">gemma3:4b</code>.
+                DEEP uses <code className="bg-muted px-1 rounded">gemma3:12b</code> (explicit only).
+                OCR ONLY skips the LLM. Pipeline diagnostics: <code className="bg-muted px-1 rounded">GET /api/ai-pipeline/health</code>
               </p>
             </div>
+
+            <PipelineDiagnosticsPanel />
 
             <div className="space-y-1.5">
               <label className="text-xs font-semibold text-muted-foreground flex items-center gap-1"><Gauge size={11} /> Timeout: {localAi.timeoutSeconds}s</label>

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import QRCode from "qrcode";
 import { Link, useLocation } from "wouter";
 import { useGetBill, useCreatePayment, getGetBillQueryKey, getListBillsQueryKey, useListTests } from "@workspace/api-client-react";
@@ -15,14 +15,16 @@ import {
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
-import { ArrowLeft, Plus, Pencil, History, Clock, ShieldAlert, Trash2, AlertTriangle, ExternalLink, Printer, Ban, Undo2, XCircle, AlertCircle, Search, X, CheckSquare, Square, RotateCcw, Stethoscope } from "lucide-react";
+import { ArrowLeft, Plus, Pencil, History, Clock, ShieldAlert, Trash2, AlertTriangle, Printer, Ban, Undo2, XCircle, AlertCircle, Search, X, CheckSquare, Square, RotateCcw, Stethoscope } from "lucide-react";
 import { useForm } from "react-hook-form";
 import { useSuperAdmin, getSuperAdminToken } from "@/hooks/useSuperAdmin";
+import { getStoredUsbKey, onUsbKeyChange } from "@/lib/usbKey";
 import { readStaffSession, hasSubPermission } from "@/lib/staffSession";
 import { useToast } from "@/hooks/use-toast";
 import { getAutoBillPaperSize, getBillPaperSize, getBillPrintLayout, getLayoutStyles, setBillPaperSize } from "@/lib/billPrintLayout";
 import {
   buildBillPrintHtml,
+  buildBillVerifyUrl,
   openBlankPrintWindow,
   writeAndPrint,
   printViaIframe,
@@ -33,6 +35,8 @@ import {
   loadBillPrintSettings,
   parseGlobalBillPrintSettings,
   printLayoutOpts,
+  applyManualBillPaperOverride,
+  resolveBillPrintPageOpts,
   type BillPrintSettings,
 } from "@/lib/billPrintSettings";
 
@@ -65,6 +69,7 @@ type DeleteForm = {
 type CancelForm = {
   performedBy: string;
   reason: string;
+  autoRefund?: { method: string };
 };
 
 type RefundForm = {
@@ -186,12 +191,12 @@ export default function BillDetail({ id }: { id: number }) {
   const ls = getLayoutStyles(billPrintLayout);
   const queryClient = useQueryClient();
   const superAdmin = useSuperAdmin();
+  const [usbKeyPresent, setUsbKeyPresent] = useState(() => getStoredUsbKey() !== null);
+  const showSuperAdminActions = superAdmin.isActive && usbKeyPresent;
 
   useEffect(() => {
-    if (paperMode === "manual") setBillPaperSize(paperSize);
-  }, [paperMode, paperSize]);
-  const autoPaperSize = getAutoBillPaperSize((bill?.order?.tests?.length ?? 0), paperMode === "manual" ? paperSize : undefined);
-  const effectivePaperSize = paperMode === "manual" ? paperSize : autoPaperSize;
+    return onUsbKeyChange(() => setUsbKeyPresent(getStoredUsbKey() !== null));
+  }, []);
 
   // Clinic settings for the printed receipt header
   const { data: clinic } = useQuery<{
@@ -209,6 +214,29 @@ export default function BillDetail({ id }: { id: number }) {
     staleTime: 5 * 60_000,
   });
 
+  const billPrintSettings = useMemo(
+    () => loadBillPrintSettings(parseGlobalBillPrintSettings(clinic?.billPrintSettingsJson)),
+    [clinic?.billPrintSettingsJson],
+  );
+  const paperLocked = billPrintSettings.adminLock === true;
+
+  useEffect(() => {
+    if (paperLocked) {
+      setPaperMode("auto");
+      return;
+    }
+    if (paperMode === "manual") setBillPaperSize(paperSize);
+  }, [paperLocked, paperMode, paperSize]);
+  const autoPaperSize = getAutoBillPaperSize((bill?.order?.tests?.length ?? 0), paperMode === "manual" && !paperLocked ? paperSize : undefined);
+  const effectivePaperSize = paperMode === "manual" && !paperLocked ? paperSize : autoPaperSize;
+
+  const { data: clinicPolicy } = useQuery<{ cancelRequiresRefund?: boolean }>({
+    queryKey: ["clinic-settings-policy"],
+    queryFn: () => api.get("/api/clinic-settings"),
+    staleTime: 60_000,
+  });
+  const cancelRequiresRefund = clinicPolicy?.cancelRequiresRefund === true;
+
   const { data: printerSettings } = useQuery<{ billPrinterType?: string }>({
     queryKey: ["printer-settings"],
     queryFn: () => api.get("/api/printers/settings"),
@@ -224,19 +252,20 @@ export default function BillDetail({ id }: { id: number }) {
 
   // Inline QR for the printed receipt — shares the same encoding as
   // BillingDesk so the verify URL stays consistent across surfaces.
-  const buildBillVerifyUrl = (billNumber: string) =>
-    // Public api-server route — works in dev (proxied /api) and production
-    // (unified serve). See artifacts/api-server/src/routes/verify.ts.
-    `${window.location.origin}/api/verify/bill/${encodeURIComponent(billNumber)}`;
-
   // Real scannable QR (PNG data URL) generated via the qrcode library
-  // when the bill loads. Empty string until generation completes; the
-  // <img> below skips rendering until the data URL is ready.
+  // when the bill loads. Empty string until generation completes.
   const [billQrDataUrl, setBillQrDataUrl] = useState<string>("");
   useEffect(() => {
     if (!bill?.billNumber) { setBillQrDataUrl(""); return; }
     let cancelled = false;
-    QRCode.toDataURL(buildBillVerifyUrl(bill.billNumber), {
+    const creatorName = (bill as { createdByName?: string | null }).createdByName;
+    const verifyUrl = buildBillVerifyUrl({
+      billNumber: bill.billNumber,
+      createdAt: bill.createdAt,
+      totalAmount: bill.totalAmount,
+      operatorId: (creatorName && String(creatorName).trim()) || "0",
+    });
+    QRCode.toDataURL(verifyUrl, {
       errorCorrectionLevel: "M",
       margin: 1,
       width: 256,
@@ -245,7 +274,7 @@ export default function BillDetail({ id }: { id: number }) {
       .then((url) => { if (!cancelled) setBillQrDataUrl(url); })
       .catch(() => { if (!cancelled) setBillQrDataUrl(""); });
     return () => { cancelled = true; };
-  }, [bill?.billNumber]);
+  }, [bill?.billNumber, bill?.createdAt, bill?.totalAmount, (bill as { createdByName?: string | null } | undefined)?.createdByName]);
 
   // Note: the previous in-page hidden-DOM print pipeline has been replaced
   // with a popup-window template (buildBillPrintHtml). The reprint flow now
@@ -268,17 +297,26 @@ export default function BillDetail({ id }: { id: number }) {
     if (!bill) return null;
     // Clinic-wide server settings as the base (same as the BillingDesk print
     // paths) so a reprint honors the admin-configured format/layout too.
-    const settings = loadBillPrintSettings(parseGlobalBillPrintSettings(clinic?.billPrintSettingsJson));
+    const settings = billPrintSettings;
+    const testCount = (bill.order?.tests ?? []).filter((t) => (t.status ?? "active") !== "cancelled").length;
+    const settingsForPrint = {
+      ...settings,
+      ...applyManualBillPaperOverride(settings, paperMode === "manual" && !settings.adminLock ? paperSize : null),
+    };
+    const pageOpts = resolveBillPrintPageOpts(settingsForPrint, testCount);
     return buildBillPrintHtml({
       bill: bill as PrintBillData,
       clinic: clinic as PrintClinic,
-      paperSize: effectivePaperSize,
+      paperSize: pageOpts.paperSize,
+      orientation: pageOpts.orientation,
+      pageCssSize: pageOpts.pageCssSize,
+      compactFooterGap: pageOpts.compactFooterGap,
       isBW,
       qrDataUrl: billQrDataUrl,
       reprintBy: opts.reprintBy,
       reprintReason: opts.reprintReason,
-      format: settings.defaultFormat,
       showQr: settings.showQrCode,
+      showTat: settings.showTatOnBill,
       showAmountInWords: settings.showAmountInWords,
       showSignatureLine: settings.showSignatureLine,
       showComputerGenerated: settings.showComputerGenerated,
@@ -290,9 +328,21 @@ export default function BillDetail({ id }: { id: number }) {
       showPatientInstructions: settings.showPatientInstructions,
       showSystemInfo: settings.showSystemInfo,
       showQueueToken: settings.showQueueTokenOnBill,
-      ...printLayoutOpts(settings),
+      ...printLayoutOpts(settingsForPrint),
     });
   };
+
+  const resolvedReprintPaper = useMemo(() => {
+    if (!bill) return "";
+    const settings = billPrintSettings;
+    const testCount = (bill.order?.tests ?? []).filter((t) => (t.status ?? "active") !== "cancelled").length;
+    const settingsForPrint = {
+      ...settings,
+      ...applyManualBillPaperOverride(settings, paperMode === "manual" && !settings.adminLock ? paperSize : null),
+    };
+    const pageOpts = resolveBillPrintPageOpts(settingsForPrint, testCount);
+    return pageOpts.pageCssSize;
+  }, [bill, billPrintSettings, paperMode, paperSize]);
 
   // Re-print: open the popup SYNCHRONOUSLY in the click handler so the
   // browser doesn't strip user-activation by the time the reprint-log POST
@@ -338,7 +388,7 @@ export default function BillDetail({ id }: { id: number }) {
     }, 300);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bill, clinic, billQrDataUrl, effectivePaperSize, isBW]);
+  }, [bill, clinic, billQrDataUrl, paperMode, paperSize, isBW]);
 
   const { data: audits = [], refetch: refetchAudits } = useQuery<BillAudit[]>({
     queryKey: ["bill-audits", id],
@@ -506,10 +556,21 @@ export default function BillDetail({ id }: { id: number }) {
   });
 
   const onCancelRefundSubmit = handleCR(async (d) => {
+    const paid = Number(bill?.paidAmount ?? 0);
+    const refundAmt = Number(d.refundAmount);
+    // Full paid amount → single atomic cancel+autoRefund. Partial → refund then cancel.
+    if (paid > 0.0001 && Math.abs(refundAmt - paid) < 0.02) {
+      cancelBill.mutate({
+        performedBy: d.performedBy.trim(),
+        reason: d.reason.trim(),
+        autoRefund: { method: d.refundMethod },
+      });
+      return;
+    }
     await refundBill.mutateAsync({
       performedBy: d.performedBy.trim(),
       reason: d.reason.trim(),
-      amount: Number(d.refundAmount),
+      amount: refundAmt,
       method: d.refundMethod,
     });
     cancelBill.mutate({ performedBy: d.performedBy.trim(), reason: d.reason.trim() });
@@ -677,18 +738,29 @@ export default function BillDetail({ id }: { id: number }) {
                 </div>
               )}
             </div>
-            <div className="flex items-center gap-1 border border-border rounded-md px-1 py-0.5 text-xs">
+            <div
+              className="flex items-center gap-1 border border-border rounded-md px-1 py-0.5 text-xs"
+              title={paperLocked ? "Paper size locked by Admin Lock in Billing Print settings" : undefined}
+            >
               <span className="text-muted-foreground px-1">Paper:</span>
-              <button
-                type="button"
-                onClick={() => { setPaperMode("manual"); setPaperSize("A4"); }}
-                className={`px-2 py-0.5 rounded ${paperSize === "A4" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"}`}
-              >A4</button>
-              <button
-                type="button"
-                onClick={() => { setPaperMode("manual"); setPaperSize("A5"); }}
-                className={`px-2 py-0.5 rounded ${paperSize === "A5" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"}`}
-              >A5</button>
+              {paperLocked ? (
+                <span className="px-2 py-0.5 rounded bg-muted text-muted-foreground font-medium">
+                  Locked ({resolvedReprintPaper || billPrintSettings.defaultPaperSize})
+                </span>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => { setPaperMode("manual"); setPaperSize("A4"); }}
+                    className={`px-2 py-0.5 rounded ${paperSize === "A4" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"}`}
+                  >A4</button>
+                  <button
+                    type="button"
+                    onClick={() => { setPaperMode("manual"); setPaperSize("A5"); }}
+                    className={`px-2 py-0.5 rounded ${paperSize === "A5" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"}`}
+                  >A5</button>
+                </>
+              )}
             </div>
             {canReprint && (
               <Button size="sm" variant="outline" onClick={() => { setReprintReason(""); setReprintNote(""); setReprintOpen(true); }}>
@@ -924,17 +996,15 @@ export default function BillDetail({ id }: { id: number }) {
           </div>
         </div>
 
-        {superAdmin.isActive && (
+        {showSuperAdminActions && (
         <div className="border border-rose-200 dark:border-rose-900/50 rounded-xl p-4 bg-rose-50/50 dark:bg-rose-950/20">
           <div className="flex items-center gap-2 mb-3">
             <ShieldAlert size={15} className="text-rose-600 dark:text-rose-400" />
             <span className="text-xs font-semibold uppercase tracking-wide text-rose-700 dark:text-rose-400">Super Admin Actions</span>
-            {superAdmin.isActive && (
-              <span className="ml-auto flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 px-2 py-0.5 rounded-full">
+            <span className="ml-auto flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 px-2 py-0.5 rounded-full">
                 <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
                 {superAdmin.userName}
               </span>
-            )}
           </div>
           <p className="text-xs text-muted-foreground mb-3">
             Authenticated as <span className="font-semibold">{superAdmin.userName}</span>. These actions are irreversible and fully audited.
@@ -949,6 +1019,7 @@ export default function BillDetail({ id }: { id: number }) {
           </div>
         </div>
         )}
+
         {reprintHistory.length > 0 && (
           <div className="border border-amber-200 dark:border-amber-800/60 rounded-xl p-4 bg-amber-50/40 dark:bg-amber-950/20">
             <div className="flex items-center gap-2 mb-3">
@@ -968,27 +1039,6 @@ export default function BillDetail({ id }: { id: number }) {
           </div>
         )}
 
-        {!superAdmin.isActive && (
-          <div className="border border-dashed border-rose-200 dark:border-rose-900/50 rounded-xl p-4 bg-rose-50/30 dark:bg-rose-950/10">
-            <div className="flex items-center gap-2 mb-2">
-              <ShieldAlert size={15} className="text-rose-600 dark:text-rose-400" />
-              <span className="text-xs font-semibold uppercase tracking-wide text-rose-700 dark:text-rose-400">Super Admin Actions Locked</span>
-            </div>
-            <p className="text-xs text-muted-foreground mb-3">
-              Open the Super Admin Portal and generate a valid session token first. After the ERP receives the token, the delete and super-edit buttons will appear here.
-            </p>
-            <a
-              href="/super-admin-portal/"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex"
-            >
-              <Button size="sm" variant="outline" className="border-rose-300 text-rose-600 hover:bg-rose-50 dark:border-rose-700 dark:text-rose-400 dark:hover:bg-rose-950/30 whitespace-nowrap">
-                <ExternalLink size={13} className="mr-1.5" /> Open Super Admin Portal
-              </Button>
-            </a>
-          </div>
-        )}
       </div>
 
       {/* Receipt printing has moved out of the main DOM and into a popup
@@ -1045,7 +1095,12 @@ export default function BillDetail({ id }: { id: number }) {
               </p>
             </div>
             <div className="text-xs text-muted-foreground">
-            Paper size: <strong>{paperMode === "manual" ? paperSize : `AUTO (${effectivePaperSize})`}</strong> · Change above the Re-print button.
+            Paper: <strong>{resolvedReprintPaper || (paperMode === "manual" && !paperLocked ? paperSize : `AUTO (${effectivePaperSize})`)}</strong>
+            {paperLocked
+              ? " (admin locked — all counters use clinic Billing Print settings)"
+              : paperMode === "manual"
+                ? " (manual)"
+                : " (clinic setting) · Change above the Re-print button."}
             </div>
             <div className="flex justify-end gap-2 pt-2">
               <Button type="button" variant="outline" onClick={() => setReprintOpen(false)}>Cancel</Button>
@@ -1345,9 +1400,13 @@ export default function BillDetail({ id }: { id: number }) {
             <button
               type="button"
               onClick={() => setRefundTab("cancel")}
-              className={`flex-1 text-sm font-medium px-3 py-1.5 rounded-md transition-colors ${
+              disabled={cancelRequiresRefund && Number(bill.paidAmount) > 0}
+              className={`flex-1 text-sm font-medium px-3 py-1.5 rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
                 refundTab === "cancel" ? "bg-card shadow-sm" : "text-muted-foreground hover:text-foreground"
               }`}
+              title={cancelRequiresRefund && Number(bill.paidAmount) > 0
+                ? "Clinic policy requires Refund & Cancel for paid bills"
+                : "Cancel without returning money (cash stays in drawer)"}
             >
               <Ban size={13} className="inline mr-1" />
               Cancel Only
@@ -1487,9 +1546,18 @@ export default function BillDetail({ id }: { id: number }) {
               <div className="bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 rounded-lg p-3 flex gap-2 text-xs text-amber-800 dark:text-amber-300">
                 <AlertTriangle size={14} className="shrink-0 mt-0.5" />
                 <span>
-                  Cancelling marks this bill as void. Existing payments stay recorded — use "Refund &amp; Cancel" above if money needs to be returned.
+                  <strong>Cancel Only</strong> voids the bill but does <strong>not</strong> return money.
+                  Cash/UPI already collected stays in today&apos;s drawer. Use <strong>Refund &amp; Cancel</strong> if the patient should get money back.
+                  {Number(bill.paidAmount) > 0 && (
+                    <> Paid so far: {formatCurrency(bill.paidAmount)}.</>
+                  )}
                 </span>
               </div>
+              {cancelRequiresRefund && Number(bill.paidAmount) > 0 && (
+                <div className="bg-red-50 border border-red-200 rounded-lg p-2.5 text-xs text-red-700">
+                  Clinic policy requires a refund when cancelling a paid bill. Switch to the Refund &amp; Cancel tab.
+                </div>
+              )}
               <div>
                 <Label>Cancellation Reason <span className="text-red-500">*</span></Label>
                 <textarea
@@ -1513,8 +1581,8 @@ export default function BillDetail({ id }: { id: number }) {
               )}
               <div className="flex justify-end gap-2 pt-2">
                 <Button type="button" variant="outline" onClick={() => setRefundOpen(false)}>Close</Button>
-                <Button type="submit" disabled={cancelBill.isPending} className="bg-red-600 hover:bg-red-700 text-white">
-                  {cancelBill.isPending ? "Cancelling…" : "Cancel Bill"}
+                <Button type="submit" disabled={cancelBill.isPending || (cancelRequiresRefund && Number(bill.paidAmount) > 0)} className="bg-red-600 hover:bg-red-700 text-white">
+                  {cancelBill.isPending ? "Cancelling…" : "Cancel Bill (no refund)"}
                 </Button>
               </div>
             </form>

@@ -92,6 +92,24 @@ export function hasValidInternalApiKey(req: import("express").Request): boolean 
 }
 
 /**
+ * Portal auth POST endpoints that already carry their own dedicated
+ * express-rate-limit middleware (staffLoginLimiter / patientLoginLimiter in
+ * portal.ts). Those limiters track only failed attempts (skipSuccessfulRequests)
+ * and use a 15-minute window suited to brute-force defence. Applying the
+ * general 300-req/min public limiter on top of them can block a legitimate
+ * first login with "Too many requests. Please slow down." whenever the clinic
+ * IP is already busy with ordinary ERP traffic (multi-tab usage, shared WiFi).
+ */
+export function isDedicatedAuthLoginPath(req: import("express").Request): boolean {
+  const path = (req.originalUrl ?? req.url ?? req.path ?? "").split("?")[0] ?? "";
+  return (
+    path.endsWith("/portal/staff-login") ||
+    path.endsWith("/portal/patient-login") ||
+    path.includes("/auth/webauthn/authenticate/")
+  );
+}
+
+/**
  * General API — generous but prevents abuse.
  *
  * Skips trusted internal automation traffic (paths under /internal/, e.g.
@@ -100,6 +118,8 @@ export function hasValidInternalApiKey(req: import("express").Request): boolean 
  * pull cannot be intermittently 429'd by sharing the same quota as ordinary
  * public API traffic. Public routes and any /internal/* request without a
  * valid key are rate-limited exactly as before.
+ *
+ * Also skips portal login POSTs — they have dedicated limiters (see above).
  */
 export const generalLimiter = rateLimit({
   windowMs: 60 * 1000, // 1 minute
@@ -107,7 +127,9 @@ export const generalLimiter = rateLimit({
   standardHeaders,
   legacyHeaders,
   message: { error: "Too many requests. Please slow down." },
-  skip: (req) => req.path.startsWith("/internal/") && hasValidInternalApiKey(req),
+  skip: (req) =>
+    (req.path.startsWith("/internal/") && hasValidInternalApiKey(req)) ||
+    isDedicatedAuthLoginPath(req),
 });
 
 /** Standard document/image upload routes (JSON base64, up to 25 MB). */

@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import QRCode from "qrcode";
 import { SelfRegistrationForm } from "../components/SelfRegistrationForm";
-import { buildBillPrintHtml, printViaIframe, type PrintBillData, type PrintClinic } from "@/lib/printBill";
+import { buildBillPrintHtml, buildBillVerifyUrl, printViaIframe, type PrintBillData, type PrintClinic } from "@/lib/printBill";
 import "./Kiosk.css";
 
 type KioskConfig = {
@@ -59,6 +59,8 @@ type ConfirmResult = {
   tokenNo: number | null;
   tokenDate: string | null;
   testTokens: Array<{ orderTestId: number; testName: string; department: string; roomNumber: string; tokenNo: number }>;
+  createdAt?: string | null;
+  createdByName?: string | null;
 };
 
 type Step = 0 | 1 | 2 | 3 | 4 | 5;
@@ -196,14 +198,19 @@ export default function Kiosk() {
   }, [step, config, paymentMode, firstName, lastName, subtotal]);
 
   // Generate the same verify-QR the Billing Desk puts on every printed
-  // receipt (scans to /api/verify/bill/<billNumber>) once registration succeeds.
+  // receipt (scans to /api/verify/bill/<billNumber>?hash=<fnv1a>) once registration succeeds.
   useEffect(() => {
     if (!result?.billNumber) { setReceiptQrDataUrl(""); return; }
-    const verifyUrl = `${window.location.origin}/api/verify/bill/${encodeURIComponent(result.billNumber)}`;
+    const verifyUrl = buildBillVerifyUrl({
+      billNumber: result.billNumber,
+      createdAt: result.createdAt,
+      totalAmount: result.totalAmount,
+      operatorId: (result.createdByName && String(result.createdByName).trim()) || "Kiosk Self-Registration",
+    });
     QRCode.toDataURL(verifyUrl, { errorCorrectionLevel: "M", margin: 1, width: 256, color: { dark: "#000000", light: "#ffffff" } })
       .then(setReceiptQrDataUrl)
       .catch(() => setReceiptQrDataUrl(""));
-  }, [result?.billNumber]);
+  }, [result?.billNumber, result?.createdAt, result?.totalAmount, result?.createdByName]);
 
   const resetAll = useCallback(() => {
     setStep(0);
@@ -396,7 +403,8 @@ export default function Kiosk() {
       paidAmount: result.totalAmount,
       balanceAmount: 0,
       status: "paid",
-      createdAt: new Date().toISOString(),
+      createdAt: result.createdAt ?? new Date().toISOString(),
+      createdByName: result.createdByName ?? "Kiosk Self-Registration",
       patient: {
         firstName,
         lastName,
@@ -420,7 +428,7 @@ export default function Kiosk() {
     // Kiosk self-registration receipts always show the queue token box —
     // that's the entire point of a kiosk print (unlike billing-counter
     // receipts, where it's an opt-in setting; see showQueueTokenOnBill).
-    const html = buildBillPrintHtml({ bill, clinic, paperSize: "A5", isBW: false, qrDataUrl: receiptQrDataUrl, format: "classic", compactFooterGap: true, showQueueToken: true });
+    const html = buildBillPrintHtml({ bill, clinic, paperSize: "A5", isBW: false, qrDataUrl: receiptQrDataUrl, compactFooterGap: true, showQueueToken: true });
     printViaIframe(html);
   }
 

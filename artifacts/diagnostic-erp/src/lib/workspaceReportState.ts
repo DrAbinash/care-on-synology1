@@ -294,7 +294,8 @@ export type WorkspaceShortcut =
   // embedded viewer without leaving the keyboard. Alt-based so they never
   // produce text and are safe to fire while the findings editor is focused
   // (a radiologist commonly wants more editor width mid-dictation).
-  | "toggle-left-panel" | "toggle-right-panel" | "toggle-viewer";
+  | "toggle-left-panel" | "toggle-right-panel" | "toggle-viewer"
+  | "focus-mode";
 
 export function matchWorkspaceShortcut(e: {
   key: string;
@@ -312,6 +313,7 @@ export function matchWorkspaceShortcut(e: {
   if (mod && shift && key === "n") return "next-study";
   if (mod && shift && key === "p") return "previous-study";
   if (mod && shift && key === "k") return "park-study";
+  if (mod && shift && key === "f") return "focus-mode";
   // Plain combos are shift-exclusive: Ctrl+Shift+S (browser screenshot on
   // some platforms) must not save, Ctrl+Shift+Enter must not finalize.
   if (mod && !shift && key === "s") return "save";

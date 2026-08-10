@@ -8,6 +8,8 @@ import {
   isStudyParked,
 } from "@/lib/reportingWorkflow";
 import { filterQueueByScope, type QueueScope } from "@/lib/studyLockState";
+import { isUltrasoundModality } from "@/lib/usgModality";
+import { toISTDateStr } from "@/lib/dateRangePresets";
 
 /**
  * useReportingWorkflow — Ticket M1.5 Phase 2: the ONE workflow controller for
@@ -48,10 +50,38 @@ export interface ReportingWorkflowOptions {
    *  assignment preference (assigned-to-me first). */
   myUserId?: number | null;
   myName?: string | null;
+  /** Modality bucket for the active reporting queue ("all" | "US" | "MR" | "CT" | …). */
+  modalityFilter?: string;
+  /** Inclusive IST calendar-day bounds (YYYY-MM-DD). Empty = no date bound. */
+  dateFrom?: string;
+  dateTo?: string;
+}
+
+function matchesQueueModality(modality: string | null | undefined, filter: string): boolean {
+  if (!filter || filter === "all") return true;
+  if (filter === "US") return isUltrasoundModality(modality);
+  const m = (modality ?? "").toUpperCase();
+  return m.startsWith(filter.toUpperCase());
+}
+
+function matchesQueueDate(createdAt: string | undefined, dateFrom: string, dateTo: string): boolean {
+  if (!dateFrom && !dateTo) return true;
+  if (!createdAt) return false;
+  const d = toISTDateStr(createdAt);
+  if (dateFrom && d < dateFrom) return false;
+  if (dateTo && d > dateTo) return false;
+  return true;
 }
 
 export function useReportingWorkflow(currentStudyId: number | undefined, options: ReportingWorkflowOptions = {}) {
-  const { scope = "all", myUserId = null, myName = null } = options;
+  const {
+    scope = "all",
+    myUserId = null,
+    myName = null,
+    modalityFilter = "all",
+    dateFrom = "",
+    dateTo = "",
+  } = options;
   const qc = useQueryClient();
 
   // Same key as pages/RadiologyWorklist.tsx — shared cache, no second fetch.
@@ -65,9 +95,14 @@ export function useReportingWorkflow(currentStudyId: number | undefined, options
   // The ACTIVE queue is the scoped one; parked pruning below deliberately
   // uses the FULL queue so switching scopes never discards parked markers
   // for studies that merely fell outside the current filter.
+  // Modality + date filters then narrow Next/Previous/position to the
+  // radiologist's selected study bucket (Reporting Workspace chrome).
   const queue = useMemo(
-    () => filterQueueByScope(fullQueue, scope, myName, myUserId),
-    [fullQueue, scope, myName, myUserId],
+    () => filterQueueByScope(fullQueue, scope, myName, myUserId).filter((s) =>
+      matchesQueueModality(s.modality, modalityFilter)
+      && matchesQueueDate(s.createdAt, dateFrom, dateTo),
+    ),
+    [fullQueue, scope, myName, myUserId, modalityFilter, dateFrom, dateTo],
   );
 
   const [parked, setParked] = useState<ParkedStudy[]>(readParked);

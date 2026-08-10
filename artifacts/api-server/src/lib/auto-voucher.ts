@@ -76,7 +76,7 @@ const REVENUE_ACCOUNT = {
   tallyGroup: "Direct Income",
 };
 
-async function ensureAccount(name: string, type: string, tallyGroup: string): Promise<string> {
+export async function ensureAccount(name: string, type: string, tallyGroup: string): Promise<string> {
   const [existing] = await db
     .select({ id: accountsTable.id })
     .from(accountsTable)
@@ -296,5 +296,80 @@ export async function autoVoucherForExpense(opts: {
     throw lastErr;
   } catch (err) {
     logger.warn({ err }, "[auto-voucher] Failed to generate expense voucher (non-fatal)");
+  }
+}
+
+/**
+ * Correct the ledger after an expense amount/mode edit:
+ *   1. Reverse every prior auto PV for this expenseId (swap Dr/Cr)
+ *   2. Post a fresh PV for the corrected amount/mode
+ *
+ * Never throws — non-fatal, same as autoVoucherForExpense.
+ */
+export async function correctExpenseVoucher(opts: {
+  expenseId: string;
+  amount: number;
+  paymentMode: string;
+  category: string;
+  description: string;
+  performedBy?: string | null;
+}): Promise<void> {
+  try {
+    const { expenseId, amount, paymentMode, category, description, performedBy } = opts;
+    if (!Number.isFinite(amount) || amount <= 0) return;
+
+    const prior = await db
+      .select()
+      .from(vouchersTable)
+      .where(and(
+        eq(vouchersTable.reference, expenseId),
+        eq(vouchersTable.type, "payment"),
+      ));
+
+    // Only reverse original / corrected expense PVs — skip rows already marked reversed.
+    const toReverse = prior.filter((v) =>
+      !(v.narration ?? "").toLowerCase().includes("reversal of expense"),
+    );
+
+    for (const v of toReverse) {
+      let lastErr: unknown;
+      let posted = false;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const voucherNumber = await nextVoucherNumber("payment", attempt);
+        try {
+          await db.insert(vouchersTable).values({
+            voucherNumber,
+            type: "payment",
+            date: istDateStr(),
+            // Swap sides to reverse the original PV
+            debitAccountId: v.creditAccountId,
+            creditAccountId: v.debitAccountId,
+            amount: v.amount,
+            particular: `Reversal | ${v.particular ?? expenseId}`,
+            billId: null,
+            performedBy: performedBy ?? null,
+            narration: `Reversal of expense ${expenseId} (edit correction)`,
+            reference: expenseId,
+          });
+          posted = true;
+          break;
+        } catch (err: unknown) {
+          if ((err as { code?: string }).code === "23505") { lastErr = err; continue; }
+          throw err;
+        }
+      }
+      if (!posted && lastErr) throw lastErr;
+    }
+
+    await autoVoucherForExpense({
+      expenseId,
+      amount,
+      paymentMode,
+      category,
+      description,
+      performedBy,
+    });
+  } catch (err) {
+    logger.warn({ err }, "[auto-voucher] Failed to correct expense voucher (non-fatal)");
   }
 }

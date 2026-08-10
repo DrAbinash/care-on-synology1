@@ -17,20 +17,30 @@
 // looked perfect. Always pass the server global here so the effective paper
 // size is the one the clinic actually configured.
 
-export type BillFormat = "classic" | "modern-landscape" | "premium-a5" | "designer-a" | "designer-b" | "designer-c";
-// Ordered by recommendation, most-recommended first — "modern-landscape" is
-// the purpose-built A5-landscape layout for Epson-style ink printers (most
-// clinics' primary workflow); the older formats are kept for backward
-// compatibility so existing counters that already picked one keep printing
-// exactly the same bill.
-export const BILL_FORMATS: { id: BillFormat; label: string }[] = [
-  { id: "modern-landscape", label: "Modern — A5 Landscape (Recommended)" },
-  { id: "classic",          label: "Classic (Legacy)" },
-  { id: "premium-a5",       label: "Premium A5 (Legacy)" },
-  { id: "designer-a",       label: "Designer A — Minimal Premium" },
-  { id: "designer-b",       label: "Designer B — Modern Diagnostic" },
-  { id: "designer-c",       label: "Designer C — Corporate Healthcare" },
-];
+export type BillFormat = "classic";
+/** Retired format ids that may still appear in older clinic_settings JSON blobs. */
+export type LegacyBillFormat =
+  | BillFormat
+  | "modern-landscape"
+  | "premium-a5"
+  | "designer-a"
+  | "designer-b"
+  | "designer-c";
+
+/** All bill printing uses the unified Classic template. */
+export function normalizeBillFormat(_raw: unknown): BillFormat {
+  return "classic";
+}
+
+function wasLandscapeBillFormat(raw: unknown): boolean {
+  return (
+    raw === "modern-landscape" ||
+    raw === "premium-a5" ||
+    raw === "designer-a" ||
+    raw === "designer-b" ||
+    raw === "designer-c"
+  );
+}
 
 export type BillPaperSize = "A5-landscape" | "A5-portrait" | "half-a4" | "A4";
 export const BILL_PAPER_SIZES: { id: BillPaperSize; label: string }[] = [
@@ -54,16 +64,41 @@ export const PRINT_ACTIONS: { id: PrintAction; label: string }[] = [
   { id: "save-only", label: "Save Only" },
 ];
 
+/** How Billing Desk should deliver a receipt after save. */
+export type BillPrintDelivery = "print" | "preview-only" | "preview-and-print" | "skip";
+
+/**
+ * Decide whether to open the in-app preview, the browser print dialog, or both.
+ * Explicit Save & Print always reaches the printer; enablePreview may also show
+ * the in-app preview first.
+ */
+export function resolveBillPrintDelivery(
+  settings: Pick<BillPrintSettings, "enablePreview" | "directPrintAfterSave" | "autoOpenPrintDialog">,
+  intent: "save-print" | "save-only" | "background",
+): BillPrintDelivery {
+  if (intent === "save-only") return "skip";
+
+  const shouldPrint =
+    intent === "save-print" ||
+    settings.directPrintAfterSave ||
+    settings.autoOpenPrintDialog;
+
+  if (!shouldPrint) {
+    return settings.enablePreview ? "preview-only" : "skip";
+  }
+
+  if (intent === "save-print") {
+    return settings.enablePreview ? "preview-and-print" : "print";
+  }
+
+  return settings.enablePreview ? "preview-only" : "print";
+}
+
 export type UserRole = "reception" | "accounts" | "admin" | "supervisor" | "billing" | "lab" | "manager";
 
 export type BillPrintSettings = {
-  // Format
+  /** @deprecated Always normalized to "classic"; kept for legacy JSON blobs only. */
   defaultFormat: BillFormat;
-  classicEnabled: boolean;
-  premiumA5Enabled: boolean;
-  designerAEnabled: boolean;
-  designerBEnabled: boolean;
-  designerCEnabled: boolean;
   // Auto paper size threshold: switch from A5 → A4 when tests >= this value
   autoA4Threshold: number;
 
@@ -75,6 +110,8 @@ export type BillPrintSettings = {
 
   // Display toggles
   showQrCode: boolean;
+  /** When true, printed bills show each test's catalog duration as a TAT column. */
+  showTatOnBill: boolean;
   showAmountInWords: boolean;
   showSignatureLine: boolean;
   showComputerGenerated: boolean;
@@ -100,6 +137,11 @@ export type BillPrintSettings = {
   // rather than a single global "density" so a clinic can tune exactly the
   // one thing that's wrong for their printer without fighting a preset.
   printMarginMm: number | null;
+  /** Clinic logo height on the printed bill (px). null = format built-in default. */
+  printLogoHeightPx: number | null;
+  /** Header layout: "right" = address/phone/website under Bill No. (reference style);
+   * "left" = address block under the clinic name (classic style). */
+  headerLayout: "left" | "right" | null;
   printTitleFontPx: number | null;
   printPatientNameFontPx: number | null;
   printBodyFontPx: number | null;
@@ -126,15 +168,11 @@ export type BillPrintSettings = {
 
 export const GLOBAL_BILL_PRINT_DEFAULTS: BillPrintSettings = {
   defaultFormat: "classic",
-  classicEnabled: true,
-  premiumA5Enabled: true,
-  designerAEnabled: true,
-  designerBEnabled: true,
-  designerCEnabled: true,
-  autoA4Threshold: 5,
-  defaultPaperSize: "A5-portrait",
+  autoA4Threshold: 8,
+  defaultPaperSize: "A5-landscape",
   defaultCopyType: "patient",
   showQrCode: true,
+  showTatOnBill: false,
   showAmountInWords: false,
   showSignatureLine: true,
   showComputerGenerated: true,
@@ -147,6 +185,8 @@ export const GLOBAL_BILL_PRINT_DEFAULTS: BillPrintSettings = {
   showSystemInfo: false,
   showQueueTokenOnBill: false,
   printMarginMm: null,
+  printLogoHeightPx: null,
+  headerLayout: "right",
   printTitleFontPx: null,
   printPatientNameFontPx: null,
   printBodyFontPx: null,
@@ -255,29 +295,75 @@ export function parseGlobalBillPrintSettings(json: string | null | undefined): P
   }
 }
 
+export function billPrintSettingsStorageKey(userId = getUserId()): string {
+  return userId ? LS_KEY(userId) : "diagnosticErp:billPrintSettings";
+}
+
+/** Drop this browser's per-user bill-print override (used when admin lock is on). */
+export function clearBillPrintSettingsOverride(userId = getUserId()): void {
+  try {
+    window.localStorage.removeItem(billPrintSettingsStorageKey(userId));
+  } catch {
+    // ignore
+  }
+}
+
+function finalizeBillPrintSettings(settings: BillPrintSettings): BillPrintSettings {
+  const rawFormat = settings.defaultFormat;
+  let defaultPaperSize = settings.defaultPaperSize;
+  // Legacy modern/designer formats implied landscape half-A4 even when paper
+  // was left on A5-portrait — upgrade so @page width matches the printer tray.
+  if (wasLandscapeBillFormat(rawFormat) && defaultPaperSize === "A5-portrait") {
+    defaultPaperSize = "A5-landscape";
+  }
+  return {
+    ...settings,
+    defaultFormat: "classic",
+    defaultPaperSize,
+  };
+}
+
 export function loadBillPrintSettings(global: Partial<BillPrintSettings> = {}): BillPrintSettings {
   const userId = getUserId();
   const role = getUserRole();
   const defaults = mergeDefaults(GLOBAL_BILL_PRINT_DEFAULTS, role);
   const merged = { ...defaults, ...global };
-  const key = userId ? LS_KEY(userId) : "diagnosticErp:billPrintSettings";
+  const key = billPrintSettingsStorageKey(userId);
+
+  // Admin lock = clinic-wide forced settings. Skip role defaults so every
+  // counter gets the exact blob the admin saved, not role-specific tweaks.
+  if (merged.adminLock) {
+    const locked = { ...GLOBAL_BILL_PRINT_DEFAULTS, ...global } as BillPrintSettings;
+    try {
+      if (window.localStorage.getItem(key)) {
+        window.localStorage.removeItem(key);
+      }
+    } catch {
+      // ignore
+    }
+    return finalizeBillPrintSettings(locked);
+  }
+
   try {
     const raw = window.localStorage.getItem(key);
-    if (!raw) return merged;
+    if (!raw) return finalizeBillPrintSettings(merged);
     const parsed = JSON.parse(raw);
-    // If adminLock is on globally, ignore local overrides
-    if (global.adminLock) return merged;
-    return { ...merged, ...parsed };
+    return finalizeBillPrintSettings({ ...merged, ...parsed });
   } catch {
-    return merged;
+    return finalizeBillPrintSettings(merged);
   }
 }
 
-export function saveBillPrintSettings(settings: Partial<BillPrintSettings>): void {
-  const userId = getUserId();
-  const key = userId ? LS_KEY(userId) : "diagnosticErp:billPrintSettings";
+/** Persist a per-user override. Clinic-wide saves from Settings should NOT call this. */
+export function saveBillPrintSettings(
+  settings: Partial<BillPrintSettings>,
+  global: Partial<BillPrintSettings> = {},
+): void {
+  if (global.adminLock || settings.adminLock) return;
+
+  const key = billPrintSettingsStorageKey();
   try {
-    const existing = loadBillPrintSettings();
+    const existing = loadBillPrintSettings(global);
     const merged = { ...existing, ...settings };
     window.localStorage.setItem(key, JSON.stringify(merged));
   } catch {
@@ -297,6 +383,8 @@ export function mergeDefaults(base: BillPrintSettings, role: UserRole | null): B
 export function printLayoutOpts(settings: BillPrintSettings) {
   return {
     printMarginMm: settings.printMarginMm,
+    printLogoHeightPx: settings.printLogoHeightPx,
+    headerLayout: settings.headerLayout,
     printTitleFontPx: settings.printTitleFontPx,
     printPatientNameFontPx: settings.printPatientNameFontPx,
     printBodyFontPx: settings.printBodyFontPx,
@@ -308,15 +396,13 @@ export function printLayoutOpts(settings: BillPrintSettings) {
   };
 }
 
-// ── Helper to get current effective format ──
-export function getEffectiveFormat(global: Partial<BillPrintSettings>, userOverride: Partial<BillPrintSettings> = {}): BillFormat {
-  const merged = loadBillPrintSettings(global);
-  const eff = { ...merged, ...userOverride };
-  if (eff.defaultFormat === "premium-a5" && eff.premiumA5Enabled) return "premium-a5";
-  if (eff.defaultFormat === "classic" && eff.classicEnabled) return "classic";
-  if (eff.premiumA5Enabled) return "premium-a5";
-  if (eff.classicEnabled) return "classic";
-  return "classic";
+/** Resolve logo height (px) for a bill format; clamps to a printable range. */
+export function resolveBillLogoHeightPx(
+  overridePx: number | null | undefined,
+  formatDefaultPx: number,
+): number {
+  const raw = overridePx != null && Number.isFinite(overridePx) ? Number(overridePx) : formatDefaultPx;
+  return Math.max(24, Math.min(160, Math.round(raw)));
 }
 
 // ── Paper size helpers ──
@@ -329,18 +415,98 @@ export function getAutoBillPaperSize(
   return testCount > threshold ? "A4" : "A5-portrait";
 }
 
+/** Pixel dimensions for on-screen bill previews (96 dpi, matches Settings live preview). */
+export function billPreviewPaperPx(pageOpts: BillPrintPageOpts): { w: number; h: number } {
+  if (pageOpts.paperSize === "A4") return { w: 794, h: 1123 };
+  if (pageOpts.orientation === "landscape" || pageOpts.pageCssSize.includes("210mm 148mm")) {
+    return { w: 794, h: 559 };
+  }
+  return { w: 559, h: 794 };
+}
+
 export function getPaperSizeCss(size: BillPaperSize): { pageSize: string; width: string; minHeight: string; maxHeight: string } {
   switch (size) {
     case "A5-landscape":
-      return { pageSize: "A5 landscape", width: "198mm", minHeight: "136mm", maxHeight: "136mm" };
+      // Full physical page — do not subtract margins here (safe padding is applied
+      // by the document layout engine). Narrow widths caused empty side bands.
+      return { pageSize: "A5 landscape", width: "210mm", minHeight: "148mm", maxHeight: "none" };
     case "A5-portrait":
-      return { pageSize: "A5 portrait", width: "136mm", minHeight: "198mm", maxHeight: "198mm" };
+      return { pageSize: "A5 portrait", width: "148mm", minHeight: "210mm", maxHeight: "none" };
     case "half-a4":
-      return { pageSize: "148mm 210mm", width: "148mm", minHeight: "198mm", maxHeight: "198mm" };
+      return { pageSize: "210mm 148mm", width: "210mm", minHeight: "148mm", maxHeight: "none" };
     case "A4":
     default:
-      return { pageSize: "A4 portrait", width: "210mm", minHeight: "277mm", maxHeight: "none" };
+      return { pageSize: "A4 portrait", width: "210mm", minHeight: "297mm", maxHeight: "none" };
   }
+}
+
+/** Resolved @page + body options shared by Billing Desk, Bill Detail, Settings preview. */
+export type BillPrintPageOpts = {
+  paperSize: "A4" | "A5";
+  orientation: "portrait" | "landscape";
+  /** Short A5 bills: avoid flex spacer that leaves a huge blank middle. */
+  compactFooterGap: boolean;
+  /** Exact CSS size for @page (half-a4, A5 landscape, etc.). */
+  pageCssSize: string;
+};
+
+/**
+ * Map clinic Billing Print settings + test count → paper/orientation the HTML
+ * renderer should declare. Always honours defaultPaperSize (including
+ * A5-landscape) — older call sites only passed A4/half-a4 as "forced", which
+ * made landscape trays print portrait jobs and the driver scaled/rotated them.
+ */
+export function resolveBillPrintPageOpts(
+  settings: Pick<BillPrintSettings, "defaultPaperSize" | "autoA4Threshold">,
+  testCount: number,
+): BillPrintPageOpts {
+  const effective = getAutoBillPaperSize(
+    testCount,
+    settings.defaultPaperSize,
+    settings.autoA4Threshold ?? 5,
+  );
+  if (effective === "A4") {
+    return {
+      paperSize: "A4",
+      orientation: "portrait",
+      // Short A4 bills still look sparse if we leave a huge flex gap — keep
+      // the footer tight so content reads as one professional block.
+      compactFooterGap: testCount <= 8,
+      pageCssSize: "A4 portrait",
+    };
+  }
+  const orientation: "portrait" | "landscape" =
+    effective === "A5-landscape" ? "landscape" : "portrait";
+  const pageCssSize =
+    effective === "half-a4"
+      ? "210mm 148mm"
+      : effective === "A5-landscape"
+        ? "A5 landscape"
+        : "A5 portrait";
+  return {
+    paperSize: "A5",
+    orientation,
+    compactFooterGap: testCount <= 4,
+    pageCssSize,
+  };
+}
+
+/**
+ * Bill Detail reprint exposes an A4/A5 header toggle. When staff pick manual
+ * paper, honour it while keeping the clinic's A5 variant (landscape vs portrait).
+ * Admin Lock ignores the manual toggle so every counter / reprint matches the
+ * clinic-wide paper setting.
+ */
+export function applyManualBillPaperOverride(
+  settings: Pick<BillPrintSettings, "defaultPaperSize" | "adminLock">,
+  manualPaper: "A4" | "A5" | null | undefined,
+): Pick<BillPrintSettings, "defaultPaperSize"> {
+  if (settings.adminLock) return { defaultPaperSize: settings.defaultPaperSize };
+  if (!manualPaper) return { defaultPaperSize: settings.defaultPaperSize };
+  if (manualPaper === "A4") return { defaultPaperSize: "A4" };
+  const size = settings.defaultPaperSize;
+  if (size === "A5-landscape" || size === "half-a4") return { defaultPaperSize: size };
+  return { defaultPaperSize: "A5-portrait" };
 }
 
 // ── Adaptive density class based on test count ──

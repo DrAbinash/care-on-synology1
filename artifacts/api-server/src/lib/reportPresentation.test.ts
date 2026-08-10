@@ -135,10 +135,10 @@ describe("premium layout (Phase 7)", () => {
     expect(html).toContain("page-break-after: avoid");
   });
 
-  it("classic template keeps the inline image grid and 4-column demographics", () => {
+  it("classic template keeps the inline image grid and stacked demographics", () => {
     const html = renderReportDocument(baseModel({ keyImages: images }), resolvePresentationTemplate("care-classic"));
     expect(html).toContain("image-panel-inline");
-    expect(html).toContain("patient-grid");
+    expect(html).toContain("patient-stacked");
     expect(html).not.toContain("float: right; width: 62mm");
   });
 
@@ -309,7 +309,9 @@ describe("R1.3 — key-image badge", () => {
       resolvePresentationTemplate("care-premium"),
     );
     expect(html).not.toContain("key-image-badge");
-    expect(html).not.toContain("position: relative");
+    // Classic header accent uses position:relative on .hdr — only assert the
+    // key-image conditional block is absent (R1.1 compat: no .image-cell rule).
+    expect(html).not.toMatch(/\.image-cell \{ position: relative; \}/);
     // The conditional must contribute ZERO bytes when false — .image-cell's
     // closing brace is directly followed by .dicom-img, exactly as in R1.1.
     expect(html).toContain("    }\n    .dicom-img");

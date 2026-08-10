@@ -330,6 +330,30 @@ hopeReferralsRouter.post("/:id/accept", async (req: StaffAuthRequest, res) => {
       return order;
     });
 
+    // Care-attributed prep WhatsApp (optional; non-fatal). Billing stays on Care.
+    if (ref.patientPhone) {
+      try {
+        const { sendWhatsAppNow } = await import("../../services/whatsapp/WhatsAppOutbox.js");
+        const testNames = targetItems.map((t) => t.careDisplayName || t.sourceTestName).filter(Boolean).join(", ");
+        const text = [
+          `Care Diagnostics: your tests are booked (${result.orderNumber}).`,
+          testNames ? `Tests: ${testNames}` : null,
+          "Please bring a doctor's prescription / referral and arrive fasting if advised for blood tests.",
+          "Payment and reports are handled by Care Diagnostics (separate from Hope Hospital).",
+        ].filter(Boolean).join("\n");
+        await sendWhatsAppNow({
+          recipientPhone: ref.patientPhone,
+          messagePurpose: "manual_staff_send",
+          text,
+          patientId: ref.carePatientId ?? null,
+          idempotencyKey: `hope-referral-prep:${ref.referralUuid}:${result.orderId}`,
+          createdBy: `care-staff:${staffName(req)}`,
+        });
+      } catch (waErr) {
+        console.warn("[integration] prep WhatsApp failed:", (waErr as Error)?.message);
+      }
+    }
+
     res.status(201).json({
       orderId: result.orderId, orderNumber: result.orderNumber, patientId: ref.carePatientId,
       totalAmount: result.totalAmount,

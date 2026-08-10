@@ -1,11 +1,12 @@
 import { useState, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
+import OpsHealthStrip from "@/components/OpsHealthStrip";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Calendar, AlertCircle, RefreshCw } from "lucide-react";
-import { SummaryExportToolbar } from "@/components/SummaryExport";
+import { SummaryExportToolbar, formatExportAmount } from "@/components/SummaryExport";
 import type { ExportConfig } from "@/components/SummaryExport";
 import {
   useGetDashboardStats,
@@ -109,6 +110,8 @@ type OverallSummary = {
   totalReceived: number;
   digitalCollection: number;
   cashCollection: number;
+  cashRefunded?: number;
+  cashExpenses?: number;
   totalExpenses: number;
   discountsGiven: number;
   netCollection: number;
@@ -611,18 +614,18 @@ function ReconciliationFlow({ s }: { s: OverallSummary }) {
         <h3 className="text-sm font-bold text-gray-900 dark:text-foreground flex items-center gap-2">
           <BarChart3 size={14} className="text-blue-600" /> Daily Financial Reconciliation
         </h3>
-        <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Step-by-step cash flow verification</p>
+        <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Payment-axis cash flow (money that moved)</p>
       </div>
       <div className="p-4 space-y-0">
-        <RecRow label="Gross Billing" value={s.grossBilling} type="start" />
-        <RecRow label="− Outstanding / Dues" value={s.outstanding} type="deduct" />
-        <RecRow label="− Refunds & Cancellations" value={s.refundsAndCancellations} type="deduct"
-          note={`₹${s.refundAmount.toFixed(0)} refunds + ₹${s.cancelledAmount.toFixed(0)} cancelled`} />
-        <RecRow label="− Cash Expenses" value={s.totalExpenses} type="deduct" />
+        <RecRow label="Payments Received" value={s.totalReceived} type="start" />
+        <RecRow label="− Refunds (money returned)" value={s.refundAmount} type="deduct" />
+        <RecRow label="− Expenses" value={s.totalExpenses} type="deduct" />
         <div className="my-2 border-t-2 border-green-200 dark:border-green-800" />
         <RecRow label="= Net Collection" value={s.netCollection} type="result" />
         <div className="my-2 border-t border-dashed border-gray-200 dark:border-gray-700" />
-        <RecRow label="− Digital Collection" value={s.digitalCollection} type="deduct" />
+        <RecRow label="Cash In" value={s.cashCollection} type="start" />
+        <RecRow label="− Cash Refunded" value={s.cashRefunded ?? 0} type="deduct" />
+        <RecRow label="− Cash Expenses" value={s.cashExpenses ?? 0} type="deduct" />
         <div className="my-2 border-t-2 border-blue-200 dark:border-blue-800" />
         <RecRow label="= Physical Cash in Hand" value={s.physicalCashInHand} type="final" />
         <div className="mt-4 grid grid-cols-2 gap-2">
@@ -635,6 +638,9 @@ function ReconciliationFlow({ s }: { s: OverallSummary }) {
             <p className="text-base font-bold text-blue-800 dark:text-blue-200">{fmt(s.physicalCashInHand)}</p>
           </div>
         </div>
+        <p className="text-[10px] text-muted-foreground mt-3">
+          Billing {fmt(s.grossBilling)} · Outstanding {fmt(s.outstanding)} · Cancelled {fmt(s.cancelledAmount)} (context only — not subtracted again into net)
+        </p>
       </div>
     </div>
   );
@@ -807,23 +813,24 @@ export default function Dashboard() {
 
   const exportConfig = useMemo<ExportConfig | null>(() => {
     if (!overallSummary) return null;
-    const inr = (n: number) =>
-      new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(n);
+    const amt = formatExportAmount;
     return {
       title: "Dashboard — Financial Report",
       subtitle: from === to ? from : `${from} to ${to}`,
       sections: [
         {
           title: "Financial Summary",
+          layout: "full",
           metrics: [
-            ["Gross Billing", inr(overallSummary.grossBilling)],
-            ["Net Collection", inr(overallSummary.netCollection)],
-            ["Physical Cash in Hand", inr(overallSummary.physicalCashInHand)],
-            ["Digital Collection", inr(overallSummary.digitalCollection)],
-            ["Outstanding / Dues", inr(overallSummary.outstanding)],
-            ["Refunds & Cancellations", inr(overallSummary.refundsAndCancellations)],
-            ["Cash Expenses", inr(overallSummary.totalExpenses)],
-            ["Discounts Given", inr(overallSummary.discountsGiven)],
+            ["Gross Billing", amt(overallSummary.grossBilling)],
+            ["Net Collection", amt(overallSummary.netCollection)],
+            ["Physical Cash in Hand", amt(overallSummary.physicalCashInHand)],
+            ["Digital Collection", amt(overallSummary.digitalCollection)],
+            ["Outstanding / Dues", amt(overallSummary.outstanding)],
+            ["Refunds (money returned)", amt(overallSummary.refundAmount)],
+            ["Cancelled Bills (info)", amt(overallSummary.cancelledAmount)],
+            ["Cash Expenses", amt(overallSummary.totalExpenses)],
+            ["Discounts Given", amt(overallSummary.discountsGiven)],
             ["Pending Reports", String(overallSummary.pendingReports)],
           ],
         },
@@ -832,12 +839,12 @@ export default function Dashboard() {
         ...(staffRows.length > 0 ? [{
           title: "Staff Comparison",
           headers: ["Staff", "Bills", "Total Billing", "Received", "Cash", "Digital", "Discounts", "Cancels", "Net Cash"],
-          rows: staffRows.map((r) => [r.staffName, r.billCount, inr(r.totalBilling), inr(r.totalReceived), inr(r.cashCollection), inr(r.digitalCollection), inr(r.discountsGiven), r.cancellationCount, inr(r.netCashHandled)]),
+          rows: staffRows.map((r) => [r.staffName, r.billCount, amt(r.totalBilling), amt(r.totalReceived), amt(r.cashCollection), amt(r.digitalCollection), amt(r.discountsGiven), r.cancellationCount, amt(r.netCashHandled)]),
         }] : []),
         ...(modalityRows.length > 0 ? [{
           title: "Modality Summary",
           headers: ["Modality", "Tests", "Gross Billing", "Completed", "Pending"],
-          rows: modalityRows.map((r) => [r.modality, r.testCount, inr(r.grossBilling), r.completedReports, r.pendingReports]),
+          rows: modalityRows.map((r) => [r.modality, r.testCount, amt(r.grossBilling), r.completedReports, r.pendingReports]),
         }] : []),
       ],
     };
@@ -888,6 +895,7 @@ export default function Dashboard() {
       />
 
       <div className="px-4 xl:px-6 space-y-5">
+        <OpsHealthStrip />
 
         {/* ── KPI cards (5 columns on xl) ─────────────────────────────────── */}
         <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3">

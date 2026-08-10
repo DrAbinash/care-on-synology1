@@ -1,0 +1,20 @@
+import { useWorkspace, useWorkspaceSelector } from "@/lib/zai-workspace/store";
+import { Mic, MicOff, X } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { useEffect, useState } from "react";
+import { api } from "@/lib/fetchApi";
+export function VoiceBar() {
+  const show = useWorkspaceSelector(s => s.showVoiceBar); const listening = useWorkspaceSelector(s => s.voiceListening); const setListening = useWorkspaceSelector(s => s.setVoiceListening);
+  const setT = useWorkspaceSelector(s => s.setVoiceTranscript); const t = useWorkspaceSelector(s => s.voiceTranscript); const toggle = useWorkspaceSelector(s => s.toggleVoiceBar);
+  const provider = useWorkspaceSelector(s => s.voiceProvider); const setP = useWorkspaceSelector(s => s.setVoiceProvider);
+  const [caps, setCaps] = useState<{ local: boolean; server: boolean; webspeech: boolean } | null>(null);
+  useEffect(() => { api.get<{ available?: boolean; server?: boolean; local?: boolean }>("/api/ai/transcribe/status").then(r => setCaps({ local: !!r.local, server: !!(r.server ?? r.available), webspeech: typeof window !== "undefined" && ("SpeechRecognition" in window || "webkitSpeechRecognition" in window) })).catch(() => setCaps({ local: false, server: false, webspeech: typeof window !== "undefined" && ("SpeechRecognition" in window || "webkitSpeechRecognition" in window) })); }, []);
+  useEffect(() => { if (!caps) return; if (caps.local) setP("local"); else if (caps.server) setP("server"); else if (caps.webspeech) setP("webspeech"); else setP(null); }, [caps, setP]);
+  useEffect(() => {
+    if (!listening || !provider) return; let c = false; let rec: MediaRecorder | null = null; let stream: MediaStream | null = null; const chunks: Blob[] = [];
+    async function start() { try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); if (c) { stream.getTracks().forEach(t => t.stop()); return; } rec = new MediaRecorder(stream); rec.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); }; rec.onstop = async () => { if (c || !chunks.length) return; const blob = new Blob(chunks, { type: rec?.mimeType || "audio/webm" }); const r = new FileReader(); r.onload = async () => { const d = String(r.result ?? ""); const b64 = d.slice(d.indexOf(",") + 1); const ep = provider === "local" ? "/api/ai/transcribe/local" : provider === "server" ? "/api/ai/transcribe" : null; if (!ep) return; try { const res = await api.post<{ text?: string }>(ep, { audioBase64: b64, mimeType: blob.type }); if (!c && res.text) { setT(res.text); const cur = useWorkspace.getState().findingsText; const s = cur.length > 0 && !cur.endsWith(" ") ? " " : ""; useWorkspace.getState().setField("findings", cur + s + res.text + " "); } } catch (e) { console.warn("[Voice]", e); } }; r.readAsDataURL(blob); }; rec.start(); } catch (e) { setListening(false); } }
+    start(); return () => { c = true; if (rec && rec.state !== "inactive") rec.stop(); stream?.getTracks().forEach(t => t.stop()); };
+  }, [listening, provider, setListening, setT]);
+  if (!show) return null;
+  return <div className="absolute bottom-3 left-1/2 z-30 -translate-x-1/2"><div className={cn("flex items-center gap-2 rounded-full border bg-slate-900 pl-3 pr-1.5 py-1.5 shadow-2xl", listening ? "border-emerald-400 ring-2 ring-emerald-400/30" : "border-slate-700")}><button onClick={() => setListening(!listening)} className={cn("flex h-7 w-7 items-center justify-center rounded-full transition", listening ? "bg-rose-500 text-white animate-pulse" : "bg-slate-700 text-slate-300 hover:bg-slate-600")}>{listening ? <MicOff className="h-3.5 w-3.5" /> : <Mic className="h-3.5 w-3.5" />}</button><div className="min-w-[200px] max-w-[400px]">{listening ? <div className="text-[11px] text-slate-200">{t || <span className="text-slate-400 italic">Listening via {provider ?? "..."}...</span>}</div> : <div className="text-[11px] text-slate-400">Push-to-talk · {provider ? provider : "No provider"}</div>}</div><button onClick={toggle} className="ml-1 flex h-6 w-6 items-center justify-center rounded-full text-slate-400 hover:bg-slate-700"><X className="h-3 w-3" /></button></div></div>;
+}

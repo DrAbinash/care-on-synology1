@@ -1,6 +1,10 @@
 import { useState, useEffect } from "react";
 import { useLocation } from "wouter";
 import PresentationTemplateManager from "@/components/radiology/PresentationTemplateManager";
+import ReportLayoutQuickSelect, {
+  type ReportLayoutKey,
+  quickSelectLayoutKey,
+} from "@/components/radiology/ReportLayoutQuickSelect";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
 import { hostForProfile, orthancBaseForProfile, ohifBaseForProfile, publicBaseUrl } from "@/lib/networkProfiles";
@@ -16,7 +20,7 @@ import {
   Network, Server, MonitorPlay, Radio, BrainCircuit,
   Wrench, Activity, ShieldAlert,
   RefreshCw, Save,
-  Zap, ShieldCheck, PlayCircle, Info, Palette, Mic, Waves
+  Zap, ShieldCheck, PlayCircle, Info, Palette, Mic, Waves, Cpu, BookOpen
 } from "lucide-react";
 import type { UseMutationResult } from "@tanstack/react-query";
 // M1.6B2/B3 — voice layer settings (same pacs_settings persistence as this
@@ -27,6 +31,7 @@ import {
   type TranscriptionSession, type TranscribeCapabilities, type VoiceUserPrefs,
 } from "@/lib/voiceTranscription";
 import { readStaffSession, FULL_ACCESS_ROLES, normalizeRole } from "@/lib/staffSession";
+import PacsViewerSetupWizard from "@/components/radiology/PacsViewerSetupWizard";
 
 // Sub-panels imported or reconstructed for unified look
 import { ModalityPanel } from "@/pages/ModalityManagement";
@@ -43,6 +48,7 @@ import {
 } from "@/components/smartRadiology/SmartRadiologyCards";
 import { RisMonitorCommandGrid } from "@/components/risMonitoring/RisMonitorCards";
 import ViewerNetworkRoutesCard from "@/components/radiology/ViewerNetworkRoutesCard";
+import { MwlStatusPanel } from "@/components/radiology/MwlStatusPanel";
 
 type Setting = { id: number; key: string; value: string | null; category: string; isSecret: boolean };
 type ServiceHealth = { name: string; endpoint: string; status: "green" | "yellow" | "red"; details: string };
@@ -74,13 +80,141 @@ function isDockerBridgeIpLike(value: string): boolean {
   return true;
 }
 
+type MriWarmStatus = {
+  enabled: boolean;
+  mode: string;
+  lastN: number;
+  running: boolean;
+  lastRunAt: string | null;
+  lastDurationMs: number | null;
+  lastWarmed: number;
+  lastFailed: number;
+  lastSkipped: number;
+  lastError: string | null;
+  candidates: number;
+  orthancReachable: boolean | null;
+};
+
+
+function SpineFormatUpgradePanel({ disabled }: { disabled?: boolean }) {
+  const { toast } = useToast();
+  const upgrade = useMutation({
+    mutationFn: () =>
+      api.post<{ ok: boolean; inserted: number; upgraded: number; findingsRemapped: number; message: string }>(
+        "/api/structured-report-templates/upgrade-spine-formats",
+        {},
+      ),
+    onSuccess: (res) => {
+      toast({
+        title: "Spine formats",
+        description: res.message
+          || `Inserted ${res.inserted}, upgraded ${res.upgraded}, remapped ${res.findingsRemapped}.`,
+      });
+    },
+    onError: (err: Error) =>
+      toast({ title: "Spine upgrade failed", description: err.message, variant: "destructive" }),
+  });
+
+  return (
+    <div className="rounded-lg border bg-muted/20 p-3 space-y-2 text-[11px]" data-testid="spine-format-upgrade">
+      <p className="text-muted-foreground">
+        Applies denser Cervical / Dorsal / LS anatomy sections to clinic presets and remaps Quick Select
+        labels that still point at old bundled sections (e.g. “C2-C3 to C6-C7” → per-level / {"{level}"}).
+      </p>
+      <Button
+        type="button"
+        size="sm"
+        variant="outline"
+        className="h-7 text-[10px]"
+        disabled={disabled || upgrade.isPending}
+        onClick={() => upgrade.mutate()}
+        data-testid="btn-upgrade-spine-formats"
+      >
+        <RefreshCw size={11} className={`mr-1 ${upgrade.isPending ? "animate-spin" : ""}`} />
+        {upgrade.isPending ? "Upgrading…" : "Upgrade spine formats now"}
+      </Button>
+    </div>
+  );
+}
+
+function MriWarmCacheStatusPanel() {
+  const { toast } = useToast();
+  const { data, refetch, isFetching } = useQuery<MriWarmStatus>({
+    queryKey: ["mri-warm-cache-status"],
+    queryFn: () => api.get("/api/radiology/mri-warm-cache/status"),
+    refetchInterval: 30_000,
+  });
+  const runNow = useMutation({
+    mutationFn: () => api.post("/api/radiology/mri-warm-cache/run", { force: true }),
+    onSuccess: () => {
+      void refetch();
+      toast({ title: "MRI warm cache run started" });
+    },
+    onError: (err: Error) => toast({ title: "Warm cache failed", description: err.message, variant: "destructive" }),
+  });
+
+  return (
+    <div className="rounded-lg border bg-muted/20 p-3 space-y-2 text-[11px]" data-testid="mri-warm-cache-status">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="font-semibold text-xs">Status</span>
+        {data?.running ? (
+          <Badge className="bg-amber-100 text-amber-800 border-amber-300">Running…</Badge>
+        ) : data?.orthancReachable === false ? (
+          <Badge className="bg-red-100 text-red-800 border-red-300">Orthanc unreachable</Badge>
+        ) : (
+          <Badge className="bg-emerald-100 text-emerald-800 border-emerald-300">Idle</Badge>
+        )}
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="h-7 text-[10px] ml-auto"
+          disabled={runNow.isPending || data?.running}
+          onClick={() => runNow.mutate()}
+        >
+          <RefreshCw size={11} className={`mr-1 ${isFetching || runNow.isPending ? "animate-spin" : ""}`} />
+          Warm now
+        </Button>
+      </div>
+      <p className="text-muted-foreground">
+        Last run: {data?.lastRunAt ? new Date(data.lastRunAt).toLocaleString() : "—"}
+        {data?.lastDurationMs != null ? ` · ${Math.round(data.lastDurationMs / 1000)}s` : ""}
+        {" · "}warmed {data?.lastWarmed ?? 0}/{data?.candidates ?? 0}
+        {(data?.lastSkipped ?? 0) > 0 ? ` · ${data?.lastSkipped} not in Orthanc yet` : ""}
+        {(data?.lastFailed ?? 0) > 0 ? ` · ${data?.lastFailed} failed` : ""}
+      </p>
+      {data?.lastError && <p className="text-red-700">{data.lastError}</p>}
+    </div>
+  );
+}
+
 export default function RadiologySettingsCenter() {
   const { toast } = useToast();
   const qc = useQueryClient();
   const [, navigate] = useLocation();
   const isAdmin = FULL_ACCESS_ROLES.has(normalizeRole(readStaffSession()?.user.role ?? ""));
 
-  const [activeTab, setActiveTab] = useState("network");
+  const SETTINGS_TABS = [
+    "general", "reading-suite", "network", "modalities", "pacs", "pacs-advanced", "viewers", "mwl",
+    "reporting", "usg-extraction", "style", "premium", "voice", "diagnostics", "history", "advanced",
+  ] as const;
+
+  const [activeTab, setActiveTab] = useState(() => {
+    try {
+      const t = new URLSearchParams(window.location.search).get("tab");
+      if (t && (SETTINGS_TABS as readonly string[]).includes(t)) return t;
+    } catch { /* ignore */ }
+    return "general";
+  });
+
+  function goTab(tab: string) {
+    setActiveTab(tab);
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.set("tab", tab);
+      window.history.replaceState({}, "", url.toString());
+    } catch { /* ignore */ }
+  }
   const [detectedProfile, setDetectedProfile] = useState<"LAN" | "TAILSCALE" | "PUBLIC">("PUBLIC");
   const [profileOverride, setProfileOverride] = useState<"auto" | "LAN" | "TAILSCALE" | "PUBLIC">(() => {
     return (localStorage.getItem("pacs_network_profile") as any) || "auto";
@@ -113,6 +247,7 @@ export default function RadiologySettingsCenter() {
   });
 
   const [valResults, setValResults] = useState<Array<{ name: string; status: "PASS" | "WARNING" | "FAIL"; message: string }> | null>(null);
+  const [mwlSyncing, setMwlSyncing] = useState(false);
   const [isValidating, setIsValidating] = useState(false);
   const [changeReason, setChangeReason] = useState("");
 
@@ -173,15 +308,46 @@ export default function RadiologySettingsCenter() {
     const v = sv(key);
     return v === "" ? defaultOn : v === "true";
   };
+  /** R1.1 premium layout — active when the canonical template is care-premium
+   *  or the legacy master switch is explicitly ON. */
+  const premiumLayoutActive =
+    sv("report_presentation_template") === "care-premium" ||
+    sv("premium_layout_enabled") === "true";
+  const activeReportLayout = quickSelectLayoutKey(
+    sv("report_presentation_template") || (premiumLayoutActive ? "care-premium" : "care-classic"),
+  );
 
   const upsertSetting = useMutation({
-    mutationFn: (body: object) => api.post("/api/radiology/pacs-settings", body),
-    onSuccess: () => {
+    mutationFn: (body: object) => api.post("/api/radiology/pacs-settings", {
+      ...body,
+      ...(changeReason.trim() ? { reason: changeReason.trim() } : {}),
+    }),
+    onSuccess: (_data, variables) => {
       qc.invalidateQueries({ queryKey: ["pacs-settings"] });
+      if ((variables as { key?: string }).key === "premium_layout_enabled"
+        || (variables as { key?: string }).key === "report_presentation_template") {
+        qc.invalidateQueries({ queryKey: ["presentation-templates"] });
+      }
       toast({ title: "Configuration updated successfully" });
     },
     onError: (err: any) => toast({ title: "Failed to update configuration", description: err.message, variant: "destructive" }),
   });
+
+  const setActiveReportLayout = (layout: ReportLayoutKey) => {
+    const reason = layout === "care-premium" ? "Premium report layout activated" : "Classic report layout activated";
+    upsertSetting.mutate({
+      key: "report_presentation_template",
+      value: layout,
+      category: "premium",
+      reason,
+    });
+    upsertSetting.mutate({
+      key: "premium_layout_enabled",
+      value: String(layout === "care-premium"),
+      category: "premium",
+      reason,
+    });
+  };
 
   // Mutation to update clinic settings
   const updateClinicSettings = useMutation({
@@ -245,7 +411,7 @@ export default function RadiologySettingsCenter() {
     <div className="p-4 md:p-6 space-y-6">
       <PageHeader
         title="Radiology Settings Center"
-        subtitle="Unified console for PACS, Modalities, Viewers, AI Clinical Assistant, and diagnostics"
+        subtitle="Admin hub for PACS, viewers, MWL, report style, voice, and USG — start on the General tab"
         actions={
           <Button variant="outline" size="sm" onClick={() => { refetchSettings(); refetchClinic(); refetchHealth(); }}>
             <RefreshCw size={14} className="mr-1.5" /> Reload Config
@@ -293,9 +459,10 @@ export default function RadiologySettingsCenter() {
       </div>
 
       {/* Navigation tabs */}
-      <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
+      <Tabs value={activeTab} onValueChange={goTab} className="space-y-4">
         <TabsList className="flex flex-wrap h-auto gap-1 bg-muted p-1 rounded-lg">
           <TabsTrigger value="general"><ShieldCheck size={14} className="mr-1.5" />General</TabsTrigger>
+          <TabsTrigger value="reading-suite"><BookOpen size={14} className="mr-1.5" />Reading Suite</TabsTrigger>
           <TabsTrigger value="network"><Network size={14} className="mr-1.5" />Profiles</TabsTrigger>
           <TabsTrigger value="modalities"><Server size={14} className="mr-1.5" />Modalities</TabsTrigger>
           <TabsTrigger value="pacs"><Radio size={14} className="mr-1.5" />PACS Servers</TabsTrigger>
@@ -312,9 +479,70 @@ export default function RadiologySettingsCenter() {
           <TabsTrigger value="advanced"><ShieldAlert size={14} className="mr-1.5" />Advanced</TabsTrigger>
         </TabsList>
 
+        {isAdmin && (
+          <div className="rounded-lg border bg-muted/30 p-3 flex flex-wrap items-end gap-3">
+            <div className="flex-1 min-w-[240px]">
+              <Label className="text-xs font-semibold">Change reason (optional — appears in History tab)</Label>
+              <Input
+                className="h-8 mt-1 text-sm"
+                value={changeReason}
+                onChange={(e) => setChangeReason(e.target.value)}
+                placeholder="e.g. Updated OHIF URL after NAS migration"
+              />
+            </div>
+            <p className="text-[11px] text-muted-foreground max-w-md">
+              Applied to the next PACS/viewer/premium setting you save on this page.
+            </p>
+          </div>
+        )}
+
         {/* Tab content 1: Network Profiles */}
         {/* ── Phase E: GENERAL — plain-language everyday options ── */}
         <TabsContent value="general" className="space-y-4">
+          <div className="rounded-xl border bg-card p-5 space-y-3" data-testid="radiology-settings-overview">
+            <div>
+              <h3 className="text-sm font-bold">Radiology Settings Center — start here</h3>
+              <p className="text-xs text-muted-foreground mt-1">
+                This is the main admin hub for PACS, viewers, MWL, report style, voice, and USG extraction.
+                Browser-only productivity toggles live under Settings → Radiology Flags; server roadmap switches under Feature Flags.
+              </p>
+            </div>
+            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              {([
+                { tab: "network", title: "Network profiles", desc: "LAN / Tailscale / Public routing for Orthanc & viewers" },
+                { tab: "pacs", title: "PACS servers", desc: "Orthanc / Conquest endpoints and AE titles" },
+                { tab: "viewers", title: "Viewers", desc: "OHIF & Weasis launch URLs and diagnostics" },
+                { tab: "mwl", title: "DICOM & MWL", desc: "Modality worklist sync and status" },
+                { tab: "style", title: "Report style", desc: "Letterhead, fonts, and print chrome" },
+                { tab: "voice", title: "Voice", desc: "Dictation provider and radiologist prefs" },
+                { tab: "usg-extraction", title: "USG extraction", desc: "Measurement / SR extraction for ultrasound" },
+                { tab: "reporting", title: "AI & templates", desc: "AI reporting panels and template helpers" },
+                { tab: "diagnostics", title: "Diagnostics", desc: "Live health checks for PACS services" },
+              ] as const).map((card) => (
+                <button
+                  key={card.tab}
+                  type="button"
+                  onClick={() => goTab(card.tab)}
+                  className="text-left rounded-lg border bg-muted/20 hover:bg-muted/50 p-3 transition-colors"
+                  data-testid={`radiology-settings-goto-${card.tab}`}
+                >
+                  <div className="text-xs font-semibold">{card.title}</div>
+                  <div className="text-[11px] text-muted-foreground mt-0.5 leading-snug">{card.desc}</div>
+                </button>
+              ))}
+            </div>
+            <div className="flex flex-wrap gap-2 pt-1">
+              <Button type="button" size="sm" variant="outline" className="h-7 text-[11px]" onClick={() => navigate("/settings?tab=radiology")}>
+                ERP Settings → Radiology
+              </Button>
+              <Button type="button" size="sm" variant="outline" className="h-7 text-[11px]" onClick={() => navigate("/settings?tab=feature-flags")}>
+                Server Feature Flags
+              </Button>
+              <Button type="button" size="sm" variant="outline" className="h-7 text-[11px]" onClick={() => navigate("/radiology/reporting-workspace")}>
+                Open Reporting Workspace
+              </Button>
+            </div>
+          </div>
           <div className="rounded-xl border bg-card p-5 space-y-4 max-w-2xl">
             <h3 className="text-sm font-bold">General Radiology Options</h3>
             <p className="text-xs text-muted-foreground">Everyday behavior of the Radiology module. Safe to change; takes effect immediately for new page loads.</p>
@@ -340,9 +568,9 @@ export default function RadiologySettingsCenter() {
             <div className="flex items-center justify-between border rounded-lg p-3">
               <div>
                 <Label className="text-xs font-semibold">Lock report after Final sign-off</Label>
-                <p className="text-[11px] text-muted-foreground">Finalized reports are locked in the Reading Room (Save/Finalize disabled after sign-off). Keep ON; owner amendments go through preserved owner tools.</p>
+                <p className="text-[11px] text-muted-foreground">Moved to <button type="button" className="underline text-primary" onClick={() => goTab("reading-suite")}>Reading Suite</button> — default OFF for trial.</p>
               </div>
-              <Switch checked={svOn("report_final_lock")} disabled={!isAdmin}
+              <Switch checked={svOn("report_final_lock", false)} disabled={!isAdmin}
                 onCheckedChange={(v) => upsertSetting.mutate({ key: "report_final_lock", value: String(v), category: "radiology" })} />
             </div>
             <div className="space-y-1">
@@ -355,6 +583,158 @@ export default function RadiologySettingsCenter() {
                 disabled={!isAdmin}
               />
               <p className="text-[11px] text-muted-foreground">A red "waiting" badge appears on Worklist studies that haven't been finalized within this many hours — helps reception spot studies stuck in the queue.</p>
+            </div>
+          </div>
+          <div className="rounded-xl border bg-card p-4 space-y-2 max-w-2xl">
+            <h4 className="text-xs font-bold uppercase tracking-wide text-muted-foreground">Related admin pages</h4>
+            <div className="flex flex-wrap gap-2 text-sm">
+              <a href="/settings/radiology-quick-select" className="text-primary hover:underline">USG Quick Select</a>
+              <span className="text-muted-foreground">·</span>
+              <a href="/radiology/hl7-settings" className="text-primary hover:underline">HL7 / ORM settings</a>
+              <span className="text-muted-foreground">·</span>
+              <a href="/radiology/structured-report-templates" className="text-primary hover:underline">Structured templates</a>
+              <span className="text-muted-foreground">·</span>
+              <a href="/radiology/normal-templates" className="text-primary hover:underline">Normal one-click templates</a>
+            </div>
+          </div>
+        </TabsContent>
+
+        <TabsContent value="reading-suite" className="space-y-4" data-testid="reading-suite-tab">
+          <div className="rounded-xl border bg-card p-5 space-y-2 max-w-3xl">
+            <h3 className="text-sm font-bold flex items-center gap-2">
+              <BookOpen size={16} className="text-sky-600" /> Reading Suite
+            </h3>
+            <p className="text-xs text-muted-foreground">
+              One place for Worklist + Reporting Workspace behaviour. Trial defaults favour speed over hard locks —
+              tighten these when you go live with a multi-reader roster.
+            </p>
+          </div>
+
+          <div className="rounded-xl border bg-card p-5 space-y-4 max-w-3xl">
+            <h4 className="text-xs font-bold uppercase tracking-wide text-muted-foreground">Permissions &amp; safety</h4>
+            <div className="flex items-center justify-between border rounded-lg p-3">
+              <div>
+                <Label className="text-xs font-semibold">Lock report after Final sign-off</Label>
+                <p className="text-[11px] text-muted-foreground">
+                  OFF (trial default): you can keep editing after Finalize. ON: Final/Amended reports become read-only in the workspace.
+                </p>
+              </div>
+              <Switch checked={svOn("report_final_lock", false)} disabled={!isAdmin}
+                onCheckedChange={(v) => upsertSetting.mutate({ key: "report_final_lock", value: String(v), category: "radiology" })} />
+            </div>
+            <div className="flex items-center justify-between border rounded-lg p-3">
+              <div>
+                <Label className="text-xs font-semibold">Relax concurrent study locks</Label>
+                <p className="text-[11px] text-muted-foreground">
+                  ON (trial default): owners/radiologists can keep typing even if another session holds the study lock.
+                  Turn OFF for strict single-reader safety.
+                </p>
+              </div>
+              <Switch checked={svOn("report_relax_study_locks", true)} disabled={!isAdmin}
+                onCheckedChange={(v) => upsertSetting.mutate({ key: "report_relax_study_locks", value: String(v), category: "radiology" })} />
+            </div>
+          </div>
+
+          <div className="rounded-xl border bg-card p-5 space-y-4 max-w-3xl">
+            <h4 className="text-xs font-bold uppercase tracking-wide text-muted-foreground">Worklist queue</h4>
+            <div className="flex items-center justify-between border rounded-lg p-3">
+              <div>
+                <Label className="text-xs font-semibold">Highlight Urgent / VIP studies</Label>
+                <p className="text-[11px] text-muted-foreground">Tints STAT / EMERGENCY / URGENT / VIP rows on the Worklist.</p>
+              </div>
+              <Switch checked={svOn("urgent_highlight_enabled")} disabled={!isAdmin}
+                onCheckedChange={(v) => upsertSetting.mutate({ key: "urgent_highlight_enabled", value: String(v), category: "radiology" })} />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">Aging alert after (hours)</Label>
+              <Input
+                type="number" min={1} max={72} className="h-8 text-sm w-32"
+                placeholder="4"
+                defaultValue={sv("radiology_aging_alert_hours", "4")}
+                onBlur={(e) => upsertSetting.mutate({ key: "radiology_aging_alert_hours", value: e.target.value.trim() || "4", category: "radiology" })}
+                disabled={!isAdmin}
+              />
+              <p className="text-[11px] text-muted-foreground">Red “waiting” badge on studies not finalized within this window.</p>
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              Modality quick filter (USG / MRI / More) lives on the <button type="button" className="underline text-primary" onClick={() => navigate("/radiology/worklist")}>Worklist</button>, not the reporting editor.
+            </p>
+          </div>
+
+          <div className="rounded-xl border bg-card p-5 space-y-4 max-w-3xl">
+            <h4 className="text-xs font-bold uppercase tracking-wide text-muted-foreground">MRI study warm cache</h4>
+            <p className="text-[11px] text-muted-foreground">
+              Speeds up Reporting Workspace MRI opens by touching today+yesterday (or last N) MR studies in Orthanc
+              every ~10 minutes, and by prefetching DICOMweb metadata in the browser when the queue loads.
+              Pixel data stays in Orthanc — nothing heavy is stored in the ERP database.
+            </p>
+            <div className="flex items-center justify-between border rounded-lg p-3">
+              <div>
+                <Label className="text-xs font-semibold">Enable MRI warm cache</Label>
+                <p className="text-[11px] text-muted-foreground">ON (trial default). Disable if Orthanc load is a concern overnight.</p>
+              </div>
+              <Switch checked={svOn("mri_warm_cache_enabled", true)} disabled={!isAdmin}
+                onCheckedChange={(v) => upsertSetting.mutate({ key: "mri_warm_cache_enabled", value: String(v), category: "radiology" })} />
+            </div>
+            <div className="grid sm:grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <Label className="text-xs">Selection mode</Label>
+                <select
+                  className="h-8 w-full text-xs border rounded-md px-2 bg-background"
+                  disabled={!isAdmin}
+                  value={sv("mri_warm_cache_mode", "today_yesterday")}
+                  onChange={(e) => upsertSetting.mutate({ key: "mri_warm_cache_mode", value: e.target.value, category: "radiology" })}
+                >
+                  <option value="today_yesterday">Today + Yesterday (auto-refresh daily)</option>
+                  <option value="last_n">Last N MRI cases</option>
+                </select>
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs">Last N (when mode = Last N)</Label>
+                <Input
+                  type="number" min={5} max={50} className="h-8 text-sm w-32"
+                  placeholder="20"
+                  defaultValue={sv("mri_warm_cache_last_n", "20")}
+                  onBlur={(e) => upsertSetting.mutate({ key: "mri_warm_cache_last_n", value: e.target.value.trim() || "20", category: "radiology" })}
+                  disabled={!isAdmin}
+                />
+              </div>
+            </div>
+            <MriWarmCacheStatusPanel />
+          </div>
+
+          <div className="rounded-xl border bg-card p-5 space-y-4 max-w-3xl">
+            <h4 className="text-xs font-bold uppercase tracking-wide text-muted-foreground">Spine format upgrade</h4>
+            <p className="text-[11px] text-muted-foreground">
+              Expands Cervical / Dorsal / LS structured templates to per-level anatomy (C2–C7, T1–T12, L1–S1)
+              and remaps Quick Select sections that still point at old bundled labels like “C2-C3 to C6-C7”.
+              Safe to run more than once — only upgrades when the new preset has more sections.
+            </p>
+            <SpineFormatUpgradePanel disabled={!isAdmin} />
+          </div>
+
+          <div className="rounded-xl border bg-card p-5 space-y-3 max-w-3xl">
+            <h4 className="text-xs font-bold uppercase tracking-wide text-muted-foreground">Reporting content &amp; tools</h4>
+            <div className="grid sm:grid-cols-2 gap-2 text-sm">
+              {[
+                { href: "/settings/radiology-quick-select", label: "Quick Select (findings & protocols)" },
+                { href: "/radiology/structured-report-templates", label: "Structured templates" },
+                { href: "/radiology/normal-templates", label: "Normal one-click templates" },
+                { href: "/radiology/ai-reporting-settings", label: "AI reporting" },
+                { href: "/radiology/usg-admin-settings", label: "USG extraction admin" },
+                { href: "/settings/radiology/knowledge-packs", label: "Knowledge packs" },
+                { href: "/radiology/reporting-workspace", label: "Open Reporting Workspace" },
+                { href: "/radiology/worklist", label: "Open Worklist" },
+              ].map((l) => (
+                <button
+                  key={l.href}
+                  type="button"
+                  className="text-left rounded-lg border px-3 py-2 hover:bg-muted/50 text-primary"
+                  onClick={() => navigate(l.href)}
+                >
+                  {l.label}
+                </button>
+              ))}
             </div>
           </div>
         </TabsContent>
@@ -483,6 +863,11 @@ export default function RadiologySettingsCenter() {
 
         {/* Tab content 4: Viewers */}
         <TabsContent value="viewers" className="space-y-4">
+          <PacsViewerSetupWizard
+            lanIpHint={settings.find((s) => s.key === "lan_host")?.value ?? ""}
+            setSetting={(key, value) => upsertSetting.mutate({ key, value, category: "viewer" })}
+            onSaved={() => void qc.invalidateQueries({ queryKey: ["pacs-settings"] })}
+          />
           <div className="rounded-xl border bg-card p-5 space-y-4">
             <h3 className="font-semibold text-sm flex items-center gap-2">
               <MonitorPlay size={16} className="text-primary" />
@@ -492,7 +877,7 @@ export default function RadiologySettingsCenter() {
               <div className="space-y-2">
                 <label className="text-xs font-semibold">Default PACS Viewer</label>
                 <select
-                  value={settings.find(s => s.key === "default_viewer")?.value ?? "OHIF"}
+                  value={settings.find(s => s.key === "default_viewer")?.value ?? "WEASIS"}
                   onChange={(e) => upsertSetting.mutate({ key: "default_viewer", value: e.target.value, category: "viewer" })}
                   className="w-full h-9 text-sm border rounded-md px-2 bg-background"
                 >
@@ -518,7 +903,7 @@ export default function RadiologySettingsCenter() {
 
             <div className="space-y-4 pt-4 border-t">
               {/* Quick-fill for clinic LAN — no IP is invented; asks for the
-                  real address instead of assuming 192.168.1.137, which is
+                  real address instead of assuming 172.16.1.139, which is
                   not correct for every deployment. */}
               <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 flex items-start gap-3">
                 <div className="flex-1 min-w-0">
@@ -530,7 +915,7 @@ export default function RadiologySettingsCenter() {
                 <button
                   className="flex-shrink-0 px-3 py-1.5 text-xs font-semibold bg-amber-600 hover:bg-amber-700 text-white rounded-md"
                   onClick={() => {
-                    const lanIp = window.prompt("Enter your clinic's LAN IP (e.g. 192.168.1.137) — never a Docker bridge IP like 172.17.x.x:");
+                    const lanIp = window.prompt("Enter your clinic's LAN IP (e.g. 172.16.1.139) — never a Docker bridge IP like 172.17.x.x:");
                     if (!lanIp) return;
                     if (isDockerBridgeIpLike(lanIp)) {
                       toast({ title: "That looks like a Docker bridge IP", description: "Use your real clinic LAN IP instead — browsers and Weasis cannot reach Docker-internal addresses.", variant: "destructive" });
@@ -543,7 +928,7 @@ export default function RadiologySettingsCenter() {
                     upsertSetting.mutate({ key: "weasis_wado_url",              value: `http://${lanIp}:8042/wado`,                             category: "viewer" });
                     upsertSetting.mutate({ key: "weasis_manifest_url_template", value: `weasis://$dicom:get -w "http://${lanIp}:8042/wado?requestType=WADO&studyUID={studyInstanceUID}&contentType=application/dicom"`, category: "viewer" });
                     upsertSetting.mutate({ key: "viewer_mode",                  value: "BOTH",                                                       category: "viewer" });
-                    upsertSetting.mutate({ key: "default_viewer",               value: "OHIF",                                                       category: "viewer" });
+                    upsertSetting.mutate({ key: "default_viewer",               value: "WEASIS",                                                       category: "viewer" });
                   }}
                 >
                   Fill In LAN IP…
@@ -609,40 +994,45 @@ export default function RadiologySettingsCenter() {
 
         {/* Tab content 5: DICOM & MWL */}
         <TabsContent value="mwl" className="space-y-4">
+          <MwlStatusPanel
+            isAdmin={isAdmin}
+            syncing={mwlSyncing}
+            onSync={async () => {
+              setMwlSyncing(true);
+              try {
+                const r = await api.post<{ total: number; written: number; removed: number }>("/api/radiology/mwl-worklist/sync", {});
+                toast({ title: "MWL sync complete", description: `${r.written} written, ${r.removed} removed (${r.total} procedures)` });
+                void qc.invalidateQueries({ queryKey: ["mwl-deployment-status"] });
+              } catch (e: unknown) {
+                toast({ title: "MWL sync failed", description: e instanceof Error ? e.message : "Error", variant: "destructive" });
+              } finally {
+                setMwlSyncing(false);
+              }
+            }}
+          />
           <div className="grid lg:grid-cols-2 gap-6">
             <div className="space-y-6">
               <div className="rounded-xl border bg-card p-5 space-y-3">
                 <h3 className="font-semibold text-sm flex items-center gap-2">
                   <Wrench size={16} className="text-primary" />
-                  MWL Config
+                  How it works
                 </h3>
                 <div className="flex items-start gap-2 text-xs text-muted-foreground">
                   <Info size={14} className="mt-0.5 shrink-0 text-primary" />
                   <p>
-                    The Modality Worklist AE Title &amp; port are configured on the <strong>Windows MWL agent</strong>
-                    itself (see the DICOM Agent setup guide below), not stored here. The ERP serves scheduled
-                    procedures to that agent over <code className="font-mono">GET /api/internal/radiology/mwl</code>.
+                    <strong>Bill USG</strong> → ERP writes patient name + accession to a shared folder →
+                    <strong> USG machine C-FINDs</strong> the worklist → technologist selects patient (no re-typing) →
+                    scan ends → <strong>Orthanc</strong> → ERP matches accession → queue completes + reporting worklist updates.
                   </p>
                 </div>
-              </div>
-              <div className="rounded-xl border bg-card p-5 space-y-4">
-                <h3 className="font-semibold text-sm flex items-center gap-2">
-                  <Radio size={16} className="text-primary" />
-                  DICOM Puller scheduler
-                </h3>
-                <p className="text-xs text-muted-foreground">
-                  The cron puller runs queries on configured DICOM nodes. Select node pull settings under PACS Servers.
+                <p className="text-[11px] text-muted-foreground">
+                  Alternative: Windows MWL agent queries <code className="font-mono bg-muted px-1 rounded">GET /api/internal/radiology/mwl</code> — see Agent Setup panel →
                 </p>
-                <div className="flex items-center justify-between p-3 rounded-lg border bg-muted/40">
-                  <div className="space-y-0.5">
-                    <span className="text-xs font-semibold">Auto-puller Service Daemon</span>
-                    <p className="text-[11px] text-muted-foreground">Triggers matching C-MOVE commands to conquest destination</p>
-                  </div>
-                  <Badge variant="outline" className="text-green-600 border-green-200">Active</Badge>
-                </div>
+                <p className="text-[11px] text-muted-foreground">
+                  DICOM auto-puller schedules are configured under <strong>PACS Servers</strong>.
+                </p>
               </div>
             </div>
-
             <div className="space-y-6">
               <AgentSetupPanel />
             </div>
@@ -796,12 +1186,16 @@ export default function RadiologySettingsCenter() {
                 </p>
                 <Button
                   className="w-full justify-center h-9"
-                  onClick={() => {
-                    toast({ title: "Sync triggered" });
-                    api.post("/api/sync/trigger", {});
+                  onClick={async () => {
+                    try {
+                      const r = await api.post<{ total: number; written: number; removed: number }>("/api/radiology/mwl-worklist/sync", {});
+                      toast({ title: "MWL sync complete", description: `${r.written} written, ${r.removed} removed` });
+                    } catch (e: unknown) {
+                      toast({ title: "MWL sync failed", description: e instanceof Error ? e.message : "Error", variant: "destructive" });
+                    }
                   }}
                 >
-                  Trigger Sync Now
+                  Sync MWL Worklist Now
                 </Button>
               </div>
             </div>
@@ -890,11 +1284,17 @@ export default function RadiologySettingsCenter() {
           <div className="rounded-xl border bg-card p-5 space-y-3 max-w-3xl">
             <h3 className="text-sm font-bold">Premium Report Presentation</h3>
             <p className="text-xs text-muted-foreground">
-              Owner configuration for the preserved Premium Report module (opened via the "Premium Preview" button in the Reading Room and Worklist). These switches are stored as admin settings and applied by the Premium Report module.
+              Choose the clinic-wide report layout below. All print, PDF, and workspace preview surfaces use the same canonical server renderer. Radiologists can still compare layouts in the Reading Room preview without changing this default.
             </p>
+            <ReportLayoutQuickSelect
+              value={activeReportLayout}
+              activeKey={activeReportLayout}
+              disabled={!isAdmin}
+              onChange={setActiveReportLayout}
+              className="max-w-md"
+            />
             <div className="grid md:grid-cols-2 gap-2">
               {([
-                ["premium_layout_enabled", "Premium Report Layout", "Master switch for the premium presentation layer."],
                 ["premium_image_panel", "Image Panel", "Right-side representative DICOM images from Orthanc."],
                 ["premium_qr_verification", "QR Verification", "Printed QR code for report authenticity checks."],
                 ["premium_digital_signature", "Digital Signature", "Radiologist signature block on the final report."],
@@ -909,8 +1309,11 @@ export default function RadiologySettingsCenter() {
                     <Label className="text-xs font-semibold">{label}</Label>
                     <p className="text-[11px] text-muted-foreground">{help}</p>
                   </div>
-                  <Switch checked={svOn(key)} disabled={!isAdmin}
-                    onCheckedChange={(v) => upsertSetting.mutate({ key, value: String(v), category: "premium" })} />
+                  <Switch
+                    checked={svOn(key, false)}
+                    disabled={!isAdmin}
+                    onCheckedChange={(v) => upsertSetting.mutate({ key, value: String(v), category: "premium" })}
+                  />
                 </div>
               ))}
             </div>
@@ -929,8 +1332,9 @@ export default function RadiologySettingsCenter() {
           <div className="rounded-xl border bg-card p-5 space-y-3 max-w-3xl">
             <h3 className="text-sm font-bold">Report Letterhead Size</h3>
             <p className="text-xs text-muted-foreground">
-              Enlarge the report header, clinic logo, clinic name/address block and the footer.
-              These sizing overrides apply on top of the selected report template and affect both draft previews and finalized reports.
+              Baseline sizes for header, logo and footer. For logo left/right, clinic name/address
+              alignment, and the line under the header, use the <strong>Style</strong> tab — those
+              Style settings override these sizes on print and PDF.
             </p>
             <div className="grid sm:grid-cols-3 gap-4">
               <div className="space-y-2">
@@ -1038,6 +1442,53 @@ export default function RadiologySettingsCenter() {
               Advanced PACS Hardening
             </h3>
             <RisMonitorCommandGrid />
+          </div>
+
+          <div className="rounded-xl border bg-card p-5 space-y-3">
+            <h3 className="font-semibold text-sm flex items-center gap-2">
+              <Cpu size={16} className="text-primary" />
+              Radiology admin tools (moved from sidebar)
+            </h3>
+            <p className="text-xs text-muted-foreground">
+              Deep tools keep their routes; discovery is here and under Settings → Radiology Tools.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {[
+                { href: "/radiology/advanced-tools", label: "Advanced Tools catalog" },
+                { href: "/radiology/network-control-center", label: "Network Control" },
+                { href: "/dicom-nodes", label: "DICOM Nodes" },
+                { href: "/radiology/modality-management", label: "Modalities" },
+                { href: "/radiology/dicom-agent-dashboard", label: "DICOM Agent" },
+                { href: "/radiology/watchdog", label: "Watchdog" },
+                { href: "/radiology/hl7-settings", label: "HL7 Settings" },
+                { href: "/radiology/ai-reporting-settings", label: "AI Reporting" },
+                { href: "/radiology/ai-prompt-manager", label: "AI Prompt Manager" },
+                { href: "/radiology/ai-comparison", label: "AI Comparison" },
+                { href: "/radiology/missed-finding-detector", label: "Missed Finding Detector" },
+                { href: "/radiology/image-review", label: "Image Review" },
+                { href: "/radiology/provider-fallback", label: "Provider Fallback" },
+                { href: "/settings/radiology/knowledge-packs", label: "Knowledge Packs" },
+                { href: "/teaching-cases", label: "Teaching Files" },
+              ].map((item) => (
+                <Button
+                  key={item.href}
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-xs"
+                  onClick={() => navigate(item.href)}
+                >
+                  {item.label}
+                </Button>
+              ))}
+            </div>
+            <Button
+              size="sm"
+              variant="secondary"
+              className="h-8"
+              onClick={() => navigate("/settings?tab=radiology")}
+            >
+              Open Settings → Radiology Tools hub
+            </Button>
           </div>
 
           <div className="rounded-xl border bg-card p-5 space-y-4">
@@ -1191,7 +1642,7 @@ function VoiceSettingsPanel({ settings, upsertSetting, isAdmin }: {
             <Input className="h-9 text-sm font-mono" disabled={!isAdmin} defaultValue={getRaw("voice_local_stt_url")}
               key={`lsu-${getRaw("voice_local_stt_url")}`}
               onBlur={(e) => { if (e.target.value.trim() !== getRaw("voice_local_stt_url")) set("voice_local_stt_url", e.target.value.trim()); }}
-              placeholder="http://192.168.1.137:9000 (empty = off)" />
+              placeholder="http://172.16.1.139:9000 (empty = off)" />
             <div className="flex gap-2">
               <select className="h-8 text-xs border rounded-md px-2 bg-background" disabled={!isAdmin}
                 value={getRaw("voice_local_stt_kind") === "whispercpp" ? "whispercpp" : "openai"}

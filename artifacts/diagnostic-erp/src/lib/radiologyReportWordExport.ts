@@ -125,8 +125,21 @@ export function safeFileNamePart(raw: string): string {
  * inventoryExports.ts) — docx/file-saver are not bundled into the main chunk.
  */
 export async function exportRadiologyReportToWord(html: string, fileBaseName: string): Promise<void> {
-  const { Document, Packer, Paragraph, TextRun, AlignmentType, BorderStyle } = await import("docx");
-  const { saveAs } = await import("file-saver");
+  let Document: typeof import("docx").Document;
+  let Packer: typeof import("docx").Packer;
+  let Paragraph: typeof import("docx").Paragraph;
+  let TextRun: typeof import("docx").TextRun;
+  let AlignmentType: typeof import("docx").AlignmentType;
+  let BorderStyle: typeof import("docx").BorderStyle;
+  let saveAs: typeof import("file-saver").saveAs;
+  try {
+    ({ Document, Packer, Paragraph, TextRun, AlignmentType, BorderStyle } = await import("docx"));
+    ({ saveAs } = await import("file-saver"));
+  } catch {
+    throw new Error(
+      "Could not load the Word export module (page is stale or the ERP tunnel returned an error page). Reload this page and try again.",
+    );
+  }
 
   const blocks = parseReportHtmlToBlocks(html);
   const children: InstanceType<typeof Paragraph>[] = [];

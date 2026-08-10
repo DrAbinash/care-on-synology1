@@ -136,7 +136,9 @@ function converter(callingae, calledae, ip, port)
     return
   end
 
-  -- CONQUEST stores names as "Last^First^Middle" — normalise to readable form.
+  -- CONQUEST stores names as "Last^First^Middle" — strip carets so the ERP
+  -- intake can reformat (First Last, MD) and match against billed names.
+  -- Full PN cleanup (degrees/titles/order) runs server-side in Care.
   local raw_name   = PatientsName or PatientName or ""
   local patient_name = raw_name:gsub("%^", " "):match("^%s*(.-)%s*$")
   if patient_name == "" then patient_name = "UNKNOWN" end
@@ -146,7 +148,8 @@ function converter(callingae, calledae, ip, port)
   local modality     = Modality             or "OT"
   local description  = StudyDescription     or ""
   local study_date   = StudyDate            or ""
-  local referring_dr = ReferringPhysiciansName or ""
+  local referring_raw = ReferringPhysiciansName or ""
+  local referring_dr = referring_raw:gsub("%^", " "):match("^%s*(.-)%s*$") or ""
 
   local body = string.format(
     '{"patientId":"%s","patientName":"%s","accessionNumber":"%s",'

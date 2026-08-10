@@ -136,6 +136,8 @@ export async function sendDailySummaryEmail(params: {
   unclassifiedCollected: number;
   discountsGiven: number;
   refundsAndCancellations: number;
+  refundAmount?: number;
+  cancelledBillAmount?: number;
   averageBillValue: number;
   newPatients: number;
   totalOutstandingDues: number;
@@ -160,7 +162,7 @@ export async function sendDailySummaryEmail(params: {
 
   const inr = (n: number) => `₹${n.toLocaleString("en-IN", { minimumFractionDigits: 2 })}`;
 
-  const cards = [
+  const cards: Array<[string, string]> = [
     ["Total Revenue Collected", inr(params.totalRevenue)],
     ["Total Outstanding Dues", inr(params.totalOutstandingDues)],
     ["Cash Collected", inr(params.cashCollected)],
@@ -168,11 +170,18 @@ export async function sendDailySummaryEmail(params: {
     ["Average Bill Value", inr(params.averageBillValue)],
     ["New Patients Today", String(params.newPatients)],
   ];
-  const cardHtml = cards.map(([label, value]) => `
-    <div style="flex:1;min-width:150px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:12px">
-      <div style="font-size:11px;color:#6b7280">${label}</div>
-      <div style="font-size:16px;font-weight:700;color:#065f46;margin-top:2px">${value}</div>
-    </div>`).join("");
+  const cardCell = ([label, value]: [string, string]) => `
+    <td style="width:33.33%;padding:5px;vertical-align:top">
+      <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:12px;box-sizing:border-box">
+        <div style="font-size:11px;color:#6b7280">${label}</div>
+        <div style="font-size:16px;font-weight:700;color:#065f46;margin-top:2px">${value}</div>
+      </div>
+    </td>`;
+  const cardHtml = `
+    <table role="presentation" style="width:100%;border-collapse:separate;border-spacing:0;margin-bottom:16px">
+      <tr>${cards.slice(0, 3).map(cardCell).join("")}</tr>
+      <tr>${cards.slice(3, 6).map(cardCell).join("")}</tr>
+    </table>`;
 
   const rows: Array<[string, string]> = [
     ["Date", params.date],
@@ -180,7 +189,8 @@ export async function sendDailySummaryEmail(params: {
     ["Bills Pending / Partial", String(params.pendingBills)],
     ["Bills Edited", String(params.billsEdited)],
     ["Discounts Given", inr(params.discountsGiven)],
-    ["Refunds & Cancellations", inr(params.refundsAndCancellations)],
+    ["Refunds (money returned)", inr(params.refundAmount ?? params.refundsAndCancellations)],
+    ["Cancelled Bills (info)", inr(params.cancelledBillAmount ?? 0)],
     ["Expenses (Cash)", inr(params.cashExpenses)],
     ["Expenses (Digital)", inr(params.digitalExpenses)],
   ];
@@ -237,7 +247,7 @@ export async function sendDailySummaryEmail(params: {
         <p style="margin:4px 0 0;opacity:0.85;font-size:13px">${params.date}</p>
       </div>
       <div style="background:white;padding:20px;border-radius:0 0 8px 8px;border:1px solid #e2e8f0">
-        <div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:16px">${cardHtml}</div>
+        ${cardHtml}
         <table style="width:100%;border-collapse:collapse">${rowHtml}</table>
         ${staffRowHtml ? `
         <h3 style="font-size:13px;color:#374151;margin:20px 0 8px">Staff-wise Collections</h3>

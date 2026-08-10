@@ -13,6 +13,7 @@ import {
   type Doctor,
 } from "@workspace/api-client-react";
 import { saAuthHeaders } from "@/lib/saApi";
+import { doctorMatchesQuery } from "@/lib/doctorSearch";
 
 const SA_BOOKS_KEY = ["/api/super-admin/books"] as const;
 const SA_DOCTORS_KEY = ["/api/super-admin/doctors-list"] as const;
@@ -425,11 +426,7 @@ function AssignDoctorsModal({
     },
   });
 
-  const filtered = allDoctors.filter(d =>
-    !filter ||
-    d.name.toLowerCase().includes(filter.toLowerCase()) ||
-    (d.specialization ?? "").toLowerCase().includes(filter.toLowerCase()),
-  );
+  const filtered = allDoctors.filter((d) => doctorMatchesQuery(d, filter));
 
   const toggle = (id: number) => {
     const next = new Set(selected);
@@ -449,7 +446,7 @@ function AssignDoctorsModal({
         </div>
 
         <Input
-          placeholder="Filter by name or specialization…"
+          placeholder="Search by name (e.g. abi), specialty, or ID…"
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
           className="mb-3"

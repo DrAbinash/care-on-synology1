@@ -48,7 +48,10 @@ import { syncStudyToSite, getMultiSiteWorklist, getSites } from "../lib/multiSit
 import { decideRouting, getRoutingStats } from "../lib/dicomRoutingOptimizer";
 import { runMatchingEngineForWorklist } from "./internal-radiology";
 import { calculateMatchScore } from "../lib/pacs/matchingEngine";
+import { DEFAULT_INSTITUTIONAL_STYLE } from "../lib/institutionalReportStyle.js";
+import { publishRadiologyStudyToMwl } from "../lib/pacs/publishRadiologyStudyToMwl";
 import { logger } from "../lib/logger";
+import { radiologyBroadcaster, type RadiologyUpdateEvent } from "../lib/radiologyBroadcast";
 
 // Build an absolute https URL for share-link composition. Trusts the standard
 // reverse-proxy headers `x-forwarded-proto` / `x-forwarded-host`. The proxy
@@ -74,6 +77,15 @@ const MODALITY_MAP: Record<string, string> = {
   "DEXA": "BMD",
 };
 const RADIOLOGY_DEPARTMENTS = Object.keys(MODALITY_MAP);
+
+/** Postgres undefined_table / undefined_column — schema lag after a deploy. */
+function isSchemaDriftError(err: unknown): boolean {
+  const e = err as { code?: string; message?: string } | null;
+  const code = e?.code ?? "";
+  if (code === "42P01" || code === "42703") return true;
+  const msg = (e?.message ?? String(err)).toLowerCase();
+  return msg.includes("does not exist") || msg.includes("undefined_column") || msg.includes("undefined_table");
+}
 
 function todayISO(): string {
   const d = new Date();
@@ -194,6 +206,27 @@ export async function generateStudiesForOrder(opts: {
           // Never block study creation on assignment failure
         }
 
+        // ── Antigravity MWL path: ERP names + accession → modality ──
+        // Best-effort. Always inserts radiology_scheduled_procedures (queried by
+        // the Windows MWL agent). Writes Orthanc .wl when ORTHANC_WORKLIST_DIR
+        // is set. Return match uses accession (work id) + optional CARE-BILL.
+        try {
+          await publishRadiologyStudyToMwl({
+            accessionNumber: row.accessionNumber,
+            patientId: opts.patientId,
+            billId: opts.billId,
+            orderId: opts.orderId,
+            modality,
+            procedureName: ot.testName,
+            studyDescription: opts.dicomFields?.studyDescription ?? ot.testName,
+            referringDoctor: opts.dicomFields?.referringDoctor ?? row.referringDoctor ?? null,
+            bodyPart: opts.dicomFields?.bodyPart ?? null,
+            stationAeTitle: opts.dicomFields?.scheduledStationAETitle ?? null,
+          });
+        } catch {
+          // Never block study creation on MWL publish failure
+        }
+
         out.push({ orderTestId: ot.orderTestId, testName: ot.testName, modality, accessionNumber: row.accessionNumber });
         lastErr = null;
         break;
@@ -272,40 +305,40 @@ export async function reconcileMissingStudies(): Promise<number> {
 //   assigned=unclaimed → studies awaiting a radiologist (acquired/in-prelim, no claim)
 //   assigned=mine&staffId=NN → studies claimed by the given staff
 radiologyRouter.get("/worklist", async (req, res) => {
-  const date = (req.query.date as string) || todayISO();
-  const status = (req.query.status as string) || "";
-  const modality = (req.query.modality as string) || "";
-  const search = (req.query.search as string)?.trim() || "";
-  const assigned = (req.query.assigned as string) || "";
-  // staffId is only meaningful for `assigned=mine`. Reject malformed values
-  // (e.g. "undefined") with a 400 instead of silently coercing to 0 and
-  // returning an empty worklist that looks like "you have no studies".
-  const rawStaffId = req.query.staffId;
-  let staffId: number | null = null;
-  if (rawStaffId !== undefined && rawStaffId !== null && rawStaffId !== "") {
-    const n = Number(rawStaffId);
-    if (!Number.isInteger(n) || n < 1) {
-      res.status(400).json({ error: "Invalid staffId" });
-      return;
+  try {
+    const date = (req.query.date as string) || todayISO();
+    const status = (req.query.status as string) || "";
+    const modality = (req.query.modality as string) || "";
+    const search = (req.query.search as string)?.trim() || "";
+    const assigned = (req.query.assigned as string) || "";
+    // staffId is only meaningful for `assigned=mine`. Reject malformed values
+    // (e.g. "undefined") with a 400 instead of silently coercing to 0 and
+    // returning an empty worklist that looks like "you have no studies".
+    const rawStaffId = req.query.staffId;
+    let staffId: number | null = null;
+    if (rawStaffId !== undefined && rawStaffId !== null && rawStaffId !== "") {
+      const n = Number(rawStaffId);
+      if (!Number.isInteger(n) || n < 1) {
+        res.status(400).json({ error: "Invalid staffId" });
+        return;
+      }
+      staffId = n;
     }
-    staffId = n;
-  }
 
-  const conds = [eq(radiologyStudiesTable.studyDate, date)];
-  if (status && status !== "all") conds.push(eq(radiologyStudiesTable.status, status));
-  if (modality && modality !== "all") conds.push(eq(radiologyStudiesTable.modality, modality));
-  if (assigned === "unclaimed") {
-    conds.push(isNull(radiologyStudiesTable.assignedRadiologistId));
-  } else if (assigned === "mine") {
-    if (staffId === null) {
-      res.status(400).json({ error: "assigned=mine requires staffId" });
-      return;
+    const conds = [eq(radiologyStudiesTable.studyDate, date)];
+    if (status && status !== "all") conds.push(eq(radiologyStudiesTable.status, status));
+    if (modality && modality !== "all") conds.push(eq(radiologyStudiesTable.modality, modality));
+    if (assigned === "unclaimed") {
+      conds.push(isNull(radiologyStudiesTable.assignedRadiologistId));
+    } else if (assigned === "mine") {
+      if (staffId === null) {
+        res.status(400).json({ error: "assigned=mine requires staffId" });
+        return;
+      }
+      conds.push(eq(radiologyStudiesTable.assignedRadiologistId, staffId));
     }
-    conds.push(eq(radiologyStudiesTable.assignedRadiologistId, staffId));
-  }
 
-  const rows = await db
-    .select({
+    const baseSelect = {
       id: radiologyStudiesTable.id,
       accessionNumber: radiologyStudiesTable.accessionNumber,
       modality: radiologyStudiesTable.modality,
@@ -338,33 +371,67 @@ radiologyRouter.get("/worklist", async (req, res) => {
       testName: testsTable.name,
       billId: billsTable.id,
       billNumber: billsTable.billNumber,
-      lockUserId: radiologyStudyLocksTable.userId,
-      lockUserName: radiologyStudyLocksTable.userName,
-      lockTime: radiologyStudyLocksTable.lockTime,
-      lockLastActivityAt: radiologyStudyLocksTable.lastActivityAt,
-      lockWorkstation: radiologyStudyLocksTable.workstation,
-    })
-    .from(radiologyStudiesTable)
-    .leftJoin(patientsTable, eq(patientsTable.id, radiologyStudiesTable.patientId))
-    .leftJoin(testsTable, eq(testsTable.id, radiologyStudiesTable.testId))
-    .leftJoin(billsTable, eq(billsTable.id, radiologyStudiesTable.billId))
-    .leftJoin(radiologyStudyLocksTable, eq(radiologyStudyLocksTable.studyId, radiologyStudiesTable.id))
-    .where(and(...conds))
-    .orderBy(asc(radiologyStudiesTable.scheduledAt));
+    } as const;
 
-  let filtered = rows;
-  if (search) {
-    const s = search.toLowerCase();
-    filtered = rows.filter((r) =>
-      r.accessionNumber.toLowerCase().includes(s) ||
-      (r.patientName ?? "").toLowerCase().includes(s) ||
-      (r.patientCode ?? "").toLowerCase().includes(s) ||
-      (r.patientPhone ?? "").toLowerCase().includes(s) ||
-      (r.testName ?? "").toLowerCase().includes(s) ||
-      (r.testCode ?? "").toLowerCase().includes(s)
-    );
+    let rows;
+    try {
+      rows = await db
+        .select({
+          ...baseSelect,
+          lockUserId: radiologyStudyLocksTable.userId,
+          lockUserName: radiologyStudyLocksTable.userName,
+          lockTime: radiologyStudyLocksTable.lockTime,
+          lockLastActivityAt: radiologyStudyLocksTable.lastActivityAt,
+          lockWorkstation: radiologyStudyLocksTable.workstation,
+        })
+        .from(radiologyStudiesTable)
+        .leftJoin(patientsTable, eq(patientsTable.id, radiologyStudiesTable.patientId))
+        .leftJoin(testsTable, eq(testsTable.id, radiologyStudiesTable.testId))
+        .leftJoin(billsTable, eq(billsTable.id, radiologyStudiesTable.billId))
+        .leftJoin(radiologyStudyLocksTable, eq(radiologyStudyLocksTable.studyId, radiologyStudiesTable.id))
+        .where(and(...conds))
+        .orderBy(asc(radiologyStudiesTable.scheduledAt));
+    } catch (lockErr) {
+      // Prod DBs that lag the radiology_study_locks migration used to 500 the
+      // entire RIS Study Queue. Serve the queue without lock columns instead.
+      if (!isSchemaDriftError(lockErr)) throw lockErr;
+      req.log.warn({ err: lockErr }, "[worklist] radiology_study_locks missing — serving without locks");
+      const plain = await db
+        .select(baseSelect)
+        .from(radiologyStudiesTable)
+        .leftJoin(patientsTable, eq(patientsTable.id, radiologyStudiesTable.patientId))
+        .leftJoin(testsTable, eq(testsTable.id, radiologyStudiesTable.testId))
+        .leftJoin(billsTable, eq(billsTable.id, radiologyStudiesTable.billId))
+        .where(and(...conds))
+        .orderBy(asc(radiologyStudiesTable.scheduledAt));
+      rows = plain.map((r) => ({
+        ...r,
+        lockUserId: null,
+        lockUserName: null,
+        lockTime: null,
+        lockLastActivityAt: null,
+        lockWorkstation: null,
+      }));
+    }
+
+    let filtered = rows;
+    if (search) {
+      const s = search.toLowerCase();
+      filtered = rows.filter((r) =>
+        r.accessionNumber.toLowerCase().includes(s) ||
+        (r.patientName ?? "").toLowerCase().includes(s) ||
+        (r.patientCode ?? "").toLowerCase().includes(s) ||
+        (r.patientPhone ?? "").toLowerCase().includes(s) ||
+        (r.testName ?? "").toLowerCase().includes(s) ||
+        (r.testCode ?? "").toLowerCase().includes(s)
+      );
+    }
+    res.json(filtered);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    req.log.error({ err }, "[worklist] Route Error");
+    res.status(500).json({ error: message, message });
   }
-  res.json(filtered);
 });
 
 // GET /api/radiology/pacs-worklist/count — total rows in radiology_worklist (no filters).
@@ -378,6 +445,39 @@ radiologyRouter.get("/pacs-worklist/count", async (req, res) => {
   const totalRows = parseInt(rows[0]?.n ?? "0", 10);
   req.log.info({ totalRows }, "[pacs-worklist/count] DB row count");
   res.json({ totalRows });
+});
+
+// GET /api/radiology/pacs-worklist-stream — SSE push when PACS intake arrives
+// (EventSource cannot send Authorization; pass ?staffToken= from localStorage).
+radiologyRouter.get("/pacs-worklist-stream", async (req, res): Promise<void> => {
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.setHeader("Content-Encoding", "identity");
+  res.flushHeaders();
+
+  const writeEvent = (data: object): void => {
+    try {
+      res.write(`data: ${JSON.stringify(data)}\n\n`);
+    } catch { /* client disconnected */ }
+  };
+
+  writeEvent({ type: "connected", ts: Date.now() });
+
+  const heartbeat = setInterval(() => {
+    try { res.write(": heartbeat\n\n"); } catch { /* ignore */ }
+  }, 25_000);
+
+  const onUpdate = (evt: RadiologyUpdateEvent): void => {
+    writeEvent({ type: "refresh", worklistId: evt.worklistId, ts: evt.ts });
+  };
+  radiologyBroadcaster.on("radiology-update", onUpdate);
+
+  req.on("close", () => {
+    clearInterval(heartbeat);
+    radiologyBroadcaster.off("radiology-update", onUpdate);
+  });
 });
 
 // GET /api/radiology/pacs-worklist?status=&modality=&search=
@@ -395,88 +495,99 @@ radiologyRouter.get("/pacs-worklist", async (req, res) => {
     if (status && status !== "all") conds.push(eq(radiologyWorklistTable.status, status));
     if (modality && modality !== "all") conds.push(eq(radiologyWorklistTable.modality, modality));
 
-    const rows = await db
-      .select({
-        id: radiologyWorklistTable.id,
-        studyId: radiologyWorklistTable.studyId,
-        patientId: radiologyWorklistTable.patientId,
-        dicomPatientId: radiologyWorklistTable.dicomPatientId,
-        patientMatchStatus: radiologyWorklistTable.patientMatchStatus,
-        patientName: radiologyWorklistTable.patientName,
-        age: radiologyWorklistTable.age,
-        sex: radiologyWorklistTable.sex,
-        modality: radiologyWorklistTable.modality,
-        studyDescription: radiologyWorklistTable.studyDescription,
-        studyDate: radiologyWorklistTable.studyDate,
-        accessionNumber: radiologyWorklistTable.accessionNumber,
-        studyInstanceUID: radiologyWorklistTable.studyInstanceUID,
-        aeTitle: radiologyWorklistTable.aeTitle,
-        ipAddress: radiologyWorklistTable.ipAddress,
-        port: radiologyWorklistTable.port,
-        referringDoctor: radiologyWorklistTable.referringDoctor,
-        weasisUrl: radiologyWorklistTable.weasisUrl,
-        sourcePacs: radiologyWorklistTable.sourcePacs,
-        sourceAeTitle: radiologyWorklistTable.sourceAeTitle,
-        dicomMetadata: radiologyWorklistTable.dicomMetadata,
-        status: radiologyWorklistTable.status,
-        assignedRadiologist: radiologyWorklistTable.assignedRadiologist,
-        // M1.6B1 — id-based assignment (organizational ownership)
-        assignedRadiologistId: radiologyWorklistTable.assignedRadiologistId,
-        assignedAt: radiologyWorklistTable.assignedAt,
-        assignedByName: radiologyWorklistTable.assignedByName,
-        aiDraftStatus: radiologyWorklistTable.aiDraftStatus,
-        aiDraftJson: radiologyWorklistTable.aiDraftJson,
-        aiFeedback: radiologyWorklistTable.aiFeedback,
-        aiFeedbackAt: radiologyWorklistTable.aiFeedbackAt,
-        reportId: radiologyWorklistTable.reportId,
-        deliveryStatus: radiologyWorklistTable.deliveryStatus,
-        createdAt: radiologyWorklistTable.createdAt,
-        updatedAt: radiologyWorklistTable.updatedAt,
-        // M1.6A — real lock columns.
-        lockUserId: radiologyWorklistTable.lockUserId,
-        lockUserName: radiologyWorklistTable.lockUserName,
-        lockTime: radiologyWorklistTable.lockTime,
-        lockLastActivityAt: radiologyWorklistTable.lockLastActivityAt,
-        lockWorkstation: radiologyWorklistTable.lockWorkstation,
-        // Phase C (unified worklist) — ADDITIVE fields only, no schema change.
-        // UHID from the matched ERP patient; bill number resolved via the
-        // linked study (radiology_studies.bill_id → bills.bill_number).
-        uhid: patientsTable.patientId,
-        billNumber: billsTable.billNumber,
-        // Priority REUSES the existing radiology_studies.priority column
-        // (stat | emergency | urgent | routine | vip) via the same join —
-        // no new table or column created (schema-growth minimization).
-        priority: radiologyStudiesTable.priority,
-        // R2.0 — canonical ultrasound integration: fold USG/Doppler
-        // measurement + key-image counts and the latest report-draft status
-        // into the ONE PACS worklist row, so USG studies never need a
-        // separate worklist. Scalar subqueries (not a GROUP BY) to keep this
-        // additive and avoid touching the existing filter/sort/pagination
-        // logic above — each of the three tables already carries an index
-        // on worklist_id (see usgMeasurements.ts), so this is cheap even
-        // computed unconditionally for every row.
-        usgMeasurementCount: sql<number>`(
-          select count(*) from ${usgMeasurementsTable}
-          where ${usgMeasurementsTable.worklistId} = ${radiologyWorklistTable.id}
-        )`.mapWith(Number),
-        usgKeyImageCount: sql<number>`(
-          select count(*) from ${usgKeyImagesTable}
-          where ${usgKeyImagesTable.worklistId} = ${radiologyWorklistTable.id}
-        )`.mapWith(Number),
-        usgReportStatus: sql<string | null>`(
-          select ${usgReportDraftsTable.status} from ${usgReportDraftsTable}
-          where ${usgReportDraftsTable.worklistId} = ${radiologyWorklistTable.id}
-          order by ${usgReportDraftsTable.updatedAt} desc
-          limit 1
-        )`,
-      })
-      .from(radiologyWorklistTable)
-      .leftJoin(patientsTable, eq(radiologyWorklistTable.patientId, patientsTable.id))
-      .leftJoin(radiologyStudiesTable, eq(radiologyWorklistTable.studyId, radiologyStudiesTable.id))
-      .leftJoin(billsTable, eq(radiologyStudiesTable.billId, billsTable.id))
-      .where(conds.length > 0 ? and(...conds) : undefined)
-      .orderBy(desc(radiologyWorklistTable.createdAt))
-      .limit(500);
+    const coreSelect = {
+      id: radiologyWorklistTable.id,
+      studyId: radiologyWorklistTable.studyId,
+      patientId: radiologyWorklistTable.patientId,
+      dicomPatientId: radiologyWorklistTable.dicomPatientId,
+      patientMatchStatus: radiologyWorklistTable.patientMatchStatus,
+      patientName: radiologyWorklistTable.patientName,
+      age: radiologyWorklistTable.age,
+      sex: radiologyWorklistTable.sex,
+      modality: radiologyWorklistTable.modality,
+      studyDescription: radiologyWorklistTable.studyDescription,
+      studyDate: radiologyWorklistTable.studyDate,
+      accessionNumber: radiologyWorklistTable.accessionNumber,
+      studyInstanceUID: radiologyWorklistTable.studyInstanceUID,
+      aeTitle: radiologyWorklistTable.aeTitle,
+      ipAddress: radiologyWorklistTable.ipAddress,
+      port: radiologyWorklistTable.port,
+      referringDoctor: radiologyWorklistTable.referringDoctor,
+      weasisUrl: radiologyWorklistTable.weasisUrl,
+      sourcePacs: radiologyWorklistTable.sourcePacs,
+      sourceAeTitle: radiologyWorklistTable.sourceAeTitle,
+      dicomMetadata: radiologyWorklistTable.dicomMetadata,
+      status: radiologyWorklistTable.status,
+      assignedRadiologist: radiologyWorklistTable.assignedRadiologist,
+      // M1.6B1 — id-based assignment (organizational ownership)
+      assignedRadiologistId: radiologyWorklistTable.assignedRadiologistId,
+      assignedAt: radiologyWorklistTable.assignedAt,
+      assignedByName: radiologyWorklistTable.assignedByName,
+      aiDraftStatus: radiologyWorklistTable.aiDraftStatus,
+      aiDraftJson: radiologyWorklistTable.aiDraftJson,
+      aiFeedback: radiologyWorklistTable.aiFeedback,
+      aiFeedbackAt: radiologyWorklistTable.aiFeedbackAt,
+      reportId: radiologyWorklistTable.reportId,
+      deliveryStatus: radiologyWorklistTable.deliveryStatus,
+      createdAt: radiologyWorklistTable.createdAt,
+      updatedAt: radiologyWorklistTable.updatedAt,
+      // M1.6A — real lock columns.
+      lockUserId: radiologyWorklistTable.lockUserId,
+      lockUserName: radiologyWorklistTable.lockUserName,
+      lockTime: radiologyWorklistTable.lockTime,
+      lockLastActivityAt: radiologyWorklistTable.lockLastActivityAt,
+      lockWorkstation: radiologyWorklistTable.lockWorkstation,
+      // Phase C (unified worklist) — ADDITIVE fields only, no schema change.
+      uhid: patientsTable.patientId,
+      billNumber: billsTable.billNumber,
+      testName: testsTable.name,
+      priority: radiologyStudiesTable.priority,
+    } as const;
+
+    // R2.0 — USG scalar subqueries. Optional: if usg_* tables lag migrations,
+    // we retry without them so the PACS worklist still loads.
+    const usgSelect = {
+      usgMeasurementCount: sql<number>`(
+        select count(*) from ${usgMeasurementsTable}
+        where ${usgMeasurementsTable.worklistId} = ${radiologyWorklistTable.id}
+      )`.mapWith(Number),
+      usgKeyImageCount: sql<number>`(
+        select count(*) from ${usgKeyImagesTable}
+        where ${usgKeyImagesTable.worklistId} = ${radiologyWorklistTable.id}
+      )`.mapWith(Number),
+      usgReportStatus: sql<string | null>`(
+        select ${usgReportDraftsTable.status} from ${usgReportDraftsTable}
+        where ${usgReportDraftsTable.worklistId} = ${radiologyWorklistTable.id}
+        order by ${usgReportDraftsTable.updatedAt} desc
+        limit 1
+      )`,
+    } as const;
+
+    const runQuery = (includeUsg: boolean) =>
+      db
+        .select(includeUsg ? { ...coreSelect, ...usgSelect } : {
+          ...coreSelect,
+          usgMeasurementCount: sql<number>`0`.mapWith(Number),
+          usgKeyImageCount: sql<number>`0`.mapWith(Number),
+          usgReportStatus: sql<string | null>`NULL`,
+        })
+        .from(radiologyWorklistTable)
+        .leftJoin(patientsTable, eq(radiologyWorklistTable.patientId, patientsTable.id))
+        .leftJoin(radiologyStudiesTable, eq(radiologyWorklistTable.studyId, radiologyStudiesTable.id))
+        .leftJoin(billsTable, eq(radiologyStudiesTable.billId, billsTable.id))
+        .leftJoin(testsTable, eq(radiologyStudiesTable.testId, testsTable.id))
+        .where(conds.length > 0 ? and(...conds) : undefined)
+        .orderBy(desc(radiologyWorklistTable.createdAt))
+        .limit(500);
+
+    let rows;
+    try {
+      rows = await runQuery(true);
+    } catch (usgErr) {
+      if (!isSchemaDriftError(usgErr)) throw usgErr;
+      req.log.warn({ err: usgErr }, "[pacs-worklist] USG tables/columns missing — serving without USG extras");
+      rows = await runQuery(false);
+    }
 
     // M1.6A — serve lock expiry SERVER-computed (lock_last_activity_at +
     // configured TTL), so no client derives it from its own clock or a
@@ -495,6 +606,7 @@ radiologyRouter.get("/pacs-worklist", async (req, res) => {
         (r.patientName ?? "").toLowerCase().includes(s) ||
         (r.accessionNumber ?? "").toLowerCase().includes(s) ||
         (r.studyDescription ?? "").toLowerCase().includes(s) ||
+        ((r as any).testName ?? "").toLowerCase().includes(s) ||
         (r.referringDoctor ?? "").toLowerCase().includes(s) ||
         ((r as any).uhid ?? "").toLowerCase().includes(s) ||
         ((r as any).billNumber ?? "").toLowerCase().includes(s)
@@ -505,7 +617,10 @@ radiologyRouter.get("/pacs-worklist", async (req, res) => {
     res.json(filtered);
   } catch (err: any) {
     req.log.error(err, "[pacs-worklist] Route Error");
-    res.status(500).json({ error: "Internal server error", message: err.message, stack: err.stack });
+    // Put the real Postgres/detail message in `error` so UI toasts are actionable
+    // (sanitizeApiErrorMessage previously hid it behind the generic wrapper).
+    const message = err?.message || "Internal server error";
+    res.status(500).json({ error: message, message, stack: err?.stack });
   }
 });
 
@@ -920,6 +1035,14 @@ radiologyRouter.post("/:id/report", async (req, res) => {
   }
 
   const [row] = await db.update(radiologyStudiesTable).set(updates).where(eq(radiologyStudiesTable.id, id)).returning();
+  if (body.stage === "final" && existing.testId) {
+    const { hookConsumeOnStudyFinalized } = await import("../lib/inventoryConsumption");
+    hookConsumeOnStudyFinalized({
+      id: row.id,
+      testId: existing.testId,
+      finalReportedBy: body.reportedBy ?? null,
+    });
+  }
   res.json(row);
 });
 
@@ -1261,6 +1384,27 @@ radiologyRouter.get("/pacs-settings", async (_req, res) => {
   res.json(rows);
 });
 
+// ── MRI warm cache (Reporting Workspace speed) ─────────────────────────────
+radiologyRouter.get("/mri-warm-cache/status", async (_req, res) => {
+  try {
+    const { getMriWarmCacheStatus } = await import("../lib/pacs/mriStudyWarmer");
+    res.json(getMriWarmCacheStatus());
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : "status unavailable" });
+  }
+});
+
+radiologyRouter.post("/mri-warm-cache/run", async (req, res) => {
+  try {
+    const { runMriWarmCache } = await import("../lib/pacs/mriStudyWarmer");
+    const force = (req.body as { force?: boolean } | undefined)?.force !== false;
+    const status = await runMriWarmCache({ force });
+    res.json(status);
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : "warm run failed" });
+  }
+});
+
 // POST /api/radiology/pacs-settings  (upsert by key+category)
 radiologyRouter.post("/pacs-settings", async (req, res) => {
   const staffReq = req as StaffAuthRequest;
@@ -1313,6 +1457,13 @@ radiologyRouter.post("/pacs-settings", async (req, res) => {
       changedBy,
       changedByName,
     });
+  }
+
+  // Premium Report master switch → canonical presentation template (R1.1/R1.2).
+  if (key === "premium_layout_enabled" && category === "premium" && oldValue !== newValue) {
+    const { writeActiveSelection } = await import("../lib/presentationTemplateStore.js");
+    const templateKey = newValue === "true" ? "care-premium" : "care-classic";
+    await writeActiveSelection("standard", templateKey, { id: changedBy, name: changedByName });
   }
 
   res.json(row);
@@ -2522,6 +2673,123 @@ radiologyRouter.get("/pacs-worklist/:id/matching-candidates", async (req, res) =
   }
 });
 
+/**
+ * GET /api/radiology/frequent-referring-doctors
+ * Top referring-doctor names from recent worklist rows — the short list
+ * radiologists need as one-tap chips in Reporting Workspace.
+ */
+radiologyRouter.get("/frequent-referring-doctors", async (req, res) => {
+  try {
+    const limitRaw = Number(req.query.limit);
+    const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(Math.trunc(limitRaw), 1), 24) : 12;
+    const rows = await db.execute<{ name: string; count: string }>(sql`
+      SELECT trim(referring_doctor) AS name, COUNT(*)::text AS count
+        FROM radiology_worklist
+       WHERE referring_doctor IS NOT NULL
+         AND trim(referring_doctor) <> ''
+         AND created_at >= NOW() - INTERVAL '120 days'
+       GROUP BY trim(referring_doctor)
+       ORDER BY COUNT(*) DESC, trim(referring_doctor) ASC
+       LIMIT ${limit}
+    `);
+    const list = ((rows as unknown as { rows?: Array<{ name: string; count: string }> }).rows
+      ?? (rows as unknown as Array<{ name: string; count: string }>))
+      .map((r) => ({ name: r.name, count: Number(r.count) || 0 }))
+      .filter((r) => r.name);
+    res.json({ doctors: list });
+  } catch (err: any) {
+    logger.error({ err }, "frequent-referring-doctors failed");
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * PATCH /api/radiology/pacs-worklist/:id/referring-doctor
+ * One-tap referring-doctor fix from Reporting Workspace. Updates the worklist
+ * row and the linked radiology_studies row when present (report header + MWL).
+ */
+radiologyRouter.patch("/pacs-worklist/:id/referring-doctor", async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isFinite(id) || id <= 0) {
+      res.status(400).json({ error: "Invalid worklist id" });
+      return;
+    }
+    const raw = (req.body as { referringDoctor?: unknown } | undefined)?.referringDoctor;
+    if (typeof raw !== "string") {
+      res.status(400).json({ error: "referringDoctor string required (empty clears)" });
+      return;
+    }
+    const referringDoctor = raw.trim() || null;
+
+    const [worklistItem] = await db
+      .select({
+        id: radiologyWorklistTable.id,
+        studyId: radiologyWorklistTable.studyId,
+        accessionNumber: radiologyWorklistTable.accessionNumber,
+        referringDoctor: radiologyWorklistTable.referringDoctor,
+      })
+      .from(radiologyWorklistTable)
+      .where(eq(radiologyWorklistTable.id, id))
+      .limit(1);
+
+    if (!worklistItem) {
+      res.status(404).json({ error: "Worklist item not found" });
+      return;
+    }
+
+    await db
+      .update(radiologyWorklistTable)
+      .set({ referringDoctor, updatedAt: new Date() })
+      .where(eq(radiologyWorklistTable.id, id));
+
+    if (worklistItem.studyId) {
+      await db
+        .update(radiologyStudiesTable)
+        .set({ referringDoctor, updatedAt: new Date() })
+        .where(eq(radiologyStudiesTable.id, worklistItem.studyId));
+    }
+
+    await db.insert(radiologyAuditLogTable).values({
+      worklistId: id,
+      accessionNumber: worklistItem.accessionNumber,
+      action: "REFERRING_DOCTOR_SET",
+      actor: (req as StaffAuthRequest).staffSession?.subjectName || "staff",
+      details: JSON.stringify({
+        from: worklistItem.referringDoctor,
+        to: referringDoctor,
+      }),
+    });
+
+    res.json({ ok: true, referringDoctor });
+  } catch (err: any) {
+    logger.error({ err }, "Error setting referring doctor");
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/radiology/pacs-worklist/:id/auto-link-billed-study — link worklist to billed radiology_studies when patient is billed but study_id is null
+radiologyRouter.post("/pacs-worklist/:id/auto-link-billed-study", async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) {
+      res.status(400).json({ error: "Invalid ID" });
+      return;
+    }
+    const { autoLinkBilledStudyForWorklist } = await import("../lib/pacs/worklistBillingLink");
+    const actor = (req as { staffSession?: { subjectName?: string } }).staffSession?.subjectName || "staff";
+    const result = await autoLinkBilledStudyForWorklist(id, actor);
+    if (result.linked && result.studyId) {
+      const { runMatchingEngineForWorklist } = await import("./internal-radiology");
+      try { await runMatchingEngineForWorklist(id); } catch { /* non-blocking */ }
+    }
+    res.json({ success: result.linked, ...result });
+  } catch (err: unknown) {
+    logger.error({ err }, "Error in auto-link-billed-study");
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
 // POST /api/radiology/pacs-worklist/:id/link-study — manually bind a studyId to worklist row
 radiologyRouter.post("/pacs-worklist/:id/link-study", async (req, res) => {
   try {
@@ -2661,25 +2929,7 @@ radiologyRouter.get("/institutional-style", async (req, res) => {
     if (!style) {
       res.json({
         id: 1,
-        presetName: "Care Diagnostics Default",
-        sectionOrder: "Technique,Findings,Impression",
-        showClinicalHistory: true,
-        showComparison: true,
-        showRecommendation: true,
-        showCriticalCommunication: true,
-        showMeasurements: true,
-        headingStyle: "underlined",
-        abnormalEmphasis: "bold_abnormal",
-        spacing: "standard",
-        printLayout: "letterhead",
-        margins: "standard",
-        fontSize: "standard",
-        showRadiologistName: true,
-        showDegree: true,
-        showRegNumber: true,
-        showDigitalSignature: true,
-        showTimestamp: true,
-        showQrVerification: true,
+        ...DEFAULT_INSTITUTIONAL_STYLE,
       });
       return;
     }
@@ -2708,11 +2958,26 @@ radiologyRouter.put("/institutional-style", async (req, res) => {
       showCriticalCommunication: body.showCriticalCommunication !== false,
       showMeasurements: body.showMeasurements !== false,
       headingStyle: body.headingStyle || "underlined",
+      subheadingStyle: body.subheadingStyle || body.headingStyle || "underlined",
       abnormalEmphasis: body.abnormalEmphasis || "bold_abnormal",
       spacing: body.spacing || "standard",
+      lineGap: body.lineGap || body.spacing || "standard",
       printLayout: body.printLayout || "letterhead",
       margins: body.margins || "standard",
       fontSize: body.fontSize || "standard",
+      fontFamily: body.fontFamily || "arial",
+      logoPosition: body.logoPosition || "left",
+      signaturePosition: body.signaturePosition || "right",
+      imagePlacement: body.imagePlacement || "inline",
+      studyTitleStyle: body.studyTitleStyle || "underlined",
+      logoScale: body.logoScale || "large",
+      clinicNameScale: body.clinicNameScale || "large",
+      addressScale: body.addressScale || "large",
+      nameAlign: body.nameAlign || "left",
+      addressAlign: body.addressAlign || "center",
+      headerRuleEnabled: body.headerRuleEnabled !== false,
+      headerRuleThickness: body.headerRuleThickness || "medium",
+      headerRuleColor: body.headerRuleColor || "accent",
       showRadiologistName: body.showRadiologistName !== false,
       showDegree: body.showDegree !== false,
       showRegNumber: body.showRegNumber !== false,

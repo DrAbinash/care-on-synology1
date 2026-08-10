@@ -231,6 +231,7 @@ describe("matchWorkspaceShortcut (Phase 11)", () => {
 
   it("M1.5: Ctrl+Shift+N/P/K → next / previous / park", () => {
     expect(matchWorkspaceShortcut({ key: "N", ctrlKey: true, shiftKey: true })).toBe("next-study");
+    expect(matchWorkspaceShortcut({ key: "F", ctrlKey: true, shiftKey: true })).toBe("focus-mode");
     expect(matchWorkspaceShortcut({ key: "P", metaKey: true, shiftKey: true })).toBe("previous-study");
     expect(matchWorkspaceShortcut({ key: "K", ctrlKey: true, shiftKey: true })).toBe("park-study");
   });

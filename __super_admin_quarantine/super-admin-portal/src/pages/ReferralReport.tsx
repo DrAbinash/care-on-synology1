@@ -16,10 +16,13 @@ import {
   ArrowLeft, Printer, Stethoscope, Users, FileText, IndianRupee, TrendingUp, Download, FileSpreadsheet, Percent, Clock, HelpCircle, MessageCircle, Send, Check, AlertTriangle, ChevronRight, ShieldCheck,
 } from "lucide-react";
 import { saAuthHeaders } from "@/lib/saApi";
+import { DoctorSearchSelect } from "@/components/DoctorSearchSelect";
 import { exportCommissionPdf } from "@/lib/exportCommissionPdf";
 import { exportCommissionExcel } from "@/lib/exportCommissionExcel";
 import { exportCommissionWord } from "@/lib/exportCommissionWord";
 import type { CommissionDoctorEntryX, CommissionTestGroupRowX } from "@/lib/exportCommissionPdf";
+import { saveHtmlAsWord } from "@/lib/saveHtmlAsWord";
+import { saveAs } from "file-saver";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 type SaDoctor = { id: number; name: string };
@@ -537,6 +540,313 @@ const DEFAULT_COLS: ColFlags = {
   discount: false,
 };
 
+type XCell = {
+  value?: string | number | null;
+  type?: typeof String | typeof Number;
+  fontWeight?: "bold";
+  align?: "left" | "center" | "right";
+  backgroundColor?: string;
+} | null;
+
+const AMBER = "#FEF3C7";
+const GREY = "#E5E7EB";
+
+function patientRowCells(row: PatientRow, cols: ColFlags, discountFmt: DiscountFmt): XCell[] {
+  return [
+    { value: fmtDate(row.date), type: String },
+    { value: row.patientName, type: String },
+    { value: row.testName, type: String },
+    ...(cols.billNo ? [{ value: row.billNumber, type: String } as XCell] : []),
+    ...(cols.orderNo ? [{ value: row.orderNumber, type: String } as XCell] : []),
+    ...(cols.category ? [{ value: row.category, type: String } as XCell] : []),
+    ...(cols.rate ? [{ value: fmtRate(row.ruleType, row.ruleValue), align: "center" as const } as XCell] : []),
+    ...(cols.billAmount ? [{ value: row.price, type: Number, align: "right" as const } as XCell] : []),
+    ...(cols.discount ? [{
+      value: row.billDiscount > 0 ? fmtDiscount(discountFmt, row.billDiscount, row.billSubtotal) : "—",
+      align: "center" as const,
+    } as XCell] : []),
+    { value: row.commission, type: Number, align: "right" },
+  ];
+}
+
+function patientHeaderCells(cols: ColFlags, discountFmt: DiscountFmt): XCell[] {
+  return [
+    { value: "Date", fontWeight: "bold", backgroundColor: GREY },
+    { value: "Patient Name", fontWeight: "bold", backgroundColor: GREY },
+    { value: "Test Name", fontWeight: "bold", backgroundColor: GREY },
+    ...(cols.billNo ? [{ value: "Bill No", fontWeight: "bold", backgroundColor: GREY } as XCell] : []),
+    ...(cols.orderNo ? [{ value: "Order No", fontWeight: "bold", backgroundColor: GREY } as XCell] : []),
+    ...(cols.category ? [{ value: "Category", fontWeight: "bold", backgroundColor: GREY } as XCell] : []),
+    ...(cols.rate ? [{ value: "Rate", fontWeight: "bold", backgroundColor: GREY, align: "center" as const } as XCell] : []),
+    ...(cols.billAmount ? [{ value: "Bill Amt", fontWeight: "bold", backgroundColor: GREY, align: "right" as const } as XCell] : []),
+    ...(cols.discount ? [{
+      value: discountFmt === "percent" ? "Discount %" : "Discount",
+      fontWeight: "bold",
+      backgroundColor: GREY,
+      align: "center" as const,
+    } as XCell] : []),
+    { value: "Commission", fontWeight: "bold", backgroundColor: GREY, align: "right" },
+  ];
+}
+
+/** Excel export that mirrors the on-screen By Doctor / Rate Bands layouts (patient-level detail). */
+async function exportViewLayoutExcel(
+  mode: "by-doctor" | "rate-bands",
+  report: DoctorEntry[],
+  from: string,
+  to: string,
+  doctorLabel: string,
+  cols: ColFlags,
+  discountFmt: DiscountFmt,
+  bandCats: Set<string>,
+): Promise<void> {
+  const rows: XCell[][] = [
+    [{ value: "Referral & Commission Report", fontWeight: "bold" }],
+    [{ value: `Period: ${from} to ${to} · Doctor: ${doctorLabel}` }],
+    [{ value: `View: ${mode === "by-doctor" ? "By Doctor" : "Rate Bands"}` }],
+    [null],
+  ];
+
+  if (mode === "by-doctor") {
+    const header = patientHeaderCells(cols, discountFmt);
+    for (const e of report) {
+      rows.push([
+        { value: e.doctor.name, fontWeight: "bold", backgroundColor: AMBER },
+        ...Array(header.length - 1).fill(null),
+      ]);
+      rows.push(header);
+      for (const r of e.rows) rows.push(patientRowCells(r, cols, discountFmt));
+      const agg = uniqueBillDiscount(e.rows);
+      const totalCells: XCell[] = [
+        { value: "TOTAL", fontWeight: "bold" },
+        null,
+        null,
+        ...(cols.billNo ? [null] : []),
+        ...(cols.orderNo ? [null] : []),
+        ...(cols.category ? [null] : []),
+        ...(cols.rate ? [null] : []),
+        ...(cols.billAmount ? [{ value: e.totalRevenue, type: Number, fontWeight: "bold", align: "right" } as XCell] : []),
+        ...(cols.discount ? [{
+          value: agg.discount > 0 ? fmtDiscount(discountFmt, agg.discount, agg.subtotal) : "—",
+          fontWeight: "bold",
+          align: "center" as const,
+        } as XCell] : []),
+        { value: e.totalCommission, type: Number, fontWeight: "bold", align: "right" },
+      ];
+      rows.push(totalCells);
+      rows.push([null]);
+    }
+    if (report.length > 1) {
+      const allRows = report.flatMap((e) => e.rows);
+      const agg = uniqueBillDiscount(allRows);
+      const grandComm = report.reduce((s, e) => s + e.totalCommission, 0);
+      const grandRev = report.reduce((s, e) => s + e.totalRevenue, 0);
+      rows.push([
+        { value: "GRAND TOTAL", fontWeight: "bold", backgroundColor: AMBER },
+        null,
+        null,
+        ...(cols.billNo ? [null] : []),
+        ...(cols.orderNo ? [null] : []),
+        ...(cols.category ? [null] : []),
+        ...(cols.rate ? [null] : []),
+        ...(cols.billAmount ? [{ value: grandRev, type: Number, fontWeight: "bold", align: "right" } as XCell] : []),
+        ...(cols.discount ? [{
+          value: agg.discount > 0 ? fmtDiscount(discountFmt, agg.discount, agg.subtotal) : "—",
+          fontWeight: "bold",
+          align: "center" as const,
+        } as XCell] : []),
+        { value: grandComm, type: Number, fontWeight: "bold", align: "right" },
+      ]);
+    }
+  } else {
+    const bands = buildRateBands(report, bandCats);
+    for (const b of bands) {
+      rows.push([
+        { value: `${b.label} — ${b.kind === "outsourced" ? "Outsourced" : "In-house"}`, fontWeight: "bold", backgroundColor: AMBER },
+        null, null, null,
+        ...(cols.billNo ? [null] : []),
+        ...(cols.orderNo ? [null] : []),
+        { value: b.commission, type: Number, fontWeight: "bold", align: "right" },
+      ]);
+      rows.push([
+        { value: "Date", fontWeight: "bold", backgroundColor: GREY },
+        { value: "Patient Name", fontWeight: "bold", backgroundColor: GREY },
+        { value: "Referring Doctor", fontWeight: "bold", backgroundColor: GREY },
+        ...(cols.billNo ? [{ value: "Bill No", fontWeight: "bold", backgroundColor: GREY } as XCell] : []),
+        ...(cols.orderNo ? [{ value: "Order No", fontWeight: "bold", backgroundColor: GREY } as XCell] : []),
+        { value: "Bill Amt", fontWeight: "bold", backgroundColor: GREY, align: "right" },
+        ...(b.kind === "outsourced" ? [{ value: "Lab Cost", fontWeight: "bold", backgroundColor: GREY, align: "right" as const } as XCell] : []),
+        { value: "Commission", fontWeight: "bold", backgroundColor: GREY, align: "right" },
+      ]);
+      for (const t of b.tests) {
+        rows.push([
+          { value: `${t.testName}${t.category ? ` (${t.category})` : ""} — ${t.count} test(s)`, fontWeight: "bold" },
+          null,
+          null,
+          ...(cols.billNo ? [null] : []),
+          ...(cols.orderNo ? [null] : []),
+          { value: t.revenue, type: Number, fontWeight: "bold", align: "right" },
+          ...(b.kind === "outsourced" ? [{ value: t.outsourceCost, type: Number, fontWeight: "bold", align: "right" } as XCell] : []),
+          { value: t.commission, type: Number, fontWeight: "bold", align: "right" },
+        ]);
+        for (const r of t.rows) {
+          rows.push([
+            { value: fmtDate(r.date), type: String },
+            { value: r.patientName, type: String },
+            { value: r.doctorName, type: String },
+            ...(cols.billNo ? [{ value: r.billNumber, type: String } as XCell] : []),
+            ...(cols.orderNo ? [{ value: r.orderNumber, type: String } as XCell] : []),
+            { value: r.price, type: Number, align: "right" },
+            ...(b.kind === "outsourced" ? [{ value: r.outsourceCost, type: Number, align: "right" } as XCell] : []),
+            { value: r.commission, type: Number, align: "right" },
+          ]);
+        }
+      }
+      rows.push([null]);
+    }
+    const totRevenue = bands.reduce((s, b) => s + b.revenue, 0);
+    const totCommission = bands.reduce((s, b) => s + b.commission, 0);
+    rows.push([
+      { value: `GRAND TOTAL (${bands.length} bands)`, fontWeight: "bold", backgroundColor: AMBER },
+      null, null,
+      ...(cols.billNo ? [null] : []),
+      ...(cols.orderNo ? [null] : []),
+      { value: totRevenue, type: Number, fontWeight: "bold", align: "right" },
+      null,
+      { value: totCommission, type: Number, fontWeight: "bold", align: "right" },
+    ]);
+  }
+
+  const writeXlsxFile = (await import("write-excel-file/browser")).default as unknown as (
+    sheets: Array<{ data: XCell[][]; sheet?: string; columns?: { width: number }[] }>,
+  ) => { toBlob: () => Promise<Blob> };
+  const colCount = Math.max(...rows.map((r) => r.length));
+  const blob = await writeXlsxFile([{
+    data: rows,
+    sheet: mode === "by-doctor" ? "By Doctor" : "Rate Bands",
+    columns: Array.from({ length: colCount }, () => ({ width: 16 })),
+  }]).toBlob();
+  saveAs(blob, `Referral_Commission_Report_${mode}_${from}_to_${to}.xlsx`);
+}
+
+/** PDF export mirroring By Doctor / Rate Bands on-screen layouts. */
+async function exportViewLayoutPdf(
+  mode: "by-doctor" | "rate-bands",
+  report: DoctorEntry[],
+  from: string,
+  to: string,
+  doctorLabel: string,
+  cols: ColFlags,
+  discountFmt: DiscountFmt,
+  bandCats: Set<string>,
+): Promise<void> {
+  const { default: jsPDF } = await import("jspdf");
+  const { default: autoTable } = await import("jspdf-autotable");
+  const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
+  const pageW = doc.internal.pageSize.getWidth();
+  let y = 14;
+
+  doc.setFontSize(13);
+  doc.setFont("helvetica", "bold");
+  doc.text("Referral & Commission Report", pageW / 2, y, { align: "center" });
+  y += 6;
+  doc.setFontSize(8);
+  doc.setFont("helvetica", "normal");
+  doc.text(`${from} to ${to}  ·  ${doctorLabel}  ·  ${mode === "by-doctor" ? "By Doctor" : "Rate Bands"}`, pageW / 2, y, { align: "center" });
+  y += 8;
+
+  if (mode === "by-doctor") {
+    const head = patientHeaderCells(cols, discountFmt).map((c) => (c?.value != null ? String(c.value) : ""));
+    for (const e of report) {
+      if (y > 180) { doc.addPage(); y = 14; }
+      doc.setFontSize(10);
+      doc.setFont("helvetica", "bold");
+      doc.text(e.doctor.name, 14, y);
+      y += 4;
+      const body = e.rows.map((r) =>
+        patientRowCells(r, cols, discountFmt).map((c) => {
+          if (c?.value == null) return "";
+          if (c.type === Number && typeof c.value === "number") return c.value.toFixed(2);
+          return String(c.value);
+        }),
+      );
+      const agg = uniqueBillDiscount(e.rows);
+      const totalRow = patientHeaderCells(cols, discountFmt).map((_, i, arr) => {
+        const labelIdx = 0;
+        const commIdx = arr.length - 1;
+        const billIdx = arr.findIndex((h) => h?.value === "Bill Amt");
+        const discIdx = arr.findIndex((h) => String(h?.value ?? "").startsWith("Discount"));
+        if (i === labelIdx) return "TOTAL";
+        if (i === commIdx) return e.totalCommission.toFixed(2);
+        if (i === billIdx && billIdx >= 0) return e.totalRevenue.toFixed(2);
+        if (i === discIdx && discIdx >= 0) {
+          return agg.discount > 0 ? fmtDiscount(discountFmt, agg.discount, agg.subtotal) : "—";
+        }
+        return "";
+      });
+      body.push(totalRow);
+      autoTable(doc, {
+        startY: y,
+        head: [head],
+        body,
+        styles: { fontSize: 7, cellPadding: 1.5 },
+        headStyles: { fillColor: [243, 244, 246], fontStyle: "bold", fontSize: 7 },
+        margin: { left: 14, right: 14 },
+      });
+      y = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 6;
+    }
+  } else {
+    const bands = buildRateBands(report, bandCats);
+    for (const b of bands) {
+      if (y > 180) { doc.addPage(); y = 14; }
+      doc.setFontSize(10);
+      doc.setFont("helvetica", "bold");
+      doc.text(`${b.label} — ${b.kind === "outsourced" ? "Outsourced" : "In-house"}`, 14, y);
+      y += 4;
+      const head = [
+        "Date", "Patient", "Ref. Doctor",
+        ...(cols.billNo ? ["Bill No"] : []),
+        ...(cols.orderNo ? ["Order No"] : []),
+        "Bill Amt",
+        ...(b.kind === "outsourced" ? ["Lab Cost"] : []),
+        "Commission",
+      ];
+      const body: string[][] = [];
+      for (const t of b.tests) {
+        body.push([
+          `${t.testName} (${t.count})`, "", "", ...(cols.billNo ? [""] : []), ...(cols.orderNo ? [""] : []),
+          t.revenue.toFixed(2),
+          ...(b.kind === "outsourced" ? [t.outsourceCost.toFixed(2)] : []),
+          t.commission.toFixed(2),
+        ]);
+        for (const r of t.rows) {
+          body.push([
+            fmtDate(r.date),
+            r.patientName,
+            r.doctorName,
+            ...(cols.billNo ? [r.billNumber] : []),
+            ...(cols.orderNo ? [r.orderNumber] : []),
+            r.price.toFixed(2),
+            ...(b.kind === "outsourced" ? [r.outsourceCost.toFixed(2)] : []),
+            r.commission.toFixed(2),
+          ]);
+        }
+      }
+      autoTable(doc, {
+        startY: y,
+        head: [head],
+        body,
+        styles: { fontSize: 7, cellPadding: 1.5 },
+        headStyles: { fillColor: [243, 244, 246], fontStyle: "bold", fontSize: 7 },
+        margin: { left: 14, right: 14 },
+      });
+      y = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 6;
+    }
+  }
+
+  doc.save(`Referral_Commission_Report_${mode}_${from}_to_${to}.pdf`);
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 export default function ReferralReport({ onBack }: { onBack: () => void }) {
   const { toast } = useToast();
@@ -739,6 +1049,17 @@ export default function ReferralReport({ onBack }: { onBack: () => void }) {
     : "All Doctors";
   const exportMode: Parameters<typeof exportCommissionPdf>[2] =
     mode === "consolidated" ? "consolidated" : "standard";
+  const viewUsesPrintLayout = mode === "by-doctor" || mode === "rate-bands";
+
+  const exportMeta = {
+    title: "Referral & Commission Report",
+    from,
+    to,
+    doctorFilter: doctorLabel,
+    generatedAt: new Date().toLocaleString("en-IN"),
+    grandTotal,
+  };
+  const exportFileBase = `Referral_Commission_Report_${from}_to_${to}`;
 
   const handleDownloadExcel = async () => {
     if (report.length === 0) {
@@ -747,20 +1068,17 @@ export default function ReferralReport({ onBack }: { onBack: () => void }) {
     }
     setXlsxLoading(true);
     try {
-      await exportCommissionExcel(
-        toExportSections(report),
-        {
-          title: "Referral & Commission Report",
-          from,
-          to,
-          doctorFilter: doctorLabel,
-          generatedAt: new Date().toLocaleString("en-IN"),
-          grandTotal,
-        },
-        exportMode,
-        cols.rate,
-        showBreakdown,
-      );
+      if (viewUsesPrintLayout) {
+        await exportViewLayoutExcel(mode, report, from, to, doctorLabel, cols, discountFmt, bandCats);
+      } else {
+        await exportCommissionExcel(
+          toExportSections(report),
+          exportMeta,
+          exportMode,
+          cols.rate,
+          showBreakdown,
+        );
+      }
     } catch (err) {
       toast({ title: "Excel export failed", description: String(err), variant: "destructive" });
     } finally {
@@ -775,20 +1093,18 @@ export default function ReferralReport({ onBack }: { onBack: () => void }) {
     }
     setWordLoading(true);
     try {
-      await exportCommissionWord(
-        toExportSections(report),
-        {
-          title: "Referral & Commission Report",
-          from,
-          to,
-          doctorFilter: doctorLabel,
-          generatedAt: new Date().toLocaleString("en-IN"),
-          grandTotal,
-        },
-        exportMode,
-        cols.rate,
-        showBreakdown,
-      );
+      if (viewUsesPrintLayout) {
+        const html = buildPrintHtml(mode, report, grandTotal, from, to, doctorLabel, cols, discountFmt, showBreakdown, bandCats);
+        saveHtmlAsWord(html.replace(/<script>[\s\S]*?<\/script>/, ""), exportFileBase);
+      } else {
+        await exportCommissionWord(
+          toExportSections(report),
+          exportMeta,
+          exportMode,
+          cols.rate,
+          showBreakdown,
+        );
+      }
     } catch (err) {
       toast({ title: "Word export failed", description: String(err), variant: "destructive" });
     } finally {
@@ -803,21 +1119,18 @@ export default function ReferralReport({ onBack }: { onBack: () => void }) {
     }
     setPdfLoading(true);
     try {
-      await exportCommissionPdf(
-        toExportSections(report),
-        {
-          title: "Referral & Commission Report",
-          from,
-          to,
-          doctorFilter: doctorLabel,
-          generatedAt: new Date().toLocaleString("en-IN"),
-          grandTotal,
-        },
-        exportMode,
-        cols.rate,
-        undefined,
-        showBreakdown,
-      );
+      if (viewUsesPrintLayout) {
+        await exportViewLayoutPdf(mode, report, from, to, doctorLabel, cols, discountFmt, bandCats);
+      } else {
+        await exportCommissionPdf(
+          toExportSections(report),
+          exportMeta,
+          exportMode,
+          cols.rate,
+          undefined,
+          showBreakdown,
+        );
+      }
     } catch (err) {
       toast({ title: "PDF export failed", description: String(err), variant: "destructive" });
     } finally {
@@ -862,17 +1175,16 @@ export default function ReferralReport({ onBack }: { onBack: () => void }) {
               </div>
               <div>
                 <Label className="text-xs">Referral Doctor</Label>
-                <Select onValueChange={v => setDoctorId(v === "all" ? null : Number(v))}>
-                  <SelectTrigger className="mt-1 w-56">
-                    <SelectValue placeholder="All Doctors" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All Doctors</SelectItem>
-                    {doctors.map(d => (
-                      <SelectItem key={d.id} value={String(d.id)}>{d.name}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <DoctorSearchSelect
+                  className="mt-1 w-72"
+                  doctors={doctors}
+                  value={doctorId}
+                  onChange={setDoctorId}
+                  allowAll
+                  allLabel="All Doctors"
+                  placeholder="Search doctors (e.g. abi)…"
+                  wide
+                />
               </div>
             </div>
             <div className="flex gap-2">
@@ -1045,6 +1357,34 @@ export default function ReferralReport({ onBack }: { onBack: () => void }) {
             </div>
           ))}
         </div>
+
+        {/* Wiring alert — Rate 0% / Commission ₹0 usually means no slab matched */}
+        {(() => {
+          const noneRows = report.flatMap((d) => d.rows.filter((r) => r.ruleScope === "none"));
+          if (noneRows.length === 0) return null;
+          const sampleTests = [...new Set(noneRows.map((r) => r.testName))].slice(0, 6);
+          return (
+            <div className="bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-xl p-4 flex items-start gap-3 text-sm text-amber-900 dark:text-amber-100">
+              <AlertTriangle size={18} className="shrink-0 mt-0.5 text-amber-600" />
+              <div className="space-y-1">
+                <p className="font-semibold">
+                  {noneRows.length} test line{noneRows.length === 1 ? "" : "s"} have no matching commission slab (shown as Rate 0%)
+                </p>
+                <p className="text-xs leading-relaxed opacity-90">
+                  Commission is calculated from each referring doctor&apos;s own slabs.
+                  Bound test ids must match the catalogue row on the bill — duplicate
+                  names (e.g. two &ldquo;CT BRAIN&rdquo; rows) used to miss; that is now fixed by
+                  name-alias matching. Confirm the rule sits on <em>this</em> doctor
+                  (not only one profile), and that the billed test is in the slab&apos;s
+                  selected list (picker now shows #id).
+                  {sampleTests.length > 0 && (
+                    <> Unmatched examples: {sampleTests.join(", ")}{sampleTests.length >= 6 ? "…" : ""}.</>
+                  )}
+                </p>
+              </div>
+            </div>
+          );
+        })()}
 
         {/* Report body */}
         {isLoading ? (

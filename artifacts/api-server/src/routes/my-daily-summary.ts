@@ -1,11 +1,20 @@
 import { Router } from "express";
 import { db } from "@workspace/db";
 import { billsTable, paymentsTable, billAuditsTable, patientsTable, ordersTable, doctorsTable, voucherAuditsTable, expensesTable } from "@workspace/db/schema";
-import { sql, and, eq, gte, lt } from "drizzle-orm";
-import { FULL_ACCESS_ROLES } from "../middleware/requireStaffAuth";
+import { sql, and, eq, gte, lt, notInArray } from "drizzle-orm";
+import { FULL_ACCESS_ROLES, requireAdminRole } from "../middleware/requireStaffAuth";
 import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { getTransporter, getEmailSettings } from "../email";
 import { classifyPaymentMethod, isPhysicalCash, isDigitalSettlement } from "../lib/paymentMethodClassifier";
+import { computeRefundsOnCancelledBillsCreatedInPeriod, computeCollectibleForReconciliation } from "../lib/dailySummaryCollectible";
+import { buildStaffActivityRows, BILL_AUDIT_OPERATIONAL_CHANGE_TYPES } from "../lib/staffActivityAttribution";
+import { buildBillingVsPacsSummary } from "../lib/pacs/billingVsPacsSummary";
+import {
+  buildModalityBillingSummary,
+  listModalityBills,
+} from "../lib/pacs/modalityBillingSummary";
+import { resolveModalityQuery } from "../lib/pacs/imagingModalityBucket";
+import { buildLowStockSummary } from "../lib/inventoryLowStockSummary";
 
 export const myDailySummaryRouter = Router();
 
@@ -120,6 +129,7 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
       billNumber: billsTable.billNumber,
       totalAmount: billsTable.totalAmount,
       createdByName: billsTable.createdByName,
+      cancelledByName: billsTable.cancelledByName,
       cancelledAt: billsTable.cancelledAt,
     })
     .from(billsTable)
@@ -234,6 +244,7 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
     .where(and(
       gte(billAuditsTable.createdAt, start),
       lt(billAuditsTable.createdAt, end),
+      notInArray(billAuditsTable.changeType, [...BILL_AUDIT_OPERATIONAL_CHANGE_TYPES]),
       ...(staffName !== null ? [eq(billAuditsTable.editedBy, staffName)] : []),
     ))
     .orderBy(sql`${billAuditsTable.createdAt} DESC`)
@@ -423,6 +434,14 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
     .filter((p) => p.billStatus !== "cancelled")
     .reduce((s, p) => s + Math.abs(Number(p.amount)), 0);
   const refundsWithoutCancellationCount = refundItems.filter((p) => p.billStatus !== "cancelled").length;
+  // Refunds on bills created in this period that are now cancelled — already
+  // removed from collectible via cancelledOnMyBills; exclude from refund
+  // deduction so same-day cancel+refund does not double-subtract.
+  const refundsOnCancelledBillsCreatedInPeriod = computeRefundsOnCancelledBillsCreatedInPeriod(
+    knownRefundItems,
+    start,
+    end,
+  );
   // Bills CANCELLED BY this staff (informational — accountability of canceller)
   const cancelledAmount = cancelledByMe.reduce((s, r) => s + Number(r.totalAmount), 0);
   // FIXED: cashCollection now subtracts cash refunds (was previously gross cash in)
@@ -445,12 +464,16 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
   const staffSet = new Set<string>();
   for (const r of allBillRows) if (r.createdByName) staffSet.add(r.createdByName);
   for (const p of allPaymentRows) if (p.recordedByName) staffSet.add(p.recordedByName);
-  for (const r of cancelledByMeRows) if (r.createdByName) staffSet.add(r.createdByName);
+  for (const r of cancelledByMeRows) if (r.cancelledByName) staffSet.add(r.cancelledByName);
   const staffNames = Array.from(staffSet).sort();
 
   // ── Per-staff breakdown (only when viewing All Staff aggregate) ──
   type StaffRow = {
     name: string;
+    billsCreated: number;
+    cashCollected: number;
+    billsCancelled: number;
+    cashRefunded: number;
     grossBilled: number;
     activeBilling: number;
     cancelled: number;
@@ -459,7 +482,6 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
     billCount: number;
     cashIn: number;
     digitalIn: number;
-    cashRefunded: number;
     digitalRefunded: number;
     netCash: number;
     netDigital: number;
@@ -478,7 +500,7 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
     const staffSet = new Set<string>();
     for (const r of allBillRows) if (r.createdByName) staffSet.add(r.createdByName);
     for (const p of allPaymentRows) if (p.recordedByName) staffSet.add(p.recordedByName);
-    for (const r of cancelledByMeRows) if (r.createdByName) staffSet.add(r.createdByName);
+    for (const r of cancelledByMeRows) if (r.cancelledByName) staffSet.add(r.cancelledByName);
     const names = Array.from(staffSet).sort();
 
     // Expenses per person (cash + digital, only needed for all-staff mode)
@@ -503,68 +525,85 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
       digitalExpPerPerson[r.approved_by] = Number(r.digital);
     }
 
-    byStaff = staffNames.map((name) => {
-      const sbills = allBillRows.filter((r) => r.createdByName === name);
-      const sactive = sbills.filter((r) => r.status !== "cancelled");
-      const scancelled = sbills.filter((r) => r.status === "cancelled");
-      const spayPos = allPaymentRows.filter((p) => p.recordedByName === name && Number(p.amount) > 0);
-      const spayNeg = allPaymentRows.filter((p) => p.recordedByName === name && Number(p.amount) < 0);
-      const scancelledByMe = cancelledByMeRows.filter((r) => r.createdByName === name);
+    byStaff = (() => {
+      const activity = buildStaffActivityRows({
+        staffNames: names,
+        bills: allBillRows.map((r) => ({
+          createdByName: r.createdByName,
+          totalAmount: r.totalAmount,
+          status: r.status,
+        })),
+        cancelledByActor: cancelledByMeRows.map((r) => ({
+          cancelledByName: r.cancelledByName,
+          totalAmount: r.totalAmount,
+        })),
+        payments: allPaymentRows.map((p) => {
+          const cls = classifyPaymentMethod(p.method);
+          return {
+            recordedByName: p.recordedByName,
+            amount: p.amount,
+            method: p.method,
+            isCash: isPhysicalCash(p.method),
+            isDigital: isDigitalSettlement(p.method),
+            isKnown: cls.isKnown,
+          };
+        }),
+      });
 
-      const sGrossBilled = sbills.reduce((s, r) => s + Number(r.totalAmount), 0);
-      const sActiveBilling = sactive.reduce((s, r) => s + Number(r.totalAmount), 0);
-      const sCancelled = scancelled.reduce((s, r) => s + Number(r.totalAmount), 0);
-      const sOutstanding = sactive.reduce((s, r) => s + trueOutstanding(r), 0);
-      const sNetCollected = sActiveBilling - sOutstanding;
-      const sPayPosKnown = spayPos.filter((p) => classifyPaymentMethod(p.method).isKnown);
-      const sPayNegKnown = spayNeg.filter((p) => classifyPaymentMethod(p.method).isKnown);
-      const sCashIn = sPayPosKnown.reduce((s, p) => s + (isPhysicalCash(p.method) ? Number(p.amount) : 0), 0);
-      const sDigitalIn = sPayPosKnown.reduce((s, p) => s + (isDigitalSettlement(p.method) ? Number(p.amount) : 0), 0);
-      const sCashRef = sPayNegKnown.reduce((s, p) => s + (isPhysicalCash(p.method) ? Math.abs(Number(p.amount)) : 0), 0);
-      const sDigitalRef = sPayNegKnown.reduce((s, p) => s + (isDigitalSettlement(p.method) ? Math.abs(Number(p.amount)) : 0), 0);
-      const sNetCash = sCashIn - sCashRef;
-      const sNetDigital = sDigitalIn - sDigitalRef;
-      const sTotalRec = spayPos.reduce((s, p) => s + Number(p.amount), 0);
-      const sCashExp = cashExpPerPerson[name] ?? 0;
-      const sDigitalExp = digitalExpPerPerson[name] ?? 0;
-      const sTotalExp = sCashExp + sDigitalExp;
-      const sPhysCash = sNetCash - sCashExp;
-      // Dues collected belongs to the staff who RECORDED the dues payment (whose
-      // drawer received it today), not whoever created the original bill. This
-      // must be summed from the raw dues payment rows by recordedByName — the
-      // per-bill duesBills aggregate carries only the bill creator and can't
-      // attribute a bill whose dues were collected by several people. Using the
-      // recorder also keeps the all-staff breakdown consistent with the
-      // single-staff view (which filters dues by paymentsTable.recordedByName).
-      const sDues = duesPaymentRows
-        .filter((d) => d.recordedByName === name)
-        .reduce((s, d) => s + Number(d.paymentAmount), 0);
-      const sDiscounts = sactive.reduce((s, r) => s + Number(r.discount ?? 0), 0);
+      return activity.map((act) => {
+        const name = act.name;
+        const sbills = allBillRows.filter((r) => r.createdByName === name);
+        const sactive = sbills.filter((r) => r.status !== "cancelled");
+        const spayPos = allPaymentRows.filter((p) => p.recordedByName === name && Number(p.amount) > 0);
+        // Action-based: Bills Created stays on creator even after cancel (act.billsCreated).
+        // Bills Cancelled attributed to canceller (act.billsCancelled), NOT creator.
+        // Cash Collected / Cash Refunded attributed to payment/refund recorder.
+        const sOutstanding = sactive.reduce((s, r) => s + trueOutstanding(r), 0);
+        const sCashExp = cashExpPerPerson[name] ?? 0;
+        const sDigitalExp = digitalExpPerPerson[name] ?? 0;
+        const sTotalExp = sCashExp + sDigitalExp;
+        const sNetCash = act.cashCollected - act.cashRefunded;
+        const sNetDigital = act.digitalCollected - act.digitalRefunded;
+        const sDues = duesPaymentRows
+          .filter((d) => d.recordedByName === name)
+          .reduce((s, d) => s + Number(d.paymentAmount), 0);
+        const sDiscounts = sactive.reduce((s, r) => s + Number(r.discount ?? 0), 0);
+        const sActiveBilling = sactive.reduce((s, r) => s + Number(r.totalAmount), 0);
 
-      return {
-        name,
-        grossBilled: sGrossBilled,
-        activeBilling: sActiveBilling,
-        cancelled: sCancelled,
-        outstanding: sOutstanding,
-        netCollected: sNetCollected,
-        billCount: sactive.length,
-        cashIn: sCashIn,
-        digitalIn: sDigitalIn,
-        cashRefunded: sCashRef,
-        digitalRefunded: sDigitalRef,
-        netCash: sNetCash,
-        netDigital: sNetDigital,
-        totalReceived: sTotalRec,
-        cashExpenses: sCashExp,
-        digitalExpenses: sDigitalExp,
-        totalExpenses: sTotalExp,
-        physicalCashInHand: sPhysCash,
-        duesCollected: sDues,
-        discountsGiven: sDiscounts,
-        cancellationCount: scancelledByMe.length,
-      };
-    });
+        return {
+          name,
+          // Staff Activity primary columns (action-based, immutable per actor)
+          billsCreated: act.billsCreated,
+          cashCollected: act.cashCollected,
+          billsCancelled: act.billsCancelled,
+          cashRefunded: act.cashRefunded,
+          // Legacy aliases used by existing UI/export
+          grossBilled: act.billsCreated,
+          activeBilling: sActiveBilling,
+          cancelled: act.billsCancelled,
+          outstanding: sOutstanding,
+          // Do NOT redefine "net collected" as active−outstanding for staff activity —
+          // that wrongly zeroes User1 after User2 cancels. Keep field for compatibility
+          // but set to cash+digital collected (what this person took in).
+          netCollected: act.cashCollected + act.digitalCollected,
+          billCount: act.billCreateCount,
+          cashIn: act.cashCollected,
+          digitalIn: act.digitalCollected,
+          digitalRefunded: act.digitalRefunded,
+          netCash: sNetCash,
+          netDigital: sNetDigital,
+          totalReceived: spayPos.reduce((s, p) => s + Number(p.amount), 0),
+          cashExpenses: sCashExp,
+          digitalExpenses: sDigitalExp,
+          totalExpenses: sTotalExp,
+          // Not a personal drawer shortage — retained for day-close expense view only.
+          physicalCashInHand: sNetCash - sCashExp,
+          duesCollected: sDues,
+          discountsGiven: sDiscounts,
+          cancellationCount: act.cancellationCount,
+        };
+      });
+    })();
   }
 
   res.json({
@@ -584,6 +623,16 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
       refundAmount,
       refundsWithoutCancellationAmount,
       refundsWithoutCancellationCount,
+      refundsOnCancelledBillsCreatedInPeriod,
+      collectible: computeCollectibleForReconciliation({
+        grossBilledIncludingCancelled,
+        duesCollectedTotal,
+        cancelledOnMyBills,
+        cashRefunded,
+        digitalRefunded,
+        refundsOnCancelledBillsCreatedInPeriod,
+        outstanding,
+      }),
       cancelledAmount,
       cashExpenses,
       digitalExpenses,
@@ -594,6 +643,12 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
       digitalIn,
       cashRefunded,
       digitalRefunded,
+      /**
+       * Net Cash Available (doctor primary figure) — PHYSICAL CASH ONLY.
+       * = completed cash collections − completed cash refunds.
+       * UPI / card / bank / online / insurance are excluded (see digitalIn / digitalRefunded).
+       */
+      netClinicCash: cashIn - cashRefunded,
       netDigital,
       cashCollection,
       physicalCashInHand,
@@ -992,7 +1047,12 @@ myDailySummaryRouter.get("/drilldown", async (req: StaffAuthRequest, res) => {
       // Rather than inventing a fake per-record table, show the same
       // component breakdown transparently as its own small table.
       const cashPayments = await db
-        .select({ amount: paymentsTable.amount, method: paymentsTable.method })
+        .select({
+          amount: paymentsTable.amount,
+          method: paymentsTable.method,
+          billStatus: billsTable.status,
+          billCreatedAt: billsTable.createdAt,
+        })
         .from(paymentsTable)
         .innerJoin(billsTable, eq(paymentsTable.billId, billsTable.id))
         .where(and(
@@ -1035,19 +1095,51 @@ myDailySummaryRouter.get("/drilldown", async (req: StaffAuthRequest, res) => {
           ],
         };
       } else {
+        // Same formula as the headline "Collectible Amount" KPI on the
+        // summary route above (computeCollectibleForReconciliation): must
+        // include Old Dues Collected and subtract Refunds (excluding
+        // refunds already accounted for via cancelled-bill removal, so a
+        // same-day cancel+refund does not double-subtract).
+        const duesPaymentRowsForCollectible = await db
+          .select({ paymentAmount: paymentsTable.amount })
+          .from(paymentsTable)
+          .innerJoin(billsTable, eq(paymentsTable.billId, billsTable.id))
+          .where(and(
+            gte(paymentsTable.createdAt, start),
+            lt(paymentsTable.createdAt, end),
+            lt(billsTable.createdAt, start),
+            sql`${paymentsTable.amount}::numeric > 0`,
+            ...(staffName !== null ? [eq(paymentsTable.recordedByName, staffName)] : []),
+          ));
+        const duesCollectedTotal = duesPaymentRowsForCollectible.reduce((s, r) => s + Number(r.paymentAmount), 0);
+        const refundsOnCancelledBillsCreatedInPeriod = computeRefundsOnCancelledBillsCreatedInPeriod(
+          cashPayments.map((p) => ({ amount: p.amount, billStatus: p.billStatus, billCreatedAt: p.billCreatedAt })),
+          start,
+          end,
+        );
+        const collectibleAmount = computeCollectibleForReconciliation({
+          grossBilledIncludingCancelled: billsIncl,
+          duesCollectedTotal,
+          cancelledOnMyBills: cancelledOnBills,
+          cashRefunded,
+          digitalRefunded,
+          refundsOnCancelledBillsCreatedInPeriod,
+          outstanding: outstandingBills,
+        });
+        const refundsForCollectible = Math.max(0, cashRefunded + digitalRefunded - refundsOnCancelledBillsCreatedInPeriod);
         result = {
           label: "Collectible Amount — Breakdown",
           columns: ["Component", "Amount"],
           rows: [
-            ["Total Bills Generated", billsIncl],
+            ["Total Bills Generated (incl. cancelled)", billsIncl],
+            ["+ Old Dues Collected", duesCollectedTotal],
             ["− Cancelled Bills", -cancelledOnBills],
+            ["− Refunds (excl. same-period cancel+refund)", -refundsForCollectible],
             ["− Outstanding / Dues", -outstandingBills],
-            ["= Collectible Amount", billsIncl - cancelledOnBills - outstandingBills],
+            ["= Collectible Amount", collectibleAmount],
           ],
         };
       }
-      // Suppress unused-var lint for digitalIn/digitalRefunded when only one branch used them
-      void digitalIn; void digitalRefunded;
       break;
     }
 
@@ -1093,4 +1185,88 @@ myDailySummaryRouter.get("/drilldown", async (req: StaffAuthRequest, res) => {
     from, to, staffName: staffName ?? "All Staff",
     ...result,
   });
+});
+
+// GET /billing-vs-pacs — clinic-wide billed vs PACS intake by modality (date range)
+// Admin/super_admin only — not shown on normal staff Daily Summary.
+myDailySummaryRouter.get("/billing-vs-pacs", requireAdminRole, async (req: StaffAuthRequest, res) => {
+  const today = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+  const from = typeof req.query.from === "string" ? req.query.from : today;
+  const to = typeof req.query.to === "string" ? req.query.to : from;
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) {
+    return res.status(400).json({ error: "Invalid date format — use YYYY-MM-DD" });
+  }
+  if (from > to) {
+    return res.status(400).json({ error: "from must be on or before to" });
+  }
+
+  try {
+    const summary = await buildBillingVsPacsSummary(from, to);
+    return res.json(summary);
+  } catch (err) {
+    req.log.error({ err, from, to }, "billing-vs-pacs summary failed");
+    return res.status(500).json({ error: "Failed to load imaging reconciliation summary" });
+  }
+});
+
+// GET /modality-billing — clinic-wide MRI/CT/USG/X-Ray billed counts (bill date)
+myDailySummaryRouter.get("/modality-billing", requireAdminRole, async (req: StaffAuthRequest, res) => {
+  const today = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+  const from = typeof req.query.from === "string" ? req.query.from : today;
+  const to = typeof req.query.to === "string" ? req.query.to : from;
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) {
+    return res.status(400).json({ error: "Invalid date format — use YYYY-MM-DD" });
+  }
+  if (from > to) {
+    return res.status(400).json({ error: "from must be on or before to" });
+  }
+
+  try {
+    const summary = await buildModalityBillingSummary(from, to);
+    return res.json(summary);
+  } catch (err) {
+    req.log.error({ err, from, to }, "modality-billing summary failed");
+    return res.status(500).json({ error: "Failed to load modality billing summary" });
+  }
+});
+
+// GET /modality-bills — bills containing a modality in the date range (drill-down)
+myDailySummaryRouter.get("/modality-bills", requireAdminRole, async (req: StaffAuthRequest, res) => {
+  const today = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+  const from = typeof req.query.from === "string" ? req.query.from : today;
+  const to = typeof req.query.to === "string" ? req.query.to : from;
+  const modalityRaw = typeof req.query.modality === "string" ? req.query.modality : "";
+  const modality = resolveModalityQuery(modalityRaw);
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) {
+    return res.status(400).json({ error: "Invalid date format — use YYYY-MM-DD" });
+  }
+  if (from > to) {
+    return res.status(400).json({ error: "from must be on or before to" });
+  }
+  if (!modality) {
+    return res.status(400).json({
+      error: "Invalid modality — use MRI, CT, CT Scan, USG, X-Ray, or OPG",
+    });
+  }
+
+  try {
+    const result = await listModalityBills(from, to, modality);
+    return res.json(result);
+  } catch (err) {
+    req.log.error({ err, from, to, modality }, "modality-bills drilldown failed");
+    return res.status(500).json({ error: "Failed to load modality bills" });
+  }
+});
+
+// GET /low-stock — clinic-wide stock alert summary for Daily Summary KPI
+myDailySummaryRouter.get("/low-stock", requireAdminRole, async (_req, res) => {
+  try {
+    const summary = await buildLowStockSummary(15);
+    return res.json(summary);
+  } catch (err) {
+    return res.status(500).json({ error: "Failed to load low stock summary" });
+  }
 });

@@ -4,7 +4,7 @@ import { getPacsProvider, isBlockedHost, resolveAndCheckHost, tcpProbe } from ".
 vi.mock("./pacsConfig.js", () => {
   return {
     getRadiologyConfig: async () => {
-      const defaultHost = process.env.ORTHANC_URL ? new URL(process.env.ORTHANC_URL).hostname : "192.168.1.137";
+      const defaultHost = process.env.ORTHANC_URL ? new URL(process.env.ORTHANC_URL).hostname : "172.16.1.139";
       return {
         orthanc: {
           dicomWebUrl: process.env.ORTHANC_URL ? `${process.env.ORTHANC_URL}/dicom-web` : "",

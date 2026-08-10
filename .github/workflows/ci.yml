@@ -70,6 +70,8 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Install poppler-utils (pdftotext — used by PDF-export text-layer assertions)
+        run: sudo apt-get update && sudo apt-get install -y poppler-utils
       - name: Clean-boot + upgrade-safety migration smoke
         run: pnpm db:smoke
       - name: Bootstrap the test database (full migration path)
@@ -78,3 +80,43 @@ jobs:
         # --no-file-parallelism because the DB-dependent tests share one Postgres
         # database; parallel files collide on rows/ids (proven flaky otherwise).
         run: pnpm exec vitest run --no-file-parallelism
+
+  e2e-smoke:
+    name: Browser smoke (login shell)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: erp
+          POSTGRES_PASSWORD: erp
+          POSTGRES_DB: care_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U erp"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql://erp:erp@localhost:5432/care_test
+      MIGRATION_SMOKE_ADMIN_URL: postgresql://erp:erp@localhost:5432/postgres
+      JWT_SECRET: ci-e2e-jwt-secret
+      SESSION_SECRET: ci-e2e-session-secret
+      ENABLE_SCHEDULERS: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Bootstrap the test database
+        run: pnpm db:bootstrap
+      - name: Install Chromium
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Browser smoke
+        run: pnpm e2e:smoke

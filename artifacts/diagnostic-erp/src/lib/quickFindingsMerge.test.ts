@@ -79,3 +79,25 @@ describe("mergeImpression / removeImpression", () => {
     expect(removeImpression(lines, "Paranasal sinusitis.")).toEqual(lines);
   });
 });
+
+describe("stripNormalImpressionLines", () => {
+  it("removes template normal lines when an abnormal is present", async () => {
+    const { stripNormalImpressionLines } = await import("./quickFindingsMerge");
+    const lines = [
+      "Normal MRI Brain study. No significant intracranial abnormality.",
+      "Mild mucosal thickening in the ethmoid sinuses.",
+    ];
+    const out = stripNormalImpressionLines(lines, { onlyIfAbnormal: true });
+    expect(out).toEqual(["Mild mucosal thickening in the ethmoid sinuses."]);
+  });
+
+  it("removes knownNormals even when phrasing differs from heuristic", async () => {
+    const { stripNormalImpressionLines } = await import("./quickFindingsMerge");
+    const known = "This study is entirely fine.";
+    const out = stripNormalImpressionLines(
+      [known, "Disc bulge at L4-L5."],
+      { knownNormals: [known] },
+    );
+    expect(out).toEqual(["Disc bulge at L4-L5."]);
+  });
+});

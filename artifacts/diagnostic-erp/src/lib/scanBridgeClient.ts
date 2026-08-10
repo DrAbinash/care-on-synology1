@@ -91,8 +91,11 @@ export async function checkScanBridgeHealth(): Promise<ScanBridgeHealth> {
     if (!res.ok || json.ok !== true) {
       return { state: "device-error", error: String(json.error ?? "Bridge reported an error"), vendor: json.vendor as string | undefined };
     }
+    // Bridge process is reachable. deviceConnected=false only means no scanner
+    // plugged in or watch folder empty — /scan and /latest-scan may still work
+    // (folder-watch clinics, or WIA after staff scans via vendor software).
     return {
-      state: json.deviceConnected === false ? "device-error" : "ok",
+      state: "ok",
       vendor: json.vendor as string | undefined,
       deviceConnected: json.deviceConnected as boolean | undefined,
       authRequired: json.authRequired as boolean | undefined,
@@ -127,6 +130,29 @@ export async function scanBridgeCapture(): Promise<ScanBridgeImageResult> {
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : "Could not reach the scanner bridge. Is it running on this workstation?" };
   }
+}
+
+export async function scanBridgeCaptureWithFallback(): Promise<ScanBridgeImageResult> {
+  const direct = await scanBridgeCapture();
+  if (direct.ok && direct.imageBase64) return direct;
+
+  const shouldTryLatest =
+    direct.fallback === "folder-watch" ||
+    direct.code === "WIA_UNSUPPORTED_DRIVER" ||
+    direct.code === "WIA_NO_DEVICE";
+
+  if (shouldTryLatest) {
+    const latest = await scanBridgeLatestScan();
+    if (latest.ok && latest.imageBase64) return latest;
+    return {
+      ok: false,
+      error: latest.error || direct.error || "Scan failed — try scanning in your scanner app, then Import Latest.",
+      code: latest.code ?? direct.code ?? null,
+      fallback: latest.fallback ?? direct.fallback ?? "folder-watch",
+    };
+  }
+
+  return direct;
 }
 
 export async function scanBridgeLatestScan(): Promise<ScanBridgeImageResult> {

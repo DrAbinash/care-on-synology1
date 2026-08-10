@@ -21,6 +21,7 @@ import {
   Package, Trash2, History, SlidersHorizontal, Pencil,
   LayoutGrid, Table as TableIcon, Download, FileSpreadsheet,
   FileText, FileType, Truck, Phone, Mail, MapPin, Eye,
+  ClipboardList, ShoppingCart, Layers,
 } from "lucide-react";
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
@@ -34,11 +35,17 @@ import { useToast } from "@/hooks/use-toast";
 import { buildCsv, downloadCsv, parseCsv } from "@/lib/csv";
 import { Upload, ScanLine } from "lucide-react";
 import PurchaseInvoiceScannerPanel from "@/components/PurchaseInvoiceScannerPanel";
+import InventoryDemandPanel from "@/components/InventoryDemandPanel";
+import InventoryReorderPanel from "@/components/InventoryReorderPanel";
+import InventoryBatchesPanel from "@/components/InventoryBatchesPanel";
+import InventoryBarcodeStrip from "@/components/InventoryBarcodeStrip";
 
 type Item = {
   id: number; name: string; unit: string; category: string;
   currentStock: number; minStock: number; costPrice: number; isActive: boolean;
   preferredVendorId?: number | null;
+  barcode?: string | null;
+  trackExpiry?: boolean;
 };
 type TxnRow = {
   id: number; type: string; quantity: string; stockBefore: string;
@@ -109,6 +116,7 @@ export default function Inventory() {
   const [view, setView] = useState<"cards" | "table">("cards");
   const [categoryFilter, setCategoryFilter] = useState<string>("all");
   const [stockFilter, setStockFilter] = useState<"all" | "low" | "out">("all");
+  const [scannedItem, setScannedItem] = useState<Item | null>(null);
 
   // ── CSV export/import for items + vendors ─────────────────────────────
   // Two separate file inputs (one per tab) so the user can't accidentally
@@ -225,6 +233,17 @@ export default function Inventory() {
     queryKey: ["inventory-low"],
     queryFn: () => api.get("/api/inventory/low-stock"),
   });
+
+  const { data: pendingDemands = [] } = useQuery<{ id: number }[]>({
+    queryKey: ["/api/inventory/demands", "pending"],
+    queryFn: () => api.get("/api/inventory/demands?status=pending"),
+  });
+
+  const { data: reorderSuggestions = [] } = useQuery<{ id: number }[]>({
+    queryKey: ["/api/inventory/reorder/requests"],
+    queryFn: () => api.get("/api/inventory/reorder/requests?status=suggested"),
+  });
+
   const { data: rules = [] } = useQuery<ConsumptionRule[]>({
     queryKey: ["consumption-rules"],
     queryFn: () => api.get("/api/inventory/consumption-rules"),
@@ -547,6 +566,24 @@ export default function Inventory() {
                 <span className="ml-2 bg-red-500 text-white rounded-full text-xs px-1.5 py-0.5">{lowStock.length}</span>
               )}
             </TabsTrigger>
+            <TabsTrigger value="demands">
+              <ClipboardList size={13} className="mr-1" />
+              Staff Demands
+              {pendingDemands.length > 0 && (
+                <span className="ml-2 bg-violet-500 text-white rounded-full text-xs px-1.5 py-0.5">{pendingDemands.length}</span>
+              )}
+            </TabsTrigger>
+            <TabsTrigger value="reorders">
+              <ShoppingCart size={13} className="mr-1" />
+              Reorders
+              {reorderSuggestions.length > 0 && (
+                <span className="ml-2 bg-amber-500 text-white rounded-full text-xs px-1.5 py-0.5">{reorderSuggestions.length}</span>
+              )}
+            </TabsTrigger>
+            <TabsTrigger value="batches">
+              <Layers size={13} className="mr-1" />
+              Lots & Expiry
+            </TabsTrigger>
             <TabsTrigger value="rules">Consumption Rules</TabsTrigger>
             <TabsTrigger value="vendors">
               Vendors
@@ -559,6 +596,20 @@ export default function Inventory() {
 
           {/* ── Items Tab ── */}
           <TabsContent value="items" className="space-y-4">
+            <InventoryBarcodeStrip
+              onItemFound={(item) => {
+                setScannedItem(item as Item);
+                setSearch(item.name);
+              }}
+            />
+            {scannedItem && (
+              <div className="flex flex-wrap items-center gap-2 text-xs bg-violet-50 dark:bg-violet-950/20 border border-violet-200 dark:border-violet-800 rounded-lg px-3 py-2">
+                <span>Scanned: <strong>{scannedItem.name}</strong> ({scannedItem.barcode ?? `INV-${scannedItem.id}`})</span>
+                <Button size="sm" variant="outline" className="h-7 text-[10px]" onClick={() => setStockDialog({ item: scannedItem, mode: "in" })}>Stock In</Button>
+                <Button size="sm" variant="outline" className="h-7 text-[10px]" onClick={() => setStockDialog({ item: scannedItem, mode: "out" })}>Stock Out</Button>
+                <Button size="sm" variant="ghost" className="h-7 text-[10px]" onClick={() => setScannedItem(null)}>Clear</Button>
+              </div>
+            )}
             {lowStock.length > 0 && (
               <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 flex items-start gap-3">
                 <AlertTriangle size={18} className="text-amber-600 mt-0.5 flex-shrink-0" />
@@ -788,6 +839,20 @@ export default function Inventory() {
                 ))}
               </div>
             )}
+          </TabsContent>
+
+          {/* ── Staff Demands Tab ── */}
+          <TabsContent value="demands" className="space-y-4">
+            <InventoryDemandPanel items={items} />
+          </TabsContent>
+
+          {/* ── Reorders Tab ── */}
+          <TabsContent value="reorders" className="space-y-4">
+            <InventoryReorderPanel />
+          </TabsContent>
+
+          <TabsContent value="batches" className="space-y-4">
+            <InventoryBatchesPanel items={items} />
           </TabsContent>
 
           {/* ── Consumption Rules Tab ── */}
@@ -1408,6 +1473,7 @@ export default function Inventory() {
                     minStock: Number(fd.get("minStock") || 0),
                     costPrice: Number(fd.get("costPrice") || 0),
                     preferredVendorId: rawVendor && rawVendor !== "__none__" ? Number(rawVendor) : null,
+                    barcode: String(fd.get("barcode") || "").trim() || null,
                   },
                 });
               }}
@@ -1429,6 +1495,15 @@ export default function Inventory() {
               <div className="grid grid-cols-2 gap-3">
                 <div><Label>Min Stock</Label><Input type="number" step="any" name="minStock" defaultValue={editItem.minStock} className="mt-1" /></div>
                 <div><Label>Cost Price (₹)</Label><Input type="number" step="any" name="costPrice" defaultValue={editItem.costPrice} className="mt-1" /></div>
+              </div>
+              <div>
+                <Label>Barcode / SKU</Label>
+                <Input
+                  name="barcode"
+                  defaultValue={editItem.barcode ?? `INV-${editItem.id}`}
+                  placeholder="INV-123 or custom code"
+                  className="mt-1 font-mono text-sm"
+                />
               </div>
               <div>
                 <Label>Preferred Vendor</Label>

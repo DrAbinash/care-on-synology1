@@ -1,25 +1,28 @@
 /**
- * ScannerSettings.tsx — Admin/owner-only page holding the technical scanner
- * options moved OUT of the reception-facing UnifiedScanCapture dialog per
- * the scanner-overhaul plan: bridge base URL override, workstation-pairing
- * secret, and a live bridge health/diagnostics readout.
+ * ScannerSettings.tsx — Admin/owner-only page for scanner preferences and
+ * workstation-local bridge/TVS setup. Linked from Form F's ID Scan panel
+ * ("Scanner Settings").
  *
- * This intentionally does NOT expose scan-bridge's env-var-level adapter
- * config (BRIDGE_SCAN_VENDOR, WIA_DEVICE_INDEX, etc.) — those stay
- * workstation-local env vars set when starting the bridge process, since
- * they're per-machine hardware config, not something to sync through the
- * ERP's central settings. What IS useful centrally: the URL/secret the
- * browser uses to reach whichever bridge is running locally, and a way to
- * verify it's actually working without digging through browser devtools.
+ * Clinic-wide: Preferred Scanning Source (webcam / flatbed / mobile) — which
+ * tab Form F opens by default. Workstation-local: bridge URL/secret and TVS
+ * device binding (saved in this browser only).
+ *
+ * Env-var-level adapter config (BRIDGE_SCAN_VENDOR, WIA_DEVICE_INDEX, etc.)
+ * stays on the bridge process — per-machine hardware, not ERP settings.
  */
 import { useEffect, useRef, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import PageHeader from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
-import { CheckCircle2, XCircle, Loader2, RefreshCcw, ShieldCheck, Camera } from "lucide-react";
+import { api } from "@/lib/fetchApi";
+import { CheckCircle2, XCircle, Loader2, RefreshCcw, ShieldCheck, Camera, Download } from "lucide-react";
 import {
   checkScanBridgeHealth,
   getScanBridgeSecret,
@@ -37,12 +40,45 @@ import {
 } from "@/lib/tvsDeviceProfile";
 import { classifyCameraError } from "@/lib/cameraDiagnostics";
 
+/** Same self-contained installer Form F's "Set up scanner" dialog offers. */
+const SCAN_BRIDGE_INSTALLER_URL = `${import.meta.env.BASE_URL}scanner/install-scan-bridge.ps1`;
+
+type PreferredScanner = "camera" | "bridge" | "mobile";
+
 export default function ScannerSettings() {
   const { toast } = useToast();
+  const qc = useQueryClient();
   const [bridgeUrl, setBridgeUrlInput] = useState(getScanBridgeUrl());
   const [bridgeSecret, setBridgeSecretInput] = useState(getScanBridgeSecret());
   const [health, setHealth] = useState<ScanBridgeHealth | null>(null);
   const [testing, setTesting] = useState(false);
+
+  // Clinic-wide default capture method for Form F's ID Scan panel.
+  const { data: clinicSettings } = useQuery<{ preferredScanner?: string }>({
+    queryKey: ["clinic-settings"],
+    queryFn: () => api.get("/api/clinic-settings"),
+  });
+  const [preferredScanner, setPreferredScanner] = useState<PreferredScanner>("bridge");
+  useEffect(() => {
+    const v = clinicSettings?.preferredScanner;
+    if (v === "camera" || v === "bridge" || v === "mobile") setPreferredScanner(v);
+    else if (clinicSettings) setPreferredScanner("bridge");
+  }, [clinicSettings]);
+  const savePreferred = useMutation({
+    mutationFn: (value: PreferredScanner) =>
+      api.put("/api/clinic-settings", { preferredScanner: value }),
+    onSuccess: (_data, value) => {
+      setPreferredScanner(value);
+      qc.invalidateQueries({ queryKey: ["clinic-settings"] });
+      toast({
+        title: "Preferred scanning source saved",
+        description: "Form F will open this tab by default. Other methods stay available.",
+      });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Could not save", description: err.message, variant: "destructive" });
+    },
+  });
 
   async function runTest() {
     setTesting(true);
@@ -129,7 +165,38 @@ export default function ScannerSettings() {
 
   return (
     <div className="p-6 max-w-2xl mx-auto space-y-6">
-      <PageHeader title="Scanner Settings" subtitle="Technical scanner bridge configuration for this workstation" />
+      <PageHeader title="Scanner Settings" subtitle="Form F ID scan defaults and workstation scanner setup" />
+
+      <div className="border rounded-xl p-5 space-y-4 bg-card">
+        <div>
+          <h3 className="text-sm font-semibold mb-1">Preferred Scanning Source</h3>
+          <p className="text-xs text-muted-foreground">
+            Which capture method Form F opens by default on the ID Scan panel. All methods stay available as tabs.
+            This is clinic-wide (shared by every workstation).
+          </p>
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="preferred-scanner">Default method</Label>
+          <Select
+            value={preferredScanner}
+            onValueChange={(v) => {
+              if (v === "camera" || v === "bridge" || v === "mobile") {
+                savePreferred.mutate(v);
+              }
+            }}
+            disabled={savePreferred.isPending}
+          >
+            <SelectTrigger id="preferred-scanner" className="h-9 bg-background">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="bridge">Flatbed Scanner / ScanBridge (default)</SelectItem>
+              <SelectItem value="camera">Webcam / TVS PDS 8M</SelectItem>
+              <SelectItem value="mobile">Wireless Mobile Scan</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
 
       <div className="border rounded-xl p-5 space-y-4 bg-card">
         <div>
@@ -138,6 +205,23 @@ export default function ScannerSettings() {
             The Scanner Bridge is a small local app that runs on each reception workstation and lets the browser
             talk to a physically connected scanner (Canon flatbed/ADF, or the TVS PDS 8M). These settings are
             saved per-browser (this computer only) — every workstation configures its own.
+          </p>
+        </div>
+
+        <div className="rounded-lg border border-dashed bg-muted/30 p-3 space-y-2">
+          <p className="text-xs text-muted-foreground">
+            One-time setup on this PC: install Node.js LTS, then download and run the installer
+            (right-click → Run with PowerShell). Enter this ERP address when prompted. Same installer as Form F.
+          </p>
+          <a
+            href={SCAN_BRIDGE_INSTALLER_URL}
+            download="install-scan-bridge.ps1"
+            className="inline-flex items-center justify-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+          >
+            <Download size={16} /> Download installer (install-scan-bridge.ps1)
+          </a>
+          <p className="text-[10px] text-muted-foreground">
+            If Windows blocks it: right-click the file → Properties → tick Unblock → OK, then run it.
           </p>
         </div>
 
@@ -245,9 +329,9 @@ export default function ScannerSettings() {
       <div className="border rounded-xl p-5 space-y-2 bg-card">
         <h3 className="text-sm font-semibold">Reception scan options</h3>
         <p className="text-xs text-muted-foreground">
-          Reception staff see a simplified scan dialog (TVS PDS 8M once bound above, Existing Scanner, Upload,
-          Mobile Scan, Webcam). Advanced bridge/device diagnostics live only on this page — reception never sees
-          bridge URLs, ports, or vendor adapter names.
+          Form F opens the Preferred Scanning Source above (Scanner / ScanBridge by default). Staff can still switch tabs to
+          Existing Scanner, Mobile, or Upload. Advanced bridge/device diagnostics live only on this page —
+          reception never sees bridge URLs, ports, or vendor adapter names.
         </p>
         <Badge variant="outline" className="text-[10px]">TVS PDS 8M capture — code-complete, awaiting physical hardware validation</Badge>
       </div>

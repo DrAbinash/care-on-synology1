@@ -318,6 +318,27 @@ router.post("/:id/status", async (req, res) => {
   }
 
   const [updated] = await db.update(samplesTable).set(updates).where(eq(samplesTable.id, id)).returning();
+
+  if (next === "completed") {
+    const assignments = await db
+      .select({ orderTestId: sampleTestAssignmentsTable.orderTestId, testId: orderTestsTable.testId })
+      .from(sampleTestAssignmentsTable)
+      .innerJoin(orderTestsTable, eq(orderTestsTable.id, sampleTestAssignmentsTable.orderTestId))
+      .where(eq(sampleTestAssignmentsTable.sampleId, id));
+    const { hookConsumeOnSampleCompleted } = await import("../lib/inventoryConsumption");
+    const actor = body.data.actorName?.trim() || "lab";
+    for (const a of assignments) {
+      if (a.testId) {
+        hookConsumeOnSampleCompleted({
+          sampleId: id,
+          orderTestId: a.orderTestId,
+          testId: a.testId,
+          performedBy: actor,
+        });
+      }
+    }
+  }
+
   res.json(await expandSample(updated));
 });
 

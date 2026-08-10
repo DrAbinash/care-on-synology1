@@ -20,7 +20,14 @@ const SAFETY_CHIP: Record<VoiceSafetyClass, { label: string; cls: string }> = {
   HIGH_RISK: { label: "HIGH RISK", cls: "bg-red-50 text-red-800 border-red-300" },
 };
 
-export default function VoiceCommandBar({ voice }: { voice: VoiceSession }) {
+export default function VoiceCommandBar({
+  voice,
+  embedded = false,
+}: {
+  voice: VoiceSession;
+  /** Render controls inline (no second full-width toolbar row). */
+  embedded?: boolean;
+}) {
   const [helpOpen, setHelpOpen] = useState(false);
 
   const statusText = !voice.enabled
@@ -39,13 +46,12 @@ export default function VoiceCommandBar({ voice }: { voice: VoiceSession }) {
     : voice.phase === "processing" ? "bg-blue-50 text-blue-800 border-blue-300"
     : "bg-slate-100 text-slate-700 border-slate-300";
 
-  return (
-    <div className="shrink-0 border-b bg-muted/10 text-[11px]" data-testid="voice-bar">
-      <div className="flex items-center gap-1.5 px-3 py-1 flex-wrap">
-        <Mic size={12} className="text-muted-foreground shrink-0" />
+  const controls = (
+      <div className={`flex items-center gap-1 ${embedded ? "min-w-0" : "gap-1.5 px-3 py-1 flex-wrap"}`}>
+        {!embedded && <Mic size={12} className="text-muted-foreground shrink-0" />}
         {/* Push-to-talk: hold with the pointer (or hold Space outside editors) */}
         <Button
-          size="sm" variant="outline" className="h-6 text-[10px] gap-1 px-1.5 select-none"
+          size="sm" variant="outline" className="h-6 text-[10px] gap-1 px-1.5 select-none shrink-0"
           data-testid="voice-ptt"
           disabled={!voice.enabled}
           onPointerDown={(e) => { e.preventDefault(); voice.startListening("ptt"); }}
@@ -58,7 +64,7 @@ export default function VoiceCommandBar({ voice }: { voice: VoiceSession }) {
         {/* Toggle listen (Ctrl+Space) */}
         <Button
           size="sm" variant={voice.capturing && !voice.handsFree ? "destructive" : "outline"}
-          className="h-6 text-[10px] gap-1 px-1.5"
+          className="h-6 text-[10px] gap-1 px-1.5 shrink-0"
           data-testid="voice-toggle"
           disabled={!voice.enabled || voice.handsFree}
           onClick={() => voice.toggleListening()}
@@ -70,7 +76,7 @@ export default function VoiceCommandBar({ voice }: { voice: VoiceSession }) {
         {/* M1.6B3 — hands-free continuous session (wake/sleep phrases) */}
         <Button
           size="sm" variant={voice.handsFree ? "destructive" : "outline"}
-          className="h-6 text-[10px] gap-1 px-1.5"
+          className="h-6 text-[10px] gap-1 px-1.5 shrink-0"
           data-testid="voice-handsfree"
           disabled={!voice.enabled || (!voice.handsFree && !voice.handsFreeCapable)}
           onClick={() => voice.toggleHandsFree()}
@@ -78,17 +84,17 @@ export default function VoiceCommandBar({ voice }: { voice: VoiceSession }) {
             ? "Hands-free: listen continuously; say “go to sleep”/“wake up” to pause/resume, “cancel” to exit"
             : "Hands-free needs a provider with live utterances (browser speech, or enable live segmented transcription for server/local)"}
         >
-          <InfinityIcon size={11} /> {voice.handsFree ? "End hands-free" : "Hands-free"}
+          <InfinityIcon size={11} /> <span className={embedded ? "hidden xl:inline" : undefined}>{voice.handsFree ? "End hands-free" : "Hands-free"}</span>
         </Button>
         {voice.handsFree && voice.asleep && (
-          <span data-testid="voice-asleep" className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 border text-[10px] font-semibold bg-slate-100 text-slate-700 border-slate-300">
-            <Moon size={9} /> Asleep — say “wake up”
+          <span data-testid="voice-asleep" className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 border text-[10px] font-semibold bg-slate-100 text-slate-700 border-slate-300 shrink-0">
+            <Moon size={9} /> Asleep
           </span>
         )}
         {/* Listening / provider status — always truthful */}
         <span
           data-testid="voice-status"
-          className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 border text-[10px] font-semibold ${statusCls}`}
+          className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 border text-[10px] font-semibold shrink-0 ${statusCls}`}
           title={voice.providerLabel}
         >
           {voice.phase === "listening" && (
@@ -100,10 +106,12 @@ export default function VoiceCommandBar({ voice }: { voice: VoiceSession }) {
           {voice.phase === "processing" && <Loader2 size={9} className="animate-spin" />}
           {statusText}
         </span>
-        <span className="text-muted-foreground text-[10px]" data-testid="voice-provider">{voice.providerLabel}</span>
+        {!embedded && (
+          <span className="text-muted-foreground text-[10px]" data-testid="voice-provider">{voice.providerLabel}</span>
+        )}
         {/* Command vs dictation mode + dictation target */}
         <select
-          className="h-6 text-[10px] border rounded-md px-1 bg-background text-muted-foreground"
+          className="h-6 text-[10px] border rounded-md px-1 bg-background text-muted-foreground shrink-0"
           data-testid="voice-mode"
           value={voice.mode}
           onChange={(e) => voice.setMode(e.target.value === "dictation" ? "dictation" : "command")}
@@ -115,7 +123,7 @@ export default function VoiceCommandBar({ voice }: { voice: VoiceSession }) {
         </select>
         {voice.mode === "dictation" && (
           <select
-            className="h-6 text-[10px] border rounded-md px-1 bg-background text-muted-foreground"
+            className="h-6 text-[10px] border rounded-md px-1 bg-background text-muted-foreground shrink-0"
             data-testid="voice-dictation-target"
             value={voice.dictationTarget}
             onChange={(e) => voice.setDictationTarget(e.target.value as typeof voice.dictationTarget)}
@@ -126,14 +134,14 @@ export default function VoiceCommandBar({ voice }: { voice: VoiceSession }) {
             <option value="recommendation">→ Recommendation</option>
           </select>
         )}
-        {/* Live transcript */}
-        <span className="text-muted-foreground italic truncate max-w-[280px]" data-testid="voice-transcript">
+        {/* Live transcript — fills remaining space instead of leaving a dead gap */}
+        <span className={`text-muted-foreground italic truncate ${embedded ? "flex-1 min-w-[4rem] max-w-[18rem]" : "max-w-[280px]"}`} data-testid="voice-transcript">
           {voice.interim || voice.lastTranscript || ""}
         </span>
         {voice.feedback && (
-          <span className="text-[10px]" data-testid="voice-feedback">{voice.feedback}</span>
+          <span className="text-[10px] shrink-0" data-testid="voice-feedback">{voice.feedback}</span>
         )}
-        <div className="ml-auto flex items-center gap-1">
+        <div className="flex items-center gap-1 shrink-0">
           {voice.undoAvailable && (
             <Button size="sm" variant="ghost" className="h-6 text-[10px] gap-1 px-1.5"
               data-testid="voice-undo" onClick={() => voice.undoLast()} title={`Undo ${voice.undoLabel ?? ""}`}>
@@ -146,7 +154,10 @@ export default function VoiceCommandBar({ voice }: { voice: VoiceSession }) {
           </Button>
         </div>
       </div>
+  );
 
+  const extras = (
+    <>
       {/* Recognition/permission trouble — retry, never block keyboard/mouse */}
       {voice.trouble && (
         <div className="flex items-center gap-2 px-3 py-1 bg-red-50 border-t border-red-200 text-red-800" data-testid="voice-trouble">
@@ -247,6 +258,22 @@ export default function VoiceCommandBar({ voice }: { voice: VoiceSession }) {
           </div>
         </div>
       )}
+    </>
+  );
+
+  if (embedded) {
+    return (
+      <div className="min-w-0 flex-1 flex flex-col" data-testid="voice-bar">
+        {controls}
+        {extras}
+      </div>
+    );
+  }
+
+  return (
+    <div className="shrink-0 border-b bg-muted/10 text-[11px]" data-testid="voice-bar">
+      {controls}
+      {extras}
     </div>
   );
 }

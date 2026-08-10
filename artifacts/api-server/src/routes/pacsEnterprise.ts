@@ -14,6 +14,7 @@ import { tcpProbe } from "../lib/pacs/providers.js";
 import { testNodeConnection } from "../services/dicom-pull-agent/dimse-agent";
 import { getRadiologyConfig, validateRadiologyConfig, isDockerBridgeIp } from "../lib/pacs/pacsConfig.js";
 import { writeWorklistFile, removeWorklistFile, syncWorklistForStatus, isMwlEnabled, MWL_TERMINAL_STATUSES } from "../lib/pacs/mwlWorklistWriter.js";
+import { getMwlDeploymentStatus } from "../lib/pacs/mwlDeploymentStatus.js";
 import { NETWORK_LAN_HOST, DEFAULT_OHIF_BASE_URL, DEFAULT_WADO_URL, OHIF_HTTP_PORT } from "../lib/networkDefaults";
 import { fetchPrintImageBytes, PRINT_MAX_IMAGE_BYTES } from "../lib/reportImages";
 import { buildPrintClinic } from "../lib/buildPrintClinic";
@@ -299,7 +300,7 @@ const DEFAULT_VIEWER_SETTINGS: Record<string, string> = {
   pacs_port: "4242",
   pacs_ae_title: "ORTHANC2",
   viewer_mode: "BOTH",
-  default_viewer: "OHIF",
+  default_viewer: "WEASIS",
   ohif_enabled: "true",
   weasis_enabled: "true",
 };
@@ -690,7 +691,7 @@ router.get("/studies/:studyInstanceUID/ohif-launch", async (req, res) => {
       viewerType: "OHIF",
       error: "Viewer settings are not configured. Go to PACS / DICOM Settings → Viewer Settings and click Load Clinic Viewer Defaults.",
       ohifUrl: null,
-      dicomWebBaseUrl: dicomWebUrl || null,
+      dicomWebBaseUrl: "/api/radiology/dicom-web",
       pacsType,
       requestedLevel,
       launchLevel: null,
@@ -725,18 +726,143 @@ router.get("/studies/:studyInstanceUID/ohif-launch", async (req, res) => {
     accessionNumber,
   });
 
+  // Browser QIDO/WADO must always use the ERP same-origin proxy — never a LAN
+  // OHIF/Orthanc URL (CORS + mixed-content block remote/Tailscale clients).
+  // The server reaches Orthanc internally; the SPA only needs session cookies.
+  const browserDicomWeb = "/api/radiology/dicom-web";
+
   res.json({
     studyInstanceUID,
     patientName,
     accessionNumber,
     viewerType: "OHIF",
     ohifUrl,
-    dicomWebBaseUrl: dicomWebUrl,
+    dicomWebBaseUrl: browserDicomWeb || dicomWebUrl,
+    /** Server-side Orthanc DICOMweb (not for browser fetch). */
+    orthancDicomWebUrl: dicomWebUrl,
     pacsType,
     requestedLevel,
     launchLevel,
   });
 });
+
+// ─── Browser DICOMweb proxy (Report Images / Print Images) ───────────────────
+// OHIF loads images inside its own origin via nginx → Orthanc. The SPA cannot
+// QIDO Orthanc :8042 (CORS / auth). These routes re-expose the subset of
+// DICOMweb the image pickers need, authenticated as staff, using server-side
+// Orthanc credentials.
+
+async function orthancDicomWebFetch(pathAndQuery: string, accept: string): Promise<Response | null> {
+  const cfg = await getRadiologyConfig();
+  const base =
+    process.env.ORTHANC_INTERNAL_URL?.replace(/\/+$/, "")
+    || cfg.orthanc.dicomWebUrl?.replace(/\/dicom-web\/?$/, "")
+    || "";
+  if (!base) return null;
+  const headers: Record<string, string> = { Accept: accept };
+  const user = process.env.ORTHANC_USERNAME || "";
+  const pass = process.env.ORTHANC_PASSWORD || "";
+  if (user && pass) headers.Authorization = "Basic " + Buffer.from(`${user}:${pass}`).toString("base64");
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 12_000);
+  try {
+    return await fetch(`${base}/dicom-web${pathAndQuery}`, { headers, signal: controller.signal });
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+router.get("/dicom-web/studies/:studyInstanceUID/series", async (req, res) => {
+  const { studyInstanceUID } = req.params;
+  if (!LAUNCH_UID.test(studyInstanceUID)) {
+    res.status(400).json({ error: "invalid StudyInstanceUID" });
+    return;
+  }
+  const upstream = await orthancDicomWebFetch(
+    `/studies/${encodeURIComponent(studyInstanceUID)}/series`,
+    "application/dicom+json",
+  );
+  if (!upstream) {
+    res.status(502).json({ error: "Orthanc DICOMweb unreachable" });
+    return;
+  }
+  const body = Buffer.from(await upstream.arrayBuffer());
+  res.status(upstream.status).type(upstream.headers.get("content-type") || "application/dicom+json").send(body);
+});
+
+router.get("/dicom-web/studies/:studyInstanceUID/series/:seriesInstanceUID/instances", async (req, res) => {
+  const { studyInstanceUID, seriesInstanceUID } = req.params;
+  if (!LAUNCH_UID.test(studyInstanceUID) || !LAUNCH_UID.test(seriesInstanceUID)) {
+    res.status(400).json({ error: "invalid UID" });
+    return;
+  }
+  const upstream = await orthancDicomWebFetch(
+    `/studies/${encodeURIComponent(studyInstanceUID)}/series/${encodeURIComponent(seriesInstanceUID)}/instances`,
+    "application/dicom+json",
+  );
+  if (!upstream) {
+    res.status(502).json({ error: "Orthanc DICOMweb unreachable" });
+    return;
+  }
+  const body = Buffer.from(await upstream.arrayBuffer());
+  res.status(upstream.status).type(upstream.headers.get("content-type") || "application/dicom+json").send(body);
+});
+
+router.get(
+  "/dicom-web/studies/:studyInstanceUID/series/:seriesInstanceUID/instances/:sopInstanceUID/rendered",
+  async (req, res) => {
+    const { studyInstanceUID, seriesInstanceUID, sopInstanceUID } = req.params;
+    if (!LAUNCH_UID.test(studyInstanceUID) || !LAUNCH_UID.test(seriesInstanceUID) || !LAUNCH_UID.test(sopInstanceUID)) {
+      res.status(400).json({ error: "invalid UID" });
+      return;
+    }
+    const qs = new URLSearchParams();
+    if (typeof req.query.quality === "string") qs.set("quality", req.query.quality);
+    if (typeof req.query.viewport === "string") qs.set("viewport", req.query.viewport);
+    const suffix = qs.toString() ? `?${qs}` : "";
+    const upstream = await orthancDicomWebFetch(
+      `/studies/${encodeURIComponent(studyInstanceUID)}/series/${encodeURIComponent(seriesInstanceUID)}/instances/${encodeURIComponent(sopInstanceUID)}/rendered${suffix}`,
+      "image/jpeg",
+    );
+    if (!upstream) {
+      res.status(502).json({ error: "Orthanc DICOMweb unreachable" });
+      return;
+    }
+    const body = Buffer.from(await upstream.arrayBuffer());
+    res.status(upstream.status).type(upstream.headers.get("content-type") || "image/jpeg").send(body);
+  },
+);
+
+router.get(
+  "/dicom-web/studies/:studyInstanceUID/series/:seriesInstanceUID/instances/:sopInstanceUID/frames/:frame/rendered",
+  async (req, res) => {
+    const { studyInstanceUID, seriesInstanceUID, sopInstanceUID, frame } = req.params;
+    if (!LAUNCH_UID.test(studyInstanceUID) || !LAUNCH_UID.test(seriesInstanceUID) || !LAUNCH_UID.test(sopInstanceUID)) {
+      res.status(400).json({ error: "invalid UID" });
+      return;
+    }
+    if (!/^\d{1,6}$/.test(frame)) {
+      res.status(400).json({ error: "invalid frame" });
+      return;
+    }
+    const qs = new URLSearchParams();
+    if (typeof req.query.quality === "string") qs.set("quality", req.query.quality);
+    if (typeof req.query.viewport === "string") qs.set("viewport", req.query.viewport);
+    const suffix = qs.toString() ? `?${qs}` : "";
+    const upstream = await orthancDicomWebFetch(
+      `/studies/${encodeURIComponent(studyInstanceUID)}/series/${encodeURIComponent(seriesInstanceUID)}/instances/${encodeURIComponent(sopInstanceUID)}/frames/${frame}/rendered${suffix}`,
+      "image/jpeg",
+    );
+    if (!upstream) {
+      res.status(502).json({ error: "Orthanc DICOMweb unreachable" });
+      return;
+    }
+    const body = Buffer.from(await upstream.arrayBuffer());
+    res.status(upstream.status).type(upstream.headers.get("content-type") || "image/jpeg").send(body);
+  },
+);
 
 // ─── M1.2 — READ-ONLY LAUNCH DIAGNOSTICS ─────────────────────────────────────
 // The browser cannot ask the PACS whether a StudyInstanceUID exists (QIDO is
@@ -960,22 +1086,37 @@ router.post("/mwl-procedures", async (req, res) => {
 // enabling the feature, and reconciliation if files drift. Removes terminal
 // procedures' files, (re)writes active ones.
 router.post("/mwl-worklist/sync", async (_req, res) => {
-  if (!isMwlEnabled()) {
-    res.status(503).json({ error: "Modality worklist is not configured. Set ORTHANC_WORKLIST_DIR and mount a folder shared with Orthanc (worklists plugin)." });
-    return;
-  }
-  const rows = await db.select().from(radiologyScheduledProceduresTable).limit(5000);
-  let written = 0;
-  let removed = 0;
-  for (const row of rows) {
-    if (MWL_TERMINAL_STATUSES.has((row.status || "").toUpperCase())) {
-      await removeWorklistFile(row.accessionNumber);
-      removed++;
-    } else if (await writeWorklistFile(row)) {
-      written++;
+  try {
+    if (!isMwlEnabled()) {
+      res.status(503).json({ error: "Modality worklist is not configured. Set ORTHANC_WORKLIST_DIR and mount a folder shared with Orthanc (worklists plugin)." });
+      return;
     }
+    const rows = await db.select().from(radiologyScheduledProceduresTable).limit(5000);
+    let written = 0;
+    let removed = 0;
+    for (const row of rows) {
+      if (MWL_TERMINAL_STATUSES.has((row.status || "").toUpperCase())) {
+        await removeWorklistFile(row.accessionNumber);
+        removed++;
+      } else if (await writeWorklistFile(row)) {
+        written++;
+      }
+    }
+    res.json({ total: rows.length, written, removed });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: message, message });
   }
-  res.json({ total: rows.length, written, removed });
+});
+
+// GET /api/radiology/mwl-status — deployment health for Settings → DICOM & MWL tab
+router.get("/mwl-status", async (_req, res) => {
+  try {
+    const status = await getMwlDeploymentStatus();
+    res.json(status);
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
 });
 
 // ─── DICOM Q/R QUERY ─────────────────────────────────────────────────────────
@@ -2784,7 +2925,7 @@ router.get("/network/warnings", async (req, res) => {
     // Check for Docker Bridge IP leaks (shared, corrected helper — see
     // pacsConfig.ts; deliberately excludes the real clinic LAN 172.16.1.x)
     if (isDockerBridgeIp(cfg.orthanc.ip)) {
-      warnings.push("Orthanc IP uses a Docker bridge network address, unreachable by LAN workstations. Set ORTHANC_IP or ORTHANC_URL to the clinic's real LAN IP (e.g. 192.168.1.137) in .env.");
+      warnings.push("Orthanc IP uses a Docker bridge network address, unreachable by LAN workstations. Set ORTHANC_IP or ORTHANC_URL to the clinic's real LAN IP (e.g. 172.16.1.139) in .env.");
     }
     if (isDockerBridgeIp(cfg.conquest.ip)) {
       warnings.push("Conquest IP uses a Docker bridge network address, unreachable by LAN workstations. Set CONQUEST_HOST to the clinic's real LAN IP in .env.");

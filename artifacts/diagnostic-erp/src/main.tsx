@@ -2,6 +2,7 @@ import { createRoot } from "react-dom/client";
 import { setAuthTokenGetter } from "@workspace/api-client-react";
 import App from "./App";
 import { ERP_SESSION_KEY, type StaffSession } from "./lib/staffSession";
+import { runErpConnectivityBootstrap, runErpConnectivitySyncInit } from "./lib/erpConnectivity";
 import "./index.css";
 
 // Apply the persisted color scheme synchronously, before the first paint —
@@ -60,7 +61,15 @@ window.addEventListener("vite:preloadError", () => {
   }
 });
 
-createRoot(document.getElementById("root")!).render(<App />);
+function boot() {
+  runErpConnectivitySyncInit();
+  const rootEl = document.getElementById("root")!;
+  createRoot(rootEl).render(<App />);
+  // Background only — must never block paint or redirect off caredeoghar.com.
+  void runErpConnectivityBootstrap();
+}
+
+boot();
 
 // Once the app has mounted successfully, clear the reload guard so a LATER
 // redeploy during this same browser session can still trigger one auto-reload

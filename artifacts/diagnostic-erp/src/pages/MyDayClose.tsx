@@ -217,7 +217,7 @@ export default function MyDayClose() {
   const expected = previewQ.data?.expected;
 
   return (
-    <div className="p-4 md:p-6 space-y-6 max-w-4xl mx-auto">
+    <div className="p-4 md:p-6 space-y-6 max-w-4xl mx-auto min-w-0">
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <div>
           <h1 className="text-2xl font-bold flex items-center gap-2">
@@ -337,7 +337,7 @@ export default function MyDayClose() {
         <CardContent>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
             <div>
-              <div className="text-muted-foreground text-xs">From</div>
+              <div className="text-muted-foreground text-xs">Since last close</div>
               <div className="font-medium">{fmtIst(previewQ.data?.coveredFromTs ?? null)}</div>
             </div>
             <div>
@@ -503,14 +503,14 @@ export default function MyDayClose() {
           </div>
 
           {/* Summary table */}
-          <div className="rounded-lg border border-gray-200 dark:border-card-border overflow-hidden">
-            <table className="w-full text-sm">
+          <div className="rounded-lg border border-gray-200 dark:border-card-border overflow-x-auto">
+            <table className="w-full text-sm min-w-[28rem]">
               <thead className="bg-gray-50 dark:bg-muted/30">
                 <tr>
-                  <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase">Category</th>
-                  <th className="px-3 py-2 text-right text-xs font-semibold text-muted-foreground uppercase">Expected</th>
-                  <th className="px-3 py-2 text-right text-xs font-semibold text-muted-foreground uppercase">Counted</th>
-                  <th className="px-3 py-2 text-right text-xs font-semibold text-muted-foreground uppercase">Variance</th>
+                  <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase whitespace-nowrap">Category</th>
+                  <th className="px-3 py-2 text-right text-xs font-semibold text-muted-foreground uppercase whitespace-nowrap">Expected</th>
+                  <th className="px-3 py-2 text-right text-xs font-semibold text-muted-foreground uppercase whitespace-nowrap">Counted</th>
+                  <th className="px-3 py-2 text-right text-xs font-semibold text-muted-foreground uppercase whitespace-nowrap">Variance</th>
                 </tr>
               </thead>
               <tbody>
@@ -605,20 +605,21 @@ export default function MyDayClose() {
       <Card>
         <CardHeader><CardTitle className="text-base">My Past Closures</CardTitle></CardHeader>
         <CardContent>
-          <table className="w-full text-sm">
-            <thead className="text-left text-xs text-muted-foreground uppercase border-b">
-              <tr>
-                <th className="py-2">Date</th>
-                <th>Closed At</th>
-                <th>Bills</th>
-                <th>Expected</th>
-                <th>Actual</th>
-                <th>Variance</th>
-                <th>Status</th>
-                <th className="text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm min-w-[40rem]">
+              <thead className="text-left text-xs text-muted-foreground uppercase border-b">
+                <tr>
+                  <th className="py-2 whitespace-nowrap">Date</th>
+                  <th className="whitespace-nowrap">Closed At</th>
+                  <th className="whitespace-nowrap">Bills</th>
+                  <th className="whitespace-nowrap">Expected</th>
+                  <th className="whitespace-nowrap">Actual</th>
+                  <th className="whitespace-nowrap">Variance</th>
+                  <th className="whitespace-nowrap">Status</th>
+                  <th className="text-right whitespace-nowrap">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
               {(historyQ.data ?? []).map((c) => {
                 const v = nv(c.variance);
                 const statusColors: Record<string, string> = {
@@ -631,20 +632,20 @@ export default function MyDayClose() {
                 const sc = statusColors[c.drawerStatus] ?? "text-gray-600";
                 return (
                   <tr key={c.id} className="border-b last:border-b-0">
-                    <td className="py-2 font-medium">{c.closureDate}</td>
-                    <td>{fmtIst(c.closedAt)}</td>
-                    <td>{c.billsCount}</td>
-                    <td>{inr(nv(c.totalExpected))}</td>
-                    <td>{inr(nv(c.totalActual))}</td>
-                    <td className={v === 0 ? "text-green-600" : v < 0 ? "text-red-600" : "text-amber-600"}>
+                    <td className="py-2 font-medium whitespace-nowrap">{c.closureDate}</td>
+                    <td className="whitespace-nowrap">{fmtIst(c.closedAt)}</td>
+                    <td className="whitespace-nowrap">{c.billsCount}</td>
+                    <td className="whitespace-nowrap tabular-nums">{inr(nv(c.totalExpected))}</td>
+                    <td className="whitespace-nowrap tabular-nums">{inr(nv(c.totalActual))}</td>
+                    <td className={`whitespace-nowrap tabular-nums ${v === 0 ? "text-green-600" : v < 0 ? "text-red-600" : "text-amber-600"}`}>
                       {v === 0 ? "—" : `${v < 0 ? "−" : "+"}${inr(Math.abs(v))}`}
                     </td>
-                    <td>
+                    <td className="whitespace-nowrap">
                       <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold capitalize ${sc}`}>
                         {c.drawerStatus}
                       </span>
                     </td>
-                    <td className="text-right">
+                    <td className="text-right whitespace-nowrap">
                       <Button size="sm" variant="ghost" onClick={() => setDetailOpen(c)}>View</Button>
                     </td>
                   </tr>
@@ -657,8 +658,9 @@ export default function MyDayClose() {
                   </td>
                 </tr>
               )}
-            </tbody>
-          </table>
+              </tbody>
+            </table>
+          </div>
         </CardContent>
       </Card>
 

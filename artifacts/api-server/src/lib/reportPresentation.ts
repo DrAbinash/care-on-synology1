@@ -144,14 +144,15 @@ export interface PresentationTemplate {
     sectionBg: string; sectionBorder: string;
     labelColor: string; valueColor: string; impressionBg: string;
   };
-  layout: {
+    layout: {
     /** "inline" — images render as a block after the body (classic).
      *  "side-panel" — desktop: report left / images right; print: floated
      *  right rail the text wraps around. Full width when no images. */
     imagePlacement: "inline" | "side-panel";
     /** "grid" — the classic 4-column label-over-value demographics grid.
-     *  "table" — the premium label : value table. */
-    patientBlockStyle: "grid" | "table";
+     *  "table" — the premium label : value table.
+     *  "stacked" — letterhead-style lines (name, age/sex, UHID, ref dr). */
+    patientBlockStyle: "grid" | "table" | "stacked";
     pageMargins: string;
   };
 }
@@ -178,7 +179,7 @@ export const PRESENTATION_TEMPLATES: PresentationTemplate[] = [
       sectionBg: "#f8fafc", sectionBorder: "#e2e8f0",
       labelColor: "#64748b", valueColor: "#111111", impressionBg: "#fef9c3",
     },
-    layout: { imagePlacement: "inline", patientBlockStyle: "grid", pageMargins: "14mm" },
+    layout: { imagePlacement: "inline", patientBlockStyle: "stacked", pageMargins: "12mm 14mm" },
   },
   {
     id: "care-premium",
@@ -212,6 +213,65 @@ export function resolvePresentationTemplate(id?: string | null): PresentationTem
   const wanted = (id ?? "").trim();
   return PRESENTATION_TEMPLATES.find((t) => t.id === wanted)
     ?? PRESENTATION_TEMPLATES.find((t) => t.id === DEFAULT_TEMPLATE_ID)!;
+}
+
+/** Format YYYYMMDD or ISO dates for report headers. */
+export function formatReportDate(raw: string | null | undefined): string {
+  if (!raw) return "";
+  const digits = raw.replace(/\D/g, "");
+  if (digits.length >= 8) {
+    const y = digits.slice(0, 4);
+    const m = digits.slice(4, 6);
+    const day = digits.slice(6, 8);
+    const months = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+    const mi = parseInt(m, 10) - 1;
+    if (mi >= 0 && mi < 12) {
+      const d = new Date(parseInt(y, 10), mi, parseInt(day, 10));
+      if (!Number.isNaN(d.getTime())) {
+        const weekday = d.toLocaleDateString("en-IN", { weekday: "long" });
+        return `${weekday}, ${months[mi]} ${parseInt(day, 10)}, ${y}`;
+      }
+    }
+    return `${day}/${m}/${y}`;
+  }
+  try {
+    const d = new Date(raw);
+    if (!Number.isNaN(d.getTime())) {
+      return d.toLocaleDateString("en-IN", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
+    }
+  } catch { /* fall through */ }
+  return raw;
+}
+
+function rowByLabel(rows: ReportPatientRow[], ...labels: string[]): string {
+  const wanted = labels.map((l) => l.toLowerCase());
+  const hit = rows.find((r) => wanted.includes(r.label.toLowerCase()));
+  return hit?.value?.trim() ?? "";
+}
+
+function stackedPatientBlockHtml(rows: ReportPatientRow[], pal: PresentationTemplate["palette"]): string {
+  const name = rowByLabel(rows, "patient", "name");
+  const ageSex = rowByLabel(rows, "age / sex", "age/sex", "age", "sex");
+  const uhid = rowByLabel(rows, "uhid", "patient id", "patient id / uhid");
+  const studyDate = rowByLabel(rows, "study date", "date");
+  const refDr = rowByLabel(rows, "referring doctor", "ref. doctor", "ref by", "ref. by");
+  const accession = rowByLabel(rows, "accession no.", "accession", "accession number");
+  const testName = rowByLabel(rows, "test", "test name");
+
+  const lines: string[] = [];
+  if (name) lines.push(`<div class="ps-name">${escapeHtml(name)}</div>`);
+  const meta1 = [ageSex ? `Age/Sex: ${escapeHtml(ageSex)}` : "", studyDate ? `Date: ${escapeHtml(studyDate)}` : ""].filter(Boolean).join(" &nbsp;&nbsp; ");
+  if (meta1) lines.push(`<div class="ps-line">${meta1}</div>`);
+  const meta2 = [uhid ? `UHID: ${escapeHtml(uhid)}` : "", refDr ? `Ref. By: ${escapeHtml(refDr)}` : ""].filter(Boolean).join(" &nbsp;&nbsp; ");
+  if (meta2) lines.push(`<div class="ps-line">${meta2}</div>`);
+  const meta3 = [accession ? `Accession: ${escapeHtml(accession)}` : "", testName ? `Test: ${escapeHtml(testName)}` : ""].filter(Boolean).join(" &nbsp;&nbsp; ");
+  if (meta3) lines.push(`<div class="ps-line">${meta3}</div>`);
+
+  if (lines.length === 0) {
+    return rows.filter((r) => r.value).map((r) => `<div class="ps-line"><strong>${escapeHtml(r.label)}:</strong> ${escapeHtml(r.value)}</div>`).join("");
+  }
+
+  return `<div class="patient-stacked" style="--ps-label:${pal.labelColor};--ps-value:${pal.valueColor}">${lines.join("")}</div>`;
 }
 
 // ── Fragment builders (shared by all templates) ──────────────────────────────
@@ -288,9 +348,22 @@ export interface TemplateRenderExtensions {
   templateVersion?: number;
   copyType?: string;
   page?: { size: "A4" | "A5" | "Letter"; orientation: "portrait" | "landscape"; margins: string };
-  headerCfg?: { show: boolean; showLogo: boolean; showTagline: boolean; showContact: boolean; style: "banded" | "underlined" };
+  headerCfg?: {
+    show: boolean;
+    showLogo: boolean;
+    showTagline: boolean;
+    showContact: boolean;
+    style: "banded" | "underlined";
+    /** Clinic Style settings / template override for logo placement in the letterhead. */
+    logoPosition?: "left" | "center" | "right";
+  };
   studyTitleCfg?: { style: "bar" | "plain" };
-  signatureCfg?: { show: boolean; showImage: boolean };
+  signatureCfg?: {
+    show: boolean;
+    showImage: boolean;
+    /** Horizontal alignment of the signature block(s). */
+    align?: "left" | "center" | "right";
+  };
   footerCfg?: { show: boolean };
   imagePanelCfg?: { placement: "inline" | "side-panel"; panelWidthMm: number };
   watermarkCfg?: { enabled: boolean; text: string };
@@ -332,6 +405,10 @@ export function renderReportDocument(
   const headerCfg = template.headerCfg ?? { show: true, showLogo: true, showTagline: true, showContact: true, style: banded ? "banded" as const : "underlined" as const };
   const signatureCfg = template.signatureCfg ?? { show: true, showImage: true };
   const footerCfg = template.footerCfg ?? { show: true };
+  const logoPosition = headerCfg.logoPosition ?? "left";
+  const signatureAlign = signatureCfg.align ?? "right";
+  const sigJustify =
+    signatureAlign === "left" ? "flex-start" : signatureAlign === "center" ? "center" : "flex-end";
   const panelWidthMm = template.imagePanelCfg?.panelWidthMm ?? 64;
   const orphans = template.pageBreaks?.orphans ?? 3;
   const widows = template.pageBreaks?.widows ?? 3;
@@ -348,7 +425,9 @@ export function renderReportDocument(
     : "";
 
   const visibleRows = model.patientRows.filter((r) => r.value);
-  const patientBlockHtml = template.layout.patientBlockStyle === "grid"
+  const patientBlockHtml = template.layout.patientBlockStyle === "stacked"
+    ? stackedPatientBlockHtml(visibleRows, pal)
+    : template.layout.patientBlockStyle === "grid"
     ? `<div class="patient-grid">${visibleRows
         .map((r) => `<div><span>${escapeHtml(r.label)}</span><strong>${escapeHtml(r.value)}</strong></div>`)
         .join("")}</div>`
@@ -398,12 +477,43 @@ export function renderReportDocument(
     .hdr {
       background: ${pal.headerBg};
       display: flex; align-items: center; gap: 14px;
-      padding: ${!banded ? "0 0 10px" : "14px 20px 10px"};
-      ${!banded ? `border-bottom: 3px solid ${pal.accent};` : ""}
-      margin-bottom: ${!banded ? "12px" : "0"};
+      padding: ${!banded ? "12px 16px 10px" : "14px 20px 10px"};
+      ${!banded ? `border-bottom: 2px solid ${pal.accent};` : ""}
+      margin-bottom: ${!banded ? "0" : "0"};
       break-inside: avoid;
+      position: relative;
+      overflow: hidden;
     }
-    .hdr img.logo { width: 60px; height: 60px; object-fit: contain; }
+    .hdr::before {
+      content: "";
+      position: absolute;
+      left: 0; top: 0; bottom: 0;
+      width: 6px;
+      background: linear-gradient(180deg, #0ea5e9 0%, #6366f1 55%, #14b8a6 100%);
+      border-radius: 0 3px 3px 0;
+    }
+    .hdr-inner { display: flex; align-items: center; gap: 14px; width: 100%; padding-left: 8px; }
+    .hdr-inner.logo-pos-center { flex-direction: column; align-items: center; text-align: center; gap: 8px; }
+    .hdr-inner.logo-pos-center .hdr-brand { flex: 0 1 auto; text-align: center; }
+    .hdr-inner.logo-pos-center .contact { margin-left: 0; text-align: center; width: 100%; }
+    .hdr-inner.logo-pos-right { flex-direction: row-reverse; }
+    .hdr-inner.logo-pos-right .hdr-brand { text-align: right; }
+    .hdr-inner.logo-pos-right .contact { margin-left: 0; margin-right: auto; text-align: left; }
+    .hdr-address-bar {
+      font-size: 9.5px; color: #475569; text-align: center;
+      border-bottom: none;
+      padding: 4px 12px 6px; margin-bottom: 0;
+      line-height: 1.45;
+    }
+    .hdr-rule {
+      border: none;
+      border-top: 2px solid ${pal.accent};
+      margin: 2px 0 10px;
+      height: 0;
+    }
+    .hdr-rule.hdr-rule-hidden { display: none; }
+    .hdr img.logo { width: 64px; height: 64px; object-fit: contain; }
+    .hdr .hdr-brand { flex: 1; }
     .hdr .name { ${slotCss(ty.header)} line-height: 1.1; }
     .hdr .tagline { font-size: 10px; color: ${!banded ? "#475569" : pal.accent}; margin-top: 2px; letter-spacing: 0.06em; }
     .hdr .contact { margin-left: auto; text-align: right; font-size: 10px; color: ${!banded ? "#475569" : pal.headerText + "cc"}; line-height: 1.4; }
@@ -421,8 +531,8 @@ export function renderReportDocument(
     .study-title-bar {
       ${slotCss(ty.studyTitle)}
       ${!titleBar
-        ? `padding: 2px 0 6px;`
-        : `background: ${pal.accent}; text-align: center; padding: 8px 20px; clear: both;`}
+        ? `padding: 10px 0 8px; text-align: center; text-decoration: underline; text-underline-offset: 4px; letter-spacing: 0.04em;`
+        : `background: ${pal.accent}; text-align: center; padding: 8px 20px; clear: both; text-decoration: none;`}
       break-inside: avoid; break-after: avoid-page;
     }
     .reportno { float: right; font-family: monospace; color: ${pal.labelColor}; font-size: 10px; }
@@ -444,6 +554,9 @@ export function renderReportDocument(
     .patient-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px 14px; }
     .patient-grid div span { color: ${pal.labelColor}; display: block; font-size: 9px; text-transform: uppercase; letter-spacing: 0.5px; }
     .patient-grid div strong { font-size: 12px; color: ${pal.valueColor}; }
+    .patient-stacked { line-height: 1.45; }
+    .patient-stacked .ps-name { font-size: 13pt; font-weight: 800; color: ${pal.valueColor}; margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.02em; }
+    .patient-stacked .ps-line { font-size: 10pt; color: ${pal.valueColor}; margin: 2px 0; }
 
     /* ── Content area: report column + optional image side panel ── */
     .content-area { padding: ${!banded ? "0" : "0 20px"}; }
@@ -551,7 +664,7 @@ export function renderReportDocument(
     }
 
     /* ── Footer + signatures slots ── */
-    .sigs { display: flex; gap: 30px; justify-content: flex-end; margin-top: 26px; break-inside: avoid; clear: both; }
+    .sigs { display: flex; gap: 30px; justify-content: ${sigJustify}; margin-top: 26px; break-inside: avoid; clear: both; }
     .sigbox { ${slotCss(ty.signature)} width: 200px; text-align: center; }
     .sigbox .sigimg { height: 50px; display: flex; align-items: flex-end; justify-content: center; }
     .sigbox .sigimg img { max-height: 50px; max-width: 180px; object-fit: contain; }
@@ -580,17 +693,20 @@ export function renderReportDocument(
     ${draftWatermark}
     ${templateWatermark}
     ${headerCfg.show ? `<div class="hdr">
-      ${model.clinic.logoDataUrl && headerCfg.showLogo ? `<img class="logo" src="${model.clinic.logoDataUrl}" alt="logo"/>` : ""}
-      <div>
-        <div class="name">${escapeHtml(model.clinic.name)}</div>
-        ${model.clinic.tagline && headerCfg.showTagline ? `<div class="tagline">${escapeHtml(model.clinic.tagline)}</div>` : ""}
+      <div class="hdr-inner logo-pos-${logoPosition}">
+        ${model.clinic.logoDataUrl && headerCfg.showLogo ? `<img class="logo" src="${model.clinic.logoDataUrl}" alt="logo"/>` : ""}
+        <div class="hdr-brand">
+          <div class="name">${escapeHtml(model.clinic.name)}</div>
+          ${model.clinic.tagline && headerCfg.showTagline ? `<div class="tagline">${escapeHtml(model.clinic.tagline)}</div>` : ""}
+        </div>
+        ${headerCfg.showContact ? `<div class="contact">
+          ${[model.clinic.phone, model.clinic.email].filter(Boolean).map((v) => escapeHtml(v!)).join(" • ")}<br/>
+          ${model.clinic.website ? `${escapeHtml(model.clinic.website)}` : ""}
+        </div>` : ""}
       </div>
-      ${headerCfg.showContact ? `<div class="contact">
-        ${escapeHtml(model.clinic.address ?? "")}<br/>
-        ${[model.clinic.phone, model.clinic.email].filter(Boolean).map((v) => escapeHtml(v!)).join(" • ")}<br/>
-        ${escapeHtml(model.clinic.website ?? "")}
-      </div>` : ""}
-    </div>` : ""}
+    </div>
+    ${model.clinic.address ? `<div class="hdr-address-bar">${escapeHtml(model.clinic.address)}</div>` : ""}
+    <hr class="hdr-rule" />` : ""}
     <span class="reportno">Report #: ${escapeHtml(model.reportNumber)}</span>
     <div class="study-title-bar">${escapeHtml(model.studyTitle)}</div>
     <div class="patient-section">

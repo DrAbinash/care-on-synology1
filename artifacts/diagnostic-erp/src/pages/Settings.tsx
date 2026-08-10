@@ -1,11 +1,13 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef, useDeferredValue } from "react";
-import { Link } from "wouter";
+import { Link, useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import QRCode from "qrcode";
 import { buildBillPrintHtml, type PrintBillData, type PrintClinic } from "@/lib/printBill";
+import { resolveBillPrintPageOpts } from "@/lib/billPrintSettings";
 import { api, fetchApi, getStaffToken } from "@/lib/fetchApi";
 import { useSuperAdmin, getSuperAdminToken } from "@/hooks/useSuperAdmin";
 import PageHeader from "@/components/PageHeader";
+import { PortalLoginBackgroundSettings } from "@/components/PortalLoginBackgroundSettings";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -26,10 +28,16 @@ import {
   RefreshCcw, FileCode, Send, QrCode, Palette, Bot, Inbox, ChevronRight,
   ArrowLeft, Phone, Layers, AlertTriangle, ScanLine, Receipt, Keyboard, Brain,
   Sparkles, Construction, GraduationCap, Tv, GripVertical, ScrollText, Flag,
-  Smartphone, RectangleVertical, RectangleHorizontal, Clock,
+  Smartphone, RectangleVertical, RectangleHorizontal, Clock, Plug, Radio, Cpu, Server, ArrowRight,
 } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
+import {
+  INTEGRATIONS_OPS_LINKS,
+  RADIOLOGY_AI_LINKS,
+  RADIOLOGY_INFRA_LINKS,
+  type SettingsHubLink,
+} from "@/lib/settingsHubCatalog";
 
 type AppUser = {
   id: number; name: string; email: string; role: string;
@@ -117,10 +125,11 @@ const DEFAULT_PERMISSIONS: Record<string, string[]> = {
 const MODULE_SUB_PERMISSIONS: Record<string, { id: string; label: string }[]> = {
   "/settings": [
     { id: "clinic", label: "Clinic Info" },
+    { id: "integrations", label: "Integrations & Ops" },
     { id: "users", label: "Users Management" },
     { id: "security", label: "Security & FIDO2" },
     { id: "backup", label: "Backup & Replication" },
-    { id: "radiology", label: "Radiology Config" },
+    { id: "radiology", label: "Radiology" },
     { id: "appearance", label: "Appearance & Themes" },
     { id: "notifications", label: "Email & WhatsApp" },
     { id: "billing", label: "Billing Settings" },
@@ -159,39 +168,61 @@ const MODULE_SUB_PERMISSIONS: Record<string, { id: string; label: string }[]> = 
   ],
 };
 
-const TABS = [
-  { id: "clinic", label: "Clinic Info", icon: Building2 },
-  { id: "about", label: "About / Version", icon: Tag },
-  { id: "appearance", label: "Appearance", icon: Palette },
-  { id: "users", label: "Users", icon: Users },
-  { id: "departments", label: "Departments", icon: Network },
-  { id: "locations", label: "Locations", icon: Layers },
-  { id: "branches", label: "Branches", icon: MapPin },
-  { id: "report-templates", label: "Report Templates", icon: FileCode },
-  { id: "portal", label: "Patient Portal", icon: Globe },
-  { id: "online-booking", label: "Online Booking", icon: CreditCard },
-  { id: "mobile-app", label: "Mobile App", icon: Smartphone },
-  { id: "kiosk", label: "Self-Reg Kiosk", icon: QrCode },
-  { id: "queue-settings", label: "Queue Settings", icon: ClipboardList },
-  { id: "queue-display", label: "Queue Display (TV)", icon: Tv },
-  { id: "form-f", label: "Form F Tests", icon: FileText },
-  { id: "scanner", label: "Scanner", icon: ScanLine },
-  { id: "email", label: "Email Notifications", icon: Mail },
-  { id: "printers", label: "Printers", icon: Printer },
-  { id: "billing-print", label: "Billing Print", icon: FileText },
-  { id: "receipt-messages", label: "Receipt Messages", icon: MessageCircle },
-  { id: "footer-services", label: "Footer Services", icon: Layers },
-  { id: "promotional-footer", label: "Promotional Footer", icon: Tag },
-  { id: "discount-reasons", label: "Discount Reasons", icon: Tag },
-  { id: "reprint-reasons", label: "Edit/Modify/Reprint Reasons", icon: Printer },
-  { id: "backup", label: "Backup", icon: Database },
-  { id: "radiology", label: "Radiology", icon: ScanLine },
-  { id: "manual", label: "User Manual", icon: FileDown },
-  { id: "security", label: "Security", icon: ShieldCheck },
-  { id: "audit-log", label: "Audit Log", icon: ScrollText },
-  { id: "feature-flags", label: "Feature Flags", icon: Flag },
-  { id: "password", label: "Change Password", icon: KeyRound },
+type SettingsTabDef = {
+  id: string;
+  label: string;
+  icon: React.ComponentType<{ size?: number }>;
+  /** Visual group label in the Settings tab strip (Radiology was easy to miss among 30 flat tabs). */
+  group: "Clinic" | "Radiology" | "People" | "Portals" | "Billing" | "Devices" | "System";
+};
+
+const TABS: SettingsTabDef[] = [
+  { id: "clinic", label: "Clinic Info", icon: Building2, group: "Clinic" },
+  { id: "integrations", label: "Integrations & Ops", icon: Plug, group: "Clinic" },
+  { id: "about", label: "About / Version", icon: Tag, group: "Clinic" },
+  { id: "appearance", label: "Appearance", icon: Palette, group: "Clinic" },
+  // Radiology — early in the strip so it is not buried after Backup among 30 tabs.
+  { id: "radiology", label: "Radiology", icon: Radio, group: "Radiology" },
+  { id: "users", label: "Users", icon: Users, group: "People" },
+  { id: "security", label: "Security", icon: ShieldCheck, group: "People" },
+  { id: "password", label: "Change Password", icon: KeyRound, group: "People" },
+  { id: "portal", label: "Portal & Login", icon: Globe, group: "Portals" },
+  { id: "online-booking", label: "Online Booking", icon: CreditCard, group: "Portals" },
+  { id: "mobile-app", label: "Mobile App", icon: Smartphone, group: "Portals" },
+  { id: "kiosk", label: "Self-Reg Kiosk", icon: QrCode, group: "Portals" },
+  { id: "queue-settings", label: "Queue Settings", icon: ClipboardList, group: "Portals" },
+  { id: "queue-display", label: "Queue Display (TV)", icon: Tv, group: "Portals" },
+  { id: "billing-print", label: "Billing Print", icon: FileText, group: "Billing" },
+  { id: "receipt-messages", label: "Receipt Messages", icon: MessageCircle, group: "Billing" },
+  { id: "footer-services", label: "Footer Services", icon: Layers, group: "Billing" },
+  { id: "promotional-footer", label: "Promotional Footer", icon: Tag, group: "Billing" },
+  { id: "discount-reasons", label: "Discount Reasons", icon: Tag, group: "Billing" },
+  { id: "reprint-reasons", label: "Edit/Modify/Reprint Reasons", icon: Printer, group: "Billing" },
+  { id: "email", label: "Email Notifications", icon: Mail, group: "Billing" },
+  { id: "printers", label: "Printers", icon: Printer, group: "Devices" },
+  { id: "scanner", label: "Scanner", icon: ScanLine, group: "Devices" },
+  { id: "form-f", label: "Form F Tests", icon: FileText, group: "Devices" },
+  { id: "departments", label: "Departments", icon: Network, group: "System" },
+  { id: "locations", label: "Locations", icon: Layers, group: "System" },
+  { id: "branches", label: "Branches", icon: MapPin, group: "System" },
+  { id: "backup", label: "Backup", icon: Database, group: "System" },
+  { id: "audit-log", label: "Audit Log", icon: ScrollText, group: "System" },
+  { id: "feature-flags", label: "Feature Flags (Server)", icon: Flag, group: "System" },
+  { id: "manual", label: "User Manual", icon: FileDown, group: "System" },
 ];
+
+/** Old tab ids that still appear in bookmarks / event deep-links. */
+const SETTINGS_TAB_ALIASES: Record<string, string> = {
+  "radiology-tools": "radiology",
+  whatsapp: "integrations",
+};
+
+function resolveSettingsTabId(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  if (SETTINGS_TAB_ALIASES[raw]) return SETTINGS_TAB_ALIASES[raw];
+  if (TABS.some((t) => t.id === raw)) return raw;
+  return null;
+}
 
 const MANUAL_SECTIONS: ManualSection[] = [
   { title: "Getting Started", icon: BookOpen, points: ["Use the Dashboard to review daily counts, revenue, and pending work.", "Register patients first, then create test orders, then generate bills.", "Use the Billing module to record payments and monitor balances."] },
@@ -252,7 +283,16 @@ function buildManualText() {
 
 export default function Settings() {
   const qc = useQueryClient();
+  const [, setLocation] = useLocation();
   const session = useMemo(() => readStaffSession(), []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const fromQuery = new URLSearchParams(window.location.search).get("tab");
+    if (fromQuery === "report-templates") {
+      setLocation("/report-generator?view=templates");
+    }
+  }, [setLocation]);
 
   const allowedTabs = useMemo(() => {
     if (!session) return TABS;
@@ -263,14 +303,20 @@ export default function Settings() {
       else if (t.id === "audit-log" || t.id === "feature-flags") action = "security";
       else if (t.id === "billing-print" || t.id === "discount-reasons" || t.id === "reprint-reasons" || t.id === "receipt-messages" || t.id === "footer-services" || t.id === "promotional-footer") action = "billing";
       else if (t.id === "printers" || t.id === "scanner") action = "devices";
-      else if (t.id === "departments" || t.id === "locations" || t.id === "branches" || t.id === "report-templates") action = "infrastructure";
-      else if (t.id === "portal" || t.id === "online-booking" || t.id === "kiosk") action = "portals";
+      else if (t.id === "departments" || t.id === "locations" || t.id === "branches") action = "infrastructure";
+      else if (t.id === "portal" || t.id === "online-booking" || t.id === "kiosk" || t.id === "queue-settings" || t.id === "queue-display") action = "portals";
+      else if (t.id === "integrations") action = "clinic";
 
       return hasSubPermission(session, "/settings", action);
     });
   }, [session]);
 
   const [tab, setTab] = useState<string>(() => {
+    // Deep-link: /settings?tab=scanner (and Form F "Scanner Settings" links)
+    if (typeof window !== "undefined") {
+      const fromQuery = resolveSettingsTabId(new URLSearchParams(window.location.search).get("tab"));
+      if (fromQuery) return fromQuery;
+    }
     const initialSession = readStaffSession();
     if (!initialSession) return "users";
     const initialAllowed = TABS.filter(t => {
@@ -280,31 +326,96 @@ export default function Settings() {
       else if (t.id === "audit-log" || t.id === "feature-flags") action = "security";
       else if (t.id === "billing-print" || t.id === "discount-reasons" || t.id === "reprint-reasons" || t.id === "receipt-messages" || t.id === "footer-services" || t.id === "promotional-footer") action = "billing";
       else if (t.id === "printers" || t.id === "scanner") action = "devices";
-      else if (t.id === "departments" || t.id === "locations" || t.id === "branches" || t.id === "report-templates") action = "infrastructure";
-      else if (t.id === "portal" || t.id === "online-booking" || t.id === "kiosk" || t.id === "queue-settings") action = "portals";
+      else if (t.id === "departments" || t.id === "locations" || t.id === "branches") action = "infrastructure";
+      else if (t.id === "portal" || t.id === "online-booking" || t.id === "kiosk" || t.id === "queue-settings" || t.id === "queue-display") action = "portals";
+      else if (t.id === "integrations") action = "clinic";
 
       return hasSubPermission(initialSession, "/settings", action);
     });
     return initialAllowed[0]?.id ?? "password";
   });
 
+  // Keep URL query in sync so the Scanner tab is bookmarkable / shareable.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    if (url.searchParams.get("tab") === tab) return;
+    url.searchParams.set("tab", tab);
+    window.history.replaceState({}, "", `${url.pathname}?${url.searchParams.toString()}${url.hash}`);
+  }, [tab]);
+
+  // If ?tab= points at a tab the user cannot see, fall back to first allowed.
+  useEffect(() => {
+    if (!allowedTabs.some((t) => t.id === tab)) {
+      setTab(allowedTabs[0]?.id ?? "password");
+    }
+  }, [allowedTabs, tab]);
+
+  // Form F links use #preferred-scanning-source — scroll once the Scanner tab is open.
+  useEffect(() => {
+    if (tab !== "scanner") return;
+    if (typeof window === "undefined" || window.location.hash !== "#preferred-scanning-source") return;
+    const t = window.setTimeout(() => {
+      document.getElementById("preferred-scanning-source")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 50);
+    return () => window.clearTimeout(t);
+  }, [tab]);
+
+  // Clinic Info "Open Billing Print" and similar deep-links.
+  useEffect(() => {
+    const onTab = (e: Event) => {
+      const id = resolveSettingsTabId(String((e as CustomEvent).detail || ""));
+      if (id) setTab(id);
+    };
+    window.addEventListener("care:settings-tab", onTab);
+    return () => window.removeEventListener("care:settings-tab", onTab);
+  }, []);
+
+  const groupedAllowedTabs = useMemo(() => {
+    const groups: Array<{ group: SettingsTabDef["group"]; tabs: SettingsTabDef[] }> = [];
+    for (const t of allowedTabs) {
+      const last = groups[groups.length - 1];
+      if (last && last.group === t.group) last.tabs.push(t);
+      else groups.push({ group: t.group, tabs: [t] });
+    }
+    return groups;
+  }, [allowedTabs]);
+
   return (
     <div className="pb-8">
-      <PageHeader title="Settings" subtitle="User management, system configuration, and software documentation" />
+      <PageHeader title="Settings" subtitle="Clinic, Radiology, billing, portals, and system configuration" />
       <div className="px-6">
-        <div className="flex flex-wrap gap-1 bg-muted p-1 rounded-xl mb-6 w-fit">
-          {allowedTabs.map(t => {
-            const Icon = t.icon;
-            return <button key={t.id} onClick={() => setTab(t.id)} className={`flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg transition-all ${tab === t.id ? "bg-card shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"}`}><Icon size={14} />{t.label}</button>;
-          })}
+        <div className="flex flex-wrap items-center gap-1 bg-muted p-1 rounded-xl mb-6 w-fit max-w-full" data-testid="settings-tab-strip">
+          {groupedAllowedTabs.map((g, gi) => (
+            <React.Fragment key={g.group}>
+              {gi > 0 && <span className="mx-1 h-6 w-px bg-border shrink-0" aria-hidden />}
+              <span className="px-1.5 text-[9px] font-bold uppercase tracking-wide text-muted-foreground/80 select-none">{g.group}</span>
+              {g.tabs.map((t) => {
+                const Icon = t.icon;
+                return (
+                  <button
+                    key={t.id}
+                    data-testid={`settings-tab-${t.id}`}
+                    onClick={() => setTab(t.id)}
+                    className={`flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-lg transition-all ${
+                      tab === t.id ? "bg-card shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    <Icon size={14} />
+                    {t.label}
+                  </button>
+                );
+              })}
+            </React.Fragment>
+          ))}
         </div>
         {tab === "clinic" && <ClinicInfoTab />}
+        {tab === "integrations" && <IntegrationsOpsHubTab />}
         {tab === "appearance" && <AppearanceTab />}
         {tab === "users" && <UsersTab qc={qc} />}
         {tab === "departments" && <DepartmentsTab />}
         {tab === "locations" && <LocationsTab />}
         {tab === "branches" && <BranchesTab />}
-        {tab === "report-templates" && <ReportTemplatesTab />}
         {tab === "portal" && <PatientPortalTab />}
         {tab === "online-booking" && <OnlineBookingTab />}
         {tab === "mobile-app" && <MobileAppTab />}
@@ -340,6 +451,102 @@ export default function Settings() {
         {tab === "audit-log" && <AuditLogTab />}
         {tab === "feature-flags" && <FeatureFlagsTab />}
         {tab === "password" && <ChangePasswordTab />}
+      </div>
+    </div>
+  );
+}
+
+function SettingsHubCardGrid({ links }: { links: SettingsHubLink[] }) {
+  return (
+    <div className="grid sm:grid-cols-2 gap-3">
+      {links.map((item) => (
+        <Link
+          key={item.path}
+          href={item.path}
+          className="group rounded-xl border border-card-border bg-card p-4 hover:border-primary/40 hover:bg-muted/30 transition-colors"
+          data-testid={`settings-hub-link-${item.path.replace(/\W+/g, "-")}`}
+        >
+          <div className="flex items-start justify-between gap-2">
+            <h3 className="font-semibold text-sm">{item.title}</h3>
+            <ArrowRight size={14} className="text-muted-foreground group-hover:text-primary shrink-0 mt-0.5" />
+          </div>
+          <p className="text-xs text-muted-foreground mt-1.5 leading-relaxed">{item.description}</p>
+          {item.alsoIn && (
+            <p className="text-[11px] text-blue-700 dark:text-blue-300 mt-2">Also in: {item.alsoIn}</p>
+          )}
+        </Link>
+      ))}
+    </div>
+  );
+}
+
+/** Non-radiology admin pages formerly on the left sidebar. */
+function IntegrationsOpsHubTab() {
+  return (
+    <div className="max-w-4xl space-y-5">
+      <div className="rounded-xl border border-blue-200 bg-blue-50/70 dark:bg-blue-950/20 dark:border-blue-800 px-4 py-3 text-sm text-blue-900 dark:text-blue-200 leading-relaxed">
+        <strong>Integrations &amp; Ops</strong> collects Hope Connection, Reception Command Center,
+        Diagnostic Integration, Knowledge Base, and AI Caller Credentials — moved out of the left
+        sidebar so the rail stays operational. Routes are unchanged; open a card to use the full page.
+      </div>
+      <div className="bg-card border border-card-border rounded-xl p-5 space-y-4">
+        <div>
+          <h2 className="font-bold text-lg flex items-center gap-2"><Plug size={16} /> Partner &amp; front-desk integrations</h2>
+          <p className="text-sm text-muted-foreground mt-1">Non-radiology connection and reception tools.</p>
+        </div>
+        <SettingsHubCardGrid links={INTEGRATIONS_OPS_LINKS} />
+      </div>
+    </div>
+  );
+}
+
+/** Radiology infra + AI admin pages formerly duplicated under Radiology & Settings nav.
+ *  Merged into the single Settings → Radiology tab (RadiologySettingsTab). */
+function RadiologyToolsHubPanel() {
+  return (
+    <div className="space-y-5">
+      <div className="grid gap-3 sm:grid-cols-3">
+        <Link
+          href="/settings/radiology"
+          className="rounded-xl border border-blue-200 bg-blue-50/80 dark:bg-blue-950/30 dark:border-blue-800 p-4 hover:bg-blue-100/80 transition-colors"
+          data-testid="settings-radiology-open-center"
+        >
+          <div className="text-sm font-bold text-blue-950 dark:text-blue-100">Radiology Settings Center</div>
+          <p className="text-xs text-blue-900/80 dark:text-blue-200/80 mt-1 leading-relaxed">
+            PACS, Orthanc, OHIF/Weasis, MWL, report style, voice, USG extraction — the real admin hub.
+          </p>
+          <span className="inline-flex items-center gap-1 text-xs font-semibold text-blue-700 dark:text-blue-300 mt-2">Open →</span>
+        </Link>
+        <Link
+          href="/settings/radiology-quick-select"
+          className="rounded-xl border bg-card border-card-border p-4 hover:bg-muted/40 transition-colors"
+        >
+          <div className="text-sm font-bold">Quick Select Settings</div>
+          <p className="text-xs text-muted-foreground mt-1 leading-relaxed">Finding chips / macros used in Reporting Workspace.</p>
+          <span className="inline-flex items-center gap-1 text-xs font-semibold text-primary mt-2">Open →</span>
+        </Link>
+        <Link
+          href="/radiology/usg-admin-settings"
+          className="rounded-xl border bg-card border-card-border p-4 hover:bg-muted/40 transition-colors"
+        >
+          <div className="text-sm font-bold">USG Admin Settings</div>
+          <p className="text-xs text-muted-foreground mt-1 leading-relaxed">Ultrasound extraction, SR, and companion admin.</p>
+          <span className="inline-flex items-center gap-1 text-xs font-semibold text-primary mt-2">Open →</span>
+        </Link>
+      </div>
+      <div className="bg-card border border-card-border rounded-xl p-5 space-y-4">
+        <div>
+          <h2 className="font-bold text-lg flex items-center gap-2"><Server size={16} /> Infrastructure · DICOM · Network</h2>
+          <p className="text-sm text-muted-foreground mt-1">Deep tools: PACS nodes, modalities, agents, HL7, and knowledge packs.</p>
+        </div>
+        <SettingsHubCardGrid links={RADIOLOGY_INFRA_LINKS} />
+      </div>
+      <div className="bg-card border border-card-border rounded-xl p-5 space-y-4">
+        <div>
+          <h2 className="font-bold text-lg flex items-center gap-2"><Cpu size={16} /> AI · Assistants · Teaching</h2>
+          <p className="text-sm text-muted-foreground mt-1">Reporting AI tools formerly listed under Advanced Radiology Tools.</p>
+        </div>
+        <SettingsHubCardGrid links={RADIOLOGY_AI_LINKS} />
       </div>
     </div>
   );
@@ -703,6 +910,7 @@ type ClinicSettings = {
   billShowCode?: boolean;
   billShowCategory?: boolean;
   dayCloseAutoPrint?: boolean;
+  cancelRequiresRefund?: boolean;
   patientPhoneRequired?: boolean;
   // V3: Receipt messages
   receiptThankYouMessage?: string;
@@ -745,7 +953,6 @@ type ClinicSettings = {
 import { SIDEBAR_THEMES as SIDEBAR_THEME_PRESETS, parseCustomHex, buildCustomTheme } from "@/lib/sidebarThemes";
 import { useUserTheme } from "@/lib/userTheme";
 import { readStaffSession, isFeatureEnabled, setFeatureFlag, hasSubPermission } from "@/lib/staffSession";
-import { getBillPrintLayout, setBillPrintLayout, BILL_LAYOUTS, type BillLayout } from "@/lib/billPrintLayout";
 
 function ThemeGrid({
   themes,
@@ -897,6 +1104,10 @@ function BillingDeskLayoutCard() {
   const [showOptionalFields, setShowOptionalFields] = useState(() => isFeatureEnabled("billingDeskShowOptionalFields"));
   const [keyboardNav, setKeyboardNav] = useState(() => isFeatureEnabled("billingDeskKeyboardNav") !== false);
   const [autoFocusNext, setAutoFocusNext] = useState(() => isFeatureEnabled("billingDeskAutoFocus") !== false);
+  const [autoResetDelay, setAutoResetDelay] = useState(() => {
+    if (typeof window === "undefined") return "3000";
+    return localStorage.getItem("billingDeskAutoResetDelay") ?? "3000";
+  });
 
   // All toggle helpers follow the same pattern: update local state + write to
   // localStorage via setFeatureFlag (which now dispatches featureFlagsChanged,
@@ -1080,6 +1291,26 @@ function BillingDeskLayoutCard() {
           </span>
           <input type="checkbox" className="sr-only" checked={autoFocusNext} onChange={() => toggle("billingDeskAutoFocus", autoFocusNext, setAutoFocusNext)} />
         </label>
+        <div className="px-3 py-2 rounded-lg border border-card-border bg-muted/20 space-y-1.5">
+          <label htmlFor="billing-desk-auto-reset" className="text-sm font-medium">Auto-reset after save</label>
+          <div className="text-[11px] text-muted-foreground">How long before the desk clears for the next bill. Use <strong>Immediate</strong> for high-volume counters, or <strong>Manual</strong> when printing token/Form F.</div>
+          <select
+            id="billing-desk-auto-reset"
+            value={autoResetDelay}
+            onChange={(e) => {
+              const next = e.target.value;
+              setAutoResetDelay(next);
+              localStorage.setItem("billingDeskAutoResetDelay", next);
+              window.dispatchEvent(new Event("billingDeskPrefsChanged"));
+            }}
+            className="w-full h-9 text-sm border border-input rounded-md px-2 bg-background"
+          >
+            <option value="manual">Manual — click New</option>
+            <option value="0">Immediate — reset right after save</option>
+            <option value="3000">3 seconds (default)</option>
+            <option value="5000">5 seconds</option>
+          </select>
+        </div>
       </div>
 
       <p className="text-[11px] text-muted-foreground pt-1">
@@ -1177,7 +1408,7 @@ function AppearanceTab() {
   });
 
   return (
-    <div className="max-w-2xl space-y-6">
+    <div className="max-w-3xl space-y-6">
       {/* My personal theme */}
       <div className="bg-card border border-card-border rounded-xl p-5 space-y-5">
         <div>
@@ -1211,6 +1442,9 @@ function AppearanceTab() {
 
       {/* Billing desk layout toggle */}
       <BillingDeskLayoutCard />
+
+      {/* Staff login / portal background (admin) */}
+      {isAdmin && <PortalLoginBackgroundSettings standalone />}
 
       {/* Clinic-wide default (admin only) */}
       {isAdmin && (
@@ -1264,7 +1498,6 @@ function ClinicInfoTab() {
   });
   const [form, setForm] = useState<ClinicSettings | null>(null);
   const [uploadErr, setUploadErr] = useState("");
-  const [billLayout, setBillLayoutLocal] = useState<BillLayout>(() => getBillPrintLayout());
 
   const current = form ?? settings ?? null;
 
@@ -1377,6 +1610,20 @@ function ClinicInfoTab() {
             </button>
             <p className="text-xs text-muted-foreground mt-1">When enabled, closing the day prints a summary slip on the bill printer right after save.</p>
           </div>
+          <div>
+            <Label>Cancel paid bill requires refund</Label>
+            <button
+              type="button"
+              onClick={() => setForm({ ...current, cancelRequiresRefund: !(current.cancelRequiresRefund ?? false) })}
+              className={`mt-1 w-full flex items-center justify-between px-4 py-3 rounded-lg border transition-colors ${(current.cancelRequiresRefund ?? false) ? "bg-green-50 border-green-300 dark:bg-green-950/30 dark:border-green-800" : "bg-muted/30 border-card-border"}`}
+            >
+              <span className="text-sm font-medium">{(current.cancelRequiresRefund ?? false) ? "Required" : "Optional (Cancel Only allowed)"}</span>
+              <span className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${(current.cancelRequiresRefund ?? false) ? "bg-green-500" : "bg-muted-foreground/40"}`}>
+                <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${(current.cancelRequiresRefund ?? false) ? "translate-x-5" : "translate-x-1"}`} />
+              </span>
+            </button>
+            <p className="text-xs text-muted-foreground mt-1">When required, staff must use Refund &amp; Cancel for paid bills — Cancel Only is blocked so cash cannot stay in the drawer unmarked.</p>
+          </div>
         </div>
         <div className="flex justify-end gap-2 pt-2 border-t border-card-border">
           <Button variant="outline" type="button" onClick={() => setForm(settings ?? null)}>Reset</Button>
@@ -1407,227 +1654,64 @@ function ClinicInfoTab() {
           </p>
         </div>
 
-        <div className="bg-card border border-card-border rounded-xl p-5 space-y-4">
+        <div className="bg-card border border-card-border rounded-xl p-5 space-y-3">
           <div>
-            <h2 className="font-bold text-lg flex items-center gap-2">🖨️ Bill Print Copies</h2>
-            <p className="text-sm text-muted-foreground">How many copies of each bill to print per print job. Use 2 if you keep one for the patient and one for the clinic file.</p>
+            <h2 className="font-bold text-lg flex items-center gap-2">🖨️ Billing Print · QR · TAT</h2>
+            <p className="text-sm text-muted-foreground">
+              Paper size, layout, QR verification, TAT column, and what appears on the receipt are all configured in one place.
+            </p>
           </div>
-          <div className="grid grid-cols-2 gap-3">
-            {[1, 2].map((n) => {
-              const active = (current.billPrintCopies ?? 1) === n;
-              return (
-                <button
-                  key={n}
-                  type="button"
-                  onClick={() => setForm({ ...current, billPrintCopies: n })}
-                  className={`px-4 py-3 rounded-lg border text-sm font-medium transition-colors ${active ? "bg-blue-50 border-blue-400 text-blue-700 dark:bg-blue-950/30 dark:border-blue-700 dark:text-blue-300" : "bg-muted/30 border-card-border text-muted-foreground hover:bg-muted/50"}`}
-                >
-                  {n} {n === 1 ? "Copy" : "Copies"}
-                </button>
-              );
-            })}
-          </div>
-          <p className="text-[11px] text-muted-foreground leading-relaxed">
-            Click <strong>Save Changes</strong> after choosing to apply.
-          </p>
-        </div>
-
-        <div className="bg-card border border-card-border rounded-xl p-5 space-y-4">
-          <div>
-            <h2 className="font-bold text-lg flex items-center gap-2">⏱️ Show TAT on Bill</h2>
-            <p className="text-sm text-muted-foreground">When enabled, the printed bill shows a "TAT" (turnaround time) column with each test's expected duration.</p>
+          <div className="rounded-lg border border-blue-200 bg-blue-50 dark:bg-blue-950/30 dark:border-blue-800 px-4 py-3 text-sm text-blue-800 dark:text-blue-300 leading-relaxed">
+            Open <strong>Settings → Billing Print</strong> for format, A5 landscape (recommended), QR, TAT, columns, and live preview.
+            Clinic Info keeps logo, address, and identity only.
           </div>
           <button
             type="button"
-            onClick={() => setForm({ ...current, showTatOnBill: !current.showTatOnBill })}
-            className={`w-full flex items-center justify-between px-4 py-3 rounded-lg border transition-colors ${current.showTatOnBill ? "bg-green-50 border-green-300 dark:bg-green-950/30 dark:border-green-800" : "bg-muted/30 border-card-border"}`}
+            onClick={() => {
+              try { window.dispatchEvent(new CustomEvent("care:settings-tab", { detail: "billing-print" })); } catch { /* noop */ }
+            }}
+            className="inline-flex items-center justify-center rounded-lg bg-primary text-primary-foreground text-sm font-semibold px-4 py-2.5 hover:opacity-90 transition-opacity"
+            data-testid="goto-billing-print-settings"
           >
-            <span className="text-sm font-medium">{current.showTatOnBill ? "Enabled" : "Disabled"}</span>
-            <span className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${current.showTatOnBill ? "bg-green-500" : "bg-muted-foreground/40"}`}>
-              <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${current.showTatOnBill ? "translate-x-5" : "translate-x-1"}`} />
-            </span>
+            Open Billing Print settings
           </button>
-          <p className="text-[11px] text-muted-foreground leading-relaxed">
-            Click <strong>Save Changes</strong> after toggling to apply.
-          </p>
         </div>
 
-        <div className="bg-card border border-card-border rounded-xl p-5 space-y-4">
+        <div className="bg-card border border-card-border rounded-xl p-5 space-y-3">
           <div>
-            <h2 className="font-bold text-lg flex items-center gap-2">📄 Bill Print Format</h2>
-            <p className="text-sm text-muted-foreground">Control what appears on the printed bill receipt — paper size, columns, and layout.</p>
+            <h2 className="font-bold text-lg flex items-center gap-2">🔌 Integrations &amp; Ops</h2>
+            <p className="text-sm text-muted-foreground">
+              Hope Connection, Reception Command Center, Diagnostic Integration, Knowledge Base, and AI Caller Credentials.
+            </p>
           </div>
-          {/* Paper size / orientation is configured in Settings → Billing Print
-              (with a live preview) — that is the setting the printed bill
-              actually uses. Nothing here controls paper size; this card only
-              deals with columns/requirements below. */}
-          <div className="rounded-lg border border-blue-200 bg-blue-50 dark:bg-blue-950/30 dark:border-blue-800 px-4 py-3 text-sm text-blue-800 dark:text-blue-300">
-            Paper size &amp; orientation (A5 portrait/landscape, half A4, A4) now live under{" "}
-            <strong>Settings → Billing Print → Paper &amp; Copy</strong>, with a live preview. Set it there.
-          </div>
-          {/* Show test code */}
-          <div>
-            <p className="text-sm font-medium mb-1">Show Test Code Column</p>
-            <button
-              type="button"
-              onClick={() => setForm({ ...current, billShowCode: !(current.billShowCode ?? true) })}
-              className={`w-full flex items-center justify-between px-4 py-3 rounded-lg border transition-colors ${(current.billShowCode ?? true) ? "bg-green-50 border-green-300 dark:bg-green-950/30 dark:border-green-800" : "bg-muted/30 border-card-border"}`}
-            >
-              <span className="text-sm font-medium">{(current.billShowCode ?? true) ? "Shown" : "Hidden"}</span>
-              <span className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${(current.billShowCode ?? true) ? "bg-green-500" : "bg-muted-foreground/40"}`}>
-                <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${(current.billShowCode ?? true) ? "translate-x-5" : "translate-x-1"}`} />
-              </span>
-            </button>
-          </div>
-          {/* Show category */}
-          <div>
-            <p className="text-sm font-medium mb-1">Show Category Column</p>
-            <button
-              type="button"
-              onClick={() => setForm({ ...current, billShowCategory: !(current.billShowCategory ?? true) })}
-              className={`w-full flex items-center justify-between px-4 py-3 rounded-lg border transition-colors ${(current.billShowCategory ?? true) ? "bg-green-50 border-green-300 dark:bg-green-950/30 dark:border-green-800" : "bg-muted/30 border-card-border"}`}
-            >
-              <span className="text-sm font-medium">{(current.billShowCategory ?? true) ? "Shown" : "Hidden"}</span>
-              <span className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${(current.billShowCategory ?? true) ? "bg-green-500" : "bg-muted-foreground/40"}`}>
-                <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${(current.billShowCategory ?? true) ? "translate-x-5" : "translate-x-1"}`} />
-              </span>
-            </button>
-          </div>
-          {/* Phone number required for patient registration */}
-          <div>
-            <p className="text-sm font-medium mb-1">Require Phone Number</p>
-            <p className="text-xs text-muted-foreground mb-2">When on, phone number is mandatory to register a patient on the Patients page. Kiosk and online booking self-registration always require a phone number regardless of this setting.</p>
-            <button
-              type="button"
-              onClick={() => setForm({ ...current, patientPhoneRequired: !(current.patientPhoneRequired ?? true) })}
-              className={`w-full flex items-center justify-between px-4 py-3 rounded-lg border transition-colors ${(current.patientPhoneRequired ?? true) ? "bg-green-50 border-green-300 dark:bg-green-950/30 dark:border-green-800" : "bg-muted/30 border-card-border"}`}
-            >
-              <span className="text-sm font-medium">{(current.patientPhoneRequired ?? true) ? "Required" : "Optional"}</span>
-              <span className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${(current.patientPhoneRequired ?? true) ? "bg-green-500" : "bg-muted-foreground/40"}`}>
-                <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${(current.patientPhoneRequired ?? true) ? "translate-x-5" : "translate-x-1"}`} />
-              </span>
-            </button>
-          </div>
-          {/* Receipt Layout Style */}
-          <div>
-            <p className="text-sm font-medium mb-1">Receipt Layout Style</p>
-            <p className="text-xs text-muted-foreground mb-3">Choose how the printed bill looks. Saved instantly on this device — no Save required.</p>
-            <div className="grid grid-cols-3 gap-3">
-              {BILL_LAYOUTS.map((preset) => {
-                const active = billLayout === preset.id;
-                return (
-                  <button
-                    key={preset.id}
-                    type="button"
-                    onClick={() => { setBillLayoutLocal(preset.id); setBillPrintLayout(preset.id); }}
-                    className={`rounded-lg border p-2 text-left transition-all ${active ? "border-blue-400 ring-2 ring-blue-200 dark:ring-blue-900" : "border-card-border hover:border-muted-foreground/40"}`}
-                  >
-                    {/* Mini dummy bill preview */}
-                    <div className="w-full rounded overflow-hidden border border-border mb-2" style={{ background: "#fff", fontFamily: "Arial, sans-serif", fontSize: "4px", lineHeight: 1.4, color: "#222" }}>
-                      {/* Header bar */}
-                      <div style={{
-                        borderBottom: preset.id === "classic" ? "2px solid #1e40af" : preset.id === "compact" ? "2px solid #111" : "1px solid #888",
-                        padding: "4px 5px 3px",
-                        display: "flex", alignItems: "flex-start", gap: 3, justifyContent: "space-between",
-                      }}>
-                        <div>
-                          <div style={{ fontSize: "6px", fontWeight: 800, color: preset.id === "classic" ? "#1e40af" : "#111" }}>CARE DIAGNOSTICS</div>
-                          <div style={{ fontSize: "4px", color: "#666" }}>Subhash Chowk, Castair's Town, Near Bajla Mahila College</div>
-                          <div style={{ fontSize: "4px", color: "#666" }}>Ph: 9973497200</div>
-                        </div>
-                        <div style={{ width: 12, height: 12, background: "#f0f0f0", border: "1px solid #ccc", borderRadius: 1, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 3, color: "#999" }}>QR</div>
-                      </div>
-                      {/* Bill title + patient */}
-                      <div style={{ padding: "2px 5px", borderBottom: "1px solid #e2e8f0" }}>
-                        <div style={{ fontSize: "5px", fontWeight: 700, letterSpacing: "0.5px" }}>INVOICE / RECEIPT</div>
-                        <div style={{ fontSize: "4px", color: "#444" }}>AJMAL KHAN · 38 YRS / M</div>
-                        <div style={{ fontSize: "4px", color: "#666" }}>Ref: Self / Walk-in · Bill: 2026050206</div>
-                      </div>
-                      {/* Tests table */}
-                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "4px" }}>
-                        <thead>
-                          <tr style={{
-                            background: preset.id === "classic" ? "#1e40af" : preset.id === "compact" ? "#f0f0f0" : "transparent",
-                            color: preset.id === "classic" ? "#fff" : "#111",
-                            borderBottom: preset.id === "minimal" ? "1px solid #888" : "none",
-                          }}>
-                            <th style={{ padding: "2px 4px", textAlign: "left", fontWeight: 600 }}>#</th>
-                            <th style={{ padding: "2px 4px", textAlign: "left", fontWeight: 600 }}>Test Name</th>
-                            <th style={{ padding: "2px 4px", textAlign: "right", fontWeight: 600 }}>Amount</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {["USG WHOLE ABDOMEN", "BLOOD COUNT"].map((name, i) => (
-                            <tr key={name} style={{
-                              background: preset.id === "classic" ? (i % 2 === 0 ? "#f8fafc" : "#fff") : "#fff",
-                              borderBottom: preset.id === "minimal" ? "1px solid #eee" : preset.id === "compact" ? "1px solid #bbb" : "1px solid #e2e8f0",
-                            }}>
-                              <td style={{ padding: "1.5px 4px" }}>{i + 1}</td>
-                              <td style={{ padding: "1.5px 4px", fontWeight: 600 }}>{name}</td>
-                              <td style={{ padding: "1.5px 4px", textAlign: "right" }}>₹{i === 0 ? "1,500" : "350"}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                      {/* Total row */}
-                      <div style={{ display: "flex", justifyContent: "flex-end", padding: "2px 4px" }}>
-                        <table style={{ fontSize: "4px", borderCollapse: "collapse" }}>
-                          <tbody>
-                            <tr>
-                              <td style={{ padding: "1px 4px", color: "#666" }}>Subtotal</td>
-                              <td style={{ padding: "1px 4px", textAlign: "right" }}>₹1,850.00</td>
-                            </tr>
-                            <tr style={{
-                              background: preset.id === "classic" ? "#1e40af" : preset.id === "compact" ? "#e8e8e8" : "transparent",
-                              color: preset.id === "classic" ? "#fff" : "#111",
-                              fontWeight: 700,
-                              borderTop: preset.id === "minimal" ? "1.5px solid #555" : preset.id === "compact" ? "1px solid #999" : "none",
-                            }}>
-                              <td style={{ padding: "2px 4px" }}>Total</td>
-                              <td style={{ padding: "2px 4px", textAlign: "right" }}>₹1,850.00</td>
-                            </tr>
-                            <tr>
-                              <td style={{ padding: "1px 4px", color: "#16a34a" }}>Paid</td>
-                              <td style={{ padding: "1px 4px", textAlign: "right", color: "#16a34a" }}>₹1,850.00</td>
-                            </tr>
-                            <tr style={{ fontWeight: 700, color: "#16a34a", borderTop: "1px solid #ddd" }}>
-                              <td style={{ padding: "1.5px 4px" }}>Balance</td>
-                              <td style={{ padding: "1.5px 4px", textAlign: "right" }}>₹0.00</td>
-                            </tr>
-                          </tbody>
-                        </table>
-                      </div>
-                      {/* Footer */}
-                      <div style={{ borderTop: "1px dashed #ccc", padding: "2px 4px", textAlign: "center", color: "#999", fontSize: "3.5px" }}>
-                        Thank you for choosing our services. · Computer-generated invoice.
-                      </div>
-                    </div>
-                    <div className={`text-xs font-semibold ${active ? "text-blue-700 dark:text-blue-300" : "text-foreground"}`}>{preset.label}</div>
-                    <div className="text-[10px] text-muted-foreground leading-snug mt-0.5">{preset.description}</div>
-                    {active && <div className="mt-1 text-[10px] font-semibold text-blue-600 dark:text-blue-400">✓ Active</div>}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-          <p className="text-[11px] text-muted-foreground leading-relaxed">
-            Layout applies immediately to new prints. Click <strong>Save Changes</strong> after adjusting paper size / columns.
-          </p>
-        </div>
-
-        <div className="bg-card border border-card-border rounded-xl p-5 space-y-4">
-          <div>
-            <h2 className="font-bold text-lg flex items-center gap-2">🔳 Print QR on Bill</h2>
-            <p className="text-sm text-muted-foreground">When enabled, every printed bill receipt embeds a small "Scan to verify" QR code linking to the bill verification page. This replaces the old separate "QR Bill" print button.</p>
+          <div className="rounded-lg border border-blue-200 bg-blue-50 dark:bg-blue-950/30 dark:border-blue-800 px-4 py-3 text-sm text-blue-800 dark:text-blue-300 leading-relaxed">
+            These tools moved out of the left sidebar into <strong>Settings → Integrations &amp; Ops</strong>.
           </div>
           <button
             type="button"
-            onClick={() => setForm({ ...current, qrOnBillEnabled: !(current.qrOnBillEnabled ?? true) })}
-            className={`w-full flex items-center justify-between px-4 py-3 rounded-lg border transition-colors ${(current.qrOnBillEnabled ?? true) ? "bg-green-50 border-green-300 dark:bg-green-950/30 dark:border-green-800" : "bg-muted/30 border-card-border"}`}
+            onClick={() => {
+              try { window.dispatchEvent(new CustomEvent("care:settings-tab", { detail: "integrations" })); } catch { /* noop */ }
+            }}
+            className="inline-flex items-center justify-center rounded-lg bg-primary text-primary-foreground text-sm font-semibold px-4 py-2.5 hover:opacity-90 transition-opacity"
+            data-testid="goto-integrations-settings"
           >
-            <span className="text-sm font-medium">{(current.qrOnBillEnabled ?? true) ? "Enabled" : "Disabled"}</span>
-            <span className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${(current.qrOnBillEnabled ?? true) ? "bg-green-500" : "bg-muted-foreground/40"}`}>
-              <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${(current.qrOnBillEnabled ?? true) ? "translate-x-5" : "translate-x-1"}`} />
+            Open Integrations &amp; Ops
+          </button>
+        </div>
+
+        <div className="bg-card border border-card-border rounded-xl p-5 space-y-4">
+          <div>
+            <h2 className="font-bold text-lg flex items-center gap-2">📞 Patient Phone Requirement</h2>
+            <p className="text-sm text-muted-foreground">When on, phone number is mandatory to register a patient on Bill Desk, Quick Register, and the Patients page. Kiosk and online booking self-registration always require a phone number regardless of this setting.</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setForm({ ...current, patientPhoneRequired: !(current.patientPhoneRequired ?? true) })}
+            className={`w-full flex items-center justify-between px-4 py-3 rounded-lg border transition-colors ${(current.patientPhoneRequired ?? true) ? "bg-green-50 border-green-300 dark:bg-green-950/30 dark:border-green-800" : "bg-muted/30 border-card-border"}`}
+          >
+            <span className="text-sm font-medium">{(current.patientPhoneRequired ?? true) ? "Required" : "Optional"}</span>
+            <span className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${(current.patientPhoneRequired ?? true) ? "bg-green-500" : "bg-muted-foreground/40"}`}>
+              <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${(current.patientPhoneRequired ?? true) ? "translate-x-5" : "translate-x-1"}`} />
             </span>
           </button>
           <p className="text-[11px] text-muted-foreground leading-relaxed">
@@ -1702,25 +1786,14 @@ function PatientPortalTab() {
   });
   const [form, setForm] = useState<PortalConfig | null>(null);
   const [copied, setCopied] = useState(false);
-  const [bgUploadErr, setBgUploadErr] = useState("");
   useEffect(() => { if (data) setForm(data); }, [data]);
-
-  const onBackgroundChange = (file: File | null) => {
-    if (!file || !form) return;
-    setBgUploadErr("");
-    if (!file.type.startsWith("image/")) { setBgUploadErr("Please upload an image file"); return; }
-    // Raw byte limit here must stay <= the server's base64-length limit * 3/4
-    // (base64 inflates size by ~33%) — see clinicSettings.ts's
-    // portalBackgroundImageDataUrl check (4,000,000 chars → 3,000,000 bytes).
-    if (file.size > 3_000_000) { setBgUploadErr("Image too large (max ~3 MB). Use a smaller photo."); return; }
-    const reader = new FileReader();
-    reader.onload = () => setForm({ ...form, portalBackgroundImageDataUrl: String(reader.result) });
-    reader.readAsDataURL(file);
-  };
 
   const save = useMutation({
     mutationFn: (body: Partial<PortalConfig>) => api.put("/api/clinic-settings", body),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["clinic-settings"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["clinic-settings"] });
+      qc.invalidateQueries({ queryKey: ["portal-settings"] });
+    },
   });
 
   if (isLoading || !form) {
@@ -1836,50 +1909,10 @@ function PatientPortalTab() {
             </div>
           </div>
 
-          <div className="bg-card border border-card-border rounded-xl p-5 space-y-4">
-            <div>
-              <h3 className="font-bold flex items-center gap-2"><ImageIcon size={16} /> Background Image</h3>
-              <p className="text-xs text-muted-foreground">Shown behind the login/portal page instead of the plain default background. Recommended: a wide photo, &lt; 3 MB.</p>
-            </div>
-            <div className="border-2 border-dashed border-card-border rounded-lg p-4 flex items-center justify-center bg-muted/30 min-h-[140px]">
-              {form.portalBackgroundImageDataUrl ? (
-                <img src={form.portalBackgroundImageDataUrl} alt="Background preview" className="max-h-40 max-w-full object-contain rounded" />
-              ) : (
-                <div className="text-center text-muted-foreground text-sm">
-                  <ImageIcon size={32} className="mx-auto mb-2 opacity-30" />
-                  No background image set
-                </div>
-              )}
-            </div>
-            <input
-              type="file"
-              accept="image/*"
-              onChange={(e) => onBackgroundChange(e.target.files?.[0] ?? null)}
-              className="hidden"
-              id="portal-background-input"
-            />
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => { document.getElementById("portal-background-input")?.click(); }}
-              className="w-full"
-            >
-              <Upload size={14} className="mr-2" /> Choose Background Image
-            </Button>
-            {form.portalBackgroundImageDataUrl && (
-              <Button
-                variant="ghost"
-                className="w-full text-destructive hover:text-destructive"
-                onClick={() => setForm({ ...form, portalBackgroundImageDataUrl: null })}
-              >
-                <Trash2 size={14} className="mr-2" /> Remove Background Image
-              </Button>
-            )}
-            {bgUploadErr && <p className="text-xs text-destructive">{bgUploadErr}</p>}
-            <p className="text-[11px] text-muted-foreground leading-relaxed">
-              Click <strong>Save Changes</strong> below after choosing an image.
-            </p>
-          </div>
+          <PortalLoginBackgroundSettings
+            value={form.portalBackgroundImageDataUrl}
+            onChange={(portalBackgroundImageDataUrl) => setForm({ ...form, portalBackgroundImageDataUrl })}
+          />
 
           <div className="bg-card border border-card-border rounded-xl p-5 space-y-3">
             <div>
@@ -3973,6 +4006,7 @@ function AuditLogTab() {
 type FeatureFlagRow = {
   key: string; enabled: boolean; description: string;
   updatedBy: string | null; updatedAt: string;
+  wired?: boolean;
 };
 
 function FeatureFlagsTab() {
@@ -4000,9 +4034,8 @@ function FeatureFlagsTab() {
       <div className="bg-card border border-card-border rounded-xl p-4">
         <h2 className="font-bold text-lg flex items-center gap-2"><Flag size={16} /> Feature Flags</h2>
         <p className="text-sm text-muted-foreground mt-1">
-          Server-side switches for the Radiology Implementation Roadmap. Every flag below is dark by default —
-          turning one on changes real backend behavior for every radiologist, not just this browser. See the
-          roadmap document for each flag's rollout plan and rollback-by-flip guarantee.
+          Server-side switches for the Radiology Implementation Roadmap. Flags marked <strong>Not wired</strong> have no
+          product effect yet — enabling them is blocked. See Flight Deck → Ops Flags for the registry.
         </p>
       </div>
 
@@ -4013,31 +4046,48 @@ function FeatureFlagsTab() {
               <tr className="border-b border-card-border bg-muted/40">
                 <th className="text-left px-4 py-3 text-xs font-semibold uppercase text-muted-foreground">Flag</th>
                 <th className="text-left px-4 py-3 text-xs font-semibold uppercase text-muted-foreground">Description</th>
+                <th className="text-left px-4 py-3 text-xs font-semibold uppercase text-muted-foreground">Wiring</th>
                 <th className="text-left px-4 py-3 text-xs font-semibold uppercase text-muted-foreground">Last changed</th>
                 <th className="text-right px-4 py-3 text-xs font-semibold uppercase text-muted-foreground">Enabled</th>
               </tr>
             </thead>
             <tbody>
               {isLoading ? (
-                <tr><td colSpan={4} className="px-4 py-10 text-center text-muted-foreground">Loading feature flags…</td></tr>
+                <tr><td colSpan={5} className="px-4 py-10 text-center text-muted-foreground">Loading feature flags…</td></tr>
               ) : flags.length === 0 ? (
-                <tr><td colSpan={4} className="px-4 py-10 text-center text-muted-foreground">No feature flags found.</td></tr>
-              ) : flags.map((f) => (
-                <tr key={f.key} className="border-b border-card-border/60 hover:bg-muted/30">
+                <tr><td colSpan={5} className="px-4 py-10 text-center text-muted-foreground">No feature flags found.</td></tr>
+              ) : flags.map((f) => {
+                const wired = f.wired !== false;
+                return (
+                <tr key={f.key} className={`border-b border-card-border/60 hover:bg-muted/30 ${!wired ? "opacity-70" : ""}`}>
                   <td className="px-4 py-3 font-mono text-xs">{f.key}</td>
                   <td className="px-4 py-3 text-muted-foreground max-w-md">{f.description}</td>
+                  <td className="px-4 py-3 whitespace-nowrap">
+                    {wired ? (
+                      <span className="text-[10px] font-semibold uppercase text-emerald-700 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded">Wired</span>
+                    ) : (
+                      <span className="text-[10px] font-semibold uppercase text-amber-800 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded" title="Enabling has no product effect">Not wired</span>
+                    )}
+                  </td>
                   <td className="px-4 py-3 text-muted-foreground whitespace-nowrap">
                     {f.updatedBy ? `${f.updatedBy} · ${new Date(f.updatedAt).toLocaleString("en-IN")}` : "—"}
                   </td>
                   <td className="px-4 py-3 text-right">
                     <Toggle
                       checked={f.enabled}
-                      onChange={(v) => toggle.mutate({ key: f.key, enabled: v })}
+                      onChange={(v) => {
+                        if (!wired && v) {
+                          toast({ title: "Flag not wired", description: "This switch has no product effect yet.", variant: "destructive" });
+                          return;
+                        }
+                        toggle.mutate({ key: f.key, enabled: v });
+                      }}
                       label={`Toggle ${f.key}`}
                     />
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -4603,8 +4653,8 @@ const BILL_PREVIEW_SAMPLE: PrintBillData = {
   order: {
     doctor: { name: "Dr. S. Sharma" },
     tests: [
-      { price: 700, status: "active", test: { code: "USG001", name: "Whole Abdomen USG", category: "Radiology" } },
-      { price: 400, status: "active", test: { code: "CBC001", name: "Complete Blood Count", category: "Pathology" } },
+      { price: 700, status: "active", test: { code: "USG001", name: "Whole Abdomen USG", category: "Radiology", duration: "Same day" } },
+      { price: 400, status: "active", test: { code: "CBC001", name: "Complete Blood Count", category: "Pathology", duration: "4 hrs" } },
     ],
   },
   payments: [{ method: "upi", amount: 1000, referenceNumber: "UPI-1234567890" }],
@@ -4620,6 +4670,7 @@ const BILL_PREVIEW_FALLBACK_CLINIC: PrintClinic = {
   billShowCode: true,
   billShowCategory: true,
   qrOnBillEnabled: true,
+  showTatOnBill: false,
 };
 
 // ── Billing Print tab helpers — MODULE scope on purpose ──────────────────────
@@ -4664,11 +4715,19 @@ const SelectCard = ({ label, options, value, onChange }: { label: string; option
 
 // Named BillPrintToggleRow (not ToggleRow) — a different module-level
 // ToggleRow with {label, checked} props already exists further down.
-const BillPrintToggleRow = ({ label, value, onChange }: { label: string; value: boolean; onChange: (v: boolean) => void }) => (
+const BillPrintToggleRow = ({
+  label, value, onChange, disabled,
+}: {
+  label: string;
+  value: boolean;
+  onChange: (v: boolean) => void;
+  disabled?: boolean;
+}) => (
   <button
     type="button"
-    onClick={() => onChange(!value)}
-    className={`w-full flex items-center justify-between px-4 py-3 rounded-lg border transition-colors ${value ? "bg-green-50 border-green-300 dark:bg-green-950/30 dark:border-green-800" : "bg-muted/30 border-card-border"}`}
+    disabled={disabled}
+    onClick={() => { if (!disabled) onChange(!value); }}
+    className={`w-full flex items-center justify-between px-4 py-3 rounded-lg border transition-colors disabled:opacity-60 disabled:cursor-not-allowed ${value ? "bg-green-50 border-green-300 dark:bg-green-950/30 dark:border-green-800" : "bg-muted/30 border-card-border"}`}
   >
     <span className="text-sm font-medium">{label}</span>
     <span className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${value ? "bg-green-500" : "bg-muted-foreground/40"}`}>
@@ -4749,32 +4808,36 @@ const NumberOverrideField = ({
 // fine-tune the sliders. "Normal" clears every override back to null (the
 // built-in size, which is already tuned separately per paper size).
 const LAYOUT_PRESETS = {
+  /** Epson A5 ink — minimal side padding so the slip fills the tray. */
+  epsonDense: {
+    printMarginMm: 2, printLogoHeightPx: 40,
+    printTitleFontPx: 16, printPatientNameFontPx: 12, printBodyFontPx: 12,
+    printHeaderFontPx: 9,  printTableFontPx: 10, printTotalFontPx: 11,
+    printFooterFontPx: 9,  printTinyFontPx: 8,
+  },
   compact: {
-    printMarginMm: 5,
+    printMarginMm: 2, printLogoHeightPx: 40,
     printTitleFontPx: 16, printPatientNameFontPx: 12, printBodyFontPx: 12,
     printHeaderFontPx: 9,  printTableFontPx: 10, printTotalFontPx: 11,
     printFooterFontPx: 9,  printTinyFontPx: 8,
   },
   normal: {
-    printMarginMm: null, printTitleFontPx: null, printPatientNameFontPx: null,
+    printMarginMm: null, printLogoHeightPx: null,
+    printTitleFontPx: null, printPatientNameFontPx: null,
     printBodyFontPx: null, printHeaderFontPx: null, printTableFontPx: null,
     printTotalFontPx: null, printFooterFontPx: null, printTinyFontPx: null,
   },
   comfortable: {
-    printMarginMm: 12,
+    printMarginMm: 8, printLogoHeightPx: 96,
     printTitleFontPx: 22, printPatientNameFontPx: 18, printBodyFontPx: 15,
     printHeaderFontPx: 12, printTableFontPx: 14, printTotalFontPx: 15,
     printFooterFontPx: 12, printTinyFontPx: 11,
   },
 } as const;
 
-const billFormats: { id: string; label: string }[] = [
-  { id: "modern-landscape", label: "Modern — A5 Landscape (Recommended)" },
-  { id: "classic",     label: "Classic (Legacy)" },
-  { id: "premium-a5", label: "Premium A5 (Legacy)" },
-  { id: "designer-a", label: "Designer Layout A — Minimal Premium" },
-  { id: "designer-b", label: "Designer Layout B — Modern Diagnostic" },
-  { id: "designer-c", label: "Designer Layout C — Corporate Healthcare" },
+const headerLayouts: { id: string; label: string }[] = [
+  { id: "right", label: "Address on right (under Bill No.)" },
+  { id: "left", label: "Address on left (under clinic name)" },
 ];
 const billPaperSizes: { id: string; label: string }[] = [
   { id: "A5-portrait", label: "A5 Portrait" },
@@ -4808,6 +4871,14 @@ function BillingPrintTab() {
   const [loading, setLoading] = useState(true);
   const [saved, setSaved] = useState(false);
   const { toast } = useToast();
+  const session = useMemo(() => readStaffSession(), []);
+  const isAdminUser = session?.user?.role === "admin" || session?.user?.role === "super_admin";
+
+  // Clinic columns formerly edited under Clinic Info — now owned here so QR /
+  // TAT / columns / copies stay in one place and stay wired to print.
+  const [billPrintCopies, setBillPrintCopies] = useState(1);
+  const [billShowCode, setBillShowCode] = useState(true);
+  const [billShowCategory, setBillShowCategory] = useState(true);
 
   // ── Live preview ──
   const [previewVisible, setPreviewVisible] = useState(true);
@@ -4847,19 +4918,32 @@ function BillingPrintTab() {
   // in flight; it catches up as soon as React is idle. No visible lag on
   // typed changes, no jank when dragging.
   const deferredSettings = useDeferredValue(settings);
+  const deferredShowCode = useDeferredValue(billShowCode);
+  const deferredShowCategory = useDeferredValue(billShowCategory);
+  const deferredCopies = useDeferredValue(billPrintCopies);
   const previewHtml = useMemo(() => {
     if (!deferredSettings) return "";
-    const orientation: "portrait" | "landscape" = deferredSettings.defaultPaperSize === "A5-landscape" ? "landscape" : "portrait";
-    const paperSize: "A4" | "A5" = deferredSettings.defaultPaperSize === "A4" ? "A4" : "A5";
+    const pageOpts = resolveBillPrintPageOpts(deferredSettings, BILL_PREVIEW_SAMPLE.order?.tests?.length ?? 1);
+    const clinicForPreview: PrintClinic = {
+      ...(previewClinic ?? BILL_PREVIEW_FALLBACK_CLINIC),
+      qrOnBillEnabled: deferredSettings.showQrCode !== false,
+      showTatOnBill: deferredSettings.showTatOnBill === true,
+      billShowCode: deferredShowCode,
+      billShowCategory: deferredShowCategory,
+      billPrintCopies: deferredCopies,
+    };
     return buildBillPrintHtml({
       bill: BILL_PREVIEW_SAMPLE,
-      clinic: previewClinic ?? BILL_PREVIEW_FALLBACK_CLINIC,
-      paperSize,
-      orientation,
+      clinic: clinicForPreview,
+      paperSize: pageOpts.paperSize,
+      orientation: pageOpts.orientation,
+      pageCssSize: pageOpts.pageCssSize,
+      compactFooterGap: pageOpts.compactFooterGap,
       isBW: effectivePreviewIsBW,
       qrDataUrl: previewQrUrl,
-      format: deferredSettings.defaultFormat,
+      headerLayout: deferredSettings.headerLayout,
       showQr: deferredSettings.showQrCode,
+      showTat: deferredSettings.showTatOnBill,
       showAmountInWords: deferredSettings.showAmountInWords,
       showSignatureLine: deferredSettings.showSignatureLine,
       showComputerGenerated: deferredSettings.showComputerGenerated,
@@ -4872,6 +4956,7 @@ function BillingPrintTab() {
       showSystemInfo: deferredSettings.showSystemInfo,
       showQueueToken: deferredSettings.showQueueTokenOnBill,
       printMarginMm: deferredSettings.printMarginMm,
+      printLogoHeightPx: deferredSettings.printLogoHeightPx,
       printTitleFontPx: deferredSettings.printTitleFontPx,
       printPatientNameFontPx: deferredSettings.printPatientNameFontPx,
       printBodyFontPx: deferredSettings.printBodyFontPx,
@@ -4881,7 +4966,7 @@ function BillingPrintTab() {
       printFooterFontPx: deferredSettings.printFooterFontPx,
       printTinyFontPx: deferredSettings.printTinyFontPx,
     });
-  }, [deferredSettings, previewClinic, previewQrUrl, effectivePreviewIsBW]);
+  }, [deferredSettings, previewClinic, previewQrUrl, effectivePreviewIsBW, deferredShowCode, deferredShowCategory, deferredCopies]);
 
   // Initialize once the clinic-wide server blob is known (success OR error —
   // on error we degrade to defaults + this browser's local overrides, same as
@@ -4893,7 +4978,20 @@ function BillingPrintTab() {
     if (!clinicFetched && !clinicError) return;
     settingsInitialized.current = true;
     import("@/lib/billPrintSettings").then((m) => {
-      setSettings(m.loadBillPrintSettings(m.parseGlobalBillPrintSettings(previewClinic?.billPrintSettingsJson)));
+      const global = m.parseGlobalBillPrintSettings(previewClinic?.billPrintSettingsJson);
+      // Prefer blob TAT when set; otherwise honor legacy Clinic Info column.
+      if (typeof global.showTatOnBill !== "boolean" && previewClinic?.showTatOnBill === true) {
+        global.showTatOnBill = true;
+      }
+      // QR: Billing Print toggle AND clinic gate — seed from both so the
+      // unified toggle matches what print actually does.
+      if (previewClinic?.qrOnBillEnabled === false) {
+        global.showQrCode = false;
+      }
+      setSettings(m.loadBillPrintSettings(global));
+      setBillPrintCopies(Math.min(2, Math.max(1, Number(previewClinic?.billPrintCopies) || 1)));
+      setBillShowCode(previewClinic?.billShowCode !== false);
+      setBillShowCategory(previewClinic?.billShowCategory !== false);
       setLoading(false);
     });
   }, [clinicFetched, clinicError, previewClinic]);
@@ -4903,24 +5001,54 @@ function BillingPrintTab() {
     setSaved(false);
   }, []);
 
+  // When Admin Lock is on, only admin/super_admin may change Billing Print
+  // settings — every other role sees a read-only clinic-wide config.
+  const settingsReadOnly = !!(settings?.adminLock) && !isAdminUser;
+
   const save = () => {
     if (!settings) return;
+    if (settingsReadOnly) {
+      toast({
+        variant: "destructive",
+        title: "Admin Lock is on",
+        description: "Only an admin can change Billing Print settings while Admin Lock is enabled.",
+      });
+      return;
+    }
     import("@/lib/billPrintSettings").then(async (m) => {
-      // Local first (works offline, per-user override layer), then the
-      // clinic-wide server blob so every billing counter prints with the
-      // paper size/format configured and previewed here — not each
-      // browser's stale localStorage default (the rotated-bill bug).
-      m.saveBillPrintSettings(settings);
+      // Clinic-wide settings live on the server only. Writing them into this
+      // browser's localStorage created a per-user override layer that could
+      // beat the server blob (and made admin lock look broken on other
+      // counters that still had stale overrides).
+      if (settings.adminLock) {
+        m.clearBillPrintSettingsOverride();
+      }
       try {
-        await api.put("/api/clinic-settings", { billPrintSettingsJson: JSON.stringify(settings) });
+        // Keep clinic columns in sync with the unified Billing Print toggles
+        // so classic/modern printers, branding endpoints, and legacy Clinic
+        // Info fields never disagree.
+        await api.put("/api/clinic-settings", {
+          billPrintSettingsJson: JSON.stringify(settings),
+          qrOnBillEnabled: settings.showQrCode !== false,
+          showTatOnBill: settings.showTatOnBill === true,
+          billPrintCopies,
+          billShowCode,
+          billShowCategory,
+        });
         qc.invalidateQueries({ queryKey: ["clinic-settings"] });
-        toast({ title: "Saved", description: "Billing print settings saved clinic-wide." });
+        toast({
+          title: "Saved",
+          description: settings.adminLock
+            ? "Billing print settings locked clinic-wide — all counters will use these settings."
+            : "Billing print · QR · TAT saved clinic-wide. Turn on Admin Lock to prevent per-counter overrides.",
+        });
       } catch {
         toast({
           variant: "destructive",
-          title: "Saved on this device only",
-          description: "Could not reach the server — other billing counters may keep printing with their old settings.",
+          title: "Could not save",
+          description: "Could not reach the server — billing counters may keep printing with their old settings.",
         });
+        return;
       }
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
@@ -4944,24 +5072,43 @@ function BillingPrintTab() {
 
   return (
     <div className={`grid gap-4 items-start ${previewVisible ? "xl:grid-cols-[1fr_360px]" : "grid-cols-1"}`}>
-    <div className="space-y-4">
+    <div className={`space-y-4 ${settingsReadOnly ? "pointer-events-none opacity-70" : ""}`}>
+      {settings.adminLock && (
+        <div
+          className="rounded-xl border border-amber-300 bg-amber-50/80 dark:bg-amber-950/30 dark:border-amber-800 px-4 py-3 text-xs text-amber-950 dark:text-amber-100 leading-relaxed pointer-events-auto"
+          data-testid="bill-print-admin-lock-banner"
+        >
+          <strong>Admin Lock is on.</strong> Every billing counter and reprint uses these clinic-wide
+          settings — per-user overrides and manual paper toggles are ignored.
+          {!isAdminUser && " Only an admin can change or unlock these settings."}
+        </div>
+      )}
       {/* One "recommended for A5-landscape ink" callout at the top of the tab
           so a new admin knows the right combination in one glance. */}
       <div className="rounded-xl border border-blue-200 bg-blue-50/60 dark:bg-blue-950/20 dark:border-blue-800 px-4 py-3 text-xs text-blue-900 dark:text-blue-200 leading-relaxed">
-        <strong>Recommended for most Indian diagnostic centres:</strong> Format{" "}
-        <em>Modern — A5 Landscape</em> · Paper <em>A5 Landscape</em> · Direct Print After Save <em>on</em>{" "}
-        (below). Designed for Epson/HP ink printers on half-A4 paper — dense, one-page bill,
-        cleanly-inked accent color, no wasted ink or blank margins. Watch the Live Preview on the right
-        while you tune.
+        <strong>Recommended for most Indian diagnostic centres:</strong> Header{" "}
+        <em>Address on right</em> · Paper <em>A5 Landscape</em> · Direct Print After Save <em>on</em>{" "}
+        (below). Dense one-page bill — avoids the half-blank A4 look. Watch the Live Preview on the right
+        while you tune.{" "}
+        {settings.defaultPaperSize !== "A5-landscape" && (
+          <button
+            type="button"
+            className="ml-1 underline font-semibold hover:no-underline"
+            onClick={() => update({ defaultPaperSize: "A5-landscape", autoA4Threshold: 8 })}
+            data-testid="apply-recommended-bill-layout"
+          >
+            Apply recommended layout
+          </button>
+        )}
       </div>
 
       {/* SECTION 1 — Essentials: what the bill looks like AND what paper it prints on */}
       <SectionCard title="Format &amp; Paper" subtitle="The two decisions that determine everything else. Pick a layout, pick your paper.">
         <SelectCard
-          label="Bill layout"
-          options={billFormats}
-          value={settings.defaultFormat}
-          onChange={(v) => update({ defaultFormat: v as any })}
+          label="Header layout"
+          options={headerLayouts}
+          value={settings.headerLayout ?? "right"}
+          onChange={(v) => update({ headerLayout: v as any })}
         />
         <SelectCard
           label="Paper size &amp; orientation"
@@ -4982,23 +5129,13 @@ function BillingPrintTab() {
           <div className="flex items-center gap-2">
             <input
               type="number" min={1} max={20}
-              value={(settings as any).autoA4Threshold ?? 5}
+              value={(settings as any).autoA4Threshold ?? 8}
               onChange={(e) => update({ autoA4Threshold: Math.max(1, Math.min(20, Number(e.target.value))) } as any)}
               className="w-16 h-7 text-xs border border-input rounded-md px-2 bg-background"
             />
-            <span className="text-xs text-muted-foreground">investigations (default 5)</span>
+            <span className="text-xs text-muted-foreground">investigations (default 8) — keeps short bills on A5 so they don&apos;t leave a half-blank A4 page</span>
           </div>
         </div>
-        <details className="text-xs text-muted-foreground">
-          <summary className="cursor-pointer font-medium hover:text-foreground">Enable / disable older layouts (advanced)</summary>
-          <div className="grid grid-cols-2 gap-3 mt-2">
-            <BillPrintToggleRow label="Enable Classic (legacy)" value={settings.classicEnabled} onChange={(v) => update({ classicEnabled: v })} />
-            <BillPrintToggleRow label="Enable Premium A5 (legacy)" value={settings.premiumA5Enabled} onChange={(v) => update({ premiumA5Enabled: v })} />
-            <BillPrintToggleRow label="Enable Designer A" value={(settings as any).designerAEnabled !== false} onChange={(v) => update({ designerAEnabled: v } as any)} />
-            <BillPrintToggleRow label="Enable Designer B" value={(settings as any).designerBEnabled !== false} onChange={(v) => update({ designerBEnabled: v } as any)} />
-            <BillPrintToggleRow label="Enable Designer C" value={(settings as any).designerCEnabled !== false} onChange={(v) => update({ designerCEnabled: v } as any)} />
-          </div>
-        </details>
         <div className="rounded-lg border border-amber-200 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-800 px-4 py-3 text-xs text-amber-800 dark:text-amber-300 leading-relaxed">
           <strong>Printer prints with big blank margins?</strong> This setting only decides the size
           the bill is <em>designed</em> for — your browser's print dialog also needs the matching
@@ -5008,9 +5145,12 @@ function BillingPrintTab() {
         </div>
       </SectionCard>
 
-      <SectionCard title="What appears on the printed bill" subtitle="Optional elements. Each toggle updates the Live Preview immediately.">
+      <SectionCard title="What appears on the printed bill" subtitle="QR, TAT, columns, and optional footer elements. Each toggle updates the Live Preview immediately. Formerly split across Clinic Info and Billing Print — now one place.">
         <div className="grid grid-cols-2 gap-3">
-          <BillPrintToggleRow label="Show QR Code" value={settings.showQrCode} onChange={(v) => update({ showQrCode: v })} />
+          <BillPrintToggleRow label="Show QR Code (scan to verify)" value={settings.showQrCode} onChange={(v) => { update({ showQrCode: v }); setSaved(false); }} />
+          <BillPrintToggleRow label="Show TAT (turnaround) column" value={settings.showTatOnBill} onChange={(v) => { update({ showTatOnBill: v }); setSaved(false); }} />
+          <BillPrintToggleRow label="Show Code Column" value={billShowCode} onChange={(v) => { setBillShowCode(v); setSaved(false); }} />
+          <BillPrintToggleRow label="Show Category Column" value={billShowCategory} onChange={(v) => { setBillShowCategory(v); setSaved(false); }} />
           <BillPrintToggleRow label="Show Amount in Words" value={settings.showAmountInWords} onChange={(v) => update({ showAmountInWords: v })} />
           <BillPrintToggleRow label="Show Signature Line" value={settings.showSignatureLine} onChange={(v) => update({ showSignatureLine: v })} />
           <BillPrintToggleRow label="Show Computer Generated Note" value={settings.showComputerGenerated} onChange={(v) => update({ showComputerGenerated: v })} />
@@ -5023,8 +5163,28 @@ function BillingPrintTab() {
           <BillPrintToggleRow label="Show System Information" value={settings.showSystemInfo} onChange={(v) => update({ showSystemInfo: v })} />
           <BillPrintToggleRow label="Show Queue Token Box" value={settings.showQueueTokenOnBill} onChange={(v) => update({ showQueueTokenOnBill: v })} />
         </div>
+        <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <p className="text-xs font-medium text-muted-foreground mb-1">Physical copies per print</p>
+            <div className="flex items-center gap-2">
+              <input
+                type="number"
+                min={1}
+                max={2}
+                value={billPrintCopies}
+                onChange={(e) => {
+                  setBillPrintCopies(Math.min(2, Math.max(1, Number(e.target.value) || 1)));
+                  setSaved(false);
+                }}
+                className="w-16 h-8 text-sm border border-input rounded-md px-2 bg-background"
+                data-testid="bill-print-copies"
+              />
+              <span className="text-xs text-muted-foreground">1 = patient only · 2 = patient + office</span>
+            </div>
+          </div>
+        </div>
         <p className="text-[11px] text-muted-foreground leading-relaxed mt-1">
-          Adds a large "QUEUE TOKEN #NN" box near the top of the bill, separate from the per-test department token list (which always prints when present). Off by default to avoid a redundant box on billing-counter receipts.
+          TAT uses each test&apos;s catalog duration. Queue Token Box is separate from the per-test department token list (which always prints when present). Off by default to avoid a redundant box on billing-counter receipts.
         </p>
       </SectionCard>
 
@@ -5036,14 +5196,20 @@ function BillingPrintTab() {
             "Normal" clears every override back to null (built-in defaults). */}
         <div className="flex items-center gap-2 flex-wrap pb-3 mb-1 border-b border-border/50">
           <span className="text-xs font-medium text-muted-foreground">Quick preset:</span>
+          <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => update(LAYOUT_PRESETS.epsonDense)}>Epson dense (A5 ink)</Button>
           <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => update(LAYOUT_PRESETS.compact)}>Compact</Button>
           <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => update(LAYOUT_PRESETS.normal)}>Normal (built-in default)</Button>
           <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => update(LAYOUT_PRESETS.comfortable)}>Comfortable (larger)</Button>
         </div>
         <NumberOverrideField
-          label="Page Margin" unit="mm" min={2} max={25} sliderDefault={10}
-          value={settings.printMarginMm} defaultLabel="10mm (A5) / 8mm (A4)"
+          label="Page Margin" unit="mm" min={2} max={25} sliderDefault={2}
+          value={settings.printMarginMm} defaultLabel="8mm (A5) / 6mm (A4)"
           onChange={(v) => update({ printMarginMm: v })}
+        />
+        <NumberOverrideField
+          label="Clinic Logo Height" unit="px" min={24} max={160} sliderDefault={72}
+          value={settings.printLogoHeightPx} defaultLabel="72px (Modern) / 120px (Classic)"
+          onChange={(v) => update({ printLogoHeightPx: v })}
         />
         <div className="grid grid-cols-2 gap-x-4 gap-y-2">
           <NumberOverrideField
@@ -5107,14 +5273,19 @@ function BillingPrintTab() {
           <BillPrintToggleRow label="Also auto-download a PDF copy" value={settings.autoDownloadPdf} onChange={(v) => update({ autoDownloadPdf: v })} />
           <BillPrintToggleRow label="Fast Billing Mode (minimal prompts)" value={settings.fastBillingMode} onChange={(v) => update({ fastBillingMode: v })} />
         </div>
-        <div className="mt-2 pt-3 border-t border-border/50">
-          <BillPrintToggleRow label="Admin Lock — apply these settings to every counter (users can't override)" value={settings.adminLock} onChange={(v) => update({ adminLock: v })} />
+        <div className="mt-2 pt-3 border-t border-border/50 pointer-events-auto">
+          <BillPrintToggleRow
+            label="Admin Lock — apply these settings to every counter (users can't override)"
+            value={settings.adminLock}
+            disabled={!isAdminUser}
+            onChange={(v) => update({ adminLock: v })}
+          />
         </div>
       </SectionCard>
 
-      <div className="flex justify-end gap-2 pt-2">
-        <Button variant="outline" onClick={reset}>Reset</Button>
-        <Button onClick={save} className={saved ? "bg-green-600 hover:bg-green-700" : ""}>
+      <div className="flex justify-end gap-2 pt-2 pointer-events-auto">
+        <Button variant="outline" onClick={reset} disabled={settingsReadOnly}>Reset</Button>
+        <Button onClick={save} disabled={settingsReadOnly} className={saved ? "bg-green-600 hover:bg-green-700" : ""}>
           {saved ? (
             <span className="flex items-center gap-1.5"><Check size={16} /> Saved</span>
           ) : (
@@ -5166,7 +5337,7 @@ function BillingPrintTab() {
           </div>
         </div>
         <p className="text-[11px] text-center text-muted-foreground">
-          {billFormats.find((f) => f.id === settings.defaultFormat)?.label ?? settings.defaultFormat}
+          {headerLayouts.find((f) => f.id === (settings.headerLayout ?? "right"))?.label ?? ""}
           {" · "}
           {billPaperSizes.find((p) => p.id === settings.defaultPaperSize)?.label ?? settings.defaultPaperSize}
         </p>
@@ -6487,185 +6658,8 @@ function BranchesTab() {
   );
 }
 
-// ============================================================
-// REPORT TEMPLATES TAB
-// ============================================================
-type ReportTemplate = {
-  id: number; testId: number; name: string; format: string;
-  content: string; isDefault: boolean; tags: string | null; modality: string | null;
-};
-type LiteTest = { id: number; code: string; name: string; category: string };
-
-function ReportTemplatesTab() {
-  const qc = useQueryClient();
-  const { toast } = useToast();
-  const { data: templates = [], isLoading } = useQuery<ReportTemplate[]>({
-    queryKey: ["report-templates"],
-    queryFn: () => api.get("/api/report-templates"),
-  });
-  const { data: tests = [] } = useQuery<LiteTest[]>({
-    queryKey: ["report-templates-tests"],
-    queryFn: async () => {
-      const r = await api.get<{ tests: LiteTest[]; total: number } | LiteTest[]>("/api/tests");
-      return Array.isArray(r) ? r : (r?.tests ?? []);
-    },
-  });
-  const [open, setOpen] = useState(false);
-  const [editing, setEditing] = useState<ReportTemplate | null>(null);
-  const [search, setSearch] = useState("");
-  const [filterTest, setFilterTest] = useState<string>("");
-  const [form, setForm] = useState({ testId: "", name: "", format: "text", content: "", isDefault: false, tags: "", modality: "" });
-
-  const testMap = new Map(tests.map(t => [t.id, t]));
-
-  const reset = () => { setEditing(null); setForm({ testId: "", name: "", format: "text", content: "", isDefault: false, tags: "", modality: "" }); };
-
-  const create = useMutation({
-    mutationFn: (b: typeof form) => api.post("/api/report-templates", { ...b, testId: Number(b.testId) }),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["report-templates"] }); setOpen(false); reset(); toast({ title: "Template created" }); },
-    onError: (e: Error) => toast({ title: "Failed", description: e.message, variant: "destructive" }),
-  });
-  const update = useMutation({
-    mutationFn: ({ id, b }: { id: number; b: typeof form }) => api.patch(`/api/report-templates/${id}`, { ...b, testId: Number(b.testId) }),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["report-templates"] }); setOpen(false); reset(); toast({ title: "Template updated" }); },
-    onError: (e: Error) => toast({ title: "Failed", description: e.message, variant: "destructive" }),
-  });
-  const remove = useMutation({
-    mutationFn: (id: number) => api.delete(`/api/report-templates/${id}`),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["report-templates"] }); toast({ title: "Template deleted" }); },
-    onError: (e: Error) => toast({ title: "Failed", description: e.message, variant: "destructive" }),
-  });
-
-  const onEdit = (t: ReportTemplate) => {
-    setEditing(t);
-    setForm({ testId: String(t.testId), name: t.name, format: t.format, content: t.content, isDefault: t.isDefault, tags: t.tags || "", modality: t.modality || "" });
-    setOpen(true);
-  };
-  const onSubmit = () => {
-    if (!form.testId || !form.name.trim() || !form.content.trim()) {
-      toast({ title: "Test, name and content are required", variant: "destructive" });
-      return;
-    }
-    if (editing) update.mutate({ id: editing.id, b: form });
-    else create.mutate(form);
-  };
-
-  const filtered = templates.filter(t => {
-    if (filterTest && String(t.testId) !== filterTest) return false;
-    if (search) {
-      const q = search.toLowerCase();
-      const test = testMap.get(t.testId);
-      if (!t.name.toLowerCase().includes(q) && !(test?.name.toLowerCase().includes(q)) && !(t.tags || "").toLowerCase().includes(q)) return false;
-    }
-    return true;
-  });
-
-  return (
-    <div className="space-y-3">
-      <div className="bg-card border border-border rounded-xl p-4 flex items-center justify-between flex-wrap gap-3">
-        <div>
-          <h3 className="font-semibold flex items-center gap-2"><FileCode size={16} /> Report Templates</h3>
-          <p className="text-xs text-muted-foreground mt-1">Per-test report templates used by Report Generator. Mark one default per test for auto-load.</p>
-        </div>
-        <Button onClick={() => { reset(); setOpen(true); }}><Plus size={14} className="mr-1" /> New Template</Button>
-      </div>
-
-      <div className="bg-card border border-border rounded-xl p-3 flex flex-wrap items-end gap-3">
-        <div className="flex-1 min-w-[180px]">
-          <Label className="text-xs">Search</Label>
-          <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Template name, test or tag" className="h-9" />
-        </div>
-        <div className="min-w-[200px]">
-          <Label className="text-xs">Filter by Test</Label>
-          <Select value={filterTest || "__all__"} onValueChange={(v) => setFilterTest(v === "__all__" ? "" : v)}>
-            <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
-            <SelectContent className="max-h-72">
-              <SelectItem value="__all__">All tests</SelectItem>
-              {tests.map(t => <SelectItem key={t.id} value={String(t.id)}>{t.code} — {t.name}</SelectItem>)}
-            </SelectContent>
-          </Select>
-        </div>
-      </div>
-
-      <div className="bg-card border border-border rounded-xl overflow-hidden">
-        <table className="w-full text-sm">
-          <thead className="bg-muted/40">
-            <tr className="text-left">
-              <th className="px-3 py-2 font-medium text-xs">Test</th>
-              <th className="px-3 py-2 font-medium text-xs">Template Name</th>
-              <th className="px-3 py-2 font-medium text-xs">Format</th>
-              <th className="px-3 py-2 font-medium text-xs">Modality</th>
-              <th className="px-3 py-2 font-medium text-xs">Tags</th>
-              <th className="px-3 py-2 font-medium text-xs text-center">Default</th>
-              <th className="px-3 py-2 font-medium text-xs text-right">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {isLoading
-              ? <tr><td colSpan={7} className="px-3 py-8 text-center text-xs text-muted-foreground">Loading…</td></tr>
-              : filtered.length === 0
-                ? <tr><td colSpan={7} className="px-3 py-8 text-center text-xs text-muted-foreground">No templates {templates.length > 0 ? "matching filters" : "yet — create your first template"}</td></tr>
-                : filtered.map(t => {
-                  const test = testMap.get(t.testId);
-                  return (
-                    <tr key={t.id} className="border-t border-border/50 hover:bg-muted/20">
-                      <td className="px-3 py-2 text-xs">{test ? <span><span className="font-mono">{test.code}</span> — {test.name}</span> : `Test #${t.testId}`}</td>
-                      <td className="px-3 py-2 font-medium">{t.name}</td>
-                      <td className="px-3 py-2"><Badge variant="outline">{t.format}</Badge></td>
-                      <td className="px-3 py-2 text-xs">{t.modality || "—"}</td>
-                      <td className="px-3 py-2 text-xs text-muted-foreground max-w-xs truncate" title={t.tags || ""}>{t.tags || "—"}</td>
-                      <td className="px-3 py-2 text-center">{t.isDefault ? <Badge className="bg-violet-100 text-violet-700">Default</Badge> : <span className="text-muted-foreground text-xs">—</span>}</td>
-                      <td className="px-3 py-2">
-                        <div className="flex justify-end gap-1">
-                          <Button size="sm" variant="outline" onClick={() => onEdit(t)}><Pencil size={13} /></Button>
-                          <Button size="sm" variant="outline" onClick={() => { if (confirm(`Delete "${t.name}"?`)) remove.mutate(t.id); }}><Trash2 size={13} className="text-rose-500" /></Button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-          </tbody>
-        </table>
-      </div>
-
-      <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) reset(); }}>
-        <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
-          <DialogHeader><DialogTitle>{editing ? "Edit Template" : "New Report Template"}</DialogTitle></DialogHeader>
-          <div className="grid grid-cols-2 gap-3">
-            <div className="col-span-2">
-              <Label className="text-xs">Test *</Label>
-              <Select value={form.testId} onValueChange={(v) => setForm({ ...form, testId: v })}>
-                <SelectTrigger><SelectValue placeholder="Select test" /></SelectTrigger>
-                <SelectContent className="max-h-72">{tests.map(t => <SelectItem key={t.id} value={String(t.id)}>{t.code} — {t.name}</SelectItem>)}</SelectContent>
-              </Select>
-            </div>
-            <div><Label className="text-xs">Name *</Label><Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Standard PA View" /></div>
-            <div><Label className="text-xs">Format</Label>
-              <Select value={form.format} onValueChange={(v) => setForm({ ...form, format: v })}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent><SelectItem value="text">text</SelectItem><SelectItem value="html">html</SelectItem></SelectContent>
-              </Select>
-            </div>
-            <div><Label className="text-xs">Modality</Label><Input value={form.modality} onChange={(e) => setForm({ ...form, modality: e.target.value })} placeholder="USG, CT, MRI, X-RAY, LAB, ECG…" /></div>
-            <div><Label className="text-xs">Tags (comma-separated)</Label><Input value={form.tags} onChange={(e) => setForm({ ...form, tags: e.target.value })} placeholder="fatty liver, hepatomegaly" /></div>
-            <div className="col-span-2">
-              <Label className="text-xs">Content (use [PLACEHOLDERS]) *</Label>
-              <Textarea rows={10} value={form.content} onChange={(e) => setForm({ ...form, content: e.target.value })} className="font-mono text-xs" placeholder="Patient: [PATIENT_NAME]&#10;Age: [AGE]&#10;..." />
-            </div>
-            <label className="flex items-center gap-2 col-span-2 text-sm">
-              <input type="checkbox" checked={form.isDefault} onChange={(e) => setForm({ ...form, isDefault: e.target.checked })} />
-              Mark as default for this test (auto-loaded by Report Generator)
-            </label>
-          </div>
-          <div className="flex justify-end gap-2">
-            <Button variant="outline" onClick={() => { setOpen(false); reset(); }}>Cancel</Button>
-            <Button onClick={onSubmit}>{editing ? "Save" : "Create"}</Button>
-          </div>
-        </DialogContent>
-      </Dialog>
-    </div>
-  );
-}
+// Report templates moved to Report Generator → Manage Templates tab
+// (see components/ReportTemplatesManager.tsx)
 
 // ============================================================
 // RADIOLOGY SETTINGS TAB — Productivity Tools
@@ -6894,19 +6888,24 @@ function RadiologySettingsTab() {
     { id: "radiologyMacroEngine", label: "Personal Macro Engine", desc: "Shortcuts like /normalbrain, /l4l5disc, /fazekas2 for instant insertion", value: macroEngine, set: setMacroEngine },
   ];
 
+  const [showExperimentalFlags, setShowExperimentalFlags] = useState(false);
+
   return (
-    <div className="max-w-2xl space-y-6">
-      <Link
-        href="/settings/radiology"
-        className="flex items-center justify-between gap-3 rounded-xl border bg-blue-50 dark:bg-blue-950/20 border-blue-200 dark:border-blue-800 p-3 text-sm hover:bg-blue-100 dark:hover:bg-blue-900/30 transition-colors"
-      >
-        <span>Looking for PACS, Orthanc, OHIF, Weasis, DICOM, or worklist settings? Those live on the dedicated <strong>Radiology Settings</strong> page.</span>
-        <span className="shrink-0 text-blue-600 dark:text-blue-400 font-medium">Open →</span>
-      </Link>
-      <div className="bg-card border border-card-border rounded-xl p-5 space-y-4">
+    <div className="max-w-4xl space-y-6">
+      <div className="rounded-xl border bg-card border-card-border p-4 space-y-1">
+        <h2 className="font-bold text-lg flex items-center gap-2"><Radio size={18} /> Radiology</h2>
+        <p className="text-sm text-muted-foreground">
+          Main ERP Settings home for radiology. Use the Settings Center for PACS/viewer config; the cards for deep tools;
+          device flags below are browser-local productivity toggles (not clinic-wide).
+        </p>
+      </div>
+
+      <RadiologyToolsHubPanel />
+
+      <div className="border-t pt-4 space-y-6">
         <div>
-          <h2 className="font-bold text-lg flex items-center gap-2"><ScanLine size={16} /> Radiology Productivity Tools</h2>
-          <p className="text-sm text-muted-foreground mt-1">Enable or disable productivity features in the Radiology Report workspace. All are local to this device and stored in browser preferences.</p>
+          <h2 className="font-bold text-lg flex items-center gap-2"><ScanLine size={16} /> Device productivity flags</h2>
+          <p className="text-sm text-muted-foreground mt-1">Stored in this browser only — not the same as server Feature Flags or Radiology Settings Center.</p>
         </div>
         <div className="space-y-2">
           {toggles.map((t) => (
@@ -6926,8 +6925,21 @@ function RadiologySettingsTab() {
             </label>
           ))}
         </div>
-      </div>
 
+      <div className="rounded-xl border border-amber-200 bg-amber-50/60 dark:bg-amber-950/20 dark:border-amber-800 p-4 space-y-3">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-semibold text-amber-950 dark:text-amber-100">Experimental / roadmap toggles</h3>
+            <p className="text-xs text-amber-900/80 dark:text-amber-200/80 mt-1">
+              Dozens of browser-local flags from earlier roadmap phases. Many are unwired or partial — they do not replace Radiology Settings Center or server Feature Flags.
+            </p>
+          </div>
+          <Button type="button" size="sm" variant="outline" className="h-8 shrink-0" onClick={() => setShowExperimentalFlags((v) => !v)}>
+            {showExperimentalFlags ? "Hide experimental" : "Show experimental"}
+          </Button>
+        </div>
+        {showExperimentalFlags && (
+          <div className="space-y-6 pt-1">
       {/* Phase 3: Advanced Productivity */}
       <div className="bg-card border border-card-border rounded-xl p-5 space-y-4">
         <div>
@@ -7174,6 +7186,10 @@ function RadiologySettingsTab() {
         </div>
       </div>
 
+          </div>
+        )}
+      </div>
+
       {/* Keyboard shortcuts reference */}
       <div className="bg-card border border-card-border rounded-xl p-5 space-y-4">
         <div>
@@ -7206,6 +7222,7 @@ function RadiologySettingsTab() {
             <span className="font-mono text-xs text-muted-foreground">Ctrl + Shift + M</span>
           </div>
         </div>
+      </div>
       </div>
     </div>
   );
@@ -7562,7 +7579,7 @@ function DisplaysOverview({
   activeRoomKey,
   onSelectRoom,
 }: {
-  rooms?: { roomKey: string; roomTitle: string; online: boolean; lastSeenAt: number | null }[];
+  rooms?: { roomKey: string; roomTitle: string; online: boolean; lastSeenAt: number | null; staffAlertEnabled?: boolean }[];
   activeRoomKey: string;
   onSelectRoom: (roomKey: string) => void;
 }) {
@@ -7590,6 +7607,11 @@ function DisplaysOverview({
             <span className={`w-2 h-2 rounded-full shrink-0 ${r.online ? "bg-emerald-500" : "bg-red-500"}`} />
             <span className="font-medium">{r.roomTitle || r.roomKey.toUpperCase()}</span>
             <span className="text-muted-foreground">{r.online ? "online" : fmtLastSeen(r.lastSeenAt)}</span>
+            {!r.online && r.staffAlertEnabled && (
+              <span className="text-amber-700 dark:text-amber-300" title="Staff WhatsApp alert enabled for this TV">
+                ⚠ alert
+              </span>
+            )}
           </button>
         ))}
       </div>
@@ -7609,7 +7631,7 @@ function QueueDisplaySettingsTab() {
   // List of all configured displays (MRI, CT, X-Ray, USG, Reception, etc.)
   // — fully dynamic, no fixed list. Doctors add rooms from here; each gets
   // its own independent settings row and its own /display/:roomKey URL.
-  const { data: rooms } = useQuery<{ roomKey: string; roomTitle: string; displayName: string; online: boolean; lastSeenAt: number | null }[]>({
+  const { data: rooms } = useQuery<{ roomKey: string; roomTitle: string; displayName: string; online: boolean; lastSeenAt: number | null; staffAlertEnabled?: boolean }[]>({
     queryKey: ["queue-display-rooms"],
     queryFn: () => api.get("/api/settings/queue-display"),
     refetchInterval: 30_000, // keep the Displays Overview online/offline status fresh
@@ -8002,7 +8024,7 @@ function QueueDisplaySettingsTab() {
                 );
               })()}
               <p className="text-[11px] text-muted-foreground mt-1.5">
-                Picked from actual test departments, so this can never silently mismatch what tokens are tagged with. None selected = show every department on this TV.
+                Picked from actual test departments, so this can never silently mismatch what tokens are tagged with. None selected auto-fills from the room key (e.g. usg → USG); reception shows all departments.
               </p>
             </div>
           </SettingsCard>
@@ -9009,13 +9031,13 @@ function ScannerSettingsTab() {
   const [autoRotate, setAutoRotate] = useState(false);
   const [archive, setArchive] = useState(true);
   const [padding, setPadding] = useState(12);
-  const [quality, setQuality] = useState(85);
-  const [maxWidth, setMaxWidth] = useState(1200);
+  const [quality, setQuality] = useState(92);
+  const [maxWidth, setMaxWidth] = useState(2000);
   
   // Wireless settings
   const [mobileScan, setMobileScan] = useState(true);
   const [phonePairing, setPhonePairing] = useState(true);
-  const [preferredScanner, setPreferredScanner] = useState("mobile");
+  const [preferredScanner, setPreferredScanner] = useState("bridge");
   const [requireConfirmation, setRequireConfirmation] = useState(true);
   const [autoDeleteTemp, setAutoDeleteTemp] = useState(true);
   const [ocrEnabled, setOcrEnabled] = useState(true);
@@ -9036,12 +9058,12 @@ function ScannerSettingsTab() {
     setAutoRotate(settings.autoRotateScan === true);
     setArchive(settings.archiveImportedScans !== false);
     setPadding(Number(settings.cropPadding ?? 12));
-    setQuality(Number(settings.jpegQuality ?? 85));
-    setMaxWidth(Number(settings.maxScanWidth ?? 1200));
+    setQuality(Number(settings.jpegQuality ?? 92));
+    setMaxWidth(Number(settings.maxScanWidth ?? 2000));
     
     setMobileScan(settings.mobileScanEnabled !== false);
     setPhonePairing(settings.phonePairingEnabled !== false);
-    setPreferredScanner(String(settings.preferredScanner ?? "mobile"));
+    setPreferredScanner(String(settings.preferredScanner ?? "bridge"));
     setRequireConfirmation(settings.requireDesktopConfirmation !== false);
     setAutoDeleteTemp(settings.autoDeleteTempScans !== false);
     setOcrEnabled(settings.ocrEnabled !== false);
@@ -9090,6 +9112,32 @@ function ScannerSettingsTab() {
 
   return (
     <div className="space-y-6 max-w-2xl">
+      {/* First card — Form F default capture method (most looked-for setting) */}
+      <div id="preferred-scanning-source" className="bg-card border border-border rounded-xl p-5 space-y-4">
+        <div>
+          <h3 className="font-semibold text-base">Preferred Scanning Source</h3>
+          <p className="text-sm text-muted-foreground mt-0.5">
+            Default capture method on Form F&apos;s ID Scan panel. Flatbed / ScanBridge is the default for on-prem clinics; webcam and mobile stay available as tabs.
+          </p>
+        </div>
+        <div className="space-y-1 max-w-md">
+          <label htmlFor="preferredScanner" className="text-sm font-medium">Default method</label>
+          <Select value={preferredScanner} onValueChange={setPreferredScanner}>
+            <SelectTrigger id="preferredScanner" className="h-9 bg-white dark:bg-background">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="bridge">Flatbed Scanner / ScanBridge (default)</SelectItem>
+              <SelectItem value="camera">Webcam / TVS PDS 8M</SelectItem>
+              <SelectItem value="mobile">Wireless Mobile Scan</SelectItem>
+            </SelectContent>
+          </Select>
+          <p className="text-[11px] text-muted-foreground">
+            Save with the button at the bottom of this page.
+          </p>
+        </div>
+      </div>
+
       {/* Kiosk & Global Hospital Scanner Settings */}
       <div className="bg-card border border-border rounded-xl p-5 space-y-5">
         <div>
@@ -9285,35 +9333,18 @@ function ScannerSettingsTab() {
             </label>
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-1">
-              <label htmlFor="preferredScanner" className="text-sm font-medium">Preferred Scanning Source</label>
-              <Select value={preferredScanner} onValueChange={setPreferredScanner}>
-                <SelectTrigger id="preferredScanner" className="h-9 bg-white dark:bg-background">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="bridge">Flatbed Scanner / Scan Bridge</SelectItem>
-                  <SelectItem value="camera">Webcam / TVS PDS 8M</SelectItem>
-                  <SelectItem value="mobile">Wireless Mobile Scan</SelectItem>
-                </SelectContent>
-              </Select>
-              <p className="text-[11px] text-muted-foreground">Default capture method pre-selected on Form F's ID Scan panel.</p>
-            </div>
-            
-            <div className="flex items-center gap-3 pt-6">
-              <input
-                id="requireConfirmation"
-                type="checkbox"
-                checked={requireConfirmation}
-                onChange={(e) => setRequireConfirmation(e.target.checked)}
-                className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
-              />
-              <label htmlFor="requireConfirmation" className="text-sm font-medium">
-                Require Desktop Approval
-                <p className="text-xs text-muted-foreground font-normal">Force user to verify and accept scanned images before attaching.</p>
-              </label>
-            </div>
+          <div className="flex items-center gap-3">
+            <input
+              id="requireConfirmation"
+              type="checkbox"
+              checked={requireConfirmation}
+              onChange={(e) => setRequireConfirmation(e.target.checked)}
+              className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
+            />
+            <label htmlFor="requireConfirmation" className="text-sm font-medium">
+              Require Desktop Approval
+              <p className="text-xs text-muted-foreground font-normal">Force user to verify and accept scanned images before attaching.</p>
+            </label>
           </div>
 
           <div className="flex items-center gap-3">
@@ -9363,7 +9394,9 @@ function ScannerSettingsTab() {
             />
             <label htmlFor="aadhaarQr" className="text-sm font-medium">
               Enable Aadhaar QR Code Extraction
-              <p className="text-xs text-muted-foreground font-normal">Decrypt secure QR codes printed on Aadhaar cards for 100% accurate demographic extraction.</p>
+              <p className="text-xs text-muted-foreground font-normal">
+                Reads legacy plain-XML Aadhaar QR codes (pre-~2019 cards). Newer UIDAI Secure QR is detected but not decoded yet — those fall back to OCR.
+              </p>
             </label>
           </div>
 
@@ -9389,11 +9422,11 @@ function ScannerSettingsTab() {
             setAutoRotate(settings.autoRotateScan === true);
             setArchive(settings.archiveImportedScans !== false);
             setPadding(Number(settings.cropPadding ?? 12));
-            setQuality(Number(settings.jpegQuality ?? 85));
-            setMaxWidth(Number(settings.maxScanWidth ?? 1200));
+            setQuality(Number(settings.jpegQuality ?? 92));
+            setMaxWidth(Number(settings.maxScanWidth ?? 2000));
             setMobileScan(settings.mobileScanEnabled !== false);
             setPhonePairing(settings.phonePairingEnabled !== false);
-            setPreferredScanner(String(settings.preferredScanner ?? "mobile"));
+            setPreferredScanner(String(settings.preferredScanner ?? "bridge"));
             setRequireConfirmation(settings.requireDesktopConfirmation !== false);
             setAutoDeleteTemp(settings.autoDeleteTempScans !== false);
             setOcrEnabled(settings.ocrEnabled !== false);
