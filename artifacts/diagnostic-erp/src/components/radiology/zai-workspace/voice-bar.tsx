@@ -1,12 +1,12 @@
-import { useWorkspace } from "@/lib/zai-workspace/store";
+import { useWorkspace, useWorkspaceSelector } from "@/lib/zai-workspace/store";
 import { Mic, MicOff, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useEffect, useState } from "react";
 import { api } from "@/lib/fetchApi";
 export function VoiceBar() {
-  const show = useWorkspace(s => s.showVoiceBar); const listening = useWorkspace(s => s.voiceListening); const setListening = useWorkspace(s => s.setVoiceListening);
-  const setT = useWorkspace(s => s.setVoiceTranscript); const t = useWorkspace(s => s.voiceTranscript); const toggle = useWorkspace(s => s.toggleVoiceBar);
-  const provider = useWorkspace(s => s.voiceProvider); const setP = useWorkspace(s => s.setVoiceProvider);
+  const show = useWorkspaceSelector(s => s.showVoiceBar); const listening = useWorkspaceSelector(s => s.voiceListening); const setListening = useWorkspaceSelector(s => s.setVoiceListening);
+  const setT = useWorkspaceSelector(s => s.setVoiceTranscript); const t = useWorkspaceSelector(s => s.voiceTranscript); const toggle = useWorkspaceSelector(s => s.toggleVoiceBar);
+  const provider = useWorkspaceSelector(s => s.voiceProvider); const setP = useWorkspaceSelector(s => s.setVoiceProvider);
   const [caps, setCaps] = useState<{ local: boolean; server: boolean; webspeech: boolean } | null>(null);
   useEffect(() => { api.get<{ available?: boolean; server?: boolean; local?: boolean }>("/api/ai/transcribe/status").then(r => setCaps({ local: !!r.local, server: !!(r.server ?? r.available), webspeech: typeof window !== "undefined" && ("SpeechRecognition" in window || "webkitSpeechRecognition" in window) })).catch(() => setCaps({ local: false, server: false, webspeech: typeof window !== "undefined" && ("SpeechRecognition" in window || "webkitSpeechRecognition" in window) })); }, []);
   useEffect(() => { if (!caps) return; if (caps.local) setP("local"); else if (caps.server) setP("server"); else if (caps.webspeech) setP("webspeech"); else setP(null); }, [caps, setP]);

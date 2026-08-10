@@ -1,9 +1,9 @@
-import { useWorkspace } from "@/lib/zai-workspace/store";
+import { useWorkspace, useWorkspaceSelector } from "@/lib/zai-workspace/store";
 import { useEffect, useState } from "react";
 import { Clock, AlertTriangle, Bell } from "lucide-react";
 import { cn } from "@/lib/utils";
 export function CriticalSlaTimer() {
-  const startedAt = useWorkspace(s => s.criticalSlaStartedAt); const slaMin = useWorkspace(s => s.criticalSlaMinutes); const esc = useWorkspace(s => s.criticalSlaEscalated); const escalate = useWorkspace(s => s.escalateCriticalSla);
+  const startedAt = useWorkspaceSelector(s => s.criticalSlaStartedAt); const slaMin = useWorkspaceSelector(s => s.criticalSlaMinutes); const esc = useWorkspaceSelector(s => s.criticalSlaEscalated); const escalate = useWorkspaceSelector(s => s.escalateCriticalSla);
   const [elapsed, setElapsed] = useState(0);
   useEffect(() => { if (!startedAt) return; const tick = () => { const s = Math.floor((Date.now() - startedAt) / 1000); setElapsed(s); if (s >= slaMin * 60 && !useWorkspace.getState().criticalSlaEscalated) escalate(); }; tick(); const i = setInterval(tick, 1000); return () => clearInterval(i); }, [startedAt, slaMin, escalate]);
   if (!startedAt) return null;

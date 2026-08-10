@@ -1,14 +1,14 @@
-import { useWorkspace } from "@/lib/zai-workspace/store";
+import { useWorkspace, useWorkspaceSelector } from "@/lib/zai-workspace/store";
 import { modalityAccent, patientAccent } from "@/lib/zai-workspace/types";
 import { Maximize2, Layers, Image as ImageIcon, Crosshair, Stethoscope } from "lucide-react";
 import { useState, useEffect } from "react";
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/fetchApi";
 export function ViewerPanel() {
-  const study = useWorkspace(s => s.studies.find(x => x.id === s.activeStudyId));
-  const measurements = useWorkspace(s => s.measurements);
-  const insertM = useWorkspace(s => s.insertMeasurement);
-  const insertAll = useWorkspace(s => s.insertAllMeasurements);
+  const study = useWorkspaceSelector(s => s.studies.find(x => x.id === s.activeStudyId));
+  const measurements = useWorkspaceSelector(s => s.measurements);
+  const insertM = useWorkspaceSelector(s => s.insertMeasurement);
+  const insertAll = useWorkspaceSelector(s => s.insertAllMeasurements);
   const [activeSeries, setActiveSeries] = useState(0);
   const [url, setUrl] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);

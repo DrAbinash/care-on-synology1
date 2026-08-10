@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { useWorkspace } from "@/lib/zai-workspace/store";
+import { useWorkspace, useWorkspaceSelector } from "@/lib/zai-workspace/store";
 import { lookupProfile, formatSignOff } from "@/lib/zai-workspace/sign-off-profiles";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
@@ -8,10 +8,10 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { AlertTriangle, ShieldCheck, Phone, MessageSquare, User, Clock } from "lucide-react";
 import { api } from "@/lib/fetchApi";
 export function FinalizeDialog() {
-  const open = useWorkspace(s => s.isFinalizing); const cancel = useWorkspace(s => s.cancelFinalize); const complete = useWorkspace(s => s.completeFinalize);
-  const study = useWorkspace(s => s.studies.find(x => x.id === s.activeStudyId)); const items = useWorkspace(s => s.copilotItems); const ack = useWorkspace(s => s.acknowledgedCopilotIds);
-  const profiles = useWorkspace(s => s.signOffProfiles);
-  const ft = useWorkspace(s => s.findingsText); const it = useWorkspace(s => s.impressionText); const rt = useWorkspace(s => s.recommendationText); const tt = useWorkspace(s => s.techniqueText);
+  const open = useWorkspaceSelector(s => s.isFinalizing); const cancel = useWorkspaceSelector(s => s.cancelFinalize); const complete = useWorkspaceSelector(s => s.completeFinalize);
+  const study = useWorkspaceSelector(s => s.studies.find(x => x.id === s.activeStudyId)); const items = useWorkspaceSelector(s => s.copilotItems); const ack = useWorkspaceSelector(s => s.acknowledgedCopilotIds);
+  const profiles = useWorkspaceSelector(s => s.signOffProfiles);
+  const ft = useWorkspaceSelector(s => s.findingsText); const it = useWorkspaceSelector(s => s.impressionText); const rt = useWorkspaceSelector(s => s.recommendationText); const tt = useWorkspaceSelector(s => s.techniqueText);
   const [critAcked, setCritAcked] = useState(false); const [notify, setNotify] = useState(true);
   const critItems = items.filter(i => i.kind === "critical"); const hasCrit = critItems.length > 0; const allAcked = critItems.every(i => ack.has(i.id));
   const biradsNeeded = study?.modality === "MG" && !/bi-rads/i.test(it);

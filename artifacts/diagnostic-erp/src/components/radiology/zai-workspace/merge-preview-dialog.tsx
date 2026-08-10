@@ -1,4 +1,4 @@
-import { useWorkspace } from "@/lib/zai-workspace/store";
+import { useWorkspace, useWorkspaceSelector } from "@/lib/zai-workspace/store";
 import type { MergeSentence } from "@/lib/zai-workspace/types";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
@@ -6,7 +6,7 @@ import { Check, X, GitMerge, Minus } from "lucide-react";
 import { cn } from "@/lib/utils";
 const T: Record<string, { bg: string; text: string; border: string }> = { common: { bg: "bg-slate-50", text: "text-slate-700", border: "border-l-slate-300" }, "from-a": { bg: "bg-emerald-50", text: "text-emerald-800", border: "border-l-emerald-400" }, "from-b": { bg: "bg-sky-50", text: "text-sky-800", border: "border-l-sky-400" } };
 export function MergePreviewDialog() {
-  const open = useWorkspace(s => s.mergePreviewOpen); const r = useWorkspace(s => s.lastMergeResult); const f = useWorkspace(s => s.lastMergeFormats); const apply = useWorkspace(s => s.applyMergedResult); const cancel = useWorkspace(s => s.cancelMerge);
+  const open = useWorkspaceSelector(s => s.mergePreviewOpen); const r = useWorkspaceSelector(s => s.lastMergeResult); const f = useWorkspaceSelector(s => s.lastMergeFormats); const apply = useWorkspaceSelector(s => s.applyMergedResult); const cancel = useWorkspaceSelector(s => s.cancelMerge);
   return <Dialog open={open} onOpenChange={o => !o && cancel()}><DialogContent className="max-w-3xl max-h-[90vh] flex flex-col"><DialogHeader><DialogTitle className="flex items-center gap-2"><GitMerge className="h-4 w-4 text-emerald-600" /> Merge Preview</DialogTitle><DialogDescription>Common kept once, unique from both added.</DialogDescription></DialogHeader>
     <div className="flex flex-wrap gap-2 mb-2"><Legend tone="common" count={r?.stats.commonSentencesDiscarded ?? 0} /><Legend tone="from-a" count={r?.stats.addedFromA ?? 0} name={f?.a.name} /><Legend tone="from-b" count={r?.stats.addedFromB ?? 0} name={f?.b?.name} /></div>
     {r && <div className="rounded-md border border-emerald-200 bg-emerald-50/40 p-2 text-[11px] text-emerald-800 mb-2">Kept <b>{r.stats.commonSentencesDiscarded}</b> common once, added <b>{r.stats.addedFromA}</b> from {f?.a.name} + <b>{r.stats.addedFromB}</b> from {f?.b?.name}.</div>}

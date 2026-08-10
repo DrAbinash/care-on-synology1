@@ -56,7 +56,7 @@ describe("AI query endpoint — single typed entry point", () => {
 
   it("every former promptText call site now uses the typed client", () => {
     for (const rel of [
-      "pages/RadiologyReportingWorkspace.tsx",
+      "pages/RadiologyReportingWorkspace.legacy.tsx",
       "pages/RadiologyCommandCenter.tsx",
       "pages/DicomViewer.tsx",
       "components/NeuroPromptPanel.tsx",
@@ -122,7 +122,7 @@ describe("Prior-studies wiring", () => {
   });
 
   it("workspaces pass the current study for server-side self-exclusion", () => {
-    expect(read(resolve(ERP_SRC, "pages/RadiologyReportingWorkspace.tsx"))).toMatch(/excludeStudyId=\{entry\?\.studyId/);
+    expect(read(resolve(ERP_SRC, "pages/RadiologyReportingWorkspace.tsx"))).toMatch(/excludeStudyId=\{(studyId|entry\?\.studyId)/);
     expect(read(resolve(ERP_SRC, "pages/UsgCompanionWorkspace.tsx"))).toMatch(/excludeStudyId=\{studyId/);
   });
 });

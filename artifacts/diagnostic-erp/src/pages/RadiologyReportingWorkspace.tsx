@@ -111,7 +111,7 @@ import ReferringDoctorQuickSelect from "@/components/ReferringDoctorQuickSelect"
 import { ModuleErrorBoundary } from "@/components/ModuleErrorBoundary";
 
 // ─── New Z.ai workspace components ─────────────────────────────────────────────
-import { useWorkspace } from "@/lib/zai-workspace/store";
+import { useWorkspace, type WorkspaceStore } from "@/lib/zai-workspace/store";
 import { getFindingsCompletionPct, shouldPreloadNext } from "@/lib/zai-workspace/types";
 import type { Study, MeasurementRow, PriorStudy } from "@/lib/zai-workspace/types";
 import { WorklistStrip } from "@/components/radiology/zai-workspace/worklist-strip";
@@ -173,20 +173,20 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
 
   // ─── Z.ai workspace store (new features) ──────────────────────────────────
   const ws = useWorkspace;
-  const studies = useWorkspace(s => s.studies);
-  const activeStudyId = useWorkspace(s => s.activeStudyId);
-  const selectStudy = useWorkspace(s => s.selectStudy);
-  const setStudies = useWorkspace(s => s.setStudies);
-  const findingsText = useWorkspace(s => s.findingsText);
-  const impressionText = useWorkspace(s => s.impressionText);
-  const recommendationText = useWorkspace(s => s.recommendationText);
-  const techniqueText = useWorkspace(s => s.techniqueText);
-  const clinicalHistoryText = useWorkspace(s => s.clinicalHistoryText);
-  const isFinalized = useWorkspace(s => s.isFinalized);
-  const preloadTriggered = useWorkspace(s => s.preloadTriggered);
-  const criticalSlaStartedAt = useWorkspace(s => s.criticalSlaStartedAt);
-  const completedCount = useWorkspace(s => s.completedStudyIds.size);
-  const sessionStartedAt = useWorkspace(s => s.sessionStartedAt);
+  const studies = useWorkspace((s: WorkspaceStore) => s.studies);
+  const activeStudyId = useWorkspace((s: WorkspaceStore) => s.activeStudyId);
+  const selectStudy = useWorkspace((s: WorkspaceStore) => s.selectStudy);
+  const setStudies = useWorkspace((s: WorkspaceStore) => s.setStudies);
+  const findingsText = useWorkspace((s: WorkspaceStore) => s.findingsText);
+  const impressionText = useWorkspace((s: WorkspaceStore) => s.impressionText);
+  const recommendationText = useWorkspace((s: WorkspaceStore) => s.recommendationText);
+  const techniqueText = useWorkspace((s: WorkspaceStore) => s.techniqueText);
+  const clinicalHistoryText = useWorkspace((s: WorkspaceStore) => s.clinicalHistoryText);
+  const isFinalized = useWorkspace((s: WorkspaceStore) => s.isFinalized);
+  const preloadTriggered = useWorkspace((s: WorkspaceStore) => s.preloadTriggered);
+  const criticalSlaStartedAt = useWorkspace((s: WorkspaceStore) => s.criticalSlaStartedAt);
+  const completedCount = useWorkspace((s: WorkspaceStore) => s.completedStudyIds.size);
+  const sessionStartedAt = useWorkspace((s: WorkspaceStore) => s.sessionStartedAt);
 
   // ─── Existing Care hooks (the wiring contract) ─────────────────────────────
   // 1. Workflow (queue, navigation, parked, history)
@@ -331,11 +331,11 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   useEffect(() => {
     if (studies.length === 0 || activeStudyId) return;
     if (studyId) {
-      const match = studies.find(s => s.id === String(studyId));
+      const match = studies.find((s: Study) => s.id === String(studyId));
       if (match) { selectStudy(match.id); return; }
     }
     const pr: Record<string, number> = { stat: 0, urgent: 1, routine: 2, vip: 1 };
-    const sorted = [...studies].sort((a, b) => (pr[a.priority] - pr[b.priority]) || (a.tatMinutes - b.tatMinutes));
+    const sorted = [...studies].sort((a: Study, b: Study) => (pr[a.priority] - pr[b.priority]) || (a.tatMinutes - b.tatMinutes));
     if (sorted[0]) selectStudy(sorted[0].id);
   }, [studies, activeStudyId, studyId, selectStudy]);
 
@@ -394,9 +394,9 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   useEffect(() => {
     if (!preloadTriggered || !activeStudyId) return;
     const completedSet = useWorkspace.getState().completedStudyIds;
-    const remaining = studies.filter(s => !completedSet.has(s.id) && s.id !== activeStudyId);
+    const remaining = studies.filter((s: Study) => !completedSet.has(s.id) && s.id !== activeStudyId);
     const pr: Record<string, number> = { stat: 0, urgent: 1, routine: 2, vip: 1 };
-    remaining.sort((a, b) => (pr[a.priority] - pr[b.priority]) || (a.tatMinutes - b.tatMinutes));
+    remaining.sort((a: Study, b: Study) => (pr[a.priority] - pr[b.priority]) || (a.tatMinutes - b.tatMinutes));
     const next = remaining[0];
     if (next) {
       useWorkspace.getState().setNextStudy(next.id);
@@ -637,7 +637,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   });
 
   // ─── Compute derived state ──────────────────────────────────────────────────
-  const study = studies.find(s => s.id === activeStudyId);
+  const study = studies.find((s: Study) => s.id === activeStudyId);
   const sessionMin = Math.floor((Date.now() - sessionStartedAt) / 60000);
   const showFatigue = sessionMin >= 90 && sessionMin % 90 < 2 && !useWorkspace.getState().fatigueCardDismissed;
   const findingsPct = study ? getFindingsCompletionPct(findingsText, study.modality) : 0;

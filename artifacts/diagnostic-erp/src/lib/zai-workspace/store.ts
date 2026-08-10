@@ -1,4 +1,4 @@
-import { create } from "zustand";
+import { create, type StateCreator, type StoreApi, type UseBoundStore } from "zustand";
 import type { Study, MeasurementRow, PriorStudy, CopilotItem, CriticalFinding, QuickSelectTile, QuickSelectField, ReportFormat, SnippetMacro, SignOffProfile, MergeResult, Modality, LintIssue } from "./types";
 import { runLintRules, runCopilotAnalysis, computeQualityScore, mergeTwoFormats, expandMacro, detectMacroTrigger, shouldPreloadNext } from "./types";
 import { DEFAULT_QUICK_SELECT_TILES, lookupTiles, loadTiles, saveTiles, createTile, resetToDefaults } from "./quick-select-library";
@@ -31,7 +31,7 @@ interface S {
   preloadTriggered: boolean;
 }
 
-export const useWorkspace = create<S & {
+export type WorkspaceStore = S & {
   setStudies: (s: Study[]) => void; selectStudy: (id: string) => void; setNextStudy: (id: string | null) => void; markNextStudyPreloaded: () => void;
   setField: (f: EditorField, v: string) => void; setEditorContent: (c: { findings: string; impression: string; recommendation: string; technique: string; clinicalHistory: string }) => void;
   setMeasurements: (m: MeasurementRow[]) => void; setPriors: (p: PriorStudy[]) => void;
@@ -53,7 +53,9 @@ export const useWorkspace = create<S & {
   openMacroEditor: (m: SnippetMacro | null) => void; closeMacroEditor: () => void; saveMacro: (i: Omit<SnippetMacro, "id" | "createdAt" | "updatedAt"> & { id?: string }) => void;
   deleteMacro: (id: string) => void; setActiveMacroPrompt: (p: { macro: SnippetMacro; field: EditorField; startPos: number } | null) => void; applyMacroWithValues: (v: Record<string, string>) => void;
   updateSignOffProfile: (m: Modality, n: string, c: string) => void; triggerPreload: () => void; resetPreload: () => void;
-}>((set, get) => ({
+};
+
+const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   studies: [], activeStudyId: null, nextStudyId: null, nextStudyPreloaded: false,
   findingsText: "", impressionText: "", recommendationText: "", techniqueText: "", clinicalHistoryText: "",
   measurements: [], priors: [], criticalFindings: [],
@@ -105,22 +107,29 @@ export const useWorkspace = create<S & {
   setReportFormatPickerOpen: (o) => set({ reportFormatPickerOpen: o }),
   toggleFormatSelection: (id) => { const c = get().selectedFormatIds; if (c.includes(id)) set({ selectedFormatIds: c.filter(x => x !== id) }); else if (c.length < 2) set({ selectedFormatIds: [...c, id] }); },
   clearFormatSelection: () => set({ selectedFormatIds: [] }),
-  applySelectedFormats: () => { const ids = get().selectedFormatIds; if (!ids.length) return; const fs = get().reportFormats.filter(f => ids.includes(f.id)); if (!fs.length) return; const { findingsText, impressionText, recommendationText, techniqueText } = get(); if (findingsText.trim() || impressionText.trim() || recommendationText.trim() || techniqueText.trim()) { set({ confirmOverwriteOpen: true, pendingFormatIds: ids }); return; } get().confirmOverwriteAndApply(); },
-  confirmOverwriteAndApply: () => { const ids = get().pendingFormatIds.length ? get().pendingFormatIds : get().selectedFormatIds; const fs = get().reportFormats.filter(f => ids.includes(f.id)); if (!fs.length) { set({ confirmOverwriteOpen: false, pendingFormatIds: [] }); return; } if (fs.length === 1) { const f = fs[0]; get().setField("technique", f.technique); get().setField("findings", f.findings); get().setField("impression", f.impression); get().setField("recommendation", f.recommendation); const nf = get().reportFormats.map(x => x.id === f.id ? { ...x, usageCount: (x.usageCount ?? 0) + 1 } : x); saveFormats(nf); set({ reportFormats: nf, confirmOverwriteOpen: false, pendingFormatIds: [], reportFormatPickerOpen: false }); return; } const [a, b] = fs; const r = mergeTwoFormats(a, b); set({ lastMergeResult: r, lastMergeFormats: { a, b }, mergePreviewOpen: true, confirmOverwriteOpen: false, pendingFormatIds: [] }); },
+  applySelectedFormats: () => { const ids = get().selectedFormatIds; if (!ids.length) return; const fs = get().reportFormats.filter((f: ReportFormat) => ids.includes(f.id)); if (!fs.length) return; const { findingsText, impressionText, recommendationText, techniqueText } = get(); if (findingsText.trim() || impressionText.trim() || recommendationText.trim() || techniqueText.trim()) { set({ confirmOverwriteOpen: true, pendingFormatIds: ids }); return; } get().confirmOverwriteAndApply(); },
+  confirmOverwriteAndApply: () => { const ids = get().pendingFormatIds.length ? get().pendingFormatIds : get().selectedFormatIds; const fs = get().reportFormats.filter((f: ReportFormat) => ids.includes(f.id)); if (!fs.length) { set({ confirmOverwriteOpen: false, pendingFormatIds: [] }); return; } if (fs.length === 1) { const f = fs[0]; get().setField("technique", f.technique); get().setField("findings", f.findings); get().setField("impression", f.impression); get().setField("recommendation", f.recommendation); const nf = get().reportFormats.map((x: ReportFormat) => x.id === f.id ? { ...x, usageCount: (x.usageCount ?? 0) + 1 } : x); saveFormats(nf); set({ reportFormats: nf, confirmOverwriteOpen: false, pendingFormatIds: [], reportFormatPickerOpen: false }); return; } const [a, b] = fs; const r = mergeTwoFormats(a, b); set({ lastMergeResult: r, lastMergeFormats: { a, b }, mergePreviewOpen: true, confirmOverwriteOpen: false, pendingFormatIds: [] }); },
   cancelOverwrite: () => set({ confirmOverwriteOpen: false, pendingFormatIds: [] }),
-  applyMergedResult: () => { const r = get().lastMergeResult; if (!r) return; get().setField("technique", r.technique); get().setField("findings", r.findings); get().setField("impression", r.impression); get().setField("recommendation", r.recommendation); const ids = get().selectedFormatIds; const nf = get().reportFormats.map(x => ids.includes(x.id) ? { ...x, usageCount: (x.usageCount ?? 0) + 1 } : x); saveFormats(nf); set({ reportFormats: nf, mergePreviewOpen: false, lastMergeResult: null, lastMergeFormats: null, reportFormatPickerOpen: false }); },
+  applyMergedResult: () => { const r = get().lastMergeResult; if (!r) return; get().setField("technique", r.technique); get().setField("findings", r.findings); get().setField("impression", r.impression); get().setField("recommendation", r.recommendation); const ids = get().selectedFormatIds; const nf = get().reportFormats.map((x: ReportFormat) => ids.includes(x.id) ? { ...x, usageCount: (x.usageCount ?? 0) + 1 } : x); saveFormats(nf); set({ reportFormats: nf, mergePreviewOpen: false, lastMergeResult: null, lastMergeFormats: null, reportFormatPickerOpen: false }); },
   cancelMerge: () => set({ mergePreviewOpen: false, lastMergeResult: null, lastMergeFormats: null }),
   saveAsFormat: (i) => { const f = createFormat(i); const fs = [...get().reportFormats, f]; saveFormats(fs); set({ reportFormats: fs, saveAsFormatDialogOpen: false }); },
-  deleteReportFormat: (id) => { const fs = get().reportFormats.filter(f => f.id !== id); saveFormats(fs); set({ reportFormats: fs, selectedFormatIds: get().selectedFormatIds.filter(x => x !== id) }); },
+  deleteReportFormat: (id) => { const fs = get().reportFormats.filter((f: ReportFormat) => f.id !== id); saveFormats(fs); set({ reportFormats: fs, selectedFormatIds: get().selectedFormatIds.filter((x: string) => x !== id) }); },
   openSaveAsFormatDialog: () => set({ saveAsFormatDialogOpen: true }), closeSaveAsFormatDialog: () => set({ saveAsFormatDialogOpen: false }),
   resetReportFormatsToDefaults: () => set({ reportFormats: resetFormatsToDefaults(), selectedFormatIds: [] }),
   openMacroEditor: (m) => set({ macroEditorOpen: true, editingMacro: m }), closeMacroEditor: () => set({ macroEditorOpen: false, editingMacro: null }),
-  saveMacro: (input) => { const e = input.id ? get().snippetMacros.find(m => m.id === input.id) : null; let ms: SnippetMacro[]; if (e) ms = get().snippetMacros.map(m => m.id === e.id ? { ...m, ...input, updatedAt: new Date().toISOString() } : m); else ms = [...get().snippetMacros, createMacro(input)]; saveMacros(ms); set({ snippetMacros: ms }); get().closeMacroEditor(); },
-  deleteMacro: (id) => { const ms = get().snippetMacros.filter(m => m.id !== id); saveMacros(ms); set({ snippetMacros: ms }); get().closeMacroEditor(); },
+  saveMacro: (input) => { const e = input.id ? get().snippetMacros.find((m: SnippetMacro) => m.id === input.id) : null; let ms: SnippetMacro[]; if (e) ms = get().snippetMacros.map((m: SnippetMacro) => m.id === e.id ? { ...m, ...input, updatedAt: new Date().toISOString() } : m); else ms = [...get().snippetMacros, createMacro(input)]; saveMacros(ms); set({ snippetMacros: ms }); get().closeMacroEditor(); },
+  deleteMacro: (id) => { const ms = get().snippetMacros.filter((m: SnippetMacro) => m.id !== id); saveMacros(ms); set({ snippetMacros: ms }); get().closeMacroEditor(); },
   setActiveMacroPrompt: (p) => set({ activeMacroPrompt: p }),
-  applyMacroWithValues: (values) => { const p = get().activeMacroPrompt; if (!p) return; const exp = expandMacro(p.macro, values); const c = get()[`${p.field}Text` as "findingsText"]; const before = c.slice(0, p.startPos); const after = c.slice(p.startPos).replace(/^:[a-z][a-z0-9_]*/i, ""); get().setField(p.field, before + exp + " " + after); set({ activeMacroPrompt: null }); },
-  updateSignOffProfile: (m, n, c) => { const e = get().signOffProfiles.find(p => p.modality === m); let ps: SignOffProfile[]; if (e) ps = get().signOffProfiles.map(p => p.id === e.id ? { ...p, signerName: n, signerCredentials: c } : p); else ps = [...get().signOffProfiles, createProfile({ modality: m, signerName: n, signerCredentials: c, isDefault: true })]; saveProfiles(ps); set({ signOffProfiles: ps }); },
+  applyMacroWithValues: (values: Record<string, string>) => { const p = get().activeMacroPrompt; if (!p) return; const exp = expandMacro(p.macro, values); const c = get()[`${p.field}Text` as "findingsText"]; const before = c.slice(0, p.startPos); const after = c.slice(p.startPos).replace(/^:[a-z][a-z0-9_]*/i, ""); get().setField(p.field, before + exp + " " + after); set({ activeMacroPrompt: null }); },
+  updateSignOffProfile: (m: Modality, n: string, c: string) => { const e = get().signOffProfiles.find((p: SignOffProfile) => p.modality === m); let ps: SignOffProfile[]; if (e) ps = get().signOffProfiles.map((p: SignOffProfile) => p.id === e.id ? { ...p, signerName: n, signerCredentials: c } : p); else ps = [...get().signOffProfiles, createProfile({ modality: m, signerName: n, signerCredentials: c, isDefault: true })]; saveProfiles(ps); set({ signOffProfiles: ps }); },
   triggerPreload: () => set({ preloadTriggered: true }), resetPreload: () => set({ preloadTriggered: false, nextStudyPreloaded: false }),
-}));
+} as WorkspaceStore);
+
+export const useWorkspace: UseBoundStore<StoreApi<WorkspaceStore>> = create<WorkspaceStore>()(createWorkspaceStore);
+
+/** Typed selector — use in zai-workspace components so `s` is inferred as WorkspaceStore. */
+export function useWorkspaceSelector<T>(selector: (state: WorkspaceStore) => T): T {
+  return useWorkspace(selector);
+}
 
 export { DEFAULT_QUICK_SELECT_TILES, lookupTiles, DEFAULT_REPORT_FORMATS, lookupFormats, DEFAULT_SNIPPET_MACROS, lookupMacros, DEFAULT_SIGN_OFF_PROFILES, lookupProfile, formatSignOff };

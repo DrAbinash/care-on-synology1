@@ -1,4 +1,4 @@
-import { useWorkspace } from "@/lib/zai-workspace/store";
+import { useWorkspace, useWorkspaceSelector } from "@/lib/zai-workspace/store";
 import { patientAccent, modalityAccent } from "@/lib/zai-workspace/types";
 import { Clock, Lock, AlertTriangle, ChevronRight, Archive } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -6,8 +6,8 @@ import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 const PR: Record<string, { l: string; t: string }> = { stat: { l: "STAT", t: "bg-rose-100 text-rose-700 border-rose-200" }, urgent: { l: "URGENT", t: "bg-amber-100 text-amber-700 border-amber-200" }, routine: { l: "ROUTINE", t: "bg-slate-100 text-slate-600 border-slate-200" }, vip: { l: "VIP", t: "bg-violet-100 text-violet-700 border-violet-200" } };
 export function WorklistStrip() {
-  const studies = useWorkspace(s => s.studies); const activeId = useWorkspace(s => s.activeStudyId);
-  const completed = useWorkspace(s => s.completedStudyIds); const parked = useWorkspace(s => s.parkedStudyIds); const select = useWorkspace(s => s.selectStudy);
+  const studies = useWorkspaceSelector(s => s.studies); const activeId = useWorkspaceSelector(s => s.activeStudyId);
+  const completed = useWorkspaceSelector(s => s.completedStudyIds); const parked = useWorkspaceSelector(s => s.parkedStudyIds); const select = useWorkspaceSelector(s => s.selectStudy);
   return (
     <div className="flex h-full flex-col">
       <div className="flex items-center justify-between border-b border-border px-3 py-2"><div><div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Reading Queue</div><div className="text-[10px] text-muted-foreground/70">{studies.length - completed.size} pending · {completed.size} signed · {parked.size} parked</div></div><button onClick={() => useWorkspace.getState().advanceToNextStudy()} className="inline-flex items-center gap-1 rounded-md bg-emerald-600 px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-white hover:bg-emerald-700"><ChevronRight className="h-3 w-3" /> Next</button></div>

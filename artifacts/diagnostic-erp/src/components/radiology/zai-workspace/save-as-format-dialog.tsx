@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useWorkspace } from "@/lib/zai-workspace/store";
+import { useWorkspace, useWorkspaceSelector } from "@/lib/zai-workspace/store";
 import { MODALITIES } from "@/lib/zai-workspace/quick-select-library";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
@@ -8,9 +8,9 @@ import { Label } from "@/components/ui/label";
 import { Plus, Save } from "lucide-react";
 const MODS = ["MR","CT","XR","US","MG","DX","NM","PT","DOPPLER","ECHO","USG_OB"];
 export function SaveAsFormatDialog() {
-  const open = useWorkspace(s => s.saveAsFormatDialogOpen); const close = useWorkspace(s => s.closeSaveAsFormatDialog); const save = useWorkspace(s => s.saveAsFormat);
-  const study = useWorkspace(s => s.studies.find(x => x.id === s.activeStudyId));
-  const ft = useWorkspace(s => s.findingsText); const it = useWorkspace(s => s.impressionText); const rt = useWorkspace(s => s.recommendationText); const tt = useWorkspace(s => s.techniqueText);
+  const open = useWorkspaceSelector(s => s.saveAsFormatDialogOpen); const close = useWorkspaceSelector(s => s.closeSaveAsFormatDialog); const save = useWorkspaceSelector(s => s.saveAsFormat);
+  const study = useWorkspaceSelector(s => s.studies.find(x => x.id === s.activeStudyId));
+  const ft = useWorkspaceSelector(s => s.findingsText); const it = useWorkspaceSelector(s => s.impressionText); const rt = useWorkspaceSelector(s => s.recommendationText); const tt = useWorkspaceSelector(s => s.techniqueText);
   const [name, setName] = useState(""); const [mod, setMod] = useState(study?.modality ?? "MR"); const [bp, setBp] = useState(study?.bodyPart ?? "Brain"); const [tags, setTags] = useState("");
   if (!open) return null; const bps = MODALITIES[mod] ?? []; const has = ft.trim() || it.trim();
   const handleSave = () => { if (!name.trim() || !has) return; save({ name: name.trim(), modality: mod, bodyPart: bp, diagnosisTags: tags.split(",").map(t => t.trim()).filter(Boolean), technique: tt, findings: ft, impression: it, recommendation: rt, isCommon: false, custom: true }); setName(""); setTags(""); };
