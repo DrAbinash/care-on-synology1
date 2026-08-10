@@ -1,4 +1,4 @@
-import { useWorkspace } from "@/lib/zai-workspace/store";
+import { useWorkspace, useWorkspaceSelector } from "@/lib/zai-workspace/store";
 import { lookupFormats } from "@/lib/zai-workspace/report-formats-library";
 import type { ReportFormat } from "@/lib/zai-workspace/types";
 import { useMemo, useState } from "react";
@@ -7,9 +7,9 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 function cat(f: ReportFormat): string { const t = f.diagnosisTags.join(" ").toLowerCase(); return t.includes("critical") ? "bg-rose-500" : t.includes("normal") ? "bg-emerald-500" : t.includes("benign") ? "bg-sky-500" : "bg-amber-500"; }
 export function ReportFormatPicker() {
-  const formats = useWorkspace(s => s.reportFormats); const sel = useWorkspace(s => s.selectedFormatIds);
-  const toggle = useWorkspace(s => s.toggleFormatSelection); const apply = useWorkspace(s => s.applySelectedFormats); const clear = useWorkspace(s => s.clearFormatSelection);
-  const study = useWorkspace(s => s.studies.find(x => x.id === s.activeStudyId)); const openSaveAs = useWorkspace(s => s.openSaveAsFormatDialog); const del = useWorkspace(s => s.deleteReportFormat);
+  const formats = useWorkspaceSelector(s => s.reportFormats); const sel = useWorkspaceSelector(s => s.selectedFormatIds);
+  const toggle = useWorkspaceSelector(s => s.toggleFormatSelection); const apply = useWorkspaceSelector(s => s.applySelectedFormats); const clear = useWorkspaceSelector(s => s.clearFormatSelection);
+  const study = useWorkspaceSelector(s => s.studies.find(x => x.id === s.activeStudyId)); const openSaveAs = useWorkspaceSelector(s => s.openSaveAsFormatDialog); const del = useWorkspaceSelector(s => s.deleteReportFormat);
   const [search, setSearch] = useState("");
   const scoped = useMemo(() => lookupFormats(formats, study?.modality, study?.bodyPart), [formats, study?.modality, study?.bodyPart]);
   const filtered = useMemo(() => { if (!search.trim()) return scoped; const q = search.toLowerCase(); return scoped.filter(f => f.name.toLowerCase().includes(q) || f.diagnosisTags.some(t => t.toLowerCase().includes(q)) || f.findings.toLowerCase().includes(q)); }, [scoped, search]);

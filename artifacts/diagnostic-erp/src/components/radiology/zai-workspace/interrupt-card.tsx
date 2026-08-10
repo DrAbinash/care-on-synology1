@@ -1,12 +1,12 @@
-import { useWorkspace } from "@/lib/zai-workspace/store";
+import { useWorkspace, useWorkspaceSelector } from "@/lib/zai-workspace/store";
 import { AlertTriangle, Phone, MessageSquare, X, Clock, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useState } from "react";
 
 export function InterruptChannelCard() {
-  const n = useWorkspace(s => s.notification);
-  const clear = useWorkspace(s => s.clearNotification);
-  const study = useWorkspace(s => s.studies.find(x => x.id === s.activeStudyId));
+  const n = useWorkspaceSelector(s => s.notification);
+  const clear = useWorkspaceSelector(s => s.clearNotification);
+  const study = useWorkspaceSelector(s => s.studies.find(x => x.id === s.activeStudyId));
   const [open, setOpen] = useState(false);
   if (!n || n.kind !== "interrupt") return null;
   return (

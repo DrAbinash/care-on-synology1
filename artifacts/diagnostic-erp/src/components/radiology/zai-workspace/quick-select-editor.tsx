@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useWorkspace } from "@/lib/zai-workspace/store";
+import { useWorkspace, useWorkspaceSelector } from "@/lib/zai-workspace/store";
 import { MODALITIES } from "@/lib/zai-workspace/quick-select-library";
 import type { QuickSelectTile, QuickSelectField } from "@/lib/zai-workspace/types";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
@@ -13,9 +13,9 @@ const FL: Record<QuickSelectField, string> = { clinicalHistory: "History", techn
 const CT: Record<string, { l: string; b: string; t: string; bd: string }> = { normal: { l: "Normal", b: "bg-emerald-50", t: "text-emerald-700", bd: "border-emerald-300" }, abnormal: { l: "Abnormal", b: "bg-amber-50", t: "text-amber-700", bd: "border-amber-300" }, critical: { l: "Critical", b: "bg-rose-50", t: "text-rose-700", bd: "border-rose-300" }, variant: { l: "Variant", b: "bg-sky-50", t: "text-sky-700", bd: "border-sky-300" } };
 const MODS = ["MR","CT","XR","US","MG","DX","NM","PT","DOPPLER","ECHO","USG_OB"];
 export function QuickSelectEditor() {
-  const open = useWorkspace(s => s.quickSelectEditorOpen); const editing = useWorkspace(s => s.quickSelectEditingTile); const field = useWorkspace(s => s.quickSelectEditorField);
-  const close = useWorkspace(s => s.closeQuickSelectEditor); const save = useWorkspace(s => s.saveQuickSelectTile); const del = useWorkspace(s => s.deleteQuickSelectTile);
-  const study = useWorkspace(s => s.studies.find(x => x.id === s.activeStudyId));
+  const open = useWorkspaceSelector(s => s.quickSelectEditorOpen); const editing = useWorkspaceSelector(s => s.quickSelectEditingTile); const field = useWorkspaceSelector(s => s.quickSelectEditorField);
+  const close = useWorkspaceSelector(s => s.closeQuickSelectEditor); const save = useWorkspaceSelector(s => s.saveQuickSelectTile); const del = useWorkspaceSelector(s => s.deleteQuickSelectTile);
+  const study = useWorkspaceSelector(s => s.studies.find(x => x.id === s.activeStudyId));
   if (!open || !field) return null;
   return <Dialog open={open} onOpenChange={o => !o && close()}><DialogContent className="max-w-lg"><Form key={editing?.id ?? "new"} editing={editing} field={field} study={study} close={close} save={save} del={del} /></DialogContent></Dialog>;
 }

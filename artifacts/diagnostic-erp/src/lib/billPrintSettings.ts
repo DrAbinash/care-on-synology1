@@ -17,41 +17,29 @@
 // looked perfect. Always pass the server global here so the effective paper
 // size is the one the clinic actually configured.
 
-export type BillFormat = "classic" | "modern-landscape";
-/** Formats that may still appear in older clinic_settings JSON blobs. */
+export type BillFormat = "classic";
+/** Retired format ids that may still appear in older clinic_settings JSON blobs. */
 export type LegacyBillFormat =
   | BillFormat
+  | "modern-landscape"
   | "premium-a5"
   | "designer-a"
   | "designer-b"
   | "designer-c";
 
-// Only Modern + Classic are offered in Settings. Older Premium/Designer
-// values stored in clinic JSON are remapped via normalizeBillFormat().
-export const BILL_FORMATS: { id: BillFormat; label: string }[] = [
-  { id: "modern-landscape", label: "Modern — A5 Landscape (Recommended)" },
-  { id: "classic",          label: "Classic" },
-];
-
-/** Map any stored format (including retired Premium/Designer ids) to a supported one. */
-export function normalizeBillFormat(raw: unknown): BillFormat {
-  if (raw === "classic") return "classic";
-  return "modern-landscape";
+/** All bill printing uses the unified Classic template. */
+export function normalizeBillFormat(_raw: unknown): BillFormat {
+  return "classic";
 }
 
-/**
- * Modern — A5 Landscape bills must declare a 210 mm-wide page. When paper is
- * left on A5 Portrait the HTML is only 148 mm wide and the printer centres it
- * on a landscape tray — large blank bands on the left and right.
- */
-export function coercePaperSizeForFormat(
-  format: BillFormat | LegacyBillFormat | undefined,
-  paperSize: BillPaperSize,
-): BillPaperSize {
-  if (normalizeBillFormat(format) !== "modern-landscape") return paperSize;
-  if (paperSize === "A4") return "A4";
-  if (paperSize === "A5-landscape" || paperSize === "half-a4") return paperSize;
-  return "A5-landscape";
+function wasLandscapeBillFormat(raw: unknown): boolean {
+  return (
+    raw === "modern-landscape" ||
+    raw === "premium-a5" ||
+    raw === "designer-a" ||
+    raw === "designer-b" ||
+    raw === "designer-c"
+  );
 }
 
 export type BillPaperSize = "A5-landscape" | "A5-portrait" | "half-a4" | "A4";
@@ -109,7 +97,7 @@ export function resolveBillPrintDelivery(
 export type UserRole = "reception" | "accounts" | "admin" | "supervisor" | "billing" | "lab" | "manager";
 
 export type BillPrintSettings = {
-  // Format — Modern (recommended) or Classic only
+  /** @deprecated Always normalized to "classic"; kept for legacy JSON blobs only. */
   defaultFormat: BillFormat;
   // Auto paper size threshold: switch from A5 → A4 when tests >= this value
   autoA4Threshold: number;
@@ -151,6 +139,9 @@ export type BillPrintSettings = {
   printMarginMm: number | null;
   /** Clinic logo height on the printed bill (px). null = format built-in default. */
   printLogoHeightPx: number | null;
+  /** Header layout: "right" = address/phone/website under Bill No. (reference style);
+   * "left" = address block under the clinic name (classic style). */
+  headerLayout: "left" | "right" | null;
   printTitleFontPx: number | null;
   printPatientNameFontPx: number | null;
   printBodyFontPx: number | null;
@@ -176,9 +167,7 @@ export type BillPrintSettings = {
 };
 
 export const GLOBAL_BILL_PRINT_DEFAULTS: BillPrintSettings = {
-  // Dense A5-landscape receipt — fills the page professionally; avoids the
-  // half-blank A4 look of Classic on full A4 paper for typical short bills.
-  defaultFormat: "modern-landscape",
+  defaultFormat: "classic",
   autoA4Threshold: 8,
   defaultPaperSize: "A5-landscape",
   defaultCopyType: "patient",
@@ -197,6 +186,7 @@ export const GLOBAL_BILL_PRINT_DEFAULTS: BillPrintSettings = {
   showQueueTokenOnBill: false,
   printMarginMm: null,
   printLogoHeightPx: null,
+  headerLayout: "right",
   printTitleFontPx: null,
   printPatientNameFontPx: null,
   printBodyFontPx: null,
@@ -319,9 +309,17 @@ export function clearBillPrintSettingsOverride(userId = getUserId()): void {
 }
 
 function finalizeBillPrintSettings(settings: BillPrintSettings): BillPrintSettings {
+  const rawFormat = settings.defaultFormat;
+  let defaultPaperSize = settings.defaultPaperSize;
+  // Legacy modern/designer formats implied landscape half-A4 even when paper
+  // was left on A5-portrait — upgrade so @page width matches the printer tray.
+  if (wasLandscapeBillFormat(rawFormat) && defaultPaperSize === "A5-portrait") {
+    defaultPaperSize = "A5-landscape";
+  }
   return {
     ...settings,
-    defaultFormat: normalizeBillFormat(settings.defaultFormat),
+    defaultFormat: "classic",
+    defaultPaperSize,
   };
 }
 
@@ -386,6 +384,7 @@ export function printLayoutOpts(settings: BillPrintSettings) {
   return {
     printMarginMm: settings.printMarginMm,
     printLogoHeightPx: settings.printLogoHeightPx,
+    headerLayout: settings.headerLayout,
     printTitleFontPx: settings.printTitleFontPx,
     printPatientNameFontPx: settings.printPatientNameFontPx,
     printBodyFontPx: settings.printBodyFontPx,
@@ -404,13 +403,6 @@ export function resolveBillLogoHeightPx(
 ): number {
   const raw = overridePx != null && Number.isFinite(overridePx) ? Number(overridePx) : formatDefaultPx;
   return Math.max(24, Math.min(160, Math.round(raw)));
-}
-
-// ── Helper to get current effective format ──
-export function getEffectiveFormat(global: Partial<BillPrintSettings>, userOverride: Partial<BillPrintSettings> = {}): BillFormat {
-  const merged = loadBillPrintSettings(global);
-  const eff = { ...merged, ...userOverride };
-  return normalizeBillFormat(eff.defaultFormat);
 }
 
 // ── Paper size helpers ──
@@ -465,13 +457,12 @@ export type BillPrintPageOpts = {
  * made landscape trays print portrait jobs and the driver scaled/rotated them.
  */
 export function resolveBillPrintPageOpts(
-  settings: Pick<BillPrintSettings, "defaultPaperSize" | "autoA4Threshold" | "defaultFormat">,
+  settings: Pick<BillPrintSettings, "defaultPaperSize" | "autoA4Threshold">,
   testCount: number,
 ): BillPrintPageOpts {
-  const paperSize = coercePaperSizeForFormat(settings.defaultFormat, settings.defaultPaperSize);
   const effective = getAutoBillPaperSize(
     testCount,
-    paperSize,
+    settings.defaultPaperSize,
     settings.autoA4Threshold ?? 5,
   );
   if (effective === "A4") {

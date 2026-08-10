@@ -1,6 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { buildBillPrintHtml, type PrintBillData, type PrintClinic } from "./printBill";
-import { buildModernLandscapeBillPrintHtml } from "./modernLandscapeBillPrint";
+import { buildBillPrintHtml, buildBillAuditToken, buildBillAuditHash, buildBillVerifyUrl, type PrintBillData, type PrintClinic } from "./printBill";
 import {
   PAGE_SPECS,
   documentLayoutCssForPaper,
@@ -62,7 +61,6 @@ function baseOpts(overrides: Record<string, unknown> = {}) {
     pageCssSize: "A5 landscape",
     isBW: false,
     qrDataUrl: "data:image/png;base64,qr",
-    format: "modern-landscape" as const,
     showQr: true,
     showSignatureLine: true,
     ...overrides,
@@ -110,70 +108,137 @@ describe("document layout engine — page specifications", () => {
   });
 });
 
-describe("document layout engine — bill renderers", () => {
-  test("modern landscape uses shared @page dimensions", () => {
-    const html = buildModernLandscapeBillPrintHtml(baseOpts());
+describe("document layout engine — bill renderers (unified Classic)", () => {
+  test("uses shared @page dimensions for A5 landscape", () => {
+    const html = buildBillPrintHtml(baseOpts());
     expect(html).toContain("@page { size: 210mm 148mm; margin: 0; }");
     expect(html).toContain('class="care-doc-page receipt"');
-    expect(html).not.toMatch(/min-height:\s*\d+mm/);
-    expect(html).not.toContain("height: 100%");
-  });
-
-  test("modern landscape stays 210mm wide even when pageCssSize says portrait", () => {
-    const html = buildModernLandscapeBillPrintHtml(
-      baseOpts({ pageCssSize: "A5 portrait", orientation: "portrait" }),
-    );
-    expect(html).toContain("width: 210mm");
-    expect(html).toContain("height: 148mm");
-    expect(html).not.toContain("width: 148mm");
   });
 
   test("bill number renders on the same line as Bill No.", () => {
-    const html = buildModernLandscapeBillPrintHtml(baseOpts());
-    expect(html).toContain("Bill No. <span");
+    const html = buildBillPrintHtml(baseOpts());
+    // Reference layout: BILL NO: label + bold number inline
+    expect(html).toContain("BILL NO:");
     expect(html).toContain("2026001");
-    expect(html).not.toMatch(/Bill No\.<\/div>\s*<div[^>]*>2026001/);
   });
 
-  test.each([1, 5, 10])("%i-test bill renders without flex page spacer", (count) => {
-    const html = buildModernLandscapeBillPrintHtml(
-      baseOpts({ bill: sampleBill(count) }),
-    );
-    expect(html).not.toContain('style="flex:1"');
+  test("enterprise audit token is present on the bill", () => {
+    const html = buildBillPrintHtml(baseOpts());
+    expect(html).toContain("title=\"Audit token\"");
+    // Token format: BILLNO-TIMESTAMP-TOTAL-OP-HASH
+    expect(html).toMatch(/2026001-\d+-4900\.00-\d+-[0-9A-F]{8}/);
+  });
+
+  test("financial block and footer have page-break-inside:avoid", () => {
+    const html = buildBillPrintHtml(baseOpts());
+    expect(html).toContain("page-break-inside: avoid");
+    expect(html).toContain("financial-block");
+    expect(html).toContain("receipt-footer");
+  });
+
+  test("balance due uses alert styling when unpaid", () => {
+    const unpaid = buildBillPrintHtml(baseOpts({
+      bill: sampleBill(1, { balanceAmount: 500, paidAmount: 4400 }),
+    }));
+    expect(unpaid).toContain("#fef2f2"); // alert bg
+    expect(unpaid).toContain("#b91c1c"); // alert text
+    const paid = buildBillPrintHtml(baseOpts({
+      bill: sampleBill(1, { balanceAmount: 0, paidAmount: 4900 }),
+    }));
+    expect(paid).toContain("#f0fdf4"); // settled bg
+    expect(paid).toContain("#15803d"); // settled text
+  });
+
+  test("currency amounts always show two decimal places", () => {
+    const html = buildBillPrintHtml(baseOpts({
+      bill: sampleBill(1, { subtotal: 1500, totalAmount: 1500, paidAmount: 1500 }),
+    }));
+    expect(html).toContain("1,500.00");
+  });
+
+  test("muted metadata labels use uppercase PH / EMAIL / BILL NO", () => {
+    const html = buildBillPrintHtml(baseOpts({ headerLayout: "right" }));
+    expect(html).toContain("PH:");
+    expect(html).toContain("EMAIL:");
+    expect(html).toContain("BILL NO:");
+    expect(html).toContain("color:#64748b"); // muted label color
+  });
+
+  test("header layout 'right' puts address under Bill No.; 'left' keeps it under clinic name", () => {
+    const right = buildBillPrintHtml(baseOpts({ headerLayout: "right" }));
+    const left = buildBillPrintHtml(baseOpts({ headerLayout: "left" }));
+    expect(right).toContain("Main Road, Deoghar");
+    expect(left).toContain("Main Road, Deoghar");
+    const rightBillIdx = right.indexOf("BILL NO:");
+    const rightAddrIdx = right.indexOf("Main Road, Deoghar");
+    expect(rightAddrIdx).toBeGreaterThan(rightBillIdx);
+    const leftBillIdx = left.indexOf("BILL NO:");
+    const leftAddrIdx = left.indexOf("Main Road, Deoghar");
+    expect(leftAddrIdx).toBeLessThan(leftBillIdx);
+  });
+
+  test("date renders exactly once on the bill", () => {
+    const html = buildBillPrintHtml(baseOpts());
+    const matches = html.match(/01 AUG 2026/g) ?? [];
+    expect(matches.length).toBe(1);
+  });
+
+  test.each([1, 5, 10])("%i-test bill renders correctly", (count) => {
+    const html = buildBillPrintHtml(baseOpts({ bill: sampleBill(count) }));
     expect(html).toContain("Magnetic Resonance");
+    expect(html).toContain("care-doc-page");
   });
 
   test("QR enabled and disabled", () => {
-    const on = buildModernLandscapeBillPrintHtml(baseOpts({ showQr: true, qrDataUrl: "data:x" }));
-    const off = buildModernLandscapeBillPrintHtml(baseOpts({ showQr: false, qrDataUrl: "" }));
+    const on = buildBillPrintHtml(baseOpts({ showQr: true, qrDataUrl: "data:x" }));
+    const off = buildBillPrintHtml(baseOpts({ showQr: false, qrDataUrl: "" }));
     expect(on).toContain("Scan to verify");
     expect(off).not.toContain("Scan to verify");
   });
 
-  test("signature toggle", () => {
-    const on = buildModernLandscapeBillPrintHtml(baseOpts({ showSignatureLine: true }));
-    const off = buildModernLandscapeBillPrintHtml(baseOpts({ showSignatureLine: false }));
-    expect(on).toContain("Authorised Signature");
-    expect(off).not.toContain("border-bottom:1px solid #94a3b8");
+  test("signature line renders", () => {
+    const html = buildBillPrintHtml(baseOpts());
+    expect(html).toContain("Authorised Signature");
   });
 
   test("reprint marker", () => {
-    const html = buildModernLandscapeBillPrintHtml(
+    const html = buildBillPrintHtml(
       baseOpts({ reprintBy: "Admin", reprintReason: "Lost copy" }),
     );
     expect(html).toContain("REPRINT");
     expect(html).toContain("Lost copy");
   });
 
-  test("queue token on and off", () => {
-    const on = buildModernLandscapeBillPrintHtml(baseOpts({ showQueueToken: true }));
-    const off = buildModernLandscapeBillPrintHtml(baseOpts({ showQueueToken: false }));
+  test("queue token box toggles with showQueueToken", () => {
+    const on = buildBillPrintHtml(baseOpts({ showQueueToken: true }));
+    const off = buildBillPrintHtml(baseOpts({ showQueueToken: false }));
+    // Big QUEUE TOKEN box only shows when showQueueToken is true
     expect(on).toContain("QUEUE TOKEN");
     expect(off).not.toContain("QUEUE TOKEN");
+    // Per-test department tokens also hidden when showQueueToken is false
+    expect(off).not.toContain("Token #");
+  });
+
+  test("same room shows one token (deduped by department+room)", () => {
+    const html = buildBillPrintHtml(baseOpts({
+      showQueueToken: true,
+      bill: sampleBill(3, {
+        testTokens: [
+          { department: "Pathology", roomNumber: "7", tokenNo: 5 },
+          { department: "Pathology", roomNumber: "7", tokenNo: 5 }, // Same room, same token
+          { department: "Radiology", roomNumber: "2", tokenNo: 3 },
+        ],
+      }),
+    }));
+    // Count occurrences of each token line
+    const pathologyMatches = html.match(/<strong>Pathology<\/strong>/g) ?? [];
+    const radiologyMatches = html.match(/<strong>Radiology<\/strong>/g) ?? [];
+    expect(pathologyMatches.length).toBe(1); // One token for Pathology Room 7
+    expect(radiologyMatches.length).toBe(1); // One token for Radiology Room 2
   });
 
   test("large amounts and long names", () => {
-    const html = buildModernLandscapeBillPrintHtml(
+    const html = buildBillPrintHtml(
       baseOpts({
         bill: sampleBill(1, {
           totalAmount: 9999999.99,
@@ -187,46 +252,34 @@ describe("document layout engine — bill renderers", () => {
   });
 
   test("classic format uses engine and percentage columns", () => {
-    const html = buildBillPrintHtml({
-      ...baseOpts({ format: "classic", orientation: "landscape" }),
-    });
+    const html = buildBillPrintHtml(baseOpts());
     expect(html).toContain("@page { size: 210mm 148mm; margin: 0; }");
-    expect(html).toContain('width:18%');
-    expect(html).not.toContain("90px");
+    expect(html).toContain("care-doc-page");
+    expect(html).toContain("totals-grid");
   });
 
-  test("retired premium/designer format ids remap to modern landscape", () => {
-    for (const format of ["premium-a5", "designer-a", "designer-b", "designer-c"] as const) {
+  test("retired format ids all render with the unified template", () => {
+    for (const _legacy of ["classic", "modern-landscape", "premium-a5", "designer-a", "designer-b", "designer-c"] as const) {
       const html = buildBillPrintHtml({
-        ...baseOpts({ format: format as any }),
+        ...baseOpts(),
         paperSize: "A5",
         orientation: "landscape",
         pageCssSize: "A5 landscape",
       });
       expect(html).toMatch(/@page\s*\{[^}]*margin:\s*0/);
       expect(html).toContain("care-doc-page");
-      // Modern landscape marker (shared page shell + modern header structure)
       expect(html).toContain("210mm");
     }
   });
 
   test("A5 landscape page box does not exceed 210mm x 148mm", () => {
-    const html = buildModernLandscapeBillPrintHtml(baseOpts());
+    const html = buildBillPrintHtml(baseOpts());
     expect(html).toContain("width: 210mm");
     expect(html).toContain("height: 148mm");
   });
 
-  test("modern landscape does not stretch the middle row to full page height", () => {
-    // height:100% / calc(100%) on the table+totals flex row left a blank
-    // band on short bills; content must hug and leave the footer tight.
-    const html = buildModernLandscapeBillPrintHtml(baseOpts());
-    expect(html).not.toMatch(/padding-top:\d+px;height:\s*calc\(100%/);
-    expect(html).not.toMatch(/padding-top:\d+px;height:\s*100%/);
-    expect(html).toContain("padding-top:4px;align-items:flex-start");
-  });
-
   test("TAT column appears when showTat is on", () => {
-    const html = buildModernLandscapeBillPrintHtml(
+    const html = buildBillPrintHtml(
       baseOpts({
         showTat: true,
         bill: sampleBill(1, {
@@ -249,7 +302,7 @@ describe("document layout engine — bill renderers", () => {
 
   test("A5 portrait page box does not exceed 148mm x 210mm", () => {
     const html = buildBillPrintHtml({
-      ...baseOpts({ format: "classic" }),
+      ...baseOpts(),
       orientation: "portrait",
       pageCssSize: "A5 portrait",
     });
@@ -259,7 +312,7 @@ describe("document layout engine — bill renderers", () => {
 
   test("A4 page box does not exceed 210mm x 297mm", () => {
     const html = buildBillPrintHtml({
-      ...baseOpts({ format: "classic" }),
+      ...baseOpts(),
       paperSize: "A4",
       pageCssSize: "A4 portrait",
     });
@@ -290,5 +343,69 @@ describe("print delivery module", () => {
     expect(src).not.toContain("printToPDF");
     expect(src).not.toContain("__care_print_iframe__");
     expect(src).toContain("writeAndPrint(null, html)");
+  });
+});
+
+describe("buildBillAuditToken", () => {
+  test("is deterministic for the same inputs", () => {
+    const a = buildBillAuditToken({
+      billNumber: "BILL-2026-001",
+      createdAt: "2026-08-01T10:30:00.000Z",
+      totalAmount: 4900,
+      operatorId: 7,
+    });
+    const b = buildBillAuditToken({
+      billNumber: "BILL-2026-001",
+      createdAt: "2026-08-01T10:30:00.000Z",
+      totalAmount: 4900,
+      operatorId: 7,
+    });
+    expect(a).toBe(b);
+    expect(a).toMatch(/^2026001-\d+-4900\.00-7-[0-9A-F]{8}$/);
+  });
+
+  test("changes when amount or operator changes", () => {
+    const base = {
+      billNumber: "20260810042",
+      createdAt: "2026-08-01T10:30:00.000Z",
+      totalAmount: 1500,
+      operatorId: 1,
+    };
+    const a = buildBillAuditToken(base);
+    const b = buildBillAuditToken({ ...base, totalAmount: 1501 });
+    const c = buildBillAuditToken({ ...base, operatorId: 2 });
+    expect(a).not.toBe(b);
+    expect(a).not.toBe(c);
+  });
+
+  test("buildBillAuditHash is the trailing FNV-1a hex of the audit token", () => {
+    const opts = {
+      billNumber: "BILL-2026-001",
+      createdAt: "2026-08-01T10:30:00.000Z",
+      totalAmount: 4900,
+      operatorId: "Reception Desk",
+    };
+    const token = buildBillAuditToken(opts);
+    const hash = buildBillAuditHash(opts);
+    expect(hash).toMatch(/^[0-9A-F]{8}$/);
+    expect(token.endsWith(`-${hash}`)).toBe(true);
+  });
+
+  test("buildBillVerifyUrl appends ?hash= FNV-1a query param", () => {
+    const url = buildBillVerifyUrl({
+      billNumber: "BILL-2026-001",
+      createdAt: "2026-08-01T10:30:00.000Z",
+      totalAmount: 4900,
+      operatorId: "Abinash",
+      origin: "https://caredeoghar.com",
+    });
+    expect(url).toMatch(/^https:\/\/caredeoghar\.com\/api\/verify\/bill\/BILL-2026-001\?hash=[0-9A-F]{8}$/);
+    const hash = new URL(url).searchParams.get("hash");
+    expect(hash).toBe(buildBillAuditHash({
+      billNumber: "BILL-2026-001",
+      createdAt: "2026-08-01T10:30:00.000Z",
+      totalAmount: 4900,
+      operatorId: "Abinash",
+    }));
   });
 });

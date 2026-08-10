@@ -1,11 +1,11 @@
-import { useWorkspace } from "@/lib/zai-workspace/store";
+import { useWorkspace, useWorkspaceSelector } from "@/lib/zai-workspace/store";
 import { useState, useEffect, useRef } from "react";
 import { Zap, X, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 export function MacroPromptPopover() {
-  const prompt = useWorkspace(s => s.activeMacroPrompt); const apply = useWorkspace(s => s.applyMacroWithValues); const cancel = useWorkspace(s => s.setActiveMacroPrompt);
+  const prompt = useWorkspaceSelector(s => s.activeMacroPrompt); const apply = useWorkspaceSelector(s => s.applyMacroWithValues); const cancel = useWorkspaceSelector(s => s.setActiveMacroPrompt);
   const [values, setValues] = useState<Record<string, string>>({}); const ref = useRef<HTMLInputElement>(null);
   useEffect(() => { if (prompt) { const init: Record<string, string> = {}; for (const v of prompt.macro.variables) init[v.name] = v.default ?? ""; setValues(init); setTimeout(() => ref.current?.focus(), 50); } }, [prompt]);
   if (!prompt) return null;

@@ -31,7 +31,11 @@ export default function VerifyReceipt() {
 
   useEffect(() => {
     if (!billId) { setLoading(false); return; }
-    api.get(`/api/verify/bill/${encodeURIComponent(billId)}`)
+    const hash = typeof window !== "undefined"
+      ? new URLSearchParams(window.location.search).get("hash")
+      : null;
+    const qs = hash ? `?hash=${encodeURIComponent(hash)}` : "";
+    api.get(`/api/verify/bill/${encodeURIComponent(billId)}${qs}`)
       .then((d) => { setData(d); setLoading(false); })
       .catch((e) => { setError(e.message || "Failed to verify receipt"); setLoading(false); });
   }, [billId]);

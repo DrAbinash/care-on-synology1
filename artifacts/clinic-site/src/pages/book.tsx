@@ -1383,7 +1383,7 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
                     // (tidy and cuttable) rather than being stretched to fill
                     // A4. (The clinic's own counter copy stays A5 via the
                     // Billing Desk's own paper-size setting — a separate path.)
-                    const html = buildBillPrintHtml({ bill, clinic, paperSize: "A5", isBW: false, qrDataUrl, format: "classic", compactFooterGap: true, compactOnA4: true });
+                    const html = buildBillPrintHtml({ bill, clinic, paperSize: "A5", isBW: false, qrDataUrl, compactFooterGap: true, compactOnA4: true });
                     writeAndPrint(win, html);
                   }}
                 >

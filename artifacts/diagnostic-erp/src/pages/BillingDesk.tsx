@@ -15,6 +15,7 @@ import { genUUID } from "@/lib/utils";
 import { getBillPaperSize } from "@/lib/billPrintLayout";
 import {
   buildBillPrintHtml,
+  buildBillVerifyUrl as buildBillVerifyUrlFromAudit,
   openBlankPrintWindow,
   writeAndPrint,
   type PrintBillData,
@@ -130,6 +131,8 @@ type LastBill = {
   discount: number;
   total: number;
   payments: PaySplit[];
+  createdAt?: string | null;
+  createdByName?: string | null;
   tokenNo?: number | null;
   tokenDate?: string | null;
   // Per-department queue tokens issued by the bill creation flow. Populated
@@ -280,10 +283,36 @@ function deliverBillReceipt(
   }
 }
 
-function buildBillVerifyUrl(billNumber: string) {
-  // Points at the public api-server endpoint so the QR works in both dev
-  // (where /api is proxied) and production (single-process unified serve).
-  return `${window.location.origin}/api/verify/bill/${encodeURIComponent(billNumber)}`;
+function sessionOperatorName(): string {
+  try {
+    if (typeof window === "undefined") return "";
+    const raw = window.localStorage.getItem("erp_session");
+    if (!raw) return "";
+    const parsed = JSON.parse(raw);
+    return String(parsed.user?.name ?? "").trim();
+  } catch {
+    return "";
+  }
+}
+
+/** QR payload: /api/verify/bill/{billNo}?hash={fnv1a} — hash matches printed audit token. */
+function buildBillVerifyUrl(bill: {
+  billNumber: string;
+  createdAt?: string | null;
+  totalAmount?: number | string;
+  total?: number | string;
+  createdByName?: string | null;
+}) {
+  const operatorId =
+    (bill.createdByName && String(bill.createdByName).trim()) ||
+    sessionOperatorName() ||
+    "0";
+  return buildBillVerifyUrlFromAudit({
+    billNumber: bill.billNumber,
+    createdAt: bill.createdAt,
+    totalAmount: bill.totalAmount ?? bill.total ?? 0,
+    operatorId,
+  });
 }
 
 // Lightweight placeholder used as a fallback before the async QR has been
@@ -691,7 +720,7 @@ export default function BillingDesk() {
   useEffect(() => {
     if (!lastBill) { setBillQrDataUrl(""); return; }
     let cancelled = false;
-    QRCode.toDataURL(buildBillVerifyUrl(lastBill.billNumber), {
+    QRCode.toDataURL(buildBillVerifyUrl(lastBill), {
       errorCorrectionLevel: "M",
       margin: 1,
       width: 256,
@@ -948,6 +977,7 @@ export default function BillingDesk() {
                 paidAmount: paid,
                 balanceAmount: Math.max(0, Number(updatedBill.totalAmount) - paid),
                 createdAt: updatedBill.createdAt,
+                createdByName: updatedBill.createdByName ?? null,
                 patient: {
                   firstName: updatedBill.patient.firstName,
                   lastName: updatedBill.patient.lastName,
@@ -984,7 +1014,12 @@ export default function BillingDesk() {
               const cachedPrinter = printerCfgCached ?? queryClient.getQueryData<PrinterCfg>(["printer-settings"]);
               const isBW = (cachedPrinter as { billPrinterType?: string } | undefined)?.billPrinterType === "bw";
               
-              QRCode.toDataURL(buildBillVerifyUrl(updatedBill.billNumber), {
+              QRCode.toDataURL(buildBillVerifyUrl({
+                billNumber: updatedBill.billNumber,
+                createdAt: updatedBill.createdAt,
+                totalAmount: updatedBill.totalAmount,
+                createdByName: updatedBill.createdByName,
+              }), {
                 errorCorrectionLevel: "M",
                 margin: 1,
                 width: 256,
@@ -1007,7 +1042,6 @@ export default function BillingDesk() {
                     compactFooterGap: pageOpts.compactFooterGap,
                     isBW,
                     qrDataUrl: qrUrl as string,
-                    format: settings.defaultFormat,
                     showQr: settings.showQrCode,
                     showTat: settings.showTatOnBill,
                     showAmountInWords: settings.showAmountInWords,
@@ -1383,6 +1417,8 @@ export default function BillingDesk() {
       type BillResponse = {
         id: number;
         billNumber: string;
+        createdAt?: string;
+        createdByName?: string | null;
         token?: { tokenNo: number; tokenDate: string } | null;
         testTokens?: Array<{ orderTestId: number; testName: string; department: string; roomNumber: string; floorLabel: string; tokenNo: number }>;
         needsFormFData?: boolean;
@@ -1454,6 +1490,8 @@ export default function BillingDesk() {
         discount: discountAmt,
         total,
         payments: paymentSplits.filter((p) => Number(p.amount) > 0),
+        createdAt: bill.createdAt ?? new Date().toISOString(),
+        createdByName: bill.createdByName ?? (sessionOperatorName() || null),
         tokenNo: bill.token?.tokenNo ?? null,
         tokenDate: bill.token?.tokenDate ?? null,
         testTokens: bill.testTokens ?? [],
@@ -1512,7 +1550,7 @@ export default function BillingDesk() {
               return;
             }
           }
-          void QRCode.toDataURL(buildBillVerifyUrl(lastBillLocal.billNumber), {
+          void QRCode.toDataURL(buildBillVerifyUrl(lastBillLocal), {
             errorCorrectionLevel: "M",
             margin: 1,
             width: 256,
@@ -1531,7 +1569,8 @@ export default function BillingDesk() {
               totalAmount: lastBillLocal.total,
               paidAmount: paid,
               balanceAmount: Math.max(0, lastBillLocal.total - paid),
-              createdAt: new Date().toISOString(),
+              createdAt: lastBillLocal.createdAt ?? new Date().toISOString(),
+              createdByName: lastBillLocal.createdByName ?? null,
               patient: {
                 firstName: lastBillLocal.patient.firstName,
                 lastName: lastBillLocal.patient.lastName,
@@ -1567,7 +1606,6 @@ export default function BillingDesk() {
               compactFooterGap: pageOpts.compactFooterGap,
               isBW,
               qrDataUrl: qrUrl as string,
-              format: settings.defaultFormat,
               showQr: settings.showQrCode,
               showTat: settings.showTatOnBill,
               showAmountInWords: settings.showAmountInWords,
@@ -1920,8 +1958,11 @@ export default function BillingDesk() {
         if (m) {
           e.preventDefault();
           e.stopPropagation();
+          // Prefer the scanned URL as-is so the anti-tamper ?hash= survives.
+          const verifyUrl = /^https?:\/\//i.test(val.trim())
+            ? val.trim()
+            : `${window.location.origin}/api/verify/bill/${encodeURIComponent(m[1])}${val.includes("hash=") ? val.slice(val.indexOf("?")) : ""}`;
           el.value = "";
-          const verifyUrl = `${window.location.origin}/api/verify/bill/${encodeURIComponent(m[1])}`;
           window.open(verifyUrl, "_blank", "noopener,noreferrer");
           return;
         }

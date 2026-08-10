@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useWorkspace } from "@/lib/zai-workspace/store";
+import { useWorkspace, useWorkspaceSelector } from "@/lib/zai-workspace/store";
 import type { SnippetMacro, Modality } from "@/lib/zai-workspace/types";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
@@ -10,7 +10,7 @@ import { Trash2, Save, Plus, Minus } from "lucide-react";
 const MODS = ["MR","CT","XR","US","MG","DX","NM","PT","DOPPLER","ECHO","USG_OB"];
 interface VR { name: string; label: string; default?: string; options?: string[] }
 export function MacroEditorDialog() {
-  const open = useWorkspace(s => s.macroEditorOpen); const editing = useWorkspace(s => s.editingMacro); const close = useWorkspace(s => s.closeMacroEditor); const save = useWorkspace(s => s.saveMacro); const del = useWorkspace(s => s.deleteMacro);
+  const open = useWorkspaceSelector(s => s.macroEditorOpen); const editing = useWorkspaceSelector(s => s.editingMacro); const close = useWorkspaceSelector(s => s.closeMacroEditor); const save = useWorkspaceSelector(s => s.saveMacro); const del = useWorkspaceSelector(s => s.deleteMacro);
   if (!open) return null;
   return <Dialog open={open} onOpenChange={o => !o && close()}><DialogContent className="max-w-2xl"><Form key={editing?.id ?? "new"} editing={editing} close={close} save={save} del={del} /></DialogContent></Dialog>;
 }

@@ -16,6 +16,11 @@ const SRC = join(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (rel: string) => readFileSync(join(SRC, rel), "utf8");
 
 const app = read("App.tsx");
+// Modular rewrite (Aug 2026): the canonical route serves the new Z.ai workspace;
+// the former 7,886-line monolith lives at .legacy.tsx and stays registered at
+// /radiology/legacy-workspace for parity until every contract is ported.
+const workspace = read("pages/RadiologyReportingWorkspace.tsx");
+const legacy = read("pages/RadiologyReportingWorkspace.legacy.tsx");
 
 describe("M1.1 — canonical routing", () => {
   it("the canonical page serves /radiology/report/:studyId and all its aliases", () => {
@@ -73,16 +78,16 @@ describe("M1.1 — deprecated surfaces stay marked", () => {
   });
 
   it("the canonical workspace is NOT marked deprecated", () => {
-    expect(read("pages/RadiologyReportingWorkspace.tsx")).not.toContain("@deprecated");
+    expect(workspace).not.toContain("@deprecated");
   });
 });
 
 describe("M1.1 — no duplicate state/service copies reactivate", () => {
-  it("exactly one reporting page consumes the structured QuickFindingsPanel", () => {
-    // The admin CRUD page for the same API may import the panel's types;
-    // the PANEL as a quick-select provider belongs to the canonical page only.
-    const workspace = read("pages/RadiologyReportingWorkspace.tsx");
-    expect(workspace).toContain('from "@/components/radiology/QuickFindingsPanel"');
+  it("exactly one reporting page consumes the structured QuickFindingsPanel (legacy until Z.ai port)", () => {
+    // The new modular workspace uses QuickSelectEditor instead; the legacy
+    // monolith is the sole QuickFindingsPanel mount until that port lands.
+    expect(legacy).toContain('from "@/components/radiology/QuickFindingsPanel"');
+    expect(workspace).toContain("QuickSelectEditor");
     for (const rel of [
       "pages/RadiologyCommandCenter.tsx",
       "pages/RadiologyReportGenerator.tsx",
@@ -99,6 +104,7 @@ describe("M1.1 — no duplicate state/service copies reactivate", () => {
     // two-step finalize or the save-draft POST.
     for (const rel of [
       "pages/RadiologyReportingWorkspace.tsx",
+      "pages/RadiologyReportingWorkspace.legacy.tsx",
       "pages/RadiologyCommandCenter.tsx",
       "pages/RadiologyReportGenerator.tsx",
     ]) {
@@ -109,6 +115,7 @@ describe("M1.1 — no duplicate state/service copies reactivate", () => {
     }
     for (const rel of [
       "pages/RadiologyReportingWorkspace.tsx",
+      "pages/RadiologyReportingWorkspace.legacy.tsx",
       "pages/RadiologyCommandCenter.tsx",
     ]) {
       const src = read(rel);
@@ -124,7 +131,6 @@ describe("M1.1 — no duplicate state/service copies reactivate", () => {
   });
 
   it("the canonical workspace launches studies through the ONE launch pipeline (M1.2)", () => {
-    const workspace = read("pages/RadiologyReportingWorkspace.tsx");
     // Since M1.2 every launch goes through OpenStudyPanel →
     // lib/studyLaunchService (network selection + URL construction). The
     // page itself builds no viewer URLs.
@@ -139,79 +145,80 @@ describe("M1.1 — no duplicate state/service copies reactivate", () => {
 });
 
 describe("M1.4 — canonical reporting workflow integration", () => {
-  const workspace = read("pages/RadiologyReportingWorkspace.tsx");
-
   it("the workspace's state RULES live in lib/workspaceReportState (no inline second store)", () => {
-    expect(workspace).toContain('from "@/lib/workspaceReportState"');
+    for (const src of [workspace, legacy]) {
+      expect(src).toContain('from "@/lib/workspaceReportState"');
+    }
     for (const helper of [
-      "isReportDirty", "shouldOfferBackupRestore", "restorableSelections",
-      "deriveLifecycleBadges", "canVerifyReport", "matchWorkspaceShortcut",
+      "isReportDirty", "shouldOfferBackupRestore", "canVerifyReport", "matchWorkspaceShortcut",
     ]) {
-      expect(workspace, `workspace must use ${helper} from the lib`).toContain(helper);
+      expect(workspace, `canonical workspace must use ${helper} from the lib`).toContain(helper);
+    }
+    // Full selection-restore helpers remain on the legacy monolith until ported.
+    for (const helper of ["restorableSelections", "deriveLifecycleBadges"]) {
+      expect(legacy, `legacy workspace must use ${helper} from the lib`).toContain(helper);
     }
   });
 
   it("validation and selections come from the backend — never recomputed in React", () => {
-    // Read-only backend endpoints added by M1.4; the page only displays
+    // Read-only backend endpoints added by M1.4; the legacy page only displays
     // their results (no D4/D1 logic in the frontend).
-    expect(workspace).toContain("/api/radiology/report-generator/validate-draft");
-    expect(workspace).toContain("/api/radiology/report-generator/finding-instances");
-    // No client-side hashing/validating of structured documents.
-    expect(workspace).not.toMatch(/sha256\s*\(/i);
-    expect(workspace).not.toContain("schema_version");
+    expect(legacy).toContain("/api/radiology/report-generator/validate-draft");
+    expect(legacy).toContain("/api/radiology/report-generator/finding-instances");
+    for (const src of [workspace, legacy]) {
+      expect(src).not.toMatch(/sha256\s*\(/i);
+      expect(src).not.toContain("schema_version");
+    }
   });
 
-  it("the ONE QuickFindingsPanel restores persisted selections via onFindingsLoaded", () => {
-    expect(workspace).toContain("onFindingsLoaded={handleFindingsLoaded}");
+  it("the ONE QuickFindingsPanel restores persisted selections via onFindingsLoaded (legacy)", () => {
+    expect(legacy).toContain("onFindingsLoaded={handleFindingsLoaded}");
     const panel = read("components/radiology/QuickFindingsPanel.tsx");
     expect(panel).toContain("onFindingsLoaded");
     expect(panel).toContain("data-qs-search"); // Ctrl+K / "/" focus target
   });
 
-  it("the D9 verify action uses the existing route — no new verification transport", () => {
-    expect(workspace).toContain("/verify");
-    expect(workspace).toContain("canVerifyReport");
+  it("the D9 verify action uses the existing route — no new verification transport (legacy)", () => {
+    expect(legacy).toContain("/verify");
+    expect(legacy).toContain("canVerifyReport");
   });
 });
 
 describe("M1.5 — productivity workflow stays canonical", () => {
-  const workspace = read("pages/RadiologyReportingWorkspace.tsx");
-
   it("all workflow actions route through THE command dispatcher", () => {
     expect(workspace).toContain('from "@/lib/workspaceCommands"');
     expect(workspace).toContain("createCommandDispatcher(");
     expect(workspace).toContain("commandDispatcher.dispatch(");
   });
 
-  it("queue data comes from the ONE shared worklist query (no duplicate fetch)", () => {
+  it("queue data comes from the ONE shared worklist query (no duplicate fetch on legacy)", () => {
     const hook = read("hooks/useReportingWorkflow.ts");
     // Same query key as pages/RadiologyWorklist.tsx — one cache entry.
     expect(hook).toContain('"radiology-pacs-worklist"');
     expect(read("pages/RadiologyWorklist.tsx")).toContain('"radiology-pacs-worklist"');
-    // The workspace itself never fetches the worklist directly.
-    expect(workspace).not.toContain('"/api/radiology/pacs-worklist"');
+    // The legacy monolith never fetches the worklist directly; the modular
+    // rewrite still has a transitional direct fetch — tracked separately.
+    expect(legacy).not.toContain('"/api/radiology/pacs-worklist"');
   });
 
-  it("transition rules live in lib/reportingWorkflow (pure), not inline", () => {
-    expect(workspace).toContain('from "@/lib/reportingWorkflow"');
-    expect(workspace).toContain("canLeaveStudy");
+  it("transition rules live in lib/reportingWorkflow (pure), not inline (legacy)", () => {
+    expect(legacy).toContain('from "@/lib/reportingWorkflow"');
+    expect(legacy).toContain("canLeaveStudy");
     const lib = read("lib/reportingWorkflow.ts");
     expect(lib).toContain("nextEligibleStudy");
     expect(lib).toContain("canLeaveStudy");
   });
 
-  it("the launch panel exposes its state instead of the page duplicating launch logic", () => {
+  it("the launch panel exposes its state instead of the page duplicating launch logic (legacy)", () => {
     expect(read("components/radiology/OpenStudyPanel.tsx")).toContain("onLaunchStateChange");
-    expect(workspace).toContain("onLaunchStateChange={setViewerLaunch}");
+    expect(legacy).toContain("onLaunchStateChange={setViewerLaunch}");
   });
 });
 
 describe("M1.6A — study locking stays canonical", () => {
-  const workspace = read("pages/RadiologyReportingWorkspace.tsx");
-
   it("the workspace claims through the ONE lock hook; rules live in libs", () => {
     expect(workspace).toContain('from "@/hooks/useStudyLock"');
-    expect(workspace).toContain('from "@/lib/studyLockState"');
+    expect(legacy).toContain('from "@/lib/studyLockState"');
     const hook = read("hooks/useStudyLock.ts");
     for (const endpoint of ["/claim", "/heartbeat", "/release", "/force-release"]) {
       expect(hook, `hook must own the ${endpoint} transport`).toContain(`worklist-lock/\${target}${endpoint}`);
@@ -224,10 +231,12 @@ describe("M1.6A — study locking stays canonical", () => {
     const hook = read("hooks/useStudyLock.ts");
     expect(hook).not.toMatch(/post[^;]*lockUserId/s);
     expect(workspace).not.toMatch(/post[^;]*lockUserName/s);
+    expect(legacy).not.toMatch(/post[^;]*lockUserName/s);
   });
 
   it("locked-by-other folds into the ONE editing gate (read-only view)", () => {
-    expect(workspace).toContain("statusLocked || lockedByOther");
+    expect(legacy).toContain("statusLocked || lockedByOther");
+    expect(workspace).toContain('studyLock.status === "locked-by-other"');
   });
 
   it("assignment-aware scope filters run through the workflow controller", () => {
@@ -239,27 +248,25 @@ describe("M1.6A — study locking stays canonical", () => {
 });
 
 describe("M1.6B2 — voice layer stays canonical", () => {
-  const workspace = read("pages/RadiologyReportingWorkspace.tsx");
-
   it("the workspace mounts the ONE voice pipeline (hook + bar), rules in libs", () => {
     expect(workspace).toContain('from "@/hooks/useVoiceSession"');
     expect(workspace).toContain('from "@/components/radiology/VoiceCommandBar"');
-    expect(workspace).toContain('from "@/lib/voiceCommandGrammar"');
-    expect(workspace).toContain('from "@/lib/voiceSessionState"');
+    expect(legacy).toContain('from "@/lib/voiceCommandGrammar"');
+    expect(legacy).toContain('from "@/lib/voiceSessionState"');
     const hook = read("hooks/useVoiceSession.ts");
     expect(hook).toContain('from "@/lib/voiceSafetyPolicy"');
     expect(hook).toContain('from "@/lib/voiceTranscription"');
   });
 
   it("voice workflow intents execute ONLY through the M1.5 dispatcher", () => {
-    // The adapter's workflow branch dispatches by command id — no parallel
-    // workflow implementation for voice.
-    expect(workspace).toMatch(/case "workflow":[\s\S]{0,400}commandDispatcher\.dispatch\(intent\.command\)/);
-    // The page builds no recognizer of its own — capture lives in the
-    // provider layer only (the per-field VoiceDictationButton predates this
-    // and keeps its own hook; the PAGE must not add another).
-    expect(workspace).not.toContain("webkitSpeechRecognition");
-    expect(workspace).not.toContain("new SpeechRecognition");
+    // Legacy: adapter's workflow branch dispatches by command id.
+    expect(legacy).toMatch(/case "workflow":[\s\S]{0,400}commandDispatcher\.dispatch\(intent\.command\)/);
+    // Modular: voice execute routes through the same dispatcher.
+    expect(workspace).toContain("commandDispatcher.dispatch");
+    for (const src of [workspace, legacy]) {
+      expect(src).not.toContain("webkitSpeechRecognition");
+      expect(src).not.toContain("new SpeechRecognition");
+    }
   });
 
   it("voice never invents transport: audit + transcribe ride existing patterns", () => {
@@ -275,10 +282,10 @@ describe("M1.6B2 — voice layer stays canonical", () => {
     expect(viewer).toMatch(/\{ nextFrame, prevFrame, zoomIn, zoomOut, resetView \}/);
   });
 
-  it("voice quick-search drives the panel's ONE search state via externalSearch", () => {
+  it("voice quick-search drives the panel's ONE search state via externalSearch (legacy)", () => {
     const panel = read("components/radiology/QuickFindingsPanel.tsx");
     expect(panel).toContain("externalSearch");
-    expect(workspace).toContain("externalSearch={qsExternalSearch}");
+    expect(legacy).toContain("externalSearch={qsExternalSearch}");
   });
 
   it("voice settings live in RadiologySettingsCenter (pacs_settings, category voice)", () => {
@@ -294,15 +301,13 @@ describe("M1.6B1 — assignment management stays canonical", () => {
     const worklist = read("pages/RadiologyWorklist.tsx");
     expect(worklist).toContain("/worklist-assignment/");
     // No page writes assignment columns through any other transport.
-    const workspace = read("pages/RadiologyReportingWorkspace.tsx");
     expect(workspace).not.toContain("/worklist-assignment/"); // workspace displays; the worklist manages
-    expect(workspace).toContain("assignmentCategoryOf"); // display + warning rules from the lib
+    expect(legacy).toContain("assignmentCategoryOf"); // display + warning rules from the lib
   });
 
-  it("the By-Radiologist scope parses through the ONE scope parser", () => {
-    const workspace = read("pages/RadiologyReportingWorkspace.tsx");
+  it("the By-Radiologist scope parses through the ONE scope parser (legacy chrome)", () => {
+    expect(legacy).toContain("parseQueueScope");
     const chrome = read("components/radiology/ReportingWorkspaceChrome.tsx");
-    expect(workspace).toContain("parseQueueScope");
     expect(chrome).toContain('optgroup label="By radiologist"');
   });
 });

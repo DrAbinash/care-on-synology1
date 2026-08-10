@@ -272,8 +272,32 @@ export async function generateTestTokensForOrder(opts: {
     .innerJoin(testsTable, eq(testsTable.id, orderTestsTable.testId))
     .where(eq(orderTestsTable.orderId, opts.orderId));
 
+  // One queue token per (department, room) — a patient with three pathology
+  // tests going to Room 7 gets ONE token for Room 7, not three. We track which
+  // orderTests map to each issued token so the first test's row carries it;
+  // subsequent tests to the same room reuse the same token number.
+  const roomTokenMap = new Map<string, { tokenNo: number; department: string; roomNumber: string }>();
+
   const out: Array<{ orderTestId: number; testName: string; department: string; roomNumber: string; floorLabel: string; tokenNo: number }> = [];
   for (const ot of orderTests) {
+    const dept = ot.department || "Pathology";
+    const room = ot.roomNumber || "";
+    const key = `${dept}::${room}`;
+
+    const existing = roomTokenMap.get(key);
+    if (existing) {
+      // Reuse the same token — same room, same visit
+      out.push({
+        orderTestId: ot.orderTestId,
+        testName: ot.testName,
+        department: existing.department,
+        roomNumber: existing.roomNumber,
+        floorLabel: ot.floorLabel || "",
+        tokenNo: existing.tokenNo,
+      });
+      continue;
+    }
+
     try {
       const t = await generateTestToken({
         ledgerId: opts.ledgerId,
@@ -282,11 +306,12 @@ export async function generateTestTokensForOrder(opts: {
         orderTestId: ot.orderTestId,
         testId: ot.testId,
         patientId: opts.patientId,
-        department: ot.department || "Pathology",
-        roomNumber: ot.roomNumber || "",
+        department: dept,
+        roomNumber: room,
         priority: opts.priority,
         source: opts.source,
       });
+      roomTokenMap.set(key, { tokenNo: t.tokenNo, department: t.department, roomNumber: t.roomNumber });
       out.push({
         orderTestId: ot.orderTestId,
         testName: ot.testName,

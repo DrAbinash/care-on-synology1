@@ -1,11 +1,11 @@
 import { useState, useEffect, useRef } from "react";
-import { useWorkspace } from "@/lib/zai-workspace/store";
+import { useWorkspace, useWorkspaceSelector } from "@/lib/zai-workspace/store";
 import { Command as Cmdk } from "cmdk";
 import { Search, ChevronRight, Sparkles, AlertTriangle, Brain, Mic, Save, Printer, Plus } from "lucide-react";
 import { lookupMacros } from "@/lib/zai-workspace/snippet-macros-library";
 interface I { id: string; label: string; detail?: string; icon: typeof Search; group: string; action: () => void; shortcut?: string; }
 export function CommandPalette() {
-  const open = useWorkspace(s => s.showCommandPalette); const setOpen = useWorkspace(s => s.setCommandPalette);
+  const open = useWorkspaceSelector(s => s.showCommandPalette); const setOpen = useWorkspaceSelector(s => s.setCommandPalette);
   const [query, setQuery] = useState(""); const [recents, setRecents] = useState<string[]>([]); const ref = useRef<HTMLInputElement>(null);
   useEffect(() => { if (open) { setQuery(""); setTimeout(() => ref.current?.focus(), 0); } }, [open]);
   if (!open) return null;

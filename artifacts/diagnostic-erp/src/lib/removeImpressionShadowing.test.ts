@@ -44,9 +44,11 @@ import { mergeImpression, removeImpression } from "./quickFindingsMerge";
  *      round-trips once wired to the real quickFindingsMerge functions.
  */
 
-const WORKSPACE_PATH = resolve(__dirname, "../pages/RadiologyReportingWorkspace.tsx");
+// The modular rewrite moved the monolith to .legacy.tsx; Bug-001 guards live there
+// until the Quick Select / renderEngine wiring is ported to the new workspace.
+const WORKSPACE_PATH = resolve(__dirname, "../pages/RadiologyReportingWorkspace.legacy.tsx");
 
-describe("RadiologyReportingWorkspace.tsx — removeImpression shadowing regression guard (Bug-001)", () => {
+describe("RadiologyReportingWorkspace.legacy.tsx — removeImpression shadowing regression guard (Bug-001)", () => {
   const source = readFileSync(WORKSPACE_PATH, "utf-8");
 
   test("no local function named removeImpression is declared (would re-shadow the import)", () => {

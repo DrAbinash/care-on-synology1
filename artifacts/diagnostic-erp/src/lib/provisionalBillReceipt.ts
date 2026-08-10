@@ -93,7 +93,6 @@ export function buildProvisionalBillPrintHtml(
     compactFooterGap: pageOpts.compactFooterGap,
     isBW,
     qrDataUrl: "",
-    format: settings.defaultFormat,
     showQr: false,
     provisionalReceipt: true,
     showAmountInWords: settings.showAmountInWords,

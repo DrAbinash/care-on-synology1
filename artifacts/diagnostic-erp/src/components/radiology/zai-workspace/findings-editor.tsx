@@ -1,5 +1,5 @@
 import { useEffect, useRef, useMemo } from "react";
-import { useWorkspace } from "@/lib/zai-workspace/store";
+import { useWorkspace, useWorkspaceSelector } from "@/lib/zai-workspace/store";
 import { runLintRules, type LintIssue } from "@/lib/zai-workspace/types";
 import { QuickSelectStrip } from "./quick-select-strip";
 interface Props { field: "findings" | "impression" | "recommendation" | "technique" | "clinicalHistory"; label: string; placeholder?: string; minHeight?: string; showGhost?: boolean; }
@@ -7,14 +7,14 @@ const G: Record<string, string> = { error: "✕", warning: "△", info: "◌" };
 const C: Record<string, string> = { error: "text-rose-500", warning: "text-amber-500", info: "text-sky-500" };
 export function FindingsEditor({ field, label, placeholder, minHeight = "200px", showGhost = false }: Props) {
   const ref = useRef<HTMLTextAreaElement>(null);
-  const value = useWorkspace(s => s[`${field}Text` as "findingsText"] as string);
-  const setField = useWorkspace(s => s.setField);
-  const gt = useWorkspace(s => showGhost ? s.ghostText : null);
-  const gTarget = useWorkspace(s => showGhost ? s.ghostTextTarget : null);
-  const accept = useWorkspace(s => s.acceptGhostText);
-  const setGhost = useWorkspace(s => s.setGhostText);
-  const sid = useWorkspace(s => s.activeStudyId);
-  const studies = useWorkspace(s => s.studies);
+  const value = useWorkspaceSelector(s => s[`${field}Text` as "findingsText"] as string);
+  const setField = useWorkspaceSelector(s => s.setField);
+  const gt = useWorkspaceSelector(s => showGhost ? s.ghostText : null);
+  const gTarget = useWorkspaceSelector(s => showGhost ? s.ghostTextTarget : null);
+  const accept = useWorkspaceSelector(s => s.acceptGhostText);
+  const setGhost = useWorkspaceSelector(s => s.setGhostText);
+  const sid = useWorkspaceSelector(s => s.activeStudyId);
+  const studies = useWorkspaceSelector(s => s.studies);
   const issues: LintIssue[] = useMemo(() => { if (!value) return []; const st = studies.find(s => s.id === sid); return runLintRules(value, { modality: st?.modality ?? "XR", sex: st?.patient.sex }); }, [value, sid, studies]);
   useEffect(() => { if (ref.current) { ref.current.style.height = "auto"; ref.current.style.height = Math.max(parseInt(minHeight), ref.current.scrollHeight) + "px"; } }, [value, minHeight]);
   useEffect(() => { if (gTarget === field && gt && ref.current) { ref.current.focus(); const e = ref.current.value.length; ref.current.setSelectionRange(e, e); } }, [gTarget, gt, field]);

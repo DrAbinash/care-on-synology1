@@ -1,4 +1,4 @@
-import { useWorkspace } from "@/lib/zai-workspace/store";
+import { useWorkspace, useWorkspaceSelector } from "@/lib/zai-workspace/store";
 import { lookupTiles } from "@/lib/zai-workspace/quick-select-library";
 import type { QuickSelectField, QuickSelectTile } from "@/lib/zai-workspace/types";
 import { useMemo, useState, useRef, useEffect } from "react";
@@ -8,11 +8,11 @@ import { Button } from "@/components/ui/button";
 const CAT: Record<string, string> = { normal: "bg-emerald-500", abnormal: "bg-amber-500", critical: "bg-rose-500", variant: "bg-sky-500" };
 const LABELS: Record<QuickSelectField, string> = { clinicalHistory: "History", technique: "Technique", findings: "Findings", impression: "Impression", recommendation: "Recommendation" };
 export function QuickSelectStrip({ field }: { field: QuickSelectField }) {
-  const tiles = useWorkspace(s => s.quickSelectTiles);
-  const study = useWorkspace(s => s.studies.find(x => x.id === s.activeStudyId));
-  const openEditor = useWorkspace(s => s.openQuickSelectEditor);
-  const toggleFav = useWorkspace(s => s.toggleTileFavorite);
-  const incUsage = useWorkspace(s => s.incrementTileUsage);
+  const tiles = useWorkspaceSelector(s => s.quickSelectTiles);
+  const study = useWorkspaceSelector(s => s.studies.find(x => x.id === s.activeStudyId));
+  const openEditor = useWorkspaceSelector(s => s.openQuickSelectEditor);
+  const toggleFav = useWorkspaceSelector(s => s.toggleTileFavorite);
+  const incUsage = useWorkspaceSelector(s => s.incrementTileUsage);
   const [search, setSearch] = useState(""); const [showSearch, setShowSearch] = useState(false); const ref = useRef<HTMLInputElement>(null);
   const scoped = useMemo(() => lookupTiles(tiles, field, study?.modality, study?.bodyPart), [tiles, field, study?.modality, study?.bodyPart]);
   const filtered = useMemo(() => { if (!search.trim()) return scoped; const q = search.toLowerCase(); return scoped.filter(t => t.label.toLowerCase().includes(q) || t.sentence.toLowerCase().includes(q) || (t.mnemonic ?? "").toLowerCase().includes(q)); }, [scoped, search]);

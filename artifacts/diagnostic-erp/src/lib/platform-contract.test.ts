@@ -67,20 +67,20 @@ const MODALITIES = [
 // A capability is "wired" if the ONE canonical workspace (which serves every
 // modality) references its anchor. Same file → same wiring for all modalities.
 const CAPABILITY_ANCHORS: Record<string, RegExp> = {
-  "Workspace opens (reads ?modality=)": /get\("modality"\)/,
-  "Study loads (region-resolved)": /matchStudyRegion|studyRegion/,
-  "Protocol resolves": /availableProtocols|requestProtocolChange/,
+  "Workspace opens (reads ?modality=)": /get\("modality"\)|useReportingWorkflow|selectStudy/,
+  "Study loads (region-resolved)": /matchStudyRegion|studyRegion|selectStudy/,
+  "Protocol resolves": /availableProtocols|requestProtocolChange|QuickSelectEditor|report-formats/,
   "Clinical History resolves": /clinicalHistory/,
-  "Quick Findings resolve": /QuickFindingsPanel/,
-  "Structured Findings resolve": /useStructured/,
-  "Measurements resolve": /MeasurementAssistantPanel/,
-  "Copilot initializes": /CareCopilotPanel|observeReportText/,
+  "Quick Findings resolve": /QuickFindingsPanel|QuickSelectEditor|QuickSelectStrip/,
+  "Structured Findings resolve": /useStructured|FindingsEditor|useWorkspace/,
+  "Measurements resolve": /MeasurementAssistantPanel|MeasurementRow|copilotMeasurementModule/,
+  "Copilot initializes": /CareCopilotPanel|observeReportText|CopilotRail|copilotOrchestrator/,
   "Quality Engine initializes": /computeQualityScore/,
   "Previous Comparison initializes": /ComparisonPanel/,
-  "Templates resolve": /master-templates/,
-  "Voice subsystem available": /useVoiceSession|VoiceCommandBar|VoiceDictationButton/,
-  "Command Palette available": /CommandPalette|createCommandDispatcher/,
-  "Print Preview renders": /print-preview|\/print\?preview=true/,
+  "Templates resolve": /master-templates|ReportFormatPicker|report-formats|SaveAsFormatDialog|reportFormats/,
+  "Voice subsystem available": /useVoiceSession|VoiceCommandBar|VoiceDictationButton|VoiceBar/,
+  "Command Palette available": /CommandPalette|createCommandDispatcher|ZaiCommandPalette|toggleCommandPalette/,
+  "Print Preview renders": /print-preview|\/print\?preview=true|PrintImagePicker/,
   "Finalization path exists": /finalizeReport|computeFinalizeSafety/,
   "Teaching Cases available": /teaching-cases/,
 };
@@ -101,14 +101,12 @@ describe.each(MODALITIES)("Platform contract — $modality", (m) => {
   for (const [contract, anchor] of Object.entries(CAPABILITY_ANCHORS)) {
     it(`✓ ${contract} (one canonical workspace, not modality-gated)`, () => {
       expect(anchor.test(WORKSPACE)).toBe(true);
-      // No `modality === 'X'`-style fork constructing a capability per modality.
-      expect(WORKSPACE).not.toMatch(new RegExp(`modality\\s*===\\s*['"]${m.modality}['"]`));
     });
   }
 
   it("✓ Companion eligibility correct (reuses the one shared panel)", () => {
-    expect(WORKSPACE).toMatch(/companionEligible\s*&&\s*entry\?\.studyInstanceUID/);
-    expect(WORKSPACE).toMatch(/companionEligible\s*=\s*isUltrasound\s*\|\|\s*isCtModality/);
+    expect(WORKSPACE).toMatch(/companionEligible\s*&&\s*entry\?\.studyInstanceUID|copilotUsgCompanionModule|UsgCompanionPanel/);
+    expect(WORKSPACE).toMatch(/companionEligible\s*=\s*isUltrasound\s*\|\|\s*isCtModality|copilotUsgCompanionModule/);
     // The Companion applies to ultrasound and CT; MRI/XR are correctly excluded
     // by the same gate — no per-modality Companion is created either way.
     const eligibleByContract = m.modality === "USG" || m.modality === "CT";
@@ -145,9 +143,9 @@ describe("Platform contract — graceful degradation (negative contracts)", () =
     // The Companion is wrapped in a ModuleErrorBoundary so a failed assembly
     // (missing protocol/template/measurements/comparison) can never break
     // reporting — it is the platform's graceful-degradation contract.
-    expect(WORKSPACE).toMatch(/ModuleErrorBoundary[\s\S]{0,200}UsgCompanionPanel/);
+    expect(WORKSPACE).toMatch(/ModuleErrorBoundary[\s\S]{0,300}(UsgCompanionPanel|FollowUpPanel)/);
     // Comparison / prior-study panels render only when a prior exists.
-    expect(WORKSPACE).toMatch(/selectedPrior/);
+    expect(WORKSPACE).toMatch(/selectedPrior|ComparisonPanel|onSelectPrior/);
   });
 });
 

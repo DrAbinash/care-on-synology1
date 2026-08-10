@@ -1,4 +1,4 @@
-import { useWorkspace } from "@/lib/zai-workspace/store";
+import { useWorkspace, useWorkspaceSelector } from "@/lib/zai-workspace/store";
 import { runLintRules, computeQualityScore } from "@/lib/zai-workspace/types";
 import type { CopilotItem } from "@/lib/zai-workspace/types";
 import { ReportFormatPicker } from "./report-format-picker";
@@ -14,9 +14,9 @@ const KI: Record<string, typeof AlertTriangle> = { critical: AlertTriangle, cont
 const KC: Record<string, string> = { critical: "border-rose-300 bg-rose-50 text-rose-700", contradiction: "border-amber-300 bg-amber-50 text-amber-700", suggestion: "border-sky-300 bg-sky-50 text-sky-700", missing: "border-amber-300 bg-amber-50 text-amber-700", measurement: "border-emerald-300 bg-emerald-50 text-emerald-700", recommendation: "border-violet-300 bg-violet-50 text-violet-700", differential: "border-cyan-300 bg-cyan-50 text-cyan-700", "ai-draft": "border-fuchsia-300 bg-fuchsia-50 text-fuchsia-700" };
 const BD: Record<string, string> = { routine: "bg-slate-200 text-slate-600", "worth-a-look": "bg-amber-100 text-amber-700", attention: "bg-rose-100 text-rose-700" };
 export function CopilotRail() {
-  const stage = useWorkspace(s => s.railStage); const setStage = useWorkspace(s => s.setRailStage); const items = useWorkspace(s => s.copilotItems); const ack = useWorkspace(s => s.acknowledgedCopilotIds); const ins = useWorkspace(s => s.insertCopilotText);
-  const priors = useWorkspace(s => s.priors); const ms = useWorkspace(s => s.measurements); const study = useWorkspace(s => s.studies.find(x => x.id === s.activeStudyId));
-  const ft = useWorkspace(s => s.findingsText); const it = useWorkspace(s => s.impressionText);
+  const stage = useWorkspaceSelector(s => s.railStage); const setStage = useWorkspaceSelector(s => s.setRailStage); const items = useWorkspaceSelector(s => s.copilotItems); const ack = useWorkspaceSelector(s => s.acknowledgedCopilotIds); const ins = useWorkspaceSelector(s => s.insertCopilotText);
+  const priors = useWorkspaceSelector(s => s.priors); const ms = useWorkspaceSelector(s => s.measurements); const study = useWorkspaceSelector(s => s.studies.find(x => x.id === s.activeStudyId));
+  const ft = useWorkspaceSelector(s => s.findingsText); const it = useWorkspaceSelector(s => s.impressionText);
   const q = useMemo(() => { const iss = runLintRules(ft + "\n" + it, { modality: study?.modality ?? "XR", sex: study?.patient.sex }); return computeQualityScore({ findingsText: ft, impressionText: it, measurements: ms, issues: iss }); }, [ft, it, ms, study]);
   const vis = items.filter(i => !ack.has(i.id));
   return <div className="flex h-full flex-col"><div className="flex border-b border-border">{STAGES.map(({id, l, i: Icon}) => <button key={id} onClick={() => setStage(id)} className={cn("flex flex-1 flex-col items-center gap-0.5 py-2 text-[10px] font-semibold uppercase tracking-wider transition border-b-2", stage === id ? "border-emerald-500 text-emerald-700" : "border-transparent text-muted-foreground hover:text-foreground")}><Icon className="h-3.5 w-3.5" />{l}</button>)}</div>
