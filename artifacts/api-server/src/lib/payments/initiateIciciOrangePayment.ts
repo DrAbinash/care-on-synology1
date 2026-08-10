@@ -14,9 +14,29 @@ import type { InitiatePaymentParams, InitiatePaymentResult } from "./PaymentProv
 /** Same callback path registered with ICICI for webpage online booking. */
 export const ICICI_ORANGE_PAY_CALLBACK_PATH = "/api/public/booking/icici-callback";
 
+/** Public bridge page phones hit when scanning Bill Desk QR (whitelisted domain). */
+export const ICICI_ORANGE_PAY_QR_BRIDGE_PATH = "/api/public/booking/icici-pay";
+
 export function buildIciciOrangePayReturnUrl(): string {
   const base = getIciciPublicBaseUrl();
   return `${base}${ICICI_ORANGE_PAY_CALLBACK_PATH}`;
+}
+
+/**
+ * QR must encode a URL on the bank-whitelisted domain (caredeoghar.com), not
+ * the raw ICICI HPP URL. Phones that open pgpay.icicibank.com directly often
+ * get "Domain Validation Fail"; navigating from caredeoghar.com first works
+ * (same path as the Orange Pay button).
+ */
+export function buildIciciOrangePayQrUrl(txnRef: string): string {
+  const base = getIciciPublicBaseUrl();
+  return `${base}${ICICI_ORANGE_PAY_QR_BRIDGE_PATH}/${encodeURIComponent(txnRef)}`;
+}
+
+/** Rebuild ICICI HPP URL from initiateSale response fields. */
+export function assembleIciciRedirectUrl(redirectURI: string, tranCtx: string): string {
+  const joinChar = redirectURI.includes("?") ? "&" : "?";
+  return `${redirectURI}${joinChar}tranCtx=${encodeURIComponent(tranCtx)}`;
 }
 
 export type InitiateIciciOrangePayOpts = {

@@ -24,6 +24,7 @@ import { recordPaymentDiagnostic, getRecentDiagnostics, getDiagnosticById, getLa
 import { confirmBookingInternal } from "./online-bookings";
 import { autoVoucherForPayment } from "../lib/auto-voucher";
 import { getIciciPublicBaseUrl } from "../lib/payments/iciciPublicBaseUrl";
+import { assembleIciciRedirectUrl } from "../lib/payments/initiateIciciOrangePayment";
 
 export function validateSelfRegistration(params: {
   name: string;
@@ -1523,6 +1524,98 @@ publicBookingRouter.get("/icici-callback", async (req, res): Promise<void> => {
 publicBookingRouter.post("/icici-callback", async (req, res): Promise<void> => {
   const merged = { ...(req.query as Record<string, string>), ...(req.body as Record<string, string>) };
   await handleIciciCallback(req, res, merged);
+});
+
+/**
+ * QR bridge — phones scan a caredeoghar.com URL (bank-whitelisted domain),
+ * then we send them to the ICICI hosted payment page. Encoding the raw ICICI
+ * HPP URL in the QR causes "Domain Validation Fail" on many phone browsers;
+ * the Orange Pay button works because it navigates from caredeoghar.com first.
+ *
+ * Serves a short HTML page (meta-refresh + JS + tap button) so camera-QR apps
+ * that don't follow bare 302s still land on payment.
+ */
+publicBookingRouter.get("/icici-pay/:txnRef", async (req, res): Promise<void> => {
+  const txnRef = String(req.params.txnRef || "").trim();
+  if (!txnRef || txnRef.length > 80 || !/^[A-Za-z0-9._-]+$/.test(txnRef)) {
+    res.status(400).type("html").send("<!doctype html><title>Invalid</title><p>Invalid payment link.</p>");
+    return;
+  }
+
+  const [logRecord] = await db.select()
+    .from(paymentLogsTable)
+    .where(eq(paymentLogsTable.bookingRef, txnRef))
+    .limit(1);
+
+  if (!logRecord) {
+    res.status(404).type("html").send("<!doctype html><title>Not found</title><p>Payment session not found. Ask the counter to start payment again.</p>");
+    return;
+  }
+
+  if (logRecord.status === "success") {
+    res.type("html").send("<!doctype html><title>Paid</title><p style='font-family:sans-serif;padding:24px'>This payment is already complete. You can close this page.</p>");
+    return;
+  }
+  if (logRecord.status === "failed" || logRecord.status === "expired") {
+    res.status(410).type("html").send("<!doctype html><title>Expired</title><p style='font-family:sans-serif;padding:24px'>This payment link is no longer valid. Ask the counter to retry.</p>");
+    return;
+  }
+
+  let redirectUrl = "";
+  try {
+    const reqPayload = JSON.parse(logRecord.requestPayload || "{}") as { redirectUrl?: string; expiryTime?: string };
+    if (reqPayload.expiryTime && new Date(reqPayload.expiryTime) < new Date()) {
+      res.status(410).type("html").send("<!doctype html><title>Expired</title><p style='font-family:sans-serif;padding:24px'>This payment link has expired. Ask the counter to retry.</p>");
+      return;
+    }
+    if (typeof reqPayload.redirectUrl === "string" && /^https?:\/\//i.test(reqPayload.redirectUrl)) {
+      redirectUrl = reqPayload.redirectUrl;
+    }
+  } catch { /* fall through */ }
+
+  if (!redirectUrl) {
+    try {
+      const resp = JSON.parse(logRecord.responsePayload || "{}") as { redirectURI?: string; tranCtx?: string };
+      if (resp.redirectURI && resp.tranCtx) {
+        redirectUrl = assembleIciciRedirectUrl(resp.redirectURI, resp.tranCtx);
+      }
+    } catch { /* ignore */ }
+  }
+
+  if (!redirectUrl || !/^https?:\/\//i.test(redirectUrl)) {
+    res.status(502).type("html").send("<!doctype html><title>Unavailable</title><p style='font-family:sans-serif;padding:24px'>Payment page is not ready. Ask the counter to retry Online Payment.</p>");
+    return;
+  }
+
+  // Escape for HTML attribute / JS string
+  const safeHref = redirectUrl.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+  const safeJs = JSON.stringify(redirectUrl);
+
+  res
+    .status(200)
+    .type("html")
+    .setHeader("Cache-Control", "no-store")
+    .send(`<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<meta http-equiv="refresh" content="0;url=${safeHref}"/>
+<title>Care Diagnostics — Secure Payment</title>
+<style>
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#fff7ed;color:#0f172a}
+  .card{max-width:360px;padding:28px 22px;text-align:center}
+  h1{font-size:20px;margin:0 0 8px}
+  p{font-size:14px;color:#64748b;margin:0 0 18px;line-height:1.4}
+  a.btn{display:inline-block;background:#FF6600;color:#fff;font-weight:700;text-decoration:none;padding:12px 20px;border-radius:10px;font-size:15px}
+</style>
+</head><body>
+<div class="card">
+  <h1>Opening ICICI Orange Pay…</h1>
+  <p>If nothing happens, tap the button below to continue securely.</p>
+  <a class="btn" href="${safeHref}" rel="noopener">Continue to payment</a>
+</div>
+<script>location.replace(${safeJs});</script>
+</body></html>`);
 });
 
 // ── POST /api/public/booking/create-order (Razorpay ─ kept for backwards compat) ──
