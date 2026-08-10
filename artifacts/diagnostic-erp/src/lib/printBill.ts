@@ -283,7 +283,7 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
   // still varies by A5 vs A4 paper size; a non-null override applies fixed
   // regardless of paper size. ──
   const useCompactFooter = compactFooterGap || sparseBill;
-  const marginMm = opts.printMarginMm ?? (isA5 ? 8 : 6);
+  const marginMm = opts.printMarginMm ?? (isA5 ? 10 : 6);
   // Title ("INVOICE/RECEIPT") is the page's real anchor and must read as the
   // largest header element; clinic contact info (headerPx) is secondary and
   // was previously LARGER than the title, inverting the hierarchy.
