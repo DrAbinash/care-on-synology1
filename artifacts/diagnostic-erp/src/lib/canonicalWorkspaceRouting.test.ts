@@ -149,11 +149,15 @@ describe("M1.4 — canonical reporting workflow integration", () => {
     for (const src of [workspace, legacy]) {
       expect(src).toContain('from "@/lib/workspaceReportState"');
     }
-    for (const helper of [
-      "isReportDirty", "shouldOfferBackupRestore", "canVerifyReport", "matchWorkspaceShortcut",
-    ]) {
+    // Shared pure helpers both surfaces must pull from the lib (not re-implement).
+    for (const helper of ["shouldOfferBackupRestore", "canVerifyReport", "matchWorkspaceShortcut"]) {
       expect(workspace, `canonical workspace must use ${helper} from the lib`).toContain(helper);
+      expect(legacy, `legacy workspace must use ${helper} from the lib`).toContain(helper);
     }
+    // Dirty detection: legacy uses isReportDirty snapshots; modular uses zustand isDirty
+    // plus normalizeImpressionLines for backup/hydrate (string vs string[] impression).
+    expect(legacy, "legacy workspace must use isReportDirty from the lib").toContain("isReportDirty");
+    expect(workspace, "canonical workspace must normalize impression via the lib").toContain("normalizeImpressionLines");
     // Full selection-restore helpers remain on the legacy monolith until ported.
     for (const helper of ["restorableSelections", "deriveLifecycleBadges"]) {
       expect(legacy, `legacy workspace must use ${helper} from the lib`).toContain(helper);

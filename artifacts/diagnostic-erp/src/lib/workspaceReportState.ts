@@ -24,10 +24,39 @@ export interface ReportSnapshotFields {
   clinicalHistory: string;
   technique: string;
   rawFindings: string;
-  impression: string[];
+  impression: string[] | string;
   recommendation: string;
   /** Sorted Quick Select ids so selection changes count as dirty. */
   quickSelectIds: number[];
+}
+
+/** Coerce impression from string, string[], or legacy JSON string to string[]. */
+export function normalizeImpressionLines(impression: unknown): string[] {
+  if (Array.isArray(impression)) {
+    return impression
+      .filter((l): l is string => typeof l === "string")
+      .map((l) => l.trim())
+      .filter(Boolean);
+  }
+  if (typeof impression === "string") {
+    const trimmed = impression.trim();
+    if (!trimmed) return [];
+    if (trimmed.startsWith("[")) {
+      try {
+        const parsed = JSON.parse(trimmed) as unknown;
+        if (Array.isArray(parsed)) {
+          return parsed
+            .filter((l): l is string => typeof l === "string")
+            .map((l) => l.trim())
+            .filter(Boolean);
+        }
+      } catch {
+        /* fall through — treat as plain text */
+      }
+    }
+    return [trimmed];
+  }
+  return [];
 }
 
 /** Stable serialization — the single definition of "the report content". */
@@ -36,7 +65,7 @@ export function serializeReportSnapshot(f: ReportSnapshotFields): string {
     ch: f.clinicalHistory.trim(),
     t: f.technique.trim(),
     rf: f.rawFindings.trim(),
-    im: f.impression.map((l) => l.trim()).filter(Boolean),
+    im: normalizeImpressionLines(f.impression),
     re: f.recommendation.trim(),
     qs: [...f.quickSelectIds].sort((a, b) => a - b),
   });
@@ -80,9 +109,10 @@ export function shouldOfferBackupRestore(
   serverContent: Pick<ReportSnapshotFields, "clinicalHistory" | "rawFindings" | "impression" | "recommendation"> | null,
 ): boolean {
   if (!backup) return false;
+  const backupImpression = normalizeImpressionLines(backup.impression);
   const hasContent = Boolean(
     backup.clinicalHistory?.trim() || backup.rawFindings?.trim() ||
-    (backup.impression ?? []).some((l) => l.trim()) || backup.recommendation?.trim(),
+    backupImpression.length > 0 || backup.recommendation?.trim(),
   );
   if (!hasContent) return false;
 
@@ -91,11 +121,11 @@ export function shouldOfferBackupRestore(
     if (backup.at <= new Date(serverUpdatedAt).getTime()) return false;
   }
   if (serverContent) {
+    const serverImpression = normalizeImpressionLines(serverContent.impression);
     const same =
       (backup.clinicalHistory ?? "").trim() === serverContent.clinicalHistory.trim() &&
       (backup.rawFindings ?? "").trim() === serverContent.rawFindings.trim() &&
-      JSON.stringify((backup.impression ?? []).map((l) => l.trim()).filter(Boolean)) ===
-        JSON.stringify(serverContent.impression.map((l) => l.trim()).filter(Boolean)) &&
+      JSON.stringify(backupImpression) === JSON.stringify(serverImpression) &&
       (backup.recommendation ?? "").trim() === serverContent.recommendation.trim();
     if (same) return false;
   }

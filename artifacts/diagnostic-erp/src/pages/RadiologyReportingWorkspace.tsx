@@ -84,7 +84,7 @@ import {
   writeRescueDraft, readRescueDraft, clearRescueDraft,
 } from "@/lib/draftRescue";
 import {
-  serializeReportSnapshot, isReportDirty, shouldOfferBackupRestore,
+  shouldOfferBackupRestore, normalizeImpressionLines,
   canVerifyReport, matchWorkspaceShortcut,
 } from "@/lib/workspaceReportState";
 import { createCommandDispatcher } from "@/lib/workspaceCommands";
@@ -349,7 +349,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       const normStr = (v: unknown) => Array.isArray(v) ? v.join("\n") : (typeof v === "string" ? v : "");
       useWorkspace.getState().setEditorContent({
         findings: normStr(draft.findings ?? draft.rawFindings),
-        impression: normStr(draft.impression),
+        impression: normalizeImpressionLines(draft.impression).join("\n"),
         recommendation: normStr(draft.recommendation),
         technique: normStr(draft.technique),
         clinicalHistory: normStr(draft.clinicalHistory) || (workflow.currentRow as any)?.clinicalHistory || "",
@@ -365,7 +365,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
           const normStr = (v: unknown) => Array.isArray(v) ? v.join("\n") : (typeof v === "string" ? v : "");
           useWorkspace.getState().setEditorContent({
             findings: normStr(draft.findings),
-            impression: normStr(draft.impression),
+            impression: normalizeImpressionLines(draft.impression).join("\n"),
             recommendation: normStr(draft.recommendation),
             technique: normStr(draft.technique),
             clinicalHistory: (row as any).clinicalHistory ?? "",
@@ -940,16 +940,21 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       )}
 
       {/* ─── Draft restore banner ─── */}
-      {draftBackup.restoreAvailable && (shouldOfferBackupRestore as any)(
+      {draftBackup.restoreAvailable && shouldOfferBackupRestore(
         draftBackup.peek(),
-        existingDraft?.updatedAt,
-        (serializeReportSnapshot as any)({ clinicalHistory: clinicalHistoryText, technique: techniqueText, rawFindings: findingsText, impression: impressionText, recommendation: recommendationText, quickSelectIds: [] }),
+        existingDraft?.updatedAt ?? null,
+        {
+          clinicalHistory: clinicalHistoryText,
+          rawFindings: findingsText,
+          impression: impressionText,
+          recommendation: recommendationText,
+        },
       ) && (
         <div className="fixed top-4 right-4 z-30 w-80 rounded-lg border border-amber-300 bg-amber-50 p-3 shadow-xl">
           <div className="text-xs font-semibold text-amber-800">Unsaved draft found</div>
           <div className="text-[10px] text-amber-700 mt-1">A local backup is newer than the server draft.</div>
           <div className="flex gap-1.5 mt-2">
-            <Button size="sm" className="h-6 text-[10px]" onClick={() => { const r = draftBackup.peek() as any; if (r) useWorkspace.getState().setEditorContent({ findings: r.rawFindings ?? "", impression: r.impression ?? "", recommendation: r.recommendation ?? "", technique: r.technique ?? "", clinicalHistory: r.clinicalHistory ?? "" }); }}>Restore</Button>
+            <Button size="sm" className="h-6 text-[10px]" onClick={() => { const r = draftBackup.peek(); if (r) useWorkspace.getState().setEditorContent({ findings: r.rawFindings ?? "", impression: normalizeImpressionLines(r.impression).join("\n"), recommendation: r.recommendation ?? "", technique: r.technique ?? "", clinicalHistory: r.clinicalHistory ?? "" }); }}>Restore</Button>
             <Button size="sm" variant="ghost" className="h-6 text-[10px]" onClick={() => draftBackup.discard()}>Discard</Button>
           </div>
         </div>

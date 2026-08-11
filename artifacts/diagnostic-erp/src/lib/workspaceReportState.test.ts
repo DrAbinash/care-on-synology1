@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   serializeReportSnapshot, isReportDirty, withQuickIdsInSnapshot,
-  shouldOfferBackupRestore, restorableSelections, extractD1QuickSelections,
+  shouldOfferBackupRestore, normalizeImpressionLines, restorableSelections, extractD1QuickSelections,
   toInstanceParams, deriveLifecycleBadges, canVerifyReport,
   matchWorkspaceShortcut,
   type ReportSnapshotFields,
@@ -13,6 +13,22 @@ import {
 const F = (over: Partial<ReportSnapshotFields> = {}): ReportSnapshotFields => ({
   clinicalHistory: "", technique: "", rawFindings: "", impression: [],
   recommendation: "", quickSelectIds: [], ...over,
+});
+
+describe("normalizeImpressionLines", () => {
+  it("accepts arrays, plain strings, and legacy JSON strings", () => {
+    expect(normalizeImpressionLines([" a ", "", "b"])).toEqual(["a", "b"]);
+    expect(normalizeImpressionLines("Single line")).toEqual(["Single line"]);
+    expect(normalizeImpressionLines('["Line one", "Line two"]')).toEqual(["Line one", "Line two"]);
+    expect(normalizeImpressionLines("")).toEqual([]);
+    expect(normalizeImpressionLines(null)).toEqual([]);
+  });
+
+  it("lets serializeReportSnapshot accept a string impression (new workspace shape)", () => {
+    const fromString = serializeReportSnapshot(F({ impression: "Chronic SVD." }));
+    const fromArray = serializeReportSnapshot(F({ impression: ["Chronic SVD."] }));
+    expect(fromString).toBe(fromArray);
+  });
 });
 
 describe("serializeReportSnapshot / isReportDirty", () => {
