@@ -13,16 +13,22 @@ export function ViewerPanel() {
   const [url, setUrl] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [launching, setLaunching] = useState(false);
-  useEffect(() => { if (!study) { setUrl(null); return; } let c = false; setLaunching(true); setErr(null);
-    api.get<{ url: string; error?: string }>(`/api/radiology/studies/${encodeURIComponent(study.studyInstanceUID)}/ohif-launch`).then(r => { if (!c) { if (r.url) setUrl(r.url); else if (r.error) setErr(r.error); } }).catch(e => { if (!c) setErr(e instanceof Error ? e.message : "Launch failed"); }).finally(() => { if (!c) setLaunching(false); });
+  useEffect(() => {
+    if (!study?.studyInstanceUID?.trim()) { setUrl(null); setErr(null); setLaunching(false); return; }
+    let c = false; setLaunching(true); setErr(null);
+    api.get<{ url: string; error?: string }>(`/api/radiology/studies/${encodeURIComponent(study.studyInstanceUID)}/ohif-launch`)
+      .then(r => { if (!c) { if (r.url) setUrl(r.url); else if (r.error) setErr(r.error); } })
+      .catch(e => { if (!c) setErr(e instanceof Error ? e.message : "Launch failed"); })
+      .finally(() => { if (!c) setLaunching(false); });
     return () => { c = true; };
   }, [study?.studyInstanceUID]);
   if (!study) return <div className="flex h-full items-center justify-center text-sm text-muted-foreground">Select a study</div>;
-  const mod = modalityAccent(study.modality); const a = patientAccent(study.patient.id); const series = study.series > 0 ? study.series : 4;
+  const patient = study.patient ?? { id: "0", name: "Unknown", age: 0, sex: "O" as const, uhid: "", referringDoctor: "" };
+  const mod = modalityAccent(study.modality); const a = patientAccent(patient.id || "0"); const series = study.series > 0 ? study.series : 4;
   return (
     <div className="flex h-full flex-col bg-slate-950">
       <div className="flex items-center justify-between border-b border-slate-800 px-3 py-2"><div className="flex items-center gap-2"><span className="rounded px-1.5 py-0.5 text-[10px] font-bold text-white" style={{ background: mod.color }}>{mod.label}</span><span className="text-xs font-semibold text-slate-200">{study.studyDescription}</span><span className="text-[10px] text-slate-400">{study.bodyPart}</span></div><div className="flex items-center gap-2">{launching && <span className="text-[10px] text-slate-400">Launching...</span>}<button className="rounded p-1 text-slate-400 hover:bg-slate-800"><Maximize2 className="h-3.5 w-3.5" /></button></div></div>
-      <div className="flex items-center gap-2 px-3 py-1.5 text-[11px]" style={{ background: a.bg, color: a.text }}><div className="h-2 w-2 rounded-full" style={{ background: a.ring }} /><span className="font-semibold">{study.patient.name}</span><span>·</span><span>{study.patient.age}{study.patient.sex}</span><span>·</span><span className="font-mono">{study.patient.uhid}</span><span className="ml-auto inline-flex items-center gap-1"><Stethoscope className="h-3 w-3" /> {study.patient.referringDoctor}</span></div>
+      <div className="flex items-center gap-2 px-3 py-1.5 text-[11px]" style={{ background: a.bg, color: a.text }}><div className="h-2 w-2 rounded-full" style={{ background: a.ring }} /><span className="font-semibold">{patient.name}</span><span>·</span><span>{patient.age}{patient.sex}</span><span>·</span><span className="font-mono">{patient.uhid}</span><span className="ml-auto inline-flex items-center gap-1"><Stethoscope className="h-3 w-3" /> {patient.referringDoctor}</span></div>
       <div className="relative flex-1 overflow-hidden">
         {url ? <iframe src={url} className="absolute inset-0 h-full w-full border-0" title="OHIF Viewer" allow="clipboard-read; clipboard-write; fullscreen" /> : err ? <div className="absolute inset-0 flex items-center justify-center bg-slate-950"><div className="text-center max-w-sm p-4"><div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-rose-900/40 border border-rose-700"><Crosshair className="h-6 w-6 text-rose-400" /></div><div className="text-sm font-semibold text-rose-300">Viewer launch failed</div><div className="text-[10px] text-rose-400/80 mt-1">{err}</div></div></div> :
         <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-slate-900 via-slate-950 to-black" style={{ backgroundImage: `radial-gradient(circle at 50% 45%, hsl(${a.hue}, 30%, 25%) 0%, transparent 60%)` }}>

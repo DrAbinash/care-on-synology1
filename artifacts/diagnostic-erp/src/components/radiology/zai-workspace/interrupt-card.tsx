@@ -47,7 +47,7 @@ export function InterruptChannelCard() {
 }
 
 function Workflow({ onClose, study }: { onClose: () => void; study: any }) {
-  const [rec, setRec] = useState(study?.patient.referringDoctor ?? "");
+  const [rec, setRec] = useState(study?.patient?.referringDoctor ?? "");
   const [method, setMethod] = useState<"phone" | "whatsapp" | "in-person" | "email">("phone");
   const [note, setNote] = useState("");
   const [logged, setLogged] = useState(false);
