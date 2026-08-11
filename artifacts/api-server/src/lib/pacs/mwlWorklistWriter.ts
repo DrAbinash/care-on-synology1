@@ -26,7 +26,7 @@
 
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { writeFile, unlink, mkdir, rename, copyFile } from "node:fs/promises";
+import { writeFile, unlink, mkdir, rename } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { logger } from "../logger";
@@ -39,6 +39,7 @@ const CARE_MWL_ROOT = "1.2.840.9999.113";
 const UID_ROLE = { study: "1", series: "2", sop: "3" } as const;
 /** Reject dumps that would crash Orthanc's worklist housekeeper. */
 const EMPTY_UID_TAG = /\((?:0008,0018|0020,000D|0020,000E)\)\s+UI\s+\[\s*\]/;
+const DICOM_UID_RE = /^[0-9]+(\.[0-9]+)+$/;
 
 export interface MwlProcedure {
   accessionNumber: string;
@@ -119,7 +120,7 @@ function stagingDir(): string {
 }
 
 /**
- * Refuse dumps that Orthanc's worklist housekeeper would reject (empty UIDs).
+ * Refuse dumps that Orthanc's worklist housekeeper would reject (empty/invalid UIDs).
  * Exported for unit tests.
  */
 export function assertValidMwlDump(dumpText: string): void {
@@ -129,12 +130,23 @@ export function assertValidMwlDump(dumpText: string): void {
   for (const tag of ["(0008,0016)", "(0008,0018)", "(0020,000D)", "(0020,000E)"]) {
     const re = new RegExp(tag.replace(/[()]/g, "\\$&") + "\\s+UI\\s+\\[([^\\]]*)\\]");
     const m = dumpText.match(re);
-    if (!m || !m[1].trim()) {
+    const uid = m?.[1]?.trim() ?? "";
+    if (!uid) {
       throw new Error(`MWL dump missing non-empty UID for ${tag}`);
+    }
+    if (uid.length > 64 || !DICOM_UID_RE.test(uid)) {
+      throw new Error(`MWL dump has invalid DICOM UID for ${tag}: ${uid}`);
     }
   }
   if (!dumpText.includes("(0040,0100) SQ")) {
     throw new Error("MWL dump missing ScheduledProcedureStepSequence");
+  }
+}
+
+/** Ensure generated UIDs themselves always meet DICOM rules (defense in depth). */
+export function assertValidGeneratedUid(uid: string, label: string): void {
+  if (!uid || uid.length > 64 || !DICOM_UID_RE.test(uid)) {
+    throw new Error(`Invalid generated ${label}: ${uid}`);
   }
 }
 
@@ -146,15 +158,21 @@ function uidSuffix(accession: string, role: string): string {
 
 /** Pre-allocated StudyInstanceUID for the scheduled procedure (Orthanc housekeeper requires this). */
 export function mwlStudyInstanceUid(accession: string): string {
-  return `${CARE_MWL_ROOT}.${UID_ROLE.study}.${uidSuffix(accession, "study")}`;
+  const uid = `${CARE_MWL_ROOT}.${UID_ROLE.study}.${uidSuffix(accession, "study")}`;
+  assertValidGeneratedUid(uid, "StudyInstanceUID");
+  return uid;
 }
 
 export function mwlSeriesInstanceUid(accession: string): string {
-  return `${CARE_MWL_ROOT}.${UID_ROLE.series}.${uidSuffix(accession, "series")}`;
+  const uid = `${CARE_MWL_ROOT}.${UID_ROLE.series}.${uidSuffix(accession, "series")}`;
+  assertValidGeneratedUid(uid, "SeriesInstanceUID");
+  return uid;
 }
 
 export function mwlSopInstanceUid(accession: string): string {
-  return `${CARE_MWL_ROOT}.${UID_ROLE.sop}.${uidSuffix(accession, "sop")}`;
+  const uid = `${CARE_MWL_ROOT}.${UID_ROLE.sop}.${uidSuffix(accession, "sop")}`;
+  assertValidGeneratedUid(uid, "SOPInstanceUID");
+  return uid;
 }
 
 // dump2dcm textual dump for one worklist item. UIDs are pre-allocated from the
@@ -222,26 +240,98 @@ function runDump2Dcm(dumpText: string, outPath: string): Promise<boolean> {
   });
 }
 
+/** Post-dump2dcm: confirm binary file exposes non-empty Study/Series/SOP UIDs via dcmdump. */
+function validateDicomUidsWithDcmdump(filePath: string): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    const proc = spawn(
+      "dcmdump",
+      ["+P", "StudyInstanceUID", "+P", "SeriesInstanceUID", "+P", "SOPInstanceUID", filePath],
+      { stdio: ["ignore", "pipe", "ignore"] },
+    );
+    let out = "";
+    proc.stdout?.on("data", (chunk: Buffer) => { out += chunk.toString("utf8"); });
+    let settled = false;
+    const finish = (ok: boolean) => {
+      if (settled) return;
+      settled = true;
+      resolve(ok);
+    };
+    proc.on("error", () => finish(false)); // dcmdump missing — caller decides policy
+    proc.on("close", (code) => {
+      if (code !== 0) return finish(false);
+      const has = (keyword: string) => {
+        const re = new RegExp(`${keyword}\\s+[^\\[]*\\[([^\\]]+)\\]`);
+        const m = out.match(re);
+        const v = m?.[1]?.trim() ?? "";
+        return v.length > 0 && v.length <= 64 && DICOM_UID_RE.test(v);
+      };
+      // dcmdump +P output varies; also accept lines containing the keywords with brackets
+      const nonempty = (name: string) => {
+        if (has(name)) return true;
+        const idx = out.indexOf(name);
+        if (idx < 0) return false;
+        const slice = out.slice(idx, idx + 200);
+        const m = slice.match(/\[([^\]]+)\]/);
+        const v = m?.[1]?.trim() ?? "";
+        return v.length > 0 && v.length <= 64 && DICOM_UID_RE.test(v);
+      };
+      finish(nonempty("StudyInstanceUID") && nonempty("SeriesInstanceUID") && nonempty("SOPInstanceUID"));
+    });
+    setTimeout(() => { try { proc.kill(); } catch { /* gone */ } finish(false); }, 10_000);
+  });
+}
+
 /**
  * Atomically publish a worklist into Orthanc's watched folder:
- *   validate dump → dump2dcm into staging (outside watch) → rename into live .wl
- * Orthanc must never observe a partially-written or empty-UID file.
+ *   validate dump → dump2dcm into staging (outside watch) → validate DICOM →
+ *   rename into live .wl (same filesystem required).
+ *
+ * Never copyFile into the watched folder (non-atomic; Orthanc could read a partial file).
  */
 async function publishWorklistAtomically(dumpText: string, finalPath: string): Promise<boolean> {
   assertValidMwlDump(dumpText);
   const stageRoot = stagingDir();
+  // Staging must be outside the Orthanc Database/Directory folder.
+  const liveDir = path.dirname(finalPath);
+  if (path.resolve(stageRoot) === path.resolve(liveDir)) {
+    throw new Error("MWL staging dir must not equal Orthanc watched worklists dir");
+  }
   await mkdir(stageRoot, { recursive: true }).catch(() => {});
-  await mkdir(path.dirname(finalPath), { recursive: true }).catch(() => {});
+  await mkdir(liveDir, { recursive: true }).catch(() => {});
   const stagePath = path.join(stageRoot, `${path.basename(finalPath)}.${process.pid}.${Date.now()}.tmp`);
   try {
     const ok = await runDump2Dcm(dumpText, stagePath);
     if (!ok) return false;
+
+    const dicomOk = await validateDicomUidsWithDcmdump(stagePath);
+    if (!dicomOk) {
+      // If dcmdump is unavailable, dump text already passed assertValidMwlDump;
+      // still refuse empty zero-byte outputs.
+      const { stat } = await import("node:fs/promises");
+      const st = await stat(stagePath).catch(() => null);
+      if (!st || st.size <= 0) {
+        await unlink(stagePath).catch(() => {});
+        return false;
+      }
+      // dcmdump missing or parse quirk: keep file only if size looks like a DICOM object
+      if (st.size < 128) {
+        await unlink(stagePath).catch(() => {});
+        logger.warn({ stagePath, size: st.size }, "mwl: post-dump2dcm file too small — refusing publish");
+        return false;
+      }
+      logger.warn({ stagePath }, "mwl: dcmdump validation unavailable/failed — proceeding on dump-text validation + size check");
+    }
+
     try {
       await rename(stagePath, finalPath);
-    } catch {
-      // Cross-device rename can fail; copy then unlink staging.
-      await copyFile(stagePath, finalPath);
+    } catch (err) {
+      // Cross-device rename is NOT atomically safe into Orthanc's watch folder.
       await unlink(stagePath).catch(() => {});
+      logger.warn(
+        { err, stagePath, finalPath },
+        "mwl: atomic rename failed (staging must be on the same filesystem as worklists) — refusing non-atomic copy",
+      );
+      return false;
     }
     return true;
   } catch (err) {
