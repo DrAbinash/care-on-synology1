@@ -1073,12 +1073,16 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   });
 
   // M1.6B1 — assignable radiologists (By-Radiologist scope + display names).
-  const { data: radiologistsData } = useQuery<{ success: boolean; radiologists: Array<{ id: number; name: string; role: string }> }>({
+  const { data: radiologistsData } = useQuery<{ success: boolean; radiologists: Array<{ id: number; name: string; role: string }> } | Array<{ id: number; name: string; role?: string }>>({
     queryKey: ["radiology-radiologists"],
     queryFn: () => api.get("/api/radiology/radiologists"),
     staleTime: 5 * 60_000,
   });
-  const radiologists = radiologistsData?.radiologists ?? [];
+  const radiologists = useMemo(() => {
+    const raw = radiologistsData;
+    const rows = Array.isArray(raw) ? raw : raw?.radiologists ?? [];
+    return rows.filter((r): r is { id: number; name: string } => !!r && typeof r.id === "number" && !!r.name);
+  }, [radiologistsData]);
   function changeQueueScope(next: QueueScope) {
     setQueueScope(next);
     try { window.localStorage.setItem("radiology_queue_scope", next); } catch { /* private mode */ }
@@ -1112,8 +1116,8 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   // Modality + date narrow Next/Previous/position to the selected study bucket.
   const workflow = useReportingWorkflow(studyId, {
     scope: queueScope,
-    myUserId: session?.user.id ?? null,
-    myName: session?.user.name ?? null,
+    myUserId: session?.user?.id ?? null,
+    myName: session?.user?.name ?? null,
     modalityFilter: queueModalityFilter,
     dateFrom: queueDateFrom,
     dateTo: queueDateTo,
@@ -5200,7 +5204,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
             and recently used templates first" without inventing new state. */}
         <div className="pt-1 border-t">
           <PreferencesPanel
-            currentUserId={session?.user.id ?? null}
+            currentUserId={session?.user?.id ?? null}
             onApplyTemplate={(templateName) => {
               const usgMatch = usgTemplates.find((t) => t.label === templateName);
               if (usgMatch) { void applyUsgTemplate(usgMatch.id); return; }
@@ -5241,7 +5245,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     items: mergeCopilotItems(
       [...(copilotPrefs.autoAnalyze ? copilotReport.items : []), ...aiCopilotItems],
       unifiedInboxExtras,
-    ),
+    ).filter((i) => i && typeof i.id === "string"),
   }), [copilotReport, copilotPrefs.autoAnalyze, aiCopilotItems, unifiedInboxExtras]);
   const copilotInboxCount = copilotPanelReport.items.filter(
     (i) => !copilotEffectiveDismissed.has(i.id),
@@ -5579,7 +5583,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                   </span>
                 </div>
                 {/* Assigned to another radiologist: warn, never silently steal */}
-                {assignmentCategoryOf(entry, session?.user.name ?? null, session?.user.id ?? null) === "other" && (
+                {assignmentCategoryOf(entry, session?.user?.name ?? null, session?.user?.id ?? null) === "other" && (
                   <div className="flex items-center gap-1.5 p-1.5 rounded bg-amber-50 border border-amber-200 text-amber-900 text-[11px]">
                     <AlertTriangle size={12} className="shrink-0" />
                     <span>Assigned to {entry.assignedRadiologist} — reporting it will NOT change the assignment.</span>
@@ -5627,9 +5631,10 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
                 <div className="h-full flex flex-col items-center justify-center gap-3 p-4 text-center">
                   <MonitorPlay size={40} className="text-muted-foreground/20" />
                   <div>
-                    <p className="text-sm font-medium text-muted-foreground">No DICOM study linked</p>
-                    <p className="text-xs text-muted-foreground/70 mt-1">
-                      Open images in Weasis or OHIF using the buttons above.
+                    <p className="text-sm font-semibold text-muted-foreground">No DICOM study linked</p>
+                    <p className="text-xs text-muted-foreground/70 mt-1 max-w-[240px]">
+                      This worklist row has no StudyInstanceUID — common after moving or re-indexing Orthanc.
+                      Re-link the study from the Worklist, or open images via Weasis/OHIF above if accession is known.
                     </p>
                   </div>
                 </div>

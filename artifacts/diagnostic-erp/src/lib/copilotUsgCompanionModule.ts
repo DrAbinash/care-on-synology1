@@ -96,7 +96,7 @@ export function usgCompanionModuleItems(ctx: CopilotContext): CopilotItem[] {
   }
 
   // 4) Expected measurements that were never captured for this study type.
-  if (c.missing.length > 0) {
+  if (c.missing.length > 0 && c.studyType) {
     items.push({
       id: `usg-companion:missing:${c.studyType}`,
       category: "missing", severity: "info",

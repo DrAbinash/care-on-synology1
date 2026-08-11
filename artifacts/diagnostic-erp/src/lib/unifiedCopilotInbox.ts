@@ -75,6 +75,9 @@ export function buildUnifiedInboxExtras(opts: {
 
 /** Dedupe by id — core engine items win over extras with the same id. */
 export function mergeCopilotItems(core: CopilotItem[], extras: CopilotItem[]): CopilotItem[] {
-  const seen = new Set(core.map((i) => i.id));
-  return [...core, ...extras.filter((i) => !seen.has(i.id))];
+  const valid = (items: CopilotItem[]) =>
+    items.filter((i): i is CopilotItem => !!i && typeof i.id === "string" && i.id.length > 0);
+  const safeCore = valid(core);
+  const seen = new Set(safeCore.map((i) => i.id));
+  return [...safeCore, ...valid(extras).filter((i) => !seen.has(i.id))];
 }

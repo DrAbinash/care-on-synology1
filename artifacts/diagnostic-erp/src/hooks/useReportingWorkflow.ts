@@ -5,7 +5,7 @@ import {
   type QueueStudy, type ParkedStudy, type WorkflowSnapshot,
   queuePosition, queueIndicators, nextEligibleStudy, nextParkedStudy,
   pushHistory, popHistory, parkStudy, unparkStudy, pruneParked, parseParked,
-  isStudyParked,
+  isStudyParked, sanitizeQueueStudies,
 } from "@/lib/reportingWorkflow";
 import { filterQueueByScope, type QueueScope } from "@/lib/studyLockState";
 import { isUltrasoundModality } from "@/lib/usgModality";
@@ -85,9 +85,9 @@ export function useReportingWorkflow(currentStudyId: number | undefined, options
   const qc = useQueryClient();
 
   // Same key as pages/RadiologyWorklist.tsx — shared cache, no second fetch.
-  const { data: fullQueue = [], isFetching: queueRefreshing, refetch: refetchQueue, dataUpdatedAt } = useQuery<QueueStudy[]>({
+  const { data: fullQueueRaw = [], isFetching: queueRefreshing, refetch: refetchQueue, dataUpdatedAt } = useQuery<QueueStudy[]>({
     queryKey: ["radiology-pacs-worklist"],
-    queryFn: () => api.get<QueueStudy[]>("/api/radiology/pacs-worklist"),
+    queryFn: async () => sanitizeQueueStudies(await api.get<QueueStudy[]>("/api/radiology/pacs-worklist")),
     refetchInterval: 30_000,
     placeholderData: (prev) => prev, // background refresh never blanks the strip
   });
@@ -97,6 +97,8 @@ export function useReportingWorkflow(currentStudyId: number | undefined, options
   // for studies that merely fell outside the current filter.
   // Modality + date filters then narrow Next/Previous/position to the
   // radiologist's selected study bucket (Reporting Workspace chrome).
+  const fullQueue = useMemo(() => sanitizeQueueStudies(fullQueueRaw), [fullQueueRaw]);
+
   const queue = useMemo(
     () => filterQueueByScope(fullQueue, scope, myName, myUserId).filter((s) =>
       matchesQueueModality(s.modality, modalityFilter)

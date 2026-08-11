@@ -51,7 +51,9 @@ export function aiCopilotModules(): CopilotModule[] {
 export function runLocalModules(ctx: CopilotContext): CopilotItem[] {
   return localCopilotModules().flatMap((m) => {
     try {
-      return m.analyze!(ctx);
+      return (m.analyze!(ctx) ?? []).filter(
+        (it): it is CopilotItem => !!it && typeof it.id === "string" && it.id.length > 0,
+      );
     } catch {
       return [];
     }

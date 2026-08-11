@@ -341,6 +341,7 @@ function dedupe(items: CopilotItem[]): CopilotItem[] {
   const seen = new Set<string>();
   const rank: Record<Severity, number> = { critical: 0, warning: 1, info: 2 };
   return items
+    .filter((it): it is CopilotItem => !!it && typeof it.id === "string" && it.id.length > 0)
     .filter((it) => (seen.has(it.id) ? false : (seen.add(it.id), true)))
     .sort((a, b) => rank[a.severity] - rank[b.severity]);
 }

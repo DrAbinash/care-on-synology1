@@ -38,6 +38,13 @@ export interface QueueStudy {
   createdAt?: string;
 }
 
+/** Drop malformed queue rows (missing id) so navigation/indicators never crash. */
+export function sanitizeQueueStudies(rows: QueueStudy[]): QueueStudy[] {
+  return rows.filter(
+    (s): s is QueueStudy => s != null && typeof s.id === "number" && Number.isFinite(s.id),
+  );
+}
+
 export interface ParkedStudy {
   id: number;
   reason: string | null;

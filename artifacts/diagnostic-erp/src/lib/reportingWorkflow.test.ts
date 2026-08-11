@@ -5,7 +5,7 @@ import {
   queuePosition, queueIndicators, nextEligibleStudy, nextParkedStudy,
   pushHistory, popHistory, HISTORY_LIMIT,
   parkStudy, unparkStudy, pruneParked, parseParked,
-  canLeaveStudy,
+  canLeaveStudy, sanitizeQueueStudies,
 } from "./reportingWorkflow";
 
 // Ticket M1.5 — the workflow controller's pure rules.
@@ -237,5 +237,17 @@ describe("canLeaveStudy (Phase 3/7 transition gate)", () => {
       reason: "This report has unsaved changes. Leave without saving?",
     });
     expect(canLeaveStudy({ ...base, dirty: true, saving: true }).kind).toBe("blocked");
+  });
+});
+
+describe("sanitizeQueueStudies", () => {
+  it("drops rows without a finite numeric id", () => {
+    const rows = [
+      study(1),
+      { ...study(2), id: undefined as unknown as number },
+      null as unknown as QueueStudy,
+      study(3),
+    ];
+    expect(sanitizeQueueStudies(rows).map((s) => s.id)).toEqual([1, 3]);
   });
 });
