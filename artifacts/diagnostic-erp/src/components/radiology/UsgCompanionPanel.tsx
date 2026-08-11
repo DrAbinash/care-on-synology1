@@ -328,7 +328,7 @@ export default function UsgCompanionPanel(props: UsgCompanionPanelProps) {
   // Thread the measurement + auto-population outcome up into the existing Copilot.
   useEffect(() => {
     if (!props.onCopilotContext) return;
-    if (!data || !measurements) { props.onCopilotContext(null); return; }
+    if (!data || !measurements || !data.detectedStudyType?.id) { props.onCopilotContext(null); return; }
     const isRejected = measurements.status === "rejected";
     const present = measurements.items.filter((i) => i.present);
     props.onCopilotContext({
@@ -345,7 +345,7 @@ export default function UsgCompanionPanel(props: UsgCompanionPanelProps) {
 
   // Fire-and-forget telemetry (Phase 1 + Phase 2 fields).
   useEffect(() => {
-    if (!data || !measurements) return;
+    if (!data || !measurements || !data.detectedStudyType?.id) return;
     const applied = props.autoPopulatedBlocks ?? [];
     const sig = `${studyInstanceUID}:${measurements.foundCount}:${data.extraction.status}:${readiness.score}:${applied.length}:${edits}`;
     if (postedRef.current === sig) return;

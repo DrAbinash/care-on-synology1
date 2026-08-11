@@ -141,7 +141,10 @@ export default function CareCopilotPanel({
   report, dismissed, onInsert, onDismiss, onGoToConflict, recentActions, onUndoLast, provider, analyzing, prefs, onSetPref,
   onAskAi, aiBusy, aiCount, onResetLearning, onExportLearning,
 }: Props) {
-  const visible = useMemo(() => report.items.filter((i) => !dismissed.has(i.id)), [report.items, dismissed]);
+  const visible = useMemo(
+    () => report.items.filter((i) => i && typeof i.id === "string" && !dismissed.has(i.id)),
+    [report.items, dismissed],
+  );
   const grouped = useMemo(() => {
     const map = new Map<CopilotCategory, CopilotItem[]>();
     for (const it of visible) (map.get(it.category) ?? map.set(it.category, []).get(it.category)!).push(it);
