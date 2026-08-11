@@ -142,7 +142,7 @@ const CARDS: ModuleCard[] = [
     title: "USG Extraction Settings",
     description: "Configure AI pipeline — OCR, SR priority, confidence thresholds, auto-reject, machine profiles.",
     icon: Settings2,
-    path: "/usg/settings",
+    path: "/settings/radiology?tab=usg-extraction",
     gradient: "from-slate-50 via-gray-50 to-zinc-50 dark:from-slate-950/40 dark:via-gray-950/40 dark:to-zinc-950/40",
     iconBg: "bg-slate-100 text-slate-600 dark:bg-slate-900/50 dark:text-slate-300",
     ownerOnly: true,

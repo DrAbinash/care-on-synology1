@@ -2,7 +2,7 @@
  * FinalizeSignDialog — workspace finalize confirmation with optional
  * signer picker (multi-signature clinics) and critical-finding gate.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
@@ -41,8 +41,12 @@ type Props = {
 };
 
 export default function FinalizeSignDialog({ open, input, onResolve, onCancel }: Props) {
-  const multi = (input?.signatures.length ?? 0) > 1;
-  const single = input?.signatures.length === 1 ? input.signatures[0] : null;
+  const signatures = useMemo(
+    () => (Array.isArray(input?.signatures) ? input.signatures : []),
+    [input?.signatures],
+  );
+  const multi = signatures.length > 1;
+  const single = signatures.length === 1 ? signatures[0] : null;
   const [signerId, setSignerId] = useState<string>("");
   const [criticalAck, setCriticalAck] = useState(false);
   const [notifyReferring, setNotifyReferring] = useState(false);
@@ -54,23 +58,23 @@ export default function FinalizeSignDialog({ open, input, onResolve, onCancel }:
     setNotifyReferring(input.criticalRequiresAck);
     const remembered = loadSessionSignerId();
     if (multi) {
-      const match = remembered && input.signatures.some((s) => s.id === remembered)
+      const match = remembered && signatures.some((s) => s.id === remembered)
         ? String(remembered)
-        : String(input.signatures[0]?.id ?? "");
+        : String(signatures[0]?.id ?? "");
       setSignerId(match);
     } else if (single) {
       setSignerId(String(single.id));
     } else {
       setSignerId("");
     }
-  }, [open, input, multi, single]);
+  }, [open, input, multi, single, signatures]);
 
   if (!input) return null;
 
   const needsSigner = multi || single != null;
   const canConfirm =
     (!input.criticalRequiresAck || criticalAck) &&
-    (!needsSigner || !!signerId || input.signatures.length === 0);
+    (!needsSigner || !!signerId || signatures.length === 0);
 
   return (
     <Dialog open={open} onOpenChange={(v) => { if (!v) onCancel(); }}>
@@ -116,7 +120,7 @@ export default function FinalizeSignDialog({ open, input, onResolve, onCancel }:
             <Select value={signerId} onValueChange={setSignerId}>
               <SelectTrigger><SelectValue placeholder="Choose signature" /></SelectTrigger>
               <SelectContent>
-                {input.signatures.map((s) => (
+                {signatures.map((s) => (
                   <SelectItem key={s.id} value={String(s.id)}>{s.name}</SelectItem>
                 ))}
               </SelectContent>
@@ -132,7 +136,7 @@ export default function FinalizeSignDialog({ open, input, onResolve, onCancel }:
           <p className="text-xs text-muted-foreground">Will sign as <strong>{single.name}</strong>.</p>
         )}
 
-        {input.signatures.length === 0 && (
+        {signatures.length === 0 && (
           <p className="text-xs text-amber-700">
             No active signature on file — finalize will mark the study final; sign later from Report Hub.
           </p>

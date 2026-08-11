@@ -8,6 +8,8 @@ import Layout from "@/components/Layout";
 import { ModuleErrorBoundary } from "@/components/ModuleErrorBoundary";
 import { readStaffSession, canAccess, firstPermissionedPath, firstAllowedPath, longestMatchingNavPath, FULL_ACCESS_ROLES, normalizeRole } from "@/lib/staffSession";
 
+import { RedirectToRadiologySettings } from "@/components/radiology/RedirectToRadiologySettings";
+
 /**
  * Phase C (Radiology V2): the unified Radiology Worklist at /radiology/worklist
  * is the single staff-facing worklist. Old worklist routes redirect here.
@@ -413,7 +415,9 @@ function Router() {
               <Route path="/register" component={Register} />
               <Route path="/discounts" component={Discounts} />
               <Route path="/pacs" component={PACS} />
-              <Route path="/dicom-nodes" component={DicomNodes} />
+              <Route path="/dicom-nodes">
+                {() => <RedirectToRadiologySettings tab="pacs-advanced" />}
+              </Route>
               <Route path="/appointments" component={Appointments} />
               <Route path="/daily-summary" component={DailySummary} />
               <Route path="/my-daily-summary" component={MyDailySummary} />
@@ -504,10 +508,16 @@ function Router() {
               <Route path="/radiology/network-control-center" component={NetworkControlCenter} />
               <Route path="/radiology/pacs-logs" component={PacsLogs} />
               <Route path="/radiology/dicom-agent-dashboard" component={DicomAgentDashboard} />
-              <Route path="/radiology/modality-management" component={ModalityManagement} />
+              <Route path="/radiology/modality-management">
+                {() => <RedirectToRadiologySettings tab="modalities" />}
+              </Route>
               <Route path="/radiology/viewer/:studyInstanceUID" component={DicomViewer} />
-              <Route path="/radiology/agent-setup" component={AgentSetup} />
-              <Route path="/radiology/ai-reporting-settings" component={AiReportingSettings} />
+              <Route path="/radiology/agent-setup">
+                {() => <RedirectToRadiologySettings tab="sync" />}
+              </Route>
+              <Route path="/radiology/ai-reporting-settings">
+                {() => <RedirectToRadiologySettings tab="reporting" />}
+              </Route>
               <Route path="/knowledge-base" component={KnowledgeBaseManager} />
               <Route path="/ai-caller-credentials" component={AiCallerCredentials} />
               <Route path="/reception-command-center" component={ReceptionCommandCenter} />
@@ -552,8 +562,12 @@ function Router() {
       <Route path="/radiology/normal-templates" component={NormalReportTemplates} />
               <Route path="/radiology/archive-lifecycle" component={PacsArchiveLifecycle} />
               <Route path="/radiology/watchdog" component={PacsWatchdogDashboard} />
-              <Route path="/radiology/ai-inference-settings" component={AiInferenceSettings} />
-              <Route path="/radiology/hl7-settings" component={Hl7Settings} />
+              <Route path="/radiology/ai-inference-settings">
+                {() => <RedirectToRadiologySettings tab="reporting" />}
+              </Route>
+              <Route path="/radiology/hl7-settings">
+                {() => <RedirectToRadiologySettings tab="advanced" />}
+              </Route>
               {/* Phase 12: Real Radiology Workflow & DICOM Operations */}
               <Route path="/radiology/command-center/:studyId">
                 {(params) => <OwnerOnlyPreserved><RadiologyCommandCenter studyId={Number(params.studyId)} /></OwnerOnlyPreserved>}
@@ -573,7 +587,9 @@ function Router() {
               <Route path="/radiology/productivity-tools" component={RadiologistTools} />
               <Route path="/radiology/usg-measurements/:studyInstanceUID" component={UsgMeasurementReview} />
               <Route path="/radiology/usg-measurements" component={UsgMeasurementReview} />
-              <Route path="/radiology/usg-admin-settings" component={UsgAdminSettings} />
+              <Route path="/radiology/usg-admin-settings">
+                {() => <RedirectToRadiologySettings tab="usg-extraction" />}
+              </Route>
               <Route path="/radiology/usg-rollout" component={UsgAdminReadiness} />
               <Route path="/radiology/usg-demo" component={UsgDemoMode} />
               {/* USG / DOPPLER module */}
@@ -585,7 +601,9 @@ function Router() {
               <Route path="/usg/doppler" component={UsgDopplerReporting} />
               <Route path="/usg/key-images" component={UsgKeyImagesGallery} />
               <Route path="/usg/critical" component={UsgCriticalAlerts} />
-              <Route path="/usg/settings" component={UsgAdminSettings} />
+              <Route path="/usg/settings">
+                {() => <RedirectToRadiologySettings tab="usg-extraction" />}
+              </Route>
               <Route path="/usg/analytics" component={UsgAnalytics} />
               <Route path="/usg/pregnancy-dashboard" component={PregnancyDashboard} />
               <Route path="/backup-replication" component={BackupReplication} />
@@ -654,7 +672,9 @@ function Router() {
               </Route>
               {/* M1.3 — the ONE admin diagnostics page (Flight Deck). */}
               <Route path="/radiology/flight-deck" component={RadiologyFlightDeck} />
-              <Route path="/settings/radiology-quick-select" component={RadiologyQuickSelectSettings} />
+              <Route path="/settings/radiology-quick-select">
+                {() => <RedirectToRadiologySettings tab="quick-select" />}
+              </Route>
               <Route path="/radiology/settings">
                 {() => <AdminOnlySettings><RadiologySettingsCenter /></AdminOnlySettings>}
               </Route>

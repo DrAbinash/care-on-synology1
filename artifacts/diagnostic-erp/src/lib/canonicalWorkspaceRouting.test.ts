@@ -195,13 +195,14 @@ describe("M1.5 — productivity workflow stays canonical", () => {
     expect(workspace).toContain("commandDispatcher.dispatch(");
   });
 
-  it("queue data comes from the ONE shared worklist query (no duplicate fetch on legacy)", () => {
+  it("queue data comes from the ONE shared worklist query (no duplicate fetch)", () => {
     const hook = read("hooks/useReportingWorkflow.ts");
     // Same query key as pages/RadiologyWorklist.tsx — one cache entry.
     expect(hook).toContain('"radiology-pacs-worklist"');
     expect(read("pages/RadiologyWorklist.tsx")).toContain('"radiology-pacs-worklist"');
-    // The legacy monolith never fetches the worklist directly; the modular
-    // rewrite still has a transitional direct fetch — tracked separately.
+    // Modular workspace must not re-fetch pacs-worklist directly — that dump
+    // overwrote nested patient and crashed WorklistStrip on s.patient.id.
+    expect(workspace).not.toContain('"/api/radiology/pacs-worklist"');
     expect(legacy).not.toContain('"/api/radiology/pacs-worklist"');
   });
 

@@ -505,46 +505,52 @@ function IntegrationsOpsHubTab() {
 function RadiologyToolsHubPanel() {
   return (
     <div className="space-y-5">
+      <div className="rounded-xl border border-blue-200 bg-blue-50/70 dark:bg-blue-950/20 dark:border-blue-800 px-4 py-3 text-sm text-blue-900 dark:text-blue-200 leading-relaxed">
+        <strong>All radiology / USG / PACS / MWL settings</strong> live in one place:
+        {" "}
+        <Link href="/settings/radiology" className="underline font-semibold">Settings → Radiology</Link>.
+        Old sidebar and deep-link URLs redirect into the matching tab.
+      </div>
       <div className="grid gap-3 sm:grid-cols-3">
         <Link
           href="/settings/radiology"
           className="rounded-xl border border-blue-200 bg-blue-50/80 dark:bg-blue-950/30 dark:border-blue-800 p-4 hover:bg-blue-100/80 transition-colors"
           data-testid="settings-radiology-open-center"
         >
-          <div className="text-sm font-bold text-blue-950 dark:text-blue-100">Radiology Settings Center</div>
+          <div className="text-sm font-bold text-blue-950 dark:text-blue-100">Open Radiology Settings</div>
           <p className="text-xs text-blue-900/80 dark:text-blue-200/80 mt-1 leading-relaxed">
-            PACS, Orthanc, OHIF/Weasis, MWL, report style, voice, USG extraction — the real admin hub.
+            Overview, PACS, Viewer, MWL, Modalities, Sync, USG, Quick Select, AI, Diagnostics, Deployment.
           </p>
           <span className="inline-flex items-center gap-1 text-xs font-semibold text-blue-700 dark:text-blue-300 mt-2">Open →</span>
         </Link>
         <Link
-          href="/settings/radiology-quick-select"
+          href="/settings/radiology?tab=quick-select"
           className="rounded-xl border bg-card border-card-border p-4 hover:bg-muted/40 transition-colors"
         >
-          <div className="text-sm font-bold">Quick Select Settings</div>
-          <p className="text-xs text-muted-foreground mt-1 leading-relaxed">Finding chips / macros used in Reporting Workspace.</p>
-          <span className="inline-flex items-center gap-1 text-xs font-semibold text-primary mt-2">Open →</span>
+          <div className="text-sm font-bold">Quick Select</div>
+          <p className="text-xs text-muted-foreground mt-1 leading-relaxed">Finding chips / macros (embedded tab).</p>
+          <span className="inline-flex items-center gap-1 text-xs font-semibold text-primary mt-2">Open tab →</span>
         </Link>
         <Link
-          href="/radiology/usg-admin-settings"
+          href="/settings/radiology?tab=usg-extraction"
           className="rounded-xl border bg-card border-card-border p-4 hover:bg-muted/40 transition-colors"
         >
-          <div className="text-sm font-bold">USG Admin Settings</div>
-          <p className="text-xs text-muted-foreground mt-1 leading-relaxed">Ultrasound extraction, SR, and companion admin.</p>
-          <span className="inline-flex items-center gap-1 text-xs font-semibold text-primary mt-2">Open →</span>
+          <div className="text-sm font-bold">USG Settings</div>
+          <p className="text-xs text-muted-foreground mt-1 leading-relaxed">Extraction / SR / companion (embedded tab).</p>
+          <span className="inline-flex items-center gap-1 text-xs font-semibold text-primary mt-2">Open tab →</span>
         </Link>
       </div>
       <div className="bg-card border border-card-border rounded-xl p-5 space-y-4">
         <div>
           <h2 className="font-bold text-lg flex items-center gap-2"><Server size={16} /> Infrastructure · DICOM · Network</h2>
-          <p className="text-sm text-muted-foreground mt-1">Deep tools: PACS nodes, modalities, agents, HL7, and knowledge packs.</p>
+          <p className="text-sm text-muted-foreground mt-1">Deep tools deep-link into Radiology Settings tabs where possible.</p>
         </div>
         <SettingsHubCardGrid links={RADIOLOGY_INFRA_LINKS} />
       </div>
       <div className="bg-card border border-card-border rounded-xl p-5 space-y-4">
         <div>
           <h2 className="font-bold text-lg flex items-center gap-2"><Cpu size={16} /> AI · Assistants · Teaching</h2>
-          <p className="text-sm text-muted-foreground mt-1">Reporting AI tools formerly listed under Advanced Radiology Tools.</p>
+          <p className="text-sm text-muted-foreground mt-1">Reporting AI tools — prefer the AI &amp; Templates tab first.</p>
         </div>
         <SettingsHubCardGrid links={RADIOLOGY_AI_LINKS} />
       </div>

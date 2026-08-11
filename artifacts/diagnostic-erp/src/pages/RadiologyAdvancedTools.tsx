@@ -50,7 +50,7 @@ const FEATURES: RadiologyFeature[] = [
   },
   {
     name: "AI Reporting Settings",
-    route: "/radiology/ai-reporting-settings",
+    route: "/settings/radiology?tab=reporting",
     purpose: "Configure AI providers, model selection, prompt templates, and auto-generation rules.",
     status: "Active",
     adminOnly: true,
@@ -130,7 +130,7 @@ const FEATURES: RadiologyFeature[] = [
   },
   {
     name: "Modality Management",
-    route: "/radiology/modality-management",
+    route: "/settings/radiology?tab=modalities",
     purpose: "Register, configure, and monitor imaging modalities (CT, MRI, USG, etc.).",
     status: "Active",
     adminOnly: true,
@@ -146,7 +146,7 @@ const FEATURES: RadiologyFeature[] = [
   },
   {
     name: "AI Inference Settings",
-    route: "/radiology/ai-inference-settings",
+    route: "/settings/radiology?tab=reporting",
     purpose: "Configure on-premise or cloud AI inference endpoints and credentials.",
     status: "Experimental",
     adminOnly: true,
@@ -154,7 +154,7 @@ const FEATURES: RadiologyFeature[] = [
   },
   {
     name: "HL7 Settings",
-    route: "/radiology/hl7-settings",
+    route: "/settings/radiology?tab=advanced",
     purpose: "Configure HL7 message routing and integration with external systems.",
     status: "Active",
     adminOnly: true,
@@ -162,7 +162,7 @@ const FEATURES: RadiologyFeature[] = [
   },
   {
     name: "Agent Setup",
-    route: "/radiology/agent-setup",
+    route: "/settings/radiology?tab=sync",
     purpose: "Install and configure the DICOM agent on imaging workstations.",
     status: "Active",
     adminOnly: true,
@@ -394,7 +394,7 @@ const FEATURES: RadiologyFeature[] = [
   },
   {
     name: "USG Admin Settings",
-    route: "/radiology/usg-admin-settings",
+    route: "/settings/radiology?tab=usg-extraction",
     purpose: "Configure USG measurement extraction settings.",
     status: "Active",
     adminOnly: true,
@@ -467,7 +467,7 @@ const FEATURES: RadiologyFeature[] = [
   },
   {
     name: "DICOM Nodes",
-    route: "/dicom-nodes",
+    route: "/settings/radiology?tab=pacs-advanced",
     purpose: "Manage DICOM SCP/SCU nodes and routing rules.",
     status: "Active",
     adminOnly: true,

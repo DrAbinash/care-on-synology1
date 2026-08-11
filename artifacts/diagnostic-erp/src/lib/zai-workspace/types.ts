@@ -22,7 +22,17 @@ export interface SignOffProfile { id: string; modality: Modality; signerName: st
 
 // Per-patient accent (pre-attentive wrong-patient detection)
 export function patientAccent(id: string) { let h=0; for(let i=0;i<id.length;i++) h=(h*31+id.charCodeAt(i))>>>0; const hue=h%360; return { hue, bg:`hsl(${hue},70%,96%)`, ring:`hsl(${hue},65%,55%)`, text:`hsl(${hue},70%,30%)` }; }
-export function modalityAccent(m: Modality) { const map: Record<Modality,string>={XR:"oklch(0.6 0.12 60)",CT:"oklch(0.55 0.18 220)",MR:"oklch(0.55 0.18 280)",US:"oklch(0.6 0.15 180)",MG:"oklch(0.65 0.18 330)",DX:"oklch(0.6 0.12 60)",NM:"oklch(0.55 0.18 140)",PT:"oklch(0.6 0.2 30)",DOPPLER:"oklch(0.6 0.15 200)",ECHO:"oklch(0.6 0.18 0)",USG_OB:"oklch(0.6 0.15 180)"}; return { color:map[m], label:m }; }
+export function modalityAccent(m: Modality | string | undefined | null) {
+  const map: Record<string, string> = {
+    XR: "oklch(0.6 0.12 60)", CT: "oklch(0.55 0.18 220)", MR: "oklch(0.55 0.18 280)",
+    US: "oklch(0.6 0.15 180)", MG: "oklch(0.65 0.18 330)", DX: "oklch(0.6 0.12 60)",
+    NM: "oklch(0.55 0.18 140)", PT: "oklch(0.6 0.2 30)", DOPPLER: "oklch(0.6 0.15 200)",
+    ECHO: "oklch(0.6 0.18 0)", USG_OB: "oklch(0.6 0.15 180)",
+  };
+  const key = String(m ?? "XR").toUpperCase();
+  const color = map[key] ?? map.XR;
+  return { color, label: key || "XR" };
+}
 
 // Critical patterns (mirrors criticalFindingsAlert.ts)
 export const CRITICAL_PATTERNS: { pattern: RegExp; phrase: string; severity: Criticality }[] = [

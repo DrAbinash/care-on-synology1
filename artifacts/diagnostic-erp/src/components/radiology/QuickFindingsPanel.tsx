@@ -463,7 +463,7 @@ export default function QuickFindingsPanel({
       <div className="p-3 space-y-2">
         <p className="text-xs text-muted-foreground">No quick-select study tabs configured.</p>
         {isAdmin && (
-          <Link href="/settings/radiology-quick-select" className="text-xs text-primary underline inline-flex items-center gap-1">
+          <Link href="/settings/radiology?tab=quick-select" className="text-xs text-primary underline inline-flex items-center gap-1">
             <Settings2 size={11} /> Configure quick select
           </Link>
         )}
@@ -825,7 +825,7 @@ export default function QuickFindingsPanel({
           >
             <Plus size={10} /> Add button
           </button>
-          <Link href="/settings/radiology-quick-select" className="text-[10px] text-muted-foreground hover:text-primary underline inline-flex items-center gap-1">
+          <Link href="/settings/radiology?tab=quick-select" className="text-[10px] text-muted-foreground hover:text-primary underline inline-flex items-center gap-1">
             <Settings2 size={10} /> Full settings
           </Link>
         </div>

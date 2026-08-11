@@ -1,8 +1,7 @@
 /**
  * Catalog of admin pages formerly cluttering the left sidebar.
- * Surfaced as hub cards under Settings → Integrations & Ops (non-radiology)
- * and Settings → Radiology Tools (radiology). Standalone routes stay wired —
- * hubs only organize discovery; they do not re-implement the pages.
+ * Radiology discovery now deep-links into /settings/radiology?tab=… whenever
+ * the surface is already embedded in the Radiology Settings Center.
  */
 
 export type SettingsHubLink = {
@@ -42,72 +41,71 @@ export const INTEGRATIONS_OPS_LINKS: SettingsHubLink[] = [
   },
 ];
 
-/** Radiology PACS / DICOM / network / agent tooling. */
+/** Radiology PACS / DICOM / network / agent tooling — prefer Settings Center tabs. */
 export const RADIOLOGY_INFRA_LINKS: SettingsHubLink[] = [
   {
-    title: "Radiology Settings Center",
+    title: "Radiology Settings (hub)",
     path: "/settings/radiology",
-    description: "Canonical hub for PACS, viewers, MWL, modalities, AI reporting panels, and diagnostics.",
+    description: "Canonical hub for PACS, viewers, MWL, modalities, USG, Quick Select, AI, and diagnostics.",
   },
   {
-    title: "Network Control Center",
-    path: "/radiology/network-control-center",
-    description: "LAN / Tailscale / public profile routing and sync diagnostics.",
-    alsoIn: "Radiology Settings → Diagnostics",
+    title: "Overview",
+    path: "/settings/radiology?tab=overview",
+    description: "Traffic-light health for Orthanc, MWL, sync workers, and deployment endpoints.",
   },
   {
-    title: "DICOM Nodes",
-    path: "/dicom-nodes",
-    description: "DICOM node registry, provider endpoints, and pull jobs.",
-    alsoIn: "Radiology Settings → PACS Servers",
-  },
-  {
-    title: "Modality Management",
-    path: "/radiology/modality-management",
+    title: "Modalities",
+    path: "/settings/radiology?tab=modalities",
     description: "Modality AE titles, rooms, and worklist bindings.",
-    alsoIn: "Radiology Settings → Modalities",
   },
   {
-    title: "DICOM Agent",
-    path: "/radiology/dicom-agent-dashboard",
-    description: "Agent status, logs, and MWL bridge health.",
-    alsoIn: "Radiology Settings → Diagnostics",
+    title: "PACS / DICOM (Full)",
+    path: "/settings/radiology?tab=pacs-advanced",
+    description: "Full PACS KV editor + DICOM node registry.",
   },
   {
-    title: "Watchdog",
-    path: "/radiology/watchdog",
-    description: "PACS / Orthanc watchdog dashboard and alerts.",
-    alsoIn: "Radiology Settings → Diagnostics",
+    title: "Modality Worklist",
+    path: "/settings/radiology?tab=mwl",
+    description: "MWL deployment status, sync, staging/live mounts.",
   },
   {
-    title: "HL7 Settings",
-    path: "/radiology/hl7-settings",
-    description: "HL7 ORM message settings, inbox, and connection test.",
-    alsoIn: "Radiology Settings → General (related links)",
+    title: "Sync / Automation",
+    path: "/settings/radiology?tab=sync",
+    description: "care-erp-sync, poller, pull agent, Windows agent setup.",
+  },
+  {
+    title: "USG Extraction",
+    path: "/settings/radiology?tab=usg-extraction",
+    description: "Ultrasound acquisition, SR, and companion admin (was /radiology/usg-admin-settings).",
+  },
+  {
+    title: "Quick Select",
+    path: "/settings/radiology?tab=quick-select",
+    description: "Finding chips / macros for Reporting Workspace (was /settings/radiology-quick-select).",
+  },
+  {
+    title: "Diagnostics",
+    path: "/settings/radiology?tab=diagnostics",
+    description: "Flight Deck, logs, watchdog, DICOM agent, network control shortcuts.",
+  },
+  {
+    title: "Deployment (read-only)",
+    path: "/settings/radiology?tab=deployment",
+    description: "Resolved ORTHANC_INTERNAL_URL, worklist mounts, worker flags — no secrets.",
   },
   {
     title: "Knowledge Packs",
     path: "/settings/radiology/knowledge-packs",
     description: "Install and manage radiology knowledge packs for reporting.",
   },
-  {
-    title: "Quick Select Buttons",
-    path: "/settings/radiology-quick-select",
-    description: "USG / reporting quick-select button configuration.",
-  },
-  {
-    title: "Advanced Tools catalog",
-    path: "/radiology/advanced-tools",
-    description: "Searchable launcher for experimental and owner-only radiology admin pages.",
-  },
 ];
 
-/** Radiology AI / reporting assistant tooling. */
+/** Radiology AI / reporting assistant tooling — deep-link into hub when embedded. */
 export const RADIOLOGY_AI_LINKS: SettingsHubLink[] = [
   {
-    title: "AI Reporting",
-    path: "/radiology/ai-reporting-settings",
-    description: "Providers, models, prompts, and auto-generation rules.",
+    title: "AI & Templates",
+    path: "/settings/radiology?tab=reporting",
+    description: "AI reporting + inference panels (canonical).",
     alsoIn: "Radiology Settings → AI & Templates",
   },
   {
@@ -118,22 +116,22 @@ export const RADIOLOGY_AI_LINKS: SettingsHubLink[] = [
   {
     title: "AI Comparison",
     path: "/radiology/ai-comparison",
-    description: "Run multi-model comparisons and save preferred outputs.",
+    description: "Side-by-side AI draft comparison workspace.",
   },
   {
     title: "Missed Finding Detector",
     path: "/radiology/missed-finding-detector",
-    description: "Client-side checklist assistant for common missed findings.",
+    description: "Missed-finding detector admin / review.",
   },
   {
-    title: "Image Review Assistant",
+    title: "Image Review",
     path: "/radiology/image-review",
-    description: "AI-assisted image review prompts and review workflow.",
+    description: "Image review assistant configuration.",
   },
   {
     title: "Provider Fallback",
     path: "/radiology/provider-fallback",
-    description: "Configure AI provider fallback chain when primary is down.",
+    description: "AI provider failover routing.",
   },
   {
     title: "AI Extraction Review",

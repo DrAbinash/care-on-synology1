@@ -14,7 +14,8 @@ import { tcpProbe } from "../lib/pacs/providers.js";
 import { testNodeConnection } from "../services/dicom-pull-agent/dimse-agent";
 import { getRadiologyConfig, validateRadiologyConfig, isDockerBridgeIp } from "../lib/pacs/pacsConfig.js";
 import { writeWorklistFile, removeWorklistFile, syncWorklistForStatus, isMwlEnabled, MWL_TERMINAL_STATUSES } from "../lib/pacs/mwlWorklistWriter.js";
-import { getMwlDeploymentStatus } from "../lib/pacs/mwlDeploymentStatus.js";
+import { getMwlDeploymentStatus, recordMwlSyncResult } from "../lib/pacs/mwlDeploymentStatus.js";
+import { getRadiologyAdminOverview } from "../lib/pacs/radiologyAdminOverview.js";
 import { NETWORK_LAN_HOST, DEFAULT_OHIF_BASE_URL, DEFAULT_WADO_URL, OHIF_HTTP_PORT } from "../lib/networkDefaults";
 import { fetchPrintImageBytes, PRINT_MAX_IMAGE_BYTES } from "../lib/reportImages";
 import { buildPrintClinic } from "../lib/buildPrintClinic";
@@ -1102,9 +1103,11 @@ router.post("/mwl-worklist/sync", async (_req, res) => {
         written++;
       }
     }
+    recordMwlSyncResult({ written, removed, total: rows.length });
     res.json({ total: rows.length, written, removed });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    recordMwlSyncResult({ written: 0, removed: 0, total: 0, error: message });
     res.status(500).json({ error: message, message });
   }
 });
@@ -1114,6 +1117,16 @@ router.get("/mwl-status", async (_req, res) => {
   try {
     const status = await getMwlDeploymentStatus();
     res.json(status);
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+/** Aggregated Radiology Settings Overview (safe — no secret values). */
+router.get("/admin-overview", async (_req, res) => {
+  try {
+    const overview = await getRadiologyAdminOverview();
+    res.json(overview);
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }

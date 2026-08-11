@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 
 type MwlCheckStatus = "pass" | "warn" | "fail" | "skip";
+type MwlVerdict = "healthy" | "degraded" | "failed";
 
 type MwlCheck = {
   id: string;
@@ -19,10 +20,15 @@ type MwlCheck = {
 
 type MwlDeploymentStatus = {
   ready: boolean;
+  verdict?: MwlVerdict;
   checks: MwlCheck[];
   worklistDir: string | null;
   worklistHostHint: string | null;
+  stagingDir?: string | null;
+  stagingHostHint?: string | null;
   wlFileCount: number;
+  quarantineCount?: number;
+  activeProcedureCount?: number;
   procedureStats: Record<string, number>;
   recentActive: Array<{
     accessionNumber: string;
@@ -32,6 +38,17 @@ type MwlDeploymentStatus = {
     scheduledDate: string | null;
     hasWlFile: boolean;
   }>;
+  orthancInternal?: {
+    display: string;
+    networkNote: string;
+  };
+  lastSync?: {
+    written: number | null;
+    removed: number | null;
+    total: number | null;
+    at: string | null;
+    error: string | null;
+  } | null;
   setupSteps: string[];
 };
 
@@ -86,101 +103,108 @@ export function MwlStatusPanel({
     );
   }
 
+  const verdict = data.verdict ?? (data.ready ? "healthy" : "failed");
+  const banner =
+    verdict === "healthy"
+      ? "border-emerald-200 bg-emerald-50/80 dark:bg-emerald-950/20"
+      : verdict === "degraded"
+        ? "border-amber-200 bg-amber-50/80 dark:bg-amber-950/20"
+        : "border-red-200 bg-red-50/80 dark:bg-red-950/20";
+
   return (
-    <div className="space-y-4">
-      {/* Overall banner */}
-      <div className={`rounded-xl border p-4 flex flex-wrap items-center justify-between gap-3 ${
-        data.ready
-          ? "border-emerald-200 bg-emerald-50/80 dark:bg-emerald-950/20"
-          : "border-amber-200 bg-amber-50/80 dark:bg-amber-950/20"
-      }`}>
+    <div className="space-y-4" data-testid="mwl-status-panel">
+      <div className={`rounded-xl border p-4 flex flex-wrap items-center justify-between gap-3 ${banner}`}>
         <div className="flex items-start gap-3">
-          {data.ready
+          {verdict === "healthy"
             ? <CheckCircle2 size={22} className="text-emerald-600 mt-0.5 shrink-0" />
-            : <AlertTriangle size={22} className="text-amber-600 mt-0.5 shrink-0" />}
+            : verdict === "degraded"
+              ? <AlertTriangle size={22} className="text-amber-600 mt-0.5 shrink-0" />
+              : <XCircle size={22} className="text-red-600 mt-0.5 shrink-0" />}
           <div>
-            <p className="font-semibold text-sm">
-              {data.ready ? "MWL ready — bill → USG auto-fill can work" : "MWL not fully configured yet"}
+            <p className="font-semibold text-sm uppercase tracking-wide" data-testid="mwl-verdict">
+              MWL {verdict}{data.ready ? "" : " — not ready for modalities"}
             </p>
             <p className="text-xs text-muted-foreground mt-0.5">
-              {data.wlFileCount} worklist file(s) on disk
-              {data.worklistDir ? ` · ${data.worklistDir}` : ""}
-              {data.worklistHostHint ? ` (host: ${data.worklistHostHint})` : ""}
+              {data.wlFileCount} live .wl
+              {typeof data.activeProcedureCount === "number" ? ` · ${data.activeProcedureCount} active procedures` : ""}
+              {data.quarantineCount ? ` · ${data.quarantineCount} quarantined` : ""}
+              {data.worklistDir ? ` · live ${data.worklistDir}` : ""}
+              {data.stagingDir ? ` · staging ${data.stagingDir}` : ""}
             </p>
+            {data.orthancInternal && (
+              <p className="text-[10px] text-muted-foreground mt-1 font-mono break-all">
+                Orthanc internal: {data.orthancInternal.display}
+              </p>
+            )}
           </div>
         </div>
-        <Button variant="outline" size="sm" className="h-8 gap-1.5" onClick={() => void refetch()} disabled={isFetching}>
-          <RefreshCw size={13} className={isFetching ? "animate-spin" : ""} /> Refresh
-        </Button>
+        <div className="flex items-center gap-2">
+          {isAdmin && (
+            <Button size="sm" className="h-8 gap-1.5" onClick={onSync} disabled={syncing}>
+              <Radio size={13} /> {syncing ? "Syncing…" : "Sync worklist"}
+            </Button>
+          )}
+          <Button variant="outline" size="sm" className="h-8 gap-1.5" onClick={() => void refetch()} disabled={isFetching}>
+            <RefreshCw size={13} className={isFetching ? "animate-spin" : ""} /> Refresh
+          </Button>
+        </div>
       </div>
 
-      {/* Checklist */}
+      {data.lastSync && (
+        <div className={`rounded-lg border p-3 text-xs ${data.lastSync.error || data.lastSync.written === 0 && (data.lastSync.total ?? 0) > 0 ? "border-red-200 bg-red-50 text-red-800" : "bg-muted/30 text-muted-foreground"}`}>
+          Last sync{data.lastSync.at ? ` @ ${data.lastSync.at}` : ""}: wrote {data.lastSync.written ?? "—"},
+          removed {data.lastSync.removed ?? "—"} of {data.lastSync.total ?? "—"}
+          {data.lastSync.error ? ` — ${data.lastSync.error}` : ""}
+        </div>
+      )}
+
       <div className="rounded-xl border bg-card p-4 space-y-2">
         <h3 className="font-semibold text-sm flex items-center gap-2">
           <ListChecks size={16} className="text-primary" /> Deployment checks
         </h3>
-        <div className="space-y-2">
+        <ul className="space-y-2">
           {data.checks.map((c) => (
-            <div key={c.id} className="flex items-start gap-2 p-2.5 rounded-lg border bg-muted/30">
+            <li key={c.id} className="flex items-start gap-2 text-xs border-b border-border/60 pb-2 last:border-0">
               {statusIcon(c.status)}
-              <div className="flex-1 min-w-0">
+              <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2 flex-wrap">
-                  <span className="text-xs font-semibold">{c.title}</span>
+                  <span className="font-semibold">{c.title}</span>
                   {statusBadge(c.status)}
                 </div>
-                <p className="text-[11px] text-muted-foreground mt-0.5 break-words">{c.detail}</p>
+                <p className="text-muted-foreground mt-0.5 break-words">{c.detail}</p>
                 {c.fix && c.status !== "pass" && (
-                  <p className="text-[11px] text-amber-800 dark:text-amber-300 mt-1">
-                    <strong>Fix:</strong> {c.fix}
-                  </p>
+                  <p className="text-[10px] text-amber-800 mt-1">Fix: {c.fix}</p>
                 )}
               </div>
-            </div>
+            </li>
           ))}
-        </div>
+        </ul>
       </div>
 
-      {/* Setup steps */}
-      <div className="rounded-xl border bg-card p-4 space-y-3">
-        <h3 className="font-semibold text-sm flex items-center gap-2">
-          <FileStack size={16} className="text-primary" /> Simple setup steps
-        </h3>
-        <ol className="list-decimal list-inside space-y-2 text-xs text-muted-foreground">
-          {data.setupSteps.map((step, i) => (
-            <li key={i} className="leading-relaxed pl-1">{step}</li>
-          ))}
-        </ol>
-      </div>
-
-      {/* Today's active procedures */}
       {data.recentActive.length > 0 && (
-        <div className="rounded-xl border bg-card p-4 space-y-3">
+        <div className="rounded-xl border bg-card p-4 space-y-2">
           <h3 className="font-semibold text-sm flex items-center gap-2">
-            <Radio size={16} className="text-primary" /> Active today (waiting for USG/modality)
+            <FileStack size={16} className="text-primary" /> Recent active procedures
           </h3>
           <div className="overflow-x-auto">
             <table className="w-full text-[11px]">
               <thead>
                 <tr className="text-left text-muted-foreground border-b">
-                  <th className="py-1.5 pr-2">Accession</th>
-                  <th className="py-1.5 pr-2">Patient</th>
-                  <th className="py-1.5 pr-2">Mod</th>
-                  <th className="py-1.5 pr-2">Status</th>
-                  <th className="py-1.5">.wl file</th>
+                  <th className="py-1 pr-2">Accession</th>
+                  <th className="py-1 pr-2">Patient</th>
+                  <th className="py-1 pr-2">Mod</th>
+                  <th className="py-1 pr-2">Status</th>
+                  <th className="py-1">.wl</th>
                 </tr>
               </thead>
               <tbody>
                 {data.recentActive.map((r) => (
-                  <tr key={r.accessionNumber} className="border-b border-muted/50">
-                    <td className="py-1.5 pr-2 font-mono">{r.accessionNumber}</td>
-                    <td className="py-1.5 pr-2">{r.patientName ?? "—"}</td>
-                    <td className="py-1.5 pr-2">{r.modality ?? "—"}</td>
-                    <td className="py-1.5 pr-2">{r.status}</td>
-                    <td className="py-1.5">
-                      {r.hasWlFile
-                        ? <span className="text-emerald-600 font-semibold">Yes</span>
-                        : <span className="text-amber-600">Missing — click Sync</span>}
-                    </td>
+                  <tr key={r.accessionNumber} className="border-b border-border/40">
+                    <td className="py-1 pr-2 font-mono">{r.accessionNumber}</td>
+                    <td className="py-1 pr-2">{r.patientName ?? "—"}</td>
+                    <td className="py-1 pr-2">{r.modality ?? "—"}</td>
+                    <td className="py-1 pr-2">{r.status ?? "—"}</td>
+                    <td className="py-1">{r.hasWlFile ? "✓" : "Missing"}</td>
                   </tr>
                 ))}
               </tbody>
@@ -189,22 +213,14 @@ export function MwlStatusPanel({
         </div>
       )}
 
-      {/* Procedure stats + sync */}
-      <div className="rounded-xl border bg-card p-4 flex flex-wrap items-center justify-between gap-3">
-        <div className="text-xs text-muted-foreground">
-          <span className="font-semibold text-foreground">All procedures: </span>
-          {Object.entries(data.procedureStats).length === 0
-            ? "none yet"
-            : Object.entries(data.procedureStats).map(([k, v]) => `${k}: ${v}`).join(" · ")}
+      {data.setupSteps?.length > 0 && (
+        <div className="rounded-xl border border-dashed p-4 text-[11px] text-muted-foreground space-y-1">
+          <p className="font-semibold text-foreground text-xs">Setup checklist</p>
+          <ol className="list-decimal pl-4 space-y-1">
+            {data.setupSteps.map((s) => <li key={s}>{s}</li>)}
+          </ol>
         </div>
-        <Button
-          size="sm"
-          disabled={!isAdmin || syncing}
-          onClick={onSync}
-        >
-          {syncing ? "Syncing…" : "Sync MWL files now"}
-        </Button>
-      </div>
+      )}
     </div>
   );
 }

@@ -561,7 +561,7 @@ const PALETTE_COMMANDS: PaletteItem[] = [
   { id: "command:compare-previous", kind: "command", title: "Compare with previous study", subtitle: "Open the prior-study comparison", keywords: "prior previous comparison interval change longitudinal" },
 ];
 const PALETTE_SETTINGS: PaletteItem[] = [
-  { id: "setting:/settings/radiology-quick-select", kind: "setting", title: "Settings — Radiology Quick Select", subtitle: "Findings, structured questions, protocols, chips", keywords: "configure structured questions defaults" },
+  { id: "setting:/settings/radiology?tab=quick-select", kind: "setting", title: "Settings — Radiology Quick Select", subtitle: "Findings, structured questions, protocols, chips", keywords: "configure structured questions defaults" },
   { id: "setting:/settings", kind: "setting", title: "Settings — All", keywords: "configure preferences" },
 ];
 
