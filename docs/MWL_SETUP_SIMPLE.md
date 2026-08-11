@@ -114,7 +114,10 @@ If the USG cannot reach Orthanc directly, run the Windows MWL SCP agent (see Age
 |---------|-----|
 | No `.wl` files | Check ORTHANC_WORKLIST_DIR + volume mount; run Sync |
 | USG worklist empty | Orthanc worklists plugin off or wrong folder path |
-| Study not in ERP | INTERNAL_API_KEY mismatch; check Orthanc `erp_notify.lua` |
+| Study not in ERP | INTERNAL_API_KEY mismatch; check `care-erp-sync` container logs |
 | Patient name wrong on USG | Bill must include patient; accession must copy to study |
+| Orthanc crashes / restarts with `missing StudyInstanceUID` | Old `.wl` files had empty UIDs. Update ERP (MWL writer fix), then in ERP **Settings → Radiology → Sync MWL files now**, or delete `/volume1/docker/care-pacs/orthanc/worklists/*.wl` and re-sync. Add `"SetStudyInstanceUidIfMissing": true` to orthanc.json `Worklists` block. |
+
+**Note:** Orthanc→ERP intake is owned by the `care-erp-sync` Python container (`care_erp_sync.py`), not `auto_pull.lua`. The Lua script only logs stored instances. Sidecar `requirements.txt` needs only `requests`.
 
 See also: `docker/orthanc/orthanc-worklists-config.snippet.json`

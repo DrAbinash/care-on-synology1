@@ -24,11 +24,22 @@
  * it (the periodic/manual sync re-generates the folder from the DB).
  */
 
+import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { writeFile, unlink, mkdir } from "node:fs/promises";
+import { writeFile, unlink, mkdir, rename } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { logger } from "../logger";
+
+/** Modality Worklist Information Model — FIND (required SOP Class on .wl files). */
+const MWL_SOP_CLASS = "1.2.840.10008.5.1.4.31";
+/** Care numeric root — deterministic UIDs from accession (digits/dots only; DICOM UI). */
+const CARE_MWL_ROOT = "1.2.840.9999.113";
+/** Role component: 1=study, 2=series, 3=sop */
+const UID_ROLE = { study: "1", series: "2", sop: "3" } as const;
+/** Reject dumps that would crash Orthanc's worklist housekeeper. */
+const EMPTY_UID_TAG = /\((?:0008,0018|0020,000D|0020,000E)\)\s+UI\s+\[\s*\]/;
+const DICOM_UID_RE = /^[0-9]+(\.[0-9]+)+$/;
 
 export interface MwlProcedure {
   accessionNumber: string;
@@ -98,20 +109,91 @@ function fileFor(accession: string): string | null {
   return path.join(dir, accession.replace(/[^A-Za-z0-9._-]/g, "_") + ".wl");
 }
 
-// dump2dcm textual dump for one worklist item. StudyInstanceUID is left empty so
-// the modality assigns it; the accession number is the linking key.
+/** Staging dir outside Orthanc's watched folder (sibling `worklists-staging` or OS tmp). */
+function stagingDir(): string {
+  const live = worklistDir();
+  if (live) {
+    const sibling = path.join(path.dirname(live), "worklists-staging");
+    return sibling;
+  }
+  return os.tmpdir();
+}
+
+/**
+ * Refuse dumps that Orthanc's worklist housekeeper would reject (empty/invalid UIDs).
+ * Exported for unit tests.
+ */
+export function assertValidMwlDump(dumpText: string): void {
+  if (EMPTY_UID_TAG.test(dumpText)) {
+    throw new Error("MWL dump contains empty Study/Series/SOP Instance UID — refusing write");
+  }
+  for (const tag of ["(0008,0016)", "(0008,0018)", "(0020,000D)", "(0020,000E)"]) {
+    const re = new RegExp(tag.replace(/[()]/g, "\\$&") + "\\s+UI\\s+\\[([^\\]]*)\\]");
+    const m = dumpText.match(re);
+    const uid = m?.[1]?.trim() ?? "";
+    if (!uid) {
+      throw new Error(`MWL dump missing non-empty UID for ${tag}`);
+    }
+    if (uid.length > 64 || !DICOM_UID_RE.test(uid)) {
+      throw new Error(`MWL dump has invalid DICOM UID for ${tag}: ${uid}`);
+    }
+  }
+  if (!dumpText.includes("(0040,0100) SQ")) {
+    throw new Error("MWL dump missing ScheduledProcedureStepSequence");
+  }
+}
+
+/** Ensure generated UIDs themselves always meet DICOM rules (defense in depth). */
+export function assertValidGeneratedUid(uid: string, label: string): void {
+  if (!uid || uid.length > 64 || !DICOM_UID_RE.test(uid)) {
+    throw new Error(`Invalid generated ${label}: ${uid}`);
+  }
+}
+
+/** Deterministic DICOM UID suffix from accession + role (stable across MWL re-sync). */
+function uidSuffix(accession: string, role: string): string {
+  const hash = createHash("sha256").update(`${accession}\0${role}`).digest("hex");
+  return BigInt(`0x${hash.slice(0, 15)}`).toString();
+}
+
+/** Pre-allocated StudyInstanceUID for the scheduled procedure (Orthanc housekeeper requires this). */
+export function mwlStudyInstanceUid(accession: string): string {
+  const uid = `${CARE_MWL_ROOT}.${UID_ROLE.study}.${uidSuffix(accession, "study")}`;
+  assertValidGeneratedUid(uid, "StudyInstanceUID");
+  return uid;
+}
+
+export function mwlSeriesInstanceUid(accession: string): string {
+  const uid = `${CARE_MWL_ROOT}.${UID_ROLE.series}.${uidSuffix(accession, "series")}`;
+  assertValidGeneratedUid(uid, "SeriesInstanceUID");
+  return uid;
+}
+
+export function mwlSopInstanceUid(accession: string): string {
+  const uid = `${CARE_MWL_ROOT}.${UID_ROLE.sop}.${uidSuffix(accession, "sop")}`;
+  assertValidGeneratedUid(uid, "SOPInstanceUID");
+  return uid;
+}
+
+// dump2dcm textual dump for one worklist item. UIDs are pre-allocated from the
+// accession so Orthanc's worklist housekeeper accepts the file; accession remains
+// the clinical linking key when the modality assigns its own study UID on scan.
 function buildDump(p: MwlProcedure): string {
+  const acc = esc(p.accessionNumber);
   const modality = esc(p.modality).toUpperCase() || "OT";
   const desc = esc(p.studyDescription || p.procedureName || "");
   const comments = buildComments(p);
   return [
     `(0008,0005) CS [ISO_IR 100]`,
-    `(0008,0050) SH [${esc(p.accessionNumber)}]`,
+    `(0008,0016) UI [${MWL_SOP_CLASS}]`,
+    `(0008,0018) UI [${mwlSopInstanceUid(acc)}]`,
+    `(0008,0050) SH [${acc}]`,
     `(0010,0010) PN [${toPn(p.patientName)}]`,
     `(0010,0020) LO [${esc(p.patientId)}]`,
     `(0010,0030) DA [${digits(p.patientDob)}]`,
     `(0010,0040) CS [${esc(p.patientSex)}]`,
-    `(0020,000D) UI []`,
+    `(0020,000D) UI [${mwlStudyInstanceUid(acc)}]`,
+    `(0020,000E) UI [${mwlSeriesInstanceUid(acc)}]`,
     `(0032,1060) LO [${desc}]`,
     `(0008,0090) PN [${toPn(p.referringDoctor)}]`,
     `(0018,0015) CS [${esc(p.bodyPartExamined)}]`,
@@ -139,15 +221,15 @@ export function formatMwlPersonName(name: string | null | undefined): string {
 
 function runDump2Dcm(dumpText: string, outPath: string): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
-    const tmp = path.join(os.tmpdir(), `mwl_${path.basename(outPath)}_${process.pid}.txt`);
-    writeFile(tmp, dumpText, "utf8")
+    const tmpDump = path.join(os.tmpdir(), `mwl_${path.basename(outPath)}_${process.pid}.txt`);
+    writeFile(tmpDump, dumpText, "utf8")
       .then(() => {
-        const proc = spawn("dump2dcm", [tmp, outPath], { stdio: "ignore" });
+        const proc = spawn("dump2dcm", [tmpDump, outPath], { stdio: "ignore" });
         let settled = false;
         const finish = (ok: boolean) => {
           if (settled) return;
           settled = true;
-          unlink(tmp).catch(() => {});
+          unlink(tmpDump).catch(() => {});
           resolve(ok);
         };
         proc.on("error", () => finish(false)); // dump2dcm not installed / not on PATH
@@ -158,6 +240,106 @@ function runDump2Dcm(dumpText: string, outPath: string): Promise<boolean> {
   });
 }
 
+/** Post-dump2dcm: confirm binary file exposes non-empty Study/Series/SOP UIDs via dcmdump. */
+function validateDicomUidsWithDcmdump(filePath: string): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    const proc = spawn(
+      "dcmdump",
+      ["+P", "StudyInstanceUID", "+P", "SeriesInstanceUID", "+P", "SOPInstanceUID", filePath],
+      { stdio: ["ignore", "pipe", "ignore"] },
+    );
+    let out = "";
+    proc.stdout?.on("data", (chunk: Buffer) => { out += chunk.toString("utf8"); });
+    let settled = false;
+    const finish = (ok: boolean) => {
+      if (settled) return;
+      settled = true;
+      resolve(ok);
+    };
+    proc.on("error", () => finish(false)); // dcmdump missing — caller decides policy
+    proc.on("close", (code) => {
+      if (code !== 0) return finish(false);
+      const has = (keyword: string) => {
+        const re = new RegExp(`${keyword}\\s+[^\\[]*\\[([^\\]]+)\\]`);
+        const m = out.match(re);
+        const v = m?.[1]?.trim() ?? "";
+        return v.length > 0 && v.length <= 64 && DICOM_UID_RE.test(v);
+      };
+      // dcmdump +P output varies; also accept lines containing the keywords with brackets
+      const nonempty = (name: string) => {
+        if (has(name)) return true;
+        const idx = out.indexOf(name);
+        if (idx < 0) return false;
+        const slice = out.slice(idx, idx + 200);
+        const m = slice.match(/\[([^\]]+)\]/);
+        const v = m?.[1]?.trim() ?? "";
+        return v.length > 0 && v.length <= 64 && DICOM_UID_RE.test(v);
+      };
+      finish(nonempty("StudyInstanceUID") && nonempty("SeriesInstanceUID") && nonempty("SOPInstanceUID"));
+    });
+    setTimeout(() => { try { proc.kill(); } catch { /* gone */ } finish(false); }, 10_000);
+  });
+}
+
+/**
+ * Atomically publish a worklist into Orthanc's watched folder:
+ *   validate dump → dump2dcm into staging (outside watch) → validate DICOM →
+ *   rename into live .wl (same filesystem required).
+ *
+ * Never copyFile into the watched folder (non-atomic; Orthanc could read a partial file).
+ */
+async function publishWorklistAtomically(dumpText: string, finalPath: string): Promise<boolean> {
+  assertValidMwlDump(dumpText);
+  const stageRoot = stagingDir();
+  // Staging must be outside the Orthanc Database/Directory folder.
+  const liveDir = path.dirname(finalPath);
+  if (path.resolve(stageRoot) === path.resolve(liveDir)) {
+    throw new Error("MWL staging dir must not equal Orthanc watched worklists dir");
+  }
+  await mkdir(stageRoot, { recursive: true }).catch(() => {});
+  await mkdir(liveDir, { recursive: true }).catch(() => {});
+  const stagePath = path.join(stageRoot, `${path.basename(finalPath)}.${process.pid}.${Date.now()}.tmp`);
+  try {
+    const ok = await runDump2Dcm(dumpText, stagePath);
+    if (!ok) return false;
+
+    const dicomOk = await validateDicomUidsWithDcmdump(stagePath);
+    if (!dicomOk) {
+      // If dcmdump is unavailable, dump text already passed assertValidMwlDump;
+      // still refuse empty zero-byte outputs.
+      const { stat } = await import("node:fs/promises");
+      const st = await stat(stagePath).catch(() => null);
+      if (!st || st.size <= 0) {
+        await unlink(stagePath).catch(() => {});
+        return false;
+      }
+      // dcmdump missing or parse quirk: keep file only if size looks like a DICOM object
+      if (st.size < 128) {
+        await unlink(stagePath).catch(() => {});
+        logger.warn({ stagePath, size: st.size }, "mwl: post-dump2dcm file too small — refusing publish");
+        return false;
+      }
+      logger.warn({ stagePath }, "mwl: dcmdump validation unavailable/failed — proceeding on dump-text validation + size check");
+    }
+
+    try {
+      await rename(stagePath, finalPath);
+    } catch (err) {
+      // Cross-device rename is NOT atomically safe into Orthanc's watch folder.
+      await unlink(stagePath).catch(() => {});
+      logger.warn(
+        { err, stagePath, finalPath },
+        "mwl: atomic rename failed (staging must be on the same filesystem as worklists) — refusing non-atomic copy",
+      );
+      return false;
+    }
+    return true;
+  } catch (err) {
+    await unlink(stagePath).catch(() => {});
+    throw err;
+  }
+}
+
 /** Write/refresh the worklist file for one scheduled procedure. Best-effort. */
 export async function writeWorklistFile(p: MwlProcedure): Promise<boolean> {
   try {
@@ -165,8 +347,8 @@ export async function writeWorklistFile(p: MwlProcedure): Promise<boolean> {
     if (!dir || !p.accessionNumber) return false;
     const out = fileFor(p.accessionNumber);
     if (!out) return false;
-    await mkdir(dir, { recursive: true }).catch(() => {});
-    const ok = await runDump2Dcm(buildDump(p), out);
+    const dump = buildDump(p);
+    const ok = await publishWorklistAtomically(dump, out);
     if (!ok) logger.warn({ accession: p.accessionNumber }, "mwl: dump2dcm failed (is DCMTK installed?)");
     return ok;
   } catch (err) {
