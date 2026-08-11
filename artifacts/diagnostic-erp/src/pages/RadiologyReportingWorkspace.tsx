@@ -345,12 +345,14 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     if (existingDraft) {
       hydratedDraftForStudyRef.current = studyId;
       const draft = existingDraft as any;
+      // Normalize: API may return impression/recommendation as string[] or string
+      const normStr = (v: unknown) => Array.isArray(v) ? v.join("\n") : (typeof v === "string" ? v : "");
       useWorkspace.getState().setEditorContent({
-        findings: draft.findings ?? draft.rawFindings ?? "",
+        findings: normStr(draft.findings ?? draft.rawFindings),
         impression: normalizeImpressionLines(draft.impression).join("\n"),
-        recommendation: draft.recommendation ?? "",
-        technique: draft.technique ?? "",
-        clinicalHistory: draft.clinicalHistory ?? (workflow.currentRow as any)?.clinicalHistory ?? "",
+        recommendation: normStr(draft.recommendation),
+        technique: normStr(draft.technique),
+        clinicalHistory: normStr(draft.clinicalHistory) || (workflow.currentRow as any)?.clinicalHistory || "",
       });
     } else {
       // Fetch AI draft
@@ -359,12 +361,13 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         api.post<{ findings: string; impression: string; recommendation: string }>("/api/ai-reporting/draft", {
           studyInstanceUID: row.studyInstanceUID,
           modality: row.modality,
-        }).then(draft => {
+        }).then((draft: any) => {
+          const normStr = (v: unknown) => Array.isArray(v) ? v.join("\n") : (typeof v === "string" ? v : "");
           useWorkspace.getState().setEditorContent({
-            findings: draft.findings,
-            impression: draft.impression,
-            recommendation: draft.recommendation,
-            technique: "",
+            findings: normStr(draft.findings),
+            impression: normalizeImpressionLines(draft.impression).join("\n"),
+            recommendation: normStr(draft.recommendation),
+            technique: normStr(draft.technique),
             clinicalHistory: (row as any).clinicalHistory ?? "",
           });
         }).catch(() => {

@@ -1,0 +1,58 @@
+{
+  "Name": "CareDiagnostics",
+  "DicomAet": "ORTHANC2",
+  "DicomPort": 4242,
+  "HttpPort": 8042,
+
+  "RemoteAccessAllowed": true,
+  "AuthenticationEnabled": false,
+
+  "StorageDirectory": "/var/lib/orthanc/db",
+  "IndexDirectory": "/var/lib/orthanc/db",
+
+  "Plugins": [
+    "/usr/share/orthanc/plugins-available/libOrthancDicomWeb.so",
+    "/usr/share/orthanc/plugins-available/libOrthancWorklists.so"
+  ],
+
+  "LuaScripts": [
+    "/etc/orthanc/scripts/auto_pull.lua"
+  ],
+
+  "DicomAlwaysAllowStore": true,
+  "DicomCheckCalledAet": false,
+
+  "DicomWeb": {
+    "Enable": true,
+    "Root": "/dicom-web/",
+    "EnableWado": true,
+    "WadoRoot": "/wado",
+    "Ssl": false,
+    "EnableCors": true
+  },
+
+  "HttpHeaders": {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Headers": "Authorization, Origin, X-Requested-With, Content-Type, Accept, Range",
+    "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS"
+  },
+
+  "Worklists": {
+    "Enable": true,
+    "Database": "/var/lib/orthanc/worklists",
+    "SetStudyInstanceUidIfMissing": true,
+    "DeleteWorklistsOnStableStudy": true,
+    "HousekeepingInterval": 60
+  },
+
+  "DicomModalities": {
+    "UIH": ["UIH", "172.16.1.103", 3333],
+    "UIH_MRI": ["UIH", "172.16.1.103", 3333],
+    "CT_MACHINE": ["ct99", "172.16.1.99", 4006],
+    "weasis-clinic": ["weasis123", "172.16.1.140", 11113],
+    "weasis-su": ["weasissu", "172.16.1.141", 11113],
+    "GE-Voluson-E9": ["Voluson", "172.16.1.46", 104],
+    "XRAY_1": ["film plus", "172.16.1.80", 105],
+    "XRAY_2": ["film plus", "172.16.1.90", 105]
+  }
+}
