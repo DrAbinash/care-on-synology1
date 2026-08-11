@@ -73,7 +73,31 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   snippetMacros: typeof window !== "undefined" ? loadMacros() : DEFAULT_SNIPPET_MACROS, macroEditorOpen: false, editingMacro: null, activeMacroPrompt: null,
   signOffProfiles: typeof window !== "undefined" ? loadProfiles() : DEFAULT_SIGN_OFF_PROFILES, preloadTriggered: false,
 
-  setStudies: (s) => set({ studies: normalizeWorkspaceStudies(s) }),
+  setStudies: (s) => {
+    const next = normalizeWorkspaceStudies(s);
+    const prev = get().studies;
+    // Skip no-op updates — otherwise setStudies(workflow.queue) in a render-driven
+    // effect can thrash when the queue array is a new [] reference each render
+    // (React minified error #185 / maximum update depth).
+    if (
+      prev.length === next.length
+      && prev.every((p, i) => {
+        const n = next[i]!;
+        return p.id === n.id
+          && p.accession === n.accession
+          && p.studyInstanceUID === n.studyInstanceUID
+          && p.status === n.status
+          && p.priority === n.priority
+          && p.patient?.id === n.patient?.id
+          && p.patient?.name === n.patient?.name
+          && p.tatMinutes === n.tatMinutes
+          && p.lockedBy === n.lockedBy;
+      })
+    ) {
+      return;
+    }
+    set({ studies: next });
+  },
   selectStudy: (id) => { const st = get().studies.find(s => s.id === id); if (!st) return; set({ activeStudyId: id, findingsText: "", impressionText: "", recommendationText: "", techniqueText: "", clinicalHistoryText: st.clinicalHistory || "", measurements: [], priors: [], isDirty: false, isFinalized: false, isFinalizing: false, railStage: "orient", ghostText: null, ghostTextTarget: null, acknowledgedCopilotIds: new Set(), activeCopilotItem: null, voiceTranscript: "", voiceListening: false, selectedFormatIds: [], reportFormatPickerOpen: false, criticalSlaStartedAt: null, criticalSlaEscalated: false, preloadTriggered: false, nextStudyPreloaded: false }); setTimeout(() => get().recomputeCopilot(), 0); },
   setNextStudy: (id) => set({ nextStudyId: id }), markNextStudyPreloaded: () => set({ nextStudyPreloaded: true }),
   setField: (f, v) => { const p: Partial<S> = { isDirty: true }; if (f === "findings") p.findingsText = v; else if (f === "impression") p.impressionText = v; else if (f === "recommendation") p.recommendationText = v; else if (f === "technique") p.techniqueText = v; else if (f === "clinicalHistory") p.clinicalHistoryText = v; set(p); if (f === "findings" || f === "impression" || f === "recommendation") { const d = detectMacroTrigger(v, get().snippetMacros); if (d) set({ activeMacroPrompt: { macro: d.macro, field: f, startPos: d.startPos } }); else if (get().activeMacroPrompt) set({ activeMacroPrompt: null }); } const st = get().studies.find(s => s.id === get().activeStudyId); if (f === "findings" && st && shouldPreloadNext(v, st.modality, get().preloadTriggered)) set({ preloadTriggered: true }); setTimeout(() => get().recomputeCopilot(), 0); },

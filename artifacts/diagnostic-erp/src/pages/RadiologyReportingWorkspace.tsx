@@ -279,8 +279,9 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   // A second direct fetch used to overwrite nested `patient` with flat API rows
   // and crash WorklistStrip on `s.patient.id` a few seconds after load.
   useEffect(() => {
-    if (!workflow.queue) return;
-    setStudies(workflow.queue);
+    // Always sync (including empty) so the strip clears when the queue is empty.
+    // setStudies is idempotent for equal content — safe against unstable [].
+    setStudies(workflow.queue ?? []);
   }, [workflow.queue, setStudies]);
 
   // ─── Auto-select first study ────────────────────────────────────────────────
