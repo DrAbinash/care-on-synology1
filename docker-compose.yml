@@ -402,7 +402,7 @@ services:
       # Modality Worklist (.wl) — same host folder Orthanc worklists plugin reads.
       # care-pacs mounts this at /var/lib/orthanc/worklists.
       - ${ORTHANC_WORKLIST_HOST_DIR:-/volume1/docker/care-pacs/orthanc/worklists}:/orthanc-worklists
-      - /volume1/docker/care-pacs/orthanc/worklists-staging:/orthanc-worklists-staging
+      - /volume1/docker/care-pacs/orthanc/worklists-staging:/worklists-staging
     healthcheck:
       # ── Liveness probe (process alive + port responding) ───────────────────
       # Hits GET /health — registered on the Express app with no auth, no
