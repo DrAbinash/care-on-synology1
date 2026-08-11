@@ -33,7 +33,7 @@ interface S {
 }
 
 export type WorkspaceStore = S & {
-  setStudies: (s: Study[]) => void; selectStudy: (id: string) => void; setNextStudy: (id: string | null) => void; markNextStudyPreloaded: () => void;
+  setStudies: (s: unknown) => void; selectStudy: (id: string) => void; setNextStudy: (id: string | null) => void; markNextStudyPreloaded: () => void;
   setField: (f: EditorField, v: string) => void; setEditorContent: (c: { findings: string; impression: string; recommendation: string; technique: string; clinicalHistory: string }) => void;
   setMeasurements: (m: MeasurementRow[]) => void; setPriors: (p: PriorStudy[]) => void;
   insertMeasurement: (id: string) => void; insertAllMeasurements: () => void;
