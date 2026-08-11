@@ -4,6 +4,7 @@ import {
   mwlStudyInstanceUid,
   mwlSeriesInstanceUid,
   mwlSopInstanceUid,
+  assertValidMwlDump,
 } from "./mwlWorklistWriter";
 
 describe("MWL UIDs (Orthanc housekeeper requires non-empty Study/Series/SOP UIDs)", () => {
@@ -11,13 +12,38 @@ describe("MWL UIDs (Orthanc housekeeper requires non-empty Study/Series/SOP UIDs
     const a = mwlStudyInstanceUid("ACC-2026-001");
     const b = mwlStudyInstanceUid("ACC-2026-001");
     expect(a).toBe(b);
-    expect(a).toMatch(/^1\.2\.840\.9999\.care\.mwl\.study\.\d+$/);
-    expect(mwlSeriesInstanceUid("ACC-2026-001")).toMatch(/^1\.2\.840\.9999\.care\.mwl\.series\.\d+$/);
-    expect(mwlSopInstanceUid("ACC-2026-001")).toMatch(/^1\.2\.840\.9999\.care\.mwl\.sop\.\d+$/);
+    expect(a).toMatch(/^1\.2\.840\.9999\.113\.1\.\d+$/);
+    expect(mwlSeriesInstanceUid("ACC-2026-001")).toMatch(/^1\.2\.840\.9999\.113\.2\.\d+$/);
+    expect(mwlSopInstanceUid("ACC-2026-001")).toMatch(/^1\.2\.840\.9999\.113\.3\.\d+$/);
   });
 
   test("different accessions produce different study UIDs", () => {
     expect(mwlStudyInstanceUid("A1")).not.toBe(mwlStudyInstanceUid("A2"));
+  });
+
+  test("assertValidMwlDump rejects empty StudyInstanceUID", () => {
+    const bad = [
+      "(0008,0016) UI [1.2.840.10008.5.1.4.31]",
+      "(0008,0018) UI [1.2.3]",
+      "(0020,000D) UI []",
+      "(0020,000E) UI [1.2.4]",
+      "(0040,0100) SQ",
+    ].join("\n");
+    expect(() => assertValidMwlDump(bad)).toThrow(/empty|Study/i);
+  });
+
+  test("assertValidMwlDump accepts a well-formed dump skeleton", () => {
+    const study = mwlStudyInstanceUid("ACC1");
+    const series = mwlSeriesInstanceUid("ACC1");
+    const sop = mwlSopInstanceUid("ACC1");
+    const good = [
+      `(0008,0016) UI [1.2.840.10008.5.1.4.31]`,
+      `(0008,0018) UI [${sop}]`,
+      `(0020,000D) UI [${study}]`,
+      `(0020,000E) UI [${series}]`,
+      `(0040,0100) SQ`,
+    ].join("\n");
+    expect(() => assertValidMwlDump(good)).not.toThrow();
   });
 });
 

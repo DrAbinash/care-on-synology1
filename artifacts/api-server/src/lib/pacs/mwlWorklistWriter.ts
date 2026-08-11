@@ -26,15 +26,19 @@
 
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { writeFile, unlink, mkdir } from "node:fs/promises";
+import { writeFile, unlink, mkdir, rename, copyFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { logger } from "../logger";
 
 /** Modality Worklist Information Model — FIND (required SOP Class on .wl files). */
 const MWL_SOP_CLASS = "1.2.840.10008.5.1.4.31";
-/** Care namespace root — deterministic UIDs derived from accession (stable across re-sync). */
-const CARE_MWL_ROOT = "1.2.840.9999.care.mwl";
+/** Care numeric root — deterministic UIDs from accession (digits/dots only; DICOM UI). */
+const CARE_MWL_ROOT = "1.2.840.9999.113";
+/** Role component: 1=study, 2=series, 3=sop */
+const UID_ROLE = { study: "1", series: "2", sop: "3" } as const;
+/** Reject dumps that would crash Orthanc's worklist housekeeper. */
+const EMPTY_UID_TAG = /\((?:0008,0018|0020,000D|0020,000E)\)\s+UI\s+\[\s*\]/;
 
 export interface MwlProcedure {
   accessionNumber: string;
@@ -104,6 +108,36 @@ function fileFor(accession: string): string | null {
   return path.join(dir, accession.replace(/[^A-Za-z0-9._-]/g, "_") + ".wl");
 }
 
+/** Staging dir outside Orthanc's watched folder (sibling `worklists-staging` or OS tmp). */
+function stagingDir(): string {
+  const live = worklistDir();
+  if (live) {
+    const sibling = path.join(path.dirname(live), "worklists-staging");
+    return sibling;
+  }
+  return os.tmpdir();
+}
+
+/**
+ * Refuse dumps that Orthanc's worklist housekeeper would reject (empty UIDs).
+ * Exported for unit tests.
+ */
+export function assertValidMwlDump(dumpText: string): void {
+  if (EMPTY_UID_TAG.test(dumpText)) {
+    throw new Error("MWL dump contains empty Study/Series/SOP Instance UID — refusing write");
+  }
+  for (const tag of ["(0008,0016)", "(0008,0018)", "(0020,000D)", "(0020,000E)"]) {
+    const re = new RegExp(tag.replace(/[()]/g, "\\$&") + "\\s+UI\\s+\\[([^\\]]*)\\]");
+    const m = dumpText.match(re);
+    if (!m || !m[1].trim()) {
+      throw new Error(`MWL dump missing non-empty UID for ${tag}`);
+    }
+  }
+  if (!dumpText.includes("(0040,0100) SQ")) {
+    throw new Error("MWL dump missing ScheduledProcedureStepSequence");
+  }
+}
+
 /** Deterministic DICOM UID suffix from accession + role (stable across MWL re-sync). */
 function uidSuffix(accession: string, role: string): string {
   const hash = createHash("sha256").update(`${accession}\0${role}`).digest("hex");
@@ -112,15 +146,15 @@ function uidSuffix(accession: string, role: string): string {
 
 /** Pre-allocated StudyInstanceUID for the scheduled procedure (Orthanc housekeeper requires this). */
 export function mwlStudyInstanceUid(accession: string): string {
-  return `${CARE_MWL_ROOT}.study.${uidSuffix(accession, "study")}`;
+  return `${CARE_MWL_ROOT}.${UID_ROLE.study}.${uidSuffix(accession, "study")}`;
 }
 
 export function mwlSeriesInstanceUid(accession: string): string {
-  return `${CARE_MWL_ROOT}.series.${uidSuffix(accession, "series")}`;
+  return `${CARE_MWL_ROOT}.${UID_ROLE.series}.${uidSuffix(accession, "series")}`;
 }
 
 export function mwlSopInstanceUid(accession: string): string {
-  return `${CARE_MWL_ROOT}.sop.${uidSuffix(accession, "sop")}`;
+  return `${CARE_MWL_ROOT}.${UID_ROLE.sop}.${uidSuffix(accession, "sop")}`;
 }
 
 // dump2dcm textual dump for one worklist item. UIDs are pre-allocated from the
@@ -169,15 +203,15 @@ export function formatMwlPersonName(name: string | null | undefined): string {
 
 function runDump2Dcm(dumpText: string, outPath: string): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
-    const tmp = path.join(os.tmpdir(), `mwl_${path.basename(outPath)}_${process.pid}.txt`);
-    writeFile(tmp, dumpText, "utf8")
+    const tmpDump = path.join(os.tmpdir(), `mwl_${path.basename(outPath)}_${process.pid}.txt`);
+    writeFile(tmpDump, dumpText, "utf8")
       .then(() => {
-        const proc = spawn("dump2dcm", [tmp, outPath], { stdio: "ignore" });
+        const proc = spawn("dump2dcm", [tmpDump, outPath], { stdio: "ignore" });
         let settled = false;
         const finish = (ok: boolean) => {
           if (settled) return;
           settled = true;
-          unlink(tmp).catch(() => {});
+          unlink(tmpDump).catch(() => {});
           resolve(ok);
         };
         proc.on("error", () => finish(false)); // dump2dcm not installed / not on PATH
@@ -188,6 +222,34 @@ function runDump2Dcm(dumpText: string, outPath: string): Promise<boolean> {
   });
 }
 
+/**
+ * Atomically publish a worklist into Orthanc's watched folder:
+ *   validate dump → dump2dcm into staging (outside watch) → rename into live .wl
+ * Orthanc must never observe a partially-written or empty-UID file.
+ */
+async function publishWorklistAtomically(dumpText: string, finalPath: string): Promise<boolean> {
+  assertValidMwlDump(dumpText);
+  const stageRoot = stagingDir();
+  await mkdir(stageRoot, { recursive: true }).catch(() => {});
+  await mkdir(path.dirname(finalPath), { recursive: true }).catch(() => {});
+  const stagePath = path.join(stageRoot, `${path.basename(finalPath)}.${process.pid}.${Date.now()}.tmp`);
+  try {
+    const ok = await runDump2Dcm(dumpText, stagePath);
+    if (!ok) return false;
+    try {
+      await rename(stagePath, finalPath);
+    } catch {
+      // Cross-device rename can fail; copy then unlink staging.
+      await copyFile(stagePath, finalPath);
+      await unlink(stagePath).catch(() => {});
+    }
+    return true;
+  } catch (err) {
+    await unlink(stagePath).catch(() => {});
+    throw err;
+  }
+}
+
 /** Write/refresh the worklist file for one scheduled procedure. Best-effort. */
 export async function writeWorklistFile(p: MwlProcedure): Promise<boolean> {
   try {
@@ -195,8 +257,8 @@ export async function writeWorklistFile(p: MwlProcedure): Promise<boolean> {
     if (!dir || !p.accessionNumber) return false;
     const out = fileFor(p.accessionNumber);
     if (!out) return false;
-    await mkdir(dir, { recursive: true }).catch(() => {});
-    const ok = await runDump2Dcm(buildDump(p), out);
+    const dump = buildDump(p);
+    const ok = await publishWorklistAtomically(dump, out);
     if (!ok) logger.warn({ accession: p.accessionNumber }, "mwl: dump2dcm failed (is DCMTK installed?)");
     return ok;
   } catch (err) {
