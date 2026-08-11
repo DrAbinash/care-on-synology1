@@ -39,7 +39,8 @@ export interface QueueStudy {
 }
 
 /** Drop malformed queue rows (missing id) so navigation/indicators never crash. */
-export function sanitizeQueueStudies(rows: QueueStudy[]): QueueStudy[] {
+export function sanitizeQueueStudies(rows: QueueStudy[] | null | undefined): QueueStudy[] {
+  if (!rows || rows.length === 0) return [];
   return rows.filter(
     (s): s is QueueStudy => s != null && typeof s.id === "number" && Number.isFinite(s.id),
   );

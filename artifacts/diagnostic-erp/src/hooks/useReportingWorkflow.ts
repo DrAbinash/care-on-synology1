@@ -28,6 +28,9 @@ import { toISTDateStr } from "@/lib/dateRangePresets";
 
 const PARKED_STORAGE_KEY = "radiology_parked_studies_v1";
 
+/** Stable empty fallback — NEVER use `= []` inline on useQuery data (new ref each render → max update depth). */
+const EMPTY_QUEUE: QueueStudy[] = [];
+
 function readParked(): ParkedStudy[] {
   try {
     return parseParked(typeof window !== "undefined" ? window.localStorage.getItem(PARKED_STORAGE_KEY) : null);
@@ -85,7 +88,7 @@ export function useReportingWorkflow(currentStudyId: number | undefined, options
   const qc = useQueryClient();
 
   // Same key as pages/RadiologyWorklist.tsx — shared cache, no second fetch.
-  const { data: fullQueueRaw = [], isFetching: queueRefreshing, refetch: refetchQueue, dataUpdatedAt } = useQuery<QueueStudy[]>({
+  const { data: fullQueueRaw, isFetching: queueRefreshing, refetch: refetchQueue, dataUpdatedAt } = useQuery<QueueStudy[]>({
     queryKey: ["radiology-pacs-worklist"],
     queryFn: async () => sanitizeQueueStudies(await api.get<QueueStudy[]>("/api/radiology/pacs-worklist")),
     refetchInterval: 30_000,
@@ -97,7 +100,10 @@ export function useReportingWorkflow(currentStudyId: number | undefined, options
   // for studies that merely fell outside the current filter.
   // Modality + date filters then narrow Next/Previous/position to the
   // radiologist's selected study bucket (Reporting Workspace chrome).
-  const fullQueue = useMemo(() => sanitizeQueueStudies(fullQueueRaw), [fullQueueRaw]);
+  const fullQueue = useMemo(
+    () => sanitizeQueueStudies(fullQueueRaw ?? EMPTY_QUEUE),
+    [fullQueueRaw],
+  );
 
   const queue = useMemo(
     () => filterQueueByScope(fullQueue, scope, myName, myUserId).filter((s) =>
