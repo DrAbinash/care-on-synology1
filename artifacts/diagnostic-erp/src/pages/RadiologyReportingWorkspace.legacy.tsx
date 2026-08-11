@@ -4567,8 +4567,8 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
           impression,
           isCritical,
           criticalNote,
-          createdBy: session?.user.name ?? "Radiologist",
-          actor: session?.user.name ?? "staff",
+          createdBy: session?.user?.name ?? "Radiologist",
+          actor: session?.user?.name ?? "staff",
           signatureId: finalizeSignerRef.current.signatureId,
           // F7 (Cockpit→Workspace merge): durable record of the quality
           // warnings that existed and how the critical finding (if any) was
@@ -4680,13 +4680,13 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     const targetId = finalReport.id ?? linkedReportId;
     if (!targetId) return;
     if (!window.confirm(
-      `Verify (countersign) this report as ${session?.user.name ?? "current user"}?\n\n` +
+      `Verify (countersign) this report as ${session?.user?.name ?? "current user"}?\n\n` +
       `This records you as the verifying radiologist.`,
     )) return;
     setVerifying(true);
     try {
       await api.post(`/api/patient-reports/${targetId}/verify`, {
-        verifiedByName: session?.user.name ?? undefined,
+        verifiedByName: session?.user?.name ?? undefined,
       });
       toast({ title: "Report verified" });
       void qc.invalidateQueries({ queryKey: ["workspace-final-report"] });
