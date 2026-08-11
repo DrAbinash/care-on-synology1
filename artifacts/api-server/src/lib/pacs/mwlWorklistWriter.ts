@@ -24,11 +24,17 @@
  * it (the periodic/manual sync re-generates the folder from the DB).
  */
 
+import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { writeFile, unlink, mkdir } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { logger } from "../logger";
+
+/** Modality Worklist Information Model — FIND (required SOP Class on .wl files). */
+const MWL_SOP_CLASS = "1.2.840.10008.5.1.4.31";
+/** Care namespace root — deterministic UIDs derived from accession (stable across re-sync). */
+const CARE_MWL_ROOT = "1.2.840.9999.care.mwl";
 
 export interface MwlProcedure {
   accessionNumber: string;
@@ -98,20 +104,44 @@ function fileFor(accession: string): string | null {
   return path.join(dir, accession.replace(/[^A-Za-z0-9._-]/g, "_") + ".wl");
 }
 
-// dump2dcm textual dump for one worklist item. StudyInstanceUID is left empty so
-// the modality assigns it; the accession number is the linking key.
+/** Deterministic DICOM UID suffix from accession + role (stable across MWL re-sync). */
+function uidSuffix(accession: string, role: string): string {
+  const hash = createHash("sha256").update(`${accession}\0${role}`).digest("hex");
+  return BigInt(`0x${hash.slice(0, 15)}`).toString();
+}
+
+/** Pre-allocated StudyInstanceUID for the scheduled procedure (Orthanc housekeeper requires this). */
+export function mwlStudyInstanceUid(accession: string): string {
+  return `${CARE_MWL_ROOT}.study.${uidSuffix(accession, "study")}`;
+}
+
+export function mwlSeriesInstanceUid(accession: string): string {
+  return `${CARE_MWL_ROOT}.series.${uidSuffix(accession, "series")}`;
+}
+
+export function mwlSopInstanceUid(accession: string): string {
+  return `${CARE_MWL_ROOT}.sop.${uidSuffix(accession, "sop")}`;
+}
+
+// dump2dcm textual dump for one worklist item. UIDs are pre-allocated from the
+// accession so Orthanc's worklist housekeeper accepts the file; accession remains
+// the clinical linking key when the modality assigns its own study UID on scan.
 function buildDump(p: MwlProcedure): string {
+  const acc = esc(p.accessionNumber);
   const modality = esc(p.modality).toUpperCase() || "OT";
   const desc = esc(p.studyDescription || p.procedureName || "");
   const comments = buildComments(p);
   return [
     `(0008,0005) CS [ISO_IR 100]`,
-    `(0008,0050) SH [${esc(p.accessionNumber)}]`,
+    `(0008,0016) UI [${MWL_SOP_CLASS}]`,
+    `(0008,0018) UI [${mwlSopInstanceUid(acc)}]`,
+    `(0008,0050) SH [${acc}]`,
     `(0010,0010) PN [${toPn(p.patientName)}]`,
     `(0010,0020) LO [${esc(p.patientId)}]`,
     `(0010,0030) DA [${digits(p.patientDob)}]`,
     `(0010,0040) CS [${esc(p.patientSex)}]`,
-    `(0020,000D) UI []`,
+    `(0020,000D) UI [${mwlStudyInstanceUid(acc)}]`,
+    `(0020,000E) UI [${mwlSeriesInstanceUid(acc)}]`,
     `(0032,1060) LO [${desc}]`,
     `(0008,0090) PN [${toPn(p.referringDoctor)}]`,
     `(0018,0015) CS [${esc(p.bodyPartExamined)}]`,
