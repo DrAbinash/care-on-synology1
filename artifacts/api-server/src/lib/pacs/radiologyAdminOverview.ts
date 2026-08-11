@@ -153,7 +153,8 @@ export async function getRadiologyAdminOverview(): Promise<RadiologyAdminOvervie
       id: "sync",
       label: "Sync / Automation",
       status: duplicateSyncWarning ? "yellow" : (pollerOn || erpSyncLikely ? "green" : "yellow"),
-      detail: duplicateSyncWarning ?? syncWorkers.filter((w) => w.enabled).map((w) => w.label).join(" · ") || "No intake path clearly enabled",
+      detail: duplicateSyncWarning
+        ?? (syncWorkers.filter((w) => w.enabled).map((w) => w.label).join(" · ") || "No intake path clearly enabled"),
     },
     {
       id: "ohif",
