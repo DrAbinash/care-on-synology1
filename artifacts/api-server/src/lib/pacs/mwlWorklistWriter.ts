@@ -119,6 +119,11 @@ function stagingDir(): string {
   return os.tmpdir();
 }
 
+/** Public accessor for diagnostics / Settings MWL panel (same rules as publish). */
+export function getMwlStagingDir(): string {
+  return stagingDir();
+}
+
 /**
  * Refuse dumps that Orthanc's worklist housekeeper would reject (empty/invalid UIDs).
  * Exported for unit tests.

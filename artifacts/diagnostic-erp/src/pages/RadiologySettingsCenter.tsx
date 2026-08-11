@@ -49,6 +49,9 @@ import {
 import { RisMonitorCommandGrid } from "@/components/risMonitoring/RisMonitorCards";
 import ViewerNetworkRoutesCard from "@/components/radiology/ViewerNetworkRoutesCard";
 import { MwlStatusPanel } from "@/components/radiology/MwlStatusPanel";
+import { RadiologyAdminOverviewPanel } from "@/components/radiology/RadiologyAdminOverviewPanel";
+import { RadiologyDeploymentPanel } from "@/components/radiology/RadiologyDeploymentPanel";
+import RadiologyQuickSelectSettings from "@/pages/RadiologyQuickSelectSettings";
 
 type Setting = { id: number; key: string; value: string | null; category: string; isSecret: boolean };
 type ServiceHealth = { name: string; endpoint: string; status: "green" | "yellow" | "red"; details: string };
@@ -195,16 +198,20 @@ export default function RadiologySettingsCenter() {
   const isAdmin = FULL_ACCESS_ROLES.has(normalizeRole(readStaffSession()?.user.role ?? ""));
 
   const SETTINGS_TABS = [
-    "general", "reading-suite", "network", "modalities", "pacs", "pacs-advanced", "viewers", "mwl",
-    "reporting", "usg-extraction", "style", "premium", "voice", "diagnostics", "history", "advanced",
+    "overview", "general", "reading-suite", "network", "modalities", "pacs", "pacs-advanced", "viewers", "mwl",
+    "sync", "reporting", "usg-extraction", "quick-select", "style", "premium", "voice",
+    "diagnostics", "history", "deployment", "advanced",
   ] as const;
 
   const [activeTab, setActiveTab] = useState(() => {
     try {
       const t = new URLSearchParams(window.location.search).get("tab");
       if (t && (SETTINGS_TABS as readonly string[]).includes(t)) return t;
+      // Aliases from old deep links
+      if (t === "usg") return "usg-extraction";
+      if (t === "dicom") return "mwl";
     } catch { /* ignore */ }
-    return "general";
+    return "overview";
   });
 
   function goTab(tab: string) {
@@ -458,23 +465,27 @@ export default function RadiologySettingsCenter() {
         </div>
       </div>
 
-      {/* Navigation tabs */}
+      {/* Navigation tabs — primary IA first, then clinical/content, then diagnostics */}
       <Tabs value={activeTab} onValueChange={goTab} className="space-y-4">
         <TabsList className="flex flex-wrap h-auto gap-1 bg-muted p-1 rounded-lg">
+          <TabsTrigger value="overview"><Activity size={14} className="mr-1.5" />Overview</TabsTrigger>
+          <TabsTrigger value="pacs"><Radio size={14} className="mr-1.5" />PACS Server</TabsTrigger>
+          <TabsTrigger value="viewers"><MonitorPlay size={14} className="mr-1.5" />Viewer</TabsTrigger>
+          <TabsTrigger value="mwl"><Wrench size={14} className="mr-1.5" />MWL</TabsTrigger>
+          <TabsTrigger value="modalities"><Server size={14} className="mr-1.5" />Modalities</TabsTrigger>
+          <TabsTrigger value="sync"><RefreshCw size={14} className="mr-1.5" />Sync</TabsTrigger>
+          <TabsTrigger value="usg-extraction"><Waves size={14} className="mr-1.5" />USG</TabsTrigger>
+          <TabsTrigger value="quick-select"><Zap size={14} className="mr-1.5" />Quick Select</TabsTrigger>
+          <TabsTrigger value="reporting"><BrainCircuit size={14} className="mr-1.5" />AI</TabsTrigger>
+          <TabsTrigger value="diagnostics"><Activity size={14} className="mr-1.5" />Diagnostics</TabsTrigger>
+          <TabsTrigger value="deployment"><ShieldAlert size={14} className="mr-1.5" />Deployment</TabsTrigger>
           <TabsTrigger value="general"><ShieldCheck size={14} className="mr-1.5" />General</TabsTrigger>
           <TabsTrigger value="reading-suite"><BookOpen size={14} className="mr-1.5" />Reading Suite</TabsTrigger>
           <TabsTrigger value="network"><Network size={14} className="mr-1.5" />Profiles</TabsTrigger>
-          <TabsTrigger value="modalities"><Server size={14} className="mr-1.5" />Modalities</TabsTrigger>
-          <TabsTrigger value="pacs"><Radio size={14} className="mr-1.5" />PACS Servers</TabsTrigger>
-          <TabsTrigger value="pacs-advanced"><Server size={14} className="mr-1.5" />PACS / DICOM (Full)</TabsTrigger>
-          <TabsTrigger value="viewers"><MonitorPlay size={14} className="mr-1.5" />Viewers</TabsTrigger>
-          <TabsTrigger value="mwl"><Wrench size={14} className="mr-1.5" />DICOM &amp; MWL</TabsTrigger>
-          <TabsTrigger value="reporting"><BrainCircuit size={14} className="mr-1.5" />AI &amp; Templates</TabsTrigger>
-          <TabsTrigger value="usg-extraction"><Waves size={14} className="mr-1.5" />USG Extraction</TabsTrigger>
+          <TabsTrigger value="pacs-advanced"><Server size={14} className="mr-1.5" />PACS Full</TabsTrigger>
           <TabsTrigger value="style"><Palette size={14} className="mr-1.5" />Report Style</TabsTrigger>
-          <TabsTrigger value="premium"><Zap size={14} className="mr-1.5" />Premium Report</TabsTrigger>
+          <TabsTrigger value="premium"><Zap size={14} className="mr-1.5" />Premium</TabsTrigger>
           <TabsTrigger value="voice"><Mic size={14} className="mr-1.5" />Voice</TabsTrigger>
-          <TabsTrigger value="diagnostics"><Activity size={14} className="mr-1.5" />Diagnostics</TabsTrigger>
           <TabsTrigger value="history"><Info size={14} className="mr-1.5" />History</TabsTrigger>
           <TabsTrigger value="advanced"><ShieldAlert size={14} className="mr-1.5" />Advanced</TabsTrigger>
         </TabsList>
@@ -495,6 +506,38 @@ export default function RadiologySettingsCenter() {
             </p>
           </div>
         )}
+
+        {/* ── Overview (canonical landing) ── */}
+        <TabsContent value="overview" className="space-y-4">
+          <RadiologyAdminOverviewPanel onGotoTab={goTab} />
+          <div className="rounded-xl border bg-card p-4">
+            <p className="text-xs text-muted-foreground mb-3">
+              All radiology / USG / PACS / MWL admin settings live on this page. Old sidebar entries and deep links redirect here.
+            </p>
+            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+              {([
+                { tab: "pacs", title: "PACS Server", desc: "Orthanc endpoints & AE" },
+                { tab: "viewers", title: "Viewer", desc: "OHIF / Weasis / network routes" },
+                { tab: "mwl", title: "MWL", desc: "Worklist status & sync" },
+                { tab: "sync", title: "Sync", desc: "Poller / agents / duplicate warning" },
+                { tab: "usg-extraction", title: "USG", desc: "Extraction & companion" },
+                { tab: "quick-select", title: "Quick Select", desc: "Finding chips & macros" },
+                { tab: "reporting", title: "AI", desc: "Reporting & inference" },
+                { tab: "deployment", title: "Deployment", desc: "Read-only env values" },
+              ] as const).map((card) => (
+                <button
+                  key={card.tab}
+                  type="button"
+                  onClick={() => goTab(card.tab)}
+                  className="text-left rounded-lg border bg-muted/20 hover:bg-muted/50 p-3 transition-colors"
+                >
+                  <div className="text-xs font-semibold">{card.title}</div>
+                  <div className="text-[10px] text-muted-foreground mt-0.5">{card.desc}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+        </TabsContent>
 
         {/* Tab content 1: Network Profiles */}
         {/* ── Phase E: GENERAL — plain-language everyday options ── */}
@@ -586,11 +629,13 @@ export default function RadiologySettingsCenter() {
             </div>
           </div>
           <div className="rounded-xl border bg-card p-4 space-y-2 max-w-2xl">
-            <h4 className="text-xs font-bold uppercase tracking-wide text-muted-foreground">Related admin pages</h4>
+            <h4 className="text-xs font-bold uppercase tracking-wide text-muted-foreground">Related settings</h4>
             <div className="flex flex-wrap gap-2 text-sm">
-              <a href="/settings/radiology-quick-select" className="text-primary hover:underline">USG Quick Select</a>
+              <button type="button" className="text-primary hover:underline" onClick={() => goTab("quick-select")}>Quick Select</button>
               <span className="text-muted-foreground">·</span>
-              <a href="/radiology/hl7-settings" className="text-primary hover:underline">HL7 / ORM settings</a>
+              <button type="button" className="text-primary hover:underline" onClick={() => goTab("usg-extraction")}>USG Settings</button>
+              <span className="text-muted-foreground">·</span>
+              <button type="button" className="text-primary hover:underline" onClick={() => goTab("advanced")}>HL7 / Advanced</button>
               <span className="text-muted-foreground">·</span>
               <a href="/radiology/structured-report-templates" className="text-primary hover:underline">Structured templates</a>
               <span className="text-muted-foreground">·</span>
@@ -717,20 +762,20 @@ export default function RadiologySettingsCenter() {
             <h4 className="text-xs font-bold uppercase tracking-wide text-muted-foreground">Reporting content &amp; tools</h4>
             <div className="grid sm:grid-cols-2 gap-2 text-sm">
               {[
-                { href: "/settings/radiology-quick-select", label: "Quick Select (findings & protocols)" },
+                { tab: "quick-select", label: "Quick Select (findings & protocols)" },
                 { href: "/radiology/structured-report-templates", label: "Structured templates" },
                 { href: "/radiology/normal-templates", label: "Normal one-click templates" },
-                { href: "/radiology/ai-reporting-settings", label: "AI reporting" },
-                { href: "/radiology/usg-admin-settings", label: "USG extraction admin" },
+                { tab: "reporting", label: "AI reporting" },
+                { tab: "usg-extraction", label: "USG extraction admin" },
                 { href: "/settings/radiology/knowledge-packs", label: "Knowledge packs" },
                 { href: "/radiology/reporting-workspace", label: "Open Reporting Workspace" },
                 { href: "/radiology/worklist", label: "Open Worklist" },
               ].map((l) => (
                 <button
-                  key={l.href}
+                  key={l.tab ?? l.href}
                   type="button"
                   className="text-left rounded-lg border px-3 py-2 hover:bg-muted/50 text-primary"
-                  onClick={() => navigate(l.href)}
+                  onClick={() => (l.tab ? goTab(l.tab) : navigate(l.href!))}
                 >
                   {l.label}
                 </button>
@@ -966,18 +1011,17 @@ export default function RadiologySettingsCenter() {
                 <p className="text-[11px] text-muted-foreground">Orthanc WADO endpoint — your clinic LAN IP + :8042/wado. Never a Docker bridge IP.</p>
               </div>
 
-              {/* Internal URLs — read-only display. These are set via .env,
-                  not editable here, since they're infra/deployment-level
-                  (container-to-container), not clinic-level configuration.
-                  See ORTHANC_INTERNAL_URL / OHIF_INTERNAL_URL in .env.example. */}
+              {/* Internal Orthanc URL — never invent Docker hostnames; see Deployment tab. */}
               <div className="rounded-lg border border-dashed bg-muted/30 p-3 space-y-2">
-                <p className="text-xs font-semibold text-muted-foreground">Internal URLs (server/container only — set via .env, not here)</p>
-                <div className="grid sm:grid-cols-2 gap-2 text-[11px] font-mono text-muted-foreground">
-                  <div>ORTHANC_INTERNAL_URL<br /><span className="text-foreground">http://care-orthanc:8042</span></div>
-                  <div>OHIF_INTERNAL_URL<br /><span className="text-foreground">(optional — only if health-check probes can't reach the public URL above)</span></div>
-                </div>
-                <p className="text-[10px] text-muted-foreground">
-                  These are used only for the API server's own health-check probes — never for the URL that opens in a doctor's browser or Weasis. Docker service names (like <code>care-orthanc</code>) are fine here, since this traffic never leaves the Docker network.
+                <p className="text-xs font-semibold text-muted-foreground">Server-side Orthanc URL</p>
+                <p className="text-[11px] text-muted-foreground">
+                  Browser launch URLs are edited above. The API&apos;s <code className="font-mono">ORTHANC_INTERNAL_URL</code> is
+                  deployment-owned (often a LAN IP when ERP and Orthanc are on separate Docker networks).
+                  {" "}
+                  <button type="button" className="underline text-primary" onClick={() => goTab("deployment")}>
+                    View resolved value on Deployment tab
+                  </button>
+                  — never invent a Docker service hostname when ERP and Orthanc are on separate networks.
                 </p>
               </div>
             </div>
@@ -1003,6 +1047,14 @@ export default function RadiologySettingsCenter() {
                 const r = await api.post<{ total: number; written: number; removed: number }>("/api/radiology/mwl-worklist/sync", {});
                 toast({ title: "MWL sync complete", description: `${r.written} written, ${r.removed} removed (${r.total} procedures)` });
                 void qc.invalidateQueries({ queryKey: ["mwl-deployment-status"] });
+                void qc.invalidateQueries({ queryKey: ["radiology-admin-overview"] });
+                if (r.written === 0 && r.total > 0) {
+                  toast({
+                    title: "MWL sync wrote 0 files",
+                    description: "Check staging/live mounts and atomic rename (EXDEV) on the MWL tab.",
+                    variant: "destructive",
+                  });
+                }
               } catch (e: unknown) {
                 toast({ title: "MWL sync failed", description: e instanceof Error ? e.message : "Error", variant: "destructive" });
               } finally {
@@ -1033,10 +1085,21 @@ export default function RadiologySettingsCenter() {
                 </p>
               </div>
             </div>
-            <div className="space-y-6">
-              <AgentSetupPanel />
-            </div>
           </div>
+        </TabsContent>
+
+        {/* Sync / Automation — workers + agent setup (moved from sidebar Agent Setup) */}
+        <TabsContent value="sync" className="space-y-4">
+          <div className="rounded-xl border bg-card p-4 text-xs text-muted-foreground">
+            Prefer a single Orthanc→ERP intake path. If both <code className="font-mono">ORTHANC_CHANGES_POLLER</code> and
+            care-erp-sync are active, you may get duplicate study notifications — check the Overview tab.
+            Storage paths are not editable here (care-pacs owns Orthanc storage).
+            {" "}
+            <button type="button" className="underline text-primary" onClick={() => goTab("overview")}>Open Overview</button>
+            {" · "}
+            <button type="button" className="underline text-primary" onClick={() => goTab("mwl")}>Open MWL status</button>
+          </div>
+          <AgentSetupPanel />
         </TabsContent>
 
         {/* Tab content 6: AI & Templates */}
@@ -1425,13 +1488,26 @@ export default function RadiologySettingsCenter() {
           <VoiceSettingsPanel settings={settings} upsertSetting={upsertSetting} isAdmin={isAdmin} />
         </TabsContent>
 
-        {/* Tab content 8.7: USG extraction pipeline (GE Voluson push monitor,
-            OCR/AI-normalize toggles, confidence thresholds). Shared panel —
-            also reachable via the preserved /radiology/usg-admin-settings and
-            /usg/settings deep links. This whole page is admin-gated, matching
-            the standalone wrapper's FULL_ACCESS_ROLES check. */}
+        {/* Tab content 8.7: USG extraction pipeline */}
         <TabsContent value="usg-extraction" className="space-y-4">
+          <div className="rounded-lg border bg-muted/20 p-3 text-xs text-muted-foreground">
+            Canonical home for USG admin settings. Old routes <code className="font-mono">/radiology/usg-admin-settings</code> and
+            <code className="font-mono"> /usg/settings</code> redirect here.
+          </div>
           <UsgExtractionPanel />
+        </TabsContent>
+
+        {/* Quick Select (was /settings/radiology-quick-select) */}
+        <TabsContent value="quick-select" className="space-y-4">
+          <div className="rounded-lg border bg-muted/20 p-3 text-xs text-muted-foreground">
+            Canonical home for Quick Select. Old route <code className="font-mono">/settings/radiology-quick-select</code> redirects here.
+          </div>
+          <RadiologyQuickSelectSettings />
+        </TabsContent>
+
+        {/* Deployment — read-only env */}
+        <TabsContent value="deployment" className="space-y-4">
+          <RadiologyDeploymentPanel />
         </TabsContent>
 
         {/* Tab content 9: Advanced */}
@@ -1456,12 +1532,12 @@ export default function RadiologySettingsCenter() {
               {[
                 { href: "/radiology/advanced-tools", label: "Advanced Tools catalog" },
                 { href: "/radiology/network-control-center", label: "Network Control" },
-                { href: "/dicom-nodes", label: "DICOM Nodes" },
-                { href: "/radiology/modality-management", label: "Modalities" },
+                { tab: "pacs-advanced", label: "DICOM Nodes / PACS Full" },
+                { tab: "modalities", label: "Modalities" },
                 { href: "/radiology/dicom-agent-dashboard", label: "DICOM Agent" },
                 { href: "/radiology/watchdog", label: "Watchdog" },
                 { href: "/radiology/hl7-settings", label: "HL7 Settings" },
-                { href: "/radiology/ai-reporting-settings", label: "AI Reporting" },
+                { tab: "reporting", label: "AI Reporting" },
                 { href: "/radiology/ai-prompt-manager", label: "AI Prompt Manager" },
                 { href: "/radiology/ai-comparison", label: "AI Comparison" },
                 { href: "/radiology/missed-finding-detector", label: "Missed Finding Detector" },
@@ -1471,11 +1547,11 @@ export default function RadiologySettingsCenter() {
                 { href: "/teaching-cases", label: "Teaching Files" },
               ].map((item) => (
                 <Button
-                  key={item.href}
+                  key={item.tab ?? item.href}
                   size="sm"
                   variant="outline"
                   className="h-7 text-xs"
-                  onClick={() => navigate(item.href)}
+                  onClick={() => (item.tab ? goTab(item.tab) : navigate(item.href!))}
                 >
                   {item.label}
                 </Button>

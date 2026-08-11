@@ -68,13 +68,13 @@ export const SECTION_LABELS: Record<PackSectionName, string> = {
 /** Where each gap is fixed — deep links to the REAL owning admin routes
  *  (paths verified against App.tsx; the coverage test pins them). */
 export const SECTION_ADMIN_LINKS: Record<PackSectionName, string> = {
-  protocol: "/settings/radiology-quick-select",
+  protocol: "/settings/radiology?tab=quick-select",
   template: "/radiology/structured-report-templates",
-  clinicalHistory: "/settings/radiology-quick-select",
-  quickFindings: "/settings/radiology-quick-select",
-  structuredFindings: "/settings/radiology-quick-select",
+  clinicalHistory: "/settings/radiology?tab=quick-select",
+  quickFindings: "/settings/radiology?tab=quick-select",
+  structuredFindings: "/settings/radiology?tab=quick-select",
   measurements: "/measurement-registry",
-  checklist: "/settings/radiology-quick-select",
+  checklist: "/settings/radiology?tab=quick-select",
   companion: "/settings/radiology/knowledge-packs",
   copilot: "/settings/radiology/knowledge-packs",
   recommendations: "/settings/radiology/recommendations",

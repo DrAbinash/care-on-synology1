@@ -205,8 +205,8 @@ const navItems: NavEntry[] = [
           // display's "Now Serving" card actually reads) — previously only
           // reachable via the unrelated top-level "Queue Tokens" nav item.
           { path: "/queue?department=USG",                       icon: Ticket,     label: "USG Queue / Call Next" },
-          { path: "/settings/radiology-quick-select",            icon: Settings2,  label: "Quick Select Settings", ownerOnly: true },
-          { path: "/radiology/usg-admin-settings",               icon: Settings2,  label: "USG Admin Settings", ownerOnly: true },
+          // USG / Quick Select admin settings live ONLY under Settings → Radiology
+          // (tabs usg-extraction + quick-select). Sidebar entries removed to kill duplicates.
         ],
       },
       // Owner-only leftovers — not needed in a radiologist's daily rail.
@@ -305,7 +305,8 @@ const navItems: NavEntry[] = [
       // Radiology Tools hub tabs — see Settings.tsx. Dedicated Radiology
       // Settings Center remains the PACS/DICOM/AI configuration hub.
       { path: "/settings",                  icon: Settings2,      label: "General Settings" },
-      { path: "/settings/radiology",        icon: Radio,          label: "Radiology Settings Center", ownerOnly: true },
+      // Single radiology admin entry — USG, Quick Select, PACS, MWL, AI all live inside it.
+      { path: "/settings/radiology",        icon: Radio,          label: "Radiology", ownerOnly: true },
       { path: "/settings/scanner",          icon: ScanLine,       label: "Scanner Settings", ownerOnly: true },
       { path: "/abdm-abha",                 icon: ShieldCheck,    label: "ABDM / ABHA", featureFlag: "ff_abdm_abha" },
       { path: "/tests",                     icon: FlaskConical,   label: "Test Catalog" },
