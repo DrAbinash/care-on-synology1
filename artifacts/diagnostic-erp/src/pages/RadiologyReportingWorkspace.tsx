@@ -274,57 +274,13 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const rightPanelRef = useRef<ImperativePanelHandle>(null);
   const hydratedDraftForStudyRef = useRef<number | null>(null);
 
-  // ─── Fetch worklist from real API ──────────────────────────────────────────
+  // ─── Sync workflow queue into Z.ai store (single ingress — no raw pacs dump) ─
+  // useReportingWorkflow already owns the shared "radiology-pacs-worklist" query.
+  // A second direct fetch used to overwrite nested `patient` with flat API rows
+  // and crash WorklistStrip on `s.patient.id` a few seconds after load.
   useEffect(() => {
-    let cancelled = false;
-    async function fetchWorklist() {
-      try {
-        const data = await api.get<{ studies: Study[] } | Study[]>("/api/radiology/pacs-worklist");
-        const list = Array.isArray(data) ? data : data.studies;
-        if (!cancelled && list) setStudies(list);
-      } catch (err) {
-        console.warn("[Workspace] worklist fetch failed:", err);
-      }
-    }
-    fetchWorklist();
-    const interval = setInterval(fetchWorklist, 30000);
-    return () => { cancelled = true; clearInterval(interval); };
-  }, [setStudies]);
-
-  // ─── Sync workflow queue into Z.ai store ────────────────────────────────────
-  useEffect(() => {
-    if (workflow.queue && workflow.queue.length > 0) {
-      setStudies(workflow.queue.map((q: any) => ({
-        id: String(q.id),
-        accession: q.accessionNumber ?? "",
-        studyInstanceUID: q.studyInstanceUID ?? "",
-        patient: {
-          id: String(q.patientId ?? 0),
-          name: q.patientName ?? "Unknown",
-          age: q.patientAge ?? 0,
-          sex: q.patientSex ?? "O",
-          uhid: q.patientId ?? "",
-          phone: q.patientPhone,
-          referringDoctor: q.referringDoctor ?? "",
-        },
-        modality: q.modality ?? "XR",
-        bodyPart: q.bodyPart ?? "",
-        studyDescription: q.studyDescription ?? "",
-        clinicalHistory: (q as any).clinicalHistory ?? "",
-        status: q.status ?? "received",
-        priority: q.priority ?? "routine",
-        receivedAt: q.receivedAt ?? "",
-        lockedBy: q.lockUserName,
-        lockExpiresAt: q.lockExpiresAt,
-        priorCount: q.priorCount ?? 0,
-        criticalFlag: q.criticalFlag ?? false,
-        aiDraftReady: q.aiDraftReady ?? false,
-        tatMinutes: q.tatMinutes ?? 0,
-        slaMinutes: q.slaMinutes ?? 240,
-        series: q.series ?? 0,
-        images: q.images ?? 0,
-      })));
-    }
+    if (!workflow.queue) return;
+    setStudies(workflow.queue);
   }, [workflow.queue, setStudies]);
 
   // ─── Auto-select first study ────────────────────────────────────────────────
@@ -335,7 +291,9 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       if (match) { selectStudy(match.id); return; }
     }
     const pr: Record<string, number> = { stat: 0, urgent: 1, routine: 2, vip: 1 };
-    const sorted = [...studies].sort((a: Study, b: Study) => (pr[a.priority] - pr[b.priority]) || (a.tatMinutes - b.tatMinutes));
+    const sorted = [...studies].sort(
+      (a: Study, b: Study) => ((pr[a.priority] ?? 2) - (pr[b.priority] ?? 2)) || (a.tatMinutes - b.tatMinutes),
+    );
     if (sorted[0]) selectStudy(sorted[0].id);
   }, [studies, activeStudyId, studyId, selectStudy]);
 
@@ -362,6 +320,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
           studyInstanceUID: row.studyInstanceUID,
           modality: row.modality,
         }).then((draft: any) => {
+          if (!draft || typeof draft !== "object") return;
           const normStr = (v: unknown) => Array.isArray(v) ? v.join("\n") : (typeof v === "string" ? v : "");
           useWorkspace.getState().setEditorContent({
             findings: normStr(draft.findings),
@@ -403,10 +362,16 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     const next = remaining[0];
     if (next) {
       useWorkspace.getState().setNextStudy(next.id);
+      const patientId = next.patient?.id;
+      const priorUrl = patientId && patientId !== "0"
+        ? `/api/radiology-copilot/prior-studies?patientId=${encodeURIComponent(patientId)}`
+        : null;
       Promise.allSettled([
-        api.get(`/api/radiology-copilot/prior-studies?patientId=${next.patient.id}`),
-        api.get(`/api/radiology/report-generator/measurements?studyId=${next.id}`),
-        api.post("/api/ai-reporting/draft", { studyInstanceUID: next.studyInstanceUID, modality: next.modality }),
+        priorUrl ? api.get(priorUrl) : Promise.resolve(null),
+        api.get(`/api/radiology/report-generator/measurements?studyId=${encodeURIComponent(next.id)}`),
+        next.studyInstanceUID
+          ? api.post("/api/ai-reporting/draft", { studyInstanceUID: next.studyInstanceUID, modality: next.modality })
+          : Promise.resolve(null),
       ]).then(() => useWorkspace.getState().markNextStudyPreloaded());
     }
   }, [preloadTriggered, studies, activeStudyId]);
@@ -668,7 +633,9 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
               {study.modality}
             </span>
             <span className="text-xs font-semibold truncate">{study.studyDescription}</span>
-            <span className="text-[10px] text-muted-foreground truncate">· {study.patient.name} ({study.patient.age}{study.patient.sex})</span>
+            <span className="text-[10px] text-muted-foreground truncate">
+              · {study.patient?.name ?? "Unknown"} ({study.patient?.age ?? 0}{study.patient?.sex ?? "O"})
+            </span>
             {findingsPct > 0 && (
               <span className={`text-[9px] font-mono px-1 rounded ${findingsPct >= 80 ? "bg-emerald-100 text-emerald-700" : "bg-muted text-muted-foreground"}`}
                 title="Findings completion (preload fires at 80%)">{findingsPct}%</span>

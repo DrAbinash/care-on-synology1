@@ -33,7 +33,7 @@ export function useRadiologyDraftId(studyId: number | null | undefined) {
       const res = await api.get<{ success: boolean; drafts: RadiologyDraftRow[] }>(
         `/api/radiology/report-generator/drafts?studyId=${studyId}`,
       );
-      return res.drafts[0] ?? null;
+      return res?.drafts?.[0] ?? null;
     },
     enabled: !!studyId,
   });

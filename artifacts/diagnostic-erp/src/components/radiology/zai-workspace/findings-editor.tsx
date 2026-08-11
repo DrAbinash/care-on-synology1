@@ -15,7 +15,7 @@ export function FindingsEditor({ field, label, placeholder, minHeight = "200px",
   const setGhost = useWorkspaceSelector(s => s.setGhostText);
   const sid = useWorkspaceSelector(s => s.activeStudyId);
   const studies = useWorkspaceSelector(s => s.studies);
-  const issues: LintIssue[] = useMemo(() => { if (!value) return []; const st = studies.find(s => s.id === sid); return runLintRules(value, { modality: st?.modality ?? "XR", sex: st?.patient.sex }); }, [value, sid, studies]);
+  const issues: LintIssue[] = useMemo(() => { if (!value) return []; const st = studies.find(s => s.id === sid); return runLintRules(value, { modality: st?.modality ?? "XR", sex: st?.patient?.sex }); }, [value, sid, studies]);
   useEffect(() => { if (ref.current) { ref.current.style.height = "auto"; ref.current.style.height = Math.max(parseInt(minHeight), ref.current.scrollHeight) + "px"; } }, [value, minHeight]);
   useEffect(() => { if (gTarget === field && gt && ref.current) { ref.current.focus(); const e = ref.current.value.length; ref.current.setSelectionRange(e, e); } }, [gTarget, gt, field]);
   const hk = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -30,7 +30,7 @@ export function FindingsEditor({ field, label, placeholder, minHeight = "200px",
     else if (field === "recommendation") s = "Clinical correlation advised. Follow-up as clinically indicated.";
     setGhost(s, s ? field : null);
   };
-  const lines = value.split("\n");
+  const lines = (typeof value === "string" ? value : "").split("\n");
   return (
     <div className="relative w-full">
       <QuickSelectStrip field={field} />
