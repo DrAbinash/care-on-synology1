@@ -12,7 +12,7 @@ import { z } from "zod/v4";
 import { FULL_ACCESS_ROLES, type StaffAuthRequest } from "../middleware/requireStaffAuth";
 import {
   resolveAiEnablementForUser, getPreferences, savePreferences, getSchedulerConfig, saveSchedulerConfig,
-  getModalityPolicies, setModalityPolicy, setOvernightModalities, listFeaturePolicies, setFeaturePolicy,
+  getModalityPolicies, setModalityPolicy, setOvernightModalities, saveDraftAutomation, listFeaturePolicies, setFeaturePolicy,
 } from "../lib/ai/clinicalConfigService";
 import { scheduleStudy, getAiQueueDashboard, cancelAiJob, runNightBatch, runScheduledReprocessing, runLearningAggregation } from "../lib/ai/schedulerService";
 import { getLatestDraftForStudy, recordDraftFeedback } from "../lib/ai/draftService";
@@ -115,6 +115,7 @@ aiClinicalRouter.get("/scheduler/config", async (req, res) => { if (!requireAdmi
 aiClinicalRouter.put("/scheduler/config", async (req, res) => {
   if (!requireAdmin(req, res)) return;
   const parsed = z.object({
+    draftTiming: z.enum(["on_arrival", "scheduled"]).optional(),
     nightStart: z.string().optional(), nightEnd: z.string().optional(), quietStart: z.string().optional(), quietEnd: z.string().optional(),
     gpuLimitPercent: z.number().int().optional(), cpuLimitPercent: z.number().int().optional(), maxConcurrentJobs: z.number().int().optional(),
     maxRetries: z.number().int().optional(), includePriors: z.boolean().optional(), includeOcr: z.boolean().optional(),
@@ -122,7 +123,24 @@ aiClinicalRouter.put("/scheduler/config", async (req, res) => {
   }).safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ error: parsed.error.issues }); return; }
   await saveSchedulerConfig(parsed.data, staff(req)?.role);
-  res.json({ ok: true });
+  res.json({ ok: true, config: await getSchedulerConfig() });
+});
+
+/** One-shot save from Settings → Radiology → AI → Draft automation. */
+aiClinicalRouter.put("/draft-automation", async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const parsed = z.object({
+    draftTiming: z.enum(["on_arrival", "scheduled"]),
+    modalities: z.array(z.string().min(1)),
+    nightStart: z.string().optional(),
+    nightEnd: z.string().optional(),
+    quietStart: z.string().optional(),
+    quietEnd: z.string().optional(),
+    enableAi: z.boolean().optional(),
+  }).safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ error: parsed.error.issues }); return; }
+  const result = await saveDraftAutomation({ ...parsed.data, updatedBy: staff(req)?.role });
+  res.json({ ok: true, ...result });
 });
 
 aiClinicalRouter.get("/modality-policies", async (req, res) => { if (!requireAdmin(req, res)) return; res.json(await getModalityPolicies()); });

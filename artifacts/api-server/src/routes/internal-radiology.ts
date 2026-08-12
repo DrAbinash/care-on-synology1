@@ -846,6 +846,20 @@ router.post("/radiology/studies", async (req, res) => {
       });
     }
 
+    // DICOM → Ollama draft: enqueue per Settings → Radiology → AI (on arrival or scheduled).
+    if (studyInstanceUID) {
+      import("../lib/ai/schedulerService")
+        .then(({ scheduleStudyOnDicomArrival }) =>
+          scheduleStudyOnDicomArrival({
+            studyInstanceUid: studyInstanceUID as string,
+            modality: modality ?? null,
+          }),
+        )
+        .catch((err: unknown) => {
+          logger.warn({ err, worklistId: row.id }, "AI draft schedule on intake failed silently");
+        });
+    }
+
     logger.info({ worklistId: row.id, accessionNumber }, "POST /api/internal/radiology/studies success");
     res.status(201).json({ success: true, worklistId: row.id });
     return;

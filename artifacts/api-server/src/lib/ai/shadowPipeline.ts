@@ -28,6 +28,7 @@ import { listStudyInstances, renderAnchors } from "./studyImageFetch";
 import { shadowStubProvider, type ShadowInferenceProvider } from "./shadowInference";
 import { runDeterministicQuality } from "./rulesBeforeAi";
 import { applyTrustGauntlet, type GauntletFinding } from "./findingValidation";
+import { seedReportDraftFromAi } from "./seedReportDraftFromAi";
 
 export const AI_SHADOW_PIPELINE_JOB = "ai_shadow_pipeline";
 
@@ -292,6 +293,7 @@ export function makeAiShadowPipelineHandler(overrides: Partial<ShadowPipelineDep
 
     // Morning worklist signal — radiologists see READY on overnight AI drafts.
     try {
+      const findingsText = gauntlet.valid.map((f) => f.text).join("\n");
       await db
         .update(radiologyWorklistTable)
         .set({
@@ -301,13 +303,23 @@ export function makeAiShadowPipelineHandler(overrides: Partial<ShadowPipelineDep
             draftId: draftRow.id,
             version,
             findingCount: gauntlet.valid.length,
+            findings: findingsText,
             impression: draft.impression,
             updatedAt: new Date().toISOString(),
           }),
         })
         .where(eq(radiologyWorklistTable.studyInstanceUID, uid));
+
+      // Patient/worklist working draft so Reporting Workspace opens with text ready.
+      await seedReportDraftFromAi({
+        studyInstanceUid: uid,
+        findingsText,
+        impressionLines: Array.isArray(draft.impression) ? draft.impression : [],
+        modality: payload.modality,
+        sourceDraftId: draftRow.id,
+      });
     } catch {
-      /* worklist update is best-effort — shadow draft is already durable */
+      /* worklist/report draft update is best-effort — shadow draft is already durable */
     }
 
     return {

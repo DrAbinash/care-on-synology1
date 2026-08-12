@@ -73,6 +73,21 @@ export const aiClient = {
       `/api/ai/modality-policies`,
       { overnightModalities, mode: mode ?? "night_batch" },
     ),
+  saveDraftAutomation: (body: {
+    draftTiming: "on_arrival" | "scheduled";
+    modalities: string[];
+    nightStart?: string;
+    nightEnd?: string;
+    quietStart?: string;
+    quietEnd?: string;
+    enableAi?: boolean;
+  }) =>
+    api.put<{
+      ok: boolean;
+      masterEnabled?: boolean;
+      scheduler?: Record<string, unknown>;
+      policies?: Array<{ modality: string; mode: string }>;
+    }>(`/api/ai/draft-automation`, body),
   runNightBatch: (force?: boolean) =>
     api.post<Record<string, unknown>>(
       `/api/ai/scheduler/run/night-batch${force ? "?force=1" : ""}`,

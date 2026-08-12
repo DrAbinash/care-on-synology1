@@ -10,11 +10,12 @@
 import { db } from "@workspace/db";
 import {
   aiFeaturePoliciesTable, aiSchedulerConfigTable, aiModalityPoliciesTable, aiRadiologistPreferencesTable,
+  featureFlagsTable,
 } from "@workspace/db/schema";
 import { eq } from "drizzle-orm";
-import { isFeatureEnabledServer } from "../featureFlags";
+import { isFeatureEnabledServer, invalidateFeatureFlagCache } from "../featureFlags";
 import { resolveAiEnablement, type AiPolicyRow, type Enablement } from "./aiPolicy";
-import type { SchedulerConfig, ModalityMode } from "./aiScheduler";
+import type { SchedulerConfig, ModalityMode, DraftTiming } from "./aiScheduler";
 import { normalizeAiModality } from "./modalityNormalize";
 
 export { normalizeAiModality } from "./modalityNormalize";
@@ -46,15 +47,21 @@ export async function resolveAiEnablementForUser(q: EnablementQuery): Promise<En
 
 // ── Scheduler config (singleton id=1, with safe defaults) ───────────────────
 const DEFAULT_SCHEDULER: SchedulerConfig = {
+  draftTiming: "on_arrival",
   nightStart: "23:00", nightEnd: "06:00", quietStart: "08:00", quietEnd: "20:00",
   maxConcurrentJobs: 2, gpuLimitPercent: 90, cpuLimitPercent: 80,
   skipFinalizedReports: true, skipUnchangedStudies: true,
 };
 
+function asDraftTiming(v: unknown): DraftTiming {
+  return v === "scheduled" ? "scheduled" : "on_arrival";
+}
+
 export async function getSchedulerConfig(): Promise<SchedulerConfig> {
   const [row] = await db.select().from(aiSchedulerConfigTable).limit(1);
   if (!row) return DEFAULT_SCHEDULER;
   return {
+    draftTiming: asDraftTiming((row as { draftTiming?: string }).draftTiming),
     nightStart: row.nightStart, nightEnd: row.nightEnd, quietStart: row.quietStart, quietEnd: row.quietEnd,
     maxConcurrentJobs: row.maxConcurrentJobs, gpuLimitPercent: row.gpuLimitPercent, cpuLimitPercent: row.cpuLimitPercent,
     skipFinalizedReports: row.skipFinalizedReports, skipUnchangedStudies: row.skipUnchangedStudies,
@@ -95,11 +102,10 @@ export async function setModalityPolicy(modality: string, mode: ModalityMode, up
 }
 
 /**
- * Batch-set overnight modalities.
- * - Selected → night_batch (or opts.mode)
- * - Existing night_batch not selected → disabled
- * - immediate / manual left untouched so daytime policies survive overnight edits
- * - Known codes with no row yet and not selected stay absent (treated as disabled)
+ * Batch-set draft modalities for the selected automation timing.
+ * - Selected → mode (immediate for on_arrival, night_batch for scheduled)
+ * - Existing immediate/night_batch not selected → disabled
+ * - manual left untouched
  */
 export async function setOvernightModalities(
   selected: string[],
@@ -117,8 +123,7 @@ export async function setOvernightModalities(
       await setModalityPolicy(modality, mode, opts.updatedBy);
       continue;
     }
-    // Only clear prior overnight membership — do not clobber immediate/manual.
-    if (!current || current === "night_batch" || current === "disabled") {
+    if (!current || current === "night_batch" || current === "immediate" || current === "disabled") {
       await setModalityPolicy(modality, "disabled", opts.updatedBy);
     }
   }
@@ -126,6 +131,49 @@ export async function setOvernightModalities(
     if (!known.includes(modality)) await setModalityPolicy(modality, mode, opts.updatedBy);
   }
   return getModalityPolicies();
+}
+
+/** Persist full DICOM→draft automation from Settings → Radiology → AI. */
+export async function saveDraftAutomation(opts: {
+  draftTiming: DraftTiming;
+  modalities: string[];
+  nightStart?: string;
+  nightEnd?: string;
+  quietStart?: string;
+  quietEnd?: string;
+  enableAi?: boolean;
+  updatedBy?: string;
+}): Promise<{
+  scheduler: SchedulerConfig;
+  policies: Array<{ modality: string; mode: ModalityMode }>;
+  masterEnabled: boolean;
+}> {
+  if (opts.enableAi !== false) {
+    await db
+      .insert(featureFlagsTable)
+      .values({ key: AI_MASTER_FLAG, enabled: true, updatedBy: opts.updatedBy ?? "ai-draft-settings" })
+      .onConflictDoUpdate({
+        target: featureFlagsTable.key,
+        set: { enabled: true, updatedBy: opts.updatedBy ?? "ai-draft-settings", updatedAt: new Date() },
+      });
+    invalidateFeatureFlagCache();
+    await setFeaturePolicy("global", "*", true, "pilot", opts.updatedBy);
+  }
+
+  const mode: ModalityMode = opts.draftTiming === "on_arrival" ? "immediate" : "night_batch";
+  await saveSchedulerConfig({
+    draftTiming: opts.draftTiming,
+    nightStart: opts.nightStart,
+    nightEnd: opts.nightEnd,
+    quietStart: opts.quietStart,
+    quietEnd: opts.quietEnd,
+  }, opts.updatedBy);
+  const policies = await setOvernightModalities(opts.modalities, { mode, updatedBy: opts.updatedBy });
+  return {
+    scheduler: await getSchedulerConfig(),
+    policies,
+    masterEnabled: await isFeatureEnabledServer(AI_MASTER_FLAG),
+  };
 }
 
 // ── Feature policies (admin enable/disable per scope) ───────────────────────

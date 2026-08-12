@@ -32,6 +32,8 @@ export type AiFeaturePolicy = typeof aiFeaturePoliciesTable.$inferSelect;
 // ── Scheduler config (singleton row id=1) ───────────────────────────────────
 export const aiSchedulerConfigTable = pgTable("ai_scheduler_config", {
   id: serial("id").primaryKey(),
+  /** on_arrival = draft when DICOM lands; scheduled = only inside nightStart–nightEnd. */
+  draftTiming: text("draft_timing").notNull().default("on_arrival"),
   nightStart: text("night_start").notNull().default("23:00"), // HH:MM (local)
   nightEnd: text("night_end").notNull().default("06:00"),
   quietStart: text("quiet_start").notNull().default("08:00"),

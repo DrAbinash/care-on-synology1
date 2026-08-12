@@ -516,7 +516,7 @@ export function AiReportingPanel() {
     { id: "general", icon: Settings2, label: "General" },
     { id: "providers", icon: Key, label: "AI Providers" },
     { id: "local-ai", icon: Zap, label: "Local AI" },
-    { id: "overnight", icon: Moon, label: "Overnight Drafts" },
+    { id: "overnight", icon: Moon, label: "Draft automation" },
     { id: "prompts", icon: BookOpen, label: "Prompt Templates" },
     { id: "permissions", icon: Users, label: "Permissions" },
   ] as const;

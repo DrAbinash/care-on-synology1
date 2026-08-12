@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { inWindow, decideScheduling, admitJob, type SchedulerConfig, type SchedulingInput } from "./aiScheduler";
 
 const cfg: SchedulerConfig = {
-  nightStart: "23:00", nightEnd: "06:00", quietStart: "08:00", quietEnd: "20:00",
+  draftTiming: "scheduled", nightStart: "23:00", nightEnd: "06:00", quietStart: "08:00", quietEnd: "20:00",
   maxConcurrentJobs: 2, gpuLimitPercent: 90, cpuLimitPercent: 80,
   skipFinalizedReports: true, skipUnchangedStudies: true,
 };
@@ -41,6 +41,14 @@ describe("scheduler decisions across modes (G10)", () => {
   });
   it("STAT/emergency runs immediately even during quiet hours", () => {
     expect(decideScheduling(inp({ nowMinutes: M(13), priority: "stat" }), cfg)).toMatchObject({ enqueue: true, mode: "immediate" });
+  });
+  it("on_arrival timing enqueues immediate modality even during quiet hours", () => {
+    const onArrival = { ...cfg, draftTiming: "on_arrival" as const };
+    expect(decideScheduling(inp({ nowMinutes: M(13) }), onArrival)).toMatchObject({
+      enqueue: true,
+      mode: "immediate",
+      reason: "on DICOM arrival",
+    });
   });
   it("night_batch modality defers outside the night window but enqueues inside it", () => {
     expect(decideScheduling(inp({ modalityMode: "night_batch", nowMinutes: M(22) }), cfg)).toMatchObject({ enqueue: false, mode: "night_batch" });
