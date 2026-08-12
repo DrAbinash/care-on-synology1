@@ -57,6 +57,8 @@ export interface UseVoiceSessionOptions {
    *  command dispatcher; edits go through the same setters buttons use. */
   execute: (parse: ParsedVoiceCommand) => VoiceExecutionResult;
   onAudit: (commandType: "finalize" | "verify", outcome: VoiceAuditOutcome) => void;
+  /** Optional AI polish for dictation text before the confirm preview opens. */
+  cleanupDictation?: (raw: string) => Promise<string>;
 }
 
 export type VoicePhase = "idle" | "listening" | "processing";
@@ -184,36 +186,53 @@ export function useVoiceSession(options: UseVoiceSessionOptions) {
   }, [executeNow, auditIfNeeded, confirmPending]);
 
   const handleFinalTranscript = useCallback((transcript: string, providerConfidence: number | null, bound: VoiceCaptureBinding) => {
-    setPhase("idle");
     setInterim("");
     setCaptureTrigger(null);
     const current = optsRef.current;
     if (isStaleVoiceResult(bound, current.studyId ?? null, nonceRef.current)) {
+      setPhase("idle");
       if (transcript) setFeedback("Discarded voice input from a previous study");
       return;
     }
     setLastTranscript(transcript);
     if (!transcript.trim()) {
+      setPhase("idle");
       setFeedback("Heard nothing — try again");
       return;
     }
     if (mode === "dictation") {
       // Dictation mode: the whole utterance is text for the selected editor;
       // ALWAYS previewed + editable before insertion (Phase 9), append-only.
-      const text = normalizeDictationText(transcript, { autoPunctuation: current.settings.autoPunctuation });
-      const parse: ParsedVoiceCommand = {
-        rawTranscript: transcript,
-        normalizedTranscript: transcript,
-        intent: { type: "dictate", target: dictationTarget, mode: "append", text },
-        parameters: { text },
-        confidenceBand: "CLEAR",
-        alternatives: [],
-        parseErrors: [],
+      // Optional AI cleanup runs before the preview so radiologists edit polished text.
+      const baseText = normalizeDictationText(transcript, { autoPunctuation: current.settings.autoPunctuation });
+      const openDictationPreview = (text: string) => {
+        const parse: ParsedVoiceCommand = {
+          rawTranscript: transcript,
+          normalizedTranscript: transcript,
+          intent: { type: "dictate", target: dictationTarget, mode: "append", text },
+          parameters: { text },
+          confidenceBand: "CLEAR",
+          alternatives: [],
+          parseErrors: [],
+        };
+        const verdict = evaluateVoiceCommand(parse, current.getContext());
+        setPending({ parse, verdict, editableText: text });
+        setPhase("idle");
+        setFeedback(null);
       };
-      const verdict = evaluateVoiceCommand(parse, current.getContext());
-      setPending({ parse, verdict, editableText: text });
+      const polish = current.cleanupDictation;
+      if (polish) {
+        setPhase("processing");
+        setFeedback("Cleaning dictation…");
+        void polish(baseText)
+          .then((cleaned) => openDictationPreview((cleaned || baseText).trim() || baseText))
+          .catch(() => openDictationPreview(baseText));
+        return;
+      }
+      openDictationPreview(baseText);
       return;
     }
+    setPhase("idle");
     handleParsed(parseVoiceTranscript(transcript, { providerConfidence }));
   }, [mode, dictationTarget, handleParsed]);
 

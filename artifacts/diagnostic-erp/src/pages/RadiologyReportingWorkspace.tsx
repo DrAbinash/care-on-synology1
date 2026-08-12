@@ -124,6 +124,7 @@ import ComparisonPanel from "@/components/radiology/ComparisonPanel";
 import FollowUpPanel from "@/components/radiology/FollowUpPanel";
 import FinalizeSignDialog from "@/components/radiology/FinalizeSignDialog";
 import VoiceCommandBar from "@/components/radiology/VoiceCommandBar";
+import FieldCareMic from "@/components/radiology/FieldCareMic";
 import QuickFindingsPanel, { type QuickFinding } from "@/components/radiology/QuickFindingsPanel";
 import PriorComparisonToolbar from "@/components/radiology/PriorComparisonToolbar";
 import ViewerMeasurementsBanner from "@/components/radiology/ViewerMeasurementsBanner";
@@ -137,7 +138,6 @@ import { FindingsHighlightEditor } from "@/components/FindingsHighlightEditor";
 import ReferringDoctorQuickSelect from "@/components/ReferringDoctorQuickSelect";
 import { ModuleErrorBoundary } from "@/components/ModuleErrorBoundary";
 import { useReportingStudySetup } from "@/hooks/useReportingStudySetup";
-import VoiceDictationButton from "@/components/VoiceDictationButton";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
@@ -161,7 +161,6 @@ import type { Study, MeasurementRow, PriorStudy } from "@/lib/zai-workspace/type
 import { WorklistStrip } from "@/components/radiology/zai-workspace/worklist-strip";
 import { CopilotRail } from "@/components/radiology/zai-workspace/copilot-rail";
 import { FindingsEditor } from "@/components/radiology/zai-workspace/findings-editor";
-import { VoiceBar } from "@/components/radiology/zai-workspace/voice-bar";
 import { FinalizeDialog } from "@/components/radiology/zai-workspace/finalize-dialog";
 import { InterruptChannelCard } from "@/components/radiology/zai-workspace/interrupt-card";
 import { QuickSelectEditor } from "@/components/radiology/zai-workspace/quick-select-editor";
@@ -533,11 +532,28 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       confirmationPolicy: voiceSettings.confirmationPolicy,
     }),
     execute: executeVoiceCommand,
+    cleanupDictation: async (raw) => {
+      try {
+        const res = await api.post<{ cleaned?: string; text?: string }>(
+          "/api/radiology/report-generator/voice-cleanup",
+          { rawTranscript: raw, draftId, studyId, patientId: workflow.currentRow?.patientId },
+        );
+        return (res.cleaned ?? res.text ?? raw).trim() || raw;
+      } catch {
+        return raw;
+      }
+    },
     onAudit: (commandType, outcome) => {
       api.post("/api/radiology/voice-command-audit", { commandType, studyId, outcome }).catch(() => {});
     },
   });
-  const fieldMicBlocked = voiceSession.capturing || voiceSession.handsFree;
+
+  const focusVoiceBar = useCallback(() => {
+    document.querySelector("[data-testid='voice-command-bar']")?.scrollIntoView({
+      block: "nearest",
+      behavior: "smooth",
+    });
+  }, []);
 
   // 7. Copilot learning + prefs
   const { prefs: copilotPrefs } = useCopilotPrefs();
@@ -1036,7 +1052,13 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       if (e.ctrlKey && (e.key === "i" || e.key === "I")) { e.preventDefault(); triggerAiImpression(); return; }
       if (e.ctrlKey && e.shiftKey && (e.key === "v" || e.key === "V")) {
         e.preventDefault();
-        useWorkspace.getState().toggleVoiceBar();
+        focusVoiceBar();
+        if (voiceSession.enabled && !voiceSession.capturing) {
+          voiceSession.setMode("dictation");
+          voiceSession.startListening("toggle");
+        } else if (voiceSession.capturing) {
+          voiceSession.stopListening();
+        }
         return;
       }
       if (e.key === "?" && !e.ctrlKey && !e.metaKey && !e.altKey) {
@@ -1074,7 +1096,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     };
   }, [
     commandDispatcher, finalizeReport, leftCollapsed, showEmbeddedViewer, setLayoutMode,
-    voiceSession, voiceSettings.pttKey,
+    voiceSession, voiceSettings.pttKey, focusVoiceBar,
   ]);
 
   // ─── AI auto-impression (Ctrl+I) ───────────────────────────────────────────
@@ -1562,7 +1584,16 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
             <Keyboard className="h-3.5 w-3.5 mr-1" /> ?
           </Button>
           {/* New voice bar */}
-          <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => useWorkspace.getState().toggleVoiceBar()} title="Floating Care voice bar (Ctrl+Shift+V)">
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-7 px-2 text-xs"
+            onClick={() => {
+              focusVoiceBar();
+              if (voiceSession.enabled) voiceSession.toggleListening();
+            }}
+            title="Focus Care voice bar / toggle listen (Ctrl+Shift+V)"
+          >
             <Brain className="h-3.5 w-3.5 mr-1" /> Voice
           </Button>
           {/* Command palette */}
@@ -1947,17 +1978,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                         <FindingsEditor field="clinicalHistory" label="Clinical History" minHeight="56px" placeholder="Presenting complaint and relevant history." />
                       </div>
                       {!isLocked && !isFinalized && (
-                        <VoiceDictationButton
-                          targetField="clinicalHistory"
-                          draftId={draftId ?? undefined}
-                          studyId={studyId ?? undefined}
-                          patientId={workflow.currentRow?.patientId ?? undefined}
-                          disabled={fieldMicBlocked}
-                          onInsert={(text) => {
-                            const state = useWorkspace.getState();
-                            state.setField("clinicalHistory", mergeBlock(state.clinicalHistoryText, text));
-                          }}
-                        />
+                        <FieldCareMic voice={voiceSession} target="clinicalHistory" />
                       )}
                     </div>
                     <div className="flex items-center gap-2">
@@ -1965,17 +1986,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                         <FindingsEditor field="technique" label="Technique" minHeight="60px" placeholder="Modality, sequences, contrast..." />
                       </div>
                       {!isLocked && !isFinalized && (
-                        <VoiceDictationButton
-                          targetField="technique"
-                          draftId={draftId ?? undefined}
-                          studyId={studyId ?? undefined}
-                          patientId={workflow.currentRow?.patientId ?? undefined}
-                          disabled={fieldMicBlocked}
-                          onInsert={(text) => {
-                            const state = useWorkspace.getState();
-                            state.setField("technique", mergeBlock(state.techniqueText, text));
-                          }}
-                        />
+                        <FieldCareMic voice={voiceSession} target="technique" />
                       )}
                     </div>
 
@@ -2014,17 +2025,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                           Highlight scan
                         </label>
                         {!isLocked && !isFinalized && (
-                          <VoiceDictationButton
-                            targetField="findings"
-                            draftId={draftId ?? undefined}
-                            studyId={studyId ?? undefined}
-                            patientId={workflow.currentRow?.patientId ?? undefined}
-                            disabled={fieldMicBlocked}
-                            onInsert={(text) => {
-                              const state = useWorkspace.getState();
-                              state.setField("findings", mergeBlock(state.findingsText, text));
-                            }}
-                          />
+                          <FieldCareMic voice={voiceSession} target="findings" />
                         )}
                       </div>
                     </div>
@@ -2045,18 +2046,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                         <FindingsEditor field="impression" label="Impression" minHeight="100px" placeholder="Conclusion. Ctrl+I for AI impression." showGhost />
                       </div>
                       {!isLocked && !isFinalized && (
-                        <VoiceDictationButton
-                          targetField="impression"
-                          draftId={draftId ?? undefined}
-                          studyId={studyId ?? undefined}
-                          patientId={workflow.currentRow?.patientId ?? undefined}
-                          disabled={fieldMicBlocked}
-                          onInsert={(text) => {
-                            const state = useWorkspace.getState();
-                            const lines = state.impressionText.split("\n").filter(Boolean);
-                            state.setField("impression", mergeImpression(lines, text).join("\n"));
-                          }}
-                        />
+                        <FieldCareMic voice={voiceSession} target="impression" />
                       )}
                     </div>
                     <div className="flex items-center gap-2">
@@ -2064,17 +2054,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                         <FindingsEditor field="recommendation" label="Recommendation" minHeight="60px" placeholder="Follow-up, referral..." showGhost />
                       </div>
                       {!isLocked && !isFinalized && (
-                        <VoiceDictationButton
-                          targetField="recommendation"
-                          draftId={draftId ?? undefined}
-                          studyId={studyId ?? undefined}
-                          patientId={workflow.currentRow?.patientId ?? undefined}
-                          disabled={fieldMicBlocked}
-                          onInsert={(text) => {
-                            const state = useWorkspace.getState();
-                            state.setField("recommendation", mergeBlock(state.recommendationText, text));
-                          }}
-                        />
+                        <FieldCareMic voice={voiceSession} target="recommendation" />
                       )}
                     </div>
 
@@ -2310,7 +2290,6 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       </footer>
 
       {/* ─── Floating UI overlays ─── */}
-      <VoiceBar voice={voiceSession} />
       <ZaiCommandPalette />
       <FinalizeSignDialog
         open={finalizeFlow.open}

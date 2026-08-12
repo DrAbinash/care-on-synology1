@@ -17,7 +17,9 @@ export function CommandPalette() {
     { id: "ai-ghost", label: "Suggest with AI at cursor", icon: Sparkles, group: "AI", action: () => ws.setGhostText("Findings concerning for acute abnormality.", "findings") },
     { id: "finalize", label: "Finalize & sign", icon: AlertTriangle, group: "Actions", action: () => ws.startFinalize(), shortcut: "⌃↵" },
     { id: "print", label: "Print report", icon: Printer, group: "Actions", action: () => window.print() },
-    { id: "voice", label: "Toggle voice", icon: Mic, group: "Actions", action: () => ws.toggleVoiceBar(), shortcut: "⌃⇧V" },
+    { id: "voice", label: "Toggle voice listen", icon: Mic, group: "Actions", action: () => {
+      document.querySelector("[data-testid='voice-command-bar']")?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }, shortcut: "⌃⇧V" },
     { id: "save-fmt", label: "Save as format", icon: Save, group: "Actions", action: () => ws.openSaveAsFormatDialog() },
     ...macros.slice(0, 6).map(m => ({ id: `m-${m.id}`, label: `:${m.trigger} — ${m.label}`, detail: m.template.slice(0, 60) + "...", icon: Plus, group: "Macros", action: () => ws.setField("findings", ws.findingsText.replace(/:[a-z][a-z0-9_]*$/i, "") + `:${m.trigger} `) })),
   ];
