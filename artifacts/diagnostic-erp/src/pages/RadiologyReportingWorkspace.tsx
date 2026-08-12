@@ -1176,8 +1176,10 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                 {studySetup.activeProtocol.name}
               </Badge>
             )}
-            {studySetup.matchedStudyRegion && (
-              <span className="text-[9px] text-muted-foreground shrink-0">· {studySetup.matchedStudyRegion}</span>
+            {studySetup.studyRegions.length > 0 && (
+              <span className="text-[9px] text-muted-foreground shrink-0" title="Selected study regions">
+                · {studySetup.studyRegions.join(" + ")}
+              </span>
             )}
             <span className="text-[10px] text-muted-foreground truncate">
               · {study.patient?.name ?? "Unknown"} ({study.patient?.age ?? 0}{study.patient?.sex ?? "O"})
@@ -1446,7 +1448,9 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                           }
                           onSuggestHistory={() => {
                             const chips = (studySetup.quickSelectData?.clinicalHistory ?? [])
-                              .filter((c) => c.isActive && (!studySetup.matchedStudyRegion || c.studyType === studySetup.matchedStudyRegion));
+                              .filter((c) => c.isActive && (
+                                studySetup.studyRegions.length === 0 || studySetup.studyRegions.includes(c.studyType)
+                              ));
                             const first = chips[0];
                             if (first?.insertedText) {
                               const state = useWorkspace.getState();
@@ -1486,11 +1490,77 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       />
                     )}
 
-                    {/* Study setup strip — protocol / test name from DICOM */}
-                    {(studySetup.activeProtocol || studySetup.selectedTemplate || studySetup.matchedStudyRegion) && (
+                    {/* Study setup strip — regions / protocol / test name from DICOM */}
+                    {(studySetup.activeProtocol || studySetup.selectedTemplate || studySetup.studyRegions.length > 0) && (
                       <div className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/30 px-2 py-1.5 text-[10px]" data-testid="study-setup-strip">
-                        {studySetup.matchedStudyRegion && (
-                          <span className="font-semibold text-muted-foreground">Region: {studySetup.matchedStudyRegion}</span>
+                        {studySetup.availableRegions.length > 0 && (
+                          <label className="inline-flex items-center gap-1 flex-wrap">
+                            <span className="font-semibold text-muted-foreground">Regions</span>
+                            <div className="inline-flex flex-wrap gap-0.5" role="group" aria-label="Study regions (multi-select)" data-testid="study-region-chips">
+                              {(() => {
+                                const REGION_CHIP_LIMIT = 6;
+                                const primary = studySetup.availableRegions.slice(0, REGION_CHIP_LIMIT);
+                                const overflow = studySetup.availableRegions.slice(REGION_CHIP_LIMIT);
+                                const extraSelected = studySetup.studyRegions.filter((r) => !primary.includes(r));
+                                const visible = [...primary, ...extraSelected];
+                                return (
+                                  <>
+                                    {visible.map((r) => {
+                                      const on = studySetup.studyRegions.includes(r);
+                                      return (
+                                        <button
+                                          key={r}
+                                          type="button"
+                                          disabled={isLocked || isFinalized}
+                                          aria-pressed={on}
+                                          title={on ? `Remove ${r}` : `Add ${r} (technique merges)`}
+                                          className={`h-6 px-1.5 text-[10px] rounded border font-medium transition-colors ${
+                                            on
+                                              ? "bg-primary text-primary-foreground border-primary"
+                                              : "bg-background text-muted-foreground border-border hover:bg-muted"
+                                          }`}
+                                          onClick={() => studySetup.handleRegionToggle(r)}
+                                        >
+                                          {r}
+                                        </button>
+                                      );
+                                    })}
+                                    {overflow.length > 0 && (
+                                      <select
+                                        aria-label="More study regions"
+                                        title="Add another region — its technique merges into Technique"
+                                        className="h-6 max-w-[9rem] text-[10px] rounded border bg-background px-1"
+                                        value=""
+                                        disabled={isLocked || isFinalized}
+                                        onChange={(e) => {
+                                          const name = e.target.value;
+                                          if (name) studySetup.handleRegionToggle(name);
+                                          e.currentTarget.value = "";
+                                        }}
+                                      >
+                                        <option value="">More regions…</option>
+                                        {overflow.map((r) => (
+                                          <option key={r} value={r}>
+                                            {studySetup.studyRegions.includes(r) ? "✓ " : "+ "}{r}
+                                          </option>
+                                        ))}
+                                      </select>
+                                    )}
+                                  </>
+                                );
+                              })()}
+                            </div>
+                            {studySetup.regionOverrides != null && (
+                              <button
+                                type="button"
+                                className="text-amber-600 underline text-[10px]"
+                                title={`Auto-detected: ${studySetup.autoStudyRegion ?? "none"}`}
+                                onClick={() => studySetup.resetRegionOverrides()}
+                              >
+                                reset
+                              </button>
+                            )}
+                          </label>
                         )}
                         {studySetup.availableProtocols.length > 0 && (
                           <select
@@ -1687,15 +1757,13 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                         onSideChange={setQuickSide}
                         disabled={isLocked || isFinalized}
                         initialStudyHint={studySetup.studyHint || null}
+                        selectedRegions={studySetup.studyRegions}
+                        onRegionToggle={studySetup.handleRegionToggle}
                         isAdmin={isOwner}
                         activeProtocolId={studySetup.activeProtocol?.id ?? null}
                         onProtocolChange={studySetup.requestProtocolChange}
                         onChecklistChange={studySetup.handleChecklistChange}
                         onMeasurement={(template, value) => appendFindings(template.replace(/\{value\}/gi, value).replace(/\{val\}/gi, value))}
-                        onAutoTechnique={(text) => {
-                          const state = useWorkspace.getState();
-                          state.setField("technique", mergeBlock(state.techniqueText, text));
-                        }}
                         onInsertNormals={(text) => appendFindings(text)}
                         onAcceptLearnedSuggestion={(text) => {
                           const state = useWorkspace.getState();

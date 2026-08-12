@@ -21,6 +21,7 @@ import {
 } from "@/lib/pickStructuredTemplate";
 import { templateCatalogModality } from "@/lib/radiologyTemplateModality";
 import { mergeBlock } from "@/lib/quickFindingsMerge";
+import { combineStudyRegionTitle } from "@/lib/combineStudyRegions";
 import { chocolateBoxSetFor, type ChocolateBoxSet } from "@/lib/findingsMacros";
 import type {
   QuickProtocol,
@@ -105,6 +106,7 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     onToast,
   } = args;
 
+  const [regionOverrides, setRegionOverrides] = useState<string[] | null>(null);
   const [activeProtocol, setActiveProtocol] = useState<QuickProtocol | null>(null);
   const [selectedTemplateId, setSelectedTemplateId] = useState<number | null>(null);
   const [checklistPercent, setChecklistPercent] = useState(100);
@@ -147,16 +149,24 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     return filterRegionNamesForModality(all, modality);
   }, [quickSelectData, modality]);
 
-  const matchedStudyRegion = useMemo(
+  const autoStudyRegion = useMemo(
     () => matchStudyRegion(studyHint, availableRegions),
     [studyHint, availableRegions],
   );
 
+  const studyRegions = useMemo(() => {
+    if (regionOverrides && regionOverrides.length > 0) return regionOverrides;
+    return autoStudyRegion ? [autoStudyRegion] : [];
+  }, [regionOverrides, autoStudyRegion]);
+
+  /** Primary region (first selected) — drives default template / protocol pick. */
+  const matchedStudyRegion = studyRegions[0] ?? null;
+
   const availableProtocols = useMemo(
     () => (quickSelectData?.protocols ?? [])
-      .filter((p) => p.isActive && matchedStudyRegion != null && p.studyType === matchedStudyRegion)
+      .filter((p) => p.isActive && studyRegions.includes(p.studyType))
       .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name)),
-    [quickSelectData, matchedStudyRegion],
+    [quickSelectData, studyRegions],
   );
 
   const selectedTemplate = useMemo(
@@ -174,7 +184,13 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     [modality, studyDescription],
   );
 
-  const testName = selectedTemplate?.templateName
+  const combinedTestName = useMemo(
+    () => (studyRegions.length > 1 ? combineStudyRegionTitle(modality, studyRegions) : null),
+    [modality, studyRegions],
+  );
+
+  const testName = combinedTestName
+    ?? selectedTemplate?.templateName
     ?? studyDescription
     ?? activeProtocol?.name
     ?? null;
@@ -184,6 +200,7 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     autoProtocolForStudyRef.current = null;
     autoTemplateForStudyRef.current = null;
     hydratedTemplateApplyRef.current = null;
+    setRegionOverrides(null);
     setActiveProtocol(null);
     setSelectedTemplateId(null);
     setChecklistPercent(100);
@@ -410,9 +427,38 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     setSelectedTemplateId(id);
   }, []);
 
+  /** Toggle a study region (multi-select). Adding a region merges its technique. */
+  const handleRegionToggle = useCallback((regionName: string) => {
+    if (disabled) return;
+    const current = new Set(studyRegions);
+    if (current.has(regionName)) {
+      if (current.size <= 1) return;
+      current.delete(regionName);
+      setRegionOverrides([...current]);
+      return;
+    }
+    current.add(regionName);
+    setRegionOverrides([...current]);
+    const protocol = pickQuickProtocol(quickSelectData?.protocols ?? [], regionName);
+    if (protocol) applyProtocol(protocol, false);
+    const tab = quickSelectData?.tabs?.find((t) => t.name === regionName);
+    if (tab?.techniqueText) {
+      setters.setTechnique((prev) => mergeBlock(prev, tab.techniqueText));
+    }
+  }, [disabled, studyRegions, quickSelectData, applyProtocol, setters]);
+
+  const resetRegionOverrides = useCallback(() => {
+    setRegionOverrides(null);
+  }, []);
+
   return {
     studyHint,
+    autoStudyRegion,
     matchedStudyRegion,
+    studyRegions,
+    regionOverrides,
+    handleRegionToggle,
+    resetRegionOverrides,
     availableRegions,
     availableProtocols,
     activeProtocol,
