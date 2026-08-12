@@ -340,4 +340,15 @@ router.get("/drafts/:draftId/overrides", async (req, res) => {
   res.json({ overrides: rows });
 });
 
+// GET /evaluations/recent — clinic-wide evaluation feed for admin quality console.
+router.get("/evaluations/recent", async (req, res) => {
+  const limit = Math.min(Math.max(Number(req.query.limit ?? 50), 1), 200);
+  const rows = await db
+    .select()
+    .from(reportQualityEvaluationsTable)
+    .orderBy(desc(reportQualityEvaluationsTable.createdAt))
+    .limit(limit);
+  res.json({ evaluations: rows.map(serializeEvaluation) });
+});
+
 export default router;

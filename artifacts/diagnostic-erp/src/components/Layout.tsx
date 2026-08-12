@@ -310,6 +310,7 @@ const navItems: NavEntry[] = [
       { path: "/settings/scanner",          icon: ScanLine,       label: "Scanner Settings", ownerOnly: true },
       { path: "/abdm-abha",                 icon: ShieldCheck,    label: "ABDM / ABHA", featureFlag: "ff_abdm_abha" },
       { path: "/tests",                     icon: FlaskConical,   label: "Test Catalog" },
+      { path: "/measurement-registry",        icon: Activity,       label: "Measurement Registry", ownerOnly: true },
       { path: "/pathology-registry",        icon: TestTube,       label: "Pathology Registry", ownerOnly: true },
       { path: "/outsourced-labs",           icon: Building2,      label: "Outsourced Labs" },
       { path: "/outsourced-cost-report",    icon: IndianRupee,    label: "Outsource Costs" },
