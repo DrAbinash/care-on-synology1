@@ -199,7 +199,7 @@ export default function ReportImagePicker({
       </button>
 
       {expanded && (
-        <div className="px-3 pb-3 space-y-3">
+        <div className="px-3 pb-2 space-y-2 max-h-36 overflow-y-auto" data-testid="report-picker-body">
           {effectiveDraftId && (
             <ReportImagePanel draftId={effectiveDraftId} dicomWebBase={dicomWebBase} disabled={disabled} />
           )}
@@ -224,12 +224,12 @@ export default function ReportImagePicker({
           )}
 
           {effectiveDraftId && studyInstanceUID && dicomWebBase && !disabled && (
-            <div className="space-y-1.5" data-testid="series-browser">
+            <div className="space-y-1" data-testid="series-browser">
               {series.map((s) => (
                 <div key={s.uid} className="rounded-md border overflow-hidden">
                   <button
                     type="button"
-                    className="w-full flex items-center gap-1.5 px-2 py-1.5 text-left bg-muted/50 hover:bg-muted"
+                    className="w-full flex items-center gap-1.5 px-2 py-1 text-left bg-muted/50 hover:bg-muted"
                     onClick={() => (openSeries === s.uid ? setOpenSeries(null) : void openSeriesInstances(s.uid))}
                   >
                     <span className="text-[11px] font-medium flex-1 truncate">{s.description || "Series"}</span>
@@ -237,25 +237,25 @@ export default function ReportImagePicker({
                     {openSeries === s.uid ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
                   </button>
                   {openSeries === s.uid && (
-                    <div className="grid grid-cols-4 gap-1 p-1.5">
+                    <div className="grid grid-cols-8 gap-0.5 p-1">
                       {loadingInstances ? (
-                        <div className="col-span-4 flex justify-center py-2"><Loader2 size={13} className="animate-spin text-muted-foreground" /></div>
+                        <div className="col-span-8 flex justify-center py-1"><Loader2 size={13} className="animate-spin text-muted-foreground" /></div>
                       ) : instances.map((inst) => {
                         const selected = refs.some((r) => r.sopInstanceUid === inst.uid);
                         const thumb = thumbnailRenderedUrl(dicomWebBase, {
                           studyInstanceUid: studyInstanceUID, seriesInstanceUid: s.uid, sopInstanceUid: inst.uid,
-                        }, 96);
+                        }, 64);
                         return (
                           <button
                             key={inst.uid}
                             type="button"
-                            className={`relative aspect-square rounded overflow-hidden border-2 bg-black ${selected ? "border-blue-500" : "border-transparent hover:border-muted-foreground/40"}`}
+                            className={`relative h-10 rounded overflow-hidden border-2 bg-black ${selected ? "border-blue-500" : "border-transparent hover:border-muted-foreground/40"}`}
                             onClick={() => selectInstance(s, inst)}
                             title={`Image ${inst.instanceNumber ?? ""}${selected ? " (selected — click to remove)" : ""}`}
                             data-testid={`instance-thumb-${inst.uid}`}
                           >
                             {thumb && <img src={thumb} alt="" className="h-full w-full object-contain" loading="lazy" />}
-                            {selected && <span className="absolute top-0.5 right-0.5 h-3.5 w-3.5 rounded-full bg-blue-500 text-white text-[8px] leading-[14px] text-center">✓</span>}
+                            {selected && <span className="absolute top-0 right-0 h-3 w-3 rounded-full bg-blue-500 text-white text-[8px] leading-3 text-center">✓</span>}
                           </button>
                         );
                       })}
@@ -265,7 +265,7 @@ export default function ReportImagePicker({
               ))}
               {series.length === 0 && (
                 <p className="text-[11px] text-muted-foreground">
-                  No series returned from PACS yet. Expand again after the study has been received, or open OHIF above to confirm the study is online.
+                  No series returned from PACS yet. Expand again after the study has been received, or open OHIF in a new tab to confirm the study is online.
                 </p>
               )}
             </div>

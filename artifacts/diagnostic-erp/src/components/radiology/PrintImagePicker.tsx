@@ -284,7 +284,7 @@ export default function PrintImagePicker({
       </button>
 
       {expanded && (
-        <div className="px-3 pb-3 space-y-3">
+        <div className="px-3 pb-2 space-y-2 max-h-28 overflow-y-auto" data-testid="print-picker-body">
           {!studyInstanceUID && (
             <p className="text-[11px] text-muted-foreground">No StudyInstanceUID on this study — images unavailable.</p>
           )}
@@ -298,7 +298,7 @@ export default function PrintImagePicker({
           )}
 
           {selected.size > 0 && (
-            <div className="flex items-center gap-2 rounded-md border bg-emerald-50/50 p-2" data-testid="print-selection-bar">
+            <div className="flex items-center gap-2 rounded-md border bg-emerald-50/50 px-2 py-1" data-testid="print-selection-bar">
               <span className="text-[11px] text-muted-foreground flex-1">{selected.size} image(s) ready to print</span>
               <label className="flex items-center gap-1 text-[11px] text-muted-foreground">
                 Copies
@@ -341,20 +341,20 @@ export default function PrintImagePicker({
           )}
 
           {activeJobKey && (
-            <div className="flex items-center gap-2 rounded-md border bg-muted/30 p-2 text-[11px] text-muted-foreground" data-testid="print-job-progress">
+            <div className="flex items-center gap-2 rounded-md border bg-muted/30 px-2 py-1 text-[11px] text-muted-foreground" data-testid="print-job-progress">
               <Loader2 size={12} className="animate-spin shrink-0" />
               {jobStatus?.status === "processing" ? "Printing…" : "Queued for printing…"}
             </div>
           )}
 
-          {/* Series browser */}
+          {/* Series browser — compact thumbs so the picker stays ~¼ prior height */}
           {studyInstanceUID && dicomWebBase && !disabled && (
-            <div className="space-y-1.5" data-testid="print-series-browser">
+            <div className="space-y-1" data-testid="print-series-browser">
               {series.map((s) => (
                 <div key={s.uid} className="rounded-md border overflow-hidden">
                   <button
                     type="button"
-                    className="w-full flex items-center gap-1.5 px-2 py-1.5 text-left bg-muted/50 hover:bg-muted"
+                    className="w-full flex items-center gap-1.5 px-2 py-1 text-left bg-muted/50 hover:bg-muted"
                     onClick={() => (openSeries === s.uid ? setOpenSeries(null) : void openSeriesInstances(s.uid))}
                   >
                     <span className="text-[11px] font-medium flex-1 truncate">{s.description || "Series"}</span>
@@ -362,27 +362,27 @@ export default function PrintImagePicker({
                     {openSeries === s.uid ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
                   </button>
                   {openSeries === s.uid && (
-                    <div className="grid grid-cols-4 gap-1 p-1.5">
+                    <div className="grid grid-cols-8 gap-0.5 p-1">
                       {loadingInstances ? (
-                        <div className="col-span-4 flex justify-center py-2"><Loader2 size={13} className="animate-spin text-muted-foreground" /></div>
+                        <div className="col-span-8 flex justify-center py-1"><Loader2 size={13} className="animate-spin text-muted-foreground" /></div>
                       ) : instances.map((inst) => {
                         const isSelected = selected.has(inst.uid);
                         const thumb = thumbnailRenderedUrl(dicomWebBase, {
                           studyInstanceUid: studyInstanceUID, seriesInstanceUid: s.uid, sopInstanceUid: inst.uid,
-                        }, 96);
+                        }, 64);
                         return (
                           <button
                             key={inst.uid}
                             type="button"
-                            className={`relative aspect-square rounded overflow-hidden border-2 bg-black ${isSelected ? "border-emerald-500" : "border-transparent hover:border-muted-foreground/40"}`}
+                            className={`relative h-10 rounded overflow-hidden border-2 bg-black ${isSelected ? "border-emerald-500" : "border-transparent hover:border-muted-foreground/40"}`}
                             onClick={() => toggleSelect(s, inst)}
                             title={`Image ${inst.instanceNumber ?? ""}${isSelected ? " (selected for print — click to remove)" : ""}`}
                             data-testid={`print-instance-thumb-${inst.uid}`}
                           >
                             {thumb && <img src={thumb} alt="" className="h-full w-full object-contain" loading="lazy" />}
                             {isSelected && (
-                              <span className="absolute top-0.5 right-0.5 h-3.5 w-3.5 rounded-full bg-emerald-500 text-white flex items-center justify-center">
-                                <Printer size={9} />
+                              <span className="absolute top-0 right-0 h-3 w-3 rounded-full bg-emerald-500 text-white flex items-center justify-center">
+                                <Printer size={8} />
                               </span>
                             )}
                           </button>

@@ -13,10 +13,10 @@
  *   • saveRadiologyDraft / finalizeRadiologyReport → save + sign + archive
  *   • studyLaunchService → OHIF viewer launch (AUTO LAN/Tailscale/Cloudflare/Public)
  *   • EmbeddedWadoViewer → embedded DICOM viewer with 3 enlarge modes
+ *     (center-column vertical, fullscreen overlay, open in new tab)
  *   • PrintImagePicker / ReportImagePicker → DICOM image selection for print
  *   • ComparisonPanel → prior study comparison with sentence-level diff
  *   • FollowUpPanel → follow-up recommendations
- *   • OpenStudyPanel → viewer launch control
  *   • validateReport / computeQualityScore → report validation
  *   • finalizeSafety / criticalResults → pre-finalize safety checks
  *   • draftRescue → pre-redirect save on 401
@@ -99,7 +99,6 @@ import {
 
 // ─── Existing Care components ──────────────────────────────────────────────────
 import EmbeddedWadoViewer, { type EmbeddedViewerHandle } from "@/components/EmbeddedWadoViewer";
-import OpenStudyPanel from "@/components/radiology/OpenStudyPanel";
 import PrintImagePicker from "@/components/radiology/PrintImagePicker";
 import ReportImagePicker from "@/components/radiology/ReportImagePicker";
 import ComparisonPanel from "@/components/radiology/ComparisonPanel";
@@ -109,6 +108,7 @@ import VoiceCommandBar from "@/components/radiology/VoiceCommandBar";
 // import CommandPalette from "@/components/radiology/CommandPalette"; // replaced by ZaiCommandPalette
 import ReferringDoctorQuickSelect from "@/components/ReferringDoctorQuickSelect";
 import { ModuleErrorBoundary } from "@/components/ModuleErrorBoundary";
+import { Input } from "@/components/ui/input";
 
 // ─── New Z.ai workspace components ─────────────────────────────────────────────
 import { useWorkspace, type WorkspaceStore } from "@/lib/zai-workspace/store";
@@ -152,7 +152,7 @@ import "@/lib/copilotUsgCompanionModule";
 
 import {
   Lock, AlertTriangle, ChevronRight, Pause, Clock, Sparkles, ShieldCheck,
-  Brain, Activity, Zap, Printer, FileDown, Share2, Eye,
+  Brain, Activity, Zap, Printer, FileDown, Share2, Eye, PanelLeftClose, PanelLeftOpen,
 } from "lucide-react";
 
 interface Props { studyId?: number; }
@@ -274,6 +274,30 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const rightPanelRef = useRef<ImperativePanelHandle>(null);
   const hydratedDraftForStudyRef = useRef<number | null>(null);
 
+  // Viewer vertical enlarge (center column only) + left worklist collapse
+  const [viewerColumnExpanded, setViewerColumnExpanded] = useState(false);
+  const [leftCollapsed, setLeftCollapsed] = useState(false);
+  const [patientJumpFilter, setPatientJumpFilter] = useState("");
+
+  const openStudy = useCallback((id: string | number) => {
+    const sid = String(id);
+    selectStudy(sid);
+    navigate(`/radiology/reporting-workspace/${sid}`);
+    // Old workspace: collapse the left queue after a patient is chosen so the
+    // viewer/editor reclaim width.
+    requestAnimationFrame(() => leftPanelRef.current?.collapse());
+  }, [selectStudy, navigate]);
+
+  const jumpQueue = useMemo(() => {
+    const q = patientJumpFilter.trim().toLowerCase();
+    if (!q) return studies;
+    return studies.filter((s: Study) => {
+      const patient = s.patient?.name ?? "";
+      const hay = `${patient} ${s.modality ?? ""} ${s.accession ?? ""} ${s.studyDescription ?? ""}`.toLowerCase();
+      return hay.includes(q);
+    });
+  }, [studies, patientJumpFilter]);
+
   // ─── Sync workflow queue into Z.ai store (single ingress — no raw pacs dump) ─
   // useReportingWorkflow already owns the shared "radiology-pacs-worklist" query.
   // A second direct fetch used to overwrite nested `patient` with flat API rows
@@ -295,8 +319,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     const sorted = [...studies].sort(
       (a: Study, b: Study) => ((pr[a.priority] ?? 2) - (pr[b.priority] ?? 2)) || (a.tatMinutes - b.tatMinutes),
     );
-    if (sorted[0]) selectStudy(sorted[0].id);
-  }, [studies, activeStudyId, studyId, selectStudy]);
+    if (sorted[0]) openStudy(sorted[0].id);
+  }, [studies, activeStudyId, studyId, selectStudy, openStudy]);
 
   // ─── Hydrate editor when study changes ──────────────────────────────────────
   useEffect(() => {
@@ -377,16 +401,17 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     }
   }, [preloadTriggered, studies, activeStudyId]);
 
-  // ─── Save draft (server-side) ──────────────────────────────────────────────
-  const saveDraft = useCallback(async () => {
-    if (!studyId) return;
+  // ─── Save draft (server-side) — returns draft id so Report Images can auto-ensure ─
+  const saveDraft = useCallback(async (): Promise<number | null> => {
+    if (!studyId) return null;
     const offlineMsg = offlineBlockMessage(isOnline, "save");
-    if (offlineMsg) { toast({ title: "Offline", description: offlineMsg, variant: "destructive" }); return; }
+    if (offlineMsg) { toast({ title: "Offline", description: offlineMsg, variant: "destructive" }); return null; }
     try {
       const res = await retryWithBackoff(
-        () => saveRadiologyDraft({
+        () => saveRadiologyDraft<{ success?: boolean; draft?: { id: number }; id?: number }>({
+          id: draftId ?? undefined,
           studyId,
-          draftId: draftId ?? undefined,
+          worklistId: studyId,
           clinicalHistory: clinicalHistoryText,
           technique: techniqueText,
           rawFindings: findingsText,
@@ -395,10 +420,13 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         } as any),
         { shouldRetry: isTransientError },
       );
-      captureSavedDraftId((res as any).id);
+      const id = res?.draft?.id ?? res?.id ?? null;
+      if (id) captureSavedDraftId(id);
       toast({ title: "Draft saved", duration: 1500 });
+      return id;
     } catch (err) {
       toast({ title: "Save failed", description: err instanceof Error ? err.message : "Unknown error", variant: "destructive" });
+      return null;
     }
   }, [studyId, draftId, clinicalHistoryText, techniqueText, findingsText, impressionText, recommendationText, isOnline, captureSavedDraftId, toast]);
 
@@ -498,19 +526,21 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
 
   // ─── Command dispatcher (single choke point for keyboard/voice/palette) ────
   const commandDispatcher = useMemo(() => createCommandDispatcher({
-    save: saveDraft,
+    save: async () => { await saveDraft(); },
     finalize: finalizeReport,
     next: () => {
       const next = workflow.peekNext();
-      if (next) { (workflow.beginTransition as any)(next.id); navigate(`/radiology/reporting-workspace/${next.id}`); }
+      if (next) { (workflow.beginTransition as any)(next.id); openStudy(next.id); }
     },
     previous: () => {
       const prev = workflow.peekParked();
-      if (prev) { (workflow.beginPreviousTransition as any)(prev.id); navigate(`/radiology/reporting-workspace/${prev.id}`); }
+      if (prev) { (workflow.beginPreviousTransition as any)(prev.id); openStudy(prev.id); }
     },
     park: () => { if (studyId) { (workflow as any).park(studyId, ""); } },
     refresh: () => workflow.refreshQueue(),
-    "open-viewer": () => { /* OpenStudyPanel handles this */ },
+    "open-viewer": () => {
+      // External viewers launch from the embedded OHIF header (new tab).
+    },
     "focus-quick-search": () => { /* TODO */ },
     verify: () => { /* TODO: D9 verify */ },
     unpark: () => { if (studyId) { workflow.unpark(studyId); } },
@@ -520,7 +550,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     "close-panel": () => { rightPanelRef.current?.collapse(); },
     "select-template-1": () => {}, "select-template-2": () => {}, "select-template-3": () => {},
     "select-template-4": () => {}, "select-template-5": () => {}, "select-template-6": () => {},
-  }), [saveDraft, finalizeReport, workflow, studyId, navigate]);
+  }), [saveDraft, finalizeReport, workflow, studyId, openStudy]);
 
   // ─── Global keyboard shortcuts ─────────────────────────────────────────────
   useEffect(() => {
@@ -627,6 +657,49 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
           </div>
         </div>
         <div className="h-5 w-px bg-border mx-1" />
+        {/* Searchable patient jump (ported from legacy chrome) */}
+        <div className="flex items-center gap-1 shrink-0" data-testid="compact-patient-picker">
+          <Input
+            value={patientJumpFilter}
+            onChange={(e) => setPatientJumpFilter(e.target.value)}
+            placeholder="Search patient…"
+            className="h-7 w-28 text-[10px] px-1.5"
+            data-testid="queue-patient-filter"
+          />
+          <select
+            className="h-7 min-w-[9rem] max-w-[16rem] text-[10px] border rounded-md px-1.5 bg-background"
+            value=""
+            data-testid="queue-jump"
+            aria-label="Select patient"
+            onChange={(e) => {
+              const id = e.target.value;
+              if (id) openStudy(id);
+              setPatientJumpFilter("");
+            }}
+          >
+            <option value="">
+              {study?.patient?.name
+                ? `${study.patient.name.slice(0, 28)}${study.patient.name.length > 28 ? "…" : ""}`
+                : `Patients (${jumpQueue.length})`}
+            </option>
+            {jumpQueue.map((s: Study) => (
+              <option key={s.id} value={s.id}>
+                {s.patient?.name ?? "Unknown"} · {s.modality} · {s.accession}
+              </option>
+            ))}
+          </select>
+        </div>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="h-7 w-7 p-0"
+          title={leftCollapsed ? "Expand worklist" : "Collapse worklist"}
+          data-testid="toggle-left-panel"
+          onClick={() => (leftCollapsed ? leftPanelRef.current?.expand() : leftPanelRef.current?.collapse())}
+        >
+          {leftCollapsed ? <PanelLeftOpen className="h-3.5 w-3.5" /> : <PanelLeftClose className="h-3.5 w-3.5" />}
+        </Button>
+        <div className="h-5 w-px bg-border mx-1" />
         {study && (
           <div className="flex items-center gap-2 min-w-0 flex-1">
             <span className="rounded px-1.5 py-0.5 text-[10px] font-bold text-white"
@@ -722,46 +795,67 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       {/* ─── Three-column resizable layout ─── */}
       <div className="flex-1 min-h-0">
         <ResizablePanelGroup direction="horizontal">
-          {/* Left: Worklist */}
-          <ResizablePanel defaultSize={18} minSize={14} maxSize={26} ref={leftPanelRef}>
+          {/* Left: Worklist — collapsible like the legacy workspace */}
+          <ResizablePanel
+            defaultSize={18}
+            minSize={12}
+            maxSize={26}
+            collapsible
+            collapsedSize={3}
+            ref={leftPanelRef}
+            onCollapse={() => setLeftCollapsed(true)}
+            onExpand={() => setLeftCollapsed(false)}
+          >
             <div className="h-full border-r border-border bg-card">
-              <WorklistStrip />
+              {leftCollapsed ? (
+                <button
+                  type="button"
+                  className="flex h-full w-full flex-col items-center gap-2 py-3 text-muted-foreground hover:bg-muted/40"
+                  onClick={() => leftPanelRef.current?.expand()}
+                  title="Expand worklist"
+                  data-testid="left-panel-expand"
+                >
+                  <PanelLeftOpen className="h-4 w-4" />
+                  <span className="text-[9px] writing-mode-vertical font-semibold tracking-wider uppercase" style={{ writingMode: "vertical-rl" }}>
+                    Queue
+                  </span>
+                </button>
+              ) : (
+                <WorklistStrip onSelectStudy={openStudy} />
+              )}
             </div>
           </ResizablePanel>
           <ResizableHandle />
 
-          {/* Center: Viewer + Embedded WADO + Print/Report Image Pickers */}
+          {/* Center: Embedded WADO + compact Print/Report pickers */}
           <ResizablePanel defaultSize={36} minSize={28} maxSize={50}>
             <div className="flex h-full flex-col">
-              {/* OpenStudyPanel — viewer launch control */}
-              {workflow.currentRow && (
-                <div className="border-b border-border p-2">
-                  <OpenStudyPanel study={{ studyInstanceUID: workflow.currentRow?.studyInstanceUID ?? null, accessionNumber: workflow.currentRow?.accessionNumber ?? null, patientId: workflow.currentRow?.patientId ?? null, worklistId: studyId ?? null }} isAdmin={isOwner} />
-                </div>
-              )}
-              {/* EmbeddedWadoViewer — 3 enlarge modes */}
+              {/* EmbeddedWadoViewer — 3 enlarge modes (column / fullscreen / new tab).
+                  Open Study / Weasis / Tailscale chrome removed: it ate vertical
+                  space; OHIF new-tab + network probe live on the viewer header. */}
               <div className="flex-1 min-h-0">
                 <EmbeddedWadoViewer
                   ref={embeddedViewerRef}
                   studyInstanceUID={workflow.currentRow?.studyInstanceUID ?? null}
                   accessionNumber={workflow.currentRow?.accessionNumber ?? null}
+                  columnExpanded={viewerColumnExpanded}
+                  onColumnExpandedChange={setViewerColumnExpanded}
                 />
               </div>
-              {/* Report Image Picker */}
-              {workflow.currentRow && (
-                <div className="border-t border-border">
+              {/* Report / Print pickers hide while the viewer is vertically enlarged */}
+              {!viewerColumnExpanded && workflow.currentRow && (
+                <div className="border-t border-border shrink-0">
                   <ReportImagePicker
                     draftId={draftId ?? null}
                     studyId={studyId ?? null}
                     studyInstanceUID={workflow.currentRow?.studyInstanceUID ?? null}
                     disabled={workflow.currentRow?.status === "REPORT_FINAL"}
-                    onEnsureDraft={async () => { await saveDraft(); return draftId ?? null; }}
+                    onEnsureDraft={saveDraft}
                   />
                 </div>
               )}
-              {/* Print Image Picker */}
-              {workflow.currentRow && (
-                <div className="border-t border-border">
+              {!viewerColumnExpanded && workflow.currentRow && (
+                <div className="border-t border-border shrink-0">
                   <PrintImagePicker
                     studyInstanceUID={workflow.currentRow?.studyInstanceUID ?? null}
                     disabled={workflow.currentRow?.status === "REPORT_FINAL"}

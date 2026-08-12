@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
   ZoomIn, ZoomOut, RotateCcw, Sun, Moon, ChevronLeft, ChevronRight,
-  Layers, Maximize2, Minimize2, AlertTriangle, RefreshCw, ExternalLink,
+  Layers, Maximize2, Minimize2, Expand, Shrink, AlertTriangle, RefreshCw, ExternalLink,
 } from "lucide-react";
 import { BROWSER_DICOMWEB_BASE } from "@/lib/browserDicomWeb";
 import { planStudyLaunch, localStorageRouteCache, type StudyLaunchResult } from "@/lib/studyLaunchService";
@@ -75,7 +75,11 @@ export interface EmbeddedViewerHandle {
 const EmbeddedWadoViewer = forwardRef<EmbeddedViewerHandle, {
   studyInstanceUID: string | null;
   accessionNumber?: string | null;
-  /** Fill the left column (hide report images below) — distinct from fullscreen overlay. */
+  /**
+   * Vertical enlarge inside the center (viewer) column only — grow UP/DOWN to
+   * reclaim space above/below the view box (Open Study chrome, Report/Print
+   * pickers). Distinct from near-fullscreen overlay and from open-in-new-tab.
+   */
   columnExpanded?: boolean;
   onColumnExpandedChange?: (expanded: boolean) => void;
 }>(function EmbeddedWadoViewer({ studyInstanceUID, accessionNumber, columnExpanded = false, onColumnExpandedChange }, ref) {
@@ -254,7 +258,7 @@ function ViewerContent({ studyInstanceUID, accessionNumber, controlRef, columnEx
   // M1.6B2 — same setters the toolbar buttons call, nothing more.
   useImperativeHandle(controlRef, () => ({ nextFrame, prevFrame, zoomIn, zoomOut, resetView }));
 
-  // Escape closes the enlarged view (matches every dialog in the app).
+  // Escape exits near-fullscreen overlay (column expand is restored via its own control).
   useEffect(() => {
     if (!isExpanded) return;
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setIsExpanded(false); };
@@ -277,13 +281,15 @@ function ViewerContent({ studyInstanceUID, accessionNumber, controlRef, columnEx
 
   return (
     <div className={`flex flex-col rounded-lg border overflow-hidden min-h-0 ${isExpanded ? "fixed inset-4 z-50 bg-background shadow-2xl" : "relative h-full"}`}>
-      {/* Header — Maximize fills the left column (hides report images below).
-          Double-click toggles fullscreen overlay. Clicks inside the OHIF
-          iframe cannot reach us. */}
+      {/* Three enlarge modes:
+          1) Maximize — grow view box UP/DOWN inside the center column only
+          2) Expand — near-fullscreen overlay (whole workspace chrome)
+          3) ExternalLink — OHIF in a new browser tab
+          Double-click header also toggles near-fullscreen. */}
       <div
-        className="flex items-center justify-between gap-2 px-3 py-2 bg-muted/50 border-b flex-wrap cursor-pointer select-none shrink-0"
+        className="flex items-center justify-between gap-2 px-3 py-1.5 bg-muted/50 border-b flex-wrap cursor-pointer select-none shrink-0"
         onDoubleClick={() => setIsExpanded((v) => !v)}
-        title={isExpanded ? "Double-click to exit fullscreen" : columnExpanded ? "Double-click for fullscreen" : "Maximize fills panel · double-click for fullscreen"}
+        title={isExpanded ? "Double-click to exit fullscreen" : "Double-click for fullscreen overlay"}
         data-testid="viewer-header"
       >
         <div className="flex items-center gap-2 text-xs min-w-0">
@@ -294,7 +300,7 @@ function ViewerContent({ studyInstanceUID, accessionNumber, controlRef, columnEx
         </div>
         <div className="flex items-center gap-1">
           {/* OHIF ⇄ Frames toggle — Weasis is a desktop app and launches via
-              the Open Study panel, it cannot render inside the page. */}
+              open-in-new-tab / external tools; it cannot render inside the page. */}
           <div className="flex items-center rounded-md border overflow-hidden text-[11px]" data-testid="viewer-mode-toggle">
             <button
               type="button"
@@ -315,19 +321,30 @@ function ViewerContent({ studyInstanceUID, accessionNumber, controlRef, columnEx
           </div>
           {viewMode === "OHIF" && bestOhifUrl && (
             <Button size="sm" variant="ghost" className="h-7 w-7 p-0" title="Open OHIF in a new tab"
-              onClick={() => window.open(bestOhifUrl, "_blank")}>
+              onClick={(e) => { e.stopPropagation(); window.open(bestOhifUrl, "_blank"); }}
+              data-testid="viewer-open-new-tab">
               <ExternalLink className="h-3.5 w-3.5" />
             </Button>
           )}
           <Button
             size="sm"
-            variant="ghost"
+            variant={columnExpanded ? "secondary" : "ghost"}
             className="h-7 w-7 p-0"
-            onClick={() => (isExpanded ? setIsExpanded(false) : toggleColumnExpanded())}
-            title={isExpanded ? "Exit fullscreen" : columnExpanded ? "Restore report images panel" : "Fill panel (hide report images below)"}
+            onClick={(e) => { e.stopPropagation(); if (isExpanded) setIsExpanded(false); toggleColumnExpanded(); }}
+            title={columnExpanded ? "Restore Report/Print panels below" : "Enlarge view box up & down (center column only)"}
             data-testid="viewer-column-expand"
           >
-            {(isExpanded || columnExpanded) ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
+            {columnExpanded ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
+          </Button>
+          <Button
+            size="sm"
+            variant={isExpanded ? "secondary" : "ghost"}
+            className="h-7 w-7 p-0"
+            onClick={(e) => { e.stopPropagation(); setIsExpanded((v) => !v); }}
+            title={isExpanded ? "Exit fullscreen overlay" : "Fill whole screen"}
+            data-testid="viewer-fullscreen"
+          >
+            {isExpanded ? <Shrink className="h-3.5 w-3.5" /> : <Expand className="h-3.5 w-3.5" />}
           </Button>
         </div>
       </div>
