@@ -183,6 +183,7 @@ const navItems: NavEntry[] = [
       // Daily path only — extra AI/admin/legacy pages live under Settings → Radiology
       // or /radiology hub → Advanced (routes unchanged; bookmarks still work).
       { path: "/radiology/worklist",            icon: ScanSearch,     label: "Worklist" },
+      { path: "/radiology/my-collection",        icon: ShieldAlert,    label: "DICOM Match" },
       { path: "/radiology/reporting-workspace", icon: FilePen,        label: "Reporting Workspace" },
       { path: "/radiology/legacy-workspace",   icon: FilePen,        label: "Legacy Workspace (old)", ownerOnly: true },
       { path: "/report-delivery",               icon: Send,           label: "Report Delivery" },

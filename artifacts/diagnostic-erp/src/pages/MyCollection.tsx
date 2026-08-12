@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
 import PageHeader from "@/components/PageHeader";
@@ -75,6 +75,32 @@ type CandidateStudy = {
   matchWarnings: string[];
 };
 
+type MatchListFilter = "all" | "unbilled" | "needs_review" | "resolved";
+
+function parseMatchListFilter(): MatchListFilter {
+  try {
+    const q = new URLSearchParams(window.location.search).get("filter");
+    if (q === "unbilled" || q === "unlinked") return "unbilled";
+    if (q === "review" || q === "needs_review") return "needs_review";
+    if (q === "resolved") return "resolved";
+  } catch {
+    /* ignore */
+  }
+  return "all";
+}
+
+function isUnbilledScan(item: PacsWorklistItem): boolean {
+  return item.studyId == null;
+}
+
+function needsMatchReview(item: PacsWorklistItem): boolean {
+  return Boolean(item.studyId) && item.matchDecision === "PENDING" && item.matchScore !== "GREEN";
+}
+
+function isResolvedMatch(item: PacsWorklistItem): boolean {
+  return item.matchScore === "GREEN" || item.matchDecision === "APPROVED";
+}
+
 export default function MyCollection() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -83,13 +109,38 @@ export default function MyCollection() {
   const [isOverrideDialogOpen, setIsOverrideDialogOpen] = useState(false);
   const [overrideReason, setOverrideReason] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
+  const [listFilter, setListFilter] = useState<MatchListFilter>(parseMatchListFilter);
 
   const { data: worklist = [], isLoading, refetch } = useQuery<PacsWorklistItem[]>({
     queryKey: ["/api/radiology/pacs-worklist"],
     queryFn: () => api.get("/api/radiology/pacs-worklist"),
   });
 
-  const selectedItem = worklist.find((item) => item.id === selectedId) || worklist[0];
+  const listCounts = useMemo(() => ({
+    all: worklist.length,
+    unbilled: worklist.filter(isUnbilledScan).length,
+    needs_review: worklist.filter(needsMatchReview).length,
+    resolved: worklist.filter(isResolvedMatch).length,
+  }), [worklist]);
+
+  const filteredWorklist = useMemo(() => {
+    switch (listFilter) {
+      case "unbilled":
+        return worklist.filter(isUnbilledScan);
+      case "needs_review":
+        return worklist.filter(needsMatchReview);
+      case "resolved":
+        return worklist.filter(isResolvedMatch);
+      default:
+        return worklist;
+    }
+  }, [worklist, listFilter]);
+
+  const selectedItem =
+    filteredWorklist.find((item) => item.id === selectedId)
+    ?? filteredWorklist[0]
+    ?? worklist.find((item) => item.id === selectedId)
+    ?? worklist[0];
 
   const { data: candidatesData } = useQuery<{ candidates: CandidateStudy[] }>({
     queryKey: ["/api/radiology/pacs-worklist", selectedItem?.id, "matching-candidates"],
@@ -157,11 +208,64 @@ export default function MyCollection() {
       <div className="flex justify-between items-center">
         <PageHeader
           title="DICOM Match Center"
-          subtitle="Verify auto-pulled PACS studies match billed test orders to prevent mismatch errors and report delivery forgery."
+          subtitle="Catch scans performed without billing, verify PACS studies match billed orders, and block wrong-study report delivery."
         />
         <Button onClick={() => refetch()} variant="outline" className="gap-2">
           <RefreshCw className="h-4 w-4" /> Refresh
         </Button>
+      </div>
+
+      {listCounts.unbilled > 0 && (
+        <div className="rounded-xl border border-orange-300 bg-orange-50 dark:bg-orange-950/30 px-4 py-3 flex flex-wrap items-start gap-3">
+          <AlertTriangle className="h-5 w-5 text-orange-600 shrink-0 mt-0.5" />
+          <div className="flex-1 min-w-0 text-sm">
+            <p className="font-semibold text-orange-900 dark:text-orange-200">
+              {listCounts.unbilled} scan{listCounts.unbilled === 1 ? "" : "s"} in PACS without a billed order
+            </p>
+            <p className="text-xs text-orange-800/90 dark:text-orange-300/90 mt-1">
+              Staff may have acquired imaging before billing. Review each row, bill the patient if needed, then link the study or reject the scan.
+            </p>
+          </div>
+          {listFilter !== "unbilled" && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="border-orange-400 text-orange-800 hover:bg-orange-100 shrink-0"
+              onClick={() => setListFilter("unbilled")}
+            >
+              Show unbilled only
+            </Button>
+          )}
+        </div>
+      )}
+
+      <div className="flex flex-wrap gap-2">
+        {([
+          { key: "unbilled" as const, label: "Scan without billing", count: listCounts.unbilled, tone: "orange" },
+          { key: "needs_review" as const, label: "Needs review", count: listCounts.needs_review, tone: "amber" },
+          { key: "resolved" as const, label: "Resolved", count: listCounts.resolved, tone: "emerald" },
+          { key: "all" as const, label: "All PACS intake", count: listCounts.all, tone: "slate" },
+        ]).map(({ key, label, count, tone }) => (
+          <button
+            key={key}
+            type="button"
+            onClick={() => setListFilter(key)}
+            className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-xs font-semibold transition-colors ${
+              listFilter === key
+                ? tone === "orange"
+                  ? "border-orange-500 bg-orange-100 text-orange-900 dark:bg-orange-950/50 dark:text-orange-200"
+                  : tone === "amber"
+                    ? "border-amber-500 bg-amber-100 text-amber-900 dark:bg-amber-950/50 dark:text-amber-200"
+                    : tone === "emerald"
+                      ? "border-emerald-500 bg-emerald-100 text-emerald-900 dark:bg-emerald-950/50 dark:text-emerald-200"
+                      : "border-slate-400 bg-slate-100 text-slate-900 dark:bg-slate-800 dark:text-slate-100"
+                : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300"
+            }`}
+          >
+            {label}
+            <Badge variant="outline" className="text-[10px] px-1.5 py-0 tabular-nums">{count}</Badge>
+          </button>
+        ))}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
@@ -176,11 +280,13 @@ export default function MyCollection() {
               <div className="flex justify-center items-center py-10">
                 <RefreshCw className="h-8 w-8 animate-spin text-slate-400" />
               </div>
-            ) : worklist.length === 0 ? (
-              <div className="text-center py-10 text-slate-500">No PACS studies in worklist</div>
+            ) : filteredWorklist.length === 0 ? (
+              <div className="text-center py-10 text-slate-500">
+                {worklist.length === 0 ? "No PACS studies in worklist" : "No studies in this filter"}
+              </div>
             ) : (
               <div className="divide-y divide-slate-100 dark:divide-slate-900">
-                {worklist.map((item) => (
+                {filteredWorklist.map((item) => (
                   <div
                     key={item.id}
                     onClick={() => {
@@ -196,9 +302,16 @@ export default function MyCollection() {
                       <span className="font-semibold text-slate-900 dark:text-slate-100 truncate">
                         {item.patientName}
                       </span>
-                      <Badge className={getScoreBadgeColor(item.matchScore)}>
-                        {item.matchScore} ({item.matchPoints} pts)
-                      </Badge>
+                      <div className="flex flex-col items-end gap-1 shrink-0">
+                        {isUnbilledScan(item) && (
+                          <Badge className="bg-orange-600 hover:bg-orange-700 text-white text-[10px]">
+                            No billing
+                          </Badge>
+                        )}
+                        <Badge className={getScoreBadgeColor(item.matchScore)}>
+                          {item.matchScore} ({item.matchPoints} pts)
+                        </Badge>
+                      </div>
                     </div>
                     <div className="flex justify-between items-center text-xs text-slate-500 dark:text-slate-400">
                       <span>Modality: {item.modality}</span>
