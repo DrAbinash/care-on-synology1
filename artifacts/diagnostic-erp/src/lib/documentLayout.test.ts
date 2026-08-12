@@ -115,11 +115,17 @@ describe("document layout engine — bill renderers (unified Classic)", () => {
     expect(html).toContain('class="care-doc-page receipt"');
   });
 
-  test("bill number renders on the same line as Bill No.", () => {
+  test("bill number renders under date/time in the patient meta block", () => {
     const html = buildBillPrintHtml(baseOpts());
-    // Reference layout: BILL NO: label + bold number inline
     expect(html).toContain("BILL NO:");
     expect(html).toContain("2026001");
+    // Bill No. must appear after the patient date line, not in the header under INVOICE
+    const invoiceIdx = html.indexOf(">INVOICE<");
+    const billNoIdx = html.indexOf("BILL NO:");
+    const dateIdx = html.indexOf("01 AUG 2026");
+    expect(invoiceIdx).toBeGreaterThanOrEqual(0);
+    expect(dateIdx).toBeGreaterThan(invoiceIdx);
+    expect(billNoIdx).toBeGreaterThan(dateIdx);
   });
 
   test("enterprise audit token is present on the bill", () => {
@@ -164,17 +170,46 @@ describe("document layout engine — bill renderers (unified Classic)", () => {
     expect(html).toContain("color:#64748b"); // muted label color
   });
 
-  test("header layout 'right' puts address under Bill No.; 'left' keeps it under clinic name", () => {
+  test("header layout 'right' puts address under invoice title; 'left' keeps it under clinic name", () => {
     const right = buildBillPrintHtml(baseOpts({ headerLayout: "right" }));
     const left = buildBillPrintHtml(baseOpts({ headerLayout: "left" }));
     expect(right).toContain("Main Road, Deoghar");
     expect(left).toContain("Main Road, Deoghar");
-    const rightBillIdx = right.indexOf("BILL NO:");
+    // Address on right: after INVOICE title, before patient Bill No.
+    const rightInvoiceIdx = right.indexOf(">INVOICE<");
     const rightAddrIdx = right.indexOf("Main Road, Deoghar");
-    expect(rightAddrIdx).toBeGreaterThan(rightBillIdx);
+    const rightBillIdx = right.indexOf("BILL NO:");
+    expect(rightAddrIdx).toBeGreaterThan(rightInvoiceIdx);
+    expect(rightBillIdx).toBeGreaterThan(rightAddrIdx);
+    // Address on left: under clinic name, before patient Bill No.
     const leftBillIdx = left.indexOf("BILL NO:");
     const leftAddrIdx = left.indexOf("Main Road, Deoghar");
     expect(leftAddrIdx).toBeLessThan(leftBillIdx);
+  });
+
+  test("referring doctor matches patient name weight and size", () => {
+    const html = buildBillPrintHtml(baseOpts());
+    // Doctor value uses font-weight 800 (same as patient name)
+    expect(html).toMatch(/REF:[\s\S]*?font-weight:800[\s\S]*?DR\.\s*SHARMA/);
+  });
+
+  test("patient meta right stack is date, bill no, then phone/id", () => {
+    const html = buildBillPrintHtml(baseOpts());
+    const dateIdx = html.indexOf("01 AUG 2026");
+    const billIdx = html.indexOf("BILL NO:");
+    const phIdx = html.indexOf(">PH<");
+    const idIdx = html.indexOf(">ID<");
+    expect(dateIdx).toBeGreaterThanOrEqual(0);
+    expect(billIdx).toBeGreaterThan(dateIdx);
+    expect(phIdx).toBeGreaterThan(billIdx);
+    expect(idIdx).toBeGreaterThan(phIdx);
+  });
+
+  test("page padding is equal on left and right", () => {
+    const html = buildBillPrintHtml(baseOpts({ printMarginMm: 10 }));
+    expect(html).toContain("padding-left: 10mm");
+    expect(html).toContain("padding-right: 10mm");
+    expect(html).toContain("overflow: hidden");
   });
 
   test("date renders exactly once on the bill", () => {

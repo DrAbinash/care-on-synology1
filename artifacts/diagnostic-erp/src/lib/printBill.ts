@@ -294,8 +294,9 @@ export type BuildPrintHtmlOpts = {
   // printLogoHeightPx applies to the bill header logo.
   printMarginMm?: number | null;
   printLogoHeightPx?: number | null;
-  /** Header layout: "right" (default) = address/phone/website under Bill No. on the
-   * right side, bigger logo on the left; "left" = address under the clinic name. */
+  /** Header layout: "right" (default) = address/phone/website under the invoice
+   * title on the right, bigger logo on the left; "left" = address under the clinic name.
+   * Bill number lives in the patient meta block (under date/time), not the header. */
   headerLayout?: "left" | "right" | null;
   printTitleFontPx?: number | null;
   printPatientNameFontPx?: number | null;
@@ -467,9 +468,6 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
           </td>
           <td style="vertical-align:top;text-align:right;padding:0;width:${addressRight ? "50%" : "38%"}">
             <div style="font-size:${titleSize};font-weight:800;letter-spacing:1.2px;text-transform:uppercase;color:#0f172a">${isCancelled ? "CANCELLED" : isUnconfirmedQr ? "AWAITING PAYMENT" : "INVOICE"}</div>
-            <div style="margin-top:6px;white-space:nowrap">
-              ${metaLabel("BILL NO:", headerPx)} ${metaValue(billDigits, titleSize, 800)}
-            </div>
             ${addressRight ? addressLinesHtml("right") : ""}
             ${addressRight ? contactBlockHtml("right") : ""}
           </td>
@@ -482,17 +480,24 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
       ${reprintBy || reprintReason ? `<div style="display:inline-block;background:#f3f4f6;color:#4b5563;border:1px solid #d1d5db;border-radius:3px;padding:2px 8px;font-size:${tinyPx};font-weight:600;letter-spacing:0.02em;margin-bottom:8px">REPRINT${reprintBy ? ` &nbsp;&middot;&nbsp; ${esc(reprintBy)}` : ""}${reprintReason ? ` &nbsp;&middot;&nbsp; ${esc(reprintReason)}` : ""} &nbsp;&middot;&nbsp; ${esc(new Date().toLocaleDateString("en-IN"))}</div>` : ""}
 
       <table style="width:100%;border-collapse:collapse;margin-bottom:4px;table-layout:fixed">
-        <colgroup><col style="width:62%"/><col style="width:38%"/></colgroup>
+        <colgroup><col style="width:58%"/><col style="width:42%"/></colgroup>
         <tr>
-          <td style="vertical-align:top;padding:0;padding-right:8px;overflow-wrap:anywhere;word-break:break-word">
+          <td style="vertical-align:top;padding:0;overflow-wrap:anywhere;word-break:break-word">
             <div style="font-size:${patientNameSize};font-weight:800;line-height:1.25;color:#0f172a">${esc(`${bill.patient?.firstName ?? ""} ${bill.patient?.lastName ?? ""}`.trim().toUpperCase())}${ageGender ? ` <span style="font-weight:600;color:#475569">${esc(ageGender)}</span>` : ""}</div>
-            <div style="font-size:${patientNameSize};margin-top:3px;line-height:1.3">
-              ${metaLabel("REF:", patientNameSize)} ${metaValue(rawDoctor ? (rawDoctor.match(/^\s*DR\.?\s*/i) ? rawDoctor.trim().toUpperCase() : "DR. " + rawDoctor.trim().toUpperCase()) : "SELF / WALK-IN", patientNameSize, 700)}
+            <div style="font-size:${patientNameSize};margin-top:3px;line-height:1.3;font-weight:800;color:#0f172a">
+              ${metaLabel("REF:", patientNameSize)} ${metaValue(rawDoctor ? (rawDoctor.match(/^\s*DR\.?\s*/i) ? rawDoctor.trim().toUpperCase() : "DR. " + rawDoctor.trim().toUpperCase()) : "SELF / WALK-IN", patientNameSize, 800)}
             </div>
           </td>
-          <td style="vertical-align:top;text-align:right;padding:0;font-size:${patientNameSize};line-height:1.35;white-space:nowrap">
-            <div style="font-weight:800;color:#0f172a">${created.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }).toUpperCase()} &nbsp;${created.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: true }).toUpperCase()}</div>
-            <div style="margin-top:2px">${metaLabel("PH", tinyPx)} ${metaValue(bill.patient?.phone ?? "", tinyPx, 600)} · ${metaLabel("ID", tinyPx)} ${metaValue(bill.patient?.patientId ?? "", tinyPx, 600)}</div>
+          <td style="vertical-align:top;padding:0;position:relative">
+            <div style="visibility:hidden;pointer-events:none;font-size:${patientNameSize};line-height:1.25" aria-hidden="true">
+              <div style="font-weight:800;line-height:1.25">&nbsp;</div>
+              <div style="margin-top:3px;line-height:1.3">&nbsp;</div>
+            </div>
+            <div style="position:absolute;inset:0;display:flex;flex-direction:column;justify-content:space-between;text-align:right;white-space:nowrap">
+              <div style="font-size:${patientNameSize};font-weight:800;line-height:1.15;color:#0f172a">${created.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }).toUpperCase()} &nbsp;${created.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: true }).toUpperCase()}</div>
+              <div style="font-size:${patientNameSize};line-height:1.15;color:#0f172a">${metaLabel("BILL NO:", patientNameSize)} ${metaValue(billDigits, patientNameSize, 800)}</div>
+              <div style="font-size:${patientNameSize};line-height:1.15;color:#0f172a">${metaLabel("PH", patientNameSize)} ${metaValue(bill.patient?.phone ?? "", patientNameSize, 600)} · ${metaLabel("ID", patientNameSize)} ${metaValue(bill.patient?.patientId ?? "", patientNameSize, 600)}</div>
+            </div>
           </td>
         </tr>
       </table>
