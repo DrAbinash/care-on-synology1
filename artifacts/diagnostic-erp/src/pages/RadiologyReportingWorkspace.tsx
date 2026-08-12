@@ -121,9 +121,12 @@ import { mergeBlock, removeBlock, mergeImpression, removeImpression } from "@/li
 import type { Side } from "@/lib/sideSwap";
 import {
   loadWorkspaceLayoutPrefs, saveWorkspaceLayoutPrefs,
-  shouldShowEmbeddedViewer, type WorkspaceLayoutMode,
+  shouldShowEmbeddedViewer, fallbackModeWhenPopupBlocked, type WorkspaceLayoutMode,
 } from "@/lib/workspaceLayoutPrefs";
 import { isUltrasoundModality, isObstetricUsgStudy } from "@/lib/usgModality";
+import { prefetchMriStudies, prefetchNextMriStudy } from "@/lib/mriStudyPrefetch";
+import { BROWSER_DICOMWEB_BASE } from "@/lib/browserDicomWeb";
+import type { ReportImageRef } from "@/lib/reportImageRefs";
 
 // ─── New Z.ai workspace components ─────────────────────────────────────────────
 import { useWorkspace, type WorkspaceStore } from "@/lib/zai-workspace/store";
@@ -168,7 +171,7 @@ import "@/lib/copilotUsgCompanionModule";
 import {
   Lock, AlertTriangle, ChevronLeft, ChevronRight, Pause, Clock, Sparkles, ShieldCheck,
   Brain, Activity, Zap, Printer, FileDown, Share2, Eye, PanelLeftClose, PanelLeftOpen,
-  Maximize2, Columns2, Monitor, Archive, Keyboard,
+  Maximize2, Columns2, Monitor, Archive, Keyboard, AppWindow,
 } from "lucide-react";
 
 interface Props { studyId?: number; }
@@ -188,6 +191,9 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const commandDispatcherRef = useRef<{ dispatch: (cmd: string) => void } | null>(null);
   const canVerifyRef = useRef(false);
   const verifyActionRef = useRef<(() => void) | null>(null);
+  const pcpndtBlockedRef = useRef(false);
+  const linkedReportIdRef = useRef<number | null>(null);
+  const openLegacyTabRef = useRef<(tab: LegacyBoxTab) => void>(() => {});
   const [legacyTab, setLegacyTab] = useState<LegacyBoxTab | null>(null);
   const [shortcutHelpOpen, setShortcutHelpOpen] = useState(false);
   const [verifyBusy, setVerifyBusy] = useState(false);
@@ -572,6 +578,17 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     // 1. Save dirty state first
     if (useWorkspace.getState().isDirty) await saveDraft();
 
+    // 1b. PCPNDT Form F gate (obstetric USG) — same rule as legacy
+    if (pcpndtBlockedRef.current) {
+      toast({
+        title: "Finalize blocked — PCPNDT Form F required",
+        description:
+          "This is an obstetric/fetal ultrasound and the patient's PCPNDT Form F is missing or incomplete. Use Legacy Box → Measure → Review & Map to Form F, then finalize again.",
+        variant: "destructive",
+      });
+      return;
+    }
+
     // 2. Validate (local + server validate-draft when available)
     const validationIssues = validateReport({
       findings: findingsText,
@@ -683,18 +700,20 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     previous: () => { goPrevStudy(); },
     park: () => { if (studyId) { (workflow as any).park(studyId, ""); } },
     refresh: () => workflow.refreshQueue(),
-    "open-viewer": () => {
-      // External viewers launch from the embedded OHIF header (new tab).
-    },
-    "focus-quick-search": () => { /* TODO */ },
+    "open-viewer": () => { openLegacyTabRef.current("open-study"); },
+    "focus-quick-search": () => { openLegacyTabRef.current("library"); },
     verify: () => { verifyActionRef.current?.(); },
     unpark: () => { if (studyId) { workflow.unpark(studyId); } },
     "reload-current": () => window.location.reload(),
-    "focus-findings": () => { /* TODO */ },
-    "focus-impression": () => { /* TODO */ },
+    "focus-findings": () => { /* FindingsEditor owns focus */ },
+    "focus-impression": () => { /* FindingsEditor owns focus */ },
     "close-panel": () => { rightPanelRef.current?.collapse(); },
-    "select-template-1": () => {}, "select-template-2": () => {}, "select-template-3": () => {},
-    "select-template-4": () => {}, "select-template-5": () => {}, "select-template-6": () => {},
+    "select-template-1": () => { openLegacyTabRef.current("templates"); },
+    "select-template-2": () => { openLegacyTabRef.current("templates"); },
+    "select-template-3": () => { openLegacyTabRef.current("templates"); },
+    "select-template-4": () => { openLegacyTabRef.current("templates"); },
+    "select-template-5": () => { openLegacyTabRef.current("templates"); },
+    "select-template-6": () => { openLegacyTabRef.current("templates"); },
   }), [saveDraft, finalizeReport, workflow, studyId, goNextStudy, goPrevStudy]);
   commandDispatcherRef.current = commandDispatcher;
 
@@ -764,34 +783,58 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   }, [workflow.currentRow, findingsText, impressionText, recommendationText]);
 
   const handleExportPdf = useCallback(async () => {
-    const html = `<h2>${workflow.currentRow?.studyDescription ?? "Report"}</h2><p><b>Findings:</b> ${findingsText}</p><p><b>Impression:</b> ${impressionText}</p><p><b>Recommendation:</b> ${recommendationText}</p>`;
-    await (exportRadiologyReportToPdf as any)({
-      htmlBody: html,
-      patientName: workflow.currentRow?.patientName ?? "",
-      studyDescription: workflow.currentRow?.studyDescription ?? "",
-      accessionNumber: workflow.currentRow?.accessionNumber ?? "",
-      dicomWebBase: "",
-      imageRefs: [],
-    });
-  }, [workflow.currentRow, findingsText, impressionText, recommendationText]);
+    let refs: ReportImageRef[] = [];
+    if (draftId) {
+      try {
+        refs = await api.get(`/api/radiology/report-generator/image-references?draftId=${draftId}`);
+      } catch { /* export without images if refs unavailable */ }
+    }
+    try {
+      await exportRadiologyReportToPdf({
+        patientName: workflow.currentRow?.patientName ?? "",
+        age: String((workflow.currentRow as { age?: string | number } | null)?.age ?? ""),
+        sex: String((workflow.currentRow as { sex?: string } | null)?.sex ?? ""),
+        accessionNumber: workflow.currentRow?.accessionNumber ?? "",
+        studyDate: String((workflow.currentRow as { studyDate?: string } | null)?.studyDate ?? ""),
+        referringDoctor: String((workflow.currentRow as { referringDoctor?: string } | null)?.referringDoctor ?? ""),
+        modality: workflow.currentRow?.modality ?? "",
+        bodyPart: workflow.currentRow?.studyDescription ?? "",
+        clinicalHistory: clinicalHistoryText,
+        technique: techniqueText,
+        useStructured: false,
+        findingsMap: {},
+        rawFindings: findingsText,
+        impression: impressionText.split("\n").filter(Boolean),
+        recommendation: recommendationText,
+        studyName: workflow.currentRow?.studyDescription ?? "Radiology Report",
+        dicomWebBase: BROWSER_DICOMWEB_BASE,
+        imageRefs: refs,
+        clinic: null,
+      });
+    } catch (err) {
+      toast({
+        title: "Export failed",
+        description: err instanceof Error ? err.message : "Could not build the PDF",
+        variant: "destructive",
+      });
+    }
+  }, [workflow.currentRow, findingsText, impressionText, recommendationText, clinicalHistoryText, techniqueText, draftId, toast]);
 
   // ─── Teaching case save ─────────────────────────────────────────────────────
   const handleSaveTeachingCase = useCallback(async () => {
     if (!studyId) return;
     try {
-      await api.post("/api/teaching-cases/generate-from-report", { studyId, findings: findingsText, impression: impressionText });
+      await api.post("/api/teaching-cases/generate-from-report", {
+        studyId,
+        findings: findingsText,
+        impression: impressionText,
+        modality: workflow.currentRow?.modality,
+        studyDescription: workflow.currentRow?.studyDescription,
+        patientName: workflow.currentRow?.patientName,
+      });
       toast({ title: "Saved as teaching case" });
     } catch (err) { toast({ title: "Failed", variant: "destructive" }); }
-  }, [studyId, findingsText, impressionText, toast]);
-
-  // ─── Report share (WhatsApp) ─────────────────────────────────────────────────
-  const handleShare = useCallback(async () => {
-    if (!studyId) return;
-    try {
-      await api.post(`/api/patient-reports/${studyId}/share`, { channel: "whatsapp" });
-      toast({ title: "Shared via WhatsApp" });
-    } catch (err) { toast({ title: "Share failed", variant: "destructive" }); }
-  }, [studyId, toast]);
+  }, [studyId, findingsText, impressionText, toast, workflow.currentRow]);
 
   // ─── Verify / countersign (legacy D9) — additive; does not replace Finalize ─
   const linkedReportId = useMemo(() => {
@@ -799,6 +842,27 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     const draft = existingDraft as { finalReportId?: number | null } | null | undefined;
     return draft?.finalReportId ?? row?.reportId ?? null;
   }, [workflow.currentRow, existingDraft]);
+  linkedReportIdRef.current = linkedReportId;
+
+  // Same query key as ReportImagePicker — keeps selected DICOM refs warm for PDF.
+  useQuery<ReportImageRef[]>({
+    queryKey: ["report-image-references", draftId],
+    queryFn: () => api.get(`/api/radiology/report-generator/image-references?draftId=${draftId}`),
+    enabled: !!draftId,
+  });
+
+  // ─── Report share (WhatsApp) — uses finalized report id, not worklist id ────
+  const handleShare = useCallback(async () => {
+    const reportId = linkedReportIdRef.current;
+    if (!reportId) {
+      toast({ title: "Finalize the report first", description: "WhatsApp share needs a finalized patient report.", variant: "destructive" });
+      return;
+    }
+    try {
+      await api.post(`/api/patient-reports/${reportId}/share`, { channel: "whatsapp" });
+      toast({ title: "Shared via WhatsApp" });
+    } catch (err) { toast({ title: "Share failed", description: err instanceof Error ? err.message : "Error", variant: "destructive" }); }
+  }, [toast]);
 
   const { data: finalReport } = useQuery<{
     id?: number;
@@ -861,6 +925,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     setLegacyTab(tab);
     rightPanelRef.current?.expand();
   }, []);
+  openLegacyTabRef.current = openLegacyTab;
 
   // ─── PCPNDT gate (OB USG Form F check) ──────────────────────────────────────
   const modalityRaw = workflow.currentRow?.modality ?? "";
@@ -881,12 +946,50 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   );
 
   const isObUsg = isObstetricUsgStudy(modalityRaw, workflow.currentRow?.studyDescription ?? "");
-  const { data: pcpndtCompliance } = useQuery<{ compliant: boolean; missing?: string[] }>({
+  const { data: pcpndtCompliance } = useQuery<{ compliant: boolean; errors?: string[]; missing?: string[]; formFId?: number | null }>({
     queryKey: ["pcpndt-compliance", workflow.currentRow?.patientId],
     queryFn: () => api.get(`/api/patient-reports/pcpndt-compliance/${workflow.currentRow!.patientId}`),
     enabled: !!workflow.currentRow?.patientId && isObUsg,
     refetchInterval: 30000,
   });
+  const pcpndtBlocked = isObUsg && pcpndtCompliance?.compliant !== true;
+  pcpndtBlockedRef.current = pcpndtBlocked;
+  const pcpndtMissing = pcpndtCompliance?.errors ?? pcpndtCompliance?.missing ?? [];
+
+  // Warm MRI DICOMweb for the reporting queue (same path as embedded viewer).
+  useEffect(() => {
+    const base = BROWSER_DICOMWEB_BASE;
+    const mriUids = (workflow.queue ?? [])
+      .filter((s: { modality?: string | null }) => {
+        const m = (s.modality ?? "").trim().toUpperCase();
+        return m === "MR" || m.startsWith("MR");
+      })
+      .map((s: { studyInstanceUID?: string | null }) => s.studyInstanceUID)
+      .filter((uid: string | null | undefined): uid is string => !!uid);
+    if (mriUids.length > 0) {
+      prefetchMriStudies(mriUids.map((uid) => ({ studyInstanceUID: uid, dicomWebBaseUrl: base })));
+    } else if (workflow.currentRow?.studyInstanceUID && isMriModality) {
+      prefetchMriStudies([{ studyInstanceUID: workflow.currentRow.studyInstanceUID, dicomWebBaseUrl: base }]);
+    }
+  }, [workflow.queue, workflow.currentRow?.studyInstanceUID, isMriModality]);
+
+  useEffect(() => {
+    if (!studyId) return;
+    const idx = (workflow.queue ?? []).findIndex((s: { id: number }) => s.id === studyId);
+    if (idx < 0) return;
+    const next = workflow.queue[idx + 1] as { studyInstanceUID?: string | null; modality?: string | null } | undefined;
+    if (!next?.studyInstanceUID) return;
+    const m = (next.modality ?? "").trim().toUpperCase();
+    if (m === "MR" || m.startsWith("MR")) {
+      prefetchNextMriStudy({ studyInstanceUID: next.studyInstanceUID, dicomWebBaseUrl: BROWSER_DICOMWEB_BASE });
+    }
+  }, [workflow.queue, studyId]);
+
+  // Dual Screen: open Legacy Open Study (popup viewer). Fall back to Split if blocked.
+  useEffect(() => {
+    if (layoutMode !== "dualScreen") return;
+    openLegacyTab("open-study");
+  }, [layoutMode, studyId, openLegacyTab]);
 
   // ─── Compute derived state ──────────────────────────────────────────────────
   const study = studies.find((s: Study) => s.id === activeStudyId);
@@ -916,6 +1019,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
             { mode: "reportFocus" as const, label: "Report", icon: <Maximize2 className="h-3 w-3" />, title: "Report Focus — hide viewer" },
             { mode: "split" as const, label: "Split", icon: <Columns2 className="h-3 w-3" />, title: "Split — viewer + editor" },
             { mode: "viewerFocus" as const, label: "Viewer", icon: <Monitor className="h-3 w-3" />, title: "Viewer Focus — larger viewer" },
+            { mode: "dualScreen" as const, label: "Dual", icon: <AppWindow className="h-3 w-3" />, title: "Dual Screen — Open Study popup + full editor" },
           ]).map((m) => (
             <button
               key={m.mode}
@@ -1083,7 +1187,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
           )}
           {/* Finalize */}
           <Button size="sm" className="h-7 px-3 text-xs bg-emerald-600 hover:bg-emerald-700"
-            onClick={finalizeReport} disabled={!studyId || isFinalized || isLocked}>
+            onClick={finalizeReport} disabled={!studyId || isFinalized || isLocked || pcpndtBlocked}
+            title={pcpndtBlocked ? "Complete PCPNDT Form F before finalize" : undefined}>
             <ShieldCheck className="h-3.5 w-3.5 mr-1" />
             {isFinalized ? "Signed" : "Finalize"}
             <kbd className="ml-1.5 rounded bg-white/20 px-1 py-0.5 text-[8px] font-mono">⌃↵</kbd>
@@ -1111,7 +1216,15 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       {isObUsg && pcpndtCompliance && !pcpndtCompliance.compliant && (
         <div className="flex items-center gap-2 px-3 py-1.5 bg-rose-50 border-b border-rose-200 text-xs text-rose-800">
           <AlertTriangle className="h-3 w-3" />
-          PCPNDT Form F incomplete: {(pcpndtCompliance.missing ?? []).join(", ")}. Finalize will be blocked.
+          PCPNDT Form F incomplete{pcpndtMissing.length ? `: ${pcpndtMissing.join(", ")}` : ""}. Finalize is blocked — use Legacy Box → Measure → Review & Map to Form F.
+          <Button size="sm" variant="outline" className="h-5 text-[10px] ml-auto" onClick={() => openLegacyTab("measurements")}>
+            Open Measure
+          </Button>
+        </div>
+      )}
+      {isObUsg && pcpndtCompliance?.compliant === true && (
+        <div className="flex items-center gap-2 px-3 py-1 bg-emerald-50 border-b border-emerald-200 text-[11px] text-emerald-800">
+          <ShieldCheck className="h-3 w-3" /> PCPNDT Form F verified
         </div>
       )}
 
@@ -1174,8 +1287,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                         draftId={draftId ?? null}
                         studyId={studyId ?? null}
                         studyInstanceUID={workflow.currentRow?.studyInstanceUID ?? null}
-                        disabled={workflow.currentRow?.status === "REPORT_FINAL"}
-                        onEnsureDraft={saveDraft}
+                        disabled={isLocked || isFinalized || workflow.currentRow?.status === "REPORT_FINAL"}
+                        onEnsureDraft={isLocked ? undefined : saveDraft}
                       />
                     </div>
                   )}
@@ -1183,7 +1296,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                     <div className="border-t border-border shrink-0">
                       <PrintImagePicker
                         studyInstanceUID={workflow.currentRow?.studyInstanceUID ?? null}
-                        disabled={workflow.currentRow?.status === "REPORT_FINAL"}
+                        disabled={isLocked || isFinalized || workflow.currentRow?.status === "REPORT_FINAL"}
                       />
                     </div>
                   )}
@@ -1463,6 +1576,16 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                           );
                         }
                         if (r.technique) state.setField("technique", mergeBlock(state.techniqueText, r.technique));
+                      }}
+                      onViewerLaunchResult={(result) => {
+                        if (!result.success && result.errorCode === "POPUP_BLOCKED" && layoutMode === "dualScreen") {
+                          setLayoutMode(fallbackModeWhenPopupBlocked("dualScreen"));
+                          toast({
+                            title: "Popup blocked — showing Split View",
+                            description: "Allow popups for this site to use Dual Screen, then open the study again.",
+                            variant: "destructive",
+                          });
+                        }
                       }}
                     />
                   </ModuleErrorBoundary>

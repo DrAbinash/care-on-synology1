@@ -13,7 +13,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Archive, Sparkles, BookOpen, Ruler, Printer, FileDiff, GraduationCap,
-  Library, Brain, MonitorPlay, ChevronDown, ChevronRight,
+  Library, Brain, MonitorPlay, ChevronDown, ChevronRight, ClipboardPlus, Heart,
 } from "lucide-react";
 import CareCopilotPanel, { type CopilotAction } from "@/components/radiology/CareCopilotPanel";
 import FindingsLibraryPanel from "@/components/radiology/FindingsLibraryPanel";
@@ -22,12 +22,14 @@ import UsgMeasurementReviewPanel from "@/components/radiology/UsgMeasurementRevi
 import MeasurementAssistantPanel from "@/components/MeasurementAssistantPanel";
 import PreferencesPanel from "@/components/PreferencesPanel";
 import RadiologyKnowledgePanel from "@/components/RadiologyKnowledgePanel";
+import RadiologyMemoryPanel from "@/components/RadiologyMemoryPanel";
 import OpenStudyPanel from "@/components/radiology/OpenStudyPanel";
 import ReportLayoutQuickSelect, { type ReportLayoutKey } from "@/components/radiology/ReportLayoutQuickSelect";
 import { AiDraftPanel } from "@/components/ai/AiDraftPanel";
 import { analyzeCopilot, type CopilotItem, type CopilotReport } from "@/lib/copilotOrchestrator";
 import { useCopilotPrefs } from "@/hooks/useCopilotPrefs";
 import { isUltrasoundModality } from "@/lib/usgModality";
+import { useToast } from "@/hooks/use-toast";
 
 export type LegacyBoxTab =
   | "links"
@@ -35,6 +37,7 @@ export type LegacyBoxTab =
   | "library"
   | "templates"
   | "measurements"
+  | "memory"
   | "knowledge"
   | "diff"
   | "print"
@@ -46,8 +49,9 @@ const TABS: Array<{ id: LegacyBoxTab; label: string; icon: ReactNode }> = [
   { id: "links", label: "Links", icon: <Archive className="h-3 w-3" /> },
   { id: "copilot", label: "CARE Copilot", icon: <Sparkles className="h-3 w-3" /> },
   { id: "library", label: "Findings Lib", icon: <Library className="h-3 w-3" /> },
-  { id: "templates", label: "Prefs / Macros", icon: <BookOpen className="h-3 w-3" /> },
+  { id: "templates", label: "Templates", icon: <BookOpen className="h-3 w-3" /> },
   { id: "measurements", label: "Measure", icon: <Ruler className="h-3 w-3" /> },
+  { id: "memory", label: "Memory", icon: <Heart className="h-3 w-3" /> },
   { id: "knowledge", label: "Knowledge", icon: <Brain className="h-3 w-3" /> },
   { id: "diff", label: "AI Diff", icon: <FileDiff className="h-3 w-3" /> },
   { id: "print", label: "Print Preview", icon: <Printer className="h-3 w-3" /> },
@@ -55,6 +59,23 @@ const TABS: Array<{ id: LegacyBoxTab; label: string; icon: ReactNode }> = [
   { id: "teaching", label: "Teaching", icon: <GraduationCap className="h-3 w-3" /> },
   { id: "open-study", label: "Open Study", icon: <MonitorPlay className="h-3 w-3" /> },
 ];
+
+type MasterTemplate = {
+  id: number;
+  groupName: string;
+  templateName: string;
+  modality: string;
+  bodyPart: string | null;
+  findings: string;
+  impression: string;
+  recommendations: string | null;
+};
+
+type UsgTemplate = {
+  id: string;
+  label: string;
+  category: string;
+};
 
 export interface LegacyBoxProps {
   /** Controlled tab — parent can open a specific legacy tool. */
@@ -88,9 +109,12 @@ export interface LegacyBoxProps {
   onSetImpression: (text: string) => void;
   onSetTechnique: (text: string) => void;
   onApplyReport: (r: { findingsText: string; impressionLines: string[]; technique?: string }) => void;
+  /** Optional: notify parent when Dual/Open Study launches (popup blocked → split). */
+  onViewerLaunchResult?: (result: { success: boolean; errorCode?: string | null }) => void;
 }
 
 export default function LegacyBox(props: LegacyBoxProps) {
+  const { toast } = useToast();
   const [collapsed, setCollapsed] = useState(false);
   const [internalTab, setInternalTab] = useState<LegacyBoxTab>("links");
   const tab = props.activeTab ?? internalTab;
@@ -107,6 +131,8 @@ export default function LegacyBox(props: LegacyBoxProps) {
   const [printLayout, setPrintLayout] = useState<ReportLayoutKey>("care-classic");
   const [teachingNotes, setTeachingNotes] = useState("");
   const [teachingBusy, setTeachingBusy] = useState(false);
+  const [formFBusy, setFormFBusy] = useState(false);
+  const [usgApplyBusy, setUsgApplyBusy] = useState<string | null>(null);
 
   const careReport: CopilotReport = useMemo(
     () => analyzeCopilot({
@@ -129,7 +155,6 @@ export default function LegacyBox(props: LegacyBoxProps) {
     ],
   );
 
-  // Reset dismissals when study changes
   useEffect(() => {
     setDismissed(new Set());
     setRecentActions([]);
@@ -165,6 +190,22 @@ export default function LegacyBox(props: LegacyBoxProps) {
     staleTime: 30_000,
   });
 
+  const { data: masterTemplatesResp } = useQuery<{ templates: MasterTemplate[]; count: number }>({
+    queryKey: ["radiology-master-templates-v2"],
+    queryFn: () => api.get("/api/radiology/knowledge/master-templates"),
+    staleTime: 300_000,
+    enabled: tab === "templates",
+  });
+  const masterTemplates = masterTemplatesResp?.templates ?? [];
+
+  const isUs = isUltrasoundModality(props.modality);
+  const { data: usgTemplates = [] } = useQuery<UsgTemplate[]>({
+    queryKey: ["usg-report-templates"],
+    queryFn: () => api.get("/api/usg-reports/templates"),
+    staleTime: 300_000,
+    enabled: tab === "templates" && isUs,
+  });
+
   function insertCopilot(item: CopilotItem) {
     const text = item.insertText?.trim();
     if (!text) return;
@@ -190,12 +231,101 @@ export default function LegacyBox(props: LegacyBoxProps) {
         notes: teachingNotes,
       });
       setTeachingNotes("");
+      toast({ title: "Saved as teaching case" });
+    } catch (err) {
+      toast({ title: "Teaching save failed", description: err instanceof Error ? err.message : "Error", variant: "destructive" });
     } finally {
       setTeachingBusy(false);
     }
   }
 
-  const isUs = isUltrasoundModality(props.modality);
+  function applyMasterTemplate(tpl: MasterTemplate) {
+    if (props.disabled) return;
+    const hasTyped = props.findingsText.trim().length > 0 || props.impressionText.trim().length > 0;
+    if (hasTyped && !window.confirm(`Replace the current Findings and Impression with "${tpl.templateName}"?`)) return;
+    props.onSetFindings(tpl.findings || "");
+    props.onSetImpression(tpl.impression || "");
+    if (tpl.recommendations?.trim()) props.onAppendRecommendation(tpl.recommendations);
+    toast({ title: "Master template applied", description: tpl.templateName });
+  }
+
+  async function applyUsgTemplate(templateId: string) {
+    if (props.disabled || !props.studyInstanceUID) return;
+    setUsgApplyBusy(templateId);
+    try {
+      const res = await api.post<{
+        findings?: string;
+        impression?: string;
+        technique?: string;
+        recommendation?: string;
+      }>("/api/usg-reports/auto-generate", { templateId, studyInstanceUID: props.studyInstanceUID });
+      if (res.findings) props.onSetFindings(res.findings);
+      if (res.impression) props.onSetImpression(res.impression);
+      if (res.technique) props.onSetTechnique(res.technique);
+      if (res.recommendation) props.onAppendRecommendation(res.recommendation);
+      toast({ title: "USG template applied" });
+    } catch (err) {
+      toast({
+        title: "USG template failed",
+        description: err instanceof Error ? err.message : "Error",
+        variant: "destructive",
+      });
+    } finally {
+      setUsgApplyBusy(null);
+    }
+  }
+
+  async function reviewAndMapToFormF() {
+    if (!props.studyInstanceUID) return;
+    setFormFBusy(true);
+    try {
+      const rows = await api.get<Array<Record<string, unknown>>>(
+        `/api/usg-extraction/study/${encodeURIComponent(props.studyInstanceUID)}`,
+      );
+      const m = rows?.[0];
+      if (!m || m.status !== "approved") {
+        toast({
+          title: "No approved measurements yet",
+          description: "Approve extracted measurements in Measure before mapping to Form F.",
+          variant: "destructive",
+        });
+        return;
+      }
+      const parts: string[] = [];
+      const add = (label: string, v: unknown) => { if (v) parts.push(`${label}: ${v}`); };
+      add("GA", m.ga); add("CRL", m.crl); add("EDD", m.edd); add("FHR", m.fhr);
+      add("BPD", m.bpd); add("HC", m.hc); add("AC", m.ac); add("FL", m.fl); add("EFW", m.efw);
+      add("Placenta", m.placentaPosition); add("Liquor/AFI", m.liquorAfi);
+      add("Presentation", m.fetalPresentation);
+      if (parts.length === 0) {
+        toast({ title: "No obstetric measurements to map", variant: "destructive" });
+        return;
+      }
+      let fetalUsgStudyId: number | null = null;
+      if (props.studyId != null) {
+        try {
+          const strip = await api.get<{ found: boolean; fetalStudyId?: number }>(
+            `/api/fetal-usg-dashboard/strip/${props.studyId}`,
+          );
+          if (strip.found && strip.fetalStudyId) fetalUsgStudyId = strip.fetalStudyId;
+        } catch { /* best-effort */ }
+      }
+      const params = new URLSearchParams({ prefillUsgSummary: parts.join(", ") });
+      if (fetalUsgStudyId != null) params.set("prefillFetalUsgStudyId", String(fetalUsgStudyId));
+      window.open(`/form-f?${params.toString()}`, "_blank", "noopener");
+    } catch {
+      toast({ title: "Failed to load measurements for Form F", variant: "destructive" });
+    } finally {
+      setFormFBusy(false);
+    }
+  }
+
+  const modalityFilteredMaster = masterTemplates.filter((m) => {
+    if (!props.modality) return true;
+    const want = props.modality.trim().toUpperCase();
+    const have = (m.modality || "").trim().toUpperCase();
+    return !have || have === want || have.startsWith(want) || want.startsWith(have);
+  }).slice(0, 16);
 
   return (
     <div className="border-t border-amber-200/80 bg-amber-50/30" data-testid="legacy-box">
@@ -250,7 +380,8 @@ export default function LegacyBox(props: LegacyBoxProps) {
                   ))}
                 </div>
                 <p className="text-[10px] text-muted-foreground pt-1">
-                  Also available inline above the editor when applicable: USG Companion, OB strip, MRI readiness, Open Study (tab).
+                  Inline above the editor when applicable: USG Companion, OB strip, MRI readiness.
+                  Report / Print DICOM image pickers sit under the viewer (center column).
                 </p>
               </div>
             )}
@@ -261,11 +392,7 @@ export default function LegacyBox(props: LegacyBoxProps) {
                 dismissed={dismissed}
                 onInsert={insertCopilot}
                 onDismiss={dismissCopilot}
-                onGoToConflict={(match) => {
-                  if (match && props.findingsText.toLowerCase().includes(match.toLowerCase())) {
-                    /* advisory only — editor focus left to user */
-                  }
-                }}
+                onGoToConflict={() => { /* advisory */ }}
                 recentActions={recentActions}
                 onUndoLast={() => setRecentActions((prev) => prev.slice(1))}
                 provider="local"
@@ -284,12 +411,60 @@ export default function LegacyBox(props: LegacyBoxProps) {
             )}
 
             {tab === "templates" && (
-              <PreferencesPanel
-                currentUserId={props.currentUserId}
-                onApplyTemplate={(name) => props.onAppendFindings(`[Template: ${name}]`)}
-                onInsertFindingText={props.onAppendFindings}
-                onInsertImpressionPoint={props.onAppendImpression}
-              />
+              <div className="space-y-3">
+                {isUs && usgTemplates.length > 0 && (
+                  <div className="space-y-1">
+                    <div className="text-[10px] font-semibold uppercase text-muted-foreground">USG Templates</div>
+                    <div className="flex flex-col gap-1 max-h-[140px] overflow-y-auto">
+                      {usgTemplates.map((t) => (
+                        <Button
+                          key={t.id}
+                          size="sm"
+                          variant="outline"
+                          className="h-auto py-1.5 text-left justify-start px-2 flex-col items-start gap-0"
+                          disabled={props.disabled || !props.studyInstanceUID || usgApplyBusy === t.id}
+                          onClick={() => void applyUsgTemplate(t.id)}
+                        >
+                          <span className="text-xs font-medium">{t.label}</span>
+                          <span className="text-[10px] opacity-70">{t.category}</span>
+                        </Button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {modalityFilteredMaster.length > 0 && (
+                  <div className="space-y-1">
+                    <div className="text-[10px] font-semibold uppercase text-muted-foreground">Master Library</div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {modalityFilteredMaster.map((m) => (
+                        <Button
+                          key={`master-${m.id}`}
+                          size="sm"
+                          variant="outline"
+                          title={`${m.groupName.replace(/_/g, " ")}${m.bodyPart ? " · " + m.bodyPart : ""}`}
+                          onClick={() => applyMasterTemplate(m)}
+                          disabled={props.disabled}
+                          className="h-7 text-[10px]"
+                        >
+                          {m.templateName}
+                        </Button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                <div className="text-[10px] font-semibold uppercase text-muted-foreground pt-1">Prefs / Macros</div>
+                <PreferencesPanel
+                  currentUserId={props.currentUserId}
+                  onApplyTemplate={(name) => {
+                    // Prefer master match by name; else open as findings note.
+                    const match = masterTemplates.find((m) => m.templateName === name);
+                    if (match) applyMasterTemplate(match);
+                    else props.onAppendFindings(`[Template: ${name}]`);
+                  }}
+                  onInsertFindingText={props.onAppendFindings}
+                  onInsertImpressionPoint={props.onAppendImpression}
+                />
+              </div>
             )}
 
             {tab === "measurements" && (
@@ -308,6 +483,20 @@ export default function LegacyBox(props: LegacyBoxProps) {
                     }}
                   />
                 )}
+                {isUs && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="h-7 text-[11px] w-full"
+                    disabled={!props.studyInstanceUID || formFBusy || props.disabled}
+                    onClick={() => void reviewAndMapToFormF()}
+                    data-testid="legacy-form-f-map"
+                  >
+                    <ClipboardPlus className="h-3.5 w-3.5 mr-1" />
+                    {formFBusy ? "Opening Form F…" : "Review & Map to Form F"}
+                  </Button>
+                )}
                 <MeasurementAssistantPanel
                   patientId={props.patientId ?? undefined}
                   studyId={props.studyId ?? undefined}
@@ -319,6 +508,18 @@ export default function LegacyBox(props: LegacyBoxProps) {
                   }}
                 />
               </div>
+            )}
+
+            {tab === "memory" && (
+              <RadiologyMemoryPanel
+                patientId={props.patientId ?? undefined}
+                orderId={props.orderId ?? undefined}
+                modality={props.modality ?? undefined}
+                bodyPart={props.bodyPart ?? undefined}
+                findingsText={props.findingsText}
+                impressionText={props.impressionText}
+                onSuggestionInsert={props.onAppendFindings}
+              />
             )}
 
             {tab === "knowledge" && (
@@ -431,6 +632,14 @@ export default function LegacyBox(props: LegacyBoxProps) {
                   worklistId: props.worklistId ?? null,
                 }}
                 isAdmin={!!props.isAdmin}
+                onLaunchStateChange={(state) => {
+                  if (state?.lastResult) {
+                    props.onViewerLaunchResult?.({
+                      success: !!state.lastResult.success,
+                      errorCode: state.lastResult.errorCode ?? null,
+                    });
+                  }
+                }}
               />
             )}
           </div>
