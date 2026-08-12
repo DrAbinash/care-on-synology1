@@ -18,7 +18,7 @@ import {
   resolveTemplateRecordForRender,
 } from "../lib/presentationTemplateStore";
 import type { CopyType } from "../lib/presentationTemplateModel";
-import { sendReportWhatsapp, sendReportDelivery } from "./whatsapp";
+import { sendReportDelivery } from "./whatsapp";
 import crypto from "node:crypto";
 import {
   whatsappSettingsTable,
@@ -2812,13 +2812,13 @@ publicReportsRouter.get("/:token/pdf", async (req, res) => {
   if (!row.publicTokenExpiresAt || row.publicTokenExpiresAt < new Date()) {
     res.status(410).send("This link has expired. Please contact the clinic for a new report link."); return;
   }
-  if (row.status !== "verified" && row.status !== "delivered") {
+  if (row.status !== "verified" && row.status !== "delivered" && row.status !== "pending_verification") {
     res.status(403).send("Report not yet finalized"); return;
   }
   const useUpdatedStyle = req.query.useUpdatedStyle === "true";
   // D8 Phase 6 — a token minted for a now-superseded report resolves to the
   // latest signed amendment by default, but ONLY to a version this surface is
-  // allowed to deliver (verified/delivered — drafts never leak to patients).
+  // allowed to deliver (signed/verified/delivered — drafts never leak).
   // If no newer version qualifies yet, the token's own row is served WITH the
   // superseded banner + watermark — never presented as current. Access
   // control is unchanged: the token was validated against its row above, no
@@ -2826,7 +2826,7 @@ publicReportsRouter.get("/:token/pdf", async (req, res) => {
   // patient-controllable version parameter.
   const artifact = await buildReportArtifact(row.id, {
     useUpdatedStyle, surface: "public_pdf",
-    deliverableStatuses: ["verified", "delivered"],
+    deliverableStatuses: ["pending_verification", "verified", "delivered"],
     copyType: "patient",
   });
   if (!artifact) { res.status(404).send("Not found"); return; }
@@ -2858,10 +2858,19 @@ async function markDeliveredIfVerified(id: number) {
 // ────────────────────────────────────────────────────────────────────────────
 // Share — WhatsApp / Email
 // ────────────────────────────────────────────────────────────────────────────
-function reportPublicUrl(req: Request, reportId: number): string {
+function reportStaffPdfUrl(req: Request, reportId: number): string {
   const proto = req.headers["x-forwarded-proto"] || req.protocol || "https";
   const host = req.headers["x-forwarded-host"] || req.headers.host || "";
   return `${proto}://${host}/api/patient-reports/${reportId}/pdf`;
+}
+
+/** Patient-openable PDF URL (public token). Falls back to staff URL only if mint fails. */
+async function reportPatientPdfUrl(req: Request, reportId: number): Promise<string> {
+  const token = await ensurePublicToken(reportId);
+  const proto = req.headers["x-forwarded-proto"] || req.protocol || "https";
+  const host = req.headers["x-forwarded-host"] || req.headers.host || "";
+  if (token) return `${proto}://${host}/api/p/r/${token}/pdf`;
+  return reportStaffPdfUrl(req, reportId);
 }
 
 patientReportsRouter.post("/:id/share", async (req, res) => {
@@ -2878,7 +2887,9 @@ patientReportsRouter.post("/:id/share", async (req, res) => {
   // WhatsApp link, and email HTML all reference the row actually shared.
   const shareVersion = await resolveReportVersion(requestedId, {
     mode: await effectiveResolveMode(undefined),
-    deliverableStatuses: ["verified", "delivered"],
+    // Signed reports (pending countersign) are deliverable via WhatsApp from
+    // the reporting workspace — drafts still never resolve.
+    deliverableStatuses: ["pending_verification", "verified", "delivered"],
   });
   if (!shareVersion) {
     res.status(404).json({ error: "Report not found" });
@@ -2896,27 +2907,35 @@ patientReportsRouter.post("/:id/share", async (req, res) => {
     res.status(404).json({ error: "Report not found" });
     return;
   }
-  if (row.r.status !== "verified" && row.r.status !== "delivered") {
-    res.status(409).json({ error: "Report must be verified before sharing" });
+  if (row.r.status !== "verified" && row.r.status !== "delivered" && row.r.status !== "pending_verification") {
+    res.status(409).json({ error: "Report must be signed before sharing" });
     return;
   }
 
   const recipient = (typeof b.recipient === "string" && b.recipient.trim()) ||
     (channel === "whatsapp" ? row.patientPhone : channel === "email" ? row.patientEmail : null);
   const sharedBy = typeof b.sharedBy === "string" ? b.sharedBy : null;
-  const url = reportPublicUrl(req, id);
   const patientName = [row.patientFirstName, row.patientLastName].filter(Boolean).join(" ");
 
   let status: "sent" | "failed" = "sent";
   let errorMessage: string | null = null;
+  let reportUrl: string | null = null;
 
   if (channel === "whatsapp") {
     if (!recipient) {
       res.status(400).json({ error: "No phone number on file. Provide recipient." });
       return;
     }
-    const result = await sendReportWhatsapp({ phone: recipient, patientName, reportNumber: row.r.reportNumber, testName: row.testName ?? "Lab Report", reportUrl: url });
-    // Not just !result.ok -- sendReportWhatsapp goes through wa_outbox, where
+    // Patient-openable public PDF (same path as auto-on-verify), not the staff auth PDF.
+    reportUrl = await reportPatientPdfUrl(req, id);
+    const result = await sendReportDelivery({
+      phone: recipient,
+      patientName,
+      reportNumber: row.r.reportNumber,
+      testName: row.testName ?? "Radiology Report",
+      reportUrl,
+    });
+    // Not just !result.ok -- sendReportDelivery goes through wa_outbox, where
     // ok:true also covers shadow-mode-suppressed sends (result.skipped) that
     // never reached Meta at all. Treating that as "sent" would falsely mark
     // this report delivered and complete a BEND-1 re-delivery obligation for
@@ -2951,7 +2970,7 @@ patientReportsRouter.post("/:id/share", async (req, res) => {
     }).catch((err) => req.log?.error({ err }, "BEND-1 obligation completion failed"));
   }
 
-  res.json({ ok: status === "sent", share, error: errorMessage });
+  res.json({ ok: status === "sent", share, error: errorMessage, reportUrl });
 });
 
 // Helper: list templates for a test (mirror of report-templates filter for convenience).

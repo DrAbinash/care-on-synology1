@@ -14,6 +14,8 @@ interface Props {
   targetField?: string;
   className?: string;
   onVoiceIntent?: (intent: string) => void;
+  /** When true (e.g. Care voice session capturing), refuse to start a second mic. */
+  disabled?: boolean;
 }
 
 /**
@@ -35,6 +37,7 @@ export default function VoiceDictationButton({
   targetField,
   className,
   onVoiceIntent,
+  disabled = false,
 }: Props) {
   const {
     status,
@@ -344,7 +347,8 @@ export default function VoiceDictationButton({
         variant="outline"
         className={`${className ?? ""} gap-1`}
         onClick={start}
-        title="Start voice dictation (en-IN)"
+        disabled={disabled}
+        title={disabled ? "Care voice session is active — stop it first" : "Start voice dictation (en-IN)"}
       >
         <Mic size={14} />
         Voice

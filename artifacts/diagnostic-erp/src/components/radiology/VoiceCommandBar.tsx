@@ -47,7 +47,10 @@ export default function VoiceCommandBar({
     : "bg-slate-100 text-slate-700 border-slate-300";
 
   const controls = (
-      <div className={`flex items-center gap-1 ${embedded ? "min-w-0" : "gap-1.5 px-3 py-1 flex-wrap"}`}>
+      <div
+        className={`flex items-center gap-1 ${embedded ? "min-w-0" : "gap-1.5 px-3 py-1 flex-wrap"}`}
+        data-testid="voice-command-bar"
+      >
         {!embedded && <Mic size={12} className="text-muted-foreground shrink-0" />}
         {/* Push-to-talk: hold with the pointer (or hold Space outside editors) */}
         <Button
@@ -132,6 +135,8 @@ export default function VoiceCommandBar({
             <option value="findings">→ Findings</option>
             <option value="impression">→ Impression</option>
             <option value="recommendation">→ Recommendation</option>
+            <option value="technique">→ Technique</option>
+            <option value="clinicalHistory">→ History</option>
           </select>
         )}
         {/* Live transcript — fills remaining space instead of leaving a dead gap */}

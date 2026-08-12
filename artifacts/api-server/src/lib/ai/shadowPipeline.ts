@@ -15,6 +15,7 @@
 import { db } from "@workspace/db";
 import {
   studySnapshotsTable, aiProcessingManifestsTable, aiShadowDraftsTable, aiEvidenceTable, canonicalStudyTable,
+  radiologyWorklistTable,
 } from "@workspace/db/schema";
 import { and, desc, eq } from "drizzle-orm";
 import { getNextProvisionalVersion } from "./provisionalVersioning";
@@ -288,6 +289,30 @@ export function makeAiShadowPipelineHandler(overrides: Partial<ShadowPipelineDep
       })),
     );
     if (evidenceRows.length > 0) await db.insert(aiEvidenceTable).values(evidenceRows);
+
+    // Morning worklist signal — radiologists see READY on overnight AI drafts.
+    // Human report drafts stay radiologist-owned (AiDraftPanel Accept → editor);
+    // AI must never write radiology_report_drafts (aiIsolation guard).
+    try {
+      const findingsText = gauntlet.valid.map((f) => f.text).join("\n");
+      await db
+        .update(radiologyWorklistTable)
+        .set({
+          aiDraftStatus: "READY",
+          aiDraftJson: JSON.stringify({
+            source: "ai_shadow",
+            draftId: draftRow.id,
+            version,
+            findingCount: gauntlet.valid.length,
+            findings: findingsText,
+            impression: draft.impression,
+            updatedAt: new Date().toISOString(),
+          }),
+        })
+        .where(eq(radiologyWorklistTable.studyInstanceUID, uid));
+    } catch {
+      /* worklist update is best-effort — shadow draft is already durable */
+    }
 
     return {
       ok: true,

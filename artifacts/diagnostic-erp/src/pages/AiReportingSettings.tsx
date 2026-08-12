@@ -7,8 +7,9 @@ import { useToast } from "@/hooks/use-toast";
 import {
   BrainCircuit, Eye, EyeOff, Save, TestTube2, RefreshCw, ShieldCheck,
   Key, ChevronDown, ChevronUp, CheckCircle2, XCircle, AlertTriangle,
-  BookOpen, Settings2, Users, FileText, Wifi, WifiOff, Zap, Gauge,
+  BookOpen, Settings2, Users, FileText, Wifi, WifiOff, Zap, Gauge, Moon,
 } from "lucide-react";
+import OvernightAiSettings from "@/components/ai/OvernightAiSettings";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface GlobalSettings {
@@ -305,7 +306,9 @@ export function AiReportingPanel() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
-  const [activeSection, setActiveSection] = useState<"general" | "providers" | "prompts" | "permissions" | "local-ai">("general");
+  const [activeSection, setActiveSection] = useState<
+    "general" | "providers" | "prompts" | "permissions" | "local-ai" | "overnight"
+  >("general");
 
   // Local AI settings state
   const [localAi, setLocalAi] = useState({
@@ -513,6 +516,7 @@ export function AiReportingPanel() {
     { id: "general", icon: Settings2, label: "General" },
     { id: "providers", icon: Key, label: "AI Providers" },
     { id: "local-ai", icon: Zap, label: "Local AI" },
+    { id: "overnight", icon: Moon, label: "Draft automation" },
     { id: "prompts", icon: BookOpen, label: "Prompt Templates" },
     { id: "permissions", icon: Users, label: "Permissions" },
   ] as const;
@@ -804,6 +808,13 @@ export function AiReportingPanel() {
             {localAiSaving ? <RefreshCw size={14} className="animate-spin" /> : <Save size={14} />}
             Save Local AI Settings
           </Button>
+        </div>
+      )}
+
+      {/* ── Overnight DICOM → Ollama drafts ── */}
+      {activeSection === "overnight" && (
+        <div className="space-y-4">
+          <OvernightAiSettings />
         </div>
       )}
 

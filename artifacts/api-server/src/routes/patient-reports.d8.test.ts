@@ -124,7 +124,7 @@ vi.mock("../lib/htmlToPdf", () => ({
 const whatsappCalls: unknown[] = [];
 vi.mock("./whatsapp", () => ({
   sendReportWhatsapp: async (args: unknown) => { whatsappCalls.push(args); return { ok: true }; },
-  sendReportDelivery: async () => ({ ok: true }),
+  sendReportDelivery: async (args: unknown) => { whatsappCalls.push(args); return { ok: true }; },
 }));
 const emailCalls: unknown[] = [];
 vi.mock("../email", () => ({ sendReportEmail: async (args: unknown) => { emailCalls.push(args); return { ok: true }; } }));
@@ -524,7 +524,8 @@ describe("D8 — public token resolves to the latest valid signed amendment", ()
 
 describe("D8 — share targets the latest deliverable version", () => {
   test("WhatsApp link and share log reference the latest version", async () => {
-    plainReportQueryScript = [[ROW_900], [ROW_900, ROW_909], [ROW_909]];
+    // resolve chain + ensurePublicToken select (+ optional update returning)
+    plainReportQueryScript = [[ROW_900], [ROW_900, ROW_909], [ROW_909], [{ ...ROW_909, publicToken: "tok-share-909", publicTokenExpiresAt: new Date("2099-01-01T00:00:00Z") }]];
     linkageQueryScript = [[], [L1], [L1]];
     joinedQueryScript = [joined(ROW_909)];
     const res = await postShare("900", { channel: "whatsapp" });
@@ -532,7 +533,8 @@ describe("D8 — share targets the latest deliverable version", () => {
     expect(res.body.ok).toBe(true);
     expect(whatsappCalls).toHaveLength(1);
     const wa = whatsappCalls[0] as Record<string, unknown>;
-    expect(String(wa.reportUrl)).toContain("/api/patient-reports/909/pdf");
+    expect(String(wa.reportUrl)).toContain("/api/p/r/");
+    expect(String(wa.reportUrl)).toContain("/pdf");
     expect(wa.reportNumber).toBe("RPT-A1");
     expect((shares()[0].values as Record<string, unknown>).reportId).toBe(909);
     expect(String(auditLogCalls[0].newValue)).toContain('"surface":"share_whatsapp"');

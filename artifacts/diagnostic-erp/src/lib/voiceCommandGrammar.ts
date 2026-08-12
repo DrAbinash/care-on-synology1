@@ -11,6 +11,8 @@
  * which routes workflow intents through the M1.5 command dispatcher.
  */
 
+import { applyRadiologyVoiceLexicon } from "./voiceDictationLexicon";
+
 // ── Intents ──────────────────────────────────────────────────────────────────
 
 /** Workflow intents map 1:1 onto WORKSPACE_COMMANDS ids (M1.5 dispatcher). */
@@ -19,7 +21,12 @@ export type VoiceWorkflowCommand =
   | "refresh" | "reload-current" | "open-viewer"
   | "focus-findings" | "focus-impression" | "focus-quick-search" | "close-panel";
 
-export type DictationTarget = "findings" | "impression" | "recommendation";
+export type DictationTarget =
+  | "findings"
+  | "impression"
+  | "recommendation"
+  | "technique"
+  | "clinicalHistory";
 
 /** Viewer operations the embedded viewer really supports (M1.6B2 grounding:
  *  EmbeddedWadoViewer has zoom/frame/reset setters; window presets, pan and
@@ -73,19 +80,11 @@ export function normalizeTranscript(raw: string): string {
     .trim();
 }
 
-/** Conservative dictation-text normalization (Phase 9): spoken punctuation,
- *  optional first-capital + terminal period. Never reinterprets meaning. */
+/** Conservative dictation-text normalization (Phase 9): radiology lexicon,
+ *  spoken punctuation, optional first-capital + terminal period. Never
+ *  reinterprets clinical meaning beyond known spoken aliases. */
 export function normalizeDictationText(text: string, opts: { autoPunctuation: boolean }): string {
-  let out = text
-    .replace(/\b(full[- ]?stop|period)\b/gi, ".")
-    .replace(/\bcomma\b/gi, ",")
-    .replace(/\bsemicolon\b/gi, ";")
-    .replace(/\bcolon\b/gi, ":")
-    .replace(/\bnew[- ]?line\b/gi, "\n")
-    .replace(/ +([.,;:])/g, "$1")
-    .replace(/[ \t]+/g, " ")
-    .replace(/ *\n */g, "\n")
-    .trim();
+  let out = applyRadiologyVoiceLexicon(text);
   if (opts.autoPunctuation && out) {
     out = out.charAt(0).toUpperCase() + out.slice(1);
     if (/[a-z0-9)]$/i.test(out)) out += ".";
@@ -138,6 +137,10 @@ const RULES: Rule[] = [
   { category: "Dictation", example: "impression <text>", pattern: /^(add |append )?impression (?<text>.+)$/, build: (m) => ({ type: "dictate", target: "impression", mode: "append", text: m.groups!.text }) },
   { category: "Dictation", example: "replace impression with <text>", pattern: /^replace impression with (?<text>.+)$/, build: (m) => ({ type: "dictate", target: "impression", mode: "replace", text: m.groups!.text }) },
   { category: "Dictation", example: "add recommendation <text>", pattern: /^(add |append )?recommendations? (?<text>.+)$/, build: (m) => ({ type: "dictate", target: "recommendation", mode: "append", text: m.groups!.text }) },
+  { category: "Dictation", example: "technique <text>", pattern: /^(add |append )?technique (?<text>.+)$/, build: (m) => ({ type: "dictate", target: "technique", mode: "append", text: m.groups!.text }) },
+  { category: "Dictation", example: "replace technique with <text>", pattern: /^replace technique with (?<text>.+)$/, build: (m) => ({ type: "dictate", target: "technique", mode: "replace", text: m.groups!.text }) },
+  { category: "Dictation", example: "clinical history <text>", pattern: /^(add |append )?(clinical history|history) (?<text>.+)$/, build: (m) => ({ type: "dictate", target: "clinicalHistory", mode: "append", text: m.groups!.text }) },
+  { category: "Dictation", example: "replace history with <text>", pattern: /^replace (clinical )?history with (?<text>.+)$/, build: (m) => ({ type: "dictate", target: "clinicalHistory", mode: "replace", text: m.groups!.text }) },
 
   // Quick Select
   { category: "Quick Select", example: "search finding <term>", pattern: /^search (for )?findings? (?<term>.+)$/, build: (m) => ({ type: "quick-select", action: "search", term: m.groups!.term }) },

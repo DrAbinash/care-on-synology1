@@ -152,6 +152,10 @@ interface Props {
    *  term and the panel adopts it as the search text. Display-only control of
    *  the SAME search state the keyboard uses — no second search path. */
   externalSearch?: { seq: number; term: string } | null;
+  /** When set, study tabs are controlled by the parent (multi-region merge). */
+  selectedRegions?: string[];
+  /** Parent-owned region toggle — merges technique across regions. */
+  onRegionToggle?: (regionName: string) => void;
 }
 
 const SIDES: Array<{ value: Side; label: string }> = [
@@ -164,7 +168,7 @@ export default function QuickFindingsPanel({
   selectedIds, onToggle, onFindingClick, onEditBeforeInsert, onMeasurement, side, onSideChange, disabled, initialStudyHint, isAdmin,
   instances, onUpdateInstance, onAutoTechnique, onInsertNormals,
   activeProtocolId, onProtocolChange, onChecklistChange, onAcceptLearnedSuggestion,
-  onFindingsLoaded, externalSearch,
+  onFindingsLoaded, externalSearch, selectedRegions, onRegionToggle,
 }: Props) {
   const qc = useQueryClient();
   const searchRef = useRef<HTMLInputElement>(null);
@@ -264,6 +268,7 @@ export default function QuickFindingsPanel({
   // Multi-select tabs (initialized from study description hint once).
   const [selectedTabs, setSelectedTabs] = useState<Set<string> | null>(null);
   const effectiveTabs = useMemo(() => {
+    if (selectedRegions && selectedRegions.length > 0) return new Set(selectedRegions);
     if (selectedTabs) return selectedTabs;
     if (!initialStudyHint || activeTabs.length === 0) return new Set<string>();
     // Shared region resolver (also used by the workspace) so the panel's
@@ -271,9 +276,13 @@ export default function QuickFindingsPanel({
     // pick the same region for a study.
     const match = matchStudyRegion(initialStudyHint, activeTabs.map((t) => t.name));
     return match ? new Set([match]) : new Set<string>();
-  }, [selectedTabs, initialStudyHint, activeTabs]);
+  }, [selectedRegions, selectedTabs, initialStudyHint, activeTabs]);
 
   function toggleTab(name: string) {
+    if (onRegionToggle) {
+      onRegionToggle(name);
+      return;
+    }
     const next = new Set(effectiveTabs);
     if (next.has(name)) next.delete(name);
     else {

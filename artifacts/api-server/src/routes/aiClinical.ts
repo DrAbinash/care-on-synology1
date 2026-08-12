@@ -12,7 +12,7 @@ import { z } from "zod/v4";
 import { FULL_ACCESS_ROLES, type StaffAuthRequest } from "../middleware/requireStaffAuth";
 import {
   resolveAiEnablementForUser, getPreferences, savePreferences, getSchedulerConfig, saveSchedulerConfig,
-  getModalityPolicies, setModalityPolicy, listFeaturePolicies, setFeaturePolicy,
+  getModalityPolicies, setModalityPolicy, setOvernightModalities, saveDraftAutomation, listFeaturePolicies, setFeaturePolicy,
 } from "../lib/ai/clinicalConfigService";
 import { scheduleStudy, getAiQueueDashboard, cancelAiJob, runNightBatch, runScheduledReprocessing, runLearningAggregation } from "../lib/ai/schedulerService";
 import { getLatestDraftForStudy, recordDraftFeedback } from "../lib/ai/draftService";
@@ -115,6 +115,7 @@ aiClinicalRouter.get("/scheduler/config", async (req, res) => { if (!requireAdmi
 aiClinicalRouter.put("/scheduler/config", async (req, res) => {
   if (!requireAdmin(req, res)) return;
   const parsed = z.object({
+    draftTiming: z.enum(["on_arrival", "scheduled"]).optional(),
     nightStart: z.string().optional(), nightEnd: z.string().optional(), quietStart: z.string().optional(), quietEnd: z.string().optional(),
     gpuLimitPercent: z.number().int().optional(), cpuLimitPercent: z.number().int().optional(), maxConcurrentJobs: z.number().int().optional(),
     maxRetries: z.number().int().optional(), includePriors: z.boolean().optional(), includeOcr: z.boolean().optional(),
@@ -122,12 +123,42 @@ aiClinicalRouter.put("/scheduler/config", async (req, res) => {
   }).safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ error: parsed.error.issues }); return; }
   await saveSchedulerConfig(parsed.data, staff(req)?.role);
-  res.json({ ok: true });
+  res.json({ ok: true, config: await getSchedulerConfig() });
+});
+
+/** One-shot save from Settings → Radiology → AI → Draft automation. */
+aiClinicalRouter.put("/draft-automation", async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const parsed = z.object({
+    draftTiming: z.enum(["on_arrival", "scheduled"]),
+    modalities: z.array(z.string().min(1)),
+    nightStart: z.string().optional(),
+    nightEnd: z.string().optional(),
+    quietStart: z.string().optional(),
+    quietEnd: z.string().optional(),
+    enableAi: z.boolean().optional(),
+  }).safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ error: parsed.error.issues }); return; }
+  const result = await saveDraftAutomation({ ...parsed.data, updatedBy: staff(req)?.role });
+  res.json({ ok: true, ...result });
 });
 
 aiClinicalRouter.get("/modality-policies", async (req, res) => { if (!requireAdmin(req, res)) return; res.json(await getModalityPolicies()); });
 aiClinicalRouter.put("/modality-policies", async (req, res) => {
   if (!requireAdmin(req, res)) return;
+  // Batch overnight selection: { overnightModalities: ["MR","CT"], mode?: "night_batch" }
+  const batch = z.object({
+    overnightModalities: z.array(z.string().min(1)).min(0),
+    mode: z.enum(["immediate", "night_batch", "manual", "disabled"]).optional(),
+  }).safeParse(req.body);
+  if (batch.success) {
+    const policies = await setOvernightModalities(batch.data.overnightModalities, {
+      mode: batch.data.mode ?? "night_batch",
+      updatedBy: staff(req)?.role,
+    });
+    res.json({ ok: true, policies });
+    return;
+  }
   const parsed = z.object({ modality: z.string().min(1), mode: z.enum(["immediate", "night_batch", "manual", "disabled"]) }).safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ error: parsed.error.issues }); return; }
   await setModalityPolicy(parsed.data.modality, parsed.data.mode, staff(req)?.role);
@@ -156,7 +187,11 @@ aiClinicalRouter.post("/jobs/:id/cancel", async (req, res) => {
 aiClinicalRouter.post("/scheduler/run/:mode", async (req, res) => {
   if (!requireAdmin(req, res)) return;
   switch (req.params.mode) {
-    case "night-batch": res.json(await runNightBatch()); return;
+    case "night-batch": {
+      const force = req.query.force === "1" || req.body?.force === true;
+      res.json(await runNightBatch(50, { forceOutsideWindow: force }));
+      return;
+    }
     case "reprocess": res.json(await runScheduledReprocessing()); return;
     case "learning": res.json(await runLearningAggregation()); return;
     default: res.status(400).json({ error: "unknown mode" });

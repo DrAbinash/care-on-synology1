@@ -133,10 +133,13 @@ describe("M1.1 — no duplicate state/service copies reactivate", () => {
   it("the canonical workspace launches studies through the ONE launch pipeline (M1.2)", () => {
     // Since M1.2 every launch goes through OpenStudyPanel →
     // lib/studyLaunchService (network selection + URL construction). The
-    // page itself builds no viewer URLs.
-    expect(workspace).toContain('from "@/components/radiology/OpenStudyPanel"');
+    // page itself builds no viewer URLs. OpenStudyPanel is mounted via LegacyBox
+    // (additive) so the workspace must not inline launch URLs.
+    expect(workspace).toContain('from "@/components/radiology/LegacyBox"');
     expect(workspace).not.toContain("weasis-launch-redirect"); // no inline URL copy left
     expect(workspace).not.toContain("window.open(`/radiology/viewer");
+    const legacyBox = read("components/radiology/LegacyBox.tsx");
+    expect(legacyBox).toContain('from "@/components/radiology/OpenStudyPanel"');
     const panel = read("components/radiology/OpenStudyPanel.tsx");
     expect(panel).toContain('from "@/lib/studyLaunchService"');
     // The panel builds no URLs either — the service is the single source.

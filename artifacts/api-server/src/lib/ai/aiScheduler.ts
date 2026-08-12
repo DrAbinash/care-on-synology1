@@ -8,8 +8,11 @@
  */
 export type ModalityMode = "immediate" | "night_batch" | "manual" | "disabled";
 export type Priority = "stat" | "emergency" | "vip" | "routine";
+/** When DICOM arrives vs only inside the configured night window. */
+export type DraftTiming = "on_arrival" | "scheduled";
 
 export interface SchedulerConfig {
+  draftTiming: DraftTiming;
   nightStart: string; // "HH:MM" local
   nightEnd: string;
   quietStart: string;
@@ -75,10 +78,22 @@ export function decideScheduling(inp: SchedulingInput, cfg: SchedulerConfig): Sc
     case "manual":
       return { enqueue: false, mode: "manual", reason: "modality manual-only" };
     case "immediate":
+      // On-arrival mode: never park routine work for quiet hours — draft as soon
+      // as DICOM is stable. Quiet-hour deferral only applies when timing is scheduled
+      // (or legacy immediate without on_arrival).
+      if (cfg.draftTiming === "on_arrival") {
+        return { enqueue: true, mode: "immediate", reason: stat ? "STAT/emergency immediate" : "on DICOM arrival" };
+      }
       if (quiet && !stat) return { enqueue: false, mode: "night_batch", reason: "quiet hours — deferred to night batch" };
       return { enqueue: true, mode: "immediate", reason: stat ? "STAT/emergency immediate" : "immediate" };
     case "night_batch":
       if (stat) return { enqueue: true, mode: "immediate", reason: "STAT/emergency overrides night-batch" };
+      // Inside the configured night window the night cron (and any run that
+      // happens to land here) must actually enqueue — otherwise night_batch
+      // modalities would never process.
+      if (isWithinNightWindow(inp.nowMinutes, cfg)) {
+        return { enqueue: true, mode: "night_batch", reason: "night batch window" };
+      }
       return { enqueue: false, mode: "night_batch", reason: "queued for night batch window" };
     default:
       return { enqueue: false, mode: "manual", reason: "unknown modality mode" };

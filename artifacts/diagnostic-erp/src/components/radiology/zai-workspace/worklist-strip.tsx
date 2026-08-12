@@ -13,7 +13,7 @@ const PR: Record<string, { l: string; t: string }> = {
 };
 const FALLBACK_PRIO = PR.routine;
 
-export function WorklistStrip() {
+export function WorklistStrip({ onSelectStudy }: { onSelectStudy?: (id: string) => void } = {}) {
   const studies = useWorkspaceSelector(s => s.studies);
   const activeId = useWorkspaceSelector(s => s.activeStudyId);
   const completed = useWorkspaceSelector(s => s.completedStudyIds);
@@ -56,7 +56,10 @@ export function WorklistStrip() {
             return (
               <button
                 key={s.id}
-                onClick={() => select(s.id)}
+                onClick={() => {
+                  select(s.id);
+                  onSelectStudy?.(s.id);
+                }}
                 className={cn(
                   "group relative flex w-full flex-col gap-1 rounded-lg border px-2.5 py-2 text-left transition",
                   isActive ? "border-emerald-400 bg-emerald-50/60 shadow-sm" : "border-transparent hover:border-border hover:bg-muted/40",
