@@ -105,6 +105,11 @@ import VoiceCommandBar from "@/components/radiology/VoiceCommandBar";
 import QuickFindingsPanel, { type QuickFinding } from "@/components/radiology/QuickFindingsPanel";
 import PriorComparisonToolbar from "@/components/radiology/PriorComparisonToolbar";
 import ViewerMeasurementsBanner from "@/components/radiology/ViewerMeasurementsBanner";
+import LegacyBox, { type LegacyBoxTab } from "@/components/radiology/LegacyBox";
+import UsgCompanionPanel from "@/components/radiology/UsgCompanionPanel";
+import MriReadinessStrip from "@/components/radiology/MriReadinessStrip";
+import ObDashboardStrip from "@/components/radiology/ObDashboardStrip";
+import ReportingShortcutHelp from "@/components/radiology/ReportingShortcutHelp";
 import ReferringDoctorQuickSelect from "@/components/ReferringDoctorQuickSelect";
 import { ModuleErrorBoundary } from "@/components/ModuleErrorBoundary";
 import { Input } from "@/components/ui/input";
@@ -118,6 +123,7 @@ import {
   loadWorkspaceLayoutPrefs, saveWorkspaceLayoutPrefs,
   shouldShowEmbeddedViewer, type WorkspaceLayoutMode,
 } from "@/lib/workspaceLayoutPrefs";
+import { isUltrasoundModality, isObstetricUsgStudy } from "@/lib/usgModality";
 
 // ─── New Z.ai workspace components ─────────────────────────────────────────────
 import { useWorkspace, type WorkspaceStore } from "@/lib/zai-workspace/store";
@@ -162,7 +168,7 @@ import "@/lib/copilotUsgCompanionModule";
 import {
   Lock, AlertTriangle, ChevronLeft, ChevronRight, Pause, Clock, Sparkles, ShieldCheck,
   Brain, Activity, Zap, Printer, FileDown, Share2, Eye, PanelLeftClose, PanelLeftOpen,
-  Maximize2, Columns2, Monitor,
+  Maximize2, Columns2, Monitor, Archive, Keyboard,
 } from "lucide-react";
 
 interface Props { studyId?: number; }
@@ -173,6 +179,18 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const isMobile = useIsMobile();
   const isOnline = useOnlineStatus();
   const qc = useQueryClient();
+
+  // Refs declared early — voice/viewer callbacks close over these.
+  const embeddedViewerRef = useRef<EmbeddedViewerHandle>(null);
+  const leftPanelRef = useRef<ImperativePanelHandle>(null);
+  const rightPanelRef = useRef<ImperativePanelHandle>(null);
+  const hydratedDraftForStudyRef = useRef<number | null>(null);
+  const commandDispatcherRef = useRef<{ dispatch: (cmd: string) => void } | null>(null);
+  const canVerifyRef = useRef(false);
+  const verifyActionRef = useRef<(() => void) | null>(null);
+  const [legacyTab, setLegacyTab] = useState<LegacyBoxTab | null>(null);
+  const [shortcutHelpOpen, setShortcutHelpOpen] = useState(false);
+  const [verifyBusy, setVerifyBusy] = useState(false);
 
   // ─── Session ──────────────────────────────────────────────────────────────
   const session = useMemo(() => readStaffSession(), []);
@@ -250,14 +268,53 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       isLocked: studyLock.status === "locked-by-other",
       lockedByOther: studyLock.status === "locked-by-other",
       lockLost: !!(studyLock.status === "expired-lost" || studyLock.status === "connection-lost"),
-      canVerify: false,
+      canVerify: canVerifyRef.current,
       structuredFindings: null,
       viewerAvailable: embeddedViewerRef.current != null,
       confirmationPolicy: voiceSettings.confirmationPolicy,
     }) as any),
     execute: (cmd) => {
-      // Route through the command dispatcher
-      if (cmd.intent) if (cmd) commandDispatcher.dispatch(cmd as any);
+      // Full legacy-style voice execution — keep NEW dispatcher, add dictate/viewer paths.
+      const intent = (cmd as any)?.intent;
+      if (!intent) return { ok: false, reason: "no_intent" };
+      if (intent.type === "dictate") {
+        const text = String(intent.text || "").trim();
+        if (!text) return { ok: false, reason: "empty" };
+        const state = useWorkspace.getState();
+        const target = intent.target || "findings";
+        const mode = intent.mode || "append";
+        if (target === "impression") {
+          state.setField("impression", mode === "replace" ? text : mergeBlock(state.impressionText, text));
+        } else if (target === "recommendation") {
+          state.setField("recommendation", mode === "replace" ? text : mergeBlock(state.recommendationText, text));
+        } else if (target === "technique") {
+          state.setField("technique", mode === "replace" ? text : mergeBlock(state.techniqueText, text));
+        } else if (target === "clinicalHistory" || target === "clinical_history") {
+          state.setField("clinicalHistory", mode === "replace" ? text : mergeBlock(state.clinicalHistoryText, text));
+        } else {
+          state.setField("findings", mode === "replace" ? text : mergeBlock(state.findingsText, text));
+        }
+        return { ok: true };
+      }
+      if (intent.type === "workflow" && intent.command) {
+        commandDispatcherRef.current?.dispatch(intent.command);
+        return { ok: true };
+      }
+      if (intent.type === "viewer") {
+        const v = embeddedViewerRef.current;
+        if (!v) return { ok: false, reason: "no_viewer" };
+        if (intent.action === "next") v.nextFrame();
+        else if (intent.action === "prev" || intent.action === "previous") v.prevFrame();
+        else if (intent.action === "zoom_in") v.zoomIn();
+        else if (intent.action === "zoom_out") v.zoomOut();
+        else if (intent.action === "reset") v.resetView();
+        return { ok: true };
+      }
+      if (intent.type === "quick_select_search" && intent.term) {
+        setLegacyTab("library");
+        rightPanelRef.current?.expand();
+        return { ok: true };
+      }
       return { ok: true };
     },
     onAudit: (commandType, outcome) => {
@@ -296,12 +353,6 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const [criticalNote, setCriticalNote] = useState("");
   const [checklistComm, setChecklistComm] = useState({ phoned: false, annotated: false, dispatched: false });
   const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
-
-  // ─── Refs ──────────────────────────────────────────────────────────────────
-  const embeddedViewerRef = useRef<EmbeddedViewerHandle>(null);
-  const leftPanelRef = useRef<ImperativePanelHandle>(null);
-  const rightPanelRef = useRef<ImperativePanelHandle>(null);
-  const hydratedDraftForStudyRef = useRef<number | null>(null);
 
   // Viewer vertical enlarge (center column only) + left worklist collapse
   const [viewerColumnExpanded, setViewerColumnExpanded] = useState(false);
@@ -636,7 +687,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       // External viewers launch from the embedded OHIF header (new tab).
     },
     "focus-quick-search": () => { /* TODO */ },
-    verify: () => { /* TODO: D9 verify */ },
+    verify: () => { verifyActionRef.current?.(); },
     unpark: () => { if (studyId) { workflow.unpark(studyId); } },
     "reload-current": () => window.location.reload(),
     "focus-findings": () => { /* TODO */ },
@@ -645,6 +696,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     "select-template-1": () => {}, "select-template-2": () => {}, "select-template-3": () => {},
     "select-template-4": () => {}, "select-template-5": () => {}, "select-template-6": () => {},
   }), [saveDraft, finalizeReport, workflow, studyId, goNextStudy, goPrevStudy]);
+  commandDispatcherRef.current = commandDispatcher;
 
   // ─── Global keyboard shortcuts ─────────────────────────────────────────────
   useEffect(() => {
@@ -664,10 +716,31 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       if (e.ctrlKey && e.key === "Enter") { e.preventDefault(); finalizeReport(); return; }
       if (e.ctrlKey && (e.key === "i" || e.key === "I")) { e.preventDefault(); triggerAiImpression(); return; }
       if (e.ctrlKey && e.shiftKey && (e.key === "v" || e.key === "V")) { e.preventDefault(); useWorkspace.getState().toggleVoiceBar(); return; }
+      if (e.key === "?" && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        const t = e.target as HTMLElement | null;
+        const tag = t?.tagName?.toLowerCase();
+        if (tag !== "input" && tag !== "textarea" && !(t as HTMLElement)?.isContentEditable) {
+          e.preventDefault();
+          setShortcutHelpOpen(true);
+        }
+      }
+      if (e.altKey && e.key === "\\") {
+        e.preventDefault();
+        setLayoutMode(showEmbeddedViewer ? "reportFocus" : "split");
+      }
+      if (e.altKey && e.key === "[") {
+        e.preventDefault();
+        leftCollapsed ? leftPanelRef.current?.expand() : leftPanelRef.current?.collapse();
+      }
+      if (e.altKey && e.key === "]") {
+        e.preventDefault();
+        rightPanelRef.current?.expand();
+        setLegacyTab((t) => t ?? "links");
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [commandDispatcher, finalizeReport]);
+  }, [commandDispatcher, finalizeReport, leftCollapsed, showEmbeddedViewer, setLayoutMode]);
 
   // ─── AI auto-impression (Ctrl+I) ───────────────────────────────────────────
   const triggerAiImpression = useCallback(async () => {
@@ -720,8 +793,94 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     } catch (err) { toast({ title: "Share failed", variant: "destructive" }); }
   }, [studyId, toast]);
 
+  // ─── Verify / countersign (legacy D9) — additive; does not replace Finalize ─
+  const linkedReportId = useMemo(() => {
+    const row = workflow.currentRow as { reportId?: number | null } | null | undefined;
+    const draft = existingDraft as { finalReportId?: number | null } | null | undefined;
+    return draft?.finalReportId ?? row?.reportId ?? null;
+  }, [workflow.currentRow, existingDraft]);
+
+  const { data: finalReport } = useQuery<{
+    id?: number;
+    signedByName?: string | null;
+    status?: string | null;
+    lifecycle?: { state?: string; superseded?: boolean };
+    version?: { superseded?: boolean };
+  }>({
+    queryKey: ["workspace-final-report", linkedReportId],
+    queryFn: () => api.get(`/api/patient-reports/${linkedReportId}`),
+    enabled: !!linkedReportId,
+  });
+
+  const verifyGate = useMemo(
+    () => canVerifyReport(
+      {
+        subjectName: session?.user?.name ?? undefined,
+        role: session?.user?.role ?? undefined,
+        permissions: (session?.user as { permissions?: string[] } | undefined)?.permissions,
+      },
+      finalReport ?? null,
+    ),
+    [session, finalReport],
+  );
+  const reportSuperseded = Boolean(finalReport?.version?.superseded || finalReport?.lifecycle?.superseded);
+  const canShowVerify = Boolean(finalReport) && verifyGate.allowed && !reportSuperseded;
+  canVerifyRef.current = canShowVerify;
+
+  const handleVerifyReport = useCallback(async () => {
+    if (!finalReport || verifyBusy) return;
+    const targetId = finalReport.id ?? linkedReportId;
+    if (!targetId) return;
+    if (!window.confirm(
+      `Verify (countersign) this report as ${session?.user?.name ?? "current user"}?\n\n` +
+      `This records you as the verifying radiologist.`,
+    )) return;
+    setVerifyBusy(true);
+    try {
+      await api.post(`/api/patient-reports/${targetId}/verify`, {
+        verifiedByName: session?.user?.name ?? undefined,
+      });
+      toast({ title: "Report verified" });
+      void qc.invalidateQueries({ queryKey: ["workspace-final-report"] });
+    } catch (err) {
+      toast({
+        title: "Verify failed",
+        description: err instanceof Error ? err.message : "Error",
+        variant: "destructive",
+      });
+    } finally {
+      setVerifyBusy(false);
+    }
+  }, [finalReport, verifyBusy, linkedReportId, session, toast, qc]);
+
+  verifyActionRef.current = () => {
+    if (canShowVerify && !verifyBusy) void handleVerifyReport();
+  };
+
+  const openLegacyTab = useCallback((tab: LegacyBoxTab) => {
+    setLegacyTab(tab);
+    rightPanelRef.current?.expand();
+  }, []);
+
   // ─── PCPNDT gate (OB USG Form F check) ──────────────────────────────────────
-  const isObUsg = workflow.currentRow?.modality === "US" && /OB|obstetric|fetal/i.test(workflow.currentRow?.studyDescription ?? "");
+  const modalityRaw = workflow.currentRow?.modality ?? "";
+  const isUltrasound = isUltrasoundModality(modalityRaw);
+  const isCtModality = modalityRaw.trim().toUpperCase().startsWith("CT");
+  const isMriModality = modalityRaw.trim().toUpperCase().startsWith("MR");
+  const companionEligible = isUltrasound || isCtModality;
+  const studyRegion = (workflow.currentRow as { bodyPart?: string | null } | null)?.bodyPart
+    ?? workflow.currentRow?.studyDescription
+    ?? null;
+  const qualityScore = useMemo(
+    () => computeQualityScore({
+      findings: findingsText,
+      impression: [impressionText],
+      technique: techniqueText,
+    } as any),
+    [findingsText, impressionText, techniqueText],
+  );
+
+  const isObUsg = isObstetricUsgStudy(modalityRaw, workflow.currentRow?.studyDescription ?? "");
   const { data: pcpndtCompliance } = useQuery<{ compliant: boolean; missing?: string[] }>({
     queryKey: ["pcpndt-compliance", workflow.currentRow?.patientId],
     queryFn: () => api.get(`/api/patient-reports/pcpndt-compliance/${workflow.currentRow!.patientId}`),
@@ -875,6 +1034,26 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
           <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={handleSaveTeachingCase}>
             <Eye className="h-3.5 w-3.5 mr-1" /> Teaching
           </Button>
+          {/* Legacy Box opener — does not replace new UI */}
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-7 px-2 text-xs text-amber-800"
+            title="Open Legacy Box (old tools kept alongside)"
+            data-testid="open-legacy-box"
+            onClick={() => openLegacyTab(legacyTab ?? "links")}
+          >
+            <Archive className="h-3.5 w-3.5 mr-1" /> Legacy
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-7 px-2 text-xs"
+            title="Keyboard shortcuts (?)"
+            onClick={() => setShortcutHelpOpen(true)}
+          >
+            <Keyboard className="h-3.5 w-3.5 mr-1" /> ?
+          </Button>
           {/* New voice bar */}
           <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => useWorkspace.getState().toggleVoiceBar()}>
             <Brain className="h-3.5 w-3.5 mr-1" /> Voice2
@@ -887,6 +1066,21 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
           <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => { if (studyId) (workflow as any).park(studyId, ""); }} title="Park (P)">
             <Pause className="h-3.5 w-3.5 mr-1" /> Park
           </Button>
+          {/* Verify / countersign (legacy) */}
+          {canShowVerify && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 px-2 text-xs border-indigo-300 text-indigo-800"
+              disabled={verifyBusy}
+              onClick={() => void handleVerifyReport()}
+              data-testid="verify-report"
+              title={verifyGate.reason ?? "Countersign / verify"}
+            >
+              <ShieldCheck className="h-3.5 w-3.5 mr-1" />
+              {verifyBusy ? "Verifying…" : "Verify"}
+            </Button>
+          )}
           {/* Finalize */}
           <Button size="sm" className="h-7 px-3 text-xs bg-emerald-600 hover:bg-emerald-700"
             onClick={finalizeReport} disabled={!studyId || isFinalized || isLocked}>
@@ -1013,6 +1207,69 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       />
                     )}
 
+                    {/* OB dashboard strip — silent for non-OB USG */}
+                    {isUltrasound && (
+                      <ObDashboardStrip
+                        studyId={studyId ?? (workflow.currentRow as { studyId?: number } | null)?.studyId}
+                        onApplyToReport={(text) => appendFindings(text)}
+                      />
+                    )}
+
+                    {/* USG / CT Companion — additive, error-bounded */}
+                    {companionEligible && workflow.currentRow?.studyInstanceUID && (
+                      <ModuleErrorBoundary resetKey={String(workflow.currentRow.studyInstanceUID)}>
+                        <UsgCompanionPanel
+                          studyInstanceUID={workflow.currentRow.studyInstanceUID}
+                          studyId={studyId ?? undefined}
+                          patientId={workflow.currentRow.patientId ?? undefined}
+                          disabled={isLocked || isFinalized}
+                          templateSelected={false}
+                          protocolSelected={false}
+                          historyPresent={clinicalHistoryText.trim().length > 0}
+                          quickFindingsSelected={selectedQuickIds.size > 0}
+                          copilotClear={true}
+                          userEdited={isDirty || !!lastSavedAt}
+                          reportSaved={!!lastSavedAt}
+                          reportFinalized={isFinalized || workflow.currentRow.status === "REPORT_FINAL"}
+                          currentTechnique={techniqueText}
+                          currentFindings={findingsText}
+                          currentImpression={impressionText.split("\n").filter(Boolean)}
+                          currentRecommendation={recommendationText}
+                          selectedFindingIds={[...selectedQuickIds]}
+                          region={studyRegion}
+                          onOpenTab={(tab) => {
+                            if (tab === "measurements" || tab === "measure") openLegacyTab("measurements");
+                            else if (tab === "templates" || tab === "library") openLegacyTab("library");
+                            else if (tab === "copilot") openLegacyTab("copilot");
+                            else if (tab === "prior") rightPanelRef.current?.expand();
+                            else openLegacyTab("links");
+                          }}
+                        />
+                      </ModuleErrorBoundary>
+                    )}
+
+                    {/* MRI readiness — when Companion is not shown */}
+                    {!isLocked && isMriModality && !companionEligible && (
+                      <MriReadinessStrip
+                        studyRegion={studyRegion}
+                        protocolName={null}
+                        protocolApplied={false}
+                        templateName={null}
+                        templateMismatch={false}
+                        priorCount={0}
+                        pendingMeasurements={0}
+                        checklistPercent={null}
+                        qualityScore={qualityScore.score}
+                        disabled={isLocked || isFinalized}
+                        onOpenTab={(tab) => {
+                          if (tab === "measurements") openLegacyTab("measurements");
+                          else if (tab === "templates" || tab === "quickselect") openLegacyTab("templates");
+                          else if (tab === "prior") rightPanelRef.current?.expand();
+                          else openLegacyTab("links");
+                        }}
+                      />
+                    )}
+
                     {/* Prior comparison — one-click interval sentences (legacy) */}
                     {!isLocked && workflow.currentRow?.patientId && (
                       <PriorComparisonToolbar
@@ -1035,7 +1292,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                         onInsertAll={(lines) => {
                           for (const line of lines) appendFindings(line);
                         }}
-                        onOpenMeasureTab={() => rightPanelRef.current?.expand()}
+                        onOpenMeasureTab={() => openLegacyTab("measurements")}
                       />
                     )}
 
@@ -1153,6 +1410,62 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       </ModuleErrorBoundary>
                     </div>
                   )}
+
+                  {/* Legacy Box — all remaining old tools kept alongside new UI */}
+                  <ModuleErrorBoundary>
+                    <LegacyBox
+                      activeTab={legacyTab}
+                      onTabChange={setLegacyTab}
+                      worklistId={studyId ?? null}
+                      studyId={studyId ?? null}
+                      patientId={workflow.currentRow?.patientId ?? null}
+                      orderId={(workflow.currentRow as { orderId?: number | null } | null)?.orderId ?? null}
+                      draftId={draftId ?? null}
+                      studyInstanceUID={workflow.currentRow?.studyInstanceUID ?? null}
+                      accessionNumber={workflow.currentRow?.accessionNumber ?? null}
+                      modality={workflow.currentRow?.modality ?? null}
+                      studyDescription={workflow.currentRow?.studyDescription ?? null}
+                      bodyPart={(workflow.currentRow as { bodyPart?: string | null } | null)?.bodyPart ?? null}
+                      findingsText={findingsText}
+                      impressionText={impressionText}
+                      recommendationText={recommendationText}
+                      techniqueText={techniqueText}
+                      clinicalHistoryText={clinicalHistoryText}
+                      selectedFindingLabels={[]}
+                      criticalMarked={isCritical}
+                      criticalCommunicated={checklistComm.phoned}
+                      isAdmin={isOwner}
+                      disabled={isLocked || isFinalized}
+                      currentUserId={myUserId}
+                      onAppendFindings={appendFindings}
+                      onAppendImpression={(text) => {
+                        const state = useWorkspace.getState();
+                        const lines = state.impressionText.split("\n").filter(Boolean);
+                        state.setField("impression", mergeImpression(lines, text).join("\n"));
+                      }}
+                      onAppendRecommendation={(text) => {
+                        const state = useWorkspace.getState();
+                        state.setField("recommendation", mergeBlock(state.recommendationText, text));
+                      }}
+                      onSetFindings={(text) => useWorkspace.getState().setField("findings", text)}
+                      onSetImpression={(text) => useWorkspace.getState().setField("impression", text)}
+                      onSetTechnique={(text) => useWorkspace.getState().setField("technique", text)}
+                      onApplyReport={(r) => {
+                        const state = useWorkspace.getState();
+                        if (r.findingsText) state.setField("findings", mergeBlock(state.findingsText, r.findingsText));
+                        if (r.impressionLines?.length) {
+                          state.setField(
+                            "impression",
+                            r.impressionLines.reduce(
+                              (acc, line) => mergeImpression(acc.split("\n").filter(Boolean), line).join("\n"),
+                              state.impressionText,
+                            ),
+                          );
+                        }
+                        if (r.technique) state.setField("technique", mergeBlock(state.techniqueText, r.technique));
+                      }}
+                    />
+                  </ModuleErrorBoundary>
                 </div>
               </ResizablePanel>
             </ResizablePanelGroup>
@@ -1170,6 +1483,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
           <span><kbd className="rounded bg-muted px-1 py-0.5 font-mono">⌃⇧P</kbd> previous</span>
           <span><kbd className="rounded bg-muted px-1 py-0.5 font-mono">⌃⇧K</kbd> park</span>
           <span><kbd className="rounded bg-muted px-1 py-0.5 font-mono">:macro</kbd>+<kbd className="rounded bg-muted px-1 py-0.5 font-mono">Tab</kbd></span>
+          <span><kbd className="rounded bg-muted px-1 py-0.5 font-mono">?</kbd> shortcuts</span>
+          <span><kbd className="rounded bg-muted px-1 py-0.5 font-mono">Alt+]</kbd> Legacy Box</span>
         </div>
         {study?.lockedBy && <div className="flex items-center gap-1.5 text-amber-600"><Lock className="h-3 w-3" />Locked by you</div>}
         <div className="flex items-center gap-2">
@@ -1197,6 +1512,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       <SaveAsFormatDialog />
       <MacroEditorDialog />
       <MacroPromptPopover />
+      <ReportingShortcutHelp open={shortcutHelpOpen} onClose={() => setShortcutHelpOpen(false)} />
 
       {/* ─── Zero-Click Read Loop success toast ─── */}
       {isFinalized && (
