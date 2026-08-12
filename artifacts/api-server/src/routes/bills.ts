@@ -33,6 +33,10 @@ import { generateStudiesForOrder } from "./radiology";
 import { sendBillWhatsapp } from "./whatsapp";
 import { autoVoucherForPayment } from "../lib/auto-voucher";
 import { getSlowThresholdMs } from "../lib/requestMetrics";
+import {
+  cancelRadiologyMwlForBill,
+  cancelRadiologyMwlForOrderTest,
+} from "../lib/pacs/cancelRadiologyStudyFromMwl";
 import { eq, and, sql, desc, like, or, gt, ne, inArray } from "drizzle-orm";
 import { z } from "zod";
 import {
@@ -1238,6 +1242,12 @@ billsRouter.post("/:id/cancel", requireStaffSubPermission("/billing", "delete"),
   if (!txResult) return;
   const { updated, oldStatus, cascadedTestCount, refundedAmount, refundMethod, cancelRefundPaymentId } = txResult;
 
+  // Cascade cancel → MWL: remove Orthanc .wl + mark scheduled procedures CANCELLED
+  // so modalities no longer C-FIND voided exams. Best-effort; never blocks response.
+  cancelRadiologyMwlForBill(id).catch((err) => {
+    req.log?.warn?.({ err, billId: id }, "MWL cancel cascade after bill cancel failed");
+  });
+
   // Auto-generate refund voucher when an auto-refund happened on cancellation.
   if (refundedAmount > 0 && refundMethod) {
     try {
@@ -1874,6 +1884,12 @@ billsRouter.post("/:id/cancel-test", async (req: StaffAuthRequest, res) => {
   });
 
   if (!result) return;
+
+  // Partial cancel → drop MWL for that order_test's radiology study (best-effort).
+  cancelRadiologyMwlForOrderTest(otId).catch((err) => {
+    req.log?.warn?.({ err, orderTestId: otId }, "MWL cancel cascade after cancel-test failed");
+  });
+
   res.json(await buildBill(result));
 });
 
@@ -2010,6 +2026,13 @@ billsRouter.post("/:id/cancel-refund-tests", async (req: StaffAuthRequest, res) 
 
   if (!txResult) return;
   const { updated, targets, refundedAmount, refundRecorded, refundMethod: method, refundPaymentId } = txResult;
+
+  // Drop MWL entries for each cancelled radiology order_test (best-effort).
+  for (const t of targets) {
+    cancelRadiologyMwlForOrderTest(t.id).catch((err) => {
+      req.log?.warn?.({ err, orderTestId: t.id }, "MWL cancel cascade after cancel-refund-tests failed");
+    });
+  }
 
   // Voucher + email
   if (refundRecorded && refundedAmount > 0) {

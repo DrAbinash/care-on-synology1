@@ -30,7 +30,9 @@ import { recordObligationSendOutcome, completeObligationsForDelivery } from "./r
 import type { RadiologyJobHandler, RadiologyJobRow } from "./radiologyJobs";
 import { AI_SHADOW_PIPELINE_JOB, makeAiShadowPipelineHandler } from "./ai/shadowPipeline";
 import { gatewayInferenceProvider } from "./ai/gatewayInferenceProvider";
+import { MWL_WL_CLEANUP_JOB, mwlWlCleanupHandler } from "./pacs/mwlWlCleanup";
 
+export { MWL_WL_CLEANUP_JOB };
 export const REDELIVERY_SEND_JOB = "radiology_redelivery_send";
 export const PACS_REARCHIVE_JOB = "radiology_pacs_rearchive";
 
@@ -264,4 +266,6 @@ export const RADIOLOGY_JOB_HANDLERS: Record<string, RadiologyJobHandler> = {
   // no new scheduler, no new worker, no new queue. P2 injects the AI Gateway
   // (replacing the P1 stub) at the inference seam; still shadow-only.
   [AI_SHADOW_PIPELINE_JOB]: makeAiShadowPipelineHandler({ provider: gatewayInferenceProvider }),
+  // MWL cancel cleanup — remove-only; never writeWorklistFile.
+  [MWL_WL_CLEANUP_JOB]: mwlWlCleanupHandler,
 };

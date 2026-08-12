@@ -50,6 +50,7 @@ import { runMatchingEngineForWorklist } from "./internal-radiology";
 import { calculateMatchScore } from "../lib/pacs/matchingEngine";
 import { DEFAULT_INSTITUTIONAL_STYLE } from "../lib/institutionalReportStyle.js";
 import { publishRadiologyStudyToMwl } from "../lib/pacs/publishRadiologyStudyToMwl";
+import { cancelRadiologyMwlByAccession } from "../lib/pacs/cancelRadiologyStudyFromMwl";
 import { logger } from "../lib/logger";
 import { radiologyBroadcaster, type RadiologyUpdateEvent } from "../lib/radiologyBroadcast";
 
@@ -969,6 +970,14 @@ radiologyRouter.patch("/:id", async (req, res) => {
 
   const [row] = await db.update(radiologyStudiesTable).set(updates).where(eq(radiologyStudiesTable.id, id)).returning();
   if (!row) { res.status(404).json({ error: "Study not found" }); return; }
+
+  // Study cancelled → remove from Orthanc MWL so modality queue drops it.
+  if (body.status === "cancelled" && row.accessionNumber) {
+    cancelRadiologyMwlByAccession(row.accessionNumber, "study status cancelled").catch((err) => {
+      logger.warn({ err, accessionNumber: row.accessionNumber }, "MWL cancel after study PATCH failed");
+    });
+  }
+
   res.json(row);
 });
 

@@ -219,6 +219,11 @@ function buildDump(p: MwlProcedure): string {
   ].join("\n");
 }
 
+/** Exported for acceptance tests — same dump text Orthanc receives via dump2dcm. */
+export function buildMwlDumpText(p: MwlProcedure): string {
+  return buildDump(p);
+}
+
 /** Exported for unit tests — DICOM PN formatting used on the wire to modalities. */
 export function formatMwlPersonName(name: string | null | undefined): string {
   return toPn(name);
@@ -362,24 +367,57 @@ export async function writeWorklistFile(p: MwlProcedure): Promise<boolean> {
   }
 }
 
-/** Remove the worklist file for a procedure (completed / cancelled). Best-effort. */
-export async function removeWorklistFile(accessionNumber: string): Promise<void> {
+/** Remove the worklist file for a procedure (completed / cancelled).
+ *  Returns an accurate outcome — callers must not assume success. */
+export type RemoveWorklistResult =
+  | { outcome: "removed" }
+  | { outcome: "already_absent" }
+  | { outcome: "disabled" }
+  | { outcome: "failed"; error: string };
+
+/** True when there is nothing left to clean on disk (or MWL publishing is off). */
+export function isRemoveWorklistSuccess(r: RemoveWorklistResult): boolean {
+  return r.outcome === "removed" || r.outcome === "already_absent" || r.outcome === "disabled";
+}
+
+export async function removeWorklistFile(accessionNumber: string): Promise<RemoveWorklistResult> {
+  const acc = (accessionNumber || "").trim();
+  if (!acc) return { outcome: "already_absent" };
   try {
-    const out = fileFor(accessionNumber);
-    if (out) await unlink(out).catch(() => {}); // ignore missing file
+    const out = fileFor(acc);
+    if (!out) return { outcome: "disabled" };
+    try {
+      await unlink(out);
+      return { outcome: "removed" };
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException)?.code;
+      if (code === "ENOENT") return { outcome: "already_absent" };
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.warn({ err, accession: acc }, "mwl: removeWorklistFile failed");
+      return { outcome: "failed", error: msg };
+    }
   } catch (err) {
-    logger.warn({ err, accession: accessionNumber }, "mwl: removeWorklistFile failed");
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.warn({ err, accession: acc }, "mwl: removeWorklistFile failed");
+    return { outcome: "failed", error: msg };
   }
 }
 
 /** Terminal statuses whose procedures should NOT appear on the modality worklist. */
 export const MWL_TERMINAL_STATUSES = new Set(["COMPLETED", "CANCELLED", "CANCELED", "DISCONTINUED", "ARRIVED"]);
 
+export type SyncWorklistResult = {
+  action: "removed" | "written" | "skipped";
+  remove?: RemoveWorklistResult;
+  written?: boolean;
+};
+
 /** Reconcile one procedure's worklist file with its status. */
-export async function syncWorklistForStatus(p: MwlProcedure, status: string): Promise<void> {
+export async function syncWorklistForStatus(p: MwlProcedure, status: string): Promise<SyncWorklistResult> {
   if (MWL_TERMINAL_STATUSES.has((status || "").toUpperCase())) {
-    await removeWorklistFile(p.accessionNumber);
-  } else {
-    await writeWorklistFile(p);
+    const remove = await removeWorklistFile(p.accessionNumber);
+    return { action: "removed", remove };
   }
+  const written = await writeWorklistFile(p);
+  return { action: "written", written };
 }

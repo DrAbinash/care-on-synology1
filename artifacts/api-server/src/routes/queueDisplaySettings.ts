@@ -34,6 +34,7 @@ import { buildPingMessage } from "../lib/queueDisplayPingScheduler";
 import {
   inferDepartmentFromRoomKey,
   resolveQueueDisplayDepartments,
+  shouldSelfHealModalityRoomDepartments,
 } from "../lib/queueDisplayDepartments";
 import { getWhatsAppService } from "../services/whatsapp/WhatsAppService";
 
@@ -153,17 +154,18 @@ function serialize(row: typeof queueDisplaySettingsTable.$inferSelect) {
 async function getOrCreate(roomKey: string) {
   const rows = await db.select().from(queueDisplaySettingsTable).where(eq(queueDisplaySettingsTable.roomKey, roomKey)).limit(1);
   if (rows[0]) {
-    // Self-heal legacy rows that left departments blank — those TVs showed MRI/CT/etc.
-    if (!rows[0].departments.trim()) {
-      const inferred = inferDepartmentFromRoomKey(roomKey);
-      if (inferred) {
-        const [healed] = await db
-          .update(queueDisplaySettingsTable)
-          .set({ departments: inferred, updatedAt: new Date() })
-          .where(eq(queueDisplaySettingsTable.id, rows[0].id))
-          .returning();
-        if (healed) return healed;
-      }
+    // Self-heal legacy modality-room rows:
+    //  - blank departments (old "show everything" bug), OR
+    //  - foreign-only imaging list that omits the room's own dept
+    //    (e.g. roomKey "usg" + departments "MRI,CT")
+    const heal = shouldSelfHealModalityRoomDepartments(roomKey, rows[0].departments);
+    if (heal.heal && heal.target) {
+      const [healed] = await db
+        .update(queueDisplaySettingsTable)
+        .set({ departments: heal.target, updatedAt: new Date() })
+        .where(eq(queueDisplaySettingsTable.id, rows[0].id))
+        .returning();
+      if (healed) return healed;
     }
     return rows[0];
   }
@@ -405,12 +407,14 @@ queueDisplaySettingsRouter.patch("/:roomKey", requireStaffAuth, async (req, res)
     const existing = await getOrCreate(roomKey); // ensure row exists
     // Persist inferred departments on admin save — blank must not mean "every
     // department" on modality-specific TVs (e.g. roomKey "usg" → USG only).
-    const nextDepartments = update.departments !== undefined
-      ? String(update.departments).trim()
-      : existing.departments.trim();
-    if (!nextDepartments) {
-      const inferred = inferDepartmentFromRoomKey(roomKey);
-      if (inferred) update.departments = inferred;
+    // Also reject legacy foreign-only lists (e.g. "MRI,CT" on usg) unless the
+    // room's own department is included (intentional multi-dept).
+    const candidate = update.departments !== undefined
+      ? String(update.departments)
+      : existing.departments;
+    const heal = shouldSelfHealModalityRoomDepartments(roomKey, candidate);
+    if (heal.heal && heal.target) {
+      update.departments = heal.target;
     }
     const [saved] = await db
       .update(queueDisplaySettingsTable)

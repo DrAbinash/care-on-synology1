@@ -4,8 +4,10 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
   CheckCircle2, AlertTriangle, XCircle, MinusCircle,
-  RefreshCw, ListChecks, FileStack, Radio,
+  RefreshCw, ListChecks, FileStack, Radio, Eraser,
 } from "lucide-react";
+import { useState } from "react";
+import { useToast } from "@/hooks/use-toast";
 
 type MwlCheckStatus = "pass" | "warn" | "fail" | "skip";
 type MwlVerdict = "healthy" | "degraded" | "failed";
@@ -50,6 +52,17 @@ type MwlDeploymentStatus = {
     error: string | null;
   } | null;
   setupSteps: string[];
+  cleanupRetry?: {
+    pending: number;
+    retrying: number;
+    abandoned: number;
+    overdue: number;
+    oldestPendingAgeMs: number | null;
+    lastSuccessAt: string | null;
+    trafficLight: "green" | "amber" | "red";
+    detail: string;
+    staleTerminalWlCount?: number;
+  };
 };
 
 function statusIcon(status: MwlCheckStatus) {
@@ -81,6 +94,8 @@ export function MwlStatusPanel({
   onSync: () => void;
   syncing?: boolean;
 }) {
+  const { toast } = useToast();
+  const [cleanupRetrying, setCleanupRetrying] = useState(false);
   const { data, isLoading, isFetching, refetch, error } = useQuery<MwlDeploymentStatus>({
     queryKey: ["mwl-deployment-status"],
     queryFn: () => api.get("/api/radiology/mwl-status"),
@@ -110,6 +125,32 @@ export function MwlStatusPanel({
       : verdict === "degraded"
         ? "border-amber-200 bg-amber-50/80 dark:bg-amber-950/20"
         : "border-red-200 bg-red-50/80 dark:bg-red-950/20";
+
+  const cleanup = data.cleanupRetry;
+  const cleanupLight = cleanup?.trafficLight ?? "green";
+
+  const runCleanupRetry = async () => {
+    setCleanupRetrying(true);
+    try {
+      const r = await api.post<{ ran: number; succeeded: number; failed: number }>(
+        "/api/radiology-diagnostics/mwl-cleanup/retry",
+        {},
+      );
+      toast({
+        title: "MWL cleanup retry",
+        description: `Processed ${r.ran}: ${r.succeeded} ok, ${r.failed} failed`,
+      });
+      void refetch();
+    } catch (e: unknown) {
+      toast({
+        title: "Cleanup retry failed",
+        description: e instanceof Error ? e.message : "Error",
+        variant: "destructive",
+      });
+    } finally {
+      setCleanupRetrying(false);
+    }
+  };
 
   return (
     <div className="space-y-4" data-testid="mwl-status-panel">
@@ -149,6 +190,56 @@ export function MwlStatusPanel({
           </Button>
         </div>
       </div>
+
+      {cleanup && (
+        <div
+          className={`rounded-xl border p-4 space-y-2 ${
+            cleanupLight === "green"
+              ? "border-emerald-200 bg-emerald-50/50"
+              : cleanupLight === "amber"
+                ? "border-amber-200 bg-amber-50/50"
+                : "border-red-200 bg-red-50/50"
+          }`}
+          data-testid="mwl-cleanup-retry-status"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h3 className="font-semibold text-sm flex items-center gap-2">
+              <Eraser size={16} className="text-primary" />
+              MWL cancel cleanup
+            </h3>
+            <Badge
+              variant="outline"
+              className={`text-[10px] uppercase ${
+                cleanupLight === "green"
+                  ? "text-emerald-700 border-emerald-200"
+                  : cleanupLight === "amber"
+                    ? "text-amber-700 border-amber-200"
+                    : "text-red-700 border-red-200"
+              }`}
+            >
+              {cleanupLight === "green" ? "GREEN" : cleanupLight === "amber" ? "AMBER" : "RED"}
+            </Badge>
+          </div>
+          <p className="text-xs text-muted-foreground">{cleanup.detail}</p>
+          <p className="text-[11px] text-muted-foreground font-mono">
+            pending={cleanup.pending} · retrying={cleanup.retrying} · abandoned={cleanup.abandoned}
+            {cleanup.staleTerminalWlCount ? ` · stale .wl=${cleanup.staleTerminalWlCount}` : ""}
+            {cleanup.lastSuccessAt ? ` · last ok ${cleanup.lastSuccessAt}` : ""}
+          </p>
+          {isAdmin && (cleanup.pending + cleanup.retrying + cleanup.abandoned > 0 || (cleanup.staleTerminalWlCount ?? 0) > 0) && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-8 gap-1.5"
+              onClick={() => void runCleanupRetry()}
+              disabled={cleanupRetrying}
+              data-testid="mwl-cleanup-retry-now"
+            >
+              <Eraser size={13} /> {cleanupRetrying ? "Retrying…" : "Retry MWL Cleanup Now"}
+            </Button>
+          )}
+        </div>
+      )}
 
       {data.lastSync && (
         <div className={`rounded-lg border p-3 text-xs ${data.lastSync.error || data.lastSync.written === 0 && (data.lastSync.total ?? 0) > 0 ? "border-red-200 bg-red-50 text-red-800" : "bg-muted/30 text-muted-foreground"}`}>
