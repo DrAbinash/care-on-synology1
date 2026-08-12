@@ -90,9 +90,6 @@ import {
 import { createCommandDispatcher } from "@/lib/workspaceCommands";
 import { loadReadingSession, toggleReadingSession, bumpSessionCompleted } from "@/lib/readingSession";
 import {
-  loadWorkspaceLayoutPrefs, saveWorkspaceLayoutPrefs,
-} from "@/lib/workspaceLayoutPrefs";
-import {
   parseVoiceSettings, parseVoiceUserPrefs, mergeVoiceSettings,
   fetchTranscribeCapabilities,
 } from "@/lib/voiceTranscription";
@@ -105,10 +102,22 @@ import ComparisonPanel from "@/components/radiology/ComparisonPanel";
 import FollowUpPanel from "@/components/radiology/FollowUpPanel";
 import FinalizeSignDialog from "@/components/radiology/FinalizeSignDialog";
 import VoiceCommandBar from "@/components/radiology/VoiceCommandBar";
-// import CommandPalette from "@/components/radiology/CommandPalette"; // replaced by ZaiCommandPalette
+import QuickFindingsPanel, { type QuickFinding } from "@/components/radiology/QuickFindingsPanel";
+import PriorComparisonToolbar from "@/components/radiology/PriorComparisonToolbar";
+import ViewerMeasurementsBanner from "@/components/radiology/ViewerMeasurementsBanner";
 import ReferringDoctorQuickSelect from "@/components/ReferringDoctorQuickSelect";
 import { ModuleErrorBoundary } from "@/components/ModuleErrorBoundary";
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Textarea } from "@/components/ui/textarea";
+import { mergeBlock, removeBlock, mergeImpression, removeImpression } from "@/lib/quickFindingsMerge";
+import type { Side } from "@/lib/sideSwap";
+import {
+  loadWorkspaceLayoutPrefs, saveWorkspaceLayoutPrefs,
+  shouldShowEmbeddedViewer, type WorkspaceLayoutMode,
+} from "@/lib/workspaceLayoutPrefs";
 
 // ─── New Z.ai workspace components ─────────────────────────────────────────────
 import { useWorkspace, type WorkspaceStore } from "@/lib/zai-workspace/store";
@@ -151,8 +160,9 @@ import "@/lib/copilotRecommendationModule";
 import "@/lib/copilotUsgCompanionModule";
 
 import {
-  Lock, AlertTriangle, ChevronRight, Pause, Clock, Sparkles, ShieldCheck,
+  Lock, AlertTriangle, ChevronLeft, ChevronRight, Pause, Clock, Sparkles, ShieldCheck,
   Brain, Activity, Zap, Printer, FileDown, Share2, Eye, PanelLeftClose, PanelLeftOpen,
+  Maximize2, Columns2, Monitor,
 } from "lucide-react";
 
 interface Props { studyId?: number; }
@@ -183,6 +193,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const techniqueText = useWorkspace((s: WorkspaceStore) => s.techniqueText);
   const clinicalHistoryText = useWorkspace((s: WorkspaceStore) => s.clinicalHistoryText);
   const isFinalized = useWorkspace((s: WorkspaceStore) => s.isFinalized);
+  const isDirty = useWorkspace((s: WorkspaceStore) => s.isDirty);
   const preloadTriggered = useWorkspace((s: WorkspaceStore) => s.preloadTriggered);
   const criticalSlaStartedAt = useWorkspace((s: WorkspaceStore) => s.criticalSlaStartedAt);
   const completedCount = useWorkspace((s: WorkspaceStore) => s.completedStudyIds.size);
@@ -265,8 +276,26 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   // 9. Reading session (auto-advance toggle)
   const [readingSession, setReadingSession] = useState(() => loadReadingSession());
 
-  // 10. Layout prefs (per-radiologist panel sizes)
-  const [layoutPrefs, setLayoutPrefs] = useState(() => (loadWorkspaceLayoutPrefs as any)());
+  // 10. Layout prefs (Report / Split / Viewer) — ported from legacy
+  const [layoutPrefs, setLayoutPrefs] = useState(() => loadWorkspaceLayoutPrefs(myUserId));
+  const layoutMode = layoutPrefs.mode;
+  const showEmbeddedViewer = shouldShowEmbeddedViewer(layoutMode);
+  const setLayoutMode = useCallback((mode: WorkspaceLayoutMode) => {
+    setLayoutPrefs((prev) => {
+      const next = { ...prev, mode };
+      saveWorkspaceLayoutPrefs(myUserId, next);
+      return next;
+    });
+    if (mode === "reportFocus") setViewerColumnExpanded(false);
+  }, [myUserId]);
+
+  // Legacy clinic Quick Select + critical checklist
+  const [selectedQuickIds, setSelectedQuickIds] = useState<Set<number>>(() => new Set());
+  const [quickSide, setQuickSide] = useState<Side>("left");
+  const [isCritical, setIsCritical] = useState(false);
+  const [criticalNote, setCriticalNote] = useState("");
+  const [checklistComm, setChecklistComm] = useState({ phoned: false, annotated: false, dispatched: false });
+  const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
 
   // ─── Refs ──────────────────────────────────────────────────────────────────
   const embeddedViewerRef = useRef<EmbeddedViewerHandle>(null);
@@ -286,7 +315,59 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     // Old workspace: collapse the left queue after a patient is chosen so the
     // viewer/editor reclaim width.
     requestAnimationFrame(() => leftPanelRef.current?.collapse());
+    // Clear study-scoped UI state (Quick Select / critical checklist)
+    setSelectedQuickIds(new Set());
+    setIsCritical(false);
+    setCriticalNote("");
+    setChecklistComm({ phoned: false, annotated: false, dispatched: false });
+    setLastSavedAt(null);
   }, [selectStudy, navigate]);
+
+  const goNextStudy = useCallback(() => {
+    const next = workflow.peekNext();
+    if (!next) { toast({ title: "End of queue" }); return; }
+    workflow.beginTransition(studyId, next);
+    openStudy(next.id);
+  }, [workflow, studyId, openStudy, toast]);
+
+  const goPrevStudy = useCallback(() => {
+    const prevId = workflow.beginPreviousTransition(studyId);
+    if (prevId == null) { toast({ title: "No previous study in history" }); return; }
+    openStudy(prevId);
+  }, [workflow, studyId, openStudy, toast]);
+
+  /** Clinic Quick Select toggle — insert/remove exact template text (legacy merge safety). */
+  const handleQuickToggle = useCallback((finding: QuickFinding, nowSelected: boolean) => {
+    setSelectedQuickIds((prev) => {
+      const next = new Set(prev);
+      if (nowSelected) next.add(finding.id);
+      else next.delete(finding.id);
+      return next;
+    });
+    const state = useWorkspace.getState();
+    if (nowSelected) {
+      if (finding.findingText) state.setField("findings", mergeBlock(state.findingsText, finding.findingText));
+      if (finding.impressionText) {
+        const lines = state.impressionText.split("\n").filter(Boolean);
+        state.setField("impression", mergeImpression(lines, finding.impressionText).join("\n"));
+      }
+      if (finding.techniqueText) state.setField("technique", mergeBlock(state.techniqueText, finding.techniqueText));
+      if (finding.recommendationText) state.setField("recommendation", mergeBlock(state.recommendationText, finding.recommendationText));
+    } else {
+      if (finding.findingText) state.setField("findings", removeBlock(state.findingsText, finding.findingText));
+      if (finding.impressionText) {
+        const lines = state.impressionText.split("\n").filter(Boolean);
+        state.setField("impression", removeImpression(lines, finding.impressionText).join("\n"));
+      }
+      if (finding.techniqueText) state.setField("technique", removeBlock(state.techniqueText, finding.techniqueText));
+      if (finding.recommendationText) state.setField("recommendation", removeBlock(state.recommendationText, finding.recommendationText));
+    }
+  }, []);
+
+  const appendFindings = useCallback((text: string) => {
+    const state = useWorkspace.getState();
+    state.setField("findings", mergeBlock(state.findingsText, text));
+  }, []);
 
   const jumpQueue = useMemo(() => {
     const q = patientJumpFilter.trim().toLowerCase();
@@ -422,6 +503,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       );
       const id = res?.draft?.id ?? res?.id ?? null;
       if (id) captureSavedDraftId(id);
+      setLastSavedAt(new Date());
       toast({ title: "Draft saved", duration: 1500 });
       return id;
     } catch (err) {
@@ -439,21 +521,36 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     // 1. Save dirty state first
     if (useWorkspace.getState().isDirty) await saveDraft();
 
-    // 2. Validate
+    // 2. Validate (local + server validate-draft when available)
     const validationIssues = validateReport({
       findings: findingsText,
       impression: [impressionText],
       technique: techniqueText,
     } as any);
+    if (draftId) {
+      try {
+        const serverVal = await api.post<{
+          structured?: { errors?: unknown[]; warnings?: string[]; skipReasons?: string[] };
+        }>("/api/radiology/report-generator/validate-draft", { draftId });
+        const errs = serverVal?.structured?.errors ?? [];
+        const warns = serverVal?.structured?.warnings ?? [];
+        const skips = serverVal?.structured?.skipReasons ?? [];
+        for (const e of errs) validationIssues.push(typeof e === "string" ? e : JSON.stringify(e));
+        for (const w of warns) validationIssues.push(w);
+        for (const s of skips) validationIssues.push(s);
+      } catch { /* non-fatal — local validation still applies */ }
+    }
 
-    // 3. Critical findings check
+    // 3. Critical findings check (auto-detect + manual mark/comms from legacy)
     const criticalHits = detectCriticalFindings(findingsText, [impressionText]);
+    const criticalMarked = isCritical || criticalHits.length > 0;
+    const criticalCommunicated = checklistComm.phoned;
     const safetyIssues = computeFinalizeSafety({
       checklistActive: false,
       checklistPercent: 100,
       criticalHits: criticalHits.map(h => ({ label: h.label })),
-      criticalMarked: false,
-      criticalCommunicated: false,
+      criticalMarked,
+      criticalCommunicated,
     });
 
     // 4. Get signatures
@@ -468,13 +565,16 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       unbilledNote: "",
       signatures: signatures,
       criticalRequiresAck: criticalFindingBlocksFinalize({
-      checklistActive: false,
-      checklistPercent: 100,
-      criticalHits: criticalHits.map(h => ({ label: h.label })),
-      criticalMarked: false,
-      criticalCommunicated: false,
-    }),
-      criticalSummary: criticalHits.map(h => h.label).join(", "),
+        checklistActive: false,
+        checklistPercent: 100,
+        criticalHits: criticalHits.map(h => ({ label: h.label })),
+        criticalMarked,
+        criticalCommunicated,
+      }),
+      criticalSummary: [
+        ...criticalHits.map(h => h.label),
+        ...(isCritical && criticalNote ? [criticalNote] : []),
+      ].filter(Boolean).join(", "),
     });
 
     if (!result.confirmed) return;
@@ -494,8 +594,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
           title: workflow.currentRow?.studyDescription ?? "Report",
           htmlBody: `<h2>${workflow.currentRow?.studyDescription ?? "Report"}</h2><p><b>Findings:</b> ${findingsText}</p><p><b>Impression:</b> ${impressionText}</p><p><b>Recommendation:</b> ${recommendationText}</p>`,
           impression: [impressionText],
-          isCritical: criticalHits.length > 0,
-          criticalNote: criticalHits.length > 0 ? criticalHits.map(h => h.label).join(", ") : null,
+          isCritical: criticalMarked,
+          criticalNote: criticalNote || (criticalHits.length > 0 ? criticalHits.map(h => h.label).join(", ") : null),
           createdBy: session?.user?.name ?? "Dr. Abinash Kumar",
         } as any,
       );
@@ -522,20 +622,14 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     } catch (err) {
       toast({ title: "Finalize failed", description: err instanceof Error ? err.message : "Unknown error", variant: "destructive" });
     }
-  }, [studyId, workflow, isOnline, findingsText, impressionText, recommendationText, techniqueText, saveDraft, finalizeFlow, draftBackup, qc, toast]);
+  }, [studyId, workflow, isOnline, findingsText, impressionText, recommendationText, techniqueText, saveDraft, finalizeFlow, draftBackup, qc, toast, isCritical, criticalNote, checklistComm, draftId, session]);
 
   // ─── Command dispatcher (single choke point for keyboard/voice/palette) ────
   const commandDispatcher = useMemo(() => createCommandDispatcher({
     save: async () => { await saveDraft(); },
     finalize: finalizeReport,
-    next: () => {
-      const next = workflow.peekNext();
-      if (next) { (workflow.beginTransition as any)(next.id); openStudy(next.id); }
-    },
-    previous: () => {
-      const prev = workflow.peekParked();
-      if (prev) { (workflow.beginPreviousTransition as any)(prev.id); openStudy(prev.id); }
-    },
+    next: () => { goNextStudy(); },
+    previous: () => { goPrevStudy(); },
     park: () => { if (studyId) { (workflow as any).park(studyId, ""); } },
     refresh: () => workflow.refreshQueue(),
     "open-viewer": () => {
@@ -550,7 +644,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     "close-panel": () => { rightPanelRef.current?.collapse(); },
     "select-template-1": () => {}, "select-template-2": () => {}, "select-template-3": () => {},
     "select-template-4": () => {}, "select-template-5": () => {}, "select-template-6": () => {},
-  }), [saveDraft, finalizeReport, workflow, studyId, openStudy]);
+  }), [saveDraft, finalizeReport, workflow, studyId, goNextStudy, goPrevStudy]);
 
   // ─── Global keyboard shortcuts ─────────────────────────────────────────────
   useEffect(() => {
@@ -656,6 +750,41 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
             <div className="text-[9px] text-muted-foreground leading-none mt-0.5">World's best reporting workspace</div>
           </div>
         </div>
+        <div className="h-5 w-px bg-border mx-1" />
+        {/* Layout modes — Report / Split / Viewer (legacy) */}
+        <div className="flex items-center rounded-md border overflow-hidden text-[10px]" data-testid="layout-mode-selector">
+          {([
+            { mode: "reportFocus" as const, label: "Report", icon: <Maximize2 className="h-3 w-3" />, title: "Report Focus — hide viewer" },
+            { mode: "split" as const, label: "Split", icon: <Columns2 className="h-3 w-3" />, title: "Split — viewer + editor" },
+            { mode: "viewerFocus" as const, label: "Viewer", icon: <Monitor className="h-3 w-3" />, title: "Viewer Focus — larger viewer" },
+          ]).map((m) => (
+            <button
+              key={m.mode}
+              type="button"
+              title={m.title}
+              onClick={() => setLayoutMode(m.mode)}
+              className={`inline-flex items-center gap-1 px-2 py-1.5 border-r last:border-r-0 ${layoutMode === m.mode ? "bg-primary text-primary-foreground" : "hover:bg-muted"}`}
+            >
+              {m.icon}{m.label}
+            </button>
+          ))}
+        </div>
+        <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={goPrevStudy} title="Previous (history)">
+          <ChevronLeft className="h-3.5 w-3.5 mr-0.5" /> Prev
+        </Button>
+        <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={goNextStudy} title="Next study">
+          Next <ChevronRight className="h-3.5 w-3.5 ml-0.5" />
+        </Button>
+        {isDirty && (
+          <Badge variant="outline" className="text-[9px] bg-amber-50 text-amber-800 border-amber-200" data-testid="dirty-badge">
+            Unsaved
+          </Badge>
+        )}
+        {lastSavedAt && !isDirty && (
+          <span className="text-[9px] text-muted-foreground" title={lastSavedAt.toLocaleString()}>
+            Saved {lastSavedAt.toLocaleTimeString()}
+          </span>
+        )}
         <div className="h-5 w-px bg-border mx-1" />
         {/* Searchable patient jump (ported from legacy chrome) */}
         <div className="flex items-center gap-1 shrink-0" data-testid="compact-patient-picker">
@@ -827,64 +956,161 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
           </ResizablePanel>
           <ResizableHandle />
 
-          {/* Center: Embedded WADO + compact Print/Report pickers */}
-          <ResizablePanel defaultSize={36} minSize={28} maxSize={50}>
-            <div className="flex h-full flex-col">
-              {/* EmbeddedWadoViewer — 3 enlarge modes (column / fullscreen / new tab).
-                  Open Study / Weasis / Tailscale chrome removed: it ate vertical
-                  space; OHIF new-tab + network probe live on the viewer header. */}
-              <div className="flex-1 min-h-0">
-                <EmbeddedWadoViewer
-                  ref={embeddedViewerRef}
-                  studyInstanceUID={workflow.currentRow?.studyInstanceUID ?? null}
-                  accessionNumber={workflow.currentRow?.accessionNumber ?? null}
-                  columnExpanded={viewerColumnExpanded}
-                  onColumnExpandedChange={setViewerColumnExpanded}
-                />
-              </div>
-              {/* Report / Print pickers hide while the viewer is vertically enlarged */}
-              {!viewerColumnExpanded && workflow.currentRow && (
-                <div className="border-t border-border shrink-0">
-                  <ReportImagePicker
-                    draftId={draftId ?? null}
-                    studyId={studyId ?? null}
-                    studyInstanceUID={workflow.currentRow?.studyInstanceUID ?? null}
-                    disabled={workflow.currentRow?.status === "REPORT_FINAL"}
-                    onEnsureDraft={saveDraft}
-                  />
+          {/* Center: Embedded WADO + compact Print/Report pickers (hidden in Report Focus) */}
+          {showEmbeddedViewer && (
+            <>
+              <ResizablePanel
+                defaultSize={layoutMode === "viewerFocus" ? 48 : 36}
+                minSize={28}
+                maxSize={58}
+              >
+                <div className="flex h-full flex-col">
+                  <div className="flex-1 min-h-0">
+                    <EmbeddedWadoViewer
+                      ref={embeddedViewerRef}
+                      studyInstanceUID={workflow.currentRow?.studyInstanceUID ?? null}
+                      accessionNumber={workflow.currentRow?.accessionNumber ?? null}
+                      columnExpanded={viewerColumnExpanded}
+                      onColumnExpandedChange={setViewerColumnExpanded}
+                    />
+                  </div>
+                  {!viewerColumnExpanded && workflow.currentRow && (
+                    <div className="border-t border-border shrink-0">
+                      <ReportImagePicker
+                        draftId={draftId ?? null}
+                        studyId={studyId ?? null}
+                        studyInstanceUID={workflow.currentRow?.studyInstanceUID ?? null}
+                        disabled={workflow.currentRow?.status === "REPORT_FINAL"}
+                        onEnsureDraft={saveDraft}
+                      />
+                    </div>
+                  )}
+                  {!viewerColumnExpanded && workflow.currentRow && (
+                    <div className="border-t border-border shrink-0">
+                      <PrintImagePicker
+                        studyInstanceUID={workflow.currentRow?.studyInstanceUID ?? null}
+                        disabled={workflow.currentRow?.status === "REPORT_FINAL"}
+                      />
+                    </div>
+                  )}
                 </div>
-              )}
-              {!viewerColumnExpanded && workflow.currentRow && (
-                <div className="border-t border-border shrink-0">
-                  <PrintImagePicker
-                    studyInstanceUID={workflow.currentRow?.studyInstanceUID ?? null}
-                    disabled={workflow.currentRow?.status === "REPORT_FINAL"}
-                  />
-                </div>
-              )}
-            </div>
-          </ResizablePanel>
-          <ResizableHandle />
+              </ResizablePanel>
+              <ResizableHandle />
+            </>
+          )}
 
           {/* Right: Editor + Copilot Rail */}
-          <ResizablePanel defaultSize={46} minSize={36}>
+          <ResizablePanel defaultSize={showEmbeddedViewer ? (layoutMode === "viewerFocus" ? 38 : 46) : 82} minSize={36}>
             <ResizablePanelGroup direction="horizontal">
               {/* Editor column */}
               <ResizablePanel defaultSize={58} minSize={42}>
                 <div className="h-full overflow-y-auto bg-card">
-                  <div className="p-4 space-y-4">
-                    {/* Referring doctor quick select */}
+                  <div className="p-4 space-y-3">
                     {workflow.currentRow && (
                       <ReferringDoctorQuickSelect
                         worklistId={studyId ?? 0}
                         currentName={(workflow.currentRow as any)?.referringDoctor}
                       />
                     )}
+
+                    {/* Prior comparison — one-click interval sentences (legacy) */}
+                    {!isLocked && workflow.currentRow?.patientId && (
+                      <PriorComparisonToolbar
+                        patientId={workflow.currentRow.patientId}
+                        excludeStudyId={studyId ?? undefined}
+                        modality={workflow.currentRow.modality ?? ""}
+                        studyDescription={workflow.currentRow.studyDescription ?? ""}
+                        comparisonMissing={false}
+                        disabled={isLocked || isFinalized}
+                        onInsertFindings={appendFindings}
+                        onOpenPriorTab={() => rightPanelRef.current?.expand()}
+                      />
+                    )}
+
+                    {/* Pending viewer measurements banner (legacy) */}
+                    {!isLocked && workflow.currentRow?.studyInstanceUID && (
+                      <ViewerMeasurementsBanner
+                        studyInstanceUID={workflow.currentRow.studyInstanceUID}
+                        disabled={isLocked || isFinalized}
+                        onInsertAll={(lines) => {
+                          for (const line of lines) appendFindings(line);
+                        }}
+                        onOpenMeasureTab={() => rightPanelRef.current?.expand()}
+                      />
+                    )}
+
                     <FindingsEditor field="clinicalHistory" label="Clinical History" minHeight="56px" placeholder="Presenting complaint and relevant history." />
                     <FindingsEditor field="technique" label="Technique" minHeight="60px" placeholder="Modality, sequences, contrast..." />
                     <FindingsEditor field="findings" label="Findings" minHeight="220px" placeholder="Type findings. Use :macro + Tab for snippets. Ctrl+Enter for AI ghost." showGhost />
                     <FindingsEditor field="impression" label="Impression" minHeight="100px" placeholder="Conclusion. Ctrl+I for AI impression." showGhost />
                     <FindingsEditor field="recommendation" label="Recommendation" minHeight="60px" placeholder="Follow-up, referral..." showGhost />
+
+                    {/* Critical finding mark + communication checklist (legacy) */}
+                    <div className="flex flex-col gap-2 border rounded-md p-3 bg-red-50/40 border-red-100" data-testid="critical-finding-panel">
+                      <div className="flex items-center gap-2">
+                        <Switch
+                          id="critical"
+                          checked={isCritical}
+                          onCheckedChange={setIsCritical}
+                          disabled={isLocked || isFinalized}
+                        />
+                        <Label htmlFor="critical" className="text-sm font-semibold text-red-700 flex items-center gap-1 cursor-pointer">
+                          <AlertTriangle size={13} /> Mark Critical Finding
+                        </Label>
+                      </div>
+                      {isCritical && (
+                        <>
+                          <Textarea
+                            value={criticalNote}
+                            onChange={(e) => setCriticalNote(e.target.value)}
+                            placeholder="Describe critical finding (e.g. acute infarct, cord compression)..."
+                            className="min-h-[50px] text-sm resize-none"
+                            disabled={isLocked || isFinalized}
+                          />
+                          <div className="flex flex-col gap-1.5 pt-1 border-t border-red-100">
+                            <span className="text-[10px] font-semibold text-red-700 uppercase tracking-wide">Communication Checklist</span>
+                            {([
+                              ["phoned", "Telephoned Doctor"],
+                              ["annotated", "Annotated in PACS"],
+                              ["dispatched", "Dispatched Alert"],
+                            ] as const).map(([key, label]) => (
+                              <label key={key} className="flex items-center gap-2 text-xs cursor-pointer">
+                                <Checkbox
+                                  checked={checklistComm[key]}
+                                  onCheckedChange={(v) => setChecklistComm((prev) => ({ ...prev, [key]: !!v }))}
+                                  disabled={isLocked || isFinalized}
+                                />
+                                {label}
+                              </label>
+                            ))}
+                          </div>
+                        </>
+                      )}
+                    </div>
+
+                    {/* Clinic Quick Select (legacy QuickFindingsPanel) */}
+                    <div className="border rounded-md p-2" data-testid="clinic-quick-select">
+                      <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">Clinic Quick Select</div>
+                      <QuickFindingsPanel
+                        selectedIds={selectedQuickIds}
+                        onToggle={handleQuickToggle}
+                        side={quickSide}
+                        onSideChange={setQuickSide}
+                        disabled={isLocked || isFinalized}
+                        initialStudyHint={workflow.currentRow?.studyDescription ?? workflow.currentRow?.modality ?? null}
+                        isAdmin={isOwner}
+                        onMeasurement={(template, value) => appendFindings(template.replace(/\{value\}/gi, value).replace(/\{val\}/gi, value))}
+                        onAutoTechnique={(text) => {
+                          const state = useWorkspace.getState();
+                          state.setField("technique", mergeBlock(state.techniqueText, text));
+                        }}
+                        onInsertNormals={(text) => appendFindings(text)}
+                        onAcceptLearnedSuggestion={(text) => {
+                          const state = useWorkspace.getState();
+                          state.setField("recommendation", mergeBlock(state.recommendationText, text));
+                        }}
+                      />
+                    </div>
                   </div>
                 </div>
               </ResizablePanel>
@@ -893,7 +1119,6 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
               <ResizablePanel defaultSize={42} minSize={32} ref={rightPanelRef}>
                 <div className="h-full border-l border-border bg-card overflow-y-auto">
                   <CopilotRail />
-                  {/* ComparisonPanel — prior study comparison with sentence-level diff */}
                   {workflow.currentRow && (
                     <div className="border-t border-border p-2">
                       <ComparisonPanel
@@ -902,13 +1127,20 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                         currentModality={workflow.currentRow.modality ?? ""}
                         currentStudyDescription={workflow.currentRow.studyDescription ?? ""}
                         currentFindings={findingsText}
-                        onInsertFindings={(text) => useWorkspace.getState().setField("findings", findingsText + " " + text)}
-                        onInsertImpression={(text) => useWorkspace.getState().setField("impression", impressionText + " " + text)}
-                        onSelectPrior={() => {}}
+                        onInsertFindings={(text) => appendFindings(text)}
+                        onInsertImpression={(text) => {
+                          const state = useWorkspace.getState();
+                          const lines = state.impressionText.split("\n").filter(Boolean);
+                          state.setField("impression", mergeImpression(lines, text).join("\n"));
+                        }}
+                        onSelectPrior={(prior) => {
+                          if (prior?.dateIso) {
+                            appendFindings(`Compared with prior study dated ${String(prior.dateIso).slice(0, 10)}.`);
+                          }
+                        }}
                       />
                     </div>
                   )}
-                  {/* FollowUpPanel — follow-up recommendations with sentence diff */}
                   {workflow.currentRow && (
                     <div className="border-t border-border p-2">
                       <ModuleErrorBoundary>
@@ -916,7 +1148,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                           patientId={workflow.currentRow?.patientId ?? null}
                           currentFindings={findingsText}
                           onCopyFindings={(text: string) => useWorkspace.getState().setField("findings", text)}
-                          onCopyImpression={(lines: string[]) => useWorkspace.getState().setField("impression", lines.join(" "))}
+                          onCopyImpression={(lines: string[]) => useWorkspace.getState().setField("impression", lines.join("\n"))}
                         />
                       </ModuleErrorBoundary>
                     </div>
@@ -933,10 +1165,10 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         <div className="flex items-center gap-3">
           <span><kbd className="rounded bg-muted px-1 py-0.5 font-mono">⌘K</kbd> palette</span>
           <span><kbd className="rounded bg-muted px-1 py-0.5 font-mono">⌃↵</kbd> finalize</span>
-          <span><kbd className="rounded bg-muted px-1 py-0.5 font-mono">⌃I</kbd> AI impression</span>
-          <span><kbd className="rounded bg-muted px-1 py-0.5 font-mono">⌃⇧V</kbd> voice</span>
-          <span><kbd className="rounded bg-muted px-1 py-0.5 font-mono">N</kbd> next</span>
-          <span><kbd className="rounded bg-muted px-1 py-0.5 font-mono">P</kbd> park</span>
+          <span><kbd className="rounded bg-muted px-1 py-0.5 font-mono">⌃S</kbd> save</span>
+          <span><kbd className="rounded bg-muted px-1 py-0.5 font-mono">⌃⇧N</kbd> next</span>
+          <span><kbd className="rounded bg-muted px-1 py-0.5 font-mono">⌃⇧P</kbd> previous</span>
+          <span><kbd className="rounded bg-muted px-1 py-0.5 font-mono">⌃⇧K</kbd> park</span>
           <span><kbd className="rounded bg-muted px-1 py-0.5 font-mono">:macro</kbd>+<kbd className="rounded bg-muted px-1 py-0.5 font-mono">Tab</kbd></span>
         </div>
         {study?.lockedBy && <div className="flex items-center gap-1.5 text-amber-600"><Lock className="h-3 w-3" />Locked by you</div>}
