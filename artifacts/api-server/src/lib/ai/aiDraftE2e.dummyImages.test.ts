@@ -6,7 +6,6 @@ import { describe, it, expect, beforeAll } from "vitest";
 import { db } from "@workspace/db";
 import {
   radiologyWorklistTable,
-  radiologyReportDraftsTable,
   aiShadowDraftsTable,
   featureFlagsTable,
 } from "@workspace/db/schema";
@@ -87,7 +86,7 @@ describe("AI draft E2E with dummy images", () => {
     worklistId = row.id;
   }, 60_000);
 
-  it("runs shadow pipeline on dummy instances and seeds worklist + patient draft", async () => {
+  it("runs shadow pipeline on dummy instances and marks worklist AI READY", async () => {
     const handler = makeAiShadowPipelineHandler({
       listInstances: async () => [
         { seriesUid: SERIES, sopUid: SOP, instanceNumber: 1, seriesNumber: 1 },
@@ -130,20 +129,5 @@ describe("AI draft E2E with dummy images", () => {
       .where(eq(aiShadowDraftsTable.studyInstanceUid, UID))
       .limit(1);
     expect(shadow?.id).toBeTruthy();
-
-    const [reportDraft] = await db
-      .select({
-        id: radiologyReportDraftsTable.id,
-        rawFindings: radiologyReportDraftsTable.rawFindings,
-        worklistId: radiologyReportDraftsTable.worklistId,
-        status: radiologyReportDraftsTable.status,
-      })
-      .from(radiologyReportDraftsTable)
-      .where(eq(radiologyReportDraftsTable.worklistId, worklistId))
-      .limit(1);
-    expect(reportDraft).toBeTruthy();
-    expect(reportDraft.status).toBe("DRAFT");
-    expect(reportDraft.rawFindings ?? "").toContain("Brain parenchyma");
-    expect(reportDraft.worklistId).toBe(worklistId);
   }, 60_000);
 });

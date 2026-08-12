@@ -24,6 +24,7 @@ describe("on-arrival draft scheduling smoke", () => {
         patientName: "ARRIVAL^TEST",
         modality: "MR",
         studyInstanceUID: uid,
+        accessionNumber: `ACC-ARR-${Date.now()}`,
         status: "STUDY_RECEIVED",
         aiDraftStatus: "NONE",
         dicomPatientId: "ARR1",
