@@ -219,6 +219,11 @@ function buildDump(p: MwlProcedure): string {
   ].join("\n");
 }
 
+/** Exported for acceptance tests — same dump text Orthanc receives via dump2dcm. */
+export function buildMwlDumpText(p: MwlProcedure): string {
+  return buildDump(p);
+}
+
 /** Exported for unit tests — DICOM PN formatting used on the wire to modalities. */
 export function formatMwlPersonName(name: string | null | undefined): string {
   return toPn(name);

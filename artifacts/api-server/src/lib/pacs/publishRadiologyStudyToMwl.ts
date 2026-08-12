@@ -19,7 +19,7 @@ import {
 } from "@workspace/db/schema";
 import { eq } from "drizzle-orm";
 import { logger } from "../logger";
-import { isMwlEnabled, writeWorklistFile } from "./mwlWorklistWriter";
+import { isMwlEnabled, writeWorklistFile, removeWorklistFile } from "./mwlWorklistWriter";
 
 function yyyymmdd(d: Date = new Date()): string {
   return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
@@ -173,29 +173,37 @@ export async function publishRadiologyStudyToMwl(opts: {
     if (!row) return empty;
 
     let written = false;
+    const statusUpper = (row.status || "").toUpperCase();
+    const isTerminal = ["COMPLETED", "CANCELLED", "CANCELED", "DISCONTINUED"].includes(statusUpper);
+
     if (isMwlEnabled()) {
-      written = await writeWorklistFile({
-        accessionNumber: row.accessionNumber,
-        patientId: row.patientId,
-        patientName: row.patientName,
-        patientSex: row.patientSex,
-        patientDob: row.patientDob,
-        modality: row.modality,
-        studyDescription: row.studyDescription || row.procedureName,
-        procedureName: row.procedureName,
-        referringDoctor: row.referringDoctor,
-        scheduledDate: row.scheduledDate,
-        scheduledTime: row.scheduledTime,
-        stationAeTitle: row.stationAeTitle,
-        bodyPartExamined: row.bodyPartExamined,
-        sourceBillId: row.sourceBillId ?? String(opts.billId),
-        sourceOrderId: row.sourceOrderId ?? String(opts.orderId),
-      });
-      if (written && (row.status || "").toUpperCase() === "SCHEDULED") {
-        await db
-          .update(radiologyScheduledProceduresTable)
-          .set({ status: "SENT_TO_MWL", updatedAt: new Date() })
-          .where(eq(radiologyScheduledProceduresTable.id, row.id));
+      if (isTerminal) {
+        // Never re-publish a cancelled/completed accession — remove any stale .wl.
+        await removeWorklistFile(row.accessionNumber);
+      } else {
+        written = await writeWorklistFile({
+          accessionNumber: row.accessionNumber,
+          patientId: row.patientId,
+          patientName: row.patientName,
+          patientSex: row.patientSex,
+          patientDob: row.patientDob,
+          modality: row.modality,
+          studyDescription: row.studyDescription || row.procedureName,
+          procedureName: row.procedureName,
+          referringDoctor: row.referringDoctor,
+          scheduledDate: row.scheduledDate,
+          scheduledTime: row.scheduledTime,
+          stationAeTitle: row.stationAeTitle,
+          bodyPartExamined: row.bodyPartExamined,
+          sourceBillId: row.sourceBillId ?? String(opts.billId),
+          sourceOrderId: row.sourceOrderId ?? String(opts.orderId),
+        });
+        if (written && statusUpper === "SCHEDULED") {
+          await db
+            .update(radiologyScheduledProceduresTable)
+            .set({ status: "SENT_TO_MWL", updatedAt: new Date() })
+            .where(eq(radiologyScheduledProceduresTable.id, row.id));
+        }
       }
     }
 

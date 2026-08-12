@@ -49,6 +49,7 @@ import {
 import { RisMonitorCommandGrid } from "@/components/risMonitoring/RisMonitorCards";
 import ViewerNetworkRoutesCard from "@/components/radiology/ViewerNetworkRoutesCard";
 import { MwlStatusPanel } from "@/components/radiology/MwlStatusPanel";
+import { MwlAcceptanceTestsPanel } from "@/components/radiology/MwlAcceptanceTestsPanel";
 import { RadiologyAdminOverviewPanel } from "@/components/radiology/RadiologyAdminOverviewPanel";
 import { RadiologyDeploymentPanel } from "@/components/radiology/RadiologyDeploymentPanel";
 import RadiologyQuickSelectSettings from "@/pages/RadiologyQuickSelectSettings";
@@ -1037,7 +1038,7 @@ export default function RadiologySettingsCenter() {
         </TabsContent>
 
         {/* Tab content 5: DICOM & MWL */}
-        <TabsContent value="mwl" className="space-y-4">
+        <TabsContent value="mwl" className="space-y-4" data-testid="settings-radiology-mwl">
           <MwlStatusPanel
             isAdmin={isAdmin}
             syncing={mwlSyncing}
@@ -1062,6 +1063,7 @@ export default function RadiologySettingsCenter() {
               }
             }}
           />
+          <MwlAcceptanceTestsPanel />
           <div className="grid lg:grid-cols-2 gap-6">
             <div className="space-y-6">
               <div className="rounded-xl border bg-card p-5 space-y-3">

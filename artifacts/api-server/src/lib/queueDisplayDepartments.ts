@@ -5,6 +5,11 @@
  * Each TV is configured by roomKey (e.g. "usg", "mri"). When the
  * departments column is left blank the display feed shows every department —
  * which is why MRI tokens were appearing on the USG TV.
+ *
+ * Canonical modality rooms (usg, mri, ct, …) also self-heal legacy rows that
+ * stored foreign imaging departments without the room's own department
+ * (e.g. roomKey "usg" + departments "MRI,CT"). Intentional multi-department
+ * displays that include the room's own department (e.g. "USG,MRI") are kept.
  */
 
 /** Longest-prefix-first so "x-ray" wins over "x". */
@@ -48,17 +53,65 @@ export function parseConfiguredDepartments(configured: string | null | undefined
     .filter(Boolean);
 }
 
+export type DepartmentSelfHeal = {
+  /** Persist + use the inferred single department instead of configured value. */
+  heal: boolean;
+  target: string | null;
+  reason: "blank" | "legacy_foreign_only" | null;
+};
+
+/**
+ * Detect legacy/accidental department config on a modality-specific TV.
+ *
+ * Heal when:
+ *  - departments blank on a modality room (old "show everything" bug), OR
+ *  - departments omit the room's own modality (e.g. usg → "MRI,CT")
+ *
+ * Do NOT heal when:
+ *  - reception / unknown rooms (multi-dept by design when blank), OR
+ *  - configured list already includes the inferred department (intentional
+ *    multi-department display, e.g. "USG,MRI" on the USG TV)
+ */
+export function shouldSelfHealModalityRoomDepartments(
+  roomKey: string,
+  configured: string | null | undefined,
+): DepartmentSelfHeal {
+  const inferred = inferDepartmentFromRoomKey(roomKey);
+  if (!inferred) {
+    return { heal: false, target: null, reason: null };
+  }
+
+  const explicit = parseConfiguredDepartments(configured);
+  if (explicit.length === 0) {
+    return { heal: true, target: inferred, reason: "blank" };
+  }
+
+  if (explicit.includes(inferred)) {
+    return { heal: false, target: null, reason: null };
+  }
+
+  // Room's own department missing — treat as legacy accidental override.
+  return { heal: true, target: inferred, reason: "legacy_foreign_only" };
+}
+
 /**
  * Effective departments for queue filtering.
- * Explicit config wins; otherwise infer from roomKey so /queue/usg never
- * silently shows MRI/CT tokens.
+ * Applies legacy self-heal for modality rooms; otherwise explicit config wins;
+ * blank + known roomKey falls back to inference so /queue/usg never silently
+ * shows MRI/CT tokens.
  */
 export function resolveQueueDisplayDepartments(
   roomKey: string,
   configured: string | null | undefined,
 ): string[] {
+  const selfHeal = shouldSelfHealModalityRoomDepartments(roomKey, configured);
+  if (selfHeal.heal && selfHeal.target) {
+    return [selfHeal.target];
+  }
+
   const explicit = parseConfiguredDepartments(configured);
   if (explicit.length > 0) return explicit;
+
   const inferred = inferDepartmentFromRoomKey(roomKey);
   return inferred ? [inferred] : [];
 }

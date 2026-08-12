@@ -23,6 +23,8 @@ import {
   runViewerDiagnostics,
   runWorkflowSimulation,
 } from "../lib/radiologyDeploymentDiagnostics";
+import { getAcceptanceChecklistMeta } from "../lib/pacs/radiologyE2eAcceptance";
+import { getMwlDeploymentStatus } from "../lib/pacs/mwlDeploymentStatus";
 
 export const radiologyDiagnosticsRouter = Router();
 radiologyDiagnosticsRouter.use(requireAdminRole);
@@ -118,6 +120,39 @@ radiologyDiagnosticsRouter.post("/workflow-simulation", async (req: StaffAuthReq
       newValue: JSON.stringify({ status: section.status, checks: section.checks.length }),
     }).catch(() => undefined);
     res.json(section);
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
+/**
+ * GET /api/radiology-diagnostics/acceptance-checklist
+ * Read-only: static acceptance cards + live MWL readiness counts.
+ * Never creates patients, bills, or .wl files.
+ */
+radiologyDiagnosticsRouter.get("/acceptance-checklist", async (_req: StaffAuthRequest, res: Response) => {
+  try {
+    const meta = getAcceptanceChecklistMeta();
+    let infrastructure: {
+      ready: boolean;
+      verdict?: string;
+      wlFileCount: number;
+      activeProcedureCount?: number;
+      quarantineCount?: number;
+    } | null = null;
+    try {
+      const mwl = await getMwlDeploymentStatus();
+      infrastructure = {
+        ready: mwl.ready,
+        verdict: mwl.verdict,
+        wlFileCount: mwl.wlFileCount,
+        activeProcedureCount: mwl.activeProcedureCount,
+        quarantineCount: mwl.quarantineCount,
+      };
+    } catch {
+      infrastructure = null;
+    }
+    res.json({ ...meta, infrastructure });
   } catch (err) {
     fail(res, err);
   }

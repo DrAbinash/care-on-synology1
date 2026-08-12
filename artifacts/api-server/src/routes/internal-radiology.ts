@@ -50,6 +50,7 @@ import { formatDicomPersonNameForDisplay } from "../lib/pacs/dicomNameNormalize"
 import { shouldFallbackToAccessionLookup, isWorklistUidRaceViolation } from "../lib/radiologyWorklistDedup";
 import { radiologyOpenFallbackPath, resolveRadiologyOpen } from "../lib/resolveRadiologyOpen";
 import { runDicomIntakeAutomation } from "../lib/pacs/dicomIntakeAutomation";
+import { cancelRadiologyMwlByAccession } from "../lib/pacs/cancelRadiologyStudyFromMwl";
 
 export async function runMatchingEngineForWorklist(worklistId: number): Promise<void> {
   const [row] = await db
@@ -2022,6 +2023,13 @@ router.post("/radiology/mwl-order-status", async (req, res) => {
     .set(updates)
     .where(eq(radiologyStudiesTable.id, study.id))
     .returning();
+
+  // Agent-reported CANCELLED → drop Orthanc .wl + scheduled procedure (best-effort).
+  if (mwlStatus === "CANCELLED" && updated.accessionNumber) {
+    cancelRadiologyMwlByAccession(updated.accessionNumber, "mwl-order-status CANCELLED").catch((err) => {
+      logger.warn({ err, accessionNumber: updated.accessionNumber }, "MWL cancel after mwl-order-status failed");
+    });
+  }
 
   await audit({
     accessionNumber: study.accessionNumber,
