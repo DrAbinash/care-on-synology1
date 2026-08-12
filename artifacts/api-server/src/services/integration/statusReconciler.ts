@@ -22,6 +22,7 @@ import { enqueueOutboxEvent } from "./outbox";
 import { writeReferralEvent } from "./audit";
 import { assertTransition, isReferralStatus, shortestPath } from "./referralStateMachine";
 import { classifyModality } from "./catalogueMapping";
+import { DEFAULT_OHIF_BASE_URL } from "../../lib/networkDefaults";
 
 // ── Pure milestone classifier (unit-tested) ─────────────────────────────────
 const SAMPLE_COLLECTED_STATES = new Set(["collected", "received", "in_processing", "completed", "reported"]);
@@ -69,7 +70,13 @@ export async function reconcileStatuses(opts: { limit?: number } = {}): Promise<
     if (!ref.careOrderId) continue;
     const [samples, studies, items] = await Promise.all([
       db.select({ status: samplesTable.status }).from(samplesTable).where(eq(samplesTable.orderId, ref.careOrderId)),
-      db.select({ status: radiologyStudiesTable.status }).from(radiologyStudiesTable).where(eq(radiologyStudiesTable.orderId, ref.careOrderId)),
+      db.select({
+        id: radiologyStudiesTable.id,
+        status: radiologyStudiesTable.status,
+        modality: radiologyStudiesTable.modality,
+        studyInstanceUID: radiologyStudiesTable.studyInstanceUid,
+        accessionNumber: radiologyStudiesTable.accessionNumber,
+      }).from(radiologyStudiesTable).where(eq(radiologyStudiesTable.orderId, ref.careOrderId)),
       db.select().from(diagnosticReferralItemsTable).where(eq(diagnosticReferralItemsTable.referralId, ref.id)),
     ]);
     if (samples.length === 0 && studies.length === 0) continue;
@@ -89,11 +96,29 @@ export async function reconcileStatuses(opts: { limit?: number } = {}): Promise<
         if (ev) sampleEvents++;
       }
       if (m.studyPerformed) {
+        const ohifBase = (process.env.OHIF_URL || DEFAULT_OHIF_BASE_URL).replace(/\/+$/, "");
+        const studiesPayload = studies
+          .filter((s) => STUDY_PERFORMED_STATES.has(s.status))
+          .map((s) => ({
+            careStudyId: s.id,
+            modality: s.modality,
+            studyInstanceUID: s.studyInstanceUID,
+            accessionNumber: s.accessionNumber,
+            ohifUrl: s.studyInstanceUID
+              ? `${ohifBase}/viewer?StudyInstanceUIDs=${encodeURIComponent(s.studyInstanceUID)}`
+              : null,
+          }));
         const ev = await enqueueOutboxEvent(tx, {
           eventType: "diagnostic_study.completed",
           idempotencyKey: `diagnostic_study.completed:${ref.referralUuid}`,
           correlationId: ref.referralUuid, aggregateId: ref.referralUuid, partnerId: ref.createdByPartnerId ?? null,
-          payload: { referralUuid: ref.referralUuid, careOrderId: ref.careOrderId, status: "STUDY_PERFORMED" },
+          payload: {
+            referralUuid: ref.referralUuid,
+            careOrderId: ref.careOrderId,
+            carePatientId: ref.carePatientId,
+            status: "STUDY_PERFORMED",
+            studies: studiesPayload,
+          },
         });
         if (ev) studyEvents++;
       }

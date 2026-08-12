@@ -198,7 +198,7 @@ import "@/lib/copilotUsgCompanionModule";
 import {
   Lock, AlertTriangle, ChevronLeft, ChevronRight, Pause, Clock, Sparkles, ShieldCheck,
   Brain, Activity, Zap, Printer, FileDown, Share2, Eye, PanelLeftClose, PanelLeftOpen,
-  Maximize2, Columns2, Monitor, Archive, Keyboard, AppWindow, MessageCircle,
+  Maximize2, Columns2, Monitor, Archive, Keyboard, AppWindow, MessageCircle, Hospital,
 } from "lucide-react";
 
 interface Props { studyId?: number; }
@@ -232,6 +232,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const [previewLayoutOverride, setPreviewLayoutOverride] = useState<ReportLayoutKey | null>(null);
   const [shortcutHelpOpen, setShortcutHelpOpen] = useState(false);
   const [verifyBusy, setVerifyBusy] = useState(false);
+  const [sendHopeBusy, setSendHopeBusy] = useState(false);
 
   // ─── Session ──────────────────────────────────────────────────────────────
   const session = useMemo(() => readStaffSession(), []);
@@ -973,6 +974,25 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         toast({ title: "Report saved but NOT signed", description: finalizeResult.signError ?? "Sign error", variant: "destructive" });
       }
 
+      // 7b. Auto-push to Hope when this study is linked to a Hope referral (best-effort).
+      if (finalizeResult.signed && (finalizeResult.reportId || studyId)) {
+        void api
+          .post<{ ok?: boolean; alreadySent?: boolean; error?: string }>("/api/internal/radiology/send-report-to-hope", {
+            reportId: finalizeResult.reportId ?? undefined,
+            worklistId: studyId,
+          })
+          .then((r) => {
+            if (r?.ok) {
+              toast({
+                title: r.alreadySent ? "Already on Hope" : "Sent to Hope",
+                description: "Report is available on Hope ERP investigations.",
+                duration: 2500,
+              });
+            }
+          })
+          .catch(() => { /* no Hope referral / integration off — silent */ });
+      }
+
       // 8. Post-finalize cleanup
       workflow.markCompleted(studyId);
       draftBackup.clear();
@@ -1572,6 +1592,54 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
           </Button>
           <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={handleShare} title="Share report">
             <Share2 className="h-3.5 w-3.5 mr-1" /> Share
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-7 px-2 text-xs"
+            data-testid="send-report-to-hope"
+            title="Send signed report to Hope ERP"
+            disabled={!studyId || sendHopeBusy}
+            onClick={() => {
+              void (async () => {
+                setSendHopeBusy(true);
+                try {
+                  const reportId = linkedReportIdRef.current;
+                  const r = await api.post<{
+                    ok?: boolean;
+                    alreadySent?: boolean;
+                    error?: string;
+                    code?: string;
+                  }>("/api/internal/radiology/send-report-to-hope", {
+                    reportId: reportId ?? undefined,
+                    worklistId: studyId,
+                  });
+                  if (!r?.ok) {
+                    toast({
+                      title: "Could not send to Hope",
+                      description: r?.error ?? "Link a Hope referral or finalize the report first.",
+                      variant: "destructive",
+                    });
+                    return;
+                  }
+                  toast({
+                    title: r.alreadySent ? "Already on Hope" : "Sent to Hope",
+                    description: "Report appears under Hope investigations for this patient.",
+                  });
+                } catch (err) {
+                  toast({
+                    title: "Could not send to Hope",
+                    description: err instanceof Error ? err.message : "Unknown error",
+                    variant: "destructive",
+                  });
+                } finally {
+                  setSendHopeBusy(false);
+                }
+              })();
+            }}
+          >
+            <Hospital className="h-3.5 w-3.5 mr-1" />
+            {sendHopeBusy ? "Sending…" : "Hope"}
           </Button>
           {/* Teaching case */}
           <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={handleSaveTeachingCase}>

@@ -45,7 +45,7 @@ export async function reconcileResults(opts: { limit?: number } = {}): Promise<{
     const reports = await db
       .select()
       .from(patientReportsTable)
-      .where(and(eq(patientReportsTable.orderId, ref.careOrderId), inArray(patientReportsTable.status, ["verified", "delivered"])));
+      .where(and(eq(patientReportsTable.orderId, ref.careOrderId), inArray(patientReportsTable.status, ["pending_verification", "verified", "delivered"])));
     if (reports.length === 0) continue;
 
     const items = await db.select().from(diagnosticReferralItemsTable).where(eq(diagnosticReferralItemsTable.referralId, ref.id));
