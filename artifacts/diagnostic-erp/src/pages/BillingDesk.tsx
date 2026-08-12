@@ -10,6 +10,7 @@ import {
   formatProvisionalBillNumber,
   type ProvisionalBillPrintSnapshot,
 } from "@/lib/provisionalBillReceipt";
+import { confirmedPaymentTotal, onlinePaymentTotal } from "@/lib/billingPaymentTotals";
 import { readStaffSession, isFeatureEnabled, isOwnerRole } from "@/lib/staffSession";
 import { genUUID } from "@/lib/utils";
 import { getBillPaperSize } from "@/lib/billPrintLayout";
@@ -852,6 +853,11 @@ export default function BillingDesk() {
   const [gatewayPaymentError, setGatewayPaymentError] = useState("");
   const [expiryMinutes, setExpiryMinutes] = useState(30);
   const [gatewayQrUrl, setGatewayQrUrl] = useState("");
+  /** Bill saved but gateway (or alternate collect) not finished yet. */
+  const [paymentAwaitingOnline, setPaymentAwaitingOnline] = useState(false);
+  const [gatewayAltMethod, setGatewayAltMethod] = useState<"cash" | "upi" | "card">("cash");
+  const [gatewayAltAmount, setGatewayAltAmount] = useState("");
+  const [gatewayAltBusy, setGatewayAltBusy] = useState(false);
 
   useEffect(() => {
     if (!gatewayPaymentInfo) { setGatewayQrUrl(""); return; }
@@ -960,6 +966,7 @@ export default function BillingDesk() {
         );
         if (res.status === "success") {
           setGatewayPaymentStatus("success");
+          setPaymentAwaitingOnline(false);
           toast({ title: "Payment Successful!", description: "Gateway payment received successfully." });
           window.setTimeout(async () => {
             setGatewayModalOpen(false);
@@ -1330,6 +1337,7 @@ export default function BillingDesk() {
       );
       if (res.status === "success") {
         setGatewayPaymentStatus("success");
+        setPaymentAwaitingOnline(false);
         toast({ title: "Payment confirmed!" });
       } else if (res.status === "failed" || res.status === "expired") {
         setGatewayPaymentStatus(res.status);
@@ -1347,6 +1355,129 @@ export default function BillingDesk() {
     setGatewayPaymentStatus("pending");
     setGatewayPaymentError("");
     if (billId) navigate(`/billing/${billId}`);
+  };
+
+  /** Collect cash/UPI/card on the same bill without leaving Billing Desk. */
+  const collectAlternateGatewayPayment = async () => {
+    const billId = gatewayPaymentInfo?.billId ?? lastBill?.id;
+    if (!billId) return;
+    const amount = Number(gatewayAltAmount);
+    const maxDue = gatewayPaymentInfo?.amount
+      ?? (lastBill ? Math.max(0, lastBill.total - confirmedPaymentTotal(lastBill.payments)) : 0);
+    if (!Number.isFinite(amount) || amount <= 0 || amount > maxDue + 0.01) {
+      toast({ title: "Invalid amount", description: `Enter an amount up to ${inr(maxDue)}`, variant: "destructive" });
+      return;
+    }
+    setGatewayAltBusy(true);
+    try {
+      await api.post("/api/payments", { billId, amount, method: gatewayAltMethod });
+      setGatewayPaymentStatus("success");
+      setPaymentAwaitingOnline(false);
+      setGatewayPaymentError("");
+      toast({ title: "Payment recorded", description: `${gatewayAltMethod.toUpperCase()} · ${inr(amount)}` });
+      queryClient.invalidateQueries({ queryKey: ["recent-bills-today"] });
+      queryClient.invalidateQueries({ queryKey: ["today-collections-panel"] });
+      queryClient.invalidateQueries({ queryKey: ["bills"] });
+      // Print updated bill (same path as gateway success).
+      try {
+        const updatedBill = await api.get<any>(`/api/bills/${billId}`);
+        const paid = (updatedBill.payments ?? []).reduce((s: number, p: any) => s + Number(p.amount || 0), 0);
+        const billForPrint: PrintBillData = {
+          billNumber: updatedBill.billNumber,
+          subtotal: Number(updatedBill.subtotal),
+          discount: Number(updatedBill.discount),
+          taxAmount: Number(updatedBill.taxAmount),
+          totalAmount: Number(updatedBill.totalAmount),
+          paidAmount: paid,
+          balanceAmount: Math.max(0, Number(updatedBill.totalAmount) - paid),
+          createdAt: updatedBill.createdAt,
+          createdByName: updatedBill.createdByName ?? null,
+          patient: {
+            firstName: updatedBill.patient.firstName,
+            lastName: updatedBill.patient.lastName,
+            patientId: updatedBill.patient.patientId,
+            phone: updatedBill.patient.phone ?? null,
+            gender: updatedBill.patient.gender ?? null,
+            dateOfBirth: updatedBill.patient.dateOfBirth ?? null,
+            ageValue: updatedBill.patient.ageValue ?? null,
+            ageUnit: updatedBill.patient.ageUnit ?? null,
+          },
+          order: {
+            doctor: updatedBill.order?.doctor ? { name: updatedBill.order.doctor.name } : null,
+            tests: updatedBill.order?.tests?.map((t: any) => ({
+              price: t.price,
+              status: t.status || "active",
+              test: t.test
+                ? { name: t.test.name, code: t.test.code ?? "", category: t.test.category, duration: (t.test as { duration?: string }).duration ?? "" }
+                : { name: t.displayName || "Test", code: "", category: "", duration: "" },
+            })) || [],
+          },
+          payments: (updatedBill.payments ?? []).map((p: any) => ({
+            method: p.method,
+            amount: Number(p.amount || 0),
+          })),
+          tokenNo: lastBillLocalRef.current?.tokenNo ?? null,
+          testTokens: lastBillLocalRef.current?.testTokens ?? null,
+        };
+        const cachedClinic = queryClient.getQueryData<PrintClinic>(["clinic-settings"]) || (clinic as PrintClinic);
+        const settings = loadBillPrintSettings(parseGlobalBillPrintSettings(cachedClinic?.billPrintSettingsJson));
+        const cachedPrinter = printerCfgCached ?? queryClient.getQueryData<PrinterCfg>(["printer-settings"]);
+        const isBW = (cachedPrinter as { billPrinterType?: string } | undefined)?.billPrinterType === "bw";
+        const qrUrl = await QRCode.toDataURL(buildBillVerifyUrl({
+          billNumber: updatedBill.billNumber,
+          createdAt: updatedBill.createdAt,
+          totalAmount: updatedBill.totalAmount,
+          createdByName: updatedBill.createdByName,
+        }), {
+          errorCorrectionLevel: "M",
+          margin: 1,
+          width: 256,
+          color: { dark: "#000000", light: "#ffffff" },
+        }).catch(() => "");
+        const pageOpts = resolveBillPrintPageOpts(settings, updatedBill.order?.tests?.length || 1);
+        const html = buildBillPrintHtml({
+          bill: billForPrint,
+          clinic: cachedClinic,
+          paperSize: pageOpts.paperSize,
+          orientation: pageOpts.orientation,
+          pageCssSize: pageOpts.pageCssSize,
+          compactFooterGap: pageOpts.compactFooterGap,
+          isBW,
+          qrDataUrl: qrUrl as string,
+          showQr: settings.showQrCode,
+          showTat: settings.showTatOnBill,
+          showAmountInWords: settings.showAmountInWords,
+          showSignatureLine: settings.showSignatureLine,
+          showComputerGenerated: settings.showComputerGenerated,
+          showReportMessage: settings.showReportMessage,
+          showServiceFooter: settings.showServiceFooter,
+          showBrandingFooter: settings.showBrandingFooter,
+          showBarcode: settings.showBarcode,
+          showWatermark: settings.showWatermark,
+          showPatientInstructions: settings.showPatientInstructions,
+          showSystemInfo: settings.showSystemInfo,
+          showQueueToken: settings.showQueueTokenOnBill,
+          ...printLayoutOpts(settings),
+        });
+        const delivery = resolveBillPrintDelivery(settings, "background");
+        deliverBillReceipt(html, delivery, null, {
+          setHtml: setPrintPreviewHtml,
+          setOpen: setPrintPreviewOpen,
+          setPaperPx: setPrintPreviewPaperPx,
+          paperPx: billPreviewPaperPx(pageOpts),
+        });
+      } catch (e) {
+        console.error("Failed to print after alternate payment:", e);
+      }
+      window.setTimeout(() => {
+        setGatewayModalOpen(false);
+        resetAll(true);
+      }, 1200);
+    } catch (err: any) {
+      toast({ title: "Payment failed", description: err?.message || "Could not record payment", variant: "destructive" });
+    } finally {
+      setGatewayAltBusy(false);
+    }
   };
 
   const queryClient = useQueryClient();
@@ -1424,6 +1555,9 @@ export default function BillingDesk() {
         needsFormFData?: boolean;
         needsOnlinePayment?: boolean;
         onlineAmount?: number;
+        paidAmount?: number;
+        balanceAmount?: number;
+        status?: string;
         _idempotent?: boolean;
       };
 
@@ -1500,9 +1634,32 @@ export default function BillingDesk() {
       lastBillRef.current = lastBillLocal;
       lastBillLocalRef.current = lastBillLocal;
 
-      if (bill.needsOnlinePayment) {
+      // Online gateway is unpaid until confirmed. Also resume gateway on
+      // idempotent replay when the desk still has an online split and balance.
+      const onlineIntentAmt = onlinePaymentTotal(lastBillLocal.payments);
+      const serverBalance =
+        bill.balanceAmount != null && Number.isFinite(Number(bill.balanceAmount))
+          ? Number(bill.balanceAmount)
+          : null;
+      const resumeOnlineOnReplay =
+        !!bill._idempotent &&
+        onlineIntentAmt > 0.01 &&
+        (serverBalance == null || serverBalance > 0.01);
+      const shouldCollectOnline = !!bill.needsOnlinePayment || resumeOnlineOnReplay;
+      const gatewayAmount = Number(bill.onlineAmount) > 0.01
+        ? Number(bill.onlineAmount)
+        : (serverBalance != null && serverBalance > 0.01 ? serverBalance : onlineIntentAmt);
+
+      if (shouldCollectOnline && gatewayAmount > 0.01) {
+        // Don't leave a blank print popup open while waiting on the gateway.
+        printPopupRef.current?.close?.();
+        printPopupRef.current = null;
+        printAfterSaveRef.current = false;
+        setPaymentAwaitingOnline(true);
         setGatewayPaymentStatus("pending");
         setGatewayPaymentError("");
+        setGatewayAltMethod("cash");
+        setGatewayAltAmount(gatewayAmount.toFixed(2));
         setGatewayModalOpen(true);
         setGatewayPaymentInfo(null);
         try {
@@ -1514,19 +1671,22 @@ export default function BillingDesk() {
             tranCtx?: string;
             expiryTime?: string;
           }>(`/api/bills/${bill.id}/initiate-gateway-payment`, {
-            amount: bill.onlineAmount,
+            amount: gatewayAmount,
             expiryMinutes,
           });
           setGatewayPaymentInfo({
             ...initRes,
             billId: bill.id,
           });
+          setGatewayAltAmount(Number(initRes.amount || gatewayAmount).toFixed(2));
         } catch (err: any) {
           setGatewayPaymentStatus("failed");
           setGatewayPaymentError(err.message || "Failed to initiate online payment");
         }
         return;
       }
+
+      setPaymentAwaitingOnline(false);
 
       setShowBillToast(true);
       window.setTimeout(() => setShowBillToast(false), 5000);
@@ -1560,7 +1720,8 @@ export default function BillingDesk() {
             .then((qrUrl) => {
             const clinicForPrint = cachedClinic ?? (clinic as PrintClinic);
             const isBW = (cachedPrinter as { billPrinterType?: string } | undefined)?.billPrinterType === "bw";
-            const paid = lastBillLocal.payments.reduce((s, p) => s + Number(p.amount || 0), 0);
+            // Never treat unconfirmed "online" gateway intent as paid on the receipt.
+            const paid = confirmedPaymentTotal(lastBillLocal.payments);
             const billForPrint: PrintBillData = {
               billNumber: lastBillLocal.billNumber,
               subtotal: lastBillLocal.subtotal,
@@ -1746,9 +1907,14 @@ export default function BillingDesk() {
   // subtotal (not post-discount), same base self-registration.ts uses.
   const vipSurchargeAmt = isVipActive ? subtotal * (vipPercentage / 100) : 0;
   const total       = Math.max(0, subtotal - discountAmt) + vipSurchargeAmt;
-  const paidTotal   = payNow ? paymentSplits.reduce((s, p) => s + (Number(p.amount) || 0), 0) : 0;
-  const balance     = Math.max(0, total - paidTotal);
-  const paymentOverTotal = payNow && paidTotal > total + 0.01;
+  // "online" is gateway intent only — not money collected until confirmed.
+  const committedPaid = payNow ? confirmedPaymentTotal(paymentSplits) : 0;
+  const onlinePendingAmt = payNow ? onlinePaymentTotal(paymentSplits) : 0;
+  const allocatedTotal = committedPaid + onlinePendingAmt;
+  const paidTotal = committedPaid;
+  const balance = Math.max(0, total - committedPaid);
+  const paymentOverTotal = payNow && allocatedTotal > total + 0.01;
+  const awaitingOnlineCover = onlinePendingAmt > 0.01 && balance - onlinePendingAmt <= 0.01;
 
   // Default collect amount = net total (full payment is the common case).
   // Stops syncing once the cashier types a different value for partial pay.
@@ -2029,6 +2195,12 @@ export default function BillingDesk() {
     paymentAmountTouched.current = false;
     setPaymentSplits([{ mode: "cash", amount: "" }]);
     setLastBill(null);
+    setPaymentAwaitingOnline(false);
+    setGatewayModalOpen(false);
+    setGatewayPaymentInfo(null);
+    setGatewayPaymentStatus("pending");
+    setGatewayPaymentError("");
+    setGatewayAltAmount("");
     setSuggestion(null);
     setHusbandName("");
     setPatientAddress("");
@@ -3050,13 +3222,35 @@ export default function BillingDesk() {
                       </button>
                     )}
 
-                    {/* THIRD: Balance / Paid indicator */}
-                    {(balance > 0 || (paidTotal > 0 && total > 0) || paymentOverTotal) && (
+                    {/* THIRD: Balance / Paid indicator — never call online "Fully Paid" */}
+                    {(balance > 0 || (paidTotal > 0 && total > 0) || paymentOverTotal || onlinePendingAmt > 0) && (
                       <div className="rounded-lg border px-3 py-2">
                         {paymentOverTotal ? (
                           <div className="flex items-center justify-between">
                             <span className="text-[12px] font-bold text-red-700">Exceeds net total</span>
-                            <span className="text-[18px] font-extrabold text-red-600 tabular-nums">{inr(paidTotal)}</span>
+                            <span className="text-[18px] font-extrabold text-red-600 tabular-nums">{inr(allocatedTotal)}</span>
+                          </div>
+                        ) : onlinePendingAmt > 0.01 ? (
+                          <div className="space-y-1">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-[12px] font-bold text-amber-800">
+                                {awaitingOnlineCover || paymentAwaitingOnline
+                                  ? "Awaiting online payment"
+                                  : "Online payment (unconfirmed)"}
+                              </span>
+                              <span className="text-[16px] font-extrabold text-amber-700 tabular-nums">{inr(onlinePendingAmt)}</span>
+                            </div>
+                            {committedPaid > 0.01 && (
+                              <div className="text-[11px] text-muted-foreground">
+                                Collected so far · {inr(committedPaid)}
+                              </div>
+                            )}
+                            {Math.max(0, balance - onlinePendingAmt) > 0.01 && (
+                              <div className="flex items-center justify-between">
+                                <span className="text-[11px] font-bold text-red-700">Still due after online</span>
+                                <span className="text-[13px] font-extrabold text-red-600 tabular-nums">{inr(balance - onlinePendingAmt)}</span>
+                              </div>
+                            )}
                           </div>
                         ) : balance > 0 ? (
                           <div className="flex items-center justify-between">
@@ -3135,6 +3329,10 @@ export default function BillingDesk() {
             <div className="mb-2.5 flex-shrink-0 space-y-2">
               <Button
                 onClick={() => {
+                  if (lastBill && paymentAwaitingOnline) {
+                    setGatewayModalOpen(true);
+                    return;
+                  }
                   if (generatingRef.current || !!lastBillRef.current) return;
                   generatingRef.current = true;
                   printPopupRef.current?.close?.();
@@ -3143,25 +3341,33 @@ export default function BillingDesk() {
                   generateMut.mutate();
                 }}
                 disabled={
-                  !selectedPatient ||
-                  selectedTests.length === 0 ||
-                  generateMut.isPending ||
-                  !!lastBill ||
-                  (discountAmt > 0 && !discountReason) ||
-                  paymentOverTotal ||
-                  (needsFormF && !clinic?.formFBillingPrompt && (
-                    (clinic?.formFGuardianRequired !== false && !husbandName.trim()) ||
-                    (clinic?.formFAddressRequired !== false && !patientAddress.trim())
-                  )) ||
-                  (needsDicom && !dicomFieldsComplete)
+                  lastBill && paymentAwaitingOnline
+                    ? false
+                    : (
+                      !selectedPatient ||
+                      selectedTests.length === 0 ||
+                      generateMut.isPending ||
+                      !!lastBill ||
+                      (discountAmt > 0 && !discountReason) ||
+                      paymentOverTotal ||
+                      (needsFormF && !clinic?.formFBillingPrompt && (
+                        (clinic?.formFGuardianRequired !== false && !husbandName.trim()) ||
+                        (clinic?.formFAddressRequired !== false && !patientAddress.trim())
+                      )) ||
+                      (needsDicom && !dicomFieldsComplete)
+                    )
                 }
                 className={`w-full h-14 text-[16px] font-extrabold tracking-wide rounded-xl shadow-lg disabled:shadow-none border-0 transition-all ${
-                  lastBill
+                  lastBill && paymentAwaitingOnline
+                    ? "bg-gradient-to-r from-amber-500 to-orange-500 hover:brightness-110 text-white shadow-amber-300/50"
+                    : lastBill
                     ? "bg-gradient-to-r from-emerald-600 to-green-600 hover:brightness-110 text-white shadow-emerald-300/50"
                     : "bg-gradient-to-r from-blue-600 via-indigo-600 to-violet-600 hover:brightness-110 text-white shadow-indigo-300/50 disabled:bg-none disabled:bg-[#cbd5e1] disabled:text-[#94a3b8]"
                 }`}
               >
-                {lastBill ? (
+                {lastBill && paymentAwaitingOnline ? (
+                  <>Payment pending — tap to collect</>
+                ) : lastBill ? (
                   <><CheckCircle2 size={20} className="mr-2" />Bill Saved ✓</>
                 ) : generateMut.isPending ? (
                   <><Printer size={20} className="mr-2 animate-spin" />Saving…</>
@@ -3415,10 +3621,20 @@ export default function BillingDesk() {
       </Dialog>
 
       {/* Online Gateway Payment Modal */}
-      <Dialog open={gatewayModalOpen} onOpenChange={(o) => { if (!o) setGatewayModalOpen(false); }}>
+      <Dialog open={gatewayModalOpen} onOpenChange={(o) => {
+        if (!o) {
+          setGatewayModalOpen(false);
+          // Closing without success leaves the bill due — keep pending state so
+          // staff can reopen and collect an alternate method from the desk.
+        }
+      }}>
         <DialogContent className="max-w-sm">
           <DialogHeader>
-            <DialogTitle>Online Payment</DialogTitle>
+            <DialogTitle>
+              {paymentAwaitingOnline && gatewayPaymentStatus !== "success"
+                ? "Collect payment"
+                : "Online Payment"}
+            </DialogTitle>
           </DialogHeader>
           <div className="flex flex-col items-center gap-1 text-[10px] text-[#94a3b8]">
             <div className="flex items-center justify-center gap-1.5">
@@ -3513,7 +3729,51 @@ export default function BillingDesk() {
               <div className="text-red-600 text-sm">{gatewayPaymentError || "Payment failed"}</div>
             )}
             {gatewayPaymentStatus === "expired" && (
-              <div className="text-amber-700 text-sm">Payment link expired. Collect manually or retry online from the bill page.</div>
+              <div className="text-amber-700 text-sm">Payment link expired. Collect cash/UPI/card below, or open the bill page.</div>
+            )}
+            {(gatewayPaymentStatus === "failed" || gatewayPaymentStatus === "expired" || (gatewayPaymentStatus === "pending" && !!gatewayPaymentInfo)) && (
+              <div className="mt-1 rounded-lg border border-amber-200 bg-amber-50/80 px-3 py-3 text-left space-y-2">
+                <div className="text-[11px] font-bold uppercase tracking-wide text-amber-900">
+                  Collect alternate payment here
+                </div>
+                <p className="text-[11px] text-amber-900/80 leading-snug">
+                  Online not done? Record cash / UPI / card on this bill without leaving Billing Desk.
+                </p>
+                <div className="grid grid-cols-3 gap-1">
+                  {(["cash", "upi", "card"] as const).map((m) => (
+                    <button
+                      key={m}
+                      type="button"
+                      onClick={() => setGatewayAltMethod(m)}
+                      className={`rounded-md border px-2 py-1.5 text-[11px] font-bold uppercase ${
+                        gatewayAltMethod === m
+                          ? "bg-indigo-600 text-white border-indigo-600"
+                          : "bg-white text-slate-600 border-slate-200"
+                      }`}
+                    >
+                      {m}
+                    </button>
+                  ))}
+                </div>
+                <div>
+                  <Label className="text-[11px]">Amount (₹)</Label>
+                  <Input
+                    type="number"
+                    min={0.01}
+                    step="0.01"
+                    value={gatewayAltAmount}
+                    onChange={(e) => setGatewayAltAmount(e.target.value)}
+                    className="mt-1 h-9"
+                  />
+                </div>
+                <Button
+                  className="w-full bg-emerald-600 hover:bg-emerald-700 text-white"
+                  disabled={gatewayAltBusy}
+                  onClick={() => { void collectAlternateGatewayPayment(); }}
+                >
+                  {gatewayAltBusy ? "Recording…" : `Record ${gatewayAltMethod.toUpperCase()} payment`}
+                </Button>
+              </div>
             )}
             <div className="flex flex-col gap-2 pt-2">
               {(gatewayPaymentStatus === "failed" || gatewayPaymentStatus === "expired" || (gatewayPaymentStatus === "pending" && gatewayPaymentInfo)) && (
@@ -3522,7 +3782,7 @@ export default function BillingDesk() {
                   className="w-full text-[#2563eb] border-[#2563eb]/40"
                   onClick={handleGatewayChangePaymentMode}
                 >
-                  Change payment mode — collect Cash/UPI on bill
+                  Open bill page instead
                 </Button>
               )}
               <div className="flex gap-2">
@@ -3698,7 +3958,7 @@ function CollectPaymentDialog({
               <Select value={collectMethod} onValueChange={setCollectMethod}>
                 <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  {["cash", "upi", "card", "online", "insurance"].map((m) => (
+                  {["cash", "upi", "card", "insurance"].map((m) => (
                     <SelectItem key={m} value={m} className="capitalize">{m.toUpperCase()}</SelectItem>
                   ))}
                 </SelectContent>

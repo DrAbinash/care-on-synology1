@@ -403,11 +403,22 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
       const [existingBillRow] = await db.select().from(billsTable)
         .where(eq(billsTable.id, refId));
       if (existingBillRow) {
-        // Return the same shape the original creation would have returned
+        // Return paid/balance so Billing Desk can resume online payment (or
+        // show due) instead of printing a false "fully paid" receipt. The
+        // desk decides needsOnlinePayment from its own online split + balance
+        // — we must not force the gateway for ordinary unpaid / pay-later bills.
+        const built = await buildBill(existingBillRow);
         res.status(200).json({
           id: existingBillRow.id,
           billNumber: existingBillRow.billNumber,
-          _idempotent: true, // signals the frontend this is a replayed response
+          createdAt: existingBillRow.createdAt,
+          createdByName: existingBillRow.createdByName,
+          paidAmount: built.paidAmount,
+          balanceAmount: built.balanceAmount,
+          status: existingBillRow.status,
+          _idempotent: true,
+          needsOnlinePayment: false,
+          onlineAmount: Number(built.balanceAmount) > 0.01 ? Number(built.balanceAmount) : 0,
         });
         return;
       }
