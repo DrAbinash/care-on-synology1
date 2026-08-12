@@ -100,12 +100,21 @@ import {
   shouldOfferBackupRestore, normalizeImpressionLines,
   canVerifyReport, matchWorkspaceShortcut,
 } from "@/lib/workspaceReportState";
-import { createCommandDispatcher } from "@/lib/workspaceCommands";
+import { createCommandDispatcher, type DispatchResult } from "@/lib/workspaceCommands";
 import { loadReadingSession, toggleReadingSession, bumpSessionCompleted } from "@/lib/readingSession";
 import {
   parseVoiceSettings, parseVoiceUserPrefs, mergeVoiceSettings,
-  fetchTranscribeCapabilities,
+  fetchTranscribeCapabilities, type TranscribeCapabilities,
 } from "@/lib/voiceTranscription";
+import { voiceKeyAction } from "@/lib/voiceSessionState";
+import {
+  normalizeDictationText, describeIntent,
+  type ParsedVoiceCommand, type ViewerOp,
+} from "@/lib/voiceCommandGrammar";
+import type { VoiceExecutionResult } from "@/hooks/useVoiceSession";
+import {
+  matchStudyCombination, buildCombination, combinationInserts,
+} from "@/lib/studyCombinations";
 
 // ─── Existing Care components ──────────────────────────────────────────────────
 import EmbeddedWadoViewer, { type EmbeddedViewerHandle } from "@/components/EmbeddedWadoViewer";
@@ -206,7 +215,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const rightPanelRef = useRef<ImperativePanelHandle>(null);
   const hydratedDraftForStudyRef = useRef<number | null>(null);
   const [draftHydratedStudyId, setDraftHydratedStudyId] = useState<number | null>(null);
-  const commandDispatcherRef = useRef<{ dispatch: (cmd: string) => void } | null>(null);
+  const commandDispatcherRef = useRef<{ dispatch: (cmd: string) => DispatchResult } | null>(null);
   const canVerifyRef = useRef(false);
   const verifyActionRef = useRef<(() => void) | null>(null);
   const pcpndtBlockedRef = useRef(false);
@@ -279,78 +288,256 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   // 5. Finalize flow (promise-based sign dialog)
   const finalizeFlow = useFinalizeFlow();
 
-  // 6. Voice session (4-provider speech-to-text with grammar + safety)
-  const [voiceSettings, setVoiceSettings] = useState(() => mergeVoiceSettings(
-    parseVoiceSettings([]),
-    parseVoiceUserPrefs(null),
-  ));
-  const [voiceCapabilities, setVoiceCapabilities] = useState<{ server: boolean; local: boolean }>({ server: false, local: false });
-  useEffect(() => {
-    fetchTranscribeCapabilities().then(caps => setVoiceCapabilities(caps)).catch(() => {});
+  // 6. Voice session — Care pipeline (prefs + grammar + safety + multi-provider)
+  const { data: pacsSettingsRows } = useQuery<Array<{ id: number; key: string; value: string | null; category: string }>>({
+    queryKey: ["pacs-settings"],
+    queryFn: () => api.get("/api/radiology/pacs-settings"),
+    staleTime: 5 * 60_000,
+  });
+  const clinicVoiceSettings = useMemo(() => parseVoiceSettings(pacsSettingsRows), [pacsSettingsRows]);
+  const { data: voiceUserPrefsRaw } = useQuery<unknown>({
+    queryKey: ["voice-user-preferences"],
+    queryFn: () => api.get("/api/radiology/report-generator/voice-preferences"),
+    enabled: clinicVoiceSettings.enabled,
+    staleTime: 5 * 60_000,
+  });
+  const voiceSettings = useMemo(
+    () => mergeVoiceSettings(clinicVoiceSettings, voiceUserPrefsRaw ? parseVoiceUserPrefs(voiceUserPrefsRaw) : null),
+    [clinicVoiceSettings, voiceUserPrefsRaw],
+  );
+  const { data: voiceCapabilities = { server: false, local: false } } = useQuery<TranscribeCapabilities>({
+    queryKey: ["voice-transcribe-status"],
+    queryFn: fetchTranscribeCapabilities,
+    enabled: voiceSettings.enabled,
+    staleTime: 5 * 60_000,
+  });
+
+  const [qsExternalSearch, setQsExternalSearch] = useState<{ seq: number; term: string } | null>(null);
+  const quickFindingTemplatesRef = useRef<QuickFinding[]>([]);
+  const selectedQuickIdsRef = useRef<Set<number>>(new Set());
+  const handleQuickToggleRef = useRef<(finding: QuickFinding, nowSelected: boolean) => void>(() => {});
+  const voiceParkReasonRef = useRef<string | null>(null);
+
+  const focusReportField = useCallback((field: "findings" | "impression" | "technique" | "clinicalHistory" | "recommendation") => {
+    const el = document.querySelector(`[data-report-field="${field}"] textarea`) as HTMLTextAreaElement | null;
+    el?.focus();
   }, []);
+
+  const executeVoiceCommand = useCallback((parse: ParsedVoiceCommand): VoiceExecutionResult => {
+    const intent = parse.intent;
+    if (!intent) return { ok: false, message: "Nothing to execute" };
+
+    if (intent.type === "cancel") return { ok: true, message: "Cancelled" };
+    if (intent.type === "confirm") return { ok: false, message: "Nothing to confirm" };
+    if (intent.type === "handsfree") return { ok: false, message: "Hands-free is controlled from the voice bar" };
+    if (intent.type === "viewer-unsupported") {
+      return { ok: false, message: `The embedded viewer does not support ${intent.capability}` };
+    }
+
+    if (intent.type === "dictate") {
+      const text = normalizeDictationText(intent.text, { autoPunctuation: voiceSettings.autoPunctuation });
+      if (!text) return { ok: false, message: "Nothing to insert" };
+      const state = useWorkspace.getState();
+      const mode = intent.mode;
+      if (intent.target === "findings") {
+        const prev = state.findingsText;
+        state.setField("findings", mode === "replace" ? text : mergeBlock(prev, text));
+        return {
+          ok: true,
+          message: `${mode === "replace" ? "Replaced" : "Appended to"} findings`,
+          undo: () => useWorkspace.getState().setField("findings", prev),
+          undoLabel: "findings edit",
+        };
+      }
+      if (intent.target === "impression") {
+        const prev = state.impressionText;
+        const next = mode === "replace"
+          ? text
+          : mergeImpression(prev.split("\n").filter(Boolean), text).join("\n");
+        state.setField("impression", next);
+        return {
+          ok: true,
+          message: `${mode === "replace" ? "Replaced" : "Appended to"} impression`,
+          undo: () => useWorkspace.getState().setField("impression", prev),
+          undoLabel: "impression edit",
+        };
+      }
+      if (intent.target === "recommendation") {
+        const prev = state.recommendationText;
+        state.setField("recommendation", mode === "replace" ? text : mergeBlock(prev, text));
+        return {
+          ok: true,
+          message: `${mode === "replace" ? "Replaced" : "Appended to"} recommendation`,
+          undo: () => useWorkspace.getState().setField("recommendation", prev),
+          undoLabel: "recommendation edit",
+        };
+      }
+      if (intent.target === "technique") {
+        const prev = state.techniqueText;
+        state.setField("technique", mode === "replace" ? text : mergeBlock(prev, text));
+        return {
+          ok: true,
+          message: `${mode === "replace" ? "Replaced" : "Appended to"} technique`,
+          undo: () => useWorkspace.getState().setField("technique", prev),
+          undoLabel: "technique edit",
+        };
+      }
+      const prev = state.clinicalHistoryText;
+      state.setField("clinicalHistory", mode === "replace" ? text : mergeBlock(prev, text));
+      return {
+        ok: true,
+        message: `${mode === "replace" ? "Replaced" : "Appended to"} clinical history`,
+        undo: () => useWorkspace.getState().setField("clinicalHistory", prev),
+        undoLabel: "history edit",
+      };
+    }
+
+    if (intent.type === "workflow") {
+      if (intent.command === "park") voiceParkReasonRef.current = intent.reason ?? "";
+      if (intent.command === "focus-findings") {
+        focusReportField("findings");
+        return { ok: true, message: describeIntent(intent) };
+      }
+      if (intent.command === "focus-impression") {
+        focusReportField("impression");
+        return { ok: true, message: describeIntent(intent) };
+      }
+      const res = commandDispatcherRef.current?.dispatch(intent.command);
+      if (intent.command === "park") voiceParkReasonRef.current = null;
+      if (!res) return { ok: false, message: "Command dispatcher unavailable" };
+      return res.executed
+        ? { ok: true, message: describeIntent(intent) }
+        : { ok: false, message: `Command not available (${res.reason ?? "unknown"})` };
+    }
+
+    if (intent.type === "viewer") {
+      const h = embeddedViewerRef.current;
+      if (!h) return { ok: false, message: "Embedded viewer is not open for this study" };
+      const ops: Record<ViewerOp, () => void> = {
+        "next-image": () => h.nextFrame(),
+        "previous-image": () => h.prevFrame(),
+        "zoom-in": () => h.zoomIn(),
+        "zoom-out": () => h.zoomOut(),
+        "reset-view": () => h.resetView(),
+      };
+      ops[intent.op]();
+      return { ok: true, message: describeIntent(intent) };
+    }
+
+    if (intent.type === "quick-select") {
+      if (intent.action === "search") {
+        setQsExternalSearch((prev) => ({ seq: (prev?.seq ?? 0) + 1, term: intent.term }));
+        openLegacyTabRef.current("library");
+        rightPanelRef.current?.expand();
+        return { ok: true, message: `Searching quick findings for “${intent.term}”` };
+      }
+      const templates = quickFindingTemplatesRef.current;
+      if (!templates.length) {
+        return { ok: false, message: "Quick findings are not loaded yet — open Clinic Quick Select once" };
+      }
+      const norm = intent.term.trim().toLowerCase();
+      const selected = selectedQuickIdsRef.current;
+      const pool = intent.action === "remove" ? templates.filter((f) => selected.has(f.id)) : templates;
+      let matches = pool.filter((f) => f.label.trim().toLowerCase() === norm);
+      if (matches.length === 0) matches = pool.filter((f) => f.label.toLowerCase().includes(norm));
+      if (matches.length === 0) {
+        return {
+          ok: false,
+          message: intent.action === "remove"
+            ? `No selected finding matches “${intent.term}”`
+            : `No quick finding matches “${intent.term}”`,
+        };
+      }
+      if (matches.length > 1) {
+        return {
+          ok: false,
+          message: `Multiple findings match “${intent.term}”: ${matches.slice(0, 3).map((f) => f.label).join(" · ")} — say the full name`,
+        };
+      }
+      const f = matches[0];
+      const nowSelected = intent.action === "select";
+      if (nowSelected && selected.has(f.id)) return { ok: true, message: `“${f.label}” is already selected` };
+      handleQuickToggleRef.current(f, nowSelected);
+      return {
+        ok: true,
+        message: `${nowSelected ? "Selected" : "Removed"} “${f.label}”`,
+        undo: () => handleQuickToggleRef.current(f, !nowSelected),
+        undoLabel: `quick finding ${nowSelected ? "selection" : "removal"}`,
+      };
+    }
+
+    if (intent.type === "quick-modifier") {
+      return {
+        ok: false,
+        message: "Quick modifiers need a selected structured finding — use Clinic Quick Select chips first",
+      };
+    }
+
+    if (intent.type === "combination") {
+      const combo = matchStudyCombination(intent.term);
+      if (!combo) return { ok: false, message: `No study combination matches “${intent.term}”` };
+      const assembled = buildCombination(combo.templateIds);
+      if (!assembled) return { ok: false, message: `Could not assemble “${combo.label}”` };
+      const inserts = combinationInserts(assembled);
+      const state = useWorkspace.getState();
+      const prev = {
+        findings: state.findingsText,
+        impression: state.impressionText,
+        technique: state.techniqueText,
+        recommendation: state.recommendationText,
+      };
+      if (inserts.technique) state.setField("technique", mergeBlock(state.techniqueText, inserts.technique));
+      for (const block of inserts.findingsBlocks) {
+        const text = `${block.heading}\n${block.text}`.trim();
+        state.setField("findings", mergeBlock(useWorkspace.getState().findingsText, text));
+      }
+      for (const line of inserts.impression) {
+        state.setField(
+          "impression",
+          mergeImpression(useWorkspace.getState().impressionText.split("\n").filter(Boolean), line).join("\n"),
+        );
+      }
+      if (inserts.recommendation) {
+        state.setField("recommendation", mergeBlock(useWorkspace.getState().recommendationText, inserts.recommendation));
+      }
+      return {
+        ok: true,
+        message: `Applied ${combo.label}`,
+        undo: () => {
+          const s = useWorkspace.getState();
+          s.setField("findings", prev.findings);
+          s.setField("impression", prev.impression);
+          s.setField("technique", prev.technique);
+          s.setField("recommendation", prev.recommendation);
+        },
+        undoLabel: "combination insert",
+      };
+    }
+
+    return { ok: false, message: "Unrecognized voice intent" };
+  }, [voiceSettings.autoPunctuation, focusReportField]);
+
   const voiceSession = useVoiceSession({
     studyId: studyId ?? undefined,
     settings: voiceSettings,
     capabilities: voiceCapabilities,
-    getContext: (() => ({
+    getContext: () => ({
       studyId: studyId ?? null,
       dirty: useWorkspace.getState().isDirty,
       isLocked: studyLock.status === "locked-by-other",
       lockedByOther: studyLock.status === "locked-by-other",
-      lockLost: !!(studyLock.status === "expired-lost" || studyLock.status === "connection-lost"),
+      lockLost: studyLock.status === "expired-lost" || studyLock.status === "connection-lost",
       canVerify: canVerifyRef.current,
-      structuredFindings: null,
+      structuredFindings: false,
       viewerAvailable: embeddedViewerRef.current != null,
       confirmationPolicy: voiceSettings.confirmationPolicy,
-    }) as any),
-    execute: (cmd) => {
-      // Full legacy-style voice execution — keep NEW dispatcher, add dictate/viewer paths.
-      const intent = (cmd as any)?.intent;
-      if (!intent) return { ok: false, reason: "no_intent" };
-      if (intent.type === "dictate") {
-        const text = String(intent.text || "").trim();
-        if (!text) return { ok: false, reason: "empty" };
-        const state = useWorkspace.getState();
-        const target = intent.target || "findings";
-        const mode = intent.mode || "append";
-        if (target === "impression") {
-          state.setField("impression", mode === "replace" ? text : mergeBlock(state.impressionText, text));
-        } else if (target === "recommendation") {
-          state.setField("recommendation", mode === "replace" ? text : mergeBlock(state.recommendationText, text));
-        } else if (target === "technique") {
-          state.setField("technique", mode === "replace" ? text : mergeBlock(state.techniqueText, text));
-        } else if (target === "clinicalHistory" || target === "clinical_history") {
-          state.setField("clinicalHistory", mode === "replace" ? text : mergeBlock(state.clinicalHistoryText, text));
-        } else {
-          state.setField("findings", mode === "replace" ? text : mergeBlock(state.findingsText, text));
-        }
-        return { ok: true };
-      }
-      if (intent.type === "workflow" && intent.command) {
-        commandDispatcherRef.current?.dispatch(intent.command);
-        return { ok: true };
-      }
-      if (intent.type === "viewer") {
-        const v = embeddedViewerRef.current;
-        if (!v) return { ok: false, reason: "no_viewer" };
-        if (intent.action === "next") v.nextFrame();
-        else if (intent.action === "prev" || intent.action === "previous") v.prevFrame();
-        else if (intent.action === "zoom_in") v.zoomIn();
-        else if (intent.action === "zoom_out") v.zoomOut();
-        else if (intent.action === "reset") v.resetView();
-        return { ok: true };
-      }
-      if (intent.type === "quick_select_search" && intent.term) {
-        setLegacyTab("library");
-        rightPanelRef.current?.expand();
-        return { ok: true };
-      }
-      return { ok: true };
-    },
+    }),
+    execute: executeVoiceCommand,
     onAudit: (commandType, outcome) => {
       api.post("/api/radiology/voice-command-audit", { commandType, studyId, outcome }).catch(() => {});
     },
   });
+  const fieldMicBlocked = voiceSession.capturing || voiceSession.handsFree;
 
   // 7. Copilot learning + prefs
   const { prefs: copilotPrefs } = useCopilotPrefs();
@@ -491,6 +678,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       if (finding.recommendationText) state.setField("recommendation", removeBlock(state.recommendationText, finding.recommendationText));
     }
   }, []);
+  handleQuickToggleRef.current = handleQuickToggle;
+  selectedQuickIdsRef.current = selectedQuickIds;
 
   const appendFindings = useCallback((text: string) => {
     const state = useWorkspace.getState();
@@ -793,8 +982,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     verify: () => { verifyActionRef.current?.(); },
     unpark: () => { if (studyId) { workflow.unpark(studyId); } },
     "reload-current": () => window.location.reload(),
-    "focus-findings": () => { /* FindingsEditor owns focus */ },
-    "focus-impression": () => { /* FindingsEditor owns focus */ },
+    "focus-findings": () => { focusReportField("findings"); },
+    "focus-impression": () => { focusReportField("impression"); },
     "close-panel": () => { rightPanelRef.current?.collapse(); },
     "select-template-1": () => { openLegacyTabRef.current("templates"); },
     "select-template-2": () => { openLegacyTabRef.current("templates"); },
@@ -802,12 +991,35 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     "select-template-4": () => { openLegacyTabRef.current("templates"); },
     "select-template-5": () => { openLegacyTabRef.current("templates"); },
     "select-template-6": () => { openLegacyTabRef.current("templates"); },
-  }), [saveDraft, finalizeReport, workflow, studyId, goNextStudy, goPrevStudy]);
+  }), [saveDraft, finalizeReport, workflow, studyId, goNextStudy, goPrevStudy, focusReportField]);
   commandDispatcherRef.current = commandDispatcher;
 
-  // ─── Global keyboard shortcuts ─────────────────────────────────────────────
+  // ─── Global keyboard shortcuts (voice keys FIRST, then workspace) ──────────
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      const action = voiceKeyAction(
+        {
+          key: e.key, ctrlKey: e.ctrlKey, metaKey: e.metaKey, altKey: e.altKey,
+          shiftKey: e.shiftKey, repeat: e.repeat,
+          target: e.target as { tagName?: string; isContentEditable?: boolean } | null,
+        },
+        {
+          enabled: voiceSession.enabled,
+          pttKey: voiceSettings.pttKey,
+          capturing: voiceSession.capturing,
+          hasPendingPreview: voiceSession.pending != null,
+          confirmViaEnterAllowed: voiceSession.pending?.verdict.confirmViaEnterAllowed ?? false,
+        },
+      );
+      if (action) {
+        e.preventDefault();
+        if (action === "toggle-listen") voiceSession.toggleListening();
+        else if (action === "ptt-start") voiceSession.startListening("ptt");
+        else if (action === "confirm-pending") voiceSession.confirmPending("enter");
+        else voiceSession.cancel();
+        return;
+      }
+
       // Route workflow commands through the dispatcher
       const cmd = matchWorkspaceShortcut({
         key: e.key,
@@ -822,7 +1034,11 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       if (e.ctrlKey && e.key === "k") { e.preventDefault(); useWorkspace.getState().toggleCommandPalette(); return; }
       if (e.ctrlKey && e.key === "Enter") { e.preventDefault(); finalizeReport(); return; }
       if (e.ctrlKey && (e.key === "i" || e.key === "I")) { e.preventDefault(); triggerAiImpression(); return; }
-      if (e.ctrlKey && e.shiftKey && (e.key === "v" || e.key === "V")) { e.preventDefault(); useWorkspace.getState().toggleVoiceBar(); return; }
+      if (e.ctrlKey && e.shiftKey && (e.key === "v" || e.key === "V")) {
+        e.preventDefault();
+        useWorkspace.getState().toggleVoiceBar();
+        return;
+      }
       if (e.key === "?" && !e.ctrlKey && !e.metaKey && !e.altKey) {
         const t = e.target as HTMLElement | null;
         const tag = t?.tagName?.toLowerCase();
@@ -845,9 +1061,21 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         setLegacyTab((t) => t ?? "links");
       }
     };
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.key === " " && voiceSession.captureTrigger === "ptt") {
+        voiceSession.stopListening();
+      }
+    };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [commandDispatcher, finalizeReport, leftCollapsed, showEmbeddedViewer, setLayoutMode]);
+    window.addEventListener("keyup", onKeyUp);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("keyup", onKeyUp);
+    };
+  }, [
+    commandDispatcher, finalizeReport, leftCollapsed, showEmbeddedViewer, setLayoutMode,
+    voiceSession, voiceSettings.pttKey,
+  ]);
 
   // ─── AI auto-impression (Ctrl+I) ───────────────────────────────────────────
   const triggerAiImpression = useCallback(async () => {
@@ -1334,8 +1562,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
             <Keyboard className="h-3.5 w-3.5 mr-1" /> ?
           </Button>
           {/* New voice bar */}
-          <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => useWorkspace.getState().toggleVoiceBar()}>
-            <Brain className="h-3.5 w-3.5 mr-1" /> Voice2
+          <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => useWorkspace.getState().toggleVoiceBar()} title="Floating Care voice bar (Ctrl+Shift+V)">
+            <Brain className="h-3.5 w-3.5 mr-1" /> Voice
           </Button>
           {/* Command palette */}
           <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => useWorkspace.getState().toggleCommandPalette()}>
@@ -1714,7 +1942,24 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       />
                     )}
 
-                    <FindingsEditor field="clinicalHistory" label="Clinical History" minHeight="56px" placeholder="Presenting complaint and relevant history." />
+                    <div className="flex items-center gap-2">
+                      <div className="flex-1">
+                        <FindingsEditor field="clinicalHistory" label="Clinical History" minHeight="56px" placeholder="Presenting complaint and relevant history." />
+                      </div>
+                      {!isLocked && !isFinalized && (
+                        <VoiceDictationButton
+                          targetField="clinicalHistory"
+                          draftId={draftId ?? undefined}
+                          studyId={studyId ?? undefined}
+                          patientId={workflow.currentRow?.patientId ?? undefined}
+                          disabled={fieldMicBlocked}
+                          onInsert={(text) => {
+                            const state = useWorkspace.getState();
+                            state.setField("clinicalHistory", mergeBlock(state.clinicalHistoryText, text));
+                          }}
+                        />
+                      )}
+                    </div>
                     <div className="flex items-center gap-2">
                       <div className="flex-1">
                         <FindingsEditor field="technique" label="Technique" minHeight="60px" placeholder="Modality, sequences, contrast..." />
@@ -1725,6 +1970,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                           draftId={draftId ?? undefined}
                           studyId={studyId ?? undefined}
                           patientId={workflow.currentRow?.patientId ?? undefined}
+                          disabled={fieldMicBlocked}
                           onInsert={(text) => {
                             const state = useWorkspace.getState();
                             state.setField("technique", mergeBlock(state.techniqueText, text));
@@ -1773,6 +2019,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                             draftId={draftId ?? undefined}
                             studyId={studyId ?? undefined}
                             patientId={workflow.currentRow?.patientId ?? undefined}
+                            disabled={fieldMicBlocked}
                             onInsert={(text) => {
                               const state = useWorkspace.getState();
                               state.setField("findings", mergeBlock(state.findingsText, text));
@@ -1793,8 +2040,43 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                     ) : (
                       <FindingsEditor field="findings" label="" minHeight="220px" placeholder="Type findings. Use :macro + Tab for snippets. Ctrl+Enter for AI ghost." showGhost />
                     )}
-                    <FindingsEditor field="impression" label="Impression" minHeight="100px" placeholder="Conclusion. Ctrl+I for AI impression." showGhost />
-                    <FindingsEditor field="recommendation" label="Recommendation" minHeight="60px" placeholder="Follow-up, referral..." showGhost />
+                    <div className="flex items-center gap-2">
+                      <div className="flex-1">
+                        <FindingsEditor field="impression" label="Impression" minHeight="100px" placeholder="Conclusion. Ctrl+I for AI impression." showGhost />
+                      </div>
+                      {!isLocked && !isFinalized && (
+                        <VoiceDictationButton
+                          targetField="impression"
+                          draftId={draftId ?? undefined}
+                          studyId={studyId ?? undefined}
+                          patientId={workflow.currentRow?.patientId ?? undefined}
+                          disabled={fieldMicBlocked}
+                          onInsert={(text) => {
+                            const state = useWorkspace.getState();
+                            const lines = state.impressionText.split("\n").filter(Boolean);
+                            state.setField("impression", mergeImpression(lines, text).join("\n"));
+                          }}
+                        />
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <div className="flex-1">
+                        <FindingsEditor field="recommendation" label="Recommendation" minHeight="60px" placeholder="Follow-up, referral..." showGhost />
+                      </div>
+                      {!isLocked && !isFinalized && (
+                        <VoiceDictationButton
+                          targetField="recommendation"
+                          draftId={draftId ?? undefined}
+                          studyId={studyId ?? undefined}
+                          patientId={workflow.currentRow?.patientId ?? undefined}
+                          disabled={fieldMicBlocked}
+                          onInsert={(text) => {
+                            const state = useWorkspace.getState();
+                            state.setField("recommendation", mergeBlock(state.recommendationText, text));
+                          }}
+                        />
+                      )}
+                    </div>
 
                     {/* Critical finding mark + communication checklist (legacy) */}
                     <div className="flex flex-col gap-2 border rounded-md p-3 bg-red-50/40 border-red-100" data-testid="critical-finding-panel">
@@ -1883,6 +2165,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                           const state = useWorkspace.getState();
                           state.setField("recommendation", mergeBlock(state.recommendationText, text));
                         }}
+                        onFindingsLoaded={(findings) => { quickFindingTemplatesRef.current = findings; }}
+                        externalSearch={qsExternalSearch}
                       />
                     </div>
                   </div>
@@ -2026,7 +2310,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       </footer>
 
       {/* ─── Floating UI overlays ─── */}
-      <VoiceBar />
+      <VoiceBar voice={voiceSession} />
       <ZaiCommandPalette />
       <FinalizeSignDialog
         open={finalizeFlow.open}

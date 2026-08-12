@@ -197,7 +197,7 @@ import { todayISO, daysAgoISO } from "@/lib/dateRangePresets";
 import { useVoiceSession, type VoiceExecutionResult } from "@/hooks/useVoiceSession";
 import VoiceCommandBar from "@/components/radiology/VoiceCommandBar";
 import ReportingWorkspaceChrome, { WORKSPACE_CHROME_COLLAPSED_KEY } from "@/components/radiology/ReportingWorkspaceChrome";
-import { normalizeDictationText, describeIntent, type ParsedVoiceCommand, type ViewerOp } from "@/lib/voiceCommandGrammar";
+import { normalizeDictationText, describeIntent, type ParsedVoiceCommand, type ViewerOp, type DictationTarget } from "@/lib/voiceCommandGrammar";
 import { voiceKeyAction } from "@/lib/voiceSessionState";
 import {
   parseVoiceSettings, parseVoiceUserPrefs, mergeVoiceSettings, fetchTranscribeCapabilities,
@@ -3616,7 +3616,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   // The safety policy has already gated by lock/permission/mode; handlers
   // keep their own guards on top.
 
-  function voiceDictate(intent: { target: "findings" | "impression" | "recommendation"; mode: "append" | "replace"; text: string }): VoiceExecutionResult {
+  function voiceDictate(intent: { target: DictationTarget; mode: "append" | "replace"; text: string }): VoiceExecutionResult {
     const text = normalizeDictationText(intent.text, { autoPunctuation: voiceSettings.autoPunctuation });
     if (!text) return { ok: false, message: "Nothing to insert" };
     if (intent.target === "findings") {
@@ -3633,6 +3633,22 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
       return {
         ok: true, message: `${intent.mode === "replace" ? "Replaced" : "Appended to"} impression`,
         undo: () => setImpression(prev), undoLabel: "impression edit",
+      };
+    }
+    if (intent.target === "technique") {
+      const prev = technique;
+      setTechnique(intent.mode === "replace" ? text : prev.trim() ? `${prev.replace(/\s+$/, "")}\n${text}` : text);
+      return {
+        ok: true, message: `${intent.mode === "replace" ? "Replaced" : "Appended to"} technique`,
+        undo: () => setTechnique(prev), undoLabel: "technique edit",
+      };
+    }
+    if (intent.target === "clinicalHistory") {
+      const prev = clinicalHistory;
+      setClinicalHistory(intent.mode === "replace" ? text : prev.trim() ? `${prev.replace(/\s+$/, "")}\n${text}` : text);
+      return {
+        ok: true, message: `${intent.mode === "replace" ? "Replaced" : "Appended to"} clinical history`,
+        undo: () => setClinicalHistory(prev), undoLabel: "history edit",
       };
     }
     const prev = recommendation;

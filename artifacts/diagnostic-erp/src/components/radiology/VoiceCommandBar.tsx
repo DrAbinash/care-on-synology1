@@ -132,6 +132,8 @@ export default function VoiceCommandBar({
             <option value="findings">→ Findings</option>
             <option value="impression">→ Impression</option>
             <option value="recommendation">→ Recommendation</option>
+            <option value="technique">→ Technique</option>
+            <option value="clinicalHistory">→ History</option>
           </select>
         )}
         {/* Live transcript — fills remaining space instead of leaving a dead gap */}

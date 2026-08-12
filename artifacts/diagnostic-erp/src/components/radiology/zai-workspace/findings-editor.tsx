@@ -32,7 +32,7 @@ export function FindingsEditor({ field, label, placeholder, minHeight = "200px",
   };
   const lines = (typeof value === "string" ? value : "").split("\n");
   return (
-    <div className="relative w-full">
+    <div className="relative w-full" data-report-field={field}>
       <QuickSelectStrip field={field} />
       <div className="flex items-center justify-between mb-1.5">
         <label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{label}</label>
