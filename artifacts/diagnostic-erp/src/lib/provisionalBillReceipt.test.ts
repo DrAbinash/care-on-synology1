@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildProvisionalBillPrintHtml,
   formatProvisionalBillNumber,
+  snapshotToPrintBillData,
   type ProvisionalBillPrintSnapshot,
 } from "./provisionalBillReceipt";
 
@@ -24,6 +25,21 @@ const snapshot: ProvisionalBillPrintSnapshot = {
   total: 500,
   payments: [{ mode: "cash", amount: 500 }],
 };
+
+describe("snapshotToPrintBillData online exclusion", () => {
+  it("does not treat unconfirmed online as paid", () => {
+    const data = snapshotToPrintBillData({
+      ...snapshot,
+      payments: [
+        { mode: "cash", amount: 100 },
+        { mode: "online", amount: 400 },
+      ],
+      total: 500,
+    });
+    expect(data.paidAmount).toBe(100);
+    expect(data.balanceAmount).toBe(400);
+  });
+});
 
 describe("buildProvisionalBillPrintHtml", () => {
   it("marks receipt provisional and disables QR", () => {

@@ -8,6 +8,7 @@ import type { PrintBillData, PrintClinic } from "./printBill";
 import { buildBillPrintHtml } from "./printBill";
 import type { BillPrintSettings } from "./billPrintSettings";
 import { resolveBillPrintPageOpts, printLayoutOpts } from "./billPrintSettings";
+import { confirmedPaymentTotal } from "./billingPaymentTotals";
 
 export type ProvisionalBillPrintSnapshot = {
   clientRef: string;
@@ -40,7 +41,8 @@ export function formatProvisionalBillNumber(clientRef: string, at = new Date()):
 }
 
 export function snapshotToPrintBillData(snapshot: ProvisionalBillPrintSnapshot): PrintBillData {
-  const paid = snapshot.payments.reduce((s, p) => s + Number(p.amount || 0), 0);
+  // Unconfirmed gateway "online" rows are not money collected yet.
+  const paid = confirmedPaymentTotal(snapshot.payments);
   return {
     billNumber: snapshot.provisionalBillNumber,
     subtotal: snapshot.subtotal,
