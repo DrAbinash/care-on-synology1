@@ -2505,7 +2505,11 @@ billsRouter.post("/:id/initiate-gateway-payment", async (req: StaffAuthRequest, 
 
 // GET /api/bills/gateway-payment-status/:txnRef
 billsRouter.get("/gateway-payment-status/:txnRef", async (req: StaffAuthRequest, res): Promise<void> => {
-  const txnRef = req.params.txnRef;
+  const txnRef = String(req.params.txnRef || "").trim();
+  if (!txnRef) {
+    res.status(400).json({ error: "Transaction reference is required" });
+    return;
+  }
 
   const [logRecord] = await db.select()
     .from(paymentLogsTable)
