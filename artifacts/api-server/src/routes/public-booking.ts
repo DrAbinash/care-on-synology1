@@ -25,6 +25,7 @@ import { confirmBookingInternal } from "./online-bookings";
 import { autoVoucherForPayment } from "../lib/auto-voucher";
 import { getIciciPublicBaseUrl } from "../lib/payments/iciciPublicBaseUrl";
 import { assembleIciciRedirectUrl } from "../lib/payments/initiateIciciOrangePayment";
+import { resolveBillDeskCollector } from "../lib/payments/resolveBillDeskCollector";
 
 export function validateSelfRegistration(params: {
   name: string;
@@ -1412,6 +1413,12 @@ async function handleIciciCallback(req: any, res: any, queryOrBody: Record<strin
             .limit(1);
 
           if (!existingPayment) {
+            // Bill Desk BILLPAY settle — credit initiating cashier (stored at
+            // initiate). Website booking confirmation below still uses Super Admin.
+            const collectorName = resolveBillDeskCollector({
+              requestPayload: logRecord?.requestPayload,
+              billCreatedByName: bill.createdByName,
+            });
             const [insertedPay] = await tx.insert(paymentsTable).values({
               billId,
               amount: collectAmount.toFixed(2),
@@ -1420,7 +1427,7 @@ async function handleIciciCallback(req: any, res: any, queryOrBody: Record<strin
               gatewayTxnId: txnID || null,
               settlementStatus: "captured",
               notes: `Paid online via ${provider.displayName}. txnID: ${txnID || ""}`,
-              recordedByName: "Super Admin",
+              recordedByName: collectorName,
             }).returning({ id: paymentsTable.id });
 
             const newPaid = Number(bill.paidAmount) + collectAmount;
@@ -1440,7 +1447,7 @@ async function handleIciciCallback(req: any, res: any, queryOrBody: Record<strin
               method: `Online (${provider.displayName})`,
               billNumber: bill.billNumber,
               patientName: logRecord ? logRecord.patientName : "Billing Desk Online",
-              performedBy: "Super Admin",
+              performedBy: collectorName,
               paymentId: insertedPay?.id,
             }).catch(() => {});
           }

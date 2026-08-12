@@ -107,13 +107,36 @@ billPaymentLinksRouter.post("/create", async (req, res) => {
     logger.warn({ err, txnRef }, "[bill-payment-links] initiate failed");
   }
 
+  const createdBy = actorOf(req).userName;
   const [row] = await db.insert(billPaymentLinksTable).values({
     billId: bill.id, token, txnRef, gateway, amount: amount.toFixed(2),
     redirectUrl, status: redirectUrl ? "created" : "failed",
     sentTo: patient.phone, lastError: errorMessage,
     expiresAt: new Date(Date.now() + LINK_EXPIRY_DAYS * 864e5),
-    createdBy: actorOf(req).userName,
+    createdBy,
   }).returning();
+
+  // Stamp initiating staff on the payment log so BILLPAY webhook/callback
+  // settle credits this user (same as Billing Desk online collection).
+  if (createdBy && createdBy !== "system") {
+    try {
+      const [log] = await db.select({ requestPayload: paymentLogsTable.requestPayload })
+        .from(paymentLogsTable)
+        .where(eq(paymentLogsTable.bookingRef, txnRef))
+        .limit(1);
+      let existing: Record<string, unknown> = {};
+      if (log?.requestPayload) {
+        try { existing = JSON.parse(log.requestPayload); } catch { existing = {}; }
+      }
+      if (log) {
+        await db.update(paymentLogsTable)
+          .set({ requestPayload: JSON.stringify({ ...existing, initiatedByName: createdBy }) })
+          .where(eq(paymentLogsTable.bookingRef, txnRef));
+      }
+    } catch (err) {
+      logger.warn({ err, txnRef }, "[bill-payment-links] failed to stamp initiatedByName");
+    }
+  }
 
   await audit(req, { action: "create", entityType: "bill_payment_link", entityId: String(row.id), newValue: JSON.stringify({ billId: bill.id, amount, gateway }) });
   if (!redirectUrl) { res.status(502).json({ error: errorMessage || "Could not create payment link", link: row }); return; }

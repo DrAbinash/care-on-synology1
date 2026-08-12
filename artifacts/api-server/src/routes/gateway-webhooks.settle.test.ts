@@ -17,6 +17,7 @@ let billRow: Record<string, unknown> | null;
 let existingPayments: Array<Record<string, unknown>>;
 let insertedPayments: Array<Record<string, unknown>>;
 let billUpdates: Array<Record<string, unknown>>;
+let paymentLogRows: Array<Record<string, unknown>>;
 
 vi.mock("@workspace/db", () => {
   const chainFor = (table: { __name?: string }) => {
@@ -25,11 +26,12 @@ vi.mock("@workspace/db", () => {
       if (table.__name === "payments") return existingPayments;
       if (table.__name === "clinic_settings") return [{ v: "" }];
       if (table.__name === "online_bookings") return [];
+      if (table.__name === "payment_logs") return paymentLogRows;
       return [];
     };
     const tail: Record<string, unknown> = { limit: rows };
     tail["for"] = () => ({ limit: rows });
-    return { where: () => tail, ...tail, orderBy: () => ({ limit: rows }) };
+    return { where: () => ({ ...tail, orderBy: () => ({ limit: rows }) }), ...tail, orderBy: () => ({ limit: rows }) };
   };
   const dbLike = {
     select: () => ({ from: (t: { __name?: string }) => chainFor(t) }),
@@ -69,7 +71,7 @@ vi.mock("@workspace/db/schema", () => ({
     referenceNumber: "reference_number", gatewayTxnId: "gateway_txn_id",
   },
   onlineBookingsTable: { __name: "online_bookings", id: "id" },
-  paymentLogsTable: { __name: "payment_logs" },
+  paymentLogsTable: { __name: "payment_logs", bookingRef: "booking_ref", createdAt: "created_at", requestPayload: "request_payload" },
   clinicSettingsTable: { __name: "clinic_settings", iciciSecretKey: "icici_secret_key" },
 }));
 
@@ -80,6 +82,7 @@ vi.mock("../lib/auto-voucher", () => ({
 }));
 vi.mock("../lib/payments/PaymentEngine", () => ({ PaymentEngine: { getProvider: vi.fn(), checkStatus: vi.fn() } }));
 vi.mock("../middleware/requireStaffAuth", () => ({ requireStaffAuth: (_r: unknown, _s: unknown, next: () => void) => next() }));
+// Use the real collector helper (it only needs db.select on payment_logs).
 
 import { gatewayWebhookRouter, verifyIciciWebhookSignature } from "./gateway-webhooks";
 
@@ -118,10 +121,20 @@ const MERCHANT_REF = "BILLPAY-42-A1B2C3";
 const PROVIDER_TXN = "ICICI-TXN-999888";
 
 beforeEach(() => {
-  billRow = { id: 42, paidAmount: "0.00", totalAmount: "500.00", refundAmount: "0.00", billNumber: "0042" };
+  billRow = {
+    id: 42,
+    paidAmount: "0.00",
+    totalAmount: "500.00",
+    refundAmount: "0.00",
+    billNumber: "0042",
+    createdByName: "Desk Cashier",
+  };
   existingPayments = [];
   insertedPayments = [];
   billUpdates = [];
+  paymentLogRows = [{
+    requestPayload: JSON.stringify({ initiatedByName: "Desk Cashier", redirectUrl: "https://example.test" }),
+  }];
   voucherCalls.length = 0;
 });
 
@@ -137,8 +150,20 @@ describe("ICICI S2S webhook — canonical identifier keying", () => {
     expect(insertedPayments[0]["referenceNumber"]).toBe(MERCHANT_REF);
     expect(insertedPayments[0]["gatewayTxnId"]).toBe(PROVIDER_TXN);
     expect(insertedPayments[0]["settlementStatus"]).toBe("captured");
+    expect(insertedPayments[0]["recordedByName"]).toBe("Desk Cashier");
     expect(billUpdates).toHaveLength(1);
     expect(billUpdates[0]["paidAmount"]).toBe("500.00");
+    expect(voucherCalls[0]?.["performedBy"]).toBe("Desk Cashier");
+  });
+
+  test("Bill Desk BILLPAY settle credits initiating staff, not Super Admin", async () => {
+    paymentLogRows = [{
+      requestPayload: JSON.stringify({ initiatedByName: "Priya Sharma" }),
+    }];
+    await iciciWebhook({ body: signedIciciBody({ merchantTxnNo: MERCHANT_REF, txnID: PROVIDER_TXN, amount: "500.00", txnStatus: "SUC" }) }, makeRes());
+    expect(insertedPayments[0]["recordedByName"]).toBe("Priya Sharma");
+    expect(insertedPayments[0]["recordedByName"]).not.toBe("Super Admin");
+    expect(voucherCalls[0]?.["performedBy"]).toBe("Priya Sharma");
   });
 
   test("REGRESSION (the double-post): webhook after the callback already recorded the payment → no second row, no second bill update", async () => {
@@ -177,6 +202,22 @@ describe("callback + poll paths share the same keying (source contracts)", () =>
     expect(src).toContain("eq(paymentsTable.gatewayTxnId, txnRef)");
     const pollIdx = src.indexOf("gateway-payment-status/:txnRef");
     expect(src.slice(pollIdx, pollIdx + 4000)).toContain('settlementStatus: "captured"');
+  });
+
+  test("Bill Desk initiate stores initiatedByName; poll/callback no longer hardcode Super Admin for BILLPAY", () => {
+    const bills = read("./bills.ts");
+    expect(bills).toContain("initiatedByName");
+    expect(bills).toContain("resolveBillDeskCollector");
+    const pollIdx = bills.indexOf("gateway-payment-status/:txnRef");
+    expect(bills.slice(pollIdx, pollIdx + 5000)).not.toContain('recordedByName: "Super Admin"');
+
+    const booking = read("./public-booking.ts");
+    const billPayIdx = booking.indexOf('merchantTxnNo.startsWith("BILLPAY-")');
+    const bookingBranchIdx = booking.indexOf("const [booking] = await db.select().from(onlineBookingsTable)", billPayIdx);
+    expect(booking.slice(billPayIdx, bookingBranchIdx)).toContain("resolveBillDeskCollector");
+    expect(booking.slice(billPayIdx, bookingBranchIdx)).not.toContain('recordedByName: "Super Admin"');
+    // Website online booking confirmation stays Super Admin.
+    expect(booking).toContain('confirmBookingInternal(booking.id, "Super Admin")');
   });
 
   test("no settle path keys reference_number by the provider txnID anymore", () => {
