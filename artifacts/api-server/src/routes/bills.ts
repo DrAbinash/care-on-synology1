@@ -2403,6 +2403,7 @@ billsRouter.post("/:id/swap-test", async (req: StaffAuthRequest, res) => {
 import { PaymentEngine } from "../lib/payments/PaymentEngine";
 import { initiateIciciOrangePayment, buildIciciOrangePayQrUrl } from "../lib/payments/initiateIciciOrangePayment";
 import { resolveActiveGateway } from "../lib/payments/resolveActiveGateway";
+import { resolveBillDeskCollector } from "../lib/payments/resolveBillDeskCollector";
 import { paymentLogsTable } from "@workspace/db/schema";
 import crypto from "node:crypto";
 import { logger } from "../lib/logger";
@@ -2411,6 +2412,7 @@ import { logger } from "../lib/logger";
 billsRouter.post("/:id/initiate-gateway-payment", async (req: StaffAuthRequest, res): Promise<void> => {
   const id = Number(req.params.id);
   const { amount: requestedAmount, expiryMinutes = 30 } = req.body || {};
+  const initiatedByName = req.staffSession?.subjectName?.trim() || "";
 
   const [bill] = await db.select().from(billsTable).where(eq(billsTable.id, id)).limit(1);
   if (!bill) {
@@ -2481,11 +2483,14 @@ billsRouter.post("/:id/initiate-gateway-payment", async (req: StaffAuthRequest, 
     } catch {
       existingPayload = {};
     }
+    // Persist the initiating cashier so poll / callback / S2S settle paths
+    // credit Bill Desk online collections to that staff member (not Super Admin).
     await db.update(paymentLogsTable)
       .set({
         requestPayload: JSON.stringify({
           ...existingPayload,
           redirectUrl: result.redirectUrl,
+          ...(initiatedByName ? { initiatedByName } : {}),
           ...(expiryTime ? { expiryTime: expiryTime.toISOString(), expiryMinutes } : {}),
         }),
       })
@@ -2510,8 +2515,12 @@ billsRouter.post("/:id/initiate-gateway-payment", async (req: StaffAuthRequest, 
 });
 
 // GET /api/bills/gateway-payment-status/:txnRef
-billsRouter.get("/gateway-payment-status/:txnRef", async (req, res): Promise<void> => {
-  const txnRef = req.params.txnRef;
+billsRouter.get("/gateway-payment-status/:txnRef", async (req: StaffAuthRequest, res): Promise<void> => {
+  const txnRef = String(req.params.txnRef || "").trim();
+  if (!txnRef) {
+    res.status(400).json({ error: "Transaction reference is required" });
+    return;
+  }
 
   const [logRecord] = await db.select()
     .from(paymentLogsTable)
@@ -2605,6 +2614,11 @@ billsRouter.get("/gateway-payment-status/:txnRef", async (req, res): Promise<voi
 
         if (!existingPayment) {
           const collectAmount = Number(logRecord.amount);
+          const collectorName = resolveBillDeskCollector({
+            requestPayload: logRecord.requestPayload,
+            sessionName: req.staffSession?.subjectName,
+            billCreatedByName: bill.createdByName,
+          });
           const [insertedPayment] = await tx.insert(paymentsTable).values({
             billId,
             amount: collectAmount.toFixed(2),
@@ -2612,7 +2626,7 @@ billsRouter.get("/gateway-payment-status/:txnRef", async (req, res): Promise<voi
             referenceNumber: txnRef,
             settlementStatus: "captured",
             notes: `Paid online via ${provider.displayName} at Billing Desk.`,
-            recordedByName: "Super Admin",
+            recordedByName: collectorName,
           }).returning();
 
           const newPaid = Number(bill.paidAmount) + collectAmount;
@@ -2632,7 +2646,7 @@ billsRouter.get("/gateway-payment-status/:txnRef", async (req, res): Promise<voi
             method: "Online (ICICI Orange Pay)",
             billNumber: bill.billNumber,
             patientName: logRecord.patientName,
-            performedBy: "Super Admin",
+            performedBy: collectorName,
             paymentId: insertedPayment.id,
           }).catch(() => {});
         }

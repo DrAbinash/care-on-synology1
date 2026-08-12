@@ -36,11 +36,12 @@ import {
   paymentLogsTable,
   clinicSettingsTable,
 } from "@workspace/db/schema";
-import { eq, and, or, inArray } from "drizzle-orm";
+import { eq, and, or, inArray, like, desc } from "drizzle-orm";
 import { logger } from "../lib/logger";
 import { autoVoucherForPayment } from "../lib/auto-voucher";
 import { PaymentEngine } from "../lib/payments/PaymentEngine";
-import { requireStaffAuth } from "../middleware/requireStaffAuth";
+import { resolveBillDeskCollectorFromTxnRef } from "../lib/payments/resolveBillDeskCollectorFromDb";
+import { requireStaffAuth, type StaffAuthRequest } from "../middleware/requireStaffAuth";
 
 export const gatewayWebhookRouter = Router();
 
@@ -296,6 +297,11 @@ gatewayWebhookRouter.post("/icici-webhook", async (req, res): Promise<void> => {
       logger.warn({ merchantTxnNo }, "[icici-webhook] Cannot parse billId from BILLPAY ref");
       return;
     }
+    const [billForActor] = await db.select().from(billsTable).where(eq(billsTable.id, billId)).limit(1);
+    const collectorName = await resolveBillDeskCollectorFromTxnRef(merchantTxnNo, {
+      billCreatedByName: billForActor?.createdByName,
+      fallback: "ICICI S2S Webhook",
+    });
     const { settled, alreadySettled, paymentId } = await settleBill({
       billId,
       amount,
@@ -303,10 +309,10 @@ gatewayWebhookRouter.post("/icici-webhook", async (req, res): Promise<void> => {
       merchantRef: merchantTxnNo,
       gatewayTxnId: txnID,
       gatewayName: "ICICI Orange Pay",
-      performedBy: "ICICI S2S Webhook",
+      performedBy: collectorName,
     });
     if (settled) {
-      const [bill] = await db.select().from(billsTable).where(eq(billsTable.id, billId)).limit(1);
+      const bill = billForActor ?? (await db.select().from(billsTable).where(eq(billsTable.id, billId)).limit(1))[0];
       if (bill) {
         autoVoucherForPayment({
           billId,
@@ -314,7 +320,7 @@ gatewayWebhookRouter.post("/icici-webhook", async (req, res): Promise<void> => {
           method: "online",
           billNumber: bill.billNumber,
           patientName: null,
-          performedBy: "ICICI S2S Webhook",
+          performedBy: collectorName,
           paymentId: paymentId ?? undefined,
         }).catch(() => {});
       }
@@ -428,6 +434,11 @@ gatewayWebhookRouter.post("/hdfc-webhook", async (req, res): Promise<void> => {
       logger.warn({ orderId }, "[hdfc-webhook] Cannot parse billId from BILLPAY ref");
       return;
     }
+    const [billForActor] = await db.select().from(billsTable).where(eq(billsTable.id, billId)).limit(1);
+    const collectorName = await resolveBillDeskCollectorFromTxnRef(orderId, {
+      billCreatedByName: billForActor?.createdByName,
+      fallback: "HDFC S2S Webhook",
+    });
     const { settled, alreadySettled, paymentId } = await settleBill({
       billId,
       amount,
@@ -435,10 +446,10 @@ gatewayWebhookRouter.post("/hdfc-webhook", async (req, res): Promise<void> => {
       merchantRef: orderId,
       gatewayTxnId: txnId,
       gatewayName: "HDFC SmartGateway",
-      performedBy: "HDFC S2S Webhook",
+      performedBy: collectorName,
     });
     if (settled) {
-      const [bill] = await db.select().from(billsTable).where(eq(billsTable.id, billId)).limit(1);
+      const bill = billForActor ?? (await db.select().from(billsTable).where(eq(billsTable.id, billId)).limit(1))[0];
       if (bill) {
         autoVoucherForPayment({
           billId,
@@ -446,7 +457,7 @@ gatewayWebhookRouter.post("/hdfc-webhook", async (req, res): Promise<void> => {
           method: "online",
           billNumber: bill.billNumber,
           patientName: null,
-          performedBy: "HDFC S2S Webhook",
+          performedBy: collectorName,
           paymentId: paymentId ?? undefined,
         }).catch(() => {});
       }
@@ -496,7 +507,7 @@ gatewayWebhookRouter.post("/hdfc-webhook", async (req, res): Promise<void> => {
 // Calls the gateway's checkStatus API and settles if paid.
 // Used when the webhook was missed (network issue, server restart, etc.)
 
-gatewayWebhookRouter.post("/reconcile", requireStaffAuth, async (req, res): Promise<void> => {
+gatewayWebhookRouter.post("/reconcile", requireStaffAuth, async (req: StaffAuthRequest, res): Promise<void> => {
   const { type, id, gateway: forceGateway } = req.body as {
     type?: string;
     id?: number;
@@ -513,22 +524,25 @@ gatewayWebhookRouter.post("/reconcile", requireStaffAuth, async (req, res): Prom
   let billId: number | null = null;
   let patientName: string | null = null;
   let billNumber: string | null = null;
+  let billCreatedByName: string | null = null;
 
   if (type === "bill") {
     const [bill] = await db.select().from(billsTable).where(eq(billsTable.id, id)).limit(1);
     if (!bill) { res.status(404).json({ error: "Bill not found" }); return; }
 
-    // Look for the payment log associated with this bill
+    // Desk txn refs are BILLPAY-<id>-<hex>; match the newest initiate log.
     const [log] = await db
       .select()
       .from(paymentLogsTable)
-      .where(eq(paymentLogsTable.bookingRef, `BILLPAY-${id}`))
+      .where(like(paymentLogsTable.bookingRef, `BILLPAY-${id}-%`))
+      .orderBy(desc(paymentLogsTable.createdAt))
       .limit(1);
 
     bookingRef = log?.bookingRef || `BILLPAY-${id}`;
     amount = log ? Number(log.amount) : Number(bill.balanceAmount);
     billId = id;
     billNumber = bill.billNumber;
+    billCreatedByName = bill.createdByName ?? null;
   } else {
     const [booking] = await db.select().from(onlineBookingsTable).where(eq(onlineBookingsTable.id, id)).limit(1);
     if (!booking) { res.status(404).json({ error: "Booking not found" }); return; }
@@ -557,6 +571,11 @@ gatewayWebhookRouter.post("/reconcile", requireStaffAuth, async (req, res): Prom
 
     // Payment confirmed — settle
     if (type === "bill" && billId) {
+      const collectorName = await resolveBillDeskCollectorFromTxnRef(bookingRef, {
+        sessionName: req.staffSession?.subjectName,
+        billCreatedByName,
+        fallback: "Manual Reconciliation",
+      });
       const { settled, alreadySettled, paymentId } = await settleBill({
         billId,
         amount,
@@ -564,7 +583,7 @@ gatewayWebhookRouter.post("/reconcile", requireStaffAuth, async (req, res): Prom
         merchantRef: bookingRef,
         gatewayTxnId: "",
         gatewayName: provider.displayName,
-        performedBy: "Manual Reconciliation",
+        performedBy: collectorName,
       });
 
       if (settled && billNumber) {
@@ -574,7 +593,7 @@ gatewayWebhookRouter.post("/reconcile", requireStaffAuth, async (req, res): Prom
           method: "online",
           billNumber,
           patientName,
-          performedBy: "Manual Reconciliation",
+          performedBy: collectorName,
           paymentId: paymentId ?? undefined,
         }).catch(() => {});
       }
