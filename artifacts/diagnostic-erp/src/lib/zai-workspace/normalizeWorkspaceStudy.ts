@@ -95,7 +95,9 @@ export function normalizeWorkspaceStudy(raw: unknown): Study | null {
     lockExpiresAt: r.lockExpiresAt != null ? asString(r.lockExpiresAt) : undefined,
     priorCount: asNumber(r.priorCount, 0),
     criticalFlag: Boolean(r.criticalFlag),
-    aiDraftReady: Boolean(r.aiDraftReady),
+    aiDraftReady:
+      Boolean(r.aiDraftReady)
+      || asString(r.aiDraftStatus).toUpperCase() === "READY",
     tatMinutes: asNumber(r.tatMinutes, 0),
     slaMinutes: asNumber(r.slaMinutes, 240),
     series: asNumber(r.series, 0),

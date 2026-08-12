@@ -12,11 +12,11 @@ import {
 } from "@workspace/db/schema";
 import { and, eq, desc, inArray, isNull, sql } from "drizzle-orm";
 import { isFeatureEnabledServer } from "../featureFlags";
-import { AI_MASTER_FLAG, getSchedulerConfig, getModalityMode } from "./clinicalConfigService";
+import { AI_MASTER_FLAG, getSchedulerConfig, getModalityMode, getModalityPolicies, normalizeAiModality } from "./clinicalConfigService";
 import { enqueueAiShadowJob, AI_SHADOW_PIPELINE_JOB } from "./shadowPipeline";
 import { jobBacklogCounts, listDeadLetterJobs } from "../radiologyJobs";
 import { resolveRadiologyStudyId } from "../canonicalStudy";
-import { decideScheduling, type Priority } from "./aiScheduler";
+import { decideScheduling, isWithinNightWindow, type Priority } from "./aiScheduler";
 
 function nowMinutesLocal(): number {
   const d = new Date();
@@ -31,6 +31,8 @@ export async function scheduleStudy(opts: {
   manualRequest?: boolean;
   isFinalized?: boolean;
   arrivalSignature?: string;
+  /** When true, studies whose decision is "defer to night" are enqueued now (night cron). */
+  forceNightWindow?: boolean;
 }): Promise<{ enqueued: boolean; reason: string; jobId?: number }> {
   if (!(await isFeatureEnabledServer(AI_MASTER_FLAG))) return { enqueued: false, reason: "master flag off" };
   const cfg = await getSchedulerConfig();
@@ -38,17 +40,30 @@ export async function scheduleStudy(opts: {
 
   // "unchanged" = a manifest already exists for the current snapshot content.
   const isUnchanged = await hasCurrentManifest(opts.studyInstanceUid);
-  const decision = decideScheduling(
+  const now = nowMinutesLocal();
+  let decision = decideScheduling(
     {
       modalityMode,
       priority: opts.priority ?? "routine",
-      nowMinutes: nowMinutesLocal(),
+      nowMinutes: now,
       isFinalized: opts.isFinalized ?? false,
       isUnchanged,
       manualRequest: opts.manualRequest,
     },
     cfg,
   );
+  // Night cron: force-enqueue anything already classified for night_batch
+  // (including immediate studies deferred during quiet hours).
+  if (
+    !decision.enqueue
+    && opts.forceNightWindow
+    && decision.mode === "night_batch"
+    && isWithinNightWindow(now, cfg)
+    && modalityMode !== "disabled"
+    && modalityMode !== "manual"
+  ) {
+    decision = { enqueue: true, mode: "night_batch", reason: "night batch force (deferred study)" };
+  }
   if (!decision.enqueue) return { enqueued: false, reason: decision.reason };
 
   const radiologyStudyId = await resolveRadiologyStudyId({ studyInstanceUid: opts.studyInstanceUid });
@@ -70,21 +85,55 @@ async function hasCurrentManifest(studyInstanceUid: string): Promise<boolean> {
   return !!row;
 }
 
-/** Night Batch: enqueue complete, not-yet-snapshotted studies. Bounded. */
-export async function runNightBatch(limit = 50): Promise<{ considered: number; enqueued: number }> {
-  if (!(await isFeatureEnabledServer(AI_MASTER_FLAG))) return { considered: 0, enqueued: 0 };
+/** Night Batch: enqueue complete, not-yet-snapshotted studies for overnight
+ *  modalities (night_batch + immediate deferred). Bounded. Respects the
+ *  configured night window so a manual trigger outside the window is a no-op
+ *  unless `forceOutsideWindow` is set (admin "Run now"). */
+export async function runNightBatch(
+  limit = 50,
+  opts: { forceOutsideWindow?: boolean } = {},
+): Promise<{ considered: number; enqueued: number; skippedWindow?: boolean; overnightModalities: string[] }> {
+  if (!(await isFeatureEnabledServer(AI_MASTER_FLAG))) {
+    return { considered: 0, enqueued: 0, overnightModalities: [] };
+  }
+  const cfg = await getSchedulerConfig();
+  if (!opts.forceOutsideWindow && !isWithinNightWindow(nowMinutesLocal(), cfg)) {
+    return { considered: 0, enqueued: 0, skippedWindow: true, overnightModalities: [] };
+  }
+
+  const policies = await getModalityPolicies();
+  const overnight = new Set(
+    policies
+      .filter((p) => p.mode === "night_batch" || p.mode === "immediate")
+      .map((p) => normalizeAiModality(p.modality)),
+  );
+  if (overnight.size === 0) {
+    return { considered: 0, enqueued: 0, overnightModalities: [] };
+  }
+
   const rows = await db
     .select({ uid: dicomIncomingStudiesTable.studyInstanceUID, modality: dicomIncomingStudiesTable.modality })
     .from(dicomIncomingStudiesTable)
     .leftJoin(studySnapshotsTable, eq(studySnapshotsTable.studyInstanceUid, dicomIncomingStudiesTable.studyInstanceUID))
     .where(and(eq(dicomIncomingStudiesTable.transferStatus, "complete"), isNull(studySnapshotsTable.id)))
-    .limit(limit);
+    .limit(Math.max(limit * 3, 50)); // over-fetch then modality-filter
+
+  let considered = 0;
   let enqueued = 0;
   for (const r of rows) {
-    const res = await scheduleStudy({ studyInstanceUid: r.uid, modality: r.modality, arrivalSignature: "night-batch" });
+    const mod = normalizeAiModality(r.modality ?? "");
+    if (!overnight.has(mod)) continue;
+    considered++;
+    if (enqueued >= limit) break;
+    const res = await scheduleStudy({
+      studyInstanceUid: r.uid,
+      modality: r.modality,
+      arrivalSignature: "night-batch",
+      forceNightWindow: true,
+    });
     if (res.enqueued) enqueued++;
   }
-  return { considered: rows.length, enqueued };
+  return { considered, enqueued, overnightModalities: [...overnight] };
 }
 
 /** Scheduled Reprocessing: re-enqueue recent studies; the pipeline's inputHash

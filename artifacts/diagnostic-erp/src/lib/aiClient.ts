@@ -68,6 +68,16 @@ export const aiClient = {
   saveSchedulerConfig: (patch: Record<string, unknown>) => api.put<{ ok: boolean }>(`/api/ai/scheduler/config`, patch),
   getModalityPolicies: () => api.get<Array<{ modality: string; mode: string }>>(`/api/ai/modality-policies`),
   setModalityPolicy: (modality: string, mode: string) => api.put<{ ok: boolean }>(`/api/ai/modality-policies`, { modality, mode }),
+  setOvernightModalities: (overnightModalities: string[], mode?: string) =>
+    api.put<{ ok: boolean }>(
+      `/api/ai/modality-policies`,
+      { overnightModalities, mode: mode ?? "night_batch" },
+    ),
+  runNightBatch: (force?: boolean) =>
+    api.post<Record<string, unknown>>(
+      `/api/ai/scheduler/run/night-batch${force ? "?force=1" : ""}`,
+      { force: Boolean(force) },
+    ),
   getQueue: () => api.get<Record<string, unknown>>(`/api/ai/queue`),
   setPolicy: (body: { scope: string; scopeKey: string; enabled: boolean; mode: string }) => api.put<{ ok: boolean }>(`/api/ai/policies`, body),
 };

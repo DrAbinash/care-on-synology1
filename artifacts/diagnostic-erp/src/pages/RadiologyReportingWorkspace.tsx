@@ -129,6 +129,7 @@ import QuickFindingsPanel, { type QuickFinding } from "@/components/radiology/Qu
 import PriorComparisonToolbar from "@/components/radiology/PriorComparisonToolbar";
 import ViewerMeasurementsBanner from "@/components/radiology/ViewerMeasurementsBanner";
 import LegacyBox, { type LegacyBoxTab } from "@/components/radiology/LegacyBox";
+import { AiDraftPanel } from "@/components/ai/AiDraftPanel";
 import UsgCompanionPanel from "@/components/radiology/UsgCompanionPanel";
 import MriReadinessStrip from "@/components/radiology/MriReadinessStrip";
 import ObDashboardStrip from "@/components/radiology/ObDashboardStrip";
@@ -2290,6 +2291,12 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       </footer>
 
       {/* ─── Floating UI overlays ─── */}
+      {/* Overnight / shadow AI drafts — self-gates on pilot visibility */}
+      <AiDraftPanel
+        studyInstanceUid={workflow.currentRow?.studyInstanceUID ?? study?.studyInstanceUID ?? null}
+        modality={workflow.currentRow?.modality ?? study?.modality ?? null}
+        onInsertText={appendFindings}
+      />
       <ZaiCommandPalette />
       <FinalizeSignDialog
         open={finalizeFlow.open}

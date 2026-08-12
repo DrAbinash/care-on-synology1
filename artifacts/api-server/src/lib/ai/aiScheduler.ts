@@ -79,6 +79,12 @@ export function decideScheduling(inp: SchedulingInput, cfg: SchedulerConfig): Sc
       return { enqueue: true, mode: "immediate", reason: stat ? "STAT/emergency immediate" : "immediate" };
     case "night_batch":
       if (stat) return { enqueue: true, mode: "immediate", reason: "STAT/emergency overrides night-batch" };
+      // Inside the configured night window the night cron (and any run that
+      // happens to land here) must actually enqueue — otherwise night_batch
+      // modalities would never process.
+      if (isWithinNightWindow(inp.nowMinutes, cfg)) {
+        return { enqueue: true, mode: "night_batch", reason: "night batch window" };
+      }
       return { enqueue: false, mode: "night_batch", reason: "queued for night batch window" };
     default:
       return { enqueue: false, mode: "manual", reason: "unknown modality mode" };

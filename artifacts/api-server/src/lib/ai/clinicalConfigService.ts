@@ -15,6 +15,9 @@ import { eq } from "drizzle-orm";
 import { isFeatureEnabledServer } from "../featureFlags";
 import { resolveAiEnablement, type AiPolicyRow, type Enablement } from "./aiPolicy";
 import type { SchedulerConfig, ModalityMode } from "./aiScheduler";
+import { normalizeAiModality } from "./modalityNormalize";
+
+export { normalizeAiModality } from "./modalityNormalize";
 
 /** The single global master flag. Unseeded ⇒ false ⇒ AI off for everyone. */
 export const AI_MASTER_FLAG = "ff_radiology_ai";
@@ -75,15 +78,54 @@ export async function getModalityPolicies(): Promise<Array<{ modality: string; m
 
 export async function getModalityMode(modality: string | null | undefined): Promise<ModalityMode> {
   if (!modality) return "disabled";
-  const [row] = await db.select().from(aiModalityPoliciesTable).where(eq(aiModalityPoliciesTable.modality, modality)).limit(1);
-  return (row?.mode as ModalityMode) ?? "disabled";
+  const key = normalizeAiModality(modality);
+  const [row] = await db.select().from(aiModalityPoliciesTable).where(eq(aiModalityPoliciesTable.modality, key)).limit(1);
+  if (row) return row.mode as ModalityMode;
+  // Fall back to raw code if a legacy row used a non-normalized key.
+  const [raw] = await db.select().from(aiModalityPoliciesTable).where(eq(aiModalityPoliciesTable.modality, modality.trim().toUpperCase())).limit(1);
+  return (raw?.mode as ModalityMode) ?? "disabled";
 }
 
 export async function setModalityPolicy(modality: string, mode: ModalityMode, updatedBy?: string): Promise<void> {
+  const key = normalizeAiModality(modality);
   await db
     .insert(aiModalityPoliciesTable)
-    .values({ modality, mode, updatedBy })
+    .values({ modality: key, mode, updatedBy })
     .onConflictDoUpdate({ target: aiModalityPoliciesTable.modality, set: { mode, updatedBy } });
+}
+
+/**
+ * Batch-set overnight modalities.
+ * - Selected → night_batch (or opts.mode)
+ * - Existing night_batch not selected → disabled
+ * - immediate / manual left untouched so daytime policies survive overnight edits
+ * - Known codes with no row yet and not selected stay absent (treated as disabled)
+ */
+export async function setOvernightModalities(
+  selected: string[],
+  opts: { updatedBy?: string; mode?: ModalityMode } = {},
+): Promise<Array<{ modality: string; mode: ModalityMode }>> {
+  const mode = opts.mode ?? "night_batch";
+  const wanted = new Set(selected.map(normalizeAiModality));
+  const known = ["MR", "CT", "CR", "US", "MG", "Doppler"];
+  const existing = await getModalityPolicies();
+  const byMod = new Map(existing.map((p) => [normalizeAiModality(p.modality), p.mode as ModalityMode]));
+
+  for (const modality of known) {
+    const current = byMod.get(modality);
+    if (wanted.has(modality)) {
+      await setModalityPolicy(modality, mode, opts.updatedBy);
+      continue;
+    }
+    // Only clear prior overnight membership — do not clobber immediate/manual.
+    if (!current || current === "night_batch" || current === "disabled") {
+      await setModalityPolicy(modality, "disabled", opts.updatedBy);
+    }
+  }
+  for (const modality of wanted) {
+    if (!known.includes(modality)) await setModalityPolicy(modality, mode, opts.updatedBy);
+  }
+  return getModalityPolicies();
 }
 
 // ── Feature policies (admin enable/disable per scope) ───────────────────────

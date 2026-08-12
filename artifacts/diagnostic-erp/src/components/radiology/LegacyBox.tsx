@@ -25,7 +25,6 @@ import RadiologyKnowledgePanel from "@/components/RadiologyKnowledgePanel";
 import RadiologyMemoryPanel from "@/components/RadiologyMemoryPanel";
 import OpenStudyPanel from "@/components/radiology/OpenStudyPanel";
 import ReportLayoutQuickSelect, { type ReportLayoutKey } from "@/components/radiology/ReportLayoutQuickSelect";
-import { AiDraftPanel } from "@/components/ai/AiDraftPanel";
 import { analyzeCopilot, type CopilotItem, type CopilotReport } from "@/lib/copilotOrchestrator";
 import { useCopilotPrefs } from "@/hooks/useCopilotPrefs";
 import { isUltrasoundModality } from "@/lib/usgModality";
@@ -607,11 +606,21 @@ export default function LegacyBox(props: LegacyBoxProps) {
             )}
 
             {tab === "ai" && (
-              <AiDraftPanel
-                studyInstanceUid={props.studyInstanceUID ?? null}
-                modality={props.modality ?? null}
-                onInsertText={props.onAppendFindings}
-              />
+              <div className="space-y-2 text-[11px] text-muted-foreground">
+                <p className="font-semibold text-foreground">Overnight / shadow AI drafts</p>
+                <p>
+                  When AI is enabled for your account, the floating <strong>AI Draft</strong> panel
+                  (bottom-right) shows overnight Ollama drafts for this study. Accept findings into
+                  the report, edit, then finalize as usual — print and PACS use the signed report.
+                </p>
+                <p>
+                  Configure modalities and the midnight window under{" "}
+                  <strong>Settings → AI Reporting → Overnight Drafts</strong>.
+                </p>
+                {!props.studyInstanceUID && (
+                  <p className="text-amber-700">Open a study with a DICOM UID to load its draft.</p>
+                )}
+              </div>
             )}
 
             {tab === "teaching" && (

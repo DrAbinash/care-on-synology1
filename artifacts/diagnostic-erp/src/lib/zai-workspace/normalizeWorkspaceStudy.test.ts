@@ -85,4 +85,21 @@ describe("normalizeWorkspaceStudy", () => {
     expect(list[1].patient.id).toBe("9");
     expect(list[1].priority).toBe("routine");
   });
+
+  it("marks aiDraftReady from worklist aiDraftStatus READY", () => {
+    const study = normalizeWorkspaceStudy({
+      id: 3,
+      patientName: "X",
+      modality: "MR",
+      aiDraftStatus: "READY",
+    });
+    expect(study!.aiDraftReady).toBe(true);
+    const none = normalizeWorkspaceStudy({
+      id: 4,
+      patientName: "Y",
+      modality: "CT",
+      aiDraftStatus: "NONE",
+    });
+    expect(none!.aiDraftReady).toBe(false);
+  });
 });

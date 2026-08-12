@@ -42,8 +42,10 @@ describe("scheduler decisions across modes (G10)", () => {
   it("STAT/emergency runs immediately even during quiet hours", () => {
     expect(decideScheduling(inp({ nowMinutes: M(13), priority: "stat" }), cfg)).toMatchObject({ enqueue: true, mode: "immediate" });
   });
-  it("night_batch modality defers routine studies but lets STAT jump", () => {
+  it("night_batch modality defers outside the night window but enqueues inside it", () => {
     expect(decideScheduling(inp({ modalityMode: "night_batch", nowMinutes: M(22) }), cfg)).toMatchObject({ enqueue: false, mode: "night_batch" });
+    expect(decideScheduling(inp({ modalityMode: "night_batch", nowMinutes: M(23, 30) }), cfg)).toMatchObject({ enqueue: true, mode: "night_batch" });
+    expect(decideScheduling(inp({ modalityMode: "night_batch", nowMinutes: M(2) }), cfg)).toMatchObject({ enqueue: true, mode: "night_batch" });
     expect(decideScheduling(inp({ modalityMode: "night_batch", priority: "emergency" }), cfg)).toMatchObject({ enqueue: true, mode: "immediate" });
   });
 });
