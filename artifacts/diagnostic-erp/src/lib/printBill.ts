@@ -489,14 +489,14 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
             </div>
           </td>
           <td style="vertical-align:top;padding:0;position:relative">
-            <div style="visibility:hidden;pointer-events:none;font-size:${patientNameSize};line-height:1.25" aria-hidden="true">
+            <div style="visibility:hidden;pointer-events:none;font-size:${patientNameSize}" aria-hidden="true">
               <div style="font-weight:800;line-height:1.25">&nbsp;</div>
               <div style="margin-top:3px;line-height:1.3">&nbsp;</div>
             </div>
-            <div style="position:absolute;inset:0;display:flex;flex-direction:column;justify-content:space-between;text-align:right;white-space:nowrap">
-              <div style="font-size:${patientNameSize};font-weight:800;line-height:1.15;color:#0f172a">${created.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }).toUpperCase()} &nbsp;${created.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: true }).toUpperCase()}</div>
-              <div style="font-size:${patientNameSize};line-height:1.15;color:#0f172a">${metaLabel("BILL NO:", patientNameSize)} ${metaValue(billDigits, patientNameSize, 800)}</div>
-              <div style="font-size:${patientNameSize};line-height:1.15;color:#0f172a">${metaLabel("PH", patientNameSize)} ${metaValue(bill.patient?.phone ?? "", patientNameSize, 600)} · ${metaLabel("ID", patientNameSize)} ${metaValue(bill.patient?.patientId ?? "", patientNameSize, 600)}</div>
+            <div style="position:absolute;inset:0;display:flex;flex-direction:column;text-align:right;white-space:nowrap;overflow:hidden">
+              <div style="flex:1 1 0;display:flex;align-items:flex-start;justify-content:flex-end;font-size:${patientNameSize};font-weight:800;line-height:1.1;color:#0f172a">${created.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }).toUpperCase()} &nbsp;${created.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: true }).toUpperCase()}</div>
+              <div style="flex:1 1 0;display:flex;align-items:center;justify-content:flex-end;font-size:${patientNameSize};line-height:1.1;color:#0f172a">${metaLabel("BILL NO:", patientNameSize)} ${metaValue(billDigits, patientNameSize, 800)}</div>
+              <div style="flex:1 1 0;display:flex;align-items:flex-end;justify-content:flex-end;font-size:${patientNameSize};line-height:1.1;color:#0f172a">${metaLabel("PH", patientNameSize)} ${metaValue(bill.patient?.phone ?? "", patientNameSize, 600)} · ${metaLabel("ID", patientNameSize)} ${metaValue(bill.patient?.patientId ?? "", patientNameSize, 600)}</div>
             </div>
           </td>
         </tr>
