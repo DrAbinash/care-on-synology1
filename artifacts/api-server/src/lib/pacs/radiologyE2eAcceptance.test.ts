@@ -126,10 +126,28 @@ describe("Radiology E2E acceptance — cancellation (D)", () => {
       const s = scenarioById("cancellation");
       const proc = buildAcceptanceMwlProcedure(s);
       const wlPath = path.join(live, `${s.accessionNumber}.wl`);
-      // Seed a fake live file (acceptance does not require dump2dcm for cancel path)
       await writeFile(wlPath, "fake-wl", "utf8");
-      await syncWorklistForStatus(proc, "CANCELLED");
+      const sync = await syncWorklistForStatus(proc, "CANCELLED");
+      expect(sync.action).toBe("removed");
+      expect(sync.remove?.outcome).toBe("removed");
       await expect(access(wlPath)).rejects.toThrow();
+    } finally {
+      if (ORIG_MWL_DIR === undefined) delete process.env.ORTHANC_WORKLIST_DIR;
+      else process.env.ORTHANC_WORKLIST_DIR = ORIG_MWL_DIR;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("already-absent .wl is idempotent success (wlRemoved semantics)", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "mwl-cancel-abs-"));
+    const live = path.join(root, "worklists");
+    await mkdir(live, { recursive: true });
+    process.env.ORTHANC_WORKLIST_DIR = live;
+    try {
+      const { removeWorklistFile, isRemoveWorklistSuccess } = await import("./mwlWorklistWriter");
+      const r = await removeWorklistFile("ACC-NEVER-EXISTED");
+      expect(r.outcome).toBe("already_absent");
+      expect(isRemoveWorklistSuccess(r)).toBe(true);
     } finally {
       if (ORIG_MWL_DIR === undefined) delete process.env.ORTHANC_WORKLIST_DIR;
       else process.env.ORTHANC_WORKLIST_DIR = ORIG_MWL_DIR;

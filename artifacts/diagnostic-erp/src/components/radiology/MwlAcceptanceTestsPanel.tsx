@@ -36,6 +36,16 @@ type MwlDeploymentStatus = {
   activeProcedureCount?: number;
   quarantineCount?: number;
   worklistDir: string | null;
+  cleanupRetry?: {
+    pending: number;
+    retrying: number;
+    abandoned: number;
+    overdue: number;
+    trafficLight: "green" | "amber" | "red";
+    detail: string;
+    staleTerminalWlCount?: number;
+    lastSuccessAt?: string | null;
+  };
 };
 
 const FALLBACK_SCENARIOS: AcceptanceScenario[] = [
@@ -80,7 +90,8 @@ const FALLBACK_SCENARIOS: AcceptanceScenario[] = [
     expectedModality: "MR",
     procedureDescription: "Cancel after MWL publish",
     chain: [
-      "Create one test procedure → confirm visible → cancel → confirm removed from MWL/.wl/modality",
+      "Create one test procedure → confirm visible → cancel → ERP CANCELLED",
+      "If .wl unlink fails: diagnostics shows pending cleanup → retry removes it → GREEN",
     ],
     manualDoc: "docs/RADIOLOGY_END_TO_END_ACCEPTANCE.md",
   },
@@ -158,6 +169,21 @@ export function MwlAcceptanceTestsPanel() {
               {typeof mwl.activeProcedureCount === "number" ? ` · ${mwl.activeProcedureCount} active` : ""}
               {mwl.quarantineCount ? ` · ${mwl.quarantineCount} quarantined` : ""}
             </span>
+            {mwl.cleanupRetry && (
+              <Badge
+                variant="outline"
+                className={
+                  mwl.cleanupRetry.trafficLight === "green"
+                    ? "text-emerald-700 border-emerald-200"
+                    : mwl.cleanupRetry.trafficLight === "amber"
+                      ? "text-amber-700 border-amber-200"
+                      : "text-red-700 border-red-200"
+                }
+                data-testid="acceptance-cleanup-light"
+              >
+                Cleanup: {mwl.cleanupRetry.detail}
+              </Badge>
+            )}
           </div>
         )}
       </div>

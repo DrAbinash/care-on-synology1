@@ -179,7 +179,20 @@ export async function publishRadiologyStudyToMwl(opts: {
     if (isMwlEnabled()) {
       if (isTerminal) {
         // Never re-publish a cancelled/completed accession — remove any stale .wl.
-        await removeWorklistFile(row.accessionNumber);
+        // Do NOT set SENT_TO_MWL. Do NOT call writeWorklistFile.
+        const removed = await removeWorklistFile(row.accessionNumber);
+        if (removed.outcome === "failed") {
+          try {
+            const { afterCancelEnsureWlRemoved } = await import("./mwlWlCleanup");
+            await afterCancelEnsureWlRemoved(row.accessionNumber, removed, {
+              billId: opts.billId,
+              orderId: opts.orderId,
+              reason: "terminal republish guard — stale .wl remove failed",
+            });
+          } catch {
+            /* never block publish path */
+          }
+        }
       } else {
         written = await writeWorklistFile({
           accessionNumber: row.accessionNumber,

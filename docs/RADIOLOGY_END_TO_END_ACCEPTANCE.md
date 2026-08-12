@@ -116,6 +116,21 @@ Call Next remains keyed off the token’s own department (unchanged). Legacy set
 
 **Expected chain:** Create → confirm visible → cancel → confirm removed from MWL, .wl, modality, and TV queue.
 
+### Cancellation failure / recovery (filesystem)
+
+Billing cancel must **always** succeed even if Orthanc `.wl` unlink fails.
+
+| Step | Expected |
+| --- | --- |
+| 1. Cancel test / bill | ERP status becomes `CANCELLED` (study + scheduled procedure) |
+| 2. Modality | Should no longer see the exam on C-FIND once `.wl` is gone |
+| 3. If filesystem deletion temporarily fails | `wlRemoved=false`; durable `mwl_wl_cleanup` job enqueued on `dicom_retry_queue` |
+| 4. Diagnostics (Settings → Radiology → MWL) | Shows **Pending MWL cleanup** (AMBER) or overdue (RED) — counts only, no PHI |
+| 5. Background retry / **Retry MWL Cleanup Now** | Removes `.wl` when mount recovers; job → success |
+| 6. Diagnostics | Returns **GREEN** (`Pending MWL cleanup: 0`) |
+
+Retry jobs **never** call `writeWorklistFile` and never restore cancelled billing state.
+
 **PASS □** **FAIL □** Notes: _______________
 
 ---

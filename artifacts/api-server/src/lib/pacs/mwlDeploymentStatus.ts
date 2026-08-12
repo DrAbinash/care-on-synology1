@@ -71,6 +71,18 @@ export type MwlDeploymentStatus = {
     error: string | null;
   } | null;
   setupSteps: string[];
+  /** Durable MWL .wl cleanup retry summary (no PHI). */
+  cleanupRetry?: {
+    pending: number;
+    retrying: number;
+    abandoned: number;
+    overdue: number;
+    oldestPendingAgeMs: number | null;
+    lastSuccessAt: string | null;
+    trafficLight: "green" | "amber" | "red";
+    detail: string;
+    staleTerminalWlCount?: number;
+  };
 };
 
 /** In-memory last sync result (set by sync route; process-local). */
@@ -455,6 +467,53 @@ export async function getMwlDeploymentStatus(): Promise<MwlDeploymentStatus> {
     ));
   }
 
+  // 12 — Durable cancel cleanup retry (dicom_retry_queue / mwl_wl_cleanup)
+  let cleanupRetry: MwlDeploymentStatus["cleanupRetry"];
+  try {
+    const { getMwlCleanupDiagnostics, countStaleTerminalWlFiles } = await import("./mwlWlCleanup");
+    const diag = await getMwlCleanupDiagnostics();
+    let staleTerminalWlCount = 0;
+    if (dir) {
+      staleTerminalWlCount = await countStaleTerminalWlFiles(
+        (accession) => wlFileExists(dir, accession),
+        40,
+      );
+    }
+    cleanupRetry = { ...diag, staleTerminalWlCount };
+
+    const cleanupStatus =
+      diag.trafficLight === "green" ? "pass" : diag.trafficLight === "amber" ? "warn" : "fail";
+    const ageMin = diag.oldestPendingAgeMs != null
+      ? Math.round(diag.oldestPendingAgeMs / 60_000)
+      : null;
+    checks.push(check(
+      "mwl_cleanup",
+      "MWL cancel .wl cleanup retry",
+      cleanupStatus,
+      [
+        diag.detail,
+        diag.lastSuccessAt ? `last success ${diag.lastSuccessAt}` : null,
+        ageMin != null ? `oldest pending ~${ageMin}m` : null,
+        staleTerminalWlCount > 0 ? `${staleTerminalWlCount} terminal procedure(s) still have .wl` : null,
+      ].filter(Boolean).join(" · "),
+      cleanupStatus === "pass"
+        ? undefined
+        : "Use Retry MWL Cleanup on the MWL tab, or wait for the radiology jobs cron tick.",
+    ));
+
+    if (staleTerminalWlCount > 0 && cleanupStatus === "pass") {
+      checks.push(check(
+        "stale_terminal_wl",
+        "Cancelled/completed .wl still on disk",
+        "warn",
+        `${staleTerminalWlCount} terminal procedure(s) still have a live .wl — enqueue cleanup or Sync`,
+        "Cancel again or click Retry MWL Cleanup; Sync also removes terminal rows.",
+      ));
+    }
+  } catch {
+    cleanupRetry = undefined;
+  }
+
   const { ready, verdict } = deriveMwlVerdict(checks);
 
   return {
@@ -473,5 +532,6 @@ export async function getMwlDeploymentStatus(): Promise<MwlDeploymentStatus> {
     orthancInternal,
     lastSync,
     setupSteps: SETUP_STEPS,
+    cleanupRetry,
   };
 }
