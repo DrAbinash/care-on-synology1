@@ -49,7 +49,10 @@ export function buildDocumentBaseCss(layout: ResolvedPageLayout, compactSlipOnA4
     height: auto;
     margin-left: auto;
     margin-right: auto;
-    padding: ${safePaddingMm}mm;
+    padding-top: ${safePaddingMm}mm;
+    padding-right: ${safePaddingMm}mm;
+    padding-bottom: ${safePaddingMm}mm;
+    padding-left: ${safePaddingMm}mm;
   }`
     : "";
 
@@ -60,7 +63,9 @@ export function buildDocumentBaseCss(layout: ResolvedPageLayout, compactSlipOnA4
     margin: 0;
     padding: 0;
     width: ${widthMm}mm;
+    max-width: ${widthMm}mm;
     background: #fff;
+    overflow: hidden;
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
   }
@@ -69,13 +74,24 @@ export function buildDocumentBaseCss(layout: ResolvedPageLayout, compactSlipOnA4
   }
   .care-doc-page {
     width: ${widthMm}mm;
+    max-width: ${widthMm}mm;
     height: ${heightMm}mm;
-    padding: ${safePaddingMm}mm;
+    /* Explicit equal L/R padding — avoids asymmetric “more gap on the right”
+       from scrollbars or shorthand padding quirks in print/preview. */
+    padding-top: ${safePaddingMm}mm;
+    padding-right: ${safePaddingMm}mm;
+    padding-bottom: ${safePaddingMm}mm;
+    padding-left: ${safePaddingMm}mm;
+    margin: 0;
     box-sizing: border-box;
     overflow: hidden;
     position: relative;
     page-break-after: always;
     break-after: page;
+  }
+  .care-doc-page > table,
+  .care-doc-page > div {
+    max-width: 100%;
   }
   .care-doc-page:last-child {
     page-break-after: auto;

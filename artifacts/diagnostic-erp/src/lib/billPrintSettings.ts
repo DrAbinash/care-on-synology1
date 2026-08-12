@@ -139,7 +139,8 @@ export type BillPrintSettings = {
   printMarginMm: number | null;
   /** Clinic logo height on the printed bill (px). null = format built-in default. */
   printLogoHeightPx: number | null;
-  /** Header layout: "right" = address/phone/website under Bill No. (reference style);
+  /** Header layout: "right" = address/phone/website under the invoice title
+   * (bill number sits in the patient meta block under date/time);
    * "left" = address block under the clinic name (classic style). */
   headerLayout: "left" | "right" | null;
   printTitleFontPx: number | null;

@@ -4842,7 +4842,7 @@ const LAYOUT_PRESETS = {
 } as const;
 
 const headerLayouts: { id: string; label: string }[] = [
-  { id: "right", label: "Address on right (under Bill No.)" },
+  { id: "right", label: "Address on right (under invoice)" },
   { id: "left", label: "Address on left (under clinic name)" },
 ];
 const billPaperSizes: { id: string; label: string }[] = [
@@ -5332,10 +5332,12 @@ function BillingPrintTab() {
             <iframe
               title="Bill print preview"
               srcDoc={previewHtml}
+              scrolling="no"
               style={{
                 width: previewNatural.w,
                 height: previewNatural.h,
                 border: "none",
+                overflow: "hidden",
                 transform: `scale(${previewScale})`,
                 transformOrigin: "top left",
               }}
