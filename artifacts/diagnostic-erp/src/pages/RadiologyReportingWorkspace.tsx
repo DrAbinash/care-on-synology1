@@ -130,6 +130,7 @@ import PriorComparisonToolbar from "@/components/radiology/PriorComparisonToolba
 import ViewerMeasurementsBanner from "@/components/radiology/ViewerMeasurementsBanner";
 import LegacyBox, { type LegacyBoxTab } from "@/components/radiology/LegacyBox";
 import { AiDraftPanel } from "@/components/ai/AiDraftPanel";
+import { WhatsAppReportShareDialog } from "@/components/radiology/WhatsAppReportShareDialog";
 import UsgCompanionPanel from "@/components/radiology/UsgCompanionPanel";
 import MriReadinessStrip from "@/components/radiology/MriReadinessStrip";
 import ObDashboardStrip from "@/components/radiology/ObDashboardStrip";
@@ -197,7 +198,7 @@ import "@/lib/copilotUsgCompanionModule";
 import {
   Lock, AlertTriangle, ChevronLeft, ChevronRight, Pause, Clock, Sparkles, ShieldCheck,
   Brain, Activity, Zap, Printer, FileDown, Share2, Eye, PanelLeftClose, PanelLeftOpen,
-  Maximize2, Columns2, Monitor, Archive, Keyboard, AppWindow,
+  Maximize2, Columns2, Monitor, Archive, Keyboard, AppWindow, MessageCircle,
 } from "lucide-react";
 
 interface Props { studyId?: number; }
@@ -222,6 +223,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const linkedReportIdRef = useRef<number | null>(null);
   const openLegacyTabRef = useRef<(tab: LegacyBoxTab) => void>(() => {});
   const [legacyTab, setLegacyTab] = useState<LegacyBoxTab | null>(null);
+  const [whatsappShareOpen, setWhatsappShareOpen] = useState(false);
   const [exportingWord, setExportingWord] = useState(false);
   const [exportingPdf, setExportingPdf] = useState(false);
   const [headingCase, setHeadingCase] = useState<ReportHeadingCase>("all_caps");
@@ -1264,17 +1266,18 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   }, [workflow.currentRow, existingDraft]);
   linkedReportIdRef.current = linkedReportId;
 
-  // ─── Report share (WhatsApp) — uses finalized report id, not worklist id ────
-  const handleShare = useCallback(async () => {
+  // ─── Report share (WhatsApp) — dialog with phone + verify-then-send ─────────
+  const handleShare = useCallback(() => {
     const reportId = linkedReportIdRef.current;
     if (!reportId) {
-      toast({ title: "Finalize the report first", description: "WhatsApp share needs a finalized patient report.", variant: "destructive" });
+      toast({
+        title: "Finalize the report first",
+        description: "WhatsApp send needs a signed patient report. Use Finalize, then Share.",
+        variant: "destructive",
+      });
       return;
     }
-    try {
-      await api.post(`/api/patient-reports/${reportId}/share`, { channel: "whatsapp" });
-      toast({ title: "Shared via WhatsApp" });
-    } catch (err) { toast({ title: "Share failed", description: err instanceof Error ? err.message : "Error", variant: "destructive" }); }
+    setWhatsappShareOpen(true);
   }, [toast]);
 
   const { data: finalReport } = useQuery<{
@@ -1556,8 +1559,18 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
           <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => void handleExportPdf()} disabled={exportingPdf} title="Export PDF with selected images + clinic branding">
             <Printer className="h-3.5 w-3.5 mr-1" /> {exportingPdf ? "…" : "PDF"}
           </Button>
-          {/* Share */}
-          <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={handleShare}>
+          {/* WhatsApp share */}
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-7 px-2 text-xs text-emerald-700"
+            onClick={handleShare}
+            title="Send report PDF link on WhatsApp"
+            data-testid="btn-workspace-whatsapp-share"
+          >
+            <MessageCircle className="h-3.5 w-3.5 mr-1" /> WhatsApp
+          </Button>
+          <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={handleShare} title="Share report">
             <Share2 className="h-3.5 w-3.5 mr-1" /> Share
           </Button>
           {/* Teaching case */}
@@ -2291,6 +2304,18 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       </footer>
 
       {/* ─── Floating UI overlays ─── */}
+      <WhatsAppReportShareDialog
+        open={whatsappShareOpen}
+        onOpenChange={setWhatsappShareOpen}
+        reportId={linkedReportId}
+        fallbackPhone={(workflow.currentRow as { patientPhone?: string | null } | null)?.patientPhone ?? study?.patient?.phone ?? null}
+        fallbackPatientName={workflow.currentRow?.patientName ?? study?.patient?.name ?? null}
+        canVerify={canShowVerify}
+        verifierName={session?.user?.name ?? null}
+        onSent={() => {
+          void qc.invalidateQueries({ queryKey: ["workspace-final-report"] });
+        }}
+      />
       {/* Overnight / shadow AI drafts — self-gates on pilot visibility */}
       <AiDraftPanel
         studyInstanceUid={workflow.currentRow?.studyInstanceUID ?? study?.studyInstanceUID ?? null}
