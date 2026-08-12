@@ -139,7 +139,7 @@ function TemplateForm({
         {/* Technique */}
         <div className="space-y-1">
           <label className="text-xs font-semibold text-muted-foreground">Technique / Protocol</label>
-          <textarea value={technique} onChange={(e) => setTechnique(e.target.value)} rows={3} className="w-full p-2 text-sm rounded-lg border bg-background resize-none" placeholder="MRI Brain was performed on a 1.5T/3T scanner using standard brain protocol..." />
+          <textarea value={technique} onChange={(e) => setTechnique(e.target.value)} rows={3} className="w-full p-2 text-sm rounded-lg border bg-background resize-none" placeholder="MRI Brain was performed on a 3T scanner using standard brain protocol..." />
         </div>
 
         {/* Findings items */}

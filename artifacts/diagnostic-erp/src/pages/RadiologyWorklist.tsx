@@ -29,8 +29,6 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
-import { MwlPanel } from "@/pages/MwlDashboard";
-import { MwlStatusPanel } from "@/components/radiology/MwlStatusPanel";
 import QueueModalityFilter from "@/components/radiology/QueueModalityFilter";
 
 type WorklistEntry = {
@@ -1066,10 +1064,10 @@ export default function RadiologyWorklist() {
 
   return (
     <div className="p-4 md:p-6 space-y-4">
-      <PageHeader title="Worklist Hub" subtitle="Study queue, PACS worklist, and modality worklist in one place" />
+      <PageHeader title="Worklist Hub" subtitle="RIS study queue and PACS intake worklist" />
 
       <Tabs defaultValue="pacs-worklist" className="space-y-4">
-        <TabsList className="grid w-full grid-cols-1 sm:grid-cols-3 h-auto gap-1.5 p-1.5 bg-muted/40 rounded-xl border border-border/60">
+        <TabsList className="grid w-full grid-cols-1 sm:grid-cols-2 h-auto gap-1.5 p-1.5 bg-muted/40 rounded-xl border border-border/60">
           <TabsTrigger
             value="study-queue"
             className="flex items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium transition-all data-[state=active]:bg-background data-[state=active]:shadow-sm data-[state=active]:border data-[state=active]:border-border/60"
@@ -1083,13 +1081,6 @@ export default function RadiologyWorklist() {
           >
             <ScanSearch size={15} />
             <span className="text-center leading-tight">PACS Worklist</span>
-          </TabsTrigger>
-          <TabsTrigger
-            value="mwl"
-            className="flex items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium transition-all data-[state=active]:bg-background data-[state=active]:shadow-sm data-[state=active]:border data-[state=active]:border-border/60"
-          >
-            <CalendarDays size={15} />
-            <span className="text-center leading-tight">MWL</span>
           </TabsTrigger>
         </TabsList>
 
@@ -1806,23 +1797,6 @@ export default function RadiologyWorklist() {
                 to print/share. Automated email delivery is not enabled (READY_TO_SEND only).
               </div>
             </div>
-          </div>
-        </TabsContent>
-
-        <TabsContent value="mwl">
-          <div className="space-y-3">
-            <MwlStatusPanel
-              isAdmin={["admin", "super_admin", "owner"].includes(normalizeRole(session?.user?.role || ""))}
-              onSync={() => {
-                void api.post("/api/radiology/mwl-worklist/sync", {}).then(() => {
-                  toast({ title: "MWL sync requested" });
-                  void qc.invalidateQueries({ queryKey: ["mwl-deployment-status"] });
-                }).catch((e: unknown) => {
-                  toast({ title: "MWL sync failed", description: e instanceof Error ? e.message : "Error", variant: "destructive" });
-                });
-              }}
-            />
-            <MwlPanel />
           </div>
         </TabsContent>
       </Tabs>

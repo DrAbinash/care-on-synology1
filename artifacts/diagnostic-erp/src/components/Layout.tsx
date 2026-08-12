@@ -211,7 +211,6 @@ const navItems: NavEntry[] = [
       },
       // Owner-only leftovers — not needed in a radiologist's daily rail.
       { path: "/radiology/operations-dashboard", icon: Gauge,       label: "Ops Dashboard", ownerOnly: true },
-      { path: "/radiology/my-collection",        icon: ShieldAlert, label: "DICOM Match", ownerOnly: true },
       { path: "/teleradiology",                  icon: Globe,       label: "Teleradiology", ownerOnly: true },
     ],
   },

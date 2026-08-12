@@ -71,10 +71,10 @@ export default function BillingVsPacsKpi({ from, to }: Props) {
           </p>
         </div>
         <Link
-          href="/radiology/my-collection"
+          href="/radiology/worklist"
           className="text-[11px] font-semibold text-primary hover:underline whitespace-nowrap"
         >
-          Review in Match Center →
+          Open PACS worklist →
         </Link>
       </div>
 
