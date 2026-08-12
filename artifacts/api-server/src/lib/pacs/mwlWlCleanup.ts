@@ -19,6 +19,7 @@ import {
   type RadiologyJobRow,
 } from "../radiologyJobs";
 import {
+  isRemoveWorklistSuccess,
   removeWorklistFile,
   type RemoveWorklistResult,
 } from "./mwlWorklistWriter";

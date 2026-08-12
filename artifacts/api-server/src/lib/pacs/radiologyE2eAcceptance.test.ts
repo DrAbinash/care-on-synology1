@@ -311,7 +311,7 @@ describe("Radiology E2E acceptance — SENT_TO_MWL gating (unit contract)", () =
     // Documented invariant: publish sets SENT_TO_MWL only when writeWorklistFile
     // returns true AND prior status was SCHEDULED. Failed write leaves SCHEDULED.
     const written = false;
-    const prior = "SCHEDULED";
+    const prior: string = "SCHEDULED";
     const next = written && prior === "SCHEDULED" ? "SENT_TO_MWL" : prior;
     expect(next).toBe("SCHEDULED");
 
@@ -320,7 +320,7 @@ describe("Radiology E2E acceptance — SENT_TO_MWL gating (unit contract)", () =
     expect(nextOk).toBe("SENT_TO_MWL");
 
     // Terminal statuses never advance to SENT_TO_MWL
-    const terminal = "CANCELLED";
+    const terminal: string = "CANCELLED";
     const nextTerminal = writtenOk && terminal === "SCHEDULED" ? "SENT_TO_MWL" : terminal;
     expect(nextTerminal).toBe("CANCELLED");
   });
