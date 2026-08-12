@@ -4,135 +4,13 @@ import {
   parseReportHtmlToBlocks,
   safeFileNamePart,
 } from "./radiologyReportWordExport";
+import {
+  buildPreviewHtml,
+  type BuildPreviewHtmlOpts,
+} from "./radiologyReportPreviewHtml";
 
-// The clinic composes final reports in Word, not this app. This converter's
-// entire job is turning the SAME HTML the workspace's own Preview pane
-// already renders (buildPreviewHtml() → previewHtml,
-// RadiologyReportingWorkspace.tsx:405) into a .docx a radiologist can keep
-// working from — so it must genuinely handle every shape that function can
-// produce, not a hand-picked simplification.
-//
-// buildPreviewHtml cannot be imported directly here: it lives inside a
-// ~5900-line page component whose import graph is full of "@/…"-aliased
-// component imports, and the root vitest.config.ts (which every
-// artifacts/*/src/**/*.test.ts file runs under, including this one) has no
-// alias resolution configured — only artifacts/diagnostic-erp's own Vite
-// build does. Pulling the real function in would mean either mocking dozens
-// of unrelated UI components or reconfiguring alias resolution repo-wide for
-// one test file, neither of which belongs in this PR.
-//
-// Instead, mirrorBuildPreviewHtml() below is a byte-for-byte port of that
-// function's real template literals, transcribed directly from
-// RadiologyReportingWorkspace.tsx:405-497 while writing this file — same
-// style attributes, same placeholder strings, same conditional structure.
-// If buildPreviewHtml's HTML shape ever changes, this mirror (and these
-// tests) must be updated to match, same as any fixture. Where it matters —
-// the exact placeholder markup that caused a real bug below — the fixture
-// quotes the source literally rather than approximating it.
-
-function escHtmlMirror(v: string): string {
-  return String(v ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
-}
-
-function fmtHeadingMirror(text: string, headingCase: "all_caps" | "title_case"): string {
-  if (headingCase === "all_caps") return text.toUpperCase();
-  return text.replace(/\w\S*/g, (w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase());
-}
-
-interface MirrorOpts {
-  patientName: string;
-  age: string;
-  sex: string;
-  accessionNumber: string;
-  referringDoctor: string;
-  studyDate: string;
-  studyName: string;
-  technique: string;
-  clinicalHistory: string;
-  findingsMap: Record<string, { normal: boolean; text: string }>;
-  rawFindings: string;
-  useStructured: boolean;
-  impression: string[];
-  recommendation: string;
-  imageRefs: { displayOrder: number; description: string; isKeyImage?: boolean }[];
-  headingCase?: "all_caps" | "title_case";
-  sectionSpacing?: "spaced" | "compact";
-  impressionStyle?: "bulleted" | "numbered" | "plain";
-}
-
-/** Faithful port of RadiologyReportingWorkspace.tsx:405 buildPreviewHtml(). */
-function mirrorBuildPreviewHtml(opts: MirrorOpts): string {
-  const hc = opts.headingCase ?? "all_caps";
-  const ss = opts.sectionSpacing ?? "spaced";
-  const sp = ss === "compact" ? "2px" : "10px";
-  const sp2 = ss === "compact" ? "4px" : "12px";
-
-  const headerHtml = `<p style="margin:0 0 2px;"><strong>NAME: ${escHtmlMirror(opts.patientName)} &nbsp;&nbsp; AGE/SEX: ${escHtmlMirror(opts.age ?? "")}/${escHtmlMirror(opts.sex ?? "")} &nbsp;&nbsp; ACC: ${escHtmlMirror(opts.accessionNumber)}</strong></p>
-  <p style="margin:0 0 2px;"><strong>REF. BY: ${escHtmlMirror(opts.referringDoctor)} &nbsp;&nbsp; DATE: ${escHtmlMirror(opts.studyDate)}</strong></p>`;
-
-  let findingsHtml = "";
-  if (opts.useStructured) {
-    findingsHtml = Object.entries(opts.findingsMap)
-      .map(([label, item]) => {
-        const raw = item.text.trim();
-        const sentence = raw || (item.normal ? "Normal." : "—");
-        const body = escHtmlMirror(sentence).replaceAll("\n", "<br/>");
-        const bodyHtml = item.normal ? body : `<strong>${body}</strong>`;
-        return `<p style="margin:${sp} 0;break-after:avoid-page;page-break-after:avoid;"><strong>${escHtmlMirror(fmtHeadingMirror(label, hc))}:</strong> ${bodyHtml}</p>`;
-      })
-      .join("\n");
-  } else {
-    findingsHtml = `<p style="margin:0 0 ${sp};">${escHtmlMirror(opts.rawFindings).replaceAll("\n", "<br/>") || "<em style='color:#aaa;'>No findings entered.</em>"}</p>`;
-  }
-
-  const impressionBullets = opts.impression.filter(Boolean);
-  let impressionHtml = "";
-  if (impressionBullets.length > 0) {
-    const ist = opts.impressionStyle ?? "bulleted";
-    if (ist === "numbered") {
-      impressionHtml = `<ol style="margin:4px 0 0 22px;padding:0;">${impressionBullets.map((b) => `<li>${escHtmlMirror(b)}</li>`).join("")}</ol>`;
-    } else if (ist === "plain") {
-      impressionHtml = `<p style="margin:4px 0;">${impressionBullets.map((b) => escHtmlMirror(b)).join("; ")}</p>`;
-    } else {
-      impressionHtml = `<ul style="margin:4px 0 0 18px;padding:0;">${impressionBullets.map((b) => `<li>${escHtmlMirror(b)}</li>`).join("")}</ul>`;
-    }
-  } else {
-    impressionHtml = `<p style="margin:4px 0;color:#aaa;"><em>Draft impression — not verified.</em></p>`;
-  }
-
-  const hStyle = (margin: string) => `margin:${margin};break-after:avoid-page;page-break-after:avoid;`;
-
-  const orderedImageRefs = [...opts.imageRefs].sort((a, b) => a.displayOrder - b.displayOrder);
-  const imagesHtml = orderedImageRefs.length > 0
-    ? `<h3 style="${hStyle(`${sp2} 0 ${sp}`)}"><u>${fmtHeadingMirror("Key Images", hc)}</u></h3>
-    <ul style="margin:4px 0 0 18px;padding:0;">${orderedImageRefs.map((img, i) => `<li>Image ${i + 1}${img.isKeyImage ? " (KEY)" : ""}: ${escHtmlMirror(img.description)}</li>`).join("")}</ul>`
-    : "";
-
-  return `<div style="font-family:Arial,sans-serif;font-size:13px;line-height:1.45;color:#111;max-width:720px;margin:0 auto;">
-    ${headerHtml}
-    <hr style="border:none;border-top:2px solid #000;margin:6px 0;" />
-    <h2 style="text-align:center;text-decoration:underline;font-size:15px;margin:8px 0;break-after:avoid-page;page-break-after:avoid;"><strong>${escHtmlMirror(opts.studyName)}</strong></h2>
-    <h3 style="${hStyle(`${sp} 0 ${sp}`)}"><u>${fmtHeadingMirror("Technique", hc)}</u></h3>
-    <p style="margin:0 0 ${sp};">${escHtmlMirror(opts.technique)}</p>
-    ${opts.clinicalHistory ? `<h3 style="${hStyle(`${sp} 0 ${sp}`)}"><u>${fmtHeadingMirror("Clinical History", hc)}</u></h3><p style="margin:0 0 ${sp};">${escHtmlMirror(opts.clinicalHistory)}</p>` : ""}
-    <hr style="border:none;border-top:2px solid #000;margin:6px 0;" />
-    <h3 style="${hStyle(`${sp} 0 ${sp}`)}"><u>${fmtHeadingMirror("Findings / Observation", hc)}</u></h3>
-    ${findingsHtml}
-    ${imagesHtml}
-    <h3 style="${hStyle(`${sp2} 0 ${sp}`)}"><u>${fmtHeadingMirror("Impression", hc)}</u></h3>
-    ${impressionHtml}
-    <h3 style="${hStyle(`${sp2} 0 ${sp}`)}"><u>${fmtHeadingMirror("Recommendation", hc)}</u></h3>
-    <p style="margin:0 0 ${sp};">${escHtmlMirror(opts.recommendation || "Please correlate with clinical findings.")}</p>
-    <hr style="border:none;border-top:1px solid #999;margin:${sp2} 0 4px;" />
-    <p style="font-size:11px;color:#666;font-style:italic;margin:0;">Please correlate with clinical history and findings. Report issued by authorized radiologist only.</p>
-  </div>`.trim();
-}
-
-const BASE_OPTS: MirrorOpts = {
+// Word export must handle every shape buildPreviewHtml() can produce.
+const BASE_OPTS: BuildPreviewHtmlOpts = {
   patientName: "Ramesh Kumar",
   age: "45",
   sex: "M",
@@ -191,7 +69,7 @@ describe("parseInlineHtml — real segments from real escHtml() output", () => {
 
 describe("parseReportHtmlToBlocks — against a faithful mirror of buildPreviewHtml()", () => {
   test("raw (non-structured) findings with a plain impression", () => {
-    const html = mirrorBuildPreviewHtml({
+    const html = buildPreviewHtml({
       ...BASE_OPTS,
       rawFindings: "No acute intracranial hemorrhage.\nVentricles normal.",
       impression: ["No acute abnormality"],
@@ -224,7 +102,7 @@ describe("parseReportHtmlToBlocks — against a faithful mirror of buildPreviewH
   });
 
   test("structured findings (findingsMap) render each region as its own paragraph, abnormal bolded", () => {
-    const html = mirrorBuildPreviewHtml({
+    const html = buildPreviewHtml({
       ...BASE_OPTS,
       useStructured: true,
       findingsMap: {
@@ -255,7 +133,7 @@ describe("parseReportHtmlToBlocks — against a faithful mirror of buildPreviewH
   });
 
   test("numbered impression style parses as an ordered list", () => {
-    const html = mirrorBuildPreviewHtml({
+    const html = buildPreviewHtml({
       ...BASE_OPTS,
       impression: ["Finding A", "Finding B"],
       impressionStyle: "numbered",
@@ -268,7 +146,7 @@ describe("parseReportHtmlToBlocks — against a faithful mirror of buildPreviewH
   });
 
   test("key images render as a list block, ordered by displayOrder, KEY images marked", () => {
-    const html = mirrorBuildPreviewHtml({
+    const html = buildPreviewHtml({
       ...BASE_OPTS,
       imageRefs: [
         { displayOrder: 1, description: "Sagittal T2", isKeyImage: false },
@@ -288,7 +166,7 @@ describe("parseReportHtmlToBlocks — against a faithful mirror of buildPreviewH
   });
 
   test("section dividers (<hr>) between header/body/footer are preserved", () => {
-    const html = mirrorBuildPreviewHtml(BASE_OPTS);
+    const html = buildPreviewHtml(BASE_OPTS);
     const blocks = parseReportHtmlToBlocks(html);
     // Three: after the patient-header block, after clinical history (before
     // Findings), and near the footer before the disclaimer line.
@@ -297,7 +175,7 @@ describe("parseReportHtmlToBlocks — against a faithful mirror of buildPreviewH
   });
 
   test("an empty draft still produces a complete, non-crashing document with real placeholder text (not raw tags)", () => {
-    const html = mirrorBuildPreviewHtml(BASE_OPTS);
+    const html = buildPreviewHtml(BASE_OPTS);
     const blocks = parseReportHtmlToBlocks(html);
     expect(blocks.length).toBeGreaterThan(5);
 

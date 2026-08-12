@@ -74,6 +74,19 @@ import { readStaffSession, normalizeRole, isOwnerRole, isFeatureEnabled } from "
 import { saveRadiologyDraft, finalizeRadiologyReport } from "@/lib/radiologyReportLifecycle";
 import { exportRadiologyReportToWord, safeFileNamePart } from "@/lib/radiologyReportWordExport";
 import { exportRadiologyReportToPdf } from "@/lib/radiologyReportPdfExport";
+import {
+  buildPreviewHtml,
+  formatReportExportError,
+  type ReportHeadingCase,
+  type ReportSectionSpacing,
+  type ReportImpressionStyle,
+} from "@/lib/radiologyReportPreviewHtml";
+import type { PrintClinic } from "@/lib/reportPdfGenerator";
+import {
+  type ReportLayoutKey,
+  quickSelectLayoutKey,
+} from "@/components/radiology/ReportLayoutQuickSelect";
+import ReportExportPanel from "@/components/radiology/ReportExportPanel";
 import { validateReport, computeQualityScore } from "@/lib/reportValidator";
 import { logParityInDev } from "@/lib/reportQualityShadow";
 import { detectCriticalFindings } from "@/lib/criticalResults";
@@ -200,6 +213,12 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const linkedReportIdRef = useRef<number | null>(null);
   const openLegacyTabRef = useRef<(tab: LegacyBoxTab) => void>(() => {});
   const [legacyTab, setLegacyTab] = useState<LegacyBoxTab | null>(null);
+  const [exportingWord, setExportingWord] = useState(false);
+  const [exportingPdf, setExportingPdf] = useState(false);
+  const [headingCase, setHeadingCase] = useState<ReportHeadingCase>("all_caps");
+  const [sectionSpacing, setSectionSpacing] = useState<ReportSectionSpacing>("spaced");
+  const [impressionStyle, setImpressionStyle] = useState<ReportImpressionStyle>("bulleted");
+  const [previewLayoutOverride, setPreviewLayoutOverride] = useState<ReportLayoutKey | null>(null);
   const [shortcutHelpOpen, setShortcutHelpOpen] = useState(false);
   const [verifyBusy, setVerifyBusy] = useState(false);
 
@@ -845,19 +864,93 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     } catch (err) { console.warn("[Workspace] AI impression:", err); }
   }, [workflow.currentRow]);
 
-  // ─── Word/PDF export ────────────────────────────────────────────────────────
-  const handleExportWord = useCallback(() => {
-    const html = `<h2>${workflow.currentRow?.studyDescription ?? "Report"}</h2><p><b>Findings:</b> ${findingsText}</p><p><b>Impression:</b> ${impressionText}</p><p><b>Recommendation:</b> ${recommendationText}</p>`;
-    exportRadiologyReportToWord(html, safeFileNamePart(workflow.currentRow?.patientName ?? "report"));
-  }, [workflow.currentRow, findingsText, impressionText, recommendationText]);
+  // ─── Word/PDF export (legacy layout path + Classic/Premium) ────────────────
+  const { data: presentationTemplates } = useQuery<{ active: Partial<Record<string, string>> }>({
+    queryKey: ["presentation-templates"],
+    queryFn: () => api.get("/api/radiology/presentation-templates"),
+    staleTime: 60_000,
+  });
+  const clinicReportLayout = quickSelectLayoutKey(presentationTemplates?.active?.standard);
+  const reportLayout = previewLayoutOverride ?? clinicReportLayout;
+
+  const { data: clinicSettings } = useQuery<PrintClinic>({
+    queryKey: ["clinic-settings"],
+    queryFn: () => api.get("/api/clinic-settings/branding"),
+    staleTime: 5 * 60_000,
+  });
+
+  const { data: imageRefs = [] } = useQuery<ReportImageRef[]>({
+    queryKey: ["report-image-references", draftId],
+    queryFn: () => api.get(`/api/radiology/report-generator/image-references?draftId=${draftId}`),
+    enabled: !!draftId,
+  });
+
+  const studyNameForExport = studySetup.testName
+    ?? workflow.currentRow?.studyDescription
+    ?? "Radiology Report";
+
+  const previewHtml = useMemo(
+    () =>
+      buildPreviewHtml({
+        patientName: workflow.currentRow?.patientName ?? "",
+        age: String((workflow.currentRow as { age?: string | number } | null)?.age ?? ""),
+        sex: String((workflow.currentRow as { sex?: string } | null)?.sex ?? ""),
+        accessionNumber: workflow.currentRow?.accessionNumber ?? "",
+        referringDoctor: String((workflow.currentRow as { referringDoctor?: string } | null)?.referringDoctor ?? ""),
+        studyDate: String((workflow.currentRow as { studyDate?: string } | null)?.studyDate ?? ""),
+        studyName: studyNameForExport,
+        technique: techniqueText,
+        clinicalHistory: clinicalHistoryText,
+        findingsMap: {},
+        rawFindings: findingsText,
+        useStructured: false,
+        impression: impressionText.split("\n").filter(Boolean),
+        recommendation: recommendationText,
+        imageRefs,
+        headingCase,
+        sectionSpacing,
+        impressionStyle,
+      }),
+    [
+      workflow.currentRow, studyNameForExport, techniqueText, clinicalHistoryText,
+      findingsText, impressionText, recommendationText, imageRefs,
+      headingCase, sectionSpacing, impressionStyle,
+    ],
+  );
+
+  const handleExportWord = useCallback(async () => {
+    setExportingWord(true);
+    try {
+      let html = previewHtml;
+      // Premium: prefer server-rendered clinic layout when a draft/report exists.
+      if (reportLayout === "care-premium" && (draftId || linkedReportIdRef.current)) {
+        try {
+          const templateQs = `template=${encodeURIComponent(reportLayout)}`;
+          const reportId = linkedReportIdRef.current;
+          const url = reportId
+            ? `/api/patient-reports/${reportId}/print?preview=true&${templateQs}`
+            : `/api/radiology/report-generator/drafts/${draftId}/print-preview?${templateQs}`;
+          const serverHtml = await api.get<string>(url);
+          if (typeof serverHtml === "string" && serverHtml.trim()) html = serverHtml;
+        } catch {
+          /* fall back to client previewHtml */
+        }
+      }
+      const fileName = `${safeFileNamePart(workflow.currentRow?.patientName ?? "patient")}_${safeFileNamePart(workflow.currentRow?.accessionNumber ?? "report")}`;
+      await exportRadiologyReportToWord(html, fileName);
+    } catch (err) {
+      toast({
+        title: "Export failed",
+        description: formatReportExportError(err, "Word"),
+        variant: "destructive",
+      });
+    } finally {
+      setExportingWord(false);
+    }
+  }, [workflow.currentRow, previewHtml, toast, reportLayout, draftId]);
 
   const handleExportPdf = useCallback(async () => {
-    let refs: ReportImageRef[] = [];
-    if (draftId) {
-      try {
-        refs = await api.get(`/api/radiology/report-generator/image-references?draftId=${draftId}`);
-      } catch { /* export without images if refs unavailable */ }
-    }
+    setExportingPdf(true);
     try {
       await exportRadiologyReportToPdf({
         patientName: workflow.currentRow?.patientName ?? "",
@@ -875,19 +968,26 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         rawFindings: findingsText,
         impression: impressionText.split("\n").filter(Boolean),
         recommendation: recommendationText,
-        studyName: workflow.currentRow?.studyDescription ?? "Radiology Report",
+        studyName: studyNameForExport,
+        headingCase,
         dicomWebBase: BROWSER_DICOMWEB_BASE,
-        imageRefs: refs,
-        clinic: null,
+        imageRefs,
+        clinic: clinicSettings ?? null,
       });
     } catch (err) {
       toast({
         title: "Export failed",
-        description: err instanceof Error ? err.message : "Could not build the PDF",
+        description: formatReportExportError(err, "PDF"),
         variant: "destructive",
       });
+    } finally {
+      setExportingPdf(false);
     }
-  }, [workflow.currentRow, findingsText, impressionText, recommendationText, clinicalHistoryText, techniqueText, draftId, toast]);
+  }, [
+    workflow.currentRow, clinicalHistoryText, techniqueText, findingsText,
+    impressionText, recommendationText, studyNameForExport, headingCase,
+    imageRefs, clinicSettings, toast,
+  ]);
 
   // ─── Teaching case save ─────────────────────────────────────────────────────
   const handleSaveTeachingCase = useCallback(async () => {
@@ -912,13 +1012,6 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     return draft?.finalReportId ?? row?.reportId ?? null;
   }, [workflow.currentRow, existingDraft]);
   linkedReportIdRef.current = linkedReportId;
-
-  // Same query key as ReportImagePicker — keeps selected DICOM refs warm for PDF.
-  useQuery<ReportImageRef[]>({
-    queryKey: ["report-image-references", draftId],
-    queryFn: () => api.get(`/api/radiology/report-generator/image-references?draftId=${draftId}`),
-    enabled: !!draftId,
-  });
 
   // ─── Report share (WhatsApp) — uses finalized report id, not worklist id ────
   const handleShare = useCallback(async () => {
@@ -1205,12 +1298,12 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
             <ShieldCheck className="h-3.5 w-3.5 mr-1" /> Save
           </Button>
           {/* Word export */}
-          <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={handleExportWord}>
-            <FileDown className="h-3.5 w-3.5 mr-1" /> Word
+          <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => void handleExportWord()} disabled={exportingWord} title="Export Word (same layout as preview)">
+            <FileDown className="h-3.5 w-3.5 mr-1" /> {exportingWord ? "…" : "Word"}
           </Button>
           {/* PDF export */}
-          <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={handleExportPdf}>
-            <Printer className="h-3.5 w-3.5 mr-1" /> PDF
+          <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => void handleExportPdf()} disabled={exportingPdf} title="Export PDF with selected images + clinic branding">
+            <Printer className="h-3.5 w-3.5 mr-1" /> {exportingPdf ? "…" : "PDF"}
           </Button>
           {/* Share */}
           <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={handleShare}>
@@ -1746,6 +1839,27 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       )}
                     </div>
 
+                    {/* Report layout (Classic / Premium) + Word/PDF — same path as legacy */}
+                    <ReportExportPanel
+                      draftId={draftId ?? null}
+                      linkedReportId={linkedReportId}
+                      previewHtml={previewHtml}
+                      reportLayout={reportLayout}
+                      clinicActiveLayout={presentationTemplates?.active?.standard}
+                      onLayoutChange={setPreviewLayoutOverride}
+                      headingCase={headingCase}
+                      onHeadingCaseChange={setHeadingCase}
+                      sectionSpacing={sectionSpacing}
+                      onSectionSpacingChange={setSectionSpacing}
+                      impressionStyle={impressionStyle}
+                      onImpressionStyleChange={setImpressionStyle}
+                      onExportWord={handleExportWord}
+                      onExportPdf={handleExportPdf}
+                      exportingWord={exportingWord}
+                      exportingPdf={exportingPdf}
+                      disabled={false}
+                    />
+
                     {/* Clinic Quick Select (legacy QuickFindingsPanel) */}
                     <div className="border rounded-md p-2" data-testid="clinic-quick-select">
                       <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">Clinic Quick Select</div>
@@ -1877,6 +1991,9 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                           });
                         }
                       }}
+                      printLayout={reportLayout}
+                      onPrintLayoutChange={setPreviewLayoutOverride}
+                      clinicActiveLayout={presentationTemplates?.active?.standard}
                     />
                   </ModuleErrorBoundary>
                 </div>

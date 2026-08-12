@@ -111,6 +111,10 @@ export interface LegacyBoxProps {
   onApplyReport: (r: { findingsText: string; impressionLines: string[]; technique?: string }) => void;
   /** Optional: notify parent when Dual/Open Study launches (popup blocked → split). */
   onViewerLaunchResult?: (result: { success: boolean; errorCode?: string | null }) => void;
+  /** Controlled Classic/Premium layout — shared with workspace export panel. */
+  printLayout?: ReportLayoutKey;
+  onPrintLayoutChange?: (key: ReportLayoutKey) => void;
+  clinicActiveLayout?: string | null;
 }
 
 export default function LegacyBox(props: LegacyBoxProps) {
@@ -128,7 +132,12 @@ export default function LegacyBox(props: LegacyBoxProps) {
   const [dismissed, setDismissed] = useState<Set<string>>(() => new Set());
   const [recentActions, setRecentActions] = useState<CopilotAction[]>([]);
   const [knowledgeSub, setKnowledgeSub] = useState("master");
-  const [printLayout, setPrintLayout] = useState<ReportLayoutKey>("care-classic");
+  const [internalPrintLayout, setInternalPrintLayout] = useState<ReportLayoutKey>("care-classic");
+  const printLayout = props.printLayout ?? internalPrintLayout;
+  const setPrintLayout = (key: ReportLayoutKey) => {
+    setInternalPrintLayout(key);
+    props.onPrintLayoutChange?.(key);
+  };
   const [teachingNotes, setTeachingNotes] = useState("");
   const [teachingBusy, setTeachingBusy] = useState(false);
   const [formFBusy, setFormFBusy] = useState(false);
@@ -567,7 +576,7 @@ export default function LegacyBox(props: LegacyBoxProps) {
                   <ReportLayoutQuickSelect
                     value={printLayout}
                     onChange={setPrintLayout}
-                    activeKey={printLayout}
+                    activeKey={props.clinicActiveLayout ?? printLayout}
                   />
                 </div>
                 {!props.draftId && (
