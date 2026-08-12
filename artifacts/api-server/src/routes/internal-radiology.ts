@@ -1569,22 +1569,25 @@ router.get("/radiology/worklist", async (req, res) => {
   res.json(rows);
 });
 
-// GET /api/internal/radiology/resolve-open?orderId=&patientId=&modality=&patientName=
-// Deep-link helper for Hope (and other partners): map a CARE order/patient to
+// GET /api/internal/radiology/resolve-open?orderId=&patientId=&uhid=&modality=&patientName=
+// Deep-link helper for Hope (and other partners): map a CARE order/patient/UHID to
 // the Reporting Workspace worklist id. Falls back to a filtered worklist path
-// when the MRI/study has not arrived in PACS yet.
+// when the MRI/CT study has not arrived in PACS yet.
 router.get("/radiology/resolve-open", async (req, res) => {
   const orderIdRaw = req.query.orderId;
   const patientIdRaw = req.query.patientId;
+  const uhid = typeof req.query.uhid === "string" ? req.query.uhid.trim() : null;
   const modality = typeof req.query.modality === "string" ? req.query.modality : null;
   const patientName = typeof req.query.patientName === "string" ? req.query.patientName : null;
 
   const orderId = orderIdRaw != null && orderIdRaw !== "" ? Number(orderIdRaw) : null;
   const patientId = patientIdRaw != null && patientIdRaw !== "" ? Number(patientIdRaw) : null;
 
-  if ((orderId == null || !Number.isFinite(orderId)) && (patientId == null || !Number.isFinite(patientId))) {
+  const hasOrder = orderId != null && Number.isFinite(orderId);
+  const hasPatient = patientId != null && Number.isFinite(patientId);
+  if (!hasOrder && !hasPatient && !uhid) {
     res.status(400).json({
-      error: "Provide orderId and/or patientId",
+      error: "Provide orderId, patientId, and/or uhid",
       fallbackPath: radiologyOpenFallbackPath({ modality, patientName }),
     });
     return;
@@ -1592,9 +1595,10 @@ router.get("/radiology/resolve-open", async (req, res) => {
 
   try {
     const target = await resolveRadiologyOpen({
-      orderId: orderId != null && Number.isFinite(orderId) ? orderId : null,
-      patientId: patientId != null && Number.isFinite(patientId) ? patientId : null,
+      orderId: hasOrder ? orderId : null,
+      patientId: hasPatient ? patientId : null,
       modality,
+      uhid,
     });
 
     if (!target) {
@@ -1611,11 +1615,42 @@ router.get("/radiology/resolve-open", async (req, res) => {
       fallbackPath: radiologyOpenFallbackPath({ modality: target.modality || modality, patientName }),
     });
   } catch (err) {
-    logger.error({ err, orderId, patientId, modality }, "resolve-open failed");
+    logger.error({ err, orderId, patientId, uhid, modality }, "resolve-open failed");
     res.status(500).json({
       error: "Failed to resolve radiology open target",
       fallbackPath: radiologyOpenFallbackPath({ modality, patientName }),
     });
+  }
+});
+
+// POST /api/internal/radiology/send-report-to-hope
+// Push a finalized radiology report to Hope immediately (outbox + dispatch).
+router.post("/radiology/send-report-to-hope", async (req, res) => {
+  const reportId = req.body?.reportId != null ? Number(req.body.reportId) : null;
+  const worklistId = req.body?.worklistId != null ? Number(req.body.worklistId) : null;
+  if ((reportId == null || !Number.isFinite(reportId)) && (worklistId == null || !Number.isFinite(worklistId))) {
+    res.status(400).json({ error: "Provide reportId and/or worklistId" });
+    return;
+  }
+  try {
+    const { emitReportToHope } = await import("../services/integration/emitReportToHope");
+    const result = await emitReportToHope({
+      reportId: reportId != null && Number.isFinite(reportId) ? reportId : null,
+      worklistId: worklistId != null && Number.isFinite(worklistId) ? worklistId : null,
+      dispatchNow: true,
+    });
+    if (!result.ok) {
+      const status = result.code === "NOT_FOUND" ? 404
+        : result.code === "NOT_SIGNED" ? 409
+        : result.code === "NO_REFERRAL" ? 409
+        : 500;
+      res.status(status).json(result);
+      return;
+    }
+    res.json(result);
+  } catch (err) {
+    logger.error({ err, reportId, worklistId }, "send-report-to-hope failed");
+    res.status(500).json({ ok: false, error: "Failed to send report to Hope", code: "EMIT_FAILED" });
   }
 });
 

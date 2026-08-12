@@ -1,11 +1,12 @@
 /**
  * Deep-link landing page for external systems (Hope OPD).
  *
- * URL: /radiology/open?orderId=&patientId=&modality=MR&patientName=
+ * URL: /radiology/open?orderId=&patientId=&uhid=&modality=MR&patientName=
  *
- * Resolves to the Reporting Workspace when a worklist row exists; otherwise
- * lands on the modality-filtered worklist so the radiologist can pick the study
- * once PACS has pushed it. Requires an active Care staff session (Bearer JWT).
+ * Resolves to the Reporting Workspace (with the matching DICOM study selected)
+ * when a worklist row exists; otherwise lands on the modality-filtered worklist
+ * so the radiologist can pick the study once PACS has pushed it.
+ * Requires an active Care staff session (Bearer JWT).
  */
 
 import { useEffect, useState } from "react";
@@ -34,6 +35,7 @@ export default function RadiologyOpenRedirect() {
     const q = readQuery();
     const orderId = q.get("orderId");
     const patientId = q.get("patientId");
+    const uhid = q.get("uhid");
     const modalityRaw = q.get("modality");
     const modality = modalityRaw === "MRI" ? "MR" : modalityRaw;
     const patientName = q.get("patientName");
@@ -41,6 +43,7 @@ export default function RadiologyOpenRedirect() {
     const params = new URLSearchParams();
     if (orderId) params.set("orderId", orderId);
     if (patientId) params.set("patientId", patientId);
+    if (uhid) params.set("uhid", uhid);
     if (modality) params.set("modality", modality);
     if (patientName) params.set("patientName", patientName);
 
@@ -50,7 +53,7 @@ export default function RadiologyOpenRedirect() {
     const fallbackQs = fallbackParams.toString();
     const fallback = fallbackQs ? `/radiology/worklist?${fallbackQs}` : "/radiology/worklist";
 
-    if (!orderId && !patientId) {
+    if (!orderId && !patientId && !uhid) {
       navigate(fallback, { replace: true });
       return;
     }
