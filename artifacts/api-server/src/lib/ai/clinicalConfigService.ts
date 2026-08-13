@@ -47,9 +47,10 @@ export async function resolveAiEnablementForUser(q: EnablementQuery): Promise<En
 
 // ── Scheduler config (singleton id=1, with safe defaults) ───────────────────
 const DEFAULT_SCHEDULER: SchedulerConfig = {
-  draftTiming: "on_arrival",
-  nightStart: "23:00", nightEnd: "06:00", quietStart: "08:00", quietEnd: "20:00",
-  maxConcurrentJobs: 2, gpuLimitPercent: 90, cpuLimitPercent: 80,
+  draftTiming: "scheduled",
+  // Clinical overnight window: 5 PM → 10 AM next morning (crosses midnight).
+  nightStart: "17:00", nightEnd: "10:00", quietStart: "10:00", quietEnd: "17:00",
+  maxConcurrentJobs: 1, gpuLimitPercent: 90, cpuLimitPercent: 80,
   skipFinalizedReports: true, skipUnchangedStudies: true,
 };
 
@@ -167,6 +168,8 @@ export async function saveDraftAutomation(opts: {
     nightEnd: opts.nightEnd,
     quietStart: opts.quietStart,
     quietEnd: opts.quietEnd,
+    // Overnight MRI default: one concurrent study (configurable later).
+    maxConcurrentJobs: 1,
   }, opts.updatedBy);
   const policies = await setOvernightModalities(opts.modalities, { mode, updatedBy: opts.updatedBy });
   return {

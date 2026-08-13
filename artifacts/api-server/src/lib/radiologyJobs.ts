@@ -159,10 +159,20 @@ async function failJob(job: RadiologyJobRow, error: string): Promise<RadiologyJo
 }
 
 /** One worker tick: requeue stale claims, then run up to maxJobs due jobs.
- *  Returns what happened (used by cron, the ops tick endpoint and tests). */
+ *  Returns what happened (used by cron, the ops tick endpoint and tests).
+ *
+ *  concurrencyByType: optional per-operationType ceiling on concurrently RUNNING
+ *  jobs (e.g. ai_shadow_pipeline → 1). When the ceiling is already hit, that
+ *  type is skipped for this tick so a failed/completed job releases the slot
+ *  and the next study can start on a later tick — never blocks other job types.
+ */
 export async function runRadiologyJobTick(
   handlers: Record<string, RadiologyJobHandler>,
-  opts: { workerId?: string; maxJobs?: number } = {},
+  opts: {
+    workerId?: string;
+    maxJobs?: number;
+    concurrencyByType?: Record<string, number>;
+  } = {},
 ): Promise<{ requeuedStale: number; ran: Array<{ id: number; operationType: string; outcome: string }> }> {
   const handledTypes = Object.keys(handlers);
   if (handledTypes.length === 0) return { requeuedStale: 0, ran: [] };
@@ -170,9 +180,64 @@ export async function runRadiologyJobTick(
   const requeuedStale = await requeueStaleRunningJobs(handledTypes);
   const ran: Array<{ id: number; operationType: string; outcome: string }> = [];
   const maxJobs = opts.maxJobs ?? 5;
+  const concurrencyByType = opts.concurrencyByType ?? {};
+
+  // Pre-compute which types are at capacity so we don't claim them.
+  const blockedTypes = new Set<string>();
+  for (const [op, limit] of Object.entries(concurrencyByType)) {
+    if (limit <= 0) { blockedTypes.add(op); continue; }
+    const [row] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(dicomRetryQueueTable)
+      .where(and(
+        eq(dicomRetryQueueTable.operationType, op),
+        eq(dicomRetryQueueTable.status, "running"),
+      ));
+    if ((row?.count ?? 0) >= limit) blockedTypes.add(op);
+  }
+
+  const claimableTypes = handledTypes.filter((t) => !blockedTypes.has(t));
+  if (claimableTypes.length === 0) return { requeuedStale, ran };
+
   for (let i = 0; i < maxJobs; i++) {
-    const job = await claimNextJob(workerId, handledTypes);
+    // Re-check AI concurrency mid-tick so we never start two shadow jobs in one loop.
+    const stillClaimable = claimableTypes.filter((t) => {
+      const lim = concurrencyByType[t];
+      if (lim == null) return true;
+      const startedThisTick = ran.filter((r) => r.operationType === t).length;
+      return startedThisTick < lim;
+    });
+    if (stillClaimable.length === 0) break;
+
+    const job = await claimNextJob(workerId, stillClaimable);
     if (!job) break;
+
+    // If this op has a concurrency ceiling and we somehow claimed past it, abandon claim.
+    const lim = concurrencyByType[job.operationType];
+    if (lim != null) {
+      const [row] = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(dicomRetryQueueTable)
+        .where(and(
+          eq(dicomRetryQueueTable.operationType, job.operationType),
+          eq(dicomRetryQueueTable.status, "running"),
+        ));
+      // count includes the job we just claimed
+      if ((row?.count ?? 1) > lim) {
+        await db
+          .update(dicomRetryQueueTable)
+          .set({
+            status: "pending",
+            lockedBy: null,
+            lockedAt: null,
+            nextRetryAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(eq(dicomRetryQueueTable.id, job.id));
+        break;
+      }
+    }
+
     try {
       const result = await handlers[job.operationType](job);
       if (result.ok) {
