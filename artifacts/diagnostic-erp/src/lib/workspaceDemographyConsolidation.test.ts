@@ -63,3 +63,22 @@ describe("Provenance visualization — editor only", () => {
     expect(previewHtml).not.toMatch(/provenance|quick-select|quick-findings|Source:/i);
   });
 });
+
+describe("Save/finalize payloads — provenance never persisted", () => {
+  it("saveDraft posts plain clinical fields only (no fieldProvenance)", () => {
+    const saveIdx = workspace.indexOf("() => saveRadiologyDraft<{");
+    expect(saveIdx).toBeGreaterThan(-1);
+    const slice = workspace.slice(saveIdx, saveIdx + 500);
+    expect(slice).toContain("rawFindings: findingsText");
+    expect(slice).toContain("technique: techniqueText");
+    expect(slice).not.toContain("fieldProvenance");
+  });
+
+  it("finalize validation uses plain field strings only", () => {
+    const valIdx = workspace.indexOf("const validationIssues = validateReport({");
+    expect(valIdx).toBeGreaterThan(-1);
+    const slice = workspace.slice(valIdx, valIdx + 200);
+    expect(slice).toContain("findings: findingsText");
+    expect(slice).not.toContain("fieldProvenance");
+  });
+});
