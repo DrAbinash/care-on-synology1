@@ -1,5 +1,5 @@
 import { useEffect, useRef, useMemo } from "react";
-import { useWorkspaceSelector } from "@/lib/zai-workspace/store";
+import { useWorkspaceSelector, EMPTY_FIELD_PROVENANCE } from "@/lib/zai-workspace/store";
 import { runLintRules, type LintIssue } from "@/lib/zai-workspace/types";
 import {
   formatProvenanceHover,
@@ -30,9 +30,6 @@ const VISUAL_STYLES: Record<ProvenanceVisualKind, string> = {
   merged: "border-l-amber-500 bg-amber-500/10 text-foreground",
   other: "border-l-slate-400 bg-slate-500/10 text-foreground",
 };
-
-/** Stable fallback — never use `?? {}` inside a zustand selector (new ref each read → React #185). */
-const EMPTY_FIELD_PROVENANCE: Record<string, never> = {};
 
 const LEGEND: Array<{ kind: ProvenanceVisualKind; label: string; box: string }> = [
   { kind: "quick-select", label: "Quick Select", box: "bg-sky-500/25 border-sky-500" },
