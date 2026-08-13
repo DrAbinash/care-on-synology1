@@ -1,6 +1,5 @@
 import { useWorkspace, useWorkspaceSelector } from "@/lib/zai-workspace/store";
 import { lookupTiles } from "@/lib/zai-workspace/quick-select-library";
-import { mergeReportFieldContent } from "@/lib/reportFieldMerge";
 import type { QuickSelectField, QuickSelectTile } from "@/lib/zai-workspace/types";
 import { useMemo, useState, useRef, useEffect } from "react";
 import { Plus, Pencil, Star, Search, X, ChevronRight } from "lucide-react";
@@ -26,7 +25,7 @@ export function QuickSelectStrip({ field }: { field: QuickSelectField }) {
         <div className="flex items-center gap-0.5">{showSearch ? <div className="relative"><Search className="absolute left-1.5 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground" /><input ref={ref} value={search} onChange={e => setSearch(e.target.value)} onKeyDown={e => e.key === "Escape" && setShowSearch(false)} placeholder="Search..." className="h-6 w-44 rounded-full border border-border bg-background pl-6 pr-6 text-[11px] outline-none focus:border-emerald-400" /><button onClick={() => { setShowSearch(false); setSearch(""); }} className="absolute right-1 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"><X className="h-3 w-3" /></button></div> : <Button size="sm" variant="ghost" className="h-6 px-2 text-[10px]" onClick={() => setShowSearch(true)}><Search className="h-3 w-3" /></Button>}</div>
       </div>
       <div className="flex flex-wrap gap-1 max-h-[88px] overflow-y-auto pr-1">
-        {filtered.map(tile => <div key={tile.id} className="group relative inline-flex items-center gap-1 rounded-md border bg-card px-2 py-1 text-[10.5px] cursor-pointer transition hover:border-emerald-300 hover:shadow-sm" onClick={() => { const c = useWorkspace.getState()[`${field}Text` as "findingsText"] as string; useWorkspace.getState().setField(field, mergeReportFieldContent({ field, existing: c, incoming: tile.sentence, source: "quick-select" })); incUsage(tile.id); }} title={tile.sentence}>
+        {filtered.map(tile => <div key={tile.id} className="group relative inline-flex items-center gap-1 rounded-md border bg-card px-2 py-1 text-[10.5px] cursor-pointer transition hover:border-emerald-300 hover:shadow-sm" onClick={() => { useWorkspace.getState().mergeField(field, tile.sentence, "quick-select"); incUsage(tile.id); }} title={tile.sentence}>
           <span className={cn("h-1.5 w-1.5 rounded-full flex-none", CAT[tile.category])} />
           <span className="font-semibold truncate max-w-[140px]">{tile.label}</span>
           {tile.mnemonic && <span className="rounded bg-muted px-1 font-mono text-[8px] text-muted-foreground uppercase">{tile.mnemonic}</span>}

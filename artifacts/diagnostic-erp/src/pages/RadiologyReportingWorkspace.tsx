@@ -152,7 +152,6 @@ import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Textarea } from "@/components/ui/textarea";
 import { mergeBlock, removeBlock, mergeImpression, removeImpression } from "@/lib/quickFindingsMerge";
-import { mergeReportFieldContent } from "@/lib/reportFieldMerge";
 import type { Side } from "@/lib/sideSwap";
 import {
   loadWorkspaceLayoutPrefs, saveWorkspaceLayoutPrefs,
@@ -498,19 +497,16 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         technique: state.techniqueText,
         recommendation: state.recommendationText,
       };
-      if (inserts.technique) state.setField("technique", mergeReportFieldContent({ field: "technique", existing: state.techniqueText, incoming: inserts.technique, source: "protocol" }));
+      if (inserts.technique) state.mergeField("technique", inserts.technique, "protocol");
       for (const block of inserts.findingsBlocks) {
         const text = `${block.heading}\n${block.text}`.trim();
-        state.setField("findings", mergeReportFieldContent({ field: "findings", existing: useWorkspace.getState().findingsText, incoming: text, source: "protocol" }));
+        useWorkspace.getState().mergeField("findings", text, "protocol");
       }
       for (const line of inserts.impression) {
-        state.setField(
-          "impression",
-          mergeImpression(useWorkspace.getState().impressionText.split("\n").filter(Boolean), line).join("\n"),
-        );
+        useWorkspace.getState().mergeField("impression", line, "protocol");
       }
       if (inserts.recommendation) {
-        state.setField("recommendation", mergeReportFieldContent({ field: "recommendation", existing: useWorkspace.getState().recommendationText, incoming: inserts.recommendation, source: "protocol" }));
+        useWorkspace.getState().mergeField("recommendation", inserts.recommendation, "protocol");
       }
       return {
         ok: true,
@@ -690,13 +686,10 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     });
     const state = useWorkspace.getState();
     if (nowSelected) {
-      if (finding.findingText) state.setField("findings", mergeReportFieldContent({ field: "findings", existing: state.findingsText, incoming: finding.findingText, source: "quick-findings" }));
-      if (finding.impressionText) {
-        const lines = state.impressionText.split("\n").filter(Boolean);
-        state.setField("impression", mergeImpression(lines, finding.impressionText).join("\n"));
-      }
-      if (finding.techniqueText) state.setField("technique", mergeReportFieldContent({ field: "technique", existing: state.techniqueText, incoming: finding.techniqueText, source: "quick-findings" }));
-      if (finding.recommendationText) state.setField("recommendation", mergeReportFieldContent({ field: "recommendation", existing: state.recommendationText, incoming: finding.recommendationText, source: "quick-findings" }));
+      if (finding.findingText) state.mergeField("findings", finding.findingText, "quick-findings");
+      if (finding.impressionText) state.mergeField("impression", finding.impressionText, "quick-findings");
+      if (finding.techniqueText) state.mergeField("technique", finding.techniqueText, "quick-findings");
+      if (finding.recommendationText) state.mergeField("recommendation", finding.recommendationText, "quick-findings");
     } else {
       if (finding.findingText) state.setField("findings", removeBlock(state.findingsText, finding.findingText));
       if (finding.impressionText) {
@@ -711,8 +704,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   selectedQuickIdsRef.current = selectedQuickIds;
 
   const appendFindings = useCallback((text: string) => {
-    const state = useWorkspace.getState();
-    state.setField("findings", mergeReportFieldContent({ field: "findings", existing: state.findingsText, incoming: text, source: "companion" }));
+    useWorkspace.getState().mergeField("findings", text, "companion");
   }, []);
 
   const jumpQueue = useMemo(() => {
@@ -2378,17 +2370,13 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       onSetTechnique={(text) => useWorkspace.getState().setField("technique", text)}
                       onApplyReport={(r) => {
                         const state = useWorkspace.getState();
-                        if (r.findingsText) state.setField("findings", mergeBlock(state.findingsText, r.findingsText));
+                        if (r.findingsText) state.mergeField("findings", r.findingsText, "template");
                         if (r.impressionLines?.length) {
-                          state.setField(
-                            "impression",
-                            r.impressionLines.reduce(
-                              (acc, line) => mergeImpression(acc.split("\n").filter(Boolean), line).join("\n"),
-                              state.impressionText,
-                            ),
-                          );
+                          for (const line of r.impressionLines) {
+                            useWorkspace.getState().mergeField("impression", line, "template");
+                          }
                         }
-                        if (r.technique) state.setField("technique", mergeReportFieldContent({ field: "technique", existing: state.techniqueText, incoming: r.technique, source: "template" }));
+                        if (r.technique) state.mergeField("technique", r.technique, "template");
                       }}
                       onViewerLaunchResult={(result) => {
                         if (!result.success && result.errorCode === "POPUP_BLOCKED" && layoutMode === "dualScreen") {

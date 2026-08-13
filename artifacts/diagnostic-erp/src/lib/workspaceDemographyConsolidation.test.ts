@@ -36,4 +36,30 @@ describe("RadiologyReportingWorkspace — consolidation contracts", () => {
     expect(workspace).toMatch(/age:\s*canonicalDemography\.age/);
     expect(workspace).toMatch(/sex:\s*canonicalDemography\.sex/);
   });
+
+  it("uses shared mergeField for Quick Findings / protocol / companion (provenance)", () => {
+    expect(workspace).toContain('mergeField("findings"');
+    expect(workspace).toContain('"quick-findings"');
+    expect(workspace).toContain('"protocol"');
+    expect(workspace).toContain('"companion"');
+    expect(workspace).not.toContain("mergeReportFieldContent(");
+  });
+});
+
+const findingsEditor = readFileSync(
+  resolve(ERP_SRC, "components/radiology/zai-workspace/findings-editor.tsx"),
+  "utf8",
+);
+const previewHtml = readFileSync(resolve(ERP_SRC, "lib/radiologyReportPreviewHtml.ts"), "utf8");
+
+describe("Provenance visualization — editor only", () => {
+  it("FindingsEditor renders provenance legend/map as editor-only", () => {
+    expect(findingsEditor).toContain('data-editor-only="provenance"');
+    expect(findingsEditor).toContain("provenance-legend");
+    expect(findingsEditor).toContain("formatProvenanceHover");
+  });
+
+  it("preview HTML builder never references provenance", () => {
+    expect(previewHtml).not.toMatch(/provenance|quick-select|quick-findings|Source:/i);
+  });
 });

@@ -5,8 +5,8 @@
  * macro and companion insertions into technique / findings / impression /
  * recommendation. No external AI calls — deterministic, conservative rules.
  *
- * Provenance: manual text is never destructively rewritten; automated content
- * may be deduplicated against other automated content.
+ * Clinical report text stays plain strings. Provenance is a parallel map keyed
+ * by normalizeForDedupe(sentence) — never duplicated into stored/preview text.
  */
 
 export type ReportFieldKey = "technique" | "findings" | "impression" | "recommendation" | "clinicalHistory";
@@ -21,12 +21,48 @@ export type InsertSource =
   | "companion"
   | "ai-draft";
 
+/** normalizeForDedupe(sentence) → contributing sources (deduped, stable order). */
+export type FieldProvenanceMap = Record<string, InsertSource[]>;
+
 export interface MergeOptions {
   field: ReportFieldKey;
   existing: string;
   incoming: string;
   source?: InsertSource;
+  existingProvenance?: FieldProvenanceMap;
 }
+
+export interface MergeWithProvenanceResult {
+  text: string;
+  provenance: FieldProvenanceMap;
+}
+
+interface AnnotatedSentence {
+  text: string;
+  sources: Set<InsertSource>;
+}
+
+const SOURCE_ORDER: InsertSource[] = [
+  "manual",
+  "quick-select",
+  "quick-findings",
+  "protocol",
+  "template",
+  "macro",
+  "companion",
+  "ai-draft",
+];
+
+const SOURCE_LABELS: Record<InsertSource, string> = {
+  manual: "Manual",
+  "quick-select": "Quick Select",
+  "quick-findings": "Quick Findings",
+  protocol: "Protocol",
+  template: "Template",
+  macro: "Macro",
+  companion: "Companion",
+  "ai-draft": "AI Draft",
+};
 
 /** Normalize for duplicate detection: lowercase, strip punctuation, collapse whitespace. */
 export function normalizeForDedupe(text: string): string {
@@ -44,6 +80,99 @@ export function splitToSentences(block: string): string[] {
     .flatMap((line) => line.split(/(?<=[.!?])\s+/))
     .map((s) => s.trim())
     .filter(Boolean);
+}
+
+export function sourceLabel(source: InsertSource): string {
+  return SOURCE_LABELS[source] ?? source;
+}
+
+export function sortSources(sources: Iterable<InsertSource>): InsertSource[] {
+  const set = new Set(sources);
+  return SOURCE_ORDER.filter((s) => set.has(s));
+}
+
+export function formatProvenanceHover(sources: InsertSource[]): string {
+  const sorted = sortSources(sources);
+  if (sorted.length === 0 || (sorted.length === 1 && sorted[0] === "manual")) {
+    return "Source: Manual";
+  }
+  if (sorted.length === 1) {
+    return `Source: ${sourceLabel(sorted[0]!)}`;
+  }
+  return `Merged: ${sorted.map(sourceLabel).join(" + ")}`;
+}
+
+/** Visual bucket for editor tinting (QS blue / QF green / merged / manual / other). */
+export type ProvenanceVisualKind = "manual" | "quick-select" | "quick-findings" | "merged" | "other";
+
+export function provenanceVisualKind(sources: InsertSource[]): ProvenanceVisualKind {
+  const sorted = sortSources(sources).filter((s) => s !== "manual");
+  if (sorted.length === 0) return "manual";
+  if (sorted.length > 1) return "merged";
+  if (sorted[0] === "quick-select") return "quick-select";
+  if (sorted[0] === "quick-findings") return "quick-findings";
+  return "other";
+}
+
+export function provenanceFromText(text: string, source: InsertSource): FieldProvenanceMap {
+  const out: FieldProvenanceMap = {};
+  for (const s of splitToSentences(text)) {
+    const key = normalizeForDedupe(s);
+    if (!key) continue;
+    out[key] = sortSources([...(out[key] ?? []), source]);
+  }
+  return out;
+}
+
+export function provenanceMapToSegments(
+  text: string,
+  provenance: FieldProvenanceMap,
+): Array<{ text: string; sources: InsertSource[]; key: string }> {
+  return splitToSentences(text).map((s) => {
+    const key = normalizeForDedupe(s);
+    const sources = sortSources(provenance[key] ?? ["manual"]);
+    return { text: s, sources, key };
+  });
+}
+
+/**
+ * After manual typing/editing: keep provenance only for sentences whose
+ * normalized key still matches. Changed or new sentences → manual.
+ * Never rewrites clinical text.
+ */
+export function reconcileProvenanceAfterManualEdit(
+  _previousText: string,
+  nextText: string,
+  previousProvenance: FieldProvenanceMap,
+): FieldProvenanceMap {
+  const out: FieldProvenanceMap = {};
+  for (const s of splitToSentences(nextText)) {
+    const key = normalizeForDedupe(s);
+    if (!key) continue;
+    const prev = previousProvenance[key];
+    out[key] = prev && prev.length > 0 ? sortSources(prev) : ["manual"];
+  }
+  return out;
+}
+
+function annotateExisting(text: string, provenance: FieldProvenanceMap): AnnotatedSentence[] {
+  return splitToSentences(text).map((s) => {
+    const key = normalizeForDedupe(s);
+    const sources = new Set<InsertSource>(provenance[key] ?? ["manual"]);
+    return { text: s, sources };
+  });
+}
+
+function segmentsToResult(segments: AnnotatedSentence[], joinWith: "\n" | " "): MergeWithProvenanceResult {
+  const provenance: FieldProvenanceMap = {};
+  for (const seg of segments) {
+    const key = normalizeForDedupe(seg.text);
+    if (!key) continue;
+    const existing = provenance[key] ?? [];
+    provenance[key] = sortSources([...existing, ...seg.sources]);
+  }
+  const text = segments.map((s) => s.text).join(joinWith);
+  return { text, provenance };
 }
 
 // ─── Technique concept extraction (deterministic, no AI) ────────────────────
@@ -73,37 +202,79 @@ function techniqueConcepts(text: string): Set<string> {
 
 /**
  * Technique merge: exact/normalized dedupe + concept-aware merging.
- * If two sentences cover the same concept set, keep the more informative one.
+ * When a duplicate is dropped, its source is unioned onto the kept sentence.
  */
-export function mergeTechnique(existing: string, incoming: string): string {
+export function mergeTechniqueWithProvenance(
+  existing: string,
+  incoming: string,
+  existingProvenance: FieldProvenanceMap,
+  source: InsertSource,
+): MergeWithProvenanceResult {
   const inc = incoming.trim();
-  if (!inc) return existing;
-  const existingSentences = splitToSentences(existing);
+  if (!inc) {
+    return { text: existing, provenance: { ...existingProvenance } };
+  }
+
+  const segments = annotateExisting(existing, existingProvenance);
+  const existingNorm = new Map<string, number>();
+  const existingConcepts = new Set<string>();
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i]!;
+    existingNorm.set(normalizeForDedupe(seg.text), i);
+    for (const c of techniqueConcepts(seg.text)) existingConcepts.add(c);
+  }
+
   const incomingSentences = splitToSentences(inc);
+  const keptIncoming: AnnotatedSentence[] = [];
 
-  const existingNorm = new Set(existingSentences.map(normalizeForDedupe));
-  const existingConcepts = techniqueConcepts(existing);
-
-  const keptIncoming: string[] = [];
   for (const s of incomingSentences) {
     const n = normalizeForDedupe(s);
     if (!n) continue;
-    if (existingNorm.has(n)) continue; // exact/normalized duplicate
+
+    const dupIdx = existingNorm.get(n);
+    if (dupIdx !== undefined) {
+      segments[dupIdx]!.sources.add(source);
+      continue;
+    }
 
     const sConcepts = techniqueConcepts(s);
     const newConcepts = [...sConcepts].filter((c) => !existingConcepts.has(c));
     if (sConcepts.size > 0 && newConcepts.length === 0) {
-      // All concepts already covered — drop the near-duplicate.
+      // Concept-covered near-duplicate — attribute onto covering segments.
+      for (const seg of segments) {
+        const shared = [...techniqueConcepts(seg.text)].some((c) => sConcepts.has(c));
+        if (shared) seg.sources.add(source);
+      }
       continue;
     }
-    keptIncoming.push(s);
+
+    keptIncoming.push({ text: s, sources: new Set([source]) });
     for (const c of sConcepts) existingConcepts.add(c);
-    existingNorm.add(n);
+    existingNorm.set(n, segments.length + keptIncoming.length - 1);
   }
 
-  if (keptIncoming.length === 0) return existing;
-  const base = existing.trimEnd();
-  return base ? `${base}\n${keptIncoming.join(" ")}` : keptIncoming.join(" ");
+  const all = [...segments, ...keptIncoming];
+  if (keptIncoming.length === 0 && segments.length === 0) {
+    return { text: "", provenance: {} };
+  }
+  if (keptIncoming.length === 0) {
+    return segmentsToResult(segments, "\n");
+  }
+  // Preserve prior layout: existing block + space-joined new sentences (same as mergeTechnique).
+  const base = segments.map((s) => s.text).join("\n").trimEnd();
+  const added = keptIncoming.map((s) => s.text).join(" ");
+  const text = base ? `${base}\n${added}` : added;
+  const provenance: FieldProvenanceMap = {};
+  for (const seg of all) {
+    const key = normalizeForDedupe(seg.text);
+    if (!key) continue;
+    provenance[key] = sortSources([...(provenance[key] ?? []), ...seg.sources]);
+  }
+  return { text, provenance };
+}
+
+export function mergeTechnique(existing: string, incoming: string): string {
+  return mergeTechniqueWithProvenance(existing, incoming, {}, "manual").text;
 }
 
 // ─── Findings / impression / recommendation ─────────────────────────────────
@@ -126,59 +297,84 @@ function hasConflictingClinicalDetail(a: string, b: string): boolean {
 }
 
 /**
- * Merge free-text findings/impression/recommendation.
- * - Removes exact/normalized duplicate sentences.
- * - For near-duplicates, preserves the more informative statement only when
- *   there is no conflicting clinical detail (laterality/level/severity/measurement).
- * - When uncertain, preserves both.
+ * Merge free-text findings/impression/recommendation with provenance.
+ * Deduped/near-merged sentences union their sources.
  */
-export function mergeSentences(existing: string, incoming: string): string {
+export function mergeSentencesWithProvenance(
+  existing: string,
+  incoming: string,
+  existingProvenance: FieldProvenanceMap,
+  source: InsertSource,
+): MergeWithProvenanceResult {
   const inc = incoming.trim();
-  if (!inc) return existing;
-  const existingSentences = splitToSentences(existing);
-  const incomingSentences = splitToSentences(inc);
+  if (!inc) {
+    return { text: existing, provenance: { ...existingProvenance } };
+  }
 
-  const out = [...existingSentences];
-  const normSeen = new Set(existingSentences.map(normalizeForDedupe));
+  const out = annotateExisting(existing, existingProvenance);
+  const normSeen = new Map<string, number>();
+  for (let i = 0; i < out.length; i++) {
+    normSeen.set(normalizeForDedupe(out[i]!.text), i);
+  }
 
-  for (const s of incomingSentences) {
+  for (const s of splitToSentences(inc)) {
     const n = normalizeForDedupe(s);
     if (!n) continue;
-    if (normSeen.has(n)) continue; // duplicate
 
-    // Near-duplicate: one is a more detailed version of the other.
-    // Require the shorter text to be a prefix/subsequence of the longer so
-    // "Disc desiccation at L4-L5." merges into "Disc desiccation with diffuse
-    // bulge at L4-L5." but unrelated sentences never collapse.
+    const dupIdx = normSeen.get(n);
+    if (dupIdx !== undefined) {
+      out[dupIdx]!.sources.add(source);
+      continue;
+    }
+
     let merged = false;
     for (let i = 0; i < out.length; i++) {
-      const o = out[i];
-      const on = normalizeForDedupe(o);
-      if (hasConflictingClinicalDetail(o, s)) continue;
+      const o = out[i]!;
+      const on = normalizeForDedupe(o.text);
+      if (hasConflictingClinicalDetail(o.text, s)) continue;
       const shorter = on.length <= n.length ? on : n;
       const longer = on.length <= n.length ? n : on;
       const shorterWords = shorter.split(" ").filter(Boolean);
       const longerWords = longer.split(" ").filter(Boolean);
       const isSubsequence = shorterWords.every((w) => longerWords.includes(w));
       if (isSubsequence && shorterWords.length >= 2) {
-        // Keep the longer (more informative) version.
-        if (s.length > o.length) out[i] = s;
+        if (s.length > o.text.length) {
+          // Keep longer text; union sources (clinical text already chosen by merge rules).
+          o.text = s;
+          normSeen.delete(on);
+          normSeen.set(n, i);
+        }
+        o.sources.add(source);
         merged = true;
         break;
       }
     }
     if (!merged) {
-      out.push(s);
-      normSeen.add(n);
+      out.push({ text: s, sources: new Set([source]) });
+      normSeen.set(n, out.length - 1);
     }
   }
-  return out.join("\n");
+
+  return segmentsToResult(out, "\n");
 }
 
-/** Canonical entry point used by all insertion tools. */
+export function mergeSentences(existing: string, incoming: string): string {
+  return mergeSentencesWithProvenance(existing, incoming, {}, "manual").text;
+}
+
+/** Provenance-aware canonical entry point. */
+export function mergeReportFieldContentWithProvenance(opts: MergeOptions): MergeWithProvenanceResult {
+  const { field, existing, incoming, source = "manual", existingProvenance = {} } = opts;
+  if (!incoming.trim()) {
+    return { text: existing, provenance: { ...existingProvenance } };
+  }
+  if (field === "technique") {
+    return mergeTechniqueWithProvenance(existing, incoming, existingProvenance, source);
+  }
+  return mergeSentencesWithProvenance(existing, incoming, existingProvenance, source);
+}
+
+/** Canonical entry point used by all insertion tools (text only). */
 export function mergeReportFieldContent(opts: MergeOptions): string {
-  const { field, existing, incoming } = opts;
-  if (!incoming.trim()) return existing;
-  if (field === "technique") return mergeTechnique(existing, incoming);
-  return mergeSentences(existing, incoming);
+  return mergeReportFieldContentWithProvenance(opts).text;
 }

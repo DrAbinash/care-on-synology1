@@ -6,13 +6,25 @@ import { DEFAULT_QUICK_SELECT_TILES, lookupTiles, loadTiles, saveTiles, createTi
 import { DEFAULT_REPORT_FORMATS, lookupFormats, loadFormats, saveFormats, createFormat, resetFormatsToDefaults } from "./report-formats-library";
 import { DEFAULT_SNIPPET_MACROS, lookupMacros, loadMacros, saveMacros, createMacro } from "./snippet-macros-library";
 import { DEFAULT_SIGN_OFF_PROFILES, loadProfiles, saveProfiles, lookupProfile, formatSignOff, createProfile } from "./sign-off-profiles";
+import {
+  mergeReportFieldContentWithProvenance,
+  provenanceFromText,
+  reconcileProvenanceAfterManualEdit,
+  type FieldProvenanceMap,
+  type InsertSource,
+  type ReportFieldKey,
+} from "@/lib/reportFieldMerge";
 
 export type EditorField = "findings" | "impression" | "recommendation" | "technique" | "clinicalHistory";
 export type RailStage = "orient" | "observe" | "measure" | "conclude" | "verify";
 
+type FieldProvenanceState = Partial<Record<EditorField, FieldProvenanceMap>>;
+
 interface S {
   studies: Study[]; activeStudyId: string | null; nextStudyId: string | null; nextStudyPreloaded: boolean;
   findingsText: string; impressionText: string; recommendationText: string; techniqueText: string; clinicalHistoryText: string;
+  /** Editor-only source map; never serialized into clinical report / preview / PDF. */
+  fieldProvenance: FieldProvenanceState;
   measurements: MeasurementRow[]; priors: PriorStudy[]; criticalFindings: CriticalFinding[];
   isDirty: boolean; isFinalizing: boolean; isFinalized: boolean; railStage: RailStage;
   showCommandPalette: boolean; showVoiceBar: boolean; voiceListening: boolean; voiceTranscript: string; voiceProvider: string | null;
@@ -32,9 +44,20 @@ interface S {
   preloadTriggered: boolean;
 }
 
+function fieldTextKey(f: EditorField): keyof Pick<S, "findingsText" | "impressionText" | "recommendationText" | "techniqueText" | "clinicalHistoryText"> {
+  if (f === "findings") return "findingsText";
+  if (f === "impression") return "impressionText";
+  if (f === "recommendation") return "recommendationText";
+  if (f === "technique") return "techniqueText";
+  return "clinicalHistoryText";
+}
+
 export type WorkspaceStore = S & {
   setStudies: (s: unknown) => void; selectStudy: (id: string) => void; setNextStudy: (id: string | null) => void; markNextStudyPreloaded: () => void;
-  setField: (f: EditorField, v: string) => void; setEditorContent: (c: { findings: string; impression: string; recommendation: string; technique: string; clinicalHistory: string }) => void;
+  setField: (f: EditorField, v: string, opts?: { source?: InsertSource; replaceProvenance?: boolean }) => void;
+  /** Semantic merge + provenance update (Quick Select / Quick Findings / protocol / …). */
+  mergeField: (f: EditorField, incoming: string, source: InsertSource) => void;
+  setEditorContent: (c: { findings: string; impression: string; recommendation: string; technique: string; clinicalHistory: string }) => void;
   setMeasurements: (m: MeasurementRow[]) => void; setPriors: (p: PriorStudy[]) => void;
   insertMeasurement: (id: string) => void; insertAllMeasurements: () => void;
   setGhostText: (t: string | null, target: EditorField | null) => void; acceptGhostText: () => void;
@@ -59,6 +82,7 @@ export type WorkspaceStore = S & {
 const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   studies: [], activeStudyId: null, nextStudyId: null, nextStudyPreloaded: false,
   findingsText: "", impressionText: "", recommendationText: "", techniqueText: "", clinicalHistoryText: "",
+  fieldProvenance: {},
   measurements: [], priors: [], criticalFindings: [],
   isDirty: false, isFinalizing: false, isFinalized: false, railStage: "orient",
   showCommandPalette: false, showVoiceBar: false, voiceListening: false, voiceTranscript: "", voiceProvider: null,
@@ -98,13 +122,85 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     }
     set({ studies: next });
   },
-  selectStudy: (id) => { const st = get().studies.find(s => s.id === id); if (!st) return; set({ activeStudyId: id, findingsText: "", impressionText: "", recommendationText: "", techniqueText: "", clinicalHistoryText: st.clinicalHistory || "", measurements: [], priors: [], isDirty: false, isFinalized: false, isFinalizing: false, railStage: "orient", ghostText: null, ghostTextTarget: null, acknowledgedCopilotIds: new Set(), activeCopilotItem: null, voiceTranscript: "", voiceListening: false, selectedFormatIds: [], reportFormatPickerOpen: false, criticalSlaStartedAt: null, criticalSlaEscalated: false, preloadTriggered: false, nextStudyPreloaded: false }); setTimeout(() => get().recomputeCopilot(), 0); },
+  selectStudy: (id) => { const st = get().studies.find(s => s.id === id); if (!st) return; set({ activeStudyId: id, findingsText: "", impressionText: "", recommendationText: "", techniqueText: "", clinicalHistoryText: st.clinicalHistory || "", fieldProvenance: {}, measurements: [], priors: [], isDirty: false, isFinalized: false, isFinalizing: false, railStage: "orient", ghostText: null, ghostTextTarget: null, acknowledgedCopilotIds: new Set(), activeCopilotItem: null, voiceTranscript: "", voiceListening: false, selectedFormatIds: [], reportFormatPickerOpen: false, criticalSlaStartedAt: null, criticalSlaEscalated: false, preloadTriggered: false, nextStudyPreloaded: false }); setTimeout(() => get().recomputeCopilot(), 0); },
   setNextStudy: (id) => set({ nextStudyId: id }), markNextStudyPreloaded: () => set({ nextStudyPreloaded: true }),
-  setField: (f, v) => { const p: Partial<S> = { isDirty: true }; if (f === "findings") p.findingsText = v; else if (f === "impression") p.impressionText = v; else if (f === "recommendation") p.recommendationText = v; else if (f === "technique") p.techniqueText = v; else if (f === "clinicalHistory") p.clinicalHistoryText = v; set(p); if (f === "findings" || f === "impression" || f === "recommendation") { const d = detectMacroTrigger(v, get().snippetMacros); if (d) set({ activeMacroPrompt: { macro: d.macro, field: f, startPos: d.startPos } }); else if (get().activeMacroPrompt) set({ activeMacroPrompt: null }); } const st = get().studies.find(s => s.id === get().activeStudyId); if (f === "findings" && st && shouldPreloadNext(v, st.modality, get().preloadTriggered)) set({ preloadTriggered: true }); setTimeout(() => get().recomputeCopilot(), 0); },
+  setField: (f, v, opts) => {
+    const key = fieldTextKey(f);
+    const prevText = get()[key];
+    const prevProv = get().fieldProvenance[f] ?? {};
+    let nextProv: FieldProvenanceMap;
+    if (opts?.replaceProvenance && opts.source) {
+      nextProv = provenanceFromText(v, opts.source);
+    } else if (opts?.source && opts.source !== "manual") {
+      // Wholesale assign from a known source without semantic merge.
+      nextProv = provenanceFromText(v, opts.source);
+    } else {
+      nextProv = reconcileProvenanceAfterManualEdit(prevText, v, prevProv);
+    }
+    const p: Partial<S> = {
+      isDirty: true,
+      [key]: v,
+      fieldProvenance: { ...get().fieldProvenance, [f]: nextProv },
+    };
+    set(p);
+    if (f === "findings" || f === "impression" || f === "recommendation") {
+      const d = detectMacroTrigger(v, get().snippetMacros);
+      if (d) set({ activeMacroPrompt: { macro: d.macro, field: f, startPos: d.startPos } });
+      else if (get().activeMacroPrompt) set({ activeMacroPrompt: null });
+    }
+    const st = get().studies.find(s => s.id === get().activeStudyId);
+    if (f === "findings" && st && shouldPreloadNext(v, st.modality, get().preloadTriggered)) set({ preloadTriggered: true });
+    setTimeout(() => get().recomputeCopilot(), 0);
+  },
+  mergeField: (f, incoming, source) => {
+    const key = fieldTextKey(f);
+    const existing = get()[key];
+    const existingProvenance = get().fieldProvenance[f] ?? {};
+    const result = mergeReportFieldContentWithProvenance({
+      field: f as ReportFieldKey,
+      existing,
+      incoming,
+      source,
+      existingProvenance,
+    });
+    set({
+      isDirty: true,
+      [key]: result.text,
+      fieldProvenance: { ...get().fieldProvenance, [f]: result.provenance },
+    });
+    if (f === "findings" || f === "impression" || f === "recommendation") {
+      const d = detectMacroTrigger(result.text, get().snippetMacros);
+      if (d) set({ activeMacroPrompt: { macro: d.macro, field: f, startPos: d.startPos } });
+      else if (get().activeMacroPrompt) set({ activeMacroPrompt: null });
+    }
+    const st = get().studies.find(s => s.id === get().activeStudyId);
+    if (f === "findings" && st && shouldPreloadNext(result.text, st.modality, get().preloadTriggered)) set({ preloadTriggered: true });
+    setTimeout(() => get().recomputeCopilot(), 0);
+  },
   setEditorContent: (c) => {
     // Normalize: API may return impression/recommendation as string[] or string
     const norm = (v: unknown) => Array.isArray(v) ? v.join("\n") : (typeof v === "string" ? v : "");
-    set({ findingsText: norm(c.findings), impressionText: norm(c.impression), recommendationText: norm(c.recommendation), techniqueText: norm(c.technique), clinicalHistoryText: norm(c.clinicalHistory), isDirty: true });
+    const findings = norm(c.findings);
+    const impression = norm(c.impression);
+    const recommendation = norm(c.recommendation);
+    const technique = norm(c.technique);
+    const clinicalHistory = norm(c.clinicalHistory);
+    // Loaded drafts/templates have uncertain provenance — mark as manual (safe).
+    set({
+      findingsText: findings,
+      impressionText: impression,
+      recommendationText: recommendation,
+      techniqueText: technique,
+      clinicalHistoryText: clinicalHistory,
+      fieldProvenance: {
+        findings: provenanceFromText(findings, "manual"),
+        impression: provenanceFromText(impression, "manual"),
+        recommendation: provenanceFromText(recommendation, "manual"),
+        technique: provenanceFromText(technique, "manual"),
+        clinicalHistory: provenanceFromText(clinicalHistory, "manual"),
+      },
+      isDirty: true,
+    });
   },
   setMeasurements: (m) => set({ measurements: m }), setPriors: (p) => set({ priors: p }),
   insertMeasurement: (id) => { const ms = get().measurements.map(m => m.id === id ? { ...m, inserted: true } : m); const m = ms.find(x => x.id === id); if (m) { const c = get().findingsText; const t = `${m.name}: ${m.value}${m.unit}${m.priorValue ? ` (prior ${m.priorValue}${m.unit})` : ""}`; const s = c.length > 0 && !c.endsWith(" ") && !c.endsWith("\n") ? " " : ""; get().setField("findings", c + s + t + ". "); } set({ measurements: ms }); setTimeout(() => get().recomputeCopilot(), 0); },
@@ -121,7 +217,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   startFinalize: () => set({ isFinalizing: true }),
   completeFinalize: () => { const id = get().activeStudyId; if (!id) { set({ isFinalizing: false }); return; } const c = new Set(get().completedStudyIds); c.add(id); set({ isFinalizing: false, isFinalized: true, completedStudyIds: c, lastSignAt: Date.now(), criticalSlaStartedAt: null, criticalSlaEscalated: false }); setTimeout(() => get().advanceToNextStudy(), 1800); },
   cancelFinalize: () => set({ isFinalizing: false }),
-  advanceToNextStudy: () => { const { studies, completedStudyIds, activeStudyId, nextStudyId, nextStudyPreloaded } = get(); if (nextStudyId && nextStudyPreloaded) { get().selectStudy(nextStudyId); set({ nextStudyId: null, nextStudyPreloaded: false }); return; } const r = studies.filter(s => !completedStudyIds.has(s.id) && s.id !== activeStudyId); const pr: Record<string, number> = { stat: 0, urgent: 1, routine: 2, vip: 1 }; r.sort((a, b) => ((pr[a.priority] ?? 2) - (pr[b.priority] ?? 2)) || (a.tatMinutes - b.tatMinutes)); if (r[0]) get().selectStudy(r[0].id); else set({ activeStudyId: null, findingsText: "", impressionText: "", recommendationText: "" }); },
+  advanceToNextStudy: () => { const { studies, completedStudyIds, activeStudyId, nextStudyId, nextStudyPreloaded } = get(); if (nextStudyId && nextStudyPreloaded) { get().selectStudy(nextStudyId); set({ nextStudyId: null, nextStudyPreloaded: false }); return; } const r = studies.filter(s => !completedStudyIds.has(s.id) && s.id !== activeStudyId); const pr: Record<string, number> = { stat: 0, urgent: 1, routine: 2, vip: 1 }; r.sort((a, b) => ((pr[a.priority] ?? 2) - (pr[b.priority] ?? 2)) || (a.tatMinutes - b.tatMinutes)); if (r[0]) get().selectStudy(r[0].id); else set({ activeStudyId: null, findingsText: "", impressionText: "", recommendationText: "", fieldProvenance: {} }); },
   dismissFatigueCard: () => set({ fatigueCardDismissed: true }),
   pushNotification: (n) => set({ notification: { ...n, id: Math.random().toString(36).slice(2) } }), clearNotification: () => set({ notification: null }),
   startCriticalSla: () => set({ criticalSlaStartedAt: Date.now(), criticalSlaEscalated: false }), clearCriticalSla: () => set({ criticalSlaStartedAt: null, criticalSlaEscalated: false }), escalateCriticalSla: () => set({ criticalSlaEscalated: true }),
@@ -137,9 +233,9 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   toggleFormatSelection: (id) => { const c = get().selectedFormatIds; if (c.includes(id)) set({ selectedFormatIds: c.filter(x => x !== id) }); else if (c.length < 2) set({ selectedFormatIds: [...c, id] }); },
   clearFormatSelection: () => set({ selectedFormatIds: [] }),
   applySelectedFormats: () => { const ids = get().selectedFormatIds; if (!ids.length) return; const fs = get().reportFormats.filter((f: ReportFormat) => ids.includes(f.id)); if (!fs.length) return; const { findingsText, impressionText, recommendationText, techniqueText } = get(); if (findingsText.trim() || impressionText.trim() || recommendationText.trim() || techniqueText.trim()) { set({ confirmOverwriteOpen: true, pendingFormatIds: ids }); return; } get().confirmOverwriteAndApply(); },
-  confirmOverwriteAndApply: () => { const ids = get().pendingFormatIds.length ? get().pendingFormatIds : get().selectedFormatIds; const fs = get().reportFormats.filter((f: ReportFormat) => ids.includes(f.id)); if (!fs.length) { set({ confirmOverwriteOpen: false, pendingFormatIds: [] }); return; } if (fs.length === 1) { const f = fs[0]; get().setField("technique", f.technique); get().setField("findings", f.findings); get().setField("impression", f.impression); get().setField("recommendation", f.recommendation); const nf = get().reportFormats.map((x: ReportFormat) => x.id === f.id ? { ...x, usageCount: (x.usageCount ?? 0) + 1 } : x); saveFormats(nf); set({ reportFormats: nf, confirmOverwriteOpen: false, pendingFormatIds: [], reportFormatPickerOpen: false }); return; } const [a, b] = fs; const r = mergeTwoFormats(a, b); set({ lastMergeResult: r, lastMergeFormats: { a, b }, mergePreviewOpen: true, confirmOverwriteOpen: false, pendingFormatIds: [] }); },
+  confirmOverwriteAndApply: () => { const ids = get().pendingFormatIds.length ? get().pendingFormatIds : get().selectedFormatIds; const fs = get().reportFormats.filter((f: ReportFormat) => ids.includes(f.id)); if (!fs.length) { set({ confirmOverwriteOpen: false, pendingFormatIds: [] }); return; } if (fs.length === 1) { const f = fs[0]; get().setField("technique", f.technique, { source: "template", replaceProvenance: true }); get().setField("findings", f.findings, { source: "template", replaceProvenance: true }); get().setField("impression", f.impression, { source: "template", replaceProvenance: true }); get().setField("recommendation", f.recommendation, { source: "template", replaceProvenance: true }); const nf = get().reportFormats.map((x: ReportFormat) => x.id === f.id ? { ...x, usageCount: (x.usageCount ?? 0) + 1 } : x); saveFormats(nf); set({ reportFormats: nf, confirmOverwriteOpen: false, pendingFormatIds: [], reportFormatPickerOpen: false }); return; } const [a, b] = fs; const r = mergeTwoFormats(a, b); set({ lastMergeResult: r, lastMergeFormats: { a, b }, mergePreviewOpen: true, confirmOverwriteOpen: false, pendingFormatIds: [] }); },
   cancelOverwrite: () => set({ confirmOverwriteOpen: false, pendingFormatIds: [] }),
-  applyMergedResult: () => { const r = get().lastMergeResult; if (!r) return; get().setField("technique", r.technique); get().setField("findings", r.findings); get().setField("impression", r.impression); get().setField("recommendation", r.recommendation); const ids = get().selectedFormatIds; const nf = get().reportFormats.map((x: ReportFormat) => ids.includes(x.id) ? { ...x, usageCount: (x.usageCount ?? 0) + 1 } : x); saveFormats(nf); set({ reportFormats: nf, mergePreviewOpen: false, lastMergeResult: null, lastMergeFormats: null, reportFormatPickerOpen: false }); },
+  applyMergedResult: () => { const r = get().lastMergeResult; if (!r) return; get().setField("technique", r.technique, { source: "template", replaceProvenance: true }); get().setField("findings", r.findings, { source: "template", replaceProvenance: true }); get().setField("impression", r.impression, { source: "template", replaceProvenance: true }); get().setField("recommendation", r.recommendation, { source: "template", replaceProvenance: true }); const ids = get().selectedFormatIds; const nf = get().reportFormats.map((x: ReportFormat) => ids.includes(x.id) ? { ...x, usageCount: (x.usageCount ?? 0) + 1 } : x); saveFormats(nf); set({ reportFormats: nf, mergePreviewOpen: false, lastMergeResult: null, lastMergeFormats: null, reportFormatPickerOpen: false }); },
   cancelMerge: () => set({ mergePreviewOpen: false, lastMergeResult: null, lastMergeFormats: null }),
   saveAsFormat: (i) => { const f = createFormat(i); const fs = [...get().reportFormats, f]; saveFormats(fs); set({ reportFormats: fs, saveAsFormatDialogOpen: false }); },
   deleteReportFormat: (id) => { const fs = get().reportFormats.filter((f: ReportFormat) => f.id !== id); saveFormats(fs); set({ reportFormats: fs, selectedFormatIds: get().selectedFormatIds.filter((x: string) => x !== id) }); },
@@ -149,7 +245,30 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   saveMacro: (input) => { const e = input.id ? get().snippetMacros.find((m: SnippetMacro) => m.id === input.id) : null; let ms: SnippetMacro[]; if (e) ms = get().snippetMacros.map((m: SnippetMacro) => m.id === e.id ? { ...m, ...input, updatedAt: new Date().toISOString() } : m); else ms = [...get().snippetMacros, createMacro(input)]; saveMacros(ms); set({ snippetMacros: ms }); get().closeMacroEditor(); },
   deleteMacro: (id) => { const ms = get().snippetMacros.filter((m: SnippetMacro) => m.id !== id); saveMacros(ms); set({ snippetMacros: ms }); get().closeMacroEditor(); },
   setActiveMacroPrompt: (p) => set({ activeMacroPrompt: p }),
-  applyMacroWithValues: (values: Record<string, string>) => { const p = get().activeMacroPrompt; if (!p) return; const exp = expandMacro(p.macro, values); const c = get()[`${p.field}Text` as "findingsText"]; const before = c.slice(0, p.startPos); const after = c.slice(p.startPos).replace(/^:[a-z][a-z0-9_]*/i, ""); get().setField(p.field, before + exp + " " + after); set({ activeMacroPrompt: null }); },
+  applyMacroWithValues: (values: Record<string, string>) => {
+    const p = get().activeMacroPrompt;
+    if (!p) return;
+    const exp = expandMacro(p.macro, values);
+    const c = get()[`${p.field}Text` as "findingsText"];
+    const before = c.slice(0, p.startPos);
+    const after = c.slice(p.startPos).replace(/^:[a-z][a-z0-9_]*/i, "");
+    // Macro expansion replaces the trigger token; merge the expanded text with macro provenance.
+    const assembled = before + exp + " " + after;
+    const prevProv = get().fieldProvenance[p.field] ?? {};
+    const macroProv = provenanceFromText(exp, "macro");
+    const reconciled = reconcileProvenanceAfterManualEdit(c, assembled, { ...prevProv, ...macroProv });
+    // Prefer macro attribution for sentences that came from the expansion.
+    for (const [k, sources] of Object.entries(macroProv)) {
+      reconciled[k] = sources;
+    }
+    set({
+      isDirty: true,
+      [fieldTextKey(p.field)]: assembled,
+      fieldProvenance: { ...get().fieldProvenance, [p.field]: reconciled },
+      activeMacroPrompt: null,
+    });
+    setTimeout(() => get().recomputeCopilot(), 0);
+  },
   updateSignOffProfile: (m: Modality, n: string, c: string) => { const e = get().signOffProfiles.find((p: SignOffProfile) => p.modality === m); let ps: SignOffProfile[]; if (e) ps = get().signOffProfiles.map((p: SignOffProfile) => p.id === e.id ? { ...p, signerName: n, signerCredentials: c } : p); else ps = [...get().signOffProfiles, createProfile({ modality: m, signerName: n, signerCredentials: c, isDefault: true })]; saveProfiles(ps); set({ signOffProfiles: ps }); },
   triggerPreload: () => set({ preloadTriggered: true }), resetPreload: () => set({ preloadTriggered: false, nextStudyPreloaded: false }),
 } as WorkspaceStore);
