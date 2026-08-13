@@ -98,6 +98,7 @@ import { useIsMobile } from "@/hooks/use-mobile";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
 import { useGlobalScanner } from "@/hooks/useGlobalScanner";
 import { api } from "@/lib/fetchApi";
+import { applyNameGenderExtras, parseNameGenderExtraList } from "@/lib/nameGender";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { SyncPanel, SyncBadge } from "@/components/SyncPanel";
@@ -183,6 +184,7 @@ const navItems: NavEntry[] = [
       // Daily path only — extra AI/admin/legacy pages live under Settings → Radiology
       // or /radiology hub → Advanced (routes unchanged; bookmarks still work).
       { path: "/radiology/worklist",            icon: ScanSearch,     label: "Worklist" },
+      { path: "/radiology/my-collection",        icon: ShieldAlert,    label: "DICOM Match" },
       { path: "/radiology/reporting-workspace", icon: FilePen,        label: "Reporting Workspace" },
       { path: "/radiology/legacy-workspace",   icon: FilePen,        label: "Legacy Workspace (old)", ownerOnly: true },
       { path: "/report-delivery",               icon: Send,           label: "Report Delivery" },
@@ -211,7 +213,6 @@ const navItems: NavEntry[] = [
       },
       // Owner-only leftovers — not needed in a radiologist's daily rail.
       { path: "/radiology/operations-dashboard", icon: Gauge,       label: "Ops Dashboard", ownerOnly: true },
-      { path: "/radiology/my-collection",        icon: ShieldAlert, label: "DICOM Match", ownerOnly: true },
       { path: "/teleradiology",                  icon: Globe,       label: "Teleradiology", ownerOnly: true },
     ],
   },
@@ -310,6 +311,7 @@ const navItems: NavEntry[] = [
       { path: "/settings/scanner",          icon: ScanLine,       label: "Scanner Settings", ownerOnly: true },
       { path: "/abdm-abha",                 icon: ShieldCheck,    label: "ABDM / ABHA", featureFlag: "ff_abdm_abha" },
       { path: "/tests",                     icon: FlaskConical,   label: "Test Catalog" },
+      { path: "/measurement-registry",        icon: Activity,       label: "Measurement Registry", ownerOnly: true },
       { path: "/pathology-registry",        icon: TestTube,       label: "Pathology Registry", ownerOnly: true },
       { path: "/outsourced-labs",           icon: Building2,      label: "Outsourced Labs" },
       { path: "/outsourced-cost-report",    icon: IndianRupee,    label: "Outsource Costs" },
@@ -363,6 +365,19 @@ function FullscreenToggle() {
 export default function Layout({ children }: { children: React.ReactNode }) {
   // Module B: clinic name centralization — pull from /api/clinic-settings so the
   // sidebar branding matches every other clinic-aware surface (BillDetail, Display, FormF).
+  // Clinic-added male/female first names for registration Sex suggestion.
+  const { data: pacsSettingsForNames } = useQuery<Array<{ key: string; value: string | null }>>({
+    queryKey: ["pacs-settings"],
+    queryFn: () => api.get("/api/radiology/pacs-settings"),
+    staleTime: 5 * 60_000,
+  });
+  useEffect(() => {
+    if (!pacsSettingsForNames) return;
+    const maleRaw = pacsSettingsForNames.find((r) => r.key === "name_gender_male_extra")?.value;
+    const femaleRaw = pacsSettingsForNames.find((r) => r.key === "name_gender_female_extra")?.value;
+    applyNameGenderExtras(parseNameGenderExtraList(maleRaw), parseNameGenderExtraList(femaleRaw));
+  }, [pacsSettingsForNames]);
+
   const { data: clinic } = useQuery<{ name?: string; tagline?: string; sidebarTheme?: string }>({
     queryKey: ["clinic-settings-public"],
     queryFn: () => api.get("/api/clinic-settings/branding"),

@@ -7,9 +7,9 @@
  * every evaluation is a new immutable row; every override is appended to
  * history and never overwrites a prior one.
  *
- * SHADOW (Phase 2): additive only. No existing endpoint is replaced and no
- * finalize/workflow behavior changes. Nothing in production calls these yet —
- * they establish the canonical persistence + API contract.
+ * SHADOW (Phase 2): additive only. Finalize/workflow now calls POST /evaluate
+ * from the reporting workspace before sign-off; structured-tier blockers gate
+ * finalize unless overridden via append-only override history.
  *
  *   POST /evaluate                          — run the engine, persist, return DTO
  *   POST /evaluations/:evaluationId/override — append an override (never overwrite)
@@ -338,6 +338,17 @@ router.get("/drafts/:draftId/overrides", async (req, res) => {
     .orderBy(desc(reportQualityOverridesTable.createdAt))
     .limit(200);
   res.json({ overrides: rows });
+});
+
+// GET /evaluations/recent — clinic-wide evaluation feed for admin quality console.
+router.get("/evaluations/recent", async (req, res) => {
+  const limit = Math.min(Math.max(Number(req.query.limit ?? 50), 1), 200);
+  const rows = await db
+    .select()
+    .from(reportQualityEvaluationsTable)
+    .orderBy(desc(reportQualityEvaluationsTable.createdAt))
+    .limit(limit);
+  res.json({ evaluations: rows.map(serializeEvaluation) });
 });
 
 export default router;

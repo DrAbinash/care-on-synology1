@@ -142,7 +142,7 @@ export const RADIOLOGY_TEMPLATES: Record<string, ReportTemplate> = {
     studyName: "MRI BRAIN PLAIN",
     protocolId: "MRI_BRAIN_PLAIN",
     technique:
-      "MRI of brain has been performed on a 1.5T / 3T scanner without intravenous contrast. " +
+      "MRI of brain has been performed on a 3T scanner without intravenous contrast. " +
       "Sequences acquired: T1-weighted sagittal (localiser, TR ~500 ms / TE ~20 ms, 5 mm), " +
       "T2-weighted axial FSE (TR 4000–5000 ms / TE 100–120 ms, 5 mm / 1 mm gap, foramen magnum to vertex), " +
       "FLAIR axial (TR ~8500 ms / TE ~120 ms / TI ~2300 ms, 5 mm — CSF-suppressed), " +
@@ -177,7 +177,7 @@ export const RADIOLOGY_TEMPLATES: Record<string, ReportTemplate> = {
     studyName: "MRI BRAIN WITH CONTRAST",
     protocolId: "MRI_BRAIN_CONTRAST",
     technique:
-      "MRI of brain has been performed on a 1.5T / 3T scanner with gadolinium-based contrast (0.1 mmol/kg IV). " +
+      "MRI of brain has been performed on a 3T scanner with gadolinium-based contrast (0.1 mmol/kg IV). " +
       "Pre-contrast sequences: T1-weighted sagittal (localiser), T2-weighted axial FSE (TR 4000–5000 ms / TE 100–120 ms, 5 mm), " +
       "FLAIR axial (TR ~8500 ms / TE ~120 ms / TI ~2300 ms), " +
       "DWI axial echo-planar (b = 0 & 1000 s/mm²) with ADC map, " +
@@ -214,7 +214,7 @@ export const RADIOLOGY_TEMPLATES: Record<string, ReportTemplate> = {
     studyName: "MRI BRAIN STROKE PROTOCOL",
     protocolId: "MRI_STROKE_PROTOCOL",
     technique:
-      "MRI brain stroke protocol performed on a 1.5T / 3T scanner. " +
+      "MRI brain stroke protocol performed on a 3T scanner. " +
       "Rapid acquisition order: DWI axial (b = 0 & 1000 s/mm²) with ADC map — performed first to detect acute restriction; " +
       "FLAIR axial (TR ~8500 ms / TE ~120 ms / TI ~2300 ms) — FLAIR-DWI mismatch assessed for tissue at risk; " +
       "T2-weighted axial FSE; " +
@@ -247,7 +247,7 @@ export const RADIOLOGY_TEMPLATES: Record<string, ReportTemplate> = {
     studyName: "MRI LUMBOSACRAL SPINE",
     protocolId: "MRI_LS_SPINE",
     technique:
-      "MRI of lumbosacral spine performed on a 1.5T / 3T scanner without intravenous contrast. " +
+      "MRI of lumbosacral spine performed on a 3T scanner without intravenous contrast. " +
       "Sequences: T1-weighted sagittal FSE (TR ~500–700 ms / TE ~10–20 ms, 4 mm, L1 to S2), " +
       "T2-weighted sagittal FSE (TR 3000–4000 ms / TE 100–120 ms, 4 mm — disc hydration and cord signal), " +
       "STIR sagittal (TR ~3000 ms / TI ~150 ms — bone marrow oedema, infective/malignant change), " +
@@ -281,7 +281,7 @@ export const RADIOLOGY_TEMPLATES: Record<string, ReportTemplate> = {
     studyName: "MRI CERVICAL SPINE",
     protocolId: "MRI_CERVICAL_SPINE",
     technique:
-      "MRI of cervical spine performed on a 1.5T / 3T scanner without contrast. " +
+      "MRI of cervical spine performed on a 3T scanner without contrast. " +
       "Sequences: T1-weighted sagittal FSE (4 mm, C0 to T1 coverage), " +
       "T2-weighted sagittal FSE (TR 3000–4500 ms / TE 100–120 ms, 3–4 mm — cord signal, disc), " +
       "STIR sagittal (bone marrow oedema, cord contusion in trauma), " +
@@ -313,7 +313,7 @@ export const RADIOLOGY_TEMPLATES: Record<string, ReportTemplate> = {
     studyName: "MRI DORSAL SPINE",
     protocolId: "MRI_DORSAL_SPINE",
     technique:
-      "MRI of dorsal (thoracic) spine performed on a 1.5T / 3T scanner without contrast. " +
+      "MRI of dorsal (thoracic) spine performed on a 3T scanner without contrast. " +
       "Sequences: T1-weighted sagittal FSE (4 mm, T1 to T12–L1 junction), " +
       "T2-weighted sagittal FSE (TR 3000–4000 ms / TE 100–120 ms, 4 mm — cord signal, disc), " +
       "STIR sagittal (bone marrow oedema, vertebral collapse signal), " +
@@ -355,7 +355,7 @@ export const RADIOLOGY_TEMPLATES: Record<string, ReportTemplate> = {
     studyName: "MRI KNEE",
     protocolId: "MRI_KNEE",
     technique:
-      "MRI of knee performed on a 1.5T / 3T scanner without contrast using a dedicated knee coil. " +
+      "MRI of knee performed on a 3T scanner without contrast using a dedicated knee coil. " +
       "Sequences: PD-weighted sagittal FSE with fat saturation (3 mm, lateral to medial, for cartilage and menisci), " +
       "PD-weighted coronal FSE with fat saturation (3 mm, ligaments and meniscal horns), " +
       "T2-weighted axial FSE with fat saturation (4 mm, cartilage, bursae, Hoffa's fat), " +

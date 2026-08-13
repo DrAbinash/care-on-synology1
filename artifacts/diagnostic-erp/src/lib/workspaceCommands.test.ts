@@ -11,9 +11,11 @@ describe("command vocabulary", () => {
       "verify", "unpark", "reload-current", "focus-findings", "focus-impression", "close-panel",
       "select-template-1", "select-template-2", "select-template-3",
       "select-template-4", "select-template-5", "select-template-6",
+      "focus-mode",
     ]);
     expect(isWorkspaceCommand("next")).toBe(true);
     expect(isWorkspaceCommand("verify")).toBe(true);
+    expect(isWorkspaceCommand("focus-mode")).toBe(true);
     expect(isWorkspaceCommand("voice-magic")).toBe(false);
   });
 });

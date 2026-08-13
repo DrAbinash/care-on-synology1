@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS feature_flags (
 
 INSERT INTO feature_flags (key, description) VALUES
   ('ff_radiology_structured_core',  'FindingInstance dual-write into report_finding_instances (Roadmap Strand A)'),
+  ('ff_radiology_catalog',          'Canonical radiology catalog API — findings, parameters, aliases (Roadmap B1/B2)'),
   ('ff_radiology_render_v2',        'Merged renderEngine as the sole report text producer (Roadmap Strand F)'),
   ('ff_radiology_measurement_pool', 'Finding-independent measurement pool + attach/detach (Roadmap Strand C)'),
   ('ff_radiology_classification',   'Data-driven classification/grading engine, e.g. TI-RADS/NIHSS (Roadmap Strand D)'),

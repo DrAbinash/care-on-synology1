@@ -42,7 +42,7 @@ const STATUS_META: Record<string, { label: string; color: string; icon: React.Re
   CANCELLED:    { label: "Cancelled",    color: "bg-red-100 text-red-800",     icon: <XCircle size={12} /> },
 };
 
-const MODALITIES = ["", "MR", "CT", "CR", "DX", "US", "NM", "PT", "MG", "OT"];
+const MODALITIES = ["__all", "MR", "CT", "CR", "DX", "US", "NM", "PT", "MG", "OT"];
 
 function formatDate(d: string | null) {
   if (!d) return "—";
@@ -157,13 +157,16 @@ export function MwlPanel() {
         </div>
         <div>
           <label className="text-xs text-muted-foreground block mb-1">Modality</label>
-          <Select value={filterModality} onValueChange={setFilterModality}>
+          <Select
+            value={filterModality || "__all"}
+            onValueChange={(v) => setFilterModality(v === "__all" ? "" : v)}
+          >
             <SelectTrigger className="w-32">
               <SelectValue placeholder="All" />
             </SelectTrigger>
             <SelectContent>
               {MODALITIES.map((m) => (
-                <SelectItem key={m || "__all"} value={m}>{m || "All modalities"}</SelectItem>
+                <SelectItem key={m} value={m}>{m === "__all" ? "All modalities" : m}</SelectItem>
               ))}
             </SelectContent>
           </Select>

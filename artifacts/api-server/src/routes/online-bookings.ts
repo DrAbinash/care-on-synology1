@@ -17,8 +17,6 @@ import {
 } from "@workspace/db/schema";
 import { eq, desc, and, or, ilike, sql, inArray } from "drizzle-orm";
 import { generateBillNumber } from "./bills";
-import { generateTokenForBill } from "./tokens";
-import { generateTestTokensForOrder } from "./test-tokens";
 import crypto from "node:crypto";
 import { calculateDobFromAge } from "./public-booking";
 import { registerPatientSelfFlow } from "../services/self-registration";

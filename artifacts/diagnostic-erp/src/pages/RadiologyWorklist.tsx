@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useLocation } from "wouter";
+import { useLocation, Link } from "wouter";
 import { api, getStaffToken } from "@/lib/fetchApi";
 import { readStaffSession, ERP_SESSION_KEY, canAccess, normalizeRole } from "@/lib/staffSession";
 import { toUnifiedStatus, worklistRoleView, priorityInfo, type WorklistRoleView } from "@/lib/radiologyStatus";
@@ -29,8 +29,6 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
-import { MwlPanel } from "@/pages/MwlDashboard";
-import { MwlStatusPanel } from "@/components/radiology/MwlStatusPanel";
 import QueueModalityFilter from "@/components/radiology/QueueModalityFilter";
 
 type WorklistEntry = {
@@ -1063,13 +1061,14 @@ export default function RadiologyWorklist() {
 
   const trulyEmpty = entries.length === 0 && !isLoading;
   const filteredEmpty = entries.length > 0 && tableRows.length === 0;
+  const unlinkedPacsCount = entries.filter((e) => e.studyId == null).length;
 
   return (
     <div className="p-4 md:p-6 space-y-4">
-      <PageHeader title="Worklist Hub" subtitle="Study queue, PACS worklist, and modality worklist in one place" />
+      <PageHeader title="Worklist Hub" subtitle="RIS study queue and PACS intake worklist" />
 
       <Tabs defaultValue="pacs-worklist" className="space-y-4">
-        <TabsList className="grid w-full grid-cols-1 sm:grid-cols-3 h-auto gap-1.5 p-1.5 bg-muted/40 rounded-xl border border-border/60">
+        <TabsList className="grid w-full grid-cols-1 sm:grid-cols-2 h-auto gap-1.5 p-1.5 bg-muted/40 rounded-xl border border-border/60">
           <TabsTrigger
             value="study-queue"
             className="flex items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium transition-all data-[state=active]:bg-background data-[state=active]:shadow-sm data-[state=active]:border data-[state=active]:border-border/60"
@@ -1083,13 +1082,6 @@ export default function RadiologyWorklist() {
           >
             <ScanSearch size={15} />
             <span className="text-center leading-tight">PACS Worklist</span>
-          </TabsTrigger>
-          <TabsTrigger
-            value="mwl"
-            className="flex items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium transition-all data-[state=active]:bg-background data-[state=active]:shadow-sm data-[state=active]:border data-[state=active]:border-border/60"
-          >
-            <CalendarDays size={15} />
-            <span className="text-center leading-tight">MWL</span>
           </TabsTrigger>
         </TabsList>
 
@@ -1132,6 +1124,26 @@ export default function RadiologyWorklist() {
                 </Button>
               </div>
             </div>
+
+            {unlinkedPacsCount > 0 && (
+              <div className="flex flex-wrap items-start gap-3 p-3 rounded-lg bg-orange-50 border border-orange-200 dark:bg-orange-950/30 dark:border-orange-800 text-sm text-orange-900 dark:text-orange-200">
+                <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0 text-orange-600" />
+                <div className="flex-1 min-w-0">
+                  <span className="font-semibold">
+                    {unlinkedPacsCount} PACS scan{unlinkedPacsCount === 1 ? "" : "s"} without billing
+                  </span>
+                  <span className="text-xs text-orange-800/90 dark:text-orange-300/90 block mt-0.5">
+                    Imaging arrived from the modality but no billed radiology order is linked — review in DICOM Match Center before reporting or delivery.
+                  </span>
+                </div>
+                <Link
+                  href="/radiology/my-collection?filter=unbilled"
+                  className="text-xs font-semibold text-orange-800 dark:text-orange-300 underline shrink-0 hover:text-orange-900"
+                >
+                  Open DICOM Match →
+                </Link>
+              </div>
+            )}
 
             {/* Filters + date range (dates aligned right) */}
             <div className="flex flex-wrap items-center gap-2 justify-between">
@@ -1806,23 +1818,6 @@ export default function RadiologyWorklist() {
                 to print/share. Automated email delivery is not enabled (READY_TO_SEND only).
               </div>
             </div>
-          </div>
-        </TabsContent>
-
-        <TabsContent value="mwl">
-          <div className="space-y-3">
-            <MwlStatusPanel
-              isAdmin={["admin", "super_admin", "owner"].includes(normalizeRole(session?.user?.role || ""))}
-              onSync={() => {
-                void api.post("/api/radiology/mwl-worklist/sync", {}).then(() => {
-                  toast({ title: "MWL sync requested" });
-                  void qc.invalidateQueries({ queryKey: ["mwl-deployment-status"] });
-                }).catch((e: unknown) => {
-                  toast({ title: "MWL sync failed", description: e instanceof Error ? e.message : "Error", variant: "destructive" });
-                });
-              }}
-            />
-            <MwlPanel />
           </div>
         </TabsContent>
       </Tabs>

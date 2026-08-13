@@ -76,7 +76,7 @@ async function req(token, method, path, body) {
   const text = await r.text();
   let json;
   try { json = text ? JSON.parse(text) : null; } catch { json = text; }
-  return { status: r.status, body: json };
+  return { status: r.status, body: json, headers: r.headers };
 }
 
 async function main() {
@@ -99,10 +99,12 @@ async function main() {
       const r = await req(token, "GET", "/api/tokens/today?ledgerId=-1");
       expectStatus(r.status, 400, r.body);
     });
-    await check("GET /api/tokens/today?ledgerId=1 → 200", async () => {
+    await check("GET /api/tokens/today?ledgerId=1 → 200 (deprecated)", async () => {
       const r = await req(token, "GET", "/api/tokens/today?ledgerId=1");
       expectStatus(r.status, 200, r.body);
       if (!Array.isArray(r.body)) throw new Error("expected array");
+      const dep = r.headers.get("deprecation") || r.headers.get("Deprecation");
+      if (!dep) throw new Error("expected Deprecation header on legacy /api/tokens");
     });
 
     await check("GET /api/test-tokens/today without ledgerId → 400", async () => {

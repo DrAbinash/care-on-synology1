@@ -177,6 +177,14 @@ const FEATURES: RadiologyFeature[] = [
     icon: ListChecks,
   },
   {
+    name: "Content Catalog (canonical API)",
+    route: "/settings/radiology?tab=content-catalog",
+    purpose: "Canonical findings, parameters, categories, and aliases (ff_radiology_catalog).",
+    status: "Active",
+    adminOnly: true,
+    icon: BookOpen,
+  },
+  {
     name: "AI Audit Log",
     route: "/radiology/ai-audit-log",
     purpose: "Review all AI-generated content, edits, and approvals for compliance.",
@@ -351,6 +359,22 @@ const FEATURES: RadiologyFeature[] = [
     status: "Active",
     adminOnly: true,
     icon: ListChecks,
+  },
+  {
+    name: "MWL Dashboard (enterprise)",
+    route: "/radiology/mwl-dashboard",
+    purpose: "Enterprise MWL procedure list synced from billing (pacsEnterprise API).",
+    status: "Active",
+    adminOnly: true,
+    icon: ListChecks,
+  },
+  {
+    name: "Study Access Logs",
+    route: "/radiology/study-access-logs",
+    purpose: "Audit who opened or acted on imaging studies.",
+    status: "Active",
+    adminOnly: true,
+    icon: ShieldAlert,
   },
   {
     name: "AI Pipeline Manager",

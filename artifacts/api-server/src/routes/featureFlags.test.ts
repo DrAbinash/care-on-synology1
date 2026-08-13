@@ -12,6 +12,7 @@ import { describe, expect, test, vi, beforeEach } from "vitest";
 
 let allRows: Array<{ key: string; enabled: boolean; description: string; updatedBy: string | null; updatedAt: string }>;
 let selectOneResult: typeof allRows;
+let limitQueue: Array<typeof allRows> = [];
 let updateSetCalls: Record<string, unknown>[];
 let updatedRow: (typeof allRows)[number] | null;
 
@@ -21,7 +22,10 @@ vi.mock("@workspace/db", () => ({
       from: () => ({
         orderBy: async () => allRows,
         where: () => ({
-          limit: async () => selectOneResult,
+          limit: async () => {
+            if (limitQueue.length > 0) return limitQueue.shift()!;
+            return selectOneResult;
+          },
         }),
       }),
     }),
@@ -105,6 +109,7 @@ describe("GET /api/feature-flags", () => {
 describe("PATCH /api/feature-flags/:key", () => {
   beforeEach(() => {
     selectOneResult = [{ key: "ff_radiology_structured_core", enabled: false, description: "x", updatedBy: null, updatedAt: "2026-01-01T00:00:00.000Z" }];
+    limitQueue = [];
     updatedRow = selectOneResult[0];
     updateSetCalls = [];
     invalidateFeatureFlagCache.mockClear();
@@ -152,6 +157,23 @@ describe("PATCH /api/feature-flags/:key", () => {
 
     expect(res.statusCode).toBe(200);
     expect(updateSetCalls[0]).toMatchObject({ enabled: false });
+  });
+
+  test("rejects enabling catalog when structured_core dependency is off", async () => {
+    const catalog = { key: "ff_radiology_catalog", enabled: false, description: "catalog", updatedBy: null, updatedAt: "2026-01-01T00:00:00.000Z" };
+    const core = { key: "ff_radiology_structured_core", enabled: false, description: "core", updatedBy: null, updatedAt: "2026-01-01T00:00:00.000Z" };
+    limitQueue = [[catalog], [core]];
+    updatedRow = catalog;
+    const { default: featureFlagsRouter } = await import("./featureFlags");
+    const handler = getRouteHandler(featureFlagsRouter, "patch", "/:key");
+    const req = { params: { key: "ff_radiology_catalog" }, body: { enabled: true }, staffSession: { subjectName: "Dr. Admin" } };
+    const res = makeRes();
+    await handler(req, res);
+
+    expect(res.statusCode).toBe(400);
+    expect(String(res.body?.error ?? "")).toMatch(/structured_core/i);
+    expect(res.body?.missingDependencies).toEqual(["ff_radiology_structured_core"]);
+    expect(updateSetCalls).toHaveLength(0);
   });
 
   test("rejects a non-boolean enabled value with 400, never touches the DB", async () => {

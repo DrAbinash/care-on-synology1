@@ -170,6 +170,9 @@ const PERMISSION_ALIASES: Readonly<Record<string, string>> = {
   "/radiology/productivity": "/radiology",
   "/radiology/ai-model-routing": "/radiology",
   "/radiology/structured-report-templates": "/radiology",
+  "/radiology/mwl-dashboard": "/radiology",
+  "/radiology/study-access-logs": "/radiology",
+  "/radiology/quality-gates": "/radiology",
   "/radiology/ai-audit-log": "/radiology",
   "/radiology/ai-quality-scores": "/radiology",
   "/radiology/ai-prompt-effectiveness": "/radiology",
@@ -412,6 +415,7 @@ const FEATURE_FLAG_DEFAULTS: Record<string, boolean> = {
   // the server's feature_flags table is authoritative for these keys and
   // wins over both this default and any stale localStorage copy. All off.
   ff_radiology_structured_core: false,
+  ff_radiology_catalog: false,
   ff_radiology_render_v2: false,
   ff_radiology_measurement_pool: false,
   ff_radiology_classification: false,

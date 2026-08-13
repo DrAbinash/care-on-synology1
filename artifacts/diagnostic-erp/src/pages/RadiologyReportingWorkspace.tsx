@@ -90,10 +90,13 @@ import type { PrintClinic } from "@/lib/reportPdfGenerator";
 import {
   type ReportLayoutKey,
   quickSelectLayoutKey,
+  reportLayoutTemplateQuery,
 } from "@/components/radiology/ReportLayoutQuickSelect";
 import ReportExportPanel from "@/components/radiology/ReportExportPanel";
 import { validateReport, computeQualityScore } from "@/lib/reportValidator";
 import { logParityInDev } from "@/lib/reportQualityShadow";
+import { formatQualityAdvisoryForDialog } from "@/lib/reportQualityFinalize";
+import { runFinalizeQualityEvaluation } from "@/lib/reportQualityFinalizeApi";
 import { detectCriticalFindings } from "@/lib/criticalResults";
 import { computeFinalizeSafety, formatFinalizeSafety, criticalFindingBlocksFinalize } from "@/lib/finalizeSafety";
 import { retryWithBackoff, isTransientError, offlineBlockMessage } from "@/lib/reliability";
@@ -151,8 +154,10 @@ import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Textarea } from "@/components/ui/textarea";
-import { removeBlock, removeImpression } from "@/lib/quickFindingsMerge";
+import { mergeBlock, removeBlock, removeImpression } from "@/lib/quickFindingsMerge";
 import type { InsertSource } from "@/lib/reportFieldMerge";
+import { generateLocalImpression } from "@/lib/generateLocalImpression";
+import { hasPhrase, appendClinicalPhrase, removeClinicalPhrase } from "@/lib/clinicalHistoryText";
 import type { Side } from "@/lib/sideSwap";
 import {
   loadWorkspaceLayoutPrefs, saveWorkspaceLayoutPrefs,
@@ -206,7 +211,59 @@ import {
   Lock, AlertTriangle, ChevronLeft, ChevronRight, Pause, Clock, Sparkles, ShieldCheck,
   Brain, Activity, Zap, Printer, FileDown, Share2, Eye, PanelLeftClose, PanelLeftOpen,
   Maximize2, Columns2, Monitor, Archive, Keyboard, AppWindow, MessageCircle, Hospital,
+  Trash2, MonitorPlay,
 } from "lucide-react";
+
+/** Default Recommendation chips when `report_recommendation_chips` is unset. */
+const DEFAULT_RECOMMENDATION_CHIPS: string[] = [
+  "Clinical correlation is recommended.",
+  "Correlation with previous imaging is advised.",
+  "Follow-up imaging is advised as clinically indicated.",
+  "Contrast-enhanced study is suggested for further characterisation.",
+  "MRI is advised for further evaluation.",
+  "Specialist / surgical consultation is recommended.",
+  "No further imaging is required at present.",
+];
+
+const RECOMMENDATION_CHIP_ALIASES: Record<string, string[]> = {
+  "Clinical correlation is recommended.": [
+    "Please correlate with clinical and laboratory findings.",
+    "Please correlate with clinical findings.",
+    "Clinical correlation advised.",
+    "Clinical correlation is advised.",
+  ],
+  "Follow-up imaging is advised as clinically indicated.": [
+    "Follow-up imaging is recommended as clinically indicated.",
+    "Follow up imaging is advised as clinically indicated.",
+  ],
+};
+
+function toggleRecommendationChip(existing: string, chip: string): string {
+  const trimmed = chip.trim();
+  if (!trimmed) return existing;
+  const aliases = RECOMMENDATION_CHIP_ALIASES[trimmed] ?? [];
+  const present = existing.includes(trimmed) || aliases.some((a) => existing.includes(a));
+  if (present) {
+    let next = removeBlock(existing, trimmed);
+    for (const a of aliases) next = removeBlock(next, a);
+    return next;
+  }
+  return mergeBlock(existing, trimmed);
+}
+
+function recommendationChipActive(existing: string, chip: string): boolean {
+  const trimmed = chip.trim();
+  if (!trimmed) return false;
+  if (existing.includes(trimmed)) return true;
+  return (RECOMMENDATION_CHIP_ALIASES[trimmed] ?? []).some((a) => existing.includes(a));
+}
+
+function findingsMapToText(map: Record<string, { normal: boolean; text: string }>): string {
+  return Object.entries(map)
+    .filter(([, v]) => v.text.trim())
+    .map(([label, v]) => `${label}: ${v.text}`)
+    .join("\n\n");
+}
 
 interface Props { studyId?: number; }
 
@@ -233,6 +290,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const [whatsappShareOpen, setWhatsappShareOpen] = useState(false);
   const [exportingWord, setExportingWord] = useState(false);
   const [exportingPdf, setExportingPdf] = useState(false);
+  const [printingLikeFinal, setPrintingLikeFinal] = useState(false);
   const [headingCase, setHeadingCase] = useState<ReportHeadingCase>("all_caps");
   const [sectionSpacing, setSectionSpacing] = useState<ReportSectionSpacing>("spaced");
   const [impressionStyle, setImpressionStyle] = useState<ReportImpressionStyle>("bulleted");
@@ -242,6 +300,22 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const [sendHopeBusy, setSendHopeBusy] = useState(false);
   // Radiologist-local demography overrides — never written to patient master.
   const [demographyOverrides, setDemographyOverrides] = useState<Partial<ReportDemography>>({});
+
+  // Structured Normal/Abnormal section cards (legacy parity)
+  const [useStructured, setUseStructured] = useState(false);
+  const [findingsMap, setFindingsMap] = useState<Record<string, { normal: boolean; text: string }>>({});
+  const startReportUndoRef = useRef<{
+    technique: string;
+    findings: string;
+    impression: string;
+    recommendation: string;
+    clinicalHistory: string;
+    findingsMap: Record<string, { normal: boolean; text: string }>;
+    useStructured: boolean;
+    selectedTemplateId: number | null;
+  } | null>(null);
+  const [canUndoStartReport, setCanUndoStartReport] = useState(false);
+  const pendingStructuredPopulateRef = useRef(false);
 
   // ─── Session ──────────────────────────────────────────────────────────────
   const session = useMemo(() => readStaffSession(), []);
@@ -620,6 +694,94 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const [leftCollapsed, setLeftCollapsed] = useState(false);
   const [patientJumpFilter, setPatientJumpFilter] = useState("");
 
+  // Viewer focus — collapse app sidebar via Layout; sticky while writing
+  const [viewerFocusMode, setViewerFocusMode] = useState(false);
+  const viewerFocusRef = useRef(false);
+  const setViewerFocus = useCallback((on: boolean) => {
+    if (viewerFocusRef.current === on) return;
+    viewerFocusRef.current = on;
+    setViewerFocusMode(on);
+    try { window.dispatchEvent(new CustomEvent("care:viewer-focus", { detail: on })); } catch { /* noop */ }
+  }, []);
+
+  useEffect(() => {
+    if (!showEmbeddedViewer) {
+      setViewerFocus(false);
+      setViewerColumnExpanded(false);
+    }
+  }, [showEmbeddedViewer, setViewerFocus]);
+
+  useEffect(() => {
+    if (showEmbeddedViewer) setViewerFocus(true);
+  }, [showEmbeddedViewer, setViewerFocus]);
+
+  useEffect(() => () => {
+    if (viewerFocusRef.current) {
+      try { window.dispatchEvent(new CustomEvent("care:viewer-focus", { detail: false })); } catch { /* noop */ }
+    }
+  }, []);
+
+  const enterReportingFocusMode = useCallback(() => {
+    leftPanelRef.current?.collapse();
+    rightPanelRef.current?.collapse();
+    try { window.dispatchEvent(new CustomEvent("care:workspace-focus", { detail: true })); } catch { /* noop */ }
+  }, []);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("focus") !== "1") return;
+    enterReportingFocusMode();
+    params.delete("focus");
+    const qs = params.toString();
+    window.history.replaceState(
+      null,
+      "",
+      window.location.pathname + (qs ? `?${qs}` : "") + window.location.hash,
+    );
+  }, [studyId, enterReportingFocusMode]);
+
+  useEffect(() => {
+    try { window.dispatchEvent(new CustomEvent("care:workspace-focus", { detail: true })); } catch { /* noop */ }
+    return () => {
+      try { window.dispatchEvent(new CustomEvent("care:workspace-focus", { detail: false })); } catch { /* noop */ }
+    };
+  }, []);
+
+  // Auto-link toast when worklist entry was auto-linked to a billed study
+  const { data: workspaceEntry } = useQuery<{
+    autoLinkMeta?: { reason?: string; studyId?: number; matchScore?: number };
+  }>({
+    queryKey: ["workspace-entry", studyId],
+    queryFn: () => api.get(`/api/internal/radiology/worklist/${studyId}`),
+    enabled: !!studyId,
+  });
+  const autoLinkNotifiedRef = useRef<number | null>(null);
+  useEffect(() => {
+    const meta = workspaceEntry?.autoLinkMeta;
+    if (!meta || !studyId) return;
+    if (meta.reason !== "auto-linked to billed study") return;
+    if (autoLinkNotifiedRef.current === studyId) return;
+    autoLinkNotifiedRef.current = studyId;
+    toast({
+      title: "Billed study linked",
+      description: `Auto-linked to study #${meta.studyId}${meta.matchScore ? ` (${meta.matchScore} match)` : ""}.`,
+    });
+  }, [workspaceEntry?.autoLinkMeta, studyId, toast]);
+
+  // Reset structured state when switching studies
+  useEffect(() => {
+    setFindingsMap({});
+    setUseStructured(false);
+    startReportUndoRef.current = null;
+    setCanUndoStartReport(false);
+  }, [studyId]);
+
+  // Keep findingsText in sync when structured cards drive the report
+  useEffect(() => {
+    if (!useStructured) return;
+    useWorkspace.getState().setField("findings", findingsMapToText(findingsMap));
+  }, [findingsMap, useStructured]);
+
   // DICOM → protocol / technique / test-name auto-select (legacy chain)
   const studySetupSetters = useMemo(() => ({
     setTechnique: (next: string | ((prev: string) => string)) => {
@@ -702,6 +864,116 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     setters: studySetupSetters,
     onToast: (opts) => toast({ title: opts.title, description: opts.description, variant: opts.variant }),
   });
+
+  const clinicalHistoryChips = useMemo(
+    () => (studySetup.quickSelectData?.clinicalHistory ?? [])
+      .filter((c) => c.isActive && (
+        studySetup.studyRegions.length === 0 || studySetup.studyRegions.includes(c.studyType)
+      ))
+      .sort((a, b) => a.sortOrder - b.sortOrder || a.displayLabel.localeCompare(b.displayLabel)),
+    [studySetup.quickSelectData, studySetup.studyRegions],
+  );
+
+  const recommendationChips = useMemo<string[]>(() => {
+    const raw = pacsSettingsRows?.find((r) => r.key === "report_recommendation_chips")?.value;
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          const chips = parsed.map((x) => String(x).trim()).filter(Boolean);
+          if (chips.length > 0) return chips;
+        }
+      } catch { /* fall back */ }
+    }
+    return DEFAULT_RECOMMENDATION_CHIPS;
+  }, [pacsSettingsRows]);
+
+  const reportNeedsStart = useMemo(() => {
+    const region = studySetup.matchedStudyRegion ?? studySetup.studyRegions[0];
+    if (!region) return false;
+    const findingsEmpty = useStructured
+      ? Object.values(findingsMap).every((v) => !v.text.trim() || v.normal)
+      : !findingsText.trim();
+    const noWork = !techniqueText.trim() && findingsEmpty && !impressionText.trim();
+    return noWork
+      || studySetup.templateMismatch
+      || (!studySetup.activeProtocol && studySetup.availableProtocols.length > 0);
+  }, [
+    studySetup.matchedStudyRegion, studySetup.studyRegions, useStructured, findingsMap,
+    findingsText, techniqueText, impressionText, studySetup.templateMismatch,
+    studySetup.activeProtocol, studySetup.availableProtocols.length,
+  ]);
+
+  const handleStartReport = useCallback(() => {
+    if (studyLock.status === "locked-by-other" || isFinalized) return;
+    const fields = studySetupSetters.readFields();
+    startReportUndoRef.current = {
+      ...fields,
+      findingsMap: { ...findingsMap },
+      useStructured,
+      selectedTemplateId: studySetup.selectedTemplateId,
+    };
+    const result = studySetup.startReportBootstrap();
+    if (!result) {
+      startReportUndoRef.current = null;
+      return;
+    }
+    if (Object.keys(result.sectionMap).length > 0) {
+      setFindingsMap(result.sectionMap);
+      setUseStructured(true);
+    } else {
+      setUseStructured(false);
+    }
+    setCanUndoStartReport(true);
+  }, [
+    studyLock.status, isFinalized, studySetupSetters, findingsMap, useStructured, studySetup,
+  ]);
+
+  const undoStartReport = useCallback(() => {
+    const snap = startReportUndoRef.current;
+    if (!snap) return;
+    useWorkspace.getState().setEditorContent({
+      findings: snap.findings,
+      impression: snap.impression,
+      recommendation: snap.recommendation,
+      technique: snap.technique,
+      clinicalHistory: snap.clinicalHistory,
+    });
+    setFindingsMap(snap.findingsMap);
+    setUseStructured(snap.useStructured);
+    if (snap.selectedTemplateId != null) studySetup.selectTemplateManual(snap.selectedTemplateId);
+    startReportUndoRef.current = null;
+    setCanUndoStartReport(false);
+    toast({ title: "Start report undone" });
+  }, [studySetup, toast]);
+
+  const handleGenerateLocalImpression = useCallback(() => {
+    if (studyLock.status === "locked-by-other" || isFinalized) return;
+    const lines = generateLocalImpression(
+      useStructured ? findingsMapToText(findingsMap) : findingsText,
+      useStructured ? findingsMap : undefined,
+    );
+    if (lines.length === 0) {
+      toast({ title: "No findings to summarize", description: "Add findings first.", variant: "destructive" });
+      return;
+    }
+    if (impressionText.trim() && !window.confirm("Replace current impression with generated summary?")) return;
+    useWorkspace.getState().setField("impression", lines.join("\n"));
+    toast({ title: "Impression generated", description: `${lines.length} point${lines.length > 1 ? "s" : ""} from findings` });
+  }, [studyLock.status, isFinalized, useStructured, findingsMap, findingsText, impressionText, toast]);
+
+  // After Load-correct-template, populate Normal/Abnormal cards from the new template
+  useEffect(() => {
+    if (!pendingStructuredPopulateRef.current) return;
+    if (studySetup.templateFindingsSections.length === 0) return;
+    pendingStructuredPopulateRef.current = false;
+    const map: Record<string, { normal: boolean; text: string }> = {};
+    for (const s of studySetup.templateFindingsSections) {
+      map[s.label] = { normal: true, text: s.normal };
+    }
+    setFindingsMap(map);
+    setUseStructured(true);
+  }, [studySetup.templateFindingsSections, studySetup.selectedTemplateId]);
 
   const openStudy = useCallback((id: string | number) => {
     const sid = String(id);
@@ -928,8 +1200,12 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     const offlineMsg = offlineBlockMessage(isOnline, "finalize");
     if (offlineMsg) { toast({ title: "Offline", description: offlineMsg, variant: "destructive" }); return; }
 
-    // 1. Save dirty state first
-    if (useWorkspace.getState().isDirty) await saveDraft();
+    // 1. Save dirty state first (capture draft id for quality + validate-draft)
+    let effectiveDraftId = draftId;
+    if (useWorkspace.getState().isDirty) {
+      const savedId = await saveDraft();
+      if (savedId) effectiveDraftId = savedId;
+    }
 
     // 1b. PCPNDT Form F gate (obstetric USG) — same rule as legacy
     if (pcpndtBlockedRef.current) {
@@ -948,11 +1224,11 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       impression: [impressionText],
       technique: techniqueText,
     } as any);
-    if (draftId) {
+    if (effectiveDraftId) {
       try {
         const serverVal = await api.post<{
           structured?: { errors?: unknown[]; warnings?: string[]; skipReasons?: string[] };
-        }>("/api/radiology/report-generator/validate-draft", { draftId });
+        }>("/api/radiology/report-generator/validate-draft", { draftId: effectiveDraftId });
         const errs = serverVal?.structured?.errors ?? [];
         const warns = serverVal?.structured?.warnings ?? [];
         const skips = serverVal?.structured?.skipReasons ?? [];
@@ -962,7 +1238,32 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       } catch { /* non-fatal — local validation still applies */ }
     }
 
-    // 3. Critical findings check (auto-detect + manual mark/comms from legacy)
+    // 3b. Canonical report-quality evaluation (persisted, drives finalize dialog)
+    let qualityGate: Awaited<ReturnType<typeof runFinalizeQualityEvaluation>> | null = null;
+    try {
+      qualityGate = await runFinalizeQualityEvaluation({
+        draftId: effectiveDraftId,
+        modality: workflow.currentRow.modality,
+        studyDescription: workflow.currentRow.studyDescription,
+        clinicalHistory: clinicalHistoryText,
+        technique: techniqueText,
+        findings: findingsText,
+        impression: impressionText,
+        recommendation: recommendationText,
+        checklistPercent: studySetup.checklistPercent,
+      });
+    } catch (err) {
+      toast({
+        title: "Quality check failed",
+        description: err instanceof Error ? err.message : "Could not run report quality evaluation. Save draft and try again.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const qualityAdvisory = qualityGate ? formatQualityAdvisoryForDialog(qualityGate) : "";
+
+    // 4. Critical findings check (auto-detect + manual mark/comms from legacy)
     const criticalHits = detectCriticalFindings(findingsText, [impressionText]);
     const criticalMarked = isCritical || criticalHits.length > 0;
     const criticalCommunicated = checklistComm.phoned;
@@ -974,17 +1275,18 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       criticalCommunicated,
     });
 
-    // 4. Get signatures
+    // 5. Get signatures
     const signatures = await api.get<{ id: number; name: string }[]>("/api/signatures");
 
-    // 5. Prompt via finalize flow
+    // 6. Prompt via finalize flow (quality gate + critical ack + signer)
     const result = await finalizeFlow.promptFinalize({
       identity: `${workflow.currentRow.patientName} — ${workflow.currentRow.studyDescription}`,
-      validationSummary: validationIssues.join("; ") as any,
+      validationSummary: (validationIssues.join("; ") + qualityAdvisory) as string,
       warningBlock: safetyIssues.filter(i => i.severity === "warn").map(i => i.message).join("; "),
       safetyBlock: formatFinalizeSafety(safetyIssues),
       unbilledNote: "",
       signatures: signatures,
+      qualityGate,
       criticalRequiresAck: criticalFindingBlocksFinalize({
         checklistActive: false,
         checklistPercent: 100,
@@ -1000,7 +1302,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
 
     if (!result.confirmed) return;
 
-    // 6. Execute finalize
+    // 7. Execute finalize
     try {
       const finalizeResult = await finalizeRadiologyReport(
         ({
@@ -1018,6 +1320,18 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
           isCritical: criticalMarked,
           criticalNote: criticalNote || (criticalHits.length > 0 ? criticalHits.map(h => h.label).join(", ") : null),
           createdBy: session?.user?.name ?? "Dr. Abinash Kumar",
+          actor: session?.user?.name ?? "Dr. Abinash Kumar",
+          signatureId: result.signatureId,
+          auditDetails: qualityGate
+            ? {
+                qualityEvaluationId: qualityGate.textEvaluationId,
+                structuredQualityEvaluationId: qualityGate.structuredEvaluationId,
+                qualityScore: qualityGate.score,
+                qualityBlockingCount: qualityGate.blockingCount,
+                qualityWarningCount: qualityGate.warningCount,
+                qualitySource: "workspace-finalize",
+              }
+            : undefined,
         } as any,
       );
 
@@ -1062,7 +1376,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     } catch (err) {
       toast({ title: "Finalize failed", description: err instanceof Error ? err.message : "Unknown error", variant: "destructive" });
     }
-  }, [studyId, workflow, isOnline, findingsText, impressionText, recommendationText, techniqueText, saveDraft, finalizeFlow, draftBackup, qc, toast, isCritical, criticalNote, checklistComm, draftId, session]);
+  }, [studyId, workflow, isOnline, findingsText, impressionText, recommendationText, techniqueText, clinicalHistoryText, studySetup.checklistPercent, saveDraft, finalizeFlow, draftBackup, qc, toast, isCritical, criticalNote, checklistComm, draftId, session]);
 
   // ─── Command dispatcher (single choke point for keyboard/voice/palette) ────
   const commandDispatcher = useMemo(() => createCommandDispatcher({
@@ -1080,13 +1394,14 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     "focus-findings": () => { focusReportField("findings"); },
     "focus-impression": () => { focusReportField("impression"); },
     "close-panel": () => { rightPanelRef.current?.collapse(); },
+    "focus-mode": () => { enterReportingFocusMode(); },
     "select-template-1": () => { openLegacyTabRef.current("templates"); },
     "select-template-2": () => { openLegacyTabRef.current("templates"); },
     "select-template-3": () => { openLegacyTabRef.current("templates"); },
     "select-template-4": () => { openLegacyTabRef.current("templates"); },
     "select-template-5": () => { openLegacyTabRef.current("templates"); },
     "select-template-6": () => { openLegacyTabRef.current("templates"); },
-  }), [saveDraft, finalizeReport, workflow, studyId, goNextStudy, goPrevStudy, focusReportField]);
+  }), [saveDraft, finalizeReport, workflow, studyId, goNextStudy, goPrevStudy, focusReportField, enterReportingFocusMode]);
   commandDispatcherRef.current = commandDispatcher;
 
   // ─── Global keyboard shortcuts (voice keys FIRST, then workspace) ──────────
@@ -1291,9 +1606,9 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         studyName: studyNameForExport,
         technique: techniqueText,
         clinicalHistory: clinicalHistoryText,
-        findingsMap: {},
+        findingsMap: useStructured ? findingsMap : {},
         rawFindings: findingsText,
-        useStructured: false,
+        useStructured,
         impression: impressionText.split("\n").filter(Boolean),
         recommendation: recommendationText,
         imageRefs,
@@ -1306,6 +1621,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       canonicalDemography, studyNameForExport, techniqueText, clinicalHistoryText,
       findingsText, impressionText, recommendationText, imageRefs,
       headingCase, sectionSpacing, impressionStyle, signerLine, reportLayout,
+      useStructured, findingsMap,
     ],
   );
 
@@ -1354,8 +1670,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         bodyPart: workflow.currentRow?.studyDescription ?? "",
         clinicalHistory: clinicalHistoryText,
         technique: techniqueText,
-        useStructured: false,
-        findingsMap: {},
+        useStructured,
+        findingsMap: useStructured ? findingsMap : {},
         rawFindings: findingsText,
         impression: impressionText.split("\n").filter(Boolean),
         recommendation: recommendationText,
@@ -1378,7 +1694,35 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     canonicalDemography, clinicalHistoryText, techniqueText, findingsText,
     impressionText, recommendationText, studyNameForExport, headingCase,
     imageRefs, clinicSettings, toast, workflow.currentRow,
+    useStructured, findingsMap,
   ]);
+
+  const handlePrintLikeFinal = useCallback(async () => {
+    if (!draftId) {
+      toast({ title: "Save draft first", description: "Print-like-final needs a saved draft.", variant: "destructive" });
+      return;
+    }
+    setPrintingLikeFinal(true);
+    const w = window.open("", "_blank");
+    if (!w) {
+      setPrintingLikeFinal(false);
+      toast({ title: "Popup blocked", description: "Allow popups for this site to print.", variant: "destructive" });
+      return;
+    }
+    try {
+      const templateQs = reportLayoutTemplateQuery(reportLayout);
+      const url = `/api/radiology/report-generator/drafts/${draftId}/print-preview?autoPrint=true&likeFinal=true&${templateQs}`;
+      const html = await api.get<string>(url);
+      w.document.write(html);
+      w.document.close();
+      w.focus();
+    } catch {
+      w.close();
+      toast({ title: "Print preview failed", variant: "destructive" });
+    } finally {
+      setPrintingLikeFinal(false);
+    }
+  }, [draftId, reportLayout, toast]);
 
   // ─── Teaching case save ─────────────────────────────────────────────────────
   const handleSaveTeachingCase = useCallback(async () => {
@@ -1958,6 +2302,23 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                         {" "}Click here (or the <span className="font-mono">OHIF</span> button in the top bar) to open the embedded viewer.
                       </button>
                     )}
+                    {viewerFocusMode && showEmbeddedViewer && (
+                      <div className="flex items-center gap-2 px-2 py-1.5 -mx-1 rounded border bg-muted/10" data-testid="viewer-focus-strip">
+                        <MonitorPlay size={13} className="text-muted-foreground shrink-0" />
+                        <span className="text-xs font-semibold truncate flex-1">
+                          {workflow.currentRow?.patientName ?? "Viewer focus"}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setViewerFocus(false)}
+                          className="text-[10px] text-muted-foreground hover:text-foreground underline underline-offset-2 shrink-0"
+                          title="Show app menu again"
+                          data-testid="viewer-focus-restore"
+                        >
+                          Show details
+                        </button>
+                      </div>
+                    )}
                     {/* 1. DEMOGRAPHY — canonical, editable, feeds all outputs */}
                     {workflow.currentRow && (
                       <ReportDemographyCard
@@ -1968,10 +2329,53 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                     )}
 
                     {workflow.currentRow && (
-                      <ReferringDoctorQuickSelect
-                        worklistId={studyId ?? 0}
-                        currentName={(workflow.currentRow as any)?.referringDoctor}
-                      />
+                      <div className="space-y-1" data-testid="ref-dr-block">
+                        <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                          Ref. Dr
+                        </div>
+                        <ReferringDoctorQuickSelect
+                          worklistId={studyId ?? 0}
+                          currentName={(workflow.currentRow as any)?.referringDoctor}
+                        />
+                      </div>
+                    )}
+
+                    {/* One-click Start Report */}
+                    {!isLocked && !isFinalized && reportNeedsStart && (studySetup.matchedStudyRegion || studySetup.studyRegions[0]) && (
+                      <div
+                        className="flex flex-wrap items-center gap-2 p-3 rounded-lg border-2 border-amber-400/50 bg-gradient-to-r from-amber-50 via-orange-50/80 to-amber-50/40 shadow-sm"
+                        data-testid="start-report-banner"
+                      >
+                        <div className="w-9 h-9 rounded-lg bg-amber-500/15 flex items-center justify-center shrink-0">
+                          <Zap size={18} className="text-amber-600" />
+                        </div>
+                        <div className="flex-1 min-w-[180px]">
+                          <p className="text-sm font-semibold text-amber-950">
+                            Ready to report — {studySetup.matchedStudyRegion ?? studySetup.studyRegions[0]}
+                          </p>
+                          <p className="text-[11px] text-amber-800/80">
+                            One click applies protocol, template, and normal findings. You can undo immediately.
+                          </p>
+                        </div>
+                        <Button
+                          type="button"
+                          size="sm"
+                          className="h-8 text-xs font-semibold gap-1 bg-amber-600 hover:bg-amber-700 text-white border-0"
+                          onClick={handleStartReport}
+                          data-testid="btn-start-report"
+                        >
+                          <Zap size={14} /> Start Report
+                        </Button>
+                      </div>
+                    )}
+
+                    {canUndoStartReport && !isLocked && !isFinalized && (
+                      <div className="flex items-center gap-2 p-2 rounded-md bg-blue-50 border border-blue-200 text-blue-800 text-xs">
+                        <span className="flex-1">Report bootstrapped — undo restores your previous text.</span>
+                        <Button size="sm" variant="outline" className="h-6 text-[10px]" onClick={undoStartReport}>
+                          Undo start
+                        </Button>
+                      </div>
                     )}
 
                     {/* OB dashboard strip — silent for non-OB USG */}
@@ -2018,16 +2422,21 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                                 }
                               : undefined
                           }
-                          onSuggestHistory={() => {
-                            const chips = (studySetup.quickSelectData?.clinicalHistory ?? [])
-                              .filter((c) => c.isActive && (
-                                studySetup.studyRegions.length === 0 || studySetup.studyRegions.includes(c.studyType)
-                              ));
-                            const first = chips[0];
-                            if (first?.insertedText) {
-                              useWorkspace.getState().mergeField("clinicalHistory", first.insertedText, "protocol");
-                            }
-                          }}
+                          onSuggestHistory={
+                            clinicalHistoryChips.length > 0
+                              ? () => {
+                                  if (isLocked || isFinalized) return;
+                                  const state = useWorkspace.getState();
+                                  state.setField(
+                                    "clinicalHistory",
+                                    clinicalHistoryChips.reduce(
+                                      (acc, chip) => (hasPhrase(acc, chip.insertedText) ? acc : appendClinicalPhrase(acc, chip.insertedText)),
+                                      state.clinicalHistoryText,
+                                    ),
+                                  );
+                                }
+                              : undefined
+                          }
                           onOpenTab={(tab) => {
                             if (tab === "measurements" || tab === "measure") openLegacyTab("measurements");
                             else if (tab === "templates" || tab === "library") openLegacyTab("templates");
@@ -2158,11 +2567,28 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                             {studySetup.templateMismatch ? " ⚠ region mismatch" : ""}
                           </span>
                         )}
+                        {(studySetup.templateMismatch || !studySetup.activeProtocol) && studySetup.studyRegions[0] && (
+                          <span className="inline-flex items-center gap-0.5 text-amber-600">
+                            <AlertTriangle size={11} />
+                            {studySetup.templateMismatch ? "template mismatch" : "protocol not applied"}
+                          </span>
+                        )}
                         {studySetup.activeProtocol && (
                           <span className="text-muted-foreground">
                             Checklist {studySetup.checklistPercent}%
                           </span>
                         )}
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="h-6 text-[10px] ml-auto"
+                          disabled={isLocked || isFinalized || studySetup.studyRegions.length === 0}
+                          onClick={() => studySetup.reapplyDefaults()}
+                          data-testid="reapply-defaults"
+                        >
+                          Re-apply defaults
+                        </Button>
                       </div>
                     )}
 
@@ -2193,7 +2619,38 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                     )}
 
                     <div className="flex items-center gap-2">
-                      <div className="flex-1">
+                      <div className="flex-1 space-y-1.5">
+                        {clinicalHistoryChips.length > 0 && !isLocked && !isFinalized && (
+                          <div className="flex flex-wrap gap-1" data-testid="clinical-history-chips">
+                            {clinicalHistoryChips.map((chip) => {
+                              const active = hasPhrase(clinicalHistoryText, chip.insertedText);
+                              return (
+                                <button
+                                  key={chip.id}
+                                  type="button"
+                                  onClick={() => {
+                                    const state = useWorkspace.getState();
+                                    state.setField(
+                                      "clinicalHistory",
+                                      active
+                                        ? removeClinicalPhrase(state.clinicalHistoryText, chip.insertedText)
+                                        : appendClinicalPhrase(state.clinicalHistoryText, chip.insertedText),
+                                    );
+                                  }}
+                                  title={chip.insertedText}
+                                  aria-pressed={active}
+                                  className={`text-[10px] font-medium px-2 py-0.5 rounded-full border shadow-sm transition-all ${
+                                    active
+                                      ? "bg-teal-600 text-white border-teal-600"
+                                      : "bg-teal-50/90 text-teal-900 border-teal-200/80 hover:border-teal-400"
+                                  }`}
+                                >
+                                  {chip.displayLabel}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
                         <FindingsEditor field="clinicalHistory" label="Clinical History" minHeight="56px" placeholder="Presenting complaint and relevant history." />
                       </div>
                       {!isLocked && !isFinalized && (
@@ -2209,8 +2666,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       )}
                     </div>
 
-                    {/* Chocolate Box macros (brain/spine) — additive above findings */}
-                    {studySetup.chocolateBoxSet && (
+                    {/* Chocolate Box macros (brain/spine) — free-text mode only */}
+                    {!useStructured && studySetup.chocolateBoxSet && (
                       <div className="space-y-1" data-testid="chocolate-box">
                         <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
                           {studySetup.chocolateBoxSet.label} macros
@@ -2238,6 +2695,24 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       <div className="flex items-center gap-2">
                         <label className="flex items-center gap-1 text-[10px] text-muted-foreground cursor-pointer">
                           <Checkbox
+                            checked={useStructured}
+                            onCheckedChange={(v) => {
+                              const on = !!v;
+                              setUseStructured(on);
+                              if (on && Object.keys(findingsMap).length === 0 && studySetup.templateFindingsSections.length > 0) {
+                                const map: Record<string, { normal: boolean; text: string }> = {};
+                                for (const s of studySetup.templateFindingsSections) {
+                                  map[s.label] = { normal: true, text: s.normal };
+                                }
+                                setFindingsMap(map);
+                              }
+                            }}
+                            disabled={isLocked || isFinalized}
+                          />
+                          Structured
+                        </label>
+                        <label className="flex items-center gap-1 text-[10px] text-muted-foreground cursor-pointer">
+                          <Checkbox
                             checked={studySetup.highlightFindings}
                             onCheckedChange={(v) => studySetup.setHighlightFindings(!!v)}
                           />
@@ -2248,7 +2723,114 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                         )}
                       </div>
                     </div>
-                    {studySetup.highlightFindings ? (
+
+                    {studySetup.templateMismatch && (
+                      <div className="flex flex-wrap items-center gap-2 p-2 rounded-md border border-amber-300 bg-amber-50 text-[11px] text-amber-900" data-testid="template-mismatch-banner">
+                        <AlertTriangle size={14} className="shrink-0" />
+                        <span>
+                          Findings template ({studySetup.selectedTemplate?.templateName ?? "unknown"}) does not match study region
+                          ({studySetup.matchedStudyRegion ?? studySetup.studyRegions[0]}).
+                        </span>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="h-6 text-[10px] ml-auto"
+                          disabled={isLocked || isFinalized}
+                          onClick={() => {
+                            pendingStructuredPopulateRef.current = true;
+                            studySetup.loadCorrectTemplate();
+                          }}
+                          data-testid="load-correct-template"
+                        >
+                          Load {studySetup.matchedStudyRegion ?? studySetup.studyRegions[0]} template
+                        </Button>
+                      </div>
+                    )}
+
+                    {useStructured ? (
+                      <div className="flex flex-col gap-2" data-testid="structured-findings-cards">
+                        {Object.entries(findingsMap).map(([label, item]) => {
+                          const baseline = studySetup.templateFindingsSections.find((s) => s.label === label)?.normal ?? item.text;
+                          return (
+                            <div key={label} className="flex flex-col gap-1 border border-slate-200/80 rounded-md p-2.5 bg-card shadow-sm">
+                              <div className="flex items-center gap-2">
+                                <Label className="text-xs font-semibold flex-1 min-w-0 truncate" title={label}>
+                                  {label}
+                                </Label>
+                                <div className="inline-flex rounded-md border border-border overflow-hidden shrink-0" role="group">
+                                  <button
+                                    type="button"
+                                    disabled={isLocked || isFinalized}
+                                    aria-pressed={item.normal}
+                                    className={`h-6 px-2 text-[10px] font-semibold transition-colors disabled:opacity-50 ${
+                                      item.normal ? "bg-emerald-600 text-white" : "bg-background text-muted-foreground hover:bg-emerald-50"
+                                    }`}
+                                    onClick={() => setFindingsMap((prev) => ({
+                                      ...prev,
+                                      [label]: { normal: true, text: baseline },
+                                    }))}
+                                  >
+                                    Normal
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={isLocked || isFinalized}
+                                    aria-pressed={!item.normal}
+                                    className={`h-6 px-2 text-[10px] font-semibold border-l border-border transition-colors disabled:opacity-50 ${
+                                      !item.normal ? "bg-rose-600 text-white" : "bg-background text-muted-foreground hover:bg-rose-50"
+                                    }`}
+                                    onClick={() => setFindingsMap((prev) => {
+                                      const cur = prev[label];
+                                      const nextText =
+                                        cur.normal && cur.text.trim() === baseline.trim() ? "" : cur.text;
+                                      return { ...prev, [label]: { normal: false, text: nextText } };
+                                    })}
+                                  >
+                                    Abnormal
+                                  </button>
+                                </div>
+                                {!isLocked && !isFinalized && (
+                                  <button
+                                    type="button"
+                                    className="text-muted-foreground hover:text-destructive p-0.5 rounded"
+                                    title={`Remove "${label}" section`}
+                                    aria-label={`Remove ${label} section`}
+                                    onClick={() => setFindingsMap((prev) => {
+                                      const next = { ...prev };
+                                      delete next[label];
+                                      return next;
+                                    })}
+                                  >
+                                    <Trash2 size={12} />
+                                  </button>
+                                )}
+                              </div>
+                              {!item.normal ? (
+                                <Textarea
+                                  value={item.text}
+                                  onChange={(e) => setFindingsMap((prev) => ({
+                                    ...prev,
+                                    [label]: { ...prev[label], text: e.target.value },
+                                  }))}
+                                  placeholder="Describe finding..."
+                                  className="min-h-[48px] text-xs mt-1 resize-none"
+                                  disabled={isLocked || isFinalized}
+                                  data-editor="findings-section"
+                                />
+                              ) : (
+                                <div className="text-xs text-muted-foreground truncate">{item.text}</div>
+                              )}
+                            </div>
+                          );
+                        })}
+                        {Object.keys(findingsMap).length === 0 && (
+                          <div className="text-xs text-muted-foreground text-center py-6 border rounded-md bg-muted/20">
+                            Start Report or select a structured template to load section cards.
+                          </div>
+                        )}
+                      </div>
+                    ) : studySetup.highlightFindings ? (
                       <FindingsHighlightEditor
                         value={findingsText}
                         onChange={(v) => useWorkspace.getState().setField("findings", v)}
@@ -2261,15 +2843,67 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       <FindingsEditor field="findings" label="" minHeight="220px" placeholder="Type findings. Use :macro + Tab for snippets. Ctrl+Enter for AI ghost." showGhost />
                     )}
                     <div className="flex items-center gap-2">
-                      <div className="flex-1">
-                        <FindingsEditor field="impression" label="Impression" minHeight="100px" placeholder="Conclusion. Ctrl+I for AI impression." showGhost />
+                      <div className="flex-1 space-y-1.5">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-[10px] font-semibold uppercase text-muted-foreground">Impression</span>
+                          {!isLocked && !isFinalized && (
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              className="h-6 text-[10px]"
+                              onClick={handleGenerateLocalImpression}
+                              data-testid="generate-local-impression"
+                              title="Generate impression from findings (local, no AI)"
+                            >
+                              <Sparkles size={11} className="mr-1" /> Generate Impression
+                            </Button>
+                          )}
+                        </div>
+                        <FindingsEditor field="impression" label="" minHeight="100px" placeholder="Conclusion. Ctrl+I for AI impression." showGhost />
                       </div>
                       {!isLocked && !isFinalized && (
                         <FieldCareMic voice={voiceSession} target="impression" />
                       )}
                     </div>
                     <div className="flex items-center gap-2">
-                      <div className="flex-1">
+                      <div className="flex-1 space-y-1.5">
+                        {recommendationChips.length > 0 && !isLocked && !isFinalized && (
+                          <div className="flex flex-wrap gap-1" data-testid="recommendation-chips">
+                            {recommendationChips.map((chip, i) => {
+                              const active = recommendationChipActive(recommendationText, chip);
+                              return (
+                                <button
+                                  key={`${i}-${chip.slice(0, 24)}`}
+                                  type="button"
+                                  onClick={() => {
+                                    const state = useWorkspace.getState();
+                                    state.setField("recommendation", toggleRecommendationChip(state.recommendationText, chip));
+                                  }}
+                                  title={chip}
+                                  aria-pressed={active}
+                                  className={`text-[10px] font-medium px-2 py-0.5 rounded-full border shadow-sm transition-all max-w-[14rem] truncate ${
+                                    active
+                                      ? "bg-violet-600 text-white border-violet-600"
+                                      : "bg-violet-50 text-violet-900 border-violet-200 hover:border-violet-400"
+                                  }`}
+                                >
+                                  {chip.length > 42 ? `${chip.slice(0, 40)}…` : chip}
+                                </button>
+                              );
+                            })}
+                            {recommendationText.trim() && (
+                              <button
+                                type="button"
+                                className="text-[10px] text-muted-foreground underline px-1"
+                                onClick={() => useWorkspace.getState().setField("recommendation", "")}
+                                title="Clear the Recommendation field"
+                              >
+                                Clear
+                              </button>
+                            )}
+                          </div>
+                        )}
                         <FindingsEditor field="recommendation" label="Recommendation" minHeight="60px" placeholder="Follow-up, referral..." showGhost />
                       </div>
                       {!isLocked && !isFinalized && (
@@ -2336,8 +2970,10 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       onImpressionStyleChange={setImpressionStyle}
                       onExportWord={handleExportWord}
                       onExportPdf={handleExportPdf}
+                      onPrintLikeFinal={handlePrintLikeFinal}
                       exportingWord={exportingWord}
                       exportingPdf={exportingPdf}
+                      printingLikeFinal={printingLikeFinal}
                       disabled={false}
                     />
 

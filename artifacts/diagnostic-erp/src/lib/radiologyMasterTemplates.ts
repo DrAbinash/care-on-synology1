@@ -49,7 +49,7 @@ export const MRI_BRAIN_MASTER: MasterTemplate = {
   isMaster: true,
   author: "Dr. Sugandha",
   title: "MRI BRAIN",
-  technique: "MRI of the brain was performed on a 1.5T/3T scanner using T1W, T2W, FLAIR, DWI, and SWI sequences in axial, coronal, and sagittal planes.",
+  technique: "MRI of the brain was performed on a 3T scanner using T1W, T2W, FLAIR, DWI, and SWI sequences in axial, coronal, and sagittal planes.",
   findings: `BRAIN PARENCHYMA: Normal signal intensity on all sequences.
 VENTRICULAR SYSTEM: Normal size and configuration.
 MIDLINE: No shift.

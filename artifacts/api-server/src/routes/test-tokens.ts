@@ -14,6 +14,8 @@ function todayISO(): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
+export { deriveBillTokenFromTestTokens } from "../lib/deriveBillToken";
+
 function ledgerScope(ledgerId: number) {
   return ledgerId === 1
     ? or(eq(testTokensTable.ledgerId, 1), isNull(testTokensTable.ledgerId))
