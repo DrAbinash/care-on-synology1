@@ -48,6 +48,26 @@ router.patch("/:key", requireAdminRole, async (req: StaffAuthRequest, res) => {
     return;
   }
 
+  const registryEntry = RADIOLOGY_FLAG_REGISTRY.find((e) => e.key === key);
+  if (enabled && registryEntry && registryEntry.dependsOn.length > 0) {
+    const missing: string[] = [];
+    for (const dep of registryEntry.dependsOn) {
+      const [depRow] = await db
+        .select()
+        .from(featureFlagsTable)
+        .where(eq(featureFlagsTable.key, dep))
+        .limit(1);
+      if (!depRow?.enabled) missing.push(dep);
+    }
+    if (missing.length > 0) {
+      res.status(400).json({
+        error: `Cannot enable "${key}" until dependencies are enabled: ${missing.join(", ")}`,
+        missingDependencies: missing,
+      });
+      return;
+    }
+  }
+
   const [existing] = await db.select().from(featureFlagsTable).where(eq(featureFlagsTable.key, key)).limit(1);
   if (!existing) {
     res.status(404).json({ error: `Unknown feature flag: ${key}` });

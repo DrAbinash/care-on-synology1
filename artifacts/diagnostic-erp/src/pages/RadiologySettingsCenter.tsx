@@ -53,6 +53,7 @@ import { MwlAcceptanceTestsPanel } from "@/components/radiology/MwlAcceptanceTes
 import { RadiologyAdminOverviewPanel } from "@/components/radiology/RadiologyAdminOverviewPanel";
 import { RadiologyDeploymentPanel } from "@/components/radiology/RadiologyDeploymentPanel";
 import RadiologyQuickSelectSettings from "@/pages/RadiologyQuickSelectSettings";
+import { RadiologyCatalogPanel } from "@/pages/RadiologyCatalogAdmin";
 
 type Setting = { id: number; key: string; value: string | null; category: string; isSecret: boolean };
 type ServiceHealth = { name: string; endpoint: string; status: "green" | "yellow" | "red"; details: string };
@@ -200,7 +201,7 @@ export default function RadiologySettingsCenter() {
 
   const SETTINGS_TABS = [
     "overview", "general", "reading-suite", "network", "modalities", "pacs", "pacs-advanced", "viewers", "mwl",
-    "sync", "reporting", "usg-extraction", "quick-select", "style", "premium", "voice",
+    "sync", "reporting", "usg-extraction", "quick-select", "content-catalog", "style", "premium", "voice",
     "diagnostics", "history", "deployment", "advanced",
   ] as const;
 
@@ -477,6 +478,7 @@ export default function RadiologySettingsCenter() {
           <TabsTrigger value="sync"><RefreshCw size={14} className="mr-1.5" />Sync</TabsTrigger>
           <TabsTrigger value="usg-extraction"><Waves size={14} className="mr-1.5" />USG</TabsTrigger>
           <TabsTrigger value="quick-select"><Zap size={14} className="mr-1.5" />Quick Select</TabsTrigger>
+          <TabsTrigger value="content-catalog"><BookOpen size={14} className="mr-1.5" />Content Catalog</TabsTrigger>
           <TabsTrigger value="reporting"><BrainCircuit size={14} className="mr-1.5" />AI</TabsTrigger>
           <TabsTrigger value="diagnostics"><Activity size={14} className="mr-1.5" />Diagnostics</TabsTrigger>
           <TabsTrigger value="deployment"><ShieldAlert size={14} className="mr-1.5" />Deployment</TabsTrigger>
@@ -826,6 +828,7 @@ export default function RadiologySettingsCenter() {
             <div className="grid sm:grid-cols-2 gap-2 text-sm">
               {[
                 { tab: "quick-select", label: "Quick Select (findings & protocols)" },
+                { tab: "content-catalog", label: "Content catalog (canonical API)" },
                 { href: "/radiology/structured-report-templates", label: "Structured templates" },
                 { href: "/radiology/normal-templates", label: "Normal one-click templates" },
                 { tab: "reporting", label: "AI reporting" },
@@ -1567,6 +1570,15 @@ export default function RadiologySettingsCenter() {
             Canonical home for Quick Select. Old route <code className="font-mono">/settings/radiology-quick-select</code> redirects here.
           </div>
           <RadiologyQuickSelectSettings />
+        </TabsContent>
+
+        {/* Canonical catalog API (findings, parameters, aliases) — ff_radiology_catalog */}
+        <TabsContent value="content-catalog" className="space-y-4">
+          <div className="rounded-lg border bg-muted/20 p-3 text-xs text-muted-foreground">
+            Canonical finding/parameter graph at <code className="font-mono">/api/radiology/catalog</code>.
+            Legacy Quick Select tiles, structured templates, and techniques stay on their own pages (see Hub tab).
+          </div>
+          <RadiologyCatalogPanel embedded />
         </TabsContent>
 
         {/* Deployment — read-only env */}

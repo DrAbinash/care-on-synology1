@@ -84,6 +84,12 @@ export const RADIOLOGY_INFRA_LINKS: SettingsHubLink[] = [
     description: "Finding chips / macros for Reporting Workspace (was /settings/radiology-quick-select).",
   },
   {
+    title: "Content catalog",
+    path: "/settings/radiology?tab=content-catalog",
+    description: "Canonical findings, parameters, and aliases (ff_radiology_catalog API).",
+    alsoIn: "Settings → Radiology → Content Catalog tab",
+  },
+  {
     title: "Diagnostics",
     path: "/settings/radiology?tab=diagnostics",
     description: "Flight Deck, logs, watchdog, DICOM agent, network control shortcuts.",

@@ -958,7 +958,7 @@ type ClinicSettings = {
 
 import { SIDEBAR_THEMES as SIDEBAR_THEME_PRESETS, parseCustomHex, buildCustomTheme } from "@/lib/sidebarThemes";
 import { useUserTheme } from "@/lib/userTheme";
-import { readStaffSession, isFeatureEnabled, setFeatureFlag, hasSubPermission } from "@/lib/staffSession";
+import { readStaffSession, isFeatureEnabled, setFeatureFlag, setServerFeatureFlags, hasSubPermission } from "@/lib/staffSession";
 
 function ThemeGrid({
   themes,
@@ -4027,6 +4027,7 @@ function FeatureFlagsTab() {
     mutationFn: ({ key, enabled }: { key: string; enabled: boolean }) =>
       api.patch<FeatureFlagRow>(`/api/feature-flags/${key}`, { enabled }),
     onSuccess: (updated) => {
+      setServerFeatureFlags({ [updated.key]: updated.enabled });
       qc.invalidateQueries({ queryKey: ["feature-flags"] });
       toast({ title: updated.enabled ? "Flag enabled" : "Flag disabled", description: updated.key });
     },

@@ -10,18 +10,29 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import type { Request, Response, NextFunction } from "express";
+import { isFeatureEnabledServer } from "../featureFlags";
 
 export const FF_RADIOLOGY_CATALOG = "ff_radiology_catalog";
 
-/** OFF unless FF_RADIOLOGY_CATALOG is explicitly "true"/"1"/"on". */
+/** OFF unless FF_RADIOLOGY_CATALOG env is truthy OR DB feature_flags row is enabled. */
 export function isRadiologyCatalogEnabled(): boolean {
   const v = (process.env.FF_RADIOLOGY_CATALOG ?? "").trim().toLowerCase();
   return v === "true" || v === "1" || v === "on";
 }
 
+/** Async gate — env var OR server feature_flags table (T0.1). */
+export async function isRadiologyCatalogEnabledAsync(): Promise<boolean> {
+  if (isRadiologyCatalogEnabled()) return true;
+  return await isFeatureEnabledServer(FF_RADIOLOGY_CATALOG);
+}
+
 /** Router-level guard: 404 (not 403) so a disabled catalog is invisible. */
-export function requireRadiologyCatalogFlag(_req: Request, res: Response, next: NextFunction): void {
-  if (!isRadiologyCatalogEnabled()) {
+export async function requireRadiologyCatalogFlag(
+  _req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  if (!(await isRadiologyCatalogEnabledAsync())) {
     res.status(404).json({ error: "Not found" });
     return;
   }
