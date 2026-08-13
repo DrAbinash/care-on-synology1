@@ -38,6 +38,8 @@ export const WORKSPACE_COMMANDS = [
   "select-template-4",
   "select-template-5",
   "select-template-6",
+  // Ctrl+Shift+F — collapse chrome / side panels for dictation focus
+  "focus-mode",
 ] as const;
 
 export type WorkspaceCommand = (typeof WORKSPACE_COMMANDS)[number];

@@ -98,6 +98,7 @@ import { useIsMobile } from "@/hooks/use-mobile";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
 import { useGlobalScanner } from "@/hooks/useGlobalScanner";
 import { api } from "@/lib/fetchApi";
+import { applyNameGenderExtras, parseNameGenderExtraList } from "@/lib/nameGender";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { SyncPanel, SyncBadge } from "@/components/SyncPanel";
@@ -363,6 +364,19 @@ function FullscreenToggle() {
 export default function Layout({ children }: { children: React.ReactNode }) {
   // Module B: clinic name centralization — pull from /api/clinic-settings so the
   // sidebar branding matches every other clinic-aware surface (BillDetail, Display, FormF).
+  // Clinic-added male/female first names for registration Sex suggestion.
+  const { data: pacsSettingsForNames } = useQuery<Array<{ key: string; value: string | null }>>({
+    queryKey: ["pacs-settings"],
+    queryFn: () => api.get("/api/radiology/pacs-settings"),
+    staleTime: 5 * 60_000,
+  });
+  useEffect(() => {
+    if (!pacsSettingsForNames) return;
+    const maleRaw = pacsSettingsForNames.find((r) => r.key === "name_gender_male_extra")?.value;
+    const femaleRaw = pacsSettingsForNames.find((r) => r.key === "name_gender_female_extra")?.value;
+    applyNameGenderExtras(parseNameGenderExtraList(maleRaw), parseNameGenderExtraList(femaleRaw));
+  }, [pacsSettingsForNames]);
+
   const { data: clinic } = useQuery<{ name?: string; tagline?: string; sidebarTheme?: string }>({
     queryKey: ["clinic-settings-public"],
     queryFn: () => api.get("/api/clinic-settings/branding"),
