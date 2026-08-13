@@ -26,6 +26,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { AlertTriangle, GripVertical, ImageOff, Loader2, RefreshCw, Star, Trash2 } from "lucide-react";
+import { withDicomWebAuth } from "@/lib/browserDicomWeb";
 import {
   launchQueryForRef, ohifUrlForRef, reorderIds, thumbnailRenderedUrl,
   type ReportImageRef,
@@ -177,7 +178,7 @@ export default function ReportImagePanel({
       )}
 
       {refs.map((ref, index) => {
-        const thumb = dicomWebBase && !brokenThumbs[ref.id] ? thumbnailRenderedUrl(dicomWebBase, ref) : null;
+        const thumb = dicomWebBase && !brokenThumbs[ref.id] ? withDicomWebAuth(thumbnailRenderedUrl(dicomWebBase, ref)) : null;
         return (
           <div
             key={ref.id}

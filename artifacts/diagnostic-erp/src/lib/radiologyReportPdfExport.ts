@@ -18,6 +18,7 @@
 
 import { thumbnailRenderedUrl, type ReportImageRef } from "./reportImageRefs";
 import { generateReportPDF, loadPrintSettings, type PrintClinic } from "./reportPdfGenerator";
+import { dicomWebFetch } from "./browserDicomWeb";
 
 function fmtHeading(text: string, headingCase: "all_caps" | "title_case"): string {
   if (headingCase === "all_caps") return text.toUpperCase();
@@ -71,7 +72,7 @@ export async function fetchKeyImageDataUrls(
   if (!dicomWebBase || refs.length === 0) return [];
   const limit = opts.limit ?? 12;
   const size = opts.size ?? 600;
-  const fetchImpl = opts.fetchImpl ?? fetch;
+  const fetchImpl = opts.fetchImpl ?? dicomWebFetch;
   const ordered = [...refs].sort((a, b) => a.displayOrder - b.displayOrder).slice(0, limit);
   const dataUrls = await Promise.all(
     ordered.map(async (ref) => {

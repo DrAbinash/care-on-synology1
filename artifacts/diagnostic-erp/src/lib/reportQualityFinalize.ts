@@ -47,7 +47,7 @@ export type FinalizeQualityGate = {
   warningCount: number;
   /** All findings (text + structured shadow), each stamped with evaluationId. */
   findings: CanonicalQualityFinding[];
-  /** Structured-tier blockers still unresolved (override required to proceed). */
+  /** Structured-tier blockers still unresolved (shown as review-only; do not block sign-off). */
   unresolvedBlockers: CanonicalQualityFinding[];
   /** Heuristic / warning-tier items for display (non-blocking). */
   advisoryFindings: CanonicalQualityFinding[];
@@ -158,7 +158,7 @@ export function formatQualityAdvisoryForDialog(gate: FinalizeQualityGate): strin
     lines.push(`Quality score: ${gate.score}/100`);
   }
   if (gate.unresolvedBlockers.length > 0) {
-    lines.push(`${gate.unresolvedBlockers.length} blocking issue(s) require override before signing.`);
+    lines.push(`${gate.unresolvedBlockers.length} quality issue(s) to review (does not block signing).`);
   }
   const warns = gate.advisoryFindings.filter((f) => f.severity === "warning" || f.severity === "blocker");
   if (warns.length > 0) {

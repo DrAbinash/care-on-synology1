@@ -545,6 +545,9 @@ export const AI_TASK_CATALOG: AiTaskDef[] = [
   // single-provider default, since OCR specifically needs to degrade
   // gracefully to manual entry rather than hard-fail.
   { key: "id_card_ocr", label: "ID Card OCR (Form F)", description: "Extract identity fields (name, DOB, gender, address, ID number) from a scanned government ID for PCPNDT Form F.", vision: true },
+  { key: "bill_ocr", label: "Expense Bill OCR", description: "Extract vendor, date, amount, GST, category, and payment mode from a photographed bill or receipt. Local Ollama vision — Gemini is not used.", vision: true },
+  { key: "bank_statement_ocr", label: "Bank Statement OCR", description: "Extract transaction rows from a photographed or scanned bank statement. Local Ollama vision — Gemini is not used.", vision: true },
+  { key: "invoice_ocr", label: "Purchase Invoice OCR", description: "Extract vendor, invoice number, totals, and line items from a supplier invoice image. Local Ollama vision — Gemini is not used.", vision: true },
 ];
 
 export const AI_TASK_KEYS = AI_TASK_CATALOG.map((t) => t.key);
