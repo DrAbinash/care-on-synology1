@@ -31,6 +31,9 @@ const VISUAL_STYLES: Record<ProvenanceVisualKind, string> = {
   other: "border-l-slate-400 bg-slate-500/10 text-foreground",
 };
 
+/** Stable fallback — never use `?? {}` inside a zustand selector (new ref each read → React #185). */
+const EMPTY_FIELD_PROVENANCE: Record<string, never> = {};
+
 const LEGEND: Array<{ kind: ProvenanceVisualKind; label: string; box: string }> = [
   { kind: "quick-select", label: "Quick Select", box: "bg-sky-500/25 border-sky-500" },
   { kind: "quick-findings", label: "Quick Findings", box: "bg-emerald-500/25 border-emerald-500" },
@@ -52,7 +55,7 @@ export function FindingsEditor({ field, label, placeholder, minHeight = "200px",
   const ref = useRef<HTMLTextAreaElement>(null);
   const value = useWorkspaceSelector(s => s[`${field}Text` as "findingsText"] as string);
   const setField = useWorkspaceSelector(s => s.setField);
-  const provenance = useWorkspaceSelector(s => s.fieldProvenance[field] ?? {});
+  const provenance = useWorkspaceSelector(s => s.fieldProvenance[field] ?? EMPTY_FIELD_PROVENANCE);
   const gt = useWorkspaceSelector(s => showGhost ? s.ghostText : null);
   const gTarget = useWorkspaceSelector(s => showGhost ? s.ghostTextTarget : null);
   const accept = useWorkspaceSelector(s => s.acceptGhostText);
