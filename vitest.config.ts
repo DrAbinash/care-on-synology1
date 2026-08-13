@@ -1,10 +1,13 @@
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
+
+const repoRoot = path.dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig({
   resolve: {
     alias: {
-      "@": path.resolve(__dirname, "artifacts/diagnostic-erp/src"),
+      "@": path.resolve(repoRoot, "artifacts/diagnostic-erp/src"),
     },
   },
   test: {
