@@ -90,7 +90,13 @@ export const gatewayInferenceProvider: ShadowInferenceProvider = {
           const { selectProviderChain } = await import("@workspace/ai-providers");
           const chain = await selectProviderChain(taskKey, required, phi);
           if (chain.length === 0) {
-            return [{ provider: "ollama", model: vision.model, modelDigest: null }];
+            return [{
+              provider: "ollama",
+              model: vision.model,
+              modelDigest: null,
+              isLocal: true,
+              phiEligible: true,
+            }];
           }
           return chain.map((c) =>
             c.provider === "ollama" && (!c.model || /gemma3:4b/i.test(c.model))
