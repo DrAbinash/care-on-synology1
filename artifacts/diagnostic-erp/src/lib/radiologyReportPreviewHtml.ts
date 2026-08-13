@@ -58,8 +58,18 @@ export function buildPreviewHtml(opts: BuildPreviewHtmlOpts): string {
   const sp = ss === "compact" ? "2px" : "10px";
   const sp2 = ss === "compact" ? "4px" : "12px";
 
-  const headerHtml = `<p style="margin:0 0 2px;"><strong>NAME: ${escHtml(opts.patientName)} &nbsp;&nbsp; AGE/SEX: ${escHtml(opts.age ?? "")}/${escHtml(opts.sex ?? "")} &nbsp;&nbsp; ACC: ${escHtml(opts.accessionNumber)}</strong></p>
-  <p style="margin:0 0 2px;"><strong>REF. BY: ${escHtml(opts.referringDoctor)} &nbsp;&nbsp; DATE: ${escHtml(opts.studyDate)}</strong></p>`;
+  // Demography: Name + Ref Doctor on the left; Age/Sex, DOB, Date on the right.
+  // All upper case, bold, and slightly larger than body copy.
+  const name = escHtml(opts.patientName || "—").toUpperCase();
+  const ref = escHtml(opts.referringDoctor || "—").toUpperCase();
+  const ageSex = `${escHtml(opts.age || "")}${opts.age && opts.sex ? " / " : ""}${escHtml(opts.sex || "")}`.trim();
+  const headerHtml = `
+<table style="width:100%;border-collapse:collapse;margin:0 0 4px;font-size:13px;">
+  <tr>
+    <td style="text-align:left;vertical-align:top;padding:0;"><strong style="font-size:14px;">${name}</strong><br/><span style="font-size:12px;">REF. BY: <strong>${ref}</strong></span></td>
+    <td style="text-align:right;vertical-align:top;padding:0;white-space:nowrap;"><strong style="font-size:13px;">${escHtml(ageSex || "—")}</strong><br/><span style="font-size:12px;">${opts.studyDate ? `DATE: <strong>${escHtml(opts.studyDate)}</strong>` : ""}${opts.accessionNumber ? ` · ACC: <strong>${escHtml(opts.accessionNumber)}</strong>` : ""}</span></td>
+  </tr>
+</table>`;
 
   let findingsHtml = "";
   if (opts.useStructured) {

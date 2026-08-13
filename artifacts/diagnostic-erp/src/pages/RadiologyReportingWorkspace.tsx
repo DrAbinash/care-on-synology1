@@ -81,6 +81,11 @@ import {
   type ReportSectionSpacing,
   type ReportImpressionStyle,
 } from "@/lib/radiologyReportPreviewHtml";
+import {
+  mergeReportDemography,
+  resolveDisplayAge,
+  type ReportDemography,
+} from "@/lib/reportDemography";
 import type { PrintClinic } from "@/lib/reportPdfGenerator";
 import {
   type ReportLayoutKey,
@@ -137,6 +142,7 @@ import ObDashboardStrip from "@/components/radiology/ObDashboardStrip";
 import ReportingShortcutHelp from "@/components/radiology/ReportingShortcutHelp";
 import StructuredFindingDialog from "@/components/radiology/StructuredFindingDialog";
 import { FindingsHighlightEditor } from "@/components/FindingsHighlightEditor";
+import ReportDemographyCard from "@/components/radiology/ReportDemographyCard";
 import ReferringDoctorQuickSelect from "@/components/ReferringDoctorQuickSelect";
 import { ModuleErrorBoundary } from "@/components/ModuleErrorBoundary";
 import { useReportingStudySetup } from "@/hooks/useReportingStudySetup";
@@ -233,6 +239,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const [shortcutHelpOpen, setShortcutHelpOpen] = useState(false);
   const [verifyBusy, setVerifyBusy] = useState(false);
   const [sendHopeBusy, setSendHopeBusy] = useState(false);
+  // Radiologist-local demography overrides — never written to patient master.
+  const [demographyOverrides, setDemographyOverrides] = useState<Partial<ReportDemography>>({});
 
   // ─── Session ──────────────────────────────────────────────────────────────
   const session = useMemo(() => readStaffSession(), []);
@@ -1162,15 +1170,60 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     ?? workflow.currentRow?.studyDescription
     ?? "Radiology Report";
 
+  // ─── Canonical report demography (ERP > DICOM > manual override) ─────────
+  const patientMasterQ = useQuery<{
+    dateOfBirth?: string | null;
+    ageValue?: number | null;
+    ageUnit?: string | null;
+    gender?: string | null;
+    firstName?: string | null;
+    lastName?: string | null;
+  }>({
+    queryKey: ["patient-master", workflow.currentRow?.patientId],
+    queryFn: () => api.get(`/api/patients/${workflow.currentRow!.patientId}`),
+    enabled: !!workflow.currentRow?.patientId,
+    staleTime: 60_000,
+    retry: false,
+  });
+
+  const canonicalDemography = useMemo(() => {
+    const row = workflow.currentRow as Record<string, unknown> | null | undefined;
+    const master = patientMasterQ.data ?? null;
+    const erpAge = resolveDisplayAge(
+      { age: row?.age, patientAge: row?.patientAge },
+      master,
+      row?.dicomMetadata && typeof row.dicomMetadata === "object"
+        ? String((row.dicomMetadata as Record<string, unknown>).PatientAge ?? "")
+        : null,
+    );
+    const merged = mergeReportDemography({
+      erp: {
+        patientName: row?.patientName,
+        age: erpAge,
+        sex: row?.sex ?? master?.gender,
+        patientId: row?.patientId,
+        uhid: row?.uhid,
+        accessionNumber: row?.accessionNumber,
+        studyDescription: row?.studyDescription,
+        studyDate: row?.studyDate,
+        referringDoctor: row?.referringDoctor,
+        dateOfBirth: master?.dateOfBirth,
+      },
+      dicom: (row?.dicomMetadata as Record<string, unknown> | undefined) ?? {},
+      overrides: demographyOverrides,
+    });
+    return merged;
+  }, [workflow.currentRow, patientMasterQ.data, demographyOverrides]);
+
   const previewHtml = useMemo(
     () =>
       buildPreviewHtml({
-        patientName: workflow.currentRow?.patientName ?? "",
-        age: String((workflow.currentRow as { age?: string | number } | null)?.age ?? ""),
-        sex: String((workflow.currentRow as { sex?: string } | null)?.sex ?? ""),
-        accessionNumber: workflow.currentRow?.accessionNumber ?? "",
-        referringDoctor: String((workflow.currentRow as { referringDoctor?: string } | null)?.referringDoctor ?? ""),
-        studyDate: String((workflow.currentRow as { studyDate?: string } | null)?.studyDate ?? ""),
+        patientName: canonicalDemography.patientName,
+        age: canonicalDemography.age,
+        sex: canonicalDemography.sex,
+        accessionNumber: canonicalDemography.accessionNumber,
+        referringDoctor: canonicalDemography.referringDoctor,
+        studyDate: canonicalDemography.studyDate,
         studyName: studyNameForExport,
         technique: techniqueText,
         clinicalHistory: clinicalHistoryText,
@@ -1185,7 +1238,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         impressionStyle,
       }),
     [
-      workflow.currentRow, studyNameForExport, techniqueText, clinicalHistoryText,
+      canonicalDemography, studyNameForExport, techniqueText, clinicalHistoryText,
       findingsText, impressionText, recommendationText, imageRefs,
       headingCase, sectionSpacing, impressionStyle,
     ],
@@ -1226,12 +1279,12 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     setExportingPdf(true);
     try {
       await exportRadiologyReportToPdf({
-        patientName: workflow.currentRow?.patientName ?? "",
-        age: String((workflow.currentRow as { age?: string | number } | null)?.age ?? ""),
-        sex: String((workflow.currentRow as { sex?: string } | null)?.sex ?? ""),
-        accessionNumber: workflow.currentRow?.accessionNumber ?? "",
-        studyDate: String((workflow.currentRow as { studyDate?: string } | null)?.studyDate ?? ""),
-        referringDoctor: String((workflow.currentRow as { referringDoctor?: string } | null)?.referringDoctor ?? ""),
+        patientName: canonicalDemography.patientName,
+        age: canonicalDemography.age,
+        sex: canonicalDemography.sex,
+        accessionNumber: canonicalDemography.accessionNumber,
+        studyDate: canonicalDemography.studyDate,
+        referringDoctor: canonicalDemography.referringDoctor,
         modality: workflow.currentRow?.modality ?? "",
         bodyPart: workflow.currentRow?.studyDescription ?? "",
         clinicalHistory: clinicalHistoryText,
@@ -1257,9 +1310,9 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       setExportingPdf(false);
     }
   }, [
-    workflow.currentRow, clinicalHistoryText, techniqueText, findingsText,
+    canonicalDemography, clinicalHistoryText, techniqueText, findingsText,
     impressionText, recommendationText, studyNameForExport, headingCase,
-    imageRefs, clinicSettings, toast,
+    imageRefs, clinicSettings, toast, workflow.currentRow,
   ]);
 
   // ─── Teaching case save ─────────────────────────────────────────────────────
@@ -1829,6 +1882,15 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
               <ResizablePanel defaultSize={58} minSize={42}>
                 <div className="h-full overflow-y-auto bg-card">
                   <div className="p-4 space-y-3">
+                    {/* 1. DEMOGRAPHY — canonical, editable, feeds all outputs */}
+                    {workflow.currentRow && (
+                      <ReportDemographyCard
+                        value={canonicalDemography}
+                        onChange={(patch) => setDemographyOverrides((prev) => ({ ...prev, ...patch }))}
+                        disabled={isLocked || isFinalized}
+                      />
+                    )}
+
                     {workflow.currentRow && (
                       <ReferringDoctorQuickSelect
                         worklistId={studyId ?? 0}
@@ -2063,7 +2125,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                         <FieldCareMic voice={voiceSession} target="clinicalHistory" />
                       )}
                     </div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2" data-testid="canonical-technique-editor">
                       <div className="flex-1">
                         <FindingsEditor field="technique" label="Technique" minHeight="60px" placeholder="Modality, sequences, contrast..." />
                       </div>
