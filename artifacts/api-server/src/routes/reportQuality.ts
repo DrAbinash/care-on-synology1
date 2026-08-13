@@ -7,9 +7,9 @@
  * every evaluation is a new immutable row; every override is appended to
  * history and never overwrites a prior one.
  *
- * SHADOW (Phase 2): additive only. No existing endpoint is replaced and no
- * finalize/workflow behavior changes. Nothing in production calls these yet —
- * they establish the canonical persistence + API contract.
+ * SHADOW (Phase 2): additive only. Finalize/workflow now calls POST /evaluate
+ * from the reporting workspace before sign-off; structured-tier blockers gate
+ * finalize unless overridden via append-only override history.
  *
  *   POST /evaluate                          — run the engine, persist, return DTO
  *   POST /evaluations/:evaluationId/override — append an override (never overwrite)
