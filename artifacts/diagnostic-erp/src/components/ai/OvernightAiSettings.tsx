@@ -45,10 +45,10 @@ export default function OvernightAiSettings() {
 
   const [timing, setTiming] = useState<DraftTiming>("on_arrival");
   const [selected, setSelected] = useState<string[]>([]);
-  const [nightStart, setNightStart] = useState("23:00");
-  const [nightEnd, setNightEnd] = useState("06:00");
-  const [quietStart, setQuietStart] = useState("08:00");
-  const [quietEnd, setQuietEnd] = useState("20:00");
+  const [nightStart, setNightStart] = useState("17:00");
+  const [nightEnd, setNightEnd] = useState("10:00");
+  const [quietStart, setQuietStart] = useState("10:00");
+  const [quietEnd, setQuietEnd] = useState("17:00");
   const [enableAi, setEnableAi] = useState(true);
 
   useEffect(() => {
@@ -168,7 +168,7 @@ export default function OvernightAiSettings() {
               <Clock className="h-4 w-4" /> At scheduled time
             </div>
             <p className={`text-[10px] mt-1 ${timing === "scheduled" ? "text-indigo-100" : "text-muted-foreground"}`}>
-              Batch runs only inside the night window below (e.g. after midnight).
+              Batch runs only inside the night window below (default 17:00–10:00 IST). Cron polls every 15 min; the window check is server-side.
             </p>
           </button>
         </div>

@@ -138,6 +138,20 @@ export async function runOllamaAiDraftVerify(opts: {
     const model = clinicRow?.ollamaModel?.trim() || runtime.modelStandard;
     const installed = probe.reachable ? await listOllamaModels(baseUrl) : [];
     const hasModel = modelInstalled(installed, model);
+    const vision = (await import("./overnightVisionConfig")).getOvernightVisionInferenceOptions();
+    const hasVision = modelInstalled(installed, vision.model);
+    add(checks, {
+      group: "Ollama",
+      name: "Overnight MRI vision model pulled",
+      status: !probe.reachable ? "SKIPPED" : hasVision ? "PASS" : "FAIL",
+      detail: !probe.reachable
+        ? "Skipped — Ollama unreachable"
+        : hasVision
+          ? `${vision.model} present (num_ctx=${vision.numCtx}, think=${vision.think}, concurrency=${vision.concurrency})`
+          : `${vision.model} NOT found — overnight MRI drafts will fail`,
+      remediation: hasVision || !probe.reachable ? undefined : `On the Windows Ollama PC: ollama pull ${vision.model}`,
+      blocking: true,
+    });
     add(checks, {
       group: "Ollama",
       name: "Configured model pulled",

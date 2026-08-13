@@ -13,26 +13,33 @@ vi.mock("../aiPipeline/runtimeConfig", () => ({
   })),
 }));
 
-vi.mock("@workspace/db", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@workspace/db")>();
-  return {
-    ...actual,
-    db: {
-      select: vi.fn(() => ({
-        from: vi.fn(() => ({
-          orderBy: vi.fn(() => ({
-            limit: vi.fn(async () => [{
-              ollamaEnabled: true,
-              ollamaBaseUrl: "http://127.0.0.1:11434",
-              ollamaModel: "gemma3:4b",
-              ollamaLocalOnly: true,
-            }]),
-          })),
+vi.mock("@workspace/db", () => ({
+  db: {
+    select: vi.fn(() => ({
+      from: vi.fn(() => ({
+        orderBy: vi.fn(() => ({
+          limit: vi.fn(async () => [{
+            ollamaEnabled: true,
+            ollamaBaseUrl: "http://127.0.0.1:11434",
+            ollamaModel: "gemma3:4b",
+            ollamaLocalOnly: true,
+          }]),
         })),
       })),
-    },
-  };
-});
+    })),
+  },
+  clinicSettingsTable: {},
+}));
+
+vi.mock("./overnightVisionConfig", () => ({
+  getOvernightVisionInferenceOptions: () => ({
+    model: "qwen3-vl:8b",
+    numCtx: 16384,
+    think: false,
+    temperature: 0.1,
+    concurrency: 1,
+  }),
+}));
 
 vi.mock("@workspace/ai-providers", () => ({
   probeOllamaReachable: vi.fn(async () => ({ reachable: true, error: null })),
@@ -79,7 +86,7 @@ describe("runOllamaAiDraftVerify", () => {
         if (url.includes("/api/tags")) {
           return {
             ok: true,
-            json: async () => ({ models: [{ name: "gemma3:4b" }] }),
+            json: async () => ({ models: [{ name: "gemma3:4b" }, { name: "qwen3-vl:8b" }] }),
           };
         }
         if (url.includes("/api/generate")) {
@@ -98,7 +105,7 @@ describe("runOllamaAiDraftVerify", () => {
     const result = await runOllamaAiDraftVerify({ runDraft: true });
     expect(result.ok).toBe(true);
     expect(result.blockingFailed).toBe(false);
-    expect(result.checks.some((c) => c.name === "Reachability" && c.status === "PASS")).toBe(true);
+    expect(result.checks.some((c) => c.name === "Overnight MRI vision model pulled" && c.status === "PASS")).toBe(true);
     expect(result.checks.some((c) => c.name === "Sample Ollama generation" && c.status === "PASS")).toBe(true);
   });
 

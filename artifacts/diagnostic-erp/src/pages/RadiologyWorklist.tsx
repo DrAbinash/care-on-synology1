@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useLocation, Link } from "wouter";
 import { api, getStaffToken } from "@/lib/fetchApi";
@@ -623,6 +623,7 @@ export default function RadiologyWorklist() {
     return MODALITY_OPTIONS.includes(normalized) ? normalized : "all";
   });
   const [lockFilter, setLockFilter] = useState("all");
+  const [aiDraftFilter, setAiDraftFilter] = useState<"all" | "overnight">("all");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   function setDatePreset(from: string, to: string) {
@@ -965,6 +966,11 @@ export default function RadiologyWorklist() {
     if (lockFilter === "mine" && !isMine) return false;
     if (lockFilter === "locked" && (!isLocked || isMine)) return false;
 
+    if (aiDraftFilter === "overnight") {
+      const st = (e.aiDraftStatus || "NONE").toUpperCase();
+      if (st !== "READY" && st !== "PENDING" && st !== "ERROR") return false;
+    }
+
     // Client-side date-range filter (IST calendar day), keyed off study received time
     if (dateFrom || dateTo) {
       const entryDate = e.createdAt ? toISTDateStr(e.createdAt) : null;
@@ -982,6 +988,17 @@ export default function RadiologyWorklist() {
       (e.referringDoctor ?? "").toLowerCase().includes(s)
     );
   });
+
+  const aiDraftCounts = useMemo(() => {
+    let ready = 0, error = 0, processing = 0;
+    for (const e of entries) {
+      const st = (e.aiDraftStatus || "NONE").toUpperCase();
+      if (st === "READY") ready++;
+      else if (st === "ERROR") error++;
+      else if (st === "PENDING") processing++;
+    }
+    return { ready, error, processing };
+  }, [entries]);
 
   // Rows to render in table — real rows + optional sentinel
   const tableRows = [
@@ -1173,6 +1190,26 @@ export default function RadiologyWorklist() {
                 onChange={setModalityFilter}
                 size="md"
               />
+              <button
+                type="button"
+                data-testid="overnight-ai-drafts-filter"
+                onClick={() => setAiDraftFilter((v) => (v === "overnight" ? "all" : "overnight"))}
+                className={`inline-flex items-center gap-1.5 h-9 px-2.5 rounded-md border text-xs font-medium transition ${
+                  aiDraftFilter === "overnight"
+                    ? "border-indigo-500 bg-indigo-600 text-white"
+                    : "border-border bg-background text-muted-foreground hover:bg-muted"
+                }`}
+                title="Show studies with overnight AI drafts (READY / PENDING / ERROR)"
+              >
+                <Sparkles className="h-3.5 w-3.5" />
+                Overnight AI Drafts
+              </button>
+              <span
+                className="text-[11px] text-muted-foreground whitespace-nowrap"
+                data-testid="ai-draft-summary"
+              >
+                AI Drafts: {aiDraftCounts.ready} READY | {aiDraftCounts.error} ERROR | {aiDraftCounts.processing} PROCESSING
+              </span>
               <Select value={lockFilter} onValueChange={setLockFilter}>
                 <SelectTrigger className="w-[150px]">
                   <SelectValue placeholder="Lock Status" />
@@ -1220,12 +1257,12 @@ export default function RadiologyWorklist() {
                   </Button>
                 </PopoverContent>
               </Popover>
-              {(statusFilter !== "all" || modalityFilter !== "all" || lockFilter !== "all" || search || dateFrom || dateTo) && (
+              {(statusFilter !== "all" || modalityFilter !== "all" || lockFilter !== "all" || aiDraftFilter !== "all" || search || dateFrom || dateTo) && (
                 <Button
                   variant="ghost"
                   size="sm"
                   className="text-xs"
-                  onClick={() => { setSearch(""); setStatusFilter("all"); setModalityFilter("all"); setLockFilter("all"); setDateFrom(""); setDateTo(""); }}
+                  onClick={() => { setSearch(""); setStatusFilter("all"); setModalityFilter("all"); setLockFilter("all"); setAiDraftFilter("all"); setDateFrom(""); setDateTo(""); }}
                 >
                   Clear filters
                 </Button>

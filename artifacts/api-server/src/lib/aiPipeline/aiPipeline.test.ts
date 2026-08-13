@@ -38,6 +38,9 @@ describe("aiPipeline config", () => {
     expect(c.modelFast).toBe("gemma3:4b");
     expect(c.modelStandard).toBe("gemma3:4b");
     expect(c.modelLarge).toBe("gemma3:12b");
+    expect(c.modelVision).toBe("qwen3-vl:8b");
+    expect(c.ollamaNumCtx).toBe(16384);
+    expect(c.ollamaThink).toBe(false);
     expect(c.aiMode).toBe("AUTO");
     expect(c.aiConcurrency).toBe(1);
   });
