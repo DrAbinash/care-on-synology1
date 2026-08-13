@@ -23,6 +23,7 @@
     "e2e:smoke": "playwright test --config playwright.config.ts",
     "db:bootstrap": "node scripts/apply-all-migrations.mjs",
     "operations:verify-deployment": "node scripts/verify-deployment.mjs",
+    "operations:verify-ollama-ai-draft": "node scripts/verify-ollama-ai-draft.mjs",
     "validate:radiology-content": "pnpm --filter @workspace/scripts run validate:radiology-content",
     "smoke:production": "pnpm --filter @workspace/api-server run smoke",
     "test": "vitest run"
