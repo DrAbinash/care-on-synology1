@@ -5,6 +5,7 @@
  * unacknowledged critical findings.
  */
 import { useCallback, useRef, useState } from "react";
+import type { FinalizeQualityGate } from "@/lib/reportQualityFinalize";
 
 export type SignatureOption = { id: number; name: string };
 
@@ -18,6 +19,8 @@ export type FinalizePromptInput = {
   /** When true, confirm is disabled until the radiologist acknowledges. */
   criticalRequiresAck: boolean;
   criticalSummary?: string;
+  /** Canonical report-quality evaluation snapshot (workspace-finalize source). */
+  qualityGate?: FinalizeQualityGate | null;
 };
 
 export type FinalizePromptResult = {

@@ -90,6 +90,8 @@ import {
 import ReportExportPanel from "@/components/radiology/ReportExportPanel";
 import { validateReport, computeQualityScore } from "@/lib/reportValidator";
 import { logParityInDev } from "@/lib/reportQualityShadow";
+import { formatQualityAdvisoryForDialog } from "@/lib/reportQualityFinalize";
+import { runFinalizeQualityEvaluation } from "@/lib/reportQualityFinalizeApi";
 import { detectCriticalFindings } from "@/lib/criticalResults";
 import { computeFinalizeSafety, formatFinalizeSafety, criticalFindingBlocksFinalize } from "@/lib/finalizeSafety";
 import { retryWithBackoff, isTransientError, offlineBlockMessage } from "@/lib/reliability";
@@ -1142,8 +1144,12 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     const offlineMsg = offlineBlockMessage(isOnline, "finalize");
     if (offlineMsg) { toast({ title: "Offline", description: offlineMsg, variant: "destructive" }); return; }
 
-    // 1. Save dirty state first
-    if (useWorkspace.getState().isDirty) await saveDraft();
+    // 1. Save dirty state first (capture draft id for quality + validate-draft)
+    let effectiveDraftId = draftId;
+    if (useWorkspace.getState().isDirty) {
+      const savedId = await saveDraft();
+      if (savedId) effectiveDraftId = savedId;
+    }
 
     // 1b. PCPNDT Form F gate (obstetric USG) — same rule as legacy
     if (pcpndtBlockedRef.current) {
@@ -1162,11 +1168,11 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       impression: [impressionText],
       technique: techniqueText,
     } as any);
-    if (draftId) {
+    if (effectiveDraftId) {
       try {
         const serverVal = await api.post<{
           structured?: { errors?: unknown[]; warnings?: string[]; skipReasons?: string[] };
-        }>("/api/radiology/report-generator/validate-draft", { draftId });
+        }>("/api/radiology/report-generator/validate-draft", { draftId: effectiveDraftId });
         const errs = serverVal?.structured?.errors ?? [];
         const warns = serverVal?.structured?.warnings ?? [];
         const skips = serverVal?.structured?.skipReasons ?? [];
@@ -1176,7 +1182,32 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       } catch { /* non-fatal — local validation still applies */ }
     }
 
-    // 3. Critical findings check (auto-detect + manual mark/comms from legacy)
+    // 3b. Canonical report-quality evaluation (persisted, drives finalize dialog)
+    let qualityGate: Awaited<ReturnType<typeof runFinalizeQualityEvaluation>> | null = null;
+    try {
+      qualityGate = await runFinalizeQualityEvaluation({
+        draftId: effectiveDraftId,
+        modality: workflow.currentRow.modality,
+        studyDescription: workflow.currentRow.studyDescription,
+        clinicalHistory: clinicalHistoryText,
+        technique: techniqueText,
+        findings: findingsText,
+        impression: impressionText,
+        recommendation: recommendationText,
+        checklistPercent: studySetup.checklistPercent,
+      });
+    } catch (err) {
+      toast({
+        title: "Quality check failed",
+        description: err instanceof Error ? err.message : "Could not run report quality evaluation. Save draft and try again.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const qualityAdvisory = qualityGate ? formatQualityAdvisoryForDialog(qualityGate) : "";
+
+    // 4. Critical findings check (auto-detect + manual mark/comms from legacy)
     const criticalHits = detectCriticalFindings(findingsText, [impressionText]);
     const criticalMarked = isCritical || criticalHits.length > 0;
     const criticalCommunicated = checklistComm.phoned;
@@ -1188,17 +1219,18 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       criticalCommunicated,
     });
 
-    // 4. Get signatures
+    // 5. Get signatures
     const signatures = await api.get<{ id: number; name: string }[]>("/api/signatures");
 
-    // 5. Prompt via finalize flow
+    // 6. Prompt via finalize flow (quality gate + critical ack + signer)
     const result = await finalizeFlow.promptFinalize({
       identity: `${workflow.currentRow.patientName} — ${workflow.currentRow.studyDescription}`,
-      validationSummary: validationIssues.join("; ") as any,
+      validationSummary: (validationIssues.join("; ") + qualityAdvisory) as string,
       warningBlock: safetyIssues.filter(i => i.severity === "warn").map(i => i.message).join("; "),
       safetyBlock: formatFinalizeSafety(safetyIssues),
       unbilledNote: "",
       signatures: signatures,
+      qualityGate,
       criticalRequiresAck: criticalFindingBlocksFinalize({
         checklistActive: false,
         checklistPercent: 100,
@@ -1214,7 +1246,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
 
     if (!result.confirmed) return;
 
-    // 6. Execute finalize
+    // 7. Execute finalize
     try {
       const finalizeResult = await finalizeRadiologyReport(
         ({
@@ -1232,6 +1264,18 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
           isCritical: criticalMarked,
           criticalNote: criticalNote || (criticalHits.length > 0 ? criticalHits.map(h => h.label).join(", ") : null),
           createdBy: session?.user?.name ?? "Dr. Abinash Kumar",
+          actor: session?.user?.name ?? "Dr. Abinash Kumar",
+          signatureId: result.signatureId,
+          auditDetails: qualityGate
+            ? {
+                qualityEvaluationId: qualityGate.textEvaluationId,
+                structuredQualityEvaluationId: qualityGate.structuredEvaluationId,
+                qualityScore: qualityGate.score,
+                qualityBlockingCount: qualityGate.blockingCount,
+                qualityWarningCount: qualityGate.warningCount,
+                qualitySource: "workspace-finalize",
+              }
+            : undefined,
         } as any,
       );
 
@@ -1276,7 +1320,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     } catch (err) {
       toast({ title: "Finalize failed", description: err instanceof Error ? err.message : "Unknown error", variant: "destructive" });
     }
-  }, [studyId, workflow, isOnline, findingsText, impressionText, recommendationText, techniqueText, saveDraft, finalizeFlow, draftBackup, qc, toast, isCritical, criticalNote, checklistComm, draftId, session]);
+  }, [studyId, workflow, isOnline, findingsText, impressionText, recommendationText, techniqueText, clinicalHistoryText, studySetup.checklistPercent, saveDraft, finalizeFlow, draftBackup, qc, toast, isCritical, criticalNote, checklistComm, draftId, session]);
 
   // ─── Command dispatcher (single choke point for keyboard/voice/palette) ────
   const commandDispatcher = useMemo(() => createCommandDispatcher({
