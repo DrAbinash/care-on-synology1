@@ -154,7 +154,7 @@ import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Textarea } from "@/components/ui/textarea";
-import { mergeBlock, removeBlock, removeImpression } from "@/lib/quickFindingsMerge";
+import { removeBlock, removeImpression } from "@/lib/quickFindingsMerge";
 import type { InsertSource } from "@/lib/reportFieldMerge";
 import { generateLocalImpression } from "@/lib/generateLocalImpression";
 import { hasPhrase, appendClinicalPhrase, removeClinicalPhrase } from "@/lib/clinicalHistoryText";
@@ -238,17 +238,13 @@ const RECOMMENDATION_CHIP_ALIASES: Record<string, string[]> = {
   ],
 };
 
-function toggleRecommendationChip(existing: string, chip: string): string {
+function removeRecommendationChip(existing: string, chip: string): string {
   const trimmed = chip.trim();
   if (!trimmed) return existing;
   const aliases = RECOMMENDATION_CHIP_ALIASES[trimmed] ?? [];
-  const present = existing.includes(trimmed) || aliases.some((a) => existing.includes(a));
-  if (present) {
-    let next = removeBlock(existing, trimmed);
-    for (const a of aliases) next = removeBlock(next, a);
-    return next;
-  }
-  return mergeBlock(existing, trimmed);
+  let next = removeBlock(existing, trimmed);
+  for (const a of aliases) next = removeBlock(next, a);
+  return next;
 }
 
 function recommendationChipActive(existing: string, chip: string): boolean {
@@ -2878,7 +2874,16 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                                   type="button"
                                   onClick={() => {
                                     const state = useWorkspace.getState();
-                                    state.setField("recommendation", toggleRecommendationChip(state.recommendationText, chip));
+                                    const cur = state.recommendationText;
+                                    const trimmed = chip.trim();
+                                    if (!trimmed) return;
+                                    const aliases = RECOMMENDATION_CHIP_ALIASES[trimmed] ?? [];
+                                    const present = cur.includes(trimmed) || aliases.some((a) => cur.includes(a));
+                                    if (present) {
+                                      state.setField("recommendation", removeRecommendationChip(cur, chip));
+                                    } else {
+                                      state.mergeField("recommendation", trimmed, "quick-findings");
+                                    }
                                   }}
                                   title={chip}
                                   aria-pressed={active}
