@@ -7,7 +7,6 @@ import {
   orderTestsTable, billsTable, paymentsTable, ledgersTable, doctorsTable,
 } from "@workspace/db/schema";
 import { eq, sql, and, inArray } from "drizzle-orm";
-import { generateTokenForBill } from "./tokens";
 import { generateTestTokensForOrder } from "./test-tokens";
 import { z } from "zod";
 import { logger } from "../lib/logger";
