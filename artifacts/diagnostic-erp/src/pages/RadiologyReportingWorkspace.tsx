@@ -2034,7 +2034,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
           {/* Existing VoiceCommandBar */}
           {voiceSession.enabled && <VoiceCommandBar voice={voiceSession} embedded />}
           {/* Save button */}
-          <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={saveDraft} disabled={!isOnline}>
+          <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => void saveDraft()} disabled={!isOnline}>
             <ShieldCheck className="h-3.5 w-3.5 mr-1" /> Save
           </Button>
           {/* Word export */}

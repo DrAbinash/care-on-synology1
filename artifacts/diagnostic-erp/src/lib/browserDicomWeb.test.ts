@@ -1,5 +1,20 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, beforeEach } from "vitest";
 import { withDicomWebAuth } from "./browserDicomWeb";
+
+const store = new Map<string, string>();
+
+beforeEach(() => {
+  store.clear();
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: {
+      getItem: (k: string) => (store.has(k) ? store.get(k)! : null),
+      setItem: (k: string, v: string) => { store.set(k, String(v)); },
+      removeItem: (k: string) => { store.delete(k); },
+      clear: () => { store.clear(); },
+    },
+  });
+});
 
 describe("withDicomWebAuth", () => {
   afterEach(() => {
