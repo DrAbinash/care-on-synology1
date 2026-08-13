@@ -71,7 +71,7 @@ export const mriProtocolSpecsTable = pgTable(
     name: text("name").notNull(),                   // "MRI Brain Plain"
     modality: text("modality").notNull(),            // "MRI"
     bodyPart: text("body_part").notNull(),           // "BRAIN" | "SPINE_LS" | …
-    fieldStrengthT: text("field_strength_t").notNull().default("1.5T/3T"),
+    fieldStrengthT: text("field_strength_t").notNull().default("3T"),
     // Clinical indications (JSON string[])
     indications: jsonb("indications").notNull().default([]),
     // Ordered sequence specifications (JSON MriSequenceSpec[])

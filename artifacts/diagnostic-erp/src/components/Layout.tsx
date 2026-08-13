@@ -183,6 +183,7 @@ const navItems: NavEntry[] = [
       // Daily path only — extra AI/admin/legacy pages live under Settings → Radiology
       // or /radiology hub → Advanced (routes unchanged; bookmarks still work).
       { path: "/radiology/worklist",            icon: ScanSearch,     label: "Worklist" },
+      { path: "/radiology/my-collection",        icon: ShieldAlert,    label: "DICOM Match" },
       { path: "/radiology/reporting-workspace", icon: FilePen,        label: "Reporting Workspace" },
       { path: "/radiology/legacy-workspace",   icon: FilePen,        label: "Legacy Workspace (old)", ownerOnly: true },
       { path: "/report-delivery",               icon: Send,           label: "Report Delivery" },
@@ -211,7 +212,6 @@ const navItems: NavEntry[] = [
       },
       // Owner-only leftovers — not needed in a radiologist's daily rail.
       { path: "/radiology/operations-dashboard", icon: Gauge,       label: "Ops Dashboard", ownerOnly: true },
-      { path: "/radiology/my-collection",        icon: ShieldAlert, label: "DICOM Match", ownerOnly: true },
       { path: "/teleradiology",                  icon: Globe,       label: "Teleradiology", ownerOnly: true },
     ],
   },
@@ -310,6 +310,7 @@ const navItems: NavEntry[] = [
       { path: "/settings/scanner",          icon: ScanLine,       label: "Scanner Settings", ownerOnly: true },
       { path: "/abdm-abha",                 icon: ShieldCheck,    label: "ABDM / ABHA", featureFlag: "ff_abdm_abha" },
       { path: "/tests",                     icon: FlaskConical,   label: "Test Catalog" },
+      { path: "/measurement-registry",        icon: Activity,       label: "Measurement Registry", ownerOnly: true },
       { path: "/pathology-registry",        icon: TestTube,       label: "Pathology Registry", ownerOnly: true },
       { path: "/outsourced-labs",           icon: Building2,      label: "Outsourced Labs" },
       { path: "/outsourced-cost-report",    icon: IndianRupee,    label: "Outsource Costs" },

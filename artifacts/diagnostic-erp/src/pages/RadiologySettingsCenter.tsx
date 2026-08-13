@@ -105,7 +105,7 @@ function SpineFormatUpgradePanel({ disabled }: { disabled?: boolean }) {
   const upgrade = useMutation({
     mutationFn: () =>
       api.post<{ ok: boolean; inserted: number; upgraded: number; findingsRemapped: number; message: string }>(
-        "/api/structured-report-templates/upgrade-spine-formats",
+        "/api/radiology/structured-report-templates/upgrade-spine-formats",
         {},
       ),
     onSuccess: (res) => {

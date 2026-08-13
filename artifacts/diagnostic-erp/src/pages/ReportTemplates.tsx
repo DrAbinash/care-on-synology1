@@ -11,6 +11,8 @@ import {
   Download, Star, StarOff,
 } from "lucide-react";
 
+const STRUCTURED_TEMPLATES_API = "/api/radiology/structured-report-templates";
+
 interface StructuredTemplate {
   id: number;
   templateName: string;
@@ -139,7 +141,7 @@ function TemplateForm({
         {/* Technique */}
         <div className="space-y-1">
           <label className="text-xs font-semibold text-muted-foreground">Technique / Protocol</label>
-          <textarea value={technique} onChange={(e) => setTechnique(e.target.value)} rows={3} className="w-full p-2 text-sm rounded-lg border bg-background resize-none" placeholder="MRI Brain was performed on a 1.5T/3T scanner using standard brain protocol..." />
+          <textarea value={technique} onChange={(e) => setTechnique(e.target.value)} rows={3} className="w-full p-2 text-sm rounded-lg border bg-background resize-none" placeholder="MRI Brain was performed on a 3T scanner using standard brain protocol..." />
         </div>
 
         {/* Findings items */}
@@ -212,29 +214,29 @@ export default function ReportTemplates() {
 
   const { data: templates = [], isLoading } = useQuery<StructuredTemplate[]>({
     queryKey: ["structured-report-templates"],
-    queryFn: () => api.get("/api/structured-report-templates"),
+    queryFn: () => api.get(STRUCTURED_TEMPLATES_API),
   });
 
   const createMutation = useMutation({
-    mutationFn: (data: object) => api.post("/api/structured-report-templates", data),
+    mutationFn: (data: object) => api.post(STRUCTURED_TEMPLATES_API, data),
     onSuccess: () => { toast({ title: "Template created" }); void queryClient.invalidateQueries({ queryKey: ["structured-report-templates"] }); setShowForm(false); },
     onError: (e: Error) => toast({ title: "Error", description: e.message, variant: "destructive" }),
   });
 
   const updateMutation = useMutation({
-    mutationFn: ({ id, data }: { id: number; data: object }) => api.patch(`/api/structured-report-templates/${id}`, data),
+    mutationFn: ({ id, data }: { id: number; data: object }) => api.patch(`${STRUCTURED_TEMPLATES_API}/${id}`, data),
     onSuccess: () => { toast({ title: "Template updated" }); void queryClient.invalidateQueries({ queryKey: ["structured-report-templates"] }); setShowForm(false); setEditingTemplate(undefined); },
     onError: (e: Error) => toast({ title: "Error", description: e.message, variant: "destructive" }),
   });
 
   const deleteMutation = useMutation({
-    mutationFn: (id: number) => api.delete(`/api/structured-report-templates/${id}`),
+    mutationFn: (id: number) => api.delete(`${STRUCTURED_TEMPLATES_API}/${id}`),
     onSuccess: () => { toast({ title: "Template deleted" }); void queryClient.invalidateQueries({ queryKey: ["structured-report-templates"] }); },
     onError: (e: Error) => toast({ title: "Error", description: e.message, variant: "destructive" }),
   });
 
   const seedMutation = useMutation({
-    mutationFn: () => api.post("/api/structured-report-templates/seed", {}),
+    mutationFn: () => api.post(`${STRUCTURED_TEMPLATES_API}/seed`, {}),
     onSuccess: (r: { inserted: number }) => { toast({ title: `${r.inserted} preset templates loaded` }); void queryClient.invalidateQueries({ queryKey: ["structured-report-templates"] }); },
     onError: (e: Error) => toast({ title: "Seed failed", description: e.message, variant: "destructive" }),
   });

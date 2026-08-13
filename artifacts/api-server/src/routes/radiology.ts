@@ -489,12 +489,15 @@ radiologyRouter.get("/pacs-worklist", async (req, res) => {
     const status = (req.query.status as string) || "";
     const modality = (req.query.modality as string) || "";
     const search = (req.query.search as string)?.trim() || "";
+    const unlinkedOnly =
+      req.query.unlinked === "1" || req.query.unlinked === "true" || req.query.filter === "unbilled";
 
-    req.log.info({ status: status || "all", modality: modality || "all", search: search || "" }, "[pacs-worklist] route hit — staff auth passed");
+    req.log.info({ status: status || "all", modality: modality || "all", search: search || "", unlinkedOnly }, "[pacs-worklist] route hit — staff auth passed");
 
     const conds: ReturnType<typeof eq>[] = [];
     if (status && status !== "all") conds.push(eq(radiologyWorklistTable.status, status));
     if (modality && modality !== "all") conds.push(eq(radiologyWorklistTable.modality, modality));
+    if (unlinkedOnly) conds.push(isNull(radiologyWorklistTable.studyId));
 
     const coreSelect = {
       id: radiologyWorklistTable.id,
@@ -530,6 +533,14 @@ radiologyRouter.get("/pacs-worklist", async (req, res) => {
       aiFeedbackAt: radiologyWorklistTable.aiFeedbackAt,
       reportId: radiologyWorklistTable.reportId,
       deliveryStatus: radiologyWorklistTable.deliveryStatus,
+      matchScore: radiologyWorklistTable.matchScore,
+      matchPoints: radiologyWorklistTable.matchPoints,
+      matchReasons: radiologyWorklistTable.matchReasons,
+      matchWarnings: radiologyWorklistTable.matchWarnings,
+      matchDecision: radiologyWorklistTable.matchDecision,
+      matchApprovedBy: radiologyWorklistTable.matchApprovedBy,
+      matchApprovedAt: radiologyWorklistTable.matchApprovedAt,
+      matchOverrideReason: radiologyWorklistTable.matchOverrideReason,
       createdAt: radiologyWorklistTable.createdAt,
       updatedAt: radiologyWorklistTable.updatedAt,
       // M1.6A — real lock columns.
@@ -542,6 +553,21 @@ radiologyRouter.get("/pacs-worklist", async (req, res) => {
       uhid: patientsTable.patientId,
       billNumber: billsTable.billNumber,
       testName: testsTable.name,
+      billedTestName: testsTable.name,
+      billedPatientName: sql<string | null>`(
+        select trim(concat(p.first_name, ' ', p.last_name))
+        from ${patientsTable} p
+        where p.id = ${radiologyStudiesTable.patientId}
+        limit 1
+      )`,
+      billedPatientUHID: sql<string | null>`(
+        select p.patient_id from ${patientsTable} p
+        where p.id = ${radiologyStudiesTable.patientId}
+        limit 1
+      )`,
+      billedAccessionNumber: radiologyStudiesTable.accessionNumber,
+      billedModality: radiologyStudiesTable.modality,
+      billedStudyDate: radiologyStudiesTable.studyDate,
       priority: radiologyStudiesTable.priority,
     } as const;
 
@@ -2536,61 +2562,6 @@ radiologyRouter.post("/user-item-usage", async (req: StaffAuthRequest, res) => {
 });
 
 // ── Anti-Forgery DICOM & Billing Matching Endpoints ──
-
-// GET /api/radiology/pacs-worklist — list PACS studies and match statuses
-radiologyRouter.get("/pacs-worklist", async (req, res) => {
-  try {
-    const list = await db
-      .select({
-        id: radiologyWorklistTable.id,
-        studyId: radiologyWorklistTable.studyId,
-        patientId: radiologyWorklistTable.patientId,
-        dicomPatientId: radiologyWorklistTable.dicomPatientId,
-        patientMatchStatus: radiologyWorklistTable.patientMatchStatus,
-        patientName: radiologyWorklistTable.patientName,
-        age: radiologyWorklistTable.age,
-        sex: radiologyWorklistTable.sex,
-        modality: radiologyWorklistTable.modality,
-        studyDescription: radiologyWorklistTable.studyDescription,
-        studyDate: radiologyWorklistTable.studyDate,
-        accessionNumber: radiologyWorklistTable.accessionNumber,
-        studyInstanceUID: radiologyWorklistTable.studyInstanceUID,
-        aeTitle: radiologyWorklistTable.aeTitle,
-        referringDoctor: radiologyWorklistTable.referringDoctor,
-        weasisUrl: radiologyWorklistTable.weasisUrl,
-        sourcePacs: radiologyWorklistTable.sourcePacs,
-        status: radiologyWorklistTable.status,
-        matchScore: radiologyWorklistTable.matchScore,
-        matchPoints: radiologyWorklistTable.matchPoints,
-        matchReasons: radiologyWorklistTable.matchReasons,
-        matchWarnings: radiologyWorklistTable.matchWarnings,
-        matchDecision: radiologyWorklistTable.matchDecision,
-        matchApprovedBy: radiologyWorklistTable.matchApprovedBy,
-        matchApprovedAt: radiologyWorklistTable.matchApprovedAt,
-        matchOverrideReason: radiologyWorklistTable.matchOverrideReason,
-        // Join fields if study linked
-        billedTestName: testsTable.name,
-        billedPatientName: sql`concat(${patientsTable.firstName}, ' ', ${patientsTable.lastName})`,
-        billedPatientUHID: patientsTable.patientId,
-        billedAccessionNumber: radiologyStudiesTable.accessionNumber,
-        billedModality: radiologyStudiesTable.modality,
-        billedStudyDate: radiologyStudiesTable.studyDate,
-        billNumber: billsTable.billNumber,
-      })
-      .from(radiologyWorklistTable)
-      .leftJoin(radiologyStudiesTable, eq(radiologyStudiesTable.id, radiologyWorklistTable.studyId))
-      .leftJoin(patientsTable, eq(patientsTable.id, radiologyStudiesTable.patientId))
-      .leftJoin(testsTable, eq(testsTable.id, radiologyStudiesTable.testId))
-      .leftJoin(billsTable, eq(billsTable.id, radiologyStudiesTable.billId))
-      .orderBy(desc(radiologyWorklistTable.createdAt))
-      .limit(100);
-
-    res.json(list);
-  } catch (err: any) {
-    logger.error({ err }, "Error fetching pacs worklist");
-    res.status(500).json({ error: err.message });
-  }
-});
 
 // GET /api/radiology/pacs-worklist/:id/matching-candidates — find billed studies matching PACS modality/names
 radiologyRouter.get("/pacs-worklist/:id/matching-candidates", async (req, res) => {

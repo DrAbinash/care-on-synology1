@@ -353,6 +353,22 @@ const FEATURES: RadiologyFeature[] = [
     icon: ListChecks,
   },
   {
+    name: "MWL Dashboard (enterprise)",
+    route: "/radiology/mwl-dashboard",
+    purpose: "Enterprise MWL procedure list synced from billing (pacsEnterprise API).",
+    status: "Active",
+    adminOnly: true,
+    icon: ListChecks,
+  },
+  {
+    name: "Study Access Logs",
+    route: "/radiology/study-access-logs",
+    purpose: "Audit who opened or acted on imaging studies.",
+    status: "Active",
+    adminOnly: true,
+    icon: ShieldAlert,
+  },
+  {
     name: "AI Pipeline Manager",
     route: "/radiology/ai-pipeline",
     purpose: "Manage and monitor AI processing pipelines.",

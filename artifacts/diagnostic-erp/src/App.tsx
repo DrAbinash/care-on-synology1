@@ -234,6 +234,8 @@ const RadiologyCommandCenter = lazy(() => import("@/pages/RadiologyCommandCenter
 const RadiologyAdvancedTools = lazy(() => import("@/pages/RadiologyAdvancedTools"));
 const AcquisitionGateway     = lazy(() => import("@/pages/AcquisitionGateway"));
 const MwlManager             = lazy(() => import("@/pages/MwlManager"));
+const MwlDashboard           = lazy(() => import("@/pages/MwlDashboard"));
+const StudyAccessLogs        = lazy(() => import("@/pages/StudyAccessLogs"));
 const AiPipelineManager      = lazy(() => import("@/pages/AiPipelineManager"));
 const CriticalAlertsManager  = lazy(() => import("@/pages/CriticalAlertsManager"));
 const StorageLifecycle       = lazy(() => import("@/pages/StorageLifecycle"));
@@ -267,7 +269,7 @@ const ERP_NAV_ORDER = [
   "/", "/dashboard", "/my-daily-summary", "/my-day-close", "/reception-command-center", "/daily-summary", "/patients", "/register", "/appointments", "/queue", "/online-bookings",
   "/radiology", "/radiology/legacy", "/radiology/worklist", "/radiology/open", "/radiology/report-generator", "/radiology/report-builder", "/radiology/findings-manager", "/radiology/reporting-workspace", "/radiology/advanced-tools", "/radiology/pacs-dashboard", "/radiology/operational-health", "/radiology/pacs-settings", "/radiology/network-control-center", "/radiology/pacs-logs",
   "/radiology/dicom-agent-dashboard", "/radiology/modality-management",
-  "/radiology/agent-setup", "/radiology/ai-reporting-settings", "/radiology/ai-prompt-templates", "/radiology/ai-model-routing", "/radiology/structured-report-templates", "/radiology/ai-audit-log",
+  "/radiology/agent-setup", "/radiology/ai-reporting-settings", "/radiology/ai-prompt-templates", "/radiology/ai-model-routing", "/radiology/structured-report-templates", "/radiology/mwl-dashboard", "/radiology/study-access-logs", "/radiology/ai-audit-log",
   "/radiology/viewer", "/radiology/archive-lifecycle", "/radiology/watchdog", "/radiology/ai-inference-settings", "/radiology/hl7-settings", "/teleradiology",
   "/radiology/usg-measurements", "/radiology/usg-admin-settings", "/radiology/usg-rollout", "/radiology/usg-demo",
   "/usg", "/usg/worklist", "/usg/measurements", "/usg/reporting", "/usg/doppler", "/usg/key-images", "/usg/settings", "/usg/critical", "/usg/analytics",
@@ -581,6 +583,8 @@ function Router() {
               <Route path="/radiology/advanced-tools" component={RadiologyAdvancedTools} />
               <Route path="/radiology/acquisition-gateway" component={AcquisitionGateway} />
               <Route path="/radiology/mwl-manager" component={MwlManager} />
+              <Route path="/radiology/mwl-dashboard" component={MwlDashboard} />
+              <Route path="/radiology/study-access-logs" component={StudyAccessLogs} />
               <Route path="/radiology/ai-pipeline" component={AiPipelineManager} />
               <Route path="/radiology/critical-alerts" component={CriticalAlertsManager} />
               <Route path="/radiology/storage-lifecycle" component={StorageLifecycle} />
