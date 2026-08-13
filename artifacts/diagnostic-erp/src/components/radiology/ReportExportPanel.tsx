@@ -32,8 +32,11 @@ export type ReportExportPanelProps = {
   onImpressionStyleChange: (v: ReportImpressionStyle) => void;
   onExportWord: () => void | Promise<void>;
   onExportPdf: () => void | Promise<void>;
+  /** Draft-only: open print preview without the DRAFT watermark. */
+  onPrintLikeFinal?: () => void | Promise<void>;
   exportingWord?: boolean;
   exportingPdf?: boolean;
+  printingLikeFinal?: boolean;
   disabled?: boolean;
 };
 
@@ -52,8 +55,10 @@ export default function ReportExportPanel({
   onImpressionStyleChange,
   onExportWord,
   onExportPdf,
+  onPrintLikeFinal,
   exportingWord,
   exportingPdf,
+  printingLikeFinal,
   disabled,
 }: ReportExportPanelProps) {
   const [open, setOpen] = useState(true);
@@ -116,6 +121,20 @@ export default function ReportExportPanel({
             {exportingPdf ? <RefreshCw className="h-3 w-3 mr-1 animate-spin" /> : <Printer className="h-3 w-3 mr-1" />}
             PDF
           </Button>
+          {onPrintLikeFinal && draftId && !linkedReportId && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-6 text-[10px] px-2"
+              disabled={disabled || printingLikeFinal}
+              onClick={() => void onPrintLikeFinal()}
+              title="Print draft using final layout (no DRAFT watermark)"
+              data-testid="print-like-final"
+            >
+              {printingLikeFinal ? <RefreshCw className="h-3 w-3 mr-1 animate-spin" /> : <Printer className="h-3 w-3 mr-1" />}
+              Print like final
+            </Button>
+          )}
         </div>
       </div>
 

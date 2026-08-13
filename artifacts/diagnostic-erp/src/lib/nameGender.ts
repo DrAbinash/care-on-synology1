@@ -365,6 +365,41 @@ const HONORIFIC_PREFIXES = new Set([
 const MALE_SET = new Set(MALE_NAMES);
 const FEMALE_SET = new Set(FEMALE_NAMES);
 
+/** Clinic-added names from Radiology Settings (`name_gender_male_extra` /
+ *  `name_gender_female_extra` pacs_settings). Merged at lookup time so staff
+ *  can teach unrecognized local names without a code deploy. */
+let EXTRA_MALE = new Set<string>();
+let EXTRA_FEMALE = new Set<string>();
+
+/** Parse a stored JSON string array (or newline-separated fallback) into
+ *  normalized name tokens. Returns [] on empty / malformed input. */
+export function parseNameGenderExtraList(raw: string | null | undefined): string[] {
+  if (!raw?.trim()) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      return parsed.map((x) => normalizeToken(String(x))).filter(Boolean);
+    }
+  } catch {
+    /* newline-separated fallback for the Settings textarea */
+  }
+  return raw.split(/[\n,]+/).map(normalizeToken).filter(Boolean);
+}
+
+/**
+ * Replace the in-memory clinic extras used by `detectGenderFromName`.
+ * Call whenever pacs_settings load or the Settings panel saves extras.
+ */
+export function applyNameGenderExtras(male: string[], female: string[]): void {
+  EXTRA_MALE = new Set(male.map(normalizeToken).filter(Boolean));
+  EXTRA_FEMALE = new Set(female.map(normalizeToken).filter(Boolean));
+}
+
+/** Current clinic extras (for Settings UI display / tests). */
+export function getNameGenderExtras(): { male: string[]; female: string[] } {
+  return { male: [...EXTRA_MALE], female: [...EXTRA_FEMALE] };
+}
+
 /**
  * Returns "male" | "female" for a recognized first name, or null if the
  * name isn't in the list (ambiguous/unisex/unrecognized). Accepts either
@@ -377,16 +412,16 @@ export function detectGenderFromName(fullNameOrFirstName: string): "male" | "fem
   const firstToken = tokens.find((t) => !HONORIFIC_PREFIXES.has(t));
   if (!firstToken) return null;
 
-  if (MALE_SET.has(firstToken)) return "male";
-  if (FEMALE_SET.has(firstToken)) return "female";
+  if (MALE_SET.has(firstToken) || EXTRA_MALE.has(firstToken)) return "male";
+  if (FEMALE_SET.has(firstToken) || EXTRA_FEMALE.has(firstToken)) return "female";
 
   // A handful of names in the lists are two words (e.g. "md" prefixes,
   // "suman kumar") — also try the first two tokens joined, in case the
   // caller passed a full name starting with one of those.
   if (tokens.length >= 2) {
     const twoWord = `${firstToken} ${tokens[1]}`;
-    if (MALE_SET.has(twoWord)) return "male";
-    if (FEMALE_SET.has(twoWord)) return "female";
+    if (MALE_SET.has(twoWord) || EXTRA_MALE.has(twoWord)) return "male";
+    if (FEMALE_SET.has(twoWord) || EXTRA_FEMALE.has(twoWord)) return "female";
   }
 
   return null;
