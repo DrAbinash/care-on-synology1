@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
 import { readStaffSession, FULL_ACCESS_ROLES, normalizeRole } from "@/lib/staffSession";
 import PageHeader from "@/components/PageHeader";
+import { InfrastructurePulseStrip } from "@/components/InfrastructurePulseStrip";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Link } from "wouter";
@@ -1940,6 +1941,8 @@ export default function MyDailySummary() {
           </div>
         }
       />
+
+      {isOwner && <InfrastructurePulseStrip />}
 
       {/* ── Drawer Status Warning Chips ── */}
       {drawerQ.data && <DrawerChips status={drawerQ.data} />}
