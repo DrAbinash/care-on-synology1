@@ -929,8 +929,7 @@ export default function FormF() {
   // initial scan/upload and the "Retry OCR" button, so both go through
   // identical field-population logic.
   //
-  // Fallback chain: AI (Ollama → Gemini via /api/form-f/upload-id) →
-  // on-device Tesseract.js when AI returns no usable fields or errors.
+  // Fallback chain: Ollama → on-device Tesseract.js → Gemini (if a key exists).
   // Manual entry remains available either way. ──
   async function runIdCardOcr(base64: string, mimeType: string) {
     let resp: IdCardUploadResponse | null = null;
@@ -997,6 +996,34 @@ export default function FormF() {
       }
     } catch (e) {
       console.warn("[form-f] Tesseract fallback failed", e);
+    }
+
+    try {
+      toast({ title: "Trying Gemini…", description: "Third pass — only runs if an API key is configured." });
+      const gemResp = await api.post<IdCardUploadResponse>("/api/form-f/upload-id", {
+        formFId: 0,
+        imageBase64: base64,
+        mimeType,
+        useGeminiFallback: true,
+      });
+      const gemOcr = gemResp.ocr ?? null;
+      const gemUsable = !!(gemOcr?.guardianName || gemOcr?.address || gemOcr?.idNumber);
+      if (gemUsable && gemResp.ocrOutcome === "success") {
+        setIdCardOcrResult({ ...gemOcr, ocrProvider: "gemini" });
+        if (gemOcr?.guardianName) setIdCardExtractedName(gemOcr.guardianName);
+        if (gemOcr?.address) setIdCardExtractedAddress(gemOcr.address);
+        if (ocrConfidenceTier(gemOcr?.confidencePercent) === "auto") {
+          setForm((prev) => ({
+            ...prev,
+            husbandFatherName: prev.husbandFatherName || gemOcr?.guardianName || prev.husbandFatherName,
+            address: prev.address || gemOcr?.address || prev.address,
+          }));
+        }
+        toast({ title: "Scanned with Gemini", description: "Review every field before saving." });
+        return gemResp;
+      }
+    } catch (e) {
+      console.warn("[form-f] Gemini third-pass failed", e);
     }
 
     setIdCardOcrResult(aiOcr);

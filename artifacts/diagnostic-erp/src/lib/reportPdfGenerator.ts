@@ -106,7 +106,7 @@ export const DEFAULT_PRINT_SETTINGS: PrintSettings = {
   signature: {
     enabled: true,
     name: "Dr. Sugandha Priyadarshini",
-    qualification: "MBBS, MD (Radiodiagnosis), DNB (I)",
+    qualification: "MD (Radiodiagnosis & Medical Imaging)",
     registrationNo: "",
     imageDataUrl: null,
     showQualification: true,
@@ -119,6 +119,11 @@ export function loadPrintSettings(): PrintSettings {
     const raw = localStorage.getItem("radiology_print_settings");
     if (!raw) return { ...DEFAULT_PRINT_SETTINGS, footer: { ...DEFAULT_PRINT_SETTINGS.footer }, header: { ...DEFAULT_PRINT_SETTINGS.header }, show: { ...DEFAULT_PRINT_SETTINGS.show }, signature: { ...DEFAULT_PRINT_SETTINGS.signature }, margins: { ...DEFAULT_PRINT_SETTINGS.margins } };
     const parsed = JSON.parse(raw) as Partial<PrintSettings>;
+    const signature = { ...DEFAULT_PRINT_SETTINGS.signature, ...(parsed.signature ?? {}) };
+    if (/abinash/i.test(signature.name)) {
+      signature.name = DEFAULT_PRINT_SETTINGS.signature.name;
+      signature.qualification = DEFAULT_PRINT_SETTINGS.signature.qualification;
+    }
     return {
       ...DEFAULT_PRINT_SETTINGS,
       ...parsed,
@@ -126,7 +131,7 @@ export function loadPrintSettings(): PrintSettings {
       header: { ...DEFAULT_PRINT_SETTINGS.header, ...(parsed.header ?? {}) },
       footer: { ...DEFAULT_PRINT_SETTINGS.footer, ...(parsed.footer ?? {}) },
       show: { ...DEFAULT_PRINT_SETTINGS.show, ...(parsed.show ?? {}) },
-      signature: { ...DEFAULT_PRINT_SETTINGS.signature, ...(parsed.signature ?? {}) },
+      signature,
       layout: parsed.layout ?? DEFAULT_PRINT_SETTINGS.layout,
     };
   } catch {

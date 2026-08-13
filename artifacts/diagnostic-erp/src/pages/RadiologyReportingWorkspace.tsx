@@ -1163,7 +1163,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   }, [preloadTriggered, studies, activeStudyId]);
 
   // ─── Save draft (server-side) — returns draft id so Report Images can auto-ensure ─
-  const saveDraft = useCallback(async (): Promise<number | null> => {
+  const saveDraft = useCallback(async (opts?: { silent?: boolean }): Promise<number | null> => {
     if (!studyId) return null;
     const offlineMsg = offlineBlockMessage(isOnline, "save");
     if (offlineMsg) { toast({ title: "Offline", description: offlineMsg, variant: "destructive" }); return null; }
@@ -1184,7 +1184,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       const id = res?.draft?.id ?? res?.id ?? null;
       if (id) captureSavedDraftId(id);
       setLastSavedAt(new Date());
-      toast({ title: "Draft saved", duration: 1500 });
+      if (!opts?.silent) toast({ title: "Draft saved", duration: 1500 });
       return id;
     } catch (err) {
       toast({ title: "Save failed", description: err instanceof Error ? err.message : "Unknown error", variant: "destructive" });
@@ -1252,11 +1252,9 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       });
     } catch (err) {
       toast({
-        title: "Quality check failed",
-        description: err instanceof Error ? err.message : "Could not run report quality evaluation. Save draft and try again.",
-        variant: "destructive",
+        title: "Quality check skipped",
+        description: err instanceof Error ? err.message : "Could not run report quality evaluation — continuing.",
       });
-      return;
     }
 
     const qualityAdvisory = qualityGate ? formatQualityAdvisoryForDialog(qualityGate) : "";
@@ -1274,7 +1272,13 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     });
 
     // 5. Get signatures
-    const signatures = await api.get<{ id: number; name: string }[]>("/api/signatures");
+    // Prefer Dr. Sugandha when several signatures exist — she is the clinic radiologist.
+    const signaturesRaw = await api.get<{ id: number; name: string }[]>("/api/signatures");
+    const signatures = [...signaturesRaw].sort((a, b) => {
+      const as = /sugandha/i.test(a.name) ? 0 : 1;
+      const bs = /sugandha/i.test(b.name) ? 0 : 1;
+      return as - bs;
+    });
 
     // 6. Prompt via finalize flow (quality gate + critical ack + signer)
     const result = await finalizeFlow.promptFinalize({
@@ -1317,8 +1321,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
           impression: [impressionText],
           isCritical: criticalMarked,
           criticalNote: criticalNote || (criticalHits.length > 0 ? criticalHits.map(h => h.label).join(", ") : null),
-          createdBy: session?.user?.name ?? "Dr. Abinash Kumar",
-          actor: session?.user?.name ?? "Dr. Abinash Kumar",
+          createdBy: session?.user?.name ?? "Dr. Sugandha Priyadarshini",
+          actor: session?.user?.name ?? "Dr. Sugandha Priyadarshini",
           signatureId: result.signatureId,
           auditDetails: qualityGate
             ? {
@@ -1696,8 +1700,10 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   ]);
 
   const handlePrintLikeFinal = useCallback(async () => {
-    if (!draftId) {
-      toast({ title: "Save draft first", description: "Print-like-final needs a saved draft.", variant: "destructive" });
+    let id = draftId;
+    if (!id) id = await saveDraft({ silent: true });
+    if (!id) {
+      toast({ title: "Could not save draft", description: "Print-like-final needs a saved draft.", variant: "destructive" });
       return;
     }
     setPrintingLikeFinal(true);
@@ -1709,7 +1715,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     }
     try {
       const templateQs = reportLayoutTemplateQuery(reportLayout);
-      const url = `/api/radiology/report-generator/drafts/${draftId}/print-preview?autoPrint=true&likeFinal=true&${templateQs}`;
+      const url = `/api/radiology/report-generator/drafts/${id}/print-preview?autoPrint=true&likeFinal=true&${templateQs}`;
       const html = await api.get<string>(url);
       w.document.write(html);
       w.document.close();
@@ -1720,7 +1726,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     } finally {
       setPrintingLikeFinal(false);
     }
-  }, [draftId, reportLayout, toast]);
+  }, [draftId, reportLayout, saveDraft, toast]);
 
   // ─── Teaching case save ─────────────────────────────────────────────────────
   const handleSaveTeachingCase = useCallback(async () => {
@@ -2264,7 +2270,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                         studyId={studyId ?? null}
                         studyInstanceUID={workflow.currentRow?.studyInstanceUID ?? null}
                         disabled={isLocked || isFinalized || workflow.currentRow?.status === "REPORT_FINAL"}
-                        onEnsureDraft={isLocked ? undefined : saveDraft}
+                        onEnsureDraft={isLocked ? undefined : () => saveDraft({ silent: true })}
                       />
                     </div>
                   )}

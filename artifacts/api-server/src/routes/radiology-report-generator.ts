@@ -1936,7 +1936,8 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
     });
     let previewSignatures: ReportDocumentModel["signatures"] = [];
     try {
-      const [sig] = await db.select().from(signaturesTable).where(eq(signaturesTable.isActive, true)).limit(1);
+      const rows = await db.select().from(signaturesTable).where(eq(signaturesTable.isActive, true));
+      const sig = rows.find((s) => /sugandha/i.test(s.name)) ?? rows[0];
       if (sig) {
         previewSignatures = [{
           name: sig.name,
@@ -1944,6 +1945,13 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
           role: sig.role ?? null,
           registrationNo: sig.registrationNo || null,
           imageDataUrl: sig.imageDataUrl ?? null,
+          label: "Signed:",
+          whenLabel: "",
+        }];
+      } else {
+        previewSignatures = [{
+          name: "Dr. Sugandha Priyadarshini",
+          qualification: "MD (Radiodiagnosis & Medical Imaging)",
           label: "Signed:",
           whenLabel: "",
         }];

@@ -116,7 +116,7 @@ describe("premium layout (Phase 7)", () => {
     const html = renderReportDocument(baseModel({ keyImages: images }), resolvePresentationTemplate("care-premium"));
     expect(html).toContain("grid-template-columns: 1fr 64mm"); // desktop split
     expect(html).not.toMatch(/\.image-panel-side\s*\{\s*float:\s*right/); // R1.4 — float removed (broke print pagination)
-    expect(html).toContain("SELECTED IMAGES");
+    expect(html).toContain("KEY IMAGES");
     expect(html.indexOf("FLAIR")).toBeLessThan(html.indexOf("T2 AXIAL")); // displayOrder wins
     expect(html).toContain('data-sop-instance-uid="1.2.3.4"');  // viewer integration hook
   });
@@ -124,7 +124,7 @@ describe("premium layout (Phase 7)", () => {
   it("without images: full-width report, no side panel CSS, no image heading", () => {
     const html = renderReportDocument(baseModel({ keyImages: [] }), resolvePresentationTemplate("care-premium"));
     expect(html).not.toContain("grid-template-columns: 1fr 64mm");
-    expect(html).not.toContain("SELECTED IMAGES");
+    expect(html).not.toContain("KEY IMAGES");
   });
 
   it("page-break discipline: widows/orphans set, images and signatures never split", () => {
@@ -140,6 +140,23 @@ describe("premium layout (Phase 7)", () => {
     expect(html).toContain("image-panel-inline");
     expect(html).toContain("patient-stacked");
     expect(html).not.toContain("float: right; width: 62mm");
+  });
+
+  it("letter-pad header, footer, Sugandha default, key images on the right", () => {
+    const html = renderReportDocument(
+      baseModel({ keyImages: images, signatures: [], clinic: { name: "", address: "", phone: "", email: "" } }),
+      resolvePresentationTemplate("care-premium"),
+    );
+    expect(html).toContain("letterpad");
+    expect(html).toContain("logo-pos-right");
+    expect(html).toContain("DEOGHAR-814 112");
+    expect(html).toContain("care.deoghar@gmail.com");
+    expect(html).toContain("MULTI SLICE CT SCAN");
+    expect(html).toContain("not for medico-legal");
+    expect(html).toContain("Dr. Sugandha Priyadarshini");
+    expect(html).toContain("MD (Radiodiagnosis &amp; Medical Imaging)");
+    expect(html).toContain("KEY IMAGES");
+    expect(html).toContain("grid-template-columns: 1fr 64mm");
   });
 
   it("only data:/same-origin srcs are ever emitted (no public PACS URLs by construction)", () => {

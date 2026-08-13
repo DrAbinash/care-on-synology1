@@ -7,7 +7,7 @@ import {
   ZoomIn, ZoomOut, RotateCcw, Sun, Moon, ChevronLeft, ChevronRight,
   Layers, Maximize2, Minimize2, Expand, Shrink, AlertTriangle, RefreshCw, ExternalLink,
 } from "lucide-react";
-import { BROWSER_DICOMWEB_BASE } from "@/lib/browserDicomWeb";
+import { BROWSER_DICOMWEB_BASE, dicomWebFetch, withDicomWebAuth } from "@/lib/browserDicomWeb";
 import { planStudyLaunch, localStorageRouteCache, type StudyLaunchResult } from "@/lib/studyLaunchService";
 
 interface Series {
@@ -181,7 +181,7 @@ function ViewerContent({ studyInstanceUID, accessionNumber, controlRef, columnEx
     if (!dicomWebBase || !studyInstanceUID) return;
     try {
       const url = `${dicomWebBase}/studies/${encodeURIComponent(studyInstanceUID)}/series`;
-      const res = await fetch(url, { headers: { Accept: "application/dicom+json" } });
+      const res = await dicomWebFetch(url);
       if (!res.ok) return;
       const data = await res.json();
       const mapped: Series[] = (Array.isArray(data) ? data : []).map((s: any) => ({
@@ -199,7 +199,7 @@ function ViewerContent({ studyInstanceUID, accessionNumber, controlRef, columnEx
     if (!dicomWebBase || !studyInstanceUID || !selectedSeriesUID) return;
     try {
       const url = `${dicomWebBase}/studies/${encodeURIComponent(studyInstanceUID)}/series/${encodeURIComponent(selectedSeriesUID)}/instances`;
-      const res = await fetch(url, { headers: { Accept: "application/dicom+json" } });
+      const res = await dicomWebFetch(url);
       if (!res.ok) return;
       const data = await res.json();
       const mapped: Instance[] = (Array.isArray(data) ? data : []).map((i: any) => ({
@@ -225,7 +225,7 @@ function ViewerContent({ studyInstanceUID, accessionNumber, controlRef, columnEx
     const img = new Image();
     img.onload = () => { setFrameUrl(url); setLoadingFrames(false); };
     img.onerror = () => { setLoadingFrames(false); };
-    img.src = url;
+    img.src = withDicomWebAuth(url) ?? url;
   }, [dicomWebBase, studyInstanceUID, selectedSeriesUID, instances, selectedInstIdx]);
 
   const zoomIn = () => setZoom((z) => Math.min(z * 1.2, 5));
