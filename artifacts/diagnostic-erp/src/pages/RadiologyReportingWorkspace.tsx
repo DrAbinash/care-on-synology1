@@ -151,7 +151,8 @@ import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Textarea } from "@/components/ui/textarea";
-import { mergeBlock, removeBlock, mergeImpression, removeImpression } from "@/lib/quickFindingsMerge";
+import { removeBlock, removeImpression } from "@/lib/quickFindingsMerge";
+import type { InsertSource } from "@/lib/reportFieldMerge";
 import type { Side } from "@/lib/sideSwap";
 import {
   loadWorkspaceLayoutPrefs, saveWorkspaceLayoutPrefs,
@@ -350,9 +351,14 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       if (!text) return { ok: false, message: "Nothing to insert" };
       const state = useWorkspace.getState();
       const mode = intent.mode;
+      const voiceSource = "manual" as const;
       if (intent.target === "findings") {
         const prev = state.findingsText;
-        state.setField("findings", mode === "replace" ? text : mergeBlock(prev, text));
+        if (mode === "replace") {
+          state.replaceField("findings", text, voiceSource);
+        } else {
+          state.mergeField("findings", text, voiceSource);
+        }
         return {
           ok: true,
           message: `${mode === "replace" ? "Replaced" : "Appended to"} findings`,
@@ -362,10 +368,11 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       }
       if (intent.target === "impression") {
         const prev = state.impressionText;
-        const next = mode === "replace"
-          ? text
-          : mergeImpression(prev.split("\n").filter(Boolean), text).join("\n");
-        state.setField("impression", next);
+        if (mode === "replace") {
+          state.replaceField("impression", text, voiceSource);
+        } else {
+          state.mergeField("impression", text, voiceSource);
+        }
         return {
           ok: true,
           message: `${mode === "replace" ? "Replaced" : "Appended to"} impression`,
@@ -375,7 +382,11 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       }
       if (intent.target === "recommendation") {
         const prev = state.recommendationText;
-        state.setField("recommendation", mode === "replace" ? text : mergeBlock(prev, text));
+        if (mode === "replace") {
+          state.replaceField("recommendation", text, voiceSource);
+        } else {
+          state.mergeField("recommendation", text, voiceSource);
+        }
         return {
           ok: true,
           message: `${mode === "replace" ? "Replaced" : "Appended to"} recommendation`,
@@ -385,7 +396,11 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       }
       if (intent.target === "technique") {
         const prev = state.techniqueText;
-        state.setField("technique", mode === "replace" ? text : mergeBlock(prev, text));
+        if (mode === "replace") {
+          state.replaceField("technique", text, voiceSource);
+        } else {
+          state.mergeField("technique", text, voiceSource);
+        }
         return {
           ok: true,
           message: `${mode === "replace" ? "Replaced" : "Appended to"} technique`,
@@ -394,7 +409,11 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         };
       }
       const prev = state.clinicalHistoryText;
-      state.setField("clinicalHistory", mode === "replace" ? text : mergeBlock(prev, text));
+      if (mode === "replace") {
+        state.replaceField("clinicalHistory", text, voiceSource);
+      } else {
+        state.mergeField("clinicalHistory", text, voiceSource);
+      }
       return {
         ok: true,
         message: `${mode === "replace" ? "Replaced" : "Appended to"} clinical history`,
@@ -623,6 +642,42 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       const cur = useWorkspace.getState().clinicalHistoryText;
       useWorkspace.getState().setField("clinicalHistory", typeof next === "function" ? next(cur) : next);
     },
+    mergeTechnique: (incoming: string, source: InsertSource) => {
+      useWorkspace.getState().mergeField("technique", incoming, source);
+    },
+    mergeFindings: (incoming: string, source: InsertSource) => {
+      useWorkspace.getState().mergeField("findings", incoming, source);
+    },
+    mergeImpression: (incoming: string, source: InsertSource) => {
+      useWorkspace.getState().mergeField("impression", incoming, source);
+    },
+    mergeRecommendation: (incoming: string, source: InsertSource) => {
+      useWorkspace.getState().mergeField("recommendation", incoming, source);
+    },
+    setTechniqueIfEmpty: (text: string, source: InsertSource) => {
+      useWorkspace.getState().setFieldIfEmpty("technique", text, source);
+    },
+    setFindingsIfEmpty: (text: string, source: InsertSource) => {
+      useWorkspace.getState().setFieldIfEmpty("findings", text, source);
+    },
+    setImpressionIfEmpty: (text: string, source: InsertSource) => {
+      useWorkspace.getState().setFieldIfEmpty("impression", text, source);
+    },
+    setRecommendationIfEmpty: (text: string, source: InsertSource) => {
+      useWorkspace.getState().setFieldIfEmpty("recommendation", text, source);
+    },
+    replaceTechnique: (text: string, source: InsertSource) => {
+      useWorkspace.getState().replaceField("technique", text, source);
+    },
+    replaceFindings: (text: string, source: InsertSource) => {
+      useWorkspace.getState().replaceField("findings", text, source);
+    },
+    replaceImpression: (text: string, source: InsertSource) => {
+      useWorkspace.getState().replaceField("impression", text, source);
+    },
+    replaceRecommendation: (text: string, source: InsertSource) => {
+      useWorkspace.getState().replaceField("recommendation", text, source);
+    },
     readFields: () => {
       const s = useWorkspace.getState();
       return {
@@ -777,10 +832,10 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         const state = useWorkspace.getState();
         const normStr = (v: unknown) => Array.isArray(v) ? v.join("\n") : (typeof v === "string" ? v : "");
         // Fill-empty only so auto protocol/template win when AI is empty.
-        if (!state.findingsText.trim() && normStr(draft.findings)) state.setField("findings", normStr(draft.findings));
-        if (!state.impressionText.trim() && draft.impression) state.setField("impression", normalizeImpressionLines(draft.impression).join("\n"));
-        if (!state.recommendationText.trim() && normStr(draft.recommendation)) state.setField("recommendation", normStr(draft.recommendation));
-        if (!state.techniqueText.trim() && normStr(draft.technique)) state.setField("technique", normStr(draft.technique));
+        if (!state.findingsText.trim() && normStr(draft.findings)) state.setFieldIfEmpty("findings", normStr(draft.findings), "ai-draft");
+        if (!state.impressionText.trim() && draft.impression) state.setFieldIfEmpty("impression", normalizeImpressionLines(draft.impression).join("\n"), "ai-draft");
+        if (!state.recommendationText.trim() && normStr(draft.recommendation)) state.setFieldIfEmpty("recommendation", normStr(draft.recommendation), "ai-draft");
+        if (!state.techniqueText.trim() && normStr(draft.technique)) state.setFieldIfEmpty("technique", normStr(draft.technique), "ai-draft");
         if (!state.clinicalHistoryText.trim()) state.setField("clinicalHistory", (row as any).clinicalHistory ?? "");
       }).catch(() => {
         const state = useWorkspace.getState();
@@ -1942,8 +1997,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                               ));
                             const first = chips[0];
                             if (first?.insertedText) {
-                              const state = useWorkspace.getState();
-                              state.setField("clinicalHistory", mergeBlock(state.clinicalHistoryText, first.insertedText));
+                              useWorkspace.getState().mergeField("clinicalHistory", first.insertedText, "protocol");
                             }
                           }}
                           onOpenTab={(tab) => {
@@ -2279,8 +2333,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                         onMeasurement={(template, value) => appendFindings(template.replace(/\{value\}/gi, value).replace(/\{val\}/gi, value))}
                         onInsertNormals={(text) => appendFindings(text)}
                         onAcceptLearnedSuggestion={(text) => {
-                          const state = useWorkspace.getState();
-                          state.setField("recommendation", mergeBlock(state.recommendationText, text));
+                          useWorkspace.getState().mergeField("recommendation", text, "quick-findings");
                         }}
                         onFindingsLoaded={(findings) => { quickFindingTemplatesRef.current = findings; }}
                         externalSearch={qsExternalSearch}
@@ -2304,9 +2357,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                         currentFindings={findingsText}
                         onInsertFindings={(text) => appendFindings(text)}
                         onInsertImpression={(text) => {
-                          const state = useWorkspace.getState();
-                          const lines = state.impressionText.split("\n").filter(Boolean);
-                          state.setField("impression", mergeImpression(lines, text).join("\n"));
+                          useWorkspace.getState().mergeField("impression", text, "template");
                         }}
                         onSelectPrior={(prior) => {
                           if (prior?.dateIso) {
@@ -2357,13 +2408,10 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       currentUserId={myUserId}
                       onAppendFindings={appendFindings}
                       onAppendImpression={(text) => {
-                        const state = useWorkspace.getState();
-                        const lines = state.impressionText.split("\n").filter(Boolean);
-                        state.setField("impression", mergeImpression(lines, text).join("\n"));
+                        useWorkspace.getState().mergeField("impression", text, "template");
                       }}
                       onAppendRecommendation={(text) => {
-                        const state = useWorkspace.getState();
-                        state.setField("recommendation", mergeBlock(state.recommendationText, text));
+                        useWorkspace.getState().mergeField("recommendation", text, "template");
                       }}
                       onSetFindings={(text) => useWorkspace.getState().setField("findings", text)}
                       onSetImpression={(text) => useWorkspace.getState().setField("impression", text)}

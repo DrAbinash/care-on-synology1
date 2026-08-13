@@ -43,6 +43,8 @@ describe("RadiologyReportingWorkspace — consolidation contracts", () => {
     expect(workspace).toContain('"protocol"');
     expect(workspace).toContain('"companion"');
     expect(workspace).not.toContain("mergeReportFieldContent(");
+    expect(workspace).not.toContain("mergeBlock(");
+    expect(workspace).not.toContain("mergeImpression(");
   });
 });
 

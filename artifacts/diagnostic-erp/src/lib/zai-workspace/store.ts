@@ -57,6 +57,10 @@ export type WorkspaceStore = S & {
   setField: (f: EditorField, v: string, opts?: { source?: InsertSource; replaceProvenance?: boolean }) => void;
   /** Semantic merge + provenance update (Quick Select / Quick Findings / protocol / …). */
   mergeField: (f: EditorField, incoming: string, source: InsertSource) => void;
+  /** Fill only when the field is empty; assigns provenance for the inserted block. */
+  setFieldIfEmpty: (f: EditorField, v: string, source: InsertSource) => void;
+  /** Wholesale replace with provenance for the new content. */
+  replaceField: (f: EditorField, v: string, source: InsertSource) => void;
   setEditorContent: (c: { findings: string; impression: string; recommendation: string; technique: string; clinicalHistory: string }) => void;
   setMeasurements: (m: MeasurementRow[]) => void; setPriors: (p: PriorStudy[]) => void;
   insertMeasurement: (id: string) => void; insertAllMeasurements: () => void;
@@ -177,6 +181,15 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     if (f === "findings" && st && shouldPreloadNext(result.text, st.modality, get().preloadTriggered)) set({ preloadTriggered: true });
     setTimeout(() => get().recomputeCopilot(), 0);
   },
+  setFieldIfEmpty: (f, v, source) => {
+    const existing = get()[fieldTextKey(f)];
+    if (!existing.trim() && v.trim()) {
+      get().setField(f, v, { source, replaceProvenance: true });
+    }
+  },
+  replaceField: (f, v, source) => {
+    get().setField(f, v, { source, replaceProvenance: true });
+  },
   setEditorContent: (c) => {
     // Normalize: API may return impression/recommendation as string[] or string
     const norm = (v: unknown) => Array.isArray(v) ? v.join("\n") : (typeof v === "string" ? v : "");
@@ -203,13 +216,67 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     });
   },
   setMeasurements: (m) => set({ measurements: m }), setPriors: (p) => set({ priors: p }),
-  insertMeasurement: (id) => { const ms = get().measurements.map(m => m.id === id ? { ...m, inserted: true } : m); const m = ms.find(x => x.id === id); if (m) { const c = get().findingsText; const t = `${m.name}: ${m.value}${m.unit}${m.priorValue ? ` (prior ${m.priorValue}${m.unit})` : ""}`; const s = c.length > 0 && !c.endsWith(" ") && !c.endsWith("\n") ? " " : ""; get().setField("findings", c + s + t + ". "); } set({ measurements: ms }); setTimeout(() => get().recomputeCopilot(), 0); },
-  insertAllMeasurements: () => { const ms = get().measurements.map(m => ({ ...m, inserted: true })); const c = get().findingsText; const t = ms.map(m => `${m.name}: ${m.value}${m.unit}${m.priorValue ? ` (prior ${m.priorValue}${m.unit})` : ""}`).join(", "); const s = c.length > 0 && !c.endsWith(" ") && !c.endsWith("\n") ? " " : ""; get().setField("findings", c + s + "Measurements: " + t + ". "); set({ measurements: ms }); setTimeout(() => get().recomputeCopilot(), 0); },
+  insertMeasurement: (id) => {
+    const ms = get().measurements.map(m => m.id === id ? { ...m, inserted: true } : m);
+    const m = ms.find(x => x.id === id);
+    if (m) {
+      const t = `${m.name}: ${m.value}${m.unit}${m.priorValue ? ` (prior ${m.priorValue}${m.unit})` : ""}`;
+      const sentence = t.trim().endsWith(".") ? t.trim() : `${t.trim()}.`;
+      get().mergeField("findings", sentence, "companion");
+    }
+    set({ measurements: ms });
+    setTimeout(() => get().recomputeCopilot(), 0);
+  },
+  insertAllMeasurements: () => {
+    const ms = get().measurements.map(m => ({ ...m, inserted: true }));
+    const t = ms.map(m => `${m.name}: ${m.value}${m.unit}${m.priorValue ? ` (prior ${m.priorValue}${m.unit})` : ""}`).join(", ");
+    get().mergeField("findings", `Measurements: ${t}.`, "companion");
+    set({ measurements: ms });
+    setTimeout(() => get().recomputeCopilot(), 0);
+  },
   setGhostText: (t, target) => set({ ghostText: t, ghostTextTarget: target }),
-  acceptGhostText: () => { const { ghostText, ghostTextTarget } = get(); if (!ghostText || !ghostTextTarget) return; const c = get()[`${ghostTextTarget}Text` as "findingsText"]; const s = c.length > 0 && !c.endsWith(" ") && !c.endsWith("\n") ? " " : ""; get().setField(ghostTextTarget, c + s + ghostText); set({ ghostText: null, ghostTextTarget: null }); },
+  acceptGhostText: () => {
+    const { ghostText, ghostTextTarget } = get();
+    if (!ghostText || !ghostTextTarget) return;
+    get().mergeField(ghostTextTarget, ghostText, "ai-draft");
+    set({ ghostText: null, ghostTextTarget: null });
+  },
   acknowledgeCopilotItem: (id) => { const a = new Set(get().acknowledgedCopilotIds); a.add(id); set({ acknowledgedCopilotIds: a }); },
   setActiveCopilotItem: (i) => set({ activeCopilotItem: i }),
-  insertCopilotText: (item) => { if (!item.insertText) return; if (item.kind === "missing" && item.id === "missing-impression") { set({ activeCopilotItem: item }); return; } if (item.id === "missing-comparison") { const c = get().findingsText; const s = c.length > 0 && !c.startsWith("Comparison") && !c.endsWith(" ") ? " " : ""; get().setField("findings", item.insertText + s + c); } else if (item.kind === "measurement") { get().insertAllMeasurements(); } else { const c = get().findingsText; const s = c.length > 0 && !c.endsWith(" ") && !c.endsWith("\n") ? " " : ""; get().setField("findings", c + s + item.insertText); } get().acknowledgeCopilotItem(item.id); },
+  insertCopilotText: (item) => {
+    if (!item.insertText) return;
+    if (item.kind === "missing" && item.id === "missing-impression") {
+      set({ activeCopilotItem: item });
+      return;
+    }
+    if (item.id === "missing-comparison") {
+      const insert = item.insertText.trim();
+      const c = get().findingsText;
+      if (!c.trim()) {
+        get().mergeField("findings", insert, "companion");
+      } else if (c.startsWith("Comparison")) {
+        get().mergeField("findings", insert, "companion");
+      } else {
+        const combined = `${insert} ${c}`;
+        const prevProv = get().fieldProvenance.findings ?? {};
+        const nextProv = reconcileProvenanceAfterManualEdit(c, combined, prevProv);
+        for (const [k, sources] of Object.entries(provenanceFromText(insert, "companion"))) {
+          nextProv[k] = sources;
+        }
+        set({
+          isDirty: true,
+          findingsText: combined,
+          fieldProvenance: { ...get().fieldProvenance, findings: nextProv },
+        });
+        setTimeout(() => get().recomputeCopilot(), 0);
+      }
+    } else if (item.kind === "measurement") {
+      get().insertAllMeasurements();
+    } else {
+      get().mergeField("findings", item.insertText, "companion");
+    }
+    get().acknowledgeCopilotItem(item.id);
+  },
   recomputeCopilot: () => { const { findingsText, impressionText, measurements, activeStudyId, priors, copilotItems } = get(); const st = get().studies.find(s => s.id === activeStudyId); if (!st?.patient) { if (copilotItems.length) set({ copilotItems: [] }); return; } const items = runCopilotAnalysis({ findingsText, impressionText, measurements, modality: st.modality, sex: st.patient?.sex, hasPrior: priors.length > 0 }); if (JSON.stringify(copilotItems) === JSON.stringify(items)) return; const ci = items.filter(i => i.kind === "critical" && !get().acknowledgedCopilotIds.has(i.id)); if (ci.length > 0 && !get().notification) { get().pushNotification({ kind: "interrupt", text: `Critical finding: ${ci[0].detail}` }); if (!get().criticalSlaStartedAt) get().startCriticalSla(); } set({ copilotItems: items }); },
   setRailStage: (s) => set({ railStage: s }), toggleCommandPalette: () => set({ showCommandPalette: !get().showCommandPalette }), setCommandPalette: (o) => set({ showCommandPalette: o }),
   toggleVoiceBar: () => set({ showVoiceBar: !get().showVoiceBar }), setVoiceListening: (o) => set({ voiceListening: o }), setVoiceTranscript: (t) => set({ voiceTranscript: t }), setVoiceProvider: (p) => set({ voiceProvider: p }),
