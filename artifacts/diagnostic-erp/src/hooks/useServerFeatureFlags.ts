@@ -39,6 +39,12 @@ export function useServerFeatureFlags(): void {
     }
 
     void hydrate();
-    return () => { cancelled = true; };
-  }, []); // run once on mount
+
+    const onFlagsChanged = () => void hydrate();
+    window.addEventListener("featureFlagsChanged", onFlagsChanged);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("featureFlagsChanged", onFlagsChanged);
+    };
+  }, []); // run once on mount; re-hydrate when flags toggle in Settings
 }
