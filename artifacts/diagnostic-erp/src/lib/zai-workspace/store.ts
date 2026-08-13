@@ -1,5 +1,5 @@
 import { create, type StateCreator, type StoreApi, type UseBoundStore } from "zustand";
-import { shallow } from "zustand/shallow";
+import { useShallow } from "zustand/react/shallow";
 import type { Study, MeasurementRow, PriorStudy, CopilotItem, CriticalFinding, QuickSelectTile, QuickSelectField, ReportFormat, SnippetMacro, SignOffProfile, MergeResult, Modality, LintIssue } from "./types";
 import { runLintRules, runCopilotAnalysis, computeQualityScore, mergeTwoFormats, expandMacro, detectMacroTrigger, shouldPreloadNext } from "./types";
 import { normalizeWorkspaceStudies } from "./normalizeWorkspaceStudy";
@@ -379,7 +379,7 @@ export const useWorkspace: UseBoundStore<StoreApi<WorkspaceStore>> = create<Work
  * infinite re-renders from fresh `{}` / `[]` fallbacks (React minified #185).
  */
 export function useWorkspaceSelector<T>(selector: (state: WorkspaceStore) => T): T {
-  return useWorkspace(selector, shallow);
+  return useWorkspace(useShallow(selector));
 }
 
 export { DEFAULT_QUICK_SELECT_TILES, lookupTiles, DEFAULT_REPORT_FORMATS, lookupFormats, DEFAULT_SNIPPET_MACROS, lookupMacros, DEFAULT_SIGN_OFF_PROFILES, lookupProfile, formatSignOff };
