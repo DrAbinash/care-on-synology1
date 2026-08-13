@@ -1,14 +1,11 @@
 #!/usr/bin/env node
 /**
- * verify-ollama-ai-draft.mjs — Pre-deploy Ollama auto AI draft checks.
+ * verify-ollama-ai-draft.mjs — Optional ops/CI wrapper around POST /api/radiology-ollama/verify.
  *
- *   pnpm operations:verify-ollama-ai-draft              # full (includes Ollama generate)
- *   pnpm operations:verify-ollama-ai-draft -- --dry-run # connectivity + config only
- *   pnpm operations:verify-ollama-ai-draft -- --json    # machine-readable
+ * Primary UI: Settings → Radiology → AI & Templates → "Verify before redeploy" (PASS/FAIL in ERP).
  *
- * Requires a running API and staff credentials:
- *   VERIFY_API_URL (default http://localhost:8080)
- *   STAFF_TOKEN  OR  STAFF_USERNAME/STAFF_EMAIL + STAFF_PIN
+ *   pnpm operations:verify-ollama-ai-draft -- --dry-run
+ *   pnpm operations:verify-ollama-ai-draft -- --json
  */
 const JSON_OUT = process.argv.includes("--json");
 const DRY_RUN = process.argv.includes("--dry-run");

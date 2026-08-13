@@ -1,7 +1,7 @@
 /**
- * Pre-deploy Ollama auto AI draft verification — Settings → Radiology UI + CLI.
+ * Pre-deploy Ollama auto AI draft verification — Settings → Radiology (ERP only).
  */
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { api } from "@/lib/fetchApi";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -44,12 +44,20 @@ const STATUS_CLASS: Record<OllamaVerifyStatus, string> = {
   SKIPPED: "text-muted-foreground border-muted bg-muted/30",
 };
 
-export function OllamaAiDraftVerifyPanel({ compact = false }: { compact?: boolean }) {
+export function OllamaAiDraftVerifyPanel({
+  compact = false,
+  autoRunOnMount = true,
+}: {
+  compact?: boolean;
+  /** Run quick checks when the panel opens (no live Ollama call). */
+  autoRunOnMount?: boolean;
+}) {
   const { toast } = useToast();
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<OllamaVerifyResult | null>(null);
+  const autoRan = useRef(false);
 
-  async function runVerify(dryRun: boolean) {
+  async function runVerify(dryRun: boolean, opts?: { silent?: boolean }) {
     setBusy(true);
     try {
       const r = await api.post<OllamaVerifyResult>("/api/radiology-ollama/verify", {
@@ -57,21 +65,33 @@ export function OllamaAiDraftVerifyPanel({ compact = false }: { compact?: boolea
         runDraft: !dryRun,
       });
       setResult(r);
-      toast({
-        title: r.ok ? "Verification passed" : "Verification needs attention",
-        description: r.summary,
-        variant: r.ok ? "default" : "destructive",
-      });
+      if (!opts?.silent) {
+        toast({
+          title: r.ok ? "Verification passed" : "Verification needs attention",
+          description: r.summary,
+          variant: r.ok ? "default" : "destructive",
+        });
+      }
+      return r;
     } catch (e: unknown) {
-      toast({
-        title: "Verification failed",
-        description: e instanceof Error ? e.message : String(e),
-        variant: "destructive",
-      });
+      if (!opts?.silent) {
+        toast({
+          title: "Verification failed",
+          description: e instanceof Error ? e.message : String(e),
+          variant: "destructive",
+        });
+      }
+      return null;
     } finally {
       setBusy(false);
     }
   }
+
+  useEffect(() => {
+    if (!autoRunOnMount || autoRan.current) return;
+    autoRan.current = true;
+    void runVerify(true, { silent: true });
+  }, [autoRunOnMount]);
 
   const groups = result
     ? [...new Set(result.checks.map((c) => c.group))]
@@ -86,11 +106,11 @@ export function OllamaAiDraftVerifyPanel({ compact = false }: { compact?: boolea
         <div>
           <h3 className="text-sm font-semibold flex items-center gap-2">
             <ShieldCheck size={14} className="text-primary" />
-            Ollama auto-draft verification
+            Verify before redeploy
           </h3>
           <p className="text-[11px] text-muted-foreground mt-0.5 max-w-xl">
-            Run before redeploy: checks master AI flag, Ollama reachability, model pull, sample generation,
-            draft automation settings, and shadow job queue. Does not create patients or modify reports.
+            Runs inside the ERP — no terminal or SSH on the NAS. Each row shows PASS, FAIL, WARNING, or SKIPPED
+            with the reason and what to fix. Safe: no fake patients, no report changes.
           </p>
         </div>
         <div className="flex gap-1.5 shrink-0">
@@ -101,9 +121,10 @@ export function OllamaAiDraftVerifyPanel({ compact = false }: { compact?: boolea
             className="h-8 text-xs gap-1"
             disabled={busy}
             onClick={() => void runVerify(true)}
+            data-testid="ollama-verify-quick"
           >
             {busy ? <RefreshCw size={12} className="animate-spin" /> : <RefreshCw size={12} />}
-            Quick
+            Re-run quick
           </Button>
           <Button
             type="button"
@@ -114,15 +135,23 @@ export function OllamaAiDraftVerifyPanel({ compact = false }: { compact?: boolea
             data-testid="ollama-verify-full-run"
           >
             {busy ? <RefreshCw size={12} className="animate-spin" /> : <Play size={12} />}
-            Full verify
+            Full test
           </Button>
         </div>
       </div>
 
       {!compact && (
         <p className="text-[10px] text-muted-foreground">
-          <strong>Quick</strong> skips live Ollama generation. <strong>Full verify</strong> calls Ollama once with a non-PHI prompt (~30–120s).
+          Quick checks run automatically when you open this panel. <strong>Full test</strong> asks Ollama to
+          generate once (~30–120s) to confirm drafting works end-to-end.
         </p>
+      )}
+
+      {busy && !result && (
+        <div className="flex items-center gap-2 text-xs text-muted-foreground py-2">
+          <RefreshCw size={14} className="animate-spin" />
+          Running verification…
+        </div>
       )}
 
       {result && (
@@ -153,9 +182,15 @@ export function OllamaAiDraftVerifyPanel({ compact = false }: { compact?: boolea
                         <Icon size={14} className="shrink-0 mt-0.5" />
                         <div className="min-w-0 flex-1">
                           <div className="flex flex-wrap items-center gap-2">
+                            <Badge
+                              variant="outline"
+                              className={`text-[9px] h-4 font-semibold uppercase ${STATUS_CLASS[c.status]}`}
+                            >
+                              {c.status}
+                            </Badge>
                             <span className="font-medium">{c.name}</span>
                             {c.blocking && c.status === "FAIL" && (
-                              <Badge variant="outline" className="text-[9px] h-4">blocking</Badge>
+                              <Badge variant="destructive" className="text-[9px] h-4">must fix</Badge>
                             )}
                           </div>
                           <p className="text-[11px] mt-0.5 opacity-90">{c.detail}</p>
