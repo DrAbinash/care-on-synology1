@@ -1,4 +1,5 @@
 import { create, type StateCreator, type StoreApi, type UseBoundStore } from "zustand";
+import { shallow } from "zustand/shallow";
 import type { Study, MeasurementRow, PriorStudy, CopilotItem, CriticalFinding, QuickSelectTile, QuickSelectField, ReportFormat, SnippetMacro, SignOffProfile, MergeResult, Modality, LintIssue } from "./types";
 import { runLintRules, runCopilotAnalysis, computeQualityScore, mergeTwoFormats, expandMacro, detectMacroTrigger, shouldPreloadNext } from "./types";
 import { normalizeWorkspaceStudies } from "./normalizeWorkspaceStudy";
@@ -19,6 +20,14 @@ export type EditorField = "findings" | "impression" | "recommendation" | "techni
 export type RailStage = "orient" | "observe" | "measure" | "conclude" | "verify";
 
 type FieldProvenanceState = Partial<Record<EditorField, FieldProvenanceMap>>;
+
+/** Stable empty provenance — never use inline `?? {}` inside zustand selectors (React #185). */
+export const EMPTY_FIELD_PROVENANCE: FieldProvenanceMap = {};
+
+function fieldProvenanceEqual(a: FieldProvenanceMap | undefined, b: FieldProvenanceMap): boolean {
+  if (!a || Object.keys(a).length === 0) return Object.keys(b).length === 0;
+  return JSON.stringify(a) === JSON.stringify(b);
+}
 
 interface S {
   studies: Study[]; activeStudyId: string | null; nextStudyId: string | null; nextStudyPreloaded: boolean;
@@ -131,7 +140,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   setField: (f, v, opts) => {
     const key = fieldTextKey(f);
     const prevText = get()[key];
-    const prevProv = get().fieldProvenance[f] ?? {};
+    const prevProv = get().fieldProvenance[f] ?? EMPTY_FIELD_PROVENANCE;
     let nextProv: FieldProvenanceMap;
     if (opts?.replaceProvenance && opts.source) {
       nextProv = provenanceFromText(v, opts.source);
@@ -141,6 +150,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     } else {
       nextProv = reconcileProvenanceAfterManualEdit(prevText, v, prevProv);
     }
+    if (prevText === v && fieldProvenanceEqual(prevProv, nextProv)) return;
     const p: Partial<S> = {
       isDirty: true,
       [key]: v,
@@ -159,7 +169,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   mergeField: (f, incoming, source) => {
     const key = fieldTextKey(f);
     const existing = get()[key];
-    const existingProvenance = get().fieldProvenance[f] ?? {};
+    const existingProvenance = get().fieldProvenance[f] ?? EMPTY_FIELD_PROVENANCE;
     const result = mergeReportFieldContentWithProvenance({
       field: f as ReportFieldKey,
       existing,
@@ -167,6 +177,12 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       source,
       existingProvenance,
     });
+    if (
+      result.text === existing
+      && fieldProvenanceEqual(existingProvenance, result.provenance)
+    ) {
+      return;
+    }
     set({
       isDirty: true,
       [key]: result.text,
@@ -198,6 +214,28 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     const recommendation = norm(c.recommendation);
     const technique = norm(c.technique);
     const clinicalHistory = norm(c.clinicalHistory);
+    const state = get();
+    const nextProv = {
+      findings: provenanceFromText(findings, "manual"),
+      impression: provenanceFromText(impression, "manual"),
+      recommendation: provenanceFromText(recommendation, "manual"),
+      technique: provenanceFromText(technique, "manual"),
+      clinicalHistory: provenanceFromText(clinicalHistory, "manual"),
+    };
+    if (
+      state.findingsText === findings
+      && state.impressionText === impression
+      && state.recommendationText === recommendation
+      && state.techniqueText === technique
+      && state.clinicalHistoryText === clinicalHistory
+      && fieldProvenanceEqual(state.fieldProvenance.findings, nextProv.findings)
+      && fieldProvenanceEqual(state.fieldProvenance.impression, nextProv.impression)
+      && fieldProvenanceEqual(state.fieldProvenance.recommendation, nextProv.recommendation)
+      && fieldProvenanceEqual(state.fieldProvenance.technique, nextProv.technique)
+      && fieldProvenanceEqual(state.fieldProvenance.clinicalHistory, nextProv.clinicalHistory)
+    ) {
+      return;
+    }
     // Loaded drafts/templates have uncertain provenance — mark as manual (safe).
     set({
       findingsText: findings,
@@ -205,13 +243,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       recommendationText: recommendation,
       techniqueText: technique,
       clinicalHistoryText: clinicalHistory,
-      fieldProvenance: {
-        findings: provenanceFromText(findings, "manual"),
-        impression: provenanceFromText(impression, "manual"),
-        recommendation: provenanceFromText(recommendation, "manual"),
-        technique: provenanceFromText(technique, "manual"),
-        clinicalHistory: provenanceFromText(clinicalHistory, "manual"),
-      },
+      fieldProvenance: nextProv,
       isDirty: true,
     });
   },
@@ -258,7 +290,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         get().mergeField("findings", insert, "companion");
       } else {
         const combined = `${insert} ${c}`;
-        const prevProv = get().fieldProvenance.findings ?? {};
+        const prevProv = get().fieldProvenance.findings ?? EMPTY_FIELD_PROVENANCE;
         const nextProv = reconcileProvenanceAfterManualEdit(c, combined, prevProv);
         for (const [k, sources] of Object.entries(provenanceFromText(insert, "companion"))) {
           nextProv[k] = sources;
@@ -321,7 +353,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     const after = c.slice(p.startPos).replace(/^:[a-z][a-z0-9_]*/i, "");
     // Macro expansion replaces the trigger token; merge the expanded text with macro provenance.
     const assembled = before + exp + " " + after;
-    const prevProv = get().fieldProvenance[p.field] ?? {};
+    const prevProv = get().fieldProvenance[p.field] ?? EMPTY_FIELD_PROVENANCE;
     const macroProv = provenanceFromText(exp, "macro");
     const reconciled = reconcileProvenanceAfterManualEdit(c, assembled, { ...prevProv, ...macroProv });
     // Prefer macro attribution for sentences that came from the expansion.
@@ -342,9 +374,12 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
 
 export const useWorkspace: UseBoundStore<StoreApi<WorkspaceStore>> = create<WorkspaceStore>()(createWorkspaceStore);
 
-/** Typed selector — use in zai-workspace components so `s` is inferred as WorkspaceStore. */
+/**
+ * Typed selector — shallow equality by default so selectors never trigger
+ * infinite re-renders from fresh `{}` / `[]` fallbacks (React minified #185).
+ */
 export function useWorkspaceSelector<T>(selector: (state: WorkspaceStore) => T): T {
-  return useWorkspace(selector);
+  return useWorkspace(selector, shallow);
 }
 
 export { DEFAULT_QUICK_SELECT_TILES, lookupTiles, DEFAULT_REPORT_FORMATS, lookupFormats, DEFAULT_SNIPPET_MACROS, lookupMacros, DEFAULT_SIGN_OFF_PROFILES, lookupProfile, formatSignOff };

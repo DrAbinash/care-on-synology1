@@ -61,6 +61,17 @@ describe("Provenance visualization — editor only", () => {
     expect(findingsEditor).toContain("formatProvenanceHover");
   });
 
+  it("useWorkspaceSelector uses shallow equality (React #185 guard)", () => {
+    const store = readFileSync(resolve(__dirname, "zai-workspace/store.ts"), "utf8");
+    expect(store).toContain("useWorkspace(selector, shallow)");
+    expect(store).toContain("export const EMPTY_FIELD_PROVENANCE");
+  });
+
+  it("FindingsEditor avoids unstable zustand selector fallback (React #185)", () => {
+    expect(findingsEditor).toContain("EMPTY_FIELD_PROVENANCE");
+    expect(findingsEditor).not.toMatch(/fieldProvenance\[field\]\s*\?\?\s*\{\}/);
+  });
+
   it("preview HTML builder never references provenance", () => {
     expect(previewHtml).not.toMatch(/provenance|quick-select|quick-findings|Source:/i);
   });

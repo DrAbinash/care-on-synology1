@@ -775,7 +775,9 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   // Keep findingsText in sync when structured cards drive the report
   useEffect(() => {
     if (!useStructured) return;
-    useWorkspace.getState().setField("findings", findingsMapToText(findingsMap));
+    const text = findingsMapToText(findingsMap);
+    if (useWorkspace.getState().findingsText === text) return;
+    useWorkspace.getState().setField("findings", text);
   }, [findingsMap, useStructured]);
 
   // DICOM → protocol / technique / test-name auto-select (legacy chain)
