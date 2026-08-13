@@ -46,7 +46,7 @@ import { isUltrasoundModality, isObstetricUsgStudy } from "../lib/usgModality";
 import { checkPcpndtFormFCompliance, PCPNDT_OVERRIDE_ROLES } from "../lib/pcpndtCompliance";
 import { auditLog } from "../lib/audit";
 import { calculateMatchScore, type DicomInput, type BilledTestInput } from "../lib/pacs/matchingEngine";
-import { formatDicomPersonNameForDisplay } from "../lib/pacs/dicomNameNormalize";
+import { formatDicomPersonNameForDisplay, reconcileAccessionVsReferringDoctor } from "../lib/pacs/dicomNameNormalize";
 import { shouldFallbackToAccessionLookup, isWorklistUidRaceViolation } from "../lib/radiologyWorklistDedup";
 import { radiologyOpenFallbackPath, resolveRadiologyOpen } from "../lib/resolveRadiologyOpen";
 import { runDicomIntakeAutomation } from "../lib/pacs/dicomIntakeAutomation";
@@ -424,21 +424,21 @@ router.post("/radiology/studies", async (req, res) => {
     const studyDescription = typeof b.studyDescription === "string" ? b.studyDescription.trim() || null : (typeof b.StudyDescription === "string" ? b.StudyDescription.trim() || null : null);
     const studyDate = typeof b.studyDate === "string" ? b.studyDate.trim() || null : (typeof b.StudyDate === "string" ? b.StudyDate.trim() || null : null);
     const accessionNumberRaw = typeof b.accessionNumber === "string" ? b.accessionNumber.trim() : (typeof b.AccessionNumber === "string" ? b.AccessionNumber.trim() : "");
-    // accession_number is external DICOM data and is frequently missing or
-    // bad (some modalities push non-identifier text like a referring
-    // doctor's name into this field). It's stored as null rather than an
-    // empty string / rejected outright — study_instance_uid is the
-    // identifier this intake relies on for correctness; accession_number
-    // is kept as an optional, non-unique reference field only.
-    const accessionNumber: string | null = accessionNumberRaw || null;
+    const referringDoctorRaw = typeof b.referringDoctor === "string" ? b.referringDoctor.trim() || null : null;
+    const referringFromTag = referringDoctorRaw
+      ? (formatDicomPersonNameForDisplay(referringDoctorRaw) || referringDoctorRaw)
+      : null;
+    // MRI / billing sometimes type the referring doctor into Accession Number.
+    const reconciledIds = reconcileAccessionVsReferringDoctor({
+      accessionNumber: accessionNumberRaw,
+      referringDoctor: referringFromTag,
+    });
+    const accessionNumber: string | null = reconciledIds.accessionNumber || null;
+    const referringDoctor: string | null = reconciledIds.referringDoctor || null;
     const studyInstanceUID = typeof b.studyInstanceUID === "string" ? b.studyInstanceUID.trim() || null : (typeof b.StudyInstanceUID === "string" ? b.StudyInstanceUID.trim() || null : null);
     const aeTitle = typeof b.aeTitle === "string" ? b.aeTitle.trim() || null : null;
     const ipAddress = typeof b.ipAddress === "string" ? b.ipAddress.trim() || null : null;
     const port = typeof b.port === "number" ? b.port : null;
-    const referringDoctorRaw = typeof b.referringDoctor === "string" ? b.referringDoctor.trim() || null : null;
-    const referringDoctor = referringDoctorRaw
-      ? (formatDicomPersonNameForDisplay(referringDoctorRaw) || referringDoctorRaw)
-      : null;
     const weasisUrl = typeof b.weasisUrl === "string" ? b.weasisUrl.trim() || null : null;
     const sourcePacs = typeof b.sourcePacs === "string" ? b.sourcePacs.trim() || null : null;
     const sourceAeTitle = typeof b.sourceAeTitle === "string" ? b.sourceAeTitle.trim() || null : null;

@@ -6,6 +6,11 @@
  * new modular workspace and Word converter share one source of truth.
  */
 import type { ReportImageRef } from "./reportImageRefs";
+import {
+  buildClassicDemographyHeaderHtml,
+  buildDemographyHeaderHtml,
+  type ReportDemography,
+} from "./reportDemography";
 
 export type ReportHeadingCase = "all_caps" | "title_case";
 export type ReportSectionSpacing = "spaced" | "compact";
@@ -20,6 +25,8 @@ export type BuildPreviewHtmlOpts = {
   accessionNumber: string;
   referringDoctor: string;
   studyDate: string;
+  /** Classic = NAME/AGE/SEX/ACC lines; premium = two-column table header. */
+  headerStyle?: "classic" | "table";
   studyName: string;
   technique: string;
   clinicalHistory: string;
@@ -36,6 +43,8 @@ export type BuildPreviewHtmlOpts = {
   headingCase?: ReportHeadingCase;
   sectionSpacing?: ReportSectionSpacing;
   impressionStyle?: ReportImpressionStyle;
+  /** Radiologist name + degree for editor preview only (PDF uses print settings). */
+  signerLine?: string;
 };
 
 export function escHtml(v: string): string {
@@ -58,18 +67,21 @@ export function buildPreviewHtml(opts: BuildPreviewHtmlOpts): string {
   const sp = ss === "compact" ? "2px" : "10px";
   const sp2 = ss === "compact" ? "4px" : "12px";
 
-  // Demography: Name + Ref Doctor on the left; Age/Sex, DOB, Date on the right.
-  // All upper case, bold, and slightly larger than body copy.
-  const name = escHtml(opts.patientName || "—").toUpperCase();
-  const ref = escHtml(opts.referringDoctor || "—").toUpperCase();
-  const ageSex = `${escHtml(opts.age || "")}${opts.age && opts.sex ? " / " : ""}${escHtml(opts.sex || "")}`.trim();
-  const headerHtml = `
-<table style="width:100%;border-collapse:collapse;margin:0 0 4px;font-size:13px;">
-  <tr>
-    <td style="text-align:left;vertical-align:top;padding:0;"><strong style="font-size:14px;">${name}</strong><br/><span style="font-size:12px;">REF. BY: <strong>${ref}</strong></span></td>
-    <td style="text-align:right;vertical-align:top;padding:0;white-space:nowrap;"><strong style="font-size:13px;">${escHtml(ageSex || "—")}</strong><br/><span style="font-size:12px;">${opts.studyDate ? `DATE: <strong>${escHtml(opts.studyDate)}</strong>` : ""}${opts.accessionNumber ? ` · ACC: <strong>${escHtml(opts.accessionNumber)}</strong>` : ""}</span></td>
-  </tr>
-</table>`;
+  const demography: ReportDemography = {
+    patientName: opts.patientName,
+    age: opts.age,
+    sex: opts.sex,
+    patientId: "",
+    uhid: "",
+    accessionNumber: opts.accessionNumber,
+    studyDescription: "",
+    studyDate: opts.studyDate,
+    referringDoctor: opts.referringDoctor,
+    dateOfBirth: "",
+  };
+  const headerHtml = opts.headerStyle === "classic"
+    ? buildClassicDemographyHeaderHtml(demography)
+    : buildDemographyHeaderHtml(demography);
 
   let findingsHtml = "";
   if (opts.useStructured) {
@@ -126,6 +138,7 @@ export function buildPreviewHtml(opts: BuildPreviewHtmlOpts): string {
     <p style="margin:0 0 ${sp};">${escHtml(opts.recommendation || "Please correlate with clinical findings.")}</p>
     <hr style="border:none;border-top:1px solid #999;margin:${sp2} 0 4px;" />
     <p style="font-size:11px;color:#666;font-style:italic;margin:0;">Please correlate with clinical history and findings. Report issued by authorized radiologist only.</p>
+    ${opts.signerLine ? `<p style="text-align:right;margin:18px 0 0;font-size:12px;"><strong>${escHtml(opts.signerLine)}</strong></p>` : ""}
   </div>`.trim();
 }
 

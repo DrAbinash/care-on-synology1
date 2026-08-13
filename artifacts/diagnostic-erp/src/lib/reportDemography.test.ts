@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   mergeReportDemography,
   buildDemographyHeaderHtml,
+  buildClassicDemographyHeaderHtml,
+  reconcileAccessionVsReferringDoctor,
+  formatReferringDoctorDisplay,
+  enrichReferringDoctorFromCatalog,
   dicomAgeToDisplay,
   resolveDisplayAge,
 } from "./reportDemography";
@@ -82,7 +86,89 @@ describe("resolveDisplayAge", () => {
   });
 });
 
+describe("reconcileAccessionVsReferringDoctor", () => {
+  it("moves MRI billing doctor name from Acc No. to REF. BY", () => {
+    const d = mergeReportDemography({
+      erp: { patientName: "Rita Devi", accessionNumber: "DR.SANJAY KUMAR", referringDoctor: "" },
+      dicom: {},
+    });
+    expect(d.accessionNumber).toBe("");
+    expect(d.referringDoctor).toMatch(/Sanjay Kumar/i);
+    expect(d.referringDoctor).toMatch(/^Dr\./);
+  });
+
+  it("keeps a real accession number", () => {
+    const d = mergeReportDemography({
+      erp: { accessionNumber: "ACC-20260813-MR-001", referringDoctor: "Dr. ERP" },
+      dicom: {},
+    });
+    expect(d.accessionNumber).toBe("ACC-20260813-MR-001");
+    expect(d.referringDoctor).toBe("Dr. ERP");
+  });
+
+  it("enriches referring doctor from catalog when uniquely matched", () => {
+    const enriched = enrichReferringDoctorFromCatalog(
+      formatReferringDoctorDisplay("Sanjay Kumar"),
+      ["Dr. Sanjay Kumar, MD"],
+    );
+    expect(enriched).toContain("MD");
+  });
+});
+
+describe("buildClassicDemographyHeaderHtml", () => {
+  it("omits ACC and REF. BY when blank", () => {
+    const html = buildClassicDemographyHeaderHtml({
+      patientName: "Rita Devi",
+      sex: "F",
+      studyDate: "20260813",
+      accessionNumber: "",
+      referringDoctor: "",
+    });
+    expect(html).toContain("NAME:");
+    expect(html).toContain("Rita Devi");
+    expect(html).toContain("AGE/SEX:");
+    expect(html).toContain(" F");
+    expect(html).toContain("DATE:");
+    expect(html).not.toContain("ACC:");
+    expect(html).not.toContain("REF. BY:");
+  });
+
+  it("shows REF. BY after reconcile and hides fake ACC", () => {
+    const reconciled = reconcileAccessionVsReferringDoctor({
+      accessionNumber: "DR.SANJAY KUMAR",
+      referringDoctor: "",
+    });
+    const html = buildClassicDemographyHeaderHtml({
+      patientName: "Rita Devi",
+      sex: "F",
+      studyDate: "20260813",
+      ...reconciled,
+    });
+    expect(html).toContain("REF. BY:");
+    expect(html).toContain("Sanjay Kumar");
+    expect(html).not.toContain("ACC:");
+  });
+});
+
 describe("buildDemographyHeaderHtml", () => {
+  it("omits blank REF. BY and ACC in table layout", () => {
+    const html = buildDemographyHeaderHtml(mergeReportDemography({
+      erp: {
+        patientName: "Rita Devi",
+        sex: "F",
+        studyDate: "2026-08-13",
+        accessionNumber: "",
+        referringDoctor: "",
+      },
+    }));
+    expect(html).toContain("RITA DEVI");
+    expect(html).not.toContain("REF. BY:");
+    expect(html).not.toContain("ACC:");
+    expect(html).toContain("DATE:");
+  });
+});
+
+describe("buildDemographyHeaderHtml — full row", () => {
   it("renders name/ref left, age/dob/date right, upper-case", () => {
     const html = buildDemographyHeaderHtml(mergeReportDemography({
       erp: {

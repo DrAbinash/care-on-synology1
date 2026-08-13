@@ -164,7 +164,7 @@ import { BROWSER_DICOMWEB_BASE } from "@/lib/browserDicomWeb";
 import type { ReportImageRef } from "@/lib/reportImageRefs";
 
 // ─── New Z.ai workspace components ─────────────────────────────────────────────
-import { useWorkspace, type WorkspaceStore } from "@/lib/zai-workspace/store";
+import { useWorkspace, formatSignOff, lookupProfile, type WorkspaceStore } from "@/lib/zai-workspace/store";
 import { getFindingsCompletionPct, shouldPreloadNext } from "@/lib/zai-workspace/types";
 import type { Study, MeasurementRow, PriorStudy } from "@/lib/zai-workspace/types";
 import { WorklistStrip } from "@/components/radiology/zai-workspace/worklist-strip";
@@ -1234,6 +1234,20 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     retry: false,
   });
 
+  const doctorsCatalogQ = useQuery<{ name: string }[]>({
+    queryKey: ["doctors-list"],
+    queryFn: () => api.get<{ doctors: { name: string }[] }>("/api/doctors").then((d) => d.doctors ?? []),
+    staleTime: 5 * 60_000,
+    retry: false,
+  });
+
+  const signOffProfiles = useWorkspace((s: WorkspaceStore) => s.signOffProfiles);
+  const signerLine = useMemo(() => {
+    const modality = (workflow.currentRow?.modality ?? "CT") as import("@/lib/zai-workspace/types").Modality;
+    const profile = lookupProfile(signOffProfiles, modality);
+    return profile ? formatSignOff(profile) : "";
+  }, [signOffProfiles, workflow.currentRow?.modality]);
+
   const canonicalDemography = useMemo(() => {
     const row = workflow.currentRow as Record<string, unknown> | null | undefined;
     const master = patientMasterQ.data ?? null;
@@ -1259,9 +1273,10 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       },
       dicom: (row?.dicomMetadata as Record<string, unknown> | undefined) ?? {},
       overrides: demographyOverrides,
+      referringDoctorCatalog: (doctorsCatalogQ.data ?? []).map((d) => d.name),
     });
     return merged;
-  }, [workflow.currentRow, patientMasterQ.data, demographyOverrides]);
+  }, [workflow.currentRow, patientMasterQ.data, demographyOverrides, doctorsCatalogQ.data]);
 
   const previewHtml = useMemo(
     () =>
@@ -1272,6 +1287,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         accessionNumber: canonicalDemography.accessionNumber,
         referringDoctor: canonicalDemography.referringDoctor,
         studyDate: canonicalDemography.studyDate,
+        headerStyle: reportLayout === "care-classic" ? "classic" : "table",
         studyName: studyNameForExport,
         technique: techniqueText,
         clinicalHistory: clinicalHistoryText,
@@ -1284,11 +1300,12 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         headingCase,
         sectionSpacing,
         impressionStyle,
+        signerLine,
       }),
     [
       canonicalDemography, studyNameForExport, techniqueText, clinicalHistoryText,
       findingsText, impressionText, recommendationText, imageRefs,
-      headingCase, sectionSpacing, impressionStyle,
+      headingCase, sectionSpacing, impressionStyle, signerLine, reportLayout,
     ],
   );
 
@@ -1557,8 +1574,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         <div className="flex items-center rounded-md border overflow-hidden text-[10px]" data-testid="layout-mode-selector">
           {([
             { mode: "reportFocus" as const, label: "Report", icon: <Maximize2 className="h-3 w-3" />, title: "Report Focus — hide viewer" },
-            { mode: "split" as const, label: "Split", icon: <Columns2 className="h-3 w-3" />, title: "Split — viewer + editor" },
-            { mode: "viewerFocus" as const, label: "Viewer", icon: <Monitor className="h-3 w-3" />, title: "Viewer Focus — larger viewer" },
+            { mode: "split" as const, label: "OHIF", icon: <Columns2 className="h-3 w-3" />, title: "OHIF / WADO images + editor" },
+            { mode: "viewerFocus" as const, label: "Viewer+", icon: <Monitor className="h-3 w-3" />, title: "Larger embedded WADO / OHIF viewer" },
             { mode: "dualScreen" as const, label: "Dual", icon: <AppWindow className="h-3 w-3" />, title: "Dual Screen — Open Study popup + full editor" },
           ]).map((m) => (
             <button
@@ -1930,6 +1947,17 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
               <ResizablePanel defaultSize={58} minSize={42}>
                 <div className="h-full overflow-y-auto bg-card">
                   <div className="p-4 space-y-3">
+                    {!showEmbeddedViewer && layoutMode === "reportFocus" && (
+                      <button
+                        type="button"
+                        data-testid="open-ohif-viewer"
+                        onClick={() => setLayoutMode("split")}
+                        className="w-full rounded-md border border-sky-300 bg-sky-50 px-3 py-2 text-left text-xs text-sky-900 hover:bg-sky-100"
+                      >
+                        <span className="font-semibold">OHIF / WADO images are hidden.</span>
+                        {" "}Click here (or the <span className="font-mono">OHIF</span> button in the top bar) to open the embedded viewer.
+                      </button>
+                    )}
                     {/* 1. DEMOGRAPHY — canonical, editable, feeds all outputs */}
                     {workflow.currentRow && (
                       <ReportDemographyCard

@@ -20,12 +20,35 @@ describe("buildPreviewHtml", () => {
       recommendation: "Clinical correlation.",
       imageRefs: [],
     });
-    expect(html).toContain("Test Patient");
+    expect(html).toContain("TEST PATIENT");
     expect(html).toContain("MRI BRAIN WITH CERVICAL SPINE");
     expect(html).toContain("Multiplanar MRI");
     expect(html).toContain("Neck pain");
     expect(html).toContain("Brain normal.");
     expect(html).toContain("No significant abnormality");
+  });
+
+  it("classic header omits blank ACC", () => {
+    const html = buildPreviewHtml({
+      patientName: "Test Patient",
+      age: "",
+      sex: "F",
+      accessionNumber: "",
+      referringDoctor: "Dr X",
+      studyDate: "2026-01-01",
+      headerStyle: "classic",
+      studyName: "CT BRAIN",
+      technique: "NCCT.",
+      clinicalHistory: "",
+      findingsMap: {},
+      rawFindings: "Normal.",
+      useStructured: false,
+      impression: [],
+      recommendation: "",
+      imageRefs: [],
+    });
+    expect(html).toContain("REF. BY:");
+    expect(html).not.toContain("ACC:");
   });
 
   it("formats headings by case preference", () => {

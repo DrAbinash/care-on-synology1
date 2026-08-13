@@ -438,29 +438,36 @@ export function generateReportPDF(
     const ageSex = ageSexLine(report.age, report.sex).toUpperCase();
     const dateStr = formatReportDateShort(report.studyDate);
 
-    doc.setFont(font, "bold");
-    doc.text("NAME:", leftX, y);
-    doc.setFont(font, "normal");
-    doc.text(name || "—", leftX + doc.getTextWidth("NAME: ") + 1, y);
+    if (name) {
+      doc.setFont(font, "bold");
+      doc.text("NAME:", leftX, y);
+      doc.setFont(font, "normal");
+      doc.text(name, leftX + doc.getTextWidth("NAME: ") + 1, y);
+    }
 
-    doc.setFont(font, "bold");
-    doc.text("AGE/SEX:", rightX, y);
-    doc.setFont(font, "normal");
-    doc.text(ageSex || "—", rightX + doc.getTextWidth("AGE/SEX: ") + 1, y);
-    y += lineH + 0.8;
+    if (ageSex) {
+      doc.setFont(font, "bold");
+      doc.text("AGE/SEX:", rightX, y);
+      doc.setFont(font, "normal");
+      doc.text(ageSex, rightX + doc.getTextWidth("AGE/SEX: ") + 1, y);
+    }
+    if (name || ageSex) y += lineH + 0.8;
 
-    doc.setFont(font, "bold");
-    doc.text("REFD. BY:", leftX, y);
-    doc.setFont(font, "bold");
-    doc.text(refBy || "—", leftX + doc.getTextWidth("REFD. BY: ") + 1, y);
+    if (refBy) {
+      doc.setFont(font, "bold");
+      doc.text("REFD. BY:", leftX, y);
+      doc.setFont(font, "bold");
+      doc.text(refBy, leftX + doc.getTextWidth("REFD. BY: ") + 1, y);
+    }
 
-    if (settings.header.showDate !== false) {
+    if (settings.header.showDate !== false && dateStr) {
       doc.setFont(font, "bold");
       doc.text("DATE:", rightX, y);
       doc.setFont(font, "normal");
-      doc.text(dateStr || "—", rightX + doc.getTextWidth("DATE: ") + 1, y);
+      doc.text(dateStr, rightX + doc.getTextWidth("DATE: ") + 1, y);
     }
-    y += lineH + 1.5;
+    if (refBy || (settings.header.showDate !== false && dateStr)) y += lineH + 0.8;
+    y += 1.5;
 
     // Double rule (letter-pad style)
     doc.setDrawColor(0);
