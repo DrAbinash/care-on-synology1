@@ -84,9 +84,9 @@ export default function BankStatementImportPanel({
 
   const parse = async (override?: { imageBase64: string; mimeType: string }) => {
     setParsing(true); setError(""); setTxns([]); setImported(0); setSkippedDuplicates(0); setIsBlurred(false);
+    const b64 = override?.imageBase64 ?? imageBase64;
+    const mt = override?.mimeType ?? imageMime;
     try {
-      const b64 = override?.imageBase64 ?? imageBase64;
-      const mt = override?.mimeType ?? imageMime;
       const payload =
         inputMode === "text"
           ? { text: csvText }
