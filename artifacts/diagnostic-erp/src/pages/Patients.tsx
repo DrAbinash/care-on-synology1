@@ -33,7 +33,7 @@ import { useMutation } from "@tanstack/react-query";
 import { readStaffSession, FULL_ACCESS_ROLES, hasSubPermission } from "@/lib/staffSession";
 import UnifiedScanCapture from "@/components/UnifiedScanCapture";
 import { useDocumentScan } from "@/hooks/useDocumentScan";
-import { linkDocumentScan } from "@/lib/documentScanApi";
+import { linkDocumentScan, persistDocumentScanFromBlob } from "@/lib/documentScanApi";
 import { detectGenderFromName } from "@/lib/nameGender";
 
 type PatientForm = {
@@ -59,9 +59,7 @@ export default function Patients() {
   const [photoDataUrl, setPhotoDataUrl] = useState<string | null>(null);
   const [photoErr, setPhotoErr] = useState("");
   const [pendingPhotoScanId, setPendingPhotoScanId] = useState<number | null>(null);
-  const patientScan = useDocumentScan({
-    persist: { module: "patients", entityType: "patient", docType: "photo" },
-  });
+  const patientScan = useDocumentScan();
   const [editPatient, setEditPatient] = useState<{ id: number; firstName: string; lastName: string; dateOfBirth: string; ageValue?: number | null; ageUnit?: string | null; gender: string; phone: string; email: string | null; address: string | null; bloodGroup: string | null } | null>(null);
   const queryClient = useQueryClient();
 
@@ -508,7 +506,17 @@ export default function Patients() {
                           const scanned = await patientScan.handleCapture(result);
                           setPhotoErr("");
                           setPhotoDataUrl(scanned.dataUrl);
-                          setPendingPhotoScanId(scanned.scanId ?? null);
+                          void persistDocumentScanFromBlob(result.file, {
+                            module: "patients",
+                            entityType: "patient",
+                            docType: "photo",
+                            scanSource: result.source,
+                            deviceLabel: result.deviceLabel,
+                            fileName: result.filename,
+                            mimeType: result.mimeType,
+                          }).then((persisted) => {
+                            if (persisted?.id) setPendingPhotoScanId(persisted.id);
+                          });
                         }}
                         onError={(msg) => setPhotoErr(msg)}
                       />

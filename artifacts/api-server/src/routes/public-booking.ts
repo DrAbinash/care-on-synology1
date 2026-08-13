@@ -1,6 +1,7 @@
 import { Router } from "express";
 import crypto from "node:crypto";
 import rateLimit from "express-rate-limit";
+import { deriveBillTokenFromTestTokens } from "../lib/deriveBillToken";
 import { db } from "@workspace/db";
 import {
   clinicSettingsTable,
@@ -8,7 +9,7 @@ import {
   packagesTable,
   packageTestsTable,
   onlineBookingsTable,
-  tokensTable,
+  testTokensTable,
   billsTable,
   paymentsTable,
   paymentLogsTable,
@@ -345,11 +346,15 @@ publicBookingRouter.get("/by-ref", async (req, res): Promise<void> => {
 
   let tokenNo: number | null = null;
   if (row.billId) {
-    const [tok] = await db.select({ tokenNo: tokensTable.tokenNo })
-      .from(tokensTable)
-      .where(eq(tokensTable.billId, row.billId))
-      .limit(1);
-    if (tok) tokenNo = tok.tokenNo;
+    const testTokenRows = await db
+      .select({ tokenNo: testTokensTable.tokenNo, tokenDate: testTokensTable.tokenDate })
+      .from(testTokensTable)
+      .where(eq(testTokensTable.billId, row.billId));
+    const derived = deriveBillTokenFromTestTokens(
+      testTokenRows,
+      testTokenRows[0]?.tokenDate,
+    );
+    if (derived) tokenNo = derived.tokenNo;
   }
 
   // Never expose the Razorpay HMAC signature: it is a server-computed secret
