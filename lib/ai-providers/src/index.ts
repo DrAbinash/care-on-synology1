@@ -30,6 +30,11 @@ export interface AiQueryOptions {
   prompt: string;
   images: string[];
   maxTokens?: number;
+  /** Ollama native options.num_ctx (sent on /api/chat). */
+  numCtx?: number;
+  /** Ollama native `think` flag (false = no chain-of-thought when supported). */
+  think?: boolean;
+  temperature?: number;
 }
 
 export interface AiQueryResult {
@@ -82,9 +87,10 @@ export const BUILTIN_PROVIDER_CONFIGS: Record<string, AiProviderConfig> = {
     needsApiKey: false,
     needsEndpointUrl: true,
     // Routine default for the Windows OCR/AI worker: gemma3:4b.
+    // Overnight MRI vision default is qwen3-vl:8b (AI_MODEL_VISION / task route).
     // gemma3:12b is Deep/Large only. qwen3:14b / gpt-oss:20b remain approved
     // for clinics that already standardized on them (stored settings win).
-    defaultModels: ["gemma3:4b", "gemma3:12b", "qwen3:14b", "gpt-oss:20b"],
+    defaultModels: ["gemma3:4b", "gemma3:12b", "qwen3-vl:8b", "qwen3:14b", "gpt-oss:20b"],
     placeholder: "http://172.16.1.140:11434",
   },
 };
@@ -266,26 +272,70 @@ class AnthropicProvider implements AiProvider {
   }
 }
 
+/**
+ * Strip `<think>…</think>` blocks some models emit (qwen3 family) even when
+ * think=false — defensive before JSON parse / draft storage.
+ */
+export function stripThinkBlocks(text: string): string {
+  return (text ?? "").replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+}
+
+/** Build the native Ollama `/api/chat` JSON body (exported for unit tests). */
+export function buildOllamaChatPayload(opts: AiQueryOptions): Record<string, unknown> {
+  const model = opts.model || "gemma3:4b";
+  const images = (opts.images ?? []).map((img) =>
+    img.replace(/^data:image\/[a-zA-Z0-9+.-]+;base64,/, ""),
+  );
+  const message: Record<string, unknown> = {
+    role: "user",
+    content: opts.prompt,
+  };
+  if (images.length > 0) message.images = images;
+
+  const options: Record<string, unknown> = {};
+  if (opts.numCtx != null && Number.isFinite(opts.numCtx)) options.num_ctx = opts.numCtx;
+  if (opts.temperature != null && Number.isFinite(opts.temperature)) options.temperature = opts.temperature;
+  if (opts.maxTokens != null && Number.isFinite(opts.maxTokens)) options.num_predict = opts.maxTokens;
+
+  const body: Record<string, unknown> = {
+    model,
+    messages: [message],
+    stream: false,
+  };
+  // Always send think when the caller sets it (overnight MRI: false).
+  if (opts.think !== undefined) body.think = opts.think;
+  if (Object.keys(options).length > 0) body.options = options;
+  return body;
+}
+
 class OllamaProvider implements AiProvider {
   config = BUILTIN_PROVIDER_CONFIGS.ollama;
   constructor(private endpointUrl: string) {}
 
   async query(opts: AiQueryOptions): Promise<AiQueryResult> {
     try {
-      const client = await getOllamaClient(this.endpointUrl);
-      type ContentItem =
-        | { type: "text"; text: string }
-        | { type: "image_url"; image_url: { url: string } };
-      const content: ContentItem[] = [{ type: "text", text: opts.prompt }];
-      for (const img of opts.images) {
-        content.push({ type: "image_url", image_url: { url: `data:image/jpeg;base64,${img}` } });
-      }
-      const resp = await client.chat.completions.create({
-        model: opts.model || "gemma3:4b",
-        messages: [{ role: "user", content }],
-        max_tokens: opts.maxTokens ?? 4096,
+      const base = this.endpointUrl.replace(/\/$/, "");
+      const body = buildOllamaChatPayload(opts);
+      const resp = await fetch(`${base}/api/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
       });
-      return { text: resp.choices[0]?.message?.content ?? "", success: true };
+      if (!resp.ok) {
+        const detail = await resp.text().catch(() => "");
+        return {
+          text: "",
+          success: false,
+          error: `Ollama /api/chat ${resp.status}${detail ? `: ${detail.slice(0, 200)}` : ""}`,
+        };
+      }
+      const data = (await resp.json()) as {
+        message?: { content?: string; thinking?: string };
+        response?: string;
+      };
+      const raw = data.message?.content ?? data.response ?? "";
+      // Discard message.thinking (chain-of-thought) even if the model ignored think=false.
+      return { text: stripThinkBlocks(raw), success: true };
     } catch (err: unknown) {
       return { text: "", success: false, error: err instanceof Error ? err.message : "Ollama error" };
     }
@@ -293,7 +343,6 @@ class OllamaProvider implements AiProvider {
 
   async testConnection(model?: string): Promise<{ ok: boolean; message: string; availableModels?: string[] }> {
     try {
-      // List models
       const url = `${this.endpointUrl.replace(/\/$/, "")}/api/tags`;
       const tagsResp = await fetch(url, { method: "GET" });
       if (!tagsResp.ok) {
@@ -301,11 +350,12 @@ class OllamaProvider implements AiProvider {
       }
       const tagsData = await tagsResp.json() as { models?: Array<{ name: string; size?: number }> };
       const models = tagsData.models?.map((m) => m.name) ?? [];
-      // Test chat completion with the selected model (fallback only when omitted)
       const chatResult = await this.query({
         model: model || "gemma3:4b",
         prompt: "Reply with exactly the word: CONNECTED",
         images: [],
+        think: false,
+        numCtx: 2048,
       });
       return {
         ok: chatResult.success,
@@ -464,7 +514,13 @@ export async function generateAiResponse(
   providerName: string,
   prompt: string,
   images?: string[],
-  options?: { model?: string; maxTokens?: number }
+  options?: {
+    model?: string;
+    maxTokens?: number;
+    numCtx?: number;
+    think?: boolean;
+    temperature?: number;
+  },
 ): Promise<AiQueryResult> {
   const provider = await createAiProviderFromDb(providerName);
   if (!provider) {
@@ -484,6 +540,9 @@ export async function generateAiResponse(
     prompt,
     images: images ?? [],
     maxTokens: options?.maxTokens,
+    numCtx: options?.numCtx,
+    think: options?.think,
+    temperature: options?.temperature,
   });
 }
 
@@ -606,7 +665,14 @@ export async function generateAiForTask(
   taskKey: string,
   prompt: string,
   images?: string[],
-  options?: { provider?: string; model?: string; maxTokens?: number },
+  options?: {
+    provider?: string;
+    model?: string;
+    maxTokens?: number;
+    numCtx?: number;
+    think?: boolean;
+    temperature?: number;
+  },
 ): Promise<AiQueryResult> {
   const route = options?.provider ? null : await resolveTaskRoute(taskKey);
   const providerName = options?.provider ?? route?.provider ?? (await getDefaultProviderName());
@@ -614,6 +680,9 @@ export async function generateAiForTask(
   return generateAiResponse(providerName, prompt, images, {
     model,
     maxTokens: options?.maxTokens,
+    numCtx: options?.numCtx,
+    think: options?.think,
+    temperature: options?.temperature,
   });
 }
 
@@ -630,7 +699,7 @@ export async function generateAiForTask(
 const KNOWN_VISION_MODEL_PATTERNS = [
   /llava/i, /bakllava/i, /moondream/i, /minicpm-v/i, /pixtral/i,
   /llama3\.2-vision/i, /llama-vision/i, /llama4/i,
-  /qwen2(\.5)?-vl/i, /qwen-vl/i, /granite3\.2-vision/i, /cogvlm/i,
+  /qwen2(\.5)?-vl/i, /qwen-vl/i, /qwen3-vl/i, /granite3\.2-vision/i, /cogvlm/i,
   /gemma3(?!:1b)/i, // gemma3 family supports vision except the 1b text-only variant
 ];
 const KNOWN_TEXT_ONLY_MODEL_PATTERNS = [

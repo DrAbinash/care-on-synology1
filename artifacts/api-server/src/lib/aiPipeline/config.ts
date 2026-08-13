@@ -46,6 +46,10 @@ export interface AiPipelineConfig {
   modelStandard: string;
   modelLarge: string;
   modelVision: string;
+  /** Ollama native options.num_ctx for vision/draft chat (default 16384). */
+  ollamaNumCtx: number;
+  /** Ollama native `think` flag — false disables chain-of-thought when supported. */
+  ollamaThink: boolean;
   timeoutFastSeconds: number;
   timeoutLargeSeconds: number;
   aiConcurrency: number;
@@ -94,9 +98,13 @@ export function loadAiPipelineConfig(forceReload = false): AiPipelineConfig {
     modelFast: strEnv("AI_MODEL_FAST", "gemma3:4b"),
     modelStandard: strEnv("AI_MODEL_STANDARD", "gemma3:4b"),
     modelLarge: strEnv("AI_MODEL_LARGE", "gemma3:12b"),
-    modelVision: strEnv("AI_MODEL_VISION", "gemma3:4b"),
+    // Overnight MRI vision default: qwen3-vl:8b (override via AI_MODEL_VISION).
+    modelVision: strEnv("AI_MODEL_VISION", "qwen3-vl:8b"),
+    ollamaNumCtx: Math.max(2048, numEnv("OLLAMA_NUM_CTX", 16384)),
+    ollamaThink: boolEnv("OLLAMA_THINK", false),
     timeoutFastSeconds: Math.max(10, numEnv("AI_TIMEOUT_FAST_SECONDS", 120)),
     timeoutLargeSeconds: Math.max(30, numEnv("AI_TIMEOUT_LARGE_SECONDS", 300)),
+    // Overnight MRI: one study at a time (override via AI_CONCURRENCY).
     aiConcurrency: Math.max(1, numEnv("AI_CONCURRENCY", 1)),
     temperatureExtraction: numEnv("AI_TEMPERATURE_EXTRACTION", 0),
     temperatureDraft: numEnv("AI_TEMPERATURE_DRAFT", 0.1),
