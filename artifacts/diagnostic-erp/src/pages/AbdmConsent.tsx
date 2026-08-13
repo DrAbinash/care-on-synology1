@@ -298,7 +298,7 @@ function PatientAbhaTab() {
   });
 
   const unlinkMut = useMutation({
-    mutationFn: (id: number) => api.post(`/api/abdm/abha/${id}/unlink`),
+    mutationFn: (id: number) => api.post(`/api/abdm/abha/${id}/unlink`, {}),
     onSuccess: () => {
       toast({ title: "ABHA unlinked" });
       qc.invalidateQueries({ queryKey: ["abdm-abha-links", pid] });

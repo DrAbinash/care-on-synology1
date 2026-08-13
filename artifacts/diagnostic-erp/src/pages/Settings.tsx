@@ -9064,7 +9064,7 @@ function ScannerSettingsTab() {
   async function purgeUnlinkedScans() {
     setPurgingScans(true);
     try {
-      const result = await api.post<{ deletedRows: number; deletedFiles: number; retentionDays: number }>("/api/scans/purge-unlinked");
+      const result = await api.post<{ deletedRows: number; deletedFiles: number; retentionDays: number }>("/api/scans/purge-unlinked", {});
       toast({
         title: "Unlinked scans purged",
         description: `Removed ${result.deletedRows} row(s) and ${result.deletedFiles} file(s) older than ${result.retentionDays} days.`,
