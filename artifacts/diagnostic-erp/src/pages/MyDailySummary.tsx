@@ -1920,6 +1920,17 @@ export default function MyDailySummary() {
         subtitle={data ? `${data.staffName} • ${from === to ? from : `${from} → ${to}`}` : "Personal financial summary"}
         actions={
           <div className="flex items-center gap-2 flex-wrap">
+            <Link href="/expenses">
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-8 text-xs font-semibold flex items-center gap-1.5 border-rose-200 text-rose-700 hover:bg-rose-50 dark:border-rose-900 dark:text-rose-300 dark:hover:bg-rose-950/40"
+                title="Record or review expenses"
+              >
+                <TrendingDown size={13} />
+                Expense
+              </Button>
+            </Link>
             <Link href="/my-day-close">
               <Button
                 size="sm"
