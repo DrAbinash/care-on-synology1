@@ -12,7 +12,7 @@ import { describe, expect, test, vi, beforeEach } from "vitest";
 
 let allRows: Array<{ key: string; enabled: boolean; description: string; updatedBy: string | null; updatedAt: string }>;
 let selectOneResult: typeof allRows;
-let limitQueue: typeof allRows = [];
+let limitQueue: Array<typeof allRows> = [];
 let updateSetCalls: Record<string, unknown>[];
 let updatedRow: (typeof allRows)[number] | null;
 
