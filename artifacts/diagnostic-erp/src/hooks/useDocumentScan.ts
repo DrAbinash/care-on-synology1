@@ -3,15 +3,17 @@
  * result shape, so callers don't have to hand-roll the same
  * "convert to base64 for my existing OCR endpoint" boilerplate.
  *
- * This does NOT persist to the server on its own yet — the shared
- * `scanned_documents` metadata table (module/entityId/docType/scanSource/
- * ocrStatus tracking) lands in a later phase. Until then, each caller keeps
- * posting the returned base64 to its own existing OCR/save endpoint exactly
- * as it does today (e.g. /api/form-f/upload-id, /api/expenses/scan-bill) —
- * this hook only removes the repeated blob-to-base64 conversion.
+ * This hook optionally persists captures via POST /api/scans when `persist`
+ * options are supplied; otherwise callers keep posting base64 to module OCR
+ * endpoints exactly as before.
  */
 import { useCallback, useState } from "react";
 import type { ScanCaptureResult } from "@/components/UnifiedScanCapture";
+import {
+  type DocumentScanDocType,
+  type DocumentScanModule,
+  persistDocumentScanFromBlob,
+} from "@/lib/documentScanApi";
 
 export interface DocumentScanState {
   base64: string;
@@ -19,6 +21,16 @@ export interface DocumentScanState {
   dataUrl: string;
   source: ScanCaptureResult["source"];
   filename?: string;
+  scanId?: number;
+}
+
+export interface UseDocumentScanOptions {
+  persist?: {
+    module: DocumentScanModule;
+    entityType: string;
+    docType: DocumentScanDocType;
+    entityId?: number;
+  };
 }
 
 function blobToDataUrl(blob: Blob): Promise<string> {
@@ -30,7 +42,7 @@ function blobToDataUrl(blob: Blob): Promise<string> {
   });
 }
 
-export function useDocumentScan() {
+export function useDocumentScan(options?: UseDocumentScanOptions) {
   const [scan, setScan] = useState<DocumentScanState | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -39,19 +51,34 @@ export function useDocumentScan() {
     try {
       const dataUrl = await blobToDataUrl(result.file);
       const base64 = dataUrl.split(",")[1] ?? "";
+      let scanId: number | undefined;
+      if (options?.persist) {
+        const persisted = await persistDocumentScanFromBlob(result.file, {
+          module: options.persist.module,
+          entityType: options.persist.entityType,
+          docType: options.persist.docType,
+          entityId: options.persist.entityId,
+          scanSource: result.source,
+          deviceLabel: result.deviceLabel,
+          fileName: result.filename,
+          mimeType: result.mimeType,
+        });
+        scanId = persisted?.id;
+      }
       const next: DocumentScanState = {
         base64,
         mimeType: result.mimeType,
         dataUrl,
         source: result.source,
         filename: result.filename,
+        scanId,
       };
       setScan(next);
       return next;
     } finally {
       setBusy(false);
     }
-  }, []);
+  }, [options?.persist]);
 
   const clear = useCallback(() => setScan(null), []);
 

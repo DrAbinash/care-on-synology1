@@ -9060,6 +9060,22 @@ function ScannerSettingsTab() {
   const [displaySeconds, setDisplaySeconds] = useState(10);
   
   const [saving, setSaving] = useState(false);
+  const [purgingScans, setPurgingScans] = useState(false);
+
+  async function purgeUnlinkedScans() {
+    setPurgingScans(true);
+    try {
+      const result = await api.post<{ deletedRows: number; deletedFiles: number; retentionDays: number }>("/api/scans/purge-unlinked", {});
+      toast({
+        title: "Unlinked scans purged",
+        description: `Removed ${result.deletedRows} row(s) and ${result.deletedFiles} file(s) older than ${result.retentionDays} days.`,
+      });
+    } catch (e) {
+      toast({ title: "Purge failed", description: (e as Error).message, variant: "destructive" });
+    } finally {
+      setPurgingScans(false);
+    }
+  }
 
   useEffect(() => {
     if (!settings) return;
@@ -9370,6 +9386,18 @@ function ScannerSettingsTab() {
             </label>
           </div>
         </div>
+      </div>
+
+      <div className="bg-card border border-border rounded-xl p-5 space-y-4">
+        <div>
+          <h3 className="font-semibold text-base">Document scan archive</h3>
+          <p className="text-sm text-muted-foreground mt-0.5">
+            Purge unlinked captures from the shared scanned_documents store (Form F, patients, expenses, banking) past the clinic retention window.
+          </p>
+        </div>
+        <Button variant="outline" type="button" onClick={purgeUnlinkedScans} disabled={purgingScans}>
+          {purgingScans ? "Purging…" : "Purge unlinked scans now"}
+        </Button>
       </div>
 
       <div className="bg-card border border-border rounded-xl p-5 space-y-5">

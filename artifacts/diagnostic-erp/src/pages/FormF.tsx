@@ -17,6 +17,7 @@ import IdScanCapturePanel from "@/components/IdScanCapturePanel";
 import { type ScanCaptureResult, type ScanSide } from "@/components/UnifiedScanCapture";
 import { decodeQrFromBlob } from "@/lib/aadhaarQr";
 import { runIdCardTesseractOcr } from "@/lib/idCardTesseractOcr";
+import { persistDocumentScanFromBlob } from "@/lib/documentScanApi";
 import { readStaffSession, normalizeRole, FULL_ACCESS_ROLES } from "@/lib/staffSession";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
@@ -1017,9 +1018,17 @@ export default function FormF() {
   }
 
   // ── ID card image processing (shared by upload, UnifiedScanCapture, camera) ──
-  async function processIdImage(file: Blob) {
+  async function processIdImage(file: Blob, scanMeta?: { source?: ScanCaptureResult["source"]; filename?: string }) {
     setIdCardUploading(true);
     try {
+      void persistDocumentScanFromBlob(file, {
+        module: "form-f",
+        entityType: "form-f-record",
+        docType: "id-card",
+        scanSource: scanMeta?.source ?? "upload",
+        fileName: scanMeta?.filename,
+        mimeType: file.type || "image/jpeg",
+      });
       // Preferred extraction order: Aadhaar QR data first (no server round
       // trip, no OCR cost), then OCR, then manual entry (existing editable
       // fields below are always available regardless of which path fires).
@@ -1188,7 +1197,7 @@ export default function FormF() {
       return;
     }
     setScanPanelSide("front");
-    await processIdImage(result.file);
+    await processIdImage(result.file, { source: result.source, filename: result.filename });
   }
 
   // ── Camera / scanner capture helpers ──
