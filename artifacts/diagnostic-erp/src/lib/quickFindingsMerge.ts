@@ -1,15 +1,11 @@
 /**
- * quickFindingsMerge.ts — pure text-merge helpers for the Radiology Quick
- * Select feature. Zero dependencies so they're unit-testable under the root
- * vitest config (node environment, no path aliases needed by the test).
+ * quickFindingsMerge.ts — exact-match append/remove helpers for Quick Findings
+ * deselection and legacy surfaces.
  *
- * Safety model:
- *   - INSERT is deduped: an identical block/line is never added twice, even
- *     if the radiologist re-toggles a button or two buttons share text.
- *   - REMOVE only removes an exact verbatim match. If the radiologist
- *     edited the inserted sentence, removal silently no-ops — edited text
- *     is always preserved. Worst case is one leftover sentence to delete
- *     manually; never lost work.
+ * Automated report-field INSERTION in the Radiology Reporting Workspace uses
+ * reportFieldMerge via zustand mergeField. These helpers remain for:
+ *   - exact verbatim removal (removeBlock / removeImpression)
+ *   - legacy workspace / USG composer / render engine surfaces
  */
 
 /** Appends `block` as its own paragraph unless the exact block already exists. */

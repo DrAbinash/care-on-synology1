@@ -161,3 +161,56 @@ export function nameComparisonKeys(raw: string | null | undefined): string[] {
   }
   return [...keys].filter(Boolean);
 }
+
+/**
+ * True when AccessionNumber is actually a referring-doctor name.
+ * MRI / billing sometimes type "DR.SANJAY KUMAR" into Acc No. instead of a
+ * real work-id like ACC-20260813-MR-001.
+ */
+export function accessionLooksLikeReferringDoctor(raw: string | null | undefined): boolean {
+  const s = String(raw ?? "").trim();
+  if (!s) return false;
+  if (/^ACC[-_]/i.test(s)) return false;
+  if (/^\d{4,}$/.test(s.replace(/[-\s]/g, ""))) return false;
+  if (/^dr\.?\s*/i.test(s.replace(/\s+/g, " "))) return true;
+  if (/^dr[A-Z.]/i.test(s)) return true; // DR.SANJAY / DRA.K.SINGH
+  const hasDegree = tokenizePersonName(s).some((t) => isDegreeToken(t));
+  const letters = (s.match(/[A-Za-z]/g) || []).length;
+  const digits = (s.match(/\d/g) || []).length;
+  const words = tokenizePersonName(s).filter((t) => !isDegreeToken(t) && !isTitleToken(t));
+  if (hasDegree && words.length >= 2 && digits <= 2 && letters >= 6) return true;
+  return false;
+}
+
+/** Display form for a referring doctor: "Dr. Sanjay Kumar, MD". */
+export function formatReferringDoctorDisplay(raw: string | null | undefined): string {
+  const s = String(raw ?? "").trim();
+  if (!s) return "";
+  if (/^(self|walk[\s-]*in|na|n\/a|none|-)$/i.test(s)) return s;
+  const formatted = formatDicomPersonNameForDisplay(s) || s.replace(/\^+/g, " ").replace(/\s+/g, " ").trim();
+  if (/^dr\.?\s/i.test(formatted)) {
+    return formatted.replace(/^dr\.?\s+/i, "Dr. ");
+  }
+  return `Dr. ${formatted}`;
+}
+
+/**
+ * If accession holds a doctor name and referring doctor is blank, move it.
+ * Never invent a fake accession for display.
+ */
+export function reconcileAccessionVsReferringDoctor(input: {
+  accessionNumber?: string | null;
+  referringDoctor?: string | null;
+}): { accessionNumber: string; referringDoctor: string } {
+  const accession = String(input.accessionNumber ?? "").trim();
+  let referring = String(input.referringDoctor ?? "").trim();
+  if (!referring && accessionLooksLikeReferringDoctor(accession)) {
+    referring = formatReferringDoctorDisplay(accession);
+    return { accessionNumber: "", referringDoctor: referring };
+  }
+  if (referring) referring = formatReferringDoctorDisplay(referring);
+  if (accessionLooksLikeReferringDoctor(accession)) {
+    return { accessionNumber: "", referringDoctor: referring };
+  }
+  return { accessionNumber: accession, referringDoctor: referring };
+}

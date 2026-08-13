@@ -20,9 +20,10 @@ import {
   templateRegionMismatch,
 } from "@/lib/pickStructuredTemplate";
 import { templateCatalogModality } from "@/lib/radiologyTemplateModality";
-import { mergeBlock } from "@/lib/quickFindingsMerge";
 import { combineStudyRegionTitle } from "@/lib/combineStudyRegions";
 import { chocolateBoxSetFor, type ChocolateBoxSet } from "@/lib/findingsMacros";
+import { mergeBlock } from "@/lib/quickFindingsMerge";
+import type { InsertSource } from "@/lib/reportFieldMerge";
 import type {
   QuickProtocol,
   QuickSelectData,
@@ -75,6 +76,18 @@ export type StudySetupSetters = {
   setImpression: (next: string | ((prev: string) => string)) => void;
   setRecommendation: (next: string | ((prev: string) => string)) => void;
   setClinicalHistory: (next: string | ((prev: string) => string)) => void;
+  mergeTechnique: (incoming: string, source: InsertSource) => void;
+  mergeFindings: (incoming: string, source: InsertSource) => void;
+  mergeImpression: (incoming: string, source: InsertSource) => void;
+  mergeRecommendation: (incoming: string, source: InsertSource) => void;
+  setTechniqueIfEmpty: (text: string, source: InsertSource) => void;
+  setFindingsIfEmpty: (text: string, source: InsertSource) => void;
+  setImpressionIfEmpty: (text: string, source: InsertSource) => void;
+  setRecommendationIfEmpty: (text: string, source: InsertSource) => void;
+  replaceTechnique: (text: string, source: InsertSource) => void;
+  replaceFindings: (text: string, source: InsertSource) => void;
+  replaceImpression: (text: string, source: InsertSource) => void;
+  replaceRecommendation: (text: string, source: InsertSource) => void;
   /** Read live field values (zustand getState). */
   readFields: () => StudySetupFields;
 };
@@ -216,27 +229,24 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     setActiveProtocol(protocol);
     if (!protocol || disabled) return;
     if (protocol.recommendationText) {
-      setters.setRecommendation((prev) => mergeBlock(prev, protocol.recommendationText));
+      setters.mergeRecommendation(protocol.recommendationText, "protocol");
     }
     if (protocol.techniqueText) {
       const fields = setters.readFields();
       if (replaceTechnique) {
-        // Replace when empty or still holding last auto-inserted protocol text.
         if (!fields.technique.trim() || fields.technique === lastInsertedTechniqueRef.current) {
-          setters.setTechnique(protocol.techniqueText);
+          setters.replaceTechnique(protocol.techniqueText, "protocol");
           lastInsertedTechniqueRef.current = protocol.techniqueText;
         } else {
-          // Radiologist has edited — merge instead of clobber.
-          setters.setTechnique(mergeBlock(fields.technique, protocol.techniqueText));
+          setters.mergeTechnique(protocol.techniqueText, "protocol");
         }
       } else {
-        setters.setTechnique((prev) => {
-          if (!prev.trim()) {
-            lastInsertedTechniqueRef.current = protocol.techniqueText;
-            return protocol.techniqueText;
-          }
-          return mergeBlock(prev, protocol.techniqueText);
-        });
+        if (!fields.technique.trim()) {
+          setters.replaceTechnique(protocol.techniqueText, "protocol");
+          lastInsertedTechniqueRef.current = protocol.techniqueText;
+        } else {
+          setters.mergeTechnique(protocol.techniqueText, "protocol");
+        }
       }
     }
   }, [disabled, setters]);
@@ -296,26 +306,30 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     const fields = setters.readFields();
 
     if (templateApplySourceRef.current === "manual") {
-      setters.setTechnique(sections.technique || fields.technique);
-      setters.setFindings(selectedTemplate.defaultFindings || "");
-      setters.setImpression(selectedTemplate.defaultImpression || "");
-      setters.setRecommendation(fields.recommendation.trim() ? fields.recommendation : "Please correlate with clinical findings.");
+      setters.replaceTechnique(sections.technique || fields.technique, "template");
+      setters.replaceFindings(selectedTemplate.defaultFindings || "", "template");
+      setters.replaceImpression(selectedTemplate.defaultImpression || "", "template");
+      if (fields.recommendation.trim()) {
+        setters.setRecommendation(fields.recommendation);
+      } else {
+        setters.replaceRecommendation("Please correlate with clinical findings.", "template");
+      }
       return;
     }
 
     // Auto: fill-empty only — never clobber draft / typed text.
     if (!fields.technique.trim() && sections.technique) {
-      setters.setTechnique(sections.technique);
+      setters.setTechniqueIfEmpty(sections.technique, "template");
       lastInsertedTechniqueRef.current = sections.technique;
     }
     if (!fields.findings.trim() && selectedTemplate.defaultFindings) {
-      setters.setFindings(selectedTemplate.defaultFindings);
+      setters.setFindingsIfEmpty(selectedTemplate.defaultFindings, "template");
     }
     if (!fields.impression.trim() && selectedTemplate.defaultImpression) {
-      setters.setImpression(selectedTemplate.defaultImpression);
+      setters.setImpressionIfEmpty(selectedTemplate.defaultImpression, "template");
     }
     if (!fields.recommendation.trim()) {
-      setters.setRecommendation("Please correlate with clinical findings.");
+      setters.setRecommendationIfEmpty("Please correlate with clinical findings.", "template");
     }
   }, [selectedTemplate, disabled, setters]);
 
@@ -324,13 +338,13 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     let applied = 0;
     for (const b of plan.blocks) {
       if (b.section === "technique") {
-        setters.setTechnique((prev) => (prev.trim() ? prev : b.text));
+        setters.setTechniqueIfEmpty(b.text, "companion");
       } else if (b.section === "findings") {
-        setters.setFindings((prev) => mergeBlock(prev, b.text));
+        setters.mergeFindings(b.text, "companion");
       } else if (b.section === "recommendation") {
-        setters.setRecommendation((prev) => mergeBlock(prev, b.text));
+        setters.mergeRecommendation(b.text, "companion");
       } else if (b.section === "impression") {
-        setters.setImpression((prev) => (prev.trim() ? prev : b.text));
+        setters.setImpressionIfEmpty(b.text, "companion");
       }
       applied++;
     }
@@ -384,21 +398,16 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
 
     const generated = generateStructuredFinding(f, values);
     if (generated.finding?.trim()) {
-      setters.setFindings((prev) => mergeBlock(prev, generated.finding));
+      setters.mergeFindings(generated.finding, "quick-findings");
     }
     if (generated.impression?.trim()) {
-      setters.setImpression((prev) => {
-        const lines = prev.split("\n").filter(Boolean);
-        return lines.includes(generated.impression.trim())
-          ? prev
-          : [...lines, generated.impression.trim()].join("\n");
-      });
+      setters.mergeImpression(generated.impression, "quick-findings");
     }
     if (generated.technique?.trim()) {
-      setters.setTechnique((prev) => mergeBlock(prev, generated.technique));
+      setters.mergeTechnique(generated.technique, "quick-findings");
     }
     if (generated.recommendation?.trim()) {
-      setters.setRecommendation((prev) => mergeBlock(prev, generated.recommendation));
+      setters.mergeRecommendation(generated.recommendation, "quick-findings");
     }
 
     if (!selectedIds.has(f.id)) {
@@ -419,7 +428,7 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
 
   const applyChocolateTile = useCallback((text: string) => {
     if (disabled || !text.trim()) return;
-    setters.setFindings((prev) => mergeBlock(prev, text));
+    setters.mergeFindings(text, "macro");
   }, [disabled, setters]);
 
   const selectTemplateManual = useCallback((id: number) => {
@@ -597,7 +606,7 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     if (protocol) applyProtocol(protocol, false);
     const tab = quickSelectData?.tabs?.find((t) => t.name === regionName);
     if (tab?.techniqueText) {
-      setters.setTechnique((prev) => mergeBlock(prev, tab.techniqueText));
+      setters.mergeTechnique(tab.techniqueText, "protocol");
     }
   }, [disabled, studyRegions, quickSelectData, applyProtocol, setters]);
 

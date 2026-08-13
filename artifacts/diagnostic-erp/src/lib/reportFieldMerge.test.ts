@@ -1,0 +1,280 @@
+import { describe, expect, it } from "vitest";
+import {
+  mergeReportFieldContent,
+  mergeReportFieldContentWithProvenance,
+  mergeTechnique,
+  mergeSentences,
+  normalizeForDedupe,
+  reconcileProvenanceAfterManualEdit,
+  formatProvenanceHover,
+  provenanceVisualKind,
+  provenanceFromText,
+  type FieldProvenanceMap,
+} from "./reportFieldMerge";
+import { buildPreviewHtml } from "./radiologyReportPreviewHtml";
+
+describe("normalizeForDedupe", () => {
+  it("ignores case and punctuation", () => {
+    expect(normalizeForDedupe("MRI Brain, 3T.")).toBe(normalizeForDedupe("mri brain 3t"));
+  });
+});
+
+describe("mergeTechnique", () => {
+  it("removes exact duplicate technique", () => {
+    const a = "MRI study performed on a 3T scanner.";
+    expect(mergeTechnique(a, a)).toBe(a);
+  });
+
+  it("removes duplicate with punctuation/case differences", () => {
+    const a = "MRI study performed on a 3T scanner.";
+    const b = "mri study performed on a 3t scanner";
+    expect(mergeTechnique(a, b)).toBe(a);
+  });
+
+  it("merges equivalent 3T wording without duplication", () => {
+    const existing = "MRI study performed on a 3T scanner using multiplanar multisequence acquisition.";
+    const incoming = "Multiplanar multisequence MRI was performed on a 3 Tesla scanner.";
+    const out = mergeTechnique(existing, incoming);
+    expect(out).toBe(existing); // same concepts, no new line
+  });
+
+  it("retains complementary technique information", () => {
+    const existing = "MRI performed on 3T scanner.";
+    const incoming = "T1, T2, FLAIR, DWI and SWI sequences obtained.";
+    const out = mergeTechnique(existing, incoming);
+    expect(out).toContain("3T");
+    expect(out).toContain("T1");
+    expect(out).toContain("SWI");
+  });
+});
+
+describe("mergeSentences (findings/impression)", () => {
+  it("removes exact duplicate finding", () => {
+    const a = "Disc desiccation at L4-L5.";
+    expect(mergeSentences(a, a)).toBe(a);
+  });
+
+  it("prefers more informative finding when safe", () => {
+    const existing = "Disc desiccation at L4-L5.";
+    const incoming = "Disc desiccation with diffuse bulge at L4-L5.";
+    const out = mergeSentences(existing, incoming);
+    expect(out).toContain("diffuse bulge");
+    expect(out.split("\n").length).toBe(1);
+  });
+
+  it("preserves laterality differences", () => {
+    const existing = "Disc bulge at L4-L5 on the left.";
+    const incoming = "Disc bulge at L4-L5 on the right.";
+    const out = mergeSentences(existing, incoming);
+    expect(out).toContain("left");
+    expect(out).toContain("right");
+  });
+
+  it("preserves severity differences", () => {
+    const existing = "Mild disc bulge at L4-L5.";
+    const incoming = "Severe disc bulge at L4-L5.";
+    const out = mergeSentences(existing, incoming);
+    expect(out).toContain("Mild");
+    expect(out).toContain("Severe");
+  });
+
+  it("removes duplicate impression", () => {
+    const a = "Normal MRI brain.";
+    expect(mergeSentences(a, a)).toBe(a);
+  });
+});
+
+describe("mergeReportFieldContent — source order equivalence", () => {
+  it("quick-select then quick-findings ≈ reverse", () => {
+    const qs = "MRI performed on 3T scanner.";
+    const qf = "T1, T2, FLAIR sequences obtained.";
+    const a = mergeReportFieldContent({ field: "technique", existing: qs, incoming: qf, source: "quick-findings" });
+    const b = mergeReportFieldContent({ field: "technique", existing: qf, incoming: qs, source: "quick-select" });
+    expect(normalizeForDedupe(a)).toContain("3t");
+    expect(normalizeForDedupe(b)).toContain("3t");
+    expect(normalizeForDedupe(a)).toContain("flair");
+    expect(normalizeForDedupe(b)).toContain("flair");
+  });
+});
+
+describe("provenance — Quick Select / Quick Findings / merged", () => {
+  it("attributes Quick Select insertions", () => {
+    const r = mergeReportFieldContentWithProvenance({
+      field: "technique",
+      existing: "",
+      incoming: "MRI performed on 3T scanner.",
+      source: "quick-select",
+    });
+    const key = normalizeForDedupe("MRI performed on 3T scanner.");
+    expect(r.provenance[key]).toEqual(["quick-select"]);
+    expect(formatProvenanceHover(r.provenance[key]!)).toBe("Source: Quick Select");
+    expect(provenanceVisualKind(r.provenance[key]!)).toBe("quick-select");
+  });
+
+  it("attributes Quick Findings insertions", () => {
+    const r = mergeReportFieldContentWithProvenance({
+      field: "findings",
+      existing: "",
+      incoming: "Disc desiccation at L4-L5.",
+      source: "quick-findings",
+    });
+    const key = normalizeForDedupe("Disc desiccation at L4-L5.");
+    expect(r.provenance[key]).toEqual(["quick-findings"]);
+    expect(formatProvenanceHover(r.provenance[key]!)).toBe("Source: Quick Findings");
+    expect(provenanceVisualKind(r.provenance[key]!)).toBe("quick-findings");
+  });
+
+  it("unions sources when complementary content is merged", () => {
+    const first = mergeReportFieldContentWithProvenance({
+      field: "technique",
+      existing: "",
+      incoming: "MRI performed on 3T scanner.",
+      source: "quick-select",
+    });
+    const second = mergeReportFieldContentWithProvenance({
+      field: "technique",
+      existing: first.text,
+      incoming: "T1, T2, FLAIR sequences obtained.",
+      source: "quick-findings",
+      existingProvenance: first.provenance,
+    });
+    expect(second.text).toContain("3T");
+    expect(second.text).toContain("FLAIR");
+    const qsKey = normalizeForDedupe("MRI performed on 3T scanner.");
+    const qfKey = normalizeForDedupe("T1, T2, FLAIR sequences obtained.");
+    expect(second.provenance[qsKey]).toEqual(["quick-select"]);
+    expect(second.provenance[qfKey]).toEqual(["quick-findings"]);
+  });
+
+  it("deduplication does not lose source attribution (exact duplicate)", () => {
+    const sentence = "Disc desiccation at L4-L5.";
+    const first = mergeReportFieldContentWithProvenance({
+      field: "findings",
+      existing: "",
+      incoming: sentence,
+      source: "quick-select",
+    });
+    const second = mergeReportFieldContentWithProvenance({
+      field: "findings",
+      existing: first.text,
+      incoming: sentence,
+      source: "quick-findings",
+      existingProvenance: first.provenance,
+    });
+    expect(second.text).toBe(sentence);
+    const key = normalizeForDedupe(sentence);
+    expect(second.provenance[key]).toEqual(["quick-select", "quick-findings"]);
+    expect(formatProvenanceHover(second.provenance[key]!)).toBe(
+      "Merged: Quick Select + Quick Findings",
+    );
+    expect(provenanceVisualKind(second.provenance[key]!)).toBe("merged");
+  });
+
+  it("deduplication does not lose source attribution (technique concept near-dup)", () => {
+    const existing = "MRI study performed on a 3T scanner using multiplanar multisequence acquisition.";
+    const incoming = "Multiplanar multisequence MRI was performed on a 3 Tesla scanner.";
+    const first = mergeReportFieldContentWithProvenance({
+      field: "technique",
+      existing: "",
+      incoming: existing,
+      source: "quick-select",
+    });
+    const second = mergeReportFieldContentWithProvenance({
+      field: "technique",
+      existing: first.text,
+      incoming,
+      source: "quick-findings",
+      existingProvenance: first.provenance,
+    });
+    expect(second.text).toBe(existing);
+    const key = normalizeForDedupe(existing);
+    expect(second.provenance[key]).toContain("quick-select");
+    expect(second.provenance[key]).toContain("quick-findings");
+  });
+
+  it("near-merge keeps unioned provenance on the informative sentence", () => {
+    const first = mergeReportFieldContentWithProvenance({
+      field: "findings",
+      existing: "",
+      incoming: "Disc desiccation at L4-L5.",
+      source: "quick-select",
+    });
+    const second = mergeReportFieldContentWithProvenance({
+      field: "findings",
+      existing: first.text,
+      incoming: "Disc desiccation with diffuse bulge at L4-L5.",
+      source: "quick-findings",
+      existingProvenance: first.provenance,
+    });
+    expect(second.text.split("\n").length).toBe(1);
+    expect(second.text).toContain("diffuse bulge");
+    const key = normalizeForDedupe(second.text);
+    expect(second.provenance[key]).toEqual(["quick-select", "quick-findings"]);
+  });
+});
+
+describe("provenance — manual edits remain safe", () => {
+  it("marks changed sentences as manual without rewriting clinical text", () => {
+    const text = "Disc desiccation at L4-L5.\nNo cord compression.";
+    const provenance: FieldProvenanceMap = {
+      [normalizeForDedupe("Disc desiccation at L4-L5.")]: ["quick-select"],
+      [normalizeForDedupe("No cord compression.")]: ["quick-findings"],
+    };
+    const edited = "Disc desiccation with annular tear at L4-L5.\nNo cord compression.";
+    const next = reconcileProvenanceAfterManualEdit(text, edited, provenance);
+    expect(edited).toContain("annular tear"); // clinical text unchanged by reconcile
+    expect(next[normalizeForDedupe("Disc desiccation with annular tear at L4-L5.")]).toEqual(["manual"]);
+    expect(next[normalizeForDedupe("No cord compression.")]).toEqual(["quick-findings"]);
+  });
+
+  it("new typed content is manual", () => {
+    const next = reconcileProvenanceAfterManualEdit("", "Manually typed finding.", {});
+    expect(next[normalizeForDedupe("Manually typed finding.")]).toEqual(["manual"]);
+    expect(formatProvenanceHover(["manual"])).toBe("Source: Manual");
+  });
+});
+
+describe("provenance never leaks into Preview/PDF/print/report text", () => {
+  it("clinical merge result is plain text without provenance markers", () => {
+    const r = mergeReportFieldContentWithProvenance({
+      field: "findings",
+      existing: "Normal ventricles.",
+      incoming: "No acute infarct.",
+      source: "quick-findings",
+      existingProvenance: provenanceFromText("Normal ventricles.", "quick-select"),
+    });
+    expect(r.text).not.toMatch(/Source:|Merged:|quick-select|quick-findings|provenance/i);
+    expect(r.text).not.toContain("<");
+    expect(r.text).toBe("Normal ventricles.\nNo acute infarct.");
+  });
+
+  it("buildPreviewHtml only receives plain field strings", () => {
+    const findings = "Disc desiccation at L4-L5.";
+    const technique = "MRI performed on 3T scanner.";
+    const html = buildPreviewHtml({
+      patientName: "Test Patient",
+      age: "45",
+      sex: "M",
+      accessionNumber: "A1",
+      referringDoctor: "Dr X",
+      studyDate: "2026-01-01",
+      studyName: "MRI LS Spine",
+      technique,
+      clinicalHistory: "Back pain",
+      findingsMap: {},
+      rawFindings: findings,
+      useStructured: false,
+      impression: ["Degenerative disc disease."],
+      recommendation: "Clinical correlation.",
+      imageRefs: [],
+    });
+    expect(html).toContain(findings);
+    expect(html).toContain(technique);
+    expect(html).not.toMatch(/Source:\s*Quick Select/i);
+    expect(html).not.toMatch(/Source:\s*Quick Findings/i);
+    expect(html).not.toMatch(/Merged:\s*Quick Select/i);
+    expect(html).not.toMatch(/data-provenance|data-editor-only|provenance-legend|provenance-map/i);
+    expect(html).not.toContain("bg-sky-500");
+    expect(html).not.toContain("bg-emerald-500");
+  });
+});

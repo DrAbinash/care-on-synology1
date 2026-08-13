@@ -4,6 +4,7 @@ import {
   clampRightPct,
   defaultModeState,
   defaultWorkspaceLayoutPrefs,
+  DEFAULT_LAYOUT_MODE,
   fallbackModeWhenPopupBlocked,
   isWorkspaceLayoutMode,
   LEFT_COLLAPSED_PCT,
@@ -97,6 +98,13 @@ describe("isWorkspaceLayoutMode", () => {
     expect(isWorkspaceLayoutMode(null)).toBe(false);
     expect(isWorkspaceLayoutMode(42)).toBe(false);
     expect(isWorkspaceLayoutMode(undefined)).toBe(false);
+  });
+});
+
+describe("defaultWorkspaceLayoutPrefs", () => {
+  it("defaults to split so the embedded OHIF viewer is visible on first visit", () => {
+    expect(DEFAULT_LAYOUT_MODE).toBe("split");
+    expect(defaultWorkspaceLayoutPrefs().mode).toBe("split");
   });
 });
 

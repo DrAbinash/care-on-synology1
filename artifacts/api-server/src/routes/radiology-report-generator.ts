@@ -50,6 +50,7 @@ import {
   reportFindingInstancesTable,
   pacsSettingsTable,
   testsTable,
+  signaturesTable,
 } from "@workspace/db/schema";
 import { eq, and, desc, isNull, asc, ilike, or, inArray, sql } from "drizzle-orm";
 import { requireAdminRole, type StaffAuthRequest } from "../middleware/requireStaffAuth";
@@ -69,6 +70,7 @@ import {
   buildInstitutionalStyleCss,
 } from "../lib/institutionalReportStyle";
 import { resolveDraftKeyImages } from "../lib/reportImages";
+import { reconcileAccessionVsReferringDoctor } from "../lib/pacs/dicomNameNormalize";
 import { isFeatureEnabledServer } from "../lib/featureFlags";
 import { checkWriteLock } from "../lib/studyLocks";
 import { regenerateDraftStructuredJson } from "../lib/radiologyStructuredJsonCache";
@@ -767,6 +769,52 @@ function escHtml(v: string): string {
     .replaceAll('"', "&quot;");
 }
 
+function hasReportDemographyValue(v: string | null | undefined): boolean {
+  return String(v ?? "").trim().length > 0;
+}
+
+function formatReportAgeSexLine(age: string | null | undefined, sex: string | null | undefined): string {
+  const a = String(age ?? "").trim();
+  const s = String(sex ?? "").trim();
+  if (!a && !s) return "";
+  if (a && s) return `${a}/${s}`;
+  return a || s;
+}
+
+function buildClassicPatientHeaderHtml(input: {
+  patientName?: string | null;
+  age?: string | null;
+  sex?: string | null;
+  patientId?: string | null;
+  accessionNumber?: string | null;
+  referringDoctor?: string | null;
+  studyDate?: string | null;
+}): string {
+  const line1Parts: string[] = [];
+  if (hasReportDemographyValue(input.patientName)) {
+    line1Parts.push(`NAME: ${escHtml(String(input.patientName).trim())}`);
+  }
+  const ageSex = formatReportAgeSexLine(input.age, input.sex);
+  if (ageSex) line1Parts.push(`AGE/SEX: ${escHtml(ageSex)}`);
+  if (hasReportDemographyValue(input.patientId)) {
+    line1Parts.push(`UHID: ${escHtml(String(input.patientId).trim())}`);
+  }
+  if (hasReportDemographyValue(input.accessionNumber)) {
+    line1Parts.push(`ACC: ${escHtml(String(input.accessionNumber).trim())}`);
+  }
+  const line2Parts: string[] = [];
+  if (hasReportDemographyValue(input.referringDoctor)) {
+    line2Parts.push(`REF. BY: ${escHtml(String(input.referringDoctor).trim())}`);
+  }
+  if (hasReportDemographyValue(input.studyDate)) {
+    line2Parts.push(`DATE: ${escHtml(String(input.studyDate).trim())}`);
+  }
+  return [line1Parts.join(" &nbsp;&nbsp; "), line2Parts.join(" &nbsp;&nbsp; ")]
+    .filter(Boolean)
+    .map((line) => `<p style="margin:0 0 2px;"><strong>${line}</strong></p>`)
+    .join("\n");
+}
+
 // Preference-aware section heading formatter
   function fmtHeading(text: string, headingCase: "all_caps" | "title_case"): string {
     if (headingCase === "all_caps") return text.toUpperCase();
@@ -930,11 +978,23 @@ function escHtml(v: string): string {
       </div>`
       : "";
 
+    const reconciledIds = reconcileAccessionVsReferringDoctor({
+      accessionNumber: input.accessionNumber,
+      referringDoctor: input.referringDoctor,
+    });
+
     const headerHtml = prefs.headerLine1
       ? `<p style="margin:0 0 2px;"><strong>${escHtml(prefs.headerLine1)}</strong></p>
     <p style="margin:0 0 2px;"><strong>${escHtml(line2)}</strong></p>`
-      : `<p style="margin:0 0 2px;"><strong>NAME: ${escHtml(input.patientName ?? "")} &nbsp;&nbsp; AGE/SEX: ${escHtml(input.age ?? "")}/${escHtml(input.sex ?? "")} &nbsp;&nbsp; UHID: ${escHtml(input.patientId ?? "")} &nbsp;&nbsp; ACC: ${escHtml(input.accessionNumber ?? "")}</strong></p>
-    <p style="margin:0 0 2px;"><strong>REF. BY: ${escHtml(input.referringDoctor ?? "")} &nbsp;&nbsp; DATE: ${escHtml(input.studyDate ?? "")}</strong></p>`;
+      : buildClassicPatientHeaderHtml({
+        patientName: input.patientName,
+        age: input.age,
+        sex: input.sex,
+        patientId: input.patientId,
+        accessionNumber: reconciledIds.accessionNumber,
+        referringDoctor: reconciledIds.referringDoctor,
+        studyDate: input.studyDate,
+      });
 
     const footerBlock = (!isPlainPaper && prefs.showEndOfReportFooter !== false)
       ? `<hr style="border:none;border-top:1px solid #999;margin:${sp2} 0 4px;" />
@@ -1870,7 +1930,27 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
 
   const likeFinal = req.query.likeFinal === "true";
 
-  const model: ReportDocumentModel = {
+    const ids = reconcileAccessionVsReferringDoctor({
+      accessionNumber: worklist?.accessionNumber ?? "",
+      referringDoctor: worklist?.referringDoctor ?? "",
+    });
+    let previewSignatures: ReportDocumentModel["signatures"] = [];
+    try {
+      const [sig] = await db.select().from(signaturesTable).where(eq(signaturesTable.isActive, true)).limit(1);
+      if (sig) {
+        previewSignatures = [{
+          name: sig.name,
+          qualification: sig.qualification || null,
+          role: sig.role ?? null,
+          registrationNo: sig.registrationNo || null,
+          imageDataUrl: sig.imageDataUrl ?? null,
+          label: "Signed:",
+          whenLabel: "",
+        }];
+      }
+    } catch { /* preview still works without a signature row */ }
+
+    const model: ReportDocumentModel = {
     reportNumber: likeFinal ? `PREVIEW-${draft.id}` : `DRAFT-${draft.id}`,
     studyTitle,
     typeLabel: "RADIOLOGY",
@@ -1889,8 +1969,8 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
       { label: "Age / Sex", value: [worklist?.age, worklist?.sex].filter(Boolean).join(" / ") },
       { label: "UHID", value: patientUhid ?? "" },
       { label: "Study Date", value: formattedStudyDate },
-      { label: "Referring Doctor", value: worklist?.referringDoctor ?? "" },
-      { label: "Accession No.", value: worklist?.accessionNumber ?? "" },
+      { label: "Referring Doctor", value: ids.referringDoctor },
+      { label: "Accession No.", value: ids.accessionNumber },
       { label: "Test", value: catalogTestName ?? draft.studyName ?? "" },
       { label: "Modality", value: draft.modality ?? worklist?.modality ?? "" },
     ],
@@ -1899,7 +1979,7 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
     stamp: likeFinal
       ? { kind: "pending", label: "PREVIEW (unsigned)" }
       : { kind: "draft", label: "DRAFT (not signed)" },
-    signatures: [],
+    signatures: previewSignatures,
     showQrPlaceholder: false,
     footerNote: clinic?.footerNote ?? "",
     generatedAtLabel: new Date().toLocaleString("en-IN"),
