@@ -63,6 +63,7 @@ vi.mock("@workspace/db/schema", () => ({
 }));
 
 vi.mock("@workspace/integrations-gemini-ai", () => ({ geminiParseBankStatement: vi.fn() }));
+vi.mock("../lib/ocr/localDocumentOcr", () => ({ parseBankStatementLocal: vi.fn() }));
 vi.mock("../lib/accounting/reportBuilders", () => ({
   buildTrialBalance: vi.fn(), buildProfitLoss: vi.fn(), buildBalanceSheet: vi.fn(),
 }));

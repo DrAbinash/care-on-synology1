@@ -32,6 +32,7 @@ import {
 } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
+import { EmergencyBillingReconciliationTab } from "@/components/EmergencyBillingReconciliationTab";
 import {
   INTEGRATIONS_OPS_LINKS,
   RADIOLOGY_AI_LINKS,
@@ -193,6 +194,7 @@ const TABS: SettingsTabDef[] = [
   { id: "queue-settings", label: "Queue Settings", icon: ClipboardList, group: "Portals" },
   { id: "queue-display", label: "Queue Display (TV)", icon: Tv, group: "Portals" },
   { id: "billing-print", label: "Billing Print", icon: FileText, group: "Billing" },
+  { id: "emergency-billing", label: "Emergency Billing", icon: AlertTriangle, group: "Billing" },
   { id: "receipt-messages", label: "Receipt Messages", icon: MessageCircle, group: "Billing" },
   { id: "footer-services", label: "Footer Services", icon: Layers, group: "Billing" },
   { id: "promotional-footer", label: "Promotional Footer", icon: Tag, group: "Billing" },
@@ -438,6 +440,7 @@ export default function Settings() {
         )}
         {tab === "printers" && <PrinterTab />}
         {tab === "billing-print" && <BillingPrintTab />}
+        {tab === "emergency-billing" && <EmergencyBillingReconciliationTab />}
         {tab === "receipt-messages" && <ReceiptMessagesTab />}
         {tab === "footer-services" && <FooterServicesTab />}
         {tab === "promotional-footer" && <PromotionalFooterTab />}
@@ -9060,6 +9063,22 @@ function ScannerSettingsTab() {
   const [displaySeconds, setDisplaySeconds] = useState(10);
   
   const [saving, setSaving] = useState(false);
+  const [purgingScans, setPurgingScans] = useState(false);
+
+  async function purgeUnlinkedScans() {
+    setPurgingScans(true);
+    try {
+      const result = await api.post<{ deletedRows: number; deletedFiles: number; retentionDays: number }>("/api/scans/purge-unlinked", {});
+      toast({
+        title: "Unlinked scans purged",
+        description: `Removed ${result.deletedRows} row(s) and ${result.deletedFiles} file(s) older than ${result.retentionDays} days.`,
+      });
+    } catch (e) {
+      toast({ title: "Purge failed", description: (e as Error).message, variant: "destructive" });
+    } finally {
+      setPurgingScans(false);
+    }
+  }
 
   useEffect(() => {
     if (!settings) return;
@@ -9370,6 +9389,18 @@ function ScannerSettingsTab() {
             </label>
           </div>
         </div>
+      </div>
+
+      <div className="bg-card border border-border rounded-xl p-5 space-y-4">
+        <div>
+          <h3 className="font-semibold text-base">Document scan archive</h3>
+          <p className="text-sm text-muted-foreground mt-0.5">
+            Purge unlinked captures from the shared scanned_documents store (Form F, patients, expenses, banking) past the clinic retention window.
+          </p>
+        </div>
+        <Button variant="outline" type="button" onClick={purgeUnlinkedScans} disabled={purgingScans}>
+          {purgingScans ? "Purging…" : "Purge unlinked scans now"}
+        </Button>
       </div>
 
       <div className="bg-card border border-border rounded-xl p-5 space-y-5">

@@ -1,9 +1,24 @@
-import { Router, type IRouter } from "express";
+/**
+ * Legacy bill-level queue tokens (tokens table).
+ *
+ * Deprecated: new bills derive display tokens from /api/test-tokens via
+ * deriveBillTokenFromTestTokens(). These routes remain for historical rows
+ * and backward-compatible status updates only.
+ */
+import { Router, type IRouter, type Response } from "express";
 import { db } from "@workspace/db";
 import { tokensTable, patientsTable } from "@workspace/db/schema";
-import { and, desc, eq, isNull, max, or, sql } from "drizzle-orm";
+import { and, desc, eq, isNull, or, sql } from "drizzle-orm";
 
 export const tokensRouter: IRouter = Router();
+
+const DEPRECATION_NOTE = "Deprecated: use /api/test-tokens for queue operations. Legacy bill tokens are no longer issued.";
+
+function addDeprecationHeaders(res: Response): void {
+  res.setHeader("Deprecation", "true");
+  res.setHeader("X-Deprecated-Endpoint", "/api/test-tokens");
+  res.setHeader("X-Deprecation-Notice", DEPRECATION_NOTE);
+}
 
 function todayISO(): string {
   const d = new Date();
@@ -19,45 +34,9 @@ function ledgerScope(ledgerId: number) {
     : eq(tokensTable.ledgerId, ledgerId);
 }
 
-export async function generateTokenForBill(opts: {
-  ledgerId: number;
-  billId: number;
-  patientId: number;
-  priority?: number;
-  source?: string;
-}): Promise<{ tokenNo: number; tokenDate: string }> {
-  const tokenDate = todayISO();
-  // Atomic insert: compute next token number inside the INSERT itself so two
-  // concurrent bills can never receive the same token. A unique index on
-  // (ledger_id, token_date, token_no) provides a final safety net.
-  const ledgerMatch =
-    opts.ledgerId === 1
-      ? sql`(${tokensTable.ledgerId} = 1 OR ${tokensTable.ledgerId} IS NULL)`
-      : sql`${tokensTable.ledgerId} = ${opts.ledgerId}`;
-  const nextNoExpr = sql<number>`(
-    SELECT COALESCE(MAX(${tokensTable.tokenNo}), 0) + 1
-      FROM ${tokensTable}
-     WHERE ${tokensTable.tokenDate} = ${tokenDate}
-       AND ${ledgerMatch}
-  )`;
-  const [row] = await db
-    .insert(tokensTable)
-    .values({
-      ledgerId: opts.ledgerId,
-      billId: opts.billId,
-      patientId: opts.patientId,
-      tokenNo: nextNoExpr,
-      tokenDate,
-      status: "waiting",
-      priority: opts.priority ?? 0,
-      source: opts.source ?? "walkin",
-    })
-    .returning({ tokenNo: tokensTable.tokenNo });
-  return { tokenNo: row.tokenNo, tokenDate };
-}
-
-// GET /api/tokens/today?ledgerId=N (required)
+// GET /api/tokens/today?ledgerId=N (required) — legacy rows only
 tokensRouter.get("/today", async (req, res): Promise<void> => {
+  addDeprecationHeaders(res);
   const raw = req.query.ledgerId;
   const ledgerId = Number(raw);
   if (raw === undefined || raw === "" || !Number.isInteger(ledgerId) || ledgerId <= 0) {
@@ -90,6 +69,7 @@ tokensRouter.get("/today", async (req, res): Promise<void> => {
 
 // PATCH /api/tokens/:id  { status?, priority? }
 tokensRouter.patch("/:id", async (req, res): Promise<void> => {
+  addDeprecationHeaders(res);
   const id = Number(req.params.id);
   const { status, priority } = req.body as { status?: string; priority?: number };
   const updates: Partial<typeof tokensTable.$inferInsert> = {};

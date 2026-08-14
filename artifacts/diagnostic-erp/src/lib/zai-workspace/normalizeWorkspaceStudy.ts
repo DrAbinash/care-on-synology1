@@ -65,7 +65,10 @@ export function normalizeWorkspaceStudy(raw: unknown): Study | null {
   const patient: Patient = {
     id: asString(patientId, "0"),
     name: asString(nested?.name ?? r.patientName, "Unknown"),
-    age: asNumber(nested?.age ?? r.patientAge, 0),
+    age: (() => {
+      const n = asNumber(nested?.age ?? r.patientAge, 0);
+      return n > 0 && n <= 120 ? n : 0;
+    })(),
     sex: asSex(nested?.sex ?? r.patientSex),
     uhid: asString(nested?.uhid ?? r.uhid ?? r.patientId, ""),
     phone: nested?.phone != null || r.patientPhone != null

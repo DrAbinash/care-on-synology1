@@ -18,8 +18,8 @@ export const WORKSPACE_LAYOUT_MODES: readonly WorkspaceLayoutMode[] = [
   "dualScreen",
 ];
 
-/** First visit defaults to Report Focus so the writing column owns the screen. */
-export const DEFAULT_LAYOUT_MODE: WorkspaceLayoutMode = "reportFocus";
+/** First visit defaults to Split so the embedded OHIF / WADO viewer is visible. */
+export const DEFAULT_LAYOUT_MODE: WorkspaceLayoutMode = "split";
 
 // ── Column-width constraints (percentage of the 3-column body) ─────────────
 // Kept wide enough to be useful, tight enough that no column can crush

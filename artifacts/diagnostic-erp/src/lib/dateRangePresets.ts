@@ -14,9 +14,7 @@ export function todayISO(): string {
 }
 
 export function daysAgoISO(n: number): string {
-  const d = new Date();
-  d.setDate(d.getDate() - n);
-  return d.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+  return shiftISODate(todayISO(), -n);
 }
 
 export function startOfWeekISO(): string {

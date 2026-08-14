@@ -13,6 +13,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { aiClient } from "@/lib/aiClient";
+import { api } from "@/lib/fetchApi";
 import { Moon, Play, RefreshCw, Save, Bot, Zap, Clock } from "lucide-react";
 
 const MODALITY_OPTIONS: Array<{ code: string; label: string; hint: string }> = [
@@ -42,14 +43,25 @@ export default function OvernightAiSettings() {
     queryFn: () => aiClient.getQueue(),
     refetchInterval: 30_000,
   });
+  const { data: masterFlagOn } = useQuery({
+    queryKey: ["feature-flags", "ff_radiology_ai"],
+    queryFn: async () => {
+      const rows = await api.get<Array<{ key: string; enabled: boolean }>>("/api/feature-flags");
+      return rows.find((r) => r.key === "ff_radiology_ai")?.enabled ?? false;
+    },
+  });
 
   const [timing, setTiming] = useState<DraftTiming>("on_arrival");
   const [selected, setSelected] = useState<string[]>([]);
-  const [nightStart, setNightStart] = useState("23:00");
-  const [nightEnd, setNightEnd] = useState("06:00");
-  const [quietStart, setQuietStart] = useState("08:00");
-  const [quietEnd, setQuietEnd] = useState("20:00");
+  const [nightStart, setNightStart] = useState("17:00");
+  const [nightEnd, setNightEnd] = useState("10:00");
+  const [quietStart, setQuietStart] = useState("10:00");
+  const [quietEnd, setQuietEnd] = useState("17:00");
   const [enableAi, setEnableAi] = useState(true);
+
+  useEffect(() => {
+    if (masterFlagOn !== undefined) setEnableAi(masterFlagOn);
+  }, [masterFlagOn]);
 
   useEffect(() => {
     const active = policies
@@ -86,6 +98,9 @@ export default function OvernightAiSettings() {
     onSuccess: (res) => {
       void qc.invalidateQueries({ queryKey: ["ai-modality-policies"] });
       void qc.invalidateQueries({ queryKey: ["ai-scheduler-config"] });
+      void qc.invalidateQueries({ queryKey: ["feature-flags"] });
+      void qc.invalidateQueries({ queryKey: ["ai-reporting-settings"] });
+      window.dispatchEvent(new Event("featureFlagsChanged"));
       toast({
         title: "AI draft automation saved",
         description: `${timing === "on_arrival" ? "On DICOM arrival" : `Scheduled ${nightStart}–${nightEnd}`}: ${selectedLabel}. Master AI ${res.masterEnabled ? "ON" : "OFF"}.`,
@@ -168,7 +183,7 @@ export default function OvernightAiSettings() {
               <Clock className="h-4 w-4" /> At scheduled time
             </div>
             <p className={`text-[10px] mt-1 ${timing === "scheduled" ? "text-indigo-100" : "text-muted-foreground"}`}>
-              Batch runs only inside the night window below (e.g. after midnight).
+              Batch runs only inside the night window below (default 17:00–10:00 IST). Cron polls every 15 min; the window check is server-side.
             </p>
           </button>
         </div>

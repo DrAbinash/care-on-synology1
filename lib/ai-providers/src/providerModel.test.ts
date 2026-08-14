@@ -106,21 +106,29 @@ describe("Anthropic — selected model reaches the client unchanged", () => {
   });
 });
 
-describe("Ollama — selected model reaches the client unchanged", () => {
-  const okTags = { ok: true, json: async () => ({ models: [{ name: "gemma3:4b" }, { name: "gemma3:12b" }, { name: "qwen3:14b" }] }) };
-  beforeEach(() => { vi.stubGlobal("fetch", vi.fn(async () => okTags as unknown as Response)); });
+describe("Ollama — selected model reaches native /api/chat unchanged", () => {
+  const bodies: Array<Record<string, unknown>> = [];
+  beforeEach(() => {
+    bodies.length = 0;
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      if (String(url).endsWith("/api/tags")) {
+        return { ok: true, json: async () => ({ models: [{ name: "gemma3:4b" }, { name: "qwen3-vl:8b" }, { name: "qwen3:14b" }] }) } as unknown as Response;
+      }
+      if (init?.body) bodies.push(JSON.parse(String(init.body)));
+      return { ok: true, json: async () => ({ message: { content: "CONNECTED" } }) } as unknown as Response;
+    }));
+  });
 
-  it("passes the submitted model VERBATIM and not the fallback probe", async () => {
+  it("passes the submitted model VERBATIM on /api/chat", async () => {
     const p = await createAiProvider("ollama", undefined, "http://172.16.1.140:11434");
-    const r = await p!.testConnection("qwen3:14b");
+    const r = await p!.testConnection("qwen3-vl:8b");
     expect(r.ok).toBe(true);
-    expect(openaiCreate).toHaveBeenCalledWith(expect.objectContaining({ model: "qwen3:14b" }));
-    expect(openaiCreate).not.toHaveBeenCalledWith(expect.objectContaining({ model: "gemma3:4b" }));
+    expect(bodies.some((b) => b.model === "qwen3-vl:8b")).toBe(true);
+    expect(bodies.some((b) => b.model === "gemma3:4b")).toBe(false);
   });
   it("uses the gemma3:4b default probe ONLY when no model is supplied", async () => {
-    // gemma3:4b is the routine default for the Windows OCR/AI worker.
     const p = await createAiProvider("ollama", undefined, "http://172.16.1.140:11434");
     await p!.testConnection();
-    expect(openaiCreate).toHaveBeenCalledWith(expect.objectContaining({ model: "gemma3:4b" }));
+    expect(bodies.some((b) => b.model === "gemma3:4b")).toBe(true);
   });
 });

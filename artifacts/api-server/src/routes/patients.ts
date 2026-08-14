@@ -73,6 +73,39 @@ async function releasePatientIdLock(): Promise<void> {
   await db.execute(sql`SELECT pg_advisory_unlock(${PATIENT_ID_LOCK})`).catch(() => {});
 }
 
+/** Same UHID lock + patients insert as POST /api/patients (no parallel emergency patient table). */
+export async function createCanonicalPatient(values: {
+  firstName: string;
+  lastName: string;
+  phone: string;
+  dateOfBirth: string;
+  gender: string;
+  ageValue?: number | null;
+  ageUnit?: string | null;
+  address?: string | null;
+}): Promise<PatientRow> {
+  const patientId = await generatePatientId();
+  try {
+    const [patient] = await db
+      .insert(patientsTable)
+      .values({
+        patientId,
+        firstName: values.firstName.trim() || "Unknown",
+        lastName: values.lastName.trim() || "-",
+        phone: values.phone.trim() || "0000000000",
+        dateOfBirth: values.dateOfBirth,
+        gender: values.gender,
+        ageValue: values.ageValue ?? null,
+        ageUnit: values.ageUnit ?? null,
+        address: values.address ?? null,
+      })
+      .returning();
+    return patient;
+  } finally {
+    await releasePatientIdLock();
+  }
+}
+
 patientsRouter.get("/", async (req, res) => {
   const parsed = ListPatientsQueryParams.safeParse(req.query);
   if (!parsed.success) {

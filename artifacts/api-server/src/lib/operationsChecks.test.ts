@@ -201,7 +201,7 @@ describe("buildOperationsReport — end to end with a fake ctx", () => {
         }
         if (text.includes("schema_deploy_state")) return [{ key: "db_patch_ok", value: "true" }, { key: "schema_verify_status", value: "full_pass" }];
         if (text.includes("sync_status = 'synced'")) return [{ m: new Date(NOW.getTime() - 60000).toISOString(), n: 2 }];
-        if (text.includes("study_received_at")) return [{ m: new Date(NOW.getTime() - 60000).toISOString() }];
+        if (text.includes("dicom_studies") && text.includes("created_at")) return [{ m: new Date(NOW.getTime() - 60000).toISOString() }];
         if (text.includes("backup_job_logs")) return [{ created_at: new Date(NOW.getTime() - 3600000).toISOString(), size_bytes: 1048576 }];
         return [{ c: 0, ok: 1 }];
       },

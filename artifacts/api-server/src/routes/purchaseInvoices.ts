@@ -31,9 +31,8 @@ import {
   vendorsTable,
 } from "@workspace/db/schema";
 import { eq, desc } from "drizzle-orm";
-import { geminiOcrInvoice } from "@workspace/integrations-gemini-ai";
 import { preprocessScanImage } from "../lib/ocr/idCardPipeline";
-import { getProviderApiKey } from "@workspace/ai-providers";
+import { ocrInvoice } from "../lib/ocr/localDocumentOcr";
 import { matchInvoiceLineToCatalog, AUTO_MATCH_THRESHOLD } from "../lib/invoiceLineMatching";
 import { receiveBatchTx } from "./inventoryBatches";
 import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
@@ -76,7 +75,9 @@ async function matchLinesToCatalog(lineItems: RawLineItem[]) {
 
 // ── POST /scan — OCR + catalog-match, no persistence ──────────────────────
 router.post("/scan", async (req, res) => {
-  const { imageBase64, mimeType } = req.body as { imageBase64?: string; mimeType?: string };
+  const { imageBase64, mimeType, useGeminiFallback } = req.body as {
+    imageBase64?: string; mimeType?: string; useGeminiFallback?: boolean;
+  };
   if (!imageBase64 || !mimeType) {
     res.status(400).json({ error: "imageBase64 and mimeType are required" });
     return;
@@ -93,12 +94,9 @@ router.post("/scan", async (req, res) => {
 
   try {
     const pre = await preprocessScanImage(imageBase64, mimeType);
-    const dbApiKey = await getProviderApiKey("gemini").catch(() => null);
-    const ocr = await geminiOcrInvoice(
-      pre.buffer.toString("base64"),
-      pre.mimeType,
-      dbApiKey ? { apiKey: dbApiKey } : {},
-    );
+    const ocr = await ocrInvoice(pre.buffer.toString("base64"), pre.mimeType, {
+      useGeminiFallback: Boolean(useGeminiFallback),
+    });
 
     const [vendorId, lineItems] = await Promise.all([
       lookupVendorByName(ocr.vendor),
@@ -115,6 +113,9 @@ router.post("/scan", async (req, res) => {
       totalAmount: ocr.totalAmount,
       confidence: ocr.confidence,
       confidencePercent: ocr.confidencePercent,
+      ocrProvider: ocr.ocrProvider,
+      tesseractFallbackSuggested: ocr.tesseractFallbackSuggested,
+      geminiFallbackAvailable: ocr.geminiFallbackAvailable,
       lineItems,
       blurScore: pre.blurScore,
       isBlurred: pre.isBlurred,
