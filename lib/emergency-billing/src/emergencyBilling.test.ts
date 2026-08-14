@@ -3,17 +3,26 @@ import {
   applyIdempotentOutcome,
   buildEmergencyJsonPackage,
   classifyPatientMatch,
+  countsFromSnapshot,
   CSV_FORMAT,
   duePreserved,
   emptyImportResult,
+  emergencyMasterSyncIntervalHours,
   formatEmgBillNumber,
   isSafeToAutoImport,
   isValidEmgBillNumber,
+  JSON_FORMAT,
+  MASTER_FORMAT,
   parseEmergencyCsv,
   parseEmergencyJson,
   parseEmgBillNumber,
+  parseMasterSnapshot,
   serializeEmergencyCsv,
+  shouldSkipScheduledPush,
+  snapshotAgeBand,
+  stampMasterSnapshot,
   summarizeTransactions,
+  UnsupportedContractError,
   verifyJsonChecksum,
   type EmergencyTransaction,
 } from "./index";
@@ -195,5 +204,98 @@ describe("partial payment preservation", () => {
     expect(s.collected).toBe(3000);
     expect(s.due).toBe(1000);
     expect(duePreserved(t)).toBe(true);
+  });
+});
+
+function sampleMaster() {
+  return stampMasterSnapshot({
+    syncedAt: "2026-08-14T11:35:00.000Z",
+    services: [{ id: 1, code: "MRI-BR", name: "MRI Brain", category: "MRI", price: 4000, isActive: true }],
+    doctors: [{ id: 2, name: "Dr Test", specialization: "Radiology" }],
+    patients: [{
+      id: 10, patientId: "P-00010", firstName: "Ravi", lastName: "Kumar",
+      phone: "9876543210", gender: "male", dateOfBirth: null, ageValue: 42, ageUnit: "years",
+    }],
+    staff: [{
+      id: 1, name: "Owner", username: "owner@test", role: "super_admin",
+      pinHash: "hash", maxDiscount: 100, permissions: null,
+    }],
+    discountReasons: ["STAFF"],
+  });
+}
+
+describe("CARE_EMERGENCY_MASTER_V1", () => {
+  it("accepts the current contract and stamps format/version", () => {
+    const snap = sampleMaster();
+    expect(snap.format).toBe(MASTER_FORMAT);
+    expect(snap.version).toBe(1);
+    const parsed = parseMasterSnapshot(snap);
+    expect(parsed.services).toHaveLength(1);
+    expect(countsFromSnapshot(parsed)).toEqual({
+      serviceCount: 1, doctorCount: 1, patientCount: 1, staffCount: 1,
+    });
+  });
+
+  it("rejects an incompatible future schema version", () => {
+    expect(() => parseMasterSnapshot({ ...sampleMaster(), version: 2 })).toThrow(UnsupportedContractError);
+    expect(() => parseMasterSnapshot({ ...sampleMaster(), format: "CARE_EMERGENCY_MASTER_V2" })).toThrow(/Unsupported master-data format/);
+  });
+
+  it("rejects a payload with no format rather than guessing", () => {
+    const { format: _f, version: _v, ...rest } = sampleMaster();
+    expect(() => parseMasterSnapshot(rest)).toThrow(/Expected CARE_EMERGENCY_MASTER_V1/);
+  });
+});
+
+describe("billing JSON/CSV contract versions", () => {
+  it("rejects an incompatible JSON package version", () => {
+    const { pkg, errors } = parseEmergencyJson(JSON.stringify({
+      format: JSON_FORMAT,
+      version: 99,
+      exportedAt: "2026-08-14T00:00:00.000Z",
+      masterDataLastSyncedAt: null,
+      sessions: [],
+      transactions: [sampleTxn()],
+      checksumSha256: "x",
+    }));
+    expect(pkg).toBeNull();
+    expect(errors[0]).toMatch(/Unsupported JSON contract version 99/);
+  });
+
+  it("rejects an unknown CSV format row", () => {
+    const csv = serializeEmergencyCsv([sampleTxn()]).replace(CSV_FORMAT, "CARE_EMERGENCY_BILLING_V9");
+    const { transactions, errors } = parseEmergencyCsv(csv);
+    expect(transactions).toHaveLength(0);
+    expect(errors.some((e) => e.includes("unsupported format"))).toBe(true);
+  });
+});
+
+describe("snapshot age bands", () => {
+  const now = new Date("2026-08-14T12:00:00.000Z");
+
+  it("never / fresh / warning / stale", () => {
+    expect(snapshotAgeBand(null, now)).toBe("never");
+    expect(snapshotAgeBand("2026-08-14T10:00:00.000Z", now)).toBe("fresh");
+    expect(snapshotAgeBand("2026-08-14T04:00:00.000Z", now)).toBe("warning");
+    expect(snapshotAgeBand("2026-08-13T10:00:00.000Z", now)).toBe("stale");
+  });
+
+  it("does not treat stale data as a hard failure — billing may continue", () => {
+    expect(snapshotAgeBand("2026-08-01T00:00:00.000Z", now)).toBe("stale");
+  });
+});
+
+describe("scheduled push skip (idempotent interval)", () => {
+  const now = new Date("2026-08-14T12:00:00.000Z");
+
+  it("reads EMERGENCY_MASTER_SYNC_INTERVAL_HOURS", () => {
+    expect(emergencyMasterSyncIntervalHours({} as NodeJS.ProcessEnv)).toBe(6);
+    expect(emergencyMasterSyncIntervalHours({ EMERGENCY_MASTER_SYNC_INTERVAL_HOURS: "12" } as NodeJS.ProcessEnv)).toBe(12);
+  });
+
+  it("skips a scheduled tick after a recent manual push", () => {
+    expect(shouldSkipScheduledPush("2026-08-14T11:05:00.000Z", 6, now)).toBe(true);
+    expect(shouldSkipScheduledPush("2026-08-14T05:00:00.000Z", 6, now)).toBe(false);
+    expect(shouldSkipScheduledPush(null, 6, now)).toBe(false);
   });
 });

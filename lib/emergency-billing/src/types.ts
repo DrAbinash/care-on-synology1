@@ -5,7 +5,15 @@
 
 export const CSV_FORMAT = "CARE_EMERGENCY_BILLING_V1" as const;
 export const JSON_FORMAT = "CARE_EMERGENCY_BILLING_JSON_V1" as const;
+export const MASTER_FORMAT = "CARE_EMERGENCY_MASTER_V1" as const;
+export const MASTER_VERSION = 1 as const;
 export const SOURCE = "LOCAL_EMERGENCY" as const;
+
+export const PUSH_INITIATORS = ["MANUAL", "SCHEDULER", "EVENT"] as const;
+export type PushInitiator = (typeof PUSH_INITIATORS)[number];
+
+export const SNAPSHOT_AGE_BANDS = ["never", "fresh", "warning", "stale"] as const;
+export type SnapshotAgeBand = (typeof SNAPSHOT_AGE_BANDS)[number];
 
 export const PAYMENT_MODES = ["cash", "upi", "card"] as const;
 export type PaymentMode = (typeof PAYMENT_MODES)[number];
@@ -151,7 +159,16 @@ export interface ImportBatchResult {
   failureDetails: Array<{ uuid: string; error: string }>;
 }
 
+export interface MasterPushCounts {
+  serviceCount: number;
+  doctorCount: number;
+  patientCount: number;
+  staffCount: number;
+}
+
 export interface MasterDataSnapshot {
+  format: typeof MASTER_FORMAT;
+  version: typeof MASTER_VERSION;
   syncedAt: string;
   services: Array<{
     id: number;
