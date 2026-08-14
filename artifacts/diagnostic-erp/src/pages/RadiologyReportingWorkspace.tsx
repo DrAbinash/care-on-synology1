@@ -1376,7 +1376,10 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         } as any),
         {
           title: workflow.currentRow?.studyDescription ?? "Report",
-          htmlBody: `<h2>${workflow.currentRow?.studyDescription ?? "Report"}</h2><p><b>Findings:</b> ${findingsText}</p><p><b>Impression:</b> ${impressionText}</p><p><b>Recommendation:</b> ${recommendationText}</p>`,
+          htmlBody: (() => {
+            const esc = (s: string) => s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;");
+            return `<h2>${esc(workflow.currentRow?.studyDescription ?? "Report")}</h2><p><b>Findings:</b> ${esc(findingsText).replace(/\n/g,"<br/>")}</p><p><b>Impression:</b> ${esc(impressionText).replace(/\n/g,"<br/>")}</p><p><b>Recommendation:</b> ${esc(recommendationText).replace(/\n/g,"<br/>")}</p>`;
+          })(),
           impression: [impressionText],
           isCritical: criticalMarked,
           criticalNote: criticalNote || (criticalHits.length > 0 ? criticalHits.map(h => h.label).join(", ") : null),
