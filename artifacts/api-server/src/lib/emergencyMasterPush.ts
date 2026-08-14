@@ -1,11 +1,15 @@
 import {
   MASTER_FORMAT,
+  compareMasterContract,
   countsFromSnapshot,
   emergencyMasterSyncIntervalHours,
+  masterPushBlockedReason,
+  parseEmergencyCapability,
   parseEmergencyJson,
   shouldSkipScheduledPush,
   snapshotAgeBand,
   snapshotAgeHours,
+  type EmergencyCapability,
   type MasterDataSnapshot,
   type MasterPushCounts,
   type PushInitiator,
@@ -37,6 +41,47 @@ export async function probeEmergencyNas(
     return res.ok ? "ONLINE" : "OFFLINE";
   } catch {
     return "OFFLINE";
+  }
+}
+
+export async function fetchEmergencyCapability(
+  baseUrl: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<EmergencyCapability | null> {
+  const url = baseUrl.replace(/\/+$/, "");
+  if (!url) return null;
+  for (const path of ["/api/capability", "/api/health"]) {
+    try {
+      const res = await fetchImpl(`${url}${path}`, { signal: AbortSignal.timeout(4_000) });
+      if (!res.ok) continue;
+      const parsed = parseEmergencyCapability(await res.json());
+      if (parsed) return parsed;
+    } catch {
+      /* try next path */
+    }
+  }
+  return null;
+}
+
+export async function fetchEmergencyOpsStatus(
+  opts: { baseUrl: string; token: string; fetchImpl?: typeof fetch },
+): Promise<{ pendingTransactionCount: number; openSessionCount: number } | null> {
+  const fetchImpl = opts.fetchImpl ?? fetch;
+  const url = opts.baseUrl.replace(/\/+$/, "");
+  if (!url || !opts.token) return null;
+  try {
+    const res = await fetchImpl(`${url}/api/internal/ops-status`, {
+      headers: nasHeaders(opts.token),
+      signal: AbortSignal.timeout(4_000),
+    });
+    if (!res.ok) return null;
+    const body = (await res.json()) as Record<string, unknown>;
+    const pending = Number(body.pendingTransactionCount);
+    const open = Number(body.openSessionCount);
+    if (!Number.isFinite(pending) || !Number.isFinite(open)) return null;
+    return { pendingTransactionCount: pending, openSessionCount: open };
+  } catch {
+    return null;
   }
 }
 
@@ -173,6 +218,28 @@ export async function runEmergencyMasterPush(
     }
   }
 
+  const capability = await fetchEmergencyCapability(cfg.baseUrl, deps.fetchImpl);
+  const blocked = masterPushBlockedReason(capability?.supportedMasterContractVersions ?? null);
+  if (blocked) {
+    const log: MasterPushLogRow = {
+      initiatedBy: opts.initiatedBy,
+      userName: opts.userName,
+      userId: opts.userId,
+      targetUrl: cfg.baseUrl,
+      snapshotFormat: MASTER_FORMAT,
+      snapshotVersion: 1,
+      serviceCount: null,
+      doctorCount: null,
+      patientCount: null,
+      staffCount: null,
+      success: false,
+      errorMessage: blocked,
+      pushedAt: now,
+    };
+    await deps.recordLog(log);
+    return { ok: false, error: blocked, targetUrl: cfg.baseUrl };
+  }
+
   const snapshot = await deps.buildSnapshot();
   const counts = countsFromSnapshot(snapshot);
   const posted = await postMasterSnapshotHttp({
@@ -212,6 +279,13 @@ export function emergencyStatusFromState(opts: {
   lastFailure: { at: string; error: string; initiatedBy: string } | null;
   now?: Date;
   syncIntervalHours?: number;
+  capability?: EmergencyCapability | null;
+  ops?: { pendingTransactionCount: number; openSessionCount: number } | null;
+  lastSuccessfulFetchAt?: Date | string | null;
+  lastSuccessfulReconciliationAt?: Date | string | null;
+  failedImportCount24h?: number;
+  careAppVersion?: string | null;
+  careBuildSha?: string | null;
 }): {
   nasStatus: "ONLINE" | "OFFLINE";
   configured: boolean;
@@ -222,10 +296,38 @@ export function emergencyStatusFromState(opts: {
   counts: MasterPushCounts | null;
   lastFailure: { at: string; error: string; initiatedBy: string } | null;
   syncIntervalHours: number;
+  contract: ReturnType<typeof compareMasterContract>;
+  app225: {
+    appVersion: string | null;
+    buildSha: string | null;
+    databaseHealthy: boolean | null;
+    masterSnapshotPresent: boolean | null;
+    masterSnapshotCreatedAt: string | null;
+  };
+  careIntegration: {
+    expectedContract: string;
+    appVersion: string | null;
+    buildSha: string | null;
+  };
+  lastSuccessfulFetchAt: string | null;
+  lastSuccessfulReconciliationAt: string | null;
+  pendingEmergencyBills: number | null;
+  openEmergencySessions: number | null;
+  failedImportCount24h: number;
 } {
   const last = opts.lastSuccessfulPushAt
     ? (typeof opts.lastSuccessfulPushAt === "string" ? opts.lastSuccessfulPushAt : opts.lastSuccessfulPushAt.toISOString())
     : null;
+  const lastFetch = opts.lastSuccessfulFetchAt
+    ? (typeof opts.lastSuccessfulFetchAt === "string" ? opts.lastSuccessfulFetchAt : opts.lastSuccessfulFetchAt.toISOString())
+    : null;
+  const lastRecon = opts.lastSuccessfulReconciliationAt
+    ? (typeof opts.lastSuccessfulReconciliationAt === "string" ? opts.lastSuccessfulReconciliationAt : opts.lastSuccessfulReconciliationAt.toISOString())
+    : null;
+  const remoteSupported = opts.nasStatus === "OFFLINE"
+    ? null
+    : (opts.capability?.supportedMasterContractVersions ?? null);
+  const contract = compareMasterContract({ remoteSupported });
   return {
     nasStatus: opts.nasStatus,
     configured: opts.configured,
@@ -236,5 +338,23 @@ export function emergencyStatusFromState(opts: {
     counts: opts.counts,
     lastFailure: opts.lastFailure,
     syncIntervalHours: opts.syncIntervalHours ?? emergencyMasterSyncIntervalHours(),
+    contract,
+    app225: {
+      appVersion: opts.capability?.appVersion ?? null,
+      buildSha: opts.capability?.buildSha ?? null,
+      databaseHealthy: opts.capability?.databaseHealthy ?? null,
+      masterSnapshotPresent: opts.capability?.masterSnapshotPresent ?? null,
+      masterSnapshotCreatedAt: opts.capability?.masterSnapshotCreatedAt ?? last,
+    },
+    careIntegration: {
+      expectedContract: MASTER_FORMAT,
+      appVersion: opts.careAppVersion ?? null,
+      buildSha: opts.careBuildSha ?? null,
+    },
+    lastSuccessfulFetchAt: lastFetch,
+    lastSuccessfulReconciliationAt: lastRecon,
+    pendingEmergencyBills: opts.ops?.pendingTransactionCount ?? null,
+    openEmergencySessions: opts.ops?.openSessionCount ?? null,
+    failedImportCount24h: opts.failedImportCount24h ?? 0,
   };
 }

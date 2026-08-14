@@ -7,3 +7,4 @@ export * from "./money";
 export * from "./idempotency";
 export * from "./master";
 export * from "./snapshotAge";
+export * from "./compatibility";

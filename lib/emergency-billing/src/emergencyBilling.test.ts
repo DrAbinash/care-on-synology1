@@ -13,6 +13,10 @@ import {
   isValidEmgBillNumber,
   JSON_FORMAT,
   MASTER_FORMAT,
+  advertisedEmergencyCapability,
+  compareMasterContract,
+  masterPushBlockedReason,
+  parseEmergencyCapability,
   parseEmergencyCsv,
   parseEmergencyJson,
   parseEmgBillNumber,
@@ -267,6 +271,39 @@ describe("billing JSON/CSV contract versions", () => {
     const { transactions, errors } = parseEmergencyCsv(csv);
     expect(transactions).toHaveLength(0);
     expect(errors.some((e) => e.includes("unsupported format"))).toBe(true);
+  });
+});
+
+describe("CARE ↔ 225app master contract compatibility", () => {
+  it("matching contract versions → COMPATIBLE", () => {
+    const advertised = advertisedEmergencyCapability();
+    expect(advertised.supportedMasterContractVersions).toEqual([MASTER_FORMAT]);
+    const cmp = compareMasterContract({ remoteSupported: advertised.supportedMasterContractVersions });
+    expect(cmp.status).toBe("COMPATIBLE");
+    expect(cmp.careExpected).toBe("CARE_EMERGENCY_MASTER_V1");
+    expect(cmp.remotePrimary).toBe("CARE_EMERGENCY_MASTER_V1");
+    expect(masterPushBlockedReason(advertised.supportedMasterContractVersions)).toBeNull();
+  });
+
+  it("unsupported version → MISMATCH and blocks master push", () => {
+    const cmp = compareMasterContract({ remoteSupported: ["CARE_EMERGENCY_MASTER_V2"] });
+    expect(cmp.status).toBe("MISMATCH");
+    expect(cmp.careExpected).toBe("CARE_EMERGENCY_MASTER_V1");
+    expect(cmp.remotePrimary).toBe("CARE_EMERGENCY_MASTER_V2");
+    expect(masterPushBlockedReason(["CARE_EMERGENCY_MASTER_V2"])).toMatch(/VERSION MISMATCH/);
+  });
+
+  it("uses the same identifier parseMasterSnapshot accepts", () => {
+    const snap = sampleMaster();
+    expect(parseMasterSnapshot(snap).format).toBe(
+      compareMasterContract({ remoteSupported: [MASTER_FORMAT] }).careExpected,
+    );
+  });
+
+  it("legacy capability body without supported versions is UNAVAILABLE (not a silent match)", () => {
+    expect(parseEmergencyCapability({ ok: true, service: "care-emergency-billing" })).toBeNull();
+    expect(compareMasterContract({ remoteSupported: null }).status).toBe("UNAVAILABLE");
+    expect(masterPushBlockedReason(null)).toBeNull();
   });
 });
 

@@ -120,12 +120,13 @@ describe("runEmergencyMasterPush", () => {
     const fetchImpl = vi.fn(async () => jsonResponse(200, { ok: true }));
     const deps = makeDeps({ fetchImpl: fetchImpl as unknown as typeof fetch });
     await runEmergencyMasterPush({ initiatedBy: "MANUAL", userName: "Owner", userId: 1 }, deps);
+    const callsAfterManual = fetchImpl.mock.calls.length;
     const scheduled = await runEmergencyMasterPush(
       { initiatedBy: "SCHEDULER", userName: "scheduler", userId: null, respectInterval: true },
       deps,
     );
     expect(scheduled).toEqual({ ok: true, skipped: true, reason: "interval" });
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl).toHaveBeenCalledTimes(callsAfterManual);
   });
 
   it("DS225+ offline fails without updating last success", async () => {
@@ -163,6 +164,54 @@ describe("runEmergencyMasterPush", () => {
     expect(r).toEqual({ ok: true, skipped: true, reason: "lock" });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
+
+  it("refuses master push on contract mismatch without posting snapshot", async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/api/capability") || url.includes("/api/health")) {
+        return jsonResponse(200, {
+          status: "ok",
+          appVersion: "1.0.0",
+          buildSha: "deadbeef",
+          supportedMasterContractVersions: ["CARE_EMERGENCY_MASTER_V2"],
+          supportedBillingCsvVersions: ["CARE_EMERGENCY_BILLING_V1"],
+          supportedBillingJsonVersions: ["CARE_EMERGENCY_BILLING_JSON_V1"],
+          databaseHealthy: true,
+          masterSnapshotPresent: true,
+          masterSnapshotCreatedAt: "2026-08-14T10:00:00.000Z",
+        });
+      }
+      return jsonResponse(200, { ok: true });
+    });
+    const deps = makeDeps({ fetchImpl: fetchImpl as unknown as typeof fetch });
+    const r = await runEmergencyMasterPush({ initiatedBy: "MANUAL", userName: "Owner", userId: 1 }, deps);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toMatch(/VERSION MISMATCH/);
+    expect(deps.lastSuccess).toBeNull();
+    expect(fetchImpl.mock.calls.some((c) => String(c[0]).includes("/api/internal/master-sync"))).toBe(false);
+  });
+
+  it("posts master snapshot when capability advertises CARE_EMERGENCY_MASTER_V1", async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/api/capability")) {
+        return jsonResponse(200, {
+          status: "ok",
+          supportedMasterContractVersions: [MASTER_FORMAT],
+          supportedBillingCsvVersions: ["CARE_EMERGENCY_BILLING_V1"],
+          supportedBillingJsonVersions: ["CARE_EMERGENCY_BILLING_JSON_V1"],
+          databaseHealthy: true,
+          masterSnapshotPresent: true,
+          masterSnapshotCreatedAt: "2026-08-14T10:00:00.000Z",
+        });
+      }
+      return jsonResponse(200, { ok: true });
+    });
+    const deps = makeDeps({ fetchImpl: fetchImpl as unknown as typeof fetch });
+    const r = await runEmergencyMasterPush({ initiatedBy: "MANUAL", userName: "Owner", userId: 1 }, deps);
+    expect(r.ok).toBe(true);
+    expect(fetchImpl.mock.calls.some((c) => String(c[0]).includes("/api/internal/master-sync"))).toBe(true);
+  });
 });
 
 describe("emergencyStatusFromState", () => {
@@ -193,5 +242,42 @@ describe("emergencyStatusFromState", () => {
     expect(s.ageBand).toBe("stale");
     expect(s.neverSynced).toBe(false);
     expect(s.counts?.serviceCount).toBe(428);
+  });
+
+  it("marks 225app offline as UNAVAILABLE contract (not a silent match)", () => {
+    const s = emergencyStatusFromState({
+      configured: true,
+      nasStatus: "OFFLINE",
+      lastSuccessfulPushAt: "2026-08-14T10:00:00.000Z",
+      counts: null,
+      lastFailure: null,
+      now,
+    });
+    expect(s.nasStatus).toBe("OFFLINE");
+    expect(s.contract.status).toBe("UNAVAILABLE");
+  });
+
+  it("surfaces compatible contract from capability", () => {
+    const s = emergencyStatusFromState({
+      configured: true,
+      nasStatus: "ONLINE",
+      lastSuccessfulPushAt: "2026-08-14T10:00:00.000Z",
+      counts: null,
+      lastFailure: null,
+      now,
+      capability: {
+        status: "ok",
+        appVersion: "1.0.0",
+        buildSha: "abc123",
+        supportedMasterContractVersions: [MASTER_FORMAT],
+        supportedBillingCsvVersions: ["CARE_EMERGENCY_BILLING_V1"],
+        supportedBillingJsonVersions: ["CARE_EMERGENCY_BILLING_JSON_V1"],
+        databaseHealthy: true,
+        masterSnapshotPresent: true,
+        masterSnapshotCreatedAt: "2026-08-14T10:00:00.000Z",
+      },
+    });
+    expect(s.contract.status).toBe("COMPATIBLE");
+    expect(s.app225.buildSha).toBe("abc123");
   });
 });

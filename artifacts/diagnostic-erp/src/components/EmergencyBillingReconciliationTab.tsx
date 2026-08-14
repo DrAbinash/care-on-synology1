@@ -19,6 +19,29 @@ type NasStatus = {
   counts: { serviceCount: number; doctorCount: number; patientCount: number; staffCount: number } | null;
   lastFailure: { at: string; error: string; initiatedBy: string } | null;
   syncIntervalHours: number;
+  contract?: {
+    status: "COMPATIBLE" | "MISMATCH" | "UNAVAILABLE";
+    careExpected: string;
+    remoteSupported: string[];
+    remotePrimary: string | null;
+  };
+  app225?: {
+    appVersion: string | null;
+    buildSha: string | null;
+    databaseHealthy: boolean | null;
+    masterSnapshotPresent: boolean | null;
+    masterSnapshotCreatedAt: string | null;
+  };
+  careIntegration?: {
+    expectedContract: string;
+    appVersion: string | null;
+    buildSha: string | null;
+  };
+  lastSuccessfulFetchAt?: string | null;
+  lastSuccessfulReconciliationAt?: string | null;
+  pendingEmergencyBills?: number | null;
+  openEmergencySessions?: number | null;
+  failedImportCount24h?: number;
 };
 
 type PushLogRow = {
@@ -158,6 +181,11 @@ function ageLabel(hours: number | null | undefined) {
   return `${days} day${days === 1 ? "" : "s"}`;
 }
 
+function shaShort(sha: string | null | undefined) {
+  if (!sha || sha === "unknown") return "unknown";
+  return sha.length > 8 ? sha.slice(0, 8) : sha;
+}
+
 function successMessage(r: PushResult) {
   const when = fmtIst(r.syncedAt);
   return [
@@ -287,6 +315,7 @@ export function EmergencyBillingReconciliationTab() {
     reader.readAsText(file);
   }
 
+  const contractMismatch = status?.contract?.status === "MISMATCH";
   const s = preview?.summary;
 
   return (
@@ -303,6 +332,38 @@ export function EmergencyBillingReconciliationTab() {
 
       <div className="bg-card border border-card-border rounded-xl p-5 space-y-3">
         <h2 className="font-bold text-lg">Emergency Billing</h2>
+        <div className="rounded-lg border bg-muted/40 p-3 text-sm font-mono leading-6" data-testid="emergency-contract-card">
+          <div>Emergency NAS: <strong>{status?.nasStatus ?? "OFFLINE"}</strong>{status?.configured === false ? " (not configured)" : ""}</div>
+          <div>225app contract: <strong>{status?.contract?.remotePrimary || (status?.nasStatus === "ONLINE" ? "unknown" : "—")}</strong></div>
+          <div>CARE expected contract: <strong>{status?.contract?.careExpected || status?.careIntegration?.expectedContract || "CARE_EMERGENCY_MASTER_V1"}</strong></div>
+          <div>
+            Status:{" "}
+            {status?.contract?.status === "COMPATIBLE" ? (
+              <strong className="text-emerald-700 dark:text-emerald-300">✓ COMPATIBLE</strong>
+            ) : status?.contract?.status === "MISMATCH" ? (
+              <strong className="text-red-700 dark:text-red-300">⚠ VERSION MISMATCH</strong>
+            ) : (
+              <strong className="text-muted-foreground">unknown</strong>
+            )}
+          </div>
+          {status?.app225?.appVersion && (
+            <div className="text-xs text-muted-foreground font-sans mt-1">
+              225app {status.app225.appVersion}
+              {status.app225.buildSha ? ` · ${shaShort(status.app225.buildSha)}` : ""}
+              {status.careIntegration?.buildSha ? ` · CARE ${shaShort(status.careIntegration.buildSha)}` : ""}
+            </div>
+          )}
+        </div>
+        {contractMismatch && (
+          <div className="rounded-lg border border-red-300 bg-red-50 dark:bg-red-950/30 p-3 text-sm">
+            <div className="font-semibold text-red-900 dark:text-red-100">⚠ VERSION MISMATCH</div>
+            <p className="mt-1 text-red-800 dark:text-red-200">
+              CARE expects: {status?.contract?.careExpected}<br />
+              225app supports: {status?.contract?.remoteSupported.join(", ") || "(none)"}
+            </p>
+            <p className="mt-1 text-xs text-red-700 dark:text-red-300">Master-data sync is blocked until both sides use the same contract.</p>
+          </div>
+        )}
         <div className="flex flex-wrap items-center gap-2 text-sm">
           <span className="font-medium">Emergency NAS status:</span>
           <Badge variant={status?.nasStatus === "ONLINE" ? "default" : "destructive"}>
@@ -313,7 +374,7 @@ export function EmergencyBillingReconciliationTab() {
           <div className="rounded-lg border border-red-300 bg-red-50 dark:bg-red-950/30 p-3 text-sm">
             <div className="font-semibold text-red-900 dark:text-red-100">Emergency NAS has never been synchronized.</div>
             <p className="mt-1 text-red-800 dark:text-red-200">Push the initial master-data snapshot before the first emergency session.</p>
-            <Button className="mt-2" onClick={() => pushMaster.mutate()} disabled={pushMaster.isPending}>
+            <Button className="mt-2" onClick={() => pushMaster.mutate()} disabled={pushMaster.isPending || contractMismatch}>
               <RefreshCcw size={14} className="mr-1" /> Push Initial Master Data
             </Button>
           </div>
@@ -331,6 +392,8 @@ export function EmergencyBillingReconciliationTab() {
         <div className="text-sm space-y-1">
           <div>Last successful master-data push: <strong>{fmtIst(status?.lastSuccessfulPushAt)}</strong></div>
           <div>Age of snapshot: <strong>{ageLabel(status?.snapshotAgeHours)}</strong></div>
+          <div>Last successful emergency fetch: <strong>{fmtIst(status?.lastSuccessfulFetchAt)}</strong></div>
+          <div>Last successful reconciliation: <strong>{fmtIst(status?.lastSuccessfulReconciliationAt)}</strong></div>
           {status?.counts && (
             <pre className="text-xs bg-muted rounded-lg p-3 whitespace-pre-wrap">{`Services: ${fmtCount(status.counts.serviceCount)}
 Doctors: ${fmtCount(status.counts.doctorCount)}
@@ -341,7 +404,7 @@ Staff: ${fmtCount(status.counts.staffCount)}`}</pre>
             <div className="text-destructive text-xs">Last failed push ({status.lastFailure.initiatedBy} at {fmtIst(status.lastFailure.at)}): {status.lastFailure.error}</div>
           )}
         </div>
-        <Button onClick={() => pushMaster.mutate()} disabled={pushMaster.isPending} size="lg">
+        <Button onClick={() => pushMaster.mutate()} disabled={pushMaster.isPending || contractMismatch} size="lg">
           <RefreshCcw size={16} className="mr-1" /> Push Master Data Now
         </Button>
       </div>

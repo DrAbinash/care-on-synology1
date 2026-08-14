@@ -1,5 +1,5 @@
-import { db, emergencyNasConfigTable, emergencyMasterPushLogTable, pool } from "@workspace/db";
-import { desc, eq } from "drizzle-orm";
+import { db, emergencyNasConfigTable, emergencyMasterPushLogTable, emergencyReconciliationBatchesTable, pool } from "@workspace/db";
+import { desc, eq, gt, gte, sql } from "drizzle-orm";
 import {
   emergencyMasterSyncIntervalHours,
   type EmergencySessionRecord,
@@ -7,9 +7,12 @@ import {
   type PushInitiator,
 } from "@workspace/emergency-billing";
 import { buildEmergencyMasterSnapshot } from "./emergencyMasterSnapshot";
+import { resolveVersionInfo } from "./operationsContext";
 import {
   EMERGENCY_MASTER_PUSH_LOCK_KEY,
   emergencyStatusFromState,
+  fetchEmergencyCapability,
+  fetchEmergencyOpsStatus,
   fetchPendingHttp,
   probeEmergencyNas,
   runEmergencyMasterPush,
@@ -176,6 +179,10 @@ export async function getEmergencyBillingStatus() {
   const { baseUrl, token } = resolveNasTarget(cfg);
   const configured = !!(baseUrl && token);
   const nasStatus = configured ? await probeEmergencyNas(baseUrl) : "OFFLINE";
+  const capability = nasStatus === "ONLINE" ? await fetchEmergencyCapability(baseUrl) : null;
+  const ops = nasStatus === "ONLINE" && token
+    ? await fetchEmergencyOpsStatus({ baseUrl, token })
+    : null;
   const [lastOk] = await db
     .select()
     .from(emergencyMasterPushLogTable)
@@ -189,6 +196,26 @@ export async function getEmergencyBillingStatus() {
     .orderBy(desc(emergencyMasterPushLogTable.pushedAt))
     .limit(1);
   const lastSuccessfulPushAt = lastOk?.pushedAt ?? cfg?.lastMasterPushAt ?? null;
+  const since = new Date(Date.now() - 24 * 3_600_000);
+  let failedImportCount24h = 0;
+  let lastSuccessfulReconciliationAt: Date | null = null;
+  try {
+    const [failRow] = await db
+      .select({ n: sql<number>`coalesce(sum(${emergencyReconciliationBatchesTable.failureCount}), 0)` })
+      .from(emergencyReconciliationBatchesTable)
+      .where(gte(emergencyReconciliationBatchesTable.importedAt, since));
+    failedImportCount24h = Number(failRow?.n ?? 0);
+    const [recon] = await db
+      .select({ importedAt: emergencyReconciliationBatchesTable.importedAt })
+      .from(emergencyReconciliationBatchesTable)
+      .where(gt(emergencyReconciliationBatchesTable.importedCount, 0))
+      .orderBy(desc(emergencyReconciliationBatchesTable.importedAt))
+      .limit(1);
+    lastSuccessfulReconciliationAt = recon?.importedAt ?? null;
+  } catch {
+    failedImportCount24h = 0;
+  }
+  const version = resolveVersionInfo();
   return emergencyStatusFromState({
     configured,
     nasStatus,
@@ -208,6 +235,13 @@ export async function getEmergencyBillingStatus() {
           initiatedBy: lastFail.initiatedBy,
         }
       : null,
+    capability,
+    ops,
+    lastSuccessfulFetchAt: cfg?.lastFetchAt ?? null,
+    lastSuccessfulReconciliationAt,
+    failedImportCount24h,
+    careAppVersion: version.version,
+    careBuildSha: version.commit,
   });
 }
 
