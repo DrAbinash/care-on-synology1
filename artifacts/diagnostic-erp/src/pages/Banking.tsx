@@ -20,6 +20,7 @@ import {
   ScanLine,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import BankStatementImportPanel from "@/components/BankStatementImportPanel";
 
 const PROVIDERS = [
   { value: "mock", label: "Mock / Test" },
@@ -338,6 +339,11 @@ export default function Banking() {
     queryFn: () => api.get("/api/banking/accounts"),
   });
 
+  const ledgerAccountsQuery = useQuery<{ id: number; name: string; type: string }[]>({
+    queryKey: ["accounts"],
+    queryFn: () => api.get("/api/accounting/accounts"),
+  });
+
   const summaryQuery = useQuery<BankingSummary>({
     queryKey: ["banking", "summary"],
     queryFn: () => api.get("/api/banking/summary"),
@@ -609,8 +615,8 @@ export default function Banking() {
           {/* Recovered discoverability: bank statement AI import already
               exists and works under Accounting → Scan & Import — this links
               to it rather than rebuilding a second import UI here. */}
-          <Button variant="outline" size="sm" onClick={() => (window.location.href = "/accounting?tab=scan-import")} className="gap-1.5">
-            <ScanLine className="w-4 h-4" /> Import Bank Statement (AI)
+          <Button variant="outline" size="sm" onClick={() => setTab("statement")} className="gap-1.5">
+            <ScanLine className="w-4 h-4" /> Import Statement (JPEG / OCR)
           </Button>
           <Button variant="outline" onClick={async () => {
             setRefreshAllLoading(true);
@@ -676,6 +682,7 @@ export default function Banking() {
 
       <Tabs value={tab} onValueChange={setTab}>
         <TabsList className="mb-4 flex-wrap">
+          <TabsTrigger value="statement">Statement OCR</TabsTrigger>
           <TabsTrigger value="accounts">Accounts</TabsTrigger>
           <TabsTrigger value="transactions">Transactions</TabsTrigger>
           <TabsTrigger value="payments">Payments</TabsTrigger>
@@ -687,6 +694,17 @@ export default function Banking() {
           <TabsTrigger value="webhooks">Webhooks</TabsTrigger>
           <TabsTrigger value="day-close">Day Close</TabsTrigger>
         </TabsList>
+
+        <TabsContent value="statement">
+          <BankStatementImportPanel
+            accounts={ledgerAccountsQuery.data ?? []}
+            onImported={() => {
+              qc.invalidateQueries({ queryKey: ["vouchers"] });
+              qc.invalidateQueries({ queryKey: ["ledger"] });
+              qc.invalidateQueries({ queryKey: ["banking"] });
+            }}
+          />
+        </TabsContent>
 
         {/* ── Accounts ─────────────────────────────────────────────────────── */}
         <TabsContent value="accounts">

@@ -12,7 +12,7 @@
  *   3. DICOM worklist row / dicomMetadata (PatientAge, PatientSex, …)
  */
 
-import { formatAgeForPrint } from "./age";
+import { formatAgeForPrint, isPlausibleAgeYears, isSentinelDob } from "./age";
 
 export interface ReportDemography {
   patientName: string;
@@ -36,7 +36,7 @@ export function dicomAgeToDisplay(raw: string | null | undefined): string {
   if (!m) return "";
   const n = parseInt(m[1], 10);
   if (!Number.isFinite(n) || n <= 0) return "";
-  if (m[2] === "Y") return `${n} Yrs`;
+  if (m[2] === "Y") return isPlausibleAgeYears(n) ? `${n} Yrs` : "";
   if (m[2] === "M") return `${n} Mo`;
   return `${n} D`;
 }
@@ -65,6 +65,10 @@ function firstNonEmptyAge(...vals: Array<unknown>): string {
     const s = String(v ?? "").trim();
     // Reject bare "0" / "0 Yrs" so a blank ERP age field falls through to DICOM.
     if (!s || s === "0" || /^0\s*(yrs?|years?|mo|months?|d|days?)?$/i.test(s)) continue;
+    const years = parseInt(s, 10);
+    // Sentinel DOB 1900-01-01 renders as ~126 Yrs in 2026 — never show that.
+    if (Number.isFinite(years) && /yrs?|years?/i.test(s) && !isPlausibleAgeYears(years)) continue;
+    if (Number.isFinite(years) && !/[a-z]/i.test(s) && !isPlausibleAgeYears(years) && years > 120) continue;
     return s;
   }
   return "";
@@ -210,7 +214,9 @@ export function mergeReportDemography(input: {
     studyDescription: pick(erp.studyDescription, erp.testName, dicom.studyDescription, dicomMeta.StudyDescription),
     studyDate: pick(erp.studyDate, dicom.studyDate, dicomMeta.StudyDate),
     referringDoctor: pick(erp.referringDoctor, dicom.referringDoctor, dicomMeta.ReferringPhysicianName),
-    dateOfBirth: pick(erp.dateOfBirth, dicomMeta.PatientBirthDate),
+    dateOfBirth: isSentinelDob(pick(erp.dateOfBirth, dicomMeta.PatientBirthDate))
+      ? ""
+      : pick(erp.dateOfBirth, dicomMeta.PatientBirthDate),
   };
 
   const ov = input.overrides ?? {};
@@ -350,7 +356,10 @@ export function resolveDisplayAge(
   const fromErp = firstNonEmptyAge(erp?.age, erp?.patientAge);
   if (fromErp) return fromErp;
   if (patientMaster) {
-    const fromMaster = formatAgeForPrint(patientMaster);
+    const fromMaster = formatAgeForPrint({
+      ...patientMaster,
+      dateOfBirth: isSentinelDob(patientMaster.dateOfBirth) ? "" : patientMaster.dateOfBirth,
+    });
     if (fromMaster) return fromMaster;
   }
   return dicomAgeToDisplay(dicomAge);

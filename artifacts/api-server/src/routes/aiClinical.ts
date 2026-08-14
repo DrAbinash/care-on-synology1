@@ -80,6 +80,14 @@ aiClinicalRouter.post("/generate", async (req, res) => {
   if (!parsed.success) { res.status(400).json({ error: parsed.error.issues }); return; }
   const enablement = await resolveAiEnablementForUser({ staffId: s?.id ?? null, modality: parsed.data.modality ?? null });
   if (!enablement.enabled) { res.status(403).json({ error: "AI is not enabled for this context" }); return; }
+  // Server-side modality gate — CT/XR/etc. must not enter when only MRI is enabled,
+  // even if the client crafts a manual generate request.
+  const { getModalityMode } = await import("../lib/ai/clinicalConfigService");
+  const mode = await getModalityMode(parsed.data.modality ?? null);
+  if (mode === "disabled") {
+    res.status(403).json({ error: "AI drafting is disabled for this modality", modality: parsed.data.modality ?? null, mode });
+    return;
+  }
   const result = await scheduleStudy({ studyInstanceUid: parsed.data.studyInstanceUid, modality: parsed.data.modality ?? null, manualRequest: true });
   res.json(result);
 });

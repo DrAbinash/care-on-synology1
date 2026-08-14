@@ -26,7 +26,7 @@ export interface SchedulerConfig {
 
 function toMinutes(hhmm: string): number {
   const [h, m] = hhmm.split(":").map((x) => Number(x));
-  return (h || 0) * 60 + (m || 0);
+  return (Number.isFinite(h) ? h : 0) * 60 + (Number.isFinite(m) ? m : 0);
 }
 
 /** Window membership, handling windows that wrap past midnight. */
@@ -65,6 +65,11 @@ export interface SchedulingDecision {
  * never auto-enqueue. Finalized and unchanged studies are skipped per config.
  */
 export function decideScheduling(inp: SchedulingInput, cfg: SchedulerConfig): SchedulingDecision {
+  // Disabled modalities never enqueue — even manual/on-demand requests.
+  // Malformed API callers must not bypass modality policy.
+  if (inp.modalityMode === "disabled") {
+    return { enqueue: false, mode: "manual", reason: "modality AI disabled" };
+  }
   if (inp.manualRequest) return { enqueue: true, mode: "immediate", reason: "manual/on-demand request" };
   if (cfg.skipFinalizedReports && inp.isFinalized) return { enqueue: false, mode: "manual", reason: "skip: report finalized" };
   if (cfg.skipUnchangedStudies && inp.isUnchanged) return { enqueue: false, mode: "manual", reason: "skip: study unchanged" };
@@ -73,8 +78,6 @@ export function decideScheduling(inp: SchedulingInput, cfg: SchedulerConfig): Sc
   const quiet = isQuietHours(inp.nowMinutes, cfg);
 
   switch (inp.modalityMode) {
-    case "disabled":
-      return { enqueue: false, mode: "manual", reason: "modality AI disabled" };
     case "manual":
       return { enqueue: false, mode: "manual", reason: "modality manual-only" };
     case "immediate":

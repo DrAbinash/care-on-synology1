@@ -76,10 +76,22 @@ describe("finalizeRadiologyReport — auto-sign identity safety", () => {
     expect(mockPost).toHaveBeenCalledWith("/api/patient-reports/99/sign", { signatureId: 1 });
   });
 
-  it("declines to auto-sign when 2+ active signatures exist, instead of guessing", async () => {
+  it("auto-signs as Dr. Sugandha when she is among several active signatures", async () => {
     mockSignatures = [
       { id: 1, name: "Dr. Asha Rao", isActive: true },
-      { id: 2, name: "Dr. Sugandha", isActive: true },
+      { id: 2, name: "Dr. Sugandha Priyadarshini", isActive: true },
+    ];
+    mockHappyReportCreation();
+    const result = await finalizeRadiologyReport({ patientId: 2, studyId: 1, worklistId: 1 }, CONTENT);
+    expect(result.signed).toBe(true);
+    expect(result.signError).toBeNull();
+    expect(mockPost).toHaveBeenCalledWith("/api/patient-reports/99/sign", { signatureId: 2 });
+  });
+
+  it("declines to auto-sign when 2+ active signatures exist and none is the clinic radiologist", async () => {
+    mockSignatures = [
+      { id: 1, name: "Dr. Asha Rao", isActive: true },
+      { id: 2, name: "Dr. Locum", isActive: true },
     ];
     mockHappyReportCreation();
     const result = await finalizeRadiologyReport({ patientId: 2, studyId: 1, worklistId: 1 }, CONTENT);

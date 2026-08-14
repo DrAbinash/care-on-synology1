@@ -20,7 +20,7 @@ describe("classifyOllamaModelVisionByName", () => {
   it.each([
     "llava:13b", "llava-llama3:latest", "bakllava:7b", "moondream:latest",
     "minicpm-v:8b", "pixtral:12b", "llama3.2-vision:11b", "llama3.2-vision:90b",
-    "qwen2.5-vl:7b", "qwen2-vl:7b", "gemma3:12b", "gemma3:27b",
+    "qwen2.5-vl:7b", "qwen2-vl:7b", "qwen3-vl:8b", "gemma3:12b", "gemma3:27b",
   ])("classifies %s as vision-capable", (model) => {
     expect(classifyOllamaModelVisionByName(model)).toBe("vision");
   });

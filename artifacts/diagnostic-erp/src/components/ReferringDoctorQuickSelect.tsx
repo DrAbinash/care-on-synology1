@@ -14,7 +14,7 @@ import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
 import { useToast } from "@/hooks/use-toast";
-import { Search, X } from "lucide-react";
+import { Search, X, Pencil } from "lucide-react";
 
 type Doctor = { id: number; name: string };
 type Frequent = { name: string; count: number };
@@ -41,6 +41,9 @@ export default function ReferringDoctorQuickSelect({
   const qc = useQueryClient();
   const [searchOpen, setSearchOpen] = useState(false);
   const [search, setSearch] = useState("");
+  const [editingName, setEditingName] = useState<string | null>(null);
+  const [editValue, setEditValue] = useState("");
+  const [addValue, setAddValue] = useState("");
 
   const { data: myQuick } = useQuery<{ quickDoctorIds?: string }>({
     queryKey: ["my-quick-doctors"],
@@ -124,27 +127,61 @@ export default function ReferringDoctorQuickSelect({
         {chips.map((c) => {
           const selected = currentKey !== "" && normalizeKey(c.name) === currentKey;
           return (
-            <button
-              key={`${c.source}:${c.name}`}
-              type="button"
-              disabled={busy}
-              title={c.name}
-              onClick={() => {
-                if (selected) return;
-                setMut.mutate(c.name);
-              }}
-              className={[
-                "max-w-[9.5rem] truncate rounded border px-1.5 py-0.5 text-[10px] font-medium transition-colors",
-                selected
-                  ? "border-sky-600 bg-sky-600 text-white"
-                  : "border-sky-200 bg-sky-50 text-sky-900 hover:border-sky-400 hover:bg-sky-100",
-                busy ? "opacity-60" : "",
-              ].join(" ")}
-            >
-              {shortLabel(c.name)}
-            </button>
+            <span key={`${c.source}:${c.name}`} className="inline-flex items-center max-w-[11rem]">
+              <button
+                type="button"
+                disabled={busy}
+                title={c.name}
+                onClick={() => {
+                  if (selected) return;
+                  setMut.mutate(c.name);
+                }}
+                className={[
+                  "max-w-[9.5rem] truncate rounded-l border px-1.5 py-0.5 text-[10px] font-medium transition-colors",
+                  selected
+                    ? "border-sky-600 bg-sky-600 text-white"
+                    : "border-sky-200 bg-sky-50 text-sky-900 hover:border-sky-400 hover:bg-sky-100",
+                  busy ? "opacity-60" : "",
+                ].join(" ")}
+              >
+                {shortLabel(c.name)}
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                title="Edit degrees / name"
+                className={[
+                  "rounded-r border border-l-0 px-1 py-0.5 text-sky-800",
+                  selected ? "border-sky-600 bg-sky-600 text-white" : "border-sky-200 bg-sky-50 hover:bg-sky-100",
+                ].join(" ")}
+                onClick={() => {
+                  setEditingName(c.name);
+                  setEditValue(c.name);
+                }}
+              >
+                <Pencil size={9} />
+              </button>
+            </span>
           );
         })}
+        <input
+          className="h-[22px] w-28 rounded border border-dashed border-muted-foreground/40 bg-background px-1.5 text-[10px]"
+          placeholder="Add doctor…"
+          value={addValue}
+          disabled={busy}
+          data-testid="ref-doctor-add-box"
+          onChange={(e) => setAddValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              const name = addValue.trim();
+              if (name) {
+                setMut.mutate(name);
+                setAddValue("");
+              }
+            }
+          }}
+          title="Type a new referring doctor and press Enter"
+        />
         <button
           type="button"
           disabled={busy}
@@ -168,6 +205,38 @@ export default function ReferringDoctorQuickSelect({
           </button>
         ) : null}
       </div>
+
+      {editingName && (
+        <div className="rounded border bg-background p-1.5 shadow-sm" data-testid="ref-doctor-edit-degrees">
+          <p className="text-[10px] text-muted-foreground mb-1">Add degrees (MD, MBBS, DNB…)</p>
+          <input
+            className="mb-1 h-7 w-full rounded border px-2 text-xs"
+            value={editValue}
+            onChange={(e) => setEditValue(e.target.value)}
+            autoFocus
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && editValue.trim()) {
+                setMut.mutate(editValue.trim());
+                setEditingName(null);
+              }
+              if (e.key === "Escape") setEditingName(null);
+            }}
+          />
+          <div className="flex justify-end gap-1">
+            <button type="button" className="text-[10px] px-1.5 py-0.5" onClick={() => setEditingName(null)}>Cancel</button>
+            <button
+              type="button"
+              className="text-[10px] px-1.5 py-0.5 rounded bg-sky-600 text-white"
+              onClick={() => {
+                if (editValue.trim()) setMut.mutate(editValue.trim());
+                setEditingName(null);
+              }}
+            >
+              Save
+            </button>
+          </div>
+        </div>
+      )}
 
       {searchOpen && (
         <div className="rounded border bg-background p-1.5 shadow-sm">

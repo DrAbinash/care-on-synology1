@@ -64,6 +64,10 @@ function matchesQueueModality(modality: string | null | undefined, filter: strin
   if (!filter || filter === "all") return true;
   if (filter === "US") return isUltrasoundModality(modality);
   const m = (modality ?? "").toUpperCase();
+  if (filter === "XR" || filter === "XRAY") {
+    return m === "CR" || m === "DX" || m === "XR" || m === "XA" || m === "RF"
+      || m.includes("X-RAY") || m.includes("XRAY");
+  }
   return m.startsWith(filter.toUpperCase());
 }
 
@@ -108,7 +112,7 @@ export function useReportingWorkflow(currentStudyId: number | undefined, options
   const queue = useMemo(
     () => filterQueueByScope(fullQueue, scope, myName, myUserId).filter((s) =>
       matchesQueueModality(s.modality, modalityFilter)
-      && matchesQueueDate(s.createdAt, dateFrom, dateTo),
+      && matchesQueueDate(s.createdAt ?? (s as { receivedAt?: string }).receivedAt, dateFrom, dateTo),
     ),
     [fullQueue, scope, myName, myUserId, modalityFilter, dateFrom, dateTo],
   );
@@ -153,9 +157,12 @@ export function useReportingWorkflow(currentStudyId: number | undefined, options
 
   const position = useMemo(() => queuePosition(queue, currentStudyId ?? null), [queue, currentStudyId]);
   const indicators = useMemo(() => queueIndicators(snapshot), [snapshot]);
+  // Open study stays visible even when it falls outside the modality/date filter.
   const currentRow = useMemo(
-    () => queue.find((s) => s.id === currentStudyId) ?? null,
-    [queue, currentStudyId],
+    () => fullQueue.find((s) => s.id === currentStudyId)
+      ?? queue.find((s) => s.id === currentStudyId)
+      ?? null,
+    [fullQueue, queue, currentStudyId],
   );
   const completedCount = useMemo(
     () => indicators.filter((i) => i.completed).length,

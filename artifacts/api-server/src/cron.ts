@@ -64,6 +64,7 @@ export function startCronScheduler() {
   scheduleAiSchedulerModes();
   scheduleQueueDisplayAlerts();
   scheduleInventoryLowStockAlerts();
+  scheduleEmergencyMasterPush();
 
   // Start the in-process DIMSE pull agent if enabled.
   // When ENABLE_DICOM_PULL_AGENT is set, the agent polls for pull jobs and
@@ -77,17 +78,42 @@ export function startCronScheduler() {
   }
 }
 
+/** Push the minimum master-data snapshot to DS225+. Interval is
+ * EMERGENCY_MASTER_SYNC_INTERVAL_HOURS (default 6). Hourly tick + skip-if-fresh
+ * plus a Postgres advisory lock so duplicate API/worker processes cannot both push.
+ */
+function scheduleEmergencyMasterPush() {
+  cron.schedule("17 * * * *", async () => {
+    try {
+      const { pushEmergencyMasterIfConfigured } = await import("./lib/emergencyNasClient");
+      const result = await pushEmergencyMasterIfConfigured("scheduler");
+      if (result.ok && "skipped" in result && result.skipped) {
+        console.log("[cron] emergency master push skipped:", result.reason);
+      } else if (!result.ok) {
+        console.warn("[cron] emergency master push failed:", result.error);
+      } else {
+        console.log("[cron] emergency master push ok", result.syncedAt);
+      }
+    } catch (err) {
+      console.warn("[cron] emergency master push skipped:", err instanceof Error ? err.message : err);
+    }
+  });
+}
+
 // ── Phase P3: AI Scheduler modes (Night Batch / Reprocessing / Learning) ─────
 // Each handler is internally gated by the ff_radiology_ai master flag, so these
 // crons are a hard no-op until an admin enables AI. They only ENQUEUE onto the
 // existing radiology job engine — no new worker or queue is created here.
 function scheduleAiSchedulerModes() {
-  // Night Batch — every 30 min; runNightBatch itself checks the night window is
-  // configured via the scheduler config and skips finalized/unchanged studies.
-  cron.schedule("*/30 23,0,1,2,3,4,5 * * *", async () => {
+  // Night Batch — every 15 minutes around the clock. runNightBatch() itself
+  // checks the configured night window (default 17:00–10:00 IST) and is a
+  // no-op outside it. Do NOT hard-code 23–05 hours here — that conflicted with
+  // the configurable clinical window.
+  cron.schedule("*/15 * * * *", async () => {
     try {
       const { runNightBatch } = await import("./lib/ai/schedulerService");
       const r = await runNightBatch();
+      if (r.skippedWindow) return;
       if (r.enqueued > 0) console.log(`[cron] AI night batch: enqueued ${r.enqueued}/${r.considered}`);
     } catch (err) {
       console.error("[cron] AI night batch failed:", err);
@@ -113,7 +139,7 @@ function scheduleAiSchedulerModes() {
       console.error("[cron] AI learning aggregation failed:", err);
     }
   });
-  console.log("[cron] AI scheduler modes registered (gated by ff_radiology_ai)");
+  console.log("[cron] AI scheduler modes registered (gated by ff_radiology_ai; window from ai_scheduler_config)");
 }
 
 // ── BEND-1: durable radiology job runner ─────────────────────────────────────
@@ -123,7 +149,21 @@ function scheduleAiSchedulerModes() {
 function scheduleRadiologyJobs() {
   cron.schedule("* * * * *", async () => {
     try {
-      const result = await runRadiologyJobTick(RADIOLOGY_JOB_HANDLERS, { maxJobs: 5 });
+      // AI shadow pipeline concurrency is enforced inside runRadiologyJobTick via
+      // concurrencyByType (AI_CONCURRENCY ∩ maxConcurrentJobs, default 1).
+      let aiMax = 1;
+      try {
+        const { getOvernightVisionInferenceOptions } = await import("./lib/ai/overnightVisionConfig");
+        const { getSchedulerConfig } = await import("./lib/ai/clinicalConfigService");
+        const vision = getOvernightVisionInferenceOptions();
+        const sched = await getSchedulerConfig();
+        aiMax = Math.max(1, Math.min(vision.concurrency, sched.maxConcurrentJobs));
+      } catch { /* keep 1 */ }
+      const { AI_SHADOW_PIPELINE_JOB } = await import("./lib/ai/shadowPipeline");
+      const result = await runRadiologyJobTick(RADIOLOGY_JOB_HANDLERS, {
+        maxJobs: 5,
+        concurrencyByType: { [AI_SHADOW_PIPELINE_JOB]: aiMax },
+      });
       if (result.ran.length > 0 || result.requeuedStale > 0) {
         console.log("[cron] radiology jobs:", JSON.stringify(result));
       }

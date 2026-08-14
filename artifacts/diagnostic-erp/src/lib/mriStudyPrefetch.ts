@@ -7,9 +7,10 @@
  * the server-side mriStudyWarmer — does NOT store pixels in IndexedDB.
  */
 
+import { dicomWebFetch, withDicomWebAuth } from "./browserDicomWeb";
+
 const PREFETCH_CONCURRENCY = 2;
 const MAX_STUDIES = 20;
-const SERIES_ACCEPT = "application/dicom+json";
 
 export type PrefetchTarget = {
   studyInstanceUID: string;
@@ -29,7 +30,7 @@ async function prefetchOne(t: PrefetchTarget): Promise<void> {
   const base = t.dicomWebBaseUrl.replace(/\/$/, "");
   const seriesUrl = `${base}/studies/${encodeURIComponent(t.studyInstanceUID)}/series`;
   try {
-    const res = await fetch(seriesUrl, { headers: { Accept: SERIES_ACCEPT } });
+    const res = await dicomWebFetch(seriesUrl);
     if (!res.ok) return;
     const data = (await res.json()) as Array<Record<string, { Value?: unknown[] }>>;
     const series = (Array.isArray(data) ? data : [])
@@ -38,7 +39,7 @@ async function prefetchOne(t: PrefetchTarget): Promise<void> {
       .slice(0, 4);
     for (const seriesUid of series) {
       const instUrl = `${base}/studies/${encodeURIComponent(t.studyInstanceUID)}/series/${encodeURIComponent(seriesUid)}/instances`;
-      const ir = await fetch(instUrl, { headers: { Accept: SERIES_ACCEPT } });
+      const ir = await dicomWebFetch(instUrl);
       if (!ir.ok) continue;
       const instances = (await ir.json()) as Array<Record<string, { Value?: unknown[] }>>;
       const first = (Array.isArray(instances) ? instances : [])
@@ -51,7 +52,7 @@ async function prefetchOne(t: PrefetchTarget): Promise<void> {
         const img = new Image();
         img.onload = () => resolve();
         img.onerror = () => resolve();
-        img.src = rendered;
+        img.src = withDicomWebAuth(rendered) ?? rendered;
       });
       break; // one preview per study is enough for open-speed
     }

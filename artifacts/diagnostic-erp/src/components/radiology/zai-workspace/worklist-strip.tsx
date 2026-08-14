@@ -13,7 +13,24 @@ const PR: Record<string, { l: string; t: string }> = {
 };
 const FALLBACK_PRIO = PR.routine;
 
-export function WorklistStrip({ onSelectStudy }: { onSelectStudy?: (id: string) => void } = {}) {
+export type ReadingQueueDatePreset = "today-yesterday" | "today" | "all";
+
+export function WorklistStrip({
+  onSelectStudy,
+  onNextStudy,
+  modalityFilter = "MR",
+  onModalityFilterChange,
+  datePreset = "today-yesterday",
+  onDatePresetChange,
+}: {
+  onSelectStudy?: (id: string) => void;
+  /** Same Next as the top-bar Prev/Next — CARE worklist order, not the Z.ai store skip. */
+  onNextStudy?: () => void;
+  modalityFilter?: string;
+  onModalityFilterChange?: (value: string) => void;
+  datePreset?: ReadingQueueDatePreset;
+  onDatePresetChange?: (value: ReadingQueueDatePreset) => void;
+} = {}) {
   const studies = useWorkspaceSelector(s => s.studies);
   const activeId = useWorkspaceSelector(s => s.activeStudyId);
   const completed = useWorkspaceSelector(s => s.completedStudyIds);
@@ -22,19 +39,52 @@ export function WorklistStrip({ onSelectStudy }: { onSelectStudy?: (id: string) 
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center justify-between border-b border-border px-3 py-2">
-        <div>
-          <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Reading Queue</div>
-          <div className="text-[10px] text-muted-foreground/70">
-            {studies.length - completed.size} pending · {completed.size} signed · {parked.size} parked
+      <div className="border-b border-border px-3 py-2 space-y-1.5">
+        <div className="flex items-center justify-between gap-2">
+          <div>
+            <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Reading Queue</div>
+            <div className="text-[10px] text-muted-foreground/70">
+              {studies.length - completed.size} pending · {completed.size} signed · {parked.size} parked
+            </div>
           </div>
+          <button
+            type="button"
+            data-testid="reading-queue-next"
+            onClick={() => {
+              if (onNextStudy) onNextStudy();
+              else useWorkspace.getState().advanceToNextStudy();
+            }}
+            className="inline-flex items-center gap-1 rounded-md bg-emerald-600 px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-white hover:bg-emerald-700"
+          >
+            <ChevronRight className="h-3 w-3" /> Next
+          </button>
         </div>
-        <button
-          onClick={() => useWorkspace.getState().advanceToNextStudy()}
-          className="inline-flex items-center gap-1 rounded-md bg-emerald-600 px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-white hover:bg-emerald-700"
-        >
-          <ChevronRight className="h-3 w-3" /> Next
-        </button>
+        <div className="flex items-center gap-1">
+          <select
+            aria-label="Queue modality"
+            data-testid="reading-queue-modality"
+            className="h-6 flex-1 min-w-0 rounded border bg-background px-1 text-[10px]"
+            value={modalityFilter}
+            onChange={(e) => onModalityFilterChange?.(e.target.value)}
+          >
+            <option value="MR">MRI</option>
+            <option value="CT">CT</option>
+            <option value="XR">X-Ray</option>
+            <option value="US">USG</option>
+            <option value="all">All</option>
+          </select>
+          <select
+            aria-label="Queue date"
+            data-testid="reading-queue-date"
+            className="h-6 flex-1 min-w-0 rounded border bg-background px-1 text-[10px]"
+            value={datePreset}
+            onChange={(e) => onDatePresetChange?.(e.target.value as ReadingQueueDatePreset)}
+          >
+            <option value="today-yesterday">Today &amp; Yesterday</option>
+            <option value="today">Today</option>
+            <option value="all">All dates</option>
+          </select>
+        </div>
       </div>
       <ScrollArea className="flex-1">
         <div className="space-y-1 p-1.5">
@@ -78,7 +128,7 @@ export function WorklistStrip({ onSelectStudy }: { onSelectStudy?: (id: string) 
                       {isParked && <Badge variant="outline" className="bg-amber-50 text-[9px] text-amber-700 border-amber-200">PARKED</Badge>}
                     </div>
                     <div className="mt-0.5 truncate text-[10px] text-muted-foreground">
-                      {patient.age}{patient.sex} · {s.studyDescription} · {s.bodyPart}
+                      {patient.age ? `${patient.age}${patient.sex}` : patient.sex} · {s.studyDescription} · {s.bodyPart}
                     </div>
                   </div>
                   <div className="flex flex-col items-end gap-1">

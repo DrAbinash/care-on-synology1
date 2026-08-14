@@ -23,6 +23,22 @@ export { normalizeAiModality } from "./modalityNormalize";
 /** The single global master flag. Unseeded ⇒ false ⇒ AI off for everyone. */
 export const AI_MASTER_FLAG = "ff_radiology_ai";
 
+/** Upsert the master radiology AI flag and pilot visibility policy. */
+export async function setMasterAiFlag(enabled: boolean, updatedBy?: string): Promise<void> {
+  const by = updatedBy ?? "clinical-config";
+  await db
+    .insert(featureFlagsTable)
+    .values({ key: AI_MASTER_FLAG, enabled, updatedBy: by })
+    .onConflictDoUpdate({
+      target: featureFlagsTable.key,
+      set: { enabled, updatedBy: by, updatedAt: new Date() },
+    });
+  invalidateFeatureFlagCache();
+  if (enabled) {
+    await setFeaturePolicy("global", "*", true, "pilot", by);
+  }
+}
+
 export interface EnablementQuery {
   staffId?: number | null;
   modality?: string | null;
@@ -47,9 +63,10 @@ export async function resolveAiEnablementForUser(q: EnablementQuery): Promise<En
 
 // ── Scheduler config (singleton id=1, with safe defaults) ───────────────────
 const DEFAULT_SCHEDULER: SchedulerConfig = {
-  draftTiming: "on_arrival",
-  nightStart: "23:00", nightEnd: "06:00", quietStart: "08:00", quietEnd: "20:00",
-  maxConcurrentJobs: 2, gpuLimitPercent: 90, cpuLimitPercent: 80,
+  draftTiming: "scheduled",
+  // Clinical overnight window: 5 PM → 10 AM next morning (crosses midnight).
+  nightStart: "17:00", nightEnd: "10:00", quietStart: "10:00", quietEnd: "17:00",
+  maxConcurrentJobs: 1, gpuLimitPercent: 90, cpuLimitPercent: 80,
   skipFinalizedReports: true, skipUnchangedStudies: true,
 };
 
@@ -149,15 +166,7 @@ export async function saveDraftAutomation(opts: {
   masterEnabled: boolean;
 }> {
   if (opts.enableAi !== false) {
-    await db
-      .insert(featureFlagsTable)
-      .values({ key: AI_MASTER_FLAG, enabled: true, updatedBy: opts.updatedBy ?? "ai-draft-settings" })
-      .onConflictDoUpdate({
-        target: featureFlagsTable.key,
-        set: { enabled: true, updatedBy: opts.updatedBy ?? "ai-draft-settings", updatedAt: new Date() },
-      });
-    invalidateFeatureFlagCache();
-    await setFeaturePolicy("global", "*", true, "pilot", opts.updatedBy);
+    await setMasterAiFlag(true, opts.updatedBy ?? "ai-draft-settings");
   }
 
   const mode: ModalityMode = opts.draftTiming === "on_arrival" ? "immediate" : "night_batch";
@@ -167,6 +176,8 @@ export async function saveDraftAutomation(opts: {
     nightEnd: opts.nightEnd,
     quietStart: opts.quietStart,
     quietEnd: opts.quietEnd,
+    // Overnight MRI default: one concurrent study (configurable later).
+    maxConcurrentJobs: 1,
   }, opts.updatedBy);
   const policies = await setOvernightModalities(opts.modalities, { mode, updatedBy: opts.updatedBy });
   return {
