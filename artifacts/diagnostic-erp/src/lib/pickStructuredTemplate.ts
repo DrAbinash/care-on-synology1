@@ -143,6 +143,26 @@ export function pickStructuredTemplate<T extends StructuredTemplateRow>(
   return null;
 }
 
+/** Prefer the study-region chip (LS Spine) over a generic MRI description that would match Brain. */
+export function pickStructuredTemplateForRegion<T extends StructuredTemplateRow>(
+  templates: T[],
+  modality: string | null | undefined,
+  region: string | null | undefined,
+  studyDescription?: string | null,
+): T | null {
+  const mod = templateCatalogModality(modality);
+  const bodyPart = studyRegionToBodyPart(region);
+  if (bodyPart) {
+    const pool = templates.filter((t) => templateCatalogModality(t.modality) === mod);
+    const byBody = pool.find((t) => t.bodyPart === bodyPart);
+    if (byBody) return byBody;
+    const inferred: StructuredTemplateMatch = { bodyPart, studyType: "PLAIN" };
+    const byName = pool.find((t) => nameHintMatch(t.templateName, inferred));
+    if (byName) return byName;
+  }
+  return pickStructuredTemplate(templates, modality, studyDescription ?? region);
+}
+
 /** True when loaded template anatomy disagrees with resolved study region. */
 export function templateRegionMismatch(
   studyRegion: string | null | undefined,

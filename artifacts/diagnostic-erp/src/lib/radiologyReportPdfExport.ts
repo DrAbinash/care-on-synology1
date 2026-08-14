@@ -139,7 +139,13 @@ export async function exportRadiologyReportToPdf(input: RadiologyPdfExportInput)
       keyImages,
       reportTitle: input.studyName || "Radiology Report",
     },
-    settings,
+    {
+      ...settings,
+      show: {
+        ...settings.show,
+        keyImages: keyImages.length > 0 || settings.show.keyImages,
+      },
+    },
     input.clinic,
   );
 }

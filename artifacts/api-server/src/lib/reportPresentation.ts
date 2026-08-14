@@ -425,7 +425,7 @@ export function renderReportDocument(
   const headerCfg = template.headerCfg ?? { show: true, showLogo: true, showTagline: true, showContact: true, style: banded ? "banded" as const : "underlined" as const };
   const signatureCfg = template.signatureCfg ?? { show: true, showImage: true };
   const footerCfg = template.footerCfg ?? { show: true };
-  const logoPosition = letterPad ? "right" : (headerCfg.logoPosition ?? "left");
+  const logoPosition = letterPad ? "left" : (headerCfg.logoPosition ?? "left");
   const signatureAlign = signatureCfg.align ?? "right";
   const sigJustify =
     signatureAlign === "left" ? "flex-start" : signatureAlign === "center" ? "center" : "flex-end";
@@ -485,15 +485,17 @@ export function renderReportDocument(
     ? (model.clinic.logoDataUrl || CARE_LETTERPAD.logoSrc)
     : "";
   const letterPadHeaderHtml = headerCfg.show ? `<div class="hdr">
-      <div class="hdr-inner logo-pos-right">
-        <div class="hdr-brand">
-          <div class="name">${escapeHtml(letterPadName)}</div>
+      <div class="hdr-inner logo-pos-left letterpad-bill">
+        ${letterPadLogo
+          ? `<img class="logo" src="${letterPadLogo}" alt="${escapeHtml(letterPadName)}"/>`
+          : `<div class="hdr-brand"><div class="name">${escapeHtml(letterPadName)}</div></div>`}
+        <div class="contact letterpad-addr-right">
+          ${escapeHtml(letterPadAddress)}<br/>
+          ${escapeHtml(letterPadPhone)}<br/>
+          Email: ${escapeHtml(letterPadEmail)}
         </div>
-        ${letterPadLogo ? `<img class="logo" src="${letterPadLogo}" alt="CARE"/>` : ""}
       </div>
     </div>
-    <div class="hdr-address-bar letterpad-addr">${escapeHtml(letterPadAddress)}</div>
-    <div class="letterpad-contact">${escapeHtml(letterPadPhone)}, Email: ${escapeHtml(letterPadEmail)}</div>
     <hr class="hdr-rule" />` : "";
   const classicHeaderHtml = headerCfg.show ? `<div class="hdr">
       <div class="hdr-inner logo-pos-${logoPosition}">
@@ -572,6 +574,8 @@ export function renderReportDocument(
     }
     .hdr-rule.hdr-rule-hidden { display: none; }
     .hdr img.logo { width: 64px; height: 64px; object-fit: contain; }
+    .hdr .letterpad-bill img.logo { width: 168px; height: auto; max-height: 52px; object-fit: contain; }
+    .hdr .letterpad-bill .contact { max-width: 48%; font-size: 9px; line-height: 1.4; }
     .hdr .hdr-brand { flex: 1; }
     .hdr .name { ${slotCss(ty.header)} line-height: 1.1; }
     .hdr .tagline { font-size: 10px; color: ${!banded ? "#475569" : pal.accent}; margin-top: 2px; letter-spacing: 0.06em; }

@@ -48,6 +48,8 @@ export default function ReportImagePicker({
   studyInstanceUID,
   disabled,
   onEnsureDraft,
+  onExpandChange,
+  hideSelectedList,
 }: {
   draftId: number | null;
   studyId?: number | null;
@@ -55,6 +57,10 @@ export default function ReportImagePicker({
   disabled?: boolean;
   /** Silent background draft so picks persist without a Save click. */
   onEnsureDraft?: () => Promise<number | null>;
+  /** When the picker opens, collapse the OHIF viewer so thumbnails can be large. */
+  onExpandChange?: (expanded: boolean) => void;
+  /** Selected thumbnails render in a separate right-rail panel. */
+  hideSelectedList?: boolean;
 }) {
   const { toast } = useToast();
   const qc = useQueryClient();
@@ -233,7 +239,13 @@ export default function ReportImagePicker({
       <button
         type="button"
         className="w-full flex items-center gap-2 px-3 py-2 text-left"
-        onClick={() => setExpanded((v) => !v)}
+        onClick={() => {
+          setExpanded((v) => {
+            const next = !v;
+            onExpandChange?.(next);
+            return next;
+          });
+        }}
         data-testid="picker-toggle"
       >
         <Images size={14} className="text-primary shrink-0" />
@@ -244,9 +256,9 @@ export default function ReportImagePicker({
       </button>
 
       {expanded && (
-        <div className="px-3 pb-2 space-y-2 max-h-52 overflow-y-auto" data-testid="report-picker-body">
-          {effectiveDraftId && (
-            <ReportImagePanel draftId={effectiveDraftId} dicomWebBase={dicomWebBase} disabled={disabled} />
+        <div className="px-3 pb-2 space-y-2 max-h-[min(70vh,32rem)] overflow-y-auto" data-testid="report-picker-body">
+          {effectiveDraftId && !hideSelectedList && (
+            <ReportImagePanel draftId={effectiveDraftId} dicomWebBase={dicomWebBase} disabled={disabled} layout="stack" />
           )}
           {!effectiveDraftId && pending.length > 0 && (
             <p className="text-[11px] text-muted-foreground">{pending.length} image(s) selected — saving in the background…</p>
@@ -278,19 +290,19 @@ export default function ReportImagePicker({
                     {openSeries === s.uid ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
                   </button>
                   {openSeries === s.uid && (
-                    <div className="grid grid-cols-8 gap-0.5 p-1">
+                    <div className="grid grid-cols-4 gap-1.5 p-1.5">
                       {loadingInstances ? (
                         <div className="col-span-8 flex justify-center py-1"><Loader2 size={13} className="animate-spin text-muted-foreground" /></div>
                       ) : instances.map((inst) => {
                         const selected = refs.some((r) => r.sopInstanceUid === inst.uid) || pending.some((p) => p.sopUid === inst.uid);
                         const thumb = withDicomWebAuth(thumbnailRenderedUrl(dicomWebBase, {
                           studyInstanceUid: studyInstanceUID, seriesInstanceUid: s.uid, sopInstanceUid: inst.uid,
-                        }, 64));
+                        }, 256));
                         return (
                           <button
                             key={inst.uid}
                             type="button"
-                            className={`relative h-10 rounded overflow-hidden border-2 bg-black ${selected ? "border-blue-500" : "border-transparent hover:border-muted-foreground/40"}`}
+                            className={`relative h-24 rounded overflow-hidden border-2 bg-black ${selected ? "border-blue-500" : "border-transparent hover:border-muted-foreground/40"}`}
                             onClick={() => selectInstance(s, inst)}
                             title={`Image ${inst.instanceNumber ?? ""}${selected ? " (selected — click to remove)" : ""}`}
                             data-testid={`instance-thumb-${inst.uid}`}
