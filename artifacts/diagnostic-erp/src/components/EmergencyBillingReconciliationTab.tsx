@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { AlertTriangle, Download, RefreshCcw } from "lucide-react";
+import { readStaffSession, normalizeRole } from "@/lib/staffSession";
 
 type NasStatus = {
   nasStatus: "ONLINE" | "OFFLINE";
@@ -200,6 +201,7 @@ function successMessage(r: PushResult) {
 export function EmergencyBillingReconciliationTab() {
   const qc = useQueryClient();
   const { toast } = useToast();
+  const isSuperAdmin = normalizeRole(readStaffSession()?.user.role ?? "") === "super_admin";
   const [baseUrl, setBaseUrl] = useState("");
   const [fetchToken, setFetchToken] = useState("");
   const [csvText, setCsvText] = useState("");
@@ -263,6 +265,15 @@ export function EmergencyBillingReconciliationTab() {
       toast({ title: "Master data synchronized successfully", description: successMessage(r) });
     },
     onError: (e: Error) => toast({ title: "Push failed", description: e.message, variant: "destructive" }),
+  });
+
+  const downloadUsbSeed = useMutation({
+    mutationFn: async () => {
+      const day = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" }).replace(/-/g, "");
+      await api.downloadFile("/api/emergency-billing/usb-seed", `CARE_ULTRA_EMERGENCY_SEED_${day}.zip`);
+    },
+    onSuccess: () => toast({ title: "USB seed downloaded", description: "Copy seed/ onto the pendrive. This zip is not a bill import." }),
+    onError: (e: Error) => toast({ title: "USB seed download failed", description: e.message, variant: "destructive" }),
   });
 
   const fetchNas = useMutation({
@@ -410,6 +421,20 @@ Staff: ${fmtCount(status.counts.staffCount)}`}</pre>
         <Button onClick={() => pushMaster.mutate()} disabled={pushMaster.isPending || contractMismatch} size="lg">
           <RefreshCcw size={16} className="mr-1" /> Push Master Data Now
         </Button>
+        {isSuperAdmin ? (
+          <div className="rounded-lg border border-dashed p-3 space-y-2" data-testid="emergency-usb-seed">
+            <div className="font-medium text-sm">Pendrive ultra-emergency seed</div>
+            <p className="text-xs text-muted-foreground">
+              Download doctors + tests (and the master JSON) for the USB stick when CARE and DS225+ are both down.
+              Do not upload this zip as emergency bills. Super admin login only.
+            </p>
+            <Button variant="outline" onClick={() => downloadUsbSeed.mutate()} disabled={downloadUsbSeed.isPending}>
+              <Download size={14} className="mr-1" /> Download USB seed
+            </Button>
+          </div>
+        ) : (
+          <p className="text-xs text-muted-foreground">USB seed download is available only when logged in as super admin.</p>
+        )}
       </div>
 
       <div className="bg-card border border-card-border rounded-xl p-5 space-y-3">

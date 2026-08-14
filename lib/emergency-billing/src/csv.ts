@@ -43,17 +43,17 @@ export const CSV_COLUMNS = [
   "tariff_synced_at",
 ] as const;
 
-function csvEscape(value: string): string {
+export function csvEscape(value: string): string {
   if (/[",\n\r]/.test(value)) return `"${value.replace(/"/g, '""')}"`;
   return value;
 }
 
-function csvCell(v: unknown): string {
+export function csvCell(v: unknown): string {
   if (v == null) return "";
   return csvEscape(String(v));
 }
 
-function parseCsvLine(line: string): string[] {
+export function parseCsvLine(line: string): string[] {
   const out: string[] = [];
   let cur = "";
   let inQuotes = false;
