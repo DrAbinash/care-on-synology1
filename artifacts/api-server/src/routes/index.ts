@@ -406,6 +406,7 @@ router.use("/bills", requireStaffAuth, requireStaffPermission("/billing"), bills
 router.use("/payments", requireStaffAuth, requireStaffPermission("/payments"), paymentsRouter);
 
 // Emergency Billing reconciliation (DS225+ → canonical CARE). Admin only.
+// USB catalogue seed download is further gated to super_admin staff login.
 // Does not create a second billing engine; imports through existing order/bill/payment tables.
 router.use("/emergency-billing", requireStaffAuth, requireAdminRole, emergencyBillingRouter);
 

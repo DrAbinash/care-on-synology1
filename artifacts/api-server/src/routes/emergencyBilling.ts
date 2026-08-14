@@ -2,7 +2,7 @@ import { Router, type Response } from "express";
 import { db, emergencyImportedTransactionsTable, emergencyNasConfigTable, emergencyReconciliationBatchesTable } from "@workspace/db";
 import { desc, eq, or, sql } from "drizzle-orm";
 import { parseEmergencyCsv, parseEmergencyJson, PatientResolutionError, type EmergencyTransaction } from "@workspace/emergency-billing";
-import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
+import { requireSuperAdminRole, type StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { auditFromRequest } from "../lib/audit";
 import { importEmergencyTransactions, loadMatchCandidates, previewEmergencyTransactions } from "../lib/emergencyReconcile";
 import { enrichCandidates, importedCareBillId, resolveEmergencyPatient } from "../lib/emergencyPatientResolve";
@@ -16,6 +16,7 @@ import {
   pushMasterToEmergencyNas,
 } from "../lib/emergencyNasClient";
 import { buildEmergencyMasterSnapshot } from "../lib/emergencyMasterSnapshot";
+import { buildUsbSeedZip, usbSeedZipFilename } from "../lib/emergencyUsbSeed";
 
 export const emergencyBillingRouter = Router();
 
@@ -75,6 +76,30 @@ emergencyBillingRouter.put("/config", async (req: StaffAuthRequest, res) => {
 emergencyBillingRouter.post("/master-snapshot", async (_req, res) => {
   const snapshot = await buildEmergencyMasterSnapshot();
   res.json({ syncedAt: snapshot.syncedAt, serviceCount: snapshot.services.length, doctorCount: snapshot.doctors.length, patientCount: snapshot.patients.length, staffCount: snapshot.staff.length });
+});
+
+emergencyBillingRouter.get("/usb-seed", requireSuperAdminRole, async (req: StaffAuthRequest, res) => {
+  const snapshot = await buildEmergencyMasterSnapshot();
+  const zip = await buildUsbSeedZip(snapshot);
+  const filename = usbSeedZipFilename();
+  await auditFromRequest(req, {
+    userId: actor(req).userId,
+    userName: actor(req).name,
+    role: req.staffSession?.role ?? "super_admin",
+    action: "emergency_usb_seed_download",
+    module: "emergency_billing",
+    entityType: "emergency_usb_seed",
+    newValue: JSON.stringify({
+      filename,
+      serviceCount: snapshot.services.length,
+      doctorCount: snapshot.doctors.length,
+      patientCount: snapshot.patients.length,
+      staffCount: snapshot.staff.length,
+    }),
+  });
+  res.setHeader("Content-Type", "application/zip");
+  res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+  res.send(zip);
 });
 
 emergencyBillingRouter.post("/push-master", async (req: StaffAuthRequest, res) => {

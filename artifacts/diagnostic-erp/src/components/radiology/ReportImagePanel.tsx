@@ -18,7 +18,7 @@
  * internal Orthanc URL and no patient-name matching ever reaches this code.
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
 import { Button } from "@/components/ui/button";
@@ -43,16 +43,35 @@ export default function ReportImagePanel({
   draftId,
   dicomWebBase,
   disabled,
+  layout = "stack",
 }: {
   draftId: number | null;
   /** Browser DICOMweb base from the M1.2 launch contract (thumbnails only). */
   dicomWebBase: string | null;
   disabled?: boolean;
+  /** right-stack = one above the other (default); grid = 2-up. */
+  layout?: "stack" | "grid";
 }) {
   const { toast } = useToast();
   const qc = useQueryClient();
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [brokenThumbs, setBrokenThumbs] = useState<Record<number, boolean>>({});
+  const [layoutMode, setLayoutMode] = useState<"stack" | "grid">(() => {
+    try {
+      const stored = localStorage.getItem("care_report_images_layout");
+      if (stored === "stack" || stored === "grid") return stored;
+    } catch { /* ignore */ }
+    return layout;
+  });
+
+  useEffect(() => {
+    const onEvt = (e: Event) => {
+      const next = (e as CustomEvent<string>).detail;
+      if (next === "stack" || next === "grid") setLayoutMode(next);
+    };
+    window.addEventListener("care-report-images-layout", onEvt);
+    return () => window.removeEventListener("care-report-images-layout", onEvt);
+  }, []);
 
   const refsQuery = useQuery<ReportImageRef[]>({
     queryKey: ["report-image-references", draftId],
@@ -148,6 +167,20 @@ export default function ReportImagePanel({
         <span className="text-[11px] font-semibold text-muted-foreground">Selected images</span>
         <Badge variant="outline" className="text-[10px]" data-testid="panel-count">{refs.length}</Badge>
         {reorderRefs.isPending && <Loader2 size={11} className="animate-spin text-muted-foreground" />}
+        <button
+          type="button"
+          className="ml-auto text-[10px] text-muted-foreground underline"
+          data-testid="selected-images-layout-toggle"
+          onClick={() => {
+            const next = layoutMode === "stack" ? "grid" : "stack";
+            setLayoutMode(next);
+            try { localStorage.setItem("care_report_images_layout", next); } catch { /* ignore */ }
+            window.dispatchEvent(new CustomEvent("care-report-images-layout", { detail: next }));
+          }}
+          title="Toggle vertical stack vs grid"
+        >
+          {layoutMode === "stack" ? "Grid" : "Stack right"}
+        </button>
       </div>
 
       {refsQuery.isLoading && (
@@ -173,16 +206,20 @@ export default function ReportImagePanel({
 
       {refsQuery.isSuccess && refs.length === 0 && (
         <p className="text-[11px] text-muted-foreground py-1" data-testid="panel-empty">
-          No images selected yet — pick images from the series below.
+          No images selected yet — pick from Report images.
         </p>
       )}
 
+      <div
+        className={layoutMode === "grid" ? "grid grid-cols-2 gap-1.5" : "flex flex-col gap-1.5"}
+        data-testid={`selected-images-layout-${layoutMode}`}
+      >
       {refs.map((ref, index) => {
         const thumb = dicomWebBase && !brokenThumbs[ref.id] ? withDicomWebAuth(thumbnailRenderedUrl(dicomWebBase, ref)) : null;
         return (
           <div
             key={ref.id}
-            className={`flex items-center gap-2 rounded-md border p-1.5 bg-card ${dragIndex === index ? "opacity-50" : ""}`}
+            className={`flex ${layoutMode === "stack" ? "flex-col" : "items-center"} gap-2 rounded-md border p-1.5 bg-card ${dragIndex === index ? "opacity-50" : ""}`}
             draggable={!disabled}
             onDragStart={() => setDragIndex(index)}
             onDragEnd={() => setDragIndex(null)}
@@ -190,10 +227,10 @@ export default function ReportImagePanel({
             onDrop={(e) => { e.preventDefault(); onDropOn(index); }}
             data-testid={`panel-ref-${ref.id}`}
           >
-            {!disabled && <GripVertical size={12} className="text-muted-foreground/60 shrink-0 cursor-grab" data-testid={`panel-drag-${ref.id}`} />}
+            {!disabled && <GripVertical size={12} className="text-muted-foreground/60 shrink-0 cursor-grab self-start" data-testid={`panel-drag-${ref.id}`} />}
             <button
               type="button"
-              className="relative h-12 w-12 shrink-0 rounded bg-black overflow-hidden"
+              className={`relative shrink-0 rounded bg-black overflow-hidden ${layoutMode === "stack" ? "h-28 w-full" : "h-12 w-12"}`}
               title="Open this image in the viewer"
               onClick={() => void openInViewer(ref)}
               data-testid={`panel-thumb-${ref.id}`}
@@ -241,6 +278,7 @@ export default function ReportImagePanel({
           </div>
         );
       })}
+      </div>
     </div>
   );
 }

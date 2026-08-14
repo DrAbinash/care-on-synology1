@@ -38,6 +38,14 @@ describe("mergeTechnique", () => {
     expect(out).toBe(existing); // same concepts, no new line
   });
 
+  it("collapses two paraphrased MRI technique paragraphs into one", () => {
+    const a = "Multiplanar, multisequence MRI of the lumbosacral spine was performed including T1, T2 and STIR sequences.";
+    const b = "MRI of the lumbosacral spine was performed using multiplanar multisequence acquisition with T1, T2, and STIR.";
+    const out = mergeTechnique(a, b);
+    expect(out.split(/[.!?]\s+/).filter(Boolean).length).toBe(1);
+    expect(out.toLowerCase()).toMatch(/lumbosacral|ls spine|t1/);
+  });
+
   it("retains complementary technique information", () => {
     const existing = "MRI performed on 3T scanner.";
     const incoming = "T1, T2, FLAIR, DWI and SWI sequences obtained.";

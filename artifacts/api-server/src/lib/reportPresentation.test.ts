@@ -148,7 +148,8 @@ describe("premium layout (Phase 7)", () => {
       resolvePresentationTemplate("care-premium"),
     );
     expect(html).toContain("letterpad");
-    expect(html).toContain("logo-pos-right");
+    expect(html).toContain("logo-pos-left");
+    expect(html).toContain("letterpad-bill");
     expect(html).toContain("DEOGHAR-814 112");
     expect(html).toContain("care.deoghar@gmail.com");
     expect(html).toContain("MULTI SLICE CT SCAN");

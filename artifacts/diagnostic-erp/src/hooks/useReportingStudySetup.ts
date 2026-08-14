@@ -15,14 +15,13 @@ import { api } from "@/lib/fetchApi";
 import { matchStudyRegion, filterRegionNamesForModality } from "@/lib/studyRegion";
 import { pickQuickProtocol } from "@/lib/pickQuickProtocol";
 import {
-  pickStructuredTemplate,
-  studyRegionToBodyPart,
+  pickStructuredTemplateForRegion,
   templateRegionMismatch,
 } from "@/lib/pickStructuredTemplate";
-import { templateCatalogModality } from "@/lib/radiologyTemplateModality";
 import { combineStudyRegionTitle } from "@/lib/combineStudyRegions";
 import { chocolateBoxSetFor, type ChocolateBoxSet } from "@/lib/findingsMacros";
 import { mergeBlock } from "@/lib/quickFindingsMerge";
+import { mergeTechnique } from "@/lib/reportFieldMerge";
 import type { InsertSource } from "@/lib/reportFieldMerge";
 import type {
   QuickProtocol,
@@ -278,16 +277,7 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     if (!studyId || templates.length === 0 || !draftHydrated) return;
     if (autoTemplateForStudyRef.current === studyId) return;
     autoTemplateForStudyRef.current = studyId;
-    let match = pickStructuredTemplate(templates, modality, studyDescription);
-    if (!match && matchedStudyRegion) {
-      const bodyPart = studyRegionToBodyPart(matchedStudyRegion);
-      const mod = templateCatalogModality(modality);
-      if (bodyPart) {
-        match = templates.find(
-          (t) => templateCatalogModality(t.modality) === mod && t.bodyPart === bodyPart,
-        ) ?? null;
-      }
-    }
+    let match = pickStructuredTemplateForRegion(templates, modality, matchedStudyRegion, studyDescription);
     if (match) {
       templateApplySourceRef.current = "auto";
       setSelectedTemplateId(match.id);
@@ -439,16 +429,12 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
   /** Pick the structured template that matches the current study region (LS Spine ≠ Brain). */
   const loadCorrectTemplate = useCallback(() => {
     if (disabled || !matchedStudyRegion) return null;
-    let match = pickStructuredTemplate(templates, modality, studyDescription);
-    if (!match) {
-      const bodyPart = studyRegionToBodyPart(matchedStudyRegion);
-      const mod = templateCatalogModality(modality);
-      if (bodyPart) {
-        match = templates.find(
-          (t) => templateCatalogModality(t.modality) === mod && t.bodyPart === bodyPart,
-        ) ?? null;
-      }
-    }
+    const match = pickStructuredTemplateForRegion(
+      templates,
+      modality,
+      matchedStudyRegion,
+      studyDescription,
+    );
     if (match) {
       selectTemplateManual(match.id);
       onToast?.({
@@ -477,16 +463,7 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
       else if (i === 0) setActiveProtocol(null);
     });
     const primary = studyRegions[0] ?? matchedStudyRegion;
-    let match = pickStructuredTemplate(templates, modality, studyDescription);
-    if (!match && primary) {
-      const bodyPart = studyRegionToBodyPart(primary);
-      const mod = templateCatalogModality(modality);
-      if (bodyPart) {
-        match = templates.find(
-          (t) => templateCatalogModality(t.modality) === mod && t.bodyPart === bodyPart,
-        ) ?? null;
-      }
-    }
+    const match = pickStructuredTemplateForRegion(templates, modality, primary, studyDescription);
     if (match) selectTemplateManual(match.id);
     onToast?.({
       title: "Study setup applied",
@@ -514,9 +491,9 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     let mergedTechnique = "";
     for (const region of studyRegions) {
       const protocol = pickQuickProtocol(quickSelectData?.protocols ?? [], region);
-      if (protocol?.techniqueText) mergedTechnique = mergeBlock(mergedTechnique, protocol.techniqueText);
+      if (protocol?.techniqueText) mergedTechnique = mergeTechnique(mergedTechnique, protocol.techniqueText);
       const tab = quickSelectData?.tabs?.find((t) => t.name === region);
-      if (tab?.techniqueText) mergedTechnique = mergeBlock(mergedTechnique, tab.techniqueText);
+      if (tab?.techniqueText) mergedTechnique = mergeTechnique(mergedTechnique, tab.techniqueText);
     }
     const primaryProtocol = pickQuickProtocol(quickSelectData?.protocols ?? [], studyRegions[0]!);
     if (primaryProtocol) {
@@ -531,16 +508,12 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
       lastInsertedTechniqueRef.current = mergedTechnique;
     }
 
-    let match = pickStructuredTemplate(templates, modality, studyDescription);
-    if (!match) {
-      const bodyPart = studyRegionToBodyPart(studyRegions[0]!);
-      const mod = templateCatalogModality(modality);
-      if (bodyPart) {
-        match = templates.find(
-          (t) => templateCatalogModality(t.modality) === mod && t.bodyPart === bodyPart,
-        ) ?? null;
-      }
-    }
+    let match = pickStructuredTemplateForRegion(
+      templates,
+      modality,
+      studyRegions[0] ?? matchedStudyRegion,
+      studyDescription,
+    );
     const sectionMap: Record<string, { normal: boolean; text: string }> = {};
     if (match) {
       selectTemplateManual(match.id);

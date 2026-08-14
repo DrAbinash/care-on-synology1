@@ -8,6 +8,7 @@
 2. CARE → **Settings → Billing → Emergency Billing**.
 3. Save DS225+ URL and fetch token.
 4. Click **Push master data to DS225+** (after tariff or staff changes, and at least weekly).
+5. **Super admin login only:** click **Download USB seed**. Unzip onto the pendrive `data/seed/` folder (`tests.csv`, `doctors.csv`, master JSON). This zip is **not** a bill import. Regular admin logins cannot download it.
 
 ## B. When CARE / main LAN is down
 
