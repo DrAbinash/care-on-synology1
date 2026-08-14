@@ -61,6 +61,8 @@ import {
   type AiPromptSource,
   type AiReportingQueryResponse,
 } from "@workspace/api-zod";
+import { AI_MASTER_FLAG, setMasterAiFlag } from "../lib/ai/clinicalConfigService";
+import { isFeatureEnabledServer } from "../lib/featureFlags";
 
 // ─── Prompt template presets ──────────────────────────────────────────────────
 export const AI_PROMPT_TEMPLATES: Record<string, string> = {
@@ -144,11 +146,14 @@ async function getGlobalSettings(): Promise<{
     allowedRoles: ["admin", "super_admin", "doctor", "radiologist"],
   };
 
-  if (!row[0]?.settingsJson) return defaults;
+  if (!row[0]?.settingsJson) {
+    return { ...defaults, enabled: await isFeatureEnabledServer(AI_MASTER_FLAG) };
+  }
   try {
-    return { ...defaults, ...(JSON.parse(row[0].settingsJson) as object) };
+    const parsed = { ...defaults, ...(JSON.parse(row[0].settingsJson) as object) };
+    return { ...parsed, enabled: await isFeatureEnabledServer(AI_MASTER_FLAG) };
   } catch {
-    return defaults;
+    return { ...defaults, enabled: await isFeatureEnabledServer(AI_MASTER_FLAG) };
   }
 }
 
@@ -362,6 +367,10 @@ router.post("/settings", async (req, res): Promise<void> => {
         .where(eq(aiProviderSettingsTable.id, existing[0].id));
     } else {
       await db.insert(aiProviderSettingsTable).values({ provider: "__global__", settingsJson: JSON.stringify(next) });
+    }
+
+    if (globalIn.enabled !== undefined) {
+      await setMasterAiFlag(globalIn.enabled, sReq.staffSession?.username ?? sReq.staffSession?.role ?? "ai-reporting-settings");
     }
   }
 

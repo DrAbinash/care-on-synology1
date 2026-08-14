@@ -23,6 +23,22 @@ export { normalizeAiModality } from "./modalityNormalize";
 /** The single global master flag. Unseeded ⇒ false ⇒ AI off for everyone. */
 export const AI_MASTER_FLAG = "ff_radiology_ai";
 
+/** Upsert the master radiology AI flag and pilot visibility policy. */
+export async function setMasterAiFlag(enabled: boolean, updatedBy?: string): Promise<void> {
+  const by = updatedBy ?? "clinical-config";
+  await db
+    .insert(featureFlagsTable)
+    .values({ key: AI_MASTER_FLAG, enabled, updatedBy: by })
+    .onConflictDoUpdate({
+      target: featureFlagsTable.key,
+      set: { enabled, updatedBy: by, updatedAt: new Date() },
+    });
+  invalidateFeatureFlagCache();
+  if (enabled) {
+    await setFeaturePolicy("global", "*", true, "pilot", by);
+  }
+}
+
 export interface EnablementQuery {
   staffId?: number | null;
   modality?: string | null;
@@ -150,15 +166,7 @@ export async function saveDraftAutomation(opts: {
   masterEnabled: boolean;
 }> {
   if (opts.enableAi !== false) {
-    await db
-      .insert(featureFlagsTable)
-      .values({ key: AI_MASTER_FLAG, enabled: true, updatedBy: opts.updatedBy ?? "ai-draft-settings" })
-      .onConflictDoUpdate({
-        target: featureFlagsTable.key,
-        set: { enabled: true, updatedBy: opts.updatedBy ?? "ai-draft-settings", updatedAt: new Date() },
-      });
-    invalidateFeatureFlagCache();
-    await setFeaturePolicy("global", "*", true, "pilot", opts.updatedBy);
+    await setMasterAiFlag(true, opts.updatedBy ?? "ai-draft-settings");
   }
 
   const mode: ModalityMode = opts.draftTiming === "on_arrival" ? "immediate" : "night_batch";
