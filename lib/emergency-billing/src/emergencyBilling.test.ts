@@ -22,6 +22,10 @@ import {
   parseEmgBillNumber,
   parseMasterSnapshot,
   serializeEmergencyCsv,
+  serializeDoctorsSeedCsv,
+  serializeTestsSeedCsv,
+  parseDoctorsSeedCsv,
+  parseTestsSeedCsv,
   shouldSkipScheduledPush,
   snapshotAgeBand,
   stampMasterSnapshot,
@@ -334,5 +338,29 @@ describe("scheduled push skip (idempotent interval)", () => {
     expect(shouldSkipScheduledPush("2026-08-14T11:05:00.000Z", 6, now)).toBe(true);
     expect(shouldSkipScheduledPush("2026-08-14T05:00:00.000Z", 6, now)).toBe(false);
     expect(shouldSkipScheduledPush(null, 6, now)).toBe(false);
+  });
+});
+
+describe("pendrive catalogue seed CSVs", () => {
+  it("round-trips tests and doctors including quoted names", () => {
+    const testsCsv = serializeTestsSeedCsv([
+      { id: 1, code: "MRI-BR", name: "MRI Brain, contrast", category: "MRI", price: 4000, isActive: true },
+    ]);
+    const doctorsCsv = serializeDoctorsSeedCsv([
+      { id: 2, name: 'Dr. "A" Patel', specialization: "Radiology" },
+    ]);
+    expect(testsCsv).toContain("MRI Brain, contrast");
+    const tests = parseTestsSeedCsv(testsCsv);
+    expect(tests.errors).toEqual([]);
+    expect(tests.tests[0]?.name).toBe("MRI Brain, contrast");
+    const doctors = parseDoctorsSeedCsv(doctorsCsv);
+    expect(doctors.errors).toEqual([]);
+    expect(doctors.doctors[0]?.name).toBe('Dr. "A" Patel');
+  });
+
+  it("rejects a billing CSV as a tests seed", () => {
+    const { tests, errors } = parseTestsSeedCsv("format,emergency_transaction_uuid\nCARE_EMERGENCY_BILLING_V1,x\n");
+    expect(tests).toEqual([]);
+    expect(errors[0]).toMatch(/missing required columns/);
   });
 });

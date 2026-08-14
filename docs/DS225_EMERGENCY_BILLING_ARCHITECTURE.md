@@ -43,7 +43,7 @@ Do not clone the CARE monorepo onto DS225+. CARE keeps only integration pieces (
 | --- | --- |
 | `@workspace/emergency-billing` | Versioned interchange: `CARE_EMERGENCY_MASTER_V1`, `CARE_EMERGENCY_BILLING_V1`, `CARE_EMERGENCY_BILLING_JSON_V1`. Compatibility is whether 225app advertises those same identifiers (`GET /api/capability`). |
 | `https://github.com/DrAbinash/225app` | Minimal capture app + dedicated PostgreSQL on DS225+. Owns `/api/capability` (no PHI) and local emergency DB state. |
-| CARE `/api/emergency-billing` | Push master data (blocked on contract mismatch), fetch pending, CSV/JSON import through canonical bill path |
+| CARE `/api/emergency-billing` | Push master data (blocked on contract mismatch), fetch pending, CSV/JSON import through canonical bill path. **USB seed zip** (`GET /usb-seed`) is super_admin ERP login only. |
 | CARE Settings → Billing → Emergency Billing | Compatibility card, Push Now, NAS status, reconciliation |
 | CARE My Daily Summary → Clinic systems | Compact Emergency DS225+ + DR/Backup rows (Hyper Backup / HOPE Postgres show `status unavailable` unless CARE can read them) |
 
