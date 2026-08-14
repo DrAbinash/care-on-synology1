@@ -1,8 +1,21 @@
-import { db, emergencyNasConfigTable } from "@workspace/db";
-import { eq } from "drizzle-orm";
-import type { EmergencyJsonPackage, EmergencySessionRecord, EmergencyTransaction, MasterDataSnapshot } from "@workspace/emergency-billing";
-import { JSON_FORMAT, parseEmergencyJson } from "@workspace/emergency-billing";
+import { db, emergencyNasConfigTable, emergencyMasterPushLogTable, pool } from "@workspace/db";
+import { desc, eq } from "drizzle-orm";
+import {
+  emergencyMasterSyncIntervalHours,
+  type EmergencySessionRecord,
+  type EmergencyTransaction,
+  type PushInitiator,
+} from "@workspace/emergency-billing";
 import { buildEmergencyMasterSnapshot } from "./emergencyMasterSnapshot";
+import {
+  EMERGENCY_MASTER_PUSH_LOCK_KEY,
+  emergencyStatusFromState,
+  fetchPendingHttp,
+  probeEmergencyNas,
+  runEmergencyMasterPush,
+  type MasterPushLogRow,
+  type MasterPushResult,
+} from "./emergencyMasterPush";
 
 export async function getEmergencyNasConfig() {
   const [row] = await db.select().from(emergencyNasConfigTable).where(eq(emergencyNasConfigTable.id, 1)).limit(1);
@@ -21,12 +34,82 @@ export function publicNasConfig(row: typeof emergencyNasConfigTable.$inferSelect
   };
 }
 
-function nasHeaders(token: string): Record<string, string> {
+function resolveNasTarget(cfg: Awaited<ReturnType<typeof getEmergencyNasConfig>>, opts?: { baseUrl?: string; token?: string }) {
+  const baseUrl = (opts?.baseUrl || cfg?.baseUrl || process.env.EMERGENCY_NAS_URL || "").replace(/\/+$/, "");
+  const token = opts?.token || cfg?.fetchToken || process.env.EMERGENCY_NAS_FETCH_TOKEN || "";
+  return { baseUrl, token };
+}
+
+async function recordPushLog(row: MasterPushLogRow) {
+  await db.insert(emergencyMasterPushLogTable).values({
+    pushedAt: row.pushedAt ?? new Date(),
+    initiatedBy: row.initiatedBy,
+    userName: row.userName,
+    userId: row.userId,
+    targetUrl: row.targetUrl,
+    snapshotFormat: row.snapshotFormat,
+    snapshotVersion: row.snapshotVersion,
+    serviceCount: row.serviceCount,
+    doctorCount: row.doctorCount,
+    patientCount: row.patientCount,
+    staffCount: row.staffCount,
+    success: row.success,
+    errorMessage: row.errorMessage,
+  });
+}
+
+function livePushDeps() {
   return {
-    Authorization: `Bearer ${token}`,
-    "X-Emergency-Fetch-Token": token,
-    Accept: "application/json",
+    getConfig: async () => {
+      const cfg = await getEmergencyNasConfig();
+      const { baseUrl, token } = resolveNasTarget(cfg);
+      if (!baseUrl) throw new Error("Emergency NAS URL is not configured");
+      if (!token) throw new Error("Emergency NAS fetch token is not configured");
+      return { baseUrl, token };
+    },
+    lastSuccessAt: async () => {
+      const cfg = await getEmergencyNasConfig();
+      return cfg?.lastMasterPushAt ?? null;
+    },
+    buildSnapshot: () => buildEmergencyMasterSnapshot(),
+    fetchImpl: fetch,
+    recordLog: recordPushLog,
+    markLastSuccess: async (at: Date, updatedBy: string) => {
+      const existing = await getEmergencyNasConfig();
+      if (existing) {
+        await db.update(emergencyNasConfigTable).set({ lastMasterPushAt: at, updatedBy }).where(eq(emergencyNasConfigTable.id, 1));
+      } else {
+        await db.insert(emergencyNasConfigTable).values({ id: 1, lastMasterPushAt: at, updatedBy });
+      }
+    },
+    tryLock: async () => true,
+    intervalHours: emergencyMasterSyncIntervalHours(),
   };
+}
+
+/**
+ * Session-level advisory lock around a scheduled push so two CARE API/worker
+ * processes cannot both push. Manual pushes do not take this lock (the push
+ * itself is idempotent).
+ */
+async function withSchedulerLock<T>(fn: (locked: boolean) => Promise<T>): Promise<T> {
+  const client = await pool.connect();
+  try {
+    const r = await client.query<{ locked: boolean }>(
+      "SELECT pg_try_advisory_lock(hashtext($1)) AS locked",
+      [EMERGENCY_MASTER_PUSH_LOCK_KEY],
+    );
+    const locked = !!r.rows[0]?.locked;
+    try {
+      return await fn(locked);
+    } finally {
+      if (locked) {
+        await client.query("SELECT pg_advisory_unlock(hashtext($1))", [EMERGENCY_MASTER_PUSH_LOCK_KEY]);
+      }
+    }
+  } finally {
+    client.release();
+  }
 }
 
 export async function fetchPendingFromEmergencyNas(opts?: {
@@ -38,79 +121,117 @@ export async function fetchPendingFromEmergencyNas(opts?: {
   masterDataLastSyncedAt: string | null;
 }> {
   const cfg = await getEmergencyNasConfig();
-  const baseUrl = (opts?.baseUrl || cfg?.baseUrl || process.env.EMERGENCY_NAS_URL || "").replace(/\/+$/, "");
-  const token = opts?.token || cfg?.fetchToken || process.env.EMERGENCY_NAS_FETCH_TOKEN || "";
+  const { baseUrl, token } = resolveNasTarget(cfg, opts);
   if (!baseUrl) throw new Error("Emergency NAS URL is not configured");
   if (!token) throw new Error("Emergency NAS fetch token is not configured");
-
-  const res = await fetch(`${baseUrl}/api/internal/pending`, {
-    headers: nasHeaders(token),
-    signal: AbortSignal.timeout(30_000),
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`Emergency NAS returned HTTP ${res.status}: ${text.slice(0, 300)}`);
-  }
-  const body = (await res.json()) as EmergencyJsonPackage & { transactions?: EmergencyTransaction[] };
-  if (body.format && body.format !== JSON_FORMAT) {
-    throw new Error(`Unexpected emergency payload format ${String(body.format)}`);
-  }
-  const parsed = parseEmergencyJson(JSON.stringify({
-    format: JSON_FORMAT,
-    version: 1,
-    exportedAt: body.exportedAt ?? new Date().toISOString(),
-    masterDataLastSyncedAt: body.masterDataLastSyncedAt ?? null,
-    sessions: body.sessions ?? [],
-    transactions: body.transactions ?? [],
-    checksumSha256: body.checksumSha256 ?? "",
-  }));
-  return {
-    sessions: parsed.pkg?.sessions ?? [],
-    transactions: parsed.pkg?.transactions ?? [],
-    masterDataLastSyncedAt: parsed.pkg?.masterDataLastSyncedAt ?? null,
-  };
+  return fetchPendingHttp({ baseUrl, token });
 }
 
-export async function pushMasterToEmergencyNas(updatedBy: string): Promise<{ ok: true; syncedAt: string; serviceCount: number }> {
-  const cfg = await getEmergencyNasConfig();
-  const baseUrl = (cfg?.baseUrl || process.env.EMERGENCY_NAS_URL || "").replace(/\/+$/, "");
-  const token = cfg?.fetchToken || process.env.EMERGENCY_NAS_FETCH_TOKEN || "";
-  if (!baseUrl) throw new Error("Emergency NAS URL is not configured");
-  if (!token) throw new Error("Emergency NAS fetch token is not configured");
-  const snapshot: MasterDataSnapshot = await buildEmergencyMasterSnapshot();
-  const res = await fetch(`${baseUrl}/api/internal/master-sync`, {
-    method: "POST",
-    headers: { ...nasHeaders(token), "Content-Type": "application/json" },
-    body: JSON.stringify(snapshot),
-    signal: AbortSignal.timeout(60_000),
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`Master sync failed HTTP ${res.status}: ${text.slice(0, 300)}`);
+export async function pushMasterToEmergencyNas(opts: {
+  initiatedBy: PushInitiator;
+  userName: string;
+  userId?: number | null;
+  respectInterval?: boolean;
+  requireLock?: boolean;
+}): Promise<MasterPushResult> {
+  const deps = livePushDeps();
+  if (opts.requireLock) {
+    return withSchedulerLock(async (locked) => {
+      if (!locked) return { ok: true as const, skipped: true as const, reason: "lock" as const };
+      return runEmergencyMasterPush(
+        {
+          initiatedBy: opts.initiatedBy,
+          userName: opts.userName,
+          userId: opts.userId ?? null,
+          respectInterval: opts.respectInterval,
+          requireLock: false,
+        },
+        deps,
+      );
+    });
   }
-  await db
-    .update(emergencyNasConfigTable)
-    .set({ lastMasterPushAt: new Date(), updatedBy })
-    .where(eq(emergencyNasConfigTable.id, 1));
-  return { ok: true, syncedAt: snapshot.syncedAt, serviceCount: snapshot.services.length };
+  return runEmergencyMasterPush(
+    {
+      initiatedBy: opts.initiatedBy,
+      userName: opts.userName,
+      userId: opts.userId ?? null,
+      respectInterval: opts.respectInterval,
+      requireLock: false,
+    },
+    deps,
+  );
 }
 
-export async function pushEmergencyMasterIfConfigured(updatedBy: string): Promise<void> {
+export async function pushEmergencyMasterIfConfigured(updatedBy: string): Promise<MasterPushResult> {
+  return pushMasterToEmergencyNas({
+    initiatedBy: "SCHEDULER",
+    userName: updatedBy,
+    respectInterval: true,
+    requireLock: true,
+  });
+}
+
+export async function getEmergencyBillingStatus() {
   const cfg = await getEmergencyNasConfig();
-  if (!cfg?.baseUrl || !(cfg.fetchToken || process.env.EMERGENCY_NAS_FETCH_TOKEN)) return;
-  await pushMasterToEmergencyNas(updatedBy);
+  const { baseUrl, token } = resolveNasTarget(cfg);
+  const configured = !!(baseUrl && token);
+  const nasStatus = configured ? await probeEmergencyNas(baseUrl) : "OFFLINE";
+  const [lastOk] = await db
+    .select()
+    .from(emergencyMasterPushLogTable)
+    .where(eq(emergencyMasterPushLogTable.success, true))
+    .orderBy(desc(emergencyMasterPushLogTable.pushedAt))
+    .limit(1);
+  const [lastFail] = await db
+    .select()
+    .from(emergencyMasterPushLogTable)
+    .where(eq(emergencyMasterPushLogTable.success, false))
+    .orderBy(desc(emergencyMasterPushLogTable.pushedAt))
+    .limit(1);
+  const lastSuccessfulPushAt = lastOk?.pushedAt ?? cfg?.lastMasterPushAt ?? null;
+  return emergencyStatusFromState({
+    configured,
+    nasStatus,
+    lastSuccessfulPushAt,
+    counts: lastOk
+      ? {
+          serviceCount: lastOk.serviceCount ?? 0,
+          doctorCount: lastOk.doctorCount ?? 0,
+          patientCount: lastOk.patientCount ?? 0,
+          staffCount: lastOk.staffCount ?? 0,
+        }
+      : null,
+    lastFailure: lastFail
+      ? {
+          at: lastFail.pushedAt.toISOString(),
+          error: lastFail.errorMessage || "Push failed",
+          initiatedBy: lastFail.initiatedBy,
+        }
+      : null,
+  });
+}
+
+export async function listEmergencyMasterPushLog(limit = 50) {
+  return db
+    .select()
+    .from(emergencyMasterPushLogTable)
+    .orderBy(desc(emergencyMasterPushLogTable.pushedAt))
+    .limit(limit);
 }
 
 export async function markEmergencyNasReconciled(opts: {
   uuids: Array<{ emergencyTransactionUuid: string; careBillId: number }>;
 }): Promise<void> {
   const cfg = await getEmergencyNasConfig();
-  const baseUrl = (cfg?.baseUrl || process.env.EMERGENCY_NAS_URL || "").replace(/\/+$/, "");
-  const token = cfg?.fetchToken || process.env.EMERGENCY_NAS_FETCH_TOKEN || "";
+  const { baseUrl, token } = resolveNasTarget(cfg);
   if (!baseUrl || !token || opts.uuids.length === 0) return;
   await fetch(`${baseUrl}/api/internal/mark-reconciled`, {
     method: "POST",
-    headers: { ...nasHeaders(token), "Content-Type": "application/json" },
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "X-Emergency-Fetch-Token": token,
+      "Content-Type": "application/json",
+    },
     body: JSON.stringify({ items: opts.uuids }),
     signal: AbortSignal.timeout(30_000),
   }).catch((err) => console.warn("[emergency-billing] mark-reconciled on NAS failed", err));

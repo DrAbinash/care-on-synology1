@@ -7,7 +7,9 @@ import { auditFromRequest } from "../lib/audit";
 import { importEmergencyTransactions, previewEmergencyTransactions } from "../lib/emergencyReconcile";
 import {
   fetchPendingFromEmergencyNas,
+  getEmergencyBillingStatus,
   getEmergencyNasConfig,
+  listEmergencyMasterPushLog,
   markEmergencyNasReconciled,
   publicNasConfig,
   pushMasterToEmergencyNas,
@@ -22,6 +24,16 @@ function actor(req: StaffAuthRequest): { name: string; userId: number | null } {
     userId: req.staffSession?.subjectId ?? null,
   };
 }
+
+emergencyBillingRouter.get("/status", async (_req, res) => {
+  const status = await getEmergencyBillingStatus();
+  res.json(status);
+});
+
+emergencyBillingRouter.get("/push-log", async (_req, res) => {
+  const rows = await listEmergencyMasterPushLog(50);
+  res.json(rows);
+});
 
 emergencyBillingRouter.get("/config", async (_req, res) => {
   const cfg = await getEmergencyNasConfig();
@@ -65,9 +77,13 @@ emergencyBillingRouter.post("/master-snapshot", async (_req, res) => {
 });
 
 emergencyBillingRouter.post("/push-master", async (req: StaffAuthRequest, res) => {
+  const who = actor(req);
   try {
-    const who = actor(req);
-    const result = await pushMasterToEmergencyNas(who.name);
+    const result = await pushMasterToEmergencyNas({
+      initiatedBy: "MANUAL",
+      userName: who.name,
+      userId: who.userId,
+    });
     await auditFromRequest(req, {
       userId: who.userId,
       userName: who.name,
@@ -77,9 +93,17 @@ emergencyBillingRouter.post("/push-master", async (req: StaffAuthRequest, res) =
       entityType: "emergency_nas",
       newValue: JSON.stringify(result),
     });
+    if (!result.ok) {
+      res.status(502).json({ error: result.error, lastSuccessfulPushUnchanged: true });
+      return;
+    }
+    if ("skipped" in result && result.skipped) {
+      res.json(result);
+      return;
+    }
     res.json(result);
   } catch (err) {
-    res.status(502).json({ error: err instanceof Error ? err.message : String(err) });
+    res.status(502).json({ error: err instanceof Error ? err.message : String(err), lastSuccessfulPushUnchanged: true });
   }
 });
 

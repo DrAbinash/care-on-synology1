@@ -9,6 +9,46 @@ import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { AlertTriangle, Download, RefreshCcw } from "lucide-react";
 
+type NasStatus = {
+  nasStatus: "ONLINE" | "OFFLINE";
+  configured: boolean;
+  neverSynced: boolean;
+  lastSuccessfulPushAt: string | null;
+  snapshotAgeHours: number | null;
+  ageBand: "never" | "fresh" | "warning" | "stale";
+  counts: { serviceCount: number; doctorCount: number; patientCount: number; staffCount: number } | null;
+  lastFailure: { at: string; error: string; initiatedBy: string } | null;
+  syncIntervalHours: number;
+};
+
+type PushLogRow = {
+  id: number;
+  pushedAt: string;
+  initiatedBy: string;
+  userName: string | null;
+  targetUrl: string | null;
+  snapshotFormat: string | null;
+  snapshotVersion: number | null;
+  serviceCount: number | null;
+  doctorCount: number | null;
+  patientCount: number | null;
+  staffCount: number | null;
+  success: boolean;
+  errorMessage: string | null;
+};
+
+type PushResult = {
+  ok: boolean;
+  skipped?: boolean;
+  reason?: string;
+  syncedAt?: string;
+  serviceCount?: number;
+  doctorCount?: number;
+  patientCount?: number;
+  staffCount?: number;
+  error?: string;
+};
+
 type NasConfig = {
   baseUrl: string;
   fetchTokenSet: boolean;
@@ -87,6 +127,48 @@ function inr(n: number) {
   return `₹${Number(n || 0).toLocaleString("en-IN", { maximumFractionDigits: 0 })}`;
 }
 
+function fmtIst(iso: string | null | undefined) {
+  if (!iso) return "never";
+  return new Date(iso).toLocaleString("en-IN", {
+    timeZone: "Asia/Kolkata",
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  });
+}
+
+function fmtCount(n: number | null | undefined) {
+  return Number(n || 0).toLocaleString("en-IN");
+}
+
+function ageLabel(hours: number | null | undefined) {
+  if (hours == null) return "never";
+  if (hours < 1) {
+    const mins = Math.max(1, Math.round(hours * 60));
+    return `${mins} minute${mins === 1 ? "" : "s"}`;
+  }
+  if (hours < 48) {
+    const h = Math.round(hours * 10) / 10;
+    return `${h} hour${h === 1 ? "" : "s"}`;
+  }
+  const days = Math.round(hours / 24);
+  return `${days} day${days === 1 ? "" : "s"}`;
+}
+
+function successMessage(r: PushResult) {
+  const when = fmtIst(r.syncedAt);
+  return [
+    `Last push: ${when}`,
+    `Services: ${fmtCount(r.serviceCount)}`,
+    `Doctors: ${fmtCount(r.doctorCount)}`,
+    `Patients cached: ${fmtCount(r.patientCount)}`,
+    `Staff: ${fmtCount(r.staffCount)}`,
+  ].join("\n");
+}
+
 export function EmergencyBillingReconciliationTab() {
   const qc = useQueryClient();
   const { toast } = useToast();
@@ -107,6 +189,17 @@ export function EmergencyBillingReconciliationTab() {
     },
   });
 
+  const { data: status } = useQuery<NasStatus>({
+    queryKey: ["emergency-nas-status"],
+    queryFn: () => api.get("/api/emergency-billing/status"),
+    refetchInterval: 30_000,
+  });
+
+  const { data: pushLog = [] } = useQuery<PushLogRow[]>({
+    queryKey: ["emergency-push-log"],
+    queryFn: () => api.get("/api/emergency-billing/push-log"),
+  });
+
   const { data: history = [] } = useQuery<HistoryBatch[]>({
     queryKey: ["emergency-history"],
     queryFn: () => api.get("/api/emergency-billing/history"),
@@ -122,6 +215,7 @@ export function EmergencyBillingReconciliationTab() {
     mutationFn: () => api.put("/api/emergency-billing/config", { baseUrl, fetchToken: fetchToken || undefined }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["emergency-nas-config"] });
+      qc.invalidateQueries({ queryKey: ["emergency-nas-status"] });
       setFetchToken("");
       toast({ title: "Emergency NAS settings saved" });
     },
@@ -129,10 +223,16 @@ export function EmergencyBillingReconciliationTab() {
   });
 
   const pushMaster = useMutation({
-    mutationFn: () => api.post("/api/emergency-billing/push-master", {}),
-    onSuccess: (r: { syncedAt: string; serviceCount: number }) => {
+    mutationFn: () => api.post<PushResult>("/api/emergency-billing/push-master", {}),
+    onSuccess: (r) => {
       qc.invalidateQueries({ queryKey: ["emergency-nas-config"] });
-      toast({ title: "Master data pushed", description: `${r.serviceCount} services at ${r.syncedAt}` });
+      qc.invalidateQueries({ queryKey: ["emergency-nas-status"] });
+      qc.invalidateQueries({ queryKey: ["emergency-push-log"] });
+      if (!r.ok) {
+        toast({ title: "Push failed", description: r.error || "Master data was not synchronized", variant: "destructive" });
+        return;
+      }
+      toast({ title: "Master data synchronized successfully", description: successMessage(r) });
     },
     onError: (e: Error) => toast({ title: "Push failed", description: e.message, variant: "destructive" }),
   });
@@ -202,6 +302,51 @@ export function EmergencyBillingReconciliationTab() {
       </div>
 
       <div className="bg-card border border-card-border rounded-xl p-5 space-y-3">
+        <h2 className="font-bold text-lg">Emergency Billing</h2>
+        <div className="flex flex-wrap items-center gap-2 text-sm">
+          <span className="font-medium">Emergency NAS status:</span>
+          <Badge variant={status?.nasStatus === "ONLINE" ? "default" : "destructive"}>
+            {status?.nasStatus ?? "OFFLINE"}
+          </Badge>
+        </div>
+        {status?.neverSynced && (
+          <div className="rounded-lg border border-red-300 bg-red-50 dark:bg-red-950/30 p-3 text-sm">
+            <div className="font-semibold text-red-900 dark:text-red-100">Emergency NAS has never been synchronized.</div>
+            <p className="mt-1 text-red-800 dark:text-red-200">Push the initial master-data snapshot before the first emergency session.</p>
+            <Button className="mt-2" onClick={() => pushMaster.mutate()} disabled={pushMaster.isPending}>
+              <RefreshCcw size={14} className="mr-1" /> Push Initial Master Data
+            </Button>
+          </div>
+        )}
+        {status && !status.neverSynced && status.ageBand === "stale" && (
+          <div className="rounded-lg border border-orange-400 bg-orange-50 dark:bg-orange-950/30 p-3 text-sm font-medium">
+            Snapshot is older than 24 hours. Emergency billing on DS225+ still uses the last valid cache — push when CARE can reach the NAS.
+          </div>
+        )}
+        {status && !status.neverSynced && status.ageBand === "warning" && (
+          <div className="rounded-lg border border-amber-300 bg-amber-50 dark:bg-amber-950/30 p-3 text-sm">
+            Snapshot is more than 6 hours old. Scheduled sync interval is {status.syncIntervalHours} hours.
+          </div>
+        )}
+        <div className="text-sm space-y-1">
+          <div>Last successful master-data push: <strong>{fmtIst(status?.lastSuccessfulPushAt)}</strong></div>
+          <div>Age of snapshot: <strong>{ageLabel(status?.snapshotAgeHours)}</strong></div>
+          {status?.counts && (
+            <pre className="text-xs bg-muted rounded-lg p-3 whitespace-pre-wrap">{`Services: ${fmtCount(status.counts.serviceCount)}
+Doctors: ${fmtCount(status.counts.doctorCount)}
+Patients cached: ${fmtCount(status.counts.patientCount)}
+Staff: ${fmtCount(status.counts.staffCount)}`}</pre>
+          )}
+          {status?.lastFailure && (
+            <div className="text-destructive text-xs">Last failed push ({status.lastFailure.initiatedBy} at {fmtIst(status.lastFailure.at)}): {status.lastFailure.error}</div>
+          )}
+        </div>
+        <Button onClick={() => pushMaster.mutate()} disabled={pushMaster.isPending} size="lg">
+          <RefreshCcw size={16} className="mr-1" /> Push Master Data Now
+        </Button>
+      </div>
+
+      <div className="bg-card border border-card-border rounded-xl p-5 space-y-3">
         <h2 className="font-bold text-lg">Emergency NAS connection</h2>
         {isLoading ? <p className="text-sm text-muted-foreground">Loading…</p> : (
           <>
@@ -216,15 +361,10 @@ export function EmergencyBillingReconciliationTab() {
               </div>
             </div>
             <div className="text-xs text-muted-foreground">
-              Last fetch: {config?.lastFetchAt ? new Date(config.lastFetchAt).toLocaleString("en-IN") : "never"}
-              {" · "}
-              Last master push: {config?.lastMasterPushAt ? new Date(config.lastMasterPushAt).toLocaleString("en-IN") : "never"}
+              Last fetch: {config?.lastFetchAt ? fmtIst(config.lastFetchAt) : "never"}
             </div>
             <div className="flex flex-wrap gap-2">
               <Button onClick={() => saveConfig.mutate()} disabled={saveConfig.isPending}>Save connection</Button>
-              <Button variant="outline" onClick={() => pushMaster.mutate()} disabled={pushMaster.isPending}>
-                <RefreshCcw size={14} className="mr-1" /> Push master data to DS225+
-              </Button>
             </div>
           </>
         )}
@@ -329,6 +469,39 @@ export function EmergencyBillingReconciliationTab() {
           </div>
         </div>
       )}
+
+      <div className="bg-card border border-card-border rounded-xl p-5 space-y-3">
+        <h2 className="font-bold text-lg">Master-data push history</h2>
+        <div className="overflow-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-muted-foreground">
+                <th className="p-2">When</th>
+                <th className="p-2">By</th>
+                <th className="p-2">User</th>
+                <th className="p-2">Target</th>
+                <th className="p-2">Version</th>
+                <th className="p-2">Counts</th>
+                <th className="p-2">Result</th>
+              </tr>
+            </thead>
+            <tbody>
+              {pushLog.map((row) => (
+                <tr key={row.id} className="border-t">
+                  <td className="p-2">{fmtIst(row.pushedAt)}</td>
+                  <td className="p-2">{row.initiatedBy}</td>
+                  <td className="p-2">{row.userName || "—"}</td>
+                  <td className="p-2 font-mono text-xs">{row.targetUrl || "—"}</td>
+                  <td className="p-2 text-xs">{row.snapshotFormat || "—"} v{row.snapshotVersion ?? "—"}</td>
+                  <td className="p-2 text-xs">{fmtCount(row.serviceCount)} svc · {fmtCount(row.doctorCount)} dr · {fmtCount(row.patientCount)} pt · {fmtCount(row.staffCount)} staff</td>
+                  <td className="p-2">{row.success ? "success" : <span className="text-destructive">{row.errorMessage || "failed"}</span>}</td>
+                </tr>
+              ))}
+              {pushLog.length === 0 && <tr><td className="p-2 text-muted-foreground" colSpan={7}>No master-data pushes yet.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
 
       <div className="bg-card border border-card-border rounded-xl p-5 space-y-3">
         <h2 className="font-bold text-lg">Emergency reconciliation history</h2>

@@ -1,4 +1,4 @@
-import { pgTable, text, serial, timestamp, integer, numeric, jsonb, uniqueIndex, boolean } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, timestamp, integer, jsonb, uniqueIndex, boolean } from "drizzle-orm/pg-core";
 import { billsTable } from "./bills";
 import { patientsTable } from "./patients";
 
@@ -53,6 +53,23 @@ export const emergencyNasConfigTable = pgTable("emergency_nas_config", {
   lastMasterPushAt: timestamp("last_master_push_at", { withTimezone: true }),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
   updatedBy: text("updated_by"),
+});
+
+export const emergencyMasterPushLogTable = pgTable("emergency_master_push_log", {
+  id: serial("id").primaryKey(),
+  pushedAt: timestamp("pushed_at", { withTimezone: true }).notNull().defaultNow(),
+  initiatedBy: text("initiated_by").notNull(), // MANUAL | SCHEDULER | EVENT
+  userName: text("user_name"),
+  userId: integer("user_id"),
+  targetUrl: text("target_url"),
+  snapshotFormat: text("snapshot_format"),
+  snapshotVersion: integer("snapshot_version"),
+  serviceCount: integer("service_count"),
+  doctorCount: integer("doctor_count"),
+  patientCount: integer("patient_count"),
+  staffCount: integer("staff_count"),
+  success: boolean("success").notNull(),
+  errorMessage: text("error_message"),
 });
 
 export type EmergencyReconciliationBatch = typeof emergencyReconciliationBatchesTable.$inferSelect;

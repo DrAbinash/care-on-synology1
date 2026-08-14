@@ -62,3 +62,23 @@ ALTER TABLE emergency_nas_config ADD COLUMN IF NOT EXISTS fetch_token text;
 INSERT INTO emergency_nas_config (id, base_url)
 SELECT 1, NULL
 WHERE NOT EXISTS (SELECT 1 FROM emergency_nas_config WHERE id = 1);
+
+CREATE TABLE IF NOT EXISTS emergency_master_push_log (
+  id serial PRIMARY KEY,
+  pushed_at timestamptz NOT NULL DEFAULT now(),
+  initiated_by text NOT NULL,
+  user_name text,
+  user_id integer,
+  target_url text,
+  snapshot_format text,
+  snapshot_version integer,
+  service_count integer,
+  doctor_count integer,
+  patient_count integer,
+  staff_count integer,
+  success boolean NOT NULL,
+  error_message text
+);
+
+CREATE INDEX IF NOT EXISTS emergency_master_push_log_at_idx
+  ON emergency_master_push_log (pushed_at DESC);

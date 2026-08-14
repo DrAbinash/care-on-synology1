@@ -1,11 +1,13 @@
 import { db, patientsTable, testsTable, doctorsTable, usersTable, discountReasonsTable } from "@workspace/db";
 import { eq, desc } from "drizzle-orm";
-import type { MasterDataSnapshot } from "@workspace/emergency-billing";
+import { stampMasterSnapshot, type MasterDataSnapshot } from "@workspace/emergency-billing";
 
 const ACTIVE_ROLES = ["admin", "super_admin", "receptionist", "billing", "manager", "accountant"];
 
+const DEFAULT_PATIENT_CACHE = 5000;
+
 /** Minimum master data CARE pushes to DS225+ while the main NAS is healthy. */
-export async function buildEmergencyMasterSnapshot(limitPatients = 2000): Promise<MasterDataSnapshot> {
+export async function buildEmergencyMasterSnapshot(limitPatients = DEFAULT_PATIENT_CACHE): Promise<MasterDataSnapshot> {
   const [services, doctors, patients, staff, reasons] = await Promise.all([
     db.select({
       id: testsTable.id,
@@ -45,7 +47,7 @@ export async function buildEmergencyMasterSnapshot(limitPatients = 2000): Promis
     db.select({ reason: discountReasonsTable.label }).from(discountReasonsTable).where(eq(discountReasonsTable.isActive, true)),
   ]);
 
-  return {
+  return stampMasterSnapshot({
     syncedAt: new Date().toISOString(),
     services: services
       .filter((s) => s.isActive !== false)
@@ -85,5 +87,5 @@ export async function buildEmergencyMasterSnapshot(limitPatients = 2000): Promis
         permissions: u.permissions,
       })),
     discountReasons: reasons.map((r) => r.reason).filter(Boolean),
-  };
+  });
 }

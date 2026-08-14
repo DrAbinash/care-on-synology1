@@ -78,12 +78,22 @@ export function startCronScheduler() {
   }
 }
 
-/** Push the minimum master-data snapshot to DS225+ every 6 hours while CARE is healthy. */
+/** Push the minimum master-data snapshot to DS225+. Interval is
+ * EMERGENCY_MASTER_SYNC_INTERVAL_HOURS (default 6). Hourly tick + skip-if-fresh
+ * plus a Postgres advisory lock so duplicate API/worker processes cannot both push.
+ */
 function scheduleEmergencyMasterPush() {
-  cron.schedule("17 */6 * * *", async () => {
+  cron.schedule("17 * * * *", async () => {
     try {
       const { pushEmergencyMasterIfConfigured } = await import("./lib/emergencyNasClient");
-      await pushEmergencyMasterIfConfigured("scheduler");
+      const result = await pushEmergencyMasterIfConfigured("scheduler");
+      if (result.ok && "skipped" in result && result.skipped) {
+        console.log("[cron] emergency master push skipped:", result.reason);
+      } else if (!result.ok) {
+        console.warn("[cron] emergency master push failed:", result.error);
+      } else {
+        console.log("[cron] emergency master push ok", result.syncedAt);
+      }
     } catch (err) {
       console.warn("[cron] emergency master push skipped:", err instanceof Error ? err.message : err);
     }
