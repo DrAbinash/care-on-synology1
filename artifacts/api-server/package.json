@@ -22,6 +22,7 @@
     "@workspace/api-zod": "workspace:*",
     "@workspace/crypto": "workspace:*",
     "@workspace/db": "workspace:*",
+    "@workspace/emergency-billing": "workspace:*",
     "@workspace/report-quality": "workspace:*",
     "@workspace/ai-providers": "workspace:*",
     "@workspace/integrations-gemini-ai": "workspace:*",

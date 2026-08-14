@@ -32,6 +32,7 @@ import {
 } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
+import { EmergencyBillingReconciliationTab } from "@/components/EmergencyBillingReconciliationTab";
 import {
   INTEGRATIONS_OPS_LINKS,
   RADIOLOGY_AI_LINKS,
@@ -193,6 +194,7 @@ const TABS: SettingsTabDef[] = [
   { id: "queue-settings", label: "Queue Settings", icon: ClipboardList, group: "Portals" },
   { id: "queue-display", label: "Queue Display (TV)", icon: Tv, group: "Portals" },
   { id: "billing-print", label: "Billing Print", icon: FileText, group: "Billing" },
+  { id: "emergency-billing", label: "Emergency Billing", icon: AlertTriangle, group: "Billing" },
   { id: "receipt-messages", label: "Receipt Messages", icon: MessageCircle, group: "Billing" },
   { id: "footer-services", label: "Footer Services", icon: Layers, group: "Billing" },
   { id: "promotional-footer", label: "Promotional Footer", icon: Tag, group: "Billing" },
@@ -438,6 +440,7 @@ export default function Settings() {
         )}
         {tab === "printers" && <PrinterTab />}
         {tab === "billing-print" && <BillingPrintTab />}
+        {tab === "emergency-billing" && <EmergencyBillingReconciliationTab />}
         {tab === "receipt-messages" && <ReceiptMessagesTab />}
         {tab === "footer-services" && <FooterServicesTab />}
         {tab === "promotional-footer" && <PromotionalFooterTab />}

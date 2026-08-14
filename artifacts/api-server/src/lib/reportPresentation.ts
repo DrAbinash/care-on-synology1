@@ -184,20 +184,20 @@ export const PRESENTATION_TEMPLATES: PresentationTemplate[] = [
   {
     id: "care-premium",
     name: "CARE Premium",
-    description: "Publication-quality layout activated from the dormant premium implementation: banded header, accent study bar, structured sections, image panel on the right.",
+    description: "CARE letter-pad header and footer, report left, key images on the right.",
     typography: {
-      header: { fontFamily: BASE_FONT, fontSize: "18pt", color: "#ffffff", fontWeight: "700", letterSpacing: "0.04em" },
+      header: { fontFamily: BASE_FONT, fontSize: "18pt", color: "#1e1b4b", fontWeight: "700", letterSpacing: "0.04em" },
       patientBlock: { fontFamily: BASE_FONT, fontSize: "8.5pt" },
-      studyTitle: { fontFamily: BASE_FONT, fontSize: "12pt", color: "#ffffff", fontWeight: "700", letterSpacing: "0.08em", textTransform: "uppercase" },
+      studyTitle: { fontFamily: BASE_FONT, fontSize: "12pt", color: "#1e3a8a", fontWeight: "700", letterSpacing: "0.08em", textTransform: "uppercase" },
       sectionHeading: { fontFamily: BASE_FONT, fontSize: "9.5pt", fontWeight: "700", letterSpacing: "0.1em", textTransform: "uppercase" },
       body: { fontFamily: BASE_FONT, fontSize: "10pt", color: "#0f172a" },
-      footer: { fontFamily: BASE_FONT, fontSize: "7.5pt", color: "#94a3b8" },
+      footer: { fontFamily: BASE_FONT, fontSize: "7.5pt", color: "#334155" },
       signature: { fontFamily: BASE_FONT, fontSize: "10pt" },
       imagePanel: { fontFamily: BASE_FONT, fontSize: "7pt" },
     },
     palette: {
-      headerBg: "#0f172a", headerText: "#ffffff", accent: "#3b82f6",
-      sectionBg: "#f8fafc", sectionBorder: "#3b82f6",
+      headerBg: "#ffffff", headerText: "#1e1b4b", accent: "#1e3a8a",
+      sectionBg: "#f8fafc", sectionBorder: "#cbd5e1",
       labelColor: "#64748b", valueColor: "#0f172a", impressionBg: "#eff6ff",
     },
     layout: { imagePlacement: "side-panel", patientBlockStyle: "table", pageMargins: "10mm 12mm" },
@@ -208,6 +208,24 @@ export const PRESENTATION_TEMPLATES: PresentationTemplate[] = [
 ];
 
 export const DEFAULT_TEMPLATE_ID = "care-classic";
+
+/** CARE Diagnostics letter-pad copy used by the Premium HTML report. */
+export const CARE_LETTERPAD = {
+  clinicName: "CARE DIAGNOSTICS",
+  address: "Near Bajla Mahila College, St. Francis School Road, Castair's Town, DEOGHAR-814 112 (JHARKHAND)",
+  phones: "75490 99099, 99734 97200",
+  email: "care.deoghar@gmail.com",
+  logoSrc: "/care-diagnostics-letterhead-logo.png",
+  radiologist: "Dr. Sugandha Priyadarshini",
+  credentials: "MD (Radiodiagnosis & Medical Imaging)",
+  servicesRow1: "MULTI SLICE CT SCAN  |  3D/4D ULTRA SOUND  |  COLOUR DOPPLER  |  MAMMOGRAPHY  |  ECHO  |  DIGITAL X-RAY  |  ECG/EEG",
+  servicesRow2: "PATHOLAB  |  OPG  |  TMT  |  NCV/EMG  |  ELASTOGRAPHY/ FIBROSCAN  |  UPPER GI ENDOSCOPY  |  HSG  |  BARIUM STUDY  |  TVS",
+  disclaimer: "Radiological diagnosis is not always conclusive & often vary with clinical course of the disease or response to treatment. This report is not for medico-legal purpose.",
+} as const;
+
+function isLetterPadTemplate(template: { id: string }): boolean {
+  return template.id === "care-premium";
+}
 
 export function resolvePresentationTemplate(id?: string | null): PresentationTemplate {
   const wanted = (id ?? "").trim();
@@ -322,6 +340,7 @@ function signaturesHtml(signatures: ReportSignatureModel[], showImage = true): s
 
 function keyImagesHtml(images: ReportKeyImageModel[], placement: "inline" | "side-panel"): string {
   if (images.length === 0) return "";
+  const heading = placement === "side-panel" ? "KEY IMAGES" : "SELECTED IMAGES";
   const cells = [...images]
     .sort((a, b) => a.displayOrder - b.displayOrder)
     .map((img, i) => `
@@ -331,8 +350,8 @@ function keyImagesHtml(images: ReportKeyImageModel[], placement: "inline" | "sid
         </figure>`)
     .join("");
   return `
-      <div class="image-panel ${placement === "side-panel" ? "image-panel-side" : "image-panel-inline"}">
-        <div class="image-panel-heading">SELECTED IMAGES</div>
+      <div class="image-panel ${placement === "side-panel" ? "image-panel-side image-panel-keyrail" : "image-panel-inline"}">
+        <div class="image-panel-heading">${heading}</div>
         <div class="image-grid">${cells}</div>
       </div>`;
 }
@@ -400,12 +419,13 @@ export function renderReportDocument(
   const sidePanel = template.layout.imagePlacement === "side-panel" && hasImages;
 
   // R1.2 template capabilities — every default reproduces R1.1 behavior.
+  const letterPad = isLetterPadTemplate(template);
   const banded = template.headerCfg ? template.headerCfg.style === "banded" : pal.headerBg !== "#ffffff";
   const titleBar = template.studyTitleCfg ? template.studyTitleCfg.style === "bar" : banded;
   const headerCfg = template.headerCfg ?? { show: true, showLogo: true, showTagline: true, showContact: true, style: banded ? "banded" as const : "underlined" as const };
   const signatureCfg = template.signatureCfg ?? { show: true, showImage: true };
   const footerCfg = template.footerCfg ?? { show: true };
-  const logoPosition = headerCfg.logoPosition ?? "left";
+  const logoPosition = letterPad ? "left" : (headerCfg.logoPosition ?? "left");
   const signatureAlign = signatureCfg.align ?? "right";
   const sigJustify =
     signatureAlign === "left" ? "flex-start" : signatureAlign === "center" ? "center" : "flex-end";
@@ -457,6 +477,47 @@ export function renderReportDocument(
     : "";
 
   const imagesBlock = keyImagesHtml(images, template.layout.imagePlacement);
+  const letterPadAddress = (model.clinic.address || "").trim() || CARE_LETTERPAD.address;
+  const letterPadPhone = (model.clinic.phone || "").trim() || `Phone: ${CARE_LETTERPAD.phones}`;
+  const letterPadEmail = (model.clinic.email || "").trim() || CARE_LETTERPAD.email;
+  const letterPadName = (model.clinic.name || "").trim() || CARE_LETTERPAD.clinicName;
+  const letterPadLogo = headerCfg.showLogo
+    ? (model.clinic.logoDataUrl || CARE_LETTERPAD.logoSrc)
+    : "";
+  const letterPadHeaderHtml = headerCfg.show ? `<div class="hdr">
+      <div class="hdr-inner logo-pos-left letterpad-bill">
+        ${letterPadLogo
+          ? `<img class="logo" src="${letterPadLogo}" alt="${escapeHtml(letterPadName)}"/>`
+          : `<div class="hdr-brand"><div class="name">${escapeHtml(letterPadName)}</div></div>`}
+        <div class="contact letterpad-addr-right">
+          ${escapeHtml(letterPadAddress)}<br/>
+          ${escapeHtml(letterPadPhone)}<br/>
+          Email: ${escapeHtml(letterPadEmail)}
+        </div>
+      </div>
+    </div>
+    <hr class="hdr-rule" />` : "";
+  const classicHeaderHtml = headerCfg.show ? `<div class="hdr">
+      <div class="hdr-inner logo-pos-${logoPosition}">
+        ${model.clinic.logoDataUrl && headerCfg.showLogo ? `<img class="logo" src="${model.clinic.logoDataUrl}" alt="logo"/>` : ""}
+        <div class="hdr-brand">
+          <div class="name">${escapeHtml(model.clinic.name)}</div>
+          ${model.clinic.tagline && headerCfg.showTagline ? `<div class="tagline">${escapeHtml(model.clinic.tagline)}</div>` : ""}
+        </div>
+        ${headerCfg.showContact ? `<div class="contact">
+          ${[model.clinic.phone, model.clinic.email].filter(Boolean).map((v) => escapeHtml(v!)).join(" • ")}<br/>
+          ${model.clinic.website ? `${escapeHtml(model.clinic.website)}` : ""}
+        </div>` : ""}
+      </div>
+    </div>
+    ${model.clinic.address ? `<div class="hdr-address-bar">${escapeHtml(model.clinic.address)}</div>` : ""}
+    <hr class="hdr-rule" />` : "";
+  const letterPadFooterHtml = footerCfg.show ? `<div class="letterpad-services">${escapeHtml(CARE_LETTERPAD.servicesRow1)}<br/>${escapeHtml(CARE_LETTERPAD.servicesRow2)}</div>
+    <div class="letterpad-disclaimer">${escapeHtml(CARE_LETTERPAD.disclaimer)}</div>` : "";
+  const classicFooterHtml = footerCfg.show ? `<div class="ftr">${escapeHtml(model.footerNote ?? "")} • ${escapeHtml(model.typeLabel)} • ${escapeHtml(model.statusLabel)} • Generated ${escapeHtml(model.generatedAtLabel)}</div>` : "";
+  const letterPadSignatures = model.signatures.filter((s) => s.name || s.imageDataUrl).length > 0
+    ? model.signatures
+    : [{ name: CARE_LETTERPAD.radiologist, qualification: CARE_LETTERPAD.credentials, label: "Signed:", whenLabel: "" }];
 
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -513,6 +574,8 @@ export function renderReportDocument(
     }
     .hdr-rule.hdr-rule-hidden { display: none; }
     .hdr img.logo { width: 64px; height: 64px; object-fit: contain; }
+    .hdr .letterpad-bill img.logo { width: 168px; height: auto; max-height: 52px; object-fit: contain; }
+    .hdr .letterpad-bill .contact { max-width: 48%; font-size: 9px; line-height: 1.4; }
     .hdr .hdr-brand { flex: 1; }
     .hdr .name { ${slotCss(ty.header)} line-height: 1.1; }
     .hdr .tagline { font-size: 10px; color: ${!banded ? "#475569" : pal.accent}; margin-top: 2px; letter-spacing: 0.06em; }
@@ -531,7 +594,7 @@ export function renderReportDocument(
     .study-title-bar {
       ${slotCss(ty.studyTitle)}
       ${!titleBar
-        ? `padding: 10px 0 8px; text-align: center; text-decoration: underline; text-underline-offset: 4px; letter-spacing: 0.04em;`
+        ? `padding: 10px 0 8px; text-align: center; text-decoration: underline; text-underline-offset: 4px; letter-spacing: 0.04em;${letterPad ? " clear: both;" : ""}`
         : `background: ${pal.accent}; text-align: center; padding: 8px 20px; clear: both; text-decoration: none;`}
       break-inside: avoid; break-after: avoid-page;
     }
@@ -676,6 +739,20 @@ export function renderReportDocument(
     .qr-box { display: inline-block; padding: 4px; border: 1px solid #ccc; background: #fff; border-radius: 4px; font-size: 8px; color: #666; font-weight: bold; text-align: center; }
     .qr-mark { width: 50px; height: 50px; display: block; margin: 2px auto 0; }
     .ftr { ${slotCss(ty.footer)} margin-top: 18px; text-align: center; border-top: 1px solid ${pal.sectionBorder}; padding-top: 6px; clear: both; break-inside: avoid; }
+    ${letterPad ? `
+    .hdr { background: #fff; }
+    .hdr::before { display: none; }
+    .hdr img.logo { width: auto; height: 52px; max-width: 220px; object-fit: contain; }
+    .hdr-rule { border-top: 2px solid #b91c1c; }
+    .letterpad-addr { color: #111; font-size: 9.5px; text-align: center; padding: 2px 12px 0; }
+    .letterpad-contact { color: #111; font-size: 9px; text-align: center; padding: 2px 12px 6px; }
+    .image-panel-keyrail { background: #0f172a; color: #fff; padding: 8px 6px; border-radius: 4px; }
+    .image-panel-keyrail .image-panel-heading { color: #fff; border-bottom-color: #3b82f6; letter-spacing: 0.12em; }
+    .image-panel-keyrail .image-caption { background: #1e3a8a; }
+    .letterpad .signame { color: #b91c1c; font-size: 11pt; }
+    .letterpad-services { background: #0f2d6e; color: #fff; text-align: center; padding: 6px 8px; font-size: 6.5px; font-weight: 700; letter-spacing: 0.04em; line-height: 1.45; margin-top: 14px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .letterpad-disclaimer { font-size: 7.5px; color: #334155; text-align: center; padding: 6px 12px 4px; font-style: italic; }
+    ` : ""}
 
     /* ── Print rules (Phase 7: widows/orphans, no split images, no blank pages) ── */
     @media print {
@@ -688,25 +765,11 @@ export function renderReportDocument(
     }
     ${opts.customCss ?? ""}
   </style></head><body>
-  <div class="report-wrapper">
+  <div class="report-wrapper${letterPad ? " letterpad" : ""}">
     ${model.safeguardWatermarkHtml ?? ""}
     ${draftWatermark}
     ${templateWatermark}
-    ${headerCfg.show ? `<div class="hdr">
-      <div class="hdr-inner logo-pos-${logoPosition}">
-        ${model.clinic.logoDataUrl && headerCfg.showLogo ? `<img class="logo" src="${model.clinic.logoDataUrl}" alt="logo"/>` : ""}
-        <div class="hdr-brand">
-          <div class="name">${escapeHtml(model.clinic.name)}</div>
-          ${model.clinic.tagline && headerCfg.showTagline ? `<div class="tagline">${escapeHtml(model.clinic.tagline)}</div>` : ""}
-        </div>
-        ${headerCfg.showContact ? `<div class="contact">
-          ${[model.clinic.phone, model.clinic.email].filter(Boolean).map((v) => escapeHtml(v!)).join(" • ")}<br/>
-          ${model.clinic.website ? `${escapeHtml(model.clinic.website)}` : ""}
-        </div>` : ""}
-      </div>
-    </div>
-    ${model.clinic.address ? `<div class="hdr-address-bar">${escapeHtml(model.clinic.address)}</div>` : ""}
-    <hr class="hdr-rule" />` : ""}
+    ${letterPad ? letterPadHeaderHtml : classicHeaderHtml}
     <span class="reportno">Report #: ${escapeHtml(model.reportNumber)}</span>
     <div class="study-title-bar">${escapeHtml(model.studyTitle)}</div>
     <div class="patient-section">
@@ -724,9 +787,9 @@ export function renderReportDocument(
       </div>
       ${sidePanel ? imagesBlock : ""}
     </div>
-    ${signatureCfg.show ? `<div class="sigs">${signaturesHtml(model.signatures, signatureCfg.showImage)}</div>` : ""}
+    ${signatureCfg.show ? `<div class="sigs">${signaturesHtml(letterPad ? letterPadSignatures : model.signatures, signatureCfg.showImage)}</div>` : ""}
     ${qrHtml}
-    ${footerCfg.show ? `<div class="ftr">${escapeHtml(model.footerNote ?? "")} • ${escapeHtml(model.typeLabel)} • ${escapeHtml(model.statusLabel)} • Generated ${escapeHtml(model.generatedAtLabel)}</div>` : ""}
+    ${letterPad ? letterPadFooterHtml : classicFooterHtml}
   </div>
   ${model.autoPrint ? `<script>window.onload=()=>{setTimeout(()=>window.print(),250);}</script>` : ""}
   </body></html>`;

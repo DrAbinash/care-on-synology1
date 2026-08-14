@@ -63,7 +63,7 @@ describe("Provenance visualization — editor only", () => {
 
   it("useWorkspaceSelector uses shallow equality (React #185 guard)", () => {
     const store = readFileSync(resolve(__dirname, "zai-workspace/store.ts"), "utf8");
-    expect(store).toContain("useWorkspace(selector, shallow)");
+    expect(store).toContain("useShallow(selector)");
     expect(store).toContain("export const EMPTY_FIELD_PROVENANCE");
   });
 

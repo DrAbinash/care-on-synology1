@@ -21,6 +21,14 @@ let settingsJson: string;
 let templateRows: Array<{ promptContent: string }>;
 let auditInserts: Record<string, unknown>[];
 let pacsSettingsQueries: number;
+const { masterAiFlagState } = vi.hoisted(() => ({
+  masterAiFlagState: { enabled: true },
+}));
+
+vi.mock("../lib/featureFlags", () => ({
+  isFeatureEnabledServer: async (key: string) =>
+    key === "ff_radiology_ai" ? masterAiFlagState.enabled : false,
+}));
 
 vi.mock("@workspace/db", () => {
   const aiProviderSettingsTable = { provider: "provider", settingsJson: "settings_json" };
@@ -164,6 +172,7 @@ function makeReq(body: Record<string, unknown>) {
 const queryHandler = getRouteHandler("post", "/query");
 
 beforeEach(() => {
+  masterAiFlagState.enabled = true;
   settingsJson = JSON.stringify({
     enabled: true,
     defaultProvider: "gemini",
@@ -291,7 +300,8 @@ describe("POST /api/ai-reporting/query — canonical prompt contract", () => {
     expect(generateAiResponse).not.toHaveBeenCalled();
   });
 
-  test("AI Reporting disabled → 403 (existing gate preserved)", async () => {
+  test("AI Reporting disabled → 403 (ff_radiology_ai master flag off)", async () => {
+    masterAiFlagState.enabled = false;
     settingsJson = JSON.stringify({ enabled: false });
     const res = makeRes();
     await queryHandler(makeReq({ promptText: "x" }), res);

@@ -19,7 +19,7 @@ vi.mock("@workspace/ai-providers", () => ({
   probeOllamaModelVision: (...args: unknown[]) => mockProbeOllamaModelVision(...args),
 }));
 
-const { resolveOcrProvider, maskEndpointUrl } = await import("./ocrProviderResolver");
+const { resolveOcrProvider, resolveOllamaVisionForOcr, maskEndpointUrl } = await import("./ocrProviderResolver");
 
 const RUNTIME = (overrides: Partial<Record<string, unknown>> = {}) => ({
   ollamaBaseUrl: "http://100.79.100.41:11434",
@@ -70,7 +70,7 @@ describe("resolveOcrProvider — auto policy (no explicit route)", () => {
     expect(result.ollama.reachabilityError).toContain("ECONNREFUSED");
   });
 
-  it("falls back to Gemini when Ollama is unreachable but Gemini is configured", async () => {
+  it("does not auto-pick Gemini when Ollama is down — Tesseract is second, Gemini is third-pass only", async () => {
     mockResolveLocalAiRuntime.mockResolvedValue(RUNTIME());
     mockClassifyOllamaModelVisionByName.mockReturnValue("vision");
     mockProbeOllamaReachable.mockResolvedValue({ reachable: false, error: "timeout" });
@@ -78,7 +78,8 @@ describe("resolveOcrProvider — auto policy (no explicit route)", () => {
 
     const result = await resolveOcrProvider();
 
-    expect(result.chosen).toEqual({ provider: "gemini", apiKey: "AIza-test-key" });
+    expect(result.chosen).toEqual({ provider: "none", reason: "ollama_unreachable" });
+    expect(result.gemini.configured).toBe(true);
   });
 
   it("rejects a text-only Ollama model (name heuristic) without wasting a reachability probe", async () => {
@@ -118,13 +119,14 @@ describe("resolveOcrProvider — auto policy (no explicit route)", () => {
     });
   });
 
-  it("falls through to Gemini when Ollama is disabled", async () => {
+  it("does not auto-pick Gemini when Ollama is disabled", async () => {
     mockResolveLocalAiRuntime.mockResolvedValue(RUNTIME({ ollamaEnabled: false }));
     mockGetProviderApiKey.mockImplementation(async (name: string) => (name === "gemini" ? "AIza-test-key" : null));
 
     const result = await resolveOcrProvider();
 
-    expect(result.chosen).toEqual({ provider: "gemini", apiKey: "AIza-test-key" });
+    expect(result.chosen).toEqual({ provider: "none", reason: "no_provider_configured" });
+    expect(result.gemini.configured).toBe(true);
   });
 });
 
@@ -154,6 +156,27 @@ describe("resolveOcrProvider — explicit form_f_id_ocr route", () => {
     const result = await resolveOcrProvider();
 
     expect(result.chosen).toEqual({ provider: "gemini", apiKey: "AIza-route-key" });
+  });
+});
+
+describe("resolveOllamaVisionForOcr", () => {
+  it("returns ollama when vision is reachable and ignores Gemini", async () => {
+    mockResolveLocalAiRuntime.mockResolvedValue(RUNTIME());
+    mockClassifyOllamaModelVisionByName.mockReturnValue("vision");
+    mockProbeOllamaModelVision.mockResolvedValue(true);
+    mockProbeOllamaReachable.mockResolvedValue({ reachable: true });
+    mockGetProviderApiKey.mockResolvedValue("AIza-unused");
+
+    const result = await resolveOllamaVisionForOcr();
+    expect(result).toEqual({
+      endpointUrl: "http://100.79.100.41:11434",
+      model: "llava:13b",
+    });
+  });
+
+  it("returns null when ollama is down", async () => {
+    mockResolveLocalAiRuntime.mockResolvedValue(RUNTIME({ ollamaEnabled: false }));
+    expect(await resolveOllamaVisionForOcr()).toBeNull();
   });
 });
 

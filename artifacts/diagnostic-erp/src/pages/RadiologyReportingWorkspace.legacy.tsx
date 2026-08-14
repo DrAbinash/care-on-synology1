@@ -4949,18 +4949,21 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     if (linkedReportId) {
       return printReport();
     }
+    let id = draftId;
+    if (!id) {
+      id = await saveDraft();
+      if (!id) {
+        toast({ title: "Could not save draft", description: "Print-like-final needs a saved draft.", variant: "destructive" });
+        return;
+      }
+    }
     const w = window.open("", "_blank");
     if (!w) {
       toast({ title: "Popup blocked", description: "Allow popups for this site to print.", variant: "destructive" });
       return;
     }
-    if (!draftId) {
-      w.close();
-      toast({ title: "Save draft first", description: "Print-like-final needs a saved draft.", variant: "destructive" });
-      return;
-    }
     const templateQs = reportLayoutTemplateQuery(previewLayout);
-    const url = `/api/radiology/report-generator/drafts/${draftId}/print-preview?autoPrint=true&likeFinal=true&${templateQs}`;
+    const url = `/api/radiology/report-generator/drafts/${id}/print-preview?autoPrint=true&likeFinal=true&${templateQs}`;
     try {
       const html = await api.get<string>(url);
       w.document.write(html);

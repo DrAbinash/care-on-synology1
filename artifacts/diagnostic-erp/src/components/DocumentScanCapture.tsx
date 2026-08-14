@@ -5,8 +5,8 @@
  *
  * This does NOT introduce a new OCR engine. It is a thin, generic capture UI
  * that posts the captured image to whatever `endpoint` the caller passes
- * (e.g. the EXISTING `/api/expenses/scan-bill`, which already uses the
- * shared Gemini OCR helper `geminiOcrBill`). The caller owns field mapping
+ * (e.g. `/api/expenses/scan-bill` — Ollama vision, then Tesseract fallback).
+ * The caller owns field mapping
  * via `onResult` — this component only handles: get an image → send it →
  * hand back the raw JSON.
  *
@@ -34,6 +34,11 @@ export interface DocumentScanCaptureProps<TResult = unknown> {
   onResult: (result: TResult) => void;
   /** Optional: called on any capture/scan error (network, endpoint, camera). */
   onError?: (message: string) => void;
+  /**
+   * When the server returns tesseractFallbackSuggested (Ollama down),
+   * run local Tesseract and return a result in the same shape.
+   */
+  tesseractFallback?: (imageBase64: string, mimeType: string) => Promise<TResult | null>;
   /** Button label shown before capture starts. */
   triggerLabel?: string;
   /** Short helper text shown above the capture area. */
@@ -66,6 +71,7 @@ export default function DocumentScanCapture<TResult = unknown>({
   docType = "receipt",
   editorTitle = "Document",
   onImage,
+  tesseractFallback,
 }: DocumentScanCaptureProps<TResult>) {
   const { toast } = useToast();
   const [open, setOpen] = useState(false);
@@ -162,12 +168,65 @@ export default function DocumentScanCapture<TResult = unknown>({
     onImage?.(base64, mimeType);
     setScanning(true);
     try {
-      const result = await api.post<TResult>(endpoint, { imageBase64: base64, mimeType });
+      const result = await api.post<TResult & { tesseractFallbackSuggested?: boolean; geminiFallbackAvailable?: boolean }>(endpoint, {
+        imageBase64: base64,
+        mimeType,
+      });
+      const needsTess = Boolean(result && typeof result === "object" && result.tesseractFallbackSuggested);
+      if (needsTess && tesseractFallback) {
+        const tess = await tesseractFallback(base64, mimeType);
+        if (tess) {
+          onResult(tess);
+          toast({ title: "Scanned with Tesseract", description: "Ollama was unavailable. Review every field before saving." });
+          setOpen(false);
+          setPreview("");
+          return;
+        }
+      }
+      const tryGemini = needsTess && Boolean(result && typeof result === "object" && result.geminiFallbackAvailable);
+      if (tryGemini) {
+        try {
+          const gem = await api.post<TResult>(endpoint, {
+            imageBase64: base64,
+            mimeType,
+            useGeminiFallback: true,
+          });
+          onResult(gem);
+          toast({ title: "Scanned with Gemini", description: "Ollama and Tesseract did not read this. Review every field before saving." });
+          setOpen(false);
+          setPreview("");
+          return;
+        } catch { /* fall through */ }
+      }
       onResult(result);
       toast({ title: "Scan complete", description: "Review the auto-filled fields before saving." });
       setOpen(false);
       setPreview("");
     } catch (err: unknown) {
+      if (tesseractFallback) {
+        try {
+          const tess = await tesseractFallback(base64, mimeType);
+          if (tess) {
+            onResult(tess);
+            toast({ title: "Scanned with Tesseract", description: "Server OCR failed. Review every field before saving." });
+            setOpen(false);
+            setPreview("");
+            return;
+          }
+        } catch { /* fall through */ }
+      }
+      try {
+        const gem = await api.post<TResult>(endpoint, {
+          imageBase64: base64,
+          mimeType,
+          useGeminiFallback: true,
+        });
+        onResult(gem);
+        toast({ title: "Scanned with Gemini", description: "Review every field before saving." });
+        setOpen(false);
+        setPreview("");
+        return;
+      } catch { /* fall through */ }
       const msg = err instanceof Error ? err.message : "AI scan failed";
       onError?.(msg);
       toast({ title: "Scan failed", description: msg, variant: "destructive" });

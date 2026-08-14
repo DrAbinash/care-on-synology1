@@ -69,16 +69,16 @@ export function buildModelRegistry(): ModelRegistryEntry[] {
     },
     {
       id: "vision",
-      displayName: "Gemma 3 4B Vision",
+      displayName: cfg.modelVision.includes("qwen") ? "Qwen3-VL 8B (Overnight MRI)" : cfg.modelVision,
       ollamaName: cfg.modelVision,
-      purpose: "Explicit vision analysis when OCR text is insufficient",
+      purpose: "Overnight MRI AI drafts (bounded key images) via Ollama vision",
       modality: "vision",
       resourceClass: "medium",
       enabled: true,
-      maxContext: 4096,
-      timeoutSeconds: cfg.timeoutFastSeconds,
-      temperature: cfg.temperatureExtraction,
-      supportedTasks: ["vision_ocr", "id_card_ocr"],
+      maxContext: cfg.ollamaNumCtx,
+      timeoutSeconds: cfg.timeoutLargeSeconds,
+      temperature: cfg.temperatureDraft,
+      supportedTasks: ["radiology_draft", "vision_ocr"],
     },
   ];
 }

@@ -7,6 +7,7 @@ import { doctorsRouter } from "./doctors";
 import { testsRouter } from "./tests";
 import { ordersRouter } from "./orders";
 import { billsRouter, paymentsRouter } from "./bills";
+import { emergencyBillingRouter } from "./emergencyBilling";
 import { reportsRouter } from "./reports";
 import inventoryRouter from "./inventory";
 import inventoryDemandsRouter from "./inventoryDemands";
@@ -403,6 +404,11 @@ router.use("/bills", requireStaffAuth, requireStaffPermission("/billing"), bills
 
 // Payments — /payments permission
 router.use("/payments", requireStaffAuth, requireStaffPermission("/payments"), paymentsRouter);
+
+// Emergency Billing reconciliation (DS225+ → canonical CARE). Admin only.
+// USB catalogue seed download is further gated to super_admin staff login.
+// Does not create a second billing engine; imports through existing order/bill/payment tables.
+router.use("/emergency-billing", requireStaffAuth, requireAdminRole, emergencyBillingRouter);
 
 // Mobile Bill Desk — READ-ONLY billing views for the staff mobile app, behind
 // its own dedicated permission so admins grant mobile billing visibility per
