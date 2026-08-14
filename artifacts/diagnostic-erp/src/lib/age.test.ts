@@ -33,6 +33,12 @@ describe("age helpers — ageValue=0 must fall through to dateOfBirth", () => {
       .toBe("");
   });
 
+  it("sentinel DOB 1900-01-01 does not render as ~126 Yrs", () => {
+    expect(formatAge({ dateOfBirth: "1900-01-01" })).toBe("");
+    expect(formatAgeForPrint({ dateOfBirth: "1900-01-01" })).toBe("");
+    expect(formatAge({ dateOfBirth: "1900-01-01T00:00:00.000Z", ageValue: 126, ageUnit: "years" })).toBe("");
+  });
+
   it("months / days age values still render at their own units", () => {
     expect(formatAgeForPrint({ dateOfBirth: "", ageValue: 8, ageUnit: "months" }))
       .toBe("8 Mo");

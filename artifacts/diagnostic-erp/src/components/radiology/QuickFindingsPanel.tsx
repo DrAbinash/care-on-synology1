@@ -175,6 +175,7 @@ export default function QuickFindingsPanel({
   const [search, setSearch] = useState("");
   const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [catalogEditor, setCatalogEditor] = useState<QuickFinding | null | "new">(null);
+  const [showRegionPicker, setShowRegionPicker] = useState(false);
 
   /** A finding declaring questions needs details before it renders. */
   const isStructured = (f: QuickFinding) => parseQuestions(f.questionsJson).length > 0;
@@ -639,6 +640,18 @@ export default function QuickFindingsPanel({
             </p>
           )}
         </div>
+        <button
+          type="button"
+          data-testid="quick-add-plus"
+          className="shrink-0 rounded-md border border-amber-300 bg-white p-1 text-amber-800 hover:bg-amber-100"
+          title={isAdmin ? "Add a catalog button" : "Pick body region"}
+          onClick={() => {
+            if (isAdmin) setCatalogEditor("new");
+            else setShowRegionPicker((v) => !v);
+          }}
+        >
+          <Plus size={12} />
+        </button>
       </div>
       {/* Universal search */}
       <div className="relative shrink-0">
@@ -691,6 +704,24 @@ export default function QuickFindingsPanel({
           );
         })}
       </div>
+      {(effectiveTabs.size === 0 || showRegionPicker) && activeTabs.length > 0 && (
+        <select
+          data-testid="quick-add-region"
+          aria-label="Body region"
+          className="h-7 text-[11px] border rounded-md px-2 bg-background shrink-0"
+          value=""
+          onChange={(e) => {
+            const name = e.target.value;
+            if (name) toggleTab(name);
+            setShowRegionPicker(false);
+          }}
+        >
+          <option value="">Body region…</option>
+          {activeTabs.map((t) => (
+            <option key={t.id} value={t.name}>{t.name}</option>
+          ))}
+        </select>
+      )}
 
       {/* Protocol Engine: pick an indication-specific preset within the
           selected region(s) — loads its own technique/normal/recommendation

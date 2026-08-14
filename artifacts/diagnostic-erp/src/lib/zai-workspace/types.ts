@@ -1,5 +1,4 @@
-// Z.ai RadReporting Workspace — domain types + pure rules
-// Mirrors existing Care schema; all API calls go through real backend.
+import { mergeTechnique } from "@/lib/reportFieldMerge";
 
 export type Modality = "XR" | "CT" | "MR" | "US" | "MG" | "DX" | "NM" | "PT" | "DOPPLER" | "ECHO" | "USG_OB";
 export type StudyStatus = "received" | "in_progress" | "draft" | "prelim" | "final" | "amended";
@@ -106,9 +105,11 @@ function mergeField(fa: string, fb: string): MergeFieldResult {
 }
 export function mergeTwoFormats(a: ReportFormat, b: ReportFormat): MergeResult {
   const tA = a.technique.trim(), tB = b.technique.trim();
-  const sameTech = norm(tA) === norm(tB);
-  const technique = sameTech ? tA : tA + " " + tB;
-  const techniqueSentences: MergeSentence[] = sameTech ? [{text:tA, source:"common"}] : [{text:tA, source:"from-a"}, {text:tB, source:"from-b"}];
+  const technique = mergeTechnique(tA, tB);
+  const sameTech = technique === tA || technique === tB || norm(tA) === norm(tB);
+  const techniqueSentences: MergeSentence[] = sameTech
+    ? [{ text: technique, source: "common" }]
+    : splitSentences(technique).map((text) => ({ text, source: "common" as const }));
   const fm = mergeField(a.findings, b.findings), im = mergeField(a.impression, b.impression), rm = mergeField(a.recommendation, b.recommendation);
   return { technique, techniqueSentences, findings: fm.text, impression: im.text, recommendation: rm.text, findingsMerged: fm, impressionMerged: im, recommendationMerged: rm,
     stats: { commonSentencesDiscarded: fm.common+im.common+rm.common, addedFromA: fm.addedFromA+im.addedFromA+rm.addedFromA, addedFromB: fm.addedFromB+im.addedFromB+rm.addedFromB, totalFinal: fm.sentences.length+im.sentences.length+rm.sentences.length } };

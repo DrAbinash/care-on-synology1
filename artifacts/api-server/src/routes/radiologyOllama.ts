@@ -770,3 +770,28 @@ radiologyOllamaRouter.post("/multi-review/winner", async (req, res): Promise<voi
   }).returning();
   res.json({ ok: true, audit });
 });
+
+// ── POST /verify — pre-deploy Ollama auto-draft verification ─────────────────
+radiologyOllamaRouter.post("/verify", async (req, res): Promise<void> => {
+  const sReq = req as StaffAuthRequest;
+  if (!canUseAi(sReq)) {
+    res.status(403).json({ error: "Permission denied. Role needs ai_reporting.use permission." });
+    return;
+  }
+  const b = (req.body ?? {}) as { dryRun?: boolean; runDraft?: boolean };
+  const dryRun = Boolean(b.dryRun) || req.query.dryRun === "1";
+  try {
+    const { runOllamaAiDraftVerify } = await import("../lib/ai/ollamaDraftVerify");
+    const result = await runOllamaAiDraftVerify({ runDraft: !dryRun && b.runDraft !== false });
+    res.json(result);
+  } catch (err: unknown) {
+    res.status(500).json({
+      ok: false,
+      blockingFailed: true,
+      summary: "Verification failed to run",
+      checks: [],
+      error: err instanceof Error ? err.message : String(err),
+      ranAt: new Date().toISOString(),
+    });
+  }
+});

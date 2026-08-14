@@ -50,6 +50,7 @@ import { RisMonitorCommandGrid } from "@/components/risMonitoring/RisMonitorCard
 import ViewerNetworkRoutesCard from "@/components/radiology/ViewerNetworkRoutesCard";
 import { MwlStatusPanel } from "@/components/radiology/MwlStatusPanel";
 import { MwlAcceptanceTestsPanel } from "@/components/radiology/MwlAcceptanceTestsPanel";
+import { OllamaAiDraftVerifyPanel } from "@/components/radiology/OllamaAiDraftVerifyPanel";
 import { RadiologyAdminOverviewPanel } from "@/components/radiology/RadiologyAdminOverviewPanel";
 import { RadiologyDeploymentPanel } from "@/components/radiology/RadiologyDeploymentPanel";
 import RadiologyQuickSelectSettings from "@/pages/RadiologyQuickSelectSettings";
@@ -1191,6 +1192,8 @@ export default function RadiologySettingsCenter() {
                     in the <strong>Local AI</strong> tab of the AI Reporting panel, on the right.
                   </p>
                 </div>
+
+                <OllamaAiDraftVerifyPanel compact />
 
                 <div className="flex items-center justify-between p-3 rounded-lg border bg-muted/40">
                   <div className="space-y-0.5">

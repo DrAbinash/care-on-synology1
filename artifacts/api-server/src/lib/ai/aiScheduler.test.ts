@@ -22,8 +22,14 @@ describe("scheduler time windows (G10)", () => {
 });
 
 describe("scheduler decisions across modes (G10)", () => {
-  it("on-demand/manual requests always enqueue immediately", () => {
-    expect(decideScheduling(inp({ manualRequest: true, modalityMode: "disabled" }), cfg)).toMatchObject({ enqueue: true, mode: "immediate" });
+  it("disabled modalities never enqueue — even on-demand/manual (server-side MRI-only gate)", () => {
+    expect(decideScheduling(inp({ manualRequest: true, modalityMode: "disabled" }), cfg)).toMatchObject({
+      enqueue: false,
+      reason: "modality AI disabled",
+    });
+  });
+  it("on-demand/manual requests enqueue immediately when the modality is enabled", () => {
+    expect(decideScheduling(inp({ manualRequest: true, modalityMode: "night_batch" }), cfg)).toMatchObject({ enqueue: true, mode: "immediate" });
   });
   it("skips finalized and unchanged studies", () => {
     expect(decideScheduling(inp({ isFinalized: true }), cfg).enqueue).toBe(false);
@@ -58,8 +64,35 @@ describe("scheduler decisions across modes (G10)", () => {
   });
 });
 
+describe("clinical overnight window 17:00–10:00 IST (wraps midnight)", () => {
+  const clinic: SchedulerConfig = {
+    ...cfg,
+    nightStart: "17:00",
+    nightEnd: "10:00",
+  };
+  it.each([
+    [16, 59, false],
+    [17, 0, true],
+    [23, 30, true],
+    [2, 0, true],
+    [9, 59, true],
+    [10, 0, false],
+  ])("%i:%s is inside=%s", (h, m, inside) => {
+    expect(inWindow(M(h, m), "17:00", "10:00")).toBe(inside);
+    expect(decideScheduling(inp({ modalityMode: "night_batch", nowMinutes: M(h, m) }), clinic).enqueue).toBe(inside);
+  });
+  it("half-open end: 10:00 is outside (now < nightEnd)", () => {
+    expect(inWindow(M(10, 0), "17:00", "10:00")).toBe(false);
+  });
+});
+
 describe("scheduler admission control (G10)", () => {
-  it("refuses past max concurrency", () => {
+  it("refuses past max concurrency of 1 (overnight MRI default)", () => {
+    const one: SchedulerConfig = { ...cfg, maxConcurrentJobs: 1 };
+    expect(admitJob({ runningJobs: 1 }, one).admit).toBe(false);
+    expect(admitJob({ runningJobs: 0 }, one).admit).toBe(true);
+  });
+  it("refuses past the configured max (legacy 2)", () => {
     expect(admitJob({ runningJobs: 2 }, cfg).admit).toBe(false);
     expect(admitJob({ runningJobs: 1 }, cfg).admit).toBe(true);
   });

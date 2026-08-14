@@ -294,7 +294,7 @@ export const CHECK_DEFS: Array<OpsCheckDef<OpsCtx>> = [
   {
     id: "orthanc.sync_fresh", name: "Orthanc → ERP sync freshness", category: "radiology_pacs", required: false,
     run: async (ctx) => {
-      const rows = await ctx.query("SELECT max(last_sync_at) AS m, count(*)::int AS n FROM radiology_studies WHERE sync_status = 'synced'");
+      const rows = await ctx.query("SELECT max(last_sync_at) AS m, count(*)::int AS n FROM dicom_studies WHERE sync_status = 'synced'");
       const n = Number(rows[0]?.n ?? 0);
       const m = rows[0]?.m ? new Date(rows[0].m as string).toISOString() : null;
       if (n === 0 || !m) return { status: "SKIPPED", message: "no successfully-synced studies yet (nothing to measure)" };
@@ -307,7 +307,7 @@ export const CHECK_DEFS: Array<OpsCheckDef<OpsCtx>> = [
   {
     id: "radiology.last_dicom", name: "Last DICOM received", category: "radiology_pacs", required: false,
     run: async (ctx) => {
-      const rows = await ctx.query("SELECT max(study_received_at) AS m FROM radiology_studies");
+      const rows = await ctx.query("SELECT max(created_at) AS m FROM dicom_studies");
       let m = rows[0]?.m ? new Date(rows[0].m as string).toISOString() : null;
       if (!m) {
         const wl = await ctx.query("SELECT max(created_at) AS m FROM radiology_worklist");
@@ -334,7 +334,7 @@ export const CHECK_DEFS: Array<OpsCheckDef<OpsCtx>> = [
   {
     id: "radiology.sync_failures", name: "Recent sync failures", category: "radiology_pacs", required: false,
     run: async (ctx) => {
-      const rows = await ctx.query("SELECT count(*)::int AS c FROM radiology_studies WHERE sync_status = 'failed'");
+      const rows = await ctx.query("SELECT count(*)::int AS c FROM dicom_studies WHERE sync_status = 'failed'");
       const c = Number(rows[0]?.c ?? 0);
       return c > 0
         ? { status: "WARNING", message: `${c} studies in sync_status=failed`, metadata: { failed: c }, recommendedAction: "Review pacs_logs (log_type=sync) for the failing studies." }
@@ -450,6 +450,78 @@ export const CHECK_DEFS: Array<OpsCheckDef<OpsCtx>> = [
   })),
 
   // ── G. OPTIONAL INTEGRATIONS (SKIPPED unless configured) ───────────────────
+  {
+    id: "integ.ocr_worker", name: "OCR worker (Paddle)", category: "integrations", required: false, optional: true,
+    run: async (ctx) => {
+      const engine = (ctx.env("OCR_ENGINE") ?? "paddle").toLowerCase();
+      if (engine !== "paddle") {
+        return { status: "SKIPPED", message: `OCR_ENGINE=${engine} — Paddle worker check skipped (not using paddle worker)` };
+      }
+      const base = (ctx.env("OCR_WORKER_URL") ?? "http://127.0.0.1:8090").replace(/\/+$/, "");
+      const r = await ctx.probe(`${base}/health`, { parseJson: true, timeoutMs: 4000 });
+      if (r.status == null) {
+        return {
+          status: "FAIL",
+          message: "OCR worker unreachable — Form F / ID scan OCR will fail",
+          recommendedAction: "Start the Paddle OCR worker and verify OCR_WORKER_URL from the API container.",
+        };
+      }
+      if (!r.ok) return { status: "WARNING", message: `OCR worker returned HTTP ${r.status}` };
+      const j = (r.json ?? {}) as { ok?: boolean; paddle_loaded?: boolean; last_error?: string | null };
+      if (j.ok && j.paddle_loaded) {
+        return { status: "PASS", message: `OCR worker reachable, Paddle loaded (${r.ms}ms)` };
+      }
+      return {
+        status: "WARNING",
+        message: j.last_error ? `OCR worker up but not ready: ${j.last_error}` : "OCR worker reachable but Paddle not loaded",
+      };
+    },
+  },
+  {
+    id: "integ.icici_orange", name: "ICICI Orange Pay", category: "integrations", required: false, optional: true,
+    run: async (ctx) => {
+      let enabled = false;
+      let merchantFromDb = "";
+      try {
+        const rows = await ctx.query(
+          "SELECT icici_enabled, active_payment_gateway, icici_merchant_id FROM clinic_settings LIMIT 1",
+        );
+        const row = rows[0];
+        const gateway = String(row?.active_payment_gateway ?? "").toLowerCase();
+        enabled = row?.icici_enabled === true || gateway === "icici";
+        merchantFromDb = String(row?.icici_merchant_id ?? "").trim();
+      } catch {
+        return { status: "UNKNOWN", message: "could not read clinic_settings for ICICI" };
+      }
+      if (!enabled) {
+        return { status: "SKIPPED", message: "ICICI Orange Pay not enabled (optional)" };
+      }
+      const merchant = (ctx.env("ICICI_MERCHANT_ID") ?? merchantFromDb).trim();
+      const secret = (ctx.env("ICICI_SECRET_KEY") ?? "").trim();
+      if (!merchant || !secret) {
+        return {
+          status: "FAIL",
+          message: "ICICI enabled but merchant ID or secret key missing",
+          recommendedAction: "Set ICICI_MERCHANT_ID and ICICI_SECRET_KEY in .env or Settings → Payments.",
+        };
+      }
+      const base = (ctx.env("ICICI_BASE_URL") ?? "").replace(/\/+$/, "");
+      if (base) {
+        const r = await ctx.probe(base, { parseJson: false, timeoutMs: 5000 });
+        if (r.status == null) {
+          return {
+            status: "WARNING",
+            message: "ICICI credentials present but gateway host unreachable from API",
+            recommendedAction: "Check LAN/firewall to ICICI PG host and ICICI_BASE_URL.",
+          };
+        }
+        if (r.status >= 500) {
+          return { status: "WARNING", message: `ICICI gateway host returned ${r.status}` };
+        }
+      }
+      return { status: "PASS", message: `ICICI Orange Pay configured (merchant ${merchant.slice(0, 4)}…)` };
+    },
+  },
   {
     id: "integ.n8n", name: "n8n", category: "integrations", required: false, optional: true,
     run: async (ctx) => {

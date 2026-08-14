@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   inferStructuredTemplateMatch,
   pickStructuredTemplate,
+  pickStructuredTemplateForRegion,
   studyRegionToBodyPart,
   templateRegionMismatch,
 } from "./pickStructuredTemplate";
@@ -43,6 +44,19 @@ describe("pickStructuredTemplate", () => {
     // Old bug: "MRI LS SPINE".includes("SPINE_LS") === false → fell back to first MRI (Brain)
     const match = pickStructuredTemplate(TEMPLATES, "MR", "LS SPINE MR");
     expect(match?.bodyPart).toBe("SPINE_LS");
+  });
+});
+
+describe("pickStructuredTemplateForRegion", () => {
+  it("loads LS Spine template even when description would default to MRI Brain", () => {
+    const match = pickStructuredTemplateForRegion(
+      TEMPLATES,
+      "MR",
+      "LS Spine",
+      "MRI",
+    );
+    expect(match?.bodyPart).toBe("SPINE_LS");
+    expect(match?.templateName).not.toMatch(/brain/i);
   });
 });
 
