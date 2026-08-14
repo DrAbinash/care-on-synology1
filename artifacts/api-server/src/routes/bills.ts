@@ -27,7 +27,7 @@ function rejectIfUsbMissing(req: Request, res: Response): boolean {
   }
   return false;
 }
-import { generateTokenForBill } from "./tokens";
+import { deriveBillTokenFromTestTokens } from "../lib/deriveBillToken";
 import { generateTestTokensForOrder } from "./test-tokens";
 import { generateStudiesForOrder } from "./radiology";
 import { sendBillWhatsapp } from "./whatsapp";
@@ -692,16 +692,7 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
   // each other AND with buildBill (which only reads rows the transaction
   // above already committed), so the desk waits for the slowest of the three,
   // not the sum. Each token failure is logged but never blocks bill creation.
-  const [tokenInfo, testTokens, built] = await Promise.all([
-    generateTokenForBill({
-      ledgerId,
-      billId: bill.id,
-      patientId: order.patientId,
-      priority: isVip ? 5 : 0,
-    }).catch((err) => {
-      console.warn("Token generation failed:", err);
-      return null;
-    }),
+  const [testTokens, built] = await Promise.all([
     generateTestTokensForOrder({
       ledgerId,
       billId: bill.id,
@@ -714,6 +705,7 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
     }),
     buildBill(bill),
   ]);
+  const tokenInfo = deriveBillTokenFromTestTokens(testTokens);
 
   // Auto-generate accounting vouchers for each inline payment — async, never blocks billing
   const patientName = pat ? `${pat.firstName} ${pat.lastName}`.trim() : undefined;

@@ -47,6 +47,7 @@ import {
   Loader2,
 } from "lucide-react";
 import { api } from "@/lib/fetchApi";
+import { mapExpenseCategory, mapExpensePaymentMode } from "@/lib/expenseScanMapping";
 
 const inr = (n: number) =>
   new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(n);
@@ -64,26 +65,11 @@ const CATEGORIES = [
 ];
 
 const PAYMENT_MODES = ["cash", "bank-transfer", "cheque", "upi", "card"];
-
-// Recovered feature (Phase: Document Platform): maps the AI bill-scanner's
-// category/payment vocabulary onto this form's existing option lists.
-// Unrecognized values fall back to the form's current defaults — never
-// silently invents a new category or payment mode.
-const AI_CATEGORY_MAP: Record<string, string> = {
-  Salaries: "salaries", Rent: "rent", Utilities: "utilities",
-  "Office Supplies": "supplies", "Medical Supplies": "supplies",
-  "Lab Reagents": "supplies", Equipment: "equipment", Maintenance: "maintenance",
-  Travel: "travel", Food: "miscellaneous", Marketing: "marketing",
-  "Professional Fees": "miscellaneous", Taxes: "miscellaneous",
-  Insurance: "miscellaneous", Miscellaneous: "miscellaneous",
-};
-const AI_PAYMENT_MODE_MAP: Record<string, string> = {
-  cash: "cash", card: "card", upi: "upi", cheque: "cheque",
-};
 type ScanBillResult = {
   vendor: string; date: string; amount: number; gstAmount: number;
   category: string; description: string; paymentMode: string; confidence: string;
   confidencePercent?: number;
+  isBlurred?: boolean;
 };
 
 const CATEGORY_COLORS: Record<string, string> = {
@@ -519,51 +505,42 @@ export default function Expenses() {
           <DialogHeader>
             <DialogTitle>{editExp ? "Edit Expense" : "Record Expense"}</DialogTitle>
           </DialogHeader>
-          {/* Recovered feature: AI bill scanner. Backend already existed
-              (/api/expenses/scan-bill via geminiOcrBill) but had no UI —
-              this wires the existing endpoint, no new OCR engine added. */}
           {!editExp && (
             <div className="pb-1">
               <DocumentScanCapture<ScanBillResult>
                 endpoint="/api/expenses/scan-bill"
-                triggerLabel="Scan Bill / Receipt with AI"
+                triggerLabel="Scan Bill / Receipt"
                 editorTitle="Bill / Receipt"
-                helperText="Photograph or upload the bill — fields below will be auto-filled. Please review before saving."
+                helperText="Photograph or upload the bill — Ollama reads it on this clinic; Tesseract is used if Ollama is down. Review before saving."
+                tesseractFallback={async (b64, mime) => {
+                  const { recognizeDocumentText } = await import("@/lib/tesseractDocumentOcr");
+                  const { parseExpenseBillText } = await import("@/lib/expenseBillTextParser");
+                  const text = await recognizeDocumentText(b64, mime);
+                  const parsed = parseExpenseBillText(text);
+                  if (!parsed.amount && !parsed.vendor) return null;
+                  return parsed;
+                }}
                 onImage={(b64, mime) => setReceiptImage(`data:${mime};base64,${b64}`)}
                 onResult={(result) => {
-                  // Below 80% confidence, don't auto-fill the form at all —
-                  // just tell staff to type it in manually from the bill.
-                  // Same tiering convention as Form F's OCR (see
-                  // ocrConfidenceTier in pages/FormF.tsx) and
-                  // BillReceiptScannerPanel.tsx's billConfidenceTier.
                   const pct = result.confidencePercent ?? 0;
-                  if (pct < 80) {
-                    toast({
-                      title: "Bill scanned — low confidence",
-                      description: `${result.confidencePercent ?? "?"}% confidence. Fields were NOT auto-filled — please enter them manually from the bill.`,
-                      variant: "destructive",
-                    });
-                    return;
-                  }
-                  // Fields already typed/changed by staff are never
-                  // overwritten. category/paymentMode/expenseDate default to
-                  // non-empty placeholders ("miscellaneous"/"cash"/today), so
-                  // plain truthiness can't tell "still at default" apart from
-                  // "user explicitly chose this" — compare against EMPTY_FORM
-                  // instead. description/amount/paidTo default to "", so a
-                  // simple truthy check is correct for those.
                   setForm({
                     ...form,
-                    category: form.category === EMPTY_FORM.category ? (AI_CATEGORY_MAP[result.category] || form.category) : form.category,
+                    category: form.category === EMPTY_FORM.category ? mapExpenseCategory(result.category) : form.category,
                     description: form.description || result.description || form.description,
                     amount: form.amount || (result.amount ? String(result.amount) : form.amount),
                     expenseDate: form.expenseDate === EMPTY_FORM.expenseDate ? (result.date || form.expenseDate) : form.expenseDate,
-                    paymentMode: form.paymentMode === EMPTY_FORM.paymentMode ? (AI_PAYMENT_MODE_MAP[result.paymentMode] || form.paymentMode) : form.paymentMode,
+                    paymentMode: form.paymentMode === EMPTY_FORM.paymentMode ? mapExpensePaymentMode(result.paymentMode) : form.paymentMode,
                     paidTo: form.paidTo || result.vendor || form.paidTo,
+                    notes: form.notes || (result.gstAmount > 0 ? `GST: ₹${result.gstAmount}` : form.notes),
                   });
                   toast({
-                    title: "Bill scanned",
-                    description: `${result.confidencePercent != null ? `${result.confidencePercent}%` : result.confidence} confidence. Please verify all fields before saving.`,
+                    title: pct < 80 || result.isBlurred ? "Bill scanned — please verify" : "Bill scanned",
+                    description: [
+                      pct ? `${pct}% confidence` : result.confidence,
+                      result.isBlurred ? "image looks blurry" : null,
+                      "Review every field before saving.",
+                    ].filter(Boolean).join(" · "),
+                    variant: pct < 80 || result.isBlurred ? "destructive" : "default",
                   });
                 }}
               />

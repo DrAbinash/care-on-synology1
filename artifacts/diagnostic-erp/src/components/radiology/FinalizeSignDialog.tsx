@@ -1,7 +1,8 @@
 /**
  * FinalizeSignDialog — workspace finalize confirmation with optional
- * signer picker (multi-signature clinics), critical-finding gate, and
- * canonical report-quality findings with override workflow.
+ * signer picker (multi-signature clinics) and critical-finding ack.
+ * Quality findings are advisory only — they do not block sign-off
+ * (single-radiologist clinic; fewer gates at software start).
  */
 import { useEffect, useMemo, useState } from "react";
 import {
@@ -9,7 +10,6 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
-import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -20,9 +20,7 @@ import type { FinalizePromptInput, FinalizePromptResult } from "@/hooks/useFinal
 import {
   computeUnresolvedBlockers,
   type CanonicalQualityFinding,
-  type QualityOverrideRow,
 } from "@/lib/reportQualityFinalize";
-import { submitQualityOverride } from "@/lib/reportQualityFinalizeApi";
 
 const SESSION_SIGNER_KEY = "radiology_finalize_signer_id";
 
@@ -82,25 +80,18 @@ export default function FinalizeSignDialog({ open, input, onResolve, onCancel }:
     () => (Array.isArray(input?.signatures) ? input.signatures : []),
     [input?.signatures],
   );
-  const multi = signatures.length > 1;
-  const single = signatures.length === 1 ? signatures[0] : null;
+  const sugandha = signatures.find((s) => /sugandha/i.test(s.name));
+  const multi = signatures.length > 1 && !sugandha;
+  const single = signatures.length === 1 ? signatures[0]! : sugandha ?? null;
   const [signerId, setSignerId] = useState<string>("");
   const [criticalAck, setCriticalAck] = useState(false);
   const [notifyReferring, setNotifyReferring] = useState(false);
   const [rememberSigner, setRememberSigner] = useState(true);
-  const [localOverrides, setLocalOverrides] = useState<QualityOverrideRow[]>([]);
-  const [overrideReasons, setOverrideReasons] = useState<Record<string, string>>({});
-  const [overrideError, setOverrideError] = useState<string | null>(null);
-  const [overridePending, setOverridePending] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open || !input) return;
     setCriticalAck(false);
     setNotifyReferring(input.criticalRequiresAck);
-    setLocalOverrides([]);
-    setOverrideReasons({});
-    setOverrideError(null);
-    setOverridePending(null);
     const remembered = loadSessionSignerId();
     if (multi) {
       const match = remembered && signatures.some((s) => s.id === remembered)
@@ -115,13 +106,9 @@ export default function FinalizeSignDialog({ open, input, onResolve, onCancel }:
   }, [open, input, multi, single, signatures]);
 
   const qualityGate = input?.qualityGate ?? null;
-  const mergedOverrides = useMemo(
-    () => [...(qualityGate?.overrides ?? []), ...localOverrides],
-    [qualityGate?.overrides, localOverrides],
-  );
   const unresolvedBlockers = useMemo(
-    () => (qualityGate ? computeUnresolvedBlockers(qualityGate.findings, mergedOverrides) : []),
-    [qualityGate, mergedOverrides],
+    () => (qualityGate ? computeUnresolvedBlockers(qualityGate.findings, qualityGate.overrides ?? []) : []),
+    [qualityGate],
   );
   const advisoryWarnings = useMemo(
     () =>
@@ -132,39 +119,9 @@ export default function FinalizeSignDialog({ open, input, onResolve, onCancel }:
   if (!input) return null;
 
   const needsSigner = multi || single != null;
-  const qualityBlocksFinalize = unresolvedBlockers.length > 0;
   const canConfirm =
     (!input.criticalRequiresAck || criticalAck) &&
-    (!needsSigner || !!signerId || signatures.length === 0) &&
-    !qualityBlocksFinalize;
-
-  const handleOverride = async (finding: CanonicalQualityFinding) => {
-    const reason = overrideReasons[finding.ruleId]?.trim();
-    if (!reason || !finding.evaluationId) {
-      setOverrideError("Enter a justification before overriding.");
-      return;
-    }
-    setOverrideError(null);
-    setOverridePending(finding.ruleId);
-    try {
-      const overrideId = await submitQualityOverride(finding.evaluationId, finding.ruleId, reason);
-      setLocalOverrides((prev) => [
-        ...prev,
-        {
-          id: overrideId,
-          evaluationId: finding.evaluationId!,
-          ruleId: finding.ruleId,
-          reason,
-          action: "override",
-        },
-      ]);
-      setOverrideReasons((prev) => ({ ...prev, [finding.ruleId]: "" }));
-    } catch (err) {
-      setOverrideError(err instanceof Error ? err.message : "Override failed");
-    } finally {
-      setOverridePending(null);
-    }
-  };
+    (!needsSigner || !!signerId || signatures.length === 0);
 
   return (
     <Dialog open={open} onOpenChange={(v) => { if (!v) onCancel(); }}>
@@ -188,13 +145,7 @@ export default function FinalizeSignDialog({ open, input, onResolve, onCancel }:
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-sm font-semibold">Report quality</span>
               <Badge variant="outline">Score {qualityGate.score}/100</Badge>
-              {qualityBlocksFinalize ? (
-                <Badge variant="destructive">
-                  {unresolvedBlockers.length} blocker(s) — override required
-                </Badge>
-              ) : (
-                <Badge className="bg-emerald-600">Ready to sign</Badge>
-              )}
+              <Badge className="bg-emerald-600">Ready to sign</Badge>
               {qualityGate.warningCount > 0 && (
                 <Badge variant="secondary">{qualityGate.warningCount} advisory</Badge>
               )}
@@ -202,40 +153,13 @@ export default function FinalizeSignDialog({ open, input, onResolve, onCancel }:
 
             {unresolvedBlockers.length > 0 && (
               <div className="space-y-2">
-                <p className="text-xs font-medium text-red-800 dark:text-red-200 flex items-center gap-1">
+                <p className="text-xs font-medium text-amber-800 dark:text-amber-200 flex items-center gap-1">
                   <AlertTriangle className="h-3.5 w-3.5" />
-                  Blocking issues (structured rules — override with reason to proceed)
+                  Review before signing (does not block)
                 </p>
                 {unresolvedBlockers.map((f) => (
-                  <div key={`block-${f.ruleId}-${f.evaluationId}`} className="space-y-1">
-                    <FindingRow finding={f} tone="blocker" />
-                    <div className="flex flex-wrap gap-2 items-end pl-1">
-                      <div className="flex-1 min-w-[200px] space-y-1">
-                        <Label className="text-[10px]">Override reason</Label>
-                        <Input
-                          className="h-8 text-xs"
-                          value={overrideReasons[f.ruleId] ?? ""}
-                          onChange={(e) =>
-                            setOverrideReasons((prev) => ({ ...prev, [f.ruleId]: e.target.value }))
-                          }
-                          placeholder="Clinical justification (required)"
-                        />
-                      </div>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        disabled={overridePending === f.ruleId}
-                        onClick={() => void handleOverride(f)}
-                      >
-                        {overridePending === f.ruleId ? "Saving…" : "Override"}
-                      </Button>
-                    </div>
-                  </div>
+                  <FindingRow key={`block-${f.ruleId}-${f.evaluationId}`} finding={f} tone="blocker" />
                 ))}
-                {overrideError && (
-                  <p className="text-xs text-red-600">{overrideError}</p>
-                )}
               </div>
             )}
 

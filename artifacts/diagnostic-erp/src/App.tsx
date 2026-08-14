@@ -132,6 +132,7 @@ const RadiologyQuickSelectSettings = lazy(() => import("@/pages/RadiologyQuickSe
 const RadiologyOperationsDashboard = lazy(() => import("@/pages/RadiologyOperationsDashboard"));
 const OperationalHealth = lazy(() => import("@/pages/OperationalHealth"));
 const RadiologyKnowledgePackManager = lazy(() => import("@/pages/RadiologyKnowledgePackManager"));
+const RadiologyCatalogAdmin = lazy(() => import("@/pages/RadiologyCatalogAdmin"));
 const ClinicalRecommendationRegistryManager = lazy(() => import("@/pages/ClinicalRecommendationRegistryManager"));
 const ClinicalContentCoverage = lazy(() => import("@/pages/ClinicalContentCoverage"));
 const ClinicalContentValidatorPage = lazy(() => import("@/pages/ClinicalContentValidatorPage"));
@@ -688,6 +689,9 @@ function Router() {
               {/* CARE Knowledge Pack Engine — admin registry/manager. */}
               <Route path="/settings/radiology/knowledge-packs">
                 {() => <AdminOnlySettings><RadiologyKnowledgePackManager /></AdminOnlySettings>}
+              </Route>
+              <Route path="/settings/radiology/content-catalog">
+                {() => <AdminOnlySettings><RadiologyCatalogAdmin /></AdminOnlySettings>}
               </Route>
               {/* Clinical Recommendation Registry — admin read-only manager. */}
               <Route path="/settings/radiology/recommendations">

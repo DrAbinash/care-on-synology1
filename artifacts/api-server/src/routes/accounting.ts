@@ -4,14 +4,13 @@ import { accountsTable, vouchersTable, voucherAuditsTable } from "@workspace/db/
 import { eq, desc, and, or, gte, lte, like, sql } from "drizzle-orm";
 import { z } from "zod/v4";
 import { apiError, apiErrorFromZod } from "../lib/api-error";
-import { geminiParseBankStatement, type BankTransaction } from "@workspace/integrations-gemini-ai";
 import { todayIST, dateToISTString } from "../lib/istDate";
 import { auditFromRequest } from "../lib/audit";
 import { autoVoucherForPayment, resolveMethodAccount, ensureAccount } from "../lib/auto-voucher";
 import { requireAdminRole, type StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { buildTrialBalance, buildProfitLoss, buildBalanceSheet, type AmountMap } from "../lib/accounting/reportBuilders";
 import { preprocessScanImage } from "../lib/ocr/idCardPipeline";
-import { getProviderApiKey } from "@workspace/ai-providers";
+import { parseBankStatementLocal, type BankTransaction } from "../lib/ocr/localDocumentOcr";
 
 const router = Router();
 
@@ -1332,6 +1331,7 @@ router.post("/bank-statement/parse", async (req, res): Promise<void> => {
     text?: string;
     imageBase64?: string;
     mimeType?: string;
+    useGeminiFallback?: boolean;
   };
 
   if (!body.text && !body.imageBase64) {
@@ -1339,38 +1339,37 @@ router.post("/bank-statement/parse", async (req, res): Promise<void> => {
     return;
   }
 
-  let input: Parameters<typeof geminiParseBankStatement>[0];
-  if (body.text) {
-    input = { text: body.text };
-  } else {
-    // The text path has no upstream size/type gate either (it's plain JSON
-    // text, cheap either way) — image/PDF input previously had NONE of the
-    // validation the bill-scan route (/api/expenses/scan-bill) already has,
-    // so an oversized or wrong-type upload went straight to Gemini instead
-    // of failing fast with a clear error.
-    if (!body.mimeType || !BANK_STATEMENT_ALLOWED_TYPES.includes(body.mimeType)) {
-      apiError(res, 400, "Unsupported file type. Use JPEG, PNG, WebP, HEIC, or PDF.");
-      return;
-    }
-    if (body.imageBase64!.length > 11_000_000) {
-      apiError(res, 400, "File too large. Maximum 8 MB.");
-      return;
-    }
-    input = { imageBase64: body.imageBase64!, mimeType: body.mimeType };
-  }
-
   try {
     let blurInfo: { blurScore: number; isBlurred: boolean } | null = null;
-    if ("imageBase64" in input) {
-      // Same shared pre-processing as ID-card OCR and bill scanning (auto-
-      // orient/trim/normalize + blur score; passes PDFs through unchanged).
-      const pre = await preprocessScanImage(input.imageBase64, input.mimeType);
-      input = { imageBase64: pre.buffer.toString("base64"), mimeType: pre.mimeType };
+    let parsed: Awaited<ReturnType<typeof parseBankStatementLocal>>;
+    if (body.text) {
+      parsed = await parseBankStatementLocal({ text: body.text }, { useGeminiFallback: Boolean(body.useGeminiFallback) });
+    } else {
+      if (!body.mimeType || !BANK_STATEMENT_ALLOWED_TYPES.includes(body.mimeType)) {
+        apiError(res, 400, "Unsupported file type. Use JPEG, PNG, WebP, HEIC, or PDF.");
+        return;
+      }
+      if (body.imageBase64!.length > 11_000_000) {
+        apiError(res, 400, "File too large. Maximum 8 MB.");
+        return;
+      }
+      const pre = await preprocessScanImage(body.imageBase64!, body.mimeType, {
+        maxWidth: 3200,
+        jpegQuality: 90,
+      });
       blurInfo = { blurScore: pre.blurScore, isBlurred: pre.isBlurred };
+      parsed = await parseBankStatementLocal(
+        { imageBase64: pre.buffer.toString("base64"), mimeType: pre.mimeType },
+        { useGeminiFallback: Boolean(body.useGeminiFallback) },
+      );
     }
-    const dbApiKey = await getProviderApiKey("gemini").catch(() => null);
-    const transactions = await geminiParseBankStatement(input, dbApiKey ? { apiKey: dbApiKey } : {});
-    res.json({ transactions, ...blurInfo });
+    res.json({
+      transactions: parsed.transactions,
+      ocrProvider: parsed.ocrProvider,
+      tesseractFallbackSuggested: parsed.tesseractFallbackSuggested,
+      geminiFallbackAvailable: parsed.geminiFallbackAvailable,
+      ...blurInfo,
+    });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     apiError(res, 502, "AI parsing failed: " + msg);

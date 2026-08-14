@@ -106,7 +106,7 @@ export const DEFAULT_PRINT_SETTINGS: PrintSettings = {
   signature: {
     enabled: true,
     name: "Dr. Sugandha Priyadarshini",
-    qualification: "MBBS, MD (Radiodiagnosis), DNB (I)",
+    qualification: "MD (Radiodiagnosis & Medical Imaging)",
     registrationNo: "",
     imageDataUrl: null,
     showQualification: true,
@@ -119,6 +119,11 @@ export function loadPrintSettings(): PrintSettings {
     const raw = localStorage.getItem("radiology_print_settings");
     if (!raw) return { ...DEFAULT_PRINT_SETTINGS, footer: { ...DEFAULT_PRINT_SETTINGS.footer }, header: { ...DEFAULT_PRINT_SETTINGS.header }, show: { ...DEFAULT_PRINT_SETTINGS.show }, signature: { ...DEFAULT_PRINT_SETTINGS.signature }, margins: { ...DEFAULT_PRINT_SETTINGS.margins } };
     const parsed = JSON.parse(raw) as Partial<PrintSettings>;
+    const signature = { ...DEFAULT_PRINT_SETTINGS.signature, ...(parsed.signature ?? {}) };
+    if (/abinash/i.test(signature.name)) {
+      signature.name = DEFAULT_PRINT_SETTINGS.signature.name;
+      signature.qualification = DEFAULT_PRINT_SETTINGS.signature.qualification;
+    }
     return {
       ...DEFAULT_PRINT_SETTINGS,
       ...parsed,
@@ -126,7 +131,7 @@ export function loadPrintSettings(): PrintSettings {
       header: { ...DEFAULT_PRINT_SETTINGS.header, ...(parsed.header ?? {}) },
       footer: { ...DEFAULT_PRINT_SETTINGS.footer, ...(parsed.footer ?? {}) },
       show: { ...DEFAULT_PRINT_SETTINGS.show, ...(parsed.show ?? {}) },
-      signature: { ...DEFAULT_PRINT_SETTINGS.signature, ...(parsed.signature ?? {}) },
+      signature,
       layout: parsed.layout ?? DEFAULT_PRINT_SETTINGS.layout,
     };
   } catch {
@@ -362,18 +367,19 @@ export function generateReportPDF(
   // Clinic Info uploads are often a different/old icon and were replacing the
   // real letter-pad CARE mark (same-to-same mismatch vs the printed pad).
   if (settings.header.enabled) {
-    const centerX = pageW / 2;
+    const leftX = m.left;
+    const rightX = pageW - m.right;
     let headerBottom = y;
     let logoDrawn = false;
+    let logoW = 0;
+    let logoH = 22;
 
     try {
       const aspect = CARE_LETTERHEAD_LOGO_SIZE.width / CARE_LETTERHEAD_LOGO_SIZE.height;
-      // Match printed pad prominence: wide brand strip, not a tiny icon.
-      const logoH = 30; // mm — keep crisp; source PNG is the official mark
-      const logoW = Math.min(contentW * 0.92, logoH * aspect);
-      const logoX = centerX - logoW / 2;
-      doc.addImage(CARE_LETTERHEAD_LOGO_DATA_URL, "PNG", logoX, y, logoW, logoH, undefined, "NONE");
-      headerBottom = y + logoH + 1.5;
+      logoH = 22;
+      logoW = Math.min(contentW * 0.52, logoH * aspect);
+      doc.addImage(CARE_LETTERHEAD_LOGO_DATA_URL, "PNG", leftX, y, logoW, logoH, undefined, "NONE");
+      headerBottom = y + logoH;
       logoDrawn = true;
     } catch {
       logoDrawn = false;
@@ -382,20 +388,21 @@ export function generateReportPDF(
     // Fallback wordmark if the bundled PNG cannot render (corrupt build, etc.)
     if (!logoDrawn) {
       doc.setFont(font, "bold");
-      doc.setFontSize(22);
+      doc.setFontSize(18);
       const care = "CARE";
-      let cx = centerX - doc.getTextWidth(care) / 2;
-      const careY = y + 10;
+      let cx = leftX;
+      const careY = y + 8;
       for (let i = 0; i < care.length; i++) {
         doc.setTextColor(...CARE_LETTER_COLORS[i]!);
         const ch = care[i]!;
         doc.text(ch, cx, careY);
         cx += doc.getTextWidth(ch);
       }
-      doc.setFontSize(11);
+      doc.setFontSize(10);
       doc.setTextColor(15, 23, 70);
-      doc.text("DIAGNOSTICS", centerX, careY + 6, { align: "center" });
-      headerBottom = careY + 9;
+      doc.text("DIAGNOSTICS", leftX, careY + 5.5);
+      headerBottom = careY + 8;
+      logoW = 48;
     }
 
     doc.setFont(font, "normal");
@@ -404,25 +411,26 @@ export function generateReportPDF(
     // Prefer the printed letter-pad address line; clinic address often differs
     // in formatting (Subhash Chowk vs St. Francis School Road wording).
     const address = DEFAULT_ADDRESS;
-    const addrLines = doc.splitTextToSize(address, contentW) as string[];
-    let ay = headerBottom + 1.2;
+    const addrMaxW = Math.max(52, contentW - logoW - 8);
+    const addrLines = doc.splitTextToSize(address, addrMaxW) as string[];
+    let ay = y + 4;
     for (const line of addrLines) {
-      doc.text(line, centerX, ay, { align: "center" });
+      doc.text(line, rightX, ay, { align: "right" });
       ay += 3.1;
     }
-    // Underline under address (letter-pad rule)
-    doc.setDrawColor(20);
-    doc.setLineWidth(0.35);
-    const underlineW = Math.min(contentW * 0.95, 170);
-    doc.line(centerX - underlineW / 2, ay - 0.8, centerX + underlineW / 2, ay - 0.8);
-
     const phones = "Phone: 75490 99099, 99734 97200";
     const email = clinic?.email?.trim()
       ? `Email: ${clinic.email.trim()}`
       : "Email: care.deoghar@gmail.com";
     doc.setFontSize(7.2);
-    doc.text(`${phones}, ${email}`, centerX, ay + 3.0, { align: "center" });
-    y = ay + 5.5;
+    doc.text(phones, rightX, ay, { align: "right" });
+    ay += 3.1;
+    doc.text(email, rightX, ay, { align: "right" });
+    headerBottom = Math.max(headerBottom, ay);
+    doc.setDrawColor(20);
+    doc.setLineWidth(0.35);
+    doc.line(leftX, headerBottom + 2, rightX, headerBottom + 2);
+    y = headerBottom + 5.5;
   } else {
     y += 2;
   }
@@ -438,29 +446,36 @@ export function generateReportPDF(
     const ageSex = ageSexLine(report.age, report.sex).toUpperCase();
     const dateStr = formatReportDateShort(report.studyDate);
 
-    doc.setFont(font, "bold");
-    doc.text("NAME:", leftX, y);
-    doc.setFont(font, "normal");
-    doc.text(name || "—", leftX + doc.getTextWidth("NAME: ") + 1, y);
+    if (name) {
+      doc.setFont(font, "bold");
+      doc.text("NAME:", leftX, y);
+      doc.setFont(font, "normal");
+      doc.text(name, leftX + doc.getTextWidth("NAME: ") + 1, y);
+    }
 
-    doc.setFont(font, "bold");
-    doc.text("AGE/SEX:", rightX, y);
-    doc.setFont(font, "normal");
-    doc.text(ageSex || "—", rightX + doc.getTextWidth("AGE/SEX: ") + 1, y);
-    y += lineH + 0.8;
+    if (ageSex) {
+      doc.setFont(font, "bold");
+      doc.text("AGE/SEX:", rightX, y);
+      doc.setFont(font, "normal");
+      doc.text(ageSex, rightX + doc.getTextWidth("AGE/SEX: ") + 1, y);
+    }
+    if (name || ageSex) y += lineH + 0.8;
 
-    doc.setFont(font, "bold");
-    doc.text("REFD. BY:", leftX, y);
-    doc.setFont(font, "bold");
-    doc.text(refBy || "—", leftX + doc.getTextWidth("REFD. BY: ") + 1, y);
+    if (refBy) {
+      doc.setFont(font, "bold");
+      doc.text("REFD. BY:", leftX, y);
+      doc.setFont(font, "bold");
+      doc.text(refBy, leftX + doc.getTextWidth("REFD. BY: ") + 1, y);
+    }
 
-    if (settings.header.showDate !== false) {
+    if (settings.header.showDate !== false && dateStr) {
       doc.setFont(font, "bold");
       doc.text("DATE:", rightX, y);
       doc.setFont(font, "normal");
-      doc.text(dateStr || "—", rightX + doc.getTextWidth("DATE: ") + 1, y);
+      doc.text(dateStr, rightX + doc.getTextWidth("DATE: ") + 1, y);
     }
-    y += lineH + 1.5;
+    if (refBy || (settings.header.showDate !== false && dateStr)) y += lineH + 0.8;
+    y += 1.5;
 
     // Double rule (letter-pad style)
     doc.setDrawColor(0);
@@ -546,28 +561,23 @@ export function generateReportPDF(
       }
       case "keyImages": {
         if (!report.keyImages || report.keyImages.length === 0) break;
-        const imgWidth = (contentW - 6) / 2;
-        const imgHeight = 28;
-        let imgX = m.left;
+        const imgWidth = Math.min(contentW * 0.42, 70);
+        const imgHeight = 38;
+        const imgX = pageW - m.right - imgWidth;
         let imgY = y;
         for (const img of report.keyImages) {
           if (!img) continue;
           if (imgY + imgHeight > contentBottom) {
             doc.addPage();
             imgY = m.top;
-            imgX = m.left;
           }
           try {
             const ext = img.startsWith("data:image/jpeg") ? "JPEG" : "PNG";
             doc.addImage(img, ext, imgX, imgY, imgWidth, imgHeight);
-            imgX += imgWidth + 3;
-            if (imgX + imgWidth > pageW - m.right) {
-              imgX = m.left;
-              imgY += imgHeight + 3;
-            }
+            imgY += imgHeight + 4;
           } catch { /* skip broken image */ }
         }
-        y = imgY + imgHeight + 4;
+        y = imgY + 2;
         break;
       }
       case "impression": {

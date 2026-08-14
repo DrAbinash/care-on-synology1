@@ -177,6 +177,14 @@ const FEATURES: RadiologyFeature[] = [
     icon: ListChecks,
   },
   {
+    name: "Content Catalog (canonical API)",
+    route: "/settings/radiology?tab=content-catalog",
+    purpose: "Canonical findings, parameters, categories, and aliases (ff_radiology_catalog).",
+    status: "Active",
+    adminOnly: true,
+    icon: BookOpen,
+  },
+  {
     name: "AI Audit Log",
     route: "/radiology/ai-audit-log",
     purpose: "Review all AI-generated content, edits, and approvals for compliance.",

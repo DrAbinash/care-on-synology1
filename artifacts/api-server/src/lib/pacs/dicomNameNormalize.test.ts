@@ -3,6 +3,9 @@ import {
   formatDicomPersonNameForDisplay,
   nameComparisonKeys,
   nameTokensForMatch,
+  accessionLooksLikeReferringDoctor,
+  reconcileAccessionVsReferringDoctor,
+  formatReferringDoctorDisplay,
 } from "./dicomNameNormalize";
 import { calculateMatchScore, nameSimilarity } from "./matchingEngine";
 
@@ -78,5 +81,38 @@ describe("nameSimilarity / matching", () => {
     // Accession (+50) + modality (+10) + … — name warning may exist but score not forced RED.
     expect(result.warnings.some((w) => w.startsWith("NAME_MISMATCH"))).toBe(true);
     expect(result.score).not.toBe("RED");
+  });
+});
+
+describe("accessionLooksLikeReferringDoctor / reconcileAccessionVsReferringDoctor", () => {
+  test("MRI billed doctor name in Acc No. is not a real accession", () => {
+    expect(accessionLooksLikeReferringDoctor("DR.SANJAY KUMAR")).toBe(true);
+    expect(accessionLooksLikeReferringDoctor("DR.A.K.SINGH MCH")).toBe(true);
+    expect(accessionLooksLikeReferringDoctor("Dr Sanjay Kumar MD")).toBe(true);
+    expect(accessionLooksLikeReferringDoctor("ACC-20260813-MR-001")).toBe(false);
+    expect(accessionLooksLikeReferringDoctor("CT20260813001")).toBe(false);
+  });
+
+  test("moves doctor-like accession into REF. BY and hides fake ACC", () => {
+    const r = reconcileAccessionVsReferringDoctor({
+      accessionNumber: "DR.SANJAY KUMAR",
+      referringDoctor: "",
+    });
+    expect(r.accessionNumber).toBe("");
+    expect(r.referringDoctor).toMatch(/Sanjay Kumar/i);
+    expect(r.referringDoctor).toMatch(/^Dr\./);
+  });
+
+  test("keeps a real accession and formats an existing referring doctor with degree", () => {
+    const r = reconcileAccessionVsReferringDoctor({
+      accessionNumber: "ACC-20260813-MR-001",
+      referringDoctor: "SANJAY KUMAR MD",
+    });
+    expect(r.accessionNumber).toBe("ACC-20260813-MR-001");
+    expect(r.referringDoctor).toContain("MD");
+  });
+
+  test("formatReferringDoctorDisplay prefixes Dr. and keeps degree", () => {
+    expect(formatReferringDoctorDisplay("Sanjay Kumar MD")).toMatch(/Dr\.\s.*MD/);
   });
 });

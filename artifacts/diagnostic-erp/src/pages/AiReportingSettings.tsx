@@ -10,6 +10,7 @@ import {
   BookOpen, Settings2, Users, FileText, Wifi, WifiOff, Zap, Gauge, Moon,
 } from "lucide-react";
 import OvernightAiSettings from "@/components/ai/OvernightAiSettings";
+import { OllamaAiDraftVerifyPanel } from "@/components/radiology/OllamaAiDraftVerifyPanel";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface GlobalSettings {
@@ -463,6 +464,8 @@ export function AiReportingPanel() {
     onSuccess: () => {
       toast({ title: "AI Reporting settings saved" });
       void queryClient.invalidateQueries({ queryKey: ["ai-reporting-settings"] });
+      void queryClient.invalidateQueries({ queryKey: ["feature-flags"] });
+      window.dispatchEvent(new Event("featureFlagsChanged"));
     },
     onError: (e: Error) => toast({ title: "Save failed", description: e.message, variant: "destructive" }),
   });
@@ -765,6 +768,8 @@ export function AiReportingPanel() {
 
             <PipelineDiagnosticsPanel />
 
+            <OllamaAiDraftVerifyPanel />
+
             <div className="space-y-1.5">
               <label className="text-xs font-semibold text-muted-foreground flex items-center gap-1"><Gauge size={11} /> Timeout: {localAi.timeoutSeconds}s</label>
               <input
@@ -814,6 +819,7 @@ export function AiReportingPanel() {
       {/* ── Overnight DICOM → Ollama drafts ── */}
       {activeSection === "overnight" && (
         <div className="space-y-4">
+          <OllamaAiDraftVerifyPanel />
           <OvernightAiSettings />
         </div>
       )}

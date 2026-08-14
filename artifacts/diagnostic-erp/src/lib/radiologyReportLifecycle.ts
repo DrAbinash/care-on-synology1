@@ -124,8 +124,9 @@ interface SignatureRow {
  * SignDialog default (the sole ACTIVE signature on file — the
  * single-radiologist clinic this ticket targets) so the auto-sign identity
  * matches what a manual Sign click would have chosen. When the signer
- * identity is AMBIGUOUS (2+ active signatures), auto-sign deliberately
- * declines rather than guessing — see autoSignReport() below. Never throws:
+ * identity is AMBIGUOUS (2+ active signatures and none is the clinic
+ * radiologist), auto-sign deliberately declines rather than guessing —
+ * see autoSignReport() below. Never throws:
  * a failure here must not undo the report row that was already created or
  * block the worklist flip; the caller surfaces `signed`/`signError`
  * truthfully instead.
@@ -149,13 +150,16 @@ async function autoSignReport(
       await api.post(`/api/patient-reports/${reportId}/sign`, { signatureId: chosen.id });
       return { signed: true, signError: null };
     }
-    // R1.4 review finding: with 2+ active signatures on file (a locum
-    // covering the solo radiologist, or a second radiologist joining the
-    // practice), silently picking the alphabetically-first one would
-    // misattribute authorship of a signed clinical document with no warning.
-    // That identity choice is safe to automate ONLY while it is unambiguous
-    // (the single-radiologist baseline this ticket targets); once ambiguous,
-    // require the deliberate, visible signer picker in Report Hub instead.
+    // Solo clinic: Dr. Sugandha is the reporting radiologist. A leftover
+    // second signature (e.g. referring / neurosurgeon) must not block sign-off.
+    const clinicRadiologist = activeSignatures.find((s) => /sugandha/i.test(s.name));
+    if (clinicRadiologist) {
+      await api.post(`/api/patient-reports/${reportId}/sign`, { signatureId: clinicRadiologist.id });
+      return { signed: true, signError: null };
+    }
+    // R1.4 review finding: with 2+ active signatures on file and no clinic
+    // radiologist match, silently picking the alphabetically-first one would
+    // misattribute authorship. Require the visible signer picker instead.
     if (activeSignatures.length > 1) {
       return { signed: false, signError: "More than one active signature is on file — choose the signer from Report Hub." };
     }

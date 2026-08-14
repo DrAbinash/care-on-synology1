@@ -60,9 +60,11 @@ export function validateProvisionalReport(raw: unknown, studyInstanceUid: string
   let repaired = false;
   if (typeof value === "string") {
     try {
+      // Strip chain-of-thought blocks some models emit even with think=false.
+      const stripped = value.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
       // tolerate ```json fences and surrounding prose
-      const m = value.match(/\{[\s\S]*\}/);
-      value = JSON.parse(m ? m[0] : value);
+      const m = stripped.match(/\{[\s\S]*\}/);
+      value = JSON.parse(m ? m[0] : stripped);
       repaired = true;
     } catch {
       return { ok: false, errors: ["model output is not valid JSON"] };

@@ -17,6 +17,7 @@ import IdScanCapturePanel from "@/components/IdScanCapturePanel";
 import { type ScanCaptureResult, type ScanSide } from "@/components/UnifiedScanCapture";
 import { decodeQrFromBlob } from "@/lib/aadhaarQr";
 import { runIdCardTesseractOcr } from "@/lib/idCardTesseractOcr";
+import { persistDocumentScanFromBlob } from "@/lib/documentScanApi";
 import { readStaffSession, normalizeRole, FULL_ACCESS_ROLES } from "@/lib/staffSession";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
@@ -928,8 +929,7 @@ export default function FormF() {
   // initial scan/upload and the "Retry OCR" button, so both go through
   // identical field-population logic.
   //
-  // Fallback chain: AI (Ollama → Gemini via /api/form-f/upload-id) →
-  // on-device Tesseract.js when AI returns no usable fields or errors.
+  // Fallback chain: Ollama → on-device Tesseract.js → Gemini (if a key exists).
   // Manual entry remains available either way. ──
   async function runIdCardOcr(base64: string, mimeType: string) {
     let resp: IdCardUploadResponse | null = null;
@@ -998,6 +998,34 @@ export default function FormF() {
       console.warn("[form-f] Tesseract fallback failed", e);
     }
 
+    try {
+      toast({ title: "Trying Gemini…", description: "Third pass — only runs if an API key is configured." });
+      const gemResp = await api.post<IdCardUploadResponse>("/api/form-f/upload-id", {
+        formFId: 0,
+        imageBase64: base64,
+        mimeType,
+        useGeminiFallback: true,
+      });
+      const gemOcr = gemResp.ocr ?? null;
+      const gemUsable = !!(gemOcr?.guardianName || gemOcr?.address || gemOcr?.idNumber);
+      if (gemUsable && gemResp.ocrOutcome === "success") {
+        setIdCardOcrResult({ ...gemOcr, ocrProvider: "gemini" });
+        if (gemOcr?.guardianName) setIdCardExtractedName(gemOcr.guardianName);
+        if (gemOcr?.address) setIdCardExtractedAddress(gemOcr.address);
+        if (ocrConfidenceTier(gemOcr?.confidencePercent) === "auto") {
+          setForm((prev) => ({
+            ...prev,
+            husbandFatherName: prev.husbandFatherName || gemOcr?.guardianName || prev.husbandFatherName,
+            address: prev.address || gemOcr?.address || prev.address,
+          }));
+        }
+        toast({ title: "Scanned with Gemini", description: "Review every field before saving." });
+        return gemResp;
+      }
+    } catch (e) {
+      console.warn("[form-f] Gemini third-pass failed", e);
+    }
+
     setIdCardOcrResult(aiOcr);
     if (aiOcr?.guardianName) setIdCardExtractedName(aiOcr.guardianName);
     if (aiOcr?.address) setIdCardExtractedAddress(aiOcr.address);
@@ -1017,9 +1045,17 @@ export default function FormF() {
   }
 
   // ── ID card image processing (shared by upload, UnifiedScanCapture, camera) ──
-  async function processIdImage(file: Blob) {
+  async function processIdImage(file: Blob, scanMeta?: { source?: ScanCaptureResult["source"]; filename?: string }) {
     setIdCardUploading(true);
     try {
+      void persistDocumentScanFromBlob(file, {
+        module: "form-f",
+        entityType: "form-f-record",
+        docType: "id-card",
+        scanSource: scanMeta?.source ?? "upload",
+        fileName: scanMeta?.filename,
+        mimeType: file.type || "image/jpeg",
+      });
       // Preferred extraction order: Aadhaar QR data first (no server round
       // trip, no OCR cost), then OCR, then manual entry (existing editable
       // fields below are always available regardless of which path fires).
@@ -1188,7 +1224,7 @@ export default function FormF() {
       return;
     }
     setScanPanelSide("front");
-    await processIdImage(result.file);
+    await processIdImage(result.file, { source: result.source, filename: result.filename });
   }
 
   // ── Camera / scanner capture helpers ──

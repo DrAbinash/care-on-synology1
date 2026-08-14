@@ -15,7 +15,7 @@ import {
 } from "@workspace/db/schema";
 import { eq, sql, inArray } from "drizzle-orm";
 import { generateBillNumber } from "../routes/bills";
-import { generateTokenForBill } from "../routes/tokens";
+import { deriveBillTokenFromTestTokens } from "../lib/deriveBillToken";
 import { generateTestTokensForOrder } from "../routes/test-tokens";
 import { calculateDobFromAge } from "../routes/public-booking";
 import { autoVoucherForPayment } from "../lib/auto-voucher";
@@ -255,20 +255,6 @@ export async function registerPatientSelfFlow(params: RegisterPatientSelfFlowPar
     sql`${patientsTable.id} = ${patientDbId} AND ${patientsTable.ledgerId} IS NULL`
   );
 
-  let tokenNo: number | null = null;
-  let tokenDate: string | null = null;
-  try {
-    const tokenInfo = await generateTokenForBill({
-      ledgerId,
-      billId: billRow.id,
-      patientId: patientDbId,
-      priority: isVip ? 5 : 0,
-      source,
-    });
-    tokenNo = tokenInfo?.tokenNo ?? null;
-    tokenDate = tokenInfo?.tokenDate ?? null;
-  } catch { /* non-blocking */ }
-
   let testTokens: Array<{ orderTestId: number; testName: string; department: string; roomNumber: string; tokenNo: number }> = [];
   try {
     testTokens = await generateTestTokensForOrder({
@@ -280,6 +266,10 @@ export async function registerPatientSelfFlow(params: RegisterPatientSelfFlowPar
       source,
     });
   } catch { /* non-blocking */ }
+
+  const derivedToken = deriveBillTokenFromTestTokens(testTokens);
+  const tokenNo = derivedToken?.tokenNo ?? null;
+  const tokenDate = derivedToken?.tokenDate ?? null;
 
   // Fan out radiology studies if applicable
   try {

@@ -1,7 +1,15 @@
-import { describe, expect, test } from "vitest";
-import { detectGenderFromName } from "./nameGender";
+import { describe, expect, test, beforeEach } from "vitest";
+import {
+  detectGenderFromName,
+  applyNameGenderExtras,
+  parseNameGenderExtraList,
+} from "./nameGender";
 
 describe("detectGenderFromName — North / East Indian coverage", () => {
+  beforeEach(() => {
+    applyNameGenderExtras([], []);
+  });
+
   test.each([
     ["Guddu", "male"],
     ["Pintu Kumar", "male"],
@@ -46,5 +54,18 @@ describe("detectGenderFromName — North / East Indian coverage", () => {
   test("unisex / unknown returns null", () => {
     expect(detectGenderFromName("Kiran")).toBeNull();
     expect(detectGenderFromName("xyzabc")).toBeNull();
+  });
+
+  test("clinic extras override unknown names", () => {
+    expect(detectGenderFromName("Zorblax")).toBeNull();
+    applyNameGenderExtras(["zorblax"], ["zorblina"]);
+    expect(detectGenderFromName("Zorblax")).toBe("male");
+    expect(detectGenderFromName("Mrs Zorblina")).toBe("female");
+  });
+
+  test("parseNameGenderExtraList accepts JSON array or newlines", () => {
+    expect(parseNameGenderExtraList('["A","B"]')).toEqual(["a", "b"]);
+    expect(parseNameGenderExtraList("A\nB, C")).toEqual(["a", "b", "c"]);
+    expect(parseNameGenderExtraList("")).toEqual([]);
   });
 });

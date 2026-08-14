@@ -6,6 +6,16 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Camera, ScanLine, Upload, X, CheckCircle2, FileText } from "lucide-react";
 import IdCardScanPanel from "@/components/IdCardScanPanel";
+import UnifiedScanCapture, { type ScanCaptureResult } from "@/components/UnifiedScanCapture";
+import { blobToScanBase64 } from "@/lib/documentScanApi";
+import {
+  LEDGER_EXPENSE_CATEGORIES,
+  LEDGER_PAYMENT_MODES,
+  mapExpenseCategory,
+  mapExpensePaymentMode,
+} from "@/lib/expenseScanMapping";
+import { recognizeDocumentText } from "@/lib/tesseractDocumentOcr";
+import { parseExpenseBillText } from "@/lib/expenseBillTextParser";
 
 type BillOcrResult = {
   vendor: string; date: string; amount: number; gstAmount: number;
@@ -18,6 +28,8 @@ type BillOcrResult = {
   // warning staff before they trust a shaky extraction.
   blurScore?: number;
   isBlurred?: boolean;
+  tesseractFallbackSuggested?: boolean;
+  geminiFallbackAvailable?: boolean;
 };
 
 // Same tiering convention as Form F's ID-card OCR (ocrConfidenceTier in
@@ -33,11 +45,13 @@ function billConfidenceTier(confidencePercent: number | undefined): "auto" | "co
   return "manual";
 }
 
-const EXPENSE_CATEGORIES = [
-  "Salaries", "Rent", "Utilities", "Office Supplies", "Medical Supplies",
-  "Lab Reagents", "Equipment", "Maintenance", "Travel", "Food",
-  "Marketing", "Professional Fees", "Taxes", "Insurance", "Miscellaneous",
-];
+function applyOcrToDraft(data: BillOcrResult): BillOcrResult {
+  return {
+    ...data,
+    category: mapExpenseCategory(data.category),
+    paymentMode: mapExpensePaymentMode(data.paymentMode),
+  };
+}
 
 // Shared Bill / Receipt Scanner panel — used by both the Accounting
 // "Scan & Import" tab and the Expenses "Bill/Receipt Scanner" tab.
@@ -56,26 +70,32 @@ export default function BillReceiptScannerPanel() {
   const fileRef = useRef<HTMLInputElement>(null);
   const qc = useQueryClient();
 
-  const handleFile = useCallback((file: File) => {
+  const ingestImage = useCallback((base64: string, mt: string) => {
     setError(""); setResult(null); setDraft(null); setSaved(false);
+    if (mt === "application/pdf") {
+      setMimeType(mt);
+      setImageBase64(base64);
+      setPreview(`data:application/pdf;base64,${base64}`);
+      return;
+    }
+    setEditing({ base64, mimeType: mt || "image/jpeg" });
+  }, []);
+
+  const handleFile = useCallback((file: File) => {
     const mt = file.type || "image/jpeg";
     const reader = new FileReader();
     reader.onload = (e) => {
       const dataUrl = e.target?.result as string;
-      const base64 = dataUrl.split(",")[1] ?? "";
-      if (mt === "application/pdf") {
-        // The crop/enhance editor is canvas-based and can't decode PDF bytes
-        // as an image — send it straight through to OCR instead.
-        setMimeType(mt);
-        setImageBase64(base64);
-        setPreview(dataUrl);
-        return;
-      }
-      // Open the crop/enhance editor first — the enhanced image scans far better.
-      setEditing({ base64, mimeType: mt });
+      ingestImage(dataUrl.split(",")[1] ?? "", mt);
     };
     reader.readAsDataURL(file);
-  }, []);
+  }, [ingestImage]);
+
+  const handleUnifiedCapture = useCallback(async (cap: ScanCaptureResult) => {
+    const mt = cap.mimeType || cap.file.type || "image/jpeg";
+    const base64 = await blobToScanBase64(cap.file);
+    if (base64) ingestImage(base64, mt);
+  }, [ingestImage]);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -83,14 +103,55 @@ export default function BillReceiptScannerPanel() {
     if (file) handleFile(file);
   }, [handleFile]);
 
-  const scan = async () => {
-    if (!imageBase64) return;
+  const scan = async (override?: { imageBase64: string; mimeType: string }) => {
+    const b64 = override?.imageBase64 ?? imageBase64;
+    const mt = override?.mimeType ?? mimeType;
+    if (!b64) return;
     setScanning(true); setError("");
     try {
-      const data = await api.post<BillOcrResult>("/api/expenses/scan-bill", { imageBase64, mimeType });
-      setResult(data);
-      setDraft({ ...data });
+      const data = await api.post<BillOcrResult>("/api/expenses/scan-bill", { imageBase64: b64, mimeType: mt });
+      if (data.tesseractFallbackSuggested && !data.amount && !data.vendor) {
+        const text = await recognizeDocumentText(b64, mt);
+        const mapped = applyOcrToDraft(parseExpenseBillText(text));
+        if (mapped.amount || mapped.vendor) {
+          setResult(mapped);
+          setDraft(mapped);
+          return;
+        }
+        if (data.geminiFallbackAvailable) {
+          const gem = await api.post<BillOcrResult>("/api/expenses/scan-bill", {
+            imageBase64: b64, mimeType: mt, useGeminiFallback: true,
+          });
+          const gemMapped = applyOcrToDraft(gem);
+          setResult(gemMapped);
+          setDraft(gemMapped);
+          return;
+        }
+      }
+      const mapped = applyOcrToDraft(data);
+      setResult(mapped);
+      setDraft(mapped);
     } catch (e: unknown) {
+      try {
+        const text = await recognizeDocumentText(b64, mt);
+        const mapped = applyOcrToDraft(parseExpenseBillText(text));
+        if (mapped.amount || mapped.vendor) {
+          setResult(mapped);
+          setDraft(mapped);
+          return;
+        }
+      } catch { /* ignore */ }
+      try {
+        const gem = await api.post<BillOcrResult>("/api/expenses/scan-bill", {
+          imageBase64: b64, mimeType: mt, useGeminiFallback: true,
+        });
+        if (gem.vendor || gem.amount) {
+          const gemMapped = applyOcrToDraft(gem);
+          setResult(gemMapped);
+          setDraft(gemMapped);
+          return;
+        }
+      } catch { /* ignore */ }
       setError((e as Error).message || "Scan failed");
     } finally {
       setScanning(false);
@@ -102,14 +163,13 @@ export default function BillReceiptScannerPanel() {
     setSaving(true); setError("");
     try {
       await api.post("/api/expenses", {
-        category: draft.category,
+        category: mapExpenseCategory(draft.category),
         description: draft.description || draft.vendor || "Scanned bill",
         amount: draft.amount,
         expenseDate: draft.date || new Date().toISOString().slice(0, 10),
-        paymentMode: draft.paymentMode || "cash",
+        paymentMode: mapExpensePaymentMode(draft.paymentMode),
         paidTo: draft.vendor || undefined,
         notes: draft.gstAmount > 0 ? `GST: ₹${draft.gstAmount}` : undefined,
-        // Keep the scanned (enhanced) bill image for audit.
         receiptImageUrl: preview || undefined,
       });
       qc.invalidateQueries({ queryKey: ["expenses"] });
@@ -142,6 +202,7 @@ export default function BillReceiptScannerPanel() {
           setImageBase64(enhanced);
           setPreview(`data:image/jpeg;base64,${enhanced}`);
           setEditing(null);
+          void scan({ imageBase64: enhanced, mimeType: "image/jpeg" });
         }}
         onCancel={() => setEditing(null)}
       />
@@ -193,11 +254,17 @@ export default function BillReceiptScannerPanel() {
             onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f); }}
           />
 
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
+            <UnifiedScanCapture
+              module="expenses"
+              docType="bill"
+              triggerLabel="Scan / camera / phone"
+              onCapture={(cap) => void handleUnifiedCapture(cap)}
+            />
             <Button variant="outline" className="flex-1" onClick={() => fileRef.current?.click()} disabled={scanning}>
-              <Upload size={14} className="mr-1" /> Upload
+              <Upload size={14} className="mr-1" /> Upload JPEG / PDF
             </Button>
-            <Button className="flex-1" onClick={scan} disabled={!imageBase64 || scanning}>
+            <Button className="flex-1" onClick={() => void scan()} disabled={!imageBase64 || scanning}>
               <ScanLine size={14} className="mr-1" /> {scanning ? "Scanning…" : "Scan with AI"}
             </Button>
           </div>
@@ -267,14 +334,14 @@ export default function BillReceiptScannerPanel() {
                 <div>
                   <Label className="text-xs">Payment Mode</Label>
                   <select className="mt-1 h-8 text-sm w-full border border-input rounded-md px-2 bg-background" value={draft.paymentMode} onChange={e => setDraft({ ...draft, paymentMode: e.target.value })}>
-                    {["cash", "card", "upi", "cheque", "other"].map(m => <option key={m} value={m}>{m.charAt(0).toUpperCase() + m.slice(1)}</option>)}
+                    {LEDGER_PAYMENT_MODES.map(m => <option key={m} value={m}>{m.replace("-", " ")}</option>)}
                   </select>
                 </div>
               </div>
               <div>
                 <Label className="text-xs">Category</Label>
                 <select className="mt-1 h-8 text-sm w-full border border-input rounded-md px-2 bg-background" value={draft.category} onChange={e => setDraft({ ...draft, category: e.target.value })}>
-                  {EXPENSE_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+                  {LEDGER_EXPENSE_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
                 </select>
               </div>
               <div>
