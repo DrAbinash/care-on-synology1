@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { shiftISODate } from "./dateRangePresets";
+import { daysAgoISO, shiftISODate, todayISO } from "./dateRangePresets";
 
 // shiftISODate replaces the Appointments.tsx bug: navigateDate() used to do
 // `new Date(selectedDate + "T00:00:00")` (parsed as LOCAL midnight, i.e. IST
@@ -38,5 +38,12 @@ describe("shiftISODate", () => {
   it("supports multi-day offsets", () => {
     expect(shiftISODate("2026-07-26", 7)).toBe("2026-08-02");
     expect(shiftISODate("2026-07-26", -30)).toBe("2026-06-26");
+  });
+});
+
+describe("daysAgoISO", () => {
+  it("is yesterday of todayISO, not local-midnight shifted into IST", () => {
+    expect(daysAgoISO(1)).toBe(shiftISODate(todayISO(), -1));
+    expect(daysAgoISO(0)).toBe(todayISO());
   });
 });

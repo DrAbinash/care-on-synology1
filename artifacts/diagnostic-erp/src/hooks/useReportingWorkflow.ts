@@ -112,7 +112,7 @@ export function useReportingWorkflow(currentStudyId: number | undefined, options
   const queue = useMemo(
     () => filterQueueByScope(fullQueue, scope, myName, myUserId).filter((s) =>
       matchesQueueModality(s.modality, modalityFilter)
-      && matchesQueueDate(s.createdAt, dateFrom, dateTo),
+      && matchesQueueDate(s.createdAt ?? (s as { receivedAt?: string }).receivedAt, dateFrom, dateTo),
     ),
     [fullQueue, scope, myName, myUserId, modalityFilter, dateFrom, dateTo],
   );
