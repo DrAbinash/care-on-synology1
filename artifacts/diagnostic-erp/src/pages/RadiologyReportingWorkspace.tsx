@@ -212,6 +212,7 @@ import "@/lib/copilotUsgCompanionModule";
 import {
   Lock, AlertTriangle, ChevronLeft, ChevronRight, Pause, Clock, Sparkles, ShieldCheck,
   Brain, Activity, Zap, Printer, FileDown, Share2, Eye, PanelLeftClose, PanelLeftOpen,
+  CheckCircle2,
   Maximize2, Columns2, Monitor, Archive, Keyboard, AppWindow, MessageCircle, Hospital,
   Trash2, MonitorPlay, Plus,
 } from "lucide-react";
@@ -1967,21 +1968,21 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const lockLost = studyLock.status === "expired-lost" || studyLock.status === "connection-lost";
 
   return (
-    <div className="flex h-screen flex-col bg-background overflow-hidden">
+    <div className="flex h-screen flex-col bg-gradient-to-br from-emerald-50/40 via-background to-background overflow-hidden">
       {/* ─── Top chrome ─── */}
-      <header className="flex items-center gap-4 border-b border-border px-4 py-2.5 bg-card">
+      <header className="flex items-center gap-4 border-b border-emerald-200/60 px-4 py-2.5 bg-gradient-to-r from-emerald-50/80 via-card to-card shadow-sm">
         <div className="flex items-center gap-2">
-          <div className="flex h-7 w-7 items-center justify-center rounded-md bg-gradient-to-br from-emerald-500 to-emerald-700">
+          <div className="flex h-7 w-7 items-center justify-center rounded-md bg-gradient-to-br from-emerald-400 via-emerald-500 to-emerald-700 shadow-md shadow-emerald-500/30 ring-1 ring-emerald-300/50">
             <Brain className="h-4 w-4 text-white" />
           </div>
           <div>
-            <div className="text-xs font-bold leading-none">Z.ai RadReporting</div>
-            <div className="text-[9px] text-muted-foreground leading-none mt-0.5">World's best reporting workspace</div>
+            <div className="text-xs font-bold leading-none bg-gradient-to-r from-emerald-700 to-emerald-600 bg-clip-text text-transparent">Z.ai RadReporting</div>
+            <div className="text-[9px] text-emerald-600/70 leading-none mt-0.5 font-medium">World's best reporting workspace</div>
           </div>
         </div>
         <div className="h-5 w-px bg-border mx-1" />
         {/* Layout modes — Report / Split / Viewer (legacy) */}
-        <div className="flex items-center rounded-md border overflow-hidden text-[10px]" data-testid="layout-mode-selector">
+        <div className="flex items-center rounded-md border border-emerald-200 overflow-hidden text-[10px] shadow-sm" data-testid="layout-mode-selector">
           {([
             { mode: "reportFocus" as const, label: "Report", icon: <Maximize2 className="h-3 w-3" />, title: "Report Focus — hide viewer" },
             { mode: "split" as const, label: "OHIF", icon: <Columns2 className="h-3 w-3" />, title: "OHIF / WADO images + editor" },
@@ -1993,7 +1994,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
               type="button"
               title={m.title}
               onClick={() => setLayoutMode(m.mode)}
-              className={`inline-flex items-center gap-1 px-2 py-1.5 border-r last:border-r-0 ${layoutMode === m.mode ? "bg-primary text-primary-foreground" : "hover:bg-muted"}`}
+              className={`inline-flex items-center gap-1 px-2 py-1.5 border-r last:border-r-0 border-emerald-200/60 transition-colors ${layoutMode === m.mode ? "bg-gradient-to-b from-emerald-500 to-emerald-600 text-white shadow-sm" : "hover:bg-emerald-50 text-foreground"}`}
             >
               {m.icon}{m.label}
             </button>
@@ -2092,10 +2093,10 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         )}
         <div className="flex items-center gap-2 shrink-0 ml-3">
           {criticalSlaStartedAt && <CriticalSlaTimer />}
-          <div className="flex items-center gap-1 text-[10px] text-muted-foreground px-2 py-1 rounded bg-muted/40">
+          <div className="flex items-center gap-1 text-[10px] text-emerald-700/80 px-2 py-1 rounded bg-emerald-50/70 border border-emerald-200/60">
             <Activity className="h-3 w-3" />
             <span className="font-mono">{Math.floor(sessionMin / 60)}h {sessionMin % 60}m</span>
-            <span className="text-muted-foreground/50">·</span>
+            <span className="text-emerald-400/60">·</span>
             <span className="text-emerald-600 font-semibold">{completedCount} signed</span>
           </div>
           {/* Existing VoiceCommandBar */}
@@ -2272,7 +2273,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         </div>
       )}
       {isObUsg && pcpndtCompliance?.compliant === true && (
-        <div className="flex items-center gap-2 px-3 py-1 bg-emerald-50 border-b border-emerald-200 text-[11px] text-emerald-800">
+        <div className="flex items-center gap-2 px-3 py-1 bg-gradient-to-r from-emerald-50 to-emerald-100/60 border-b border-emerald-200 text-[11px] text-emerald-800 font-medium">
           <ShieldCheck className="h-3 w-3" /> PCPNDT Form F verified
         </div>
       )}
@@ -2291,17 +2292,17 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
             onCollapse={() => setLeftCollapsed(true)}
             onExpand={() => setLeftCollapsed(false)}
           >
-            <div className="h-full border-r border-border bg-card">
+            <div className="h-full border-r border-emerald-200/50 bg-gradient-to-b from-card to-emerald-50/20">
               {leftCollapsed ? (
                 <button
                   type="button"
-                  className="flex h-full w-full flex-col items-center gap-2 py-3 text-muted-foreground hover:bg-muted/40"
+                  className="flex h-full w-full flex-col items-center gap-2 py-3 text-emerald-600 hover:bg-emerald-50 transition-colors"
                   onClick={() => leftPanelRef.current?.expand()}
                   title="Expand worklist"
                   data-testid="left-panel-expand"
                 >
                   <PanelLeftOpen className="h-4 w-4" />
-                  <span className="text-[9px] writing-mode-vertical font-semibold tracking-wider uppercase" style={{ writingMode: "vertical-rl" }}>
+                  <span className="text-[9px] writing-mode-vertical font-semibold tracking-wider uppercase text-emerald-700" style={{ writingMode: "vertical-rl" }}>
                     Queue
                   </span>
                 </button>
@@ -2370,7 +2371,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
             <ResizablePanelGroup direction="horizontal">
               {/* Editor column */}
               <ResizablePanel defaultSize={58} minSize={42}>
-                <div className="h-full flex bg-card min-h-0">
+                <div className="h-full flex bg-gradient-to-b from-card to-emerald-50/10 min-h-0">
                 <div className="flex-1 min-w-0 overflow-y-auto">
                   <div className="p-4 space-y-3">
                     {!showEmbeddedViewer && layoutMode === "reportFocus" && (
@@ -2385,8 +2386,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       </button>
                     )}
                     {viewerFocusMode && showEmbeddedViewer && (
-                      <div className="flex items-center gap-2 px-2 py-1.5 -mx-1 rounded border bg-muted/10" data-testid="viewer-focus-strip">
-                        <MonitorPlay size={13} className="text-muted-foreground shrink-0" />
+                      <div className="flex items-center gap-2 px-2 py-1.5 -mx-1 rounded border border-emerald-200/60 bg-emerald-50/40" data-testid="viewer-focus-strip">
+                        <MonitorPlay size={13} className="text-emerald-600 shrink-0" />
                         <span className="text-xs font-semibold truncate flex-1">
                           {workflow.currentRow?.patientName ?? "Viewer focus"}
                         </span>
@@ -2554,7 +2555,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
 
                     {/* Study setup strip — regions / protocol / test name from DICOM */}
                     {(studySetup.activeProtocol || studySetup.selectedTemplate || studySetup.studyRegions.length > 0) && (
-                      <div className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/30 px-2 py-1.5 text-[10px]" data-testid="study-setup-strip">
+                      <div className="flex flex-wrap items-center gap-2 rounded-md border border-emerald-200/60 bg-gradient-to-r from-emerald-50/40 via-card to-emerald-50/20 px-2 py-1.5 text-[10px] shadow-sm" data-testid="study-setup-strip">
                         {studySetup.availableRegions.length > 0 && (
                           <label className="inline-flex items-center gap-1 flex-wrap">
                             <span className="font-semibold text-muted-foreground">Regions</span>
@@ -3122,7 +3123,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                 </div>
                 {draftId ? (
                   <aside
-                    className="w-40 shrink-0 border-l border-border p-2 overflow-y-auto bg-muted/20"
+                    className="w-40 shrink-0 border-l border-emerald-200/50 p-2 overflow-y-auto bg-emerald-50/20"
                     data-testid="selected-images-rail"
                   >
                     <ReportImagePanel
@@ -3138,7 +3139,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
               <ResizableHandle />
               {/* Copilot rail with ComparisonPanel + FollowUpPanel */}
               <ResizablePanel defaultSize={42} minSize={32} ref={rightPanelRef}>
-                <div className="h-full border-l border-border bg-card overflow-y-auto">
+                <div className="h-full border-l border-emerald-200/50 bg-gradient-to-b from-card to-emerald-50/15 overflow-y-auto">
                   <CopilotRail />
                   {workflow.currentRow && (
                     <div className="border-t border-border p-2">
@@ -3242,24 +3243,24 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       </div>
 
       {/* ─── Footer: shortcuts + status ─── */}
-      <footer className="flex items-center justify-between border-t border-border px-3 py-1.5 bg-card text-[10px] text-muted-foreground">
+      <footer className="flex items-center justify-between border-t border-emerald-200/60 px-3 py-1.5 bg-gradient-to-r from-emerald-50/60 via-card to-emerald-50/60 text-[10px] text-muted-foreground shadow-[0_-1px_3px_rgba(16,185,129,0.08)]">
         <div className="flex items-center gap-3">
-          <span><kbd className="rounded bg-muted px-1 py-0.5 font-mono">⌘K</kbd> palette</span>
-          <span><kbd className="rounded bg-muted px-1 py-0.5 font-mono">⌃↵</kbd> finalize</span>
-          <span><kbd className="rounded bg-muted px-1 py-0.5 font-mono">⌃S</kbd> save</span>
-          <span><kbd className="rounded bg-muted px-1 py-0.5 font-mono">⌃⇧N</kbd> next</span>
-          <span><kbd className="rounded bg-muted px-1 py-0.5 font-mono">⌃⇧P</kbd> previous</span>
-          <span><kbd className="rounded bg-muted px-1 py-0.5 font-mono">⌃⇧K</kbd> park</span>
-          <span><kbd className="rounded bg-muted px-1 py-0.5 font-mono">:macro</kbd>+<kbd className="rounded bg-muted px-1 py-0.5 font-mono">Tab</kbd></span>
-          <span><kbd className="rounded bg-muted px-1 py-0.5 font-mono">?</kbd> shortcuts</span>
-          <span><kbd className="rounded bg-muted px-1 py-0.5 font-mono">Alt+]</kbd> Legacy Box</span>
+          <span><kbd className="rounded bg-emerald-100 text-emerald-700 border border-emerald-200 px-1 py-0.5 font-mono shadow-sm">⌘K</kbd> palette</span>
+          <span><kbd className="rounded bg-emerald-100 text-emerald-700 border border-emerald-200 px-1 py-0.5 font-mono shadow-sm">⌃↵</kbd> finalize</span>
+          <span><kbd className="rounded bg-emerald-100 text-emerald-700 border border-emerald-200 px-1 py-0.5 font-mono shadow-sm">⌃S</kbd> save</span>
+          <span><kbd className="rounded bg-emerald-100 text-emerald-700 border border-emerald-200 px-1 py-0.5 font-mono shadow-sm">⌃⇧N</kbd> next</span>
+          <span><kbd className="rounded bg-emerald-100 text-emerald-700 border border-emerald-200 px-1 py-0.5 font-mono shadow-sm">⌃⇧P</kbd> previous</span>
+          <span><kbd className="rounded bg-emerald-100 text-emerald-700 border border-emerald-200 px-1 py-0.5 font-mono shadow-sm">⌃⇧K</kbd> park</span>
+          <span><kbd className="rounded bg-emerald-100 text-emerald-700 border border-emerald-200 px-1 py-0.5 font-mono shadow-sm">:macro</kbd>+<kbd className="rounded bg-emerald-100 text-emerald-700 border border-emerald-200 px-1 py-0.5 font-mono shadow-sm">Tab</kbd></span>
+          <span><kbd className="rounded bg-emerald-100 text-emerald-700 border border-emerald-200 px-1 py-0.5 font-mono shadow-sm">?</kbd> shortcuts</span>
+          <span><kbd className="rounded bg-emerald-100 text-emerald-700 border border-emerald-200 px-1 py-0.5 font-mono shadow-sm">Alt+]</kbd> Legacy Box</span>
         </div>
         {study?.lockedBy && <div className="flex items-center gap-1.5 text-amber-600"><Lock className="h-3 w-3" />Locked by you</div>}
         <div className="flex items-center gap-2">
           {study?.criticalFlag && <Badge variant="outline" className="text-[9px] bg-rose-50 text-rose-700 border-rose-200"><AlertTriangle className="h-2.5 w-2.5 mr-0.5" />Critical</Badge>}
           {preloadTriggered && <Badge variant="outline" className="text-[9px] bg-sky-50 text-sky-700 border-sky-200"><Zap className="h-2.5 w-2.5 mr-0.5" />Preloaded</Badge>}
           {(readingSession as any)?.autoAdvance && <Badge variant="outline" className="text-[9px] bg-emerald-50 text-emerald-700 border-emerald-200"><ChevronRight className="h-2.5 w-2.5 mr-0.5" />Auto-advance</Badge>}
-          <span className="text-emerald-600 font-semibold">✓ Zero-Click Read Loop</span>
+          <span className="text-emerald-600 font-semibold flex items-center gap-1"><CheckCircle2 className="h-3 w-3" /> Zero-Click Read Loop</span>
         </div>
       </footer>
 
@@ -3312,7 +3313,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       {/* ─── Zero-Click Read Loop success toast ─── */}
       {isFinalized && (
         <div className="fixed bottom-16 left-1/2 -translate-x-1/2 z-30 animate-in slide-in-from-bottom-2">
-          <div className="flex items-center gap-2 rounded-full bg-emerald-600 px-4 py-2 text-white shadow-2xl">
+          <div className="flex items-center gap-2 rounded-full bg-gradient-to-r from-emerald-500 via-emerald-600 to-emerald-700 px-4 py-2 text-white shadow-2xl shadow-emerald-500/40 ring-2 ring-emerald-300/50">
             <ShieldCheck className="h-4 w-4" />
             <span className="text-sm font-semibold">Report signed & delivered</span>
             <span className="text-[10px] opacity-80">· auto-advancing...</span>

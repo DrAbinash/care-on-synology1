@@ -104,10 +104,10 @@ export function FindingsEditor({ field, label, placeholder, minHeight = "200px",
     <div className="relative w-full" data-report-field={field} data-testid={`findings-editor-${field}`}>
       <QuickSelectStrip field={field} />
       <div className="flex items-center justify-between mb-1.5">
-        <label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{label}</label>
+        <label className="text-xs font-semibold uppercase tracking-wide text-emerald-600/80">{label}</label>
         <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
           {issues.length > 0 && <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200">{issues.length} lint</span>}
-          <button onClick={sg} className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100 transition" title="AI ghost (Ctrl+Enter)"><span className="font-mono text-[10px]">⌃↵</span> AI</button>
+          <button onClick={sg} className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100 transition shadow-sm" title="AI ghost (Ctrl+Enter)"><span className="font-mono text-[10px]">⌃↵</span> AI</button>
         </div>
       </div>
 
@@ -135,7 +135,7 @@ export function FindingsEditor({ field, label, placeholder, minHeight = "200px",
       )}
 
       <div className="relative flex">
-        <div className="flex-none w-8 select-none border-r border-border bg-muted/30 text-right text-[10px] leading-[1.6] font-mono pt-2.5 text-muted-foreground/70" aria-hidden>
+        <div className="flex-none w-8 select-none border-r border-emerald-200/40 bg-gradient-to-b from-emerald-50/40 to-emerald-50/10 text-right text-[10px] leading-[1.6] font-mono pt-2.5 text-emerald-600/60" aria-hidden>
           {lines.map((_, i) => {
             const ln = i + 1;
             const li = issues.find(x => x.line === ln);
