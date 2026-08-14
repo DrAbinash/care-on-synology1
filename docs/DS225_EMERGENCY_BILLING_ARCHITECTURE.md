@@ -36,12 +36,17 @@ RECOVERY:   DS225+ → NAS API or CSV/JSON → CARE Settings → Emergency Recon
 
 ## Components
 
+The **DS225+ capture application** lives in a dedicated repository: `https://github.com/DrAbinash/225app`.
+Do not clone the CARE monorepo onto DS225+. CARE keeps only integration pieces (master-data push, fetch, CSV/JSON import, reconciliation, provenance, idempotency).
+
 | Piece | Role |
 | --- | --- |
-| `@workspace/emergency-billing` | Shared numbering, matching, CSV/JSON, money, idempotency counts |
-| DS225+ `care-emergency-*` | Minimal capture app + dedicated PostgreSQL |
-| CARE `/api/emergency-billing` | Preview, fetch, CSV/JSON import through canonical bill path |
-| CARE Settings → Billing → Emergency Billing | Owner-operated recovery UI |
+| `@workspace/emergency-billing` | Versioned interchange: `CARE_EMERGENCY_MASTER_V1`, `CARE_EMERGENCY_BILLING_V1`, `CARE_EMERGENCY_BILLING_JSON_V1` |
+| `https://github.com/DrAbinash/225app` | Minimal capture app + dedicated PostgreSQL on DS225+ |
+| CARE `/api/emergency-billing` | Push master data, fetch pending, CSV/JSON import through canonical bill path |
+| CARE Settings → Billing → Emergency Billing | Push Now, NAS status, reconciliation |
+
+Event-driven master-data push (on tariff / catalogue / doctor / discount / staff edits) is **not** enabled. Those writes are spread across many routes; a debounce/queue would add production risk. Required baseline: **Push Master Data Now** + scheduled sync (`EMERGENCY_MASTER_SYNC_INTERVAL_HOURS`, default 6) on the canonical `ENABLE_SCHEDULERS` process.
 
 ## What DS225+ must not contain
 
