@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
-import { BROWSER_DICOMWEB_BASE } from "@/lib/browserDicomWeb";
+import { BROWSER_DICOMWEB_BASE, dicomWebFetch } from "@/lib/browserDicomWeb";
 import { isFeatureEnabled } from "@/lib/staffSession";
 
 /**
@@ -101,9 +101,8 @@ export default function UsgCinePanel({
     setClips(null); setDiscoverError(false);
     (async () => {
       try {
-        const res = await fetch(
+        const res = await dicomWebFetch(
           `${dicomWebBase}/studies/${encodeURIComponent(studyInstanceUID)}/metadata`,
-          { headers: { Accept: "application/dicom+json" } },
         );
         if (!res.ok) { if (!cancelled) setDiscoverError(true); return; }
         const data = (await res.json()) as DicomJson[];

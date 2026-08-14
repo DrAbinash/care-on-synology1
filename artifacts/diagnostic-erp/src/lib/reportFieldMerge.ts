@@ -200,6 +200,33 @@ function techniqueConcepts(text: string): Set<string> {
   return out;
 }
 
+function tokenSet(text: string): Set<string> {
+  return new Set(normalizeForDedupe(text).split(" ").filter((t) => t.length > 2));
+}
+
+function jaccard(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 || b.size === 0) return 0;
+  let inter = 0;
+  for (const t of a) if (b.has(t)) inter++;
+  return inter / (a.size + b.size - inter);
+}
+
+/** Two MRI technique paragraphs that paraphrase the same scan → keep one. */
+function findTechniqueParaphraseIndex(segments: AnnotatedSentence[], incoming: string): number {
+  const incTokens = tokenSet(incoming);
+  if (incTokens.size < 4) return -1;
+  let best = -1;
+  let bestScore = 0;
+  for (let i = 0; i < segments.length; i++) {
+    const score = jaccard(incTokens, tokenSet(segments[i]!.text));
+    if (score > bestScore) {
+      bestScore = score;
+      best = i;
+    }
+  }
+  return bestScore >= 0.55 ? best : -1;
+}
+
 /**
  * Technique merge: exact/normalized dedupe + concept-aware merging.
  * When a duplicate is dropped, its source is unioned onto the kept sentence.
@@ -234,6 +261,14 @@ export function mergeTechniqueWithProvenance(
     const dupIdx = existingNorm.get(n);
     if (dupIdx !== undefined) {
       segments[dupIdx]!.sources.add(source);
+      continue;
+    }
+
+    const paraphraseIdx = findTechniqueParaphraseIndex(segments, s);
+    if (paraphraseIdx >= 0) {
+      const kept = segments[paraphraseIdx]!;
+      if (s.length > kept.text.length) kept.text = s;
+      kept.sources.add(source);
       continue;
     }
 

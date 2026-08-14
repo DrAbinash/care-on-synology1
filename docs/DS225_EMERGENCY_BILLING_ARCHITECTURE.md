@@ -43,7 +43,7 @@ Do not clone the CARE monorepo onto DS225+. CARE keeps only integration pieces (
 | --- | --- |
 | `@workspace/emergency-billing` | Versioned interchange: `CARE_EMERGENCY_MASTER_V1`, `CARE_EMERGENCY_BILLING_V1`, `CARE_EMERGENCY_BILLING_JSON_V1`. Compatibility is whether 225app advertises those same identifiers (`GET /api/capability`). |
 | `https://github.com/DrAbinash/225app` | Minimal capture app + dedicated PostgreSQL on DS225+. Owns `/api/capability` (no PHI) and local emergency DB state. |
-| CARE `/api/emergency-billing` | Push master data (blocked on contract mismatch), fetch pending, CSV/JSON import through canonical bill path |
+| CARE `/api/emergency-billing` | Push master data (blocked on contract mismatch), fetch pending, CSV/JSON import through canonical bill path. **USB seed zip** (`GET /usb-seed`) is super_admin ERP login only. |
 | CARE Settings → Billing → Emergency Billing | Compatibility card, Push Now, NAS status, reconciliation |
 | CARE My Daily Summary → Clinic systems | Compact Emergency DS225+ + DR/Backup rows (Hyper Backup / HOPE Postgres show `status unavailable` unless CARE can read them) |
 
@@ -83,7 +83,7 @@ Interrupted import rolls back the CARE transaction (UUID row + bill). Concurrent
 2. Phone + exact name → EXACT  
 3. Phone + different name → PROBABLE (review)  
 4. Else NEW PATIENT  
-Name-only never matches. CONFLICT never auto-imports.
+Name-only never matches. CONFLICT never auto-imports. PROBABLE / CONFLICT rows need an explicit **Resolve** in CARE (select an existing matcher candidate or create a new CARE patient). The decision is stored in `emergency_patient_resolutions` with who/when; already-imported UUIDs are read-only.
 
 ## Storage isolation
 

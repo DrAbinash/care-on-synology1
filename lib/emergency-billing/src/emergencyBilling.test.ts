@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   applyIdempotentOutcome,
   buildEmergencyJsonPackage,
+  applyManualPatientResolution,
   classifyPatientMatch,
   countsFromSnapshot,
   CSV_FORMAT,
@@ -10,6 +11,8 @@ import {
   emergencyMasterSyncIntervalHours,
   formatEmgBillNumber,
   isSafeToAutoImport,
+  needsManualPatientResolution,
+  PatientResolutionError,
   isValidEmgBillNumber,
   JSON_FORMAT,
   MASTER_FORMAT,
@@ -22,6 +25,10 @@ import {
   parseEmgBillNumber,
   parseMasterSnapshot,
   serializeEmergencyCsv,
+  serializeDoctorsSeedCsv,
+  serializeTestsSeedCsv,
+  parseDoctorsSeedCsv,
+  parseTestsSeedCsv,
   shouldSkipScheduledPush,
   snapshotAgeBand,
   stampMasterSnapshot,
@@ -129,6 +136,65 @@ describe("patient matching", () => {
       carePatientId: 10, uhid: null, firstName: "Someone", lastName: "Else", mobile: "1111111111", sex: "M",
     }, [ravi]);
     expect(d.matchClass).toBe("CONFLICT");
+  });
+
+  it("multiple same-phone patients are CONFLICT and stay blocked until resolved", () => {
+    const ravi2 = { ...ravi, carePatientId: 11, uhid: "P-00011", firstName: "Abinash" };
+    const d = classifyPatientMatch({
+      carePatientId: null, uhid: null, firstName: "abinash", lastName: "kumar", mobile: "9876543210", sex: "M",
+    }, [ravi, ravi2]);
+    expect(d.matchClass).toBe("CONFLICT");
+    expect(d.reason).toMatch(/Multiple CARE patients share this phone/);
+    expect(d.candidates).toHaveLength(2);
+    expect(isSafeToAutoImport(d.matchClass, false, false)).toBe(false);
+    expect(needsManualPatientResolution(d.matchClass, false, false)).toBe(true);
+  });
+
+  it("selecting one same-phone candidate resolves CONFLICT to EXACT_MATCH", () => {
+    const ravi2 = { ...ravi, carePatientId: 11, uhid: "P-00011", firstName: "Abinash" };
+    const d = classifyPatientMatch({
+      carePatientId: null, uhid: null, firstName: "abinash", lastName: "kumar", mobile: "9876543210", sex: "M",
+    }, [ravi, ravi2]);
+    const resolved = applyManualPatientResolution(d, { action: "select_existing", carePatientId: 11 });
+    expect(resolved.matchClass).toBe("EXACT_MATCH");
+    expect(resolved.carePatientId).toBe(11);
+    expect(isSafeToAutoImport(resolved.matchClass, false, false)).toBe(true);
+  });
+
+  it("create-as-new resolves CONFLICT without attaching an existing candidate", () => {
+    const ravi2 = { ...ravi, carePatientId: 11, uhid: "P-00011", firstName: "Abinash" };
+    const d = classifyPatientMatch({
+      carePatientId: null, uhid: null, firstName: "abinash", lastName: "kumar", mobile: "9876543210", sex: "M",
+    }, [ravi, ravi2]);
+    const resolved = applyManualPatientResolution(d, { action: "create_new", carePatientId: 99 });
+    expect(resolved.matchClass).toBe("NEW_PATIENT");
+    expect(resolved.carePatientId).toBe(99);
+    expect(isSafeToAutoImport(resolved.matchClass, false, false)).toBe(true);
+  });
+
+  it("unresolved CONFLICT stays blocked", () => {
+    const ravi2 = { ...ravi, carePatientId: 11, uhid: "P-00011", firstName: "Abinash" };
+    const d = classifyPatientMatch({
+      carePatientId: null, uhid: null, firstName: "abinash", lastName: "kumar", mobile: "9876543210", sex: "M",
+    }, [ravi, ravi2]);
+    expect(applyManualPatientResolution(d, null).matchClass).toBe("CONFLICT");
+    expect(isSafeToAutoImport(d.matchClass, false, false)).toBe(false);
+  });
+
+  it("will not resolve to a patient who is not a matcher candidate (no name-only merge)", () => {
+    const d = classifyPatientMatch({
+      carePatientId: null, uhid: null, firstName: "Sita", lastName: "Kumar", mobile: "9876543210", sex: "F",
+    }, [ravi]);
+    expect(() => applyManualPatientResolution(d, { action: "select_existing", carePatientId: 999 })).toThrow(PatientResolutionError);
+  });
+
+  it("already imported cannot be re-resolved", () => {
+    const d = classifyPatientMatch({
+      carePatientId: 10, uhid: "P-00010", firstName: "Ravi", lastName: "Kumar", mobile: "9876543210", sex: "M",
+    }, [ravi]);
+    expect(() => applyManualPatientResolution(d, { action: "select_existing", carePatientId: 10 }, { alreadyImported: true }))
+      .toThrow(/read-only/);
+    expect(isSafeToAutoImport("EXACT_MATCH", true, false)).toBe(false);
   });
 });
 
@@ -334,5 +400,29 @@ describe("scheduled push skip (idempotent interval)", () => {
     expect(shouldSkipScheduledPush("2026-08-14T11:05:00.000Z", 6, now)).toBe(true);
     expect(shouldSkipScheduledPush("2026-08-14T05:00:00.000Z", 6, now)).toBe(false);
     expect(shouldSkipScheduledPush(null, 6, now)).toBe(false);
+  });
+});
+
+describe("pendrive catalogue seed CSVs", () => {
+  it("round-trips tests and doctors including quoted names", () => {
+    const testsCsv = serializeTestsSeedCsv([
+      { id: 1, code: "MRI-BR", name: "MRI Brain, contrast", category: "MRI", price: 4000, isActive: true },
+    ]);
+    const doctorsCsv = serializeDoctorsSeedCsv([
+      { id: 2, name: 'Dr. "A" Patel', specialization: "Radiology" },
+    ]);
+    expect(testsCsv).toContain("MRI Brain, contrast");
+    const tests = parseTestsSeedCsv(testsCsv);
+    expect(tests.errors).toEqual([]);
+    expect(tests.tests[0]?.name).toBe("MRI Brain, contrast");
+    const doctors = parseDoctorsSeedCsv(doctorsCsv);
+    expect(doctors.errors).toEqual([]);
+    expect(doctors.doctors[0]?.name).toBe('Dr. "A" Patel');
+  });
+
+  it("rejects a billing CSV as a tests seed", () => {
+    const { tests, errors } = parseTestsSeedCsv("format,emergency_transaction_uuid\nCARE_EMERGENCY_BILLING_V1,x\n");
+    expect(tests).toEqual([]);
+    expect(errors[0]).toMatch(/missing required columns/);
   });
 });

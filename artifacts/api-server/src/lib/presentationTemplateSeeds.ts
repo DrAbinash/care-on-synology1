@@ -63,27 +63,27 @@ export const PRESENTATION_TEMPLATE_SEEDS: TemplateVersionRecord[] = [
   }),
 
   // ── care-premium — the R1.1 premium layout, unchanged ─────────────────────
-  seed("care-premium", "CARE Premium", "Publication-quality layout: banded header, accent study bar, report left with the selected-images panel right.", "standard", {
+  seed("care-premium", "CARE Premium", "CARE letter-pad header and footer, report left, key images on the right.", "standard", {
     typography: {
-      header: { fontFamily: SEGOE, fontSize: "18pt", color: "#ffffff", fontWeight: "700", letterSpacing: "0.04em" },
+      header: { fontFamily: SEGOE, fontSize: "18pt", color: "#1e1b4b", fontWeight: "700", letterSpacing: "0.04em" },
       patientBlock: { fontFamily: SEGOE, fontSize: "8.5pt" },
-      studyTitle: { fontFamily: SEGOE, fontSize: "12pt", color: "#ffffff", fontWeight: "700", letterSpacing: "0.08em", textTransform: "uppercase" },
+      studyTitle: { fontFamily: SEGOE, fontSize: "12pt", color: "#1e3a8a", fontWeight: "700", letterSpacing: "0.08em", textTransform: "uppercase" },
       sectionHeading: { fontFamily: SEGOE, fontSize: "9.5pt", fontWeight: "700", letterSpacing: "0.1em", textTransform: "uppercase" },
       body: { fontFamily: SEGOE, fontSize: "10pt", color: "#0f172a" },
-      footer: { fontFamily: SEGOE, fontSize: "7.5pt", color: "#94a3b8" },
+      footer: { fontFamily: SEGOE, fontSize: "7.5pt", color: "#334155" },
       signature: { fontFamily: SEGOE, fontSize: "10pt" },
       imagePanel: { fontFamily: SEGOE, fontSize: "7pt" },
     },
     colors: {
-      headerBg: "#0f172a", headerText: "#ffffff", accent: "#3b82f6",
-      sectionBg: "#f8fafc", sectionBorder: "#3b82f6",
+      headerBg: "#ffffff", headerText: "#1e1b4b", accent: "#1e3a8a",
+      sectionBg: "#f8fafc", sectionBorder: "#cbd5e1",
       labelColor: "#64748b", valueColor: "#0f172a", impressionBg: "#eff6ff",
     },
     spacing: {},
     page: { size: "A4", orientation: "portrait", margins: "10mm 12mm" },
-    header: { show: true, showLogo: true, showTagline: true, showContact: true, style: "banded" },
+    header: { show: true, showLogo: true, showTagline: true, showContact: true, style: "underlined" },
     patientBlock: { style: "table" },
-    studyTitle: { style: "bar" },
+    studyTitle: { style: "plain" },
     signature: { show: true, showImage: true },
     footer: { show: true },
     imagePanel: { placement: "side-panel", panelWidthMm: 64 },

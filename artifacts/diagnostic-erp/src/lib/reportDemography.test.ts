@@ -42,6 +42,15 @@ describe("mergeReportDemography — ERP > DICOM > manual override", () => {
     expect(d.referringDoctor).toBe("Dr. ERP");
   });
 
+  it("skips implausible 126 Yrs from sentinel DOB", () => {
+    const d = mergeReportDemography({
+      erp: { patientName: "Walk-in", age: "126 Yrs", dateOfBirth: "1900-01-01" },
+      dicom: {},
+    });
+    expect(d.age).toBe("");
+    expect(d.dateOfBirth).toBe("");
+  });
+
   it("ignores blank/zero ERP age so DICOM can fill", () => {
     const d = mergeReportDemography({
       erp: { patientName: "Baby", age: "0" },
@@ -72,6 +81,10 @@ describe("dicomAgeToDisplay", () => {
   ])("%s → %s", (input, expected) => {
     expect(dicomAgeToDisplay(input)).toBe(expected);
   });
+
+  it("dicomAgeToDisplay rejects implausible years", () => {
+    expect(dicomAgeToDisplay("126Y")).toBe("");
+  });
 });
 
 describe("resolveDisplayAge", () => {
@@ -83,6 +96,9 @@ describe("resolveDisplayAge", () => {
   });
   it("falls back to DICOM PatientAge", () => {
     expect(resolveDisplayAge({ age: "" }, null, "050Y")).toBe("50 Yrs");
+  });
+  it("drops implausible 126 Yrs", () => {
+    expect(resolveDisplayAge({ age: "126 Yrs" }, { dateOfBirth: "1900-01-01" }, "126Y")).toBe("");
   });
 });
 

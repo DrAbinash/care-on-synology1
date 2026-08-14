@@ -72,5 +72,18 @@ export const emergencyMasterPushLogTable = pgTable("emergency_master_push_log", 
   errorMessage: text("error_message"),
 });
 
-export type EmergencyReconciliationBatch = typeof emergencyReconciliationBatchesTable.$inferSelect;
-export type EmergencyImportedTransaction = typeof emergencyImportedTransactionsTable.$inferSelect;
+export const emergencyPatientResolutionsTable = pgTable("emergency_patient_resolutions", {
+  id: serial("id").primaryKey(),
+  emergencyTransactionUuid: text("emergency_transaction_uuid").notNull().unique(),
+  action: text("action").notNull(), // select_existing | create_new
+  carePatientId: integer("care_patient_id").references(() => patientsTable.id),
+  carePatientLabel: text("care_patient_label"),
+  resolvedByStaffId: integer("resolved_by_staff_id"),
+  resolvedByStaffName: text("resolved_by_staff_name").notNull(),
+  resolvedAt: timestamp("resolved_at", { withTimezone: true }).notNull().defaultNow(),
+  note: text("note"),
+}, (t) => ({
+  uuidUq: uniqueIndex("emergency_patient_resolutions_uuid_uq").on(t.emergencyTransactionUuid),
+}));
+
+export type EmergencyPatientResolution = typeof emergencyPatientResolutionsTable.$inferSelect;

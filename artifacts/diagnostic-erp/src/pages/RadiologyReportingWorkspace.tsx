@@ -128,6 +128,7 @@ import {
 import EmbeddedWadoViewer, { type EmbeddedViewerHandle } from "@/components/EmbeddedWadoViewer";
 import PrintImagePicker from "@/components/radiology/PrintImagePicker";
 import ReportImagePicker from "@/components/radiology/ReportImagePicker";
+import ReportImagePanel from "@/components/radiology/ReportImagePanel";
 import ComparisonPanel from "@/components/radiology/ComparisonPanel";
 import FollowUpPanel from "@/components/radiology/FollowUpPanel";
 import FinalizeSignDialog from "@/components/radiology/FinalizeSignDialog";
@@ -167,12 +168,13 @@ import { isUltrasoundModality, isObstetricUsgStudy } from "@/lib/usgModality";
 import { prefetchMriStudies, prefetchNextMriStudy } from "@/lib/mriStudyPrefetch";
 import { BROWSER_DICOMWEB_BASE } from "@/lib/browserDicomWeb";
 import type { ReportImageRef } from "@/lib/reportImageRefs";
+import { daysAgoISO, todayISO } from "@/lib/dateRangePresets";
 
 // ─── New Z.ai workspace components ─────────────────────────────────────────────
 import { useWorkspace, formatSignOff, lookupProfile, type WorkspaceStore } from "@/lib/zai-workspace/store";
 import { getFindingsCompletionPct, shouldPreloadNext } from "@/lib/zai-workspace/types";
 import type { Study, MeasurementRow, PriorStudy } from "@/lib/zai-workspace/types";
-import { WorklistStrip } from "@/components/radiology/zai-workspace/worklist-strip";
+import { WorklistStrip, type ReadingQueueDatePreset } from "@/components/radiology/zai-workspace/worklist-strip";
 import { CopilotRail } from "@/components/radiology/zai-workspace/copilot-rail";
 import { FindingsEditor } from "@/components/radiology/zai-workspace/findings-editor";
 import { FinalizeDialog } from "@/components/radiology/zai-workspace/finalize-dialog";
@@ -211,7 +213,7 @@ import {
   Lock, AlertTriangle, ChevronLeft, ChevronRight, Pause, Clock, Sparkles, ShieldCheck,
   Brain, Activity, Zap, Printer, FileDown, Share2, Eye, PanelLeftClose, PanelLeftOpen,
   Maximize2, Columns2, Monitor, Archive, Keyboard, AppWindow, MessageCircle, Hospital,
-  Trash2, MonitorPlay,
+  Trash2, MonitorPlay, Plus,
 } from "lucide-react";
 
 /** Default Recommendation chips when `report_recommendation_chips` is unset. */
@@ -313,6 +315,22 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const [canUndoStartReport, setCanUndoStartReport] = useState(false);
   const pendingStructuredPopulateRef = useRef(false);
 
+  const [queueModality, setQueueModality] = useState(() => {
+    try { return localStorage.getItem("care_reading_queue_modality") || "MR"; } catch { return "MR"; }
+  });
+  const [datePreset, setDatePreset] = useState<ReadingQueueDatePreset>(() => {
+    try {
+      const stored = localStorage.getItem("care_reading_queue_date");
+      if (stored === "today" || stored === "all" || stored === "today-yesterday") return stored;
+    } catch { /* ignore */ }
+    return "today-yesterday";
+  });
+  const queueDateRange = useMemo(() => {
+    if (datePreset === "today") return { from: todayISO(), to: todayISO() };
+    if (datePreset === "today-yesterday") return { from: daysAgoISO(1), to: todayISO() };
+    return { from: "", to: "" };
+  }, [datePreset]);
+
   // ─── Session ──────────────────────────────────────────────────────────────
   const session = useMemo(() => readStaffSession(), []);
   const myUserId = session?.user?.id ? Number(session.user.id) : null;
@@ -343,6 +361,9 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const workflow = useReportingWorkflow(studyId, {
     myUserId,
     myName,
+    modalityFilter: queueModality,
+    dateFrom: queueDateRange.from,
+    dateTo: queueDateRange.to,
   });
 
   // 2. Study lock (claim/heartbeat/release)
@@ -687,6 +708,9 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
 
   // Viewer vertical enlarge (center column only) + left worklist collapse
   const [viewerColumnExpanded, setViewerColumnExpanded] = useState(false);
+  const [reportImagesOpen, setReportImagesOpen] = useState(false);
+  const [protocolTitleOpen, setProtocolTitleOpen] = useState(false);
+  const [protocolTitle, setProtocolTitle] = useState("");
   const [leftCollapsed, setLeftCollapsed] = useState(false);
   const [patientJumpFilter, setPatientJumpFilter] = useState("");
 
@@ -872,6 +896,31 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     [studySetup.quickSelectData, studySetup.studyRegions],
   );
 
+  const addProtocolTitle = useCallback(async () => {
+    const name = protocolTitle.trim();
+    if (!name) return;
+    useWorkspace.getState().mergeField("technique", `${name}.`, "protocol");
+    const studyType = studySetup.studyRegions[0] || studySetup.matchedStudyRegion || "MRI";
+    if (isOwner) {
+      try {
+        const row = await api.post<{ id: number; name: string }>("/api/radiology/quick-select/protocols", {
+          name,
+          studyType,
+          modality: workflow.currentRow?.modality ?? "",
+          techniqueText: `${name}.`,
+        });
+        void qc.invalidateQueries({ queryKey: ["radiology-quick-select"] });
+        const created = studySetup.availableProtocols.find((p) => p.id === row?.id)
+          ?? (row ? { ...row, studyType, modality: workflow.currentRow?.modality ?? "", checklistJson: "[]", techniqueText: `${name}.`, normalText: "", recommendationText: "", requiredMeasurements: "", isGoldStandard: false, isDefault: false, sortOrder: 0, isActive: true } : null);
+        if (created && "techniqueText" in created) studySetup.requestProtocolChange(created as typeof studySetup.availableProtocols[number]);
+      } catch {
+        toast({ title: "Title added to Technique", description: "Shared protocol save needs admin permission." });
+      }
+    }
+    setProtocolTitle("");
+    setProtocolTitleOpen(false);
+  }, [protocolTitle, isOwner, studySetup, workflow.currentRow?.modality, qc, toast]);
+
   const recommendationChips = useMemo<string[]>(() => {
     const raw = pacsSettingsRows?.find((r) => r.key === "report_recommendation_chips")?.value;
     if (raw) {
@@ -1000,6 +1049,16 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     if (prevId == null) { toast({ title: "No previous study in history" }); return; }
     openStudy(prevId);
   }, [workflow, studyId, openStudy, toast]);
+
+  const persistQueueModality = useCallback((value: string) => {
+    setQueueModality(value);
+    try { localStorage.setItem("care_reading_queue_modality", value); } catch { /* ignore */ }
+  }, []);
+
+  const persistDatePreset = useCallback((value: ReadingQueueDatePreset) => {
+    setDatePreset(value);
+    try { localStorage.setItem("care_reading_queue_date", value); } catch { /* ignore */ }
+  }, []);
 
   /** Clinic Quick Select toggle — insert/remove exact template text (legacy merge safety). */
   const handleQuickToggle = useCallback((finding: QuickFinding, nowSelected: boolean) => {
@@ -1163,7 +1222,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   }, [preloadTriggered, studies, activeStudyId]);
 
   // ─── Save draft (server-side) — returns draft id so Report Images can auto-ensure ─
-  const saveDraft = useCallback(async (): Promise<number | null> => {
+  const saveDraft = useCallback(async (opts?: { silent?: boolean }): Promise<number | null> => {
     if (!studyId) return null;
     const offlineMsg = offlineBlockMessage(isOnline, "save");
     if (offlineMsg) { toast({ title: "Offline", description: offlineMsg, variant: "destructive" }); return null; }
@@ -1184,7 +1243,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       const id = res?.draft?.id ?? res?.id ?? null;
       if (id) captureSavedDraftId(id);
       setLastSavedAt(new Date());
-      toast({ title: "Draft saved", duration: 1500 });
+      if (!opts?.silent) toast({ title: "Draft saved", duration: 1500 });
       return id;
     } catch (err) {
       toast({ title: "Save failed", description: err instanceof Error ? err.message : "Unknown error", variant: "destructive" });
@@ -1252,11 +1311,9 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       });
     } catch (err) {
       toast({
-        title: "Quality check failed",
-        description: err instanceof Error ? err.message : "Could not run report quality evaluation. Save draft and try again.",
-        variant: "destructive",
+        title: "Quality check skipped",
+        description: err instanceof Error ? err.message : "Could not run report quality evaluation — continuing.",
       });
-      return;
     }
 
     const qualityAdvisory = qualityGate ? formatQualityAdvisoryForDialog(qualityGate) : "";
@@ -1274,7 +1331,13 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     });
 
     // 5. Get signatures
-    const signatures = await api.get<{ id: number; name: string }[]>("/api/signatures");
+    // Prefer Dr. Sugandha when several signatures exist — she is the clinic radiologist.
+    const signaturesRaw = await api.get<{ id: number; name: string }[]>("/api/signatures");
+    const signatures = [...signaturesRaw].sort((a, b) => {
+      const as = /sugandha/i.test(a.name) ? 0 : 1;
+      const bs = /sugandha/i.test(b.name) ? 0 : 1;
+      return as - bs;
+    });
 
     // 6. Prompt via finalize flow (quality gate + critical ack + signer)
     const result = await finalizeFlow.promptFinalize({
@@ -1317,8 +1380,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
           impression: [impressionText],
           isCritical: criticalMarked,
           criticalNote: criticalNote || (criticalHits.length > 0 ? criticalHits.map(h => h.label).join(", ") : null),
-          createdBy: session?.user?.name ?? "Dr. Abinash Kumar",
-          actor: session?.user?.name ?? "Dr. Abinash Kumar",
+          createdBy: session?.user?.name ?? "Dr. Sugandha Priyadarshini",
+          actor: session?.user?.name ?? "Dr. Sugandha Priyadarshini",
           signatureId: result.signatureId,
           auditDetails: qualityGate
             ? {
@@ -1696,8 +1759,10 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   ]);
 
   const handlePrintLikeFinal = useCallback(async () => {
-    if (!draftId) {
-      toast({ title: "Save draft first", description: "Print-like-final needs a saved draft.", variant: "destructive" });
+    let id = draftId;
+    if (!id) id = await saveDraft({ silent: true });
+    if (!id) {
+      toast({ title: "Could not save draft", description: "Print-like-final needs a saved draft.", variant: "destructive" });
       return;
     }
     setPrintingLikeFinal(true);
@@ -1709,7 +1774,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     }
     try {
       const templateQs = reportLayoutTemplateQuery(reportLayout);
-      const url = `/api/radiology/report-generator/drafts/${draftId}/print-preview?autoPrint=true&likeFinal=true&${templateQs}`;
+      const url = `/api/radiology/report-generator/drafts/${id}/print-preview?autoPrint=true&likeFinal=true&${templateQs}`;
       const html = await api.get<string>(url);
       w.document.write(html);
       w.document.close();
@@ -1720,7 +1785,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     } finally {
       setPrintingLikeFinal(false);
     }
-  }, [draftId, reportLayout, toast]);
+  }, [draftId, reportLayout, saveDraft, toast]);
 
   // ─── Teaching case save ─────────────────────────────────────────────────────
   const handleSaveTeachingCase = useCallback(async () => {
@@ -1901,7 +1966,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   return (
     <div className="flex h-screen flex-col bg-background overflow-hidden">
       {/* ─── Top chrome ─── */}
-      <header className="flex items-center gap-3 border-b border-border px-3 py-2 bg-card">
+      <header className="flex items-center gap-4 border-b border-border px-4 py-2.5 bg-card">
         <div className="flex items-center gap-2">
           <div className="flex h-7 w-7 items-center justify-center rounded-md bg-gradient-to-br from-emerald-500 to-emerald-700">
             <Brain className="h-4 w-4 text-white" />
@@ -1947,14 +2012,14 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
             Saved {lastSavedAt.toLocaleTimeString()}
           </span>
         )}
-        <div className="h-5 w-px bg-border mx-1" />
+        <div className="h-5 w-px bg-border mx-2" />
         {/* Searchable patient jump (ported from legacy chrome) */}
-        <div className="flex items-center gap-1 shrink-0" data-testid="compact-patient-picker">
+        <div className="flex items-center gap-1.5 shrink-0 mx-1" data-testid="compact-patient-picker">
           <Input
             value={patientJumpFilter}
             onChange={(e) => setPatientJumpFilter(e.target.value)}
             placeholder="Search patient…"
-            className="h-7 w-28 text-[10px] px-1.5"
+            className="h-7 w-36 text-[10px] px-2"
             data-testid="queue-patient-filter"
           />
           <select
@@ -1992,7 +2057,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         </Button>
         <div className="h-5 w-px bg-border mx-1" />
         {study && (
-          <div className="flex items-center gap-2 min-w-0 flex-1">
+          <div className="flex items-center gap-2 min-w-0 flex-1 px-2">
             <span className="rounded px-1.5 py-0.5 text-[10px] font-bold text-white"
               style={{ background: study.modality === "MR" ? "oklch(0.55 0.18 280)" : study.modality === "CT" ? "oklch(0.55 0.18 220)" : study.modality === "US" ? "oklch(0.6 0.15 180)" : "oklch(0.6 0.12 60)" }}>
               {study.modality}
@@ -2009,7 +2074,12 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
               </span>
             )}
             <span className="text-[10px] text-muted-foreground truncate">
-              · {study.patient?.name ?? "Unknown"} ({study.patient?.age ?? 0}{study.patient?.sex ?? "O"})
+              · {canonicalDemography.patientName || study.patient?.name || "Unknown"}
+              {canonicalDemography.age
+                ? ` (${canonicalDemography.age}${canonicalDemography.sex ? `/${canonicalDemography.sex}` : ""})`
+                : canonicalDemography.sex
+                  ? ` (${canonicalDemography.sex})`
+                  : ""}
             </span>
             {findingsPct > 0 && (
               <span className={`text-[9px] font-mono px-1 rounded ${findingsPct >= 80 ? "bg-emerald-100 text-emerald-700" : "bg-muted text-muted-foreground"}`}
@@ -2017,7 +2087,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
             )}
           </div>
         )}
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-2 shrink-0 ml-3">
           {criticalSlaStartedAt && <CriticalSlaTimer />}
           <div className="flex items-center gap-1 text-[10px] text-muted-foreground px-2 py-1 rounded bg-muted/40">
             <Activity className="h-3 w-3" />
@@ -2028,7 +2098,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
           {/* Existing VoiceCommandBar */}
           {voiceSession.enabled && <VoiceCommandBar voice={voiceSession} embedded />}
           {/* Save button */}
-          <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={saveDraft} disabled={!isOnline}>
+          <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => void saveDraft()} disabled={!isOnline}>
             <ShieldCheck className="h-3.5 w-3.5 mr-1" /> Save
           </Button>
           {/* Word export */}
@@ -2233,7 +2303,14 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                   </span>
                 </button>
               ) : (
-                <WorklistStrip onSelectStudy={openStudy} />
+                <WorklistStrip
+                  onSelectStudy={openStudy}
+                  onNextStudy={goNextStudy}
+                  modalityFilter={queueModality}
+                  onModalityFilterChange={persistQueueModality}
+                  datePreset={datePreset}
+                  onDatePresetChange={persistDatePreset}
+                />
               )}
             </div>
           </ResizablePanel>
@@ -2248,23 +2325,26 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                 maxSize={58}
               >
                 <div className="flex h-full flex-col">
-                  <div className="flex-1 min-h-0">
+                  <div className={reportImagesOpen ? "hidden h-0 overflow-hidden" : "flex-1 min-h-0"}>
                     <EmbeddedWadoViewer
                       ref={embeddedViewerRef}
                       studyInstanceUID={workflow.currentRow?.studyInstanceUID ?? null}
                       accessionNumber={workflow.currentRow?.accessionNumber ?? null}
+                      patientName={canonicalDemography.patientName || workflow.currentRow?.patientName || study?.patient?.name || null}
                       columnExpanded={viewerColumnExpanded}
                       onColumnExpandedChange={setViewerColumnExpanded}
                     />
                   </div>
                   {!viewerColumnExpanded && workflow.currentRow && (
-                    <div className="border-t border-border shrink-0">
+                    <div className={reportImagesOpen ? "flex-1 min-h-0 overflow-hidden" : "border-t border-border shrink-0"}>
                       <ReportImagePicker
                         draftId={draftId ?? null}
                         studyId={studyId ?? null}
                         studyInstanceUID={workflow.currentRow?.studyInstanceUID ?? null}
                         disabled={isLocked || isFinalized || workflow.currentRow?.status === "REPORT_FINAL"}
-                        onEnsureDraft={isLocked ? undefined : saveDraft}
+                        onEnsureDraft={isLocked ? undefined : () => saveDraft({ silent: true })}
+                        onExpandChange={setReportImagesOpen}
+                        hideSelectedList
                       />
                     </div>
                   )}
@@ -2287,7 +2367,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
             <ResizablePanelGroup direction="horizontal">
               {/* Editor column */}
               <ResizablePanel defaultSize={58} minSize={42}>
-                <div className="h-full overflow-y-auto bg-card">
+                <div className="h-full flex bg-card min-h-0">
+                <div className="flex-1 min-w-0 overflow-y-auto">
                   <div className="p-4 space-y-3">
                     {!showEmbeddedViewer && layoutMode === "reportFocus" && (
                       <button
@@ -2558,6 +2639,30 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                               <option key={p.id} value={p.id}>{p.name}{p.isDefault ? " ★" : ""}</option>
                             ))}
                           </select>
+                        )}
+                        <button
+                          type="button"
+                          data-testid="protocol-add-title"
+                          className="inline-flex items-center gap-0.5 h-6 px-1.5 text-[10px] rounded border border-dashed border-muted-foreground/40 text-muted-foreground hover:border-primary hover:text-primary"
+                          disabled={isLocked || isFinalized}
+                          onClick={() => setProtocolTitleOpen((v) => !v)}
+                          title="Add a protocol title (like History chips)"
+                        >
+                          <Plus size={10} /> Add Title
+                        </button>
+                        {protocolTitleOpen && (
+                          <input
+                            className="h-6 w-36 rounded border px-1.5 text-[10px] bg-background"
+                            placeholder="Protocol title"
+                            value={protocolTitle}
+                            onChange={(e) => setProtocolTitle(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") void addProtocolTitle();
+                              if (e.key === "Escape") setProtocolTitleOpen(false);
+                            }}
+                            autoFocus
+                            data-testid="protocol-title-input"
+                          />
                         )}
                         {studySetup.testName && (
                           <span className="text-foreground" title="Test / template name from DICOM match">
@@ -3011,6 +3116,20 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       />
                     </div>
                   </div>
+                </div>
+                {draftId ? (
+                  <aside
+                    className="w-40 shrink-0 border-l border-border p-2 overflow-y-auto bg-muted/20"
+                    data-testid="selected-images-rail"
+                  >
+                    <ReportImagePanel
+                      draftId={draftId}
+                      dicomWebBase={BROWSER_DICOMWEB_BASE}
+                      disabled={isLocked || isFinalized || workflow.currentRow?.status === "REPORT_FINAL"}
+                      layout="stack"
+                    />
+                  </aside>
+                ) : null}
                 </div>
               </ResizablePanel>
               <ResizableHandle />

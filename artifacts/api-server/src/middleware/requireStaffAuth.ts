@@ -231,3 +231,20 @@ export function requireAdminRole(req: StaffAuthRequest, res: Response, next: Nex
   }
   next();
 }
+
+/**
+ * Super-admin staff session only (regular ERP login, not X-SA-Token).
+ * Owner / "Super Admin" already collapse to `super_admin` via normalizeRole.
+ */
+export function requireSuperAdminRole(req: StaffAuthRequest, res: Response, next: NextFunction): void {
+  const session = req.staffSession;
+  if (!session) {
+    res.status(401).json({ error: "Staff authentication required" });
+    return;
+  }
+  if (session.role !== "super_admin") {
+    res.status(403).json({ error: "Super admin login required" });
+    return;
+  }
+  next();
+}

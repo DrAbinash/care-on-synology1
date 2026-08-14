@@ -84,7 +84,7 @@ function Workflow({ onClose, study }: { onClose: () => void; study: any }) {
           </div>
           <div className="rounded-md bg-muted/40 p-2 text-[11px] text-muted-foreground">
             <div className="flex items-center gap-1.5"><Clock className="h-3 w-3" /> {new Date().toLocaleString()}</div>
-            <div className="mt-0.5">Actor: Dr. Abinash Kumar</div>
+            <div className="mt-0.5">Actor: reporting staff</div>
           </div>
           <Button onClick={log} disabled={!rec.trim() || logged} className="w-full bg-rose-600 hover:bg-rose-700">
             {logged ? "✓ Logged" : "Log communication"}

@@ -33,14 +33,14 @@ export type AiFeaturePolicy = typeof aiFeaturePoliciesTable.$inferSelect;
 export const aiSchedulerConfigTable = pgTable("ai_scheduler_config", {
   id: serial("id").primaryKey(),
   /** on_arrival = draft when DICOM lands; scheduled = only inside nightStart–nightEnd. */
-  draftTiming: text("draft_timing").notNull().default("on_arrival"),
-  nightStart: text("night_start").notNull().default("23:00"), // HH:MM (local)
-  nightEnd: text("night_end").notNull().default("06:00"),
-  quietStart: text("quiet_start").notNull().default("08:00"),
-  quietEnd: text("quiet_end").notNull().default("20:00"),
+  draftTiming: text("draft_timing").notNull().default("scheduled"),
+  nightStart: text("night_start").notNull().default("17:00"), // HH:MM (local clinic TZ)
+  nightEnd: text("night_end").notNull().default("10:00"),
+  quietStart: text("quiet_start").notNull().default("10:00"),
+  quietEnd: text("quiet_end").notNull().default("17:00"),
   gpuLimitPercent: integer("gpu_limit_percent").notNull().default(90),
   cpuLimitPercent: integer("cpu_limit_percent").notNull().default(80),
-  maxConcurrentJobs: integer("max_concurrent_jobs").notNull().default(2),
+  maxConcurrentJobs: integer("max_concurrent_jobs").notNull().default(1),
   maxRetries: integer("max_retries").notNull().default(3),
   includePriors: boolean("include_priors").notNull().default(true),
   includeOcr: boolean("include_ocr").notNull().default(true),

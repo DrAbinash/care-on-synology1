@@ -8,9 +8,8 @@ import {
 import { resolveLocalAiRuntime } from "../aiPipeline/runtimeConfig";
 
 /**
- * Resolves which OCR provider a Form F ID-card scan should use, and why.
- * Ollama URL + vision model come from resolveLocalAiRuntime() — the same
- * canonical config used by Local AI UI, diagnostics, and the AI pipeline.
+ * Resolves which OCR provider the *first* pass should use.
+ * Chain: Ollama → client Tesseract → Gemini (useGeminiFallback, if a key exists).
  */
 
 export type OcrProviderChoice =
@@ -129,17 +128,26 @@ export async function resolveOcrProvider(): Promise<OcrProviderDiagnostics> {
     if (check.usable) {
       return { explicitRoute: route, ollama: ollamaDiag, gemini: geminiDiag, chosen: { provider: "ollama", endpointUrl: ollamaEndpoint, model: ollamaModel } };
     }
-    if (geminiKey) {
-      return { explicitRoute: route, ollama: ollamaDiag, gemini: geminiDiag, chosen: { provider: "gemini", apiKey: geminiKey } };
-    }
+    // Tesseract is the second stage (client). Gemini is only the third
+    // stage, requested explicitly via useGeminiFallback — never auto-picked here.
     return { explicitRoute: route, ollama: ollamaDiag, gemini: geminiDiag, chosen: { provider: "none", reason: check.disqualifyReason ?? "ollama_unreachable" } };
   }
 
-  if (geminiKey) {
-    return { explicitRoute: route, ollama: ollamaDiag, gemini: geminiDiag, chosen: { provider: "gemini", apiKey: geminiKey } };
-  }
-
   return { explicitRoute: route, ollama: ollamaDiag, gemini: geminiDiag, chosen: { provider: "none", reason: "no_provider_configured" } };
+}
+
+/** Ollama vision only — Gemini is the optional third OCR pass. */
+export async function resolveOllamaVisionForOcr(): Promise<{ endpointUrl: string; model: string } | null> {
+  const runtime = await resolveLocalAiRuntime();
+  if (!runtime.ollamaEnabled || !runtime.ollamaBaseUrl) return null;
+  const model = runtime.modelVision || runtime.modelStandard;
+  const check = await checkOllama(model, runtime.ollamaBaseUrl);
+  if (!check.usable) return null;
+  return { endpointUrl: runtime.ollamaBaseUrl, model };
+}
+
+export async function getGeminiOcrApiKey(): Promise<string | null> {
+  return (await getProviderApiKey("gemini").catch(() => null)) ?? process.env.AI_INTEGRATIONS_GEMINI_API_KEY ?? null;
 }
 
 /** Masks everything but the host's TLD-adjacent segment, for admin-diagnostics display. */
