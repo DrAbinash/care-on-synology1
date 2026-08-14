@@ -166,7 +166,7 @@ describe("runEmergencyMasterPush", () => {
   });
 
   it("refuses master push on contract mismatch without posting snapshot", async () => {
-    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+    const fetchImpl = vi.fn(async (input: string | URL) => {
       const url = String(input);
       if (url.includes("/api/capability") || url.includes("/api/health")) {
         return jsonResponse(200, {
@@ -192,7 +192,7 @@ describe("runEmergencyMasterPush", () => {
   });
 
   it("posts master snapshot when capability advertises CARE_EMERGENCY_MASTER_V1", async () => {
-    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+    const fetchImpl = vi.fn(async (input: string | URL) => {
       const url = String(input);
       if (url.includes("/api/capability")) {
         return jsonResponse(200, {

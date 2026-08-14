@@ -3,7 +3,10 @@ import { executeDraftRescue } from "./draftRescue";
 
 export function getStaffToken(): string | null {
   try {
-    const raw = typeof window !== "undefined" ? window.localStorage.getItem(ERP_SESSION_KEY) : null;
+    // Prefer globalThis so Vitest/node (and tests that mock localStorage) work;
+    // in the browser this is the same object as window.localStorage.
+    const storage = (globalThis as { localStorage?: Storage }).localStorage;
+    const raw = storage?.getItem(ERP_SESSION_KEY) ?? null;
     if (!raw) return null;
     const parsed = JSON.parse(raw) as StaffSession;
     return parsed?.token ?? null;
