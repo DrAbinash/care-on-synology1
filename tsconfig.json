@@ -29,6 +29,9 @@
     },
     {
       "path": "./lib/pathology"
+    },
+    {
+      "path": "./lib/emergency-billing"
     }
   ]
 }

@@ -64,6 +64,7 @@ export function startCronScheduler() {
   scheduleAiSchedulerModes();
   scheduleQueueDisplayAlerts();
   scheduleInventoryLowStockAlerts();
+  scheduleEmergencyMasterPush();
 
   // Start the in-process DIMSE pull agent if enabled.
   // When ENABLE_DICOM_PULL_AGENT is set, the agent polls for pull jobs and
@@ -75,6 +76,18 @@ export function startCronScheduler() {
     startDimsePullAgent();
     console.log("[cron] In-process DIMSE pull agent started");
   }
+}
+
+/** Push the minimum master-data snapshot to DS225+ every 6 hours while CARE is healthy. */
+function scheduleEmergencyMasterPush() {
+  cron.schedule("17 */6 * * *", async () => {
+    try {
+      const { pushEmergencyMasterIfConfigured } = await import("./lib/emergencyNasClient");
+      await pushEmergencyMasterIfConfigured("scheduler");
+    } catch (err) {
+      console.warn("[cron] emergency master push skipped:", err instanceof Error ? err.message : err);
+    }
+  });
 }
 
 // ── Phase P3: AI Scheduler modes (Night Batch / Reprocessing / Learning) ─────

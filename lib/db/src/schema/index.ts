@@ -178,3 +178,4 @@ export * from "./externalResultLinks";
 export * from "./abdm";
 // ── PCPNDT self-referral OPD auto-prescriptions ─────────────────────────────
 export * from "./selfReferralPrescriptions";
+export * from "./emergencyBilling";
