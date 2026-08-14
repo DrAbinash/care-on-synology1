@@ -370,7 +370,7 @@ router.post("/settings", async (req, res): Promise<void> => {
     }
 
     if (globalIn.enabled !== undefined) {
-      await setMasterAiFlag(globalIn.enabled, sReq.staffSession?.username ?? sReq.staffSession?.role ?? "ai-reporting-settings");
+      await setMasterAiFlag(globalIn.enabled, sReq.staffSession?.subjectName ?? sReq.staffSession?.role ?? "ai-reporting-settings");
     }
   }
 
