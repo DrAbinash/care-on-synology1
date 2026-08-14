@@ -18,6 +18,11 @@ export interface MatchCandidate {
   lastName: string;
   phone: string;
   sex: string | null;
+  dateOfBirth?: string | null;
+  ageValue?: number | null;
+  ageUnit?: string | null;
+  address?: string | null;
+  lastVisitAt?: string | null;
 }
 
 export interface MatchInput {
@@ -126,4 +131,80 @@ export function classifyPatientMatch(input: MatchInput, candidates: MatchCandida
 export function isSafeToAutoImport(matchClass: PatientMatchClass, alreadyImported: boolean, blocked: boolean): boolean {
   if (alreadyImported || blocked) return false;
   return matchClass === "EXACT_MATCH" || matchClass === "NEW_PATIENT";
+}
+
+export const PATIENT_RESOLUTION_ACTIONS = ["select_existing", "create_new"] as const;
+export type PatientResolutionAction = (typeof PATIENT_RESOLUTION_ACTIONS)[number];
+
+export interface ManualPatientResolution {
+  emergencyTransactionUuid: string;
+  action: PatientResolutionAction;
+  carePatientId: number | null;
+  carePatientLabel?: string | null;
+  resolvedByStaffName?: string | null;
+  resolvedByStaffId?: number | null;
+  resolvedAt?: string | null;
+}
+
+export class PatientResolutionError extends Error {
+  constructor(
+    message: string,
+    readonly code: "NOT_A_CANDIDATE" | "MISSING_PATIENT" | "ALREADY_IMPORTED" | "NOT_REVIEWABLE",
+  ) {
+    super(message);
+    this.name = "PatientResolutionError";
+  }
+}
+
+export function needsManualPatientResolution(
+  matchClass: PatientMatchClass,
+  alreadyImported: boolean,
+  blocked: boolean,
+): boolean {
+  if (alreadyImported || blocked) return false;
+  return matchClass === "PROBABLE_MATCH" || matchClass === "CONFLICT";
+}
+
+export function candidateLabel(c: Pick<MatchCandidate, "uhid" | "firstName" | "lastName">): string {
+  return `${c.uhid} — ${c.firstName} ${c.lastName}`.replace(/\s+/g, " ").trim();
+}
+
+/**
+ * Apply an explicit human resolution. Never infers a patient from name-only.
+ * select_existing must pick an id that the matcher already listed as a candidate.
+ */
+export function applyManualPatientResolution(
+  decision: MatchDecision,
+  resolution: Pick<ManualPatientResolution, "action" | "carePatientId"> | null | undefined,
+  opts?: { alreadyImported?: boolean },
+): MatchDecision {
+  if (!resolution) return decision;
+  if (opts?.alreadyImported) {
+    throw new PatientResolutionError("Already imported — resolver is read-only", "ALREADY_IMPORTED");
+  }
+  if (resolution.action === "create_new") {
+    return {
+      matchClass: "NEW_PATIENT",
+      reason: "Manual resolution: create as new CARE patient",
+      carePatientId: resolution.carePatientId,
+      candidates: decision.candidates,
+    };
+  }
+  const id = resolution.carePatientId;
+  if (!id) {
+    throw new PatientResolutionError("Select existing requires a CARE patient id", "MISSING_PATIENT");
+  }
+  const hit = decision.candidates.find((c) => c.carePatientId === id);
+  if (!hit) {
+    throw new PatientResolutionError(
+      "Selected patient is not a matcher candidate — will not merge by name",
+      "NOT_A_CANDIDATE",
+    );
+  }
+  return {
+    matchClass: "EXACT_MATCH",
+    reason: "Manual resolution: selected existing CARE patient",
+    carePatientId: hit.carePatientId,
+    candidates: decision.candidates,
+  };
 }

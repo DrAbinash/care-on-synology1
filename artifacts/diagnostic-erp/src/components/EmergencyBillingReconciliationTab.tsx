@@ -7,6 +7,8 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { previewRowCanResolve, resolvedCaption } from "./emergencyPreviewResolve";
 import { AlertTriangle, Download, RefreshCcw } from "lucide-react";
 import { readStaffSession, normalizeRole } from "@/lib/staffSession";
 
@@ -91,11 +93,43 @@ type PreviewRow = {
   careBillId: number | null;
   blocked: boolean;
   blockReason: string | null;
+  candidates?: Array<{
+    carePatientId: number;
+    uhid: string;
+    firstName: string;
+    lastName: string;
+    phone: string;
+    sex: string | null;
+    dateOfBirth?: string | null;
+    ageValue?: number | null;
+    ageUnit?: string | null;
+    address?: string | null;
+    lastVisitAt?: string | null;
+  }>;
+  resolution?: {
+    action: "select_existing" | "create_new";
+    carePatientId: number | null;
+    carePatientLabel: string | null;
+    resolvedByStaffName: string;
+    resolvedAt: string;
+  } | null;
   transaction: {
+    emergencyTransactionUuid: string;
+    emergencyBillNumber: string;
+    status?: string;
     netAmount: number;
     amountReceived: number;
     dueAmount: number;
-    patient: { firstName: string; lastName: string; mobile: string; uhid: string | null };
+    patient: {
+      firstName: string;
+      lastName: string;
+      mobile: string;
+      uhid: string | null;
+      sex?: string;
+      ageValue?: number | null;
+      ageUnit?: string | null;
+      dateOfBirth?: string | null;
+    };
   };
 };
 
@@ -209,6 +243,7 @@ export function EmergencyBillingReconciliationTab() {
   const [preview, setPreview] = useState<{ summary: Summary; rows: PreviewRow[]; sessions?: unknown[]; errors?: string[] } | null>(null);
   const [lastImport, setLastImport] = useState<ImportResult | null>(null);
   const [historyId, setHistoryId] = useState<number | null>(null);
+  const [resolveRow, setResolveRow] = useState<PreviewRow | null>(null);
 
   const { data: config, isLoading } = useQuery<NasConfig>({
     queryKey: ["emergency-nas-config"],
@@ -313,6 +348,29 @@ export function EmergencyBillingReconciliationTab() {
       });
     },
     onError: (e: Error) => toast({ title: "Import failed", description: e.message, variant: "destructive" }),
+  });
+
+  const resolvePatient = useMutation({
+    mutationFn: (body: { transaction: PreviewRow["transaction"]; action: "select_existing" | "create_new"; carePatientId?: number }) =>
+      api.post<{ row: PreviewRow; summary: Summary }>("/api/emergency-billing/resolve-patient", body),
+    onSuccess: (data) => {
+      setPreview((prev) => {
+        if (!prev) return { summary: data.summary, rows: [data.row] };
+        const rows = prev.rows.map((r) => r.emergencyTransactionUuid === data.row.emergencyTransactionUuid ? data.row : r);
+        const next = { ...prev, rows };
+        const s = prev.summary;
+        const conflicts = rows.filter((r) => r.matchClass === "CONFLICT" && !r.alreadyImported && !r.blocked).length;
+        const needsReview = rows.filter((r) => r.matchClass === "PROBABLE_MATCH" && !r.alreadyImported && !r.blocked).length;
+        const exactMatches = rows.filter((r) => r.matchClass === "EXACT_MATCH" && !r.alreadyImported && !r.blocked).length;
+        const newPatients = rows.filter((r) => r.matchClass === "NEW_PATIENT" && !r.alreadyImported && !r.blocked).length;
+        const safeToImport = rows.filter((r) => !r.alreadyImported && !r.blocked && (r.matchClass === "EXACT_MATCH" || r.matchClass === "NEW_PATIENT")).length;
+        next.summary = { ...s, conflicts, needsReview, exactMatches, newPatients, safeToImport };
+        return next;
+      });
+      setResolveRow(null);
+      toast({ title: "Patient resolved", description: data.row.carePatientLabel || data.row.matchReason });
+    },
+    onError: (e: Error) => toast({ title: "Resolve failed", description: e.message, variant: "destructive" }),
   });
 
   function onFile(kind: "csv" | "json", file: File | null) {
@@ -517,7 +575,7 @@ Staff: ${fmtCount(status.counts.staffCount)}`}</pre>
           <Button onClick={() => importSafe.mutate()} disabled={importSafe.isPending || s.safeToImport + s.alreadyImported === 0}>
             Import safe transactions
           </Button>
-          <p className="text-xs text-muted-foreground">PROBABLE / CONFLICT rows are left for review. One bad row does not block the rest. Re-uploading the same file will report already imported — 0 duplicates created.</p>
+          <p className="text-xs text-muted-foreground">PROBABLE / CONFLICT rows stay blocked until you click Resolve and choose a CARE patient (or create as new). Name-only is never merged. Already imported UUIDs cannot be resolved again.</p>
           {lastImport && (
             <div className="rounded-lg border p-3 text-sm">
               Supplied {lastImport.supplied} · created {lastImport.created} · already imported {lastImport.alreadyReconciled} · duplicates {lastImport.duplicates} · conflicts {lastImport.conflicts} · review {lastImport.skippedReview} · failures {lastImport.failures}
@@ -539,6 +597,7 @@ Staff: ${fmtCount(status.counts.staffCount)}`}</pre>
                   <th className="text-right p-2">Net</th>
                   <th className="text-right p-2">Paid</th>
                   <th className="text-right p-2">Due</th>
+                  <th className="text-left p-2">Action</th>
                 </tr>
               </thead>
               <tbody>
@@ -549,10 +608,18 @@ Staff: ${fmtCount(status.counts.staffCount)}`}</pre>
                     <td className="p-2">
                       {r.alreadyImported ? "ALREADY IMPORTED" : r.blocked ? "VOID" : r.matchClass}
                       <div className="text-muted-foreground">{r.matchReason || r.blockReason}</div>
+                      {resolvedCaption(r) && <div className="text-emerald-700 dark:text-emerald-300 mt-1">{resolvedCaption(r)}</div>}
                     </td>
                     <td className="p-2 text-right">{inr(r.transaction.netAmount)}</td>
                     <td className="p-2 text-right">{inr(r.transaction.amountReceived)}</td>
                     <td className="p-2 text-right">{inr(r.transaction.dueAmount)}</td>
+                    <td className="p-2">
+                      {previewRowCanResolve(r) ? (
+                        <Button size="sm" variant="outline" onClick={() => setResolveRow(r)}>Resolve</Button>
+                      ) : r.alreadyImported ? (
+                        <span className="text-muted-foreground">Read-only</span>
+                      ) : null}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -643,6 +710,84 @@ Staff: ${fmtCount(status.counts.staffCount)}`}</pre>
           </div>
         </details>
       </div>
+
+      <Dialog open={!!resolveRow} onOpenChange={(open) => { if (!open) setResolveRow(null); }}>
+        <DialogContent className="max-w-3xl max-h-[90vh] overflow-auto">
+          <DialogHeader>
+            <DialogTitle>Resolve patient — {resolveRow?.emergencyBillNumber}</DialogTitle>
+          </DialogHeader>
+          {resolveRow && (
+            <div className="space-y-3 text-sm">
+              <div className="rounded-lg border p-3">
+                <div className="font-semibold">Emergency capture</div>
+                <div>{resolveRow.transaction.patient.firstName} {resolveRow.transaction.patient.lastName}</div>
+                <div className="text-muted-foreground">
+                  Age/sex: {resolveRow.transaction.patient.ageValue ?? "—"}{resolveRow.transaction.patient.ageUnit ? ` ${resolveRow.transaction.patient.ageUnit}` : ""} / {resolveRow.transaction.patient.sex || "—"}
+                  {" · "}Mobile {resolveRow.transaction.patient.mobile || "—"}
+                  {resolveRow.transaction.patient.uhid ? ` · UHID ${resolveRow.transaction.patient.uhid}` : ""}
+                </div>
+                <div className="text-muted-foreground mt-1">{resolveRow.matchClass}: {resolveRow.matchReason}</div>
+              </div>
+              <div className="overflow-auto border rounded-lg">
+                <table className="w-full text-xs">
+                  <thead className="bg-muted">
+                    <tr>
+                      <th className="text-left p-2">UHID</th>
+                      <th className="text-left p-2">Name</th>
+                      <th className="text-left p-2">Age/DOB</th>
+                      <th className="text-left p-2">Sex</th>
+                      <th className="text-left p-2">Mobile</th>
+                      <th className="text-left p-2">Address</th>
+                      <th className="text-left p-2">Last visit</th>
+                      <th className="p-2"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(resolveRow.candidates ?? []).map((c) => (
+                      <tr key={c.carePatientId} className="border-t">
+                        <td className="p-2 font-mono">{c.uhid}</td>
+                        <td className="p-2">{c.firstName} {c.lastName}</td>
+                        <td className="p-2">{c.ageValue != null ? `${c.ageValue}${c.ageUnit ? ` ${c.ageUnit}` : ""}` : "—"}{c.dateOfBirth ? ` / ${c.dateOfBirth}` : ""}</td>
+                        <td className="p-2">{c.sex || "—"}</td>
+                        <td className="p-2">{c.phone || "—"}</td>
+                        <td className="p-2">{c.address || "—"}</td>
+                        <td className="p-2">{c.lastVisitAt ? new Date(c.lastVisitAt).toLocaleDateString("en-IN") : "—"}</td>
+                        <td className="p-2">
+                          <Button
+                            size="sm"
+                            disabled={resolvePatient.isPending || resolveRow.alreadyImported}
+                            onClick={() => resolvePatient.mutate({
+                              transaction: resolveRow.transaction,
+                              action: "select_existing",
+                              carePatientId: c.carePatientId,
+                            })}
+                          >
+                            Select existing
+                          </Button>
+                        </td>
+                      </tr>
+                    ))}
+                    {(resolveRow.candidates ?? []).length === 0 && (
+                      <tr><td className="p-3 text-muted-foreground" colSpan={8}>No CARE candidates on this phone/UHID.</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+              <p className="text-xs text-muted-foreground">Selecting an existing patient does not change that patient’s demographics. Create as new uses CARE’s normal patient registration (UHID P-#####), not an emergency-only table.</p>
+            </div>
+          )}
+          <DialogFooter className="gap-2 sm:justify-between">
+            <Button variant="outline" onClick={() => setResolveRow(null)}>Cancel / leave unresolved</Button>
+            <Button
+              variant="secondary"
+              disabled={!resolveRow || resolvePatient.isPending || resolveRow.alreadyImported}
+              onClick={() => resolveRow && resolvePatient.mutate({ transaction: resolveRow.transaction, action: "create_new" })}
+            >
+              Create as new patient
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

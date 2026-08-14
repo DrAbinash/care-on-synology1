@@ -22,6 +22,7 @@ import {
 import { and, eq, inArray, or, sql } from "drizzle-orm";
 import {
   applyIdempotentOutcome,
+  applyManualPatientResolution,
   classifyPatientMatch,
   emptyImportResult,
   isSafeToAutoImport,
@@ -48,6 +49,11 @@ import {
   synthesizeDob,
 } from "./emergencyReconcileHelpers";
 
+import {
+  enrichCandidates,
+  loadResolutions,
+} from "./emergencyPatientResolve";
+
 export {
   buildEmergencyOrderNotes,
   emergencyClientRef,
@@ -55,6 +61,7 @@ export {
   mapEmergencyGender,
   synthesizeDob,
 } from "./emergencyReconcileHelpers";
+
 
 function isUniqueViolation(err: unknown): boolean {
   let cur: unknown = err;
@@ -67,7 +74,7 @@ function isUniqueViolation(err: unknown): boolean {
   return false;
 }
 
-async function loadMatchCandidates(txns: EmergencyTransaction[]): Promise<MatchCandidate[]> {
+export async function loadMatchCandidates(txns: EmergencyTransaction[]): Promise<MatchCandidate[]> {
   const ids = [...new Set(txns.map((t) => t.patient.carePatientId).filter((n): n is number => Number.isInteger(n)))];
   const uhids = [...new Set(txns.map((t) => t.patient.uhid).filter((u): u is string => !!u))];
   const phones = [...new Set(txns.map((t) => t.patient.mobile).filter(Boolean))];
@@ -94,6 +101,10 @@ async function loadMatchCandidates(txns: EmergencyTransaction[]): Promise<MatchC
       lastName: patientsTable.lastName,
       phone: patientsTable.phone,
       gender: patientsTable.gender,
+      dateOfBirth: patientsTable.dateOfBirth,
+      ageValue: patientsTable.ageValue,
+      ageUnit: patientsTable.ageUnit,
+      address: patientsTable.address,
     })
     .from(patientsTable)
     .where(or(...clauses))
@@ -106,6 +117,10 @@ async function loadMatchCandidates(txns: EmergencyTransaction[]): Promise<MatchC
     lastName: r.lastName,
     phone: r.phone,
     sex: r.gender,
+    dateOfBirth: r.dateOfBirth,
+    ageValue: r.ageValue,
+    ageUnit: r.ageUnit,
+    address: r.address,
   }));
 }
 
@@ -128,11 +143,12 @@ export async function previewEmergencyTransactions(txns: EmergencyTransaction[])
   summary: ReconciliationSummary;
 }> {
   const imported = await alreadyImportedMap(txns.map((t) => t.emergencyTransactionUuid));
-  const candidates = await loadMatchCandidates(txns);
+  const candidates = await enrichCandidates(await loadMatchCandidates(txns));
+  const resolutions = await loadResolutions(txns.map((t) => t.emergencyTransactionUuid));
   const rows: PreviewRow[] = txns.map((t) => {
     const prior = imported.get(t.emergencyTransactionUuid);
     const blocked = t.status === "VOID";
-    const match = classifyPatientMatch(
+    let match = classifyPatientMatch(
       {
         carePatientId: t.patient.carePatientId,
         uhid: t.patient.uhid,
@@ -143,20 +159,35 @@ export async function previewEmergencyTransactions(txns: EmergencyTransaction[])
       },
       candidates,
     );
+    const stored = resolutions.get(t.emergencyTransactionUuid) ?? null;
+    if (stored && !prior) {
+      match = applyManualPatientResolution(match, stored);
+    }
+    const chosen = match.candidates.find((c) => c.carePatientId === match.carePatientId) ?? match.candidates[0];
+    const resolvedLabel = stored?.carePatientLabel
+      || (chosen ? `${chosen.uhid} — ${chosen.firstName} ${chosen.lastName}`.replace(/\s+/g, " ").trim() : null);
     return {
       emergencyTransactionUuid: t.emergencyTransactionUuid,
       emergencyBillNumber: t.emergencyBillNumber,
       matchClass: match.matchClass,
       matchReason: match.reason,
       carePatientId: match.carePatientId,
-      carePatientLabel: match.candidates[0]
-        ? `${match.candidates[0].uhid} ${match.candidates[0].firstName} ${match.candidates[0].lastName}`.trim()
-        : null,
+      carePatientLabel: resolvedLabel,
       alreadyImported: !!prior,
       careBillId: prior?.careBillId ?? null,
       blocked,
       blockReason: blocked ? `VOID: ${t.voidReason || "cancelled on emergency NAS"}` : null,
       transaction: t,
+      candidates: match.candidates,
+      resolution: stored
+        ? {
+            action: stored.action,
+            carePatientId: stored.carePatientId,
+            carePatientLabel: stored.carePatientLabel ?? resolvedLabel,
+            resolvedByStaffName: stored.resolvedByStaffName ?? "",
+            resolvedAt: stored.resolvedAt ?? "",
+          }
+        : null,
     };
   });
 
@@ -221,7 +252,7 @@ export async function importEmergencyTransactions(opts: {
       result = applyIdempotentOutcome(result, "review", t.emergencyTransactionUuid, row.blockReason ?? "void");
       continue;
     }
-    const forcedPatientId = assign[t.emergencyTransactionUuid];
+    const forcedPatientId = assign[t.emergencyTransactionUuid] ?? row.resolution?.carePatientId ?? null;
     const safe = isSafeToAutoImport(row.matchClass, false, false) || Number.isInteger(forcedPatientId);
     if (opts.onlySafe !== false && !safe) {
       result = applyIdempotentOutcome(

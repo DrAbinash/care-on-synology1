@@ -26,7 +26,7 @@
 4. Read the preview (bills, cash/UPI/card, due, exact/new/review/conflicts).
 5. Click **Import safe transactions**.
 6. Check: created vs already imported vs failures. One bad row must not block the rest.
-7. Review PROBABLE / CONFLICT rows before importing them (never merge uncertain patients).
+7. Review PROBABLE / CONFLICT rows. Click **Resolve** on the row, pick the correct CARE patient (or **Create as new patient**), then **Import safe transactions**. Never merge by name. Multiple patients sharing a phone stay blocked until you choose.
 8. Spot-check a bill in CARE: patient, tests, paid, **due unchanged**, EMG number in history.
 
 ### If Fetch fails (NAS-to-NAS down)
