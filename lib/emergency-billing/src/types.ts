@@ -112,6 +112,14 @@ export interface EmergencyJsonPackage {
   checksumSha256: string;
 }
 
+export interface PreviewRowResolution {
+  action: "select_existing" | "create_new";
+  carePatientId: number | null;
+  carePatientLabel: string | null;
+  resolvedByStaffName: string;
+  resolvedAt: string;
+}
+
 export interface PreviewRow {
   emergencyTransactionUuid: string;
   emergencyBillNumber: string;
@@ -124,6 +132,20 @@ export interface PreviewRow {
   blocked: boolean;
   blockReason: string | null;
   transaction: EmergencyTransaction;
+  candidates?: Array<{
+    carePatientId: number;
+    uhid: string;
+    firstName: string;
+    lastName: string;
+    phone: string;
+    sex: string | null;
+    dateOfBirth?: string | null;
+    ageValue?: number | null;
+    ageUnit?: string | null;
+    address?: string | null;
+    lastVisitAt?: string | null;
+  }>;
+  resolution?: PreviewRowResolution | null;
 }
 
 export interface ReconciliationSummary {

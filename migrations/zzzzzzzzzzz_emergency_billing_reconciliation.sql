@@ -82,3 +82,19 @@ CREATE TABLE IF NOT EXISTS emergency_master_push_log (
 
 CREATE INDEX IF NOT EXISTS emergency_master_push_log_at_idx
   ON emergency_master_push_log (pushed_at DESC);
+
+-- Manual PROBABLE/CONFLICT patient resolution (never auto-merge).
+CREATE TABLE IF NOT EXISTS emergency_patient_resolutions (
+  id serial PRIMARY KEY,
+  emergency_transaction_uuid text NOT NULL,
+  action text NOT NULL,
+  care_patient_id integer REFERENCES patients(id),
+  care_patient_label text,
+  resolved_by_staff_id integer,
+  resolved_by_staff_name text NOT NULL,
+  resolved_at timestamptz NOT NULL DEFAULT now(),
+  note text
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS emergency_patient_resolutions_uuid_uq
+  ON emergency_patient_resolutions (emergency_transaction_uuid);

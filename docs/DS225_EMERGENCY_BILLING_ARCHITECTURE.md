@@ -83,7 +83,7 @@ Interrupted import rolls back the CARE transaction (UUID row + bill). Concurrent
 2. Phone + exact name → EXACT  
 3. Phone + different name → PROBABLE (review)  
 4. Else NEW PATIENT  
-Name-only never matches. CONFLICT never auto-imports.
+Name-only never matches. CONFLICT never auto-imports. PROBABLE / CONFLICT rows need an explicit **Resolve** in CARE (select an existing matcher candidate or create a new CARE patient). The decision is stored in `emergency_patient_resolutions` with who/when; already-imported UUIDs are read-only.
 
 ## Storage isolation
 

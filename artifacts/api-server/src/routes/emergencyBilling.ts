@@ -1,10 +1,11 @@
 import { Router, type Response } from "express";
 import { db, emergencyImportedTransactionsTable, emergencyNasConfigTable, emergencyReconciliationBatchesTable } from "@workspace/db";
 import { desc, eq, or, sql } from "drizzle-orm";
-import { parseEmergencyCsv, parseEmergencyJson } from "@workspace/emergency-billing";
+import { parseEmergencyCsv, parseEmergencyJson, PatientResolutionError, type EmergencyTransaction } from "@workspace/emergency-billing";
 import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { auditFromRequest } from "../lib/audit";
-import { importEmergencyTransactions, previewEmergencyTransactions } from "../lib/emergencyReconcile";
+import { importEmergencyTransactions, loadMatchCandidates, previewEmergencyTransactions } from "../lib/emergencyReconcile";
+import { enrichCandidates, importedCareBillId, resolveEmergencyPatient } from "../lib/emergencyPatientResolve";
 import {
   fetchPendingFromEmergencyNas,
   getEmergencyBillingStatus,
@@ -255,6 +256,62 @@ emergencyBillingRouter.post("/import-json", async (req: StaffAuthRequest, res) =
       assignPatient: req.body?.assignPatient,
     });
   } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+emergencyBillingRouter.post("/resolve-patient", async (req: StaffAuthRequest, res) => {
+  const t = req.body?.transaction as EmergencyTransaction | undefined;
+  const action = req.body?.action === "create_new" ? "create_new" : req.body?.action === "select_existing" ? "select_existing" : null;
+  if (!t?.emergencyTransactionUuid || !t.patient || !action) {
+    res.status(400).json({ error: "transaction and action (select_existing | create_new) are required" });
+    return;
+  }
+  const who = actor(req);
+  try {
+    const careBillId = await importedCareBillId(t.emergencyTransactionUuid);
+    const candidates = await enrichCandidates(await loadMatchCandidates([t]));
+    const { resolution, decision } = await resolveEmergencyPatient({
+      transaction: t,
+      action,
+      carePatientId: req.body?.carePatientId != null ? Number(req.body.carePatientId) : null,
+      alreadyImported: careBillId != null,
+      careBillId,
+      candidates,
+      resolvedByStaffName: who.name,
+      resolvedByStaffId: who.userId,
+    });
+    await auditFromRequest(req, {
+      userId: who.userId,
+      userName: who.name,
+      role: req.staffSession?.role ?? "admin",
+      action: "emergency_patient_resolve",
+      module: "emergency_billing",
+      entityType: "emergency_transaction",
+      entityId: t.emergencyTransactionUuid,
+      newValue: JSON.stringify({
+        emg: t.emergencyBillNumber,
+        resolutionAction: resolution.action,
+        carePatientId: resolution.carePatientId,
+        carePatientLabel: resolution.carePatientLabel,
+        matchClass: decision.matchClass,
+      }),
+    });
+    const { rows, summary } = await previewEmergencyTransactions([t]);
+    res.json({
+      ok: true,
+      resolution,
+      matchClass: decision.matchClass,
+      matchReason: decision.reason,
+      row: rows[0],
+      summary,
+    });
+  } catch (err) {
+    if (err instanceof PatientResolutionError) {
+      const status = err.code === "ALREADY_IMPORTED" ? 409 : 400;
+      res.status(status).json({ error: err.message, code: err.code, readOnly: err.code === "ALREADY_IMPORTED" });
+      return;
+    }
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }
 });
