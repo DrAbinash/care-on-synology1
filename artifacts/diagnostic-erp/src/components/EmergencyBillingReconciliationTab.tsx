@@ -392,6 +392,9 @@ export function EmergencyBillingReconciliationTab() {
         <div className="text-sm space-y-1">
           <div>Last successful master-data push: <strong>{fmtIst(status?.lastSuccessfulPushAt)}</strong></div>
           <div>Age of snapshot: <strong>{ageLabel(status?.snapshotAgeHours)}</strong></div>
+          {status?.app225?.masterSnapshotCreatedAt && (
+            <div>225app snapshot: <strong>{fmtIst(status.app225.masterSnapshotCreatedAt)}</strong></div>
+          )}
           <div>Last successful emergency fetch: <strong>{fmtIst(status?.lastSuccessfulFetchAt)}</strong></div>
           <div>Last successful reconciliation: <strong>{fmtIst(status?.lastSuccessfulReconciliationAt)}</strong></div>
           {status?.counts && (
