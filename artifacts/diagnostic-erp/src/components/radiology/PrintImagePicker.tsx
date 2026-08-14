@@ -30,7 +30,7 @@ import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { Printer, ChevronDown, ChevronRight, Loader2, X } from "lucide-react";
 import { thumbnailRenderedUrl } from "@/lib/reportImageRefs";
-import { BROWSER_DICOMWEB_BASE } from "@/lib/browserDicomWeb";
+import { BROWSER_DICOMWEB_BASE, dicomWebFetch, withDicomWebAuth } from "@/lib/browserDicomWeb";
 import { healthDotClass, healthTooltip, type BridgeHealth } from "@/lib/printBridgeHealth";
 
 const MAX_PRINT_IMAGES = 100; // mirrors the server route's own cap
@@ -190,9 +190,7 @@ export default function PrintImagePicker({
   const loadSeries = useCallback(async () => {
     if (!dicomWebBase || !studyInstanceUID) return;
     try {
-      const res = await fetch(`${dicomWebBase}/studies/${encodeURIComponent(studyInstanceUID)}/series`, {
-        headers: { Accept: "application/dicom+json" },
-      });
+      const res = await dicomWebFetch(`${dicomWebBase}/studies/${encodeURIComponent(studyInstanceUID)}/series`);
       if (!res.ok) return;
       const data = (await res.json()) as Array<Record<string, { Value?: unknown[] }>>;
       setSeries((Array.isArray(data) ? data : [])
@@ -212,9 +210,8 @@ export default function PrintImagePicker({
     setOpenSeries(seriesUid);
     setLoadingInstances(true);
     try {
-      const res = await fetch(
+      const res = await dicomWebFetch(
         `${dicomWebBase}/studies/${encodeURIComponent(studyInstanceUID)}/series/${encodeURIComponent(seriesUid)}/instances`,
-        { headers: { Accept: "application/dicom+json" } },
       );
       if (!res.ok) { setInstances([]); return; }
       const data = (await res.json()) as Array<Record<string, { Value?: unknown[] }>>;
@@ -367,9 +364,9 @@ export default function PrintImagePicker({
                         <div className="col-span-8 flex justify-center py-1"><Loader2 size={13} className="animate-spin text-muted-foreground" /></div>
                       ) : instances.map((inst) => {
                         const isSelected = selected.has(inst.uid);
-                        const thumb = thumbnailRenderedUrl(dicomWebBase, {
+                        const thumb = withDicomWebAuth(thumbnailRenderedUrl(dicomWebBase, {
                           studyInstanceUid: studyInstanceUID, seriesInstanceUid: s.uid, sopInstanceUid: inst.uid,
-                        }, 64);
+                        }, 64));
                         return (
                           <button
                             key={inst.uid}

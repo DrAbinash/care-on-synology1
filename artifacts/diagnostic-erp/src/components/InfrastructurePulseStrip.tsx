@@ -5,6 +5,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "wouter";
 import { api } from "@/lib/fetchApi";
 import { buildInfrastructurePulse, type PulseTone } from "@/lib/infrastructurePulse";
+import { buildClinicSystemsSummary, type EmergencyStatusLike } from "@/lib/clinicSystemsSummary";
 import { Button } from "@/components/ui/button";
 import { RefreshCw, Gauge } from "lucide-react";
 
@@ -26,6 +27,13 @@ const PILL_CLASS: Record<PulseTone, string> = {
   grey: "border-slate-200 bg-slate-50/80 text-slate-600 dark:bg-slate-900/40 dark:text-slate-400 dark:border-slate-700",
 };
 
+const ROW_VALUE: Record<PulseTone, string> = {
+  green: "text-emerald-700 dark:text-emerald-300",
+  red: "text-red-700 dark:text-red-300 font-semibold",
+  amber: "text-amber-800 dark:text-amber-200 font-medium",
+  grey: "text-muted-foreground",
+};
+
 const ORANGE_OK_DOT = "bg-orange-500 shadow-[0_0_6px_rgba(249,115,22,0.75)]";
 
 export function InfrastructurePulseStrip() {
@@ -37,15 +45,25 @@ export function InfrastructurePulseStrip() {
     retry: false,
   });
 
+  const { data: emergency } = useQuery<EmergencyStatusLike>({
+    queryKey: ["emergency-nas-status", "clinic-systems"],
+    queryFn: () => api.get("/api/emergency-billing/status"),
+    refetchInterval: 90_000,
+    staleTime: 60_000,
+    retry: false,
+  });
+
   if (error) return null;
 
   const pills = data ? buildInfrastructurePulse(data.checks) : [];
+  const summary = data ? buildClinicSystemsSummary({ checks: data.checks, emergency: emergency ?? null }) : null;
   const badCount = pills.filter((p) => p.tone === "red" || p.tone === "amber").length;
   const okCount = pills.filter((p) => p.tone === "green").length;
+  const alertCount = summary?.alerts.length ?? 0;
 
   return (
     <div
-      className="rounded-lg border border-slate-200/80 dark:border-card-border bg-white/90 dark:bg-card/80 px-2.5 py-2 shadow-sm"
+      className="rounded-lg border border-slate-200/80 dark:border-card-border bg-white/90 dark:bg-card/80 px-2.5 py-2 shadow-sm space-y-2"
       data-testid="infrastructure-pulse-strip"
     >
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
@@ -93,7 +111,11 @@ export function InfrastructurePulseStrip() {
         <div className="flex items-center gap-1 ml-auto shrink-0">
           {!isLoading && (
             <span className="text-[10px] text-muted-foreground hidden sm:inline">
-              {badCount === 0 ? `${okCount} OK` : `${badCount} need attention`}
+              {alertCount > 0
+                ? `${alertCount} emergency alert${alertCount === 1 ? "" : "s"}`
+                : badCount === 0
+                  ? `${okCount} OK`
+                  : `${badCount} need attention`}
             </span>
           )}
           <Button
@@ -114,6 +136,45 @@ export function InfrastructurePulseStrip() {
           </Link>
         </div>
       </div>
+
+      {summary && (
+        <div className="grid gap-2 sm:grid-cols-3 text-[11px] leading-5 font-mono" data-testid="clinic-systems-emergency">
+          {summary.sections.map((section) => (
+            <div key={section.title}>
+              <div className="text-[10px] font-sans font-semibold uppercase tracking-wide text-muted-foreground mb-0.5">
+                {section.title}
+              </div>
+              {section.rows.map((row) => (
+                <div key={row.key} className="flex justify-between gap-2">
+                  <span className="text-muted-foreground font-sans">{row.label}</span>
+                  <span className={ROW_VALUE[row.tone]}>{row.value}</span>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {summary && summary.alerts.length > 0 && (
+        <div className="space-y-1" data-testid="clinic-systems-emergency-alerts">
+          {summary.alerts.map((alert) => (
+            <div
+              key={alert.id}
+              className={`rounded-md px-2 py-1 text-[11px] ${
+                alert.severity === "red"
+                  ? "bg-red-50 text-red-900 border border-red-200 dark:bg-red-950/40 dark:text-red-100 dark:border-red-800"
+                  : "bg-amber-50 text-amber-950 border border-amber-200 dark:bg-amber-950/40 dark:text-amber-100 dark:border-amber-800"
+              }`}
+            >
+              {alert.severity === "red" ? "⚠ " : ""}
+              {alert.message}
+              <Link href="/settings?tab=emergency-billing" className="ml-2 underline">
+                Emergency Billing
+              </Link>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

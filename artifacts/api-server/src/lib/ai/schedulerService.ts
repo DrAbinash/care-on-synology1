@@ -19,10 +19,12 @@ import { jobBacklogCounts, listDeadLetterJobs } from "../radiologyJobs";
 import { resolveRadiologyStudyId } from "../canonicalStudy";
 import { decideScheduling, isWithinNightWindow, type Priority } from "./aiScheduler";
 import { logger } from "../logger";
+import { istHourMinute } from "../istDate";
 
 function nowMinutesLocal(): number {
-  const d = new Date();
-  return d.getHours() * 60 + d.getMinutes();
+  // Clinic timezone (Asia/Kolkata) — never use container UTC wall-clock.
+  const { hour, minute } = istHourMinute();
+  return hour * 60 + minute;
 }
 
 async function markWorklistPending(studyInstanceUid: string): Promise<void> {
@@ -81,6 +83,9 @@ export async function scheduleStudy(opts: {
   }
   if (!decision.enqueue) return { enqueued: false, reason: decision.reason };
 
+  // Concurrency is enforced at CLAIM time (runRadiologyJobTick concurrencyByType),
+  // not at enqueue — overnight MRI must queue 8–10 studies and run them one-by-one.
+
   const radiologyStudyId = await resolveRadiologyStudyId({ studyInstanceUid: opts.studyInstanceUid });
   const res = await enqueueAiShadowJob({
     studyInstanceUid: opts.studyInstanceUid,
@@ -132,7 +137,7 @@ async function overnightModalitySet(): Promise<Set<string>> {
   const policies = await getModalityPolicies();
   return new Set(
     policies
-      .filter((p) => p.mode === "night_batch" || p.mode === "immediate")
+      .filter((p) => p.mode === "night_batch")
       .map((p) => normalizeAiModality(p.modality)),
   );
 }
@@ -150,6 +155,8 @@ export async function runNightBatch(
     return { considered: 0, enqueued: 0, skippedWindow: true, overnightModalities: [] };
   }
 
+  // Night batch only processes modalities explicitly in night_batch mode.
+  // Immediate modalities are handled on DICOM arrival — do not silently pull CT/XR.
   const overnight = await overnightModalitySet();
   if (overnight.size === 0) {
     return { considered: 0, enqueued: 0, overnightModalities: [] };

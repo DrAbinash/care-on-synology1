@@ -7,7 +7,7 @@ import {
   ZoomIn, ZoomOut, RotateCcw, Sun, Moon, ChevronLeft, ChevronRight,
   Layers, Maximize2, Minimize2, Expand, Shrink, AlertTriangle, RefreshCw, ExternalLink,
 } from "lucide-react";
-import { BROWSER_DICOMWEB_BASE } from "@/lib/browserDicomWeb";
+import { BROWSER_DICOMWEB_BASE, dicomWebFetch, withDicomWebAuth } from "@/lib/browserDicomWeb";
 import { planStudyLaunch, localStorageRouteCache, type StudyLaunchResult } from "@/lib/studyLaunchService";
 
 interface Series {
@@ -75,6 +75,7 @@ export interface EmbeddedViewerHandle {
 const EmbeddedWadoViewer = forwardRef<EmbeddedViewerHandle, {
   studyInstanceUID: string | null;
   accessionNumber?: string | null;
+  patientName?: string | null;
   /**
    * Vertical enlarge inside the center (viewer) column only — grow UP/DOWN to
    * reclaim space above/below the view box (Open Study chrome, Report/Print
@@ -82,7 +83,7 @@ const EmbeddedWadoViewer = forwardRef<EmbeddedViewerHandle, {
    */
   columnExpanded?: boolean;
   onColumnExpandedChange?: (expanded: boolean) => void;
-}>(function EmbeddedWadoViewer({ studyInstanceUID, accessionNumber, columnExpanded = false, onColumnExpandedChange }, ref) {
+}>(function EmbeddedWadoViewer({ studyInstanceUID, accessionNumber, patientName, columnExpanded = false, onColumnExpandedChange }, ref) {
   if (!studyInstanceUID) {
     return (
       <div className="flex flex-col items-center justify-center py-8 gap-2 text-muted-foreground text-sm">
@@ -96,6 +97,7 @@ const EmbeddedWadoViewer = forwardRef<EmbeddedViewerHandle, {
     <ViewerContent
       studyInstanceUID={studyInstanceUID}
       accessionNumber={accessionNumber}
+      patientName={patientName}
       controlRef={ref}
       columnExpanded={columnExpanded}
       onColumnExpandedChange={onColumnExpandedChange}
@@ -105,9 +107,10 @@ const EmbeddedWadoViewer = forwardRef<EmbeddedViewerHandle, {
 
 export default EmbeddedWadoViewer;
 
-function ViewerContent({ studyInstanceUID, accessionNumber, controlRef, columnExpanded, onColumnExpandedChange }: {
+function ViewerContent({ studyInstanceUID, accessionNumber, patientName, controlRef, columnExpanded, onColumnExpandedChange }: {
   studyInstanceUID: string;
   accessionNumber?: string | null;
+  patientName?: string | null;
   controlRef?: ForwardedRef<EmbeddedViewerHandle>;
   columnExpanded?: boolean;
   onColumnExpandedChange?: (expanded: boolean) => void;
@@ -181,7 +184,7 @@ function ViewerContent({ studyInstanceUID, accessionNumber, controlRef, columnEx
     if (!dicomWebBase || !studyInstanceUID) return;
     try {
       const url = `${dicomWebBase}/studies/${encodeURIComponent(studyInstanceUID)}/series`;
-      const res = await fetch(url, { headers: { Accept: "application/dicom+json" } });
+      const res = await dicomWebFetch(url);
       if (!res.ok) return;
       const data = await res.json();
       const mapped: Series[] = (Array.isArray(data) ? data : []).map((s: any) => ({
@@ -199,7 +202,7 @@ function ViewerContent({ studyInstanceUID, accessionNumber, controlRef, columnEx
     if (!dicomWebBase || !studyInstanceUID || !selectedSeriesUID) return;
     try {
       const url = `${dicomWebBase}/studies/${encodeURIComponent(studyInstanceUID)}/series/${encodeURIComponent(selectedSeriesUID)}/instances`;
-      const res = await fetch(url, { headers: { Accept: "application/dicom+json" } });
+      const res = await dicomWebFetch(url);
       if (!res.ok) return;
       const data = await res.json();
       const mapped: Instance[] = (Array.isArray(data) ? data : []).map((i: any) => ({
@@ -225,7 +228,7 @@ function ViewerContent({ studyInstanceUID, accessionNumber, controlRef, columnEx
     const img = new Image();
     img.onload = () => { setFrameUrl(url); setLoadingFrames(false); };
     img.onerror = () => { setLoadingFrames(false); };
-    img.src = url;
+    img.src = withDicomWebAuth(url) ?? url;
   }, [dicomWebBase, studyInstanceUID, selectedSeriesUID, instances, selectedInstIdx]);
 
   const zoomIn = () => setZoom((z) => Math.min(z * 1.2, 5));
@@ -295,6 +298,11 @@ function ViewerContent({ studyInstanceUID, accessionNumber, controlRef, columnEx
         <div className="flex items-center gap-2 text-xs min-w-0">
           <Layers className="h-3.5 w-3.5 shrink-0" />
           <span className="font-semibold shrink-0">DICOM Viewer</span>
+          {(launchData?.patientName || patientName) && (
+            <span className="font-semibold text-foreground truncate max-w-[14rem]" data-testid="viewer-patient-name" title={launchData?.patientName || patientName || ""}>
+              {launchData?.patientName || patientName}
+            </span>
+          )}
           {accessionNumber && <Badge variant="outline" className="text-[10px]">{accessionNumber}</Badge>}
           <Badge variant="outline" className="text-[10px] font-mono truncate">{studyInstanceUID.slice(0, 20)}...</Badge>
         </div>

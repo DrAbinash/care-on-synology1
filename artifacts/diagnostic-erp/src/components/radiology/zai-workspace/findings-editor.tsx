@@ -1,5 +1,5 @@
 import { useEffect, useRef, useMemo } from "react";
-import { useWorkspaceSelector } from "@/lib/zai-workspace/store";
+import { useWorkspaceSelector, EMPTY_FIELD_PROVENANCE } from "@/lib/zai-workspace/store";
 import { runLintRules, type LintIssue } from "@/lib/zai-workspace/types";
 import {
   formatProvenanceHover,
@@ -52,7 +52,7 @@ export function FindingsEditor({ field, label, placeholder, minHeight = "200px",
   const ref = useRef<HTMLTextAreaElement>(null);
   const value = useWorkspaceSelector(s => s[`${field}Text` as "findingsText"] as string);
   const setField = useWorkspaceSelector(s => s.setField);
-  const provenance = useWorkspaceSelector(s => s.fieldProvenance[field] ?? {});
+  const provenance = useWorkspaceSelector(s => s.fieldProvenance[field] ?? EMPTY_FIELD_PROVENANCE);
   const gt = useWorkspaceSelector(s => showGhost ? s.ghostText : null);
   const gTarget = useWorkspaceSelector(s => showGhost ? s.ghostTextTarget : null);
   const accept = useWorkspaceSelector(s => s.acceptGhostText);

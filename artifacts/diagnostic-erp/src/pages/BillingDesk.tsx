@@ -93,6 +93,7 @@ import {
   CreditCard,
   Barcode,
   Save,
+  TrendingDown,
 } from "lucide-react";
 
 // ──────────────────────────────────────────────────────
@@ -2350,6 +2351,14 @@ export default function BillingDesk() {
               <RecentBillsPanel />
             </PopoverContent>
           </Popover>
+          <button
+            onClick={() => navigate("/expenses")}
+            className="h-7 px-2 rounded text-[11px] font-semibold text-blue-100 hover:bg-white/15 flex items-center gap-1 transition-colors"
+            title="Record clinic expense"
+          >
+            <TrendingDown size={12} />
+            <span className="hidden md:inline">Expense</span>
+          </button>
           <button
             onClick={() => resetAll()}
             className="h-7 px-2 rounded text-[11px] font-semibold text-blue-100 hover:bg-white/15 flex items-center gap-1 transition-colors"

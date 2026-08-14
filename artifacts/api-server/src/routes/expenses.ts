@@ -7,10 +7,9 @@ import {
   UpdateExpenseBody,
   UpdateExpenseParams,
 } from "@workspace/api-zod";
-import { geminiOcrBill } from "@workspace/integrations-gemini-ai";
-import { getProviderApiKey } from "@workspace/ai-providers";
 import { autoVoucherForExpense, correctExpenseVoucher } from "../lib/auto-voucher";
 import { preprocessScanImage } from "../lib/ocr/idCardPipeline";
+import { ocrBill } from "../lib/ocr/localDocumentOcr";
 import { auditFromRequest } from "../lib/audit";
 import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
 
@@ -260,12 +259,11 @@ router.patch("/:id", async (req, res) => {
   return res.json(toNum(expense as unknown as Record<string, unknown>));
 });
 
-// ── Bill scan via Gemini Vision ────────────────────────────────────────────
-// POST /api/expenses/scan-bill
-// Body: { imageBase64: string; mimeType: string }
-// Returns the extracted expense fields so the client can review before saving.
+// POST /api/expenses/scan-bill — Ollama vision (Gemini is not used).
 router.post("/scan-bill", async (req, res) => {
-  const { imageBase64, mimeType } = req.body as { imageBase64?: string; mimeType?: string };
+  const { imageBase64, mimeType, useGeminiFallback } = req.body as {
+    imageBase64?: string; mimeType?: string; useGeminiFallback?: boolean;
+  };
   if (!imageBase64 || !mimeType) {
     return res.status(400).json({ error: "imageBase64 and mimeType are required" });
   }
@@ -273,23 +271,12 @@ router.post("/scan-bill", async (req, res) => {
   if (!allowedTypes.includes(mimeType)) {
     return res.status(400).json({ error: "Unsupported file type. Use JPEG, PNG, WebP, HEIC, or PDF." });
   }
-  // Reject files >8 MB (base64 is ~33% larger than raw bytes)
   if (imageBase64.length > 11_000_000) {
     return res.status(400).json({ error: "File too large. Maximum 8 MB." });
   }
   try {
-    // Same shared pre-processing (auto-orient/trim/normalize + blur score)
-    // used by Form F's ID-card OCR — wraps, does not replace, geminiOcrBill.
-    // Resolve the Gemini key from DB-backed AI Provider Settings first, env
-    // var fallback second — same fix applied to Form F's OCR in an earlier
-    // phase, applied here too so a key configured in Settings isn't ignored.
     const pre = await preprocessScanImage(imageBase64, mimeType);
-    const dbApiKey = await getProviderApiKey("gemini").catch(() => null);
-    const result = await geminiOcrBill(
-      pre.buffer.toString("base64"),
-      pre.mimeType,
-      dbApiKey ? { apiKey: dbApiKey } : {},
-    );
+    const result = await ocrBill(pre.buffer.toString("base64"), pre.mimeType, { useGeminiFallback: Boolean(useGeminiFallback) });
     return res.json({ ...result, blurScore: pre.blurScore, isBlurred: pre.isBlurred });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);

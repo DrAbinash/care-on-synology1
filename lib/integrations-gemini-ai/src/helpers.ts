@@ -587,7 +587,7 @@ Rules:
       reference: r.reference ?? "",
     }));
   } catch {
-    return [];
+    throw new Error("Could not read statement rows from the scan. Try a clearer JPEG or paste CSV instead.");
   }
 }
 

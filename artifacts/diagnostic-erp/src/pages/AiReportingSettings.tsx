@@ -464,6 +464,8 @@ export function AiReportingPanel() {
     onSuccess: () => {
       toast({ title: "AI Reporting settings saved" });
       void queryClient.invalidateQueries({ queryKey: ["ai-reporting-settings"] });
+      void queryClient.invalidateQueries({ queryKey: ["feature-flags"] });
+      window.dispatchEvent(new Event("featureFlagsChanged"));
     },
     onError: (e: Error) => toast({ title: "Save failed", description: e.message, variant: "destructive" }),
   });

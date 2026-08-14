@@ -294,7 +294,7 @@ export const CHECK_DEFS: Array<OpsCheckDef<OpsCtx>> = [
   {
     id: "orthanc.sync_fresh", name: "Orthanc → ERP sync freshness", category: "radiology_pacs", required: false,
     run: async (ctx) => {
-      const rows = await ctx.query("SELECT max(last_sync_at) AS m, count(*)::int AS n FROM radiology_studies WHERE sync_status = 'synced'");
+      const rows = await ctx.query("SELECT max(last_sync_at) AS m, count(*)::int AS n FROM dicom_studies WHERE sync_status = 'synced'");
       const n = Number(rows[0]?.n ?? 0);
       const m = rows[0]?.m ? new Date(rows[0].m as string).toISOString() : null;
       if (n === 0 || !m) return { status: "SKIPPED", message: "no successfully-synced studies yet (nothing to measure)" };
@@ -307,7 +307,7 @@ export const CHECK_DEFS: Array<OpsCheckDef<OpsCtx>> = [
   {
     id: "radiology.last_dicom", name: "Last DICOM received", category: "radiology_pacs", required: false,
     run: async (ctx) => {
-      const rows = await ctx.query("SELECT max(study_received_at) AS m FROM radiology_studies");
+      const rows = await ctx.query("SELECT max(created_at) AS m FROM dicom_studies");
       let m = rows[0]?.m ? new Date(rows[0].m as string).toISOString() : null;
       if (!m) {
         const wl = await ctx.query("SELECT max(created_at) AS m FROM radiology_worklist");
@@ -334,7 +334,7 @@ export const CHECK_DEFS: Array<OpsCheckDef<OpsCtx>> = [
   {
     id: "radiology.sync_failures", name: "Recent sync failures", category: "radiology_pacs", required: false,
     run: async (ctx) => {
-      const rows = await ctx.query("SELECT count(*)::int AS c FROM radiology_studies WHERE sync_status = 'failed'");
+      const rows = await ctx.query("SELECT count(*)::int AS c FROM dicom_studies WHERE sync_status = 'failed'");
       const c = Number(rows[0]?.c ?? 0);
       return c > 0
         ? { status: "WARNING", message: `${c} studies in sync_status=failed`, metadata: { failed: c }, recommendedAction: "Review pacs_logs (log_type=sync) for the failing studies." }

@@ -20,6 +20,7 @@ import { Label } from "@/components/ui/label";
 import DocumentScanCapture from "@/components/DocumentScanCapture";
 import { CheckCircle2, AlertTriangle, Trash2, WifiOff } from "lucide-react";
 import { parseInvoiceText } from "@/lib/invoiceTextParser";
+import { recognizeDocumentText } from "@/lib/tesseractDocumentOcr";
 
 type Vendor = { id: number; name: string; code: string; isActive: boolean };
 type CatalogItem = { id: number; name: string; unit: string; isActive: boolean };
@@ -47,6 +48,7 @@ interface ScanResult {
   lineItems: ScanLineItem[];
   blurScore: number;
   isBlurred: boolean;
+  tesseractFallbackSuggested?: boolean;
 }
 
 interface DraftLine {
@@ -324,10 +326,38 @@ export default function PurchaseInvoiceScannerPanel() {
             triggerLabel="Scan Invoice with AI"
             editorTitle="Purchase Invoice"
             docType="document"
-            helperText="Photograph or upload the invoice — fields and line items below will be auto-filled for review."
+            helperText="Ollama on this clinic reads the invoice; Tesseract is used if Ollama is down. Review before saving."
             onImage={(b64, mime) => setSourceImage(`data:${mime};base64,${b64}`)}
             onResult={handleScanResult}
             onError={setError}
+            tesseractFallback={async (b64, mime) => {
+              const text = await recognizeDocumentText(b64, mime);
+              const parsed = parseInvoiceText(text);
+              if (parsed.lineItems.length === 0 && !parsed.invoiceNumber && !parsed.totalAmount) return null;
+              const match = await api.post<{ vendorId: number | null; lineItems: ScanLineItem[] }>("/api/purchase-invoices/match-lines", {
+                vendor: parsed.vendor,
+                lineItems: parsed.lineItems.map((li) => ({
+                  description: li.description,
+                  quantity: li.quantity,
+                  unitCost: li.unitCost,
+                  lineTotal: li.lineTotal,
+                })),
+              });
+              return {
+                vendor: parsed.vendor,
+                vendorId: match.vendorId,
+                invoiceNumber: parsed.invoiceNumber,
+                date: parsed.date,
+                subtotal: parsed.subtotal,
+                gstAmount: parsed.gstAmount,
+                totalAmount: parsed.totalAmount,
+                confidence: "low",
+                confidencePercent: 0,
+                lineItems: match.lineItems,
+                blurScore: 0,
+                isBlurred: false,
+              };
+            }}
           />
 
           <div className="border-t border-border pt-3 space-y-2">

@@ -229,6 +229,7 @@ services:
       NODE_ENV: production
       PORT: "8080"
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      TZ: ${TZ:-Asia/Kolkata}
       # Identity stamp checked (read-only) at startup before any compatibility
       # patches run — see runStartupMigrations() in src/index.ts. Must match
       # the same APP_NAME used by care-db-patch-v2 / care-schema-verify.
@@ -352,7 +353,11 @@ services:
       AI_MODEL_FAST: ${AI_MODEL_FAST:-gemma3:4b}
       AI_MODEL_STANDARD: ${AI_MODEL_STANDARD:-gemma3:4b}
       AI_MODEL_LARGE: ${AI_MODEL_LARGE:-gemma3:12b}
-      AI_MODEL_VISION: ${AI_MODEL_VISION:-gemma3:4b}
+      # Overnight MRI drafts: Qwen3-VL 8B. Compose does not auto-inject .env —
+      # OLLAMA_NUM_CTX / OLLAMA_THINK must be listed here or the container never sees them.
+      AI_MODEL_VISION: ${AI_MODEL_VISION:-qwen3-vl:8b}
+      OLLAMA_NUM_CTX: ${OLLAMA_NUM_CTX:-16384}
+      OLLAMA_THINK: ${OLLAMA_THINK:-0}
       AI_TIMEOUT_FAST_SECONDS: ${AI_TIMEOUT_FAST_SECONDS:-120}
       AI_TIMEOUT_LARGE_SECONDS: ${AI_TIMEOUT_LARGE_SECONDS:-300}
       AI_CONCURRENCY: ${AI_CONCURRENCY:-1}
