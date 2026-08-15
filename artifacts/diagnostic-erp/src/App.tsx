@@ -59,6 +59,7 @@ function OwnerOnlyPreserved({ children }: { children: React.ReactNode }) {
 const BillingDesk     = lazy(() => import("@/pages/BillingDesk"));
 const Dashboard       = lazy(() => import("@/pages/Dashboard"));
 const Diagnostics     = lazy(() => import("@/pages/Diagnostics"));
+const BillingPeakMonitor = lazy(() => import("@/pages/BillingPeakMonitor"));
 const MeasurementRegistryManager = lazy(() => import("@/pages/MeasurementRegistryManager"));
 const PathologyRegistry = lazy(() => import("@/pages/PathologyRegistry"));
 const Patients        = lazy(() => import("@/pages/Patients"));
@@ -307,7 +308,7 @@ function PermissionGuard() {
     }
     // Owner Dashboard is admin/super_admin only — redirect others to My Daily Summary.
     const normalizedRole = normalizeRole(session.user.role);
-    if ((location === "/dashboard" || location === "/diagnostics" || location === "/measurement-registry" || location === "/pathology-registry") && !FULL_ACCESS_ROLES.has(normalizedRole)) {
+    if ((location === "/dashboard" || location === "/diagnostics" || location === "/billing-performance" || location === "/measurement-registry" || location === "/pathology-registry") && !FULL_ACCESS_ROLES.has(normalizedRole)) {
       navigate("/my-daily-summary", { replace: true });
       return;
     }
@@ -399,6 +400,8 @@ function Router() {
               <Route path="/diagnostic-integration" component={IntegrationAdmin} />
               <Route path="/admin/integrations/whatsapp" component={WhatsAppIntegrationSettings} />
               <Route path="/diagnostics" component={Diagnostics} />
+              <Route path="/billing-performance" component={BillingPeakMonitor} />
+              <Route path="/settings/performance" component={BillingPeakMonitor} />
               <Route path="/measurement-registry" component={MeasurementRegistryManager} />
               <Route path="/pathology-registry" component={PathologyRegistry} />
               <Route path="/patients" component={Patients} />

@@ -4,6 +4,7 @@ import { api } from "@/lib/fetchApi";
 import { readStaffSession, FULL_ACCESS_ROLES, normalizeRole } from "@/lib/staffSession";
 import PageHeader from "@/components/PageHeader";
 import { InfrastructurePulseStrip } from "@/components/InfrastructurePulseStrip";
+import { BillingPeakMonitorPanel } from "@/pages/BillingPeakMonitor";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Link } from "wouter";
@@ -1954,6 +1955,11 @@ export default function MyDailySummary() {
       />
 
       {isOwner && <InfrastructurePulseStrip />}
+      {isOwner && (
+        <div className="rounded-xl border bg-card p-4 shadow-sm">
+          <BillingPeakMonitorPanel compact />
+        </div>
+      )}
 
       {/* ── Drawer Status Warning Chips ── */}
       {drawerQ.data && <DrawerChips status={drawerQ.data} />}
