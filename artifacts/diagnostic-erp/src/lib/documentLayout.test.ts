@@ -69,9 +69,9 @@ function baseOpts(overrides: Record<string, unknown> = {}) {
 
 describe("document layout engine — page specifications", () => {
   test.each([
-    ["A5-landscape", "210mm 148mm", 210, 148],
+    ["A5-landscape", "210mm 297mm", 210, 148],
     ["A5-portrait", "148mm 210mm", 148, 210],
-    ["half-a4", "210mm 148mm", 210, 148],
+    ["half-a4", "210mm 297mm", 210, 148],
     ["A4", "210mm 297mm", 210, 297],
   ] as const)("paper %s has exact mm dimensions", (paper, css, w, h) => {
     expect(PAGE_SPECS[paper].pageSizeCss).toBe(css);
@@ -109,9 +109,11 @@ describe("document layout engine — page specifications", () => {
 });
 
 describe("document layout engine — bill renderers (unified Classic)", () => {
-  test("uses shared @page dimensions for A5 landscape", () => {
+  test("uses A4-portrait @page for A5 landscape so the tray is not rotated", () => {
     const html = buildBillPrintHtml(baseOpts());
-    expect(html).toContain("@page { size: 210mm 148mm; margin: 0; }");
+    expect(html).toContain("@page { size: 210mm 297mm; margin: 0; }");
+    expect(html).not.toMatch(/@page \{ size: 210mm 148mm/);
+    expect(html).not.toMatch(/@page \{ size: A5 landscape/);
     expect(html).toContain('class="care-doc-page receipt"');
   });
 
@@ -288,7 +290,7 @@ describe("document layout engine — bill renderers (unified Classic)", () => {
 
   test("classic format uses engine and percentage columns", () => {
     const html = buildBillPrintHtml(baseOpts());
-    expect(html).toContain("@page { size: 210mm 148mm; margin: 0; }");
+    expect(html).toContain("@page { size: 210mm 297mm; margin: 0; }");
     expect(html).toContain("care-doc-page");
     expect(html).toContain("totals-grid");
   });
@@ -311,6 +313,7 @@ describe("document layout engine — bill renderers (unified Classic)", () => {
     const html = buildBillPrintHtml(baseOpts());
     expect(html).toContain("width: 210mm");
     expect(html).toContain("height: 148mm");
+    expect(html).toContain("max-height: 148mm");
   });
 
   test("TAT column appears when showTat is on", () => {

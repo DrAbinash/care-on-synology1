@@ -64,6 +64,8 @@ export function buildDocumentBaseCss(layout: ResolvedPageLayout, compactSlipOnA4
     padding: 0;
     width: ${widthMm}mm;
     max-width: ${widthMm}mm;
+    height: ${heightMm}mm;
+    max-height: ${heightMm}mm;
     background: #fff;
     overflow: hidden;
     -webkit-print-color-adjust: exact;
@@ -76,6 +78,7 @@ export function buildDocumentBaseCss(layout: ResolvedPageLayout, compactSlipOnA4
     width: ${widthMm}mm;
     max-width: ${widthMm}mm;
     height: ${heightMm}mm;
+    max-height: ${heightMm}mm;
     /* Explicit equal L/R padding — avoids asymmetric “more gap on the right”
        from scrollbars or shorthand padding quirks in print/preview. */
     padding-top: ${safePaddingMm}mm;
@@ -99,10 +102,11 @@ export function buildDocumentBaseCss(layout: ResolvedPageLayout, compactSlipOnA4
   }
   ${slipRule}
   @media print {
-    html, body { width: ${widthMm}mm; }
+    html, body { width: ${widthMm}mm !important; height: ${heightMm}mm !important; max-height: ${heightMm}mm !important; }
     .care-doc-page {
       width: ${widthMm}mm !important;
       height: ${heightMm}mm !important;
+      max-height: ${heightMm}mm !important;
       overflow: hidden;
     }
   }`;

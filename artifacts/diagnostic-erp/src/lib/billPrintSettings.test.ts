@@ -237,13 +237,13 @@ describe("resolveBillPrintPageOpts — paper size reaches the print HTML", () =>
     });
     const opts = resolveBillPrintPageOpts(settings, 1);
     expect(opts.orientation).toBe("landscape");
-    expect(opts.pageCssSize).toBe("A5 landscape");
+    expect(opts.pageCssSize).toBe("210mm 297mm");
   });
   test("A5-landscape setting yields landscape @page and compact footer for short bills", () => {
     const opts = resolveBillPrintPageOpts({ defaultPaperSize: "A5-landscape", autoA4Threshold: 5 }, 1);
     expect(opts.paperSize).toBe("A5");
     expect(opts.orientation).toBe("landscape");
-    expect(opts.pageCssSize).toBe("A5 landscape");
+    expect(opts.pageCssSize).toBe("210mm 297mm");
     expect(opts.compactFooterGap).toBe(true);
   });
 
@@ -256,10 +256,11 @@ describe("resolveBillPrintPageOpts — paper size reaches the print HTML", () =>
     expect(opts.pageCssSize).toBe("A5 portrait");
   });
 
-  test("half-a4 uses landscape half-sheet dimensions", () => {
+  test("half-a4 is the same 210×148 sheet as A5, printed on an A4 portrait tray", () => {
     const opts = resolveBillPrintPageOpts({ defaultPaperSize: "half-a4", autoA4Threshold: 5 }, 1);
-    expect(opts.pageCssSize).toBe("210mm 148mm");
-    expect(opts.orientation).toBe("portrait");
+    expect(opts.pageCssSize).toBe("210mm 297mm");
+    expect(opts.orientation).toBe("landscape");
+    expect(opts.paperSize).toBe("A5");
   });
 
   test("A4 short bills use compact footer so content is not half-blank", () => {
@@ -286,7 +287,7 @@ describe("applyManualBillPaperOverride — Bill Detail reprint paper toggle", ()
     const merged = applyManualBillPaperOverride({ defaultPaperSize: "A5-landscape", adminLock: false }, "A5");
     expect(merged.defaultPaperSize).toBe("A5-landscape");
     const opts = resolveBillPrintPageOpts({ ...merged, autoA4Threshold: 5 }, 1);
-    expect(opts.pageCssSize).toBe("A5 landscape");
+    expect(opts.pageCssSize).toBe("210mm 297mm");
     expect(opts.compactFooterGap).toBe(true);
   });
 

@@ -20,13 +20,24 @@ export type PageSpec = {
   defaultSafePaddingMm: number;
 };
 
+/**
+ * Half of A4 is A5: 210 mm × 148 mm. CARE always loads that half-sheet in an
+ * A4 tray in *portrait* (210 mm across, 148 mm in the feed direction — Epson
+ * L130 and similar ink tanks). Declaring `@page { size: 210mm 148mm }` (or
+ * named `A5 landscape`) makes Chrome/drivers pick Landscape and rotate 90°,
+ * so the 210 mm-wide bill is fitted into the 148 mm feed axis and a blank
+ * band appears on the right of the paper. `@page` must stay A4 portrait;
+ * `.care-doc-page` stays 210×148 at the top of the sheet.
+ */
+export const HALF_A4_TRAY_PAGE_CSS = "210mm 297mm";
+
 /** Canonical page specifications — exact physical dimensions in mm. */
 export const PAGE_SPECS: Record<PrintPaper, PageSpec> = {
   "A5-landscape": {
     paper: "A5-landscape",
     widthMm: 210,
     heightMm: 148,
-    pageSizeCss: "210mm 148mm",
+    pageSizeCss: HALF_A4_TRAY_PAGE_CSS,
     // Clear Epson's typical ~3mm unprintable top band; still leaves room for content.
     defaultSafePaddingMm: 8,
   },
@@ -41,7 +52,7 @@ export const PAGE_SPECS: Record<PrintPaper, PageSpec> = {
     paper: "half-a4",
     widthMm: 210,
     heightMm: 148,
-    pageSizeCss: "210mm 148mm",
+    pageSizeCss: HALF_A4_TRAY_PAGE_CSS,
     defaultSafePaddingMm: 8,
   },
   A4: {
