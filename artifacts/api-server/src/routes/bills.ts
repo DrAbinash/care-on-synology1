@@ -151,9 +151,132 @@ function parseBillNumberParts(billNumber: string): { monthPrefix: string; seq: n
   return null;
 }
 
+type BuiltBill = Awaited<ReturnType<typeof buildBill>>;
+
+function mapBillNumbers(bill: typeof billsTable.$inferSelect) {
+  return {
+    ...bill,
+    subtotal: Number(bill.subtotal),
+    discount: Number(bill.discount),
+    taxAmount: Number(bill.taxAmount),
+    totalAmount: Number(bill.totalAmount),
+    originalTotal: Number(bill.originalTotal),
+    paidAmount: Number(bill.paidAmount),
+    balanceAmount: Number(bill.balanceAmount),
+  };
+}
+
+/**
+ * Batch-hydrate a page of bills into the same shape as `buildBill`.
+ *
+ * The list endpoint used to call `buildBill` once per row (~5 queries each).
+ * Today's Collections polls `/api/bills?limit=100` every 30s, so that was
+ * hundreds of queries/minute competing with desk saves. This helper does a
+ * fixed handful of IN(...) lookups for the whole page instead.
+ *
+ * `compact: true` skips payments + order line items (desk/Collections panels
+ * only need patient name + amounts). Full detail remains the default so
+ * Form 3C / Dues / OpenAPI clients keep receiving tests + payments.
+ */
+async function buildBillsBatch(
+  bills: (typeof billsTable.$inferSelect)[],
+  opts: { compact?: boolean } = {},
+): Promise<BuiltBill[]> {
+  if (bills.length === 0) return [];
+
+  const compact = opts.compact === true;
+  const billIds = bills.map((b) => b.id);
+  const patientIds = [...new Set(bills.map((b) => b.patientId))];
+  const orderIds = [...new Set(bills.map((b) => b.orderId))];
+
+  const [patients, orders, payments] = await Promise.all([
+    patientIds.length
+      ? db.select().from(patientsTable).where(inArray(patientsTable.id, patientIds))
+      : Promise.resolve([] as (typeof patientsTable.$inferSelect)[]),
+    orderIds.length
+      ? db.select().from(ordersTable).where(inArray(ordersTable.id, orderIds))
+      : Promise.resolve([] as (typeof ordersTable.$inferSelect)[]),
+    compact || billIds.length === 0
+      ? Promise.resolve([] as (typeof paymentsTable.$inferSelect)[])
+      : db
+          .select()
+          .from(paymentsTable)
+          .where(inArray(paymentsTable.billId, billIds))
+          .orderBy(desc(paymentsTable.createdAt)),
+  ]);
+
+  const patientById = new Map(patients.map((p) => [p.id, p]));
+  const orderById = new Map(orders.map((o) => [o.id, o]));
+
+  const doctorIds = [
+    ...new Set(
+      orders
+        .map((o) => o.doctorId)
+        .filter((id): id is number => typeof id === "number" && Number.isFinite(id)),
+    ),
+  ];
+  const doctors = doctorIds.length
+    ? await db.select().from(doctorsTable).where(inArray(doctorsTable.id, doctorIds))
+    : [];
+  const doctorById = new Map(doctors.map((d) => [d.id, d]));
+
+  type OrderTestJoined = {
+    orderTest: typeof orderTestsTable.$inferSelect;
+    test: typeof testsTable.$inferSelect | null;
+  };
+  let orderTestRows: OrderTestJoined[] = [];
+  if (!compact && orderIds.length > 0) {
+    orderTestRows = await db
+      .select({ orderTest: orderTestsTable, test: testsTable })
+      .from(orderTestsTable)
+      .leftJoin(testsTable, eq(orderTestsTable.testId, testsTable.id))
+      .where(inArray(orderTestsTable.orderId, orderIds));
+  }
+  const testsByOrderId = new Map<number, OrderTestJoined[]>();
+  for (const row of orderTestRows) {
+    const list = testsByOrderId.get(row.orderTest.orderId);
+    if (list) list.push(row);
+    else testsByOrderId.set(row.orderTest.orderId, [row]);
+  }
+
+  const paymentsByBillId = new Map<number, (typeof paymentsTable.$inferSelect)[]>();
+  for (const p of payments) {
+    const list = paymentsByBillId.get(p.billId);
+    if (list) list.push(p);
+    else paymentsByBillId.set(p.billId, [p]);
+  }
+
+  return bills.map((bill) => {
+    const patient = patientById.get(bill.patientId) ?? null;
+    const order = orderById.get(bill.orderId) ?? null;
+    const sanitized = patient ? sanitizePatient(patient) : null;
+
+    const orderDetails = order
+      ? {
+          ...order,
+          totalAmount: Number(order.totalAmount),
+          patient: sanitized,
+          doctor: order.doctorId != null ? (doctorById.get(order.doctorId) ?? null) : null,
+          tests: (testsByOrderId.get(order.id) ?? []).map((ot) => ({
+            ...ot.orderTest,
+            price: Number(ot.orderTest.price),
+            displayName: ot.orderTest.displayName ?? null,
+            test: ot.test ? { ...ot.test, price: Number(ot.test.price) } : null,
+          })),
+        }
+      : null;
+
+    return {
+      ...mapBillNumbers(bill),
+      patient: sanitized,
+      order: orderDetails,
+      payments: (paymentsByBillId.get(bill.id) ?? []).map((p) => ({ ...p, amount: Number(p.amount) })),
+    };
+  }) as BuiltBill[];
+}
+
 async function buildBill(bill: typeof billsTable.$inferSelect) {
-  // Runs on the hot save-and-print path (and once per row on the bills list),
-  // so the independent lookups are batched instead of awaited one by one.
+  // Single-bill detail / mutation responses. Independent lookups stay concurrent.
   const [[patient], [order], payments] = await Promise.all([
     db.select().from(patientsTable).where(eq(patientsTable.id, bill.patientId)),
     db.select().from(ordersTable).where(eq(ordersTable.id, bill.orderId)),
@@ -190,14 +313,7 @@ async function buildBill(bill: typeof billsTable.$inferSelect) {
   }
 
   return {
-    ...bill,
-    subtotal: Number(bill.subtotal),
-    discount: Number(bill.discount),
-    taxAmount: Number(bill.taxAmount),
-    totalAmount: Number(bill.totalAmount),
-    originalTotal: Number(bill.originalTotal),
-    paidAmount: Number(bill.paidAmount),
-    balanceAmount: Number(bill.balanceAmount),
+    ...mapBillNumbers(bill),
     patient: patient ? sanitizePatient(patient) : null,
     order: orderDetails,
     payments: payments.map((p) => ({ ...p, amount: Number(p.amount) })),
@@ -362,6 +478,10 @@ billsRouter.get("/", async (req, res) => {
 
   const where = conditions.length > 0 ? and(...conditions) : undefined;
 
+  // Desk Collections / recent panels pass compact=1 — patient + amounts only.
+  // Default stays full detail for Form 3C, Dues, and generated OpenAPI clients.
+  const compact = req.query.compact === "1" || req.query.compact === "true";
+
   const [bills, countResult, totalsResult] = await Promise.all([
     db.select().from(billsTable).where(where).orderBy(desc(billsTable.createdAt)).limit(limit).offset(offset),
     db.select({ count: sql<number>`count(*)` }).from(billsTable).where(where),
@@ -374,7 +494,7 @@ billsRouter.get("/", async (req, res) => {
     }).from(billsTable).where(where),
   ]);
 
-  const billsWithDetails = await Promise.all(bills.map(buildBill));
+  const billsWithDetails = await buildBillsBatch(bills, { compact });
   res.json({
     bills: billsWithDetails,
     total: Number(countResult[0]?.count ?? 0),
@@ -735,6 +855,7 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
 
   if (fastMode) {
     // Fire token generation in background — don't block the response
+    const patientName = pat ? `${pat.firstName} ${pat.lastName}`.trim() : undefined;
     generateTestTokensForOrder({
       ledgerId,
       billId: bill.id,
@@ -744,9 +865,39 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
     }).then((tokens) => {
       // Cache tokens for the client's follow-up fetch
       tokenCache.set(bill.id, { tokens, generatedAt: Date.now() });
+      // WhatsApp needs a token number — send only once tokens are ready.
+      if (pat?.phone && tokens.length > 0) {
+        const tokenInfo = deriveBillTokenFromTestTokens(tokens);
+        if (tokenInfo) {
+          sendBillWhatsapp({
+            phone: pat.phone,
+            patientName: `${pat.firstName} ${pat.lastName}`.trim(),
+            billNumber: bill.billNumber,
+            totalAmount,
+            tokenNo: tokenInfo.tokenNo,
+          }).then((result) => {
+            if (!result.ok && !result.skipped) console.warn(`WhatsApp bill notification failed for bill ${bill.billNumber}:`, result.error);
+          }).catch((err) => console.warn("WhatsApp send failed:", err));
+        }
+      }
     }).catch((err) => {
       console.warn("Per-test token generation failed (fast mode):", err);
     });
+
+    // Parity with the slow path: vouchers are fire-and-forget so they must
+    // still run under ?fast=1. Billing Desk always uses fast mode; skipping
+    // these left real-time ledger gaps until admin sync-billing.
+    for (const p of txPayments ?? []) {
+      autoVoucherForPayment({
+        billId: bill.id,
+        amount: p.amount,
+        method: p.method || "cash",
+        billNumber: bill.billNumber,
+        patientName,
+        performedBy: actorName || null,
+        paymentId: p.paymentId,
+      }).catch(() => {/* already logged inside */});
+    }
 
     const totalMs = Date.now() - startedAt;
     if (totalMs > getSlowThresholdMs()) {
@@ -2191,6 +2342,8 @@ paymentsRouter.post("/", async (req, res) => {
   // This closes the double-click race condition (Bug #1).
   let payment: typeof paymentsTable.$inferSelect;
   let newPaidAmount: number;
+  let voucherBillNumber: string | null = null;
+  let voucherPatientName: string | null = null;
 
   try {
     const txResult = await db.transaction(async (tx) => {
@@ -2231,11 +2384,26 @@ paymentsRouter.post("/", async (req, res) => {
         status: newStatus,
       }).where(eq(billsTable.id, billId));
 
-      return { inserted, paid };
+      // Resolve voucher metadata inside the same tx so the HTTP response does
+      // not wait on two extra post-commit SELECTs (collect-payment hot path).
+      const [patientRow] = await tx
+        .select({ firstName: patientsTable.firstName, lastName: patientsTable.lastName })
+        .from(patientsTable)
+        .where(eq(patientsTable.id, bill.patientId))
+        .limit(1);
+
+      return {
+        inserted,
+        paid,
+        billNumber: bill.billNumber,
+        patientName: patientRow ? `${patientRow.firstName} ${patientRow.lastName}`.trim() : null,
+      };
     });
 
     payment = txResult.inserted;
     newPaidAmount = txResult.paid;
+    voucherBillNumber = txResult.billNumber;
+    voucherPatientName = txResult.patientName;
   } catch (err: any) {
     const status = err.httpStatus ?? 500;
     res.status(status).json({ error: err.message });
@@ -2243,21 +2411,13 @@ paymentsRouter.post("/", async (req, res) => {
   }
 
   // Auto-generate accounting voucher — async, never blocks payment response
-  const [billForVoucher] = await db
-    .select({ billNumber: billsTable.billNumber, patientId: billsTable.patientId })
-    .from(billsTable)
-    .where(eq(billsTable.id, billId));
-  if (billForVoucher) {
-    const [patientRow] = await db
-      .select({ firstName: patientsTable.firstName, lastName: patientsTable.lastName })
-      .from(patientsTable)
-      .where(eq(patientsTable.id, billForVoucher.patientId));
+  if (voucherBillNumber) {
     autoVoucherForPayment({
       billId,
       amount,
       method,
-      billNumber: billForVoucher.billNumber,
-      patientName: patientRow ? `${patientRow.firstName} ${patientRow.lastName}`.trim() : null,
+      billNumber: voucherBillNumber,
+      patientName: voucherPatientName,
       performedBy: actorName || null,
       paymentId: payment.id,
     }).catch(() => {/* already logged inside */});

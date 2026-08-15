@@ -1239,7 +1239,7 @@ export default function BillingDesk() {
   const todayIsoB = new Date().toLocaleDateString("en-CA");
   const { data: todayBillsData } = useQuery<{ bills: RecentBill[] }>({
     queryKey: ["today-collections-panel", todayIsoB],
-    queryFn: () => api.get<{ bills: RecentBill[] }>(`/api/bills?dateFrom=${todayIsoB}&dateTo=${todayIsoB}&excludeCancelled=true&limit=100&page=1`),
+    queryFn: () => api.get<{ bills: RecentBill[] }>(`/api/bills?dateFrom=${todayIsoB}&dateTo=${todayIsoB}&excludeCancelled=true&limit=100&page=1&compact=1`),
     staleTime: 20_000,
     refetchOnWindowFocus: true,
   });
@@ -4190,7 +4190,7 @@ function TodayCollectionsPanel() {
   // from today regardless of how many earlier bills exist in the database.
   const { data, isLoading } = useQuery<{ bills: RecentBill[] }>({
     queryKey: ["today-collections-panel", todayIso],
-    queryFn: () => api.get<{ bills: RecentBill[] }>(`/api/bills?dateFrom=${todayIso}&dateTo=${todayIso}&excludeCancelled=true&limit=100&page=1`),
+    queryFn: () => api.get<{ bills: RecentBill[] }>(`/api/bills?dateFrom=${todayIso}&dateTo=${todayIso}&excludeCancelled=true&limit=100&page=1&compact=1`),
     staleTime: 20_000,
     refetchInterval: 30_000,
     refetchOnWindowFocus: true,
@@ -4311,7 +4311,7 @@ function RecentBillsPanel() {
   const [, navigate] = useLocation();
   const { data, isLoading, isError } = useQuery<{ bills: RecentBill[] }>({
     queryKey: ["recent-bills-today"],
-    queryFn: () => api.get<{ bills: RecentBill[] }>("/api/bills?limit=20&page=1"),
+    queryFn: () => api.get<{ bills: RecentBill[] }>("/api/bills?limit=20&page=1&compact=1"),
     ...FINANCIAL_QUERY_OPTIONS,
   });
 

@@ -100,6 +100,7 @@ export default function Billing() {
     if (dateFrom) p.set("dateFrom", dateFrom);
     if (dateTo) p.set("dateTo", dateTo);
     if (createdBy) p.set("createdBy", createdBy);
+    p.set("compact", "1");
     return `/api/bills?${p.toString()}`;
   })();
 
