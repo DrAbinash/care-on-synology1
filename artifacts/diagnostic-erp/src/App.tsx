@@ -260,7 +260,19 @@ const queryClient = new QueryClient({
       staleTime: 5 * 60_000,
       refetchOnWindowFocus: true,
       refetchOnReconnect: true,
-      refetchInterval: 60_000,
+      // CRITICAL: Do NOT set a global refetchInterval — it causes EVERY query
+      // in the app (feature-flags, sync/status, clinic-settings, doctors, tests,
+      // etc.) to refetch every 60 seconds. With multiple staff on multiple tabs,
+      // this creates 300+ requests/minute of pure polling overhead that starves
+      // real requests (bill saves, patient searches). API logs showed 34,452
+      // feature-flag polls in 2 hours (76% of all requests) — many taking 3-5s
+      // each because the server was overloaded.
+      //
+      // Queries that genuinely need polling (sync status, connectivity, display
+      // board) set their own refetchInterval explicitly in their useQuery call.
+      // The global default is now "no auto-refetch" — queries refetch only on
+      // window focus, reconnect, or manual invalidation.
+      refetchInterval: false,
       refetchIntervalInBackground: false,
     },
   },
