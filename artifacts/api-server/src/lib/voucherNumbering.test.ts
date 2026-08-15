@@ -61,7 +61,10 @@ describe("auto-voucher: receipts / refunds / expense vouchers", () => {
     // invariant under test is that a finite retry loop still surrounds the
     // INSERT so concurrent 23505s are handled — not the exact attempt budget.
     expect(autoVoucher).toContain("for (let attempt = 0; attempt < 5; attempt++)");
-    expect(autoVoucher).toContain('code === "23505"');
+    // Must walk drizzle's err.cause chain — bare err.code misses wrapped 23505s
+    // (care-api logs: 75× vouchers_voucher_number_unique while retries "missed").
+    expect(autoVoucher).toContain("function isPgUniqueViolation");
+    expect(code(autoVoucher)).toContain("isPgUniqueViolation(err)");
   });
 
   test("bucket scoping is unchanged (per type + per month)", () => {

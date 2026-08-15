@@ -1,5 +1,5 @@
 import { Router, type Response } from "express";
-import { db, ordersTable, orderTestsTable, testsTable, patientsTable, doctorsTable } from "@workspace/db";
+import { db, ordersTable, orderTestsTable, testsTable, patientsTable, doctorsTable, clinicSettingsTable } from "@workspace/db";
 import { eq, and, sql, desc, gte, lte, inArray } from "drizzle-orm";
 import {
   ListOrdersQueryParams,
@@ -35,6 +35,20 @@ function isUniqueViolation(err: unknown): boolean {
     const e = cur as { code?: string; message?: string; cause?: unknown };
     if (e.code === "23505") return true;
     if (/duplicate key value violates unique constraint|orders_order_number_unique/i.test(e.message ?? "")) {
+      return true;
+    }
+    cur = e.cause;
+  }
+  return false;
+}
+
+function isClientRefUniqueViolation(err: unknown): boolean {
+  let cur: unknown = err;
+  for (let i = 0; i < 5 && cur && typeof cur === "object"; i++) {
+    const e = cur as { constraint?: string; message?: string; cause?: unknown };
+    const constraint = e.constraint ?? "";
+    const message = e.message ?? "";
+    if (/client_ref|orders_client_ref/i.test(constraint) || /Key \(client_ref\)=/i.test(message)) {
       return true;
     }
     cur = e.cause;
@@ -237,17 +251,28 @@ export async function createOrderHandler(req: StaffAuthRequest, res: Response): 
       });
       return;
     }
-    // PRICE OVERRIDE GUARD: previously any staff could send a custom `price`
-    // per test with no comparison against the catalog price at all (e.g. a
-    // ₹5,000 MRI billed at ₹1) — only existence/active-status was checked.
-    // Only admin/super_admin may set a price that differs from the catalog
-    // price (their own discretion is already audited via bill-level discount
-    // fields elsewhere); regular staff must bill at the catalog price.
+    // PRICE OVERRIDE GUARD: admin/super_admin may set any price. Regular staff
+    // may bill at/below catalog (package line splits) and, when isVip is true,
+    // up to catalog × (1 + clinic vip%). Markup above that ceiling is rejected.
     const isFullAccess = FULL_ACCESS_ROLES.has(req.staffSession?.role ?? "");
     if (!isFullAccess) {
+      const rawIsVip = !!(req.body as { isVip?: unknown })?.isVip;
+      let vipPct = 0;
+      if (rawIsVip) {
+        const [cfg] = await db
+          .select({ vipPercentage: clinicSettingsTable.vipPercentage })
+          .from(clinicSettingsTable)
+          .limit(1);
+        vipPct = Number(cfg?.vipPercentage ?? 50);
+        if (!Number.isFinite(vipPct) || vipPct < 0) vipPct = 50;
+      }
       const mismatched = customTests!.filter((ct) => {
         const catalogPrice = Number(testMap.get(ct.testId)?.price ?? NaN);
-        return Number.isFinite(catalogPrice) && Math.abs(Number(ct.price) - catalogPrice) > 0.01;
+        if (!Number.isFinite(catalogPrice)) return false;
+        const requested = Number(ct.price);
+        if (!Number.isFinite(requested) || requested < 0) return true;
+        const maxAllowed = catalogPrice * (1 + (rawIsVip ? vipPct : 0) / 100);
+        return requested - maxAllowed > 0.01;
       });
       if (mismatched.length > 0) {
         res.status(403).json({
@@ -256,7 +281,9 @@ export async function createOrderHandler(req: StaffAuthRequest, res: Response): 
             {
               path: ["tests"],
               message:
-                "Only admin/super-admin may bill a test at a price other than its catalog price. " +
+                "Only admin/super-admin may bill a test above its catalog price" +
+                (rawIsVip ? ` (VIP ceiling ${vipPct}%)` : "") +
+                ". " +
                 mismatched
                   .map((ct) => `testId=${ct.testId} requested=₹${Number(ct.price).toFixed(2)} catalog=₹${Number(testMap.get(ct.testId)?.price ?? 0).toFixed(2)}`)
                   .join("; "),
@@ -352,6 +379,15 @@ export async function createOrderHandler(req: StaffAuthRequest, res: Response): 
       break;
     } catch (err) {
       if (!isUniqueViolation(err)) throw err;
+      // Concurrent retries with the same clientRef: winner inserted; loser
+      // must return the existing order (not burn 5 allocation retries).
+      if (clientRef && isClientRefUniqueViolation(err)) {
+        const again = await probeByClientRef();
+        if (again[0]) {
+          res.status(200).json(await buildOrder(again[0]));
+          return;
+        }
+      }
       lastUniqueErr = err;
       req.log?.warn?.({ attempt, err }, "order_number unique violation — retrying allocation");
     }

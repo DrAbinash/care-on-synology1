@@ -15,6 +15,9 @@ describe("POST /api/billing/save", () => {
     // Must defineProperty query — Object.assign({ query }) throws on Express 5
     expect(src).toContain('Object.defineProperty(billReq, "query"');
     expect(src).not.toMatch(/Object\.assign\([^)]*query:\s*\{/);
+    // Thrown handler errors must still surface orderId for orphan recovery
+    expect(src).toContain("POST /api/billing/save threw");
+    expect(src).toContain("orderId,");
   });
 
   test("orders and bills export create handlers", () => {

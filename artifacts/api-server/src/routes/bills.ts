@@ -798,6 +798,43 @@ export async function createBillHandler(req: StaffAuthRequest, res: Response): P
     return /bills_bill_number_unique|Key \(bill_number\)=/i.test(msg);
   }
 
+  function isBillClientRefUniqueViolation(err: unknown): boolean {
+    let cur: unknown = err;
+    for (let i = 0; i < 5 && cur && typeof cur === "object"; i++) {
+      const e = cur as { code?: string; constraint?: string; message?: string; cause?: unknown };
+      if (e.code === "23505" && /client_ref|bills_client_ref/i.test(String(e.constraint ?? ""))) return true;
+      if (/Key \(client_ref\)=|bills_client_ref/i.test(String(e.message ?? ""))) return true;
+      cur = e.cause;
+    }
+    return false;
+  }
+
+  async function returnExistingBillByClientRef(): Promise<boolean> {
+    if (!clientRef) return false;
+    const existingByRef = await db.execute<{ id: number }>(
+      sql`SELECT id FROM bills WHERE client_ref = ${clientRef} AND status != 'cancelled' LIMIT 1`,
+    );
+    const refRows = Array.isArray(existingByRef) ? existingByRef : (existingByRef as { rows?: { id: number }[] }).rows ?? [];
+    const refId = refRows[0]?.id;
+    if (!refId) return false;
+    const [existingBillRow] = await db.select().from(billsTable).where(eq(billsTable.id, refId));
+    if (!existingBillRow) return false;
+    const built = await buildBill(existingBillRow);
+    res.status(200).json({
+      id: existingBillRow.id,
+      billNumber: existingBillRow.billNumber,
+      createdAt: existingBillRow.createdAt,
+      createdByName: existingBillRow.createdByName,
+      paidAmount: built.paidAmount,
+      balanceAmount: built.balanceAmount,
+      status: existingBillRow.status,
+      _idempotent: true,
+      needsOnlinePayment: false,
+      onlineAmount: Number(built.balanceAmount) > 0.01 ? Number(built.balanceAmount) : 0,
+    });
+    return true;
+  }
+
   let bill: typeof billsTable.$inferSelect | undefined;
   let pat: typeof patientPreload = patientPreload;
   let lastUniqueErr: unknown;
@@ -855,6 +892,10 @@ export async function createBillHandler(req: StaffAuthRequest, res: Response): P
       lastUniqueErr = undefined;
       break;
     } catch (err) {
+      if (isBillClientRefUniqueViolation(err)) {
+        if (await returnExistingBillByClientRef()) return;
+        throw err;
+      }
       if (!isBillNumberUniqueViolation(err)) throw err;
       lastUniqueErr = err;
       req.log?.warn?.({ attempt, err }, "bill_number unique violation — reseeding sequence and retrying");
@@ -899,13 +940,23 @@ export async function createBillHandler(req: StaffAuthRequest, res: Response): P
       // Rare: bill row exists with paid totals but payment rows failed.
       // Roll the bill back to unpaid so desk can re-collect via payment POST
       // instead of leaving a paid bill with no payment ledger rows.
+      // Do NOT rethrow — that became an opaque Express 500 without billId
+      // (and orphaned the order when called via /api/billing/save).
       req.log?.error?.({ err, billId: bill.id }, "Bill created but payment insert failed — resetting bill to pending");
       await db.update(billsTable).set({
         paidAmount: "0.00",
         balanceAmount: totalAmount.toFixed(2),
         status: "pending",
       }).where(eq(billsTable.id, bill.id)).catch(() => { /* best-effort */ });
-      throw err;
+      res.status(500).json({
+        error: "Bill created but payment recording failed — reopen the bill to collect payment",
+        billId: bill.id,
+        billNumber: bill.billNumber,
+        orderId,
+        paymentsFailed: true,
+        clientRef: clientRef ?? null,
+      });
+      return;
     }
   }
 

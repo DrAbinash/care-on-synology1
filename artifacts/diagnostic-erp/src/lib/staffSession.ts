@@ -527,10 +527,25 @@ export function setServerFeatureFlags(flags: Record<string, boolean>): void {
   for (const [key, value] of Object.entries(flags)) {
     if (key.startsWith(SERVER_FLAG_PREFIX)) serverManaged[key] = value;
   }
+  // Skip no-op updates so a hydrate→event→hydrate loop cannot form even if a
+  // listener forgets to filter detail.source === "server".
+  if (serverFlags && shallowEqualFlags(serverFlags, serverManaged)) {
+    return;
+  }
   serverFlags = serverManaged;
   if (typeof window !== "undefined") {
     window.dispatchEvent(new CustomEvent("featureFlagsChanged", { detail: { source: "server" } }));
   }
+}
+
+function shallowEqualFlags(a: Record<string, boolean>, b: Record<string, boolean>): boolean {
+  const aKeys = Object.keys(a);
+  const bKeys = Object.keys(b);
+  if (aKeys.length !== bKeys.length) return false;
+  for (const k of aKeys) {
+    if (a[k] !== b[k]) return false;
+  }
+  return true;
 }
 
 export function setFeatureFlag(flag: string, value: boolean): void {
