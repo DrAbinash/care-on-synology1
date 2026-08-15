@@ -103,6 +103,33 @@ export async function replayQueue(
       let orderNumber = current.orderNumber;
 
       if (current.stage === "order") {
+        // Prefer one-shot save; fall back to legacy two-POST if the NAS is
+        // on a build that does not yet expose /api/billing/save.
+        try {
+          const billRes = await postFn<{ id: number; billNumber: string; orderId?: number; orderNumber?: string }>(
+            "/api/billing/save",
+            {
+              ...current.orderBody,
+              ...current.billBody,
+              clientRef: current.clientRef,
+            },
+          );
+          syncedBills.push({
+            clientRef: current.clientRef,
+            billId: billRes.id,
+            billNumber: billRes.billNumber,
+            provisionalBillNumber: current.provisionalBillNumber,
+            orderNumber: billRes.orderNumber ?? current.orderNumber,
+          });
+          working = removeFromQueue(working, current.clientRef);
+          synced++;
+          continue;
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          if (!/404|Cannot POST|not found/i.test(msg)) throw err;
+          // Legacy NAS: create order then bill separately.
+        }
+
         const order = await postFn<{ id: number; orderNumber: string }>("/api/orders", {
           ...current.orderBody,
           clientRef: current.clientRef,
@@ -112,7 +139,7 @@ export async function replayQueue(
         working = updateInQueue(working, current.clientRef, { stage: "bill", orderId, orderNumber });
       }
 
-      const billRes = await postFn<{ id: number; billNumber: string }>("/api/bills", {
+      const billRes = await postFn<{ id: number; billNumber: string }>("/api/bills?fast=1", {
         ...current.billBody,
         orderId,
         clientRef: current.clientRef,
