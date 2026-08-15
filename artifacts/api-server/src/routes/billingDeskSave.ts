@@ -72,12 +72,22 @@ billingDeskSaveRouter.post("/save", async (req: StaffAuthRequest, res) => {
   };
 
   // Desk always used ?fast=1; default on unless explicitly disabled.
+  // IMPORTANT: do NOT Object.assign({ query }) onto the Express request.
+  // In Express 5 / Node IncomingMessage, `req.query` is a getter-only
+  // property — assign throws:
+  //   TypeError: Cannot set property query of #<IncomingMessage> which has only a getter
+  // That was the Save & Print 500 on caredeoghar (billingDeskSave.ts).
   const fastOff = req.query.fast === "0" || req.query.fast === "false";
   const billCap = captureResponse();
   const billReq = Object.assign(Object.create(Object.getPrototypeOf(req)), req, {
     body: billBody,
-    query: { ...req.query, fast: fastOff ? "0" : "1" },
   }) as StaffAuthRequest;
+  Object.defineProperty(billReq, "query", {
+    value: { ...(req.query as Record<string, unknown>), fast: fastOff ? "0" : "1" },
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
   await createBillHandler(billReq, billCap.res);
   const billOut = billCap.get();
 

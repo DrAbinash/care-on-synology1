@@ -13,6 +13,9 @@ describe("billing pathway green — auth + counter allocation", () => {
     expect(authSrc).toContain("STAFF_AUTH_CACHE_TTL_MS");
     expect(authSrc).toContain("invalidateStaffAuthCache");
     expect(authSrc).toContain("Cache hit: skip session + user SELECTs");
+    // Throttle portal_sessions writes — feature-flags polling was starving the pool
+    expect(authSrc).toContain("SESSION_DB_TOUCH_MIN_INTERVAL_MS");
+    expect(authSrc).toContain("lastDbTouchAtMs");
   });
 
   test("bill create preloads patient and allocates via document_number_counters", () => {
