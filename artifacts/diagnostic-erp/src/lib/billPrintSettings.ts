@@ -44,9 +44,9 @@ function wasLandscapeBillFormat(raw: unknown): boolean {
 
 export type BillPaperSize = "A5-landscape" | "A5-portrait" | "half-a4" | "A4";
 export const BILL_PAPER_SIZES: { id: BillPaperSize; label: string }[] = [
-  { id: "A5-portrait", label: "A5 Portrait" },
-  { id: "A5-landscape", label: "A5 Landscape" },
-  { id: "half-a4", label: "Half A4" },
+  { id: "A5-portrait", label: "A5 Portrait (148×210 mm)" },
+  { id: "A5-landscape", label: "Half A4 / A5 (210×148 mm)" },
+  { id: "half-a4", label: "Half A4 (same as A5)" },
   { id: "A4", label: "A4" },
 ];
 
@@ -428,13 +428,13 @@ export function billPreviewPaperPx(pageOpts: BillPrintPageOpts): { w: number; h:
 export function getPaperSizeCss(size: BillPaperSize): { pageSize: string; width: string; minHeight: string; maxHeight: string } {
   switch (size) {
     case "A5-landscape":
-      // Full physical page — do not subtract margins here (safe padding is applied
-      // by the document layout engine). Narrow widths caused empty side bands.
-      return { pageSize: "A5 landscape", width: "210mm", minHeight: "148mm", maxHeight: "none" };
+    case "half-a4":
+      // Content is A5 / half-A4 (210×148). @page is A4 portrait so the printer
+      // tray stays portrait — named "A5 landscape" made drivers rotate and
+      // leave a blank band on the right.
+      return { pageSize: "210mm 297mm", width: "210mm", minHeight: "148mm", maxHeight: "148mm" };
     case "A5-portrait":
       return { pageSize: "A5 portrait", width: "148mm", minHeight: "210mm", maxHeight: "none" };
-    case "half-a4":
-      return { pageSize: "210mm 148mm", width: "210mm", minHeight: "148mm", maxHeight: "none" };
     case "A4":
     default:
       return { pageSize: "A4 portrait", width: "210mm", minHeight: "297mm", maxHeight: "none" };
@@ -476,19 +476,21 @@ export function resolveBillPrintPageOpts(
       pageCssSize: "A4 portrait",
     };
   }
-  const orientation: "portrait" | "landscape" =
-    effective === "A5-landscape" ? "landscape" : "portrait";
-  const pageCssSize =
-    effective === "half-a4"
-      ? "210mm 148mm"
-      : effective === "A5-landscape"
-        ? "A5 landscape"
-        : "A5 portrait";
+  if (effective === "A5-landscape" || effective === "half-a4") {
+    return {
+      paperSize: "A5",
+      orientation: "landscape",
+      compactFooterGap: testCount <= 4,
+      // A4 portrait @page + 210×148 content. Half of A4 IS A5. Do not emit
+      // named "A5 landscape" — printers rotate that job and leave a right gap.
+      pageCssSize: "210mm 297mm",
+    };
+  }
   return {
     paperSize: "A5",
-    orientation,
+    orientation: "portrait",
     compactFooterGap: testCount <= 4,
-    pageCssSize,
+    pageCssSize: "A5 portrait",
   };
 }
 

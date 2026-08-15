@@ -40,9 +40,14 @@ export function resolveBillPrintPaperFromOpts(opts: {
 }): PrintPaper {
   if (opts.compactOnA4 && opts.paperSize === "A5") return "A4";
   if (opts.paperSize === "A4") return "A4";
-  if (opts.pageCssSize?.includes("210mm 148mm") || opts.pageCssSize === "A5 landscape") {
+  // Landscape content = 210×148 mm half-sheet (A5 / half A4), even when @page
+  // is A4 portrait so the Epson tray does not rotate the job.
+  if (
+    opts.orientation === "landscape" ||
+    opts.pageCssSize?.includes("210mm 148mm") ||
+    opts.pageCssSize === "A5 landscape"
+  ) {
     return "A5-landscape";
   }
-  if (opts.orientation === "landscape") return "A5-landscape";
   return "A5-portrait";
 }

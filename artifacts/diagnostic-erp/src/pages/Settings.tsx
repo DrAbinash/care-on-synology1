@@ -1671,7 +1671,7 @@ function ClinicInfoTab() {
             </p>
           </div>
           <div className="rounded-lg border border-blue-200 bg-blue-50 dark:bg-blue-950/30 dark:border-blue-800 px-4 py-3 text-sm text-blue-800 dark:text-blue-300 leading-relaxed">
-            Open <strong>Settings → Billing Print</strong> for format, A5 landscape (recommended), QR, TAT, columns, and live preview.
+            Open <strong>Settings → Billing Print</strong> for format, half-A4 / A5 paper (recommended), QR, TAT, columns, and live preview.
             Clinic Info keeps logo, address, and identity only.
           </div>
           <button
@@ -4850,9 +4850,9 @@ const headerLayouts: { id: string; label: string }[] = [
   { id: "left", label: "Address on left (under clinic name)" },
 ];
 const billPaperSizes: { id: string; label: string }[] = [
-  { id: "A5-portrait", label: "A5 Portrait" },
-  { id: "A5-landscape", label: "A5 Landscape" },
-  { id: "half-a4", label: "Half A4" },
+  { id: "A5-portrait", label: "A5 Portrait (148×210 mm)" },
+  { id: "A5-landscape", label: "Half A4 / A5 (210×148 mm)" },
+  { id: "half-a4", label: "Half A4 (same as A5)" },
   { id: "A4", label: "A4" },
 ];
 const billCopyTypes: { id: string; label: string }[] = [
@@ -4872,7 +4872,7 @@ const printActions: { id: string; label: string }[] = [
 const PAPER_PX: Record<string, { w: number; h: number }> = {
   "A5-portrait": { w: 559, h: 794 },
   "A5-landscape": { w: 794, h: 559 },
-  "half-a4": { w: 559, h: 794 },
+  "half-a4": { w: 794, h: 559 },
   "A4": { w: 794, h: 1123 },
 };
 
@@ -5097,9 +5097,9 @@ function BillingPrintTab() {
           so a new admin knows the right combination in one glance. */}
       <div className="rounded-xl border border-blue-200 bg-blue-50/60 dark:bg-blue-950/20 dark:border-blue-800 px-4 py-3 text-xs text-blue-900 dark:text-blue-200 leading-relaxed">
         <strong>Recommended for most Indian diagnostic centres:</strong> Header{" "}
-        <em>Address on right</em> · Paper <em>A5 Landscape</em> · Direct Print After Save <em>on</em>{" "}
-        (below). Dense one-page bill — avoids the half-blank A4 look. Watch the Live Preview on the right
-        while you tune.{" "}
+        <em>Address on right</em> · Paper <em>Half A4 / A5 (210×148 mm)</em> · Direct Print After Save{" "}
+        <em>on</em> (below). Half of A4 <em>is</em> A5. Load the half-sheet in the A4 tray in{" "}
+        <strong>portrait</strong> (210 mm across). Dense one-page bill — watch the Live Preview.{" "}
         {settings.defaultPaperSize !== "A5-landscape" && (
           <button
             type="button"
@@ -5147,11 +5147,12 @@ function BillingPrintTab() {
           </div>
         </div>
         <div className="rounded-lg border border-amber-200 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-800 px-4 py-3 text-xs text-amber-800 dark:text-amber-300 leading-relaxed">
-          <strong>Printer prints with big blank margins?</strong> This setting only decides the size
-          the bill is <em>designed</em> for — your browser's print dialog also needs the matching
-          Paper size, and <strong>Scale</strong> must be <strong>&quot;Actual size&quot;</strong> / <strong>100%</strong>
-          (not &quot;Fit to page&quot;). If the printer tray holds A4, either switch the tray to A5
-          or select A4 here instead.
+          <strong>How to print on half A4 (this is A5):</strong> Cut A4 in half → 210×148 mm.
+          Put that sheet in the printer <em>portrait</em> (same way you load A4 — 210 mm across).
+          In the browser print dialog: Paper = <strong>A4</strong>, Orientation ={" "}
+          <strong>Portrait</strong>, Scale = <strong>Actual size / 100%</strong>
+          (not Fit to page). Do <em>not</em> pick A5 or Landscape in the printer — that rotates
+          the job and leaves a blank band on the right.
         </div>
       </SectionCard>
 

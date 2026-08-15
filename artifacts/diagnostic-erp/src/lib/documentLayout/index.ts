@@ -11,6 +11,7 @@ export {
   type PageSpec,
   type ResolvedPageLayout,
   PAGE_SPECS,
+  HALF_A4_TRAY_PAGE_CSS,
   resolvePageLayout,
   contentBoxMm,
 } from "./pageSpec";
