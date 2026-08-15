@@ -156,7 +156,7 @@ export default function ReportExportPanel({
             data-testid="report-layout-preview-enlarge-header"
           >
             <Maximize2 className="h-3 w-3 mr-1" />
-            Preview
+            Enlarge
           </Button>
         </div>
       </div>

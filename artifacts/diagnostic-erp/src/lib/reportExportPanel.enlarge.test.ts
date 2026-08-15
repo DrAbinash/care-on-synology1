@@ -20,8 +20,9 @@ describe("ReportExportPanel — enlarge preview before finalize", () => {
     expect(src).toContain("Review before finalize");
   });
 
-  it("exposes Enlarge / Preview actions in the toolbar", () => {
+  it("exposes Enlarge actions in the toolbar", () => {
     expect(src).toContain('data-testid="report-layout-preview-enlarge-btn"');
     expect(src).toContain('data-testid="report-layout-preview-enlarge-header"');
+    expect(src).toMatch(/report-layout-preview-enlarge-header[\s\S]{0,400}Enlarge/);
   });
 });
