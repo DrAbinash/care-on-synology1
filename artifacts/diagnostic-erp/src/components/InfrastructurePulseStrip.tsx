@@ -227,6 +227,11 @@ export function InfrastructurePulseStrip() {
             <ShieldCheck size={11} className={verifyMutation.isPending ? "animate-spin" : ""} />
             {verifyMutation.isPending ? "Verifying…" : "Verify Backup"}
           </Button>
+          <Link href="/billing-performance">
+            <Button type="button" variant="ghost" size="sm" className="h-6 px-1.5 text-[10px] gap-1" title="Clinic Peak / Billing Lane monitor">
+              <Gauge size={11} /> Peak
+            </Button>
+          </Link>
           <Link href="/radiology/operational-health">
             <Button type="button" variant="ghost" size="sm" className="h-6 px-1.5 text-[10px] gap-1">
               <Gauge size={11} /> Details
