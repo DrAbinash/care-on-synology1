@@ -1,4 +1,4 @@
-import { Storage, File } from "@google-cloud/storage";
+import type { Storage, File } from "@google-cloud/storage";
 import { Readable } from "stream";
 import { randomUUID } from "crypto";
 import {
@@ -11,23 +11,39 @@ import {
 
 const REPLIT_SIDECAR_ENDPOINT = "http://127.0.0.1:1106";
 
-export const objectStorageClient = new Storage({
-  credentials: {
-    audience: "replit",
-    subject_token_type: "access_token",
-    token_url: `${REPLIT_SIDECAR_ENDPOINT}/token`,
-    type: "external_account",
-    credential_source: {
-      url: `${REPLIT_SIDECAR_ENDPOINT}/credential`,
-      format: {
-        type: "json",
-        subject_token_field_name: "access_token",
-      },
-    },
-    universe_domain: "googleapis.com",
-  },
-  projectId: "",
-});
+// Loaded on first use, not at import time. @google-cloud/storage drags in
+// gaxios, whose CJS build require()s ESM-only uuid@14 and throws
+// "Cannot require() ES Module ... in a cycle" — which made every module that
+// transitively imported this file (the whole API router) unimportable under
+// Vitest. Object storage is optional on-premise, so paying that cost eagerly
+// bought nothing.
+let storageClientPromise: Promise<Storage> | null = null;
+
+async function getObjectStorageClient(): Promise<Storage> {
+  if (!storageClientPromise) {
+    storageClientPromise = import("@google-cloud/storage").then(
+      ({ Storage: StorageCtor }) =>
+        new StorageCtor({
+          credentials: {
+            audience: "replit",
+            subject_token_type: "access_token",
+            token_url: `${REPLIT_SIDECAR_ENDPOINT}/token`,
+            type: "external_account",
+            credential_source: {
+              url: `${REPLIT_SIDECAR_ENDPOINT}/credential`,
+              format: {
+                type: "json",
+                subject_token_field_name: "access_token",
+              },
+            },
+            universe_domain: "googleapis.com",
+          },
+          projectId: "",
+        }),
+    );
+  }
+  return storageClientPromise;
+}
 
 export class ObjectNotFoundError extends Error {
   constructor() {
@@ -75,7 +91,7 @@ export class ObjectStorageService {
       const fullPath = `${searchPath}/${filePath}`;
 
       const { bucketName, objectName } = parseObjectPath(fullPath);
-      const bucket = objectStorageClient.bucket(bucketName);
+      const bucket = (await getObjectStorageClient()).bucket(bucketName);
       const file = bucket.file(objectName);
 
       const [exists] = await file.exists();
@@ -145,7 +161,7 @@ export class ObjectStorageService {
     }
     const objectEntityPath = `${entityDir}${entityId}`;
     const { bucketName, objectName } = parseObjectPath(objectEntityPath);
-    const bucket = objectStorageClient.bucket(bucketName);
+    const bucket = (await getObjectStorageClient()).bucket(bucketName);
     const objectFile = bucket.file(objectName);
     const [exists] = await objectFile.exists();
     if (!exists) {
@@ -222,7 +238,7 @@ export class ObjectStorageService {
     }
     const objectEntityPath = `${entityDir}${entityId}`;
     const { bucketName, objectName } = parseObjectPath(objectEntityPath);
-    const bucket = objectStorageClient.bucket(bucketName);
+    const bucket = (await getObjectStorageClient()).bucket(bucketName);
     await bucket.file(objectName).delete().catch(() => {});
   }
 }

@@ -41,6 +41,13 @@ function code(src: string): string {
 const MAX_EXPR = "coalesce(max(substring(";
 /** The anchored all-digit guard that makes the ::int cast safe. */
 const DIGIT_GUARD = "[0-9]+$";
+/**
+ * The offset MUST be cast to int. An untyped bind param makes PostgreSQL
+ * resolve substring(text FROM $1) as the SQL-standard REGEX form, so MAX
+ * always returned 0 and the retry loop walked 0001..0005 — every voucher
+ * after the 5th in a month then failed with vouchers_voucher_number_unique.
+ */
+const OFFSET_INT_CAST = "::int)::int), 0)";
 
 describe("auto-voucher: receipts / refunds / expense vouchers", () => {
   test("nextVoucherNumber derives from MAX, not count(*)", () => {
@@ -54,6 +61,16 @@ describe("auto-voucher: receipts / refunds / expense vouchers", () => {
     // cast over the whole bucket would throw and kill voucher creation outright.
     expect(autoVoucher).toContain(DIGIT_GUARD);
     expect(autoVoucher).toContain("::int");
+  });
+
+  test("the substring offset is cast to int (regex-form trap)", () => {
+    // Without ::int, PostgreSQL resolves substring(text FROM $1) to the REGEX
+    // form and MAX always came back 0 — reproduced live: m=0 vs m=5.
+    expect(autoVoucher).toContain(OFFSET_INT_CAST);
+    expect(accounting).toContain(OFFSET_INT_CAST);
+    // No un-cast offset may remain in either numbering path.
+    expect(code(autoVoucher)).not.toMatch(/from \$\{[^}]*\}\)::int\), 0\)/);
+    expect(code(accounting)).not.toMatch(/from \$\{[^}]*\}\)::int\), 0\)/);
   });
 
   test("the retry loop is retained — MAX does not replace race handling", () => {

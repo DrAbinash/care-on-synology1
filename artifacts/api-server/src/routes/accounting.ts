@@ -167,7 +167,10 @@ function voucherBucket(type: string): string {
 async function maxVoucherSeq(bucket: string): Promise<number> {
   const r = await db
     .select({
-      m: sql<number>`coalesce(max(substring(${vouchersTable.voucherNumber} from ${bucket.length + 1})::int), 0)`,
+      // ${...}::int is required — an untyped bind param makes PostgreSQL pick
+      // substring(string FROM pattern) (regex) instead of the positional form,
+      // so MAX silently came back 0. See lib/auto-voucher.ts for the full note.
+      m: sql<number>`coalesce(max(substring(${vouchersTable.voucherNumber} from ${bucket.length + 1}::int)::int), 0)`,
     })
     .from(vouchersTable)
     .where(

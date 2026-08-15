@@ -1,4 +1,7 @@
-import { File } from "@google-cloud/storage";
+// Type-only: importing @google-cloud/storage at runtime pulls in gaxios, which
+// require()s ESM-only uuid@14 and throws inside a cycle. Nothing here needs the
+// value at runtime, so erase the import at compile time.
+import type { File } from "@google-cloud/storage";
 
 const ACL_POLICY_METADATA_KEY = "custom:aclPolicy";
 
