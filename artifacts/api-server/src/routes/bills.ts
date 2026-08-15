@@ -78,6 +78,21 @@ async function countBillsForLedger(ledgerId: number): Promise<number> {
   return Number(r[0]?.count ?? 0);
 }
 
+// ── Fast-mode token cache ──────────────────────────────────────────────────
+// When the billing desk saves with ?fast=1, tokens are generated in the
+// background and cached here. The client fetches them via GET /:id/tokens
+// once the print dialog is ready. Entries expire after 2 minutes.
+interface CachedTokens { tokens: Awaited<ReturnType<typeof generateTestTokensForOrder>>; generatedAt: number; }
+const tokenCache = new Map<number, CachedTokens>();
+const TOKEN_CACHE_TTL_MS = 120_000;
+// Clean up expired entries every 5 minutes to prevent unbounded growth
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, val] of tokenCache) {
+    if (now - val.generatedAt > TOKEN_CACHE_TTL_MS) tokenCache.delete(key);
+  }
+}, 300_000).unref();
+
 // Takes the order row the caller already holds (this runs inside the hot
 // save-and-print guard wave — no re-select).
 async function resolveLedgerForOrder(order: typeof ordersTable.$inferSelect): Promise<number> {
@@ -667,6 +682,22 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
 
   const txnDoneAt = Date.now();
 
+  // Determine Form-F + online payment flags early so both the fast-mode and
+  // normal paths can use them. Uses the clinic row + orderLineTests fetched
+  // in the parallel guard wave above.
+  let needsFormFData = false;
+  try {
+    if (formFClinic?.formFBillingPrompt) {
+      const formFTestIds: number[] = JSON.parse(formFClinic.formFTestIds ?? "[]");
+      needsFormFData = formFTestIds.length > 0 && orderLineTests.some((t) => formFTestIds.includes(t.testId));
+    }
+  } catch (e) {
+    req.log?.warn?.({ err: e }, "Form-F billing prompt check failed");
+  }
+  const onlinePayment = (inlinePayments as Array<{ amount: number; method?: string }>).find(p => p.method === "online");
+  const needsOnlinePayment = !!onlinePayment;
+  const onlineAmount = onlinePayment ? Number(onlinePayment.amount) : 0;
+
   // Radiology study fan-out — fire-and-forget. The billing desk's receipt and
   // token slip never show study/accession data, and study creation for a
   // multi-modality bill is the single slowest post-commit chain (per-study
@@ -692,6 +723,66 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
   // each other AND with buildBill (which only reads rows the transaction
   // above already committed), so the desk waits for the slowest of the three,
   // not the sum. Each token failure is logged but never blocks bill creation.
+  //
+  // FAST PATH (Fix B + C): when the client sends ?fast=1, we skip buildBill
+  // entirely (the client already has patient/order/tests data from its form
+  // state) and make token generation non-blocking — tokens are generated in
+  // the background and the client gets the bill response immediately. This
+  // cuts 1-4 seconds off the save-and-print path on slow Cloudflare Tunnel
+  // connections. The client falls back to a "token pending" state and
+  // refetches the token separately if needed.
+  const fastMode = req.query.fast === "1" || req.query.fast === "true";
+
+  if (fastMode) {
+    // Fire token generation in background — don't block the response
+    generateTestTokensForOrder({
+      ledgerId,
+      billId: bill.id,
+      orderId: order.id,
+      patientId: order.patientId,
+      priority: isVip ? 5 : 0,
+    }).then((tokens) => {
+      // Cache tokens for the client's follow-up fetch
+      tokenCache.set(bill.id, { tokens, generatedAt: Date.now() });
+    }).catch((err) => {
+      console.warn("Per-test token generation failed (fast mode):", err);
+    });
+
+    const totalMs = Date.now() - startedAt;
+    if (totalMs > getSlowThresholdMs()) {
+      req.log?.warn?.(
+        { totalMs, guardsMs: txStartedAt - startedAt, txnMs: txnDoneAt - txStartedAt, fanoutMs: 0, billId: bill.id, fastMode: true },
+        "bill save (fast mode)",
+      );
+    }
+
+    // Return minimal response — client already has patient/order/tests from form state
+    res.status(201).json({
+      id: bill.id,
+      billNumber: bill.billNumber,
+      createdAt: bill.createdAt,
+      createdByName: bill.createdByName,
+      subtotal: Number(bill.subtotal),
+      discount: Number(bill.discount),
+      taxAmount: Number(bill.taxAmount),
+      totalAmount: Number(bill.totalAmount),
+      paidAmount: Number(bill.paidAmount),
+      balanceAmount: Number(bill.balanceAmount),
+      status: bill.status,
+      patient: null,
+      order: null,
+      payments: [],
+      token: null,
+      testTokens: [],
+      studies: [],
+      needsFormFData,
+      needsOnlinePayment,
+      onlineAmount,
+      _fastMode: true,
+    });
+    return;
+  }
+
   const [testTokens, built] = await Promise.all([
     generateTestTokensForOrder({
       ledgerId,
@@ -737,23 +828,6 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
       if (!result.ok && !result.skipped) console.warn(`WhatsApp bill notification failed for bill ${bill.billNumber}:`, result.error);
     }).catch((err) => console.warn("WhatsApp send failed:", err));
   }
-
-  // Determine if this bill contains any Form-F-required tests so the billing
-  // desk can prompt for address + guardian name when the clinic setting is on.
-  // Uses the clinic row pre-fetched in the parallel wave above.
-  let needsFormFData = false;
-  try {
-    if (formFClinic?.formFBillingPrompt) {
-      const formFTestIds: number[] = JSON.parse(formFClinic.formFTestIds ?? "[]");
-      needsFormFData = formFTestIds.length > 0 && orderLineTests.some((t) => formFTestIds.includes(t.testId));
-    }
-  } catch (e) {
-    req.log?.warn?.({ err: e }, "Form-F billing prompt check failed");
-  }
-
-  const onlinePayment = (inlinePayments as Array<{ amount: number; method?: string }>).find(p => p.method === "online");
-  const needsOnlinePayment = !!onlinePayment;
-  const onlineAmount = onlinePayment ? Number(onlinePayment.amount) : 0;
 
   const totalMs = Date.now() - startedAt;
   if (totalMs > getSlowThresholdMs()) {
@@ -852,6 +926,24 @@ billsRouter.patch("/form-f-patient-data", async (req: StaffAuthRequest, res) => 
     console.error("[bills] form-f-patient-data error:", err);
     res.status(500).json({ error: "Internal server error" });
   }
+});
+
+// GET /:id/tokens — fetch test tokens for a fast-mode bill save.
+// The client calls this after receiving the fast-mode bill response, to
+// pick up the tokens that were generated in the background.
+billsRouter.get("/:id/tokens", async (req, res) => {
+  const billId = Number(req.params.id);
+  if (!Number.isInteger(billId) || billId <= 0) {
+    res.status(400).json({ error: "Invalid id" });
+    return;
+  }
+  const cached = tokenCache.get(billId);
+  if (cached && Date.now() - cached.generatedAt < TOKEN_CACHE_TTL_MS) {
+    res.json({ tokens: cached.tokens, ready: true });
+    return;
+  }
+  // Not cached or expired — regenerate on demand (client will retry once)
+  res.status(202).json({ tokens: [], ready: false });
 });
 
 billsRouter.get("/:id", async (req, res) => {

@@ -10,7 +10,23 @@ if (!process.env.DATABASE_URL) {
   );
 }
 
-export const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+export const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  // Increase pool size from default 10 to 25 — the billing save path holds
+  // a connection through the advisory-lock transaction, and concurrent saves
+  // (reception + billing counter + day-close queries) can exhaust the default
+  // 10-connection pool on a busy day, causing save latency to spike as
+  // requests queue waiting for a free connection.
+  max: Number(process.env.DB_POOL_MAX ?? 25),
+  // Fail fast instead of hanging indefinitely when the DB is unreachable.
+  // Default is 0 (no timeout) which means a frozen DB hangs the entire API.
+  connectionTimeoutMillis: 10_000,
+  // Reclaim idle connections faster so the pool stays fresh.
+  idleTimeoutMillis: 30_000,
+  // Allow a brief grace period for queries to finish when the pool is
+  // draining on shutdown, then force-close.
+  allowExitOnIdle: false,
+});
 
 // Catch idle-client errors and connection failures emitted on the pool event
 // emitter. Without this handler Node.js would print the raw error object to

@@ -99,6 +99,7 @@ type MriWarmStatus = {
   lastError: string | null;
   candidates: number;
   orthancReachable: boolean | null;
+  pausedForPeakHours?: boolean;
 };
 
 
@@ -165,6 +166,8 @@ function MriWarmCacheStatusPanel() {
         <span className="font-semibold text-xs">Status</span>
         {data?.running ? (
           <Badge className="bg-amber-100 text-amber-800 border-amber-300">Running…</Badge>
+        ) : data?.pausedForPeakHours ? (
+          <Badge className="bg-sky-100 text-sky-800 border-sky-300">Paused 8am–4pm (billing priority)</Badge>
         ) : data?.orthancReachable === false ? (
           <Badge className="bg-red-100 text-red-800 border-red-300">Orthanc unreachable</Badge>
         ) : (
@@ -776,13 +779,15 @@ export default function RadiologySettingsCenter() {
             <h4 className="text-xs font-bold uppercase tracking-wide text-muted-foreground">MRI study warm cache</h4>
             <p className="text-[11px] text-muted-foreground">
               Speeds up Reporting Workspace MRI opens by touching today+yesterday (or last N) MR studies in Orthanc
-              every ~10 minutes, and by prefetching DICOMweb metadata in the browser when the queue loads.
+              every ~10 minutes after 4pm IST, and by prefetching DICOMweb metadata in the browser when the queue loads
+              outside clinic hours. Automatic warm + browser prefetch pause 08:00–16:00 IST so billing and USG DICOM
+              send (C-STORE) keep Orthanc. Use “Warm now” if a radiologist needs MRI opens sped up during the day.
               Pixel data stays in Orthanc — nothing heavy is stored in the ERP database.
             </p>
             <div className="flex items-center justify-between border rounded-lg p-3">
               <div>
                 <Label className="text-xs font-semibold">Enable MRI warm cache</Label>
-                <p className="text-[11px] text-muted-foreground">ON (trial default). Disable if Orthanc load is a concern overnight.</p>
+                <p className="text-[11px] text-muted-foreground">ON (trial default). Auto-runs after 4pm IST. Disable if Orthanc load is a concern overnight.</p>
               </div>
               <Switch checked={svOn("mri_warm_cache_enabled", true)} disabled={!isAdmin}
                 onCheckedChange={(v) => upsertSetting.mutate({ key: "mri_warm_cache_enabled", value: String(v), category: "radiology" })} />

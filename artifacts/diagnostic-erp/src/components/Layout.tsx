@@ -98,6 +98,7 @@ import { useIsMobile } from "@/hooks/use-mobile";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
 import { useGlobalScanner } from "@/hooks/useGlobalScanner";
 import { api } from "@/lib/fetchApi";
+import { isClinicPeakHours } from "@/lib/clinicPeakHours";
 import { applyNameGenderExtras, parseNameGenderExtraList } from "@/lib/nameGender";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -283,6 +284,7 @@ const navItems: NavEntry[] = [
       { path: "/dashboard", icon: LayoutDashboard, label: "Owner Dashboard", ownerOnly: true },
       { path: "/reconciliation", icon: ClipboardCheck, label: "Reconciliation Center", ownerOnly: true },
       { path: "/diagnostics", icon: Activity, label: "API Diagnostics", ownerOnly: true },
+      { path: "/billing-performance", icon: Gauge, label: "Billing Peak Monitor", ownerOnly: true },
       { path: "/ops-cockpit", icon: Activity, label: "Operations Cockpit", ownerOnly: true, featureFlag: "ff_ops_cockpit" },
       { path: "/reports", icon: BarChart3, label: "Reports" },
       { path: "/report-delivery-tracking", icon: MessageSquare, label: "Report Delivery", featureFlag: "ff_report_delivery_receipts" },
@@ -480,7 +482,10 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!sessionUserId || !canSeeNewStudies) return;
     let mounted = true;
+    let lastPollAt = 0;
     const poll = async () => {
+      if (isClinicPeakHours() && Date.now() - lastPollAt < 90_000) return;
+      lastPollAt = Date.now();
       try {
         const res = await api.get<{ studies: Array<{ id: number; patientName: string; modality: string; studyDescription: string | null; numberOfImages: number }>; serverTime: string }>(
           `/api/dicom-studies/new?since=${encodeURIComponent(lastCheckRef.current)}`,

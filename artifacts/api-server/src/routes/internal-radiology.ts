@@ -811,7 +811,7 @@ router.post("/radiology/studies", async (req, res) => {
     // never triggered auto-extraction, so those studies sat with no
     // measurements until someone manually clicked "Extract".
     // Fire-and-forget: never blocks the intake response.
-    if (isUltrasoundModality(modality) && studyInstanceUID) {
+    if (isUltrasoundModality(modality) && studyInstanceUID && (await getUsgAdminSettings()).pipelineEnabled !== false) {
       runUsgExtraction({
         worklistId: row.id,
         studyId: row.studyId ?? undefined,

@@ -140,7 +140,17 @@ type LastBill = {
   // Per-department queue tokens issued by the bill creation flow. Populated
   // by the /api/bills POST response; rendered on the separate token printer
   // (see printToken below).
-  testTokens?: Array<{ orderTestId: number; testName: string; department: string; roomNumber: string; floorLabel: string; tokenNo: number }>;
+  testTokens?: Array<LastBillTestToken>;
+};
+
+type LastBillTestToken = {
+  orderTestId: number;
+  testName: string;
+  department: string;
+  roomNumber: string;
+  floorLabel: string;
+  tokenNo: number;
+  tokenDate?: string;
 };
 
 // ──────────────────────────────────────────────────────
@@ -1568,7 +1578,11 @@ export default function BillingDesk() {
       let order: { id: number; orderNumber: string } | undefined;
       try {
         order = await api.post<{ id: number; orderNumber: string }>("/api/orders", orderBody);
-        const bill = await api.post<BillResponse>("/api/bills", { ...billBody, orderId: order.id });
+        // FAST MODE: send ?fast=1 to skip server-side buildBill (we already
+        // have patient/order/tests from form state) and make token generation
+        // non-blocking. Cuts 1-4 seconds off save-and-print on slow connections.
+        // Tokens are fetched separately via GET /:id/tokens after the bill saves.
+        const bill = await api.post<BillResponse>("/api/bills?fast=1", { ...billBody, orderId: order.id });
         return bill;
       } catch (err) {
         if (isQueueableBillingError(err)) {
@@ -1634,6 +1648,48 @@ export default function BillingDesk() {
       setLastBill(lastBillLocal);
       lastBillRef.current = lastBillLocal;
       lastBillLocalRef.current = lastBillLocal;
+
+      // FAST MODE token fetch: if the bill was saved with ?fast=1, tokens are
+      // generated in the background. Fetch them now and update lastBill so the
+      // print dialog has the token number. This runs AFTER setLastBill so the
+      // receipt can start rendering immediately (token is printed separately).
+      if ((bill as any)._fastMode && bill.id) {
+        const billId = bill.id;
+        const fetchTokens = async (retries = 5) => {
+          for (let i = 0; i < retries; i++) {
+            try {
+              const r = await api.get<{ tokens: LastBillTestToken[]; ready: boolean }>(`/api/bills/${billId}/tokens`);
+              if (r.ready && r.tokens?.length) {
+                // Derive the bill-level token (min tokenNo across all test tokens)
+                const minTokenNo = r.tokens.reduce((min, t) => (t.tokenNo < min ? t.tokenNo : min), r.tokens[0].tokenNo);
+                const today = new Date();
+                const tokenDate = r.tokens[0]?.tokenDate ?? `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+                setLastBill(prev => prev ? {
+                  ...prev,
+                  tokenNo: minTokenNo,
+                  tokenDate,
+                  testTokens: r.tokens,
+                } : prev);
+                lastBillRef.current = lastBillRef.current ? {
+                  ...lastBillRef.current,
+                  tokenNo: minTokenNo,
+                  tokenDate,
+                  testTokens: r.tokens,
+                } : lastBillRef.current;
+                lastBillLocalRef.current = lastBillLocalRef.current ? {
+                  ...lastBillLocalRef.current,
+                  tokenNo: minTokenNo,
+                  tokenDate,
+                  testTokens: r.tokens,
+                } : lastBillLocalRef.current;
+                return;
+              }
+            } catch { /* retry */ }
+            await new Promise(r => setTimeout(r, 500)); // 500ms between retries
+          }
+        };
+        void fetchTokens();
+      }
 
       // Online gateway is unpaid until confirmed. Also resume gateway on
       // idempotent replay when the desk still has an online split and balance.
@@ -3707,7 +3763,7 @@ export default function BillingDesk() {
                     >
                       Pay with ICICI Orange Pay →
                     </button>
-                    <p className="text-[10px] text-[#94a3b8]">Scan QR on phone (opens caredeoghar.com → Orange Pay) or tap above. QR stays until payment finishes.</p>
+                    <p className="text-[10px] text-[#94a3b8]">Scan QR on phone (opens caredeoghar.com → Orange Pay) or tap above. QR stays until payment finishes. Staff can stay on LAN login — ICICI still uses the public domain, not a LAN IP. New switches/cables do not replace internet for this pay.</p>
                     <button
                       type="button"
                       onClick={openGatewayQrOnSecondScreen}

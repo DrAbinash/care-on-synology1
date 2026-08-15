@@ -111,6 +111,7 @@ import { requireSuperAdmin } from "../middleware/requireSuperAdmin";
 import { requireSuperAdminUsb, isValidUsbKey, isUsbGateEnforced } from "../middleware/requireSuperAdminUsb";
 import { requireStaffAuth, requireStaffPermission, requireStaffSubPermission, requireAdminRole } from "../middleware/requireStaffAuth";
 import diagnosticsRouter from "./diagnostics";
+import billingPerformanceRouter from "./billingPerformance";
 import adminOperationsRouter from "./admin-operations";
 import { measurementRegistryRouter } from "./measurementRegistry";
 import { pathologyRegistryRouter } from "./pathologyRegistry";
@@ -421,6 +422,10 @@ router.use("/reports", requireStaffAuth, requireStaffPermission("/reports"), rep
 // Admin-only request performance diagnostics (not part of the toggleable
 // per-user permission system — see requireAdminRole).
 router.use("/diagnostics", requireStaffAuth, requireAdminRole, diagnosticsRouter);
+
+// Admin-only Clinic Peak / Billing Lane monitor (composes requestMetrics +
+// cheap health probes; no per-request DB writes; PHI-free).
+router.use("/admin/billing-performance", requireStaffAuth, requireAdminRole, billingPerformanceRouter);
 
 // Admin-only Operational Health / Deployment Smoke Test (one-minute
 // post-rebuild verification: application/db/auth/core-erp/radiology-pacs/

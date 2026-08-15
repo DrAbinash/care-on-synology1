@@ -5,7 +5,14 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
-import { FileDown, Printer, RefreshCw, Eye } from "lucide-react";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { FileDown, Printer, RefreshCw, Eye, Maximize2 } from "lucide-react";
 import { api } from "@/lib/fetchApi";
 import ReportLayoutQuickSelect, {
   type ReportLayoutKey,
@@ -63,6 +70,8 @@ export default function ReportExportPanel({
 }: ReportExportPanelProps) {
   const [open, setOpen] = useState(true);
   const [previewRefresh, setPreviewRefresh] = useState(0);
+  const [enlarged, setEnlarged] = useState(false);
+  const [previewZoom, setPreviewZoom] = useState(1);
 
   const serverPreviewUrl = useMemo(() => {
     const templateQs = reportLayoutTemplateQuery(reportLayout);
@@ -78,7 +87,7 @@ export default function ReportExportPanel({
   const { data: serverHtml, isFetching: serverLoading, refetch } = useQuery<string>({
     queryKey: ["report-export-server-preview", serverPreviewUrl, previewRefresh],
     queryFn: () => api.get<string>(serverPreviewUrl!),
-    enabled: open && !!serverPreviewUrl && reportLayout === "care-premium",
+    enabled: (open || enlarged) && !!serverPreviewUrl && reportLayout === "care-premium",
     staleTime: 15_000,
   });
 
@@ -135,6 +144,20 @@ export default function ReportExportPanel({
               Print like final
             </Button>
           )}
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-6 text-[10px] px-2"
+            onClick={() => {
+              setOpen(true);
+              setEnlarged(true);
+            }}
+            title="Enlarge report preview to check layout and content before finalize"
+            data-testid="report-layout-preview-enlarge-header"
+          >
+            <Maximize2 className="h-3 w-3 mr-1" />
+            Enlarge
+          </Button>
         </div>
       </div>
 
@@ -181,6 +204,17 @@ export default function ReportExportPanel({
               >
                 {impressionStyle}
               </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-6 text-[10px]"
+                title="Enlarge report preview to check layout before finalize"
+                onClick={() => setEnlarged(true)}
+                data-testid="report-layout-preview-enlarge-btn"
+              >
+                <Maximize2 className="h-3 w-3 mr-1" />
+                Enlarge
+              </Button>
               {showServerPremium && (
                 <Button
                   size="sm"
@@ -207,14 +241,64 @@ export default function ReportExportPanel({
             <p className="text-[10px] text-muted-foreground">Loading Premium layout…</p>
           )}
 
-          <iframe
-            title="Report layout preview"
-            srcDoc={displayHtml}
-            className="w-full h-64 border rounded bg-white"
-            data-testid="report-layout-preview"
-          />
+          <div className="relative group">
+            <iframe
+              title="Report layout preview"
+              srcDoc={displayHtml}
+              className="w-full h-64 border rounded bg-white pointer-events-none"
+              tabIndex={-1}
+              data-testid="report-layout-preview"
+            />
+            <button
+              type="button"
+              className="absolute inset-0 rounded border-0 bg-slate-900/0 hover:bg-slate-900/10 focus-visible:ring-2 focus-visible:ring-emerald-500 cursor-zoom-in"
+              onClick={() => setEnlarged(true)}
+              title="Click to enlarge — check layout and content before finalize"
+              data-testid="report-layout-preview-enlarge"
+              aria-label="Enlarge report preview"
+            />
+            <span className="pointer-events-none absolute bottom-2 right-2 text-[10px] font-medium px-1.5 py-0.5 rounded bg-slate-900/70 text-white opacity-80 group-hover:opacity-100">
+              Click to enlarge
+            </span>
+          </div>
         </div>
       )}
+
+      <Dialog open={enlarged} onOpenChange={setEnlarged}>
+        <DialogContent
+          className="max-w-[min(1100px,96vw)] w-[96vw] h-[92vh] p-3 gap-2 flex flex-col"
+          data-testid="report-layout-preview-dialog"
+        >
+          <DialogHeader className="space-y-1 pr-8 shrink-0">
+            <DialogTitle className="text-base">Report preview</DialogTitle>
+            <DialogDescription className="text-xs">
+              Full-page layout and content as it will print. Review before finalize. Esc or ✕ to close.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex items-center gap-1 shrink-0">
+            {([0.9, 1, 1.25] as const).map((z) => (
+              <Button
+                key={z}
+                size="sm"
+                variant={previewZoom === z ? "default" : "outline"}
+                className="h-6 text-[10px] px-2"
+                onClick={() => setPreviewZoom(z)}
+              >
+                {Math.round(z * 100)}%
+              </Button>
+            ))}
+          </div>
+          <div className="flex-1 min-h-0 overflow-auto rounded border bg-slate-100 p-3">
+            <iframe
+              title="Enlarged report layout preview"
+              srcDoc={displayHtml}
+              className="w-full min-h-[1122px] bg-white shadow-md mx-auto border-0"
+              style={{ zoom: previewZoom }}
+              data-testid="report-layout-preview-enlarged"
+            />
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

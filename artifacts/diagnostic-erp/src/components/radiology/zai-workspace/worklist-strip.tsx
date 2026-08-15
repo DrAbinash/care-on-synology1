@@ -39,11 +39,11 @@ export function WorklistStrip({
 
   return (
     <div className="flex h-full flex-col">
-      <div className="border-b border-border px-3 py-2 space-y-1.5">
+      <div className="border-b border-emerald-200/50 px-3 py-2 space-y-1.5 bg-gradient-to-b from-emerald-50/60 to-transparent">
         <div className="flex items-center justify-between gap-2">
           <div>
-            <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Reading Queue</div>
-            <div className="text-[10px] text-muted-foreground/70">
+            <div className="text-xs font-semibold uppercase tracking-wider text-emerald-700">Reading Queue</div>
+            <div className="text-[10px] text-emerald-600/70">
               {studies.length - completed.size} pending · {completed.size} signed · {parked.size} parked
             </div>
           </div>
@@ -54,7 +54,7 @@ export function WorklistStrip({
               if (onNextStudy) onNextStudy();
               else useWorkspace.getState().advanceToNextStudy();
             }}
-            className="inline-flex items-center gap-1 rounded-md bg-emerald-600 px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-white hover:bg-emerald-700"
+            className="inline-flex items-center gap-1 rounded-md bg-gradient-to-b from-emerald-500 to-emerald-600 px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-white hover:from-emerald-600 hover:to-emerald-700 shadow-sm shadow-emerald-500/30"
           >
             <ChevronRight className="h-3 w-3" /> Next
           </button>
@@ -63,7 +63,7 @@ export function WorklistStrip({
           <select
             aria-label="Queue modality"
             data-testid="reading-queue-modality"
-            className="h-6 flex-1 min-w-0 rounded border bg-background px-1 text-[10px]"
+            className="h-6 flex-1 min-w-0 rounded border border-emerald-200/60 bg-background px-1 text-[10px] focus:border-emerald-400 focus:ring-1 focus:ring-emerald-300 outline-none"
             value={modalityFilter}
             onChange={(e) => onModalityFilterChange?.(e.target.value)}
           >
@@ -76,7 +76,7 @@ export function WorklistStrip({
           <select
             aria-label="Queue date"
             data-testid="reading-queue-date"
-            className="h-6 flex-1 min-w-0 rounded border bg-background px-1 text-[10px]"
+            className="h-6 flex-1 min-w-0 rounded border border-emerald-200/60 bg-background px-1 text-[10px] focus:border-emerald-400 focus:ring-1 focus:ring-emerald-300 outline-none"
             value={datePreset}
             onChange={(e) => onDatePresetChange?.(e.target.value as ReadingQueueDatePreset)}
           >
@@ -89,9 +89,9 @@ export function WorklistStrip({
       <ScrollArea className="flex-1">
         <div className="space-y-1 p-1.5">
           {studies.length === 0 && (
-            <div className="rounded border border-dashed border-border p-3 text-[11px] text-muted-foreground text-center mt-4">
+            <div className="rounded border border-dashed border-emerald-300/60 bg-emerald-50/30 p-3 text-[11px] text-emerald-700/80 text-center mt-4">
               No studies in queue.<br />
-              <span className="text-[10px]">Waiting for worklist…</span>
+              <span className="text-[10px] text-emerald-600/60">Waiting for worklist…</span>
             </div>
           )}
           {studies.map(s => {
@@ -112,7 +112,7 @@ export function WorklistStrip({
                 }}
                 className={cn(
                   "group relative flex w-full flex-col gap-1 rounded-lg border px-2.5 py-2 text-left transition",
-                  isActive ? "border-emerald-400 bg-emerald-50/60 shadow-sm" : "border-transparent hover:border-border hover:bg-muted/40",
+                  isActive ? "border-emerald-400 bg-gradient-to-r from-emerald-50 to-emerald-100/50 shadow-md shadow-emerald-500/10" : "border-transparent hover:border-emerald-200 hover:bg-emerald-50/30",
                 )}
                 style={isActive ? { boxShadow: `inset 3px 0 0 0 ${a.ring}` } : undefined}
               >

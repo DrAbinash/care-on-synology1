@@ -580,6 +580,52 @@ export const CHECK_DEFS: Array<OpsCheckDef<OpsCtx>> = [
         : { status: "PASS", message: `latest backup ${ageHours}h ago (${sizeBytes} bytes)`, metadata: { ageHours, sizeBytes } };
     },
   },
+  {
+    id: "backup.restore_verified", name: "Backup restore verified", category: "storage_backup", required: false,
+    run: async (ctx) => {
+      let rows: Array<Record<string, unknown>>;
+      try {
+        rows = await ctx.query(
+          `SELECT status, detail, ran_at FROM radiology_ops_checks WHERE check_name = 'restore_verification' ORDER BY ran_at DESC LIMIT 1`,
+        );
+      } catch {
+        return { status: "UNKNOWN", message: "radiology_ops_checks table not present" };
+      }
+      const latest = rows[0];
+      if (!latest?.ran_at) {
+        return {
+          status: "UNKNOWN",
+          message: "no restore-verification has ever been run — click 'Verify Backup' in My Daily Summary to prove your backups actually restore",
+        };
+      }
+      const ranAt = new Date(latest.ran_at as string);
+      const ageHours = Math.round((ctx.now.getTime() - ranAt.getTime()) / 3600000);
+      const status = String(latest.status ?? "unknown");
+      const detail = latest.detail as { steps?: Array<{ name: string; ok: boolean; detail: string }> } | null;
+      const stepCount = detail?.steps?.length ?? 0;
+      const failedSteps = detail?.steps?.filter((s) => !s.ok).map((s) => s.name) ?? [];
+      if (status === "pass") {
+        const staleHours = 7 * 24; // 7 days
+        if (ageHours > staleHours) {
+          return {
+            status: "WARNING",
+            message: `last restore-verify PASSED ${ageHours}h ago (> 7d) — re-run to stay current`,
+            metadata: { ageHours, stepCount },
+          };
+        }
+        return {
+          status: "PASS",
+          message: `restore verified ${ageHours}h ago — ${stepCount} steps all passed`,
+          metadata: { ageHours, stepCount },
+        };
+      }
+      return {
+        status: "FAIL",
+        message: `last restore-verify FAILED ${ageHours}h ago — failed steps: ${failedSteps.join(", ") || "unknown"}`,
+        metadata: { ageHours, stepCount, failedSteps },
+      };
+    },
+  },
 ];
 
 export interface BuildReportOptions {

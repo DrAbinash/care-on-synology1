@@ -41,6 +41,15 @@ interface EndpointStats {
   errorCount: number; // status >= 500
 }
 
+export type LatencySummary = {
+  count: number;
+  slowCount: number;
+  p50Ms: number | null;
+  p95Ms: number | null;
+  maxMs: number | null;
+  avgMs: number | null;
+};
+
 const recent: RequestLogEntry[] = [];
 const statsByKey = new Map<string, EndpointStats>();
 
@@ -96,6 +105,101 @@ export function recordRequest(entry: {
 
 export function getRecentRequests(limit = 200): RequestLogEntry[] {
   return recent.slice(-limit).reverse();
+}
+
+/** Nearest-rank percentile on a pre-sorted ascending array. */
+export function percentileNearestRank(sortedAsc: number[], p: number): number | null {
+  if (sortedAsc.length === 0) return null;
+  if (p <= 0) return sortedAsc[0]!;
+  if (p >= 100) return sortedAsc[sortedAsc.length - 1]!;
+  const rank = Math.ceil((p / 100) * sortedAsc.length) - 1;
+  return sortedAsc[Math.max(0, Math.min(sortedAsc.length - 1, rank))]!;
+}
+
+export function summarizeDurations(durationsMs: number[], slowThresholdMs = SLOW_THRESHOLD_MS): LatencySummary {
+  if (durationsMs.length === 0) {
+    return { count: 0, slowCount: 0, p50Ms: null, p95Ms: null, maxMs: null, avgMs: null };
+  }
+  const sorted = [...durationsMs].sort((a, b) => a - b);
+  const total = sorted.reduce((s, n) => s + n, 0);
+  return {
+    count: sorted.length,
+    slowCount: sorted.filter((n) => n > slowThresholdMs).length,
+    p50Ms: percentileNearestRank(sorted, 50),
+    p95Ms: percentileNearestRank(sorted, 95),
+    maxMs: sorted[sorted.length - 1]!,
+    avgMs: Math.round(total / sorted.length),
+  };
+}
+
+/** Paths as recorded under app.use("/api", …) — no /api prefix. */
+export function isBillSavePath(method: string, path: string): boolean {
+  if (method.toUpperCase() !== "POST") return false;
+  const p = path.split("?")[0] || "";
+  return p === "/bills" || p === "/bills/";
+}
+
+export function isPatientSearchPath(method: string, path: string): boolean {
+  if (method.toUpperCase() !== "GET") return false;
+  const p = path.split("?")[0] || "";
+  return p === "/patients" || p === "/patients/";
+}
+
+export function getRequestsSince(sinceMs: number): RequestLogEntry[] {
+  return recent.filter((r) => {
+    const t = Date.parse(r.timestamp);
+    return Number.isFinite(t) && t >= sinceMs;
+  });
+}
+
+export function getLatencyForMatcher(
+  match: (method: string, path: string) => boolean,
+  windowMs: number,
+  nowMs = Date.now(),
+): LatencySummary {
+  const since = nowMs - windowMs;
+  const durations = getRequestsSince(since)
+    .filter((r) => match(r.method, r.path))
+    .map((r) => r.durationMs);
+  return summarizeDurations(durations);
+}
+
+export function getRequestsPerMinute(nowMs = Date.now()): number {
+  return getRequestsSince(nowMs - 60_000).length;
+}
+
+export function getSlowEndpointsInWindow(windowMs: number, limit = 8, nowMs = Date.now()): Array<{
+  method: string;
+  path: string;
+  count: number;
+  slowCount: number;
+  p95Ms: number | null;
+  maxMs: number | null;
+}> {
+  const since = nowMs - windowMs;
+  const byKey = new Map<string, number[]>();
+  for (const r of getRequestsSince(since)) {
+    const key = `${r.method} ${r.path}`;
+    const arr = byKey.get(key) ?? [];
+    arr.push(r.durationMs);
+    byKey.set(key, arr);
+  }
+  const rows = [...byKey.entries()].map(([key, durations]) => {
+    const [method, ...rest] = key.split(" ");
+    const summary = summarizeDurations(durations);
+    return {
+      method: method || "?",
+      path: rest.join(" ") || "/",
+      count: summary.count,
+      slowCount: summary.slowCount,
+      p95Ms: summary.p95Ms,
+      maxMs: summary.maxMs,
+    };
+  });
+  return rows
+    .filter((r) => r.slowCount > 0 || (r.p95Ms != null && r.p95Ms >= SLOW_THRESHOLD_MS))
+    .sort((a, b) => (b.p95Ms ?? 0) - (a.p95Ms ?? 0))
+    .slice(0, limit);
 }
 
 export function getEndpointStats(): Array<EndpointStats & { avgMs: number }> {

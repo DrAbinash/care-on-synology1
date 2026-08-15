@@ -28,12 +28,16 @@ const VISUAL_STYLES: Record<ProvenanceVisualKind, string> = {
   "quick-select": "border-l-sky-500 bg-sky-500/10 text-foreground",
   "quick-findings": "border-l-emerald-500 bg-emerald-500/10 text-foreground",
   merged: "border-l-amber-500 bg-amber-500/10 text-foreground",
+  "template-a": "border-l-emerald-600 bg-emerald-100/60 text-emerald-900",
+  "template-b": "border-l-sky-600 bg-sky-100/60 text-sky-900",
   other: "border-l-slate-400 bg-slate-500/10 text-foreground",
 };
 
 const LEGEND: Array<{ kind: ProvenanceVisualKind; label: string; box: string }> = [
   { kind: "quick-select", label: "Quick Select", box: "bg-sky-500/25 border-sky-500" },
   { kind: "quick-findings", label: "Quick Findings", box: "bg-emerald-500/25 border-emerald-500" },
+  { kind: "template-a", label: "Format A", box: "bg-emerald-500/30 border-emerald-600" },
+  { kind: "template-b", label: "Format B", box: "bg-sky-500/30 border-sky-600" },
   { kind: "merged", label: "Merged", box: "bg-amber-500/25 border-amber-500" },
   { kind: "other", label: "Other assisted", box: "bg-slate-500/25 border-slate-400" },
   { kind: "manual", label: "Manual", box: "bg-transparent border-border" },
@@ -104,10 +108,10 @@ export function FindingsEditor({ field, label, placeholder, minHeight = "200px",
     <div className="relative w-full" data-report-field={field} data-testid={`findings-editor-${field}`}>
       <QuickSelectStrip field={field} />
       <div className="flex items-center justify-between mb-1.5">
-        <label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{label}</label>
+        <label className="text-xs font-semibold uppercase tracking-wide text-emerald-600/80">{label}</label>
         <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
           {issues.length > 0 && <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200">{issues.length} lint</span>}
-          <button onClick={sg} className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100 transition" title="AI ghost (Ctrl+Enter)"><span className="font-mono text-[10px]">⌃↵</span> AI</button>
+          <button onClick={sg} className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100 transition shadow-sm" title="AI ghost (Ctrl+Enter)"><span className="font-mono text-[10px]">⌃↵</span> AI</button>
         </div>
       </div>
 
@@ -135,7 +139,7 @@ export function FindingsEditor({ field, label, placeholder, minHeight = "200px",
       )}
 
       <div className="relative flex">
-        <div className="flex-none w-8 select-none border-r border-border bg-muted/30 text-right text-[10px] leading-[1.6] font-mono pt-2.5 text-muted-foreground/70" aria-hidden>
+        <div className="flex-none w-8 select-none border-r border-emerald-200/40 bg-gradient-to-b from-emerald-50/40 to-emerald-50/10 text-right text-[10px] leading-[1.6] font-mono pt-2.5 text-emerald-600/60" aria-hidden>
           {lines.map((_, i) => {
             const ln = i + 1;
             const li = issues.find(x => x.line === ln);

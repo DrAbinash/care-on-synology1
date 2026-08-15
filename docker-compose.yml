@@ -230,6 +230,8 @@ services:
       PORT: "8080"
       LOG_LEVEL: ${LOG_LEVEL:-info}
       TZ: ${TZ:-Asia/Kolkata}
+      # Redis for caching (feature flags, sessions, rate limiting)
+      REDIS_URL: redis://redis:6379
       # Identity stamp checked (read-only) at startup before any compatibility
       # patches run — see runStartupMigrations() in src/index.ts. Must match
       # the same APP_NAME used by care-db-patch-v2 / care-schema-verify.
@@ -461,6 +463,10 @@ services:
       # DB-identity mismatch or an explicit SCHEMA_VERIFY_STRICT=true.
       schema-verify:
         condition: service_completed_successfully
+      # Redis is best-effort — if it fails to start, the API still works
+      # (just without caching). We don't block startup on Redis health.
+      redis:
+        condition: service_started
 
   # ---------------------------------------------------------------------------
   # Web / nginx
@@ -551,6 +557,30 @@ services:
 # Add the BOUNDARY_API_KEY to the care-api service's environment in your
 # .env file so both containers share the same secret:
 #   BOUNDARY_API_KEY=some-long-random-string
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Redis — in-memory cache for feature flags, session lookups, and rate limiting.
+  # Caches GET /api/feature-flags (the #1 most-called endpoint, 76% of all
+  # requests in production logs) so it hits the DB only once per 60s instead of
+  # 300+ times/minute. Also available for future use: session cache, rate
+  # limiting, queue token cache.
+  # ───────────────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: care-redis
+    restart: unless-stopped
+    command: redis-server --maxmemory 128mb --maxmemory-policy allkeys-lru --save "" --appendonly no
+    # No port published — only accessible within the Docker network (care-api connects via redis:6379)
+    # If you need external access for debugging, uncomment:
+    # ports:
+    #   - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - default
 
 volumes:
   db_data:
