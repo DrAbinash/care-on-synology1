@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import QRCode from "qrcode";
 import { api, isQueueableBillingError } from "@/lib/fetchApi";
 import { FINANCIAL_QUERY_OPTIONS } from "@/lib/queryConfig";
+import { isClinicPeakHours } from "@/lib/clinicPeakHours";
 import { enqueueBill, QueuedForSyncError } from "@/lib/offlineBillingQueue";
 import {
   buildProvisionalBillPrintHtml,
@@ -751,6 +752,7 @@ export default function BillingDesk() {
     queryKey: ["bill-preview-no", doctorId],
     queryFn: () => api.get(doctorId ? `/api/bills/preview-number?doctorId=${doctorId}` : "/api/bills/preview-number"),
     retry: false,
+    staleTime: 60_000,
   });
   const dummyBillPreview = {
     billNumber: "2026050001",
@@ -1572,17 +1574,22 @@ export default function BillingDesk() {
         _idempotent?: boolean;
       };
 
-      // order is set as soon as its POST succeeds, so a NetworkError on the
-      // *bill* POST below still queues with "stage: bill" (order already
-      // exists — replay must only redo the bill, not double-create the order).
+      // One-shot save collapses order+bill into a single RTT. On failure we
+      // still queue with clientRef — server handlers resume via idempotency
+      // (order and/or bill may already exist).
       let order: { id: number; orderNumber: string } | undefined;
       try {
-        order = await api.post<{ id: number; orderNumber: string }>("/api/orders", orderBody);
-        // FAST MODE: send ?fast=1 to skip server-side buildBill (we already
-        // have patient/order/tests from form state) and make token generation
-        // non-blocking. Cuts 1-4 seconds off save-and-print on slow connections.
-        // Tokens are fetched separately via GET /:id/tokens after the bill saves.
-        const bill = await api.post<BillResponse>("/api/bills?fast=1", { ...billBody, orderId: order.id });
+        const bill = await api.post<BillResponse & { orderId?: number; orderNumber?: string }>(
+          "/api/billing/save",
+          { ...orderBody, ...billBody },
+        );
+        order = {
+          id: Number(bill.orderId),
+          orderNumber: String(bill.orderNumber ?? ""),
+        };
+        if (!Number.isFinite(order.id) || order.id <= 0) {
+          throw new Error("Billing save returned no orderId");
+        }
         return bill;
       } catch (err) {
         if (isQueueableBillingError(err)) {
@@ -1649,46 +1656,52 @@ export default function BillingDesk() {
       lastBillRef.current = lastBillLocal;
       lastBillLocalRef.current = lastBillLocal;
 
-      // FAST MODE token fetch: if the bill was saved with ?fast=1, tokens are
-      // generated in the background. Fetch them now and update lastBill so the
-      // print dialog has the token number. This runs AFTER setLastBill so the
-      // receipt can start rendering immediately (token is printed separately).
+      // FAST MODE token fetch: background generator + optional long-poll.
+      // One waitMs request replaces the old 5×500ms poll loop.
       if ((bill as any)._fastMode && bill.id) {
         const billId = bill.id;
-        const fetchTokens = async (retries = 5) => {
-          for (let i = 0; i < retries; i++) {
-            try {
-              const r = await api.get<{ tokens: LastBillTestToken[]; ready: boolean }>(`/api/bills/${billId}/tokens`);
-              if (r.ready && r.tokens?.length) {
-                // Derive the bill-level token (min tokenNo across all test tokens)
-                const minTokenNo = r.tokens.reduce((min, t) => (t.tokenNo < min ? t.tokenNo : min), r.tokens[0].tokenNo);
-                const today = new Date();
-                const tokenDate = r.tokens[0]?.tokenDate ?? `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
-                setLastBill(prev => prev ? {
-                  ...prev,
-                  tokenNo: minTokenNo,
-                  tokenDate,
-                  testTokens: r.tokens,
-                } : prev);
-                lastBillRef.current = lastBillRef.current ? {
-                  ...lastBillRef.current,
-                  tokenNo: minTokenNo,
-                  tokenDate,
-                  testTokens: r.tokens,
-                } : lastBillRef.current;
-                lastBillLocalRef.current = lastBillLocalRef.current ? {
-                  ...lastBillLocalRef.current,
-                  tokenNo: minTokenNo,
-                  tokenDate,
-                  testTokens: r.tokens,
-                } : lastBillLocalRef.current;
-                return;
-              }
-            } catch { /* retry */ }
-            await new Promise(r => setTimeout(r, 500)); // 500ms between retries
-          }
+        const applyTokens = (tokens: LastBillTestToken[]) => {
+          if (!tokens?.length) return;
+          const minTokenNo = tokens.reduce((min, t) => (t.tokenNo < min ? t.tokenNo : min), tokens[0].tokenNo);
+          const today = new Date();
+          const tokenDate = (tokens[0] as { tokenDate?: string })?.tokenDate
+            ?? `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+          setLastBill(prev => prev ? {
+            ...prev,
+            tokenNo: minTokenNo,
+            tokenDate,
+            testTokens: tokens,
+          } : prev);
+          lastBillRef.current = lastBillRef.current ? {
+            ...lastBillRef.current,
+            tokenNo: minTokenNo,
+            tokenDate,
+            testTokens: tokens,
+          } : lastBillRef.current;
+          lastBillLocalRef.current = lastBillLocalRef.current ? {
+            ...lastBillLocalRef.current,
+            tokenNo: minTokenNo,
+            tokenDate,
+            testTokens: tokens,
+          } : lastBillLocalRef.current;
         };
-        void fetchTokens();
+        void (async () => {
+          try {
+            const r = await api.get<{ tokens: LastBillTestToken[]; ready: boolean }>(
+              `/api/bills/${billId}/tokens?waitMs=2500`,
+            );
+            if (r.ready && r.tokens?.length) {
+              applyTokens(r.tokens);
+              return;
+            }
+          } catch { /* one quick retry without wait */ }
+          try {
+            const r = await api.get<{ tokens: LastBillTestToken[]; ready: boolean }>(
+              `/api/bills/${billId}/tokens`,
+            );
+            if (r.ready && r.tokens?.length) applyTokens(r.tokens);
+          } catch { /* tokens stay pending; print still works without them */ }
+        })();
       }
 
       // Online gateway is unpaid until confirmed. Also resume gateway on
@@ -1748,7 +1761,15 @@ export default function BillingDesk() {
       setShowBillToast(true);
       window.setTimeout(() => setShowBillToast(false), 5000);
       queryClient.invalidateQueries({ queryKey: ["recent-bills-today"] });
-      queryClient.invalidateQueries({ queryKey: ["bill-preview-no"] });
+      // Bump local preview from the number we just issued — avoid a MAX() hit
+      // that races the next save's bill-number lock under peak concurrency.
+      if (lastBillLocal?.billNumber && /^\d+$/.test(lastBillLocal.billNumber)) {
+        const nextNum = String(BigInt(lastBillLocal.billNumber) + 1n);
+        queryClient.setQueryData<{ next: string; ledgerId?: number }>(
+          ["bill-preview-no", doctorId],
+          (prev) => ({ next: nextNum, ledgerId: prev?.ledgerId }),
+        );
+      }
       if (printAfterSaveRef.current) {
         printAfterSaveRef.current = false;
         const cachedClinic = queryClient.getQueryData<PrintClinic>([
@@ -4191,8 +4212,10 @@ function TodayCollectionsPanel() {
   const { data, isLoading } = useQuery<{ bills: RecentBill[] }>({
     queryKey: ["today-collections-panel", todayIso],
     queryFn: () => api.get<{ bills: RecentBill[] }>(`/api/bills?dateFrom=${todayIso}&dateTo=${todayIso}&excludeCancelled=true&limit=100&page=1&compact=1`),
-    staleTime: 20_000,
-    refetchInterval: 30_000,
+    // Peak: poll less often so save/print keeps the API; invalidateQueries on
+    // save still refreshes immediately after each bill.
+    staleTime: isClinicPeakHours() ? 45_000 : 20_000,
+    refetchInterval: isClinicPeakHours() ? 60_000 : 30_000,
     refetchOnWindowFocus: true,
   });
 
@@ -4309,10 +4332,14 @@ type RecentBill = {
 
 function RecentBillsPanel() {
   const [, navigate] = useLocation();
+  const peak = isClinicPeakHours();
   const { data, isLoading, isError } = useQuery<{ bills: RecentBill[] }>({
     queryKey: ["recent-bills-today"],
     queryFn: () => api.get<{ bills: RecentBill[] }>("/api/bills?limit=20&page=1&compact=1"),
-    ...FINANCIAL_QUERY_OPTIONS,
+    // Desk panels: during peak, slow background refresh (saves still invalidate).
+    ...(peak
+      ? { staleTime: 30_000, refetchInterval: 60_000, refetchOnWindowFocus: true }
+      : FINANCIAL_QUERY_OPTIONS),
   });
 
   const today = new Date().toDateString();

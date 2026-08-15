@@ -26,7 +26,7 @@ export const dicomNodesTable = pgTable("dicom_nodes", {
   // ── Auto-Pull (Q/R) configuration ──────────────────────────────────────────
   // When enabled the cron scheduler creates pull jobs on the configured interval.
   autoPull: boolean("auto_pull").notNull().default(false),
-  // How often to pull in seconds (300 = 5 min).
+  // How often to pull in seconds (300 = 5 min; MRI preset uses 1200 = 20 min).
   pullIntervalSeconds: integer("pull_interval_seconds").notNull().default(300),
   // How many hours back the C-FIND query should cover (24 = 1 day).
   queryLookbackHours: integer("query_lookback_hours").notNull().default(24),

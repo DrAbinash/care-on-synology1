@@ -48,6 +48,7 @@ import { logger } from "../logger";
 import { isUltrasoundModality } from "../usgModality";
 import { isUsgErpPipelineEnabled } from "../usgExtractor";
 import { formatDicomPersonNameForDisplay } from "./dicomNameNormalize";
+import { clinicPeakHoursLabel, isClinicPeakHours } from "../clinicPeakHours";
 
 const CURSOR_KEY = "orthanc_changes_cursor";
 const CURSOR_CATEGORY = "orthanc";
@@ -56,6 +57,10 @@ const HTTP_TIMEOUT_MS = 15_000;
 // PACS with a long history can't monopolise the event loop — the cursor is
 // saved after every page, so the remainder is picked up on the next tick.
 const MAX_PAGES_PER_TICK = 50;
+/** During clinic peak, drain fewer Orthanc pages so billing keeps DB/Orthanc headroom. USG still lands within ~1 min. */
+const MAX_PAGES_PER_TICK_PEAK = 5;
+/** Minimum gap between ticks during peak (timer may still be 20s). */
+const PEAK_MIN_TICK_GAP_MS = 60_000;
 
 // ── Orthanc connection ────────────────────────────────────────────────────────
 
@@ -357,7 +362,8 @@ async function pollOnce(port: number): Promise<void> {
   if (!base) return;
 
   let since = await loadCursor();
-  for (let page = 0; page < MAX_PAGES_PER_TICK; page++) {
+  const pageCap = isClinicPeakHours() ? MAX_PAGES_PER_TICK_PEAK : MAX_PAGES_PER_TICK;
+  for (let page = 0; page < pageCap; page++) {
     const body = await orthancGet<OrthancChangesPage>(base, `/changes?since=${since}&limit=100`);
     if (!body || !Array.isArray(body.Changes)) return; // Orthanc unreachable this tick — retry next tick
 
@@ -404,6 +410,7 @@ export async function ingestOrthancStudyId(orthancStudyId: string): Promise<bool
 // ── Public entrypoint ─────────────────────────────────────────────────────────
 
 let ticking = false;
+let lastTickStartedAt = 0;
 
 export function startOrthancChangesPoller(port: number): void {
   if (process.env.PACS_PROVIDER && process.env.PACS_PROVIDER.toLowerCase() !== "orthanc") {
@@ -424,7 +431,13 @@ export function startOrthancChangesPoller(port: number): void {
   const tick = async () => {
     if (ticking) return; // never overlap runs
     if (inBackoff()) return; // Orthanc is unreachable — wait out the backoff
+    // Peak: keep USG intake alive but don't hammer Orthanc every 20s while
+    // the billing desk and USG C-STORE need the same PACS + DB headroom.
+    if (isClinicPeakHours() && lastTickStartedAt > 0 && Date.now() - lastTickStartedAt < PEAK_MIN_TICK_GAP_MS) {
+      return;
+    }
     ticking = true;
+    lastTickStartedAt = Date.now();
     try {
       await pollOnce(port);
     } catch (err) {
@@ -437,5 +450,8 @@ export function startOrthancChangesPoller(port: number): void {
   // First sweep shortly after boot (lets migrations settle), then on interval.
   setTimeout(tick, 15_000).unref?.();
   setInterval(tick, intervalMs).unref?.();
-  logger.info({ intervalMs }, "Orthanc → ERP study auto-push poller started");
+  logger.info(
+    { intervalMs, peakMinGapMs: PEAK_MIN_TICK_GAP_MS, peakWindow: clinicPeakHoursLabel() },
+    "Orthanc → ERP study auto-push poller started",
+  );
 }

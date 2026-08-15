@@ -2,7 +2,7 @@ import type { Request, Response, NextFunction } from "express";
 import { db } from "@workspace/db";
 import { portalSessionsTable, usersTable, clinicSettingsTable } from "@workspace/db/schema";
 import { and, eq, gt } from "drizzle-orm";
-import { getCached, setCached } from "../lib/ttlCache";
+import { getCached, setCached, invalidateCached } from "../lib/ttlCache";
 
 export interface StaffAuthRequest extends Request {
   staffSession?: {
@@ -27,6 +27,28 @@ export const FULL_ACCESS_ROLES = new Set(["admin", "super_admin"]);
 
 const IDLE_TIMEOUT_CACHE_KEY = "clinic-settings:session-idle-timeout-minutes";
 const IDLE_TIMEOUT_CACHE_TTL_MS = 60_000;
+
+/** Short-lived staff auth cache — billing desk hits this middleware twice per save. */
+const STAFF_AUTH_CACHE_TTL_MS = 20_000;
+type CachedStaffAuth = {
+  sessionId: number;
+  subjectId: number;
+  subjectName: string;
+  role: string;
+  permissions: string[];
+  maxDiscount: number | null;
+  expiresAtMs: number;
+  lastActivityAtMs: number;
+};
+
+function staffAuthCacheKey(token: string): string {
+  return `staff-auth:${token}`;
+}
+
+/** Drop a cached staff auth entry (logout / idle expiry / force re-check). */
+export function invalidateStaffAuthCache(token: string): void {
+  invalidateCached(staffAuthCacheKey(token));
+}
 
 async function getIdleTimeoutMinutes(): Promise<number> {
   const cached = getCached<number>(IDLE_TIMEOUT_CACHE_KEY);
@@ -64,40 +86,69 @@ export async function requireStaffAuth(
     return;
   }
 
-  // The session lookup and the clinic idle-timeout setting are independent —
-  // fetch them in one round-trip wave. This middleware runs on every
-  // authenticated request (twice per billing-desk save: POST /api/orders then
-  // POST /api/bills), so each serial round-trip here delays the receipt print.
-  // The idle-timeout setting is a single reference value that changes ~never,
-  // so it is served from the in-process TTL cache (ttlCache.ts, same pattern
-  // as clinicSettings.ts/display.ts) — a config change takes at most 60s to
-  // reach this middleware, well within the minute-resolution the setting has.
-  const [[session], idleMinutes] = await Promise.all([
-    db
-      .select()
-      .from(portalSessionsTable)
-      .where(
-        and(
-          eq(portalSessionsTable.token, token),
-          eq(portalSessionsTable.scope, "staff"),
-          gt(portalSessionsTable.expiresAt, new Date()),
-        ),
-      )
-      .limit(1),
-    getIdleTimeoutMinutes(),
-  ]);
+  const idleMinutes = await getIdleTimeoutMinutes();
+  const cacheKey = staffAuthCacheKey(token);
+  const cached = getCached<CachedStaffAuth>(cacheKey);
+  const nowMs = Date.now();
+
+  // Cache hit: skip session + user SELECTs. Billing desk save does order then
+  // bill — the second auth is almost always a hit within the 20s TTL.
+  if (cached && cached.expiresAtMs > nowMs) {
+    if (idleMinutes > 0) {
+      const idleMs = nowMs - cached.lastActivityAtMs;
+      if (idleMs > idleMinutes * 60 * 1000) {
+        invalidateCached(cacheKey);
+        await db.delete(portalSessionsTable).where(eq(portalSessionsTable.id, cached.sessionId));
+        res.status(401).json({ error: "Session expired due to inactivity. Please log in again." });
+        return;
+      }
+    }
+
+    cached.lastActivityAtMs = nowMs;
+    setCached(cacheKey, cached, STAFF_AUTH_CACHE_TTL_MS);
+    db.update(portalSessionsTable)
+      .set({ lastActivityAt: new Date(nowMs) })
+      .where(eq(portalSessionsTable.id, cached.sessionId))
+      .catch((err) => req.log?.warn?.({ err }, "session last_activity_at touch failed"));
+
+    req.staffSession = {
+      id: cached.sessionId,
+      subjectId: cached.subjectId,
+      subjectName: cached.subjectName,
+      role: cached.role,
+      permissions: cached.permissions,
+      maxDiscount: cached.maxDiscount,
+    };
+    next();
+    return;
+  }
+
+  // Cache miss — load session from Postgres.
+  const [session] = await db
+    .select()
+    .from(portalSessionsTable)
+    .where(
+      and(
+        eq(portalSessionsTable.token, token),
+        eq(portalSessionsTable.scope, "staff"),
+        gt(portalSessionsTable.expiresAt, new Date()),
+      ),
+    )
+    .limit(1);
 
   if (!session) {
+    invalidateCached(cacheKey);
     res.status(401).json({ error: "Invalid or expired staff session. Please log in again." });
     return;
   }
 
   // ── Idle timeout enforcement ──────────────────────────────────────────────
-  // If clinic_settings.session_idle_timeout_minutes > 0, invalidate the
+  // If clinic_settings.session_idle_timeout_minutes > 0, expire the
   // session when it has been idle longer than the configured window.
   if (idleMinutes > 0 && session.lastActivityAt) {
     const idleMs = Date.now() - new Date(session.lastActivityAt).getTime();
     if (idleMs > idleMinutes * 60 * 1000) {
+      invalidateCached(cacheKey);
       await db.delete(portalSessionsTable).where(eq(portalSessionsTable.id, session.id));
       res.status(401).json({ error: "Session expired due to inactivity. Please log in again." });
       return;
@@ -117,6 +168,7 @@ export async function requireStaffAuth(
     .limit(1);
 
   if (!user || !user.isActive) {
+    invalidateCached(cacheKey);
     res.status(401).json({ error: "Staff account is inactive or no longer exists. Please contact an administrator." });
     return;
   }
@@ -133,25 +185,40 @@ export async function requireStaffAuth(
     /* leave permissions empty */
   }
 
+  const role = normalizeRole(user.role);
+  const maxDiscount = user.maxDiscount != null ? Number(user.maxDiscount) : null;
+
   // Touch last_activity_at so the idle timeout resets on every authenticated
   // request. Fired WITHOUT await: this is a committed write (WAL fsync) that
   // used to gate every single response — including both halves of a
-  // billing-desk save — and nothing downstream reads its result. It is NOT
-  // debounced: the idle check above compares against this timestamp, so any
-  // staleness window would shrink the effective idle timeout by that much
-  // and could log out actively-working staff.
+  // billing-desk save — and nothing downstream reads its result.
   db.update(portalSessionsTable)
     .set({ lastActivityAt: new Date() })
     .where(eq(portalSessionsTable.id, session.id))
     .catch((err) => req.log?.warn?.({ err }, "session last_activity_at touch failed"));
 
+  setCached(
+    cacheKey,
+    {
+      sessionId: session.id,
+      subjectId: session.subjectId,
+      subjectName: session.subjectName,
+      role,
+      permissions,
+      maxDiscount,
+      expiresAtMs: new Date(session.expiresAt).getTime(),
+      lastActivityAtMs: nowMs,
+    } satisfies CachedStaffAuth,
+    STAFF_AUTH_CACHE_TTL_MS,
+  );
+
   req.staffSession = {
     id: session.id,
     subjectId: session.subjectId,
     subjectName: session.subjectName,
-    role: normalizeRole(user.role),
+    role,
     permissions,
-    maxDiscount: user.maxDiscount != null ? Number(user.maxDiscount) : null,
+    maxDiscount,
   };
 
   next();

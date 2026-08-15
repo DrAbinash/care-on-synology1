@@ -112,6 +112,7 @@ import { requireSuperAdminUsb, isValidUsbKey, isUsbGateEnforced } from "../middl
 import { requireStaffAuth, requireStaffPermission, requireStaffSubPermission, requireAdminRole } from "../middleware/requireStaffAuth";
 import diagnosticsRouter from "./diagnostics";
 import billingPerformanceRouter from "./billingPerformance";
+import billingDeskSaveRouter from "./billingDeskSave";
 import adminOperationsRouter from "./admin-operations";
 import { measurementRegistryRouter } from "./measurementRegistry";
 import { pathologyRegistryRouter } from "./pathologyRegistry";
@@ -402,6 +403,16 @@ router.use("/orders", requireStaffAuth, requireStaffPermission("/orders"), order
 
 // Billing — /billing permission (covers bill creation, edits, refunds, cancels)
 router.use("/bills", requireStaffAuth, requireStaffPermission("/billing"), billsRouter);
+
+// One-shot desk save (order+bill) — needs BOTH /orders and /billing, same as
+// the two-call path the desk used before.
+router.use(
+  "/billing",
+  requireStaffAuth,
+  requireStaffPermission("/orders"),
+  requireStaffPermission("/billing"),
+  billingDeskSaveRouter,
+);
 
 // Payments — /payments permission
 router.use("/payments", requireStaffAuth, requireStaffPermission("/payments"), paymentsRouter);

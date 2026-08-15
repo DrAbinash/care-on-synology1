@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db, billsTable, paymentsTable, ordersTable, patientsTable } from "@workspace/db";
-import { billAuditsTable, superAdminSessionsTable, ledgersTable, formFRecordsTable } from "@workspace/db/schema";
+import { billAuditsTable, superAdminSessionsTable, ledgersTable, formFRecordsTable, testTokensTable } from "@workspace/db/schema";
 import { sendBillEditEmail, sendBillReprintEmail } from "../email";
 import { isValidUsbKey, isUsbGateEnforced, getUsbKeyHeader } from "../middleware/requireSuperAdminUsb";
 import { auditFromRequest } from "../lib/audit";
@@ -33,6 +33,7 @@ import { generateStudiesForOrder } from "./radiology";
 import { sendBillWhatsapp } from "./whatsapp";
 import { autoVoucherForPayment } from "../lib/auto-voucher";
 import { getSlowThresholdMs } from "../lib/requestMetrics";
+import { nextDocumentCounter } from "../lib/documentNumberCounters";
 import {
   cancelRadiologyMwlForBill,
   cancelRadiologyMwlForOrderTest,
@@ -81,9 +82,13 @@ async function countBillsForLedger(ledgerId: number): Promise<number> {
 // ── Fast-mode token cache ──────────────────────────────────────────────────
 // When the billing desk saves with ?fast=1, tokens are generated in the
 // background and cached here. The client fetches them via GET /:id/tokens
-// once the print dialog is ready. Entries expire after 2 minutes.
-interface CachedTokens { tokens: Awaited<ReturnType<typeof generateTestTokensForOrder>>; generatedAt: number; }
+// (optionally with waitMs long-poll) once the print dialog is ready.
+type BillTokenRow = Awaited<ReturnType<typeof generateTestTokensForOrder>>[number] & {
+  tokenDate?: string;
+};
+interface CachedTokens { tokens: BillTokenRow[]; generatedAt: number; }
 const tokenCache = new Map<number, CachedTokens>();
+const tokenWaiters = new Map<number, Array<(tokens: CachedTokens["tokens"] | null) => void>>();
 const TOKEN_CACHE_TTL_MS = 120_000;
 // Clean up expired entries every 5 minutes to prevent unbounded growth
 setInterval(() => {
@@ -92,6 +97,81 @@ setInterval(() => {
     if (now - val.generatedAt > TOKEN_CACHE_TTL_MS) tokenCache.delete(key);
   }
 }, 300_000).unref();
+
+function mapDbRowsToBillTokens(
+  rows: Array<{
+    orderTestId: number | null;
+    testName: string | null;
+    department: string;
+    roomNumber: string | null;
+    floorLabel: string | null;
+    tokenNo: number;
+    tokenDate: string;
+  }>,
+): BillTokenRow[] {
+  const out: BillTokenRow[] = [];
+  for (const t of rows) {
+    if (t.orderTestId == null) continue;
+    out.push({
+      orderTestId: t.orderTestId,
+      testName: t.testName || "",
+      department: t.department,
+      roomNumber: t.roomNumber || "",
+      floorLabel: t.floorLabel || "",
+      tokenNo: t.tokenNo,
+      tokenDate: t.tokenDate,
+    });
+  }
+  return out;
+}
+
+function publishBillTokens(billId: number, tokens: CachedTokens["tokens"]) {
+  tokenCache.set(billId, { tokens, generatedAt: Date.now() });
+  const waiters = tokenWaiters.get(billId);
+  if (waiters?.length) {
+    tokenWaiters.delete(billId);
+    for (const w of waiters) {
+      try { w(tokens); } catch { /* waiter must not break fan-out */ }
+    }
+  }
+}
+
+/** Wake long-poll waiters without caching (generation failed). */
+function failBillTokens(billId: number) {
+  const waiters = tokenWaiters.get(billId);
+  if (waiters?.length) {
+    tokenWaiters.delete(billId);
+    for (const w of waiters) {
+      try { w(null); } catch { /* ignore */ }
+    }
+  }
+}
+
+function waitForBillTokens(billId: number, waitMs: number): Promise<CachedTokens["tokens"] | null> {
+  if (waitMs <= 0) return Promise.resolve(null);
+  const cached = tokenCache.get(billId);
+  if (cached && Date.now() - cached.generatedAt < TOKEN_CACHE_TTL_MS) {
+    return Promise.resolve(cached.tokens);
+  }
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      const list = tokenWaiters.get(billId);
+      if (list) {
+        const next = list.filter((w) => w !== onReady);
+        if (next.length) tokenWaiters.set(billId, next);
+        else tokenWaiters.delete(billId);
+      }
+      resolve(null);
+    }, waitMs);
+    const onReady = (tokens: CachedTokens["tokens"] | null) => {
+      clearTimeout(timer);
+      resolve(tokens);
+    };
+    const list = tokenWaiters.get(billId) ?? [];
+    list.push(onReady);
+    tokenWaiters.set(billId, list);
+  });
+}
 
 // Takes the order row the caller already holds (this runs inside the hot
 // save-and-print guard wave — no re-select).
@@ -111,35 +191,15 @@ async function resolveLedgerForOrder(order: typeof ordersTable.$inferSelect): Pr
  * `parseBillNumberParts` handles both shapes so the renumber logic keeps
  * working across the migration.
  */
-// A pooled db handle OR an open transaction — callers holding the bill-number
-// advisory lock MUST pass their `tx` (see the note below), so the type admits it.
+// A pooled db handle OR an open transaction — pass `tx` so nextval runs on the
+// same connection as the bill insert (sequences are concurrent; no long lock).
 type DbOrTx = typeof db | Parameters<Parameters<(typeof db)["transaction"]>[0]>[0];
 export async function generateBillNumber(_ledgerId: number, dbHandle: DbOrTx = db): Promise<string> {
   const date = new Date();
   const yyyymm = `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, "0")}`;
-  // Use the global MAX across ALL numeric bills, not a per-ledger count.
-  // COUNT per ledger breaks when multiple ledgers share the same bill_number
-  // unique space — ledger A and B independently arrive at the same sequence
-  // number and collide on the UNIQUE constraint.
-  //
-  // Callers that hold the care_erp_bill_number advisory lock (see call sites
-  // in this file and self-registration.ts) MUST pass their `tx` handle here,
-  // not the pooled `db`. The lock only serializes concurrent callers against
-  // each other if this SELECT runs on the same connection/transaction that
-  // holds the lock — using a separate pooled connection here would also
-  // reintroduce a connection-pool deadlock under load (every concurrent
-  // transaction blocked on the lock holds a pool connection; the lock
-  // holder's own generateBillNumber call would then have no free connection
-  // left to borrow, since the pool has a fixed max size).
-  const [row] = await dbHandle
-    .select({ maxBill: sql<string | null>`MAX(bill_number)` })
-    .from(billsTable)
-    .where(sql`bill_number ~ '^[0-9]+$'`);
-  let seq = 1;
-  if (row?.maxBill) {
-    const parts = parseBillNumberParts(row.maxBill);
-    if (parts) seq = parts.seq + 1;
-  }
+  // SEQUENCE nextval — concurrent desk saves no longer serialize on a global
+  // advisory lock for the whole bill insert transaction.
+  const seq = await nextDocumentCounter(dbHandle, "bill", "global");
   return `${yyyymm}${String(seq).padStart(4, "0")}`;
 }
 
@@ -509,7 +569,9 @@ billsRouter.get("/", async (req, res) => {
   });
 });
 
-billsRouter.post("/", async (req: StaffAuthRequest, res) => {
+billsRouter.post("/", createBillHandler);
+
+export async function createBillHandler(req: StaffAuthRequest, res: Response): Promise<void> {
   const payload = req.body?.data ?? req.body ?? {};
   const parsed = CreateBillBody.safeParse(payload);
   if (!parsed.success) {
@@ -592,7 +654,7 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
   // print. Result checks below run in the original order so error precedence
   // is unchanged.
   const tenSecondsAgo = new Date(Date.now() - 60_000); // 60s window (was 10s) — covers slow connections and timeout retries
-  const [existingBillRows, existingRecentRows, orderLineTests, ledgerId, formFClinic] = await Promise.all([
+  const [existingBillRows, existingRecentRows, orderLineTests, ledgerId, formFClinic, patientPreload] = await Promise.all([
     db
       .select({ id: billsTable.id, billNumber: billsTable.billNumber })
       .from(billsTable)
@@ -634,6 +696,10 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
         req.log?.warn?.({ err: e }, "Form-F billing prompt check failed");
         return null;
       }),
+    // Patient for ledger backfill + voucher/WhatsApp — load outside the
+    // bill-number advisory lock so concurrent saves don't serialize on it.
+    db.select().from(patientsTable).where(eq(patientsTable.id, order.patientId)).limit(1)
+      .then((rows) => rows[0] ?? null),
   ]);
 
   // Guard against double-billing:
@@ -709,41 +775,32 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
     return;
   }
 
-  // Atomically: generate bill number, backfill order's ledgerId, bind patient
-  // to ledger, and insert the bill row. Previously these were 3-4 sequential
-  // writes outside any transaction — a mid-flight failure (e.g. unique-key
-  // collision on billNumber) would leave the order/patient mutated with no
-  // matching bill row.
+  // Short first transaction: allocate number + insert bill (+ ledger backfills
+  // + create audit). Payment rows run in a follow-up transaction so the first
+  // txn stays brief (SEQUENCE nextval is concurrent; keeping payments out still
+  // shrinks lock/row hold time on the new bill and returns the pool connection
+  // sooner under concurrent desk saves).
   const txStartedAt = Date.now();
-  const { bill, pat, validPayments: txPayments } = await db.transaction(async (tx) => {
-    // Serialize bill-number allocation across concurrent requests. Without
-    // this, two overlapping POST /api/bills calls (two billing counters
-    // saving within the same instant, a busy clinic's normal case) can both
-    // read the same MAX(bill_number) via generateBillNumber() before either
-    // commits, then both try to INSERT the same bill_number — one succeeds,
-    // the other throws a raw 23505 unique-violation that surfaces to the
-    // billing desk as an opaque "Internal server error" (bill not saved, no
-    // indication a retry would work). pg_advisory_xact_lock serializes the
-    // read-then-insert critical section per Postgres session and releases
-    // automatically on commit/rollback — same pattern already used for
-    // patient_id generation (see generatePatientId in patients.ts) and the
-    // audit hash chain (see AUDIT_CHAIN_XACT_LOCK in lib/audit.ts).
-    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('care_erp_bill_number'))`);
+  const validPaymentsInput = (inlinePayments as Array<{ amount: number; method?: string; referenceNumber?: string; notes?: string }>)
+    .filter((p) => Number.isFinite(p.amount) && p.amount > 0 && p.method !== "online");
+  const paidAmountInline = validPaymentsInput.reduce((s, p) => s + p.amount, 0);
+  const balanceAmountInline = Math.max(0, totalAmount - paidAmountInline);
+  const billStatus = paidAmountInline >= totalAmount - 0.01 ? "paid" : paidAmountInline > 0 ? "partial" : "pending";
+
+  const { bill, pat } = await db.transaction(async (tx) => {
+    // Bill numbers come from SEQUENCE nextval (documentNumberCounters) — no
+    // process-wide advisory lock that serialized every concurrent desk save.
     const billNumber = await generateBillNumber(ledgerId, tx);
 
     if (!order.ledgerId) {
       await tx.update(ordersTable).set({ ledgerId }).where(eq(ordersTable.id, orderId));
     }
-    const [patRow] = await tx.select().from(patientsTable).where(eq(patientsTable.id, order.patientId));
+    // Patient was preloaded in the guard wave — avoid a SELECT while holding
+    // the bill-number counter row under concurrent desk saves.
+    const patRow = patientPreload;
     if (patRow && !patRow.ledgerId) {
       await tx.update(patientsTable).set({ ledgerId }).where(eq(patientsTable.id, patRow.id));
     }
-
-    // Compute paid amount from inline payments (validated amount > 0 by schema) - exclude pending "online" gateway payments
-    const validPayments = (inlinePayments as Array<{ amount: number; method?: string; referenceNumber?: string; notes?: string }>).filter((p) => Number.isFinite(p.amount) && p.amount > 0 && p.method !== "online");
-    const paidAmountInline = validPayments.reduce((s, p) => s + p.amount, 0);
-    const balanceAmountInline = Math.max(0, totalAmount - paidAmountInline);
-    const billStatus = paidAmountInline >= totalAmount - 0.01 ? "paid" : paidAmountInline > 0 ? "partial" : "pending";
 
     const [billRow] = await tx.insert(billsTable).values({
       billNumber,
@@ -775,30 +832,50 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
       newValue: `total=₹${totalAmount.toFixed(2)}; status=${billStatus}`,
     });
 
-    // Record each payment split atomically with the bill
-    const insertedPayments: Array<{ amount: number; method?: string; paymentId: number }> = [];
-    for (const p of validPayments) {
-      const [insertedPaymentRow] = await tx.insert(paymentsTable).values({
-        billId: billRow.id,
-        amount: p.amount.toFixed(2),
-        method: p.method || "cash",
-        referenceNumber: p.referenceNumber ?? null,
-        notes: p.notes ?? null,
-        recordedByName: actorName || null,
-      }).returning();
-      insertedPayments.push({ amount: p.amount, method: p.method, paymentId: insertedPaymentRow.id });
-      await tx.insert(billAuditsTable).values({
-        billId: billRow.id,
-        editedBy: actorName || "system",
-        reason: "Payment collected",
-        changeType: "payment_collected",
-        oldValue: null,
-        newValue: `amount=₹${p.amount.toFixed(2)}; method=${p.method || "cash"}`,
-      });
-    }
-
-    return { bill: billRow, pat: patRow, validPayments: insertedPayments };
+    return { bill: billRow, pat: patRow };
   });
+
+  // Payment rows after the bill txn commits — concurrent saves can allocate
+  // the next bill number while these inserts run.
+  let txPayments: Array<{ amount: number; method?: string; paymentId: number }> = [];
+  if (validPaymentsInput.length > 0) {
+    try {
+      txPayments = await db.transaction(async (tx) => {
+        const insertedPayments: Array<{ amount: number; method?: string; paymentId: number }> = [];
+        for (const p of validPaymentsInput) {
+          const [insertedPaymentRow] = await tx.insert(paymentsTable).values({
+            billId: bill.id,
+            amount: p.amount.toFixed(2),
+            method: p.method || "cash",
+            referenceNumber: p.referenceNumber ?? null,
+            notes: p.notes ?? null,
+            recordedByName: actorName || null,
+          }).returning();
+          insertedPayments.push({ amount: p.amount, method: p.method, paymentId: insertedPaymentRow.id });
+          await tx.insert(billAuditsTable).values({
+            billId: bill.id,
+            editedBy: actorName || "system",
+            reason: "Payment collected",
+            changeType: "payment_collected",
+            oldValue: null,
+            newValue: `amount=₹${p.amount.toFixed(2)}; method=${p.method || "cash"}`,
+          });
+        }
+        return insertedPayments;
+      });
+    } catch (err) {
+      // Rare: bill row exists with paid totals but payment rows failed.
+      // Roll the bill back to unpaid so desk can re-collect via payment POST
+      // instead of leaving a paid bill with no payment ledger rows.
+      req.log?.error?.({ err, billId: bill.id }, "Bill created but payment insert failed — resetting bill to pending");
+      await db.update(billsTable).set({
+        paidAmount: "0.00",
+        balanceAmount: totalAmount.toFixed(2),
+        status: "pending",
+      }).where(eq(billsTable.id, bill.id)).catch(() => { /* best-effort */ });
+      throw err;
+    }
+  }
 
   const txnDoneAt = Date.now();
 
@@ -863,8 +940,8 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
       patientId: order.patientId,
       priority: isVip ? 5 : 0,
     }).then((tokens) => {
-      // Cache tokens for the client's follow-up fetch
-      tokenCache.set(bill.id, { tokens, generatedAt: Date.now() });
+      // Cache + wake any long-poll GET /:id/tokens waiters
+      publishBillTokens(bill.id, tokens);
       // WhatsApp needs a token number — send only once tokens are ready.
       if (pat?.phone && tokens.length > 0) {
         const tokenInfo = deriveBillTokenFromTestTokens(tokens);
@@ -882,6 +959,7 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
       }
     }).catch((err) => {
       console.warn("Per-test token generation failed (fast mode):", err);
+      failBillTokens(bill.id);
     });
 
     // Parity with the slow path: vouchers are fire-and-forget so they must
@@ -1000,7 +1078,7 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
   // `studies` is now created asynchronously (see fire-and-forget above); the
   // key stays in the response for shape compatibility, but no client reads it.
   res.status(201).json({ ...built, token: tokenInfo, testTokens, studies: [], needsFormFData, needsOnlinePayment, onlineAmount });
-});
+}
 
 // PATCH /form-f-patient-data — Billing Desk Form F popup after bill create.
 // Lives on /bills (billing permission) so counters without /form-f module
@@ -1080,21 +1158,82 @@ billsRouter.patch("/form-f-patient-data", async (req: StaffAuthRequest, res) => 
 });
 
 // GET /:id/tokens — fetch test tokens for a fast-mode bill save.
-// The client calls this after receiving the fast-mode bill response, to
-// pick up the tokens that were generated in the background.
+// Supports ?waitMs=N (capped) so the billing desk can long-poll once instead
+// of a fixed 5×500ms retry loop. Also falls back to DB rows when the
+// in-process cache missed (multi-worker / restart).
 billsRouter.get("/:id/tokens", async (req, res) => {
   const billId = Number(req.params.id);
   if (!Number.isInteger(billId) || billId <= 0) {
     res.status(400).json({ error: "Invalid id" });
     return;
   }
+
+  const respondReady = (tokens: CachedTokens["tokens"]) => {
+    res.json({ tokens, ready: true });
+  };
+
   const cached = tokenCache.get(billId);
   if (cached && Date.now() - cached.generatedAt < TOKEN_CACHE_TTL_MS) {
-    res.json({ tokens: cached.tokens, ready: true });
+    respondReady(cached.tokens);
     return;
   }
-  // Not cached or expired — regenerate on demand (client will retry once)
-  res.status(202).json({ tokens: [], ready: false });
+
+  // DB fallback — background generator may have committed rows already.
+  const fromDb = await db
+    .select({
+      orderTestId: testTokensTable.orderTestId,
+      testName: testsTable.name,
+      department: testTokensTable.department,
+      roomNumber: testTokensTable.roomNumber,
+      floorLabel: testsTable.floorLabel,
+      tokenNo: testTokensTable.tokenNo,
+      tokenDate: testTokensTable.tokenDate,
+    })
+    .from(testTokensTable)
+    .leftJoin(testsTable, eq(testsTable.id, testTokensTable.testId))
+    .where(eq(testTokensTable.billId, billId));
+  if (fromDb.length > 0) {
+    const tokens = mapDbRowsToBillTokens(fromDb);
+    if (tokens.length > 0) {
+      publishBillTokens(billId, tokens);
+      respondReady(tokens);
+      return;
+    }
+  }
+
+  const waitRaw = Number(req.query.waitMs);
+  const waitMs = Number.isFinite(waitRaw) ? Math.max(0, Math.min(Math.floor(waitRaw), 3000)) : 0;
+  if (waitMs > 0) {
+    const waited = await waitForBillTokens(billId, waitMs);
+    if (waited && waited.length > 0) {
+      respondReady(waited);
+      return;
+    }
+    // Re-check DB after wait — another worker may have written tokens.
+    const again = await db
+      .select({
+        orderTestId: testTokensTable.orderTestId,
+        testName: testsTable.name,
+        department: testTokensTable.department,
+        roomNumber: testTokensTable.roomNumber,
+        floorLabel: testsTable.floorLabel,
+        tokenNo: testTokensTable.tokenNo,
+        tokenDate: testTokensTable.tokenDate,
+      })
+      .from(testTokensTable)
+      .leftJoin(testsTable, eq(testsTable.id, testTokensTable.testId))
+      .where(eq(testTokensTable.billId, billId));
+    if (again.length > 0) {
+      const tokens = mapDbRowsToBillTokens(again);
+      if (tokens.length > 0) {
+        publishBillTokens(billId, tokens);
+        respondReady(tokens);
+        return;
+      }
+    }
+  }
+
+  res.json({ tokens: [], ready: false });
 });
 
 billsRouter.get("/:id", async (req, res) => {

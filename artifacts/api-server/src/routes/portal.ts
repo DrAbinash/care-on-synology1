@@ -22,7 +22,7 @@ import {
 import { resolveStaffPermissions } from "../lib/staffSessionUser";
 import { eq, and, desc, gt, sql, count, or } from "drizzle-orm";
 import { sanitizePatient } from "./patients";
-import { requireStaffAuth, requireStaffPermission, normalizeRole } from "../middleware/requireStaffAuth";
+import { requireStaffAuth, requireStaffPermission, normalizeRole, invalidateStaffAuthCache } from "../middleware/requireStaffAuth";
 import { auditFromRequest } from "../lib/audit";
 
 export const portalRouter = Router();
@@ -738,6 +738,7 @@ portalRouter.post("/logout", async (req, res) => {
   const auth = req.headers.authorization || "";
   const token = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
   if (token) {
+    invalidateStaffAuthCache(token);
     const [session] = await db.select().from(portalSessionsTable).where(eq(portalSessionsTable.token, token)).limit(1);
     if (session && session.scope === "staff") {
       const [u] = await db.select({ role: usersTable.role }).from(usersTable).where(eq(usersTable.id, session.subjectId)).limit(1);
