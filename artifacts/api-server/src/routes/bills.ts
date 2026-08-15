@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db, billsTable, paymentsTable, ordersTable, patientsTable } from "@workspace/db";
-import { billAuditsTable, superAdminSessionsTable, ledgersTable, formFRecordsTable, testTokensTable, testsTable } from "@workspace/db/schema";
+import { billAuditsTable, superAdminSessionsTable, ledgersTable, formFRecordsTable, testTokensTable } from "@workspace/db/schema";
 import { sendBillEditEmail, sendBillReprintEmail } from "../email";
 import { isValidUsbKey, isUsbGateEnforced, getUsbKeyHeader } from "../middleware/requireSuperAdminUsb";
 import { auditFromRequest } from "../lib/audit";
@@ -82,7 +82,10 @@ async function countBillsForLedger(ledgerId: number): Promise<number> {
 // When the billing desk saves with ?fast=1, tokens are generated in the
 // background and cached here. The client fetches them via GET /:id/tokens
 // (optionally with waitMs long-poll) once the print dialog is ready.
-interface CachedTokens { tokens: Awaited<ReturnType<typeof generateTestTokensForOrder>>; generatedAt: number; }
+type BillTokenRow = Awaited<ReturnType<typeof generateTestTokensForOrder>>[number] & {
+  tokenDate?: string;
+};
+interface CachedTokens { tokens: BillTokenRow[]; generatedAt: number; }
 const tokenCache = new Map<number, CachedTokens>();
 const tokenWaiters = new Map<number, Array<(tokens: CachedTokens["tokens"] | null) => void>>();
 const TOKEN_CACHE_TTL_MS = 120_000;
@@ -93,6 +96,33 @@ setInterval(() => {
     if (now - val.generatedAt > TOKEN_CACHE_TTL_MS) tokenCache.delete(key);
   }
 }, 300_000).unref();
+
+function mapDbRowsToBillTokens(
+  rows: Array<{
+    orderTestId: number | null;
+    testName: string | null;
+    department: string;
+    roomNumber: string | null;
+    floorLabel: string | null;
+    tokenNo: number;
+    tokenDate: string;
+  }>,
+): BillTokenRow[] {
+  const out: BillTokenRow[] = [];
+  for (const t of rows) {
+    if (t.orderTestId == null) continue;
+    out.push({
+      orderTestId: t.orderTestId,
+      testName: t.testName || "",
+      department: t.department,
+      roomNumber: t.roomNumber || "",
+      floorLabel: t.floorLabel || "",
+      tokenNo: t.tokenNo,
+      tokenDate: t.tokenDate,
+    });
+  }
+  return out;
+}
 
 function publishBillTokens(billId: number, tokens: CachedTokens["tokens"]) {
   tokenCache.set(billId, { tokens, generatedAt: Date.now() });
@@ -1171,18 +1201,12 @@ billsRouter.get("/:id/tokens", async (req, res) => {
     .leftJoin(testsTable, eq(testsTable.id, testTokensTable.testId))
     .where(eq(testTokensTable.billId, billId));
   if (fromDb.length > 0) {
-    const tokens = fromDb.map((t) => ({
-      orderTestId: t.orderTestId,
-      testName: t.testName || "",
-      department: t.department,
-      roomNumber: t.roomNumber || "",
-      floorLabel: t.floorLabel || "",
-      tokenNo: t.tokenNo,
-      tokenDate: t.tokenDate,
-    }));
-    publishBillTokens(billId, tokens);
-    respondReady(tokens);
-    return;
+    const tokens = mapDbRowsToBillTokens(fromDb);
+    if (tokens.length > 0) {
+      publishBillTokens(billId, tokens);
+      respondReady(tokens);
+      return;
+    }
   }
 
   const waitRaw = Number(req.query.waitMs);
@@ -1208,18 +1232,12 @@ billsRouter.get("/:id/tokens", async (req, res) => {
       .leftJoin(testsTable, eq(testsTable.id, testTokensTable.testId))
       .where(eq(testTokensTable.billId, billId));
     if (again.length > 0) {
-      const tokens = again.map((t) => ({
-        orderTestId: t.orderTestId,
-        testName: t.testName || "",
-        department: t.department,
-        roomNumber: t.roomNumber || "",
-        floorLabel: t.floorLabel || "",
-        tokenNo: t.tokenNo,
-        tokenDate: t.tokenDate,
-      }));
-      publishBillTokens(billId, tokens);
-      respondReady(tokens);
-      return;
+      const tokens = mapDbRowsToBillTokens(again);
+      if (tokens.length > 0) {
+        publishBillTokens(billId, tokens);
+        respondReady(tokens);
+        return;
+      }
     }
   }
 
