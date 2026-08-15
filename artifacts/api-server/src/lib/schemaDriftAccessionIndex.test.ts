@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
-const root = join(dirname(fileURLToPath(import.meta.url)), "../../..");
+const root = join(dirname(fileURLToPath(import.meta.url)), "../../../..");
 const mig = readFileSync(join(root, "migrations/zzzz_schema_drift_fix_indexes.sql"), "utf8");
 
 describe("zzzz_schema_drift_fix_indexes accession policy", () => {
