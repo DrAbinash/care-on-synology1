@@ -140,7 +140,17 @@ type LastBill = {
   // Per-department queue tokens issued by the bill creation flow. Populated
   // by the /api/bills POST response; rendered on the separate token printer
   // (see printToken below).
-  testTokens?: Array<{ orderTestId: number; testName: string; department: string; roomNumber: string; floorLabel: string; tokenNo: number }>;
+  testTokens?: Array<LastBillTestToken>;
+};
+
+type LastBillTestToken = {
+  orderTestId: number;
+  testName: string;
+  department: string;
+  roomNumber: string;
+  floorLabel: string;
+  tokenNo: number;
+  tokenDate?: string;
 };
 
 // ──────────────────────────────────────────────────────
@@ -1648,7 +1658,7 @@ export default function BillingDesk() {
         const fetchTokens = async (retries = 5) => {
           for (let i = 0; i < retries; i++) {
             try {
-              const r = await api.get<{ tokens: Array<{ tokenNo: number; tokenDate?: string }>; ready: boolean }>(`/api/bills/${billId}/tokens`);
+              const r = await api.get<{ tokens: LastBillTestToken[]; ready: boolean }>(`/api/bills/${billId}/tokens`);
               if (r.ready && r.tokens?.length) {
                 // Derive the bill-level token (min tokenNo across all test tokens)
                 const minTokenNo = r.tokens.reduce((min, t) => (t.tokenNo < min ? t.tokenNo : min), r.tokens[0].tokenNo);
