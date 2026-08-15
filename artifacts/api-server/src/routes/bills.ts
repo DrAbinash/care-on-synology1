@@ -33,7 +33,7 @@ import { generateStudiesForOrder } from "./radiology";
 import { sendBillWhatsapp } from "./whatsapp";
 import { autoVoucherForPayment } from "../lib/auto-voucher";
 import { getSlowThresholdMs } from "../lib/requestMetrics";
-import { nextDocumentCounter } from "../lib/documentNumberCounters";
+import { nextDocumentCounter, syncBillNumberSeqForward } from "../lib/documentNumberCounters";
 import {
   cancelRadiologyMwlForBill,
   cancelRadiologyMwlForOrderTest,
@@ -787,53 +787,85 @@ export async function createBillHandler(req: StaffAuthRequest, res: Response): P
   const balanceAmountInline = Math.max(0, totalAmount - paidAmountInline);
   const billStatus = paidAmountInline >= totalAmount - 0.01 ? "paid" : paidAmountInline > 0 ? "partial" : "pending";
 
-  const { bill, pat } = await db.transaction(async (tx) => {
-    // Bill numbers come from SEQUENCE nextval (documentNumberCounters) — no
-    // process-wide advisory lock that serialized every concurrent desk save.
-    const billNumber = await generateBillNumber(ledgerId, tx);
-
-    if (!order.ledgerId) {
-      await tx.update(ordersTable).set({ ledgerId }).where(eq(ordersTable.id, orderId));
+  function isBillNumberUniqueViolation(err: unknown): boolean {
+    const e = err as { cause?: { code?: string; constraint?: string }; code?: string; constraint?: string; message?: string };
+    const code = e?.cause?.code ?? e?.code;
+    const constraint = e?.cause?.constraint ?? e?.constraint;
+    if (code === "23505" && (constraint === "bills_bill_number_unique" || String(constraint ?? "").includes("bill_number"))) {
+      return true;
     }
-    // Patient was preloaded in the guard wave — avoid a SELECT while holding
-    // the bill-number counter row under concurrent desk saves.
-    const patRow = patientPreload;
-    if (patRow && !patRow.ledgerId) {
-      await tx.update(patientsTable).set({ ledgerId }).where(eq(patientsTable.id, patRow.id));
+    const msg = String(e?.message ?? err ?? "");
+    return /bills_bill_number_unique|Key \(bill_number\)=/i.test(msg);
+  }
+
+  let bill: typeof billsTable.$inferSelect | undefined;
+  let pat: typeof patientPreload = patientPreload;
+  let lastUniqueErr: unknown;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      const result = await db.transaction(async (tx) => {
+        // Bill numbers come from SEQUENCE nextval (documentNumberCounters) — no
+        // process-wide advisory lock that serialized every concurrent desk save.
+        const billNumber = await generateBillNumber(ledgerId, tx);
+
+        if (!order.ledgerId) {
+          await tx.update(ordersTable).set({ ledgerId }).where(eq(ordersTable.id, orderId));
+        }
+        // Patient was preloaded in the guard wave — avoid a SELECT while holding
+        // the bill-number counter row under concurrent desk saves.
+        const patRow = patientPreload;
+        if (patRow && !patRow.ledgerId) {
+          await tx.update(patientsTable).set({ ledgerId }).where(eq(patientsTable.id, patRow.id));
+        }
+
+        const [billRow] = await tx.insert(billsTable).values({
+          billNumber,
+          orderId,
+          patientId: order.patientId,
+          subtotal: subtotal.toFixed(2),
+          discount: discountAmt.toFixed(2),
+          discountReason,
+          discountReasonNote,
+          taxAmount: taxAmount.toFixed(2),
+          totalAmount: totalAmount.toFixed(2),
+          originalTotal: totalAmount.toFixed(2),
+          paidAmount: paidAmountInline.toFixed(2),
+          balanceAmount: balanceAmountInline.toFixed(2),
+          status: billStatus,
+          ledgerId,
+          dueDate: dueDate ?? null,
+          createdByName: actorName || null,
+          // Store idempotency key so retries return this bill, not a duplicate
+          clientRef: clientRef ?? null,
+        }).returning();
+
+        await tx.insert(billAuditsTable).values({
+          billId: billRow.id,
+          editedBy: actorName || "system",
+          reason: "Bill created",
+          changeType: "bill_created",
+          oldValue: null,
+          newValue: `total=₹${totalAmount.toFixed(2)}; status=${billStatus}`,
+        });
+
+        return { bill: billRow, pat: patRow };
+      });
+      bill = result.bill;
+      pat = result.pat;
+      lastUniqueErr = undefined;
+      break;
+    } catch (err) {
+      if (!isBillNumberUniqueViolation(err)) throw err;
+      lastUniqueErr = err;
+      req.log?.warn?.({ attempt, err }, "bill_number unique violation — reseeding sequence and retrying");
+      await syncBillNumberSeqForward(db);
     }
-
-    const [billRow] = await tx.insert(billsTable).values({
-      billNumber,
-      orderId,
-      patientId: order.patientId,
-      subtotal: subtotal.toFixed(2),
-      discount: discountAmt.toFixed(2),
-      discountReason,
-      discountReasonNote,
-      taxAmount: taxAmount.toFixed(2),
-      totalAmount: totalAmount.toFixed(2),
-      originalTotal: totalAmount.toFixed(2),
-      paidAmount: paidAmountInline.toFixed(2),
-      balanceAmount: balanceAmountInline.toFixed(2),
-      status: billStatus,
-      ledgerId,
-      dueDate: dueDate ?? null,
-      createdByName: actorName || null,
-      // Store idempotency key so retries return this bill, not a duplicate
-      clientRef: clientRef ?? null,
-    }).returning();
-
-    await tx.insert(billAuditsTable).values({
-      billId: billRow.id,
-      editedBy: actorName || "system",
-      reason: "Bill created",
-      changeType: "bill_created",
-      oldValue: null,
-      newValue: `total=₹${totalAmount.toFixed(2)}; status=${billStatus}`,
-    });
-
-    return { bill: billRow, pat: patRow };
-  });
+  }
+  if (!bill) {
+    const message = lastUniqueErr instanceof Error ? lastUniqueErr.message : "Could not allocate a unique bill number";
+    res.status(500).json({ error: message });
+    return;
+  }
 
   // Payment rows after the bill txn commits — concurrent saves can allocate
   // the next bill number while these inserts run.

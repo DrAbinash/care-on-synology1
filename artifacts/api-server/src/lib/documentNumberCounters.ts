@@ -49,6 +49,46 @@ export async function nextDocumentCounter(
   return readNextval(result);
 }
 
+/** Bump bill_number_seq forward to at least MAX(existing bill suffix). Never rewinds. */
+export async function syncBillNumberSeqForward(dbHandle: DbOrTx): Promise<void> {
+  await dbHandle.execute(sql`CREATE SEQUENCE IF NOT EXISTS bill_number_seq`);
+  await dbHandle.execute(sql`
+    DO $$
+    DECLARE
+      max_existing bigint := 0;
+      seq_at bigint := 0;
+      target bigint := 0;
+    BEGIN
+      SELECT COALESCE(
+        MAX(
+          CASE
+            WHEN bill_number ~ '^[0-9]{6}[0-9]+$'
+              THEN substring(bill_number from 7)::bigint
+            WHEN bill_number ~ '^BILL-[0-9]{6}-[0-9]+$'
+              THEN split_part(bill_number, '-', 3)::bigint
+            ELSE NULL
+          END
+        ),
+        0
+      )
+      INTO max_existing
+      FROM bills;
+
+      SELECT CASE
+               WHEN is_called THEN last_value
+               ELSE GREATEST(last_value - 1, 0)
+             END
+        INTO seq_at
+        FROM bill_number_seq;
+
+      target := GREATEST(max_existing, seq_at);
+      IF target > 0 THEN
+        PERFORM setval('bill_number_seq', target, true);
+      END IF;
+    END $$;
+  `);
+}
+
 /**
  * Next patient UHID as `P-#####` via SEQUENCE nextval.
  * Safe on pooled connections — no session advisory lock.
