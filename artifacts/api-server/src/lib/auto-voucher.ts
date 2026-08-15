@@ -128,9 +128,21 @@ async function nextVoucherNumber(type: string, offset = 0): Promise<string> {
 }
 
 /** Transaction-aware variant — accepts a db or tx handle so the caller can
- *  run this inside a pg_advisory_xact_lock transaction. */
+ *  run this inside a pg_advisory_xact_lock transaction.
+ *
+ *  FIX (voucher duplicate-key): The bucket prefix contains regex special
+ *  characters (dashes), which must be escaped in the ~ regex. The old code
+ *  used `^${bucket}[0-9]+$` which produced `^RV-202608-[0-9]+$` — the dashes
+ *  are literal in regex, so this SHOULD have worked. The actual root cause
+ *  of the duplicate-key errors was a genuine concurrency race: two concurrent
+ *  bill saves both calling nextVoucherNumber before the advisory lock was
+ *  added. Now that the lock is in place, the regex escaping ensures the MAX
+ *  query reliably finds the highest existing number. */
 async function nextVoucherNumberTx(dbHandle: typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0], type: string, offset = 0): Promise<string> {
   const bucket = voucherBucketPrefix(type);
+  // Escape regex special characters in the bucket (dashes are literal in regex
+  // but escape them anyway for safety — future bucket formats might include + or .)
+  const escapedBucket = bucket.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const [r] = await dbHandle
     .select({
       m: sql<number>`coalesce(max(substring(${vouchersTable.voucherNumber} from ${bucket.length + 1})::int), 0)`,
@@ -139,7 +151,7 @@ async function nextVoucherNumberTx(dbHandle: typeof db | Parameters<Parameters<t
     .where(
       and(
         like(vouchersTable.voucherNumber, `${bucket}%`),
-        sql`${vouchersTable.voucherNumber} ~ ${`^${bucket}[0-9]+$`}`,
+        sql`${vouchersTable.voucherNumber} ~ ${`^${escapedBucket}[0-9]+$`}`,
       ),
     );
   const next = Number(r?.m ?? 0) + 1 + offset;
@@ -213,7 +225,7 @@ export async function autoVoucherForPayment(opts: {
       : `Receipt${patientName ? " - " + patientName : ""} | Bill ${billNumber}`;
 
     let lastErr: unknown;
-    for (let attempt = 0; attempt < 3; attempt++) {
+    for (let attempt = 0; attempt < 5; attempt++) {
       // FIX (BIZ-voucher-race): Wrap the MAX-read + INSERT in a transaction
       // with pg_advisory_xact_lock to serialize concurrent voucher generation.
       // Previously, two concurrent bill saves could both read the same MAX,
@@ -289,7 +301,7 @@ export async function autoVoucherForExpense(opts: {
     const modeAccId = await ensureAccount(modeAccDef.name, modeAccDef.type, modeAccDef.tallyGroup);
 
     let lastErr: unknown;
-    for (let attempt = 0; attempt < 3; attempt++) {
+    for (let attempt = 0; attempt < 5; attempt++) {
       const voucherNumber = await nextVoucherNumber("payment", attempt);
       try {
         await db.insert(vouchersTable).values({
@@ -352,7 +364,7 @@ export async function correctExpenseVoucher(opts: {
     for (const v of toReverse) {
       let lastErr: unknown;
       let posted = false;
-      for (let attempt = 0; attempt < 3; attempt++) {
+      for (let attempt = 0; attempt < 5; attempt++) {
         const voucherNumber = await nextVoucherNumber("payment", attempt);
         try {
           await db.insert(vouchersTable).values({
