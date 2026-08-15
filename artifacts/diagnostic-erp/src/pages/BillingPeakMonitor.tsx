@@ -43,7 +43,7 @@ type Snapshot = {
       maxMs: number | null;
     }>;
     dbPoolWaiting: number | null;
-    checkpointWriteTimeMs: number | null;
+    checkpointerWriteDeltaMs: number | null;
     background: {
       mriWarmRunning: boolean;
       mriPausedForPeak: boolean;
@@ -59,9 +59,21 @@ type Snapshot = {
     maxWalSize: string | null;
     checkpointTimeout: string | null;
     synchronousCommit: string | null;
-    lastCheckpointAt: string | null;
-    checkpointWriteTimeMs: number | null;
-    checkpointSyncTimeMs: number | null;
+    checkpointer: {
+      available: boolean;
+      cumulativeWriteTimeMs: number | null;
+      cumulativeSyncTimeMs: number | null;
+      numTimed: number | null;
+      numRequested: number | null;
+      statsResetAt: string | null;
+      sinceLastSample: {
+        sampleIntervalMs: number;
+        writeTimeDeltaMs: number;
+        syncTimeDeltaMs: number;
+        numTimedDelta: number;
+        numRequestedDelta: number;
+      } | null;
+    };
   };
   redis: { connected: boolean; note: string };
   mriWarmCache: {
@@ -210,8 +222,29 @@ export function BillingPeakMonitorPanel({ compact = false }: { compact?: boolean
                 <div>max_wal_size: {s.postgres.maxWalSize ?? "—"}</div>
                 <div>checkpoint_timeout: {s.postgres.checkpointTimeout ?? "—"}</div>
                 <div>synchronous_commit: {s.postgres.synchronousCommit ?? "—"}</div>
-                <div>last checkpoint: {s.postgres.lastCheckpointAt ? new Date(s.postgres.lastCheckpointAt).toLocaleString() : "—"}</div>
-                <div>checkpoint write/sync: {ms(s.postgres.checkpointWriteTimeMs)} / {ms(s.postgres.checkpointSyncTimeMs)}</div>
+                {s.postgres.checkpointer.available ? (
+                  <>
+                    <div className="pt-1 font-medium">pg_stat_checkpointer (cumulative since stats_reset)</div>
+                    <div>timed checkpoints: {s.postgres.checkpointer.numTimed ?? "—"}</div>
+                    <div>requested checkpoints: {s.postgres.checkpointer.numRequested ?? "—"}</div>
+                    <div>cumulative write time: {ms(s.postgres.checkpointer.cumulativeWriteTimeMs)}</div>
+                    <div>cumulative sync time: {ms(s.postgres.checkpointer.cumulativeSyncTimeMs)}</div>
+                    <div>stats_reset: {s.postgres.checkpointer.statsResetAt ? new Date(s.postgres.checkpointer.statsResetAt).toLocaleString() : "—"}</div>
+                    {s.postgres.checkpointer.sinceLastSample ? (
+                      <>
+                        <div className="pt-1 font-medium">Since last monitor sample ({s.postgres.checkpointer.sinceLastSample.sampleIntervalMs} ms)</div>
+                        <div>write Δ: {ms(s.postgres.checkpointer.sinceLastSample.writeTimeDeltaMs)}</div>
+                        <div>sync Δ: {ms(s.postgres.checkpointer.sinceLastSample.syncTimeDeltaMs)}</div>
+                        <div>timed Δ / requested Δ: {s.postgres.checkpointer.sinceLastSample.numTimedDelta} / {s.postgres.checkpointer.sinceLastSample.numRequestedDelta}</div>
+                        <div className="text-muted-foreground">Not “last checkpoint duration” — deltas of cumulative counters between samples.</div>
+                      </>
+                    ) : (
+                      <div className="text-muted-foreground">Sample delta available after the next refresh (~45s).</div>
+                    )}
+                  </>
+                ) : (
+                  <div className="text-muted-foreground">pg_stat_checkpointer unavailable (needs PostgreSQL 17+)</div>
+                )}
               </div>
             </StatCard>
             <StatCard label="Redis / background / payments">
@@ -237,7 +270,7 @@ export function BillingPeakMonitorPanel({ compact = false }: { compact?: boolean
               <div>Slow bill saves: <strong>{s.last15m.slowBillSaveCount}</strong></div>
               <div>Slow patient search: <strong>{s.last15m.slowPatientSearchCount}</strong></div>
               <div>Pool waiting: <strong>{s.last15m.dbPoolWaiting ?? "—"}</strong></div>
-              <div>Checkpoint write: <strong>{ms(s.last15m.checkpointWriteTimeMs)}</strong></div>
+              <div>Checkpointer write Δ (sample): <strong>{ms(s.last15m.checkpointerWriteDeltaMs)}</strong></div>
             </div>
             <div className="text-[11px] text-muted-foreground mb-1">
               Background: MRI {s.last15m.background.mriPausedForPeak ? "paused-peak" : s.last15m.background.mriWarmRunning ? "running" : "idle"}

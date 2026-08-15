@@ -16,8 +16,20 @@ vi.mock("@workspace/db", () => {
           ],
         };
       }
+      // PostgreSQL 17 pg_stat_checkpointer — no checkpoint_time; write_time/sync_time already ms.
       if (String(sql).includes("pg_stat_checkpointer")) {
-        return { rows: [{ checkpoint_time: new Date("2026-08-15T10:00:00Z"), write_time: 1.5, sync_time: 0.2 }] };
+        expect(String(sql)).toContain("num_timed");
+        expect(String(sql)).toContain("stats_reset");
+        expect(String(sql)).not.toContain("checkpoint_time");
+        return {
+          rows: [{
+            num_timed: 12,
+            num_requested: 3,
+            write_time: 4514.2,
+            sync_time: 2.0,
+            stats_reset: new Date("2026-08-15T08:00:00Z"),
+          }],
+        };
       }
       return { rows: [{ ok: 1 }] };
     }),
@@ -99,17 +111,79 @@ vi.mock("./requestMetrics", async () => {
   };
 });
 
-import { buildBillingPerformanceSnapshot, formatBillingPerformanceSnapshotText } from "./billingPerformanceSnapshot";
+import {
+  applyCheckpointerRow,
+  buildBillingPerformanceSnapshot,
+  formatBillingPerformanceSnapshotText,
+  resetCheckpointerSampleForTests,
+} from "./billingPerformanceSnapshot";
+
+describe("pg_stat_checkpointer PG17 units", () => {
+  beforeEach(() => {
+    resetCheckpointerSampleForTests();
+  });
+
+  test("treats write_time/sync_time as cumulative milliseconds (no ×1000)", () => {
+    const first = applyCheckpointerRow(
+      {
+        num_timed: 12,
+        num_requested: 3,
+        write_time: 4514.2,
+        sync_time: 2,
+        stats_reset: "2026-08-15T08:00:00.000Z",
+      },
+      1_000_000,
+    );
+    expect(first.available).toBe(true);
+    expect(first.cumulativeWriteTimeMs).toBe(4514);
+    expect(first.cumulativeSyncTimeMs).toBe(2);
+    expect(first.numTimed).toBe(12);
+    expect(first.numRequested).toBe(3);
+    expect(first.statsResetAt).toBe("2026-08-15T08:00:00.000Z");
+    expect(first.sinceLastSample).toBeNull();
+
+    const second = applyCheckpointerRow(
+      {
+        num_timed: 13,
+        num_requested: 3,
+        write_time: 4800,
+        sync_time: 5,
+        stats_reset: "2026-08-15T08:00:00.000Z",
+      },
+      1_000_000 + 45_000,
+    );
+    expect(second.sinceLastSample).toEqual({
+      sampleIntervalMs: 45_000,
+      writeTimeDeltaMs: 286,
+      syncTimeDeltaMs: 3,
+      numTimedDelta: 1,
+      numRequestedDelta: 0,
+    });
+  });
+
+  test("does not invent last-checkpoint duration fields", () => {
+    const row = applyCheckpointerRow({
+      num_timed: 1,
+      num_requested: 0,
+      write_time: 100,
+      sync_time: 10,
+      stats_reset: null,
+    });
+    expect(row).not.toHaveProperty("lastCheckpointAt");
+    expect(row).not.toHaveProperty("checkpointWriteTimeMs");
+  });
+});
 
 describe("billingPerformanceSnapshot", () => {
   beforeEach(() => {
+    resetCheckpointerSampleForTests();
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => ({ ok: true, status: 200 }) as Response),
     );
   });
 
-  test("builds PHI-free snapshot and survives Redis down", async () => {
+  test("builds PHI-free snapshot with honest checkpointer fields", async () => {
     const snap = await buildBillingPerformanceSnapshot();
     expect(snap.billingLane.tone).toBe("AMBER");
     expect(snap.peakMode.active).toBe(true);
@@ -121,8 +195,19 @@ describe("billingPerformanceSnapshot", () => {
     expect(JSON.stringify(snap)).not.toMatch(/1\.2\.3/);
     expect((snap as { mriWarmCache: { recent?: unknown } }).mriWarmCache.recent).toBeUndefined();
 
+    expect(snap.postgres.checkpointer.available).toBe(true);
+    expect(snap.postgres.checkpointer.cumulativeWriteTimeMs).toBe(4514);
+    expect(snap.postgres.checkpointer.cumulativeSyncTimeMs).toBe(2);
+    expect(snap.postgres.checkpointer.numTimed).toBe(12);
+    expect(snap.postgres.checkpointer.numRequested).toBe(3);
+    expect(snap.postgres).not.toHaveProperty("lastCheckpointAt");
+    expect(snap.postgres).not.toHaveProperty("checkpointWriteTimeMs");
+
     const text = formatBillingPerformanceSnapshotText(snap);
     expect(text).toContain("billingLane: AMBER");
+    expect(text).toContain("pg_stat_checkpointer cumulative");
+    expect(text).toContain("write_ms=4514");
+    expect(text).not.toMatch(/last checkpoint duration/i);
     expect(text).not.toMatch(/SECRET PATIENT/);
     expect(text).toContain("PHI note");
   });

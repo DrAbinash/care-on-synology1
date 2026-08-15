@@ -59,7 +59,8 @@ export type BillingPerformanceSnapshot = {
       maxMs: number | null;
     }>;
     dbPoolWaiting: number | null;
-    checkpointWriteTimeMs: number | null;
+    /** Delta of cumulative checkpointer write_time since previous monitor sample (ms), if available. */
+    checkpointerWriteDeltaMs: number | null;
     background: {
       mriWarmRunning: boolean;
       mriPausedForPeak: boolean;
@@ -75,9 +76,27 @@ export type BillingPerformanceSnapshot = {
     maxWalSize: string | null;
     checkpointTimeout: string | null;
     synchronousCommit: string | null;
-    lastCheckpointAt: string | null;
-    checkpointWriteTimeMs: number | null;
-    checkpointSyncTimeMs: number | null;
+    /**
+     * Honest pg_stat_checkpointer fields (PostgreSQL 17+).
+     * write_time / sync_time are cumulative milliseconds since stats_reset — not
+     * “last checkpoint duration”. There is no checkpoint_time column in PG17.
+     */
+    checkpointer: {
+      available: boolean;
+      cumulativeWriteTimeMs: number | null;
+      cumulativeSyncTimeMs: number | null;
+      numTimed: number | null;
+      numRequested: number | null;
+      statsResetAt: string | null;
+      /** Increase in cumulative counters since the previous sample in this process (no DB write). */
+      sinceLastSample: {
+        sampleIntervalMs: number;
+        writeTimeDeltaMs: number;
+        syncTimeDeltaMs: number;
+        numTimedDelta: number;
+        numRequestedDelta: number;
+      } | null;
+    };
   };
   redis: {
     connected: boolean;
@@ -118,18 +137,96 @@ function poolStats(): { total: number; idle: number; waiting: number } {
   return { total: p.totalCount ?? 0, idle: p.idleCount ?? 0, waiting: p.waitingCount ?? 0 };
 }
 
-async function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<T>((resolve) => {
-        timer = setTimeout(() => resolve(fallback), ms);
-      }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
+/** Process-local prior sample of cumulative pg_stat_checkpointer counters (no DB writes). */
+type CheckpointerSample = {
+  atMs: number;
+  writeTimeMs: number;
+  syncTimeMs: number;
+  numTimed: number;
+  numRequested: number;
+  statsResetAt: string | null;
+};
+
+let lastCheckpointerSample: CheckpointerSample | null = null;
+
+/** Test helper — reset in-memory checkpointer delta state. */
+export function resetCheckpointerSampleForTests(): void {
+  lastCheckpointerSample = null;
+}
+
+function emptyCheckpointer(): BillingPerformanceSnapshot["postgres"]["checkpointer"] {
+  return {
+    available: false,
+    cumulativeWriteTimeMs: null,
+    cumulativeSyncTimeMs: null,
+    numTimed: null,
+    numRequested: null,
+    statsResetAt: null,
+    sinceLastSample: null,
+  };
+}
+
+/**
+ * Read PostgreSQL 17 pg_stat_checkpointer.
+ * Columns: num_timed, num_requested, write_time (ms, cumulative), sync_time (ms, cumulative), stats_reset.
+ * Does NOT query checkpoint_time (does not exist). Does NOT multiply times by 1000.
+ */
+export function applyCheckpointerRow(
+  row: {
+    num_timed?: string | number | null;
+    num_requested?: string | number | null;
+    write_time?: string | number | null;
+    sync_time?: string | number | null;
+    stats_reset?: Date | string | null;
+  } | null | undefined,
+  nowMs = Date.now(),
+): BillingPerformanceSnapshot["postgres"]["checkpointer"] {
+  if (!row) return emptyCheckpointer();
+
+  const writeTimeMs = Math.round(Number(row.write_time ?? 0));
+  const syncTimeMs = Math.round(Number(row.sync_time ?? 0));
+  const numTimed = Number(row.num_timed ?? 0);
+  const numRequested = Number(row.num_requested ?? 0);
+  const statsResetAt = row.stats_reset ? new Date(row.stats_reset).toISOString() : null;
+
+  let sinceLastSample: BillingPerformanceSnapshot["postgres"]["checkpointer"]["sinceLastSample"] = null;
+  const prev = lastCheckpointerSample;
+  const statsResetChanged =
+    prev != null && prev.statsResetAt != null && statsResetAt != null && prev.statsResetAt !== statsResetAt;
+
+  if (prev && !statsResetChanged && nowMs > prev.atMs) {
+    // Counters can only go up within a stats period; clamp negatives (reset mid-flight).
+    const writeDelta = Math.max(0, writeTimeMs - prev.writeTimeMs);
+    const syncDelta = Math.max(0, syncTimeMs - prev.syncTimeMs);
+    const timedDelta = Math.max(0, numTimed - prev.numTimed);
+    const requestedDelta = Math.max(0, numRequested - prev.numRequested);
+    sinceLastSample = {
+      sampleIntervalMs: nowMs - prev.atMs,
+      writeTimeDeltaMs: writeDelta,
+      syncTimeDeltaMs: syncDelta,
+      numTimedDelta: timedDelta,
+      numRequestedDelta: requestedDelta,
+    };
   }
+
+  lastCheckpointerSample = {
+    atMs: nowMs,
+    writeTimeMs,
+    syncTimeMs,
+    numTimed,
+    numRequested,
+    statsResetAt,
+  };
+
+  return {
+    available: true,
+    cumulativeWriteTimeMs: writeTimeMs,
+    cumulativeSyncTimeMs: syncTimeMs,
+    numTimed,
+    numRequested,
+    statsResetAt,
+    sinceLastSample,
+  };
 }
 
 async function readPostgresHealth(): Promise<BillingPerformanceSnapshot["postgres"]> {
@@ -140,9 +237,7 @@ async function readPostgresHealth(): Promise<BillingPerformanceSnapshot["postgre
     maxWalSize: null as string | null,
     checkpointTimeout: null as string | null,
     synchronousCommit: null as string | null,
-    lastCheckpointAt: null as string | null,
-    checkpointWriteTimeMs: null as number | null,
-    checkpointSyncTimeMs: null as number | null,
+    checkpointer: emptyCheckpointer(),
   };
   try {
     await pool.query("SELECT 1");
@@ -158,26 +253,21 @@ async function readPostgresHealth(): Promise<BillingPerformanceSnapshot["postgre
       return row.unit ? `${row.setting}${row.unit}` : row.setting;
     };
 
-    let lastCheckpointAt: string | null = null;
-    let checkpointWriteTimeMs: number | null = null;
-    let checkpointSyncTimeMs: number | null = null;
+    let checkpointer = emptyCheckpointer();
     try {
+      // PostgreSQL 17 schema — no checkpoint_time; write_time/sync_time already ms (cumulative).
       const cp = await pool.query<{
-        checkpoint_time?: Date | string | null;
-        write_time?: string | number | null;
-        sync_time?: string | number | null;
+        num_timed: string | number;
+        num_requested: string | number;
+        write_time: string | number;
+        sync_time: string | number;
+        stats_reset: Date | string | null;
       }>(
-        `SELECT checkpoint_time, write_time, sync_time FROM pg_stat_checkpointer`,
+        `SELECT num_timed, num_requested, write_time, sync_time, stats_reset FROM pg_stat_checkpointer`,
       );
-      const row = cp.rows[0];
-      if (row?.checkpoint_time) {
-        lastCheckpointAt = new Date(row.checkpoint_time).toISOString();
-      }
-      // write_time / sync_time are seconds (double) in pg_stat_checkpointer
-      if (row?.write_time != null) checkpointWriteTimeMs = Math.round(Number(row.write_time) * 1000);
-      if (row?.sync_time != null) checkpointSyncTimeMs = Math.round(Number(row.sync_time) * 1000);
+      checkpointer = applyCheckpointerRow(cp.rows[0]);
     } catch {
-      // Older Postgres without pg_stat_checkpointer — leave nulls.
+      // Pre-17 Postgres without pg_stat_checkpointer — leave unavailable.
     }
 
     return {
@@ -187,15 +277,27 @@ async function readPostgresHealth(): Promise<BillingPerformanceSnapshot["postgre
       maxWalSize: fmt("max_wal_size"),
       checkpointTimeout: fmt("checkpoint_timeout"),
       synchronousCommit: fmt("synchronous_commit"),
-      lastCheckpointAt,
-      checkpointWriteTimeMs,
-      checkpointSyncTimeMs,
+      checkpointer,
     };
   } catch (err) {
     return {
       ...empty,
       message: err instanceof Error ? err.message.slice(0, 120) : "query failed",
     };
+  }
+}
+
+async function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((resolve) => {
+        timer = setTimeout(() => resolve(fallback), ms);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 
@@ -365,7 +467,7 @@ export async function buildBillingPerformanceSnapshot(): Promise<BillingPerforma
       slowPatientSearchCount: patientSearch.slowCount,
       slowEndpoints,
       dbPoolWaiting: pool.waiting,
-      checkpointWriteTimeMs: postgres.checkpointWriteTimeMs,
+      checkpointerWriteDeltaMs: postgres.checkpointer.sinceLastSample?.writeTimeDeltaMs ?? null,
       background: {
         mriWarmRunning: mriRaw.running,
         mriPausedForPeak: mriRaw.pausedForPeakHours,
@@ -414,7 +516,8 @@ export function formatBillingPerformanceSnapshotText(s: BillingPerformanceSnapsh
     ``,
     `DB pool: total=${s.dbPool?.total ?? "-"} idle=${s.dbPool?.idle ?? "-"} waiting=${s.dbPool?.waiting ?? "-"}`,
     `Postgres: ok=${s.postgres.ok} shared_buffers=${s.postgres.sharedBuffers ?? "-"} max_wal_size=${s.postgres.maxWalSize ?? "-"} checkpoint_timeout=${s.postgres.checkpointTimeout ?? "-"} synchronous_commit=${s.postgres.synchronousCommit ?? "-"}`,
-    `Checkpoint: last=${s.postgres.lastCheckpointAt ?? "-"} writeMs=${s.postgres.checkpointWriteTimeMs ?? "-"} syncMs=${s.postgres.checkpointSyncTimeMs ?? "-"}`,
+    `Checkpointer (pg_stat_checkpointer cumulative since stats_reset): timed=${s.postgres.checkpointer.numTimed ?? "-"} requested=${s.postgres.checkpointer.numRequested ?? "-"} write_ms=${s.postgres.checkpointer.cumulativeWriteTimeMs ?? "-"} sync_ms=${s.postgres.checkpointer.cumulativeSyncTimeMs ?? "-"} stats_reset=${s.postgres.checkpointer.statsResetAt ?? "-"}`,
+    `Checkpointer since last monitor sample: interval_ms=${s.postgres.checkpointer.sinceLastSample?.sampleIntervalMs ?? "-"} write_delta_ms=${s.postgres.checkpointer.sinceLastSample?.writeTimeDeltaMs ?? "-"} sync_delta_ms=${s.postgres.checkpointer.sinceLastSample?.syncTimeDeltaMs ?? "-"} timed_delta=${s.postgres.checkpointer.sinceLastSample?.numTimedDelta ?? "-"} requested_delta=${s.postgres.checkpointer.sinceLastSample?.numRequestedDelta ?? "-"}`,
     `Redis: ${s.redis.connected ? "connected" : "disconnected"} (${s.redis.note})`,
     ``,
     `MRI warm-cache: ${s.mriWarmCache.state} lastRun=${s.mriWarmCache.lastRunAt ?? "-"} lastError=${s.mriWarmCache.lastError ?? "none"}`,

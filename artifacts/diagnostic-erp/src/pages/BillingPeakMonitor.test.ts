@@ -9,6 +9,9 @@ describe("BillingPeakMonitor UI", () => {
     expect(src).toContain('data-testid="billing-peak-monitor"');
     expect(src).toContain("Copy Performance Snapshot");
     expect(src).toContain("/api/admin/billing-performance");
+    expect(src).toContain("cumulative write time");
+    expect(src).toContain("pg_stat_checkpointer");
+    expect(src).not.toMatch(/last checkpoint:/i);
     expect(src).not.toMatch(/patientName|studyInstanceUID|phone/);
   });
 });
