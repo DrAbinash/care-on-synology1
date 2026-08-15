@@ -158,7 +158,16 @@ async function nextVoucherNumberTx(dbHandle: typeof db | Parameters<Parameters<t
   const escapedBucket = bucket.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const [r] = await dbHandle
     .select({
-      m: sql<number>`coalesce(max(substring(${vouchersTable.voucherNumber} from ${bucket.length + 1})::int), 0)`,
+      // NOTE the ${...}::int cast on the offset. Without it drizzle sends the
+      // offset as an untyped bind param, and PostgreSQL then resolves
+      // substring(text FROM $1) to the SQL-standard REGEX form
+      // substring(string from pattern) instead of the positional form.
+      // '11' as a regex never matches 'RV-202608-0005', so MAX was always
+      // NULL → coalesce → 0. The 5-attempt retry loop then walked
+      // 0001..0005 and every voucher after the 5th in a month failed with
+      // vouchers_voucher_number_unique (75 such errors in one production
+      // log dump), silently dropping the ledger entry.
+      m: sql<number>`coalesce(max(substring(${vouchersTable.voucherNumber} from ${bucket.length + 1}::int)::int), 0)`,
     })
     .from(vouchersTable)
     .where(
