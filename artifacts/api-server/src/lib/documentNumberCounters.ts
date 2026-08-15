@@ -51,14 +51,15 @@ export async function nextDocumentCounter(
 
 /**
  * Next patient UHID as `P-#####` via SEQUENCE nextval.
- * Safe on pooled connections — no session advisory lock (unlike the old
- * pg_advisory_lock path that could hang Billing Desk registration forever
- * when unlock ran on a different pool connection).
+ * Safe on pooled connections — no session advisory lock.
  *
- * Sequence is created/seeded by migrations/zzzz_patient_id_seq.sql and
- * forward-synced by zzzz_patient_id_seq_reseed.sql. On each process boot we
- * also bump the sequence forward to MAX(existing UHID) so a stale sequence
- * (seeded while the old MAX+1 allocator was still minting IDs) cannot collide.
+ * Seeding / forward-sync happens in:
+ *   - migrations/zzzz_patient_id_seq.sql (create)
+ *   - migrations/zzzz_patient_id_seq_reseed.sql (bump to MAX on deploy)
+ *   - nextPatientIdAfterConflict() after a unique collision
+ *
+ * Boot path intentionally does NOT scan patients (that MAX was adding
+ * multi-second latency on first Register after API restart).
  */
 let patientIdSeqEnsured = false;
 
@@ -110,7 +111,8 @@ export async function syncPatientIdSeqForward(dbHandle: DbOrTx): Promise<void> {
 
 async function ensurePatientIdSeq(dbHandle: DbOrTx): Promise<void> {
   if (patientIdSeqEnsured) return;
-  await syncPatientIdSeqForward(dbHandle);
+  // Cheap: do not full-scan patients on every API boot / first Register.
+  await dbHandle.execute(sql`CREATE SEQUENCE IF NOT EXISTS patient_id_seq`);
   patientIdSeqEnsured = true;
 }
 
