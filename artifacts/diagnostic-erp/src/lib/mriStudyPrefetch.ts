@@ -7,6 +7,7 @@
  * the server-side mriStudyWarmer — does NOT store pixels in IndexedDB.
  */
 
+import { isClinicPeakHours } from "./clinicPeakHours";
 import { dicomWebFetch, withDicomWebAuth } from "./browserDicomWeb";
 
 const PREFETCH_CONCURRENCY = 2;
@@ -63,6 +64,7 @@ async function prefetchOne(t: PrefetchTarget): Promise<void> {
 
 /** Idle-time prefetch of a queue of MRI studies (concurrency-limited). */
 export function prefetchMriStudies(targets: PrefetchTarget[]): void {
+  if (isClinicPeakHours()) return;
   const list = targets
     .filter((t) => t.studyInstanceUID && t.dicomWebBaseUrl)
     .filter((t) => !warmed.has(keyOf(t)))

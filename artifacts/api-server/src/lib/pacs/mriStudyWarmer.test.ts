@@ -24,8 +24,10 @@ describe("mriStudyWarmer contract", () => {
     expect(warmer).toContain("startMriStudyWarmer");
   });
 
-  it("exports status + on-demand run for the Reading Suite panel", () => {
-    expect(warmer).toContain("export function getMriWarmCacheStatus");
-    expect(warmer).toContain("export async function runMriWarmCache");
+  it("skips automatic ticks during clinic peak hours unless force=true", () => {
+    expect(warmer).toContain("isClinicPeakHours");
+    expect(warmer).toContain("pausedForPeakHours");
+    expect(warmer).toContain("clinic peak hours (billing / USG DICOM priority)");
+    expect(warmer).toContain("if (!opts?.force && isClinicPeakHours())");
   });
 });

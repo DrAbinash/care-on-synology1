@@ -24,6 +24,7 @@ import { runRadiologyJobTick } from "./lib/radiologyJobs";
 import { RADIOLOGY_JOB_HANDLERS } from "./lib/radiologyJobHandlers";
 import { runScheduledAuditChainVerification } from "./lib/auditVerification";
 import { todayIST, istHourMinute } from "./lib/istDate";
+import { isClinicPeakHours, clinicPeakHoursLabel } from "./lib/clinicPeakHours";
 import { classifyPaymentMethod, isDigitalSettlement, isPhysicalCash } from "./lib/paymentMethodClassifier";
 import {
   calcTestCommission,
@@ -803,6 +804,10 @@ function scheduleDicomAutoPull() {
 }
 
 async function fireDicomAutoPull() {
+  if (isClinicPeakHours()) {
+    console.log(`[cron] DICOM auto-pull skipped — clinic peak hours (${clinicPeakHoursLabel()}); billing / USG C-STORE have Orthanc`);
+    return;
+  }
   const now = new Date();
 
   // Fetch all active nodes with autoPull enabled
