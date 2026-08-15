@@ -112,6 +112,7 @@ const PULL_INTERVALS = [
   { value: 300,   label: "Every 5 min" },
   { value: 600,   label: "Every 10 min" },
   { value: 900,   label: "Every 15 min" },
+  { value: 1200,  label: "Every 20 min" },
   { value: 1800,  label: "Every 30 min" },
   { value: 3600,  label: "Every hour" },
 ];
@@ -249,7 +250,8 @@ export function DicomNodesPanel() {
       preset: {
         aeTitle: "UIH", host: "172.16.1.103", port: 3333, modality: "MR",
         description: "MRI scanner", location: "Room 1", isActive: true,
-        autoPull: true, pullIntervalSeconds: 300, queryLookbackHours: 24,
+        // MRI studies are large; 20 min keeps Orthanc/NAS free for billing & USG C-STORE.
+        autoPull: true, pullIntervalSeconds: 1200, queryLookbackHours: 24,
         conquestAeTitle: "ORTHANC2", conquestHost: "172.16.1.139", conquestPort: 5680,
         preferredRetrieveMethod: "C_MOVE",
         watchFolderPath: "",

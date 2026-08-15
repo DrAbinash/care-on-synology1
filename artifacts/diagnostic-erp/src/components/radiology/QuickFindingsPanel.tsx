@@ -550,11 +550,11 @@ export default function QuickFindingsPanel({
             handleFindingDoubleClick(f);
           }}
           className={[
-            "flex-1 min-w-0 rounded-lg border px-2.5 py-2 text-left transition-all duration-150",
-            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/35",
+            "flex-1 min-w-0 rounded-xl border px-2.5 py-2 text-left transition-all duration-150",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/50",
             selected
-              ? "border-amber-500 bg-amber-600 text-white shadow-sm shadow-amber-500/20"
-              : "border-amber-200/70 bg-card hover:border-amber-400 hover:bg-amber-50/70",
+              ? "border-amber-500 bg-gradient-to-br from-amber-500 to-orange-600 text-white shadow-md shadow-amber-500/30"
+              : "border-amber-200 bg-gradient-to-br from-white via-amber-50/50 to-orange-50/40 hover:border-amber-400 hover:shadow-sm hover:shadow-amber-200/50 hover:-translate-y-px",
           ].join(" ")}
           title={
             onEditBeforeInsert
@@ -627,13 +627,13 @@ export default function QuickFindingsPanel({
 
   return (
     <div className="flex flex-col gap-2 p-2 h-full overflow-hidden">
-      <div className="shrink-0 flex items-center gap-1.5 rounded-lg border border-amber-200/80 bg-gradient-to-r from-amber-50 to-orange-50/60 px-2 py-1.5">
-        <span className="flex h-5 w-5 items-center justify-center rounded-md bg-amber-500 text-white shadow-sm">
-          <Zap size={11} />
+      <div className="shrink-0 flex items-center gap-1.5 rounded-xl border border-amber-300/90 bg-gradient-to-r from-amber-100 via-orange-50 to-rose-50 px-2.5 py-2 shadow-sm shadow-amber-200/40">
+        <span className="flex h-6 w-6 items-center justify-center rounded-lg bg-gradient-to-br from-amber-500 to-orange-600 text-white shadow-md shadow-amber-500/30">
+          <Zap size={12} />
         </span>
         <div className="min-w-0 flex-1">
-          <span className="text-[10px] font-semibold uppercase tracking-wide text-amber-950">Quick Add</span>
-          <span className="text-[9px] text-amber-800/70 ml-1.5">Alt+1–9 · / search</span>
+          <span className="text-[10px] font-bold uppercase tracking-wide text-amber-950">Quick Add</span>
+          <span className="text-[9px] text-amber-800/80 ml-1.5 font-medium">Alt+1–9 · / search</span>
           {onEditBeforeInsert && (
             <p className="text-[9px] text-amber-900/60 leading-tight mt-0.5" data-testid="quick-dblclick-hint">
               Double-click a finding to edit text for this study only
@@ -667,15 +667,15 @@ export default function QuickFindingsPanel({
       </div>
 
       {/* Side selector */}
-      <div className="flex gap-1 shrink-0">
+      <div className="flex gap-1.5 shrink-0">
         {SIDES.map((s) => (
           <button
             key={s.value}
             onClick={() => onSideChange(s.value)}
-            className={`flex-1 text-[10px] font-semibold py-1 rounded-md border transition-colors ${
+            className={`flex-1 text-[10px] font-bold py-1.5 rounded-lg border transition-all ${
               side === s.value
-                ? "bg-primary text-primary-foreground border-primary"
-                : "bg-background text-muted-foreground hover:bg-muted/50"
+                ? "bg-gradient-to-br from-sky-500 to-indigo-600 text-white border-sky-600 shadow-sm shadow-sky-400/30"
+                : "bg-gradient-to-b from-white to-sky-50/40 text-sky-900 border-sky-200 hover:border-sky-400 hover:bg-sky-50"
             }`}
             title="Laterality applied to inserted text (whole-word left/right/bilateral)"
           >
@@ -685,7 +685,7 @@ export default function QuickFindingsPanel({
       </div>
 
       {/* Study tabs */}
-      <div className="flex flex-wrap gap-1 shrink-0">
+      <div className="flex flex-wrap gap-1.5 shrink-0">
         {activeTabs.map((tab, i) => {
           const active = effectiveTabs.has(tab.name);
           return (
@@ -693,10 +693,10 @@ export default function QuickFindingsPanel({
               key={tab.id}
               onClick={() => toggleTab(tab.name)}
               title={i < 9 ? `Ctrl+${i + 1}` : undefined}
-              className={`text-[10px] font-semibold px-2 py-1 rounded-md border transition-colors ${
+              className={`text-[10px] font-bold px-2.5 py-1.5 rounded-lg border transition-all ${
                 active
-                  ? "bg-primary text-primary-foreground border-primary"
-                  : "bg-background text-muted-foreground hover:bg-muted/50"
+                  ? "bg-gradient-to-br from-violet-500 to-fuchsia-600 text-white border-violet-600 shadow-sm shadow-violet-400/30"
+                  : "bg-gradient-to-b from-white to-violet-50/50 text-violet-900 border-violet-200 hover:border-violet-400 hover:bg-violet-50"
               }`}
             >
               {tab.name}
@@ -770,7 +770,7 @@ export default function QuickFindingsPanel({
 
       {/* One-click baseline normals for the selected tab(s) */}
       {onInsertNormals && [...effectiveTabs].some((n) => activeTabs.find((t) => t.name === n)?.normalText) && (
-        <div className="flex flex-wrap gap-1 shrink-0">
+        <div className="flex flex-wrap gap-1.5 shrink-0 rounded-xl border border-emerald-200/80 bg-gradient-to-r from-emerald-50 via-teal-50/80 to-cyan-50/60 p-1.5">
           {[...effectiveTabs].map((name) => {
             const tab = activeTabs.find((t) => t.name === name);
             if (!tab?.normalText) return null;
@@ -779,10 +779,10 @@ export default function QuickFindingsPanel({
                 key={name}
                 disabled={disabled}
                 onClick={() => onInsertNormals(tab.normalText)}
-                className="text-[9px] px-2 py-0.5 rounded-md border bg-emerald-50 dark:bg-emerald-950/20 text-emerald-700 dark:text-emerald-300 border-emerald-200 hover:bg-emerald-100"
+                className="text-[10px] font-bold px-2.5 py-1 rounded-lg border border-emerald-300 bg-gradient-to-br from-emerald-500 to-teal-600 text-white shadow-sm shadow-emerald-400/30 hover:from-emerald-400 hover:to-teal-500 disabled:opacity-50"
                 title={tab.normalText}
               >
-                + {name} baseline normals
+                + {name} normals
               </button>
             );
           })}
