@@ -76,33 +76,6 @@ function razorpayAuth(keyId: string, keySecret: string): string {
   return `Basic ${Buffer.from(`${keyId}:${keySecret}`).toString("base64")}`;
 }
 
-async function generateKioskPatientId(): Promise<string> {
-  // max(patient_id) is WRONG because string comparison is lexicographic:
-  // 'P-00009' > 'P-00010' in Postgres, so the max string is not the latest number.
-  const [row] = await db
-    .select({ max: sql<number | null>`MAX(REGEXP_REPLACE(patient_id, '[^0-9]', '', 'g')::int)` })
-    .from(patientsTable);
-  const next = (row?.max ?? 0) + 1;
-  return `P-${String(next).padStart(5, "0")}`;
-}
-
-async function generateKioskBillNumber(): Promise<string> {
-  const date = new Date();
-  const yyyymm = `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, "0")}`;
-  const [row] = await db
-    .select({ maxBill: sql<string | null>`MAX(bill_number)` })
-    .from(billsTable)
-    .where(sql`bill_number ~ '^[0-9]+$'`);
-  let seq = 1;
-  if (row?.maxBill) {
-    const legacy = row.maxBill.match(/^BILL-(\d{6})-(\d+)$/);
-    const numeric = row.maxBill.match(/^(\d{6})(\d{4,})$/);
-    if (legacy) seq = Number(legacy[2]) + 1;
-    else if (numeric) seq = Number(numeric[2]) + 1;
-  }
-  return `${yyyymm}${String(seq).padStart(4, "0")}`;
-}
-
 // NOTE: createPatientBillAndTokens() was removed — it was dead code
 // replaced entirely by registerPatientSelfFlow() from services/self-registration.ts.
 

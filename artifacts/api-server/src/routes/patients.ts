@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { db, patientsTable, patientCounterTable } from "@workspace/db";
+import { db, patientsTable } from "@workspace/db";
 import { eq, ilike, or, sql, desc, and, gt, inArray } from "drizzle-orm";
 import {
   ListPatientsQueryParams,
@@ -11,6 +11,7 @@ import {
 } from "@workspace/api-zod";
 import { requireStaffSubPermission } from "../middleware/requireStaffAuth";
 import { isClinicPatientPhoneRequired, phoneLooksPresent } from "../lib/patientPhoneRequired";
+import { nextPatientId } from "../lib/documentNumberCounters";
 
 export const patientsRouter = Router();
 
@@ -21,59 +22,12 @@ export function sanitizePatient(p: PatientRow) {
   return { ...safe, hasPortalAccess: portalPinHash !== null };
 }
 
+/** Allocate next UHID via SEQUENCE nextval (no session advisory lock). */
 async function generatePatientId(): Promise<string> {
-  // Derive next ID from the maximum numeric suffix in patient_id.
-  // max(patient_id) is WRONG because string comparison is lexicographic:
-  // 'P-00009' > 'P-00010' in Postgres, so the max string is not the latest number.
-  //
-  // Concurrency fix (Bug #3): We use pg_advisory_xact_lock(hash) to serialise
-  // concurrent calls. Without this, two simultaneous registrations can both
-  // read the same MAX and generate the same patient_id, causing a UNIQUE
-  // constraint violation and a 500 at the front desk.
-  //
-  // pg_advisory_xact_lock is a transaction-scoped advisory lock. It is
-  // released automatically when the enclosing transaction commits or rolls
-  // back. We wrap the full read+compute inside a transaction so the lock
-  // spans both the SELECT and the INSERT that follows (which happens outside
-  // this function, so the caller must be inside the same transaction — or we
-  // use a session-level lock here that we release after the insert).
-  //
-  // Using a session-level lock (pg_advisory_lock / pg_advisory_unlock) so
-  // it works even though the INSERT happens after this function returns.
-  const LOCK_ID = 0x50617469656e74; // ASCII "Patient" → stable integer key
-
-  await db.execute(sql`SELECT pg_advisory_lock(${LOCK_ID})`);
-
-  try {
-    const rows = await db
-      .select({ patientId: patientsTable.patientId })
-      .from(patientsTable)
-      .where(sql`${patientsTable.patientId} LIKE 'P-%'`);
-
-    let max = 0;
-    for (const row of rows) {
-      const id = row.patientId;
-      if (!id || !id.startsWith("P-")) continue;
-      const num = parseInt(id.slice(2).replace(/\D/g, ""), 10);
-      if (!isNaN(num) && num > max) max = num;
-    }
-
-    return `P-${String(max + 1).padStart(5, "0")}`;
-  } catch (err) {
-    // Always release even on error — caller will also need to release
-    await db.execute(sql`SELECT pg_advisory_unlock(${LOCK_ID})`).catch(() => {});
-    throw err;
-  }
-  // Lock is released by releasePatientIdLock() after the INSERT succeeds
+  return nextPatientId(db);
 }
 
-// The lock from generatePatientId() must be released after the INSERT commits.
-const PATIENT_ID_LOCK = 0x50617469656e74;
-async function releasePatientIdLock(): Promise<void> {
-  await db.execute(sql`SELECT pg_advisory_unlock(${PATIENT_ID_LOCK})`).catch(() => {});
-}
-
-/** Same UHID lock + patients insert as POST /api/patients (no parallel emergency patient table). */
+/** Same UHID allocator + patients insert as POST /api/patients (no parallel emergency patient table). */
 export async function createCanonicalPatient(values: {
   firstName: string;
   lastName: string;
@@ -85,25 +39,21 @@ export async function createCanonicalPatient(values: {
   address?: string | null;
 }): Promise<PatientRow> {
   const patientId = await generatePatientId();
-  try {
-    const [patient] = await db
-      .insert(patientsTable)
-      .values({
-        patientId,
-        firstName: values.firstName.trim() || "Unknown",
-        lastName: values.lastName.trim() || "-",
-        phone: values.phone.trim() || "0000000000",
-        dateOfBirth: values.dateOfBirth,
-        gender: values.gender,
-        ageValue: values.ageValue ?? null,
-        ageUnit: values.ageUnit ?? null,
-        address: values.address ?? null,
-      })
-      .returning();
-    return patient;
-  } finally {
-    await releasePatientIdLock();
-  }
+  const [patient] = await db
+    .insert(patientsTable)
+    .values({
+      patientId,
+      firstName: values.firstName.trim() || "Unknown",
+      lastName: values.lastName.trim() || "-",
+      phone: values.phone.trim() || "0000000000",
+      dateOfBirth: values.dateOfBirth,
+      gender: values.gender,
+      ageValue: values.ageValue ?? null,
+      ageUnit: values.ageUnit ?? null,
+      address: values.address ?? null,
+    })
+    .returning();
+  return patient;
 }
 
 patientsRouter.get("/", async (req, res) => {
@@ -217,16 +167,10 @@ patientsRouter.post("/", requireStaffSubPermission("/patients", "create"), async
   const patientId = await generatePatientId();
   const insertValues: Record<string, unknown> = { ...parsed.data, patientId };
   if (photo.value !== undefined) insertValues.photoDataUrl = photo.value;
-  let patient;
-  try {
-    [patient] = await db
-      .insert(patientsTable)
-      .values(insertValues as typeof patientsTable.$inferInsert)
-      .returning();
-  } finally {
-    // Release the advisory lock regardless of INSERT success/failure
-    await releasePatientIdLock();
-  }
+  const [patient] = await db
+    .insert(patientsTable)
+    .values(insertValues as typeof patientsTable.$inferInsert)
+    .returning();
   res.status(201).json(sanitizePatient(patient));
 });
 
