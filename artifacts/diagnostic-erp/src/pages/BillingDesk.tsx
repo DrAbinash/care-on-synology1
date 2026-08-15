@@ -1656,46 +1656,52 @@ export default function BillingDesk() {
       lastBillRef.current = lastBillLocal;
       lastBillLocalRef.current = lastBillLocal;
 
-      // FAST MODE token fetch: if the bill was saved with ?fast=1, tokens are
-      // generated in the background. Fetch them now and update lastBill so the
-      // print dialog has the token number. This runs AFTER setLastBill so the
-      // receipt can start rendering immediately (token is printed separately).
+      // FAST MODE token fetch: background generator + optional long-poll.
+      // One waitMs request replaces the old 5×500ms poll loop.
       if ((bill as any)._fastMode && bill.id) {
         const billId = bill.id;
-        const fetchTokens = async (retries = 5) => {
-          for (let i = 0; i < retries; i++) {
-            try {
-              const r = await api.get<{ tokens: LastBillTestToken[]; ready: boolean }>(`/api/bills/${billId}/tokens`);
-              if (r.ready && r.tokens?.length) {
-                // Derive the bill-level token (min tokenNo across all test tokens)
-                const minTokenNo = r.tokens.reduce((min, t) => (t.tokenNo < min ? t.tokenNo : min), r.tokens[0].tokenNo);
-                const today = new Date();
-                const tokenDate = r.tokens[0]?.tokenDate ?? `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
-                setLastBill(prev => prev ? {
-                  ...prev,
-                  tokenNo: minTokenNo,
-                  tokenDate,
-                  testTokens: r.tokens,
-                } : prev);
-                lastBillRef.current = lastBillRef.current ? {
-                  ...lastBillRef.current,
-                  tokenNo: minTokenNo,
-                  tokenDate,
-                  testTokens: r.tokens,
-                } : lastBillRef.current;
-                lastBillLocalRef.current = lastBillLocalRef.current ? {
-                  ...lastBillLocalRef.current,
-                  tokenNo: minTokenNo,
-                  tokenDate,
-                  testTokens: r.tokens,
-                } : lastBillLocalRef.current;
-                return;
-              }
-            } catch { /* retry */ }
-            await new Promise(r => setTimeout(r, 500)); // 500ms between retries
-          }
+        const applyTokens = (tokens: LastBillTestToken[]) => {
+          if (!tokens?.length) return;
+          const minTokenNo = tokens.reduce((min, t) => (t.tokenNo < min ? t.tokenNo : min), tokens[0].tokenNo);
+          const today = new Date();
+          const tokenDate = (tokens[0] as { tokenDate?: string })?.tokenDate
+            ?? `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+          setLastBill(prev => prev ? {
+            ...prev,
+            tokenNo: minTokenNo,
+            tokenDate,
+            testTokens: tokens,
+          } : prev);
+          lastBillRef.current = lastBillRef.current ? {
+            ...lastBillRef.current,
+            tokenNo: minTokenNo,
+            tokenDate,
+            testTokens: tokens,
+          } : lastBillRef.current;
+          lastBillLocalRef.current = lastBillLocalRef.current ? {
+            ...lastBillLocalRef.current,
+            tokenNo: minTokenNo,
+            tokenDate,
+            testTokens: tokens,
+          } : lastBillLocalRef.current;
         };
-        void fetchTokens();
+        void (async () => {
+          try {
+            const r = await api.get<{ tokens: LastBillTestToken[]; ready: boolean }>(
+              `/api/bills/${billId}/tokens?waitMs=2500`,
+            );
+            if (r.ready && r.tokens?.length) {
+              applyTokens(r.tokens);
+              return;
+            }
+          } catch { /* one quick retry without wait */ }
+          try {
+            const r = await api.get<{ tokens: LastBillTestToken[]; ready: boolean }>(
+              `/api/bills/${billId}/tokens`,
+            );
+            if (r.ready && r.tokens?.length) applyTokens(r.tokens);
+          } catch { /* tokens stay pending; print still works without them */ }
+        })();
       }
 
       // Online gateway is unpaid until confirmed. Also resume gateway on
