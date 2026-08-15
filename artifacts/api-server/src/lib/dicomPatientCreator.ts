@@ -7,6 +7,7 @@
 import { db } from "@workspace/db";
 import { patientsTable } from "@workspace/db/schema";
 import { eq, sql, ilike, or, and } from "drizzle-orm";
+import { nextPatientId } from "./documentNumberCounters";
 
 export type DicomDemographics = {
   patientId?: string;       // DICOM PatientID (0010,0020)
@@ -50,12 +51,8 @@ function parseDicomSex(raw?: string): string {
 }
 
 async function generatePatientId(): Promise<string> {
-  const [row] = await db
-    .select({ max: sql<string>`max(patient_id)` })
-    .from(patientsTable);
-  const last = row?.max;
-  const next = last ? parseInt(last.slice(2), 10) + 1 : 1;
-  return `P-${String(next).padStart(5, "0")}`;
+  // Same SEQUENCE allocator as Billing Desk POST /api/patients.
+  return nextPatientId(db);
 }
 
 /**

@@ -20,6 +20,7 @@ import {
   testsTable,
 } from "@workspace/db";
 import { and, eq, inArray, or, sql } from "drizzle-orm";
+import { nextPatientId } from "./documentNumberCounters";
 import {
   applyIdempotentOutcome,
   applyManualPatientResolution,
@@ -297,20 +298,6 @@ export async function importEmergencyTransactions(opts: {
     .where(eq(emergencyReconciliationBatchesTable.id, batch.id));
 
   return { result, batchUuid, preview };
-}
-
-async function nextPatientId(tx: Parameters<Parameters<(typeof db)["transaction"]>[0]>[0]): Promise<string> {
-  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('care_erp_patient_id'))`);
-  const rows = await tx
-    .select({ patientId: patientsTable.patientId })
-    .from(patientsTable)
-    .where(sql`${patientsTable.patientId} LIKE 'P-%'`);
-  let max = 0;
-  for (const row of rows) {
-    const num = parseInt(String(row.patientId).slice(2).replace(/\D/g, ""), 10);
-    if (!Number.isNaN(num) && num > max) max = num;
-  }
-  return `P-${String(max + 1).padStart(5, "0")}`;
 }
 
 async function importOneTransaction(opts: {

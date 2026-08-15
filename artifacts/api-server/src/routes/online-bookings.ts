@@ -5,7 +5,6 @@ import { PaymentEngine } from "../lib/payments/PaymentEngine";
 import {
   onlineBookingsTable,
   patientsTable,
-  patientCounterTable,
   ordersTable,
   orderTestsTable,
   testsTable,
@@ -22,18 +21,6 @@ import { calculateDobFromAge } from "./public-booking";
 import { registerPatientSelfFlow } from "../services/self-registration";
 
 export const onlineBookingsRouter = Router();
-
-async function generatePatientId(): Promise<string> {
-  const [counter] = await db.select().from(patientCounterTable).limit(1);
-  let seq = 1;
-  if (counter) {
-    seq = counter.counter + 1;
-    await db.update(patientCounterTable).set({ counter: seq }).where(eq(patientCounterTable.id, counter.id));
-  } else {
-    await db.insert(patientCounterTable).values({ counter: 1 });
-  }
-  return `P${String(seq).padStart(5, "0")}`;
-}
 
 // GET /api/online-bookings
 onlineBookingsRouter.get("/", async (req, res): Promise<void> => {

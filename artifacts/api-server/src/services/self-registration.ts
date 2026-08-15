@@ -1,7 +1,6 @@
 import { db } from "@workspace/db";
 import {
   patientsTable,
-  patientCounterTable,
   ordersTable,
   orderTestsTable,
   testsTable,
@@ -20,17 +19,11 @@ import { generateTestTokensForOrder } from "../routes/test-tokens";
 import { calculateDobFromAge } from "../routes/public-booking";
 import { autoVoucherForPayment } from "../lib/auto-voucher";
 import { generateStudiesForOrder } from "../routes/radiology";
+import { nextPatientId } from "../lib/documentNumberCounters";
 
+/** UHID for kiosk / online self-registration — same SEQUENCE as Billing Desk. */
 export async function generatePatientId(): Promise<string> {
-  const [counter] = await db.select().from(patientCounterTable).limit(1);
-  let seq = 1;
-  if (counter) {
-    seq = counter.counter + 1;
-    await db.update(patientCounterTable).set({ counter: seq }).where(eq(patientCounterTable.id, counter.id));
-  } else {
-    await db.insert(patientCounterTable).values({ counter: 1 });
-  }
-  return `P${String(seq).padStart(5, "0")}`;
+  return nextPatientId(db);
 }
 
 export interface RegisterPatientSelfFlowParams {
