@@ -11,16 +11,16 @@ describe("InfrastructurePulseStrip hover panel", () => {
     "utf8",
   );
 
-  test("Open settings link is mouse-reachable (no pointer-events-none on panel)", () => {
+  test("Open settings link is mouse-reachable (interactive panel + close delay)", () => {
     expect(src).toContain('data-testid={`clinic-systems-open-settings-${pill.key}`}');
-    expect(src).toContain("group-hover:block");
-    // Hover bridge must use padding (pt-1), not margin (mt-1), so moving the
-    // cursor onto the panel does not leave the group and dismiss the popover.
-    expect(src).toContain("max-w-xs pt-1 group-hover:block");
+    expect(src).toContain("PANEL_CLOSE_DELAY_MS");
+    expect(src).toContain("onMouseEnter={openPanel}");
+    expect(src).toContain("onMouseLeave={scheduleClosePanel}");
+    // Hover bridge must use padding (pt-1), not margin-only gap.
+    expect(src).toContain("min-w-[14rem] max-w-xs pt-1");
     expect(src).toContain('data-testid={`clinic-systems-pill-panel-${pill.key}`}');
-    // The panel class list must not disable pointer events.
     const panelClassMatch = src.match(
-      /className="absolute left-0 top-full z-20[^"]*"/,
+      /className=\{`absolute left-0 top-full z-20[^`]*`\}/,
     );
     expect(panelClassMatch?.[0] ?? "").not.toContain("pointer-events-none");
   });

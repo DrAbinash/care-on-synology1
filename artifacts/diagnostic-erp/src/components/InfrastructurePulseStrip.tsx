@@ -4,11 +4,11 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Link } from "wouter";
 import { api } from "@/lib/fetchApi";
-import { buildInfrastructurePulse, type PulseTone } from "@/lib/infrastructurePulse";
+import { buildInfrastructurePulse, type PulsePill, type PulseTone } from "@/lib/infrastructurePulse";
 import { buildClinicSystemsSummary, type EmergencyStatusLike } from "@/lib/clinicSystemsSummary";
 import { Button } from "@/components/ui/button";
 import { RefreshCw, Gauge, ShieldCheck } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 type OpsReport = {
   checks: Array<{ id: string; status: "PASS" | "WARNING" | "FAIL" | "SKIPPED" | "UNKNOWN"; message: string }>;
@@ -36,6 +36,89 @@ const ROW_VALUE: Record<PulseTone, string> = {
 };
 
 const ORANGE_OK_DOT = "bg-orange-500 shadow-[0_0_6px_rgba(249,115,22,0.75)]";
+
+/** Keep the panel open briefly after mouseleave so "Open settings" is clickable. */
+const PANEL_CLOSE_DELAY_MS = 220;
+
+function ClinicSystemsStatusPill({ pill }: { pill: PulsePill }) {
+  const [panelOpen, setPanelOpen] = useState(false);
+  const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
+    };
+  }, []);
+
+  function openPanel() {
+    if (closeTimerRef.current) {
+      clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = null;
+    }
+    setPanelOpen(true);
+  }
+
+  function scheduleClosePanel() {
+    if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
+    closeTimerRef.current = setTimeout(() => setPanelOpen(false), PANEL_CLOSE_DELAY_MS);
+  }
+
+  const dotClass =
+    pill.tone === "green" && pill.accent === "orange"
+      ? ORANGE_OK_DOT
+      : DOT_CLASS[pill.tone];
+  const blink = pill.shouldBlink;
+  const pillClass = `inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px] font-medium leading-none ${PILL_CLASS[pill.tone]} ${pill.accent === "orange" && pill.tone === "green" ? "border-orange-300/80" : ""}`;
+  const pillBody = (
+    <>
+      <span
+        className={`h-2 w-2 rounded-full shrink-0 ${dotClass} ${blink ? "animate-[pulse-attention_2.5s_ease-in-out_infinite]" : ""}`}
+        aria-hidden
+      />
+      <span>{pill.label}</span>
+    </>
+  );
+
+  return (
+    // Hover panel must stay pointer-interactive: previously pointer-events-none
+    // + a margin gap made "Open settings" unreachable with the mouse.
+    <div
+      className="relative inline-flex"
+      onMouseEnter={openPanel}
+      onMouseLeave={scheduleClosePanel}
+      onFocus={openPanel}
+      onBlur={scheduleClosePanel}
+    >
+      {pill.detailsHref ? (
+        <Link href={pill.detailsHref} className={pillClass} aria-label={`${pill.label}: ${pill.message}`}>
+          {pillBody}
+        </Link>
+      ) : (
+        <div className={pillClass} title={pill.message}>
+          {pillBody}
+        </div>
+      )}
+      <div
+        className={`absolute left-0 top-full z-20 min-w-[14rem] max-w-xs pt-1 ${panelOpen ? "block" : "hidden"}`}
+        data-testid={`clinic-systems-pill-panel-${pill.key}`}
+      >
+        <div className="rounded-md border bg-popover px-2 py-1.5 text-[10px] text-popover-foreground shadow-md">
+          <div>{pill.message}</div>
+          {pill.detailsHref && (
+            <Link
+              href={pill.detailsHref}
+              className="mt-1 inline-block text-primary underline hover:text-primary/80"
+              data-testid={`clinic-systems-open-settings-${pill.key}`}
+              onClick={() => setPanelOpen(false)}
+            >
+              Open settings
+            </Link>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export function InfrastructurePulseStrip() {
   const [verifyMsg, setVerifyMsg] = useState<string | null>(null);
@@ -94,56 +177,7 @@ export function InfrastructurePulseStrip() {
             <RefreshCw size={11} className="animate-spin" /> Checking…
           </span>
         ) : (
-          pills.map((pill) => {
-            const dotClass =
-              pill.tone === "green" && pill.accent === "orange"
-                ? ORANGE_OK_DOT
-                : DOT_CLASS[pill.tone];
-            const blink = pill.shouldBlink;
-            const pillClass = `inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px] font-medium leading-none ${PILL_CLASS[pill.tone]} ${pill.accent === "orange" && pill.tone === "green" ? "border-orange-300/80" : ""}`;
-            const pillBody = (
-              <>
-                <span
-                  className={`h-2 w-2 rounded-full shrink-0 ${dotClass} ${blink ? "animate-[pulse-attention_2.5s_ease-in-out_infinite]" : ""}`}
-                  aria-hidden
-                />
-                <span>{pill.label}</span>
-              </>
-            );
-            return (
-              // Hover panel must stay pointer-interactive: previously
-              // pointer-events-none + a margin gap made "Open settings"
-              // unreachable with the mouse.
-              <div key={pill.key} className="group relative inline-flex">
-                {pill.detailsHref ? (
-                  <Link href={pill.detailsHref} className={pillClass} aria-label={`${pill.label}: ${pill.message}`}>
-                    {pillBody}
-                  </Link>
-                ) : (
-                  <div className={pillClass} title={pill.message}>
-                    {pillBody}
-                  </div>
-                )}
-                <div
-                  className="absolute left-0 top-full z-20 hidden min-w-[14rem] max-w-xs pt-1 group-hover:block group-focus-within:block"
-                  data-testid={`clinic-systems-pill-panel-${pill.key}`}
-                >
-                  <div className="rounded-md border bg-popover px-2 py-1.5 text-[10px] text-popover-foreground shadow-md">
-                    <div>{pill.message}</div>
-                    {pill.detailsHref && (
-                      <Link
-                        href={pill.detailsHref}
-                        className="mt-1 inline-block text-primary underline hover:text-primary/80"
-                        data-testid={`clinic-systems-open-settings-${pill.key}`}
-                      >
-                        Open settings
-                      </Link>
-                    )}
-                  </div>
-                </div>
-              </div>
-            );
-          })
+          pills.map((pill) => <ClinicSystemsStatusPill key={pill.key} pill={pill} />)
         )}
 
         <div className="flex items-center gap-1 ml-auto shrink-0">
