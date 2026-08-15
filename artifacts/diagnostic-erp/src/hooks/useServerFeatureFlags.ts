@@ -40,7 +40,16 @@ export function useServerFeatureFlags(): void {
 
     void hydrate();
 
-    const onFlagsChanged = () => void hydrate();
+    // Re-fetch only on LOCAL / admin toggles. setServerFeatureFlags itself
+    // dispatches featureFlagsChanged with detail.source === "server" after
+    // every successful hydrate — listening to that without filtering caused an
+    // infinite GET /api/feature-flags loop (care-api logs: 4k+ polls / ~1.5k
+    // pool timeouts in one dump), starving Save & Print.
+    const onFlagsChanged = (ev: Event) => {
+      const source = (ev as CustomEvent<{ source?: string }>).detail?.source;
+      if (source === "server") return;
+      void hydrate();
+    };
     window.addEventListener("featureFlagsChanged", onFlagsChanged);
     return () => {
       cancelled = true;

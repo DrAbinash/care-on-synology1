@@ -33,7 +33,8 @@ import { generateStudiesForOrder } from "./radiology";
 import { sendBillWhatsapp } from "./whatsapp";
 import { autoVoucherForPayment } from "../lib/auto-voucher";
 import { getSlowThresholdMs } from "../lib/requestMetrics";
-import { nextDocumentCounter } from "../lib/documentNumberCounters";
+import { nextDocumentCounter, syncBillNumberSeqForward } from "../lib/documentNumberCounters";
+import { enqueueBillingFanout } from "../lib/billingFanoutGate";
 import {
   cancelRadiologyMwlForBill,
   cancelRadiologyMwlForOrderTest,
@@ -787,53 +788,167 @@ export async function createBillHandler(req: StaffAuthRequest, res: Response): P
   const balanceAmountInline = Math.max(0, totalAmount - paidAmountInline);
   const billStatus = paidAmountInline >= totalAmount - 0.01 ? "paid" : paidAmountInline > 0 ? "partial" : "pending";
 
-  const { bill, pat } = await db.transaction(async (tx) => {
-    // Bill numbers come from SEQUENCE nextval (documentNumberCounters) — no
-    // process-wide advisory lock that serialized every concurrent desk save.
-    const billNumber = await generateBillNumber(ledgerId, tx);
-
-    if (!order.ledgerId) {
-      await tx.update(ordersTable).set({ ledgerId }).where(eq(ordersTable.id, orderId));
+  function isBillNumberUniqueViolation(err: unknown): boolean {
+    const e = err as { cause?: { code?: string; constraint?: string }; code?: string; constraint?: string; message?: string };
+    const code = e?.cause?.code ?? e?.code;
+    const constraint = e?.cause?.constraint ?? e?.constraint;
+    if (code === "23505" && (constraint === "bills_bill_number_unique" || String(constraint ?? "").includes("bill_number"))) {
+      return true;
     }
-    // Patient was preloaded in the guard wave — avoid a SELECT while holding
-    // the bill-number counter row under concurrent desk saves.
-    const patRow = patientPreload;
-    if (patRow && !patRow.ledgerId) {
-      await tx.update(patientsTable).set({ ledgerId }).where(eq(patientsTable.id, patRow.id));
+    const msg = String(e?.message ?? err ?? "");
+    return /bills_bill_number_unique|Key \(bill_number\)=/i.test(msg);
+  }
+
+  function isBillClientRefUniqueViolation(err: unknown): boolean {
+    let cur: unknown = err;
+    for (let i = 0; i < 5 && cur && typeof cur === "object"; i++) {
+      const e = cur as { code?: string; constraint?: string; message?: string; cause?: unknown };
+      if (e.code === "23505" && /client_ref|bills_client_ref/i.test(String(e.constraint ?? ""))) return true;
+      if (/Key \(client_ref\)=|bills_client_ref/i.test(String(e.message ?? ""))) return true;
+      cur = e.cause;
     }
+    return false;
+  }
 
-    const [billRow] = await tx.insert(billsTable).values({
-      billNumber,
-      orderId,
-      patientId: order.patientId,
-      subtotal: subtotal.toFixed(2),
-      discount: discountAmt.toFixed(2),
-      discountReason,
-      discountReasonNote,
-      taxAmount: taxAmount.toFixed(2),
-      totalAmount: totalAmount.toFixed(2),
-      originalTotal: totalAmount.toFixed(2),
-      paidAmount: paidAmountInline.toFixed(2),
-      balanceAmount: balanceAmountInline.toFixed(2),
-      status: billStatus,
-      ledgerId,
-      dueDate: dueDate ?? null,
-      createdByName: actorName || null,
-      // Store idempotency key so retries return this bill, not a duplicate
-      clientRef: clientRef ?? null,
-    }).returning();
+  function isActiveOrderBillUniqueViolation(err: unknown): boolean {
+    let cur: unknown = err;
+    for (let i = 0; i < 5 && cur && typeof cur === "object"; i++) {
+      const e = cur as { code?: string; constraint?: string; message?: string; cause?: unknown };
+      const constraint = String(e.constraint ?? "");
+      const message = String(e.message ?? "");
+      if (/bills_order_id_active_uidx/i.test(constraint) || /bills_order_id_active_uidx/i.test(message)) {
+        return true;
+      }
+      cur = e.cause;
+    }
+    return false;
+  }
 
-    await tx.insert(billAuditsTable).values({
-      billId: billRow.id,
-      editedBy: actorName || "system",
-      reason: "Bill created",
-      changeType: "bill_created",
-      oldValue: null,
-      newValue: `total=₹${totalAmount.toFixed(2)}; status=${billStatus}`,
+  async function returnExistingBillByClientRef(): Promise<boolean> {
+    if (!clientRef) return false;
+    const existingByRef = await db.execute<{ id: number }>(
+      sql`SELECT id FROM bills WHERE client_ref = ${clientRef} AND status != 'cancelled' LIMIT 1`,
+    );
+    const refRows = Array.isArray(existingByRef) ? existingByRef : (existingByRef as { rows?: { id: number }[] }).rows ?? [];
+    const refId = refRows[0]?.id;
+    if (!refId) return false;
+    const [existingBillRow] = await db.select().from(billsTable).where(eq(billsTable.id, refId));
+    if (!existingBillRow) return false;
+    const built = await buildBill(existingBillRow);
+    res.status(200).json({
+      id: existingBillRow.id,
+      billNumber: existingBillRow.billNumber,
+      createdAt: existingBillRow.createdAt,
+      createdByName: existingBillRow.createdByName,
+      paidAmount: built.paidAmount,
+      balanceAmount: built.balanceAmount,
+      status: existingBillRow.status,
+      _idempotent: true,
+      needsOnlinePayment: false,
+      onlineAmount: Number(built.balanceAmount) > 0.01 ? Number(built.balanceAmount) : 0,
     });
+    return true;
+  }
 
-    return { bill: billRow, pat: patRow };
-  });
+  async function returnExistingActiveBillForOrder(): Promise<boolean> {
+    const [existing] = await db
+      .select()
+      .from(billsTable)
+      .where(and(eq(billsTable.orderId, orderId), ne(billsTable.status, "cancelled")))
+      .limit(1);
+    if (!existing) return false;
+    const built = await buildBill(existing);
+    res.status(200).json({
+      id: existing.id,
+      billNumber: existing.billNumber,
+      createdAt: existing.createdAt,
+      createdByName: existing.createdByName,
+      paidAmount: built.paidAmount,
+      balanceAmount: built.balanceAmount,
+      status: existing.status,
+      _idempotent: true,
+      needsOnlinePayment: false,
+      onlineAmount: Number(built.balanceAmount) > 0.01 ? Number(built.balanceAmount) : 0,
+    });
+    return true;
+  }
+
+  let bill: typeof billsTable.$inferSelect | undefined;
+  let pat: typeof patientPreload = patientPreload;
+  let lastUniqueErr: unknown;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      const result = await db.transaction(async (tx) => {
+        // Bill numbers come from SEQUENCE nextval (documentNumberCounters) — no
+        // process-wide advisory lock that serialized every concurrent desk save.
+        const billNumber = await generateBillNumber(ledgerId, tx);
+
+        if (!order.ledgerId) {
+          await tx.update(ordersTable).set({ ledgerId }).where(eq(ordersTable.id, orderId));
+        }
+        // Patient was preloaded in the guard wave — avoid a SELECT while holding
+        // the bill-number counter row under concurrent desk saves.
+        const patRow = patientPreload;
+        if (patRow && !patRow.ledgerId) {
+          await tx.update(patientsTable).set({ ledgerId }).where(eq(patientsTable.id, patRow.id));
+        }
+
+        const [billRow] = await tx.insert(billsTable).values({
+          billNumber,
+          orderId,
+          patientId: order.patientId,
+          subtotal: subtotal.toFixed(2),
+          discount: discountAmt.toFixed(2),
+          discountReason,
+          discountReasonNote,
+          taxAmount: taxAmount.toFixed(2),
+          totalAmount: totalAmount.toFixed(2),
+          originalTotal: totalAmount.toFixed(2),
+          paidAmount: paidAmountInline.toFixed(2),
+          balanceAmount: balanceAmountInline.toFixed(2),
+          status: billStatus,
+          ledgerId,
+          dueDate: dueDate ?? null,
+          createdByName: actorName || null,
+          // Store idempotency key so retries return this bill, not a duplicate
+          clientRef: clientRef ?? null,
+        }).returning();
+
+        await tx.insert(billAuditsTable).values({
+          billId: billRow.id,
+          editedBy: actorName || "system",
+          reason: "Bill created",
+          changeType: "bill_created",
+          oldValue: null,
+          newValue: `total=₹${totalAmount.toFixed(2)}; status=${billStatus}`,
+        });
+
+        return { bill: billRow, pat: patRow };
+      });
+      bill = result.bill;
+      pat = result.pat;
+      lastUniqueErr = undefined;
+      break;
+    } catch (err) {
+      if (isBillClientRefUniqueViolation(err)) {
+        if (await returnExistingBillByClientRef()) return;
+        throw err;
+      }
+      if (isActiveOrderBillUniqueViolation(err)) {
+        if (await returnExistingActiveBillForOrder()) return;
+        throw err;
+      }
+      if (!isBillNumberUniqueViolation(err)) throw err;
+      lastUniqueErr = err;
+      req.log?.warn?.({ attempt, err }, "bill_number unique violation — reseeding sequence and retrying");
+      await syncBillNumberSeqForward(db);
+    }
+  }
+  if (!bill) {
+    const message = lastUniqueErr instanceof Error ? lastUniqueErr.message : "Could not allocate a unique bill number";
+    res.status(500).json({ error: message });
+    return;
+  }
 
   // Payment rows after the bill txn commits — concurrent saves can allocate
   // the next bill number while these inserts run.
@@ -867,13 +982,23 @@ export async function createBillHandler(req: StaffAuthRequest, res: Response): P
       // Rare: bill row exists with paid totals but payment rows failed.
       // Roll the bill back to unpaid so desk can re-collect via payment POST
       // instead of leaving a paid bill with no payment ledger rows.
+      // Do NOT rethrow — that became an opaque Express 500 without billId
+      // (and orphaned the order when called via /api/billing/save).
       req.log?.error?.({ err, billId: bill.id }, "Bill created but payment insert failed — resetting bill to pending");
       await db.update(billsTable).set({
         paidAmount: "0.00",
         balanceAmount: totalAmount.toFixed(2),
         status: "pending",
       }).where(eq(billsTable.id, bill.id)).catch(() => { /* best-effort */ });
-      throw err;
+      res.status(500).json({
+        error: "Bill created but payment recording failed — reopen the bill to collect payment",
+        billId: bill.id,
+        billNumber: bill.billNumber,
+        orderId,
+        paymentsFailed: true,
+        clientRef: clientRef ?? null,
+      });
+      return;
     }
   }
 
@@ -895,24 +1020,19 @@ export async function createBillHandler(req: StaffAuthRequest, res: Response): P
   const needsOnlinePayment = !!onlinePayment;
   const onlineAmount = onlinePayment ? Number(onlinePayment.amount) : 0;
 
-  // Radiology study fan-out — fire-and-forget. The billing desk's receipt and
-  // token slip never show study/accession data, and study creation for a
-  // multi-modality bill is the single slowest post-commit chain (per-study
-  // accession allocation, priority, and radiologist auto-assignment). It was
-  // already best-effort ("failure is logged but never blocks bill creation"),
-  // so it no longer gates the HTTP response either — the studies appear in
-  // the radiology worklist within a moment of the bill saving, long before
-  // the patient reaches the room. Idempotent per orderTest via
-  // `radiology_studies_order_test_uq`, so a crash-and-retry cannot duplicate.
-  generateStudiesForOrder({
-    billId: bill.id,
-    orderId: order.id,
-    patientId: order.patientId,
-    priority: isVip ? "vip" : "routine",
-    dicomFields,
-  }).catch((err) => {
-    console.warn("Radiology study fan-out failed:", err);
-  });
+  // Radiology study fan-out — fire-and-forget under the billing fan-out gate so
+  // concurrent Save & Print bursts cannot exhaust the pg pool.
+  enqueueBillingFanout(() =>
+    generateStudiesForOrder({
+      billId: bill.id,
+      orderId: order.id,
+      patientId: order.patientId,
+      priority: isVip ? "vip" : "routine",
+      dicomFields,
+    }).catch((err) => {
+      console.warn("Radiology study fan-out failed:", err);
+    }),
+  );
 
   // Post-commit fan-out that the response DOES need — the queue token and the
   // per-test department tokens are printed on the token slip, so they must be
@@ -933,48 +1053,52 @@ export async function createBillHandler(req: StaffAuthRequest, res: Response): P
   if (fastMode) {
     // Fire token generation in background — don't block the response
     const patientName = pat ? `${pat.firstName} ${pat.lastName}`.trim() : undefined;
-    generateTestTokensForOrder({
-      ledgerId,
-      billId: bill.id,
-      orderId: order.id,
-      patientId: order.patientId,
-      priority: isVip ? 5 : 0,
-    }).then((tokens) => {
-      // Cache + wake any long-poll GET /:id/tokens waiters
-      publishBillTokens(bill.id, tokens);
-      // WhatsApp needs a token number — send only once tokens are ready.
-      if (pat?.phone && tokens.length > 0) {
-        const tokenInfo = deriveBillTokenFromTestTokens(tokens);
-        if (tokenInfo) {
-          sendBillWhatsapp({
-            phone: pat.phone,
-            patientName: `${pat.firstName} ${pat.lastName}`.trim(),
-            billNumber: bill.billNumber,
-            totalAmount,
-            tokenNo: tokenInfo.tokenNo,
-          }).then((result) => {
-            if (!result.ok && !result.skipped) console.warn(`WhatsApp bill notification failed for bill ${bill.billNumber}:`, result.error);
-          }).catch((err) => console.warn("WhatsApp send failed:", err));
+    enqueueBillingFanout(() =>
+      generateTestTokensForOrder({
+        ledgerId,
+        billId: bill.id,
+        orderId: order.id,
+        patientId: order.patientId,
+        priority: isVip ? 5 : 0,
+      }).then((tokens) => {
+        // Cache + wake any long-poll GET /:id/tokens waiters
+        publishBillTokens(bill.id, tokens);
+        // WhatsApp needs a token number — send only once tokens are ready.
+        if (pat?.phone && tokens.length > 0) {
+          const tokenInfo = deriveBillTokenFromTestTokens(tokens);
+          if (tokenInfo) {
+            sendBillWhatsapp({
+              phone: pat.phone,
+              patientName: `${pat.firstName} ${pat.lastName}`.trim(),
+              billNumber: bill.billNumber,
+              totalAmount,
+              tokenNo: tokenInfo.tokenNo,
+            }).then((result) => {
+              if (!result.ok && !result.skipped) console.warn(`WhatsApp bill notification failed for bill ${bill.billNumber}:`, result.error);
+            }).catch((err) => console.warn("WhatsApp send failed:", err));
+          }
         }
-      }
-    }).catch((err) => {
-      console.warn("Per-test token generation failed (fast mode):", err);
-      failBillTokens(bill.id);
-    });
+      }).catch((err) => {
+        console.warn("Per-test token generation failed (fast mode):", err);
+        failBillTokens(bill.id);
+      }),
+    );
 
     // Parity with the slow path: vouchers are fire-and-forget so they must
     // still run under ?fast=1. Billing Desk always uses fast mode; skipping
     // these left real-time ledger gaps until admin sync-billing.
     for (const p of txPayments ?? []) {
-      autoVoucherForPayment({
-        billId: bill.id,
-        amount: p.amount,
-        method: p.method || "cash",
-        billNumber: bill.billNumber,
-        patientName,
-        performedBy: actorName || null,
-        paymentId: p.paymentId,
-      }).catch(() => {/* already logged inside */});
+      enqueueBillingFanout(() =>
+        autoVoucherForPayment({
+          billId: bill.id,
+          amount: p.amount,
+          method: p.method || "cash",
+          billNumber: bill.billNumber,
+          patientName,
+          performedBy: actorName || null,
+          paymentId: p.paymentId,
+        }),
+      );
     }
 
     const totalMs = Date.now() - startedAt;
@@ -1030,15 +1154,17 @@ export async function createBillHandler(req: StaffAuthRequest, res: Response): P
   // Auto-generate accounting vouchers for each inline payment — async, never blocks billing
   const patientName = pat ? `${pat.firstName} ${pat.lastName}`.trim() : undefined;
   for (const p of txPayments ?? []) {
-    autoVoucherForPayment({
-      billId: bill.id,
-      amount: p.amount,
-      method: p.method || "cash",
-      billNumber: bill.billNumber,
-      patientName,
-      performedBy: actorName || null,
-      paymentId: p.paymentId,
-    }).catch(() => {/* already logged inside */});
+    enqueueBillingFanout(() =>
+      autoVoucherForPayment({
+        billId: bill.id,
+        amount: p.amount,
+        method: p.method || "cash",
+        billNumber: bill.billNumber,
+        patientName,
+        performedBy: actorName || null,
+        paymentId: p.paymentId,
+      }),
+    );
   }
 
   // Fire WhatsApp send asynchronously — don't block the response.
@@ -1539,6 +1665,9 @@ billsRouter.post("/:id/cancel", requireStaffSubPermission("/billing", "delete"),
       // Zero out the outstanding balance so cancelled bills never appear
       // in the Due Payments report (dueOnly filter: balanceAmount > 0).
       balanceAmount: "0.00",
+      // Free client_ref so cancel+rebill / offline queue can reuse the UUID
+      // (partial unique index also excludes cancelled; this clears the column).
+      clientRef: null,
     }).where(eq(billsTable.id, id)).returning();
 
     await tx.insert(billAuditsTable).values({

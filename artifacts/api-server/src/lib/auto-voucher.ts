@@ -5,6 +5,18 @@ import { logger } from "./logger";
 import { classifyPaymentMethod } from "./paymentMethodClassifier";
 import { isClinicPeakHours } from "./clinicPeakHours";
 
+/** Drizzle wraps node-pg errors; 23505 may live on err.cause.code. */
+function isPgUniqueViolation(err: unknown): boolean {
+  let cur: unknown = err;
+  for (let i = 0; i < 5 && cur && typeof cur === "object"; i++) {
+    const e = cur as { code?: string; message?: string; cause?: unknown };
+    if (e.code === "23505") return true;
+    if (/duplicate key value violates unique constraint/i.test(e.message ?? "")) return true;
+    cur = e.cause;
+  }
+  return false;
+}
+
 // Default accounts created automatically by payment method.
 // Exact-match keyed, preserving each method's own historical ledger
 // account — unchanged from before this fix, so existing Tally books keep
@@ -269,7 +281,7 @@ export async function autoVoucherForPayment(opts: {
         });
         return;
       } catch (err: unknown) {
-        if ((err as { code?: string }).code === "23505") { lastErr = err; continue; }
+        if (isPgUniqueViolation(err)) { lastErr = err; continue; }
         throw err;
       }
     }
@@ -332,7 +344,7 @@ export async function autoVoucherForExpense(opts: {
         });
         return;
       } catch (err: unknown) {
-        if ((err as { code?: string }).code === "23505") { lastErr = err; continue; }
+        if (isPgUniqueViolation(err)) { lastErr = err; continue; }
         throw err;
       }
     }
@@ -397,7 +409,7 @@ export async function correctExpenseVoucher(opts: {
           posted = true;
           break;
         } catch (err: unknown) {
-          if ((err as { code?: string }).code === "23505") { lastErr = err; continue; }
+          if (isPgUniqueViolation(err)) { lastErr = err; continue; }
           throw err;
         }
       }

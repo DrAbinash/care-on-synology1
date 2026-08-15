@@ -30,6 +30,13 @@ const IDLE_TIMEOUT_CACHE_TTL_MS = 60_000;
 
 /** Short-lived staff auth cache — billing desk hits this middleware twice per save. */
 const STAFF_AUTH_CACHE_TTL_MS = 20_000;
+/**
+ * Minimum interval between portal_sessions.last_activity_at writes on cache hits.
+ * Feature-flags / polling endpoints hit requireStaffAuth many times per second;
+ * writing on every request exhausts the pg pool (connectionTimeoutMillis) and
+ * cascades into Save & Print / Register 500s.
+ */
+const SESSION_DB_TOUCH_MIN_INTERVAL_MS = 30_000;
 type CachedStaffAuth = {
   sessionId: number;
   subjectId: number;
@@ -39,6 +46,8 @@ type CachedStaffAuth = {
   maxDiscount: number | null;
   expiresAtMs: number;
   lastActivityAtMs: number;
+  /** Last time we actually wrote last_activity_at to Postgres. */
+  lastDbTouchAtMs: number;
 };
 
 function staffAuthCacheKey(token: string): string {
@@ -105,11 +114,15 @@ export async function requireStaffAuth(
     }
 
     cached.lastActivityAtMs = nowMs;
+    // Throttle DB touch — in-memory idle clock still updates every request.
+    if (nowMs - (cached.lastDbTouchAtMs || 0) >= SESSION_DB_TOUCH_MIN_INTERVAL_MS) {
+      cached.lastDbTouchAtMs = nowMs;
+      db.update(portalSessionsTable)
+        .set({ lastActivityAt: new Date(nowMs) })
+        .where(eq(portalSessionsTable.id, cached.sessionId))
+        .catch((err) => req.log?.warn?.({ err }, "session last_activity_at touch failed"));
+    }
     setCached(cacheKey, cached, STAFF_AUTH_CACHE_TTL_MS);
-    db.update(portalSessionsTable)
-      .set({ lastActivityAt: new Date(nowMs) })
-      .where(eq(portalSessionsTable.id, cached.sessionId))
-      .catch((err) => req.log?.warn?.({ err }, "session last_activity_at touch failed"));
 
     req.staffSession = {
       id: cached.sessionId,
@@ -208,6 +221,7 @@ export async function requireStaffAuth(
       maxDiscount,
       expiresAtMs: new Date(session.expiresAt).getTime(),
       lastActivityAtMs: nowMs,
+      lastDbTouchAtMs: nowMs,
     } satisfies CachedStaffAuth,
     STAFF_AUTH_CACHE_TTL_MS,
   );
