@@ -256,6 +256,9 @@ export const usgExtractionSettingsTable = pgTable(
     geIp:      text("ge_ip").notNull().default(""),
     gePort:    text("ge_port").notNull().default("11112"),
 
+    /** When false, ERP does not ingest/extract US studies (machine still C-STOREs to Orthanc). */
+    pipelineEnabled: boolean("pipeline_enabled").notNull().default(true),
+
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
   },

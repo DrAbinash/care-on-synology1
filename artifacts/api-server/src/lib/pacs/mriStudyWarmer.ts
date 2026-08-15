@@ -19,6 +19,7 @@ import { db } from "@workspace/db";
 import { radiologyWorklistTable, pacsSettingsTable } from "@workspace/db/schema";
 import { desc, eq, and, or, like, sql } from "drizzle-orm";
 import { logger } from "../logger";
+import { clinicPeakHoursLabel, isClinicPeakHours } from "../clinicPeakHours";
 
 const HTTP_TIMEOUT_MS = 20_000;
 const DEFAULT_INTERVAL_MS = 10 * 60_000;
@@ -41,6 +42,8 @@ export type MriWarmCacheStatus = {
   lastError: string | null;
   candidates: number;
   orthancReachable: boolean | null;
+  /** True 08:00–16:00 IST — automatic ticks are skipped so billing/USG C-STORE win. */
+  pausedForPeakHours: boolean;
   recent: Array<{
     studyInstanceUID: string;
     patientName: string | null;
@@ -65,6 +68,7 @@ const status: MriWarmCacheStatus = {
   lastError: null,
   candidates: 0,
   orthancReachable: null,
+  pausedForPeakHours: false,
   recent: [],
 };
 
@@ -265,11 +269,24 @@ async function warmOneStudy(studyInstanceUID: string): Promise<{ series: number;
 }
 
 export function getMriWarmCacheStatus(): MriWarmCacheStatus {
-  return { ...status, recent: [...status.recent] };
+  return {
+    ...status,
+    pausedForPeakHours: isClinicPeakHours(),
+    recent: [...status.recent],
+  };
 }
 
 export async function runMriWarmCache(opts?: { force?: boolean }): Promise<MriWarmCacheStatus> {
   if (status.running) return getMriWarmCacheStatus();
+  // Automatic ticks yield during clinic hours so Orthanc can accept USG C-STORE
+  // and Postgres can serve bill saves. "Warm now" (force) still runs.
+  if (!opts?.force && isClinicPeakHours()) {
+    logger.info(
+      { window: clinicPeakHoursLabel() },
+      "mri-warm-cache: skipped — clinic peak hours (billing / USG DICOM priority)",
+    );
+    return getMriWarmCacheStatus();
+  }
   const cfg = await loadConfig();
   if (!cfg.enabled && !opts?.force) {
     status.lastError = null;

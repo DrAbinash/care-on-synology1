@@ -46,6 +46,7 @@ import { pacsSettingsTable, pacsLogsTable } from "@workspace/db/schema";
 import { and, eq } from "drizzle-orm";
 import { logger } from "../logger";
 import { isUltrasoundModality } from "../usgModality";
+import { isUsgErpPipelineEnabled } from "../usgExtractor";
 import { formatDicomPersonNameForDisplay } from "./dicomNameNormalize";
 
 const CURSOR_KEY = "orthanc_changes_cursor";
@@ -303,6 +304,15 @@ async function ingestStudy(base: string, orthancStudyId: string, port: number): 
 
   const modalityRaw = tags.ModalitiesInStudy ?? tags.Modality ?? "";
   const modality = await resolveModality(base, study);
+  const usgLike = isUltrasoundModality(modality) || /US/i.test(String(modalityRaw));
+
+  // Clinic is not using USG in the radiology module: skip ERP ingest + SR
+  // fetch so Orthanc can finish C-STORE and billing stays snappy. Images remain
+  // in Orthanc; turn pipelineEnabled back on when USG reporting is needed.
+  if (usgLike && !(await isUsgErpPipelineEnabled())) {
+    logger.info({ studyInstanceUID, modality }, "orthanc-poller: USG ERP pipeline paused — skip intake");
+    return;
+  }
 
   const payload: Record<string, unknown> = {
     patientId: (patientTags.PatientID ?? "").trim(),

@@ -20,12 +20,15 @@ import pg from "pg";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { splitMigrationStatements } from "./split-migration-sql.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(__dirname, "..");
 const DRIZZLE_DIR = path.join(REPO, "lib", "db", "drizzle");
 const FEATURE_DIR = path.join(REPO, "migrations");
 const JOURNAL = path.join(DRIZZLE_DIR, "meta", "_journal.json");
+/** ALTER SYSTEM must run outside a multi-statement transaction (node-pg batches whole files). */
+const FEATURE_MIGRATION_STATEMENT_SPLIT = new Set(["zzzz_postgres_performance_tuning.sql"]);
 
 function connString() {
   if (process.env.DATABASE_URL) return process.env.DATABASE_URL;
@@ -73,9 +76,15 @@ async function main() {
     const files = fs.readdirSync(FEATURE_DIR).filter((f) => f.endsWith(".sql")).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
     let ftApplied = 0;
     for (const f of files) {
-      const sql = fs.readFileSync(path.join(FEATURE_DIR, f), "utf8").replace(/^﻿/, "");
-      try { await db.query(sql); ftApplied++; }
-      catch (e) { console.error(`  ✗ FEATURE FAILED ${f}: ${String(e.message).split("\n")[0]}`); process.exit(1); }
+      const raw = fs.readFileSync(path.join(FEATURE_DIR, f), "utf8").replace(/^﻿/, "");
+      const statements = FEATURE_MIGRATION_STATEMENT_SPLIT.has(f)
+        ? splitMigrationStatements(raw)
+        : [raw];
+      for (const stmt of statements) {
+        try { await db.query(stmt); }
+        catch (e) { console.error(`  ✗ FEATURE FAILED ${f}: ${String(e.message).split("\n")[0]}`); process.exit(1); }
+      }
+      ftApplied++;
     }
     console.log(`apply-all-migrations: ${dzApplied} drizzle applied, ${ftApplied}/${files.length} feature migrations OK`);
   } finally {

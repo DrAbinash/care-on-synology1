@@ -515,6 +515,7 @@ router.put("/settings", requireStaffPermission("/settings"), async (req: ReqWith
     geAeTitle: string;
     geIp: string;
     gePort: string;
+    pipelineEnabled: boolean;
   }>;
   await saveUsgAdminSettings(b);
   const updated = await getUsgAdminSettings();

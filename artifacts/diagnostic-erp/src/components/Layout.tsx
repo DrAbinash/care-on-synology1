@@ -98,6 +98,7 @@ import { useIsMobile } from "@/hooks/use-mobile";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
 import { useGlobalScanner } from "@/hooks/useGlobalScanner";
 import { api } from "@/lib/fetchApi";
+import { isClinicPeakHours } from "@/lib/clinicPeakHours";
 import { applyNameGenderExtras, parseNameGenderExtraList } from "@/lib/nameGender";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -480,7 +481,10 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!sessionUserId || !canSeeNewStudies) return;
     let mounted = true;
+    let lastPollAt = 0;
     const poll = async () => {
+      if (isClinicPeakHours() && Date.now() - lastPollAt < 90_000) return;
+      lastPollAt = Date.now();
       try {
         const res = await api.get<{ studies: Array<{ id: number; patientName: string; modality: string; studyDescription: string | null; numberOfImages: number }>; serverTime: string }>(
           `/api/dicom-studies/new?since=${encodeURIComponent(lastCheckRef.current)}`,

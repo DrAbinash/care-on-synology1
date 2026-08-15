@@ -8,15 +8,25 @@ import { expect, test, vi } from "vitest";
 // the database; mocking the module prevents the load-time throw without
 // affecting what is actually under test. Same pattern as
 // requireAiCallerAuth.test.ts.
+let settingsRows: Array<{ pipelineEnabled?: boolean }> = [];
+
 vi.mock("@workspace/db", () => ({
   db: {
-    select:  () => ({ from: () => ({ where: () => ({ limit: async () => [] }) }) }),
-    insert:  () => ({ values: async () => undefined }),
+    select:  () => ({ from: () => ({ where: () => ({ limit: async () => settingsRows }) }) }),
+    insert:  () => ({ values: async () => [{ id: 1 }] }),
     update:  () => ({ set:   () => ({ where: async () => undefined }) }),
   },
 }));
 
-import { parseDicomSr, parseGePrivateTags, extractDopplerFromSr, parseGePrivateTagsWithProvenance } from "./usgExtractor";
+import {
+  parseDicomSr,
+  parseGePrivateTags,
+  extractDopplerFromSr,
+  parseGePrivateTagsWithProvenance,
+  isUsgErpPipelineEnabled,
+  invalidateUsgPipelineCache,
+  runUsgExtraction,
+} from "./usgExtractor";
 
 const mockDicomJson = {
   "00080070": { "vr": "LO", "Value": ["GE Healthcare"] },
@@ -186,6 +196,29 @@ test("parse Samsung private tags", () => {
   const res = parseGePrivateTagsWithProvenance(JSON.stringify(samsungObj));
   expect(res.mapped.bpd).toBe("78.9");
   expect(res.provenance.bpd.tag).toBe("00331010");
+});
+
+test("USG ERP pipeline defaults to enabled when no settings row exists", async () => {
+  settingsRows = [];
+  invalidateUsgPipelineCache();
+  expect(await isUsgErpPipelineEnabled()).toBe(true);
+});
+
+test("USG ERP pipeline is off when pipelineEnabled is false", async () => {
+  settingsRows = [{ pipelineEnabled: false }];
+  invalidateUsgPipelineCache();
+  expect(await isUsgErpPipelineEnabled()).toBe(false);
+});
+
+test("runUsgExtraction returns immediately when the ERP pipeline is paused", async () => {
+  settingsRows = [{ pipelineEnabled: false }];
+  invalidateUsgPipelineCache();
+  const result = await runUsgExtraction({
+    studyInstanceUID: "1.2.3",
+    triggeredBy: "auto",
+  });
+  expect(result.status).toBe("failed");
+  expect(result.error).toBe("USG ERP pipeline paused");
 });
 
 

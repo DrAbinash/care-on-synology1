@@ -44,6 +44,7 @@ import pg from "pg";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { splitMigrationStatements } from "./split-migration-sql.mjs";
 
 const { Client } = pg;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -54,6 +55,8 @@ const JOURNAL = path.join(DRIZZLE_DIR, "meta", "_journal.json");
 
 const argDb = (process.argv.find((a) => a.startsWith("--db=")) || "").split("=")[1];
 const SCRATCH_DB = argDb || "care_migration_smoke";
+/** ALTER SYSTEM must run outside a multi-statement transaction (node-pg batches whole files). */
+const FEATURE_MIGRATION_STATEMENT_SPLIT = new Set(["zzzz_postgres_performance_tuning.sql"]);
 
 function adminConnString() {
   const url =
@@ -110,11 +113,15 @@ async function applyFeature(client) {
   let applied = 0;
   const errors = [];
   for (const f of files) {
-    // Strip a leading UTF-8 BOM the way `psql -f` tolerantly does — node-postgres
-    // sends it raw and the server reports a syntax error otherwise.
-    const sql = fs.readFileSync(path.join(FEATURE_DIR, f), "utf8").replace(/^﻿/, "");
-    try { await client.query(sql); applied++; }
-    catch (e) { errors.push(`${f}: ${String(e.message).split("\n")[0]}`); }
+    const raw = fs.readFileSync(path.join(FEATURE_DIR, f), "utf8").replace(/^﻿/, "");
+    const statements = FEATURE_MIGRATION_STATEMENT_SPLIT.has(f)
+      ? splitMigrationStatements(raw)
+      : [raw];
+    for (const stmt of statements) {
+      try { await client.query(stmt); }
+      catch (e) { errors.push(`${f}: ${String(e.message).split("\n")[0]}`); }
+    }
+    applied++;
   }
   return { applied, errors, total: files.length };
 }

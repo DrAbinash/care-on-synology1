@@ -66,6 +66,8 @@ export interface UsgAdminSettings {
   geAeTitle: string;
   geIp: string;
   gePort: string;
+  /** When false, skip Orthanc→ERP US ingest and auto-extraction. Machine C-STORE is unchanged. */
+  pipelineEnabled: boolean;
 }
 
 const SETTINGS_DEFAULTS: UsgAdminSettings = {
@@ -81,6 +83,7 @@ const SETTINGS_DEFAULTS: UsgAdminSettings = {
   geAeTitle: "GE_USG",
   geIp: "",
   gePort: "11112",
+  pipelineEnabled: true,
 };
 
 export async function getUsgAdminSettings(): Promise<UsgAdminSettings> {
@@ -106,6 +109,7 @@ export async function getUsgAdminSettings(): Promise<UsgAdminSettings> {
       geAeTitle:               row.geAeTitle,
       geIp:                    row.geIp,
       gePort:                  row.gePort,
+      pipelineEnabled:         row.pipelineEnabled !== false,
     };
   } catch {
     return SETTINGS_DEFAULTS;
@@ -130,6 +134,25 @@ export async function saveUsgAdminSettings(settings: Partial<UsgAdminSettings>):
       .insert(usgExtractionSettingsTable)
       .values({ id: 1, ...SETTINGS_DEFAULTS, ...settings });
   }
+  invalidateUsgPipelineCache();
+}
+
+let pipelineCache: { value: boolean; at: number } | null = null;
+const PIPELINE_CACHE_MS = 10_000;
+
+export function invalidateUsgPipelineCache(): void {
+  pipelineCache = null;
+}
+
+/** True when ERP should ingest/extract ultrasound studies. Machine C-STORE is independent. */
+export async function isUsgErpPipelineEnabled(): Promise<boolean> {
+  if (pipelineCache && Date.now() - pipelineCache.at < PIPELINE_CACHE_MS) {
+    return pipelineCache.value;
+  }
+  const s = await getUsgAdminSettings();
+  const value = s.pipelineEnabled !== false;
+  pipelineCache = { value, at: Date.now() };
+  return value;
 }
 
 // ── DICOM metadata extractor ──────────────────────────────────────────────────
@@ -596,6 +619,19 @@ async function fetchStudyInstances(
 export async function runUsgExtraction(input: UsgExtractionInput): Promise<UsgExtractionResult> {
   const startMs = Date.now();
   const { studyInstanceUID, accessionNumber, worklistId, studyId, patientId, dicomMetadataJson } = input;
+
+  if (!(await isUsgErpPipelineEnabled())) {
+    logger.info({ studyInstanceUID }, "USG extraction skipped — ERP pipeline paused");
+    return {
+      measurementId: 0,
+      logId: 0,
+      status: "failed",
+      source: "manual",
+      overallConfidence: "low",
+      measurements: {},
+      error: "USG ERP pipeline paused",
+    };
+  }
 
   // Create extraction log row (pending)
   const [logRow] = await db

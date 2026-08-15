@@ -2278,6 +2278,7 @@ async function runStartupMigrations(): Promise<void> {
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
       INSERT INTO usg_extraction_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+      ALTER TABLE usg_extraction_settings ADD COLUMN IF NOT EXISTS pipeline_enabled BOOLEAN NOT NULL DEFAULT TRUE;
 
       -- ── USG Machine Profiles ──
       CREATE TABLE IF NOT EXISTS usg_machine_profiles (
