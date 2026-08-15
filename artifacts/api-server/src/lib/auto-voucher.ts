@@ -3,6 +3,7 @@ import { accountsTable, vouchersTable } from "@workspace/db/schema";
 import { and, eq, like, sql } from "drizzle-orm";
 import { logger } from "./logger";
 import { classifyPaymentMethod } from "./paymentMethodClassifier";
+import { isClinicPeakHours } from "./clinicPeakHours";
 
 // Default accounts created automatically by payment method.
 // Exact-match keyed, preserving each method's own historical ledger
@@ -190,10 +191,22 @@ export async function autoVoucherForPayment(opts: {
    * double it. `reference` still carries the bill number (Tally unchanged).
    */
   paymentId?: number | null;
+  /**
+   * Bypass peak-hour deferral (off-peak backfill cron / admin sync). Desk
+   * capture paths omit this so voucher MAX+lock work does not contend with
+   * billing during 08:00–16:00 IST.
+   */
+  force?: boolean;
 }): Promise<void> {
   try {
-    const { billId, amount, method, billNumber, patientName, performedBy, paymentId } = opts;
+    const { billId, amount, method, billNumber, patientName, performedBy, paymentId, force } = opts;
     if (!Number.isFinite(amount) || amount === 0) return;
+
+    // Peak-hour deferral: skip capture-time voucher posting while the desk is
+    // hot. Idempotent off-peak backfill (and admin sync-billing) catch up.
+    if (!force && isClinicPeakHours()) {
+      return;
+    }
 
     // Idempotency by payment: never post a second voucher for a payment that
     // already has one (real-time retry, or a real-time voucher followed by a
@@ -403,3 +416,65 @@ export async function correctExpenseVoucher(opts: {
     logger.warn({ err }, "[auto-voucher] Failed to correct expense voucher (non-fatal)");
   }
 }
+
+/**
+ * Off-peak catch-up for payments whose capture-time voucher was deferred
+ * during clinic peak hours. Idempotent via payment_id (force=true).
+ */
+export async function backfillDeferredPaymentVouchers(opts?: {
+  limit?: number;
+}): Promise<{ attempted: number; skippedPeak: boolean }> {
+  if (isClinicPeakHours()) {
+    return { attempted: 0, skippedPeak: true };
+  }
+  const limit = Math.max(1, Math.min(opts?.limit ?? 25, 100));
+
+  // Recent positive, non-superseded payments with no payment_id-linked voucher.
+  const rows = await db.execute(sql`
+    SELECT p.id AS payment_id,
+           p.bill_id AS bill_id,
+           p.amount AS amount,
+           p.method AS method,
+           b.bill_number AS bill_number
+    FROM payments p
+    INNER JOIN bills b ON b.id = p.bill_id
+    WHERE p.amount::numeric > 0
+      AND (p.settlement_status IS NULL OR p.settlement_status <> 'superseded')
+      AND NOT EXISTS (
+        SELECT 1 FROM vouchers v
+        WHERE v.payment_id = p.id AND v.bill_id = p.bill_id
+      )
+    ORDER BY p.id DESC
+    LIMIT ${limit}
+  `);
+
+  const list = Array.isArray(rows)
+    ? rows
+    : ((rows as { rows?: unknown[] }).rows ?? []);
+
+  let attempted = 0;
+  for (const raw of list) {
+    const r = raw as {
+      payment_id?: number | string;
+      bill_id?: number | string;
+      amount?: number | string;
+      method?: string | null;
+      bill_number?: string | null;
+    };
+    const paymentId = Number(r.payment_id);
+    const billId = Number(r.bill_id);
+    const amount = Number(r.amount);
+    if (!Number.isFinite(paymentId) || !Number.isFinite(billId) || !Number.isFinite(amount)) continue;
+    attempted++;
+    await autoVoucherForPayment({
+      billId,
+      amount,
+      method: r.method || "cash",
+      billNumber: r.bill_number || `Bill #${billId}`,
+      paymentId,
+      force: true,
+    });
+  }
+  return { attempted, skippedPeak: false };
+}
+
