@@ -1,13 +1,14 @@
 /**
  * Thin infrastructure pulse strip for My Daily Summary (admin only).
  */
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation } from "@tanstack/react-query";
 import { Link } from "wouter";
 import { api } from "@/lib/fetchApi";
 import { buildInfrastructurePulse, type PulseTone } from "@/lib/infrastructurePulse";
 import { buildClinicSystemsSummary, type EmergencyStatusLike } from "@/lib/clinicSystemsSummary";
 import { Button } from "@/components/ui/button";
-import { RefreshCw, Gauge } from "lucide-react";
+import { RefreshCw, Gauge, ShieldCheck } from "lucide-react";
+import { useState } from "react";
 
 type OpsReport = {
   checks: Array<{ id: string; status: "PASS" | "WARNING" | "FAIL" | "SKIPPED" | "UNKNOWN"; message: string }>;
@@ -37,6 +38,7 @@ const ROW_VALUE: Record<PulseTone, string> = {
 const ORANGE_OK_DOT = "bg-orange-500 shadow-[0_0_6px_rgba(249,115,22,0.75)]";
 
 export function InfrastructurePulseStrip() {
+  const [verifyMsg, setVerifyMsg] = useState<string | null>(null);
   const { data, isLoading, isFetching, refetch, error } = useQuery<OpsReport>({
     queryKey: ["/api/admin/operations/health", "infrastructure-pulse"],
     queryFn: () => api.get("/api/admin/operations/health?includeOptional=1&timeout=4500"),
@@ -51,6 +53,22 @@ export function InfrastructurePulseStrip() {
     refetchInterval: 90_000,
     staleTime: 60_000,
     retry: false,
+  });
+
+  const verifyMutation = useMutation({
+    mutationFn: () => api.post<{ ok: boolean; jobId?: number; note?: string }>("/api/radiology-ops/restore-verify", {}),
+    onMutate: () => setVerifyMsg("Queuing restore-verify job…"),
+    onSuccess: (r) => {
+      setVerifyMsg(`✓ Queued (job #${r.jobId}). Result lands in ~1-2 min — refresh to see the Backup Verify light turn green.`);
+      // Refetch health after a short delay so the new check result appears
+      setTimeout(() => void refetch(), 5000);
+      setTimeout(() => void refetch(), 30000);
+      setTimeout(() => void refetch(), 90000);
+    },
+    onError: (e: unknown) => {
+      const msg = e instanceof Error ? e.message : String(e);
+      setVerifyMsg(`✗ Failed to queue: ${msg}`);
+    },
   });
 
   if (error) return null;
@@ -129,6 +147,18 @@ export function InfrastructurePulseStrip() {
           >
             <RefreshCw size={12} className={isFetching ? "animate-spin" : ""} />
           </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-6 px-1.5 text-[10px] gap-1 border-emerald-300 text-emerald-700 hover:bg-emerald-50"
+            disabled={verifyMutation.isPending}
+            onClick={() => verifyMutation.mutate()}
+            title="Prove your latest backup actually restores — creates a throwaway DB, restores the dump, verifies tables/row-counts/audit-chain, then drops it"
+          >
+            <ShieldCheck size={11} className={verifyMutation.isPending ? "animate-spin" : ""} />
+            {verifyMutation.isPending ? "Verifying…" : "Verify Backup"}
+          </Button>
           <Link href="/radiology/operational-health">
             <Button type="button" variant="ghost" size="sm" className="h-6 px-1.5 text-[10px] gap-1">
               <Gauge size={11} /> Details
@@ -136,6 +166,12 @@ export function InfrastructurePulseStrip() {
           </Link>
         </div>
       </div>
+
+      {verifyMsg && (
+        <div className="rounded-md px-2 py-1 text-[11px] bg-emerald-50 text-emerald-900 border border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-100 dark:border-emerald-800">
+          {verifyMsg}
+        </div>
+      )}
 
       {summary && (
         <div className="grid gap-2 sm:grid-cols-3 text-[11px] leading-5 font-mono" data-testid="clinic-systems-emergency">

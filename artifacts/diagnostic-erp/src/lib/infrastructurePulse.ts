@@ -27,6 +27,7 @@ export const INFRASTRUCTURE_PULSE_ITEMS: PulseItemConfig[] = [
   { key: "ollama", label: "Local AI", checkIds: ["ai.ollama"], detailsHref: "/settings/radiology?tab=reporting" },
   { key: "ocr", label: "OCR", checkIds: ["integ.ocr_worker"], detailsHref: "/settings/radiology?tab=reporting" },
   { key: "backup", label: "Backup", checkIds: ["backup.age"], detailsHref: "/radiology/operational-health" },
+  { key: "backup_verify", label: "Backup Verify", checkIds: ["backup.restore_verified"], detailsHref: "/radiology/operational-health" },
   { key: "icici", label: "ICICI Pay", checkIds: ["integ.icici_orange"], accent: "orange", detailsHref: "/settings?tab=online-booking" },
 ];
 
