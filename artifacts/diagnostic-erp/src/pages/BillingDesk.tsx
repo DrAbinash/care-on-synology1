@@ -1574,17 +1574,22 @@ export default function BillingDesk() {
         _idempotent?: boolean;
       };
 
-      // order is set as soon as its POST succeeds, so a NetworkError on the
-      // *bill* POST below still queues with "stage: bill" (order already
-      // exists — replay must only redo the bill, not double-create the order).
+      // One-shot save collapses order+bill into a single RTT. On failure we
+      // still queue with clientRef — server handlers resume via idempotency
+      // (order and/or bill may already exist).
       let order: { id: number; orderNumber: string } | undefined;
       try {
-        order = await api.post<{ id: number; orderNumber: string }>("/api/orders", orderBody);
-        // FAST MODE: send ?fast=1 to skip server-side buildBill (we already
-        // have patient/order/tests from form state) and make token generation
-        // non-blocking. Cuts 1-4 seconds off save-and-print on slow connections.
-        // Tokens are fetched separately via GET /:id/tokens after the bill saves.
-        const bill = await api.post<BillResponse>("/api/bills?fast=1", { ...billBody, orderId: order.id });
+        const bill = await api.post<BillResponse & { orderId?: number; orderNumber?: string }>(
+          "/api/billing/save",
+          { ...orderBody, ...billBody },
+        );
+        order = {
+          id: Number(bill.orderId),
+          orderNumber: String(bill.orderNumber ?? ""),
+        };
+        if (!Number.isFinite(order.id) || order.id <= 0) {
+          throw new Error("Billing save returned no orderId");
+        }
         return bill;
       } catch (err) {
         if (isQueueableBillingError(err)) {

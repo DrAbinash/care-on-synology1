@@ -509,7 +509,9 @@ billsRouter.get("/", async (req, res) => {
   });
 });
 
-billsRouter.post("/", async (req: StaffAuthRequest, res) => {
+billsRouter.post("/", createBillHandler);
+
+export async function createBillHandler(req: StaffAuthRequest, res: Response): Promise<void> {
   const payload = req.body?.data ?? req.body ?? {};
   const parsed = CreateBillBody.safeParse(payload);
   if (!parsed.success) {
@@ -1006,7 +1008,7 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
   // `studies` is now created asynchronously (see fire-and-forget above); the
   // key stays in the response for shape compatibility, but no client reads it.
   res.status(201).json({ ...built, token: tokenInfo, testTokens, studies: [], needsFormFData, needsOnlinePayment, onlineAmount });
-});
+}
 
 // PATCH /form-f-patient-data — Billing Desk Form F popup after bill create.
 // Lives on /bills (billing permission) so counters without /form-f module

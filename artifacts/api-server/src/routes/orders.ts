@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router, type Response } from "express";
 import { db, ordersTable, orderTestsTable, testsTable, patientsTable, doctorsTable } from "@workspace/db";
 import { eq, and, sql, desc, gte, lte, inArray } from "drizzle-orm";
 import {
@@ -131,7 +131,9 @@ ordersRouter.get("/", async (req, res) => {
   res.json({ orders: ordersWithDetails, total: Number(countResult[0]?.count ?? 0), page, limit });
 });
 
-ordersRouter.post("/", async (req: StaffAuthRequest, res) => {
+ordersRouter.post("/", createOrderHandler);
+
+export async function createOrderHandler(req: StaffAuthRequest, res: Response): Promise<void> {
   const parsed = CreateOrderBody.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "Invalid request", details: parsed.error.issues });
@@ -399,7 +401,7 @@ ordersRouter.post("/", async (req: StaffAuthRequest, res) => {
   }
 
   res.status(201).json(fullOrder);
-});
+}
 
 ordersRouter.get("/:id", async (req, res) => {
   const parsed = GetOrderParams.safeParse({ id: Number(req.params.id) });
