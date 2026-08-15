@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import QRCode from "qrcode";
 import { api, isQueueableBillingError } from "@/lib/fetchApi";
 import { FINANCIAL_QUERY_OPTIONS } from "@/lib/queryConfig";
+import { isClinicPeakHours } from "@/lib/clinicPeakHours";
 import { enqueueBill, QueuedForSyncError } from "@/lib/offlineBillingQueue";
 import {
   buildProvisionalBillPrintHtml,
@@ -4191,8 +4192,10 @@ function TodayCollectionsPanel() {
   const { data, isLoading } = useQuery<{ bills: RecentBill[] }>({
     queryKey: ["today-collections-panel", todayIso],
     queryFn: () => api.get<{ bills: RecentBill[] }>(`/api/bills?dateFrom=${todayIso}&dateTo=${todayIso}&excludeCancelled=true&limit=100&page=1&compact=1`),
-    staleTime: 20_000,
-    refetchInterval: 30_000,
+    // Peak: poll less often so save/print keeps the API; invalidateQueries on
+    // save still refreshes immediately after each bill.
+    staleTime: isClinicPeakHours() ? 45_000 : 20_000,
+    refetchInterval: isClinicPeakHours() ? 60_000 : 30_000,
     refetchOnWindowFocus: true,
   });
 
@@ -4309,10 +4312,14 @@ type RecentBill = {
 
 function RecentBillsPanel() {
   const [, navigate] = useLocation();
+  const peak = isClinicPeakHours();
   const { data, isLoading, isError } = useQuery<{ bills: RecentBill[] }>({
     queryKey: ["recent-bills-today"],
     queryFn: () => api.get<{ bills: RecentBill[] }>("/api/bills?limit=20&page=1&compact=1"),
-    ...FINANCIAL_QUERY_OPTIONS,
+    // Desk panels: during peak, slow background refresh (saves still invalidate).
+    ...(peak
+      ? { staleTime: 30_000, refetchInterval: 60_000, refetchOnWindowFocus: true }
+      : FINANCIAL_QUERY_OPTIONS),
   });
 
   const today = new Date().toDateString();

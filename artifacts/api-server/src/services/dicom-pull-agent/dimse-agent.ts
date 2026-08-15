@@ -23,6 +23,7 @@ import {
 import { eq, and } from "drizzle-orm";
 import { logger } from "../../lib/logger";
 import { getRadiologyConfig } from "../../lib/pacs/pacsConfig";
+import { clinicPeakHoursLabel, isClinicPeakHours } from "../../lib/clinicPeakHours";
 import type { DicomNode } from "@workspace/db/schema";
 
 /* ── dcmjs-dimse lazy import (ESM/CJS compat) ───────────────────────────── */
@@ -384,6 +385,13 @@ async function moveStudy(
 async function processNextJob(): Promise<void> {
   if (activeJobs >= MAX_CONCURRENT_JOBS) return;
 
+  // Auto-pull *creation* already skips peak hours; also stop *executing*
+  // leftover pending C-MOVE jobs so Orthanc I/O stays free for USG C-STORE
+  // and billing. Manual/force jobs created after peak resume normally.
+  if (isClinicPeakHours()) {
+    return;
+  }
+
   // Pick the oldest pending job
   const [job] = await db
     .select()
@@ -628,6 +636,15 @@ async function pollTick(): Promise<void> {
   if (!isRunning) return;
 
   try {
+    if (isClinicPeakHours()) {
+      // Heartbeat only — do not claim/run C-MOVE while the desk is busy.
+      await heartbeat({
+        status: "INFO",
+        message: `Poll tick skipped — clinic peak hours (${clinicPeakHoursLabel()}); pending C-MOVE deferred`,
+      });
+      return;
+    }
+
     // Process up to max-concurrent jobs per tick
     let processed = 0;
     while (activeJobs < MAX_CONCURRENT_JOBS && processed < 3) {

@@ -112,6 +112,12 @@ function scheduleAiSchedulerModes() {
   // the configurable clinical window.
   cron.schedule("*/15 * * * *", async () => {
     try {
+      // Night window overlaps morning peak (08:00–10:00 IST by default). Do not
+      // enqueue AI shadow work while the desk is billing — the minute job tick
+      // would still drain those rows and contend for GPU/CPU/DB/Orthanc.
+      if (isClinicPeakHours()) {
+        return;
+      }
       const { runNightBatch } = await import("./lib/ai/schedulerService");
       const r = await runNightBatch();
       if (r.skippedWindow) return;
@@ -161,9 +167,15 @@ function scheduleRadiologyJobs() {
         aiMax = Math.max(1, Math.min(vision.concurrency, sched.maxConcurrentJobs));
       } catch { /* keep 1 */ }
       const { AI_SHADOW_PIPELINE_JOB } = await import("./lib/ai/shadowPipeline");
+      const { PACS_REARCHIVE_JOB } = await import("./lib/radiologyJobHandlers");
+      const peak = isClinicPeakHours();
+      // During clinic peak, block AI + PACS rearchive (limit 0) and cap the
+      // tick to one light job so Orthanc/DB stay free for billing + USG C-STORE.
       const result = await runRadiologyJobTick(RADIOLOGY_JOB_HANDLERS, {
-        maxJobs: 5,
-        concurrencyByType: { [AI_SHADOW_PIPELINE_JOB]: aiMax },
+        maxJobs: peak ? 1 : 5,
+        concurrencyByType: peak
+          ? { [AI_SHADOW_PIPELINE_JOB]: 0, [PACS_REARCHIVE_JOB]: 0 }
+          : { [AI_SHADOW_PIPELINE_JOB]: aiMax },
       });
       if (result.ran.length > 0 || result.requeuedStale > 0) {
         console.log("[cron] radiology jobs:", JSON.stringify(result));
@@ -989,7 +1001,10 @@ function scheduleWhatsAppOutboxDispatch() {
   cron.schedule("*/2 * * * *", async () => {
     try {
       const { dispatchPendingWaOutbox } = await import("./services/whatsapp/WhatsAppOutbox");
-      const result = await dispatchPendingWaOutbox({ limit: 20, workerId: "in-process-cron" });
+      // Peak: drain slowly so bill-created WhatsApps still leave, without a
+      // 20-row HTTP burst competing with desk saves every 2 minutes.
+      const limit = isClinicPeakHours() ? 5 : 20;
+      const result = await dispatchPendingWaOutbox({ limit, workerId: "in-process-cron" });
       if (result.claimed > 0) {
         console.log(`[cron] WhatsApp outbox dispatch: claimed=${result.claimed} sent=${result.sent} failed=${result.failed} dead=${result.dead} suppressed=${result.suppressed}`);
       }
@@ -1346,7 +1361,13 @@ export async function runMonthlyReferralSummaryNow(opts?: { force?: boolean }): 
 function scheduleCommissionReconcile() {
   // Hourly at minute 20 — records hold/release transitions and auto-releases.
   cron.schedule("20 * * * *", async () => {
-    try { await fireCommissionReconcile(); }
+    try {
+      if (isClinicPeakHours()) {
+        console.log(`[cron] commission reconcile deferred — clinic peak hours (${clinicPeakHoursLabel()})`);
+        return;
+      }
+      await fireCommissionReconcile();
+    }
     catch (err) { console.error("[cron] commission reconcile failed:", err); }
   });
   console.log("[cron] Commission eligibility reconcile scheduler started (hourly)");
@@ -1559,6 +1580,10 @@ function scheduleBankingAutoSync() {
 }
 
 export async function fireBankingAutoSync() {
+  if (isClinicPeakHours()) {
+    console.log(`[cron] Banking auto-sync deferred — clinic peak hours (${clinicPeakHoursLabel()})`);
+    return;
+  }
   const { db } = await import("@workspace/db");
   const { bankAccountsTable, bankTransactionsTable } = await import("@workspace/db/schema");
   const { eq, and, gte } = await import("drizzle-orm");
