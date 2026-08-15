@@ -35,4 +35,17 @@ describe("InfrastructurePulseStrip hover panel", () => {
     expect(src).toContain('api.put("/api/usg-extraction/settings", { pipelineEnabled })');
     expect(src).toContain("Do not stop sending from the USG machine");
   });
+
+  test("dense desktop ribbon + grid layout markers (no orange ICICI branding)", () => {
+    expect(src).toContain('data-testid="clinic-systems-health-ribbon"');
+    expect(src).toContain("xl:grid-cols-4");
+    expect(src).toContain("buildDs225PulsePill");
+    expect(src).not.toContain("ORANGE_OK_DOT");
+    expect(src).not.toContain("bg-orange-500");
+    expect(src).not.toContain('accent === "orange"');
+    // Same ops/emergency queries as before — no extra polling endpoints.
+    expect(src).toContain("/api/admin/operations/health?includeOptional=1&timeout=4500");
+    expect(src).toContain("/api/emergency-billing/status");
+    expect(src).toContain("refetchInterval: 90_000");
+  });
 });

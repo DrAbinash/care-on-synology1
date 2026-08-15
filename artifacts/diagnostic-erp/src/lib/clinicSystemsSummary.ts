@@ -176,6 +176,46 @@ export function buildClinicSystemsSummary(opts: {
     },
   ];
 
+  const orthanc = checkById(opts.checks, "orthanc.reachable");
+  const ollama = checkById(opts.checks, "ai.ollama");
+  const ocr = checkById(opts.checks, "integ.ocr_worker");
+  const backupVerify = checkById(opts.checks, "backup.restore_verified");
+  const icici = checkById(opts.checks, "integ.icici_orange");
+
+  const supportingRows: ClinicSystemsRow[] = [
+    {
+      key: "orthanc",
+      label: "Orthanc/PACS",
+      value: erpValue(orthanc, "ONLINE", "UNHEALTHY"),
+      tone: erpTone(orthanc?.status),
+    },
+    {
+      key: "ollama",
+      label: "Local AI",
+      value: erpValue(ollama, "ONLINE", "UNHEALTHY"),
+      tone: erpTone(ollama?.status),
+    },
+    {
+      key: "ocr",
+      label: "OCR",
+      value: erpValue(ocr, "ONLINE", "UNHEALTHY"),
+      tone: erpTone(ocr?.status),
+    },
+    {
+      key: "backup-verify",
+      label: "Backup Verify",
+      value: erpValue(backupVerify, "VERIFIED", "FAILED"),
+      tone: erpTone(backupVerify?.status),
+    },
+    {
+      key: "icici",
+      label: "ICICI Pay",
+      // Healthy Orange Pay product must show semantic GREEN — not orange branding.
+      value: erpValue(icici, "ONLINE", "UNHEALTHY"),
+      tone: erpTone(icici?.status),
+    },
+  ];
+
   const alerts: ClinicSystemsAlert[] = [];
   if (em?.configured) {
     if (em.nasStatus === "OFFLINE") {
@@ -218,11 +258,63 @@ export function buildClinicSystemsSummary(opts: {
 
   return {
     sections: [
-      { title: "Clinic Systems", rows: careRows },
+      { title: "CARE / Core", rows: careRows },
       { title: "Emergency DS225+", rows: emergencyRows },
       { title: "DR / Backup", rows: drRows },
+      { title: "Supporting Systems", rows: supportingRows },
     ],
     alerts,
     degraded: alerts.length > 0,
+  };
+}
+
+/** Ribbon pill for DS225+ from existing emergency-billing status (no extra fetch). */
+export function buildDs225PulsePill(emergency: EmergencyStatusLike | null | undefined): {
+  key: string;
+  label: string;
+  tone: PulseTone;
+  message: string;
+  detailsHref: string;
+  shouldBlink: boolean;
+} {
+  if (!emergency || !emergency.configured) {
+    return {
+      key: "ds225",
+      label: "DS225+",
+      tone: "grey",
+      message: "Emergency billing not configured",
+      detailsHref: "/settings?tab=emergency-billing",
+      shouldBlink: false,
+    };
+  }
+  if (emergency.nasStatus === "OFFLINE") {
+    return {
+      key: "ds225",
+      label: "DS225+",
+      tone: "red",
+      message: "225app unreachable",
+      detailsHref: "/settings?tab=emergency-billing",
+      shouldBlink: true,
+    };
+  }
+  if (emergency.contract?.status === "MISMATCH" || emergency.neverSynced) {
+    return {
+      key: "ds225",
+      label: "DS225+",
+      tone: "amber",
+      message: emergency.neverSynced
+        ? "No successful initial master-data push"
+        : `Contract mismatch — CARE expects ${emergency.contract?.careExpected}`,
+      detailsHref: "/settings?tab=emergency-billing",
+      shouldBlink: true,
+    };
+  }
+  return {
+    key: "ds225",
+    label: "DS225+",
+    tone: "green",
+    message: "DS225+ Emergency online",
+    detailsHref: "/settings?tab=emergency-billing",
+    shouldBlink: false,
   };
 }
