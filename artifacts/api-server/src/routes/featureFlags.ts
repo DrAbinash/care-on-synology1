@@ -4,6 +4,7 @@ import { eq } from "drizzle-orm";
 import { requireStaffAuth, requireAdminRole, type StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { invalidateFeatureFlagCache } from "../lib/featureFlags";
 import { RADIOLOGY_FLAG_REGISTRY } from "../lib/radiologyFeatureFlagRegistry";
+import { redisGet, redisSet, redisDel } from "../lib/redisClient";
 
 // Ticket T0.1 — server-side feature flag backbone. GET is available to any
 // authenticated staff member (the frontend hydrates ff_radiology_* keys on
@@ -24,8 +25,27 @@ router.use(requireStaffAuth);
 
 router.get("/", async (_req, res) => {
   try {
+    // Redis cache: this is the #1 most-called endpoint in production (76% of
+    // all requests). Cache the full flag list for 60s so 300+ polls/minute
+    // become 1 DB query/minute. Redis miss → DB query → backfill cache.
+    const CACHE_KEY = "feature-flags:all";
+    const CACHE_TTL = 60; // seconds
+
+    const cached = await redisGet(CACHE_KEY);
+    if (cached) {
+      res.set("X-Cache", "HIT");
+      res.json(JSON.parse(cached));
+      return;
+    }
+
     const rows = await db.select().from(featureFlagsTable).orderBy(featureFlagsTable.key);
-    res.json(rows.map((r) => ({ ...r, wired: isWired(r.key) })));
+    const payload = rows.map((r) => ({ ...r, wired: isWired(r.key) }));
+
+    // Backfill cache (best-effort, don't block response)
+    void redisSet(CACHE_KEY, JSON.stringify(payload), CACHE_TTL);
+
+    res.set("X-Cache", "MISS");
+    res.json(payload);
   } catch (err) {
     // Layout hydrates flags on every page — a missing table must not 500 the ERP shell.
     const message = err instanceof Error ? err.message : String(err);
@@ -85,6 +105,8 @@ router.patch("/:key", requireAdminRole, async (req: StaffAuthRequest, res) => {
     .returning();
 
   invalidateFeatureFlagCache();
+  // Invalidate Redis cache so the next GET fetches fresh data
+  void redisDel("feature-flags:all");
   res.json({ ...updated, wired: isWired(key) });
 });
 

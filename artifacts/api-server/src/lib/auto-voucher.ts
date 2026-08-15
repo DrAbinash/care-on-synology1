@@ -124,8 +124,14 @@ function voucherBucketPrefix(type: string): string {
 // deletion already writes a voucher_audits row, whereas count(*) would silently
 // RE-ISSUE that number to a different transaction.
 async function nextVoucherNumber(type: string, offset = 0): Promise<string> {
+  return nextVoucherNumberTx(db, type, offset);
+}
+
+/** Transaction-aware variant — accepts a db or tx handle so the caller can
+ *  run this inside a pg_advisory_xact_lock transaction. */
+async function nextVoucherNumberTx(dbHandle: typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0], type: string, offset = 0): Promise<string> {
   const bucket = voucherBucketPrefix(type);
-  const [r] = await db
+  const [r] = await dbHandle
     .select({
       m: sql<number>`coalesce(max(substring(${vouchersTable.voucherNumber} from ${bucket.length + 1})::int), 0)`,
     })
@@ -208,21 +214,33 @@ export async function autoVoucherForPayment(opts: {
 
     let lastErr: unknown;
     for (let attempt = 0; attempt < 3; attempt++) {
-      const voucherNumber = await nextVoucherNumber(vType, attempt);
+      // FIX (BIZ-voucher-race): Wrap the MAX-read + INSERT in a transaction
+      // with pg_advisory_xact_lock to serialize concurrent voucher generation.
+      // Previously, two concurrent bill saves could both read the same MAX,
+      // both try to INSERT the same number, and one hit a 23505 unique
+      // violation. DB logs showed 8+ such violations. The advisory lock
+      // ensures only one voucher generation runs at a time per type.
       try {
-        await db.insert(vouchersTable).values({
-          voucherNumber,
-          type: vType,
-          date: istDateStr(),
-          debitAccountId: debitAccId,
-          creditAccountId: creditAccId,
-          amount: absAmount.toFixed(2),
-          particular,
-          billId,
-          paymentId: paymentId ?? null,
-          performedBy: performedBy ?? null,
-          narration: "Auto-generated from billing system",
-          reference: billNumber,
+        const voucherNumber = await db.transaction(async (tx) => {
+          // Lock per voucher type so receipt vouchers and payment vouchers
+          // don't block each other, but concurrent receipts serialize.
+          await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${'care_erp_voucher_' + vType}))`);
+          const num = await nextVoucherNumberTx(tx, vType, attempt);
+          await tx.insert(vouchersTable).values({
+            voucherNumber: num,
+            type: vType,
+            date: istDateStr(),
+            debitAccountId: debitAccId,
+            creditAccountId: creditAccId,
+            amount: absAmount.toFixed(2),
+            particular,
+            billId,
+            paymentId: paymentId ?? null,
+            performedBy: performedBy ?? null,
+            narration: "Auto-generated from billing system",
+            reference: billNumber,
+          });
+          return num;
         });
         return;
       } catch (err: unknown) {
