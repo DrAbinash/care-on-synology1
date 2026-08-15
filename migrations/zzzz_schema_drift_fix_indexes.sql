@@ -7,7 +7,10 @@
 -- created (likely the migration that defines them was added to the Drizzle
 -- journal but the corresponding .sql file didn't include the CREATE INDEX).
 --
--- All statements are IF NOT EXISTS — safe to run on every deployment.
+-- IMPORTANT: bills/orders referral indexes must target referred_by_id (not
+-- referred_by — that column does not exist on those tables). Match the
+-- existence-guarded pattern in add_referral_indexes.sql so clean CI Postgres
+-- boots do not hard-stop when the column is absent.
 -- =============================================================================
 
 -- 1. Unique constraint on radiology_worklist.accession_number
@@ -16,18 +19,57 @@ CREATE UNIQUE INDEX IF NOT EXISTS radiology_worklist_accession_uq
   ON radiology_worklist (accession_number)
   WHERE accession_number IS NOT NULL;
 
--- 2. Composite index on bills(referred_by, created_at) for referral reports
+-- 2. Composite index on bills(referred_by_id, created_at) for referral reports
 -- Speeds up "bills referred by doctor X in date range" queries.
-CREATE INDEX IF NOT EXISTS idx_bills_referred_by_created
-  ON bills (referred_by, created_at DESC);
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name   = 'bills'
+      AND column_name  = 'referred_by_id'
+  ) THEN
+    CREATE INDEX IF NOT EXISTS idx_bills_referred_by_created
+      ON bills (referred_by_id, created_at DESC)
+      WHERE referred_by_id IS NOT NULL;
+  ELSE
+    RAISE NOTICE 'bills.referred_by_id does not exist — skipping idx_bills_referred_by_created';
+  END IF;
+END $$;
 
--- 3. Index on bills(referred_by) for simple referral lookups
-CREATE INDEX IF NOT EXISTS idx_bills_referred_by_id
-  ON bills (referred_by);
+-- 3. Index on bills(referred_by_id) for simple referral lookups
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name   = 'bills'
+      AND column_name  = 'referred_by_id'
+  ) THEN
+    CREATE INDEX IF NOT EXISTS idx_bills_referred_by_id
+      ON bills (referred_by_id)
+      WHERE referred_by_id IS NOT NULL;
+  ELSE
+    RAISE NOTICE 'bills.referred_by_id does not exist — skipping idx_bills_referred_by_id';
+  END IF;
+END $$;
 
--- 4. Index on orders(referred_by) for referral order lookups
-CREATE INDEX IF NOT EXISTS idx_orders_referred_by
-  ON orders (referred_by);
+-- 4. Index on orders(referred_by_id) for referral order lookups
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name   = 'orders'
+      AND column_name  = 'referred_by_id'
+  ) THEN
+    CREATE INDEX IF NOT EXISTS idx_orders_referred_by
+      ON orders (referred_by_id)
+      WHERE referred_by_id IS NOT NULL;
+  ELSE
+    RAISE NOTICE 'orders.referred_by_id does not exist — skipping idx_orders_referred_by';
+  END IF;
+END $$;
 
 -- Note: The type mismatches (fetal_usg tables using timestamptz instead of
 -- timestamp) are NON-BLOCKING warnings. timestamptz is actually the CORRECT
