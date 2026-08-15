@@ -18,6 +18,8 @@ import { type ScanCaptureResult, type ScanSide } from "@/components/UnifiedScanC
 import { decodeQrFromBlob } from "@/lib/aadhaarQr";
 import { runIdCardTesseractOcr } from "@/lib/idCardTesseractOcr";
 import { persistDocumentScanFromBlob } from "@/lib/documentScanApi";
+import { buildFormFPrintHtml } from "@/lib/formFPrintHtml";
+import { openBlankPrintWindow, writeAndPrint } from "@/lib/documentLayout/printDelivery";
 import { readStaffSession, normalizeRole, FULL_ACCESS_ROLES } from "@/lib/staffSession";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
@@ -1467,33 +1469,55 @@ export default function FormF() {
     }
   }
 
+  const printPopupRef = useRef<Window | null>(null);
+
   async function printAndSave() {
+    // Open synchronously on the click so pop-up blockers do not force
+    // window.print() on the ERP shell (which prints tabs, search, etc.).
+    printPopupRef.current = openBlankPrintWindow();
     await saveFormF(true);
-    printForm();
+    printForm(printPopupRef.current);
+    printPopupRef.current = null;
   }
 
-  function printForm() {
+  function printForm(existingWin?: Window | null) {
     const printArea = document.getElementById("formf-print");
-    if (!printArea) return;
-    const w = window.open("", "_blank", "width=900,height=700");
-    if (!w) { window.print(); return; }
-    w.document.write(`
-      <!DOCTYPE html><html><head>
-      <title>Form F - PCPNDT</title>
-      <style>
-        @page { size: A4; margin: 0; }
-        body { margin: 0; padding: 0; }
-        * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-      </style>
-      </head><body>
-      ${printArea.outerHTML}
-      <script>window.onload=()=>{window.print();window.close();}<\/script>
-      </body></html>`);
-    w.document.close();
+    if (!printArea) {
+      toast({
+        title: "Open Fill Form tab first",
+        description: "Switch to Fill Form to preview Form F before printing.",
+        variant: "destructive",
+      });
+      try {
+        existingWin?.close();
+      } catch {
+        /* ignore */
+      }
+      return;
+    }
+    writeAndPrint(existingWin ?? null, buildFormFPrintHtml(printArea.outerHTML));
   }
 
   return (
     <div className="flex flex-col h-full min-h-0 bg-gray-50">
+      {/* If the user presses Ctrl+P on this page, print only the statutory Form F. */}
+      <style>{`
+        @media print {
+          body * { visibility: hidden !important; }
+          #formf-print, #formf-print * { visibility: visible !important; }
+          #formf-print {
+            position: absolute !important;
+            left: 0 !important;
+            top: 0 !important;
+            width: 210mm !important;
+            max-width: 210mm !important;
+            min-height: 297mm !important;
+            margin: 0 !important;
+            box-shadow: none !important;
+            border: none !important;
+          }
+        }
+      `}</style>
       {/* Top bar */}
       <div className="flex-shrink-0 bg-white border-b border-gray-200 px-4 py-2 flex flex-wrap items-center gap-3">
         <div className="flex items-center gap-2">
