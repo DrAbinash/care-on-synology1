@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db, billsTable, paymentsTable, ordersTable, patientsTable } from "@workspace/db";
-import { billAuditsTable, superAdminSessionsTable, ledgersTable, formFRecordsTable } from "@workspace/db/schema";
+import { billAuditsTable, superAdminSessionsTable, ledgersTable, formFRecordsTable, testTokensTable, testsTable } from "@workspace/db/schema";
 import { sendBillEditEmail, sendBillReprintEmail } from "../email";
 import { isValidUsbKey, isUsbGateEnforced, getUsbKeyHeader } from "../middleware/requireSuperAdminUsb";
 import { auditFromRequest } from "../lib/audit";
@@ -81,9 +81,10 @@ async function countBillsForLedger(ledgerId: number): Promise<number> {
 // ── Fast-mode token cache ──────────────────────────────────────────────────
 // When the billing desk saves with ?fast=1, tokens are generated in the
 // background and cached here. The client fetches them via GET /:id/tokens
-// once the print dialog is ready. Entries expire after 2 minutes.
+// (optionally with waitMs long-poll) once the print dialog is ready.
 interface CachedTokens { tokens: Awaited<ReturnType<typeof generateTestTokensForOrder>>; generatedAt: number; }
 const tokenCache = new Map<number, CachedTokens>();
+const tokenWaiters = new Map<number, Array<(tokens: CachedTokens["tokens"] | null) => void>>();
 const TOKEN_CACHE_TTL_MS = 120_000;
 // Clean up expired entries every 5 minutes to prevent unbounded growth
 setInterval(() => {
@@ -92,6 +93,54 @@ setInterval(() => {
     if (now - val.generatedAt > TOKEN_CACHE_TTL_MS) tokenCache.delete(key);
   }
 }, 300_000).unref();
+
+function publishBillTokens(billId: number, tokens: CachedTokens["tokens"]) {
+  tokenCache.set(billId, { tokens, generatedAt: Date.now() });
+  const waiters = tokenWaiters.get(billId);
+  if (waiters?.length) {
+    tokenWaiters.delete(billId);
+    for (const w of waiters) {
+      try { w(tokens); } catch { /* waiter must not break fan-out */ }
+    }
+  }
+}
+
+/** Wake long-poll waiters without caching (generation failed). */
+function failBillTokens(billId: number) {
+  const waiters = tokenWaiters.get(billId);
+  if (waiters?.length) {
+    tokenWaiters.delete(billId);
+    for (const w of waiters) {
+      try { w(null); } catch { /* ignore */ }
+    }
+  }
+}
+
+function waitForBillTokens(billId: number, waitMs: number): Promise<CachedTokens["tokens"] | null> {
+  if (waitMs <= 0) return Promise.resolve(null);
+  const cached = tokenCache.get(billId);
+  if (cached && Date.now() - cached.generatedAt < TOKEN_CACHE_TTL_MS) {
+    return Promise.resolve(cached.tokens);
+  }
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      const list = tokenWaiters.get(billId);
+      if (list) {
+        const next = list.filter((w) => w !== onReady);
+        if (next.length) tokenWaiters.set(billId, next);
+        else tokenWaiters.delete(billId);
+      }
+      resolve(null);
+    }, waitMs);
+    const onReady = (tokens: CachedTokens["tokens"] | null) => {
+      clearTimeout(timer);
+      resolve(tokens);
+    };
+    const list = tokenWaiters.get(billId) ?? [];
+    list.push(onReady);
+    tokenWaiters.set(billId, list);
+  });
+}
 
 // Takes the order row the caller already holds (this runs inside the hot
 // save-and-print guard wave — no re-select).
@@ -869,8 +918,8 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
       patientId: order.patientId,
       priority: isVip ? 5 : 0,
     }).then((tokens) => {
-      // Cache tokens for the client's follow-up fetch
-      tokenCache.set(bill.id, { tokens, generatedAt: Date.now() });
+      // Cache + wake any long-poll GET /:id/tokens waiters
+      publishBillTokens(bill.id, tokens);
       // WhatsApp needs a token number — send only once tokens are ready.
       if (pat?.phone && tokens.length > 0) {
         const tokenInfo = deriveBillTokenFromTestTokens(tokens);
@@ -888,6 +937,7 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
       }
     }).catch((err) => {
       console.warn("Per-test token generation failed (fast mode):", err);
+      failBillTokens(bill.id);
     });
 
     // Parity with the slow path: vouchers are fire-and-forget so they must
@@ -1086,21 +1136,94 @@ billsRouter.patch("/form-f-patient-data", async (req: StaffAuthRequest, res) => 
 });
 
 // GET /:id/tokens — fetch test tokens for a fast-mode bill save.
-// The client calls this after receiving the fast-mode bill response, to
-// pick up the tokens that were generated in the background.
+// Supports ?waitMs=N (capped) so the billing desk can long-poll once instead
+// of a fixed 5×500ms retry loop. Also falls back to DB rows when the
+// in-process cache missed (multi-worker / restart).
 billsRouter.get("/:id/tokens", async (req, res) => {
   const billId = Number(req.params.id);
   if (!Number.isInteger(billId) || billId <= 0) {
     res.status(400).json({ error: "Invalid id" });
     return;
   }
+
+  const respondReady = (tokens: CachedTokens["tokens"]) => {
+    res.json({ tokens, ready: true });
+  };
+
   const cached = tokenCache.get(billId);
   if (cached && Date.now() - cached.generatedAt < TOKEN_CACHE_TTL_MS) {
-    res.json({ tokens: cached.tokens, ready: true });
+    respondReady(cached.tokens);
     return;
   }
-  // Not cached or expired — regenerate on demand (client will retry once)
-  res.status(202).json({ tokens: [], ready: false });
+
+  // DB fallback — background generator may have committed rows already.
+  const fromDb = await db
+    .select({
+      orderTestId: testTokensTable.orderTestId,
+      testName: testsTable.name,
+      department: testTokensTable.department,
+      roomNumber: testTokensTable.roomNumber,
+      floorLabel: testsTable.floorLabel,
+      tokenNo: testTokensTable.tokenNo,
+      tokenDate: testTokensTable.tokenDate,
+    })
+    .from(testTokensTable)
+    .leftJoin(testsTable, eq(testsTable.id, testTokensTable.testId))
+    .where(eq(testTokensTable.billId, billId));
+  if (fromDb.length > 0) {
+    const tokens = fromDb.map((t) => ({
+      orderTestId: t.orderTestId,
+      testName: t.testName || "",
+      department: t.department,
+      roomNumber: t.roomNumber || "",
+      floorLabel: t.floorLabel || "",
+      tokenNo: t.tokenNo,
+      tokenDate: t.tokenDate,
+    }));
+    publishBillTokens(billId, tokens);
+    respondReady(tokens);
+    return;
+  }
+
+  const waitRaw = Number(req.query.waitMs);
+  const waitMs = Number.isFinite(waitRaw) ? Math.max(0, Math.min(Math.floor(waitRaw), 3000)) : 0;
+  if (waitMs > 0) {
+    const waited = await waitForBillTokens(billId, waitMs);
+    if (waited && waited.length > 0) {
+      respondReady(waited);
+      return;
+    }
+    // Re-check DB after wait — another worker may have written tokens.
+    const again = await db
+      .select({
+        orderTestId: testTokensTable.orderTestId,
+        testName: testsTable.name,
+        department: testTokensTable.department,
+        roomNumber: testTokensTable.roomNumber,
+        floorLabel: testsTable.floorLabel,
+        tokenNo: testTokensTable.tokenNo,
+        tokenDate: testTokensTable.tokenDate,
+      })
+      .from(testTokensTable)
+      .leftJoin(testsTable, eq(testsTable.id, testTokensTable.testId))
+      .where(eq(testTokensTable.billId, billId));
+    if (again.length > 0) {
+      const tokens = again.map((t) => ({
+        orderTestId: t.orderTestId,
+        testName: t.testName || "",
+        department: t.department,
+        roomNumber: t.roomNumber || "",
+        floorLabel: t.floorLabel || "",
+        tokenNo: t.tokenNo,
+        tokenDate: t.tokenDate,
+      }));
+      publishBillTokens(billId, tokens);
+      respondReady(tokens);
+      return;
+    }
+  }
+
+  res.json({ tokens: [], ready: false });
 });
 
 billsRouter.get("/:id", async (req, res) => {
