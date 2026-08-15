@@ -28,12 +28,16 @@ const VISUAL_STYLES: Record<ProvenanceVisualKind, string> = {
   "quick-select": "border-l-sky-500 bg-sky-500/10 text-foreground",
   "quick-findings": "border-l-emerald-500 bg-emerald-500/10 text-foreground",
   merged: "border-l-amber-500 bg-amber-500/10 text-foreground",
+  "template-a": "border-l-emerald-600 bg-emerald-100/60 text-emerald-900",
+  "template-b": "border-l-sky-600 bg-sky-100/60 text-sky-900",
   other: "border-l-slate-400 bg-slate-500/10 text-foreground",
 };
 
 const LEGEND: Array<{ kind: ProvenanceVisualKind; label: string; box: string }> = [
   { kind: "quick-select", label: "Quick Select", box: "bg-sky-500/25 border-sky-500" },
   { kind: "quick-findings", label: "Quick Findings", box: "bg-emerald-500/25 border-emerald-500" },
+  { kind: "template-a", label: "Format A", box: "bg-emerald-500/30 border-emerald-600" },
+  { kind: "template-b", label: "Format B", box: "bg-sky-500/30 border-sky-600" },
   { kind: "merged", label: "Merged", box: "bg-amber-500/25 border-amber-500" },
   { kind: "other", label: "Other assisted", box: "bg-slate-500/25 border-slate-400" },
   { kind: "manual", label: "Manual", box: "bg-transparent border-border" },

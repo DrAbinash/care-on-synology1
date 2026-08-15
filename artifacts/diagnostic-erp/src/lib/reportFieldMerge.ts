@@ -17,6 +17,8 @@ export type InsertSource =
   | "quick-findings"
   | "protocol"
   | "template"
+  | "template-a"
+  | "template-b"
   | "macro"
   | "companion"
   | "ai-draft";
@@ -48,6 +50,8 @@ const SOURCE_ORDER: InsertSource[] = [
   "quick-findings",
   "protocol",
   "template",
+  "template-a",
+  "template-b",
   "macro",
   "companion",
   "ai-draft",
@@ -59,6 +63,8 @@ const SOURCE_LABELS: Record<InsertSource, string> = {
   "quick-findings": "Quick Findings",
   protocol: "Protocol",
   template: "Template",
+  "template-a": "Format A",
+  "template-b": "Format B",
   macro: "Macro",
   companion: "Companion",
   "ai-draft": "AI Draft",
@@ -103,7 +109,7 @@ export function formatProvenanceHover(sources: InsertSource[]): string {
 }
 
 /** Visual bucket for editor tinting (QS blue / QF green / merged / manual / other). */
-export type ProvenanceVisualKind = "manual" | "quick-select" | "quick-findings" | "merged" | "other";
+export type ProvenanceVisualKind = "manual" | "quick-select" | "quick-findings" | "merged" | "template-a" | "template-b" | "other";
 
 export function provenanceVisualKind(sources: InsertSource[]): ProvenanceVisualKind {
   const sorted = sortSources(sources).filter((s) => s !== "manual");
@@ -111,6 +117,8 @@ export function provenanceVisualKind(sources: InsertSource[]): ProvenanceVisualK
   if (sorted.length > 1) return "merged";
   if (sorted[0] === "quick-select") return "quick-select";
   if (sorted[0] === "quick-findings") return "quick-findings";
+  if (sorted[0] === "template-a") return "template-a";
+  if (sorted[0] === "template-b") return "template-b";
   return "other";
 }
 

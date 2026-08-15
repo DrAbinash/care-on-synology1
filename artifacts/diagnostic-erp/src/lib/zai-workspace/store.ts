@@ -11,6 +11,7 @@ import {
   mergeReportFieldContentWithProvenance,
   provenanceFromText,
   reconcileProvenanceAfterManualEdit,
+  normalizeForDedupe,
   type FieldProvenanceMap,
   type InsertSource,
   type ReportFieldKey,
@@ -334,7 +335,49 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   applySelectedFormats: () => { const ids = get().selectedFormatIds; if (!ids.length) return; const fs = get().reportFormats.filter((f: ReportFormat) => ids.includes(f.id)); if (!fs.length) return; const { findingsText, impressionText, recommendationText, techniqueText } = get(); if (findingsText.trim() || impressionText.trim() || recommendationText.trim() || techniqueText.trim()) { set({ confirmOverwriteOpen: true, pendingFormatIds: ids }); return; } get().confirmOverwriteAndApply(); },
   confirmOverwriteAndApply: () => { const ids = get().pendingFormatIds.length ? get().pendingFormatIds : get().selectedFormatIds; const fs = get().reportFormats.filter((f: ReportFormat) => ids.includes(f.id)); if (!fs.length) { set({ confirmOverwriteOpen: false, pendingFormatIds: [] }); return; } if (fs.length === 1) { const f = fs[0]; get().setField("technique", f.technique, { source: "template", replaceProvenance: true }); get().setField("findings", f.findings, { source: "template", replaceProvenance: true }); get().setField("impression", f.impression, { source: "template", replaceProvenance: true }); get().setField("recommendation", f.recommendation, { source: "template", replaceProvenance: true }); const nf = get().reportFormats.map((x: ReportFormat) => x.id === f.id ? { ...x, usageCount: (x.usageCount ?? 0) + 1 } : x); saveFormats(nf); set({ reportFormats: nf, confirmOverwriteOpen: false, pendingFormatIds: [], reportFormatPickerOpen: false }); return; } const [a, b] = fs; const r = mergeTwoFormats(a, b); set({ lastMergeResult: r, lastMergeFormats: { a, b }, mergePreviewOpen: true, confirmOverwriteOpen: false, pendingFormatIds: [] }); },
   cancelOverwrite: () => set({ confirmOverwriteOpen: false, pendingFormatIds: [] }),
-  applyMergedResult: () => { const r = get().lastMergeResult; if (!r) return; get().setField("technique", r.technique, { source: "template", replaceProvenance: true }); get().setField("findings", r.findings, { source: "template", replaceProvenance: true }); get().setField("impression", r.impression, { source: "template", replaceProvenance: true }); get().setField("recommendation", r.recommendation, { source: "template", replaceProvenance: true }); const ids = get().selectedFormatIds; const nf = get().reportFormats.map((x: ReportFormat) => ids.includes(x.id) ? { ...x, usageCount: (x.usageCount ?? 0) + 1 } : x); saveFormats(nf); set({ reportFormats: nf, mergePreviewOpen: false, lastMergeResult: null, lastMergeFormats: null, reportFormatPickerOpen: false }); },
+  applyMergedResult: () => {
+    const r = get().lastMergeResult;
+    if (!r) return;
+    // Build per-sentence provenance from the merge result so differential colors
+    // (Format A = emerald, Format B = sky, common = template/gray) persist in the editor.
+    const buildProv = (sentences: Array<{ text: string; source: "common" | "from-a" | "from-b" }>): FieldProvenanceMap => {
+      const out: FieldProvenanceMap = {};
+      for (const s of sentences) {
+        const key = normalizeForDedupe(s.text);
+        if (!key) continue;
+        const src: InsertSource = s.source === "from-a" ? "template-a" : s.source === "from-b" ? "template-b" : "template";
+        out[key] = [src];
+      }
+      return out;
+    };
+    const techniqueProv = provenanceFromText(r.technique, "template");
+    const findingsProv = buildProv(r.findingsMerged.sentences);
+    const impressionProv = buildProv(r.impressionMerged.sentences);
+    const recommendationProv = buildProv(r.recommendationMerged.sentences);
+    set({
+      techniqueText: r.technique,
+      findingsText: r.findings,
+      impressionText: r.impression,
+      recommendationText: r.recommendation,
+      fieldProvenance: {
+        technique: techniqueProv,
+        findings: findingsProv,
+        impression: impressionProv,
+        recommendation: recommendationProv,
+        clinicalHistory: get().fieldProvenance.clinicalHistory ?? EMPTY_FIELD_PROVENANCE,
+      },
+      isDirty: true,
+      mergePreviewOpen: false,
+      lastMergeResult: null,
+      lastMergeFormats: null,
+      reportFormatPickerOpen: false,
+    });
+    // Increment usage count
+    const ids = get().selectedFormatIds;
+    const nf = get().reportFormats.map((x: ReportFormat) => ids.includes(x.id) ? { ...x, usageCount: (x.usageCount ?? 0) + 1 } : x);
+    saveFormats(nf);
+    set({ reportFormats: nf });
+  },
   cancelMerge: () => set({ mergePreviewOpen: false, lastMergeResult: null, lastMergeFormats: null }),
   saveAsFormat: (i) => { const f = createFormat(i); const fs = [...get().reportFormats, f]; saveFormats(fs); set({ reportFormats: fs, saveAsFormatDialogOpen: false }); },
   deleteReportFormat: (id) => { const fs = get().reportFormats.filter((f: ReportFormat) => f.id !== id); saveFormats(fs); set({ reportFormats: fs, selectedFormatIds: get().selectedFormatIds.filter((x: string) => x !== id) }); },
