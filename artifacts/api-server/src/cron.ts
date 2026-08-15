@@ -44,6 +44,7 @@ const firedToday = new Set<string>();
 export function startCronScheduler() {
   scheduleDaily();
   scheduleCommissionReconcile();
+  scheduleDeferredPaymentVouchers();
   scheduleDicomAutoPull();
   scheduleMonthlyAudit();
   scheduleMonthlyReferralSummary();
@@ -1371,6 +1372,25 @@ function scheduleCommissionReconcile() {
     catch (err) { console.error("[cron] commission reconcile failed:", err); }
   });
   console.log("[cron] Commission eligibility reconcile scheduler started (hourly)");
+}
+
+/** Off-peak catch-up for vouchers deferred during peak desk hours. */
+function scheduleDeferredPaymentVouchers() {
+  cron.schedule("*/10 * * * *", async () => {
+    try {
+      if (isClinicPeakHours()) {
+        return;
+      }
+      const { backfillDeferredPaymentVouchers } = await import("./lib/auto-voucher");
+      const r = await backfillDeferredPaymentVouchers({ limit: 25 });
+      if (r.attempted > 0) {
+        console.log(`[cron] deferred payment vouchers backfilled: ${r.attempted}`);
+      }
+    } catch (err) {
+      console.error("[cron] deferred payment voucher backfill failed:", err);
+    }
+  });
+  console.log("[cron] Deferred payment voucher backfill started (every 10 min, off-peak only)");
 }
 
 export async function runCommissionReconcileNow(): Promise<{ transitions: number }> {

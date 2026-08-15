@@ -33,6 +33,7 @@ import { generateStudiesForOrder } from "./radiology";
 import { sendBillWhatsapp } from "./whatsapp";
 import { autoVoucherForPayment } from "../lib/auto-voucher";
 import { getSlowThresholdMs } from "../lib/requestMetrics";
+import { nextDocumentCounter } from "../lib/documentNumberCounters";
 import {
   cancelRadiologyMwlForBill,
   cancelRadiologyMwlForOrderTest,
@@ -111,35 +112,15 @@ async function resolveLedgerForOrder(order: typeof ordersTable.$inferSelect): Pr
  * `parseBillNumberParts` handles both shapes so the renumber logic keeps
  * working across the migration.
  */
-// A pooled db handle OR an open transaction — callers holding the bill-number
-// advisory lock MUST pass their `tx` (see the note below), so the type admits it.
+// A pooled db handle OR an open transaction — pass `tx` so nextval runs on the
+// same connection as the bill insert (sequences are concurrent; no long lock).
 type DbOrTx = typeof db | Parameters<Parameters<(typeof db)["transaction"]>[0]>[0];
 export async function generateBillNumber(_ledgerId: number, dbHandle: DbOrTx = db): Promise<string> {
   const date = new Date();
   const yyyymm = `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, "0")}`;
-  // Use the global MAX across ALL numeric bills, not a per-ledger count.
-  // COUNT per ledger breaks when multiple ledgers share the same bill_number
-  // unique space — ledger A and B independently arrive at the same sequence
-  // number and collide on the UNIQUE constraint.
-  //
-  // Callers that hold the care_erp_bill_number advisory lock (see call sites
-  // in this file and self-registration.ts) MUST pass their `tx` handle here,
-  // not the pooled `db`. The lock only serializes concurrent callers against
-  // each other if this SELECT runs on the same connection/transaction that
-  // holds the lock — using a separate pooled connection here would also
-  // reintroduce a connection-pool deadlock under load (every concurrent
-  // transaction blocked on the lock holds a pool connection; the lock
-  // holder's own generateBillNumber call would then have no free connection
-  // left to borrow, since the pool has a fixed max size).
-  const [row] = await dbHandle
-    .select({ maxBill: sql<string | null>`MAX(bill_number)` })
-    .from(billsTable)
-    .where(sql`bill_number ~ '^[0-9]+$'`);
-  let seq = 1;
-  if (row?.maxBill) {
-    const parts = parseBillNumberParts(row.maxBill);
-    if (parts) seq = parts.seq + 1;
-  }
+  // SEQUENCE nextval — concurrent desk saves no longer serialize on a global
+  // advisory lock for the whole bill insert transaction.
+  const seq = await nextDocumentCounter(dbHandle, "bill", "global");
   return `${yyyymm}${String(seq).padStart(4, "0")}`;
 }
 
@@ -509,7 +490,9 @@ billsRouter.get("/", async (req, res) => {
   });
 });
 
-billsRouter.post("/", async (req: StaffAuthRequest, res) => {
+billsRouter.post("/", createBillHandler);
+
+export async function createBillHandler(req: StaffAuthRequest, res: Response): Promise<void> {
   const payload = req.body?.data ?? req.body ?? {};
   const parsed = CreateBillBody.safeParse(payload);
   if (!parsed.success) {
@@ -713,12 +696,11 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
     return;
   }
 
-  // Short critical section under the bill-number advisory lock:
-  // allocate number + insert bill (+ ledger backfills + create audit).
-  // Payment rows are written in a follow-up transaction AFTER this commits so
-  // concurrent desk saves are not serialized on payment inserts / payment
-  // audits for the whole lock hold. (pg_advisory_xact_lock is released only
-  // on commit/rollback.)
+  // Short first transaction: allocate number + insert bill (+ ledger backfills
+  // + create audit). Payment rows run in a follow-up transaction so the first
+  // txn stays brief (SEQUENCE nextval is concurrent; keeping payments out still
+  // shrinks lock/row hold time on the new bill and returns the pool connection
+  // sooner under concurrent desk saves).
   const txStartedAt = Date.now();
   const validPaymentsInput = (inlinePayments as Array<{ amount: number; method?: string; referenceNumber?: string; notes?: string }>)
     .filter((p) => Number.isFinite(p.amount) && p.amount > 0 && p.method !== "online");
@@ -727,17 +709,15 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
   const billStatus = paidAmountInline >= totalAmount - 0.01 ? "paid" : paidAmountInline > 0 ? "partial" : "pending";
 
   const { bill, pat } = await db.transaction(async (tx) => {
-    // Serialize bill-number allocation across concurrent requests. Without
-    // this, two overlapping POST /api/bills calls can both read the same
-    // MAX(bill_number) via generateBillNumber() before either commits.
-    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('care_erp_bill_number'))`);
+    // Bill numbers come from SEQUENCE nextval (documentNumberCounters) — no
+    // process-wide advisory lock that serialized every concurrent desk save.
     const billNumber = await generateBillNumber(ledgerId, tx);
 
     if (!order.ledgerId) {
       await tx.update(ordersTable).set({ ledgerId }).where(eq(ordersTable.id, orderId));
     }
     // Patient was preloaded in the guard wave — avoid a SELECT while holding
-    // the global bill-number lock under concurrent desk saves.
+    // the bill-number counter row under concurrent desk saves.
     const patRow = patientPreload;
     if (patRow && !patRow.ledgerId) {
       await tx.update(patientsTable).set({ ledgerId }).where(eq(patientsTable.id, patRow.id));
@@ -776,8 +756,8 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
     return { bill: billRow, pat: patRow };
   });
 
-  // Payment rows after the number lock is released — concurrent saves can
-  // allocate the next bill number while these inserts run.
+  // Payment rows after the bill txn commits — concurrent saves can allocate
+  // the next bill number while these inserts run.
   let txPayments: Array<{ amount: number; method?: string; paymentId: number }> = [];
   if (validPaymentsInput.length > 0) {
     try {
@@ -1018,7 +998,7 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
   // `studies` is now created asynchronously (see fire-and-forget above); the
   // key stays in the response for shape compatibility, but no client reads it.
   res.status(201).json({ ...built, token: tokenInfo, testTokens, studies: [], needsFormFData, needsOnlinePayment, onlineAmount });
-});
+}
 
 // PATCH /form-f-patient-data — Billing Desk Form F popup after bill create.
 // Lives on /bills (billing permission) so counters without /form-f module

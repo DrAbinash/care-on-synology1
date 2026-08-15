@@ -18,9 +18,8 @@ import type { Tx } from "./db";
 import { generateOrderNumber } from "../../routes/orders";
 
 async function allocateOrderNumber(tx: Tx): Promise<string> {
-  // Same numeric-max allocator as POST /api/orders (imported) so Hope referrals
-  // cannot mint a colliding ORD-YYYYMM-#### via the old count(*)+1 path.
-  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('care_erp_order_number'))`);
+  // Same document_number_counters allocator as POST /api/orders — no process-wide
+  // advisory lock that serialized Hope accepts with the billing desk.
   return generateOrderNumber(tx);
 }
 

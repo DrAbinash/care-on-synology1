@@ -33,13 +33,15 @@ describe("billing speed invariants", () => {
     );
   });
 
-  test("bill create releases number lock before payment inserts", () => {
-    const createIdx = billsSrc.indexOf("pg_advisory_xact_lock(hashtext('care_erp_bill_number'))");
-    expect(createIdx).toBeGreaterThan(0);
-    // First transaction ends (lock released) before payment row inserts.
-    const afterLock = billsSrc.slice(createIdx, createIdx + 4500);
-    expect(afterLock).toContain("Payment rows after the number lock is released");
-    expect(afterLock).toMatch(/return \{ bill: billRow, pat: patRow \};\s*\}\);/);
-    expect(afterLock).toContain("tx.insert(paymentsTable)");
+  test("bill create inserts payments after the short bill txn commits", () => {
+    expect(billsSrc).toContain("validPaymentsInput");
+    expect(billsSrc).toContain("Payment rows after the bill txn commits");
+    expect(billsSrc).toMatch(/return \{ bill: billRow, pat: patRow \};\s*\}\);/);
+    // No process-wide bill-number advisory lock (SEQUENCE nextval on base).
+    const codeOnly = billsSrc.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+    expect(codeOnly).not.toContain("care_erp_bill_number");
+    const afterBillTxn = billsSrc.indexOf("Payment rows after the bill txn commits");
+    expect(afterBillTxn).toBeGreaterThan(0);
+    expect(billsSrc.slice(afterBillTxn, afterBillTxn + 800)).toContain("tx.insert(paymentsTable)");
   });
 });
