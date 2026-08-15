@@ -32,4 +32,14 @@ describe("billing speed invariants", () => {
       /\/\/ Auto-generate accounting voucher[\s\S]*await db\s*\.select\(\{\s*billNumber: billsTable\.billNumber/,
     );
   });
+
+  test("bill create releases number lock before payment inserts", () => {
+    const createIdx = billsSrc.indexOf("pg_advisory_xact_lock(hashtext('care_erp_bill_number'))");
+    expect(createIdx).toBeGreaterThan(0);
+    // First transaction ends (lock released) before payment row inserts.
+    const afterLock = billsSrc.slice(createIdx, createIdx + 4500);
+    expect(afterLock).toContain("Payment rows after the number lock is released");
+    expect(afterLock).toMatch(/return \{ bill: billRow, pat: patRow \};\s*\}\);/);
+    expect(afterLock).toContain("tx.insert(paymentsTable)");
+  });
 });

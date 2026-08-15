@@ -713,25 +713,23 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
     return;
   }
 
-  // Atomically: generate bill number, backfill order's ledgerId, bind patient
-  // to ledger, and insert the bill row. Previously these were 3-4 sequential
-  // writes outside any transaction — a mid-flight failure (e.g. unique-key
-  // collision on billNumber) would leave the order/patient mutated with no
-  // matching bill row.
+  // Short critical section under the bill-number advisory lock:
+  // allocate number + insert bill (+ ledger backfills + create audit).
+  // Payment rows are written in a follow-up transaction AFTER this commits so
+  // concurrent desk saves are not serialized on payment inserts / payment
+  // audits for the whole lock hold. (pg_advisory_xact_lock is released only
+  // on commit/rollback.)
   const txStartedAt = Date.now();
-  const { bill, pat, validPayments: txPayments } = await db.transaction(async (tx) => {
+  const validPaymentsInput = (inlinePayments as Array<{ amount: number; method?: string; referenceNumber?: string; notes?: string }>)
+    .filter((p) => Number.isFinite(p.amount) && p.amount > 0 && p.method !== "online");
+  const paidAmountInline = validPaymentsInput.reduce((s, p) => s + p.amount, 0);
+  const balanceAmountInline = Math.max(0, totalAmount - paidAmountInline);
+  const billStatus = paidAmountInline >= totalAmount - 0.01 ? "paid" : paidAmountInline > 0 ? "partial" : "pending";
+
+  const { bill, pat } = await db.transaction(async (tx) => {
     // Serialize bill-number allocation across concurrent requests. Without
-    // this, two overlapping POST /api/bills calls (two billing counters
-    // saving within the same instant, a busy clinic's normal case) can both
-    // read the same MAX(bill_number) via generateBillNumber() before either
-    // commits, then both try to INSERT the same bill_number — one succeeds,
-    // the other throws a raw 23505 unique-violation that surfaces to the
-    // billing desk as an opaque "Internal server error" (bill not saved, no
-    // indication a retry would work). pg_advisory_xact_lock serializes the
-    // read-then-insert critical section per Postgres session and releases
-    // automatically on commit/rollback — same pattern already used for
-    // patient_id generation (see generatePatientId in patients.ts) and the
-    // audit hash chain (see AUDIT_CHAIN_XACT_LOCK in lib/audit.ts).
+    // this, two overlapping POST /api/bills calls can both read the same
+    // MAX(bill_number) via generateBillNumber() before either commits.
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('care_erp_bill_number'))`);
     const billNumber = await generateBillNumber(ledgerId, tx);
 
@@ -744,12 +742,6 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
     if (patRow && !patRow.ledgerId) {
       await tx.update(patientsTable).set({ ledgerId }).where(eq(patientsTable.id, patRow.id));
     }
-
-    // Compute paid amount from inline payments (validated amount > 0 by schema) - exclude pending "online" gateway payments
-    const validPayments = (inlinePayments as Array<{ amount: number; method?: string; referenceNumber?: string; notes?: string }>).filter((p) => Number.isFinite(p.amount) && p.amount > 0 && p.method !== "online");
-    const paidAmountInline = validPayments.reduce((s, p) => s + p.amount, 0);
-    const balanceAmountInline = Math.max(0, totalAmount - paidAmountInline);
-    const billStatus = paidAmountInline >= totalAmount - 0.01 ? "paid" : paidAmountInline > 0 ? "partial" : "pending";
 
     const [billRow] = await tx.insert(billsTable).values({
       billNumber,
@@ -781,30 +773,50 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
       newValue: `total=₹${totalAmount.toFixed(2)}; status=${billStatus}`,
     });
 
-    // Record each payment split atomically with the bill
-    const insertedPayments: Array<{ amount: number; method?: string; paymentId: number }> = [];
-    for (const p of validPayments) {
-      const [insertedPaymentRow] = await tx.insert(paymentsTable).values({
-        billId: billRow.id,
-        amount: p.amount.toFixed(2),
-        method: p.method || "cash",
-        referenceNumber: p.referenceNumber ?? null,
-        notes: p.notes ?? null,
-        recordedByName: actorName || null,
-      }).returning();
-      insertedPayments.push({ amount: p.amount, method: p.method, paymentId: insertedPaymentRow.id });
-      await tx.insert(billAuditsTable).values({
-        billId: billRow.id,
-        editedBy: actorName || "system",
-        reason: "Payment collected",
-        changeType: "payment_collected",
-        oldValue: null,
-        newValue: `amount=₹${p.amount.toFixed(2)}; method=${p.method || "cash"}`,
-      });
-    }
-
-    return { bill: billRow, pat: patRow, validPayments: insertedPayments };
+    return { bill: billRow, pat: patRow };
   });
+
+  // Payment rows after the number lock is released — concurrent saves can
+  // allocate the next bill number while these inserts run.
+  let txPayments: Array<{ amount: number; method?: string; paymentId: number }> = [];
+  if (validPaymentsInput.length > 0) {
+    try {
+      txPayments = await db.transaction(async (tx) => {
+        const insertedPayments: Array<{ amount: number; method?: string; paymentId: number }> = [];
+        for (const p of validPaymentsInput) {
+          const [insertedPaymentRow] = await tx.insert(paymentsTable).values({
+            billId: bill.id,
+            amount: p.amount.toFixed(2),
+            method: p.method || "cash",
+            referenceNumber: p.referenceNumber ?? null,
+            notes: p.notes ?? null,
+            recordedByName: actorName || null,
+          }).returning();
+          insertedPayments.push({ amount: p.amount, method: p.method, paymentId: insertedPaymentRow.id });
+          await tx.insert(billAuditsTable).values({
+            billId: bill.id,
+            editedBy: actorName || "system",
+            reason: "Payment collected",
+            changeType: "payment_collected",
+            oldValue: null,
+            newValue: `amount=₹${p.amount.toFixed(2)}; method=${p.method || "cash"}`,
+          });
+        }
+        return insertedPayments;
+      });
+    } catch (err) {
+      // Rare: bill row exists with paid totals but payment rows failed.
+      // Roll the bill back to unpaid so desk can re-collect via payment POST
+      // instead of leaving a paid bill with no payment ledger rows.
+      req.log?.error?.({ err, billId: bill.id }, "Bill created but payment insert failed — resetting bill to pending");
+      await db.update(billsTable).set({
+        paidAmount: "0.00",
+        balanceAmount: totalAmount.toFixed(2),
+        status: "pending",
+      }).where(eq(billsTable.id, bill.id)).catch(() => { /* best-effort */ });
+      throw err;
+    }
+  }
 
   const txnDoneAt = Date.now();
 
