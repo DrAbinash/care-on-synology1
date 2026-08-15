@@ -11,13 +11,21 @@
 -- referred_by — that column does not exist on those tables). Match the
 -- existence-guarded pattern in add_referral_indexes.sql so clean CI Postgres
 -- boots do not hard-stop when the column is absent.
+--
+-- IMPORTANT (accession): Do NOT recreate radiology_worklist_accession_uq.
+-- Startup migrations (artifacts/api-server/src/index.ts) intentionally DROP
+-- that unique index because real DICOM AccessionNumber values can repeat
+-- (e.g. a referring doctor's name "DR.A.K.SINGH MCH" pushed by a misconfigured
+-- modality). study_instance_uid is the unique key; accession is a non-unique
+-- lookup index (radiology_worklist_accession_idx). Re-adding UNIQUE hard-stops
+-- care-db-patch-v2 on production data that already has duplicates.
 -- =============================================================================
 
--- 1. Unique constraint on radiology_worklist.accession_number
--- Ensures no two worklist entries share the same accession number.
-CREATE UNIQUE INDEX IF NOT EXISTS radiology_worklist_accession_uq
-  ON radiology_worklist (accession_number)
-  WHERE accession_number IS NOT NULL;
+-- 1. Non-unique lookup index on radiology_worklist.accession_number
+-- (matches Drizzle radiologyWorklist.ts + startup migration).
+DROP INDEX IF EXISTS radiology_worklist_accession_uq;
+CREATE INDEX IF NOT EXISTS radiology_worklist_accession_idx
+  ON radiology_worklist (accession_number);
 
 -- 2. Composite index on bills(referred_by_id, created_at) for referral reports
 -- Speeds up "bills referred by doctor X in date range" queries.
@@ -78,4 +86,4 @@ END $$;
 -- definition that used 'timestamp' without timezone. We're leaving these as-is
 -- because changing them to 'timestamp' would LOSE timezone information and
 -- is a backwards-incompatible change. The schema-verify warnings are safe to
--- ignore for these columns.
+-- ignore.
