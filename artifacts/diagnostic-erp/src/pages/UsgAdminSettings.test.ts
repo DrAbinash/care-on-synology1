@@ -9,5 +9,6 @@ describe("UsgAdminSettings ERP pipeline switch", () => {
     expect(src).toContain("pipelineEnabled: true");
     expect(src).toContain("toggle(\"pipelineEnabled\")");
     expect(src).toContain("do not stop C-STORE on the scanner");
+    expect(src).toContain("Recabling switches is optional");
   });
 });

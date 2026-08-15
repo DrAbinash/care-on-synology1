@@ -3763,7 +3763,7 @@ export default function BillingDesk() {
                     >
                       Pay with ICICI Orange Pay →
                     </button>
-                    <p className="text-[10px] text-[#94a3b8]">Scan QR on phone (opens caredeoghar.com → Orange Pay) or tap above. QR stays until payment finishes.</p>
+                    <p className="text-[10px] text-[#94a3b8]">Scan QR on phone (opens caredeoghar.com → Orange Pay) or tap above. QR stays until payment finishes. Staff can stay on LAN login — ICICI still uses the public domain, not a LAN IP. New switches/cables do not replace internet for this pay.</p>
                     <button
                       type="button"
                       onClick={openGatewayQrOnSecondScreen}

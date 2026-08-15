@@ -408,6 +408,7 @@ export function UsgExtractionPanel() {
               <CardDescription>
                 The ultrasound machine still sends images to Orthanc (do not stop C-STORE on the scanner).
                 This switch only pauses ERP ingest, SR fetch, OCR, and worklist auto-extraction so billing stays fast.
+                Recabling switches is optional and only helps if USG and MRI share a congested physical switch — it does not replace this pause.
               </CardDescription>
             </CardHeader>
             <CardContent>

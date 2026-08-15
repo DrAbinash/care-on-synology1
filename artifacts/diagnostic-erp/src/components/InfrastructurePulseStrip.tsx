@@ -290,7 +290,7 @@ export function InfrastructurePulseStrip() {
             <div className="text-muted-foreground">
               {usgSettings.pipelineEnabled !== false
                 ? "On — US studies ingest into radiology (SR/OCR). Machine C-STORE is separate."
-                : "Paused — images stay in Orthanc only. Do not stop sending from the USG machine."}
+                : "Paused — images stay in Orthanc only. Do not stop sending from the USG machine. Recabling LAN is optional; this software pause is the billing/USG green lane."}
             </div>
           </div>
           <Switch
