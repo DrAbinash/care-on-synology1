@@ -114,7 +114,7 @@ function voucherBucketPrefix(type: string): string {
 // MAX has the progress guarantee count(*) lacks: every successful insert raises
 // max, so the candidate window strictly advances and there is no fixed point.
 // A 23505 is then only possible from a genuine concurrent commit, which is
-// exactly what the surrounding 3-attempt retry loop is sized for.
+// exactly what the surrounding 5-attempt retry loop is sized for.
 //
 // The regex is anchored and requires an all-digit suffix, so a hand-entered or
 // synthetic number (the ledger view injects a non-numeric "OB" opening-balance

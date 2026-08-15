@@ -57,7 +57,10 @@ describe("auto-voucher: receipts / refunds / expense vouchers", () => {
   });
 
   test("the retry loop is retained — MAX does not replace race handling", () => {
-    expect(autoVoucher).toContain("for (let attempt = 0; attempt < 3; attempt++)");
+    // Bound raised from 3→5 when advisory-lock + tx wrapping landed; the
+    // invariant under test is that a finite retry loop still surrounds the
+    // INSERT so concurrent 23505s are handled — not the exact attempt budget.
+    expect(autoVoucher).toContain("for (let attempt = 0; attempt < 5; attempt++)");
     expect(autoVoucher).toContain('code === "23505"');
   });
 
