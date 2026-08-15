@@ -752,6 +752,7 @@ export default function BillingDesk() {
     queryKey: ["bill-preview-no", doctorId],
     queryFn: () => api.get(doctorId ? `/api/bills/preview-number?doctorId=${doctorId}` : "/api/bills/preview-number"),
     retry: false,
+    staleTime: 60_000,
   });
   const dummyBillPreview = {
     billNumber: "2026050001",
@@ -1749,7 +1750,15 @@ export default function BillingDesk() {
       setShowBillToast(true);
       window.setTimeout(() => setShowBillToast(false), 5000);
       queryClient.invalidateQueries({ queryKey: ["recent-bills-today"] });
-      queryClient.invalidateQueries({ queryKey: ["bill-preview-no"] });
+      // Bump local preview from the number we just issued — avoid a MAX() hit
+      // that races the next save's bill-number lock under peak concurrency.
+      if (lastBillLocal?.billNumber && /^\d+$/.test(lastBillLocal.billNumber)) {
+        const nextNum = String(BigInt(lastBillLocal.billNumber) + 1n);
+        queryClient.setQueryData<{ next: string; ledgerId?: number }>(
+          ["bill-preview-no", doctorId],
+          (prev) => ({ next: nextNum, ledgerId: prev?.ledgerId }),
+        );
+      }
       if (printAfterSaveRef.current) {
         printAfterSaveRef.current = false;
         const cachedClinic = queryClient.getQueryData<PrintClinic>([
