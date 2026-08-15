@@ -51,3 +51,27 @@ describe("DICOM auto-pull respects peak hours", () => {
     expect(cron).toContain("DICOM auto-pull skipped — clinic peak hours");
   });
 });
+
+describe("billing priority during peak hours", () => {
+  test("cron slows AI / banking / commission / WA during peak", () => {
+    const cron = readFileSync(new URL("../cron.ts", import.meta.url), "utf8");
+    expect(cron).toContain("PACS_REARCHIVE_JOB");
+    expect(cron).toContain("[AI_SHADOW_PIPELINE_JOB]: 0");
+    expect(cron).toContain("Banking auto-sync deferred — clinic peak hours");
+    expect(cron).toContain("commission reconcile deferred — clinic peak hours");
+    expect(cron).toContain("const limit = isClinicPeakHours() ? 5 : 20");
+  });
+
+  test("DIMSE agent does not C-MOVE during peak", () => {
+    const dimse = readFileSync(new URL("../services/dicom-pull-agent/dimse-agent.ts", import.meta.url), "utf8");
+    expect(dimse).toContain("isClinicPeakHours");
+    expect(dimse).toContain("pending C-MOVE deferred");
+  });
+
+  test("Orthanc changes poller throttles during peak", () => {
+    const poller = readFileSync(new URL("./pacs/orthancChangesPoller.ts", import.meta.url), "utf8");
+    expect(poller).toContain("PEAK_MIN_TICK_GAP_MS");
+    expect(poller).toContain("MAX_PAGES_PER_TICK_PEAK");
+    expect(poller).toContain("isClinicPeakHours()");
+  });
+});

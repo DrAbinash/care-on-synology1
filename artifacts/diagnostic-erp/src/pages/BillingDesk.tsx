@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import QRCode from "qrcode";
 import { api, isQueueableBillingError } from "@/lib/fetchApi";
 import { FINANCIAL_QUERY_OPTIONS } from "@/lib/queryConfig";
+import { isClinicPeakHours } from "@/lib/clinicPeakHours";
 import { enqueueBill, QueuedForSyncError } from "@/lib/offlineBillingQueue";
 import {
   buildProvisionalBillPrintHtml,
@@ -751,6 +752,7 @@ export default function BillingDesk() {
     queryKey: ["bill-preview-no", doctorId],
     queryFn: () => api.get(doctorId ? `/api/bills/preview-number?doctorId=${doctorId}` : "/api/bills/preview-number"),
     retry: false,
+    staleTime: 60_000,
   });
   const dummyBillPreview = {
     billNumber: "2026050001",
@@ -1748,7 +1750,15 @@ export default function BillingDesk() {
       setShowBillToast(true);
       window.setTimeout(() => setShowBillToast(false), 5000);
       queryClient.invalidateQueries({ queryKey: ["recent-bills-today"] });
-      queryClient.invalidateQueries({ queryKey: ["bill-preview-no"] });
+      // Bump local preview from the number we just issued — avoid a MAX() hit
+      // that races the next save's bill-number lock under peak concurrency.
+      if (lastBillLocal?.billNumber && /^\d+$/.test(lastBillLocal.billNumber)) {
+        const nextNum = String(BigInt(lastBillLocal.billNumber) + 1n);
+        queryClient.setQueryData<{ next: string; ledgerId?: number }>(
+          ["bill-preview-no", doctorId],
+          (prev) => ({ next: nextNum, ledgerId: prev?.ledgerId }),
+        );
+      }
       if (printAfterSaveRef.current) {
         printAfterSaveRef.current = false;
         const cachedClinic = queryClient.getQueryData<PrintClinic>([
@@ -4191,8 +4201,10 @@ function TodayCollectionsPanel() {
   const { data, isLoading } = useQuery<{ bills: RecentBill[] }>({
     queryKey: ["today-collections-panel", todayIso],
     queryFn: () => api.get<{ bills: RecentBill[] }>(`/api/bills?dateFrom=${todayIso}&dateTo=${todayIso}&excludeCancelled=true&limit=100&page=1&compact=1`),
-    staleTime: 20_000,
-    refetchInterval: 30_000,
+    // Peak: poll less often so save/print keeps the API; invalidateQueries on
+    // save still refreshes immediately after each bill.
+    staleTime: isClinicPeakHours() ? 45_000 : 20_000,
+    refetchInterval: isClinicPeakHours() ? 60_000 : 30_000,
     refetchOnWindowFocus: true,
   });
 
@@ -4309,10 +4321,14 @@ type RecentBill = {
 
 function RecentBillsPanel() {
   const [, navigate] = useLocation();
+  const peak = isClinicPeakHours();
   const { data, isLoading, isError } = useQuery<{ bills: RecentBill[] }>({
     queryKey: ["recent-bills-today"],
     queryFn: () => api.get<{ bills: RecentBill[] }>("/api/bills?limit=20&page=1&compact=1"),
-    ...FINANCIAL_QUERY_OPTIONS,
+    // Desk panels: during peak, slow background refresh (saves still invalidate).
+    ...(peak
+      ? { staleTime: 30_000, refetchInterval: 60_000, refetchOnWindowFocus: true }
+      : FINANCIAL_QUERY_OPTIONS),
   });
 
   const today = new Date().toDateString();

@@ -592,7 +592,7 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
   // print. Result checks below run in the original order so error precedence
   // is unchanged.
   const tenSecondsAgo = new Date(Date.now() - 60_000); // 60s window (was 10s) — covers slow connections and timeout retries
-  const [existingBillRows, existingRecentRows, orderLineTests, ledgerId, formFClinic] = await Promise.all([
+  const [existingBillRows, existingRecentRows, orderLineTests, ledgerId, formFClinic, patientPreload] = await Promise.all([
     db
       .select({ id: billsTable.id, billNumber: billsTable.billNumber })
       .from(billsTable)
@@ -634,6 +634,10 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
         req.log?.warn?.({ err: e }, "Form-F billing prompt check failed");
         return null;
       }),
+    // Patient for ledger backfill + voucher/WhatsApp — load outside the
+    // bill-number advisory lock so concurrent saves don't serialize on it.
+    db.select().from(patientsTable).where(eq(patientsTable.id, order.patientId)).limit(1)
+      .then((rows) => rows[0] ?? null),
   ]);
 
   // Guard against double-billing:
@@ -734,7 +738,9 @@ billsRouter.post("/", async (req: StaffAuthRequest, res) => {
     if (!order.ledgerId) {
       await tx.update(ordersTable).set({ ledgerId }).where(eq(ordersTable.id, orderId));
     }
-    const [patRow] = await tx.select().from(patientsTable).where(eq(patientsTable.id, order.patientId));
+    // Patient was preloaded in the guard wave — avoid a SELECT while holding
+    // the global bill-number lock under concurrent desk saves.
+    const patRow = patientPreload;
     if (patRow && !patRow.ledgerId) {
       await tx.update(patientsTable).set({ ledgerId }).where(eq(patientsTable.id, patRow.id));
     }
