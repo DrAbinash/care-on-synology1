@@ -32,6 +32,7 @@ interface UsgSettings {
   geAeTitle: string;
   geIp: string;
   gePort: string;
+  pipelineEnabled: boolean;
 }
 
 const DEFAULTS: UsgSettings = {
@@ -47,6 +48,7 @@ const DEFAULTS: UsgSettings = {
   geAeTitle: "GE_USG",
   geIp: "",
   gePort: "11112",
+  pipelineEnabled: true,
 };
 
 interface SampleTestResult {
@@ -100,6 +102,8 @@ export function UsgExtractionPanel() {
     staleTime: 60_000,
   });
 
+  const [form, setForm] = useState<UsgSettings>(DEFAULTS);
+
   const { data: stats, refetch: refetchStats } = useQuery<{
     lastPushReceived: string | null;
     lastUsStudyReceived: string | null;
@@ -111,10 +115,8 @@ export function UsgExtractionPanel() {
   const { data: monitorItems, refetch: refetchMonitor, isFetching: isMonitorFetching } = useQuery<PushMonitorItem[]>({
     queryKey: ["usg-push-monitor"],
     queryFn: () => fetchApi("/api/usg-extraction/push-monitor"),
-    refetchInterval: 5000, // Poll every 5 seconds for live update feel
+    refetchInterval: form.pipelineEnabled === false ? false : 5000,
   });
-
-  const [form, setForm] = useState<UsgSettings>(DEFAULTS);
 
   useEffect(() => {
     if (settings) setForm(settings);
@@ -398,6 +400,29 @@ export function UsgExtractionPanel() {
 
       {activeTab === "settings" && (
         <div className="space-y-6">
+          <Card className="border-sky-200 bg-sky-50/50 dark:bg-sky-950/20 dark:border-sky-800">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-base">
+                <Waves className="h-4 w-4 text-primary" /> USG ERP pipeline
+              </CardTitle>
+              <CardDescription>
+                The ultrasound machine still sends images to Orthanc (do not stop C-STORE on the scanner).
+                This switch only pauses ERP ingest, SR fetch, OCR, and worklist auto-extraction so billing stays fast.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="flex items-center justify-between p-3 rounded-lg bg-background border">
+                <div>
+                  <Label className="font-semibold">Ingest USG studies into radiology</Label>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    Off = images stay in Orthanc only. Turn on when you start reporting USG in this module.
+                  </p>
+                </div>
+                <Switch checked={form.pipelineEnabled !== false} onCheckedChange={() => toggle("pipelineEnabled")} />
+              </div>
+            </CardContent>
+          </Card>
+
           {/* Safety notice */}
           <div className="flex gap-3 rounded-xl border border-amber-200 bg-amber-50 dark:bg-amber-950/20 dark:border-amber-800 p-4">
             <Info className="h-5 w-5 text-amber-600 flex-shrink-0 mt-0.5" />

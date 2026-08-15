@@ -7,6 +7,7 @@ import { api } from "@/lib/fetchApi";
 import { buildInfrastructurePulse, type PulsePill, type PulseTone } from "@/lib/infrastructurePulse";
 import { buildClinicSystemsSummary, type EmergencyStatusLike } from "@/lib/clinicSystemsSummary";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import { RefreshCw, Gauge, ShieldCheck } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
@@ -138,6 +139,19 @@ export function InfrastructurePulseStrip() {
     retry: false,
   });
 
+  const { data: usgSettings, refetch: refetchUsgSettings } = useQuery<{ pipelineEnabled: boolean }>({
+    queryKey: ["usg-admin-settings", "pipeline"],
+    queryFn: () => api.get("/api/usg-extraction/settings"),
+    staleTime: 15_000,
+    retry: false,
+  });
+
+  const usgPipelineMutation = useMutation({
+    mutationFn: (pipelineEnabled: boolean) =>
+      api.put("/api/usg-extraction/settings", { pipelineEnabled }),
+    onSuccess: () => void refetchUsgSettings(),
+  });
+
   const verifyMutation = useMutation({
     mutationFn: () => api.post<{ ok: boolean; jobId?: number; note?: string }>("/api/radiology-ops/restore-verify", {}),
     onMutate: () => setVerifyMsg("Queuing restore-verify job…"),
@@ -263,6 +277,28 @@ export function InfrastructurePulseStrip() {
               </Link>
             </div>
           ))}
+        </div>
+      )}
+
+      {usgSettings && (
+        <div
+          className="flex flex-wrap items-center justify-between gap-2 rounded-md border px-2 py-1.5 text-[11px] bg-sky-50/80 border-sky-200 dark:bg-sky-950/30 dark:border-sky-800"
+          data-testid="usg-erp-pipeline-switch"
+        >
+          <div className="min-w-0">
+            <div className="font-semibold text-sky-950 dark:text-sky-100">USG ERP pipeline</div>
+            <div className="text-muted-foreground">
+              {usgSettings.pipelineEnabled !== false
+                ? "On — US studies ingest into radiology (SR/OCR). Machine C-STORE is separate."
+                : "Paused — images stay in Orthanc only. Do not stop sending from the USG machine."}
+            </div>
+          </div>
+          <Switch
+            checked={usgSettings.pipelineEnabled !== false}
+            disabled={usgPipelineMutation.isPending}
+            onCheckedChange={(on) => usgPipelineMutation.mutate(on)}
+            aria-label="USG ERP pipeline"
+          />
         </div>
       )}
     </div>

@@ -29,4 +29,10 @@ describe("InfrastructurePulseStrip hover panel", () => {
     expect(src).toContain("{pill.detailsHref ? (");
     expect(src).toContain("<Link href={pill.detailsHref}");
   });
+
+  test("Clinic Systems panel has a USG ERP pipeline pause switch", () => {
+    expect(src).toContain('data-testid="usg-erp-pipeline-switch"');
+    expect(src).toContain('api.put("/api/usg-extraction/settings", { pipelineEnabled })');
+    expect(src).toContain("Do not stop sending from the USG machine");
+  });
 });
