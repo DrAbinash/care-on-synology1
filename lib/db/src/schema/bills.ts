@@ -1,10 +1,13 @@
-import { pgTable, text, serial, timestamp, integer, numeric } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, timestamp, integer, numeric, uniqueIndex } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 import { patientsTable } from "./patients";
 import { ordersTable } from "./orders";
 
-export const billsTable = pgTable("bills", {
+export const billsTable = pgTable(
+  "bills",
+  {
   id: serial("id").primaryKey(),
   billNumber: text("bill_number").notNull().unique(),
   orderId: integer("order_id").notNull().references(() => ordersTable.id),
@@ -43,7 +46,18 @@ export const billsTable = pgTable("bills", {
 
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
-});
+  },
+  (t) => [
+    // One active bill per order — cancelled rows excluded (see zzzzzzzzzzzz_billing_save_harden.sql).
+    uniqueIndex("bills_order_id_active_uidx")
+      .on(t.orderId)
+      .where(sql`${t.status} IS DISTINCT FROM 'cancelled'`),
+    // client_ref unique among non-cancelled only — cancel+rebill / queue replay.
+    uniqueIndex("bills_client_ref_uidx")
+      .on(t.clientRef)
+      .where(sql`${t.clientRef} IS NOT NULL AND ${t.status} IS DISTINCT FROM 'cancelled'`),
+  ],
+);
 
 export const paymentsTable = pgTable("payments", {
   id: serial("id").primaryKey(),

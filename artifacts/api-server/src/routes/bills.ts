@@ -34,6 +34,7 @@ import { sendBillWhatsapp } from "./whatsapp";
 import { autoVoucherForPayment } from "../lib/auto-voucher";
 import { getSlowThresholdMs } from "../lib/requestMetrics";
 import { nextDocumentCounter, syncBillNumberSeqForward } from "../lib/documentNumberCounters";
+import { enqueueBillingFanout } from "../lib/billingFanoutGate";
 import {
   cancelRadiologyMwlForBill,
   cancelRadiologyMwlForOrderTest,
@@ -809,6 +810,20 @@ export async function createBillHandler(req: StaffAuthRequest, res: Response): P
     return false;
   }
 
+  function isActiveOrderBillUniqueViolation(err: unknown): boolean {
+    let cur: unknown = err;
+    for (let i = 0; i < 5 && cur && typeof cur === "object"; i++) {
+      const e = cur as { code?: string; constraint?: string; message?: string; cause?: unknown };
+      const constraint = String(e.constraint ?? "");
+      const message = String(e.message ?? "");
+      if (/bills_order_id_active_uidx/i.test(constraint) || /bills_order_id_active_uidx/i.test(message)) {
+        return true;
+      }
+      cur = e.cause;
+    }
+    return false;
+  }
+
   async function returnExistingBillByClientRef(): Promise<boolean> {
     if (!clientRef) return false;
     const existingByRef = await db.execute<{ id: number }>(
@@ -828,6 +843,29 @@ export async function createBillHandler(req: StaffAuthRequest, res: Response): P
       paidAmount: built.paidAmount,
       balanceAmount: built.balanceAmount,
       status: existingBillRow.status,
+      _idempotent: true,
+      needsOnlinePayment: false,
+      onlineAmount: Number(built.balanceAmount) > 0.01 ? Number(built.balanceAmount) : 0,
+    });
+    return true;
+  }
+
+  async function returnExistingActiveBillForOrder(): Promise<boolean> {
+    const [existing] = await db
+      .select()
+      .from(billsTable)
+      .where(and(eq(billsTable.orderId, orderId), ne(billsTable.status, "cancelled")))
+      .limit(1);
+    if (!existing) return false;
+    const built = await buildBill(existing);
+    res.status(200).json({
+      id: existing.id,
+      billNumber: existing.billNumber,
+      createdAt: existing.createdAt,
+      createdByName: existing.createdByName,
+      paidAmount: built.paidAmount,
+      balanceAmount: built.balanceAmount,
+      status: existing.status,
       _idempotent: true,
       needsOnlinePayment: false,
       onlineAmount: Number(built.balanceAmount) > 0.01 ? Number(built.balanceAmount) : 0,
@@ -894,6 +932,10 @@ export async function createBillHandler(req: StaffAuthRequest, res: Response): P
     } catch (err) {
       if (isBillClientRefUniqueViolation(err)) {
         if (await returnExistingBillByClientRef()) return;
+        throw err;
+      }
+      if (isActiveOrderBillUniqueViolation(err)) {
+        if (await returnExistingActiveBillForOrder()) return;
         throw err;
       }
       if (!isBillNumberUniqueViolation(err)) throw err;
@@ -978,24 +1020,19 @@ export async function createBillHandler(req: StaffAuthRequest, res: Response): P
   const needsOnlinePayment = !!onlinePayment;
   const onlineAmount = onlinePayment ? Number(onlinePayment.amount) : 0;
 
-  // Radiology study fan-out — fire-and-forget. The billing desk's receipt and
-  // token slip never show study/accession data, and study creation for a
-  // multi-modality bill is the single slowest post-commit chain (per-study
-  // accession allocation, priority, and radiologist auto-assignment). It was
-  // already best-effort ("failure is logged but never blocks bill creation"),
-  // so it no longer gates the HTTP response either — the studies appear in
-  // the radiology worklist within a moment of the bill saving, long before
-  // the patient reaches the room. Idempotent per orderTest via
-  // `radiology_studies_order_test_uq`, so a crash-and-retry cannot duplicate.
-  generateStudiesForOrder({
-    billId: bill.id,
-    orderId: order.id,
-    patientId: order.patientId,
-    priority: isVip ? "vip" : "routine",
-    dicomFields,
-  }).catch((err) => {
-    console.warn("Radiology study fan-out failed:", err);
-  });
+  // Radiology study fan-out — fire-and-forget under the billing fan-out gate so
+  // concurrent Save & Print bursts cannot exhaust the pg pool.
+  enqueueBillingFanout(() =>
+    generateStudiesForOrder({
+      billId: bill.id,
+      orderId: order.id,
+      patientId: order.patientId,
+      priority: isVip ? "vip" : "routine",
+      dicomFields,
+    }).catch((err) => {
+      console.warn("Radiology study fan-out failed:", err);
+    }),
+  );
 
   // Post-commit fan-out that the response DOES need — the queue token and the
   // per-test department tokens are printed on the token slip, so they must be
@@ -1016,48 +1053,52 @@ export async function createBillHandler(req: StaffAuthRequest, res: Response): P
   if (fastMode) {
     // Fire token generation in background — don't block the response
     const patientName = pat ? `${pat.firstName} ${pat.lastName}`.trim() : undefined;
-    generateTestTokensForOrder({
-      ledgerId,
-      billId: bill.id,
-      orderId: order.id,
-      patientId: order.patientId,
-      priority: isVip ? 5 : 0,
-    }).then((tokens) => {
-      // Cache + wake any long-poll GET /:id/tokens waiters
-      publishBillTokens(bill.id, tokens);
-      // WhatsApp needs a token number — send only once tokens are ready.
-      if (pat?.phone && tokens.length > 0) {
-        const tokenInfo = deriveBillTokenFromTestTokens(tokens);
-        if (tokenInfo) {
-          sendBillWhatsapp({
-            phone: pat.phone,
-            patientName: `${pat.firstName} ${pat.lastName}`.trim(),
-            billNumber: bill.billNumber,
-            totalAmount,
-            tokenNo: tokenInfo.tokenNo,
-          }).then((result) => {
-            if (!result.ok && !result.skipped) console.warn(`WhatsApp bill notification failed for bill ${bill.billNumber}:`, result.error);
-          }).catch((err) => console.warn("WhatsApp send failed:", err));
+    enqueueBillingFanout(() =>
+      generateTestTokensForOrder({
+        ledgerId,
+        billId: bill.id,
+        orderId: order.id,
+        patientId: order.patientId,
+        priority: isVip ? 5 : 0,
+      }).then((tokens) => {
+        // Cache + wake any long-poll GET /:id/tokens waiters
+        publishBillTokens(bill.id, tokens);
+        // WhatsApp needs a token number — send only once tokens are ready.
+        if (pat?.phone && tokens.length > 0) {
+          const tokenInfo = deriveBillTokenFromTestTokens(tokens);
+          if (tokenInfo) {
+            sendBillWhatsapp({
+              phone: pat.phone,
+              patientName: `${pat.firstName} ${pat.lastName}`.trim(),
+              billNumber: bill.billNumber,
+              totalAmount,
+              tokenNo: tokenInfo.tokenNo,
+            }).then((result) => {
+              if (!result.ok && !result.skipped) console.warn(`WhatsApp bill notification failed for bill ${bill.billNumber}:`, result.error);
+            }).catch((err) => console.warn("WhatsApp send failed:", err));
+          }
         }
-      }
-    }).catch((err) => {
-      console.warn("Per-test token generation failed (fast mode):", err);
-      failBillTokens(bill.id);
-    });
+      }).catch((err) => {
+        console.warn("Per-test token generation failed (fast mode):", err);
+        failBillTokens(bill.id);
+      }),
+    );
 
     // Parity with the slow path: vouchers are fire-and-forget so they must
     // still run under ?fast=1. Billing Desk always uses fast mode; skipping
     // these left real-time ledger gaps until admin sync-billing.
     for (const p of txPayments ?? []) {
-      autoVoucherForPayment({
-        billId: bill.id,
-        amount: p.amount,
-        method: p.method || "cash",
-        billNumber: bill.billNumber,
-        patientName,
-        performedBy: actorName || null,
-        paymentId: p.paymentId,
-      }).catch(() => {/* already logged inside */});
+      enqueueBillingFanout(() =>
+        autoVoucherForPayment({
+          billId: bill.id,
+          amount: p.amount,
+          method: p.method || "cash",
+          billNumber: bill.billNumber,
+          patientName,
+          performedBy: actorName || null,
+          paymentId: p.paymentId,
+        }),
+      );
     }
 
     const totalMs = Date.now() - startedAt;
@@ -1113,15 +1154,17 @@ export async function createBillHandler(req: StaffAuthRequest, res: Response): P
   // Auto-generate accounting vouchers for each inline payment — async, never blocks billing
   const patientName = pat ? `${pat.firstName} ${pat.lastName}`.trim() : undefined;
   for (const p of txPayments ?? []) {
-    autoVoucherForPayment({
-      billId: bill.id,
-      amount: p.amount,
-      method: p.method || "cash",
-      billNumber: bill.billNumber,
-      patientName,
-      performedBy: actorName || null,
-      paymentId: p.paymentId,
-    }).catch(() => {/* already logged inside */});
+    enqueueBillingFanout(() =>
+      autoVoucherForPayment({
+        billId: bill.id,
+        amount: p.amount,
+        method: p.method || "cash",
+        billNumber: bill.billNumber,
+        patientName,
+        performedBy: actorName || null,
+        paymentId: p.paymentId,
+      }),
+    );
   }
 
   // Fire WhatsApp send asynchronously — don't block the response.
@@ -1622,6 +1665,9 @@ billsRouter.post("/:id/cancel", requireStaffSubPermission("/billing", "delete"),
       // Zero out the outstanding balance so cancelled bills never appear
       // in the Due Payments report (dueOnly filter: balanceAmount > 0).
       balanceAmount: "0.00",
+      // Free client_ref so cancel+rebill / offline queue can reuse the UUID
+      // (partial unique index also excludes cancelled; this clears the column).
+      clientRef: null,
     }).where(eq(billsTable.id, id)).returning();
 
     await tx.insert(billAuditsTable).values({

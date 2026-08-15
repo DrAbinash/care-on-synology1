@@ -10,7 +10,7 @@ import {
 } from "@workspace/api-zod";
 import { sanitizePatient } from "./patients";
 import { getSlowThresholdMs } from "../lib/requestMetrics";
-import { nextDocumentCounter } from "../lib/documentNumberCounters";
+import { nextDocumentCounter, istYearMonth, syncOrderNumberSeqForward } from "../lib/documentNumberCounters";
 import { FULL_ACCESS_ROLES } from "../middleware/requireStaffAuth";
 import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
 
@@ -19,11 +19,11 @@ export const ordersRouter = Router();
 /**
  * Allocate the next ORD-YYYYMM-#### via monthly SEQUENCE (next_order_number_seq).
  * No process-wide advisory lock — nextval is concurrent across desk saves.
+ * Month bucket is Asia/Kolkata (matches SQL seed in zzzz_document_number_counters).
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export async function generateOrderNumber(dbHandle: any = db): Promise<string> {
-  const date = new Date();
-  const yyyymm = `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, "0")}`;
+  const yyyymm = istYearMonth();
   const prefix = `ORD-${yyyymm}`;
   const num = await nextDocumentCounter(dbHandle, "order", yyyymm);
   return `${prefix}-${String(num).padStart(4, "0")}`;
@@ -389,7 +389,8 @@ export async function createOrderHandler(req: StaffAuthRequest, res: Response): 
         }
       }
       lastUniqueErr = err;
-      req.log?.warn?.({ attempt, err }, "order_number unique violation — retrying allocation");
+      req.log?.warn?.({ attempt, err }, "order_number unique violation — reseeding sequence and retrying");
+      await syncOrderNumberSeqForward(db, istYearMonth());
     }
   }
   if (!order) {

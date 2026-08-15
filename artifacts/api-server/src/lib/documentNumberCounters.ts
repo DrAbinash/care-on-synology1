@@ -90,6 +90,72 @@ export async function syncBillNumberSeqForward(dbHandle: DbOrTx): Promise<void> 
 }
 
 /**
+ * Bump order_number_seq_YYYYMM forward to MAX(ORD-YYYYMM-####) for that month.
+ * Never rewinds. Mirrors syncBillNumberSeqForward for monthly order sequences.
+ */
+export async function syncOrderNumberSeqForward(
+  dbHandle: DbOrTx,
+  yyyymm: string,
+): Promise<void> {
+  if (!/^\d{6}$/.test(yyyymm)) {
+    throw new Error(`syncOrderNumberSeqForward: invalid yyyymm ${yyyymm}`);
+  }
+  // DO blocks cannot take bind params — yyyymm is digit-validated above.
+  await dbHandle.execute(sql.raw(`
+    DO $$
+    DECLARE
+      yyyymm text := '${yyyymm}';
+      seq_name text := 'order_number_seq_' || yyyymm;
+      max_existing bigint := 0;
+      seq_at bigint := 0;
+      target bigint := 0;
+    BEGIN
+      SELECT COALESCE(
+        MAX(
+          CASE
+            WHEN split_part(order_number, '-', 3) ~ '^[0-9]+$'
+              THEN split_part(order_number, '-', 3)::bigint
+            ELSE NULL
+          END
+        ),
+        0
+      )
+      INTO max_existing
+      FROM orders
+      WHERE order_number LIKE 'ORD-' || yyyymm || '-%';
+
+      EXECUTE format('CREATE SEQUENCE IF NOT EXISTS %I', seq_name);
+
+      BEGIN
+        EXECUTE format(
+          'SELECT CASE WHEN is_called THEN last_value ELSE GREATEST(last_value - 1, 0) END FROM %I',
+          seq_name
+        ) INTO seq_at;
+      EXCEPTION WHEN undefined_table THEN
+        seq_at := 0;
+      END;
+
+      target := GREATEST(max_existing, seq_at);
+      IF target > 0 THEN
+        EXECUTE format('SELECT setval(%L, %s, true)', seq_name, target);
+      END IF;
+    END $$;
+  `));
+}
+
+/** Asia/Kolkata YYYYMM — matches migrations/zzzz_document_number_counters.sql seed. */
+export function istYearMonth(d: Date = new Date()): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+  }).formatToParts(d);
+  const y = parts.find((p) => p.type === "year")?.value ?? "1970";
+  const m = parts.find((p) => p.type === "month")?.value ?? "01";
+  return `${y}${m}`;
+}
+
+/**
  * Next patient UHID as `P-#####` via SEQUENCE nextval.
  * Safe on pooled connections — no session advisory lock.
  *
