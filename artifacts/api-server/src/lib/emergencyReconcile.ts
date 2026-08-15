@@ -373,8 +373,8 @@ async function importOneTransaction(opts: {
       .limit(1);
     if (dup) return { already: true as const, billId: dup.careBillId, patientId: 0, payments: [] as Array<{ id: number; amount: number; method: string }> };
 
-    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('care_erp_bill_number'))`);
-    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('care_erp_order_number'))`);
+    // Bill/order numbers come from document_number_counters — no process-wide
+    // advisory locks that serialized concurrent desk saves with imports.
 
     let patientId = opts.forcedPatientId ?? opts.preview.carePatientId;
     if (!patientId) {

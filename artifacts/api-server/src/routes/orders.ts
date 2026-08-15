@@ -10,41 +10,22 @@ import {
 } from "@workspace/api-zod";
 import { sanitizePatient } from "./patients";
 import { getSlowThresholdMs } from "../lib/requestMetrics";
+import { nextDocumentCounter } from "../lib/documentNumberCounters";
 import { FULL_ACCESS_ROLES } from "../middleware/requireStaffAuth";
 import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
 
 export const ordersRouter = Router();
 
 /**
- * Next ORD-YYYYMM-#### for the current calendar month.
- * Uses NUMERIC max of the trailing digits (not text MAX) so mixed padding
- * like …-12 vs …-0013 cannot stick the sequence on a duplicate.
- * Callers must hold `pg_advisory_xact_lock(hashtext('care_erp_order_number'))`
- * on the same `dbHandle` transaction.
+ * Allocate the next ORD-YYYYMM-#### via monthly SEQUENCE (next_order_number_seq).
+ * No process-wide advisory lock — nextval is concurrent across desk saves.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export async function generateOrderNumber(dbHandle: any = db): Promise<string> {
   const date = new Date();
-  const prefix = `ORD-${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, "0")}`;
-  // CRITICAL: do NOT use `substring(order_number from ${n})` with a Drizzle
-  // bound param. Postgres treats `substring(text from $1)` as the REGEX form
-  // when $1 is text-typed, so `from 12` becomes "match pattern '12'" and MAX
-  // collapses to 12 → next number always ORD-…-0013 (prod 500 storm after #413).
-  // split_part(…, '-', 3) is unambiguous for ORD-YYYYMM-####.
-  const [row] = await dbHandle
-    .select({
-      maxNum: sql<number | null>`MAX(
-        CASE
-          WHEN split_part(order_number, '-', 3) ~ '^[0-9]+$'
-          THEN split_part(order_number, '-', 3)::int
-          ELSE NULL
-        END
-      )`,
-    })
-    .from(ordersTable)
-    .where(sql`order_number LIKE ${prefix + "-%"}`);
-  const maxNum = row?.maxNum != null ? Number(row.maxNum) : 0;
-  const num = (Number.isFinite(maxNum) ? maxNum : 0) + 1;
+  const yyyymm = `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, "0")}`;
+  const prefix = `ORD-${yyyymm}`;
+  const num = await nextDocumentCounter(dbHandle, "order", yyyymm);
   return `${prefix}-${String(num).padStart(4, "0")}`;
 }
 
@@ -323,19 +304,15 @@ export async function createOrderHandler(req: StaffAuthRequest, res: Response): 
 
   // Insert the order and its line items in ONE transaction: a single commit
   // (one WAL fsync) instead of two, and a crash between the two inserts can
-  // no longer leave an order with no line items. The advisory lock serializes
-  // order_number allocation across concurrent POSTs (same pattern as
-  // bills.ts's care_erp_bill_number lock) so two overlapping requests can
-  // never compute the same order_number and collide on the unique index.
-  // Retry a few times on 23505 in case legacy mixed-pad rows still race the
-  // numeric MAX (should be rare after generateOrderNumber uses ::int).
+  // no longer leave an order with no line items. Order numbers come from
+  // document_number_counters (row UPSERT) — no process-wide advisory lock.
+  // Retry a few times on 23505 in case a legacy race still surfaces.
   let order: typeof ordersTable.$inferSelect | undefined;
   let orderTestRows: (typeof orderTestsTable.$inferSelect)[] = [];
   let lastUniqueErr: unknown;
   for (let attempt = 0; attempt < 5; attempt++) {
     try {
       const result = await db.transaction(async (tx) => {
-        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('care_erp_order_number'))`);
         const orderNumber = await generateOrderNumber(tx);
         const [orderRow] = await tx.insert(ordersTable).values({
           orderNumber,

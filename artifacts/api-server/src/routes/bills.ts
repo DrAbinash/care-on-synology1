@@ -33,6 +33,7 @@ import { generateStudiesForOrder } from "./radiology";
 import { sendBillWhatsapp } from "./whatsapp";
 import { autoVoucherForPayment } from "../lib/auto-voucher";
 import { getSlowThresholdMs } from "../lib/requestMetrics";
+import { nextDocumentCounter } from "../lib/documentNumberCounters";
 import {
   cancelRadiologyMwlForBill,
   cancelRadiologyMwlForOrderTest,
@@ -111,35 +112,15 @@ async function resolveLedgerForOrder(order: typeof ordersTable.$inferSelect): Pr
  * `parseBillNumberParts` handles both shapes so the renumber logic keeps
  * working across the migration.
  */
-// A pooled db handle OR an open transaction — callers holding the bill-number
-// advisory lock MUST pass their `tx` (see the note below), so the type admits it.
+// A pooled db handle OR an open transaction — pass `tx` so nextval runs on the
+// same connection as the bill insert (sequences are concurrent; no long lock).
 type DbOrTx = typeof db | Parameters<Parameters<(typeof db)["transaction"]>[0]>[0];
 export async function generateBillNumber(_ledgerId: number, dbHandle: DbOrTx = db): Promise<string> {
   const date = new Date();
   const yyyymm = `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, "0")}`;
-  // Use the global MAX across ALL numeric bills, not a per-ledger count.
-  // COUNT per ledger breaks when multiple ledgers share the same bill_number
-  // unique space — ledger A and B independently arrive at the same sequence
-  // number and collide on the UNIQUE constraint.
-  //
-  // Callers that hold the care_erp_bill_number advisory lock (see call sites
-  // in this file and self-registration.ts) MUST pass their `tx` handle here,
-  // not the pooled `db`. The lock only serializes concurrent callers against
-  // each other if this SELECT runs on the same connection/transaction that
-  // holds the lock — using a separate pooled connection here would also
-  // reintroduce a connection-pool deadlock under load (every concurrent
-  // transaction blocked on the lock holds a pool connection; the lock
-  // holder's own generateBillNumber call would then have no free connection
-  // left to borrow, since the pool has a fixed max size).
-  const [row] = await dbHandle
-    .select({ maxBill: sql<string | null>`MAX(bill_number)` })
-    .from(billsTable)
-    .where(sql`bill_number ~ '^[0-9]+$'`);
-  let seq = 1;
-  if (row?.maxBill) {
-    const parts = parseBillNumberParts(row.maxBill);
-    if (parts) seq = parts.seq + 1;
-  }
+  // SEQUENCE nextval — concurrent desk saves no longer serialize on a global
+  // advisory lock for the whole bill insert transaction.
+  const seq = await nextDocumentCounter(dbHandle, "bill", "global");
   return `${yyyymm}${String(seq).padStart(4, "0")}`;
 }
 
@@ -722,26 +703,15 @@ export async function createBillHandler(req: StaffAuthRequest, res: Response): P
   // matching bill row.
   const txStartedAt = Date.now();
   const { bill, pat, validPayments: txPayments } = await db.transaction(async (tx) => {
-    // Serialize bill-number allocation across concurrent requests. Without
-    // this, two overlapping POST /api/bills calls (two billing counters
-    // saving within the same instant, a busy clinic's normal case) can both
-    // read the same MAX(bill_number) via generateBillNumber() before either
-    // commits, then both try to INSERT the same bill_number — one succeeds,
-    // the other throws a raw 23505 unique-violation that surfaces to the
-    // billing desk as an opaque "Internal server error" (bill not saved, no
-    // indication a retry would work). pg_advisory_xact_lock serializes the
-    // read-then-insert critical section per Postgres session and releases
-    // automatically on commit/rollback — same pattern already used for
-    // patient_id generation (see generatePatientId in patients.ts) and the
-    // audit hash chain (see AUDIT_CHAIN_XACT_LOCK in lib/audit.ts).
-    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('care_erp_bill_number'))`);
+    // Bill numbers come from document_number_counters (atomic UPSERT) — no
+    // process-wide advisory lock that serialized every concurrent desk save.
     const billNumber = await generateBillNumber(ledgerId, tx);
 
     if (!order.ledgerId) {
       await tx.update(ordersTable).set({ ledgerId }).where(eq(ordersTable.id, orderId));
     }
     // Patient was preloaded in the guard wave — avoid a SELECT while holding
-    // the global bill-number lock under concurrent desk saves.
+    // the bill-number counter row under concurrent desk saves.
     const patRow = patientPreload;
     if (patRow && !patRow.ledgerId) {
       await tx.update(patientsTable).set({ ledgerId }).where(eq(patientsTable.id, patRow.id));
