@@ -100,27 +100,47 @@ export function InfrastructurePulseStrip() {
                 ? ORANGE_OK_DOT
                 : DOT_CLASS[pill.tone];
             const blink = pill.shouldBlink;
-            return (
-              <div
-                key={pill.key}
-                className={`group relative inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px] font-medium leading-none ${PILL_CLASS[pill.tone]} ${pill.accent === "orange" && pill.tone === "green" ? "border-orange-300/80" : ""}`}
-                title={pill.message}
-              >
+            const pillClass = `inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px] font-medium leading-none ${PILL_CLASS[pill.tone]} ${pill.accent === "orange" && pill.tone === "green" ? "border-orange-300/80" : ""}`;
+            const pillBody = (
+              <>
                 <span
                   className={`h-2 w-2 rounded-full shrink-0 ${dotClass} ${blink ? "animate-[pulse-attention_2.5s_ease-in-out_infinite]" : ""}`}
                   aria-hidden
                 />
                 <span>{pill.label}</span>
-                <span
-                  className="pointer-events-none absolute left-0 top-full z-20 mt-1 hidden min-w-[14rem] max-w-xs rounded-md border bg-popover px-2 py-1.5 text-[10px] text-popover-foreground shadow-md group-hover:block group-focus-within:block"
+              </>
+            );
+            return (
+              // Hover panel must stay pointer-interactive: previously
+              // pointer-events-none + a margin gap made "Open settings"
+              // unreachable with the mouse.
+              <div key={pill.key} className="group relative inline-flex">
+                {pill.detailsHref ? (
+                  <Link href={pill.detailsHref} className={pillClass} aria-label={`${pill.label}: ${pill.message}`}>
+                    {pillBody}
+                  </Link>
+                ) : (
+                  <div className={pillClass} title={pill.message}>
+                    {pillBody}
+                  </div>
+                )}
+                <div
+                  className="absolute left-0 top-full z-20 hidden min-w-[14rem] max-w-xs pt-1 group-hover:block group-focus-within:block"
+                  data-testid={`clinic-systems-pill-panel-${pill.key}`}
                 >
-                  {pill.message}
-                  {pill.detailsHref && (
-                    <Link href={pill.detailsHref} className="block mt-1 text-primary underline">
-                      Open settings
-                    </Link>
-                  )}
-                </span>
+                  <div className="rounded-md border bg-popover px-2 py-1.5 text-[10px] text-popover-foreground shadow-md">
+                    <div>{pill.message}</div>
+                    {pill.detailsHref && (
+                      <Link
+                        href={pill.detailsHref}
+                        className="mt-1 inline-block text-primary underline hover:text-primary/80"
+                        data-testid={`clinic-systems-open-settings-${pill.key}`}
+                      >
+                        Open settings
+                      </Link>
+                    )}
+                  </div>
+                </div>
               </div>
             );
           })
