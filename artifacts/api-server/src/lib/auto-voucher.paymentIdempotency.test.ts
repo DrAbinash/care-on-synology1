@@ -24,6 +24,7 @@ vi.mock("@workspace/db/schema", () => ({
 }));
 vi.mock("./logger", () => ({ logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() } }));
 vi.mock("./paymentMethodClassifier", () => ({ classifyPaymentMethod: () => "cash" }));
+vi.mock("./clinicPeakHours", () => ({ isClinicPeakHours: () => false }));
 
 import { autoVoucherForPayment } from "./auto-voucher";
 

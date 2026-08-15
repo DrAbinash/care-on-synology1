@@ -68,10 +68,14 @@ describe("billing priority during peak hours", () => {
     expect(dimse).toContain("pending C-MOVE deferred");
   });
 
-  test("Orthanc changes poller throttles during peak", () => {
-    const poller = readFileSync(new URL("./pacs/orthancChangesPoller.ts", import.meta.url), "utf8");
-    expect(poller).toContain("PEAK_MIN_TICK_GAP_MS");
-    expect(poller).toContain("MAX_PAGES_PER_TICK_PEAK");
-    expect(poller).toContain("isClinicPeakHours()");
+  test("auto-voucher defers during peak; cron backfills off-peak", () => {
+    const voucher = readFileSync(new URL("./auto-voucher.ts", import.meta.url), "utf8");
+    expect(voucher).toContain("isClinicPeakHours");
+    expect(voucher).toContain("Peak-hour deferral");
+    expect(voucher).toContain("backfillDeferredPaymentVouchers");
+    expect(voucher).toContain("force: true");
+    const cron = readFileSync(new URL("../cron.ts", import.meta.url), "utf8");
+    expect(cron).toContain("scheduleDeferredPaymentVouchers");
+    expect(cron).toContain("backfillDeferredPaymentVouchers");
   });
 });
