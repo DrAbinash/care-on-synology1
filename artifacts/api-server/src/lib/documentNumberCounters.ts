@@ -55,54 +55,77 @@ export async function nextDocumentCounter(
  * pg_advisory_lock path that could hang Billing Desk registration forever
  * when unlock ran on a different pool connection).
  *
- * Sequence is created/seeded by migrations/zzzz_patient_id_seq.sql. For
- * local `db:push` envs that skip feature migrations, we CREATE IF NOT EXISTS
- * and seed once when the sequence has never been used.
+ * Sequence is created/seeded by migrations/zzzz_patient_id_seq.sql and
+ * forward-synced by zzzz_patient_id_seq_reseed.sql. On each process boot we
+ * also bump the sequence forward to MAX(existing UHID) so a stale sequence
+ * (seeded while the old MAX+1 allocator was still minting IDs) cannot collide.
  */
 let patientIdSeqEnsured = false;
 
-async function ensurePatientIdSeq(dbHandle: DbOrTx): Promise<void> {
-  if (patientIdSeqEnsured) return;
+/** Bump patient_id_seq forward to at least MAX(existing P-#####). Never rewinds. */
+export async function syncPatientIdSeqForward(dbHandle: DbOrTx): Promise<void> {
   await dbHandle.execute(sql`CREATE SEQUENCE IF NOT EXISTS patient_id_seq`);
-  // Seed only when unused so we never rewind a live sequence.
   await dbHandle.execute(sql`
     DO $$
     DECLARE
-      seed bigint := 0;
+      max_existing bigint := 0;
+      seq_at bigint := 0;
+      target bigint := 0;
     BEGIN
-      IF (SELECT last_value FROM patient_id_seq) = 1
-         AND NOT (SELECT is_called FROM patient_id_seq) THEN
-        SELECT COALESCE(
-          MAX(
-            CASE
-              WHEN patient_id ~ '^P-?[0-9]+$'
-                THEN regexp_replace(patient_id, '^P-?', '')::bigint
-              ELSE NULL
-            END
-          ),
-          0
-        )
-        INTO seed
-        FROM patients;
+      SELECT COALESCE(
+        MAX(
+          CASE
+            WHEN patient_id ~ '^P-?[0-9]+$'
+              THEN regexp_replace(patient_id, '^P-?', '')::bigint
+            ELSE NULL
+          END
+        ),
+        0
+      )
+      INTO max_existing
+      FROM patients;
 
-        BEGIN
-          SELECT GREATEST(seed, COALESCE((SELECT MAX(counter) FROM patient_counter), 0))
-            INTO seed;
-        EXCEPTION WHEN undefined_table THEN
-          NULL;
-        END;
+      BEGIN
+        SELECT GREATEST(max_existing, COALESCE((SELECT MAX(counter) FROM patient_counter), 0))
+          INTO max_existing;
+      EXCEPTION WHEN undefined_table THEN
+        NULL;
+      END;
 
-        IF seed > 0 THEN
-          PERFORM setval('patient_id_seq', seed, true);
-        END IF;
+      SELECT CASE
+               WHEN is_called THEN last_value
+               ELSE GREATEST(last_value - 1, 0)
+             END
+        INTO seq_at
+        FROM patient_id_seq;
+
+      target := GREATEST(max_existing, seq_at);
+
+      IF target > 0 THEN
+        PERFORM setval('patient_id_seq', target, true);
       END IF;
     END $$;
   `);
+}
+
+async function ensurePatientIdSeq(dbHandle: DbOrTx): Promise<void> {
+  if (patientIdSeqEnsured) return;
+  await syncPatientIdSeqForward(dbHandle);
   patientIdSeqEnsured = true;
 }
 
 export async function nextPatientId(dbHandle: DbOrTx): Promise<string> {
   await ensurePatientIdSeq(dbHandle);
+  const result = await dbHandle.execute(sql`SELECT nextval('patient_id_seq') AS nextval`);
+  const n = readNextval(result);
+  return `P-${String(n).padStart(5, "0")}`;
+}
+
+/** After a unique collision, resync from MAX and allocate again. */
+export async function nextPatientIdAfterConflict(dbHandle: DbOrTx): Promise<string> {
+  patientIdSeqEnsured = false;
+  await syncPatientIdSeqForward(dbHandle);
+  patientIdSeqEnsured = true;
   const result = await dbHandle.execute(sql`SELECT nextval('patient_id_seq') AS nextval`);
   const n = readNextval(result);
   return `P-${String(n).padStart(5, "0")}`;

@@ -41,4 +41,18 @@ describe("patient UHID allocation", () => {
     expect(selfRegSrc).toContain("nextPatientId(db)");
     expect(selfRegSrc).not.toContain("patientCounterTable");
   });
+
+  it("resyncs sequence forward and retries unique patient_id collisions", () => {
+    expect(countersSrc).toContain("syncPatientIdSeqForward");
+    expect(countersSrc).toContain("nextPatientIdAfterConflict");
+    expect(patientsSrc).toContain("insertPatientWithIdRetry");
+    expect(patientsSrc).toContain("nextPatientIdAfterConflict");
+    expect(patientsSrc).toContain("patients_patient_id_unique");
+    const reseed = readFileSync(
+      join(root, "../../../../migrations/zzzz_patient_id_seq_reseed.sql"),
+      "utf8",
+    );
+    expect(reseed).toContain("setval('patient_id_seq'");
+    expect(reseed).toContain("max_existing");
+  });
 });

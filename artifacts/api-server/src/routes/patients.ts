@@ -11,7 +11,7 @@ import {
 } from "@workspace/api-zod";
 import { requireStaffSubPermission } from "../middleware/requireStaffAuth";
 import { isClinicPatientPhoneRequired, phoneLooksPresent } from "../lib/patientPhoneRequired";
-import { nextPatientId } from "../lib/documentNumberCounters";
+import { nextPatientId, nextPatientIdAfterConflict } from "../lib/documentNumberCounters";
 
 export const patientsRouter = Router();
 
@@ -27,6 +27,37 @@ async function generatePatientId(): Promise<string> {
   return nextPatientId(db);
 }
 
+function isPatientIdUniqueViolation(err: unknown): boolean {
+  const e = err as { cause?: { code?: string; constraint?: string }; code?: string; constraint?: string; message?: string };
+  const code = e?.cause?.code ?? e?.code;
+  const constraint = e?.cause?.constraint ?? e?.constraint;
+  if (code === "23505" && constraint === "patients_patient_id_unique") return true;
+  const msg = String(e?.message ?? err ?? "");
+  return msg.includes("patients_patient_id_unique") || /Key \(patient_id\)=/.test(msg);
+}
+
+/**
+ * Insert a patient row; on stale-sequence UHID collision, resync from MAX and retry.
+ */
+async function insertPatientWithIdRetry(
+  buildValues: (patientId: string) => typeof patientsTable.$inferInsert,
+): Promise<PatientRow> {
+  let patientId = await generatePatientId();
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      const [patient] = await db
+        .insert(patientsTable)
+        .values(buildValues(patientId))
+        .returning();
+      return patient;
+    } catch (err) {
+      if (!isPatientIdUniqueViolation(err) || attempt === 4) throw err;
+      patientId = await nextPatientIdAfterConflict(db);
+    }
+  }
+  throw new Error("Unable to allocate a unique patient ID");
+}
+
 /** Same UHID allocator + patients insert as POST /api/patients (no parallel emergency patient table). */
 export async function createCanonicalPatient(values: {
   firstName: string;
@@ -38,22 +69,17 @@ export async function createCanonicalPatient(values: {
   ageUnit?: string | null;
   address?: string | null;
 }): Promise<PatientRow> {
-  const patientId = await generatePatientId();
-  const [patient] = await db
-    .insert(patientsTable)
-    .values({
-      patientId,
-      firstName: values.firstName.trim() || "Unknown",
-      lastName: values.lastName.trim() || "-",
-      phone: values.phone.trim() || "0000000000",
-      dateOfBirth: values.dateOfBirth,
-      gender: values.gender,
-      ageValue: values.ageValue ?? null,
-      ageUnit: values.ageUnit ?? null,
-      address: values.address ?? null,
-    })
-    .returning();
-  return patient;
+  return insertPatientWithIdRetry((patientId) => ({
+    patientId,
+    firstName: values.firstName.trim() || "Unknown",
+    lastName: values.lastName.trim() || "-",
+    phone: values.phone.trim() || "0000000000",
+    dateOfBirth: values.dateOfBirth,
+    gender: values.gender,
+    ageValue: values.ageValue ?? null,
+    ageUnit: values.ageUnit ?? null,
+    address: values.address ?? null,
+  }));
 }
 
 patientsRouter.get("/", async (req, res) => {
@@ -164,13 +190,12 @@ patientsRouter.post("/", requireStaffSubPermission("/patients", "create"), async
     }
   }
 
-  const patientId = await generatePatientId();
-  const insertValues: Record<string, unknown> = { ...parsed.data, patientId };
-  if (photo.value !== undefined) insertValues.photoDataUrl = photo.value;
-  const [patient] = await db
-    .insert(patientsTable)
-    .values(insertValues as typeof patientsTable.$inferInsert)
-    .returning();
+  const insertBase = { ...parsed.data } as Record<string, unknown>;
+  if (photo.value !== undefined) insertBase.photoDataUrl = photo.value;
+  const patient = await insertPatientWithIdRetry((patientId) => ({
+    ...insertBase,
+    patientId,
+  }) as typeof patientsTable.$inferInsert);
   res.status(201).json(sanitizePatient(patient));
 });
 
