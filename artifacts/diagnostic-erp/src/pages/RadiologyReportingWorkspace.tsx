@@ -2746,10 +2746,10 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                                   }}
                                   title={chip.insertedText}
                                   aria-pressed={active}
-                                  className={`text-[10px] font-medium px-2 py-0.5 rounded-full border shadow-sm transition-all ${
+                                  className={`text-[10px] font-bold px-2.5 py-1 rounded-full border shadow-sm transition-all ${
                                     active
-                                      ? "bg-teal-600 text-white border-teal-600"
-                                      : "bg-teal-50/90 text-teal-900 border-teal-200/80 hover:border-teal-400"
+                                      ? "bg-gradient-to-br from-teal-500 to-cyan-600 text-white border-teal-600 shadow-teal-300/40"
+                                      : "bg-gradient-to-b from-teal-50 to-cyan-50/80 text-teal-900 border-teal-200 hover:border-teal-400 hover:shadow-md hover:-translate-y-px"
                                   }`}
                                 >
                                   {chip.displayLabel}
@@ -2775,24 +2775,34 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
 
                     {/* Chocolate Box macros (brain/spine) — free-text mode only */}
                     {!useStructured && studySetup.chocolateBoxSet && (
-                      <div className="space-y-1" data-testid="chocolate-box">
-                        <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                      <div className="space-y-1.5 rounded-xl border border-indigo-200/70 bg-gradient-to-r from-indigo-50/80 via-violet-50/50 to-fuchsia-50/40 p-2 shadow-sm" data-testid="chocolate-box">
+                        <div className="text-[10px] font-bold uppercase tracking-wide text-indigo-800">
                           {studySetup.chocolateBoxSet.label} macros
                         </div>
-                        <div className="flex flex-wrap gap-1">
-                          {studySetup.chocolateBoxSet.tiles.map((tile) => (
-                            <Button
-                              key={tile.label}
-                              type="button"
-                              size="sm"
-                              variant="outline"
-                              className="h-6 text-[10px]"
-                              disabled={isLocked || isFinalized}
-                              onClick={() => studySetup.applyChocolateTile(tile.text)}
-                            >
-                              {tile.label}
-                            </Button>
-                          ))}
+                        <div className="flex flex-wrap gap-1.5">
+                          {studySetup.chocolateBoxSet.tiles.map((tile, i) => {
+                            const palettes = [
+                              "border-indigo-300 bg-gradient-to-br from-indigo-50 to-white text-indigo-900 hover:border-indigo-500 hover:shadow-indigo-200/50",
+                              "border-violet-300 bg-gradient-to-br from-violet-50 to-white text-violet-900 hover:border-violet-500 hover:shadow-violet-200/50",
+                              "border-fuchsia-300 bg-gradient-to-br from-fuchsia-50 to-white text-fuchsia-900 hover:border-fuchsia-500 hover:shadow-fuchsia-200/50",
+                              "border-sky-300 bg-gradient-to-br from-sky-50 to-white text-sky-900 hover:border-sky-500 hover:shadow-sky-200/50",
+                              "border-teal-300 bg-gradient-to-br from-teal-50 to-white text-teal-900 hover:border-teal-500 hover:shadow-teal-200/50",
+                              "border-amber-300 bg-gradient-to-br from-amber-50 to-white text-amber-900 hover:border-amber-500 hover:shadow-amber-200/50",
+                            ];
+                            return (
+                              <Button
+                                key={tile.label}
+                                type="button"
+                                size="sm"
+                                variant="outline"
+                                className={`h-7 text-[10px] font-bold rounded-lg border shadow-sm hover:shadow-md hover:-translate-y-px transition-all ${palettes[i % palettes.length]}`}
+                                disabled={isLocked || isFinalized}
+                                onClick={() => studySetup.applyChocolateTile(tile.text)}
+                              >
+                                {tile.label}
+                              </Button>
+                            );
+                          })}
                         </div>
                       </div>
                     )}
@@ -2860,18 +2870,22 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                         {Object.entries(findingsMap).map(([label, item]) => {
                           const baseline = studySetup.templateFindingsSections.find((s) => s.label === label)?.normal ?? item.text;
                           return (
-                            <div key={label} className="flex flex-col gap-1 border border-slate-200/80 rounded-md p-2.5 bg-card shadow-sm">
+                            <div key={label} className={`flex flex-col gap-1.5 border rounded-xl p-2.5 shadow-sm transition-colors ${
+                              item.normal
+                                ? "border-emerald-200/90 bg-gradient-to-br from-emerald-50/80 via-white to-teal-50/40"
+                                : "border-rose-200/90 bg-gradient-to-br from-rose-50/70 via-white to-orange-50/30"
+                            }`}>
                               <div className="flex items-center gap-2">
-                                <Label className="text-xs font-semibold flex-1 min-w-0 truncate" title={label}>
+                                <Label className="text-xs font-bold flex-1 min-w-0 truncate" title={label}>
                                   {label}
                                 </Label>
-                                <div className="inline-flex rounded-md border border-border overflow-hidden shrink-0" role="group">
+                                <div className="inline-flex rounded-lg border border-border overflow-hidden shrink-0 shadow-sm" role="group">
                                   <button
                                     type="button"
                                     disabled={isLocked || isFinalized}
                                     aria-pressed={item.normal}
-                                    className={`h-6 px-2 text-[10px] font-semibold transition-colors disabled:opacity-50 ${
-                                      item.normal ? "bg-emerald-600 text-white" : "bg-background text-muted-foreground hover:bg-emerald-50"
+                                    className={`h-7 px-2.5 text-[10px] font-bold transition-colors disabled:opacity-50 ${
+                                      item.normal ? "bg-gradient-to-br from-emerald-500 to-teal-600 text-white shadow-inner" : "bg-white text-emerald-800 hover:bg-emerald-50"
                                     }`}
                                     onClick={() => setFindingsMap((prev) => ({
                                       ...prev,
@@ -2884,8 +2898,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                                     type="button"
                                     disabled={isLocked || isFinalized}
                                     aria-pressed={!item.normal}
-                                    className={`h-6 px-2 text-[10px] font-semibold border-l border-border transition-colors disabled:opacity-50 ${
-                                      !item.normal ? "bg-rose-600 text-white" : "bg-background text-muted-foreground hover:bg-rose-50"
+                                    className={`h-7 px-2.5 text-[10px] font-bold border-l border-border transition-colors disabled:opacity-50 ${
+                                      !item.normal ? "bg-gradient-to-br from-rose-500 to-orange-600 text-white shadow-inner" : "bg-white text-rose-800 hover:bg-rose-50"
                                     }`}
                                     onClick={() => setFindingsMap((prev) => {
                                       const cur = prev[label];
@@ -3000,8 +3014,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                                   aria-pressed={active}
                                   className={`text-[10px] font-medium px-2 py-0.5 rounded-full border shadow-sm transition-all max-w-[14rem] truncate ${
                                     active
-                                      ? "bg-violet-600 text-white border-violet-600"
-                                      : "bg-violet-50 text-violet-900 border-violet-200 hover:border-violet-400"
+                                      ? "bg-gradient-to-br from-violet-500 to-fuchsia-600 text-white border-violet-600 shadow-violet-300/40"
+                                      : "bg-gradient-to-b from-violet-50 to-fuchsia-50/70 text-violet-900 border-violet-200 hover:border-violet-400 hover:shadow-md hover:-translate-y-px"
                                   }`}
                                 >
                                   {chip.length > 42 ? `${chip.slice(0, 40)}…` : chip}
@@ -3094,8 +3108,11 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                     />
 
                     {/* Clinic Quick Select (legacy QuickFindingsPanel) */}
-                    <div className="border rounded-md p-2" data-testid="clinic-quick-select">
-                      <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">Clinic Quick Select</div>
+                    <div className="rounded-xl border border-amber-200/80 bg-gradient-to-br from-amber-50/40 via-white to-orange-50/30 p-2.5 shadow-sm shadow-amber-100/50" data-testid="clinic-quick-select">
+                      <div className="mb-2 flex items-center gap-2">
+                        <span className="flex h-5 w-5 items-center justify-center rounded-md bg-gradient-to-br from-amber-500 to-orange-600 text-[10px] font-black text-white shadow-sm">Q</span>
+                        <div className="text-[10px] font-bold uppercase tracking-wider text-amber-900">Clinic Quick Select</div>
+                      </div>
                       <QuickFindingsPanel
                         selectedIds={selectedQuickIds}
                         onToggle={handleQuickToggle}
