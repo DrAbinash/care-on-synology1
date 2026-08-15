@@ -1956,7 +1956,7 @@ export default function MyDailySummary() {
 
       {isOwner && <InfrastructurePulseStrip />}
       {isOwner && (
-        <div className="rounded-xl border bg-card p-4 shadow-sm">
+        <div className="rounded-lg border bg-card p-3 shadow-sm" data-testid="my-daily-billing-peak">
           <BillingPeakMonitorPanel compact />
         </div>
       )}

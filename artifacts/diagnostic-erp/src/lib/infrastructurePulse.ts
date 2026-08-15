@@ -15,20 +15,37 @@ export interface PulseItemConfig {
   key: string;
   label: string;
   checkIds: string[];
-  /** ICICI uses orange accent when healthy (brand). */
-  accent?: "orange";
   detailsHref?: string;
 }
 
+/**
+ * Server Health Ribbon items for Clinic Systems.
+ * Healthy ICICI Pay uses semantic GREEN (product name "Orange Pay" is not a status colour).
+ */
 export const INFRASTRUCTURE_PULSE_ITEMS: PulseItemConfig[] = [
-  { key: "erp", label: "ERP", checkIds: ["app.responding", "db.connect"] },
-  { key: "orthanc", label: "Orthanc", checkIds: ["orthanc.reachable"], detailsHref: "/radiology/operational-health" },
-  { key: "sync", label: "PACS sync", checkIds: ["orthanc.sync_fresh", "radiology.sync_worker"], detailsHref: "/radiology/operational-health" },
+  { key: "care_erp", label: "CARE ERP", checkIds: ["app.responding"] },
+  { key: "care_db", label: "CARE DB", checkIds: ["db.connect"] },
+  {
+    key: "orthanc",
+    label: "Orthanc/PACS",
+    checkIds: ["orthanc.reachable", "orthanc.sync_fresh", "radiology.sync_worker"],
+    detailsHref: "/radiology/operational-health",
+  },
+  { key: "backup", label: "Backup", checkIds: ["backup.age"], detailsHref: "/radiology/operational-health" },
+  {
+    key: "backup_verify",
+    label: "Backup Verify",
+    checkIds: ["backup.restore_verified"],
+    detailsHref: "/radiology/operational-health",
+  },
   { key: "ollama", label: "Local AI", checkIds: ["ai.ollama"], detailsHref: "/settings/radiology?tab=reporting" },
   { key: "ocr", label: "OCR", checkIds: ["integ.ocr_worker"], detailsHref: "/settings/radiology?tab=reporting" },
-  { key: "backup", label: "Backup", checkIds: ["backup.age"], detailsHref: "/radiology/operational-health" },
-  { key: "backup_verify", label: "Backup Verify", checkIds: ["backup.restore_verified"], detailsHref: "/radiology/operational-health" },
-  { key: "icici", label: "ICICI Pay", checkIds: ["integ.icici_orange"], accent: "orange", detailsHref: "/settings?tab=online-booking" },
+  {
+    key: "icici",
+    label: "ICICI Pay",
+    checkIds: ["integ.icici_orange"],
+    detailsHref: "/settings?tab=online-booking",
+  },
 ];
 
 const STATUS_RANK: Record<OpsCheckStatus, number> = {
@@ -55,7 +72,6 @@ export interface PulsePill {
   label: string;
   tone: PulseTone;
   message: string;
-  accent?: "orange";
   detailsHref?: string;
   shouldBlink: boolean;
 }
@@ -75,7 +91,6 @@ export function buildInfrastructurePulse(checks: OpsCheckLike[]): PulsePill[] {
       label: item.label,
       tone,
       message,
-      accent: item.accent,
       detailsHref: item.detailsHref,
       shouldBlink,
     };
