@@ -14,6 +14,22 @@ import { aiProviderSettingsTable, aiModelRoutesTable } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
 import { decryptSecret } from "@workspace/crypto";
 
+// ─── Canonical on-prem Local AI (chat/vision) ───────────────────────────────
+// Keep in sync with artifacts/api-server/.../canonicalLocalAi.ts.
+// Embeddings (nomic-embed-text) and Paddle OCR are separate exceptions.
+
+export const CANONICAL_OLLAMA_ENDPOINT = "http://172.16.1.140:11434";
+export const CANONICAL_LOCAL_CHAT_VISION_MODEL = "qwen3-vl:8b";
+
+function envOllamaEndpoint(): string {
+  const raw =
+    process.env.OLLAMA_BASE_URL?.trim() ||
+    process.env.OLLAMA_PRIMARY_URL?.trim() ||
+    process.env.OLLAMA_URL?.trim() ||
+    "";
+  return (raw.replace(/\/$/, "") || CANONICAL_OLLAMA_ENDPOINT);
+}
+
 // ─── Types ──────────────────────────────────────────────────────────────────
 
 export interface AiProviderConfig {
@@ -86,12 +102,10 @@ export const BUILTIN_PROVIDER_CONFIGS: Record<string, AiProviderConfig> = {
     label: "Ollama (Local)",
     needsApiKey: false,
     needsEndpointUrl: true,
-    // Routine default for the Windows OCR/AI worker: gemma3:4b.
-    // Overnight MRI vision default is qwen3-vl:8b (AI_MODEL_VISION / task route).
-    // gemma3:12b is Deep/Large only. qwen3:14b / gpt-oss:20b remain approved
-    // for clinics that already standardized on them (stored settings win).
-    defaultModels: ["gemma3:4b", "gemma3:12b", "qwen3-vl:8b", "qwen3:14b", "gpt-oss:20b"],
-    placeholder: "http://172.16.1.140:11434",
+    // Canonical local chat/vision model until multi-model routing is re-enabled.
+    // gemma3:* / qwen3:14b remain listed only so existing saved rows display cleanly.
+    defaultModels: [CANONICAL_LOCAL_CHAT_VISION_MODEL, "gemma3:4b", "gemma3:12b", "qwen3:14b", "gpt-oss:20b"],
+    placeholder: CANONICAL_OLLAMA_ENDPOINT,
   },
 };
 
@@ -282,7 +296,7 @@ export function stripThinkBlocks(text: string): string {
 
 /** Build the native Ollama `/api/chat` JSON body (exported for unit tests). */
 export function buildOllamaChatPayload(opts: AiQueryOptions): Record<string, unknown> {
-  const model = opts.model || "gemma3:4b";
+  const model = opts.model || CANONICAL_LOCAL_CHAT_VISION_MODEL;
   const images = (opts.images ?? []).map((img) =>
     img.replace(/^data:image\/[a-zA-Z0-9+.-]+;base64,/, ""),
   );
@@ -351,7 +365,7 @@ class OllamaProvider implements AiProvider {
       const tagsData = await tagsResp.json() as { models?: Array<{ name: string; size?: number }> };
       const models = tagsData.models?.map((m) => m.name) ?? [];
       const chatResult = await this.query({
-        model: model || "gemma3:4b",
+        model: model || CANONICAL_LOCAL_CHAT_VISION_MODEL,
         prompt: "Reply with exactly the word: CONNECTED",
         images: [],
         think: false,
@@ -499,8 +513,15 @@ export async function createAiProviderFromDb(name: string): Promise<AiProvider |
 
   if (meta?.needsEndpointUrl) {
     const url = await getProviderEndpointUrl(name);
-    if (!url) return null;
-    endpointUrl = url;
+    // Ollama: DB row is a mirror of Local AI settings; env/canonical fills gaps
+    // so overnight/OCR never hard-fail when clinic_settings was set via env only.
+    if (name === "ollama") {
+      endpointUrl = (url?.trim().replace(/\/$/, "") || envOllamaEndpoint());
+    } else if (!url) {
+      return null;
+    } else {
+      endpointUrl = url;
+    }
   }
 
   return createAiProvider(name, apiKey, endpointUrl);
@@ -520,20 +541,28 @@ export async function generateAiResponse(
     numCtx?: number;
     think?: boolean;
     temperature?: number;
+    /** Override endpoint (Local AI runtime) — preferred for Ollama. */
+    endpointUrl?: string;
   },
 ): Promise<AiQueryResult> {
-  const provider = await createAiProviderFromDb(providerName);
+  let provider: AiProvider | null = null;
+  if (providerName === "ollama" && options?.endpointUrl?.trim()) {
+    provider = await createAiProvider("ollama", undefined, options.endpointUrl.trim().replace(/\/$/, ""));
+  } else {
+    provider = await createAiProviderFromDb(providerName);
+  }
   if (!provider) {
     return { text: "", success: false, error: `Provider ${providerName} is not configured.` };
   }
   // Model precedence: explicit option → admin-configured stored default →
-  // the provider's own built-in default (via query's `|| default`). This keeps
-  // generation consistent with the saved provider default instead of silently
-  // using a hard-coded model when no model is passed.
+  // canonical local chat/vision model for Ollama.
   let model = options?.model?.trim() || "";
   if (!model) {
     const cfg = await loadProviderConfig(providerName);
     model = cfg?.defaultModel ?? "";
+  }
+  if (!model && providerName === "ollama") {
+    model = CANONICAL_LOCAL_CHAT_VISION_MODEL;
   }
   return provider.query({
     model,
@@ -675,6 +704,7 @@ export async function generateAiForTask(
     numCtx?: number;
     think?: boolean;
     temperature?: number;
+    endpointUrl?: string;
   },
 ): Promise<AiQueryResult> {
   const route = options?.provider ? null : await resolveTaskRoute(taskKey);
@@ -686,6 +716,7 @@ export async function generateAiForTask(
     numCtx: options?.numCtx,
     think: options?.think,
     temperature: options?.temperature,
+    endpointUrl: options?.endpointUrl,
   });
 }
 

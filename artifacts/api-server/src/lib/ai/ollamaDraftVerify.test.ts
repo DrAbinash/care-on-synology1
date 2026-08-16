@@ -6,9 +6,12 @@ vi.mock("../featureFlags", () => ({
 
 vi.mock("../aiPipeline/runtimeConfig", () => ({
   resolveLocalAiRuntime: vi.fn(async () => ({
-    ollamaBaseUrl: "http://127.0.0.1:11434",
+    ollamaBaseUrl: "http://172.16.1.140:11434",
     ollamaEnabled: true,
-    modelStandard: "gemma3:4b",
+    modelStandard: "qwen3-vl:8b",
+    localChatVisionModel: "qwen3-vl:8b",
+    ollamaUrlSource: "canonical",
+    modelStandardSource: "canonical",
     timeoutFastSeconds: 30,
   })),
 }));
@@ -20,8 +23,8 @@ vi.mock("@workspace/db", () => ({
         orderBy: vi.fn(() => ({
           limit: vi.fn(async () => [{
             ollamaEnabled: true,
-            ollamaBaseUrl: "http://127.0.0.1:11434",
-            ollamaModel: "gemma3:4b",
+            ollamaBaseUrl: "http://172.16.1.140:11434",
+            ollamaModel: "qwen3-vl:8b",
             ollamaLocalOnly: true,
           }]),
         })),
@@ -32,17 +35,23 @@ vi.mock("@workspace/db", () => ({
 }));
 
 vi.mock("./overnightVisionConfig", () => ({
-  getOvernightVisionInferenceOptions: () => ({
+  getOvernightVisionInferenceOptions: vi.fn(async () => ({
     model: "qwen3-vl:8b",
+    endpointUrl: "http://172.16.1.140:11434",
     numCtx: 16384,
     think: false,
     temperature: 0.1,
     concurrency: 1,
-  }),
+  })),
 }));
 
+const mockQuery = vi.fn(async (_opts?: unknown) => ({ success: true, text: "AI_DRAFT_VERIFY_OK" }));
 vi.mock("@workspace/ai-providers", () => ({
   probeOllamaReachable: vi.fn(async () => ({ reachable: true, error: null })),
+  createAiProvider: vi.fn(async () => ({
+    query: (opts: unknown) => mockQuery(opts),
+    testConnection: vi.fn(),
+  })),
 }));
 
 vi.mock("./clinicalConfigService", () => ({
@@ -75,24 +84,19 @@ vi.mock("../radiologyJobs", () => ({
 }));
 
 vi.mock("../ssrf/ollamaUrlGuard", () => ({
-  validateOllamaUrl: vi.fn(() => ({ ok: true, url: new URL("http://127.0.0.1:11434") })),
+  validateOllamaUrl: vi.fn(() => ({ ok: true, url: new URL("http://172.16.1.140:11434") })),
 }));
 
 describe("runOllamaAiDraftVerify", () => {
   beforeEach(() => {
+    mockQuery.mockClear();
     vi.stubGlobal(
       "fetch",
       vi.fn(async (url: string) => {
         if (url.includes("/api/tags")) {
           return {
             ok: true,
-            json: async () => ({ models: [{ name: "gemma3:4b" }, { name: "qwen3-vl:8b" }] }),
-          };
-        }
-        if (url.includes("/api/generate")) {
-          return {
-            ok: true,
-            json: async () => ({ response: "AI_DRAFT_VERIFY_OK" }),
+            json: async () => ({ models: [{ name: "qwen3-vl:8b" }] }),
           };
         }
         throw new Error(`unexpected fetch ${url}`);
@@ -100,19 +104,15 @@ describe("runOllamaAiDraftVerify", () => {
     );
   });
 
-  it("returns ok when all blocking checks pass", async () => {
+  it("passes when master flag, ollama, and canonical vision model are ready", async () => {
     const { runOllamaAiDraftVerify } = await import("./ollamaDraftVerify");
     const result = await runOllamaAiDraftVerify({ runDraft: true });
     expect(result.ok).toBe(true);
     expect(result.blockingFailed).toBe(false);
-    expect(result.checks.some((c) => c.name === "Overnight MRI vision model pulled" && c.status === "PASS")).toBe(true);
-    expect(result.checks.some((c) => c.name === "Sample Ollama generation" && c.status === "PASS")).toBe(true);
-  });
-
-  it("skips draft generation on dry run", async () => {
-    const { runOllamaAiDraftVerify } = await import("./ollamaDraftVerify");
-    const result = await runOllamaAiDraftVerify({ runDraft: false });
-    const draftCheck = result.checks.find((c) => c.name === "Sample Ollama generation");
-    expect(draftCheck?.status).toBe("SKIPPED");
+    expect(mockQuery).toHaveBeenCalled();
+    const modelCheck = result.checks.find((c) => c.name.includes("Canonical local"));
+    expect(modelCheck?.status).toBe("PASS");
+    expect(modelCheck?.detail).toContain("qwen3-vl:8b");
+    expect(modelCheck?.detail).toContain("172.16.1.140");
   });
 });

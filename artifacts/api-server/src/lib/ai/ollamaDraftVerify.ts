@@ -135,22 +135,29 @@ export async function runOllamaAiDraftVerify(opts: {
       blocking: true,
     });
 
-    const model = clinicRow?.ollamaModel?.trim() || runtime.modelStandard;
+    const model = runtime.localChatVisionModel;
     const installed = probe.reachable ? await listOllamaModels(baseUrl) : [];
     const hasModel = modelInstalled(installed, model);
-    const vision = (await import("./overnightVisionConfig")).getOvernightVisionInferenceOptions();
+    const vision = await (await import("./overnightVisionConfig")).getOvernightVisionInferenceOptions();
     const hasVision = modelInstalled(installed, vision.model);
     add(checks, {
       group: "Ollama",
-      name: "Overnight MRI vision model pulled",
+      name: "Canonical local chat/vision model pulled",
       status: !probe.reachable ? "SKIPPED" : hasVision ? "PASS" : "FAIL",
       detail: !probe.reachable
         ? "Skipped — Ollama unreachable"
         : hasVision
-          ? `${vision.model} present (num_ctx=${vision.numCtx}, think=${vision.think}, concurrency=${vision.concurrency})`
-          : `${vision.model} NOT found — overnight MRI drafts will fail`,
+          ? `${vision.model} at ${vision.endpointUrl} (num_ctx=${vision.numCtx}, think=${vision.think}, concurrency=${vision.concurrency})`
+          : `${vision.model} NOT found — overnight/OCR/Local AI will fail`,
       remediation: hasVision || !probe.reachable ? undefined : `On the Windows Ollama PC: ollama pull ${vision.model}`,
       blocking: true,
+    });
+    add(checks, {
+      group: "Ollama",
+      name: "Runtime endpoint matches jobs",
+      status: "PASS",
+      detail: `jobs+verify use ${baseUrl} / ${model} (source: url=${runtime.ollamaUrlSource}, model=${runtime.modelStandardSource})`,
+      blocking: false,
     });
     add(checks, {
       group: "Ollama",
@@ -168,28 +175,24 @@ export async function runOllamaAiDraftVerify(opts: {
     if (runDraft && probe.reachable && guard.ok && ollamaEnabled) {
       const t0 = Date.now();
       try {
-        const resp = await fetch(`${guard.url.origin}/api/generate`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            model,
-            stream: false,
-            prompt: "Reply with exactly: AI_DRAFT_VERIFY_OK",
-          }),
-          signal: AbortSignal.timeout(Math.min(120_000, runtime.timeoutFastSeconds * 1000)),
+        const { createAiProvider } = await import("@workspace/ai-providers");
+        const provider = await createAiProvider("ollama", undefined, guard.url.origin);
+        if (!provider) throw new Error("Ollama provider unavailable");
+        const chat = await provider.query({
+          model,
+          prompt: "Reply with exactly: AI_DRAFT_VERIFY_OK",
+          images: [],
+          think: false,
         });
-        if (!resp.ok) {
-          throw new Error(`HTTP ${resp.status}`);
-        }
-        const data = (await resp.json()) as { response?: string };
-        const text = (data.response ?? "").trim();
+        if (!chat.success) throw new Error(chat.error || "generation failed");
+        const text = (chat.text ?? "").trim();
         const ok = text.length > 0;
         add(checks, {
           group: "Draft",
           name: "Sample Ollama generation",
           status: ok ? "PASS" : "WARNING",
           detail: ok
-            ? `Generated in ${Date.now() - t0}ms (${text.slice(0, 80)}${text.length > 80 ? "…" : ""})`
+            ? `Generated via ai-providers in ${Date.now() - t0}ms (${text.slice(0, 80)}${text.length > 80 ? "…" : ""}) @ ${guard.url.origin} / ${model}`
             : "Empty response from Ollama",
           remediation: ok ? undefined : "Check model load / GPU memory on Ollama host",
           blocking: false,

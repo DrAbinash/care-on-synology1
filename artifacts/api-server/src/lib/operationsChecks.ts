@@ -399,15 +399,17 @@ export const CHECK_DEFS: Array<OpsCheckDef<OpsCtx>> = [
     },
   },
   {
-    id: "ai.job_queue", name: "AI job queue", category: "radiology_pacs", required: false,
+    id: "ai.job_queue", name: "AI job queue (LEGACY)", category: "radiology_pacs", required: false,
     run: async (ctx) => {
+      // LEGACY: overnight MRI uses dicom_retry_queue / ai_shadow_pipeline.
+      // Keep this check informational only — do not treat ai_job_queue as the live draft path.
       let rows: Array<Record<string, unknown>>;
       try { rows = await ctx.query("SELECT count(*)::int AS n FROM ai_job_queue WHERE status IN ('failed','error') AND retry_count >= COALESCE(max_retries, 3)"); }
-      catch { return { status: "UNKNOWN", message: "ai_job_queue not present" }; }
+      catch { return { status: "SKIPPED", message: "ai_job_queue not present (legacy table)" }; }
       const n = Number(rows[0]?.n ?? 0);
       return n > 0
-        ? { status: "WARNING", message: `${n} permanently-failed AI job(s)`, recommendedAction: "Review Admin → AI jobs; re-queue after fixing the provider.", metadata: { failed: n } }
-        : { status: "PASS", message: "no permanently-failed AI jobs" };
+        ? { status: "WARNING", message: `${n} permanently-failed LEGACY ai_job_queue row(s) — overnight drafts use dicom_retry_queue`, recommendedAction: "Ignore for overnight MRI; review Admin → AI jobs only if still using legacy workflow CRUD.", metadata: { failed: n, legacy: true } }
+        : { status: "PASS", message: "legacy ai_job_queue has no permanently-failed rows (overnight uses shadow pipeline)" };
     },
   },
   {

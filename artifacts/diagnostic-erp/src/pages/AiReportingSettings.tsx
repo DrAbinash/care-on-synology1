@@ -155,16 +155,20 @@ function ProviderCard({
   draft,
   onChange,
   onTest,
+  syncedFromLocalAi = false,
 }: {
   name: string;
   meta: ProviderInfo;
   draft: ProviderDraft;
   onChange: (d: Partial<ProviderDraft>) => void;
   onTest: () => void;
+  /** Ollama endpoint/model are owned by Local AI settings — read-only here. */
+  syncedFromLocalAi?: boolean;
 }) {
   const color = PROVIDER_COLORS[name] ?? "bg-muted/50 border-muted";
   const models = meta.defaultModels ?? [];
   const needsApiKey = meta.needsApiKey ?? false;
+  const readOnly = syncedFromLocalAi || name === "ollama";
 
   return (
     <div className={`rounded-xl border bg-gradient-to-br p-5 space-y-4 ${color}`}>
@@ -174,17 +178,26 @@ function ProviderCard({
           {draft.isDefault && (
             <span className="text-[10px] bg-primary text-primary-foreground px-1.5 py-0.5 rounded-full font-semibold">DEFAULT</span>
           )}
+          {readOnly && (
+            <span className="text-[10px] bg-muted text-muted-foreground px-1.5 py-0.5 rounded font-semibold">SYNCED FROM LOCAL AI</span>
+          )}
         </div>
-        <label className="flex items-center gap-2 cursor-pointer select-none">
+        <label className={`flex items-center gap-2 select-none ${readOnly ? "opacity-60 cursor-not-allowed" : "cursor-pointer"}`}>
           <span className="text-xs text-muted-foreground">Enable</span>
           <div
             className={`relative w-10 h-5 rounded-full transition-colors ${draft.isEnabled ? "bg-primary" : "bg-muted"}`}
-            onClick={() => onChange({ isEnabled: !draft.isEnabled })}
+            onClick={() => { if (!readOnly) onChange({ isEnabled: !draft.isEnabled }); }}
           >
             <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${draft.isEnabled ? "translate-x-5" : "translate-x-0.5"}`} />
           </div>
         </label>
       </div>
+
+      {readOnly && (
+        <p className="text-[11px] text-muted-foreground">
+          Endpoint and model are configured only under <strong>Local AI</strong>. Saving Local AI syncs this Ollama row for task routing.
+        </p>
+      )}
 
       {/* API Key or Endpoint URL */}
       <div className="space-y-1.5">
@@ -223,13 +236,17 @@ function ProviderCard({
                 <input
                   type="text"
                   value={draft.endpointUrl}
-                  onChange={(e) => onChange({ endpointUrl: e.target.value })}
+                  onChange={(e) => { if (!readOnly) onChange({ endpointUrl: e.target.value }); }}
+                  readOnly={readOnly}
+                  disabled={readOnly}
                   placeholder={draft.endpointUrl ? draft.endpointUrl : `Enter ${meta.label} endpoint (${meta.placeholder})`}
-                  className="w-full h-9 px-3 pr-9 text-xs rounded-lg border bg-background font-mono"
+                  className="w-full h-9 px-3 pr-9 text-xs rounded-lg border bg-background font-mono disabled:opacity-70"
                 />
               </div>
             </div>
-            <p className="text-[10px] text-muted-foreground">Leave blank to keep existing URL. Only updated when you type a new one.</p>
+            {!readOnly && (
+              <p className="text-[10px] text-muted-foreground">Leave blank to keep existing URL. Only updated when you type a new one.</p>
+            )}
           </>
         )}
       </div>
@@ -240,8 +257,9 @@ function ProviderCard({
         <div className="flex gap-2">
           <select
             value={draft.defaultModel}
-            onChange={(e) => onChange({ defaultModel: e.target.value })}
-            className="flex-1 h-9 px-3 text-xs rounded-lg border bg-background"
+            onChange={(e) => { if (!readOnly) onChange({ defaultModel: e.target.value }); }}
+            disabled={readOnly}
+            className="flex-1 h-9 px-3 text-xs rounded-lg border bg-background disabled:opacity-70"
           >
             <option value="">-- select model --</option>
             {models.map((m) => (
@@ -251,13 +269,15 @@ function ProviderCard({
               <option value={draft.defaultModel}>{draft.defaultModel} (custom)</option>
             )}
           </select>
-          <input
-            type="text"
-            value={draft.defaultModel}
-            onChange={(e) => onChange({ defaultModel: e.target.value })}
-            placeholder="or type custom model name"
-            className="w-48 h-9 px-3 text-xs rounded-lg border bg-background font-mono"
-          />
+          {!readOnly && (
+            <input
+              type="text"
+              value={draft.defaultModel}
+              onChange={(e) => onChange({ defaultModel: e.target.value })}
+              placeholder="or type custom model name"
+              className="w-48 h-9 px-3 text-xs rounded-lg border bg-background font-mono"
+            />
+          )}
         </div>
       </div>
 
@@ -313,9 +333,9 @@ export function AiReportingPanel() {
 
   // Local AI settings state
   const [localAi, setLocalAi] = useState({
-    primaryUrl: "http://192.168.1.250:11434",
-    fallbackUrl: "http://172.16.1.140:11434",
-    model: "gemma3:4b",
+    primaryUrl: "http://172.16.1.140:11434",
+    fallbackUrl: "",
+    model: "qwen3-vl:8b",
     enabled: false,
     localOnly: true,
     timeoutSeconds: 30,
@@ -347,15 +367,24 @@ export function AiReportingPanel() {
   async function handleLocalAiTest() {
     setLocalAiTestStatus("testing"); setLocalAiTestMsg("");
     try {
-      const r = await api.post<{ ok: boolean; error?: string; models?: string[] }>(
+      const r = await api.post<{
+        ok: boolean;
+        error?: string;
+        models?: string[];
+        model?: string;
+        endpointUsed?: string;
+        message?: string;
+      }>(
         "/api/radiology-ollama/test",
         { baseUrl: localAi.primaryUrl, model: localAi.model, allowLocal: localAi.localOnly }
       );
       if (r.ok) {
         setLocalAiTestStatus("ok");
-        setLocalAiTestMsg(`Connected! ${r.models?.length ?? 0} models available.`);
+        setLocalAiTestMsg(
+          `Connected to ${r.endpointUsed ?? localAi.primaryUrl} · model ${r.model ?? localAi.model} · ${r.models?.length ?? 0} models available.`,
+        );
       } else {
-        setLocalAiTestStatus("fail"); setLocalAiTestMsg(r.error ?? "Failed");
+        setLocalAiTestStatus("fail"); setLocalAiTestMsg(r.error ?? r.message ?? "Failed");
       }
     } catch (e: unknown) {
       setLocalAiTestStatus("fail"); setLocalAiTestMsg(e instanceof Error ? e.message : "Failed");
@@ -473,6 +502,9 @@ export function AiReportingPanel() {
   function handleSave() {
     const providers: Record<string, Omit<ProviderDraft, "showKey" | "testStatus" | "testMessage">> = {};
     for (const p of Object.keys(providerDrafts)) {
+      // Ollama endpoint/model are owned by Local AI (clinic_settings) and synced
+      // server-side — never overwrite them from the multi-provider form.
+      if (p === "ollama") continue;
       const d = providerDrafts[p];
       providers[p] = { isEnabled: d.isEnabled, isDefault: d.isDefault, apiKey: d.apiKey, endpointUrl: d.endpointUrl, defaultModel: d.defaultModel };
     }
@@ -687,18 +719,18 @@ export function AiReportingPanel() {
                 type="text"
                 value={localAi.primaryUrl}
                 onChange={(e) => setLocalAi((s) => ({ ...s, primaryUrl: e.target.value }))}
-                placeholder="http://192.168.1.250:11434"
+                placeholder="http://172.16.1.140:11434"
                 className="w-full h-9 px-3 text-xs rounded-lg border bg-background font-mono"
               />
             </div>
 
             <div className="space-y-1.5">
-              <label className="text-xs font-semibold text-muted-foreground">Fallback URL (secondary NIC / IP)</label>
+              <label className="text-xs font-semibold text-muted-foreground">Fallback URL (optional secondary NIC / IP)</label>
               <input
                 type="text"
                 value={localAi.fallbackUrl}
                 onChange={(e) => setLocalAi((s) => ({ ...s, fallbackUrl: e.target.value }))}
-                placeholder="http://172.16.1.140:11434"
+                placeholder="(optional)"
                 className="w-full h-9 px-3 text-xs rounded-lg border bg-background font-mono"
               />
               <p className="text-[10px] text-muted-foreground">Backend probes primary first, switches to fallback if primary doesn't respond. Cached for 5 minutes.</p>
@@ -735,34 +767,25 @@ export function AiReportingPanel() {
             <h3 className="text-sm font-semibold flex items-center gap-2"><BrainCircuit size={14} /> Model & Options</h3>
 
             <div className="space-y-1.5">
-              <label className="text-xs font-semibold text-muted-foreground">Default Model</label>
+              <label className="text-xs font-semibold text-muted-foreground">Local chat/vision model (canonical)</label>
               <select
                 value={localAi.model}
                 onChange={(e) => setLocalAi((s) => ({ ...s, model: e.target.value }))}
                 className="w-full h-9 px-3 text-xs rounded-lg border bg-background font-mono"
               >
-                <option value="gemma3:4b">gemma3:4b — routine FAST/STANDARD (recommended)</option>
-                <option value="gemma3:12b">gemma3:12b — DEEP only (slower on RTX 3050 8GB)</option>
-                <option value="qwen3:14b">qwen3:14b — approved alternate</option>
-                <option value="gpt-oss:20b">gpt-oss:20b — approved alternate</option>
+                <option value="qwen3-vl:8b">qwen3-vl:8b — ONLY local chat/vision model (overnight, OCR, radiology)</option>
               </select>
               <input
                 type="text"
                 value={localAi.model}
-                onChange={(e) => setLocalAi((s) => ({ ...s, model: e.target.value }))}
-                placeholder="gemma3:4b"
+                onChange={(e) => setLocalAi((s) => ({ ...s, model: e.target.value || "qwen3-vl:8b" }))}
+                placeholder="qwen3-vl:8b"
                 className="w-full h-9 px-3 text-xs rounded-lg border bg-background font-mono"
               />
-              {/12b|14b|20b|27b|70b/i.test(localAi.model) && (
-                <p className="text-[10px] text-amber-700 dark:text-amber-400 flex items-start gap-1">
-                  <AlertTriangle size={11} className="mt-0.5 shrink-0" />
-                  Large models may be slow or OOM on RTX 3050 8 GB. Prefer gemma3:4b for routine OCR cleanup and drafting. AI output is always a DRAFT requiring radiologist approval.
-                </p>
-              )}
               <p className="text-[10px] text-muted-foreground">
-                Modes: AUTO / FAST / STANDARD use <code className="bg-muted px-1 rounded">gemma3:4b</code>.
-                DEEP uses <code className="bg-muted px-1 rounded">gemma3:12b</code> (explicit only).
-                OCR ONLY skips the LLM. Pipeline diagnostics: <code className="bg-muted px-1 rounded">GET /api/ai-pipeline/health</code>
+                Until architecture is stable, overnight MRI, OCR vision, Local AI panel, and Test Connection all use this same model via <code className="bg-muted px-1 rounded">resolveLocalAiRuntime()</code>.
+                Embeddings stay on <code className="bg-muted px-1 rounded">nomic-embed-text</code>. Paddle OCR is separate.
+                Diagnostics: <code className="bg-muted px-1 rounded">GET /api/ai-pipeline/health</code>
               </p>
             </div>
 
@@ -842,6 +865,7 @@ export function AiReportingPanel() {
               draft={providerDrafts[p.provider]}
               onChange={(d) => setProviderDrafts((prev) => ({ ...prev, [p.provider]: { ...prev[p.provider], ...d } }))}
               onTest={() => void handleTestProvider(p.provider)}
+              syncedFromLocalAi={p.provider === "ollama"}
             />
           ))}
         </div>

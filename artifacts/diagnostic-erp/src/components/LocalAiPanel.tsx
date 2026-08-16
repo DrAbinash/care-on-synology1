@@ -195,7 +195,7 @@ export default function LocalAiPanel({ study, currentFindings, onInsertFindings,
           <WifiOff size={14} className="text-slate-500 shrink-0 mt-0.5" />
           <div>
             <p className="font-semibold text-slate-300">Ollama not configured</p>
-            <p>Go to <span className="text-orange-400">Settings → AI → Local AI</span> to set the primary URL: <code className="text-[9px] bg-slate-800 px-1 rounded">http://192.168.1.250:11434</code></p>
+            <p>Go to <span className="text-orange-400">Settings → AI → Local AI</span> to set the primary URL: <code className="text-[9px] bg-slate-800 px-1 rounded">http://172.16.1.140:11434</code> · model <code className="text-[9px] bg-slate-800 px-1 rounded">qwen3-vl:8b</code></p>
           </div>
         </div>
       ) : !status?.enabled ? (

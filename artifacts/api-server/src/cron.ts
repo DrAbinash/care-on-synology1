@@ -163,7 +163,7 @@ function scheduleRadiologyJobs() {
       try {
         const { getOvernightVisionInferenceOptions } = await import("./lib/ai/overnightVisionConfig");
         const { getSchedulerConfig } = await import("./lib/ai/clinicalConfigService");
-        const vision = getOvernightVisionInferenceOptions();
+        const vision = await getOvernightVisionInferenceOptions();
         const sched = await getSchedulerConfig();
         aiMax = Math.max(1, Math.min(vision.concurrency, sched.maxConcurrentJobs));
       } catch { /* keep 1 */ }

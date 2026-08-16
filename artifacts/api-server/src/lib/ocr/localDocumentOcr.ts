@@ -185,6 +185,7 @@ async function ollamaVisionJson(task: string, prompt: string, imageBase64: strin
   const result = await generateAiForTask(task, prompt, [imageBase64], {
     provider: "ollama",
     model: ollama.model,
+    endpointUrl: ollama.endpointUrl,
     maxTokens,
   });
   if (!result.success || !result.text?.trim()) {
@@ -237,6 +238,7 @@ export async function ollamaParseBankStatement(
       const result = await generateAiForTask("bank_statement_ocr", `${BANK_PROMPT}\n\nStatement text:\n${input.text}`, [], {
         provider: "ollama",
         model: ollama.model,
+        endpointUrl: ollama.endpointUrl,
         maxTokens: 4096,
       });
       if (!result.success) throw new Error(result.error || "fail");

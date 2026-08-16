@@ -5,6 +5,11 @@
  * call resolveLocalAiRuntime() from request paths. Do not scatter process.env.
  */
 
+import {
+  CANONICAL_LOCAL_CHAT_VISION_MODEL,
+  CANONICAL_OLLAMA_ENDPOINT,
+} from "./canonicalLocalAi";
+
 export type OcrEngine = "paddle" | "tesseract" | "vision";
 export type OcrProfile = "fast" | "accurate";
 export type OcrDevice = "auto" | "cpu" | "gpu";
@@ -82,6 +87,10 @@ export function loadAiPipelineConfig(forceReload = false): AiPipelineConfig {
       ? (modeRaw as AiMode)
       : "AUTO";
 
+  // Until multi-model local AI is re-enabled, all chat/vision tiers default to
+  // the single canonical model. Env overrides still apply for gradual rollout.
+  const localModel = strEnv("AI_MODEL_STANDARD", strEnv("AI_MODEL_VISION", CANONICAL_LOCAL_CHAT_VISION_MODEL));
+
   cached = {
     ocrEngine,
     ocrProfile,
@@ -93,13 +102,15 @@ export function loadAiPipelineConfig(forceReload = false): AiPipelineConfig {
     ocrWorkerUrl: strEnv("OCR_WORKER_URL", "http://127.0.0.1:8090").replace(/\/$/, ""),
     ocrWorkerToken: strEnv("OCR_WORKER_TOKEN", "") || null,
     ocrWorkerConcurrency: Math.max(1, numEnv("OCR_WORKER_CONCURRENCY", 1)),
-    ollamaBaseUrl: strEnv("OLLAMA_BASE_URL", strEnv("OLLAMA_PRIMARY_URL", "http://127.0.0.1:11434")).replace(/\/$/, ""),
+    ollamaBaseUrl: strEnv(
+      "OLLAMA_BASE_URL",
+      strEnv("OLLAMA_PRIMARY_URL", CANONICAL_OLLAMA_ENDPOINT),
+    ).replace(/\/$/, ""),
     aiMode,
-    modelFast: strEnv("AI_MODEL_FAST", "gemma3:4b"),
-    modelStandard: strEnv("AI_MODEL_STANDARD", "gemma3:4b"),
-    modelLarge: strEnv("AI_MODEL_LARGE", "gemma3:12b"),
-    // Overnight MRI vision default: qwen3-vl:8b (override via AI_MODEL_VISION).
-    modelVision: strEnv("AI_MODEL_VISION", "qwen3-vl:8b"),
+    modelFast: strEnv("AI_MODEL_FAST", localModel),
+    modelStandard: localModel,
+    modelLarge: strEnv("AI_MODEL_LARGE", localModel),
+    modelVision: strEnv("AI_MODEL_VISION", localModel),
     ollamaNumCtx: Math.max(2048, numEnv("OLLAMA_NUM_CTX", 16384)),
     ollamaThink: boolEnv("OLLAMA_THINK", false),
     timeoutFastSeconds: Math.max(10, numEnv("AI_TIMEOUT_FAST_SECONDS", 120)),

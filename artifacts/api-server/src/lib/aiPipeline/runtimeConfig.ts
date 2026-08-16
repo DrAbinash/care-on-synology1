@@ -1,11 +1,13 @@
 /**
  * Canonical Local AI runtime configuration.
  *
- * ONE resolved object for Ollama URL + AI mode + Fast/Standard/Deep/Vision models.
- * Env vars are defaults only. clinic_settings (Local AI admin UI) overlays URL +
- * standard model. Do not read ai_provider_settings for these fields at runtime —
- * that row is kept in sync on Local AI save so legacy generateAiForTask paths
- * stay consistent.
+ * ONE resolved object for Ollama URL + local chat/vision model used by overnight
+ * MRI, OCR, radiology Local AI, health checks, and verifiers.
+ *
+ * Env vars are bootstrap defaults only. clinic_settings (Local AI admin UI)
+ * overlays URL + model. Do not read ai_provider_settings for these fields at
+ * runtime — that row is kept in sync on Local AI save so legacy
+ * generateAiForTask paths stay consistent.
  */
 
 import { desc, eq } from "drizzle-orm";
@@ -16,14 +18,26 @@ import {
   resetAiPipelineConfigCache,
   type AiPipelineConfig,
 } from "./config";
+import {
+  CANONICAL_LOCAL_CHAT_VISION_MODEL,
+  CANONICAL_OLLAMA_ENDPOINT,
+  normalizeLocalChatVisionModel,
+  normalizeOllamaBaseUrl,
+} from "./canonicalLocalAi";
 
 export type LocalAiRuntime = AiPipelineConfig & {
   /** Where the Ollama URL came from */
-  ollamaUrlSource: "clinic_settings" | "env";
-  /** Where the standard model came from */
-  modelStandardSource: "clinic_settings" | "env";
+  ollamaUrlSource: "clinic_settings" | "env" | "canonical";
+  /** Where the local chat/vision model came from */
+  modelStandardSource: "clinic_settings" | "env" | "canonical";
   ollamaEnabled: boolean;
   ollamaFallbackUrl: string | null;
+  /**
+   * Single local chat/vision model used by overnight, OCR, Local AI panel,
+   * and verifiers. Equal to modelFast/standard/large/vision while architecture
+   * is locked to one model.
+   */
+  localChatVisionModel: string;
 };
 
 let runtimeCache: { value: LocalAiRuntime; expiresAt: number } | null = null;
@@ -42,11 +56,16 @@ export async function resolveLocalAiRuntime(forceReload = false): Promise<LocalA
 
   const env = loadAiPipelineConfig(forceReload);
 
-  let ollamaBaseUrl = env.ollamaBaseUrl;
-  let ollamaUrlSource: LocalAiRuntime["ollamaUrlSource"] = "env";
-  let modelStandard = env.modelStandard;
-  let modelFast = env.modelFast;
-  let modelStandardSource: LocalAiRuntime["modelStandardSource"] = "env";
+  let ollamaBaseUrl = normalizeOllamaBaseUrl(env.ollamaBaseUrl);
+  let ollamaUrlSource: LocalAiRuntime["ollamaUrlSource"] =
+    env.ollamaBaseUrl === CANONICAL_OLLAMA_ENDPOINT && !process.env.OLLAMA_BASE_URL && !process.env.OLLAMA_PRIMARY_URL
+      ? "canonical"
+      : "env";
+  let localModel = normalizeLocalChatVisionModel(env.modelStandard || env.modelVision);
+  let modelStandardSource: LocalAiRuntime["modelStandardSource"] =
+    localModel === CANONICAL_LOCAL_CHAT_VISION_MODEL && !process.env.AI_MODEL_STANDARD && !process.env.AI_MODEL_VISION
+      ? "canonical"
+      : "env";
   let ollamaEnabled = true;
   let ollamaFallbackUrl: string | null = null;
 
@@ -65,31 +84,30 @@ export async function resolveLocalAiRuntime(forceReload = false): Promise<LocalA
     if (row) {
       ollamaEnabled = row.ollamaEnabled !== false;
       if (row.ollamaBaseUrl?.trim()) {
-        ollamaBaseUrl = row.ollamaBaseUrl.trim().replace(/\/$/, "");
+        ollamaBaseUrl = normalizeOllamaBaseUrl(row.ollamaBaseUrl);
         ollamaUrlSource = "clinic_settings";
       }
       if (row.ollamaFallbackUrl?.trim()) {
-        ollamaFallbackUrl = row.ollamaFallbackUrl.trim().replace(/\/$/, "");
+        ollamaFallbackUrl = normalizeOllamaBaseUrl(row.ollamaFallbackUrl);
       }
       if (row.ollamaModel?.trim()) {
-        // Local AI "Default Model" is the canonical STANDARD (and FAST) model.
-        modelStandard = row.ollamaModel.trim();
-        modelFast = row.ollamaModel.trim();
+        localModel = normalizeLocalChatVisionModel(row.ollamaModel);
         modelStandardSource = "clinic_settings";
       }
     }
   } catch {
-    // DB unavailable during tests / early boot — env defaults only
+    // DB unavailable during tests / early boot — env/canonical defaults only
   }
 
   const value: LocalAiRuntime = {
     ...env,
     ollamaBaseUrl,
-    modelStandard,
-    modelFast,
-    // Deep + Vision stay env-configured (no dual DB fields yet)
-    modelLarge: env.modelLarge,
-    modelVision: env.modelVision,
+    // Lock all chat/vision tiers to the single local model.
+    modelStandard: localModel,
+    modelFast: localModel,
+    modelLarge: localModel,
+    modelVision: localModel,
+    localChatVisionModel: localModel,
     ollamaUrlSource,
     modelStandardSource,
     ollamaEnabled,
@@ -109,8 +127,8 @@ export async function syncOllamaProviderSettings(opts: {
   defaultModel: string | null;
   isEnabled: boolean;
 }): Promise<void> {
-  const endpointUrl = opts.endpointUrl?.trim().replace(/\/$/, "") || null;
-  const defaultModel = opts.defaultModel?.trim() || null;
+  const endpointUrl = normalizeOllamaBaseUrl(opts.endpointUrl);
+  const defaultModel = normalizeLocalChatVisionModel(opts.defaultModel);
 
   const [existing] = await db
     .select({ id: aiProviderSettingsTable.id })

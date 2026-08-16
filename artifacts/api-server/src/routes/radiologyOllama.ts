@@ -112,7 +112,7 @@ async function getOllamaConfig(): Promise<OllamaConfig | null> {
       })()
     : null;
 
-  const model = runtime.modelStandard;
+  const model = runtime.localChatVisionModel;
 
   // Return cached working endpoint if still valid
   const now = Date.now();
@@ -158,25 +158,48 @@ async function getOllamaConfig(): Promise<OllamaConfig | null> {
   };
 }
 
-// ── Ollama generate helper ────────────────────────────────────────────────────
+// ── Ollama generate helper (canonical: @workspace/ai-providers) ───────────────
 async function ollamaGenerate(
   baseUrl: string,
   model: string,
   prompt: string,
   signal?: AbortSignal,
 ): Promise<string> {
-  const resp = await fetch(`${baseUrl}/api/generate`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model, prompt, stream: false }),
-    signal,
+  const { createAiProvider } = await import("@workspace/ai-providers");
+  const provider = await createAiProvider("ollama", undefined, baseUrl);
+  if (!provider) throw new Error("Ollama provider unavailable");
+
+  const queryPromise = provider.query({
+    model,
+    prompt,
+    images: [],
+    think: false,
   });
-  if (!resp.ok) {
-    const text = await resp.text().catch(() => "");
-    throw new Error(`Ollama responded ${resp.status}: ${text.slice(0, 200)}`);
+
+  let result;
+  if (signal) {
+    result = await Promise.race([
+      queryPromise,
+      new Promise<never>((_, reject) => {
+        if (signal.aborted) {
+          reject(new Error("Ollama request aborted"));
+          return;
+        }
+        signal.addEventListener(
+          "abort",
+          () => reject(new Error("Ollama request aborted")),
+          { once: true },
+        );
+      }),
+    ]);
+  } else {
+    result = await queryPromise;
   }
-  const data = await resp.json() as { response?: string };
-  return (data.response ?? "").trim();
+
+  if (!result.success) {
+    throw new Error(result.error || "Ollama generation failed");
+  }
+  return (result.text ?? "").trim();
 }
 
 // ── Rich audit helper ─────────────────────────────────────────────────────────
@@ -328,16 +351,19 @@ Report to reformat:
 ${b.reportText || b.findings || ""}`,
 };
 
-// ── GET /status — current config summary (no outbound call) ──────────────────
+// ── GET /status — current config summary via canonical runtime ───────────────
 radiologyOllamaRouter.get("/status", async (_req, res): Promise<void> => {
   try {
+    const { resolveLocalAiRuntime } = await import("../lib/aiPipeline/runtimeConfig");
+    const {
+      CANONICAL_OLLAMA_ENDPOINT,
+      CANONICAL_LOCAL_CHAT_VISION_MODEL,
+    } = await import("../lib/aiPipeline/canonicalLocalAi");
+    const runtime = await resolveLocalAiRuntime(true);
+
     const rows = await db
       .select({
-        ollamaBaseUrl: clinicSettingsTable.ollamaBaseUrl,
-        ollamaFallbackUrl: (clinicSettingsTable as any).ollamaFallbackUrl,
-        ollamaModel: clinicSettingsTable.ollamaModel,
         ollamaLocalOnly: clinicSettingsTable.ollamaLocalOnly,
-        ollamaEnabled: (clinicSettingsTable as any).ollamaEnabled,
         ollamaTimeoutSeconds: (clinicSettingsTable as any).ollamaTimeoutSeconds,
         ollamaAuditEnabled: (clinicSettingsTable as any).ollamaAuditEnabled,
         ollamaKnownModels: clinicSettingsTable.ollamaKnownModels,
@@ -347,19 +373,23 @@ radiologyOllamaRouter.get("/status", async (_req, res): Promise<void> => {
       .limit(1);
 
     const row = rows[0];
-    const configured = Boolean(row?.ollamaBaseUrl);
-    const primaryValidation = configured ? validateOllamaUrl(row!.ollamaBaseUrl!, row?.ollamaLocalOnly ?? false) : null;
-    const fallbackValidation = row?.ollamaFallbackUrl ? validateOllamaUrl(row.ollamaFallbackUrl, row?.ollamaLocalOnly ?? false) : null;
+    const configured = Boolean(runtime.ollamaBaseUrl);
+    const primaryValidation = configured
+      ? validateOllamaUrl(runtime.ollamaBaseUrl, row?.ollamaLocalOnly ?? false)
+      : null;
+    const fallbackValidation = runtime.ollamaFallbackUrl
+      ? validateOllamaUrl(runtime.ollamaFallbackUrl, row?.ollamaLocalOnly ?? false)
+      : null;
 
     let knownModels: string[] = [];
     try { knownModels = JSON.parse(row?.ollamaKnownModels ?? "[]"); } catch { /**/ }
 
     res.json({
       configured,
-      enabled: row?.ollamaEnabled !== false,
-      primaryUrl: row?.ollamaBaseUrl ?? null,
-      fallbackUrl: row?.ollamaFallbackUrl ?? null,
-      model: row?.ollamaModel ?? null,
+      enabled: runtime.ollamaEnabled,
+      primaryUrl: runtime.ollamaBaseUrl ?? null,
+      fallbackUrl: runtime.ollamaFallbackUrl ?? null,
+      model: runtime.localChatVisionModel,
       localOnly: row?.ollamaLocalOnly ?? false,
       timeoutSeconds: row?.ollamaTimeoutSeconds ?? 30,
       auditEnabled: row?.ollamaAuditEnabled !== false,
@@ -367,10 +397,17 @@ radiologyOllamaRouter.get("/status", async (_req, res): Promise<void> => {
       primaryUrlError: primaryValidation?.ok === false ? primaryValidation.reason : null,
       fallbackUrlValid: fallbackValidation?.ok ?? false,
       knownModels,
+      ollamaUrlSource: runtime.ollamaUrlSource,
+      modelSource: runtime.modelStandardSource,
+      canonical: {
+        endpoint: CANONICAL_OLLAMA_ENDPOINT,
+        model: CANONICAL_LOCAL_CHAT_VISION_MODEL,
+      },
+      // Probe candidates = resolved primary/fallback only (no stale LAN hardcodes).
       candidateUrls: [
-        "http://192.168.1.250:11434",
-        "http://172.16.1.140:11434",
-      ],
+        runtime.ollamaBaseUrl,
+        runtime.ollamaFallbackUrl,
+      ].filter((u): u is string => !!u),
     });
   } catch (err: unknown) {
     res.status(500).json({ error: err instanceof Error ? err.message : "Status check failed" });
@@ -382,9 +419,11 @@ radiologyOllamaRouter.post("/test", async (req, res): Promise<void> => {
   // SSRF-capable endpoint (it fetches an operator-supplied URL) — restrict to
   // AI-permitted users, not every authenticated staff account (P5 fix).
   if (!canUseAi(req as StaffAuthRequest)) { res.status(403).json({ ok: false, error: "AI reporting permission required" }); return; }
+  const { resolveLocalAiRuntime } = await import("../lib/aiPipeline/runtimeConfig");
+  const runtime = await resolveLocalAiRuntime(true);
   const b = (req.body ?? {}) as Record<string, unknown>;
-  const rawUrl = b.baseUrl ? String(b.baseUrl).trim() : "";
-  const model = b.model ? String(b.model).trim() : "gemma3:4b";
+  const rawUrl = b.baseUrl ? String(b.baseUrl).trim() : runtime.ollamaBaseUrl;
+  const model = b.model ? String(b.model).trim() : runtime.localChatVisionModel;
   // `allowLocal` comes from the saved admin policy (`ollamaLocalOnly`), NEVER the
   // request body: a client-controlled flag here let any caller opt out of the
   // private/LAN SSRF guard (P5 fix).
@@ -403,26 +442,43 @@ radiologyOllamaRouter.post("/test", async (req, res): Promise<void> => {
   const baseUrl = guard.url.origin;
   try {
     const t0 = Date.now();
-    const ac = new AbortController();
-    const timer = setTimeout(() => ac.abort(), 10000);
-    const resp = await fetch(`${baseUrl}/api/tags`, { signal: ac.signal });
-    clearTimeout(timer);
-    if (!resp.ok) { res.status(502).json({ ok: false, error: `Ollama returned ${resp.status}` }); return; }
-    const data = await resp.json() as { models?: { name: string }[] };
-    const models = (data.models ?? []).map((m) => m.name);
-    const modelFound = models.includes(model);
-    res.json({ ok: true, model, models, modelFound, latencyMs: Date.now() - t0 });
+    const { createAiProvider } = await import("@workspace/ai-providers");
+    const provider = await createAiProvider("ollama", undefined, baseUrl);
+    if (!provider) {
+      res.status(502).json({ ok: false, error: "Ollama provider unavailable" });
+      return;
+    }
+    const result = await provider.testConnection(model);
+    res.json({
+      ok: result.ok,
+      model,
+      models: result.availableModels ?? [],
+      modelFound: (result.availableModels ?? []).includes(model),
+      latencyMs: Date.now() - t0,
+      endpointUsed: baseUrl,
+      resolvedFromRuntime: !b.baseUrl && !b.model,
+      message: result.message,
+      error: result.ok ? undefined : result.message,
+    });
   } catch (err: unknown) {
     res.status(502).json({ ok: false, error: err instanceof Error ? err.message : String(err) });
   }
 });
 
-// ── POST /probe — auto-detect which LAN endpoint responds (no auth required) ─
-radiologyOllamaRouter.post("/probe", async (req, res): Promise<void> => {
-  const candidates = [
-    "http://192.168.1.250:11434",
-    "http://172.16.1.140:11434",
-  ];
+// ── POST /probe — probe resolved Local AI endpoints only ─────────────────────
+radiologyOllamaRouter.post("/probe", async (_req, res): Promise<void> => {
+  const { resolveLocalAiRuntime } = await import("../lib/aiPipeline/runtimeConfig");
+  const {
+    CANONICAL_OLLAMA_ENDPOINT,
+  } = await import("../lib/aiPipeline/canonicalLocalAi");
+  const runtime = await resolveLocalAiRuntime(true);
+  const candidates = Array.from(
+    new Set(
+      [runtime.ollamaBaseUrl, runtime.ollamaFallbackUrl, CANONICAL_OLLAMA_ENDPOINT].filter(
+        (u): u is string => !!u,
+      ),
+    ),
+  );
   const results: Array<{ url: string; reachable: boolean; latencyMs?: number }> = [];
   for (const url of candidates) {
     const t0 = Date.now();
@@ -430,7 +486,14 @@ radiologyOllamaRouter.post("/probe", async (req, res): Promise<void> => {
     results.push({ url, reachable: ok, latencyMs: ok ? Date.now() - t0 : undefined });
   }
   const working = results.find((r) => r.reachable);
-  res.json({ results, recommendedUrl: working?.url ?? null });
+  res.json({
+    results,
+    recommendedUrl: working?.url ?? null,
+    resolvedRuntime: {
+      endpoint: runtime.ollamaBaseUrl,
+      model: runtime.localChatVisionModel,
+    },
+  });
 });
 
 // ── Helper: get config or send 503 ───────────────────────────────────────────

@@ -24,10 +24,11 @@ const { resolveOcrProvider, resolveOllamaVisionForOcr, maskEndpointUrl } = await
 const RUNTIME = (overrides: Partial<Record<string, unknown>> = {}) => ({
   ollamaBaseUrl: "http://100.79.100.41:11434",
   aiMode: "standard",
-  modelFast: "gemma3:1b",
-  modelStandard: "gemma3:4b",
-  modelDeep: "qwen3:14b",
-  modelVision: "llava:13b",
+  modelFast: "qwen3-vl:8b",
+  modelStandard: "qwen3-vl:8b",
+  modelLarge: "qwen3-vl:8b",
+  modelVision: "qwen3-vl:8b",
+  localChatVisionModel: "qwen3-vl:8b",
   ollamaEnabled: true,
   source: "clinic_settings",
   ...overrides,
@@ -38,9 +39,9 @@ beforeEach(() => {
   process.env.AI_INTEGRATIONS_GEMINI_API_KEY = "";
   mockResolveTaskRoute.mockResolvedValue(null);
   mockGetProviderApiKey.mockResolvedValue(null);
-  mockResolveLocalAiRuntime.mockResolvedValue(RUNTIME({ ollamaEnabled: false, modelVision: "" }));
+  mockResolveLocalAiRuntime.mockResolvedValue(RUNTIME({ ollamaEnabled: false, localChatVisionModel: "", modelVision: "" }));
   mockClassifyOllamaModelVisionByName.mockReturnValue("unknown");
-  mockProbeOllamaReachable.mockResolvedValue({ reachable: true, models: ["llava:13b"] });
+  mockProbeOllamaReachable.mockResolvedValue({ reachable: true, models: ["qwen3-vl:8b"] });
   mockProbeOllamaModelVision.mockResolvedValue(null);
 });
 
@@ -54,7 +55,7 @@ describe("resolveOcrProvider — auto policy (no explicit route)", () => {
     expect(result.chosen).toEqual({
       provider: "ollama",
       endpointUrl: "http://100.79.100.41:11434",
-      model: "llava:13b",
+      model: "qwen3-vl:8b",
     });
   });
 
@@ -83,7 +84,7 @@ describe("resolveOcrProvider — auto policy (no explicit route)", () => {
   });
 
   it("rejects a text-only Ollama model (name heuristic) without wasting a reachability probe", async () => {
-    mockResolveLocalAiRuntime.mockResolvedValue(RUNTIME({ modelVision: "gpt-oss:20b" }));
+    mockResolveLocalAiRuntime.mockResolvedValue(RUNTIME({ localChatVisionModel: "gpt-oss:20b", modelVision: "gpt-oss:20b" }));
     mockClassifyOllamaModelVisionByName.mockReturnValue("text-only");
 
     const result = await resolveOcrProvider();
@@ -93,7 +94,7 @@ describe("resolveOcrProvider — auto policy (no explicit route)", () => {
   });
 
   it("rejects a text-only Ollama model per the server's own /api/show capabilities report", async () => {
-    mockResolveLocalAiRuntime.mockResolvedValue(RUNTIME({ modelVision: "some-custom-finetune:latest" }));
+    mockResolveLocalAiRuntime.mockResolvedValue(RUNTIME({ localChatVisionModel: "some-custom-finetune:latest", modelVision: "some-custom-finetune:latest" }));
     mockClassifyOllamaModelVisionByName.mockReturnValue("unknown");
     mockProbeOllamaReachable.mockResolvedValue({ reachable: true, models: ["some-custom-finetune:latest"] });
     mockProbeOllamaModelVision.mockResolvedValue(false);
@@ -105,7 +106,7 @@ describe("resolveOcrProvider — auto policy (no explicit route)", () => {
   });
 
   it("accepts an unknown-name model when the server reports vision capabilities", async () => {
-    mockResolveLocalAiRuntime.mockResolvedValue(RUNTIME({ modelVision: "some-custom-finetune:latest" }));
+    mockResolveLocalAiRuntime.mockResolvedValue(RUNTIME({ localChatVisionModel: "some-custom-finetune:latest", modelVision: "some-custom-finetune:latest" }));
     mockClassifyOllamaModelVisionByName.mockReturnValue("unknown");
     mockProbeOllamaReachable.mockResolvedValue({ reachable: true, models: ["some-custom-finetune:latest"] });
     mockProbeOllamaModelVision.mockResolvedValue(true);
@@ -135,7 +136,7 @@ describe("resolveOcrProvider — explicit form_f_id_ocr route", () => {
     mockResolveLocalAiRuntime.mockResolvedValue(RUNTIME());
     mockResolveTaskRoute.mockResolvedValue({
       provider: "ollama",
-      model: "llava:13b",
+      model: "qwen3-vl:8b",
       endpointUrl: "http://100.79.100.41:11434",
     });
     mockClassifyOllamaModelVisionByName.mockReturnValue("vision");
@@ -145,7 +146,7 @@ describe("resolveOcrProvider — explicit form_f_id_ocr route", () => {
     expect(result.chosen).toEqual({
       provider: "ollama",
       endpointUrl: "http://100.79.100.41:11434",
-      model: "llava:13b",
+      model: "qwen3-vl:8b",
     });
   });
 
@@ -170,7 +171,7 @@ describe("resolveOllamaVisionForOcr", () => {
     const result = await resolveOllamaVisionForOcr();
     expect(result).toEqual({
       endpointUrl: "http://100.79.100.41:11434",
-      model: "llava:13b",
+      model: "qwen3-vl:8b",
     });
   });
 
