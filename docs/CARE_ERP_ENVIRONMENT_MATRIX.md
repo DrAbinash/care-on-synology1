@@ -138,7 +138,7 @@ the reachability of an unrelated, optional self-hosted Evolution instance.
 | `PRIVATE_OBJECT_DIR` / `PUBLIC_OBJECT_SEARCH_PATHS` | ⬜ | — | object storage layout |
 | `FINGERPRINT_BRIDGE_SECRET` | ⬜ | 🔑 | fingerprint scanner bridge |
 | `DISPLAY_ACCESS_TOKEN` | ⬜ | 🔑 | queue/payment display auth |
-| `BOUNDARY_API_KEY` | ⬜ | 🔑 | shared secret for boundary service |
+| `BOUNDARY_API_KEY` | ⬜ | 🔑 | optional — federated Radiology Service only (not Orthanc/PACS/OHIF) |
 
 ## Verifier-only (diagnostics)
 `VERIFY_API_URL`, `VERIFY_WEB_URL`, `VERIFY_SKIP_API`, `MIGRATION_SMOKE_ADMIN_URL`, `SMOKE_BASE_URL` — used only by `scripts/verify-deployment.mjs` / `migration-bootstrap-smoke.mjs`, never by the running app.

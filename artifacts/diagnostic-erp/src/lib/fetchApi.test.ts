@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { isSessionDeadMessage } from "./fetchApi";
+import { isSessionDeadMessage, HttpError, isAuthHttpError, isHttpError } from "./fetchApi";
 
 // Regression coverage for the stale-tab bug: a leftover token in localStorage
 // passes the client-side route guard, so the ERP renders its authenticated
@@ -35,5 +35,15 @@ describe("isSessionDeadMessage", () => {
     expect(isSessionDeadMessage("")).toBe(false);
     expect(isSessionDeadMessage(null)).toBe(false);
     expect(isSessionDeadMessage(undefined)).toBe(false);
+  });
+});
+
+describe("HttpError", () => {
+  it("carries status so sync probes can distinguish auth from outage", () => {
+    const err = new HttpError("Staff authentication required", 401);
+    expect(isHttpError(err)).toBe(true);
+    expect(isAuthHttpError(err)).toBe(true);
+    expect(err.status).toBe(401);
+    expect(err.message).toBe("Staff authentication required");
   });
 });

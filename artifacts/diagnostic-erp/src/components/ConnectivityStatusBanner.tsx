@@ -17,7 +17,8 @@ const PUBLIC_CHECK_MS = 60_000;
  */
 export function ConnectivityStatusBanner() {
   const onLan = isOnLanErpOrigin();
-  const { showOutageBanner, pendingCount, apiReachable, isOnline } = useBillingOutageMode();
+  const { showOutageBanner, pendingCount, apiReachable, authPaused, isOnline } =
+    useBillingOutageMode();
   const [publicReachable, setPublicReachable] = useState(false);
   const [checking, setChecking] = useState(false);
 
@@ -83,9 +84,14 @@ export function ConnectivityStatusBanner() {
               {pendingCount > 0
                 ? ` — ${pendingCount} bill(s) queued for sync.`
                 : " — ERP server unreachable."}
-              {pendingCount > 0 && " Provisional receipts (OFF-…) sync automatically when the server is back."}
+              {pendingCount > 0 && authPaused
+                ? " Sign in so queued bills can sync."
+                : pendingCount > 0
+                  ? " Provisional receipts (OFF-…) sync automatically when the server is back."
+                  : null}
               {!isOnline && " (No network detected.)"}
-              {isOnline && !apiReachable && " (Network is up but the ERP server is not responding.)"}
+              {isOnline && !apiReachable && !authPaused &&
+                " (Network is up but the ERP server is not responding.)"}
             </span>
           </>
         )}

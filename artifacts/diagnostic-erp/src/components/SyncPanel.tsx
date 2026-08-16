@@ -14,13 +14,21 @@ import { useQueryClient } from "@tanstack/react-query";
 
 export function SyncPanel() {
   const isOnline = useOnlineStatus();
-  const { pendingCount, lastSyncedAt, isSyncing, lastError, triggerSync, apiReachable } = useSyncStatus();
+  const {
+    pendingCount,
+    lastSyncedAt,
+    isSyncing,
+    lastError,
+    triggerSync,
+    apiReachable,
+    authPaused,
+  } = useSyncStatus();
   const queryClient = useQueryClient();
   const [justTriggered, setJustTriggered] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [queued, setQueued] = useState<QueuedBill[]>([]);
 
-  const canSync = apiReachable && !isSyncing && !justTriggered;
+  const canSync = apiReachable && !authPaused && !isSyncing && !justTriggered;
 
   // Re-read the queue's contents whenever its length changes (a bill got
   // queued or flushed) or the disclosure opens — pendingCount already tracks
@@ -64,21 +72,25 @@ export function SyncPanel() {
 
   const connectionLabel = !isOnline
     ? "Offline"
-    : apiReachable
-      ? "Server connected"
-      : "Server unreachable";
+    : !apiReachable
+      ? "Server unreachable"
+      : authPaused
+        ? "Sign in to sync"
+        : "Server connected";
+
+  const connectionOk = apiReachable && !authPaused;
 
   return (
     <div className="space-y-1 text-[11px]">
       {/* Row 1: status + sync button */}
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-1.5">
-          {apiReachable ? (
+          {connectionOk ? (
             <CheckCircle2 size={11} className="text-emerald-500 shrink-0" />
           ) : (
             <CloudOff size={11} className="text-slate-400 shrink-0" />
           )}
-          <span className={apiReachable ? "text-emerald-300" : "text-slate-400"}>
+          <span className={connectionOk ? "text-emerald-300" : "text-slate-400"}>
             {connectionLabel}
           </span>
           {pendingCount > 0 && (

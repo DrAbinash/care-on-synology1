@@ -1,7 +1,7 @@
 // Relative (not the usual "@/lib/..." alias) so this module — including its
 // pure, DOM-free functions below — stays importable under the repo's root
 // vitest config, which has no "@/" alias resolution configured.
-import { api } from "./fetchApi";
+import { api, isAuthHttpError } from "./fetchApi";
 import type { ProvisionalBillPrintSnapshot } from "./provisionalBillReceipt";
 
 export type SyncedBillResult = {
@@ -88,7 +88,12 @@ export type PostFn = <T>(path: string, body: unknown) => Promise<T>;
 export async function replayQueue(
   queue: QueuedBill[],
   postFn: PostFn,
-): Promise<{ queue: QueuedBill[]; synced: number; syncedBills: SyncedBillResult[] }> {
+): Promise<{
+  queue: QueuedBill[];
+  synced: number;
+  syncedBills: SyncedBillResult[];
+  authFailed: boolean;
+}> {
   const replayOrder = sortQueueForReplay(queue).map((entry) => entry.clientRef);
   let working = sortQueueForReplay(queue);
   let synced = 0;
@@ -158,11 +163,18 @@ export async function replayQueue(
         attempts: current.attempts + 1,
         lastError: err instanceof Error ? err.message : "Sync failed",
       });
-      break; // Stop here — the outage likely isn't over; preserve FIFO order for the next attempt.
+      // Stop here — the outage likely isn't over; preserve FIFO order for the next attempt.
+      // Auth failures are surfaced so the sync hook can pause instead of treating the API as down.
+      return {
+        queue: working,
+        synced,
+        syncedBills,
+        authFailed: isAuthHttpError(err),
+      };
     }
   }
 
-  return { queue: working, synced, syncedBills };
+  return { queue: working, synced, syncedBills, authFailed: false };
 }
 
 // ─── Impure localStorage-backed wrapper (used by the real app) ────────────
@@ -241,20 +253,33 @@ export async function flushQueuedBills(): Promise<{
   remaining: number;
   lastError: string | null;
   syncedBills: SyncedBillResult[];
+  authFailed: boolean;
 }> {
   if (flushInFlight) {
-    return { synced: 0, remaining: readQueue().length, lastError: null, syncedBills: [] };
+    return {
+      synced: 0,
+      remaining: readQueue().length,
+      lastError: null,
+      syncedBills: [],
+      authFailed: false,
+    };
   }
   flushInFlight = true;
   try {
     const before = readQueue();
     if (before.length === 0) {
-      return { synced: 0, remaining: 0, lastError: null, syncedBills: [] };
+      return { synced: 0, remaining: 0, lastError: null, syncedBills: [], authFailed: false };
     }
-    const { queue: after, synced, syncedBills } = await replayQueue(before, api.post);
+    const { queue: after, synced, syncedBills, authFailed } = await replayQueue(before, api.post);
     writeQueue(after);
     if (syncedBills.length > 0) dispatchOfflineBillsSynced(syncedBills);
-    return { synced, remaining: after.length, lastError: after[0]?.lastError ?? null, syncedBills };
+    return {
+      synced,
+      remaining: after.length,
+      lastError: after[0]?.lastError ?? null,
+      syncedBills,
+      authFailed,
+    };
   } finally {
     flushInFlight = false;
   }

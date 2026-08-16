@@ -53,7 +53,7 @@ describe("replayQueue", () => {
   it("returns the queue unchanged when empty", async () => {
     const postFn = vi.fn();
     const result = await replayQueue([], postFn);
-    expect(result).toEqual({ queue: [], synced: 0, syncedBills: [] });
+    expect(result).toEqual({ queue: [], synced: 0, syncedBills: [], authFailed: false });
     expect(postFn).not.toHaveBeenCalled();
   });
 
@@ -175,5 +175,17 @@ describe("replayQueue", () => {
     const { queue: after } = await replayQueue(queue, postFn as any);
     expect(after.map((q) => q.clientRef)).toEqual(["b", "c"]);
     expect(after.map((q) => q.queuedAt)).toEqual(["t2", "t3"]);
+  });
+
+  it("marks authFailed on HttpError 401 so callers can pause instead of treating the API as down", async () => {
+    const { HttpError } = await import("./fetchApi");
+    const postFn = vi.fn(async () => {
+      throw new HttpError("Staff authentication required", 401);
+    });
+    const queue = [bill("ref-1", "2026-01-01T00:00:00.000Z")];
+    const { queue: after, synced, authFailed } = await replayQueue(queue, postFn as any);
+    expect(synced).toBe(0);
+    expect(authFailed).toBe(true);
+    expect(after[0]?.lastError).toBe("Staff authentication required");
   });
 });
