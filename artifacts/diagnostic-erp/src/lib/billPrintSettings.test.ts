@@ -1,6 +1,8 @@
 import { describe, expect, test, afterEach, vi } from "vitest";
 import {
   GLOBAL_BILL_PRINT_DEFAULTS,
+  CURSOR_BILL_PRINT_LAYOUT,
+  applyCursorBillPrintLayout,
   applyManualBillPaperOverride,
   clearBillPrintSettingsOverride,
   loadBillPrintSettings,
@@ -8,6 +10,7 @@ import {
   parseGlobalBillPrintSettings,
   printLayoutOpts,
   resolveBillLogoHeightPx,
+  resolveBillPrintCopyCount,
   resolveBillPrintDelivery,
   resolveBillPrintPageOpts,
   saveBillPrintSettings,
@@ -66,36 +69,36 @@ describe("parseGlobalBillPrintSettings — server blob can never break printing"
 });
 
 describe("loadBillPrintSettings — clinic-wide global reaches the print sites", () => {
-  test("REGRESSION: server global paper size overrides the built-in A5-landscape default", () => {
-    // No window at all (worst case: nothing cached locally) — the admin's
-    // A4 choice must still win over the built-in default that caused the
-    // rotated prints.
+  test("Cursor-default paper wins over any saved A4 / A5-portrait blob", () => {
     expect(GLOBAL_BILL_PRINT_DEFAULTS.defaultPaperSize).toBe("A5-landscape");
     expect(GLOBAL_BILL_PRINT_DEFAULTS.defaultFormat).toBe("classic");
+    expect(CURSOR_BILL_PRINT_LAYOUT.defaultPaperSize).toBe("A5-landscape");
     const merged = loadBillPrintSettings({ defaultPaperSize: "A4" });
-    expect(merged.defaultPaperSize).toBe("A4");
+    expect(merged.defaultPaperSize).toBe("A5-landscape");
+    expect(merged.headerLayout).toBe("right");
   });
 
   test("without a server global, built-in defaults apply unchanged", () => {
     const merged = loadBillPrintSettings();
-    expect(merged.defaultPaperSize).toBe(GLOBAL_BILL_PRINT_DEFAULTS.defaultPaperSize);
+    expect(merged.defaultPaperSize).toBe(CURSOR_BILL_PRINT_LAYOUT.defaultPaperSize);
     expect(merged.defaultFormat).toBe("classic");
     expect(merged.showTatOnBill).toBe(false);
   });
 
-  test("per-user local override wins over the global when adminLock is OFF", () => {
+  test("per-user local paper override cannot beat Cursor-default", () => {
     const userId = "7";
     stubWindow({
       userId,
       localData: {
-        [`diagnosticErp:billPrintSettings:${userId}`]: JSON.stringify({ defaultPaperSize: "A5-landscape" }),
+        [`diagnosticErp:billPrintSettings:${userId}`]: JSON.stringify({ defaultPaperSize: "A4", printMarginMm: 12 }),
       },
     });
-    const merged = loadBillPrintSettings({ defaultPaperSize: "A4", adminLock: false });
+    const merged = loadBillPrintSettings({ defaultPaperSize: "A5-portrait", adminLock: false });
     expect(merged.defaultPaperSize).toBe("A5-landscape");
+    expect(merged.printMarginMm).toBeNull();
   });
 
-  test("adminLock ON forces the clinic-wide global over any local override", () => {
+  test("adminLock ON still uses Cursor-default paper, not a saved A4 blob", () => {
     const userId = "7";
     stubWindow({
       userId,
@@ -104,7 +107,7 @@ describe("loadBillPrintSettings — clinic-wide global reaches the print sites",
       },
     });
     const merged = loadBillPrintSettings({ defaultPaperSize: "A4", adminLock: true });
-    expect(merged.defaultPaperSize).toBe("A4");
+    expect(merged.defaultPaperSize).toBe("A5-landscape");
     expect(merged.printMarginMm).toBeNull();
   });
 
@@ -128,7 +131,7 @@ describe("loadBillPrintSettings — clinic-wide global reaches the print sites",
       adminLock: true,
     });
     expect(merged.defaultPrintAction).toBe("save-print");
-    expect(merged.defaultPaperSize).toBe("A4");
+    expect(merged.defaultPaperSize).toBe("A5-landscape");
   });
 
   test("saveBillPrintSettings is a no-op when admin lock is on", () => {
@@ -150,13 +153,14 @@ describe("loadBillPrintSettings — clinic-wide global reaches the print sites",
     expect(store.has(`diagnosticErp:billPrintSettings:${userId}`)).toBe(false);
   });
 
-  test("layout & typography overrides flow through from the server global", () => {
+  test("layout & typography from the server blob cannot override Cursor-default", () => {
     const merged = loadBillPrintSettings({ printMarginMm: 2, printTitleFontPx: 22, printLogoHeightPx: 72 });
-    expect(merged.printMarginMm).toBe(2);
-    expect(merged.printTitleFontPx).toBe(22);
-    expect(merged.printLogoHeightPx).toBe(72);
+    expect(merged.printMarginMm).toBeNull();
+    expect(merged.printTitleFontPx).toBeNull();
+    expect(merged.printLogoHeightPx).toBeNull();
     expect(merged.printBodyFontPx).toBeNull();
-    expect(printLayoutOpts(merged).printLogoHeightPx).toBe(72);
+    expect(printLayoutOpts(merged).printLogoHeightPx).toBeNull();
+    expect(printLayoutOpts(merged).headerLayout).toBe("right");
   });
 
   test("resolveBillLogoHeightPx uses format default when unset and clamps range", () => {
@@ -191,7 +195,7 @@ describe("loadBillPrintSettings — clinic-wide global reaches the print sites",
     const merged = loadBillPrintSettings({ defaultPaperSize: "A4" });
     // accounts role default — untouched by the global
     expect(merged.defaultPrintAction).toBe("save-preview");
-    expect(merged.defaultPaperSize).toBe("A4");
+    expect(merged.defaultPaperSize).toBe("A5-landscape");
   });
 });
 
@@ -229,75 +233,63 @@ describe("resolveBillPrintDelivery", () => {
   });
 });
 
-describe("resolveBillPrintPageOpts — paper size reaches the print HTML", () => {
-  test("legacy modern-landscape + A5-portrait migrates to landscape @page", () => {
-    const settings = loadBillPrintSettings({
-      defaultFormat: "modern-landscape" as any,
-      defaultPaperSize: "A5-portrait",
-    });
-    const opts = resolveBillPrintPageOpts(settings, 1);
-    expect(opts.orientation).toBe("landscape");
-    expect(opts.pageCssSize).toBe("210mm 297mm");
+describe("resolveBillPrintCopyCount — physical copies", () => {
+  test("Billing Print both copies yields 2 even if the legacy column is 1", () => {
+    expect(resolveBillPrintCopyCount({ billPrintCopies: 1 }, { defaultCopyType: "both" })).toBe(2);
   });
-  test("A5-landscape setting yields landscape @page and compact footer for short bills", () => {
-    const opts = resolveBillPrintPageOpts({ defaultPaperSize: "A5-landscape", autoA4Threshold: 5 }, 1);
+
+  test("office copy is always 1 sheet", () => {
+    expect(resolveBillPrintCopyCount({ billPrintCopies: 2 }, { defaultCopyType: "office" })).toBe(1);
+  });
+
+  test("legacy bill_print_copies=2 still prints 2 when JSON is patient or unset", () => {
+    expect(resolveBillPrintCopyCount({ billPrintCopies: 2 }, { defaultCopyType: "patient" })).toBe(2);
+    expect(resolveBillPrintCopyCount({ billPrintCopies: 2 }, {})).toBe(2);
+    expect(resolveBillPrintCopyCount({ billPrintCopies: 1 }, { defaultCopyType: "patient" })).toBe(1);
+  });
+});
+
+describe("resolveBillPrintPageOpts — Cursor-default paper", () => {
+  test("short bills always use half A4 / A5 on an A4 portrait @page", () => {
+    const opts = resolveBillPrintPageOpts({ defaultPaperSize: "A5-portrait", autoA4Threshold: 5 }, 1);
     expect(opts.paperSize).toBe("A5");
     expect(opts.orientation).toBe("landscape");
     expect(opts.pageCssSize).toBe("210mm 297mm");
     expect(opts.compactFooterGap).toBe(true);
   });
 
-  test("A5-portrait setting is not dropped by auto-threshold logic", () => {
-    const opts = resolveBillPrintPageOpts(
-      { defaultPaperSize: "A5-portrait", autoA4Threshold: 5 },
-      1,
-    );
-    expect(opts.orientation).toBe("portrait");
-    expect(opts.pageCssSize).toBe("A5 portrait");
+  test("saved A4 / half-a4 / landscape blobs cannot change short-bill paper", () => {
+    for (const size of ["A4", "half-a4", "A5-landscape", "A5-portrait"] as const) {
+      const opts = resolveBillPrintPageOpts({ defaultPaperSize: size, autoA4Threshold: 1 }, 3);
+      expect(opts.pageCssSize).toBe("210mm 297mm");
+      expect(opts.orientation).toBe("landscape");
+    }
   });
 
-  test("half-a4 is the same 210×148 sheet as A5, printed on an A4 portrait tray", () => {
-    const opts = resolveBillPrintPageOpts({ defaultPaperSize: "half-a4", autoA4Threshold: 5 }, 1);
-    expect(opts.pageCssSize).toBe("210mm 297mm");
-    expect(opts.orientation).toBe("landscape");
-    expect(opts.paperSize).toBe("A5");
-  });
-
-  test("A4 short bills use compact footer so content is not half-blank", () => {
-    const opts = resolveBillPrintPageOpts({ defaultPaperSize: "A4", autoA4Threshold: 8 }, 3);
+  test("long bills (≥ Cursor autoA4Threshold) switch to A4", () => {
+    const opts = resolveBillPrintPageOpts({ defaultPaperSize: "A5-landscape" }, 12);
     expect(opts.paperSize).toBe("A4");
-    expect(opts.compactFooterGap).toBe(true);
-  });
-
-  test("A4 long bills keep full footer spacing", () => {
-    const opts = resolveBillPrintPageOpts({ defaultPaperSize: "A4", autoA4Threshold: 8 }, 12);
+    expect(opts.pageCssSize).toBe("A4 portrait");
     expect(opts.compactFooterGap).toBe(false);
   });
 });
 
-describe("applyManualBillPaperOverride — Bill Detail reprint paper toggle", () => {
-  test("manual A4 forces A4 regardless of clinic A5-landscape", () => {
-    const merged = applyManualBillPaperOverride({ defaultPaperSize: "A5-landscape", adminLock: false }, "A4");
-    expect(merged.defaultPaperSize).toBe("A4");
-    const opts = resolveBillPrintPageOpts({ ...merged, autoA4Threshold: 5 }, 1);
-    expect(opts.pageCssSize).toBe("A4 portrait");
-  });
-
-  test("manual A5 keeps clinic landscape orientation", () => {
-    const merged = applyManualBillPaperOverride({ defaultPaperSize: "A5-landscape", adminLock: false }, "A5");
-    expect(merged.defaultPaperSize).toBe("A5-landscape");
-    const opts = resolveBillPrintPageOpts({ ...merged, autoA4Threshold: 5 }, 1);
+describe("applyManualBillPaperOverride — ignored; Cursor-default owns paper", () => {
+  test("manual A4 / A5 / null all resolve to Cursor-default half A4", () => {
+    expect(applyManualBillPaperOverride({ defaultPaperSize: "A4", adminLock: false }, "A4").defaultPaperSize)
+      .toBe("A5-landscape");
+    expect(applyManualBillPaperOverride({ defaultPaperSize: "A4", adminLock: false }, "A5").defaultPaperSize)
+      .toBe("A5-landscape");
+    expect(applyManualBillPaperOverride({ defaultPaperSize: "A4", adminLock: true }, "A4").defaultPaperSize)
+      .toBe("A5-landscape");
+    const opts = resolveBillPrintPageOpts({ defaultPaperSize: "A4" }, 1);
     expect(opts.pageCssSize).toBe("210mm 297mm");
-    expect(opts.compactFooterGap).toBe(true);
   });
 
-  test("null manual paper leaves clinic setting unchanged", () => {
-    expect(applyManualBillPaperOverride({ defaultPaperSize: "A5-landscape", adminLock: false }, null))
-      .toEqual({ defaultPaperSize: "A5-landscape" });
-  });
-
-  test("adminLock ignores manual paper so every counter matches clinic setting", () => {
-    const merged = applyManualBillPaperOverride({ defaultPaperSize: "A5-landscape", adminLock: true }, "A4");
-    expect(merged.defaultPaperSize).toBe("A5-landscape");
+  test("applyCursorBillPrintLayout strips user paper and margin", () => {
+    const applied = applyCursorBillPrintLayout({ defaultPaperSize: "A4" as const, printMarginMm: 12, defaultCopyType: "both" as const });
+    expect(applied.defaultPaperSize).toBe("A5-landscape");
+    expect(applied.printMarginMm).toBeNull();
+    expect(applied.defaultCopyType).toBe("both");
   });
 });

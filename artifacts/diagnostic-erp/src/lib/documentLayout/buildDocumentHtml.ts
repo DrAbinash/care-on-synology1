@@ -39,8 +39,18 @@ export type BuildDocumentHtmlOpts = {
 };
 
 /** Shared base CSS — single implementation, used by every document type. */
-export function buildDocumentBaseCss(layout: ResolvedPageLayout, compactSlipOnA4: boolean): string {
+export function buildDocumentBaseCss(
+  layout: ResolvedPageLayout,
+  compactSlipOnA4: boolean,
+  multiPage = false,
+): string {
   const { widthMm, heightMm, pageSizeCss, safePaddingMm } = layout;
+  const rootHeight = multiPage
+    ? `height: auto; min-height: ${heightMm}mm; max-height: none; overflow: visible;`
+    : `height: ${heightMm}mm; max-height: ${heightMm}mm; overflow: hidden;`;
+  const printRootHeight = multiPage
+    ? `height: auto !important; min-height: ${heightMm}mm !important; max-height: none !important; overflow: visible !important;`
+    : `height: ${heightMm}mm !important; max-height: ${heightMm}mm !important; overflow: hidden;`;
   const slipRule = compactSlipOnA4
     ? `
   .care-doc-page--slip {
@@ -64,10 +74,8 @@ export function buildDocumentBaseCss(layout: ResolvedPageLayout, compactSlipOnA4
     padding: 0;
     width: ${widthMm}mm;
     max-width: ${widthMm}mm;
-    height: ${heightMm}mm;
-    max-height: ${heightMm}mm;
+    ${rootHeight}
     background: #fff;
-    overflow: hidden;
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
   }
@@ -102,7 +110,7 @@ export function buildDocumentBaseCss(layout: ResolvedPageLayout, compactSlipOnA4
   }
   ${slipRule}
   @media print {
-    html, body { width: ${widthMm}mm !important; height: ${heightMm}mm !important; max-height: ${heightMm}mm !important; }
+    html, body { width: ${widthMm}mm !important; ${printRootHeight} }
     .care-doc-page {
       width: ${widthMm}mm !important;
       height: ${heightMm}mm !important;
@@ -127,7 +135,8 @@ function renderPages(pages: DocumentPage[], compactSlipOnA4: boolean): string {
 export function buildDocumentHtml(opts: BuildDocumentHtmlOpts): string {
   const layout = resolvePageLayout(opts.paper, opts.safePaddingMm);
   const compactSlipOnA4 = Boolean(opts.compactSlipOnA4);
-  const baseCss = buildDocumentBaseCss(layout, compactSlipOnA4);
+  const multiPage = opts.pages.length > 1;
+  const baseCss = buildDocumentBaseCss(layout, compactSlipOnA4, multiPage);
   const fontFamily = opts.bodyFontFamily ?? "Arial, Helvetica, sans-serif";
   const fontSize = opts.bodyFontSize ?? "12px";
   const color = opts.bodyColor ?? "#000";
@@ -149,7 +158,8 @@ export function documentLayoutCssForPaper(
   paper: PrintPaper,
   safePaddingMm?: number | null,
   compactSlipOnA4 = false,
+  multiPage = false,
 ): string {
   const layout = resolvePageLayout(paper, safePaddingMm);
-  return buildDocumentBaseCss(layout, compactSlipOnA4);
+  return buildDocumentBaseCss(layout, compactSlipOnA4, multiPage);
 }

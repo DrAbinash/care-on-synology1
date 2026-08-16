@@ -32,16 +32,6 @@ export function normalizeBillFormat(_raw: unknown): BillFormat {
   return "classic";
 }
 
-function wasLandscapeBillFormat(raw: unknown): boolean {
-  return (
-    raw === "modern-landscape" ||
-    raw === "premium-a5" ||
-    raw === "designer-a" ||
-    raw === "designer-b" ||
-    raw === "designer-c"
-  );
-}
-
 export type BillPaperSize = "A5-landscape" | "A5-portrait" | "half-a4" | "A4";
 export const BILL_PAPER_SIZES: { id: BillPaperSize; label: string }[] = [
   { id: "A5-portrait", label: "A5 Portrait (148×210 mm)" },
@@ -56,6 +46,33 @@ export const BILL_COPY_TYPES: { id: CopyType; label: string }[] = [
   { id: "office", label: "Office Copy" },
   { id: "both", label: "Both Copies" },
 ];
+
+/** Map copy-type dropdown → physical pages (patient/office = 1, both = 2). */
+export function billPrintCopiesForCopyType(copyType: CopyType | undefined | null): number {
+  return copyType === "both" ? 2 : 1;
+}
+
+/** Copy-type dropdown value that matches a physical copy count. */
+export function copyTypeForBillPrintCopies(copies: number): CopyType {
+  return copies >= 2 ? "both" : "patient";
+}
+
+/**
+ * Physical bill pages to render/print. Source of truth is Settings → Billing
+ * Print (`defaultCopyType`). Legacy `bill_print_copies` is used when the JSON
+ * has no copy type, or still says patient while the column is 2 (old dual UI).
+ */
+export function resolveBillPrintCopyCount(
+  clinic: { billPrintCopies?: number | null } | null | undefined,
+  rawSettings?: { defaultCopyType?: CopyType | null } | null,
+): number {
+  const copyType = rawSettings?.defaultCopyType ?? null;
+  if (copyType === "both") return 2;
+  if (copyType === "office") return 1;
+  const fromColumn = Number(clinic?.billPrintCopies);
+  if (Number.isFinite(fromColumn) && fromColumn >= 2) return 2;
+  return 1;
+}
 
 export type PrintAction = "save-print" | "save-preview" | "save-only";
 export const PRINT_ACTIONS: { id: PrintAction; label: string }[] = [
@@ -206,6 +223,34 @@ export const GLOBAL_BILL_PRINT_DEFAULTS: BillPrintSettings = {
   adminLock: false,
 };
 
+/**
+ * Cursor-default bill layout — paper, header, margins, and type are owned in
+ * code, not by Settings sliders. Clinics may still choose copies, QR/TAT
+ * columns, and save-print workflow. Changing this object is the only way to
+ * retune how a bill sits on the page.
+ */
+export const CURSOR_BILL_PRINT_LAYOUT = {
+  defaultPaperSize: "A5-landscape" as BillPaperSize,
+  autoA4Threshold: 8,
+  headerLayout: "right" as const,
+  printMarginMm: null as number | null,
+  printLogoHeightPx: null as number | null,
+  printTitleFontPx: null as number | null,
+  printPatientNameFontPx: null as number | null,
+  printBodyFontPx: null as number | null,
+  printHeaderFontPx: null as number | null,
+  printTableFontPx: null as number | null,
+  printTotalFontPx: null as number | null,
+  printFooterFontPx: null as number | null,
+  printTinyFontPx: null as number | null,
+};
+
+export type CursorBillPrintLayout = typeof CURSOR_BILL_PRINT_LAYOUT;
+
+export function applyCursorBillPrintLayout<T extends Partial<BillPrintSettings>>(settings: T): T & CursorBillPrintLayout {
+  return { ...settings, ...CURSOR_BILL_PRINT_LAYOUT };
+}
+
 export const ROLE_BILL_PRINT_DEFAULTS: Record<UserRole, Partial<BillPrintSettings>> = {
   reception: {
     fastBillingMode: true,
@@ -310,18 +355,10 @@ export function clearBillPrintSettingsOverride(userId = getUserId()): void {
 }
 
 function finalizeBillPrintSettings(settings: BillPrintSettings): BillPrintSettings {
-  const rawFormat = settings.defaultFormat;
-  let defaultPaperSize = settings.defaultPaperSize;
-  // Legacy modern/designer formats implied landscape half-A4 even when paper
-  // was left on A5-portrait — upgrade so @page width matches the printer tray.
-  if (wasLandscapeBillFormat(rawFormat) && defaultPaperSize === "A5-portrait") {
-    defaultPaperSize = "A5-landscape";
-  }
-  return {
+  return applyCursorBillPrintLayout({
     ...settings,
     defaultFormat: "classic",
-    defaultPaperSize,
-  };
+  });
 }
 
 export function loadBillPrintSettings(global: Partial<BillPrintSettings> = {}): BillPrintSettings {
@@ -381,19 +418,19 @@ export function mergeDefaults(base: BillPrintSettings, role: UserRole | null): B
 // (printBill.ts). Centralized here so every print call site (Billing Desk,
 // Bill Detail reprint, Settings live preview) stays in sync — see
 // printMarginMm etc. on BillPrintSettings for field docs. ──
-export function printLayoutOpts(settings: BillPrintSettings) {
+export function printLayoutOpts(_settings?: Partial<BillPrintSettings>) {
   return {
-    printMarginMm: settings.printMarginMm,
-    printLogoHeightPx: settings.printLogoHeightPx,
-    headerLayout: settings.headerLayout,
-    printTitleFontPx: settings.printTitleFontPx,
-    printPatientNameFontPx: settings.printPatientNameFontPx,
-    printBodyFontPx: settings.printBodyFontPx,
-    printHeaderFontPx: settings.printHeaderFontPx,
-    printTableFontPx: settings.printTableFontPx,
-    printTotalFontPx: settings.printTotalFontPx,
-    printFooterFontPx: settings.printFooterFontPx,
-    printTinyFontPx: settings.printTinyFontPx,
+    printMarginMm: CURSOR_BILL_PRINT_LAYOUT.printMarginMm,
+    printLogoHeightPx: CURSOR_BILL_PRINT_LAYOUT.printLogoHeightPx,
+    headerLayout: CURSOR_BILL_PRINT_LAYOUT.headerLayout,
+    printTitleFontPx: CURSOR_BILL_PRINT_LAYOUT.printTitleFontPx,
+    printPatientNameFontPx: CURSOR_BILL_PRINT_LAYOUT.printPatientNameFontPx,
+    printBodyFontPx: CURSOR_BILL_PRINT_LAYOUT.printBodyFontPx,
+    printHeaderFontPx: CURSOR_BILL_PRINT_LAYOUT.printHeaderFontPx,
+    printTableFontPx: CURSOR_BILL_PRINT_LAYOUT.printTableFontPx,
+    printTotalFontPx: CURSOR_BILL_PRINT_LAYOUT.printTotalFontPx,
+    printFooterFontPx: CURSOR_BILL_PRINT_LAYOUT.printFooterFontPx,
+    printTinyFontPx: CURSOR_BILL_PRINT_LAYOUT.printTinyFontPx,
   };
 }
 
@@ -453,63 +490,42 @@ export type BillPrintPageOpts = {
 
 /**
  * Map clinic Billing Print settings + test count → paper/orientation the HTML
- * renderer should declare. Always honours defaultPaperSize (including
- * A5-landscape) — older call sites only passed A4/half-a4 as "forced", which
- * made landscape trays print portrait jobs and the driver scaled/rotated them.
+ * renderer should declare. Paper is Cursor-default (half A4 / A5 landscape on
+ * an A4 portrait @page). Long bills (≥ autoA4Threshold) switch to A4 — that
+ * threshold is also Cursor-owned, not a Settings slider.
  */
 export function resolveBillPrintPageOpts(
-  settings: Pick<BillPrintSettings, "defaultPaperSize" | "autoA4Threshold">,
+  _settings: Pick<BillPrintSettings, "defaultPaperSize" | "autoA4Threshold"> | Partial<BillPrintSettings> | undefined,
   testCount: number,
 ): BillPrintPageOpts {
-  const effective = getAutoBillPaperSize(
-    testCount,
-    settings.defaultPaperSize,
-    settings.autoA4Threshold ?? 5,
-  );
-  if (effective === "A4") {
+  const threshold = CURSOR_BILL_PRINT_LAYOUT.autoA4Threshold;
+  if (testCount >= threshold) {
     return {
       paperSize: "A4",
       orientation: "portrait",
-      // Short A4 bills still look sparse if we leave a huge flex gap — keep
-      // the footer tight so content reads as one professional block.
       compactFooterGap: testCount <= 8,
       pageCssSize: "A4 portrait",
     };
   }
-  if (effective === "A5-landscape" || effective === "half-a4") {
-    return {
-      paperSize: "A5",
-      orientation: "landscape",
-      compactFooterGap: testCount <= 4,
-      // A4 portrait @page + 210×148 content. Half of A4 IS A5. Do not emit
-      // named "A5 landscape" — printers rotate that job and leave a right gap.
-      pageCssSize: "210mm 297mm",
-    };
-  }
   return {
     paperSize: "A5",
-    orientation: "portrait",
+    orientation: "landscape",
     compactFooterGap: testCount <= 4,
-    pageCssSize: "A5 portrait",
+    // A4 portrait @page + 210×148 content. Half of A4 IS A5. Do not emit
+    // named "A5 landscape" — printers rotate that job and leave a right gap.
+    pageCssSize: "210mm 297mm",
   };
 }
 
 /**
- * Bill Detail reprint exposes an A4/A5 header toggle. When staff pick manual
- * paper, honour it while keeping the clinic's A5 variant (landscape vs portrait).
- * Admin Lock ignores the manual toggle so every counter / reprint matches the
- * clinic-wide paper setting.
+ * Bill Detail reprint used to expose an A4/A5 toggle. Paper is now
+ * Cursor-default only — manual / admin-lock overrides are ignored.
  */
 export function applyManualBillPaperOverride(
-  settings: Pick<BillPrintSettings, "defaultPaperSize" | "adminLock">,
-  manualPaper: "A4" | "A5" | null | undefined,
+  _settings: Pick<BillPrintSettings, "defaultPaperSize" | "adminLock">,
+  _manualPaper: "A4" | "A5" | null | undefined,
 ): Pick<BillPrintSettings, "defaultPaperSize"> {
-  if (settings.adminLock) return { defaultPaperSize: settings.defaultPaperSize };
-  if (!manualPaper) return { defaultPaperSize: settings.defaultPaperSize };
-  if (manualPaper === "A4") return { defaultPaperSize: "A4" };
-  const size = settings.defaultPaperSize;
-  if (size === "A5-landscape" || size === "half-a4") return { defaultPaperSize: size };
-  return { defaultPaperSize: "A5-portrait" };
+  return { defaultPaperSize: CURSOR_BILL_PRINT_LAYOUT.defaultPaperSize };
 }
 
 // ── Adaptive density class based on test count ──

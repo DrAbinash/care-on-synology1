@@ -111,6 +111,28 @@ describe("document layout engine — page specifications", () => {
 });
 
 describe("document layout engine — bill renderers (unified Classic)", () => {
+  test("two physical copies render two pages with patient/office labels", () => {
+    const html = buildBillPrintHtml(baseOpts({
+      clinic: {
+        ...sampleClinic,
+        billPrintSettingsJson: JSON.stringify({ defaultCopyType: "both" }),
+      },
+    }));
+    expect((html.match(/class="care-doc-page receipt"/g) ?? []).length).toBe(2);
+    expect(html).toContain("Patient Copy");
+    expect(html).toContain("Office Copy");
+    const multiCss = documentLayoutCssForPaper("A5-landscape", null, false, true);
+    expect(multiCss).toContain("max-height: none");
+    expect(multiCss).toContain("overflow: visible");
+  });
+
+  test("legacy bill_print_copies=2 still yields two pages when JSON has no copy type", () => {
+    const html = buildBillPrintHtml(baseOpts({
+      clinic: { ...sampleClinic, billPrintCopies: 2 },
+    }));
+    expect((html.match(/class="care-doc-page receipt"/g) ?? []).length).toBe(2);
+  });
+
   test("uses A4-portrait @page for A5 landscape so the tray is not rotated", () => {
     const html = buildBillPrintHtml(baseOpts());
     expect(html).toContain("@page { size: 210mm 297mm; margin: 0; }");
