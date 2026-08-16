@@ -57,6 +57,31 @@ export const BILL_COPY_TYPES: { id: CopyType; label: string }[] = [
   { id: "both", label: "Both Copies" },
 ];
 
+/** Map copy-type dropdown → physical pages (patient/office = 1, both = 2). */
+export function billPrintCopiesForCopyType(copyType: CopyType | undefined | null): number {
+  return copyType === "both" ? 2 : 1;
+}
+
+/** Copy-type dropdown value that matches a physical copy count. */
+export function copyTypeForBillPrintCopies(copies: number): CopyType {
+  return copies >= 2 ? "both" : "patient";
+}
+
+/**
+ * Physical bill pages to render/print. Honors clinic_settings.bill_print_copies
+ * and the Billing Print "Copies to print" dropdown (defaultCopyType) when they
+ * disagree — e.g. admin picked Both Copies but the DB column still says 1.
+ */
+export function resolveBillPrintCopyCount(
+  clinic: { billPrintCopies?: number | null } | null | undefined,
+  settings?: { defaultCopyType?: CopyType | null } | null,
+): number {
+  const fromColumn = Number(clinic?.billPrintCopies);
+  const fromColumnValid = Number.isFinite(fromColumn) && fromColumn >= 1 ? Math.min(2, Math.floor(fromColumn)) : 1;
+  const fromCopyType = billPrintCopiesForCopyType(settings?.defaultCopyType);
+  return Math.max(fromColumnValid, fromCopyType);
+}
+
 export type PrintAction = "save-print" | "save-preview" | "save-only";
 export const PRINT_ACTIONS: { id: PrintAction; label: string }[] = [
   { id: "save-print", label: "Save & Print" },

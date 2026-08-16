@@ -3,7 +3,7 @@ import { Link, useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import QRCode from "qrcode";
 import { buildBillPrintHtml, type PrintBillData, type PrintClinic } from "@/lib/printBill";
-import { resolveBillPrintPageOpts } from "@/lib/billPrintSettings";
+import { resolveBillPrintPageOpts, parseGlobalBillPrintSettings } from "@/lib/billPrintSettings";
 import { api, fetchApi, getStaffToken } from "@/lib/fetchApi";
 import { useSuperAdmin, getSuperAdminToken } from "@/hooks/useSuperAdmin";
 import PageHeader from "@/components/PageHeader";
@@ -4941,6 +4941,10 @@ function BillingPrintTab() {
       billShowCode: deferredShowCode,
       billShowCategory: deferredShowCategory,
       billPrintCopies: deferredCopies,
+      billPrintSettingsJson: JSON.stringify({
+        ...parseGlobalBillPrintSettings(previewClinic?.billPrintSettingsJson),
+        ...deferredSettings,
+      }),
     };
     return buildBillPrintHtml({
       bill: BILL_PREVIEW_SAMPLE,
@@ -5130,7 +5134,12 @@ function BillingPrintTab() {
           label="Copies to print"
           options={billCopyTypes}
           value={settings.defaultCopyType}
-          onChange={(v) => update({ defaultCopyType: v as any })}
+          onChange={(v) => {
+            const copyType = v as import("@/lib/billPrintSettings").CopyType;
+            update({ defaultCopyType: copyType });
+            setBillPrintCopies(copyType === "both" ? 2 : 1);
+            setSaved(false);
+          }}
         />
         <div className="mt-2 grid grid-cols-1 gap-2">
           <label className="text-xs font-medium text-slate-600 block">
@@ -5184,7 +5193,9 @@ function BillingPrintTab() {
                 max={2}
                 value={billPrintCopies}
                 onChange={(e) => {
-                  setBillPrintCopies(Math.min(2, Math.max(1, Number(e.target.value) || 1)));
+                  const n = Math.min(2, Math.max(1, Number(e.target.value) || 1));
+                  setBillPrintCopies(n);
+                  update({ defaultCopyType: n >= 2 ? "both" : "patient" });
                   setSaved(false);
                 }}
                 className="w-16 h-8 text-sm border border-input rounded-md px-2 bg-background"

@@ -8,6 +8,7 @@ import {
   parseGlobalBillPrintSettings,
   printLayoutOpts,
   resolveBillLogoHeightPx,
+  resolveBillPrintCopyCount,
   resolveBillPrintDelivery,
   resolveBillPrintPageOpts,
   saveBillPrintSettings,
@@ -226,6 +227,21 @@ describe("resolveBillPrintDelivery", () => {
         "background",
       ),
     ).toBe("skip");
+  });
+});
+
+describe("resolveBillPrintCopyCount — physical copies", () => {
+  test("billPrintCopies column wins when set to 2", () => {
+    expect(resolveBillPrintCopyCount({ billPrintCopies: 2 }, { defaultCopyType: "patient" })).toBe(2);
+  });
+
+  test("defaultCopyType both yields 2 when DB column is still 1", () => {
+    expect(resolveBillPrintCopyCount({ billPrintCopies: 1 }, { defaultCopyType: "both" })).toBe(2);
+  });
+
+  test("patient or office copy type alone yields 1", () => {
+    expect(resolveBillPrintCopyCount({ billPrintCopies: 1 }, { defaultCopyType: "patient" })).toBe(1);
+    expect(resolveBillPrintCopyCount({ billPrintCopies: 1 }, { defaultCopyType: "office" })).toBe(1);
   });
 });
 

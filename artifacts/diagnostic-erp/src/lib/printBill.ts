@@ -211,6 +211,11 @@ export function buildBillVerifyUrl(
 
 import { buildDocumentHtml } from "./documentLayout/buildDocumentHtml";
 import { resolveBillPrintPaperFromOpts } from "./documentLayout/billPaper";
+import {
+  loadBillPrintSettings,
+  parseGlobalBillPrintSettings,
+  resolveBillPrintCopyCount,
+} from "./billPrintSettings";
 export {
   printViaIframe,
   openBlankPrintWindow,
@@ -310,7 +315,8 @@ export type BuildPrintHtmlOpts = {
 
 export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
   const { bill, clinic, paperSize, orientation = "portrait", isBW, qrDataUrl, reprintBy, reprintReason, compactFooterGap = false, compactOnA4 = false, pageCssSize, provisionalReceipt = false } = opts;
-  const copies = Math.max(1, Math.min(2, Number(clinic?.billPrintCopies ?? 1) || 1));
+  const billPrintSettings = loadBillPrintSettings(parseGlobalBillPrintSettings(clinic?.billPrintSettingsJson));
+  const copies = resolveBillPrintCopyCount(clinic, billPrintSettings);
   const showCode = clinic?.billShowCode !== false;
   const showCategory = clinic?.billShowCategory !== false;
   const qrEnabled = (opts.showQr !== false) && clinic?.qrOnBillEnabled !== false;
@@ -467,8 +473,20 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
       <td style="padding:5px 8px;text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums;${rowOpts.borderTop ? `border-top:${rowOpts.borderTop};` : ""}${rowOpts.bg ? `background:${rowOpts.bg};` : ""}${rowOpts.bold ? "font-weight:800;" : "font-weight:700;"};color:${rowOpts.color ?? "#0f172a"};font-size:${totalPx}">${value}</td>
     </tr>`;
 
-  const page = (_copyIdx: number) => `
+  const page = (copyIdx: number) => {
+    const copyLabelText =
+      opts.copyLabel ??
+      (copies > 1
+        ? copyIdx === 0
+          ? "Patient Copy"
+          : "Office Copy"
+        : "");
+    const copyLabelBanner = copyLabelText
+      ? `<div style="text-align:right;font-size:${tinyPx};font-weight:800;color:#64748b;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px">${esc(copyLabelText)}</div>`
+      : "";
+    return `
     <div class="receipt-shell">
+      ${copyLabelBanner}
       <div class="receipt-main">
       <table style="width:100%;border-collapse:collapse;margin-bottom:5px">
         <tr>
@@ -615,6 +633,7 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
         </table>
       </div>
     </div>`;
+  };
 
   const pages = Array.from({ length: copies }).map((_, i) => page(i));
 
