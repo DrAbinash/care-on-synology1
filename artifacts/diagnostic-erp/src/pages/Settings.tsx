@@ -5214,7 +5214,7 @@ function BillingPrintTab() {
         </div>
         <NumberOverrideField
           label="Page Margin" unit="mm" min={2} max={25} sliderDefault={2}
-          value={settings.printMarginMm} defaultLabel="8mm (A5) / 6mm (A4)"
+          value={settings.printMarginMm} defaultLabel="4mm Half A4/A4 · 6mm A5 Portrait"
           onChange={(v) => update({ printMarginMm: v })}
         />
         <NumberOverrideField

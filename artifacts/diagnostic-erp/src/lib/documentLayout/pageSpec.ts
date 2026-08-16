@@ -38,29 +38,29 @@ export const PAGE_SPECS: Record<PrintPaper, PageSpec> = {
     widthMm: 210,
     heightMm: 148,
     pageSizeCss: HALF_A4_TRAY_PAGE_CSS,
-    // Clear Epson's typical ~3mm unprintable top band; still leaves room for content.
-    defaultSafePaddingMm: 8,
+    // Keep clear of typical ~3mm unprintable bands while using the half-sheet width.
+    defaultSafePaddingMm: 4,
   },
   "A5-portrait": {
     paper: "A5-portrait",
     widthMm: 148,
     heightMm: 210,
     pageSizeCss: "148mm 210mm",
-    defaultSafePaddingMm: 8,
+    defaultSafePaddingMm: 6,
   },
   "half-a4": {
     paper: "half-a4",
     widthMm: 210,
     heightMm: 148,
     pageSizeCss: HALF_A4_TRAY_PAGE_CSS,
-    defaultSafePaddingMm: 8,
+    defaultSafePaddingMm: 4,
   },
   A4: {
     paper: "A4",
     widthMm: 210,
     heightMm: 297,
     pageSizeCss: "210mm 297mm",
-    defaultSafePaddingMm: 6,
+    defaultSafePaddingMm: 4,
   },
 };
 
