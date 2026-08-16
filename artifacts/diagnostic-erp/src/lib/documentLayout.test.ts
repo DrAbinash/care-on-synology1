@@ -154,6 +154,17 @@ describe("document layout engine — bill renderers (unified Classic)", () => {
     expect(billNoIdx).toBeGreaterThan(dateIdx);
   });
 
+  test("date stays large; bill no / phone / id use a smaller meta size", () => {
+    const html = buildBillPrintHtml(baseOpts({ printPatientNameFontPx: 20 }));
+    const dateBlock = html.match(/font-size:(\d+)px[^>]*data-bill-meta="date"/);
+    const billBlock = html.match(/font-size:(\d+)px[^>]*data-bill-meta="bill-no"/);
+    const phoneBlock = html.match(/font-size:(\d+)px[^>]*data-bill-meta="phone-id"/);
+    expect(dateBlock?.[1]).toBe("20");
+    expect(Number(billBlock?.[1])).toBeLessThan(20);
+    expect(Number(phoneBlock?.[1])).toBe(Number(billBlock?.[1]));
+    expect(Number(billBlock?.[1])).toBe(14); // 20 * 0.72
+  });
+
   test("enterprise audit token is present on the bill", () => {
     const html = buildBillPrintHtml(baseOpts());
     expect(html).toContain("title=\"Audit token\"");
