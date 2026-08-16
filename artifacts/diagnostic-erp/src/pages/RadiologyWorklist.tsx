@@ -21,7 +21,7 @@ import {
   Search, Filter, Clock, CheckCheck, AlertCircle, MonitorPlay, Tv2,
   ClipboardList, CalendarDays, ShieldCheck, ShieldOff, Database,
   ChevronDown, ChevronUp, Eye, MessageSquare, ThumbsUp, ThumbsDown, Trash2,
-  X, Activity, Stethoscope, Printer, Gem, FileUp, Loader2, Columns2, Maximize2,
+  X, Activity, Stethoscope, Printer, Gem, FileUp, Loader2, Columns2, Maximize2, Link2,
 } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
@@ -151,7 +151,7 @@ function WorklistActionBtn({ icon: Icon, label, onClick, disabled, title, tone =
       onClick={onClick}
       disabled={disabled}
       title={title ?? label}
-      className={`inline-flex flex-col items-center justify-center gap-0.5 rounded-lg border px-1 py-1 w-[52px] h-[40px] text-[9px] font-semibold leading-tight transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${tones[tone]}`}
+      className={`inline-flex flex-col items-center justify-center gap-0.5 rounded-lg border px-0.5 py-1 w-[46px] h-[40px] text-[9px] font-semibold leading-tight transition-colors disabled:opacity-40 disabled:cursor-not-allowed shrink-0 ${tones[tone]}`}
     >
       <Icon className="h-3.5 w-3.5 shrink-0" />
       <span className="text-center leading-none">{label}</span>
@@ -624,6 +624,7 @@ export default function RadiologyWorklist() {
   });
   const [lockFilter, setLockFilter] = useState("all");
   const [aiDraftFilter, setAiDraftFilter] = useState<"all" | "overnight">("all");
+  const [autoLinking, setAutoLinking] = useState(false);
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   function setDatePreset(from: string, to: string) {
@@ -1080,6 +1081,62 @@ export default function RadiologyWorklist() {
   const filteredEmpty = entries.length > 0 && tableRows.length === 0;
   const unlinkedPacsCount = entries.filter((e) => e.studyId == null).length;
 
+  async function autoLinkUnlinkedBills() {
+    const ids = entries.filter((e) => e.studyId == null && e.id > 0).map((e) => e.id).slice(0, 80);
+    if (ids.length === 0) return;
+    setAutoLinking(true);
+    try {
+      let linked = 0;
+      // Small batches so the API stays responsive during desk hours.
+      for (let i = 0; i < ids.length; i += 8) {
+        const chunk = ids.slice(i, i + 8);
+        const results = await Promise.allSettled(
+          chunk.map((id) =>
+            api.post<{ linked?: boolean; studyId?: number }>(
+              `/api/radiology/pacs-worklist/${id}/auto-link-billed-study`,
+              {},
+            ),
+          ),
+        );
+        for (const r of results) {
+          if (r.status === "fulfilled" && (r.value as { linked?: boolean; success?: boolean })?.linked) linked++;
+        }
+      }
+      toast({
+        title: linked > 0 ? `Linked ${linked} billed stud${linked === 1 ? "y" : "ies"}` : "No auto-links found",
+        description:
+          linked > 0
+            ? "Bill numbers should appear after refresh. Remaining rows still need DICOM Match."
+            : "PACS rows still have no matching radiology_studies for that patient — check DICOM Match Center.",
+      });
+      void qc.invalidateQueries({ queryKey: ["radiology-pacs-worklist"] });
+      void refetch();
+    } catch (err) {
+      toast({
+        title: "Auto-link failed",
+        description: err instanceof Error ? err.message : String(err),
+        variant: "destructive",
+      });
+    } finally {
+      setAutoLinking(false);
+    }
+  }
+
+  function toggleOvernightAiDrafts() {
+    setAiDraftFilter((v) => {
+      const next = v === "overnight" ? "all" : "overnight";
+      if (next === "overnight") {
+        // Surface the AI Draft column so READY / PENDING / ERROR are visible.
+        setColumnVisibility((prev) => {
+          const nextCols = { ...prev, aiDraft: true };
+          saveWorklistColumnVisibility(nextCols);
+          return nextCols;
+        });
+      }
+      return next;
+    });
+  }
+
   return (
     <div className="p-4 md:p-6 space-y-4">
       <PageHeader title="Worklist Hub" subtitle="RIS study queue and PACS intake worklist" />
@@ -1147,15 +1204,27 @@ export default function RadiologyWorklist() {
                 <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0 text-orange-600" />
                 <div className="flex-1 min-w-0">
                   <span className="font-semibold">
-                    {unlinkedPacsCount} PACS scan{unlinkedPacsCount === 1 ? "" : "s"} without billing
+                    {unlinkedPacsCount} PACS scan{unlinkedPacsCount === 1 ? "" : "s"} without a linked bill
                   </span>
                   <span className="text-xs text-orange-800/90 dark:text-orange-300/90 block mt-0.5">
-                    Imaging arrived from the modality but no billed radiology order is linked — review in DICOM Match Center before reporting or delivery.
+                    A Billing Desk bill may already exist — this means the PACS intake row is not linked to a billed radiology study (Bill column stays —). Auto-link tries to match by patient; otherwise use DICOM Match Center.
                   </span>
                 </div>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="shrink-0 border-orange-300 text-orange-900 hover:bg-orange-100 dark:border-orange-700 dark:text-orange-200"
+                  disabled={autoLinking}
+                  onClick={() => void autoLinkUnlinkedBills()}
+                  data-testid="pacs-auto-link-bills"
+                >
+                  {autoLinking ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Link2 className="h-3.5 w-3.5 mr-1" />}
+                  Auto-link bills
+                </Button>
                 <Link
                   href="/radiology/my-collection?filter=unbilled"
-                  className="text-xs font-semibold text-orange-800 dark:text-orange-300 underline shrink-0 hover:text-orange-900"
+                  className="text-xs font-semibold text-orange-800 dark:text-orange-300 underline shrink-0 hover:text-orange-900 self-center"
                 >
                   Open DICOM Match →
                 </Link>
@@ -1193,13 +1262,13 @@ export default function RadiologyWorklist() {
               <button
                 type="button"
                 data-testid="overnight-ai-drafts-filter"
-                onClick={() => setAiDraftFilter((v) => (v === "overnight" ? "all" : "overnight"))}
+                onClick={() => toggleOvernightAiDrafts()}
                 className={`inline-flex items-center gap-1.5 h-9 px-2.5 rounded-md border text-xs font-medium transition ${
                   aiDraftFilter === "overnight"
                     ? "border-indigo-500 bg-indigo-600 text-white"
                     : "border-border bg-background text-muted-foreground hover:bg-muted"
                 }`}
-                title="Show studies with overnight AI drafts (READY / PENDING / ERROR)"
+                title="Filter to overnight AI drafts. PROCESSING = queued/running; READY = draft available (open Report / View draft); ERROR = failed. Turns on the AI Draft column."
               >
                 <Sparkles className="h-3.5 w-3.5" />
                 Overnight AI Drafts
@@ -1472,6 +1541,13 @@ export default function RadiologyWorklist() {
                             <span className="inline-flex items-center rounded border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-[11px] font-medium text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-300">
                               {entry.billNumber}
                             </span>
+                          ) : entry.studyId == null ? (
+                            <span
+                              className="text-[10px] font-medium text-orange-700 dark:text-orange-300"
+                              title="PACS row not linked to a billed radiology study — bill may still exist in Billing Desk"
+                            >
+                              Unlinked
+                            </span>
                           ) : (
                             <span className="text-muted-foreground">{"\u2014"}</span>
                           )}
@@ -1667,8 +1743,8 @@ export default function RadiologyWorklist() {
                           {fmtDate(entry.createdAt)}
                         </td>
                         )}
-                        <td className={`${WORKLIST_TD} sticky right-0 z-10 bg-background group-hover:bg-muted/25 border-l border-border/50 shadow-[-4px_0_8px_-4px_rgba(0,0,0,0.08)] min-w-[200px]`}>
-                          <div className="flex flex-wrap items-stretch justify-end gap-1 max-w-[320px] ml-auto">
+                        <td className={`${WORKLIST_TD} sticky right-0 z-10 bg-background group-hover:bg-muted/25 border-l border-border/50 shadow-[-4px_0_8px_-4px_rgba(0,0,0,0.08)] min-w-[260px]`}>
+                          <div className="flex flex-nowrap items-stretch justify-end gap-0.5 ml-auto" data-testid="worklist-actions-row">
                             {entry.id !== -1 && !isReceptionView && (
                               <>
                                 <WorklistActionBtn
@@ -1679,6 +1755,15 @@ export default function RadiologyWorklist() {
                                   title={canLaunchViewer(entry) ? "Open in Weasis" : "Study UID missing — cannot launch Weasis"}
                                   onClick={() => void launchWorklistWeasis(entry)}
                                 />
+                                {isRadView && may("/radiology/report") && (
+                                  <WorklistActionBtn
+                                    icon={Maximize2}
+                                    label="Focus"
+                                    tone="report"
+                                    title="Open Reporting Workspace in focus mode (maximized editor)"
+                                    onClick={() => navigate(reportingWorkspacePath(entry, true))}
+                                  />
+                                )}
                                 <WorklistActionBtn
                                   icon={MonitorPlay}
                                   label="OHIF"
@@ -1721,16 +1806,6 @@ export default function RadiologyWorklist() {
                               />
                             )}
 
-                            {entry.id !== -1 && isRadView && may("/radiology/report") && (
-                              <WorklistActionBtn
-                                icon={Maximize2}
-                                label="Focus"
-                                tone="report"
-                                title="Open Reporting Workspace in focus mode (maximized editor)"
-                                onClick={() => navigate(reportingWorkspacePath(entry, true))}
-                              />
-                            )}
-
                             {(entry.status === "REPORT_IN_PROGRESS" || entry.status === "AI_DRAFT_READY") && entry.id !== -1 && isOwnerView && (
                               <WorklistActionBtn
                                 icon={CheckCircle2}
@@ -1750,7 +1825,7 @@ export default function RadiologyWorklist() {
                             )}
 
                             {entry.status === "REPORT_FINAL" && (
-                              <span className="inline-flex flex-col items-center justify-center gap-0.5 rounded-lg border border-green-300 bg-green-50 text-green-800 w-[52px] h-[40px] text-[9px] font-semibold dark:bg-green-950/30 dark:text-green-300 dark:border-green-800">
+                              <span className="inline-flex flex-col items-center justify-center gap-0.5 rounded-lg border border-green-300 bg-green-50 text-green-800 w-[46px] h-[40px] text-[9px] font-semibold shrink-0 dark:bg-green-950/30 dark:text-green-300 dark:border-green-800">
                                 <CheckCircle2 className="h-3.5 w-3.5" />
                                 Final
                               </span>
@@ -1779,7 +1854,7 @@ export default function RadiologyWorklist() {
 
                             {entry.id !== -1 && entry.studyId != null && (
                               attachingStudyId === entry.studyId ? (
-                                <div className="inline-flex flex-col items-center justify-center gap-0.5 rounded-lg border border-border bg-muted/30 w-[52px] h-[40px] text-[9px] text-muted-foreground">
+                                <div className="inline-flex flex-col items-center justify-center gap-0.5 rounded-lg border border-border bg-muted/30 w-[46px] h-[40px] text-[9px] text-muted-foreground shrink-0">
                                   <Loader2 size={14} className="animate-spin text-primary" />
                                   Wait
                                 </div>

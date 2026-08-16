@@ -25,4 +25,10 @@ describe("ReportExportPanel — enlarge preview before finalize", () => {
     expect(src).toContain('data-testid="report-layout-preview-enlarge-header"');
     expect(src).toMatch(/report-layout-preview-enlarge-header[\s\S]{0,400}Enlarge/);
   });
+
+  it("keeps enlarged preview scroll on the outer pane (iframe does not eat wheel)", () => {
+    expect(src).toContain('data-testid="report-layout-preview-scroll"');
+    expect(src).toContain("overflow-y-auto");
+    expect(src).toMatch(/report-layout-preview-enlarged[\s\S]{0,200}pointer-events-none|pointer-events-none[\s\S]{0,200}report-layout-preview-enlarged/);
+  });
 });
