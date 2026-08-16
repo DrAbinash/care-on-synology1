@@ -320,6 +320,13 @@ describe("document layout engine — bill renderers (unified Classic)", () => {
     expect(html).toContain("padding-right: 4mm");
   });
 
+  test("receipt layout uses full page height and anchors footer", () => {
+    const html = buildBillPrintHtml(baseOpts());
+    expect(html).toContain("receipt-shell");
+    expect(html).toContain("min-height: 100%");
+    expect(html).toContain("margin-top: auto !important");
+  });
+
   test("TAT column appears when showTat is on", () => {
     const html = buildBillPrintHtml(
       baseOpts({
@@ -364,6 +371,8 @@ describe("document layout engine — bill renderers (unified Classic)", () => {
     expect(html).toContain("height: 297mm");
     expect(html).toContain("padding-left: 4mm");
     expect(html).toContain("padding-right: 4mm");
+    expect(html).toContain("font-size:28px");
+    expect(html).toContain("font-size:20px");
   });
 
   test("no Electron print APIs in generated HTML", () => {

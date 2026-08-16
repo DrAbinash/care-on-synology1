@@ -323,6 +323,7 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
     pageCssSize,
     compactOnA4: a4Page,
   });
+  const isA4Paper = paper === "A4";
 
   const tests = (bill.order?.tests ?? []).filter((t) => (t.status ?? "active") !== "cancelled");
   const cancelled = (bill.order?.tests ?? []).filter((t) => (t.status ?? "active") === "cancelled");
@@ -355,16 +356,16 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
     paper === "A5-landscape" || paper === "half-a4" ? 4 :
     4;
   const marginMm = opts.printMarginMm ?? defaultMarginMm;
-  const titleSize = `${opts.printTitleFontPx ?? (isA5 ? 19 : 20)}px`;
-  const patientNameSize = `${opts.printPatientNameFontPx ?? (isA5 ? 14 : 18)}px`;
-  const bodyPx = `${opts.printBodyFontPx ?? (isA5 ? 16 : 15)}px`;
-  const headerPx = `${opts.printHeaderFontPx ?? (isA5 ? 13 : 12)}px`;
-  const tablePx = `${opts.printTableFontPx ?? 12}px`;
-  const totalPx = `${opts.printTotalFontPx ?? 13}px`;
-  const footerPx = `${opts.printFooterFontPx ?? 11}px`;
-  const tinyPx = `${opts.printTinyFontPx ?? 10}px`;
+  const titleSize = `${opts.printTitleFontPx ?? (isA4Paper ? 28 : isA5 ? 19 : 20)}px`;
+  const patientNameSize = `${opts.printPatientNameFontPx ?? (isA4Paper ? 20 : isA5 ? 14 : 18)}px`;
+  const bodyPx = `${opts.printBodyFontPx ?? (isA4Paper ? 18 : isA5 ? 16 : 15)}px`;
+  const headerPx = `${opts.printHeaderFontPx ?? (isA4Paper ? 14 : isA5 ? 13 : 12)}px`;
+  const tablePx = `${opts.printTableFontPx ?? (isA4Paper ? 14 : 12)}px`;
+  const totalPx = `${opts.printTotalFontPx ?? (isA4Paper ? 16 : 13)}px`;
+  const footerPx = `${opts.printFooterFontPx ?? (isA4Paper ? 13 : 11)}px`;
+  const tinyPx = `${opts.printTinyFontPx ?? (isA4Paper ? 11 : 10)}px`;
   const addressRight = (opts.headerLayout ?? "right") === "right";
-  const logoH = resolveBillLogoHeightPx(opts.printLogoHeightPx, addressRight ? 140 : 120);
+  const logoH = resolveBillLogoHeightPx(opts.printLogoHeightPx, addressRight ? (isA4Paper ? 170 : 140) : (isA4Paper ? 150 : 120));
   const logoMaxW = Math.round(logoH * 2.0);
   const logoImgHtml = clinic?.logoDataUrl
     ? `<img src="${clinic.logoDataUrl}" alt="logo" style="max-height:${logoH}px;max-width:${logoMaxW}px;object-fit:contain;display:block;margin-bottom:4px"/>`
@@ -467,6 +468,8 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
     </tr>`;
 
   const page = (_copyIdx: number) => `
+    <div class="receipt-shell">
+      <div class="receipt-main">
       <table style="width:100%;border-collapse:collapse;margin-bottom:5px">
         <tr>
           <td style="vertical-align:top;padding:0;width:${addressRight ? "50%" : "62%"}">
@@ -590,9 +593,10 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
         </tbody>
       </table>
 
-      ${useCompactFooter ? `<div style="height:${Math.round(parseInt(footerPx, 10) * 0.6)}px"></div>` : `<div style="height:3px"></div>`}
+      ${useCompactFooter ? `<div style="height:${Math.round(parseInt(footerPx, 10) * 0.35)}px"></div>` : ""}
+      </div>
 
-      <div class="receipt-footer" style="margin-top:4px;border-top:2px solid #000;padding-top:6px;text-align:center;page-break-inside:avoid;break-inside:avoid">
+      <div class="receipt-footer" style="margin-top:auto;border-top:2px solid #000;padding-top:6px;text-align:center;page-break-inside:avoid;break-inside:avoid">
         <div style="font-size:${footerPx};font-weight:700;color:#0f172a;margin-bottom:2px;text-transform:uppercase;letter-spacing:0.02em;line-height:1.3">${esc(clinic?.footerNote || bill.reportCollectionNote || "Thank you for choosing our diagnostic services. Please collect your report within 7 days.")}</div>
         <div style="font-size:${tinyPx};color:#64748b;margin-bottom:6px;font-weight:500;letter-spacing:0.02em">THIS IS A COMPUTER-GENERATED INVOICE. NO SIGNATURE REQUIRED.</div>
 
@@ -609,7 +613,8 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
             </td>
           </tr>
         </table>
-      </div>`;
+      </div>
+    </div>`;
 
   const pages = Array.from({ length: copies }).map((_, i) => page(i));
 
@@ -620,6 +625,23 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
     compactSlipOnA4: a4Page,
     bodyFontSize: bodyPx,
     extraStyles: `
+  .receipt {
+    display: flex;
+    flex-direction: column;
+  }
+  .receipt-shell {
+    width: 100%;
+    min-height: 100%;
+    display: flex;
+    flex-direction: column;
+  }
+  .receipt-main {
+    width: 100%;
+    flex: 0 0 auto;
+  }
+  .receipt-footer {
+    margin-top: auto !important;
+  }
   table { width: 100%; }
   .test-table tbody tr:nth-child(even) td { background: #f8fafc; }
   .financial-block, .totals-grid, .receipt-footer {
