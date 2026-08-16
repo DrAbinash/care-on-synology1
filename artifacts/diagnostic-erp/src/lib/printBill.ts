@@ -363,6 +363,9 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
   const marginMm = opts.printMarginMm ?? defaultMarginMm;
   const titleSize = `${opts.printTitleFontPx ?? (isA4Paper ? 28 : isA5 ? 19 : 20)}px`;
   const patientNameSize = `${opts.printPatientNameFontPx ?? (isA4Paper ? 20 : isA5 ? 14 : 18)}px`;
+  // Bill No / phone / ID sit under the date — keep date large (useful), shrink
+  // secondary meta so long bill digits + phone fit the right column.
+  const patientMetaSize = `${Math.max(10, Math.round(parseInt(patientNameSize, 10) * 0.72))}px`;
   const bodyPx = `${opts.printBodyFontPx ?? (isA4Paper ? 18 : isA5 ? 16 : 15)}px`;
   const headerPx = `${opts.printHeaderFontPx ?? (isA4Paper ? 14 : isA5 ? 13 : 12)}px`;
   const tablePx = `${opts.printTableFontPx ?? (isA4Paper ? 14 : 12)}px`;
@@ -524,9 +527,9 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
               <div style="margin-top:3px;line-height:1.3">&nbsp;</div>
             </div>
             <div style="position:absolute;inset:0;display:flex;flex-direction:column;text-align:right;white-space:nowrap;overflow:hidden">
-              <div style="flex:1 1 0;display:flex;align-items:flex-start;justify-content:flex-end;font-size:${patientNameSize};font-weight:800;line-height:1.1;color:#0f172a">${created.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }).toUpperCase()} &nbsp;${created.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: true }).toUpperCase()}</div>
-              <div style="flex:1 1 0;display:flex;align-items:center;justify-content:flex-end;font-size:${patientNameSize};line-height:1.1;color:#0f172a">${metaLabel("BILL NO:", patientNameSize)} ${metaValue(billDigits, patientNameSize, 800)}</div>
-              <div style="flex:1 1 0;display:flex;align-items:flex-end;justify-content:flex-end;font-size:${patientNameSize};line-height:1.1;color:#0f172a">${metaLabel("PH", patientNameSize)} ${metaValue(bill.patient?.phone ?? "", patientNameSize, 600)} · ${metaLabel("ID", patientNameSize)} ${metaValue(bill.patient?.patientId ?? "", patientNameSize, 600)}</div>
+              <div style="flex:1 1 0;display:flex;align-items:flex-start;justify-content:flex-end;font-size:${patientNameSize};font-weight:800;line-height:1.1;color:#0f172a" data-bill-meta="date">${created.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }).toUpperCase()} &nbsp;${created.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: true }).toUpperCase()}</div>
+              <div style="flex:1 1 0;display:flex;align-items:center;justify-content:flex-end;font-size:${patientMetaSize};line-height:1.1;color:#0f172a" data-bill-meta="bill-no">${metaLabel("BILL NO:", patientMetaSize)} ${metaValue(billDigits, patientMetaSize, 800)}</div>
+              <div style="flex:1 1 0;display:flex;align-items:flex-end;justify-content:flex-end;font-size:${patientMetaSize};line-height:1.1;color:#0f172a" data-bill-meta="phone-id">${metaLabel("PH", patientMetaSize)} ${metaValue(bill.patient?.phone ?? "", patientMetaSize, 600)} · ${metaLabel("ID", patientMetaSize)} ${metaValue(bill.patient?.patientId ?? "", patientMetaSize, 600)}</div>
             </div>
           </td>
         </tr>
