@@ -341,7 +341,7 @@ advancedDashboardRouter.get("/", async (req: StaffAuthRequest, res) => {
     JOIN diagnostic_tests dt ON dt.id = ot.test_id
     WHERE o.created_at >= ${start} AND o.created_at <= ${end}
     GROUP BY COALESCE(dt.department, 'Other')
-    ORDER BY gross_billing::numeric DESC
+    ORDER BY COALESCE(SUM(ot.price::numeric), 0) DESC
   `);
 
   const MODALITY_ORDER = ["MRI", "CT", "X-Ray", "USG", "Pathology"];
