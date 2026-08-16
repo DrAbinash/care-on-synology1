@@ -288,13 +288,20 @@ export default function ReportExportPanel({
               </Button>
             ))}
           </div>
-          <div className="flex-1 min-h-0 overflow-auto rounded border bg-slate-100 p-3">
+          <div
+            className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden rounded border bg-slate-100 p-3 overscroll-contain"
+            data-testid="report-layout-preview-scroll"
+          >
+            {/* pointer-events-none: wheel/trackpad scroll the outer pane. Print
+                HTML often uses overflow:hidden on body, so iframe-internal
+                scroll is a dead end after Enlarge. */}
             <iframe
               title="Enlarged report layout preview"
               srcDoc={displayHtml}
-              className="w-full min-h-[1122px] bg-white shadow-md mx-auto border-0"
+              className="w-full min-h-[1122px] bg-white shadow-md mx-auto border-0 pointer-events-none"
               style={{ zoom: previewZoom }}
               data-testid="report-layout-preview-enlarged"
+              tabIndex={-1}
             />
           </div>
         </DialogContent>
