@@ -75,7 +75,6 @@ describe("loadBillPrintSettings — clinic-wide global reaches the print sites",
     expect(CURSOR_BILL_PRINT_LAYOUT.defaultPaperSize).toBe("A5-landscape");
     const merged = loadBillPrintSettings({ defaultPaperSize: "A4" });
     expect(merged.defaultPaperSize).toBe("A5-landscape");
-    expect(merged.headerLayout).toBe("right");
   });
 
   test("without a server global, built-in defaults apply unchanged", () => {
@@ -95,7 +94,7 @@ describe("loadBillPrintSettings — clinic-wide global reaches the print sites",
     });
     const merged = loadBillPrintSettings({ defaultPaperSize: "A5-portrait", adminLock: false });
     expect(merged.defaultPaperSize).toBe("A5-landscape");
-    expect(merged.printMarginMm).toBeNull();
+    expect(merged.printMarginMm).toBe(12);
   });
 
   test("adminLock ON still uses Cursor-default paper, not a saved A4 blob", () => {
@@ -106,9 +105,9 @@ describe("loadBillPrintSettings — clinic-wide global reaches the print sites",
         [`diagnosticErp:billPrintSettings:${userId}`]: JSON.stringify({ defaultPaperSize: "A5-landscape", printMarginMm: 3 }),
       },
     });
-    const merged = loadBillPrintSettings({ defaultPaperSize: "A4", adminLock: true });
+    const merged = loadBillPrintSettings({ defaultPaperSize: "A4", adminLock: true, printMarginMm: 3 });
     expect(merged.defaultPaperSize).toBe("A5-landscape");
-    expect(merged.printMarginMm).toBeNull();
+    expect(merged.printMarginMm).toBe(3);
   });
 
   test("adminLock ON clears stale localStorage overrides on load", () => {
@@ -153,14 +152,13 @@ describe("loadBillPrintSettings — clinic-wide global reaches the print sites",
     expect(store.has(`diagnosticErp:billPrintSettings:${userId}`)).toBe(false);
   });
 
-  test("layout & typography from the server blob cannot override Cursor-default", () => {
-    const merged = loadBillPrintSettings({ printMarginMm: 2, printTitleFontPx: 22, printLogoHeightPx: 72 });
-    expect(merged.printMarginMm).toBeNull();
-    expect(merged.printTitleFontPx).toBeNull();
-    expect(merged.printLogoHeightPx).toBeNull();
-    expect(merged.printBodyFontPx).toBeNull();
-    expect(printLayoutOpts(merged).printLogoHeightPx).toBeNull();
-    expect(printLayoutOpts(merged).headerLayout).toBe("right");
+  test("layout & typography from the server blob still apply; only paper is Cursor-forced", () => {
+    const merged = loadBillPrintSettings({ printMarginMm: 2, printTitleFontPx: 22, printLogoHeightPx: 72, defaultPaperSize: "A4" });
+    expect(merged.defaultPaperSize).toBe("A5-landscape");
+    expect(merged.printMarginMm).toBe(2);
+    expect(merged.printTitleFontPx).toBe(22);
+    expect(merged.printLogoHeightPx).toBe(72);
+    expect(printLayoutOpts(merged).printLogoHeightPx).toBe(72);
   });
 
   test("resolveBillLogoHeightPx uses format default when unset and clamps range", () => {
@@ -286,10 +284,10 @@ describe("applyManualBillPaperOverride — ignored; Cursor-default owns paper", 
     expect(opts.pageCssSize).toBe("210mm 297mm");
   });
 
-  test("applyCursorBillPrintLayout strips user paper and margin", () => {
+  test("applyCursorBillPrintLayout forces paper only — keeps margin/copy settings", () => {
     const applied = applyCursorBillPrintLayout({ defaultPaperSize: "A4" as const, printMarginMm: 12, defaultCopyType: "both" as const });
     expect(applied.defaultPaperSize).toBe("A5-landscape");
-    expect(applied.printMarginMm).toBeNull();
+    expect(applied.printMarginMm).toBe(12);
     expect(applied.defaultCopyType).toBe("both");
   });
 });

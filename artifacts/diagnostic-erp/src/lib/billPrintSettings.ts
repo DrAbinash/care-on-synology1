@@ -224,25 +224,14 @@ export const GLOBAL_BILL_PRINT_DEFAULTS: BillPrintSettings = {
 };
 
 /**
- * Cursor-default bill layout — paper, header, margins, and type are owned in
- * code, not by Settings sliders. Clinics may still choose copies, QR/TAT
- * columns, and save-print workflow. Changing this object is the only way to
- * retune how a bill sits on the page.
+ * Cursor-default bill paper — the only layout knob clinics cannot change.
+ * Header, margins, fonts, copies, and QR/TAT remain Settings → Billing Print
+ * controls. Changing `defaultPaperSize` / `autoA4Threshold` here is the only
+ * way to retune the physical page.
  */
 export const CURSOR_BILL_PRINT_LAYOUT = {
   defaultPaperSize: "A5-landscape" as BillPaperSize,
   autoA4Threshold: 8,
-  headerLayout: "right" as const,
-  printMarginMm: null as number | null,
-  printLogoHeightPx: null as number | null,
-  printTitleFontPx: null as number | null,
-  printPatientNameFontPx: null as number | null,
-  printBodyFontPx: null as number | null,
-  printHeaderFontPx: null as number | null,
-  printTableFontPx: null as number | null,
-  printTotalFontPx: null as number | null,
-  printFooterFontPx: null as number | null,
-  printTinyFontPx: null as number | null,
 };
 
 export type CursorBillPrintLayout = typeof CURSOR_BILL_PRINT_LAYOUT;
@@ -417,20 +406,21 @@ export function mergeDefaults(base: BillPrintSettings, role: UserRole | null): B
 // ── Layout & typography overrides, ready to spread into BuildPrintHtmlOpts
 // (printBill.ts). Centralized here so every print call site (Billing Desk,
 // Bill Detail reprint, Settings live preview) stays in sync — see
-// printMarginMm etc. on BillPrintSettings for field docs. ──
-export function printLayoutOpts(_settings?: Partial<BillPrintSettings>) {
+// printMarginMm etc. on BillPrintSettings for field docs. Paper size stays
+// Cursor-default via loadBillPrintSettings / resolveBillPrintPageOpts. ──
+export function printLayoutOpts(settings: Partial<BillPrintSettings>) {
   return {
-    printMarginMm: CURSOR_BILL_PRINT_LAYOUT.printMarginMm,
-    printLogoHeightPx: CURSOR_BILL_PRINT_LAYOUT.printLogoHeightPx,
-    headerLayout: CURSOR_BILL_PRINT_LAYOUT.headerLayout,
-    printTitleFontPx: CURSOR_BILL_PRINT_LAYOUT.printTitleFontPx,
-    printPatientNameFontPx: CURSOR_BILL_PRINT_LAYOUT.printPatientNameFontPx,
-    printBodyFontPx: CURSOR_BILL_PRINT_LAYOUT.printBodyFontPx,
-    printHeaderFontPx: CURSOR_BILL_PRINT_LAYOUT.printHeaderFontPx,
-    printTableFontPx: CURSOR_BILL_PRINT_LAYOUT.printTableFontPx,
-    printTotalFontPx: CURSOR_BILL_PRINT_LAYOUT.printTotalFontPx,
-    printFooterFontPx: CURSOR_BILL_PRINT_LAYOUT.printFooterFontPx,
-    printTinyFontPx: CURSOR_BILL_PRINT_LAYOUT.printTinyFontPx,
+    printMarginMm: settings.printMarginMm,
+    printLogoHeightPx: settings.printLogoHeightPx,
+    headerLayout: settings.headerLayout,
+    printTitleFontPx: settings.printTitleFontPx,
+    printPatientNameFontPx: settings.printPatientNameFontPx,
+    printBodyFontPx: settings.printBodyFontPx,
+    printHeaderFontPx: settings.printHeaderFontPx,
+    printTableFontPx: settings.printTableFontPx,
+    printTotalFontPx: settings.printTotalFontPx,
+    printFooterFontPx: settings.printFooterFontPx,
+    printTinyFontPx: settings.printTinyFontPx,
   };
 }
 
@@ -491,8 +481,7 @@ export type BillPrintPageOpts = {
 /**
  * Map clinic Billing Print settings + test count → paper/orientation the HTML
  * renderer should declare. Paper is Cursor-default (half A4 / A5 landscape on
- * an A4 portrait @page). Long bills (≥ autoA4Threshold) switch to A4 — that
- * threshold is also Cursor-owned, not a Settings slider.
+ * an A4 portrait @page). Long bills (≥ Cursor autoA4Threshold) switch to A4.
  */
 export function resolveBillPrintPageOpts(
   _settings: Pick<BillPrintSettings, "defaultPaperSize" | "autoA4Threshold"> | Partial<BillPrintSettings> | undefined,

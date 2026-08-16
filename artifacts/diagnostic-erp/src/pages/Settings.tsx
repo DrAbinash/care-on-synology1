@@ -4746,6 +4746,92 @@ const BillPrintToggleRow = ({
   </button>
 );
 
+const NumberOverrideField = ({
+  label, value, defaultLabel, sliderDefault, unit, min, max, onChange,
+}: {
+  label: string; value: number | null; defaultLabel: string; sliderDefault: number;
+  unit: string; min: number; max: number; onChange: (v: number | null) => void;
+}) => {
+  const isOverride = value != null;
+  const effective = value ?? sliderDefault;
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1 gap-2">
+        <p className="text-xs font-medium truncate">{label}</p>
+        <span
+          className={`text-[10px] tabular-nums shrink-0 ${isOverride ? "text-blue-600 font-semibold" : "text-muted-foreground"}`}
+          title={isOverride ? "Custom override — will be sent to every counter" : `Built-in default: ${defaultLabel}`}
+        >
+          {effective}{unit}{isOverride ? "" : " · default"}
+        </span>
+      </div>
+      <div className="flex items-center gap-2">
+        <input
+          type="range" min={min} max={max} step={1}
+          value={effective}
+          onChange={(e) => onChange(Number(e.target.value))}
+          className="flex-1 h-2 accent-blue-600 cursor-ew-resize"
+          title={`Drag left/right to shrink or stretch ${label.toLowerCase()} — the live preview follows`}
+        />
+        <input
+          type="number" min={min} max={max}
+          value={value ?? ""}
+          placeholder={`${sliderDefault}`}
+          title={`Type an exact value or drag the slider · Built-in default: ${defaultLabel}`}
+          onChange={(e) => {
+            const raw = e.target.value;
+            if (raw === "") { onChange(null); return; }
+            const n = Number(raw);
+            if (Number.isFinite(n)) onChange(Math.max(min, Math.min(max, n)));
+          }}
+          className="w-14 h-7 text-xs border border-input rounded-md px-1.5 bg-background text-center"
+        />
+        <span className="text-[10px] text-muted-foreground shrink-0 w-5">{unit}</span>
+        <button
+          type="button"
+          onClick={() => onChange(null)}
+          disabled={!isOverride}
+          className="text-sm text-muted-foreground hover:text-foreground disabled:opacity-30 disabled:cursor-not-allowed shrink-0 leading-none"
+          title={isOverride ? "Reset to built-in default" : "No override set — nothing to reset"}
+        >
+          ↺
+        </button>
+      </div>
+    </div>
+  );
+};
+
+const LAYOUT_PRESETS = {
+  epsonDense: {
+    printMarginMm: 2, printLogoHeightPx: 40,
+    printTitleFontPx: 16, printPatientNameFontPx: 12, printBodyFontPx: 12,
+    printHeaderFontPx: 9, printTableFontPx: 10, printTotalFontPx: 11,
+    printFooterFontPx: 9, printTinyFontPx: 8,
+  },
+  compact: {
+    printMarginMm: 2, printLogoHeightPx: 40,
+    printTitleFontPx: 16, printPatientNameFontPx: 12, printBodyFontPx: 12,
+    printHeaderFontPx: 9, printTableFontPx: 10, printTotalFontPx: 11,
+    printFooterFontPx: 9, printTinyFontPx: 8,
+  },
+  normal: {
+    printMarginMm: null, printLogoHeightPx: null,
+    printTitleFontPx: null, printPatientNameFontPx: null,
+    printBodyFontPx: null, printHeaderFontPx: null, printTableFontPx: null,
+    printTotalFontPx: null, printFooterFontPx: null, printTinyFontPx: null,
+  },
+  comfortable: {
+    printMarginMm: 8, printLogoHeightPx: 96,
+    printTitleFontPx: 22, printPatientNameFontPx: 18, printBodyFontPx: 15,
+    printHeaderFontPx: 12, printTableFontPx: 14, printTotalFontPx: 15,
+    printFooterFontPx: 12, printTinyFontPx: 11,
+  },
+} as const;
+
+const headerLayouts: { id: string; label: string }[] = [
+  { id: "right", label: "Address on right (under invoice)" },
+  { id: "left", label: "Address on left (under clinic name)" },
+];
 const billCopyTypes: { id: string; label: string }[] = [
   { id: "patient", label: "Patient Copy" },
   { id: "office", label: "Office Copy" },
@@ -4989,14 +5075,14 @@ function BillingPrintTab() {
           {!isAdminUser && " Only an admin can change or unlock these settings."}
         </div>
       )}
-      {/* Cursor-default paper/layout is code-owned — not a clinic slider. */}
+      {/* Cursor-default paper is code-owned — not a clinic slider. */}
       <div
         className="rounded-xl border border-slate-300 bg-slate-50 dark:bg-slate-950/40 dark:border-slate-700 px-4 py-4 space-y-3 pointer-events-auto"
         data-testid="cursor-default-bill-print"
       >
         <div className="flex items-start justify-between gap-3">
           <div>
-            <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Bill print layout</p>
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Bill print paper</p>
             <h2 className="text-base font-bold text-slate-900 dark:text-slate-100">Cursor-default</h2>
           </div>
           <span className="shrink-0 rounded-full border border-slate-300 bg-white dark:bg-slate-900 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-600 dark:text-slate-300">
@@ -5004,14 +5090,14 @@ function BillingPrintTab() {
           </span>
         </div>
         <p className="text-xs text-slate-700 dark:text-slate-300 leading-relaxed">
-          Paper size, header, margins, and fonts are locked in this layout. Clinics do not change them here —
-          only copies, QR/TAT columns, and save-print workflow below. Half of A4 <em>is</em> A5 (210×148 mm).
+          Paper size is locked to this Cursor-default layout. Clinics do not change paper here —
+          use header, copies, QR/TAT columns, typography, and save-print workflow below. Half of A4 <em>is</em> A5 (210×148 mm).
         </p>
         <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1 text-xs">
           <div><dt className="text-muted-foreground">Paper</dt><dd className="font-semibold">Half A4 / A5 · 210×148 mm</dd></div>
-          <div><dt className="text-muted-foreground">Header</dt><dd className="font-semibold">Address on right (under invoice)</dd></div>
           <div><dt className="text-muted-foreground">Job size sent to printer</dt><dd className="font-semibold">A4 portrait (210×297 mm)</dd></div>
           <div><dt className="text-muted-foreground">Long bills</dt><dd className="font-semibold">Auto A4 from 8 tests</dd></div>
+          <div><dt className="text-muted-foreground">Content area</dt><dd className="font-semibold">Top half of the A4 job</dd></div>
         </dl>
       </div>
 
@@ -5043,13 +5129,22 @@ function BillingPrintTab() {
         </p>
       </div>
 
-      <SectionCard title="Copies" subtitle="The only paper choice clinics set here. Patient or office = 1 sheet. Both = patient + office in one print job.">
+      <SectionCard title="Format &amp; Copies" subtitle="Header placement and how many sheets print. Paper stays Cursor-default (above).">
+        <SelectCard
+          label="Header layout"
+          options={headerLayouts}
+          value={settings.headerLayout ?? "right"}
+          onChange={(v) => update({ headerLayout: v as any })}
+        />
         <SelectCard
           label="Copies to print"
           options={billCopyTypes}
           value={settings.defaultCopyType}
           onChange={(v) => update({ defaultCopyType: v as import("@/lib/billPrintSettings").CopyType })}
         />
+        <p className="text-[11px] text-muted-foreground -mt-2">
+          Patient or office = 1 sheet. Both copies = patient + office (2 sheets in one print job).
+        </p>
       </SectionCard>
 
       <SectionCard title="What appears on the printed bill" subtitle="QR, TAT, columns, and optional footer elements. Each toggle updates the Live Preview immediately. Formerly split across Clinic Info and Billing Print — now one place.">
@@ -5073,6 +5168,71 @@ function BillingPrintTab() {
         <p className="text-[11px] text-muted-foreground leading-relaxed mt-1">
           TAT uses each test&apos;s catalog duration. Queue Token Box is separate from the per-test department token list (which always prints when present). Off by default to avoid a redundant box on billing-counter receipts.
         </p>
+      </SectionCard>
+
+      <SectionCard
+        title="Layout &amp; Typography"
+        subtitle="Drag any slider — the Live Preview on the right updates instantly. Type an exact number for precise tuning. Empty = built-in default (already tuned per paper size). Click ↺ to reset a single field, or use a Quick preset to reset/adjust all nine at once."
+      >
+        <div className="flex items-center gap-2 flex-wrap pb-3 mb-1 border-b border-border/50">
+          <span className="text-xs font-medium text-muted-foreground">Quick preset:</span>
+          <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => update(LAYOUT_PRESETS.epsonDense)}>Epson dense (A5 ink)</Button>
+          <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => update(LAYOUT_PRESETS.compact)}>Compact</Button>
+          <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => update(LAYOUT_PRESETS.normal)}>Normal (built-in default)</Button>
+          <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => update(LAYOUT_PRESETS.comfortable)}>Comfortable (larger)</Button>
+        </div>
+        <NumberOverrideField
+          label="Page Margin" unit="mm" min={2} max={25} sliderDefault={2}
+          value={settings.printMarginMm} defaultLabel="4mm Half A4/A4 · 6mm A5 Portrait"
+          onChange={(v) => update({ printMarginMm: v })}
+        />
+        <NumberOverrideField
+          label="Clinic Logo Height" unit="px" min={24} max={160} sliderDefault={72}
+          value={settings.printLogoHeightPx} defaultLabel="72px (Modern) / 120px (Classic)"
+          onChange={(v) => update({ printLogoHeightPx: v })}
+        />
+        <div className="grid grid-cols-2 gap-x-4 gap-y-2">
+          <NumberOverrideField
+            label="Title (INVOICE/RECEIPT)" unit="px" min={8} max={40} sliderDefault={19}
+            value={settings.printTitleFontPx} defaultLabel="19px (A5) / 20px (A4)"
+            onChange={(v) => update({ printTitleFontPx: v })}
+          />
+          <NumberOverrideField
+            label="Patient / Date" unit="px" min={8} max={32} sliderDefault={14}
+            value={settings.printPatientNameFontPx} defaultLabel="14px (A5) / 18px (A4)"
+            onChange={(v) => update({ printPatientNameFontPx: v })}
+          />
+          <NumberOverrideField
+            label="Tagline" unit="px" min={8} max={28} sliderDefault={14}
+            value={settings.printBodyFontPx} defaultLabel="14px (A5) / 13px (A4)"
+            onChange={(v) => update({ printBodyFontPx: v })}
+          />
+          <NumberOverrideField
+            label="Clinic Contact Info" unit="px" min={6} max={24} sliderDefault={11}
+            value={settings.printHeaderFontPx} defaultLabel="11px (A5) / 10px (A4)"
+            onChange={(v) => update({ printHeaderFontPx: v })}
+          />
+          <NumberOverrideField
+            label="Test Table" unit="px" min={8} max={24} sliderDefault={12}
+            value={settings.printTableFontPx} defaultLabel="12px"
+            onChange={(v) => update({ printTableFontPx: v })}
+          />
+          <NumberOverrideField
+            label="Totals" unit="px" min={8} max={24} sliderDefault={13}
+            value={settings.printTotalFontPx} defaultLabel="13px"
+            onChange={(v) => update({ printTotalFontPx: v })}
+          />
+          <NumberOverrideField
+            label="Footer Message" unit="px" min={6} max={20} sliderDefault={11}
+            value={settings.printFooterFontPx} defaultLabel="11px"
+            onChange={(v) => update({ printFooterFontPx: v })}
+          />
+          <NumberOverrideField
+            label="Fine Print" unit="px" min={6} max={18} sliderDefault={10}
+            value={settings.printTinyFontPx} defaultLabel="10px"
+            onChange={(v) => update({ printTinyFontPx: v })}
+          />
+        </div>
       </SectionCard>
 
       <SectionCard
@@ -5122,7 +5282,7 @@ function BillingPrintTab() {
           <button type="button" onClick={() => setPreviewVisible(false)} className="text-xs text-muted-foreground hover:text-foreground">Hide</button>
         </div>
         <p className="text-[11px] text-muted-foreground leading-relaxed">
-          Updates instantly as you change copies or display options — paper is Cursor-default (half A4 / A5). Sample data, not a real bill.
+          Updates instantly as you change copies, header, or display options — paper is Cursor-default (half A4 / A5). Sample data, not a real bill.
         </p>
         <label className="flex items-center gap-2 text-xs font-medium">
           <input
@@ -5159,7 +5319,7 @@ function BillingPrintTab() {
           </div>
         </div>
         <p className="text-[11px] text-center text-muted-foreground">
-          Cursor-default · Half A4 / A5 (210×148 mm) · Address on right
+          Cursor-default paper · Half A4 / A5 (210×148 mm) · {headerLayouts.find((f) => f.id === (settings.headerLayout ?? "right"))?.label ?? "Address on right"}
         </p>
       </div>
     ) : (
