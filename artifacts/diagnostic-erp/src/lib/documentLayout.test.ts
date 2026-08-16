@@ -113,7 +113,10 @@ describe("document layout engine — page specifications", () => {
 describe("document layout engine — bill renderers (unified Classic)", () => {
   test("two physical copies render two pages with patient/office labels", () => {
     const html = buildBillPrintHtml(baseOpts({
-      clinic: { ...sampleClinic, billPrintCopies: 2 },
+      clinic: {
+        ...sampleClinic,
+        billPrintSettingsJson: JSON.stringify({ defaultCopyType: "both" }),
+      },
     }));
     expect((html.match(/class="care-doc-page receipt"/g) ?? []).length).toBe(2);
     expect(html).toContain("Patient Copy");
@@ -123,13 +126,9 @@ describe("document layout engine — bill renderers (unified Classic)", () => {
     expect(multiCss).toContain("overflow: visible");
   });
 
-  test("defaultCopyType both yields two pages when DB column still says 1", () => {
+  test("legacy bill_print_copies=2 still yields two pages when JSON has no copy type", () => {
     const html = buildBillPrintHtml(baseOpts({
-      clinic: {
-        ...sampleClinic,
-        billPrintCopies: 1,
-        billPrintSettingsJson: JSON.stringify({ defaultCopyType: "both" }),
-      },
+      clinic: { ...sampleClinic, billPrintCopies: 2 },
     }));
     expect((html.match(/class="care-doc-page receipt"/g) ?? []).length).toBe(2);
   });

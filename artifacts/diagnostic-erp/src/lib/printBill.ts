@@ -212,7 +212,6 @@ export function buildBillVerifyUrl(
 import { buildDocumentHtml } from "./documentLayout/buildDocumentHtml";
 import { resolveBillPrintPaperFromOpts } from "./documentLayout/billPaper";
 import {
-  loadBillPrintSettings,
   parseGlobalBillPrintSettings,
   resolveBillPrintCopyCount,
 } from "./billPrintSettings";
@@ -315,8 +314,8 @@ export type BuildPrintHtmlOpts = {
 
 export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
   const { bill, clinic, paperSize, orientation = "portrait", isBW, qrDataUrl, reprintBy, reprintReason, compactFooterGap = false, compactOnA4 = false, pageCssSize, provisionalReceipt = false } = opts;
-  const billPrintSettings = loadBillPrintSettings(parseGlobalBillPrintSettings(clinic?.billPrintSettingsJson));
-  const copies = resolveBillPrintCopyCount(clinic, billPrintSettings);
+  const rawBillPrintSettings = parseGlobalBillPrintSettings(clinic?.billPrintSettingsJson);
+  const copies = resolveBillPrintCopyCount(clinic, rawBillPrintSettings);
   const showCode = clinic?.billShowCode !== false;
   const showCategory = clinic?.billShowCategory !== false;
   const qrEnabled = (opts.showQr !== false) && clinic?.qrOnBillEnabled !== false;

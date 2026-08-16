@@ -3,7 +3,7 @@ import { Link, useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import QRCode from "qrcode";
 import { buildBillPrintHtml, type PrintBillData, type PrintClinic } from "@/lib/printBill";
-import { resolveBillPrintPageOpts, parseGlobalBillPrintSettings } from "@/lib/billPrintSettings";
+import { resolveBillPrintPageOpts, parseGlobalBillPrintSettings, billPrintCopiesForCopyType } from "@/lib/billPrintSettings";
 import { api, fetchApi, getStaffToken } from "@/lib/fetchApi";
 import { useSuperAdmin, getSuperAdminToken } from "@/hooks/useSuperAdmin";
 import PageHeader from "@/components/PageHeader";
@@ -4885,8 +4885,8 @@ function BillingPrintTab() {
   const isAdminUser = session?.user?.role === "admin" || session?.user?.role === "super_admin";
 
   // Clinic columns formerly edited under Clinic Info — now owned here so QR /
-  // TAT / columns / copies stay in one place and stay wired to print.
-  const [billPrintCopies, setBillPrintCopies] = useState(1);
+  // TAT / columns stay in one place and stay wired to print. Copy count lives
+  // only on settings.defaultCopyType (Settings → Billing Print).
   const [billShowCode, setBillShowCode] = useState(true);
   const [billShowCategory, setBillShowCategory] = useState(true);
 
@@ -4930,7 +4930,6 @@ function BillingPrintTab() {
   const deferredSettings = useDeferredValue(settings);
   const deferredShowCode = useDeferredValue(billShowCode);
   const deferredShowCategory = useDeferredValue(billShowCategory);
-  const deferredCopies = useDeferredValue(billPrintCopies);
   const previewHtml = useMemo(() => {
     if (!deferredSettings) return "";
     const pageOpts = resolveBillPrintPageOpts(deferredSettings, BILL_PREVIEW_SAMPLE.order?.tests?.length ?? 1);
@@ -4940,7 +4939,7 @@ function BillingPrintTab() {
       showTatOnBill: deferredSettings.showTatOnBill === true,
       billShowCode: deferredShowCode,
       billShowCategory: deferredShowCategory,
-      billPrintCopies: deferredCopies,
+      billPrintCopies: billPrintCopiesForCopyType(deferredSettings.defaultCopyType),
       billPrintSettingsJson: JSON.stringify({
         ...parseGlobalBillPrintSettings(previewClinic?.billPrintSettingsJson),
         ...deferredSettings,
@@ -4980,7 +4979,7 @@ function BillingPrintTab() {
       printFooterFontPx: deferredSettings.printFooterFontPx,
       printTinyFontPx: deferredSettings.printTinyFontPx,
     });
-  }, [deferredSettings, previewClinic, previewQrUrl, effectivePreviewIsBW, deferredShowCode, deferredShowCategory, deferredCopies]);
+  }, [deferredSettings, previewClinic, previewQrUrl, effectivePreviewIsBW, deferredShowCode, deferredShowCategory]);
 
   // Initialize once the clinic-wide server blob is known (success OR error —
   // on error we degrade to defaults + this browser's local overrides, same as
@@ -5002,8 +5001,10 @@ function BillingPrintTab() {
       if (previewClinic?.qrOnBillEnabled === false) {
         global.showQrCode = false;
       }
+      if (Number(previewClinic?.billPrintCopies) >= 2 && (global.defaultCopyType == null || global.defaultCopyType === "patient")) {
+        global.defaultCopyType = "both";
+      }
       setSettings(m.loadBillPrintSettings(global));
-      setBillPrintCopies(Math.min(2, Math.max(1, Number(previewClinic?.billPrintCopies) || 1)));
       setBillShowCode(previewClinic?.billShowCode !== false);
       setBillShowCategory(previewClinic?.billShowCategory !== false);
       setLoading(false);
@@ -5045,7 +5046,7 @@ function BillingPrintTab() {
           billPrintSettingsJson: JSON.stringify(settings),
           qrOnBillEnabled: settings.showQrCode !== false,
           showTatOnBill: settings.showTatOnBill === true,
-          billPrintCopies,
+          billPrintCopies: billPrintCopiesForCopyType(settings.defaultCopyType),
           billShowCode,
           billShowCategory,
         });
@@ -5134,13 +5135,11 @@ function BillingPrintTab() {
           label="Copies to print"
           options={billCopyTypes}
           value={settings.defaultCopyType}
-          onChange={(v) => {
-            const copyType = v as import("@/lib/billPrintSettings").CopyType;
-            update({ defaultCopyType: copyType });
-            setBillPrintCopies(copyType === "both" ? 2 : 1);
-            setSaved(false);
-          }}
+          onChange={(v) => update({ defaultCopyType: v as import("@/lib/billPrintSettings").CopyType })}
         />
+        <p className="text-[11px] text-muted-foreground -mt-2">
+          Patient or office = 1 sheet. Both copies = patient + office (2 sheets in one print job).
+        </p>
         <div className="mt-2 grid grid-cols-1 gap-2">
           <label className="text-xs font-medium text-slate-600 block">
             Long bill? Auto-switch to A4 when tests exceed:
@@ -5182,28 +5181,6 @@ function BillingPrintTab() {
           <BillPrintToggleRow label="Show Patient Instructions" value={settings.showPatientInstructions} onChange={(v) => update({ showPatientInstructions: v })} />
           <BillPrintToggleRow label="Show System Information" value={settings.showSystemInfo} onChange={(v) => update({ showSystemInfo: v })} />
           <BillPrintToggleRow label="Show Queue Token Box" value={settings.showQueueTokenOnBill} onChange={(v) => update({ showQueueTokenOnBill: v })} />
-        </div>
-        <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <div>
-            <p className="text-xs font-medium text-muted-foreground mb-1">Physical copies per print</p>
-            <div className="flex items-center gap-2">
-              <input
-                type="number"
-                min={1}
-                max={2}
-                value={billPrintCopies}
-                onChange={(e) => {
-                  const n = Math.min(2, Math.max(1, Number(e.target.value) || 1));
-                  setBillPrintCopies(n);
-                  update({ defaultCopyType: n >= 2 ? "both" : "patient" });
-                  setSaved(false);
-                }}
-                className="w-16 h-8 text-sm border border-input rounded-md px-2 bg-background"
-                data-testid="bill-print-copies"
-              />
-              <span className="text-xs text-muted-foreground">1 = patient only · 2 = patient + office</span>
-            </div>
-          </div>
         </div>
         <p className="text-[11px] text-muted-foreground leading-relaxed mt-1">
           TAT uses each test&apos;s catalog duration. Queue Token Box is separate from the per-test department token list (which always prints when present). Off by default to avoid a redundant box on billing-counter receipts.

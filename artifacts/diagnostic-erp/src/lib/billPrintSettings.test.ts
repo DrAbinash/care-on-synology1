@@ -231,17 +231,18 @@ describe("resolveBillPrintDelivery", () => {
 });
 
 describe("resolveBillPrintCopyCount — physical copies", () => {
-  test("billPrintCopies column wins when set to 2", () => {
-    expect(resolveBillPrintCopyCount({ billPrintCopies: 2 }, { defaultCopyType: "patient" })).toBe(2);
-  });
-
-  test("defaultCopyType both yields 2 when DB column is still 1", () => {
+  test("Billing Print both copies yields 2 even if the legacy column is 1", () => {
     expect(resolveBillPrintCopyCount({ billPrintCopies: 1 }, { defaultCopyType: "both" })).toBe(2);
   });
 
-  test("patient or office copy type alone yields 1", () => {
+  test("office copy is always 1 sheet", () => {
+    expect(resolveBillPrintCopyCount({ billPrintCopies: 2 }, { defaultCopyType: "office" })).toBe(1);
+  });
+
+  test("legacy bill_print_copies=2 still prints 2 when JSON is patient or unset", () => {
+    expect(resolveBillPrintCopyCount({ billPrintCopies: 2 }, { defaultCopyType: "patient" })).toBe(2);
+    expect(resolveBillPrintCopyCount({ billPrintCopies: 2 }, {})).toBe(2);
     expect(resolveBillPrintCopyCount({ billPrintCopies: 1 }, { defaultCopyType: "patient" })).toBe(1);
-    expect(resolveBillPrintCopyCount({ billPrintCopies: 1 }, { defaultCopyType: "office" })).toBe(1);
   });
 });
 

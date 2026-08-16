@@ -68,18 +68,20 @@ export function copyTypeForBillPrintCopies(copies: number): CopyType {
 }
 
 /**
- * Physical bill pages to render/print. Honors clinic_settings.bill_print_copies
- * and the Billing Print "Copies to print" dropdown (defaultCopyType) when they
- * disagree — e.g. admin picked Both Copies but the DB column still says 1.
+ * Physical bill pages to render/print. Source of truth is Settings → Billing
+ * Print (`defaultCopyType`). Legacy `bill_print_copies` is used when the JSON
+ * has no copy type, or still says patient while the column is 2 (old dual UI).
  */
 export function resolveBillPrintCopyCount(
   clinic: { billPrintCopies?: number | null } | null | undefined,
-  settings?: { defaultCopyType?: CopyType | null } | null,
+  rawSettings?: { defaultCopyType?: CopyType | null } | null,
 ): number {
+  const copyType = rawSettings?.defaultCopyType ?? null;
+  if (copyType === "both") return 2;
+  if (copyType === "office") return 1;
   const fromColumn = Number(clinic?.billPrintCopies);
-  const fromColumnValid = Number.isFinite(fromColumn) && fromColumn >= 1 ? Math.min(2, Math.floor(fromColumn)) : 1;
-  const fromCopyType = billPrintCopiesForCopyType(settings?.defaultCopyType);
-  return Math.max(fromColumnValid, fromCopyType);
+  if (Number.isFinite(fromColumn) && fromColumn >= 2) return 2;
+  return 1;
 }
 
 export type PrintAction = "save-print" | "save-preview" | "save-only";
