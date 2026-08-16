@@ -475,7 +475,7 @@ export function AiReportingPanel() {
       ollamaBaseUrl?: string | null; ollamaFallbackUrl?: string | null; ollamaModel?: string | null;
       ollamaEnabled?: boolean; ollamaLocalOnly?: boolean; ollamaTimeoutSeconds?: number; ollamaAuditEnabled?: boolean;
     };
-    const rawModel = (cs.ollamaModel ?? s.model ?? "").trim();
+    const rawModel = (cs.ollamaModel ?? localAi.model ?? "").trim();
     const model =
       rawModel === "qwen3:8b" || rawModel === "qwen3:8b-instruct" || rawModel === "qwen2.5-vl:7b" || rawModel === "qwen2-vl:7b"
         ? "qwen3-vl:8b"
