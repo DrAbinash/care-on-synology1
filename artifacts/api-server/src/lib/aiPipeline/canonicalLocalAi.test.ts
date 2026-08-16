@@ -37,6 +37,13 @@ describe("canonical Local AI runtime", () => {
     expect(CANONICAL_EMBEDDING_MODEL).toBe("nomic-embed-text");
   });
 
+  test("legacy clinic model qwen3:8b maps to canonical qwen3-vl:8b", async () => {
+    const { normalizeLocalChatVisionModel } = await import("./canonicalLocalAi");
+    expect(normalizeLocalChatVisionModel("qwen3:8b")).toBe("qwen3-vl:8b");
+    expect(normalizeLocalChatVisionModel("qwen3-vl:8b")).toBe("qwen3-vl:8b");
+    expect(normalizeLocalChatVisionModel("gemma3:12b")).toBe("gemma3:12b");
+  });
+
   test("env defaults and overnight options share canonical endpoint/model", async () => {
     const env = loadAiPipelineConfig(true);
     expect(env.ollamaBaseUrl).toBe(CANONICAL_OLLAMA_ENDPOINT);
