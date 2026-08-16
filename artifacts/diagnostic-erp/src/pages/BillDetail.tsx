@@ -21,7 +21,6 @@ import { useSuperAdmin, getSuperAdminToken } from "@/hooks/useSuperAdmin";
 import { getStoredUsbKey, onUsbKeyChange } from "@/lib/usbKey";
 import { readStaffSession, hasSubPermission } from "@/lib/staffSession";
 import { useToast } from "@/hooks/use-toast";
-import { getAutoBillPaperSize, getBillPaperSize, getBillPrintLayout, getLayoutStyles, setBillPaperSize } from "@/lib/billPrintLayout";
 import {
   buildBillPrintHtml,
   buildBillVerifyUrl,
@@ -35,9 +34,7 @@ import {
   loadBillPrintSettings,
   parseGlobalBillPrintSettings,
   printLayoutOpts,
-  applyManualBillPaperOverride,
   resolveBillPrintPageOpts,
-  type BillPrintSettings,
 } from "@/lib/billPrintSettings";
 
 type PaymentForm = {
@@ -184,11 +181,7 @@ export default function BillDetail({ id }: { id: number }) {
     queryKey: ["reprint-reasons"],
     queryFn: () => api.get("/api/reprint-reasons"),
   });
-  const [paperSize, setPaperSize] = useState<"A4" | "A5">(() => getBillPaperSize());
-  const [paperMode, setPaperMode] = useState<"auto" | "manual">("auto");
   const [paymentFilter, setPaymentFilter] = useState("");
-  const billPrintLayout = getBillPrintLayout();
-  const ls = getLayoutStyles(billPrintLayout);
   const queryClient = useQueryClient();
   const superAdmin = useSuperAdmin();
   const [usbKeyPresent, setUsbKeyPresent] = useState(() => getStoredUsbKey() !== null);
@@ -218,17 +211,6 @@ export default function BillDetail({ id }: { id: number }) {
     () => loadBillPrintSettings(parseGlobalBillPrintSettings(clinic?.billPrintSettingsJson)),
     [clinic?.billPrintSettingsJson],
   );
-  const paperLocked = billPrintSettings.adminLock === true;
-
-  useEffect(() => {
-    if (paperLocked) {
-      setPaperMode("auto");
-      return;
-    }
-    if (paperMode === "manual") setBillPaperSize(paperSize);
-  }, [paperLocked, paperMode, paperSize]);
-  const autoPaperSize = getAutoBillPaperSize((bill?.order?.tests?.length ?? 0), paperMode === "manual" && !paperLocked ? paperSize : undefined);
-  const effectivePaperSize = paperMode === "manual" && !paperLocked ? paperSize : autoPaperSize;
 
   const { data: clinicPolicy } = useQuery<{ cancelRequiresRefund?: boolean }>({
     queryKey: ["clinic-settings-policy"],
@@ -299,11 +281,7 @@ export default function BillDetail({ id }: { id: number }) {
     // paths) so a reprint honors the admin-configured format/layout too.
     const settings = billPrintSettings;
     const testCount = (bill.order?.tests ?? []).filter((t) => (t.status ?? "active") !== "cancelled").length;
-    const settingsForPrint = {
-      ...settings,
-      ...applyManualBillPaperOverride(settings, paperMode === "manual" && !settings.adminLock ? paperSize : null),
-    };
-    const pageOpts = resolveBillPrintPageOpts(settingsForPrint, testCount);
+    const pageOpts = resolveBillPrintPageOpts(settings, testCount);
     return buildBillPrintHtml({
       bill: bill as PrintBillData,
       clinic: clinic as PrintClinic,
@@ -328,21 +306,9 @@ export default function BillDetail({ id }: { id: number }) {
       showPatientInstructions: settings.showPatientInstructions,
       showSystemInfo: settings.showSystemInfo,
       showQueueToken: settings.showQueueTokenOnBill,
-      ...printLayoutOpts(settingsForPrint),
+      ...printLayoutOpts(settings),
     });
   };
-
-  const resolvedReprintPaper = useMemo(() => {
-    if (!bill) return "";
-    const settings = billPrintSettings;
-    const testCount = (bill.order?.tests ?? []).filter((t) => (t.status ?? "active") !== "cancelled").length;
-    const settingsForPrint = {
-      ...settings,
-      ...applyManualBillPaperOverride(settings, paperMode === "manual" && !settings.adminLock ? paperSize : null),
-    };
-    const pageOpts = resolveBillPrintPageOpts(settingsForPrint, testCount);
-    return pageOpts.pageCssSize;
-  }, [bill, billPrintSettings, paperMode, paperSize]);
 
   // Re-print: open the popup SYNCHRONOUSLY in the click handler so the
   // browser doesn't strip user-activation by the time the reprint-log POST
@@ -388,7 +354,7 @@ export default function BillDetail({ id }: { id: number }) {
     }, 300);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bill, clinic, billQrDataUrl, paperMode, paperSize, isBW]);
+  }, [bill, clinic, billQrDataUrl, isBW]);
 
   const { data: audits = [], refetch: refetchAudits } = useQuery<BillAudit[]>({
     queryKey: ["bill-audits", id],
@@ -740,27 +706,12 @@ export default function BillDetail({ id }: { id: number }) {
             </div>
             <div
               className="flex items-center gap-1 border border-border rounded-md px-1 py-0.5 text-xs"
-              title={paperLocked ? "Paper size locked by Admin Lock in Billing Print settings" : undefined}
+              title="Paper is Cursor-default (half A4 / A5). Set the printer dialog to A4 portrait, 100% scale."
             >
               <span className="text-muted-foreground px-1">Paper:</span>
-              {paperLocked ? (
-                <span className="px-2 py-0.5 rounded bg-muted text-muted-foreground font-medium">
-                  Locked ({resolvedReprintPaper || billPrintSettings.defaultPaperSize})
-                </span>
-              ) : (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => { setPaperMode("manual"); setPaperSize("A4"); }}
-                    className={`px-2 py-0.5 rounded ${paperSize === "A4" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"}`}
-                  >A4</button>
-                  <button
-                    type="button"
-                    onClick={() => { setPaperMode("manual"); setPaperSize("A5"); }}
-                    className={`px-2 py-0.5 rounded ${paperSize === "A5" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"}`}
-                  >A5</button>
-                </>
-              )}
+              <span className="px-2 py-0.5 rounded bg-muted text-muted-foreground font-medium">
+                Cursor-default (half A4 / A5)
+              </span>
             </div>
             {canReprint && (
               <Button size="sm" variant="outline" onClick={() => { setReprintReason(""); setReprintNote(""); setReprintOpen(true); }}>
@@ -1095,12 +1046,8 @@ export default function BillDetail({ id }: { id: number }) {
               </p>
             </div>
             <div className="text-xs text-muted-foreground">
-            Paper: <strong>{resolvedReprintPaper || (paperMode === "manual" && !paperLocked ? paperSize : `AUTO (${effectivePaperSize})`)}</strong>
-            {paperLocked
-              ? " (admin locked — all counters use clinic Billing Print settings)"
-              : paperMode === "manual"
-                ? " (manual)"
-                : " (clinic setting) · Change above the Re-print button."}
+            Paper: <strong>Cursor-default (half A4 / A5)</strong>
+            {" — printer dialog: A4 · Portrait · Actual size 100%"}
             </div>
             <div className="flex justify-end gap-2 pt-2">
               <Button type="button" variant="outline" onClick={() => setReprintOpen(false)}>Cancel</Button>
