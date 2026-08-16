@@ -317,6 +317,12 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
   const showTat = (opts.showTat ?? clinic?.showTatOnBill) === true;
   const isA5 = paperSize === "A5";
   const a4Page = compactOnA4 && isA5;
+  const paper = resolveBillPrintPaperFromOpts({
+    paperSize,
+    orientation,
+    pageCssSize,
+    compactOnA4: a4Page,
+  });
 
   const tests = (bill.order?.tests ?? []).filter((t) => (t.status ?? "active") !== "cancelled");
   const cancelled = (bill.order?.tests ?? []).filter((t) => (t.status ?? "active") === "cancelled");
@@ -344,7 +350,11 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
   const statusBg = (semantic: string): string => (isBW ? "#eee" : semantic);
 
   const useCompactFooter = compactFooterGap || sparseBill;
-  const marginMm = opts.printMarginMm ?? (isA5 ? 10 : 6);
+  const defaultMarginMm =
+    paper === "A5-portrait" ? 6 :
+    paper === "A5-landscape" || paper === "half-a4" ? 4 :
+    4;
+  const marginMm = opts.printMarginMm ?? defaultMarginMm;
   const titleSize = `${opts.printTitleFontPx ?? (isA5 ? 19 : 20)}px`;
   const patientNameSize = `${opts.printPatientNameFontPx ?? (isA5 ? 14 : 18)}px`;
   const bodyPx = `${opts.printBodyFontPx ?? (isA5 ? 16 : 15)}px`;
@@ -580,7 +590,7 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
         </tbody>
       </table>
 
-      ${useCompactFooter ? `<div style="height:${Math.round(parseInt(footerPx, 10) * 1.4 * 2)}px"></div>` : `<div style="height:4px"></div>`}
+      ${useCompactFooter ? `<div style="height:${Math.round(parseInt(footerPx, 10) * 0.6)}px"></div>` : `<div style="height:3px"></div>`}
 
       <div class="receipt-footer" style="margin-top:4px;border-top:2px solid #000;padding-top:6px;text-align:center;page-break-inside:avoid;break-inside:avoid">
         <div style="font-size:${footerPx};font-weight:700;color:#0f172a;margin-bottom:2px;text-transform:uppercase;letter-spacing:0.02em;line-height:1.3">${esc(clinic?.footerNote || bill.reportCollectionNote || "Thank you for choosing our diagnostic services. Please collect your report within 7 days.")}</div>
@@ -602,13 +612,6 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
       </div>`;
 
   const pages = Array.from({ length: copies }).map((_, i) => page(i));
-
-  const paper = resolveBillPrintPaperFromOpts({
-    paperSize,
-    orientation,
-    pageCssSize,
-    compactOnA4: a4Page,
-  });
 
   return buildDocumentHtml({
     title: `Bill ${esc(bill.billNumber)}`,

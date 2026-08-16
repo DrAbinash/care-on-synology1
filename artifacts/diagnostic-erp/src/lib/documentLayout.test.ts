@@ -86,9 +86,11 @@ describe("document layout engine — page specifications", () => {
     }
   });
 
-  test("internal safe padding defaults: 8mm A5 family, 6mm A4", () => {
-    expect(resolvePageLayout("A5-landscape").safePaddingMm).toBe(8);
-    expect(resolvePageLayout("A4").safePaddingMm).toBe(6);
+  test("internal safe padding defaults use page width without wasting side space", () => {
+    expect(resolvePageLayout("A5-landscape").safePaddingMm).toBe(4);
+    expect(resolvePageLayout("half-a4").safePaddingMm).toBe(4);
+    expect(resolvePageLayout("A4").safePaddingMm).toBe(4);
+    expect(resolvePageLayout("A5-portrait").safePaddingMm).toBe(6);
   });
 
   test("generated CSS has no scale, zoom, or max-width centering", () => {
@@ -314,6 +316,8 @@ describe("document layout engine — bill renderers (unified Classic)", () => {
     expect(html).toContain("width: 210mm");
     expect(html).toContain("height: 148mm");
     expect(html).toContain("max-height: 148mm");
+    expect(html).toContain("padding-left: 4mm");
+    expect(html).toContain("padding-right: 4mm");
   });
 
   test("TAT column appears when showTat is on", () => {
@@ -346,6 +350,8 @@ describe("document layout engine — bill renderers (unified Classic)", () => {
     });
     expect(html).toContain("width: 148mm");
     expect(html).toContain("height: 210mm");
+    expect(html).toContain("padding-left: 6mm");
+    expect(html).toContain("padding-right: 6mm");
   });
 
   test("A4 page box does not exceed 210mm x 297mm", () => {
@@ -356,6 +362,8 @@ describe("document layout engine — bill renderers (unified Classic)", () => {
     });
     expect(html).toContain("width: 210mm");
     expect(html).toContain("height: 297mm");
+    expect(html).toContain("padding-left: 4mm");
+    expect(html).toContain("padding-right: 4mm");
   });
 
   test("no Electron print APIs in generated HTML", () => {
