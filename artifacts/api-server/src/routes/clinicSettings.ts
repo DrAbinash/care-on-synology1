@@ -440,7 +440,9 @@ clinicSettingsRouter.put("/", async (req, res) => {
       console.warn("[PUT /api/clinic-settings] rejected 400:", "ollamaModel must be a string or null", "| received body keys:", Object.keys(body));
       res.status(400).json({ error: "ollamaModel must be a string or null" }); return;
     }
-    update.ollamaModel = typeof body.ollamaModel === "string" ? body.ollamaModel.trim() || null : null;
+    update.ollamaModel = typeof body.ollamaModel === "string"
+      ? (await import("../lib/aiPipeline/canonicalLocalAi")).normalizeLocalChatVisionModel(body.ollamaModel)
+      : null;
   }
   if (body.ollamaKnownModels !== undefined) {
     if (typeof body.ollamaKnownModels !== "string") {
@@ -850,7 +852,10 @@ clinicSettingsRouter.post("/ollama", async (req, res) => {
 
   // ollamaModel
   if (b.ollamaModel !== undefined) {
-    update.ollamaModel = b.ollamaModel ? String(b.ollamaModel).trim() || null : null;
+    const { normalizeLocalChatVisionModel } = await import("../lib/aiPipeline/canonicalLocalAi");
+    update.ollamaModel = b.ollamaModel
+      ? normalizeLocalChatVisionModel(String(b.ollamaModel))
+      : null;
   }
 
   // URL validator helper

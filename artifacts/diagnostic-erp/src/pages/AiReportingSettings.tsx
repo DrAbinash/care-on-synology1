@@ -475,11 +475,16 @@ export function AiReportingPanel() {
       ollamaBaseUrl?: string | null; ollamaFallbackUrl?: string | null; ollamaModel?: string | null;
       ollamaEnabled?: boolean; ollamaLocalOnly?: boolean; ollamaTimeoutSeconds?: number; ollamaAuditEnabled?: boolean;
     };
+    const rawModel = (cs.ollamaModel ?? s.model ?? "").trim();
+    const model =
+      rawModel === "qwen3:8b" || rawModel === "qwen3:8b-instruct" || rawModel === "qwen2.5-vl:7b" || rawModel === "qwen2-vl:7b"
+        ? "qwen3-vl:8b"
+        : (rawModel || "qwen3-vl:8b");
     setLocalAi((s) => ({
       ...s,
       primaryUrl: cs.ollamaBaseUrl ?? s.primaryUrl,
       fallbackUrl: cs.ollamaFallbackUrl ?? s.fallbackUrl,
-      model: cs.ollamaModel ?? s.model,
+      model,
       enabled: cs.ollamaEnabled ?? s.enabled,
       localOnly: cs.ollamaLocalOnly ?? s.localOnly,
       timeoutSeconds: cs.ollamaTimeoutSeconds ?? s.timeoutSeconds,

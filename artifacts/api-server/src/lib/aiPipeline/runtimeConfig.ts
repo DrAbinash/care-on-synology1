@@ -72,6 +72,7 @@ export async function resolveLocalAiRuntime(forceReload = false): Promise<LocalA
   try {
     const rows = await db
       .select({
+        id: clinicSettingsTable.id,
         ollamaBaseUrl: clinicSettingsTable.ollamaBaseUrl,
         ollamaFallbackUrl: clinicSettingsTable.ollamaFallbackUrl,
         ollamaModel: clinicSettingsTable.ollamaModel,
@@ -91,8 +92,17 @@ export async function resolveLocalAiRuntime(forceReload = false): Promise<LocalA
         ollamaFallbackUrl = normalizeOllamaBaseUrl(row.ollamaFallbackUrl);
       }
       if (row.ollamaModel?.trim()) {
-        localModel = normalizeLocalChatVisionModel(row.ollamaModel);
+        const rawModel = row.ollamaModel.trim();
+        localModel = normalizeLocalChatVisionModel(rawModel);
         modelStandardSource = "clinic_settings";
+        // Heal stale DB value (e.g. qwen3:8b → qwen3-vl:8b) so Verify / UI stop failing.
+        if (localModel !== rawModel && row.id) {
+          void db
+            .update(clinicSettingsTable)
+            .set({ ollamaModel: localModel, updatedAt: new Date() })
+            .where(eq(clinicSettingsTable.id, row.id))
+            .catch(() => {});
+        }
       }
     }
   } catch {
