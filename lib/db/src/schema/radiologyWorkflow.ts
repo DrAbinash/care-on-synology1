@@ -98,7 +98,11 @@ export const dicomIncomingStudiesTable = pgTable(
 );
 export type DicomIncomingStudy = typeof dicomIncomingStudiesTable.$inferSelect;
 
-// ── 3. AI Job Queue (Orchestration Pipeline) ───────────────────────────────────────────────────────────────────────────────
+// ── 3. AI Job Queue (LEGACY — do not use for overnight MRI) ─────────────────
+// Overnight / on-arrival MRI shadow drafts use dicom_retry_queue op
+// `ai_shadow_pipeline` (see shadowPipeline.ts). This table remains for
+// historical radiology-workflow CRUD/ops surfaces only; do not enqueue new
+// overnight work here. Data is retained — do not DROP.
 
 export const aiJobQueueTable = pgTable(
   "ai_job_queue",

@@ -94,9 +94,21 @@ export async function buildOpsContext(input: BuildCtxInput): Promise<OpsCtx> {
 
   const orthancBase = stripSlash(env.ORTHANC_INTERNAL_URL || env.ORTHANC_URL || pacs["orthanc_url"]);
   const ohif = stripSlash(env.OHIF_URL || pacs["ohif_base_url"]);
-  const ollamaBase = stripSlash(env.OLLAMA_URL || env.OLLAMA_PRIMARY_URL || env.OLLAMA_FALLBACK_URL || pacs["ollama_url"]);
-  // Default reporting model — approved set is qwen3:14b (default), gpt-oss:20b, gemma3:12b.
-  const ollamaModel = env.OLLAMA_DEFAULT_MODEL || pacs["ollama_model"] || "qwen3:14b";
+  const ollamaBase = stripSlash(
+    env.OLLAMA_URL ||
+      env.OLLAMA_PRIMARY_URL ||
+      env.OLLAMA_BASE_URL ||
+      env.OLLAMA_FALLBACK_URL ||
+      pacs["ollama_url"] ||
+      "http://172.16.1.140:11434",
+  );
+  // Canonical local chat/vision model (embeddings remain nomic-embed-text separately).
+  const ollamaModel =
+    env.OLLAMA_DEFAULT_MODEL ||
+    env.AI_MODEL_VISION ||
+    env.AI_MODEL_STANDARD ||
+    pacs["ollama_model"] ||
+    "qwen3-vl:8b";
   const publicBase = stripSlash(env.PUBLIC_BASE_URL || (env.NETWORK_PUBLIC_DOMAIN ? `https://${env.NETWORK_PUBLIC_DOMAIN}` : null));
 
   const version = resolveVersionInfo(env);

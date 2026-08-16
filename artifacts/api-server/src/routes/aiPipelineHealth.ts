@@ -33,7 +33,7 @@ aiPipelineHealthRouter.get("/health", async (_req, res) => {
   const paddle = await fetchPaddleHealth();
   const ollamaProbe = await probeOllamaReachable(cfg.ollamaBaseUrl);
   const installed = ollamaProbe.reachable ? await listOllamaModels(cfg.ollamaBaseUrl) : [];
-  const registry = buildModelRegistry();
+  const registry = buildModelRegistry(cfg);
 
   const selected = {
     fast: cfg.modelFast,
@@ -65,6 +65,7 @@ aiPipelineHealthRouter.get("/health", async (_req, res) => {
       modelStandardSource: cfg.modelStandardSource,
       modelLarge: cfg.modelLarge,
       modelVision: cfg.modelVision,
+      localChatVisionModel: cfg.localChatVisionModel,
       ollamaEnabled: cfg.ollamaEnabled,
     },
     ollama: {
@@ -161,6 +162,7 @@ aiPipelineHealthRouter.post("/test", async (req, res) => {
     structuredExtractionSucceeded: true,
     installedModels: installed,
     ollamaReachable: ollamaProbe.reachable,
+    config: cfg,
   });
 
   const v = validateDraftReport({
@@ -210,6 +212,7 @@ aiPipelineHealthRouter.post("/test", async (req, res) => {
       modelStandard: cfg.modelStandard,
       modelLarge: cfg.modelLarge,
       modelVision: cfg.modelVision,
+      localChatVisionModel: cfg.localChatVisionModel,
     },
     parsedSections: Object.keys(parsed.sections),
     promptCatalog: Object.keys(PROMPTS),
@@ -222,7 +225,7 @@ aiPipelineHealthRouter.get("/models", async (_req, res) => {
   const cfg = await resolveLocalAiRuntime();
   const installed = await listOllamaModels(cfg.ollamaBaseUrl);
   res.json({
-    registry: buildModelRegistry().map((e) => {
+    registry: buildModelRegistry(cfg).map((e) => {
       const name =
         e.id === "fast" ? cfg.modelFast
           : e.id === "standard" ? cfg.modelStandard

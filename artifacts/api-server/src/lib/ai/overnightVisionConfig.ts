@@ -1,16 +1,16 @@
 /**
  * Canonical overnight MRI vision-inference options.
  *
- * Single source of truth for the Ollama payload used by the shadow/overnight
- * radiology draft worker. Env defaults live in aiPipeline/config.ts
- * (AI_MODEL_VISION, OLLAMA_NUM_CTX, OLLAMA_THINK, AI_TEMPERATURE_DRAFT,
- * AI_CONCURRENCY). Do not scatter hard-coded model names in callers.
+ * Resolves through resolveLocalAiRuntime() so overnight jobs use the SAME
+ * endpoint/model as Local AI Test Connection, OCR, and radiology Local AI.
  */
-import { loadAiPipelineConfig } from "../aiPipeline/config";
+import { resolveLocalAiRuntime, type LocalAiRuntime } from "../aiPipeline/runtimeConfig";
 
 export interface OvernightVisionInferenceOptions {
-  /** Ollama model tag, e.g. qwen3-vl:8b */
+  /** Ollama model tag — always the canonical local chat/vision model. */
   model: string;
+  /** Ollama base URL from the same runtime resolver. */
+  endpointUrl: string;
   /** Ollama options.num_ctx */
   numCtx: number;
   /** Ollama native `think` flag (false = no chain-of-thought) */
@@ -18,15 +18,20 @@ export interface OvernightVisionInferenceOptions {
   temperature: number;
   /** End-to-end AI shadow concurrency ceiling */
   concurrency: number;
+  runtime: LocalAiRuntime;
 }
 
-export function getOvernightVisionInferenceOptions(): OvernightVisionInferenceOptions {
-  const cfg = loadAiPipelineConfig();
+export async function getOvernightVisionInferenceOptions(
+  forceReload = false,
+): Promise<OvernightVisionInferenceOptions> {
+  const runtime = await resolveLocalAiRuntime(forceReload);
   return {
-    model: cfg.modelVision,
-    numCtx: cfg.ollamaNumCtx,
-    think: cfg.ollamaThink,
-    temperature: cfg.temperatureDraft,
-    concurrency: cfg.aiConcurrency,
+    model: runtime.localChatVisionModel,
+    endpointUrl: runtime.ollamaBaseUrl,
+    numCtx: runtime.ollamaNumCtx,
+    think: runtime.ollamaThink,
+    temperature: runtime.temperatureDraft,
+    concurrency: runtime.aiConcurrency,
+    runtime,
   };
 }

@@ -82,7 +82,7 @@ export async function resolveOcrProvider(): Promise<OcrProviderDiagnostics> {
 
   // Canonical Ollama endpoint + vision model (not a separate ai_provider_settings read).
   const ollamaEndpoint = runtime.ollamaEnabled ? runtime.ollamaBaseUrl : null;
-  const ollamaModel = runtime.modelVision || runtime.modelStandard;
+  const ollamaModel = runtime.localChatVisionModel;
   const ollamaConfigured = !!ollamaEndpoint;
 
   const ollamaDiag: OcrProviderDiagnostics["ollama"] = {
@@ -140,7 +140,7 @@ export async function resolveOcrProvider(): Promise<OcrProviderDiagnostics> {
 export async function resolveOllamaVisionForOcr(): Promise<{ endpointUrl: string; model: string } | null> {
   const runtime = await resolveLocalAiRuntime();
   if (!runtime.ollamaEnabled || !runtime.ollamaBaseUrl) return null;
-  const model = runtime.modelVision || runtime.modelStandard;
+  const model = runtime.localChatVisionModel;
   const check = await checkOllama(model, runtime.ollamaBaseUrl);
   if (!check.usable) return null;
   return { endpointUrl: runtime.ollamaBaseUrl, model };

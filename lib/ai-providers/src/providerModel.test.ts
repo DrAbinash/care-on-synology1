@@ -126,9 +126,10 @@ describe("Ollama — selected model reaches native /api/chat unchanged", () => {
     expect(bodies.some((b) => b.model === "qwen3-vl:8b")).toBe(true);
     expect(bodies.some((b) => b.model === "gemma3:4b")).toBe(false);
   });
-  it("uses the gemma3:4b default probe ONLY when no model is supplied", async () => {
+  it("uses the qwen3-vl:8b default probe ONLY when no model is supplied", async () => {
     const p = await createAiProvider("ollama", undefined, "http://172.16.1.140:11434");
     await p!.testConnection();
-    expect(bodies.some((b) => b.model === "gemma3:4b")).toBe(true);
+    expect(bodies.some((b) => b.model === "qwen3-vl:8b")).toBe(true);
+    expect(bodies.some((b) => b.model === "gemma3:4b")).toBe(false);
   });
 });

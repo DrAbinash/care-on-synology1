@@ -208,7 +208,12 @@ export async function ollamaOcrIdCard(
     "id_card_ocr",
     OLLAMA_ID_CARD_OCR_PROMPT,
     [imageBase64],
-    { provider: "ollama", model: opts.model, maxTokens: 1024 },
+    {
+      provider: "ollama",
+      model: opts.model,
+      endpointUrl: opts.endpointUrl,
+      maxTokens: 1024,
+    },
   );
   if (!result.success) {
     throw new Error(result.error || "Ollama OCR request failed");

@@ -22,12 +22,16 @@ describe("aiPipeline config", () => {
     delete process.env.AI_MODE;
   });
 
-  it("defaults to paddle + gemma3:4b + AUTO + production OCR flags", () => {
+  it("defaults to paddle + qwen3-vl:8b canonical local + AUTO + production OCR flags", () => {
     delete process.env.OCR_DEVICE;
     delete process.env.OCR_VISION_FALLBACK;
     delete process.env.OCR_PROFILE;
     delete process.env.AI_CONCURRENCY;
     delete process.env.AI_MODEL_STANDARD;
+    delete process.env.AI_MODEL_LARGE;
+    delete process.env.AI_MODEL_VISION;
+    delete process.env.OLLAMA_BASE_URL;
+    delete process.env.OLLAMA_PRIMARY_URL;
     const c = loadAiPipelineConfig(true);
     expect(c.ocrEngine).toBe("paddle");
     expect(c.ocrDevice).toBe("cpu");
@@ -35,10 +39,11 @@ describe("aiPipeline config", () => {
     expect(c.ocrRetryAccurate).toBe(true);
     expect(c.ocrTesseractFallback).toBe(true);
     expect(c.ocrVisionFallback).toBe(false);
-    expect(c.modelFast).toBe("gemma3:4b");
-    expect(c.modelStandard).toBe("gemma3:4b");
-    expect(c.modelLarge).toBe("gemma3:12b");
+    expect(c.modelFast).toBe("qwen3-vl:8b");
+    expect(c.modelStandard).toBe("qwen3-vl:8b");
+    expect(c.modelLarge).toBe("qwen3-vl:8b");
     expect(c.modelVision).toBe("qwen3-vl:8b");
+    expect(c.ollamaBaseUrl).toBe("http://172.16.1.140:11434");
     expect(c.ollamaNumCtx).toBe(16384);
     expect(c.ollamaThink).toBe(false);
     expect(c.aiMode).toBe("AUTO");
@@ -55,21 +60,33 @@ describe("aiPipeline config", () => {
 describe("model registry", () => {
   beforeEach(() => resetAiPipelineConfigCache());
 
-  it("lists fast/standard/large/vision", () => {
+  it("lists fast/standard/large/vision all on canonical local model", () => {
+    delete process.env.AI_MODEL_FAST;
+    delete process.env.AI_MODEL_STANDARD;
+    delete process.env.AI_MODEL_LARGE;
+    delete process.env.AI_MODEL_VISION;
+    resetAiPipelineConfigCache();
     const r = buildModelRegistry();
     expect(r.map((e) => e.id)).toEqual(["fast", "standard", "large", "vision"]);
-    expect(entryForMode("DEEP")?.ollamaName).toBe("gemma3:12b");
+    expect(entryForMode("DEEP")?.ollamaName).toBe("qwen3-vl:8b");
+    expect(entryForMode("STANDARD")?.ollamaName).toBe("qwen3-vl:8b");
     expect(entryForMode("OCR_ONLY")).toBeNull();
   });
 
   it("flags large models for RTX 3050", () => {
-    expect(isLikelyTooLargeForRtx3050("gemma3:4b")).toBe(false);
+    expect(isLikelyTooLargeForRtx3050("qwen3-vl:8b")).toBe(false);
     expect(isLikelyTooLargeForRtx3050("gemma3:12b")).toBe(true);
   });
 });
 
 describe("model router", () => {
-  beforeEach(() => resetAiPipelineConfigCache());
+  beforeEach(() => {
+    resetAiPipelineConfigCache();
+    delete process.env.AI_MODEL_FAST;
+    delete process.env.AI_MODEL_STANDARD;
+    delete process.env.AI_MODEL_LARGE;
+    delete process.env.AI_MODEL_VISION;
+  });
 
   it("OCR_ONLY never calls LLM", () => {
     const d = routeAiModel({ mode: "OCR_ONLY", task: "ocr_only" });
@@ -78,29 +95,28 @@ describe("model router", () => {
     expect(d.model).toBeNull();
   });
 
-  it("routine AUTO prefers gemma3:4b and does not send images", () => {
+  it("routine AUTO prefers canonical qwen3-vl:8b and does not send images", () => {
     const d = routeAiModel({
       mode: "AUTO",
       task: "demographic_extraction",
-      ocrConfidence: 0.5, // low — must NOT escalate to 12B
-      installedModels: ["gemma3:4b", "gemma3:12b"],
+      ocrConfidence: 0.5, // low — must NOT invent a different model
+      installedModels: ["qwen3-vl:8b", "gemma3:4b"],
       ollamaReachable: true,
     });
     expect(d.useLlm).toBe(true);
-    expect(d.model).toBe("gemma3:4b");
+    expect(d.model).toBe("qwen3-vl:8b");
     expect(d.sendImages).toBe(false);
     expect(d.warnings.some((w) => w.includes("low_ocr_confidence"))).toBe(true);
   });
 
-  it("DEEP selects 12B with VRAM warning", () => {
+  it("DEEP still uses canonical local model (no gemma3:12b default)", () => {
     const d = routeAiModel({
       mode: "DEEP",
       task: "radiology_draft",
-      installedModels: ["gemma3:4b", "gemma3:12b"],
+      installedModels: ["qwen3-vl:8b", "gemma3:12b"],
       ollamaReachable: true,
     });
-    expect(d.model).toBe("gemma3:12b");
-    expect(d.warnings.length).toBeGreaterThan(0);
+    expect(d.model).toBe("qwen3-vl:8b");
   });
 
   it("falls back when requested model missing", () => {

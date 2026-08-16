@@ -1,9 +1,10 @@
 /**
- * Deterministic model router — never random. Prefer gemma3:4b; escalate to 12B
- * only when the user explicitly selects DEEP (or complexity criteria + flag).
+ * Deterministic model router — never random.
+ * Local chat/vision resolves to the single canonical model from pipeline config
+ * (overlaid at runtime by resolveLocalAiRuntime).
  */
 
-import { loadAiPipelineConfig, type AiMode } from "./config";
+import { loadAiPipelineConfig, type AiMode, type AiPipelineConfig } from "./config";
 import { buildModelRegistry, entryForMode, type ModelRegistryEntry } from "./modelRegistry";
 
 export type AiTaskType =
@@ -26,8 +27,10 @@ export interface RouterInput {
   userRequestedDeep?: boolean;
   installedModels?: string[];
   ollamaReachable?: boolean;
-  /** Admin must enable before AUTO may pick 12B for complexity */
+  /** Admin must enable before AUTO may pick Deep for complexity */
   allowAutoDeep?: boolean;
+  /** Prefer passing resolveLocalAiRuntime() result so routing matches jobs. */
+  config?: AiPipelineConfig;
 }
 
 export interface RouterDecision {
@@ -50,7 +53,6 @@ function modelInstalled(name: string, installed?: string[]): boolean {
   return installed.some((m) => {
     const x = m.toLowerCase();
     if (x === want) return true;
-    // Accept "gemma3:4b-instruct-q4_0" when asking for "gemma3:4b"
     if (wantTag && x.startsWith(want + "-")) return true;
     if (wantTag && x.startsWith(wantBase + ":" + wantTag)) return true;
     return false;
@@ -58,7 +60,7 @@ function modelInstalled(name: string, installed?: string[]): boolean {
 }
 
 export function routeAiModel(input: RouterInput): RouterDecision {
-  const cfg = loadAiPipelineConfig();
+  const cfg = input.config ?? loadAiPipelineConfig();
   const mode: AiMode = input.mode ?? cfg.aiMode;
   const warnings: string[] = [];
 
@@ -91,11 +93,11 @@ export function routeAiModel(input: RouterInput): RouterDecision {
   }
 
   if (input.imageUnderstandingRequired || input.task === "vision_analysis") {
-    const vision = buildModelRegistry().find((e) => e.id === "vision")!;
+    const vision = buildModelRegistry(cfg).find((e) => e.id === "vision")!;
     let model = vision.ollamaName;
     if (!modelInstalled(model, input.installedModels)) {
       warnings.push(`vision_model_missing:${model}`);
-      const std = entryForMode("STANDARD");
+      const std = entryForMode("STANDARD", cfg);
       model = std?.ollamaName ?? cfg.modelStandard;
       warnings.push(`fell_back_to:${model}`);
     }
@@ -112,7 +114,6 @@ export function routeAiModel(input: RouterInput): RouterDecision {
     };
   }
 
-  // Low OCR confidence → do NOT auto-escalate to 12B; accurate OCR should run first
   if (
     typeof input.ocrConfidence === "number" &&
     input.ocrConfidence < cfg.ocrLowConfidenceThreshold &&
@@ -130,9 +131,8 @@ export function routeAiModel(input: RouterInput): RouterDecision {
       (input.documentLength ?? 0) > 12000 &&
       input.structuredExtractionSucceeded === false
     ) {
-      // Complexity criteria met AND admin allowed — still prefer STANDARD unless deep requested
       effectiveMode = "STANDARD";
-      warnings.push("long_document_kept_on_4b");
+      warnings.push("long_document_kept_on_canonical_model");
     } else {
       effectiveMode = "STANDARD";
     }
@@ -141,7 +141,7 @@ export function routeAiModel(input: RouterInput): RouterDecision {
     effectiveMode = "DEEP";
   }
 
-  const entry = entryForMode(effectiveMode === "AUTO" ? "STANDARD" : effectiveMode);
+  const entry = entryForMode(effectiveMode === "AUTO" ? "STANDARD" : effectiveMode, cfg);
   if (!entry) {
     return {
       useLlm: false,
@@ -180,12 +180,12 @@ export function routeAiModel(input: RouterInput): RouterDecision {
     mode: effectiveMode,
     reason:
       effectiveMode === "DEEP"
-        ? "Explicit Deep mode → large model"
+        ? `Explicit Deep mode → ${model}`
         : effectiveMode === "FAST"
-          ? "Fast mode → 4B lowest latency"
-          : "Routine production → gemma3:4b (standard)",
+          ? `Fast mode → ${model}`
+          : `Routine production → ${model} (canonical local)`,
     warnings,
-    sendImages: false, // text-only for routine OCR→draft
+    sendImages: false,
     temperature:
       input.task === "radiology_draft" || input.task === "quality_check"
         ? cfg.temperatureDraft

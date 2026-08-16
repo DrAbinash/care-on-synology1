@@ -5,9 +5,9 @@
  * Verifies:
  *   1. Windows OCR worker reachable
  *   2. PaddleOCR loaded
- *   3. gemma3:4b available on Ollama
+ *   3. qwen3-vl:8b available on Ollama
  *   4. OCR → Draft path works (via CARE /api/ai-pipeline/test)
- *   5. Correct model selected (gemma3:4b / configured standard)
+ *   5. Correct model selected (qwen3-vl:8b / configured standard)
  *   6. Output marked DRAFT
  *   7. Phase timings printed
  *
@@ -18,11 +18,11 @@
  * Env:
  *   OCR_WORKER_URL      default http://127.0.0.1:8090
  *   OCR_WORKER_TOKEN    required when worker auth is enabled
- *   OLLAMA_BASE_URL     default http://127.0.0.1:11434
+ *   OLLAMA_BASE_URL     default http://172.16.1.140:11434
  *   CARE_API_URL        default http://127.0.0.1:8080
  *   STAFF_USERNAME      default abinashsingh@gmail.com
  *   STAFF_PIN           default 1234
- *   EXPECTED_MODEL      default gemma3:4b
+ *   EXPECTED_MODEL      default qwen3-vl:8b
  */
 import { readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
@@ -33,11 +33,11 @@ const root = join(__dirname, "..");
 
 const workerUrl = (process.env.OCR_WORKER_URL || "http://127.0.0.1:8090").replace(/\/$/, "");
 const workerToken = (process.env.OCR_WORKER_TOKEN || "").trim();
-const ollamaUrl = (process.env.OLLAMA_BASE_URL || process.env.OLLAMA_PRIMARY_URL || "http://127.0.0.1:11434").replace(/\/$/, "");
+const ollamaUrl = (process.env.OLLAMA_BASE_URL || process.env.OLLAMA_PRIMARY_URL || "http://172.16.1.140:11434").replace(/\/$/, "");
 const careApi = (process.env.CARE_API_URL || "http://127.0.0.1:8080").replace(/\/$/, "");
 const staffUser = process.env.STAFF_USERNAME || "abinashsingh@gmail.com";
 const staffPin = process.env.STAFF_PIN || "1234";
-const expectedModel = process.env.EXPECTED_MODEL || "gemma3:4b";
+const expectedModel = process.env.EXPECTED_MODEL || "qwen3-vl:8b";
 
 const timings = {};
 const failures = [];
@@ -133,7 +133,7 @@ async function main() {
   }
 
   // 3. Gemma3:4b available
-  console.log("Phase 3 — Ollama gemma3:4b");
+  console.log("Phase 3 — Ollama qwen3-vl:8b");
   const models = await timed("ollamaTagsMs", async () => {
     const res = await fetch(`${ollamaUrl}/api/tags`, { signal: AbortSignal.timeout(8000) });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -145,7 +145,7 @@ async function main() {
   });
   if (models) {
     const has = models.some((m) => m === expectedModel || m.startsWith(`${expectedModel}-`) || m.startsWith(`${expectedModel}:`));
-    // Also accept exact tag forms like gemma3:4b
+    // Also accept exact tag forms like qwen3-vl:8b-q4_K_M
     const hasExact = models.some((m) => m === expectedModel || m.split(":")[0] === expectedModel.split(":")[0] && m.includes(expectedModel.split(":")[1] || ""));
     if (has || hasExact || models.includes(expectedModel)) ok(`${expectedModel} available`);
     else fail(`${expectedModel} available`, `installed=${models.slice(0, 12).join(", ") || "(none)"}`);

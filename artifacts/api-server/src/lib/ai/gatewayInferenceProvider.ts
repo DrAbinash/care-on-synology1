@@ -3,8 +3,8 @@
  *
  * Implements the P1 shadow-inference seam by calling the AI Gateway
  * (@workspace/ai-providers requestStructuredReport). Injects the canonical
- * overnight vision options (model / num_ctx / think) so the actual Ollama
- * `/api/chat` payload receives them — not just UI labels.
+ * overnight vision options (model / num_ctx / think / endpoint) from
+ * resolveLocalAiRuntime() so Test Connection and jobs share one resolution.
  */
 import { requestStructuredReport, type GatewayDeps } from "@workspace/ai-providers";
 import type { ShadowInferenceProvider, ShadowInferenceInput, ShadowInferenceOutput } from "./shadowInference";
@@ -43,23 +43,21 @@ export function buildRadiologyDraftPrompt(input: ShadowInferenceInput): string {
   ].join("\n");
 }
 
-function makeOvernightCall(): GatewayDeps["call"] {
+function makeOvernightCall(vision: Awaited<ReturnType<typeof getOvernightVisionInferenceOptions>>): GatewayDeps["call"] {
   return async ({ provider, model, prompt, images }) => {
-    const vision = getOvernightVisionInferenceOptions();
     const { generateAiResponse } = await import("@workspace/ai-providers");
-    // Prefer the canonical overnight vision model when the chosen provider is Ollama
-    // (or when no model was resolved). Task routes / capabilities can still win
-    // when they already specify a vision model.
+    // Always pin Ollama overnight drafts to the canonical local chat/vision model.
     const resolvedModel =
       provider === "ollama"
-        ? (model && !/gemma3:4b/i.test(model) ? model : vision.model)
-        : model;
+        ? vision.model
+        : (model || vision.model);
     const r = await generateAiResponse(provider, prompt, images, {
-      model: resolvedModel || vision.model,
+      model: resolvedModel,
       numCtx: vision.numCtx,
       think: vision.think,
       temperature: vision.temperature,
       maxTokens: 4096,
+      endpointUrl: provider === "ollama" ? vision.endpointUrl : undefined,
     });
     return { success: r.success, text: r.text, error: r.error };
   };
@@ -69,7 +67,7 @@ export const gatewayInferenceProvider: ShadowInferenceProvider = {
   name: "ai-gateway-v1",
   async infer(input: ShadowInferenceInput): Promise<ShadowInferenceOutput> {
     const images = (input.images ?? []).map((i) => i.imageData);
-    const vision = getOvernightVisionInferenceOptions();
+    const vision = await getOvernightVisionInferenceOptions();
     const result = await requestStructuredReport(
       {
         taskKey: RADIOLOGY_TASK_KEY,
@@ -84,8 +82,7 @@ export const gatewayInferenceProvider: ShadowInferenceProvider = {
         maxAttempts: 2,
       },
       {
-        call: makeOvernightCall(),
-        // Prefer overnight vision model in the chain when capabilities are empty/unseeded.
+        call: makeOvernightCall(vision),
         selectChain: async (taskKey, required, phi) => {
           const { selectProviderChain } = await import("@workspace/ai-providers");
           const chain = await selectProviderChain(taskKey, required, phi);
@@ -99,7 +96,7 @@ export const gatewayInferenceProvider: ShadowInferenceProvider = {
             }];
           }
           return chain.map((c) =>
-            c.provider === "ollama" && (!c.model || /gemma3:4b/i.test(c.model))
+            c.provider === "ollama"
               ? { ...c, model: vision.model }
               : c,
           );
@@ -125,7 +122,7 @@ export const gatewayInferenceProvider: ShadowInferenceProvider = {
         modelDigest: result.modelDigest,
         provider: result.provider,
         degraded: result.degraded,
-        detail: `${result.detail}; num_ctx=${vision.numCtx}; think=${vision.think}`,
+        detail: `${result.detail}; endpoint=${vision.endpointUrl}; num_ctx=${vision.numCtx}; think=${vision.think}`,
       },
     };
   },
