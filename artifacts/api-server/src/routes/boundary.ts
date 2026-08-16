@@ -44,9 +44,12 @@ const router = Router();
 // ── API key auth middleware ──────────────────────────────────────────────────
 const BOUNDARY_KEY = process.env.BOUNDARY_API_KEY;
 
+// Optional: only required for the standalone federated Radiology Service
+// (server-to-server /api/boundary). Core Orthanc/PACS/OHIF and in-ERP
+// radiology do not use this key — missing it is safe for a single-clinic install.
 if (!BOUNDARY_KEY && process.env.NODE_ENV === "production") {
   console.warn(
-    "[boundary] BOUNDARY_API_KEY not set — the radiology service will not be able to connect.",
+    "[boundary] BOUNDARY_API_KEY not set — federated Radiology Service connectivity is disabled (optional; not required for Orthanc/PACS/OHIF).",
   );
 }
 

@@ -174,6 +174,26 @@ export class NetworkError extends Error {
   }
 }
 
+/** HTTP error with a status the server actually returned (4xx/5xx after retries). */
+export class HttpError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "HttpError";
+    this.status = status;
+  }
+}
+
+export function isHttpError(err: unknown): err is HttpError {
+  return err instanceof HttpError;
+}
+
+/** Auth failure — server answered; do not treat as "API unreachable". */
+export function isAuthHttpError(err: unknown): boolean {
+  return err instanceof HttpError && (err.status === 401 || err.status === 403);
+}
+
 /**
  * True when a billing save should queue locally instead of failing outright.
  * Covers pure network failures AND gateway errors (502/503/504) common during
@@ -290,7 +310,7 @@ async function fetchWithRetry(path: string, init?: RequestInit): Promise<Respons
       if (res.status === 401 && (isSessionAuthPath(path) || isSessionDeadMessage(message))) {
         handleSessionExpiry();
       }
-      throw new Error(message);
+      throw new HttpError(message, res.status);
     }
 
     return res;
