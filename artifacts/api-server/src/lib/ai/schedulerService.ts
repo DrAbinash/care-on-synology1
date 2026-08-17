@@ -11,15 +11,28 @@ import {
   dicomIncomingStudiesTable, studySnapshotsTable, aiProcessingManifestsTable, aiDraftFeedbackTable, dicomRetryQueueTable,
   radiologyWorklistTable,
 } from "@workspace/db/schema";
-import { and, eq, desc, inArray, isNull, ne, or, sql } from "drizzle-orm";
+import { and, eq, desc, inArray, isNull, ne, sql } from "drizzle-orm";
 import { isFeatureEnabledServer } from "../featureFlags";
 import { AI_MASTER_FLAG, getSchedulerConfig, getModalityMode, getModalityPolicies, normalizeAiModality } from "./clinicalConfigService";
 import { enqueueAiShadowJob, AI_SHADOW_PIPELINE_JOB } from "./shadowPipeline";
-import { jobBacklogCounts, listDeadLetterJobs } from "../radiologyJobs";
+import { jobBacklogCounts, listDeadLetterJobs, markJobRetryable } from "../radiologyJobs";
 import { resolveRadiologyStudyId } from "../canonicalStudy";
 import { decideScheduling, isWithinNightWindow, type Priority } from "./aiScheduler";
 import { logger } from "../logger";
 import { istHourMinute } from "../istDate";
+import { isStudyInAgeWindow } from "./studyAgeWindow";
+import {
+  cancelQueuedShadowJobs,
+  duplicateEnqueueReason,
+  enrichWorklistOvernightAi,
+  findLatestShadowJob,
+  overnightQueueStats,
+  retryShadowJobs,
+} from "./overnightDraftQueue";
+import { compareOvernightDraftRows } from "./overnightAiDraftStatus";
+import { probeOllamaReachable } from "@workspace/ai-providers";
+import { resolveLocalAiRuntime } from "../aiPipeline/runtimeConfig";
+import { CANONICAL_LOCAL_CHAT_VISION_MODEL } from "../aiPipeline/canonicalLocalAi";
 
 function nowMinutesLocal(): number {
   // Clinic timezone (Asia/Kolkata) — never use container UTC wall-clock.
@@ -51,13 +64,34 @@ export async function scheduleStudy(opts: {
   arrivalSignature?: string;
   /** When true, studies whose decision is "defer to night" are enqueued now (night cron). */
   forceNightWindow?: boolean;
+  /** Explicit retry — still refuses if a job is already QUEUED/RUNNING. */
+  forceRetry?: boolean;
+  /** Night-batch / settings run: skip READY and in-flight unless forceRetry. */
+  skipDuplicates?: boolean;
 }): Promise<{ enqueued: boolean; reason: string; jobId?: number }> {
   if (!(await isFeatureEnabledServer(AI_MASTER_FLAG))) return { enqueued: false, reason: "master flag off" };
   const cfg = await getSchedulerConfig();
   const modalityMode = await getModalityMode(opts.modality);
 
+  const skipDupes = opts.skipDuplicates !== false;
+  if (skipDupes) {
+    const dup = await duplicateEnqueueReason(opts.studyInstanceUid, { forceRetry: opts.forceRetry });
+    if (dup) return { enqueued: false, reason: dup };
+  }
+
+  if (opts.forceRetry) {
+    const latest = await findLatestShadowJob(opts.studyInstanceUid);
+    if (latest && (latest.status === "abandoned" || latest.status === "failed")) {
+      const ok = await markJobRetryable(latest.id);
+      if (ok) {
+        await markWorklistPending(opts.studyInstanceUid);
+        return { enqueued: true, reason: "retried existing job", jobId: latest.id };
+      }
+    }
+  }
+
   // "unchanged" = a manifest already exists for the current snapshot content.
-  const isUnchanged = await hasCurrentManifest(opts.studyInstanceUid);
+  const isUnchanged = opts.forceRetry ? false : await hasCurrentManifest(opts.studyInstanceUid);
   const now = nowMinutesLocal();
   let decision = decideScheduling(
     {
@@ -91,7 +125,7 @@ export async function scheduleStudy(opts: {
     studyInstanceUid: opts.studyInstanceUid,
     radiologyStudyId,
     modality: opts.modality ?? null,
-    arrivalSignature: opts.arrivalSignature ?? `${decision.mode}:${opts.manualRequest ? "manual" : "auto"}`,
+    arrivalSignature: opts.arrivalSignature ?? (opts.forceNightWindow ? "overnight" : `${decision.mode}:${opts.manualRequest ? "manual" : "auto"}`),
   });
   await markWorklistPending(opts.studyInstanceUid);
   return { enqueued: true, reason: decision.reason, jobId: res.id };
@@ -142,11 +176,166 @@ async function overnightModalitySet(): Promise<Set<string>> {
   );
 }
 
+interface NightBatchCandidate {
+  uid: string;
+  modality: string | null;
+  aiDraftStatus: string;
+  studyDate: string | null;
+  createdAt: Date | null;
+}
+
+async function collectNightBatchCandidates(overnight: Set<string>, scanLimit: number): Promise<NightBatchCandidate[]> {
+  const candidates: NightBatchCandidate[] = [];
+  const seen = new Set<string>();
+
+  const wlRows = await db
+    .select({
+      uid: radiologyWorklistTable.studyInstanceUID,
+      modality: radiologyWorklistTable.modality,
+      aiDraftStatus: radiologyWorklistTable.aiDraftStatus,
+      studyDate: radiologyWorklistTable.studyDate,
+      createdAt: radiologyWorklistTable.createdAt,
+    })
+    .from(radiologyWorklistTable)
+    .where(sql`${radiologyWorklistTable.studyInstanceUID} IS NOT NULL`)
+    .orderBy(desc(radiologyWorklistTable.createdAt))
+    .limit(scanLimit);
+
+  for (const r of wlRows) {
+    if (!r.uid || seen.has(r.uid)) continue;
+    const mod = normalizeAiModality(r.modality ?? "");
+    if (!overnight.has(mod)) continue;
+    seen.add(r.uid);
+    candidates.push({
+      uid: r.uid,
+      modality: r.modality,
+      aiDraftStatus: (r.aiDraftStatus ?? "NONE").toUpperCase(),
+      studyDate: r.studyDate,
+      createdAt: r.createdAt,
+    });
+  }
+
+  const incoming = await db
+    .select({ uid: dicomIncomingStudiesTable.studyInstanceUID, modality: dicomIncomingStudiesTable.modality })
+    .from(dicomIncomingStudiesTable)
+    .leftJoin(studySnapshotsTable, eq(studySnapshotsTable.studyInstanceUid, dicomIncomingStudiesTable.studyInstanceUID))
+    .where(and(eq(dicomIncomingStudiesTable.transferStatus, "complete"), isNull(studySnapshotsTable.id)))
+    .limit(Math.min(scanLimit, 200));
+
+  for (const r of incoming) {
+    if (!r.uid || seen.has(r.uid)) continue;
+    const mod = normalizeAiModality(r.modality ?? "");
+    if (!overnight.has(mod)) continue;
+    seen.add(r.uid);
+    candidates.push({
+      uid: r.uid,
+      modality: r.modality,
+      aiDraftStatus: "NONE",
+      studyDate: null,
+      createdAt: null,
+    });
+  }
+  return candidates;
+}
+
+function applyStudyAgeWindow<T extends { studyDate: string | null; createdAt: Date | null }>(
+  rows: T[],
+  cfg: Awaited<ReturnType<typeof getSchedulerConfig>>,
+): T[] {
+  return rows.filter((r) => isStudyInAgeWindow({
+    window: cfg.studyAgeWindow,
+    studyDate: r.studyDate,
+    createdAt: r.createdAt,
+    customFrom: cfg.studyAgeCustomFrom,
+    customTo: cfg.studyAgeCustomTo,
+  }));
+}
+
+export interface NightBatchPreview {
+  overnightModalities: string[];
+  studyAgeWindow: string;
+  eligible: number;
+  alreadyReady: number;
+  alreadyQueuedOrRunning: number;
+  previouslyError: number;
+  newEligible: number;
+  skippedWindow?: boolean;
+}
+
+async function classifyNightCandidates(candidates: NightBatchCandidate[]): Promise<{
+  eligible: NightBatchCandidate[];
+  alreadyReady: number;
+  alreadyQueuedOrRunning: number;
+  previouslyError: number;
+  newEligible: NightBatchCandidate[];
+}> {
+  const eligible = candidates;
+  let alreadyReady = 0;
+  let alreadyQueuedOrRunning = 0;
+  let previouslyError = 0;
+  const newEligible: NightBatchCandidate[] = [];
+  for (const c of eligible) {
+    const dup = await duplicateEnqueueReason(c.uid);
+    if (dup === "already READY") {
+      alreadyReady++;
+      continue;
+    }
+    if (dup?.startsWith("already ")) {
+      alreadyQueuedOrRunning++;
+      continue;
+    }
+    if (c.aiDraftStatus === "ERROR") {
+      previouslyError++;
+      continue;
+    }
+    newEligible.push(c);
+  }
+  return { eligible, alreadyReady, alreadyQueuedOrRunning, previouslyError, newEligible };
+}
+
+/** Preview counts for Settings → Run batch, without enqueueing. */
+export async function previewNightBatch(): Promise<NightBatchPreview> {
+  if (!(await isFeatureEnabledServer(AI_MASTER_FLAG))) {
+    return {
+      overnightModalities: [], studyAgeWindow: "all",
+      eligible: 0, alreadyReady: 0, alreadyQueuedOrRunning: 0, previouslyError: 0, newEligible: 0,
+    };
+  }
+  const cfg = await getSchedulerConfig();
+  const overnight = await overnightModalitySet();
+  if (overnight.size === 0) {
+    return {
+      overnightModalities: [], studyAgeWindow: cfg.studyAgeWindow,
+      eligible: 0, alreadyReady: 0, alreadyQueuedOrRunning: 0, previouslyError: 0, newEligible: 0,
+    };
+  }
+  const raw = await collectNightBatchCandidates(overnight, 800);
+  const inWindow = applyStudyAgeWindow(raw, cfg);
+  const classified = await classifyNightCandidates(inWindow);
+  return {
+    overnightModalities: [...overnight],
+    studyAgeWindow: cfg.studyAgeWindow,
+    eligible: classified.eligible.length,
+    alreadyReady: classified.alreadyReady,
+    alreadyQueuedOrRunning: classified.alreadyQueuedOrRunning,
+    previouslyError: classified.previouslyError,
+    newEligible: classified.newEligible.length,
+  };
+}
+
 /** Night / scheduled batch: enqueue worklist + incoming studies still needing drafts. */
 export async function runNightBatch(
   limit = 50,
-  opts: { forceOutsideWindow?: boolean } = {},
-): Promise<{ considered: number; enqueued: number; skippedWindow?: boolean; overnightModalities: string[] }> {
+  opts: { forceOutsideWindow?: boolean; onlyNew?: boolean } = {},
+): Promise<{
+  considered: number;
+  enqueued: number;
+  skippedWindow?: boolean;
+  overnightModalities: string[];
+  skippedReady?: number;
+  skippedInFlight?: number;
+  preview?: NightBatchPreview;
+}> {
   if (!(await isFeatureEnabledServer(AI_MASTER_FLAG))) {
     return { considered: 0, enqueued: 0, overnightModalities: [] };
   }
@@ -155,72 +344,57 @@ export async function runNightBatch(
     return { considered: 0, enqueued: 0, skippedWindow: true, overnightModalities: [] };
   }
 
-  // Night batch only processes modalities explicitly in night_batch mode.
-  // Immediate modalities are handled on DICOM arrival — do not silently pull CT/XR.
   const overnight = await overnightModalitySet();
   if (overnight.size === 0) {
     return { considered: 0, enqueued: 0, overnightModalities: [] };
   }
 
-  const candidates: Array<{ uid: string; modality: string | null }> = [];
-  const seen = new Set<string>();
+  const raw = await collectNightBatchCandidates(overnight, Math.max(limit * 8, 200));
+  const candidates = applyStudyAgeWindow(raw, cfg);
+  const classified = await classifyNightCandidates(candidates);
 
-  // Primary source: radiology worklist (Orthanc intake path).
-  const wlRows = await db
-    .select({
-      uid: radiologyWorklistTable.studyInstanceUID,
-      modality: radiologyWorklistTable.modality,
-      aiDraftStatus: radiologyWorklistTable.aiDraftStatus,
-    })
-    .from(radiologyWorklistTable)
-    .where(and(
-      sql`${radiologyWorklistTable.studyInstanceUID} IS NOT NULL`,
-      or(
-        eq(radiologyWorklistTable.aiDraftStatus, "NONE"),
-        eq(radiologyWorklistTable.aiDraftStatus, "PENDING"),
-        eq(radiologyWorklistTable.aiDraftStatus, "ERROR"),
-      ),
-    ))
-    .limit(Math.max(limit * 4, 80));
-
-  for (const r of wlRows) {
-    if (!r.uid || seen.has(r.uid)) continue;
-    const mod = normalizeAiModality(r.modality ?? "");
-    if (!overnight.has(mod)) continue;
-    seen.add(r.uid);
-    candidates.push({ uid: r.uid, modality: r.modality });
-  }
-
-  // Legacy / DIMSE path: dicom_incoming_studies complete without snapshot.
-  const incoming = await db
-    .select({ uid: dicomIncomingStudiesTable.studyInstanceUID, modality: dicomIncomingStudiesTable.modality })
-    .from(dicomIncomingStudiesTable)
-    .leftJoin(studySnapshotsTable, eq(studySnapshotsTable.studyInstanceUid, dicomIncomingStudiesTable.studyInstanceUID))
-    .where(and(eq(dicomIncomingStudiesTable.transferStatus, "complete"), isNull(studySnapshotsTable.id)))
-    .limit(Math.max(limit * 3, 50));
-
-  for (const r of incoming) {
-    if (!r.uid || seen.has(r.uid)) continue;
-    const mod = normalizeAiModality(r.modality ?? "");
-    if (!overnight.has(mod)) continue;
-    seen.add(r.uid);
-    candidates.push({ uid: r.uid, modality: r.modality });
-  }
+  const toEnqueue = opts.onlyNew
+    ? classified.newEligible
+    : [
+        ...classified.newEligible,
+        ...candidates.filter((c) => c.aiDraftStatus === "ERROR"),
+      ];
 
   let considered = 0;
   let enqueued = 0;
-  for (const r of candidates) {
+  let skippedReady = 0;
+  let skippedInFlight = 0;
+  for (const r of toEnqueue) {
     considered++;
     if (enqueued >= limit) break;
     const res = await scheduleStudy({
       studyInstanceUid: r.uid,
       modality: r.modality,
-      arrivalSignature: `night-batch:${Date.now()}:${enqueued}`,
+      arrivalSignature: "overnight",
       forceNightWindow: true,
+      forceRetry: r.aiDraftStatus === "ERROR",
+      skipDuplicates: true,
     });
     if (res.enqueued) enqueued++;
+    else if (res.reason === "already READY") skippedReady++;
+    else if (res.reason.startsWith("already ")) skippedInFlight++;
   }
-  return { considered, enqueued, overnightModalities: [...overnight] };
+  return {
+    considered,
+    enqueued,
+    overnightModalities: [...overnight],
+    skippedReady,
+    skippedInFlight,
+    preview: {
+      overnightModalities: [...overnight],
+      studyAgeWindow: cfg.studyAgeWindow,
+      eligible: classified.eligible.length,
+      alreadyReady: classified.alreadyReady,
+      alreadyQueuedOrRunning: classified.alreadyQueuedOrRunning,
+      previouslyError: classified.previouslyError,
+      newEligible: classified.newEligible.length,
+    },
+  };
 }
 
 /** Scheduled Reprocessing: re-enqueue recent studies; the pipeline's inputHash
@@ -237,7 +411,12 @@ export async function runScheduledReprocessing(limit = 50): Promise<{ considered
   for (const r of rows) {
     if (seen.has(r.uid)) continue;
     seen.add(r.uid);
-    const res = await scheduleStudy({ studyInstanceUid: r.uid, manualRequest: true, arrivalSignature: "reprocess" });
+    const res = await scheduleStudy({
+      studyInstanceUid: r.uid,
+      manualRequest: true,
+      arrivalSignature: "reprocess",
+      skipDuplicates: false,
+    });
     if (res.enqueued) enqueued++;
   }
   return { considered: seen.size, enqueued };
@@ -263,18 +442,106 @@ export async function getAiQueueDashboard() {
   return { backlog, running, deadLetter };
 }
 
-/** Cancel a queued/running AI job (terminal 'abandoned' with an operator note). */
+/** Cancel queued (pending/retrying) AI jobs only — never a running Ollama claim. */
 export async function cancelAiJob(jobId: number): Promise<boolean> {
-  const [row] = await db
-    .select({ id: dicomRetryQueueTable.id, op: dicomRetryQueueTable.operationType, status: dicomRetryQueueTable.status })
-    .from(dicomRetryQueueTable)
-    .where(eq(dicomRetryQueueTable.id, jobId))
-    .limit(1);
-  if (!row || row.op !== AI_SHADOW_PIPELINE_JOB) return false;
-  if (row.status === "success") return false;
-  await db
-    .update(dicomRetryQueueTable)
-    .set({ status: "abandoned", failureReason: "cancelled by operator", lockedBy: null, lockedAt: null, updatedAt: new Date() })
-    .where(eq(dicomRetryQueueTable.id, jobId));
-  return true;
+  const result = await cancelQueuedShadowJobs([jobId]);
+  return result.cancelled === 1;
+}
+
+export async function cancelQueuedOvernightJobs(jobIds: number[]) {
+  return cancelQueuedShadowJobs(jobIds);
+}
+
+export async function retryOvernightJobs(jobIds: number[]) {
+  return retryShadowJobs(jobIds);
+}
+
+/** Queue selected worklist studies onto the existing shadow pipeline. */
+export async function queueSelectedStudies(opts: {
+  studyInstanceUids: string[];
+  modalities?: Record<string, string | null>;
+  retry?: boolean;
+}): Promise<{ queued: number; skipped: Array<{ uid: string; reason: string }> }> {
+  const skipped: Array<{ uid: string; reason: string }> = [];
+  let queued = 0;
+  for (const uid of opts.studyInstanceUids) {
+    const res = await scheduleStudy({
+      studyInstanceUid: uid,
+      modality: opts.modalities?.[uid] ?? null,
+      manualRequest: true,
+      forceRetry: Boolean(opts.retry),
+      skipDuplicates: true,
+      arrivalSignature: opts.retry ? "overnight-retry" : "overnight",
+    });
+    if (res.enqueued) queued++;
+    else skipped.push({ uid, reason: res.reason });
+  }
+  return { queued, skipped };
+}
+
+export async function attachOvernightAiToWorklist<T extends {
+  studyInstanceUID?: string | null;
+  aiDraftStatus?: string | null;
+  createdAt?: Date | string | null;
+}>(rows: T[]) {
+  const enriched = await enrichWorklistOvernightAi(rows);
+  return enriched.sort((a, b) => compareOvernightDraftRows(
+    {
+      displayStatus: a.overnightAi.displayStatus,
+      completedAt: a.overnightAi.completedAt,
+      startedAt: a.overnightAi.startedAt,
+      lastAttemptAt: a.overnightAi.lastAttemptAt,
+      queuePosition: a.overnightAi.queuePosition,
+      queuedAt: a.overnightAi.queuedAt,
+      jobId: a.overnightAi.jobId,
+      createdAt: a.createdAt instanceof Date ? a.createdAt.toISOString() : a.createdAt ?? null,
+    },
+    {
+      displayStatus: b.overnightAi.displayStatus,
+      completedAt: b.overnightAi.completedAt,
+      startedAt: b.overnightAi.startedAt,
+      lastAttemptAt: b.overnightAi.lastAttemptAt,
+      queuePosition: b.overnightAi.queuePosition,
+      queuedAt: b.overnightAi.queuedAt,
+      jobId: b.overnightAi.jobId,
+      createdAt: b.createdAt instanceof Date ? b.createdAt.toISOString() : b.createdAt ?? null,
+    },
+  ));
+}
+
+/** Compact overnight diagnostics — reuses ENABLE_SCHEDULERS, Local AI runtime, and dicom_retry_queue. */
+export async function getOvernightDiagnostics() {
+  const cfg = await getSchedulerConfig();
+  const nowMin = nowMinutesLocal();
+  const schedulersOn = process.env.ENABLE_SCHEDULERS === "1" || process.env.ENABLE_SCHEDULERS === "true";
+  const stats = await overnightQueueStats();
+  let localAiReachable = false;
+  let localAiError: string | null = null;
+  let model = CANONICAL_LOCAL_CHAT_VISION_MODEL;
+  try {
+    const runtime = await resolveLocalAiRuntime();
+    model = runtime.localChatVisionModel;
+    const probe = await probeOllamaReachable(runtime.ollamaBaseUrl);
+    localAiReachable = probe.reachable;
+    localAiError = probe.error ?? null;
+  } catch (err) {
+    localAiError = err instanceof Error ? err.message : String(err);
+  }
+  return {
+    scheduler: schedulersOn ? "running" : "not_running",
+    nightWindow: isWithinNightWindow(nowMin, cfg) ? "active" : "inactive",
+    worker: schedulersOn ? (stats.staleRunning > 0 ? "unhealthy" : "healthy") : "not_running",
+    localAi: localAiReachable ? "reachable" : "unreachable",
+    localAiError,
+    model,
+    concurrency: cfg.maxConcurrentJobs,
+    queueDepth: stats.queueDepth,
+    running: stats.running,
+    staleRunning: stats.staleRunning,
+    oldestQueuedAt: stats.oldestQueuedAt,
+    lastSuccessfulDraftAt: stats.lastSuccessfulDraftAt,
+    lastError: stats.lastError,
+    lastErrorAt: stats.lastErrorAt,
+    studyAgeWindow: cfg.studyAgeWindow,
+  };
 }

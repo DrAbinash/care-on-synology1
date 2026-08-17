@@ -22,6 +22,10 @@ export interface SchedulerConfig {
   cpuLimitPercent: number;
   skipFinalizedReports: boolean;
   skipUnchangedStudies: boolean;
+  /** all = no date filter (historical default). today ≠ last_24h. */
+  studyAgeWindow: "all" | "today" | "last_24h" | "last_48h" | "last_3d" | "last_7d" | "custom";
+  studyAgeCustomFrom: Date | string | null;
+  studyAgeCustomTo: Date | string | null;
 }
 
 function toMinutes(hhmm: string): number {

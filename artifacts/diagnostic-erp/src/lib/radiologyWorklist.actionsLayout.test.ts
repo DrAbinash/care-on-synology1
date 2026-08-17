@@ -26,8 +26,10 @@ describe("PACS worklist actions + unlinked bills UX", () => {
     expect(src).toContain("Unlinked");
   });
 
-  it("overnight AI drafts filter surfaces the AI Draft column", () => {
+  it("overnight AI drafts filter surfaces the AI Draft column and status chips", () => {
     expect(src).toContain("toggleOvernightAiDrafts");
     expect(src).toContain("aiDraft: true");
+    expect(src).toContain('data-testid="overnight-ai-drafts-filters"');
+    expect(src).toContain("compareOvernightWorklistRows");
   });
 });
