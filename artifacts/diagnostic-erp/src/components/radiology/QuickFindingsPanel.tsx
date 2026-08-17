@@ -156,6 +156,13 @@ interface Props {
   selectedRegions?: string[];
   /** Parent-owned region toggle — merges technique across regions. */
   onRegionToggle?: (regionName: string) => void;
+  /**
+   * The workspace already owns the region in its Region / Study / Protocol
+   * section, so the panel collapses its own region grid to a single
+   * "Region — Brain · Change region" line. Every region control is still here,
+   * one click behind "Change region".
+   */
+  compactRegions?: boolean;
 }
 
 const SIDES: Array<{ value: Side; label: string }> = [
@@ -168,7 +175,7 @@ export default function QuickFindingsPanel({
   selectedIds, onToggle, onFindingClick, onEditBeforeInsert, onMeasurement, side, onSideChange, disabled, initialStudyHint, isAdmin,
   instances, onUpdateInstance, onAutoTechnique, onInsertNormals,
   activeProtocolId, onProtocolChange, onChecklistChange, onAcceptLearnedSuggestion,
-  onFindingsLoaded, externalSearch, selectedRegions, onRegionToggle,
+  onFindingsLoaded, externalSearch, selectedRegions, onRegionToggle, compactRegions = false,
 }: Props) {
   const qc = useQueryClient();
   const searchRef = useRef<HTMLInputElement>(null);
@@ -684,43 +691,81 @@ export default function QuickFindingsPanel({
         ))}
       </div>
 
-      {/* Study tabs */}
-      <div className="flex flex-wrap gap-1.5 shrink-0">
-        {activeTabs.map((tab, i) => {
-          const active = effectiveTabs.has(tab.name);
-          return (
-            <button
-              key={tab.id}
-              onClick={() => toggleTab(tab.name)}
-              title={i < 9 ? `Ctrl+${i + 1}` : undefined}
-              className={`text-[10px] font-bold px-2.5 py-1.5 rounded-lg border transition-all ${
-                active
-                  ? "bg-gradient-to-br from-violet-500 to-fuchsia-600 text-white border-violet-600 shadow-sm shadow-violet-400/30"
-                  : "bg-gradient-to-b from-white to-violet-50/50 text-violet-900 border-violet-200 hover:border-violet-400 hover:bg-violet-50"
-              }`}
-            >
-              {tab.name}
-            </button>
-          );
-        })}
-      </div>
-      {(effectiveTabs.size === 0 || showRegionPicker) && activeTabs.length > 0 && (
-        <select
-          data-testid="quick-add-region"
-          aria-label="Body region"
-          className="h-7 text-[11px] border rounded-md px-2 bg-background shrink-0"
-          value=""
-          onChange={(e) => {
-            const name = e.target.value;
-            if (name) toggleTab(name);
-            setShowRegionPicker(false);
-          }}
+      {/* Region context. With compactRegions the workspace's Region section is
+          the single source of truth, so the grid folds into one line until the
+          radiologist asks to change/cross regions. */}
+      {compactRegions && effectiveTabs.size > 0 && !showRegionPicker ? (
+        <div
+          className="flex shrink-0 items-center gap-1.5 rounded-lg border border-violet-200 bg-violet-50/50 px-2 py-1"
+          data-testid="quick-add-region-compact"
         >
-          <option value="">Body region…</option>
-          {activeTabs.map((t) => (
-            <option key={t.id} value={t.name}>{t.name}</option>
-          ))}
-        </select>
+          <span className="text-[9px] font-bold uppercase tracking-wide text-violet-700">Region</span>
+          <span className="min-w-0 flex-1 truncate text-[10px] font-semibold text-violet-950">
+            {[...effectiveTabs].join(" + ")}
+          </span>
+          <button
+            type="button"
+            onClick={() => setShowRegionPicker(true)}
+            className="shrink-0 text-[10px] text-violet-700 underline underline-offset-2 hover:text-violet-900"
+            data-testid="quick-add-change-region"
+            title="Change region or pick findings from another region"
+          >
+            Change / all regions
+          </button>
+        </div>
+      ) : (
+        <>
+          {/* Study tabs */}
+          <div className="flex flex-wrap gap-1.5 shrink-0">
+            {activeTabs.map((tab, i) => {
+              const active = effectiveTabs.has(tab.name);
+              return (
+                <button
+                  key={tab.id}
+                  onClick={() => toggleTab(tab.name)}
+                  title={i < 9 ? `Ctrl+${i + 1}` : undefined}
+                  className={`text-[10px] font-bold px-2.5 py-1.5 rounded-lg border transition-all ${
+                    active
+                      ? "bg-gradient-to-br from-violet-500 to-fuchsia-600 text-white border-violet-600 shadow-sm shadow-violet-400/30"
+                      : "bg-gradient-to-b from-white to-violet-50/50 text-violet-900 border-violet-200 hover:border-violet-400 hover:bg-violet-50"
+                  }`}
+                >
+                  {tab.name}
+                </button>
+              );
+            })}
+          </div>
+          {(effectiveTabs.size === 0 || showRegionPicker) && activeTabs.length > 0 && (
+            <div className="flex shrink-0 items-center gap-1.5">
+              <select
+                data-testid="quick-add-region"
+                aria-label="Body region"
+                className="h-7 flex-1 text-[11px] border rounded-md px-2 bg-background"
+                value=""
+                onChange={(e) => {
+                  const name = e.target.value;
+                  if (name) toggleTab(name);
+                  if (!compactRegions) setShowRegionPicker(false);
+                }}
+              >
+                <option value="">Body region…</option>
+                {activeTabs.map((t) => (
+                  <option key={t.id} value={t.name}>{t.name}</option>
+                ))}
+              </select>
+              {compactRegions && showRegionPicker && (
+                <button
+                  type="button"
+                  onClick={() => setShowRegionPicker(false)}
+                  className="shrink-0 text-[10px] text-muted-foreground underline underline-offset-2 hover:text-foreground"
+                  data-testid="quick-add-region-done"
+                >
+                  Done
+                </button>
+              )}
+            </div>
+          )}
+        </>
       )}
 
       {/* Protocol Engine: pick an indication-specific preset within the

@@ -63,8 +63,23 @@ const SETS: ChocolateBoxSet[] = [BRAIN_SET, SPINE_SET];
 const BRAIN_RE = /\b(brain|head|cerebr|cranial|intracranial)\b/i;
 const SPINE_RE = /\b(spine|spinal|cervical|lumbar|dorsal|thoracic|lumbosacral|whole\s*spine)\b/i;
 
-/** Picks the macro tile set matching the active study, or null if neither brain nor spine. */
-export function chocolateBoxSetFor(modality: string | null | undefined, studyDescription: string | null | undefined): ChocolateBoxSet | null {
+/**
+ * Picks the macro tile set matching the active study, or null if neither brain
+ * nor spine.
+ *
+ * `region` is the region the radiologist selected in the workspace's Region /
+ * Study / Protocol section and wins over the DICOM StudyDescription: once
+ * someone corrects a mis-labelled study to "LS Spine", the Findings macros must
+ * follow that choice instead of the original description.
+ */
+export function chocolateBoxSetFor(
+  modality: string | null | undefined,
+  studyDescription: string | null | undefined,
+  region?: string | null,
+): ChocolateBoxSet | null {
+  const selected = region ?? "";
+  if (BRAIN_RE.test(selected)) return BRAIN_SET;
+  if (SPINE_RE.test(selected)) return SPINE_SET;
   const desc = `${modality ?? ""} ${studyDescription ?? ""}`;
   if (BRAIN_RE.test(desc)) return BRAIN_SET;
   if (SPINE_RE.test(desc)) return SPINE_SET;

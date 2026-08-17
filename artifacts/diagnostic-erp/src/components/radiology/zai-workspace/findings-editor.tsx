@@ -1,4 +1,4 @@
-import { useEffect, useRef, useMemo } from "react";
+import { useEffect, useRef, useMemo, useState } from "react";
 import { useWorkspaceSelector, EMPTY_FIELD_PROVENANCE } from "@/lib/zai-workspace/store";
 import { runLintRules, type LintIssue } from "@/lib/zai-workspace/types";
 import {
@@ -9,6 +9,7 @@ import {
   type InsertSource,
   type ProvenanceVisualKind,
 } from "@/lib/reportFieldMerge";
+import { formatProvenanceSummary, provenanceCounts } from "@/lib/reportSectionAccordion";
 import { QuickSelectStrip } from "./quick-select-strip";
 import { cn } from "@/lib/utils";
 
@@ -18,6 +19,13 @@ interface Props {
   placeholder?: string;
   minHeight?: string;
   showGhost?: boolean;
+  /**
+   * Renders the editor without its inline Quick Select tile wall. Used by the
+   * Findings section, which hosts the very same <QuickSelectStrip field="findings" />
+   * inside its "Quick Select" assistance drawer so the tiles are one click away
+   * instead of permanently occupying the editor's height.
+   */
+  hideQuickSelect?: boolean;
 }
 
 const G: Record<string, string> = { error: "✕", warning: "△", info: "◌" };
@@ -56,8 +64,16 @@ function uniqueAssistedSources(segments: Array<{ sources: InsertSource[] }>): Se
   return kinds;
 }
 
-export function FindingsEditor({ field, label, placeholder, minHeight = "200px", showGhost = false }: Props) {
+export function FindingsEditor({
+  field,
+  label,
+  placeholder,
+  minHeight = "200px",
+  showGhost = false,
+  hideQuickSelect = false,
+}: Props) {
   const ref = useRef<HTMLTextAreaElement>(null);
+  const [provenanceOpen, setProvenanceOpen] = useState(false);
   const value = useWorkspaceSelector(s => s[`${field}Text` as "findingsText"] as string);
   const setField = useWorkspaceSelector(s => s.setField);
   const provenance = useWorkspaceSelector(s => s.fieldProvenance[field] ?? EMPTY_FIELD_PROVENANCE);
@@ -79,6 +95,19 @@ export function FindingsEditor({ field, label, placeholder, minHeight = "200px",
   );
   const assistedKinds = useMemo(() => uniqueAssistedSources(segments), [segments]);
   const showProvenanceUi = assistedKinds.size > 0;
+  // Read-only attribution: CARE already knows how each segment got here, so the
+  // default view is a single counted line ("Manual 8 • Quick Select 4"). The
+  // full per-segment map stays available behind "details".
+  const sourceCounts = useMemo(
+    () =>
+      provenanceCounts(
+        segments.map((seg) => {
+          const kind = provenanceVisualKind(seg.sources);
+          return { kind, label: LEGEND.find((l) => l.kind === kind)?.label ?? "Other assisted" };
+        }),
+      ),
+    [segments],
+  );
 
   useEffect(() => {
     if (ref.current) {
@@ -110,7 +139,7 @@ export function FindingsEditor({ field, label, placeholder, minHeight = "200px",
 
   return (
     <div className="relative w-full" data-report-field={field} data-testid={`findings-editor-${field}`}>
-      <QuickSelectStrip field={field} />
+      {!hideQuickSelect && <QuickSelectStrip field={field} />}
       <div className="flex items-center justify-between mb-1.5">
         <label className="text-xs font-semibold uppercase tracking-wide text-emerald-600/80">{label}</label>
         <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
@@ -121,24 +150,41 @@ export function FindingsEditor({ field, label, placeholder, minHeight = "200px",
 
       {showProvenanceUi && (
         <div
-          className="mb-1.5 flex flex-wrap items-center gap-2"
+          className="mb-1.5 flex flex-wrap items-center gap-1.5"
           data-testid={`provenance-legend-${field}`}
           data-editor-only="provenance"
         >
-          <span className="text-[10px] font-bold uppercase tracking-wide text-foreground">Sources</span>
-          {LEGEND.filter((item) => item.kind === "manual" || assistedKinds.has(item.kind)).map((item) => (
-            <span
-              key={item.kind}
-              className={cn(
-                "inline-flex items-center gap-1.5 rounded border px-1.5 py-0.5 text-[10px] font-bold",
-                item.box,
-              )}
-              title={item.label}
-            >
-              <span className={cn("h-2.5 w-2.5 shrink-0 rounded-sm border", item.box)} aria-hidden />
-              {item.label}
-            </span>
-          ))}
+          <span className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground">Sources</span>
+          <span
+            className="text-[10px] font-semibold text-foreground/80"
+            data-testid={`provenance-summary-${field}`}
+            title="How this text entered the report — tracked automatically, never printed"
+          >
+            {formatProvenanceSummary(sourceCounts)}
+          </span>
+          <button
+            type="button"
+            onClick={() => setProvenanceOpen((v) => !v)}
+            className="text-[10px] text-muted-foreground underline underline-offset-2 hover:text-foreground"
+            data-testid={`provenance-details-toggle-${field}`}
+            aria-expanded={provenanceOpen}
+          >
+            {provenanceOpen ? "hide details" : "details"}
+          </button>
+          {provenanceOpen &&
+            LEGEND.filter((item) => item.kind === "manual" || assistedKinds.has(item.kind)).map((item) => (
+              <span
+                key={item.kind}
+                className={cn(
+                  "inline-flex items-center gap-1.5 rounded border px-1.5 py-0.5 text-[10px] font-bold",
+                  item.box,
+                )}
+                title={item.label}
+              >
+                <span className={cn("h-2.5 w-2.5 shrink-0 rounded-sm border", item.box)} aria-hidden />
+                {item.label}
+              </span>
+            ))}
         </div>
       )}
 
@@ -192,7 +238,7 @@ export function FindingsEditor({ field, label, placeholder, minHeight = "200px",
         </div>
       </div>
 
-      {showProvenanceUi && (
+      {showProvenanceUi && provenanceOpen && (
         <div
           className="mt-1.5 space-y-1"
           data-testid={`provenance-map-${field}`}

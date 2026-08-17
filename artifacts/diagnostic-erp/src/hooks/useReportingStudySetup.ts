@@ -196,8 +196,8 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
   );
 
   const chocolateBoxSet: ChocolateBoxSet | null = useMemo(
-    () => chocolateBoxSetFor(modality, studyDescription),
-    [modality, studyDescription],
+    () => chocolateBoxSetFor(modality, studyDescription, matchedStudyRegion),
+    [modality, studyDescription, matchedStudyRegion],
   );
 
   const combinedTestName = useMemo(
