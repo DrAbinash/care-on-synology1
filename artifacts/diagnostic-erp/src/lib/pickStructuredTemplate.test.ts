@@ -58,6 +58,15 @@ describe("pickStructuredTemplateForRegion", () => {
     expect(match?.bodyPart).toBe("SPINE_LS");
     expect(match?.templateName).not.toMatch(/brain/i);
   });
+
+  it("prefers the region default / v2 format when several LS Spine rows exist", () => {
+    const rows = [
+      ...TEMPLATES,
+      { id: 9, templateName: "MRI Lumbosacral Spine – CARE Standard", modality: "MRI", bodyPart: "SPINE_LS", studyType: "PLAIN", isDefault: true, schemaVersion: 2 },
+    ];
+    const match = pickStructuredTemplate(rows, "MR", "MRI LS SPINE");
+    expect(match?.id).toBe(9);
+  });
 });
 
 describe("studyRegionToBodyPart", () => {

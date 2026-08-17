@@ -49,6 +49,7 @@ export type StructuredTemplate = {
   isActive: boolean;
   formatVersion?: number;
   schemaVersion?: number;
+  isDefault?: boolean;
 };
 
 type TemplateSections = {
