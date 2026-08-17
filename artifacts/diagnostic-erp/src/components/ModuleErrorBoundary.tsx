@@ -128,7 +128,11 @@ export class ModuleErrorBoundary extends React.Component<Props, State> {
         </div>
       );
     }
-    return this.props.children;
+    return (
+      <div className="h-full min-h-0 flex-1 flex flex-col w-full overflow-hidden">
+        {this.props.children}
+      </div>
+    );
   }
 }
 

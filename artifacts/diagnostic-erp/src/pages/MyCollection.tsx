@@ -204,7 +204,8 @@ export default function MyCollection() {
   }) || [];
 
   return (
-    <div className="h-full min-h-0 flex flex-col overflow-hidden bg-slate-50 dark:bg-slate-900">
+    <div className="h-full min-h-0 w-full flex flex-col overflow-hidden bg-slate-50 dark:bg-slate-900">
+      <div className="shrink-0 w-full">
       <PageHeader
         title="DICOM Match Center"
         subtitle="Catch scans performed without billing, verify PACS studies match billed orders, and block wrong-study report delivery."
@@ -214,6 +215,7 @@ export default function MyCollection() {
           </Button>
         }
       />
+      </div>
 
       {listCounts.unbilled > 0 && (
         <div className="shrink-0 mx-3 sm:mx-4 mt-3 rounded-xl border border-orange-300 bg-orange-50 dark:bg-orange-950/30 px-4 py-3 flex flex-wrap items-start gap-3">
@@ -268,9 +270,9 @@ export default function MyCollection() {
         ))}
       </div>
 
-      <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-[minmax(280px,38%)_minmax(0,1fr)] gap-0 border-t border-slate-200 dark:border-slate-800">
+      <div className="flex-1 min-h-0 w-full grid grid-cols-1 lg:grid-cols-[minmax(280px,36%)_minmax(0,1fr)] gap-0 border-t border-slate-200 dark:border-slate-800">
         {/* Left Side: Worklist List */}
-        <Card className="h-full min-h-0 overflow-hidden rounded-none border-0 border-r border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 flex flex-col">
+        <Card className="h-full min-h-0 w-full overflow-hidden rounded-none border-0 border-r border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 flex flex-col shadow-none">
           <CardHeader className="shrink-0 py-3 px-4 border-b border-slate-100 dark:border-slate-900">
             <CardTitle className="text-lg">PACS Intake Worklist</CardTitle>
             <CardDescription>Pushed DICOM studies and matching status</CardDescription>
@@ -338,7 +340,7 @@ export default function MyCollection() {
         </Card>
 
         {/* Right Side: Double Panel Side-by-Side Comparison */}
-        <div className="min-h-0 h-full flex flex-col overflow-hidden bg-slate-50/80 dark:bg-slate-900/50">
+        <div className="min-h-0 h-full w-full min-w-0 flex flex-col overflow-hidden bg-slate-100/80 dark:bg-slate-900/80 border-l border-slate-200/60 dark:border-slate-800">
           {selectedItem ? (
             <>
               <div className="flex-1 min-h-0 overflow-y-auto p-3 sm:p-4 space-y-4">
