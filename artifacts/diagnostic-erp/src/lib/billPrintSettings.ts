@@ -456,10 +456,8 @@ export function getPaperSizeCss(size: BillPaperSize): { pageSize: string; width:
   switch (size) {
     case "A5-landscape":
     case "half-a4":
-      // Content is A5 / half-A4 (210×148). @page is A4 portrait so the printer
-      // tray stays portrait — named "A5 landscape" made drivers rotate and
-      // leave a blank band on the right.
-      return { pageSize: "210mm 297mm", width: "210mm", minHeight: "148mm", maxHeight: "148mm" };
+      // Physical half-sheet — @page matches 210×148 mm (not full A4 height).
+      return { pageSize: "210mm 148mm", width: "210mm", minHeight: "148mm", maxHeight: "148mm" };
     case "A5-portrait":
       return { pageSize: "A5 portrait", width: "148mm", minHeight: "210mm", maxHeight: "none" };
     case "A4":
@@ -500,9 +498,10 @@ export function resolveBillPrintPageOpts(
     paperSize: "A5",
     orientation: "landscape",
     compactFooterGap: testCount <= 4,
-    // A4 portrait @page + 210×148 content. Half of A4 IS A5. Do not emit
-    // named "A5 landscape" — printers rotate that job and leave a right gap.
-    pageCssSize: "210mm 297mm",
+    // @page matches physical half-sheet (210×148). Do not use full A4 @page —
+    // that leaves ~149 mm blank below on cut half-A4. Do not use named
+    // "A5 landscape" — pick Portrait in the print dialog.
+    pageCssSize: "210mm 148mm",
   };
 }
 

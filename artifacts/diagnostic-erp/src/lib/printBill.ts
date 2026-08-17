@@ -639,6 +639,9 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
 
   const pages = Array.from({ length: copies }).map((_, i) => page(i));
 
+  const shellMinHeight = useCompactFooter ? "" : "min-height: 100%;";
+  const footerMargin = useCompactFooter ? "margin-top: 8px !important;" : "margin-top: auto !important;";
+
   return buildDocumentHtml({
     title: `Bill ${esc(bill.billNumber)}`,
     paper,
@@ -652,7 +655,7 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
   }
   .receipt-shell {
     width: 100%;
-    min-height: 100%;
+    ${shellMinHeight}
     display: flex;
     flex-direction: column;
   }
@@ -661,7 +664,7 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
     flex: 0 0 auto;
   }
   .receipt-footer {
-    margin-top: auto !important;
+    ${footerMargin}
   }
   table { width: 100%; }
   .test-table tbody tr:nth-child(even) td { background: #f8fafc; }
