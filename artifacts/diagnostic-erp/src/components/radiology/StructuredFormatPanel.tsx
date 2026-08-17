@@ -10,6 +10,7 @@ import {
   type FieldPath,
   type FieldValue,
   type FormatField,
+  type ImpressionCandidate,
   type StructuredFormatDoc,
   type StructuredValues,
 } from "@/lib/structuredFormat";
@@ -20,7 +21,12 @@ type Props = {
   onValuesChange: (next: StructuredValues) => void;
   disabled?: boolean;
   onLoadAllNormals: () => void;
+  onAcceptImpression?: (text: string) => void;
 };
+
+function impressionCandidateKey(c: ImpressionCandidate): string {
+  return `${c.fieldPathKey}\0${c.optionId ?? ""}\0${c.text}`;
+}
 
 export function StructuredFormatPanel({
   sectionsJson,
@@ -28,6 +34,7 @@ export function StructuredFormatPanel({
   onValuesChange,
   disabled,
   onLoadAllNormals,
+  onAcceptImpression,
 }: Props) {
   const doc = useMemo(() => adaptSectionsJson(sectionsJson), [sectionsJson]);
   const hasFields = doc.sections.some((s) => s.fields.length > 0);
@@ -38,6 +45,10 @@ export function StructuredFormatPanel({
 
   const gen = useMemo(() => generateFromValues(doc, values), [doc, values]);
   const previewEntries = Object.entries(gen.findingsMap).filter(([, v]) => !v.normal);
+  const [ignoredCandidates, setIgnoredCandidates] = useState<Set<string>>(new Set());
+  const [editingCandidate, setEditingCandidate] = useState<string | null>(null);
+  const [editDrafts, setEditDrafts] = useState<Record<string, string>>({});
+  const visibleCandidates = gen.impressionCandidates.filter((c) => !ignoredCandidates.has(impressionCandidateKey(c)));
 
   if (!hasFields) return null;
 
@@ -170,6 +181,82 @@ export function StructuredFormatPanel({
           <p key={label} className="text-[11px]"><span className="font-semibold">{label}:</span> {v.text}</p>
         ))}
       </div>
+
+      {visibleCandidates.length > 0 && (
+        <div className="mt-2 rounded-md border border-dashed border-indigo-200 bg-white/70 p-2 space-y-2" data-testid="structured-impression-candidates">
+          <p className="text-[10px] font-bold uppercase text-muted-foreground">Impression candidates</p>
+          <p className="text-[10px] text-muted-foreground">Not inserted until Accept. Ignore never writes the editor.</p>
+          {visibleCandidates.map((c, i) => {
+            const key = impressionCandidateKey(c);
+            const editing = editingCandidate === key;
+            const draft = editDrafts[key] ?? c.text;
+            return (
+              <div key={key} className="rounded border bg-white p-1.5 space-y-1" data-testid={`structured-impression-candidate-${i}`}>
+                {editing ? (
+                  <textarea
+                    disabled={disabled}
+                    value={draft}
+                    onChange={(e) => setEditDrafts((prev) => ({ ...prev, [key]: e.target.value }))}
+                    rows={2}
+                    className="w-full p-1 rounded border text-[11px]"
+                    data-testid={`structured-impression-edit-input-${i}`}
+                  />
+                ) : (
+                  <p className="text-[11px] italic">{c.text}</p>
+                )}
+                <div className="flex flex-wrap gap-1">
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="h-5 text-[9px]"
+                    disabled={disabled || !onAcceptImpression || !draft.trim()}
+                    data-testid={`structured-impression-accept-${i}`}
+                    onClick={() => {
+                      onAcceptImpression?.(draft.trim());
+                      setIgnoredCandidates((prev) => new Set(prev).add(key));
+                      setEditingCandidate(null);
+                    }}
+                  >
+                    Accept
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="h-5 text-[9px]"
+                    disabled={disabled}
+                    data-testid={`structured-impression-edit-${i}`}
+                    onClick={() => {
+                      if (editing) {
+                        setEditingCandidate(null);
+                        return;
+                      }
+                      setEditDrafts((prev) => ({ ...prev, [key]: prev[key] ?? c.text }));
+                      setEditingCandidate(key);
+                    }}
+                  >
+                    {editing ? "Cancel" : "Edit"}
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    className="h-5 text-[9px]"
+                    disabled={disabled}
+                    data-testid={`structured-impression-ignore-${i}`}
+                    onClick={() => {
+                      setIgnoredCandidates((prev) => new Set(prev).add(key));
+                      if (editingCandidate === key) setEditingCandidate(null);
+                    }}
+                  >
+                    Ignore
+                  </Button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

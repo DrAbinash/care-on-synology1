@@ -6,15 +6,15 @@
  *
  * New sources:
  *   structured-template            — committed generated Findings/Technique/Recommendation
- *   structured-template-candidate  — Impression sentences auto-inserted as soft-accept
+ *   structured-template-candidate  — Impression sentences inserted only on Accept
  *
  * Precedence (how two sources interact on the SAME sentence after normalizeForDedupe):
  *
  * 1. Manual
  *    After the radiologist types, reconcileProvenanceAfterManualEdit keeps
  *    provenance only for unchanged sentence keys; edited/new sentences → manual.
- *    Structured generate MUST replace only the previous structured payload
- *    (exact previous generated block), never rewrite manual sentences.
+ *    Structured generate MUST replace only verbatim previous labeled lines,
+ *    never rewrite manual sentences or in-place edits.
  *
  * 2. structured-template vs protocol / template (narrative format)
  *    Protocol/template fill-empty on study open (existing). Structured generate
@@ -36,15 +36,17 @@
  *    of duplicate lordosis is merge/canonicalKey, not an AI rewrite.
  *
  * 5. Impression candidates (structured-template-candidate)
- *    Auto-inserted into Impression as visually distinct (italic/highlight).
- *    Leave = implicit accept on finalize.
- *    Edit in place → sentence becomes manual (reconcile).
- *    Delete sentence → gone. No Accept/Ignore modal.
+ *    Stay in the Structured panel as true candidates (Accept / Edit / Ignore).
+ *    Never auto-inserted into the canonical Impression editor.
+ *    Accept → mergeField("impression", text, "structured-template-candidate").
+ *    Edit → inline edit; Accept merges the edited text with the same source.
+ *    Ignore → dismiss locally; never writes the editor.
+ *    No implicit accept on finalize.
  *
  * 6. Finalize
- *    Remaining candidate sentences are kept in the signed body as normal
- *    impression text. Provenance may still record structured-template-candidate
- *    for audit; the PDF is not styled.
+ *    Unaccepted candidates are not in the signed body. Accepted sentences are
+ *    kept as normal impression text. Provenance may still record
+ *    structured-template-candidate for audit; the PDF is not styled.
  */
 
 export const STRUCTURED_TEMPLATE_SOURCE = "structured-template" as const;

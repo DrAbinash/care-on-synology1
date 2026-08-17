@@ -145,9 +145,9 @@ import {
   allNormalFindingsMap,
   extractCareStructuredFormatState,
   generateFromValues,
-  impressionCandidateBlock,
-  labeledFindingsBlock,
-  stripPreviousGenerated,
+  labeledLinesFromMap,
+  planStructuredFindingsUpdate,
+  stripExactChunks,
   toDraftFormatState,
   type StructuredValues,
 } from "@/lib/structuredFormat";
@@ -334,8 +334,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const [structuredValues, setStructuredValues] = useState<StructuredValues>({});
   const structuredTouchedRef = useRef(false);
   const structuredFormatDrivingRef = useRef(false);
-  const lastStructuredFindingsRef = useRef("");
-  const lastStructuredImpressionRef = useRef("");
+  const lastStructuredFindingsLinesRef = useRef<Record<string, string>>({});
   const saveDraftRef = useRef<(opts?: { silent?: boolean }) => Promise<number | null>>(async () => null);
 
   const [queueModality, setQueueModality] = useState(() => {
@@ -820,8 +819,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     setStructuredValues({});
     structuredTouchedRef.current = false;
     structuredFormatDrivingRef.current = false;
-    lastStructuredFindingsRef.current = "";
-    lastStructuredImpressionRef.current = "";
+    lastStructuredFindingsLinesRef.current = {};
   }, [studyId]);
 
   // Keep findingsText in sync when structured cards drive the report
@@ -916,6 +914,12 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     onToast: (opts) => toast({ title: opts.title, description: opts.description, variant: opts.variant }),
   });
 
+  const acceptStructuredImpressionCandidate = useCallback((text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    useWorkspace.getState().mergeField("impression", trimmed, "structured-template-candidate");
+  }, []);
+
   const applyStructuredGeneration = useCallback((values: StructuredValues) => {
     const tpl = studySetup.selectedTemplate;
     if (!tpl || !formatHasStructuredFields(tpl.sectionsJson)) return;
@@ -925,19 +929,19 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     setFindingsMap(gen.findingsMap);
     setUseStructured(true);
 
-    const findingsBlock = labeledFindingsBlock(gen.findingsMap);
-    const impressionBlock = impressionCandidateBlock(gen.impressionCandidates);
+    const nextLines = labeledLinesFromMap(gen.findingsMap);
     const ws = useWorkspace.getState();
-
-    const strippedF = stripPreviousGenerated(ws.findingsText, lastStructuredFindingsRef.current);
+    const plan = planStructuredFindingsUpdate(
+      ws.findingsText,
+      lastStructuredFindingsLinesRef.current,
+      nextLines,
+    );
+    const strippedF = stripExactChunks(ws.findingsText, plan.strip);
     if (strippedF !== ws.findingsText) ws.setField("findings", strippedF);
-    if (findingsBlock) ws.mergeField("findings", findingsBlock, "structured-template");
-    lastStructuredFindingsRef.current = findingsBlock;
-
-    const strippedI = stripPreviousGenerated(ws.impressionText, lastStructuredImpressionRef.current);
-    if (strippedI !== ws.impressionText) ws.setField("impression", strippedI);
-    if (impressionBlock) ws.mergeField("impression", impressionBlock, "structured-template-candidate");
-    lastStructuredImpressionRef.current = impressionBlock;
+    for (const line of plan.merge) {
+      ws.mergeField("findings", line, "structured-template");
+    }
+    lastStructuredFindingsLinesRef.current = plan.nextTracked;
 
     if (gen.techniqueText.trim()) ws.mergeField("technique", gen.techniqueText, "structured-template");
     if (gen.recommendationText.trim()) ws.mergeField("recommendation", gen.recommendationText, "structured-template");
@@ -3208,6 +3212,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                         setUseStructured(true);
                         scheduleStructuredDraftSave();
                       }}
+                      onAcceptImpression={acceptStructuredImpressionCandidate}
                     />
 
                     {/* Clinic Quick Select (legacy QuickFindingsPanel) */}
