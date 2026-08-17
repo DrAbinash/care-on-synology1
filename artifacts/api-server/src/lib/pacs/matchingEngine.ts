@@ -42,6 +42,11 @@ export interface MatchResult {
   warnings: string[];
 }
 
+/** Strip separators so ACC-20260817-US-01 and ACC20260817US01 match. */
+export function normalizeAccessionKey(acc: string | null | undefined): string {
+  return String(acc || "").replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
+}
+
 function levenshteinDistance(s1: string, s2: string): number {
   const m = s1.length;
   const n = s2.length;
@@ -122,8 +127,8 @@ export function calculateMatchScore(dicom: DicomInput, bill: BilledTestInput): M
   let points = 0;
 
   // 1. Accession Number exact match (Highest Priority)
-  const cleanDicomAcc = (dicom.accessionNumber || "").replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
-  const cleanBillAcc = (bill.accessionNumber || "").replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
+  const cleanDicomAcc = normalizeAccessionKey(dicom.accessionNumber);
+  const cleanBillAcc = normalizeAccessionKey(bill.accessionNumber);
   if (cleanDicomAcc && cleanBillAcc && cleanDicomAcc === cleanBillAcc) {
     points += 50;
     reasons.push("Accession number matches exactly");

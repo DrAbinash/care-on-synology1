@@ -69,9 +69,9 @@ function baseOpts(overrides: Record<string, unknown> = {}) {
 
 describe("document layout engine — page specifications", () => {
   test.each([
-    ["A5-landscape", "210mm 297mm", 210, 148],
+    ["A5-landscape", "210mm 148mm", 210, 148],
     ["A5-portrait", "148mm 210mm", 148, 210],
-    ["half-a4", "210mm 297mm", 210, 148],
+    ["half-a4", "210mm 148mm", 210, 148],
     ["A4", "210mm 297mm", 210, 297],
   ] as const)("paper %s has exact mm dimensions", (paper, css, w, h) => {
     expect(PAGE_SPECS[paper].pageSizeCss).toBe(css);
@@ -133,10 +133,9 @@ describe("document layout engine — bill renderers (unified Classic)", () => {
     expect((html.match(/class="care-doc-page receipt"/g) ?? []).length).toBe(2);
   });
 
-  test("uses A4-portrait @page for A5 landscape so the tray is not rotated", () => {
+  test("uses half-sheet @page (210×148) so cut A4 does not leave a blank band below", () => {
     const html = buildBillPrintHtml(baseOpts());
-    expect(html).toContain("@page { size: 210mm 297mm; margin: 0; }");
-    expect(html).not.toMatch(/@page \{ size: 210mm 148mm/);
+    expect(html).toContain("@page { size: 210mm 148mm; margin: 0; }");
     expect(html).not.toMatch(/@page \{ size: A5 landscape/);
     expect(html).toContain('class="care-doc-page receipt"');
   });
@@ -325,7 +324,7 @@ describe("document layout engine — bill renderers (unified Classic)", () => {
 
   test("classic format uses engine and percentage columns", () => {
     const html = buildBillPrintHtml(baseOpts());
-    expect(html).toContain("@page { size: 210mm 297mm; margin: 0; }");
+    expect(html).toContain("@page { size: 210mm 148mm; margin: 0; }");
     expect(html).toContain("care-doc-page");
     expect(html).toContain("totals-grid");
   });
@@ -353,8 +352,15 @@ describe("document layout engine — bill renderers (unified Classic)", () => {
     expect(html).toContain("padding-right: 4mm");
   });
 
-  test("receipt layout uses full page height and anchors footer", () => {
-    const html = buildBillPrintHtml(baseOpts());
+  test("sparse bills keep footer tight under content (no flex stretch gap)", () => {
+    const html = buildBillPrintHtml(baseOpts({ bill: sampleBill(1) }));
+    expect(html).toContain("receipt-shell");
+    expect(html).not.toContain("min-height: 100%");
+    expect(html).toContain("margin-top: 8px !important");
+  });
+
+  test("long bills anchor footer at page bottom", () => {
+    const html = buildBillPrintHtml(baseOpts({ bill: sampleBill(10), compactFooterGap: false }));
     expect(html).toContain("receipt-shell");
     expect(html).toContain("min-height: 100%");
     expect(html).toContain("margin-top: auto !important");

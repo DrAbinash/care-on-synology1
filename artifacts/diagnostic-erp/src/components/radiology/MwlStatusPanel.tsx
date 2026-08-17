@@ -30,6 +30,8 @@ type MwlDeploymentStatus = {
   stagingHostHint?: string | null;
   wlFileCount: number;
   quarantineCount?: number;
+  quarantineDir?: string | null;
+  quarantineSampleReason?: string | null;
   activeProcedureCount?: number;
   procedureStats: Record<string, number>;
   recentActive: Array<{
@@ -172,6 +174,14 @@ export function MwlStatusPanel({
               {data.worklistDir ? ` · live ${data.worklistDir}` : ""}
               {data.stagingDir ? ` · staging ${data.stagingDir}` : ""}
             </p>
+            {(data.quarantineCount ?? 0) > 0 && (
+              <p className="text-xs text-amber-800 dark:text-amber-200 mt-2 max-w-prose" data-testid="mwl-quarantine-warning">
+                Orthanc moved {data.quarantineCount} invalid .wl file{data.quarantineCount === 1 ? "" : "s"}
+                {data.quarantineDir ? ` to ${data.quarantineDir}` : " to worklists-bad"}
+                {data.quarantineSampleReason ? ` (${data.quarantineSampleReason})` : " (usually empty Study/Series/SOP UIDs)"}.
+                {" "}Do not copy them back — that can crash Orthanc. Click <span className="font-semibold">Sync worklist</span> to write valid files into the live folder. Studies already in PACS still need Auto-link on Match Center.
+              </p>
+            )}
             {data.orthancInternal && (
               <p className="text-[10px] text-muted-foreground mt-1 font-mono break-all">
                 Orthanc internal: {data.orthancInternal.display}

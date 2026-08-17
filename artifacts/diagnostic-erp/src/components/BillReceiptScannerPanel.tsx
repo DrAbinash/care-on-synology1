@@ -189,6 +189,87 @@ export default function BillReceiptScannerPanel() {
 
   const confidenceColor = (c: string) => c === "high" ? "text-green-600" : c === "medium" ? "text-amber-600" : "text-red-500";
 
+  const resultsPanel = saved ? (
+    <div className="bg-green-50 border border-green-200 rounded-xl p-6 sm:p-8 text-center space-y-3">
+      <CheckCircle2 size={40} className="text-green-500 mx-auto" />
+      <p className="font-bold text-green-800">Expense Saved!</p>
+      <p className="text-sm text-green-700">The expense has been added to your records.</p>
+      <Button onClick={reset} variant="outline">Scan Another Bill</Button>
+    </div>
+  ) : draft ? (
+    <div className="bg-card border border-card-border rounded-xl p-4 sm:p-5 space-y-4">
+      <div className="flex items-center justify-between gap-2">
+        <h3 className="font-semibold flex items-center gap-2"><CheckCircle2 size={15} className="text-green-500" /> Extracted Data</h3>
+        <span className={`text-xs font-semibold shrink-0 ${confidenceColor(draft.confidence)}`}>
+          {draft.confidencePercent != null ? `${draft.confidencePercent}%` : draft.confidence.toUpperCase()} confidence
+        </span>
+      </div>
+      <p className="text-xs text-muted-foreground">Review and edit the extracted fields before saving to expenses.</p>
+      {draft.isBlurred && (
+        <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1">
+          This capture looks blurry — retake the photo for a more reliable extraction, or verify every field carefully before saving.
+        </p>
+      )}
+      {billConfidenceTier(draft.confidencePercent) === "manual" && (
+        <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded px-2 py-1">
+          Low OCR confidence — verify every field against the original bill before saving, don't rely on this extraction as-is.
+        </p>
+      )}
+
+      <div className="grid gap-3">
+        <div>
+          <Label className="text-xs">Vendor / Supplier</Label>
+          <Input className="mt-1 h-8 text-sm" value={draft.vendor} onChange={e => setDraft({ ...draft, vendor: e.target.value })} />
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          <div>
+            <Label className="text-xs">Date</Label>
+            <Input className="mt-1 h-8 text-sm" type="date" value={draft.date} onChange={e => setDraft({ ...draft, date: e.target.value })} />
+          </div>
+          <div>
+            <Label className="text-xs">Total Amount (₹)</Label>
+            <Input className="mt-1 h-8 text-sm" type="number" step="0.01" value={draft.amount} onChange={e => setDraft({ ...draft, amount: Number(e.target.value) })} />
+          </div>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          <div>
+            <Label className="text-xs">GST Amount (₹)</Label>
+            <Input className="mt-1 h-8 text-sm" type="number" step="0.01" value={draft.gstAmount} onChange={e => setDraft({ ...draft, gstAmount: Number(e.target.value) })} />
+          </div>
+          <div>
+            <Label className="text-xs">Payment Mode</Label>
+            <select className="mt-1 h-8 text-sm w-full border border-input rounded-md px-2 bg-background" value={draft.paymentMode} onChange={e => setDraft({ ...draft, paymentMode: e.target.value })}>
+              {LEDGER_PAYMENT_MODES.map(m => <option key={m} value={m}>{m.replace("-", " ")}</option>)}
+            </select>
+          </div>
+        </div>
+        <div>
+          <Label className="text-xs">Category</Label>
+          <select className="mt-1 h-8 text-sm w-full border border-input rounded-md px-2 bg-background" value={draft.category} onChange={e => setDraft({ ...draft, category: e.target.value })}>
+            {LEDGER_EXPENSE_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </div>
+        <div>
+          <Label className="text-xs">Description</Label>
+          <Input className="mt-1 h-8 text-sm" value={draft.description} onChange={e => setDraft({ ...draft, description: e.target.value })} />
+        </div>
+      </div>
+
+      <div className="flex gap-2 pt-2 border-t border-border">
+        <Button variant="outline" onClick={reset} className="flex-1">Clear</Button>
+        <Button onClick={saveExpense} disabled={saving} className="flex-1">
+          {saving ? "Saving…" : "Save to Expense Ledger"}
+        </Button>
+      </div>
+    </div>
+  ) : (
+    <div className="hidden md:block bg-card border border-dashed border-card-border rounded-xl p-10 text-center text-muted-foreground space-y-2">
+      <ScanLine size={36} className="mx-auto opacity-30" />
+      <p className="text-sm font-medium">Upload a bill image and click Scan with AI</p>
+      <p className="text-xs">AI will extract vendor, date, amount, GST, and category automatically.</p>
+    </div>
+  );
+
   return (
     <>
     {editing && (
@@ -208,10 +289,10 @@ export default function BillReceiptScannerPanel() {
         onCancel={() => setEditing(null)}
       />
     )}
-    <div className="flex flex-col md:grid md:grid-cols-2 gap-4 md:gap-6">
-      {/* Left — upload / camera */}
-      <div className="space-y-3 min-w-0">
-        <div className="bg-card border border-card-border rounded-xl p-5 space-y-3">
+    <div className="w-full max-w-full overflow-x-hidden space-y-4 md:grid md:grid-cols-2 md:gap-6 md:space-y-0">
+      {/* Upload / camera */}
+      <div className="space-y-3 min-w-0 w-full">
+        <div className="bg-card border border-card-border rounded-xl p-4 sm:p-5 space-y-3">
           <h3 className="font-semibold flex items-center gap-2"><Camera size={15} /> Capture Bill Image</h3>
           <p className="text-xs text-muted-foreground">Take a photo on your mobile or upload an existing file. Supports JPG, PNG, WebP, HEIC, PDF.</p>
 
@@ -220,15 +301,19 @@ export default function BillReceiptScannerPanel() {
             onDrop={handleDrop}
             onDragOver={e => e.preventDefault()}
             onClick={() => fileRef.current?.click()}
-            className="relative border-2 border-dashed border-card-border rounded-xl overflow-hidden cursor-pointer hover:border-primary transition-colors"
-            style={{ minHeight: 200 }}
+            className="relative border-2 border-dashed border-card-border rounded-xl overflow-hidden cursor-pointer hover:border-primary transition-colors w-full"
           >
             {preview ? (
               <>
                 {preview.startsWith("data:image") ? (
-                  <img src={preview} alt="Bill preview" className="w-full object-contain max-h-72" />
+                  <img
+                    src={preview}
+                    alt="Bill preview"
+                    className="w-full h-auto max-h-[min(60vh,28rem)] object-contain bg-muted/20"
+                    style={{ imageOrientation: "from-image" }}
+                  />
                 ) : (
-                  <div className="flex items-center justify-center gap-2 h-52 text-muted-foreground">
+                  <div className="flex items-center justify-center gap-2 py-12 text-muted-foreground">
                     <FileText size={24} /> <span className="text-sm">PDF ready for scanning</span>
                   </div>
                 )}
@@ -237,9 +322,9 @@ export default function BillReceiptScannerPanel() {
                 </button>
               </>
             ) : (
-              <div className="flex flex-col items-center justify-center h-52 gap-3 text-muted-foreground">
+              <div className="flex flex-col items-center justify-center py-12 gap-3 text-muted-foreground">
                 <Upload size={32} className="opacity-40" />
-                <div className="text-center text-sm">
+                <div className="text-center text-sm px-4">
                   <p className="font-medium">Drag &amp; drop or click to upload</p>
                   <p className="text-xs mt-1">Or use your phone camera to take a photo</p>
                 </div>
@@ -282,6 +367,9 @@ export default function BillReceiptScannerPanel() {
           {error && <p className="text-xs text-red-500 bg-red-50 border border-red-200 rounded p-2">{error}</p>}
         </div>
 
+        {/* Mobile: show extracted data inline right after upload controls */}
+        <div className="md:hidden">{resultsPanel}</div>
+
         <div className="bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 rounded-xl p-4 text-xs text-blue-800 dark:text-blue-300 space-y-1">
           <p className="font-semibold">Tips for best results</p>
           <ul className="list-disc pl-4 space-y-0.5">
@@ -293,88 +381,9 @@ export default function BillReceiptScannerPanel() {
         </div>
       </div>
 
-      {/* Right — extracted data (inline on mobile after upload controls) */}
-      <div className="space-y-3 min-w-0">
-        {saved ? (
-          <div className="bg-green-50 border border-green-200 rounded-xl p-8 text-center space-y-3">
-            <CheckCircle2 size={40} className="text-green-500 mx-auto" />
-            <p className="font-bold text-green-800">Expense Saved!</p>
-            <p className="text-sm text-green-700">The expense has been added to your records.</p>
-            <Button onClick={reset} variant="outline">Scan Another Bill</Button>
-          </div>
-        ) : draft ? (
-          <div className="bg-card border border-card-border rounded-xl p-5 space-y-4">
-            <div className="flex items-center justify-between">
-              <h3 className="font-semibold flex items-center gap-2"><CheckCircle2 size={15} className="text-green-500" /> Extracted Data</h3>
-              <span className={`text-xs font-semibold ${confidenceColor(draft.confidence)}`}>
-                {draft.confidencePercent != null ? `${draft.confidencePercent}%` : draft.confidence.toUpperCase()} confidence
-              </span>
-            </div>
-            <p className="text-xs text-muted-foreground">Review and edit the extracted fields before saving to expenses.</p>
-            {draft.isBlurred && (
-              <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1">
-                This capture looks blurry — retake the photo for a more reliable extraction, or verify every field carefully before saving.
-              </p>
-            )}
-            {billConfidenceTier(draft.confidencePercent) === "manual" && (
-              <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded px-2 py-1">
-                Low OCR confidence — verify every field against the original bill before saving, don't rely on this extraction as-is.
-              </p>
-            )}
-
-            <div className="grid gap-3">
-              <div>
-                <Label className="text-xs">Vendor / Supplier</Label>
-                <Input className="mt-1 h-8 text-sm" value={draft.vendor} onChange={e => setDraft({ ...draft, vendor: e.target.value })} />
-              </div>
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <Label className="text-xs">Date</Label>
-                  <Input className="mt-1 h-8 text-sm" type="date" value={draft.date} onChange={e => setDraft({ ...draft, date: e.target.value })} />
-                </div>
-                <div>
-                  <Label className="text-xs">Total Amount (₹)</Label>
-                  <Input className="mt-1 h-8 text-sm" type="number" step="0.01" value={draft.amount} onChange={e => setDraft({ ...draft, amount: Number(e.target.value) })} />
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <Label className="text-xs">GST Amount (₹)</Label>
-                  <Input className="mt-1 h-8 text-sm" type="number" step="0.01" value={draft.gstAmount} onChange={e => setDraft({ ...draft, gstAmount: Number(e.target.value) })} />
-                </div>
-                <div>
-                  <Label className="text-xs">Payment Mode</Label>
-                  <select className="mt-1 h-8 text-sm w-full border border-input rounded-md px-2 bg-background" value={draft.paymentMode} onChange={e => setDraft({ ...draft, paymentMode: e.target.value })}>
-                    {LEDGER_PAYMENT_MODES.map(m => <option key={m} value={m}>{m.replace("-", " ")}</option>)}
-                  </select>
-                </div>
-              </div>
-              <div>
-                <Label className="text-xs">Category</Label>
-                <select className="mt-1 h-8 text-sm w-full border border-input rounded-md px-2 bg-background" value={draft.category} onChange={e => setDraft({ ...draft, category: e.target.value })}>
-                  {LEDGER_EXPENSE_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
-                </select>
-              </div>
-              <div>
-                <Label className="text-xs">Description</Label>
-                <Input className="mt-1 h-8 text-sm" value={draft.description} onChange={e => setDraft({ ...draft, description: e.target.value })} />
-              </div>
-            </div>
-
-            <div className="flex gap-2 pt-2 border-t border-border">
-              <Button variant="outline" onClick={reset} className="flex-1">Clear</Button>
-              <Button onClick={saveExpense} disabled={saving} className="flex-1">
-                {saving ? "Saving…" : "Save to Expense Ledger"}
-              </Button>
-            </div>
-          </div>
-        ) : (
-          <div className="hidden md:block bg-card border border-dashed border-card-border rounded-xl p-10 text-center text-muted-foreground space-y-2">
-            <ScanLine size={36} className="mx-auto opacity-30" />
-            <p className="text-sm font-medium">Upload a bill image and click Scan with AI</p>
-            <p className="text-xs">AI will extract vendor, date, amount, GST, and category automatically.</p>
-          </div>
-        )}
+      {/* Desktop: extracted data in second column */}
+      <div className="hidden md:block space-y-3 min-w-0 w-full">
+        {resultsPanel}
       </div>
     </div>
     </>

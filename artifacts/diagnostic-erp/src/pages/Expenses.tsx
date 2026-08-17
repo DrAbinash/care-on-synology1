@@ -234,16 +234,18 @@ export default function Expenses() {
   const hasFilters = categoryFilter !== "all" || paymentFilter !== "all" || from || to || search;
 
   return (
-    <div className="p-3 sm:p-6 space-y-4 sm:space-y-6 max-w-full overflow-x-hidden">
+    <div className="w-full max-w-full overflow-x-hidden">
       <PageHeader
         title="Expense Management"
         subtitle="Track and manage operational expenses"
         actions={
-          <Button onClick={() => { setShowForm(true); setForm({ ...EMPTY_FORM }); }}>
+          <Button className="w-full sm:w-auto" onClick={() => { setShowForm(true); setForm({ ...EMPTY_FORM }); }}>
             <Plus size={15} className="mr-1.5" /> Add Expense
           </Button>
         }
       />
+
+      <div className="p-3 sm:p-6 space-y-4 sm:space-y-6">
 
       {/* Tabs */}
       <div className="flex items-center gap-1 border-b border-card-border overflow-x-auto">
@@ -501,6 +503,8 @@ export default function Expenses() {
           <BillReceiptScannerPanel />
         </div>
       )}
+
+      </div>
 
       {/* Add / Edit Dialog */}
       <Dialog

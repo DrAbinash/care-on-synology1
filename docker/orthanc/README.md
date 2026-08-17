@@ -26,10 +26,13 @@ docker logs care-orthanc --tail 50
 
 ## If Orthanc was crash-looping
 
-Remove bad worklist files once, then redeploy this config and re-sync MWL from ERP:
+Remove bad worklist files once, then redeploy this config and re-sync MWL from ERP.
+
+**Do not** copy `/volume1/docker/care-pacs/orthanc/worklists-bad/*.wl` back into `worklists` — those files were quarantined because they can crash Orthanc. Leave them as an audit trail; regenerate valid files with **Settings → Radiology → Sync MWL files now**.
 
 ```bash
-rm /volume1/docker/care-pacs/orthanc/worklists/*.wl
+# Live folder only — never restore from worklists-bad
+ls /volume1/docker/care-pacs/orthanc/worklists
 docker restart care-orthanc
 ```
 

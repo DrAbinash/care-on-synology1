@@ -204,26 +204,28 @@ export default function MyCollection() {
   }) || [];
 
   return (
-    <div className="flex flex-col gap-6 p-6 min-h-screen bg-slate-50 dark:bg-slate-900">
-      <div className="flex justify-between items-center">
-        <PageHeader
-          title="DICOM Match Center"
-          subtitle="Catch scans performed without billing, verify PACS studies match billed orders, and block wrong-study report delivery."
-        />
-        <Button onClick={() => refetch()} variant="outline" className="gap-2">
-          <RefreshCw className="h-4 w-4" /> Refresh
-        </Button>
+    <div className="h-full min-h-0 w-full flex flex-col overflow-hidden bg-slate-50 dark:bg-slate-900">
+      <div className="shrink-0 w-full">
+      <PageHeader
+        title="DICOM Match Center"
+        subtitle="Catch scans performed without billing, verify PACS studies match billed orders, and block wrong-study report delivery."
+        actions={
+          <Button onClick={() => refetch()} variant="outline" className="gap-2">
+            <RefreshCw className="h-4 w-4" /> Refresh
+          </Button>
+        }
+      />
       </div>
 
       {listCounts.unbilled > 0 && (
-        <div className="rounded-xl border border-orange-300 bg-orange-50 dark:bg-orange-950/30 px-4 py-3 flex flex-wrap items-start gap-3">
+        <div className="shrink-0 mx-3 sm:mx-4 mt-3 rounded-xl border border-orange-300 bg-orange-50 dark:bg-orange-950/30 px-4 py-3 flex flex-wrap items-start gap-3">
           <AlertTriangle className="h-5 w-5 text-orange-600 shrink-0 mt-0.5" />
           <div className="flex-1 min-w-0 text-sm">
             <p className="font-semibold text-orange-900 dark:text-orange-200">
-              {listCounts.unbilled} scan{listCounts.unbilled === 1 ? "" : "s"} in PACS without a billed order
+              {listCounts.unbilled} PACS scan{listCounts.unbilled === 1 ? "" : "s"} not linked to a billed study in ERP
             </p>
             <p className="text-xs text-orange-800/90 dark:text-orange-300/90 mt-1">
-              Staff may have acquired imaging before billing. Review each row, bill the patient if needed, then link the study or reject the scan.
+              Images can already be in Orthanc — this flag means the intake row has no <code className="text-[10px]">study_id</code> link to the bill&apos;s radiology order (usually accession / MWL mismatch). Use <strong>Link Correct Study</strong> or Worklist → Auto-link bills.
             </p>
           </div>
           {listFilter !== "unbilled" && (
@@ -239,9 +241,9 @@ export default function MyCollection() {
         </div>
       )}
 
-      <div className="flex flex-wrap gap-2">
+      <div className="shrink-0 flex flex-wrap gap-2 px-3 sm:px-4 py-3">
         {([
-          { key: "unbilled" as const, label: "Scan without billing", count: listCounts.unbilled, tone: "orange" },
+          { key: "unbilled" as const, label: "Not linked to bill", count: listCounts.unbilled, tone: "orange" },
           { key: "needs_review" as const, label: "Needs review", count: listCounts.needs_review, tone: "amber" },
           { key: "resolved" as const, label: "Resolved", count: listCounts.resolved, tone: "emerald" },
           { key: "all" as const, label: "All PACS intake", count: listCounts.all, tone: "slate" },
@@ -268,14 +270,14 @@ export default function MyCollection() {
         ))}
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+      <div className="flex-1 min-h-0 w-full grid grid-cols-1 lg:grid-cols-[minmax(280px,36%)_minmax(0,1fr)] gap-0 border-t border-slate-200 dark:border-slate-800">
         {/* Left Side: Worklist List */}
-        <Card className="lg:col-span-5 h-[calc(100vh-200px)] overflow-y-auto border-slate-200 dark:border-slate-800 bg-white/80 dark:bg-slate-950/80 backdrop-blur-md">
-          <CardHeader className="sticky top-0 bg-white dark:bg-slate-950 border-b border-slate-100 dark:border-slate-900 z-10 py-4">
+        <Card className="h-full min-h-0 w-full overflow-hidden rounded-none border-0 border-r border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 flex flex-col shadow-none">
+          <CardHeader className="shrink-0 py-3 px-4 border-b border-slate-100 dark:border-slate-900">
             <CardTitle className="text-lg">PACS Intake Worklist</CardTitle>
             <CardDescription>Pushed DICOM studies and matching status</CardDescription>
           </CardHeader>
-          <CardContent className="p-0">
+          <CardContent className="p-0 flex-1 min-h-0 overflow-y-auto">
             {isLoading ? (
               <div className="flex justify-center items-center py-10">
                 <RefreshCw className="h-8 w-8 animate-spin text-slate-400" />
@@ -305,7 +307,7 @@ export default function MyCollection() {
                       <div className="flex flex-col items-end gap-1 shrink-0">
                         {isUnbilledScan(item) && (
                           <Badge className="bg-orange-600 hover:bg-orange-700 text-white text-[10px]">
-                            No billing
+                            Not linked
                           </Badge>
                         )}
                         <Badge className={getScoreBadgeColor(item.matchScore)}>
@@ -338,16 +340,17 @@ export default function MyCollection() {
         </Card>
 
         {/* Right Side: Double Panel Side-by-Side Comparison */}
-        <div className="lg:col-span-7 flex flex-col gap-6">
+        <div className="min-h-0 h-full w-full min-w-0 flex flex-col overflow-hidden bg-slate-100/80 dark:bg-slate-900/80 border-l border-slate-200/60 dark:border-slate-800">
           {selectedItem ? (
             <>
+              <div className="flex-1 min-h-0 overflow-y-auto p-3 sm:p-4 space-y-4">
               {/* Status Alert Banner */}
               <Card className={`border-l-4 ${
                 selectedItem.matchScore === "GREEN" ? "border-l-emerald-500 bg-emerald-50/50 dark:bg-emerald-950/20" :
                 selectedItem.matchScore === "YELLOW" ? "border-l-amber-500 bg-amber-50/50 dark:bg-amber-950/20" :
                 "border-l-rose-500 bg-rose-50/50 dark:bg-rose-950/20"
               }`}>
-                <CardContent className="flex items-start gap-4 p-5">
+                <CardContent className="flex items-start gap-4 p-4 sm:p-5">
                   <div className={`p-2.5 rounded-full ${
                     selectedItem.matchScore === "GREEN" ? "bg-emerald-100 text-emerald-600 dark:bg-emerald-900/30" :
                     selectedItem.matchScore === "YELLOW" ? "bg-amber-100 text-amber-600 dark:bg-amber-900/30" :
@@ -355,8 +358,8 @@ export default function MyCollection() {
                   }`}>
                     {selectedItem.matchScore === "GREEN" ? <ShieldCheck className="h-6 w-6" /> : <ShieldAlert className="h-6 w-6" />}
                   </div>
-                  <div className="flex-1 flex flex-col gap-1">
-                    <div className="flex items-center gap-2">
+                  <div className="flex-1 flex flex-col gap-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
                       <span className="font-bold text-base text-slate-800 dark:text-slate-200">
                         {selectedItem.matchScore === "GREEN" ? "Confident DICOM & Order Match" :
                          selectedItem.matchScore === "YELLOW" ? "Needs Review & Verification" :
@@ -374,10 +377,10 @@ export default function MyCollection() {
               </Card>
 
               {/* Detail Comparison */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
                 {/* DICOM Study Detail */}
                 <Card className="border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 shadow-sm">
-                  <CardHeader className="py-4 border-b border-slate-100 dark:border-slate-900">
+                  <CardHeader className="py-3 border-b border-slate-100 dark:border-slate-900">
                     <CardTitle className="text-sm font-semibold flex items-center gap-2 text-indigo-600 dark:text-indigo-400">
                       <BookOpen className="h-4 w-4" /> Received DICOM Metadata
                     </CardTitle>
@@ -430,7 +433,7 @@ export default function MyCollection() {
 
                 {/* Billed Test Detail */}
                 <Card className="border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 shadow-sm">
-                  <CardHeader className="py-4 border-b border-slate-100 dark:border-slate-900">
+                  <CardHeader className="py-3 border-b border-slate-100 dark:border-slate-900">
                     <CardTitle className="text-sm font-semibold flex items-center gap-2 text-indigo-600 dark:text-indigo-400">
                       <Calendar className="h-4 w-4" /> Billed Test Order
                     </CardTitle>
@@ -478,11 +481,11 @@ export default function MyCollection() {
                         </div>
                       </>
                     ) : (
-                      <div className="flex flex-col items-center justify-center h-full gap-3 py-10 text-center">
+                      <div className="flex flex-col items-center justify-center gap-3 py-6 text-center">
                         <Link2 className="h-8 w-8 text-rose-400 stroke-[1.5]" />
-                        <span className="font-medium text-rose-500">No Billed Study Linked</span>
-                        <p className="text-[11px] text-slate-500 max-w-[200px]">
-                          This DICOM study was auto-pulled from PACS but lacks a valid link to a billed radiology test.
+                        <span className="font-medium text-rose-500">Not linked to a billed study</span>
+                        <p className="text-[11px] text-slate-500 max-w-sm">
+                          Orthanc may already have this study&apos;s images. The ERP link is missing: DICOM accession / PatientID from the scanner did not match the bill&apos;s MWL accession (<code className="text-[10px]">ACC-…</code>). Use <strong>Link Correct Study</strong> below, or confirm the modality queried MWL before scanning.
                         </p>
                       </div>
                     )}
@@ -492,7 +495,7 @@ export default function MyCollection() {
 
               {/* Match Verification Details */}
               <Card className="border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950">
-                <CardHeader className="py-4 border-b border-slate-100 dark:border-slate-900">
+                <CardHeader className="py-3 border-b border-slate-100 dark:border-slate-900">
                   <CardTitle className="text-sm font-semibold flex items-center gap-2">
                     <UserCheck className="h-4 w-4" /> Match Engine Decision Factors
                   </CardTitle>
@@ -543,10 +546,11 @@ export default function MyCollection() {
                   )}
                 </CardContent>
               </Card>
+              </div>
 
-              {/* Action Buttons */}
-              <div className="flex flex-wrap gap-3 items-center justify-between">
-                <div className="flex gap-3">
+              {/* Action Buttons — pinned to bottom of detail pane */}
+              <div className="shrink-0 flex flex-wrap gap-3 items-center justify-between border-t border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 px-3 sm:px-4 py-3">
+                <div className="flex gap-3 flex-wrap">
                   {/* OHIF Link */}
                   {selectedItem.studyInstanceUID && (
                     <Button
@@ -574,7 +578,7 @@ export default function MyCollection() {
                   )}
                 </div>
 
-                <div className="flex gap-3">
+                <div className="flex gap-3 flex-wrap">
                   <Button
                     onClick={() => setIsLinkDialogOpen(true)}
                     variant="secondary"
@@ -610,7 +614,7 @@ export default function MyCollection() {
               </div>
             </>
           ) : (
-            <div className="flex flex-col items-center justify-center h-[calc(100vh-200px)] text-slate-400">
+            <div className="flex flex-col items-center justify-center flex-1 text-slate-400">
               <HelpCircle className="h-16 w-16 stroke-[1.2]" />
               <span className="font-semibold mt-4">Select a PACS Worklist Item to Review</span>
             </div>

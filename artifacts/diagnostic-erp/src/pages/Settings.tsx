@@ -5095,9 +5095,9 @@ function BillingPrintTab() {
         </p>
         <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1 text-xs">
           <div><dt className="text-muted-foreground">Paper</dt><dd className="font-semibold">Half A4 / A5 · 210×148 mm</dd></div>
-          <div><dt className="text-muted-foreground">Job size sent to printer</dt><dd className="font-semibold">A4 portrait (210×297 mm)</dd></div>
+          <div><dt className="text-muted-foreground">Job size sent to printer</dt><dd className="font-semibold">Half A4 · 210×148 mm</dd></div>
           <div><dt className="text-muted-foreground">Long bills</dt><dd className="font-semibold">Auto A4 from 8 tests</dd></div>
-          <div><dt className="text-muted-foreground">Content area</dt><dd className="font-semibold">Top half of the A4 job</dd></div>
+          <div><dt className="text-muted-foreground">Content area</dt><dd className="font-semibold">Fills the half-sheet (no blank band below)</dd></div>
         </dl>
       </div>
 
@@ -5112,7 +5112,7 @@ function BillingPrintTab() {
             the same way as A4 — <strong>portrait, 210 mm across</strong> (short edge into the printer).
           </li>
           <li>
-            In the print dialog set <strong>Paper size = A4</strong>. Do not pick A5.
+            In the print dialog set <strong>Paper size = A4</strong> if using a full sheet you will cut in half, or the closest <strong>210×148 mm / A5</strong> preset if your driver offers it.
           </li>
           <li>
             Set <strong>Orientation = Portrait</strong>. Do not pick Landscape — that rotates the job and leaves a blank band on the right.
@@ -5125,7 +5125,7 @@ function BillingPrintTab() {
           </li>
         </ol>
         <p className="text-[11px] text-amber-800 dark:text-amber-200">
-          Epson / Brother ink-tank: keep the driver paper as A4. The receipt prints on the top half of that A4 job — that is the half-sheet.
+          Epson / Brother ink-tank: keep <strong>Orientation = Portrait</strong> and <strong>Scale = 100%</strong>. The bill job is 210×148 mm — it should fill the half-sheet without a blank strip on the right or empty band below.
         </p>
       </div>
 

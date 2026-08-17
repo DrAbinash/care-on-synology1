@@ -20,7 +20,7 @@ describe("PACS worklist actions + unlinked bills UX", () => {
   });
 
   it("clarifies unlinked bills and offers auto-link", () => {
-    expect(src).toContain("without a linked bill");
+    expect(src).toContain("not linked to a bill");
     expect(src).toContain('data-testid="pacs-auto-link-bills"');
     expect(src).toContain("auto-link-billed-study");
     expect(src).toContain("Unlinked");
