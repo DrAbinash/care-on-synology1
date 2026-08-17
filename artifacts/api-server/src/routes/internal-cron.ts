@@ -10,6 +10,7 @@ import {
   runRestoreVerificationJob,
   runBackupDeadManCheck,
   runMonthlyReferralSummaryNow,
+  fireRadiologyJobTick,
 } from "../cron";
 import { logger } from "../lib/logger";
 
@@ -135,6 +136,20 @@ router.post("/backup-dead-man", async (_req, res) => {
   } catch (err) {
     logger.error({ err }, "internal-cron backup-dead-man failed");
     res.status(500).json({ error: "backup-dead-man failed" });
+  }
+});
+
+// Overnight AI drain. The in-process minute tick now registers even when
+// ENABLE_SCHEDULERS is unset; this endpoint is the same CRON_SECRET belt-and-
+// suspenders used for backups, for NAS Task Scheduler / curl if node-cron
+// is wedged. Does not bulk-retry abandoned jobs — it only claims due rows.
+router.post("/radiology-jobs", async (_req, res) => {
+  try {
+    const result = await fireRadiologyJobTick();
+    res.json({ ok: true, fired: "radiology-jobs", result, at: new Date().toISOString() });
+  } catch (err) {
+    logger.error({ err }, "internal-cron radiology-jobs failed");
+    res.status(500).json({ error: "radiology-jobs failed" });
   }
 });
 

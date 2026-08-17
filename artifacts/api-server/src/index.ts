@@ -23,7 +23,7 @@ initializePluginLoader(app);
 import { logger } from "./lib/logger";
 import { reportWeakGuardedSecrets } from "./lib/secretStrength";
 import { NETWORK_LAN_HOST } from "./lib/networkDefaults";
-import { startCronScheduler } from "./cron";
+import { startCronScheduler, startRadiologyJobConsumer } from "./cron";
 import { startIntegrationScheduler } from "./services/integration/scheduler";
 import { ensureDefaultLedger } from "./routes/ledgers";
 import { backfillExpirePublicTokens } from "./routes/patient-reports";
@@ -2817,6 +2817,12 @@ const server = app.listen({ port, exclusive: true }, () => {
   } else {
     logger.info("Cron schedulers disabled (set ENABLE_SCHEDULERS=1 to enable)");
   }
+
+  // Overnight AI consumer (dicom_retry_queue drain). Independent of ENABLE_SCHEDULERS
+  // so a compose miss (flag in .env but not injected into care-api) cannot stall
+  // MRI drafts. HTTP enqueue still works either way. Same pattern as billed-study
+  // reconciliation. Duplicate ticks are SKIP LOCKED + AI concurrency 1.
+  startRadiologyJobConsumer();
 
   // In-process DICOM pull agent can also start independently of schedulers
   const enableDimse =

@@ -40,6 +40,10 @@ import { renderStructuredReport } from "./structuredReport/renderer";
 import { verifyContentSha256 } from "./structuredReport/hash";
 import { resolveReportVersion } from "./radiologyReportVersion";
 import { redeliveryBacklog } from "./redeliveryObligations";
+import {
+  deriveRadiologyJobConsumerHealth,
+  getRadiologyJobConsumerHeartbeat,
+} from "./radiologyJobConsumerHeartbeat";
 import type { StructuredReportDocument } from "./structuredReport/types";
 import {
   analyzeConfiguredUrl,
@@ -894,13 +898,26 @@ export async function runSystemDiagnostics(io: DiagnosticsIO = defaultDiagnostic
     }));
   }
 
-  // Schedulers
+  // Schedulers (the 26 in-process timers). Overnight AI drain is independent —
+  // startRadiologyJobConsumer() registers even when ENABLE_SCHEDULERS is unset.
   const schedulersOn = process.env.ENABLE_SCHEDULERS === "1" || process.env.ENABLE_SCHEDULERS === "true";
   checks.push(check("system.scheduler", "Background schedulers", schedulersOn ? "PASS" : "WARNING",
     schedulersOn
-      ? "ENABLE_SCHEDULERS is on — radiology job tick (every minute) and audit verification (daily) will run"
-      : "ENABLE_SCHEDULERS is OFF — durable jobs and scheduled audit verification will NOT run on their own", {
-      fix: schedulersOn ? undefined : "Set ENABLE_SCHEDULERS=1 in the production ERP environment (exactly one instance).",
+      ? "ENABLE_SCHEDULERS is on — billing/PACS/backup crons and audit verification will run"
+      : "ENABLE_SCHEDULERS is OFF — billing/PACS/backup crons will not run; overnight AI drain is separate", {
+      fix: schedulersOn ? undefined : "Set ENABLE_SCHEDULERS=1 on exactly one always-on instance for backups and non-AI crons.",
+    }));
+  const overnightHb = getRadiologyJobConsumerHeartbeat();
+  const overnightHealth = deriveRadiologyJobConsumerHealth(overnightHb, {
+    queueDepth: 0,
+    running: 0,
+    nightWindow: true,
+  });
+  const overnightOk = overnightHealth.status === "HEALTHY" || overnightHealth.status === "PEAK_HOLD";
+  checks.push(check("system.overnight_ai_consumer", "Overnight AI job consumer", overnightOk ? "PASS" : "FAIL",
+    `${overnightHealth.status}: ${overnightHealth.detail}`, {
+      fix: overnightOk ? undefined : "Redeploy CARE API so startRadiologyJobConsumer() runs outside the ENABLE_SCHEDULERS gate.",
+      data: overnightHb,
     }));
 
   // Health endpoint inventory (informational — one place that lists them all)

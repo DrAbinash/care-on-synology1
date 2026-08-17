@@ -88,8 +88,17 @@ vi.mock("../ssrf/ollamaUrlGuard", () => ({
 }));
 
 describe("runOllamaAiDraftVerify", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     mockQuery.mockClear();
+    const hb = await import("../radiologyJobConsumerHeartbeat");
+    hb.resetRadiologyJobConsumerHeartbeatForTests();
+    hb.markRadiologyJobConsumerRegistered();
+    hb.recordRadiologyJobCronTick({
+      peak: false,
+      aiBlocked: false,
+      dueAi: 0,
+      ran: 0,
+    });
     vi.stubGlobal(
       "fetch",
       vi.fn(async (url: string) => {
@@ -114,5 +123,27 @@ describe("runOllamaAiDraftVerify", () => {
     expect(modelCheck?.status).toBe("PASS");
     expect(modelCheck?.detail).toContain("qwen3-vl:8b");
     expect(modelCheck?.detail).toContain("172.16.1.140");
+    const worker = result.checks.find((c) => c.name === "Overnight worker");
+    expect(worker?.status).toBe("PASS");
+  });
+
+  it("fails when the queue has pending jobs and the consumer is not registered", async () => {
+    const hb = await import("../radiologyJobConsumerHeartbeat");
+    hb.resetRadiologyJobConsumerHeartbeatForTests();
+    const jobs = await import("../radiologyJobs");
+    vi.mocked(jobs.jobBacklogCounts).mockResolvedValueOnce({
+      pending: 3693,
+      running: 0,
+      deadLetter: 658,
+    });
+    const { runOllamaAiDraftVerify } = await import("./ollamaDraftVerify");
+    const result = await runOllamaAiDraftVerify({ runDraft: false });
+    expect(result.ok).toBe(false);
+    expect(result.blockingFailed).toBe(true);
+    const worker = result.checks.find((c) => c.name === "Overnight worker");
+    expect(worker?.status).toBe("FAIL");
+    expect(worker?.detail).toMatch(/STOPPED/);
+    const backlog = result.checks.find((c) => c.name === "Shadow pipeline backlog");
+    expect(backlog?.status).toBe("FAIL");
   });
 });

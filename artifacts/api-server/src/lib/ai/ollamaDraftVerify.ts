@@ -16,6 +16,10 @@ import {
 } from "./clinicalConfigService";
 import { AI_SHADOW_PIPELINE_JOB } from "./shadowPipeline";
 import { jobBacklogCounts, listDeadLetterJobs } from "../radiologyJobs";
+import {
+  deriveRadiologyJobConsumerHealth,
+  getRadiologyJobConsumerHeartbeat,
+} from "../radiologyJobConsumerHeartbeat";
 
 export type VerifyStatus = "PASS" | "FAIL" | "WARNING" | "SKIPPED";
 
@@ -256,11 +260,35 @@ export async function runOllamaAiDraftVerify(opts: {
     const backlog = await jobBacklogCounts([AI_SHADOW_PIPELINE_JOB]);
     const dead = await listDeadLetterJobs([AI_SHADOW_PIPELINE_JOB]);
     const failedDead = dead.filter((j) => j.failureReason);
+    const hb = getRadiologyJobConsumerHeartbeat();
+    const consumer = deriveRadiologyJobConsumerHealth(hb, {
+      queueDepth: backlog.pending,
+      running: backlog.running,
+      nightWindow: true,
+    });
+    const backlogUnhealthy = backlog.pending > 0 && backlog.running === 0
+      && (consumer.status === "STOPPED" || consumer.status === "STALE" || consumer.status === "STARVED");
+    add(checks, {
+      group: "Queue",
+      name: "Overnight worker",
+      status: consumer.status === "HEALTHY" || consumer.status === "PEAK_HOLD"
+        ? (consumer.status === "PEAK_HOLD" ? "WARNING" : "PASS")
+        : "FAIL",
+      detail: `${consumer.status}: ${consumer.detail}. last poll ${hb.lastCronTickAt ?? "never"}; last claim ${hb.lastClaimedJobId ?? "none"}; due/pending ${backlog.pending}; running ${backlog.running}`,
+      remediation: consumer.status === "HEALTHY"
+        ? undefined
+        : "Redeploy this CARE API so startRadiologyJobConsumer() registers the minute drain even when ENABLE_SCHEDULERS is unset",
+      blocking: consumer.status === "STOPPED" || consumer.status === "STALE" || consumer.status === "STARVED",
+    });
     add(checks, {
       group: "Queue",
       name: "Shadow pipeline backlog",
-      status: "PASS",
-      detail: `pending ${backlog.pending}, running ${backlog.running}, abandoned ${backlog.deadLetter}`,
+      status: backlogUnhealthy ? "FAIL" : backlog.pending > 0 && backlog.running === 0 ? "WARNING" : "PASS",
+      detail: `pending ${backlog.pending}, running ${backlog.running}, abandoned ${backlog.deadLetter} — this is ALL ai_shadow_pipeline rows, not the worklist Overnight AI 24h chip`,
+      remediation: backlogUnhealthy
+        ? "Worker is not claiming jobs. Do not bulk-retry. Fix consumer, then retry ONE recent MRI."
+        : undefined,
+      blocking: backlogUnhealthy,
     });
     if (failedDead.length > 0) {
       add(checks, {

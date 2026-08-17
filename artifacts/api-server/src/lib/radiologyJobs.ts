@@ -285,6 +285,19 @@ export async function markJobRetryable(id: number): Promise<boolean> {
   return true;
 }
 
+/** Count claimable (pending/retrying and due) jobs of one operation type. */
+export async function countDueJobs(operationType: string, now = new Date()): Promise<number> {
+  const [row] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(dicomRetryQueueTable)
+    .where(and(
+      eq(dicomRetryQueueTable.operationType, operationType),
+      inArray(dicomRetryQueueTable.status, [...CLAIMABLE_STATUSES]),
+      or(isNull(dicomRetryQueueTable.nextRetryAt), lte(dicomRetryQueueTable.nextRetryAt, now)),
+    ));
+  return row?.count ?? 0;
+}
+
 /** Backlog counts for the ops health endpoint. */
 export async function jobBacklogCounts(handledTypes: string[]): Promise<{ pending: number; running: number; deadLetter: number }> {
   const rows = await db

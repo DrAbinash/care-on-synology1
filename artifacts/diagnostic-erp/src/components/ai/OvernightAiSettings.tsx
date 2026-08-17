@@ -326,19 +326,43 @@ export default function OvernightAiSettings() {
         <div className="rounded-md border bg-muted/30 p-3 text-[11px] space-y-1" data-testid="overnight-ai-diagnostics">
           <div className="font-semibold">Overnight AI diagnostics</div>
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-3 gap-y-0.5 text-muted-foreground">
-            <span>Scheduler: <strong className="text-foreground">{String(diagnostics.scheduler ?? "—")}</strong></span>
+            <span>Worker: <strong className={
+              String(diagnostics.worker) === "HEALTHY" ? "text-foreground"
+                : String(diagnostics.worker) === "PEAK_HOLD" ? "text-amber-700"
+                : "text-red-700"
+            }>{String(diagnostics.worker ?? "—")}</strong></span>
             <span>Night window: <strong className="text-foreground">{String(diagnostics.nightWindow ?? "—")}</strong></span>
-            <span>Worker: <strong className="text-foreground">{String(diagnostics.worker ?? "—")}</strong></span>
+            <span>Peak: <strong className="text-foreground">{String(diagnostics.clinicPeak ?? "—")}</strong></span>
+            <span>TZ: <strong className="text-foreground">{String(diagnostics.timezone ?? "Asia/Kolkata")}</strong></span>
             <span>Local AI: <strong className="text-foreground">{String(diagnostics.localAi ?? "—")}</strong></span>
             <span>Model: <strong className="text-foreground">{String(diagnostics.model ?? "qwen3-vl:8b")}</strong></span>
             <span>Queue depth: <strong className="text-foreground">{String(diagnostics.queueDepth ?? 0)}</strong></span>
+            <span>Due now: <strong className="text-foreground">{String(diagnostics.dueNow ?? "—")}</strong></span>
             <span>Running: <strong className="text-foreground">{String(diagnostics.running ?? 0)}</strong></span>
-            <span>Oldest queued: <strong className="text-foreground">{diagnostics.oldestQueuedAt ? String(diagnostics.oldestQueuedAt).slice(11, 16) : "—"}</strong></span>
-            <span>Last success: <strong className="text-foreground">{diagnostics.lastSuccessfulDraftAt ? String(diagnostics.lastSuccessfulDraftAt).slice(11, 16) : "—"}</strong></span>
+            <span>Abandoned: <strong className="text-foreground">{String(diagnostics.abandoned ?? "—")}</strong></span>
+            <span>Last poll: <strong className="text-foreground">{diagnostics.lastPoll ? String(diagnostics.lastPoll) : "never"}</strong></span>
+            <span>Last claim: <strong className="text-foreground">{diagnostics.lastClaimedJob != null ? `#${String(diagnostics.lastClaimedJob)}` : "none"}</strong></span>
+            <span>Last success: <strong className="text-foreground">{diagnostics.lastSuccessfulDraftAt ? String(diagnostics.lastSuccessfulDraftAt) : "—"}</strong></span>
+            <span>Current job: <strong className="text-foreground">{diagnostics.currentJob != null ? `#${String(diagnostics.currentJob)}` : "none"}</strong></span>
+            <span>Oldest queued: <strong className="text-foreground">{diagnostics.oldestQueuedAt ? String(diagnostics.oldestQueuedAt) : "—"}</strong></span>
           </div>
           {diagnostics.lastError ? (
             <p className="text-red-700 truncate">Last error: {String(diagnostics.lastError)}</p>
           ) : null}
+          {diagnostics.workerDetail ? (
+            <p className="text-[10px] text-muted-foreground">{String(diagnostics.workerDetail)}</p>
+          ) : null}
+          {Array.isArray(diagnostics.topAbandonedReasons) && diagnostics.topAbandonedReasons.length > 0 ? (
+            <p className="text-[10px] text-muted-foreground truncate">
+              Abandoned reasons: {(diagnostics.topAbandonedReasons as Array<{ reason?: string; count?: number }>)
+                .slice(0, 3)
+                .map((r) => `${r.count ?? "?"}× ${(r.reason ?? "").slice(0, 80)}`)
+                .join(" · ")}
+            </p>
+          ) : null}
+          <p className="text-[10px] text-muted-foreground">
+            Queue depth is all `ai_shadow_pipeline` pending/retrying rows. Worklist Overnight AI Drafts (Queued 20) is the last-24h MRI chip — a different population. Do not bulk-retry abandoned jobs.
+          </p>
           <p className="text-[10px] text-muted-foreground">Concurrency stays at 1 — Ollama processes one MRI draft at a time.</p>
         </div>
       )}
