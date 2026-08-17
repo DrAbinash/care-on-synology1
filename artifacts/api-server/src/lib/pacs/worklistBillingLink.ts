@@ -13,7 +13,7 @@ import {
 } from "@workspace/db/schema";
 import { eq, desc } from "drizzle-orm";
 import { sql } from "drizzle-orm";
-import { calculateMatchScore } from "./matchingEngine";
+import { calculateMatchScore, normalizeAccessionKey } from "./matchingEngine";
 
 const AUTO_LINK_MIN_POINTS = 45;
 
@@ -41,6 +41,75 @@ export async function autoLinkBilledStudyForWorklist(
 
   if (worklistItem.studyId) {
     return { linked: true, studyId: worklistItem.studyId, reason: "already linked" };
+  }
+
+  // Fast path: normalized accession is the MWL work-id. Prefer this over
+  // patient-scoped fuzzy match so rows with images still link when PatientID
+  // on the console was mistyped or auto-created a different patient.
+  const accKey = normalizeAccessionKey(worklistItem.accessionNumber);
+  if (accKey) {
+    const [byAcc] = await db
+      .select({
+        id: radiologyStudiesTable.id,
+        patientId: radiologyStudiesTable.patientId,
+        accessionNumber: radiologyStudiesTable.accessionNumber,
+      })
+      .from(radiologyStudiesTable)
+      .where(
+        sql`lower(regexp_replace(coalesce(${radiologyStudiesTable.accessionNumber}, ''), '[^a-zA-Z0-9]', '', 'g')) = ${accKey}`,
+      )
+      .limit(1);
+    if (byAcc) {
+      await db
+        .update(radiologyWorklistTable)
+        .set({
+          studyId: byAcc.id,
+          patientId: byAcc.patientId,
+          updatedAt: new Date(),
+        })
+        .where(eq(radiologyWorklistTable.id, worklistId));
+
+      const [study] = await db
+        .select()
+        .from(radiologyStudiesTable)
+        .where(eq(radiologyStudiesTable.id, byAcc.id))
+        .limit(1);
+      if (study) {
+        const studyUpdates: Partial<typeof radiologyStudiesTable.$inferInsert> = {
+          updatedAt: new Date(),
+          status: "acquired",
+          acquiredAt: new Date(),
+        };
+        if (worklistItem.studyInstanceUID && !study.studyInstanceUid) {
+          studyUpdates.studyInstanceUid = worklistItem.studyInstanceUID;
+        }
+        await db
+          .update(radiologyStudiesTable)
+          .set(studyUpdates)
+          .where(eq(radiologyStudiesTable.id, byAcc.id));
+      }
+
+      await db.insert(radiologyAuditLogTable).values({
+        worklistId,
+        accessionNumber: worklistItem.accessionNumber,
+        action: "AUTO_LINK_BILLED",
+        actor,
+        details: JSON.stringify({
+          studyId: byAcc.id,
+          matchPoints: 50,
+          matchScore: "GREEN",
+          method: "accession-normalized",
+        }),
+      });
+
+      return {
+        linked: true,
+        studyId: byAcc.id,
+        matchPoints: 50,
+        matchScore: "GREEN",
+        reason: "linked by accession number",
+      };
+    }
   }
 
   if (!worklistItem.patientId) {

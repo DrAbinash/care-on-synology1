@@ -45,7 +45,7 @@ import { runUsgExtraction, getUsgAdminSettings } from "../lib/usgExtractor";
 import { isUltrasoundModality, isObstetricUsgStudy } from "../lib/usgModality";
 import { checkPcpndtFormFCompliance, PCPNDT_OVERRIDE_ROLES } from "../lib/pcpndtCompliance";
 import { auditLog } from "../lib/audit";
-import { calculateMatchScore, type DicomInput, type BilledTestInput } from "../lib/pacs/matchingEngine";
+import { calculateMatchScore, normalizeAccessionKey, type DicomInput, type BilledTestInput } from "../lib/pacs/matchingEngine";
 import { formatDicomPersonNameForDisplay, reconcileAccessionVsReferringDoctor } from "../lib/pacs/dicomNameNormalize";
 import { shouldFallbackToAccessionLookup, isWorklistUidRaceViolation } from "../lib/radiologyWorklistDedup";
 import { radiologyOpenFallbackPath, resolveRadiologyOpen } from "../lib/resolveRadiologyOpen";
@@ -546,16 +546,21 @@ router.post("/radiology/studies", async (req, res) => {
       }
     }
 
-    // 2. Matched by accessionNumber
+    // 2. Matched by accessionNumber (alnum-normalized — same key MWL + Match Center use)
     if (!rStudy && accessionNumber) {
-      const [row] = await db
-        .select(studySelectFields)
-        .from(radiologyStudiesTable)
-        .where(eq(radiologyStudiesTable.accessionNumber, accessionNumber))
-        .limit(1);
-      if (row) {
-        rStudy = row;
-        matchMethod = "matched by accessionNumber";
+      const accKey = normalizeAccessionKey(accessionNumber);
+      if (accKey) {
+        const [row] = await db
+          .select(studySelectFields)
+          .from(radiologyStudiesTable)
+          .where(
+            sql`lower(regexp_replace(coalesce(${radiologyStudiesTable.accessionNumber}, ''), '[^a-zA-Z0-9]', '', 'g')) = ${accKey}`,
+          )
+          .limit(1);
+        if (row) {
+          rStudy = row;
+          matchMethod = "matched by accessionNumber";
+        }
       }
     }
 

@@ -1205,10 +1205,10 @@ export default function RadiologyWorklist() {
                 <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0 text-orange-600" />
                 <div className="flex-1 min-w-0">
                   <span className="font-semibold">
-                    {unlinkedPacsCount} PACS scan{unlinkedPacsCount === 1 ? "" : "s"} without a linked bill
+                    {unlinkedPacsCount} PACS scan{unlinkedPacsCount === 1 ? "" : "s"} not linked to a bill in ERP
                   </span>
                   <span className="text-xs text-orange-800/90 dark:text-orange-300/90 block mt-0.5">
-                    A Billing Desk bill may already exist — this means the PACS intake row is not linked to a billed radiology study (Bill column stays —). Auto-link tries to match by patient; otherwise use DICOM Match Center.
+                    Images can exist in Orthanc while Bill column stays —. Auto-link matches by accession (MWL work id); if the modality did not use MWL, open DICOM Match Center and link manually.
                   </span>
                 </div>
                 <Button

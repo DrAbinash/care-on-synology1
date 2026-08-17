@@ -222,10 +222,10 @@ export default function MyCollection() {
           <AlertTriangle className="h-5 w-5 text-orange-600 shrink-0 mt-0.5" />
           <div className="flex-1 min-w-0 text-sm">
             <p className="font-semibold text-orange-900 dark:text-orange-200">
-              {listCounts.unbilled} scan{listCounts.unbilled === 1 ? "" : "s"} in PACS without a billed order
+              {listCounts.unbilled} PACS scan{listCounts.unbilled === 1 ? "" : "s"} not linked to a billed study in ERP
             </p>
             <p className="text-xs text-orange-800/90 dark:text-orange-300/90 mt-1">
-              Staff may have acquired imaging before billing. Review each row, bill the patient if needed, then link the study or reject the scan.
+              Images can already be in Orthanc — this flag means the intake row has no <code className="text-[10px]">study_id</code> link to the bill&apos;s radiology order (usually accession / MWL mismatch). Use <strong>Link Correct Study</strong> or Worklist → Auto-link bills.
             </p>
           </div>
           {listFilter !== "unbilled" && (
@@ -243,7 +243,7 @@ export default function MyCollection() {
 
       <div className="shrink-0 flex flex-wrap gap-2 px-3 sm:px-4 py-3">
         {([
-          { key: "unbilled" as const, label: "Scan without billing", count: listCounts.unbilled, tone: "orange" },
+          { key: "unbilled" as const, label: "Not linked to bill", count: listCounts.unbilled, tone: "orange" },
           { key: "needs_review" as const, label: "Needs review", count: listCounts.needs_review, tone: "amber" },
           { key: "resolved" as const, label: "Resolved", count: listCounts.resolved, tone: "emerald" },
           { key: "all" as const, label: "All PACS intake", count: listCounts.all, tone: "slate" },
@@ -307,7 +307,7 @@ export default function MyCollection() {
                       <div className="flex flex-col items-end gap-1 shrink-0">
                         {isUnbilledScan(item) && (
                           <Badge className="bg-orange-600 hover:bg-orange-700 text-white text-[10px]">
-                            No billing
+                            Not linked
                           </Badge>
                         )}
                         <Badge className={getScoreBadgeColor(item.matchScore)}>
@@ -483,9 +483,9 @@ export default function MyCollection() {
                     ) : (
                       <div className="flex flex-col items-center justify-center gap-3 py-6 text-center">
                         <Link2 className="h-8 w-8 text-rose-400 stroke-[1.5]" />
-                        <span className="font-medium text-rose-500">No Billed Study Linked</span>
+                        <span className="font-medium text-rose-500">Not linked to a billed study</span>
                         <p className="text-[11px] text-slate-500 max-w-sm">
-                          This DICOM study was auto-pulled from PACS but lacks a valid link to a billed radiology test. Use <strong>Link Correct Study</strong> below after billing, or open Billing Desk if no bill exists yet.
+                          Orthanc may already have this study&apos;s images. The ERP link is missing: DICOM accession / PatientID from the scanner did not match the bill&apos;s MWL accession (<code className="text-[10px]">ACC-…</code>). Use <strong>Link Correct Study</strong> below, or confirm the modality queried MWL before scanning.
                         </p>
                       </div>
                     )}
