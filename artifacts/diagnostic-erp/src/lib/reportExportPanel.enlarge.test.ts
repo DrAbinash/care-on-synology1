@@ -8,10 +8,13 @@ const src = readFileSync(
 );
 
 describe("ReportExportPanel — enlarge preview before finalize", () => {
-  it("makes the small report viewport clickable", () => {
+  it("exposes a compact-preview enlarge control without a full-bleed overlay", () => {
     expect(src).toContain('data-testid="report-layout-preview-enlarge"');
-    expect(src).toContain("cursor-zoom-in");
     expect(src).toContain("Click to enlarge");
+    // Full-bleed overlay over the preview steals wheel → parent column scrolls.
+    expect(src).not.toMatch(
+      /report-layout-preview-inline-scroll[\s\S]{0,500}absolute inset-0[\s\S]{0,200}report-layout-preview-enlarge/,
+    );
   });
 
   it("opens a full-page dialog with the same preview HTML", () => {
@@ -30,5 +33,17 @@ describe("ReportExportPanel — enlarge preview before finalize", () => {
     expect(src).toContain('data-testid="report-layout-preview-scroll"');
     expect(src).toContain("overflow-y-auto");
     expect(src).toMatch(/report-layout-preview-enlarged[\s\S]{0,200}pointer-events-none|pointer-events-none[\s\S]{0,200}report-layout-preview-enlarged/);
+  });
+
+  it("scrolls the compact Classic/Premium preview on an outer pane (not the iframe)", () => {
+    expect(src).toContain('data-testid="report-layout-preview-inline-scroll"');
+    expect(src).toMatch(
+      /report-layout-preview-inline-scroll[\s\S]{0,160}overflow-y-scroll|overflow-y-scroll[\s\S]{0,160}report-layout-preview-inline-scroll/,
+    );
+    expect(src).toContain("inlineScrollRef");
+    expect(src).toMatch(/addEventListener\("wheel"/);
+    expect(src).toMatch(/passive:\s*false/);
+    expect(src).toMatch(/el\.scrollTop \+= e\.deltaY/);
+    expect(src).toMatch(/height:\s*1122/);
   });
 });
