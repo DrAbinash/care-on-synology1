@@ -6,6 +6,7 @@ import {
 } from "@workspace/db/schema";
 import { asc, eq } from "drizzle-orm";
 import { isFeatureEnabledServer } from "./featureFlags";
+import { composeStructuredJsonColumn } from "./structuredJsonColumn";
 
 /**
  * radiologyStructuredJsonCache.ts — Radiology Roadmap Ticket A4.
@@ -73,6 +74,12 @@ export function buildStructuredJsonFromFindingInstances(
 export async function regenerateDraftStructuredJson(draftId: number): Promise<void> {
   if (!(await isFeatureEnabledServer("ff_radiology_structured_core"))) return;
 
+  const [draftRow] = await db
+    .select({ structuredJson: radiologyReportDraftsTable.structuredJson })
+    .from(radiologyReportDraftsTable)
+    .where(eq(radiologyReportDraftsTable.id, draftId))
+    .limit(1);
+
   const rows = await db
     .select()
     .from(reportFindingInstancesTable)
@@ -80,9 +87,13 @@ export async function regenerateDraftStructuredJson(draftId: number): Promise<vo
     .orderBy(asc(reportFindingInstancesTable.id));
 
   const cache = buildStructuredJsonFromFindingInstances(rows);
+  const next = composeStructuredJsonColumn({
+    existing: draftRow?.structuredJson ?? null,
+    a4Cache: cache,
+  });
 
   await db
     .update(radiologyReportDraftsTable)
-    .set({ structuredJson: cache })
+    .set({ structuredJson: next })
     .where(eq(radiologyReportDraftsTable.id, draftId));
 }

@@ -135,6 +135,22 @@ import FinalizeSignDialog from "@/components/radiology/FinalizeSignDialog";
 import VoiceCommandBar from "@/components/radiology/VoiceCommandBar";
 import FieldCareMic from "@/components/radiology/FieldCareMic";
 import QuickFindingsPanel, { type QuickFinding } from "@/components/radiology/QuickFindingsPanel";
+import {
+  StructuredFormatPanel,
+  formatHasStructuredFields,
+  useDebouncedCallback,
+} from "@/components/radiology/StructuredFormatPanel";
+import {
+  adaptSectionsJson,
+  allNormalFindingsMap,
+  extractCareStructuredFormatState,
+  generateFromValues,
+  labeledLinesFromMap,
+  planStructuredFindingsUpdate,
+  stripExactChunks,
+  toDraftFormatState,
+  type StructuredValues,
+} from "@/lib/structuredFormat";
 import PriorComparisonToolbar from "@/components/radiology/PriorComparisonToolbar";
 import ViewerMeasurementsBanner from "@/components/radiology/ViewerMeasurementsBanner";
 import LegacyBox, { type LegacyBoxTab } from "@/components/radiology/LegacyBox";
@@ -315,6 +331,11 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   } | null>(null);
   const [canUndoStartReport, setCanUndoStartReport] = useState(false);
   const pendingStructuredPopulateRef = useRef(false);
+  const [structuredValues, setStructuredValues] = useState<StructuredValues>({});
+  const structuredTouchedRef = useRef(false);
+  const structuredFormatDrivingRef = useRef(false);
+  const lastStructuredFindingsLinesRef = useRef<Record<string, string>>({});
+  const saveDraftRef = useRef<(opts?: { silent?: boolean }) => Promise<number | null>>(async () => null);
 
   const [queueModality, setQueueModality] = useState(() => {
     try { return localStorage.getItem("care_reading_queue_modality") || "MR"; } catch { return "MR"; }
@@ -795,11 +816,16 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     setUseStructured(false);
     startReportUndoRef.current = null;
     setCanUndoStartReport(false);
+    setStructuredValues({});
+    structuredTouchedRef.current = false;
+    structuredFormatDrivingRef.current = false;
+    lastStructuredFindingsLinesRef.current = {};
   }, [studyId]);
 
   // Keep findingsText in sync when structured cards drive the report
   useEffect(() => {
     if (!useStructured) return;
+    if (structuredFormatDrivingRef.current) return;
     const text = findingsMapToText(findingsMap);
     if (useWorkspace.getState().findingsText === text) return;
     useWorkspace.getState().setField("findings", text);
@@ -887,6 +913,53 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     setters: studySetupSetters,
     onToast: (opts) => toast({ title: opts.title, description: opts.description, variant: opts.variant }),
   });
+
+  const acceptStructuredImpressionCandidate = useCallback((text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    useWorkspace.getState().mergeField("impression", trimmed, "structured-template-candidate");
+  }, []);
+
+  const applyStructuredGeneration = useCallback((values: StructuredValues) => {
+    const tpl = studySetup.selectedTemplate;
+    if (!tpl || !formatHasStructuredFields(tpl.sectionsJson)) return;
+    structuredFormatDrivingRef.current = true;
+    const doc = adaptSectionsJson(tpl.sectionsJson);
+    const gen = generateFromValues(doc, values);
+    setFindingsMap(gen.findingsMap);
+    setUseStructured(true);
+
+    const nextLines = labeledLinesFromMap(gen.findingsMap);
+    const ws = useWorkspace.getState();
+    const plan = planStructuredFindingsUpdate(
+      ws.findingsText,
+      lastStructuredFindingsLinesRef.current,
+      nextLines,
+    );
+    const strippedF = stripExactChunks(ws.findingsText, plan.strip);
+    if (strippedF !== ws.findingsText) ws.setField("findings", strippedF);
+    for (const line of plan.merge) {
+      ws.mergeField("findings", line, "structured-template");
+    }
+    lastStructuredFindingsLinesRef.current = plan.nextTracked;
+
+    if (gen.techniqueText.trim()) ws.mergeField("technique", gen.techniqueText, "structured-template");
+    if (gen.recommendationText.trim()) ws.mergeField("recommendation", gen.recommendationText, "structured-template");
+  }, [studySetup.selectedTemplate]);
+
+  const scheduleStructuredApply = useDebouncedCallback((values: StructuredValues) => {
+    applyStructuredGeneration(values);
+  }, 100);
+
+  const scheduleStructuredDraftSave = useDebouncedCallback(() => {
+    void saveDraftRef.current({ silent: true });
+  }, 500);
+
+  useEffect(() => {
+    if (!structuredTouchedRef.current) return;
+    if (!formatHasStructuredFields(studySetup.selectedTemplate?.sectionsJson)) return;
+    scheduleStructuredApply(structuredValues);
+  }, [structuredValues, studySetup.selectedTemplate, scheduleStructuredApply]);
 
   const clinicalHistoryChips = useMemo(
     () => (studySetup.quickSelectData?.clinicalHistory ?? [])
@@ -1145,6 +1218,11 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         technique: normStr(draft.technique),
         clinicalHistory: normStr(draft.clinicalHistory) || (workflow.currentRow as any)?.clinicalHistory || "",
       });
+      const restored = extractCareStructuredFormatState(draft.structuredJson);
+      if (restored?.values) {
+        structuredTouchedRef.current = true;
+        setStructuredValues(restored.values);
+      }
       return;
     }
 
@@ -1238,6 +1316,14 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
           rawFindings: findingsText,
           impression: [impressionText],
           recommendation: recommendationText,
+          findingsSections: useStructured ? findingsMap : undefined,
+          structuredFormatState: structuredTouchedRef.current && studySetup.selectedTemplate && formatHasStructuredFields(studySetup.selectedTemplate.sectionsJson)
+            ? toDraftFormatState({
+              formatId: studySetup.selectedTemplate.id,
+              formatVersion: studySetup.selectedTemplate.formatVersion ?? 1,
+              values: structuredValues,
+            })
+            : undefined,
         } as any),
         { shouldRetry: isTransientError },
       );
@@ -1250,7 +1336,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       toast({ title: "Save failed", description: err instanceof Error ? err.message : "Unknown error", variant: "destructive" });
       return null;
     }
-  }, [studyId, draftId, clinicalHistoryText, techniqueText, findingsText, impressionText, recommendationText, isOnline, captureSavedDraftId, toast]);
+  }, [studyId, draftId, clinicalHistoryText, techniqueText, findingsText, impressionText, recommendationText, isOnline, captureSavedDraftId, toast, useStructured, findingsMap, structuredValues, studySetup.selectedTemplate]);
+  saveDraftRef.current = saveDraft;
 
   // ─── Finalize (sign + archive + notify) ─────────────────────────────────────
   const finalizeReport = useCallback(async () => {
@@ -3105,6 +3192,27 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       exportingPdf={exportingPdf}
                       printingLikeFinal={printingLikeFinal}
                       disabled={false}
+                    />
+
+                    {/* Structured format panel — level-first; Quick Findings chips stay below */}
+                    <StructuredFormatPanel
+                      sectionsJson={studySetup.selectedTemplate?.sectionsJson}
+                      values={structuredValues}
+                      disabled={isLocked || isFinalized}
+                      onValuesChange={(next) => {
+                        structuredTouchedRef.current = true;
+                        setStructuredValues(next);
+                        scheduleStructuredDraftSave();
+                      }}
+                      onLoadAllNormals={() => {
+                        structuredTouchedRef.current = true;
+                        const doc = adaptSectionsJson(studySetup.selectedTemplate?.sectionsJson);
+                        setStructuredValues({});
+                        setFindingsMap(allNormalFindingsMap(doc));
+                        setUseStructured(true);
+                        scheduleStructuredDraftSave();
+                      }}
+                      onAcceptImpression={acceptStructuredImpressionCandidate}
                     />
 
                     {/* Clinic Quick Select (legacy QuickFindingsPanel) */}

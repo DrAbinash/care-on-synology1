@@ -75,6 +75,12 @@ import { isFeatureEnabledServer } from "../lib/featureFlags";
 import { checkWriteLock } from "../lib/studyLocks";
 import { regenerateDraftStructuredJson } from "../lib/radiologyStructuredJsonCache";
 import {
+  persistCareStructuredFormatState,
+} from "../lib/persistCareStructuredFormatState";
+import {
+  CARE_STRUCTURED_FORMAT_STATE_KIND,
+} from "../lib/structuredJsonColumn";
+import {
   checkDraftStructuredJsonDrift,
   scanDraftsForStructuredJsonDrift,
 } from "../lib/radiologyStructuredJsonDrift";
@@ -1454,6 +1460,22 @@ const SaveDraftBody = z.object({
       params: z.record(z.unknown()).optional(),
     }).passthrough(),
   ).nullish(),
+  // P1 — radiologist structured-format field values. Namespaced inside
+  // structured_json via persistCareStructuredFormatState so A4's cache array
+  // is preserved (envelope) rather than overwritten.
+  structuredFormatState: z.object({
+    kind: z.literal(CARE_STRUCTURED_FORMAT_STATE_KIND),
+    formatId: z.number().int(),
+    formatVersion: z.number().int().optional(),
+    values: z.record(z.union([
+      z.string(),
+      z.array(z.string()),
+      z.boolean(),
+      z.number(),
+      z.null(),
+    ])),
+    updatedAt: z.string().optional(),
+  }).nullish(),
 });
 
 radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest, res: Response) => {
@@ -1656,7 +1678,26 @@ radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest,
     }
   }
 
-  res.json({ success: true, draft });
+  let formatStatePersistFailed = false;
+  if (draft?.id && rest.structuredFormatState != null) {
+    try {
+      await persistCareStructuredFormatState(draft.id, {
+        kind: CARE_STRUCTURED_FORMAT_STATE_KIND,
+        formatId: rest.structuredFormatState.formatId,
+        formatVersion: rest.structuredFormatState.formatVersion ?? 1,
+        values: rest.structuredFormatState.values,
+        updatedAt: rest.structuredFormatState.updatedAt ?? new Date().toISOString(),
+      });
+    } catch (err) {
+      formatStatePersistFailed = true;
+      console.error(
+        "[radiology-report-generator] structured format state persist failed:",
+        err,
+      );
+    }
+  }
+
+  res.json({ success: true, draft, formatStatePersistFailed });
 });
 
 // GET /structured-json-drift — admin-only, read-only diagnostic (Ticket

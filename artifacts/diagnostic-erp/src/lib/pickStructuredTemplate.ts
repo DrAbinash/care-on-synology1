@@ -18,6 +18,8 @@ export type StructuredTemplateRow = {
   modality: string;
   bodyPart: string;
   studyType: string | null;
+  isDefault?: boolean;
+  schemaVersion?: number;
 };
 
 /** Infer internal bodyPart (+ optional studyType) from modality + description. */
@@ -113,6 +115,15 @@ function nameHintMatch(templateName: string, inferred: StructuredTemplateMatch):
   }
 }
 
+function preferRegionDefault<T extends StructuredTemplateRow>(rows: T[]): T | undefined {
+  if (rows.length === 0) return undefined;
+  const defaults = rows.filter((t) => t.isDefault);
+  if (defaults.length > 1 && process.env.NODE_ENV !== "production") {
+    console.warn(`[pickStructuredTemplate] ${defaults.length} templates have isDefault=true for the same region; using the first.`);
+  }
+  return defaults[0] ?? rows.find((t) => (t.schemaVersion ?? 1) >= 2) ?? rows[0];
+}
+
 /** Pick the best structured template row for a study. Never falls back to arbitrary first MRI row. */
 export function pickStructuredTemplate<T extends StructuredTemplateRow>(
   templates: T[],
@@ -127,14 +138,15 @@ export function pickStructuredTemplate<T extends StructuredTemplateRow>(
   if (pool.length === 0) return null;
 
   if (inferred.studyType) {
-    const exact = pool.find(
+    const exact = pool.filter(
       (t) => t.bodyPart === inferred.bodyPart
         && (t.studyType || "PLAIN").toUpperCase() === inferred.studyType!.toUpperCase(),
     );
-    if (exact) return exact;
+    const picked = preferRegionDefault(exact);
+    if (picked) return picked;
   }
 
-  const byBody = pool.find((t) => t.bodyPart === inferred.bodyPart);
+  const byBody = preferRegionDefault(pool.filter((t) => t.bodyPart === inferred.bodyPart));
   if (byBody) return byBody;
 
   const byName = pool.find((t) => nameHintMatch(t.templateName, inferred));
@@ -154,8 +166,9 @@ export function pickStructuredTemplateForRegion<T extends StructuredTemplateRow>
   const bodyPart = studyRegionToBodyPart(region);
   if (bodyPart) {
     const pool = templates.filter((t) => templateCatalogModality(t.modality) === mod);
-    const byBody = pool.find((t) => t.bodyPart === bodyPart);
-    if (byBody) return byBody;
+    const byBody = pool.filter((t) => t.bodyPart === bodyPart);
+    const preferred = preferRegionDefault(byBody);
+    if (preferred) return preferred;
     const inferred: StructuredTemplateMatch = { bodyPart, studyType: "PLAIN" };
     const byName = pool.find((t) => nameHintMatch(t.templateName, inferred));
     if (byName) return byName;

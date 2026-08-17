@@ -18,6 +18,10 @@
  * exact-remove/dedupe-merge used by the free-text engine, so a radiologist's
  * manual edit to a section is never silently overwritten (removeBlock only
  * strips an exact previously-inserted sentence; mergeBlock never duplicates).
+ *
+ * v2 structured formats (repeating groups, mutex, tokens, combineMode) live in
+ * `@/lib/structuredFormat`. This module still owns Quick Findings → findingsMap
+ * section matching; the format engine expands group items to those same keys.
  */
 
 import { mergeBlock, removeBlock } from "./quickFindingsMerge";

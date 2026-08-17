@@ -173,6 +173,30 @@ describe("checkDraftStructuredJsonDrift", () => {
     expect(result.driftDetected).toBe(true);
   });
 
+  test("in_sync: envelope wrapping A4 cache + format values still compares the array", async () => {
+    cacheLookupQueue = [{
+      structuredJson: {
+        kind: "care.structured_json_envelope",
+        a4Cache: [CACHE_ENTRY_A],
+        careStructuredFormat: {
+          kind: "care.structured_format_state",
+          formatId: 9,
+          formatVersion: 1,
+          values: {},
+          updatedAt: "2026-08-17T00:00:00.000Z",
+        },
+      },
+    }];
+    findingRowsQueue = [[findingRow({ id: 1, findingId: 8842 })]];
+    const { checkDraftStructuredJsonDrift } = await import("./radiologyStructuredJsonDrift");
+
+    const result = await checkDraftStructuredJsonDrift(42);
+
+    expect(result.status).toBe("in_sync");
+    expect(result.driftDetected).toBe(false);
+    expect(result.cache).toEqual([CACHE_ENTRY_A]);
+  });
+
   test("feature flag OFF: returns a trivial in_sync result without querying the database", async () => {
     structuredFlagEnabled = false;
     const { checkDraftStructuredJsonDrift } = await import("./radiologyStructuredJsonDrift");

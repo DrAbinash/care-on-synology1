@@ -10,6 +10,7 @@ let selectFromCalls: unknown[];
 let updateSetCalls: Record<string, unknown>[];
 let structuredFlagEnabled: boolean;
 let selectShouldThrow: boolean;
+let existingDraftStructuredJson: unknown;
 
 vi.mock("./featureFlags", () => ({
   isFeatureEnabledServer: async (_key: string) => structuredFlagEnabled,
@@ -17,19 +18,30 @@ vi.mock("./featureFlags", () => ({
 
 vi.mock("@workspace/db", () => ({
   db: {
-    select: () => ({
-      from: (table: unknown) => {
-        selectFromCalls.push(table);
+    select: (proj?: Record<string, unknown>) => {
+      if (proj && Object.prototype.hasOwnProperty.call(proj, "structuredJson")) {
         return {
-          where: () => ({
-            orderBy: async () => {
-              if (selectShouldThrow) throw new Error("simulated select failure");
-              return findingInstanceRows;
-            },
+          from: () => ({
+            where: () => ({
+              limit: async () => [{ structuredJson: existingDraftStructuredJson }],
+            }),
           }),
         };
-      },
-    }),
+      }
+      return {
+        from: (table: unknown) => {
+          selectFromCalls.push(table);
+          return {
+            where: () => ({
+              orderBy: async () => {
+                if (selectShouldThrow) throw new Error("simulated select failure");
+                return findingInstanceRows;
+              },
+            }),
+          };
+        },
+      };
+    },
     update: () => ({
       set: (v: Record<string, unknown>) => {
         updateSetCalls.push(v);
@@ -97,6 +109,7 @@ describe("regenerateDraftStructuredJson", () => {
     updateSetCalls = [];
     structuredFlagEnabled = true;
     selectShouldThrow = false;
+    existingDraftStructuredJson = null;
   });
 
   test("flag OFF: no-op — does not query or update anything", async () => {
@@ -145,5 +158,31 @@ describe("regenerateDraftStructuredJson", () => {
     const { regenerateDraftStructuredJson } = await import("./radiologyStructuredJsonCache");
     await expect(regenerateDraftStructuredJson(42)).rejects.toThrow("simulated select failure");
     expect(updateSetCalls).toHaveLength(0);
+  });
+
+  test("preserves care.structured_format_state when regenerating the A4 cache", async () => {
+    findingInstanceRows = [findingRow({ id: 1, findingId: 8842 })];
+    const formatState = {
+      kind: "care.structured_format_state" as const,
+      formatId: 9,
+      formatVersion: 1,
+      values: { "discs::l4-5::morphology": "bulge" },
+      updatedAt: "2026-08-17T00:00:00.000Z",
+    };
+    existingDraftStructuredJson = {
+      kind: "care.structured_json_envelope",
+      a4Cache: null,
+      careStructuredFormat: formatState,
+    };
+    const { regenerateDraftStructuredJson, buildStructuredJsonFromFindingInstances } = await import(
+      "./radiologyStructuredJsonCache"
+    );
+    await regenerateDraftStructuredJson(42);
+    expect(updateSetCalls[0]!.structuredJson).toEqual({
+      kind: "care.structured_json_envelope",
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      a4Cache: buildStructuredJsonFromFindingInstances(findingInstanceRows as any),
+      careStructuredFormat: formatState,
+    });
   });
 });

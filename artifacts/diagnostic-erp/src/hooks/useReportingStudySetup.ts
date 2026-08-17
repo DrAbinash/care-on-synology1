@@ -34,6 +34,7 @@ import {
   generateStructuredFinding,
   initialValues as structuredInitialValues,
 } from "@/lib/structuredFindings";
+import { adaptSectionsJson, allNormalFindingsMap } from "@/lib/structuredFormat";
 
 export type StructuredTemplate = {
   id: number;
@@ -46,6 +47,9 @@ export type StructuredTemplate = {
   defaultImpression: string | null;
   macrosJson: string;
   isActive: boolean;
+  formatVersion?: number;
+  schemaVersion?: number;
+  isDefault?: boolean;
 };
 
 type TemplateSections = {
@@ -560,7 +564,12 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
   /** Parse findings section cards from the selected structured template. */
   const templateFindingsSections = useMemo(() => {
     if (!selectedTemplate) return [] as Array<{ label: string; normal: string }>;
-    return parseSectionsJson(selectedTemplate.sectionsJson).findingsItems;
+    try {
+      const map = allNormalFindingsMap(adaptSectionsJson(selectedTemplate.sectionsJson));
+      return Object.entries(map).map(([label, v]) => ({ label, normal: v.text }));
+    } catch {
+      return parseSectionsJson(selectedTemplate.sectionsJson).findingsItems;
+    }
   }, [selectedTemplate]);
 
   /** Toggle a study region (multi-select). Adding a region merges its technique. */
