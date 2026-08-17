@@ -229,6 +229,7 @@ import { QuickSelectEditor } from "@/components/radiology/zai-workspace/quick-se
 import { MergePreviewDialog } from "@/components/radiology/zai-workspace/merge-preview-dialog";
 import { ConfirmOverwriteDialog } from "@/components/radiology/zai-workspace/confirm-overwrite-dialog";
 import { SaveAsFormatDialog } from "@/components/radiology/zai-workspace/save-as-format-dialog";
+import { ChocolateBoxMacros } from "@/components/radiology/zai-workspace/chocolate-box-macros";
 import { MacroEditorDialog } from "@/components/radiology/zai-workspace/macro-editor-dialog";
 import { MacroPromptPopover } from "@/components/radiology/zai-workspace/macro-prompt-popover";
 import { CriticalSlaTimer } from "@/components/radiology/zai-workspace/critical-sla-timer";
@@ -258,6 +259,7 @@ import "@/lib/copilotUsgCompanionModule";
 import {
   Lock, AlertTriangle, ChevronLeft, ChevronRight, Pause, Clock, Sparkles, ShieldCheck,
   Brain, Activity, Zap, Printer, FileDown, Share2, Eye, PanelLeftClose, PanelLeftOpen,
+  PanelRightClose, PanelRightOpen,
   CheckCircle2,
   Maximize2, Columns2, Monitor, Archive, Keyboard, AppWindow, MessageCircle, Hospital,
   Trash2, MonitorPlay, Plus,
@@ -781,6 +783,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const [protocolTitleOpen, setProtocolTitleOpen] = useState(false);
   const [protocolTitle, setProtocolTitle] = useState("");
   const [leftCollapsed, setLeftCollapsed] = useState(false);
+  const [rightCollapsed, setRightCollapsed] = useState(false);
   const [patientJumpFilter, setPatientJumpFilter] = useState("");
 
   // Viewer focus — collapse app sidebar via Layout; sticky while writing
@@ -813,8 +816,10 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const enterReportingFocusMode = useCallback(() => {
     leftPanelRef.current?.collapse();
     rightPanelRef.current?.collapse();
+    setViewerFocus(true);
+    if (!shouldShowEmbeddedViewer(layoutMode)) setLayoutMode("split");
     try { window.dispatchEvent(new CustomEvent("care:workspace-focus", { detail: true })); } catch { /* noop */ }
-  }, []);
+  }, [layoutMode, setLayoutMode, setViewerFocus]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -828,6 +833,22 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       window.location.pathname + (qs ? `?${qs}` : "") + window.location.hash,
     );
   }, [studyId, enterReportingFocusMode]);
+
+  // Clicking inside the OHIF iframe does not bubble to React. Window blur +
+  // activeElement === the embed is the same "I am looking at images" signal
+  // as clicking the viewer chrome.
+  useEffect(() => {
+    const onBlur = () => {
+      requestAnimationFrame(() => {
+        const ae = document.activeElement;
+        if (ae instanceof HTMLIFrameElement && ae.getAttribute("data-testid") === "ohif-embed") {
+          enterReportingFocusMode();
+        }
+      });
+    };
+    window.addEventListener("blur", onBlur);
+    return () => window.removeEventListener("blur", onBlur);
+  }, [enterReportingFocusMode]);
 
   useEffect(() => {
     try { window.dispatchEvent(new CustomEvent("care:workspace-focus", { detail: true })); } catch { /* noop */ }
@@ -1675,10 +1696,12 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         rightPanelRef.current?.expand();
         setLegacyTab((t) => t ?? "links");
       }
-      // Alt+1…9 jump to a major report section. Alt+digit is unclaimed by
-      // matchWorkspaceShortcut (which owns Ctrl+1–6) and by QuickFindingsPanel
-      // (Ctrl+1–9), and produces no text, so it is safe while typing.
+      // Alt+1…9 jump to a major report section. Skip while typing so Option+digit
+      // on Mac (¡™£¢∞§¶•ª) and other Alt combos in editors still produce text.
       if (e.altKey && !e.ctrlKey && !e.metaKey && /^[1-9]$/.test(e.key)) {
+        const t = e.target as HTMLElement | null;
+        const tag = t?.tagName?.toLowerCase();
+        if (tag === "input" || tag === "textarea" || t?.isContentEditable) return;
         const target = sectionForAltDigit(e.key);
         if (target) {
           e.preventDefault();
@@ -2285,6 +2308,16 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         >
           {leftCollapsed ? <PanelLeftOpen className="h-3.5 w-3.5" /> : <PanelLeftClose className="h-3.5 w-3.5" />}
         </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="h-7 w-7 p-0"
+          title={rightCollapsed ? "Expand Orient / Observe / Measure" : "Collapse Orient / Observe / Measure"}
+          data-testid="toggle-right-panel"
+          onClick={() => (rightCollapsed ? rightPanelRef.current?.expand() : rightPanelRef.current?.collapse())}
+        >
+          {rightCollapsed ? <PanelRightOpen className="h-3.5 w-3.5" /> : <PanelRightClose className="h-3.5 w-3.5" />}
+        </Button>
         <div className="h-5 w-px bg-border mx-1" />
         {study && (
           <div className="flex items-center gap-2 min-w-0 flex-1 px-2">
@@ -2554,7 +2587,11 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                 minSize={28}
                 maxSize={58}
               >
-                <div className="flex h-full flex-col">
+                <div
+                  className="flex h-full flex-col"
+                  data-testid="embedded-viewer-column"
+                  onMouseDown={enterReportingFocusMode}
+                >
                   <div className={reportImagesOpen ? "hidden h-0 overflow-hidden" : "flex-1 min-h-0"}>
                     <EmbeddedWadoViewer
                       ref={embeddedViewerRef}
@@ -2637,6 +2674,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                   <div
                     className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto p-3"
                     data-testid="report-section-accordion"
+                    onMouseDown={enterReportingFocusMode}
                   >
                     {/* 1. DEMOGRAPHY — canonical, editable, feeds all outputs */}
                     <ReportAccordionSection {...accordionProps("demography")}>
@@ -2994,38 +3032,16 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                         </div>
                       }
                     >
-                    {/* A. Region-aware macros — driven by the Region section above */}
-                    {!useStructured && studySetup.chocolateBoxSet && (
-                      <div className="space-y-1.5 rounded-xl border border-indigo-200/70 bg-gradient-to-r from-indigo-50/80 via-violet-50/50 to-fuchsia-50/40 p-2 shadow-sm" data-testid="chocolate-box">
-                        <div className="text-[10px] font-bold uppercase tracking-wide text-indigo-800">
-                          {studySetup.chocolateBoxSet.label} macros
-                        </div>
-                        <div className="flex flex-wrap gap-1.5">
-                          {studySetup.chocolateBoxSet.tiles.map((tile, i) => {
-                            const palettes = [
-                              "border-indigo-300 bg-gradient-to-br from-indigo-50 to-white text-indigo-900 hover:border-indigo-500 hover:shadow-indigo-200/50",
-                              "border-violet-300 bg-gradient-to-br from-violet-50 to-white text-violet-900 hover:border-violet-500 hover:shadow-violet-200/50",
-                              "border-fuchsia-300 bg-gradient-to-br from-fuchsia-50 to-white text-fuchsia-900 hover:border-fuchsia-500 hover:shadow-fuchsia-200/50",
-                              "border-sky-300 bg-gradient-to-br from-sky-50 to-white text-sky-900 hover:border-sky-500 hover:shadow-sky-200/50",
-                              "border-teal-300 bg-gradient-to-br from-teal-50 to-white text-teal-900 hover:border-teal-500 hover:shadow-teal-200/50",
-                              "border-amber-300 bg-gradient-to-br from-amber-50 to-white text-amber-900 hover:border-amber-500 hover:shadow-amber-200/50",
-                            ];
-                            return (
-                              <Button
-                                key={tile.label}
-                                type="button"
-                                size="sm"
-                                variant="outline"
-                                className={`h-7 text-[10px] font-bold rounded-lg border shadow-sm hover:shadow-md hover:-translate-y-px transition-all ${palettes[i % palettes.length]}`}
-                                disabled={isLocked || isFinalized}
-                                onClick={() => studySetup.applyChocolateTile(tile.text)}
-                              >
-                                {tile.label}
-                              </Button>
-                            );
-                          })}
-                        </div>
-                      </div>
+                    {/* A. Region-aware macros — driven by the Region section above.
+                        Pencil edits a box; the dashed blank box adds a new one.
+                        Same add/edit also lives in Settings → Radiology → Quick Select. */}
+                    {!useStructured && (
+                      <ChocolateBoxMacros
+                        setKey={studySetup.chocolateBoxSet.key}
+                        label={studySetup.chocolateBoxSet.label}
+                        disabled={isLocked || isFinalized}
+                        onInsert={studySetup.applyChocolateTile}
+                      />
                     )}
 
                     {studySetup.templateMismatch && (
@@ -3529,8 +3545,31 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
               </ResizablePanel>
               <ResizableHandle />
               {/* Copilot rail with ComparisonPanel + FollowUpPanel */}
-              <ResizablePanel defaultSize={42} minSize={32} ref={rightPanelRef}>
+              <ResizablePanel
+                defaultSize={42}
+                minSize={18}
+                collapsible
+                collapsedSize={3}
+                ref={rightPanelRef}
+                onCollapse={() => setRightCollapsed(true)}
+                onExpand={() => setRightCollapsed(false)}
+              >
                 <div className="h-full border-l border-emerald-200/50 bg-gradient-to-b from-card to-emerald-50/15 overflow-y-auto">
+                  {rightCollapsed ? (
+                    <button
+                      type="button"
+                      className="flex h-full w-full flex-col items-center gap-2 py-3 text-emerald-600 hover:bg-emerald-50 transition-colors"
+                      onClick={() => rightPanelRef.current?.expand()}
+                      title="Expand Orient / Observe / Measure"
+                      data-testid="right-panel-expand"
+                    >
+                      <PanelRightOpen className="h-4 w-4" />
+                      <span className="text-[9px] font-semibold tracking-wider uppercase text-emerald-700" style={{ writingMode: "vertical-rl" }}>
+                        Orient
+                      </span>
+                    </button>
+                  ) : (
+                    <>
                   <CopilotRail />
                   {workflow.currentRow && (
                     <div className="border-t border-border p-2">
@@ -3626,6 +3665,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       clinicActiveLayout={presentationTemplates?.active?.standard}
                     />
                   </ModuleErrorBoundary>
+                    </>
+                  )}
                 </div>
               </ResizablePanel>
             </ResizablePanelGroup>

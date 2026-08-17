@@ -19,7 +19,7 @@ import {
   templateRegionMismatch,
 } from "@/lib/pickStructuredTemplate";
 import { combineStudyRegionTitle } from "@/lib/combineStudyRegions";
-import { chocolateBoxSetFor, type ChocolateBoxSet } from "@/lib/findingsMacros";
+import { resolvedChocolateBoxSet, type ChocolateBoxSet } from "@/lib/findingsMacros";
 import { mergeBlock } from "@/lib/quickFindingsMerge";
 import { mergeTechnique } from "@/lib/reportFieldMerge";
 import type { InsertSource } from "@/lib/reportFieldMerge";
@@ -195,8 +195,8 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     [matchedStudyRegion, selectedTemplate?.bodyPart],
   );
 
-  const chocolateBoxSet: ChocolateBoxSet | null = useMemo(
-    () => chocolateBoxSetFor(modality, studyDescription, matchedStudyRegion),
+  const chocolateBoxSet: ChocolateBoxSet = useMemo(
+    () => resolvedChocolateBoxSet(modality, studyDescription, matchedStudyRegion),
     [modality, studyDescription, matchedStudyRegion],
   );
 

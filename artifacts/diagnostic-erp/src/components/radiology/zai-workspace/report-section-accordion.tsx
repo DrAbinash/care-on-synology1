@@ -210,7 +210,7 @@ export function FindingsToolDrawer({
     <div
       data-testid={`findings-drawer-${id}`}
       aria-hidden={!active}
-      className={cn("mt-1.5", active ? "" : "hidden")}
+      className={cn("mt-1.5", active ? "max-h-[38vh] overflow-y-auto" : "hidden")}
     >
       {children}
     </div>

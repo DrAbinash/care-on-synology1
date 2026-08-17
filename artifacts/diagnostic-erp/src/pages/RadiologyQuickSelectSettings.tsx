@@ -11,6 +11,7 @@ import { useToast } from "@/hooks/use-toast";
 import { Plus, Trash2, Pencil, X, Save, Copy, RotateCcw, ArrowUp, ArrowDown, Search } from "lucide-react";
 import type { QuickFinding, QuickStudyTab, QuickMeasurement, QuickProtocol, QuickClinicalHistoryChip } from "@/components/radiology/QuickFindingsPanel";
 import StructuredQuestionsEditor from "@/components/radiology/StructuredQuestionsEditor";
+import { ChocolateBoxSettingsPanel } from "@/components/radiology/zai-workspace/chocolate-box-macros";
 
 /**
  * Radiology Quick Select — admin configuration page.
@@ -234,6 +235,8 @@ export default function RadiologyQuickSelectSettings() {
         title="Radiology Quick Select"
         subtitle="Configure study tabs and one-click finding buttons for the reporting workspace"
       />
+
+      <ChocolateBoxSettingsPanel />
 
       {/* ── Study tabs ─────────────────────────────────────────────────── */}
       <div className="rounded-xl border bg-card shadow-sm p-4 space-y-3">

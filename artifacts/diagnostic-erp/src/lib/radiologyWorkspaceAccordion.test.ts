@@ -9,6 +9,7 @@ const workspace = read("pages/RadiologyReportingWorkspace.tsx");
 const accordion = read("components/radiology/zai-workspace/report-section-accordion.tsx");
 const findingsEditor = read("components/radiology/zai-workspace/findings-editor.tsx");
 const quickFindings = read("components/radiology/QuickFindingsPanel.tsx");
+const settings = read("pages/RadiologyQuickSelectSettings.tsx");
 
 /** Index of a marker in the workspace source, asserting it exists. */
 function at(marker: string): number {
@@ -80,13 +81,41 @@ describe("main reporting pane — progressive accordion", () => {
     // Ctrl+1–6 (templates) and Ctrl+1–9 (quick add tabs) stay untouched.
     expect(quickFindings).toContain("e.ctrlKey && !e.altKey");
   });
+
+  it("does not steal Alt+digit while the radiologist is typing in an editor", () => {
+    expect(workspace).toContain('if (tag === "input" || tag === "textarea" || t?.isContentEditable) return;');
+  });
+});
+
+describe("clicking the workspace collapses chrome, keeps OHIF", () => {
+  it("enters reporting focus from the accordion and from the viewer column", () => {
+    expect(workspace).toContain("onMouseDown={enterReportingFocusMode}");
+    expect(workspace).toContain('data-testid="embedded-viewer-column"');
+  });
+
+  it("collapses the reading queue, Orient rail, and app sidebar without hiding OHIF", () => {
+    expect(workspace).toContain("leftPanelRef.current?.collapse()");
+    expect(workspace).toContain("rightPanelRef.current?.collapse()");
+    expect(workspace).toContain("setViewerFocus(true)");
+    expect(workspace).toContain('new CustomEvent("care:workspace-focus", { detail: true })');
+    expect(workspace).toContain("collapsible");
+    expect(workspace).toContain('data-testid="right-panel-expand"');
+  });
 });
 
 describe("Findings workspace — macros, hero editor, one drawer at a time", () => {
   it("puts region-aware macros above the editor", () => {
-    const macros = at('data-testid="chocolate-box"');
+    const macros = at("<ChocolateBoxMacros");
     const editor = at('field="findings"');
     expect(macros).toBeLessThan(editor);
+  });
+
+  it("lets the radiologist add and edit macro boxes from the workspace", () => {
+    const box = read("components/radiology/zai-workspace/chocolate-box-macros.tsx");
+    expect(workspace).toContain("<ChocolateBoxMacros");
+    expect(box).toContain('data-testid="chocolate-box-add"');
+    expect(box).toContain("upsertChocolateTile");
+    expect(settings).toContain("<ChocolateBoxSettingsPanel");
   });
 
   it("keeps the editor as the hero by moving its tile wall into a drawer", () => {
@@ -110,7 +139,7 @@ describe("Findings workspace — macros, hero editor, one drawer at a time", () 
     for (const id of ["quickSelect", "quickAdd", "structured", "suggestions"]) {
       expect(workspace).toContain(`<FindingsToolDrawer id="${id}"`);
     }
-    expect(accordion).toMatch(/active \? "" : "hidden"/);
+    expect(accordion).toMatch(/active \? "max-h-\[38vh\] overflow-y-auto" : "hidden"/);
   });
 
   it("mounts Quick Add and Structured exactly once (moved, not duplicated)", () => {
@@ -144,7 +173,7 @@ describe("Region context drives the Findings tools", () => {
     expect(macrosLib).toMatch(/region\?: string \| null/);
     expect(macrosLib).toContain("BRAIN_RE.test(selected)");
     const setup = read("../src/hooks/useReportingStudySetup.ts");
-    expect(setup).toContain("chocolateBoxSetFor(modality, studyDescription, matchedStudyRegion)");
+    expect(setup).toContain("resolvedChocolateBoxSet(modality, studyDescription, matchedStudyRegion)");
   });
 
   it("Quick Add folds its region grid away but keeps cross-region access", () => {
@@ -193,7 +222,7 @@ describe("no reporting feature was deleted by the re-layout", () => {
     ["History chips", 'data-testid="clinical-history-chips"'],
     ["Clinical history editor", 'field="clinicalHistory"'],
     ["Technique editor", 'data-testid="canonical-technique-editor"'],
-    ["Region macros", 'data-testid="chocolate-box"'],
+    ["Region macros", "<ChocolateBoxMacros"],
     ["Structured findings cards", 'data-testid="structured-findings-cards"'],
     ["Highlight editor", "<FindingsHighlightEditor"],
     ["Findings editor", 'field="findings"'],
