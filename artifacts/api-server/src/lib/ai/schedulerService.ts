@@ -584,7 +584,7 @@ export async function getOvernightDiagnostics() {
     staleRunning: stats.staleRunning,
     oldestQueuedAt: stats.oldestQueuedAt,
     lastSuccessfulDraftAt: stats.lastSuccessfulDraftAt,
-    lastError: stats.lastError ?? configError,
+    lastError: stats.lastError,
     lastErrorAt: stats.lastErrorAt,
     lastHeartbeat: hb.lastCronTickAt,
     lastPoll: hb.lastTickAt,
