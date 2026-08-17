@@ -2343,7 +2343,7 @@ export default function BillingDesk() {
   // ──────────────────────────────────────────────────────────────────────────
 
   const deskClass = [
-    "h-full flex flex-col overflow-hidden bg-gradient-to-br from-sky-50 via-white to-violet-50 dark:from-slate-900 dark:via-slate-900 dark:to-slate-900",
+    "h-full max-w-full overflow-x-hidden flex flex-col overflow-hidden bg-gradient-to-br from-sky-50 via-white to-violet-50 dark:from-slate-900 dark:via-slate-900 dark:to-slate-900",
     denseTestList  ? "billing-dense"     : "",
     largeFont      ? "billing-large-font": "",
     isCompact      ? "billing-compact"   : "",
@@ -2424,7 +2424,7 @@ export default function BillingDesk() {
                 <span className="hidden md:inline">Recent</span>
               </button>
             </PopoverTrigger>
-            <PopoverContent align="end" className="p-0 w-[420px]">
+            <PopoverContent align="end" className="p-0 w-[min(420px,calc(100vw-1.5rem))]">
               <RecentBillsPanel />
             </PopoverContent>
           </Popover>
@@ -2732,7 +2732,7 @@ export default function BillingDesk() {
                     Click a filled slot to select that doctor for this bill.
                     Click an empty (dashed) slot, or right-click any slot, to
                     assign/change which doctor lives there. */}
-                <div className="grid grid-cols-4 gap-1.5">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
                     {quickDoctorIds.map((docId, idx) => {
                       const doc = docId != null ? doctors.find((d) => d.id === docId) : null;
                       const isSelected = !!doc && doctorId === doc.id;
@@ -2854,7 +2854,7 @@ export default function BillingDesk() {
                     Every box is identical width; long test names truncate
                     with an ellipsis (full name still shown on hover via title). */}
                 {showQuickTestsSetting && (
-                  <div className="grid grid-cols-4 gap-1.5">
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
                     {quickTestIds.map((slot, idx) => {
                       const test = slot != null ? allTests.find((t) => t.id === slot) : null;
                       return (
@@ -2993,8 +2993,8 @@ export default function BillingDesk() {
         </div>
 
         {/* ▌RIGHT COLUMN ▌────────────────────────────────── */}
-        <div className="w-full lg:w-[35%] flex flex-col min-h-0 bg-gradient-to-b from-indigo-50/70 to-emerald-50/50 dark:from-slate-850 dark:to-slate-850">
-          <div className="flex-1 min-h-0 overflow-y-auto flex flex-col">
+        <div className="w-full lg:w-[35%] flex flex-col min-h-0 lg:min-h-0 bg-gradient-to-b from-indigo-50/70 to-emerald-50/50 dark:from-slate-850 dark:to-slate-850">
+          <div className="min-h-0 lg:flex-1 lg:overflow-y-auto flex flex-col">
 
             {/* ── SELECTED TESTS ───────────────────────── */}
             <div className={`${cardCls} mx-2.5 mt-2.5 flex-shrink-0`}>
