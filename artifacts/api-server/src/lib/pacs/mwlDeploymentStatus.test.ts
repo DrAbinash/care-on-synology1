@@ -167,6 +167,25 @@ describe("resolveWorklistBadDirs", () => {
 });
 
 describe("sanitizeQuarantineReason", () => {
+  const liveReason = `quarantined_at_utc=20260811T152050Z
+source=/var/lib/orthanc/worklists/ACC-20260811-CR-005.wl
+severity=crash-class
+reasons:
+  - missing/invalid StudyInstanceUID ('') — Orthanc housekeeper would terminate Orthanc
+  - missing/invalid SeriesInstanceUID (None) — Orthanc housekeeper would terminate Orthanc
+  - missing/invalid SOPInstanceUID (None) — Orthanc housekeeper would terminate Orthanc
+`;
+
+  it("parses live mwl-guard crash-class reason files", () => {
+    const s = sanitizeQuarantineReason(liveReason);
+    expect(s).toMatch(/crash-class/);
+    expect(s).toMatch(/StudyInstanceUID/);
+    expect(s).toMatch(/SeriesInstanceUID/);
+    expect(s).toMatch(/SOPInstanceUID/);
+    expect(s).not.toMatch(/quarantined_at_utc/);
+    expect(s).toMatch(/do not copy back/i);
+  });
+
   it("keeps a technical UID reason", () => {
     expect(sanitizeQuarantineReason("missing/invalid StudyInstanceUID\n")).toMatch(/StudyInstanceUID/);
   });
@@ -185,7 +204,19 @@ describe("inspectWorklistQuarantine", () => {
     await mkdir(full, { recursive: true });
     await writeFile(path.join(full, "ACC-20260801-CR-001.wl"), "dicom");
     await writeFile(path.join(full, "ACC-20260811-CR-005__20260811T152050Z.wl"), "dicom");
-    await writeFile(path.join(full, "ACC-20260811-CR-005__20260811T152050Z.wl.reason.txt"), "missing/invalid StudyInstanceUID\n");
+    await writeFile(
+      path.join(full, "ACC-20260811-CR-005__20260811T152050Z.wl.reason.txt"),
+      [
+        "quarantined_at_utc=20260811T152050Z",
+        "source=/var/lib/orthanc/worklists/ACC-20260811-CR-005.wl",
+        "severity=crash-class",
+        "reasons:",
+        "  - missing/invalid StudyInstanceUID ('') — Orthanc housekeeper would terminate Orthanc",
+        "  - missing/invalid SeriesInstanceUID (None) — Orthanc housekeeper would terminate Orthanc",
+        "  - missing/invalid SOPInstanceUID (None) — Orthanc housekeeper would terminate Orthanc",
+        "",
+      ].join("\n"),
+    );
     try {
       const r = await inspectWorklistQuarantine(path.join(root, "worklists"), {
         ORTHANC_WORKLIST_BAD_DIR: empty,

@@ -5,6 +5,7 @@ import {
   mwlSeriesInstanceUid,
   mwlSopInstanceUid,
   assertValidMwlDump,
+  buildMwlDumpText,
 } from "./mwlWorklistWriter";
 
 describe("MWL UIDs (Orthanc housekeeper requires non-empty Study/Series/SOP UIDs)", () => {
@@ -64,6 +65,34 @@ describe("MWL UIDs (Orthanc housekeeper requires non-empty Study/Series/SOP UIDs
       `(0040,0100) SQ`,
     ].join("\n");
     expect(() => assertValidMwlDump(good)).not.toThrow();
+  });
+
+  test("live crash-class dump (empty Study/Series/SOP) is refused", () => {
+    const crashClass = [
+      "(0008,0016) UI [1.2.840.10008.5.1.4.31]",
+      "(0008,0018) UI []",
+      "(0008,0050) SH [ACC-20260811-CR-005]",
+      "(0020,000D) UI []",
+      "(0020,000E) UI []",
+      "(0040,0100) SQ",
+    ].join("\n");
+    expect(() => assertValidMwlDump(crashClass)).toThrow(/UID|empty|invalid/i);
+  });
+
+  test("rebuild of ACC-20260811-CR-005 emits non-empty Study/Series/SOP UIDs", () => {
+    const dump = buildMwlDumpText({
+      accessionNumber: "ACC-20260811-CR-005",
+      patientName: "Test Patient",
+      modality: "CR",
+      scheduledDate: "20260811",
+    });
+    expect(() => assertValidMwlDump(dump)).not.toThrow();
+    expect(dump).toMatch(/\(0020,000D\) UI \[1\.2\.840\.9999\.113\.1\.\d+\]/);
+    expect(dump).toMatch(/\(0020,000E\) UI \[1\.2\.840\.9999\.113\.2\.\d+\]/);
+    expect(dump).toMatch(/\(0008,0018\) UI \[1\.2\.840\.9999\.113\.3\.\d+\]/);
+    expect(dump).not.toMatch(/\(0020,000D\) UI \[\s*\]/);
+    expect(dump).not.toMatch(/\(0020,000E\) UI \[\s*\]/);
+    expect(dump).not.toMatch(/\(0008,0018\) UI \[\s*\]/);
   });
 });
 

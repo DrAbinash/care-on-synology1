@@ -132,9 +132,15 @@ export function resolveWorklistBadDirs(
   return out;
 }
 
-/** First line of an mwl-guard .reason.txt, stripped of likely PHI. */
+/** First useful line of an mwl-guard .reason.txt, stripped of likely PHI. */
 export function sanitizeQuarantineReason(text: string): string | null {
-  const line = text.split(/\r?\n/).map((l) => l.trim()).find(Boolean);
+  const parsed = parseMwlGuardReason(text);
+  if (parsed) return parsed;
+  const line = text.split(/\r?\n/).map((l) => l.trim()).find((l) => {
+    if (!l) return false;
+    if (/^(quarantined_at_utc|source|severity|reasons)\s*[=:]?/i.test(l)) return false;
+    return true;
+  });
   if (!line) return null;
   const technical = /UID|empty|invalid|missing|housekeeper|SOP|Series|Study/i.test(line);
   if (/\^/.test(line) || /\bPatient(Name|ID)?\b/i.test(line)) {
@@ -143,6 +149,35 @@ export function sanitizeQuarantineReason(text: string): string | null {
       : "quarantined (see .reason.txt on NAS — do not copy files back)";
   }
   return line.slice(0, 240);
+}
+
+/**
+ * care-mwl-guard writes:
+ *   severity=crash-class
+ *   reasons:
+ *     - missing/invalid StudyInstanceUID ('') — Orthanc housekeeper would terminate Orthanc
+ */
+export function parseMwlGuardReason(text: string): string | null {
+  const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  if (lines.length === 0) return null;
+  const severityLine = lines.find((l) => /^severity=/i.test(l));
+  const reasonBullets = lines.filter((l) => /^- /.test(l));
+  if (!severityLine && reasonBullets.length === 0) return null;
+
+  const severity = severityLine?.slice(severityLine.indexOf("=") + 1).trim() || "quarantined";
+  const uids: string[] = [];
+  for (const bullet of reasonBullets) {
+    for (const name of ["StudyInstanceUID", "SeriesInstanceUID", "SOPInstanceUID"]) {
+      if (bullet.includes(name) && !uids.includes(name)) uids.push(name);
+    }
+  }
+  if (uids.length > 0) {
+    return `${severity}: missing/invalid ${uids.join(", ")} — Orthanc housekeeper would crash; do not copy back`;
+  }
+  if (severityLine) {
+    return `${severity} quarantine — do not copy worklists-bad back`;
+  }
+  return null;
 }
 
 export const MWL_QUARANTINE_FIX =
