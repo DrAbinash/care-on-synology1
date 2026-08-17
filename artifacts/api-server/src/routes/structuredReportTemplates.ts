@@ -706,7 +706,7 @@ structuredReportTemplatesRouter.post("/", async (req, res): Promise<void> => {
   const sReq = req as StaffAuthRequest;
   if (!sReq.staffSession) { res.status(401).json({ error: "Unauthorized" }); return; }
 
-  const { templateName, modality, bodyPart, studyType, sectionsJson, defaultFindings, defaultImpression, macrosJson } = req.body as Partial<typeof structuredReportTemplatesTable.$inferInsert>;
+  const { templateName, modality, bodyPart, studyType, sectionsJson, defaultFindings, defaultImpression, macrosJson, schemaVersion, formatVersion, isDefault, tags, protocolKey, parentId, previousVersions } = req.body as Partial<typeof structuredReportTemplatesTable.$inferInsert>;
   if (!templateName || !modality || !bodyPart) {
     res.status(400).json({ error: "templateName, modality and bodyPart are required" }); return;
   }
@@ -718,6 +718,13 @@ structuredReportTemplatesRouter.post("/", async (req, res): Promise<void> => {
     defaultImpression: defaultImpression ?? null,
     macrosJson: macrosJson ?? null,
     isPreset: false,
+    schemaVersion: schemaVersion ?? 1,
+    formatVersion: formatVersion ?? 1,
+    isDefault: isDefault ?? false,
+    tags: tags ?? "",
+    protocolKey: protocolKey ?? null,
+    parentId: parentId ?? null,
+    previousVersions: previousVersions ?? "[]",
     createdBy: sReq.staffSession.subjectName,
   }).returning();
   res.status(201).json(row);
@@ -728,7 +735,7 @@ structuredReportTemplatesRouter.patch("/:id", async (req, res): Promise<void> =>
   if (!sReq.staffSession) { res.status(401).json({ error: "Unauthorized" }); return; }
 
   const id = Number(req.params["id"]);
-  const { templateName, modality, bodyPart, studyType, sectionsJson, defaultFindings, defaultImpression, macrosJson, isActive } = req.body as Partial<typeof structuredReportTemplatesTable.$inferInsert>;
+  const { templateName, modality, bodyPart, studyType, sectionsJson, defaultFindings, defaultImpression, macrosJson, isActive, schemaVersion, formatVersion, isDefault, tags, protocolKey, parentId, previousVersions, archivedAt } = req.body as Partial<typeof structuredReportTemplatesTable.$inferInsert>;
   const updates: Partial<typeof structuredReportTemplatesTable.$inferInsert> = { updatedAt: new Date(), updatedBy: sReq.staffSession.subjectName };
   if (templateName !== undefined) updates.templateName = templateName;
   if (modality !== undefined) updates.modality = modality;
@@ -739,6 +746,14 @@ structuredReportTemplatesRouter.patch("/:id", async (req, res): Promise<void> =>
   if (defaultImpression !== undefined) updates.defaultImpression = defaultImpression;
   if (macrosJson !== undefined) updates.macrosJson = macrosJson;
   if (isActive !== undefined) updates.isActive = isActive;
+  if (schemaVersion !== undefined) updates.schemaVersion = schemaVersion;
+  if (formatVersion !== undefined) updates.formatVersion = formatVersion;
+  if (isDefault !== undefined) updates.isDefault = isDefault;
+  if (tags !== undefined) updates.tags = tags;
+  if (protocolKey !== undefined) updates.protocolKey = protocolKey;
+  if (parentId !== undefined) updates.parentId = parentId;
+  if (previousVersions !== undefined) updates.previousVersions = previousVersions;
+  if (archivedAt !== undefined) updates.archivedAt = archivedAt;
 
   const [row] = await db.update(structuredReportTemplatesTable).set(updates).where(eq(structuredReportTemplatesTable.id, id)).returning();
   if (!row) { res.status(404).json({ error: "Not found" }); return; }

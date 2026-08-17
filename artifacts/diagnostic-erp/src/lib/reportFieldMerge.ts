@@ -19,6 +19,8 @@ export type InsertSource =
   | "template"
   | "template-a"
   | "template-b"
+  | "structured-template"
+  | "structured-template-candidate"
   | "macro"
   | "companion"
   | "ai-draft";
@@ -52,6 +54,8 @@ const SOURCE_ORDER: InsertSource[] = [
   "template",
   "template-a",
   "template-b",
+  "structured-template",
+  "structured-template-candidate",
   "macro",
   "companion",
   "ai-draft",
@@ -65,6 +69,8 @@ const SOURCE_LABELS: Record<InsertSource, string> = {
   template: "Template",
   "template-a": "Format A",
   "template-b": "Format B",
+  "structured-template": "Structured",
+  "structured-template-candidate": "Structured (impression)",
   macro: "Macro",
   companion: "Companion",
   "ai-draft": "AI Draft",
@@ -109,7 +115,16 @@ export function formatProvenanceHover(sources: InsertSource[]): string {
 }
 
 /** Visual bucket for editor tinting (QS blue / QF green / merged / manual / other). */
-export type ProvenanceVisualKind = "manual" | "quick-select" | "quick-findings" | "merged" | "template-a" | "template-b" | "other";
+export type ProvenanceVisualKind =
+  | "manual"
+  | "quick-select"
+  | "quick-findings"
+  | "merged"
+  | "template-a"
+  | "template-b"
+  | "structured-template"
+  | "structured-candidate"
+  | "other";
 
 export function provenanceVisualKind(sources: InsertSource[]): ProvenanceVisualKind {
   const sorted = sortSources(sources).filter((s) => s !== "manual");
@@ -119,6 +134,8 @@ export function provenanceVisualKind(sources: InsertSource[]): ProvenanceVisualK
   if (sorted[0] === "quick-findings") return "quick-findings";
   if (sorted[0] === "template-a") return "template-a";
   if (sorted[0] === "template-b") return "template-b";
+  if (sorted[0] === "structured-template") return "structured-template";
+  if (sorted[0] === "structured-template-candidate") return "structured-candidate";
   return "other";
 }
 

@@ -3,6 +3,7 @@ import { radiologyReportDraftsTable, reportFindingInstancesTable } from "@worksp
 import { asc, eq, isNotNull } from "drizzle-orm";
 import { isFeatureEnabledServer } from "./featureFlags";
 import { buildStructuredJsonFromFindingInstances, type StructuredJsonCacheEntry } from "./radiologyStructuredJsonCache";
+import { extractA4Cache } from "./structuredJsonColumn";
 
 /**
  * radiologyStructuredJsonDrift.ts — Radiology Roadmap Ticket A5.
@@ -105,7 +106,7 @@ export async function checkDraftStructuredJsonDrift(draftId: number): Promise<Dr
     .where(eq(reportFindingInstancesTable.draftId, draftId))
     .orderBy(asc(reportFindingInstancesTable.id));
 
-  const cache = (draftRow?.structuredJson ?? null) as StructuredJsonCacheEntry[] | null;
+  const cache = extractA4Cache(draftRow?.structuredJson ?? null) as StructuredJsonCacheEntry[] | null;
   const rebuilt = buildStructuredJsonFromFindingInstances(rows);
   const status = classifyDrift(cache, rebuilt);
 

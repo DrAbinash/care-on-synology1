@@ -286,3 +286,60 @@ describe("provenance never leaks into Preview/PDF/print/report text", () => {
     expect(html).not.toContain("bg-emerald-500");
   });
 });
+
+describe("structured-template provenance (P1)", () => {
+  it("tags generated findings as Structured", () => {
+    const r = mergeReportFieldContentWithProvenance({
+      field: "findings",
+      existing: "",
+      incoming: "Mild diffuse disc bulge is seen at L4-L5.",
+      source: "structured-template",
+    });
+    const key = normalizeForDedupe(r.text);
+    expect(r.provenance[key]).toEqual(["structured-template"]);
+    expect(provenanceVisualKind(r.provenance[key]!)).toBe("structured-template");
+  });
+
+  it("impression candidates are visually distinct and do not overwrite AI-only sentences", () => {
+    const ai = mergeReportFieldContentWithProvenance({
+      field: "impression",
+      existing: "",
+      incoming: "No acute infarct.",
+      source: "ai-draft",
+    });
+    const next = mergeReportFieldContentWithProvenance({
+      field: "impression",
+      existing: ai.text,
+      incoming: "L4-L5 degenerative disc disease with diffuse disc bulge.",
+      source: "structured-template-candidate",
+      existingProvenance: ai.provenance,
+    });
+    expect(next.text).toContain("No acute infarct");
+    expect(next.text).toContain("diffuse disc bulge");
+    expect(provenanceVisualKind(
+      next.provenance[normalizeForDedupe("L4-L5 degenerative disc disease with diffuse disc bulge.")]!,
+    )).toBe("structured-candidate");
+  });
+
+  it("overlapping structured + AI wording unions sources instead of duplicating", () => {
+    const sentence = "Loss of lumbar lordosis.";
+    const first = mergeReportFieldContentWithProvenance({
+      field: "findings",
+      existing: "",
+      incoming: sentence,
+      source: "ai-draft",
+    });
+    const second = mergeReportFieldContentWithProvenance({
+      field: "findings",
+      existing: first.text,
+      incoming: sentence,
+      source: "structured-template",
+      existingProvenance: first.provenance,
+    });
+    expect(second.text).toBe(sentence);
+    expect(second.provenance[normalizeForDedupe(sentence)]).toEqual([
+      "structured-template",
+      "ai-draft",
+    ]);
+  });
+});
