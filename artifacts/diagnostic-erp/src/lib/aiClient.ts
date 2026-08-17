@@ -80,6 +80,9 @@ export const aiClient = {
     nightEnd?: string;
     quietStart?: string;
     quietEnd?: string;
+    studyAgeWindow?: string;
+    studyAgeCustomFrom?: string | null;
+    studyAgeCustomTo?: string | null;
     enableAi?: boolean;
   }) =>
     api.put<{
@@ -88,11 +91,26 @@ export const aiClient = {
       scheduler?: Record<string, unknown>;
       policies?: Array<{ modality: string; mode: string }>;
     }>(`/api/ai/draft-automation`, body),
-  runNightBatch: (force?: boolean) =>
-    api.post<Record<string, unknown>>(
-      `/api/ai/scheduler/run/night-batch${force ? "?force=1" : ""}`,
-      { force: Boolean(force) },
-    ),
+  runNightBatch: (force?: boolean, onlyNew?: boolean) => {
+    const q = new URLSearchParams();
+    if (force) q.set("force", "1");
+    if (onlyNew) q.set("onlyNew", "1");
+    const qs = q.toString();
+    return api.post<Record<string, unknown>>(
+      `/api/ai/scheduler/run/night-batch${qs ? `?${qs}` : ""}`,
+      { force: Boolean(force), onlyNew: Boolean(onlyNew) },
+    );
+  },
+  previewNightBatch: () => api.get<Record<string, unknown>>(`/api/ai/scheduler/night-batch-preview`),
+  getOvernightDiagnostics: () => api.get<Record<string, unknown>>(`/api/ai/overnight-diagnostics`),
+  queueSelected: (studyInstanceUids: string[], modalities?: Record<string, string | null>, retry?: boolean) =>
+    api.post<{ queued: number; skipped: Array<{ uid: string; reason: string }> }>(`/api/ai/overnight/queue-selected`, {
+      studyInstanceUids, modalities, retry,
+    }),
+  retryOvernightJobs: (jobIds: number[]) =>
+    api.post<{ retried: number; skippedInFlight: number; skippedOther: number }>(`/api/ai/overnight/retry-jobs`, { jobIds }),
+  cancelQueuedOvernight: (jobIds: number[]) =>
+    api.post<{ cancelled: number; skippedRunning: number; skippedOther: number }>(`/api/ai/overnight/cancel-queued`, { jobIds }),
   getQueue: () => api.get<Record<string, unknown>>(`/api/ai/queue`),
   setPolicy: (body: { scope: string; scopeKey: string; enabled: boolean; mode: string }) => api.put<{ ok: boolean }>(`/api/ai/policies`, body),
 };

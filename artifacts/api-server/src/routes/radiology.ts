@@ -641,6 +641,24 @@ radiologyRouter.get("/pacs-worklist", async (req, res) => {
     }
 
     req.log.info({ rowsReturned: filtered.length, rawRows: rows.length, status: status || "all", modality: modality || "all" }, "[pacs-worklist] query complete");
+
+    const overnightDrafts =
+      req.query.overnightDrafts === "1" || req.query.overnightDrafts === "true";
+    if (overnightDrafts) {
+      const { attachOvernightAiToWorklist } = await import("../lib/ai/schedulerService");
+      const { getModalityPolicies, normalizeAiModality } = await import("../lib/ai/clinicalConfigService");
+      const policies = await getModalityPolicies();
+      const overnightMods = new Set(
+        policies.filter((p) => p.mode === "night_batch").map((p) => normalizeAiModality(p.modality)),
+      );
+      const withAi = await attachOvernightAiToWorklist(filtered);
+      res.json(withAi.map((r) => ({
+        ...r,
+        overnightEligible: overnightMods.has(normalizeAiModality((r as { modality?: string }).modality ?? "")),
+      })));
+      return;
+    }
+
     res.json(filtered);
   } catch (err: any) {
     req.log.error(err, "[pacs-worklist] Route Error");

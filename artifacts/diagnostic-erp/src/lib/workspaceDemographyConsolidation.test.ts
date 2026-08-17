@@ -42,9 +42,25 @@ describe("RadiologyReportingWorkspace — consolidation contracts", () => {
     expect(workspace).toContain('"quick-findings"');
     expect(workspace).toContain('"protocol"');
     expect(workspace).toContain('"companion"');
+    expect(workspace).toContain('"structured-template"');
+    expect(workspace).toContain("StructuredFormatPanel");
     expect(workspace).not.toContain("mergeReportFieldContent(");
     expect(workspace).not.toContain("mergeBlock(");
     expect(workspace).not.toContain("mergeImpression(");
+  });
+
+  it("does not auto-merge structured impression candidates; Accept does", () => {
+    const applyStart = workspace.indexOf("const applyStructuredGeneration");
+    const applyEnd = workspace.indexOf("const scheduleStructuredApply");
+    expect(applyStart).toBeGreaterThan(-1);
+    expect(applyEnd).toBeGreaterThan(applyStart);
+    const applyBody = workspace.slice(applyStart, applyEnd);
+    expect(applyBody).not.toContain('mergeField("impression"');
+    expect(applyBody).not.toContain("structured-template-candidate");
+    expect(workspace).toContain("onAcceptImpression");
+    expect(workspace).toMatch(
+      /mergeField\("impression",\s*\w+,\s*"structured-template-candidate"\)/,
+    );
   });
 });
 
@@ -74,6 +90,23 @@ describe("Provenance visualization — editor only", () => {
 
   it("preview HTML builder never references provenance", () => {
     expect(previewHtml).not.toMatch(/provenance|quick-select|quick-findings|Source:/i);
+  });
+});
+
+const structuredPanel = readFileSync(
+  resolve(ERP_SRC, "components/radiology/StructuredFormatPanel.tsx"),
+  "utf8",
+);
+
+describe("Structured impression candidates stay in the tray", () => {
+  it("exposes Accept / Edit / Ignore without auto-inserting", () => {
+    expect(structuredPanel).toContain("onAcceptImpression");
+    expect(structuredPanel).toContain("structured-impression-candidates");
+    expect(structuredPanel).toContain("data-testid={`structured-impression-accept-${i}`}");
+    expect(structuredPanel).toContain("data-testid={`structured-impression-edit-${i}`}");
+    expect(structuredPanel).toContain("data-testid={`structured-impression-ignore-${i}`}");
+    expect(structuredPanel).toMatch(/>\s*Accept\s*</);
+    expect(structuredPanel).toMatch(/>\s*Ignore\s*</);
   });
 });
 

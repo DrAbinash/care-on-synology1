@@ -1,14 +1,18 @@
-import { pgTable, text, serial, timestamp, integer, numeric } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, timestamp, integer, numeric, index } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 import { patientsTable } from "./patients";
 import { doctorsTable } from "./doctors";
 import { testsTable } from "./tests";
 
-export const ordersTable = pgTable("orders", {
+export const ordersTable = pgTable(
+  "orders",
+  {
   id: serial("id").primaryKey(),
   orderNumber: text("order_number").notNull().unique(),
   patientId: integer("patient_id").notNull().references(() => patientsTable.id),
+  // Referring doctor — commission / referral ledgers filter on this column
+  // (bills have no referrer column; see zzzzzzzzzzzzzz_referral_doctor_indexes.sql).
   doctorId: integer("doctor_id").references(() => doctorsTable.id),
   status: text("status").notNull().default("pending"),
   totalAmount: numeric("total_amount", { precision: 10, scale: 2 }).notNull().default("0"),
@@ -23,9 +27,16 @@ export const ordersTable = pgTable("orders", {
   clientRef: text("client_ref"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
-});
+  },
+  (t) => [
+    index("idx_orders_doctor_id").on(t.doctorId),
+    index("idx_orders_doctor_created").on(t.doctorId, t.createdAt),
+  ],
+);
 
-export const orderTestsTable = pgTable("order_tests", {
+export const orderTestsTable = pgTable(
+  "order_tests",
+  {
   id: serial("id").primaryKey(),
   orderId: integer("order_id").notNull().references(() => ordersTable.id),
   testId: integer("test_id").notNull().references(() => testsTable.id),
@@ -42,8 +53,9 @@ export const orderTestsTable = pgTable("order_tests", {
   // Editable display name override — shown on bill instead of master test name.
   displayName: text("display_name"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
-
+  },
+  (t) => [index("idx_order_tests_order_id").on(t.orderId)],
+);
 export const insertOrderSchema = createInsertSchema(ordersTable).omit({ id: true, orderNumber: true, createdAt: true, updatedAt: true });
 export type InsertOrder = z.infer<typeof insertOrderSchema>;
 export type Order = typeof ordersTable.$inferSelect;

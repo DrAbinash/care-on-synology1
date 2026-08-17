@@ -30,6 +30,7 @@ export interface RadiologyDraftRow {
   // fallback source) and the patient_reports row a D5 structured finalize
   // promoted this draft into (lifecycle-metadata lookup key).
   structuredJsonD1?: unknown;
+  structuredJson?: unknown;
   finalReportId?: number | null;
 }
 

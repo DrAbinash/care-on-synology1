@@ -1,4 +1,4 @@
-import { pgTable, text, serial, timestamp, integer, numeric, uniqueIndex } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, timestamp, integer, numeric, uniqueIndex, index } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
@@ -56,6 +56,9 @@ export const billsTable = pgTable(
     uniqueIndex("bills_client_ref_uidx")
       .on(t.clientRef)
       .where(sql`${t.clientRef} IS NOT NULL AND ${t.status} IS DISTINCT FROM 'cancelled'`),
+    // Referral reports join bills → orders.doctor_id (no referrer column on bills).
+    index("idx_bills_order_id").on(t.orderId),
+    index("idx_bills_order_created").on(t.orderId, t.createdAt),
   ],
 );
 
