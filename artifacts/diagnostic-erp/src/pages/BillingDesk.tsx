@@ -517,6 +517,7 @@ export default function BillingDesk() {
 
   // ── Patient state ──────────────────────────────────
   const [patientSearch, setPatientSearch] = useState("");
+  const [deskSearchMode, setDeskSearchMode] = useState<"patient" | "bill">("patient");
   const [selectedPatient, setSelectedPatient] = useState<Patient | null>(null);
   const [newPatient, setNewPatient] = useState({
     firstName: "", lastName: "", phone: "", gender: "" as "" | "male" | "female",
@@ -2406,7 +2407,7 @@ export default function BillingDesk() {
       {/* ═══════════════════════════════════════════════════════
           TOP BAR — date · title · search · recent · new
       ═══════════════════════════════════════════════════════ */}
-      <div className="flex-shrink-0 bg-gradient-to-r from-blue-700 via-indigo-600 to-violet-600 px-3 py-1.5 flex items-center gap-3 shadow-md">
+      <div className="flex-shrink-0 bg-gradient-to-r from-blue-700 via-indigo-600 to-violet-600 px-3 py-1.5 flex flex-wrap items-center gap-2 sm:gap-3 shadow-md">
         <span className="text-[11px] text-blue-100 flex-shrink-0 font-mono hidden sm:inline">{today()}</span>
         <span className="text-[13px] font-bold text-white flex-shrink-0 tracking-wide">Billing Desk</span>
         {previewBillNo?.next && (
@@ -2415,8 +2416,7 @@ export default function BillingDesk() {
           </span>
         )}
         <div className="flex-1 min-w-0" />
-        <div className="flex items-center gap-1.5">
-          <div className="w-36 sm:w-52 lg:w-64"><BillSearchBox /></div>
+        <div className="flex items-center gap-1.5 flex-shrink-0">
           <Popover>
             <PopoverTrigger asChild>
               <button className="h-7 px-2 rounded text-[11px] font-semibold text-blue-100 hover:bg-white/15 flex items-center gap-1 transition-colors">
@@ -2545,50 +2545,77 @@ export default function BillingDesk() {
                     </div>
                   </div>
                 ) : (
-                  /* Search / register new patient */
+                  /* Unified search — patient lookup or existing bill */
                   <div ref={searchRef}>
-                    {/* Search input */}
-                    <div className="relative">
-                      <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-[#94a3b8]" />
-                      <input
-                        className="w-full h-9 pl-9 pr-3 text-sm border border-[#dde3ec] rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-[#2563eb]/30 focus:border-[#2563eb]"
-                        placeholder="Search by name, phone or UHID…"
-                        value={patientSearch}
-                        onChange={(e) => setPatientSearch(e.target.value)}
-                        autoFocus={billingFlags.autoFocusNext}
-                      />
+                    <div className="flex rounded-md border border-[#dde3ec] p-0.5 mb-2 bg-[#f8fafc]">
+                      <button
+                        type="button"
+                        onClick={() => setDeskSearchMode("patient")}
+                        className={`flex-1 h-7 text-[11px] font-semibold rounded transition-colors ${
+                          deskSearchMode === "patient"
+                            ? "bg-white text-[#2563eb] shadow-sm"
+                            : "text-[#64748b] hover:text-[#1e3a5f]"
+                        }`}
+                      >
+                        Patient
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setDeskSearchMode("bill")}
+                        className={`flex-1 h-7 text-[11px] font-semibold rounded transition-colors ${
+                          deskSearchMode === "bill"
+                            ? "bg-white text-[#2563eb] shadow-sm"
+                            : "text-[#64748b] hover:text-[#1e3a5f]"
+                        }`}
+                      >
+                        Existing Bill
+                      </button>
                     </div>
 
-                    {/* Search results */}
-                    {debouncedSearch.length > 0 && (
-                      <div className="mt-1.5 space-y-1">
-                        {(debouncedSearch.length >= 2 ? searchResults?.patients : recentPatients?.patients)?.slice(0, 5).map((p) => (
-                          <button
-                            key={p.id}
-                            className="w-full text-left px-3 py-2 rounded-md border border-[#dde3ec] bg-white hover:bg-[#eff6ff] hover:border-[#bfdbfe] transition-colors flex items-center gap-3"
-                            onClick={() => { setSelectedPatient(p); setPatientSearch(""); }}
-                          >
-                            <div className="w-7 h-7 rounded-full bg-[#e0eaff] flex items-center justify-center text-[#2563eb] font-bold text-xs flex-shrink-0">
-                              {p.firstName[0]}{p.lastName[0]}
-                            </div>
-                            <div className="flex-1 min-w-0">
-                              <div className="text-sm font-semibold text-[#1e3a5f] truncate">{p.firstName} {p.lastName}</div>
-                              <div className="text-[11px] text-[#64748b]">{p.patientId} · {p.phone}</div>
-                            </div>
-                          </button>
-                        ))}
-                        {patientSearch.length >= 2 && searchResults?.patients?.length === 0 && (
-                          <div className="px-3 py-2 text-sm text-[#94a3b8] text-center">No patient found</div>
-                        )}
-                      </div>
-                    )}
+                    {deskSearchMode === "bill" ? (
+                      <BillSearchBox variant="inline" />
+                    ) : (
+                      <>
+                        <div className="relative">
+                          <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-[#94a3b8]" />
+                          <input
+                            className="w-full h-9 pl-9 pr-3 text-sm border border-[#dde3ec] rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-[#2563eb]/30 focus:border-[#2563eb]"
+                            placeholder="Search by name, phone or UHID…"
+                            value={patientSearch}
+                            onChange={(e) => setPatientSearch(e.target.value)}
+                            autoFocus={billingFlags.autoFocusNext}
+                          />
+                        </div>
 
-                    {/* Register New Patient — always visible below search (no toggle) */}
+                        {debouncedSearch.length > 0 && (
+                          <div className="mt-1.5 space-y-1">
+                            {(debouncedSearch.length >= 2 ? searchResults?.patients : recentPatients?.patients)?.slice(0, 5).map((p) => (
+                              <button
+                                key={p.id}
+                                className="w-full text-left px-3 py-2 rounded-md border border-[#dde3ec] bg-white hover:bg-[#eff6ff] hover:border-[#bfdbfe] transition-colors flex items-center gap-3"
+                                onClick={() => { setSelectedPatient(p); setPatientSearch(""); }}
+                              >
+                                <div className="w-7 h-7 rounded-full bg-[#e0eaff] flex items-center justify-center text-[#2563eb] font-bold text-xs flex-shrink-0">
+                                  {p.firstName[0]}{p.lastName[0]}
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                  <div className="text-sm font-semibold text-[#1e3a5f] truncate">{p.firstName} {p.lastName}</div>
+                                  <div className="text-[11px] text-[#64748b]">{p.patientId} · {p.phone}</div>
+                                </div>
+                              </button>
+                            ))}
+                            {patientSearch.length >= 2 && searchResults?.patients?.length === 0 && (
+                              <div className="px-3 py-2 text-sm text-[#94a3b8] text-center">No patient found</div>
+                            )}
+                          </div>
+                        )}
+                      </>
+                    )}
                   </div>
                 )}
 
                 {/* New Patient Registration form — always shown, not collapsible */}
-                {!selectedPatient && (
+                {!selectedPatient && deskSearchMode === "patient" && (
                   <div className="pt-2 border-t border-[#e2e8f0]">
                     <div className="flex items-center gap-1.5 mb-1.5 text-[12px] font-semibold text-[#2563eb]">
                       <UserPlus size={13} />
@@ -4063,7 +4090,7 @@ function CollectPaymentDialog({
   );
 }
 
-function BillSearchBox() {
+function BillSearchBox({ variant = "inline" }: { variant?: "inline" | "toolbar" }) {
   const [, navigate] = useLocation();
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -4072,6 +4099,8 @@ function BillSearchBox() {
   const [dueOnly, setDueOnly] = useState(true);
   const [collectBill, setCollectBill] = useState<CollectBillTarget | null>(null);
   const ref = useRef<HTMLDivElement>(null);
+  const isInline = variant === "inline";
+  const showResults = isInline ? q.trim().length >= 2 : open && q.trim().length >= 2;
 
   const { data: results = [], isFetching } = useQuery<BillSearchResult[]>({
     queryKey: ["bill-search", q, dueOnly],
@@ -4091,102 +4120,109 @@ function BillSearchBox() {
   }
 
   useEffect(() => {
+    if (isInline) return;
     function onClick(e: MouseEvent) {
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
     }
     document.addEventListener("mousedown", onClick);
     return () => document.removeEventListener("mousedown", onClick);
-  }, []);
+  }, [isInline]);
+
+  const resultsPanel = showResults ? (
+    <div className={
+      isInline
+        ? "mt-1.5 bg-white border border-[#dde3ec] rounded-lg shadow-sm overflow-hidden"
+        : "absolute right-0 top-full mt-1 w-full max-w-[min(420px,calc(100vw-1.5rem))] bg-card border border-card-border rounded-lg shadow-lg z-50 overflow-hidden"
+    }>
+      <div className={`px-3 py-2 border-b ${isInline ? "border-[#dde3ec]" : "border-card-border"} flex items-center justify-between`}>
+        <label className="flex items-center gap-1.5 text-xs cursor-pointer">
+          <input
+            type="checkbox"
+            checked={dueOnly}
+            onChange={(e) => setDueOnly(e.target.checked)}
+            className="h-3 w-3"
+          />
+          <span className={isInline ? "text-[#475569]" : "text-slate-900 dark:text-slate-900"}>Dues only</span>
+        </label>
+        <span className={`text-[10px] ${isInline ? "text-[#64748b]" : "text-slate-900 dark:text-slate-900"}`}>
+          {isFetching ? "Searching…" : `${results.length} match${results.length === 1 ? "" : "es"}`}
+        </span>
+      </div>
+      <div className="max-h-80 overflow-y-auto divide-y divide-card-border">
+        {results.length === 0 && !isFetching ? (
+          <div className={`px-4 py-6 text-xs text-center ${isInline ? "text-[#94a3b8]" : "text-slate-900 dark:text-slate-900"}`}>No bills found</div>
+        ) : (
+          results.map((r) => (
+            <div
+              key={r.id}
+              className="w-full px-3 py-2 hover:bg-muted/50 transition-colors flex items-center gap-2"
+            >
+              <button
+                type="button"
+                onClick={() => { setOpen(false); setQ(""); navigate(`/billing/${r.id}`); }}
+                className="flex-1 min-w-0 text-left"
+              >
+                <div className="flex items-center gap-2">
+                  <span className="font-mono text-xs font-extrabold text-primary">{r.billNumber}</span>
+                  {r.balanceAmount > 0 ? (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-orange-100 text-orange-700 dark:bg-orange-900/60 dark:text-white font-bold">DUE</span>
+                  ) : (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-100 text-green-700 dark:bg-green-950/40 dark:text-green-800 font-bold">PAID</span>
+                  )}
+                </div>
+                <div className="text-xs text-foreground mt-0.5 truncate">
+                  {r.patientName ?? "—"}
+                  <span className="text-slate-900 dark:text-slate-900"> · {r.patientId ?? ""} {r.phone ? `· ${r.phone}` : ""}</span>
+                </div>
+                <div className="text-right mt-0.5">
+                  <span className="text-xs text-slate-900 dark:text-slate-900">Total {inr(r.totalAmount)} · </span>
+                  <span className={`text-sm font-extrabold ${r.balanceAmount > 0 ? "text-orange-900" : "text-green-600"}`}>
+                    Bal {inr(r.balanceAmount)}
+                  </span>
+                </div>
+              </button>
+              <div className="flex flex-col gap-1 flex-shrink-0">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-[10px] px-2"
+                  onClick={() => { setOpen(false); setQ(""); navigate(`/billing/${r.id}`); }}
+                >
+                  Open
+                </Button>
+                {r.balanceAmount > 0 && r.status !== "cancelled" && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="h-7 text-[10px] px-2 bg-orange-600 hover:bg-orange-700 text-white"
+                    onClick={(e) => openCollectDialog(r, e)}
+                  >
+                    Collect
+                  </Button>
+                )}
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  ) : null;
 
   return (
     <>
-    <div ref={ref} className="relative">
+    <div ref={ref} className="relative w-full min-w-0">
       <div className="relative">
-        <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-900 dark:text-slate-900" />
+        <Search size={13} className={`absolute left-2.5 top-1/2 -translate-y-1/2 ${isInline ? "text-[#94a3b8]" : "text-slate-900 dark:text-slate-900"}`} />
         <Input
           value={q}
-          onChange={(e) => { setQ(e.target.value); setOpen(true); }}
-          onFocus={() => setOpen(true)}
+          onChange={(e) => { setQ(e.target.value); if (!isInline) setOpen(true); }}
+          onFocus={() => { if (!isInline) setOpen(true); }}
           placeholder="Search bill # / patient name…"
-          className="h-8 pl-7 pr-3 w-72 text-sm"
+          className={`h-9 pl-7 pr-3 w-full text-sm ${isInline ? "border-[#dde3ec] bg-white" : "h-8"}`}
         />
       </div>
-      {open && q.trim().length >= 2 && (
-        <div className="absolute right-0 top-full mt-1 w-[420px] bg-card border border-card-border rounded-lg shadow-lg z-50 overflow-hidden">
-          <div className="px-3 py-2 border-b border-card-border flex items-center justify-between">
-            <label className="flex items-center gap-1.5 text-xs cursor-pointer">
-              <input
-                type="checkbox"
-                checked={dueOnly}
-                onChange={(e) => setDueOnly(e.target.checked)}
-                className="h-3 w-3"
-              />
-              <span className="text-slate-900 dark:text-slate-900">Dues only</span>
-            </label>
-            <span className="text-[10px] text-slate-900 dark:text-slate-900">
-              {isFetching ? "Searching…" : `${results.length} match${results.length === 1 ? "" : "es"}`}
-            </span>
-          </div>
-          <div className="max-h-80 overflow-y-auto divide-y divide-card-border">
-            {results.length === 0 && !isFetching ? (
-              <div className="px-4 py-6 text-xs text-slate-900 dark:text-slate-900 text-center">No bills found</div>
-            ) : (
-              results.map((r) => (
-                <div
-                  key={r.id}
-                  className="w-full px-3 py-2 hover:bg-muted/50 transition-colors flex items-center gap-2"
-                >
-                  <button
-                    type="button"
-                    onClick={() => { setOpen(false); setQ(""); navigate(`/billing/${r.id}`); }}
-                    className="flex-1 min-w-0 text-left"
-                  >
-                    <div className="flex items-center gap-2">
-                      <span className="font-mono text-xs font-extrabold text-primary">{r.billNumber}</span>
-                      {r.balanceAmount > 0 ? (
-                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-orange-100 text-orange-700 dark:bg-orange-900/60 dark:text-white font-bold">DUE</span>
-                      ) : (
-                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-100 text-green-700 dark:bg-green-950/40 dark:text-green-800 font-bold">PAID</span>
-                      )}
-                    </div>
-                    <div className="text-xs text-foreground mt-0.5 truncate">
-                      {r.patientName ?? "—"}
-                      <span className="text-slate-900 dark:text-slate-900"> · {r.patientId ?? ""} {r.phone ? `· ${r.phone}` : ""}</span>
-                    </div>
-                    <div className="text-right mt-0.5">
-                      <span className="text-xs text-slate-900 dark:text-slate-900">Total {inr(r.totalAmount)} · </span>
-                      <span className={`text-sm font-extrabold ${r.balanceAmount > 0 ? "text-orange-900" : "text-green-600"}`}>
-                        Bal {inr(r.balanceAmount)}
-                      </span>
-                    </div>
-                  </button>
-                  <div className="flex flex-col gap-1 flex-shrink-0">
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      className="h-7 text-[10px] px-2"
-                      onClick={() => { setOpen(false); setQ(""); navigate(`/billing/${r.id}`); }}
-                    >
-                      Open
-                    </Button>
-                    {r.balanceAmount > 0 && r.status !== "cancelled" && (
-                      <Button
-                        type="button"
-                        size="sm"
-                        className="h-7 text-[10px] px-2 bg-orange-600 hover:bg-orange-700 text-white"
-                        onClick={(e) => openCollectDialog(r, e)}
-                      >
-                        Collect
-                      </Button>
-                    )}
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-        </div>
-      )}
+      {resultsPanel}
     </div>
 
     <CollectPaymentDialog

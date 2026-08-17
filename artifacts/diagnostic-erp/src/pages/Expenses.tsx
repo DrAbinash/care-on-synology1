@@ -234,7 +234,7 @@ export default function Expenses() {
   const hasFilters = categoryFilter !== "all" || paymentFilter !== "all" || from || to || search;
 
   return (
-    <div className="p-6 space-y-6">
+    <div className="p-3 sm:p-6 space-y-4 sm:space-y-6 max-w-full overflow-x-hidden">
       <PageHeader
         title="Expense Management"
         subtitle="Track and manage operational expenses"
@@ -246,7 +246,7 @@ export default function Expenses() {
       />
 
       {/* Tabs */}
-      <div className="flex items-center gap-1 border-b border-card-border">
+      <div className="flex items-center gap-1 border-b border-card-border overflow-x-auto">
         {[
           { key: "list", label: "Expense List", icon: Wallet },
           { key: "summary", label: "Category Summary", icon: PieChart },
@@ -255,7 +255,7 @@ export default function Expenses() {
           <button
             key={key}
             onClick={() => setActiveTab(key as "list" | "summary" | "scanner")}
-            className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
+            className={`flex items-center gap-1.5 px-3 sm:px-4 py-2.5 text-sm font-medium border-b-2 transition-colors whitespace-nowrap flex-shrink-0 ${
               activeTab === key
                 ? "border-primary text-primary"
                 : "border-transparent text-muted-foreground hover:text-foreground"
@@ -269,18 +269,18 @@ export default function Expenses() {
 
       {/* Filters */}
       {activeTab !== "scanner" && (
-      <div className="flex flex-wrap items-center gap-2">
-        <div className="relative">
+      <div className="grid grid-cols-2 sm:flex sm:flex-wrap items-center gap-2">
+        <div className="relative col-span-2 sm:col-span-1">
           <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
           <Input
             placeholder="Search description…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="pl-9 h-8 text-xs w-52"
+            className="pl-9 h-8 text-xs w-full sm:w-52"
           />
         </div>
         <Select value={categoryFilter} onValueChange={setCategoryFilter}>
-          <SelectTrigger className="h-8 w-36 text-xs">
+          <SelectTrigger className="h-8 w-full sm:w-36 text-xs">
             <SelectValue placeholder="Category" />
           </SelectTrigger>
           <SelectContent>
@@ -291,7 +291,7 @@ export default function Expenses() {
           </SelectContent>
         </Select>
         <Select value={paymentFilter} onValueChange={setPaymentFilter}>
-          <SelectTrigger className="h-8 w-36 text-xs">
+          <SelectTrigger className="h-8 w-full sm:w-36 text-xs">
             <SelectValue placeholder="Payment mode" />
           </SelectTrigger>
           <SelectContent>
@@ -301,20 +301,26 @@ export default function Expenses() {
             ))}
           </SelectContent>
         </Select>
-        <Input
-          type="date"
-          value={from}
-          onChange={(e) => setFrom(e.target.value)}
-          className="h-8 text-xs w-36"
-          placeholder="From"
-        />
-        <Input
-          type="date"
-          value={to}
-          onChange={(e) => setTo(e.target.value)}
-          className="h-8 text-xs w-36"
-          placeholder="To"
-        />
+        <div className="space-y-1">
+          <Label className="text-[10px] text-muted-foreground sm:sr-only">From</Label>
+          <Input
+            type="date"
+            value={from}
+            onChange={(e) => setFrom(e.target.value)}
+            className="h-8 text-xs w-full sm:w-36"
+            aria-label="From date"
+          />
+        </div>
+        <div className="space-y-1">
+          <Label className="text-[10px] text-muted-foreground sm:sr-only">To</Label>
+          <Input
+            type="date"
+            value={to}
+            onChange={(e) => setTo(e.target.value)}
+            className="h-8 text-xs w-full sm:w-36"
+            aria-label="To date"
+          />
+        </div>
         {hasFilters && (
           <Button
             variant="ghost"
@@ -355,7 +361,8 @@ export default function Expenses() {
                 </Button>
               </div>
             ) : (
-              <table className="w-full text-sm">
+              <div className="overflow-x-auto">
+              <table className="w-full text-sm min-w-[640px]">
                 <thead className="border-b border-card-border bg-muted/30">
                   <tr>
                     <th className="text-left px-4 py-3 font-medium text-muted-foreground">ID</th>
@@ -436,6 +443,7 @@ export default function Expenses() {
                   </tr>
                 </tfoot>
               </table>
+              </div>
             )}
           </div>
         </>
@@ -485,8 +493,8 @@ export default function Expenses() {
 
       {/* SCANNER TAB */}
       {activeTab === "scanner" && (
-        <div className="space-y-4">
-          <div className="bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-indigo-950/30 dark:to-blue-950/30 border border-indigo-200 dark:border-indigo-800 rounded-xl p-5">
+        <div className="space-y-4 max-w-full overflow-x-hidden">
+          <div className="bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-indigo-950/30 dark:to-blue-950/30 border border-indigo-200 dark:border-indigo-800 rounded-xl p-4 sm:p-5">
             <h2 className="font-bold text-lg flex items-center gap-2"><ScanLine size={18} className="text-indigo-600" /> AI-Powered Bill / Receipt Scanner</h2>
             <p className="text-sm text-muted-foreground mt-1">Scan physical bills with your phone camera or upload an image to auto-capture expense details.</p>
           </div>

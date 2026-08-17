@@ -72,13 +72,14 @@ export default function BillReceiptScannerPanel() {
 
   const ingestImage = useCallback((base64: string, mt: string) => {
     setError(""); setResult(null); setDraft(null); setSaved(false);
-    if (mt === "application/pdf") {
-      setMimeType(mt);
-      setImageBase64(base64);
+    const resolvedMime = mt || "image/jpeg";
+    setMimeType(resolvedMime);
+    setImageBase64(base64);
+    if (resolvedMime === "application/pdf") {
       setPreview(`data:application/pdf;base64,${base64}`);
-      return;
+    } else {
+      setPreview(`data:${resolvedMime};base64,${base64}`);
     }
-    setEditing({ base64, mimeType: mt || "image/jpeg" });
   }, []);
 
   const handleFile = useCallback((file: File) => {
@@ -183,7 +184,7 @@ export default function BillReceiptScannerPanel() {
 
   const reset = () => {
     setPreview(null); setImageBase64(""); setResult(null); setDraft(null);
-    setSaved(false); setError(""); setScanning(false);
+    setSaved(false); setError(""); setScanning(false); setEditing(null);
   };
 
   const confidenceColor = (c: string) => c === "high" ? "text-green-600" : c === "medium" ? "text-amber-600" : "text-red-500";
@@ -207,9 +208,9 @@ export default function BillReceiptScannerPanel() {
         onCancel={() => setEditing(null)}
       />
     )}
-    <div className="grid md:grid-cols-2 gap-6">
+    <div className="flex flex-col md:grid md:grid-cols-2 gap-4 md:gap-6">
       {/* Left — upload / camera */}
-      <div className="space-y-3">
+      <div className="space-y-3 min-w-0">
         <div className="bg-card border border-card-border rounded-xl p-5 space-y-3">
           <h3 className="font-semibold flex items-center gap-2"><Camera size={15} /> Capture Bill Image</h3>
           <p className="text-xs text-muted-foreground">Take a photo on your mobile or upload an existing file. Supports JPG, PNG, WebP, HEIC, PDF.</p>
@@ -261,10 +262,20 @@ export default function BillReceiptScannerPanel() {
               triggerLabel="Scan / camera / phone"
               onCapture={(cap) => void handleUnifiedCapture(cap)}
             />
-            <Button variant="outline" className="flex-1" onClick={() => fileRef.current?.click()} disabled={scanning}>
+            <Button variant="outline" className="flex-1 min-w-[8rem]" onClick={() => fileRef.current?.click()} disabled={scanning}>
               <Upload size={14} className="mr-1" /> Upload JPEG / PDF
             </Button>
-            <Button className="flex-1" onClick={() => void scan()} disabled={!imageBase64 || scanning}>
+            {preview && preview.startsWith("data:image") && (
+              <Button
+                variant="outline"
+                className="flex-1 min-w-[8rem]"
+                onClick={() => setEditing({ base64: imageBase64, mimeType })}
+                disabled={scanning}
+              >
+                <Camera size={14} className="mr-1" /> Crop &amp; Enhance
+              </Button>
+            )}
+            <Button className="flex-1 min-w-[8rem]" onClick={() => void scan()} disabled={!imageBase64 || scanning}>
               <ScanLine size={14} className="mr-1" /> {scanning ? "Scanning…" : "Scan with AI"}
             </Button>
           </div>
@@ -282,8 +293,8 @@ export default function BillReceiptScannerPanel() {
         </div>
       </div>
 
-      {/* Right — extracted data */}
-      <div className="space-y-3">
+      {/* Right — extracted data (inline on mobile after upload controls) */}
+      <div className="space-y-3 min-w-0">
         {saved ? (
           <div className="bg-green-50 border border-green-200 rounded-xl p-8 text-center space-y-3">
             <CheckCircle2 size={40} className="text-green-500 mx-auto" />
@@ -358,9 +369,9 @@ export default function BillReceiptScannerPanel() {
             </div>
           </div>
         ) : (
-          <div className="bg-card border border-dashed border-card-border rounded-xl p-10 text-center text-muted-foreground space-y-2">
+          <div className="hidden md:block bg-card border border-dashed border-card-border rounded-xl p-10 text-center text-muted-foreground space-y-2">
             <ScanLine size={36} className="mx-auto opacity-30" />
-            <p className="text-sm font-medium">Upload a bill image and click Scan</p>
+            <p className="text-sm font-medium">Upload a bill image and click Scan with AI</p>
             <p className="text-xs">AI will extract vendor, date, amount, GST, and category automatically.</p>
           </div>
         )}
