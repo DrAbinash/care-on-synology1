@@ -1678,6 +1678,7 @@ radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest,
     }
   }
 
+  let formatStatePersistFailed = false;
   if (draft?.id && rest.structuredFormatState != null) {
     try {
       await persistCareStructuredFormatState(draft.id, {
@@ -1688,14 +1689,15 @@ radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest,
         updatedAt: rest.structuredFormatState.updatedAt ?? new Date().toISOString(),
       });
     } catch (err) {
+      formatStatePersistFailed = true;
       console.error(
-        "[radiology-report-generator] structured format state persist failed (non-fatal):",
+        "[radiology-report-generator] structured format state persist failed:",
         err,
       );
     }
   }
 
-  res.json({ success: true, draft });
+  res.json({ success: true, draft, formatStatePersistFailed });
 });
 
 // GET /structured-json-drift — admin-only, read-only diagnostic (Ticket

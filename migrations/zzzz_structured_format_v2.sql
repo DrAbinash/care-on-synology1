@@ -28,5 +28,16 @@ ALTER TABLE structured_report_templates
 ALTER TABLE structured_report_templates
   ADD COLUMN IF NOT EXISTS previous_versions text NOT NULL DEFAULT '[]';
 
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'srt_parent_id_fkey'
+  ) THEN
+    ALTER TABLE structured_report_templates
+      ADD CONSTRAINT srt_parent_id_fkey
+      FOREIGN KEY (parent_id) REFERENCES structured_report_templates(id) ON DELETE SET NULL;
+  END IF;
+END $$;
+
 CREATE INDEX IF NOT EXISTS srt_default_idx
   ON structured_report_templates (body_part, is_default, is_active);

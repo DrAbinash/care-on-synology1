@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   inferStructuredTemplateMatch,
   pickStructuredTemplate,
@@ -66,6 +66,20 @@ describe("pickStructuredTemplateForRegion", () => {
     ];
     const match = pickStructuredTemplate(rows, "MR", "MRI LS SPINE");
     expect(match?.id).toBe(9);
+  });
+
+  it("warns in non-production when multiple templates are marked isDefault for one region", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const rows = [
+      { id: 1, templateName: "A", modality: "MRI", bodyPart: "SPINE_LS", studyType: "PLAIN", isDefault: true, schemaVersion: 2 },
+      { id: 2, templateName: "B", modality: "MRI", bodyPart: "SPINE_LS", studyType: "PLAIN", isDefault: true, schemaVersion: 2 },
+    ];
+    const match = pickStructuredTemplate(rows, "MR", "MRI LS SPINE");
+    expect(match?.id).toBe(1);
+    expect(warn).toHaveBeenCalledWith(
+      "[pickStructuredTemplate] 2 templates have isDefault=true for the same region; using the first.",
+    );
+    warn.mockRestore();
   });
 });
 

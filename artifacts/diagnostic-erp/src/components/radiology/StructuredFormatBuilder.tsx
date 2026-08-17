@@ -100,15 +100,17 @@ export function StructuredFormatBuilder({ template, onSave, onClose }: Props) {
   }
 
   function handleSave() {
-    const prev = template?.sectionsJson
+    const newSectionsJson = JSON.stringify(doc);
+    const sectionsChanged = template?.sectionsJson !== newSectionsJson;
+    const prev = template?.id && sectionsChanged && template.sectionsJson
       ? safePrev(template.previousVersions, template.sectionsJson, template.formatVersion)
-      : "[]";
+      : (template?.previousVersions ?? "[]");
     onSave({
       templateName: name,
       modality,
       bodyPart,
       studyType: studyType || null,
-      sectionsJson: JSON.stringify(doc),
+      sectionsJson: newSectionsJson,
       defaultFindings,
       defaultImpression,
       macrosJson: template?.macrosJson ?? "[]",
@@ -116,7 +118,7 @@ export function StructuredFormatBuilder({ template, onSave, onClose }: Props) {
       isDefault,
       tags,
       schemaVersion: 2,
-      formatVersion: (template?.formatVersion ?? 1) + (template?.id ? 1 : 0),
+      formatVersion: (template?.formatVersion ?? 1) + (template?.id && sectionsChanged ? 1 : 0),
       previousVersions: prev,
     });
   }
@@ -497,9 +499,13 @@ function updateOpt(field: FormatField, index: number, patch: Partial<FormatOptio
   });
 }
 
-function safePrev(existing: string | undefined, sectionsJson: string, formatVersion: number | undefined): string {
+export function safePrev(existing: string | undefined, sectionsJson: string, formatVersion: number | undefined): string {
   try {
     const arr = JSON.parse(existing || "[]") as unknown[];
+    const lastEntry = arr[arr.length - 1] as Record<string, unknown> | undefined;
+    if (lastEntry && lastEntry.sectionsJson === sectionsJson) {
+      return existing || "[]";
+    }
     arr.push({ archivedAt: new Date().toISOString(), formatVersion: formatVersion ?? 1, sectionsJson });
     return JSON.stringify(arr.slice(-20));
   } catch {

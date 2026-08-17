@@ -117,9 +117,11 @@ function nameHintMatch(templateName: string, inferred: StructuredTemplateMatch):
 
 function preferRegionDefault<T extends StructuredTemplateRow>(rows: T[]): T | undefined {
   if (rows.length === 0) return undefined;
-  return rows.find((t) => t.isDefault)
-    ?? rows.find((t) => (t.schemaVersion ?? 1) >= 2)
-    ?? rows[0];
+  const defaults = rows.filter((t) => t.isDefault);
+  if (defaults.length > 1 && process.env.NODE_ENV !== "production") {
+    console.warn(`[pickStructuredTemplate] ${defaults.length} templates have isDefault=true for the same region; using the first.`);
+  }
+  return defaults[0] ?? rows.find((t) => (t.schemaVersion ?? 1) >= 2) ?? rows[0];
 }
 
 /** Pick the best structured template row for a study. Never falls back to arbitrary first MRI row. */

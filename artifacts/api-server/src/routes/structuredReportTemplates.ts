@@ -1,11 +1,44 @@
 import { Router } from "express";
+import { z } from "zod/v4";
 import { db } from "@workspace/db";
 import { structuredReportTemplatesTable } from "@workspace/db";
 import { eq, and, sql } from "drizzle-orm";
 import { type StaffAuthRequest, FULL_ACCESS_ROLES } from "../middleware/requireStaffAuth";
+import { apiErrorFromZod } from "../lib/api-error";
 import { USG_STRUCTURED_TEMPLATE_PRESETS } from "../lib/usgReportTemplates";
 
 export const structuredReportTemplatesRouter = Router();
+
+const previousVersionsJson = z.string().refine(
+  (s) => { try { JSON.parse(s); return true; } catch { return false; } },
+  { message: "previousVersions must be valid JSON" },
+);
+
+export const PatchTemplateBody = z.object({
+  templateName: z.string().optional(),
+  modality: z.string().optional(),
+  bodyPart: z.string().optional(),
+  studyType: z.string().nullable().optional(),
+  sectionsJson: z.string().nullable().optional(),
+  defaultFindings: z.string().nullable().optional(),
+  defaultImpression: z.string().nullable().optional(),
+  macrosJson: z.string().nullable().optional(),
+  isActive: z.boolean().optional(),
+  schemaVersion: z.number().int().min(1).max(2).optional(),
+  formatVersion: z.number().int().min(1).optional(),
+  isDefault: z.boolean().optional(),
+  tags: z.string().optional(),
+  protocolKey: z.string().nullable().optional(),
+  parentId: z.number().int().nullable().optional(),
+  previousVersions: previousVersionsJson.optional(),
+  archivedAt: z.coerce.date().nullable().optional(),
+});
+
+export const PostTemplateBody = PatchTemplateBody.extend({
+  templateName: z.string().min(1),
+  modality: z.string().min(1),
+  bodyPart: z.string().min(1),
+});
 
 // ─── Preset templates ─────────────────────────────────────────────────────────
 const PRESETS = [
@@ -706,25 +739,29 @@ structuredReportTemplatesRouter.post("/", async (req, res): Promise<void> => {
   const sReq = req as StaffAuthRequest;
   if (!sReq.staffSession) { res.status(401).json({ error: "Unauthorized" }); return; }
 
-  const { templateName, modality, bodyPart, studyType, sectionsJson, defaultFindings, defaultImpression, macrosJson, schemaVersion, formatVersion, isDefault, tags, protocolKey, parentId, previousVersions } = req.body as Partial<typeof structuredReportTemplatesTable.$inferInsert>;
-  if (!templateName || !modality || !bodyPart) {
-    res.status(400).json({ error: "templateName, modality and bodyPart are required" }); return;
+  const parsed = PostTemplateBody.safeParse(req.body);
+  if (!parsed.success) {
+    apiErrorFromZod(res, 400, "Invalid template body", parsed.error);
+    return;
   }
+  const body = parsed.data;
   const [row] = await db.insert(structuredReportTemplatesTable).values({
-    templateName, modality, bodyPart,
-    studyType: studyType ?? null,
-    sectionsJson: sectionsJson ?? null,
-    defaultFindings: defaultFindings ?? null,
-    defaultImpression: defaultImpression ?? null,
-    macrosJson: macrosJson ?? null,
+    templateName: body.templateName,
+    modality: body.modality,
+    bodyPart: body.bodyPart,
+    studyType: body.studyType ?? null,
+    sectionsJson: body.sectionsJson ?? null,
+    defaultFindings: body.defaultFindings ?? null,
+    defaultImpression: body.defaultImpression ?? null,
+    macrosJson: body.macrosJson ?? null,
     isPreset: false,
-    schemaVersion: schemaVersion ?? 1,
-    formatVersion: formatVersion ?? 1,
-    isDefault: isDefault ?? false,
-    tags: tags ?? "",
-    protocolKey: protocolKey ?? null,
-    parentId: parentId ?? null,
-    previousVersions: previousVersions ?? "[]",
+    schemaVersion: body.schemaVersion ?? 1,
+    formatVersion: body.formatVersion ?? 1,
+    isDefault: body.isDefault ?? false,
+    tags: body.tags ?? "",
+    protocolKey: body.protocolKey ?? null,
+    parentId: body.parentId ?? null,
+    previousVersions: body.previousVersions ?? "[]",
     createdBy: sReq.staffSession.subjectName,
   }).returning();
   res.status(201).json(row);
@@ -735,25 +772,30 @@ structuredReportTemplatesRouter.patch("/:id", async (req, res): Promise<void> =>
   if (!sReq.staffSession) { res.status(401).json({ error: "Unauthorized" }); return; }
 
   const id = Number(req.params["id"]);
-  const { templateName, modality, bodyPart, studyType, sectionsJson, defaultFindings, defaultImpression, macrosJson, isActive, schemaVersion, formatVersion, isDefault, tags, protocolKey, parentId, previousVersions, archivedAt } = req.body as Partial<typeof structuredReportTemplatesTable.$inferInsert>;
+  const parsed = PatchTemplateBody.safeParse(req.body);
+  if (!parsed.success) {
+    apiErrorFromZod(res, 400, "Invalid template body", parsed.error);
+    return;
+  }
+  const body = parsed.data;
   const updates: Partial<typeof structuredReportTemplatesTable.$inferInsert> = { updatedAt: new Date(), updatedBy: sReq.staffSession.subjectName };
-  if (templateName !== undefined) updates.templateName = templateName;
-  if (modality !== undefined) updates.modality = modality;
-  if (bodyPart !== undefined) updates.bodyPart = bodyPart;
-  if (studyType !== undefined) updates.studyType = studyType;
-  if (sectionsJson !== undefined) updates.sectionsJson = sectionsJson;
-  if (defaultFindings !== undefined) updates.defaultFindings = defaultFindings;
-  if (defaultImpression !== undefined) updates.defaultImpression = defaultImpression;
-  if (macrosJson !== undefined) updates.macrosJson = macrosJson;
-  if (isActive !== undefined) updates.isActive = isActive;
-  if (schemaVersion !== undefined) updates.schemaVersion = schemaVersion;
-  if (formatVersion !== undefined) updates.formatVersion = formatVersion;
-  if (isDefault !== undefined) updates.isDefault = isDefault;
-  if (tags !== undefined) updates.tags = tags;
-  if (protocolKey !== undefined) updates.protocolKey = protocolKey;
-  if (parentId !== undefined) updates.parentId = parentId;
-  if (previousVersions !== undefined) updates.previousVersions = previousVersions;
-  if (archivedAt !== undefined) updates.archivedAt = archivedAt;
+  if (body.templateName !== undefined) updates.templateName = body.templateName;
+  if (body.modality !== undefined) updates.modality = body.modality;
+  if (body.bodyPart !== undefined) updates.bodyPart = body.bodyPart;
+  if (body.studyType !== undefined) updates.studyType = body.studyType;
+  if (body.sectionsJson !== undefined) updates.sectionsJson = body.sectionsJson;
+  if (body.defaultFindings !== undefined) updates.defaultFindings = body.defaultFindings;
+  if (body.defaultImpression !== undefined) updates.defaultImpression = body.defaultImpression;
+  if (body.macrosJson !== undefined) updates.macrosJson = body.macrosJson;
+  if (body.isActive !== undefined) updates.isActive = body.isActive;
+  if (body.schemaVersion !== undefined) updates.schemaVersion = body.schemaVersion;
+  if (body.formatVersion !== undefined) updates.formatVersion = body.formatVersion;
+  if (body.isDefault !== undefined) updates.isDefault = body.isDefault;
+  if (body.tags !== undefined) updates.tags = body.tags;
+  if (body.protocolKey !== undefined) updates.protocolKey = body.protocolKey;
+  if (body.parentId !== undefined) updates.parentId = body.parentId;
+  if (body.previousVersions !== undefined) updates.previousVersions = body.previousVersions;
+  if (body.archivedAt !== undefined) updates.archivedAt = body.archivedAt;
 
   const [row] = await db.update(structuredReportTemplatesTable).set(updates).where(eq(structuredReportTemplatesTable.id, id)).returning();
   if (!row) { res.status(404).json({ error: "Not found" }); return; }

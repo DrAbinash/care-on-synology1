@@ -1,4 +1,4 @@
-import { pgTable, serial, text, boolean, timestamp, integer, index } from "drizzle-orm/pg-core";
+import { pgTable, serial, text, boolean, timestamp, integer, index, type AnyPgColumn } from "drizzle-orm/pg-core";
 
 /**
  * Structured radiology report templates.
@@ -34,7 +34,7 @@ export const structuredReportTemplatesTable = pgTable(
     sortOrder: integer("sort_order").notNull().default(0),
     tags: text("tags").notNull().default(""),
     protocolKey: text("protocol_key"),
-    parentId: integer("parent_id"),
+    parentId: integer("parent_id").references((): AnyPgColumn => structuredReportTemplatesTable.id, { onDelete: "set null" }),
     archivedAt: timestamp("archived_at", { withTimezone: true }),
     // JSON array of { archivedAt, formatVersion, sectionsJson } — never delete original JSON
     previousVersions: text("previous_versions").notNull().default("[]"),
