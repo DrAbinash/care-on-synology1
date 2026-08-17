@@ -3168,9 +3168,10 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                         }}
                       />
 
-                      {/* Findings Quick Select — the full existing tile set */}
+                      {/* Findings Quick Select — the full existing tile set,
+                          scoped to the region chosen in the Region section */}
                       <FindingsToolDrawer id="quickSelect" active={activeFindingsTool === "quickSelect"}>
-                        <QuickSelectStrip field="findings" />
+                        <QuickSelectStrip field="findings" bodyPart={studySetup.matchedStudyRegion} />
                       </FindingsToolDrawer>
 
                       {/* Quick Add / Clinic Quick Select — region-aware from the

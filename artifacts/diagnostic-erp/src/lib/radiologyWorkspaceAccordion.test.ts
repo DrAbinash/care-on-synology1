@@ -92,7 +92,17 @@ describe("Findings workspace — macros, hero editor, one drawer at a time", () 
   it("keeps the editor as the hero by moving its tile wall into a drawer", () => {
     expect(workspace).toContain("hideQuickSelect");
     expect(findingsEditor).toContain("{!hideQuickSelect && <QuickSelectStrip field={field} />}");
-    expect(workspace).toContain('<QuickSelectStrip field="findings" />');
+    expect(workspace).toContain('<QuickSelectStrip field="findings"');
+  });
+
+  it("scopes Findings Quick Select tiles to the selected region", () => {
+    // PACS rows have no BodyPartExamined, so study.bodyPart is "" and every
+    // region-scoped tile used to score out of lookupTiles.
+    const strip = read("components/radiology/zai-workspace/quick-select-strip.tsx");
+    expect(strip).toContain("bodyPart?: string | null");
+    expect(strip).toContain("const scopeBodyPart = bodyPart?.trim() || study?.bodyPart;");
+    expect(strip).toContain("lookupTiles(tiles, field, study?.modality, scopeBodyPart)");
+    expect(workspace).toContain('bodyPart={studySetup.matchedStudyRegion}');
   });
 
   it("hosts exactly four assistance drawers, all mounted", () => {
@@ -187,7 +197,7 @@ describe("no reporting feature was deleted by the re-layout", () => {
     ["Structured findings cards", 'data-testid="structured-findings-cards"'],
     ["Highlight editor", "<FindingsHighlightEditor"],
     ["Findings editor", 'field="findings"'],
-    ["Findings Quick Select", '<QuickSelectStrip field="findings" />'],
+    ["Findings Quick Select", '<QuickSelectStrip field="findings"'],
     ["Quick Add / Clinic Quick Select", "<QuickFindingsPanel"],
     ["Structured format panel", "<StructuredFormatPanel"],
     ["Prior comparison", "<PriorComparisonToolbar"],
