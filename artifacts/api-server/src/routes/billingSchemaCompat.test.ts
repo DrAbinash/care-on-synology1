@@ -38,11 +38,31 @@ describe("post-deploy billing schema compatibility (source)", () => {
     expect(sql).toContain("idx_bills_referred_by_created");
   });
 
+  test("referral doctor indexes migration clears phantoms and indexes doctor_id", () => {
+    const sql = readFileSync(
+      join(repoRoot, "migrations/zzzzzzzzzzzzzz_referral_doctor_indexes.sql"),
+      "utf8",
+    );
+    // Retire schema-verify expectations for indexes on non-existent columns.
+    expect(sql).toContain("DROP INDEX IF EXISTS idx_bills_referred_by_id");
+    expect(sql).toContain("DROP INDEX IF EXISTS idx_bills_referred_by_created");
+    expect(sql).toContain("DROP INDEX IF EXISTS idx_orders_referred_by");
+    // Real referral path: orders.doctor_id + bills.order_id join.
+    expect(sql).toContain("idx_orders_doctor_id");
+    expect(sql).toContain("idx_orders_doctor_created");
+    expect(sql).toContain("idx_bills_order_id");
+    expect(sql).toContain("ON orders (doctor_id)");
+    expect(sql).not.toMatch(/ON bills \(referred_by_id/);
+    expect(sql).not.toMatch(/ON orders \(referred_by_id/);
+  });
+
   test("core billing tables use doctor_id on orders, not bills.referred_by_id", () => {
     const bills = readFileSync(join(repoRoot, "lib/db/src/schema/bills.ts"), "utf8");
     const orders = readFileSync(join(repoRoot, "lib/db/src/schema/orders.ts"), "utf8");
     expect(bills).not.toMatch(/referredById|referred_by_id/);
     expect(orders).toContain('doctorId: integer("doctor_id")');
     expect(orders).not.toMatch(/referredById|referred_by_id/);
+    expect(orders).toContain("idx_orders_doctor_id");
+    expect(bills).toContain("idx_bills_order_id");
   });
 });
