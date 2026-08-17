@@ -74,3 +74,20 @@ export function matchStudyRegion(
   }
   return best;
 }
+
+/**
+ * Last-clicked region becomes primary (index 0). That is what drives macros,
+ * Quick Select, and structured suggestions.
+ *
+ * - Not selected → add as primary (other regions stay selected).
+ * - Selected but not primary → promote, do not deselect.
+ * - Current primary with other regions still selected → deselect it.
+ * - The last remaining region cannot be removed (returns null).
+ */
+export function nextStudyRegions(current: string[], regionName: string): string[] | null {
+  const idx = current.indexOf(regionName);
+  if (idx === 0 && current.length === 1) return null;
+  if (idx === 0) return current.filter((r) => r !== regionName);
+  if (idx > 0) return [regionName, ...current.filter((r) => r !== regionName)];
+  return [regionName, ...current];
+}

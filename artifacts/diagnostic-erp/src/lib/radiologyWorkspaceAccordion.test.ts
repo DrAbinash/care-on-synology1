@@ -174,6 +174,8 @@ describe("Region context drives the Findings tools", () => {
     expect(macrosLib).toContain("BRAIN_RE.test(selected)");
     const setup = read("../src/hooks/useReportingStudySetup.ts");
     expect(setup).toContain("resolvedChocolateBoxSet(modality, studyDescription, matchedStudyRegion)");
+    expect(setup).toContain("nextStudyRegions(studyRegions, regionName)");
+    expect(workspace).toContain('data-primary={isPrimary ? "true" : undefined}');
   });
 
   it("Quick Add folds its region grid away but keeps cross-region access", () => {

@@ -2786,17 +2786,29 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                                   <>
                                     {visible.map((r) => {
                                       const on = studySetup.studyRegions.includes(r);
+                                      const isPrimary = on && studySetup.matchedStudyRegion === r;
+                                      const title = !on
+                                        ? `Add ${r} as primary (macros follow this)`
+                                        : isPrimary && studySetup.studyRegions.length > 1
+                                          ? `Remove ${r}`
+                                          : isPrimary
+                                            ? `Primary region — macros follow ${r}`
+                                            : `Make ${r} primary (macros follow this)`;
                                       return (
                                         <button
                                           key={r}
                                           type="button"
                                           disabled={isLocked || isFinalized}
                                           aria-pressed={on}
-                                          title={on ? `Remove ${r}` : `Add ${r} (technique merges)`}
+                                          aria-current={isPrimary ? "true" : undefined}
+                                          data-primary={isPrimary ? "true" : undefined}
+                                          title={title}
                                           className={`h-6 px-1.5 text-[10px] rounded border font-medium transition-colors ${
-                                            on
-                                              ? "bg-primary text-primary-foreground border-primary"
-                                              : "bg-background text-muted-foreground border-border hover:bg-muted"
+                                            isPrimary
+                                              ? "bg-primary text-primary-foreground border-primary ring-2 ring-offset-1 ring-emerald-400"
+                                              : on
+                                                ? "bg-primary/75 text-primary-foreground border-primary"
+                                                : "bg-background text-muted-foreground border-border hover:bg-muted"
                                           }`}
                                           onClick={() => studySetup.handleRegionToggle(r)}
                                         >

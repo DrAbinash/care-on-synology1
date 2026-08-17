@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { filterRegionNamesForModality, matchStudyRegion } from "./studyRegion";
+import { filterRegionNamesForModality, matchStudyRegion, nextStudyRegions } from "./studyRegion";
 
 // Region names in display (sortOrder) order — generic modality-neutral regions
 // sort before the modality-prefixed CT tabs, exactly as radiology_study_tabs is
@@ -66,5 +66,23 @@ describe("filterRegionNamesForModality", () => {
 
   it("keeps only X-Ray tabs for CR/DX", () => {
     expect(filterRegionNamesForModality(MIXED, "CR")).toEqual(["X-Ray Chest PA", "X-Ray Ankle"]);
+  });
+});
+
+describe("nextStudyRegions — last-clicked becomes primary", () => {
+  it("adds an unselected region as primary without dropping others", () => {
+    expect(nextStudyRegions(["Brain"], "LS Spine")).toEqual(["LS Spine", "Brain"]);
+  });
+
+  it("promotes a selected non-primary region instead of deselecting it", () => {
+    expect(nextStudyRegions(["LS Spine", "Brain"], "Brain")).toEqual(["Brain", "LS Spine"]);
+  });
+
+  it("deselects the current primary when other regions remain", () => {
+    expect(nextStudyRegions(["Brain", "LS Spine"], "Brain")).toEqual(["LS Spine"]);
+  });
+
+  it("refuses to drop the last remaining region", () => {
+    expect(nextStudyRegions(["Brain"], "Brain")).toBeNull();
   });
 });
