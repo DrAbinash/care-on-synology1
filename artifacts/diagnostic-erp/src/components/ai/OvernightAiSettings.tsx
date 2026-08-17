@@ -25,6 +25,8 @@ const MODALITY_OPTIONS: Array<{ code: string; label: string; hint: string }> = [
   { code: "Doppler", label: "Doppler", hint: "Vascular Doppler" },
 ];
 
+type DraftTiming = "on_arrival" | "scheduled";
+
 const STUDY_AGE_OPTIONS: Array<{ id: string; label: string; hint: string }> = [
   { id: "all", label: "All eligible studies", hint: "No date filter (previous default)" },
   { id: "today", label: "Today / current day", hint: "IST calendar day — not the same as last 24 hours" },
