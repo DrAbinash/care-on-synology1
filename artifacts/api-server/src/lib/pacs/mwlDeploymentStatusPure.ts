@@ -102,6 +102,52 @@ export const MWL_CRITICAL_CHECK_IDS = new Set([
   "publish_gap",
 ]);
 
+/**
+ * Directories the API should inspect for mwl-guard quarantine.
+ * Live `.env` uses ORTHANC_WORKLIST_DIR=/orthanc-worklists; dirname of that is `/`,
+ * so sibling lookup alone is not enough — compose must also mount `/worklists-bad`.
+ */
+export function resolveWorklistBadDirs(
+  liveDir: string | null,
+  env: NodeJS.ProcessEnv = process.env,
+): string[] {
+  const out: string[] = [];
+  const push = (p: string | null | undefined) => {
+    const t = p?.trim();
+    if (!t) return;
+    const n = t.replace(/\/+$/, "") || "/";
+    if (!out.includes(n)) out.push(n);
+  };
+  push(env.ORTHANC_WORKLIST_BAD_DIR);
+  push("/worklists-bad");
+  if (liveDir?.trim()) {
+    const live = liveDir.trim().replace(/\/+$/, "") || "/";
+    const parent = live === "/" ? "/" : live.replace(/\/[^/]+$/, "") || "/";
+    push(parent === "/" ? "/worklists-bad" : `${parent}/worklists-bad`);
+    // Host-style sibling: …/orthanc/worklists → …/orthanc/worklists-bad
+    if (/\/worklists$/i.test(live)) {
+      push(live.replace(/\/worklists$/i, "/worklists-bad"));
+    }
+  }
+  return out;
+}
+
+/** First line of an mwl-guard .reason.txt, stripped of likely PHI. */
+export function sanitizeQuarantineReason(text: string): string | null {
+  const line = text.split(/\r?\n/).map((l) => l.trim()).find(Boolean);
+  if (!line) return null;
+  const technical = /UID|empty|invalid|missing|housekeeper|SOP|Series|Study/i.test(line);
+  if (/\^/.test(line) || /\bPatient(Name|ID)?\b/i.test(line)) {
+    return technical
+      ? line.replace(/\[[^\]]{8,}\]/g, "[…]").slice(0, 200)
+      : "quarantined (see .reason.txt on NAS — do not copy files back)";
+  }
+  return line.slice(0, 240);
+}
+
+export const MWL_QUARANTINE_FIX =
+  "Do not copy worklists-bad back into the live worklists folder — Orthanc's housekeeper can crash on empty Study/Series/SOP UIDs. Redeploy care-api so live + staging worklists are mounted, then click Sync worklist to write valid .wl files. Leave quarantine as an audit trail. Historical studies already in PACS still need Auto-link on Match Center.";
+
 export function deriveMwlVerdict(checks: MwlCheck[]): { ready: boolean; verdict: MwlVerdict } {
   const byId = new Map(checks.map((c) => [c.id, c]));
   const criticalFail = [...MWL_CRITICAL_CHECK_IDS].some((id) => byId.get(id)?.status === "fail");

@@ -4,10 +4,13 @@ import {
   check,
   deriveMwlVerdict,
   resolveOrthancInternalUrl,
+  resolveWorklistBadDirs,
+  sanitizeQuarantineReason,
   type MwlCheck,
 } from "./mwlDeploymentStatusPure";
+import { inspectWorklistQuarantine } from "./mwlQuarantineInspect";
 import { probeAtomicPublish } from "./mwlAtomicPublishProbe";
-import { mkdtemp, mkdir, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 
@@ -139,5 +142,59 @@ describe("secrets are never embedded in orthanc url helper", () => {
     } as NodeJS.ProcessEnv);
     expect(JSON.stringify(info)).not.toContain("super-secret");
     expect(JSON.stringify(info)).not.toContain("1234");
+  });
+});
+
+describe("resolveWorklistBadDirs", () => {
+  it("always includes /worklists-bad for liveDir=/orthanc-worklists (dirname is /)", () => {
+    const dirs = resolveWorklistBadDirs("/orthanc-worklists", {});
+    expect(dirs).toContain("/worklists-bad");
+  });
+
+  it("prefers ORTHANC_WORKLIST_BAD_DIR", () => {
+    const dirs = resolveWorklistBadDirs("/orthanc-worklists", {
+      ORTHANC_WORKLIST_BAD_DIR: "/custom-bad",
+    } as NodeJS.ProcessEnv);
+    expect(dirs[0]).toBe("/custom-bad");
+    expect(dirs).toContain("/worklists-bad");
+  });
+
+  it("adds sibling worklists-bad for /orthanc-mwl/worklists", () => {
+    const dirs = resolveWorklistBadDirs("/orthanc-mwl/worklists", {});
+    expect(dirs).toContain("/orthanc-mwl/worklists-bad");
+    expect(dirs).toContain("/worklists-bad");
+  });
+});
+
+describe("sanitizeQuarantineReason", () => {
+  it("keeps a technical UID reason", () => {
+    expect(sanitizeQuarantineReason("missing/invalid StudyInstanceUID\n")).toMatch(/StudyInstanceUID/);
+  });
+
+  it("redacts PN-looking lines without a technical keyword", () => {
+    expect(sanitizeQuarantineReason("SINGH^ABINASH\n")).toMatch(/do not copy/i);
+  });
+});
+
+describe("inspectWorklistQuarantine", () => {
+  it("counts .wl files and samples .reason.txt from the fullest folder", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "mwl-q-"));
+    const empty = path.join(root, "empty-bad");
+    const full = path.join(root, "worklists-bad");
+    await mkdir(empty, { recursive: true });
+    await mkdir(full, { recursive: true });
+    await writeFile(path.join(full, "ACC-20260801-CR-001.wl"), "dicom");
+    await writeFile(path.join(full, "ACC-20260811-CR-005__20260811T152050Z.wl"), "dicom");
+    await writeFile(path.join(full, "ACC-20260811-CR-005__20260811T152050Z.wl.reason.txt"), "missing/invalid StudyInstanceUID\n");
+    try {
+      const r = await inspectWorklistQuarantine(path.join(root, "worklists"), {
+        ORTHANC_WORKLIST_BAD_DIR: empty,
+      } as NodeJS.ProcessEnv);
+      expect(r.count).toBe(2);
+      expect(r.dir).toBe(full);
+      expect(r.sampleReason).toMatch(/StudyInstanceUID/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });

@@ -16,12 +16,15 @@ import { radiologyScheduledProceduresTable } from "@workspace/db/schema";
 import { desc, eq, inArray, and, sql } from "drizzle-orm";
 import { isMwlEnabled, worklistDir, getMwlStagingDir } from "./mwlWorklistWriter";
 import { probeAtomicPublish } from "./mwlAtomicPublishProbe";
+import { inspectWorklistQuarantine } from "./mwlQuarantineInspect";
 import {
   check,
   resolveOrthancInternalUrl,
   assessPublishGap,
   deriveMwlVerdict,
   MWL_CRITICAL_CHECK_IDS,
+  MWL_QUARANTINE_FIX,
+  resolveWorklistBadDirs,
   type MwlCheck,
   type MwlCheckStatus,
   type MwlVerdict,
@@ -34,6 +37,8 @@ export {
   assessPublishGap,
   deriveMwlVerdict,
   MWL_CRITICAL_CHECK_IDS,
+  MWL_QUARANTINE_FIX,
+  resolveWorklistBadDirs,
   probeAtomicPublish,
 };
 export type { MwlCheck, MwlCheckStatus, MwlVerdict, OrthancInternalUrlInfo };
@@ -59,6 +64,10 @@ export type MwlDeploymentStatus = {
   stagingHostHint: string | null;
   wlFileCount: number;
   quarantineCount: number;
+  /** Container path where mwl-guard quarantine was found, if any. */
+  quarantineDir: string | null;
+  /** First technical line from a .reason.txt (PHI-stripped). */
+  quarantineSampleReason: string | null;
   activeProcedureCount: number;
   procedureStats: Record<string, number>;
   recentActive: MwlRecentProcedure[];
@@ -140,23 +149,6 @@ async function countWlFiles(dir: string): Promise<number> {
   }
 }
 
-async function countQuarantineFiles(liveDir: string | null): Promise<number> {
-  if (!liveDir) return 0;
-  const candidates = [
-    path.join(path.dirname(liveDir), "worklists-bad"),
-  ];
-  for (const dir of candidates) {
-    try {
-      await access(dir);
-      const entries = await readdir(dir);
-      return entries.filter((f) => f.endsWith(".wl") || f.endsWith(".dcm") || f.endsWith(".bad")).length;
-    } catch {
-      /* not present */
-    }
-  }
-  return 0;
-}
-
 async function wlFileExists(dir: string, accession: string): Promise<boolean> {
   const safe = accession.replace(/[^A-Za-z0-9._-]/g, "_") + ".wl";
   try {
@@ -218,6 +210,7 @@ const SETUP_STEPS = [
   "Set ORTHANC_INTERNAL_URL to a URL care-api can reach (LAN IP when ERP and PACS are separate Compose networks — not an invented Docker DNS name).",
   "Restart care-api so mounts are active.",
   "In Orthanc (care-pacs): enable worklists plugin; keep care-mwl-guard healthy.",
+  "Never copy files from worklists-bad back into live worklists — regenerate with Sync instead.",
   "Bill a radiology test → Sync → confirm .wl count rises and modality C-FIND sees the patient.",
 ];
 
@@ -369,14 +362,21 @@ export async function getMwlDeploymentStatus(): Promise<MwlDeploymentStatus> {
   }
 
   // 9 — Quarantine (mwl-guard)
-  const quarantineCount = await countQuarantineFiles(dir);
+  const quarantine = await inspectWorklistQuarantine(dir);
+  const quarantineCount = quarantine.count;
+  const quarantineDir = quarantine.dir;
+  const quarantineSampleReason = quarantine.sampleReason;
+  const quarantineDetail = quarantineCount === 0
+    ? "No quarantined .wl files detected in worklists-bad"
+    : `${quarantineCount} file(s) in ${quarantineDir ?? "worklists-bad"}`
+      + (quarantineSampleReason ? ` — ${quarantineSampleReason}` : " — typically empty Study/Series/SOP UIDs")
+      + ". Do not copy these back into live worklists.";
   checks.push(check(
     "quarantine",
     "Quarantined worklist files",
     quarantineCount === 0 ? "pass" : "warn",
-    quarantineCount === 0
-      ? "No quarantined .wl files detected in worklists-bad"
-      : `${quarantineCount} file(s) in quarantine (worklists-bad) — inspect care-mwl-guard logs`,
+    quarantineDetail,
+    quarantineCount === 0 ? undefined : MWL_QUARANTINE_FIX,
   ));
 
   // 10 — DB procedures + publish gap
@@ -526,6 +526,8 @@ export async function getMwlDeploymentStatus(): Promise<MwlDeploymentStatus> {
     stagingHostHint,
     wlFileCount,
     quarantineCount,
+    quarantineDir,
+    quarantineSampleReason,
     activeProcedureCount,
     procedureStats,
     recentActive,

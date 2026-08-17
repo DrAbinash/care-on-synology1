@@ -84,7 +84,7 @@ On the ultrasound console:
 1. **Service / DICOM** → add a **Worklist** or **MWL** server  
 2. **AE Title**: often `ORTHANC` or `WORKLIST` (match Orthanc MWL config)  
 3. **IP**: NAS IP (e.g. `172.16.1.139`)  
-4. **Port**: `4242` (Orthanc DICOM port — confirm in orthanc.json)  
+4. **Port**: host-mapped Orthanc DICOM port (this site: **`5680`**, container `4242` — not HTTP `8042`)  
 
 On the machine, open **Worklist** before scanning — today's billed patients should appear with ERP accession numbers.
 
@@ -113,11 +113,35 @@ If the USG cannot reach Orthanc directly, run the Windows MWL SCP agent (see Age
 | Symptom | Fix |
 |---------|-----|
 | No `.wl` files | Check ORTHANC_WORKLIST_DIR + volume mount; run Sync |
-| USG worklist empty | Orthanc worklists plugin off or wrong folder path |
+| USG worklist empty | Plugin off, wrong folder, or files were moved to `worklists-bad`. Do not copy `-bad` back. Redeploy care-api, then Sync. DICOM/MWL port on this site is **5680**, not 8042. |
 | Study not in ERP | INTERNAL_API_KEY mismatch; check `care-erp-sync` container logs |
 | Patient name wrong on USG | Bill must include patient; accession must copy to study |
-| Orthanc crashes / restarts with `missing StudyInstanceUID` | Old `.wl` files had empty UIDs. Update ERP (MWL writer fix), then in ERP **Settings → Radiology → Sync MWL files now**, or delete `/volume1/docker/care-pacs/orthanc/worklists/*.wl` and re-sync. Add `"SetStudyInstanceUidIfMissing": true` to orthanc.json `Worklists` block. |
+| Orthanc crashes / restarts with `missing StudyInstanceUID` | Old `.wl` files had empty UIDs. `mwl-guard` moves them to `worklists-bad`. Sync from ERP after the UID-fix deploy. Enable `SetStudyInstanceUidIfMissing` in orthanc.json. |
 
 **Note:** Orthanc→ERP intake is owned by the `care-erp-sync` Python container (`care_erp_sync.py`), not `auto_pull.lua`. The Lua script only logs stored instances. Sidecar `requirements.txt` needs only `requests`.
 
 See also: `docker/orthanc/orthanc-worklists-config.snippet.json`
+
+## `worklists-bad` — do not copy back
+
+If `ls /volume1/docker/care-pacs/orthanc/worklists-bad` shows hundreds of `ACC-*.wl` files (some with `__20260811T152050Z` timestamps and matching `.reason.txt`), those are **invalid** worklists `mwl-guard` removed so Orthanc would not crash.
+
+Typical cause: empty Study / Series / SOP Instance UID.
+
+**Recovery (live folder, not `-bad`):**
+
+```bash
+# 1. Confirm the live folder (machines query this, not worklists-bad)
+ls /volume1/docker/care-pacs/orthanc/worklists | head
+
+# 2. Optional: peek why one file was quarantined (no need to restore it)
+head -20 /volume1/docker/care-pacs/orthanc/worklists-bad/*.reason.txt | head -40
+
+# 3. After deploying care-api with worklists + worklists-bad mounts:
+#    ERP → Settings → Radiology → DICOM & MWL → Sync worklist
+#    Then confirm new .wl files appear in the live folder (not -bad).
+ls /volume1/docker/care-pacs/orthanc/worklists/*.wl | wc -l
+```
+
+Then query MWL from the machine: Called AE `ORTHANC2`, IP of the NAS, port **5680**. Studies already stored in Orthanc without a bill link still need **Auto-link** on DICOM Match Center.
+

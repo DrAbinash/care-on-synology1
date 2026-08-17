@@ -373,6 +373,7 @@ services:
       # Shared with care-pacs Orthanc worklists plugin (host path must match).
       # Live env uses /orthanc-worklists; compose also aliases /orthanc-mwl/worklists.
       ORTHANC_WORKLIST_DIR: ${ORTHANC_WORKLIST_DIR:-/orthanc-worklists}
+      ORTHANC_WORKLIST_BAD_DIR: ${ORTHANC_WORKLIST_BAD_DIR:-/worklists-bad}
       PACS_PROVIDER: ${PACS_PROVIDER:-orthanc}
       PACS_VIEWER_TYPE: ${PACS_VIEWER_TYPE:-ohif}
       OHIF_URL: ${OHIF_URL:-}
@@ -415,6 +416,9 @@ services:
       # bind both paths to the same NAS folder so dump2dcm and Orthanc see the same files.
       - ${ORTHANC_WORKLIST_HOST_DIR:-/volume1/docker/care-pacs/orthanc/worklists}:/orthanc-mwl/worklists
       - ${ORTHANC_WORKLIST_HOST_DIR:-/volume1/docker/care-pacs/orthanc/worklists}:/orthanc-worklists
+      # mwl-guard quarantine (read-only). Without this mount, Settings reports 0 quarantined
+      # even when hundreds of invalid .wl files sit on the NAS. Never copy these back.
+      - ${ORTHANC_WORKLIST_BAD_HOST_DIR:-/volume1/docker/care-pacs/orthanc/worklists-bad}:/worklists-bad:ro
     healthcheck:
       # ── Liveness probe (process alive + port responding) ───────────────────
       # Hits GET /health — registered on the Express app with no auth, no
