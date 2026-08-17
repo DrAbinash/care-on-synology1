@@ -1734,8 +1734,13 @@ function scheduleFraudDetection() {
     try {
       const { runFraudDetection } = await import("./services/banking/FraudDetectionEngine");
       const result = await runFraudDetection();
+      // totalAlerts = newly inserted rows only (deduped candidates are not counted).
       if (result.totalAlerts > 0) {
-        console.log(`[cron] Fraud detection: ${result.totalAlerts} alerts raised`);
+        const nonzero = Object.entries(result.byRule)
+          .filter(([, n]) => n > 0)
+          .map(([k, n]) => `${k}=${n}`)
+          .join(", ");
+        console.log(`[cron] Fraud detection: ${result.totalAlerts} new alerts raised (${nonzero})`);
       }
     } catch (err) {
       console.error("[cron] Fraud detection failed:", err);
