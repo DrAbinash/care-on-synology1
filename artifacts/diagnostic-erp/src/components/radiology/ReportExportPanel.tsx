@@ -2,7 +2,7 @@
  * ReportExportPanel — Classic / Premium layout, style prefs, live preview,
  * and Word/PDF export controls for the reporting workspace.
  */
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import {
@@ -72,6 +72,7 @@ export default function ReportExportPanel({
   const [previewRefresh, setPreviewRefresh] = useState(0);
   const [enlarged, setEnlarged] = useState(false);
   const [previewZoom, setPreviewZoom] = useState(1);
+  const inlineScrollRef = useRef<HTMLDivElement>(null);
 
   const serverPreviewUrl = useMemo(() => {
     const templateQs = reportLayoutTemplateQuery(reportLayout);
@@ -93,6 +94,22 @@ export default function ReportExportPanel({
 
   const showServerPremium = reportLayout === "care-premium" && !!serverPreviewUrl;
   const displayHtml = showServerPremium && serverHtml ? serverHtml : previewHtml;
+
+  // Non-passive wheel listener: React's onWheel is passive, so preventDefault is
+  // ignored and the parent column steals the gesture. Drive scrollTop here.
+  useEffect(() => {
+    if (!open) return;
+    const el = inlineScrollRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (el.scrollHeight <= el.clientHeight) return;
+      e.preventDefault();
+      e.stopPropagation();
+      el.scrollTop += e.deltaY;
+    };
+    el.addEventListener("wheel", onWheel, { passive: false, capture: true });
+    return () => el.removeEventListener("wheel", onWheel, { capture: true });
+  }, [open, displayHtml]);
 
   return (
     <div className="border rounded-md bg-card shadow-sm" data-testid="report-export-panel">
@@ -242,24 +259,36 @@ export default function ReportExportPanel({
           )}
 
           <div className="relative group">
-            <iframe
-              title="Report layout preview"
-              srcDoc={displayHtml}
-              className="w-full h-64 border rounded bg-white pointer-events-none"
-              tabIndex={-1}
-              data-testid="report-layout-preview"
-            />
+            {/* Compact preview: scroll the outer pane. Do NOT cover it with a
+                full-bleed click overlay — that steals wheel and chains scroll
+                to the parent worklist column. Print HTML often sets
+                overflow:hidden on body, so iframe-internal scroll is unreliable. */}
+            <div
+              ref={inlineScrollRef}
+              className="h-64 overflow-y-scroll overflow-x-hidden rounded border bg-white overscroll-contain"
+              data-testid="report-layout-preview-inline-scroll"
+              onDoubleClick={() => setEnlarged(true)}
+              title="Scroll to review · double-click or use Enlarge for full page"
+            >
+              <iframe
+                title="Report layout preview"
+                srcDoc={displayHtml}
+                className="w-full bg-white border-0 pointer-events-none block"
+                style={{ height: 1122 }}
+                tabIndex={-1}
+                data-testid="report-layout-preview"
+              />
+            </div>
             <button
               type="button"
-              className="absolute inset-0 rounded border-0 bg-slate-900/0 hover:bg-slate-900/10 focus-visible:ring-2 focus-visible:ring-emerald-500 cursor-zoom-in"
+              className="absolute bottom-2 right-2 z-10 text-[10px] font-medium px-1.5 py-0.5 rounded bg-slate-900/70 text-white hover:bg-slate-900 shadow-sm"
               onClick={() => setEnlarged(true)}
-              title="Click to enlarge — check layout and content before finalize"
+              title="Enlarge report preview — check layout and content before finalize"
               data-testid="report-layout-preview-enlarge"
               aria-label="Enlarge report preview"
-            />
-            <span className="pointer-events-none absolute bottom-2 right-2 text-[10px] font-medium px-1.5 py-0.5 rounded bg-slate-900/70 text-white opacity-80 group-hover:opacity-100">
+            >
               Click to enlarge
-            </span>
+            </button>
           </div>
         </div>
       )}
