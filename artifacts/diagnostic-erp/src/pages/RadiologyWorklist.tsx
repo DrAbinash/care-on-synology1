@@ -1138,11 +1138,11 @@ export default function RadiologyWorklist() {
   }
 
   return (
-    <div className="p-4 md:p-6 space-y-4">
+    <div className="h-full min-h-0 flex flex-col overflow-hidden">
       <PageHeader title="Worklist Hub" subtitle="RIS study queue and PACS intake worklist" />
 
-      <Tabs defaultValue="pacs-worklist" className="space-y-4">
-        <TabsList className="grid w-full grid-cols-1 sm:grid-cols-2 h-auto gap-1.5 p-1.5 bg-muted/40 rounded-xl border border-border/60">
+      <Tabs defaultValue="pacs-worklist" className="flex-1 min-h-0 flex flex-col px-3 sm:px-4 pb-3 sm:pb-4 space-y-3 overflow-hidden">
+        <TabsList className="shrink-0 grid w-full grid-cols-1 sm:grid-cols-2 h-auto gap-1.5 p-1.5 bg-muted/40 rounded-xl border border-border/60">
           <TabsTrigger
             value="study-queue"
             className="flex items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium transition-all data-[state=active]:bg-background data-[state=active]:shadow-sm data-[state=active]:border data-[state=active]:border-border/60"
@@ -1159,14 +1159,15 @@ export default function RadiologyWorklist() {
           </TabsTrigger>
         </TabsList>
 
-        <TabsContent value="study-queue">
+        <TabsContent value="study-queue" className="flex-1 min-h-0 overflow-y-auto mt-0 data-[state=inactive]:hidden">
           <StudyQueuePanel />
         </TabsContent>
 
-        <TabsContent value="pacs-worklist">
-          <div className="flex flex-col gap-4">
+        <TabsContent value="pacs-worklist" className="flex-1 min-h-0 overflow-hidden mt-0 data-[state=inactive]:hidden">
+          <div className="h-full min-h-0 flex flex-col gap-3 overflow-hidden">
 
             {/* ── LIVE DEBUG PANEL ── */}
+            <div className="shrink-0 space-y-3 overflow-y-auto max-h-[40vh]">
             <PacsDebugPanel
               entries={entries}
               filtered={filtered}
@@ -1447,13 +1448,15 @@ export default function RadiologyWorklist() {
               </div>
             )}
 
+            </div>
+
             {/* Table */}
             {isLoading ? (
-              <div className="flex items-center justify-center py-16">
+              <div className="flex items-center justify-center flex-1 py-16">
                 <RefreshCw className="h-6 w-6 animate-spin text-muted-foreground" />
               </div>
             ) : trulyEmpty && !showSentinel ? (
-              <div className="flex flex-col items-center justify-center py-16 gap-3 text-muted-foreground">
+              <div className="flex flex-col items-center justify-center flex-1 py-16 gap-3 text-muted-foreground">
                 <ScanSearch className="h-12 w-12" />
                 <p className="text-base font-semibold">No PACS studies found</p>
                 <p className="text-sm max-w-md text-center">
@@ -1472,7 +1475,7 @@ export default function RadiologyWorklist() {
                 </Button>
               </div>
             ) : filteredEmpty ? (
-              <div className="flex flex-col items-center justify-center py-16 gap-2 text-muted-foreground">
+              <div className="flex flex-col items-center justify-center flex-1 py-16 gap-2 text-muted-foreground">
                 <ScanSearch className="h-10 w-10" />
                 <p className="text-sm font-semibold">No studies match your filters</p>
                 <p className="text-xs">{entries.length} total in database. Try clearing search or changing filters.</p>
@@ -1481,7 +1484,7 @@ export default function RadiologyWorklist() {
                 </Button>
               </div>
             ) : (
-              <div className="overflow-x-auto rounded-lg border shadow-sm">
+              <div className="overflow-x-auto overflow-y-auto flex-1 min-h-0 rounded-lg border shadow-sm">
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="bg-muted/40 text-left border-b">
@@ -1910,12 +1913,12 @@ export default function RadiologyWorklist() {
               </div>
             )}
 
-            <div className="text-xs text-muted-foreground text-right">
+            <div className="shrink-0 text-xs text-muted-foreground text-right">
               {filtered.length} of {entries.length} entries
               {entries.length > 0 && <span> &middot; Auto-refreshes every 30s</span>}
             </div>
 
-            <div className="flex items-start gap-2 p-3 rounded-lg bg-amber-50 border border-amber-200 text-xs text-amber-800">
+            <div className="shrink-0 flex items-start gap-2 p-3 rounded-lg bg-amber-50 border border-amber-200 text-xs text-amber-800">
               <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
               <div>
                 <span className="font-semibold">Safety: </span>
