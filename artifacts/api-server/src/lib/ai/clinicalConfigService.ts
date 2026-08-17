@@ -63,7 +63,7 @@ export async function resolveAiEnablementForUser(q: EnablementQuery): Promise<En
 }
 
 // ── Scheduler config (singleton id=1, with safe defaults) ───────────────────
-const DEFAULT_SCHEDULER: SchedulerConfig = {
+export const DEFAULT_SCHEDULER: SchedulerConfig = {
   draftTiming: "scheduled",
   // Clinical overnight window: 5 PM → 10 AM next morning (crosses midnight).
   nightStart: "17:00", nightEnd: "10:00", quietStart: "10:00", quietEnd: "17:00",

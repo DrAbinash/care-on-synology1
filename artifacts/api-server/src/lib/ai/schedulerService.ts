@@ -13,7 +13,7 @@ import {
 } from "@workspace/db/schema";
 import { and, eq, desc, inArray, isNull, ne, sql } from "drizzle-orm";
 import { isFeatureEnabledServer } from "../featureFlags";
-import { AI_MASTER_FLAG, getSchedulerConfig, getModalityMode, getModalityPolicies, normalizeAiModality } from "./clinicalConfigService";
+import { AI_MASTER_FLAG, getSchedulerConfig, getModalityMode, getModalityPolicies, normalizeAiModality, DEFAULT_SCHEDULER } from "./clinicalConfigService";
 import { enqueueAiShadowJob, AI_SHADOW_PIPELINE_JOB } from "./shadowPipeline";
 import { jobBacklogCounts, listDeadLetterJobs, markJobRetryable, countDueJobs } from "../radiologyJobs";
 import {
@@ -516,12 +516,35 @@ export async function attachOvernightAiToWorklist<T extends {
 
 /** Compact overnight diagnostics — consumer heartbeat + queue truth, not Ollama health. */
 export async function getOvernightDiagnostics() {
-  const cfg = await getSchedulerConfig();
+  let cfg = DEFAULT_SCHEDULER;
+  let configError: string | null = null;
+  try {
+    cfg = await getSchedulerConfig();
+  } catch (err) {
+    configError = err instanceof Error ? err.message : String(err);
+    logger.warn({ err }, "overnight diagnostics: scheduler config unreadable — using defaults");
+  }
   const nowMin = nowMinutesLocal();
   const nightWindow = isWithinNightWindow(nowMin, cfg);
   const schedulersOn = process.env.ENABLE_SCHEDULERS === "1" || process.env.ENABLE_SCHEDULERS === "true";
-  const stats = await overnightQueueStats();
-  const dueAi = await countDueJobs(AI_SHADOW_PIPELINE_JOB);
+  let stats = {
+    queueDepth: 0,
+    running: 0,
+    abandoned: 0,
+    staleRunning: 0,
+    oldestQueuedAt: null as string | null,
+    lastSuccessfulDraftAt: null as string | null,
+    lastError: null as string | null,
+    lastErrorAt: null as string | null,
+    topAbandonedReasons: [] as Array<{ reason: string; count: number }>,
+  };
+  let dueAi = 0;
+  try {
+    stats = await overnightQueueStats();
+    dueAi = await countDueJobs(AI_SHADOW_PIPELINE_JOB);
+  } catch (err) {
+    logger.warn({ err }, "overnight diagnostics: queue stats unreadable");
+  }
   const hb = getRadiologyJobConsumerHeartbeat();
   const consumer = deriveRadiologyJobConsumerHealth(hb, {
     queueDepth: stats.queueDepth,
@@ -561,7 +584,7 @@ export async function getOvernightDiagnostics() {
     staleRunning: stats.staleRunning,
     oldestQueuedAt: stats.oldestQueuedAt,
     lastSuccessfulDraftAt: stats.lastSuccessfulDraftAt,
-    lastError: stats.lastError,
+    lastError: stats.lastError ?? configError,
     lastErrorAt: stats.lastErrorAt,
     lastHeartbeat: hb.lastCronTickAt,
     lastPoll: hb.lastTickAt,
@@ -571,6 +594,7 @@ export async function getOvernightDiagnostics() {
     currentJob: stats.running > 0 ? hb.lastClaimedJobId : null,
     topAbandonedReasons: stats.topAbandonedReasons,
     studyAgeWindow: cfg.studyAgeWindow,
+    configError,
     meaning: {
       queueDepth: "dicom_retry_queue rows with operation_type=ai_shadow_pipeline and status pending|retrying (all ages/modalities)",
       worklistQueued: "Overnight AI Drafts filter: worklist rows in the selected age chip whose latest shadow job maps to QUEUED (not the full backlog)",
