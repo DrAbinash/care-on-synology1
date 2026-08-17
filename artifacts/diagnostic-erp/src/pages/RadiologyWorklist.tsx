@@ -30,6 +30,21 @@ import {
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import QueueModalityFilter from "@/components/radiology/QueueModalityFilter";
+import { aiClient } from "@/lib/aiClient";
+import {
+  OVERNIGHT_AGE_CHIPS,
+  OVERNIGHT_STATUS_CHIPS,
+  OVERNIGHT_STATUS_STYLE,
+  compareOvernightWorklistRows,
+  formatIstTime,
+  formatRelativeAgo,
+  overnightStatusMatches,
+  studyInOvernightAgeView,
+  type OvernightAgeChip,
+  type OvernightAiPayload,
+  type OvernightDisplayStatus,
+  type OvernightStatusChip,
+} from "@/lib/overnightAiDraft";
 
 type WorklistEntry = {
   id: number;
@@ -53,6 +68,8 @@ type WorklistEntry = {
   status: string;
   assignedRadiologist: string | null;
   aiDraftStatus: string;
+  overnightAi?: OvernightAiPayload;
+  overnightEligible?: boolean;
   reportId: number | null;
   deliveryStatus: string | null;
   uhid?: string | null;        // Phase C: ERP UHID via patients join
@@ -332,6 +349,91 @@ function UsgCountBadge({ count, color }: { count: number; color: string }) {
     <span className={`inline-flex items-center justify-center min-w-[22px] px-1.5 py-0.5 rounded-full text-[10px] font-semibold border ${color}`}>
       {count}
     </span>
+  );
+}
+
+function OvernightAiDraftCell({
+  entry,
+  overnightMode,
+  onViewDraft,
+  onHelpful,
+  onNeedsImprovement,
+  onRetry,
+}: {
+  entry: WorklistEntry;
+  overnightMode: boolean;
+  onViewDraft: () => void;
+  onHelpful: () => void;
+  onNeedsImprovement: () => void;
+  onRetry?: () => void;
+}) {
+  const display = (entry.overnightAi?.displayStatus ?? (
+    entry.aiDraftStatus === "READY" ? "READY"
+      : entry.aiDraftStatus === "ERROR" ? "ERROR"
+        : entry.aiDraftStatus === "PENDING" ? "QUEUED"
+          : "NONE"
+  )) as OvernightDisplayStatus;
+  const ai = entry.overnightAi;
+  const style = overnightMode
+    ? (OVERNIGHT_STATUS_STYLE[display] ?? OVERNIGHT_STATUS_STYLE.NONE)
+    : (AI_DRAFT_STATUS_CONFIG[entry.aiDraftStatus]?.color ?? OVERNIGHT_STATUS_STYLE.NONE);
+  const queuedAgo = formatRelativeAgo(ai?.queuedAt);
+  const startedAgo = formatRelativeAgo(ai?.startedAt);
+  const completedAt = formatIstTime(ai?.completedAt);
+  let detail: string | null = null;
+  if (display === "QUEUED" || display === "RETRYING") {
+    const pos = ai?.queuePosition != null ? `Queue #${ai.queuePosition}` : null;
+    detail = [pos, queuedAgo ? `Queued ${queuedAgo}` : null].filter(Boolean).join(" · ");
+  } else if (display === "RUNNING") {
+    detail = startedAgo ? `Started ${startedAgo}` : "Ollama processing";
+  } else if (display === "READY") {
+    detail = completedAt ? `Completed ${completedAt}` : null;
+  } else if (display === "ERROR") {
+    detail = ai?.attemptCount ? `Attempt ${ai.attemptCount}` : null;
+  } else if (display === "STUCK") {
+    detail = startedAgo ? `No progress ${startedAgo}` : "Stale worker lock";
+  }
+  const label = overnightMode
+    ? (display === "NONE" ? "—" : display === "STUCK" ? "STUCK?" : display)
+    : (entry.aiDraftStatus === "NONE" ? "—" : entry.aiDraftStatus);
+
+  return (
+    <div className="flex flex-col gap-0.5 min-w-[7.5rem]">
+      <div className="flex items-center gap-1">
+        <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[10px] font-medium ${style}`}>
+          {display === "RUNNING" && <RefreshCw className="h-3 w-3 animate-spin" />}
+          {display === "QUEUED" || display === "RETRYING" ? label : label}
+        </span>
+        {display === "READY" && (
+          <Button size="sm" variant="ghost" className="h-6 w-6 p-0 text-xs" title="View AI Draft" onClick={onViewDraft}>
+            <Eye className="h-3 w-3" />
+          </Button>
+        )}
+        {display === "READY" && (
+          <Button size="sm" variant="ghost" className="h-6 w-6 p-0 text-xs text-green-600" title="Helpful" onClick={onHelpful}>
+            <ThumbsUp className="h-3 w-3" />
+          </Button>
+        )}
+        {display === "READY" && (
+          <Button size="sm" variant="ghost" className="h-6 w-6 p-0 text-xs text-red-500" title="Needs Improvement" onClick={onNeedsImprovement}>
+            <ThumbsDown className="h-3 w-3" />
+          </Button>
+        )}
+        {display === "ERROR" && ai?.lastError && (
+          <Button size="sm" variant="ghost" className="h-6 px-1 text-[10px]" title={ai.lastError} onClick={() => window.alert(ai.lastError)}>
+            View error
+          </Button>
+        )}
+        {display === "ERROR" && onRetry && (
+          <Button size="sm" variant="ghost" className="h-6 px-1 text-[10px]" title="Retry this study (idempotent; will not start a second in-flight job)" onClick={onRetry}>
+            Retry
+          </Button>
+        )}
+      </div>
+      {overnightMode && detail && (
+        <span className="text-[10px] text-muted-foreground leading-tight">{detail}</span>
+      )}
+    </div>
   );
 }
 
@@ -624,6 +726,9 @@ export default function RadiologyWorklist() {
   });
   const [lockFilter, setLockFilter] = useState("all");
   const [aiDraftFilter, setAiDraftFilter] = useState<"all" | "overnight">("all");
+  const [overnightAgeChip, setOvernightAgeChip] = useState<OvernightAgeChip>("last_24h");
+  const [overnightStatusChip, setOvernightStatusChip] = useState<OvernightStatusChip>("all");
+  const [selectedOvernightIds, setSelectedOvernightIds] = useState<Set<number>>(new Set());
   const [autoLinking, setAutoLinking] = useState(false);
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
@@ -672,10 +777,11 @@ export default function RadiologyWorklist() {
 
   const col = columnVisibility;
 
+  const overnightMode = aiDraftFilter === "overnight";
   const { data: entries = [], isLoading, isError, error, refetch } = useQuery<WorklistEntry[]>({
-    queryKey: ["radiology-pacs-worklist"],
+    queryKey: ["radiology-pacs-worklist", { overnightDrafts: overnightMode }],
     queryFn: async () => {
-      const url = `/api/radiology/pacs-worklist`;
+      const url = overnightMode ? `/api/radiology/pacs-worklist?overnightDrafts=1` : `/api/radiology/pacs-worklist`;
       console.log("[PACS-WORKLIST] Fetching:", url);
       const session = readStaffSession();
       console.log("[PACS-WORKLIST] Auth token present:", !!session?.token, "| role:", session?.user?.role);
@@ -968,16 +1074,30 @@ export default function RadiologyWorklist() {
     if (lockFilter === "locked" && (!isLocked || isMine)) return false;
 
     if (aiDraftFilter === "overnight") {
-      const st = (e.aiDraftStatus || "NONE").toUpperCase();
-      if (st !== "READY" && st !== "PENDING" && st !== "ERROR") return false;
+      const display = (e.overnightAi?.displayStatus ?? (
+        e.aiDraftStatus === "READY" ? "READY" : e.aiDraftStatus === "ERROR" ? "ERROR" : e.aiDraftStatus === "PENDING" ? "QUEUED" : "NONE"
+      )) as OvernightDisplayStatus;
+      const inOvernightSet = display !== "NONE" || Boolean(e.overnightEligible);
+      if (!inOvernightSet) return false;
+      if (!overnightStatusMatches(display, overnightStatusChip)) return false;
+      if (!studyInOvernightAgeView({
+        chip: overnightAgeChip,
+        studyDate: e.studyDate,
+        createdAt: e.createdAt,
+        customFrom: dateFrom || undefined,
+        customTo: dateTo || undefined,
+      })) return false;
     }
 
-    // Client-side date-range filter (IST calendar day), keyed off study received time
-    if (dateFrom || dateTo) {
-      const entryDate = e.createdAt ? toISTDateStr(e.createdAt) : null;
-      if (!entryDate) return false;
-      if (dateFrom && entryDate < dateFrom) return false;
-      if (dateTo && entryDate > dateTo) return false;
+    // Client-side date-range filter (IST calendar day), keyed off study received time.
+    // Overnight AI Drafts uses its own study-age chips; custom chip reuses these dates.
+    if (!overnightMode || overnightAgeChip === "custom") {
+      if (dateFrom || dateTo) {
+        const entryDate = e.createdAt ? toISTDateStr(e.createdAt) : null;
+        if (!entryDate) return false;
+        if (dateFrom && entryDate < dateFrom) return false;
+        if (dateTo && entryDate > dateTo) return false;
+      }
     }
 
     if (!search) return true;
@@ -990,21 +1110,40 @@ export default function RadiologyWorklist() {
     );
   });
 
+  const overnightFiltered = overnightMode
+    ? [...filtered].sort(compareOvernightWorklistRows)
+    : filtered;
+
   const aiDraftCounts = useMemo(() => {
-    let ready = 0, error = 0, processing = 0;
+    let ready = 0, error = 0, processing = 0, queued = 0, running = 0;
     for (const e of entries) {
-      const st = (e.aiDraftStatus || "NONE").toUpperCase();
-      if (st === "READY") ready++;
-      else if (st === "ERROR") error++;
-      else if (st === "PENDING") processing++;
+      const display = (e.overnightAi?.displayStatus ?? (
+        e.aiDraftStatus === "READY" ? "READY" : e.aiDraftStatus === "ERROR" ? "ERROR" : e.aiDraftStatus === "PENDING" ? "QUEUED" : "NONE"
+      )) as OvernightDisplayStatus;
+      const inSet = display !== "NONE" || Boolean(e.overnightEligible);
+      if (overnightMode) {
+        if (!inSet) continue;
+        if (!studyInOvernightAgeView({
+          chip: overnightAgeChip,
+          studyDate: e.studyDate,
+          createdAt: e.createdAt,
+          customFrom: dateFrom || undefined,
+          customTo: dateTo || undefined,
+        })) continue;
+      }
+      if (display === "READY") ready++;
+      else if (display === "ERROR" || display === "STUCK") error++;
+      else if (display === "RUNNING") running++;
+      else if (display === "QUEUED" || display === "RETRYING") queued++;
+      else if (e.aiDraftStatus === "PENDING") processing++;
     }
-    return { ready, error, processing };
-  }, [entries]);
+    return { ready, error, processing, queued, running };
+  }, [entries, overnightMode, overnightAgeChip, dateFrom, dateTo]);
 
   // Rows to render in table — real rows + optional sentinel
   const tableRows = [
     ...(showSentinel ? [SENTINEL_ROW] : []),
-    ...filtered,
+    ...overnightFiltered,
   ];
 
   // /api/patient-reports/:id/print is staff-authed (Authorization: Bearer
@@ -1126,15 +1265,87 @@ export default function RadiologyWorklist() {
     setAiDraftFilter((v) => {
       const next = v === "overnight" ? "all" : "overnight";
       if (next === "overnight") {
-        // Surface the AI Draft column so READY / PENDING / ERROR are visible.
         setColumnVisibility((prev) => {
           const nextCols = { ...prev, aiDraft: true };
           saveWorklistColumnVisibility(nextCols);
           return nextCols;
         });
+      } else {
+        setSelectedOvernightIds(new Set());
       }
       return next;
     });
+  }
+
+  function toggleOvernightSelect(id: number) {
+    setSelectedOvernightIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  const selectedOvernightRows = overnightFiltered.filter((e) => selectedOvernightIds.has(e.id) && e.id > 0);
+
+  async function queueSelectedOvernight() {
+    const uids = selectedOvernightRows.map((e) => e.studyInstanceUID).filter((u): u is string => !!u);
+    const modalities: Record<string, string | null> = {};
+    for (const e of selectedOvernightRows) {
+      if (e.studyInstanceUID) modalities[e.studyInstanceUID] = e.modality ?? null;
+    }
+    if (uids.length === 0) return;
+    try {
+      const res = await aiClient.queueSelected(uids, modalities, false);
+      toast({ title: `Queued ${res.queued}`, description: res.skipped.length ? `${res.skipped.length} skipped (READY or already in queue)` : "Added to overnight AI queue" });
+      setSelectedOvernightIds(new Set());
+      void refetch();
+    } catch (err) {
+      toast({ title: "Queue failed", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
+    }
+  }
+
+  async function retrySelectedOvernight() {
+    const jobIds = selectedOvernightRows
+      .filter((e) => e.overnightAi?.canRetry && e.overnightAi.jobId)
+      .map((e) => e.overnightAi!.jobId as number);
+    if (jobIds.length === 0) {
+      toast({ title: "Nothing to retry", description: "Retry is only for ERROR jobs that are not already running." });
+      return;
+    }
+    try {
+      const res = await aiClient.retryOvernightJobs(jobIds);
+      toast({ title: `Retried ${res.retried}`, description: res.skippedInFlight ? `${res.skippedInFlight} skipped (already in flight)` : undefined });
+      setSelectedOvernightIds(new Set());
+      void refetch();
+    } catch (err) {
+      toast({ title: "Retry failed", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
+    }
+  }
+
+  async function cancelSelectedOvernight() {
+    const jobIds = selectedOvernightRows
+      .filter((e) => e.overnightAi?.canCancel && e.overnightAi.jobId)
+      .map((e) => e.overnightAi!.jobId as number);
+    const blocked = selectedOvernightRows.filter((e) => e.overnightAi?.displayStatus === "RUNNING").length;
+    if (jobIds.length === 0) {
+      toast({
+        title: "Cancel not available",
+        description: blocked ? "RUNNING jobs cannot be cancelled (Ollama request is in flight)." : "Select queued studies only.",
+      });
+      return;
+    }
+    try {
+      const res = await aiClient.cancelQueuedOvernight(jobIds);
+      toast({
+        title: `Cancelled ${res.cancelled}`,
+        description: res.skippedRunning ? `${res.skippedRunning} running jobs left untouched` : undefined,
+      });
+      setSelectedOvernightIds(new Set());
+      void refetch();
+    } catch (err) {
+      toast({ title: "Cancel failed", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
+    }
   }
 
   return (
@@ -1268,7 +1479,7 @@ export default function RadiologyWorklist() {
                     ? "border-indigo-500 bg-indigo-600 text-white"
                     : "border-border bg-background text-muted-foreground hover:bg-muted"
                 }`}
-                title="Filter to overnight AI drafts. PROCESSING = queued/running; READY = draft available (open Report / View draft); ERROR = failed. Turns on the AI Draft column."
+                title="Overnight AI Drafts: QUEUED vs RUNNING from dicom_retry_queue. READY = draft available. Does not change ordinary worklist sorting."
               >
                 <Sparkles className="h-3.5 w-3.5" />
                 Overnight AI Drafts
@@ -1277,7 +1488,9 @@ export default function RadiologyWorklist() {
                 className="text-[11px] text-muted-foreground whitespace-nowrap"
                 data-testid="ai-draft-summary"
               >
-                AI Drafts: {aiDraftCounts.ready} READY | {aiDraftCounts.error} ERROR | {aiDraftCounts.processing} PROCESSING
+                {overnightMode
+                  ? `Queued: ${aiDraftCounts.queued} · Running: ${aiDraftCounts.running} · Ready: ${aiDraftCounts.ready} · Errors: ${aiDraftCounts.error}`
+                  : `AI Drafts: ${aiDraftCounts.ready} READY | ${aiDraftCounts.error} ERROR | ${aiDraftCounts.queued + aiDraftCounts.processing} PROCESSING`}
               </span>
               <Select value={lockFilter} onValueChange={setLockFilter}>
                 <SelectTrigger className="w-[150px]">
@@ -1337,6 +1550,53 @@ export default function RadiologyWorklist() {
                 </Button>
               )}
               </div>
+              {overnightMode && (
+                <div className="flex flex-wrap items-center gap-2 w-full" data-testid="overnight-ai-drafts-filters">
+                  <span className="text-[10px] uppercase tracking-wide text-muted-foreground">Study age</span>
+                  {OVERNIGHT_AGE_CHIPS.map((chip) => (
+                    <button
+                      key={chip.id}
+                      type="button"
+                      onClick={() => setOvernightAgeChip(chip.id)}
+                      className={`h-7 px-2 rounded-md border text-[11px] ${
+                        overnightAgeChip === chip.id
+                          ? "border-indigo-500 bg-indigo-600 text-white"
+                          : "border-border bg-background text-muted-foreground"
+                      }`}
+                    >
+                      {chip.label}
+                    </button>
+                  ))}
+                  <span className="text-[10px] uppercase tracking-wide text-muted-foreground ml-2">AI status</span>
+                  {OVERNIGHT_STATUS_CHIPS.map((chip) => (
+                    <button
+                      key={chip.id}
+                      type="button"
+                      onClick={() => setOvernightStatusChip(chip.id)}
+                      className={`h-7 px-2 rounded-md border text-[11px] ${
+                        overnightStatusChip === chip.id
+                          ? "border-indigo-500 bg-indigo-600 text-white"
+                          : "border-border bg-background text-muted-foreground"
+                      }`}
+                    >
+                      {chip.label}
+                    </button>
+                  ))}
+                  {selectedOvernightIds.size > 0 && (
+                    <span className="flex flex-wrap items-center gap-1 ml-auto">
+                      <Button size="sm" variant="outline" className="h-7 text-[11px]" onClick={() => void queueSelectedOvernight()}>
+                        Queue selected
+                      </Button>
+                      <Button size="sm" variant="outline" className="h-7 text-[11px]" onClick={() => void retrySelectedOvernight()}>
+                        Retry selected errors
+                      </Button>
+                      <Button size="sm" variant="outline" className="h-7 text-[11px]" onClick={() => void cancelSelectedOvernight()}>
+                        Cancel selected queued
+                      </Button>
+                    </span>
+                  )}
+                </div>
+              )}
               <div className="flex flex-wrap items-center gap-2 ml-auto">
                 <CalendarDays className="h-4 w-4 text-muted-foreground flex-shrink-0" />
                 <Input
@@ -1486,6 +1746,7 @@ export default function RadiologyWorklist() {
                   <thead>
                     <tr className="bg-muted/40 text-left border-b">
                       {showSentinel && <th className={`${WORKLIST_TH} text-orange-600`}>⚠ Debug</th>}
+                      {overnightMode && <th className={`${WORKLIST_TH} w-8`}></th>}
                       <th className={`${WORKLIST_TH} min-w-[160px] sticky left-0 z-30 bg-muted/40 border-r border-border/50`}>Patient</th>
                       <th className={WORKLIST_TH}>Bill</th>
                       <th className={`${WORKLIST_TH} min-w-[180px]`}>Study</th>
@@ -1515,6 +1776,19 @@ export default function RadiologyWorklist() {
                         {showSentinel && (
                           <td className={`${WORKLIST_TD} text-xs text-orange-600 font-mono`}>
                             {entry.id === -1 ? "SENTINEL" : "real"}
+                          </td>
+                        )}
+                        {overnightMode && (
+                          <td className={`${WORKLIST_TD} w-8`}>
+                            {entry.id === -1 ? null : (
+                              <input
+                                type="checkbox"
+                                className="h-3.5 w-3.5"
+                                checked={selectedOvernightIds.has(entry.id)}
+                                onChange={() => toggleOvernightSelect(entry.id)}
+                                aria-label={`Select ${entry.patientName} for overnight AI`}
+                              />
+                            )}
                           </td>
                         )}
                         <td className={`${WORKLIST_TD} min-w-[160px] sticky left-0 z-10 bg-background group-hover:bg-muted/25 border-r border-border/40`}>
@@ -1706,35 +1980,16 @@ export default function RadiologyWorklist() {
                           {entry.id === -1 ? (
                             <span className="text-xs text-muted-foreground">—</span>
                           ) : (
-                            <div className="flex items-center gap-1">
-                              <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[10px] font-medium ${AI_DRAFT_STATUS_CONFIG[entry.aiDraftStatus]?.color ?? "bg-gray-100 text-gray-600 border-gray-200"}`}>
-                                {entry.aiDraftStatus === "NONE" && "—"}
-                                {entry.aiDraftStatus === "PENDING" && (
-                                  <><RefreshCw className="h-3 w-3 animate-spin" /> PENDING</>
-                                )}
-                                {entry.aiDraftStatus === "READY" && (
-                                  <><Sparkles className="h-3 w-3" /> READY</>
-                                )}
-                                {entry.aiDraftStatus === "ERROR" && (
-                                  <><AlertCircle className="h-3 w-3" /> ERROR</>
-                                )}
-                              </span>
-                              {entry.aiDraftStatus === "READY" && (
-                                <Button size="sm" variant="ghost" className="h-6 w-6 p-0 text-xs" title="View AI Draft" onClick={() => viewAiDraft(entry.id)}>
-                                  <Eye className="h-3 w-3" />
-                                </Button>
-                              )}
-                              {entry.aiDraftStatus === "READY" && (
-                                <Button size="sm" variant="ghost" className="h-6 w-6 p-0 text-xs text-green-600" title="Helpful" onClick={() => submitFeedback(entry.id, "helpful")}>
-                                  <ThumbsUp className="h-3 w-3" />
-                                </Button>
-                              )}
-                              {entry.aiDraftStatus === "READY" && (
-                                <Button size="sm" variant="ghost" className="h-6 w-6 p-0 text-xs text-red-500" title="Needs Improvement" onClick={() => submitFeedback(entry.id, "needs_improvement")}>
-                                  <ThumbsDown className="h-3 w-3" />
-                                </Button>
-                              )}
-                            </div>
+                            <OvernightAiDraftCell
+                              entry={entry}
+                              overnightMode={overnightMode}
+                              onViewDraft={() => viewAiDraft(entry.id)}
+                              onHelpful={() => submitFeedback(entry.id, "helpful")}
+                              onNeedsImprovement={() => submitFeedback(entry.id, "needs_improvement")}
+                              onRetry={entry.overnightAi?.canRetry && entry.overnightAi.jobId
+                                ? () => { void aiClient.retryOvernightJobs([entry.overnightAi!.jobId as number]).then(() => refetch()); }
+                                : undefined}
+                            />
                           )}
                         </td>
                         )}

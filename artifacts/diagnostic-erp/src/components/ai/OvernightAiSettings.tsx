@@ -27,6 +27,16 @@ const MODALITY_OPTIONS: Array<{ code: string; label: string; hint: string }> = [
 
 type DraftTiming = "on_arrival" | "scheduled";
 
+const STUDY_AGE_OPTIONS: Array<{ id: string; label: string; hint: string }> = [
+  { id: "all", label: "All eligible studies", hint: "No date filter (previous default)" },
+  { id: "today", label: "Today / current day", hint: "IST calendar day — not the same as last 24 hours" },
+  { id: "last_24h", label: "Last 24 hours", hint: "Rolling 24 hours from now" },
+  { id: "last_48h", label: "Last 48 hours", hint: "Rolling 48 hours from now" },
+  { id: "last_3d", label: "Last 3 days", hint: "Rolling 72 hours from now" },
+  { id: "last_7d", label: "Last 7 days", hint: "Rolling 7 days from now" },
+  { id: "custom", label: "Custom date/time range", hint: "Inclusive from / to" },
+];
+
 export default function OvernightAiSettings() {
   const { toast } = useToast();
   const qc = useQueryClient();
@@ -43,6 +53,16 @@ export default function OvernightAiSettings() {
     queryFn: () => aiClient.getQueue(),
     refetchInterval: 30_000,
   });
+  const { data: preview, refetch: refetchPreview } = useQuery({
+    queryKey: ["ai-night-batch-preview"],
+    queryFn: () => aiClient.previewNightBatch(),
+    refetchInterval: 30_000,
+  });
+  const { data: diagnostics } = useQuery({
+    queryKey: ["ai-overnight-diagnostics"],
+    queryFn: () => aiClient.getOvernightDiagnostics(),
+    refetchInterval: 20_000,
+  });
   const { data: masterFlagOn } = useQuery({
     queryKey: ["feature-flags", "ff_radiology_ai"],
     queryFn: async () => {
@@ -58,6 +78,9 @@ export default function OvernightAiSettings() {
   const [quietStart, setQuietStart] = useState("10:00");
   const [quietEnd, setQuietEnd] = useState("17:00");
   const [enableAi, setEnableAi] = useState(true);
+  const [studyAgeWindow, setStudyAgeWindow] = useState("all");
+  const [studyAgeCustomFrom, setStudyAgeCustomFrom] = useState("");
+  const [studyAgeCustomTo, setStudyAgeCustomTo] = useState("");
 
   useEffect(() => {
     if (masterFlagOn !== undefined) setEnableAi(masterFlagOn);
@@ -77,6 +100,11 @@ export default function OvernightAiSettings() {
     setNightEnd(String(scheduler.nightEnd ?? "06:00"));
     setQuietStart(String(scheduler.quietStart ?? "08:00"));
     setQuietEnd(String(scheduler.quietEnd ?? "20:00"));
+    setStudyAgeWindow(String(scheduler.studyAgeWindow ?? "all"));
+    const from = scheduler.studyAgeCustomFrom;
+    const to = scheduler.studyAgeCustomTo;
+    setStudyAgeCustomFrom(typeof from === "string" ? from.slice(0, 16) : "");
+    setStudyAgeCustomTo(typeof to === "string" ? to.slice(0, 16) : "");
   }, [scheduler]);
 
   const selectedLabel = useMemo(
@@ -93,6 +121,9 @@ export default function OvernightAiSettings() {
         nightEnd,
         quietStart,
         quietEnd,
+        studyAgeWindow,
+        studyAgeCustomFrom: studyAgeWindow === "custom" && studyAgeCustomFrom ? new Date(studyAgeCustomFrom).toISOString() : null,
+        studyAgeCustomTo: studyAgeWindow === "custom" && studyAgeCustomTo ? new Date(studyAgeCustomTo).toISOString() : null,
         enableAi,
       }),
     onSuccess: (res) => {
@@ -100,6 +131,8 @@ export default function OvernightAiSettings() {
       void qc.invalidateQueries({ queryKey: ["ai-scheduler-config"] });
       void qc.invalidateQueries({ queryKey: ["feature-flags"] });
       void qc.invalidateQueries({ queryKey: ["ai-reporting-settings"] });
+      void qc.invalidateQueries({ queryKey: ["ai-night-batch-preview"] });
+      void qc.invalidateQueries({ queryKey: ["ai-overnight-diagnostics"] });
       window.dispatchEvent(new Event("featureFlagsChanged"));
       toast({
         title: "AI draft automation saved",
@@ -110,12 +143,15 @@ export default function OvernightAiSettings() {
   });
 
   const runMutation = useMutation({
-    mutationFn: () => aiClient.runNightBatch(true),
+    mutationFn: () => aiClient.runNightBatch(true, true),
     onSuccess: (res) => {
       void qc.invalidateQueries({ queryKey: ["ai-queue"] });
+      void qc.invalidateQueries({ queryKey: ["ai-night-batch-preview"] });
+      void qc.invalidateQueries({ queryKey: ["ai-overnight-diagnostics"] });
+      void refetchPreview();
       toast({
-        title: "Draft batch triggered",
-        description: `Considered ${res.considered ?? 0}, enqueued ${res.enqueued ?? 0}.`,
+        title: "Eligible drafts queued",
+        description: `Enqueued ${res.enqueued ?? 0} new studies (skipped READY / already queued).`,
       });
     },
     onError: (e: Error) => toast({ title: "Run failed", description: e.message, variant: "destructive" }),
@@ -244,6 +280,80 @@ export default function OvernightAiSettings() {
         </p>
       )}
 
+      <div className="space-y-2" data-testid="overnight-study-age-window">
+        <Label className="text-sm font-semibold">Study selection</Label>
+        <p className="text-[11px] text-muted-foreground">
+          Limits which studies the overnight batch enqueues. <strong>Today</strong> is the IST calendar day;
+          <strong> Last 24 hours</strong> is a rolling window — they are not the same.
+        </p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+          {STUDY_AGE_OPTIONS.map((opt) => (
+            <label
+              key={opt.id}
+              className={`flex items-start gap-2 rounded-md border px-3 py-2 cursor-pointer ${
+                studyAgeWindow === opt.id ? "border-indigo-500 bg-indigo-50 dark:bg-indigo-950/40" : "border-border"
+              }`}
+            >
+              <input
+                type="radio"
+                name="study-age-window"
+                className="mt-1"
+                checked={studyAgeWindow === opt.id}
+                onChange={() => setStudyAgeWindow(opt.id)}
+              />
+              <span>
+                <span className="text-sm font-medium">{opt.label}</span>
+                <span className="block text-[10px] text-muted-foreground">{opt.hint}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+        {studyAgeWindow === "custom" && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+            <div>
+              <Label className="text-[11px]">From</Label>
+              <Input type="datetime-local" value={studyAgeCustomFrom} onChange={(e) => setStudyAgeCustomFrom(e.target.value)} className="h-8" />
+            </div>
+            <div>
+              <Label className="text-[11px]">To</Label>
+              <Input type="datetime-local" value={studyAgeCustomTo} onChange={(e) => setStudyAgeCustomTo(e.target.value)} className="h-8" />
+            </div>
+          </div>
+        )}
+      </div>
+
+      {diagnostics && (
+        <div className="rounded-md border bg-muted/30 p-3 text-[11px] space-y-1" data-testid="overnight-ai-diagnostics">
+          <div className="font-semibold">Overnight AI diagnostics</div>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-3 gap-y-0.5 text-muted-foreground">
+            <span>Scheduler: <strong className="text-foreground">{String(diagnostics.scheduler ?? "—")}</strong></span>
+            <span>Night window: <strong className="text-foreground">{String(diagnostics.nightWindow ?? "—")}</strong></span>
+            <span>Worker: <strong className="text-foreground">{String(diagnostics.worker ?? "—")}</strong></span>
+            <span>Local AI: <strong className="text-foreground">{String(diagnostics.localAi ?? "—")}</strong></span>
+            <span>Model: <strong className="text-foreground">{String(diagnostics.model ?? "qwen3-vl:8b")}</strong></span>
+            <span>Queue depth: <strong className="text-foreground">{String(diagnostics.queueDepth ?? 0)}</strong></span>
+            <span>Running: <strong className="text-foreground">{String(diagnostics.running ?? 0)}</strong></span>
+            <span>Oldest queued: <strong className="text-foreground">{diagnostics.oldestQueuedAt ? String(diagnostics.oldestQueuedAt).slice(11, 16) : "—"}</strong></span>
+            <span>Last success: <strong className="text-foreground">{diagnostics.lastSuccessfulDraftAt ? String(diagnostics.lastSuccessfulDraftAt).slice(11, 16) : "—"}</strong></span>
+          </div>
+          {diagnostics.lastError ? (
+            <p className="text-red-700 truncate">Last error: {String(diagnostics.lastError)}</p>
+          ) : null}
+          <p className="text-[10px] text-muted-foreground">Concurrency stays at 1 — Ollama processes one MRI draft at a time.</p>
+        </div>
+      )}
+
+      {preview && (
+        <div className="rounded-md border border-indigo-200 bg-indigo-50/50 dark:bg-indigo-950/20 p-3 text-[11px] space-y-1" data-testid="overnight-batch-preview">
+          <div className="font-semibold text-indigo-900 dark:text-indigo-100">Batch preview</div>
+          <p>Eligible MRI studies: <strong>{Number(preview.eligible ?? 0)}</strong></p>
+          <p>Already READY: <strong>{Number(preview.alreadyReady ?? 0)}</strong></p>
+          <p>Already QUEUED/RUNNING: <strong>{Number(preview.alreadyQueuedOrRunning ?? 0)}</strong></p>
+          <p>Previously ERROR: <strong>{Number(preview.previouslyError ?? 0)}</strong></p>
+          <p>New eligible studies: <strong>{Number(preview.newEligible ?? 0)}</strong></p>
+        </div>
+      )}
+
       <label className="flex items-center gap-2 text-sm">
         <input
           type="checkbox"
@@ -263,14 +373,15 @@ export default function OvernightAiSettings() {
           type="button"
           variant="outline"
           className="gap-1.5"
-          disabled={runMutation.isPending}
+          disabled={runMutation.isPending || Number(preview?.newEligible ?? 0) === 0}
           onClick={() => {
-            if (!window.confirm("Run draft batch now for selected modalities (forces outside the night window)?")) return;
+            const n = Number(preview?.newEligible ?? 0);
+            if (!window.confirm(`Queue ${n} new eligible studies now? READY and already queued/running studies will be skipped.`)) return;
             runMutation.mutate();
           }}
         >
           {runMutation.isPending ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
-          Run batch now
+          Run eligible {Number(preview?.newEligible ?? 0)}
         </Button>
       </div>
 

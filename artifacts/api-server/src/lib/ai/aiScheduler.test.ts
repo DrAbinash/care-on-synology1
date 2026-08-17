@@ -5,6 +5,7 @@ const cfg: SchedulerConfig = {
   draftTiming: "scheduled", nightStart: "23:00", nightEnd: "06:00", quietStart: "08:00", quietEnd: "20:00",
   maxConcurrentJobs: 2, gpuLimitPercent: 90, cpuLimitPercent: 80,
   skipFinalizedReports: true, skipUnchangedStudies: true,
+  studyAgeWindow: "all", studyAgeCustomFrom: null, studyAgeCustomTo: null,
 };
 const M = (h: number, m = 0) => h * 60 + m;
 const inp = (o: Partial<SchedulingInput> = {}): SchedulingInput => ({ modalityMode: "immediate", priority: "routine", nowMinutes: M(13), isFinalized: false, isUnchanged: false, ...o });

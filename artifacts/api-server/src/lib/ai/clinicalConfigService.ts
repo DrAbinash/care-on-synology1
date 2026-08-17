@@ -17,6 +17,7 @@ import { isFeatureEnabledServer, invalidateFeatureFlagCache } from "../featureFl
 import { resolveAiEnablement, type AiPolicyRow, type Enablement } from "./aiPolicy";
 import type { SchedulerConfig, ModalityMode, DraftTiming } from "./aiScheduler";
 import { normalizeAiModality } from "./modalityNormalize";
+import { parseStudyAgeWindow, type StudyAgeWindow } from "./studyAgeWindow";
 
 export { normalizeAiModality } from "./modalityNormalize";
 
@@ -68,6 +69,7 @@ const DEFAULT_SCHEDULER: SchedulerConfig = {
   nightStart: "17:00", nightEnd: "10:00", quietStart: "10:00", quietEnd: "17:00",
   maxConcurrentJobs: 1, gpuLimitPercent: 90, cpuLimitPercent: 80,
   skipFinalizedReports: true, skipUnchangedStudies: true,
+  studyAgeWindow: "all", studyAgeCustomFrom: null, studyAgeCustomTo: null,
 };
 
 function asDraftTiming(v: unknown): DraftTiming {
@@ -82,6 +84,9 @@ export async function getSchedulerConfig(): Promise<SchedulerConfig> {
     nightStart: row.nightStart, nightEnd: row.nightEnd, quietStart: row.quietStart, quietEnd: row.quietEnd,
     maxConcurrentJobs: row.maxConcurrentJobs, gpuLimitPercent: row.gpuLimitPercent, cpuLimitPercent: row.cpuLimitPercent,
     skipFinalizedReports: row.skipFinalizedReports, skipUnchangedStudies: row.skipUnchangedStudies,
+    studyAgeWindow: parseStudyAgeWindow((row as { studyAgeWindow?: string }).studyAgeWindow),
+    studyAgeCustomFrom: (row as { studyAgeCustomFrom?: Date | null }).studyAgeCustomFrom ?? null,
+    studyAgeCustomTo: (row as { studyAgeCustomTo?: Date | null }).studyAgeCustomTo ?? null,
   };
 }
 
@@ -158,6 +163,9 @@ export async function saveDraftAutomation(opts: {
   nightEnd?: string;
   quietStart?: string;
   quietEnd?: string;
+  studyAgeWindow?: StudyAgeWindow;
+  studyAgeCustomFrom?: Date | string | null;
+  studyAgeCustomTo?: Date | string | null;
   enableAi?: boolean;
   updatedBy?: string;
 }): Promise<{
@@ -170,12 +178,21 @@ export async function saveDraftAutomation(opts: {
   }
 
   const mode: ModalityMode = opts.draftTiming === "on_arrival" ? "immediate" : "night_batch";
+  const customFrom = opts.studyAgeCustomFrom
+    ? (opts.studyAgeCustomFrom instanceof Date ? opts.studyAgeCustomFrom : new Date(opts.studyAgeCustomFrom))
+    : opts.studyAgeCustomFrom === null ? null : undefined;
+  const customTo = opts.studyAgeCustomTo
+    ? (opts.studyAgeCustomTo instanceof Date ? opts.studyAgeCustomTo : new Date(opts.studyAgeCustomTo))
+    : opts.studyAgeCustomTo === null ? null : undefined;
   await saveSchedulerConfig({
     draftTiming: opts.draftTiming,
     nightStart: opts.nightStart,
     nightEnd: opts.nightEnd,
     quietStart: opts.quietStart,
     quietEnd: opts.quietEnd,
+    ...(opts.studyAgeWindow ? { studyAgeWindow: parseStudyAgeWindow(opts.studyAgeWindow) } : {}),
+    ...(customFrom !== undefined ? { studyAgeCustomFrom: customFrom } : {}),
+    ...(customTo !== undefined ? { studyAgeCustomTo: customTo } : {}),
     // Overnight MRI default: one concurrent study (configurable later).
     maxConcurrentJobs: 1,
   }, opts.updatedBy);

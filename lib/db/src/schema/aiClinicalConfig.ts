@@ -46,6 +46,10 @@ export const aiSchedulerConfigTable = pgTable("ai_scheduler_config", {
   includeOcr: boolean("include_ocr").notNull().default(true),
   skipFinalizedReports: boolean("skip_finalized_reports").notNull().default(true),
   skipUnchangedStudies: boolean("skip_unchanged_studies").notNull().default(true),
+  /** all | today | last_24h | last_48h | last_3d | last_7d | custom */
+  studyAgeWindow: text("study_age_window").notNull().default("all"),
+  studyAgeCustomFrom: timestamp("study_age_custom_from", { withTimezone: true }),
+  studyAgeCustomTo: timestamp("study_age_custom_to", { withTimezone: true }),
   updatedBy: text("updated_by"),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });

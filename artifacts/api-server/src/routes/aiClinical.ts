@@ -14,7 +14,7 @@ import {
   resolveAiEnablementForUser, getPreferences, savePreferences, getSchedulerConfig, saveSchedulerConfig,
   getModalityPolicies, setModalityPolicy, setOvernightModalities, saveDraftAutomation, listFeaturePolicies, setFeaturePolicy,
 } from "../lib/ai/clinicalConfigService";
-import { scheduleStudy, getAiQueueDashboard, cancelAiJob, runNightBatch, runScheduledReprocessing, runLearningAggregation } from "../lib/ai/schedulerService";
+import { scheduleStudy, getAiQueueDashboard, cancelAiJob, runNightBatch, runScheduledReprocessing, runLearningAggregation, previewNightBatch, getOvernightDiagnostics, queueSelectedStudies, cancelQueuedOvernightJobs, retryOvernightJobs } from "../lib/ai/schedulerService";
 import { getLatestDraftForStudy, recordDraftFeedback } from "../lib/ai/draftService";
 
 export const aiClinicalRouter = Router();
@@ -128,9 +128,17 @@ aiClinicalRouter.put("/scheduler/config", async (req, res) => {
     gpuLimitPercent: z.number().int().optional(), cpuLimitPercent: z.number().int().optional(), maxConcurrentJobs: z.number().int().optional(),
     maxRetries: z.number().int().optional(), includePriors: z.boolean().optional(), includeOcr: z.boolean().optional(),
     skipFinalizedReports: z.boolean().optional(), skipUnchangedStudies: z.boolean().optional(),
+    studyAgeWindow: z.enum(["all", "today", "last_24h", "last_48h", "last_3d", "last_7d", "custom"]).optional(),
+    studyAgeCustomFrom: z.string().nullable().optional(),
+    studyAgeCustomTo: z.string().nullable().optional(),
   }).safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ error: parsed.error.issues }); return; }
-  await saveSchedulerConfig(parsed.data, staff(req)?.role);
+  const { studyAgeCustomFrom, studyAgeCustomTo, ...rest } = parsed.data;
+  await saveSchedulerConfig({
+    ...rest,
+    studyAgeCustomFrom: studyAgeCustomFrom === undefined ? undefined : studyAgeCustomFrom === null ? null : new Date(studyAgeCustomFrom),
+    studyAgeCustomTo: studyAgeCustomTo === undefined ? undefined : studyAgeCustomTo === null ? null : new Date(studyAgeCustomTo),
+  }, staff(req)?.role);
   res.json({ ok: true, config: await getSchedulerConfig() });
 });
 
@@ -144,6 +152,9 @@ aiClinicalRouter.put("/draft-automation", async (req, res) => {
     nightEnd: z.string().optional(),
     quietStart: z.string().optional(),
     quietEnd: z.string().optional(),
+    studyAgeWindow: z.enum(["all", "today", "last_24h", "last_48h", "last_3d", "last_7d", "custom"]).optional(),
+    studyAgeCustomFrom: z.string().nullable().optional(),
+    studyAgeCustomTo: z.string().nullable().optional(),
     enableAi: z.boolean().optional(),
   }).safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ error: parsed.error.issues }); return; }
@@ -186,6 +197,33 @@ aiClinicalRouter.put("/policies", async (req, res) => {
 });
 
 aiClinicalRouter.get("/queue", async (req, res) => { if (!requireAdmin(req, res)) return; res.json(await getAiQueueDashboard()); });
+aiClinicalRouter.get("/overnight-diagnostics", async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  res.json(await getOvernightDiagnostics());
+});
+aiClinicalRouter.get("/scheduler/night-batch-preview", async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  res.json(await previewNightBatch());
+});
+aiClinicalRouter.post("/overnight/queue-selected", async (req, res) => {
+  const parsed = z.object({
+    studyInstanceUids: z.array(z.string().min(1)).min(1).max(50),
+    modalities: z.record(z.string(), z.string().nullable()).optional(),
+    retry: z.boolean().optional(),
+  }).safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ error: parsed.error.issues }); return; }
+  res.json(await queueSelectedStudies(parsed.data));
+});
+aiClinicalRouter.post("/overnight/retry-jobs", async (req, res) => {
+  const parsed = z.object({ jobIds: z.array(z.number().int()).min(1).max(50) }).safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ error: parsed.error.issues }); return; }
+  res.json(await retryOvernightJobs(parsed.data.jobIds));
+});
+aiClinicalRouter.post("/overnight/cancel-queued", async (req, res) => {
+  const parsed = z.object({ jobIds: z.array(z.number().int()).min(1).max(50) }).safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ error: parsed.error.issues }); return; }
+  res.json(await cancelQueuedOvernightJobs(parsed.data.jobIds));
+});
 aiClinicalRouter.post("/jobs/:id/cancel", async (req, res) => {
   if (!requireAdmin(req, res)) return;
   const ok = await cancelAiJob(Number(req.params.id));
@@ -197,7 +235,8 @@ aiClinicalRouter.post("/scheduler/run/:mode", async (req, res) => {
   switch (req.params.mode) {
     case "night-batch": {
       const force = req.query.force === "1" || req.body?.force === true;
-      res.json(await runNightBatch(50, { forceOutsideWindow: force }));
+      const onlyNew = req.query.onlyNew === "1" || req.body?.onlyNew === true;
+      res.json(await runNightBatch(50, { forceOutsideWindow: force, onlyNew }));
       return;
     }
     case "reprocess": res.json(await runScheduledReprocessing()); return;
