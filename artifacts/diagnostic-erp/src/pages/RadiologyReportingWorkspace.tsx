@@ -88,6 +88,7 @@ import {
 } from "@/lib/reportDemography";
 import type { PrintClinic } from "@/lib/reportPdfGenerator";
 import {
+  REPORT_LAYOUT_OPTIONS,
   type ReportLayoutKey,
   quickSelectLayoutKey,
   reportLayoutTemplateQuery,
@@ -172,7 +173,11 @@ import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Textarea } from "@/components/ui/textarea";
 import { removeBlock, removeImpression } from "@/lib/quickFindingsMerge";
-import type { InsertSource } from "@/lib/reportFieldMerge";
+import {
+  provenanceMapToSegments,
+  provenanceVisualKind,
+  type InsertSource,
+} from "@/lib/reportFieldMerge";
 import { generateLocalImpression } from "@/lib/generateLocalImpression";
 import { hasPhrase, appendClinicalPhrase, removeClinicalPhrase } from "@/lib/clinicalHistoryText";
 import type { Side } from "@/lib/sideSwap";
@@ -188,17 +193,43 @@ import { daysAgoISO, todayISO } from "@/lib/dateRangePresets";
 
 // ─── New Z.ai workspace components ─────────────────────────────────────────────
 import { useWorkspace, formatSignOff, lookupProfile, type WorkspaceStore } from "@/lib/zai-workspace/store";
-import { getFindingsCompletionPct, shouldPreloadNext } from "@/lib/zai-workspace/types";
+import { getFindingsCompletionPct, runLintRules, shouldPreloadNext } from "@/lib/zai-workspace/types";
 import type { Study, MeasurementRow, PriorStudy } from "@/lib/zai-workspace/types";
 import { WorklistStrip, type ReadingQueueDatePreset } from "@/components/radiology/zai-workspace/worklist-strip";
 import { CopilotRail } from "@/components/radiology/zai-workspace/copilot-rail";
 import { FindingsEditor } from "@/components/radiology/zai-workspace/findings-editor";
+import { QuickSelectStrip } from "@/components/radiology/zai-workspace/quick-select-strip";
+import {
+  FindingsToolDrawer,
+  FindingsToolTabs,
+  ReportAccordionSection,
+} from "@/components/radiology/zai-workspace/report-section-accordion";
+import {
+  REPORT_SECTIONS,
+  countAssisted,
+  nextActiveSection,
+  nextFindingsTool,
+  sectionForAltDigit,
+  sectionStatuses,
+  summarizeDemography,
+  summarizeFieldText,
+  summarizeFindings,
+  summarizeImpression,
+  summarizeRecommendation,
+  summarizeRefDoctor,
+  summarizeRegion,
+  summarizeReport,
+  summarizeTechnique,
+  type FindingsToolId,
+  type ReportSectionId,
+} from "@/lib/reportSectionAccordion";
 import { FinalizeDialog } from "@/components/radiology/zai-workspace/finalize-dialog";
 import { InterruptChannelCard } from "@/components/radiology/zai-workspace/interrupt-card";
 import { QuickSelectEditor } from "@/components/radiology/zai-workspace/quick-select-editor";
 import { MergePreviewDialog } from "@/components/radiology/zai-workspace/merge-preview-dialog";
 import { ConfirmOverwriteDialog } from "@/components/radiology/zai-workspace/confirm-overwrite-dialog";
 import { SaveAsFormatDialog } from "@/components/radiology/zai-workspace/save-as-format-dialog";
+import { ChocolateBoxMacros } from "@/components/radiology/zai-workspace/chocolate-box-macros";
 import { MacroEditorDialog } from "@/components/radiology/zai-workspace/macro-editor-dialog";
 import { MacroPromptPopover } from "@/components/radiology/zai-workspace/macro-prompt-popover";
 import { CriticalSlaTimer } from "@/components/radiology/zai-workspace/critical-sla-timer";
@@ -228,6 +259,7 @@ import "@/lib/copilotUsgCompanionModule";
 import {
   Lock, AlertTriangle, ChevronLeft, ChevronRight, Pause, Clock, Sparkles, ShieldCheck,
   Brain, Activity, Zap, Printer, FileDown, Share2, Eye, PanelLeftClose, PanelLeftOpen,
+  PanelRightClose, PanelRightOpen,
   CheckCircle2,
   Maximize2, Columns2, Monitor, Archive, Keyboard, AppWindow, MessageCircle, Hospital,
   Trash2, MonitorPlay, Plus,
@@ -316,6 +348,21 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   // Radiologist-local demography overrides — never written to patient master.
   const [demographyOverrides, setDemographyOverrides] = useState<Partial<ReportDemography>>({});
 
+  // ─── Main-pane progressive disclosure ─────────────────────────────────────
+  // One major report section is expanded at a time; every other section stays
+  // MOUNTED but hidden (see report-section-accordion.tsx) so no editor, drawer
+  // or panel loses state and no effect re-inserts text on expand.
+  // `activeFindingsTool` is the nested Findings assistance drawer and is
+  // deliberately independent of the major accordion.
+  const [activeReportSection, setActiveReportSection] = useState<ReportSectionId | null>("findings");
+  const [activeFindingsTool, setActiveFindingsTool] = useState<FindingsToolId | null>(null);
+  const activateReportSection = useCallback((id: ReportSectionId) => {
+    setActiveReportSection((cur) => nextActiveSection(cur, id));
+  }, []);
+  const selectFindingsTool = useCallback((id: FindingsToolId) => {
+    setActiveFindingsTool((cur) => nextFindingsTool(cur, id));
+  }, []);
+
   // Structured Normal/Abnormal section cards (legacy parity)
   const [useStructured, setUseStructured] = useState(false);
   const [findingsMap, setFindingsMap] = useState<Record<string, { normal: boolean; text: string }>>({});
@@ -371,6 +418,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const recommendationText = useWorkspace((s: WorkspaceStore) => s.recommendationText);
   const techniqueText = useWorkspace((s: WorkspaceStore) => s.techniqueText);
   const clinicalHistoryText = useWorkspace((s: WorkspaceStore) => s.clinicalHistoryText);
+  // Read-only: drives the collapsed Findings summary's "N assisted" count.
+  const findingsProvenance = useWorkspace((s: WorkspaceStore) => s.fieldProvenance.findings);
   const isFinalized = useWorkspace((s: WorkspaceStore) => s.isFinalized);
   const isDirty = useWorkspace((s: WorkspaceStore) => s.isDirty);
   const preloadTriggered = useWorkspace((s: WorkspaceStore) => s.preloadTriggered);
@@ -734,6 +783,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const [protocolTitleOpen, setProtocolTitleOpen] = useState(false);
   const [protocolTitle, setProtocolTitle] = useState("");
   const [leftCollapsed, setLeftCollapsed] = useState(false);
+  const [rightCollapsed, setRightCollapsed] = useState(false);
   const [patientJumpFilter, setPatientJumpFilter] = useState("");
 
   // Viewer focus — collapse app sidebar via Layout; sticky while writing
@@ -766,8 +816,10 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const enterReportingFocusMode = useCallback(() => {
     leftPanelRef.current?.collapse();
     rightPanelRef.current?.collapse();
+    setViewerFocus(true);
+    if (!shouldShowEmbeddedViewer(layoutMode)) setLayoutMode("split");
     try { window.dispatchEvent(new CustomEvent("care:workspace-focus", { detail: true })); } catch { /* noop */ }
-  }, []);
+  }, [layoutMode, setLayoutMode, setViewerFocus]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -781,6 +833,22 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       window.location.pathname + (qs ? `?${qs}` : "") + window.location.hash,
     );
   }, [studyId, enterReportingFocusMode]);
+
+  // Clicking inside the OHIF iframe does not bubble to React. Window blur +
+  // activeElement === the embed is the same "I am looking at images" signal
+  // as clicking the viewer chrome.
+  useEffect(() => {
+    const onBlur = () => {
+      requestAnimationFrame(() => {
+        const ae = document.activeElement;
+        if (ae instanceof HTMLIFrameElement && ae.getAttribute("data-testid") === "ohif-embed") {
+          enterReportingFocusMode();
+        }
+      });
+    };
+    window.addEventListener("blur", onBlur);
+    return () => window.removeEventListener("blur", onBlur);
+  }, [enterReportingFocusMode]);
 
   useEffect(() => {
     try { window.dispatchEvent(new CustomEvent("care:workspace-focus", { detail: true })); } catch { /* noop */ }
@@ -1628,6 +1696,18 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         rightPanelRef.current?.expand();
         setLegacyTab((t) => t ?? "links");
       }
+      // Alt+1…9 jump to a major report section. Skip while typing so Option+digit
+      // on Mac (¡™£¢∞§¶•ª) and other Alt combos in editors still produce text.
+      if (e.altKey && !e.ctrlKey && !e.metaKey && /^[1-9]$/.test(e.key)) {
+        const t = e.target as HTMLElement | null;
+        const tag = t?.tagName?.toLowerCase();
+        if (tag === "input" || tag === "textarea" || t?.isContentEditable) return;
+        const target = sectionForAltDigit(e.key);
+        if (target) {
+          e.preventDefault();
+          setActiveReportSection(target);
+        }
+      }
     };
     const onKeyUp = (e: KeyboardEvent) => {
       if (e.key === " " && voiceSession.captureTrigger === "ptt") {
@@ -2054,6 +2134,88 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const isLocked = studyLock.status === "locked-by-other";
   const lockLost = studyLock.status === "expired-lost" || studyLock.status === "connection-lost";
 
+  // ─── Collapsed-section summaries (orientation, not another card) ────────────
+  const referringDoctorName = (workflow.currentRow as { referringDoctor?: string } | null)?.referringDoctor ?? null;
+  const findingsAssistedCount = useMemo(
+    () =>
+      countAssisted(
+        provenanceMapToSegments(findingsText, findingsProvenance ?? {}).map((seg) => ({
+          kind: provenanceVisualKind(seg.sources),
+          label: "",
+        })),
+      ),
+    [findingsText, findingsProvenance],
+  );
+  const findingsLintCount = useMemo(
+    () => (findingsText ? runLintRules(findingsText, { modality: study?.modality ?? "XR", sex: study?.patient?.sex }).length : 0),
+    [findingsText, study?.modality, study?.patient?.sex],
+  );
+  const reportLayoutLabel = REPORT_LAYOUT_OPTIONS.find((o) => o.key === reportLayout)?.label ?? "Classic";
+  const sectionSummaries: Record<ReportSectionId, string> = {
+    demography: summarizeDemography({
+      patientName: canonicalDemography.patientName,
+      age: canonicalDemography.age,
+      sex: canonicalDemography.sex,
+      patientCode: canonicalDemography.uhid || canonicalDemography.patientId || null,
+    }),
+    refDoctor: summarizeRefDoctor(referringDoctorName),
+    region: summarizeRegion({
+      regions: studySetup.studyRegions,
+      protocolName: studySetup.activeProtocol?.name ?? null,
+      testName: studySetup.testName,
+      templateMismatch: studySetup.templateMismatch,
+    }),
+    history: summarizeFieldText(clinicalHistoryText, "Not recorded"),
+    technique: summarizeTechnique({
+      techniqueText,
+      protocolName: studySetup.activeProtocol?.name ?? null,
+    }),
+    findings: summarizeFindings({
+      findingsText,
+      structured: useStructured,
+      structuredSectionCount: Object.keys(findingsMap).length,
+      assistedCount: findingsAssistedCount,
+      lintCount: findingsLintCount,
+    }),
+    impression: summarizeImpression(impressionText),
+    recommendation: summarizeRecommendation(recommendationText, isCritical),
+    report: summarizeReport({ layoutLabel: reportLayoutLabel, paper: "A4" }),
+  };
+  const sectionStatus = sectionStatuses({
+    hasPatient: !!workflow.currentRow,
+    refDoctor: referringDoctorName,
+    regions: studySetup.studyRegions,
+    templateMismatch: studySetup.templateMismatch,
+    clinicalHistoryText,
+    techniqueText,
+    findingsText,
+    structured: useStructured,
+    structuredSectionCount: Object.keys(findingsMap).length,
+    impressionText,
+    recommendationText,
+    critical: isCritical,
+    reportReady: !!draftId,
+  });
+  const sectionMeta = (id: ReportSectionId) => {
+    const idx = REPORT_SECTIONS.findIndex((s) => s.id === id);
+    const meta = REPORT_SECTIONS[idx];
+    return { index: idx + 1, label: meta.label, accent: meta.accent };
+  };
+  /** Shared props for every accordion header — keeps the nine call sites terse. */
+  const accordionProps = (id: ReportSectionId) => {
+    const meta = sectionMeta(id);
+    return {
+      id,
+      index: meta.index,
+      label: meta.label,
+      accent: meta.accent,
+      summary: sectionSummaries[id],
+      status: sectionStatus[id],
+      active: activeReportSection === id,
+      onActivate: activateReportSection,
+    };
+  };
+
   return (
     <div className="flex h-screen flex-col bg-gradient-to-br from-emerald-50/40 via-background to-background overflow-hidden">
       {/* ─── Top chrome ─── */}
@@ -2145,6 +2307,16 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
           onClick={() => (leftCollapsed ? leftPanelRef.current?.expand() : leftPanelRef.current?.collapse())}
         >
           {leftCollapsed ? <PanelLeftOpen className="h-3.5 w-3.5" /> : <PanelLeftClose className="h-3.5 w-3.5" />}
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="h-7 w-7 p-0"
+          title={rightCollapsed ? "Expand Orient / Observe / Measure" : "Collapse Orient / Observe / Measure"}
+          data-testid="toggle-right-panel"
+          onClick={() => (rightCollapsed ? rightPanelRef.current?.expand() : rightPanelRef.current?.collapse())}
+        >
+          {rightCollapsed ? <PanelRightOpen className="h-3.5 w-3.5" /> : <PanelRightClose className="h-3.5 w-3.5" />}
         </Button>
         <div className="h-5 w-px bg-border mx-1" />
         {study && (
@@ -2415,7 +2587,11 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                 minSize={28}
                 maxSize={58}
               >
-                <div className="flex h-full flex-col">
+                <div
+                  className="flex h-full flex-col"
+                  data-testid="embedded-viewer-column"
+                  onMouseDown={enterReportingFocusMode}
+                >
                   <div className={reportImagesOpen ? "hidden h-0 overflow-hidden" : "flex-1 min-h-0"}>
                     <EmbeddedWadoViewer
                       ref={embeddedViewerRef}
@@ -2459,8 +2635,9 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
               {/* Editor column */}
               <ResizablePanel defaultSize={58} minSize={42}>
                 <div className="h-full flex bg-gradient-to-b from-card to-emerald-50/10 min-h-0">
-                <div className="flex-1 min-w-0 overflow-y-auto">
-                  <div className="p-4 space-y-3">
+                <div className="flex flex-1 min-w-0 flex-col min-h-0">
+                  {/* Viewer chrome — never hidden behind an accordion header */}
+                  <div className="shrink-0 space-y-2 px-3 pt-3 empty:hidden">
                     {!showEmbeddedViewer && layoutMode === "reportFocus" && (
                       <button
                         type="button"
@@ -2489,27 +2666,49 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                         </button>
                       </div>
                     )}
+                  </div>
+
+                  {/* ── Progressive accordion: one active major section at a time.
+                       Collapsed sections keep their children MOUNTED (hidden), so
+                       editors, drawers and panels never lose state. ── */}
+                  <div
+                    className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto p-3"
+                    data-testid="report-section-accordion"
+                    onMouseDown={enterReportingFocusMode}
+                  >
                     {/* 1. DEMOGRAPHY — canonical, editable, feeds all outputs */}
-                    {workflow.currentRow && (
-                      <ReportDemographyCard
-                        value={canonicalDemography}
-                        onChange={(patch) => setDemographyOverrides((prev) => ({ ...prev, ...patch }))}
-                        disabled={isLocked || isFinalized}
-                      />
-                    )}
-
-                    {workflow.currentRow && (
-                      <div className="space-y-1" data-testid="ref-dr-block">
-                        <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                          Ref. Dr
-                        </div>
-                        <ReferringDoctorQuickSelect
-                          worklistId={studyId ?? 0}
-                          currentName={(workflow.currentRow as any)?.referringDoctor}
+                    <ReportAccordionSection {...accordionProps("demography")}>
+                      {workflow.currentRow ? (
+                        <ReportDemographyCard
+                          value={canonicalDemography}
+                          onChange={(patch) => setDemographyOverrides((prev) => ({ ...prev, ...patch }))}
+                          disabled={isLocked || isFinalized}
                         />
-                      </div>
-                    )}
+                      ) : (
+                        <p className="py-2 text-xs text-muted-foreground">No study selected.</p>
+                      )}
+                    </ReportAccordionSection>
 
+                    {/* 2. REFERRING DOCTOR — current doctor, edit, quick chips, add */}
+                    <ReportAccordionSection {...accordionProps("refDoctor")}>
+                      {workflow.currentRow ? (
+                        <div className="space-y-1" data-testid="ref-dr-block">
+                          <ReferringDoctorQuickSelect
+                            worklistId={studyId ?? 0}
+                            currentName={(workflow.currentRow as any)?.referringDoctor}
+                          />
+                        </div>
+                      ) : (
+                        <p className="py-2 text-xs text-muted-foreground">No study selected.</p>
+                      )}
+                    </ReportAccordionSection>
+
+                    {/* 3. REGION / STUDY / PROTOCOL — the ONE anatomical context
+                         selector. Everything downstream (macros, Quick Select,
+                         Quick Add, structured template, suggestions) reads the
+                         region chosen here. */}
+                    <ReportAccordionSection {...accordionProps("region")}>
+                    <div className="space-y-2">
                     {/* One-click Start Report */}
                     {!isLocked && !isFinalized && reportNeedsStart && (studySetup.matchedStudyRegion || studySetup.studyRegions[0]) && (
                       <div
@@ -2546,76 +2745,6 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                           Undo start
                         </Button>
                       </div>
-                    )}
-
-                    {/* OB dashboard strip — silent for non-OB USG */}
-                    {isUltrasound && (
-                      <ObDashboardStrip
-                        studyId={studyId ?? (workflow.currentRow as { studyId?: number } | null)?.studyId}
-                        onApplyToReport={(text) => appendFindings(text)}
-                      />
-                    )}
-
-                    {/* USG / CT Companion — additive, error-bounded */}
-                    {companionEligible && workflow.currentRow?.studyInstanceUID && (
-                      <ModuleErrorBoundary resetKey={String(workflow.currentRow.studyInstanceUID)}>
-                        <UsgCompanionPanel
-                          studyInstanceUID={workflow.currentRow.studyInstanceUID}
-                          studyId={studyId ?? undefined}
-                          patientId={workflow.currentRow.patientId ?? undefined}
-                          disabled={isLocked || isFinalized}
-                          templateSelected={studySetup.selectedTemplateId != null}
-                          protocolSelected={!!studySetup.activeProtocol}
-                          historyPresent={clinicalHistoryText.trim().length > 0}
-                          quickFindingsSelected={selectedQuickIds.size > 0}
-                          copilotClear={true}
-                          userEdited={isDirty || !!lastSavedAt}
-                          reportSaved={!!lastSavedAt}
-                          reportFinalized={isFinalized || workflow.currentRow.status === "REPORT_FINAL"}
-                          currentTechnique={techniqueText}
-                          currentFindings={findingsText}
-                          currentImpression={impressionText.split("\n").filter(Boolean)}
-                          currentRecommendation={recommendationText}
-                          protocolTechnique={studySetup.activeProtocol?.techniqueText ?? null}
-                          protocolNormals={studySetup.activeProtocol?.normalText ?? null}
-                          protocolRecommendation={studySetup.activeProtocol?.recommendationText ?? null}
-                          selectedFindingIds={[...selectedQuickIds]}
-                          region={studySetup.matchedStudyRegion}
-                          checklistRemaining={studySetup.activeProtocol ? studySetup.checklistRemaining : []}
-                          autoPopulatedBlocks={studySetup.companionLedger}
-                          onAutoPopulate={studySetup.handleCompanionAutoPopulate}
-                          onApplyProtocol={
-                            studySetup.availableProtocols.some((p) => p.isDefault)
-                              ? () => {
-                                  const d = studySetup.availableProtocols.find((p) => p.isDefault);
-                                  if (d) studySetup.requestProtocolChange(d);
-                                }
-                              : undefined
-                          }
-                          onSuggestHistory={
-                            clinicalHistoryChips.length > 0
-                              ? () => {
-                                  if (isLocked || isFinalized) return;
-                                  const state = useWorkspace.getState();
-                                  state.setField(
-                                    "clinicalHistory",
-                                    clinicalHistoryChips.reduce(
-                                      (acc, chip) => (hasPhrase(acc, chip.insertedText) ? acc : appendClinicalPhrase(acc, chip.insertedText)),
-                                      state.clinicalHistoryText,
-                                    ),
-                                  );
-                                }
-                              : undefined
-                          }
-                          onOpenTab={(tab) => {
-                            if (tab === "measurements" || tab === "measure") openLegacyTab("measurements");
-                            else if (tab === "templates" || tab === "library") openLegacyTab("templates");
-                            else if (tab === "copilot") openLegacyTab("copilot");
-                            else if (tab === "prior") rightPanelRef.current?.expand();
-                            else openLegacyTab("links");
-                          }}
-                        />
-                      </ModuleErrorBoundary>
                     )}
 
                     {/* MRI readiness — when Companion is not shown */}
@@ -2657,17 +2786,29 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                                   <>
                                     {visible.map((r) => {
                                       const on = studySetup.studyRegions.includes(r);
+                                      const isPrimary = on && studySetup.matchedStudyRegion === r;
+                                      const title = !on
+                                        ? `Add ${r} as primary (macros follow this)`
+                                        : isPrimary && studySetup.studyRegions.length > 1
+                                          ? `Remove ${r}`
+                                          : isPrimary
+                                            ? `Primary region — macros follow ${r}`
+                                            : `Make ${r} primary (macros follow this)`;
                                       return (
                                         <button
                                           key={r}
                                           type="button"
                                           disabled={isLocked || isFinalized}
                                           aria-pressed={on}
-                                          title={on ? `Remove ${r}` : `Add ${r} (technique merges)`}
+                                          aria-current={isPrimary ? "true" : undefined}
+                                          data-primary={isPrimary ? "true" : undefined}
+                                          title={title}
                                           className={`h-6 px-1.5 text-[10px] rounded border font-medium transition-colors ${
-                                            on
-                                              ? "bg-primary text-primary-foreground border-primary"
-                                              : "bg-background text-muted-foreground border-border hover:bg-muted"
+                                            isPrimary
+                                              ? "bg-primary text-primary-foreground border-primary ring-2 ring-offset-1 ring-emerald-400"
+                                              : on
+                                                ? "bg-primary/75 text-primary-foreground border-primary"
+                                                : "bg-background text-muted-foreground border-border hover:bg-muted"
                                           }`}
                                           onClick={() => studySetup.handleRegionToggle(r)}
                                         >
@@ -2786,32 +2927,11 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       </div>
                     )}
 
-                    {/* Prior comparison — one-click interval sentences (legacy) */}
-                    {!isLocked && workflow.currentRow?.patientId && (
-                      <PriorComparisonToolbar
-                        patientId={workflow.currentRow.patientId}
-                        excludeStudyId={studyId ?? undefined}
-                        modality={workflow.currentRow.modality ?? ""}
-                        studyDescription={workflow.currentRow.studyDescription ?? ""}
-                        comparisonMissing={false}
-                        disabled={isLocked || isFinalized}
-                        onInsertFindings={appendFindings}
-                        onOpenPriorTab={() => rightPanelRef.current?.expand()}
-                      />
-                    )}
+                    </div>
+                    </ReportAccordionSection>
 
-                    {/* Pending viewer measurements banner (legacy) */}
-                    {!isLocked && workflow.currentRow?.studyInstanceUID && (
-                      <ViewerMeasurementsBanner
-                        studyInstanceUID={workflow.currentRow.studyInstanceUID}
-                        disabled={isLocked || isFinalized}
-                        onInsertAll={(lines) => {
-                          for (const line of lines) appendFindings(line);
-                        }}
-                        onOpenMeasureTab={() => openLegacyTab("measurements")}
-                      />
-                    )}
-
+                    {/* 4. HISTORY — History Quick Select + editor + dictation together */}
+                    <ReportAccordionSection {...accordionProps("history")}>
                     <div className="flex items-center gap-2">
                       <div className="flex-1 space-y-1.5">
                         {clinicalHistoryChips.length > 0 && !isLocked && !isFinalized && (
@@ -2851,6 +2971,32 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                         <FieldCareMic voice={voiceSession} target="clinicalHistory" />
                       )}
                     </div>
+                    </ReportAccordionSection>
+
+                    {/* 5. TECHNIQUE — Quick Select + editor + dictation + protocol context */}
+                    <ReportAccordionSection {...accordionProps("technique")}>
+                    {(studySetup.activeProtocol || studySetup.studyRegions.length > 0) && (
+                      <div className="mb-1.5 flex flex-wrap items-center gap-1.5 text-[10px] text-muted-foreground" data-testid="technique-protocol-context">
+                        {studySetup.studyRegions.length > 0 && (
+                          <span className="rounded border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 font-semibold text-emerald-900">
+                            {studySetup.studyRegions.join(" + ")}
+                          </span>
+                        )}
+                        {studySetup.activeProtocol && (
+                          <span className="rounded border border-violet-200 bg-violet-50 px-1.5 py-0.5 font-semibold text-violet-900">
+                            {studySetup.activeProtocol.name}
+                          </span>
+                        )}
+                        <button
+                          type="button"
+                          className="underline underline-offset-2 hover:text-foreground"
+                          onClick={() => setActiveReportSection("region")}
+                          title="Change region or protocol (Alt+3)"
+                        >
+                          change
+                        </button>
+                      </div>
+                    )}
                     <div className="flex items-center gap-2" data-testid="canonical-technique-editor">
                       <div className="flex-1">
                         <FindingsEditor field="technique" label="Technique" minHeight="60px" placeholder="Modality, sequences, contrast..." />
@@ -2859,74 +3005,56 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                         <FieldCareMic voice={voiceSession} target="technique" />
                       )}
                     </div>
+                    </ReportAccordionSection>
 
-                    {/* Chocolate Box macros (brain/spine) — free-text mode only */}
-                    {!useStructured && studySetup.chocolateBoxSet && (
-                      <div className="space-y-1.5 rounded-xl border border-indigo-200/70 bg-gradient-to-r from-indigo-50/80 via-violet-50/50 to-fuchsia-50/40 p-2 shadow-sm" data-testid="chocolate-box">
-                        <div className="text-[10px] font-bold uppercase tracking-wide text-indigo-800">
-                          {studySetup.chocolateBoxSet.label} macros
-                        </div>
-                        <div className="flex flex-wrap gap-1.5">
-                          {studySetup.chocolateBoxSet.tiles.map((tile, i) => {
-                            const palettes = [
-                              "border-indigo-300 bg-gradient-to-br from-indigo-50 to-white text-indigo-900 hover:border-indigo-500 hover:shadow-indigo-200/50",
-                              "border-violet-300 bg-gradient-to-br from-violet-50 to-white text-violet-900 hover:border-violet-500 hover:shadow-violet-200/50",
-                              "border-fuchsia-300 bg-gradient-to-br from-fuchsia-50 to-white text-fuchsia-900 hover:border-fuchsia-500 hover:shadow-fuchsia-200/50",
-                              "border-sky-300 bg-gradient-to-br from-sky-50 to-white text-sky-900 hover:border-sky-500 hover:shadow-sky-200/50",
-                              "border-teal-300 bg-gradient-to-br from-teal-50 to-white text-teal-900 hover:border-teal-500 hover:shadow-teal-200/50",
-                              "border-amber-300 bg-gradient-to-br from-amber-50 to-white text-amber-900 hover:border-amber-500 hover:shadow-amber-200/50",
-                            ];
-                            return (
-                              <Button
-                                key={tile.label}
-                                type="button"
-                                size="sm"
-                                variant="outline"
-                                className={`h-7 text-[10px] font-bold rounded-lg border shadow-sm hover:shadow-md hover:-translate-y-px transition-all ${palettes[i % palettes.length]}`}
-                                disabled={isLocked || isFinalized}
-                                onClick={() => studySetup.applyChocolateTile(tile.text)}
-                              >
-                                {tile.label}
-                              </Button>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    )}
-
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-[10px] font-semibold uppercase text-muted-foreground">Findings</span>
-                      <div className="flex items-center gap-2">
-                        <label className="flex items-center gap-1 text-[10px] text-muted-foreground cursor-pointer">
-                          <Checkbox
-                            checked={useStructured}
-                            onCheckedChange={(v) => {
-                              const on = !!v;
-                              setUseStructured(on);
-                              if (on && Object.keys(findingsMap).length === 0 && studySetup.templateFindingsSections.length > 0) {
-                                const map: Record<string, { normal: boolean; text: string }> = {};
-                                for (const s of studySetup.templateFindingsSections) {
-                                  map[s.label] = { normal: true, text: s.normal };
+                    {/* 6. FINDINGS — region-aware macros on top, editor as the hero,
+                         and exactly ONE assistance drawer open at a time below. */}
+                    <ReportAccordionSection
+                      {...accordionProps("findings")}
+                      headerExtra={
+                        <div className="flex shrink-0 items-center gap-2">
+                          <label className="flex cursor-pointer items-center gap-1 text-[10px] text-muted-foreground">
+                            <Checkbox
+                              checked={useStructured}
+                              onCheckedChange={(v) => {
+                                const on = !!v;
+                                setUseStructured(on);
+                                if (on && Object.keys(findingsMap).length === 0 && studySetup.templateFindingsSections.length > 0) {
+                                  const map: Record<string, { normal: boolean; text: string }> = {};
+                                  for (const s of studySetup.templateFindingsSections) {
+                                    map[s.label] = { normal: true, text: s.normal };
+                                  }
+                                  setFindingsMap(map);
                                 }
-                                setFindingsMap(map);
-                              }
-                            }}
-                            disabled={isLocked || isFinalized}
-                          />
-                          Structured
-                        </label>
-                        <label className="flex items-center gap-1 text-[10px] text-muted-foreground cursor-pointer">
-                          <Checkbox
-                            checked={studySetup.highlightFindings}
-                            onCheckedChange={(v) => studySetup.setHighlightFindings(!!v)}
-                          />
-                          Highlight scan
-                        </label>
-                        {!isLocked && !isFinalized && (
-                          <FieldCareMic voice={voiceSession} target="findings" />
-                        )}
-                      </div>
-                    </div>
+                              }}
+                              disabled={isLocked || isFinalized}
+                            />
+                            Structured
+                          </label>
+                          <label className="flex cursor-pointer items-center gap-1 text-[10px] text-muted-foreground">
+                            <Checkbox
+                              checked={studySetup.highlightFindings}
+                              onCheckedChange={(v) => studySetup.setHighlightFindings(!!v)}
+                            />
+                            Highlight scan
+                          </label>
+                          {!isLocked && !isFinalized && (
+                            <FieldCareMic voice={voiceSession} target="findings" />
+                          )}
+                        </div>
+                      }
+                    >
+                    {/* A. Region-aware macros — driven by the Region section above.
+                        Pencil edits a box; the dashed blank box adds a new one.
+                        Same add/edit also lives in Settings → Radiology → Quick Select. */}
+                    {!useStructured && (
+                      <ChocolateBoxMacros
+                        setKey={studySetup.chocolateBoxSet.key}
+                        label={studySetup.chocolateBoxSet.label}
+                        disabled={isLocked || isFinalized}
+                        onInsert={studySetup.applyChocolateTile}
+                      />
+                    )}
 
                     {studySetup.templateMismatch && (
                       <div className="flex flex-wrap items-center gap-2 p-2 rounded-md border border-amber-300 bg-amber-50 text-[11px] text-amber-900" data-testid="template-mismatch-banner">
@@ -3048,8 +3176,200 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                         dataEditor="findings"
                       />
                     ) : (
-                      <FindingsEditor field="findings" label="" minHeight="220px" placeholder="Type findings. Use :macro + Tab for snippets. Ctrl+Enter for AI ghost." showGhost />
+                      /* B. The editor is the hero. Its Quick Select tile wall moves
+                         to the Quick Select drawer below (same component). */
+                      <FindingsEditor field="findings" label="" minHeight="220px" placeholder="Type findings. Use :macro + Tab for snippets. Ctrl+Enter for AI ghost." showGhost hideQuickSelect />
                     )}
+
+                    {/* C. Assistance drawers — one at a time; every panel stays
+                         mounted so search text, structured nav and drafts survive. */}
+                    <div className="mt-2 space-y-1.5">
+                      <FindingsToolTabs
+                        active={activeFindingsTool}
+                        onSelect={selectFindingsTool}
+                        badges={{
+                          quickAdd: selectedQuickIds.size || null,
+                          structured: formatHasStructuredFields(studySetup.selectedTemplate?.sectionsJson) ? "●" : null,
+                        }}
+                        unavailable={{
+                          structured: !formatHasStructuredFields(studySetup.selectedTemplate?.sectionsJson),
+                        }}
+                      />
+
+                      {/* Findings Quick Select — the full existing tile set,
+                          scoped to the region chosen in the Region section */}
+                      <FindingsToolDrawer id="quickSelect" active={activeFindingsTool === "quickSelect"}>
+                        <QuickSelectStrip field="findings" bodyPart={studySetup.matchedStudyRegion} />
+                      </FindingsToolDrawer>
+
+                      {/* Quick Add / Clinic Quick Select — region-aware from the
+                          Region section; cross-region access via "Change / all regions" */}
+                      <FindingsToolDrawer id="quickAdd" active={activeFindingsTool === "quickAdd"}>
+                        <div className="rounded-xl border border-amber-200/80 bg-gradient-to-br from-amber-50/40 via-white to-orange-50/30 p-2.5 shadow-sm shadow-amber-100/50" data-testid="clinic-quick-select">
+                          <div className="mb-2 flex items-center gap-2">
+                            <span className="flex h-5 w-5 items-center justify-center rounded-md bg-gradient-to-br from-amber-500 to-orange-600 text-[10px] font-black text-white shadow-sm">Q</span>
+                            <div className="text-[10px] font-bold uppercase tracking-wider text-amber-900">
+                              Clinic Quick Select{studySetup.matchedStudyRegion ? ` — ${studySetup.matchedStudyRegion}` : ""}
+                            </div>
+                          </div>
+                          <QuickFindingsPanel
+                            selectedIds={selectedQuickIds}
+                            onToggle={handleQuickToggle}
+                            onFindingClick={(f) => studySetup.handleFindingClick(f, selectedQuickIds, handleQuickToggle)}
+                            side={quickSide}
+                            onSideChange={setQuickSide}
+                            disabled={isLocked || isFinalized}
+                            initialStudyHint={studySetup.studyHint || null}
+                            selectedRegions={studySetup.studyRegions}
+                            onRegionToggle={studySetup.handleRegionToggle}
+                            compactRegions
+                            isAdmin={isOwner}
+                            activeProtocolId={studySetup.activeProtocol?.id ?? null}
+                            onProtocolChange={studySetup.requestProtocolChange}
+                            onChecklistChange={studySetup.handleChecklistChange}
+                            onMeasurement={(template, value) => appendFindings(template.replace(/\{value\}/gi, value).replace(/\{val\}/gi, value))}
+                            onInsertNormals={(text) => appendFindings(text)}
+                            onAcceptLearnedSuggestion={(text) => {
+                              useWorkspace.getState().mergeField("recommendation", text, "quick-findings");
+                            }}
+                            onFindingsLoaded={(findings) => { quickFindingTemplatesRef.current = findings; }}
+                            externalSearch={qsExternalSearch}
+                          />
+                        </div>
+                      </FindingsToolDrawer>
+
+                      {/* Structured format (P1) — level-based / repeating groups */}
+                      <FindingsToolDrawer id="structured" active={activeFindingsTool === "structured"}>
+                        <StructuredFormatPanel
+                          sectionsJson={studySetup.selectedTemplate?.sectionsJson}
+                          values={structuredValues}
+                          disabled={isLocked || isFinalized}
+                          onValuesChange={(next) => {
+                            structuredTouchedRef.current = true;
+                            setStructuredValues(next);
+                            scheduleStructuredDraftSave();
+                          }}
+                          onLoadAllNormals={() => {
+                            structuredTouchedRef.current = true;
+                            const doc = adaptSectionsJson(studySetup.selectedTemplate?.sectionsJson);
+                            setStructuredValues({});
+                            setFindingsMap(allNormalFindingsMap(doc));
+                            setUseStructured(true);
+                            scheduleStructuredDraftSave();
+                          }}
+                          onAcceptImpression={acceptStructuredImpressionCandidate}
+                        />
+                        {!formatHasStructuredFields(studySetup.selectedTemplate?.sectionsJson) && (
+                          <p className="px-1 py-2 text-[11px] text-muted-foreground">
+                            No structured format for this template. Pick a template in
+                            {" "}
+                            <button type="button" className="underline underline-offset-2" onClick={() => setActiveReportSection("region")}>
+                              Region / Study / Protocol
+                            </button>
+                            .
+                          </p>
+                        )}
+                      </FindingsToolDrawer>
+
+                      {/* Suggestions — prior-interval sentences, pending viewer
+                          measurements, OB dashboard and the USG/CT Companion */}
+                      <FindingsToolDrawer id="suggestions" active={activeFindingsTool === "suggestions"}>
+                        <div className="space-y-2" data-testid="findings-suggestions">
+                          {!isLocked && workflow.currentRow?.patientId && (
+                            <PriorComparisonToolbar
+                              patientId={workflow.currentRow.patientId}
+                              excludeStudyId={studyId ?? undefined}
+                              modality={workflow.currentRow.modality ?? ""}
+                              studyDescription={workflow.currentRow.studyDescription ?? ""}
+                              comparisonMissing={false}
+                              disabled={isLocked || isFinalized}
+                              onInsertFindings={appendFindings}
+                              onOpenPriorTab={() => rightPanelRef.current?.expand()}
+                            />
+                          )}
+                          {!isLocked && workflow.currentRow?.studyInstanceUID && (
+                            <ViewerMeasurementsBanner
+                              studyInstanceUID={workflow.currentRow.studyInstanceUID}
+                              disabled={isLocked || isFinalized}
+                              onInsertAll={(lines) => {
+                                for (const line of lines) appendFindings(line);
+                              }}
+                              onOpenMeasureTab={() => openLegacyTab("measurements")}
+                            />
+                          )}
+                          {isUltrasound && (
+                            <ObDashboardStrip
+                              studyId={studyId ?? (workflow.currentRow as { studyId?: number } | null)?.studyId}
+                              onApplyToReport={(text) => appendFindings(text)}
+                            />
+                          )}
+                          {companionEligible && workflow.currentRow?.studyInstanceUID && (
+                            <ModuleErrorBoundary resetKey={String(workflow.currentRow.studyInstanceUID)}>
+                              <UsgCompanionPanel
+                                studyInstanceUID={workflow.currentRow.studyInstanceUID}
+                                studyId={studyId ?? undefined}
+                                patientId={workflow.currentRow.patientId ?? undefined}
+                                disabled={isLocked || isFinalized}
+                                templateSelected={studySetup.selectedTemplateId != null}
+                                protocolSelected={!!studySetup.activeProtocol}
+                                historyPresent={clinicalHistoryText.trim().length > 0}
+                                quickFindingsSelected={selectedQuickIds.size > 0}
+                                copilotClear={true}
+                                userEdited={isDirty || !!lastSavedAt}
+                                reportSaved={!!lastSavedAt}
+                                reportFinalized={isFinalized || workflow.currentRow.status === "REPORT_FINAL"}
+                                currentTechnique={techniqueText}
+                                currentFindings={findingsText}
+                                currentImpression={impressionText.split("\n").filter(Boolean)}
+                                currentRecommendation={recommendationText}
+                                protocolTechnique={studySetup.activeProtocol?.techniqueText ?? null}
+                                protocolNormals={studySetup.activeProtocol?.normalText ?? null}
+                                protocolRecommendation={studySetup.activeProtocol?.recommendationText ?? null}
+                                selectedFindingIds={[...selectedQuickIds]}
+                                region={studySetup.matchedStudyRegion}
+                                checklistRemaining={studySetup.activeProtocol ? studySetup.checklistRemaining : []}
+                                autoPopulatedBlocks={studySetup.companionLedger}
+                                onAutoPopulate={studySetup.handleCompanionAutoPopulate}
+                                onApplyProtocol={
+                                  studySetup.availableProtocols.some((p) => p.isDefault)
+                                    ? () => {
+                                        const d = studySetup.availableProtocols.find((p) => p.isDefault);
+                                        if (d) studySetup.requestProtocolChange(d);
+                                      }
+                                    : undefined
+                                }
+                                onSuggestHistory={
+                                  clinicalHistoryChips.length > 0
+                                    ? () => {
+                                        if (isLocked || isFinalized) return;
+                                        const state = useWorkspace.getState();
+                                        state.setField(
+                                          "clinicalHistory",
+                                          clinicalHistoryChips.reduce(
+                                            (acc, chip) => (hasPhrase(acc, chip.insertedText) ? acc : appendClinicalPhrase(acc, chip.insertedText)),
+                                            state.clinicalHistoryText,
+                                          ),
+                                        );
+                                      }
+                                    : undefined
+                                }
+                                onOpenTab={(tab) => {
+                                  if (tab === "measurements" || tab === "measure") openLegacyTab("measurements");
+                                  else if (tab === "templates" || tab === "library") openLegacyTab("templates");
+                                  else if (tab === "copilot") openLegacyTab("copilot");
+                                  else if (tab === "prior") rightPanelRef.current?.expand();
+                                  else openLegacyTab("links");
+                                }}
+                              />
+                            </ModuleErrorBoundary>
+                          )}
+                        </div>
+                      </FindingsToolDrawer>
+                    </div>
+                    </ReportAccordionSection>
+
+                    {/* 7. IMPRESSION — Quick Select + editor + Generate + dictation */}
+                    <ReportAccordionSection {...accordionProps("impression")}>
                     <div className="flex items-center gap-2">
                       <div className="flex-1 space-y-1.5">
                         <div className="flex items-center justify-between gap-2">
@@ -3074,6 +3394,27 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                         <FieldCareMic voice={voiceSession} target="impression" />
                       )}
                     </div>
+                    {formatHasStructuredFields(studySetup.selectedTemplate?.sectionsJson) && (
+                      <p className="mt-1 text-[10px] text-muted-foreground">
+                        Structured impression candidates live in{" "}
+                        <button
+                          type="button"
+                          className="underline underline-offset-2 hover:text-foreground"
+                          onClick={() => {
+                            setActiveReportSection("findings");
+                            setActiveFindingsTool("structured");
+                          }}
+                        >
+                          Findings → Structured
+                        </button>
+                        {" "}(Accept / Edit / Ignore).
+                      </p>
+                    )}
+                    </ReportAccordionSection>
+
+                    {/* 8. RECOMMENDATION — Quick Select chips + editor + dictation,
+                         with the Critical Finding control at final review. */}
+                    <ReportAccordionSection {...accordionProps("recommendation")}>
                     <div className="flex items-center gap-2">
                       <div className="flex-1 space-y-1.5">
                         {recommendationChips.length > 0 && !isLocked && !isFinalized && (
@@ -3170,8 +3511,11 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                         </>
                       )}
                     </div>
+                    </ReportAccordionSection>
 
-                    {/* Report layout (Classic / Premium) + Word/PDF — same path as legacy */}
+                    {/* 9. REPORT / LAYOUT / EXPORT — Classic/Premium, preview,
+                         Enlarge, Word, PDF, print controls (unchanged renderer). */}
+                    <ReportAccordionSection {...accordionProps("report")}>
                     <ReportExportPanel
                       draftId={draftId ?? null}
                       linkedReportId={linkedReportId}
@@ -3193,57 +3537,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       printingLikeFinal={printingLikeFinal}
                       disabled={false}
                     />
-
-                    {/* Structured format panel — level-first; Quick Findings chips stay below */}
-                    <StructuredFormatPanel
-                      sectionsJson={studySetup.selectedTemplate?.sectionsJson}
-                      values={structuredValues}
-                      disabled={isLocked || isFinalized}
-                      onValuesChange={(next) => {
-                        structuredTouchedRef.current = true;
-                        setStructuredValues(next);
-                        scheduleStructuredDraftSave();
-                      }}
-                      onLoadAllNormals={() => {
-                        structuredTouchedRef.current = true;
-                        const doc = adaptSectionsJson(studySetup.selectedTemplate?.sectionsJson);
-                        setStructuredValues({});
-                        setFindingsMap(allNormalFindingsMap(doc));
-                        setUseStructured(true);
-                        scheduleStructuredDraftSave();
-                      }}
-                      onAcceptImpression={acceptStructuredImpressionCandidate}
-                    />
-
-                    {/* Clinic Quick Select (legacy QuickFindingsPanel) */}
-                    <div className="rounded-xl border border-amber-200/80 bg-gradient-to-br from-amber-50/40 via-white to-orange-50/30 p-2.5 shadow-sm shadow-amber-100/50" data-testid="clinic-quick-select">
-                      <div className="mb-2 flex items-center gap-2">
-                        <span className="flex h-5 w-5 items-center justify-center rounded-md bg-gradient-to-br from-amber-500 to-orange-600 text-[10px] font-black text-white shadow-sm">Q</span>
-                        <div className="text-[10px] font-bold uppercase tracking-wider text-amber-900">Clinic Quick Select</div>
-                      </div>
-                      <QuickFindingsPanel
-                        selectedIds={selectedQuickIds}
-                        onToggle={handleQuickToggle}
-                        onFindingClick={(f) => studySetup.handleFindingClick(f, selectedQuickIds, handleQuickToggle)}
-                        side={quickSide}
-                        onSideChange={setQuickSide}
-                        disabled={isLocked || isFinalized}
-                        initialStudyHint={studySetup.studyHint || null}
-                        selectedRegions={studySetup.studyRegions}
-                        onRegionToggle={studySetup.handleRegionToggle}
-                        isAdmin={isOwner}
-                        activeProtocolId={studySetup.activeProtocol?.id ?? null}
-                        onProtocolChange={studySetup.requestProtocolChange}
-                        onChecklistChange={studySetup.handleChecklistChange}
-                        onMeasurement={(template, value) => appendFindings(template.replace(/\{value\}/gi, value).replace(/\{val\}/gi, value))}
-                        onInsertNormals={(text) => appendFindings(text)}
-                        onAcceptLearnedSuggestion={(text) => {
-                          useWorkspace.getState().mergeField("recommendation", text, "quick-findings");
-                        }}
-                        onFindingsLoaded={(findings) => { quickFindingTemplatesRef.current = findings; }}
-                        externalSearch={qsExternalSearch}
-                      />
-                    </div>
+                    </ReportAccordionSection>
                   </div>
                 </div>
                 {draftId ? (
@@ -3263,8 +3557,31 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
               </ResizablePanel>
               <ResizableHandle />
               {/* Copilot rail with ComparisonPanel + FollowUpPanel */}
-              <ResizablePanel defaultSize={42} minSize={32} ref={rightPanelRef}>
+              <ResizablePanel
+                defaultSize={42}
+                minSize={18}
+                collapsible
+                collapsedSize={3}
+                ref={rightPanelRef}
+                onCollapse={() => setRightCollapsed(true)}
+                onExpand={() => setRightCollapsed(false)}
+              >
                 <div className="h-full border-l border-emerald-200/50 bg-gradient-to-b from-card to-emerald-50/15 overflow-y-auto">
+                  {rightCollapsed ? (
+                    <button
+                      type="button"
+                      className="flex h-full w-full flex-col items-center gap-2 py-3 text-emerald-600 hover:bg-emerald-50 transition-colors"
+                      onClick={() => rightPanelRef.current?.expand()}
+                      title="Expand Orient / Observe / Measure"
+                      data-testid="right-panel-expand"
+                    >
+                      <PanelRightOpen className="h-4 w-4" />
+                      <span className="text-[9px] font-semibold tracking-wider uppercase text-emerald-700" style={{ writingMode: "vertical-rl" }}>
+                        Orient
+                      </span>
+                    </button>
+                  ) : (
+                    <>
                   <CopilotRail />
                   {workflow.currentRow && (
                     <div className="border-t border-border p-2">
@@ -3360,6 +3677,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       clinicActiveLayout={presentationTemplates?.active?.standard}
                     />
                   </ModuleErrorBoundary>
+                    </>
+                  )}
                 </div>
               </ResizablePanel>
             </ResizablePanelGroup>

@@ -12,14 +12,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
-import { matchStudyRegion, filterRegionNamesForModality } from "@/lib/studyRegion";
+import { matchStudyRegion, filterRegionNamesForModality, nextStudyRegions } from "@/lib/studyRegion";
 import { pickQuickProtocol } from "@/lib/pickQuickProtocol";
 import {
   pickStructuredTemplateForRegion,
   templateRegionMismatch,
 } from "@/lib/pickStructuredTemplate";
 import { combineStudyRegionTitle } from "@/lib/combineStudyRegions";
-import { chocolateBoxSetFor, type ChocolateBoxSet } from "@/lib/findingsMacros";
+import { resolvedChocolateBoxSet, type ChocolateBoxSet } from "@/lib/findingsMacros";
 import { mergeBlock } from "@/lib/quickFindingsMerge";
 import { mergeTechnique } from "@/lib/reportFieldMerge";
 import type { InsertSource } from "@/lib/reportFieldMerge";
@@ -195,9 +195,9 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     [matchedStudyRegion, selectedTemplate?.bodyPart],
   );
 
-  const chocolateBoxSet: ChocolateBoxSet | null = useMemo(
-    () => chocolateBoxSetFor(modality, studyDescription),
-    [modality, studyDescription],
+  const chocolateBoxSet: ChocolateBoxSet = useMemo(
+    () => resolvedChocolateBoxSet(modality, studyDescription, matchedStudyRegion),
+    [modality, studyDescription, matchedStudyRegion],
   );
 
   const combinedTestName = useMemo(
@@ -572,18 +572,15 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     }
   }, [selectedTemplate]);
 
-  /** Toggle a study region (multi-select). Adding a region merges its technique. */
+  /** Toggle a study region (multi-select). Last-clicked region becomes
+   *  primary so macros / Quick Select follow what the radiologist just clicked. */
   const handleRegionToggle = useCallback((regionName: string) => {
     if (disabled) return;
-    const current = new Set(studyRegions);
-    if (current.has(regionName)) {
-      if (current.size <= 1) return;
-      current.delete(regionName);
-      setRegionOverrides([...current]);
-      return;
-    }
-    current.add(regionName);
-    setRegionOverrides([...current]);
+    const next = nextStudyRegions(studyRegions, regionName);
+    if (!next) return;
+    const added = !studyRegions.includes(regionName);
+    setRegionOverrides(next);
+    if (!added) return;
     const protocol = pickQuickProtocol(quickSelectData?.protocols ?? [], regionName);
     if (protocol) applyProtocol(protocol, false);
     const tab = quickSelectData?.tabs?.find((t) => t.name === regionName);

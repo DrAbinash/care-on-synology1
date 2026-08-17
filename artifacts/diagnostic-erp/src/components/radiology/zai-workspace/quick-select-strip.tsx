@@ -56,7 +56,20 @@ const LABELS: Record<QuickSelectField, string> = {
   recommendation: "Recommendation",
 };
 
-export function QuickSelectStrip({ field }: { field: QuickSelectField }) {
+export function QuickSelectStrip({
+  field,
+  bodyPart,
+}: {
+  field: QuickSelectField;
+  /**
+   * Region to scope tiles by, overriding the study's own bodyPart. PACS
+   * worklist rows carry no BodyPartExamined, so `study.bodyPart` is empty and
+   * every region-scoped tile (MR + "Brain", MR + "LS Spine", …) scored out of
+   * `lookupTiles`. Passing the region selected in the workspace's Region
+   * section makes the tiles follow that choice.
+   */
+  bodyPart?: string | null;
+}) {
   const tiles = useWorkspaceSelector((s) => s.quickSelectTiles);
   const study = useWorkspaceSelector((s) => s.studies.find((x) => x.id === s.activeStudyId));
   const openEditor = useWorkspaceSelector((s) => s.openQuickSelectEditor);
@@ -65,9 +78,10 @@ export function QuickSelectStrip({ field }: { field: QuickSelectField }) {
   const [search, setSearch] = useState("");
   const [showSearch, setShowSearch] = useState(false);
   const ref = useRef<HTMLInputElement>(null);
+  const scopeBodyPart = bodyPart?.trim() || study?.bodyPart;
   const scoped = useMemo(
-    () => lookupTiles(tiles, field, study?.modality, study?.bodyPart),
-    [tiles, field, study?.modality, study?.bodyPart],
+    () => lookupTiles(tiles, field, study?.modality, scopeBodyPart),
+    [tiles, field, study?.modality, scopeBodyPart],
   );
   const filtered = useMemo(() => {
     if (!search.trim()) return scoped;
@@ -101,7 +115,7 @@ export function QuickSelectStrip({ field }: { field: QuickSelectField }) {
             {LABELS[field]} Quick Select
           </span>
           <span className={cn("rounded-full border px-1.5 py-0.5 font-mono text-[9px] font-semibold", FIELD_PILL[field])}>
-            {study.modality} · {study.bodyPart}
+            {study.modality}{scopeBodyPart ? ` · ${scopeBodyPart}` : ""}
           </span>
           <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[9px] font-medium text-slate-600">
             {scoped.length} tiles
