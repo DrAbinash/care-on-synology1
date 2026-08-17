@@ -312,14 +312,26 @@ export async function overnightQueueStats(now = new Date()) {
   const lastError = jobs
     .filter((j) => (j.status === "abandoned" || j.status === "failed") && j.failureReason)
     .sort((a, b) => (b.lastAttemptedAt?.getTime() ?? b.id) - (a.lastAttemptedAt?.getTime() ?? a.id))[0] ?? null;
+  const abandoned = jobs.filter((j) => j.status === "abandoned");
+  const abandonedReasons: Record<string, number> = {};
+  for (const j of abandoned) {
+    const key = (j.failureReason ?? "(no reason)").slice(0, 160);
+    abandonedReasons[key] = (abandonedReasons[key] ?? 0) + 1;
+  }
+  const topAbandonedReasons = Object.entries(abandonedReasons)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 8)
+    .map(([reason, count]) => ({ reason, count }));
   return {
     queueDepth: waiting.length,
     running: running.length,
+    abandoned: abandoned.length,
     staleRunning: staleRunning.length,
     oldestQueuedAt: oldestQueued?.createdAt?.toISOString() ?? null,
     lastSuccessfulDraftAt: lastSuccess?.completedAt?.toISOString() ?? null,
     lastError: lastError?.failureReason ?? null,
     lastErrorAt: lastError?.lastAttemptedAt?.toISOString() ?? null,
+    topAbandonedReasons,
   };
 }
 

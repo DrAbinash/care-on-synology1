@@ -252,11 +252,12 @@ services:
       # Neither of these was passed into the container before, so there was NO
       # way to run any scheduled job in production:
       #
-      #   ENABLE_SCHEDULERS — gates all 26 in-process cron timers (index.ts).
-      #     Unset = every timer is unregistered, including automated backups,
-      #     the weekly restore-verification, and the backup dead-man alert.
-      #     Set to 1 on exactly ONE always-on instance (this Synology stack) —
-      #     never on an autoscale replica, or jobs double-fire.
+      #   ENABLE_SCHEDULERS — gates most in-process cron timers (index.ts).
+      #     Unset = billing/PACS/backup/audit timers stay unregistered.
+      #     Overnight AI drain (dicom_retry_queue / ai_shadow_pipeline) now
+      #     starts even when this is unset — do not rely on this flag for MRI
+      #     drafts. Set to 1 on exactly ONE always-on instance for the other
+      #     crons; never on an autoscale replica, or those jobs double-fire.
       #
       #   CRON_SECRET — bearer secret for POST /api/internal/cron/* , the
       #     external trigger path (NAS Task Scheduler / curl). The guard returns

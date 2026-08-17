@@ -20,11 +20,15 @@ import {
   stopDimsePullAgent,
   isDimsePullAgentRunning,
 } from "./services/dicom-pull-agent/dimse-agent";
-import { runRadiologyJobTick } from "./lib/radiologyJobs";
+import { runRadiologyJobTick, countDueJobs } from "./lib/radiologyJobs";
 import { RADIOLOGY_JOB_HANDLERS } from "./lib/radiologyJobHandlers";
 import { runScheduledAuditChainVerification } from "./lib/auditVerification";
 import { todayIST, istHourMinute } from "./lib/istDate";
 import { isClinicPeakHours, clinicPeakHoursLabel } from "./lib/clinicPeakHours";
+import {
+  markRadiologyJobConsumerRegistered,
+  recordRadiologyJobCronTick,
+} from "./lib/radiologyJobConsumerHeartbeat";
 import { classifyPaymentMethod, isDigitalSettlement, isPhysicalCash } from "./lib/paymentMethodClassifier";
 import {
   calcTestCommission,
@@ -38,6 +42,7 @@ import {
 } from "./lib/commissionCalc";
 
 let currentTask: ReturnType<typeof cron.schedule> | null = null;
+let radiologyJobConsumerStarted = false;
 // Track already-fired events per day to avoid double-firing
 const firedToday = new Set<string>();
 
@@ -61,9 +66,8 @@ export function startCronScheduler() {
   scheduleRecall();
   scheduleFeedbackInvites();
   scheduleOpsAnomalyScan();
-  scheduleRadiologyJobs();
+  startRadiologyJobConsumer();
   scheduleAuditChainVerify();
-  scheduleAiSchedulerModes();
   scheduleQueueDisplayAlerts();
   scheduleInventoryLowStockAlerts();
   scheduleEmergencyMasterPush();
@@ -154,37 +158,84 @@ function scheduleAiSchedulerModes() {
 // Every minute: requeue stale running claims (worker-restart safety), then
 // run up to 5 due jobs. Bounded retries + dead-letter live in radiologyJobs;
 // handlers are idempotent, so a crash between attempts never double-sends.
+/**
+ * Overnight AI + durable radiology drain. Must run even when ENABLE_SCHEDULERS
+ * is unset. The NAS .env may set ENABLE_SCHEDULERS=1, but Compose only injects
+ * keys listed in docker-compose.yml — a missed recreate leaves the flag off
+ * inside care-api while HTTP enqueue still fills dicom_retry_queue.
+ * Duplicate registration is a no-op. Concurrent processes are safe: claim
+ * uses FOR UPDATE SKIP LOCKED; AI concurrency stays 1 via running-row count.
+ */
+export function startRadiologyJobConsumer(): void {
+  if (radiologyJobConsumerStarted) return;
+  radiologyJobConsumerStarted = true;
+  markRadiologyJobConsumerRegistered();
+  scheduleRadiologyJobs();
+  scheduleAiSchedulerModes();
+  console.log("[cron] radiology job consumer registered (overnight AI drain every minute, IST)");
+}
+
 function scheduleRadiologyJobs() {
   cron.schedule("* * * * *", async () => {
     try {
-      // AI shadow pipeline concurrency is enforced inside runRadiologyJobTick via
-      // concurrencyByType (AI_CONCURRENCY ∩ maxConcurrentJobs, default 1).
-      let aiMax = 1;
-      try {
-        const { getOvernightVisionInferenceOptions } = await import("./lib/ai/overnightVisionConfig");
-        const { getSchedulerConfig } = await import("./lib/ai/clinicalConfigService");
-        const vision = await getOvernightVisionInferenceOptions();
-        const sched = await getSchedulerConfig();
-        aiMax = Math.max(1, Math.min(vision.concurrency, sched.maxConcurrentJobs));
-      } catch { /* keep 1 */ }
-      const { AI_SHADOW_PIPELINE_JOB } = await import("./lib/ai/shadowPipeline");
-      const { PACS_REARCHIVE_JOB } = await import("./lib/radiologyJobHandlers");
-      const peak = isClinicPeakHours();
-      // During clinic peak, block AI + PACS rearchive (limit 0) and cap the
-      // tick to one light job so Orthanc/DB stay free for billing + USG C-STORE.
-      const result = await runRadiologyJobTick(RADIOLOGY_JOB_HANDLERS, {
-        maxJobs: peak ? 1 : 5,
-        concurrencyByType: peak
-          ? { [AI_SHADOW_PIPELINE_JOB]: 0, [PACS_REARCHIVE_JOB]: 0 }
-          : { [AI_SHADOW_PIPELINE_JOB]: aiMax },
-      });
-      if (result.ran.length > 0 || result.requeuedStale > 0) {
-        console.log("[cron] radiology jobs:", JSON.stringify(result));
-      }
+      await fireRadiologyJobTick();
     } catch (err) {
       console.error("[cron] radiology job tick failed:", err);
     }
-  });
+  }, { timezone: "Asia/Kolkata" });
+}
+
+/** One drain pass of dicom_retry_queue. Used by the minute cron and POST /api/internal/cron/radiology-jobs. */
+export async function fireRadiologyJobTick(): Promise<{
+  requeuedStale: number;
+  ran: Array<{ id: number; operationType: string; outcome: string }>;
+}> {
+  const peak = isClinicPeakHours();
+  let aiMax = 1;
+  let dueAi = 0;
+  let aiBlocked = false;
+  try {
+    const { getOvernightVisionInferenceOptions } = await import("./lib/ai/overnightVisionConfig");
+    const { getSchedulerConfig } = await import("./lib/ai/clinicalConfigService");
+    const vision = await getOvernightVisionInferenceOptions();
+    const sched = await getSchedulerConfig();
+    aiMax = Math.max(1, Math.min(vision.concurrency, sched.maxConcurrentJobs));
+  } catch { /* keep 1 */ }
+  try {
+    const { AI_SHADOW_PIPELINE_JOB } = await import("./lib/ai/shadowPipeline");
+    const { PACS_REARCHIVE_JOB } = await import("./lib/radiologyJobHandlers");
+    aiBlocked = peak;
+    dueAi = await countDueJobs(AI_SHADOW_PIPELINE_JOB);
+    const result = await runRadiologyJobTick(RADIOLOGY_JOB_HANDLERS, {
+      maxJobs: peak ? 1 : 5,
+      concurrencyByType: peak
+        ? { [AI_SHADOW_PIPELINE_JOB]: 0, [PACS_REARCHIVE_JOB]: 0 }
+        : { [AI_SHADOW_PIPELINE_JOB]: aiMax },
+    });
+    const aiRun = result.ran.find((r) => r.operationType === AI_SHADOW_PIPELINE_JOB);
+    recordRadiologyJobCronTick({
+      peak,
+      aiBlocked,
+      dueAi,
+      ran: result.ran.length,
+      claimedJobId: aiRun?.id ?? result.ran[0]?.id ?? null,
+      claimedType: aiRun?.operationType ?? result.ran[0]?.operationType ?? null,
+      outcome: aiRun?.outcome ?? result.ran[0]?.outcome ?? null,
+    });
+    if (result.ran.length > 0 || result.requeuedStale > 0) {
+      console.log("[cron] radiology jobs:", JSON.stringify(result));
+    }
+    return result;
+  } catch (err) {
+    recordRadiologyJobCronTick({
+      peak,
+      aiBlocked,
+      dueAi,
+      ran: 0,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    throw err;
+  }
 }
 
 // ── BEND-1: scheduled audit-chain verification (safe default cadence) ────────

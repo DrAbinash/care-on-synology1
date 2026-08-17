@@ -13,9 +13,14 @@ import {
 } from "@workspace/db/schema";
 import { and, eq, desc, inArray, isNull, ne, sql } from "drizzle-orm";
 import { isFeatureEnabledServer } from "../featureFlags";
-import { AI_MASTER_FLAG, getSchedulerConfig, getModalityMode, getModalityPolicies, normalizeAiModality } from "./clinicalConfigService";
+import { AI_MASTER_FLAG, getSchedulerConfig, getModalityMode, getModalityPolicies, normalizeAiModality, DEFAULT_SCHEDULER } from "./clinicalConfigService";
 import { enqueueAiShadowJob, AI_SHADOW_PIPELINE_JOB } from "./shadowPipeline";
-import { jobBacklogCounts, listDeadLetterJobs, markJobRetryable } from "../radiologyJobs";
+import { jobBacklogCounts, listDeadLetterJobs, markJobRetryable, countDueJobs } from "../radiologyJobs";
+import {
+  deriveRadiologyJobConsumerHealth,
+  getRadiologyJobConsumerHeartbeat,
+} from "../radiologyJobConsumerHeartbeat";
+import { isClinicPeakHours, clinicPeakHoursLabel } from "../clinicPeakHours";
 import { resolveRadiologyStudyId } from "../canonicalStudy";
 import { decideScheduling, isWithinNightWindow, type Priority } from "./aiScheduler";
 import { logger } from "../logger";
@@ -509,12 +514,44 @@ export async function attachOvernightAiToWorklist<T extends {
   ));
 }
 
-/** Compact overnight diagnostics — reuses ENABLE_SCHEDULERS, Local AI runtime, and dicom_retry_queue. */
+/** Compact overnight diagnostics — consumer heartbeat + queue truth, not Ollama health. */
 export async function getOvernightDiagnostics() {
-  const cfg = await getSchedulerConfig();
+  let cfg = DEFAULT_SCHEDULER;
+  let configError: string | null = null;
+  try {
+    cfg = await getSchedulerConfig();
+  } catch (err) {
+    configError = err instanceof Error ? err.message : String(err);
+    logger.warn({ err }, "overnight diagnostics: scheduler config unreadable — using defaults");
+  }
   const nowMin = nowMinutesLocal();
+  const nightWindow = isWithinNightWindow(nowMin, cfg);
   const schedulersOn = process.env.ENABLE_SCHEDULERS === "1" || process.env.ENABLE_SCHEDULERS === "true";
-  const stats = await overnightQueueStats();
+  let stats = {
+    queueDepth: 0,
+    running: 0,
+    abandoned: 0,
+    staleRunning: 0,
+    oldestQueuedAt: null as string | null,
+    lastSuccessfulDraftAt: null as string | null,
+    lastError: null as string | null,
+    lastErrorAt: null as string | null,
+    topAbandonedReasons: [] as Array<{ reason: string; count: number }>,
+  };
+  let dueAi = 0;
+  try {
+    stats = await overnightQueueStats();
+    dueAi = await countDueJobs(AI_SHADOW_PIPELINE_JOB);
+  } catch (err) {
+    logger.warn({ err }, "overnight diagnostics: queue stats unreadable");
+  }
+  const hb = getRadiologyJobConsumerHeartbeat();
+  const consumer = deriveRadiologyJobConsumerHealth(hb, {
+    queueDepth: stats.queueDepth,
+    running: stats.running,
+    nightWindow,
+  });
+  const peak = isClinicPeakHours();
   let localAiReachable = false;
   let localAiError: string | null = null;
   let model = CANONICAL_LOCAL_CHAT_VISION_MODEL;
@@ -528,20 +565,39 @@ export async function getOvernightDiagnostics() {
     localAiError = err instanceof Error ? err.message : String(err);
   }
   return {
+    timezone: "Asia/Kolkata",
     scheduler: schedulersOn ? "running" : "not_running",
-    nightWindow: isWithinNightWindow(nowMin, cfg) ? "active" : "inactive",
-    worker: schedulersOn ? (stats.staleRunning > 0 ? "unhealthy" : "healthy") : "not_running",
+    nightWindow: nightWindow ? "active" : "inactive",
+    nightWindowHours: `${cfg.nightStart}–${cfg.nightEnd} IST`,
+    clinicPeak: peak ? "active" : "inactive",
+    clinicPeakHours: clinicPeakHoursLabel(),
+    worker: consumer.status,
+    workerDetail: consumer.detail,
     localAi: localAiReachable ? "reachable" : "unreachable",
     localAiError,
     model,
     concurrency: cfg.maxConcurrentJobs,
     queueDepth: stats.queueDepth,
     running: stats.running,
+    abandoned: stats.abandoned,
+    dueNow: dueAi,
     staleRunning: stats.staleRunning,
     oldestQueuedAt: stats.oldestQueuedAt,
     lastSuccessfulDraftAt: stats.lastSuccessfulDraftAt,
     lastError: stats.lastError,
     lastErrorAt: stats.lastErrorAt,
+    lastHeartbeat: hb.lastCronTickAt,
+    lastPoll: hb.lastTickAt,
+    lastClaimedJob: hb.lastClaimedJobId,
+    lastClaimedAt: hb.lastClaimAt,
+    lastCompletedDraft: stats.lastSuccessfulDraftAt,
+    currentJob: stats.running > 0 ? hb.lastClaimedJobId : null,
+    topAbandonedReasons: stats.topAbandonedReasons,
     studyAgeWindow: cfg.studyAgeWindow,
+    configError,
+    meaning: {
+      queueDepth: "dicom_retry_queue rows with operation_type=ai_shadow_pipeline and status pending|retrying (all ages/modalities)",
+      worklistQueued: "Overnight AI Drafts filter: worklist rows in the selected age chip whose latest shadow job maps to QUEUED (not the full backlog)",
+    },
   };
 }
