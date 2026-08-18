@@ -18,7 +18,7 @@ type LowStockSummary = {
   }>;
 };
 
-export default function LowStockKpi() {
+export default function LowStockKpi({ hideHeader = false }: { hideHeader?: boolean } = {}) {
   const { data, isLoading, isError } = useQuery<LowStockSummary>({
     queryKey: ["daily-summary-low-stock"],
     queryFn: () => api.get("/api/dashboard/my-daily-summary/low-stock"),
@@ -27,7 +27,7 @@ export default function LowStockKpi() {
 
   if (isLoading) {
     return (
-      <div className="bg-white dark:bg-card border border-gray-200 dark:border-card-border rounded-xl p-4 shadow-sm">
+      <div className={hideHeader ? "p-4" : "bg-white dark:bg-card border border-gray-200 dark:border-card-border rounded-xl p-4 shadow-sm"}>
         <div className="h-16 bg-gray-100 dark:bg-muted/30 rounded-lg animate-pulse" />
       </div>
     );
@@ -39,13 +39,16 @@ export default function LowStockKpi() {
 
   return (
     <div
-      className={`bg-white dark:bg-card border rounded-xl p-4 shadow-sm space-y-3 ${
-        hasAlert
-          ? "border-amber-300 dark:border-amber-700 ring-1 ring-amber-200/60 dark:ring-amber-900/40"
-          : "border-gray-200 dark:border-card-border"
+      className={`${hideHeader ? "p-4 space-y-3" : "bg-white dark:bg-card border rounded-xl p-4 shadow-sm space-y-3"} ${
+        hideHeader
+          ? ""
+          : hasAlert
+            ? "border-amber-300 dark:border-amber-700 ring-1 ring-amber-200/60 dark:ring-amber-900/40"
+            : "border-gray-200 dark:border-card-border"
       }`}
       data-testid="low-stock-kpi"
     >
+      {!hideHeader && (
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
           <h3 className="text-sm font-bold text-gray-900 dark:text-foreground flex items-center gap-2">
@@ -60,6 +63,7 @@ export default function LowStockKpi() {
           Open Inventory →
         </Link>
       </div>
+      )}
 
       <div className="flex flex-wrap gap-3">
         <div className={`rounded-lg border px-4 py-2 min-w-[100px] text-center ${
