@@ -2405,6 +2405,7 @@ async function runStartupMigrations(): Promise<void> {
       -- ── Doctor address + area for marketing / area-based search ──
       ALTER TABLE doctors ADD COLUMN IF NOT EXISTS address TEXT;
       ALTER TABLE doctors ADD COLUMN IF NOT EXISTS area TEXT;
+      ALTER TABLE doctors ADD COLUMN IF NOT EXISTS degree TEXT;
 
       -- ── Role-Permissions Matrix (May 2026) ──
       -- Granular per-role, per-module permission table.  The UI super-admin

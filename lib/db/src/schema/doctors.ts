@@ -6,6 +6,9 @@ export const doctorsTable = pgTable("doctors", {
   id: serial("id").primaryKey(),
   name: text("name").notNull(),
   specialization: text("specialization").notNull(),
+  // Medical degree / qualification (MBBS, MD, DNB…) — reporting workspace
+  // reads this from doctors master for REF. BY / chip labels. Not stuffed into name.
+  degree: text("degree"),
   phone: text("phone"),
   email: text("email"),
   hospitalAffiliation: text("hospital_affiliation"),

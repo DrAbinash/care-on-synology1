@@ -62,6 +62,8 @@ export interface CopilotReport {
 export interface CopilotContext {
   modality: string;
   studyDescription: string;
+  /** Resolved radiology_study_tabs.name — wins over studyDescription for study gates. */
+  region?: string | null;
   clinicalHistory: string;
   findings: string;
   impression: string[];
@@ -227,12 +229,12 @@ export function analyzeCopilot(ctx: CopilotContext): CopilotReport {
 
   // 1. Live findings analysis — reuse the existing observer engine verbatim.
   if (ctx.findings.trim()) {
-    for (const s of observeReportText(ctx.modality, ctx.studyDescription, ctx.findings)) {
+    for (const s of observeReportText(ctx.modality, ctx.studyDescription, ctx.findings, ctx.region)) {
       items.push(fromLegacy(s));
     }
   }
 
-  const study = ctx.studyDescription.toLowerCase();
+  const study = (ctx.region ?? ctx.studyDescription).toLowerCase();
 
   // 2. Missing observations (knowledge base).
   for (const r of MISSING_RULES) {

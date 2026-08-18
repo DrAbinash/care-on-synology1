@@ -12,6 +12,8 @@ import { Plus, Trash2, Pencil, X, Save, Copy, RotateCcw, ArrowUp, ArrowDown, Sea
 import type { QuickFinding, QuickStudyTab, QuickMeasurement, QuickProtocol, QuickClinicalHistoryChip } from "@/components/radiology/QuickFindingsPanel";
 import StructuredQuestionsEditor from "@/components/radiology/StructuredQuestionsEditor";
 import { ChocolateBoxSettingsPanel } from "@/components/radiology/zai-workspace/chocolate-box-macros";
+import { buildReportingStudyContext } from "@/lib/reportingStudyContext";
+import { chocolateBoxSetFor } from "@/lib/findingsMacros";
 
 /**
  * Radiology Quick Select — admin configuration page.
@@ -229,6 +231,10 @@ export default function RadiologyQuickSelectSettings() {
     .filter((c) => !filterTab || c.studyType === filterTab)
     .sort((a, b) => a.studyType.localeCompare(b.studyType) || a.sortOrder - b.sortOrder || a.displayLabel.localeCompare(b.displayLabel));
 
+  const associatedMacros = filterTab
+    ? chocolateBoxSetFor(buildReportingStudyContext({ regions: [filterTab], source: "override" }))
+    : null;
+
   return (
     <div className="p-4 md:p-6 space-y-6">
       <PageHeader
@@ -244,7 +250,13 @@ export default function RadiologyQuickSelectSettings() {
         <div className="flex flex-wrap gap-2">
           {tabs.map((t) => (
             <div key={t.id} className={`flex items-center gap-1.5 rounded-lg border px-2 py-1 text-xs ${t.isActive ? "" : "opacity-50"}`}>
-              <span className="font-medium">{t.name}</span>
+              <span
+                className="font-medium cursor-pointer hover:text-primary"
+                onClick={() => setFilterTab(t.name === filterTab ? "" : t.name)}
+                title="Show content associated with this study"
+              >
+                {t.name}
+              </span>
               <Switch
                 checked={t.isActive}
                 onCheckedChange={(v) => updateTab.mutate({ id: t.id, isActive: v })}
@@ -267,6 +279,18 @@ export default function RadiologyQuickSelectSettings() {
           ))}
           {tabs.length === 0 && !isLoading && <p className="text-xs text-muted-foreground">No study tabs yet.</p>}
         </div>
+        {filterTab && (
+          <div className="rounded-lg border bg-muted/20 p-3 space-y-1.5" data-testid="associated-study-content">
+            <p className="text-xs font-semibold">Content associated with {filterTab}</p>
+            <p className="text-[11px] text-muted-foreground">
+              Findings {findings.length} · Protocols {protocols.length} · History chips {chips.length}
+              {associatedMacros ? ` · Workspace macros: ${associatedMacros.label} (${associatedMacros.tiles.map((t) => t.label).join(", ")})` : " · No workspace macros for this region"}
+            </p>
+            {filterTab !== "Spine" && associatedMacros?.key !== "brain" && associatedMacros?.tiles.some((t) => t.label === "Disc Bulge") && (
+              <p className="text-[10px] text-muted-foreground">Generic Spine tiles (Disc Bulge, Disc Desiccation, Normal Spine) are inherited as a fallback. Lumbar-only tiles are not shown on cervical/dorsal.</p>
+            )}
+          </div>
+        )}
         {editingTab && (
           <div className="rounded-lg border bg-muted/30 p-3 space-y-2">
             <p className="text-xs font-semibold">Edit "{editingTab.name}" — Abnormality Engine texts</p>

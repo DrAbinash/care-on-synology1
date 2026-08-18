@@ -2169,6 +2169,12 @@ export const ListDoctorsResponse = zod.object({
         .describe(
           "State medical council registration number — printed on PCPNDT Form F.",
         ),
+      degree: zod
+        .string()
+        .nullish()
+        .describe(
+          "Medical degree / qualification shown on reports (e.g. MBBS, MD).",
+        ),
       defaultCommission: zod.union([zod.number(), zod.string()]).nullish(),
       defaultCommissionType: zod.string().nullish(),
       ledgerId: zod.number().nullish(),
@@ -2190,6 +2196,12 @@ export const CreateDoctorBody = zod.object({
   address: zod.string().nullish(),
   area: zod.string().nullish(),
   registrationNumber: zod.string().nullish(),
+  degree: zod
+    .string()
+    .nullish()
+    .describe(
+      "Medical degree / qualification shown on reports (e.g. MBBS, MD).",
+    ),
 });
 
 /**
@@ -2208,6 +2220,12 @@ export const UpdateDoctorBody = zod.object({
   address: zod.string().nullish(),
   area: zod.string().nullish(),
   registrationNumber: zod.string().nullish(),
+  degree: zod
+    .string()
+    .nullish()
+    .describe(
+      "Medical degree / qualification shown on reports (e.g. MBBS, MD).",
+    ),
   defaultCommission: zod.union([zod.number(), zod.string()]).optional(),
   defaultCommissionType: zod.string().optional(),
   ledgerId: zod.number().nullish(),
@@ -2235,6 +2253,12 @@ export const UpdateDoctorResponse = zod.object({
     .nullish()
     .describe(
       "State medical council registration number — printed on PCPNDT Form F.",
+    ),
+  degree: zod
+    .string()
+    .nullish()
+    .describe(
+      "Medical degree / qualification shown on reports (e.g. MBBS, MD).",
     ),
   defaultCommission: zod.union([zod.number(), zod.string()]).nullish(),
   defaultCommissionType: zod.string().nullish(),

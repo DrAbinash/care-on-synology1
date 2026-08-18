@@ -1,5 +1,6 @@
 import type { Modality } from "./types";
 import type { QuickSelectTile, QuickSelectField } from "./types";
+import { contentStudyTypes, type ReportingStudyContext } from "@/lib/reportingStudyContext";
 const now = () => new Date().toISOString();
 const uid = () => `qs_${Date.now().toString(36)}_${Math.random().toString(36).slice(2,7)}`;
 function t(f: QuickSelectField, l: string, s: string, o: Partial<QuickSelectTile> = {}): QuickSelectTile { return { id: uid(), field: f, label: l, sentence: s, category: "normal", createdAt: now(), updatedAt: now(), ...o }; }
@@ -54,8 +55,34 @@ export const DEFAULT_QUICK_SELECT_TILES: QuickSelectTile[] = [
   t("recommendation","Stroke team","Immediate stroke team notification advised. If within thrombolysis window, consider IV tPA per protocol. CTA head and neck recommended.",{mnemonic:"st",scopeModality:"CT",scopeBodyPart:"Brain",category:"critical",favorite:true}),
 ];
 
+/** @deprecated Use lookupTilesForContext with ReportingStudyContext. DICOM bodyPart is provenance only. */
 export function lookupTiles(tiles: QuickSelectTile[], field: QuickSelectField, modality: Modality | undefined, bodyPart: string | undefined): QuickSelectTile[] {
   return tiles.filter(t => t.field === field).map(t => ({ t, s: t.scopeModality === modality && t.scopeBodyPart === bodyPart ? 100 : t.scopeModality === modality && !t.scopeBodyPart ? 50 : !t.scopeModality ? 10 : -1 })).filter(x => x.s >= 0).sort((a, b) => b.s - a.s || a.t.label.localeCompare(b.t.label)).map(x => x.t);
+}
+
+/** Scope tiles by the resolved ReportingStudyContext, not DICOM bodyPart. */
+export function lookupTilesForContext(
+  tiles: QuickSelectTile[],
+  field: QuickSelectField,
+  modality: Modality | undefined,
+  ctx: ReportingStudyContext | null | undefined,
+): QuickSelectTile[] {
+  if (!ctx?.region) {
+    return tiles.filter((tile) => tile.field === field && !tile.scopeBodyPart && !tile.scopeModality);
+  }
+  const allowed = new Set(contentStudyTypes(ctx.regions.length > 0 ? ctx.regions : [ctx.region]).map((s) => s.toLowerCase()));
+  return tiles
+    .filter((tile) => tile.field === field)
+    .map((tile) => {
+      if (tile.scopeModality && tile.scopeModality !== modality) return { tile, s: -1 };
+      if (tile.scopeBodyPart && !allowed.has(tile.scopeBodyPart.toLowerCase())) return { tile, s: -1 };
+      const exact = tile.scopeBodyPart && tile.scopeBodyPart.toLowerCase() === ctx.region!.toLowerCase();
+      const s = exact ? 100 : tile.scopeBodyPart ? 80 : tile.scopeModality === modality ? 50 : 10;
+      return { tile, s };
+    })
+    .filter((x) => x.s >= 0)
+    .sort((a, b) => b.s - a.s || a.tile.label.localeCompare(b.tile.label))
+    .map((x) => x.tile);
 }
 const SK = "zai-rad-quickselect-v1";
 export function loadTiles(): QuickSelectTile[] { try { const r = localStorage.getItem(SK); return r ? JSON.parse(r) : DEFAULT_QUICK_SELECT_TILES; } catch { return DEFAULT_QUICK_SELECT_TILES; } }

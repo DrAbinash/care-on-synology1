@@ -126,11 +126,11 @@ describe("Findings workspace — macros, hero editor, one drawer at a time", () 
 
   it("scopes Findings Quick Select tiles to the selected region", () => {
     // PACS rows have no BodyPartExamined, so study.bodyPart is "" and every
-    // region-scoped tile used to score out of lookupTiles.
+    // region-scoped tile used to score out of lookupTiles. Tiles now follow
+    // ReportingStudyContext (synced from the workspace region), not DICOM bodyPart.
     const strip = read("components/radiology/zai-workspace/quick-select-strip.tsx");
     expect(strip).toContain("bodyPart?: string | null");
-    expect(strip).toContain("const scopeBodyPart = bodyPart?.trim() || study?.bodyPart;");
-    expect(strip).toContain("lookupTiles(tiles, field, study?.modality, scopeBodyPart)");
+    expect(strip).toContain("lookupTilesForContext(tiles, field, study?.modality, reportingContext)");
     expect(workspace).toContain('bodyPart={studySetup.matchedStudyRegion}');
   });
 
@@ -170,10 +170,11 @@ describe("Findings workspace — macros, hero editor, one drawer at a time", () 
 describe("Region context drives the Findings tools", () => {
   it("macros follow the selected region, not just the DICOM description", () => {
     const macrosLib = read("lib/findingsMacros.ts");
-    expect(macrosLib).toMatch(/region\?: string \| null/);
-    expect(macrosLib).toContain("BRAIN_RE.test(selected)");
+    expect(macrosLib).toContain("ReportingStudyContext");
+    expect(macrosLib).toContain("ctx.spineSegment");
+    expect(macrosLib).not.toContain("BRAIN_RE");
     const setup = read("../src/hooks/useReportingStudySetup.ts");
-    expect(setup).toContain("resolvedChocolateBoxSet(modality, studyDescription, matchedStudyRegion)");
+    expect(setup).toContain("resolvedChocolateBoxSet(studyContext)");
     expect(setup).toContain("nextStudyRegions(studyRegions, regionName)");
     expect(workspace).toContain('data-primary={isPrimary ? "true" : undefined}');
   });

@@ -3,8 +3,8 @@
  * auto-select for the new Radiology Reporting Workspace.
  *
  * Ports the legacy chain:
- *   modality+studyDescription → matchStudyRegion → pickQuickProtocol → technique
- *   modality+studyDescription → pickStructuredTemplate → test name (+ fill-empty)
+ *   modality+studyDescription → matchStudyRegion → ReportingStudyContext
+ *   → pickQuickProtocol / pickStructuredTemplateForRegion / resolvedChocolateBoxSet
  *
  * Additive only: callers write into the Z.ai store via setters; nothing here
  * replaces FindingsEditor / CopilotRail.
@@ -18,8 +18,14 @@ import {
   pickStructuredTemplateForRegion,
   templateRegionMismatch,
 } from "@/lib/pickStructuredTemplate";
+import {
+  buildReportingStudyContext,
+  reportingContextEqual,
+  type ReportingStudyContext,
+} from "@/lib/reportingStudyContext";
 import { combineStudyRegionTitle } from "@/lib/combineStudyRegions";
 import { resolvedChocolateBoxSet, type ChocolateBoxSet } from "@/lib/findingsMacros";
+import { useWorkspace } from "@/lib/zai-workspace/store";
 import { mergeBlock } from "@/lib/quickFindingsMerge";
 import { mergeTechnique } from "@/lib/reportFieldMerge";
 import type { InsertSource } from "@/lib/reportFieldMerge";
@@ -114,6 +120,7 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     studyId,
     modality,
     studyDescription,
+    bodyPart: dicomBodyPart,
     isLoadingExistingDraft,
     draftHydrated,
     existingDraft,
@@ -133,6 +140,8 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
 
   const autoProtocolForStudyRef = useRef<number | null>(null);
   const autoTemplateForStudyRef = useRef<number | null>(null);
+  const lastRegionForTemplateRef = useRef<string | null>(null);
+  const lastRegionForProtocolRef = useRef<string | null>(null);
   const templateApplySourceRef = useRef<"auto" | "manual">("auto");
   const lastInsertedTechniqueRef = useRef<string | null>(null);
   const structuredValuesRef = useRef<Map<number, Record<string, string>>>(new Map());
@@ -178,6 +187,17 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
   /** Primary region (first selected) — drives default template / protocol pick. */
   const matchedStudyRegion = studyRegions[0] ?? null;
 
+  const studyContext: ReportingStudyContext = useMemo(
+    () => buildReportingStudyContext({
+      modality,
+      studyDescription,
+      dicomBodyPart,
+      regions: studyRegions,
+      source: regionOverrides ? "override" : (matchedStudyRegion ? "auto" : "unresolved"),
+    }),
+    [modality, studyDescription, dicomBodyPart, studyRegions, regionOverrides, matchedStudyRegion],
+  );
+
   const availableProtocols = useMemo(
     () => (quickSelectData?.protocols ?? [])
       .filter((p) => p.isActive && studyRegions.includes(p.studyType))
@@ -196,8 +216,8 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
   );
 
   const chocolateBoxSet: ChocolateBoxSet = useMemo(
-    () => resolvedChocolateBoxSet(modality, studyDescription, matchedStudyRegion),
-    [modality, studyDescription, matchedStudyRegion],
+    () => resolvedChocolateBoxSet(studyContext),
+    [studyContext],
   );
 
   const combinedTestName = useMemo(
@@ -215,6 +235,8 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
   useEffect(() => {
     autoProtocolForStudyRef.current = null;
     autoTemplateForStudyRef.current = null;
+    lastRegionForTemplateRef.current = null;
+    lastRegionForProtocolRef.current = null;
     hydratedTemplateApplyRef.current = null;
     setRegionOverrides(null);
     setActiveProtocol(null);
@@ -276,17 +298,41 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     matchedStudyRegion, applyProtocol, setters,
   ]);
 
-  // Auto structured template (test name) once per study — after hydrate.
+  // Region override: switch the protocol selector without replacing typed technique.
+  useEffect(() => {
+    if (!studyId || !quickSelectData || !draftHydrated) return;
+    if (!matchedStudyRegion) return;
+    if (lastRegionForProtocolRef.current === matchedStudyRegion) return;
+    const isFirst = lastRegionForProtocolRef.current == null;
+    lastRegionForProtocolRef.current = matchedStudyRegion;
+    if (isFirst) return;
+    const protocol = pickQuickProtocol(quickSelectData.protocols, matchedStudyRegion);
+    if (protocol) applyProtocol(protocol, false);
+    else setActiveProtocol(null);
+  }, [studyId, quickSelectData, draftHydrated, matchedStudyRegion, applyProtocol]);
+
+  // Keep the workspace store's reporting context in lockstep so snippet /
+  // format / Quick Select tile lookups consume the same resolved identity.
+  useEffect(() => {
+    const prev = useWorkspace.getState().reportingContext;
+    if (reportingContextEqual(prev, studyContext)) return;
+    useWorkspace.getState().setReportingContext(studyContext);
+  }, [studyContext]);
+
+  // Auto structured template from the resolved region. Re-runs when the
+  // radiologist overrides the region, but always with fill-empty-only apply
+  // (templateApplySourceRef = "auto") so typed Findings/Impression are kept.
   useEffect(() => {
     if (!studyId || templates.length === 0 || !draftHydrated) return;
-    if (autoTemplateForStudyRef.current === studyId) return;
+    if (!matchedStudyRegion) return;
+    if (lastRegionForTemplateRef.current === matchedStudyRegion) return;
+    lastRegionForTemplateRef.current = matchedStudyRegion;
+    const match = pickStructuredTemplateForRegion(templates, modality, matchedStudyRegion);
+    if (!match) return;
     autoTemplateForStudyRef.current = studyId;
-    let match = pickStructuredTemplateForRegion(templates, modality, matchedStudyRegion, studyDescription);
-    if (match) {
-      templateApplySourceRef.current = "auto";
-      setSelectedTemplateId(match.id);
-    }
-  }, [studyId, templates, modality, studyDescription, matchedStudyRegion, draftHydrated]);
+    templateApplySourceRef.current = "auto";
+    setSelectedTemplateId(match.id);
+  }, [studyId, templates, modality, matchedStudyRegion, draftHydrated]);
 
   // Apply template content fill-empty-only on auto; full replace on manual.
   useEffect(() => {
@@ -595,6 +641,7 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
 
   return {
     studyHint,
+    studyContext,
     autoStudyRegion,
     matchedStudyRegion,
     studyRegions,

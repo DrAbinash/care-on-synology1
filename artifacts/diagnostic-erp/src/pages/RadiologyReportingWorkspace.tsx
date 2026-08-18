@@ -84,6 +84,7 @@ import {
 import {
   mergeReportDemography,
   resolveDisplayAge,
+  formatDoctorWithDegree,
   type ReportDemography,
 } from "@/lib/reportDemography";
 import type { PrintClinic } from "@/lib/reportPdfGenerator";
@@ -1031,9 +1032,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
 
   const clinicalHistoryChips = useMemo(
     () => (studySetup.quickSelectData?.clinicalHistory ?? [])
-      .filter((c) => c.isActive && (
-        studySetup.studyRegions.length === 0 || studySetup.studyRegions.includes(c.studyType)
-      ))
+      .filter((c) => c.isActive && studySetup.studyRegions.includes(c.studyType))
       .sort((a, b) => a.sortOrder - b.sortOrder || a.displayLabel.localeCompare(b.displayLabel)),
     [studySetup.quickSelectData, studySetup.studyRegions],
   );
@@ -1781,9 +1780,9 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     retry: false,
   });
 
-  const doctorsCatalogQ = useQuery<{ name: string }[]>({
+  const doctorsCatalogQ = useQuery<{ name: string; degree?: string | null }[]>({
     queryKey: ["doctors-list"],
-    queryFn: () => api.get<{ doctors: { name: string }[] }>("/api/doctors").then((d) => d.doctors ?? []),
+    queryFn: () => api.get<{ doctors: { name: string; degree?: string | null }[] }>("/api/doctors").then((d) => d.doctors ?? []),
     staleTime: 5 * 60_000,
     retry: false,
   });
@@ -1820,7 +1819,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       },
       dicom: (row?.dicomMetadata as Record<string, unknown> | undefined) ?? {},
       overrides: demographyOverrides,
-      referringDoctorCatalog: (doctorsCatalogQ.data ?? []).map((d) => d.name),
+      referringDoctorCatalog: (doctorsCatalogQ.data ?? []).map((d) => formatDoctorWithDegree(d.name, d.degree)),
     });
     return merged;
   }, [workflow.currentRow, patientMasterQ.data, demographyOverrides, doctorsCatalogQ.data]);
@@ -3629,6 +3628,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       modality={workflow.currentRow?.modality ?? null}
                       studyDescription={workflow.currentRow?.studyDescription ?? null}
                       bodyPart={(workflow.currentRow as { bodyPart?: string | null } | null)?.bodyPart ?? null}
+                      region={studySetup.matchedStudyRegion}
                       findingsText={findingsText}
                       impressionText={impressionText}
                       recommendationText={recommendationText}

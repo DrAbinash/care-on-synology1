@@ -53,6 +53,7 @@ import RadiologyCopilotPanel from "@/components/RadiologyCopilotPanel";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { FindingsHighlightEditor, type FindingsHighlightEditorHandle } from "@/components/FindingsHighlightEditor";
 import { chocolateBoxSetFor, insertAtCursor } from "@/lib/findingsMacros";
+import { buildReportingStudyContext } from "@/lib/reportingStudyContext";
 import RadiologyMemoryPanel from "@/components/RadiologyMemoryPanel";
 import RadiologyKnowledgePanel from "@/components/RadiologyKnowledgePanel";
 import MeasurementAssistantPanel from "@/components/MeasurementAssistantPanel";
@@ -83,7 +84,7 @@ import { isUltrasoundModality, isObstetricUsgStudy, normalizeModality } from "@/
 import { templateCatalogModality, templateModalityMatches } from "@/lib/radiologyTemplateModality";
 import {
   pickStructuredTemplate,
-  studyRegionToBodyPart,
+  pickStructuredTemplateForRegion,
   templateRegionMismatch,
 } from "@/lib/pickStructuredTemplate";
 import { pickQuickProtocol } from "@/lib/pickQuickProtocol";
@@ -2058,8 +2059,13 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
 
   // Chocolate Box macro set — depends on `entry`, so must be declared after it.
   const chocolateBoxSet = useMemo(
-    () => chocolateBoxSetFor(entry?.modality, entry?.studyDescription),
-    [entry?.modality, entry?.studyDescription],
+    () => chocolateBoxSetFor(buildReportingStudyContext({
+      modality: entry?.modality,
+      studyDescription: entry?.studyDescription,
+      regions: studyRegions,
+      source: regionOverrides ? "override" : (studyRegion ? "auto" : "unresolved"),
+    })),
+    [entry?.modality, entry?.studyDescription, studyRegions, studyRegion, regionOverrides],
   );
 
   // Live Report Quality Score (Phase 3) — recomputed as the radiologist
@@ -2211,9 +2217,9 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   const [dismissedCoPilotIds, setDismissedCoPilotIds] = useState<Set<string>>(new Set());
   const coPilotSuggestions = useMemo(() => {
     if (!rawFindings.trim()) return [] as CoPilotSuggestion[];
-    return observeReportText(entry?.modality ?? "", entry?.studyDescription ?? "", rawFindings)
+    return observeReportText(entry?.modality ?? "", entry?.studyDescription ?? "", rawFindings, studyRegion)
       .filter((s) => !COPILOT_SUPERSEDED_IDS.has(s.id) && !dismissedCoPilotIds.has(s.id));
-  }, [rawFindings, entry?.modality, entry?.studyDescription, dismissedCoPilotIds]);
+  }, [rawFindings, entry?.modality, entry?.studyDescription, studyRegion, dismissedCoPilotIds]);
 
   // ── CARE Copilot (PR #80) ───────────────────────────────────────────────────
   // Unified, always-on advisory panel. The analysis is LOCAL and deterministic
@@ -2254,13 +2260,14 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   // template `criticalWatchList` data (no duplicate list here); seeds the
   // critical-results detector in addition to its built-in emergency table.
   const entryCriticalWatchList = useMemo(
-    () => criticalWatchListFor(entry?.modality, entry?.studyDescription),
-    [entry?.modality, entry?.studyDescription],
+    () => criticalWatchListFor(entry?.modality, entry?.studyDescription, studyRegion),
+    [entry?.modality, entry?.studyDescription, studyRegion],
   );
 
   const copilotContext = useMemo<CopilotContext>(() => ({
     modality: entry?.modality ?? "",
     studyDescription: entry?.studyDescription ?? "",
+    region: studyRegion,
     clinicalHistory,
     findings: useStructured ? findingsAsText() : rawFindings,
     impression: impression.filter(Boolean),
@@ -2284,7 +2291,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     // USG Companion Copilot module (undefined for non-USG studies → module no-op).
     usgCompanion: companionCopilot ?? undefined,
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [entry?.modality, entry?.studyDescription, clinicalHistory, useStructured, findingsMap, rawFindings, impression, recommendation, technique, selectedQuickIds, findingById, checklistPercent, missingRequiredMeasurements, selectedPrior, copilotViewerMeasurements, entryCriticalWatchList, isCritical, checklistComm.phoned, companionCopilot]);
+  }), [entry?.modality, entry?.studyDescription, studyRegion, clinicalHistory, useStructured, findingsMap, rawFindings, impression, recommendation, technique, selectedQuickIds, findingById, checklistPercent, missingRequiredMeasurements, selectedPrior, copilotViewerMeasurements, entryCriticalWatchList, isCritical, checklistComm.phoned, companionCopilot]);
 
   // MRI PR 3 — critical findings described in the drafted report (for the
   // finalize-safety gate and the pre-sign preview), computed from the same
@@ -2424,7 +2431,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
   // per-section boxes, not rawFindings) and the report is editable.
   const copilotCompletion = useMemo(
     () => (copilotPrefs.enabled && copilotPrefs.autoComplete && !useStructured
-      ? suggestCompletion(rawFindings, { studyDescription: entry?.studyDescription ?? "" })
+      ? suggestCompletion(rawFindings, { studyDescription: entry?.studyDescription ?? "", region: studyRegion })
       : null),
     [copilotPrefs.enabled, copilotPrefs.autoComplete, useStructured, rawFindings, entry?.studyDescription],
   );
@@ -3113,16 +3120,7 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
       lastInsertedTechniqueRef.current = null;
     }
     if (!entry || templates.length === 0) return;
-    let match = pickStructuredTemplate(templates, entry.modality, entry.studyDescription);
-    if (!match) {
-      const bodyPart = studyRegionToBodyPart(region);
-      const mod = templateCatalogModality(entry.modality);
-      if (bodyPart) {
-        match = templates.find(
-          (t) => templateCatalogModality(t.modality) === mod && t.bodyPart === bodyPart,
-        ) ?? null;
-      }
-    }
+    const match = pickStructuredTemplateForRegion(templates, entry.modality, region);
     if (!match) return;
     templateApplySourceRef.current = opts?.fullReplace ? "manual" : "auto";
     setSelectedTemplateId(match.id);
@@ -3242,17 +3240,9 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     }
 
     let match = entry
-      ? pickStructuredTemplate(templates, entry.modality, entry.studyDescription)
+      ? (pickStructuredTemplateForRegion(templates, entry.modality, studyRegion)
+        ?? (!studyRegion ? pickStructuredTemplate(templates, entry.modality, entry.studyDescription) : null))
       : null;
-    if (!match && entry && studyRegion) {
-      const bodyPart = studyRegionToBodyPart(studyRegion);
-      const mod = templateCatalogModality(entry.modality);
-      if (bodyPart) {
-        match = templates.find(
-          (t) => templateCatalogModality(t.modality) === mod && t.bodyPart === bodyPart,
-        ) ?? null;
-      }
-    }
 
     if (match) {
       templateApplySourceRef.current = "manual";
@@ -3293,16 +3283,8 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
     const studyKey = studyId ?? -1;
     if (autoTemplateForStudyRef.current === studyKey) return;
     autoTemplateForStudyRef.current = studyKey;
-    let match = pickStructuredTemplate(templates, entry.modality, entry.studyDescription);
-    if (!match && studyRegion) {
-      const bodyPart = studyRegionToBodyPart(studyRegion);
-      const mod = templateCatalogModality(entry.modality);
-      if (bodyPart) {
-        match = templates.find(
-          (t) => templateCatalogModality(t.modality) === mod && t.bodyPart === bodyPart,
-        ) ?? null;
-      }
-    }
+    const match = pickStructuredTemplateForRegion(templates, entry.modality, studyRegion)
+      ?? (!studyRegion ? pickStructuredTemplate(templates, entry.modality, entry.studyDescription) : null);
     if (match && match.id !== selectedTemplateId) {
       templateApplySourceRef.current = "auto";
       setSelectedTemplateId(match.id);
@@ -3363,16 +3345,8 @@ export default function RadiologyReportingWorkspace({ studyId }: { studyId?: num
 
   const applyCorrectStructuredTemplate = useCallback(() => {
     if (!entry || templates.length === 0) return;
-    let match = pickStructuredTemplate(templates, entry.modality, entry.studyDescription);
-    if (!match && studyRegion) {
-      const bodyPart = studyRegionToBodyPart(studyRegion);
-      const mod = templateCatalogModality(entry.modality);
-      if (bodyPart) {
-        match = templates.find(
-          (t) => templateCatalogModality(t.modality) === mod && t.bodyPart === bodyPart,
-        ) ?? null;
-      }
-    }
+    const match = pickStructuredTemplateForRegion(templates, entry.modality, studyRegion)
+      ?? (!studyRegion ? pickStructuredTemplate(templates, entry.modality, entry.studyDescription) : null);
     if (!match) {
       toast({ title: "No matching template", description: "Pick a template from the Templates tab.", variant: "destructive" });
       return;

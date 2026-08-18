@@ -65,6 +65,7 @@ doctorsRouter.get("/", async (req, res) => {
       address: doctorsTable.address,
       area: doctorsTable.area,
       registrationNumber: doctorsTable.registrationNumber,
+      degree: doctorsTable.degree,
       defaultCommissionType: doctorsTable.defaultCommissionType,
       defaultCommission: doctorsTable.defaultCommission,
       ledgerId: doctorsTable.ledgerId,
@@ -82,7 +83,8 @@ doctorsRouter.get("/", async (req, res) => {
         ilike(doctorsTable.specialization, `%${search}%`),
         ilike(doctorsTable.hospitalAffiliation, `%${search}%`),
         ilike(doctorsTable.address, `%${search}%`),
-        ilike(doctorsTable.area, `%${search}%`)
+        ilike(doctorsTable.area, `%${search}%`),
+        ilike(doctorsTable.degree, `%${search}%`)
       )
     ) as typeof query;
   }
@@ -110,6 +112,7 @@ doctorsRouter.post("/", async (req, res) => {
   const values = hasCommissionAccess(req)
     ? parsed.data
     : stripFields(parsed.data as Record<string, unknown>, DOCTOR_COMMISSION_FIELDS) as typeof parsed.data;
+  if (typeof values.degree === "string") values.degree = values.degree.trim() || null;
   const [doctor] = await db.insert(doctorsTable).values({ ...values, ledgerId }).returning();
   invalidateCachedPrefix(DOCTORS_LIST_CACHE_KEY);
   res.status(201).json(
@@ -144,6 +147,7 @@ doctorsRouter.patch("/:id", async (req, res) => {
   if (body.area !== undefined) updates.area = body.area || null;
   // Module B: registrationNumber persists from the Doctors form so PCPNDT Form F can auto-fill it.
   if (body.registrationNumber !== undefined) updates.registrationNumber = body.registrationNumber || null;
+  if (body.degree !== undefined) updates.degree = body.degree?.trim() || null;
   // Commission rate changes require the pen drive — silently ignored otherwise,
   // so an ordinary staff edit to a doctor's other details still succeeds.
   if (hasCommissionAccess(req)) {
@@ -221,8 +225,10 @@ doctorsRouter.post("/import", async (req, res) => {
     const area = typeof r.area === "string" && r.area.trim() ? r.area.trim() : null;
     const registrationNumber = typeof r.registrationNumber === "string" && r.registrationNumber.trim()
       ? r.registrationNumber.trim() : null;
+    const degree = typeof r.degree === "string" && r.degree.trim()
+      ? r.degree.trim() : null;
 
-    const values = { name, specialization, phone, email, hospitalAffiliation, address, area, registrationNumber };
+    const values = { name, specialization, phone, email, hospitalAffiliation, address, area, registrationNumber, degree };
 
     try {
       // Match priority: registrationNumber > name+phone > name only.

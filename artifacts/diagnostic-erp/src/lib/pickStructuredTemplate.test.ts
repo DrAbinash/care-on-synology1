@@ -81,11 +81,28 @@ describe("pickStructuredTemplateForRegion", () => {
     );
     warn.mockRestore();
   });
+
+  it("does not guess Brain when the region has no template mapping", () => {
+    const match = pickStructuredTemplateForRegion(
+      TEMPLATES,
+      "MR",
+      "Knee",
+      "MRI Brain Plain",
+    );
+    expect(match).toBeNull();
+  });
 });
 
 describe("studyRegionToBodyPart", () => {
   it("maps LS Spine region", () => {
     expect(studyRegionToBodyPart("LS Spine")).toBe("SPINE_LS");
+  });
+
+  it("maps cervical / dorsal / whole separately", () => {
+    expect(studyRegionToBodyPart("Cervical Spine")).toBe("SPINE_CERVICAL");
+    expect(studyRegionToBodyPart("Dorsal Spine")).toBe("SPINE_DORSAL");
+    expect(studyRegionToBodyPart("Whole Spine")).toBe("SPINE_WHOLE");
+    expect(studyRegionToBodyPart("Knee")).toBeNull();
   });
 });
 

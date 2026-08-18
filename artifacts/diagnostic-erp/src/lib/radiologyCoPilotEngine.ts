@@ -21,10 +21,12 @@ export interface ChecklistItem {
 export function observeReportText(
   modality: string,
   studyDescription: string,
-  text: string
+  text: string,
+  region?: string | null,
 ): CoPilotSuggestion[] {
   const suggestions: CoPilotSuggestion[] = [];
   const normalized = text.toLowerCase();
+  const studyHaystack = (region ?? studyDescription).toLowerCase();
 
   // Rule: Disc protrusion documented -> Foraminal stenosis not described
   if (normalized.includes("protrusion") || normalized.includes("herniation") || normalized.includes("bulge")) {
@@ -57,7 +59,7 @@ export function observeReportText(
 
   // Rule: Enhancing lesion -> Consider spectroscopy
   if (normalized.includes("enhancing") || normalized.includes("enhancement") || normalized.includes("ring-enhancing")) {
-    if (!normalized.includes("spectroscopy") && !normalized.includes("mrs") && studyDescription.toLowerCase().includes("brain")) {
+    if (!normalized.includes("spectroscopy") && !normalized.includes("mrs") && studyHaystack.includes("brain")) {
       suggestions.push({
         id: "brain-spectroscopy",
         type: "clinical",
@@ -131,9 +133,9 @@ export function observeReportText(
 }
 
 // ─── 2. Smart Clinical Reminders ───
-export function getSmartReminders(modality: string, studyDescription: string): CoPilotSuggestion[] {
+export function getSmartReminders(modality: string, studyDescription: string, region?: string | null): CoPilotSuggestion[] {
   const suggestions: CoPilotSuggestion[] = [];
-  const desc = studyDescription.toLowerCase();
+  const desc = (region ?? studyDescription).toLowerCase();
   const mod = modality.toUpperCase();
 
   if (desc.includes("brain") || desc.includes("head")) {
@@ -192,8 +194,8 @@ export function getSmartReminders(modality: string, studyDescription: string): C
 }
 
 // ─── 3. Checklist Generator ───
-export function getChecklist(modality: string, studyDescription: string): ChecklistItem[] {
-  const desc = studyDescription.toLowerCase();
+export function getChecklist(modality: string, studyDescription: string, region?: string | null): ChecklistItem[] {
+  const desc = (region ?? studyDescription).toLowerCase();
   const mod = modality.toUpperCase();
 
   if (desc.includes("brain") || desc.includes("head")) {

@@ -2818,6 +2818,10 @@ components:
           type: string
           nullable: true
           description: State medical council registration number — printed on PCPNDT Form F.
+        degree:
+          type: string
+          nullable: true
+          description: Medical degree / qualification shown on reports (e.g. MBBS, MD).
         defaultCommission:
           oneOf:
             - type: number
@@ -2869,6 +2873,10 @@ components:
         registrationNumber:
           type: string
           nullable: true
+        degree:
+          type: string
+          nullable: true
+          description: Medical degree / qualification shown on reports (e.g. MBBS, MD).
       required: [name, specialization]
 
     DashboardStats:
@@ -3768,6 +3776,10 @@ components:
         registrationNumber:
           type: string
           nullable: true
+        degree:
+          type: string
+          nullable: true
+          description: Medical degree / qualification shown on reports (e.g. MBBS, MD).
         defaultCommission:
           oneOf:
             - type: number

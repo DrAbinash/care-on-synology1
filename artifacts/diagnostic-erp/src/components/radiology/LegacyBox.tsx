@@ -90,6 +90,8 @@ export interface LegacyBoxProps {
   modality?: string | null;
   studyDescription?: string | null;
   bodyPart?: string | null;
+  /** Resolved radiology_study_tabs.name — drives copilot study gates. */
+  region?: string | null;
   findingsText: string;
   impressionText: string;
   recommendationText: string;
@@ -146,6 +148,7 @@ export default function LegacyBox(props: LegacyBoxProps) {
     () => analyzeCopilot({
       modality: props.modality ?? "",
       studyDescription: props.studyDescription ?? "",
+      region: props.region ?? null,
       clinicalHistory: props.clinicalHistoryText,
       findings: props.findingsText,
       impression: props.impressionText.split("\n").filter(Boolean),
@@ -156,7 +159,7 @@ export default function LegacyBox(props: LegacyBoxProps) {
       criticalCommunicated: props.criticalCommunicated,
     }),
     [
-      props.modality, props.studyDescription, props.clinicalHistoryText,
+      props.modality, props.studyDescription, props.region, props.clinicalHistoryText,
       props.findingsText, props.impressionText, props.recommendationText,
       props.techniqueText, props.selectedFindingLabels,
       props.criticalMarked, props.criticalCommunicated,
@@ -511,6 +514,7 @@ export default function LegacyBox(props: LegacyBoxProps) {
                   orderId={props.orderId ?? undefined}
                   modality={props.modality ?? undefined}
                   bodyPart={props.bodyPart ?? undefined}
+                  studyRegionHint={props.region ?? props.bodyPart ?? undefined}
                   onMeasurementsChange={(compiled) => {
                     if (compiled?.trim()) props.onAppendFindings(compiled);
                   }}
