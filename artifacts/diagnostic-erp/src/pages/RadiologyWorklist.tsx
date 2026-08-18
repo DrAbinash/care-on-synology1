@@ -8,7 +8,6 @@ import { launchViewer, recordFailedLaunch, recordSuccessfulLaunch, resolveActive
 import { launchRadiologyStudy } from "@/lib/studyLaunchService";
 import { normalizeModality, isUltrasoundModality } from "@/lib/usgModality";
 import { DATE_PRESETS, toISTDateStr } from "@/lib/dateRangePresets";
-import PageHeader from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -566,19 +565,20 @@ function PacsDebugPanel({
   const [expanded, setExpanded] = useState(false);
 
   return (
-    <div className="rounded-lg border-2 border-blue-400 bg-blue-50 dark:bg-blue-950/40 dark:border-blue-600 overflow-hidden">
-      {/* Header */}
+    <div className={expanded ? "w-full basis-full rounded border border-blue-300/80 bg-blue-50/80 dark:bg-blue-950/30 dark:border-blue-700 overflow-hidden" : "inline-flex shrink-0"}>
       <button
-        className="w-full flex items-center justify-between px-4 py-2 bg-blue-100 dark:bg-blue-900/50 hover:bg-blue-200 dark:hover:bg-blue-900/70 transition-colors"
+        className={expanded
+          ? "w-full flex items-center justify-between gap-2 px-2 py-0.5 bg-blue-100/90 dark:bg-blue-900/40 hover:bg-blue-200/80 dark:hover:bg-blue-900/60 transition-colors"
+          : "inline-flex items-center gap-1 h-7 px-1.5 rounded-md border border-blue-300/60 bg-blue-50/80 text-[10px] font-mono font-semibold text-blue-900 dark:text-blue-200 hover:bg-blue-100/90"}
         onClick={() => setExpanded((v) => !v)}
+        type="button"
+        title="PACS worklist diagnostics"
       >
-        <div className="flex items-center gap-2 font-mono text-xs font-bold text-blue-900 dark:text-blue-200">
-          <Database className="h-3.5 w-3.5" />
-          PACS WORKLIST / DICOM RECEIVED STUDIES — LIVE DIAGNOSTIC PANEL
-          {isLoading && <span className="ml-2 text-blue-500 animate-pulse">● fetching…</span>}
-          {isError && <span className="ml-2 text-red-600">⚠ ERROR</span>}
-        </div>
-        {expanded ? <ChevronUp className="h-4 w-4 text-blue-600" /> : <ChevronDown className="h-4 w-4 text-blue-600" />}
+        <Database className="h-3 w-3 shrink-0" />
+        <span className="truncate max-w-[72px]">Debug</span>
+        {isLoading && <span className="text-blue-500 animate-pulse shrink-0">●</span>}
+        {isError && <span className="text-red-600 shrink-0">⚠</span>}
+        {expanded ? <ChevronUp className="h-3 w-3 text-blue-600 shrink-0" /> : <ChevronDown className="h-3 w-3 text-blue-600 shrink-0" />}
       </button>
 
       {expanded && (
@@ -1350,23 +1350,28 @@ export default function RadiologyWorklist() {
 
   return (
     <div className="h-full min-h-0 flex flex-col overflow-hidden">
-      <PageHeader title="Worklist Hub" subtitle="RIS study queue and PACS intake worklist" />
+      <div className="shrink-0 flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5 px-2 sm:px-3 py-1 border-b border-border/60 bg-muted/15">
+        <div className="flex items-center gap-2 min-w-0">
+          <h1 className="text-sm font-bold tracking-tight text-foreground">Worklist Hub</h1>
+          <span className="text-[10px] text-muted-foreground hidden sm:inline truncate">RIS queue · PACS intake</span>
+        </div>
+      </div>
 
-      <Tabs defaultValue="pacs-worklist" className="flex-1 min-h-0 flex flex-col px-3 sm:px-4 pb-3 sm:pb-4 space-y-3 overflow-hidden">
-        <TabsList className="shrink-0 grid w-full grid-cols-1 sm:grid-cols-2 h-auto gap-1.5 p-1.5 bg-muted/40 rounded-xl border border-border/60">
+      <Tabs defaultValue="pacs-worklist" className="flex-1 min-h-0 flex flex-col px-2 sm:px-3 pb-2 pt-1.5 gap-1.5 overflow-hidden">
+        <TabsList className="shrink-0 inline-flex h-8 w-full sm:w-auto p-0.5 gap-0.5 bg-muted/40 rounded-md border border-border/50">
           <TabsTrigger
             value="study-queue"
-            className="flex items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium transition-all data-[state=active]:bg-background data-[state=active]:shadow-sm data-[state=active]:border data-[state=active]:border-border/60"
+            className="h-7 flex-1 sm:flex-none rounded px-2.5 text-xs font-medium gap-1.5 data-[state=active]:bg-background data-[state=active]:shadow-sm"
           >
-            <ClipboardList size={15} />
-            <span className="text-center leading-tight">RIS Study Queue</span>
+            <ClipboardList size={13} />
+            <span>RIS Study Queue</span>
           </TabsTrigger>
           <TabsTrigger
             value="pacs-worklist"
-            className="flex items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium transition-all data-[state=active]:bg-background data-[state=active]:shadow-sm data-[state=active]:border data-[state=active]:border-border/60"
+            className="h-7 flex-1 sm:flex-none rounded px-2.5 text-xs font-medium gap-1.5 data-[state=active]:bg-background data-[state=active]:shadow-sm"
           >
-            <ScanSearch size={15} />
-            <span className="text-center leading-tight">PACS Worklist</span>
+            <ScanSearch size={13} />
+            <span>PACS Worklist</span>
           </TabsTrigger>
         </TabsList>
 
@@ -1375,89 +1380,51 @@ export default function RadiologyWorklist() {
         </TabsContent>
 
         <TabsContent value="pacs-worklist" className="flex-1 min-h-0 overflow-hidden mt-0 data-[state=inactive]:hidden">
-          <div className="h-full min-h-0 flex flex-col gap-3 overflow-hidden">
+          <div className="h-full min-h-0 flex flex-col gap-1 overflow-hidden">
 
-            {/* ── LIVE DEBUG PANEL ── */}
-            <div className="shrink-0 space-y-3 overflow-y-auto max-h-[40vh]">
-            <PacsDebugPanel
-              entries={entries}
-              filtered={filtered}
-              isLoading={isLoading}
-              isError={isError}
-              error={error as Error | null}
-              lastRefresh={lastRefresh}
-              statusFilter={statusFilter}
-              modalityFilter={modalityFilter}
-              search={search}
-              dbTotalRows={countData?.totalRows ?? null}
-              onForceRefresh={() => void refetch()}
-              onClearCache={handleClearCache}
-              showSentinel={showSentinel}
-              onToggleSentinel={() => setShowSentinel((v) => !v)}
-            />
-
-            {/* Summary bar */}
-            <div className="flex items-center justify-between bg-slate-100 dark:bg-muted/40 border border-slate-200 dark:border-card-border rounded-lg px-4 py-2">
-              <span className="text-sm font-bold text-slate-700 dark:text-slate-300">
-                PACS Worklist / DICOM Received Studies: <span className="text-lg text-slate-900 dark:text-foreground tabular-nums">{entries.length}</span>
-              </span>
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-slate-500 dark:text-slate-400">
-                  {isLoading ? "Loading..." : filtered.length === entries.length ? "All visible" : `${filtered.length} filtered`}
+            <div className="shrink-0 space-y-0.5 border-b border-border/40 pb-0.5" data-testid="pacs-worklist-toolbar">
+            <div className="flex flex-wrap items-center gap-1">
+              <PacsDebugPanel
+                entries={entries}
+                filtered={filtered}
+                isLoading={isLoading}
+                isError={isError}
+                error={error as Error | null}
+                lastRefresh={lastRefresh}
+                statusFilter={statusFilter}
+                modalityFilter={modalityFilter}
+                search={search}
+                dbTotalRows={countData?.totalRows ?? null}
+                onForceRefresh={() => void refetch()}
+                onClearCache={handleClearCache}
+                showSentinel={showSentinel}
+                onToggleSentinel={() => setShowSentinel((v) => !v)}
+              />
+              <span className="text-[11px] font-semibold text-muted-foreground whitespace-nowrap shrink-0">
+                PACS <span className="text-foreground tabular-nums">{entries.length}</span>
+                <span className="font-normal text-muted-foreground/80">
+                  {isLoading ? " · …" : filtered.length === entries.length ? "" : ` · ${filtered.length} shown`}
                 </span>
-                <Button variant="outline" size="sm" onClick={() => void refetch()}>
-                  <RefreshCw className="h-4 w-4 mr-1" /> Refresh
-                </Button>
-              </div>
-            </div>
+              </span>
+              <Button variant="outline" size="sm" className="h-7 px-2 text-[11px]" onClick={() => void refetch()}>
+                <RefreshCw className="h-3 w-3 mr-1" /> Refresh
+              </Button>
+              <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => setShowWorkload((v) => !v)} data-testid="btn-workload">
+                {showWorkload ? "Hide workload" : "Workload"}
+              </Button>
 
-            {unlinkedPacsCount > 0 && (
-              <div className="flex flex-wrap items-start gap-3 p-3 rounded-lg bg-orange-50 border border-orange-200 dark:bg-orange-950/30 dark:border-orange-800 text-sm text-orange-900 dark:text-orange-200">
-                <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0 text-orange-600" />
-                <div className="flex-1 min-w-0">
-                  <span className="font-semibold">
-                    {unlinkedPacsCount} PACS scan{unlinkedPacsCount === 1 ? "" : "s"} not linked to a bill in ERP
-                  </span>
-                  <span className="text-xs text-orange-800/90 dark:text-orange-300/90 block mt-0.5">
-                    Images can exist in Orthanc while Bill column stays —. Auto-link matches by accession (MWL work id); if the modality did not use MWL, open DICOM Match Center and link manually.
-                  </span>
-                </div>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  className="shrink-0 border-orange-300 text-orange-900 hover:bg-orange-100 dark:border-orange-700 dark:text-orange-200"
-                  disabled={autoLinking}
-                  onClick={() => void autoLinkUnlinkedBills()}
-                  data-testid="pacs-auto-link-bills"
-                >
-                  {autoLinking ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Link2 className="h-3.5 w-3.5 mr-1" />}
-                  Auto-link bills
-                </Button>
-                <Link
-                  href="/radiology/my-collection?filter=unbilled"
-                  className="text-xs font-semibold text-orange-800 dark:text-orange-300 underline shrink-0 hover:text-orange-900 self-center"
-                >
-                  Open DICOM Match →
-                </Link>
-              </div>
-            )}
-
-            {/* Filters + date range (dates aligned right) */}
-            <div className="flex flex-wrap items-center gap-2 justify-between">
-              <div className="flex flex-wrap gap-2 items-center flex-1 min-w-0">
-              <div className="relative flex-1 min-w-[180px] max-w-md">
-                <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+              <div className="relative w-[min(220px,28vw)] shrink-0">
+                <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
                 <Input
-                  className="pl-8"
+                  className="h-7 pl-7 text-xs"
                   placeholder="Search patient, accession..."
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
                 />
               </div>
               <Select value={statusFilter} onValueChange={setStatusFilter}>
-                <SelectTrigger className="w-[160px]">
-                  <Filter className="h-4 w-4 mr-1 text-muted-foreground" />
+                <SelectTrigger className="h-7 w-[118px] text-xs">
+                  <Filter className="h-3 w-3 mr-1 text-muted-foreground" />
                   <SelectValue placeholder="Status" />
                 </SelectTrigger>
                 <SelectContent>
@@ -1469,33 +1436,33 @@ export default function RadiologyWorklist() {
               <QueueModalityFilter
                 value={modalityFilter}
                 onChange={setModalityFilter}
-                size="md"
+                size="sm"
               />
               <button
                 type="button"
                 data-testid="overnight-ai-drafts-filter"
                 onClick={() => toggleOvernightAiDrafts()}
-                className={`inline-flex items-center gap-1.5 h-9 px-2.5 rounded-md border text-xs font-medium transition ${
+                className={`inline-flex items-center gap-1 h-7 px-2 rounded-md border text-[11px] font-medium transition shrink-0 ${
                   aiDraftFilter === "overnight"
                     ? "border-indigo-500 bg-indigo-600 text-white"
                     : "border-border bg-background text-muted-foreground hover:bg-muted"
                 }`}
                 title="Overnight AI Drafts: QUEUED vs RUNNING from dicom_retry_queue. READY = draft available. Does not change ordinary worklist sorting."
               >
-                <Sparkles className="h-3.5 w-3.5" />
-                Overnight AI Drafts
+                <Sparkles className="h-3 w-3" />
+                Overnight AI
               </button>
               <span
-                className="text-[11px] text-muted-foreground whitespace-nowrap"
+                className="text-[10px] text-muted-foreground whitespace-nowrap hidden lg:inline"
                 data-testid="ai-draft-summary"
               >
                 {overnightMode
-                  ? `Queued: ${aiDraftCounts.queued} · Running: ${aiDraftCounts.running} · Ready: ${aiDraftCounts.ready} · Errors: ${aiDraftCounts.error}`
-                  : `AI Drafts: ${aiDraftCounts.ready} READY | ${aiDraftCounts.error} ERROR | ${aiDraftCounts.queued + aiDraftCounts.processing} PROCESSING`}
+                  ? `Q ${aiDraftCounts.queued} · R ${aiDraftCounts.running} · ✓ ${aiDraftCounts.ready} · ! ${aiDraftCounts.error}`
+                  : `AI ${aiDraftCounts.ready} ready · ${aiDraftCounts.error} err · ${aiDraftCounts.queued + aiDraftCounts.processing} proc`}
               </span>
               <Select value={lockFilter} onValueChange={setLockFilter}>
-                <SelectTrigger className="w-[150px]">
-                  <SelectValue placeholder="Lock Status" />
+                <SelectTrigger className="h-7 w-[108px] text-xs">
+                  <SelectValue placeholder="Lock" />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All Locks</SelectItem>
@@ -1506,9 +1473,9 @@ export default function RadiologyWorklist() {
               </Select>
               <Popover>
                 <PopoverTrigger asChild>
-                  <Button variant="outline" size="sm" className="h-9 gap-1.5">
-                    <Columns2 className="h-4 w-4" />
-                    Columns
+                  <Button variant="outline" size="sm" className="h-7 px-2 text-[11px] gap-1">
+                    <Columns2 className="h-3 w-3" />
+                    Cols
                   </Button>
                 </PopoverTrigger>
                 <PopoverContent align="start" className="w-56 p-2">
@@ -1544,94 +1511,42 @@ export default function RadiologyWorklist() {
                 <Button
                   variant="ghost"
                   size="sm"
-                  className="text-xs"
+                  className="h-7 px-2 text-[11px]"
                   onClick={() => { setSearch(""); setStatusFilter("all"); setModalityFilter("all"); setLockFilter("all"); setAiDraftFilter("all"); setDateFrom(""); setDateTo(""); }}
                 >
-                  Clear filters
+                  Clear
                 </Button>
               )}
-              </div>
-              {overnightMode && (
-                <div className="flex flex-wrap items-center gap-2 w-full" data-testid="overnight-ai-drafts-filters">
-                  <span className="text-[10px] uppercase tracking-wide text-muted-foreground">Study age</span>
-                  {OVERNIGHT_AGE_CHIPS.map((chip) => (
-                    <button
-                      key={chip.id}
-                      type="button"
-                      onClick={() => setOvernightAgeChip(chip.id)}
-                      className={`h-7 px-2 rounded-md border text-[11px] ${
-                        overnightAgeChip === chip.id
-                          ? "border-indigo-500 bg-indigo-600 text-white"
-                          : "border-border bg-background text-muted-foreground"
-                      }`}
-                    >
-                      {chip.label}
-                    </button>
-                  ))}
-                  <span className="text-[10px] uppercase tracking-wide text-muted-foreground ml-2">AI status</span>
-                  {OVERNIGHT_STATUS_CHIPS.map((chip) => (
-                    <button
-                      key={chip.id}
-                      type="button"
-                      onClick={() => setOvernightStatusChip(chip.id)}
-                      className={`h-7 px-2 rounded-md border text-[11px] ${
-                        overnightStatusChip === chip.id
-                          ? "border-indigo-500 bg-indigo-600 text-white"
-                          : "border-border bg-background text-muted-foreground"
-                      }`}
-                    >
-                      {chip.label}
-                    </button>
-                  ))}
-                  {selectedOvernightIds.size > 0 && (
-                    <span className="flex flex-wrap items-center gap-1 ml-auto">
-                      <Button size="sm" variant="outline" className="h-7 text-[11px]" onClick={() => void queueSelectedOvernight()}>
-                        Queue selected
-                      </Button>
-                      <Button size="sm" variant="outline" className="h-7 text-[11px]" onClick={() => void retrySelectedOvernight()}>
-                        Retry selected errors
-                      </Button>
-                      <Button size="sm" variant="outline" className="h-7 text-[11px]" onClick={() => void cancelSelectedOvernight()}>
-                        Cancel selected queued
-                      </Button>
-                    </span>
-                  )}
-                </div>
-              )}
-              <div className="flex flex-wrap items-center gap-2 ml-auto">
-                <CalendarDays className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+
+              <div className="flex items-center gap-1 ml-auto shrink-0 overflow-x-auto max-w-full">
+                <CalendarDays className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
                 <Input
                   type="date"
                   value={dateFrom}
                   onChange={(e) => setDateFrom(e.target.value)}
-                  className="h-9 w-[140px] text-sm"
+                  className="h-7 w-[118px] text-xs"
                 />
-                <span className="text-muted-foreground text-sm">→</span>
+                <span className="text-muted-foreground text-[10px]">→</span>
                 <Input
                   type="date"
                   value={dateTo}
                   onChange={(e) => setDateTo(e.target.value)}
-                  className="h-9 w-[140px] text-sm"
+                  className="h-7 w-[118px] text-xs"
                 />
-                <div className="flex gap-1 flex-wrap">
-                  {DATE_PRESETS.map((p) => (
-                    <Button
-                      key={p.label}
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      className="h-8 text-xs px-2.5"
-                      onClick={() => setDatePreset(p.from(), p.to())}
-                    >
-                      {p.label}
-                    </Button>
-                  ))}
-                </div>
+                {DATE_PRESETS.map((p) => (
+                  <Button
+                    key={p.label}
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7 text-[10px] px-1.5 shrink-0"
+                    onClick={() => setDatePreset(p.from(), p.to())}
+                  >
+                    {p.label}
+                  </Button>
+                ))}
               </div>
-            </div>
 
-            {/* Status chips + DICOM intake shortcut */}
-            <div className="flex gap-2 flex-wrap items-center">
               {Object.entries(STATUS_CONFIG).map(([key, cfg]) => {
                 const count = entries.filter((e) => e.status === key).length;
                 if (count === 0) return null;
@@ -1639,7 +1554,7 @@ export default function RadiologyWorklist() {
                   <button
                     key={key}
                     onClick={() => setStatusFilter(statusFilter === key ? "all" : key)}
-                    className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium border cursor-pointer transition-opacity ${cfg.color} ${statusFilter === key ? "opacity-100 ring-2 ring-offset-1 ring-current" : "opacity-80 hover:opacity-100"}`}
+                    className={`inline-flex items-center gap-0.5 px-1.5 h-6 rounded-full text-[10px] font-medium border cursor-pointer transition-opacity shrink-0 ${cfg.color} ${statusFilter === key ? "opacity-100 ring-1 ring-offset-0 ring-current" : "opacity-80 hover:opacity-100"}`}
                   >
                     {cfg.icon} {cfg.label} ({count})
                   </button>
@@ -1650,23 +1565,93 @@ export default function RadiologyWorklist() {
                   type="button"
                   data-testid="dicom-intake-filter"
                   onClick={() => setStatusFilter(statusFilter === "STUDY_RECEIVED" ? "all" : "STUDY_RECEIVED")}
-                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold border border-sky-300 bg-sky-50 text-sky-900"
+                  className="inline-flex items-center gap-0.5 px-1.5 h-6 rounded-full text-[10px] font-semibold border border-sky-300 bg-sky-50 text-sky-900 shrink-0"
                   title="DICOM intake — studies just received from PACS/modality"
                 >
                   <Database className="h-3 w-3" />
-                  Intake queue ({entries.filter((e) => e.status === "STUDY_RECEIVED").length})
+                  Intake ({entries.filter((e) => e.status === "STUDY_RECEIVED").length})
                 </button>
               )}
             </div>
 
-            {/* M1.6B1 — live radiologist workload (reuses worklist data only) */}
-            <div className="flex items-center gap-2">
-              <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => setShowWorkload((v) => !v)} data-testid="btn-workload">
-                {showWorkload ? "Hide workload" : "Workload"}
-              </Button>
-            </div>
+            {unlinkedPacsCount > 0 && (
+              <div className="flex flex-wrap items-center gap-2 px-2 py-1 rounded-md bg-orange-50 border border-orange-200 dark:bg-orange-950/30 dark:border-orange-800 text-[11px] text-orange-900 dark:text-orange-200">
+                <AlertCircle className="h-3.5 w-3.5 shrink-0 text-orange-600" />
+                <span className="font-semibold shrink-0">{unlinkedPacsCount} unlinked</span>
+                <span className="text-orange-800/90 dark:text-orange-300/90 truncate min-w-0 hidden md:inline" title="Images can exist in Orthanc while Bill column stays —. Auto-link matches by accession (MWL work id); if the modality did not use MWL, open DICOM Match Center and link manually.">
+                  Bill column — until linked · auto-link by accession or use DICOM Match
+                </span>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-6 px-2 text-[10px] shrink-0 border-orange-300 text-orange-900 hover:bg-orange-100 dark:border-orange-700 dark:text-orange-200"
+                  disabled={autoLinking}
+                  onClick={() => void autoLinkUnlinkedBills()}
+                  data-testid="pacs-auto-link-bills"
+                >
+                  {autoLinking ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <Link2 className="h-3 w-3 mr-1" />}
+                  Auto-link
+                </Button>
+                <Link
+                  href="/radiology/my-collection?filter=unbilled"
+                  className="text-[10px] font-semibold text-orange-800 dark:text-orange-300 underline shrink-0 hover:text-orange-900"
+                >
+                  DICOM Match →
+                </Link>
+              </div>
+            )}
+
+            {overnightMode && (
+              <div className="flex flex-wrap items-center gap-1.5" data-testid="overnight-ai-drafts-filters">
+                <span className="text-[9px] uppercase tracking-wide text-muted-foreground">Age</span>
+                {OVERNIGHT_AGE_CHIPS.map((chip) => (
+                  <button
+                    key={chip.id}
+                    type="button"
+                    onClick={() => setOvernightAgeChip(chip.id)}
+                    className={`h-6 px-1.5 rounded border text-[10px] ${
+                      overnightAgeChip === chip.id
+                        ? "border-indigo-500 bg-indigo-600 text-white"
+                        : "border-border bg-background text-muted-foreground"
+                    }`}
+                  >
+                    {chip.label}
+                  </button>
+                ))}
+                <span className="text-[9px] uppercase tracking-wide text-muted-foreground ml-1">AI</span>
+                {OVERNIGHT_STATUS_CHIPS.map((chip) => (
+                  <button
+                    key={chip.id}
+                    type="button"
+                    onClick={() => setOvernightStatusChip(chip.id)}
+                    className={`h-6 px-1.5 rounded border text-[10px] ${
+                      overnightStatusChip === chip.id
+                        ? "border-indigo-500 bg-indigo-600 text-white"
+                        : "border-border bg-background text-muted-foreground"
+                    }`}
+                  >
+                    {chip.label}
+                  </button>
+                ))}
+                {selectedOvernightIds.size > 0 && (
+                  <span className="flex flex-wrap items-center gap-1 ml-auto">
+                    <Button size="sm" variant="outline" className="h-6 text-[10px] px-2" onClick={() => void queueSelectedOvernight()}>
+                      Queue selected
+                    </Button>
+                    <Button size="sm" variant="outline" className="h-6 text-[10px] px-2" onClick={() => void retrySelectedOvernight()}>
+                      Retry errors
+                    </Button>
+                    <Button size="sm" variant="outline" className="h-6 text-[10px] px-2" onClick={() => void cancelSelectedOvernight()}>
+                      Cancel queued
+                    </Button>
+                  </span>
+                )}
+              </div>
+            )}
+
             {showWorkload && (
-              <div className="rounded-lg border p-3 bg-muted/10" data-testid="workload-panel">
+              <div className="rounded-md border p-2 bg-muted/10 text-xs" data-testid="workload-panel">
                 <div className="text-xs font-semibold mb-2">
                   Radiologist workload
                   <span className="text-muted-foreground font-normal ml-2">
@@ -2144,50 +2129,27 @@ export default function RadiologyWorklist() {
               </div>
             )}
 
-            {/* ── Emergency fallback: raw JSON cards ── */}
-            {entries.length > 0 && (
-              <div>
-                <button
-                  className="text-xs text-muted-foreground underline hover:text-foreground"
-                  onClick={() => setShowRawJson((v) => !v)}
-                >
-                  {showRawJson ? "Hide" : "Show"} raw API response ({entries.length} rows) — use if table appears blank
-                </button>
-                {showRawJson && (
-                  <div className="mt-2 space-y-2 max-h-96 overflow-y-auto">
-                    {entries.map((entry, idx) => (
-                      <pre
-                        key={entry.id ?? idx}
-                        className="rounded border bg-slate-50 dark:bg-muted/40 p-2 text-xs font-mono overflow-x-auto whitespace-pre-wrap break-all"
-                      >
-                        {JSON.stringify(entry, null, 2)}
-                      </pre>
-                    ))}
-                  </div>
-                )}
-              </div>
+            <div className="shrink-0 flex flex-wrap items-center justify-between gap-x-3 gap-y-0.5 border-t border-border/60 px-1 py-0.5 text-[10px] text-muted-foreground">
+              <button
+                type="button"
+                className="text-[10px] text-primary underline-offset-2 hover:underline"
+                onClick={() => setShowRawJson((v) => !v)}
+              >
+                {showRawJson ? "Hide raw API" : "Raw API"}
+              </button>
+              <span className="tabular-nums">
+                {filtered.length}/{entries.length} shown
+                {entries.length > 0 && <span className="hidden sm:inline"> · 30s refresh</span>}
+              </span>
+              <span className="text-amber-800 truncate min-w-0" title="AI drafts require radiologist review before delivery">
+                Safety: AI drafts need review — finalize in Reporting Workspace
+              </span>
+            </div>
+            {showRawJson && (
+              <pre className="shrink-0 max-h-40 overflow-auto border-t border-border bg-muted/30 p-2 text-[10px] text-foreground">
+                {JSON.stringify(entries, null, 2)}
+              </pre>
             )}
-
-            <div className="shrink-0 text-xs text-muted-foreground text-right">
-              {filtered.length} of {entries.length} entries
-              {entries.length > 0 && <span> &middot; Auto-refreshes every 30s</span>}
-            </div>
-
-            <div className="shrink-0 flex items-start gap-2 p-3 rounded-lg bg-amber-50 border border-amber-200 text-xs text-amber-800">
-              <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
-              <div>
-                <span className="font-semibold">Safety: </span>
-                AI drafts are never automatically marked as final. Prefer{" "}
-                <button type="button" className="underline font-medium" onClick={() => navigate("/radiology/reporting-workspace")}>
-                  Reporting Workspace
-                </button>{" "}
-                finalize for portal/WhatsApp delivery. External Word/PDF attach stores on the study only — use{" "}
-                <button type="button" className="underline font-medium" onClick={() => navigate("/report-delivery")}>
-                  Report Delivery
-                </button>{" "}
-                to print/share. Automated email delivery is not enabled (READY_TO_SEND only).
-              </div>
-            </div>
           </div>
         </TabsContent>
       </Tabs>
