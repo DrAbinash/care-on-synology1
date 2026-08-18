@@ -243,28 +243,58 @@ export async function exportRadiologyReportToWord(
   const dateStr = (letterhead?.studyDate || "").trim();
 
   const headerChildren: Array<InstanceType<typeof Paragraph> | InstanceType<typeof Table>> = [
-    new Paragraph({
-      spacing: { after: 60 },
-      children: [
-        new ImageRun({
-          type: "png",
-          data: dataUrlToBytes(CARE_LETTERHEAD_LOGO_DATA_URL),
-          transformation: { width: 240, height: 82 },
+    new Table({
+      width: { size: 9360, type: WidthType.DXA },
+      rows: [
+        new TableRow({
+          children: [
+            new TableCell({
+              borders: noBorder,
+              width: { size: 4800, type: WidthType.DXA },
+              children: [new Paragraph({
+                spacing: { after: 0 },
+                children: [
+                  new ImageRun({
+                    type: "png",
+                    data: dataUrlToBytes(CARE_LETTERHEAD_LOGO_DATA_URL),
+                    transformation: { width: 244, height: 83 },
+                  }),
+                ],
+              })],
+            }),
+            new TableCell({
+              borders: noBorder,
+              width: { size: 4560, type: WidthType.DXA },
+              children: [
+                new Paragraph({
+                  alignment: AlignmentType.RIGHT,
+                  spacing: { after: 0 },
+                  children: [new TextRun({
+                    text: "Near Bajla Mahila College, St. Francis School Road, Castair's Town, DEOGHAR-814 112",
+                    size: 14,
+                    font: "Helvetica",
+                  })],
+                }),
+                new Paragraph({
+                  alignment: AlignmentType.RIGHT,
+                  spacing: { after: 0 },
+                  children: [new TextRun({ text: "(JHARKHAND)", size: 14, font: "Helvetica" })],
+                }),
+                new Paragraph({
+                  alignment: AlignmentType.RIGHT,
+                  spacing: { after: 0 },
+                  children: [new TextRun({ text: "Phone: 75490 99099, 99734 97200", size: 14, font: "Helvetica" })],
+                }),
+                new Paragraph({
+                  alignment: AlignmentType.RIGHT,
+                  spacing: { after: 80 },
+                  children: [new TextRun({ text: "Email: care.deoghar@gmail.com", size: 14, font: "Helvetica" })],
+                }),
+              ],
+            }),
+          ],
         }),
       ],
-    }),
-    new Paragraph({
-      alignment: AlignmentType.RIGHT,
-      spacing: { after: 40 },
-      children: [new TextRun({
-        text: "Near Bajla Mahila College, St. Francis School Road, Castair's Town, DEOGHAR-814 112 (JHARKHAND)",
-        size: 14,
-      })],
-    }),
-    new Paragraph({
-      alignment: AlignmentType.RIGHT,
-      spacing: { after: 40 },
-      children: [new TextRun({ text: "Phone: 75490 99099, 99734 97200  ·  Email: care.deoghar@gmail.com", size: 14 })],
     }),
     new Table({
       width: { size: 9360, type: WidthType.DXA },

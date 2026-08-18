@@ -218,6 +218,9 @@ export const DEFAULT_TEMPLATE_ID = "care-classic";
 /** CARE Diagnostics letter-pad copy used by the Premium HTML report. */
 export const CARE_LETTERPAD = {
   clinicName: "CARE DIAGNOSTICS",
+  /** Same wrap as generateReportPDF (jsPDF split of the printed pad). */
+  addressLine1: "Near Bajla Mahila College, St. Francis School Road, Castair's Town, DEOGHAR-814 112",
+  addressLine2: "(JHARKHAND)",
   address: "Near Bajla Mahila College, St. Francis School Road, Castair's Town, DEOGHAR-814 112 (JHARKHAND)",
   phones: "75490 99099, 99734 97200",
   email: "care.deoghar@gmail.com",
@@ -231,6 +234,76 @@ export const CARE_LETTERPAD = {
 
 function isLetterPadTemplate(template: { id: string }): boolean {
   return template.id === "care-premium" || template.id === "care-classic";
+}
+
+/**
+ * Wins over pacs letterhead-scale and institutional Style `!important`
+ * rules (those force a square 60–104px logo). Sizes match generateReportPDF:
+ * logo 22mm tall, address 7.2pt Helvetica right-aligned, 14mm side / 8mm top.
+ */
+export function letterPadErpPdfLockCss(): string {
+  return `
+    /* ERP PDF letter-pad header lock (generateReportPDF) */
+    @page { margin: 8mm 14mm 12mm 14mm !important; }
+    .letterpad .hdr {
+      padding: 0 !important;
+      gap: 0 !important;
+      background: #fff !important;
+      border: none !important;
+      border-bottom: none !important;
+      align-items: flex-start !important;
+      overflow: visible !important;
+    }
+    .letterpad .hdr::before { display: none !important; }
+    .letterpad .hdr-inner,
+    .letterpad .hdr-inner.letterpad-bill {
+      display: flex !important;
+      flex-direction: row !important;
+      align-items: flex-start !important;
+      justify-content: space-between !important;
+      gap: 8mm !important;
+      width: 100% !important;
+      padding: 0 !important;
+    }
+    .letterpad .hdr img.logo,
+    .letterpad .letterpad-bill img.logo {
+      width: auto !important;
+      height: 22mm !important;
+      max-width: 65mm !important;
+      max-height: 22mm !important;
+      object-fit: contain !important;
+      object-position: left top !important;
+    }
+    .letterpad .hdr .contact,
+    .letterpad .letterpad-bill .contact,
+    .letterpad .letterpad-addr-right {
+      max-width: none !important;
+      width: auto !important;
+      flex: 1 1 auto !important;
+      margin: 4mm 0 0 0 !important;
+      text-align: right !important;
+      font-family: Helvetica, Arial, sans-serif !important;
+      font-size: 7.2pt !important;
+      line-height: 3.1mm !important;
+      font-weight: 400 !important;
+      color: #141414 !important;
+      text-transform: none !important;
+      letter-spacing: 0 !important;
+    }
+    .letterpad .hdr-rule {
+      display: block !important;
+      border: none !important;
+      border-top: 0.35mm solid #141414 !important;
+      margin: 2mm 0 0 !important;
+      height: 0 !important;
+    }
+    .letterpad .letterpad-demo-wrap { padding: 3.5mm 0 0 !important; }
+    .letterpad .letterpad-demo {
+      font-family: Helvetica, Arial, sans-serif !important;
+      font-size: 9pt !important;
+      color: #000 !important;
+    }
+  `;
 }
 
 export function resolvePresentationTemplate(id?: string | null): PresentationTemplate {
@@ -554,7 +627,6 @@ export function renderReportDocument(
   const overflowBlock = overflowImages.length > 0
     ? keyImagesHtml(overflowImages, "inline", { heading: "KEY IMAGES (continued)", extraClass: "image-panel-overflow" })
     : "";
-  const letterPadAddress = CARE_LETTERPAD.address;
   const letterPadPhone = `Phone: ${CARE_LETTERPAD.phones}`;
   const letterPadEmail = (model.clinic.email || "").trim() || CARE_LETTERPAD.email;
   const letterPadName = CARE_LETTERPAD.clinicName;
@@ -565,7 +637,8 @@ export function renderReportDocument(
           ? `<img class="logo" src="${letterPadLogo}" alt="${escapeHtml(letterPadName)}"/>`
           : `<div class="hdr-brand"><div class="name">${escapeHtml(letterPadName)}</div></div>`}
         <div class="contact letterpad-addr-right">
-          ${escapeHtml(letterPadAddress)}<br/>
+          ${escapeHtml(CARE_LETTERPAD.addressLine1)}<br/>
+          ${escapeHtml(CARE_LETTERPAD.addressLine2)}<br/>
           ${escapeHtml(letterPadPhone)}<br/>
           Email: ${escapeHtml(letterPadEmail)}
         </div>
@@ -658,8 +731,8 @@ export function renderReportDocument(
     }
     .hdr-rule.hdr-rule-hidden { display: none; }
     .hdr img.logo { width: 64px; height: 64px; object-fit: contain; }
-    .hdr .letterpad-bill img.logo { width: 168px; height: auto; max-height: 52px; object-fit: contain; }
-    .hdr .letterpad-bill .contact { max-width: 48%; font-size: 9px; line-height: 1.4; }
+    .hdr .letterpad-bill img.logo { width: auto; height: 22mm; max-width: 65mm; object-fit: contain; object-position: left top; }
+    .hdr .letterpad-bill .contact { flex: 1; font-size: 7.2pt; line-height: 3.1mm; color: #141414; text-align: right; margin-top: 4mm; }
     .hdr .hdr-brand { flex: 1; }
     .hdr .name { ${slotCss(ty.header)} line-height: 1.1; }
     .hdr .tagline { font-size: 10px; color: ${!banded ? "#475569" : pal.accent}; margin-top: 2px; letter-spacing: 0.06em; }
@@ -860,10 +933,11 @@ export function renderReportDocument(
     .qr-mark { width: 50px; height: 50px; display: block; margin: 2px auto 0; }
     .ftr { ${slotCss(ty.footer)} margin-top: 18px; text-align: center; border-top: 1px solid ${pal.sectionBorder}; padding-top: 6px; clear: both; break-inside: avoid; }
     ${letterPad ? `
-    .hdr { background: #fff; }
+    .hdr { background: #fff; padding: 0; border: none; }
     .hdr::before { display: none; }
-    .hdr img.logo { width: auto; height: 52px; max-width: 220px; object-fit: contain; }
-    .hdr-rule { border-top: 2px solid #b91c1c; }
+    .hdr-inner.letterpad-bill { align-items: flex-start; gap: 8mm; padding-left: 0; }
+    .hdr img.logo { width: auto; height: 22mm; max-width: 65mm; object-fit: contain; }
+    .hdr-rule { border-top: 0.35mm solid #141414; margin: 2mm 0 0; }
     .letterpad-addr { color: #111; font-size: 9.5px; text-align: center; padding: 2px 12px 0; }
     .letterpad-contact { color: #111; font-size: 9px; text-align: center; padding: 2px 12px 6px; }
     .image-panel-keyrail { background: #0f172a; color: #fff; padding: 8px 6px; border-radius: 4px; }
@@ -897,6 +971,7 @@ export function renderReportDocument(
       body { orphans: ${orphans}; widows: ${widows}; }
     }
     ${opts.customCss ?? ""}
+    ${letterPad ? letterPadErpPdfLockCss() : ""}
   </style></head><body>
   <div class="report-wrapper${letterPad ? " letterpad" : ""}">
     ${model.safeguardWatermarkHtml ?? ""}

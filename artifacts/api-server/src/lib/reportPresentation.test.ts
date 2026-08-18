@@ -5,6 +5,7 @@ import {
   type ReportDocumentModel,
 } from "./reportPresentation";
 import { renderedPathForReference, viewportForImageCount } from "./reportImages";
+import { buildLetterheadScaleCss } from "./reportLetterheadScale";
 
 // Ticket R1.1 — THE shared presentation layer. Every rendered surface flows
 // through renderReportDocument, so its layout/typography/page-break contract
@@ -510,6 +511,20 @@ describe("letter-pad header contact is the printed pad, not clinic CRM copy", ()
     expect(html).toContain("DEOGHAR-814 112");
     expect(html).toContain("info@clinic.com");
     expect(html).not.toContain("• info@clinic.com");
+    expect(html).toMatch(/DEOGHAR-814 112<br\/>\s*\(JHARKHAND\)/);
+    expect(html).toContain("font-size: 7.2pt !important");
+    expect(html).toContain("height: 22mm !important");
+  });
+
+  it("ERP PDF header lock wins over square letterhead-scale CSS", () => {
+    const html = renderReportDocument(
+      baseModel({ clinic: { name: "Care Diagnostics", phone: "", email: "info@clinic.com" } }),
+      resolvePresentationTemplate("care-classic"),
+      { customCss: buildLetterheadScaleCss() },
+    );
+    expect(html).toContain("height: 82px !important");
+    expect(html.indexOf("height: 22mm !important")).toBeGreaterThan(html.indexOf("height: 82px !important"));
+    expect(html.indexOf("font-size: 7.2pt !important")).toBeGreaterThan(html.indexOf("font-size: 12.5px !important"));
   });
 
   it("clinic phone does not replace the printed pad numbers", () => {

@@ -189,8 +189,9 @@ const CARE_LETTER_COLORS: Array<[number, number, number]> = [
   [249, 115, 22],  // E — orange
 ];
 
-const DEFAULT_ADDRESS =
-  "Near Bajla Mahila College, St. Francis School Road, Castair's Town, DEOGHAR-814 112 (JHARKHAND)";
+const LETTERPAD_ADDRESS_LINE1 =
+  "Near Bajla Mahila College, St. Francis School Road, Castair's Town, DEOGHAR-814 112";
+const LETTERPAD_ADDRESS_LINE2 = "(JHARKHAND)";
 
 function formatReportDateShort(raw: string | null | undefined): string {
   if (!raw) return "";
@@ -368,13 +369,12 @@ export function generateReportPDF(
       const rightX = pageW - m.right;
       let headerBottom = cursor;
       let logoDrawn = false;
-      let logoW = 0;
       let logoH = 22;
 
       try {
         const aspect = CARE_LETTERHEAD_LOGO_SIZE.width / CARE_LETTERHEAD_LOGO_SIZE.height;
         logoH = 22;
-        logoW = Math.min(contentW * 0.52, logoH * aspect);
+        const logoW = Math.min(contentW * 0.52, logoH * aspect);
         doc.addImage(CARE_LETTERHEAD_LOGO_DATA_URL, "PNG", leftX, cursor, logoW, logoH, undefined, "NONE");
         headerBottom = cursor + logoH;
         logoDrawn = true;
@@ -398,15 +398,12 @@ export function generateReportPDF(
         doc.setTextColor(15, 23, 70);
         doc.text("DIAGNOSTICS", leftX, careY + 5.5);
         headerBottom = careY + 8;
-        logoW = 48;
       }
 
       doc.setFont(font, "normal");
       doc.setFontSize(7.2);
       doc.setTextColor(20, 20, 20);
-      const address = DEFAULT_ADDRESS;
-      const addrMaxW = Math.max(52, contentW - logoW - 8);
-      const addrLines = doc.splitTextToSize(address, addrMaxW) as string[];
+      const addrLines = [LETTERPAD_ADDRESS_LINE1, LETTERPAD_ADDRESS_LINE2];
       let ay = cursor + 4;
       for (const line of addrLines) {
         doc.text(line, rightX, ay, { align: "right" });

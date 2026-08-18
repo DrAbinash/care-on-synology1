@@ -52,6 +52,7 @@ describe("letter-pad PDF preview artifact", () => {
     expect(text).toContain("DEOGHAR-814 112");
     expect(text).toContain("75490 99099");
     expect(text).toContain("St. Francis School Road");
+    expect(text).toMatch(/DEOGHAR-814 112\s*\n\s*\(JHARKHAND\)/);
     expect(text).not.toContain("WRONG ADDRESS");
     expect(text).not.toContain("0000000000");
 
