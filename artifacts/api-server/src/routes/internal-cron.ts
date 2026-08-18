@@ -153,6 +153,20 @@ router.post("/radiology-jobs", async (_req, res) => {
   }
 });
 
+router.post("/radiology-jobs-canary", async (req, res) => {
+  try {
+    const jobId = Number(req.body?.jobId);
+    const { runOvernightAiCanary } = await import("../lib/ai/overnightCanary");
+    const result = await runOvernightAiCanary({
+      jobId: Number.isInteger(jobId) && jobId > 0 ? jobId : undefined,
+    });
+    res.json({ ok: true, fired: "radiology-jobs-canary", result, at: new Date().toISOString() });
+  } catch (err) {
+    logger.error({ err }, "internal-cron radiology-jobs-canary failed");
+    res.status(500).json({ error: "radiology-jobs-canary failed" });
+  }
+});
+
 // Monthly referral-activity summary. Sends referral counts and billed amounts —
 // no commission figure, rate or payout. Forced by default so an admin can verify
 // delivery before turning the scheduled send on; a forced run does not consume

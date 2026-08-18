@@ -15,7 +15,7 @@ import { and, eq, desc, inArray, isNull, ne, sql } from "drizzle-orm";
 import { isFeatureEnabledServer } from "../featureFlags";
 import { AI_MASTER_FLAG, getSchedulerConfig, getModalityMode, getModalityPolicies, normalizeAiModality, DEFAULT_SCHEDULER } from "./clinicalConfigService";
 import { enqueueAiShadowJob, AI_SHADOW_PIPELINE_JOB } from "./shadowPipeline";
-import { jobBacklogCounts, listDeadLetterJobs, markJobRetryable, countDueJobs } from "../radiologyJobs";
+import { jobBacklogCounts, listDeadLetterJobs, markJobRetryable, countDueJobs, peekOvernightAiClaim } from "../radiologyJobs";
 import {
   deriveRadiologyJobConsumerHealth,
   getRadiologyJobConsumerHeartbeat,
@@ -33,6 +33,7 @@ import {
   findLatestShadowJob,
   overnightQueueStats,
   retryShadowJobs,
+  shadowQueueComposition,
 } from "./overnightDraftQueue";
 import { compareOvernightDraftRows } from "./overnightAiDraftStatus";
 import { probeOllamaReachable } from "@workspace/ai-providers";
@@ -539,9 +540,13 @@ export async function getOvernightDiagnostics() {
     topAbandonedReasons: [] as Array<{ reason: string; count: number }>,
   };
   let dueAi = 0;
+  let composition: Awaited<ReturnType<typeof shadowQueueComposition>> | null = null;
+  let claimPreview: Awaited<ReturnType<typeof peekOvernightAiClaim>> | null = null;
   try {
     stats = await overnightQueueStats();
     dueAi = await countDueJobs(AI_SHADOW_PIPELINE_JOB);
+    composition = await shadowQueueComposition();
+    claimPreview = await peekOvernightAiClaim({ preferNewest: false });
   } catch (err) {
     logger.warn({ err }, "overnight diagnostics: queue stats unreadable");
   }
@@ -590,14 +595,55 @@ export async function getOvernightDiagnostics() {
     lastPoll: hb.lastTickAt,
     lastClaimedJob: hb.lastClaimedJobId,
     lastClaimedAt: hb.lastClaimAt,
+    lastRan: hb.lastRan,
+    lastOutcome: hb.lastOutcome,
     lastCompletedDraft: stats.lastSuccessfulDraftAt,
     currentJob: stats.running > 0 ? hb.lastClaimedJobId : null,
     topAbandonedReasons: stats.topAbandonedReasons,
     studyAgeWindow: cfg.studyAgeWindow,
     configError,
+    composition,
+    claimPreview,
+    firstStop: describeOvernightFirstStop({
+      consumer: consumer.status,
+      registered: hb.registered,
+      lastCronTickAt: hb.lastCronTickAt,
+      lastRan: hb.lastRan,
+      lastOutcome: hb.lastOutcome,
+      lastError: hb.lastError ?? stats.lastError,
+      dueNow: dueAi,
+      pending: stats.queueDepth,
+      running: stats.running,
+      peak,
+    }),
     meaning: {
       queueDepth: "dicom_retry_queue rows with operation_type=ai_shadow_pipeline and status pending|retrying (all ages/modalities)",
       worklistQueued: "Overnight AI Drafts filter: worklist rows in the selected age chip whose latest shadow job maps to QUEUED (not the full backlog)",
     },
   };
+}
+
+function describeOvernightFirstStop(input: {
+  consumer: string;
+  registered: boolean;
+  lastCronTickAt: string | null;
+  lastRan: number;
+  lastOutcome: string | null;
+  lastError: string | null;
+  dueNow: number;
+  pending: number;
+  running: number;
+  peak: boolean;
+}): string {
+  if (!input.registered) return "consumer_not_registered_in_this_api_process";
+  if (input.running > 0) return "none_job_running";
+  if (input.peak && input.pending > 0) return "clinic_peak_ai_concurrency_0";
+  if (!input.lastCronTickAt) return "drain_timer_registered_but_never_polled";
+  if (input.consumer === "STALE") return "drain_tick_stale_or_hung";
+  if (input.consumer === "STARVED") return "claim_returned_no_row_despite_due_jobs";
+  if (input.dueNow === 0 && input.pending > 0) return "jobs_waiting_on_next_retry_at_backoff";
+  if (input.lastRan > 0 && input.lastOutcome && input.lastOutcome !== "success") {
+    return `handler_failed:${(input.lastError ?? input.lastOutcome).slice(0, 120)}`;
+  }
+  return "none_consumer_polling";
 }

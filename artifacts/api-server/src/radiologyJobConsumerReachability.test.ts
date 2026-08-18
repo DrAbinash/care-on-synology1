@@ -20,29 +20,30 @@ const internalCronSrc = readFileSync(join(__dirname, "routes", "internal-cron.ts
 const compose = readFileSync(join(REPO, "docker-compose.yml"), "utf8");
 
 describe("overnight AI consumer is reachable without ENABLE_SCHEDULERS", () => {
-  test("index.ts starts the consumer after the ENABLE_SCHEDULERS else-branch", () => {
-    const gate = indexSrc.indexOf('process.env["ENABLE_SCHEDULERS"]');
+  test("index.ts starts the consumer BEFORE the ENABLE_SCHEDULERS block", () => {
     const consumer = indexSrc.indexOf("startRadiologyJobConsumer()");
+    const gate = indexSrc.indexOf('process.env["ENABLE_SCHEDULERS"]');
+    expect(consumer).toBeGreaterThan(-1);
     expect(gate).toBeGreaterThan(-1);
-    expect(consumer).toBeGreaterThan(gate);
-    const elseLog = indexSrc.indexOf("Cron schedulers disabled");
-    expect(elseLog).toBeGreaterThan(gate);
-    expect(consumer).toBeGreaterThan(elseLog);
+    expect(consumer).toBeLessThan(gate);
   });
 
-  test("cron.ts exports the drain and registers it idempotently", () => {
+  test("cron.ts exports the drain and registers it idempotently without timezone", () => {
     expect(cronSrc).toContain("export function startRadiologyJobConsumer");
     expect(cronSrc).toContain("export async function fireRadiologyJobTick");
     expect(cronSrc).toContain("if (radiologyJobConsumerStarted) return");
     expect(cronSrc).toContain("markRadiologyJobConsumerRegistered");
+    expect(cronSrc).toContain("setInterval(run, 60_000)");
+    expect(cronSrc).not.toMatch(/cron\.schedule\("\* \* \* \* \*"[\s\S]{0,200}timezone:\s*"Asia\/Kolkata"/);
   });
 
-  test("internal-cron exposes POST /radiology-jobs behind CRON_SECRET", () => {
+  test("internal-cron exposes POST /radiology-jobs and canary behind CRON_SECRET", () => {
     const guardAt = internalCronSrc.indexOf("router.use(requireCronSecret)");
     expect(guardAt).toBeGreaterThan(-1);
     const routeAt = internalCronSrc.indexOf('router.post("/radiology-jobs"');
     expect(routeAt).toBeGreaterThan(guardAt);
     expect(internalCronSrc).toContain("fireRadiologyJobTick");
+    expect(internalCronSrc).toContain('router.post("/radiology-jobs-canary"');
   });
 
   test("compose still injects ENABLE_SCHEDULERS into care-api", () => {

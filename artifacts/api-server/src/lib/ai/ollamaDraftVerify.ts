@@ -274,10 +274,14 @@ export async function runOllamaAiDraftVerify(opts: {
       status: consumer.status === "HEALTHY" || consumer.status === "PEAK_HOLD"
         ? (consumer.status === "PEAK_HOLD" ? "WARNING" : "PASS")
         : "FAIL",
-      detail: `${consumer.status}: ${consumer.detail}. last poll ${hb.lastCronTickAt ?? "never"}; last claim ${hb.lastClaimedJobId ?? "none"}; due/pending ${backlog.pending}; running ${backlog.running}`,
+      detail: `${consumer.status}: ${consumer.detail}. last poll ${hb.lastCronTickAt ?? "never"}; last claim ${hb.lastClaimedJobId ?? "none"}; lastRan ${hb.lastRan}; due/pending ${backlog.pending}; running ${backlog.running}`,
       remediation: consumer.status === "HEALTHY"
         ? undefined
-        : "Redeploy this CARE API so startRadiologyJobConsumer() registers the minute drain even when ENABLE_SCHEDULERS is unset",
+        : consumer.status === "PEAK_HOLD"
+          ? "Clinic peak hours — overnight AI waits until peak ends (default 16:00 IST)"
+          : consumer.status === "STARVED"
+            ? "Consumer polled but claimed nothing. Check next_retry_at, SKIP LOCKED, and GET /api/ai/overnight-diagnostics composition."
+            : "Redeploy CARE API so startRadiologyJobConsumer() runs before the ENABLE_SCHEDULERS block (a scheduler throw must not skip the drain).",
       blocking: consumer.status === "STOPPED" || consumer.status === "STALE" || consumer.status === "STARVED",
     });
     add(checks, {

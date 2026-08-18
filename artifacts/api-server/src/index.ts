@@ -2808,23 +2808,30 @@ const server = app.listen({ port, exclusive: true }, () => {
   // makes what is still exposed loud on every boot rather than silent.
   reportWeakGuardedSecrets((msg) => logger.error(msg));
 
+  // Overnight AI drain MUST start even if ENABLE_SCHEDULERS cron init throws.
+  // A throw inside startCronScheduler previously skipped this call and left
+  // thousands of pending MRI jobs unclaimed.
+  try {
+    startRadiologyJobConsumer();
+  } catch (err) {
+    logger.error({ err }, "Overnight AI consumer failed to register");
+  }
+
   // Cron schedulers must NOT run on autoscale deployments: containers can
   // scale to zero and miss firing windows, and every cold start would
   // re-init the scheduler. Enable them only on always-on hosts (Reserved VM,
   // local dev, or the Windows desktop bundle) by setting ENABLE_SCHEDULERS=1.
   if (process.env["ENABLE_SCHEDULERS"] === "1" || process.env["ENABLE_SCHEDULERS"] === "true") {
-    startCronScheduler();
-    startIntegrationScheduler();
-    logger.info("Cron schedulers enabled (ENABLE_SCHEDULERS set)");
+    try {
+      startCronScheduler();
+      startIntegrationScheduler();
+      logger.info("Cron schedulers enabled (ENABLE_SCHEDULERS set)");
+    } catch (err) {
+      logger.error({ err }, "Cron schedulers failed to start — overnight AI drain is independent");
+    }
   } else {
     logger.info("Cron schedulers disabled (set ENABLE_SCHEDULERS=1 to enable)");
   }
-
-  // Overnight AI consumer (dicom_retry_queue drain). Independent of ENABLE_SCHEDULERS
-  // so a compose miss (flag in .env but not injected into care-api) cannot stall
-  // MRI drafts. HTTP enqueue still works either way. Same pattern as billed-study
-  // reconciliation. Duplicate ticks are SKIP LOCKED + AI concurrency 1.
-  startRadiologyJobConsumer();
 
   // In-process DICOM pull agent can also start independently of schedulers
   const enableDimse =

@@ -38,6 +38,20 @@ export interface RadiologyJobRow {
 
 export type RadiologyJobHandler = (job: RadiologyJobRow) => Promise<{ ok: boolean; detail?: string }>;
 
+export type RadiologyClaimStrategy = "fifo" | "overnight_ai";
+
+export interface RadiologyTickOpts {
+  workerId?: string;
+  maxJobs?: number;
+  concurrencyByType?: Record<string, number>;
+  /** fifo = oldest id (legacy). overnight_ai = skip superseded duplicates, prefer fresh 48h jobs. */
+  claimStrategy?: RadiologyClaimStrategy;
+  /** Claim this row only (canary). Must still be pending/retrying. */
+  jobId?: number;
+  /** Canary: prefer newest eligible job. Ignored when jobId is set. */
+  preferNewest?: boolean;
+}
+
 /** Idempotent enqueue: the same idempotency key never creates a second job.
  *  Returns the job id (existing or new). */
 export async function enqueueRadiologyJob(args: {
@@ -88,21 +102,76 @@ export async function requeueStaleRunningJobs(handledTypes: string[], staleMs = 
   return stale.length;
 }
 
+function executeRows<T>(res: unknown): T[] {
+  const withRows = res as { rows?: T[] };
+  if (Array.isArray(withRows.rows)) return withRows.rows;
+  return Array.isArray(res) ? (res as T[]) : [];
+}
+
 /** Claim the next due job of the handled types — FOR UPDATE SKIP LOCKED so
  *  concurrent workers/restarts never claim the same row twice. */
-async function claimNextJob(workerId: string, handledTypes: string[]): Promise<RadiologyJobRow | null> {
+async function claimNextJob(
+  workerId: string,
+  handledTypes: string[],
+  opts: Pick<RadiologyTickOpts, "claimStrategy" | "jobId" | "preferNewest"> = {},
+): Promise<RadiologyJobRow | null> {
+  if (handledTypes.length === 0) return null;
   return db.transaction(async (tx) => {
-    const [row] = await tx
-      .select()
-      .from(dicomRetryQueueTable)
-      .where(and(
-        inArray(dicomRetryQueueTable.status, [...CLAIMABLE_STATUSES]),
-        inArray(dicomRetryQueueTable.operationType, handledTypes),
-        or(isNull(dicomRetryQueueTable.nextRetryAt), lte(dicomRetryQueueTable.nextRetryAt, new Date())),
-      ))
-      .orderBy(asc(dicomRetryQueueTable.id))
-      .limit(1)
-      .for("update", { skipLocked: true });
+    let claimedId: number | null = null;
+    if (opts.jobId != null) {
+      const res = await tx.execute(sql`
+        SELECT id FROM dicom_retry_queue
+        WHERE id = ${opts.jobId}
+          AND status IN ('pending', 'retrying')
+        LIMIT 1
+        FOR UPDATE SKIP LOCKED
+      `);
+      claimedId = executeRows<{ id: number }>(res)[0]?.id ?? null;
+    } else if (opts.claimStrategy === "overnight_ai") {
+      const newest = opts.preferNewest === true;
+      const res = await tx.execute(sql`
+        SELECT q.id FROM dicom_retry_queue q
+        WHERE q.status IN ('pending', 'retrying')
+          AND q.operation_type IN (${sql.join(handledTypes.map((t) => sql`${t}`), sql`, `)})
+          AND (q.next_retry_at IS NULL OR q.next_retry_at <= NOW())
+          AND (
+            q.payload->>'studyInstanceUid' IS NULL
+            OR NOT EXISTS (
+              SELECT 1 FROM dicom_retry_queue n
+              WHERE n.operation_type = q.operation_type
+                AND n.status IN ('pending', 'retrying', 'running')
+                AND n.payload->>'studyInstanceUid' = q.payload->>'studyInstanceUid'
+                AND n.id > q.id
+            )
+          )
+        ORDER BY
+          CASE
+            WHEN q.retry_count = 0 AND q.created_at > NOW() - INTERVAL '48 hours' THEN 0
+            WHEN q.retry_count = 0 THEN 1
+            ELSE 2
+          END,
+          CASE WHEN ${newest} THEN q.id END DESC NULLS LAST,
+          q.id ASC
+        LIMIT 1
+        FOR UPDATE SKIP LOCKED
+      `);
+      claimedId = executeRows<{ id: number }>(res)[0]?.id ?? null;
+    } else {
+      const [picked] = await tx
+        .select({ id: dicomRetryQueueTable.id })
+        .from(dicomRetryQueueTable)
+        .where(and(
+          inArray(dicomRetryQueueTable.status, [...CLAIMABLE_STATUSES]),
+          inArray(dicomRetryQueueTable.operationType, handledTypes),
+          or(isNull(dicomRetryQueueTable.nextRetryAt), lte(dicomRetryQueueTable.nextRetryAt, new Date())),
+        ))
+        .orderBy(asc(dicomRetryQueueTable.id))
+        .limit(1)
+        .for("update", { skipLocked: true });
+      claimedId = picked?.id ?? null;
+    }
+    if (claimedId == null) return null;
+    const [row] = await tx.select().from(dicomRetryQueueTable).where(eq(dicomRetryQueueTable.id, claimedId)).limit(1);
     if (!row) return null;
     const now = new Date();
     await tx
@@ -144,7 +213,7 @@ async function completeJob(id: number, detail?: string): Promise<void> {
 
 async function failJob(job: RadiologyJobRow, error: string): Promise<RadiologyJobStatus> {
   const now = new Date();
-  const next = decideFailure({ retryCount: job.retryCount, maxRetries: job.maxRetries, now });
+  const next = decideFailure({ retryCount: job.retryCount, maxRetries: job.maxRetries, now, error });
   await db
     .update(dicomRetryQueueTable)
     .set({
@@ -168,11 +237,7 @@ async function failJob(job: RadiologyJobRow, error: string): Promise<RadiologyJo
  */
 export async function runRadiologyJobTick(
   handlers: Record<string, RadiologyJobHandler>,
-  opts: {
-    workerId?: string;
-    maxJobs?: number;
-    concurrencyByType?: Record<string, number>;
-  } = {},
+  opts: RadiologyTickOpts = {},
 ): Promise<{ requeuedStale: number; ran: Array<{ id: number; operationType: string; outcome: string }> }> {
   const handledTypes = Object.keys(handlers);
   if (handledTypes.length === 0) return { requeuedStale: 0, ran: [] };
@@ -181,6 +246,11 @@ export async function runRadiologyJobTick(
   const ran: Array<{ id: number; operationType: string; outcome: string }> = [];
   const maxJobs = opts.maxJobs ?? 5;
   const concurrencyByType = opts.concurrencyByType ?? {};
+  const claimOpts = {
+    claimStrategy: opts.claimStrategy,
+    jobId: opts.jobId,
+    preferNewest: opts.preferNewest,
+  };
 
   // Pre-compute which types are at capacity so we don't claim them.
   const blockedTypes = new Set<string>();
@@ -209,8 +279,10 @@ export async function runRadiologyJobTick(
     });
     if (stillClaimable.length === 0) break;
 
-    const job = await claimNextJob(workerId, stillClaimable);
+    const job = await claimNextJob(workerId, stillClaimable, claimOpts);
     if (!job) break;
+    // Explicit canary id is single-shot.
+    if (opts.jobId != null) claimOpts.jobId = undefined;
 
     // If this op has a concurrency ceiling and we somehow claimed past it, abandon claim.
     const lim = concurrencyByType[job.operationType];
@@ -307,4 +379,97 @@ export async function jobBacklogCounts(handledTypes: string[]): Promise<{ pendin
     .groupBy(dicomRetryQueueTable.status);
   const get = (s: string) => rows.find((r) => r.status === s)?.count ?? 0;
   return { pending: get("pending") + get("retrying"), running: get("running"), deadLetter: get("abandoned") };
+}
+
+export async function getRadiologyJobById(id: number): Promise<{
+  id: number;
+  operationType: string;
+  status: string;
+  retryCount: number;
+  failureReason: string | null;
+  payload: unknown;
+  idempotencyKey: string | null;
+  nextRetryAt: Date | null;
+} | null> {
+  const [row] = await db
+    .select({
+      id: dicomRetryQueueTable.id,
+      operationType: dicomRetryQueueTable.operationType,
+      status: dicomRetryQueueTable.status,
+      retryCount: dicomRetryQueueTable.retryCount,
+      failureReason: dicomRetryQueueTable.failureReason,
+      payload: dicomRetryQueueTable.payload,
+      idempotencyKey: dicomRetryQueueTable.idempotencyKey,
+      nextRetryAt: dicomRetryQueueTable.nextRetryAt,
+    })
+    .from(dicomRetryQueueTable)
+    .where(eq(dicomRetryQueueTable.id, id))
+    .limit(1);
+  return row ?? null;
+}
+
+/** Read-only preview of which overnight AI row the next claim would take. Does not lock. */
+export async function peekOvernightAiClaim(opts: { preferNewest?: boolean; jobId?: number } = {}): Promise<{
+  id: number;
+  status: string;
+  retryCount: number;
+  modality: string | null;
+  studyInstanceUid: string | null;
+  idempotencyKey: string | null;
+  createdAt: Date | null;
+} | null> {
+  if (opts.jobId != null) {
+    const row = await getRadiologyJobById(opts.jobId);
+    if (!row) return null;
+    const payload = (row.payload ?? {}) as { studyInstanceUid?: string; modality?: string };
+    return {
+      id: row.id,
+      status: row.status,
+      retryCount: row.retryCount,
+      modality: payload.modality ?? null,
+      studyInstanceUid: payload.studyInstanceUid ?? null,
+      idempotencyKey: row.idempotencyKey,
+      createdAt: null,
+    };
+  }
+  const newest = opts.preferNewest === true;
+  const res = await db.execute(sql`
+    SELECT q.id, q.status, q.retry_count AS "retryCount",
+           q.payload->>'modality' AS modality,
+           q.payload->>'studyInstanceUid' AS "studyInstanceUid",
+           q.idempotency_key AS "idempotencyKey",
+           q.created_at AS "createdAt"
+    FROM dicom_retry_queue q
+    WHERE q.status IN ('pending', 'retrying')
+      AND q.operation_type = 'ai_shadow_pipeline'
+      AND (q.next_retry_at IS NULL OR q.next_retry_at <= NOW())
+      AND (
+        q.payload->>'studyInstanceUid' IS NULL
+        OR NOT EXISTS (
+          SELECT 1 FROM dicom_retry_queue n
+          WHERE n.operation_type = q.operation_type
+            AND n.status IN ('pending', 'retrying', 'running')
+            AND n.payload->>'studyInstanceUid' = q.payload->>'studyInstanceUid'
+            AND n.id > q.id
+        )
+      )
+    ORDER BY
+      CASE
+        WHEN q.retry_count = 0 AND q.created_at > NOW() - INTERVAL '48 hours' THEN 0
+        WHEN q.retry_count = 0 THEN 1
+        ELSE 2
+      END,
+      CASE WHEN ${newest} THEN q.id END DESC NULLS LAST,
+      q.id ASC
+    LIMIT 1
+  `);
+  return executeRows<{
+    id: number;
+    status: string;
+    retryCount: number;
+    modality: string | null;
+    studyInstanceUid: string | null;
+    idempotencyKey: string | null;
+    createdAt: Date | null;
+  }>(res)[0] ?? null;
 }

@@ -94,6 +94,45 @@ describe("radiology job consumer heartbeat", () => {
     expect(r.detail).toMatch(/due AI/i);
   });
 
+  it("is HEALTHY when lastRan>0 even if due jobs remain (short fail is still progress)", () => {
+    markRadiologyJobConsumerRegistered(new Date("2026-08-17T20:00:00Z"));
+    recordRadiologyJobCronTick({
+      at: new Date("2026-08-17T20:01:00Z"),
+      peak: false,
+      aiBlocked: false,
+      dueAi: 20,
+      ran: 1,
+      claimedJobId: 99,
+      claimedType: "ai_shadow_pipeline",
+      outcome: "retrying",
+    });
+    const r = deriveRadiologyJobConsumerHealth(getRadiologyJobConsumerHeartbeat(), {
+      queueDepth: 3576,
+      running: 0,
+      nightWindow: true,
+      now: new Date("2026-08-17T20:01:10Z"),
+    });
+    expect(r.status).toBe("HEALTHY");
+  });
+
+  it("is HEALTHY while a job is running even if the wrapping tick is older than 2.5 min", () => {
+    markRadiologyJobConsumerRegistered(new Date("2026-08-17T20:00:00Z"));
+    recordRadiologyJobCronTick({
+      at: new Date("2026-08-17T20:00:00Z"),
+      peak: false,
+      aiBlocked: false,
+      dueAi: 20,
+      ran: 0,
+    });
+    const r = deriveRadiologyJobConsumerHealth(getRadiologyJobConsumerHeartbeat(), {
+      queueDepth: 20,
+      running: 1,
+      nightWindow: true,
+      now: new Date("2026-08-17T20:05:00Z"),
+    });
+    expect(r.status).toBe("HEALTHY");
+  });
+
   it("does not call ENABLE_SCHEDULERS + staleRunning=0 a healthy worker", () => {
     // Regression: getOvernightDiagnostics used to report worker:"healthy"
     // whenever ENABLE_SCHEDULERS was on and staleRunning===0, even with

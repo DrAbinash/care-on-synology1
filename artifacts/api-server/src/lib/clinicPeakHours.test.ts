@@ -56,7 +56,8 @@ describe("billing priority during peak hours", () => {
   test("cron slows AI / banking / commission / WA during peak", () => {
     const cron = readFileSync(new URL("../cron.ts", import.meta.url), "utf8");
     expect(cron).toContain("PACS_REARCHIVE_JOB");
-    expect(cron).toContain("[AI_SHADOW_PIPELINE_JOB]: 0");
+    expect(cron).toContain("[PACS_REARCHIVE_JOB]: 0");
+    expect(cron).toContain('skipped: "peak_hold"');
     expect(cron).toContain("Banking auto-sync deferred — clinic peak hours");
     expect(cron).toContain("commission reconcile deferred — clinic peak hours");
     expect(cron).toContain("const limit = isClinicPeakHours() ? 5 : 20");
