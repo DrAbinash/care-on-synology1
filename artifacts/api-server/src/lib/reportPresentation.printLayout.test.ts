@@ -4,7 +4,9 @@
  * launches the same Playwright path htmlToPdf.ts uses and checks that four
  * key images sit on the RIGHT of page 1 instead of a blank-left page 2.
  */
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import sharp from "sharp";
 import { chromium } from "playwright";
@@ -16,7 +18,52 @@ import {
   type ReportKeyImageModel,
 } from "./reportPresentation";
 
-const ARTIFACT_DIR = "/opt/cursor/artifacts";
+function resolveArtifactDir(): string {
+  const preferred = "/opt/cursor/artifacts";
+  try {
+    mkdirSync(preferred, { recursive: true });
+    return preferred;
+  } catch {
+    const fallback = join(tmpdir(), "premium-print-layout");
+    mkdirSync(fallback, { recursive: true });
+    return fallback;
+  }
+}
+
+const ARTIFACT_DIR = resolveArtifactDir();
+
+function hasChromium(): boolean {
+  try {
+    return existsSync(chromium.executablePath());
+  } catch {
+    return false;
+  }
+}
+
+type PrintBox = { left: number; top: number; width: number; height: number };
+type PrintGeo = { col: PrintBox | null; rail: PrintBox | null; cellCount: number };
+
+type BrowserDocument = {
+  querySelector: (sel: string) => { getBoundingClientRect: () => PrintBox } | null;
+  querySelectorAll: (sel: string) => { length: number; item: (i: number) => { getBoundingClientRect: () => PrintBox } | null };
+};
+
+function measureSideRail(): PrintGeo {
+  const doc = (globalThis as unknown as { document: BrowserDocument }).document;
+  const col = doc.querySelector(".report-column")?.getBoundingClientRect();
+  const rail = doc.querySelector(".image-panel-side")?.getBoundingClientRect();
+  const nodeList = doc.querySelectorAll(".image-panel-side .image-cell");
+  const cells: PrintBox[] = [];
+  for (let i = 0; i < nodeList.length; i++) {
+    const el = nodeList.item(i);
+    if (el) cells.push(el.getBoundingClientRect());
+  }
+  return {
+    col: col ? { left: col.left, top: col.top, width: col.width, height: col.height } : null,
+    rail: rail ? { left: rail.left, top: rail.top, width: rail.width, height: rail.height } : null,
+    cellCount: cells.length,
+  };
+}
 
 function pdfPageCount(buf: Buffer): number {
   const text = buf.toString("latin1");
@@ -63,7 +110,7 @@ const SHORT_BODY = `<p><strong>CLINICAL HISTORY:</strong> Headache.</p>
 <p><strong>TECHNIQUE:</strong> Multiplanar MRI brain.</p>
 <p><strong>FINDINGS:</strong> Brain parenchyma is normal. Ventricles are normal. No midline shift.</p>`;
 
-describe("premium print layout (Chromium)", () => {
+describe.skipIf(!hasChromium())("premium print layout (Chromium)", () => {
   it("keeps four framed key images on the right of page 1", async () => {
     const src = await mriLikeJpeg();
     const captions = ["T2W Axial", "FLAIR Coronal", "T1W Sagittal", "DWI Axial"];
@@ -85,17 +132,7 @@ describe("premium print layout (Chromium)", () => {
       await page.setViewportSize({ width: 794, height: 1123 });
       await page.setContent(html, { waitUntil: "networkidle" });
 
-      const geo = await page.evaluate(() => {
-        const col = document.querySelector(".report-column")?.getBoundingClientRect();
-        const rail = document.querySelector(".image-panel-side")?.getBoundingClientRect();
-        const cells = [...document.querySelectorAll(".image-panel-side .image-cell")]
-          .map((el) => el.getBoundingClientRect());
-        return {
-          col: col ? { left: col.left, top: col.top, width: col.width, height: col.height } : null,
-          rail: rail ? { left: rail.left, top: rail.top, width: rail.width, height: rail.height } : null,
-          cellCount: cells.length,
-        };
-      });
+      const geo = await page.evaluate(measureSideRail);
 
       expect(geo.col).toBeTruthy();
       expect(geo.rail).toBeTruthy();
