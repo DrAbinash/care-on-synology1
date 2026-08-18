@@ -21,7 +21,7 @@ import {
   isDimsePullAgentRunning,
 } from "./services/dicom-pull-agent/dimse-agent";
 import { runRadiologyJobTick, countDueJobs } from "./lib/radiologyJobs";
-import { RADIOLOGY_JOB_HANDLERS } from "./lib/radiologyJobHandlers";
+import { PACS_REARCHIVE_JOB, RADIOLOGY_JOB_HANDLERS } from "./lib/radiologyJobHandlers";
 import { runScheduledAuditChainVerification } from "./lib/auditVerification";
 import { todayIST, istHourMinute } from "./lib/istDate";
 import { isClinicPeakHours, clinicPeakHoursLabel } from "./lib/clinicPeakHours";
@@ -315,6 +315,7 @@ async function fireOtherRadiologyJobTick(): Promise<void> {
   const peak = isClinicPeakHours();
   await runRadiologyJobTick(others, {
     maxJobs: peak ? 1 : 3,
+    concurrencyByType: peak ? { [PACS_REARCHIVE_JOB]: 0 } : {},
     workerId: `radiology-other-${process.pid}`,
   });
 }
