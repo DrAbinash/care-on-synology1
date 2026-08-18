@@ -1916,7 +1916,7 @@ export default function MyDailySummary() {
 
   return (
     <div
-      className="h-full min-h-0 overflow-y-auto"
+      className="h-full min-h-0 overflow-y-auto overflow-x-hidden"
       data-testid="my-daily-summary-page"
     >
       <PageHeader

@@ -16,7 +16,7 @@ describe("My Daily Summary — page fills the pane and scrolls", () => {
   it("gives the page its own full-height overflow-y-auto scroller", () => {
     expect(pageSrc).toContain('data-testid="my-daily-summary-page"');
     expect(pageSrc).toMatch(
-      /data-testid="my-daily-summary-page"[\s\S]{0,80}h-full min-h-0 overflow-y-auto|h-full min-h-0 overflow-y-auto[\s\S]{0,80}data-testid="my-daily-summary-page"/,
+      /data-testid="my-daily-summary-page"[\s\S]{0,80}h-full min-h-0 overflow-y-auto overflow-x-hidden|h-full min-h-0 overflow-y-auto overflow-x-hidden[\s\S]{0,80}data-testid="my-daily-summary-page"/,
     );
   });
 

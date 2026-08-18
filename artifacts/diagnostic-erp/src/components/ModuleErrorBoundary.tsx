@@ -133,7 +133,7 @@ export class ModuleErrorBoundary extends React.Component<Props, State> {
     // so they appeared cut off and could not scroll. Workspace pages that
     // use h-full plus their own overflow still fill this sized parent.
     return (
-      <div className="h-full min-h-0 flex-1 flex flex-col w-full overflow-y-auto">
+      <div className="h-full min-h-0 flex-1 flex flex-col w-full overflow-y-auto overflow-x-hidden">
         {this.props.children}
       </div>
     );
