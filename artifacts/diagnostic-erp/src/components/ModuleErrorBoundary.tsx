@@ -128,8 +128,12 @@ export class ModuleErrorBoundary extends React.Component<Props, State> {
         </div>
       );
     }
+    // overflow-y-auto (not overflow-hidden): document-style pages such as
+    // My Daily Summary are taller than the pane. overflow-hidden clipped them
+    // so they appeared cut off and could not scroll. Workspace pages that
+    // use h-full plus their own overflow still fill this sized parent.
     return (
-      <div className="h-full min-h-0 flex-1 flex flex-col w-full overflow-hidden">
+      <div className="h-full min-h-0 flex-1 flex flex-col w-full overflow-y-auto overflow-x-hidden">
         {this.props.children}
       </div>
     );
