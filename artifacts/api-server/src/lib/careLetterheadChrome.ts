@@ -63,8 +63,14 @@ export type CareLetterheadChrome = {
   disclaimer?: string;
 };
 
-export function resolveLetterheadChrome(template: { id?: string; letterhead?: CareLetterheadChrome }): typeof CARE_LETTERPAD & CareLetterheadChrome {
-  return { ...CARE_LETTERPAD, ...(template.letterhead ?? {}) };
+/** CARE defaults overlaid with template.letterhead — literals widen to string. */
+export type ResolvedLetterheadChrome = {
+  [K in keyof typeof CARE_LETTERPAD]: K extends "kind" ? "care-letterpad" | "clinic" : string;
+};
+
+export function resolveLetterheadChrome(template: { id?: string; letterhead?: CareLetterheadChrome }): ResolvedLetterheadChrome {
+  const overlay = template.letterhead ?? {};
+  return { ...CARE_LETTERPAD, ...overlay, kind: overlay.kind ?? CARE_LETTERPAD.kind };
 }
 
 export function usesCareLetterpad(template: { id?: string; letterhead?: { kind?: string } }): boolean {

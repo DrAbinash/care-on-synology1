@@ -53,8 +53,9 @@ export const DEFAULT_CARE_LETTERPAD: Required<Pick<
   disclaimer: "Radiological diagnosis is not always conclusive & often vary with clinical course of the disease or response to treatment. This report is not for medico-legal purpose.",
 };
 
-export function resolveCareLetterpadChrome(letterhead?: CareLetterpadChrome | null): typeof DEFAULT_CARE_LETTERPAD & CareLetterpadChrome {
-  return { ...DEFAULT_CARE_LETTERPAD, ...(letterhead ?? {}) };
+export function resolveCareLetterpadChrome(letterhead?: CareLetterpadChrome | null): typeof DEFAULT_CARE_LETTERPAD {
+  const overlay = letterhead ?? {};
+  return { ...DEFAULT_CARE_LETTERPAD, ...overlay, kind: overlay.kind ?? DEFAULT_CARE_LETTERPAD.kind };
 }
 
 export function parseMeasurementPt(value?: string | null): number | undefined {
