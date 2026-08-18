@@ -2061,24 +2061,30 @@ function OnlineBookingCatalogSelector({
   }, [form, pkgField]);
 
   // ── Booking time slots (configurable "Select time slot" options) ──────────
-  const bookingSlots = useMemo<Array<{ value: string; label: string }>>(() => {
+  type SlotRow = { value: string; label: string; maxBookings?: number | null; modality?: string };
+  const bookingSlots = useMemo<SlotRow[]>(() => {
     try {
       const parsed = JSON.parse(form.bookingTimeSlots || "[]");
       if (Array.isArray(parsed)) {
         return parsed
           .filter((s) => s && typeof s.value === "string" && typeof s.label === "string")
-          .map((s) => ({ value: s.value, label: s.label }));
+          .map((s) => ({
+            value: s.value,
+            label: s.label,
+            maxBookings: typeof s.maxBookings === "number" && s.maxBookings > 0 ? s.maxBookings : null,
+            modality: typeof s.modality === "string" ? s.modality : "",
+          }));
       }
     } catch { /* ignore */ }
     return [];
   }, [form.bookingTimeSlots]);
 
-  const writeBookingSlots = (slots: Array<{ value: string; label: string }>) =>
+  const writeBookingSlots = (slots: SlotRow[]) =>
     setForm((prev) => prev && { ...prev, bookingTimeSlots: JSON.stringify(slots) });
-  const updateSlot = (idx: number, patch: Partial<{ value: string; label: string }>) =>
+  const updateSlot = (idx: number, patch: Partial<SlotRow>) =>
     writeBookingSlots(bookingSlots.map((s, i) => (i === idx ? { ...s, ...patch } : s)));
   const removeSlot = (idx: number) => writeBookingSlots(bookingSlots.filter((_, i) => i !== idx));
-  const addSlot = () => writeBookingSlots([...bookingSlots, { value: "", label: "" }]);
+  const addSlot = () => writeBookingSlots([...bookingSlots, { value: "", label: "", maxBookings: null, modality: "" }]);
   const resetSlotsToDefault = () => writeBookingSlots([
     { value: "07:00 – 10:00", label: "Morning (7:00 – 10:00 AM)" },
     { value: "10:00 – 13:00", label: "Late Morning (10:00 AM – 1:00 PM)" },
@@ -2301,29 +2307,54 @@ function OnlineBookingCatalogSelector({
           </button>
         </div>
         <p className="text-sm text-muted-foreground mb-3">
-          These are the time slots patients pick from in the online booking form.
-          Edit them to match your opening hours (e.g. 9 AM – 11 PM). The
-          <strong> label</strong> is what patients see; the <strong>value</strong> is
-          stored on the booking. Leave the list empty to fall back to the built-in defaults.
+          These are the time slots patients pick from on the website, kiosk, and reception
+          <strong> New Booking</strong> form. The <strong>label</strong> is what people see;
+          the <strong>value</strong> is stored on the booking. <strong>Max bookings</strong> caps
+          how many online bookings can share that slot (blank = unlimited). Optional
+          <strong> modality</strong> scopes the cap (e.g. MRI 10–11 AM = 3). Website, kiosk and
+          reception share the same capacity. Leave the list empty to fall back to the built-in defaults.
         </p>
         <div className="space-y-2">
           {bookingSlots.length === 0 ? (
             <p className="text-sm text-muted-foreground italic">No custom slots — the default slots are used.</p>
           ) : (
             bookingSlots.map((slot, idx) => (
-              <div key={idx} className="flex flex-col sm:flex-row gap-2 items-stretch sm:items-center">
+              <div key={idx} className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
                 <Input
-                  className="h-9 flex-1"
-                  placeholder="Label (e.g. Morning (9:00 – 11:00 AM))"
+                  className="h-9 flex-1 min-w-[12rem]"
+                  placeholder="Label (e.g. MRI 10:00 – 11:00 AM)"
                   value={slot.label}
                   onChange={(e) => updateSlot(idx, { label: e.target.value })}
                 />
                 <Input
-                  className="h-9 sm:w-48"
-                  placeholder="Value (e.g. 09:00 – 11:00)"
+                  className="h-9 sm:w-44"
+                  placeholder="Value (e.g. 10:00 – 11:00)"
                   value={slot.value}
                   onChange={(e) => updateSlot(idx, { value: e.target.value })}
                 />
+                <Input
+                  className="h-9 sm:w-28"
+                  type="number"
+                  min={0}
+                  placeholder="Max (blank = ∞)"
+                  value={slot.maxBookings ?? ""}
+                  onChange={(e) => {
+                    const raw = e.target.value;
+                    updateSlot(idx, { maxBookings: raw === "" ? null : Math.max(0, Number(raw) || 0) });
+                  }}
+                />
+                <select
+                  className="h-9 sm:w-36 rounded-md border border-input bg-background px-2 text-sm"
+                  value={slot.modality || ""}
+                  onChange={(e) => updateSlot(idx, { modality: e.target.value })}
+                >
+                  <option value="">All services</option>
+                  <option value="mri">MRI</option>
+                  <option value="ct">CT</option>
+                  <option value="usg">USG</option>
+                  <option value="xray">X-Ray</option>
+                  <option value="pathology">Pathology</option>
+                </select>
                 <button
                   type="button"
                   onClick={() => removeSlot(idx)}

@@ -6,7 +6,14 @@ import React, { useEffect, useRef, useState } from "react";
 import { detectGenderFromName } from "../lib/nameGender";
 
 /** A selectable appointment time slot in the online booking form. */
-export type BookingTimeSlot = { value: string; label: string };
+export type BookingTimeSlot = {
+  value: string;
+  label: string;
+  maxBookings?: number | null;
+  modality?: string;
+  remaining?: number | null;
+  available?: boolean;
+};
 
 /** Minimal referring-doctor option for the booking form's doctor picker. */
 export type ReferringDoctorOption = { id: number; name: string; specialization?: string | null };
@@ -57,12 +64,25 @@ export interface SelfRegistrationFormProps {
     email?: string;
     date?: string;
     timeSlot?: string;
+    slotModality?: string;
     notes?: string;
     isVip?: boolean;
     referringDoctorId?: number | null;
     referringDoctorName?: string;
   }) => void;
+  /** Called when the appointment date changes so the parent can refresh slot occupancy. */
+  onDateChange?: (date: string) => void;
   onBack?: () => void;
+}
+
+function slotOptionValue(s: BookingTimeSlot): string {
+  return s.modality ? `${s.modality}::${s.value}` : s.value;
+}
+
+function parseSlotOption(raw: string): { timeSlot: string; slotModality: string } {
+  const idx = raw.indexOf("::");
+  if (idx > 0) return { slotModality: raw.slice(0, idx), timeSlot: raw.slice(idx + 2) };
+  return { timeSlot: raw, slotModality: "" };
 }
 
 const GENDERS = [
@@ -79,6 +99,7 @@ export const SelfRegistrationForm: React.FC<SelfRegistrationFormProps> = ({
   timeSlots,
   doctors,
   onSubmit,
+  onDateChange,
   onBack,
 }) => {
   const isKiosk = mode === "kiosk";
@@ -302,6 +323,7 @@ export const SelfRegistrationForm: React.FC<SelfRegistrationFormProps> = ({
       return;
     }
 
+    const parsedSlot = parseSlotOption(timeSlot);
     onSubmit({
       firstName: firstName.trim(),
       lastName: lastName.trim(),
@@ -311,7 +333,8 @@ export const SelfRegistrationForm: React.FC<SelfRegistrationFormProps> = ({
       ageUnit,
       email,
       date,
-      timeSlot,
+      timeSlot: parsedSlot.timeSlot,
+      slotModality: parsedSlot.slotModality,
       notes,
       isVip,
       referringDoctorId,
@@ -558,7 +581,10 @@ export const SelfRegistrationForm: React.FC<SelfRegistrationFormProps> = ({
         type="date"
         required
         value={date}
-        onChange={(e: React.ChangeEvent<HTMLInputElement>) => setDate(e.target.value)}
+        onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+          setDate(e.target.value);
+          onDateChange?.(e.target.value);
+        }}
         min={new Date().toISOString().slice(0, 10)}
       />
 
@@ -570,7 +596,9 @@ export const SelfRegistrationForm: React.FC<SelfRegistrationFormProps> = ({
       >
         <option value="">Select time slot</option>
         {slotOptions.map((s) => (
-          <option key={s.value} value={s.value}>{s.label}</option>
+          <option key={slotOptionValue(s)} value={slotOptionValue(s)} disabled={s.available === false}>
+            {s.label}{s.remaining != null ? ` (${s.remaining} left)` : ""}{s.available === false ? " — full" : ""}
+          </option>
         ))}
       </select>
 

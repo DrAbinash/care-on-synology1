@@ -14,8 +14,19 @@ import {
   paymentsTable,
   paymentLogsTable,
   doctorsTable,
-  DEFAULT_BOOKING_TIME_SLOTS,
 } from "@workspace/db/schema";
+import {
+  createPendingOnlineBooking,
+  failPendingBooking,
+  generateBookingRef,
+  getSlotAvailability,
+  OnlineBookingError,
+  type CreatePendingBookingInput,
+} from "../services/onlineBookingCreate";
+import {
+  parseBookingTimeSlots,
+  validateSelfRegistration as validateSelfRegistrationShared,
+} from "../services/onlineBookingSlots";
 import { eq, and, or, inArray } from "drizzle-orm";
 import { logger } from "../lib/logger";
 import { PaymentEngine } from "../lib/payments/PaymentEngine";
@@ -28,31 +39,7 @@ import { getIciciPublicBaseUrl } from "../lib/payments/iciciPublicBaseUrl";
 import { assembleIciciRedirectUrl } from "../lib/payments/initiateIciciOrangePayment";
 import { resolveBillDeskCollector } from "../lib/payments/resolveBillDeskCollector";
 
-export function validateSelfRegistration(params: {
-  name: string;
-  phone: string;
-  gender: string;
-  ageValue: number | null | undefined;
-  ageUnit: string;
-}): string | null {
-  if (!params.name?.trim()) {
-    return "Please enter your name.";
-  }
-  const cleanPhone = params.phone?.trim().replace(/\D/g, "");
-  if (!params.phone?.trim() || cleanPhone.length !== 10) {
-    return "Please enter a valid mobile number.";
-  }
-  if (!params.gender || !["male", "female", "other"].includes(params.gender.toLowerCase())) {
-    return "Please select gender.";
-  }
-  if (params.ageValue === undefined || params.ageValue === null || Number.isNaN(Number(params.ageValue)) || Number(params.ageValue) < 0) {
-    return "Please enter age.";
-  }
-  if (!params.ageUnit || !["years", "months", "days"].includes(params.ageUnit.toLowerCase())) {
-    return "Please select a valid age unit.";
-  }
-  return null;
-}
+export const validateSelfRegistration = validateSelfRegistrationShared;
 
 export function calculateDobFromAge(ageValue: number, ageUnit: string): string {
   const now = new Date();
@@ -97,47 +84,45 @@ async function getSettings() {
   return row;
 }
 
-// Parse the admin-configured booking time slots (JSON-as-text). Falls back to
-// the built-in defaults when unset or malformed so the public form always has
-// a usable list of options.
-function parseBookingTimeSlots(raw: string | null | undefined): Array<{ value: string; label: string }> {
-  if (!raw || !raw.trim()) return [...DEFAULT_BOOKING_TIME_SLOTS];
+function publicCreateInput(body: Record<string, unknown>, bookingRef?: string) {
+  // Public website/kiosk only. Never accept reception/phone here — those
+  // sources hold capacity until confirm/cancel (Pay at Centre).
+  const source = body.source === "kiosk" ? "kiosk" : "website";
+  return {
+    name: String(body.name ?? ""),
+    phone: String(body.phone ?? ""),
+    email: String(body.email ?? ""),
+    selectedDate: String(body.selectedDate ?? ""),
+    timeSlot: String(body.timeSlot ?? ""),
+    slotModality: typeof body.slotModality === "string" ? body.slotModality : "",
+    testIds: Array.isArray(body.testIds) ? body.testIds as number[] : [],
+    packageIds: Array.isArray(body.packageIds) ? body.packageIds as number[] : [],
+    totalAmount: Number(body.totalAmount),
+    notes: String(body.notes ?? ""),
+    isVip: Boolean(body.isVip),
+    ageValue: Number(body.ageValue),
+    ageUnit: String(body.ageUnit ?? "years"),
+    gender: String(body.gender ?? ""),
+    referringDoctorId: (body.referringDoctorId as number | null) ?? null,
+    referringDoctorName: String(body.referringDoctorName ?? ""),
+    source,
+    bookingRef,
+  };
+}
+
+async function reserveOrReject(req: { body?: unknown }, res: { status: (n: number) => { json: (b: unknown) => void } }, extra?: { bookingRef?: string; gateway?: CreatePendingBookingInput["gateway"] }) {
   try {
-    const parsed = JSON.parse(raw);
-    if (
-      Array.isArray(parsed) &&
-      parsed.every(
-        (s) => s && typeof s === "object" && typeof s.value === "string" && typeof s.label === "string",
-      )
-    ) {
-      const cleaned = (parsed as Array<{ value: string; label: string }>)
-        .map((s) => ({ value: s.value.trim(), label: s.label.trim() }))
-        .filter((s) => s.value !== "" && s.label !== "");
-      return cleaned.length > 0 ? cleaned : [...DEFAULT_BOOKING_TIME_SLOTS];
+    return await createPendingOnlineBooking({
+      ...publicCreateInput((req.body || {}) as Record<string, unknown>, extra?.bookingRef),
+      gateway: extra?.gateway,
+    });
+  } catch (err) {
+    if (err instanceof OnlineBookingError) {
+      res.status(err.statusCode).json({ error: err.message });
+      return null;
     }
-  } catch { /* fall through to defaults */ }
-  return [...DEFAULT_BOOKING_TIME_SLOTS];
-}
-
-// Normalize the referring doctor captured by the booking form for persistence
-// on the online_bookings row. Only a positive integer id is trusted; the name
-// is display-only (kept alongside so the bookings list can show it even if the
-// doctor is later removed) and dropped when there is no valid id.
-function normalizeReferringDoctor(
-  rawId: unknown,
-  rawName: unknown,
-): { referringDoctorId: number | null; referringDoctorName: string | null } {
-  const id = Number(rawId);
-  const validId = Number.isInteger(id) && id > 0 ? id : null;
-  const name = typeof rawName === "string" ? rawName.trim() : "";
-  return { referringDoctorId: validId, referringDoctorName: validId && name ? name : null };
-}
-
-function generateBookingRef(): string {
-  const now = new Date();
-  const prefix = `OB${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}`;
-  const rand = crypto.randomBytes(3).toString("hex").toUpperCase();
-  return `${prefix}${rand}`;
+    throw err;
+  }
 }
 
 // ── PayU helpers ──────────────────────────────────────────────────────────────
@@ -311,6 +296,33 @@ publicBookingRouter.get("/config", async (_req, res): Promise<void> => {
     customBharatpeBannerUrl: settings.customBharatpeBannerUrl,
     customPayuBannerUrl: settings.customPayuBannerUrl,
   });
+});
+
+// GET /api/public/booking/slots?date=YYYY-MM-DD&testIds=1,2&packageIds=3
+// Occupancy for the shared website/kiosk/reception slot pool.
+publicBookingRouter.get("/slots", async (req, res): Promise<void> => {
+  res.setHeader("Cache-Control", "no-store");
+  const settings = await getSettings();
+  const selectedDate = String(req.query.date || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(selectedDate)) {
+    res.status(400).json({ error: "date (YYYY-MM-DD) is required." });
+    return;
+  }
+  if (!settings?.onlineBookingEnabled) {
+    res.json({ slots: [], selectedDate });
+    return;
+  }
+  const parseIds = (raw: unknown) =>
+    String(raw || "")
+      .split(",")
+      .map((v) => Number(v.trim()))
+      .filter((n) => Number.isInteger(n) && n > 0);
+  const result = await getSlotAvailability({
+    selectedDate,
+    testIds: parseIds(req.query.testIds),
+    packageIds: parseIds(req.query.packageIds),
+  });
+  res.json(result);
 });
 
 // GET /api/public/booking/doctors
@@ -656,6 +668,9 @@ publicBookingRouter.post("/payu-initiate", createOrderLimiter, async (req, res):
   }
 
   const bookingRef = generateBookingRef();
+  const booking = await reserveOrReject(req, res, { bookingRef, gateway: { payuTxnId: bookingRef } });
+  if (!booking) return;
+
   const base = getPublicBase(req as Parameters<typeof getPublicBase>[0]);
   const returnUrl = `${base}/api/public/booking/payu-callback`;
 
@@ -670,32 +685,14 @@ publicBookingRouter.post("/payu-initiate", createOrderLimiter, async (req, res):
     });
 
     if (!result.success) {
+      await failPendingBooking(booking.id, result.errorMessage || "Could not initiate PayU payment.");
       res.status(400).json({ error: "Could not initiate PayU payment. Please try again.", details: result.errorMessage });
       return;
     }
 
-    await db.insert(onlineBookingsTable).values({
-      bookingRef,
-      name: name,
-      phone: phone.trim(),
-      email: email.trim(),
-      selectedDate,
-      timeSlot: timeSlot.trim(),
-      ...normalizeReferringDoctor(referringDoctorId, referringDoctorName),
-      testIds: JSON.stringify(testIds),
-      packageIds: JSON.stringify(packageIds),
-      totalAmount: String(amount),
-      notes: notes.trim(),
-      isVip: Boolean(isVip) && Boolean(settings.vipQueueEnabled),
-      ageValue: Number(ageValue),
-      ageUnit: ageUnit.toLowerCase(),
-      gender: gender.toLowerCase(),
-      payuTxnId: bookingRef,
-      status: "pending_payment",
-    });
-
     res.json(result.rawResponse); // PayU returns { fields, actionUrl }
   } catch (err: any) {
+    await failPendingBooking(booking.id, "Could not connect to PayU.");
     logger.error({ err, bookingRef }, "PayU initiate exception");
     res.status(400).json({ error: "Could not connect to PayU. Please try again." });
   }
@@ -847,6 +844,9 @@ publicBookingRouter.post("/phonepe-initiate", createOrderLimiter, async (req, re
   }
 
   const bookingRef = generateBookingRef();
+  const booking = await reserveOrReject(req, res, { bookingRef, gateway: { phonepeTransactionId: bookingRef } });
+  if (!booking) return;
+
   const base = getPublicBase(req as Parameters<typeof getPublicBase>[0]);
   const returnUrl = `${base}/api/public/booking/phonepe-callback`;
 
@@ -861,33 +861,18 @@ publicBookingRouter.post("/phonepe-initiate", createOrderLimiter, async (req, re
     });
 
     if (!result.success) {
+      await failPendingBooking(booking.id, result.errorMessage || "Could not initiate PhonePe payment.");
       res.status(400).json({ error: "Could not initiate PhonePe payment. Please try again.", details: result.errorMessage });
       return;
     }
 
-    await db.insert(onlineBookingsTable).values({
-      bookingRef,
-      name: name,
-      phone: phone.trim(),
-      email: email.trim(),
-      selectedDate,
-      timeSlot: timeSlot.trim(),
-      ...normalizeReferringDoctor(referringDoctorId, referringDoctorName),
-      testIds: JSON.stringify(testIds),
-      packageIds: JSON.stringify(packageIds),
-      totalAmount: String(amount),
-      notes: notes.trim(),
-      isVip: Boolean(isVip) && Boolean(settings.vipQueueEnabled),
-      ageValue: Number(ageValue),
-      ageUnit: ageUnit.toLowerCase(),
-      gender: gender.toLowerCase(),
-      phonepeTransactionId: bookingRef,
-      phonepeProviderRefId: result.gatewayTxnId || "",
-      status: "pending_payment",
-    });
+    await db.update(onlineBookingsTable)
+      .set({ phonepeProviderRefId: result.gatewayTxnId || "" })
+      .where(eq(onlineBookingsTable.id, booking.id));
 
     res.json({ bookingRef, redirectUrl: result.redirectUrl });
   } catch (err: any) {
+    await failPendingBooking(booking.id, "Could not connect to PhonePe.");
     logger.error({ err, bookingRef }, "PhonePe initiate exception");
     res.status(400).json({ error: "Could not connect to PhonePe. Please try again." });
   }
@@ -1013,6 +998,9 @@ publicBookingRouter.post("/bharatpe-initiate", createOrderLimiter, async (req, r
   }
 
   const bookingRef = generateBookingRef();
+  const booking = await reserveOrReject(req, res, { bookingRef, gateway: { bharatpeTransactionId: bookingRef } });
+  if (!booking) return;
+
   const base = getPublicBase(req as Parameters<typeof getPublicBase>[0]);
   const returnUrl = `${base}/api/public/booking/bharatpe-callback`;
 
@@ -1027,33 +1015,18 @@ publicBookingRouter.post("/bharatpe-initiate", createOrderLimiter, async (req, r
     });
 
     if (!result.success) {
+      await failPendingBooking(booking.id, result.errorMessage || "Could not initiate BharatPe payment.");
       res.status(400).json({ error: "Could not initiate BharatPe payment. Please try again.", details: result.errorMessage });
       return;
     }
 
-    await db.insert(onlineBookingsTable).values({
-      bookingRef,
-      name: name,
-      phone: phone.trim(),
-      email: email.trim(),
-      selectedDate,
-      timeSlot: timeSlot.trim(),
-      ...normalizeReferringDoctor(referringDoctorId, referringDoctorName),
-      testIds: JSON.stringify(testIds),
-      packageIds: JSON.stringify(packageIds),
-      totalAmount: String(amount),
-      notes: notes.trim(),
-      isVip: Boolean(isVip) && Boolean(settings.vipQueueEnabled),
-      ageValue: Number(ageValue),
-      ageUnit: ageUnit.toLowerCase(),
-      gender: gender.toLowerCase(),
-      bharatpeTransactionId: bookingRef,
-      bharatpeProviderRefId: result.gatewayTxnId || null,
-      status: "pending_payment",
-    });
+    await db.update(onlineBookingsTable)
+      .set({ bharatpeProviderRefId: result.gatewayTxnId || null })
+      .where(eq(onlineBookingsTable.id, booking.id));
 
     res.json({ bookingRef, redirectUrl: result.redirectUrl });
   } catch {
+    await failPendingBooking(booking.id, "Could not connect to BharatPe.");
     res.status(400).json({ error: "Could not connect to BharatPe. Please try again." });
     return;
   }
@@ -1220,6 +1193,9 @@ publicBookingRouter.post("/icici-initiate", createOrderLimiter, async (req, res)
   }
 
   const bookingRef = generateBookingRef();
+  const booking = await reserveOrReject(req, res, { bookingRef, gateway: { iciciTransactionId: bookingRef } });
+  if (!booking) return;
+
   const base = getIciciPublicBaseUrl();
   const returnUrl = `${base}/api/public/booking/icici-callback`;
 
@@ -1276,33 +1252,18 @@ publicBookingRouter.post("/icici-initiate", createOrderLimiter, async (req, res)
         iciciResponseBody: result.rawResponse,
       }, "ICICI initiate failed");
 
+      await failPendingBooking(booking.id, result.errorMessage || "Could not initiate ICICI payment.");
       res.status(400).json({ error: "Could not initiate ICICI payment. Please try again.", details: result.errorMessage });
       return;
     }
 
-    await db.insert(onlineBookingsTable).values({
-      bookingRef,
-      name: name,
-      phone: phone.trim(),
-      email: email.trim(),
-      selectedDate,
-      timeSlot: timeSlot.trim(),
-      ...normalizeReferringDoctor(referringDoctorId, referringDoctorName),
-      testIds: JSON.stringify(testIds),
-      packageIds: JSON.stringify(packageIds),
-      totalAmount: String(amount),
-      notes: notes.trim(),
-      isVip: Boolean(isVip) && Boolean(settings.vipQueueEnabled),
-      ageValue: Number(ageValue),
-      ageUnit: ageUnit.toLowerCase(),
-      gender: gender.toLowerCase(),
-      iciciTransactionId: bookingRef,
-      iciciProviderRefId: result.rawResponse?.tranCtx || null,
-      status: "pending_payment",
-    });
+    await db.update(onlineBookingsTable)
+      .set({ iciciProviderRefId: result.rawResponse?.tranCtx || null })
+      .where(eq(onlineBookingsTable.id, booking.id));
 
     res.json({ bookingRef, redirectUrl: result.redirectUrl, tranCtx: result.rawResponse?.tranCtx });
   } catch (err: any) {
+    await failPendingBooking(booking.id, err.message || "Could not connect to ICICI payment gateway.");
     // safe logging on exception
     const iciciMerchantId = settings?.iciciMerchantId || process.env.ICICI_MERCHANT_ID || "";
     const selectedServicesCount = testIds.length + packageIds.length;
@@ -1687,6 +1648,9 @@ publicBookingRouter.post("/create-order", createOrderLimiter, async (req, res): 
   }
 
   const bookingRef = generateBookingRef();
+  const booking = await reserveOrReject(req, res, { bookingRef });
+  if (!booking) return;
+
   const amountPaise = Math.round(amount * 100);
 
   const auth = Buffer.from(`${keyId}:${keySecret}`).toString("base64");
@@ -1702,27 +1666,21 @@ publicBookingRouter.post("/create-order", createOrderLimiter, async (req, res): 
     });
     if (!rpRes.ok) {
       const err = await rpRes.json().catch(() => ({}));
+      await failPendingBooking(booking.id, "Payment gateway error.");
       res.status(400).json({ error: "Payment gateway error. Please try again.", details: (err as { error?: { description?: string } }).error?.description });
       return;
     }
     const rpData = (await rpRes.json()) as { id: string };
     razorpayOrderId = rpData.id;
   } catch {
+    await failPendingBooking(booking.id, "Could not connect to payment gateway.");
     res.status(400).json({ error: "Could not connect to payment gateway. Please try again." });
     return;
   }
 
-  await db.insert(onlineBookingsTable).values({
-    bookingRef, name: name, phone: phone.trim(), email: email.trim(),
-    selectedDate, timeSlot: timeSlot.trim(), testIds: JSON.stringify(testIds), packageIds: JSON.stringify(packageIds),
-    ...normalizeReferringDoctor(referringDoctorId, referringDoctorName),
-    totalAmount: String(amount), notes: notes.trim(),
-    isVip: Boolean(isVip) && Boolean(settings.vipQueueEnabled),
-    ageValue: Number(ageValue),
-    ageUnit: ageUnit.toLowerCase(),
-    gender: gender.toLowerCase(),
-    razorpayOrderId, status: "pending_payment",
-  });
+  await db.update(onlineBookingsTable)
+    .set({ razorpayOrderId })
+    .where(eq(onlineBookingsTable.id, booking.id));
 
   res.json({ bookingRef, razorpayOrderId, amountPaise, keyId });
 });
@@ -1827,26 +1785,9 @@ publicBookingRouter.post("/qr-initiate", createOrderLimiter, async (req, res): P
   }
   const name = String(rawName).trim().toUpperCase();
 
-  const bookingRef = generateBookingRef();
-
-  await db.insert(onlineBookingsTable).values({
-    bookingRef,
-    name: name,
-    phone: phone.trim(),
-    email: email.trim(),
-    selectedDate,
-    timeSlot: timeSlot.trim(),
-    ...normalizeReferringDoctor(referringDoctorId, referringDoctorName),
-    testIds: JSON.stringify(testIds),
-    packageIds: JSON.stringify(packageIds),
-    totalAmount: String(amount),
-    notes: notes.trim(),
-    isVip: Boolean(isVip) && Boolean(settings.vipQueueEnabled),
-    ageValue: Number(ageValue),
-    ageUnit: ageUnit.toLowerCase(),
-    gender: gender.toLowerCase(),
-    status: "pending_payment",
-  });
+  const booking = await reserveOrReject(req, res);
+  if (!booking) return;
+  const bookingRef = booking.bookingRef;
 
   // Build a dynamic UPI intent URL for the exact amount
   const vpa = settings.upiVpa || settings.kioskUpiVpa || "";

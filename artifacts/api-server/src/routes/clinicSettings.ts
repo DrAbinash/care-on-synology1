@@ -8,6 +8,7 @@ import {
   stripFields,
 } from "../middleware/commissionVisibility";
 import { FULL_ACCESS_ROLES, normalizeRole, type StaffAuthRequest } from "../middleware/requireStaffAuth";
+import { sanitizeBookingTimeSlots, OnlineBookingError } from "../services/onlineBookingSlots";
 
 const CLINIC_SETTINGS_CACHE_KEY = "clinic-settings:v1";
 
@@ -364,39 +365,21 @@ clinicSettingsRouter.put("/", async (req, res) => {
   }
 
   // bookingTimeSlots is stored as JSON-as-text (whitelisted in textFields
-  // above). Validate it parses to an array of { value, label } strings so a
-  // malformed blob can never reach the public booking form and break the
-  // dropdown. An empty array is allowed (the form falls back to defaults).
+  // above). Validate it parses to an array of { value, label, maxBookings?,
+  // modality? } so a malformed blob can never reach the public booking form.
+  // An empty array is allowed (the form falls back to defaults).
   if (update.bookingTimeSlots !== undefined) {
     const raw = String(update.bookingTimeSlots || "").trim();
     if (raw === "") {
       update.bookingTimeSlots = "[]";
     } else {
-      let parsed: unknown;
       try {
-        parsed = JSON.parse(raw);
-      } catch {
-        res.status(400).json({ error: "bookingTimeSlots must be valid JSON." });
+        update.bookingTimeSlots = JSON.stringify(sanitizeBookingTimeSlots(raw));
+      } catch (err) {
+        const msg = err instanceof OnlineBookingError ? err.message : "bookingTimeSlots must be valid JSON.";
+        res.status(400).json({ error: msg });
         return;
       }
-      if (
-        !Array.isArray(parsed) ||
-        !parsed.every(
-          (s) =>
-            s && typeof s === "object" &&
-            typeof (s as { value?: unknown }).value === "string" &&
-            typeof (s as { label?: unknown }).label === "string",
-        )
-      ) {
-        res.status(400).json({ error: "bookingTimeSlots must be an array of { value, label } objects." });
-        return;
-      }
-      // Re-serialize the sanitized list (drops any extra keys, trims strings).
-      update.bookingTimeSlots = JSON.stringify(
-        (parsed as Array<{ value: string; label: string }>)
-          .map((s) => ({ value: s.value.trim(), label: s.label.trim() }))
-          .filter((s) => s.value !== "" && s.label !== ""),
-      );
     }
   }
 

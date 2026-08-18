@@ -106,7 +106,7 @@ type BookingConfig = {
   // Hope partner page selection, curated in Care's Settings (empty = not set).
   hopeAllowedTestIds?: number[];
   hopeAllowedPackageIds?: number[];
-  bookingTimeSlots?: { value: string; label: string }[];
+  bookingTimeSlots?: { value: string; label: string; maxBookings?: number | null; modality?: string; remaining?: number | null; available?: boolean }[];
 };
 type DoctorOption = { id: number; name: string; specialization?: string | null };
 type TestItem = { id: number; code: string; name: string; category: string; price: string };
@@ -166,6 +166,7 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
   }, []);
 
   const [config, setConfig] = useState<BookingConfig | null>(null);
+  const [liveSlots, setLiveSlots] = useState<BookingConfig["bookingTimeSlots"]>(undefined);
   const [tests, setTests] = useState<TestItem[]>([]);
   const [pkgs, setPkgs] = useState<PkgItem[]>([]);
   const [step, setStep] = useState<0 | 1 | 2 | 3 | 4 | 5 | 6>(0); // 0=details,1=select,2=review,3=done,4=failed,5=qr-payment,6=confirmed
@@ -228,6 +229,7 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
       gender: "" as "male" | "female" | "",
       referringDoctorId: null as number | null,
       referringDoctorName: "",
+      slotModality: "",
     };
   });
   const [selTests, setSelTests] = useState<Set<number>>(new Set());
@@ -258,7 +260,10 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
 
   useEffect(() => {
     bookingGet<BookingConfig>("/api/public/booking/config")
-      .then(setConfig)
+      .then((c) => {
+        setConfig(c);
+        setLiveSlots(c.bookingTimeSlots);
+      })
       .catch(() => setConfig({ enabled: false, keyId: "", vipEnabled: false, gateway: null }));
   }, []);
 
@@ -458,6 +463,8 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
     try {
       const res = await bookingPost<{ payuUrl: string; fields: Record<string, string> }>("/api/public/booking/payu-initiate", {
         name: pd.name, phone: pd.phone, email: pd.email, selectedDate: pd.date, timeSlot: pd.timeSlot,
+        slotModality: pd.slotModality || "",
+        source: mode === "kiosk" ? "kiosk" : "website",
         testIds: Array.from(selTests), packageIds: Array.from(selPkgs),
         totalAmount: total, notes: pd.notes, isVip: pd.isVip,
         ageValue: pd.ageValue ? Number(pd.ageValue) : null, ageUnit: pd.ageUnit, gender: pd.gender,
@@ -475,6 +482,8 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
     try {
       const res = await bookingPost<{ bookingRef: string; redirectUrl: string }>("/api/public/booking/phonepe-initiate", {
         name: pd.name, phone: pd.phone, email: pd.email, selectedDate: pd.date, timeSlot: pd.timeSlot,
+        slotModality: pd.slotModality || "",
+        source: mode === "kiosk" ? "kiosk" : "website",
         testIds: Array.from(selTests), packageIds: Array.from(selPkgs),
         totalAmount: total, notes: pd.notes, isVip: pd.isVip,
         ageValue: pd.ageValue ? Number(pd.ageValue) : null, ageUnit: pd.ageUnit, gender: pd.gender,
@@ -492,6 +501,8 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
     try {
       const res = await bookingPost<{ bookingRef: string; redirectUrl: string }>("/api/public/booking/bharatpe-initiate", {
         name: pd.name, phone: pd.phone, email: pd.email, selectedDate: pd.date, timeSlot: pd.timeSlot,
+        slotModality: pd.slotModality || "",
+        source: mode === "kiosk" ? "kiosk" : "website",
         testIds: Array.from(selTests), packageIds: Array.from(selPkgs),
         totalAmount: total, notes: pd.notes, isVip: pd.isVip,
         ageValue: pd.ageValue ? Number(pd.ageValue) : null, ageUnit: pd.ageUnit, gender: pd.gender,
@@ -512,6 +523,8 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
 
       const res = await bookingPost<{ bookingRef: string; razorpayOrderId: string; amountPaise: number; keyId: string }>("/api/public/booking/create-order", {
         name: pd.name, phone: pd.phone, email: pd.email, selectedDate: pd.date, timeSlot: pd.timeSlot,
+        slotModality: pd.slotModality || "",
+        source: mode === "kiosk" ? "kiosk" : "website",
         testIds: Array.from(selTests), packageIds: Array.from(selPkgs),
         totalAmount: total, notes: pd.notes, isVip: pd.isVip,
         ageValue: pd.ageValue ? Number(pd.ageValue) : null, ageUnit: pd.ageUnit, gender: pd.gender,
@@ -567,6 +580,8 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
     try {
       const res = await bookingPost<{ bookingRef: string; redirectUrl: string; tranCtx: string }>("/api/public/booking/icici-initiate", {
         name: pd.name, phone: pd.phone, email: pd.email, selectedDate: pd.date, timeSlot: pd.timeSlot,
+        slotModality: pd.slotModality || "",
+        source: mode === "kiosk" ? "kiosk" : "website",
         testIds: Array.from(selTests), packageIds: Array.from(selPkgs),
         totalAmount: total, notes: pd.notes, isVip: pd.isVip,
         ageValue: pd.ageValue ? Number(pd.ageValue) : null, ageUnit: pd.ageUnit, gender: pd.gender,
@@ -586,6 +601,8 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
     try {
       const res = await bookingPost<{ bookingRef: string; amount: number; upiVpa: string; upiName: string; upiUrl: string; upiQrImageUrl: string; clinicName: string }>("/api/public/booking/qr-initiate", {
         name: pd.name, phone: pd.phone, email: pd.email, selectedDate: pd.date, timeSlot: pd.timeSlot,
+        slotModality: pd.slotModality || "",
+        source: mode === "kiosk" ? "kiosk" : "website",
         testIds: Array.from(selTests), packageIds: Array.from(selPkgs),
         totalAmount: total, notes: pd.notes, isVip: pd.isVip,
         ageValue: pd.ageValue ? Number(pd.ageValue) : null, ageUnit: pd.ageUnit, gender: pd.gender,
@@ -835,7 +852,13 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
               </h2>
               <SelfRegistrationForm
                 mode={mode}
-                timeSlots={config?.bookingTimeSlots}
+                timeSlots={liveSlots || config?.bookingTimeSlots}
+                onDateChange={(d) => {
+                  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return;
+                  bookingGet<{ slots: NonNullable<BookingConfig["bookingTimeSlots"]> }>(`/api/public/booking/slots?date=${encodeURIComponent(d)}`)
+                    .then((r) => setLiveSlots(r.slots))
+                    .catch(() => {});
+                }}
                 doctors={doctors}
                 initialValues={{
                   firstName: pd.name,
@@ -868,6 +891,7 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
                     gender: data.gender,
                     referringDoctorId: data.referringDoctorId ?? null,
                     referringDoctorName: data.referringDoctorName || "",
+                    slotModality: data.slotModality || "",
                   });
                   loadCatalog();
                   setStep(1);

@@ -14,9 +14,10 @@ import {
 } from "@/components/ui/dialog";
 import {
   Search, RefreshCw, CheckCircle2, XCircle, Eye, Globe, Star,
-  CreditCard, Phone, Calendar, FileText, User, Clock,
+  CreditCard, Phone, Calendar, FileText, User, Clock, Plus,
 } from "lucide-react";
 import { Link } from "wouter";
+import { NewOnlineBookingDialog } from "./NewOnlineBookingDialog";
 
 type OnlineBooking = {
   id: number;
@@ -39,13 +40,15 @@ type OnlineBooking = {
   confirmedByName: string | null;
   confirmedAt: string | null;
   createdAt: string;
+  source?: string;
 };
 
 const STATUS_COLORS: Record<string, string> = {
   pending_payment: "bg-yellow-100 text-yellow-800 border-yellow-300",
   paid:            "bg-blue-100 text-blue-800 border-blue-300",
   confirmed:       "bg-emerald-100 text-emerald-800 border-emerald-300",
-  cancelled:       "bg-zinc-100 text-zinc-600 border-zinc-300",
+  payment_failed: "bg-red-100 text-red-800 border-red-300",
+  cancelled:       "bg-gray-100 text-gray-800 border-gray-300",
 };
 
 const STATUS_LABELS: Record<string, string> = {
@@ -53,6 +56,14 @@ const STATUS_LABELS: Record<string, string> = {
   paid:            "Paid – Awaiting Confirm",
   confirmed:       "Confirmed",
   cancelled:       "Cancelled",
+  payment_failed:  "Payment Failed",
+};
+
+const SOURCE_LABELS: Record<string, string> = {
+  website: "Website",
+  kiosk: "Kiosk",
+  reception: "Reception",
+  phone: "Phone",
 };
 
 export default function OnlineBookingsPage() {
@@ -63,6 +74,7 @@ export default function OnlineBookingsPage() {
   const [selected, setSelected] = useState<OnlineBooking | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [cancelOpen, setCancelOpen] = useState(false);
+  const [newOpen, setNewOpen] = useState(false);
 
   const { data, isFetching, refetch } = useQuery<{ bookings: OnlineBooking[] }>({
     queryKey: ["online-bookings", status, search],
@@ -103,9 +115,13 @@ export default function OnlineBookingsPage() {
     <div className="p-4 md:p-6 space-y-4">
       <PageHeader
         title="Online Bookings"
-        subtitle={`Paid via website · ${paidCount > 0 ? `${paidCount} awaiting confirmation` : "All confirmed"}`}
+        subtitle={`Website, kiosk, phone and reception · ${paidCount > 0 ? `${paidCount} awaiting confirmation` : "All confirmed"}`}
         actions={
           <div className="flex items-center gap-2">
+            <Button size="sm" onClick={() => setNewOpen(true)}>
+              <Plus size={13} className="mr-1" />
+              New Booking
+            </Button>
             <Button variant="outline" size="sm" onClick={() => refetch()} disabled={isFetching}>
               <RefreshCw size={13} className={`mr-1 ${isFetching ? "animate-spin" : ""}`} />
               Refresh
@@ -124,6 +140,7 @@ export default function OnlineBookingsPage() {
             <SelectItem value="paid">Paid – Awaiting Confirm</SelectItem>
             <SelectItem value="confirmed">Confirmed</SelectItem>
             <SelectItem value="cancelled">Cancelled</SelectItem>
+            <SelectItem value="payment_failed">Payment Failed</SelectItem>
           </SelectContent>
         </Select>
         <div className="relative flex-1 min-w-[220px] max-w-md">
@@ -143,7 +160,7 @@ export default function OnlineBookingsPage() {
           <Globe size={32} className="mx-auto mb-3 text-muted-foreground/40" />
           <p className="text-base font-medium">No online bookings found</p>
           <p className="text-sm text-muted-foreground mt-1">
-            Bookings placed on the clinic website will appear here once payment is made.
+            Bookings from the clinic website, kiosk, phone, and reception appear here.
           </p>
         </div>
       ) : (
@@ -157,6 +174,7 @@ export default function OnlineBookingsPage() {
                   <th className="px-4 py-3 text-left font-medium">Date</th>
                   <th className="px-4 py-3 text-right font-medium">Amount</th>
                   <th className="px-4 py-3 text-left font-medium">Status</th>
+                  <th className="px-4 py-3 text-left font-medium">Source</th>
                   <th className="px-4 py-3 text-left font-medium">Booked</th>
                   <th className="px-4 py-3 text-right font-medium">Actions</th>
                 </tr>
@@ -198,6 +216,9 @@ export default function OnlineBookingsPage() {
                       </span>
                     </td>
                     <td className="px-4 py-3 text-xs text-muted-foreground">
+                      {SOURCE_LABELS[b.source || "website"] || b.source || "Website"}
+                    </td>
+                    <td className="px-4 py-3 text-xs text-muted-foreground">
                       {new Date(b.createdAt).toLocaleString("en-IN", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}
                     </td>
                     <td className="px-4 py-3">
@@ -216,6 +237,15 @@ export default function OnlineBookingsPage() {
                             onClick={() => { setSelected(b); setConfirmOpen(true); }}
                           >
                             <CheckCircle2 size={12} className="mr-1" /> Confirm
+                          </Button>
+                        )}
+                        {b.status === "pending_payment" && (b.source === "reception" || b.source === "phone") && (
+                          <Button
+                            size="sm" variant="default"
+                            className="h-7 px-2 text-xs bg-emerald-600 hover:bg-emerald-700"
+                            onClick={() => { setSelected(b); setConfirmOpen(true); }}
+                          >
+                            <CheckCircle2 size={12} className="mr-1" /> Confirm (Pay at Centre)
                           </Button>
                         )}
                         {(b.status === "paid" || b.status === "pending_payment") && (
@@ -369,6 +399,37 @@ export default function OnlineBookingsPage() {
           </DialogContent>
         </Dialog>
       )}
+
+      <NewOnlineBookingDialog
+        open={newOpen}
+        onClose={() => setNewOpen(false)}
+        onCreated={async (booking, paymentChoice) => {
+          qc.invalidateQueries({ queryKey: ["online-bookings"] });
+          setNewOpen(false);
+          if (paymentChoice === "link") {
+            try {
+              const r = await api.post<{ url: string; linkId: string }>(`/api/online-bookings/${booking.id}/payment-link`, {});
+              if (r.url && navigator.clipboard) await navigator.clipboard.writeText(r.url);
+              toast({
+                title: "Booking saved · payment link ready",
+                description: r.url
+                  ? `${booking.bookingRef} · Link copied to clipboard. Share via WhatsApp or SMS.`
+                  : `${booking.bookingRef} created.`,
+              });
+            } catch (e: unknown) {
+              toast({
+                title: "Booking saved",
+                description: `${booking.bookingRef} created, but the payment link could not be generated: ${(e as { message?: string }).message || "no gateway configured"}. Use Pay at Centre or Share Link from the list.`,
+              });
+            }
+          } else {
+            toast({
+              title: "Booking saved — pay at centre",
+              description: `${booking.bookingRef} is holding the slot. Confirm it when the patient pays at the counter.`,
+            });
+          }
+        }}
+      />
     </div>
   );
 }
