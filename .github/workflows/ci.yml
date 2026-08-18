@@ -20,6 +20,8 @@ jobs:
   static:
     name: Static checks (typecheck, migration order, grounding)
     runs-on: ubuntu-latest
+    # Healthy run is ~3 min. Cap so a hung typecheck cannot sit for 6h.
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -41,6 +43,9 @@ jobs:
   test:
     name: Tests + migration smoke (real Postgres)
     runs-on: ubuntu-latest
+    # Healthy run is ~8 min. PR #548 sat >10 min (and a sibling e2e job 2h)
+    # on unbounded apt-get because the job inherited the 6h default.
+    timeout-minutes: 15
     services:
       postgres:
         image: postgres:16-alpine
@@ -71,14 +76,17 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Install poppler-utils (pdftotext — used by PDF-export text-layer assertions)
-        run: sudo apt-get update && sudo apt-get install -y poppler-utils
+        timeout-minutes: 3
+        run: sudo bash scripts/ci-apt-install.sh poppler-utils
       - name: Install Chromium (Premium print-layout proof)
+        timeout-minutes: 5
         run: pnpm exec playwright install --with-deps chromium
       - name: Clean-boot + upgrade-safety migration smoke
         run: pnpm db:smoke
       - name: Bootstrap the test database (full migration path)
         run: pnpm db:bootstrap
       - name: Vitest suite (sequential — one shared DB)
+        timeout-minutes: 10
         # --no-file-parallelism because the DB-dependent tests share one Postgres
         # database; parallel files collide on rows/ids (proven flaky otherwise).
         run: pnpm exec vitest run --no-file-parallelism
@@ -86,6 +94,8 @@ jobs:
   e2e-smoke:
     name: Browser smoke (login shell)
     runs-on: ubuntu-latest
+    # Healthy run is ~2 min. Chromium `--with-deps` hung 2h on #547's push.
+    timeout-minutes: 8
     services:
       postgres:
         image: postgres:16-alpine
@@ -119,6 +129,7 @@ jobs:
       - name: Bootstrap the test database
         run: pnpm db:bootstrap
       - name: Install Chromium
+        timeout-minutes: 5
         run: pnpm exec playwright install --with-deps chromium
       - name: Browser smoke
         run: pnpm e2e:smoke
