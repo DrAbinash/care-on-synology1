@@ -201,6 +201,13 @@ aiClinicalRouter.get("/overnight-diagnostics", async (req, res) => {
   if (!requireAdmin(req, res)) return;
   res.json(await getOvernightDiagnostics());
 });
+aiClinicalRouter.post("/overnight/canary", async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const parsed = z.object({ jobId: z.number().int().optional() }).safeParse(req.body ?? {});
+  if (!parsed.success) { res.status(400).json({ error: parsed.error.issues }); return; }
+  const { runOvernightAiCanary } = await import("../lib/ai/overnightCanary");
+  res.json(await runOvernightAiCanary(parsed.data));
+});
 aiClinicalRouter.get("/scheduler/night-batch-preview", async (req, res) => {
   if (!requireAdmin(req, res)) return;
   res.json(await previewNightBatch());

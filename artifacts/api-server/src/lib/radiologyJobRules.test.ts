@@ -26,9 +26,22 @@ describe("bounded retries with backoff", () => {
     expect(final.status).toBe(DEAD_LETTER_STATUS);
   });
 
-  it("maxRetries floor of 1: even a zero/negative config cannot retry forever", () => {
-    expect(decideFailure({ retryCount: 0, maxRetries: 0, now: NOW }).status).toBe("abandoned");
-    expect(decideFailure({ retryCount: 0, maxRetries: -5, now: NOW }).status).toBe("abandoned");
+  it("no-DICOM / missing UID abandon after 2 attempts instead of occupying the slot for maxRetries", () => {
+    const first = decideFailure({
+      retryCount: 0, maxRetries: 5, now: NOW,
+      error: "no DICOM instances found for study (not yet arrived / not stable)",
+    });
+    expect(first.status).toBe("retrying");
+    const second = decideFailure({
+      retryCount: 1, maxRetries: 5, now: NOW,
+      error: "no DICOM instances found for study (not yet arrived / not stable)",
+    });
+    expect(second.status).toBe("abandoned");
+    const badPayload = decideFailure({
+      retryCount: 0, maxRetries: 5, now: NOW,
+      error: "invalid payload: studyInstanceUid required",
+    });
+    expect(badPayload.status).toBe("abandoned");
   });
 });
 

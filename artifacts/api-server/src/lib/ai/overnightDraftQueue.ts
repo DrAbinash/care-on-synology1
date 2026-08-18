@@ -335,4 +335,137 @@ export async function overnightQueueStats(now = new Date()) {
   };
 }
 
+function executeRows<T>(res: unknown): T[] {
+  const withRows = res as { rows?: T[] };
+  if (Array.isArray(withRows.rows)) return withRows.rows;
+  return Array.isArray(res) ? (res as T[]) : [];
+}
+
+/** Read-only composition of ai_shadow_pipeline rows. Never deletes or reseeds. */
+export async function shadowQueueComposition() {
+  const statusRows = executeRows<{ status: string; n: number }>(await db.execute(sql`
+    SELECT status, count(*)::int AS n
+    FROM dicom_retry_queue
+    WHERE operation_type = ${AI_SHADOW_PIPELINE_JOB}
+    GROUP BY status
+  `));
+  const byStatus = Object.fromEntries(statusRows.map((r) => [r.status, r.n]));
+  const pending = (byStatus.pending ?? 0) + (byStatus.retrying ?? 0);
+
+  const dueNow = executeRows<{ n: number }>(await db.execute(sql`
+    SELECT count(*)::int AS n FROM dicom_retry_queue
+    WHERE operation_type = ${AI_SHADOW_PIPELINE_JOB}
+      AND status IN ('pending','retrying')
+      AND (next_retry_at IS NULL OR next_retry_at <= NOW())
+  `))[0]?.n ?? 0;
+
+  const retryBuckets = executeRows<{ retry_count: number; n: number }>(await db.execute(sql`
+    SELECT retry_count, count(*)::int AS n
+    FROM dicom_retry_queue
+    WHERE operation_type = ${AI_SHADOW_PIPELINE_JOB}
+      AND status IN ('pending','retrying')
+    GROUP BY retry_count
+    ORDER BY retry_count
+  `));
+
+  const ageBuckets = executeRows<{ bucket: string; n: number }>(await db.execute(sql`
+    SELECT bucket, count(*)::int AS n FROM (
+      SELECT CASE
+        WHEN created_at > NOW() - INTERVAL '3 hours' THEN '0-3h'
+        WHEN created_at > NOW() - INTERVAL '10 hours' THEN '3-10h'
+        WHEN created_at > NOW() - INTERVAL '24 hours' THEN '10-24h'
+        WHEN created_at > NOW() - INTERVAL '7 days' THEN '1-7d'
+        ELSE '7d+'
+      END AS bucket
+      FROM dicom_retry_queue
+      WHERE operation_type = ${AI_SHADOW_PIPELINE_JOB}
+        AND status IN ('pending','retrying')
+    ) t
+    GROUP BY bucket
+  `));
+
+  const modalities = executeRows<{ modality: string; n: number }>(await db.execute(sql`
+    SELECT COALESCE(NULLIF(upper(payload->>'modality'), ''), '(none)') AS modality, count(*)::int AS n
+    FROM dicom_retry_queue
+    WHERE operation_type = ${AI_SHADOW_PIPELINE_JOB}
+      AND status IN ('pending','retrying')
+    GROUP BY 1
+    ORDER BY n DESC
+  `));
+
+  const reasons = executeRows<{ reason: string; n: number }>(await db.execute(sql`
+    SELECT COALESCE(left(failure_reason, 160), '(no reason)') AS reason, count(*)::int AS n
+    FROM dicom_retry_queue
+    WHERE operation_type = ${AI_SHADOW_PIPELINE_JOB}
+      AND status = 'abandoned'
+    GROUP BY 1
+    ORDER BY n DESC
+    LIMIT 10
+  `));
+
+  const duplicateIdentity = executeRows<{ studies: number; extraJobs: number }>(await db.execute(sql`
+    SELECT
+      count(*)::int AS studies,
+      COALESCE(sum(n - 1), 0)::int AS "extraJobs"
+    FROM (
+      SELECT payload->>'studyInstanceUid' AS uid, count(*)::int AS n
+      FROM dicom_retry_queue
+      WHERE operation_type = ${AI_SHADOW_PIPELINE_JOB}
+        AND status IN ('pending','retrying')
+        AND payload->>'studyInstanceUid' IS NOT NULL
+      GROUP BY 1
+      HAVING count(*) > 1
+    ) d
+  `))[0] ?? { studies: 0, extraJobs: 0 };
+
+  const uniqueStudies = executeRows<{ n: number }>(await db.execute(sql`
+    SELECT count(DISTINCT payload->>'studyInstanceUid')::int AS n
+    FROM dicom_retry_queue
+    WHERE operation_type = ${AI_SHADOW_PIPELINE_JOB}
+      AND status IN ('pending','retrying')
+  `))[0]?.n ?? 0;
+
+  const arrivalKeyed = executeRows<{ n: number }>(await db.execute(sql`
+    SELECT count(*)::int AS n
+    FROM dicom_retry_queue
+    WHERE operation_type = ${AI_SHADOW_PIPELINE_JOB}
+      AND status IN ('pending','retrying')
+      AND idempotency_key LIKE 'ai:shadow:%:dicom-arrival:%'
+  `))[0]?.n ?? 0;
+
+  const overnightKeyed = executeRows<{ n: number }>(await db.execute(sql`
+    SELECT count(*)::int AS n
+    FROM dicom_retry_queue
+    WHERE operation_type = ${AI_SHADOW_PIPELINE_JOB}
+      AND status IN ('pending','retrying')
+      AND idempotency_key LIKE 'ai:shadow:%:overnight'
+  `))[0]?.n ?? 0;
+
+  const lockWaiters = executeRows<{ n: number }>(await db.execute(sql`
+    SELECT count(*)::int AS n
+    FROM pg_locks l
+    JOIN pg_class c ON c.oid = l.relation
+    WHERE c.relname = 'dicom_retry_queue' AND NOT l.granted
+  `))[0]?.n ?? 0;
+
+  return {
+    byStatus,
+    pending,
+    running: byStatus.running ?? 0,
+    abandoned: byStatus.abandoned ?? 0,
+    success: byStatus.success ?? 0,
+    dueNow,
+    uniqueStudies,
+    duplicateStudies: duplicateIdentity.studies,
+    duplicateExtraJobs: duplicateIdentity.extraJobs,
+    arrivalKeyedDuplicates: arrivalKeyed,
+    overnightKeyed,
+    age: Object.fromEntries(ageBuckets.map((r) => [r.bucket, r.n])),
+    retryCount: retryBuckets.map((r) => ({ retryCount: r.retry_count, n: r.n })),
+    modality: modalities,
+    abandonedReasons: reasons,
+    ungrantedLocks: lockWaiters,
+  };
+}
+
 export { IN_FLIGHT as SHADOW_IN_FLIGHT_STATUSES };
