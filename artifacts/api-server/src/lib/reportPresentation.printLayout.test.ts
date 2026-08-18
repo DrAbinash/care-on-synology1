@@ -110,6 +110,20 @@ const SHORT_BODY = `<p><strong>CLINICAL HISTORY:</strong> Headache.</p>
 <p><strong>TECHNIQUE:</strong> Multiplanar MRI brain.</p>
 <p><strong>FINDINGS:</strong> Brain parenchyma is normal. Ventricles are normal. No midline shift.</p>`;
 
+const ARHAN_BODY = `<p><strong>CLINICAL HISTORY:</strong> LOC ?Convulsions</p>
+<p><strong>TECHNIQUE:</strong> Multiplanar T1-weighted, T2-weighted, FLAIR, DWI with ADC, SWI/T2*, and post-contrast T1-weighted sequences were obtained on Brand New 3 Tesla Machine.</p>
+<p><strong>FINDINGS:</strong> A focal, well-circumscribed lesion is identified in the subcortical white matter of the right parietal lobe, measuring approximately 10.9 x 9.9 mm.</p>
+<p>• Signal Characteristics: The lesion is T1 hypointense and T2 hyperintense with surrounding gross hyperintensity suggestive of oedema. On FLAIR, the central core is hypointense, consistent with fluid-filled content with surrounding gross hyperintensity.</p>
+<p>• Enhancement Pattern: Post-gadolinium sequences demonstrate a distinct, regular peripheral ring enhancement surrounding the non-enhancing core.</p>
+<p>• Perilesional Edema: There is associated perilesional vasogenic edema, visualized as T2/FLAIR hyperintensity in the adjacent white matter. No significant mass effect or midline shift is noted.</p>
+<p>• Susceptibility (SWI): A focal area of SWI hypointensity (blooming) is present within the lesion. Analysis of the phase imaging reveals reverse phase hyperintensity, diagnostic of diamagnetic material (calcification).</p>
+<p>• Diffusion (DWI/ADC): Primarily DWI hypointense with a focal hyperintense internal focus. The ADC map is hyperintense, confirming the absence of restricted diffusion.</p>
+<p><strong>IMPRESSION:</strong></p>
+<p>1. A focal, well-circumscribed lesion is identified in the subcortical white matter of the right parietal lobe, measuring approximately 10.9 x 9.9 mm. The lesion is T1 hypointense and T2 hyperintense with surrounding gross hyperintensity suggestive of oedema.</p>
+<p>2. On FLAIR, the central core is hypointense, consistent with fluid-filled content with surrounding gross hyperintensity.</p>
+<p>3. Post-gadolinium sequences demonstrate a distinct, regular peripheral ring enhancement surrounding the non-enhancing core.</p>
+<p><strong>RECOMMENDATION:</strong> FOLLOW UP SCAN IF CLINICALLY INDICATED. Clinical correlation advised.</p>`;
+
 describe.skipIf(!hasChromium())("premium print layout (Chromium)", () => {
   it("keeps four framed key images on the right of page 1", async () => {
     const src = await mriLikeJpeg();
@@ -234,6 +248,51 @@ describe.skipIf(!hasChromium())("premium print layout (Chromium)", () => {
       mkdirSync(ARTIFACT_DIR, { recursive: true });
       writeFileSync(`${ARTIFACT_DIR}/premium_6images.pdf`, pdf);
       expect(pdfPageCount(Buffer.from(pdf))).toBeLessThanOrEqual(2);
+    } finally {
+      await browser.close();
+    }
+  }, 90_000);
+
+  it("classic + 6 images keeps a right rail on page 1 (Arhan / PREVIEW-19)", async () => {
+    const src = await mriLikeJpeg();
+    const captions = [
+      "T1_FSE_FLAIR_COR_FS", "FLAIR-AXIAL", "T2_AXIAL",
+      "EPI_DWI_TRA_B0", "T1_FSE_FLAIR_SAG_FS", "FLAIR-AXIAL",
+    ];
+    const six: ReportKeyImageModel[] = captions.map((caption, i) => ({
+      src, caption, displayOrder: i,
+      framing: { zoom: 1.4, offsetX: 0, offsetY: 0, fitMode: "cover" as const },
+    }));
+    const html = renderReportDocument(
+      modelWithImages(six, ARHAN_BODY),
+      resolvePresentationTemplate("care-classic"),
+    );
+    expect(html).toContain("has-side-images");
+    expect(html).toContain("image-panel-side");
+    expect(html).not.toMatch(/class="image-panel image-panel-inline/);
+    expect(html).not.toContain("SELECTED IMAGES");
+
+    const browser = await chromium.launch({ args: ["--no-sandbox", "--disable-setuid-sandbox"] });
+    try {
+      const page = await browser.newPage();
+      await page.emulateMedia({ media: "print" });
+      await page.setViewportSize({ width: 794, height: 1123 });
+      await page.setContent(html, { waitUntil: "networkidle" });
+      const geo = await page.evaluate(measureSideRail);
+      expect(geo.col).toBeTruthy();
+      expect(geo.rail).toBeTruthy();
+      expect(geo.cellCount).toBe(6);
+      expect(geo.rail!.left).toBeGreaterThan(geo.col!.left + geo.col!.width * 0.5);
+      expect(Math.abs(geo.rail!.top - geo.col!.top)).toBeLessThan(24);
+
+      const pdf = await page.pdf({ printBackground: true, preferCSSPageSize: true });
+      expect(pdfPageCount(Buffer.from(pdf))).toBeLessThanOrEqual(2);
+      mkdirSync(ARTIFACT_DIR, { recursive: true });
+      writeFileSync(`${ARTIFACT_DIR}/classic_arhan_6images.pdf`, pdf);
+      await page.screenshot({
+        path: `${ARTIFACT_DIR}/classic_arhan_page1_print.png`,
+        fullPage: false,
+      });
     } finally {
       await browser.close();
     }

@@ -32,8 +32,8 @@ function seed(
 }
 
 export const PRESENTATION_TEMPLATE_SEEDS: TemplateVersionRecord[] = [
-  // ── care-classic — the R1.1 default, unchanged ────────────────────────────
-  seed("care-classic", "CARE Classic", "The presentation the clinic delivers today — unchanged default.", "standard", {
+  // ── care-classic — letter-pad right rail (matches jsPDF / Arhan MRI) ──────
+  seed("care-classic", "CARE Classic", "CARE letterhead with stacked demographics and key images on the right (letter-pad).", "standard", {
     typography: {
       header: { fontFamily: SEGOE, fontSize: "20px", color: "#1e1b4b", fontWeight: "800" },
       patientBlock: { fontFamily: SEGOE, fontSize: "11px" },
@@ -56,7 +56,7 @@ export const PRESENTATION_TEMPLATE_SEEDS: TemplateVersionRecord[] = [
     studyTitle: { style: "plain" },
     signature: { show: true, showImage: true },
     footer: { show: true },
-    imagePanel: { placement: "inline", panelWidthMm: 64 },
+    imagePanel: { placement: "side-panel", panelWidthMm: 64 },
     watermark: { enabled: false, text: "" },
     qr: { show: true },
     pageBreaks: { orphans: 3, widows: 3 },

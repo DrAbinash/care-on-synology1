@@ -139,11 +139,13 @@ describe("premium layout (Phase 7)", () => {
     expect(html).toContain("page-break-after: avoid");
   });
 
-  it("classic template keeps the inline image grid and stacked demographics", () => {
+  it("classic template uses the same right rail as letter-pad (stacked demographics)", () => {
     const html = renderReportDocument(baseModel({ keyImages: images }), resolvePresentationTemplate("care-classic"));
-    expect(html).toContain("image-panel-inline");
+    expect(html).toContain("has-side-images");
+    expect(html).toContain("image-panel-side");
     expect(html).toContain("patient-stacked");
-    expect(html).not.toContain("float: right; width: 62mm");
+    expect(html).toContain("image-viewport");
+    expect(html).not.toMatch(/class="image-panel image-panel-inline/);
   });
 
   it("letter-pad header, footer, Sugandha default, key images on the right", () => {
@@ -341,9 +343,9 @@ describe("R1.3 — key-image badge", () => {
     expect(html).toContain("    }\n    .dicom-img");
   });
 
-  it("badge renders in classic (inline) placement too — one renderer everywhere", () => {
+  it("badge renders in classic (side-panel) placement too — one renderer everywhere", () => {
     const html = renderReportDocument(baseModel({ keyImages: images }), resolvePresentationTemplate("care-classic"));
-    expect(html).toContain("image-panel-inline");
+    expect(html).toContain("image-panel-side");
     expect(html).toContain('<span class="key-image-badge">★ KEY</span>');
   });
 });
@@ -440,10 +442,11 @@ describe("premium two-column print rail (page-1 images beside findings)", () => 
     expect(html).toContain("image-panel-overflow");
   });
 
-  it("classic inline images are not wrapped in the premium viewport", () => {
+  it("classic also uses the premium viewport on the right rail", () => {
     const html = renderReportDocument(baseModel({ keyImages: images }), resolvePresentationTemplate("care-classic"));
-    expect(html).toContain("image-panel-inline");
-    expect(html).not.toContain("image-viewport");
+    expect(html).toContain("image-panel-side");
+    expect(html).toContain("image-viewport");
+    expect(html).not.toMatch(/class="image-panel image-panel-inline/);
   });
 
   it("zero images never emit an empty right column", () => {

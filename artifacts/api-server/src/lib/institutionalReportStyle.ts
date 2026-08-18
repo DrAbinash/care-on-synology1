@@ -456,7 +456,10 @@ export function applyInstitutionalTemplateOverrides(
   if (!style) return template;
 
   const imagePlacement = coerceImagePlacement(style.imagePlacement);
-  const layoutPlacement = imagePlacement === "side-panel" ? "side-panel" : "inline";
+  // Style UI "Inline with findings" is the letter-pad right rail (jsPDF /
+  // Arhan MRI). Mapping it to after-body `inline` dumped a 2-up SELECTED
+  // IMAGES gallery onto page 2 (PREVIEW-19). Only "end" stacks after the body.
+  const layoutPlacement = imagePlacement === "end" ? "inline" : "side-panel";
 
   const next: RenderableTemplate = {
     ...template,
@@ -501,11 +504,6 @@ export function applyInstitutionalTemplateOverrides(
     },
     bodyLineHeight: LINE_HEIGHT[coerceSpacing(style.lineGap ?? style.spacing)],
   };
-
-  if (imagePlacement === "end") {
-    next.layout = { ...next.layout, imagePlacement: "inline" };
-    next.imagePanelCfg = { ...next.imagePanelCfg!, placement: "inline" };
-  }
 
   return next;
 }

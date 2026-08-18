@@ -120,7 +120,16 @@ describe("institutionalReportStyle", () => {
     expect(baseTemplate.layout.imagePlacement).toBe("inline");
   });
 
-  it("maps end image placement to inline flow", () => {
+  it("maps default inline placement to a right side rail (letter-pad / Arhan)", () => {
+    const next = applyInstitutionalTemplateOverrides(baseTemplate, {
+      imagePlacement: "inline",
+    });
+    expect(next.layout.imagePlacement).toBe("side-panel");
+    expect(next.imagePanelCfg?.placement).toBe("side-panel");
+    expect(baseTemplate.layout.imagePlacement).toBe("inline");
+  });
+
+  it("maps end image placement to after-body gallery, not a right rail", () => {
     const next = applyInstitutionalTemplateOverrides(baseTemplate, {
       imagePlacement: "end",
     });

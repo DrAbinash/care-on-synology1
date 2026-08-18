@@ -722,9 +722,9 @@ export function RadiologyStylePanel() {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="inline">Inline with findings</SelectItem>
+                    <SelectItem value="inline">Beside findings (right)</SelectItem>
                     <SelectItem value="side-panel">Side panel (right)</SelectItem>
-                    <SelectItem value="end">After findings (end of report)</SelectItem>
+                    <SelectItem value="end">After findings (separate section)</SelectItem>
                   </SelectContent>
                 </Select>
               </div>

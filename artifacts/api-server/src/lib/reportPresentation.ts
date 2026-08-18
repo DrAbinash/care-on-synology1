@@ -168,7 +168,7 @@ export const PRESENTATION_TEMPLATES: PresentationTemplate[] = [
   {
     id: "care-classic",
     name: "CARE Classic",
-    description: "The presentation the clinic delivers today — unchanged default.",
+    description: "CARE letterhead with stacked demographics and key images on the right (letter-pad).",
     typography: {
       header: { fontFamily: BASE_FONT, fontSize: "20px", color: "#1e1b4b", fontWeight: "800" },
       patientBlock: { fontFamily: BASE_FONT, fontSize: "11px" },
@@ -184,7 +184,7 @@ export const PRESENTATION_TEMPLATES: PresentationTemplate[] = [
       sectionBg: "#f8fafc", sectionBorder: "#e2e8f0",
       labelColor: "#64748b", valueColor: "#111111", impressionBg: "#fef9c3",
     },
-    layout: { imagePlacement: "inline", patientBlockStyle: "stacked", pageMargins: "12mm 14mm" },
+    layout: { imagePlacement: "side-panel", patientBlockStyle: "stacked", pageMargins: "12mm 14mm" },
   },
   {
     id: "care-premium",
@@ -784,13 +784,15 @@ export function renderReportDocument(
     /* Fixed print heights so 1–6 images stay on page 1 beside findings.
        A 70mm frame times four overflowed the remaining A4 column and Chromium
        moved the whole rail to page 2. Count-adaptive height keeps the
-       picture-frame size stable; the image never drives the page layout. */
+       picture-frame size stable; the image never drives the page layout.
+       5–6 images use ~24mm (letter-pad jsPDF uses 38mm and wraps to page 2);
+       24mm still fits page 1 beside a full MRI findings column. */
     .image-panel-side[data-image-count="1"] .image-viewport { height: 78mm; aspect-ratio: auto; }
     .image-panel-side[data-image-count="2"] .image-viewport { height: 52mm; aspect-ratio: auto; }
     .image-panel-side[data-image-count="3"] .image-viewport,
     .image-panel-side[data-image-count="4"] .image-viewport { height: 30mm; aspect-ratio: auto; }
     .image-panel-side[data-image-count="5"] .image-viewport,
-    .image-panel-side[data-image-count="6"] .image-viewport { height: 16mm; aspect-ratio: auto; }` : ""}
+    .image-panel-side[data-image-count="6"] .image-viewport { height: 24mm; aspect-ratio: auto; }` : ""}
     .image-panel-overflow { margin-top: 10px; }
     .image-caption {
       background: ${pal.accent}; color: #fff; font-weight: 600;
