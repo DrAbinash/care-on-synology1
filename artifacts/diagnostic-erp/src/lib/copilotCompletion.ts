@@ -57,12 +57,12 @@ export function currentFragment(before: string): string {
  */
 export function suggestCompletion(
   before: string,
-  opts: { studyDescription?: string } = {},
+  opts: { studyDescription?: string; region?: string | null } = {},
 ): { trigger: string; completion: string } | null {
   const frag = currentFragment(before);
   const fragLower = frag.toLowerCase().replace(/\s+$/, "");
   if (fragLower.length < 6) return null;
-  const study = (opts.studyDescription ?? "").toLowerCase();
+  const study = (opts.region ?? opts.studyDescription ?? "").toLowerCase();
   for (const r of COMPLETION_RULES) {
     if (r.studyIncludes && !study.includes(r.studyIncludes)) continue;
     if (!fragLower.endsWith(r.trigger)) continue;

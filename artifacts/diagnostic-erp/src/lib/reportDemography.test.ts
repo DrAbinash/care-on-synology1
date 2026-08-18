@@ -5,6 +5,7 @@ import {
   buildClassicDemographyHeaderHtml,
   reconcileAccessionVsReferringDoctor,
   formatReferringDoctorDisplay,
+  formatDoctorWithDegree,
   enrichReferringDoctorFromCatalog,
   dicomAgeToDisplay,
   resolveDisplayAge,
@@ -128,6 +129,21 @@ describe("reconcileAccessionVsReferringDoctor", () => {
       ["Dr. Sanjay Kumar, MD"],
     );
     expect(enriched).toContain("MD");
+  });
+
+  it("appends doctors-master degree without duplicating tokens already in the name", () => {
+    expect(formatDoctorWithDegree("Dr. Sanjay Kumar", "MD")).toBe("Dr. Sanjay Kumar, MD");
+    expect(formatDoctorWithDegree("Dr. Sanjay Kumar, MD", "MD")).toBe("Dr. Sanjay Kumar, MD");
+    expect(formatDoctorWithDegree("Sanjay Kumar", "MBBS, MD")).toMatch(/MBBS/);
+    expect(formatDoctorWithDegree("Sanjay Kumar", "MBBS, MD")).toMatch(/MD/);
+  });
+
+  it("merge picks up catalog degree from doctors master", () => {
+    const d = mergeReportDemography({
+      erp: { referringDoctor: "Sanjay Kumar" },
+      referringDoctorCatalog: [formatDoctorWithDegree("Dr. Sanjay Kumar", "MD")],
+    });
+    expect(d.referringDoctor).toContain("MD");
   });
 });
 

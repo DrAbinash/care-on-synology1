@@ -14,6 +14,7 @@ describe("Radiology Reporting Workspace handwritten notes", () => {
   const panel = read("components/radiology/ReportImagePanel.tsx");
   const quick = read("components/radiology/QuickFindingsPanel.tsx");
   const refDoc = read("components/ReferringDoctorQuickSelect.tsx");
+  const doctorsPage = read("pages/Doctors.tsx");
 
   it("Report images collapse OHIF and hide the selected list (right rail)", () => {
     expect(picker).toContain("onExpandChange");
@@ -39,9 +40,14 @@ describe("Radiology Reporting Workspace handwritten notes", () => {
     expect(workspace).toContain("patientName={canonicalDemography.patientName");
   });
 
-  it("referring doctor chips have pencil + add box", () => {
-    expect(refDoc).toContain('data-testid="ref-doctor-add-box"');
-    expect(refDoc).toContain('data-testid="ref-doctor-edit-degrees"');
+  it("referring doctor chips pick degree from doctors master, not a local add form", () => {
+    expect(refDoc).not.toContain('data-testid="ref-doctor-add-box"');
+    expect(refDoc).not.toContain('data-testid="ref-doctor-edit-degrees"');
+    expect(refDoc).not.toContain('placeholder="Add doctor…');
+    expect(refDoc).toContain("formatDoctorWithDegree");
+    expect(workspace).toContain("formatDoctorWithDegree");
+    expect(doctorsPage).toContain('register("degree")');
+    expect(doctorsPage).toContain('regEdit("degree")');
   });
 
   it("protocol has + Add Title like History chips", () => {

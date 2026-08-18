@@ -3,11 +3,14 @@
  * "Brain", "Cervical Spine", "LS Spine") for the study currently open in the
  * Reporting Workspace, from its free-text hint (modality + study description).
  *
- * This is the SINGLE source of the region-matching rule. Both the right-side
- * QuickFindingsPanel (which drives its protocol dropdown) and the workspace
- * (which drives the study-specific Clinical History chips and the near-Technique
- * protocol dropdown) call this, so all three resolve to the same region — no
- * duplicated matching logic and no divergence.
+ * This is the SINGLE source of the region-matching rule. After a region is
+ * resolved, consumers must use ReportingStudyContext (see reportingStudyContext.ts)
+ * rather than re-parsing modality + StudyDescription.
+ *
+ * Both the right-side QuickFindingsPanel (which drives its protocol dropdown)
+ * and the workspace (which drives the study-specific Clinical History chips and
+ * the near-Technique protocol dropdown) call this, so all three resolve to the
+ * same region — no duplicated matching logic and no divergence.
  *
  * Semantics: among the configured regions whose name appears (case-insensitively)
  * as a substring of the hint, the MOST SPECIFIC (longest name) wins; ties are

@@ -38,6 +38,7 @@ import { useDeleteDoctor } from "@workspace/api-client-react";
 type DoctorForm = {
   name: string;
   specialization: string;
+  degree?: string;
   phone?: string;
   email?: string;
   hospitalAffiliation?: string;
@@ -50,6 +51,7 @@ type Doctor = {
   id: number;
   name: string;
   specialization: string;
+  degree?: string | null;
   phone?: string | null;
   email?: string | null;
   hospitalAffiliation?: string | null;
@@ -67,7 +69,10 @@ export default function Doctors() {
 
   const { data, isLoading, isError, refetch } = useListDoctors({ search: search || undefined });
 
-  const invalidate = () => queryClient.invalidateQueries({ queryKey: getListDoctorsQueryKey() });
+  const invalidate = () => {
+    queryClient.invalidateQueries({ queryKey: getListDoctorsQueryKey() });
+    queryClient.invalidateQueries({ queryKey: ["doctors-list"] });
+  };
 
   const createDoctor = useCreateDoctor({
     mutation: { onSuccess: () => { invalidate(); setOpen(false); reset(); } },
@@ -103,6 +108,7 @@ export default function Doctors() {
       const rows = (res?.doctors ?? []).map((d) => ({
         name: d.name,
         specialization: d.specialization,
+        degree: d.degree ?? "",
         phone: d.phone ?? "",
         email: d.email ?? "",
         hospitalAffiliation: d.hospitalAffiliation ?? "",
@@ -111,7 +117,7 @@ export default function Doctors() {
         registrationNumber: d.registrationNumber ?? "",
       }));
       const csv = buildCsv(
-        ["name","specialization","phone","email","hospitalAffiliation","address","area","registrationNumber"],
+        ["name","specialization","degree","phone","email","hospitalAffiliation","address","area","registrationNumber"],
         rows,
       );
       downloadCsv(csv, `doctors-${new Date().toISOString().slice(0, 10)}.csv`);
@@ -170,6 +176,7 @@ export default function Doctors() {
     resetEdit({
       name: doc.name,
       specialization: doc.specialization,
+      degree: doc.degree ?? "",
       phone: doc.phone ?? "",
       email: doc.email ?? "",
       hospitalAffiliation: doc.hospitalAffiliation ?? "",
@@ -237,6 +244,9 @@ export default function Doctors() {
                     </div>
                     <div className="min-w-0 flex-1">
                       <p className="font-semibold text-foreground truncate">{doc.name}</p>
+                      {doc.degree && (
+                        <p className="text-[11px] text-muted-foreground mt-0.5">{doc.degree}</p>
+                      )}
                       <p className="text-xs text-primary font-medium mt-0.5">{doc.specialization}</p>
                       {doc.phone && (
                         <div className="flex items-center gap-1.5 mt-2 text-xs text-muted-foreground">
@@ -293,6 +303,11 @@ export default function Doctors() {
               <Input {...register("name", { required: true })} className="mt-1" placeholder="Dr. Full Name" />
             </div>
             <div>
+              <Label>Degree / Qualification</Label>
+              <Input {...register("degree")} className="mt-1" placeholder="e.g. MBBS, MD" />
+              <p className="mt-1 text-[11px] text-muted-foreground">Shown on radiology reports when this doctor is selected.</p>
+            </div>
+            <div>
               <Label>Specialization *</Label>
               <Input {...register("specialization", { required: true })} className="mt-1" placeholder="e.g. Cardiologist" />
             </div>
@@ -343,6 +358,11 @@ export default function Doctors() {
             <div>
               <Label>Full Name *</Label>
               <Input {...regEdit("name", { required: true })} className="mt-1" />
+            </div>
+            <div>
+              <Label>Degree / Qualification</Label>
+              <Input {...regEdit("degree")} className="mt-1" placeholder="e.g. MBBS, MD" />
+              <p className="mt-1 text-[11px] text-muted-foreground">Shown on radiology reports when this doctor is selected.</p>
             </div>
             <div>
               <Label>Specialization *</Label>

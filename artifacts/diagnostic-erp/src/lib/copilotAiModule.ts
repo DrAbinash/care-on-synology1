@@ -31,7 +31,7 @@ export function buildCopilotAiPrompt(ctx: CopilotContext): string {
     "RECOMMENDATION: <one recommendation>",
     "IMPRESSION: <one concise impression line>",
     "",
-    `Study: ${ctx.studyDescription || ctx.modality}`,
+    `Study: ${ctx.region || ctx.studyDescription || ctx.modality}`,
     `Clinical history: ${ctx.clinicalHistory || "(none)"}`,
     `Findings: ${findings}`,
     `Impression so far: ${impression}`,

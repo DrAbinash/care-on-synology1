@@ -85,6 +85,13 @@
       "when": 1782705414050,
       "tag": "0011_default_viewer_weasis",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1782705414051,
+      "tag": "0012_doctor_degree",
+      "breakpoints": true
     }
   ]
 }

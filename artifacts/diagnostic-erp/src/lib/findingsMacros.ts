@@ -1,18 +1,24 @@
 // "Chocolate Box" quick-macro engine for the freeform Findings & Observation
-// editor — context-aware macro sets keyed off study modality/description,
-// each tile's text inserted at the live cursor position (see
-// insertAtCursor below), with any [bracketed] variable auto-selected for
-// immediate typing/dictation overwrite.
+// editor — context-aware macro sets keyed off the resolved ReportingStudyContext
+// (radiology_study_tabs.name), each tile's text inserted at the live cursor
+// position (see insertAtCursor below), with any [bracketed] variable auto-selected
+// for immediate typing/dictation overwrite.
 //
 // These are DRAFT narrative starting points, same spirit as every other
 // template/macro/snippet mechanism already in this workspace (Templates
 // tab, Normal Shortcuts, applyMacro) — inserted text is always reviewed
 // and edited by the radiologist before Finalize, never auto-signed.
 //
+// Study association is NOT done by re-parsing modality + StudyDescription.
+// Callers pass the already-resolved ReportingStudyContext. Generic Spine is
+// only an inherited fallback under a specific spine segment.
+//
 // Built-in tiles ship as defaults. Radiologists can add / edit / delete
 // boxes from the reporting workspace (pencil + blank add box) and from
 // Settings → Radiology → Quick Select. Customisations persist in
 // localStorage (with an in-memory fallback for tests / private mode).
+
+import type { ReportingStudyContext } from "./reportingStudyContext";
 
 export type ChocolateTile = {
   id: string;
@@ -51,37 +57,71 @@ const BRAIN_SET: ChocolateBoxSet = {
   ],
 };
 
-const SPINE_SET: ChocolateBoxSet = {
+/** Shared spine tiles — inherited by cervical / dorsal / lumbar / whole. */
+const SPINE_COMMON_TILES: ChocolateTile[] = [
+  {
+    id: "spine-disc-bulge",
+    label: "Disc Bulge",
+    text: "Diffuse disc bulge at the [Level] level indenting the anterior thecal sac, [with/without] impingement on the [exiting nerve root].",
+  },
+  {
+    id: "spine-desiccation",
+    label: "Disc Desiccation",
+    text: "Loss of normal T2 signal intensity (desiccation) of the intervertebral disc at [Level], in keeping with early degenerative disc disease.",
+  },
+  {
+    id: "spine-normal",
+    label: "Normal Spine",
+    text: "Vertebral body heights and alignment are maintained throughout. No disc bulge, herniation, or significant canal/foraminal stenosis identified. Visualized cord/cauda equina and paraspinal soft tissues are unremarkable.",
+  },
+];
+
+const CERVICAL_TILES: ChocolateTile[] = [
+  {
+    id: "cervical-c5-6",
+    label: "C5-6 Level",
+    text: "At the C5-6 level: vertebral body height and alignment are maintained. Disc space is [normal/reduced]. [Findings].",
+  },
+];
+
+const DORSAL_TILES: ChocolateTile[] = [
+  {
+    id: "dorsal-d7-8",
+    label: "D7-8 Level",
+    text: "At the D7-8 level: vertebral body height and alignment are maintained. Disc space is [normal/reduced]. [Findings].",
+  },
+];
+
+const LUMBAR_TILES: ChocolateTile[] = [
+  {
+    id: "spine-l1-2",
+    label: "L1-2 Level",
+    text: "At the L1-2 level: vertebral body height and alignment are maintained. Disc space is [normal/reduced]. [Findings].",
+  },
+];
+
+function box(key: string, label: string, extra: ChocolateTile[]): ChocolateBoxSet {
+  return { key, label, tiles: [...extra, ...SPINE_COMMON_TILES] };
+}
+
+const CERVICAL_SET = box("cervical", "Cervical Spine", CERVICAL_TILES);
+const DORSAL_SET = box("dorsal", "Dorsal Spine", DORSAL_TILES);
+const LUMBAR_SET = box("lumbar", "LS Spine", LUMBAR_TILES);
+const WHOLE_SET = box("whole-spine", "Whole Spine", []);
+const SPINE_GENERIC_SET: ChocolateBoxSet = {
   key: "spine",
   label: "Spine",
-  tiles: [
-    {
-      id: "spine-disc-bulge",
-      label: "Disc Bulge",
-      text: "Diffuse disc bulge at the [Level] level indenting the anterior thecal sac, [with/without] impingement on the [exiting nerve root].",
-    },
-    {
-      id: "spine-desiccation",
-      label: "Disc Desiccation",
-      text: "Loss of normal T2 signal intensity (desiccation) of the intervertebral disc at [Level], in keeping with early degenerative disc disease.",
-    },
-    {
-      id: "spine-l1-2",
-      label: "L1-2 Level",
-      text: "At the L1-2 level: vertebral body height and alignment are maintained. Disc space is [normal/reduced]. [Findings].",
-    },
-    {
-      id: "spine-normal",
-      label: "Normal Spine",
-      text: "Vertebral body heights and alignment are maintained throughout. No disc bulge, herniation, or significant canal/foraminal stenosis identified. Visualized cord/cauda equina and paraspinal soft tissues are unremarkable.",
-    },
-  ],
+  tiles: SPINE_COMMON_TILES,
 };
 
-const SETS: ChocolateBoxSet[] = [BRAIN_SET, SPINE_SET];
-
-const BRAIN_RE = /\b(brain|head|cerebr|cranial|intracranial)\b/i;
-const SPINE_RE = /\b(spine|spinal|cervical|lumbar|dorsal|thoracic|lumbosacral|whole\s*spine)\b/i;
+const SETS: ChocolateBoxSet[] = [
+  BRAIN_SET,
+  CERVICAL_SET,
+  DORSAL_SET,
+  LUMBAR_SET,
+  WHOLE_SET,
+  SPINE_GENERIC_SET,
+];
 
 const STORAGE_KEY = "care-rad-chocolate-boxes-v1";
 export const CHOCOLATE_BOX_CHANGED = "care:chocolate-box-changed";
@@ -194,25 +234,23 @@ export function resetChocolateTiles(key: string): void {
 }
 
 /**
- * Picks the catalog macro set matching the active study, or null if neither
- * brain nor spine. `tiles` here are the built-in defaults — call
- * `loadChocolateTiles(set.key)` (or `resolvedChocolateBoxSet`) for the
- * workstation's edited list.
- *
- * `region` is the region the radiologist selected in the workspace's Region /
- * Study / Protocol section and wins over the DICOM StudyDescription.
+ * Picks the catalog macro set for the already-resolved study context.
+ * Unknown / unmatched studies return null (no unrelated clinical tiles).
+ * `tiles` here are the built-in defaults — call `loadChocolateTiles(set.key)`
+ * (or `resolvedChocolateBoxSet`) for the workstation's edited list.
  */
-export function chocolateBoxSetFor(
-  modality: string | null | undefined,
-  studyDescription: string | null | undefined,
-  region?: string | null,
-): ChocolateBoxSet | null {
-  const selected = region ?? "";
-  if (BRAIN_RE.test(selected)) return BRAIN_SET;
-  if (SPINE_RE.test(selected)) return SPINE_SET;
-  const desc = `${modality ?? ""} ${studyDescription ?? ""}`;
-  if (BRAIN_RE.test(desc)) return BRAIN_SET;
-  if (SPINE_RE.test(desc)) return SPINE_SET;
+export function chocolateBoxSetFor(ctx: ReportingStudyContext | null | undefined): ChocolateBoxSet | null {
+  if (!ctx?.region) return null;
+  if (ctx.family === "brain") return BRAIN_SET;
+  if (ctx.family === "spine") {
+    switch (ctx.spineSegment) {
+      case "cervical": return CERVICAL_SET;
+      case "dorsal": return DORSAL_SET;
+      case "lumbar": return LUMBAR_SET;
+      case "whole": return WHOLE_SET;
+      default: return SPINE_GENERIC_SET;
+    }
+  }
   return null;
 }
 
@@ -221,15 +259,13 @@ export function chocolateBoxSetFor(
  * when the study is not Brain/Spine. Custom keys persist independently.
  */
 export function resolvedChocolateBoxSet(
-  modality: string | null | undefined,
-  studyDescription: string | null | undefined,
-  region?: string | null,
+  ctx: ReportingStudyContext | null | undefined,
 ): ChocolateBoxSet {
-  const catalog = chocolateBoxSetFor(modality, studyDescription, region);
+  const catalog = chocolateBoxSetFor(ctx);
   if (catalog) {
     return { ...catalog, tiles: loadChocolateTiles(catalog.key) };
   }
-  const label = region?.trim() || "Findings";
+  const label = ctx?.region?.trim() || "Findings";
   const key = slug(label);
   return { key, label, tiles: loadChocolateTiles(key) };
 }

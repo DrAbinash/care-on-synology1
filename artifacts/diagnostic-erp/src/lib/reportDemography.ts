@@ -138,6 +138,18 @@ export function formatReferringDoctorDisplay(raw: string | null | undefined): st
   return degrees.length ? `${withDr}, ${degrees.join(", ")}` : withDr;
 }
 
+/** Doctors-master name + degree for REF. BY, chips, and report headers. */
+export function formatDoctorWithDegree(name: string, degree?: string | null): string {
+  const formatted = formatReferringDoctorDisplay(name);
+  const deg = String(degree ?? "").replace(/\s+/g, " ").trim();
+  if (!deg || !formatted) return formatted;
+  const hay = formatted.toLowerCase();
+  if (hay.includes(deg.toLowerCase())) return formatted;
+  const tokens = deg.split(/[\s,;/]+/).filter((t) => t.length > 1);
+  if (tokens.length > 0 && tokens.every((t) => hay.includes(t.toLowerCase()))) return formatted;
+  return `${formatted}, ${deg}`;
+}
+
 export function reconcileAccessionVsReferringDoctor(input: {
   accessionNumber?: string | null;
   referringDoctor?: string | null;

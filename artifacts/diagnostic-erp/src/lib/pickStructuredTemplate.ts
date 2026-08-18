@@ -92,6 +92,7 @@ export function inferStructuredTemplateMatch(
 export function studyRegionToBodyPart(region: string | null | undefined): string | null {
   if (!region) return null;
   const r = region.toLowerCase();
+  if (r.includes("whole spine")) return "SPINE_WHOLE";
   if (r.includes("ls spine") || r.includes("lumbar") || r.includes("lumbo")) return "SPINE_LS";
   if (r.includes("cervical")) return "SPINE_CERVICAL";
   if (r.includes("dorsal") || r.includes("thoracic")) return "SPINE_DORSAL";
@@ -107,6 +108,7 @@ function nameHintMatch(templateName: string, inferred: StructuredTemplateMatch):
     case "SPINE_LS": return n.includes("ls spine") || n.includes("lumbo");
     case "SPINE_CERVICAL": return n.includes("cervical");
     case "SPINE_DORSAL": return n.includes("dorsal") || n.includes("thoracic");
+    case "SPINE_WHOLE": return n.includes("whole spine");
     case "BRAIN":
       if (inferred.studyType === "STROKE_PROTOCOL") return n.includes("stroke");
       if (inferred.studyType === "CONTRAST") return n.includes("contrast");
@@ -124,7 +126,12 @@ function preferRegionDefault<T extends StructuredTemplateRow>(rows: T[]): T | un
   return defaults[0] ?? rows.find((t) => (t.schemaVersion ?? 1) >= 2) ?? rows[0];
 }
 
-/** Pick the best structured template row for a study. Never falls back to arbitrary first MRI row. */
+/**
+ * Pick the best structured template row from a DICOM description when no
+ * study-region has been resolved. Prefer pickStructuredTemplateForRegion once
+ * a radiology_study_tabs name is available — do not use this as a second
+ * independent study guess in the reporting workspace.
+ */
 export function pickStructuredTemplate<T extends StructuredTemplateRow>(
   templates: T[],
   modality: string | null | undefined,
@@ -155,25 +162,28 @@ export function pickStructuredTemplate<T extends StructuredTemplateRow>(
   return null;
 }
 
-/** Prefer the study-region chip (LS Spine) over a generic MRI description that would match Brain. */
+/**
+ * Prefer the already-resolved study-region chip over re-parsing StudyDescription.
+ * When a region is present but does not map to a template bodyPart, return null
+ * rather than guessing (the old MRI default was Brain).
+ */
 export function pickStructuredTemplateForRegion<T extends StructuredTemplateRow>(
   templates: T[],
   modality: string | null | undefined,
   region: string | null | undefined,
-  studyDescription?: string | null,
+  _studyDescription?: string | null,
 ): T | null {
   const mod = templateCatalogModality(modality);
   const bodyPart = studyRegionToBodyPart(region);
-  if (bodyPart) {
-    const pool = templates.filter((t) => templateCatalogModality(t.modality) === mod);
-    const byBody = pool.filter((t) => t.bodyPart === bodyPart);
-    const preferred = preferRegionDefault(byBody);
-    if (preferred) return preferred;
-    const inferred: StructuredTemplateMatch = { bodyPart, studyType: "PLAIN" };
-    const byName = pool.find((t) => nameHintMatch(t.templateName, inferred));
-    if (byName) return byName;
-  }
-  return pickStructuredTemplate(templates, modality, studyDescription ?? region);
+  if (!bodyPart) return null;
+  const pool = templates.filter((t) => templateCatalogModality(t.modality) === mod);
+  const byBody = pool.filter((t) => t.bodyPart === bodyPart);
+  const preferred = preferRegionDefault(byBody);
+  if (preferred) return preferred;
+  const inferred: StructuredTemplateMatch = { bodyPart, studyType: "PLAIN" };
+  const byName = pool.find((t) => nameHintMatch(t.templateName, inferred));
+  if (byName) return byName;
+  return null;
 }
 
 /** True when loaded template anatomy disagrees with resolved study region. */

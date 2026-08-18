@@ -201,6 +201,8 @@ ALTER TABLE doctors
   ADD COLUMN IF NOT EXISTS address TEXT;
 ALTER TABLE doctors
   ADD COLUMN IF NOT EXISTS area TEXT;
+ALTER TABLE doctors
+  ADD COLUMN IF NOT EXISTS degree TEXT;
 
 -- ── form_f_records ────────────────────────────────────────────────────────────
 

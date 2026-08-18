@@ -5,7 +5,7 @@ import { runLintRules, runCopilotAnalysis, computeQualityScore, mergeTwoFormats,
 import { normalizeWorkspaceStudies } from "./normalizeWorkspaceStudy";
 import { DEFAULT_QUICK_SELECT_TILES, lookupTiles, loadTiles, saveTiles, createTile, resetToDefaults } from "./quick-select-library";
 import { DEFAULT_REPORT_FORMATS, lookupFormats, loadFormats, saveFormats, createFormat, resetFormatsToDefaults } from "./report-formats-library";
-import { DEFAULT_SNIPPET_MACROS, lookupMacros, loadMacros, saveMacros, createMacro } from "./snippet-macros-library";
+import { DEFAULT_SNIPPET_MACROS, lookupMacros, lookupMacrosForContext, loadMacros, saveMacros, createMacro } from "./snippet-macros-library";
 import { DEFAULT_SIGN_OFF_PROFILES, loadProfiles, saveProfiles, lookupProfile, formatSignOff, createProfile } from "./sign-off-profiles";
 import {
   mergeReportFieldContentWithProvenance,
@@ -16,6 +16,11 @@ import {
   type InsertSource,
   type ReportFieldKey,
 } from "@/lib/reportFieldMerge";
+import {
+  EMPTY_REPORTING_STUDY_CONTEXT,
+  reportingContextEqual,
+  type ReportingStudyContext,
+} from "@/lib/reportingStudyContext";
 
 export type EditorField = "findings" | "impression" | "recommendation" | "technique" | "clinicalHistory";
 export type RailStage = "orient" | "observe" | "measure" | "conclude" | "verify";
@@ -52,14 +57,8 @@ interface S {
   activeMacroPrompt: { macro: SnippetMacro; field: EditorField; startPos: number } | null;
   signOffProfiles: SignOffProfile[];
   preloadTriggered: boolean;
-}
-
-function fieldTextKey(f: EditorField): keyof Pick<S, "findingsText" | "impressionText" | "recommendationText" | "techniqueText" | "clinicalHistoryText"> {
-  if (f === "findings") return "findingsText";
-  if (f === "impression") return "impressionText";
-  if (f === "recommendation") return "recommendationText";
-  if (f === "technique") return "techniqueText";
-  return "clinicalHistoryText";
+  /** Resolved reporting identity — content selectors must use this, not DICOM bodyPart. */
+  reportingContext: ReportingStudyContext;
 }
 
 export type WorkspaceStore = S & {
@@ -91,7 +90,21 @@ export type WorkspaceStore = S & {
   openMacroEditor: (m: SnippetMacro | null) => void; closeMacroEditor: () => void; saveMacro: (i: Omit<SnippetMacro, "id" | "createdAt" | "updatedAt"> & { id?: string }) => void;
   deleteMacro: (id: string) => void; setActiveMacroPrompt: (p: { macro: SnippetMacro; field: EditorField; startPos: number } | null) => void; applyMacroWithValues: (v: Record<string, string>) => void;
   updateSignOffProfile: (m: Modality, n: string, c: string) => void; triggerPreload: () => void; resetPreload: () => void;
+  setReportingContext: (ctx: ReportingStudyContext) => void;
 };
+
+function scopedSnippetMacros(get: () => WorkspaceStore): SnippetMacro[] {
+  const st = get().studies.find((s) => s.id === get().activeStudyId);
+  return lookupMacrosForContext(get().snippetMacros, st?.modality, get().reportingContext);
+}
+
+function fieldTextKey(f: EditorField): keyof Pick<S, "findingsText" | "impressionText" | "recommendationText" | "techniqueText" | "clinicalHistoryText"> {
+  if (f === "findings") return "findingsText";
+  if (f === "impression") return "impressionText";
+  if (f === "recommendation") return "recommendationText";
+  if (f === "technique") return "techniqueText";
+  return "clinicalHistoryText";
+}
 
 const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   studies: [], activeStudyId: null, nextStudyId: null, nextStudyPreloaded: false,
@@ -110,6 +123,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   saveAsFormatDialogOpen: false, mergePreviewOpen: false, lastMergeResult: null, lastMergeFormats: null, confirmOverwriteOpen: false, pendingFormatIds: [],
   snippetMacros: typeof window !== "undefined" ? loadMacros() : DEFAULT_SNIPPET_MACROS, macroEditorOpen: false, editingMacro: null, activeMacroPrompt: null,
   signOffProfiles: typeof window !== "undefined" ? loadProfiles() : DEFAULT_SIGN_OFF_PROFILES, preloadTriggered: false,
+  reportingContext: EMPTY_REPORTING_STUDY_CONTEXT,
 
   setStudies: (s) => {
     const next = normalizeWorkspaceStudies(s);
@@ -136,7 +150,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     }
     set({ studies: next });
   },
-  selectStudy: (id) => { const st = get().studies.find(s => s.id === id); if (!st) return; set({ activeStudyId: id, findingsText: "", impressionText: "", recommendationText: "", techniqueText: "", clinicalHistoryText: st.clinicalHistory || "", fieldProvenance: {}, measurements: [], priors: [], isDirty: false, isFinalized: false, isFinalizing: false, railStage: "orient", ghostText: null, ghostTextTarget: null, acknowledgedCopilotIds: new Set(), activeCopilotItem: null, voiceTranscript: "", voiceListening: false, selectedFormatIds: [], reportFormatPickerOpen: false, criticalSlaStartedAt: null, criticalSlaEscalated: false, preloadTriggered: false, nextStudyPreloaded: false }); setTimeout(() => get().recomputeCopilot(), 0); },
+  selectStudy: (id) => { const st = get().studies.find(s => s.id === id); if (!st) return; set({ activeStudyId: id, findingsText: "", impressionText: "", recommendationText: "", techniqueText: "", clinicalHistoryText: st.clinicalHistory || "", fieldProvenance: {}, measurements: [], priors: [], isDirty: false, isFinalized: false, isFinalizing: false, railStage: "orient", ghostText: null, ghostTextTarget: null, acknowledgedCopilotIds: new Set(), activeCopilotItem: null, voiceTranscript: "", voiceListening: false, selectedFormatIds: [], reportFormatPickerOpen: false, criticalSlaStartedAt: null, criticalSlaEscalated: false, preloadTriggered: false, nextStudyPreloaded: false, reportingContext: EMPTY_REPORTING_STUDY_CONTEXT }); setTimeout(() => get().recomputeCopilot(), 0); },
   setNextStudy: (id) => set({ nextStudyId: id }), markNextStudyPreloaded: () => set({ nextStudyPreloaded: true }),
   setField: (f, v, opts) => {
     const key = fieldTextKey(f);
@@ -159,7 +173,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     };
     set(p);
     if (f === "findings" || f === "impression" || f === "recommendation") {
-      const d = detectMacroTrigger(v, get().snippetMacros);
+      const d = detectMacroTrigger(v, scopedSnippetMacros(get));
       if (d) set({ activeMacroPrompt: { macro: d.macro, field: f, startPos: d.startPos } });
       else if (get().activeMacroPrompt) set({ activeMacroPrompt: null });
     }
@@ -190,7 +204,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       fieldProvenance: { ...get().fieldProvenance, [f]: result.provenance },
     });
     if (f === "findings" || f === "impression" || f === "recommendation") {
-      const d = detectMacroTrigger(result.text, get().snippetMacros);
+      const d = detectMacroTrigger(result.text, scopedSnippetMacros(get));
       if (d) set({ activeMacroPrompt: { macro: d.macro, field: f, startPos: d.startPos } });
       else if (get().activeMacroPrompt) set({ activeMacroPrompt: null });
     }
@@ -413,6 +427,10 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   },
   updateSignOffProfile: (m: Modality, n: string, c: string) => { const e = get().signOffProfiles.find((p: SignOffProfile) => p.modality === m); let ps: SignOffProfile[]; if (e) ps = get().signOffProfiles.map((p: SignOffProfile) => p.id === e.id ? { ...p, signerName: n, signerCredentials: c } : p); else ps = [...get().signOffProfiles, createProfile({ modality: m, signerName: n, signerCredentials: c, isDefault: true })]; saveProfiles(ps); set({ signOffProfiles: ps }); },
   triggerPreload: () => set({ preloadTriggered: true }), resetPreload: () => set({ preloadTriggered: false, nextStudyPreloaded: false }),
+  setReportingContext: (ctx) => {
+    if (reportingContextEqual(get().reportingContext, ctx)) return;
+    set({ reportingContext: ctx });
+  },
 } as WorkspaceStore);
 
 export const useWorkspace: UseBoundStore<StoreApi<WorkspaceStore>> = create<WorkspaceStore>()(createWorkspaceStore);

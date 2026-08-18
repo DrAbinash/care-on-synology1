@@ -1,5 +1,6 @@
 import type { Modality, SnippetMacro } from "./types";
 import { expandMacro, detectMacroTrigger } from "./types";
+import { contentStudyTypes, type ReportingStudyContext } from "@/lib/reportingStudyContext";
 const now = () => new Date().toISOString();
 const uid = () => `sm_${Date.now().toString(36)}_${Math.random().toString(36).slice(2,7)}`;
 function m(trig: string, label: string, tmpl: string, vars: { name: string; label: string; default?: string; options?: string[] }[], opts: { scopeModality?: Modality; scopeBodyPart?: string } = {}): SnippetMacro { return { id: uid(), trigger: trig, label, template: tmpl, variables: vars, createdAt: now(), updatedAt: now(), ...opts }; }
@@ -16,8 +17,26 @@ export const DEFAULT_SNIPPET_MACROS: SnippetMacro[] = [
   m("normallssp","Normal LS spine MRI","Lumbar vertebrae show normal alignment and marrow signal. No evidence of spondylolisthesis. Disc spaces are maintained. No evidence of acute fracture. Conus medullaris is at L1 level with normal appearance. Cauda equina nerve roots are normally distributed. Paraspinal soft tissues are unremarkable. Sacroiliac joints are normal.",[],{scopeModality:"MR",scopeBodyPart:"LS Spine"}),
 ];
 
+/** @deprecated Use lookupMacrosForContext with ReportingStudyContext. */
 export function lookupMacros(macros: SnippetMacro[], m: Modality | undefined, b: string | undefined): SnippetMacro[] {
   return macros.filter(mc => { if (!mc.scopeModality) return true; if (mc.scopeModality !== m) return false; if (mc.scopeBodyPart && mc.scopeBodyPart !== b) return false; return true; });
+}
+
+/** Scope macros by the resolved ReportingStudyContext, not DICOM bodyPart. */
+export function lookupMacrosForContext(
+  macros: SnippetMacro[],
+  m: Modality | undefined,
+  ctx: ReportingStudyContext | null | undefined,
+): SnippetMacro[] {
+  if (!ctx?.region) {
+    return macros.filter((mc) => !mc.scopeModality && !mc.scopeBodyPart);
+  }
+  const allowed = new Set(contentStudyTypes(ctx.regions.length > 0 ? ctx.regions : [ctx.region]).map((s) => s.toLowerCase()));
+  return macros.filter((mc) => {
+    if (mc.scopeModality && mc.scopeModality !== m) return false;
+    if (mc.scopeBodyPart && !allowed.has(mc.scopeBodyPart.toLowerCase())) return false;
+    return true;
+  });
 }
 const SK = "zai-rad-snippetmacros-v1";
 export function loadMacros(): SnippetMacro[] { try { const r = localStorage.getItem(SK); if (!r) return DEFAULT_SNIPPET_MACROS; const c = JSON.parse(r) as SnippetMacro[]; return [...DEFAULT_SNIPPET_MACROS, ...c.filter(x => x.custom)]; } catch { return DEFAULT_SNIPPET_MACROS; } }

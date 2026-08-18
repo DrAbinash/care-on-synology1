@@ -8,6 +8,7 @@ import {
   resolvedChocolateBoxSet,
   upsertChocolateTile,
 } from "./findingsMacros";
+import { buildReportingStudyContext } from "./reportingStudyContext";
 
 afterEach(() => {
   resetAllChocolateBoxes();
@@ -15,12 +16,36 @@ afterEach(() => {
 
 describe("chocolateBoxSetFor", () => {
   it("prefers the selected region over the DICOM description", () => {
-    const set = chocolateBoxSetFor("MR", "MRI BRAIN PLAIN", "LS Spine");
-    expect(set?.key).toBe("spine");
+    const set = chocolateBoxSetFor(buildReportingStudyContext({
+      modality: "MR",
+      studyDescription: "MRI BRAIN PLAIN",
+      regions: ["LS Spine"],
+      source: "override",
+    }));
+    expect(set?.key).toBe("lumbar");
+    expect(set?.tiles.map((t) => t.label)).toContain("L1-2 Level");
+    expect(set?.tiles.map((t) => t.label)).not.toContain("C5-6 Level");
   });
 
-  it("matches brain from description when no region is set", () => {
-    expect(chocolateBoxSetFor("MR", "MRI BRAIN PLAIN")?.key).toBe("brain");
+  it("does not guess Brain from description when no region is resolved", () => {
+    expect(chocolateBoxSetFor(buildReportingStudyContext({
+      modality: "MR",
+      studyDescription: "MRI BRAIN PLAIN",
+      regions: [],
+      source: "unresolved",
+    }))).toBeNull();
+  });
+
+  it("picks cervical-specific tiles, not lumbar", () => {
+    const set = chocolateBoxSetFor(buildReportingStudyContext({
+      modality: "MR",
+      studyDescription: "MRI Cervical Spine",
+      regions: ["Cervical Spine"],
+      source: "auto",
+    }));
+    expect(set?.key).toBe("cervical");
+    expect(set?.tiles.map((t) => t.label)).toContain("C5-6 Level");
+    expect(set?.tiles.map((t) => t.label)).not.toContain("L1-2 Level");
   });
 });
 
@@ -61,7 +86,12 @@ describe("chocolate box add / edit from the workstation", () => {
   });
 
   it("still shows an addable set for unmatched regions", () => {
-    const set = resolvedChocolateBoxSet("MR", "MRI NECK", "Neck");
+    const set = resolvedChocolateBoxSet(buildReportingStudyContext({
+      modality: "MR",
+      studyDescription: "MRI NECK",
+      regions: ["Neck"],
+      source: "auto",
+    }));
     expect(set.key).toBe("neck");
     expect(set.tiles).toEqual([]);
     upsertChocolateTile(set.key, { label: "Normal neck", text: "Neck soft tissues are unremarkable." });

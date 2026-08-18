@@ -10,6 +10,7 @@ import { parseProperties, type AbnormalityInstance } from "@/lib/abnormalityEngi
 import { parseQuestions } from "@/lib/structuredFindings";
 import { computeChecklistStatus, summarizeChecklist, parseChecklist } from "@/lib/checklistEngine";
 import { filterRegionNamesForModality, matchStudyRegion } from "@/lib/studyRegion";
+import { contentStudyTypes } from "@/lib/reportingStudyContext";
 import WorkspaceQuickFindingEditor from "./WorkspaceQuickFindingEditor";
 
 /**
@@ -286,6 +287,8 @@ export default function QuickFindingsPanel({
     return match ? new Set([match]) : new Set<string>();
   }, [selectedRegions, selectedTabs, initialStudyHint, activeTabs]);
 
+  const contentTabs = useMemo(() => new Set(contentStudyTypes([...effectiveTabs])), [effectiveTabs]);
+
   function toggleTab(name: string) {
     if (onRegionToggle) {
       onRegionToggle(name);
@@ -343,7 +346,7 @@ export default function QuickFindingsPanel({
     const tabOrder = activeTabs.map((t) => t.name);
     const pool = searchLower
       ? data.findings.filter((f) => f.isActive && matchesSearch(f))
-      : data.findings.filter((f) => f.isActive && effectiveTabs.has(f.studyType));
+      : data.findings.filter((f) => f.isActive && contentTabs.has(f.studyType));
     return pool.sort((a, b) => {
       const ta = tabOrder.indexOf(a.studyType);
       const tb = tabOrder.indexOf(b.studyType);
@@ -351,7 +354,7 @@ export default function QuickFindingsPanel({
       return a.sortOrder - b.sortOrder;
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, effectiveTabs, activeTabs, searchLower]);
+  }, [data, effectiveTabs, contentTabs, activeTabs, searchLower]);
 
   // Favorites strip: this radiologist's pinned buttons, always shown first.
   const favoriteFindings = useMemo(
@@ -397,10 +400,10 @@ export default function QuickFindingsPanel({
       .filter((m) =>
         searchLower
           ? m.label.toLowerCase().includes(searchLower)
-          : effectiveTabs.has(m.studyType),
+          : contentTabs.has(m.studyType),
       )
       .sort((a, b) => a.sortOrder - b.sortOrder);
-  }, [data, effectiveTabs, searchLower]);
+  }, [data, effectiveTabs, contentTabs, searchLower]);
 
   function insertMeasurement(m: QuickMeasurement) {
     const value = window.prompt(`${m.label} (${m.unit}):`);

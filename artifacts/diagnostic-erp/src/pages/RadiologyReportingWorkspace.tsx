@@ -84,6 +84,7 @@ import {
 import {
   mergeReportDemography,
   resolveDisplayAge,
+  formatDoctorWithDegree,
   type ReportDemography,
 } from "@/lib/reportDemography";
 import type { PrintClinic } from "@/lib/reportPdfGenerator";
@@ -258,7 +259,7 @@ import "@/lib/copilotUsgCompanionModule";
 
 import {
   Lock, AlertTriangle, ChevronLeft, ChevronRight, Pause, Clock, Sparkles, ShieldCheck,
-  Brain, Activity, Zap, Printer, FileDown, Share2, Eye, PanelLeftClose, PanelLeftOpen,
+  Brain, Activity, Zap, Share2, Eye, PanelLeftClose, PanelLeftOpen,
   PanelRightClose, PanelRightOpen,
   CheckCircle2,
   Maximize2, Columns2, Monitor, Archive, Keyboard, AppWindow, MessageCircle, Hospital,
@@ -1031,9 +1032,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
 
   const clinicalHistoryChips = useMemo(
     () => (studySetup.quickSelectData?.clinicalHistory ?? [])
-      .filter((c) => c.isActive && (
-        studySetup.studyRegions.length === 0 || studySetup.studyRegions.includes(c.studyType)
-      ))
+      .filter((c) => c.isActive && studySetup.studyRegions.includes(c.studyType))
       .sort((a, b) => a.sortOrder - b.sortOrder || a.displayLabel.localeCompare(b.displayLabel)),
     [studySetup.quickSelectData, studySetup.studyRegions],
   );
@@ -1781,9 +1780,9 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     retry: false,
   });
 
-  const doctorsCatalogQ = useQuery<{ name: string }[]>({
+  const doctorsCatalogQ = useQuery<{ name: string; degree?: string | null }[]>({
     queryKey: ["doctors-list"],
-    queryFn: () => api.get<{ doctors: { name: string }[] }>("/api/doctors").then((d) => d.doctors ?? []),
+    queryFn: () => api.get<{ doctors: { name: string; degree?: string | null }[] }>("/api/doctors").then((d) => d.doctors ?? []),
     staleTime: 5 * 60_000,
     retry: false,
   });
@@ -1820,7 +1819,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       },
       dicom: (row?.dicomMetadata as Record<string, unknown> | undefined) ?? {},
       overrides: demographyOverrides,
-      referringDoctorCatalog: (doctorsCatalogQ.data ?? []).map((d) => d.name),
+      referringDoctorCatalog: (doctorsCatalogQ.data ?? []).map((d) => formatDoctorWithDegree(d.name, d.degree)),
     });
     return merged;
   }, [workflow.currentRow, patientMasterQ.data, demographyOverrides, doctorsCatalogQ.data]);
@@ -1861,8 +1860,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     setExportingWord(true);
     try {
       let html = previewHtml;
-      // Premium: prefer server-rendered clinic layout when a draft/report exists.
-      if (reportLayout === "care-premium" && (draftId || linkedReportIdRef.current)) {
+      // Prefer server-rendered letter-pad layout when a draft/report exists.
+      if ((reportLayout === "care-premium" || reportLayout === "care-classic") && (draftId || linkedReportIdRef.current)) {
         try {
           const templateQs = `template=${encodeURIComponent(reportLayout)}`;
           const reportId = linkedReportIdRef.current;
@@ -1876,7 +1875,13 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         }
       }
       const fileName = `${safeFileNamePart(workflow.currentRow?.patientName ?? "patient")}_${safeFileNamePart(workflow.currentRow?.accessionNumber ?? "report")}`;
-      await exportRadiologyReportToWord(html, fileName);
+      await exportRadiologyReportToWord(html, fileName, {
+        patientName: canonicalDemography.patientName,
+        age: canonicalDemography.age,
+        sex: canonicalDemography.sex,
+        referringDoctor: canonicalDemography.referringDoctor,
+        studyDate: canonicalDemography.studyDate,
+      });
     } catch (err) {
       toast({
         title: "Export failed",
@@ -1886,7 +1891,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     } finally {
       setExportingWord(false);
     }
-  }, [workflow.currentRow, previewHtml, toast, reportLayout, draftId]);
+  }, [workflow.currentRow, previewHtml, toast, reportLayout, draftId, canonicalDemography]);
 
   const handleExportPdf = useCallback(async () => {
     setExportingPdf(true);
@@ -2363,14 +2368,6 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
           {/* Save button */}
           <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => void saveDraft()} disabled={!isOnline}>
             <ShieldCheck className="h-3.5 w-3.5 mr-1" /> Save
-          </Button>
-          {/* Word export */}
-          <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => void handleExportWord()} disabled={exportingWord} title="Export Word (same layout as preview)">
-            <FileDown className="h-3.5 w-3.5 mr-1" /> {exportingWord ? "…" : "Word"}
-          </Button>
-          {/* PDF export */}
-          <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => void handleExportPdf()} disabled={exportingPdf} title="Export PDF with selected images + clinic branding">
-            <Printer className="h-3.5 w-3.5 mr-1" /> {exportingPdf ? "…" : "PDF"}
           </Button>
           {/* WhatsApp share */}
           <Button
@@ -3631,6 +3628,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       modality={workflow.currentRow?.modality ?? null}
                       studyDescription={workflow.currentRow?.studyDescription ?? null}
                       bodyPart={(workflow.currentRow as { bodyPart?: string | null } | null)?.bodyPart ?? null}
+                      region={studySetup.matchedStudyRegion}
                       findingsText={findingsText}
                       impressionText={impressionText}
                       recommendationText={recommendationText}

@@ -1,5 +1,6 @@
 import type { Modality, ReportFormat, MergeResult } from "./types";
 import { mergeTwoFormats } from "./types";
+import { contentStudyTypes, type ReportingStudyContext } from "@/lib/reportingStudyContext";
 const now = () => new Date().toISOString();
 const uid = () => `rf_${Date.now().toString(36)}_${Math.random().toString(36).slice(2,7)}`;
 function fmt(n: string, m: Modality, b: string, t: string[], body: { technique: string; findings: string; impression: string; recommendation: string }, c = false): ReportFormat { return { id: uid(), name: n, modality: m, bodyPart: b, diagnosisTags: t, isCommon: c, createdAt: now(), updatedAt: now(), ...body }; }
@@ -25,8 +26,25 @@ export const DEFAULT_REPORT_FORMATS: ReportFormat[] = [
   fmt("MG Breast — BI-RADS 5 (Highly suspicious)","MG","Breast",["birads 5","malignancy","critical"],{technique:"Bilateral mammography. Standard CC and MLO views. Tomosynthesis acquired. Comparison with prior mammogram dated ____.",findings:"Spiculated mass in the right breast, upper outer quadrant, measuring ___ × ___ cm, with associated skin retraction and nipple retraction. Clustered pleomorphic microcalcifications in the same region. Enlarged right axillary lymph node with cortical thickening and loss of fatty hilum. Left breast is unremarkable.",impression:"BI-RADS 5: Highly suggestive of malignancy. Spiculated mass with microcalcifications and suspicious axillary lymph node in the right breast.",recommendation:"Image-guided biopsy of the right breast lesion is mandatory. Surgical referral advised. Bilateral breast MRI for staging. Oncology referral."},true),
 ];
 
+/** @deprecated Use lookupFormatsForContext with ReportingStudyContext. */
 export function lookupFormats(formats: ReportFormat[], m: Modality | undefined, b: string | undefined): ReportFormat[] {
   return formats.filter(f => f.modality === m && (!b || f.bodyPart === b)).sort((a, b) => { if (a.isCommon !== b.isCommon) return a.isCommon ? -1 : 1; return (b.usageCount ?? 0) - (a.usageCount ?? 0) || a.name.localeCompare(b.name); });
+}
+
+/** Scope formats by the resolved region. Unknown studies get none (no unrelated Brain/LS rows). */
+export function lookupFormatsForContext(
+  formats: ReportFormat[],
+  m: Modality | undefined,
+  ctx: ReportingStudyContext | null | undefined,
+): ReportFormat[] {
+  if (!ctx?.region) return [];
+  const allowed = new Set(contentStudyTypes(ctx.regions.length > 0 ? ctx.regions : [ctx.region]).map((s) => s.toLowerCase()));
+  return formats
+    .filter((f) => f.modality === m && allowed.has(f.bodyPart.toLowerCase()))
+    .sort((a, b) => {
+      if (a.isCommon !== b.isCommon) return a.isCommon ? -1 : 1;
+      return (b.usageCount ?? 0) - (a.usageCount ?? 0) || a.name.localeCompare(b.name);
+    });
 }
 const SK = "zai-rad-reportformats-v1";
 export function loadFormats(): ReportFormat[] { try { const r = localStorage.getItem(SK); return r ? JSON.parse(r) : DEFAULT_REPORT_FORMATS; } catch { return DEFAULT_REPORT_FORMATS; } }

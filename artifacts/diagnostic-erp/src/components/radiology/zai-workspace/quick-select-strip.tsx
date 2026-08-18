@@ -1,5 +1,5 @@
 import { useWorkspace, useWorkspaceSelector } from "@/lib/zai-workspace/store";
-import { lookupTiles } from "@/lib/zai-workspace/quick-select-library";
+import { lookupTilesForContext } from "@/lib/zai-workspace/quick-select-library";
 import type { QuickSelectField, QuickSelectTile } from "@/lib/zai-workspace/types";
 import { useMemo, useState, useRef, useEffect } from "react";
 import { Plus, Pencil, Star, Search, X, ChevronRight } from "lucide-react";
@@ -72,6 +72,7 @@ export function QuickSelectStrip({
 }) {
   const tiles = useWorkspaceSelector((s) => s.quickSelectTiles);
   const study = useWorkspaceSelector((s) => s.studies.find((x) => x.id === s.activeStudyId));
+  const reportingContext = useWorkspaceSelector((s) => s.reportingContext);
   const openEditor = useWorkspaceSelector((s) => s.openQuickSelectEditor);
   const toggleFav = useWorkspaceSelector((s) => s.toggleTileFavorite);
   const incUsage = useWorkspaceSelector((s) => s.incrementTileUsage);
@@ -80,8 +81,8 @@ export function QuickSelectStrip({
   const ref = useRef<HTMLInputElement>(null);
   const scopeBodyPart = bodyPart?.trim() || study?.bodyPart;
   const scoped = useMemo(
-    () => lookupTiles(tiles, field, study?.modality, scopeBodyPart),
-    [tiles, field, study?.modality, scopeBodyPart],
+    () => lookupTilesForContext(tiles, field, study?.modality, reportingContext),
+    [tiles, field, study?.modality, reportingContext],
   );
   const filtered = useMemo(() => {
     if (!search.trim()) return scoped;
@@ -115,7 +116,7 @@ export function QuickSelectStrip({
             {LABELS[field]} Quick Select
           </span>
           <span className={cn("rounded-full border px-1.5 py-0.5 font-mono text-[9px] font-semibold", FIELD_PILL[field])}>
-            {study.modality}{scopeBodyPart ? ` · ${scopeBodyPart}` : ""}
+            {study.modality} · {reportingContext.region || scopeBodyPart || "unresolved"}
           </span>
           <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[9px] font-medium text-slate-600">
             {scoped.length} tiles

@@ -2,14 +2,14 @@ import { useState, useEffect, useRef } from "react";
 import { useWorkspace, useWorkspaceSelector } from "@/lib/zai-workspace/store";
 import { Command as Cmdk } from "cmdk";
 import { Search, ChevronRight, Sparkles, AlertTriangle, Brain, Mic, Save, Printer, Plus } from "lucide-react";
-import { lookupMacros } from "@/lib/zai-workspace/snippet-macros-library";
+import { lookupMacrosForContext } from "@/lib/zai-workspace/snippet-macros-library";
 interface I { id: string; label: string; detail?: string; icon: typeof Search; group: string; action: () => void; shortcut?: string; }
 export function CommandPalette() {
   const open = useWorkspaceSelector(s => s.showCommandPalette); const setOpen = useWorkspaceSelector(s => s.setCommandPalette);
   const [query, setQuery] = useState(""); const [recents, setRecents] = useState<string[]>([]); const ref = useRef<HTMLInputElement>(null);
   useEffect(() => { if (open) { setQuery(""); setTimeout(() => ref.current?.focus(), 0); } }, [open]);
   if (!open) return null;
-  const ws = useWorkspace.getState(); const study = ws.studies.find(s => s.id === ws.activeStudyId); const macros = lookupMacros(ws.snippetMacros, study?.modality, study?.bodyPart);
+  const ws = useWorkspace.getState(); const study = ws.studies.find(s => s.id === ws.activeStudyId); const macros = lookupMacrosForContext(ws.snippetMacros, study?.modality, ws.reportingContext);
   const items: I[] = [
     { id: "next", label: "Next study", icon: ChevronRight, group: "Navigate", action: () => ws.advanceToNextStudy(), shortcut: "N" },
     { id: "park", label: "Park study", icon: Save, group: "Navigate", action: () => ws.parkStudy(), shortcut: "P" },

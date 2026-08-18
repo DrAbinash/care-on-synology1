@@ -206,6 +206,8 @@ export interface Doctor {
   area?: string | null;
   /** State medical council registration number — printed on PCPNDT Form F. */
   registrationNumber?: string | null;
+  /** Medical degree / qualification shown on reports (e.g. MBBS, MD). */
+  degree?: string | null;
   defaultCommission?: number | string | null;
   defaultCommissionType?: string | null;
   ledgerId?: number | null;
@@ -428,6 +430,8 @@ export interface CreateDoctorBody {
   address?: string | null;
   area?: string | null;
   registrationNumber?: string | null;
+  /** Medical degree / qualification shown on reports (e.g. MBBS, MD). */
+  degree?: string | null;
 }
 
 export type DashboardStatsOrdersByStatusItem = {
@@ -963,6 +967,8 @@ export interface UpdateDoctorBody {
   address?: string | null;
   area?: string | null;
   registrationNumber?: string | null;
+  /** Medical degree / qualification shown on reports (e.g. MBBS, MD). */
+  degree?: string | null;
   defaultCommission?: number | string;
   defaultCommissionType?: string;
   ledgerId?: number | null;

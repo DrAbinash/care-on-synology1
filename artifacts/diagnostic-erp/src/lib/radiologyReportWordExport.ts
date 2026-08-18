@@ -93,10 +93,12 @@ export type ReportBlock =
 export function parseReportHtmlToBlocks(html: string): ReportBlock[] {
   const blocks: ReportBlock[] = [];
   const blockRe =
-    /<h2[^>]*>([\s\S]*?)<\/h2>|<h3[^>]*><u>([\s\S]*?)<\/u><\/h3>|<hr[^>]*\/?>|<ul[^>]*>([\s\S]*?)<\/ul>|<ol[^>]*>([\s\S]*?)<\/ol>|<p[^>]*>([\s\S]*?)<\/p>/gi;
+    /<div[^>]*class="[^"]*study-title-bar[^"]*"[^>]*>([\s\S]*?)<\/div>|<div[^>]*class="[^"]*section-heading[^"]*"[^>]*>([\s\S]*?)<\/div>|<h2[^>]*>([\s\S]*?)<\/h2>|<h3[^>]*><u>([\s\S]*?)<\/u><\/h3>|<hr[^>]*\/?>|<ul[^>]*>([\s\S]*?)<\/ul>|<ol[^>]*>([\s\S]*?)<\/ol>|<p[^>]*>([\s\S]*?)<\/p>/gi;
   let m: RegExpExecArray | null;
   while ((m = blockRe.exec(html)) !== null) {
-    const [full, h2, h3, ul, ol, p] = m;
+    const [full, titleBar, sectionH, h2, h3, ul, ol, p] = m;
+    if (titleBar !== undefined) { blocks.push({ type: "heading1", text: decodeEntities(stripTags(titleBar)) }); continue; }
+    if (sectionH !== undefined) { blocks.push({ type: "heading2", text: decodeEntities(stripTags(sectionH)) }); continue; }
     if (h2 !== undefined) { blocks.push({ type: "heading1", text: decodeEntities(stripTags(h2)) }); continue; }
     if (h3 !== undefined) { blocks.push({ type: "heading2", text: decodeEntities(stripTags(h3)) }); continue; }
     if (ul !== undefined || ol !== undefined) {
@@ -106,10 +108,40 @@ export function parseReportHtmlToBlocks(html: string): ReportBlock[] {
       continue;
     }
     if (p !== undefined) { blocks.push({ type: "paragraph", segments: parseInlineHtml(p) }); continue; }
-    // Only remaining alternative that can match here is <hr>.
     if (full.toLowerCase().startsWith("<hr")) { blocks.push({ type: "divider" }); continue; }
   }
   return blocks;
+}
+
+const DEMOGRAPHY_LINE_RE = /^(NAME:|AGE\/SEX:|REFD\.?\s*BY:|REF\.?\s*BY:|DATE:)/i;
+
+function paragraphLooksLikeDemography(block: ReportBlock): boolean {
+  if (block.type !== "paragraph") return false;
+  const text = block.segments.map((s) => s.text).join("").trim();
+  return DEMOGRAPHY_LINE_RE.test(text);
+}
+
+export type WordLetterheadOpts = {
+  patientName?: string;
+  age?: string;
+  sex?: string;
+  referringDoctor?: string;
+  studyDate?: string;
+};
+
+function dataUrlToBytes(dataUrl: string): Uint8Array {
+  const b64 = dataUrl.split(",")[1] ?? "";
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+function formatWordAgeSex(age?: string, sex?: string): string {
+  const a = (age || "").trim();
+  const s = (sex || "").trim().toUpperCase();
+  if (a && s) return `${a} / ${s}`;
+  return a || s;
 }
 
 /** A safe, short filename component — same intent as uploads.ts's sanitiser
@@ -120,20 +152,33 @@ export function safeFileNamePart(raw: string): string {
 }
 
 /**
- * Builds a downloadable .docx from the same HTML buildPreviewHtml() produces.
- * Dynamic import matches the existing pattern (statementExport.ts,
- * inventoryExports.ts) — docx/file-saver are not bundled into the main chunk.
+ * Builds a downloadable .docx from preview/print HTML, with the CARE letter-pad
+ * header and NAME/AGE/SEX demography (same chrome as the PDF).
  */
-export async function exportRadiologyReportToWord(html: string, fileBaseName: string): Promise<void> {
+export async function exportRadiologyReportToWord(
+  html: string,
+  fileBaseName: string,
+  letterhead?: WordLetterheadOpts,
+): Promise<void> {
   let Document: typeof import("docx").Document;
   let Packer: typeof import("docx").Packer;
   let Paragraph: typeof import("docx").Paragraph;
   let TextRun: typeof import("docx").TextRun;
   let AlignmentType: typeof import("docx").AlignmentType;
   let BorderStyle: typeof import("docx").BorderStyle;
+  let Header: typeof import("docx").Header;
+  let Footer: typeof import("docx").Footer;
+  let Table: typeof import("docx").Table;
+  let TableRow: typeof import("docx").TableRow;
+  let TableCell: typeof import("docx").TableCell;
+  let WidthType: typeof import("docx").WidthType;
+  let ImageRun: typeof import("docx").ImageRun;
   let saveAs: typeof import("file-saver").saveAs;
   try {
-    ({ Document, Packer, Paragraph, TextRun, AlignmentType, BorderStyle } = await import("docx"));
+    ({
+      Document, Packer, Paragraph, TextRun, AlignmentType, BorderStyle,
+      Header, Footer, Table, TableRow, TableCell, WidthType, ImageRun,
+    } = await import("docx"));
     ({ saveAs } = await import("file-saver"));
   } catch {
     throw new Error(
@@ -141,7 +186,8 @@ export async function exportRadiologyReportToWord(html: string, fileBaseName: st
     );
   }
 
-  const blocks = parseReportHtmlToBlocks(html);
+  const { CARE_LETTERHEAD_LOGO_DATA_URL } = await import("./careLetterheadLogo");
+  const blocks = parseReportHtmlToBlocks(html).filter((b) => !paragraphLooksLikeDemography(b));
   const children: InstanceType<typeof Paragraph>[] = [];
 
   const runsFor = (segments: InlineSegment[]) =>
@@ -185,7 +231,128 @@ export async function exportRadiologyReportToWord(html: string, fileBaseName: st
     }
   }
 
-  const doc = new Document({ sections: [{ properties: {}, children }] });
+  const noBorder = {
+    top: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
+    bottom: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
+    left: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
+    right: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
+  };
+  const name = (letterhead?.patientName || "").trim().toUpperCase();
+  const ageSex = formatWordAgeSex(letterhead?.age, letterhead?.sex).toUpperCase();
+  const refBy = (letterhead?.referringDoctor || "").trim().toUpperCase();
+  const dateStr = (letterhead?.studyDate || "").trim();
+
+  const headerChildren: Array<InstanceType<typeof Paragraph> | InstanceType<typeof Table>> = [
+    new Paragraph({
+      spacing: { after: 60 },
+      children: [
+        new ImageRun({
+          type: "png",
+          data: dataUrlToBytes(CARE_LETTERHEAD_LOGO_DATA_URL),
+          transformation: { width: 240, height: 82 },
+        }),
+      ],
+    }),
+    new Paragraph({
+      alignment: AlignmentType.RIGHT,
+      spacing: { after: 40 },
+      children: [new TextRun({
+        text: "Near Bajla Mahila College, St. Francis School Road, Castair's Town, DEOGHAR-814 112 (JHARKHAND)",
+        size: 14,
+      })],
+    }),
+    new Paragraph({
+      alignment: AlignmentType.RIGHT,
+      spacing: { after: 40 },
+      children: [new TextRun({ text: "Phone: 75490 99099, 99734 97200  ·  Email: care.deoghar@gmail.com", size: 14 })],
+    }),
+    new Table({
+      width: { size: 9360, type: WidthType.DXA },
+      rows: [
+        new TableRow({
+          children: [
+            new TableCell({
+              borders: noBorder,
+              width: { size: 5400, type: WidthType.DXA },
+              children: [new Paragraph({ children: [
+                new TextRun({ text: "NAME: ", bold: true, size: 20 }),
+                new TextRun({ text: name, size: 20 }),
+              ] })],
+            }),
+            new TableCell({
+              borders: noBorder,
+              width: { size: 3960, type: WidthType.DXA },
+              children: [new Paragraph({ children: [
+                new TextRun({ text: "AGE/SEX: ", bold: true, size: 20 }),
+                new TextRun({ text: ageSex, size: 20 }),
+              ] })],
+            }),
+          ],
+        }),
+        new TableRow({
+          children: [
+            new TableCell({
+              borders: noBorder,
+              width: { size: 5400, type: WidthType.DXA },
+              children: [new Paragraph({ children: [
+                new TextRun({ text: "REFD. BY: ", bold: true, size: 20 }),
+                new TextRun({ text: refBy, size: 20 }),
+              ] })],
+            }),
+            new TableCell({
+              borders: noBorder,
+              width: { size: 3960, type: WidthType.DXA },
+              children: [new Paragraph({ children: [
+                new TextRun({ text: "DATE: ", bold: true, size: 20 }),
+                new TextRun({ text: dateStr, size: 20 }),
+              ] })],
+            }),
+          ],
+        }),
+      ],
+    }),
+  ];
+
+  const doc = new Document({
+    sections: [{
+      properties: {},
+      headers: { default: new Header({ children: headerChildren }) },
+      footers: {
+        default: new Footer({
+          children: [
+            new Paragraph({
+              alignment: AlignmentType.CENTER,
+              children: [new TextRun({
+                text: "MULTI SLICE CT SCAN | 3D/4D ULTRA SOUND | COLOUR DOPPLER | MAMMOGRAPHY | ECHO | DIGITAL X-RAY | ECG/EEG",
+                size: 12,
+                bold: true,
+                color: "0F2D6E",
+              })],
+            }),
+            new Paragraph({
+              alignment: AlignmentType.CENTER,
+              spacing: { after: 60 },
+              children: [new TextRun({
+                text: "PATHOLAB | OPG | TMT | NCV/EMG | ELASTOGRAPHY/FIBROSCAN | UPPER GI ENDOSCOPY | HSG | BARIUM STUDY | TVS",
+                size: 12,
+                bold: true,
+                color: "0F2D6E",
+              })],
+            }),
+            new Paragraph({
+              alignment: AlignmentType.CENTER,
+              children: [new TextRun({
+                text: "Radiological diagnosis is not always conclusive & often vary with clinical course of the disease or response to treatment. This report is not for medico-legal purpose.",
+                size: 12,
+                italics: true,
+              })],
+            }),
+          ],
+        }),
+      },
+      children,
+    }],
+  });
   const blob = await Packer.toBlob(doc);
   saveAs(blob, `${fileBaseName}.docx`);
 }

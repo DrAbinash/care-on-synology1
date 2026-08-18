@@ -361,130 +361,126 @@ export function generateReportPDF(
 
   let y = m.top;
 
-  // ── LETTER-PAD HEADER (matches Care Diagnostics pre-printed pad) ──
-  // Official brand strip: hands+heart | CARE (bubble colors) | DIAGNOSTICS,
-  // then address underline + phone/email. Do NOT use clinic.logoDataUrl here —
-  // Clinic Info uploads are often a different/old icon and were replacing the
-  // real letter-pad CARE mark (same-to-same mismatch vs the printed pad).
-  if (settings.header.enabled) {
-    const leftX = m.left;
-    const rightX = pageW - m.right;
-    let headerBottom = y;
-    let logoDrawn = false;
-    let logoW = 0;
-    let logoH = 22;
+  const drawLetterPadChrome = (): number => {
+    let cursor = m.top;
+    if (settings.header.enabled) {
+      const leftX = m.left;
+      const rightX = pageW - m.right;
+      let headerBottom = cursor;
+      let logoDrawn = false;
+      let logoW = 0;
+      let logoH = 22;
 
-    try {
-      const aspect = CARE_LETTERHEAD_LOGO_SIZE.width / CARE_LETTERHEAD_LOGO_SIZE.height;
-      logoH = 22;
-      logoW = Math.min(contentW * 0.52, logoH * aspect);
-      doc.addImage(CARE_LETTERHEAD_LOGO_DATA_URL, "PNG", leftX, y, logoW, logoH, undefined, "NONE");
-      headerBottom = y + logoH;
-      logoDrawn = true;
-    } catch {
-      logoDrawn = false;
-    }
-
-    // Fallback wordmark if the bundled PNG cannot render (corrupt build, etc.)
-    if (!logoDrawn) {
-      doc.setFont(font, "bold");
-      doc.setFontSize(18);
-      const care = "CARE";
-      let cx = leftX;
-      const careY = y + 8;
-      for (let i = 0; i < care.length; i++) {
-        doc.setTextColor(...CARE_LETTER_COLORS[i]!);
-        const ch = care[i]!;
-        doc.text(ch, cx, careY);
-        cx += doc.getTextWidth(ch);
+      try {
+        const aspect = CARE_LETTERHEAD_LOGO_SIZE.width / CARE_LETTERHEAD_LOGO_SIZE.height;
+        logoH = 22;
+        logoW = Math.min(contentW * 0.52, logoH * aspect);
+        doc.addImage(CARE_LETTERHEAD_LOGO_DATA_URL, "PNG", leftX, cursor, logoW, logoH, undefined, "NONE");
+        headerBottom = cursor + logoH;
+        logoDrawn = true;
+      } catch {
+        logoDrawn = false;
       }
-      doc.setFontSize(10);
-      doc.setTextColor(15, 23, 70);
-      doc.text("DIAGNOSTICS", leftX, careY + 5.5);
-      headerBottom = careY + 8;
-      logoW = 48;
-    }
 
-    doc.setFont(font, "normal");
-    doc.setFontSize(7.2);
-    doc.setTextColor(20, 20, 20);
-    // Prefer the printed letter-pad address line; clinic address often differs
-    // in formatting (Subhash Chowk vs St. Francis School Road wording).
-    const address = DEFAULT_ADDRESS;
-    const addrMaxW = Math.max(52, contentW - logoW - 8);
-    const addrLines = doc.splitTextToSize(address, addrMaxW) as string[];
-    let ay = y + 4;
-    for (const line of addrLines) {
-      doc.text(line, rightX, ay, { align: "right" });
+      if (!logoDrawn) {
+        doc.setFont(font, "bold");
+        doc.setFontSize(18);
+        const care = "CARE";
+        let cx = leftX;
+        const careY = cursor + 8;
+        for (let i = 0; i < care.length; i++) {
+          doc.setTextColor(...CARE_LETTER_COLORS[i]!);
+          const ch = care[i]!;
+          doc.text(ch, cx, careY);
+          cx += doc.getTextWidth(ch);
+        }
+        doc.setFontSize(10);
+        doc.setTextColor(15, 23, 70);
+        doc.text("DIAGNOSTICS", leftX, careY + 5.5);
+        headerBottom = careY + 8;
+        logoW = 48;
+      }
+
+      doc.setFont(font, "normal");
+      doc.setFontSize(7.2);
+      doc.setTextColor(20, 20, 20);
+      const address = DEFAULT_ADDRESS;
+      const addrMaxW = Math.max(52, contentW - logoW - 8);
+      const addrLines = doc.splitTextToSize(address, addrMaxW) as string[];
+      let ay = cursor + 4;
+      for (const line of addrLines) {
+        doc.text(line, rightX, ay, { align: "right" });
+        ay += 3.1;
+      }
+      const phones = "Phone: 75490 99099, 99734 97200";
+      const email = clinic?.email?.trim()
+        ? `Email: ${clinic.email.trim()}`
+        : "Email: care.deoghar@gmail.com";
+      doc.setFontSize(7.2);
+      doc.text(phones, rightX, ay, { align: "right" });
       ay += 3.1;
-    }
-    const phones = "Phone: 75490 99099, 99734 97200";
-    const email = clinic?.email?.trim()
-      ? `Email: ${clinic.email.trim()}`
-      : "Email: care.deoghar@gmail.com";
-    doc.setFontSize(7.2);
-    doc.text(phones, rightX, ay, { align: "right" });
-    ay += 3.1;
-    doc.text(email, rightX, ay, { align: "right" });
-    headerBottom = Math.max(headerBottom, ay);
-    doc.setDrawColor(20);
-    doc.setLineWidth(0.35);
-    doc.line(leftX, headerBottom + 2, rightX, headerBottom + 2);
-    y = headerBottom + 5.5;
-  } else {
-    y += 2;
-  }
-
-  // ── PATIENT BLOCK (letter pad — no "Patient Demographics" heading) ──
-  if (settings.show.patientBox) {
-    doc.setFontSize(fs.patient);
-    doc.setTextColor(0, 0, 0);
-    const leftX = m.left;
-    const rightX = pageW / 2 + 4;
-    const name = (report.patientName || "").trim().toUpperCase();
-    const refBy = (report.referringDoctor || "").trim().toUpperCase();
-    const ageSex = ageSexLine(report.age, report.sex).toUpperCase();
-    const dateStr = formatReportDateShort(report.studyDate);
-
-    if (name) {
-      doc.setFont(font, "bold");
-      doc.text("NAME:", leftX, y);
-      doc.setFont(font, "normal");
-      doc.text(name, leftX + doc.getTextWidth("NAME: ") + 1, y);
+      doc.text(email, rightX, ay, { align: "right" });
+      headerBottom = Math.max(headerBottom, ay);
+      doc.setDrawColor(20);
+      doc.setLineWidth(0.35);
+      doc.line(leftX, headerBottom + 2, rightX, headerBottom + 2);
+      cursor = headerBottom + 5.5;
+    } else {
+      cursor += 2;
     }
 
-    if (ageSex) {
-      doc.setFont(font, "bold");
-      doc.text("AGE/SEX:", rightX, y);
-      doc.setFont(font, "normal");
-      doc.text(ageSex, rightX + doc.getTextWidth("AGE/SEX: ") + 1, y);
-    }
-    if (name || ageSex) y += lineH + 0.8;
+    if (settings.show.patientBox) {
+      doc.setFontSize(fs.patient);
+      doc.setTextColor(0, 0, 0);
+      const leftX = m.left;
+      const rightX = pageW / 2 + 4;
+      const name = (report.patientName || "").trim().toUpperCase();
+      const refBy = (report.referringDoctor || "").trim().toUpperCase();
+      const ageSex = ageSexLine(report.age, report.sex).toUpperCase();
+      const dateStr = formatReportDateShort(report.studyDate);
 
-    if (refBy) {
-      doc.setFont(font, "bold");
-      doc.text("REFD. BY:", leftX, y);
-      doc.setFont(font, "bold");
-      doc.text(refBy, leftX + doc.getTextWidth("REFD. BY: ") + 1, y);
-    }
+      if (name) {
+        doc.setFont(font, "bold");
+        doc.text("NAME:", leftX, cursor);
+        doc.setFont(font, "normal");
+        doc.text(name, leftX + doc.getTextWidth("NAME: ") + 1, cursor);
+      }
 
-    if (settings.header.showDate !== false && dateStr) {
-      doc.setFont(font, "bold");
-      doc.text("DATE:", rightX, y);
-      doc.setFont(font, "normal");
-      doc.text(dateStr, rightX + doc.getTextWidth("DATE: ") + 1, y);
-    }
-    if (refBy || (settings.header.showDate !== false && dateStr)) y += lineH + 0.8;
-    y += 1.5;
+      if (ageSex) {
+        doc.setFont(font, "bold");
+        doc.text("AGE/SEX:", rightX, cursor);
+        doc.setFont(font, "normal");
+        doc.text(ageSex, rightX + doc.getTextWidth("AGE/SEX: ") + 1, cursor);
+      }
+      if (name || ageSex) cursor += lineH + 0.8;
 
-    // Double rule (letter-pad style)
-    doc.setDrawColor(0);
-    doc.setLineWidth(0.55);
-    doc.line(m.left, y, pageW - m.right, y);
-    doc.setLineWidth(0.25);
-    doc.line(m.left, y + 1.1, pageW - m.right, y + 1.1);
-    y += 5;
-  }
+      if (refBy) {
+        doc.setFont(font, "bold");
+        doc.text("REFD. BY:", leftX, cursor);
+        doc.setFont(font, "bold");
+        doc.text(refBy, leftX + doc.getTextWidth("REFD. BY: ") + 1, cursor);
+      }
+
+      if (settings.header.showDate !== false && dateStr) {
+        doc.setFont(font, "bold");
+        doc.text("DATE:", rightX, cursor);
+        doc.setFont(font, "normal");
+        doc.text(dateStr, rightX + doc.getTextWidth("DATE: ") + 1, cursor);
+      }
+      if (refBy || (settings.header.showDate !== false && dateStr)) cursor += lineH + 0.8;
+      cursor += 1.5;
+
+      doc.setDrawColor(0);
+      doc.setLineWidth(0.55);
+      doc.line(m.left, cursor, pageW - m.right, cursor);
+      doc.setLineWidth(0.25);
+      doc.line(m.left, cursor + 1.1, pageW - m.right, cursor + 1.1);
+      cursor += 5;
+    }
+    return cursor;
+  };
+
+  y = drawLetterPadChrome();
 
   // ── STUDY TITLE (centered, underlined) ──
   const title = (report.reportTitle || "Radiology Report").trim().toUpperCase();
@@ -502,7 +498,7 @@ export function generateReportPDF(
   const ensureSpace = (needed: number) => {
     if (y + needed > contentBottom) {
       doc.addPage();
-      y = m.top;
+      y = drawLetterPadChrome();
     }
   };
 
@@ -569,7 +565,8 @@ export function generateReportPDF(
           if (!img) continue;
           if (imgY + imgHeight > contentBottom) {
             doc.addPage();
-            imgY = m.top;
+            y = drawLetterPadChrome();
+            imgY = y;
           }
           try {
             const ext = img.startsWith("data:image/jpeg") ? "JPEG" : "PNG";

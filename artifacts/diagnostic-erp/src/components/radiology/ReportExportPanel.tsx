@@ -88,12 +88,12 @@ export default function ReportExportPanel({
   const { data: serverHtml, isFetching: serverLoading, refetch } = useQuery<string>({
     queryKey: ["report-export-server-preview", serverPreviewUrl, previewRefresh],
     queryFn: () => api.get<string>(serverPreviewUrl!),
-    enabled: (open || enlarged) && !!serverPreviewUrl && reportLayout === "care-premium",
+    enabled: (open || enlarged) && !!serverPreviewUrl,
     staleTime: 15_000,
   });
 
-  const showServerPremium = reportLayout === "care-premium" && !!serverPreviewUrl;
-  const displayHtml = showServerPremium && serverHtml ? serverHtml : previewHtml;
+  const showServerLayout = !!serverPreviewUrl;
+  const displayHtml = showServerLayout && serverHtml ? serverHtml : previewHtml;
 
   // Non-passive wheel listener: React's onWheel is passive, so preventDefault is
   // ignored and the parent column steals the gesture. Drive scrollTop here.
@@ -232,7 +232,7 @@ export default function ReportExportPanel({
                 <Maximize2 className="h-3 w-3 mr-1" />
                 Enlarge
               </Button>
-              {showServerPremium && (
+              {showServerLayout && (
                 <Button
                   size="sm"
                   variant="ghost"
@@ -249,13 +249,13 @@ export default function ReportExportPanel({
             </div>
           </div>
 
-          {reportLayout === "care-premium" && !serverPreviewUrl && (
+          {!serverPreviewUrl && (
             <p className="text-[10px] text-amber-700">
-              Save a draft to load the clinic Premium print layout (server-rendered). Showing classic client preview until then.
+              Save a draft to load the clinic print layout (letter-pad header + images). Showing a simplified preview until then.
             </p>
           )}
-          {showServerPremium && serverLoading && !serverHtml && (
-            <p className="text-[10px] text-muted-foreground">Loading Premium layout…</p>
+          {showServerLayout && serverLoading && !serverHtml && (
+            <p className="text-[10px] text-muted-foreground">Loading print layout…</p>
           )}
 
           <div className="relative group">

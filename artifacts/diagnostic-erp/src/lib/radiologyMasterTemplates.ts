@@ -831,7 +831,8 @@ function normModality(m: string): string {
  * each template's label / bodyPart / title. De-duplicated; empty when nothing
  * matches (the built-in critical table still covers the generic emergencies).
  */
-export function criticalWatchListFor(modality?: string | null, studyDescription?: string | null): string[] {
+export function criticalWatchListFor(modality?: string | null, studyDescription?: string | null, region?: string | null): string[] {
+  const resolved = (region || "").toLowerCase().trim();
   const desc = (studyDescription || "").toLowerCase().trim();
   const mod = normModality(modality || "");
   const words = desc.split(/[^a-z0-9]+/).filter((w) => w.length >= 4);
@@ -840,7 +841,11 @@ export function criticalWatchListFor(modality?: string | null, studyDescription?
     if (!t.criticalWatchList?.length) continue;
     if (mod && normModality(t.modality) !== mod) continue;
     const hay = `${t.label} ${t.bodyPart} ${t.title}`.toLowerCase();
-    const matched = !!desc && (hay.includes(desc) || words.some((w) => hay.includes(w)));
+    // Resolved region wins: match the full tab name (e.g. "Cervical Spine"),
+    // never a generic "spine" token that would pull lumbar watch terms.
+    const matched = resolved
+      ? hay.includes(resolved) || resolved.includes(t.bodyPart.toLowerCase())
+      : !!desc && (hay.includes(desc) || words.some((w) => hay.includes(w)));
     if (!matched) continue;
     for (const term of t.criticalWatchList) {
       const clean = term.trim();
