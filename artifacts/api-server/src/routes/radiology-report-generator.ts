@@ -55,7 +55,7 @@ import {
 import { eq, and, desc, isNull, asc, ilike, or, inArray, sql } from "drizzle-orm";
 import { requireAdminRole, type StaffAuthRequest } from "../middleware/requireStaffAuth";
 import {
-  escapeHtml, renderReportDocument, formatReportDate,
+  escapeHtml, renderReportDocument, formatReportDate, formatReportDateShort,
   type ReportDocumentModel, type ReportKeyImageModel,
 } from "../lib/reportPresentation";
 import { resolveTemplateForRender } from "../lib/presentationTemplateStore";
@@ -1443,6 +1443,7 @@ const SaveDraftBody = z.object({
   modality: z.string().nullish(),
   studyName: z.string().nullish(),
   clinicalHistory: z.string().nullish(),
+  technique: z.string().nullish(),
   rawFindings: z.string().nullish(),
   findingsSections: z.record(
     z.union([
@@ -1488,6 +1489,12 @@ radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest,
 
   const { id, ...rest } = parsed.data;
   const author = req.staffSession?.subjectName ?? null;
+  const sectionsForStore: Record<string, unknown> = rest.findingsSections
+    ? { ...rest.findingsSections }
+    : {};
+  if (rest.technique?.trim()) {
+    sectionsForStore.Technique = rest.technique.trim();
+  }
 
   // M1.6A — respect active study locks: a draft save against a worklist row
   // that ANOTHER user actively holds is refused, so two radiologists can
@@ -1517,8 +1524,8 @@ radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest,
     studyName: rest.studyName ?? null,
     clinicalHistory: rest.clinicalHistory ?? null,
     rawFindings: rest.rawFindings ?? null,
-    findingsSections: rest.findingsSections
-      ? JSON.stringify(rest.findingsSections)
+    findingsSections: Object.keys(sectionsForStore).length > 0
+      ? JSON.stringify(sectionsForStore)
       : null,
     impression: rest.impression ? JSON.stringify(rest.impression) : null,
     recommendation: rest.recommendation ?? null,
@@ -1941,12 +1948,27 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
   // (presentation of existing content only — no clinical wording is altered).
   const esc = (s: string | null | undefined) => escapeHtml(s ?? "");
   let sectionsHtml = "";
+  let techniqueHtml = "";
   try {
-    const sections = draft.findingsSections ? (JSON.parse(draft.findingsSections) as Record<string, string>) : {};
-    sectionsHtml = Object.entries(sections)
-      .filter(([, content]) => (content ?? "").trim())
-      .map(([name, content]) => `<div class="section-heading">${esc(name)}</div><p>${esc(content).replaceAll("\n", "<br/>")}</p>`)
-      .join("\n");
+    const sections = draft.findingsSections ? (JSON.parse(draft.findingsSections) as Record<string, unknown>) : {};
+    const sectionText = (content: unknown): string => {
+      if (typeof content === "string") return content;
+      if (content && typeof content === "object" && "text" in content) {
+        return String((content as { text?: unknown }).text ?? "");
+      }
+      return "";
+    };
+    const findingsParts: string[] = [];
+    for (const [name, content] of Object.entries(sections)) {
+      const text = sectionText(content).trim();
+      if (!text) continue;
+      if (name.toLowerCase() === "technique") {
+        techniqueHtml = `<div class="section-heading">Technique</div><p>${esc(text).replaceAll("\n", "<br/>")}</p>`;
+        continue;
+      }
+      findingsParts.push(`<div class="section-heading">${esc(name)}</div><p>${esc(text).replaceAll("\n", "<br/>")}</p>`);
+    }
+    sectionsHtml = findingsParts.join("\n");
   } catch { /* malformed sections JSON → fall through to raw findings */ }
   if (!sectionsHtml && draft.rawFindings?.trim()) {
     sectionsHtml = `<div class="section-heading">Findings</div><p>${esc(draft.rawFindings).replaceAll("\n", "<br/>")}</p>`;
@@ -1962,6 +1984,7 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
   }
   const bodyHtml = [
     draft.clinicalHistory?.trim() ? `<div class="section-heading">Clinical History</div><p>${esc(draft.clinicalHistory)}</p>` : "",
+    techniqueHtml,
     sectionsHtml,
     impressionList,
     draft.recommendation?.trim() ? `<div class="section-heading">Recommendation</div><p>${esc(draft.recommendation)}</p>` : "",
@@ -2018,7 +2041,7 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
       { label: "Patient", value: worklist?.patientName ?? "" },
       { label: "Age / Sex", value: [worklist?.age, worklist?.sex].filter(Boolean).join(" / ") },
       { label: "UHID", value: patientUhid ?? "" },
-      { label: "Study Date", value: formattedStudyDate },
+      { label: "Study Date", value: formatReportDateShort(worklist?.studyDate ?? null) || formattedStudyDate },
       { label: "Referring Doctor", value: ids.referringDoctor },
       { label: "Accession No.", value: ids.accessionNumber },
       { label: "Test", value: catalogTestName ?? draft.studyName ?? "" },
@@ -2027,7 +2050,7 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
     bodyHtml,
     keyImages,
     stamp: likeFinal
-      ? { kind: "pending", label: "PREVIEW (unsigned)" }
+      ? { kind: "pending", label: "" }
       : { kind: "draft", label: "DRAFT (not signed)" },
     signatures: previewSignatures,
     showQrPlaceholder: false,

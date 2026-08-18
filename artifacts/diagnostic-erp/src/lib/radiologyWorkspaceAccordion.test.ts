@@ -260,4 +260,10 @@ describe("no reporting feature was deleted by the re-layout", () => {
     expect(exportPanel).toContain("onExportPdf");
     expect(exportPanel).toContain("onPrintLikeFinal");
   });
+
+  it("does not duplicate Word/PDF on the workspace toolbar", () => {
+    expect(workspace).not.toMatch(/title="Export Word/);
+    expect(workspace).not.toMatch(/title="Export PDF with selected images/);
+    expect((workspace.match(/handleExportWord/g) ?? []).length).toBeGreaterThanOrEqual(1);
+  });
 });

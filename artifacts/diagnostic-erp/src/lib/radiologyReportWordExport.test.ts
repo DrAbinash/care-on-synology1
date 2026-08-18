@@ -165,6 +165,16 @@ describe("parseReportHtmlToBlocks — against a faithful mirror of buildPreviewH
     expect(itemTexts[1]).toContain("Image 2: Sagittal T2");
   });
 
+  test("section-heading and study-title-bar from the print renderer are parsed", () => {
+    const html = `<div class="study-title-bar">MRI CERVICAL SPINE</div>
+      <div class="section-heading">Technique</div><p>T1W and T2W sagittal.</p>
+      <div class="section-heading">Findings</div><p>Cervical lordosis maintained.</p>`;
+    const blocks = parseReportHtmlToBlocks(html);
+    expect(blocks.find((b) => b.type === "heading1")).toMatchObject({ text: "MRI CERVICAL SPINE" });
+    expect(blocks.filter((b) => b.type === "heading2").map((b) => (b as { text: string }).text))
+      .toEqual(["Technique", "Findings"]);
+  });
+
   test("section dividers (<hr>) between header/body/footer are preserved", () => {
     const html = buildPreviewHtml(BASE_OPTS);
     const blocks = parseReportHtmlToBlocks(html);

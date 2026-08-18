@@ -53,14 +53,14 @@ describe("template registry (Phase 8)", () => {
 describe("renderReportDocument — content contract", () => {
   it("carries clinic, patient rows (empties hidden), body, stamp, signature and footer", () => {
     const html = renderReportDocument(baseModel(), resolvePresentationTemplate("care-classic"));
-    expect(html).toContain("Care Diagnostics");
+    expect(html).toContain("CARE DIAGNOSTICS");
     expect(html).toContain("Sunita Sharma");
     expect(html).toContain("MRI BRAIN (PLAIN)");
     expect(html).toContain("FINDINGS: Normal study.");
     expect(html).toContain("VERIFIED on 11/7/2026");
     expect(html).toContain("Dr. Asha Rao");
     expect(html).toContain("Reg. No: JH-123");
-    expect(html).toContain("Not valid for medicolegal use");
+    expect(html).toContain("not for medico-legal");
     expect(html).not.toContain("Empty Hidden");
   });
 
@@ -139,11 +139,13 @@ describe("premium layout (Phase 7)", () => {
     expect(html).toContain("page-break-after: avoid");
   });
 
-  it("classic template uses the same right rail as letter-pad (stacked demographics)", () => {
+  it("classic template uses the same right rail and letter-pad NAME/AGE demography", () => {
     const html = renderReportDocument(baseModel({ keyImages: images }), resolvePresentationTemplate("care-classic"));
     expect(html).toContain("has-side-images");
     expect(html).toContain("image-panel-side");
-    expect(html).toContain("patient-stacked");
+    expect(html).toContain("letterpad-demo");
+    expect(html).toContain("NAME:");
+    expect(html).toContain("AGE/SEX:");
     expect(html).toContain("image-viewport");
     expect(html).not.toMatch(/class="image-panel image-panel-inline/);
   });
@@ -166,6 +168,25 @@ describe("premium layout (Phase 7)", () => {
     expect(html).toContain("has-side-images");
     expect(html).toContain("width: 70%");
     expect(html).toContain("width: 30%");
+  });
+
+  it("inlines the CARE letter-pad logo and repeats header+demography on print pages", () => {
+    const html = renderReportDocument(baseModel({
+      patientRows: [
+        { label: "Patient", value: "Premchand Mandal" },
+        { label: "Age / Sex", value: "4 YRS / M" },
+        { label: "Referring Doctor", value: "Dr. Tushar Jyoti (Ortho), MS" },
+        { label: "Study Date", value: "20260818" },
+      ],
+    }), resolvePresentationTemplate("care-classic"));
+    expect(html).toContain("letterpad-sheet");
+    expect(html).toContain("<thead>");
+    expect(html).toContain("<tfoot>");
+    expect(html).toContain("data:image/png;base64,");
+    expect(html).toContain("Premchand Mandal");
+    expect(html).toContain("REFD. BY:");
+    expect(html).toContain("18/08/2026");
+    expect(html).toContain("letterpad-demo-rule");
   });
 
   it("only data:/same-origin srcs are ever emitted (no public PACS URLs by construction)", () => {
@@ -472,29 +493,32 @@ describe("R1.4 — report number no longer overlaps the banded title bar", () =>
     expect(html).toMatch(/\.study-title-bar\s*\{[^}]*clear:\s*both/);
   });
 
-  it("classic (no colored background) is unaffected", () => {
+  it("classic (no colored background) still clears the floated report-number on letter-pad", () => {
     const html = renderReportDocument(baseModel(), resolvePresentationTemplate("care-classic"));
     const rule = html.match(/\.study-title-bar\s*\{[^}]*\}/)?.[0] ?? "";
-    expect(rule).not.toContain("clear: both");
+    expect(rule).toContain("clear: both");
   });
 });
 
-describe("R1.4 — header contact line never has a dangling leading bullet", () => {
-  it("phone blank, email set → no leading bullet", () => {
+describe("letter-pad header contact is the printed pad, not clinic CRM copy", () => {
+  it("classic and premium use St. Francis / DEOGHAR letter-pad address", () => {
     const html = renderReportDocument(
       baseModel({ clinic: { name: "Care Diagnostics", phone: "", email: "info@clinic.com" } }),
       resolvePresentationTemplate("care-classic"),
     );
-    expect(html).toContain("info@clinic.com<br/>");
+    expect(html).toContain("St. Francis School Road");
+    expect(html).toContain("DEOGHAR-814 112");
+    expect(html).toContain("info@clinic.com");
     expect(html).not.toContain("• info@clinic.com");
   });
 
-  it("both present → still joined with the bullet separator", () => {
+  it("clinic phone does not replace the printed pad numbers", () => {
     const html = renderReportDocument(
       baseModel({ clinic: { name: "Care Diagnostics", phone: "06432-1234", email: "info@clinic.com" } }),
       resolvePresentationTemplate("care-classic"),
     );
-    expect(html).toContain("06432-1234 • info@clinic.com");
+    expect(html).toContain("75490 99099");
+    expect(html).not.toContain("06432-1234 • info@clinic.com");
   });
 });
 
