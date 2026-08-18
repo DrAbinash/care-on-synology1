@@ -8,6 +8,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import sharp from "sharp";
 import { chromium } from "playwright";
+import { detectContentBoundingBox, suggestFramingFromBox } from "./imageFraming";
 import {
   renderReportDocument,
   resolvePresentationTemplate,
@@ -111,6 +112,55 @@ describe("premium print layout (Chromium)", () => {
       writeFileSync(`${ARTIFACT_DIR}/premium_prahlad_4images.pdf`, pdf);
       await page.screenshot({
         path: `${ARTIFACT_DIR}/premium_prahlad_page1_print.png`,
+        fullPage: false,
+      });
+    } finally {
+      await browser.close();
+    }
+  }, 90_000);
+
+  it("frames the PRAHLAD MRI JPEGs in the right rail on a single page", async () => {
+    const fs = await import("node:fs");
+    const paths = [2, 3, 4, 5].map((n) => `/tmp/prahlad-imgs/img-00${n}.jpg`);
+    if (paths.some((p) => !fs.existsSync(p))) return;
+
+    const captions = ["T2W Axial", "FLAIR", "T1W Sagittal", "DWI"];
+    const images: ReportKeyImageModel[] = [];
+    for (let i = 0; i < paths.length; i++) {
+      const buf = fs.readFileSync(paths[i]);
+      const { data, info } = await sharp(buf)
+        .resize(160, 160, { fit: "fill" })
+        .ensureAlpha()
+        .raw()
+        .toBuffer({ resolveWithObject: true });
+      const box = detectContentBoundingBox(data, info.width, info.height);
+      const framing = box
+        ? suggestFramingFromBox(box, info.width, info.height)
+        : { zoom: 1.7, offsetX: 0, offsetY: 0, fitMode: "cover" as const };
+      images.push({
+        src: `data:image/jpeg;base64,${buf.toString("base64")}`,
+        caption: captions[i],
+        displayOrder: i,
+        framing,
+      });
+    }
+
+    const html = renderReportDocument(
+      modelWithImages(images, SHORT_BODY),
+      resolvePresentationTemplate("care-premium"),
+    );
+    const browser = await chromium.launch({ args: ["--no-sandbox", "--disable-setuid-sandbox"] });
+    try {
+      const page = await browser.newPage();
+      await page.emulateMedia({ media: "print" });
+      await page.setViewportSize({ width: 794, height: 1123 });
+      await page.setContent(html, { waitUntil: "networkidle" });
+      const pdf = await page.pdf({ printBackground: true, preferCSSPageSize: true });
+      expect(pdfPageCount(Buffer.from(pdf))).toBe(1);
+      mkdirSync(ARTIFACT_DIR, { recursive: true });
+      writeFileSync(`${ARTIFACT_DIR}/premium_prahlad_real_mri_4images.pdf`, pdf);
+      await page.screenshot({
+        path: `${ARTIFACT_DIR}/premium_prahlad_real_mri_page1.png`,
         fullPage: false,
       });
     } finally {

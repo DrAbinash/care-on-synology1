@@ -135,7 +135,7 @@ describe("premium layout (Phase 7)", () => {
     const html = renderReportDocument(baseModel({ keyImages: images }), resolvePresentationTemplate("care-premium"));
     expect(html).toContain("orphans: 3; widows: 3");
     expect(html).toMatch(/\.image-cell[\s\S]*?break-inside: avoid/);
-    expect(html).toMatch(/\.image-cell, \.sigs, \.impression, \.patient-section, \.hdr \{ page-break-inside: avoid; \}/);
+    expect(html).toMatch(/\.image-cell, \.sigs, \.impression, \.patient-section, \.hdr, \.letterpad-footer-block \{ page-break-inside: avoid; \}/);
     expect(html).toContain("page-break-after: avoid");
   });
 
@@ -423,6 +423,8 @@ describe("premium two-column print rail (page-1 images beside findings)", () => 
     expect(html).toContain("--img-zoom:1.35");
     expect(html).toContain("--img-ox:-12%");
     expect(html).toContain("--img-oy:8%");
+    expect(html).toContain("object-fit:cover");
+    expect(html).toContain("scale(1.35)");
     expect(html).toContain('data-image-count="1"');
     expect(html).toContain('[data-image-count="1"] .image-viewport { height: 78mm;');
     expect(html).toContain('[data-image-count="4"] .image-viewport { height: 30mm;');

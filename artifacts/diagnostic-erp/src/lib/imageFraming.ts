@@ -65,6 +65,12 @@ export function framingInlineStyle(raw: unknown): string {
   return `--img-zoom:${f.zoom};--img-ox:${f.offsetX}%;--img-oy:${f.offsetY}%;--img-fit:${f.fitMode}`;
 }
 
+/** Direct img CSS so Chromium print cannot drop custom-property transforms. */
+export function framingImgInline(raw: unknown): string {
+  const f = parseImageFraming(raw);
+  return `object-fit:${f.fitMode};object-position:center;transform:translate(${f.offsetX}%,${f.offsetY}%) scale(${f.zoom});transform-origin:center center`;
+}
+
 /** Same transform the PDF viewport applies — used by the workspace editor/thumbs. */
 export function framingImgStyle(raw: unknown): {
   objectFit: ImageFitMode;
@@ -135,12 +141,12 @@ export function suggestFramingFromBox(
   imgW: number,
   imgH: number,
 ): ImageFraming {
-  const pad = 0.04;
+  const pad = 0.02;
   const cx = box.x + box.w / 2;
   const cy = box.y + box.h / 2;
   const zoomX = imgW / Math.max(1, box.w * (1 + pad));
   const zoomY = imgH / Math.max(1, box.h * (1 + pad));
-  const zoom = clampZoom(Math.max(zoomX, zoomY));
+  const zoom = clampZoom(Math.max(zoomX, zoomY) * 1.12);
   const offsetX = clampOffset(((imgW / 2 - cx) / imgW) * 100);
   const offsetY = clampOffset(((imgH / 2 - cy) / imgH) * 100);
   return { zoom, offsetX, offsetY, fitMode: "cover" };

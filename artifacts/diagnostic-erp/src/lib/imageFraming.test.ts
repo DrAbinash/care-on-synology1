@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_IMAGE_FRAMING, SIDE_RAIL_MAX_IMAGES, clampZoom,
-  detectContentBoundingBox, framingImgStyle, framingInlineStyle, parseImageFraming,
+  detectContentBoundingBox, framingImgInline, framingImgStyle, framingInlineStyle, parseImageFraming,
   sideRailCount, suggestFramingFromBox,
 } from "./imageFraming";
 
@@ -24,6 +24,7 @@ describe("imageFraming", () => {
     const img = framingImgStyle({ zoom: 1.35, offsetX: -12, offsetY: 8, fitMode: "cover" });
     expect(img.objectFit).toBe("cover");
     expect(img.transform).toBe("translate(-12%, 8%) scale(1.35)");
+    expect(framingImgInline({ zoom: 1.35, offsetX: -12, offsetY: 8, fitMode: "cover" })).toContain("scale(1.35)");
   });
 
   it("caps the right-hand rail at 6 images", () => {

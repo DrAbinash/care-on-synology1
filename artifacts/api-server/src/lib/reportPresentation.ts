@@ -22,7 +22,7 @@
  * templates register in PRESENTATION_TEMPLATES without new render logic.
  */
 
-import { framingInlineStyle, sideRailCount } from "./imageFraming";
+import { framingImgInline, framingInlineStyle, sideRailCount } from "./imageFraming";
 
 // ── Escaping ─────────────────────────────────────────────────────────────────
 
@@ -358,7 +358,7 @@ function keyImagesHtml(
       const sop = img.sopInstanceUid ? ` data-sop-instance-uid="${escapeHtml(img.sopInstanceUid)}"` : "";
       const badge = img.isKeyImage ? `<span class="key-image-badge">★ KEY</span>` : "";
       const imgTag = useViewport
-        ? `<div class="image-viewport" style="${framingInlineStyle(img.framing)}"><img src="${img.src}" class="dicom-img" alt="${alt}" /></div>`
+        ? `<div class="image-viewport"><div class="image-framed" style="${framingInlineStyle(img.framing)};${framingImgInline(img.framing)}"><img src="${img.src}" class="dicom-img" alt="${alt}" /></div></div>`
         : `<img src="${img.src}" class="dicom-img" alt="${alt}" />`;
       return `
         <figure class="image-cell"${sop}>
@@ -540,8 +540,10 @@ export function renderReportDocument(
     </div>
     ${model.clinic.address ? `<div class="hdr-address-bar">${escapeHtml(model.clinic.address)}</div>` : ""}
     <hr class="hdr-rule" />` : "";
-  const letterPadFooterHtml = footerCfg.show ? `<div class="letterpad-services">${escapeHtml(CARE_LETTERPAD.servicesRow1)}<br/>${escapeHtml(CARE_LETTERPAD.servicesRow2)}</div>
-    <div class="letterpad-disclaimer">${escapeHtml(CARE_LETTERPAD.disclaimer)}</div>` : "";
+  const letterPadFooterHtml = footerCfg.show ? `<div class="letterpad-footer-block">
+    <div class="letterpad-services">${escapeHtml(CARE_LETTERPAD.servicesRow1)}<br/>${escapeHtml(CARE_LETTERPAD.servicesRow2)}</div>
+    <div class="letterpad-disclaimer">${escapeHtml(CARE_LETTERPAD.disclaimer)}</div>
+  </div>` : "";
   const classicFooterHtml = footerCfg.show ? `<div class="ftr">${escapeHtml(model.footerNote ?? "")} • ${escapeHtml(model.typeLabel)} • ${escapeHtml(model.statusLabel)} • Generated ${escapeHtml(model.generatedAtLabel)}</div>` : "";
   const letterPadSignatures = model.signatures.filter((s) => s.name || s.imageDataUrl).length > 0
     ? model.signatures
@@ -660,13 +662,13 @@ export function renderReportDocument(
     .content-area { padding: ${!banded ? "0" : "0 20px"}; }
     ${sidePanel ? `
     /* TWO-COLUMN on screen AND print (A4 preview must match PDF).
-       CSS Grid + the old @media screen (min-width: 1024px) left print as a
-       single column, so the image rail dropped below the report onto page 2
-       (blank left / stacked right). Chromium print also treats a tall grid
-       item with unbreakable children as one box and shoves it to the next
-       page. A table row keeps the 70/30 split starting on page 1; each
-       .image-cell stays unsplit; viewport height is capped by count so
-       1–6 images fit the first page without a float pagination bomb. */
+       A large-screen-only CSS grid left print as a single column, so the
+       image rail dropped below the report onto page 2 (blank left / stacked
+       right). Chromium print also treats a tall grid item with unbreakable
+       children as one box and shoves it to the next page. A table row keeps
+       the 70/30 split starting on page 1; each .image-cell stays unsplit;
+       viewport height is capped by count so 1–6 images fit the first page
+       without a float pagination bomb. */
     .content-area.has-side-images {
       display: table;
       width: 100%;
@@ -688,6 +690,7 @@ export function renderReportDocument(
       page-break-inside: auto;
       break-inside: auto;
     }
+    .content-area.has-side-images + .sigs { margin-top: 12px; }
     @media print {
       .content-area.has-side-images { display: table; width: 100%; }
       .image-panel-side { position: static; width: 30%; }
@@ -764,25 +767,30 @@ export function renderReportDocument(
       -webkit-print-color-adjust: exact; print-color-adjust: exact;
     }` : ""}
     .dicom-img { width: 100%; max-height: 70mm; object-fit: contain; display: block; background: #000; }
+    ${sidePanel ? `
     .image-viewport {
       position: relative; width: 100%; aspect-ratio: 4 / 3; overflow: hidden; background: #000;
     }
-    .image-viewport .dicom-img {
-      position: absolute; inset: 0; width: 100%; height: 100%; max-height: none;
-      object-fit: var(--img-fit, cover); object-position: center;
+    .image-viewport .image-framed {
+      position: absolute; inset: 0;
       transform: translate(var(--img-ox, 0%), var(--img-oy, 0%)) scale(var(--img-zoom, 1));
       transform-origin: center center;
     }
+    .image-viewport .dicom-img {
+      width: 100%; height: 100%; max-height: none;
+      object-fit: var(--img-fit, cover); object-position: center;
+      display: block;
+    }
     /* Fixed print heights so 1–6 images stay on page 1 beside findings.
-       70mm × 4 overflowed the remaining A4 column and Chromium moved the
-       whole rail to page 2. Count-adaptive height keeps the picture-frame
-       size stable; the image never drives the page layout. */
+       A 70mm frame times four overflowed the remaining A4 column and Chromium
+       moved the whole rail to page 2. Count-adaptive height keeps the
+       picture-frame size stable; the image never drives the page layout. */
     .image-panel-side[data-image-count="1"] .image-viewport { height: 78mm; aspect-ratio: auto; }
     .image-panel-side[data-image-count="2"] .image-viewport { height: 52mm; aspect-ratio: auto; }
     .image-panel-side[data-image-count="3"] .image-viewport,
     .image-panel-side[data-image-count="4"] .image-viewport { height: 30mm; aspect-ratio: auto; }
     .image-panel-side[data-image-count="5"] .image-viewport,
-    .image-panel-side[data-image-count="6"] .image-viewport { height: 20mm; aspect-ratio: auto; }
+    .image-panel-side[data-image-count="6"] .image-viewport { height: 16mm; aspect-ratio: auto; }` : ""}
     .image-panel-overflow { margin-top: 10px; }
     .image-caption {
       background: ${pal.accent}; color: #fff; font-weight: 600;
@@ -790,7 +798,7 @@ export function renderReportDocument(
     }
 
     /* ── Footer + signatures slots ── */
-    .sigs { display: flex; gap: 30px; justify-content: ${sigJustify}; margin-top: 26px; break-inside: avoid; clear: both; }
+    .sigs { display: flex; gap: 30px; justify-content: ${sigJustify}; margin-top: 26px; break-inside: avoid; page-break-after: avoid; clear: both; }
     .sigbox { ${slotCss(ty.signature)} width: 200px; text-align: center; }
     .sigbox .sigimg { height: 50px; display: flex; align-items: flex-end; justify-content: center; }
     .sigbox .sigimg img { max-height: 50px; max-width: 180px; object-fit: contain; }
@@ -815,6 +823,7 @@ export function renderReportDocument(
     .letterpad .signame { color: #b91c1c; font-size: 11pt; }
     .letterpad-services { background: #0f2d6e; color: #fff; text-align: center; padding: 6px 8px; font-size: 6.5px; font-weight: 700; letter-spacing: 0.04em; line-height: 1.45; margin-top: 14px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     .letterpad-disclaimer { font-size: 7.5px; color: #334155; text-align: center; padding: 6px 12px 4px; font-style: italic; }
+    .letterpad-footer-block { break-inside: avoid; page-break-inside: avoid; page-break-before: avoid; }
     ` : ""}
 
     /* ── Print rules (Phase 7: widows/orphans, no split images, no blank pages) ── */
@@ -822,7 +831,8 @@ export function renderReportDocument(
       @page { size: ${pageSize}; margin: ${template.layout.pageMargins}; }
       .report-wrapper { max-width: 100%; }
       .no-print { display: none !important; }
-      .image-cell, .sigs, .impression, .patient-section, .hdr { page-break-inside: avoid; }
+      .image-cell, .sigs, .impression, .patient-section, .hdr, .letterpad-footer-block { page-break-inside: avoid; }
+      .sigs { page-break-after: avoid; }
       .section-heading, .image-panel-heading { page-break-after: avoid; }
       body { orphans: ${orphans}; widows: ${widows}; }
     }
