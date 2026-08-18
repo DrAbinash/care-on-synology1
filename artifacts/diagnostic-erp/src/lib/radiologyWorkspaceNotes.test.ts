@@ -58,4 +58,17 @@ describe("Radiology Reporting Workspace handwritten notes", () => {
     expect(panel).toContain('data-testid="selected-images-layout-toggle"');
     expect(panel).toContain("care_report_images_layout");
   });
+
+  it("exposes Edit Framing on every selected report image", () => {
+    expect(panel).toContain("panel-edit-framing-");
+    expect(panel).toContain("ImageFramingEditor");
+    expect(panel).toContain("Edit Framing");
+    expect(panel).toContain("framingImgStyle");
+    const editor = read("components/radiology/ImageFramingEditor.tsx");
+    expect(editor).toContain('data-testid="framing-fit"');
+    expect(editor).toContain('data-testid="framing-fill"');
+    expect(editor).toContain('data-testid="framing-reset"');
+    expect(editor).toContain('data-testid="framing-apply"');
+    expect(editor).toContain("width: 238");
+  });
 });

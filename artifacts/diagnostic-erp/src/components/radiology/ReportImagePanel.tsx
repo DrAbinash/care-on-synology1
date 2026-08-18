@@ -25,12 +25,14 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
-import { AlertTriangle, GripVertical, ImageOff, Loader2, RefreshCw, Star, Trash2 } from "lucide-react";
+import { AlertTriangle, Crop, GripVertical, ImageOff, Loader2, RefreshCw, Star, Trash2 } from "lucide-react";
 import { withDicomWebAuth } from "@/lib/browserDicomWeb";
 import {
   launchQueryForRef, ohifUrlForRef, reorderIds, thumbnailRenderedUrl,
   type ReportImageRef,
 } from "@/lib/reportImageRefs";
+import { parseImageFraming, framingImgStyle, type ImageFraming } from "@/lib/imageFraming";
+import ImageFramingEditor from "@/components/radiology/ImageFramingEditor";
 
 interface LaunchResponse {
   ohifUrl?: string | null;
@@ -56,6 +58,7 @@ export default function ReportImagePanel({
   const qc = useQueryClient();
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [brokenThumbs, setBrokenThumbs] = useState<Record<number, boolean>>({});
+  const [framingRef, setFramingRef] = useState<ReportImageRef | null>(null);
   const [layoutMode, setLayoutMode] = useState<"stack" | "grid">(() => {
     try {
       const stored = localStorage.getItem("care_report_images_layout");
@@ -216,6 +219,7 @@ export default function ReportImagePanel({
       >
       {refs.map((ref, index) => {
         const thumb = dicomWebBase && !brokenThumbs[ref.id] ? withDicomWebAuth(thumbnailRenderedUrl(dicomWebBase, ref)) : null;
+        const framing = parseImageFraming(ref.presentationJson);
         return (
           <div
             key={ref.id}
@@ -230,7 +234,7 @@ export default function ReportImagePanel({
             {!disabled && <GripVertical size={12} className="text-muted-foreground/60 shrink-0 cursor-grab self-start" data-testid={`panel-drag-${ref.id}`} />}
             <button
               type="button"
-              className={`relative shrink-0 rounded bg-black overflow-hidden ${layoutMode === "stack" ? "h-28 w-full" : "h-12 w-12"}`}
+              className={`relative shrink-0 rounded bg-black overflow-hidden ${layoutMode === "stack" ? "w-full aspect-[4/3]" : "h-12 w-12"}`}
               title="Open this image in the viewer"
               onClick={() => void openInViewer(ref)}
               data-testid={`panel-thumb-${ref.id}`}
@@ -239,7 +243,8 @@ export default function ReportImagePanel({
                 ? <img
                     src={thumb}
                     alt={ref.description}
-                    className="h-full w-full object-contain"
+                    className="absolute inset-0 h-full w-full"
+                    style={framingImgStyle(framing)}
                     loading="lazy"
                     onError={() => setBrokenThumbs((b) => ({ ...b, [ref.id]: true }))}
                   />
@@ -263,6 +268,17 @@ export default function ReportImagePanel({
                 <Button
                   size="sm"
                   variant="ghost"
+                  className="h-7 px-1.5 text-[10px] gap-0.5"
+                  title="Edit framing for the Premium Report viewport"
+                  onClick={() => setFramingRef(ref)}
+                  data-testid={`panel-edit-framing-${ref.id}`}
+                >
+                  <Crop size={12} />
+                  <span className="hidden sm:inline">Edit Framing</span>
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
                   className="h-7 w-7 p-0"
                   title={ref.isKeyImage ? "Unmark key image" : "Mark as key image"}
                   onClick={() => patchRef.mutate({ id: ref.id, body: { isKeyImage: !ref.isKeyImage } })}
@@ -279,6 +295,22 @@ export default function ReportImagePanel({
         );
       })}
       </div>
+      <ImageFramingEditor
+        open={!!framingRef}
+        imageSrc={(() => {
+          if (!framingRef || !dicomWebBase || brokenThumbs[framingRef.id]) return null;
+          const url = thumbnailRenderedUrl(dicomWebBase, framingRef, 512);
+          return url ? withDicomWebAuth(url) : null;
+        })()}
+        caption={framingRef?.description ?? ""}
+        initial={framingRef?.presentationJson}
+        onClose={() => setFramingRef(null)}
+        onApply={(framing: ImageFraming) => {
+          if (!framingRef) return;
+          patchRef.mutate({ id: framingRef.id, body: { framing: parseImageFraming(framing) } });
+          setFramingRef(null);
+        }}
+      />
     </div>
   );
 }

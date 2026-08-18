@@ -112,18 +112,22 @@ describe("premium layout (Phase 7)", () => {
     { src: "data:image/jpeg;base64,BBB", caption: "FLAIR", displayOrder: 0 },
   ];
 
-  it("with images: desktop two-column grid; print flows normally (R1.4 — no float, see pagination tests)", () => {
+  it("with images: two-column table on screen AND print; rail stays beside the report", () => {
     const html = renderReportDocument(baseModel({ keyImages: images }), resolvePresentationTemplate("care-premium"));
-    expect(html).toContain("grid-template-columns: 1fr 64mm"); // desktop split
-    expect(html).not.toMatch(/\.image-panel-side\s*\{\s*float:\s*right/); // R1.4 — float removed (broke print pagination)
+    expect(html).toContain("has-side-images");
+    expect(html).toContain("display: table");
+    expect(html).toContain("width: 70%");
+    expect(html).toContain("width: 30%");
+    expect(html).not.toMatch(/\.image-panel-side\s*\{\s*float:\s*right/);
     expect(html).toContain("KEY IMAGES");
+    expect(html).toContain("image-viewport");
     expect(html.indexOf("FLAIR")).toBeLessThan(html.indexOf("T2 AXIAL")); // displayOrder wins
     expect(html).toContain('data-sop-instance-uid="1.2.3.4"');  // viewer integration hook
   });
 
   it("without images: full-width report, no side panel CSS, no image heading", () => {
     const html = renderReportDocument(baseModel({ keyImages: [] }), resolvePresentationTemplate("care-premium"));
-    expect(html).not.toContain("grid-template-columns: 1fr 64mm");
+    expect(html).not.toContain("has-side-images");
     expect(html).not.toContain("KEY IMAGES");
   });
 
@@ -131,7 +135,7 @@ describe("premium layout (Phase 7)", () => {
     const html = renderReportDocument(baseModel({ keyImages: images }), resolvePresentationTemplate("care-premium"));
     expect(html).toContain("orphans: 3; widows: 3");
     expect(html).toMatch(/\.image-cell[\s\S]*?break-inside: avoid/);
-    expect(html).toMatch(/\.image-cell, \.sigs, \.impression, \.patient-section, \.hdr \{ page-break-inside: avoid; \}/);
+    expect(html).toMatch(/\.image-cell, \.sigs, \.impression, \.patient-section, \.hdr, \.letterpad-footer-block \{ page-break-inside: avoid; \}/);
     expect(html).toContain("page-break-after: avoid");
   });
 
@@ -157,7 +161,9 @@ describe("premium layout (Phase 7)", () => {
     expect(html).toContain("Dr. Sugandha Priyadarshini");
     expect(html).toContain("MD (Radiodiagnosis &amp; Medical Imaging)");
     expect(html).toContain("KEY IMAGES");
-    expect(html).toContain("grid-template-columns: 1fr 64mm");
+    expect(html).toContain("has-side-images");
+    expect(html).toContain("width: 70%");
+    expect(html).toContain("width: 30%");
   });
 
   it("only data:/same-origin srcs are ever emitted (no public PACS URLs by construction)", () => {
@@ -248,7 +254,7 @@ describe("R1.2 — template capabilities", () => {
     const html = renderReportDocument(baseModel({
       keyImages: [{ src: "data:image/jpeg;base64,AAA", caption: "X", displayOrder: 0 }],
     }), referrer);
-    expect(html).toContain("grid-template-columns: 1fr 55mm");
+    expect(html).toContain("has-side-images");
     expect(html).not.toMatch(/\.image-panel-side\s*\{\s*float:\s*right/);
   });
 
@@ -387,42 +393,73 @@ describe("R1.4 — real QR code, never a fake placeholder", () => {
   });
 });
 
-describe("R1.4 — care-premium print no longer floats the image panel", () => {
+describe("premium two-column print rail (page-1 images beside findings)", () => {
   const images = [
     { src: "data:image/jpeg;base64,AAA", caption: "T2 AXIAL", displayOrder: 0 },
     { src: "data:image/jpeg;base64,BBB", caption: "FLAIR", displayOrder: 1 },
   ];
 
-  it("print CSS has no float on .image-panel-side (the pagination-breaking rule)", () => {
+  it("print keeps a 1-column image rail (not a 2-up gallery dumped after the text)", () => {
     const html = renderReportDocument(baseModel({ keyImages: images }), resolvePresentationTemplate("care-premium"));
     expect(html).not.toMatch(/\.image-panel-side\s*\{\s*float:\s*right/);
-    expect(html).toMatch(/@media print[\s\S]*?\.image-panel-side\s*\{\s*width:\s*100%/);
+    expect(html).toMatch(/@media print[\s\S]*?\.content-area.has-side-images \.image-panel-side \.image-grid\s*\{\s*grid-template-columns:\s*1fr/);
+    expect(html).not.toMatch(/\.content-area.has-side-images \.image-panel-side \.image-grid\s*\{\s*grid-template-columns:\s*repeat\(2/);
   });
 
-  it("print image grid is 2-up (matches classic's density) instead of the old 1-column float rail", () => {
+  it("two-column table is not gated on min-width 1024px (A4 preview is ~794px)", () => {
     const html = renderReportDocument(baseModel({ keyImages: images }), resolvePresentationTemplate("care-premium"));
-    expect(html).toMatch(/@media print[\s\S]*?\.image-panel-side \.image-grid\s*\{\s*grid-template-columns:\s*repeat\(2,\s*1fr\)/);
+    expect(html).not.toContain("min-width: 1024px");
+    expect(html).toContain(".content-area.has-side-images");
+    expect(html).toContain("display: table");
+    expect(html).toContain("table-layout: fixed");
   });
 
-  it("print 2-up rule is scoped through .content-area for higher specificity than the plain (screen-sidebar) 1-column rule", () => {
-    // Regression guard: a bare `@media print { .image-panel-side .image-grid
-    // { grid-template-columns: repeat(2, 1fr); } }` has the SAME specificity
-    // as the unconditional `.image-panel-side .image-grid { grid-template-columns:
-    // 1fr; }` declared later in the stylesheet for the screen sidebar layout —
-    // that unconditional rule has no media qualifier, so it also matches
-    // print, and being later in source order it silently wins, leaving print
-    // output single-column. Proven wrong with real Chromium print-to-PDF
-    // rendering (images stacked one-per-row instead of 2-up) before this
-    // selector was scoped through the real .content-area ancestor to outrank
-    // it without touching source order or !important.
-    const html = renderReportDocument(baseModel({ keyImages: images }), resolvePresentationTemplate("care-premium"));
-    expect(html).toMatch(/@media print[\s\S]*?\.content-area \.image-panel-side \.image-grid\s*\{\s*grid-template-columns:\s*repeat\(2,\s*1fr\)/);
+  it("fixed 4:3 viewport + cover default; framing CSS variables are emitted", () => {
+    const html = renderReportDocument(baseModel({
+      keyImages: [{ src: "data:image/jpeg;base64,AAA", caption: "T2", displayOrder: 0, framing: { zoom: 1.35, offsetX: -12, offsetY: 8, fitMode: "cover" } }],
+    }), resolvePresentationTemplate("care-premium"));
+    expect(html).toContain("aspect-ratio: 4 / 3");
+    expect(html).toContain("object-fit: var(--img-fit, cover)");
+    expect(html).toContain("--img-zoom:1.35");
+    expect(html).toContain("--img-ox:-12%");
+    expect(html).toContain("--img-oy:8%");
+    expect(html).toContain("object-fit:cover");
+    expect(html).toContain("scale(1.35)");
+    expect(html).toContain('data-image-count="1"');
+    expect(html).toContain('[data-image-count="1"] .image-viewport { height: 78mm;');
+    expect(html).toContain('[data-image-count="4"] .image-viewport { height: 30mm;');
   });
 
-  it("screen layout (the sticky two-column grid) is unchanged", () => {
-    const html = renderReportDocument(baseModel({ keyImages: images }), resolvePresentationTemplate("care-premium"));
-    expect(html).toContain("grid-template-columns: 1fr 64mm"); // desktop split preserved
-    expect(html).toContain("position: sticky");
+  it("7+ images keep 6 on the right rail and continue the rest below (no empty left column)", () => {
+    const many = Array.from({ length: 7 }, (_, i) => ({
+      src: `data:image/jpeg;base64,A${i}`, caption: `IMG ${i}`, displayOrder: i,
+    }));
+    const html = renderReportDocument(baseModel({ keyImages: many }), resolvePresentationTemplate("care-premium"));
+    expect(html).toContain('data-image-count="6"');
+    expect(html).toContain("KEY IMAGES (continued)");
+    expect(html).toContain("image-panel-overflow");
+  });
+
+  it("classic inline images are not wrapped in the premium viewport", () => {
+    const html = renderReportDocument(baseModel({ keyImages: images }), resolvePresentationTemplate("care-classic"));
+    expect(html).toContain("image-panel-inline");
+    expect(html).not.toContain("image-viewport");
+  });
+
+  it("zero images never emit an empty right column", () => {
+    const html = renderReportDocument(baseModel({ keyImages: [] }), resolvePresentationTemplate("care-premium"));
+    expect(html).not.toContain("has-side-images");
+    expect(html).not.toContain('class="image-panel image-panel-side');
+    expect(html).not.toContain("KEY IMAGES");
+  });
+
+  it("four images use the medium print viewport height", () => {
+    const four = Array.from({ length: 4 }, (_, i) => ({
+      src: `data:image/jpeg;base64,A${i}`, caption: `IMG ${i}`, displayOrder: i,
+    }));
+    const html = renderReportDocument(baseModel({ keyImages: four }), resolvePresentationTemplate("care-premium"));
+    expect(html).toContain('data-image-count="4"');
+    expect(html).toContain('[data-image-count="4"] .image-viewport { height: 30mm;');
   });
 });
 

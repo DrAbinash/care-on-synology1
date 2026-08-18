@@ -59,6 +59,7 @@ import {
   type ReportDocumentModel, type ReportKeyImageModel,
 } from "../lib/reportPresentation";
 import { resolveTemplateForRender } from "../lib/presentationTemplateStore";
+import { parseImageFraming, serializeImageFraming } from "../lib/imageFraming";
 import {
   buildLetterheadScaleCss,
   REPORT_HEADER_SCALE_KEY,
@@ -2535,14 +2536,25 @@ const ImageRefPatchSchema = z.object({
   description: z.string().min(1).max(500).optional(),
   displayOrder: z.number().int().min(0).max(1_000).optional(),
   isKeyImage: z.boolean().optional(),
+  framing: z.object({
+    zoom: z.number(),
+    offsetX: z.number(),
+    offsetY: z.number(),
+    fitMode: z.enum(["contain", "cover"]),
+  }).optional(),
 });
 
 radiologyReportGeneratorRouter.patch("/image-references/:id", async (req: StaffAuthRequest, res: Response) => {
   const id = Number(req.params.id);
   if (!id) { res.status(400).json({ error: "Invalid id" }); return; }
   const parsed = ImageRefPatchSchema.safeParse(req.body);
-  if (!parsed.success || (parsed.data.description === undefined && parsed.data.displayOrder === undefined && parsed.data.isKeyImage === undefined)) {
-    res.status(400).json({ error: "description, displayOrder or isKeyImage required" });
+  if (!parsed.success || (
+    parsed.data.description === undefined
+    && parsed.data.displayOrder === undefined
+    && parsed.data.isKeyImage === undefined
+    && parsed.data.framing === undefined
+  )) {
+    res.status(400).json({ error: "description, displayOrder, isKeyImage or framing required" });
     return;
   }
   const [target] = await db.select({ draftId: radiologyImageReferencesTable.draftId })
@@ -2554,6 +2566,7 @@ radiologyReportGeneratorRouter.patch("/image-references/:id", async (req: StaffA
       ...(parsed.data.description !== undefined ? { description: parsed.data.description } : {}),
       ...(parsed.data.displayOrder !== undefined ? { displayOrder: parsed.data.displayOrder } : {}),
       ...(parsed.data.isKeyImage !== undefined ? { isKeyImage: parsed.data.isKeyImage } : {}),
+      ...(parsed.data.framing !== undefined ? { presentationJson: serializeImageFraming(parseImageFraming(parsed.data.framing)) } : {}),
     })
     .where(eq(radiologyImageReferencesTable.id, id))
     .returning();

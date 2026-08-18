@@ -45,6 +45,7 @@ export interface ImageReferenceRow {
   displayOrder: number;
   isKeyImage: boolean;
   createdBy: string | null;
+  presentationJson?: string | null;
 }
 
 /** R1.3 — pure: rendered-viewport edge (px) adapted to how many images the
@@ -235,6 +236,7 @@ export async function resolveDraftKeyImages(draftId: number): Promise<ReportKeyI
       displayOrder: refs[i].displayOrder ?? 0,
       sopInstanceUid: refs[i].sopInstanceUid,
       isKeyImage: refs[i].isKeyImage === true,
+      framing: refs[i].presentationJson ?? "{}",
     });
   }
   return out;

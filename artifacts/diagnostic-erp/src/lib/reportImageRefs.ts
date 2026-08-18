@@ -22,6 +22,8 @@ export interface ReportImageRef {
   /** R1.3 — clinically-flagged key image (KEY badge in the rendered report). */
   isKeyImage?: boolean;
   createdBy?: string | null;
+  /** Non-destructive viewport JSON persisted on the reference row. */
+  presentationJson?: string | null;
 }
 
 export interface NewImageRefInput {

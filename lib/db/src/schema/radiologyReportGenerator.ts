@@ -199,6 +199,9 @@ export const radiologyImageReferencesTable = pgTable(
     // express the COALESCE, so the DB enforces duplicate prevention.
     isKeyImage: boolean("is_key_image").notNull().default(false),
     createdBy: text("created_by"),
+    // Non-destructive report viewport: { zoom, offsetX, offsetY, fitMode }.
+    // Original DICOM is never overwritten.
+    presentationJson: text("presentation_json").notNull().default("{}"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
   },

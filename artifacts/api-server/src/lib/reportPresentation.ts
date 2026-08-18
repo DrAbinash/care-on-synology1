@@ -22,6 +22,8 @@
  * templates register in PRESENTATION_TEMPLATES without new render logic.
  */
 
+import { framingImgInline, framingInlineStyle, sideRailCount } from "./imageFraming";
+
 // ── Escaping ─────────────────────────────────────────────────────────────────
 
 export function escapeHtml(s: string | null | undefined): string {
@@ -75,6 +77,9 @@ export interface ReportKeyImageModel {
   sopInstanceUid?: string | null;
   /** R1.3 — clinically-flagged key image; rendered with a KEY badge. */
   isKeyImage?: boolean;
+  /** Non-destructive viewport framing (zoom / pan / fit). Same CSS is used
+   *  by workspace preview, print, and PDF. */
+  framing?: { zoom: number; offsetX: number; offsetY: number; fitMode: "contain" | "cover" } | string | null;
 }
 
 export interface ReportDocumentModel {
@@ -146,8 +151,8 @@ export interface PresentationTemplate {
   };
     layout: {
     /** "inline" — images render as a block after the body (classic).
-     *  "side-panel" — desktop: report left / images right; print: floated
-     *  right rail the text wraps around. Full width when no images. */
+     *  "side-panel" — report left (~70%) / key images right (~30%) on BOTH
+     *  screen preview and print/PDF. Full width when no images. */
     imagePlacement: "inline" | "side-panel";
     /** "grid" — the classic 4-column label-over-value demographics grid.
      *  "table" — the premium label : value table.
@@ -338,19 +343,34 @@ function signaturesHtml(signatures: ReportSignatureModel[], showImage = true): s
   return blocks.join("");
 }
 
-function keyImagesHtml(images: ReportKeyImageModel[], placement: "inline" | "side-panel"): string {
+function keyImagesHtml(
+  images: ReportKeyImageModel[],
+  placement: "inline" | "side-panel",
+  opts: { heading?: string; extraClass?: string } = {},
+): string {
   if (images.length === 0) return "";
-  const heading = placement === "side-panel" ? "KEY IMAGES" : "SELECTED IMAGES";
+  const heading = opts.heading ?? (placement === "side-panel" ? "KEY IMAGES" : "SELECTED IMAGES");
+  const useViewport = placement === "side-panel";
   const cells = [...images]
     .sort((a, b) => a.displayOrder - b.displayOrder)
-    .map((img, i) => `
-        <figure class="image-cell"${img.sopInstanceUid ? ` data-sop-instance-uid="${escapeHtml(img.sopInstanceUid)}"` : ""}>
-          ${img.isKeyImage ? `<span class="key-image-badge">★ KEY</span>` : ""}<img src="${img.src}" class="dicom-img" alt="${escapeHtml(img.caption || `Image ${i + 1}`)}" />
-          <figcaption class="image-caption">${escapeHtml(img.caption || `Image ${i + 1}`)}</figcaption>
-        </figure>`)
+    .map((img, i) => {
+      const alt = escapeHtml(img.caption || `Image ${i + 1}`);
+      const sop = img.sopInstanceUid ? ` data-sop-instance-uid="${escapeHtml(img.sopInstanceUid)}"` : "";
+      const badge = img.isKeyImage ? `<span class="key-image-badge">★ KEY</span>` : "";
+      const imgTag = useViewport
+        ? `<div class="image-viewport"><div class="image-framed" style="${framingInlineStyle(img.framing)};${framingImgInline(img.framing)}"><img src="${img.src}" class="dicom-img" alt="${alt}" /></div></div>`
+        : `<img src="${img.src}" class="dicom-img" alt="${alt}" />`;
+      return `
+        <figure class="image-cell"${sop}>
+          ${badge}${imgTag}
+          <figcaption class="image-caption">${alt}</figcaption>
+        </figure>`;
+    })
     .join("");
+  const sideCls = placement === "side-panel" ? "image-panel-side image-panel-keyrail" : "image-panel-inline";
+  const countAttr = placement === "side-panel" ? ` data-image-count="${images.length}"` : "";
   return `
-      <div class="image-panel ${placement === "side-panel" ? "image-panel-side image-panel-keyrail" : "image-panel-inline"}">
+      <div class="image-panel ${sideCls}${opts.extraClass ? ` ${opts.extraClass}` : ""}"${countAttr}>
         <div class="image-panel-heading">${heading}</div>
         <div class="image-grid">${cells}</div>
       </div>`;
@@ -477,6 +497,14 @@ export function renderReportDocument(
     : "";
 
   const imagesBlock = keyImagesHtml(images, template.layout.imagePlacement);
+  const sortedImages = [...images].sort((a, b) => a.displayOrder - b.displayOrder);
+  const railN = sidePanel ? sideRailCount(sortedImages.length) : 0;
+  const railImages = sidePanel ? sortedImages.slice(0, railN) : [];
+  const overflowImages = sidePanel ? sortedImages.slice(railN) : [];
+  const railBlock = sidePanel ? keyImagesHtml(railImages, "side-panel") : "";
+  const overflowBlock = overflowImages.length > 0
+    ? keyImagesHtml(overflowImages, "inline", { heading: "KEY IMAGES (continued)", extraClass: "image-panel-overflow" })
+    : "";
   const letterPadAddress = (model.clinic.address || "").trim() || CARE_LETTERPAD.address;
   const letterPadPhone = (model.clinic.phone || "").trim() || `Phone: ${CARE_LETTERPAD.phones}`;
   const letterPadEmail = (model.clinic.email || "").trim() || CARE_LETTERPAD.email;
@@ -512,8 +540,10 @@ export function renderReportDocument(
     </div>
     ${model.clinic.address ? `<div class="hdr-address-bar">${escapeHtml(model.clinic.address)}</div>` : ""}
     <hr class="hdr-rule" />` : "";
-  const letterPadFooterHtml = footerCfg.show ? `<div class="letterpad-services">${escapeHtml(CARE_LETTERPAD.servicesRow1)}<br/>${escapeHtml(CARE_LETTERPAD.servicesRow2)}</div>
-    <div class="letterpad-disclaimer">${escapeHtml(CARE_LETTERPAD.disclaimer)}</div>` : "";
+  const letterPadFooterHtml = footerCfg.show ? `<div class="letterpad-footer-block">
+    <div class="letterpad-services">${escapeHtml(CARE_LETTERPAD.servicesRow1)}<br/>${escapeHtml(CARE_LETTERPAD.servicesRow2)}</div>
+    <div class="letterpad-disclaimer">${escapeHtml(CARE_LETTERPAD.disclaimer)}</div>
+  </div>` : "";
   const classicFooterHtml = footerCfg.show ? `<div class="ftr">${escapeHtml(model.footerNote ?? "")} • ${escapeHtml(model.typeLabel)} • ${escapeHtml(model.statusLabel)} • Generated ${escapeHtml(model.generatedAtLabel)}</div>` : "";
   const letterPadSignatures = model.signatures.filter((s) => s.name || s.imageDataUrl).length > 0
     ? model.signatures
@@ -533,6 +563,13 @@ export function renderReportDocument(
       print-color-adjust: exact;
     }
     .report-wrapper { max-width: 210mm; margin: 0 auto; background: #fff; }
+    @media screen {
+      html, body { background: #94a3b8; }
+      .report-wrapper {
+        max-width: 210mm; min-height: 297mm; margin: 12px auto; padding: 0;
+        box-shadow: 0 4px 24px rgba(15, 23, 42, 0.28);
+      }
+    }
 
     /* ── Header slot ── */
     .hdr {
@@ -624,32 +661,40 @@ export function renderReportDocument(
     /* ── Content area: report column + optional image side panel ── */
     .content-area { padding: ${!banded ? "0" : "0 20px"}; }
     ${sidePanel ? `
-    /* Desktop: two columns — clinical report left, selected images right. */
-    @media screen and (min-width: 1024px) {
-      .content-area { display: grid; grid-template-columns: 1fr ${panelWidthMm}mm; gap: 8mm; align-items: start; }
-      .image-panel-side { position: sticky; top: 8px; }
+    /* TWO-COLUMN on screen AND print (A4 preview must match PDF).
+       A large-screen-only CSS grid left print as a single column, so the
+       image rail dropped below the report onto page 2 (blank left / stacked
+       right). Chromium print also treats a tall grid item with unbreakable
+       children as one box and shoves it to the next page. A table row keeps
+       the 70/30 split starting on page 1; each .image-cell stays unsplit;
+       viewport height is capped by count so 1–6 images fit the first page
+       without a float pagination bomb. */
+    .content-area.has-side-images {
+      display: table;
+      width: 100%;
+      table-layout: fixed;
+      border-collapse: separate;
+      border-spacing: 10px 0;
     }
-    /* R1.4 — print/PDF does NOT float the image panel. A floated column
-       runs independently of the main text's page-break flow: once the
-       float outgrows the (often much shorter) report text beside it,
-       Chromium's print engine keeps emitting pages whose main column is
-       empty while only the float continues — reproduced with real
-       Chromium print-to-PDF: a 24-image care-premium report grew from 6
-       pages (classic, no float) to 10 pages, most of them blank, and a
-       100-image report reached 26 pages. Printing the images in normal
-       document flow after the report text, 2-up, paginates exactly like
-       every other section on the page (break-inside:avoid per image cell,
-       already set below) and can never desynchronize from the text. */
+    .content-area.has-side-images > .report-column {
+      display: table-cell;
+      vertical-align: top;
+      width: 70%;
+    }
+    .content-area.has-side-images > .image-panel-side {
+      display: table-cell;
+      vertical-align: top;
+      width: 30%;
+      max-width: ${panelWidthMm}mm;
+      margin: 0;
+      page-break-inside: auto;
+      break-inside: auto;
+    }
+    .content-area.has-side-images + .sigs { margin-top: 12px; }
     @media print {
-      .image-panel-side { width: 100%; }
-      /* Specificity must beat the unconditional (screen-sidebar) single-column
-         rule below (.image-panel-side .image-grid), which has no media
-         qualifier and so also matches print — an equal-specificity print rule
-         placed earlier in the stylesheet loses to it by source order. Scoping
-         through the real .content-area ancestor (image-panel-side is always
-         its direct child — see the content-area markup below) adds a class
-         to the selector without resorting to !important. */
-      .content-area .image-panel-side .image-grid { grid-template-columns: repeat(2, 1fr); }
+      .content-area.has-side-images { display: table; width: 100%; }
+      .image-panel-side { position: static; width: 30%; }
+      .content-area.has-side-images .image-panel-side .image-grid { grid-template-columns: 1fr; }
     }` : ""}
 
     /* ── Section headings + body slots ── */
@@ -707,7 +752,8 @@ export function renderReportDocument(
       break-after: avoid-page;
     }
     .image-panel-inline .image-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
-    .image-panel-side .image-grid { display: grid; grid-template-columns: 1fr; gap: 8px; }
+    .image-panel-side .image-grid { display: grid; grid-template-columns: 1fr; gap: 4px; }
+    .image-panel-side .image-caption { padding: 1px 5px; font-size: 6.5px; }
     .image-cell {
       margin: 0; border: 1px solid #e0e0e0; border-radius: 4px; overflow: hidden;
       background: #000; text-align: center;
@@ -721,13 +767,38 @@ export function renderReportDocument(
       -webkit-print-color-adjust: exact; print-color-adjust: exact;
     }` : ""}
     .dicom-img { width: 100%; max-height: 70mm; object-fit: contain; display: block; background: #000; }
+    ${sidePanel ? `
+    .image-viewport {
+      position: relative; width: 100%; aspect-ratio: 4 / 3; overflow: hidden; background: #000;
+    }
+    .image-viewport .image-framed {
+      position: absolute; inset: 0;
+      transform: translate(var(--img-ox, 0%), var(--img-oy, 0%)) scale(var(--img-zoom, 1));
+      transform-origin: center center;
+    }
+    .image-viewport .dicom-img {
+      width: 100%; height: 100%; max-height: none;
+      object-fit: var(--img-fit, cover); object-position: center;
+      display: block;
+    }
+    /* Fixed print heights so 1–6 images stay on page 1 beside findings.
+       A 70mm frame times four overflowed the remaining A4 column and Chromium
+       moved the whole rail to page 2. Count-adaptive height keeps the
+       picture-frame size stable; the image never drives the page layout. */
+    .image-panel-side[data-image-count="1"] .image-viewport { height: 78mm; aspect-ratio: auto; }
+    .image-panel-side[data-image-count="2"] .image-viewport { height: 52mm; aspect-ratio: auto; }
+    .image-panel-side[data-image-count="3"] .image-viewport,
+    .image-panel-side[data-image-count="4"] .image-viewport { height: 30mm; aspect-ratio: auto; }
+    .image-panel-side[data-image-count="5"] .image-viewport,
+    .image-panel-side[data-image-count="6"] .image-viewport { height: 16mm; aspect-ratio: auto; }` : ""}
+    .image-panel-overflow { margin-top: 10px; }
     .image-caption {
       background: ${pal.accent}; color: #fff; font-weight: 600;
       padding: 2px 6px; letter-spacing: 0.05em; text-transform: uppercase;
     }
 
     /* ── Footer + signatures slots ── */
-    .sigs { display: flex; gap: 30px; justify-content: ${sigJustify}; margin-top: 26px; break-inside: avoid; clear: both; }
+    .sigs { display: flex; gap: 30px; justify-content: ${sigJustify}; margin-top: 26px; break-inside: avoid; page-break-after: avoid; clear: both; }
     .sigbox { ${slotCss(ty.signature)} width: 200px; text-align: center; }
     .sigbox .sigimg { height: 50px; display: flex; align-items: flex-end; justify-content: center; }
     .sigbox .sigimg img { max-height: 50px; max-width: 180px; object-fit: contain; }
@@ -752,6 +823,7 @@ export function renderReportDocument(
     .letterpad .signame { color: #b91c1c; font-size: 11pt; }
     .letterpad-services { background: #0f2d6e; color: #fff; text-align: center; padding: 6px 8px; font-size: 6.5px; font-weight: 700; letter-spacing: 0.04em; line-height: 1.45; margin-top: 14px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     .letterpad-disclaimer { font-size: 7.5px; color: #334155; text-align: center; padding: 6px 12px 4px; font-style: italic; }
+    .letterpad-footer-block { break-inside: avoid; page-break-inside: avoid; page-break-before: avoid; }
     ` : ""}
 
     /* ── Print rules (Phase 7: widows/orphans, no split images, no blank pages) ── */
@@ -759,7 +831,8 @@ export function renderReportDocument(
       @page { size: ${pageSize}; margin: ${template.layout.pageMargins}; }
       .report-wrapper { max-width: 100%; }
       .no-print { display: none !important; }
-      .image-cell, .sigs, .impression, .patient-section, .hdr { page-break-inside: avoid; }
+      .image-cell, .sigs, .impression, .patient-section, .hdr, .letterpad-footer-block { page-break-inside: avoid; }
+      .sigs { page-break-after: avoid; }
       .section-heading, .image-panel-heading { page-break-after: avoid; }
       body { orphans: ${orphans}; widows: ${widows}; }
     }
@@ -777,7 +850,7 @@ export function renderReportDocument(
     </div>
     ${model.safeguardBannerHtml ?? ""}
     ${criticalBanner}
-    <div class="content-area">
+    <div class="content-area${sidePanel ? " has-side-images" : ""}">
       <div class="report-column">
         ${model.impression ? `<div class="impression"><strong>Impression:</strong> ${escapeHtml(model.impression)}</div>` : ""}
         ${parametersHtml(model.parameters)}
@@ -785,8 +858,9 @@ export function renderReportDocument(
         ${!sidePanel ? imagesBlock : ""}
         ${stampHtml}
       </div>
-      ${sidePanel ? imagesBlock : ""}
+      ${sidePanel ? railBlock : ""}
     </div>
+    ${overflowBlock}
     ${signatureCfg.show ? `<div class="sigs">${signaturesHtml(letterPad ? letterPadSignatures : model.signatures, signatureCfg.showImage)}</div>` : ""}
     ${qrHtml}
     ${letterPad ? letterPadFooterHtml : classicFooterHtml}
