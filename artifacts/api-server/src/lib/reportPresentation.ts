@@ -23,6 +23,7 @@
  */
 
 import { framingImgInline, framingInlineStyle, sideRailCount } from "./imageFraming";
+import { careLetterheadLogoDataUrl } from "./careLetterheadLogo";
 
 // ── Escaping ─────────────────────────────────────────────────────────────────
 
@@ -229,7 +230,7 @@ export const CARE_LETTERPAD = {
 } as const;
 
 function isLetterPadTemplate(template: { id: string }): boolean {
-  return template.id === "care-premium";
+  return template.id === "care-premium" || template.id === "care-classic";
 }
 
 export function resolvePresentationTemplate(id?: string | null): PresentationTemplate {
@@ -266,6 +267,26 @@ export function formatReportDate(raw: string | null | undefined): string {
   return raw;
 }
 
+/** Letter-pad DATE line: DD/MM/YYYY (matches generateReportPDF). */
+export function formatReportDateShort(raw: string | null | undefined): string {
+  if (!raw) return "";
+  const trimmed = raw.trim();
+  if (/^\d{2}\/\d{2}\/\d{4}$/.test(trimmed)) return trimmed;
+  const digits = trimmed.replace(/\D/g, "");
+  if (digits.length >= 8) {
+    return `${digits.slice(6, 8)}/${digits.slice(4, 6)}/${digits.slice(0, 4)}`;
+  }
+  try {
+    const d = new Date(trimmed);
+    if (!Number.isNaN(d.getTime())) {
+      const dd = String(d.getDate()).padStart(2, "0");
+      const mm = String(d.getMonth() + 1).padStart(2, "0");
+      return `${dd}/${mm}/${d.getFullYear()}`;
+    }
+  } catch { /* fall through */ }
+  return trimmed;
+}
+
 function rowByLabel(rows: ReportPatientRow[], ...labels: string[]): string {
   const wanted = labels.map((l) => l.toLowerCase());
   const hit = rows.find((r) => wanted.includes(r.label.toLowerCase()));
@@ -295,6 +316,30 @@ function stackedPatientBlockHtml(rows: ReportPatientRow[], pal: PresentationTemp
   }
 
   return `<div class="patient-stacked" style="--ps-label:${pal.labelColor};--ps-value:${pal.valueColor}">${lines.join("")}</div>`;
+}
+
+/** CARE letter-pad demography: NAME | AGE/SEX, REFD. BY | DATE (matches jsPDF). */
+function letterpadPatientBlockHtml(rows: ReportPatientRow[]): string {
+  const name = rowByLabel(rows, "patient", "name");
+  const ageSex = rowByLabel(rows, "age / sex", "age/sex");
+  const refDr = rowByLabel(rows, "referring doctor", "ref. doctor", "ref by", "ref. by", "refd. by");
+  const dateRaw = rowByLabel(rows, "study date", "date");
+  const dateStr = formatReportDateShort(dateRaw) || dateRaw;
+  const cell = (label: string, value: string) =>
+    value
+      ? `<strong>${escapeHtml(label)}</strong> ${escapeHtml(value)}`
+      : "";
+  return `<table class="letterpad-demo">
+    <tr>
+      <td class="ld-left">${cell("NAME:", name)}</td>
+      <td class="ld-right">${cell("AGE/SEX:", ageSex)}</td>
+    </tr>
+    <tr>
+      <td class="ld-left">${cell("REFD. BY:", refDr)}</td>
+      <td class="ld-right">${cell("DATE:", dateStr)}</td>
+    </tr>
+  </table>
+  <div class="letterpad-demo-rule"></div>`;
 }
 
 // ── Fragment builders (shared by all templates) ──────────────────────────────
@@ -465,7 +510,9 @@ export function renderReportDocument(
     : "";
 
   const visibleRows = model.patientRows.filter((r) => r.value);
-  const patientBlockHtml = template.layout.patientBlockStyle === "stacked"
+  const patientBlockHtml = letterPad
+    ? letterpadPatientBlockHtml(visibleRows)
+    : template.layout.patientBlockStyle === "stacked"
     ? stackedPatientBlockHtml(visibleRows, pal)
     : template.layout.patientBlockStyle === "grid"
     ? `<div class="patient-grid">${visibleRows
@@ -479,7 +526,9 @@ export function renderReportDocument(
     ? `<div class="critical">⚠ CRITICAL VALUE — IMMEDIATE ATTENTION REQUIRED${model.criticalNote ? `: ${escapeHtml(model.criticalNote)}` : ""}</div>`
     : "";
 
-  const stampHtml = `<div class="stamp ${model.stamp.kind}">${escapeHtml(model.stamp.label)}</div>`;
+  const stampHtml = model.stamp.label
+    ? `<div class="stamp ${model.stamp.kind}">${escapeHtml(model.stamp.label)}</div>`
+    : "";
 
   const bodyHtml = model.bodyHtml
     ? `<div class="body">${model.bodyHtml}</div>`
@@ -505,13 +554,11 @@ export function renderReportDocument(
   const overflowBlock = overflowImages.length > 0
     ? keyImagesHtml(overflowImages, "inline", { heading: "KEY IMAGES (continued)", extraClass: "image-panel-overflow" })
     : "";
-  const letterPadAddress = (model.clinic.address || "").trim() || CARE_LETTERPAD.address;
-  const letterPadPhone = (model.clinic.phone || "").trim() || `Phone: ${CARE_LETTERPAD.phones}`;
+  const letterPadAddress = CARE_LETTERPAD.address;
+  const letterPadPhone = `Phone: ${CARE_LETTERPAD.phones}`;
   const letterPadEmail = (model.clinic.email || "").trim() || CARE_LETTERPAD.email;
-  const letterPadName = (model.clinic.name || "").trim() || CARE_LETTERPAD.clinicName;
-  const letterPadLogo = headerCfg.showLogo
-    ? (model.clinic.logoDataUrl || CARE_LETTERPAD.logoSrc)
-    : "";
+  const letterPadName = CARE_LETTERPAD.clinicName;
+  const letterPadLogo = headerCfg.showLogo ? careLetterheadLogoDataUrl() : "";
   const letterPadHeaderHtml = headerCfg.show ? `<div class="hdr">
       <div class="hdr-inner logo-pos-left letterpad-bill">
         ${letterPadLogo
@@ -823,6 +870,17 @@ export function renderReportDocument(
     .image-panel-keyrail .image-panel-heading { color: #fff; border-bottom-color: #3b82f6; letter-spacing: 0.12em; }
     .image-panel-keyrail .image-caption { background: #1e3a8a; }
     .letterpad .signame { color: #b91c1c; font-size: 11pt; }
+    .letterpad .reportno { display: none; }
+    .letterpad-demo { width: 100%; border-collapse: collapse; margin: 2px 0 0; font-size: 11px; color: #111; text-transform: uppercase; }
+    .letterpad-demo td { padding: 1px 0; vertical-align: top; }
+    .letterpad-demo .ld-left { text-align: left; width: 58%; }
+    .letterpad-demo .ld-right { text-align: left; width: 42%; }
+    .letterpad-demo-wrap { background: transparent; border: none; padding: 2px 0 0; border-radius: 0; margin-bottom: 0; }
+    .letterpad-demo-rule { border: none; border-top: 2.2px solid #111; border-bottom: 0.9px solid #111; height: 3.2px; margin: 6px 0 8px; }
+    .letterpad-sheet { width: 100%; border-collapse: collapse; }
+    .letterpad-sheet > thead > tr > td,
+    .letterpad-sheet > tbody > tr > td,
+    .letterpad-sheet > tfoot > tr > td { padding: 0; border: none; vertical-align: top; }
     .letterpad-services { background: #0f2d6e; color: #fff; text-align: center; padding: 6px 8px; font-size: 6.5px; font-weight: 700; letter-spacing: 0.04em; line-height: 1.45; margin-top: 14px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     .letterpad-disclaimer { font-size: 7.5px; color: #334155; text-align: center; padding: 6px 12px 4px; font-style: italic; }
     .letterpad-footer-block { break-inside: avoid; page-break-inside: avoid; page-break-before: avoid; }
@@ -844,12 +902,13 @@ export function renderReportDocument(
     ${model.safeguardWatermarkHtml ?? ""}
     ${draftWatermark}
     ${templateWatermark}
-    ${letterPad ? letterPadHeaderHtml : classicHeaderHtml}
+    ${letterPad ? `<table class="letterpad-sheet"><thead><tr><td>
+    ${letterPadHeaderHtml}
+    <div class="patient-section letterpad-demo-wrap">${patientBlockHtml}</div>
+    </td></tr></thead><tbody><tr><td>` : `${classicHeaderHtml}
     <span class="reportno">Report #: ${escapeHtml(model.reportNumber)}</span>
+    <div class="patient-section">${patientBlockHtml}</div>`}
     <div class="study-title-bar">${escapeHtml(model.studyTitle)}</div>
-    <div class="patient-section">
-      ${patientBlockHtml}
-    </div>
     ${model.safeguardBannerHtml ?? ""}
     ${criticalBanner}
     <div class="content-area${sidePanel ? " has-side-images" : ""}">
@@ -865,7 +924,7 @@ export function renderReportDocument(
     ${overflowBlock}
     ${signatureCfg.show ? `<div class="sigs">${signaturesHtml(letterPad ? letterPadSignatures : model.signatures, signatureCfg.showImage)}</div>` : ""}
     ${qrHtml}
-    ${letterPad ? letterPadFooterHtml : classicFooterHtml}
+    ${letterPad ? `</td></tr></tbody><tfoot><tr><td>${letterPadFooterHtml}</td></tr></tfoot></table>` : classicFooterHtml}
   </div>
   ${model.autoPrint ? `<script>window.onload=()=>{setTimeout(()=>window.print(),250);}</script>` : ""}
   </body></html>`;

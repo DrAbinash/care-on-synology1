@@ -258,7 +258,7 @@ import "@/lib/copilotUsgCompanionModule";
 
 import {
   Lock, AlertTriangle, ChevronLeft, ChevronRight, Pause, Clock, Sparkles, ShieldCheck,
-  Brain, Activity, Zap, Printer, FileDown, Share2, Eye, PanelLeftClose, PanelLeftOpen,
+  Brain, Activity, Zap, Share2, Eye, PanelLeftClose, PanelLeftOpen,
   PanelRightClose, PanelRightOpen,
   CheckCircle2,
   Maximize2, Columns2, Monitor, Archive, Keyboard, AppWindow, MessageCircle, Hospital,
@@ -1861,8 +1861,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     setExportingWord(true);
     try {
       let html = previewHtml;
-      // Premium: prefer server-rendered clinic layout when a draft/report exists.
-      if (reportLayout === "care-premium" && (draftId || linkedReportIdRef.current)) {
+      // Prefer server-rendered letter-pad layout when a draft/report exists.
+      if ((reportLayout === "care-premium" || reportLayout === "care-classic") && (draftId || linkedReportIdRef.current)) {
         try {
           const templateQs = `template=${encodeURIComponent(reportLayout)}`;
           const reportId = linkedReportIdRef.current;
@@ -1876,7 +1876,13 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         }
       }
       const fileName = `${safeFileNamePart(workflow.currentRow?.patientName ?? "patient")}_${safeFileNamePart(workflow.currentRow?.accessionNumber ?? "report")}`;
-      await exportRadiologyReportToWord(html, fileName);
+      await exportRadiologyReportToWord(html, fileName, {
+        patientName: canonicalDemography.patientName,
+        age: canonicalDemography.age,
+        sex: canonicalDemography.sex,
+        referringDoctor: canonicalDemography.referringDoctor,
+        studyDate: canonicalDemography.studyDate,
+      });
     } catch (err) {
       toast({
         title: "Export failed",
@@ -1886,7 +1892,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     } finally {
       setExportingWord(false);
     }
-  }, [workflow.currentRow, previewHtml, toast, reportLayout, draftId]);
+  }, [workflow.currentRow, previewHtml, toast, reportLayout, draftId, canonicalDemography]);
 
   const handleExportPdf = useCallback(async () => {
     setExportingPdf(true);
@@ -2363,14 +2369,6 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
           {/* Save button */}
           <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => void saveDraft()} disabled={!isOnline}>
             <ShieldCheck className="h-3.5 w-3.5 mr-1" /> Save
-          </Button>
-          {/* Word export */}
-          <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => void handleExportWord()} disabled={exportingWord} title="Export Word (same layout as preview)">
-            <FileDown className="h-3.5 w-3.5 mr-1" /> {exportingWord ? "…" : "Word"}
-          </Button>
-          {/* PDF export */}
-          <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => void handleExportPdf()} disabled={exportingPdf} title="Export PDF with selected images + clinic branding">
-            <Printer className="h-3.5 w-3.5 mr-1" /> {exportingPdf ? "…" : "PDF"}
           </Button>
           {/* WhatsApp share */}
           <Button

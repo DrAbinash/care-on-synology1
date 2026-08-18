@@ -297,4 +297,58 @@ describe.skipIf(!hasChromium())("premium print layout (Chromium)", () => {
       await browser.close();
     }
   }, 90_000);
+
+  it("Premchand-style Classic print has letter-pad header + NAME/AGE demography", async () => {
+    const src = await mriLikeJpeg();
+    const html = renderReportDocument(
+      {
+        ...modelWithImages(
+          [
+            { src, caption: "T2 SAG", displayOrder: 0, framing: { zoom: 1.4, offsetX: 0, offsetY: 0, fitMode: "cover" } },
+            { src, caption: "T2 AX", displayOrder: 1, framing: { zoom: 1.4, offsetX: 0, offsetY: 0, fitMode: "cover" } },
+          ],
+          `<div class="section-heading">Clinical History</div><p>NECK PAIN. CERVICAL RADICULOPATHY.</p>
+<div class="section-heading">Technique</div><p>MRI Cervical Spine: T1W and T2W sagittal.</p>
+<div class="section-heading">Findings</div><p>Cervical lordosis maintained. Craniovertebral junction normal.</p>
+<div class="section-heading">Impression</div><ol><li>Normal MRI Cervical Spine.</li></ol>`,
+        ),
+        studyTitle: "MRI LS SPINE WITH CERVICAL SPINE",
+        clinic: { name: "WRONG", address: "WRONG ADDRESS", phone: "0000000000", email: "care.deoghar@gmail.com" },
+        patientRows: [
+          { label: "Patient", value: "Premchand Mandal" },
+          { label: "Age / Sex", value: "4 YRS / M" },
+          { label: "Referring Doctor", value: "Dr. Tushar Jyoti (Ortho), MS" },
+          { label: "Study Date", value: "20260818" },
+        ],
+        stamp: { kind: "pending", label: "" },
+        impression: undefined,
+        draftWatermark: false,
+      },
+      resolvePresentationTemplate("care-classic"),
+    );
+    expect(html).toContain("St. Francis School Road");
+    expect(html).toContain("NAME:");
+    expect(html).toContain("Premchand Mandal");
+    expect(html).toContain("18/08/2026");
+    expect(html).not.toContain("WRONG ADDRESS");
+    expect(html).toContain("letterpad-sheet");
+    expect(html).not.toContain("PREVIEW (unsigned)");
+
+    const browser = await chromium.launch({ args: ["--no-sandbox", "--disable-setuid-sandbox"] });
+    try {
+      const page = await browser.newPage();
+      await page.emulateMedia({ media: "print" });
+      await page.setViewportSize({ width: 794, height: 1123 });
+      await page.setContent(html, { waitUntil: "networkidle" });
+      mkdirSync(ARTIFACT_DIR, { recursive: true });
+      await page.screenshot({
+        path: `${ARTIFACT_DIR}/premchand_letterpad_print_page1.png`,
+        fullPage: false,
+      });
+      const pdf = await page.pdf({ printBackground: true, preferCSSPageSize: true });
+      writeFileSync(`${ARTIFACT_DIR}/premchand_letterpad_print.pdf`, pdf);
+    } finally {
+      await browser.close();
+    }
+  }, 90_000);
 });
