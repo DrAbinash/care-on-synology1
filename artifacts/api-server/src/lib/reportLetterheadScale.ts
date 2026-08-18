@@ -4,10 +4,9 @@
  *
  * These are NOT template defaults: reportPresentation.ts keeps its byte-stable
  * seed CSS, and this module produces an EXTRA `customCss` fragment (all rules
- * `!important`) that is appended LAST so it wins by cascade order. Both the
- * finalized-report render path (patient-reports.ts) and the draft print-preview
- * path (radiology-report-generator.ts) call buildLetterheadScaleCss so drafts
- * and finals size identically.
+ * `!important`) that is appended LAST so it wins by cascade order. Draft and
+ * final print paths call buildReportSurfaceCss, which skips this fragment for
+ * CARE letter-pad templates (logo/address come from definition.letterhead).
  *
  * The three inputs come from pacs_settings key/value rows (no schema change).
  * Defaults ship BIGGER than the historical seed sizes ("large") so the

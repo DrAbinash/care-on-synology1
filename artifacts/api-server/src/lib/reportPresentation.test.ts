@@ -5,6 +5,7 @@ import {
   type ReportDocumentModel,
 } from "./reportPresentation";
 import { renderedPathForReference, viewportForImageCount } from "./reportImages";
+import { buildLetterheadScaleCss } from "./reportLetterheadScale";
 
 // Ticket R1.1 — THE shared presentation layer. Every rendered surface flows
 // through renderReportDocument, so its layout/typography/page-break contract
@@ -507,9 +508,28 @@ describe("letter-pad header contact is the printed pad, not clinic CRM copy", ()
       resolvePresentationTemplate("care-classic"),
     );
     expect(html).toContain("St. Francis School Road");
+    expect(html).toContain("Castair&#39;s Town");
     expect(html).toContain("DEOGHAR-814 112");
-    expect(html).toContain("info@clinic.com");
+    expect(html).toContain("99734 97200");
+    expect(html).toContain("care.deoghar@gmail.com");
+    expect(html).not.toContain("CARE.DEOGHAR@GMAIL.COM");
+    expect(html).toContain("www.caredeoghar.com");
+    expect(html).not.toContain("info@clinic.com");
     expect(html).not.toContain("• info@clinic.com");
+    expect(html).toMatch(/DEOGHAR-814 112<br\/>\s*\(JHARKHAND\)/);
+    expect(html).toContain("font-size: 7.2pt !important");
+    expect(html).toContain("height: 22mm !important");
+  });
+
+  it("ERP PDF header lock wins over square letterhead-scale CSS", () => {
+    const html = renderReportDocument(
+      baseModel({ clinic: { name: "Care Diagnostics", phone: "", email: "info@clinic.com" } }),
+      resolvePresentationTemplate("care-classic"),
+      { customCss: buildLetterheadScaleCss() },
+    );
+    expect(html).toContain("height: 82px !important");
+    expect(html.indexOf("height: 22mm !important")).toBeGreaterThan(html.indexOf("height: 82px !important"));
+    expect(html.indexOf("font-size: 7.2pt !important")).toBeGreaterThan(html.indexOf("font-size: 12.5px !important"));
   });
 
   it("clinic phone does not replace the printed pad numbers", () => {
@@ -519,6 +539,28 @@ describe("letter-pad header contact is the printed pad, not clinic CRM copy", ()
     );
     expect(html).toContain("75490 99099");
     expect(html).not.toContain("06432-1234 • info@clinic.com");
+  });
+
+  it("template letterhead copy is the source of truth for Classic HTML", () => {
+    const seed = seedByKey("care-classic")!;
+    const compiled = compileTemplate({
+      ...seed,
+      definition: {
+        ...seed.definition,
+        letterhead: {
+          ...seed.definition.letterhead!,
+          email: "desk@caredeoghar.com",
+          website: "www.example-clinic.in",
+          addressFontSize: "8pt",
+        },
+      },
+    });
+    const html = renderReportDocument(baseModel(), compiled);
+    expect(html).toContain("desk@caredeoghar.com");
+    expect(html).toContain("www.example-clinic.in");
+    expect(html).not.toContain("care.deoghar@gmail.com");
+    expect(html).toContain("font-size: 8pt !important");
+    expect(compileTemplate(seed).letterhead?.email).toBe("care.deoghar@gmail.com");
   });
 });
 

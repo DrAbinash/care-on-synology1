@@ -61,14 +61,13 @@ import {
 import { resolveTemplateForRender } from "../lib/presentationTemplateStore";
 import { parseImageFraming, serializeImageFraming } from "../lib/imageFraming";
 import {
-  buildLetterheadScaleCss,
   REPORT_HEADER_SCALE_KEY,
   REPORT_LOGO_SCALE_KEY,
   REPORT_FOOTER_SCALE_KEY,
 } from "../lib/reportLetterheadScale";
 import {
   applyInstitutionalTemplateOverrides,
-  buildInstitutionalStyleCss,
+  buildReportSurfaceCss,
 } from "../lib/institutionalReportStyle";
 import { resolveDraftKeyImages } from "../lib/reportImages";
 import { reconcileAccessionVsReferringDoctor } from "../lib/pacs/dicomNameNormalize";
@@ -2078,7 +2077,8 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
   }
   const template = applyInstitutionalTemplateOverrides(baseTemplate, instStyle);
 
-  // pacs letterhead scale first; institutional Style settings last so they win.
+  // pacs letterhead scale + Style chrome apply to clinic-branded templates.
+  // CARE letter-pad (Classic/Premium) reads logo/address from the template.
   let customCss = "";
   try {
     const scaleRows = await db.select({ key: pacsSettingsTable.key, value: pacsSettingsTable.value })
@@ -2088,15 +2088,14 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
         eq(pacsSettingsTable.category, "report"),
       ));
     const scaleVal = (k: string) => scaleRows.find((row) => row.key === k)?.value;
-    customCss += buildLetterheadScaleCss({
+    customCss += buildReportSurfaceCss(template, instStyle, {
       headerScale: scaleVal(REPORT_HEADER_SCALE_KEY),
       logoScale: scaleVal(REPORT_LOGO_SCALE_KEY),
       footerScale: scaleVal(REPORT_FOOTER_SCALE_KEY),
     });
   } catch {
-    customCss += buildLetterheadScaleCss();
+    customCss += buildReportSurfaceCss(template, instStyle);
   }
-  customCss += buildInstitutionalStyleCss(instStyle);
 
   res.setHeader("Content-Type", "text/html; charset=utf-8");
   res.setHeader("Cache-Control", "no-store");

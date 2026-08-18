@@ -24,6 +24,7 @@ import ReportLayoutQuickSelect, {
   type ReportLayoutKey,
   quickSelectLayoutKey,
 } from "@/components/radiology/ReportLayoutQuickSelect";
+import { DEFAULT_CARE_LETTERPAD, type CareLetterpadChrome } from "@/lib/careLetterpadChrome";
 
 type CopyType = "standard" | "patient" | "referrer";
 
@@ -68,6 +69,7 @@ interface TemplateDefinition {
   watermark: { enabled: boolean; text: string };
   qr: { show: boolean };
   pageBreaks: { orphans: number; widows: number };
+  letterhead?: CareLetterpadChrome;
 }
 
 interface TemplateEntry {
@@ -310,7 +312,15 @@ function TemplateEditor({ base, asNewKey, safeFonts, slots, onClose, onSaved }: 
   const [displayName, setDisplayName] = useState(asNewKey ? `${base.displayName} Copy` : base.displayName);
   const [newKey, setNewKey] = useState(asNewKey ? `${base.templateKey}-copy` : base.templateKey);
   const [copyType, setCopyType] = useState<CopyType>(base.copyType);
-  const [def, setDef] = useState<TemplateDefinition>(() => JSON.parse(JSON.stringify(base.definition)));
+  const [def, setDef] = useState<TemplateDefinition>(() => {
+    const cloned = JSON.parse(JSON.stringify(base.definition)) as TemplateDefinition;
+    if (!cloned.letterhead) {
+      cloned.letterhead = (base.templateKey === "care-classic" || base.templateKey === "care-premium")
+        ? { ...DEFAULT_CARE_LETTERPAD }
+        : { kind: "clinic" };
+    }
+    return cloned;
+  });
   const [openSlot, setOpenSlot] = useState<string | null>(null);
   const [issues, setIssues] = useState<ValidationIssue[]>([]);
   const [saving, setSaving] = useState(false);
@@ -487,6 +497,57 @@ function TemplateEditor({ base, asNewKey, safeFonts, slots, onClose, onSaved }: 
             </label>
           ))}
         </div>
+      </div>
+
+      {/* Letter-pad chrome — source of truth for Classic/Premium printed header */}
+      <div className="space-y-2 rounded border bg-background p-2" data-testid="letterhead-editor">
+        <span className="text-[11px] font-medium">Letter-pad header</span>
+        <p className="text-[10px] text-muted-foreground">
+          CARE Classic / Premium use this block for the printed pad (logo size, St. Francis address, email, website).
+          Clinic-branded templates keep CRM branding when kind is “clinic”.
+        </p>
+        <div className="grid md:grid-cols-3 gap-2">
+          <div>
+            <label className="text-[10px] text-muted-foreground">Kind</label>
+            <select
+              className="w-full h-7 text-[11px] border rounded px-1 bg-background"
+              value={def.letterhead?.kind ?? "clinic"}
+              onChange={(e) => {
+                const kind = e.target.value as CareLetterpadChrome["kind"];
+                setDef((d) => ({
+                  ...d,
+                  letterhead: kind === "care-letterpad"
+                    ? { ...DEFAULT_CARE_LETTERPAD, ...d.letterhead, kind }
+                    : { kind: "clinic" },
+                }));
+              }}
+              data-testid="letterhead-kind"
+            >
+              <option value="care-letterpad">CARE letter-pad (ERP PDF header)</option>
+              <option value="clinic">Clinic branding</option>
+            </select>
+          </div>
+        </div>
+        {def.letterhead?.kind === "care-letterpad" && (
+          <div className="grid md:grid-cols-2 gap-2">
+            <LabeledInput label="Address line 1" value={def.letterhead.addressLine1 ?? ""}
+              onChange={(v) => setDef((d) => ({ ...d, letterhead: { ...d.letterhead, kind: "care-letterpad", addressLine1: v } }))} />
+            <LabeledInput label="Address line 2" value={def.letterhead.addressLine2 ?? ""}
+              onChange={(v) => setDef((d) => ({ ...d, letterhead: { ...d.letterhead, kind: "care-letterpad", addressLine2: v } }))} />
+            <LabeledInput label="Phones" value={def.letterhead.phones ?? ""}
+              onChange={(v) => setDef((d) => ({ ...d, letterhead: { ...d.letterhead, kind: "care-letterpad", phones: v } }))} />
+            <LabeledInput label="Email (lowercase)" value={def.letterhead.email ?? ""}
+              onChange={(v) => setDef((d) => ({ ...d, letterhead: { ...d.letterhead, kind: "care-letterpad", email: v } }))} />
+            <LabeledInput label="Website (no http://)" value={def.letterhead.website ?? ""}
+              onChange={(v) => setDef((d) => ({ ...d, letterhead: { ...d.letterhead, kind: "care-letterpad", website: v } }))} />
+            <LabeledInput label="Logo height (e.g. 22mm)" value={def.letterhead.logoHeight ?? ""}
+              onChange={(v) => setDef((d) => ({ ...d, letterhead: { ...d.letterhead, kind: "care-letterpad", logoHeight: v } }))} />
+            <LabeledInput label="Address font (e.g. 7.2pt)" value={def.letterhead.addressFontSize ?? ""}
+              onChange={(v) => setDef((d) => ({ ...d, letterhead: { ...d.letterhead, kind: "care-letterpad", addressFontSize: v } }))} />
+            <LabeledInput label="Clinic name" value={def.letterhead.clinicName ?? ""}
+              onChange={(v) => setDef((d) => ({ ...d, letterhead: { ...d.letterhead, kind: "care-letterpad", clinicName: v } }))} />
+          </div>
+        )}
       </div>
 
       {issues.length > 0 && (

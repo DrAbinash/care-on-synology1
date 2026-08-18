@@ -13,6 +13,12 @@
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
 import { CARE_LETTERHEAD_LOGO_DATA_URL, CARE_LETTERHEAD_LOGO_SIZE } from "./careLetterheadLogo";
+import {
+  resolveCareLetterpadChrome,
+  parseMeasurementMm,
+  parseMeasurementPt,
+  type CareLetterpadChrome,
+} from "./careLetterpadChrome";
 
 export type PrintSettings = {
   paperSize: "A4" | "A5" | "Letter";
@@ -189,9 +195,6 @@ const CARE_LETTER_COLORS: Array<[number, number, number]> = [
   [249, 115, 22],  // E — orange
 ];
 
-const DEFAULT_ADDRESS =
-  "Near Bajla Mahila College, St. Francis School Road, Castair's Town, DEOGHAR-814 112 (JHARKHAND)";
-
 function formatReportDateShort(raw: string | null | undefined): string {
   if (!raw) return "";
   const digits = raw.replace(/\D/g, "");
@@ -334,7 +337,7 @@ export function generateReportPDF(
   report: ReportData,
   settings: PrintSettings,
   clinic: PrintClinic,
-  opts?: { save?: boolean },
+  opts?: { save?: boolean; letterhead?: CareLetterpadChrome },
 ): jsPDF {
   const fmt = settings.paperSize;
   const sizes: Record<string, number[]> = {
@@ -361,6 +364,10 @@ export function generateReportPDF(
 
   let y = m.top;
 
+  const pad = resolveCareLetterpadChrome(opts?.letterhead);
+  const addrPt = parseMeasurementPt(pad.addressFontSize) ?? 7.2;
+  const logoMm = parseMeasurementMm(pad.logoHeight) ?? 22;
+
   const drawLetterPadChrome = (): number => {
     let cursor = m.top;
     if (settings.header.enabled) {
@@ -368,13 +375,12 @@ export function generateReportPDF(
       const rightX = pageW - m.right;
       let headerBottom = cursor;
       let logoDrawn = false;
-      let logoW = 0;
-      let logoH = 22;
+      let logoH = logoMm;
 
       try {
         const aspect = CARE_LETTERHEAD_LOGO_SIZE.width / CARE_LETTERHEAD_LOGO_SIZE.height;
-        logoH = 22;
-        logoW = Math.min(contentW * 0.52, logoH * aspect);
+        logoH = logoMm;
+        const logoW = Math.min(contentW * 0.52, logoH * aspect);
         doc.addImage(CARE_LETTERHEAD_LOGO_DATA_URL, "PNG", leftX, cursor, logoW, logoH, undefined, "NONE");
         headerBottom = cursor + logoH;
         logoDrawn = true;
@@ -398,28 +404,26 @@ export function generateReportPDF(
         doc.setTextColor(15, 23, 70);
         doc.text("DIAGNOSTICS", leftX, careY + 5.5);
         headerBottom = careY + 8;
-        logoW = 48;
       }
 
       doc.setFont(font, "normal");
-      doc.setFontSize(7.2);
+      doc.setFontSize(addrPt);
       doc.setTextColor(20, 20, 20);
-      const address = DEFAULT_ADDRESS;
-      const addrMaxW = Math.max(52, contentW - logoW - 8);
-      const addrLines = doc.splitTextToSize(address, addrMaxW) as string[];
+      const addrLines = [pad.addressLine1, pad.addressLine2];
       let ay = cursor + 4;
       for (const line of addrLines) {
         doc.text(line, rightX, ay, { align: "right" });
         ay += 3.1;
       }
-      const phones = "Phone: 75490 99099, 99734 97200";
-      const email = clinic?.email?.trim()
-        ? `Email: ${clinic.email.trim()}`
-        : "Email: care.deoghar@gmail.com";
-      doc.setFontSize(7.2);
+      const phones = `Phone: ${pad.phones}`;
+      const email = `Email: ${pad.email}`;
+      const website = pad.website;
+      doc.setFontSize(addrPt);
       doc.text(phones, rightX, ay, { align: "right" });
       ay += 3.1;
       doc.text(email, rightX, ay, { align: "right" });
+      ay += 3.1;
+      doc.text(website, rightX, ay, { align: "right" });
       headerBottom = Math.max(headerBottom, ay);
       doc.setDrawColor(20);
       doc.setLineWidth(0.35);
@@ -635,7 +639,9 @@ export function generateReportPDF(
   const pageCount = doc.getNumberOfPages();
   for (let i = 1; i <= pageCount; i++) {
     doc.setPage(i);
-    const serviceLines = (settings.footer.servicesBar || "")
+    const serviceLines = (pad.servicesRow1 && pad.servicesRow2
+      ? `${pad.servicesRow1}\n${pad.servicesRow2}`
+      : settings.footer.servicesBar || "")
       .split(/\n+/)
       .map((s) => s.trim())
       .filter(Boolean);
@@ -653,12 +659,12 @@ export function generateReportPDF(
         doc.text(line, pageW / 2, startY + idx * rowGap, { align: "center", maxWidth: pageW - 6 });
       });
     }
-    if (settings.footer.enabled && settings.footer.disclaimer) {
+    if (settings.footer.enabled && (pad.disclaimer || settings.footer.disclaimer)) {
       doc.setFont(font, "normal");
       doc.setFontSize(fs.disclaimer - 0.3);
       doc.setTextColor(30, 30, 30);
       const discY = barY + barH + 3.0;
-      const discLines = doc.splitTextToSize(settings.footer.disclaimer, contentW) as string[];
+      const discLines = doc.splitTextToSize(pad.disclaimer || settings.footer.disclaimer, contentW) as string[];
       doc.text(discLines, pageW / 2, discY, { align: "center" });
     }
     if (settings.footer.enabled && settings.footer.showPageNumber) {

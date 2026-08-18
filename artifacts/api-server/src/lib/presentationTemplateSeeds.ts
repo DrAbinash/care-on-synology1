@@ -13,6 +13,7 @@
 import {
   type CopyType, type TemplateDefinition, type TemplateVersionRecord,
 } from "./presentationTemplateModel";
+import { CARE_LETTERPAD_TEMPLATE_FIELDS } from "./careLetterheadChrome";
 
 const SEGOE = "'Segoe UI', Helvetica, Arial, sans-serif";
 const GEORGIA = "Georgia, 'Times New Roman', serif";
@@ -60,6 +61,7 @@ export const PRESENTATION_TEMPLATE_SEEDS: TemplateVersionRecord[] = [
     watermark: { enabled: false, text: "" },
     qr: { show: true },
     pageBreaks: { orphans: 3, widows: 3 },
+    letterhead: { ...CARE_LETTERPAD_TEMPLATE_FIELDS },
   }),
 
   // ── care-premium — the R1.1 premium layout, unchanged ─────────────────────
@@ -90,6 +92,7 @@ export const PRESENTATION_TEMPLATE_SEEDS: TemplateVersionRecord[] = [
     watermark: { enabled: false, text: "" },
     qr: { show: true },
     pageBreaks: { orphans: 3, widows: 3 },
+    letterhead: { ...CARE_LETTERPAD_TEMPLATE_FIELDS },
   }),
 
   // ── care-v2 — refreshed CARE identity (teal), same canonical layout ──────
