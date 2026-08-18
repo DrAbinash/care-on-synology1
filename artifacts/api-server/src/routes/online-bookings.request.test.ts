@@ -27,6 +27,8 @@ describe.skipIf(!dbAvailable)("Online booking reception + slot capacity — requ
   let adminToken: string;
   let adminUserId: number;
   let savedSettings: { onlineBookingEnabled: boolean; onlineBookingAllowedTestIds: string; bookingTimeSlots: string } | null = null;
+  let settingsRowId: number | null = null;
+  let insertedSettings = false;
   const date = "2099-06-15";
   const slot = "10:00 – 11:00";
 
@@ -34,22 +36,46 @@ describe.skipIf(!dbAvailable)("Online booking reception + slot capacity — requ
     app = await createTestApp();
     fx = await seedBillingFixture();
 
-    const [settings] = await db.select().from(clinicSettingsTable).limit(1);
-    savedSettings = settings
-      ? {
-          onlineBookingEnabled: settings.onlineBookingEnabled,
-          onlineBookingAllowedTestIds: settings.onlineBookingAllowedTestIds,
-          bookingTimeSlots: settings.bookingTimeSlots,
-        }
-      : null;
-
-    await db.update(clinicSettingsTable).set({
+    const bookingPatch = {
       onlineBookingEnabled: true,
       onlineBookingAllowedTestIds: JSON.stringify([fx.testId]),
       bookingTimeSlots: JSON.stringify([
         { value: slot, label: "Late morning test slot", maxBookings: 1 },
       ]),
-    });
+    };
+
+    const [settings] = await db
+      .select({
+        id: clinicSettingsTable.id,
+        onlineBookingEnabled: clinicSettingsTable.onlineBookingEnabled,
+        onlineBookingAllowedTestIds: clinicSettingsTable.onlineBookingAllowedTestIds,
+        bookingTimeSlots: clinicSettingsTable.bookingTimeSlots,
+      })
+      .from(clinicSettingsTable)
+      .limit(1);
+    if (settings) {
+      settingsRowId = settings.id;
+      savedSettings = {
+        onlineBookingEnabled: settings.onlineBookingEnabled,
+        onlineBookingAllowedTestIds: settings.onlineBookingAllowedTestIds,
+        bookingTimeSlots: settings.bookingTimeSlots,
+      };
+      await db.update(clinicSettingsTable).set(bookingPatch).where(eq(clinicSettingsTable.id, settings.id));
+    } else {
+      // CI db:bootstrap creates the table but does not seed clinic_settings
+      // (that insert happens on API boot, which request tests skip).
+      const [inserted] = await db.insert(clinicSettingsTable).values(bookingPatch).returning();
+      settingsRowId = inserted.id;
+      insertedSettings = true;
+    }
+
+    const [enabled] = await db
+      .select({ onlineBookingEnabled: clinicSettingsTable.onlineBookingEnabled })
+      .from(clinicSettingsTable)
+      .limit(1);
+    if (!enabled?.onlineBookingEnabled) {
+      throw new Error("online booking stayed disabled after test setup (clinic_settings missing or update no-op)");
+    }
 
     const marker = fx.marker;
     const [admin] = await db.insert(usersTable).values({
@@ -77,8 +103,10 @@ describe.skipIf(!dbAvailable)("Online booking reception + slot capacity — requ
     await db.delete(onlineBookingsTable).where(eq(onlineBookingsTable.selectedDate, date)).catch(() => {});
     if (adminToken) await db.delete(portalSessionsTable).where(eq(portalSessionsTable.token, adminToken)).catch(() => {});
     if (adminUserId) await db.delete(usersTable).where(eq(usersTable.id, adminUserId)).catch(() => {});
-    if (savedSettings) {
-      await db.update(clinicSettingsTable).set(savedSettings);
+    if (insertedSettings && settingsRowId) {
+      await db.delete(clinicSettingsTable).where(eq(clinicSettingsTable.id, settingsRowId)).catch(() => {});
+    } else if (savedSettings && settingsRowId) {
+      await db.update(clinicSettingsTable).set(savedSettings).where(eq(clinicSettingsTable.id, settingsRowId));
     }
     await fx?.cleanup();
   }, 60_000);
