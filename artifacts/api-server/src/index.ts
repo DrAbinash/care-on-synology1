@@ -1765,6 +1765,7 @@ async function runStartupMigrations(): Promise<void> {
       );
       CREATE INDEX IF NOT EXISTS rad_img_refs_draft_idx ON radiology_image_references(draft_id);
       CREATE INDEX IF NOT EXISTS rad_img_refs_study_idx ON radiology_image_references(study_id);
+      ALTER TABLE radiology_image_references ADD COLUMN IF NOT EXISTS presentation_json TEXT NOT NULL DEFAULT '{}';
 
       -- ── USG enterprise additions (Phase 5+) ───────────────────────────────
       ALTER TABLE usg_report_drafts ADD COLUMN IF NOT EXISTS verified_by      TEXT;

@@ -327,8 +327,8 @@ export default function ReportExportPanel({
             <iframe
               title="Enlarged report layout preview"
               srcDoc={displayHtml}
-              className="w-full min-h-[1122px] bg-white shadow-md mx-auto border-0 pointer-events-none"
-              style={{ zoom: previewZoom }}
+              className="bg-white shadow-md mx-auto border-0 pointer-events-none block"
+              style={{ zoom: previewZoom, width: 794, height: 1123, minHeight: 1123 }}
               data-testid="report-layout-preview-enlarged"
               tabIndex={-1}
             />

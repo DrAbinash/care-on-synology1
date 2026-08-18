@@ -33,6 +33,7 @@ describe("ReportExportPanel — enlarge preview before finalize", () => {
     expect(src).toContain('data-testid="report-layout-preview-scroll"');
     expect(src).toContain("overflow-y-auto");
     expect(src).toMatch(/report-layout-preview-enlarged[\s\S]{0,200}pointer-events-none|pointer-events-none[\s\S]{0,200}report-layout-preview-enlarged/);
+    expect(src).toMatch(/width:\s*794/);
   });
 
   it("scrolls the compact Classic/Premium preview on an outer pane (not the iframe)", () => {
