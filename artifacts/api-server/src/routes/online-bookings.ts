@@ -1,30 +1,32 @@
 import { Router } from "express";
 import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
+import { FULL_ACCESS_ROLES, normalizeRole } from "../middleware/requireStaffAuth";
 import { db } from "@workspace/db";
 import { PaymentEngine } from "../lib/payments/PaymentEngine";
 import {
   onlineBookingsTable,
   patientsTable,
-  ordersTable,
-  orderTestsTable,
   testsTable,
   packagesTable,
-  packageTestsTable,
-  billsTable,
-  paymentsTable,
   clinicSettingsTable,
 } from "@workspace/db/schema";
-import { eq, desc, and, or, ilike, sql, inArray } from "drizzle-orm";
-import { generateBillNumber } from "./bills";
+import { eq, desc, and, or, ilike, inArray } from "drizzle-orm";
 import crypto from "node:crypto";
-import { calculateDobFromAge } from "./public-booking";
 import { registerPatientSelfFlow } from "../services/self-registration";
+import {
+  computeCatalogAmount,
+  createPendingOnlineBooking,
+  getSlotAvailability,
+  OnlineBookingError,
+  parseIdList,
+} from "../services/onlineBookingCreate";
+import { BOOKING_SOURCES, parseBookingTimeSlots } from "../services/onlineBookingSlots";
 
 export const onlineBookingsRouter = Router();
 
 // GET /api/online-bookings
 onlineBookingsRouter.get("/", async (req, res): Promise<void> => {
-  const { status, search, page = "1", limit = "30" } = req.query as Record<string, string>;
+  const { status, search, source, page = "1", limit = "30" } = req.query as Record<string, string>;
   const pg = Math.max(1, Number(page));
   const lim = Math.min(100, Math.max(1, Number(limit)));
   const offset = (pg - 1) * lim;
@@ -40,6 +42,9 @@ onlineBookingsRouter.get("/", async (req, res): Promise<void> => {
   const conditions = [];
   if (status && status !== "all") {
     conditions.push(eq(onlineBookingsTable.status, status));
+  }
+  if (source && source !== "all" && (BOOKING_SOURCES as readonly string[]).includes(source)) {
+    conditions.push(eq(onlineBookingsTable.source, source));
   }
   if (search?.trim()) {
     const pat = `%${search.trim().toLowerCase()}%`;
@@ -57,6 +62,156 @@ onlineBookingsRouter.get("/", async (req, res): Promise<void> => {
 
   const rows = await query;
   res.json({ bookings: rows });
+});
+
+// GET /api/online-bookings/slots — same occupancy pool as the public form.
+onlineBookingsRouter.get("/slots", async (req, res): Promise<void> => {
+  const selectedDate = String(req.query.date || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(selectedDate)) {
+    res.status(400).json({ error: "date (YYYY-MM-DD) is required." });
+    return;
+  }
+  const parseIds = (raw: unknown) =>
+    String(raw || "")
+      .split(",")
+      .map((v) => Number(v.trim()))
+      .filter((n) => Number.isInteger(n) && n > 0);
+  const result = await getSlotAvailability({
+    selectedDate,
+    testIds: parseIds(req.query.testIds),
+    packageIds: parseIds(req.query.packageIds),
+  });
+  res.json(result);
+});
+
+// GET /api/online-bookings/catalog — same whitelist website/kiosk use.
+onlineBookingsRouter.get("/catalog", async (_req, res): Promise<void> => {
+  const [settings] = await db.select().from(clinicSettingsTable).limit(1);
+  const allowedTestIds = parseIdList(settings?.onlineBookingAllowedTestIds);
+  const allowedPackageIds = parseIdList(settings?.onlineBookingAllowedPackageIds);
+  const slots = parseBookingTimeSlots(settings?.bookingTimeSlots);
+
+  const tests = allowedTestIds.length === 0
+    ? []
+    : await db
+        .select({
+          id: testsTable.id,
+          code: testsTable.code,
+          name: testsTable.name,
+          category: testsTable.category,
+          department: testsTable.department,
+          price: testsTable.price,
+        })
+        .from(testsTable)
+        .where(and(eq(testsTable.isActive, true), inArray(testsTable.id, allowedTestIds)));
+
+  const packages = allowedPackageIds.length === 0
+    ? []
+    : await db
+        .select({
+          id: packagesTable.id,
+          code: packagesTable.packageCode,
+          name: packagesTable.name,
+          price: packagesTable.price,
+        })
+        .from(packagesTable)
+        .where(and(eq(packagesTable.isActive, true), inArray(packagesTable.id, allowedPackageIds)));
+
+  res.json({
+    tests,
+    packages,
+    slots,
+    vipQueueEnabled: Boolean(settings?.vipQueueEnabled),
+    vipPercentage: Number(settings?.vipPercentage || 50),
+    onlineBookingEnabled: Boolean(settings?.onlineBookingEnabled),
+  });
+});
+
+// POST /api/online-bookings — reception/phone booking through the same pipeline.
+onlineBookingsRouter.post("/", async (req: StaffAuthRequest, res): Promise<void> => {
+  const body = (req.body || {}) as Record<string, unknown>;
+  const sourceRaw = String(body.source || "reception");
+  if (sourceRaw !== "reception" && sourceRaw !== "phone") {
+    res.status(400).json({ error: "source must be reception or phone." });
+    return;
+  }
+
+  const overrideCapacity = Boolean(body.overrideCapacity);
+  if (overrideCapacity) {
+    const role = normalizeRole(req.staffSession?.role || "");
+    if (!FULL_ACCESS_ROLES.has(role)) {
+      res.status(403).json({ error: "Only an admin can override a full slot." });
+      return;
+    }
+  }
+
+  let name = String(body.name || "").trim();
+  let phone = String(body.phone || "").trim();
+  let gender = String(body.gender || "").trim();
+  let ageValue = Number(body.ageValue);
+  let ageUnit = String(body.ageUnit || "years");
+  let email = String(body.email || "").trim();
+  let patientId = body.patientId != null ? Number(body.patientId) : null;
+
+  if (patientId && Number.isInteger(patientId) && patientId > 0) {
+    const [patient] = await db.select().from(patientsTable).where(eq(patientsTable.id, patientId)).limit(1);
+    if (!patient) {
+      res.status(404).json({ error: "Patient not found." });
+      return;
+    }
+    if (!name) name = `${patient.firstName} ${patient.lastName}`.trim();
+    if (!phone) phone = patient.phone;
+    if (!gender) gender = patient.gender;
+    if (!Number.isFinite(ageValue) || ageValue < 0) ageValue = Number(patient.ageValue || 0);
+    if (!body.ageUnit && patient.ageUnit) ageUnit = patient.ageUnit;
+    if (!email && patient.email) email = patient.email;
+  } else {
+    patientId = null;
+  }
+
+  const testIds = Array.isArray(body.testIds) ? (body.testIds as number[]) : [];
+  const packageIds = Array.isArray(body.packageIds) ? (body.packageIds as number[]) : [];
+  const isVip = Boolean(body.isVip);
+
+  let totalAmount = Number(body.totalAmount);
+  try {
+    const computed = await computeCatalogAmount({ testIds, packageIds, isVip });
+    if (computed > 0) totalAmount = computed;
+  } catch {
+    /* fall back to client amount */
+  }
+
+  try {
+    const booking = await createPendingOnlineBooking({
+      name,
+      phone,
+      email,
+      selectedDate: String(body.selectedDate || ""),
+      timeSlot: String(body.timeSlot || ""),
+      slotModality: typeof body.slotModality === "string" ? body.slotModality : "",
+      testIds,
+      packageIds,
+      totalAmount,
+      notes: String(body.notes || ""),
+      isVip,
+      ageValue,
+      ageUnit,
+      gender,
+      referringDoctorId: (body.referringDoctorId as number | null) ?? null,
+      referringDoctorName: String(body.referringDoctorName || ""),
+      source: sourceRaw,
+      patientId,
+      overrideCapacity,
+      overrideReason: String(body.overrideReason || ""),
+    });
+    res.status(201).json({ booking });
+  } catch (err) {
+    if (err instanceof OnlineBookingError) {
+      res.status(err.statusCode).json({ error: err.message });
+      return;
+    }
+    res.status(400).json({ error: (err as Error).message || "Failed to create booking" });
+  }
 });
 
 // GET /api/online-bookings/:id

@@ -318,4 +318,16 @@ describe("PUT /api/clinic-settings — billPrintSettingsJson (clinic-wide Billin
     expect(res.statusCode).toBe(200);
     expect(updateSetCalls[0].billPrintSettingsJson).toBe(blob);
   });
+
+  test("bookingTimeSlots preserves maxBookings and modality", async () => {
+    const { default: clinicSettingsRouter } = await import("./clinicSettings");
+    const handler = getPutHandler(clinicSettingsRouter);
+    const slots = [
+      { value: "10:00 – 11:00", label: "MRI 10–11 AM", maxBookings: 3, modality: "mri" },
+    ];
+    const res = makeRes();
+    await handler({ body: { bookingTimeSlots: JSON.stringify(slots) } }, res);
+    expect(res.statusCode).toBe(200);
+    expect(updateSetCalls[0]?.bookingTimeSlots).toBe(JSON.stringify(slots));
+  });
 });

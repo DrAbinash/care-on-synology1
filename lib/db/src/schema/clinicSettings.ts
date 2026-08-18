@@ -88,10 +88,10 @@ export const clinicSettingsTable = pgTable("clinic_settings", {
   hopeBookingAllowedTestIds: text("hope_booking_allowed_test_ids").notNull().default("[]"),
   hopeBookingAllowedPackageIds: text("hope_booking_allowed_package_ids").notNull().default("[]"),
   // Configurable appointment time slots shown in the online booking form.
-  // JSON-as-text array of { value, label } objects — admins edit these in
-  // Settings so the clinic can match its actual opening hours (e.g. 9 AM–11 PM)
-  // instead of the old hard-coded 7 AM–9 PM list. Empty "[]" makes the form
-  // fall back to its built-in defaults.
+  // JSON-as-text array of { value, label, maxBookings?, modality? } objects —
+  // admins edit these in Settings so the clinic can match its actual opening
+  // hours and cap bookings per slot (shared by website, kiosk, and reception).
+  // Empty "[]" makes the form fall back to its built-in defaults.
   bookingTimeSlots: text("booking_time_slots").notNull().default(DEFAULT_BOOKING_TIME_SLOTS_JSON),
   sidebarTheme: text("sidebar_theme").notNull().default("navy"),
   billDefaultPaperSize: text("bill_default_paper_size").notNull().default("A5"),

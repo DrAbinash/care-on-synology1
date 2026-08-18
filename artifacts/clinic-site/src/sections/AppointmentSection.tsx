@@ -8,7 +8,7 @@ function get(c: Record<string, unknown>, k: string, fb = ""): string {
   return typeof c[k] === "string" ? (c[k] as string) : fb;
 }
 
-type BookingConfig = { enabled: boolean; keyId: string; vipEnabled: boolean; gateway: "payu" | "razorpay" | "phonepe" | "bharatpe" | "icici" | "hdfc" | null; payuMerchantKey?: string; phonepeMerchantId?: string; bharatpeMerchantId?: string; iciciMerchantId?: string; kioskUpiVpa?: string; kioskUpiName?: string; upiQrEnabled?: boolean; upiVpa?: string; upiQrImageUrl?: string; bookingTimeSlots?: { value: string; label: string }[] };
+type BookingConfig = { enabled: boolean; keyId: string; vipEnabled: boolean; gateway: "payu" | "razorpay" | "phonepe" | "bharatpe" | "icici" | "hdfc" | null; payuMerchantKey?: string; phonepeMerchantId?: string; bharatpeMerchantId?: string; iciciMerchantId?: string; kioskUpiVpa?: string; kioskUpiName?: string; upiQrEnabled?: boolean; upiVpa?: string; upiQrImageUrl?: string; bookingTimeSlots?: { value: string; label: string; maxBookings?: number | null; modality?: string; remaining?: number | null; available?: boolean }[] };
 type DoctorOption = { id: number; name: string; specialization?: string | null };
 type TestItem = { id: number; code: string; name: string; category: string; price: string };
 type PkgItem  = { id: number; code: string; name: string; price: string; description: string };
@@ -65,6 +65,7 @@ export default function AppointmentSection({ section, settings }: { section: Sec
   const bookingPhone = (settings.whatsappNumber || "").replace(/[^0-9]/g, "");
 
   const [config, setConfig] = useState<BookingConfig | null>(null);
+  const [liveSlots, setLiveSlots] = useState<BookingConfig["bookingTimeSlots"]>(undefined);
   const [doctors, setDoctors] = useState<DoctorOption[]>([]);
   const [tests, setTests] = useState<TestItem[]>([]);
   const [pkgs, setPkgs] = useState<PkgItem[]>([]);
@@ -76,7 +77,7 @@ export default function AppointmentSection({ section, settings }: { section: Sec
   const [catFilter, setCatFilter] = useState("all");
   const urlChecked = useRef(false);
 
-  const [pd, setPd] = useState({ name: "", phone: "", email: "", date: "", timeSlot: "", notes: "", isVip: false, ageValue: "", ageUnit: "years", gender: "", referringDoctorId: null as number | null, referringDoctorName: "" });
+  const [pd, setPd] = useState({ name: "", phone: "", email: "", date: "", timeSlot: "", notes: "", isVip: false, ageValue: "", ageUnit: "years", gender: "", referringDoctorId: null as number | null, referringDoctorName: "", slotModality: "" });
   const [errFields, setErrFields] = useState<string[]>([]);
   const [selTests, setSelTests] = useState<Set<number>>(new Set());
   const [selPkgs, setSelPkgs] = useState<Set<number>>(new Set());
@@ -115,7 +116,10 @@ export default function AppointmentSection({ section, settings }: { section: Sec
 
   useEffect(() => {
     bookingGet<BookingConfig>("/api/public/booking/config")
-      .then(setConfig)
+      .then((c) => {
+        setConfig(c);
+        setLiveSlots(c.bookingTimeSlots);
+      })
       .catch(() => setConfig({ enabled: false, keyId: "", vipEnabled: false, gateway: null }));
     bookingGet<{ doctors: DoctorOption[] }>("/api/public/booking/doctors")
       .then((d) => setDoctors(d.doctors || []))
@@ -160,6 +164,8 @@ export default function AppointmentSection({ section, settings }: { section: Sec
     try {
       const res = await bookingPost<{ payuUrl: string; fields: Record<string, string> }>("/api/public/booking/payu-initiate", {
         name: pd.name, phone: pd.phone, email: pd.email, selectedDate: pd.date, timeSlot: pd.timeSlot,
+        slotModality: pd.slotModality || "",
+        source: "website",
         testIds: Array.from(selTests), packageIds: Array.from(selPkgs),
         totalAmount: total, notes: pd.notes, isVip: pd.isVip,
         ageValue: pd.ageValue ? Number(pd.ageValue) : null, ageUnit: pd.ageUnit, gender: pd.gender,
@@ -179,6 +185,8 @@ export default function AppointmentSection({ section, settings }: { section: Sec
     try {
       const res = await bookingPost<{ bookingRef: string; redirectUrl: string }>("/api/public/booking/phonepe-initiate", {
         name: pd.name, phone: pd.phone, email: pd.email, selectedDate: pd.date, timeSlot: pd.timeSlot,
+        slotModality: pd.slotModality || "",
+        source: "website",
         testIds: Array.from(selTests), packageIds: Array.from(selPkgs),
         totalAmount: total, notes: pd.notes, isVip: pd.isVip,
         ageValue: pd.ageValue ? Number(pd.ageValue) : null, ageUnit: pd.ageUnit, gender: pd.gender,
@@ -198,6 +206,8 @@ export default function AppointmentSection({ section, settings }: { section: Sec
     try {
       const res = await bookingPost<{ bookingRef: string; redirectUrl: string }>("/api/public/booking/bharatpe-initiate", {
         name: pd.name, phone: pd.phone, email: pd.email, selectedDate: pd.date, timeSlot: pd.timeSlot,
+        slotModality: pd.slotModality || "",
+        source: "website",
         testIds: Array.from(selTests), packageIds: Array.from(selPkgs),
         totalAmount: total, notes: pd.notes, isVip: pd.isVip,
         ageValue: pd.ageValue ? Number(pd.ageValue) : null, ageUnit: pd.ageUnit, gender: pd.gender,
@@ -217,6 +227,8 @@ export default function AppointmentSection({ section, settings }: { section: Sec
     try {
       const res = await bookingPost<{ bookingRef: string; redirectUrl: string; tranCtx: string }>("/api/public/booking/icici-initiate", {
         name: pd.name, phone: pd.phone, email: pd.email, selectedDate: pd.date, timeSlot: pd.timeSlot,
+        slotModality: pd.slotModality || "",
+        source: "website",
         testIds: Array.from(selTests), packageIds: Array.from(selPkgs),
         totalAmount: total, notes: pd.notes, isVip: pd.isVip,
         ageValue: pd.ageValue ? Number(pd.ageValue) : null, ageUnit: pd.ageUnit, gender: pd.gender,
@@ -235,6 +247,8 @@ export default function AppointmentSection({ section, settings }: { section: Sec
     try {
       const res = await bookingPost<{ bookingRef: string; amount: number; upiVpa: string; upiName: string; upiUrl: string; upiQrImageUrl: string; clinicName: string }>("/api/public/booking/qr-initiate", {
         name: pd.name, phone: pd.phone, email: pd.email, selectedDate: pd.date, timeSlot: pd.timeSlot,
+        slotModality: pd.slotModality || "",
+        source: "website",
         testIds: Array.from(selTests), packageIds: Array.from(selPkgs),
         totalAmount: total, notes: pd.notes, isVip: pd.isVip,
         ageValue: pd.ageValue ? Number(pd.ageValue) : null, ageUnit: pd.ageUnit, gender: pd.gender,
@@ -280,6 +294,8 @@ export default function AppointmentSection({ section, settings }: { section: Sec
 
       const res = await bookingPost<{ bookingRef: string; razorpayOrderId: string; amountPaise: number; keyId: string }>("/api/public/booking/create-order", {
         name: pd.name, phone: pd.phone, email: pd.email, selectedDate: pd.date, timeSlot: pd.timeSlot,
+        slotModality: pd.slotModality || "",
+        source: "website",
         testIds: Array.from(selTests), packageIds: Array.from(selPkgs),
         totalAmount: total, notes: pd.notes, isVip: pd.isVip,
         ageValue: pd.ageValue ? Number(pd.ageValue) : null, ageUnit: pd.ageUnit, gender: pd.gender,
@@ -459,7 +475,13 @@ export default function AppointmentSection({ section, settings }: { section: Sec
         ) : step === "form" ? (
           <SelfRegistrationForm
             mode="online"
-            timeSlots={config?.bookingTimeSlots}
+            timeSlots={liveSlots || config?.bookingTimeSlots}
+            onDateChange={(d) => {
+              if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return;
+              bookingGet<{ slots: NonNullable<BookingConfig["bookingTimeSlots"]> }>(`/api/public/booking/slots?date=${encodeURIComponent(d)}`)
+                .then((r) => setLiveSlots(r.slots))
+                .catch(() => {});
+            }}
             doctors={doctors}
             initialValues={{
               firstName: pd.name,
@@ -492,6 +514,7 @@ export default function AppointmentSection({ section, settings }: { section: Sec
                 gender: data.gender,
                 referringDoctorId: data.referringDoctorId ?? null,
                 referringDoctorName: data.referringDoctorName || "",
+                slotModality: data.slotModality || "",
               });
               loadCatalog();
               setStep("select");

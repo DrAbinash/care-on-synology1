@@ -1407,6 +1407,11 @@ async function runStartupMigrations(): Promise<void> {
 
       -- ── Online bookings time slot ────────────────────────────────────────
       ALTER TABLE online_bookings ADD COLUMN IF NOT EXISTS time_slot TEXT NOT NULL DEFAULT '';
+      ALTER TABLE online_bookings ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'website';
+      ALTER TABLE online_bookings ADD COLUMN IF NOT EXISTS slot_modality TEXT NOT NULL DEFAULT '';
+      ALTER TABLE online_bookings ADD COLUMN IF NOT EXISTS capacity_override_reason TEXT;
+      CREATE INDEX IF NOT EXISTS online_bookings_slot_capacity_idx
+        ON online_bookings (selected_date, time_slot, slot_modality);
 
       -- ── ICICI payment gateway column additions ───────────────────────────
       ALTER TABLE online_bookings ADD COLUMN IF NOT EXISTS icici_transaction_id TEXT;
