@@ -1383,7 +1383,7 @@ export default function RadiologyWorklist() {
           <div className="h-full min-h-0 flex flex-col gap-1 overflow-hidden">
 
             <div className="shrink-0 space-y-0.5 border-b border-border/40 pb-0.5" data-testid="pacs-worklist-toolbar">
-            <div className="flex flex-wrap items-center gap-1">
+            <div className="flex flex-nowrap items-center gap-1 overflow-x-auto pb-0.5">
               <PacsDebugPanel
                 entries={entries}
                 filtered={filtered}
@@ -1518,34 +1518,47 @@ export default function RadiologyWorklist() {
                 </Button>
               )}
 
-              <div className="flex items-center gap-1 ml-auto shrink-0 overflow-x-auto max-w-full">
-                <CalendarDays className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                <Input
-                  type="date"
-                  value={dateFrom}
-                  onChange={(e) => setDateFrom(e.target.value)}
-                  className="h-7 w-[118px] text-xs"
-                />
-                <span className="text-muted-foreground text-[10px]">→</span>
-                <Input
-                  type="date"
-                  value={dateTo}
-                  onChange={(e) => setDateTo(e.target.value)}
-                  className="h-7 w-[118px] text-xs"
-                />
-                {DATE_PRESETS.map((p) => (
-                  <Button
-                    key={p.label}
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="h-7 text-[10px] px-1.5 shrink-0"
-                    onClick={() => setDatePreset(p.from(), p.to())}
-                  >
-                    {p.label}
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button variant="outline" size="sm" className="h-7 px-2 text-[11px] gap-1 ml-auto shrink-0">
+                    <CalendarDays className="h-3 w-3" />
+                    {dateFrom || dateTo
+                      ? `${dateFrom ? dateFrom.slice(5) : "…"}→${dateTo ? dateTo.slice(5) : "…"}`
+                      : "Dates"}
                   </Button>
-                ))}
-              </div>
+                </PopoverTrigger>
+                <PopoverContent align="end" className="w-auto p-2">
+                  <div className="flex items-center gap-1.5">
+                    <Input
+                      type="date"
+                      value={dateFrom}
+                      onChange={(e) => setDateFrom(e.target.value)}
+                      className="h-7 w-[118px] text-xs"
+                    />
+                    <span className="text-muted-foreground text-[10px]">→</span>
+                    <Input
+                      type="date"
+                      value={dateTo}
+                      onChange={(e) => setDateTo(e.target.value)}
+                      className="h-7 w-[118px] text-xs"
+                    />
+                  </div>
+                  <div className="mt-2 flex flex-wrap gap-1">
+                    {DATE_PRESETS.map((p) => (
+                      <Button
+                        key={p.label}
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-7 text-[10px] px-1.5"
+                        onClick={() => setDatePreset(p.from(), p.to())}
+                      >
+                        {p.label}
+                      </Button>
+                    ))}
+                  </div>
+                </PopoverContent>
+              </Popover>
 
               {Object.entries(STATUS_CONFIG).map(([key, cfg]) => {
                 const count = entries.filter((e) => e.status === key).length;
