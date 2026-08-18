@@ -1915,7 +1915,10 @@ export default function MyDailySummary() {
   }, [s, data, from, to, isOwner, clinicSettings?.name, clinicSettings?.logoDataUrl]);
 
   return (
-    <div className="space-y-5">
+    <div
+      className="h-full min-h-0 overflow-y-auto"
+      data-testid="my-daily-summary-page"
+    >
       <PageHeader
         title="My Daily Summary"
         subtitle={data ? `${data.staffName} • ${from === to ? from : `${from} → ${to}`}` : "Personal financial summary"}
@@ -1954,6 +1957,7 @@ export default function MyDailySummary() {
         }
       />
 
+      <div className="px-4 sm:px-6 pb-10 space-y-5">
       {isOwner && <InfrastructurePulseStrip />}
       {isOwner && (
         <div className="rounded-lg border bg-card p-3 shadow-sm" data-testid="my-daily-billing-peak">
@@ -2806,6 +2810,7 @@ export default function MyDailySummary() {
         staffName={isSuperAdmin && staffFilter.trim() ? staffFilter.trim() : null}
         onClose={() => setDrilldownType(null)}
       />
+      </div>
     </div>
   );
 }
