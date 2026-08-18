@@ -287,8 +287,13 @@ export async function exportRadiologyReportToWord(
                 }),
                 new Paragraph({
                   alignment: AlignmentType.RIGHT,
-                  spacing: { after: 80 },
+                  spacing: { after: 0 },
                   children: [new TextRun({ text: "Email: care.deoghar@gmail.com", size: 14, font: "Helvetica" })],
+                }),
+                new Paragraph({
+                  alignment: AlignmentType.RIGHT,
+                  spacing: { after: 80 },
+                  children: [new TextRun({ text: "www.caredeoghar.com", size: 14, font: "Helvetica" })],
                 }),
               ],
             }),

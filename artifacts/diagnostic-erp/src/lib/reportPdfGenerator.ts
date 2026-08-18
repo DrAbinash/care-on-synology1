@@ -410,13 +410,14 @@ export function generateReportPDF(
         ay += 3.1;
       }
       const phones = "Phone: 75490 99099, 99734 97200";
-      const email = clinic?.email?.trim()
-        ? `Email: ${clinic.email.trim()}`
-        : "Email: care.deoghar@gmail.com";
+      const email = "Email: care.deoghar@gmail.com";
+      const website = "www.caredeoghar.com";
       doc.setFontSize(7.2);
       doc.text(phones, rightX, ay, { align: "right" });
       ay += 3.1;
       doc.text(email, rightX, ay, { align: "right" });
+      ay += 3.1;
+      doc.text(website, rightX, ay, { align: "right" });
       headerBottom = Math.max(headerBottom, ay);
       doc.setDrawColor(20);
       doc.setLineWidth(0.35);

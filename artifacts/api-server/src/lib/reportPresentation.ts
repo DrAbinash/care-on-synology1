@@ -224,6 +224,7 @@ export const CARE_LETTERPAD = {
   address: "Near Bajla Mahila College, St. Francis School Road, Castair's Town, DEOGHAR-814 112 (JHARKHAND)",
   phones: "75490 99099, 99734 97200",
   email: "care.deoghar@gmail.com",
+  website: "www.caredeoghar.com",
   logoSrc: "/care-diagnostics-letterhead-logo.png",
   radiologist: "Dr. Sugandha Priyadarshini",
   credentials: "MD (Radiodiagnosis & Medical Imaging)",
@@ -628,7 +629,7 @@ export function renderReportDocument(
     ? keyImagesHtml(overflowImages, "inline", { heading: "KEY IMAGES (continued)", extraClass: "image-panel-overflow" })
     : "";
   const letterPadPhone = `Phone: ${CARE_LETTERPAD.phones}`;
-  const letterPadEmail = (model.clinic.email || "").trim() || CARE_LETTERPAD.email;
+  const letterPadEmail = CARE_LETTERPAD.email;
   const letterPadName = CARE_LETTERPAD.clinicName;
   const letterPadLogo = headerCfg.showLogo ? careLetterheadLogoDataUrl() : "";
   const letterPadHeaderHtml = headerCfg.show ? `<div class="hdr">
@@ -640,7 +641,8 @@ export function renderReportDocument(
           ${escapeHtml(CARE_LETTERPAD.addressLine1)}<br/>
           ${escapeHtml(CARE_LETTERPAD.addressLine2)}<br/>
           ${escapeHtml(letterPadPhone)}<br/>
-          Email: ${escapeHtml(letterPadEmail)}
+          Email: ${escapeHtml(letterPadEmail)}<br/>
+          ${escapeHtml(CARE_LETTERPAD.website)}
         </div>
       </div>
     </div>

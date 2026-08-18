@@ -508,8 +508,13 @@ describe("letter-pad header contact is the printed pad, not clinic CRM copy", ()
       resolvePresentationTemplate("care-classic"),
     );
     expect(html).toContain("St. Francis School Road");
+    expect(html).toContain("Castair&#39;s Town");
     expect(html).toContain("DEOGHAR-814 112");
-    expect(html).toContain("info@clinic.com");
+    expect(html).toContain("99734 97200");
+    expect(html).toContain("care.deoghar@gmail.com");
+    expect(html).not.toContain("CARE.DEOGHAR@GMAIL.COM");
+    expect(html).toContain("www.caredeoghar.com");
+    expect(html).not.toContain("info@clinic.com");
     expect(html).not.toContain("• info@clinic.com");
     expect(html).toMatch(/DEOGHAR-814 112<br\/>\s*\(JHARKHAND\)/);
     expect(html).toContain("font-size: 7.2pt !important");

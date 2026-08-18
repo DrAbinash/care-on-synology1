@@ -331,6 +331,8 @@ describe.skipIf(!hasChromium())("premium print layout (Chromium)", () => {
     );
     expect(html).toContain("St. Francis School Road");
     expect(html).toMatch(/DEOGHAR-814 112<br\/>\s*\(JHARKHAND\)/);
+    expect(html).toContain("care.deoghar@gmail.com");
+    expect(html).toContain("www.caredeoghar.com");
     expect(html).toContain("height: 22mm !important");
     expect(html.indexOf("height: 22mm !important")).toBeGreaterThan(html.indexOf("height: 82px !important"));
     expect(letterPadErpPdfLockCss()).toContain("7.2pt");
