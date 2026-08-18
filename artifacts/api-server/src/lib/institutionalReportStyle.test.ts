@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   applyInstitutionalTemplateOverrides,
   buildInstitutionalStyleCss,
+  buildReportSurfaceCss,
   coerceFontFamilyKey,
   coerceImagePlacement,
   coerceLogoPosition,
@@ -102,8 +103,9 @@ describe("institutionalReportStyle", () => {
     expect(buildInstitutionalStyleCss(undefined)).toBe("");
   });
 
-  it("overrides template image placement and signature/logo config", () => {
-    const next = applyInstitutionalTemplateOverrides(baseTemplate, {
+  it("overrides image placement and signature on clinic-branded templates; letter-pad keeps logo left", () => {
+    const clinicTemplate: RenderableTemplate = { ...baseTemplate, id: "hope", letterhead: { kind: "clinic" } };
+    const next = applyInstitutionalTemplateOverrides(clinicTemplate, {
       imagePlacement: "side-panel",
       logoPosition: "center",
       signaturePosition: "left",
@@ -116,8 +118,14 @@ describe("institutionalReportStyle", () => {
     expect(next.signatureCfg?.align).toBe("left");
     expect(next.signatureCfg?.showImage).toBe(false);
     expect(next.studyTitleCfg?.style).toBe("bar");
-    // original untouched
-    expect(baseTemplate.layout.imagePlacement).toBe("inline");
+    expect(clinicTemplate.layout.imagePlacement).toBe("inline");
+  });
+
+  it("does not let Style logoPosition squash CARE letter-pad chrome", () => {
+    const next = applyInstitutionalTemplateOverrides(baseTemplate, {
+      logoPosition: "center",
+    });
+    expect(next.headerCfg?.logoPosition).toBeUndefined();
   });
 
   it("maps default inline placement to a right side rail (letter-pad / Arhan)", () => {
@@ -135,5 +143,36 @@ describe("institutionalReportStyle", () => {
     });
     expect(next.layout.imagePlacement).toBe("inline");
     expect(next.imagePanelCfg?.placement).toBe("inline");
+  });
+
+  it("skipLetterheadChrome omits square-logo and @page header chrome", () => {
+    const css = buildInstitutionalStyleCss({
+      logoScale: "xlarge",
+      clinicNameScale: "xlarge",
+      logoPosition: "right",
+      headerRuleEnabled: true,
+      margins: "narrow",
+    }, { skipLetterheadChrome: true });
+    expect(css).not.toContain("width: 104px");
+    expect(css).not.toContain("@page { size: A4");
+    expect(css).not.toContain("flex-direction: row-reverse");
+    expect(css).toContain("Institutional report style overrides");
+    expect(css).toContain("font-family:");
+  });
+
+  it("CARE letter-pad surface CSS skips the 82px logo-scale fragment", () => {
+    const css = buildReportSurfaceCss(
+      { id: "care-classic", letterhead: { kind: "care-letterpad" } },
+      { logoScale: "large", fontFamily: "georgia" },
+      { logoScale: "large", headerScale: "large" },
+    );
+    expect(css).not.toContain("height: 82px !important");
+    expect(css).toContain("Georgia");
+    const clinicCss = buildReportSurfaceCss(
+      { id: "hope", letterhead: { kind: "clinic" } },
+      { logoScale: "large" },
+      { logoScale: "large" },
+    );
+    expect(clinicCss).toContain("height: 82px !important");
   });
 });

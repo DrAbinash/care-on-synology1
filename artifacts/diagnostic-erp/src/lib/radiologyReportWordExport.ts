@@ -127,6 +127,7 @@ export type WordLetterheadOpts = {
   sex?: string;
   referringDoctor?: string;
   studyDate?: string;
+  chrome?: import("./careLetterpadChrome").CareLetterpadChrome;
 };
 
 function dataUrlToBytes(dataUrl: string): Uint8Array {
@@ -186,7 +187,13 @@ export async function exportRadiologyReportToWord(
     );
   }
 
-  const { CARE_LETTERHEAD_LOGO_DATA_URL } = await import("./careLetterheadLogo");
+  const { CARE_LETTERHEAD_LOGO_DATA_URL, CARE_LETTERHEAD_LOGO_SIZE } = await import("./careLetterheadLogo");
+  const { resolveCareLetterpadChrome, parseMeasurementMm, parseMeasurementPt } = await import("./careLetterpadChrome");
+  const chrome = resolveCareLetterpadChrome(letterhead?.chrome);
+  const logoMm = parseMeasurementMm(chrome.logoHeight) ?? 22;
+  const logoHeightPx = Math.round(logoMm * 96 / 25.4);
+  const logoWidthPx = Math.round(logoHeightPx * (CARE_LETTERHEAD_LOGO_SIZE.width / CARE_LETTERHEAD_LOGO_SIZE.height));
+  const addrHalfPt = Math.round((parseMeasurementPt(chrome.addressFontSize) ?? 7.2) * 2);
   const blocks = parseReportHtmlToBlocks(html).filter((b) => !paragraphLooksLikeDemography(b));
   const children: InstanceType<typeof Paragraph>[] = [];
 
@@ -257,7 +264,7 @@ export async function exportRadiologyReportToWord(
                   new ImageRun({
                     type: "png",
                     data: dataUrlToBytes(CARE_LETTERHEAD_LOGO_DATA_URL),
-                    transformation: { width: 244, height: 83 },
+                    transformation: { width: logoWidthPx, height: logoHeightPx },
                   }),
                 ],
               })],
@@ -270,30 +277,30 @@ export async function exportRadiologyReportToWord(
                   alignment: AlignmentType.RIGHT,
                   spacing: { after: 0 },
                   children: [new TextRun({
-                    text: "Near Bajla Mahila College, St. Francis School Road, Castair's Town, DEOGHAR-814 112",
-                    size: 14,
+                    text: chrome.addressLine1,
+                    size: addrHalfPt,
                     font: "Helvetica",
                   })],
                 }),
                 new Paragraph({
                   alignment: AlignmentType.RIGHT,
                   spacing: { after: 0 },
-                  children: [new TextRun({ text: "(JHARKHAND)", size: 14, font: "Helvetica" })],
+                  children: [new TextRun({ text: chrome.addressLine2, size: addrHalfPt, font: "Helvetica" })],
                 }),
                 new Paragraph({
                   alignment: AlignmentType.RIGHT,
                   spacing: { after: 0 },
-                  children: [new TextRun({ text: "Phone: 75490 99099, 99734 97200", size: 14, font: "Helvetica" })],
+                  children: [new TextRun({ text: `Phone: ${chrome.phones}`, size: addrHalfPt, font: "Helvetica" })],
                 }),
                 new Paragraph({
                   alignment: AlignmentType.RIGHT,
                   spacing: { after: 0 },
-                  children: [new TextRun({ text: "Email: care.deoghar@gmail.com", size: 14, font: "Helvetica" })],
+                  children: [new TextRun({ text: `Email: ${chrome.email}`, size: addrHalfPt, font: "Helvetica" })],
                 }),
                 new Paragraph({
                   alignment: AlignmentType.RIGHT,
                   spacing: { after: 80 },
-                  children: [new TextRun({ text: "www.caredeoghar.com", size: 14, font: "Helvetica" })],
+                  children: [new TextRun({ text: chrome.website, size: addrHalfPt, font: "Helvetica" })],
                 }),
               ],
             }),
@@ -358,7 +365,7 @@ export async function exportRadiologyReportToWord(
             new Paragraph({
               alignment: AlignmentType.CENTER,
               children: [new TextRun({
-                text: "MULTI SLICE CT SCAN | 3D/4D ULTRA SOUND | COLOUR DOPPLER | MAMMOGRAPHY | ECHO | DIGITAL X-RAY | ECG/EEG",
+                text: chrome.servicesRow1,
                 size: 12,
                 bold: true,
                 color: "0F2D6E",
@@ -368,7 +375,7 @@ export async function exportRadiologyReportToWord(
               alignment: AlignmentType.CENTER,
               spacing: { after: 60 },
               children: [new TextRun({
-                text: "PATHOLAB | OPG | TMT | NCV/EMG | ELASTOGRAPHY/FIBROSCAN | UPPER GI ENDOSCOPY | HSG | BARIUM STUDY | TVS",
+                text: chrome.servicesRow2,
                 size: 12,
                 bold: true,
                 color: "0F2D6E",
@@ -377,7 +384,7 @@ export async function exportRadiologyReportToWord(
             new Paragraph({
               alignment: AlignmentType.CENTER,
               children: [new TextRun({
-                text: "Radiological diagnosis is not always conclusive & often vary with clinical course of the disease or response to treatment. This report is not for medico-legal purpose.",
+                text: chrome.disclaimer,
                 size: 12,
                 italics: true,
               })],

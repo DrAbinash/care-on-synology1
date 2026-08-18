@@ -63,14 +63,13 @@ import {
 } from "../lib/reportPresentation";
 import { resolveReportKeyImages } from "../lib/reportImages";
 import {
-  buildLetterheadScaleCss,
   REPORT_HEADER_SCALE_KEY,
   REPORT_LOGO_SCALE_KEY,
   REPORT_FOOTER_SCALE_KEY,
 } from "../lib/reportLetterheadScale";
 import {
   applyInstitutionalTemplateOverrides,
-  buildInstitutionalStyleCss,
+  buildReportSurfaceCss,
   DEFAULT_INSTITUTIONAL_STYLE,
 } from "../lib/institutionalReportStyle";
 import {
@@ -2609,29 +2608,8 @@ async function renderReportVersionHtml(reportId: number, autoPrint: boolean, use
     };
   }
 
-  // Build style overrides. pacs letterhead scale is the baseline; institutional
-  // Style settings are appended LAST so logo/name/address sizes, alignment and
-  // the header rule from Radiology Settings → Style always win.
-  let customStyles = "";
-  try {
-    const scaleRows = await db.select({ key: pacsSettingsTable.key, value: pacsSettingsTable.value })
-      .from(pacsSettingsTable)
-      .where(and(
-        inArray(pacsSettingsTable.key, [REPORT_HEADER_SCALE_KEY, REPORT_LOGO_SCALE_KEY, REPORT_FOOTER_SCALE_KEY]),
-        eq(pacsSettingsTable.category, "report"),
-      ));
-    const scaleVal = (k: string) => scaleRows.find((row) => row.key === k)?.value;
-    customStyles += buildLetterheadScaleCss({
-      headerScale: scaleVal(REPORT_HEADER_SCALE_KEY),
-      logoScale: scaleVal(REPORT_LOGO_SCALE_KEY),
-      footerScale: scaleVal(REPORT_FOOTER_SCALE_KEY),
-    });
-  } catch {
-    customStyles += buildLetterheadScaleCss();
-  }
-  if (instStyle) {
-    customStyles += buildInstitutionalStyleCss(instStyle);
-  }
+  // Style chrome is built after template resolution so CARE letter-pad
+  // templates skip the square-logo dropdown / Style header overrides.
 
   // D8 — visual safeguards for the served version (empty strings when the
   // report has no amendment chain). Semantics are FROZEN — the fragments pass
@@ -2722,6 +2700,25 @@ async function renderReportVersionHtml(reportId: number, autoPrint: boolean, use
   // problem can never stop a report from printing.
   const baseTemplate = await resolveTemplateForRender({ explicit: templateId, reportId, copyType });
   const template = applyInstitutionalTemplateOverrides(baseTemplate, instStyle);
+
+  let customStyles = "";
+  try {
+    const scaleRows = await db.select({ key: pacsSettingsTable.key, value: pacsSettingsTable.value })
+      .from(pacsSettingsTable)
+      .where(and(
+        inArray(pacsSettingsTable.key, [REPORT_HEADER_SCALE_KEY, REPORT_LOGO_SCALE_KEY, REPORT_FOOTER_SCALE_KEY]),
+        eq(pacsSettingsTable.category, "report"),
+      ));
+    const scaleVal = (k: string) => scaleRows.find((row) => row.key === k)?.value;
+    customStyles += buildReportSurfaceCss(template, instStyle, {
+      headerScale: scaleVal(REPORT_HEADER_SCALE_KEY),
+      logoScale: scaleVal(REPORT_LOGO_SCALE_KEY),
+      footerScale: scaleVal(REPORT_FOOTER_SCALE_KEY),
+    });
+  } catch {
+    customStyles += buildReportSurfaceCss(template, instStyle);
+  }
+
   return renderReportDocument(model, template, { customCss: customStyles });
 }
 

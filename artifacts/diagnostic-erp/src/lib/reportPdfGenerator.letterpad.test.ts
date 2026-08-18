@@ -71,4 +71,37 @@ describe("letter-pad PDF preview artifact", () => {
     );
     expect(CARE_LETTERHEAD_LOGO_DATA_URL).toContain(publicPng.toString("base64").slice(0, 80));
   });
+
+  it("uses presentation-template letterhead copy when provided", () => {
+    const doc = generateReportPDF(
+      {
+        patientName: "Template Patient",
+        age: "30 Y",
+        sex: "F",
+        studyDate: "20260818",
+        referringDoctor: "Dr Test",
+        findings: "Normal.",
+        impression: "Normal.",
+        reportTitle: "MRI BRAIN",
+      },
+      DEFAULT_PRINT_SETTINGS,
+      { name: "IGNORED", address: "WRONG", email: "CARE.DEOGHAR@GMAIL.COM" },
+      {
+        save: false,
+        letterhead: {
+          kind: "care-letterpad",
+          email: "desk@caredeoghar.com",
+          website: "www.example-clinic.in",
+        },
+      },
+    );
+    mkdirSync("/opt/cursor/artifacts", { recursive: true });
+    const out = "/opt/cursor/artifacts/letterpad-template-chrome.pdf";
+    writeFileSync(out, Buffer.from(doc.output("arraybuffer")));
+    const text = execFileSync("pdftotext", ["-layout", out, "-"], { encoding: "utf8" });
+    expect(text).toContain("desk@caredeoghar.com");
+    expect(text).toContain("www.example-clinic.in");
+    expect(text).not.toContain("care.deoghar@gmail.com");
+    expect(text).toContain("St. Francis School Road");
+  });
 });

@@ -540,6 +540,28 @@ describe("letter-pad header contact is the printed pad, not clinic CRM copy", ()
     expect(html).toContain("75490 99099");
     expect(html).not.toContain("06432-1234 • info@clinic.com");
   });
+
+  it("template letterhead copy is the source of truth for Classic HTML", () => {
+    const seed = seedByKey("care-classic")!;
+    const compiled = compileTemplate({
+      ...seed,
+      definition: {
+        ...seed.definition,
+        letterhead: {
+          ...seed.definition.letterhead!,
+          email: "desk@caredeoghar.com",
+          website: "www.example-clinic.in",
+          addressFontSize: "8pt",
+        },
+      },
+    });
+    const html = renderReportDocument(baseModel(), compiled);
+    expect(html).toContain("desk@caredeoghar.com");
+    expect(html).toContain("www.example-clinic.in");
+    expect(html).not.toContain("care.deoghar@gmail.com");
+    expect(html).toContain("font-size: 8pt !important");
+    expect(compileTemplate(seed).letterhead?.email).toBe("care.deoghar@gmail.com");
+  });
 });
 
 describe("R1.4 — screen_only print layout no longer blanks the printed page", () => {
