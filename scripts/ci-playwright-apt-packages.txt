@@ -1,5 +1,3 @@
-# Playwright Chromium runtime deps on Ubuntu 24.04 (from `playwright install-deps chromium --dry-run`).
-# Headless CI does not need xvfb/xserver-common/libgbm-dev.
 fonts-freefont-ttf
 fonts-ipafont-gothic
 fonts-tlwg-loma-otf

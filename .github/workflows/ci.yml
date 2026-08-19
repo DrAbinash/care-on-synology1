@@ -78,7 +78,7 @@ jobs:
       - name: Install CI apt packages (poppler + Playwright system deps)
         timeout-minutes: 8
         run: |
-          mapfile -t PW_DEPS < scripts/ci-playwright-apt-packages.txt
+          mapfile -t PW_DEPS < <(grep -v '^[[:space:]]*$' scripts/ci-playwright-apt-packages.txt)
           sudo bash scripts/ci-apt-install.sh poppler-utils "${PW_DEPS[@]}"
       - name: Cache Playwright Chromium
         uses: actions/cache@v4
@@ -140,7 +140,7 @@ jobs:
       - name: Install CI apt packages (Playwright system deps)
         timeout-minutes: 8
         run: |
-          mapfile -t PW_DEPS < scripts/ci-playwright-apt-packages.txt
+          mapfile -t PW_DEPS < <(grep -v '^[[:space:]]*$' scripts/ci-playwright-apt-packages.txt)
           sudo bash scripts/ci-apt-install.sh "${PW_DEPS[@]}"
       - name: Cache Playwright Chromium
         uses: actions/cache@v4
