@@ -70,6 +70,11 @@ import {
   buildReportSurfaceCss,
 } from "../lib/institutionalReportStyle";
 import { resolveDraftKeyImages } from "../lib/reportImages";
+import {
+  parseImpressionBullets,
+  parseImpressionStyle,
+  renderImpressionSectionHtml,
+} from "../lib/impressionFormatting";
 import { reconcileAccessionVsReferringDoctor } from "../lib/pacs/dicomNameNormalize";
 import { isFeatureEnabledServer } from "../lib/featureFlags";
 import { checkWriteLock } from "../lib/studyLocks";
@@ -1973,13 +1978,10 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
     sectionsHtml = `<div class="section-heading">Findings</div><p>${esc(draft.rawFindings).replaceAll("\n", "<br/>")}</p>`;
   }
   let impressionList = "";
-  try {
-    const bullets = draft.impression ? (JSON.parse(draft.impression) as string[]) : [];
-    if (Array.isArray(bullets) && bullets.filter(Boolean).length > 0) {
-      impressionList = `<div class="section-heading">Impression</div><ol>${bullets.filter(Boolean).map((b) => `<li>${esc(b)}</li>`).join("")}</ol>`;
-    }
-  } catch {
-    if (draft.impression?.trim()) impressionList = `<div class="section-heading">Impression</div><p>${esc(draft.impression)}</p>`;
+  const impressionStyle = parseImpressionStyle(req.query.impressionStyle);
+  const impressionBullets = parseImpressionBullets(draft.impression);
+  if (impressionBullets.length > 0) {
+    impressionList = renderImpressionSectionHtml(impressionBullets, impressionStyle, esc);
   }
   const bodyHtml = [
     draft.clinicalHistory?.trim() ? `<div class="section-heading">Clinical History</div><p>${esc(draft.clinicalHistory)}</p>` : "",

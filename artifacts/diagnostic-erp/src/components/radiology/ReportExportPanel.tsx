@@ -12,7 +12,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { FileDown, Printer, RefreshCw, Eye, Maximize2 } from "lucide-react";
+import { FileDown, Printer, RefreshCw, Eye, Maximize2, ShieldCheck } from "lucide-react";
 import { api } from "@/lib/fetchApi";
 import ReportLayoutQuickSelect, {
   type ReportLayoutKey,
@@ -41,6 +41,12 @@ export type ReportExportPanelProps = {
   onExportPdf: () => void | Promise<void>;
   /** Draft-only: open print preview without the DRAFT watermark. */
   onPrintLikeFinal?: () => void | Promise<void>;
+  /** Double-click preview → jump to an editor section in the workspace. */
+  onEditSection?: (field: "clinicalHistory" | "technique" | "findings" | "impression" | "recommendation") => void;
+  /** Sign/finalize from the enlarged preview (same action as workspace header). */
+  onFinalize?: () => void | Promise<void>;
+  finalizeDisabled?: boolean;
+  finalizeLabel?: string;
   exportingWord?: boolean;
   exportingPdf?: boolean;
   printingLikeFinal?: boolean;
@@ -63,6 +69,10 @@ export default function ReportExportPanel({
   onExportWord,
   onExportPdf,
   onPrintLikeFinal,
+  onEditSection,
+  onFinalize,
+  finalizeDisabled,
+  finalizeLabel = "Finalize",
   exportingWord,
   exportingPdf,
   printingLikeFinal,
@@ -72,18 +82,43 @@ export default function ReportExportPanel({
   const [previewRefresh, setPreviewRefresh] = useState(0);
   const [enlarged, setEnlarged] = useState(false);
   const [previewZoom, setPreviewZoom] = useState(1);
+  const [editPickerOpen, setEditPickerOpen] = useState(false);
   const inlineScrollRef = useRef<HTMLDivElement>(null);
+
+  const editSections: Array<{ field: "clinicalHistory" | "technique" | "findings" | "impression" | "recommendation"; label: string }> = [
+    { field: "clinicalHistory", label: "History" },
+    { field: "technique", label: "Technique" },
+    { field: "findings", label: "Findings" },
+    { field: "impression", label: "Impression" },
+    { field: "recommendation", label: "Recommendation" },
+  ];
+
+  const handlePreviewDoubleClick = () => {
+    if (onEditSection) {
+      setEditPickerOpen(true);
+      setEnlarged(true);
+      return;
+    }
+    setEnlarged(true);
+  };
+
+  const jumpToSection = (field: "clinicalHistory" | "technique" | "findings" | "impression" | "recommendation") => {
+    onEditSection?.(field);
+    setEditPickerOpen(false);
+    setEnlarged(false);
+  };
 
   const serverPreviewUrl = useMemo(() => {
     const templateQs = reportLayoutTemplateQuery(reportLayout);
+    const styleQs = `impressionStyle=${encodeURIComponent(impressionStyle)}`;
     if (linkedReportId) {
-      return `/api/patient-reports/${linkedReportId}/print?preview=true&${templateQs}`;
+      return `/api/patient-reports/${linkedReportId}/print?preview=true&${templateQs}&${styleQs}`;
     }
     if (draftId) {
-      return `/api/radiology/report-generator/drafts/${draftId}/print-preview?${templateQs}`;
+      return `/api/radiology/report-generator/drafts/${draftId}/print-preview?${templateQs}&${styleQs}`;
     }
     return null;
-  }, [draftId, linkedReportId, reportLayout]);
+  }, [draftId, linkedReportId, reportLayout, impressionStyle]);
 
   const { data: serverHtml, isFetching: serverLoading, refetch } = useQuery<string>({
     queryKey: ["report-export-server-preview", serverPreviewUrl, previewRefresh],
@@ -161,6 +196,19 @@ export default function ReportExportPanel({
               Print like final
             </Button>
           )}
+          {onFinalize ? (
+            <Button
+              size="sm"
+              className="h-6 text-[10px] px-2 bg-emerald-600 hover:bg-emerald-700 text-white"
+              disabled={disabled || finalizeDisabled}
+              onClick={() => void onFinalize()}
+              title="Sign and finalize this report"
+              data-testid="report-layout-finalize-btn"
+            >
+              <ShieldCheck className="h-3 w-3 mr-1" />
+              {finalizeLabel}
+            </Button>
+          ) : null}
           <Button
             size="sm"
             variant="outline"
@@ -267,8 +315,8 @@ export default function ReportExportPanel({
               ref={inlineScrollRef}
               className="h-64 overflow-y-scroll overflow-x-hidden rounded border bg-white overscroll-contain"
               data-testid="report-layout-preview-inline-scroll"
-              onDoubleClick={() => setEnlarged(true)}
-              title="Scroll to review · double-click or use Enlarge for full page"
+              onDoubleClick={handlePreviewDoubleClick}
+              title="Scroll to review · double-click to edit a section · Enlarge for full page"
             >
               <iframe
                 title="Report layout preview"
@@ -300,11 +348,33 @@ export default function ReportExportPanel({
         >
           <DialogHeader className="space-y-1 pr-8 shrink-0">
             <DialogTitle className="text-base">Report preview</DialogTitle>
-            <DialogDescription className="text-xs">
-              Full-page layout and content as it will print. Review before finalize. Esc or ✕ to close.
-            </DialogDescription>
+          <DialogDescription className="text-xs">
+            Full-page layout and content as it will print. Review before finalize. Esc or ✕ to close.
+            {onEditSection ? " Double-click the compact preview to pick a section to edit." : ""}
+          </DialogDescription>
+          {editPickerOpen && onEditSection && (
+            <div className="flex flex-wrap gap-1 pt-1" data-testid="report-preview-edit-sections">
+              {editSections.map((s) => (
+                <Button key={s.field} size="sm" variant="outline" className="h-7 text-[10px]" onClick={() => jumpToSection(s.field)}>
+                  Edit {s.label}
+                </Button>
+              ))}
+            </div>
+          )}
           </DialogHeader>
-          <div className="flex items-center gap-1 shrink-0">
+          <div className="flex items-center gap-1 shrink-0 flex-wrap">
+            {onFinalize ? (
+              <Button
+                size="sm"
+                className="h-7 text-[10px] bg-emerald-600 hover:bg-emerald-700"
+                disabled={finalizeDisabled}
+                onClick={() => void onFinalize()}
+                data-testid="report-preview-finalize"
+              >
+                <ShieldCheck className="h-3.5 w-3.5 mr-1" />
+                {finalizeLabel}
+              </Button>
+            ) : null}
             {([0.9, 1, 1.25] as const).map((z) => (
               <Button
                 key={z}

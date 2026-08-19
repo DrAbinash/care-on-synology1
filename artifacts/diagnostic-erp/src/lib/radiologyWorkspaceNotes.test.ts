@@ -40,14 +40,23 @@ describe("Radiology Reporting Workspace handwritten notes", () => {
     expect(workspace).toContain("patientName={canonicalDemography.patientName");
   });
 
-  it("referring doctor chips pick degree from doctors master, not a local add form", () => {
-    expect(refDoc).not.toContain('data-testid="ref-doctor-add-box"');
-    expect(refDoc).not.toContain('data-testid="ref-doctor-edit-degrees"');
-    expect(refDoc).not.toContain('placeholder="Add doctor…');
+  it("referring doctor quick select exposes add box and pencil editor with catalog degrees", () => {
+    expect(refDoc).toContain('data-testid="ref-doctor-add-box"');
+    expect(refDoc).toContain('data-testid="ref-doctor-edit-degrees"');
+    expect(refDoc).toContain('placeholder="Add doctor…');
     expect(refDoc).toContain("formatDoctorWithDegree");
     expect(workspace).toContain("formatDoctorWithDegree");
     expect(doctorsPage).toContain('register("degree")');
     expect(doctorsPage).toContain('regEdit("degree")');
+  });
+
+  it("History section saves server chips via + Add Title pencil editor", () => {
+    const historyStrip = read("components/radiology/ClinicalHistoryChipStrip.tsx");
+    expect(historyStrip).toContain('data-testid="history-add-title"');
+    expect(historyStrip).toContain("/api/radiology/quick-select/clinical-history");
+    expect(historyStrip).toContain('queryKey: ["radiology-quick-select"]');
+    expect(workspace).toContain("ClinicalHistoryChipStrip");
+    expect(workspace).toContain('onEditSection={focusReportField}');
   });
 
   it("protocol has + Add Title like History chips", () => {

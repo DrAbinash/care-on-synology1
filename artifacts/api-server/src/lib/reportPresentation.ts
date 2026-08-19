@@ -729,18 +729,19 @@ export function renderReportDocument(
     }
     .content-area.has-side-images > .image-panel-side {
       display: table-cell;
-      vertical-align: top;
+      vertical-align: stretch;
       width: 30%;
       max-width: ${panelWidthMm}mm;
       margin: 0;
       page-break-inside: auto;
       break-inside: auto;
+      height: 100%;
     }
     .content-area.has-side-images + .sigs { margin-top: 12px; }
     @media print {
       .content-area.has-side-images { display: table; width: 100%; }
       .image-panel-side { position: static; width: 30%; }
-      .content-area.has-side-images .image-panel-side .image-grid { grid-template-columns: 1fr; }
+      .content-area.has-side-images .image-panel-side .image-grid { flex-direction: column; }
     }` : ""}
 
     /* ── Section headings + body slots ── */
@@ -798,8 +799,26 @@ export function renderReportDocument(
       break-after: avoid-page;
     }
     .image-panel-inline .image-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
-    .image-panel-side .image-grid { display: grid; grid-template-columns: 1fr; gap: 4px; }
-    .image-panel-side .image-caption { padding: 1px 5px; font-size: 6.5px; }
+    .image-panel-side .image-grid {
+      display: flex;
+      flex-direction: column;
+      flex: 1 1 auto;
+      gap: 6px;
+      min-height: 0;
+    }
+    .image-panel-side.image-panel-keyrail {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      min-height: 100%;
+    }
+    .image-panel-side .image-cell {
+      flex: 1 1 0;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
+    .image-panel-side .image-caption { padding: 1px 5px; font-size: 6.5px; flex-shrink: 0; }
     .image-cell {
       margin: 0; border: 1px solid #e0e0e0; border-radius: 4px; overflow: hidden;
       background: #000; text-align: center;
@@ -815,7 +834,8 @@ export function renderReportDocument(
     .dicom-img { width: 100%; max-height: 70mm; object-fit: contain; display: block; background: #000; }
     ${sidePanel ? `
     .image-viewport {
-      position: relative; width: 100%; aspect-ratio: 4 / 3; overflow: hidden; background: #000;
+      position: relative; width: 100%; flex: 1 1 0; min-height: 14mm;
+      overflow: hidden; background: #000;
     }
     .image-viewport .image-framed {
       position: absolute; inset: 0;
@@ -827,18 +847,8 @@ export function renderReportDocument(
       object-fit: var(--img-fit, cover); object-position: center;
       display: block;
     }
-    /* Fixed print heights so 1–6 images stay on page 1 beside findings.
-       A 70mm frame times four overflowed the remaining A4 column and Chromium
-       moved the whole rail to page 2. Count-adaptive height keeps the
-       picture-frame size stable; the image never drives the page layout.
-       5–6 images use ~24mm (letter-pad jsPDF uses 38mm and wraps to page 2);
-       24mm still fits page 1 beside a full MRI findings column. */
-    .image-panel-side[data-image-count="1"] .image-viewport { height: 78mm; aspect-ratio: auto; }
-    .image-panel-side[data-image-count="2"] .image-viewport { height: 52mm; aspect-ratio: auto; }
-    .image-panel-side[data-image-count="3"] .image-viewport,
-    .image-panel-side[data-image-count="4"] .image-viewport { height: 30mm; aspect-ratio: auto; }
-    .image-panel-side[data-image-count="5"] .image-viewport,
-    .image-panel-side[data-image-count="6"] .image-viewport { height: 24mm; aspect-ratio: auto; }` : ""}
+    /* Side-rail images share the full column height evenly (1–6) so the dark
+       key-rail panel fills the right column without a blank band below. */` : ""}
     .image-panel-overflow { margin-top: 10px; }
     .image-caption {
       background: ${pal.accent}; color: #fff; font-weight: 600;

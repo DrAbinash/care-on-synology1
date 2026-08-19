@@ -222,7 +222,7 @@ describe("no reporting feature was deleted by the re-layout", () => {
     ["Re-apply defaults", 'data-testid="reapply-defaults"'],
     ["MRI readiness", "<MriReadinessStrip"],
     ["Template mismatch + load", 'data-testid="load-correct-template"'],
-    ["History chips", 'data-testid="clinical-history-chips"'],
+    ["History chips", "ClinicalHistoryChipStrip"],
     ["Clinical history editor", 'field="clinicalHistory"'],
     ["Technique editor", 'data-testid="canonical-technique-editor"'],
     ["Region macros", "<ChocolateBoxMacros"],
