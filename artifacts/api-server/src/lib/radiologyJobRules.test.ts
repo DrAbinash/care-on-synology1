@@ -26,17 +26,17 @@ describe("bounded retries with backoff", () => {
     expect(final.status).toBe(DEAD_LETTER_STATUS);
   });
 
-  it("no-DICOM / missing UID abandon after 2 attempts instead of occupying the slot for maxRetries", () => {
-    const first = decideFailure({
-      retryCount: 0, maxRetries: 5, now: NOW,
-      error: "no DICOM instances found for study (not yet arrived / not stable)",
-    });
-    expect(first.status).toBe("retrying");
-    const second = decideFailure({
-      retryCount: 1, maxRetries: 5, now: NOW,
-      error: "no DICOM instances found for study (not yet arrived / not stable)",
-    });
-    expect(second.status).toBe("abandoned");
+  it("no-DICOM retries longer while images may still be transferring to Orthanc", () => {
+    const err = "no DICOM instances found for study (not yet arrived / not stable)";
+    let retryCount = 0;
+    let status = "retrying";
+    while (status === "retrying" && retryCount < 10) {
+      const next = decideFailure({ retryCount, maxRetries: 5, now: NOW, error: err });
+      status = next.status;
+      retryCount = next.retryCount;
+    }
+    expect(retryCount).toBe(5);
+    expect(status).toBe("abandoned");
     const badPayload = decideFailure({
       retryCount: 0, maxRetries: 5, now: NOW,
       error: "invalid payload: studyInstanceUid required",

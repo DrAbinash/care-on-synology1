@@ -46,7 +46,7 @@ export function decideFailure(args: {
   const ceiling = /invalid payload: studyinstanceuid required/i.test(err)
     ? 1
     : /no dicom instances found/i.test(err)
-      ? Math.min(2, Math.max(1, args.maxRetries))
+      ? Math.min(8, Math.max(3, args.maxRetries))
       : Math.max(1, args.maxRetries);
   if (retryCount >= ceiling) {
     return { status: "abandoned", retryCount, nextRetryAt: null };

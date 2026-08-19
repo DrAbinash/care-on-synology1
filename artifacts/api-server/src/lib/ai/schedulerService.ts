@@ -148,11 +148,18 @@ export async function scheduleStudyOnDicomArrival(opts: {
 }): Promise<{ enqueued: boolean; reason: string }> {
   try {
     if (!opts.studyInstanceUid) return { enqueued: false, reason: "missing studyInstanceUid" };
+    const latest = await findLatestShadowJob(opts.studyInstanceUid);
+    const noDicomAbandoned = latest?.status === "abandoned"
+      && /no dicom instances found/i.test(latest.failureReason ?? "");
     const res = await scheduleStudy({
       studyInstanceUid: opts.studyInstanceUid,
       modality: opts.modality,
       priority: opts.priority ?? "routine",
       arrivalSignature: `dicom-arrival:${Date.now()}`,
+      // DICOM is stable now — enqueue even outside the night window and revive
+      // jobs that were abandoned while images were still transferring.
+      forceNightWindow: true,
+      forceRetry: noDicomAbandoned,
     });
     if (res.enqueued) {
       logger.info({ uid: opts.studyInstanceUid, modality: opts.modality, reason: res.reason }, "AI draft scheduled on DICOM arrival");
