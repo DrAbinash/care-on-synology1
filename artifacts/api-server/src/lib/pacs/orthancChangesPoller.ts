@@ -44,6 +44,7 @@
 import { db } from "@workspace/db";
 import { pacsSettingsTable, pacsLogsTable } from "@workspace/db/schema";
 import { and, eq } from "drizzle-orm";
+import { sanitizeDicomSex } from "@workspace/pathology";
 import { logger } from "../logger";
 import { isUltrasoundModality } from "../usgModality";
 import { isUsgErpPipelineEnabled } from "../usgExtractor";
@@ -328,7 +329,7 @@ async function ingestStudy(base: string, orthancStudyId: string, port: number): 
     studyDescription: (tags.StudyDescription ?? "").trim(),
     studyDate: (tags.StudyDate ?? "").trim(),
     referringDoctor: normalizePersonName(tags.ReferringPhysicianName),
-    sex: (patientTags.PatientSex ?? "").trim() || undefined,
+    sex: sanitizeDicomSex((patientTags.PatientSex ?? "").trim()) ?? undefined,
     aeTitle: "ORTHANC",
     sourcePacs: "ORTHANC",
   };

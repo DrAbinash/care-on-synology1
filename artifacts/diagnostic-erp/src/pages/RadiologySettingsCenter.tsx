@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { useLocation } from "wouter";
+import { Link, useLocation } from "wouter";
 import PresentationTemplateManager from "@/components/radiology/PresentationTemplateManager";
 import ReportLayoutQuickSelect, {
   type ReportLayoutKey,
@@ -635,66 +635,11 @@ export default function RadiologySettingsCenter() {
               <p className="text-[11px] text-muted-foreground">A red "waiting" badge appears on Worklist studies that haven't been finalized within this many hours — helps reception spot studies stuck in the queue.</p>
             </div>
           </div>
-          <div className="rounded-xl border bg-card p-5 space-y-3 max-w-2xl" data-testid="name-gender-extras-panel">
+          <div className="rounded-xl border bg-muted/30 p-4 space-y-2 max-w-2xl" data-testid="name-gender-extras-moved">
             <h3 className="text-sm font-bold">Patient name → Sex suggestion</h3>
             <p className="text-xs text-muted-foreground">
-              Bill Desk / Register / Patients / Kiosk pre-fill Sex from a bundled Indian first-name list.
-              Add clinic-specific names here (one per line) when a local name is missing — no code deploy needed.
-              Unisex names should stay off both lists.
+              Moved to <Link href="/settings?tab=clinic" className="text-primary underline">General Settings → Clinic Info</Link> so registration Sex pre-fill is configured alongside clinic identity, not under Radiology.
             </p>
-            {(() => {
-              const maleStored = sv("name_gender_male_extra", "");
-              const femaleStored = sv("name_gender_female_extra", "");
-              const toLines = (raw: string) => {
-                try {
-                  const parsed = raw ? JSON.parse(raw) : [];
-                  if (Array.isArray(parsed)) return parsed.map((x: unknown) => String(x)).join("\n");
-                } catch { /* fall through */ }
-                return raw;
-              };
-              return (
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <div className="space-y-1">
-                    <Label className="text-xs font-semibold">Extra male names</Label>
-                    <textarea
-                      key={`male-${maleStored}`}
-                      defaultValue={toLines(maleStored)}
-                      disabled={!isAdmin}
-                      rows={5}
-                      placeholder={"Raju\nChhotu"}
-                      className="w-full text-sm border rounded-md px-2 py-1.5 bg-background resize-y"
-                      onBlur={(e) => {
-                        const names = e.target.value.split(/[\n,]+/).map((s) => s.trim()).filter(Boolean);
-                        upsertSetting.mutate({
-                          key: "name_gender_male_extra",
-                          value: JSON.stringify(names),
-                          category: "radiology",
-                        });
-                      }}
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <Label className="text-xs font-semibold">Extra female names</Label>
-                    <textarea
-                      key={`female-${femaleStored}`}
-                      defaultValue={toLines(femaleStored)}
-                      disabled={!isAdmin}
-                      rows={5}
-                      placeholder={"Munni\nGudiya"}
-                      className="w-full text-sm border rounded-md px-2 py-1.5 bg-background resize-y"
-                      onBlur={(e) => {
-                        const names = e.target.value.split(/[\n,]+/).map((s) => s.trim()).filter(Boolean);
-                        upsertSetting.mutate({
-                          key: "name_gender_female_extra",
-                          value: JSON.stringify(names),
-                          category: "radiology",
-                        });
-                      }}
-                    />
-                  </div>
-                </div>
-              );
-            })()}
           </div>
 
           <div className="rounded-xl border bg-card p-4 space-y-2 max-w-2xl">

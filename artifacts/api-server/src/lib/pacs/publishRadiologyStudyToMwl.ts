@@ -18,6 +18,7 @@ import {
   radiologyStudiesTable,
 } from "@workspace/db/schema";
 import { eq } from "drizzle-orm";
+import { genderToDicomSex } from "@workspace/pathology";
 import { logger } from "../logger";
 import { isMwlEnabled, writeWorklistFile, removeWorklistFile } from "./mwlWorklistWriter";
 
@@ -27,14 +28,6 @@ function yyyymmdd(d: Date = new Date()): string {
 
 function hhmmss(d: Date = new Date()): string {
   return `${String(d.getHours()).padStart(2, "0")}${String(d.getMinutes()).padStart(2, "0")}${String(d.getSeconds()).padStart(2, "0")}`;
-}
-
-function sexCode(gender: string | null | undefined): string {
-  const g = (gender || "").trim().toUpperCase();
-  if (g.startsWith("M")) return "M";
-  if (g.startsWith("F")) return "F";
-  if (g.startsWith("O")) return "O";
-  return "";
 }
 
 function dobCompact(dob: string | null | undefined): string | null {
@@ -113,7 +106,7 @@ export async function publishRadiologyStudyToMwl(opts: {
           .set({
             patientId: patient?.uhid ?? String(opts.patientId),
             patientName: patientName || null,
-            patientSex: sexCode(patient?.gender) || null,
+            patientSex: genderToDicomSex(patient?.gender) || null,
             patientAge,
             patientDob: dobCompact(patient?.dateOfBirth),
             modality: opts.modality || null,
@@ -142,7 +135,7 @@ export async function publishRadiologyStudyToMwl(opts: {
             accessionNumber,
             patientId: patient?.uhid ?? String(opts.patientId),
             patientName: patientName || null,
-            patientSex: sexCode(patient?.gender) || null,
+            patientSex: genderToDicomSex(patient?.gender) || null,
             patientAge,
             patientDob: dobCompact(patient?.dateOfBirth),
             modality: opts.modality || null,

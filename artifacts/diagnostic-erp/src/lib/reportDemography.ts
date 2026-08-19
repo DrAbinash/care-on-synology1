@@ -13,6 +13,7 @@
  */
 
 import { formatAgeForPrint, isPlausibleAgeYears, isSentinelDob } from "./age";
+import { sanitizeDicomSex } from "@workspace/pathology";
 
 export interface ReportDemography {
   patientName: string;
@@ -43,11 +44,7 @@ export function dicomAgeToDisplay(raw: string | null | undefined): string {
 
 /** DICOM PatientSex ("M"/"F"/"O"/"MALE"/…) → single-letter normalized. */
 export function normalizeSex(raw: string | null | undefined): string {
-  const s = String(raw ?? "").trim().toUpperCase();
-  if (!s) return "";
-  if (s.startsWith("M")) return "M";
-  if (s.startsWith("F")) return "F";
-  return "O";
+  return sanitizeDicomSex(raw) ?? "";
 }
 
 type SourceBag = Record<string, unknown> | null | undefined;
