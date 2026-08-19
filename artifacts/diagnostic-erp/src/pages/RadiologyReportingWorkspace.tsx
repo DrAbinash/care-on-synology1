@@ -2979,6 +2979,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                         <ClinicalHistoryChipStrip
                           chips={clinicalHistoryChips}
                           studyRegions={studySetup.studyRegions}
+                          defaultStudyType={studySetup.studyRegions[0] || studySetup.matchedStudyRegion || "MRI Brain"}
                           clinicalHistoryText={clinicalHistoryText}
                           onClinicalHistoryChange={(next) => useWorkspace.getState().setField("clinicalHistory", next)}
                           isOwner={isOwner}

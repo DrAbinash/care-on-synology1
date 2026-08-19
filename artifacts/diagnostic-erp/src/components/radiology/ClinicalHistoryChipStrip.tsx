@@ -28,6 +28,7 @@ type ChipDraft = {
 export default function ClinicalHistoryChipStrip({
   chips,
   studyRegions,
+  defaultStudyType,
   clinicalHistoryText,
   onClinicalHistoryChange,
   isOwner,
@@ -35,6 +36,8 @@ export default function ClinicalHistoryChipStrip({
 }: {
   chips: QuickClinicalHistoryChip[];
   studyRegions: string[];
+  /** Used when no study region is picked yet (empty worklist / new chip). */
+  defaultStudyType?: string;
   clinicalHistoryText: string;
   onClinicalHistoryChange: (next: string) => void;
   isOwner: boolean;
@@ -69,7 +72,7 @@ export default function ClinicalHistoryChipStrip({
   });
 
   const openNew = () => {
-    const studyType = studyRegions[0] ?? "";
+    const studyType = studyRegions[0] ?? defaultStudyType ?? "MRI Brain";
     setEditing({
       studyType,
       displayLabel: "",
