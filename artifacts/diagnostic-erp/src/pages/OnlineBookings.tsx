@@ -91,10 +91,15 @@ export default function OnlineBookingsPage() {
 
   const confirmMutation = useMutation({
     mutationFn: (id: number) => api.post(`/api/online-bookings/${id}/confirm`, {}),
-    onSuccess: (res: { billId: number }) => {
+    onSuccess: (res: { billId: number; dueAtCentre?: boolean }) => {
       qc.invalidateQueries({ queryKey: ["online-bookings"] });
       setConfirmOpen(false);
-      toast({ title: "Booking confirmed", description: `Bill #${res.billId} created and tokens issued.` });
+      toast({
+        title: res.dueAtCentre ? "Booking confirmed — due at Billing Desk" : "Booking confirmed",
+        description: res.dueAtCentre
+          ? `Unpaid bill #${res.billId} created. Collect cash/UPI/card at Billing Desk — this does not post Online Collections.`
+          : `Bill #${res.billId} created and tokens issued.`,
+      });
     },
     onError: (e: Error) => toast({ title: "Error", description: e.message, variant: "destructive" }),
   });
@@ -353,11 +358,21 @@ export default function OnlineBookingsPage() {
             </DialogHeader>
             <div className="space-y-2 text-sm">
               <p>Confirming <strong>{selected.bookingRef}</strong> for <strong>{selected.name}</strong> will:</p>
-              <ul className="list-disc ml-5 space-y-1 text-muted-foreground">
-                <li>Create or link the patient record</li>
-                <li>Create an order and a paid bill (₹{Number(selected.totalAmount).toLocaleString("en-IN")})</li>
-                <li>Issue queue tokens {selected.isVip ? "(VIP priority)" : "(online queue)"}</li>
-              </ul>
+              {(selected.source === "reception" || selected.source === "phone") && selected.status === "pending_payment" ? (
+                <ul className="list-disc ml-5 space-y-1 text-muted-foreground">
+                  <li>Create or link the patient record</li>
+                  <li>Create an order and an <strong className="text-foreground">unpaid bill</strong> (₹{Number(selected.totalAmount).toLocaleString("en-IN")} due)</li>
+                  <li>Not record a payment and not post Online Collections / ICICI</li>
+                  <li>Issue queue tokens {selected.isVip ? "(VIP priority)" : "(online queue)"}</li>
+                  <li>Collect cash / UPI / card later at Billing Desk — that is what posts accounts</li>
+                </ul>
+              ) : (
+                <ul className="list-disc ml-5 space-y-1 text-muted-foreground">
+                  <li>Create or link the patient record</li>
+                  <li>Create an order and a paid bill (₹{Number(selected.totalAmount).toLocaleString("en-IN")})</li>
+                  <li>Issue queue tokens {selected.isVip ? "(VIP priority)" : "(online queue)"}</li>
+                </ul>
+              )}
               <p className="text-muted-foreground">Appointment date: <strong className="text-foreground">{selected.selectedDate}</strong>{selected.timeSlot && <> · <strong className="text-foreground">{selected.timeSlot}</strong></>}</p>
             </div>
             <DialogFooter>
@@ -425,7 +440,7 @@ export default function OnlineBookingsPage() {
           } else {
             toast({
               title: "Booking saved — pay at centre",
-              description: `${booking.bookingRef} is holding the slot. Confirm it when the patient pays at the counter.`,
+              description: `${booking.bookingRef} is holding the slot. Confirm when the patient arrives to create an unpaid bill, then collect at Billing Desk.`,
             });
           }
         }}

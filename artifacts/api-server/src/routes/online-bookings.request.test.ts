@@ -15,6 +15,10 @@ import {
   onlineBookingsTable,
   portalSessionsTable,
   usersTable,
+  billsTable,
+  paymentsTable,
+  vouchersTable,
+  testTokensTable,
 } from "@workspace/db/schema";
 import { eq, like } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
@@ -101,6 +105,8 @@ describe.skipIf(!dbAvailable)("Online booking reception + slot capacity — requ
   afterAll(async () => {
     await db.delete(onlineBookingsTable).where(like(onlineBookingsTable.bookingRef, "OB2099%")).catch(() => {});
     await db.delete(onlineBookingsTable).where(eq(onlineBookingsTable.selectedDate, date)).catch(() => {});
+    await db.delete(onlineBookingsTable).where(eq(onlineBookingsTable.selectedDate, "2099-07-01")).catch(() => {});
+    await db.delete(onlineBookingsTable).where(eq(onlineBookingsTable.selectedDate, "2099-07-02")).catch(() => {});
     if (adminToken) await db.delete(portalSessionsTable).where(eq(portalSessionsTable.token, adminToken)).catch(() => {});
     if (adminUserId) await db.delete(usersTable).where(eq(usersTable.id, adminUserId)).catch(() => {});
     if (insertedSettings && settingsRowId) {
@@ -225,5 +231,89 @@ describe.skipIf(!dbAvailable)("Online booking reception + slot capacity — requ
       .where(eq(onlineBookingsTable.bookingRef, res.body.bookingRef))
       .limit(1);
     expect(row.source).toBe("website");
+  });
+
+  test("Pay at Centre confirm creates an unpaid due bill and does not post ICICI/online collection", async () => {
+    const payDate = "2099-07-01";
+    await db.delete(onlineBookingsTable).where(eq(onlineBookingsTable.selectedDate, payDate));
+
+    const created = await request(app)
+      .post("/api/online-bookings")
+      .set("Authorization", `Bearer ${fx.token}`)
+      .send({
+        patientId: fx.patientId,
+        selectedDate: payDate,
+        timeSlot: slot,
+        testIds: [fx.testId],
+        packageIds: [],
+        source: "phone",
+      });
+    expect(created.status).toBe(201);
+    const bookingId = created.body.booking.id as number;
+
+    // Share Link initiate used to stamp ICICI ids before money arrived.
+    await db.update(onlineBookingsTable).set({
+      iciciTransactionId: created.body.booking.bookingRef,
+      iciciProviderRefId: "initiate-only-tran-ctx",
+    }).where(eq(onlineBookingsTable.id, bookingId));
+
+    const confirmed = await request(app)
+      .post(`/api/online-bookings/${bookingId}/confirm`)
+      .set("Authorization", `Bearer ${fx.token}`)
+      .send({});
+    expect(confirmed.status).toBe(200);
+    expect(confirmed.body.dueAtCentre).toBe(true);
+    expect(confirmed.body.billId).toBeGreaterThan(0);
+
+    const billId = confirmed.body.billId as number;
+    const [bill] = await db.select().from(billsTable).where(eq(billsTable.id, billId)).limit(1);
+    expect(bill.status).toBe("pending");
+    expect(Number(bill.paidAmount)).toBe(0);
+    expect(Number(bill.balanceAmount)).toBeGreaterThan(0);
+
+    const pays = await db.select().from(paymentsTable).where(eq(paymentsTable.billId, billId));
+    expect(pays).toHaveLength(0);
+
+    const vouchers = await db.select().from(vouchersTable).where(eq(vouchersTable.billId, billId));
+    expect(vouchers).toHaveLength(0);
+
+    const [row] = await db.select().from(onlineBookingsTable).where(eq(onlineBookingsTable.id, bookingId)).limit(1);
+    expect(row.status).toBe("confirmed");
+    expect(row.iciciTransactionId).toBeNull();
+    expect(row.iciciProviderRefId).toBeNull();
+
+    await db.delete(testTokensTable).where(eq(testTokensTable.billId, billId)).catch(() => {});
+    await db.delete(onlineBookingsTable).where(eq(onlineBookingsTable.id, bookingId)).catch(() => {});
+  });
+
+  test("Share payment link returns 400 (or 200), never 502/503", async () => {
+    const linkDate = "2099-07-02";
+    await db.delete(onlineBookingsTable).where(eq(onlineBookingsTable.selectedDate, linkDate));
+
+    const created = await request(app)
+      .post("/api/online-bookings")
+      .set("Authorization", `Bearer ${fx.token}`)
+      .send({
+        patientId: fx.patientId,
+        selectedDate: linkDate,
+        timeSlot: slot,
+        testIds: [fx.testId],
+        packageIds: [],
+        source: "reception",
+      });
+    expect(created.status).toBe(201);
+
+    const link = await request(app)
+      .post(`/api/online-bookings/${created.body.booking.id}/payment-link`)
+      .set("Authorization", `Bearer ${fx.token}`)
+      .send({});
+    expect([200, 400]).toContain(link.status);
+    expect(link.status).not.toBe(502);
+    expect(link.status).not.toBe(503);
+    if (link.status === 400) {
+      expect(String(link.body.error || "")).not.toMatch(/temporarily unavailable/i);
+    }
+
+    await db.delete(onlineBookingsTable).where(eq(onlineBookingsTable.id, created.body.booking.id)).catch(() => {});
   });
 });
