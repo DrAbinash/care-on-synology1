@@ -20,7 +20,7 @@ import {
   vouchersTable,
   testTokensTable,
 } from "@workspace/db/schema";
-import { eq, like } from "drizzle-orm";
+import { eq, like, sql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 
 const dbAvailable = hasDatabaseUrl();
@@ -39,6 +39,8 @@ describe.skipIf(!dbAvailable)("Online booking reception + slot capacity — requ
   beforeAll(async () => {
     app = await createTestApp();
     fx = await seedBillingFixture();
+    // db:push does not run SQL migrations; bill numbers need this sequence.
+    await db.execute(sql`CREATE SEQUENCE IF NOT EXISTS bill_number_seq`);
 
     const bookingPatch = {
       onlineBookingEnabled: true,
@@ -261,7 +263,7 @@ describe.skipIf(!dbAvailable)("Online booking reception + slot capacity — requ
       .post(`/api/online-bookings/${bookingId}/confirm`)
       .set("Authorization", `Bearer ${fx.token}`)
       .send({});
-    expect(confirmed.status).toBe(200);
+    expect(confirmed.status, JSON.stringify(confirmed.body)).toBe(200);
     expect(confirmed.body.dueAtCentre).toBe(true);
     expect(confirmed.body.billId).toBeGreaterThan(0);
 
