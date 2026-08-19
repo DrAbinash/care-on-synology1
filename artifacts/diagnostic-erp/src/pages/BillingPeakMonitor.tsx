@@ -135,7 +135,7 @@ function LatencyBlock({ title, s, threshold }: { title: string; s: LatencySummar
   );
 }
 
-export function BillingPeakMonitorPanel({ compact = false }: { compact?: boolean }) {
+export function BillingPeakMonitorPanel({ compact = false, hideTitle = false }: { compact?: boolean; hideTitle?: boolean }) {
   const [copied, setCopied] = useState(false);
   const { data, isFetching, refetch, error } = useQuery<ApiResponse>({
     queryKey: ["billing-performance-snapshot"],
@@ -162,11 +162,13 @@ export function BillingPeakMonitorPanel({ compact = false }: { compact?: boolean
   return (
     <div className={compact ? "space-y-3" : "space-y-4"} data-testid="billing-peak-monitor">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2 text-sm font-semibold">
-          <Gauge className="h-4 w-4 text-primary" />
-          Clinic Peak / Billing Lane
-        </div>
-        <div className="flex items-center gap-2">
+        {!hideTitle && (
+          <div className="flex items-center gap-2 text-sm font-semibold">
+            <Gauge className="h-4 w-4 text-primary" />
+            Clinic Peak / Billing Lane
+          </div>
+        )}
+        <div className={`flex items-center gap-2 ${hideTitle ? "ml-auto" : ""}`}>
           <Button type="button" size="sm" variant="outline" onClick={() => void copy()} disabled={!data?.text}>
             <Copy className="h-3.5 w-3.5 mr-1" />
             {copied ? "Copied" : "Copy Performance Snapshot"}

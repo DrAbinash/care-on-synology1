@@ -107,6 +107,27 @@ export interface TemplateDefinition {
   watermark: { enabled: boolean; text: string };
   qr: { show: boolean };
   pageBreaks: { orphans: number; widows: number };
+  /**
+   * Optional CARE letter-pad chrome. When kind is care-letterpad, preview/print
+   * use the printed-pad logo + St. Francis address from this block (Radiology
+   * Settings → Report Style), not clinic CRM / letterhead-scale dropdowns.
+   */
+  letterhead?: {
+    kind: "care-letterpad" | "clinic";
+    clinicName?: string;
+    addressLine1?: string;
+    addressLine2?: string;
+    phones?: string;
+    email?: string;
+    website?: string;
+    logoHeight?: string;
+    addressFontSize?: string;
+    radiologist?: string;
+    credentials?: string;
+    servicesRow1?: string;
+    servicesRow2?: string;
+    disclaimer?: string;
+  };
 }
 
 /** A stored template version (DB row shape, sans DB plumbing). */
@@ -200,6 +221,7 @@ export function validateTemplateDefinition(def: unknown): TemplateValidationIssu
   checkKnownKeys(issues, "definition", d, [
     "typography", "colors", "spacing", "page", "header", "patientBlock",
     "studyTitle", "signature", "footer", "imagePanel", "watermark", "qr", "pageBreaks",
+    "letterhead",
   ]);
 
   // typography slots
@@ -324,6 +346,42 @@ export function validateTemplateDefinition(def: unknown): TemplateValidationIssu
     }
   }
 
+  if (d.letterhead != null) {
+    if (typeof d.letterhead !== "object" || Array.isArray(d.letterhead)) {
+      issues.push({ path: "letterhead", message: "letterhead must be an object" });
+    } else {
+      const lh = d.letterhead as Record<string, unknown>;
+      checkKnownKeys(issues, "letterhead", lh, [
+        "kind", "clinicName", "addressLine1", "addressLine2", "phones", "email",
+        "website", "logoHeight", "addressFontSize", "radiologist", "credentials",
+        "servicesRow1", "servicesRow2", "disclaimer",
+      ]);
+      if (lh.kind != null && lh.kind !== "care-letterpad" && lh.kind !== "clinic") {
+        issues.push({ path: "letterhead.kind", message: "kind must be care-letterpad|clinic" });
+      }
+      for (const [field, max] of [
+        ["clinicName", 80], ["addressLine1", 200], ["addressLine2", 80],
+        ["phones", 80], ["email", 80], ["website", 80],
+        ["radiologist", 80], ["credentials", 120],
+        ["servicesRow1", 300], ["servicesRow2", 300], ["disclaimer", 400],
+      ] as const) {
+        const v = lh[field];
+        if (v == null) continue;
+        if (typeof v !== "string" || v.length > max) {
+          issues.push({ path: `letterhead.${field}`, message: `must be a string of at most ${max} characters` });
+        } else if (forbidden(v)) {
+          issues.push({ path: `letterhead.${field}`, message: "contains forbidden characters (markup/script/URL/CSS)" });
+        }
+      }
+      for (const field of ["logoHeight", "addressFontSize"] as const) {
+        const v = lh[field];
+        if (v != null && (typeof v !== "string" || !MEASUREMENT.test(v))) {
+          issues.push({ path: `letterhead.${field}`, message: `"${String(v).slice(0, 40)}" is not a bounded measurement` });
+        }
+      }
+    }
+  }
+
   // final sweep: NO string anywhere in the definition may carry forbidden content
   const sweep = (value: unknown, path: string): void => {
     if (typeof value === "string") {
@@ -441,6 +499,7 @@ export interface ResolvedTemplate extends PresentationTemplate {
   impressionTypography: SlotTypography;
   bodyLineHeight?: string;
   bodyTextAlign?: string;
+  letterhead?: TemplateDefinition["letterhead"];
 }
 
 export function compileTemplate(record: Pick<TemplateVersionRecord, "templateKey" | "version" | "displayName" | "copyType" | "definition"> & { description?: string | null }): ResolvedTemplate {
@@ -476,6 +535,11 @@ export function compileTemplate(record: Pick<TemplateVersionRecord, "templateKey
     impressionTypography: toSlotTypography(d.typography.impression),
     bodyLineHeight: d.typography.body?.lineHeight ?? d.spacing?.lineHeight,
     bodyTextAlign: d.typography.body?.textAlign,
+    letterhead: d.letterhead ?? (
+      record.templateKey === "care-classic" || record.templateKey === "care-premium"
+        ? { kind: "care-letterpad" as const }
+        : undefined
+    ),
   };
 }
 

@@ -21,7 +21,7 @@ import {
   isDimsePullAgentRunning,
 } from "./services/dicom-pull-agent/dimse-agent";
 import { runRadiologyJobTick, countDueJobs } from "./lib/radiologyJobs";
-import { RADIOLOGY_JOB_HANDLERS } from "./lib/radiologyJobHandlers";
+import { PACS_REARCHIVE_JOB, RADIOLOGY_JOB_HANDLERS } from "./lib/radiologyJobHandlers";
 import { runScheduledAuditChainVerification } from "./lib/auditVerification";
 import { todayIST, istHourMinute } from "./lib/istDate";
 import { isClinicPeakHours, clinicPeakHoursLabel } from "./lib/clinicPeakHours";
@@ -43,6 +43,9 @@ import {
 
 let currentTask: ReturnType<typeof cron.schedule> | null = null;
 let radiologyJobConsumerStarted = false;
+let overnightAiTickInFlight = false;
+let overnightAiInterval: ReturnType<typeof setInterval> | null = null;
+let otherRadiologyJobsStarted = false;
 // Track already-fired events per day to avoid double-firing
 const firedToday = new Set<string>();
 
@@ -67,6 +70,7 @@ export function startCronScheduler() {
   scheduleFeedbackInvites();
   scheduleOpsAnomalyScan();
   startRadiologyJobConsumer();
+  startOtherRadiologyJobConsumer();
   scheduleAuditChainVerify();
   scheduleQueueDisplayAlerts();
   scheduleInventoryLowStockAlerts();
@@ -163,67 +167,129 @@ function scheduleAiSchedulerModes() {
  * is unset. The NAS .env may set ENABLE_SCHEDULERS=1, but Compose only injects
  * keys listed in docker-compose.yml — a missed recreate leaves the flag off
  * inside care-api while HTTP enqueue still fills dicom_retry_queue.
- * Duplicate registration is a no-op. Concurrent processes are safe: claim
- * uses FOR UPDATE SKIP LOCKED; AI concurrency stays 1 via running-row count.
+ *
+ * This consumer drains ONLY ai_shadow_pipeline (concurrency 1). Other radiology
+ * job types stay behind ENABLE_SCHEDULERS so a restore-verify cannot occupy the
+ * overnight tick. Duplicate registration is a no-op. Concurrent processes are
+ * safe: claim uses FOR UPDATE SKIP LOCKED; in-process overlap is mutexed.
  */
 export function startRadiologyJobConsumer(): void {
   if (radiologyJobConsumerStarted) return;
   radiologyJobConsumerStarted = true;
   markRadiologyJobConsumerRegistered();
-  scheduleRadiologyJobs();
+  const run = () => {
+    void fireOvernightAiTick().catch((err) => {
+      console.error("[cron] overnight AI tick failed:", err);
+    });
+  };
+  // First poll soon so diagnostics are not STOPPED for a full minute after boot,
+  // and so we do not depend on node-cron timezone matching.
+  setTimeout(run, 8_000).unref?.();
+  overnightAiInterval = setInterval(run, 60_000);
+  overnightAiInterval.unref?.();
+  // Backup minute trigger (no timezone — * * * * * is TZ-independent).
+  cron.schedule("* * * * *", async () => {
+    try {
+      await fireOvernightAiTick();
+    } catch (err) {
+      console.error("[cron] overnight AI cron tick failed:", err);
+    }
+  });
   scheduleAiSchedulerModes();
-  console.log("[cron] radiology job consumer registered (overnight AI drain every minute, IST)");
+  console.log("[cron] overnight AI consumer registered (8s first poll, then every 60s; independent of ENABLE_SCHEDULERS)");
+}
+
+/** Non-AI dicom_retry_queue types (restore-verify, redelivery, PACS). ENABLE_SCHEDULERS only. */
+export function startOtherRadiologyJobConsumer(): void {
+  if (otherRadiologyJobsStarted) return;
+  otherRadiologyJobsStarted = true;
+  cron.schedule("* * * * *", async () => {
+    try {
+      await fireOtherRadiologyJobTick();
+    } catch (err) {
+      console.error("[cron] other radiology job tick failed:", err);
+    }
+  });
 }
 
 function scheduleRadiologyJobs() {
-  cron.schedule("* * * * *", async () => {
-    try {
-      await fireRadiologyJobTick();
-    } catch (err) {
-      console.error("[cron] radiology job tick failed:", err);
-    }
-  }, { timezone: "Asia/Kolkata" });
+  // Kept for tests that grep this name; overnight drain is startRadiologyJobConsumer.
+  startRadiologyJobConsumer();
 }
 
-/** One drain pass of dicom_retry_queue. Used by the minute cron and POST /api/internal/cron/radiology-jobs. */
-export async function fireRadiologyJobTick(): Promise<{
+/** One overnight AI drain pass. Used by the 60s timer and POST /api/internal/cron/radiology-jobs. */
+export async function fireRadiologyJobTick(opts: {
+  canary?: boolean;
+  jobId?: number;
+} = {}): Promise<{
   requeuedStale: number;
   ran: Array<{ id: number; operationType: string; outcome: string }>;
+  skipped?: string;
 }> {
+  return fireOvernightAiTick(opts);
+}
+
+export async function fireOvernightAiTick(opts: {
+  canary?: boolean;
+  jobId?: number;
+} = {}): Promise<{
+  requeuedStale: number;
+  ran: Array<{ id: number; operationType: string; outcome: string }>;
+  skipped?: string;
+}> {
+  if (overnightAiTickInFlight && opts.jobId == null) {
+    return { requeuedStale: 0, ran: [], skipped: "in_flight" };
+  }
+  overnightAiTickInFlight = true;
   const peak = isClinicPeakHours();
   let aiMax = 1;
   let dueAi = 0;
-  let aiBlocked = false;
+  const aiBlocked = peak;
+  recordRadiologyJobCronTick({
+    peak,
+    aiBlocked,
+    dueAi: 0,
+    ran: 0,
+  });
   try {
     const { getOvernightVisionInferenceOptions } = await import("./lib/ai/overnightVisionConfig");
     const { getSchedulerConfig } = await import("./lib/ai/clinicalConfigService");
     const vision = await getOvernightVisionInferenceOptions();
     const sched = await getSchedulerConfig();
-    aiMax = Math.max(1, Math.min(vision.concurrency, sched.maxConcurrentJobs));
+    aiMax = Math.max(1, Math.min(1, vision.concurrency, sched.maxConcurrentJobs));
   } catch { /* keep 1 */ }
   try {
     const { AI_SHADOW_PIPELINE_JOB } = await import("./lib/ai/shadowPipeline");
-    const { PACS_REARCHIVE_JOB } = await import("./lib/radiologyJobHandlers");
-    aiBlocked = peak;
     dueAi = await countDueJobs(AI_SHADOW_PIPELINE_JOB);
-    const result = await runRadiologyJobTick(RADIOLOGY_JOB_HANDLERS, {
-      maxJobs: peak ? 1 : 5,
-      concurrencyByType: peak
-        ? { [AI_SHADOW_PIPELINE_JOB]: 0, [PACS_REARCHIVE_JOB]: 0 }
-        : { [AI_SHADOW_PIPELINE_JOB]: aiMax },
-    });
-    const aiRun = result.ran.find((r) => r.operationType === AI_SHADOW_PIPELINE_JOB);
+    if (aiBlocked) {
+      recordRadiologyJobCronTick({ peak, aiBlocked: true, dueAi, ran: 0 });
+      return { requeuedStale: 0, ran: [], skipped: "peak_hold" };
+    }
+    const handler = RADIOLOGY_JOB_HANDLERS[AI_SHADOW_PIPELINE_JOB];
+    if (!handler) return { requeuedStale: 0, ran: [], skipped: "no_handler" };
+    const result = await runRadiologyJobTick(
+      { [AI_SHADOW_PIPELINE_JOB]: handler },
+      {
+        maxJobs: 1,
+        concurrencyByType: { [AI_SHADOW_PIPELINE_JOB]: aiMax },
+        claimStrategy: "overnight_ai",
+        jobId: opts.jobId,
+        preferNewest: opts.canary === true && opts.jobId == null,
+        workerId: opts.canary ? `canary-${process.pid}` : `overnight-${process.pid}`,
+      },
+    );
+    const aiRun = result.ran[0];
     recordRadiologyJobCronTick({
       peak,
-      aiBlocked,
+      aiBlocked: false,
       dueAi,
       ran: result.ran.length,
-      claimedJobId: aiRun?.id ?? result.ran[0]?.id ?? null,
-      claimedType: aiRun?.operationType ?? result.ran[0]?.operationType ?? null,
-      outcome: aiRun?.outcome ?? result.ran[0]?.outcome ?? null,
+      claimedJobId: aiRun?.id ?? null,
+      claimedType: aiRun?.operationType ?? null,
+      outcome: aiRun?.outcome ?? null,
     });
     if (result.ran.length > 0 || result.requeuedStale > 0) {
-      console.log("[cron] radiology jobs:", JSON.stringify(result));
+      console.log("[cron] overnight AI:", JSON.stringify(result));
     }
     return result;
   } catch (err) {
@@ -235,7 +301,23 @@ export async function fireRadiologyJobTick(): Promise<{
       error: err instanceof Error ? err.message : String(err),
     });
     throw err;
+  } finally {
+    overnightAiTickInFlight = false;
   }
+}
+
+async function fireOtherRadiologyJobTick(): Promise<void> {
+  const { AI_SHADOW_PIPELINE_JOB } = await import("./lib/ai/shadowPipeline");
+  const others: typeof RADIOLOGY_JOB_HANDLERS = {};
+  for (const [k, h] of Object.entries(RADIOLOGY_JOB_HANDLERS)) {
+    if (k !== AI_SHADOW_PIPELINE_JOB) others[k] = h;
+  }
+  const peak = isClinicPeakHours();
+  await runRadiologyJobTick(others, {
+    maxJobs: peak ? 1 : 3,
+    concurrencyByType: peak ? { [PACS_REARCHIVE_JOB]: 0 } : {},
+    workerId: `radiology-other-${process.pid}`,
+  });
 }
 
 // ── BEND-1: scheduled audit-chain verification (safe default cadence) ────────

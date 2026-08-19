@@ -52,6 +52,10 @@ describe("letter-pad PDF preview artifact", () => {
     expect(text).toContain("DEOGHAR-814 112");
     expect(text).toContain("75490 99099");
     expect(text).toContain("St. Francis School Road");
+    expect(text).toMatch(/DEOGHAR-814 112\s*\n\s*\(JHARKHAND\)/);
+    expect(text).toContain("care.deoghar@gmail.com");
+    expect(text).not.toContain("CARE.DEOGHAR@GMAIL.COM");
+    expect(text).toContain("www.caredeoghar.com");
     expect(text).not.toContain("WRONG ADDRESS");
     expect(text).not.toContain("0000000000");
 
@@ -66,5 +70,38 @@ describe("letter-pad PDF preview artifact", () => {
       new URL("../../public/care-diagnostics-letterhead-logo.png", import.meta.url),
     );
     expect(CARE_LETTERHEAD_LOGO_DATA_URL).toContain(publicPng.toString("base64").slice(0, 80));
+  });
+
+  it("uses presentation-template letterhead copy when provided", () => {
+    const doc = generateReportPDF(
+      {
+        patientName: "Template Patient",
+        age: "30 Y",
+        sex: "F",
+        studyDate: "20260818",
+        referringDoctor: "Dr Test",
+        findings: "Normal.",
+        impression: "Normal.",
+        reportTitle: "MRI BRAIN",
+      },
+      DEFAULT_PRINT_SETTINGS,
+      { name: "IGNORED", address: "WRONG", email: "CARE.DEOGHAR@GMAIL.COM" },
+      {
+        save: false,
+        letterhead: {
+          kind: "care-letterpad",
+          email: "desk@caredeoghar.com",
+          website: "www.example-clinic.in",
+        },
+      },
+    );
+    mkdirSync("/opt/cursor/artifacts", { recursive: true });
+    const out = "/opt/cursor/artifacts/letterpad-template-chrome.pdf";
+    writeFileSync(out, Buffer.from(doc.output("arraybuffer")));
+    const text = execFileSync("pdftotext", ["-layout", out, "-"], { encoding: "utf8" });
+    expect(text).toContain("desk@caredeoghar.com");
+    expect(text).toContain("www.example-clinic.in");
+    expect(text).not.toContain("care.deoghar@gmail.com");
+    expect(text).toContain("St. Francis School Road");
   });
 });

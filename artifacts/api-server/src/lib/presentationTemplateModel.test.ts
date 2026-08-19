@@ -122,6 +122,21 @@ describe("definition validation (Phases 2/7 — the security boundary)", () => {
     }
   });
 
+  it("accepts CARE letter-pad fields and rejects URL-smuggling in website", () => {
+    const d = validDef();
+    expect(d.letterhead?.email).toBe("care.deoghar@gmail.com");
+    expect(d.letterhead?.website).toBe("www.caredeoghar.com");
+    expect(validateTemplateDefinition(d)).toEqual([]);
+    d.letterhead = { kind: "care-letterpad", website: "https://caredeoghar.com" };
+    expect(validateTemplateDefinition(d).some((i) => i.path === "letterhead.website")).toBe(true);
+    const d2 = validDef();
+    d2.letterhead = { kind: "nope" as "care-letterpad" };
+    expect(validateTemplateDefinition(d2).some((i) => i.path === "letterhead.kind")).toBe(true);
+    const d3 = validDef();
+    d3.letterhead = { kind: "care-letterpad", logoHeight: "huge" };
+    expect(validateTemplateDefinition(d3).some((i) => i.path === "letterhead.logoHeight")).toBe(true);
+  });
+
   it("template keys and display names are slug/length/content-checked", () => {
     expect(validateTemplateKey("care-classic")).toEqual([]);
     expect(validateTemplateKey("My Template").length).toBe(1);

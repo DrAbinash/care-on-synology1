@@ -24,15 +24,31 @@ export function computeBackoffMs(retryCount: number): number {
   return base * 2 ** capped;
 }
 
+/** Failures that will not succeed on retry (bad payload, or DICOM never arriving). */
+export function isPermanentShadowFailure(error: string): boolean {
+  const e = error.toLowerCase();
+  return e.includes("invalid payload: studyinstanceuid required")
+    || e.includes("no dicom instances found");
+}
+
 /** After a failed attempt: bounded retries, then dead-letter. NEVER an
- *  infinite retry — maxRetries is a hard ceiling. */
+ *  infinite retry — maxRetries is a hard ceiling.
+ *  Permanently invalid studies stop quickly so they cannot occupy the single
+ *  AI claim slot for hours while tonight's MRI waits. */
 export function decideFailure(args: {
   retryCount: number;   // attempts already recorded BEFORE this failure
   maxRetries: number;
   now: Date;
+  error?: string | null;
 }): { status: RadiologyJobStatus; retryCount: number; nextRetryAt: Date | null } {
   const retryCount = args.retryCount + 1;
-  if (retryCount >= Math.max(1, args.maxRetries)) {
+  const err = args.error ?? "";
+  const ceiling = /invalid payload: studyinstanceuid required/i.test(err)
+    ? 1
+    : /no dicom instances found/i.test(err)
+      ? Math.min(2, Math.max(1, args.maxRetries))
+      : Math.max(1, args.maxRetries);
+  if (retryCount >= ceiling) {
     return { status: "abandoned", retryCount, nextRetryAt: null };
   }
   return {

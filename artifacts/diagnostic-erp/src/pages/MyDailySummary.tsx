@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
 import { readStaffSession, FULL_ACCESS_ROLES, normalizeRole } from "@/lib/staffSession";
@@ -21,6 +21,7 @@ import {
   XCircle, FileEdit, Clock, Calendar, RefreshCw, Tag, CheckCircle2,
   ArrowRight, Users, Percent, Receipt, Lock, AlertTriangle, ShieldCheck,
   ChevronRight, ChevronDown, ChevronUp, Info, AlertCircle, Calculator, Save,
+  Package, ScanSearch, ScanLine, Gauge,
 } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -1612,6 +1613,57 @@ function MyActivityLog({ data }: { data: MyDailySummaryData | undefined }) {
   );
 }
 
+// ─── Collapsible secondary boxes (collapsed by default) ───────────────────────
+
+function SummaryCollapsibleBox({
+  title,
+  icon,
+  headerRight,
+  children,
+  testId,
+}: {
+  title: string;
+  icon?: ReactNode;
+  headerRight?: ReactNode;
+  children: ReactNode;
+  testId?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div
+      className="bg-white dark:bg-card border border-gray-200 dark:border-card-border rounded-xl shadow-sm overflow-hidden"
+      data-testid={testId}
+    >
+      <div className="flex items-stretch">
+        <button
+          type="button"
+          onClick={() => setOpen((o) => !o)}
+          className="flex-1 min-w-0 flex items-center justify-between gap-3 px-4 py-3 text-left hover:bg-gray-50 dark:hover:bg-muted/20 transition-colors"
+          aria-expanded={open}
+        >
+          <h3 className="text-sm font-bold text-gray-900 dark:text-foreground flex items-center gap-2 min-w-0">
+            {icon}
+            <span className="truncate">{title}</span>
+          </h3>
+          {open
+            ? <ChevronUp size={18} className="text-gray-400 shrink-0" />
+            : <ChevronDown size={18} className="text-gray-400 shrink-0" />}
+        </button>
+        {headerRight && (
+          <div className="flex items-center pr-4 shrink-0">
+            {headerRight}
+          </div>
+        )}
+      </div>
+      {open && (
+        <div className="border-t border-gray-100 dark:border-card-border">
+          {children}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── My Daily Summary Page ────────────────────────────────────────────────────
 
 const LS_STAFF_FILTER_KEY = "my_daily_summary_staff_filter";
@@ -1959,11 +2011,6 @@ export default function MyDailySummary() {
 
       <div className="px-4 sm:px-6 pb-10 space-y-5">
       {isOwner && <InfrastructurePulseStrip />}
-      {isOwner && (
-        <div className="rounded-lg border bg-card p-3 shadow-sm" data-testid="my-daily-billing-peak">
-          <BillingPeakMonitorPanel compact />
-        </div>
-      )}
 
       {/* ── Drawer Status Warning Chips ── */}
       {drawerQ.data && <DrawerChips status={drawerQ.data} />}
@@ -2133,15 +2180,6 @@ export default function MyDailySummary() {
           </p>
         )}
       </div>
-
-      {/* Clinic-wide imaging / inventory KPIs — admin & super_admin only */}
-      {isOwner && (
-        <>
-          <ModalityBillingKpi from={from} to={to} />
-          <BillingVsPacsKpi from={from} to={to} />
-          <LowStockKpi />
-        </>
-      )}
 
       {/* ── Loading State ── */}
       {isLoading && (
@@ -2707,17 +2745,44 @@ export default function MyDailySummary() {
         );
       })()}
 
-      {/* ── Recent Bills ── */}
+      {/* Secondary boxes — collapsible, collapsed by default, below Discounts Given */}
+      {data && data.payments.length > 0 && (
+        <SummaryCollapsibleBox
+          title="Payments Collected by Me"
+          icon={<Wallet size={14} className="text-green-600" />}
+          testId="payments-collected-by-me"
+        >
+          <div className="divide-y divide-gray-100 dark:divide-card-border">
+            {data.payments.map((p) => (
+              <div key={p.id} className="flex items-center justify-between px-4 py-2.5 hover:bg-gray-50 dark:hover:bg-muted/20">
+                <div className="flex items-center gap-3">
+                  <Banknote size={13} className="text-green-500 flex-shrink-0" />
+                  <div>
+                    <Link href={`/billing/${p.billId}`} className="text-xs font-semibold text-primary hover:underline">Bill #{p.billId}</Link>
+                    <p className="text-[10px] text-gray-500">{fmtTime(p.createdAt)}</p>
+                  </div>
+                </div>
+                <div className="text-right">
+                  <p className="text-xs font-bold text-green-700 dark:text-green-400 tabular-nums">{fmt(p.amount)}</p>
+                  <p className="text-[10px] text-gray-500 capitalize">{p.method}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </SummaryCollapsibleBox>
+      )}
+
       {data && data.bills.length > 0 && (
-        <div className="bg-white dark:bg-card border border-gray-200 dark:border-card-border rounded-xl shadow-sm overflow-hidden">
-          <div className="px-4 py-3 border-b border-gray-100 dark:border-card-border flex items-center justify-between">
-            <h3 className="text-sm font-bold text-gray-900 dark:text-foreground flex items-center gap-2">
-              <IndianRupee size={14} className="text-emerald-600" /> Bills Created by Me
-            </h3>
+        <SummaryCollapsibleBox
+          title="Bills Created by Me"
+          icon={<IndianRupee size={14} className="text-emerald-600" />}
+          headerRight={
             <Link href="/billing" className="text-xs font-semibold text-primary hover:underline flex items-center gap-1">
               All bills <ArrowRight size={11} />
             </Link>
-          </div>
+          }
+          testId="bills-created-by-me"
+        >
           <div className="overflow-x-auto snap-x">
             <table className="w-full text-xs min-w-[800px]">
               <thead className="bg-gray-50 dark:bg-muted/30">
@@ -2762,35 +2827,55 @@ export default function MyDailySummary() {
               </tfoot>
             </table>
           </div>
-        </div>
+        </SummaryCollapsibleBox>
       )}
 
-      {/* ── Recent Payments ── */}
-      {data && data.payments.length > 0 && (
-        <div className="bg-white dark:bg-card border border-gray-200 dark:border-card-border rounded-xl shadow-sm overflow-hidden">
-          <div className="px-4 py-3 border-b border-gray-100 dark:border-card-border">
-            <h3 className="text-sm font-bold text-gray-900 dark:text-foreground flex items-center gap-2">
-              <Wallet size={14} className="text-green-600" /> Payments Collected by Me
-            </h3>
-          </div>
-          <div className="divide-y divide-gray-100 dark:divide-card-border">
-            {data.payments.map((p) => (
-              <div key={p.id} className="flex items-center justify-between px-4 py-2.5 hover:bg-gray-50 dark:hover:bg-muted/20">
-                <div className="flex items-center gap-3">
-                  <Banknote size={13} className="text-green-500 flex-shrink-0" />
-                  <div>
-                    <Link href={`/billing/${p.billId}`} className="text-xs font-semibold text-primary hover:underline">Bill #{p.billId}</Link>
-                    <p className="text-[10px] text-gray-500">{fmtTime(p.createdAt)}</p>
-                  </div>
-                </div>
-                <div className="text-right">
-                  <p className="text-xs font-bold text-green-700 dark:text-green-400 tabular-nums">{fmt(p.amount)}</p>
-                  <p className="text-[10px] text-gray-500 capitalize">{p.method}</p>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
+      {isOwner && (
+        <>
+          <SummaryCollapsibleBox
+            title="Inventory"
+            icon={<Package size={14} className="text-amber-600" />}
+            headerRight={
+              <Link href="/inventory" className="text-[11px] font-semibold text-primary hover:underline whitespace-nowrap">
+                Open Inventory →
+              </Link>
+            }
+            testId="inventory-low-stock"
+          >
+            <LowStockKpi hideHeader />
+          </SummaryCollapsibleBox>
+
+          <SummaryCollapsibleBox
+            title="Imaging vs PACS"
+            icon={<ScanSearch size={14} className="text-violet-600" />}
+            headerRight={
+              <Link href="/radiology/my-collection?filter=unbilled" className="text-[11px] font-semibold text-primary hover:underline whitespace-nowrap">
+                Review in Match Center →
+              </Link>
+            }
+            testId="imaging-vs-pacs"
+          >
+            <BillingVsPacsKpi from={from} to={to} hideHeader />
+          </SummaryCollapsibleBox>
+
+          <SummaryCollapsibleBox
+            title="Imaging Billed"
+            icon={<ScanLine size={14} className="text-sky-600" />}
+            testId="imaging-billed"
+          >
+            <ModalityBillingKpi from={from} to={to} hideHeader />
+          </SummaryCollapsibleBox>
+
+          <SummaryCollapsibleBox
+            title="Clinic Peak / Billing Lane"
+            icon={<Gauge size={14} className="text-primary" />}
+            testId="my-daily-billing-peak"
+          >
+            <div className="p-3">
+              <BillingPeakMonitorPanel compact hideTitle />
+            </div>
+          </SummaryCollapsibleBox>
+        </>
       )}
 
       {/* Empty state */}

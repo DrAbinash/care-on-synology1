@@ -9,7 +9,9 @@
  */
 
 import type { RenderableTemplate } from "./reportPresentation";
+import { usesCareLetterpad } from "./careLetterheadChrome";
 import {
+  buildLetterheadScaleCss,
   coerceHeaderScale,
   coerceLogoScale,
   HEADER_CONTACT_PX,
@@ -17,6 +19,7 @@ import {
   HEADER_TAGLINE_PX,
   LOGO_PX,
   type HeaderScale,
+  type LetterheadScaleInput,
   type LogoScale,
 } from "./reportLetterheadScale";
 
@@ -377,7 +380,10 @@ function findingsEmphasisCss(emphasis: AbnormalEmphasis): string {
  * Build the institutional customCss fragment appended last by renderReportDocument.
  * Always returns a string (may be empty when style is null).
  */
-export function buildInstitutionalStyleCss(style: InstitutionalReportStyle | null | undefined): string {
+export function buildInstitutionalStyleCss(
+  style: InstitutionalReportStyle | null | undefined,
+  opts?: { skipLetterheadChrome?: boolean },
+): string {
   if (!style) return "";
 
   const spacing = coerceSpacing(style.lineGap ?? style.spacing);
@@ -402,20 +408,26 @@ export function buildInstitutionalStyleCss(style: InstitutionalReportStyle | nul
   const lineHt = LINE_HEIGHT[spacing];
   const lineGap = LINE_GAP[spacing];
   const sectionGap = SECTION_GAP[spacing];
+  const skipChrome = opts?.skipLetterheadChrome === true;
 
   let css = `
       /* Institutional report style overrides */
-      @page { size: A4; margin: ${marginVal}; }
+      ${skipChrome ? "" : `@page { size: A4; margin: ${marginVal}; }`}
       body, .body {
         font-family: ${fontFamily} !important;
         font-size: ${fs} !important;
         line-height: ${lineHt} !important;
       }
+      ${skipChrome ? `
+      .patient-section, .study-title-bar, .section-heading,
+      .impression, .sigbox, .ftr, .image-panel {
+        font-family: ${fontFamily} !important;
+      }` : `
       .hdr .name, .hdr .tagline, .hdr .contact, .hdr-address-bar,
       .patient-section, .study-title-bar, .section-heading,
       .impression, .sigbox, .ftr, .image-panel {
         font-family: ${fontFamily} !important;
-      }
+      }`}
       .body p, .body div, .body li {
         margin-top: 0 !important;
         margin-bottom: ${lineGap} !important;
@@ -427,11 +439,11 @@ export function buildInstitutionalStyleCss(style: InstitutionalReportStyle | nul
       ${headingDecorationCss(heading, ".section-heading")}
       ${headingDecorationCss(subheading, ".image-panel-heading, .body h3, .body h4, .subheading")}
       ${studyTitleCss(studyTitle)}
-      ${logoPositionCss(logoPos)}
-      ${nameAlignCss(nameAlign)}
-      ${addressAlignCss(addressAlign)}
-      ${letterheadSizeCss(logoScale, nameScale, addressScale)}
-      ${headerRuleCss(ruleEnabled, ruleThickness, ruleColor)}
+      ${skipChrome ? "" : logoPositionCss(logoPos)}
+      ${skipChrome ? "" : nameAlignCss(nameAlign)}
+      ${skipChrome ? "" : addressAlignCss(addressAlign)}
+      ${skipChrome ? "" : letterheadSizeCss(logoScale, nameScale, addressScale)}
+      ${skipChrome ? "" : headerRuleCss(ruleEnabled, ruleThickness, ruleColor)}
       ${signaturePositionCss(sigPos)}
       ${findingsEmphasisCss(abnormal)}
     `;
@@ -479,7 +491,7 @@ export function applyInstitutionalTemplateOverrides(
         showContact: true,
         style: "underlined" as const,
       }),
-      logoPosition: coerceLogoPosition(style.logoPosition),
+      ...(usesCareLetterpad(template) ? {} : { logoPosition: coerceLogoPosition(style.logoPosition) }),
     },
     signatureCfg: {
       show: template.signatureCfg?.show ?? true,
@@ -506,6 +518,26 @@ export function applyInstitutionalTemplateOverrides(
   };
 
   return next;
+}
+
+/**
+ * CSS appended to renderReportDocument for a print/preview surface.
+ * CARE letter-pad templates skip the square-logo scale dropdown and Style
+ * header chrome (logo position/size, address align, header rule, @page) —
+ * those come from definition.letterhead instead.
+ */
+export function buildReportSurfaceCss(
+  template: { id?: string; letterhead?: { kind?: string } },
+  instStyle: InstitutionalReportStyle | null | undefined,
+  scale?: LetterheadScaleInput,
+): string {
+  const skipChrome = usesCareLetterpad(template);
+  let css = "";
+  if (!skipChrome) {
+    css += buildLetterheadScaleCss(scale ?? {});
+  }
+  css += buildInstitutionalStyleCss(instStyle, { skipLetterheadChrome: skipChrome });
+  return css;
 }
 
 /** Defaults used by GET when no DB row exists and by Style UI presets. */

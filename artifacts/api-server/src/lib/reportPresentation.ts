@@ -24,6 +24,20 @@
 
 import { framingImgInline, framingInlineStyle, sideRailCount } from "./imageFraming";
 import { careLetterheadLogoDataUrl } from "./careLetterheadLogo";
+import {
+  letterPadErpPdfLockCss,
+  resolveLetterheadChrome,
+  usesCareLetterpad,
+  type CareLetterheadChrome,
+} from "./careLetterheadChrome";
+
+export {
+  CARE_LETTERPAD,
+  letterPadErpPdfLockCss,
+  resolveLetterheadChrome,
+  usesCareLetterpad,
+  type CareLetterheadChrome,
+} from "./careLetterheadChrome";
 
 // ── Escaping ─────────────────────────────────────────────────────────────────
 
@@ -214,24 +228,6 @@ export const PRESENTATION_TEMPLATES: PresentationTemplate[] = [
 ];
 
 export const DEFAULT_TEMPLATE_ID = "care-classic";
-
-/** CARE Diagnostics letter-pad copy used by the Premium HTML report. */
-export const CARE_LETTERPAD = {
-  clinicName: "CARE DIAGNOSTICS",
-  address: "Near Bajla Mahila College, St. Francis School Road, Castair's Town, DEOGHAR-814 112 (JHARKHAND)",
-  phones: "75490 99099, 99734 97200",
-  email: "care.deoghar@gmail.com",
-  logoSrc: "/care-diagnostics-letterhead-logo.png",
-  radiologist: "Dr. Sugandha Priyadarshini",
-  credentials: "MD (Radiodiagnosis & Medical Imaging)",
-  servicesRow1: "MULTI SLICE CT SCAN  |  3D/4D ULTRA SOUND  |  COLOUR DOPPLER  |  MAMMOGRAPHY  |  ECHO  |  DIGITAL X-RAY  |  ECG/EEG",
-  servicesRow2: "PATHOLAB  |  OPG  |  TMT  |  NCV/EMG  |  ELASTOGRAPHY/ FIBROSCAN  |  UPPER GI ENDOSCOPY  |  HSG  |  BARIUM STUDY  |  TVS",
-  disclaimer: "Radiological diagnosis is not always conclusive & often vary with clinical course of the disease or response to treatment. This report is not for medico-legal purpose.",
-} as const;
-
-function isLetterPadTemplate(template: { id: string }): boolean {
-  return template.id === "care-premium" || template.id === "care-classic";
-}
 
 export function resolvePresentationTemplate(id?: string | null): PresentationTemplate {
   const wanted = (id ?? "").trim();
@@ -457,6 +453,7 @@ export interface TemplateRenderExtensions {
   impressionTypography?: SlotTypography;
   bodyLineHeight?: string;
   bodyTextAlign?: string;
+  letterhead?: CareLetterheadChrome;
 }
 
 export type RenderableTemplate = PresentationTemplate & TemplateRenderExtensions;
@@ -484,7 +481,8 @@ export function renderReportDocument(
   const sidePanel = template.layout.imagePlacement === "side-panel" && hasImages;
 
   // R1.2 template capabilities — every default reproduces R1.1 behavior.
-  const letterPad = isLetterPadTemplate(template);
+  const letterPad = usesCareLetterpad(template);
+  const pad = resolveLetterheadChrome(template);
   const banded = template.headerCfg ? template.headerCfg.style === "banded" : pal.headerBg !== "#ffffff";
   const titleBar = template.studyTitleCfg ? template.studyTitleCfg.style === "bar" : banded;
   const headerCfg = template.headerCfg ?? { show: true, showLogo: true, showTagline: true, showContact: true, style: banded ? "banded" as const : "underlined" as const };
@@ -554,10 +552,9 @@ export function renderReportDocument(
   const overflowBlock = overflowImages.length > 0
     ? keyImagesHtml(overflowImages, "inline", { heading: "KEY IMAGES (continued)", extraClass: "image-panel-overflow" })
     : "";
-  const letterPadAddress = CARE_LETTERPAD.address;
-  const letterPadPhone = `Phone: ${CARE_LETTERPAD.phones}`;
-  const letterPadEmail = (model.clinic.email || "").trim() || CARE_LETTERPAD.email;
-  const letterPadName = CARE_LETTERPAD.clinicName;
+  const letterPadPhone = `Phone: ${pad.phones}`;
+  const letterPadEmail = pad.email;
+  const letterPadName = pad.clinicName;
   const letterPadLogo = headerCfg.showLogo ? careLetterheadLogoDataUrl() : "";
   const letterPadHeaderHtml = headerCfg.show ? `<div class="hdr">
       <div class="hdr-inner logo-pos-left letterpad-bill">
@@ -565,9 +562,11 @@ export function renderReportDocument(
           ? `<img class="logo" src="${letterPadLogo}" alt="${escapeHtml(letterPadName)}"/>`
           : `<div class="hdr-brand"><div class="name">${escapeHtml(letterPadName)}</div></div>`}
         <div class="contact letterpad-addr-right">
-          ${escapeHtml(letterPadAddress)}<br/>
+          ${escapeHtml(pad.addressLine1)}<br/>
+          ${escapeHtml(pad.addressLine2)}<br/>
           ${escapeHtml(letterPadPhone)}<br/>
-          Email: ${escapeHtml(letterPadEmail)}
+          Email: ${escapeHtml(letterPadEmail)}<br/>
+          ${escapeHtml(pad.website)}
         </div>
       </div>
     </div>
@@ -588,13 +587,13 @@ export function renderReportDocument(
     ${model.clinic.address ? `<div class="hdr-address-bar">${escapeHtml(model.clinic.address)}</div>` : ""}
     <hr class="hdr-rule" />` : "";
   const letterPadFooterHtml = footerCfg.show ? `<div class="letterpad-footer-block">
-    <div class="letterpad-services">${escapeHtml(CARE_LETTERPAD.servicesRow1)}<br/>${escapeHtml(CARE_LETTERPAD.servicesRow2)}</div>
-    <div class="letterpad-disclaimer">${escapeHtml(CARE_LETTERPAD.disclaimer)}</div>
+    <div class="letterpad-services">${escapeHtml(pad.servicesRow1)}<br/>${escapeHtml(pad.servicesRow2)}</div>
+    <div class="letterpad-disclaimer">${escapeHtml(pad.disclaimer)}</div>
   </div>` : "";
   const classicFooterHtml = footerCfg.show ? `<div class="ftr">${escapeHtml(model.footerNote ?? "")} • ${escapeHtml(model.typeLabel)} • ${escapeHtml(model.statusLabel)} • Generated ${escapeHtml(model.generatedAtLabel)}</div>` : "";
   const letterPadSignatures = model.signatures.filter((s) => s.name || s.imageDataUrl).length > 0
     ? model.signatures
-    : [{ name: CARE_LETTERPAD.radiologist, qualification: CARE_LETTERPAD.credentials, label: "Signed:", whenLabel: "" }];
+    : [{ name: pad.radiologist, qualification: pad.credentials, label: "Signed:", whenLabel: "" }];
 
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -658,8 +657,8 @@ export function renderReportDocument(
     }
     .hdr-rule.hdr-rule-hidden { display: none; }
     .hdr img.logo { width: 64px; height: 64px; object-fit: contain; }
-    .hdr .letterpad-bill img.logo { width: 168px; height: auto; max-height: 52px; object-fit: contain; }
-    .hdr .letterpad-bill .contact { max-width: 48%; font-size: 9px; line-height: 1.4; }
+    .hdr .letterpad-bill img.logo { width: auto; height: 22mm; max-width: 65mm; object-fit: contain; object-position: left top; }
+    .hdr .letterpad-bill .contact { flex: 1; font-size: 7.2pt; line-height: 3.1mm; color: #141414; text-align: right; margin-top: 4mm; }
     .hdr .hdr-brand { flex: 1; }
     .hdr .name { ${slotCss(ty.header)} line-height: 1.1; }
     .hdr .tagline { font-size: 10px; color: ${!banded ? "#475569" : pal.accent}; margin-top: 2px; letter-spacing: 0.06em; }
@@ -860,10 +859,11 @@ export function renderReportDocument(
     .qr-mark { width: 50px; height: 50px; display: block; margin: 2px auto 0; }
     .ftr { ${slotCss(ty.footer)} margin-top: 18px; text-align: center; border-top: 1px solid ${pal.sectionBorder}; padding-top: 6px; clear: both; break-inside: avoid; }
     ${letterPad ? `
-    .hdr { background: #fff; }
+    .hdr { background: #fff; padding: 0; border: none; }
     .hdr::before { display: none; }
-    .hdr img.logo { width: auto; height: 52px; max-width: 220px; object-fit: contain; }
-    .hdr-rule { border-top: 2px solid #b91c1c; }
+    .hdr-inner.letterpad-bill { align-items: flex-start; gap: 8mm; padding-left: 0; }
+    .hdr img.logo { width: auto; height: 22mm; max-width: 65mm; object-fit: contain; }
+    .hdr-rule { border-top: 0.35mm solid #141414; margin: 2mm 0 0; }
     .letterpad-addr { color: #111; font-size: 9.5px; text-align: center; padding: 2px 12px 0; }
     .letterpad-contact { color: #111; font-size: 9px; text-align: center; padding: 2px 12px 6px; }
     .image-panel-keyrail { background: #0f172a; color: #fff; padding: 8px 6px; border-radius: 4px; }
@@ -897,6 +897,7 @@ export function renderReportDocument(
       body { orphans: ${orphans}; widows: ${widows}; }
     }
     ${opts.customCss ?? ""}
+    ${letterPad ? letterPadErpPdfLockCss(pad) : ""}
   </style></head><body>
   <div class="report-wrapper${letterPad ? " letterpad" : ""}">
     ${model.safeguardWatermarkHtml ?? ""}

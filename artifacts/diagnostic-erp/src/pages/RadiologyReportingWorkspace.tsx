@@ -74,6 +74,7 @@ import { readStaffSession, normalizeRole, isOwnerRole, isFeatureEnabled } from "
 import { saveRadiologyDraft, finalizeRadiologyReport } from "@/lib/radiologyReportLifecycle";
 import { exportRadiologyReportToWord, safeFileNamePart } from "@/lib/radiologyReportWordExport";
 import { exportRadiologyReportToPdf } from "@/lib/radiologyReportPdfExport";
+import { activeStandardLetterhead, type PresentationTemplatesPayload } from "@/lib/careLetterpadChrome";
 import {
   buildPreviewHtml,
   formatReportExportError,
@@ -1740,7 +1741,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   }, [workflow.currentRow]);
 
   // ─── Word/PDF export (legacy layout path + Classic/Premium) ────────────────
-  const { data: presentationTemplates } = useQuery<{ active: Partial<Record<string, string>> }>({
+  const { data: presentationTemplates } = useQuery<PresentationTemplatesPayload>({
     queryKey: ["presentation-templates"],
     queryFn: () => api.get("/api/radiology/presentation-templates"),
     staleTime: 60_000,
@@ -1881,6 +1882,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         sex: canonicalDemography.sex,
         referringDoctor: canonicalDemography.referringDoctor,
         studyDate: canonicalDemography.studyDate,
+        chrome: activeStandardLetterhead(presentationTemplates),
       });
     } catch (err) {
       toast({
@@ -1891,7 +1893,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     } finally {
       setExportingWord(false);
     }
-  }, [workflow.currentRow, previewHtml, toast, reportLayout, draftId, canonicalDemography]);
+  }, [workflow.currentRow, previewHtml, toast, reportLayout, draftId, canonicalDemography, presentationTemplates]);
 
   const handleExportPdf = useCallback(async () => {
     setExportingPdf(true);
@@ -1917,6 +1919,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         dicomWebBase: BROWSER_DICOMWEB_BASE,
         imageRefs,
         clinic: clinicSettings ?? null,
+        letterhead: activeStandardLetterhead(presentationTemplates),
       });
     } catch (err) {
       toast({
@@ -1931,7 +1934,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     canonicalDemography, clinicalHistoryText, techniqueText, findingsText,
     impressionText, recommendationText, studyNameForExport, headingCase,
     imageRefs, clinicSettings, toast, workflow.currentRow,
-    useStructured, findingsMap,
+    useStructured, findingsMap, presentationTemplates,
   ]);
 
   const handlePrintLikeFinal = useCallback(async () => {

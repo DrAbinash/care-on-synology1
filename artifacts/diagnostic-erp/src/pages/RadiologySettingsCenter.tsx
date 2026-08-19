@@ -1470,9 +1470,10 @@ export default function RadiologySettingsCenter() {
           <div className="rounded-xl border bg-card p-5 space-y-3 max-w-3xl">
             <h3 className="text-sm font-bold">Report Letterhead Size</h3>
             <p className="text-xs text-muted-foreground">
-              Baseline sizes for header, logo and footer. For logo left/right, clinic name/address
-              alignment, and the line under the header, use the <strong>Style</strong> tab — those
-              Style settings override these sizes on print and PDF.
+              These sizes apply to clinic-branded templates (Hope, Government, CARE V2).
+              CARE Classic and CARE Premium take logo size and the St. Francis address from the
+              presentation template above — edit that template’s letter-pad fields to change the printed pad.
+              For logo left/right on clinic-branded templates, use the Style controls further down.
             </p>
             <div className="grid sm:grid-cols-3 gap-4">
               <div className="space-y-2">

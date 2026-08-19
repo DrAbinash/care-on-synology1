@@ -38,3 +38,27 @@ describe("My Daily Summary — page fills the pane and scrolls", () => {
     expect(drilldownSrc).toContain("overflow-auto flex-1");
   });
 });
+
+describe("My Daily Summary — secondary boxes sit below Discounts Given", () => {
+  it("collapses payments, bills, inventory, imaging, and peak boxes by default after discounts", () => {
+    expect(pageSrc).toContain("function SummaryCollapsibleBox");
+    expect(pageSrc).toContain("const [open, setOpen] = useState(false)");
+
+    const moneyFlow = pageSrc.indexOf("Money flow");
+    const discounts = pageSrc.indexOf("Discounts Given — detailed table");
+    const payments = pageSrc.indexOf('title="Payments Collected by Me"');
+    const bills = pageSrc.indexOf('title="Bills Created by Me"');
+    const inventory = pageSrc.indexOf('title="Inventory"');
+    const imagingVsPacs = pageSrc.indexOf('title="Imaging vs PACS"');
+    const imagingBilled = pageSrc.indexOf('title="Imaging Billed"');
+    const peak = pageSrc.indexOf('title="Clinic Peak / Billing Lane"');
+
+    expect(discounts).toBeGreaterThan(moneyFlow);
+    expect(payments).toBeGreaterThan(discounts);
+    expect(bills).toBeGreaterThan(payments);
+    expect(inventory).toBeGreaterThan(bills);
+    expect(imagingVsPacs).toBeGreaterThan(inventory);
+    expect(imagingBilled).toBeGreaterThan(imagingVsPacs);
+    expect(peak).toBeGreaterThan(imagingBilled);
+  });
+});

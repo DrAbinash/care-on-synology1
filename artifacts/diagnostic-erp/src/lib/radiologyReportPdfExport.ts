@@ -18,6 +18,7 @@
 
 import { thumbnailRenderedUrl, type ReportImageRef } from "./reportImageRefs";
 import { generateReportPDF, loadPrintSettings, type PrintClinic } from "./reportPdfGenerator";
+import type { CareLetterpadChrome } from "./careLetterpadChrome";
 import { dicomWebFetch } from "./browserDicomWeb";
 
 function fmtHeading(text: string, headingCase: "all_caps" | "title_case"): string {
@@ -111,6 +112,7 @@ export interface RadiologyPdfExportInput {
   dicomWebBase: string | null;
   imageRefs: ReportImageRef[];
   clinic: PrintClinic;
+  letterhead?: CareLetterpadChrome;
 }
 
 export async function exportRadiologyReportToPdf(input: RadiologyPdfExportInput): Promise<void> {
@@ -147,5 +149,6 @@ export async function exportRadiologyReportToPdf(input: RadiologyPdfExportInput)
       },
     },
     input.clinic,
+    { letterhead: input.letterhead },
   );
 }

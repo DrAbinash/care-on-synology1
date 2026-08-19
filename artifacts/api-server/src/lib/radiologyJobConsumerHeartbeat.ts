@@ -138,17 +138,25 @@ export function deriveRadiologyJobConsumerHealth(
       detail: "Overnight job consumer is not registered in this process — pending jobs will never be claimed",
     };
   }
+  // A live running claim means the consumer already moved pending → running.
+  // Do not call that STALE just because the tick waits on Ollama (up to 10 min).
+  if (opts.running > 0) {
+    return {
+      status: "HEALTHY",
+      detail: `Consumer polling; ${opts.running} job(s) running`,
+    };
+  }
   if (!snap.lastCronTickAt) {
     const registeredMs = snap.registeredAt ? now.getTime() - Date.parse(snap.registeredAt) : 0;
     if (registeredMs > STALE_MS) {
       return {
         status: "STOPPED",
-        detail: "Consumer registered but has never polled — node-cron tick did not fire",
+        detail: "Consumer registered but has never polled — drain timer did not fire",
       };
     }
     return {
       status: "HEALTHY",
-      detail: "Consumer registered; waiting for first minute tick",
+      detail: "Consumer registered; waiting for first drain tick",
     };
   }
   const tickAge = now.getTime() - Date.parse(snap.lastCronTickAt);
@@ -170,16 +178,17 @@ export function deriveRadiologyJobConsumerHealth(
     && opts.running === 0
     && (snap.lastDueAi ?? 0) > 0
     && !snap.lastAiBlocked
+    && snap.lastRan === 0
   ) {
     return {
       status: "STARVED",
-      detail: `${snap.lastDueAi} due AI job(s) and running=0 after a live poll — claim path did not start a shadow job`,
+      detail: `${snap.lastDueAi} due AI job(s) and running=0 after a live poll that claimed nothing — claim path did not start a shadow job`,
     };
   }
   return {
     status: "HEALTHY",
-    detail: opts.running > 0
-      ? `Consumer polling; ${opts.running} job(s) running`
+    detail: snap.lastRan > 0
+      ? `Consumer polling; last tick ran ${snap.lastRan} job(s)`
       : "Consumer polling every minute",
   };
 }
