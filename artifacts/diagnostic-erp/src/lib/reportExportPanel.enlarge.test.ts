@@ -54,4 +54,10 @@ describe("ReportExportPanel — enlarge preview before finalize", () => {
     expect(src).toContain('data-testid="report-preview-edit-sections"');
     expect(src).toMatch(/onDoubleClick=\{handlePreviewDoubleClick\}/);
   });
+
+  it("exposes Finalize in the export toolbar and enlarged preview", () => {
+    expect(src).toContain("onFinalize");
+    expect(src).toContain('data-testid="report-layout-finalize-btn"');
+    expect(src).toContain('data-testid="report-preview-finalize"');
+  });
 });

@@ -12,7 +12,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { FileDown, Printer, RefreshCw, Eye, Maximize2 } from "lucide-react";
+import { FileDown, Printer, RefreshCw, Eye, Maximize2, ShieldCheck } from "lucide-react";
 import { api } from "@/lib/fetchApi";
 import ReportLayoutQuickSelect, {
   type ReportLayoutKey,
@@ -43,6 +43,10 @@ export type ReportExportPanelProps = {
   onPrintLikeFinal?: () => void | Promise<void>;
   /** Double-click preview → jump to an editor section in the workspace. */
   onEditSection?: (field: "clinicalHistory" | "technique" | "findings" | "impression" | "recommendation") => void;
+  /** Sign/finalize from the enlarged preview (same action as workspace header). */
+  onFinalize?: () => void | Promise<void>;
+  finalizeDisabled?: boolean;
+  finalizeLabel?: string;
   exportingWord?: boolean;
   exportingPdf?: boolean;
   printingLikeFinal?: boolean;
@@ -66,6 +70,9 @@ export default function ReportExportPanel({
   onExportPdf,
   onPrintLikeFinal,
   onEditSection,
+  onFinalize,
+  finalizeDisabled,
+  finalizeLabel = "Finalize",
   exportingWord,
   exportingPdf,
   printingLikeFinal,
@@ -103,14 +110,15 @@ export default function ReportExportPanel({
 
   const serverPreviewUrl = useMemo(() => {
     const templateQs = reportLayoutTemplateQuery(reportLayout);
+    const styleQs = `impressionStyle=${encodeURIComponent(impressionStyle)}`;
     if (linkedReportId) {
-      return `/api/patient-reports/${linkedReportId}/print?preview=true&${templateQs}`;
+      return `/api/patient-reports/${linkedReportId}/print?preview=true&${templateQs}&${styleQs}`;
     }
     if (draftId) {
-      return `/api/radiology/report-generator/drafts/${draftId}/print-preview?${templateQs}`;
+      return `/api/radiology/report-generator/drafts/${draftId}/print-preview?${templateQs}&${styleQs}`;
     }
     return null;
-  }, [draftId, linkedReportId, reportLayout]);
+  }, [draftId, linkedReportId, reportLayout, impressionStyle]);
 
   const { data: serverHtml, isFetching: serverLoading, refetch } = useQuery<string>({
     queryKey: ["report-export-server-preview", serverPreviewUrl, previewRefresh],
@@ -188,6 +196,19 @@ export default function ReportExportPanel({
               Print like final
             </Button>
           )}
+          {onFinalize ? (
+            <Button
+              size="sm"
+              className="h-6 text-[10px] px-2 bg-emerald-600 hover:bg-emerald-700 text-white"
+              disabled={disabled || finalizeDisabled}
+              onClick={() => void onFinalize()}
+              title="Sign and finalize this report"
+              data-testid="report-layout-finalize-btn"
+            >
+              <ShieldCheck className="h-3 w-3 mr-1" />
+              {finalizeLabel}
+            </Button>
+          ) : null}
           <Button
             size="sm"
             variant="outline"
@@ -341,7 +362,19 @@ export default function ReportExportPanel({
             </div>
           )}
           </DialogHeader>
-          <div className="flex items-center gap-1 shrink-0">
+          <div className="flex items-center gap-1 shrink-0 flex-wrap">
+            {onFinalize ? (
+              <Button
+                size="sm"
+                className="h-7 text-[10px] bg-emerald-600 hover:bg-emerald-700"
+                disabled={finalizeDisabled}
+                onClick={() => void onFinalize()}
+                data-testid="report-preview-finalize"
+              >
+                <ShieldCheck className="h-3.5 w-3.5 mr-1" />
+                {finalizeLabel}
+              </Button>
+            ) : null}
             {([0.9, 1, 1.25] as const).map((z) => (
               <Button
                 key={z}

@@ -3554,6 +3554,9 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       onExportPdf={handleExportPdf}
                       onPrintLikeFinal={handlePrintLikeFinal}
                       onEditSection={focusReportField}
+                      onFinalize={finalizeReport}
+                      finalizeDisabled={!studyId || isFinalized || isLocked || pcpndtBlocked}
+                      finalizeLabel={isFinalized ? "Signed" : "Finalize"}
                       exportingWord={exportingWord}
                       exportingPdf={exportingPdf}
                       printingLikeFinal={printingLikeFinal}
