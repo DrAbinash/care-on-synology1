@@ -94,7 +94,7 @@ export default function ClinicalHistoryChipStrip({
   };
 
   return (
-    <div className="space-y-1.5" data-testid="clinical-history-chip-strip">
+    <div className="space-y-1.5" data-testid="clinical-history-chips">
       <div className="flex flex-wrap gap-1 items-center">
         {visible.map((chip) => {
           const active = hasPhrase(clinicalHistoryText, chip.insertedText);
