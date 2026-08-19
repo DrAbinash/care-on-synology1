@@ -14,7 +14,7 @@ const aptHelper = readFileSync(path.join(root, "scripts/ci-apt-install.sh"), "ut
 
 describe("CI hang guards (PR #548 — apt-get sat past 10 min with no timeout)", () => {
   it("every job caps wall time so a hung step cannot sit for the 6h default", () => {
-    for (const job of ["static", "test", "e2e-smoke"]) {
+    for (const job of ["static", "test"]) {
       const block = yml.split(/\n  (?=[a-z])/).find((chunk) => chunk.startsWith(`${job}:`));
       expect(block, `job ${job} missing`).toBeTruthy();
       expect(block).toMatch(/timeout-minutes:\s*[1-9][0-9]*/);
@@ -23,8 +23,8 @@ describe("CI hang guards (PR #548 — apt-get sat past 10 min with no timeout)",
 
   it("CI apt and Chromium installs have bounded step timeouts", () => {
     expect(yml).toMatch(/Install CI apt packages[\s\S]*?timeout-minutes:\s*[1-9]/);
-    const chromiumSteps = yml.match(/Install Chromium browser[\s\S]*?timeout-minutes:\s*[1-9]/g) || [];
-    expect(chromiumSteps.length).toBeGreaterThanOrEqual(2);
+    expect(yml).toMatch(/Install Chromium browser[\s\S]*?timeout-minutes:\s*[1-9]/);
+    expect(yml).toMatch(/Browser smoke \(login shell\)[\s\S]*?timeout-minutes:\s*[1-9]/);
     expect(yml).not.toContain("playwright install --with-deps chromium");
     expect(yml).toContain("playwright install chromium");
   });
