@@ -41,6 +41,8 @@ export type ReportExportPanelProps = {
   onExportPdf: () => void | Promise<void>;
   /** Draft-only: open print preview without the DRAFT watermark. */
   onPrintLikeFinal?: () => void | Promise<void>;
+  /** Double-click preview → jump to an editor section in the workspace. */
+  onEditSection?: (field: "clinicalHistory" | "technique" | "findings" | "impression" | "recommendation") => void;
   exportingWord?: boolean;
   exportingPdf?: boolean;
   printingLikeFinal?: boolean;
@@ -63,6 +65,7 @@ export default function ReportExportPanel({
   onExportWord,
   onExportPdf,
   onPrintLikeFinal,
+  onEditSection,
   exportingWord,
   exportingPdf,
   printingLikeFinal,
@@ -72,7 +75,31 @@ export default function ReportExportPanel({
   const [previewRefresh, setPreviewRefresh] = useState(0);
   const [enlarged, setEnlarged] = useState(false);
   const [previewZoom, setPreviewZoom] = useState(1);
+  const [editPickerOpen, setEditPickerOpen] = useState(false);
   const inlineScrollRef = useRef<HTMLDivElement>(null);
+
+  const editSections: Array<{ field: "clinicalHistory" | "technique" | "findings" | "impression" | "recommendation"; label: string }> = [
+    { field: "clinicalHistory", label: "History" },
+    { field: "technique", label: "Technique" },
+    { field: "findings", label: "Findings" },
+    { field: "impression", label: "Impression" },
+    { field: "recommendation", label: "Recommendation" },
+  ];
+
+  const handlePreviewDoubleClick = () => {
+    if (onEditSection) {
+      setEditPickerOpen(true);
+      setEnlarged(true);
+      return;
+    }
+    setEnlarged(true);
+  };
+
+  const jumpToSection = (field: "clinicalHistory" | "technique" | "findings" | "impression" | "recommendation") => {
+    onEditSection?.(field);
+    setEditPickerOpen(false);
+    setEnlarged(false);
+  };
 
   const serverPreviewUrl = useMemo(() => {
     const templateQs = reportLayoutTemplateQuery(reportLayout);
@@ -267,8 +294,8 @@ export default function ReportExportPanel({
               ref={inlineScrollRef}
               className="h-64 overflow-y-scroll overflow-x-hidden rounded border bg-white overscroll-contain"
               data-testid="report-layout-preview-inline-scroll"
-              onDoubleClick={() => setEnlarged(true)}
-              title="Scroll to review · double-click or use Enlarge for full page"
+              onDoubleClick={handlePreviewDoubleClick}
+              title="Scroll to review · double-click to edit a section · Enlarge for full page"
             >
               <iframe
                 title="Report layout preview"
@@ -300,9 +327,19 @@ export default function ReportExportPanel({
         >
           <DialogHeader className="space-y-1 pr-8 shrink-0">
             <DialogTitle className="text-base">Report preview</DialogTitle>
-            <DialogDescription className="text-xs">
-              Full-page layout and content as it will print. Review before finalize. Esc or ✕ to close.
-            </DialogDescription>
+          <DialogDescription className="text-xs">
+            Full-page layout and content as it will print. Review before finalize. Esc or ✕ to close.
+            {onEditSection ? " Double-click the compact preview to pick a section to edit." : ""}
+          </DialogDescription>
+          {editPickerOpen && onEditSection && (
+            <div className="flex flex-wrap gap-1 pt-1" data-testid="report-preview-edit-sections">
+              {editSections.map((s) => (
+                <Button key={s.field} size="sm" variant="outline" className="h-7 text-[10px]" onClick={() => jumpToSection(s.field)}>
+                  Edit {s.label}
+                </Button>
+              ))}
+            </div>
+          )}
           </DialogHeader>
           <div className="flex items-center gap-1 shrink-0">
             {([0.9, 1, 1.25] as const).map((z) => (

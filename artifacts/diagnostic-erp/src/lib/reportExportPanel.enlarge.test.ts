@@ -47,4 +47,11 @@ describe("ReportExportPanel — enlarge preview before finalize", () => {
     expect(src).toMatch(/el\.scrollTop \+= e\.deltaY/);
     expect(src).toMatch(/height:\s*1122/);
   });
+
+  it("double-click opens section picker when onEditSection is wired", () => {
+    expect(src).toContain("onEditSection");
+    expect(src).toContain("handlePreviewDoubleClick");
+    expect(src).toContain('data-testid="report-preview-edit-sections"');
+    expect(src).toMatch(/onDoubleClick=\{handlePreviewDoubleClick\}/);
+  });
 });

@@ -167,6 +167,10 @@ import StructuredFindingDialog from "@/components/radiology/StructuredFindingDia
 import { FindingsHighlightEditor } from "@/components/FindingsHighlightEditor";
 import ReportDemographyCard from "@/components/radiology/ReportDemographyCard";
 import ReferringDoctorQuickSelect from "@/components/ReferringDoctorQuickSelect";
+import ClinicalHistoryChipStrip from "@/components/radiology/ClinicalHistoryChipStrip";
+import StudyLocalFindingEditDialog, {
+  type StudyLocalTextOverride,
+} from "@/components/radiology/StudyLocalFindingEditDialog";
 import { ModuleErrorBoundary } from "@/components/ModuleErrorBoundary";
 import { useReportingStudySetup } from "@/hooks/useReportingStudySetup";
 import { Input } from "@/components/ui/input";
@@ -490,14 +494,27 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
 
   const [qsExternalSearch, setQsExternalSearch] = useState<{ seq: number; term: string } | null>(null);
   const quickFindingTemplatesRef = useRef<QuickFinding[]>([]);
+  const studyTextOverridesRef = useRef<Map<number, StudyLocalTextOverride>>(new Map());
+  const [studyLocalEdit, setStudyLocalEdit] = useState<QuickFinding | null>(null);
   const selectedQuickIdsRef = useRef<Set<number>>(new Set());
   const handleQuickToggleRef = useRef<(finding: QuickFinding, nowSelected: boolean) => void>(() => {});
   const voiceParkReasonRef = useRef<string | null>(null);
 
   const focusReportField = useCallback((field: "findings" | "impression" | "technique" | "clinicalHistory" | "recommendation") => {
-    const el = document.querySelector(`[data-report-field="${field}"] textarea`) as HTMLTextAreaElement | null;
-    el?.focus();
-  }, []);
+    const sectionByField: Record<typeof field, ReportSectionId> = {
+      clinicalHistory: "history",
+      technique: "technique",
+      findings: "findings",
+      impression: "impression",
+      recommendation: "recommendation",
+    };
+    activateReportSection(sectionByField[field]);
+    window.setTimeout(() => {
+      const el = document.querySelector(`[data-report-field="${field}"] textarea`) as HTMLTextAreaElement | null;
+      el?.focus();
+      el?.scrollIntoView({ block: "center", behavior: "smooth" });
+    }, 50);
+  }, [activateReportSection]);
 
   const executeVoiceCommand = useCallback((parse: ParsedVoiceCommand): VoiceExecutionResult => {
     const intent = parse.intent;
@@ -1228,6 +1245,31 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   }, []);
   handleQuickToggleRef.current = handleQuickToggle;
   selectedQuickIdsRef.current = selectedQuickIds;
+
+  const handleEditBeforeInsert = useCallback((finding: QuickFinding) => {
+    if (isLocked || isFinalized) return;
+    setStudyLocalEdit(finding);
+  }, [isLocked, isFinalized]);
+
+  const applyStudyLocalEdit = useCallback((override: StudyLocalTextOverride) => {
+    const f = studyLocalEdit;
+    if (!f) return;
+    studyTextOverridesRef.current.set(f.id, override);
+    setStudyLocalEdit(null);
+    const patched: QuickFinding = {
+      ...f,
+      findingText: override.finding,
+      impressionText: override.impression,
+      techniqueText: override.technique,
+      recommendationText: override.recommendation,
+    };
+    if (!selectedQuickIds.has(f.id)) {
+      handleQuickToggle(patched, true);
+    } else {
+      handleQuickToggle(f, false);
+      handleQuickToggle(patched, true);
+    }
+  }, [studyLocalEdit, selectedQuickIds, handleQuickToggle]);
 
   const appendFindings = useCallback((text: string) => {
     useWorkspace.getState().mergeField("findings", text, "companion");
@@ -2934,37 +2976,14 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                     <ReportAccordionSection {...accordionProps("history")}>
                     <div className="flex items-center gap-2">
                       <div className="flex-1 space-y-1.5">
-                        {clinicalHistoryChips.length > 0 && !isLocked && !isFinalized && (
-                          <div className="flex flex-wrap gap-1" data-testid="clinical-history-chips">
-                            {clinicalHistoryChips.map((chip) => {
-                              const active = hasPhrase(clinicalHistoryText, chip.insertedText);
-                              return (
-                                <button
-                                  key={chip.id}
-                                  type="button"
-                                  onClick={() => {
-                                    const state = useWorkspace.getState();
-                                    state.setField(
-                                      "clinicalHistory",
-                                      active
-                                        ? removeClinicalPhrase(state.clinicalHistoryText, chip.insertedText)
-                                        : appendClinicalPhrase(state.clinicalHistoryText, chip.insertedText),
-                                    );
-                                  }}
-                                  title={chip.insertedText}
-                                  aria-pressed={active}
-                                  className={`text-[10px] font-bold px-2.5 py-1 rounded-full border shadow-sm transition-all ${
-                                    active
-                                      ? "bg-gradient-to-br from-teal-500 to-cyan-600 text-white border-teal-600 shadow-teal-300/40"
-                                      : "bg-gradient-to-b from-teal-50 to-cyan-50/80 text-teal-900 border-teal-200 hover:border-teal-400 hover:shadow-md hover:-translate-y-px"
-                                  }`}
-                                >
-                                  {chip.displayLabel}
-                                </button>
-                              );
-                            })}
-                          </div>
-                        )}
+                        <ClinicalHistoryChipStrip
+                          chips={clinicalHistoryChips}
+                          studyRegions={studySetup.studyRegions}
+                          clinicalHistoryText={clinicalHistoryText}
+                          onClinicalHistoryChange={(next) => useWorkspace.getState().setField("clinicalHistory", next)}
+                          isOwner={isOwner}
+                          disabled={isLocked || isFinalized}
+                        />
                         <FindingsEditor field="clinicalHistory" label="Clinical History" minHeight="56px" placeholder="Presenting complaint and relevant history." />
                       </div>
                       {!isLocked && !isFinalized && (
@@ -3216,6 +3235,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                             selectedIds={selectedQuickIds}
                             onToggle={handleQuickToggle}
                             onFindingClick={(f) => studySetup.handleFindingClick(f, selectedQuickIds, handleQuickToggle)}
+                            onEditBeforeInsert={handleEditBeforeInsert}
                             side={quickSide}
                             onSideChange={setQuickSide}
                             disabled={isLocked || isFinalized}
@@ -3532,6 +3552,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       onExportWord={handleExportWord}
                       onExportPdf={handleExportPdf}
                       onPrintLikeFinal={handlePrintLikeFinal}
+                      onEditSection={focusReportField}
                       exportingWord={exportingWord}
                       exportingPdf={exportingPdf}
                       printingLikeFinal={printingLikeFinal}
@@ -3738,6 +3759,15 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       <FinalizeDialog />
       <InterruptChannelCard />
       <QuickSelectEditor />
+
+      {studyLocalEdit && (
+        <StudyLocalFindingEditDialog
+          finding={studyLocalEdit}
+          initial={studyTextOverridesRef.current.get(studyLocalEdit.id) ?? null}
+          onApply={applyStudyLocalEdit}
+          onCancel={() => setStudyLocalEdit(null)}
+        />
+      )}
       <MergePreviewDialog />
       <ConfirmOverwriteDialog />
       <SaveAsFormatDialog />
