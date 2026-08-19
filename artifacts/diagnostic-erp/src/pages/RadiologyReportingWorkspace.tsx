@@ -447,6 +447,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const studyLock = useStudyLock(studyId, {
     enabled: Boolean(workflow.currentRow && workflow.currentRow.status !== "REPORT_FINAL" && workflow.currentRow.status !== "DELIVERED") as any,
   });
+  const isLocked = studyLock.status === "locked-by-other";
+  const lockLost = studyLock.status === "expired-lost" || studyLock.status === "connection-lost";
 
   // 3. Draft ID (server-side persistence)
   const { draftId, existingDraft, captureSavedDraftId, isLoadingExistingDraft } = useRadiologyDraftId(studyId ?? null);
@@ -2181,8 +2183,6 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const sessionMin = Math.floor((Date.now() - sessionStartedAt) / 60000);
   const showFatigue = sessionMin >= 90 && sessionMin % 90 < 2 && !useWorkspace.getState().fatigueCardDismissed;
   const findingsPct = study ? getFindingsCompletionPct(findingsText, study.modality) : 0;
-  const isLocked = studyLock.status === "locked-by-other";
-  const lockLost = studyLock.status === "expired-lost" || studyLock.status === "connection-lost";
 
   // ─── Collapsed-section summaries (orientation, not another card) ────────────
   const referringDoctorName = (workflow.currentRow as { referringDoctor?: string } | null)?.referringDoctor ?? null;
