@@ -173,6 +173,9 @@ export function makeAiShadowPipelineHandler(overrides: Partial<ShadowPipelineDep
 
     const startedAt = new Date();
     const rendered = await deps.renderAnchors(uid, anchors);
+    if (rendered.length === 0) {
+      return { ok: false, detail: "could not render DICOM images for AI (Orthanc DICOMweb/preview failed — check ORTHANC_INTERNAL_URL and credentials)" };
+    }
 
     // 4. Inference via the AI Gateway seam (P2 / G7). Still shadow.
     const { draft, provenance } = await deps.provider.infer({

@@ -44,6 +44,14 @@ export {
 } from "./referenceRanges";
 
 export {
+  sanitizeDicomSex,
+  dicomSexForDisplay,
+  genderToDicomSex,
+  isPlausibleDicomSex,
+  type DicomSexCode,
+} from "./dicomSex";
+
+export {
   parseNumericResult,
   flagToStatus,
   isAbnormalFlag,

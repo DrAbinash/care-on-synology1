@@ -100,6 +100,7 @@ import { useGlobalScanner } from "@/hooks/useGlobalScanner";
 import { api } from "@/lib/fetchApi";
 import { isClinicPeakHours } from "@/lib/clinicPeakHours";
 import { applyNameGenderExtras, parseNameGenderExtraList } from "@/lib/nameGender";
+import { pickNameGenderExtra } from "@/components/NameGenderExtrasPanel";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { SyncPanel, SyncBadge } from "@/components/SyncPanel";
@@ -375,8 +376,8 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   });
   useEffect(() => {
     if (!pacsSettingsForNames) return;
-    const maleRaw = pacsSettingsForNames.find((r) => r.key === "name_gender_male_extra")?.value;
-    const femaleRaw = pacsSettingsForNames.find((r) => r.key === "name_gender_female_extra")?.value;
+    const maleRaw = pickNameGenderExtra(pacsSettingsForNames, "name_gender_male_extra");
+    const femaleRaw = pickNameGenderExtra(pacsSettingsForNames, "name_gender_female_extra");
     applyNameGenderExtras(parseNameGenderExtraList(maleRaw), parseNameGenderExtraList(femaleRaw));
   }, [pacsSettingsForNames]);
 

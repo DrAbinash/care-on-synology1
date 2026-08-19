@@ -15,7 +15,7 @@ import { and, eq, desc, inArray, isNull, ne, sql } from "drizzle-orm";
 import { isFeatureEnabledServer } from "../featureFlags";
 import { AI_MASTER_FLAG, getSchedulerConfig, getModalityMode, getModalityPolicies, normalizeAiModality, DEFAULT_SCHEDULER } from "./clinicalConfigService";
 import { enqueueAiShadowJob, AI_SHADOW_PIPELINE_JOB } from "./shadowPipeline";
-import { jobBacklogCounts, listDeadLetterJobs, markJobRetryable, countDueJobs, peekOvernightAiClaim } from "../radiologyJobs";
+import { jobBacklogCounts, listDeadLetterJobs, markJobRetryable, countDueJobs, peekOvernightAiClaim, getRadiologyJobById } from "../radiologyJobs";
 import {
   deriveRadiologyJobConsumerHealth,
   getRadiologyJobConsumerHeartbeat,
@@ -133,6 +133,12 @@ export async function scheduleStudy(opts: {
     modality: opts.modality ?? null,
     arrivalSignature: opts.arrivalSignature ?? (opts.forceNightWindow ? "overnight" : `${decision.mode}:${opts.manualRequest ? "manual" : "auto"}`),
   });
+  if (!res.created && res.id > 0) {
+    const existing = await getRadiologyJobById(res.id);
+    if (existing && (existing.status === "abandoned" || existing.status === "failed")) {
+      await markJobRetryable(existing.id);
+    }
+  }
   await markWorklistPending(opts.studyInstanceUid);
   return { enqueued: true, reason: decision.reason, jobId: res.id };
 }
@@ -148,11 +154,18 @@ export async function scheduleStudyOnDicomArrival(opts: {
 }): Promise<{ enqueued: boolean; reason: string }> {
   try {
     if (!opts.studyInstanceUid) return { enqueued: false, reason: "missing studyInstanceUid" };
+    const latest = await findLatestShadowJob(opts.studyInstanceUid);
+    const noDicomAbandoned = latest?.status === "abandoned"
+      && /no dicom instances found/i.test(latest.failureReason ?? "");
     const res = await scheduleStudy({
       studyInstanceUid: opts.studyInstanceUid,
       modality: opts.modality,
       priority: opts.priority ?? "routine",
       arrivalSignature: `dicom-arrival:${Date.now()}`,
+      // DICOM is stable now — enqueue even outside the night window and revive
+      // jobs that were abandoned while images were still transferring.
+      forceNightWindow: true,
+      forceRetry: noDicomAbandoned,
     });
     if (res.enqueued) {
       logger.info({ uid: opts.studyInstanceUid, modality: opts.modality, reason: res.reason }, "AI draft scheduled on DICOM arrival");

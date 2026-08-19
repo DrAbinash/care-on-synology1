@@ -7,6 +7,7 @@ import { toUnifiedStatus, worklistRoleView, priorityInfo, type WorklistRoleView 
 import { launchViewer, recordFailedLaunch, recordSuccessfulLaunch, resolveActiveProfile } from "@/lib/viewerService";
 import { launchRadiologyStudy } from "@/lib/studyLaunchService";
 import { normalizeModality, isUltrasoundModality } from "@/lib/usgModality";
+import { sanitizeDicomSex } from "@workspace/pathology";
 import { DATE_PRESETS, toISTDateStr } from "@/lib/dateRangePresets";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -97,7 +98,8 @@ function displayTestName(entry: Pick<WorklistEntry, "testName" | "studyDescripti
 }
 
 function formatWorklistAgeSex(entry: Pick<WorklistEntry, "age" | "sex">): string | null {
-  const parts = [entry.age, entry.sex].filter(Boolean);
+  const sex = entry.sex ? (sanitizeDicomSex(entry.sex) ?? null) : null;
+  const parts = [entry.age, sex].filter(Boolean);
   return parts.length > 0 ? parts.join(" \u00b7 ") : null;
 }
 

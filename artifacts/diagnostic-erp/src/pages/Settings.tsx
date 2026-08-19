@@ -39,6 +39,7 @@ import {
   RADIOLOGY_INFRA_LINKS,
   type SettingsHubLink,
 } from "@/lib/settingsHubCatalog";
+import { NameGenderExtrasPanel, pickNameGenderExtra } from "@/components/NameGenderExtrasPanel";
 
 type AppUser = {
   id: number; name: string; email: string; role: string;
@@ -1501,6 +1502,13 @@ function AppearanceTab() {
 
 function ClinicInfoTab() {
   const qc = useQueryClient();
+  const session = readStaffSession();
+  const isAdmin = session?.user.role === "admin" || session?.user.role === "super_admin";
+  const { data: pacsSettings } = useQuery<Array<{ key: string; value: string | null; category?: string }>>({
+    queryKey: ["pacs-settings"],
+    queryFn: () => api.get("/api/radiology/pacs-settings"),
+    staleTime: 5 * 60_000,
+  });
   const { data: settings, isLoading, error } = useQuery<ClinicSettings>({
     queryKey: ["clinic-settings"],
     queryFn: () => api.get("/api/clinic-settings"),
@@ -1643,6 +1651,14 @@ function ClinicInfoTab() {
       </div>
 
       <div className="space-y-4">
+        {isAdmin && (
+          <NameGenderExtrasPanel
+            maleStored={pickNameGenderExtra(pacsSettings, "name_gender_male_extra")}
+            femaleStored={pickNameGenderExtra(pacsSettings, "name_gender_female_extra")}
+            category="general"
+          />
+        )}
+
         <div className="bg-card border border-card-border rounded-xl p-5 space-y-4">
           <div>
             <h2 className="font-bold text-lg flex items-center gap-2"><User2 size={16} /> Patient Photo Capture</h2>
