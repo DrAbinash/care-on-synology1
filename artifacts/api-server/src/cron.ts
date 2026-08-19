@@ -244,7 +244,8 @@ export async function fireOvernightAiTick(opts: {
   const peak = isClinicPeakHours();
   let aiMax = 1;
   let dueAi = 0;
-  const aiBlocked = peak;
+  // Targeted canary (explicit jobId) is for ops/tests — run even during peak hold.
+  const aiBlocked = peak && !(opts.canary === true && opts.jobId != null);
   recordRadiologyJobCronTick({
     peak,
     aiBlocked,
