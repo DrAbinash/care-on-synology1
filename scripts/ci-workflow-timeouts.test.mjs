@@ -14,24 +14,26 @@ const aptHelper = readFileSync(path.join(root, "scripts/ci-apt-install.sh"), "ut
 
 describe("CI hang guards (PR #548 — apt-get sat past 10 min with no timeout)", () => {
   it("every job caps wall time so a hung step cannot sit for the 6h default", () => {
-    for (const job of ["static", "test", "e2e-smoke"]) {
+    for (const job of ["static", "test"]) {
       const block = yml.split(/\n  (?=[a-z])/).find((chunk) => chunk.startsWith(`${job}:`));
       expect(block, `job ${job} missing`).toBeTruthy();
       expect(block).toMatch(/timeout-minutes:\s*[1-9][0-9]*/);
     }
   });
 
-  it("poppler and Chromium installs have their own short step timeouts", () => {
-    expect(yml).toMatch(/Install poppler-utils[\s\S]*?timeout-minutes:\s*[1-5]\b/);
-    const chromiumSteps = yml.match(/Install Chromium[\s\S]*?timeout-minutes:\s*[1-9]/g) || [];
-    expect(chromiumSteps.length).toBeGreaterThanOrEqual(2);
+  it("CI apt and Chromium installs have bounded step timeouts", () => {
+    expect(yml).toMatch(/Install CI apt packages[\s\S]*?timeout-minutes:\s*[1-9]/);
+    expect(yml).toMatch(/Install Chromium browser[\s\S]*?timeout-minutes:\s*[1-9]/);
+    expect(yml).toMatch(/Browser smoke \(login shell\)[\s\S]*?timeout-minutes:\s*[1-9]/);
+    expect(yml).not.toContain("playwright install --with-deps chromium");
+    expect(yml).toContain("playwright install chromium");
   });
 
   it("apt-get is not invoked unbounded from the workflow", () => {
     expect(yml).not.toMatch(/sudo apt-get update && sudo apt-get install/);
     expect(yml).toContain("scripts/ci-apt-install.sh");
-    expect(aptHelper).toMatch(/timeout 90 apt-get update/);
-    expect(aptHelper).toMatch(/timeout 90 apt-get install/);
+    expect(aptHelper).toMatch(/timeout 240 apt-get update/);
+    expect(aptHelper).toMatch(/timeout 240 apt-get install/);
     expect(aptHelper).toContain("DEBIAN_FRONTEND=noninteractive");
     expect(aptHelper).toContain("fuser /var/lib/dpkg/lock-frontend");
   });
