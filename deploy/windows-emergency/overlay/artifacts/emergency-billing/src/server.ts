@@ -414,7 +414,7 @@ export async function createApp() {
   app.get("/api/bills", requireAuth, async (req, res) => {
     const { rows } = await pool.query(
       `SELECT uuid, bill_number, status, created_at, created_by_staff_name, payload_json, care_bill_id, reconciled_at,
-              sync_status, sync_error, synced_at, source_device_id, care_destination_id
+              sync_status, sync_error, synced_at, source_device_id, care_destination_id, sync_detail
        FROM emergency_transactions ORDER BY created_at DESC LIMIT 200`,
     );
     res.json(rows.map((r) => ({
@@ -426,6 +426,7 @@ export async function createApp() {
       syncedAt: r.synced_at,
       sourceDeviceId: r.source_device_id,
       careDestinationId: r.care_destination_id,
+      syncDetail: r.sync_detail ?? null,
     })));
   });
 
@@ -858,15 +859,28 @@ export async function createApp() {
     }
   });
 
-  async function pushPendingToCare(opts?: { onlyFailed?: boolean }): Promise<Record<string, unknown>> {
+  async function pushPendingToCare(opts?: {
+    onlyFailed?: boolean;
+    onlyUuids?: string[];
+    assignPatient?: Record<string, number>;
+    includeConflicts?: boolean;
+  }): Promise<Record<string, unknown>> {
     if (!PRIMARY_CARE_URL) throw new Error("PRIMARY_CARE_URL is not configured");
     if (!FETCH_TOKEN) throw new Error("EMERGENCY_FETCH_TOKEN is not configured");
-    const where = opts?.onlyFailed
+    let where = opts?.onlyFailed
       ? `status = 'PENDING' AND sync_status = 'failed'`
-      : `status = 'PENDING'`;
+      : opts?.includeConflicts
+        ? `status = 'PENDING' AND (sync_status IS NULL OR sync_status IN ('pending','failed','conflict'))`
+        : `status = 'PENDING' AND (sync_status IS NULL OR sync_status IN ('pending','failed'))`;
+    const params: unknown[] = [];
+    if (opts?.onlyUuids?.length) {
+      params.push(opts.onlyUuids);
+      where = `status = 'PENDING' AND uuid = ANY($1::text[])`;
+    }
     const { rows: sessRows } = await pool.query(`SELECT * FROM emergency_sessions ORDER BY started_at DESC`);
     const { rows } = await pool.query(
       `SELECT uuid, bill_number, payload_json, status FROM emergency_transactions WHERE ${where} ORDER BY created_at`,
+      params,
     );
     if (!rows.length) {
       return { created: 0, alreadyReconciled: 0, duplicates: 0, failures: 0, conflicts: 0, supplied: 0 };
@@ -892,7 +906,12 @@ export async function createApp() {
         "Content-Type": "application/json",
         "X-Emergency-Fetch-Token": FETCH_TOKEN,
       },
-      body: JSON.stringify({ package: pkg, sourceDeviceId: DEVICE_ID, onlySafe: true }),
+      body: JSON.stringify({
+        package: pkg,
+        sourceDeviceId: DEVICE_ID,
+        onlySafe: true,
+        assignPatient: opts?.assignPatient ?? undefined,
+      }),
     });
     const text = await res.text();
     let body: any = null;
@@ -900,13 +919,7 @@ export async function createApp() {
     if (!res.ok) throw new Error(body?.error || `Main CARE returned HTTP ${res.status}`);
 
     const failureUuids = new Set((body.failureDetails || []).map((f: { uuid: string }) => f.uuid));
-    const previewRows: Array<{
-      emergencyTransactionUuid?: string;
-      matchClass?: string;
-      alreadyImported?: boolean;
-      careBillId?: number | null;
-      transaction?: { emergencyTransactionUuid?: string };
-    }> = Array.isArray(body.preview?.rows)
+    const previewRows: Array<Record<string, any>> = Array.isArray(body.preview?.rows)
       ? body.preview.rows
       : Array.isArray(body.preview)
         ? body.preview
@@ -921,15 +934,29 @@ export async function createApp() {
       if (failureUuids.has(uuid)) {
         const detail = (body.failureDetails || []).find((f: { uuid: string }) => f.uuid === uuid);
         await pool.query(
-          `UPDATE emergency_transactions SET sync_status='failed', sync_error=$1 WHERE uuid=$2`,
-          [detail?.error || "import failed", uuid],
+          `UPDATE emergency_transactions SET sync_status='failed', sync_error=$1, sync_detail=$2::jsonb WHERE uuid=$3`,
+          [detail?.error || "import failed", JSON.stringify(preview ?? { error: detail?.error }), uuid],
         );
         continue;
       }
-      if (matchClass === "CONFLICT" || matchClass === "PROBABLE_MATCH") {
+      // After Resolve stores a CARE resolution (or assignPatient override), preview
+      // becomes EXACT_MATCH / NEW_PATIENT. Treat forced/assigned imports as synced
+      // even if a stale preview row still says CONFLICT.
+      const assigned =
+        opts?.assignPatient?.[uuid] != null ||
+        (preview?.resolution?.carePatientId != null && Number.isInteger(Number(preview.resolution.carePatientId)));
+      if ((matchClass === "CONFLICT" || matchClass === "PROBABLE_MATCH") && !assigned) {
         await pool.query(
-          `UPDATE emergency_transactions SET sync_status='conflict', sync_error=$1 WHERE uuid=$2`,
-          [`Needs CARE review (${matchClass}) — resolve in Main CARE Emergency Billing`, uuid],
+          `UPDATE emergency_transactions
+           SET sync_status='conflict',
+               sync_error=$1,
+               sync_detail=$2::jsonb
+           WHERE uuid=$3`,
+          [
+            `${matchClass}: ${preview?.matchReason || "needs patient resolution before merge"}`,
+            JSON.stringify(preview ?? { matchClass, matchReason: "unknown" }),
+            uuid,
+          ],
         );
         continue;
       }
@@ -939,22 +966,22 @@ export async function createApp() {
         matchClass === "NEW_PATIENT" ||
         matchClass === ""
       ) {
-        // Empty matchClass: CARE accepted the batch; treat as synced (idempotent UUIDs).
         const careBillId = preview?.careBillId ?? null;
         await pool.query(
           `UPDATE emergency_transactions
            SET status='RECONCILED', sync_status='synced', sync_error=NULL, synced_at=now(),
                care_bill_id=COALESCE($1, care_bill_id), care_destination_id=COALESCE($1, care_destination_id),
                reconciled_at=COALESCE(reconciled_at, now()),
+               sync_detail=$3::jsonb,
                payload_json = jsonb_set(payload_json, '{status}', '"RECONCILED"')
            WHERE uuid=$2 AND status = 'PENDING'`,
-          [careBillId, uuid],
+          [careBillId, uuid, JSON.stringify(preview ?? { synced: true })],
         );
         continue;
       }
       await pool.query(
-        `UPDATE emergency_transactions SET sync_status='failed', sync_error=$1 WHERE uuid=$2`,
-        [`Unrecognized match class: ${matchClass || "none"}`, uuid],
+        `UPDATE emergency_transactions SET sync_status='failed', sync_error=$1, sync_detail=$2::jsonb WHERE uuid=$3`,
+        [`Unrecognized match class: ${matchClass || "none"}`, JSON.stringify(preview ?? {}), uuid],
       );
     }
 
@@ -965,7 +992,7 @@ export async function createApp() {
       alreadyReconciled: body.alreadyReconciled ?? 0,
       duplicates: body.duplicates ?? 0,
       failures: body.failures ?? 0,
-      conflicts: body.conflicts ?? 0,
+      conflicts: body.conflicts ?? body.skippedReview ?? 0,
       skippedReview: body.skippedReview ?? 0,
       batchUuid: body.batchUuid,
     };
@@ -982,12 +1009,148 @@ export async function createApp() {
     }
   });
 
+  /** Refresh conflict/pending preview details from Main CARE without importing. */
+  app.post("/api/care/refresh-preview", requireAuth, requireAdmin, async (_req, res) => {
+    try {
+      if (!PRIMARY_CARE_URL || !FETCH_TOKEN) throw new Error("PRIMARY_CARE_URL / EMERGENCY_FETCH_TOKEN not configured");
+      const { rows: sessRows } = await pool.query(`SELECT * FROM emergency_sessions ORDER BY started_at DESC`);
+      const { rows } = await pool.query(
+        `SELECT uuid, bill_number, payload_json, status FROM emergency_transactions
+         WHERE status = 'PENDING' ORDER BY created_at`,
+      );
+      if (!rows.length) {
+        res.json({ updated: 0, rows: [] });
+        return;
+      }
+      const pkg = buildEmergencyJsonPackage({
+        sessions: sessRows.map((r) => ({
+          emergencySessionUuid: r.uuid,
+          startedAt: new Date(r.started_at).toISOString(),
+          startedByStaffId: r.started_by_staff_id,
+          startedByStaffName: r.started_by_staff_name,
+          reason: r.reason,
+          workstation: r.workstation,
+          endedAt: r.ended_at ? new Date(r.ended_at).toISOString() : null,
+          endedByStaffId: r.ended_by_staff_id,
+          endedByStaffName: r.ended_by_staff_name,
+        })),
+        transactions: rows.map(rowToTxn),
+        masterDataLastSyncedAt: (await getMeta("master_data_last_synced_at")) || null,
+      });
+      const r = await fetch(`${PRIMARY_CARE_URL}/api/emergency-bridge/preview-json`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Emergency-Fetch-Token": FETCH_TOKEN,
+        },
+        body: JSON.stringify({ package: pkg }),
+      });
+      const text = await r.text();
+      let body: any = null;
+      try { body = text ? JSON.parse(text) : null; } catch { body = { error: text }; }
+      if (!r.ok) throw new Error(body?.error || `Main CARE returned HTTP ${r.status}`);
+      const previewRows: Array<Record<string, any>> = Array.isArray(body.rows) ? body.rows : [];
+      let updated = 0;
+      for (const preview of previewRows) {
+        const uuid = String(preview.emergencyTransactionUuid || "");
+        if (!uuid) continue;
+        const matchClass = String(preview.matchClass || "");
+        let syncStatus = "pending";
+        let syncError: string | null = null;
+        if (preview.alreadyImported) {
+          syncStatus = "synced";
+        } else if (matchClass === "CONFLICT" || matchClass === "PROBABLE_MATCH") {
+          syncStatus = "conflict";
+          syncError = `${matchClass}: ${preview.matchReason || "needs patient resolution"}`;
+        } else if (preview.blocked) {
+          syncStatus = "failed";
+          syncError = preview.blockReason || "blocked";
+        }
+        await pool.query(
+          `UPDATE emergency_transactions SET sync_status=$1, sync_error=$2, sync_detail=$3::jsonb WHERE uuid=$4 AND status='PENDING'`,
+          [syncStatus, syncError, JSON.stringify(preview), uuid],
+        );
+        updated += 1;
+      }
+      await probeMainCare();
+      res.json({ updated, summary: body.summary ?? null, rows: previewRows });
+    } catch (err) {
+      await probeMainCare();
+      res.status(502).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  /**
+   * Resolve a CONFLICT/PROBABLE row against Main CARE (select existing or create new),
+   * then import that single emergency bill. Mirrors DS225 → CARE reconciliation Resolve.
+   */
+  app.post("/api/care/resolve-conflict", requireAuth, requireAdmin, async (req: AuthedRequest, res) => {
+    try {
+      if (!PRIMARY_CARE_URL || !FETCH_TOKEN) throw new Error("PRIMARY_CARE_URL / EMERGENCY_FETCH_TOKEN not configured");
+      const uuid = String(req.body?.emergencyTransactionUuid || "").trim();
+      const action = req.body?.action === "create_new" ? "create_new" : req.body?.action === "select_existing" ? "select_existing" : null;
+      const carePatientId = req.body?.carePatientId != null ? Number(req.body.carePatientId) : null;
+      if (!uuid || !action) {
+        res.status(400).json({ error: "emergencyTransactionUuid and action (select_existing | create_new) are required" });
+        return;
+      }
+      if (action === "select_existing" && !Number.isInteger(carePatientId)) {
+        res.status(400).json({ error: "carePatientId is required for select_existing" });
+        return;
+      }
+      const { rows } = await pool.query(
+        `SELECT uuid, bill_number, payload_json, status FROM emergency_transactions WHERE uuid=$1`,
+        [uuid],
+      );
+      const row = rows[0];
+      if (!row || row.status !== "PENDING") {
+        res.status(404).json({ error: "Pending emergency transaction not found" });
+        return;
+      }
+      const txn = rowToTxn(row);
+      const resolveRes = await fetch(`${PRIMARY_CARE_URL}/api/emergency-bridge/resolve-patient`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Emergency-Fetch-Token": FETCH_TOKEN,
+        },
+        body: JSON.stringify({
+          transaction: txn,
+          action,
+          carePatientId,
+          resolvedByStaffName: req.staff?.name || "emergency",
+        }),
+      });
+      const resolveText = await resolveRes.text();
+      let resolveBody: any = null;
+      try { resolveBody = resolveText ? JSON.parse(resolveText) : null; } catch { resolveBody = { error: resolveText }; }
+      if (!resolveRes.ok) {
+        throw new Error(resolveBody?.error || `Resolve failed HTTP ${resolveRes.status}`);
+      }
+
+      const assignPatient: Record<string, number> = {};
+      const resolvedId = resolveBody?.resolution?.carePatientId ?? carePatientId;
+      if (Number.isInteger(resolvedId)) {
+        assignPatient[uuid] = Number(resolvedId);
+      }
+
+      const pushResult = await pushPendingToCare({
+        onlyUuids: [uuid],
+        assignPatient: Object.keys(assignPatient).length ? assignPatient : undefined,
+      });
+      await audit(req.staff!, "resolve_conflict", uuid, `${action} → carePatient ${resolvedId ?? "new"}`, req.ip);
+      await probeMainCare();
+      res.json({ ok: true, resolution: resolveBody.resolution, push: pushResult, previewRow: resolveBody.row });
+    } catch (err) {
+      await probeMainCare();
+      res.status(502).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
   app.post("/api/care/retry-failed", requireAuth, requireAdmin, async (_req, res) => {
     try {
-      // Clear failed flag back to pending-style retry of failed rows only.
       await pool.query(`UPDATE emergency_transactions SET sync_error=NULL WHERE sync_status='failed' AND status='PENDING'`);
       const result = await pushPendingToCare({ onlyFailed: false });
-      // Re-push only previously failed: filter after reset — actually push all pending is safer/idempotent.
       await probeMainCare();
       res.json(result);
     } catch (err) {

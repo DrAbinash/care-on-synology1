@@ -15,6 +15,8 @@ const state = {
   careStatus: { state: "unknown", label: "Checking…", lastCheckedAt: null },
   ops: null,
   toast: null,
+  reconTab: "conflict", // pending | conflict | synced | all
+  resolveRow: null,
 };
 
 async function api(path, opts = {}) {
@@ -154,10 +156,9 @@ function renderMain() {
 
       ${admin ? opsPanel() : ""}
 
-      <div class="card" style="margin:10px">
-        <div class="sec-h slate">Today's emergency bills</div>
-        <div class="sec-body" id="bills"></div>
-      </div>
+      ${reconciliationPanel()}
+
+      ${state.resolveRow ? resolveModalHtml(state.resolveRow) : ""}
 
       ${state.toast ? `<div class="toast ${state.toast.kind}">${escapeHtml(state.toast.msg)}</div>` : ""}
     </div>`;
@@ -173,7 +174,8 @@ function renderMain() {
   };
   if (!state.locked) bindBillForm();
   bindOps();
-  renderBills();
+  bindReconciliation();
+  if (state.resolveRow) bindResolveModal();
 }
 
 function deskLayout() {
@@ -300,6 +302,7 @@ function opsPanel() {
         <div class="ops-actions">
           <button class="btn btn-amber" id="sync-from-main">Sync From Main CARE</button>
           <button class="btn btn-primary" id="push-to-main" style="width:auto">Push Emergency Data</button>
+          <button class="btn btn-secondary" id="refresh-preview">Refresh Conflict Details</button>
           <button class="btn btn-secondary" id="retry-failed">Retry Failed</button>
           <button class="btn btn-secondary" id="csv">Export CSV</button>
           <button class="btn btn-secondary" id="json">Export JSON</button>
@@ -329,8 +332,9 @@ function bindOps() {
       const r = await api("/api/care/push-transactions", { method: "POST" });
       await refreshBills();
       await refreshOps();
+      state.reconTab = (r.conflicts ?? 0) > 0 ? "conflict" : "synced";
       render();
-      msg(`Pushed to Main CARE — created ${r.created ?? 0}, already ${r.alreadyReconciled ?? r.duplicates ?? 0}, failed ${r.failures ?? 0}`);
+      msg(`Pushed to Main CARE — created ${r.created ?? 0}, already ${r.alreadyReconciled ?? r.duplicates ?? 0}, conflicts ${r.conflicts ?? 0}, failed ${r.failures ?? 0}. Resolve conflicts in the Conflicts tab.`);
     } catch (err) { msg(err.message, false); }
   };
   if ($("#retry-failed")) $("#retry-failed").onclick = async () => {
@@ -339,7 +343,17 @@ function bindOps() {
       await refreshBills();
       await refreshOps();
       render();
-      msg(`Retry complete — created ${r.created ?? 0}, failed ${r.failures ?? 0}`);
+      msg(`Retry complete — created ${r.created ?? 0}, failed ${r.failures ?? 0}, conflicts ${r.conflicts ?? 0}`);
+    } catch (err) { msg(err.message, false); }
+  };
+  if ($("#refresh-preview")) $("#refresh-preview").onclick = async () => {
+    try {
+      const r = await api("/api/care/refresh-preview", { method: "POST" });
+      await refreshBills();
+      await refreshOps();
+      state.reconTab = "conflict";
+      render();
+      msg(`Conflict details refreshed — ${r.updated ?? 0} rows`);
     } catch (err) { msg(err.message, false); }
   };
   if ($("#csv")) $("#csv").onclick = () => download("/api/export/csv", "emergency.csv");
@@ -370,28 +384,33 @@ function bindBillForm() {
     });
   });
 
-  if ($("#dq")) $("#dq").oninput = debounce(async (e) => {
-    const q = e.target.value.trim();
-    if (state.referringDoctor && q !== state.referringDoctor.name) state.referringDoctor = null;
-    const box = $("#dsug");
-    if (q.length < 1) { box.classList.add("hidden"); return; }
-    const rows = await api("/api/doctors?q=" + encodeURIComponent(q));
-    box.classList.remove("hidden");
-    box.innerHTML = `<button type="button" data-id="">Walk-in / none</button>` + rows.map((d) =>
-      `<button type="button" data-id="${d.id}">${escapeHtml(d.name)}${d.specialization ? `<span class="muted" style="margin-left:auto">${escapeHtml(d.specialization)}</span>` : ""}</button>`
-    ).join("");
-    box.querySelectorAll("button[data-id]").forEach((el) => {
-      el.onclick = () => {
-        if (!el.dataset.id) {
-          state.referringDoctor = null;
-        } else {
-          const d = rows.find((x) => String(x.id) === el.dataset.id);
-          state.referringDoctor = d ? { id: d.id, name: d.name, specialization: d.specialization || "" } : null;
-        }
-        render();
-      };
-    });
-  });
+  if ($("#dq")) {
+    const loadDocs = async (q) => {
+      const box = $("#dsug");
+      if (!box) return;
+      if (state.referringDoctor && q && q !== state.referringDoctor.name) state.referringDoctor = null;
+      const rows = await api("/api/doctors?q=" + encodeURIComponent(q || ""));
+      box.classList.remove("hidden");
+      box.innerHTML = `<button type="button" data-id="">Walk-in / none</button>` + rows.map((d) =>
+        `<button type="button" data-id="${d.id}"><span>${escapeHtml(d.name)}</span>${d.specialization ? `<span class="muted" style="margin-left:auto">${escapeHtml(d.specialization)}</span>` : ""}</button>`
+      ).join("") || `<div class="empty">No doctors in master cache — Sync From Main CARE</div>`;
+      box.querySelectorAll("button[data-id]").forEach((el) => {
+        el.onclick = (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          if (!el.dataset.id) {
+            state.referringDoctor = null;
+          } else {
+            const d = rows.find((x) => String(x.id) === el.dataset.id);
+            state.referringDoctor = d ? { id: d.id, name: d.name, specialization: d.specialization || "" } : null;
+          }
+          render();
+        };
+      });
+    };
+    $("#dq").oninput = debounce(async (e) => { await loadDocs(e.target.value.trim()); }, 150);
+    $("#dq").onfocus = async (e) => { await loadDocs(e.target.value.trim()); };
+  }
 
   if ($("#sq")) $("#sq").oninput = debounce(async (e) => {
     const q = e.target.value.trim();
@@ -637,38 +656,196 @@ async function printReceipt(t) {
   api("/api/bills/" + t.emergencyTransactionUuid + "/reprint", { method: "POST" }).catch(() => {});
 }
 
-function renderBills() {
-  const el = $("#bills");
-  if (!el) return;
-  if (!state.bills.length) {
-    el.innerHTML = `<p class="muted">No emergency bills yet today.</p>`;
-    return;
+function syncStatusOf(b) {
+  return String(b.syncStatus || b.status || "pending").toLowerCase();
+}
+
+function billsByTab(tab) {
+  const all = state.bills || [];
+  if (tab === "all") return all;
+  if (tab === "pending") return all.filter((b) => syncStatusOf(b) === "pending" && b.status === "PENDING");
+  if (tab === "conflict") return all.filter((b) => syncStatusOf(b) === "conflict" || syncStatusOf(b) === "failed");
+  if (tab === "synced") return all.filter((b) => syncStatusOf(b) === "synced" || b.status === "RECONCILED");
+  return all;
+}
+
+function reconciliationPanel() {
+  const pending = (state.bills || []).filter((b) => syncStatusOf(b) === "pending" && b.status === "PENDING").length;
+  const conflict = (state.bills || []).filter((b) => syncStatusOf(b) === "conflict" || syncStatusOf(b) === "failed").length;
+  const synced = (state.bills || []).filter((b) => syncStatusOf(b) === "synced" || b.status === "RECONCILED").length;
+  const rows = billsByTab(state.reconTab);
+  return `
+    <div class="card" style="margin:10px">
+      <div class="sec-h slate">Reconciliation — Synced &amp; Conflicts</div>
+      <div class="sec-body">
+        <p class="muted" style="margin:0 0 10px">
+          Conflicts (same mobile / different name, or shared dummy numbers like 1234567890) stay here until you
+          <b>Resolve &amp; Merge</b> — pick an existing CARE patient or create as new. Safe bills sync automatically on Push.
+        </p>
+        <div class="recon-tabs">
+          <button type="button" data-tab="conflict" class="${state.reconTab === "conflict" ? "active" : ""}">Conflicts / Failed (${conflict})</button>
+          <button type="button" data-tab="pending" class="${state.reconTab === "pending" ? "active" : ""}">Pending (${pending})</button>
+          <button type="button" data-tab="synced" class="${state.reconTab === "synced" ? "active" : ""}">Synced (${synced})</button>
+          <button type="button" data-tab="all" class="${state.reconTab === "all" ? "active" : ""}">All (${(state.bills || []).length})</button>
+        </div>
+        <div id="bills">${reconTableHtml(rows)}</div>
+      </div>
+    </div>`;
+}
+
+function reconTableHtml(rows) {
+  if (!rows.length) {
+    return `<p class="muted">No rows in this tab.</p>`;
   }
-  el.innerHTML = `<table class="bills"><thead><tr><th>No</th><th>Patient</th><th>Net</th><th>Paid</th><th>Due</th><th>Status</th><th></th></tr></thead><tbody>
-    ${state.bills.map((b) => `<tr>
-      <td>${escapeHtml(b.emergencyBillNumber)}</td>
-      <td>${escapeHtml((b.patient?.firstName || "") + " " + (b.patient?.lastName || ""))}</td>
-      <td class="tabular">${fmt(b.netAmount)}</td>
-      <td class="tabular">${fmt(b.amountReceived)}</td>
-      <td class="tabular">${fmt(b.dueAmount)}</td>
-      <td><span class="badge ${escapeHtml(b.syncStatus || b.status)}">${escapeHtml(String(b.syncStatus || b.status).toUpperCase())}</span></td>
-      <td>
-        ${b.status === "PENDING" ? `<button class="btn btn-danger void" data-u="${b.emergencyTransactionUuid}" style="height:28px;font-size:11px">Void</button>` : ""}
-        <button class="btn btn-secondary pr" data-u="${b.emergencyTransactionUuid}" style="height:28px;font-size:11px">Print</button>
-      </td>
-    </tr>`).join("")}
+  return `<table class="bills"><thead><tr>
+    <th>EMG No</th><th>Patient</th><th>Mobile</th><th>Net</th><th>Status</th><th>Conflict / sync detail</th><th></th>
+  </tr></thead><tbody>
+    ${rows.map((b) => {
+      const detail = b.syncDetail || {};
+      const reason = b.syncError || detail.matchReason || detail.matchClass || "—";
+      const candN = Array.isArray(detail.candidates) ? detail.candidates.length : 0;
+      const canResolve = syncStatusOf(b) === "conflict" || (detail.matchClass === "CONFLICT" || detail.matchClass === "PROBABLE_MATCH");
+      return `<tr>
+        <td>${escapeHtml(b.emergencyBillNumber)}</td>
+        <td>${escapeHtml((b.patient?.firstName || "") + " " + (b.patient?.lastName || ""))}</td>
+        <td>${escapeHtml(b.patient?.mobile || "—")}</td>
+        <td class="tabular">${fmt(b.netAmount)}</td>
+        <td><span class="badge ${escapeHtml(b.syncStatus || b.status)}">${escapeHtml(String(b.syncStatus || b.status).toUpperCase())}</span></td>
+        <td style="max-width:280px">
+          <div style="font-size:11px">${escapeHtml(reason)}</div>
+          ${candN ? `<div class="muted">${candN} CARE candidate(s)</div>` : ""}
+          ${b.careBillId ? `<div class="muted">CARE bill id ${escapeHtml(b.careBillId)}</div>` : ""}
+        </td>
+        <td>
+          ${canResolve && b.status === "PENDING" ? `<button class="btn btn-amber resolve" data-u="${b.emergencyTransactionUuid}" style="height:28px;font-size:11px;width:auto">Resolve &amp; Merge</button>` : ""}
+          ${b.status === "PENDING" && syncStatusOf(b) === "pending" ? `<button class="btn btn-danger void" data-u="${b.emergencyTransactionUuid}" style="height:28px;font-size:11px">Void</button>` : ""}
+          <button class="btn btn-secondary pr" data-u="${b.emergencyTransactionUuid}" style="height:28px;font-size:11px">Print</button>
+        </td>
+      </tr>`;
+    }).join("")}
   </tbody></table>`;
-  el.querySelectorAll(".void").forEach((b) => b.onclick = async () => {
+}
+
+function resolveModalHtml(b) {
+  const detail = b.syncDetail || {};
+  const p = b.patient || {};
+  const candidates = Array.isArray(detail.candidates) ? detail.candidates : [];
+  return `
+    <div class="modal-backdrop" id="resolve-modal">
+      <div class="modal">
+        <h3>Resolve patient — ${escapeHtml(b.emergencyBillNumber)}</h3>
+        <div class="card" style="margin:0 0 12px;box-shadow:none">
+          <div class="sec-body">
+            <div class="field-label">Emergency capture</div>
+            <div style="font-weight:800">${escapeHtml((p.firstName || "") + " " + (p.lastName || ""))}</div>
+            <div class="muted">
+              Age/sex: ${escapeHtml(p.ageValue ?? "—")}${p.ageUnit ? " " + escapeHtml(p.ageUnit) : ""} / ${escapeHtml(p.sex || "—")}
+              · Mobile ${escapeHtml(p.mobile || "—")}
+              ${p.uhid ? " · UHID " + escapeHtml(p.uhid) : ""}
+            </div>
+            <div class="muted" style="margin-top:6px">${escapeHtml(detail.matchClass || "CONFLICT")}: ${escapeHtml(detail.matchReason || b.syncError || "")}</div>
+          </div>
+        </div>
+        <p class="muted">Select the matching CARE patient (do not merge by name alone), or create as a new CARE patient. Dummy mobiles like 1234567890 often produce conflicts — pick carefully.</p>
+        <div style="overflow:auto;border:1px solid var(--line);border-radius:10px;margin:10px 0">
+          <table class="cand-table">
+            <thead><tr>
+              <th>UHID</th><th>Name</th><th>Age/DOB</th><th>Sex</th><th>Mobile</th><th>Address</th><th>Last visit</th><th></th>
+            </tr></thead>
+            <tbody>
+              ${candidates.length ? candidates.map((c) => `
+                <tr>
+                  <td class="tabular">${escapeHtml(c.uhid)}</td>
+                  <td>${escapeHtml(c.firstName)} ${escapeHtml(c.lastName)}</td>
+                  <td>${c.ageValue != null ? escapeHtml(c.ageValue) + (c.ageUnit ? " " + escapeHtml(c.ageUnit) : "") : "—"}${c.dateOfBirth ? " / " + escapeHtml(c.dateOfBirth) : ""}</td>
+                  <td>${escapeHtml(c.sex || "—")}</td>
+                  <td>${escapeHtml(c.phone || "—")}</td>
+                  <td>${escapeHtml(c.address || "—")}</td>
+                  <td>${c.lastVisitAt ? escapeHtml(new Date(c.lastVisitAt).toLocaleDateString("en-IN")) : "—"}</td>
+                  <td><button type="button" class="btn btn-primary pick-existing" data-id="${c.carePatientId}" style="height:28px;font-size:11px;width:auto">Select existing</button></td>
+                </tr>`).join("") : `<tr><td colspan="8" class="muted" style="padding:12px">No CARE candidates on this phone/UHID. Use Create as new patient, or Refresh Conflict Details after Main CARE is online.</td></tr>`}
+            </tbody>
+          </table>
+        </div>
+        <div class="btn-row" style="justify-content:space-between">
+          <button type="button" class="btn btn-secondary" id="resolve-cancel" style="width:auto">Cancel</button>
+          <button type="button" class="btn btn-amber" id="resolve-create" style="width:auto">Create as new CARE patient</button>
+        </div>
+        <p id="resolve-err" class="muted" style="color:#b91c1c;margin-top:8px"></p>
+      </div>
+    </div>`;
+}
+
+function bindReconciliation() {
+  document.querySelectorAll(".recon-tabs button[data-tab]").forEach((btn) => {
+    btn.onclick = () => { state.reconTab = btn.dataset.tab; render(); };
+  });
+  document.querySelectorAll(".resolve").forEach((btn) => {
+    btn.onclick = async () => {
+      const bill = state.bills.find((x) => x.emergencyTransactionUuid === btn.dataset.u);
+      if (!bill) return;
+      // Ensure we have candidates — refresh preview for this set if missing
+      if (!bill.syncDetail?.candidates) {
+        try {
+          await api("/api/care/refresh-preview", { method: "POST" });
+          await refreshBills();
+        } catch { /* keep going with what we have */ }
+      }
+      const fresh = state.bills.find((x) => x.emergencyTransactionUuid === btn.dataset.u) || bill;
+      state.resolveRow = fresh;
+      render();
+    };
+  });
+  document.querySelectorAll(".void").forEach((b) => b.onclick = async () => {
     const reason = prompt("Void reason?");
     if (!reason) return;
     await api("/api/bills/" + b.dataset.u + "/void", { method: "POST", body: { reason } });
     await refreshBills();
     render();
   });
-  el.querySelectorAll(".pr").forEach((b) => b.onclick = () => {
+  document.querySelectorAll(".pr").forEach((b) => b.onclick = () => {
     const t = state.bills.find((x) => x.emergencyTransactionUuid === b.dataset.u);
     if (t) printReceipt(t);
   });
+}
+
+function bindResolveModal() {
+  const bill = state.resolveRow;
+  if (!bill) return;
+  const close = () => { state.resolveRow = null; render(); };
+  if ($("#resolve-cancel")) $("#resolve-cancel").onclick = close;
+  const backdrop = $("#resolve-modal");
+  if (backdrop) backdrop.onclick = (e) => { if (e.target === backdrop) close(); };
+  const run = async (action, carePatientId) => {
+    const err = $("#resolve-err");
+    if (err) err.textContent = "";
+    try {
+      await api("/api/care/resolve-conflict", {
+        method: "POST",
+        body: {
+          emergencyTransactionUuid: bill.emergencyTransactionUuid,
+          action,
+          carePatientId: carePatientId ?? undefined,
+        },
+      });
+      state.resolveRow = null;
+      await refreshBills();
+      await refreshOps();
+      state.reconTab = "synced";
+      render();
+      toast("Conflict resolved and pushed to Main CARE");
+    } catch (e) {
+      if (err) err.textContent = e.message;
+    }
+  };
+  document.querySelectorAll(".pick-existing").forEach((btn) => {
+    btn.onclick = () => run("select_existing", Number(btn.dataset.id));
+  });
+  if ($("#resolve-create")) $("#resolve-create").onclick = () => run("create_new");
+}
+
+function renderBills() {
+  // kept for compatibility — reconciliation panel renders via render()
 }
 
 async function startSession() {

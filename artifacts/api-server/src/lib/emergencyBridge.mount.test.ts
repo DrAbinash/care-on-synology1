@@ -10,6 +10,8 @@ describe("emergency bridge routes", () => {
     const bridge = readFileSync(path.resolve(__dirname, "../routes/emergencyBridge.ts"), "utf8");
     expect(bridge).toContain("/master-snapshot");
     expect(bridge).toContain("/import-json");
+    expect(bridge).toContain("/resolve-patient");
+    expect(bridge).toContain("assignPatient");
     expect(bridge).toContain("X-Emergency-Fetch-Token");
     expect(bridge).toContain("requireEmergencyFetchToken");
   });
