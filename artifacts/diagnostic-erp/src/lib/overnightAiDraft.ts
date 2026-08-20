@@ -8,6 +8,8 @@ export type OvernightDisplayStatus =
   | "RUNNING"
   | "RETRYING"
   | "READY"
+  | "EMPTY"
+  | "QUARANTINED"
   | "ERROR"
   | "STUCK"
   | "NONE";
@@ -29,7 +31,7 @@ export interface OvernightAiPayload {
 }
 
 export type OvernightAgeChip = "today" | "last_24h" | "last_48h" | "last_3d" | "last_7d" | "custom";
-export type OvernightStatusChip = "all" | "queued" | "running" | "ready" | "error";
+export type OvernightStatusChip = "all" | "queued" | "running" | "ready" | "empty" | "quarantined" | "error";
 
 export const OVERNIGHT_AGE_CHIPS: Array<{ id: OvernightAgeChip; label: string }> = [
   { id: "today", label: "Today" },
@@ -45,6 +47,8 @@ export const OVERNIGHT_STATUS_CHIPS: Array<{ id: OvernightStatusChip; label: str
   { id: "queued", label: "Queued" },
   { id: "running", label: "Running" },
   { id: "ready", label: "Ready" },
+  { id: "empty", label: "Empty" },
+  { id: "quarantined", label: "Quarantined" },
   { id: "error", label: "Error" },
 ];
 
@@ -80,6 +84,8 @@ export function overnightStatusMatches(
   if (chip === "queued") return status === "QUEUED" || status === "RETRYING";
   if (chip === "running") return status === "RUNNING";
   if (chip === "ready") return status === "READY";
+  if (chip === "empty") return status === "EMPTY";
+  if (chip === "quarantined") return status === "QUARANTINED";
   if (chip === "error") return status === "ERROR" || status === "STUCK";
   return true;
 }
@@ -130,6 +136,8 @@ export const OVERNIGHT_STATUS_STYLE: Record<OvernightDisplayStatus, string> = {
   RETRYING: "bg-orange-50 text-orange-800 border-orange-200",
   RUNNING: "bg-sky-50 text-sky-800 border-sky-200",
   READY: "bg-purple-50 text-purple-700 border-purple-200",
+  EMPTY: "bg-slate-50 text-slate-700 border-slate-300",
+  QUARANTINED: "bg-amber-50 text-amber-900 border-amber-300",
   ERROR: "bg-red-50 text-red-700 border-red-200",
   STUCK: "bg-rose-50 text-rose-800 border-rose-300",
   NONE: "bg-gray-100 text-gray-600 border-gray-200",
@@ -139,8 +147,9 @@ function rank(status: OvernightDisplayStatus): number {
   if (status === "RUNNING") return 0;
   if (status === "READY") return 1;
   if (status === "ERROR" || status === "STUCK") return 2;
-  if (status === "QUEUED" || status === "RETRYING") return 3;
-  return 4;
+  if (status === "EMPTY" || status === "QUARANTINED") return 3;
+  if (status === "QUEUED" || status === "RETRYING") return 4;
+  return 5;
 }
 
 function ts(iso: string | null | undefined): number {
@@ -158,7 +167,9 @@ export function compareOvernightWorklistRows(
   const sb = b.overnightAi?.displayStatus ?? "NONE";
   const r = rank(sa) - rank(sb);
   if (r !== 0) return r;
-  if (sa === "READY") return ts(b.overnightAi?.completedAt) - ts(a.overnightAi?.completedAt);
+  if (sa === "READY" || sa === "EMPTY" || sa === "QUARANTINED") {
+    return ts(b.overnightAi?.completedAt) - ts(a.overnightAi?.completedAt);
+  }
   if (sa === "QUEUED" || sa === "RETRYING") {
     const pa = a.overnightAi?.queuePosition ?? Number.MAX_SAFE_INTEGER;
     const pb = b.overnightAi?.queuePosition ?? Number.MAX_SAFE_INTEGER;
