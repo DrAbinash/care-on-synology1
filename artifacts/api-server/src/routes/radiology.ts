@@ -672,26 +672,46 @@ radiologyRouter.get("/pacs-worklist", async (req, res) => {
 
 /**
  * GET /api/radiology/pacs-worklist/:id/ai-draft
- * Retrieve the stored AI draft JSON for a worklist entry.
+ * Retrieve a radiologist-readable AI draft for a worklist entry.
+ * Hydrates from ai_shadow_drafts when available (authoritative grounded content);
+ * falls back to the compact radiology_worklist.ai_draft_json pointer/summary.
  */
 radiologyRouter.get("/pacs-worklist/:id/ai-draft", async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) { res.status(400).json({ error: "Invalid id" }); return; }
 
   const [row] = await db
-    .select({ aiDraftJson: radiologyWorklistTable.aiDraftJson, aiDraftStatus: radiologyWorklistTable.aiDraftStatus })
+    .select({
+      aiDraftJson: radiologyWorklistTable.aiDraftJson,
+      aiDraftStatus: radiologyWorklistTable.aiDraftStatus,
+      studyInstanceUID: radiologyWorklistTable.studyInstanceUID,
+    })
     .from(radiologyWorklistTable)
     .where(eq(radiologyWorklistTable.id, id))
     .limit(1);
 
   if (!row) { res.status(404).json({ error: "Not found" }); return; }
 
-  let draft: Record<string, unknown> | null = null;
+  let stored: Record<string, unknown> | null = null;
   try {
-    if (row.aiDraftJson) draft = JSON.parse(row.aiDraftJson) as Record<string, unknown>;
+    if (row.aiDraftJson) stored = JSON.parse(row.aiDraftJson) as Record<string, unknown>;
   } catch {
-    draft = null;
+    stored = null;
   }
+
+  let shadow = null;
+  const uid = (row.studyInstanceUID ?? "").trim();
+  if (uid) {
+    try {
+      const { getLatestDraftForStudy } = await import("../lib/ai/draftService.js");
+      shadow = await getLatestDraftForStudy(uid);
+    } catch {
+      shadow = null;
+    }
+  }
+
+  const { shapeWorklistAiDraftViewer } = await import("../lib/ai/worklistAiDraftViewer.js");
+  const draft = shapeWorklistAiDraftViewer({ stored, shadow });
 
   res.json({
     id,

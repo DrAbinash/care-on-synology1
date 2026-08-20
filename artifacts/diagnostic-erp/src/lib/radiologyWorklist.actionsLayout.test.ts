@@ -32,4 +32,10 @@ describe("PACS worklist actions + unlinked bills UX", () => {
     expect(src).toContain('data-testid="overnight-ai-drafts-filters"');
     expect(src).toContain("compareOvernightWorklistRows");
   });
+
+  it("AI Draft Viewer shows findings/impression, not raw JSON dump", () => {
+    expect(src).toContain("normalizeWorklistAiDraftViewer");
+    expect(src).toContain("AI finished, but no grounded findings were produced");
+    expect(src).not.toContain("JSON.stringify(draftViewer.draft");
+  });
 });

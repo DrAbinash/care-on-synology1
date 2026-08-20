@@ -45,6 +45,10 @@ import {
   type OvernightDisplayStatus,
   type OvernightStatusChip,
 } from "@/lib/overnightAiDraft";
+import {
+  normalizeWorklistAiDraftViewer,
+  type WorklistAiDraftViewerPayload,
+} from "@/lib/worklistAiDraftViewer";
 
 type WorklistEntry = {
   id: number;
@@ -745,7 +749,10 @@ export default function RadiologyWorklist() {
   // tracks which row's file input is mid-upload, matching OutsourceWorklist's
   // "Attach Report" pattern exactly.
   const [attachingStudyId, setAttachingStudyId] = useState<number | null>(null);
-  const [draftViewer, setDraftViewer] = useState<{ id: number; draft: Record<string, unknown> | null } | null>(null);
+  const [draftViewer, setDraftViewer] = useState<{
+    id: number;
+    draft: WorklistAiDraftViewerPayload | Record<string, unknown> | null;
+  } | null>(null);
   // M1.6B1 — assignment management + live workload
   const [showWorkload, setShowWorkload] = useState(false);
   const [feedbackEntry, setFeedbackEntry] = useState<number | null>(null);
@@ -1180,10 +1187,13 @@ export default function RadiologyWorklist() {
     setTimeout(() => void refetch(), 100);
   }
 
-  // Phase 8: View stored AI draft
+  // Phase 8: View stored AI draft (hydrated findings/impression — not raw JSON)
   async function viewAiDraft(id: number) {
     try {
-      const result = await api.get<{ draft: Record<string, unknown> | null; safetyNote: string }>(`/api/radiology/pacs-worklist/${id}/ai-draft`);
+      const result = await api.get<{
+        draft: WorklistAiDraftViewerPayload | Record<string, unknown> | null;
+        safetyNote: string;
+      }>(`/api/radiology/pacs-worklist/${id}/ai-draft`);
       setDraftViewer({ id, draft: result.draft });
     } catch (err) {
       toast({ title: "Error", description: err instanceof Error ? err.message : "Failed to load draft", variant: "destructive" });
@@ -2180,15 +2190,95 @@ export default function RadiologyWorklist() {
               AI Draft — Requires Radiologist Review
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-3 text-sm">
-            {draftViewer?.draft ? (
-              <div className="rounded border bg-muted/40 p-3 max-h-96 overflow-y-auto">
-                <pre className="text-xs whitespace-pre-wrap">{JSON.stringify(draftViewer.draft, null, 2)}</pre>
+          {(() => {
+            const viewed = normalizeWorklistAiDraftViewer(draftViewer?.draft);
+            return (
+              <div className="space-y-3 text-sm">
+                {!draftViewer?.draft ? (
+                  <p className="text-muted-foreground">No draft stored for this study.</p>
+                ) : viewed.empty ? (
+                  <div className="rounded border border-amber-200 bg-amber-50/80 p-3 text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-100">
+                    <p className="font-medium text-xs">AI finished, but no grounded findings were produced.</p>
+                    <p className="mt-1 text-xs text-amber-800/90 dark:text-amber-200/90">
+                      The study is marked READY because the overnight pipeline completed. Open Reporting Workspace to draft manually
+                      {viewed.quarantinedCount > 0
+                        ? `, or regenerate — ${viewed.quarantinedCount} ungrounded finding(s) were quarantined and hidden.`
+                        : ", or regenerate the AI draft if images / Ollama are available."}
+                    </p>
+                    {draftViewer?.id != null && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="mt-3 h-7 text-xs"
+                        onClick={() => {
+                          setDraftViewer(null);
+                          navigate(reportingWorkspacePath({ id: draftViewer.id }));
+                        }}
+                      >
+                        Open Reporting Workspace
+                      </Button>
+                    )}
+                  </div>
+                ) : (
+                  <div className="rounded border bg-muted/40 p-3 max-h-96 overflow-y-auto space-y-3">
+                    {viewed.degraded && (
+                      <p className="text-[11px] text-amber-700 dark:text-amber-300">
+                        Degraded draft (deterministic / limited inference).
+                      </p>
+                    )}
+                    <div>
+                      <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                        Findings{viewed.findingCount > 0 ? ` (${viewed.findingCount})` : ""}
+                      </div>
+                      <ul className="space-y-2">
+                        {viewed.findings.map((f, i) => (
+                          <li key={f.key ?? i} className="text-sm whitespace-pre-wrap leading-relaxed">
+                            {f.text}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                    {viewed.impression.length > 0 && (
+                      <div>
+                        <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                          Impression
+                        </div>
+                        <ul className="list-disc pl-4 space-y-1">
+                          {viewed.impression.map((line, i) => (
+                            <li key={i} className="text-sm leading-relaxed">{line}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    {(viewed.provenanceLine || viewed.draftId != null) && (
+                      <div className="border-t pt-2 text-[10px] text-muted-foreground">
+                        {[
+                          viewed.draftId != null ? `draft #${viewed.draftId}` : null,
+                          viewed.version != null ? `v${viewed.version}` : null,
+                          viewed.provenanceLine,
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")}
+                      </div>
+                    )}
+                    {draftViewer?.id != null && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 text-xs"
+                        onClick={() => {
+                          setDraftViewer(null);
+                          navigate(reportingWorkspacePath({ id: draftViewer.id }));
+                        }}
+                      >
+                        Review in Reporting Workspace
+                      </Button>
+                    )}
+                  </div>
+                )}
               </div>
-            ) : (
-              <p className="text-muted-foreground">No draft stored for this study.</p>
-            )}
-          </div>
+            );
+          })()}
         </DialogContent>
       </Dialog>
 
