@@ -346,7 +346,7 @@ export function makeAiShadowPipelineHandler(overrides: Partial<ShadowPipelineDep
 
     return {
       ok: true,
-      detail: `shadow OK — rev ${snapshotRevision}, draft v${version} (#${draftRow.id}), manifest ${manifestRow.id}, valid ${gauntlet.valid.length}, quarantined ${gauntlet.quarantined.length}, degraded ${degraded}, images ${rendered.length}, model ${provenance.modelVersion}`,
+      detail: `shadow OK — rev ${snapshotRevision}, draft v${version} (#${draftRow.id}), manifest ${manifestRow.id}, valid ${gauntlet.valid.length}, quarantined ${gauntlet.quarantined.length}, degraded ${degraded}, images ${rendered.length}/${imageBudget.maxImages} (ctxBudget num_ctx=${vision.numCtx}), model ${provenance.modelVersion}`,
     };
   };
 }
