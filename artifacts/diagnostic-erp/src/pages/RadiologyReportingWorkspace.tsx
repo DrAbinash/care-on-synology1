@@ -1571,6 +1571,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
           worklistId: studyId,
           patientId: workflow.currentRow.patientId,
           accessionNumber: workflow.currentRow.accessionNumber ?? "",
+          studyInstanceUID: workflow.currentRow.studyInstanceUID ?? "",
           studyDescription: workflow.currentRow.studyDescription ?? "",
           modality: workflow.currentRow.modality ?? "",
         } as any),
@@ -1603,7 +1604,12 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       if (finalizeResult.signed) {
         toast({ title: "Report finalized & signed", description: `Report #${finalizeResult.reportId}` });
       } else if (finalizeResult.reportCreationSkipped) {
-        toast({ title: "Worklist marked final", description: `No patient report row created: ${finalizeResult.reportCreationSkipped}`, variant: "destructive" });
+        toast({
+          title: "Worklist marked final",
+          description: finalizeResult.reportCreationSkipped.includes("no patient")
+            ? "Study finalized on the worklist. No billed patient report row (expected until billing is linked)."
+            : `No patient report row created: ${finalizeResult.reportCreationSkipped}`,
+        });
       } else {
         toast({ title: "Report saved but NOT signed", description: finalizeResult.signError ?? "Sign error", variant: "destructive" });
       }
@@ -1927,6 +1933,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         referringDoctor: canonicalDemography.referringDoctor,
         studyDate: canonicalDemography.studyDate,
         chrome: activeStandardLetterhead(presentationTemplates),
+        physicalLetterpad: true,
       });
     } catch (err) {
       toast({

@@ -333,6 +333,40 @@ function drawNumberedImpression(
   return y;
 }
 
+/** Key images beside report text (letter-pad side rail) — sized to fit without extra blank pages. */
+function drawSideRailKeyImages(
+  doc: jsPDF,
+  images: string[],
+  railX: number,
+  railW: number,
+  startY: number,
+  contentBottom: number,
+  font: string,
+  headingSize: number,
+): number {
+  if (images.length === 0 || railW <= 8) return startY;
+  const gap = 1.4;
+  const headingH = 5;
+  const avail = Math.max(20, contentBottom - startY - headingH);
+  const cellH = Math.min(34, Math.max(12, (avail - gap * Math.max(0, images.length - 1)) / images.length));
+  const imgW = railW - 0.5;
+  let imgY = startY;
+  doc.setFont(font, "bold");
+  doc.setFontSize(headingSize - 0.5);
+  doc.setTextColor(0, 0, 0);
+  doc.text("KEY IMAGES", railX, imgY);
+  imgY += headingH;
+  for (const img of images) {
+    if (!img) continue;
+    try {
+      const ext = img.startsWith("data:image/jpeg") ? "JPEG" : "PNG";
+      doc.addImage(img, ext, railX, imgY, imgW, cellH);
+      imgY += cellH + gap;
+    } catch { /* skip broken image */ }
+  }
+  return imgY;
+}
+
 export function generateReportPDF(
   report: ReportData,
   settings: PrintSettings,
@@ -499,6 +533,15 @@ export function generateReportPDF(
 
   const contentBottom = pageH - m.bottom - 18;
 
+  const keyImageList = (report.keyImages ?? []).filter(Boolean);
+  const sideRail =
+    keyImageList.length > 0 && settings.show.keyImages;
+  const textW = sideRail ? contentW * 0.62 : contentW;
+  const railW = sideRail ? contentW - textW - 3 : 0;
+  const railX = pageW - m.right - railW;
+  let railStartY = 0;
+  let railBottomY = 0;
+
   const ensureSpace = (needed: number) => {
     if (y + needed > contentBottom) {
       doc.addPage();
@@ -515,7 +558,7 @@ export function generateReportPDF(
         if (!report.clinicalHistory?.trim()) break;
         ensureSpace(12);
         y = drawSectionHeading(doc, "CLINICAL HISTORY:", m.left, y, font, fs.heading);
-        y = drawWrappedBody(doc, report.clinicalHistory.trim(), m.left, y, contentW, font, fs.body, lineH);
+        y = drawWrappedBody(doc, report.clinicalHistory.trim(), m.left, y, textW, font, fs.body, lineH);
         y += lineH * 0.55;
         break;
       }
@@ -523,7 +566,7 @@ export function generateReportPDF(
         if (!report.technique?.trim()) break;
         ensureSpace(12);
         y = drawSectionHeading(doc, "TECHNIQUE:", m.left, y, font, fs.heading);
-        y = drawWrappedBody(doc, report.technique.trim(), m.left, y, contentW, font, fs.body, lineH);
+        y = drawWrappedBody(doc, report.technique.trim(), m.left, y, textW, font, fs.body, lineH);
         y += lineH * 0.55;
         break;
       }
@@ -531,7 +574,7 @@ export function generateReportPDF(
         if (!report.comparison?.trim()) break;
         ensureSpace(12);
         y = drawSectionHeading(doc, "COMPARISON:", m.left, y, font, fs.heading);
-        y = drawWrappedBody(doc, report.comparison.trim(), m.left, y, contentW, font, fs.body, lineH);
+        y = drawWrappedBody(doc, report.comparison.trim(), m.left, y, textW, font, fs.body, lineH);
         y += lineH * 0.55;
         break;
       }
@@ -554,38 +597,21 @@ export function generateReportPDF(
       case "findings": {
         if (!report.findings?.trim()) break;
         ensureSpace(16);
+        if (sideRail && railStartY === 0) railStartY = y;
         y = drawSectionHeading(doc, "FINDINGS:", m.left, y, font, fs.heading);
-        y = drawFindingsBlock(doc, report.findings.trim(), m.left, y, contentW, font, fs.body, lineH);
+        y = drawFindingsBlock(doc, report.findings.trim(), m.left, y, textW, font, fs.body, lineH);
         y += lineH * 0.4;
         break;
       }
       case "keyImages": {
-        if (!report.keyImages || report.keyImages.length === 0) break;
-        const imgWidth = Math.min(contentW * 0.42, 70);
-        const imgHeight = 38;
-        const imgX = pageW - m.right - imgWidth;
-        let imgY = y;
-        for (const img of report.keyImages) {
-          if (!img) continue;
-          if (imgY + imgHeight > contentBottom) {
-            doc.addPage();
-            y = drawLetterPadChrome();
-            imgY = y;
-          }
-          try {
-            const ext = img.startsWith("data:image/jpeg") ? "JPEG" : "PNG";
-            doc.addImage(img, ext, imgX, imgY, imgWidth, imgHeight);
-            imgY += imgHeight + 4;
-          } catch { /* skip broken image */ }
-        }
-        y = imgY + 2;
+        // Side rail drawn once after the body loop (aligned with findings).
         break;
       }
       case "impression": {
         if (!report.impression?.trim()) break;
         ensureSpace(14);
         y = drawSectionHeading(doc, "IMPRESSION:", m.left, y, font, fs.heading);
-        y = drawNumberedImpression(doc, report.impression.trim(), m.left, y, contentW, font, fs.body, lineH);
+        y = drawNumberedImpression(doc, report.impression.trim(), m.left, y, textW, font, fs.body, lineH);
         y += lineH * 0.4;
         break;
       }
@@ -593,11 +619,19 @@ export function generateReportPDF(
         if (!report.recommendation?.trim()) break;
         ensureSpace(12);
         y = drawSectionHeading(doc, "RECOMMENDATION:", m.left, y, font, fs.heading);
-        y = drawWrappedBody(doc, report.recommendation.trim(), m.left, y, contentW, font, fs.body, lineH);
+        y = drawWrappedBody(doc, report.recommendation.trim(), m.left, y, textW, font, fs.body, lineH);
         y += lineH * 0.4;
         break;
       }
     }
+  }
+
+  if (sideRail) {
+    const railTop = railStartY > 0 ? railStartY : y;
+    railBottomY = drawSideRailKeyImages(
+      doc, keyImageList, railX, railW, railTop, contentBottom, font, fs.heading,
+    );
+    y = Math.max(y, railBottomY);
   }
 
   // ── SIGNATURE (right, doctor name in red) — sits under report body, not

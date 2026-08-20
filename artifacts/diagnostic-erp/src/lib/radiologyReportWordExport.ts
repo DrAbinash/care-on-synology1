@@ -128,6 +128,12 @@ export type WordLetterheadOpts = {
   referringDoctor?: string;
   studyDate?: string;
   chrome?: import("./careLetterpadChrome").CareLetterpadChrome;
+  /**
+   * When true (default for workspace export): omit embedded CARE letterhead in
+   * Word and leave top page margin so the radiologist can print on pre-printed
+   * physical letter-pad. Demography still appears in the body.
+   */
+  physicalLetterpad?: boolean;
 };
 
 function dataUrlToBytes(dataUrl: string): Uint8Array {
@@ -174,11 +180,13 @@ export async function exportRadiologyReportToWord(
   let TableCell: typeof import("docx").TableCell;
   let WidthType: typeof import("docx").WidthType;
   let ImageRun: typeof import("docx").ImageRun;
+  let convertMillimetersToTwip: typeof import("docx").convertMillimetersToTwip;
   let saveAs: typeof import("file-saver").saveAs;
   try {
     ({
       Document, Packer, Paragraph, TextRun, AlignmentType, BorderStyle,
       Header, Footer, Table, TableRow, TableCell, WidthType, ImageRun,
+      convertMillimetersToTwip,
     } = await import("docx"));
     ({ saveAs } = await import("file-saver"));
   } catch {
@@ -248,6 +256,53 @@ export async function exportRadiologyReportToWord(
   const ageSex = formatWordAgeSex(letterhead?.age, letterhead?.sex).toUpperCase();
   const refBy = (letterhead?.referringDoctor || "").trim().toUpperCase();
   const dateStr = (letterhead?.studyDate || "").trim();
+  const physicalLetterpad = letterhead?.physicalLetterpad !== false;
+
+  const demographyTable = new Table({
+    width: { size: 9360, type: WidthType.DXA },
+    rows: [
+      new TableRow({
+        children: [
+          new TableCell({
+            borders: noBorder,
+            width: { size: 5400, type: WidthType.DXA },
+            children: [new Paragraph({ children: [
+              new TextRun({ text: "NAME: ", bold: true, size: 20 }),
+              new TextRun({ text: name, size: 20 }),
+            ] })],
+          }),
+          new TableCell({
+            borders: noBorder,
+            width: { size: 3960, type: WidthType.DXA },
+            children: [new Paragraph({ children: [
+              new TextRun({ text: "AGE/SEX: ", bold: true, size: 20 }),
+              new TextRun({ text: ageSex, size: 20 }),
+            ] })],
+          }),
+        ],
+      }),
+      new TableRow({
+        children: [
+          new TableCell({
+            borders: noBorder,
+            width: { size: 5400, type: WidthType.DXA },
+            children: [new Paragraph({ children: [
+              new TextRun({ text: "REFD. BY: ", bold: true, size: 20 }),
+              new TextRun({ text: refBy, size: 20 }),
+            ] })],
+          }),
+          new TableCell({
+            borders: noBorder,
+            width: { size: 3960, type: WidthType.DXA },
+            children: [new Paragraph({ children: [
+              new TextRun({ text: "DATE: ", bold: true, size: 20 }),
+              new TextRun({ text: dateStr, size: 20 }),
+            ] })],
+          }),
+        ],
+      }),
+    ],
+  });
 
   const headerChildren: Array<InstanceType<typeof Paragraph> | InstanceType<typeof Table>> = [
     new Table({
@@ -308,91 +363,77 @@ export async function exportRadiologyReportToWord(
         }),
       ],
     }),
-    new Table({
-      width: { size: 9360, type: WidthType.DXA },
-      rows: [
-        new TableRow({
-          children: [
-            new TableCell({
-              borders: noBorder,
-              width: { size: 5400, type: WidthType.DXA },
-              children: [new Paragraph({ children: [
-                new TextRun({ text: "NAME: ", bold: true, size: 20 }),
-                new TextRun({ text: name, size: 20 }),
-              ] })],
-            }),
-            new TableCell({
-              borders: noBorder,
-              width: { size: 3960, type: WidthType.DXA },
-              children: [new Paragraph({ children: [
-                new TextRun({ text: "AGE/SEX: ", bold: true, size: 20 }),
-                new TextRun({ text: ageSex, size: 20 }),
-              ] })],
-            }),
-          ],
-        }),
-        new TableRow({
-          children: [
-            new TableCell({
-              borders: noBorder,
-              width: { size: 5400, type: WidthType.DXA },
-              children: [new Paragraph({ children: [
-                new TextRun({ text: "REFD. BY: ", bold: true, size: 20 }),
-                new TextRun({ text: refBy, size: 20 }),
-              ] })],
-            }),
-            new TableCell({
-              borders: noBorder,
-              width: { size: 3960, type: WidthType.DXA },
-              children: [new Paragraph({ children: [
-                new TextRun({ text: "DATE: ", bold: true, size: 20 }),
-                new TextRun({ text: dateStr, size: 20 }),
-              ] })],
-            }),
-          ],
-        }),
-      ],
-    }),
+    demographyTable,
   ];
+
+  const bodyChildren: Array<InstanceType<typeof Paragraph> | InstanceType<typeof Table>> = physicalLetterpad
+    ? [
+        new Paragraph({ spacing: { after: 120 }, children: [] }),
+        demographyTable,
+        new Paragraph({
+          border: { bottom: { style: BorderStyle.SINGLE, size: 6, color: "000000" } },
+          spacing: { after: 160 },
+          children: [],
+        }),
+        ...children,
+      ]
+    : [...children];
 
   const doc = new Document({
     sections: [{
-      properties: {},
-      headers: { default: new Header({ children: headerChildren }) },
-      footers: {
-        default: new Footer({
-          children: [
-            new Paragraph({
-              alignment: AlignmentType.CENTER,
-              children: [new TextRun({
-                text: chrome.servicesRow1,
-                size: 12,
-                bold: true,
-                color: "0F2D6E",
-              })],
-            }),
-            new Paragraph({
-              alignment: AlignmentType.CENTER,
-              spacing: { after: 60 },
-              children: [new TextRun({
-                text: chrome.servicesRow2,
-                size: 12,
-                bold: true,
-                color: "0F2D6E",
-              })],
-            }),
-            new Paragraph({
-              alignment: AlignmentType.CENTER,
-              children: [new TextRun({
-                text: chrome.disclaimer,
-                size: 12,
-                italics: true,
-              })],
-            }),
-          ],
-        }),
-      },
-      children,
+      properties: physicalLetterpad
+        ? {
+            page: {
+              margin: {
+                top: convertMillimetersToTwip(42),
+                right: convertMillimetersToTwip(18),
+                bottom: convertMillimetersToTwip(18),
+                left: convertMillimetersToTwip(18),
+              },
+            },
+          }
+        : {},
+      ...(physicalLetterpad
+        ? {}
+        : { headers: { default: new Header({ children: headerChildren }) }}),
+      ...(physicalLetterpad
+        ? {}
+        : {
+            footers: {
+              default: new Footer({
+                children: [
+                  new Paragraph({
+                    alignment: AlignmentType.CENTER,
+                    children: [new TextRun({
+                      text: chrome.servicesRow1,
+                      size: 12,
+                      bold: true,
+                      color: "0F2D6E",
+                    })],
+                  }),
+                  new Paragraph({
+                    alignment: AlignmentType.CENTER,
+                    spacing: { after: 60 },
+                    children: [new TextRun({
+                      text: chrome.servicesRow2,
+                      size: 12,
+                      bold: true,
+                      color: "0F2D6E",
+                    })],
+                  }),
+                  new Paragraph({
+                    alignment: AlignmentType.CENTER,
+                    children: [new TextRun({
+                      text: chrome.disclaimer,
+                      size: 12,
+                      italics: true,
+                    })],
+                  }),
+                ],
+              }),
+            },
+          }),
+      children: bodyChildren,
     }],
   });
   const blob = await Packer.toBlob(doc);

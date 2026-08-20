@@ -886,6 +886,8 @@ router.post("/radiology/studies", async (req, res) => {
 
 router.post("/radiology/report-status", async (req, res) => {
   const b = (req.body ?? {}) as {
+    /** radiology_worklist.id — preferred when accession/UID are missing or stale. */
+    worklistId?: number;
     studyId?: number;
     accessionNumber?: string;
     studyInstanceUID?: string;
@@ -903,9 +905,16 @@ router.post("/radiology/report-status", async (req, res) => {
     softFinalReason?: string;
   };
 
-  // Find worklist row
+  // Find worklist row — worklist id first (canonical workspace key), then UID/accession.
   let existing: typeof radiologyWorklistTable.$inferSelect | undefined;
-  if (b.studyInstanceUID) {
+  if (b.worklistId) {
+    const [row] = await db
+      .select()
+      .from(radiologyWorklistTable)
+      .where(eq(radiologyWorklistTable.id, b.worklistId));
+    existing = row;
+  }
+  if (!existing && b.studyInstanceUID) {
     const [row] = await db
       .select()
       .from(radiologyWorklistTable)

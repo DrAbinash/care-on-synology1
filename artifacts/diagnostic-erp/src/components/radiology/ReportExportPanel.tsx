@@ -2,7 +2,7 @@
  * ReportExportPanel — Classic / Premium layout, style prefs, live preview,
  * and Word/PDF export controls for the reporting workspace.
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import {
@@ -23,6 +23,55 @@ import type {
   ReportSectionSpacing,
   ReportImpressionStyle,
 } from "@/lib/radiologyReportPreviewHtml";
+
+/** One A4 page at 96dpi — minimum preview height when measurement is unavailable. */
+const MIN_PREVIEW_PAGE_PX = 1122;
+
+function measureIframeDocHeight(iframe: HTMLIFrameElement | null): number {
+  if (!iframe) return MIN_PREVIEW_PAGE_PX;
+  try {
+    const doc = iframe.contentDocument;
+    if (!doc) return MIN_PREVIEW_PAGE_PX;
+    const pages = doc.querySelectorAll(".care-doc-page");
+    if (pages.length > 0) {
+      let total = 0;
+      pages.forEach((p) => {
+        total += (p as HTMLElement).offsetHeight || 0;
+      });
+      if (total > 0) return Math.max(total, MIN_PREVIEW_PAGE_PX);
+    }
+    return Math.max(
+      doc.body?.scrollHeight ?? 0,
+      doc.body?.offsetHeight ?? 0,
+      doc.documentElement?.scrollHeight ?? 0,
+      doc.documentElement?.offsetHeight ?? 0,
+      MIN_PREVIEW_PAGE_PX,
+    );
+  } catch {
+    return MIN_PREVIEW_PAGE_PX;
+  }
+}
+
+/** Wheel on nested workspace columns is stolen by parents — drive scrollTop on the pane. */
+function usePreviewWheelScroll(
+  ref: RefObject<HTMLDivElement | null>,
+  enabled: boolean,
+  deps: unknown[],
+) {
+  useEffect(() => {
+    if (!enabled) return;
+    const el = ref.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (el.scrollHeight <= el.clientHeight + 1) return;
+      e.preventDefault();
+      e.stopPropagation();
+      el.scrollTop += e.deltaY;
+    };
+    el.addEventListener("wheel", onWheel, { passive: false, capture: true });
+    return () => el.removeEventListener("wheel", onWheel, { capture: true });
+  }, [enabled, ref, ...deps]);
+}
 
 export type ReportExportPanelProps = {
   draftId: number | null;
@@ -83,7 +132,17 @@ export default function ReportExportPanel({
   const [enlarged, setEnlarged] = useState(false);
   const [previewZoom, setPreviewZoom] = useState(1);
   const [editPickerOpen, setEditPickerOpen] = useState(false);
+  const [docHeightPx, setDocHeightPx] = useState(MIN_PREVIEW_PAGE_PX);
   const inlineScrollRef = useRef<HTMLDivElement>(null);
+  const enlargedScrollRef = useRef<HTMLDivElement>(null);
+  const inlineIframeRef = useRef<HTMLIFrameElement>(null);
+  const enlargedIframeRef = useRef<HTMLIFrameElement>(null);
+
+  const syncPreviewHeight = useCallback((iframe: HTMLIFrameElement | null) => {
+    const h = measureIframeDocHeight(iframe);
+    setDocHeightPx((prev) => Math.max(prev, h));
+    if (iframe) iframe.style.height = `${h}px`;
+  }, []);
 
   const editSections: Array<{ field: "clinicalHistory" | "technique" | "findings" | "impression" | "recommendation"; label: string }> = [
     { field: "clinicalHistory", label: "History" },
@@ -130,21 +189,17 @@ export default function ReportExportPanel({
   const showServerLayout = !!serverPreviewUrl;
   const displayHtml = showServerLayout && serverHtml ? serverHtml : previewHtml;
 
-  // Non-passive wheel listener: React's onWheel is passive, so preventDefault is
-  // ignored and the parent column steals the gesture. Drive scrollTop here.
   useEffect(() => {
-    if (!open) return;
-    const el = inlineScrollRef.current;
-    if (!el) return;
-    const onWheel = (e: WheelEvent) => {
-      if (el.scrollHeight <= el.clientHeight) return;
-      e.preventDefault();
-      e.stopPropagation();
-      el.scrollTop += e.deltaY;
-    };
-    el.addEventListener("wheel", onWheel, { passive: false, capture: true });
-    return () => el.removeEventListener("wheel", onWheel, { capture: true });
-  }, [open, displayHtml]);
+    setDocHeightPx(MIN_PREVIEW_PAGE_PX);
+    const t = window.setTimeout(() => {
+      syncPreviewHeight(inlineIframeRef.current);
+      if (enlarged) syncPreviewHeight(enlargedIframeRef.current);
+    }, 80);
+    return () => window.clearTimeout(t);
+  }, [displayHtml, enlarged, syncPreviewHeight]);
+
+  usePreviewWheelScroll(inlineScrollRef, open, [displayHtml, docHeightPx]);
+  usePreviewWheelScroll(enlargedScrollRef, enlarged, [displayHtml, docHeightPx, previewZoom]);
 
   return (
     <div className="border rounded-md bg-card shadow-sm" data-testid="report-export-panel">
@@ -313,16 +368,20 @@ export default function ReportExportPanel({
                 overflow:hidden on body, so iframe-internal scroll is unreliable. */}
             <div
               ref={inlineScrollRef}
-              className="h-64 overflow-y-scroll overflow-x-hidden rounded border bg-white overscroll-contain"
+              className="h-64 overflow-y-scroll overflow-x-hidden rounded border bg-white overscroll-contain touch-pan-y"
               data-testid="report-layout-preview-inline-scroll"
               onDoubleClick={handlePreviewDoubleClick}
-              title="Scroll to review · double-click to edit a section · Enlarge for full page"
+              title={onEditSection
+                ? "Scroll to review · double-click to edit a section · Enlarge for full page"
+                : "Scroll to review · double-click or use Enlarge for full page"}
             >
               <iframe
+                ref={inlineIframeRef}
                 title="Report layout preview"
                 srcDoc={displayHtml}
                 className="w-full bg-white border-0 pointer-events-none block"
-                style={{ height: 1122 }}
+                style={{ height: docHeightPx, minHeight: MIN_PREVIEW_PAGE_PX }}
+                onLoad={(e) => syncPreviewHeight(e.currentTarget)}
                 tabIndex={-1}
                 data-testid="report-layout-preview"
               />
@@ -348,19 +407,19 @@ export default function ReportExportPanel({
         >
           <DialogHeader className="space-y-1 pr-8 shrink-0">
             <DialogTitle className="text-base">Report preview</DialogTitle>
-          <DialogDescription className="text-xs">
-            Full-page layout and content as it will print. Review before finalize. Esc or ✕ to close.
-            {onEditSection ? " Double-click the compact preview to pick a section to edit." : ""}
-          </DialogDescription>
-          {editPickerOpen && onEditSection && (
-            <div className="flex flex-wrap gap-1 pt-1" data-testid="report-preview-edit-sections">
-              {editSections.map((s) => (
-                <Button key={s.field} size="sm" variant="outline" className="h-7 text-[10px]" onClick={() => jumpToSection(s.field)}>
-                  Edit {s.label}
-                </Button>
-              ))}
-            </div>
-          )}
+            <DialogDescription className="text-xs">
+              Full-page layout and content as it will print. Review before finalize. Esc or ✕ to close.
+              {onEditSection ? " Double-click the compact preview to pick a section to edit." : ""}
+            </DialogDescription>
+            {editPickerOpen && onEditSection && (
+              <div className="flex flex-wrap gap-1 pt-1" data-testid="report-preview-edit-sections">
+                {editSections.map((s) => (
+                  <Button key={s.field} size="sm" variant="outline" className="h-7 text-[10px]" onClick={() => jumpToSection(s.field)}>
+                    Edit {s.label}
+                  </Button>
+                ))}
+              </div>
+            )}
           </DialogHeader>
           <div className="flex items-center gap-1 shrink-0 flex-wrap">
             {onFinalize ? (
@@ -388,17 +447,25 @@ export default function ReportExportPanel({
             ))}
           </div>
           <div
-            className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden rounded border bg-slate-100 p-3 overscroll-contain"
+            ref={enlargedScrollRef}
+            className="flex-1 min-h-0 overflow-y-scroll overflow-x-hidden rounded border bg-slate-100 p-3 overscroll-contain touch-pan-y"
             data-testid="report-layout-preview-scroll"
           >
             {/* pointer-events-none: wheel/trackpad scroll the outer pane. Print
                 HTML often uses overflow:hidden on body, so iframe-internal
-                scroll is a dead end after Enlarge. */}
+                scroll is a dead end after Enlarge. Height follows full doc. */}
             <iframe
+              ref={enlargedIframeRef}
               title="Enlarged report layout preview"
               srcDoc={displayHtml}
               className="bg-white shadow-md mx-auto border-0 pointer-events-none block"
-              style={{ zoom: previewZoom, width: 794, height: 1123, minHeight: 1123 }}
+              style={{
+                zoom: previewZoom,
+                width: 794,
+                height: docHeightPx,
+                minHeight: MIN_PREVIEW_PAGE_PX,
+              }}
+              onLoad={(e) => syncPreviewHeight(e.currentTarget)}
               data-testid="report-layout-preview-enlarged"
               tabIndex={-1}
             />
