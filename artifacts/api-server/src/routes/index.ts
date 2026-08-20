@@ -8,6 +8,7 @@ import { testsRouter } from "./tests";
 import { ordersRouter } from "./orders";
 import { billsRouter, paymentsRouter } from "./bills";
 import { emergencyBillingRouter } from "./emergencyBilling";
+import { emergencyBridgeRouter } from "./emergencyBridge";
 import { reportsRouter } from "./reports";
 import inventoryRouter from "./inventory";
 import inventoryDemandsRouter from "./inventoryDemands";
@@ -254,6 +255,9 @@ router.use(generalLimiter);
 // ─── Public / unauthenticated routes ─────────────────────────────────────────
 router.use(healthRouter);
 router.use(systemRouter);
+// Windows / DS225+ Emergency CARE → Main CARE bridge (fetch-token auth, not staff session).
+// Lets the emergency PC pull master snapshots and push JSON bills when Main CARE is back.
+router.use("/emergency-bridge", emergencyBridgeRouter);
 // Federated Radiology Service boundary API — API-key auth (X-Boundary-Key),
 // not staff session. Mounted before staff-auth routes so the radiology
 // service can reach it server-to-server without a staff login.
