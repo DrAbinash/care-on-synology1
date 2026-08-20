@@ -29,8 +29,10 @@ describe("Radiology Reporting Workspace handwritten notes", () => {
     expect(strip).toContain('data-testid="reading-queue-modality"');
     expect(strip).toContain('data-testid="reading-queue-date"');
     expect(strip).toContain('data-testid="reading-queue-next"');
+    expect(strip).toContain('data-testid="warm-mri-today-yesterday"');
     expect(workspace).toContain('modalityFilter: queueModality');
     expect(workspace).toContain("onNextStudy={goNextStudy}");
+    expect(workspace).toContain("onWarmMriTodayYesterday");
     expect(workspace).toContain('"today-yesterday"');
   });
 

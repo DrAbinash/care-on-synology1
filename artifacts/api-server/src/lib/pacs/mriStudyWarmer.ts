@@ -276,7 +276,7 @@ export function getMriWarmCacheStatus(): MriWarmCacheStatus {
   };
 }
 
-export async function runMriWarmCache(opts?: { force?: boolean }): Promise<MriWarmCacheStatus> {
+export async function runMriWarmCache(opts?: { force?: boolean; mode?: MriWarmMode }): Promise<MriWarmCacheStatus> {
   if (status.running) return getMriWarmCacheStatus();
   // Automatic ticks yield during clinic hours so Orthanc can accept USG C-STORE
   // and Postgres can serve bill saves. "Warm now" (force) still runs.
@@ -288,6 +288,7 @@ export async function runMriWarmCache(opts?: { force?: boolean }): Promise<MriWa
     return getMriWarmCacheStatus();
   }
   const cfg = await loadConfig();
+  const mode = opts?.mode ?? cfg.mode;
   if (!cfg.enabled && !opts?.force) {
     status.lastError = null;
     return getMriWarmCacheStatus();
@@ -312,7 +313,7 @@ export async function runMriWarmCache(opts?: { force?: boolean }): Promise<MriWa
       return getMriWarmCacheStatus();
     }
 
-    const candidates = await listMriCandidates(cfg.mode, cfg.lastN);
+    const candidates = await listMriCandidates(mode, cfg.lastN);
     status.candidates = candidates.length;
     let warmed = 0;
     let failed = 0;
@@ -354,7 +355,7 @@ export async function runMriWarmCache(opts?: { force?: boolean }): Promise<MriWa
     status.lastRunAt = new Date().toISOString();
     status.lastDurationMs = Date.now() - started;
     logger.info(
-      { warmed, failed, skipped, candidates: candidates.length, mode: cfg.mode, ms: status.lastDurationMs },
+      { warmed, failed, skipped, candidates: candidates.length, mode, ms: status.lastDurationMs },
       "mri-warm-cache: tick complete",
     );
   } catch (err) {

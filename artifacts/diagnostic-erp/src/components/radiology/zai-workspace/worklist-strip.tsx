@@ -1,6 +1,6 @@
 import { useWorkspace, useWorkspaceSelector } from "@/lib/zai-workspace/store";
 import { patientAccent, modalityAccent } from "@/lib/zai-workspace/types";
-import { Clock, Lock, AlertTriangle, ChevronRight, Archive } from "lucide-react";
+import { Clock, Lock, AlertTriangle, ChevronRight, Archive, Flame } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
@@ -22,6 +22,9 @@ export function WorklistStrip({
   onModalityFilterChange,
   datePreset = "today-yesterday",
   onDatePresetChange,
+  onWarmMriTodayYesterday,
+  mriWarmBusy,
+  mriWarmLabel,
 }: {
   onSelectStudy?: (id: string) => void;
   /** Same Next as the top-bar Prev/Next — CARE worklist order, not the Z.ai store skip. */
@@ -30,6 +33,10 @@ export function WorklistStrip({
   onModalityFilterChange?: (value: string) => void;
   datePreset?: ReadingQueueDatePreset;
   onDatePresetChange?: (value: ReadingQueueDatePreset) => void;
+  /** Touch Orthanc + browser DICOMweb for Today & Yesterday MR only. */
+  onWarmMriTodayYesterday?: () => void;
+  mriWarmBusy?: boolean;
+  mriWarmLabel?: string | null;
 } = {}) {
   const studies = useWorkspaceSelector(s => s.studies);
   const activeId = useWorkspaceSelector(s => s.activeStudyId);
@@ -85,6 +92,20 @@ export function WorklistStrip({
             <option value="all">All dates</option>
           </select>
         </div>
+        {onWarmMriTodayYesterday ? (
+          <button
+            type="button"
+            data-testid="warm-mri-today-yesterday"
+            title="Pre-load Today & Yesterday MRI in Orthanc and DICOMweb for faster opens"
+            disabled={mriWarmBusy}
+            onClick={() => onWarmMriTodayYesterday()}
+            className="inline-flex w-full items-center justify-center gap-1 rounded-md border border-amber-300/80 bg-amber-50 px-2 py-1 text-[10px] font-semibold text-amber-900 hover:bg-amber-100 disabled:opacity-60"
+          >
+            <Flame className={`h-3 w-3 ${mriWarmBusy ? "animate-pulse" : ""}`} />
+            {mriWarmBusy ? "Warming MRI…" : "Warm MRI · Today & Yesterday"}
+            {mriWarmLabel ? <span className="text-[9px] font-normal opacity-80">({mriWarmLabel})</span> : null}
+          </button>
+        ) : null}
       </div>
       <ScrollArea className="flex-1">
         <div className="space-y-1 p-1.5">

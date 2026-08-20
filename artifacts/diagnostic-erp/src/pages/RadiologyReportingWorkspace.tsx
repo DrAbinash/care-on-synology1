@@ -45,7 +45,7 @@
 
 import { useEffect, useState, useMemo, useCallback, useRef } from "react";
 import { useLocation } from "wouter";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
 import {
   ResizableHandle, ResizablePanel, ResizablePanelGroup,
 } from "@/components/ui/resizable";
@@ -193,6 +193,7 @@ import {
 } from "@/lib/workspaceLayoutPrefs";
 import { isUltrasoundModality, isObstetricUsgStudy } from "@/lib/usgModality";
 import { prefetchMriStudies, prefetchNextMriStudy } from "@/lib/mriStudyPrefetch";
+import { mriWarmTargetsFromRows } from "@/lib/mriWarmScope";
 import { BROWSER_DICOMWEB_BASE } from "@/lib/browserDicomWeb";
 import type { ReportImageRef } from "@/lib/reportImageRefs";
 import { daysAgoISO, todayISO } from "@/lib/dateRangePresets";
@@ -2150,22 +2151,56 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   pcpndtBlockedRef.current = pcpndtBlocked;
   const pcpndtMissing = pcpndtCompliance?.errors ?? pcpndtCompliance?.missing ?? [];
 
-  // Warm MRI DICOMweb for the reporting queue (same path as embedded viewer).
+  // Warm MRI DICOMweb for Today & Yesterday MR studies (not the whole "All dates" queue).
+  const mriWarmBrowserTargets = useMemo(
+    () => mriWarmTargetsFromRows(workflow.fullQueue ?? workflow.queue ?? [], BROWSER_DICOMWEB_BASE),
+    [workflow.fullQueue, workflow.queue],
+  );
+
+  const { data: mriWarmStatus } = useQuery<{
+    running?: boolean;
+    lastWarmed?: number;
+    candidates?: number;
+    pausedForPeakHours?: boolean;
+    orthancReachable?: boolean | null;
+    lastRunAt?: string | null;
+  }>({
+    queryKey: ["mri-warm-cache-status"],
+    queryFn: () => api.get("/api/radiology/mri-warm-cache/status"),
+    refetchInterval: 30_000,
+    staleTime: 15_000,
+  });
+
+  const warmMriTodayYesterday = useMutation({
+    mutationFn: () => api.post("/api/radiology/mri-warm-cache/run", { force: true, mode: "today_yesterday" }),
+    onSuccess: () => {
+      prefetchMriStudies(mriWarmBrowserTargets);
+      void qc.invalidateQueries({ queryKey: ["mri-warm-cache-status"] });
+      toast({
+        title: "MRI warm started",
+        description: "Today & Yesterday MR studies are loading into Orthanc / DICOMweb cache.",
+      });
+    },
+    onError: (err: Error) => {
+      toast({ title: "MRI warm failed", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const mriWarmCountLabel = useMemo(() => {
+    const n = mriWarmBrowserTargets.length;
+    if (n === 0) return null;
+    return `${n} MR`;
+  }, [mriWarmBrowserTargets.length]);
+
   useEffect(() => {
-    const base = BROWSER_DICOMWEB_BASE;
-    const mriUids = (workflow.queue ?? [])
-      .filter((s: { modality?: string | null }) => {
-        const m = (s.modality ?? "").trim().toUpperCase();
-        return m === "MR" || m.startsWith("MR");
-      })
-      .map((s: { studyInstanceUID?: string | null }) => s.studyInstanceUID)
-      .filter((uid: string | null | undefined): uid is string => !!uid);
-    if (mriUids.length > 0) {
-      prefetchMriStudies(mriUids.map((uid) => ({ studyInstanceUID: uid, dicomWebBaseUrl: base })));
-    } else if (workflow.currentRow?.studyInstanceUID && isMriModality) {
-      prefetchMriStudies([{ studyInstanceUID: workflow.currentRow.studyInstanceUID, dicomWebBaseUrl: base }]);
+    if (mriWarmBrowserTargets.length === 0) {
+      if (workflow.currentRow?.studyInstanceUID && isMriModality) {
+        prefetchMriStudies([{ studyInstanceUID: workflow.currentRow.studyInstanceUID, dicomWebBaseUrl: BROWSER_DICOMWEB_BASE }]);
+      }
+      return;
     }
-  }, [workflow.queue, workflow.currentRow?.studyInstanceUID, isMriModality]);
+    prefetchMriStudies(mriWarmBrowserTargets);
+  }, [mriWarmBrowserTargets, workflow.currentRow?.studyInstanceUID, isMriModality]);
 
   useEffect(() => {
     if (!studyId) return;
@@ -2622,6 +2657,9 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                   onModalityFilterChange={persistQueueModality}
                   datePreset={datePreset}
                   onDatePresetChange={persistDatePreset}
+                  onWarmMriTodayYesterday={() => warmMriTodayYesterday.mutate()}
+                  mriWarmBusy={warmMriTodayYesterday.isPending || !!mriWarmStatus?.running}
+                  mriWarmLabel={mriWarmCountLabel}
                 />
               )}
             </div>
