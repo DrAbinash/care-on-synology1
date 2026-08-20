@@ -448,7 +448,7 @@ export default function ReportExportPanel({
           </div>
           <div
             ref={enlargedScrollRef}
-            className="flex-1 min-h-0 overflow-y-scroll overflow-x-hidden rounded border bg-slate-100 p-3 overscroll-contain touch-pan-y"
+            className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden rounded border bg-slate-100 p-3 overscroll-contain touch-pan-y"
             data-testid="report-layout-preview-scroll"
           >
             {/* pointer-events-none: wheel/trackpad scroll the outer pane. Print
@@ -459,6 +459,7 @@ export default function ReportExportPanel({
               title="Enlarged report layout preview"
               srcDoc={displayHtml}
               className="bg-white shadow-md mx-auto border-0 pointer-events-none block"
+              data-testid="report-layout-preview-enlarged"
               style={{
                 zoom: previewZoom,
                 width: 794,
@@ -466,7 +467,6 @@ export default function ReportExportPanel({
                 minHeight: MIN_PREVIEW_PAGE_PX,
               }}
               onLoad={(e) => syncPreviewHeight(e.currentTarget)}
-              data-testid="report-layout-preview-enlarged"
               tabIndex={-1}
             />
           </div>
