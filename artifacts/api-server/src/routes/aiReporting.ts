@@ -70,6 +70,8 @@ import {
   logAiReportingDraftDiagnostics,
   newAiRequestId,
 } from "../lib/ai/aiReportingRequestDiagnostics";
+import { resolveInteractiveDraftNumCtx } from "../lib/ai/contextBudget";
+import { resolveLocalAiRuntime } from "../lib/aiPipeline/runtimeConfig";
 
 // ─── Prompt template presets ──────────────────────────────────────────────────
 export const AI_PROMPT_TEMPLATES: Record<string, string> = {
@@ -849,9 +851,26 @@ router.post("/draft", async (req, res): Promise<void> => {
     };
   }
 
-  // Call AI with fallback — no provider AbortController on this path (by design today).
-  // Overnight shadow uses gateway withTimeout(10min); radiology-ollama uses clinic 30s.
-  const aiResult = await generateAiForTask("radiology_draft", finalPrompt, images, { model });
+  // Call AI — MUST send options.num_ctx. Live caredeoghar proved omitting it
+  // makes Ollama use ~4096 and reject 6-image MRI payloads (~6453 tokens).
+  const runtime = await resolveLocalAiRuntime(true);
+  const draftOverride = process.env.OLLAMA_DRAFT_NUM_CTX
+    ? Number(process.env.OLLAMA_DRAFT_NUM_CTX)
+    : null;
+  const draftCtx = resolveInteractiveDraftNumCtx({
+    configuredNumCtx: runtime.ollamaNumCtx,
+    imageCount: images.length,
+    draftNumCtxOverride: Number.isFinite(draftOverride) ? draftOverride : null,
+  });
+  const ollamaOpts =
+    providerName === "ollama"
+      ? {
+          model,
+          numCtx: draftCtx.requestedNumCtx,
+          endpointUrl: runtime.ollamaBaseUrl,
+        }
+      : { model };
+  const aiResult = await generateAiForTask("radiology_draft", finalPrompt, images, ollamaOpts);
   const success = aiResult.success;
   const aiResponse = aiResult.text;
   const errorMsg = aiResult.error;
@@ -880,6 +899,9 @@ router.post("/draft", async (req, res): Promise<void> => {
     parser,
     clinicOllamaTimeoutSeconds,
     totalElapsedMs: Date.now() - routeT0,
+    configuredNumCtx: draftCtx.configuredNumCtx,
+    requestedNumCtx: draftCtx.requestedNumCtx,
+    numCtxReason: draftCtx.reason,
   });
   logAiReportingDraftDiagnostics(diag, success ? "info" : "error");
 
@@ -953,6 +975,11 @@ router.post("/draft", async (req, res): Promise<void> => {
         timeoutStage: diag.timeoutStage,
         timeoutMsConfigured: diag.timeoutMsConfigured,
         clinicOllamaTimeoutSeconds: diag.clinicOllamaTimeoutSeconds,
+        configuredNumCtx: diag.configuredNumCtx,
+        requestedNumCtx: diag.requestedNumCtx,
+        ollamaAvailableContext: diag.ollamaAvailableContext,
+        ollamaRequestTokens: diag.ollamaRequestTokens,
+        numCtxReason: diag.numCtxReason,
         timeoutSourcesNote: diag.timeoutSourcesNote,
       },
     });

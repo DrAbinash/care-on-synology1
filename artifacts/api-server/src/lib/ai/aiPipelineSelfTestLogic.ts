@@ -42,6 +42,11 @@ export interface PathProbeResult {
   ollamaLoadDurationNs?: number | null;
   ollamaPromptEvalCount?: number | null;
   ollamaEvalCount?: number | null;
+  configuredNumCtx?: number | null;
+  requestedNumCtx?: number | null;
+  ollamaAvailableContext?: number | null;
+  ollamaRequestTokens?: number | null;
+  errorCode?: string | null;
 }
 
 export type SelfTestFinal = "PASS" | "FAIL" | "PARTIAL" | "RUNNING" | "NO_MRI";
@@ -253,6 +258,7 @@ function stage(
  * Derive overall self-test final from key probes.
  * Direct OK + CARE/provider fail → PARTIAL.
  * Empty full-pipeline output is never PASS.
+ * Context-budget failures are called out explicitly (not generic 502).
  */
 export function deriveSelfTestFinal(input: {
   noMri: boolean;
@@ -262,6 +268,9 @@ export function deriveSelfTestFinal(input: {
   providerOnly6Pass: boolean | null;
   fullCare1Pass: boolean | null;
   fullCare6Pass: boolean | null;
+  contextProbe8192Pass?: boolean | null;
+  contextProbe16384Pass?: boolean | null;
+  contextBudgetExceeded?: boolean;
 }): { final: SelfTestFinal; summary: string } {
   if (input.noMri) {
     return {
@@ -289,6 +298,19 @@ export function deriveSelfTestFinal(input: {
     return {
       final: "PASS",
       summary: "PASS — CARE pipeline healthy (direct probe had issues; review Direct steps).",
+    };
+  }
+
+  if (input.contextBudgetExceeded && provider1 === true && provider6 === false) {
+    const ctxHint =
+      input.contextProbe8192Pass === true
+        ? "6 images PASS at num_ctx=8192"
+        : input.contextProbe16384Pass === true
+          ? "6 images PASS at num_ctx=16384"
+          : "raise/send options.num_ctx (do not omit)";
+    return {
+      final: "PARTIAL",
+      summary: `PARTIAL / FAIL — CONTEXT_BUDGET_EXCEEDED on multi-image without adequate num_ctx. ${ctxHint}.`,
     };
   }
 

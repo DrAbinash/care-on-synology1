@@ -54,6 +54,11 @@ export interface AiReportingDraftDiagnostics {
   timeoutStage: string | null;
   /** Provider-layer AbortSignal timeout; null means none on this path. */
   timeoutMsConfigured: number | null;
+  configuredNumCtx: number | null;
+  requestedNumCtx: number | null;
+  ollamaAvailableContext: number | null;
+  ollamaRequestTokens: number | null;
+  numCtxReason: string | null;
   /**
    * Clinic Local AI timeout (radiology-ollama path). Logged for comparison —
    * /api/ai-reporting/draft does NOT apply this AbortController today.
@@ -91,6 +96,9 @@ export function buildAiReportingDraftDiagnostics(input: {
   parser: AiDraftParserMeta | null;
   clinicOllamaTimeoutSeconds: number | null;
   totalElapsedMs: number;
+  configuredNumCtx?: number | null;
+  requestedNumCtx?: number | null;
+  numCtxReason?: string | null;
 }): AiReportingDraftDiagnostics {
   const d: AiQueryDiagnostics | undefined = input.aiResult.diagnostics;
   const success = input.aiResult.success;
@@ -122,14 +130,19 @@ export function buildAiReportingDraftDiagnostics(input: {
     success,
     errorClass: success ? null : (d?.errorClass ?? "AiProviderError"),
     errorCode: success ? null : (d?.errorCode ?? "AI_PROVIDER_ERROR"),
-    errorMessage: success ? null : (d?.errorMessage ?? input.aiResult.error ?? "AI provider error").slice(0, 300),
+    errorMessage: success ? null : (d?.errorMessage ?? input.aiResult.error ?? "AI provider error").slice(0, 400),
     timeoutStage: d?.timeoutStage ?? null,
     timeoutMsConfigured: d?.timeoutMsConfigured ?? null,
+    configuredNumCtx: input.configuredNumCtx ?? null,
+    requestedNumCtx: d?.requestedNumCtx ?? input.requestedNumCtx ?? null,
+    ollamaAvailableContext: d?.ollamaAvailableContext ?? null,
+    ollamaRequestTokens: d?.ollamaRequestTokens ?? null,
+    numCtxReason: input.numCtxReason ?? null,
     clinicOllamaTimeoutSeconds: input.clinicOllamaTimeoutSeconds,
     timeoutSourcesNote:
-      "ai-reporting/draft → generateAiForTask → Ollama /api/chat has NO AbortController by default; " +
-      "gateway overnight path uses withTimeout(10min); radiology-ollama uses clinic ollamaTimeoutSeconds (default 30s); " +
-      "reverse proxies may still cut HTTP at ~30s.",
+      "ai-reporting/draft → generateAiForTask → Ollama /api/chat; num_ctx must be explicit " +
+      "(omitting it caused live CONTEXT_BUDGET_EXCEEDED at Ollama default ~4096). " +
+      "gateway overnight path uses withTimeout(10min)+runtime num_ctx; radiology-ollama uses clinic timeout.",
   };
 }
 

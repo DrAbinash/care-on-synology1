@@ -150,8 +150,21 @@ export function makeAiShadowPipelineHandler(overrides: Partial<ShadowPipelineDep
     }
 
     // 2. Structured, modality-aware image selection (UID + frame provenance).
+    // Cap by context budget: live proof showed 6 images ≈ 6453 tokens; 20 images
+    // would exceed even num_ctx=16384 and drive overnight abandonments.
     const modality = payload.modality ?? instances.find((i) => i.modality)?.modality ?? undefined;
-    const anchors = selectImageAnchors(instances, { strategy: "modality-aware", modality: modality ?? undefined, maxImages: 20 });
+    const { getOvernightVisionInferenceOptions } = await import("./overnightVisionConfig");
+    const { maxImagesForContextBudget } = await import("./contextBudget");
+    const vision = await getOvernightVisionInferenceOptions();
+    const imageBudget = maxImagesForContextBudget({
+      numCtx: vision.numCtx,
+      hardCap: 20,
+    });
+    const anchors = selectImageAnchors(instances, {
+      strategy: "modality-aware",
+      modality: modality ?? undefined,
+      maxImages: imageBudget.maxImages,
+    });
 
     // 3. Manifest idempotency — inputHash on STABLE inputs (not the resolved model).
     const inputHash = computeInputHash({

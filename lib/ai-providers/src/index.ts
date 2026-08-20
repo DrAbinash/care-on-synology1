@@ -95,6 +95,12 @@ export interface AiQueryDiagnostics {
   timeoutStage?: string | null;
   /** AbortSignal timeout configured for this call; null = none at provider layer. */
   timeoutMsConfigured?: number | null;
+  /** options.num_ctx actually placed on the Ollama /api/chat body (null = not sent). */
+  requestedNumCtx?: number | null;
+  /** From Ollama exceed_context_size_error when present. */
+  ollamaAvailableContext?: number | null;
+  /** From Ollama exceed_context_size_error / n_prompt_tokens when present. */
+  ollamaRequestTokens?: number | null;
 }
 
 export interface AiQueryResult {
@@ -403,6 +409,26 @@ function classifyProviderError(err: unknown): {
   };
 }
 
+function parseContextExceededFromOllamaDetail(detail: string): {
+  errorCode: string;
+  ollamaAvailableContext: number | null;
+  ollamaRequestTokens: number | null;
+} | null {
+  if (!/exceed_context_size_error|exceeds the available context size/i.test(detail)) return null;
+  const reqMatch = detail.match(/request\s*\((\d+)\s*tokens?\)/i);
+  const availMatch = detail.match(/available context size\s*\((\d+)\s*tokens?\)/i);
+  const promptTok = detail.match(/"n_prompt_tokens"\s*:\s*(\d+)/i);
+  return {
+    errorCode: "CONTEXT_BUDGET_EXCEEDED",
+    ollamaRequestTokens: reqMatch
+      ? Number(reqMatch[1])
+      : promptTok
+        ? Number(promptTok[1])
+        : null,
+    ollamaAvailableContext: availMatch ? Number(availMatch[1]) : null,
+  };
+}
+
 class OllamaProvider implements AiProvider {
   config = BUILTIN_PROVIDER_CONFIGS.ollama;
   constructor(private endpointUrl: string) {}
@@ -417,6 +443,8 @@ class OllamaProvider implements AiProvider {
     const timeoutMsConfigured = opts.timeoutMs != null && Number.isFinite(opts.timeoutMs)
       ? Math.max(1, Math.floor(opts.timeoutMs))
       : null;
+    const requestedNumCtx =
+      opts.numCtx != null && Number.isFinite(opts.numCtx) ? Math.floor(opts.numCtx) : null;
 
     const baseDiag = (): Omit<
       AiQueryDiagnostics,
@@ -433,6 +461,8 @@ class OllamaProvider implements AiProvider {
       | "ollamaLoadDurationNs"
       | "ollamaPromptEvalCount"
       | "ollamaEvalCount"
+      | "ollamaAvailableContext"
+      | "ollamaRequestTokens"
     > => ({
       provider: "ollama",
       resolvedEndpoint: base,
@@ -445,6 +475,7 @@ class OllamaProvider implements AiProvider {
       thinkSent: opts.think !== undefined,
       thinkValue: opts.think !== undefined ? opts.think : null,
       requestBodyBytes: null,
+      requestedNumCtx,
     });
 
     try {
@@ -463,7 +494,8 @@ class OllamaProvider implements AiProvider {
       const elapsedMs = Date.now() - t0;
       if (!resp.ok) {
         const detail = await resp.text().catch(() => "");
-        const errorMessage = `Ollama /api/chat ${resp.status}${detail ? `: ${detail.slice(0, 200)}` : ""}`;
+        const errorMessage = `Ollama /api/chat ${resp.status}${detail ? `: ${detail.slice(0, 400)}` : ""}`;
+        const ctxErr = parseContextExceededFromOllamaDetail(detail || errorMessage);
         return {
           text: "",
           success: false,
@@ -480,9 +512,11 @@ class OllamaProvider implements AiProvider {
             ollamaLoadDurationNs: null,
             ollamaPromptEvalCount: null,
             ollamaEvalCount: null,
-            errorClass: "OllamaHttpError",
-            errorCode: `HTTP_${resp.status}`,
-            errorMessage: errorMessage.slice(0, 300),
+            ollamaAvailableContext: ctxErr?.ollamaAvailableContext ?? null,
+            ollamaRequestTokens: ctxErr?.ollamaRequestTokens ?? null,
+            errorClass: ctxErr ? "ContextBudgetExceeded" : "OllamaHttpError",
+            errorCode: ctxErr?.errorCode ?? `HTTP_${resp.status}`,
+            errorMessage: errorMessage.slice(0, 400),
             timeoutStage: null,
           },
         };
@@ -516,6 +550,8 @@ class OllamaProvider implements AiProvider {
           ollamaLoadDurationNs: typeof data.load_duration === "number" ? data.load_duration : null,
           ollamaPromptEvalCount: typeof data.prompt_eval_count === "number" ? data.prompt_eval_count : null,
           ollamaEvalCount: typeof data.eval_count === "number" ? data.eval_count : null,
+          ollamaAvailableContext: null,
+          ollamaRequestTokens: typeof data.prompt_eval_count === "number" ? data.prompt_eval_count : null,
           errorClass: null,
           errorCode: null,
           errorMessage: null,
@@ -540,6 +576,8 @@ class OllamaProvider implements AiProvider {
           ollamaLoadDurationNs: null,
           ollamaPromptEvalCount: null,
           ollamaEvalCount: null,
+          ollamaAvailableContext: null,
+          ollamaRequestTokens: null,
           errorClass: classified.errorClass,
           errorCode: classified.errorCode,
           errorMessage: classified.errorMessage,
