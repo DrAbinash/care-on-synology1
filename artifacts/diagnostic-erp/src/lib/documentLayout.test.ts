@@ -69,9 +69,9 @@ function baseOpts(overrides: Record<string, unknown> = {}) {
 
 describe("document layout engine — page specifications", () => {
   test.each([
-    ["A5-landscape", "210mm 297mm", 210, 148],
+    ["A5-landscape", "210mm 148mm", 210, 148],
     ["A5-portrait", "148mm 210mm", 148, 210],
-    ["half-a4", "210mm 297mm", 210, 148],
+    ["half-a4", "210mm 148mm", 210, 148],
     ["A4", "210mm 297mm", 210, 297],
   ] as const)("paper %s has exact mm dimensions", (paper, css, w, h) => {
     expect(PAGE_SPECS[paper].pageSizeCss).toBe(css);
@@ -133,13 +133,12 @@ describe("document layout engine — bill renderers (unified Classic)", () => {
     expect((html.match(/class="care-doc-page receipt"/g) ?? []).length).toBe(2);
   });
 
-  test("uses A4-portrait @page for half-sheet bills so the tray is not rotated", () => {
+  test("uses 210×148 @page matching pre-cut half A4 in the tray", () => {
     const html = buildBillPrintHtml(baseOpts());
-    expect(html).toContain("@page { size: 210mm 297mm; margin: 0; }");
-    expect(html).not.toMatch(/@page \{ size: 210mm 148mm/);
+    expect(html).toContain("@page { size: 210mm 148mm; margin: 0; }");
+    expect(html).not.toMatch(/@page \{ size: 210mm 297mm/);
     expect(html).not.toMatch(/@page \{ size: A5 landscape/);
     expect(html).toContain('class="care-doc-page receipt"');
-    // Content box stays half-sheet height — blank lower A4 is cut away after print
     expect(html).toContain("height: 148mm");
     expect(html).toContain("max-height: 148mm");
   });
@@ -328,7 +327,7 @@ describe("document layout engine — bill renderers (unified Classic)", () => {
 
   test("classic format uses engine and percentage columns", () => {
     const html = buildBillPrintHtml(baseOpts());
-    expect(html).toContain("@page { size: 210mm 297mm; margin: 0; }");
+    expect(html).toContain("@page { size: 210mm 148mm; margin: 0; }");
     expect(html).toContain("care-doc-page");
     expect(html).toContain("totals-grid");
   });

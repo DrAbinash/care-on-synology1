@@ -21,18 +21,17 @@ export type PageSpec = {
 };
 
 /**
- * Half of A4 is A5 content: 210 mm × 148 mm.
+ * Half of A4 is A5: 210 mm × 148 mm (pre-cut A4 loaded in the tray).
  *
- * CRITICAL: `@page` must be A4 portrait (210×297), NOT 210×148.
- * A 210×148 page box is landscape (width > height). Chrome/Epson then
- * default the print dialog to Landscape, fit the bill into the short feed
- * axis, and leave a blank band on the RIGHT and empty space BELOW.
+ * `@page` MUST match the physical sheet (210×148). Sending A4 (210×297) when
+ * the tray already holds cut half-sheets leaves blank space below (and can
+ * shrink/offset the receipt). Named `A5 landscape` is avoided — use exact mm.
  *
- * With A4-portrait @page the tray stays Portrait; the receipt occupies the
- * top 148 mm. Cut the sheet in half after printing (or discard the empty
- * lower half). Named `A5 landscape` has the same rotation bug — never emit it.
+ * Printer dialog: select a User Defined / custom paper of 210×148 mm (not A4).
+ * If the dialog still says Paper=A4, Chrome fits the half-sheet job onto a
+ * full A4 frame and you get blank bands on the right and below.
  */
-export const HALF_A4_TRAY_PAGE_CSS = "210mm 297mm";
+export const HALF_A4_TRAY_PAGE_CSS = "210mm 148mm";
 
 /** Canonical page specifications — exact physical dimensions in mm. */
 export const PAGE_SPECS: Record<PrintPaper, PageSpec> = {

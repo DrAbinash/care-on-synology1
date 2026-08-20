@@ -446,8 +446,8 @@ export function getAutoBillPaperSize(
 /** Pixel dimensions for on-screen bill previews (96 dpi, matches Settings live preview). */
 export function billPreviewPaperPx(pageOpts: BillPrintPageOpts): { w: number; h: number } {
   if (pageOpts.paperSize === "A4") return { w: 794, h: 1123 };
-  // Half-sheet content is always 210×148 (landscape), even when @page is A4 portrait.
-  if (pageOpts.orientation === "landscape" || pageOpts.pageCssSize.includes("210mm 148mm") || pageOpts.pageCssSize.includes("210mm 297mm")) {
+  // Half-sheet content is always 210×148 (pre-cut A4 / A5 landscape).
+  if (pageOpts.orientation === "landscape" || pageOpts.pageCssSize.includes("210mm 148mm")) {
     return { w: 794, h: 559 };
   }
   return { w: 559, h: 794 };
@@ -457,10 +457,8 @@ export function getPaperSizeCss(size: BillPaperSize): { pageSize: string; width:
   switch (size) {
     case "A5-landscape":
     case "half-a4":
-      // Content is 210×148; @page is A4 portrait so the tray is not rotated.
-      // Emitting 210×148 (landscape page box) makes Chrome/Epson leave blank
-      // bands on the right and below.
-      return { pageSize: "210mm 297mm", width: "210mm", minHeight: "148mm", maxHeight: "148mm" };
+      // Pre-cut half A4 in the tray — @page matches the physical sheet.
+      return { pageSize: "210mm 148mm", width: "210mm", minHeight: "148mm", maxHeight: "148mm" };
     case "A5-portrait":
       return { pageSize: "A5 portrait", width: "148mm", minHeight: "210mm", maxHeight: "none" };
     case "A4":
@@ -500,13 +498,12 @@ export function resolveBillPrintPageOpts(
   return {
     paperSize: "A5",
     orientation: "landscape",
-    // Fill the 148 mm content box — pin footer to the bottom. Compact gap was
-    // for tall A4 pages; on the half-sheet it left blank space under the receipt.
+    // Fill the 148 mm sheet — pin footer to the bottom.
     compactFooterGap: false,
-    // A4 portrait @page + 210×148 content. Do not emit 210×148 or named
-    // "A5 landscape" — those landscape page boxes rotate the Epson job and
-    // leave blank bands on the right and below. Cut the A4 sheet after print.
-    pageCssSize: "210mm 297mm",
+    // Exact mm for pre-cut half A4. Do not use full A4 @page (blank below on
+    // cut sheets) or named "A5 landscape". In the print dialog pick User
+    // Defined 210×148 — leaving Paper=A4 causes blank on the right and below.
+    pageCssSize: "210mm 148mm",
   };
 }
 
