@@ -15,4 +15,12 @@ describe("emergency bridge routes", () => {
     expect(bridge).toContain("X-Emergency-Fetch-Token");
     expect(bridge).toContain("requireEmergencyFetchToken");
   });
+
+  it("day-scopes phone matches so old diagnostic charts do not block sync", () => {
+    const reconcile = readFileSync(path.resolve(__dirname, "./emergencyReconcile.ts"), "utf8");
+    expect(reconcile).toContain("phoneMatchScope");
+    expect(reconcile).toContain("same Asia/Kolkata");
+    expect(reconcile).toContain("clinicDayBoundsIst");
+    expect(reconcile).toMatch(/older CARE records ignored|never whole-history phone search/);
+  });
 });

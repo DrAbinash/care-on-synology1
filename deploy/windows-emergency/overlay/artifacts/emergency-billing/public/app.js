@@ -679,8 +679,9 @@ function reconciliationPanel() {
       <div class="sec-h slate">Reconciliation — Synced &amp; Conflicts</div>
       <div class="sec-body">
         <p class="muted" style="margin:0 0 10px">
-          Conflicts (same mobile / different name, or shared dummy numbers like 1234567890) stay here until you
-          <b>Resolve &amp; Merge</b> — pick an existing CARE patient or create as new. Safe bills sync automatically on Push.
+          Conflicts (same mobile on the <b>same clinic day</b> only — older CARE charts are ignored)
+          stay here until you <b>Resolve &amp; Merge</b>. Dummy numbers like 1234567890 from past days
+          auto-create as new. Safe bills sync on Push.
         </p>
         <div class="recon-tabs">
           <button type="button" data-tab="conflict" class="${state.reconTab === "conflict" ? "active" : ""}">Conflicts / Failed (${conflict})</button>
@@ -746,7 +747,8 @@ function resolveModalHtml(b) {
             <div class="muted" style="margin-top:6px">${escapeHtml(detail.matchClass || "CONFLICT")}: ${escapeHtml(detail.matchReason || b.syncError || "")}</div>
           </div>
         </div>
-        <p class="muted">Select the matching CARE patient (do not merge by name alone), or create as a new CARE patient. Dummy mobiles like 1234567890 often produce conflicts — pick carefully.</p>
+        <p class="muted">Select a CARE patient seen <b>today</b> (do not merge by name alone), or create as new.
+          Older records with the same mobile are not listed — diagnostic walk-ins are treated as new patients.</p>
         <div style="overflow:auto;border:1px solid var(--line);border-radius:10px;margin:10px 0">
           <table class="cand-table">
             <thead><tr>

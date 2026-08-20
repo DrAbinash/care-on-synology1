@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   buildEmergencyOrderNotes,
+  clinicDayBoundsIst,
   emergencyClientRef,
   emergencyOrderClientRef,
   mapEmergencyGender,
+  parseEmergencyPhoneMatchScope,
   synthesizeDob,
 } from "./emergencyReconcileHelpers";
 import { SOURCE } from "@workspace/emergency-billing";
@@ -28,6 +30,17 @@ describe("emergency reconcile helpers", () => {
     expect(synthesizeDob({ dateOfBirth: "1984-02-01", ageValue: 40, ageUnit: "years" })).toBe("1984-02-01");
     const dob = synthesizeDob({ dateOfBirth: null, ageValue: 10, ageUnit: "years", at: new Date("2026-08-14T00:00:00.000Z") });
     expect(dob.startsWith("2016-")).toBe(true);
+  });
+
+  it("clinicDayBoundsIst uses Asia/Kolkata calendar day (not whole-history)", () => {
+    // 2026-08-19 22:30 UTC = 2026-08-20 04:00 IST → dayKey 2026-08-20
+    const b = clinicDayBoundsIst("2026-08-19T22:30:00.000Z");
+    expect(b.dayKey).toBe("2026-08-20");
+    expect(b.startUtc.toISOString()).toBe("2026-08-19T18:30:00.000Z");
+    expect(b.endUtc.toISOString()).toBe("2026-08-20T18:30:00.000Z");
+    expect(parseEmergencyPhoneMatchScope(undefined)).toBe("day");
+    expect(parseEmergencyPhoneMatchScope("all")).toBe("all");
+    expect(parseEmergencyPhoneMatchScope("day")).toBe("day");
   });
 
   it("embeds LOCAL_EMERGENCY provenance in order notes", () => {
