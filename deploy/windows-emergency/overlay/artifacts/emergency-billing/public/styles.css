@@ -217,7 +217,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   display: flex;
   flex-direction: column;
   gap: 10px;
-  overflow: auto;
+  overflow: visible;
 }
 @media (min-width: 1024px) {
   .col-left {
@@ -231,7 +231,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   display: flex;
   flex-direction: column;
   gap: 10px;
-  overflow: auto;
+  overflow: visible;
   background: rgba(248, 250, 252, 0.6);
 }
 @media (min-width: 1024px) {
@@ -244,7 +244,13 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   border: 1px solid var(--line);
   border-radius: 14px;
   box-shadow: var(--shadow);
-  overflow: hidden;
+  overflow: visible; /* allow doctor/patient/service suggest menus to escape the card */
+  position: relative;
+  z-index: 1;
+}
+.card:focus-within,
+.card.has-suggest {
+  z-index: 30;
 }
 .sec-h {
   display: flex;
@@ -312,14 +318,14 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .suggest {
   position: absolute;
-  z-index: 40;
+  z-index: 80;
   left: 0; right: 0;
   top: calc(100% + 4px);
   background: #fff;
   border: 1px solid var(--line);
   border-radius: 10px;
-  box-shadow: 0 12px 28px -12px rgba(15, 60, 110, 0.35);
-  max-height: 240px;
+  box-shadow: 0 12px 28px -12px rgba(15, 60, 110, 0.45);
+  max-height: 280px;
   overflow: auto;
 }
 .suggest button {
@@ -541,7 +547,42 @@ table.bills tr:hover { background: rgba(37, 99, 235, 0.05); }
 .badge.PENDING, .badge.pending { background: #fffbeb; color: #92400e; border: 1px solid #fcd34d; }
 .badge.RECONCILED, .badge.synced { background: #ecfdf5; color: #065f46; border: 1px solid #a7f3d0; }
 .badge.VOID, .badge.void { background: #f1f5f9; color: #64748b; border: 1px solid #e2e8f0; }
-.badge.FAILED, .badge.failed, .badge.CONFLICT, .badge.conflict { background: #fef2f2; color: #991b1b; border: 1px solid #fecaca; }
+.badge.FAILED, .badge.failed, .badge.CONFLICT, .badge.conflict, .badge.PROBABLE_MATCH { background: #fef2f2; color: #991b1b; border: 1px solid #fecaca; }
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.45);
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+.modal {
+  background: #fff;
+  border-radius: 14px;
+  width: min(900px, 100%);
+  max-height: min(90vh, 900px);
+  overflow: auto;
+  box-shadow: 0 20px 50px rgba(0,0,0,0.25);
+  padding: 16px;
+}
+.modal h3 { margin: 0 0 8px; font-size: 16px; }
+.cand-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.cand-table th, .cand-table td { padding: 8px; border-bottom: 1px solid #e2e8f0; text-align: left; vertical-align: top; }
+.cand-table th { background: #f8fafc; font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+.recon-tabs { display: flex; gap: 6px; margin-bottom: 10px; flex-wrap: wrap; }
+.recon-tabs button {
+  height: 30px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: #f8fafc;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 0 12px;
+}
+.recon-tabs button.active { background: #1e3a5f; color: #fff; border-color: #1e3a5f; }
 
 .locked-card {
   margin: 16px;

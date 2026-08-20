@@ -35,6 +35,10 @@ import {
   summarizeTransactions,
   UnsupportedContractError,
   verifyJsonChecksum,
+  buildEmergencySyncSummary,
+  parseEmergencySyncSummaryScope,
+  clinicDayBoundsIst,
+  EMERGENCY_SYNC_SUMMARY_FORMAT,
   type EmergencyTransaction,
 } from "./index";
 
@@ -424,5 +428,57 @@ describe("pendrive catalogue seed CSVs", () => {
     const { tests, errors } = parseTestsSeedCsv("format,emergency_transaction_uuid\nCARE_EMERGENCY_BILLING_V1,x\n");
     expect(tests).toEqual([]);
     expect(errors[0]).toMatch(/missing required columns/);
+  });
+});
+
+describe("emergency-side sync summary (separate from CARE import preview)", () => {
+  it("defaults scope to today and parses selectors", () => {
+    expect(parseEmergencySyncSummaryScope(undefined)).toBe("today");
+    expect(parseEmergencySyncSummaryScope("session")).toBe("session");
+    expect(parseEmergencySyncSummaryScope("all")).toBe("all");
+  });
+
+  it("scopes today (IST) vs all and freezes USB receipt fields", () => {
+    const onToday = sampleTxn({
+      emergencyTransactionUuid: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      createdAt: "2026-08-20T10:00:00.000Z",
+      netAmount: 1000,
+      amountReceived: 1000,
+      dueAmount: 0,
+      payments: [{ method: "cash", amount: 1000, referenceNumber: null }],
+    });
+    const yesterday = sampleTxn({
+      emergencyTransactionUuid: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      createdAt: "2026-08-19T10:00:00.000Z",
+      netAmount: 500,
+      amountReceived: 500,
+      dueAmount: 0,
+      payments: [{ method: "upi", amount: 500, referenceNumber: null }],
+    });
+    const todaySum = buildEmergencySyncSummary({
+      rows: [
+        { ...onToday, syncStatus: "synced" },
+        { ...yesterday, syncStatus: "pending" },
+      ],
+      scope: "today",
+      now: "2026-08-20T12:00:00.000Z",
+      frozen: true,
+      lastHandoff: { channel: "USB", at: "2026-08-20T12:05:00.000Z" },
+    });
+    expect(todaySum.format).toBe(EMERGENCY_SYNC_SUMMARY_FORMAT);
+    expect(todaySum.bills).toBe(1);
+    expect(todaySum.synced).toBe(1);
+    expect(todaySum.net).toBe(1000);
+    expect(todaySum.frozen).toBe(true);
+
+    const allSum = buildEmergencySyncSummary({
+      rows: [
+        { ...onToday, syncStatus: "synced" },
+        { ...yesterday, syncStatus: "pending" },
+      ],
+      scope: "all",
+      now: "2026-08-20T12:00:00.000Z",
+    });
+    expect(allSum.bills).toBe(2);
   });
 });

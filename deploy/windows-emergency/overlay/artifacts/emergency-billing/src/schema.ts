@@ -106,4 +106,5 @@ ALTER TABLE emergency_transactions ADD COLUMN IF NOT EXISTS sync_error text;
 ALTER TABLE emergency_transactions ADD COLUMN IF NOT EXISTS synced_at timestamptz;
 ALTER TABLE emergency_transactions ADD COLUMN IF NOT EXISTS source_device_id text;
 ALTER TABLE emergency_transactions ADD COLUMN IF NOT EXISTS care_destination_id integer;
+ALTER TABLE emergency_transactions ADD COLUMN IF NOT EXISTS sync_detail jsonb;
 `;
