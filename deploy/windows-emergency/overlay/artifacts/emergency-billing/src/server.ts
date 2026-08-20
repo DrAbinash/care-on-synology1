@@ -10,9 +10,11 @@ import bcrypt from "bcryptjs";
 import {
   advertisedEmergencyCapability,
   buildEmergencyJsonPackage,
+  buildEmergencySyncSummary,
   countsFromSnapshot,
   formatEmgBillNumber,
   istYyyymmdd,
+  parseEmergencySyncSummaryScope,
   parseMasterSnapshot,
   searchCachedDoctors,
   serializeEmergencyCsv,
@@ -21,7 +23,9 @@ import {
   snapshotAgeHours,
   SOURCE,
   UnsupportedContractError,
+  type EmergencyHandoffInfo,
   type EmergencySessionRecord,
+  type EmergencySyncSummary,
   type EmergencyTransaction,
   type MasterDataSnapshot,
 } from "@workspace/emergency-billing";
@@ -92,6 +96,45 @@ async function setMeta(key: string, value: string) {
      ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value`,
     [key, value],
   );
+}
+
+async function loadLastHandoff(): Promise<EmergencyHandoffInfo | null> {
+  const raw = await getMeta("last_handoff_json");
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as EmergencyHandoffInfo;
+  } catch {
+    return null;
+  }
+}
+
+async function recordHandoff(info: EmergencyHandoffInfo) {
+  await setMeta("last_handoff_json", JSON.stringify(info));
+}
+
+async function buildDeviceSyncSummary(opts?: {
+  scope?: string;
+  frozen?: boolean;
+  handoffOverride?: EmergencyHandoffInfo | null;
+}): Promise<EmergencySyncSummary> {
+  const scope = parseEmergencySyncSummaryScope(opts?.scope);
+  const session = await activeSession();
+  const { rows } = await pool.query(
+    `SELECT uuid, bill_number, payload_json, status, sync_status
+     FROM emergency_transactions ORDER BY created_at`,
+  );
+  const summaryRows = rows.map((r) => ({
+    ...rowToTxn(r),
+    syncStatus: r.sync_status || (r.status === "RECONCILED" ? "synced" : r.status === "VOID" ? "void" : "pending"),
+  }));
+  return buildEmergencySyncSummary({
+    rows: summaryRows,
+    scope,
+    sessionUuid: session?.emergencySessionUuid ?? null,
+    openSession: !!session,
+    lastHandoff: opts?.handoffOverride !== undefined ? opts.handoffOverride : await loadLastHandoff(),
+    frozen: !!opts?.frozen,
+  });
 }
 
 async function activeSession(): Promise<EmergencySessionRecord | null> {
@@ -430,6 +473,12 @@ export async function createApp() {
     })));
   });
 
+  /** Emergency-device reconciliation summary (separate from CARE import preview). */
+  app.get("/api/recon/summary", requireAuth, async (req, res) => {
+    const summary = await buildDeviceSyncSummary({ scope: String(req.query.scope || "today") });
+    res.json(summary);
+  });
+
   app.post("/api/bills", requireAuth, async (req: AuthedRequest, res) => {
     const session = await activeSession();
     if (!session) {
@@ -676,7 +725,20 @@ export async function createApp() {
       csvSha256: sha256Hex(csv),
       jsonSha256: json.checksumSha256,
       note: "Disaster copy only. Do not run live billing from USB storage.",
+      /** Frozen emergency-side summary (not CARE's import preview). Default scope: today IST. */
+      emergencySyncSummary: null as EmergencySyncSummary | null,
     };
+    const handoff: EmergencyHandoffInfo = {
+      channel: "USB",
+      at: manifest.exportedAt,
+    };
+    await recordHandoff(handoff);
+    const scope = parseEmergencySyncSummaryScope(req.query.scope);
+    manifest.emergencySyncSummary = await buildDeviceSyncSummary({
+      scope,
+      frozen: true,
+      handoffOverride: handoff,
+    });
     await audit(req.staff!, "export_usb", null, `${txns.length} rows`, req.ip);
     res.json({ manifest, csv, json });
   });
@@ -986,6 +1048,16 @@ export async function createApp() {
     }
 
     await audit(null, "push_to_care", null, `supplied ${rows.length}; created ${body.created ?? 0}`);
+    const handoff: EmergencyHandoffInfo = {
+      channel: "LAN_PUSH",
+      at: new Date().toISOString(),
+      created: body.created ?? 0,
+      alreadyReconciled: body.alreadyReconciled ?? 0,
+      conflicts: body.conflicts ?? body.skippedReview ?? 0,
+      failures: body.failures ?? 0,
+      batchUuid: body.batchUuid ?? null,
+    };
+    await recordHandoff(handoff);
     return {
       supplied: rows.length,
       created: body.created ?? 0,
@@ -995,6 +1067,7 @@ export async function createApp() {
       conflicts: body.conflicts ?? body.skippedReview ?? 0,
       skippedReview: body.skippedReview ?? 0,
       batchUuid: body.batchUuid,
+      syncSummary: await buildDeviceSyncSummary({ scope: "today", handoffOverride: handoff }),
     };
   }
 

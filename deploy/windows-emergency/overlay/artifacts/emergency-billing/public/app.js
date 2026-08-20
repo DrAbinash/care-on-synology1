@@ -17,6 +17,8 @@ const state = {
   toast: null,
   reconTab: "conflict", // pending | conflict | synced | all
   resolveRow: null,
+  syncSummary: null,
+  syncSummaryScope: "today", // today | session | all
 };
 
 async function api(path, opts = {}) {
@@ -156,6 +158,8 @@ function renderMain() {
 
       ${admin ? opsPanel() : ""}
 
+      ${admin ? syncSummaryPanel() : ""}
+
       ${reconciliationPanel()}
 
       ${state.resolveRow ? resolveModalHtml(state.resolveRow) : ""}
@@ -174,8 +178,27 @@ function renderMain() {
   };
   if (!state.locked) bindBillForm();
   bindOps();
+  bindSyncSummary();
   bindReconciliation();
   if (state.resolveRow) bindResolveModal();
+}
+
+function bindSyncSummary() {
+  document.querySelectorAll("#summary-scope-tabs button[data-scope]").forEach((btn) => {
+    btn.onclick = async () => {
+      state.syncSummaryScope = btn.dataset.scope;
+      await refreshSyncSummary();
+      render();
+    };
+  });
+}
+
+async function refreshSyncSummary() {
+  try {
+    state.syncSummary = await api("/api/recon/summary?scope=" + encodeURIComponent(state.syncSummaryScope || "today"));
+  } catch {
+    /* optional for non-admin */
+  }
 }
 
 function deskLayout() {
@@ -314,6 +337,46 @@ function opsPanel() {
     </div>`;
 }
 
+function syncSummaryPanel() {
+  const s = state.syncSummary;
+  const scope = state.syncSummaryScope || "today";
+  const handoff = s?.lastHandoff;
+  return `
+    <div class="card" style="margin:10px">
+      <div class="sec-h teal">Emergency sync summary</div>
+      <div class="sec-body">
+        <p class="muted" style="margin:0 0 10px">
+          Device-side totals for this emergency PC (Windows / DS225 / USB) — separate from CARE Settings → Emergency Billing import preview.
+        </p>
+        <div class="recon-tabs" id="summary-scope-tabs">
+          <button type="button" data-scope="today" class="${scope === "today" ? "active" : ""}">Today (IST)</button>
+          <button type="button" data-scope="session" class="${scope === "session" ? "active" : ""}">Open session</button>
+          <button type="button" data-scope="all" class="${scope === "all" ? "active" : ""}">All on device</button>
+        </div>
+        ${s ? `
+          <div class="ops-grid" style="margin-top:4px">
+            <div class="ops-stat"><div class="k">Scope</div><div class="v" style="font-size:13px">${escapeHtml(s.scopeLabel)}</div></div>
+            <div class="ops-stat"><div class="k">Bills</div><div class="v">${s.bills}</div></div>
+            <div class="ops-stat"><div class="k">Pending</div><div class="v">${s.pending}</div></div>
+            <div class="ops-stat"><div class="k">Synced</div><div class="v">${s.synced}</div></div>
+            <div class="ops-stat"><div class="k">Conflict</div><div class="v">${s.conflict}</div></div>
+            <div class="ops-stat"><div class="k">Failed</div><div class="v">${s.failed}</div></div>
+            <div class="ops-stat"><div class="k">Net</div><div class="v" style="font-size:14px">${fmt(s.net)}</div></div>
+            <div class="ops-stat"><div class="k">Collected</div><div class="v" style="font-size:14px">${fmt(s.collected)}</div></div>
+            <div class="ops-stat"><div class="k">Due</div><div class="v" style="font-size:14px">${fmt(s.due)}</div></div>
+            <div class="ops-stat"><div class="k">Cash / UPI / Card</div><div class="v" style="font-size:12px">${fmt(s.cash)} · ${fmt(s.upi)} · ${fmt(s.card)}</div></div>
+          </div>
+          <p class="muted" style="margin:10px 0 0">
+            Last handoff:
+            ${handoff
+              ? `<strong>${escapeHtml(handoff.channel)}</strong> at ${escapeHtml(new Date(handoff.at).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" }))}${handoff.created != null ? ` · created ${handoff.created}, conflicts ${handoff.conflicts ?? 0}, failed ${handoff.failures ?? 0}` : ""}`
+              : "none yet"}
+          </p>
+        ` : `<p class="muted">Loading summary…</p>`}
+      </div>
+    </div>`;
+}
+
 function bindOps() {
   const msg = (t, ok = true) => {
     const el = $("#ops-msg");
@@ -332,6 +395,7 @@ function bindOps() {
       const r = await api("/api/care/push-transactions", { method: "POST" });
       await refreshBills();
       await refreshOps();
+      await refreshSyncSummary();
       state.reconTab = (r.conflicts ?? 0) > 0 ? "conflict" : "synced";
       render();
       msg(`Pushed to Main CARE — created ${r.created ?? 0}, already ${r.alreadyReconciled ?? r.duplicates ?? 0}, conflicts ${r.conflicts ?? 0}, failed ${r.failures ?? 0}. Resolve conflicts in the Conflicts tab.`);
@@ -833,6 +897,7 @@ function bindResolveModal() {
       state.resolveRow = null;
       await refreshBills();
       await refreshOps();
+      await refreshSyncSummary();
       state.reconTab = "synced";
       render();
       toast("Conflict resolved and pushed to Main CARE");
@@ -874,12 +939,15 @@ async function download(url, name) {
   a.click();
 }
 async function exportUsb() {
-  const data = await api("/api/export/usb-package");
+  const data = await api("/api/export/usb-package?scope=" + encodeURIComponent(state.syncSummaryScope || "today"));
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
   a.download = "CARE_EMERGENCY_BACKUP_PACKAGE.json";
   a.click();
+  await refreshSyncSummary();
+  render();
+  toast("USB package exported with frozen emergency sync summary");
 }
 async function refreshBills() {
   try { state.bills = await api("/api/bills"); } catch { state.bills = []; }
@@ -907,6 +975,7 @@ async function boot() {
     await refreshBills();
     await refreshOps();
     await refreshCareStatus();
+    await refreshSyncSummary();
   } catch {
     const st = await api("/api/status");
     state.me = null;
