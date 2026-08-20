@@ -834,6 +834,46 @@ radiologyOllamaRouter.post("/multi-review/winner", async (req, res): Promise<voi
   res.json({ ok: true, audit });
 });
 
+// ── POST /pipeline-self-test — async one-click AI pipeline self-test ─────────
+radiologyOllamaRouter.post("/pipeline-self-test", async (req, res): Promise<void> => {
+  const sReq = req as StaffAuthRequest;
+  if (!canUseAi(sReq)) {
+    res.status(403).json({ error: "Permission denied. Role needs ai_reporting.use permission." });
+    return;
+  }
+  const b = (req.body ?? {}) as { studyInstanceUid?: string };
+  try {
+    const { startAiPipelineSelfTest } = await import("../lib/ai/aiPipelineSelfTest");
+    const job = startAiPipelineSelfTest({
+      studyInstanceUid: typeof b.studyInstanceUid === "string" ? b.studyInstanceUid : undefined,
+    });
+    res.status(202).json(job);
+  } catch (err: unknown) {
+    res.status(500).json({
+      error: err instanceof Error ? err.message : "Failed to start AI pipeline self-test",
+    });
+  }
+});
+
+// ── GET /pipeline-self-test/:id — poll self-test status ───────────────────────
+radiologyOllamaRouter.get("/pipeline-self-test/:id", async (req, res): Promise<void> => {
+  const sReq = req as StaffAuthRequest;
+  if (!canUseAi(sReq)) {
+    res.status(403).json({ error: "Permission denied." });
+    return;
+  }
+  const { getAiPipelineSelfTest, formatSelfTestReport } = await import("../lib/ai/aiPipelineSelfTest");
+  const job = getAiPipelineSelfTest(String(req.params.id));
+  if (!job) {
+    res.status(404).json({ error: "Self-test job not found (expired or unknown id)." });
+    return;
+  }
+  res.json({
+    ...job,
+    diagnosticReport: formatSelfTestReport(job),
+  });
+});
+
 // ── POST /verify — pre-deploy Ollama auto-draft verification ─────────────────
 radiologyOllamaRouter.post("/verify", async (req, res): Promise<void> => {
   const sReq = req as StaffAuthRequest;
