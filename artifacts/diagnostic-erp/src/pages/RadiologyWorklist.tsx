@@ -316,10 +316,12 @@ const MODALITY_OPTIONS = ["all", "CR", "MR", "CT", "US", "MG", "BMD", "OT"];
 const STATUS_OPTIONS = ["all", "STUDY_RECEIVED", "AI_DRAFT_READY", "REPORT_IN_PROGRESS", "REPORT_FINAL", "DELIVERED"];
 
 const AI_DRAFT_STATUS_CONFIG: Record<string, { label: string; color: string }> = {
-  NONE:    { label: "None",    color: "bg-gray-100 text-gray-600 border-gray-200" },
-  PENDING: { label: "Pending", color: "bg-yellow-50 text-yellow-700 border-yellow-200" },
-  READY:   { label: "Ready",   color: "bg-purple-50 text-purple-700 border-purple-200" },
-  ERROR:   { label: "Error",   color: "bg-red-50 text-red-700 border-red-200" },
+  NONE:        { label: "None",        color: "bg-gray-100 text-gray-600 border-gray-200" },
+  PENDING:     { label: "Pending",     color: "bg-yellow-50 text-yellow-700 border-yellow-200" },
+  READY:       { label: "Ready",       color: "bg-purple-50 text-purple-700 border-purple-200" },
+  EMPTY:       { label: "Empty",       color: "bg-slate-50 text-slate-700 border-slate-300" },
+  QUARANTINED: { label: "Quarantined", color: "bg-amber-50 text-amber-900 border-amber-300" },
+  ERROR:       { label: "Error",       color: "bg-red-50 text-red-700 border-red-200" },
 };
 
 // R2.0 — USG/Doppler report-draft lifecycle status badge, styled consistently
@@ -374,9 +376,11 @@ function OvernightAiDraftCell({
 }) {
   const display = (entry.overnightAi?.displayStatus ?? (
     entry.aiDraftStatus === "READY" ? "READY"
-      : entry.aiDraftStatus === "ERROR" ? "ERROR"
-        : entry.aiDraftStatus === "PENDING" ? "QUEUED"
-          : "NONE"
+      : entry.aiDraftStatus === "EMPTY" ? "EMPTY"
+        : entry.aiDraftStatus === "QUARANTINED" ? "QUARANTINED"
+          : entry.aiDraftStatus === "ERROR" ? "ERROR"
+            : entry.aiDraftStatus === "PENDING" ? "QUEUED"
+              : "NONE"
   )) as OvernightDisplayStatus;
   const ai = entry.overnightAi;
   const style = overnightMode
@@ -393,6 +397,10 @@ function OvernightAiDraftCell({
     detail = startedAgo ? `Started ${startedAgo}` : "Ollama processing";
   } else if (display === "READY") {
     detail = completedAt ? `Completed ${completedAt}` : null;
+  } else if (display === "EMPTY") {
+    detail = "No usable draft";
+  } else if (display === "QUARANTINED") {
+    detail = "Findings withheld";
   } else if (display === "ERROR") {
     detail = ai?.attemptCount ? `Attempt ${ai.attemptCount}` : null;
   } else if (display === "STUCK") {
@@ -409,8 +417,8 @@ function OvernightAiDraftCell({
           {display === "RUNNING" && <RefreshCw className="h-3 w-3 animate-spin" />}
           {display === "QUEUED" || display === "RETRYING" ? label : label}
         </span>
-        {display === "READY" && (
-          <Button size="sm" variant="ghost" className="h-6 w-6 p-0 text-xs" title="Review AI draft in Reporting Workspace" onClick={onViewDraft}>
+        {(display === "READY" || display === "EMPTY" || display === "QUARANTINED") && (
+          <Button size="sm" variant="ghost" className="h-6 w-6 p-0 text-xs" title={display === "READY" ? "Review AI draft in Reporting Workspace" : "View AI draft details"} onClick={onViewDraft}>
             <Eye className="h-3 w-3" />
           </Button>
         )}
@@ -429,7 +437,7 @@ function OvernightAiDraftCell({
             View error
           </Button>
         )}
-        {display === "ERROR" && onRetry && (
+        {(display === "ERROR" || display === "EMPTY" || display === "QUARANTINED") && onRetry && (
           <Button size="sm" variant="ghost" className="h-6 px-1 text-[10px]" title="Retry this study (idempotent; will not start a second in-flight job)" onClick={onRetry}>
             Retry
           </Button>
@@ -1131,10 +1139,15 @@ export default function RadiologyWorklist() {
     : filtered;
 
   const aiDraftCounts = useMemo(() => {
-    let ready = 0, error = 0, processing = 0, queued = 0, running = 0;
+    let ready = 0, empty = 0, quarantined = 0, error = 0, processing = 0, queued = 0, running = 0;
     for (const e of entries) {
       const display = (e.overnightAi?.displayStatus ?? (
-        e.aiDraftStatus === "READY" ? "READY" : e.aiDraftStatus === "ERROR" ? "ERROR" : e.aiDraftStatus === "PENDING" ? "QUEUED" : "NONE"
+        e.aiDraftStatus === "READY" ? "READY"
+          : e.aiDraftStatus === "EMPTY" ? "EMPTY"
+            : e.aiDraftStatus === "QUARANTINED" ? "QUARANTINED"
+              : e.aiDraftStatus === "ERROR" ? "ERROR"
+                : e.aiDraftStatus === "PENDING" ? "QUEUED"
+                  : "NONE"
       )) as OvernightDisplayStatus;
       const inSet = display !== "NONE" || Boolean(e.overnightEligible);
       if (overnightMode) {
@@ -1148,12 +1161,14 @@ export default function RadiologyWorklist() {
         })) continue;
       }
       if (display === "READY") ready++;
+      else if (display === "EMPTY") empty++;
+      else if (display === "QUARANTINED") quarantined++;
       else if (display === "ERROR" || display === "STUCK") error++;
       else if (display === "RUNNING") running++;
       else if (display === "QUEUED" || display === "RETRYING") queued++;
       else if (e.aiDraftStatus === "PENDING") processing++;
     }
-    return { ready, error, processing, queued, running };
+    return { ready, empty, quarantined, error, processing, queued, running };
   }, [entries, overnightMode, overnightAgeChip, dateFrom, dateTo]);
 
   // Rows to render in table — real rows + optional sentinel
@@ -1194,9 +1209,8 @@ export default function RadiologyWorklist() {
     setTimeout(() => void refetch(), 100);
   }
 
-  // READY AI drafts open in Reporting Workspace so radiologists can Accept
-  // into findings, then edit with macros / quick-select / templates and finalize
-  // on the normal report pipeline. Peek modal remains for empty/error explanation.
+  // READY drafts with usable content open Reporting Workspace. EMPTY /
+  // QUARANTINED open the detail dialog (no Accept — nothing usable).
   async function viewAiDraft(id: number) {
     try {
       const result = await api.get<{
@@ -1204,7 +1218,7 @@ export default function RadiologyWorklist() {
         safetyNote: string;
       }>(`/api/radiology/pacs-worklist/${id}/ai-draft`);
       const viewed = normalizeWorklistAiDraftViewer(result.draft);
-      if (!viewed.empty) {
+      if (viewed.usable) {
         navigate(reportingWorkspacePath({ id }, { ai: true }));
         return;
       }
@@ -1483,8 +1497,8 @@ export default function RadiologyWorklist() {
                 data-testid="ai-draft-summary"
               >
                 {overnightMode
-                  ? `Q ${aiDraftCounts.queued} · R ${aiDraftCounts.running} · ✓ ${aiDraftCounts.ready} · ! ${aiDraftCounts.error}`
-                  : `AI ${aiDraftCounts.ready} ready · ${aiDraftCounts.error} err · ${aiDraftCounts.queued + aiDraftCounts.processing} proc`}
+                  ? `Q ${aiDraftCounts.queued} · R ${aiDraftCounts.running} · ✓ ${aiDraftCounts.ready} · ∅ ${aiDraftCounts.empty} · Qz ${aiDraftCounts.quarantined} · ! ${aiDraftCounts.error}`
+                  : `AI ${aiDraftCounts.ready} ready · ${aiDraftCounts.empty} empty · ${aiDraftCounts.quarantined} qz · ${aiDraftCounts.error} err · ${aiDraftCounts.queued + aiDraftCounts.processing} proc`}
               </span>
               <Select value={lockFilter} onValueChange={setLockFilter}>
                 <SelectTrigger className="h-7 w-[108px] text-xs">
@@ -2206,31 +2220,83 @@ export default function RadiologyWorklist() {
           </DialogHeader>
           {(() => {
             const viewed = normalizeWorklistAiDraftViewer(draftViewer?.draft);
+            const techJson = viewed.technical
+              ? JSON.stringify(viewed.technical, null, 2)
+              : null;
             return (
               <div className="space-y-3 text-sm">
                 {!draftViewer?.draft ? (
                   <p className="text-muted-foreground">No draft stored for this study.</p>
-                ) : viewed.empty ? (
-                  <div className="rounded border border-amber-200 bg-amber-50/80 p-3 text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-100">
-                    <p className="font-medium text-xs">AI finished, but no grounded findings were produced.</p>
-                    <p className="mt-1 text-xs text-amber-800/90 dark:text-amber-200/90">
-                      The study is marked READY because the overnight pipeline completed. Open Reporting Workspace to draft manually
-                      {viewed.quarantinedCount > 0
-                        ? `, or regenerate — ${viewed.quarantinedCount} ungrounded finding(s) were quarantined and hidden.`
-                        : ", or regenerate the AI draft if images / Ollama are available."}
+                ) : viewed.clinicalStatus === "QUARANTINED" ? (
+                  <div className="rounded border border-amber-300 bg-amber-50/80 p-3 text-amber-950 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-100 space-y-2">
+                    <p className="font-medium text-xs">
+                      AI produced {viewed.candidateCount || viewed.quarantinedCount} candidate finding(s).
+                      {" "}0 accepted. {viewed.quarantinedCount || viewed.candidateCount} withheld by grounding/safety checks.
+                    </p>
+                    <p className="text-xs">
+                      {viewed.emptyReasonLabel ?? "No usable impression remained after trust validation."}
+                    </p>
+                    {viewed.quarantineReasonClasses.length > 0 && (
+                      <div className="text-[11px] space-y-1">
+                        <div className="font-semibold uppercase tracking-wide text-amber-800/80">Withheld reasons</div>
+                        <ul className="list-disc pl-4">
+                          {viewed.quarantineReasonClasses.map((r) => (
+                            <li key={r.reason}>{r.reason}{r.count > 1 ? ` ×${r.count}` : ""}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    <p className="text-[11px] text-muted-foreground">Accept is unavailable — nothing usable to insert.</p>
+                    {draftViewer?.id != null && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 text-xs"
+                        onClick={() => {
+                          setDraftViewer(null);
+                          navigate(reportingWorkspacePath({ id: draftViewer.id }));
+                        }}
+                      >
+                        Open Reporting Workspace (manual draft)
+                      </Button>
+                    )}
+                    {techJson && (
+                      <details className="text-[10px] text-muted-foreground">
+                        <summary className="cursor-pointer">Technical details</summary>
+                        <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded bg-muted/50 p-2">{techJson}</pre>
+                      </details>
+                    )}
+                  </div>
+                ) : !viewed.usable ? (
+                  <div className="rounded border border-slate-300 bg-slate-50/90 p-3 text-slate-900 dark:border-slate-700 dark:bg-slate-950/40 dark:text-slate-100 space-y-2">
+                    <p className="font-medium text-xs">AI processing completed, but no usable draft was produced.</p>
+                    <p className="text-xs">
+                      Reason: {viewed.emptyReasonLabel
+                        ?? (viewed.imageCount === 0
+                          ? "No images were available for vision inference."
+                          : "No candidate findings / model returned empty.")}
+                    </p>
+                    <p className="text-[11px] text-muted-foreground">
+                      Status is EMPTY (not READY). Accept is unavailable.
                     </p>
                     {draftViewer?.id != null && (
                       <Button
                         size="sm"
                         variant="outline"
-                        className="mt-3 h-7 text-xs"
+                        className="h-7 text-xs"
                         onClick={() => {
                           setDraftViewer(null);
-                          navigate(reportingWorkspacePath({ id: draftViewer.id }, { ai: true }));
+                          navigate(reportingWorkspacePath({ id: draftViewer.id }));
                         }}
                       >
-                        Open Reporting Workspace
+                        Open Reporting Workspace (manual draft)
                       </Button>
+                    )}
+                    {techJson && (
+                      <details className="text-[10px] text-muted-foreground">
+                        <summary className="cursor-pointer">Technical details</summary>
+                        <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded bg-muted/50 p-2">{techJson}</pre>
+                      </details>
                     )}
                   </div>
                 ) : (
@@ -2244,13 +2310,17 @@ export default function RadiologyWorklist() {
                       <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
                         Findings{viewed.findingCount > 0 ? ` (${viewed.findingCount})` : ""}
                       </div>
-                      <ul className="space-y-2">
-                        {viewed.findings.map((f, i) => (
-                          <li key={f.key ?? i} className="text-sm whitespace-pre-wrap leading-relaxed">
-                            {f.text}
-                          </li>
-                        ))}
-                      </ul>
+                      {viewed.findings.length === 0 ? (
+                        <p className="text-xs text-muted-foreground">No grounded findings — impression only.</p>
+                      ) : (
+                        <ul className="space-y-2">
+                          {viewed.findings.map((f, i) => (
+                            <li key={f.key ?? i} className="text-sm whitespace-pre-wrap leading-relaxed">
+                              {f.text}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
                     </div>
                     {viewed.impression.length > 0 && (
                       <div>
@@ -2278,14 +2348,13 @@ export default function RadiologyWorklist() {
                     {draftViewer?.id != null && (
                       <Button
                         size="sm"
-                        variant="outline"
                         className="h-7 text-xs"
                         onClick={() => {
                           setDraftViewer(null);
                           navigate(reportingWorkspacePath({ id: draftViewer.id }, { ai: true }));
                         }}
                       >
-                        Review in Reporting Workspace
+                        Accept into Reporting Workspace
                       </Button>
                     )}
                   </div>

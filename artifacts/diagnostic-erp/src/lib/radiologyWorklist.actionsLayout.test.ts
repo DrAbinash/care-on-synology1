@@ -35,9 +35,11 @@ describe("PACS worklist actions + unlinked bills UX", () => {
 
   it("AI Draft Viewer shows findings/impression, not raw JSON dump", () => {
     expect(src).toContain("normalizeWorklistAiDraftViewer");
-    expect(src).toContain("AI finished, but no grounded findings were produced");
+    expect(src).toContain("no usable draft was produced");
     expect(src).not.toContain("JSON.stringify(draftViewer.draft");
     expect(src).toContain("Review AI draft in Reporting Workspace");
     expect(src).toContain("ai: true");
+    expect(src).toContain("EMPTY");
+    expect(src).toContain("QUARANTINED");
   });
 });

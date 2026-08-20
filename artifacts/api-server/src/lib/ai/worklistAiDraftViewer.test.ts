@@ -45,14 +45,15 @@ describe("shapeWorklistAiDraftViewer", () => {
       shadow: shadow(),
     });
 
-    expect(shaped.empty).toBe(false);
+    expect(shaped.usable).toBe(true);
+    expect(shaped.clinicalStatus).toBe("READY");
     expect(shaped.findingsText).toContain("Brain parenchyma");
     expect(shaped.impression).toEqual(["Normal MRI brain study."]);
     expect(shaped.findingCount).toBe(1);
     expect(shaped.draftId).toBe(19);
   });
 
-  it("surfaces empty READY drafts without requiring raw JSON", () => {
+  it("classifies draftId-19 empty pointer as EMPTY (not READY)", () => {
     const shaped = shapeWorklistAiDraftViewer({
       stored: {
         source: "ai_shadow",
@@ -63,14 +64,35 @@ describe("shapeWorklistAiDraftViewer", () => {
         impression: [],
         updatedAt: "2026-08-20T15:50:05.506Z",
       },
-      shadow: shadow({ findings: [], impression: [], quarantinedCount: 2 }),
+      shadow: shadow({ findings: [], impression: [], quarantinedCount: 0 }),
     });
 
-    expect(shaped.empty).toBe(true);
+    expect(shaped.usable).toBe(false);
+    expect(shaped.clinicalStatus).toBe("EMPTY");
     expect(shaped.findingsText).toBe("");
     expect(shaped.impression).toEqual([]);
-    expect(shaped.quarantinedCount).toBe(2);
-    expect(shaped.source).toBe("ai_shadow");
+  });
+
+  it("classifies all-quarantined drafts as QUARANTINED", () => {
+    const shaped = shapeWorklistAiDraftViewer({
+      stored: {
+        source: "ai_shadow",
+        draftId: 21,
+        findingCount: 0,
+        findings: "",
+        impression: [],
+        candidateCount: 2,
+        quarantinedCount: 2,
+        clinicalStatus: "QUARANTINED",
+        quarantineReasonClasses: [
+          { reason: "ungrounded — no valid evidence anchor in the study snapshot", count: 2 },
+        ],
+      },
+      shadow: null,
+    });
+    expect(shaped.clinicalStatus).toBe("QUARANTINED");
+    expect(shaped.usable).toBe(false);
+    expect(shaped.quarantineReasonClasses[0]?.count).toBe(2);
   });
 
   it("falls back to stored findings string when no shadow row exists", () => {
@@ -81,18 +103,20 @@ describe("shapeWorklistAiDraftViewer", () => {
         findings: "Line A\nLine B",
         impression: ["Impression A"],
         findingCount: 2,
+        clinicalStatus: "READY",
       },
       shadow: null,
     });
 
-    expect(shaped.empty).toBe(false);
+    expect(shaped.usable).toBe(true);
     expect(shaped.findings).toEqual([{ text: "Line A\nLine B" }]);
     expect(shaped.impression).toEqual(["Impression A"]);
   });
 
   it("returns empty payload when nothing is stored", () => {
     const shaped = shapeWorklistAiDraftViewer({ stored: null, shadow: null });
-    expect(shaped.empty).toBe(true);
+    expect(shaped.usable).toBe(false);
+    expect(shaped.clinicalStatus).toBe("EMPTY");
     expect(shaped.draftId).toBeNull();
   });
 });

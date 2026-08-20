@@ -642,6 +642,29 @@ radiologyRouter.get("/pacs-worklist", async (req, res) => {
 
     req.log.info({ rowsReturned: filtered.length, rawRows: rows.length, status: status || "all", modality: modality || "all" }, "[pacs-worklist] query complete");
 
+    // Correct legacy empty READY pointers for ALL worklist views (not only overnight).
+    // Job completion used to write READY even with zero usable draft content.
+    const { refineDisplayStatusFromAiDraftPointer } = await import("../lib/ai/overnightAiDraftStatus.js");
+    filtered = filtered.map((r) => {
+      let pointer: Record<string, unknown> | null = null;
+      const raw = (r as { aiDraftJson?: string | null }).aiDraftJson;
+      if (typeof raw === "string" && raw.trim()) {
+        try {
+          const parsed = JSON.parse(raw) as unknown;
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            pointer = parsed as Record<string, unknown>;
+          }
+        } catch {
+          pointer = null;
+        }
+      }
+      const wl = ((r as { aiDraftStatus?: string | null }).aiDraftStatus ?? "NONE").toUpperCase();
+      if (wl !== "READY") return r;
+      const refined = refineDisplayStatusFromAiDraftPointer("READY", pointer);
+      if (refined === "READY") return r;
+      return { ...r, aiDraftStatus: refined };
+    });
+
     const overnightDrafts =
       req.query.overnightDrafts === "1" || req.query.overnightDrafts === "true";
     if (overnightDrafts) {
