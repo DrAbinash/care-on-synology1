@@ -69,9 +69,9 @@ function baseOpts(overrides: Record<string, unknown> = {}) {
 
 describe("document layout engine — page specifications", () => {
   test.each([
-    ["A5-landscape", "210mm 148mm", 210, 148],
+    ["A5-landscape", "210mm 297mm", 210, 148],
     ["A5-portrait", "148mm 210mm", 148, 210],
-    ["half-a4", "210mm 148mm", 210, 148],
+    ["half-a4", "210mm 297mm", 210, 148],
     ["A4", "210mm 297mm", 210, 297],
   ] as const)("paper %s has exact mm dimensions", (paper, css, w, h) => {
     expect(PAGE_SPECS[paper].pageSizeCss).toBe(css);
@@ -133,11 +133,15 @@ describe("document layout engine — bill renderers (unified Classic)", () => {
     expect((html.match(/class="care-doc-page receipt"/g) ?? []).length).toBe(2);
   });
 
-  test("uses half-sheet @page (210×148) so cut A4 does not leave a blank band below", () => {
+  test("uses A4-portrait @page for half-sheet bills so the tray is not rotated", () => {
     const html = buildBillPrintHtml(baseOpts());
-    expect(html).toContain("@page { size: 210mm 148mm; margin: 0; }");
+    expect(html).toContain("@page { size: 210mm 297mm; margin: 0; }");
+    expect(html).not.toMatch(/@page \{ size: 210mm 148mm/);
     expect(html).not.toMatch(/@page \{ size: A5 landscape/);
     expect(html).toContain('class="care-doc-page receipt"');
+    // Content box stays half-sheet height — blank lower A4 is cut away after print
+    expect(html).toContain("height: 148mm");
+    expect(html).toContain("max-height: 148mm");
   });
 
   test("bill number renders under date/time in the patient meta block", () => {
@@ -324,7 +328,7 @@ describe("document layout engine — bill renderers (unified Classic)", () => {
 
   test("classic format uses engine and percentage columns", () => {
     const html = buildBillPrintHtml(baseOpts());
-    expect(html).toContain("@page { size: 210mm 148mm; margin: 0; }");
+    expect(html).toContain("@page { size: 210mm 297mm; margin: 0; }");
     expect(html).toContain("care-doc-page");
     expect(html).toContain("totals-grid");
   });
@@ -352,14 +356,27 @@ describe("document layout engine — bill renderers (unified Classic)", () => {
     expect(html).toContain("padding-right: 4mm");
   });
 
-  test("sparse bills keep footer tight under content (no flex stretch gap)", () => {
+  test("half-sheet bills fill the 148 mm content box (footer pinned to bottom)", () => {
     const html = buildBillPrintHtml(baseOpts({ bill: sampleBill(1) }));
+    expect(html).toContain("receipt-shell");
+    expect(html).toContain("min-height: 100%");
+    expect(html).toContain("margin-top: auto !important");
+  });
+
+  test("tall A4 / booking-slip can opt into compact footer gap", () => {
+    const html = buildBillPrintHtml(baseOpts({
+      bill: sampleBill(1),
+      paperSize: "A4",
+      orientation: "portrait",
+      pageCssSize: "A4 portrait",
+      compactFooterGap: true,
+    }));
     expect(html).toContain("receipt-shell");
     expect(html).not.toContain("min-height: 100%");
     expect(html).toContain("margin-top: 8px !important");
   });
 
-  test("long bills anchor footer at page bottom", () => {
+  test("long half-sheet bills also anchor footer at content bottom", () => {
     const html = buildBillPrintHtml(baseOpts({ bill: sampleBill(10), compactFooterGap: false }));
     expect(html).toContain("receipt-shell");
     expect(html).toContain("min-height: 100%");

@@ -5141,10 +5141,10 @@ function BillingPrintTab() {
           use header, copies, QR/TAT columns, typography, and save-print workflow below. Half of A4 <em>is</em> A5 (210×148 mm).
         </p>
         <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1 text-xs">
-          <div><dt className="text-muted-foreground">Paper</dt><dd className="font-semibold">Half A4 / A5 · 210×148 mm</dd></div>
-          <div><dt className="text-muted-foreground">Job size sent to printer</dt><dd className="font-semibold">Half A4 · 210×148 mm</dd></div>
+          <div><dt className="text-muted-foreground">Paper</dt><dd className="font-semibold">Half A4 / A5 · 210×148 mm content</dd></div>
+          <div><dt className="text-muted-foreground">Job size sent to printer</dt><dd className="font-semibold">A4 portrait · 210×297 mm</dd></div>
           <div><dt className="text-muted-foreground">Long bills</dt><dd className="font-semibold">Auto A4 from 8 tests</dd></div>
-          <div><dt className="text-muted-foreground">Content area</dt><dd className="font-semibold">Fills the half-sheet (no blank band below)</dd></div>
+          <div><dt className="text-muted-foreground">Content area</dt><dd className="font-semibold">Top half of A4 (cut after print)</dd></div>
         </dl>
       </div>
 
@@ -5155,14 +5155,13 @@ function BillingPrintTab() {
         <p className="font-bold text-sm">How to set paper in the printer (Windows / browser print dialog)</p>
         <ol className="list-decimal pl-4 space-y-1.5">
           <li>
-            <strong>Load the tray:</strong> cut A4 in half (210×148 mm) or use an A5 sheet. Put it in the tray
-            the same way as A4 — <strong>portrait, 210 mm across</strong> (short edge into the printer).
+            <strong>Load full A4</strong> in the tray (portrait, 210 mm across). The receipt prints on the top half; cut the sheet at 148 mm after printing.
           </li>
           <li>
-            In the print dialog set <strong>Paper size = A4</strong> if using a full sheet you will cut in half, or the closest <strong>210×148 mm / A5</strong> preset if your driver offers it.
+            In the print dialog set <strong>Paper size = A4</strong>.
           </li>
           <li>
-            Set <strong>Orientation = Portrait</strong>. Do not pick Landscape — that rotates the job and leaves a blank band on the right.
+            Set <strong>Orientation = Portrait</strong>. Do not pick Landscape — that rotates the job and leaves blank bands on the right and below.
           </li>
           <li>
             Set <strong>Scale = Actual size / 100%</strong>. Turn off “Fit to page” / “Shrink to fit”.
@@ -5172,7 +5171,8 @@ function BillingPrintTab() {
           </li>
         </ol>
         <p className="text-[11px] text-amber-800 dark:text-amber-200">
-          Epson / Brother ink-tank: keep <strong>Orientation = Portrait</strong> and <strong>Scale = 100%</strong>. The bill job is 210×148 mm — it should fill the half-sheet without a blank strip on the right or empty band below.
+          Epson / Brother ink-tank: keep <strong>Orientation = Portrait</strong> and <strong>Scale = 100%</strong>.
+          The job is A4 portrait with a 210×148 mm receipt on top — that avoids the landscape rotation that left empty space on the right and below.
         </p>
       </div>
 
