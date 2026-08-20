@@ -51,12 +51,58 @@ export interface AiQueryOptions {
   /** Ollama native `think` flag (false = no chain-of-thought when supported). */
   think?: boolean;
   temperature?: number;
+  /**
+   * Optional AbortController timeout for the provider HTTP call.
+   * When unset, the call has no provider-level AbortSignal (callers / proxies
+   * may still impose their own limits). Do not silently default this — draft
+   * vs radiology-ollama paths differ intentionally.
+   */
+  timeoutMs?: number;
+}
+
+/** PHI-safe provider call metadata — never include prompts, base64, or raw responses. */
+export interface AiQueryDiagnostics {
+  provider: string;
+  resolvedEndpoint?: string | null;
+  model?: string | null;
+  numberOfImages: number;
+  /** Approximate decoded image payload bytes (from base64 length), not pixels. */
+  totalImageBytes: number;
+  /** JSON body byte length sent to the provider (includes embedded base64 — size only). */
+  requestBodyBytes?: number | null;
+  promptLength: number;
+  startedAt: string;
+  elapsedMs: number;
+  httpStatus?: number | null;
+  responseLength: number;
+  finishReason?: string | null;
+  /** Whether `think` was included in the outbound Ollama body. */
+  thinkSent?: boolean | null;
+  /** Value of think when sent (null if not sent). */
+  thinkValue?: boolean | null;
+  /** Length of message.thinking if Ollama returned one (not the text). */
+  thinkingLength?: number | null;
+  /** Ollama timing/eval counters when present (nanoseconds for durations). */
+  ollamaTotalDurationNs?: number | null;
+  ollamaLoadDurationNs?: number | null;
+  ollamaPromptEvalCount?: number | null;
+  ollamaEvalCount?: number | null;
+  errorClass?: string | null;
+  errorCode?: string | null;
+  /** Safe truncated provider error (no PHI). */
+  errorMessage?: string | null;
+  /** Which stage timed out, if any (e.g. provider_http, gateway). */
+  timeoutStage?: string | null;
+  /** AbortSignal timeout configured for this call; null = none at provider layer. */
+  timeoutMsConfigured?: number | null;
 }
 
 export interface AiQueryResult {
   text: string;
   success: boolean;
   error?: string;
+  /** PHI-safe call metadata for structured server logs. */
+  diagnostics?: AiQueryDiagnostics;
 }
 
 export interface AiProvider {
@@ -322,36 +368,184 @@ export function buildOllamaChatPayload(opts: AiQueryOptions): Record<string, unk
   return body;
 }
 
+/** Approximate decoded byte length of a base64 (or data-URL) image string. */
+export function estimateBase64DecodedBytes(b64OrDataUrl: string): number {
+  const raw = (b64OrDataUrl ?? "").replace(/^data:image\/[a-zA-Z0-9+.-]+;base64,/, "");
+  if (!raw) return 0;
+  const padding = raw.endsWith("==") ? 2 : raw.endsWith("=") ? 1 : 0;
+  return Math.max(0, Math.floor((raw.length * 3) / 4) - padding);
+}
+
+function classifyProviderError(err: unknown): {
+  errorClass: string;
+  errorCode: string | null;
+  errorMessage: string;
+  timeoutStage: string | null;
+} {
+  if (err instanceof Error) {
+    const name = err.name || "Error";
+    const msg = (err.message || "unknown error").slice(0, 300);
+    const aborted =
+      name === "AbortError" ||
+      /aborted|abort|timed out after|TimeoutError/i.test(msg);
+    return {
+      errorClass: name,
+      errorCode: aborted ? "TIMEOUT_OR_ABORT" : name,
+      errorMessage: msg,
+      timeoutStage: aborted ? "provider_http" : null,
+    };
+  }
+  return {
+    errorClass: "UnknownError",
+    errorCode: null,
+    errorMessage: String(err).slice(0, 300),
+    timeoutStage: null,
+  };
+}
+
 class OllamaProvider implements AiProvider {
   config = BUILTIN_PROVIDER_CONFIGS.ollama;
   constructor(private endpointUrl: string) {}
 
   async query(opts: AiQueryOptions): Promise<AiQueryResult> {
+    const base = this.endpointUrl.replace(/\/$/, "");
+    const model = opts.model || CANONICAL_LOCAL_CHAT_VISION_MODEL;
+    const images = opts.images ?? [];
+    const totalImageBytes = images.reduce((sum, img) => sum + estimateBase64DecodedBytes(img), 0);
+    const startedAt = new Date().toISOString();
+    const t0 = Date.now();
+    const timeoutMsConfigured = opts.timeoutMs != null && Number.isFinite(opts.timeoutMs)
+      ? Math.max(1, Math.floor(opts.timeoutMs))
+      : null;
+
+    const baseDiag = (): Omit<
+      AiQueryDiagnostics,
+      | "elapsedMs"
+      | "httpStatus"
+      | "responseLength"
+      | "finishReason"
+      | "errorClass"
+      | "errorCode"
+      | "errorMessage"
+      | "timeoutStage"
+      | "thinkingLength"
+      | "ollamaTotalDurationNs"
+      | "ollamaLoadDurationNs"
+      | "ollamaPromptEvalCount"
+      | "ollamaEvalCount"
+    > => ({
+      provider: "ollama",
+      resolvedEndpoint: base,
+      model,
+      numberOfImages: images.length,
+      totalImageBytes,
+      promptLength: (opts.prompt ?? "").length,
+      startedAt,
+      timeoutMsConfigured,
+      thinkSent: opts.think !== undefined,
+      thinkValue: opts.think !== undefined ? opts.think : null,
+      requestBodyBytes: null,
+    });
+
     try {
-      const base = this.endpointUrl.replace(/\/$/, "");
       const body = buildOllamaChatPayload(opts);
-      const resp = await fetch(`${base}/api/chat`, {
+      const bodyJson = JSON.stringify(body);
+      const requestBodyBytes = Buffer.byteLength(bodyJson, "utf8");
+      const init: RequestInit = {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
+        body: bodyJson,
+      };
+      if (timeoutMsConfigured != null) {
+        init.signal = AbortSignal.timeout(timeoutMsConfigured);
+      }
+      const resp = await fetch(`${base}/api/chat`, init);
+      const elapsedMs = Date.now() - t0;
       if (!resp.ok) {
         const detail = await resp.text().catch(() => "");
+        const errorMessage = `Ollama /api/chat ${resp.status}${detail ? `: ${detail.slice(0, 200)}` : ""}`;
         return {
           text: "",
           success: false,
-          error: `Ollama /api/chat ${resp.status}${detail ? `: ${detail.slice(0, 200)}` : ""}`,
+          error: errorMessage,
+          diagnostics: {
+            ...baseDiag(),
+            requestBodyBytes,
+            elapsedMs,
+            httpStatus: resp.status,
+            responseLength: 0,
+            finishReason: null,
+            thinkingLength: null,
+            ollamaTotalDurationNs: null,
+            ollamaLoadDurationNs: null,
+            ollamaPromptEvalCount: null,
+            ollamaEvalCount: null,
+            errorClass: "OllamaHttpError",
+            errorCode: `HTTP_${resp.status}`,
+            errorMessage: errorMessage.slice(0, 300),
+            timeoutStage: null,
+          },
         };
       }
       const data = (await resp.json()) as {
         message?: { content?: string; thinking?: string };
         response?: string;
+        done_reason?: string;
+        done?: boolean;
+        total_duration?: number;
+        load_duration?: number;
+        prompt_eval_count?: number;
+        eval_count?: number;
       };
       const raw = data.message?.content ?? data.response ?? "";
+      const thinkingRaw = data.message?.thinking ?? "";
       // Discard message.thinking (chain-of-thought) even if the model ignored think=false.
-      return { text: stripThinkBlocks(raw), success: true };
+      const text = stripThinkBlocks(raw);
+      return {
+        text,
+        success: true,
+        diagnostics: {
+          ...baseDiag(),
+          requestBodyBytes,
+          elapsedMs,
+          httpStatus: resp.status,
+          responseLength: text.length,
+          finishReason: data.done_reason ?? (data.done === false ? "incomplete" : data.done ? "stop" : null),
+          thinkingLength: thinkingRaw.length > 0 ? thinkingRaw.length : 0,
+          ollamaTotalDurationNs: typeof data.total_duration === "number" ? data.total_duration : null,
+          ollamaLoadDurationNs: typeof data.load_duration === "number" ? data.load_duration : null,
+          ollamaPromptEvalCount: typeof data.prompt_eval_count === "number" ? data.prompt_eval_count : null,
+          ollamaEvalCount: typeof data.eval_count === "number" ? data.eval_count : null,
+          errorClass: null,
+          errorCode: null,
+          errorMessage: null,
+          timeoutStage: null,
+        },
+      };
     } catch (err: unknown) {
-      return { text: "", success: false, error: err instanceof Error ? err.message : "Ollama error" };
+      const classified = classifyProviderError(err);
+      const elapsedMs = Date.now() - t0;
+      return {
+        text: "",
+        success: false,
+        error: classified.errorMessage,
+        diagnostics: {
+          ...baseDiag(),
+          elapsedMs,
+          httpStatus: null,
+          responseLength: 0,
+          finishReason: null,
+          thinkingLength: null,
+          ollamaTotalDurationNs: null,
+          ollamaLoadDurationNs: null,
+          ollamaPromptEvalCount: null,
+          ollamaEvalCount: null,
+          errorClass: classified.errorClass,
+          errorCode: classified.errorCode,
+          errorMessage: classified.errorMessage,
+          timeoutStage: classified.timeoutStage,
+        },
+      };
     }
   }
 
@@ -543,16 +737,49 @@ export async function generateAiResponse(
     temperature?: number;
     /** Override endpoint (Local AI runtime) — preferred for Ollama. */
     endpointUrl?: string;
+    /** Optional provider HTTP AbortSignal timeout (ms). */
+    timeoutMs?: number;
   },
 ): Promise<AiQueryResult> {
+  const imgs = images ?? [];
+  const startedAt = new Date().toISOString();
+  const totalImageBytes = imgs.reduce((sum, img) => sum + estimateBase64DecodedBytes(img), 0);
+
   let provider: AiProvider | null = null;
+  let resolvedEndpoint: string | null = null;
   if (providerName === "ollama" && options?.endpointUrl?.trim()) {
-    provider = await createAiProvider("ollama", undefined, options.endpointUrl.trim().replace(/\/$/, ""));
+    resolvedEndpoint = options.endpointUrl.trim().replace(/\/$/, "");
+    provider = await createAiProvider("ollama", undefined, resolvedEndpoint);
   } else {
     provider = await createAiProviderFromDb(providerName);
+    if (providerName === "ollama") {
+      resolvedEndpoint = (await getProviderEndpointUrl("ollama"))?.replace(/\/$/, "") || envOllamaEndpoint();
+    }
   }
   if (!provider) {
-    return { text: "", success: false, error: `Provider ${providerName} is not configured.` };
+    return {
+      text: "",
+      success: false,
+      error: `Provider ${providerName} is not configured.`,
+      diagnostics: {
+        provider: providerName,
+        resolvedEndpoint,
+        model: options?.model ?? null,
+        numberOfImages: imgs.length,
+        totalImageBytes,
+        promptLength: (prompt ?? "").length,
+        startedAt,
+        elapsedMs: 0,
+        httpStatus: null,
+        responseLength: 0,
+        finishReason: null,
+        errorClass: "ProviderNotConfigured",
+        errorCode: "PROVIDER_NOT_CONFIGURED",
+        errorMessage: `Provider ${providerName} is not configured.`,
+        timeoutStage: null,
+        timeoutMsConfigured: options?.timeoutMs ?? null,
+      },
+    };
   }
   // Model precedence: explicit option → admin-configured stored default →
   // canonical local chat/vision model for Ollama.
@@ -564,15 +791,42 @@ export async function generateAiResponse(
   if (!model && providerName === "ollama") {
     model = CANONICAL_LOCAL_CHAT_VISION_MODEL;
   }
-  return provider.query({
+  const result = await provider.query({
     model,
     prompt,
-    images: images ?? [],
+    images: imgs,
     maxTokens: options?.maxTokens,
     numCtx: options?.numCtx,
     think: options?.think,
     temperature: options?.temperature,
+    timeoutMs: options?.timeoutMs,
   });
+  // Ensure diagnostics always carry the resolved endpoint/model for this call.
+  if (!result.diagnostics) {
+    result.diagnostics = {
+      provider: providerName,
+      resolvedEndpoint,
+      model,
+      numberOfImages: imgs.length,
+      totalImageBytes,
+      promptLength: (prompt ?? "").length,
+      startedAt,
+      elapsedMs: 0,
+      httpStatus: null,
+      responseLength: (result.text ?? "").length,
+      finishReason: null,
+      errorClass: result.success ? null : "ProviderError",
+      errorCode: result.success ? null : "PROVIDER_ERROR",
+      errorMessage: result.error?.slice(0, 300) ?? null,
+      timeoutStage: null,
+      timeoutMsConfigured: options?.timeoutMs ?? null,
+    };
+  } else {
+    result.diagnostics.provider = result.diagnostics.provider || providerName;
+    result.diagnostics.resolvedEndpoint = result.diagnostics.resolvedEndpoint ?? resolvedEndpoint;
+    result.diagnostics.model = result.diagnostics.model ?? model;
+  }
+  return result;
 }
 
 // ─── Model Routing (Phase 4) ─────────────────────────────────────────────────
@@ -705,6 +959,7 @@ export async function generateAiForTask(
     think?: boolean;
     temperature?: number;
     endpointUrl?: string;
+    timeoutMs?: number;
   },
 ): Promise<AiQueryResult> {
   const route = options?.provider ? null : await resolveTaskRoute(taskKey);
@@ -717,6 +972,7 @@ export async function generateAiForTask(
     think: options?.think,
     temperature: options?.temperature,
     endpointUrl: options?.endpointUrl,
+    timeoutMs: options?.timeoutMs,
   });
 }
 
