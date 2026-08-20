@@ -179,6 +179,7 @@ import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Textarea } from "@/components/ui/textarea";
 import { removeBlock, removeImpression } from "@/lib/quickFindingsMerge";
+import { inferOwnership, type PathologyIncoming } from "@/lib/pathologyPatch";
 import {
   provenanceMapToSegments,
   provenanceVisualKind,
@@ -187,6 +188,7 @@ import {
 import { generateLocalImpression } from "@/lib/generateLocalImpression";
 import { hasPhrase, appendClinicalPhrase, removeClinicalPhrase } from "@/lib/clinicalHistoryText";
 import type { Side } from "@/lib/sideSwap";
+import { applySide } from "@/lib/sideSwap";
 import {
   loadWorkspaceLayoutPrefs, saveWorkspaceLayoutPrefs,
   shouldShowEmbeddedViewer, fallbackModeWhenPopupBlocked, type WorkspaceLayoutMode,
@@ -794,6 +796,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   // Legacy clinic Quick Select + critical checklist
   const [selectedQuickIds, setSelectedQuickIds] = useState<Set<number>>(() => new Set());
   const [quickSide, setQuickSide] = useState<Side>("left");
+  const lastQuickRenderedRef = useRef<Map<number, PathologyIncoming>>(new Map());
+  const quickSideMountedRef = useRef(false);
   const [isCritical, setIsCritical] = useState(false);
   const [criticalNote, setCriticalNote] = useState("");
   const [checklistComm, setChecklistComm] = useState({ phoned: false, annotated: false, dispatched: false });
@@ -1222,32 +1226,78 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     try { localStorage.setItem("care_reading_queue_date", value); } catch { /* ignore */ }
   }, []);
 
-  /** Clinic Quick Select toggle — insert/remove exact template text (legacy merge safety). */
+  /** Clinic Quick Select — pathology patches over the whole report (ownership + laterality). */
   const handleQuickToggle = useCallback((finding: QuickFinding, nowSelected: boolean) => {
-    setSelectedQuickIds((prev) => {
-      const next = new Set(prev);
-      if (nowSelected) next.add(finding.id);
-      else next.delete(finding.id);
-      return next;
-    });
     const state = useWorkspace.getState();
     if (nowSelected) {
-      if (finding.findingText) state.mergeField("findings", finding.findingText, "quick-findings");
-      if (finding.impressionText) state.mergeField("impression", finding.impressionText, "quick-findings");
-      if (finding.techniqueText) state.mergeField("technique", finding.techniqueText, "quick-findings");
-      if (finding.recommendationText) state.mergeField("recommendation", finding.recommendationText, "quick-findings");
+      const templates: PathologyIncoming = {
+        findings: finding.findingText,
+        impression: finding.impressionText,
+        technique: finding.techniqueText,
+        recommendation: finding.recommendationText,
+      };
+      const ownership = {
+        anatomicalSection: finding.anatomicalSection,
+        conflictGroup: finding.conflictGroup,
+        baselineReplaces: finding.baselineReplaces,
+        ...((!finding.anatomicalSection && !finding.conflictGroup)
+          ? inferOwnership(finding.label, [finding.findingText, finding.impressionText])
+          : {}),
+      };
+      state.applyPathologyOverlay({
+        incoming: templates,
+        templates,
+        ownership,
+        source: "quick-findings",
+        side: quickSide,
+        id: `qf-${finding.id}`,
+      });
+      const applied = useWorkspace.getState().appliedPathologyPatches.find((p) => p.id === `qf-${finding.id}`);
+      lastQuickRenderedRef.current.set(finding.id, applied?.lastRendered ?? templates);
+      setSelectedQuickIds((prev) => {
+        const next = new Set(prev);
+        next.add(finding.id);
+        return next;
+      });
     } else {
-      if (finding.findingText) state.setField("findings", removeBlock(state.findingsText, finding.findingText));
-      if (finding.impressionText) {
+      const last = lastQuickRenderedRef.current.get(finding.id);
+      const findings = last?.findings || finding.findingText;
+      const impression = last?.impression || finding.impressionText;
+      const technique = last?.technique || finding.techniqueText;
+      const recommendation = last?.recommendation || finding.recommendationText;
+      if (findings) state.setField("findings", removeBlock(state.findingsText, findings));
+      if (impression) {
         const lines = state.impressionText.split("\n").filter(Boolean);
-        state.setField("impression", removeImpression(lines, finding.impressionText).join("\n"));
+        state.setField("impression", removeImpression(lines, impression).join("\n"));
       }
-      if (finding.techniqueText) state.setField("technique", removeBlock(state.techniqueText, finding.techniqueText));
-      if (finding.recommendationText) state.setField("recommendation", removeBlock(state.recommendationText, finding.recommendationText));
+      if (technique) state.setField("technique", removeBlock(state.techniqueText, technique));
+      if (recommendation) state.setField("recommendation", removeBlock(state.recommendationText, recommendation));
+      lastQuickRenderedRef.current.delete(finding.id);
+      setSelectedQuickIds((prev) => {
+        const next = new Set(prev);
+        next.delete(finding.id);
+        return next;
+      });
     }
-  }, []);
+  }, [quickSide]);
   handleQuickToggleRef.current = handleQuickToggle;
   selectedQuickIdsRef.current = selectedQuickIds;
+
+  useEffect(() => {
+    if (!quickSideMountedRef.current) {
+      quickSideMountedRef.current = true;
+      return;
+    }
+    useWorkspace.getState().relateralizePatches(quickSide);
+    for (const [id, prev] of lastQuickRenderedRef.current) {
+      lastQuickRenderedRef.current.set(id, {
+        findings: prev.findings ? applySide(prev.findings, quickSide) : prev.findings,
+        impression: prev.impression ? applySide(prev.impression, quickSide) : prev.impression,
+        technique: prev.technique,
+        recommendation: prev.recommendation,
+      });
+    }
+  }, [quickSide]);
 
   const handleEditBeforeInsert = useCallback((finding: QuickFinding) => {
     if (isLocked || isFinalized) return;
@@ -1297,6 +1347,11 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     // setStudies is idempotent for equal content — safe against unstable [].
     setStudies(workflow.queue ?? []);
   }, [workflow.queue, setStudies]);
+
+  // Server-backed whole-report formats + chocolate macros (migrate localStorage once).
+  useEffect(() => {
+    void useWorkspace.getState().hydrateContentLibraries();
+  }, []);
 
   // ─── Auto-select first study ────────────────────────────────────────────────
   useEffect(() => {
@@ -1714,6 +1769,11 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       // New features shortcuts
       if (e.ctrlKey && e.key === "k") { e.preventDefault(); useWorkspace.getState().toggleCommandPalette(); return; }
       if (e.ctrlKey && e.key === "Enter") { e.preventDefault(); finalizeReport(); return; }
+      if (e.ctrlKey && e.shiftKey && (e.key === "z" || e.key === "Z")) {
+        e.preventDefault();
+        useWorkspace.getState().undoLastPatch();
+        return;
+      }
       if (e.ctrlKey && (e.key === "i" || e.key === "I")) { e.preventDefault(); triggerAiImpression(); return; }
       if (e.ctrlKey && e.shiftKey && (e.key === "v" || e.key === "V")) {
         e.preventDefault();

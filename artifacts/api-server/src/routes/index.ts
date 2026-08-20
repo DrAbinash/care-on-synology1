@@ -151,6 +151,7 @@ import { radiologyAnnotationsRouter } from "./radiologyAnnotations";
 import { radiologyOllamaRouter } from "./radiologyOllama";
 import { aiPipelineHealthRouter } from "./aiPipelineHealth";
 import { radiologySnippetsRouter } from "./radiologySnippets";
+import { radiologyReportFormatsRouter } from "./radiologyReportFormats";
 import { radiologyMyAnalyticsRouter } from "./radiologyMyAnalytics";
 import { bankingRouter, bankingWebhookRouter } from "./banking";
 import { syncRouter } from "./sync";
@@ -910,6 +911,14 @@ router.use(
   requireStaffAuth,
   requireStaffPermission("/radiology"),
   radiologySnippetsRouter,
+);
+
+// Whole-report formats (Z.ai ReportFormat library) — radiology_snippets type=report_format
+router.use(
+  "/radiology/report-formats",
+  requireStaffAuth,
+  requireStaffPermission("/radiology"),
+  radiologyReportFormatsRouter,
 );
 
 // Phase 4: Radiology Knowledge Platform — Master Templates, Personal Library, Knowledge Base

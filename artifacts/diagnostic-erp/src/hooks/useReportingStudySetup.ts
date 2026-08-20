@@ -29,6 +29,8 @@ import { useWorkspace } from "@/lib/zai-workspace/store";
 import { mergeBlock } from "@/lib/quickFindingsMerge";
 import { mergeTechnique } from "@/lib/reportFieldMerge";
 import type { InsertSource } from "@/lib/reportFieldMerge";
+import { resolveChocolateOwnership } from "@/lib/chocolateMacroOwnership";
+import type { ChocolateTile } from "@/lib/findingsMacros";
 import type {
   QuickProtocol,
   QuickSelectData,
@@ -466,9 +468,40 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     else structuredValuesRef.current.delete(f.id);
   }, []);
 
-  const applyChocolateTile = useCallback((text: string) => {
-    if (disabled || !text.trim()) return;
-    setters.mergeFindings(text, "macro");
+  const applyChocolateTile = useCallback((tile: ChocolateTile | { id?: string; label?: string; text: string }) => {
+    if (disabled || !tile.text.trim()) return;
+    const full = tile as ChocolateTile;
+    const resolved = resolveChocolateOwnership({
+      id: full.id ?? "legacy",
+      label: full.label,
+      anatomicalSection: full.anatomicalSection,
+      conflictGroup: full.conflictGroup,
+      baselineReplaces: full.baselineReplaces,
+      supportsLaterality: full.supportsLaterality,
+      sectionsOwned: full.sectionsOwned,
+      legacyAppend: full.legacyAppend,
+    });
+    if (resolved.mode === "legacy-append") {
+      setters.mergeFindings(tile.text, "macro");
+      return;
+    }
+    const ownership = resolved.ownership;
+    const sections = ownership.sectionsOwned ?? ["findings"];
+    const incoming: Record<string, string | undefined> = {};
+    if (sections.includes("findings")) incoming.findings = tile.text;
+    if (sections.includes("impression") && full.impressionText) incoming.impression = full.impressionText;
+    useWorkspace.getState().applyPathologyOverlay({
+      incoming,
+      templates: incoming,
+      ownership: {
+        anatomicalSection: ownership.anatomicalSection,
+        conflictGroup: ownership.conflictGroup,
+        baselineReplaces: ownership.baselineReplaces,
+      },
+      source: "macro",
+      side: ownership.supportsLaterality ? undefined : "",
+      id: full.id ? `choco-${full.id}` : undefined,
+    });
   }, [disabled, setters]);
 
   const selectTemplateManual = useCallback((id: number) => {

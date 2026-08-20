@@ -14,8 +14,8 @@ export interface MeasurementRow { id: string; name: string; value: number; unit:
 export interface CriticalFinding { id: string; studyId: string; phrase: string; severity: Criticality; detectedAt: string; acknowledgedBy?: string; acknowledgedAt?: string; notifiedRecipient?: string; notifiedMethod?: "phone" | "whatsapp" | "in-person" | "email"; }
 
 export type QuickSelectField = "clinicalHistory" | "technique" | "findings" | "impression" | "recommendation";
-export interface QuickSelectTile { id: string; field: QuickSelectField; scopeModality?: Modality; scopeBodyPart?: string; label: string; mnemonic?: string; category: "normal" | "abnormal" | "variant" | "critical"; sentence: string; favorite?: boolean; custom?: boolean; usageCount?: number; createdAt: string; updatedAt: string; }
-export interface ReportFormat { id: string; name: string; modality: Modality; bodyPart: string; diagnosisTags: string[]; technique: string; findings: string; impression: string; recommendation: string; isCommon: boolean; custom?: boolean; usageCount?: number; createdAt: string; updatedAt: string; }
+export interface QuickSelectTile { id: string; field: QuickSelectField; scopeModality?: Modality; scopeBodyPart?: string; label: string; mnemonic?: string; category: "normal" | "abnormal" | "variant" | "critical"; sentence: string; impressionSentence?: string; favorite?: boolean; custom?: boolean; usageCount?: number; createdAt: string; updatedAt: string; anatomicalSection?: string; conflictGroup?: string; baselineReplaces?: string; }
+export interface ReportFormat { id: string; name: string; modality: Modality; bodyPart: string; diagnosisTags: string[]; clinicalHistory: string; technique: string; findings: string; impression: string; recommendation: string; isCommon: boolean; custom?: boolean; usageCount?: number; createdAt: string; updatedAt: string; }
 export interface SnippetMacro { id: string; trigger: string; label: string; template: string; variables: { name: string; label: string; default?: string; options?: string[] }[]; scopeModality?: Modality; scopeBodyPart?: string; custom?: boolean; createdAt: string; updatedAt: string; }
 export interface SignOffProfile { id: string; modality: Modality; signerName: string; signerCredentials: string; isDefault?: boolean; signatureId?: string; createdAt: string; }
 
@@ -92,7 +92,7 @@ export function computeQualityScore(ctx: { findingsText: string; impressionText:
 // Merge algorithm
 export interface MergeSentence { text: string; source: "common" | "from-a" | "from-b"; }
 export interface MergeFieldResult { text: string; sentences: MergeSentence[]; common: number; addedFromA: number; addedFromB: number; discarded: string[]; }
-export interface MergeResult { technique: string; techniqueSentences: MergeSentence[]; findings: string; impression: string; recommendation: string; findingsMerged: MergeFieldResult; impressionMerged: MergeFieldResult; recommendationMerged: MergeFieldResult; stats: { commonSentencesDiscarded: number; addedFromA: number; addedFromB: number; totalFinal: number; }; }
+export interface MergeResult { clinicalHistory: string; clinicalHistorySentences: MergeSentence[]; technique: string; techniqueSentences: MergeSentence[]; findings: string; impression: string; recommendation: string; findingsMerged: MergeFieldResult; impressionMerged: MergeFieldResult; recommendationMerged: MergeFieldResult; stats: { commonSentencesDiscarded: number; addedFromA: number; addedFromB: number; totalFinal: number; }; }
 function splitSentences(t: string): string[] { return t?.trim() ? t.replace(/\s+/g," ").trim().split(/(?<=[.!?])\s+(?=[A-Z])|(?<=[.!?])$/).map(s=>s.trim()).filter(Boolean) : []; }
 function norm(s: string): string { return s.toLowerCase().replace(/\s+/g," ").replace(/___+/g,"___").replace(/[^a-z0-9\s]/g,"").trim(); }
 function mergeField(fa: string, fb: string): MergeFieldResult {
@@ -110,9 +110,19 @@ export function mergeTwoFormats(a: ReportFormat, b: ReportFormat): MergeResult {
   const techniqueSentences: MergeSentence[] = sameTech
     ? [{ text: technique, source: "common" }]
     : splitSentences(technique).map((text) => ({ text, source: "common" as const }));
+  const hm = mergeField(a.clinicalHistory ?? "", b.clinicalHistory ?? "");
   const fm = mergeField(a.findings, b.findings), im = mergeField(a.impression, b.impression), rm = mergeField(a.recommendation, b.recommendation);
-  return { technique, techniqueSentences, findings: fm.text, impression: im.text, recommendation: rm.text, findingsMerged: fm, impressionMerged: im, recommendationMerged: rm,
-    stats: { commonSentencesDiscarded: fm.common+im.common+rm.common, addedFromA: fm.addedFromA+im.addedFromA+rm.addedFromA, addedFromB: fm.addedFromB+im.addedFromB+rm.addedFromB, totalFinal: fm.sentences.length+im.sentences.length+rm.sentences.length } };
+  return {
+    clinicalHistory: hm.text, clinicalHistorySentences: hm.sentences,
+    technique, techniqueSentences, findings: fm.text, impression: im.text, recommendation: rm.text,
+    findingsMerged: fm, impressionMerged: im, recommendationMerged: rm,
+    stats: {
+      commonSentencesDiscarded: hm.common+fm.common+im.common+rm.common,
+      addedFromA: hm.addedFromA+fm.addedFromA+im.addedFromA+rm.addedFromA,
+      addedFromB: hm.addedFromB+fm.addedFromB+im.addedFromB+rm.addedFromB,
+      totalFinal: hm.sentences.length+fm.sentences.length+im.sentences.length+rm.sentences.length,
+    },
+  };
 }
 
 // Snippet macro expansion

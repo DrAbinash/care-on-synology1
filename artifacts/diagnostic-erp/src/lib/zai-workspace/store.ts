@@ -4,7 +4,16 @@ import type { Study, MeasurementRow, PriorStudy, CopilotItem, CriticalFinding, Q
 import { runLintRules, runCopilotAnalysis, computeQualityScore, mergeTwoFormats, expandMacro, detectMacroTrigger, shouldPreloadNext } from "./types";
 import { normalizeWorkspaceStudies } from "./normalizeWorkspaceStudy";
 import { DEFAULT_QUICK_SELECT_TILES, lookupTiles, loadTiles, saveTiles, createTile, resetToDefaults } from "./quick-select-library";
-import { DEFAULT_REPORT_FORMATS, lookupFormats, loadFormats, saveFormats, createFormat, resetFormatsToDefaults } from "./report-formats-library";
+import {
+  DEFAULT_REPORT_FORMATS, lookupFormats, loadFormats, saveFormats, createFormat, resetFormatsToDefaults,
+} from "./report-formats-library";
+import {
+  bumpReportFormatUsage,
+  createReportFormatOnServer,
+  deleteReportFormatOnServer,
+  hydrateReportFormatsLibrary,
+} from "./reportFormatsApi";
+import { hydrateChocolateMacrosFromServer } from "@/lib/chocolateMacrosApi";
 import { DEFAULT_SNIPPET_MACROS, lookupMacros, lookupMacrosForContext, loadMacros, saveMacros, createMacro } from "./snippet-macros-library";
 import { DEFAULT_SIGN_OFF_PROFILES, loadProfiles, saveProfiles, lookupProfile, formatSignOff, createProfile } from "./sign-off-profiles";
 import {
@@ -18,14 +27,62 @@ import {
 } from "@/lib/reportFieldMerge";
 import {
   EMPTY_REPORTING_STUDY_CONTEXT,
+  canonicalContentRegion,
   reportingContextEqual,
   type ReportingStudyContext,
 } from "@/lib/reportingStudyContext";
+import {
+  applyPathologyPatch as overlayPathology,
+  applySideToIncoming,
+  inferOwnership,
+  relateralizeOwnedText,
+  type PathologyIncoming,
+  type PathologyOwnership,
+  type ReportNarrative,
+} from "@/lib/pathologyPatch";
+import type { Side } from "@/lib/sideSwap";
 
 export type EditorField = "findings" | "impression" | "recommendation" | "technique" | "clinicalHistory";
 export type RailStage = "orient" | "observe" | "measure" | "conclude" | "verify";
 
 type FieldProvenanceState = Partial<Record<EditorField, FieldProvenanceMap>>;
+
+export type AppliedPathologyPatch = {
+  id: string;
+  ownership: PathologyOwnership;
+  templates: PathologyIncoming;
+  lastRendered: PathologyIncoming;
+  source: InsertSource;
+};
+
+export type PendingPathologyPatch = {
+  incoming: PathologyIncoming;
+  ownership: PathologyOwnership;
+  source: InsertSource;
+  side?: Side | "";
+  templates?: PathologyIncoming;
+  id?: string;
+};
+
+type PatchSnapshot = {
+  clinicalHistoryText: string;
+  techniqueText: string;
+  findingsText: string;
+  impressionText: string;
+  recommendationText: string;
+  fieldProvenance: FieldProvenanceState;
+  appliedPathologyPatches: AppliedPathologyPatch[];
+};
+
+function narrativeFromState(s: Pick<S, "clinicalHistoryText" | "techniqueText" | "findingsText" | "impressionText" | "recommendationText">): ReportNarrative {
+  return {
+    clinicalHistory: s.clinicalHistoryText,
+    technique: s.techniqueText,
+    findings: s.findingsText,
+    impression: s.impressionText,
+    recommendation: s.recommendationText,
+  };
+}
 
 /** Stable empty provenance — never use inline `?? {}` inside zustand selectors (React #185). */
 export const EMPTY_FIELD_PROVENANCE: FieldProvenanceMap = {};
@@ -53,6 +110,9 @@ interface S {
   reportFormats: ReportFormat[]; selectedFormatIds: string[]; reportFormatPickerOpen: boolean;
   saveAsFormatDialogOpen: boolean; mergePreviewOpen: boolean; lastMergeResult: MergeResult | null;
   lastMergeFormats: { a: ReportFormat; b: ReportFormat | null } | null; confirmOverwriteOpen: boolean; pendingFormatIds: string[];
+  pendingPathologyPatch: PendingPathologyPatch | null;
+  lastPatchSnapshot: PatchSnapshot | null;
+  appliedPathologyPatches: AppliedPathologyPatch[];
   snippetMacros: SnippetMacro[]; macroEditorOpen: boolean; editingMacro: SnippetMacro | null;
   activeMacroPrompt: { macro: SnippetMacro; field: EditorField; startPos: number } | null;
   signOffProfiles: SignOffProfile[];
@@ -85,8 +145,13 @@ export type WorkspaceStore = S & {
   incrementTileUsage: (id: string) => void; toggleTileFavorite: (id: string) => void; resetQuickSelectToDefaults: () => void;
   toggleReportFormatPicker: () => void; setReportFormatPickerOpen: (o: boolean) => void; toggleFormatSelection: (id: string) => void; clearFormatSelection: () => void;
   applySelectedFormats: () => void; confirmOverwriteAndApply: () => void; cancelOverwrite: () => void; applyMergedResult: () => void; cancelMerge: () => void;
+  applyPathologyOverlay: (opts: PendingPathologyPatch & { force?: boolean }) => "applied" | "pending";
+  undoLastPatch: () => boolean;
+  relateralizePatches: (side: Side) => void;
   saveAsFormat: (i: Omit<ReportFormat, "id" | "createdAt" | "updatedAt">) => void; deleteReportFormat: (id: string) => void;
   openSaveAsFormatDialog: () => void; closeSaveAsFormatDialog: () => void; resetReportFormatsToDefaults: () => void;
+  /** Hydrate formats (+ chocolate macros) from server; migrate localStorage once. */
+  hydrateContentLibraries: () => Promise<void>;
   openMacroEditor: (m: SnippetMacro | null) => void; closeMacroEditor: () => void; saveMacro: (i: Omit<SnippetMacro, "id" | "createdAt" | "updatedAt"> & { id?: string }) => void;
   deleteMacro: (id: string) => void; setActiveMacroPrompt: (p: { macro: SnippetMacro; field: EditorField; startPos: number } | null) => void; applyMacroWithValues: (v: Record<string, string>) => void;
   updateSignOffProfile: (m: Modality, n: string, c: string) => void; triggerPreload: () => void; resetPreload: () => void;
@@ -121,6 +186,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   quickSelectTiles: typeof window !== "undefined" ? loadTiles() : DEFAULT_QUICK_SELECT_TILES, quickSelectEditorOpen: false, quickSelectEditingTile: null, quickSelectEditorField: null,
   reportFormats: typeof window !== "undefined" ? loadFormats() : DEFAULT_REPORT_FORMATS, selectedFormatIds: [], reportFormatPickerOpen: false,
   saveAsFormatDialogOpen: false, mergePreviewOpen: false, lastMergeResult: null, lastMergeFormats: null, confirmOverwriteOpen: false, pendingFormatIds: [],
+  pendingPathologyPatch: null, lastPatchSnapshot: null, appliedPathologyPatches: [],
   snippetMacros: typeof window !== "undefined" ? loadMacros() : DEFAULT_SNIPPET_MACROS, macroEditorOpen: false, editingMacro: null, activeMacroPrompt: null,
   signOffProfiles: typeof window !== "undefined" ? loadProfiles() : DEFAULT_SIGN_OFF_PROFILES, preloadTriggered: false,
   reportingContext: EMPTY_REPORTING_STUDY_CONTEXT,
@@ -346,9 +412,137 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   setReportFormatPickerOpen: (o) => set({ reportFormatPickerOpen: o }),
   toggleFormatSelection: (id) => { const c = get().selectedFormatIds; if (c.includes(id)) set({ selectedFormatIds: c.filter(x => x !== id) }); else if (c.length < 2) set({ selectedFormatIds: [...c, id] }); },
   clearFormatSelection: () => set({ selectedFormatIds: [] }),
-  applySelectedFormats: () => { const ids = get().selectedFormatIds; if (!ids.length) return; const fs = get().reportFormats.filter((f: ReportFormat) => ids.includes(f.id)); if (!fs.length) return; const { findingsText, impressionText, recommendationText, techniqueText } = get(); if (findingsText.trim() || impressionText.trim() || recommendationText.trim() || techniqueText.trim()) { set({ confirmOverwriteOpen: true, pendingFormatIds: ids }); return; } get().confirmOverwriteAndApply(); },
-  confirmOverwriteAndApply: () => { const ids = get().pendingFormatIds.length ? get().pendingFormatIds : get().selectedFormatIds; const fs = get().reportFormats.filter((f: ReportFormat) => ids.includes(f.id)); if (!fs.length) { set({ confirmOverwriteOpen: false, pendingFormatIds: [] }); return; } if (fs.length === 1) { const f = fs[0]; get().setField("technique", f.technique, { source: "template", replaceProvenance: true }); get().setField("findings", f.findings, { source: "template", replaceProvenance: true }); get().setField("impression", f.impression, { source: "template", replaceProvenance: true }); get().setField("recommendation", f.recommendation, { source: "template", replaceProvenance: true }); const nf = get().reportFormats.map((x: ReportFormat) => x.id === f.id ? { ...x, usageCount: (x.usageCount ?? 0) + 1 } : x); saveFormats(nf); set({ reportFormats: nf, confirmOverwriteOpen: false, pendingFormatIds: [], reportFormatPickerOpen: false }); return; } const [a, b] = fs; const r = mergeTwoFormats(a, b); set({ lastMergeResult: r, lastMergeFormats: { a, b }, mergePreviewOpen: true, confirmOverwriteOpen: false, pendingFormatIds: [] }); },
-  cancelOverwrite: () => set({ confirmOverwriteOpen: false, pendingFormatIds: [] }),
+  applySelectedFormats: () => {
+    const ids = get().selectedFormatIds;
+    if (!ids.length) return;
+    const fs = get().reportFormats.filter((f: ReportFormat) => ids.includes(f.id));
+    if (!fs.length) return;
+    const { findingsText, impressionText, recommendationText, techniqueText, clinicalHistoryText } = get();
+    const formatsHaveHistory = fs.some((f) => (f.clinicalHistory ?? "").trim());
+    if (findingsText.trim() || impressionText.trim() || recommendationText.trim() || techniqueText.trim() || (formatsHaveHistory && clinicalHistoryText.trim())) {
+      set({ confirmOverwriteOpen: true, pendingFormatIds: ids, pendingPathologyPatch: null });
+      return;
+    }
+    get().confirmOverwriteAndApply();
+  },
+  confirmOverwriteAndApply: () => {
+    const pendingPatch = get().pendingPathologyPatch;
+    if (pendingPatch) {
+      get().undoLastPatch();
+      get().applyPathologyOverlay({ ...pendingPatch, force: true });
+      set({ confirmOverwriteOpen: false, pendingPathologyPatch: null });
+      return;
+    }
+    const ids = get().pendingFormatIds.length ? get().pendingFormatIds : get().selectedFormatIds;
+    const fs = get().reportFormats.filter((f: ReportFormat) => ids.includes(f.id));
+    if (!fs.length) { set({ confirmOverwriteOpen: false, pendingFormatIds: [] }); return; }
+    if (fs.length === 1) {
+      const f = fs[0];
+      get().setField("technique", f.technique, { source: "template", replaceProvenance: true });
+      get().setField("findings", f.findings, { source: "template", replaceProvenance: true });
+      get().setField("impression", f.impression, { source: "template", replaceProvenance: true });
+      get().setField("recommendation", f.recommendation, { source: "template", replaceProvenance: true });
+      if ((f.clinicalHistory ?? "").trim()) {
+        get().setField("clinicalHistory", f.clinicalHistory, { source: "template", replaceProvenance: true });
+      }
+      const nf = get().reportFormats.map((x: ReportFormat) => x.id === f.id ? { ...x, usageCount: (x.usageCount ?? 0) + 1 } : x);
+      saveFormats(nf);
+      set({ reportFormats: nf, confirmOverwriteOpen: false, pendingFormatIds: [], reportFormatPickerOpen: false, appliedPathologyPatches: [], lastPatchSnapshot: null });
+      void bumpReportFormatUsage(f.id);
+      return;
+    }
+    const [a, b] = fs;
+    const r = mergeTwoFormats(a, b);
+    set({ lastMergeResult: r, lastMergeFormats: { a, b }, mergePreviewOpen: true, confirmOverwriteOpen: false, pendingFormatIds: [] });
+  },
+  cancelOverwrite: () => set({ confirmOverwriteOpen: false, pendingFormatIds: [], pendingPathologyPatch: null }),
+  applyPathologyOverlay: (opts) => {
+    const templates = opts.templates ?? opts.incoming;
+    const ownership = (opts.ownership.anatomicalSection || opts.ownership.conflictGroup || opts.ownership.baselineReplaces)
+      ? opts.ownership
+      : inferOwnership("", [templates.findings ?? "", templates.impression ?? ""]);
+    const incoming = applySideToIncoming(templates, opts.side ?? "");
+    const snap: PatchSnapshot = {
+      clinicalHistoryText: get().clinicalHistoryText,
+      techniqueText: get().techniqueText,
+      findingsText: get().findingsText,
+      impressionText: get().impressionText,
+      recommendationText: get().recommendationText,
+      fieldProvenance: { ...get().fieldProvenance },
+      appliedPathologyPatches: get().appliedPathologyPatches.map((p) => ({ ...p })),
+    };
+    const result = overlayPathology({
+      existing: narrativeFromState(get()),
+      incoming,
+      ownership,
+      provenance: get().fieldProvenance,
+      source: opts.source,
+      force: opts.force,
+    });
+    const patchId = opts.id ?? `patch_${Date.now().toString(36)}`;
+    set({
+      clinicalHistoryText: result.narrative.clinicalHistory,
+      techniqueText: result.narrative.technique,
+      findingsText: result.narrative.findings,
+      impressionText: result.narrative.impression,
+      recommendationText: result.narrative.recommendation,
+      fieldProvenance: result.provenance,
+      isDirty: true,
+      lastPatchSnapshot: snap,
+      appliedPathologyPatches: [
+        ...get().appliedPathologyPatches.filter((p) => p.id !== patchId),
+        { id: patchId, ownership, templates, lastRendered: incoming, source: opts.source },
+      ],
+    });
+    if (result.ambiguous && !opts.force) {
+      set({
+        confirmOverwriteOpen: true,
+        pendingPathologyPatch: { ...opts, incoming, templates, ownership, id: patchId },
+      });
+      return "pending";
+    }
+    return "applied";
+  },
+  undoLastPatch: () => {
+    const snap = get().lastPatchSnapshot;
+    if (!snap) return false;
+    set({
+      clinicalHistoryText: snap.clinicalHistoryText,
+      techniqueText: snap.techniqueText,
+      findingsText: snap.findingsText,
+      impressionText: snap.impressionText,
+      recommendationText: snap.recommendationText,
+      fieldProvenance: snap.fieldProvenance,
+      appliedPathologyPatches: snap.appliedPathologyPatches,
+      lastPatchSnapshot: null,
+      isDirty: true,
+    });
+    return true;
+  },
+  relateralizePatches: (side) => {
+    const patches = get().appliedPathologyPatches;
+    if (!patches.length) return;
+    let findings = get().findingsText;
+    let impression = get().impressionText;
+    let technique = get().techniqueText;
+    let recommendation = get().recommendationText;
+    const nextPatches = patches.map((p) => {
+      const next = applySideToIncoming(p.templates, side);
+      findings = relateralizeOwnedText(findings, p.lastRendered.findings ?? "", next.findings ?? "");
+      impression = relateralizeOwnedText(impression, p.lastRendered.impression ?? "", next.impression ?? "");
+      technique = relateralizeOwnedText(technique, p.lastRendered.technique ?? "", next.technique ?? "");
+      recommendation = relateralizeOwnedText(recommendation, p.lastRendered.recommendation ?? "", next.recommendation ?? "");
+      return { ...p, lastRendered: next };
+    });
+    set({
+      findingsText: findings,
+      impressionText: impression,
+      techniqueText: technique,
+      recommendationText: recommendation,
+      appliedPathologyPatches: nextPatches,
+      isDirty: true,
+    });
+  },
   applyMergedResult: () => {
     const r = get().lastMergeResult;
     if (!r) return;
@@ -368,23 +562,30 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     const findingsProv = buildProv(r.findingsMerged.sentences);
     const impressionProv = buildProv(r.impressionMerged.sentences);
     const recommendationProv = buildProv(r.recommendationMerged.sentences);
+    const historyText = (r.clinicalHistory ?? "").trim() ? r.clinicalHistory : get().clinicalHistoryText;
+    const historyProv = (r.clinicalHistory ?? "").trim()
+      ? buildProv(r.clinicalHistorySentences ?? [])
+      : (get().fieldProvenance.clinicalHistory ?? EMPTY_FIELD_PROVENANCE);
     set({
       techniqueText: r.technique,
       findingsText: r.findings,
       impressionText: r.impression,
       recommendationText: r.recommendation,
+      clinicalHistoryText: historyText,
       fieldProvenance: {
         technique: techniqueProv,
         findings: findingsProv,
         impression: impressionProv,
         recommendation: recommendationProv,
-        clinicalHistory: get().fieldProvenance.clinicalHistory ?? EMPTY_FIELD_PROVENANCE,
+        clinicalHistory: historyProv,
       },
       isDirty: true,
       mergePreviewOpen: false,
       lastMergeResult: null,
       lastMergeFormats: null,
       reportFormatPickerOpen: false,
+      appliedPathologyPatches: [],
+      lastPatchSnapshot: null,
     });
     // Increment usage count
     const ids = get().selectedFormatIds;
@@ -393,10 +594,43 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     set({ reportFormats: nf });
   },
   cancelMerge: () => set({ mergePreviewOpen: false, lastMergeResult: null, lastMergeFormats: null }),
-  saveAsFormat: (i) => { const f = createFormat(i); const fs = [...get().reportFormats, f]; saveFormats(fs); set({ reportFormats: fs, saveAsFormatDialogOpen: false }); },
-  deleteReportFormat: (id) => { const fs = get().reportFormats.filter((f: ReportFormat) => f.id !== id); saveFormats(fs); set({ reportFormats: fs, selectedFormatIds: get().selectedFormatIds.filter((x: string) => x !== id) }); },
+  saveAsFormat: (i) => {
+    const local = createFormat({
+      ...i,
+      bodyPart: canonicalContentRegion(i.bodyPart) || i.bodyPart,
+      clinicalHistory: i.clinicalHistory ?? "",
+    });
+    const optimistic = [...get().reportFormats, local];
+    saveFormats(optimistic);
+    set({ reportFormats: optimistic, saveAsFormatDialogOpen: false });
+    void createReportFormatOnServer(i)
+      .then((serverFmt) => {
+        const withoutTemp = get().reportFormats.filter((f) => f.id !== local.id);
+        const next = [...withoutTemp, serverFmt];
+        saveFormats(next);
+        set({ reportFormats: next });
+      })
+      .catch(() => {
+        /* offline: local cache remains until next hydrate/migrate */
+      });
+  },
+  deleteReportFormat: (id) => {
+    const fs = get().reportFormats.filter((f: ReportFormat) => f.id !== id);
+    saveFormats(fs);
+    set({ reportFormats: fs, selectedFormatIds: get().selectedFormatIds.filter((x: string) => x !== id) });
+    void deleteReportFormatOnServer(id).catch(() => { /* offline soft-fail */ });
+  },
   openSaveAsFormatDialog: () => set({ saveAsFormatDialogOpen: true }), closeSaveAsFormatDialog: () => set({ saveAsFormatDialogOpen: false }),
   resetReportFormatsToDefaults: () => set({ reportFormats: resetFormatsToDefaults(), selectedFormatIds: [] }),
+  hydrateContentLibraries: async () => {
+    try {
+      const formats = await hydrateReportFormatsLibrary();
+      set({ reportFormats: formats });
+    } catch { /* keep bootstrap loadFormats() */ }
+    try {
+      await hydrateChocolateMacrosFromServer();
+    } catch { /* keep local chocolate cache */ }
+  },
   openMacroEditor: (m) => set({ macroEditorOpen: true, editingMacro: m }), closeMacroEditor: () => set({ macroEditorOpen: false, editingMacro: null }),
   saveMacro: (input) => { const e = input.id ? get().snippetMacros.find((m: SnippetMacro) => m.id === input.id) : null; let ms: SnippetMacro[]; if (e) ms = get().snippetMacros.map((m: SnippetMacro) => m.id === e.id ? { ...m, ...input, updatedAt: new Date().toISOString() } : m); else ms = [...get().snippetMacros, createMacro(input)]; saveMacros(ms); set({ snippetMacros: ms }); get().closeMacroEditor(); },
   deleteMacro: (id) => { const ms = get().snippetMacros.filter((m: SnippetMacro) => m.id !== id); saveMacros(ms); set({ snippetMacros: ms }); get().closeMacroEditor(); },

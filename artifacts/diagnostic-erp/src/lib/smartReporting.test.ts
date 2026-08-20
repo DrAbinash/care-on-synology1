@@ -95,4 +95,20 @@ describe("validateReport", () => {
     const w = validateReport({ findings: "CBD measures {value} mm today overall.", impression: ["Dilated CBD."] });
     expect(w.some((x) => x.includes("{value}"))).toBe(true);
   });
+
+  it("flags basal ganglia normal + hemorrhage contradiction", () => {
+    const w = validateReport({
+      findings: "Basal ganglia are normal. Acute hemorrhage in the right basal ganglia is present today overall.",
+      impression: ["Right basal ganglia hemorrhage."],
+    });
+    expect(w.some((x) => x.includes("basal ganglia"))).toBe(true);
+  });
+
+  it("flags no restricted diffusion + acute infarct contradiction", () => {
+    const w = validateReport({
+      findings: "No restricted diffusion on DWI/ADC. Acute left MCA territory infarct is present today.",
+      impression: ["Acute left MCA territory infarct."],
+    });
+    expect(w.some((x) => x.includes("restricted diffusion"))).toBe(true);
+  });
 });

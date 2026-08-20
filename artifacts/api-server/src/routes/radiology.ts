@@ -2386,7 +2386,8 @@ radiologyRouter.post("/chocolate-findings", async (req: StaffAuthRequest, res) =
   try {
     const body = req.body as Record<string, unknown>;
     const allowed = [
-      "modality", "bodyPart", "groupName", "shortName", "findingText", "impressionText", "isCritical", "sortOrder"
+      "modality", "bodyPart", "groupName", "shortName", "findingText", "impressionText", "isCritical", "sortOrder",
+      "clientKey", "anatomicalSection", "conflictGroup", "baselineReplaces", "supportsLaterality", "sectionsOwned",
     ];
     const values: Record<string, unknown> = {};
     for (const k of allowed) {
@@ -2406,7 +2407,8 @@ radiologyRouter.patch("/chocolate-findings/:id", async (req, res) => {
     if (!Number.isFinite(id)) { res.status(400).json({ error: "Invalid id" }); return; }
     const body = req.body as Record<string, unknown>;
     const allowed = [
-      "modality", "bodyPart", "groupName", "shortName", "findingText", "impressionText", "isCritical", "sortOrder"
+      "modality", "bodyPart", "groupName", "shortName", "findingText", "impressionText", "isCritical", "sortOrder",
+      "clientKey", "anatomicalSection", "conflictGroup", "baselineReplaces", "supportsLaterality", "sectionsOwned",
     ];
     const values: Record<string, unknown> = {};
     for (const k of allowed) {

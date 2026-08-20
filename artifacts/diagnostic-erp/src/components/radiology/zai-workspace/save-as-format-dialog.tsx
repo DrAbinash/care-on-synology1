@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { useWorkspace, useWorkspaceSelector } from "@/lib/zai-workspace/store";
+import { useEffect, useState } from "react";
+import { useWorkspaceSelector } from "@/lib/zai-workspace/store";
 import { MODALITIES } from "@/lib/zai-workspace/quick-select-library";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
@@ -8,11 +8,89 @@ import { Label } from "@/components/ui/label";
 import { Plus, Save } from "lucide-react";
 const MODS = ["MR","CT","XR","US","MG","DX","NM","PT","DOPPLER","ECHO","USG_OB"];
 export function SaveAsFormatDialog() {
-  const open = useWorkspaceSelector(s => s.saveAsFormatDialogOpen); const close = useWorkspaceSelector(s => s.closeSaveAsFormatDialog); const save = useWorkspaceSelector(s => s.saveAsFormat);
-  const study = useWorkspaceSelector(s => s.studies.find(x => x.id === s.activeStudyId));
-  const ft = useWorkspaceSelector(s => s.findingsText); const it = useWorkspaceSelector(s => s.impressionText); const rt = useWorkspaceSelector(s => s.recommendationText); const tt = useWorkspaceSelector(s => s.techniqueText);
-  const [name, setName] = useState(""); const [mod, setMod] = useState(study?.modality ?? "MR"); const [bp, setBp] = useState(study?.bodyPart ?? "Brain"); const [tags, setTags] = useState("");
-  if (!open) return null; const bps = MODALITIES[mod] ?? []; const has = ft.trim() || it.trim();
-  const handleSave = () => { if (!name.trim() || !has) return; save({ name: name.trim(), modality: mod, bodyPart: bp, diagnosisTags: tags.split(",").map(t => t.trim()).filter(Boolean), technique: tt, findings: ft, impression: it, recommendation: rt, isCommon: false, custom: true }); setName(""); setTags(""); };
-  return <Dialog open={open} onOpenChange={o => !o && close()}><DialogContent className="max-w-md"><DialogHeader><DialogTitle className="flex items-center gap-2"><Save className="h-4 w-4 text-emerald-600" /> Save as format</DialogTitle><DialogDescription>Build your personal library from real reports.</DialogDescription></DialogHeader><div className="space-y-3">{!has && <div className="rounded-md border border-amber-300 bg-amber-50 p-2 text-[11px] text-amber-700">No findings/impression content. Add some first.</div>}<div><Label htmlFor="rf-name" className="text-[11px] uppercase tracking-wider">Format name</Label><Input id="rf-name" value={name} onChange={e => setName(e.target.value)} placeholder="e.g. MRI Brain — Fazekas 1" className="h-8 text-sm" autoFocus /></div><div className="grid grid-cols-2 gap-2"><div><Label htmlFor="rf-mod" className="text-[11px] uppercase tracking-wider">Modality</Label><select id="rf-mod" value={mod} onChange={e => setMod(e.target.value as typeof mod)} className="mt-0.5 w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm h-8">{MODS.map(m => <option key={m} value={m}>{m}</option>)}</select></div><div><Label htmlFor="rf-bp" className="text-[11px] uppercase tracking-wider">Body part</Label><select id="rf-bp" value={bp} onChange={e => setBp(e.target.value)} className="mt-0.5 w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm h-8">{bps.map(b => <option key={b} value={b}>{b}</option>)}{!bps.includes(bp) && <option value={bp}>{bp}</option>}</select></div></div><div><Label htmlFor="rf-tags" className="text-[11px] uppercase tracking-wider">Diagnosis tags (comma-separated)</Label><Input id="rf-tags" value={tags} onChange={e => setTags(e.target.value)} placeholder="white matter disease, fazekas 1" className="h-8 text-sm" /></div></div><DialogFooter><Button variant="ghost" onClick={close}>Cancel</Button><Button onClick={handleSave} disabled={!name.trim() || !has} className="bg-emerald-600 hover:bg-emerald-700"><Plus className="h-3.5 w-3.5 mr-1" /> Save format</Button></DialogFooter></DialogContent></Dialog>;
+  const open = useWorkspaceSelector((s) => s.saveAsFormatDialogOpen);
+  const close = useWorkspaceSelector((s) => s.closeSaveAsFormatDialog);
+  const save = useWorkspaceSelector((s) => s.saveAsFormat);
+  const study = useWorkspaceSelector((s) => s.studies.find((x) => x.id === s.activeStudyId));
+  const reportingContext = useWorkspaceSelector((s) => s.reportingContext);
+  const ft = useWorkspaceSelector((s) => s.findingsText);
+  const it = useWorkspaceSelector((s) => s.impressionText);
+  const rt = useWorkspaceSelector((s) => s.recommendationText);
+  const tt = useWorkspaceSelector((s) => s.techniqueText);
+  const ht = useWorkspaceSelector((s) => s.clinicalHistoryText);
+  const defaultBp = reportingContext.region || study?.bodyPart || "Brain";
+  const [name, setName] = useState("");
+  const [mod, setMod] = useState(study?.modality ?? "MR");
+  const [bp, setBp] = useState(defaultBp);
+  const [tags, setTags] = useState("");
+  useEffect(() => {
+    if (!open) return;
+    setMod(study?.modality ?? "MR");
+    setBp(reportingContext.region || study?.bodyPart || "Brain");
+  }, [open, study?.modality, study?.bodyPart, reportingContext.region]);
+  if (!open) return null;
+  const bps = MODALITIES[mod] ?? [];
+  const has = ft.trim() || it.trim() || ht.trim() || tt.trim() || rt.trim();
+  const handleSave = () => {
+    if (!name.trim() || !has) return;
+    save({
+      name: name.trim(),
+      modality: mod,
+      bodyPart: bp,
+      diagnosisTags: tags.split(",").map((t) => t.trim()).filter(Boolean),
+      clinicalHistory: ht,
+      technique: tt,
+      findings: ft,
+      impression: it,
+      recommendation: rt,
+      isCommon: false,
+      custom: true,
+    });
+    setName("");
+    setTags("");
+  };
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && close()}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2"><Save className="h-4 w-4 text-emerald-600" /> Save as format</DialogTitle>
+          <DialogDescription>
+            Saves Clinical History, Technique, Findings, Impression and Recommendation for this modality/region. Patient demographics, header and images are not stored — the ERP renderer supplies those dynamically.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          {!has && <div className="rounded-md border border-amber-300 bg-amber-50 p-2 text-[11px] text-amber-700">No clinical section content. Add some first.</div>}
+          <div>
+            <Label htmlFor="rf-name" className="text-[11px] uppercase tracking-wider">Format name</Label>
+            <Input id="rf-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. MRI Brain — Fazekas 1" className="h-8 text-sm" autoFocus />
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <Label htmlFor="rf-mod" className="text-[11px] uppercase tracking-wider">Modality</Label>
+              <select id="rf-mod" value={mod} onChange={(e) => setMod(e.target.value as typeof mod)} className="mt-0.5 w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm h-8">
+                {MODS.map((m) => <option key={m} value={m}>{m}</option>)}
+              </select>
+            </div>
+            <div>
+              <Label htmlFor="rf-bp" className="text-[11px] uppercase tracking-wider">Study / body region</Label>
+              <select id="rf-bp" value={bp} onChange={(e) => setBp(e.target.value)} className="mt-0.5 w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm h-8">
+                {bps.map((b) => <option key={b} value={b}>{b}</option>)}
+                {!bps.includes(bp) && <option value={bp}>{bp}</option>}
+              </select>
+            </div>
+          </div>
+          <div>
+            <Label htmlFor="rf-tags" className="text-[11px] uppercase tracking-wider">Diagnosis tags (comma-separated)</Label>
+            <Input id="rf-tags" value={tags} onChange={(e) => setTags(e.target.value)} placeholder="white matter disease, fazekas 1" className="h-8 text-sm" />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="ghost" onClick={close}>Cancel</Button>
+          <Button onClick={handleSave} disabled={!name.trim() || !has} className="bg-emerald-600 hover:bg-emerald-700">
+            <Plus className="h-3.5 w-3.5 mr-1" /> Save format
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
 }
