@@ -276,10 +276,10 @@ export type BuildPrintHtmlOpts = {
   customFooter?: string | null;
   reportCollectionNote?: string | null;
   // When true, the footer sits a fixed ~3-4 lines below the content instead
-  // of being pushed to the physical bottom of the A5 page via a flex-1
-  // spacer. Billing Desk / Bill Detail pass this for short bills (≤4 tests)
-  // and kiosk/booking always opt in — avoids a huge blank middle on A5.
-  // Defaults to false; classic also auto-compacts when ≤4 active test lines.
+  // of being pushed to the physical bottom of the content box via flex. Use
+  // only for tall A4 pages / patient booking slips — on the 148 mm half-sheet
+  // pinning the footer fills the receipt instead of leaving blank below.
+  // Defaults to false.
   compactFooterGap?: boolean;
   // When true (with paperSize "A5"), the receipt keeps its compact A5 content
   // sizing but is printed on a physical A4 page — the A5-width slip is centred
@@ -332,7 +332,6 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
 
   const tests = (bill.order?.tests ?? []).filter((t) => (t.status ?? "active") !== "cancelled");
   const cancelled = (bill.order?.tests ?? []).filter((t) => (t.status ?? "active") === "cancelled");
-  const sparseBill = tests.length <= 4;
   const billDigits = String(bill.billNumber).replace(/^BILL-?/i, "").replace(/-/g, "");
   const ageStr = calcAge(bill.patient?.dateOfBirth, bill.patient?.ageValue, bill.patient?.ageUnit);
   const ageGender = [ageStr, bill.patient?.gender].filter(Boolean).join(" / ").toUpperCase();
@@ -355,7 +354,10 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
   const statusColor = (semantic: string): string => (isBW ? "#000" : semantic);
   const statusBg = (semantic: string): string => (isBW ? "#eee" : semantic);
 
-  const useCompactFooter = compactFooterGap || sparseBill;
+  // Half-sheet (A5-landscape / half-a4): always fill the 148 mm box. Compact
+  // footer only for tall A4 / booking-slip callers that opt in explicitly.
+  const isHalfSheet = paper === "A5-landscape" || paper === "half-a4";
+  const useCompactFooter = isHalfSheet ? false : Boolean(compactFooterGap);
   const defaultMarginMm =
     paper === "A5-portrait" ? 6 :
     paper === "A5-landscape" || paper === "half-a4" ? 4 :

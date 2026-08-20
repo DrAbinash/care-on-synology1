@@ -21,11 +21,15 @@ export type PageSpec = {
 };
 
 /**
- * Half of A4 is A5: 210 mm × 148 mm. Load cut half-A4 or A5 in the tray in
- * portrait (210 mm across). @page must match the physical sheet (210×148) so
- * the job does not reserve a full A4 (297 mm) band below the receipt.
- * Named `A5 landscape` or choosing Landscape in the print dialog still
- * rotates the job and leaves a blank strip on the right — avoid those.
+ * Half of A4 is A5: 210 mm × 148 mm (pre-cut A4 loaded in the tray).
+ *
+ * `@page` MUST match the physical sheet (210×148). Sending A4 (210×297) when
+ * the tray already holds cut half-sheets leaves blank space below (and can
+ * shrink/offset the receipt). Named `A5 landscape` is avoided — use exact mm.
+ *
+ * Printer dialog: select a User Defined / custom paper of 210×148 mm (not A4).
+ * If the dialog still says Paper=A4, Chrome fits the half-sheet job onto a
+ * full A4 frame and you get blank bands on the right and below.
  */
 export const HALF_A4_TRAY_PAGE_CSS = "210mm 148mm";
 

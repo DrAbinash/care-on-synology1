@@ -248,12 +248,12 @@ describe("resolveBillPrintCopyCount — physical copies", () => {
 });
 
 describe("resolveBillPrintPageOpts — Cursor-default paper", () => {
-  test("short bills always use half A4 / A5 on an A4 portrait @page", () => {
+  test("short bills always use pre-cut half A4 @page (210×148)", () => {
     const opts = resolveBillPrintPageOpts({ defaultPaperSize: "A5-portrait", autoA4Threshold: 5 }, 1);
     expect(opts.paperSize).toBe("A5");
     expect(opts.orientation).toBe("landscape");
     expect(opts.pageCssSize).toBe("210mm 148mm");
-    expect(opts.compactFooterGap).toBe(true);
+    expect(opts.compactFooterGap).toBe(false);
   });
 
   test("saved A4 / half-a4 / landscape blobs cannot change short-bill paper", () => {
