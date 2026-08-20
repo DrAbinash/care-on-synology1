@@ -459,6 +459,7 @@ export default function ReportExportPanel({
               title="Enlarged report layout preview"
               srcDoc={displayHtml}
               className="bg-white shadow-md mx-auto border-0 pointer-events-none block"
+              data-testid="report-layout-preview-enlarged"
               style={{
                 zoom: previewZoom,
                 width: 794,
@@ -466,7 +467,6 @@ export default function ReportExportPanel({
                 minHeight: MIN_PREVIEW_PAGE_PX,
               }}
               onLoad={(e) => syncPreviewHeight(e.currentTarget)}
-              data-testid="report-layout-preview-enlarged"
               tabIndex={-1}
             />
           </div>
