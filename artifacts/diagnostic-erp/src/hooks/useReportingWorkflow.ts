@@ -237,6 +237,7 @@ export function useReportingWorkflow(currentStudyId: number | undefined, options
 
   return {
     queue,
+    fullQueue,
     queueRefreshing,
     queueUpdatedAt: dataUpdatedAt,
     position,

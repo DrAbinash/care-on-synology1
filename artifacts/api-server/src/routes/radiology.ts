@@ -1450,8 +1450,10 @@ radiologyRouter.get("/mri-warm-cache/status", async (_req, res) => {
 radiologyRouter.post("/mri-warm-cache/run", async (req, res) => {
   try {
     const { runMriWarmCache } = await import("../lib/pacs/mriStudyWarmer");
-    const force = (req.body as { force?: boolean } | undefined)?.force !== false;
-    const status = await runMriWarmCache({ force });
+    const body = (req.body ?? {}) as { force?: boolean; mode?: "today_yesterday" | "last_n" };
+    const force = body.force !== false;
+    const mode = body.mode === "last_n" || body.mode === "today_yesterday" ? body.mode : undefined;
+    const status = await runMriWarmCache({ force, mode });
     res.json(status);
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : "warm run failed" });
