@@ -37,5 +37,7 @@ describe("PACS worklist actions + unlinked bills UX", () => {
     expect(src).toContain("normalizeWorklistAiDraftViewer");
     expect(src).toContain("AI finished, but no grounded findings were produced");
     expect(src).not.toContain("JSON.stringify(draftViewer.draft");
+    expect(src).toContain("Review AI draft in Reporting Workspace");
+    expect(src).toContain("ai: true");
   });
 });

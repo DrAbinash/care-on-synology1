@@ -410,7 +410,7 @@ function OvernightAiDraftCell({
           {display === "QUEUED" || display === "RETRYING" ? label : label}
         </span>
         {display === "READY" && (
-          <Button size="sm" variant="ghost" className="h-6 w-6 p-0 text-xs" title="View AI Draft" onClick={onViewDraft}>
+          <Button size="sm" variant="ghost" className="h-6 w-6 p-0 text-xs" title="Review AI draft in Reporting Workspace" onClick={onViewDraft}>
             <Eye className="h-3 w-3" />
           </Button>
         )}
@@ -690,9 +690,16 @@ const SENTINEL_ROW: WorklistEntry = {
 };
 
 /** Single open-report path — Reporting Workspace for every modality (USG Companion is embedded there). */
-function reportingWorkspacePath(entry: Pick<WorklistEntry, "id">, focus = false): string {
+function reportingWorkspacePath(
+  entry: Pick<WorklistEntry, "id">,
+  opts: { focus?: boolean; ai?: boolean } = {},
+): string {
   const base = `/radiology/report/${entry.id}`;
-  return focus ? `${base}?focus=1` : base;
+  const params = new URLSearchParams();
+  if (opts.focus) params.set("focus", "1");
+  if (opts.ai) params.set("ai", "1");
+  const qs = params.toString();
+  return qs ? `${base}?${qs}` : base;
 }
 
 export default function RadiologyWorklist() {
@@ -1187,13 +1194,20 @@ export default function RadiologyWorklist() {
     setTimeout(() => void refetch(), 100);
   }
 
-  // Phase 8: View stored AI draft (hydrated findings/impression — not raw JSON)
+  // READY AI drafts open in Reporting Workspace so radiologists can Accept
+  // into findings, then edit with macros / quick-select / templates and finalize
+  // on the normal report pipeline. Peek modal remains for empty/error explanation.
   async function viewAiDraft(id: number) {
     try {
       const result = await api.get<{
         draft: WorklistAiDraftViewerPayload | Record<string, unknown> | null;
         safetyNote: string;
       }>(`/api/radiology/pacs-worklist/${id}/ai-draft`);
+      const viewed = normalizeWorklistAiDraftViewer(result.draft);
+      if (!viewed.empty) {
+        navigate(reportingWorkspacePath({ id }, { ai: true }));
+        return;
+      }
       setDraftViewer({ id, draft: result.draft });
     } catch (err) {
       toast({ title: "Error", description: err instanceof Error ? err.message : "Failed to load draft", variant: "destructive" });
@@ -2029,7 +2043,7 @@ export default function RadiologyWorklist() {
                                     label="Focus"
                                     tone="report"
                                     title="Open Reporting Workspace in focus mode (maximized editor)"
-                                    onClick={() => navigate(reportingWorkspacePath(entry, true))}
+                                    onClick={() => navigate(reportingWorkspacePath(entry, { focus: true }))}
                                   />
                                 )}
                                 <WorklistActionBtn
@@ -2212,7 +2226,7 @@ export default function RadiologyWorklist() {
                         className="mt-3 h-7 text-xs"
                         onClick={() => {
                           setDraftViewer(null);
-                          navigate(reportingWorkspacePath({ id: draftViewer.id }));
+                          navigate(reportingWorkspacePath({ id: draftViewer.id }, { ai: true }));
                         }}
                       >
                         Open Reporting Workspace
@@ -2268,7 +2282,7 @@ export default function RadiologyWorklist() {
                         className="h-7 text-xs"
                         onClick={() => {
                           setDraftViewer(null);
-                          navigate(reportingWorkspacePath({ id: draftViewer.id }));
+                          navigate(reportingWorkspacePath({ id: draftViewer.id }, { ai: true }));
                         }}
                       >
                         Review in Reporting Workspace

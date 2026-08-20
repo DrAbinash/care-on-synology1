@@ -62,19 +62,23 @@ export function normalizeWorklistAiDraftViewer(
   }
 
   const d = draft as WorklistAiDraftViewerPayload;
+  const rawFindings: unknown = d.findings;
   let findings: WorklistAiDraftViewerFinding[] = [];
-  if (Array.isArray(d.findings)) {
-    findings = d.findings
-      .map((f) => ({
-        key: typeof f?.key === "string" ? f.key : undefined,
-        text: typeof f?.text === "string" ? f.text.trim() : "",
-        laterality: typeof f?.laterality === "string" ? f.laterality : undefined,
-      }))
+  if (Array.isArray(rawFindings)) {
+    findings = rawFindings
+      .map((f) => {
+        const row = f && typeof f === "object" ? (f as WorklistAiDraftViewerFinding) : null;
+        return {
+          key: typeof row?.key === "string" ? row.key : undefined,
+          text: typeof row?.text === "string" ? row.text.trim() : "",
+          laterality: typeof row?.laterality === "string" ? row.laterality : undefined,
+        };
+      })
       .filter((f) => f.text.length > 0);
   } else if (typeof d.findingsText === "string" && d.findingsText.trim()) {
     findings = [{ text: d.findingsText.trim() }];
-  } else if (typeof (d as { findings?: unknown }).findings === "string") {
-    const text = String((d as { findings: string }).findings).trim();
+  } else if (typeof rawFindings === "string") {
+    const text = rawFindings.trim();
     if (text) findings = [{ text }];
   }
 
