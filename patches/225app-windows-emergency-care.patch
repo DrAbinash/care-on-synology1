@@ -1,0 +1,3956 @@
+From 4097a140be256458ca204a949cee6cff43a9a762 Mon Sep 17 00:00:00 2001
+From: Cursor Agent <cursoragent@cursor.com>
+Date: Thu, 20 Aug 2026 10:12:16 +0000
+Subject: [PATCH] Windows Emergency CARE + CARE Bill Desk UI parity
+
+Adapt the DS225+ capture stack for Windows Docker Desktop and match the
+CARE ERP Billing Desk layout so reception staff use the same visual workflow.
+
+- Light Bill Desk UI: Patient / Doctor / Investigations + Selected / Summary / Payment
+- Obvious EMERGENCY MODE banner and Main CARE online/offline status (grace period)
+- Sync From Main CARE / Push Emergency Data / Retry Failed / CSV+backup ops panel
+- PRIMARY_CARE_URL pull/push via CARE /api/emergency-bridge contract
+- Windows compose override, .env.windows.example, Start/Backup/Restore scripts
+- Persist sync_status metadata; copy backup.sh into API image
+---
+ .env.example                                  |    7 +
+ .env.windows.example                          |   40 +
+ README.md                                     |   54 +-
+ artifacts/emergency-billing/Dockerfile        |    2 +
+ artifacts/emergency-billing/public/app.js     |  534 ++++--
+ artifacts/emergency-billing/public/index.html |    2 +-
+ artifacts/emergency-billing/public/styles.css |  681 +++++--
+ artifacts/emergency-billing/src/schema.ts     |    7 +
+ artifacts/emergency-billing/src/server.ts     |  307 +++-
+ docker-compose.windows.yml                    |   19 +
+ docker-compose.yml                            |    4 +
+ docs/WINDOWS_EMERGENCY_DEPLOY.md              |   69 +
+ lib/emergency-billing/package-lock.json       |   32 +
+ lib/emergency-billing/package.json            |    2 +-
+ package-lock.json                             | 1618 +++++++++++++++++
+ scripts/windows/Backup-Emergency.ps1          |   12 +
+ scripts/windows/Restore-Emergency.ps1         |   29 +
+ scripts/windows/Start-Emergency.ps1           |   44 +
+ 18 files changed, 3170 insertions(+), 293 deletions(-)
+ create mode 100644 .env.windows.example
+ create mode 100644 docker-compose.windows.yml
+ create mode 100644 docs/WINDOWS_EMERGENCY_DEPLOY.md
+ create mode 100644 lib/emergency-billing/package-lock.json
+ create mode 100644 package-lock.json
+ create mode 100644 scripts/windows/Backup-Emergency.ps1
+ create mode 100644 scripts/windows/Restore-Emergency.ps1
+ create mode 100644 scripts/windows/Start-Emergency.ps1
+
+diff --git a/.env.example b/.env.example
+index 20f03fc..e793062 100644
+--- a/.env.example
++++ b/.env.example
+@@ -19,6 +19,13 @@ EMERGENCY_HTTP_PORT=80
+ # Must match CARE Settings → Billing → Emergency Billing fetch token.
+ EMERGENCY_FETCH_TOKEN=
+ 
++# Main CARE base URL for Windows Emergency PC pull/push (LAN IP preferred).
++# Leave blank on DS225+ if CARE always pushes/fetches toward this NAS.
++# PRIMARY_CARE_URL=http://192.168.1.50:8080
++# EMERGENCY_DEVICE_ID=ds225-emergency
++# MASTER_PULL_INTERVAL_HOURS=6
++# CARE_OFFLINE_GRACE_MS=90000
++
+ # Optional first-boot owner if CARE has not yet pushed staff identities.
+ # Leave blank after the first successful master-data sync.
+ EMERGENCY_BOOTSTRAP_USERNAME=
+diff --git a/.env.windows.example b/.env.windows.example
+new file mode 100644
+index 0000000..f3ef4f1
+--- /dev/null
++++ b/.env.windows.example
+@@ -0,0 +1,40 @@
++# Windows Emergency CARE PC — copy to .env and edit.
++# Do NOT use Synology /volume1 paths on Windows.
++
++EMERGENCY_DB_USER=emergency
++EMERGENCY_DB_PASSWORD=change-me-to-a-long-random-string
++EMERGENCY_DB_NAME=care_emergency
++
++# Loopback-only Postgres on the Windows PC
++EMERGENCY_DB_BIND=127.0.0.1
++EMERGENCY_DB_HOST_PORT=5410
++
++# Browser access for clinic LAN PCs (Docker Desktop publishes this port)
++EMERGENCY_HTTP_BIND=0.0.0.0
++EMERGENCY_HTTP_PORT=8080
++
++# Shared secret — must match Main CARE Settings → Billing → Emergency Billing fetch token
++# PowerShell: -join ((1..32) | ForEach-Object { '{0:x2}' -f (Get-Random -Max 256) })
++EMERGENCY_FETCH_TOKEN=
++
++# Main CARE ERP base URL (LAN IP preferred — do not rely on Synology QuickConnect)
++# Example: http://192.168.1.50:8080   or   http://192.168.1.50
++PRIMARY_CARE_URL=http://192.168.1.50:8080
++
++# Stable ID for this Windows emergency PC (stored on each emergency bill)
++EMERGENCY_DEVICE_ID=windows-emergency-pc-1
++
++# Optional first-boot owner if CARE has not yet pushed/pulled staff
++EMERGENCY_BOOTSTRAP_USERNAME=owner
++EMERGENCY_BOOTSTRAP_PIN=1234
++
++SESSION_HOURS=8
++
++# Auto master-data pull from Main CARE when reachable (hours). 0 = disable auto pull.
++MASTER_PULL_INTERVAL_HOURS=6
++
++# Grace before declaring Main CARE OFFLINE (milliseconds)
++CARE_OFFLINE_GRACE_MS=90000
++
++# Optional host folder for SQL dumps (Docker Desktop shared drive). Leave unset for named volume.
++# EMERGENCY_BACKUP_DIR=C:/care-emergency/backups
+diff --git a/README.md b/README.md
+index 8a219ab..8ca3d54 100644
+--- a/README.md
++++ b/README.md
+@@ -1,34 +1,31 @@
+-# CARE Emergency Billing (DS225+)
++# CARE Emergency Billing (DS225+ / Windows Emergency PC)
+ 
+-Standalone **capture-only** emergency billing for the DS225+ disaster-recovery NAS.
++Standalone **capture-only** emergency billing for disaster recovery.
+ 
+ CARE on DS1522+ remains the **only** source of truth for accounting, commission, and canonical bills.
+ 
+-This repository is independently buildable. **Do not clone the CARE monorepo onto DS225+.**
++This repository is independently buildable. **Do not clone the CARE monorepo onto the emergency host.**
+ 
+ | Piece | Repository |
+ | --- | --- |
+ | This app (UI + API + dedicated Postgres) | `https://github.com/DrAbinash/225app` |
+-| Master-data push, fetch, CSV/JSON import, reconciliation | CARE (`DrAbinash/care-on-synology1`) |
+-| Pendrive ultra-emergency (when CARE **and** DS225+ are down) | Plan: `docs/PENDRIVE_ULTRA_EMERGENCY_PLAN.md` — same CSV contract, not this Docker stack |
++| Master-data push/pull bridge, fetch, CSV/JSON import, reconciliation | CARE (`DrAbinash/care-on-synology1`) |
++| Pendrive ultra-emergency (when CARE **and** this host are down) | Plan: `docs/PENDRIVE_ULTRA_EMERGENCY_PLAN.md` |
+ 
+-## Interchange contracts
+-
+-| Format | Direction |
+-| --- | --- |
+-| `CARE_EMERGENCY_MASTER_V1` | CARE → this app (tariff / catalogue / doctors / patients / staff / discount reasons) |
+-| `CARE_EMERGENCY_BILLING_V1` | this app → CARE (CSV) |
+-| `CARE_EMERGENCY_BILLING_JSON_V1` | this app → CARE (JSON) |
++**Bill Desk UI** matches CARE ERP Billing Desk (Patient · Referring Doctor · Investigations · Selected Tests · Bill Summary · Payment) with an unmistakable **EMERGENCY MODE** banner.
+ 
+-Unsupported future versions are **rejected** (HTTP 409). Billing continues on the last valid cached snapshot if CARE is offline or the snapshot is old.
++## Windows Emergency PC (Docker Desktop)
+ 
+-CARE reads `GET /api/capability` (also mirrored on `GET /api/health`) for compatibility. That response includes `status`, `appVersion`, `buildSha`, supported contract versions, `databaseHealthy`, and whether a master snapshot is present. It does **not** include secrets, patients, or bills. Pending/open counts for CARE's daily summary are on token-protected `GET /api/internal/ops-status`.
++See **`docs/WINDOWS_EMERGENCY_DEPLOY.md`**.
+ 
+-Age bands (warning only — never a hard lock):
++```powershell
++copy .env.windows.example .env
++# edit EMERGENCY_FETCH_TOKEN, PRIMARY_CARE_URL, passwords
++powershell -ExecutionPolicy Bypass -File .\scripts\windows\Start-Emergency.ps1
++# open http://127.0.0.1:8080/
++```
+ 
+-- under 6 hours: normal
+-- 6–24 hours: warning
+-- over 24 hours: prominent stale-data warning
++Backup / restore: `scripts\windows\Backup-Emergency.ps1` / `Restore-Emergency.ps1`.
+ 
+ ## Deploy on DS225+ (`/volume1/docker/care-emergency/`)
+ 
+@@ -44,7 +41,18 @@ curl -fsS http://127.0.0.1/health
+ 
+ Bookmark `http://<DS225-IP>/` on reception PCs.
+ 
+-Then on CARE (while DS1522+ is healthy): **Settings → Billing → Emergency Billing → Push Initial Master Data**.
++Then on CARE (while DS1522+ is healthy): **Settings → Billing → Emergency Billing → Push Initial Master Data**  
++(or from this app: **Sync From Main CARE** when `PRIMARY_CARE_URL` is set).
++
++## Interchange contracts
++
++| Format | Direction |
++| --- | --- |
++| `CARE_EMERGENCY_MASTER_V1` | CARE ↔ this app (tariff / catalogue / doctors / patients / staff / discount reasons) |
++| `CARE_EMERGENCY_BILLING_V1` | this app → CARE (CSV) |
++| `CARE_EMERGENCY_BILLING_JSON_V1` | this app → CARE (JSON) |
++
++CARE bridge (token auth): `GET/POST /api/emergency-bridge/*` on Main CARE.
+ 
+ ## Local development
+ 
+@@ -56,14 +64,6 @@ export EMERGENCY_FETCH_TOKEN=dev-token
+ npm run dev   # API+UI on :8898
+ ```
+ 
+-Tests (from repo root, after `npm install` here and in `artifacts/emergency-billing`):
+-
+-```sh
+-createdb care_emergency_test   # once
+-export EMERGENCY_TEST_DATABASE_URL=postgres://ubuntu@/care_emergency_test?host=/var/run/postgresql
+-npm test
+-```
+-
+ ## What this app must not contain
+ 
+ Accounting, commission, PACS, radiology reporting, pathology, AI, inventory, HR, or a copy of `diagnostic_erp`.
+diff --git a/artifacts/emergency-billing/Dockerfile b/artifacts/emergency-billing/Dockerfile
+index be2e6f9..1c1a773 100644
+--- a/artifacts/emergency-billing/Dockerfile
++++ b/artifacts/emergency-billing/Dockerfile
+@@ -25,6 +25,8 @@ COPY --from=build /src/artifacts/emergency-billing/dist ./dist
+ COPY --from=build /src/artifacts/emergency-billing/public ./public
+ COPY --from=build /src/artifacts/emergency-billing/node_modules ./node_modules
+ COPY --from=build /src/artifacts/emergency-billing/package.json ./
++COPY backup.sh /app/backup.sh
++RUN chmod +x /app/backup.sh
+ ENV NODE_ENV=production
+ ENV GIT_COMMIT=$GIT_COMMIT
+ ENV BUILD_SHA=$GIT_COMMIT
+diff --git a/artifacts/emergency-billing/public/app.js b/artifacts/emergency-billing/public/app.js
+index 2df1dc8..f007543 100644
+--- a/artifacts/emergency-billing/public/app.js
++++ b/artifacts/emergency-billing/public/app.js
+@@ -12,7 +12,9 @@ const state = {
+   referringDoctor: null,
+   reasons: [],
+   bills: [],
+-  receipt: null,
++  careStatus: { state: "unknown", label: "Checking…", lastCheckedAt: null },
++  ops: null,
++  toast: null,
+ };
+ 
+ async function api(path, opts = {}) {
+@@ -30,27 +32,41 @@ async function api(path, opts = {}) {
+ }
+ 
+ function fmt(n) { return "₹" + Number(n || 0).toLocaleString("en-IN"); }
++function todayLabel() {
++  return new Date().toLocaleDateString("en-IN", {
++    timeZone: "Asia/Kolkata", weekday: "short", day: "2-digit", month: "short", year: "numeric",
++  });
++}
+ function syncedLabel() {
+   if (!state.syncedAt || state.neverSynced || state.ageBand === "never") {
+-    return "Emergency NAS has never been synchronized. Ask CARE (Settings → Billing → Emergency Billing) to Push Initial Master Data.";
+-  }
+-  const d = new Date(state.syncedAt);
+-  const when = d.toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
+-  if (state.ageBand === "stale") {
+-    return "Tariff / master data last synchronized: " + when + " — STALE (older than 24 hours). Billing still uses this last valid snapshot.";
++    return "Never synced with Main CARE — use Sync From Main CARE when online";
+   }
+-  if (state.ageBand === "warning") {
+-    return "Tariff / master data last synchronized: " + when + " — snapshot is more than 6 hours old. Push from CARE when the main NAS is reachable.";
+-  }
+-  return "Tariff / master data last synchronized: " + when;
++  const when = new Date(state.syncedAt).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
++  if (state.ageBand === "stale") return `Last synced with CARE: ${when} — STALE (>24h)`;
++  if (state.ageBand === "warning") return `Last synced with CARE: ${when} — aging (>6h)`;
++  return `Last synced with CARE: ${when}`;
+ }
+-
+-function syncBannerClass() {
+-  if (!state.syncedAt || state.ageBand === "never") return "lock";
+-  if (state.ageBand === "stale") return "stale";
++function syncChipClass() {
++  if (!state.syncedAt || state.ageBand === "never") return "bad";
++  if (state.ageBand === "stale") return "bad";
+   if (state.ageBand === "warning") return "warn";
+   return "ok";
+ }
++function carePillClass() {
++  if (state.careStatus.state === "online") return "online";
++  if (state.careStatus.state === "offline") return "offline";
++  return "unknown";
++}
++function toast(msg, kind = "ok") {
++  state.toast = { msg, kind, at: Date.now() };
++  render();
++  setTimeout(() => {
++    if (state.toast && Date.now() - state.toast.at >= 2800) {
++      state.toast = null;
++      render();
++    }
++  }, 3000);
++}
+ 
+ function render() {
+   if (!state.me) return renderLogin();
+@@ -59,19 +75,22 @@ function render() {
+ 
+ function renderLogin() {
+   app.innerHTML = `
+-    <div class="wrap">
+-      <div class="card">
+-        <h1>CARE Emergency Billing</h1>
+-        <p class="muted">Local DS225+ capture only. CARE on DS1522+ remains the source of truth.</p>
+-        <div class="banner ${state.locked ? "lock" : "ok"}">${state.locked ? "EMERGENCY BILLING LOCKED" : "Emergency session ACTIVE"}</div>
+-        <p class="banner ${syncBannerClass()}">${syncedLabel()}</p>
++    <div class="login-wrap">
++      <div class="login-card">
++        <div class="emg-banner" style="margin:-24px -24px 16px;border-radius:14px 14px 0 0">EMERGENCY MODE</div>
++        <h1>CARE Billing Desk</h1>
++        <p class="muted">Emergency capture on this PC. Main CARE remains the source of truth.</p>
++        <div class="chip ${state.locked ? "bad" : "ok"}" style="display:inline-flex;margin:8px 0;padding:4px 10px;border-radius:999px;border:1px solid #e2e8f0;font-size:12px;font-weight:700">
++          ${state.locked ? "Emergency billing LOCKED" : "Emergency session ACTIVE"}
++        </div>
++        <p class="muted">${syncedLabel()}</p>
+         <form id="login">
+           <label>Username</label>
+           <input name="username" autocomplete="username" required />
+           <label>PIN</label>
+           <input name="pin" type="password" autocomplete="current-password" required />
+-          <div class="row" style="margin-top:12px"><button type="submit">Login</button></div>
+-          <p id="err" class="muted"></p>
++          <div style="margin-top:14px"><button class="btn btn-primary" type="submit">Login</button></div>
++          <p id="err" class="muted" style="color:#b91c1c"></p>
+         </form>
+       </div>
+     </div>`;
+@@ -87,149 +106,303 @@ function renderLogin() {
+ 
+ function renderMain() {
+   const admin = state.me.role === "admin" || state.me.role === "super_admin";
++  const pending = state.ops?.pendingTransactionCount ?? state.bills.filter((b) => b.status === "PENDING").length;
++  const failed = state.ops?.failedTransactionCount ?? 0;
++  const conflicts = state.ops?.conflictTransactionCount ?? 0;
++
+   app.innerHTML = `
+-    <div class="wrap">
+-      <div class="row" style="justify-content:space-between">
+-        <div>
+-          <h1>CARE Emergency Billing</h1>
+-          <div class="muted">${state.me.name} · ${state.me.role}</div>
+-        </div>
+-        <div class="row">
+-          ${admin && state.locked ? `<button id="start">START EMERGENCY SESSION</button>` : ""}
+-          ${admin && !state.locked ? `<button id="end" class="secondary">END EMERGENCY SESSION</button>` : ""}
+-          ${admin ? `<button id="csv" class="secondary">Export CSV</button><button id="json" class="secondary">Export JSON</button><button id="usb" class="secondary">USB package</button>` : ""}
+-          <button id="logout" class="secondary">Logout</button>
+-        </div>
++    <div class="desk" data-desk="modern">
++      <div class="emg-banner">
++        EMERGENCY MODE — PRIMARY CARE ERP OFFLINE
++        <span>${state.careStatus.state === "online" ? "(Main CARE reachable — still emergency capture)" : "(Use this desk until Main CARE is restored)"}</span>
++      </div>
++
++      <div class="topbar">
++        <span class="date">${todayLabel()}</span>
++        <span class="title">Billing Desk</span>
++        <span class="next">Emergency capture · EMG-* bills</span>
++        <div class="spacer"></div>
++        <span class="pill ${carePillClass()}" title="Main CARE reachability">
++          MAIN CARE · ${escapeHtml(String(state.careStatus.label || state.careStatus.state).toUpperCase())}
++        </span>
++        <span class="pill">${escapeHtml(state.me.name)} · ${escapeHtml(state.me.role)}</span>
++        ${admin && state.locked ? `<button class="topbar-btn primary" id="start">START SESSION</button>` : ""}
++        ${admin && !state.locked ? `<button class="topbar-btn" id="end">END SESSION</button>` : ""}
++        <button class="topbar-btn" id="newbill">New</button>
++        <button class="topbar-btn" id="logout">Logout</button>
++      </div>
++
++      <div class="status-strip">
++        <span class="chip ${syncChipClass()}"><span class="dot"></span>${syncedLabel()}</span>
++        <span class="chip ${state.careStatus.state === "online" ? "ok" : state.careStatus.state === "offline" ? "bad" : "warn"}">
++          <span class="dot"></span>Main CARE: ${escapeHtml(state.careStatus.label || state.careStatus.state)}
++        </span>
++        <span class="chip">Pending: <b>${pending}</b></span>
++        ${failed ? `<span class="chip bad">Failed: <b>${failed}</b></span>` : ""}
++        ${conflicts ? `<span class="chip bad">Conflicts: <b>${conflicts}</b></span>` : ""}
+       </div>
+-      <div class="banner ${state.locked ? "lock" : "ok"}">${state.locked ? "EMERGENCY BILLING LOCKED" : "SESSION ACTIVE — reception may bill"}</div>
+-      <div class="banner ${syncBannerClass()}">${syncedLabel()}</div>
+-      ${state.locked ? `<div class="card">Ask the owner/admin to start an emergency session. Reception cannot unlock this screen.</div>` : billForm()}
+-      <div class="card">
+-        <h2>Today's emergency bills</h2>
+-        <div id="bills"></div>
++
++      <div class="lock-banner ${state.locked ? "locked" : "active"}">
++        ${state.locked
++          ? "EMERGENCY BILLING LOCKED — owner/admin must START SESSION before reception can bill"
++          : "SESSION ACTIVE — reception may bill on this emergency desk"}
++      </div>
++
++      ${state.locked
++        ? `<div class="locked-card">Ask the owner/admin to start an emergency session. Reception cannot unlock this screen.</div>`
++        : deskLayout()}
++
++      ${admin ? opsPanel() : ""}
++
++      <div class="card" style="margin:10px">
++        <div class="sec-h slate">Today's emergency bills</div>
++        <div class="sec-body" id="bills"></div>
+       </div>
++
++      ${state.toast ? `<div class="toast ${state.toast.kind}">${escapeHtml(state.toast.msg)}</div>` : ""}
+     </div>`;
++
+   $("#logout").onclick = async () => { await api("/api/logout", { method: "POST" }); state.me = null; render(); };
+   if ($("#start")) $("#start").onclick = startSession;
+   if ($("#end")) $("#end").onclick = endSession;
+-  if ($("#csv")) $("#csv").onclick = () => download("/api/export/csv", "emergency.csv");
+-  if ($("#json")) $("#json").onclick = () => download("/api/export/json", "emergency.json");
+-  if ($("#usb")) $("#usb").onclick = exportUsb;
++  if ($("#newbill")) $("#newbill").onclick = () => {
++    state.patient = null;
++    state.lines = [];
++    state.referringDoctor = null;
++    render();
++  };
+   if (!state.locked) bindBillForm();
++  bindOps();
+   renderBills();
+ }
+ 
+-function billForm() {
++function deskLayout() {
++  const p = state.patient;
+   return `
+-    <div class="card">
+-      <h2>New emergency bill</h2>
+-      <div class="grid">
+-        <div>
+-          <label>Search patient (name / UHID / mobile)</label>
+-          <input id="pq" placeholder="Type at least 2 characters" />
+-          <div id="psug" class="suggest hidden"></div>
+-          <div class="grid" style="margin-top:8px">
+-            <div><label>First name</label><input id="fn" /></div>
+-            <div><label>Last name</label><input id="ln" /></div>
+-            <div><label>Mobile</label><input id="mob" /></div>
+-            <div><label>Sex</label><select id="sex"><option value="M">Male</option><option value="F">Female</option><option value="O">Other</option></select></div>
+-            <div><label>Age</label><input id="age" type="number" min="0" /></div>
+-            <div><label>UHID</label><input id="uhid" readonly /></div>
++    <div class="desk-body">
++      <div class="col-left">
++        <div class="card">
++          <div class="sec-h sky">Patient</div>
++          <div class="sec-body">
++            ${p ? `
++              <div class="patient-selected">
++                <div>
++                  <div class="name">${escapeHtml(p.first_name || p.firstName || "")} ${escapeHtml(p.last_name || p.lastName || "")}</div>
++                  <div class="meta">${escapeHtml(p.patient_id || p.uhid || "New")} · ${escapeHtml(p.phone || p.mobile || "")}</div>
++                </div>
++                <button type="button" class="clear" id="clear-patient" title="Clear">×</button>
++              </div>` : `
++              <div class="search-wrap">
++                <span class="search-ico">⌕</span>
++                <input class="input" id="pq" placeholder="Search patient (name / UHID / mobile)…" autocomplete="off" />
++                <div id="psug" class="suggest hidden"></div>
++              </div>
++              <div class="grid-2" style="margin-top:10px">
++                <div><label class="field-label">First name</label><input class="input" id="fn" /></div>
++                <div><label class="field-label">Last name</label><input class="input" id="ln" /></div>
++                <div><label class="field-label">Mobile</label><input class="input" id="mob" /></div>
++                <div><label class="field-label">Sex</label>
++                  <select class="select" id="sex"><option value="M">Male</option><option value="F">Female</option><option value="O">Other</option></select>
++                </div>
++                <div><label class="field-label">Age</label><input class="input" id="age" type="number" min="0" /></div>
++                <div><label class="field-label">UHID</label><input class="input" id="uhid" readonly placeholder="Auto / from CARE cache" /></div>
++              </div>`}
+           </div>
+         </div>
+-        <div>
+-          <label>Referring doctor</label>
+-          <input id="dq" placeholder="Search name / specialization — blank = walk-in" autocomplete="off" value="${state.referringDoctor ? escapeHtml(state.referringDoctor.name) : ""}" />
+-          <div id="dsug" class="suggest hidden"></div>
+-          <div id="docpicked" class="muted">${state.referringDoctor ? escapeHtml(state.referringDoctor.name) + (state.referringDoctor.specialization ? " · " + escapeHtml(state.referringDoctor.specialization) : "") : "Walk-in / none"}</div>
+-          <label>Search service</label>
+-          <input id="sq" placeholder="MRI, CBC…" />
+-          <div id="ssug" class="suggest hidden"></div>
+-          <div id="lines"></div>
++
++        <div class="card">
++          <div class="sec-h violet">Referring Doctor</div>
++          <div class="sec-body">
++            ${state.referringDoctor ? `
++              <div class="doc-picked">
++                <span>${escapeHtml(state.referringDoctor.name)}${state.referringDoctor.specialization ? " · " + escapeHtml(state.referringDoctor.specialization) : ""}</span>
++                <button type="button" class="clear" id="clear-doc">×</button>
++              </div>` : ""}
++            <div class="search-wrap">
++              <span class="search-ico">⌕</span>
++              <input class="input" id="dq" placeholder="Search doctor or leave blank for Walk-in…" autocomplete="off"
++                value="${state.referringDoctor ? escapeHtml(state.referringDoctor.name) : ""}" />
++              <div id="dsug" class="suggest hidden"></div>
++            </div>
++            <p class="muted" style="margin:8px 0 0">${state.referringDoctor ? "Selected above" : "Walk-in / none"}</p>
++          </div>
++        </div>
++
++        <div class="card">
++          <div class="sec-h teal">Investigations</div>
++          <div class="sec-body">
++            <div class="search-wrap">
++              <span class="search-ico">⌕</span>
++              <input class="input" id="sq" placeholder="Search investigations (MRI, CBC…)" autocomplete="off" />
++              <div id="ssug" class="suggest hidden"></div>
++            </div>
++            <p class="muted" style="margin:8px 0 0">Selected tests appear on the right — same as CARE Billing Desk.</p>
++          </div>
+         </div>
+       </div>
+-      <div class="tot" style="margin:12px 0">
+-        <div>Gross <b id="gross">₹0</b></div>
+-        <div>Discount <input id="disc" type="number" min="0" value="0" /></div>
+-        <div>Net <b id="net">₹0</b></div>
+-        <div>Due <b id="due">₹0</b></div>
+-      </div>
+-      <div class="grid">
+-        <div><label>Discount reason</label><select id="dreason"><option value="">—</option>${state.reasons.map(r => `<option>${escapeHtml(r)}</option>`).join("")}</select></div>
+-        <div><label>Notes</label><input id="notes" /></div>
+-        <div><label>Cash</label><input id="cash" type="number" min="0" value="0" /></div>
+-        <div><label>UPI</label><input id="upi" type="number" min="0" value="0" /></div>
+-        <div><label>Card</label><input id="card" type="number" min="0" value="0" /></div>
++
++      <div class="col-right">
++        <div class="card">
++          <div class="sec-h amber">Selected Tests</div>
++          <div class="sec-body" id="lines"></div>
++        </div>
++
++        <div class="card">
++          <div class="sec-h emerald">Bill Summary</div>
++          <div class="sec-body">
++            <div class="sum-row"><span>Gross</span><span class="val tabular" id="gross">₹0</span></div>
++            <div class="sum-row">
++              <span>Discount</span>
++              <input class="input" id="disc" type="number" min="0" value="0" style="width:110px;height:30px;text-align:right" />
++            </div>
++            <div style="margin:6px 0">
++              <label class="field-label">Discount reason</label>
++              <select class="select" id="dreason"><option value="">—</option>${state.reasons.map((r) => `<option>${escapeHtml(r)}</option>`).join("")}</select>
++            </div>
++            <div style="margin:6px 0">
++              <label class="field-label">Notes</label>
++              <input class="input" id="notes" placeholder="Optional notes…" />
++            </div>
++            <div class="sum-net"><span class="lbl">Net Total</span><span class="val tabular" id="net">₹0</span></div>
++            <div class="sum-row" style="margin-top:4px"><span>Due</span><span class="val tabular" id="due">₹0</span></div>
++          </div>
++        </div>
++
++        <div class="card">
++          <div class="sec-h indigo">Payment</div>
++          <div class="sec-body">
++            <div class="pay-grid">
++              <div><label class="field-label">Cash</label><input class="input" id="cash" type="number" min="0" value="0" /></div>
++              <div><label class="field-label">UPI</label><input class="input" id="upi" type="number" min="0" value="0" /></div>
++              <div><label class="field-label">Card</label><input class="input" id="card" type="number" min="0" value="0" /></div>
++            </div>
++            <div class="btn-row">
++              <button class="btn btn-primary" id="save">Save &amp; Print Receipt</button>
++            </div>
++            <p id="berr" class="muted" style="color:#b91c1c;margin-top:8px"></p>
++          </div>
++        </div>
+       </div>
+-      <div class="row" style="margin-top:12px">
+-        <button id="save">Save & print receipt</button>
+-        <span id="berr" class="muted"></span>
++    </div>`;
++}
++
++function opsPanel() {
++  return `
++    <div class="card" style="margin:10px">
++      <div class="sec-h slate">Emergency System Status</div>
++      <div class="sec-body">
++        <div class="ops-grid">
++          <div class="ops-stat"><div class="k">Main CARE</div><div class="v">${escapeHtml(state.careStatus.label || state.careStatus.state)}</div></div>
++          <div class="ops-stat"><div class="k">Emergency DB</div><div class="v">${state.ops?.databaseHealthy === false ? "Failed" : "Healthy"}</div></div>
++          <div class="ops-stat"><div class="k">Pending</div><div class="v">${state.ops?.pendingTransactionCount ?? "—"}</div></div>
++          <div class="ops-stat"><div class="k">Failed / Conflict</div><div class="v">${(state.ops?.failedTransactionCount ?? 0) + (state.ops?.conflictTransactionCount ?? 0)}</div></div>
++        </div>
++        <div class="ops-actions">
++          <button class="btn btn-amber" id="sync-from-main">Sync From Main CARE</button>
++          <button class="btn btn-primary" id="push-to-main" style="width:auto">Push Emergency Data</button>
++          <button class="btn btn-secondary" id="retry-failed">Retry Failed</button>
++          <button class="btn btn-secondary" id="csv">Export CSV</button>
++          <button class="btn btn-secondary" id="json">Export JSON</button>
++          <button class="btn btn-secondary" id="usb">USB package</button>
++          <button class="btn btn-secondary" id="backup-dl">Download Backup</button>
++        </div>
++        <p id="ops-msg" class="muted" style="margin-top:8px"></p>
+       </div>
+     </div>`;
+ }
+ 
++function bindOps() {
++  const msg = (t, ok = true) => {
++    const el = $("#ops-msg");
++    if (el) { el.style.color = ok ? "#065f46" : "#b91c1c"; el.textContent = t; }
++    toast(t, ok ? "ok" : "err");
++  };
++  if ($("#sync-from-main")) $("#sync-from-main").onclick = async () => {
++    try {
++      const r = await api("/api/care/sync-master", { method: "POST" });
++      await boot();
++      msg(`Synced from Main CARE — ${r.serviceCount ?? "?"} services, ${r.doctorCount ?? "?"} doctors`);
++    } catch (err) { msg(err.message, false); }
++  };
++  if ($("#push-to-main")) $("#push-to-main").onclick = async () => {
++    try {
++      const r = await api("/api/care/push-transactions", { method: "POST" });
++      await refreshBills();
++      await refreshOps();
++      render();
++      msg(`Pushed to Main CARE — created ${r.created ?? 0}, already ${r.alreadyReconciled ?? r.duplicates ?? 0}, failed ${r.failures ?? 0}`);
++    } catch (err) { msg(err.message, false); }
++  };
++  if ($("#retry-failed")) $("#retry-failed").onclick = async () => {
++    try {
++      const r = await api("/api/care/retry-failed", { method: "POST" });
++      await refreshBills();
++      await refreshOps();
++      render();
++      msg(`Retry complete — created ${r.created ?? 0}, failed ${r.failures ?? 0}`);
++    } catch (err) { msg(err.message, false); }
++  };
++  if ($("#csv")) $("#csv").onclick = () => download("/api/export/csv", "emergency.csv");
++  if ($("#json")) $("#json").onclick = () => download("/api/export/json", "emergency.json");
++  if ($("#usb")) $("#usb").onclick = exportUsb;
++  if ($("#backup-dl")) $("#backup-dl").onclick = () => download("/api/export/backup.sql", `care_emergency_backup_${Date.now()}.sql`);
++}
++
+ function bindBillForm() {
+-  $("#pq").oninput = debounce(async (e) => {
++  if ($("#clear-patient")) $("#clear-patient").onclick = () => { state.patient = null; render(); };
++  if ($("#clear-doc")) $("#clear-doc").onclick = () => { state.referringDoctor = null; render(); };
++
++  if ($("#pq")) $("#pq").oninput = debounce(async (e) => {
+     const q = e.target.value.trim();
+     if (q.length < 2) { $("#psug").classList.add("hidden"); return; }
+     const rows = await api("/api/patients?q=" + encodeURIComponent(q));
+     const box = $("#psug");
+     box.classList.remove("hidden");
+-    box.innerHTML = rows.map((p) => `<div data-id="${p.id}">${escapeHtml(p.patient_id)} — ${escapeHtml(p.first_name)} ${escapeHtml(p.last_name)} · ${escapeHtml(p.phone)}</div>`).join("") || "<div>No local match — register below</div>";
+-    box.querySelectorAll("div[data-id]").forEach((el) => {
++    box.innerHTML = rows.length
++      ? rows.map((p) => `<button type="button" data-id="${p.id}"><strong>${escapeHtml(p.patient_id)}</strong> — ${escapeHtml(p.first_name)} ${escapeHtml(p.last_name)} <span class="muted">${escapeHtml(p.phone)}</span></button>`).join("")
++      : `<div class="empty">No local match — register below</div>`;
++    box.querySelectorAll("button[data-id]").forEach((el) => {
+       el.onclick = () => {
+         const p = rows.find((x) => String(x.id) === el.dataset.id);
+         state.patient = p;
+-        $("#fn").value = p.first_name;
+-        $("#ln").value = p.last_name;
+-        $("#mob").value = p.phone;
+-        $("#uhid").value = p.patient_id;
+-        $("#age").value = p.age_value || "";
+-        $("#sex").value = String(p.gender || "").toLowerCase().startsWith("f") ? "F" : String(p.gender || "").toLowerCase().startsWith("m") ? "M" : "O";
+-        box.classList.add("hidden");
++        render();
+       };
+     });
+   });
+-  $("#dq").oninput = debounce(async (e) => {
++
++  if ($("#dq")) $("#dq").oninput = debounce(async (e) => {
+     const q = e.target.value.trim();
+     if (state.referringDoctor && q !== state.referringDoctor.name) state.referringDoctor = null;
+     const box = $("#dsug");
+-    const picked = $("#docpicked");
+-    if (q.length < 1) {
+-      state.referringDoctor = null;
+-      box.classList.add("hidden");
+-      if (picked) picked.textContent = "Walk-in / none";
+-      return;
+-    }
++    if (q.length < 1) { box.classList.add("hidden"); return; }
+     const rows = await api("/api/doctors?q=" + encodeURIComponent(q));
+     box.classList.remove("hidden");
+-    box.innerHTML = `<div data-id="">Walk-in / none</div>` + rows.map((d) =>
+-      `<div data-id="${d.id}">${escapeHtml(d.name)}${d.specialization ? " · " + escapeHtml(d.specialization) : ""}</div>`
++    box.innerHTML = `<button type="button" data-id="">Walk-in / none</button>` + rows.map((d) =>
++      `<button type="button" data-id="${d.id}">${escapeHtml(d.name)}${d.specialization ? `<span class="muted" style="margin-left:auto">${escapeHtml(d.specialization)}</span>` : ""}</button>`
+     ).join("");
+-    box.querySelectorAll("div[data-id]").forEach((el) => {
++    box.querySelectorAll("button[data-id]").forEach((el) => {
+       el.onclick = () => {
+         if (!el.dataset.id) {
+           state.referringDoctor = null;
+-          $("#dq").value = "";
+-          if (picked) picked.textContent = "Walk-in / none";
+         } else {
+           const d = rows.find((x) => String(x.id) === el.dataset.id);
+           state.referringDoctor = d ? { id: d.id, name: d.name, specialization: d.specialization || "" } : null;
+-          $("#dq").value = d?.name || "";
+-          if (picked) picked.textContent = d ? (d.name + (d.specialization ? " · " + d.specialization : "")) : "Walk-in / none";
+         }
+-        box.classList.add("hidden");
++        render();
+       };
+     });
+   });
+-  $("#sq").oninput = debounce(async (e) => {
++
++  if ($("#sq")) $("#sq").oninput = debounce(async (e) => {
+     const q = e.target.value.trim();
+     if (q.length < 1) { $("#ssug").classList.add("hidden"); return; }
+     const rows = await api("/api/services?q=" + encodeURIComponent(q));
+     const box = $("#ssug");
+     box.classList.remove("hidden");
+-    box.innerHTML = rows.map((s) => `<div data-id="${s.id}">${escapeHtml(s.category)} · ${escapeHtml(s.name)} — ${fmt(s.price)}</div>`).join("");
+-    box.querySelectorAll("div[data-id]").forEach((el) => {
++    box.innerHTML = rows.map((s) =>
++      `<button type="button" data-id="${s.id}"><span>${escapeHtml(s.category)} · ${escapeHtml(s.name)}</span><strong class="tabular" style="margin-left:auto">${fmt(s.price)}</strong></button>`
++    ).join("") || `<div class="empty">No services</div>`;
++    box.querySelectorAll("button[data-id]").forEach((el) => {
+       el.onclick = () => {
+         const s = rows.find((x) => String(x.id) === el.dataset.id);
+         state.lines.push({ careServiceId: s.id, serviceName: s.name, category: s.category, quantity: 1, unitPrice: Number(s.price) });
+@@ -239,17 +412,47 @@ function bindBillForm() {
+       };
+     });
+   });
+-  $("#disc").oninput = $("#cash").oninput = $("#upi").oninput = $("#card").oninput = updateTotals;
+-  $("#save").onclick = saveBill;
++
++  if ($("#disc")) $("#disc").oninput = updateTotals;
++  if ($("#cash")) $("#cash").oninput = updateTotals;
++  if ($("#upi")) $("#upi").oninput = updateTotals;
++  if ($("#card")) $("#card").oninput = updateTotals;
++  if ($("#save")) $("#save").onclick = saveBill;
++
++  // Prefill patient fields when selected card is showing register form path
++  if (state.patient && $("#fn")) {
++    $("#fn").value = state.patient.first_name || "";
++    $("#ln").value = state.patient.last_name || "";
++    $("#mob").value = state.patient.phone || "";
++    $("#uhid").value = state.patient.patient_id || "";
++    $("#age").value = state.patient.age_value || "";
++    $("#sex").value = String(state.patient.gender || "").toLowerCase().startsWith("f") ? "F"
++      : String(state.patient.gender || "").toLowerCase().startsWith("m") ? "M" : "O";
++  }
+   renderLines();
+ }
+ 
+ function renderLines() {
+   const el = $("#lines");
+   if (!el) return;
+-  el.innerHTML = state.lines.map((l, i) => `<div class="row">${escapeHtml(l.serviceName)} × <input data-i="${i}" class="qty" type="number" min="1" value="${l.quantity}" style="width:70px"> ${fmt(l.unitPrice * l.quantity)} <button class="danger rm" data-i="${i}">×</button></div>`).join("");
+-  el.querySelectorAll(".qty").forEach((inp) => inp.oninput = () => { state.lines[Number(inp.dataset.i)].quantity = Number(inp.value || 1); renderLines(); });
+-  el.querySelectorAll(".rm").forEach((b) => b.onclick = () => { state.lines.splice(Number(b.dataset.i), 1); renderLines(); });
++  if (!state.lines.length) {
++    el.innerHTML = `<p class="muted">No investigations selected yet.</p>`;
++    updateTotals();
++    return;
++  }
++  el.innerHTML = state.lines.map((l, i) => `
++    <div class="line-row">
++      <div class="nm">${escapeHtml(l.serviceName)}</div>
++      <input class="qty" data-i="${i}" type="number" min="1" value="${l.quantity}" />
++      <div class="amt tabular">${fmt(l.unitPrice * l.quantity)}</div>
++      <button type="button" class="rm" data-i="${i}">×</button>
++    </div>`).join("");
++  el.querySelectorAll(".qty").forEach((inp) => {
++    inp.oninput = () => { state.lines[Number(inp.dataset.i)].quantity = Number(inp.value || 1); renderLines(); };
++  });
++  el.querySelectorAll(".rm").forEach((b) => {
++    b.onclick = () => { state.lines.splice(Number(b.dataset.i), 1); renderLines(); };
++  });
+   updateTotals();
+ }
+ 
+@@ -264,32 +467,37 @@ function updateTotals() {
+ }
+ 
+ async function saveBill() {
+-  $("#berr").textContent = "";
++  if ($("#berr")) $("#berr").textContent = "";
+   try {
+     const doc = state.referringDoctor;
++    const selected = state.patient;
+     const txn = await api("/api/bills", {
+       method: "POST",
+       body: {
+         patient: {
+-          carePatientId: state.patient?.id || null,
+-          uhid: $("#uhid").value || null,
+-          firstName: $("#fn").value,
+-          lastName: $("#ln").value,
+-          mobile: $("#mob").value,
+-          sex: $("#sex").value,
+-          ageValue: $("#age").value ? Number($("#age").value) : null,
+-          ageUnit: state.patient?.age_unit || "years",
++          carePatientId: selected?.id || null,
++          uhid: selected?.patient_id || $("#uhid")?.value || null,
++          firstName: selected?.first_name || $("#fn")?.value,
++          lastName: selected?.last_name || $("#ln")?.value,
++          mobile: selected?.phone || $("#mob")?.value,
++          sex: selected
++            ? (String(selected.gender || "").toLowerCase().startsWith("f") ? "F"
++              : String(selected.gender || "").toLowerCase().startsWith("m") ? "M" : "O")
++            : $("#sex")?.value,
++          ageValue: selected?.age_value != null ? Number(selected.age_value)
++            : ($("#age")?.value ? Number($("#age").value) : null),
++          ageUnit: selected?.age_unit || "years",
+         },
+         referringDoctorId: doc?.id || null,
+         referringDoctorName: doc?.name || null,
+         lines: state.lines.map((l) => ({ careServiceId: l.careServiceId, quantity: l.quantity })),
+-        discountAmount: Number($("#disc").value || 0),
+-        discountReason: $("#dreason").value || null,
+-        notes: $("#notes").value || null,
++        discountAmount: Number($("#disc")?.value || 0),
++        discountReason: $("#dreason")?.value || null,
++        notes: $("#notes")?.value || null,
+         payments: [
+-          { method: "cash", amount: Number($("#cash").value || 0) },
+-          { method: "upi", amount: Number($("#upi").value || 0) },
+-          { method: "card", amount: Number($("#card").value || 0) },
++          { method: "cash", amount: Number($("#cash")?.value || 0) },
++          { method: "upi", amount: Number($("#upi")?.value || 0) },
++          { method: "card", amount: Number($("#card")?.value || 0) },
+         ],
+       },
+     });
+@@ -297,9 +505,13 @@ async function saveBill() {
+     state.patient = null;
+     state.referringDoctor = null;
+     await refreshBills();
++    await refreshOps();
+     render();
++    toast(`Bill ${txn.emergencyBillNumber} saved`);
+     await printReceipt(txn);
+-  } catch (err) { $("#berr").textContent = err.message; }
++  } catch (err) {
++    if ($("#berr")) $("#berr").textContent = err.message;
++  }
+ }
+ 
+ function patientDisplayName(p) {
+@@ -311,7 +523,6 @@ function patientDisplayName(p) {
+     .trim()
+     .toUpperCase();
+ }
+-
+ function sexShort(sex) {
+   const v = String(sex || "").trim().toUpperCase();
+   if (!v) return "";
+@@ -319,7 +530,6 @@ function sexShort(sex) {
+   if (v === "F" || v.startsWith("FEMALE")) return "F";
+   return "O";
+ }
+-
+ function ageUnitShort(unit) {
+   const s = String(unit || "years").toLowerCase();
+   if (s.startsWith("month")) return "M";
+@@ -327,7 +537,6 @@ function ageUnitShort(unit) {
+   if (s.startsWith("week")) return "W";
+   return "Y";
+ }
+-
+ function ageSexLine(p) {
+   const ageNum = p?.ageValue;
+   const hasAge = ageNum != null && ageNum !== "" && !Number.isNaN(Number(ageNum));
+@@ -336,16 +545,12 @@ function ageSexLine(p) {
+   if (age && sex) return `${age} / ${sex}`;
+   return age || sex || "—";
+ }
+-
+ function istStamp(iso) {
+   if (!iso) return "";
+   return new Date(iso).toLocaleString("en-IN", {
+     timeZone: "Asia/Kolkata",
+-    day: "2-digit",
+-    month: "short",
+-    year: "numeric",
+-    hour: "2-digit",
+-    minute: "2-digit",
++    day: "2-digit", month: "short", year: "numeric",
++    hour: "2-digit", minute: "2-digit",
+   });
+ }
+ 
+@@ -362,7 +567,7 @@ function receiptHtml(t) {
+         <img class="rcpt-logo" src="/logo.png" alt="" />
+         <div>
+           <div class="rcpt-title">Emergency Receipt</div>
+-          <div class="rcpt-sub">Not a final CARE bill</div>
++          <div class="rcpt-sub">Not a final CARE bill — Billing Desk emergency capture</div>
+         </div>
+       </div>
+       ${voided ? `<div class="rcpt-void">VOID${t.voidReason ? " — " + escapeHtml(t.voidReason) : ""}</div>` : ""}
+@@ -435,16 +640,22 @@ async function printReceipt(t) {
+ function renderBills() {
+   const el = $("#bills");
+   if (!el) return;
+-  el.innerHTML = `<table><thead><tr><th>No</th><th>Patient</th><th>Net</th><th>Paid</th><th>Due</th><th>Status</th><th></th></tr></thead><tbody>
++  if (!state.bills.length) {
++    el.innerHTML = `<p class="muted">No emergency bills yet today.</p>`;
++    return;
++  }
++  el.innerHTML = `<table class="bills"><thead><tr><th>No</th><th>Patient</th><th>Net</th><th>Paid</th><th>Due</th><th>Status</th><th></th></tr></thead><tbody>
+     ${state.bills.map((b) => `<tr>
+       <td>${escapeHtml(b.emergencyBillNumber)}</td>
+-      <td>${escapeHtml(b.patient.firstName + " " + b.patient.lastName)}</td>
+-      <td>${fmt(b.netAmount)}</td>
+-      <td>${fmt(b.amountReceived)}</td>
+-      <td>${fmt(b.dueAmount)}</td>
+-      <td>${b.status}</td>
+-      <td>${b.status === "PENDING" ? `<button class="danger void" data-u="${b.emergencyTransactionUuid}">Void</button>` : ""}
+-          <button class="secondary pr" data-u="${b.emergencyTransactionUuid}">Print</button></td>
++      <td>${escapeHtml((b.patient?.firstName || "") + " " + (b.patient?.lastName || ""))}</td>
++      <td class="tabular">${fmt(b.netAmount)}</td>
++      <td class="tabular">${fmt(b.amountReceived)}</td>
++      <td class="tabular">${fmt(b.dueAmount)}</td>
++      <td><span class="badge ${escapeHtml(b.syncStatus || b.status)}">${escapeHtml(String(b.syncStatus || b.status).toUpperCase())}</span></td>
++      <td>
++        ${b.status === "PENDING" ? `<button class="btn btn-danger void" data-u="${b.emergencyTransactionUuid}" style="height:28px;font-size:11px">Void</button>` : ""}
++        <button class="btn btn-secondary pr" data-u="${b.emergencyTransactionUuid}" style="height:28px;font-size:11px">Print</button>
++      </td>
+     </tr>`).join("")}
+   </tbody></table>`;
+   el.querySelectorAll(".void").forEach((b) => b.onclick = async () => {
+@@ -473,6 +684,10 @@ async function endSession() {
+ }
+ async function download(url, name) {
+   const res = await fetch(url, { credentials: "include" });
++  if (!res.ok) {
++    toast("Download failed", "err");
++    return;
++  }
+   const blob = await res.blob();
+   const a = document.createElement("a");
+   a.href = URL.createObjectURL(blob);
+@@ -490,6 +705,16 @@ async function exportUsb() {
+ async function refreshBills() {
+   try { state.bills = await api("/api/bills"); } catch { state.bills = []; }
+ }
++async function refreshOps() {
++  try { state.ops = await api("/api/ops/status"); } catch { /* optional */ }
++}
++async function refreshCareStatus() {
++  try {
++    state.careStatus = await api("/api/care/status");
++  } catch {
++    state.careStatus = { state: "unknown", label: "Unavailable" };
++  }
++}
+ async function boot() {
+   try {
+     const me = await api("/api/me");
+@@ -501,6 +726,8 @@ async function boot() {
+     state.neverSynced = !!me.neverSynced;
+     state.reasons = await api("/api/discount-reasons");
+     await refreshBills();
++    await refreshOps();
++    await refreshCareStatus();
+   } catch {
+     const st = await api("/api/status");
+     state.me = null;
+@@ -508,6 +735,7 @@ async function boot() {
+     state.syncedAt = st.masterDataLastSyncedAt;
+     state.ageBand = st.ageBand || "never";
+     state.neverSynced = !!st.neverSynced;
++    await refreshCareStatus();
+   }
+   render();
+ }
+@@ -517,4 +745,8 @@ function debounce(fn, ms = 200) {
+ function escapeHtml(s) {
+   return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+ }
++
+ boot();
++setInterval(() => { if (state.me) refreshCareStatus().then(() => {
++  // soft refresh top pill without full re-render unless state changed
++}).catch(() => {}); }, 30_000);
+diff --git a/artifacts/emergency-billing/public/index.html b/artifacts/emergency-billing/public/index.html
+index 16ddfd9..0fb592c 100644
+--- a/artifacts/emergency-billing/public/index.html
++++ b/artifacts/emergency-billing/public/index.html
+@@ -3,7 +3,7 @@
+ <head>
+   <meta charset="UTF-8" />
+   <meta name="viewport" content="width=device-width, initial-scale=1" />
+-  <title>CARE Emergency Billing</title>
++  <title>CARE Billing Desk — Emergency</title>
+   <link rel="stylesheet" href="/styles.css" />
+ </head>
+ <body>
+diff --git a/artifacts/emergency-billing/public/styles.css b/artifacts/emergency-billing/public/styles.css
+index 39ff8c3..28adbbb 100644
+--- a/artifacts/emergency-billing/public/styles.css
++++ b/artifacts/emergency-billing/public/styles.css
+@@ -1,47 +1,561 @@
++/* CARE Emergency Billing Desk — visual parity with CARE ERP Billing Desk (modern light skin).
++   Capture-only emergency APIs underneath; presentation mirrors /erp Billing Desk. */
++
+ :root {
+-  --bg: #0f172a;
+-  --card: #1e293b;
+-  --line: #334155;
+-  --text: #f8fafc;
+-  --muted: #94a3b8;
+-  --accent: #f59e0b;
+-  --danger: #ef4444;
+-  --ok: #22c55e;
+-  --input: #0b1220;
++  --bg: #f4f6f9;
++  --card: #ffffff;
++  --line: #dde3ec;
++  --text: #1a3a5c;
++  --muted: #64748b;
++  --muted-2: #94a3b8;
++  --primary: #2563eb;
++  --danger: #dc2626;
++  --ok: #059669;
++  --warn: #d97706;
++  --sky: #0ea5e9;
++  --violet: #7c3aed;
++  --teal: #0d9488;
++  --amber: #d97706;
++  --emerald: #059669;
++  --indigo: #4f46e5;
++  --topbar-from: #0b2a4a;
++  --topbar-via: #143d6b;
++  --topbar-to: #0f4c81;
++  --radius: 12px;
++  --shadow: 0 1px 2px rgba(15, 23, 42, 0.05), 0 8px 22px -14px rgba(15, 60, 110, 0.25);
++  --font: "Segoe UI", system-ui, -apple-system, sans-serif;
+ }
++
+ * { box-sizing: border-box; }
+-html, body { margin: 0; background: var(--bg); color: var(--text); font-family: "Segoe UI", system-ui, sans-serif; }
+-h1, h2 { margin: 0 0 8px; }
+-.wrap { max-width: 1100px; margin: 0 auto; padding: 16px; }
+-.card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-bottom: 12px; }
+-.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+-label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+-input, select, textarea, button {
+-  font: inherit; border-radius: 8px; border: 1px solid var(--line); padding: 8px 10px; background: var(--input); color: var(--text);
+-}
+-button { background: var(--accent); color: #111; font-weight: 700; cursor: pointer; border: 0; }
+-button.secondary { background: #334155; color: var(--text); }
+-button.danger { background: var(--danger); color: white; }
+-button:disabled { opacity: .5; cursor: not-allowed; }
+-.banner { padding: 10px 12px; border-radius: 8px; margin-bottom: 12px; font-weight: 600; }
+-.banner.lock { background: #7f1d1d; }
+-.banner.ok { background: #14532d; }
+-.banner.warn { background: #78350f; }
+-.banner.stale { background: #9a3412; border: 2px solid #fb923c; font-size: 1.05em; }
+-.muted { color: var(--muted); font-size: 13px; }
+-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+-th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+-.suggest { background: var(--input); border: 1px solid var(--line); border-radius: 8px; max-height: 220px; overflow: auto; }
+-.suggest div { padding: 8px; cursor: pointer; }
+-.suggest div:hover { background: #334155; }
+-.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+-@media (max-width: 800px) { .grid { grid-template-columns: 1fr; } }
+-.tot { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+-.tot div { background: #0b1220; padding: 8px; border-radius: 8px; }
++html, body {
++  margin: 0;
++  height: 100%;
++  background:
++    radial-gradient(1100px 500px at 85% -10%, rgba(56, 130, 246, 0.10), transparent 60%),
++    radial-gradient(900px 420px at -10% 110%, rgba(16, 185, 129, 0.07), transparent 55%),
++    var(--bg);
++  color: var(--text);
++  font-family: var(--font);
++}
++button, input, select, textarea { font: inherit; }
++button { cursor: pointer; }
++button:disabled { opacity: 0.5; cursor: not-allowed; }
+ .hidden { display: none !important; }
+-.receipt { display: none; }
++.muted { color: var(--muted); font-size: 12px; }
++.tabular { font-variant-numeric: tabular-nums; }
++
++/* ── Login ── */
++.login-wrap {
++  min-height: 100vh;
++  display: flex;
++  align-items: center;
++  justify-content: center;
++  padding: 24px;
++}
++.login-card {
++  width: min(420px, 100%);
++  background: var(--card);
++  border: 1px solid var(--line);
++  border-radius: 14px;
++  box-shadow: var(--shadow);
++  padding: 24px;
++}
++.login-card h1 {
++  margin: 0 0 4px;
++  font-size: 20px;
++  letter-spacing: 0.02em;
++}
++.login-card label {
++  display: block;
++  font-size: 11px;
++  font-weight: 700;
++  text-transform: uppercase;
++  letter-spacing: 0.04em;
++  color: var(--muted);
++  margin: 12px 0 4px;
++}
++.login-card input {
++  width: 100%;
++  height: 38px;
++  border: 1px solid var(--line);
++  border-radius: 10px;
++  padding: 0 12px;
++  background: #fff;
++}
++.login-card input:focus {
++  outline: none;
++  border-color: rgba(37, 99, 235, 0.55);
++  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.18);
++}
++
++/* ── Desk shell ── */
++.desk {
++  min-height: 100vh;
++  display: flex;
++  flex-direction: column;
++}
++.emg-banner {
++  flex-shrink: 0;
++  background: linear-gradient(90deg, #7f1d1d, #b91c1c 40%, #9a3412);
++  color: #fff;
++  text-align: center;
++  font-weight: 800;
++  letter-spacing: 0.06em;
++  font-size: 13px;
++  padding: 8px 12px;
++  text-transform: uppercase;
++  box-shadow: 0 2px 10px rgba(127, 29, 29, 0.35);
++}
++.emg-banner span {
++  opacity: 0.9;
++  font-weight: 600;
++  letter-spacing: 0.02em;
++  text-transform: none;
++  margin-left: 8px;
++  font-size: 12px;
++}
++
++.topbar {
++  flex-shrink: 0;
++  background: linear-gradient(90deg, var(--topbar-from) 0%, var(--topbar-via) 55%, var(--topbar-to) 100%);
++  border-bottom: 1px solid rgba(126, 184, 247, 0.25);
++  box-shadow: 0 2px 14px rgba(15, 60, 110, 0.35);
++  padding: 6px 12px;
++  display: flex;
++  flex-wrap: wrap;
++  align-items: center;
++  gap: 8px 12px;
++  color: #dbeafe;
++}
++.topbar .date { font-size: 11px; font-family: ui-monospace, monospace; opacity: 0.9; }
++.topbar .title { font-size: 13px; font-weight: 800; color: #fff; letter-spacing: 0.04em; }
++.topbar .next { font-size: 10px; opacity: 0.9; }
++.topbar .next strong { color: #fff; }
++.topbar .spacer { flex: 1; min-width: 8px; }
++.topbar .pill {
++  display: inline-flex;
++  align-items: center;
++  gap: 6px;
++  font-size: 11px;
++  font-weight: 700;
++  padding: 4px 8px;
++  border-radius: 999px;
++  background: rgba(255,255,255,0.12);
++}
++.topbar .pill.online { background: rgba(16, 185, 129, 0.25); color: #bbf7d0; }
++.topbar .pill.offline { background: rgba(248, 113, 113, 0.28); color: #fecaca; }
++.topbar .pill.unknown { background: rgba(251, 191, 36, 0.25); color: #fde68a; }
++.topbar-btn {
++  height: 28px;
++  padding: 0 8px;
++  border: 0;
++  border-radius: 8px;
++  background: transparent;
++  color: #bfdbfe;
++  font-size: 11px;
++  font-weight: 700;
++  display: inline-flex;
++  align-items: center;
++  gap: 4px;
++}
++.topbar-btn:hover { background: rgba(255,255,255,0.15); color: #fff; }
++.topbar-btn.primary {
++  background: rgba(255,255,255,0.18);
++  color: #fff;
++}
++
++.status-strip {
++  flex-shrink: 0;
++  display: flex;
++  flex-wrap: wrap;
++  gap: 8px;
++  align-items: center;
++  padding: 8px 12px;
++  background: #fff;
++  border-bottom: 1px solid var(--line);
++  font-size: 12px;
++}
++.status-strip .chip {
++  display: inline-flex;
++  align-items: center;
++  gap: 6px;
++  padding: 4px 10px;
++  border-radius: 999px;
++  border: 1px solid var(--line);
++  background: #f8fafc;
++  font-weight: 600;
++}
++.status-strip .chip.ok { border-color: #a7f3d0; background: #ecfdf5; color: #065f46; }
++.status-strip .chip.warn { border-color: #fcd34d; background: #fffbeb; color: #92400e; }
++.status-strip .chip.bad { border-color: #fecaca; background: #fef2f2; color: #991b1b; }
++.status-strip .dot {
++  width: 8px; height: 8px; border-radius: 50%; background: currentColor;
++}
++
++.lock-banner {
++  flex-shrink: 0;
++  padding: 10px 14px;
++  font-weight: 700;
++  font-size: 13px;
++}
++.lock-banner.locked { background: #fef2f2; color: #991b1b; border-bottom: 1px solid #fecaca; }
++.lock-banner.active { background: #ecfdf5; color: #065f46; border-bottom: 1px solid #a7f3d0; }
++
++/* ── Two-column desk ── */
++.desk-body {
++  flex: 1;
++  display: flex;
++  flex-direction: column;
++  min-height: 0;
++}
++@media (min-width: 1024px) {
++  .desk-body { flex-direction: row; }
++}
++.col-left {
++  width: 100%;
++  padding: 10px;
++  display: flex;
++  flex-direction: column;
++  gap: 10px;
++  overflow: auto;
++}
++@media (min-width: 1024px) {
++  .col-left {
++    width: 65%;
++    border-right: 1px solid var(--line);
++  }
++}
++.col-right {
++  width: 100%;
++  padding: 10px;
++  display: flex;
++  flex-direction: column;
++  gap: 10px;
++  overflow: auto;
++  background: rgba(248, 250, 252, 0.6);
++}
++@media (min-width: 1024px) {
++  .col-right { width: 35%; }
++}
++
++/* ── Section cards (CARE color headers) ── */
++.card {
++  background: var(--card);
++  border: 1px solid var(--line);
++  border-radius: 14px;
++  box-shadow: var(--shadow);
++  overflow: hidden;
++}
++.sec-h {
++  display: flex;
++  align-items: center;
++  gap: 8px;
++  padding: 8px 12px;
++  font-size: 11px;
++  font-weight: 800;
++  letter-spacing: 0.06em;
++  text-transform: uppercase;
++  color: #fff;
++}
++.sec-h.sky { background: linear-gradient(90deg, #0284c7, #0ea5e9); }
++.sec-h.violet { background: linear-gradient(90deg, #6d28d9, #7c3aed); }
++.sec-h.teal { background: linear-gradient(90deg, #0f766e, #14b8a6); }
++.sec-h.amber { background: linear-gradient(90deg, #b45309, #d97706); }
++.sec-h.emerald { background: linear-gradient(90deg, #047857, #059669); }
++.sec-h.indigo { background: linear-gradient(90deg, #4338ca, #4f46e5); }
++.sec-h.slate { background: linear-gradient(90deg, #334155, #475569); }
++.sec-body { padding: 12px; }
++.sec-body.tight { padding: 10px 12px; }
++
++.field-label {
++  display: block;
++  font-size: 10px;
++  font-weight: 700;
++  text-transform: uppercase;
++  letter-spacing: 0.05em;
++  color: var(--muted);
++  margin-bottom: 4px;
++}
++.input, .select {
++  width: 100%;
++  height: 34px;
++  border: 1px solid var(--line);
++  border-radius: 10px;
++  padding: 0 10px;
++  background: #fff;
++  color: var(--text);
++}
++.input:focus, .select:focus {
++  outline: none;
++  border-color: rgba(37, 99, 235, 0.55);
++  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.18);
++}
++.search-wrap { position: relative; }
++.search-wrap .input { padding-left: 32px; }
++.search-ico {
++  position: absolute;
++  left: 10px;
++  top: 50%;
++  transform: translateY(-50%);
++  color: var(--muted-2);
++  font-size: 12px;
++  pointer-events: none;
++}
++.grid-2 {
++  display: grid;
++  grid-template-columns: 1fr 1fr;
++  gap: 8px;
++}
++@media (max-width: 640px) {
++  .grid-2 { grid-template-columns: 1fr; }
++}
+ 
+-/* A5 emergency receipt — compact, one page for typical bills */
++.suggest {
++  position: absolute;
++  z-index: 40;
++  left: 0; right: 0;
++  top: calc(100% + 4px);
++  background: #fff;
++  border: 1px solid var(--line);
++  border-radius: 10px;
++  box-shadow: 0 12px 28px -12px rgba(15, 60, 110, 0.35);
++  max-height: 240px;
++  overflow: auto;
++}
++.suggest button {
++  display: flex;
++  width: 100%;
++  text-align: left;
++  gap: 8px;
++  align-items: center;
++  border: 0;
++  background: transparent;
++  padding: 8px 12px;
++  font-size: 13px;
++  color: var(--text);
++}
++.suggest button:hover { background: #eff6ff; }
++.suggest .empty { padding: 10px 12px; color: var(--muted-2); font-size: 13px; }
++
++.patient-selected {
++  display: flex;
++  align-items: center;
++  gap: 10px;
++  padding: 10px 12px;
++  border: 1px solid #bfdbfe;
++  background: #eff6ff;
++  border-radius: 10px;
++}
++.patient-selected .name { font-weight: 800; color: #1e3a5f; }
++.patient-selected .meta { font-size: 12px; color: var(--muted); }
++.patient-selected .clear {
++  margin-left: auto;
++  border: 0;
++  background: transparent;
++  color: var(--muted-2);
++  font-size: 16px;
++  line-height: 1;
++}
++
++.doc-picked {
++  display: flex;
++  align-items: center;
++  gap: 8px;
++  padding: 8px 10px;
++  background: #eff6ff;
++  border: 1px solid #bfdbfe;
++  border-radius: 8px;
++  font-size: 13px;
++  font-weight: 700;
++  color: #1e3a5f;
++  margin-bottom: 8px;
++}
++.doc-picked .clear {
++  margin-left: auto;
++  border: 0;
++  background: transparent;
++  color: var(--muted-2);
++}
++
++.line-row {
++  display: flex;
++  align-items: center;
++  gap: 8px;
++  padding: 8px 0;
++  border-bottom: 1px solid #f1f5f9;
++  font-size: 13px;
++}
++.line-row:last-child { border-bottom: 0; }
++.line-row .nm { flex: 1; font-weight: 600; min-width: 0; }
++.line-row .qty {
++  width: 64px;
++  height: 30px;
++  border: 1px solid var(--line);
++  border-radius: 8px;
++  padding: 0 6px;
++  text-align: center;
++}
++.line-row .amt { width: 84px; text-align: right; font-weight: 700; }
++.line-row .rm {
++  border: 0;
++  background: #fef2f2;
++  color: var(--danger);
++  width: 28px;
++  height: 28px;
++  border-radius: 8px;
++  font-weight: 800;
++}
++
++.sum-row {
++  display: flex;
++  justify-content: space-between;
++  align-items: center;
++  padding: 4px 0;
++  font-size: 13px;
++  color: #334155;
++}
++.sum-row .val { font-weight: 700; }
++.sum-net {
++  display: flex;
++  justify-content: space-between;
++  align-items: center;
++  padding: 10px 0 4px;
++  margin-top: 6px;
++  border-top: 2px solid #1a3a5c;
++}
++.sum-net .lbl {
++  font-size: 13px;
++  font-weight: 800;
++  text-transform: uppercase;
++  letter-spacing: 0.04em;
++  color: #1a3a5c;
++}
++.sum-net .val {
++  font-size: 28px;
++  font-weight: 800;
++  color: #1a3a5c;
++  line-height: 1;
++}
++
++.pay-grid {
++  display: grid;
++  grid-template-columns: repeat(3, 1fr);
++  gap: 8px;
++}
++.btn {
++  height: 36px;
++  border: 0;
++  border-radius: 10px;
++  padding: 0 14px;
++  font-weight: 800;
++  font-size: 13px;
++  display: inline-flex;
++  align-items: center;
++  justify-content: center;
++  gap: 6px;
++}
++.btn-primary {
++  background: linear-gradient(90deg, #2563eb, #4f46e5);
++  color: #fff;
++  box-shadow: 0 6px 16px -8px rgba(37, 99, 235, 0.45);
++  width: 100%;
++}
++.btn-primary:hover { filter: brightness(1.05); }
++.btn-secondary {
++  background: #f1f5f9;
++  color: #334155;
++  border: 1px solid var(--line);
++}
++.btn-danger {
++  background: #fef2f2;
++  color: var(--danger);
++  border: 1px solid #fecaca;
++}
++.btn-amber {
++  background: #fffbeb;
++  color: #92400e;
++  border: 1px solid #fcd34d;
++}
++.btn-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
++
++.ops-grid {
++  display: grid;
++  grid-template-columns: 1fr 1fr;
++  gap: 8px;
++  font-size: 12px;
++}
++.ops-stat {
++  background: #f8fafc;
++  border: 1px solid var(--line);
++  border-radius: 10px;
++  padding: 8px 10px;
++}
++.ops-stat .k { color: var(--muted); font-size: 10px; font-weight: 700; text-transform: uppercase; }
++.ops-stat .v { font-size: 16px; font-weight: 800; margin-top: 2px; }
++.ops-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
++.ops-actions .btn { height: 32px; font-size: 11px; padding: 0 10px; }
++.toast {
++  position: fixed;
++  right: 16px;
++  bottom: 16px;
++  z-index: 80;
++  background: #0f172a;
++  color: #fff;
++  padding: 12px 14px;
++  border-radius: 12px;
++  box-shadow: 0 12px 30px rgba(0,0,0,0.25);
++  max-width: min(360px, calc(100vw - 32px));
++  font-size: 13px;
++}
++.toast.ok { background: #065f46; }
++.toast.err { background: #991b1b; }
++
++table.bills {
++  width: 100%;
++  border-collapse: collapse;
++  font-size: 12px;
++}
++table.bills th {
++  text-align: left;
++  text-transform: uppercase;
++  letter-spacing: 0.05em;
++  font-size: 10px;
++  color: var(--muted);
++  padding: 6px 8px;
++  border-bottom: 1px solid var(--line);
++}
++table.bills td {
++  padding: 8px;
++  border-bottom: 1px solid #f1f5f9;
++  vertical-align: middle;
++}
++table.bills tr:hover { background: rgba(37, 99, 235, 0.05); }
++.badge {
++  display: inline-block;
++  padding: 2px 8px;
++  border-radius: 999px;
++  font-size: 10px;
++  font-weight: 800;
++  letter-spacing: 0.04em;
++}
++.badge.PENDING, .badge.pending { background: #fffbeb; color: #92400e; border: 1px solid #fcd34d; }
++.badge.RECONCILED, .badge.synced { background: #ecfdf5; color: #065f46; border: 1px solid #a7f3d0; }
++.badge.VOID, .badge.void { background: #f1f5f9; color: #64748b; border: 1px solid #e2e8f0; }
++.badge.FAILED, .badge.failed, .badge.CONFLICT, .badge.conflict { background: #fef2f2; color: #991b1b; border: 1px solid #fecaca; }
++
++.locked-card {
++  margin: 16px;
++  padding: 24px;
++  text-align: center;
++  background: #fff;
++  border: 1px dashed #fecaca;
++  border-radius: 14px;
++  color: #991b1b;
++  font-weight: 600;
++}
++
++/* Receipt print (unchanged semantics) */
++.receipt { display: none; }
+ .rcpt {
+   font-family: "Segoe UI", Arial, Helvetica, sans-serif;
+   color: #111;
+@@ -84,7 +598,6 @@ th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line
+   grid-template-columns: 1fr auto;
+   column-gap: 16px;
+   row-gap: 2px;
+-  align-items: stretch;
+   margin-bottom: 6px;
+   padding-bottom: 6px;
+   border-bottom: 1px solid #999;
+@@ -95,78 +608,28 @@ th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line
+   align-items: center;
+   min-height: 2.6em;
+ }
+-.rcpt-pat-right {
+-  text-align: right;
+-  white-space: nowrap;
+-  justify-items: end;
+-}
+-.rcpt-pat-row {
+-  display: flex;
+-  align-items: baseline;
+-  gap: 8px;
+-  min-height: 1.3em;
+-}
+-.rcpt-pat-right .rcpt-pat-row { justify-content: flex-end; }
+-.rcpt-name {
+-  font-size: 13px;
+-  font-weight: 800;
+-  text-transform: uppercase;
+-  letter-spacing: 0.02em;
+-}
+-.rcpt-agesex { font-size: 11px; }
+-.rcpt-ref { font-size: 11px; }
+-.rcpt table { width: 100%; border-collapse: collapse; font-size: 10.5px; }
+-.rcpt th, .rcpt td { padding: 3px 4px; border-bottom: 1px solid #ccc; }
+-.rcpt th { border-bottom: 1px solid #111; font-size: 10px; text-transform: uppercase; }
+-.rcpt .num { text-align: right; white-space: nowrap; }
+-.rcpt .qty { text-align: center; width: 28px; }
+-.rcpt-sum { margin: 6px 0 0 auto; width: 58%; min-width: 140px; }
+-.rcpt-sum-row { display: flex; justify-content: space-between; gap: 12px; padding: 1px 0; }
+-.rcpt-sum-row.emph { font-weight: 800; font-size: 12px; border-top: 1px solid #111; margin-top: 2px; padding-top: 3px; }
+-.rcpt-pay { margin-top: 4px; }
+-.rcpt-foot {
+-  margin-top: 8px;
+-  padding-top: 6px;
+-  border-top: 1px dashed #666;
+-  font-size: 8.5px;
+-  color: #333;
+-}
+-.rcpt-void {
+-  color: #b91c1c;
+-  font-weight: 800;
+-  text-transform: uppercase;
+-  margin-bottom: 4px;
+-}
++.rcpt-pat-right { text-align: right; white-space: nowrap; }
++.rcpt-name { font-weight: 800; margin-right: 8px; }
++.rcpt-agesex { font-weight: 600; }
++.rcpt-ref { font-size: 10px; }
++.rcpt table { width: 100%; border-collapse: collapse; margin: 4px 0; }
++.rcpt th, .rcpt td { padding: 2px 0; border-bottom: 1px dotted #ccc; }
++.rcpt th { text-align: left; font-size: 9px; text-transform: uppercase; }
++.rcpt .qty, .rcpt .num { text-align: right; }
++.rcpt-sum { margin-top: 4px; }
++.rcpt-sum-row { display: flex; justify-content: space-between; }
++.rcpt-sum-row.emph { font-weight: 800; border-top: 1px solid #111; margin-top: 2px; padding-top: 2px; }
++.rcpt-pay { margin-top: 4px; font-size: 10px; }
++.rcpt-foot { margin-top: 8px; font-size: 9px; color: #444; border-top: 1px solid #999; padding-top: 4px; }
++.rcpt-void { color: #b91c1c; font-weight: 800; margin-bottom: 4px; }
+ 
+-@page {
+-  size: A5 portrait;
+-  margin: 7mm;
+-}
+ @media print {
+-  html, body {
+-    background: #fff !important;
+-    color: #111;
+-    margin: 0;
+-    padding: 0;
+-    height: auto !important;
+-    overflow: visible !important;
+-  }
+-  #app { display: none !important; }
+-  .receipt.hidden, #receipt.hidden { display: block !important; }
+-  #receipt, .receipt {
++  body > *:not(#receipt) { display: none !important; }
++  #receipt, #receipt * { visibility: visible; }
++  #receipt {
+     display: block !important;
+-    position: static;
+-    background: #fff;
+-    color: #111;
++    position: absolute;
++    left: 0; top: 0;
+     width: 100%;
+-    max-width: none;
+-    padding: 0;
+-    margin: 0;
+-    box-shadow: none;
+-  }
+-  .rcpt {
+-    -webkit-print-color-adjust: exact;
+-    print-color-adjust: exact;
+-    page-break-inside: avoid;
+   }
+ }
+diff --git a/artifacts/emergency-billing/src/schema.ts b/artifacts/emergency-billing/src/schema.ts
+index 11a6d9e..7a73a58 100644
+--- a/artifacts/emergency-billing/src/schema.ts
++++ b/artifacts/emergency-billing/src/schema.ts
+@@ -99,4 +99,11 @@ CREATE TABLE IF NOT EXISTS staff_sessions (
+ CREATE INDEX IF NOT EXISTS emergency_txn_session_idx ON emergency_transactions (session_uuid);
+ CREATE INDEX IF NOT EXISTS emergency_txn_status_idx ON emergency_transactions (status);
+ CREATE INDEX IF NOT EXISTS emergency_audit_at_idx ON emergency_audit (at);
++
++-- Windows Emergency CARE: per-record push/reconcile metadata (additive, idempotent).
++ALTER TABLE emergency_transactions ADD COLUMN IF NOT EXISTS sync_status text;
++ALTER TABLE emergency_transactions ADD COLUMN IF NOT EXISTS sync_error text;
++ALTER TABLE emergency_transactions ADD COLUMN IF NOT EXISTS synced_at timestamptz;
++ALTER TABLE emergency_transactions ADD COLUMN IF NOT EXISTS source_device_id text;
++ALTER TABLE emergency_transactions ADD COLUMN IF NOT EXISTS care_destination_id integer;
+ `;
+diff --git a/artifacts/emergency-billing/src/server.ts b/artifacts/emergency-billing/src/server.ts
+index 1660cb6..f130754 100644
+--- a/artifacts/emergency-billing/src/server.ts
++++ b/artifacts/emergency-billing/src/server.ts
+@@ -32,6 +32,28 @@ const COOKIE = "emg_session";
+ const SESSION_HOURS = Number(process.env.SESSION_HOURS || 8);
+ const FETCH_TOKEN = process.env.EMERGENCY_FETCH_TOKEN || "";
+ const ADMIN_ROLES = new Set(["admin", "super_admin"]);
++const PRIMARY_CARE_URL = String(process.env.PRIMARY_CARE_URL || "").replace(/\/+$/, "");
++const DEVICE_ID = process.env.EMERGENCY_DEVICE_ID || "windows-emergency";
++const CARE_OFFLINE_GRACE_MS = Math.max(15_000, Number(process.env.CARE_OFFLINE_GRACE_MS || 90_000));
++const MASTER_PULL_INTERVAL_HOURS = Math.max(0, Number(process.env.MASTER_PULL_INTERVAL_HOURS || 6));
++
++type CareReachability = {
++  state: "online" | "offline" | "unknown";
++  label: string;
++  consecutiveFailures: number;
++  lastOkAt: string | null;
++  lastCheckedAt: string | null;
++  lastError: string | null;
++};
++
++const careReach: CareReachability = {
++  state: "unknown",
++  label: "Not configured",
++  consecutiveFailures: 0,
++  lastOkAt: null,
++  lastCheckedAt: null,
++  lastError: null,
++};
+ 
+ type Staff = {
+   id: number;
+@@ -391,13 +413,19 @@ export async function createApp() {
+ 
+   app.get("/api/bills", requireAuth, async (req, res) => {
+     const { rows } = await pool.query(
+-      `SELECT uuid, bill_number, status, created_at, created_by_staff_name, payload_json, care_bill_id, reconciled_at
++      `SELECT uuid, bill_number, status, created_at, created_by_staff_name, payload_json, care_bill_id, reconciled_at,
++              sync_status, sync_error, synced_at, source_device_id, care_destination_id
+        FROM emergency_transactions ORDER BY created_at DESC LIMIT 200`,
+     );
+     res.json(rows.map((r) => ({
+       ...rowToTxn(r),
+       careBillId: r.care_bill_id,
+       reconciledAt: r.reconciled_at,
++      syncStatus: r.sync_status || (r.status === "RECONCILED" ? "synced" : r.status === "VOID" ? "void" : "pending"),
++      syncError: r.sync_error,
++      syncedAt: r.synced_at,
++      sourceDeviceId: r.source_device_id,
++      careDestinationId: r.care_destination_id,
+     })));
+   });
+ 
+@@ -524,9 +552,10 @@ export async function createApp() {
+         tariffSyncedAt,
+       };
+       await client.query(
+-        `INSERT INTO emergency_transactions (uuid, bill_number, session_uuid, status, created_by_staff_id, created_by_staff_name, payload_json)
+-         VALUES ($1,$2,$3,'PENDING',$4,$5,$6::jsonb)`,
+-        [uuid, billNumber, session.emergencySessionUuid, req.staff!.id, req.staff!.name, JSON.stringify(txn)],
++        `INSERT INTO emergency_transactions
++           (uuid, bill_number, session_uuid, status, created_by_staff_id, created_by_staff_name, payload_json, sync_status, source_device_id)
++         VALUES ($1,$2,$3,'PENDING',$4,$5,$6::jsonb,'pending',$7)`,
++        [uuid, billNumber, session.emergencySessionUuid, req.staff!.id, req.staff!.name, JSON.stringify(txn), DEVICE_ID],
+       );
+       await client.query("COMMIT");
+       await audit(req.staff!, discount > 0 ? "bill_create_discount" : "bill_create", uuid, billNumber, req.ip);
+@@ -718,6 +747,7 @@ export async function createApp() {
+       const result = await pool.query(
+         `UPDATE emergency_transactions
+          SET status='RECONCILED', care_bill_id=$1, reconciled_at=now(),
++             sync_status='synced', sync_error=NULL, synced_at=now(), care_destination_id=$1,
+              payload_json = jsonb_set(payload_json, '{status}', '"RECONCILED"')
+          WHERE uuid=$2 AND status != 'VOID'`,
+         [careBillId, uuid],
+@@ -728,6 +758,263 @@ export async function createApp() {
+     res.json({ ok: true, updated: n });
+   });
+ 
++  // ── Main CARE reachability + Windows Emergency ops ─────────────────────────
++  async function probeMainCare(): Promise<CareReachability> {
++    careReach.lastCheckedAt = new Date().toISOString();
++    if (!PRIMARY_CARE_URL) {
++      careReach.state = "unknown";
++      careReach.label = "PRIMARY_CARE_URL not set";
++      return careReach;
++    }
++    const ctrl = new AbortController();
++    const t = setTimeout(() => ctrl.abort(), 4_000);
++    try {
++      const res = await fetch(`${PRIMARY_CARE_URL}/api/emergency-bridge/health`, { signal: ctrl.signal });
++      clearTimeout(t);
++      if (!res.ok) throw new Error(`HTTP ${res.status}`);
++      careReach.consecutiveFailures = 0;
++      careReach.lastOkAt = new Date().toISOString();
++      careReach.lastError = null;
++      careReach.state = "online";
++      careReach.label = "ONLINE";
++    } catch (err) {
++      clearTimeout(t);
++      careReach.consecutiveFailures += 1;
++      careReach.lastError = err instanceof Error ? err.message : String(err);
++      const sinceOk = careReach.lastOkAt ? Date.now() - new Date(careReach.lastOkAt).getTime() : Number.POSITIVE_INFINITY;
++      // Grace: do not flip to OFFLINE on a single blip.
++      if (careReach.consecutiveFailures >= 3 || sinceOk > CARE_OFFLINE_GRACE_MS) {
++        careReach.state = "offline";
++        careReach.label = "OFFLINE — EMERGENCY MODE ACTIVE";
++      } else {
++        careReach.state = careReach.lastOkAt ? "online" : "unknown";
++        careReach.label = careReach.lastOkAt ? "ONLINE (retrying)" : "Checking…";
++      }
++    }
++    return careReach;
++  }
++
++  app.get("/api/care/status", async (_req, res) => {
++    res.json(await probeMainCare());
++  });
++
++  app.get("/api/ops/status", requireAuth, async (_req, res) => {
++    let databaseHealthy = true;
++    try {
++      await pool.query("SELECT 1");
++    } catch {
++      databaseHealthy = false;
++    }
++    const { rows: pending } = await pool.query<{ n: number }>(
++      `SELECT count(*)::int AS n FROM emergency_transactions WHERE status = 'PENDING'`,
++    );
++    const { rows: failed } = await pool.query<{ n: number }>(
++      `SELECT count(*)::int AS n FROM emergency_transactions WHERE sync_status = 'failed'`,
++    );
++    const { rows: conflict } = await pool.query<{ n: number }>(
++      `SELECT count(*)::int AS n FROM emergency_transactions WHERE sync_status = 'conflict'`,
++    );
++    const sync = await masterSyncStatus();
++    res.json({
++      databaseHealthy,
++      pendingTransactionCount: pending[0]?.n ?? 0,
++      failedTransactionCount: failed[0]?.n ?? 0,
++      conflictTransactionCount: conflict[0]?.n ?? 0,
++      masterDataLastSyncedAt: sync.masterDataLastSyncedAt,
++      ageBand: sync.ageBand,
++      care: careReach,
++      deviceId: DEVICE_ID,
++    });
++  });
++
++  async function pullMasterFromCare(): Promise<Record<string, unknown>> {
++    if (!PRIMARY_CARE_URL) throw new Error("PRIMARY_CARE_URL is not configured");
++    if (!FETCH_TOKEN) throw new Error("EMERGENCY_FETCH_TOKEN is not configured");
++    const res = await fetch(`${PRIMARY_CARE_URL}/api/emergency-bridge/master-snapshot`, {
++      headers: { "X-Emergency-Fetch-Token": FETCH_TOKEN },
++    });
++    const text = await res.text();
++    let body: unknown = null;
++    try { body = text ? JSON.parse(text) : null; } catch { body = { error: text }; }
++    if (!res.ok) {
++      const err = (body as { error?: string } | null)?.error || `Main CARE returned HTTP ${res.status}`;
++      throw new Error(err);
++    }
++    const snap = parseMasterSnapshot(body);
++    await applyMasterSnapshot(snap);
++    const counts = countsFromSnapshot(snap);
++    await audit(null, "master_pull", null, `${counts.serviceCount} services from ${PRIMARY_CARE_URL}`);
++    return { ok: true, syncedAt: snap.syncedAt, ...counts };
++  }
++
++  app.post("/api/care/sync-master", requireAuth, requireAdmin, async (req: AuthedRequest, res) => {
++    try {
++      const result = await pullMasterFromCare();
++      await probeMainCare();
++      res.json(result);
++    } catch (err) {
++      await probeMainCare();
++      res.status(502).json({ error: err instanceof Error ? err.message : String(err) });
++    }
++  });
++
++  async function pushPendingToCare(opts?: { onlyFailed?: boolean }): Promise<Record<string, unknown>> {
++    if (!PRIMARY_CARE_URL) throw new Error("PRIMARY_CARE_URL is not configured");
++    if (!FETCH_TOKEN) throw new Error("EMERGENCY_FETCH_TOKEN is not configured");
++    const where = opts?.onlyFailed
++      ? `status = 'PENDING' AND sync_status = 'failed'`
++      : `status = 'PENDING'`;
++    const { rows: sessRows } = await pool.query(`SELECT * FROM emergency_sessions ORDER BY started_at DESC`);
++    const { rows } = await pool.query(
++      `SELECT uuid, bill_number, payload_json, status FROM emergency_transactions WHERE ${where} ORDER BY created_at`,
++    );
++    if (!rows.length) {
++      return { created: 0, alreadyReconciled: 0, duplicates: 0, failures: 0, conflicts: 0, supplied: 0 };
++    }
++    const pkg = buildEmergencyJsonPackage({
++      sessions: sessRows.map((r) => ({
++        emergencySessionUuid: r.uuid,
++        startedAt: new Date(r.started_at).toISOString(),
++        startedByStaffId: r.started_by_staff_id,
++        startedByStaffName: r.started_by_staff_name,
++        reason: r.reason,
++        workstation: r.workstation,
++        endedAt: r.ended_at ? new Date(r.ended_at).toISOString() : null,
++        endedByStaffId: r.ended_by_staff_id,
++        endedByStaffName: r.ended_by_staff_name,
++      })),
++      transactions: rows.map(rowToTxn),
++      masterDataLastSyncedAt: (await getMeta("master_data_last_synced_at")) || null,
++    });
++    const res = await fetch(`${PRIMARY_CARE_URL}/api/emergency-bridge/import-json`, {
++      method: "POST",
++      headers: {
++        "Content-Type": "application/json",
++        "X-Emergency-Fetch-Token": FETCH_TOKEN,
++      },
++      body: JSON.stringify({ package: pkg, sourceDeviceId: DEVICE_ID, onlySafe: true }),
++    });
++    const text = await res.text();
++    let body: any = null;
++    try { body = text ? JSON.parse(text) : null; } catch { body = { error: text }; }
++    if (!res.ok) throw new Error(body?.error || `Main CARE returned HTTP ${res.status}`);
++
++    const failureUuids = new Set((body.failureDetails || []).map((f: { uuid: string }) => f.uuid));
++    const previewRows: Array<{
++      emergencyTransactionUuid?: string;
++      matchClass?: string;
++      alreadyImported?: boolean;
++      careBillId?: number | null;
++      transaction?: { emergencyTransactionUuid?: string };
++    }> = Array.isArray(body.preview?.rows)
++      ? body.preview.rows
++      : Array.isArray(body.preview)
++        ? body.preview
++        : [];
++
++    for (const row of rows) {
++      const uuid = row.uuid;
++      const preview = previewRows.find(
++        (p) => p.emergencyTransactionUuid === uuid || p.transaction?.emergencyTransactionUuid === uuid,
++      );
++      const matchClass = String(preview?.matchClass || "");
++      if (failureUuids.has(uuid)) {
++        const detail = (body.failureDetails || []).find((f: { uuid: string }) => f.uuid === uuid);
++        await pool.query(
++          `UPDATE emergency_transactions SET sync_status='failed', sync_error=$1 WHERE uuid=$2`,
++          [detail?.error || "import failed", uuid],
++        );
++        continue;
++      }
++      if (matchClass === "CONFLICT" || matchClass === "PROBABLE_MATCH") {
++        await pool.query(
++          `UPDATE emergency_transactions SET sync_status='conflict', sync_error=$1 WHERE uuid=$2`,
++          [`Needs CARE review (${matchClass}) — resolve in Main CARE Emergency Billing`, uuid],
++        );
++        continue;
++      }
++      if (
++        preview?.alreadyImported ||
++        matchClass === "EXACT_MATCH" ||
++        matchClass === "NEW_PATIENT" ||
++        matchClass === ""
++      ) {
++        // Empty matchClass: CARE accepted the batch; treat as synced (idempotent UUIDs).
++        const careBillId = preview?.careBillId ?? null;
++        await pool.query(
++          `UPDATE emergency_transactions
++           SET status='RECONCILED', sync_status='synced', sync_error=NULL, synced_at=now(),
++               care_bill_id=COALESCE($1, care_bill_id), care_destination_id=COALESCE($1, care_destination_id),
++               reconciled_at=COALESCE(reconciled_at, now()),
++               payload_json = jsonb_set(payload_json, '{status}', '"RECONCILED"')
++           WHERE uuid=$2 AND status = 'PENDING'`,
++          [careBillId, uuid],
++        );
++        continue;
++      }
++      await pool.query(
++        `UPDATE emergency_transactions SET sync_status='failed', sync_error=$1 WHERE uuid=$2`,
++        [`Unrecognized match class: ${matchClass || "none"}`, uuid],
++      );
++    }
++
++    await audit(null, "push_to_care", null, `supplied ${rows.length}; created ${body.created ?? 0}`);
++    return {
++      supplied: rows.length,
++      created: body.created ?? 0,
++      alreadyReconciled: body.alreadyReconciled ?? 0,
++      duplicates: body.duplicates ?? 0,
++      failures: body.failures ?? 0,
++      conflicts: body.conflicts ?? 0,
++      skippedReview: body.skippedReview ?? 0,
++      batchUuid: body.batchUuid,
++    };
++  }
++
++  app.post("/api/care/push-transactions", requireAuth, requireAdmin, async (_req, res) => {
++    try {
++      const result = await pushPendingToCare();
++      await probeMainCare();
++      res.json(result);
++    } catch (err) {
++      await probeMainCare();
++      res.status(502).json({ error: err instanceof Error ? err.message : String(err) });
++    }
++  });
++
++  app.post("/api/care/retry-failed", requireAuth, requireAdmin, async (_req, res) => {
++    try {
++      // Clear failed flag back to pending-style retry of failed rows only.
++      await pool.query(`UPDATE emergency_transactions SET sync_error=NULL WHERE sync_status='failed' AND status='PENDING'`);
++      const result = await pushPendingToCare({ onlyFailed: false });
++      // Re-push only previously failed: filter after reset — actually push all pending is safer/idempotent.
++      await probeMainCare();
++      res.json(result);
++    } catch (err) {
++      await probeMainCare();
++      res.status(502).json({ error: err instanceof Error ? err.message : String(err) });
++    }
++  });
++
++  app.get("/api/export/backup.sql", requireAuth, requireAdmin, async (req: AuthedRequest, res) => {
++    const dir = process.env.BACKUP_DIR || "/tmp";
++    await mkdir(dir, { recursive: true });
++    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
++    const file = path.join(dir, `care_emergency_download_${stamp}.sql`);
++    try {
++      await new Promise<void>((resolve, reject) => {
++        const child = spawn("pg_dump", ["--no-owner", "--format=plain", `--dbname=${process.env.DATABASE_URL}`, `--file=${file}`], {
++          stdio: "ignore",
++        });
++        child.on("exit", (code) => (code === 0 ? resolve() : reject(new Error("pg_dump exit " + code))));
++      });
++      await audit(req.staff!, "backup_download", null, file, req.ip);
++      res.download(file, `care_emergency_${stamp}.sql`);
++    } catch (err) {
++      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
++    }
++  });
++
+   const publicDir = path.join(__dirname, "..", "public");
+   app.use(express.static(publicDir));
+   app.use((req, res, next) => {
+@@ -735,6 +1022,18 @@ export async function createApp() {
+     res.sendFile(path.join(publicDir, "index.html"));
+   });
+ 
++  // Background Main CARE probe + optional master pull (never interrupts billing).
++  void probeMainCare();
++  setInterval(() => { void probeMainCare(); }, 30_000);
++  if (MASTER_PULL_INTERVAL_HOURS > 0 && PRIMARY_CARE_URL && FETCH_TOKEN) {
++    const pullMs = MASTER_PULL_INTERVAL_HOURS * 3600_000;
++    setInterval(() => {
++      void pullMasterFromCare().catch((err) => {
++        console.warn("[emergency] auto master pull failed:", err instanceof Error ? err.message : err);
++      });
++    }, pullMs);
++  }
++
+   return app;
+ }
+ 
+diff --git a/docker-compose.windows.yml b/docker-compose.windows.yml
+new file mode 100644
+index 0000000..bbbbabd
+--- /dev/null
++++ b/docker-compose.windows.yml
+@@ -0,0 +1,19 @@
++# Optional Windows Docker Desktop overrides.
++# Usage:
++#   docker compose -f docker-compose.yml -f docker-compose.windows.yml --env-file .env up -d --build
++#
++# Defaults to host port 8080 (no admin elevation for port 80).
++
++name: care-emergency
++
++services:
++  care-emergency-web:
++    ports:
++      - "${EMERGENCY_HTTP_BIND:-0.0.0.0}:${EMERGENCY_HTTP_PORT:-8080}:80"
++
++  care-emergency-api:
++    environment:
++      PRIMARY_CARE_URL: ${PRIMARY_CARE_URL:-}
++      EMERGENCY_DEVICE_ID: ${EMERGENCY_DEVICE_ID:-windows-emergency}
++      MASTER_PULL_INTERVAL_HOURS: ${MASTER_PULL_INTERVAL_HOURS:-6}
++      CARE_OFFLINE_GRACE_MS: ${CARE_OFFLINE_GRACE_MS:-90000}
+diff --git a/docker-compose.yml b/docker-compose.yml
+index 9e7bd07..98b7943 100644
+--- a/docker-compose.yml
++++ b/docker-compose.yml
+@@ -55,6 +55,10 @@ services:
+       APP_VERSION: ${APP_VERSION:-1.0.0}
+       BUILD_SHA: ${GIT_COMMIT:-unknown}
+       GIT_COMMIT: ${GIT_COMMIT:-unknown}
++      PRIMARY_CARE_URL: ${PRIMARY_CARE_URL:-}
++      EMERGENCY_DEVICE_ID: ${EMERGENCY_DEVICE_ID:-windows-emergency}
++      MASTER_PULL_INTERVAL_HOURS: ${MASTER_PULL_INTERVAL_HOURS:-6}
++      CARE_OFFLINE_GRACE_MS: ${CARE_OFFLINE_GRACE_MS:-90000}
+     volumes:
+       - ${EMERGENCY_BACKUP_DIR:-care_emergency_backups}:/backups
+     healthcheck:
+diff --git a/docs/WINDOWS_EMERGENCY_DEPLOY.md b/docs/WINDOWS_EMERGENCY_DEPLOY.md
+new file mode 100644
+index 0000000..2adeed6
+--- /dev/null
++++ b/docs/WINDOWS_EMERGENCY_DEPLOY.md
+@@ -0,0 +1,69 @@
++# Windows Emergency CARE — deploy on a clinic Windows PC (Docker Desktop)
++
++This is the same **225app** Emergency Billing capture stack used on DS225+,
++packaged for **Windows Docker Desktop** so reception can keep billing when the
++primary DS1522+ CARE ERP is unavailable.
++
++It is **not** a second full ERP. Bill Desk UI matches CARE ERP visually;
++data stays on local Postgres until reconciled back to Main CARE.
++
++## One-time setup
++
++1. Install [Docker Desktop for Windows](https://www.docker.com/products/docker-desktop/) (WSL2 backend recommended).
++2. Clone this repo to a local folder, e.g. `C:\care-emergency`.
++3. Copy `.env.windows.example` → `.env` and set:
++   - `EMERGENCY_DB_PASSWORD`
++   - `EMERGENCY_FETCH_TOKEN` (same token as Main CARE → Settings → Billing → Emergency Billing)
++   - `PRIMARY_CARE_URL=http://<MAIN-CARE-LAN-IP>:<PORT>` (prefer IP, not QuickConnect)
++4. On Main CARE, save the same fetch token and (optionally) the Windows PC URL if CARE will still push master data the old way.
++5. Start:
++
++```powershell
++cd C:\care-emergency
++powershell -ExecutionPolicy Bypass -File .\scripts\windows\Start-Emergency.ps1
++```
++
++Open `http://127.0.0.1:8080/` (or the PC's LAN IP on port 8080).
++
++## Daily ops (UI — no CLI needed during outage)
++
++After login (admin/owner):
++
++| Button | Action |
++| --- | --- |
++| **Sync From Main CARE** | Pull master tariff/patients/doctors/staff into this PC |
++| **Push Emergency Data** | Push pending EMG bills into Main CARE (idempotent) |
++| **Retry Failed** | Re-push failed rows |
++| **Export CSV / JSON / USB** | Safety-net files for Main CARE import |
++| **Download Backup** | Logical SQL dump download |
++
++Status strip shows **Main CARE ONLINE / OFFLINE** with a grace period (default 90s) so a single failed probe does not panic staff.
++
++## Backup / restore (CLI)
++
++```powershell
++.\scripts\windows\Backup-Emergency.ps1
++.\scripts\windows\Restore-Emergency.ps1 -SqlFile C:\path\to\dump.sql -Confirm
++```
++
++## Health checks
++
++```powershell
++Invoke-WebRequest http://127.0.0.1:8080/health
++docker compose -f docker-compose.yml -f docker-compose.windows.yml ps
++```
++
++Containers: `care-emergency-web`, `care-emergency-api`, `care-emergency-db`  
++Volumes: `care_emergency_db_data`, `care_emergency_backups`  
++Restart policy: `unless-stopped`
++
++## Works when
++
++- DS1522+ / DSM / Docker / primary Postgres is down
++- Internet / QuickConnect is down
++- Only this Windows PC + clinic LAN are available
++
++## Must not
++
++- Point volumes at Main CARE DB or Hyper Backup vaults
++- Use real patient data in drills unless authorized
+diff --git a/lib/emergency-billing/package-lock.json b/lib/emergency-billing/package-lock.json
+new file mode 100644
+index 0000000..e23856d
+--- /dev/null
++++ b/lib/emergency-billing/package-lock.json
+@@ -0,0 +1,32 @@
++{
++  "name": "@workspace/emergency-billing",
++  "version": "0.0.0",
++  "lockfileVersion": 3,
++  "requires": true,
++  "packages": {
++    "": {
++      "name": "@workspace/emergency-billing",
++      "version": "0.0.0",
++      "devDependencies": {
++        "@types/node": "^22.20.1"
++      }
++    },
++    "node_modules/@types/node": {
++      "version": "22.20.1",
++      "resolved": "https://registry.npmjs.org/@types/node/-/node-22.20.1.tgz",
++      "integrity": "sha512-EANqOCF9QFyra+4pfxUcX9STKJpCLjMbObVzljIJomAWSnuSIEAvyzEU53GaajbXJEgdh0iEcPL+DGvpUd4k1Q==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "undici-types": "~6.21.0"
++      }
++    },
++    "node_modules/undici-types": {
++      "version": "6.21.0",
++      "resolved": "https://registry.npmjs.org/undici-types/-/undici-types-6.21.0.tgz",
++      "integrity": "sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ==",
++      "dev": true,
++      "license": "MIT"
++    }
++  }
++}
+diff --git a/lib/emergency-billing/package.json b/lib/emergency-billing/package.json
+index 265d29f..12482c0 100644
+--- a/lib/emergency-billing/package.json
++++ b/lib/emergency-billing/package.json
+@@ -10,6 +10,6 @@
+     "typecheck": "tsc -p tsconfig.json --noEmit"
+   },
+   "devDependencies": {
+-    "@types/node": "^22.15.3"
++    "@types/node": "^22.20.1"
+   }
+ }
+diff --git a/package-lock.json b/package-lock.json
+new file mode 100644
+index 0000000..2112ced
+--- /dev/null
++++ b/package-lock.json
+@@ -0,0 +1,1618 @@
++{
++  "name": "225app",
++  "version": "1.0.0",
++  "lockfileVersion": 3,
++  "requires": true,
++  "packages": {
++    "": {
++      "name": "225app",
++      "version": "1.0.0",
++      "devDependencies": {
++        "typescript": "^5.9.2",
++        "vitest": "^3.2.7"
++      }
++    },
++    "node_modules/@esbuild/aix-ppc64": {
++      "version": "0.28.2",
++      "resolved": "https://registry.npmjs.org/@esbuild/aix-ppc64/-/aix-ppc64-0.28.2.tgz",
++      "integrity": "sha512-XExcO+dvLKvVtNTibSTBej1NCAbaGhWn9Ww1ZPx80qsahhPFe/8jgWP0IchNe0F3HwkU7n8ejhH8bjonqht8mQ==",
++      "cpu": [
++        "ppc64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "aix"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@esbuild/android-arm": {
++      "version": "0.28.2",
++      "resolved": "https://registry.npmjs.org/@esbuild/android-arm/-/android-arm-0.28.2.tgz",
++      "integrity": "sha512-kXXoiPVVGQcnIYGOeaovwOURpniDBpSq4A03qkQ+BMQqtGG6HYap3xne9C1O1yo4TR3qxlCX5IqqmX6fFo2Lqg==",
++      "cpu": [
++        "arm"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "android"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@esbuild/android-arm64": {
++      "version": "0.28.2",
++      "resolved": "https://registry.npmjs.org/@esbuild/android-arm64/-/android-arm64-0.28.2.tgz",
++      "integrity": "sha512-5YfKeeI8qWfBZIX+u2xZC3Zlb3Os/gLS2sbEKM+I4ZOcsWmHS2WLysCcQZDAFRslDUU5Oiq44gf6PYN1vGwG5A==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "android"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@esbuild/android-x64": {
++      "version": "0.28.2",
++      "resolved": "https://registry.npmjs.org/@esbuild/android-x64/-/android-x64-0.28.2.tgz",
++      "integrity": "sha512-O387ite7SzUyCcy3JQX4P4bLtEA7bLLkx+esve5JHnyYfNTxcVpXZo9jhdB0lTKN44gztELTdU7nS8Nr16Fs1Q==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "android"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@esbuild/darwin-arm64": {
++      "version": "0.28.2",
++      "resolved": "https://registry.npmjs.org/@esbuild/darwin-arm64/-/darwin-arm64-0.28.2.tgz",
++      "integrity": "sha512-n4KqkOQrraxHJcgjM1RvwbigfQKIKJVpM7xp+KsxiyUSrRdIXnt73VhrPAx0fV44hgfmIVKjxMN9J1t5jySVkw==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "darwin"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@esbuild/darwin-x64": {
++      "version": "0.28.2",
++      "resolved": "https://registry.npmjs.org/@esbuild/darwin-x64/-/darwin-x64-0.28.2.tgz",
++      "integrity": "sha512-uq6suIWYP37qzGddBKPw5QEQPi6HiLGsO7UmkpfyaYNQ3D+rN6w6WfwH+nuqcGXWvawGwxOEroO4YGnFh95azw==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "darwin"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@esbuild/freebsd-arm64": {
++      "version": "0.28.2",
++      "resolved": "https://registry.npmjs.org/@esbuild/freebsd-arm64/-/freebsd-arm64-0.28.2.tgz",
++      "integrity": "sha512-n+I0BTSRIoy+d6RPKnEVwql5UwBJolytvY4mAOIEJorKlqgPII8ix6slVVrfZ5Tnj7glIZvloylbB/EJPMWEXw==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "freebsd"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@esbuild/freebsd-x64": {
++      "version": "0.28.2",
++      "resolved": "https://registry.npmjs.org/@esbuild/freebsd-x64/-/freebsd-x64-0.28.2.tgz",
++      "integrity": "sha512-78XJTJkvPs0kz2w61301PJjXl4g7q3JqiYMZ/M/yVI73EHBrCRTgkhu9oqG7vPqq+a/yadEW8aD+agKlk5xrmg==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "freebsd"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@esbuild/linux-arm": {
++      "version": "0.28.2",
++      "resolved": "https://registry.npmjs.org/@esbuild/linux-arm/-/linux-arm-0.28.2.tgz",
++      "integrity": "sha512-XlDnu2q5yoqems+xay6wSAcg9DDD7K9RLKZEBOMZm3ckNpJBvOX20tSfby8KfrrhINDyv9V2YVZKY/SpoGJI8w==",
++      "cpu": [
++        "arm"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@esbuild/linux-arm64": {
++      "version": "0.28.2",
++      "resolved": "https://registry.npmjs.org/@esbuild/linux-arm64/-/linux-arm64-0.28.2.tgz",
++      "integrity": "sha512-pW4AC0P3it8c7do9MVM4p51FzHzdM/TZrerurgRcHJ2WTa1VQ1CIq18xncfpBJw4ojkiZZrKW2yIBWBP92j6Ug==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@esbuild/linux-ia32": {
++      "version": "0.28.2",
++      "resolved": "https://registry.npmjs.org/@esbuild/linux-ia32/-/linux-ia32-0.28.2.tgz",
++      "integrity": "sha512-CYbnj78HsIeA+DhgUKgFCfvNsTHFhMMrinUrMZpDXJXKN8T3XViTZ/+wtHeVxEWY8ewSzTFN+nRmSwO2tZaLUQ==",
++      "cpu": [
++        "ia32"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@esbuild/linux-loong64": {
++      "version": "0.28.2",
++      "resolved": "https://registry.npmjs.org/@esbuild/linux-loong64/-/linux-loong64-0.28.2.tgz",
++      "integrity": "sha512-buwkd8nsph4R+ajRvw0qM5Hja/TXQow3ptzWO2EbG/cqcIkHloRrdlBtQlshyYGTNFvfkfJ5tpPLVkY4DtsPfQ==",
++      "cpu": [
++        "loong64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@esbuild/linux-mips64el": {
++      "version": "0.28.2",
++      "resolved": "https://registry.npmjs.org/@esbuild/linux-mips64el/-/linux-mips64el-0.28.2.tgz",
++      "integrity": "sha512-ZVykbDyk7519VwiNb9Lcj9m8XM6v5V9uKPvrEMkkEedVewf+0itkhahp4HDpgERXhwLRpWFypsGbG/J8s0QjJA==",
++      "cpu": [
++        "mips64el"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@esbuild/linux-ppc64": {
++      "version": "0.28.2",
++      "resolved": "https://registry.npmjs.org/@esbuild/linux-ppc64/-/linux-ppc64-0.28.2.tgz",
++      "integrity": "sha512-CAXl+Dtd9UUuJd8pKKdwh6MLm3MUMiqMPmhZ3tTSXPqfyQ3vDl6R5hZdZ/kYojK4ofXtdfSv1tFq8XzWx3heNQ==",
++      "cpu": [
++        "ppc64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@esbuild/linux-riscv64": {
++      "version": "0.28.2",
++      "resolved": "https://registry.npmjs.org/@esbuild/linux-riscv64/-/linux-riscv64-0.28.2.tgz",
++      "integrity": "sha512-GeXCej4IQtU1B+QlDV8W/RRvbzI3O/Stss+/bCXv4lZls5WGRtu2a+3JkA3i4qIUlMXpcHebWpF8AkJhATowuA==",
++      "cpu": [
++        "riscv64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@esbuild/linux-s390x": {
++      "version": "0.28.2",
++      "resolved": "https://registry.npmjs.org/@esbuild/linux-s390x/-/linux-s390x-0.28.2.tgz",
++      "integrity": "sha512-3H1weTYZPxt/WOhByszQZybS9w5lKzUn1FDMsgEChbHWQwHYQQRfBxgCcZvPhjHfKyJjIievvMmEUawJrdY9Dg==",
++      "cpu": [
++        "s390x"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@esbuild/linux-x64": {
++      "version": "0.28.2",
++      "resolved": "https://registry.npmjs.org/@esbuild/linux-x64/-/linux-x64-0.28.2.tgz",
++      "integrity": "sha512-4xTZr1FUmSoQW4XIWmit3tzQrUTZM+N3P0XV8xROKYF50XfI7xeO90+1bZvNwxIufQ9hDQVRJH5YhgPVF8A/HQ==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@esbuild/netbsd-arm64": {
++      "version": "0.28.2",
++      "resolved": "https://registry.npmjs.org/@esbuild/netbsd-arm64/-/netbsd-arm64-0.28.2.tgz",
++      "integrity": "sha512-sSATRjPeDBg3pdgHoQfoYBob11Kk1FGa9lui5RIHZCoCkJa9QKlvl3/vKz2usCmYYjs7ymJR/2Nnsqe+Hjt5nw==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "netbsd"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@esbuild/netbsd-x64": {
++      "version": "0.28.2",
++      "resolved": "https://registry.npmjs.org/@esbuild/netbsd-x64/-/netbsd-x64-0.28.2.tgz",
++      "integrity": "sha512-lqnzCV+mM0gIADaKihiCg6ifgfU2L3h5E33rNQBN1Y4MaVGnzryzmvvf7UHxprpQdE8hpqLolJ9Rl+SkIRDpyw==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "netbsd"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@esbuild/openbsd-arm64": {
++      "version": "0.28.2",
++      "resolved": "https://registry.npmjs.org/@esbuild/openbsd-arm64/-/openbsd-arm64-0.28.2.tgz",
++      "integrity": "sha512-AL2qJILH7lNjrDmCQDvdxMfAUIv8KMNZOvrwAQ8i8//ntL9FflhOyMJ8OZSMBb8/AWXe3/5v5S20y3zCoZWKoQ==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "openbsd"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@esbuild/openbsd-x64": {
++      "version": "0.28.2",
++      "resolved": "https://registry.npmjs.org/@esbuild/openbsd-x64/-/openbsd-x64-0.28.2.tgz",
++      "integrity": "sha512-QtiuPytchRyC4rwUKhexJdQKvDuZ6hWloi3igqPQNUJCS1/v9EiO3UTOXR6A3FoMo4fnAKbWJdqaIwhOzh8qEw==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "openbsd"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@esbuild/openharmony-arm64": {
++      "version": "0.28.2",
++      "resolved": "https://registry.npmjs.org/@esbuild/openharmony-arm64/-/openharmony-arm64-0.28.2.tgz",
++      "integrity": "sha512-WkhYDmpTjLvGlScA1rwjRUmhl4k8oXR3cIbtqWmELgU/dFeHHlEllxDvdWcNJV9rbzCexB5vz8gtNewWLgCT7Q==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "openharmony"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@esbuild/sunos-x64": {
++      "version": "0.28.2",
++      "resolved": "https://registry.npmjs.org/@esbuild/sunos-x64/-/sunos-x64-0.28.2.tgz",
++      "integrity": "sha512-GPMSkTOtMnv2U2F8gxe4Io6qmVs+YKyp832Etqqxr0hFngmXQ3rzwytelm3GIn7T4VviRUlf3sOgBOiTdvaf7g==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "sunos"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@esbuild/win32-arm64": {
++      "version": "0.28.2",
++      "resolved": "https://registry.npmjs.org/@esbuild/win32-arm64/-/win32-arm64-0.28.2.tgz",
++      "integrity": "sha512-PIhhEkE9uPBleRBrQEJpUn7MBnibZzbGzYWPmY3x+YoVg/95zbjB4CxPPOQ8l5tYYM4mMaCthF8/1DIfBQQyWQ==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "win32"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@esbuild/win32-ia32": {
++      "version": "0.28.2",
++      "resolved": "https://registry.npmjs.org/@esbuild/win32-ia32/-/win32-ia32-0.28.2.tgz",
++      "integrity": "sha512-YmJbfTlvU7Sdn9BB+4PRES4oB6pxgS37MAONj+hBr/cpXS1aBPKXxNnDbu+QCWPj0o9dgyxeq79g6c5P8KeuYA==",
++      "cpu": [
++        "ia32"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "win32"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@esbuild/win32-x64": {
++      "version": "0.28.2",
++      "resolved": "https://registry.npmjs.org/@esbuild/win32-x64/-/win32-x64-0.28.2.tgz",
++      "integrity": "sha512-5ebpxr3nWMzrL/rnUI755Jkuee0bHL/Gq0WTF9lvcpv73wAp5eu8MfBUgWK9bhWvZjj7yX8etf/8tI8Ney695g==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "win32"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@jridgewell/sourcemap-codec": {
++      "version": "1.5.5",
++      "resolved": "https://registry.npmjs.org/@jridgewell/sourcemap-codec/-/sourcemap-codec-1.5.5.tgz",
++      "integrity": "sha512-cYQ9310grqxueWbl+WuIUIaiUaDcj7WOq5fVhEljNVgRfOUhY9fy2zTvfoqWsnebh8Sl70VScFbICvJnLKB0Og==",
++      "dev": true,
++      "license": "MIT"
++    },
++    "node_modules/@napi-rs/lzma-linux-x64-gnu": {
++      "version": "1.5.1",
++      "resolved": "https://registry.npmjs.org/@napi-rs/lzma-linux-x64-gnu/-/lzma-linux-x64-gnu-1.5.1.tgz",
++      "integrity": "sha512-oTXEIha4SsuXdTA4Iyskj0kpdx2yVXdhd75c2v3xGrHFfVMsbhTPZU/nMPL4sWKo4pBHm3aucLaqGlF696dTyQ==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": "^22.20 || ^24.12 || >=25"
++      }
++    },
++    "node_modules/@rollup/rollup-android-arm-eabi": {
++      "version": "4.62.4",
++      "resolved": "https://registry.npmjs.org/@rollup/rollup-android-arm-eabi/-/rollup-android-arm-eabi-4.62.4.tgz",
++      "integrity": "sha512-RrPokAb7dmbxFoeO3TloqHyOjgye8RkBhSqmp4aJMIex4c9r46ZstPnleDQOq1t46VOVjwIuwNogIqbodV1Vvg==",
++      "cpu": [
++        "arm"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "android"
++      ]
++    },
++    "node_modules/@rollup/rollup-android-arm64": {
++      "version": "4.62.4",
++      "resolved": "https://registry.npmjs.org/@rollup/rollup-android-arm64/-/rollup-android-arm64-4.62.4.tgz",
++      "integrity": "sha512-JKuJc+pnpks2pjy7L/N3v/cAkZxYlnmuZoD840ldbMI5KDbC4iO9NKwPKYdjYFCMAIIlBzYSFHxIJVYzRo2/8A==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "android"
++      ]
++    },
++    "node_modules/@rollup/rollup-darwin-arm64": {
++      "version": "4.62.4",
++      "resolved": "https://registry.npmjs.org/@rollup/rollup-darwin-arm64/-/rollup-darwin-arm64-4.62.4.tgz",
++      "integrity": "sha512-krw5uS2STmvJ02x0uTXHbqQNuz+9eZ1iw+qXk9dmW2gvV4jV7O2hEoOnuhFrpOPiel1mBFtqbxYZZtC46hXLOw==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "darwin"
++      ]
++    },
++    "node_modules/@rollup/rollup-darwin-x64": {
++      "version": "4.62.4",
++      "resolved": "https://registry.npmjs.org/@rollup/rollup-darwin-x64/-/rollup-darwin-x64-4.62.4.tgz",
++      "integrity": "sha512-wsTxtgApb4PrOsNJIm0FZ1h3WvCC+k9uxLJ4ad75hgoS4NiRes2SoJFlDAyMwiUY8IssDqGcHbXuN0sx1tfF1A==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "darwin"
++      ]
++    },
++    "node_modules/@rollup/rollup-freebsd-arm64": {
++      "version": "4.62.4",
++      "resolved": "https://registry.npmjs.org/@rollup/rollup-freebsd-arm64/-/rollup-freebsd-arm64-4.62.4.tgz",
++      "integrity": "sha512-GUOnQlyZe3yAXhWOtOMsn5Qkrv5E5mZXa0thbARWi5Ei2szlVXJFQhddZ4HbAzh8q92w5twp+CQvs/eFanz9YQ==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "freebsd"
++      ]
++    },
++    "node_modules/@rollup/rollup-freebsd-x64": {
++      "version": "4.62.4",
++      "resolved": "https://registry.npmjs.org/@rollup/rollup-freebsd-x64/-/rollup-freebsd-x64-4.62.4.tgz",
++      "integrity": "sha512-/Y7f3QuxjzPKsjA/rfEDa3+0vXqyjmJ50Ln8dPpCmWkKTrUoWHG1cWhTqaAMLob2m2nESWuC7yGrREz019Ztqg==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "freebsd"
++      ]
++    },
++    "node_modules/@rollup/rollup-linux-arm-gnueabihf": {
++      "version": "4.62.4",
++      "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-arm-gnueabihf/-/rollup-linux-arm-gnueabihf-4.62.4.tgz",
++      "integrity": "sha512-81wiiX3v7aqy+T+bT61TJ78yJjRquqFFTTbAPt08imfQQzkPIW8t6aJbkTagtCCrXMNc9D66+geqlK7ydLPNqA==",
++      "cpu": [
++        "arm"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ]
++    },
++    "node_modules/@rollup/rollup-linux-arm-musleabihf": {
++      "version": "4.62.4",
++      "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-arm-musleabihf/-/rollup-linux-arm-musleabihf-4.62.4.tgz",
++      "integrity": "sha512-9kmDIvNZqdoHOBZgNtpTBeLWYO/LVipM3H/j62P8848/l/VPEQL6N3uxU9pvP1oZAsXyC2MEnFP3ovRjo7WYNQ==",
++      "cpu": [
++        "arm"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ]
++    },
++    "node_modules/@rollup/rollup-linux-arm64-gnu": {
++      "version": "4.62.4",
++      "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-arm64-gnu/-/rollup-linux-arm64-gnu-4.62.4.tgz",
++      "integrity": "sha512-CcnXHWnXg69g+DX5VWL3FHts3qMRN2uVEHX+BZvGLdd07/gXkn3ePjYtO1LDJvxkGKVHMclKBRa1QUTH+6toYQ==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ]
++    },
++    "node_modules/@rollup/rollup-linux-arm64-musl": {
++      "version": "4.62.4",
++      "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-arm64-musl/-/rollup-linux-arm64-musl-4.62.4.tgz",
++      "integrity": "sha512-iFOibiHnTRuhrWLlRsOQFdZJJIa7S8OwkneJr4ocALP16u5yk6lWLINFwhHaEqBFMsKDUZofLkGos7+CPzGB3g==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ]
++    },
++    "node_modules/@rollup/rollup-linux-loong64-gnu": {
++      "version": "4.62.4",
++      "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-loong64-gnu/-/rollup-linux-loong64-gnu-4.62.4.tgz",
++      "integrity": "sha512-XnWYMI7euHlb5a871xPja+Gm7DRCFU+FGRrtS2sMq9N8FvqtpagUy6gD4YOemC5MRk9xbh8+jYMEJbigFQwsgA==",
++      "cpu": [
++        "loong64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ]
++    },
++    "node_modules/@rollup/rollup-linux-loong64-musl": {
++      "version": "4.62.4",
++      "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-loong64-musl/-/rollup-linux-loong64-musl-4.62.4.tgz",
++      "integrity": "sha512-qGDAlO0U8xedCcsdRm9oaoQY8DAx/QT7uIxJWhCdx0ceIWX783UC9QSYkdpzAe29wNiVfp24+bZdQmn49o45SQ==",
++      "cpu": [
++        "loong64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ]
++    },
++    "node_modules/@rollup/rollup-linux-ppc64-gnu": {
++      "version": "4.62.4",
++      "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-ppc64-gnu/-/rollup-linux-ppc64-gnu-4.62.4.tgz",
++      "integrity": "sha512-ru4H6ezD7ysA5EiEK6qkkaEb4modH8CTej6kUy/gQi20u3kB3G7Zn8snXXkeJSCOFKG/rbPPtM/+9Wgas1961w==",
++      "cpu": [
++        "ppc64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ]
++    },
++    "node_modules/@rollup/rollup-linux-ppc64-musl": {
++      "version": "4.62.4",
++      "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-ppc64-musl/-/rollup-linux-ppc64-musl-4.62.4.tgz",
++      "integrity": "sha512-2W4MO5WQVJnbJaZdvDb9rhBDuFU1nKIepPFpJUBsTh2k1YY2g+ODViaWuyOAjQ5cOP7NvrvLzt3wvHOoiAvc7w==",
++      "cpu": [
++        "ppc64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ]
++    },
++    "node_modules/@rollup/rollup-linux-riscv64-gnu": {
++      "version": "4.62.4",
++      "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-riscv64-gnu/-/rollup-linux-riscv64-gnu-4.62.4.tgz",
++      "integrity": "sha512-+fxjfuoAmVMCYV5QyjoIpu0cp5DOiOTeqYFk1AVaxGr+/ravWLX89XfQmptsoWcaVy/TGf2hexzbUOrCQIL1CQ==",
++      "cpu": [
++        "riscv64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ]
++    },
++    "node_modules/@rollup/rollup-linux-riscv64-musl": {
++      "version": "4.62.4",
++      "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-riscv64-musl/-/rollup-linux-riscv64-musl-4.62.4.tgz",
++      "integrity": "sha512-jTn8JfHGL4djjFxPuM06LmNUJDsst2jeVlsd9OmIH6zc5sC9K6rIuO4YajXatLUpBmBKl6b35ro1QZocLi+tcA==",
++      "cpu": [
++        "riscv64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ]
++    },
++    "node_modules/@rollup/rollup-linux-s390x-gnu": {
++      "version": "4.62.4",
++      "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-s390x-gnu/-/rollup-linux-s390x-gnu-4.62.4.tgz",
++      "integrity": "sha512-oCJCJL4pXsoDcP2QZ+JVlPTIRc6266zsIaeJJsWImmF7HO0W8nb6HuSgZlMWxJwaPf8ehbSw8yo0EUw925hKsA==",
++      "cpu": [
++        "s390x"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ]
++    },
++    "node_modules/@rollup/rollup-linux-x64-gnu": {
++      "version": "4.62.4",
++      "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-x64-gnu/-/rollup-linux-x64-gnu-4.62.4.tgz",
++      "integrity": "sha512-W69hukhZ3KKNRCaMIEzKvcFye42hh0FE1+YoYaf5+Ikacuftoco6yO/xouz0hc5d5W/s3yBro5jRiuEE/Q5vUw==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ]
++    },
++    "node_modules/@rollup/rollup-linux-x64-musl": {
++      "version": "4.62.4",
++      "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-x64-musl/-/rollup-linux-x64-musl-4.62.4.tgz",
++      "integrity": "sha512-qiXbGG2jkjXhzXpsFZSR2Xpb8DN/UaxYsbb/STbuR/6fpaDgRmmaq1B/LmtF2wQFOFOSsK2jdE0RZ3a0zHn4QA==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ]
++    },
++    "node_modules/@rollup/rollup-openbsd-x64": {
++      "version": "4.62.4",
++      "resolved": "https://registry.npmjs.org/@rollup/rollup-openbsd-x64/-/rollup-openbsd-x64-4.62.4.tgz",
++      "integrity": "sha512-nWeM//hxv8mIo6jD7Hu4o48DVmV9pbV6gsKaWU+4NFyqHoPKwrkRiZGLKUhOBk8qNmDmpwFtPKg80Bo/Tn4xiQ==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "openbsd"
++      ]
++    },
++    "node_modules/@rollup/rollup-openharmony-arm64": {
++      "version": "4.62.4",
++      "resolved": "https://registry.npmjs.org/@rollup/rollup-openharmony-arm64/-/rollup-openharmony-arm64-4.62.4.tgz",
++      "integrity": "sha512-s62SQ/vgsRSvMwDkOEfTqfgASF0f26ZNaQuTA6Aok5lrikf89yI2W0gFHvZb2Jpgc6N8JnOKZgCK2iciO3CsxQ==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "openharmony"
++      ]
++    },
++    "node_modules/@rollup/rollup-win32-arm64-msvc": {
++      "version": "4.62.4",
++      "resolved": "https://registry.npmjs.org/@rollup/rollup-win32-arm64-msvc/-/rollup-win32-arm64-msvc-4.62.4.tgz",
++      "integrity": "sha512-J6wGf8TVGbXJq+HH+ttTvrcfNKPbuZecV6KT1B8I18BC5IURUh5kl4Yl5OEP5eFIUoI5BWxCsyYMhFsDx8kekw==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "win32"
++      ]
++    },
++    "node_modules/@rollup/rollup-win32-ia32-msvc": {
++      "version": "4.62.4",
++      "resolved": "https://registry.npmjs.org/@rollup/rollup-win32-ia32-msvc/-/rollup-win32-ia32-msvc-4.62.4.tgz",
++      "integrity": "sha512-zmfrQd/0wu6oJs8Vq8KwY/YtsKSsLtKe/HwAP4Wqy8LhWjeT55fHRAkOhYQ12wI3ayS4Tt12d5CDRD7N96SAYQ==",
++      "cpu": [
++        "ia32"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "win32"
++      ]
++    },
++    "node_modules/@rollup/rollup-win32-x64-gnu": {
++      "version": "4.62.4",
++      "resolved": "https://registry.npmjs.org/@rollup/rollup-win32-x64-gnu/-/rollup-win32-x64-gnu-4.62.4.tgz",
++      "integrity": "sha512-qPzHqdj9rfUD+w79dtE07zi/kFwKyCJqplp5K5ygeLTp7jLpAoc16OAH39HSmRC9UpozaecsleI8uAdEj6v2yw==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "win32"
++      ]
++    },
++    "node_modules/@rollup/rollup-win32-x64-msvc": {
++      "version": "4.62.4",
++      "resolved": "https://registry.npmjs.org/@rollup/rollup-win32-x64-msvc/-/rollup-win32-x64-msvc-4.62.4.tgz",
++      "integrity": "sha512-zD6NdeWEByGE9QF9vCrlJ5YQB4oq9q91kPZS37Jwj5hOkvR1lTBSpsKhKDw4IJtbQ35LsTS1HD9DZYGKIshU1Q==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "win32"
++      ]
++    },
++    "node_modules/@types/chai": {
++      "version": "5.2.3",
++      "resolved": "https://registry.npmjs.org/@types/chai/-/chai-5.2.3.tgz",
++      "integrity": "sha512-Mw558oeA9fFbv65/y4mHtXDs9bPnFMZAL/jxdPFUpOHHIXX91mcgEHbS5Lahr+pwZFR8A7GQleRWeI6cGFC2UA==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "@types/deep-eql": "*",
++        "assertion-error": "^2.0.1"
++      }
++    },
++    "node_modules/@types/deep-eql": {
++      "version": "4.0.2",
++      "resolved": "https://registry.npmjs.org/@types/deep-eql/-/deep-eql-4.0.2.tgz",
++      "integrity": "sha512-c9h9dVVMigMPc4bwTvC5dxqtqJZwQPePsWjPlpSOnojbor6pGqdk541lfA7AqFQr5pB1BRdq0juY9db81BwyFw==",
++      "dev": true,
++      "license": "MIT"
++    },
++    "node_modules/@types/estree": {
++      "version": "1.0.9",
++      "resolved": "https://registry.npmjs.org/@types/estree/-/estree-1.0.9.tgz",
++      "integrity": "sha512-GhdPgy1el4/ImP05X05Uw4cw2/M93BCUmnEvWZNStlCzEKME4Fkk+YpoA5OiHNQmoS7Cafb8Xa3Pya8m1Qrzeg==",
++      "dev": true,
++      "license": "MIT"
++    },
++    "node_modules/@vitest/expect": {
++      "version": "3.2.7",
++      "resolved": "https://registry.npmjs.org/@vitest/expect/-/expect-3.2.7.tgz",
++      "integrity": "sha512-E8eBXaKibuvH2pSZErOjdVb5vF4PbKYcrnluBTYxEk1l/VhhwZg1kZQsdtjq+CsF5CFydf2Rdkz7jDHKSisi3w==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "@types/chai": "^5.2.2",
++        "@vitest/spy": "3.2.7",
++        "@vitest/utils": "3.2.7",
++        "chai": "^5.2.0",
++        "tinyrainbow": "^2.0.0"
++      },
++      "funding": {
++        "url": "https://opencollective.com/vitest"
++      }
++    },
++    "node_modules/@vitest/mocker": {
++      "version": "3.2.7",
++      "resolved": "https://registry.npmjs.org/@vitest/mocker/-/mocker-3.2.7.tgz",
++      "integrity": "sha512-Trr0hYO9CM3Wj6ksWHRhK9IZpIY6wTMO5u/MqXurMxT57sWBaOPEtP3Oq60ihZuh5JsiagKfz95OcxdEP6dBrA==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "@vitest/spy": "3.2.7",
++        "estree-walker": "^3.0.3",
++        "magic-string": "^0.30.17"
++      },
++      "funding": {
++        "url": "https://opencollective.com/vitest"
++      },
++      "peerDependencies": {
++        "msw": "^2.4.9",
++        "vite": "^5.0.0 || ^6.0.0 || ^7.0.0-0"
++      },
++      "peerDependenciesMeta": {
++        "msw": {
++          "optional": true
++        },
++        "vite": {
++          "optional": true
++        }
++      }
++    },
++    "node_modules/@vitest/pretty-format": {
++      "version": "3.2.7",
++      "resolved": "https://registry.npmjs.org/@vitest/pretty-format/-/pretty-format-3.2.7.tgz",
++      "integrity": "sha512-KUHlwqVu0sRlhCdyPdQ/wBoTfRahjUky1MubOmYw9fWfIZy1gNoHpuaaQBPAaMaVYdQYHJLurzj8ECCj5OwTqA==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "tinyrainbow": "^2.0.0"
++      },
++      "funding": {
++        "url": "https://opencollective.com/vitest"
++      }
++    },
++    "node_modules/@vitest/runner": {
++      "version": "3.2.7",
++      "resolved": "https://registry.npmjs.org/@vitest/runner/-/runner-3.2.7.tgz",
++      "integrity": "sha512-sB9y4ovltoQP+WaUPwmSxO9WIg9Ig694Di5PalVPsYHklAdE027mehpWF2SQSVq+k6sFgaivbTjTJwZLSHbedA==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "@vitest/utils": "3.2.7",
++        "pathe": "^2.0.3",
++        "strip-literal": "^3.0.0"
++      },
++      "funding": {
++        "url": "https://opencollective.com/vitest"
++      }
++    },
++    "node_modules/@vitest/snapshot": {
++      "version": "3.2.7",
++      "resolved": "https://registry.npmjs.org/@vitest/snapshot/-/snapshot-3.2.7.tgz",
++      "integrity": "sha512-7C+MwShwtBSI5Buwoyg3s/iY1eHL9PKAf+O1wVh/TdnjXUtkoL/9YQtre90i4MtNXM6edP1wJ2zOBpfCyhIS7g==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "@vitest/pretty-format": "3.2.7",
++        "magic-string": "^0.30.17",
++        "pathe": "^2.0.3"
++      },
++      "funding": {
++        "url": "https://opencollective.com/vitest"
++      }
++    },
++    "node_modules/@vitest/spy": {
++      "version": "3.2.7",
++      "resolved": "https://registry.npmjs.org/@vitest/spy/-/spy-3.2.7.tgz",
++      "integrity": "sha512-Q2eQGI6d2L/hBtZ0qNuKcAGid68XK6cv1xsoaIma6PaJhHPoqcEJhYpXZ/5myCMqkNgtP6UKuBhbc0nHKnrkuQ==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "tinyspy": "^4.0.3"
++      },
++      "funding": {
++        "url": "https://opencollective.com/vitest"
++      }
++    },
++    "node_modules/@vitest/utils": {
++      "version": "3.2.7",
++      "resolved": "https://registry.npmjs.org/@vitest/utils/-/utils-3.2.7.tgz",
++      "integrity": "sha512-x6BDOd7dyo3PFLY3I9/HJ25X/6OurhGXk2/B9gOZNPF7XDVjeBK4k01lQE5uvDpbuheErh91qYuE1E2OEjK3Rw==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "@vitest/pretty-format": "3.2.7",
++        "loupe": "^3.1.4",
++        "tinyrainbow": "^2.0.0"
++      },
++      "funding": {
++        "url": "https://opencollective.com/vitest"
++      }
++    },
++    "node_modules/assertion-error": {
++      "version": "2.0.1",
++      "resolved": "https://registry.npmjs.org/assertion-error/-/assertion-error-2.0.1.tgz",
++      "integrity": "sha512-Izi8RQcffqCeNVgFigKli1ssklIbpHnCYc6AknXGYoB6grJqyeby7jv12JUQgmTAnIDnbck1uxksT4dzN3PWBA==",
++      "dev": true,
++      "license": "MIT",
++      "engines": {
++        "node": ">=12"
++      }
++    },
++    "node_modules/cac": {
++      "version": "6.7.14",
++      "resolved": "https://registry.npmjs.org/cac/-/cac-6.7.14.tgz",
++      "integrity": "sha512-b6Ilus+c3RrdDk+JhLKUAQfzzgLEPy6wcXqS7f/xe1EETvsDP6GORG7SFuOs6cID5YkqchW/LXZbX5bc8j7ZcQ==",
++      "dev": true,
++      "license": "MIT",
++      "engines": {
++        "node": ">=8"
++      }
++    },
++    "node_modules/chai": {
++      "version": "5.3.3",
++      "resolved": "https://registry.npmjs.org/chai/-/chai-5.3.3.tgz",
++      "integrity": "sha512-4zNhdJD/iOjSH0A05ea+Ke6MU5mmpQcbQsSOkgdaUMJ9zTlDTD/GYlwohmIE2u0gaxHYiVHEn1Fw9mZ/ktJWgw==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "assertion-error": "^2.0.1",
++        "check-error": "^2.1.1",
++        "deep-eql": "^5.0.1",
++        "loupe": "^3.1.0",
++        "pathval": "^2.0.0"
++      },
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/check-error": {
++      "version": "2.1.3",
++      "resolved": "https://registry.npmjs.org/check-error/-/check-error-2.1.3.tgz",
++      "integrity": "sha512-PAJdDJusoxnwm1VwW07VWwUN1sl7smmC3OKggvndJFadxxDRyFJBX/ggnu/KE4kQAB7a3Dp8f/YXC1FlUprWmA==",
++      "dev": true,
++      "license": "MIT",
++      "engines": {
++        "node": ">= 16"
++      }
++    },
++    "node_modules/debug": {
++      "version": "4.4.3",
++      "resolved": "https://registry.npmjs.org/debug/-/debug-4.4.3.tgz",
++      "integrity": "sha512-RGwwWnwQvkVfavKVt22FGLw+xYSdzARwm0ru6DhTVA3umU5hZc28V3kO4stgYryrTlLpuvgI9GiijltAjNbcqA==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "ms": "^2.1.3"
++      },
++      "engines": {
++        "node": ">=6.0"
++      },
++      "peerDependenciesMeta": {
++        "supports-color": {
++          "optional": true
++        }
++      }
++    },
++    "node_modules/deep-eql": {
++      "version": "5.0.2",
++      "resolved": "https://registry.npmjs.org/deep-eql/-/deep-eql-5.0.2.tgz",
++      "integrity": "sha512-h5k/5U50IJJFpzfL6nO9jaaumfjO/f2NjK/oYB2Djzm4p9L+3T9qWpZqZ2hAbLPuuYq9wrU08WQyBTL5GbPk5Q==",
++      "dev": true,
++      "license": "MIT",
++      "engines": {
++        "node": ">=6"
++      }
++    },
++    "node_modules/es-module-lexer": {
++      "version": "1.7.0",
++      "resolved": "https://registry.npmjs.org/es-module-lexer/-/es-module-lexer-1.7.0.tgz",
++      "integrity": "sha512-jEQoCwk8hyb2AZziIOLhDqpm5+2ww5uIE6lkO/6jcOCusfk6LhMHpXXfBLXTZ7Ydyt0j4VoUQv6uGNYbdW+kBA==",
++      "dev": true,
++      "license": "MIT"
++    },
++    "node_modules/esbuild": {
++      "version": "0.28.2",
++      "resolved": "https://registry.npmjs.org/esbuild/-/esbuild-0.28.2.tgz",
++      "integrity": "sha512-HKVLS8dvII+xoKW9kmqxbRKrnWEXfJJr/FZhhJmiqIB0e053QNYFqOBouTMO/k5sID4MvCiUCvv8b9M4h32wIA==",
++      "dev": true,
++      "hasInstallScript": true,
++      "license": "MIT",
++      "bin": {
++        "esbuild": "bin/esbuild"
++      },
++      "engines": {
++        "node": ">=18"
++      },
++      "optionalDependencies": {
++        "@esbuild/aix-ppc64": "0.28.2",
++        "@esbuild/android-arm": "0.28.2",
++        "@esbuild/android-arm64": "0.28.2",
++        "@esbuild/android-x64": "0.28.2",
++        "@esbuild/darwin-arm64": "0.28.2",
++        "@esbuild/darwin-x64": "0.28.2",
++        "@esbuild/freebsd-arm64": "0.28.2",
++        "@esbuild/freebsd-x64": "0.28.2",
++        "@esbuild/linux-arm": "0.28.2",
++        "@esbuild/linux-arm64": "0.28.2",
++        "@esbuild/linux-ia32": "0.28.2",
++        "@esbuild/linux-loong64": "0.28.2",
++        "@esbuild/linux-mips64el": "0.28.2",
++        "@esbuild/linux-ppc64": "0.28.2",
++        "@esbuild/linux-riscv64": "0.28.2",
++        "@esbuild/linux-s390x": "0.28.2",
++        "@esbuild/linux-x64": "0.28.2",
++        "@esbuild/netbsd-arm64": "0.28.2",
++        "@esbuild/netbsd-x64": "0.28.2",
++        "@esbuild/openbsd-arm64": "0.28.2",
++        "@esbuild/openbsd-x64": "0.28.2",
++        "@esbuild/openharmony-arm64": "0.28.2",
++        "@esbuild/sunos-x64": "0.28.2",
++        "@esbuild/win32-arm64": "0.28.2",
++        "@esbuild/win32-ia32": "0.28.2",
++        "@esbuild/win32-x64": "0.28.2"
++      }
++    },
++    "node_modules/estree-walker": {
++      "version": "3.0.3",
++      "resolved": "https://registry.npmjs.org/estree-walker/-/estree-walker-3.0.3.tgz",
++      "integrity": "sha512-7RUKfXgSMMkzt6ZuXmqapOurLGPPfgj6l9uRZ7lRGolvk0y2yocc35LdcxKC5PQZdn2DMqioAQ2NoWcrTKmm6g==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "@types/estree": "^1.0.0"
++      }
++    },
++    "node_modules/expect-type": {
++      "version": "1.4.0",
++      "resolved": "https://registry.npmjs.org/expect-type/-/expect-type-1.4.0.tgz",
++      "integrity": "sha512-KfYbmpRm0VbLjEvVa9yGwCi9GI34xvi7A/HXYWQO65CSD2u3MczUJSuwXKFIxlGsgBQizV9q5J9NHj4VG0n+pA==",
++      "dev": true,
++      "license": "Apache-2.0",
++      "engines": {
++        "node": ">=12.0.0"
++      }
++    },
++    "node_modules/fdir": {
++      "version": "6.5.0",
++      "resolved": "https://registry.npmjs.org/fdir/-/fdir-6.5.0.tgz",
++      "integrity": "sha512-tIbYtZbucOs0BRGqPJkshJUYdL+SDH7dVM8gjy+ERp3WAUjLEFJE+02kanyHtwjWOnwrKYBiwAmM0p4kLJAnXg==",
++      "dev": true,
++      "license": "MIT",
++      "engines": {
++        "node": ">=12.0.0"
++      },
++      "peerDependencies": {
++        "picomatch": "^3 || ^4"
++      },
++      "peerDependenciesMeta": {
++        "picomatch": {
++          "optional": true
++        }
++      }
++    },
++    "node_modules/fsevents": {
++      "version": "2.3.3",
++      "resolved": "https://registry.npmjs.org/fsevents/-/fsevents-2.3.3.tgz",
++      "integrity": "sha512-5xoDfX+fL7faATnagmWPpbFtwh/R77WmMMqqHGS65C3vvB0YHrgF+B1YmZ3441tMj5n63k0212XNoJwzlhffQw==",
++      "dev": true,
++      "hasInstallScript": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "darwin"
++      ],
++      "engines": {
++        "node": "^8.16.0 || ^10.6.0 || >=11.0.0"
++      }
++    },
++    "node_modules/js-tokens": {
++      "version": "9.0.1",
++      "resolved": "https://registry.npmjs.org/js-tokens/-/js-tokens-9.0.1.tgz",
++      "integrity": "sha512-mxa9E9ITFOt0ban3j6L5MpjwegGz6lBQmM1IJkWeBZGcMxto50+eWdjC/52xDbS2vy0k7vIMK0Fe2wfL9OQSpQ==",
++      "dev": true,
++      "license": "MIT"
++    },
++    "node_modules/loupe": {
++      "version": "3.2.1",
++      "resolved": "https://registry.npmjs.org/loupe/-/loupe-3.2.1.tgz",
++      "integrity": "sha512-CdzqowRJCeLU72bHvWqwRBBlLcMEtIvGrlvef74kMnV2AolS9Y8xUv1I0U/MNAWMhBlKIoyuEgoJ0t/bbwHbLQ==",
++      "dev": true,
++      "license": "MIT"
++    },
++    "node_modules/magic-string": {
++      "version": "0.30.21",
++      "resolved": "https://registry.npmjs.org/magic-string/-/magic-string-0.30.21.tgz",
++      "integrity": "sha512-vd2F4YUyEXKGcLHoq+TEyCjxueSeHnFxyyjNp80yg0XV4vUhnDer/lvvlqM/arB5bXQN5K2/3oinyCRyx8T2CQ==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "@jridgewell/sourcemap-codec": "^1.5.5"
++      }
++    },
++    "node_modules/ms": {
++      "version": "2.1.3",
++      "resolved": "https://registry.npmjs.org/ms/-/ms-2.1.3.tgz",
++      "integrity": "sha512-6FlzubTLZG3J2a/NVCAleEhjzq5oxgHyaCU9yYXvcLsvoVaHJq/s5xXI6/XXP6tz7R9xAOtHnSO/tXtF3WRTlA==",
++      "dev": true,
++      "license": "MIT"
++    },
++    "node_modules/nanoid": {
++      "version": "3.3.18",
++      "resolved": "https://registry.npmjs.org/nanoid/-/nanoid-3.3.18.tgz",
++      "integrity": "sha512-DTg4MJbGMWkfi6VZFdNt2/caMbQy4Ou+Op/hJQvGEWcnVfoA1QA+xzRKAzw9jD6+GVOOeYr/mIcuDSdug6F6+w==",
++      "dev": true,
++      "funding": [
++        {
++          "type": "github",
++          "url": "https://github.com/sponsors/ai"
++        }
++      ],
++      "license": "MIT",
++      "bin": {
++        "nanoid": "bin/nanoid.cjs"
++      },
++      "engines": {
++        "node": "^10 || ^12 || ^13.7 || ^14 || >=15.0.1"
++      }
++    },
++    "node_modules/pathe": {
++      "version": "2.0.3",
++      "resolved": "https://registry.npmjs.org/pathe/-/pathe-2.0.3.tgz",
++      "integrity": "sha512-WUjGcAqP1gQacoQe+OBJsFA7Ld4DyXuUIjZ5cc75cLHvJ7dtNsTugphxIADwspS+AraAUePCKrSVtPLFj/F88w==",
++      "dev": true,
++      "license": "MIT"
++    },
++    "node_modules/pathval": {
++      "version": "2.0.1",
++      "resolved": "https://registry.npmjs.org/pathval/-/pathval-2.0.1.tgz",
++      "integrity": "sha512-//nshmD55c46FuFw26xV/xFAaB5HF9Xdap7HJBBnrKdAd6/GxDBaNA1870O79+9ueg61cZLSVc+OaFlfmObYVQ==",
++      "dev": true,
++      "license": "MIT",
++      "engines": {
++        "node": ">= 14.16"
++      }
++    },
++    "node_modules/picocolors": {
++      "version": "1.1.1",
++      "resolved": "https://registry.npmjs.org/picocolors/-/picocolors-1.1.1.tgz",
++      "integrity": "sha512-xceH2snhtb5M9liqDsmEw56le376mTZkEX/jEb/RxNFyegNul7eNslCXP9FDj/Lcu0X8KEyMceP2ntpaHrDEVA==",
++      "dev": true,
++      "license": "ISC"
++    },
++    "node_modules/picomatch": {
++      "version": "4.0.5",
++      "resolved": "https://registry.npmjs.org/picomatch/-/picomatch-4.0.5.tgz",
++      "integrity": "sha512-RvwwcruNjI1ncT5xRakeyS9Lf8lcItv34KD+aif+VH9kduAyfYBipGh12274xtenIPZ119/R9BdTBa8gAwSh0A==",
++      "dev": true,
++      "license": "MIT",
++      "engines": {
++        "node": ">=12"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/jonschlinkert"
++      }
++    },
++    "node_modules/postcss": {
++      "version": "8.5.26",
++      "resolved": "https://registry.npmjs.org/postcss/-/postcss-8.5.26.tgz",
++      "integrity": "sha512-u82N74LFzG8ca+dD8puPnplTXoGH4fTPpVGuIbt36G3qvNlkvfD0lEAZSxaly3KX8TS/L1A1gsCEmvKmBcVbkQ==",
++      "dev": true,
++      "funding": [
++        {
++          "type": "opencollective",
++          "url": "https://opencollective.com/postcss/"
++        },
++        {
++          "type": "tidelift",
++          "url": "https://tidelift.com/funding/github/npm/postcss"
++        },
++        {
++          "type": "github",
++          "url": "https://github.com/sponsors/ai"
++        }
++      ],
++      "license": "MIT",
++      "dependencies": {
++        "nanoid": "^3.3.17",
++        "picocolors": "^1.1.1",
++        "source-map-js": "^1.2.1"
++      },
++      "engines": {
++        "node": "^10 || ^12 || >=14"
++      }
++    },
++    "node_modules/rollup": {
++      "version": "4.62.4",
++      "resolved": "https://registry.npmjs.org/rollup/-/rollup-4.62.4.tgz",
++      "integrity": "sha512-RXOqwaPsBGjMNMa4sQjDjHieHEZDFoj/Rdr46l2MU5DfEs16wHJPC2RPTPHWhNl+M3aI472LLqFkFKut4SblOg==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "@types/estree": "1.0.9"
++      },
++      "bin": {
++        "rollup": "dist/bin/rollup"
++      },
++      "engines": {
++        "node": ">=18.0.0",
++        "npm": ">=8.0.0"
++      },
++      "optionalDependencies": {
++        "@napi-rs/lzma-linux-x64-gnu": "1.5.1",
++        "@rollup/rollup-android-arm-eabi": "4.62.4",
++        "@rollup/rollup-android-arm64": "4.62.4",
++        "@rollup/rollup-darwin-arm64": "4.62.4",
++        "@rollup/rollup-darwin-x64": "4.62.4",
++        "@rollup/rollup-freebsd-arm64": "4.62.4",
++        "@rollup/rollup-freebsd-x64": "4.62.4",
++        "@rollup/rollup-linux-arm-gnueabihf": "4.62.4",
++        "@rollup/rollup-linux-arm-musleabihf": "4.62.4",
++        "@rollup/rollup-linux-arm64-gnu": "4.62.4",
++        "@rollup/rollup-linux-arm64-musl": "4.62.4",
++        "@rollup/rollup-linux-loong64-gnu": "4.62.4",
++        "@rollup/rollup-linux-loong64-musl": "4.62.4",
++        "@rollup/rollup-linux-ppc64-gnu": "4.62.4",
++        "@rollup/rollup-linux-ppc64-musl": "4.62.4",
++        "@rollup/rollup-linux-riscv64-gnu": "4.62.4",
++        "@rollup/rollup-linux-riscv64-musl": "4.62.4",
++        "@rollup/rollup-linux-s390x-gnu": "4.62.4",
++        "@rollup/rollup-linux-x64-gnu": "4.62.4",
++        "@rollup/rollup-linux-x64-musl": "4.62.4",
++        "@rollup/rollup-openbsd-x64": "4.62.4",
++        "@rollup/rollup-openharmony-arm64": "4.62.4",
++        "@rollup/rollup-win32-arm64-msvc": "4.62.4",
++        "@rollup/rollup-win32-ia32-msvc": "4.62.4",
++        "@rollup/rollup-win32-x64-gnu": "4.62.4",
++        "@rollup/rollup-win32-x64-msvc": "4.62.4",
++        "fsevents": "~2.3.2"
++      }
++    },
++    "node_modules/siginfo": {
++      "version": "2.0.0",
++      "resolved": "https://registry.npmjs.org/siginfo/-/siginfo-2.0.0.tgz",
++      "integrity": "sha512-ybx0WO1/8bSBLEWXZvEd7gMW3Sn3JFlW3TvX1nREbDLRNQNaeNN8WK0meBwPdAaOI7TtRRRJn/Es1zhrrCHu7g==",
++      "dev": true,
++      "license": "ISC"
++    },
++    "node_modules/source-map-js": {
++      "version": "1.2.1",
++      "resolved": "https://registry.npmjs.org/source-map-js/-/source-map-js-1.2.1.tgz",
++      "integrity": "sha512-UXWMKhLOwVKb728IUtQPXxfYU+usdybtUrK/8uGE8CQMvrhOpwvzDBwj0QhSL7MQc7vIsISBG8VQ8+IDQxpfQA==",
++      "dev": true,
++      "license": "BSD-3-Clause",
++      "engines": {
++        "node": ">=0.10.0"
++      }
++    },
++    "node_modules/stackback": {
++      "version": "0.0.2",
++      "resolved": "https://registry.npmjs.org/stackback/-/stackback-0.0.2.tgz",
++      "integrity": "sha512-1XMJE5fQo1jGH6Y/7ebnwPOBEkIEnT4QF32d5R1+VXdXveM0IBMJt8zfaxX1P3QhVwrYe+576+jkANtSS2mBbw==",
++      "dev": true,
++      "license": "MIT"
++    },
++    "node_modules/std-env": {
++      "version": "3.10.0",
++      "resolved": "https://registry.npmjs.org/std-env/-/std-env-3.10.0.tgz",
++      "integrity": "sha512-5GS12FdOZNliM5mAOxFRg7Ir0pWz8MdpYm6AY6VPkGpbA7ZzmbzNcBJQ0GPvvyWgcY7QAhCgf9Uy89I03faLkg==",
++      "dev": true,
++      "license": "MIT"
++    },
++    "node_modules/strip-literal": {
++      "version": "3.1.0",
++      "resolved": "https://registry.npmjs.org/strip-literal/-/strip-literal-3.1.0.tgz",
++      "integrity": "sha512-8r3mkIM/2+PpjHoOtiAW8Rg3jJLHaV7xPwG+YRGrv6FP0wwk/toTpATxWYOW0BKdWwl82VT2tFYi5DlROa0Mxg==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "js-tokens": "^9.0.1"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/antfu"
++      }
++    },
++    "node_modules/tinybench": {
++      "version": "2.9.0",
++      "resolved": "https://registry.npmjs.org/tinybench/-/tinybench-2.9.0.tgz",
++      "integrity": "sha512-0+DUvqWMValLmha6lr4kD8iAMK1HzV0/aKnCtWb9v9641TnP/MFb7Pc2bxoxQjTXAErryXVgUOfv2YqNllqGeg==",
++      "dev": true,
++      "license": "MIT"
++    },
++    "node_modules/tinyexec": {
++      "version": "0.3.2",
++      "resolved": "https://registry.npmjs.org/tinyexec/-/tinyexec-0.3.2.tgz",
++      "integrity": "sha512-KQQR9yN7R5+OSwaK0XQoj22pwHoTlgYqmUscPYoknOoWCWfj/5/ABTMRi69FrKU5ffPVh5QcFikpWJI/P1ocHA==",
++      "dev": true,
++      "license": "MIT"
++    },
++    "node_modules/tinyglobby": {
++      "version": "0.2.17",
++      "resolved": "https://registry.npmjs.org/tinyglobby/-/tinyglobby-0.2.17.tgz",
++      "integrity": "sha512-wXR/dYpcqKmfWpEdZjiKJOwCNFndD0DMnrW/cYjVGttEkBfVgcLFHoNrlj47mjOVic9yyNu65alsgF4NQyTa2g==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "fdir": "^6.5.0",
++        "picomatch": "^4.0.4"
++      },
++      "engines": {
++        "node": ">=12.0.0"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/SuperchupuDev"
++      }
++    },
++    "node_modules/tinypool": {
++      "version": "1.1.1",
++      "resolved": "https://registry.npmjs.org/tinypool/-/tinypool-1.1.1.tgz",
++      "integrity": "sha512-Zba82s87IFq9A9XmjiX5uZA/ARWDrB03OHlq+Vw1fSdt0I+4/Kutwy8BP4Y/y/aORMo61FQ0vIb5j44vSo5Pkg==",
++      "dev": true,
++      "license": "MIT",
++      "engines": {
++        "node": "^18.0.0 || >=20.0.0"
++      }
++    },
++    "node_modules/tinyrainbow": {
++      "version": "2.0.0",
++      "resolved": "https://registry.npmjs.org/tinyrainbow/-/tinyrainbow-2.0.0.tgz",
++      "integrity": "sha512-op4nsTR47R6p0vMUUoYl/a+ljLFVtlfaXkLQmqfLR1qHma1h/ysYk4hEXZ880bf2CYgTskvTa/e196Vd5dDQXw==",
++      "dev": true,
++      "license": "MIT",
++      "engines": {
++        "node": ">=14.0.0"
++      }
++    },
++    "node_modules/tinyspy": {
++      "version": "4.0.4",
++      "resolved": "https://registry.npmjs.org/tinyspy/-/tinyspy-4.0.4.tgz",
++      "integrity": "sha512-azl+t0z7pw/z958Gy9svOTuzqIk6xq+NSheJzn5MMWtWTFywIacg2wUlzKFGtt3cthx0r2SxMK0yzJOR0IES7Q==",
++      "dev": true,
++      "license": "MIT",
++      "engines": {
++        "node": ">=14.0.0"
++      }
++    },
++    "node_modules/typescript": {
++      "version": "5.9.3",
++      "resolved": "https://registry.npmjs.org/typescript/-/typescript-5.9.3.tgz",
++      "integrity": "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==",
++      "dev": true,
++      "license": "Apache-2.0",
++      "bin": {
++        "tsc": "bin/tsc",
++        "tsserver": "bin/tsserver"
++      },
++      "engines": {
++        "node": ">=14.17"
++      }
++    },
++    "node_modules/vite": {
++      "version": "7.3.6",
++      "resolved": "https://registry.npmjs.org/vite/-/vite-7.3.6.tgz",
++      "integrity": "sha512-4XP60spRGjSZFf1qYH+dJIkK2znL3zQfl9KkOV9MkkRR/3Dls0dxaBsQPTloEc5BLXWPL9vsOxopxyKoMmDueg==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "esbuild": "^0.27.0 || ^0.28.0",
++        "fdir": "^6.5.0",
++        "picomatch": "^4.0.3",
++        "postcss": "^8.5.6",
++        "rollup": "^4.43.0",
++        "tinyglobby": "^0.2.15"
++      },
++      "bin": {
++        "vite": "bin/vite.js"
++      },
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      },
++      "funding": {
++        "url": "https://github.com/vitejs/vite?sponsor=1"
++      },
++      "optionalDependencies": {
++        "fsevents": "~2.3.3"
++      },
++      "peerDependencies": {
++        "@types/node": "^20.19.0 || >=22.12.0",
++        "jiti": ">=1.21.0",
++        "less": "^4.0.0",
++        "lightningcss": "^1.21.0",
++        "sass": "^1.70.0",
++        "sass-embedded": "^1.70.0",
++        "stylus": ">=0.54.8",
++        "sugarss": "^5.0.0",
++        "terser": "^5.16.0",
++        "tsx": "^4.8.1",
++        "yaml": "^2.4.2"
++      },
++      "peerDependenciesMeta": {
++        "@types/node": {
++          "optional": true
++        },
++        "jiti": {
++          "optional": true
++        },
++        "less": {
++          "optional": true
++        },
++        "lightningcss": {
++          "optional": true
++        },
++        "sass": {
++          "optional": true
++        },
++        "sass-embedded": {
++          "optional": true
++        },
++        "stylus": {
++          "optional": true
++        },
++        "sugarss": {
++          "optional": true
++        },
++        "terser": {
++          "optional": true
++        },
++        "tsx": {
++          "optional": true
++        },
++        "yaml": {
++          "optional": true
++        }
++      }
++    },
++    "node_modules/vite-node": {
++      "version": "3.2.4",
++      "resolved": "https://registry.npmjs.org/vite-node/-/vite-node-3.2.4.tgz",
++      "integrity": "sha512-EbKSKh+bh1E1IFxeO0pg1n4dvoOTt0UDiXMd/qn++r98+jPO1xtJilvXldeuQ8giIB5IkpjCgMleHMNEsGH6pg==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "cac": "^6.7.14",
++        "debug": "^4.4.1",
++        "es-module-lexer": "^1.7.0",
++        "pathe": "^2.0.3",
++        "vite": "^5.0.0 || ^6.0.0 || ^7.0.0-0"
++      },
++      "bin": {
++        "vite-node": "vite-node.mjs"
++      },
++      "engines": {
++        "node": "^18.0.0 || ^20.0.0 || >=22.0.0"
++      },
++      "funding": {
++        "url": "https://opencollective.com/vitest"
++      }
++    },
++    "node_modules/vitest": {
++      "version": "3.2.7",
++      "resolved": "https://registry.npmjs.org/vitest/-/vitest-3.2.7.tgz",
++      "integrity": "sha512-KrxIJ62Fd89gfysR4WotlgZABiz2dqFPgqGzX7s+CwsqLFomRH7777ZcrOD6+WVAh7khPQP41A+BKbpcJFrdEg==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "@types/chai": "^5.2.2",
++        "@vitest/expect": "3.2.7",
++        "@vitest/mocker": "3.2.7",
++        "@vitest/pretty-format": "^3.2.7",
++        "@vitest/runner": "3.2.7",
++        "@vitest/snapshot": "3.2.7",
++        "@vitest/spy": "3.2.7",
++        "@vitest/utils": "3.2.7",
++        "chai": "^5.2.0",
++        "debug": "^4.4.1",
++        "expect-type": "^1.2.1",
++        "magic-string": "^0.30.17",
++        "pathe": "^2.0.3",
++        "picomatch": "^4.0.2",
++        "std-env": "^3.9.0",
++        "tinybench": "^2.9.0",
++        "tinyexec": "^0.3.2",
++        "tinyglobby": "^0.2.14",
++        "tinypool": "^1.1.1",
++        "tinyrainbow": "^2.0.0",
++        "vite": "^5.0.0 || ^6.0.0 || ^7.0.0-0",
++        "vite-node": "3.2.4",
++        "why-is-node-running": "^2.3.0"
++      },
++      "bin": {
++        "vitest": "vitest.mjs"
++      },
++      "engines": {
++        "node": "^18.0.0 || ^20.0.0 || >=22.0.0"
++      },
++      "funding": {
++        "url": "https://opencollective.com/vitest"
++      },
++      "peerDependencies": {
++        "@edge-runtime/vm": "*",
++        "@types/debug": "^4.1.12",
++        "@types/node": "^18.0.0 || ^20.0.0 || >=22.0.0",
++        "@vitest/browser": "3.2.7",
++        "@vitest/ui": "3.2.7",
++        "happy-dom": "*",
++        "jsdom": "*"
++      },
++      "peerDependenciesMeta": {
++        "@edge-runtime/vm": {
++          "optional": true
++        },
++        "@types/debug": {
++          "optional": true
++        },
++        "@types/node": {
++          "optional": true
++        },
++        "@vitest/browser": {
++          "optional": true
++        },
++        "@vitest/ui": {
++          "optional": true
++        },
++        "happy-dom": {
++          "optional": true
++        },
++        "jsdom": {
++          "optional": true
++        }
++      }
++    },
++    "node_modules/why-is-node-running": {
++      "version": "2.3.0",
++      "resolved": "https://registry.npmjs.org/why-is-node-running/-/why-is-node-running-2.3.0.tgz",
++      "integrity": "sha512-hUrmaWBdVDcxvYqnyh09zunKzROWjbZTiNy8dBEjkS7ehEDQibXJ7XvlmtbwuTclUiIyN+CyXQD4Vmko8fNm8w==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "siginfo": "^2.0.0",
++        "stackback": "0.0.2"
++      },
++      "bin": {
++        "why-is-node-running": "cli.js"
++      },
++      "engines": {
++        "node": ">=8"
++      }
++    }
++  }
++}
+diff --git a/scripts/windows/Backup-Emergency.ps1 b/scripts/windows/Backup-Emergency.ps1
+new file mode 100644
+index 0000000..d255466
+--- /dev/null
++++ b/scripts/windows/Backup-Emergency.ps1
+@@ -0,0 +1,12 @@
++#Requires -Version 5.1
++$ErrorActionPreference = "Stop"
++$Root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
++if (-not (Test-Path (Join-Path $Root "docker-compose.yml"))) {
++  $Root = Split-Path -Parent $PSScriptRoot
++}
++Set-Location $Root
++
++Write-Host "Creating logical SQL backup..." -ForegroundColor Cyan
++docker compose -f docker-compose.yml -f docker-compose.windows.yml --env-file .env exec -T care-emergency-api /bin/sh /app/backup.sh
++if ($LASTEXITCODE -ne 0) { throw "Backup failed" }
++Write-Host "Backup complete (see care_emergency_backups volume or EMERGENCY_BACKUP_DIR)." -ForegroundColor Green
+diff --git a/scripts/windows/Restore-Emergency.ps1 b/scripts/windows/Restore-Emergency.ps1
+new file mode 100644
+index 0000000..f710a09
+--- /dev/null
++++ b/scripts/windows/Restore-Emergency.ps1
+@@ -0,0 +1,29 @@
++#Requires -Version 5.1
++<#
++.SYNOPSIS
++  Restore Emergency CARE Postgres from a plain SQL dump.
++  WARNING: replaces the emergency database contents. Does NOT touch Main CARE.
++#>
++param(
++  [Parameter(Mandatory = $true)]
++  [string]$SqlFile,
++  [switch]$Confirm
++)
++$ErrorActionPreference = "Stop"
++$Root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
++if (-not (Test-Path (Join-Path $Root "docker-compose.yml"))) {
++  $Root = Split-Path -Parent $PSScriptRoot
++}
++Set-Location $Root
++
++if (-not (Test-Path $SqlFile)) { throw "SQL file not found: $SqlFile" }
++if (-not $Confirm) {
++  throw "Refusing to restore without -Confirm. Example: .\Restore-Emergency.ps1 -SqlFile .\backups\dump.sql -Confirm"
++}
++
++Write-Host "Restoring $SqlFile into care-emergency-db (DESTRUCTIVE to emergency DB only)..." -ForegroundColor Yellow
++Get-Content -Raw $SqlFile | docker compose -f docker-compose.yml -f docker-compose.windows.yml --env-file .env exec -T care-emergency-db `
++  sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
++if ($LASTEXITCODE -ne 0) { throw "Restore failed" }
++Write-Host "Restore complete. Restart API if needed:" -ForegroundColor Green
++Write-Host "  docker compose -f docker-compose.yml -f docker-compose.windows.yml --env-file .env restart care-emergency-api"
+diff --git a/scripts/windows/Start-Emergency.ps1 b/scripts/windows/Start-Emergency.ps1
+new file mode 100644
+index 0000000..461e80f
+--- /dev/null
++++ b/scripts/windows/Start-Emergency.ps1
+@@ -0,0 +1,44 @@
++#Requires -Version 5.1
++<#
++.SYNOPSIS
++  One-command start for Windows Emergency CARE (Docker Desktop).
++#>
++$ErrorActionPreference = "Stop"
++$Root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
++if (-not (Test-Path (Join-Path $Root "docker-compose.yml"))) {
++  $Root = Split-Path -Parent $PSScriptRoot
++}
++Set-Location $Root
++
++if (-not (Test-Path ".env")) {
++  if (Test-Path ".env.windows.example") {
++    Copy-Item ".env.windows.example" ".env"
++    Write-Host "Created .env from .env.windows.example — edit secrets before production use." -ForegroundColor Yellow
++  } else {
++    throw "Missing .env — copy .env.windows.example to .env and set EMERGENCY_FETCH_TOKEN + PRIMARY_CARE_URL"
++  }
++}
++
++Write-Host "Starting Windows Emergency CARE stack..." -ForegroundColor Cyan
++docker compose -f docker-compose.yml -f docker-compose.windows.yml --env-file .env up -d --build
++if ($LASTEXITCODE -ne 0) { throw "docker compose failed" }
++
++$port = "8080"
++Get-Content .env | ForEach-Object {
++  if ($_ -match '^\s*EMERGENCY_HTTP_PORT\s*=\s*(.+)\s*$') { $port = $Matches[1].Trim() }
++}
++
++Write-Host ""
++Write-Host "Waiting for health..." -ForegroundColor Cyan
++$ok = $false
++for ($i = 0; $i -lt 40; $i++) {
++  try {
++    $r = Invoke-WebRequest -Uri "http://127.0.0.1:$port/health" -UseBasicParsing -TimeoutSec 3
++    if ($r.StatusCode -eq 200) { $ok = $true; break }
++  } catch { Start-Sleep -Seconds 2 }
++}
++if (-not $ok) { throw "Health check failed on http://127.0.0.1:$port/health" }
++
++Write-Host "Emergency CARE is UP" -ForegroundColor Green
++Write-Host "Open: http://127.0.0.1:$port/  (or http://<this-pc-lan-ip>:$port/)"
++Write-Host "UI: CARE Billing Desk layout + EMERGENCY MODE banner"
+-- 
+2.43.0
+
