@@ -1,6 +1,7 @@
 /**
  * One-click AI Pipeline Self-Test — Settings → Radiology → Local AI.
- * Distinguishes direct qwen vision from CARE /api/ai-reporting/draft path.
+ * Distinguishes direct qwen vision, provider-only, and full CARE draft path
+ * for 1-image vs normal (up to 6) image counts.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@/lib/fetchApi";
@@ -22,17 +23,53 @@ interface SelfTestStep {
   elapsedMs?: number;
 }
 
+interface PipelineStage {
+  id: string;
+  status: string;
+  detail: string;
+  elapsedMs?: number | null;
+}
+
+interface PathProbe {
+  label: string;
+  pass: boolean;
+  model: string | null;
+  endpoint: string | null;
+  imageCount: number;
+  totalImageBytes: number;
+  requestBodyBytes: number | null;
+  elapsedMs: number;
+  httpStatus: number | null;
+  responseLength: number;
+  parserSuccess: boolean | null;
+  candidateCount: number | null;
+  safeError: string | null;
+  stages: PipelineStage[];
+  thinkSent?: boolean | null;
+  thinkingLength?: number | null;
+}
+
 interface SelfTestResult {
   id: string;
   status: "queued" | "running" | "completed";
   final: "PASS" | "FAIL" | "PARTIAL" | "RUNNING" | "NO_MRI";
   summary: string;
   steps: SelfTestStep[];
+  probes?: PathProbe[];
   technical: Record<string, unknown>;
   startedAt: string;
   finishedAt: string | null;
   progressLabel: string;
   diagnosticReport?: string;
+  safety?: Record<string, unknown>;
+}
+
+interface MriStudyOption {
+  worklistId: number;
+  studyInstanceUid: string;
+  modality: string;
+  studyDescription: string | null;
+  accessionNumber: string | null;
 }
 
 const STEP_ICON: Record<StepStatus, typeof CheckCircle2> = {
@@ -65,6 +102,7 @@ export function AiPipelineSelfTestPanel() {
   const [result, setResult] = useState<SelfTestResult | null>(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [studyUid, setStudyUid] = useState("");
+  const [studies, setStudies] = useState<MriStudyOption[]>([]);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const stopPoll = useCallback(() => {
@@ -75,6 +113,13 @@ export function AiPipelineSelfTestPanel() {
   }, []);
 
   useEffect(() => () => stopPoll(), [stopPoll]);
+
+  useEffect(() => {
+    void api
+      .get<{ studies: MriStudyOption[] }>("/api/radiology-ollama/pipeline-self-test/studies?limit=20")
+      .then((r) => setStudies(r.studies ?? []))
+      .catch(() => setStudies([]));
+  }, []);
 
   async function refreshStatus(id: string) {
     const r = await api.get<SelfTestResult>(`/api/radiology-ollama/pipeline-self-test/${id}`);
@@ -102,10 +147,9 @@ export function AiPipelineSelfTestPanel() {
       setResult(started);
       pollRef.current = setInterval(() => {
         void refreshStatus(started.id).catch(() => {
-          /* keep polling; transient errors ok */
+          /* keep polling */
         });
       }, 2000);
-      // Immediate first poll
       void refreshStatus(started.id);
     } catch (e: unknown) {
       setBusy(false);
@@ -150,9 +194,10 @@ export function AiPipelineSelfTestPanel() {
             AI Pipeline Self-Test
           </h3>
           <p className="text-[11px] text-muted-foreground mt-0.5 max-w-xl">
-            One click runs the same production checks from care-api: Orthanc MRI → one rendered JPEG →
-            direct qwen vision → CARE <code className="bg-muted px-1 rounded">/api/ai-reporting/draft</code> path.
-            Diagnostic only — no clinical report write, no bulk enqueue.
+            One click: Orthanc MRI → 1 vs up to 6 images → direct{" "}
+            <code className="bg-muted px-1 rounded">/api/generate</code> +{" "}
+            <code className="bg-muted px-1 rounded">/api/chat</code> → provider-only → full CARE draft path.
+            Diagnostic only — no clinical report write.
           </p>
         </div>
         <div className="flex flex-wrap gap-1.5 shrink-0">
@@ -162,7 +207,6 @@ export function AiPipelineSelfTestPanel() {
               size="sm"
               variant="outline"
               className="h-8 text-xs gap-1"
-              disabled={!result}
               onClick={() => result && void refreshStatus(result.id)}
               data-testid="ai-pipeline-self-test-refresh"
             >
@@ -184,21 +228,36 @@ export function AiPipelineSelfTestPanel() {
         </div>
       </div>
 
-      <div className="flex flex-wrap items-end gap-2">
-        <div className="flex-1 min-w-[200px] space-y-1">
-          <label className="text-[10px] font-semibold text-muted-foreground">Study (optional)</label>
+      <div className="grid gap-2 sm:grid-cols-2">
+        <div className="space-y-1">
+          <label className="text-[10px] font-semibold text-muted-foreground">Use recent MRI / Choose study</label>
+          <select
+            className="w-full h-8 px-2 text-xs rounded-md border bg-background"
+            value={studyUid}
+            onChange={(e) => setStudyUid(e.target.value)}
+            data-testid="ai-pipeline-self-test-study-select"
+          >
+            <option value="">Use most recent MRI</option>
+            {studies.map((s) => (
+              <option key={s.studyInstanceUid} value={s.studyInstanceUid}>
+                #{s.worklistId} · {s.modality}
+                {s.studyDescription ? ` · ${s.studyDescription.slice(0, 40)}` : ""}
+                {s.accessionNumber ? ` · Acc ${s.accessionNumber}` : ""}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="space-y-1">
+          <label className="text-[10px] font-semibold text-muted-foreground">Or paste Study Instance UID</label>
           <input
             type="text"
             value={studyUid}
             onChange={(e) => setStudyUid(e.target.value)}
-            placeholder="Leave empty = Use recent MRI"
+            placeholder="1.2.840…"
             className="w-full h-8 px-2 text-xs rounded-md border bg-background font-mono"
             data-testid="ai-pipeline-self-test-study-uid"
           />
         </div>
-        <p className="text-[10px] text-muted-foreground pb-1">
-          [Use recent MRI] when empty, or paste Study Instance UID to [Choose study].
-        </p>
       </div>
 
       {busy && result && result.status !== "completed" && (
@@ -259,7 +318,7 @@ export function AiPipelineSelfTestPanel() {
                               <span className="text-[10px] opacity-80">{(s.elapsedMs / 1000).toFixed(1)}s</span>
                             )}
                           </div>
-                          <p className="text-[11px] mt-0.5 opacity-90">{s.detail}</p>
+                          <p className="text-[11px] mt-0.5 opacity-90 break-words">{s.detail}</p>
                         </div>
                       </div>
                     );
@@ -267,6 +326,27 @@ export function AiPipelineSelfTestPanel() {
               </div>
             ))}
           </div>
+
+          {result.probes && result.probes.length > 0 && (
+            <div className="space-y-2">
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                Stage breakdown
+              </p>
+              {result.probes.map((p) => (
+                <div key={p.label} className="rounded-md border px-2 py-1.5 text-[10px] space-y-0.5">
+                  <div className="font-semibold">
+                    {p.pass ? "✓" : "✕"} {p.label}
+                  </div>
+                  {(p.stages ?? []).map((st) => (
+                    <div key={st.id} className="text-muted-foreground pl-2">
+                      {st.id}: {st.status} — {st.detail}
+                      {st.elapsedMs != null ? ` (${st.elapsedMs}ms)` : ""}
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+          )}
 
           <button
             type="button"
@@ -278,7 +358,18 @@ export function AiPipelineSelfTestPanel() {
           </button>
           {detailsOpen && (
             <pre className="max-h-64 overflow-auto rounded-md border bg-muted/40 p-2 text-[10px] font-mono whitespace-pre-wrap break-all">
-              {JSON.stringify(result.technical, null, 2)}
+              {JSON.stringify(
+                {
+                  safety: result.safety,
+                  technical: result.technical,
+                  probes: (result.probes ?? []).map((p) => ({
+                    ...p,
+                    // never show image payloads
+                  })),
+                },
+                null,
+                2,
+              )}
             </pre>
           )}
         </div>

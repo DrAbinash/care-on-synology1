@@ -68,12 +68,25 @@ export interface AiQueryDiagnostics {
   numberOfImages: number;
   /** Approximate decoded image payload bytes (from base64 length), not pixels. */
   totalImageBytes: number;
+  /** JSON body byte length sent to the provider (includes embedded base64 — size only). */
+  requestBodyBytes?: number | null;
   promptLength: number;
   startedAt: string;
   elapsedMs: number;
   httpStatus?: number | null;
   responseLength: number;
   finishReason?: string | null;
+  /** Whether `think` was included in the outbound Ollama body. */
+  thinkSent?: boolean | null;
+  /** Value of think when sent (null if not sent). */
+  thinkValue?: boolean | null;
+  /** Length of message.thinking if Ollama returned one (not the text). */
+  thinkingLength?: number | null;
+  /** Ollama timing/eval counters when present (nanoseconds for durations). */
+  ollamaTotalDurationNs?: number | null;
+  ollamaLoadDurationNs?: number | null;
+  ollamaPromptEvalCount?: number | null;
+  ollamaEvalCount?: number | null;
   errorClass?: string | null;
   errorCode?: string | null;
   /** Safe truncated provider error (no PHI). */
@@ -405,7 +418,22 @@ class OllamaProvider implements AiProvider {
       ? Math.max(1, Math.floor(opts.timeoutMs))
       : null;
 
-    const baseDiag = (): Omit<AiQueryDiagnostics, "elapsedMs" | "httpStatus" | "responseLength" | "finishReason" | "errorClass" | "errorCode" | "errorMessage" | "timeoutStage"> => ({
+    const baseDiag = (): Omit<
+      AiQueryDiagnostics,
+      | "elapsedMs"
+      | "httpStatus"
+      | "responseLength"
+      | "finishReason"
+      | "errorClass"
+      | "errorCode"
+      | "errorMessage"
+      | "timeoutStage"
+      | "thinkingLength"
+      | "ollamaTotalDurationNs"
+      | "ollamaLoadDurationNs"
+      | "ollamaPromptEvalCount"
+      | "ollamaEvalCount"
+    > => ({
       provider: "ollama",
       resolvedEndpoint: base,
       model,
@@ -414,14 +442,19 @@ class OllamaProvider implements AiProvider {
       promptLength: (opts.prompt ?? "").length,
       startedAt,
       timeoutMsConfigured,
+      thinkSent: opts.think !== undefined,
+      thinkValue: opts.think !== undefined ? opts.think : null,
+      requestBodyBytes: null,
     });
 
     try {
       const body = buildOllamaChatPayload(opts);
+      const bodyJson = JSON.stringify(body);
+      const requestBodyBytes = Buffer.byteLength(bodyJson, "utf8");
       const init: RequestInit = {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
+        body: bodyJson,
       };
       if (timeoutMsConfigured != null) {
         init.signal = AbortSignal.timeout(timeoutMsConfigured);
@@ -437,10 +470,16 @@ class OllamaProvider implements AiProvider {
           error: errorMessage,
           diagnostics: {
             ...baseDiag(),
+            requestBodyBytes,
             elapsedMs,
             httpStatus: resp.status,
             responseLength: 0,
             finishReason: null,
+            thinkingLength: null,
+            ollamaTotalDurationNs: null,
+            ollamaLoadDurationNs: null,
+            ollamaPromptEvalCount: null,
+            ollamaEvalCount: null,
             errorClass: "OllamaHttpError",
             errorCode: `HTTP_${resp.status}`,
             errorMessage: errorMessage.slice(0, 300),
@@ -452,8 +491,14 @@ class OllamaProvider implements AiProvider {
         message?: { content?: string; thinking?: string };
         response?: string;
         done_reason?: string;
+        done?: boolean;
+        total_duration?: number;
+        load_duration?: number;
+        prompt_eval_count?: number;
+        eval_count?: number;
       };
       const raw = data.message?.content ?? data.response ?? "";
+      const thinkingRaw = data.message?.thinking ?? "";
       // Discard message.thinking (chain-of-thought) even if the model ignored think=false.
       const text = stripThinkBlocks(raw);
       return {
@@ -461,10 +506,16 @@ class OllamaProvider implements AiProvider {
         success: true,
         diagnostics: {
           ...baseDiag(),
+          requestBodyBytes,
           elapsedMs,
           httpStatus: resp.status,
           responseLength: text.length,
-          finishReason: data.done_reason ?? null,
+          finishReason: data.done_reason ?? (data.done === false ? "incomplete" : data.done ? "stop" : null),
+          thinkingLength: thinkingRaw.length > 0 ? thinkingRaw.length : 0,
+          ollamaTotalDurationNs: typeof data.total_duration === "number" ? data.total_duration : null,
+          ollamaLoadDurationNs: typeof data.load_duration === "number" ? data.load_duration : null,
+          ollamaPromptEvalCount: typeof data.prompt_eval_count === "number" ? data.prompt_eval_count : null,
+          ollamaEvalCount: typeof data.eval_count === "number" ? data.eval_count : null,
           errorClass: null,
           errorCode: null,
           errorMessage: null,
@@ -484,6 +535,11 @@ class OllamaProvider implements AiProvider {
           httpStatus: null,
           responseLength: 0,
           finishReason: null,
+          thinkingLength: null,
+          ollamaTotalDurationNs: null,
+          ollamaLoadDurationNs: null,
+          ollamaPromptEvalCount: null,
+          ollamaEvalCount: null,
           errorClass: classified.errorClass,
           errorCode: classified.errorCode,
           errorMessage: classified.errorMessage,

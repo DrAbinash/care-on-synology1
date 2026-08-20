@@ -1,19 +1,25 @@
 /**
  * One-click AI Pipeline Self-Test — diagnostic only.
  *
- * Distinguishes DIRECT qwen vision (proven healthy in production) from the
- * CARE application path (/api/ai-reporting/draft → provider/gateway).
+ * Probes (sequential):
+ *   Direct /api/generate (1 img)
+ *   Direct /api/chat production-shaped (1 img)
+ *   Provider-only generateAiForTask (1 img) — stop before parser
+ *   Provider-only generateAiForTask (up to 6 imgs)
+ *   Full CARE draft path (1 img) — parse sections
+ *   Full CARE draft path (up to 6 imgs)
  *
- * Never creates/finalizes clinical reports, never bulk-enqueues, never stores
- * images/base64/full prompts/full model responses.
+ * Never creates/finalizes clinical reports, never bulk-enqueues.
  */
 import { randomUUID } from "node:crypto";
 import { db } from "@workspace/db";
 import { pacsSettingsTable, radiologyWorklistTable } from "@workspace/db/schema";
 import { and, desc, eq, isNotNull, or, sql } from "drizzle-orm";
 import {
+  buildOllamaChatPayload,
   CANONICAL_LOCAL_CHAT_VISION_MODEL,
   CANONICAL_OLLAMA_ENDPOINT,
+  estimateBase64DecodedBytes,
   generateAiForTask,
   loadProviderConfig,
   probeOllamaReachable,
@@ -22,6 +28,17 @@ import {
 import { resolveLocalAiRuntime } from "../aiPipeline/runtimeConfig";
 import { orthancAuthHeaders, resolveOrthancBaseFromSources } from "./studyImageFetch";
 import { logger } from "../logger";
+import {
+  assertDiagnosticReportPhiSafe,
+  buildFullCareStages,
+  buildProviderOnlyStages,
+  deriveSelfTestFinal,
+  parseDraftSections,
+  selfTestSafetyContract,
+  type PathProbeResult,
+  type PipelineStageResult,
+  type SelfTestFinal,
+} from "./aiPipelineSelfTestLogic";
 
 export type SelfTestStepStatus = "pending" | "running" | "pass" | "fail" | "skip";
 
@@ -34,23 +51,19 @@ export interface SelfTestStep {
   elapsedMs?: number;
 }
 
-export type SelfTestFinal =
-  | "PASS"
-  | "FAIL"
-  | "PARTIAL"
-  | "RUNNING"
-  | "NO_MRI";
-
 export interface AiPipelineSelfTestResult {
   id: string;
   status: "queued" | "running" | "completed";
   final: SelfTestFinal;
   summary: string;
   steps: SelfTestStep[];
+  probes: PathProbeResult[];
+  stagesByProbe: Record<string, PipelineStageResult[]>;
   technical: Record<string, unknown>;
   startedAt: string;
   finishedAt: string | null;
   progressLabel: string;
+  safety: ReturnType<typeof selfTestSafetyContract>;
 }
 
 type JobRecord = AiPipelineSelfTestResult & { _timer?: ReturnType<typeof setTimeout> };
@@ -58,6 +71,22 @@ type JobRecord = AiPipelineSelfTestResult & { _timer?: ReturnType<typeof setTime
 const JOBS = new Map<string, JobRecord>();
 const JOB_TTL_MS = 60 * 60 * 1000;
 const MAX_JOBS = 20;
+
+const CONNECTIVITY_PROMPT =
+  "This is a connectivity test. Confirm that you can see and analyze the supplied medical image. Do not provide a diagnosis.";
+
+/** Same instruction block as POST /api/ai-reporting/draft (production-shaped). */
+const DRAFT_PROMPT = [
+  "Provide a detailed radiology report based on the supplied imaging.",
+  "",
+  "=== INSTRUCTION ===",
+  "Generate a refined radiology report. Return ONLY two sections:",
+  "FINDINGS: (structured findings)",
+  "IMPRESSION: (concise impression)",
+  "Do not include any other text or explanations.",
+  "",
+  "This is a diagnostic self-test. Do not invent patient demographics.",
+].join("\n");
 
 function upsertStep(job: JobRecord, step: SelfTestStep): void {
   const idx = job.steps.findIndex((s) => s.id === step.id);
@@ -95,6 +124,48 @@ async function resolveOrthancBase(): Promise<string | null> {
   });
 }
 
+export interface RecentMriStudyOption {
+  worklistId: number;
+  studyInstanceUid: string;
+  modality: string;
+  studyDescription: string | null;
+  accessionNumber: string | null;
+}
+
+/** Admin picker: recent MRI worklist rows (ids only — no patient names). */
+export async function listRecentMriStudies(limit = 20): Promise<RecentMriStudyOption[]> {
+  const rows = await db
+    .select({
+      id: radiologyWorklistTable.id,
+      studyInstanceUID: radiologyWorklistTable.studyInstanceUID,
+      modality: radiologyWorklistTable.modality,
+      studyDescription: radiologyWorklistTable.studyDescription,
+      accessionNumber: radiologyWorklistTable.accessionNumber,
+    })
+    .from(radiologyWorklistTable)
+    .where(
+      and(
+        isNotNull(radiologyWorklistTable.studyInstanceUID),
+        or(
+          sql`upper(${radiologyWorklistTable.modality}) in ('MR','MRI')`,
+          sql`upper(coalesce(${radiologyWorklistTable.studyDescription}, '')) like '%MRI%'`,
+        ),
+      ),
+    )
+    .orderBy(desc(radiologyWorklistTable.id))
+    .limit(Math.min(50, Math.max(1, limit)));
+
+  return rows
+    .filter((r) => !!r.studyInstanceUID)
+    .map((r) => ({
+      worklistId: r.id,
+      studyInstanceUid: r.studyInstanceUID!,
+      modality: r.modality ?? "MR",
+      studyDescription: r.studyDescription ?? null,
+      accessionNumber: r.accessionNumber ?? null,
+    }));
+}
+
 async function pickRecentMri(studyInstanceUid?: string): Promise<{
   worklistId: number;
   studyInstanceUid: string;
@@ -117,242 +188,155 @@ async function pickRecentMri(studyInstanceUid?: string): Promise<{
         modality: row.modality ?? "MR",
       };
     }
+    // Allow direct Orthanc UID even if not on worklist
+    return {
+      worklistId: 0,
+      studyInstanceUid: studyInstanceUid.trim(),
+      modality: "MR",
+    };
   }
-
-  const rows = await db
-    .select({
-      id: radiologyWorklistTable.id,
-      studyInstanceUID: radiologyWorklistTable.studyInstanceUID,
-      modality: radiologyWorklistTable.modality,
-    })
-    .from(radiologyWorklistTable)
-    .where(
-      and(
-        isNotNull(radiologyWorklistTable.studyInstanceUID),
-        or(
-          sql`upper(${radiologyWorklistTable.modality}) in ('MR','MRI')`,
-          sql`upper(coalesce(${radiologyWorklistTable.studyDescription}, '')) like '%MRI%'`,
-        ),
-      ),
-    )
-    .orderBy(desc(radiologyWorklistTable.id))
-    .limit(15);
-
-  for (const r of rows) {
-    if (r.studyInstanceUID) {
-      return {
-        worklistId: r.id,
-        studyInstanceUid: r.studyInstanceUID,
-        modality: r.modality ?? "MR",
-      };
-    }
-  }
-  return null;
+  const list = await listRecentMriStudies(15);
+  const first = list[0];
+  if (!first) return null;
+  return {
+    worklistId: first.worklistId,
+    studyInstanceUid: first.studyInstanceUid,
+    modality: first.modality,
+  };
 }
 
-async function fetchOneRenderedJpeg(
+type DcmTag = { Value?: (string | { Alphabetic?: string })[] };
+type DcmEntry = Record<string, DcmTag>;
+
+function tagStr(entry: DcmEntry | undefined, tag: string): string {
+  const v = entry?.[tag]?.Value?.[0];
+  if (typeof v === "string") return v;
+  if (v && typeof v === "object" && "Alphabetic" in v) return String(v.Alphabetic ?? "");
+  return "";
+}
+
+export interface SelectedImageMeta {
+  seriesUid: string;
+  instanceUid: string;
+  seriesDescription: string;
+  byteSize: number;
+  selectionReason: string;
+  jpegBase64: string;
+}
+
+/**
+ * Mirror POST /api/ai-reporting/draft image selection:
+ * middle instance per series, maxImages (default 6), JPEG (optionally resized).
+ */
+async function fetchDraftShapedImages(
   orthancBase: string,
   studyUid: string,
+  maxImages: number,
 ): Promise<{
   ok: boolean;
-  httpStatus: number;
-  contentType: string | null;
-  imageBytes: number;
-  seriesUid: string | null;
-  instanceUid: string | null;
   seriesCount: number;
-  instanceCount: number;
-  jpegBase64: string | null;
+  images: SelectedImageMeta[];
+  totalImageBytes: number;
   detail: string;
+  fetchElapsedMs: number;
 }> {
+  const t0 = Date.now();
   const base = orthancBase.replace(/\/$/, "");
   const auth = orthancAuthHeaders();
   const dicomWeb = `${base}/dicom-web`;
+  const empty = {
+    ok: false,
+    seriesCount: 0,
+    images: [] as SelectedImageMeta[],
+    totalImageBytes: 0,
+    detail: "fetch failed",
+    fetchElapsedMs: 0,
+  };
 
   const seriesResp = await fetch(`${dicomWeb}/studies/${encodeURIComponent(studyUid)}/series`, {
     headers: { ...auth, Accept: "application/json" },
   }).catch(() => null);
-  if (!seriesResp?.ok) {
-    // REST fallback: find study then series
-    const findResp = await fetch(`${base}/tools/find`, {
-      method: "POST",
-      headers: { ...auth, "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify({ Level: "Study", Query: { StudyInstanceUID: studyUid } }),
-    }).catch(() => null);
-    if (!findResp?.ok) {
-      return {
-        ok: false,
-        httpStatus: seriesResp?.status ?? findResp?.status ?? 0,
-        contentType: null,
-        imageBytes: 0,
-        seriesUid: null,
-        instanceUid: null,
-        seriesCount: 0,
-        instanceCount: 0,
-        jpegBase64: null,
-        detail: "Could not list series for study",
-      };
-    }
-    const studyIds = (await findResp.json().catch(() => [])) as string[];
-    const studyId = studyIds[0];
-    if (!studyId) {
-      return {
-        ok: false,
-        httpStatus: 404,
-        contentType: null,
-        imageBytes: 0,
-        seriesUid: null,
-        instanceUid: null,
-        seriesCount: 0,
-        instanceCount: 0,
-        jpegBase64: null,
-        detail: "Study not found in Orthanc",
-      };
-    }
-    const seriesListResp = await fetch(`${base}/studies/${studyId}/series`, {
-      headers: { ...auth, Accept: "application/json" },
-    }).catch(() => null);
-    const seriesIds = seriesListResp?.ok ? ((await seriesListResp.json().catch(() => [])) as string[]) : [];
-    if (seriesIds.length === 0) {
-      return {
-        ok: false,
-        httpStatus: seriesListResp?.status ?? 404,
-        contentType: null,
-        imageBytes: 0,
-        seriesUid: null,
-        instanceUid: null,
-        seriesCount: 0,
-        instanceCount: 0,
-        jpegBase64: null,
-        detail: "No series in Orthanc study",
-      };
-    }
-    const seriesId = seriesIds[0]!;
-    const instResp = await fetch(`${base}/series/${seriesId}/instances`, {
-      headers: { ...auth, Accept: "application/json" },
-    }).catch(() => null);
-    const instIds = instResp?.ok ? ((await instResp.json().catch(() => [])) as string[]) : [];
-    if (instIds.length === 0) {
-      return {
-        ok: false,
-        httpStatus: instResp?.status ?? 404,
-        contentType: null,
-        imageBytes: 0,
-        seriesUid: seriesId,
-        instanceUid: null,
-        seriesCount: seriesIds.length,
-        instanceCount: 0,
-        jpegBase64: null,
-        detail: "No instances in series",
-      };
-    }
-    const mid = instIds[Math.floor(instIds.length / 2)]!;
-    const preview = await fetch(`${base}/instances/${mid}/preview`, {
-      headers: { ...auth, Accept: "image/jpeg" },
-    }).catch(() => null);
-    if (!preview?.ok) {
-      return {
-        ok: false,
-        httpStatus: preview?.status ?? 0,
-        contentType: preview?.headers.get("content-type") ?? null,
-        imageBytes: 0,
-        seriesUid: seriesId,
-        instanceUid: mid,
-        seriesCount: seriesIds.length,
-        instanceCount: instIds.length,
-        jpegBase64: null,
-        detail: "Orthanc preview fetch failed",
-      };
-    }
-    const buf = Buffer.from(await preview.arrayBuffer());
-    return {
-      ok: true,
-      httpStatus: preview.status,
-      contentType: preview.headers.get("content-type"),
-      imageBytes: buf.byteLength,
-      seriesUid: seriesId,
-      instanceUid: mid,
-      seriesCount: seriesIds.length,
-      instanceCount: instIds.length,
-      jpegBase64: buf.toString("base64"),
-      detail: `Rendered JPEG ${buf.byteLength} bytes`,
-    };
+
+  let seriesList: DcmEntry[] = [];
+  if (seriesResp?.ok) {
+    seriesList = (await seriesResp.json().catch(() => [])) as DcmEntry[];
+  } else {
+    empty.fetchElapsedMs = Date.now() - t0;
+    empty.detail = "DICOMweb series list failed";
+    return empty;
   }
 
-  type DcmTag = { Value?: (string | { Alphabetic?: string })[] };
-  type DcmEntry = Record<string, DcmTag>;
-  const seriesList = (await seriesResp.json().catch(() => [])) as DcmEntry[];
-  if (!Array.isArray(seriesList) || seriesList.length === 0) {
-    return {
-      ok: false,
-      httpStatus: seriesResp.status,
-      contentType: null,
-      imageBytes: 0,
-      seriesUid: null,
-      instanceUid: null,
-      seriesCount: 0,
-      instanceCount: 0,
-      jpegBase64: null,
-      detail: "Empty series list",
-    };
+  const images: SelectedImageMeta[] = [];
+  const cap = Math.min(maxImages, 20);
+
+  for (const series of seriesList) {
+    if (images.length >= cap) break;
+    const seriesUID = tagStr(series, "0020000E");
+    if (!seriesUID) continue;
+    const seriesDescription =
+      tagStr(series, "0008103E") || tagStr(series, "00080060") || "series";
+
+    const instancesResp = await fetch(
+      `${dicomWeb}/studies/${encodeURIComponent(studyUid)}/series/${encodeURIComponent(seriesUID)}/instances`,
+      { headers: { ...auth, Accept: "application/json" } },
+    ).catch(() => null);
+    if (!instancesResp?.ok) continue;
+    const instances = (await instancesResp.json().catch(() => [])) as DcmEntry[];
+    if (!instances.length) continue;
+
+    const midIdx = Math.floor(instances.length / 2);
+    const inst = instances[midIdx]!;
+    const instanceUID = tagStr(inst, "00080018");
+    if (!instanceUID) continue;
+
+    const rendered = await fetch(
+      `${dicomWeb}/studies/${encodeURIComponent(studyUid)}/series/${encodeURIComponent(seriesUID)}/instances/${encodeURIComponent(instanceUID)}/rendered`,
+      { headers: { ...auth, Accept: "image/jpeg" } },
+    ).catch(() => null);
+    if (!rendered?.ok) continue;
+
+    try {
+      const rawArr = new Uint8Array(await rendered.arrayBuffer());
+      let b64: string;
+      let byteLen = rawArr.byteLength;
+      try {
+        const sharp = (await import("sharp")).default;
+        const resized = await sharp(rawArr)
+          .resize({ width: 512, withoutEnlargement: true })
+          .jpeg({ quality: 80 })
+          .toBuffer();
+        b64 = resized.toString("base64");
+        byteLen = resized.byteLength;
+      } catch {
+        b64 = Buffer.from(rawArr).toString("base64");
+      }
+      images.push({
+        seriesUid: seriesUID,
+        instanceUid: instanceUID,
+        seriesDescription: seriesDescription.slice(0, 120),
+        byteSize: byteLen,
+        selectionReason: `middle slice of series (${midIdx + 1}/${instances.length} instances)`,
+        jpegBase64: b64,
+      });
+    } catch {
+      continue;
+    }
   }
-  const seriesUID = (seriesList[0]!["0020000E"]?.Value?.[0] as string | undefined) ?? "";
-  const instResp = await fetch(
-    `${dicomWeb}/studies/${encodeURIComponent(studyUid)}/series/${encodeURIComponent(seriesUID)}/instances`,
-    { headers: { ...auth, Accept: "application/json" } },
-  ).catch(() => null);
-  const instances = instResp?.ok ? ((await instResp.json().catch(() => [])) as DcmEntry[]) : [];
-  if (!instances.length) {
-    return {
-      ok: false,
-      httpStatus: instResp?.status ?? 0,
-      contentType: null,
-      imageBytes: 0,
-      seriesUid: seriesUID || null,
-      instanceUid: null,
-      seriesCount: seriesList.length,
-      instanceCount: 0,
-      jpegBase64: null,
-      detail: "No instances in DICOMweb series",
-    };
-  }
-  const mid = instances[Math.floor(instances.length / 2)]!;
-  const instanceUID = (mid["00080018"]?.Value?.[0] as string | undefined) ?? "";
-  const rendered = await fetch(
-    `${dicomWeb}/studies/${encodeURIComponent(studyUid)}/series/${encodeURIComponent(seriesUID)}/instances/${encodeURIComponent(instanceUID)}/rendered`,
-    { headers: { ...auth, Accept: "image/jpeg" } },
-  ).catch(() => null);
-  if (!rendered?.ok) {
-    return {
-      ok: false,
-      httpStatus: rendered?.status ?? 0,
-      contentType: rendered?.headers.get("content-type") ?? null,
-      imageBytes: 0,
-      seriesUid: seriesUID || null,
-      instanceUid: instanceUID || null,
-      seriesCount: seriesList.length,
-      instanceCount: instances.length,
-      jpegBase64: null,
-      detail: "DICOMweb rendered fetch failed",
-    };
-  }
-  const buf = Buffer.from(await rendered.arrayBuffer());
+
+  const totalImageBytes = images.reduce((a, i) => a + i.byteSize, 0);
   return {
-    ok: true,
-    httpStatus: rendered.status,
-    contentType: rendered.headers.get("content-type"),
-    imageBytes: buf.byteLength,
-    seriesUid: seriesUID || null,
-    instanceUid: instanceUID || null,
+    ok: images.length > 0,
     seriesCount: seriesList.length,
-    instanceCount: instances.length,
-    jpegBase64: buf.toString("base64"),
-    detail: `Rendered JPEG ${buf.byteLength} bytes`,
+    images,
+    totalImageBytes,
+    detail: images.length
+      ? `selected ${images.length}/${cap} (series available ${seriesList.length})`
+      : "no rendered images",
+    fetchElapsedMs: Date.now() - t0,
   };
 }
 
-/** Direct Ollama /api/generate vision probe — same shape as the manual care-api proof. */
-async function directQwenVision(opts: {
+async function directGenerate(opts: {
   endpoint: string;
   model: string;
   jpegBase64: string;
@@ -361,22 +345,29 @@ async function directQwenVision(opts: {
   httpStatus: number;
   elapsedMs: number;
   responseLength: number;
-  nonEmpty: boolean;
+  requestBodyBytes: number;
+  thinkingLength: number;
+  finishReason: string | null;
+  totalDurationNs: number | null;
+  loadDurationNs: number | null;
+  promptEvalCount: number | null;
+  evalCount: number | null;
   error?: string;
 }> {
+  const body = {
+    model: opts.model,
+    prompt: CONNECTIVITY_PROMPT,
+    images: [opts.jpegBase64],
+    stream: false,
+    think: false,
+  };
+  const bodyJson = JSON.stringify(body);
   const t0 = Date.now();
   try {
     const resp = await fetch(`${opts.endpoint.replace(/\/$/, "")}/api/generate`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: opts.model,
-        prompt:
-          "This is a connectivity test. Confirm that you can see and analyze the supplied medical image. Do not provide a diagnosis.",
-        images: [opts.jpegBase64],
-        stream: false,
-        think: false,
-      }),
+      body: bodyJson,
       signal: AbortSignal.timeout(180_000),
     });
     const elapsedMs = Date.now() - t0;
@@ -387,18 +378,38 @@ async function directQwenVision(opts: {
         httpStatus: resp.status,
         elapsedMs,
         responseLength: 0,
-        nonEmpty: false,
+        requestBodyBytes: Buffer.byteLength(bodyJson, "utf8"),
+        thinkingLength: 0,
+        finishReason: null,
+        totalDurationNs: null,
+        loadDurationNs: null,
+        promptEvalCount: null,
+        evalCount: null,
         error: `Ollama /api/generate ${resp.status}${detail ? `: ${detail.slice(0, 160)}` : ""}`,
       };
     }
-    const data = (await resp.json()) as { response?: string };
+    const data = (await resp.json()) as {
+      response?: string;
+      thinking?: string;
+      done_reason?: string;
+      total_duration?: number;
+      load_duration?: number;
+      prompt_eval_count?: number;
+      eval_count?: number;
+    };
     const text = (data.response ?? "").trim();
     return {
       ok: text.length > 0,
       httpStatus: resp.status,
       elapsedMs,
       responseLength: text.length,
-      nonEmpty: text.length > 0,
+      requestBodyBytes: Buffer.byteLength(bodyJson, "utf8"),
+      thinkingLength: (data.thinking ?? "").length,
+      finishReason: data.done_reason ?? null,
+      totalDurationNs: typeof data.total_duration === "number" ? data.total_duration : null,
+      loadDurationNs: typeof data.load_duration === "number" ? data.load_duration : null,
+      promptEvalCount: typeof data.prompt_eval_count === "number" ? data.prompt_eval_count : null,
+      evalCount: typeof data.eval_count === "number" ? data.eval_count : null,
     };
   } catch (err) {
     return {
@@ -406,104 +417,309 @@ async function directQwenVision(opts: {
       httpStatus: 0,
       elapsedMs: Date.now() - t0,
       responseLength: 0,
-      nonEmpty: false,
+      requestBodyBytes: Buffer.byteLength(bodyJson, "utf8"),
+      thinkingLength: 0,
+      finishReason: null,
+      totalDurationNs: null,
+      loadDurationNs: null,
+      promptEvalCount: null,
+      evalCount: null,
       error: err instanceof Error ? err.message.slice(0, 300) : String(err).slice(0, 300),
     };
   }
 }
 
-async function runCareDraftPath(opts: {
-  worklistId: number;
-  modality: string;
+/** Production-shaped /api/chat (same payload builder as OllamaProvider). */
+async function directChatProductionShaped(opts: {
+  endpoint: string;
   model: string;
   jpegBase64: string;
-  endpointUrl: string;
+  /** Match /api/ai-reporting/draft: think is NOT sent today. */
+  matchDraftThink?: boolean;
 }): Promise<{
   ok: boolean;
-  httpEquivalentStatus: number;
+  httpStatus: number;
   elapsedMs: number;
-  providerReturned: boolean;
   responseLength: number;
-  parserSuccess: boolean;
-  findingsLength: number;
-  impressionLength: number;
-  errorClass: string | null;
-  errorCode: string | null;
-  errorMessage: string | null;
-  resolvedEndpoint: string | null;
-  resolvedModel: string | null;
-  numberOfImages: number;
-  totalImageBytes: number;
+  requestBodyBytes: number;
+  thinkSent: boolean;
+  thinkValue: boolean | null;
+  thinkingLength: number;
+  finishReason: string | null;
+  totalDurationNs: number | null;
+  loadDurationNs: number | null;
+  promptEvalCount: number | null;
+  evalCount: number | null;
+  error?: string;
 }> {
-  const prompt = [
-    "Provide a detailed radiology report based on the supplied imaging.",
-    "",
-    "=== INSTRUCTION ===",
-    "Generate a refined radiology report. Return ONLY two sections:",
-    "FINDINGS: (structured findings)",
-    "IMPRESSION: (concise impression)",
-    "Do not include any other text or explanations.",
-    "",
-    "This is a diagnostic self-test. Do not invent patient demographics.",
-  ].join("\n");
-
-  const t0 = Date.now();
-  // Same provider stack as POST /api/ai-reporting/draft (generateAiForTask),
-  // but with ONE representative image (not up to 6) so we isolate path failure
-  // from multi-image payload cost. Endpoint pinned to resolved Local AI runtime.
-  const aiResult = await generateAiForTask("radiology_draft", prompt, [opts.jpegBase64], {
+  // Draft path currently omits `think` entirely (options = { model } only).
+  const payload = buildOllamaChatPayload({
     model: opts.model,
-    endpointUrl: opts.endpointUrl,
-    think: false,
+    prompt: CONNECTIVITY_PROMPT,
+    images: [opts.jpegBase64],
+    ...(opts.matchDraftThink === false ? { think: false as const } : {}),
   });
-  const elapsedMs = Date.now() - t0;
-  let findingsLength = 0;
-  let impressionLength = 0;
-  let parserSuccess = false;
-  if (aiResult.success && aiResult.text) {
-    const findingsMatch = aiResult.text.match(/FINDINGS:?\s*([\s\S]*?)(?=IMPRESSION:|$)/i);
-    const impressionMatch = aiResult.text.match(/IMPRESSION:?\s*([\s\S]*?)$/i);
-    const findings = findingsMatch?.[1]?.trim() ?? aiResult.text.trim();
-    const impression = impressionMatch?.[1]?.trim() ?? "";
-    findingsLength = findings.length;
-    impressionLength = impression.length;
-    parserSuccess = findingsLength > 0 || impressionLength > 0;
+  const thinkSent = Object.prototype.hasOwnProperty.call(payload, "think");
+  const thinkValue = thinkSent ? Boolean(payload.think) : null;
+  const bodyJson = JSON.stringify(payload);
+  const t0 = Date.now();
+  try {
+    const resp = await fetch(`${opts.endpoint.replace(/\/$/, "")}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: bodyJson,
+      signal: AbortSignal.timeout(180_000),
+    });
+    const elapsedMs = Date.now() - t0;
+    if (!resp.ok) {
+      const detail = await resp.text().catch(() => "");
+      return {
+        ok: false,
+        httpStatus: resp.status,
+        elapsedMs,
+        responseLength: 0,
+        requestBodyBytes: Buffer.byteLength(bodyJson, "utf8"),
+        thinkSent,
+        thinkValue,
+        thinkingLength: 0,
+        finishReason: null,
+        totalDurationNs: null,
+        loadDurationNs: null,
+        promptEvalCount: null,
+        evalCount: null,
+        error: `Ollama /api/chat ${resp.status}${detail ? `: ${detail.slice(0, 160)}` : ""}`,
+      };
+    }
+    const data = (await resp.json()) as {
+      message?: { content?: string; thinking?: string };
+      response?: string;
+      done_reason?: string;
+      total_duration?: number;
+      load_duration?: number;
+      prompt_eval_count?: number;
+      eval_count?: number;
+    };
+    const text = (data.message?.content ?? data.response ?? "").trim();
+    return {
+      ok: text.length > 0,
+      httpStatus: resp.status,
+      elapsedMs,
+      responseLength: text.length,
+      requestBodyBytes: Buffer.byteLength(bodyJson, "utf8"),
+      thinkSent,
+      thinkValue,
+      thinkingLength: (data.message?.thinking ?? "").length,
+      finishReason: data.done_reason ?? null,
+      totalDurationNs: typeof data.total_duration === "number" ? data.total_duration : null,
+      loadDurationNs: typeof data.load_duration === "number" ? data.load_duration : null,
+      promptEvalCount: typeof data.prompt_eval_count === "number" ? data.prompt_eval_count : null,
+      evalCount: typeof data.eval_count === "number" ? data.eval_count : null,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      httpStatus: 0,
+      elapsedMs: Date.now() - t0,
+      responseLength: 0,
+      requestBodyBytes: Buffer.byteLength(bodyJson, "utf8"),
+      thinkSent,
+      thinkValue,
+      thinkingLength: 0,
+      finishReason: null,
+      totalDurationNs: null,
+      loadDurationNs: null,
+      promptEvalCount: null,
+      evalCount: null,
+      error: err instanceof Error ? err.message.slice(0, 300) : String(err).slice(0, 300),
+    };
+  }
+}
+
+async function runGenerateAiForTaskProbe(opts: {
+  label: string;
+  model: string;
+  endpointUrl: string;
+  images: string[];
+  imageFetchMs: number;
+  imageFetchOk: boolean;
+  fullPipeline: boolean;
+}): Promise<PathProbeResult> {
+  const imageBytes = opts.images.reduce((s, i) => s + estimateBase64DecodedBytes(i), 0);
+  if (!opts.imageFetchOk || opts.images.length === 0) {
+    const stages = opts.fullPipeline
+      ? buildFullCareStages({
+          imageFetchOk: false,
+          imageFetchMs: opts.imageFetchMs,
+          providerReturned: false,
+          providerElapsedMs: 0,
+          httpStatus: null,
+          safeError: "no images",
+          parserSuccess: null,
+          candidateCount: null,
+          jsonParseOk: null,
+        })
+      : buildProviderOnlyStages({
+          imageFetchOk: false,
+          imageFetchMs: opts.imageFetchMs,
+          providerReturned: false,
+          providerElapsedMs: 0,
+          httpStatus: null,
+          safeError: "no images",
+        });
+    return {
+      label: opts.label,
+      pass: false,
+      model: opts.model,
+      endpoint: opts.endpointUrl,
+      imageCount: 0,
+      totalImageBytes: 0,
+      requestBodyBytes: null,
+      elapsedMs: opts.imageFetchMs,
+      httpStatus: null,
+      responseLength: 0,
+      parserSuccess: null,
+      candidateCount: null,
+      safeError: "image fetch failed",
+      stages,
+    };
   }
 
+  // Match /api/ai-reporting/draft: generateAiForTask with { model } only — no think flag.
+  const t0 = Date.now();
+  const aiResult = await generateAiForTask("radiology_draft", DRAFT_PROMPT, opts.images, {
+    model: opts.model,
+    endpointUrl: opts.endpointUrl,
+  });
+  const elapsedMs = Date.now() - t0;
+  const d = aiResult.diagnostics;
+  const providerReturned = aiResult.success;
+  const parsed = providerReturned ? parseDraftSections(aiResult.text ?? "") : null;
+
+  if (!opts.fullPipeline) {
+    const stages = buildProviderOnlyStages({
+      imageFetchOk: true,
+      imageFetchMs: opts.imageFetchMs,
+      providerReturned,
+      providerElapsedMs: elapsedMs,
+      httpStatus: d?.httpStatus ?? null,
+      safeError: aiResult.error?.slice(0, 300) ?? null,
+    });
+    return {
+      label: opts.label,
+      pass: providerReturned,
+      model: d?.model ?? opts.model,
+      endpoint: d?.resolvedEndpoint ?? opts.endpointUrl,
+      imageCount: d?.numberOfImages ?? opts.images.length,
+      totalImageBytes: d?.totalImageBytes ?? imageBytes,
+      requestBodyBytes: d?.requestBodyBytes ?? null,
+      elapsedMs,
+      httpStatus: d?.httpStatus ?? (providerReturned ? 200 : 502),
+      responseLength: d?.responseLength ?? (aiResult.text?.length ?? 0),
+      parserSuccess: null,
+      candidateCount: null,
+      safeError: providerReturned ? null : (d?.errorMessage ?? aiResult.error ?? "provider failed").slice(0, 300),
+      stages,
+      thinkSent: d?.thinkSent ?? false,
+      thinkValue: d?.thinkValue ?? null,
+      thinkingLength: d?.thinkingLength ?? null,
+      finishReason: d?.finishReason ?? null,
+      ollamaTotalDurationNs: d?.ollamaTotalDurationNs ?? null,
+      ollamaLoadDurationNs: d?.ollamaLoadDurationNs ?? null,
+      ollamaPromptEvalCount: d?.ollamaPromptEvalCount ?? null,
+      ollamaEvalCount: d?.ollamaEvalCount ?? null,
+    };
+  }
+
+  const parserSuccess = parsed?.parserSuccess ?? false;
+  const candidateCount = parsed?.candidateCount ?? 0;
+  const stages = buildFullCareStages({
+    imageFetchOk: true,
+    imageFetchMs: opts.imageFetchMs,
+    providerReturned,
+    providerElapsedMs: elapsedMs,
+    httpStatus: d?.httpStatus ?? null,
+    safeError: aiResult.error?.slice(0, 300) ?? null,
+    parserSuccess: providerReturned ? parserSuccess : null,
+    candidateCount: providerReturned ? candidateCount : null,
+    jsonParseOk: providerReturned ? (parsed?.jsonParseOk ?? null) : null,
+  });
+  const pass = providerReturned && parserSuccess && candidateCount > 0;
   return {
-    ok: aiResult.success && parserSuccess,
-    httpEquivalentStatus: aiResult.success ? 200 : 502,
+    label: opts.label,
+    pass,
+    model: d?.model ?? opts.model,
+    endpoint: d?.resolvedEndpoint ?? opts.endpointUrl,
+    imageCount: d?.numberOfImages ?? opts.images.length,
+    totalImageBytes: d?.totalImageBytes ?? imageBytes,
+    requestBodyBytes: d?.requestBodyBytes ?? null,
     elapsedMs,
-    providerReturned: aiResult.success,
-    responseLength: aiResult.diagnostics?.responseLength ?? (aiResult.text?.length ?? 0),
-    parserSuccess,
-    findingsLength,
-    impressionLength,
-    errorClass: aiResult.diagnostics?.errorClass ?? (aiResult.success ? null : "AiProviderError"),
-    errorCode: aiResult.diagnostics?.errorCode ?? (aiResult.success ? null : "AI_PROVIDER_ERROR"),
-    errorMessage: aiResult.success
+    httpStatus: d?.httpStatus ?? (providerReturned ? 200 : 502),
+    responseLength: d?.responseLength ?? (aiResult.text?.length ?? 0),
+    parserSuccess: providerReturned ? parserSuccess : null,
+    candidateCount: providerReturned ? candidateCount : null,
+    safeError: pass
       ? null
-      : (aiResult.diagnostics?.errorMessage ?? aiResult.error ?? "AI provider error").slice(0, 300),
-    resolvedEndpoint: aiResult.diagnostics?.resolvedEndpoint ?? opts.endpointUrl,
-    resolvedModel: aiResult.diagnostics?.model ?? opts.model,
-    numberOfImages: aiResult.diagnostics?.numberOfImages ?? 1,
-    totalImageBytes: aiResult.diagnostics?.totalImageBytes ?? 0,
+      : !providerReturned
+        ? (d?.errorMessage ?? aiResult.error ?? "provider failed").slice(0, 300)
+        : "parser/final_shape failed — empty or unusable draft sections",
+    stages,
+    thinkSent: d?.thinkSent ?? false,
+    thinkValue: d?.thinkValue ?? null,
+    thinkingLength: d?.thinkingLength ?? null,
+    finishReason: d?.finishReason ?? null,
+    ollamaTotalDurationNs: d?.ollamaTotalDurationNs ?? null,
+    ollamaLoadDurationNs: d?.ollamaLoadDurationNs ?? null,
+    ollamaPromptEvalCount: d?.ollamaPromptEvalCount ?? null,
+    ollamaEvalCount: d?.ollamaEvalCount ?? null,
+  };
+}
+
+function probeToStep(probe: PathProbeResult, group: string, id: string, name: string): SelfTestStep {
+  const stageHint = probe.stages
+    .filter((s) => s.status === "fail")
+    .map((s) => `${s.id}: ${s.detail}`)
+    .slice(0, 2)
+    .join("; ");
+  return {
+    id,
+    group,
+    name,
+    status: probe.pass ? "pass" : "fail",
+    elapsedMs: probe.elapsedMs,
+    detail: [
+      probe.pass ? "PASS" : "FAIL",
+      `images=${probe.imageCount}`,
+      `bytes=${probe.totalImageBytes}`,
+      probe.requestBodyBytes != null ? `bodyBytes=${probe.requestBodyBytes}` : null,
+      `HTTP ${probe.httpStatus ?? "?"}`,
+      `respLen=${probe.responseLength}`,
+      probe.parserSuccess != null ? `parser=${probe.parserSuccess}` : null,
+      probe.candidateCount != null ? `candidates=${probe.candidateCount}` : null,
+      probe.thinkSent != null ? `thinkSent=${probe.thinkSent}` : null,
+      probe.thinkingLength != null ? `thinkingLen=${probe.thinkingLength}` : null,
+      probe.safeError,
+      stageHint || null,
+    ]
+      .filter(Boolean)
+      .join(" · "),
   };
 }
 
 async function executeSelfTest(job: JobRecord, opts: { studyInstanceUid?: string }): Promise<void> {
   job.status = "running";
   job.final = "RUNNING";
-  const technical: Record<string, unknown> = {};
+  const technical: Record<string, unknown> = {
+    safety: selfTestSafetyContract(),
+  };
+  const probes: PathProbeResult[] = [];
 
   try {
-    // 1. Runtime
     upsertStep(job, {
       id: "runtime",
       group: "Runtime",
       name: "CARE API runtime config",
       status: "running",
-      detail: "Resolving Local AI + Orthanc…",
+      detail: "Resolving…",
     });
     const runtime = await resolveLocalAiRuntime(true);
     const orthancBase = await resolveOrthancBase();
@@ -516,28 +732,20 @@ async function executeSelfTest(job: JobRecord, opts: { studyInstanceUid?: string
       CANONICAL_LOCAL_CHAT_VISION_MODEL;
     const endpoint = runtime.ollamaBaseUrl || CANONICAL_OLLAMA_ENDPOINT;
     technical.ollamaEndpoint = endpoint;
-    technical.ollamaUrlSource = runtime.ollamaUrlSource;
     technical.model = model;
-    technical.modelSource = runtime.modelStandardSource;
     technical.orthancEndpoint = orthancBase;
     technical.provider = taskRoute?.provider ?? prov?.provider ?? "ollama";
     technical.taskRoute = taskRoute;
-    technical.canonicalEndpoint = CANONICAL_OLLAMA_ENDPOINT;
-    technical.canonicalModel = CANONICAL_LOCAL_CHAT_VISION_MODEL;
+    technical.draftPathThinkNote =
+      "POST /api/ai-reporting/draft calls generateAiForTask with { model } only — think is NOT sent (unlike overnight think:false).";
     upsertStep(job, {
       id: "runtime",
       group: "Runtime",
       name: "CARE API runtime config",
-      status: orthancBase && endpoint ? "pass" : "fail",
+      status: endpoint && orthancBase ? "pass" : "fail",
       detail: `Ollama ${endpoint} · model ${model} · Orthanc ${orthancBase ?? "MISSING"} · provider ${technical.provider}`,
     });
-    if (!endpoint) {
-      job.final = "FAIL";
-      job.summary = "FAIL — Ollama endpoint not resolved";
-      return;
-    }
 
-    // 2. Ollama health
     upsertStep(job, {
       id: "ollama-health",
       group: "Runtime",
@@ -545,27 +753,23 @@ async function executeSelfTest(job: JobRecord, opts: { studyInstanceUid?: string
       status: "running",
       detail: "GET /api/tags…",
     });
-    const probe = await probeOllamaReachable(endpoint, 6000);
-    const hasModel =
-      (probe.models ?? []).some(
-        (m) => m === model || m.startsWith(`${model}:`) || m.startsWith(model),
-      ) ||
-      (probe.models ?? []).some((m) => m.includes("qwen3-vl"));
-    technical.ollamaModelsSample = (probe.models ?? []).slice(0, 8);
+    const probeTags = await probeOllamaReachable(endpoint, 6000);
+    const hasModel = (probeTags.models ?? []).some(
+      (m) => m === model || m.startsWith(`${model}:`) || m.includes("qwen3-vl"),
+    );
     technical.qwenInstalled = hasModel;
     upsertStep(job, {
       id: "ollama-health",
       group: "Runtime",
       name: "Ollama health",
-      status: probe.reachable && hasModel ? "pass" : "fail",
-      detail: probe.reachable
+      status: probeTags.reachable && hasModel ? "pass" : "fail",
+      detail: probeTags.reachable
         ? hasModel
           ? `GET /api/tags OK — ${model} present`
-          : `GET /api/tags OK — ${model} NOT found`
-        : probe.error ?? "unreachable",
+          : `${model} NOT found`
+        : probeTags.error ?? "unreachable",
     });
 
-    // 3. Orthanc health
     upsertStep(job, {
       id: "orthanc-health",
       group: "Runtime",
@@ -587,23 +791,15 @@ async function executeSelfTest(job: JobRecord, opts: { studyInstanceUid?: string
       group: "Runtime",
       name: "Orthanc health",
       status: orthancOk ? "pass" : "fail",
-      detail: orthancOk ? `GET /system ${technical.orthancSystemHttp}` : "Orthanc /system failed",
+      detail: orthancOk ? `GET /system ${technical.orthancSystemHttp}` : "failed",
     });
 
     if (!orthancOk || !orthancBase) {
       job.final = "FAIL";
-      job.summary = "FAIL — Orthanc unreachable; cannot run image test";
+      job.summary = "FAIL — Orthanc unreachable";
       return;
     }
 
-    // 4–6. MRI + rendered JPEG
-    upsertStep(job, {
-      id: "mri-study",
-      group: "Image path",
-      name: "MRI study found",
-      status: "running",
-      detail: "Selecting recent MRI…",
-    });
     const study = await pickRecentMri(opts.studyInstanceUid);
     if (!study) {
       upsertStep(job, {
@@ -613,8 +809,17 @@ async function executeSelfTest(job: JobRecord, opts: { studyInstanceUid?: string
         status: "fail",
         detail: "Could not run image test — no eligible MRI found.",
       });
-      job.final = "NO_MRI";
-      job.summary = "Could not run image test — no eligible MRI found.";
+      const derived = deriveSelfTestFinal({
+        noMri: true,
+        directGeneratePass: null,
+        directChatPass: null,
+        providerOnly1Pass: null,
+        providerOnly6Pass: null,
+        fullCare1Pass: null,
+        fullCare6Pass: null,
+      });
+      job.final = derived.final;
+      job.summary = derived.summary;
       return;
     }
     technical.worklistId = study.worklistId;
@@ -625,164 +830,237 @@ async function executeSelfTest(job: JobRecord, opts: { studyInstanceUid?: string
       group: "Image path",
       name: "MRI study found",
       status: "pass",
-      detail: `worklist #${study.worklistId} · modality ${study.modality}`,
+      detail: `worklist #${study.worklistId || "n/a"} · ${study.modality}`,
     });
 
     upsertStep(job, {
       id: "image-fetch",
       group: "Image path",
-      name: "Rendered JPEG fetched",
+      name: "Draft-shaped image selection",
       status: "running",
-      detail: "Fetching one representative slice…",
+      detail: "Fetching up to 6 middle-slice JPEGs…",
     });
-    const img = await fetchOneRenderedJpeg(orthancBase, study.studyInstanceUid);
-    technical.seriesUid = img.seriesUid;
-    technical.instanceUid = img.instanceUid;
-    technical.seriesCount = img.seriesCount;
-    technical.instanceCount = img.instanceCount;
-    technical.imageBytes = img.imageBytes;
-    technical.imageHttpStatus = img.httpStatus;
-    technical.imageContentType = img.contentType;
-    upsertStep(job, {
-      id: "series",
-      group: "Image path",
-      name: "Series found",
-      status: img.seriesCount > 0 ? "pass" : "fail",
-      detail: `${img.seriesCount} series`,
-    });
-    upsertStep(job, {
-      id: "instance",
-      group: "Image path",
-      name: "Instance found",
-      status: img.instanceCount > 0 ? "pass" : "fail",
-      detail: `${img.instanceCount} instance(s)`,
-    });
+    const fetched = await fetchDraftShapedImages(orthancBase, study.studyInstanceUid, 6);
+    technical.imageSelection = {
+      seriesCount: fetched.seriesCount,
+      selectedCount: fetched.images.length,
+      totalImageBytes: fetched.totalImageBytes,
+      perImageByteSizes: fetched.images.map((i) => i.byteSize),
+      seriesDescriptions: fetched.images.map((i) => i.seriesDescription),
+      selectionReasons: fetched.images.map((i) => i.selectionReason),
+      seriesUids: fetched.images.map((i) => i.seriesUid),
+      instanceUids: fetched.images.map((i) => i.instanceUid),
+      fetchElapsedMs: fetched.fetchElapsedMs,
+      detail: fetched.detail,
+    };
     upsertStep(job, {
       id: "image-fetch",
       group: "Image path",
-      name: "Rendered JPEG fetched",
-      status: img.ok ? "pass" : "fail",
-      detail: img.ok
-        ? `HTTP ${img.httpStatus} · ${img.contentType ?? "?"} · ${Math.round(img.imageBytes / 1024)} KB`
-        : img.detail,
-      elapsedMs: undefined,
+      name: "Draft-shaped image selection",
+      status: fetched.ok ? "pass" : "fail",
+      detail: fetched.ok
+        ? `${fetched.images.length} images · ${Math.round(fetched.totalImageBytes / 1024)} KB total · ${fetched.seriesCount} series in study`
+        : fetched.detail,
+      elapsedMs: fetched.fetchElapsedMs,
     });
-    if (!img.ok || !img.jpegBase64) {
+    if (!fetched.ok) {
       job.final = "FAIL";
-      job.summary = "FAIL — could not fetch rendered MRI JPEG";
+      job.summary = "FAIL — could not fetch rendered MRI JPEG(s)";
       return;
     }
 
-    // 7. Direct qwen vision
+    const img1 = [fetched.images[0]!.jpegBase64];
+    const img6 = fetched.images.map((i) => i.jpegBase64);
+    const bytes1 = fetched.images[0]!.byteSize;
+
+    // A. Direct /api/generate 1 image
     upsertStep(job, {
-      id: "direct-vision",
-      group: "Direct qwen vision",
-      name: "Ollama /api/generate",
+      id: "direct-generate",
+      group: "Direct Ollama",
+      name: "/api/generate 1 image",
       status: "running",
-      detail: "Sending one MRI JPEG…",
+      detail: "…",
     });
-    const direct = await directQwenVision({
+    const gen = await directGenerate({ endpoint, model, jpegBase64: img1[0]! });
+    const genProbe: PathProbeResult = {
+      label: "Direct /api/generate 1 image",
+      pass: gen.ok,
+      model,
+      endpoint,
+      imageCount: 1,
+      totalImageBytes: bytes1,
+      requestBodyBytes: gen.requestBodyBytes,
+      elapsedMs: gen.elapsedMs,
+      httpStatus: gen.httpStatus,
+      responseLength: gen.responseLength,
+      parserSuccess: null,
+      candidateCount: null,
+      safeError: gen.error ?? null,
+      stages: [],
+      thinkSent: true,
+      thinkValue: false,
+      thinkingLength: gen.thinkingLength,
+      finishReason: gen.finishReason,
+      ollamaTotalDurationNs: gen.totalDurationNs,
+      ollamaLoadDurationNs: gen.loadDurationNs,
+      ollamaPromptEvalCount: gen.promptEvalCount,
+      ollamaEvalCount: gen.evalCount,
+    };
+    probes.push(genProbe);
+    upsertStep(job, probeToStep(genProbe, "Direct Ollama", "direct-generate", "/api/generate 1 image"));
+
+    // B. Direct /api/chat production-shaped (think NOT sent — matches draft)
+    upsertStep(job, {
+      id: "direct-chat",
+      group: "Direct Ollama",
+      name: "/api/chat 1 image (draft-shaped)",
+      status: "running",
+      detail: "…",
+    });
+    const chat = await directChatProductionShaped({
       endpoint,
       model,
-      jpegBase64: img.jpegBase64,
+      jpegBase64: img1[0]!,
+      matchDraftThink: true,
     });
-    technical.directVision = {
-      httpStatus: direct.httpStatus,
-      elapsedMs: direct.elapsedMs,
-      responseLength: direct.responseLength,
-      nonEmpty: direct.nonEmpty,
-      error: direct.error ?? null,
-    };
-    upsertStep(job, {
-      id: "direct-vision",
-      group: "Direct qwen vision",
-      name: "Ollama /api/generate",
-      status: direct.ok ? "pass" : "fail",
-      detail: direct.ok
-        ? `HTTP ${direct.httpStatus} · ${(direct.elapsedMs / 1000).toFixed(1)} sec · non-empty (${direct.responseLength} chars)`
-        : direct.error ?? `HTTP ${direct.httpStatus}`,
-      elapsedMs: direct.elapsedMs,
-    });
-
-    // 8. CARE application path (same stack as /api/ai-reporting/draft)
-    upsertStep(job, {
-      id: "care-pipeline",
-      group: "CARE AI pipeline",
-      name: "/api/ai-reporting/draft path",
-      status: "running",
-      detail: "generateAiForTask(radiology_draft)…",
-    });
-    const care = await runCareDraftPath({
-      worklistId: study.worklistId,
-      modality: study.modality,
+    const chatProbe: PathProbeResult = {
+      label: "Direct /api/chat 1 image (draft-shaped)",
+      pass: chat.ok,
       model,
-      jpegBase64: img.jpegBase64,
-      endpointUrl: endpoint,
-    });
-    technical.carePipeline = {
-      httpEquivalentStatus: care.httpEquivalentStatus,
-      elapsedMs: care.elapsedMs,
-      providerReturned: care.providerReturned,
-      responseLength: care.responseLength,
-      parserSuccess: care.parserSuccess,
-      findingsLength: care.findingsLength,
-      impressionLength: care.impressionLength,
-      errorClass: care.errorClass,
-      errorCode: care.errorCode,
-      errorMessage: care.errorMessage,
-      resolvedEndpoint: care.resolvedEndpoint,
-      resolvedModel: care.resolvedModel,
-      numberOfImages: care.numberOfImages,
-      totalImageBytes: care.totalImageBytes,
-      candidateCountBeforeTrust: null,
-      candidateCountAccepted: null,
-      candidateCountQuarantined: null,
-      note: "Interactive draft path does not run overnight trust gauntlet; trust counts are N/A here.",
+      endpoint,
+      imageCount: 1,
+      totalImageBytes: bytes1,
+      requestBodyBytes: chat.requestBodyBytes,
+      elapsedMs: chat.elapsedMs,
+      httpStatus: chat.httpStatus,
+      responseLength: chat.responseLength,
+      parserSuccess: null,
+      candidateCount: null,
+      safeError: chat.error ?? null,
+      stages: [],
+      thinkSent: chat.thinkSent,
+      thinkValue: chat.thinkValue,
+      thinkingLength: chat.thinkingLength,
+      finishReason: chat.finishReason,
+      ollamaTotalDurationNs: chat.totalDurationNs,
+      ollamaLoadDurationNs: chat.loadDurationNs,
+      ollamaPromptEvalCount: chat.promptEvalCount,
+      ollamaEvalCount: chat.evalCount,
     };
-    upsertStep(job, {
-      id: "care-pipeline",
-      group: "CARE AI pipeline",
-      name: "/api/ai-reporting/draft path",
-      status: care.providerReturned ? "pass" : "fail",
-      detail: care.providerReturned
-        ? `provider OK · ${(care.elapsedMs / 1000).toFixed(1)} sec · response ${care.responseLength} chars`
-        : `${care.httpEquivalentStatus} after ${(care.elapsedMs / 1000).toFixed(1)} sec — ${care.errorClass}/${care.errorCode}: ${care.errorMessage}`,
-      elapsedMs: care.elapsedMs,
-    });
-    upsertStep(job, {
-      id: "parser",
-      group: "Parser",
-      name: "FINDINGS/IMPRESSION parse",
-      status: !care.providerReturned ? "skip" : care.parserSuccess ? "pass" : "fail",
-      detail: !care.providerReturned
-        ? "not reached"
-        : care.parserSuccess
-          ? `findings ${care.findingsLength} · impression ${care.impressionLength}`
-          : "provider returned but sections empty/unparseable",
-    });
-    upsertStep(job, {
-      id: "trust",
-      group: "Trust layer",
-      name: "Overnight trust gauntlet",
-      status: "skip",
-      detail: "not reached on interactive draft path (shadow pipeline only)",
-    });
+    probes.push(chatProbe);
+    upsertStep(
+      job,
+      probeToStep(chatProbe, "Direct Ollama", "direct-chat", "/api/chat 1 image (draft-shaped)"),
+    );
+    technical.thinkBehavior = {
+      draftPathSendsThink: false,
+      directGenerateSentThinkFalse: true,
+      directGenerateThinkingLength: gen.thinkingLength,
+      directChatDraftShapedThinkSent: chat.thinkSent,
+      directChatThinkingLength: chat.thinkingLength,
+      note: "If thinkingLength>0 despite think:false or omitted, Ollama is still emitting thinking.",
+    };
 
-    if (direct.ok && care.ok) {
-      job.final = "PASS";
-      job.summary = "PASS — end-to-end AI pipeline healthy";
-    } else if (direct.ok && !care.providerReturned) {
-      job.final = "PARTIAL";
-      job.summary = "PARTIAL / FAIL — Direct vision healthy; CARE application path failed.";
-    } else if (direct.ok && care.providerReturned && !care.parserSuccess) {
-      job.final = "PARTIAL";
-      job.summary = "PARTIAL — Direct vision OK; CARE provider returned but parser found no usable sections.";
-    } else {
-      job.final = "FAIL";
-      job.summary = !direct.ok
-        ? "FAIL — direct qwen vision failed"
-        : "FAIL — CARE AI pipeline failed";
-    }
+    // C. Provider-only 1 image
+    upsertStep(job, {
+      id: "provider-1",
+      group: "Provider-only",
+      name: "generateAiForTask 1 image",
+      status: "running",
+      detail: "…",
+    });
+    const p1 = await runGenerateAiForTaskProbe({
+      label: "Provider-only 1 image",
+      model,
+      endpointUrl: endpoint,
+      images: img1,
+      imageFetchMs: fetched.fetchElapsedMs,
+      imageFetchOk: true,
+      fullPipeline: false,
+    });
+    probes.push(p1);
+    upsertStep(job, probeToStep(p1, "Provider-only", "provider-1", "generateAiForTask 1 image"));
+
+    // D. Provider-only up to 6
+    upsertStep(job, {
+      id: "provider-6",
+      group: "Provider-only",
+      name: `generateAiForTask ${img6.length} images`,
+      status: "running",
+      detail: "…",
+    });
+    const p6 = await runGenerateAiForTaskProbe({
+      label: `Provider-only ${img6.length} images`,
+      model,
+      endpointUrl: endpoint,
+      images: img6,
+      imageFetchMs: fetched.fetchElapsedMs,
+      imageFetchOk: true,
+      fullPipeline: false,
+    });
+    probes.push(p6);
+    upsertStep(
+      job,
+      probeToStep(p6, "Provider-only", "provider-6", `generateAiForTask ${img6.length} images`),
+    );
+
+    // E. Full CARE 1 image
+    upsertStep(job, {
+      id: "full-1",
+      group: "Full CARE pipeline",
+      name: "draft path 1 image",
+      status: "running",
+      detail: "…",
+    });
+    const f1 = await runGenerateAiForTaskProbe({
+      label: "Full CARE pipeline 1 image",
+      model,
+      endpointUrl: endpoint,
+      images: img1,
+      imageFetchMs: fetched.fetchElapsedMs,
+      imageFetchOk: true,
+      fullPipeline: true,
+    });
+    probes.push(f1);
+    upsertStep(job, probeToStep(f1, "Full CARE pipeline", "full-1", "draft path 1 image"));
+
+    // F. Full CARE up to 6
+    upsertStep(job, {
+      id: "full-6",
+      group: "Full CARE pipeline",
+      name: `draft path ${img6.length} images`,
+      status: "running",
+      detail: "…",
+    });
+    const f6 = await runGenerateAiForTaskProbe({
+      label: `Full CARE pipeline ${img6.length} images`,
+      model,
+      endpointUrl: endpoint,
+      images: img6,
+      imageFetchMs: fetched.fetchElapsedMs,
+      imageFetchOk: true,
+      fullPipeline: true,
+    });
+    probes.push(f6);
+    upsertStep(
+      job,
+      probeToStep(f6, "Full CARE pipeline", "full-6", `draft path ${img6.length} images`),
+    );
+
+    job.probes = probes;
+    job.stagesByProbe = Object.fromEntries(probes.map((p) => [p.label, p.stages]));
+
+    const derived = deriveSelfTestFinal({
+      noMri: false,
+      directGeneratePass: genProbe.pass,
+      directChatPass: chatProbe.pass,
+      providerOnly1Pass: p1.pass,
+      providerOnly6Pass: p6.pass,
+      fullCare1Pass: f1.pass,
+      fullCare6Pass: f6.pass,
+    });
+    job.final = derived.final;
+    job.summary = derived.summary;
   } catch (err) {
     const msg = err instanceof Error ? err.message.slice(0, 300) : String(err).slice(0, 300);
     logger.error({ err, selfTestId: job.id }, "ai pipeline self-test crashed");
@@ -797,11 +1075,13 @@ async function executeSelfTest(job: JobRecord, opts: { studyInstanceUid?: string
     job.summary = `FAIL — self-test error: ${msg}`;
     technical.crash = msg;
   } finally {
+    // Drop image payloads from memory references in technical
+    technical.jpegHeld = false;
     job.technical = technical;
+    job.probes = probes;
+    job.stagesByProbe = Object.fromEntries(probes.map((p) => [p.label, p.stages]));
     job.status = "completed";
     job.finishedAt = new Date().toISOString();
-    // Drop JPEG from memory if any residual reference
-    technical.jpegHeld = false;
   }
 }
 
@@ -823,18 +1103,18 @@ export function startAiPipelineSelfTest(opts: {
     final: "RUNNING",
     summary: "Queued…",
     steps: [],
+    probes: [],
+    stagesByProbe: {},
     technical: {},
     startedAt: new Date().toISOString(),
     finishedAt: null,
     progressLabel: "Queued",
+    safety: selfTestSafetyContract(),
   };
   JOBS.set(id, job);
-
-  // Fire-and-forget — do not block the HTTP response for 30–120s.
   setImmediate(() => {
     void executeSelfTest(job, opts);
   });
-
   const { _timer: _t, ...rest } = job;
   return rest;
 }
@@ -847,7 +1127,9 @@ export function formatSelfTestReport(result: AiPipelineSelfTestResult): string {
     `summary: ${result.summary}`,
     `startedAt: ${result.startedAt}`,
     `finishedAt: ${result.finishedAt ?? "—"}`,
+    `safety: ${JSON.stringify(result.safety)}`,
     "",
+    "=== STEPS ===",
   ];
   for (const s of result.steps) {
     const mark =
@@ -856,7 +1138,40 @@ export function formatSelfTestReport(result: AiPipelineSelfTestResult): string {
     lines.push(`  ${s.detail}${s.elapsedMs != null ? ` (${s.elapsedMs} ms)` : ""}`);
   }
   lines.push("");
-  lines.push("TECHNICAL (PHI-safe)");
+  lines.push("=== PROBES ===");
+  for (const p of result.probes ?? []) {
+    lines.push(`--- ${p.label} ---`);
+    lines.push(`  result: ${p.pass ? "PASS" : "FAIL"}`);
+    lines.push(`  model: ${p.model}`);
+    lines.push(`  endpoint: ${p.endpoint}`);
+    lines.push(`  imageCount: ${p.imageCount}`);
+    lines.push(`  totalImageBytes: ${p.totalImageBytes}`);
+    lines.push(`  requestBodyBytes: ${p.requestBodyBytes}`);
+    lines.push(`  elapsedMs: ${p.elapsedMs}`);
+    lines.push(`  httpStatus: ${p.httpStatus}`);
+    lines.push(`  responseLength: ${p.responseLength}`);
+    lines.push(`  parserSuccess: ${p.parserSuccess}`);
+    lines.push(`  candidateCount: ${p.candidateCount}`);
+    lines.push(`  thinkSent: ${p.thinkSent} thinkValue: ${p.thinkValue} thinkingLength: ${p.thinkingLength}`);
+    lines.push(`  finishReason: ${p.finishReason}`);
+    lines.push(
+      `  ollama: total_duration_ns=${p.ollamaTotalDurationNs} load_duration_ns=${p.ollamaLoadDurationNs} prompt_eval=${p.ollamaPromptEvalCount} eval=${p.ollamaEvalCount}`,
+    );
+    lines.push(`  safeError: ${p.safeError ?? "—"}`);
+    for (const st of p.stages) {
+      lines.push(`  stage ${st.id}: ${st.status.toUpperCase()} ${st.detail}${st.elapsedMs != null ? ` (${st.elapsedMs}ms)` : ""}`);
+    }
+  }
+  lines.push("");
+  lines.push("=== TECHNICAL (PHI-safe) ===");
   lines.push(JSON.stringify(result.technical, null, 2));
-  return lines.join("\n");
+
+  const report = lines.join("\n");
+  const safety = assertDiagnosticReportPhiSafe(report);
+  if (!safety.ok) {
+    return `${report}\n\nWARNING: report failed PHI-safe checks: ${safety.reasons.join(", ")}`;
+  }
+  return report;
 }
+
+export { assertDiagnosticReportPhiSafe, deriveSelfTestFinal, parseDraftSections };

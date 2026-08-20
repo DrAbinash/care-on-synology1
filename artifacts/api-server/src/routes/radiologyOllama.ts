@@ -834,6 +834,25 @@ radiologyOllamaRouter.post("/multi-review/winner", async (req, res): Promise<voi
   res.json({ ok: true, audit });
 });
 
+// ── GET /pipeline-self-test/studies — recent MRI options for picker ───────────
+radiologyOllamaRouter.get("/pipeline-self-test/studies", async (req, res): Promise<void> => {
+  const sReq = req as StaffAuthRequest;
+  if (!canUseAi(sReq)) {
+    res.status(403).json({ error: "Permission denied." });
+    return;
+  }
+  try {
+    const { listRecentMriStudies } = await import("../lib/ai/aiPipelineSelfTest");
+    const limit = Number(req.query.limit) || 20;
+    const studies = await listRecentMriStudies(limit);
+    res.json({ studies });
+  } catch (err: unknown) {
+    res.status(500).json({
+      error: err instanceof Error ? err.message : "Failed to list MRI studies",
+    });
+  }
+});
+
 // ── POST /pipeline-self-test — async one-click AI pipeline self-test ─────────
 radiologyOllamaRouter.post("/pipeline-self-test", async (req, res): Promise<void> => {
   const sReq = req as StaffAuthRequest;
@@ -860,6 +879,11 @@ radiologyOllamaRouter.get("/pipeline-self-test/:id", async (req, res): Promise<v
   const sReq = req as StaffAuthRequest;
   if (!canUseAi(sReq)) {
     res.status(403).json({ error: "Permission denied." });
+    return;
+  }
+  // Avoid treating "studies" as an id if route order ever flips.
+  if (String(req.params.id) === "studies") {
+    res.status(404).json({ error: "Not found" });
     return;
   }
   const { getAiPipelineSelfTest, formatSelfTestReport } = await import("../lib/ai/aiPipelineSelfTest");
