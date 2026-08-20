@@ -28,6 +28,7 @@ import { listStudyInstances, renderAnchors } from "./studyImageFetch";
 import { shadowStubProvider, type ShadowInferenceProvider } from "./shadowInference";
 import { runDeterministicQuality } from "./rulesBeforeAi";
 import { applyTrustGauntlet, type GauntletFinding } from "./findingValidation";
+import { classifyShadowDraftUsability, buildWorklistAiDraftPointer } from "./shadowDraftUsability";
 
 export const AI_SHADOW_PIPELINE_JOB = "ai_shadow_pipeline";
 
@@ -293,24 +294,37 @@ export function makeAiShadowPipelineHandler(overrides: Partial<ShadowPipelineDep
     );
     if (evidenceRows.length > 0) await db.insert(aiEvidenceTable).values(evidenceRows);
 
-    // Morning worklist signal — radiologists see READY on overnight AI drafts.
+    // Morning worklist signal — clinicalStatus is READY only when there is
+    // usable draft text (grounded findings and/or impression). Technical job
+    // success with empty/quarantined content must NOT display as READY.
     // Human report drafts stay radiologist-owned (AiDraftPanel Accept → editor);
     // AI must never write radiology_report_drafts (aiIsolation guard).
     try {
       const findingsText = gauntlet.valid.map((f) => f.text).join("\n");
+      const usability = classifyShadowDraftUsability({
+        acceptedFindings: gauntlet.valid,
+        quarantinedFindings: gauntlet.quarantined,
+        impression: draft.impression ?? [],
+        candidateCount: aiFindings.length,
+        degraded,
+        imageCount: rendered.length,
+      });
+      const pointer = buildWorklistAiDraftPointer({
+        draftId: draftRow.id,
+        version,
+        source: degraded ? "ai_shadow_degraded" : "ai_shadow",
+        findingsText,
+        impression: draft.impression ?? [],
+        usability,
+        imageCount: rendered.length,
+        modelVersion: provenance.modelVersion,
+        degraded,
+      });
       await db
         .update(radiologyWorklistTable)
         .set({
-          aiDraftStatus: "READY",
-          aiDraftJson: JSON.stringify({
-            source: "ai_shadow",
-            draftId: draftRow.id,
-            version,
-            findingCount: gauntlet.valid.length,
-            findings: findingsText,
-            impression: draft.impression,
-            updatedAt: new Date().toISOString(),
-          }),
+          aiDraftStatus: usability.clinicalStatus,
+          aiDraftJson: JSON.stringify(pointer),
         })
         .where(eq(radiologyWorklistTable.studyInstanceUID, uid));
     } catch {

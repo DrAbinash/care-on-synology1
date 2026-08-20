@@ -39,6 +39,7 @@ export function buildRadiologyDraftPrompt(input: ShadowInferenceInput): string {
     "Every abnormal finding MUST include an evidence anchor referencing one of the provided image series/SOP UIDs.",
     "Do not invent series/SOP UIDs. If unsure, omit the finding or mark it indeterminate.",
     "Distinguish OBSERVATION (findings[]) from IMPRESSION (impression[]).",
+    "If the supplied images show no significant abnormality (or only a limited review is possible), still return a non-empty impression[] with a concise reviewable statement such as 'No significant abnormality identified on the supplied images — radiologist review required.' Do NOT invent anatomy-specific normal findings for sequences that were not demonstrated.",
     `Available image anchors: ${JSON.stringify(input.imageAnchors.slice(0, 20))}`,
   ].join("\n");
 }

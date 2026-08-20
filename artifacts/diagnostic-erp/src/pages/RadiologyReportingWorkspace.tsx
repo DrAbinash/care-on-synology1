@@ -3857,6 +3857,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         studyInstanceUid={workflow.currentRow?.studyInstanceUID ?? study?.studyInstanceUID ?? null}
         modality={workflow.currentRow?.modality ?? study?.modality ?? null}
         onInsertText={appendFindings}
+        preferOpen={typeof window !== "undefined" && new URLSearchParams(window.location.search).get("ai") === "1"}
       />
       <ZaiCommandPalette />
       <FinalizeSignDialog
