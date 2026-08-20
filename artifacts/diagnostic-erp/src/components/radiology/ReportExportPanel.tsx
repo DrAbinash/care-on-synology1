@@ -448,7 +448,7 @@ export default function ReportExportPanel({
           </div>
           <div
             ref={enlargedScrollRef}
-            className="flex-1 min-h-0 overflow-y-scroll overflow-x-hidden rounded border bg-slate-100 p-3 overscroll-contain touch-pan-y"
+            className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden rounded border bg-slate-100 p-3 overscroll-contain touch-pan-y"
             data-testid="report-layout-preview-scroll"
           >
             {/* pointer-events-none: wheel/trackpad scroll the outer pane. Print
