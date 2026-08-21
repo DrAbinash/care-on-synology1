@@ -1,5 +1,5 @@
-// Bill receipt printing — A5 thermal receipt optimised for Indian diagnostic centres.
-// Matches the physical receipt layout from the reference image.
+// Bill receipt printing — HOPE A5 portrait geometry (148×210 mm).
+// Visual layout mirrors legacy HOPE OPD A5; CARE owns finance / QR / audit.
 
 import { resolveBillLogoHeightPx } from "./billPrintSettings";
 
@@ -313,10 +313,16 @@ export type BuildPrintHtmlOpts = {
 };
 
 export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
-  const { bill, clinic, paperSize, orientation = "portrait", isBW, qrDataUrl, reprintBy, reprintReason, compactFooterGap = false, compactOnA4 = false, pageCssSize, provisionalReceipt = false } = opts;
+  const {
+    bill, clinic, paperSize, orientation = "portrait", isBW, qrDataUrl,
+    reprintBy, reprintReason, compactFooterGap = false, compactOnA4 = false,
+    pageCssSize, provisionalReceipt = false,
+  } = opts;
   const rawBillPrintSettings = parseGlobalBillPrintSettings(clinic?.billPrintSettingsJson);
   const copies = resolveBillPrintCopyCount(clinic, rawBillPrintSettings);
-  const showCode = clinic?.billShowCode !== false;
+  // HOPE A5 service table is Service | Amount. Category becomes optional group
+  // headers (not a column). Code/TAT are not HOPE columns — TAT may annotate
+  // the service name when the clinic toggle is on.
   const showCategory = clinic?.billShowCategory !== false;
   const qrEnabled = (opts.showQr !== false) && clinic?.qrOnBillEnabled !== false;
   const showTat = (opts.showTat ?? clinic?.showTatOnBill) === true;
@@ -334,7 +340,7 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
   const cancelled = (bill.order?.tests ?? []).filter((t) => (t.status ?? "active") === "cancelled");
   const billDigits = String(bill.billNumber).replace(/^BILL-?/i, "").replace(/-/g, "");
   const ageStr = calcAge(bill.patient?.dateOfBirth, bill.patient?.ageValue, bill.patient?.ageUnit);
-  const ageGender = [ageStr, bill.patient?.gender].filter(Boolean).join(" / ").toUpperCase();
+  const ageGender = [bill.patient?.gender, ageStr].filter(Boolean).join(" / ");
   const created = bill.createdAt ? new Date(bill.createdAt) : new Date();
   const isCancelled = (bill.status ?? "") === "cancelled";
   const rawDoctor = bill.order?.doctor?.name ?? "";
@@ -351,68 +357,16 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
   const insAmt = payByMode["insurance"] || 0;
   const chqAmt = payByMode["cheque"] || 0;
 
-  const statusColor = (semantic: string): string => (isBW ? "#000" : semantic);
-  const statusBg = (semantic: string): string => (isBW ? "#eee" : semantic);
-
-  // Half-sheet (A5-landscape / half-a4): always fill the 148 mm box. Compact
-  // footer only for tall A4 / booking-slip callers that opt in explicitly.
+  // HOPE A5 portrait is the default geometry. Half-sheet / A4 compact retain
+  // CARE overflow behaviour but share the same visual structure.
   const isHalfSheet = paper === "A5-landscape" || paper === "half-a4";
   const useCompactFooter = isHalfSheet ? false : Boolean(compactFooterGap);
   const defaultMarginMm =
-    paper === "A5-portrait" ? 6 :
+    paper === "A5-portrait" ? 8 :
     paper === "A5-landscape" || paper === "half-a4" ? 4 :
     4;
   const marginMm = opts.printMarginMm ?? defaultMarginMm;
-  const titleSize = `${opts.printTitleFontPx ?? (isA4Paper ? 28 : isA5 ? 19 : 20)}px`;
-  const patientNameSize = `${opts.printPatientNameFontPx ?? (isA4Paper ? 20 : isA5 ? 14 : 18)}px`;
-  // Bill No / phone / ID sit under the date — keep date large (useful), shrink
-  // secondary meta so long bill digits + phone fit the right column.
-  const patientMetaSize = `${Math.max(10, Math.round(parseInt(patientNameSize, 10) * 0.72))}px`;
-  const bodyPx = `${opts.printBodyFontPx ?? (isA4Paper ? 18 : isA5 ? 16 : 15)}px`;
-  const headerPx = `${opts.printHeaderFontPx ?? (isA4Paper ? 14 : isA5 ? 13 : 12)}px`;
-  const tablePx = `${opts.printTableFontPx ?? (isA4Paper ? 14 : 12)}px`;
-  const totalPx = `${opts.printTotalFontPx ?? (isA4Paper ? 16 : 13)}px`;
-  const footerPx = `${opts.printFooterFontPx ?? (isA4Paper ? 13 : 11)}px`;
-  const tinyPx = `${opts.printTinyFontPx ?? (isA4Paper ? 11 : 10)}px`;
-  const addressRight = (opts.headerLayout ?? "right") === "right";
-  const logoH = resolveBillLogoHeightPx(opts.printLogoHeightPx, addressRight ? (isA4Paper ? 170 : 140) : (isA4Paper ? 150 : 120));
-  const logoMaxW = Math.round(logoH * 2.0);
-  const logoImgHtml = clinic?.logoDataUrl
-    ? `<img src="${clinic.logoDataUrl}" alt="logo" style="max-height:${logoH}px;max-width:${logoMaxW}px;object-fit:contain;display:block;margin-bottom:4px"/>`
-    : "";
-
-  const colCount = 3 + (showCode ? 1 : 0) + (showCategory ? 1 : 0) + (showTat ? 1 : 0);
-
-  const testRows = tests.map((t, i) => {
-    const code = t.test?.code ?? "";
-    const name = t.displayName ?? t.test?.name ?? "";
-    const cat = t.test?.category ?? "";
-    const tat = (t.test?.duration ?? "").trim();
-    const codeFontSize = `${Math.round(parseInt(tablePx, 10) * 0.9)}px`;
-    return `<tr>
-      <td style="padding:5px 8px;border:1px solid #000;text-align:center;font-size:${tablePx};font-variant-numeric:tabular-nums">${i + 1}</td>
-      ${showCode ? `<td style="padding:5px 8px;border:1px solid #000;font-family:ui-monospace,Menlo,monospace;font-size:${codeFontSize}">${esc(code)}</td>` : ""}
-      <td style="padding:5px 8px;border:1px solid #000;font-size:${tablePx};font-weight:600;color:#0f172a">${esc(name)}</td>
-      ${showCategory ? `<td style="padding:5px 8px;border:1px solid #000;font-size:${tablePx};color:#64748b">${esc(cat)}</td>` : ""}
-      ${showTat ? `<td style="padding:5px 8px;border:1px solid #000;font-size:${tablePx};color:#64748b;white-space:nowrap">${esc(tat || "—")}</td>` : ""}
-      <td style="padding:5px 8px;border:1px solid #000;text-align:right;font-size:${tablePx};font-weight:700;white-space:nowrap;font-variant-numeric:tabular-nums">₹${fmt(t.price)}</td>
-    </tr>`;
-  }).join("");
-
-  const cancelledRow = cancelled.length === 0 ? "" : `
-    <div style="margin-top:4px;font-size:${tinyPx};color:#888">
-      <em>Cancelled: ${esc(cancelled.map((t) => t.displayName ?? t.test?.name ?? "").join(", "))}</em>
-    </div>`;
-
-  const payRows = (bill.payments ?? []).map((p) => {
-    const ref = p.referenceNumber ? ` (${esc(p.referenceNumber)})` : "";
-    return `<tr>
-      <td style="padding:3px 6px 3px 0;font-size:${tinyPx};text-transform:capitalize;color:#64748b">${esc(p.method)}${ref ? `<span style="color:#94a3b8;font-size:${Math.round(parseInt(tinyPx, 10) * 0.85)}px">${ref}</span>` : ""}</td>
-      <td style="padding:3px 0;text-align:right;font-weight:700;font-size:${tinyPx};font-variant-numeric:tabular-nums;color:#0f172a">₹${fmt(p.amount)}</td>
-    </tr>`;
-  }).join("");
-
-  const hasPayDetail = (bill.payments ?? []).length > 0;
+  const logoH = resolveBillLogoHeightPx(opts.printLogoHeightPx, isA4Paper ? 90 : 68);
 
   const session = (() => {
     try {
@@ -439,112 +393,119 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
     operatorId,
   });
 
-  const balAmt = Number(bill.balanceAmount || 0);
-  const balDueBg = statusBg(isUnconfirmedQr ? "#fef3c7" : balAmt > 0 ? "#fef2f2" : "#f0fdf4");
-  const balDueColor = statusColor(isUnconfirmedQr ? "#b45309" : balAmt > 0 ? "#b91c1c" : "#15803d");
+  const ink = isBW ? "#000" : "#722626";
+  const border = isBW ? "#000" : "#722626";
+  const patientName = `${bill.patient?.firstName ?? ""} ${bill.patient?.lastName ?? ""}`.trim() || "—";
+  const doctorDisplay = rawDoctor
+    ? (rawDoctor.match(/^\s*DR\.?\s*/i) ? rawDoctor.trim() : `Dr. ${rawDoctor.trim()}`)
+    : "Self";
+  const dateTimeStr = `${created.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })} ${created.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: true })}`;
+  const receiptTitle = provisionalReceipt
+    ? "Provisional Receipt"
+    : isCancelled
+      ? "Cancelled Receipt"
+      : "Receipt";
 
-  const contactRow = (content: string) =>
-    content ? `<div style="font-size:${headerPx};line-height:1.45;margin-top:2px">${content}</div>` : "";
-  const contactLine = (label: string, value: string) =>
-    `${metaLabel(label, headerPx)} ${metaValue(value, headerPx, 600)}`;
+  const paymentModeParts: string[] = [];
+  if (cashAmt > 0) paymentModeParts.push(`Cash: ₹${fmt(cashAmt)}`);
+  if (upiAmt > 0) paymentModeParts.push(`UPI: ₹${fmt(upiAmt)}`);
+  if (cardAmt > 0) paymentModeParts.push(`Card: ₹${fmt(cardAmt)}`);
+  if (insAmt > 0) paymentModeParts.push(`Insurance: ₹${fmt(insAmt)}`);
+  if (chqAmt > 0) paymentModeParts.push(`Cheque: ₹${fmt(chqAmt)}`);
+  const paymentModeLine = paymentModeParts.length > 0
+    ? paymentModeParts.join(" · ")
+    : Number(bill.paidAmount || 0) > 0
+      ? "Paid"
+      : "—";
 
-  const addressLinesHtml = (align: "left" | "right") => {
-    if (!clinic?.address) return "";
-    return clinic.address
-      .split(/\s*\n\s*/)
-      .filter(Boolean)
-      .map((line) => `<div style="font-size:${headerPx};font-weight:600;color:#0f172a;line-height:1.45;margin-top:2px;text-align:${align}">${esc(line.trim())}</div>`)
-      .join("");
+  type ServiceRow = { name: string; amount: number; category: string; tat: string };
+  const serviceRows: ServiceRow[] = tests.map((t) => {
+    const name = t.displayName ?? t.test?.name ?? "Test";
+    const tat = (t.test?.duration ?? "").trim();
+    const display = showTat && tat ? `${name} (${tat})` : name;
+    return {
+      name: display,
+      amount: Number(t.price || 0),
+      category: (t.test?.category || "").trim() || "General",
+      tat,
+    };
+  });
+
+  const renderServiceBody = (): string => {
+    if (serviceRows.length === 0) {
+      return `<tr><td colspan="2" style="text-align:center;padding:6px;">No services</td></tr>`;
+    }
+    if (!showCategory) {
+      return serviceRows.map((r) => `
+        <tr>
+          <td>${esc(r.name)}</td>
+          <td class="amt">₹${fmt(r.amount)}</td>
+        </tr>`).join("");
+    }
+    const byCat = new Map<string, ServiceRow[]>();
+    for (const r of serviceRows) {
+      const list = byCat.get(r.category) || [];
+      list.push(r);
+      byCat.set(r.category, list);
+    }
+    const parts: string[] = [];
+    for (const [cat, rows] of byCat) {
+      parts.push(`<tr class="cat-row"><td colspan="2"><b>${esc(cat)}</b></td></tr>`);
+      for (const r of rows) {
+        parts.push(`
+          <tr>
+            <td style="padding-left:12px;">${esc(r.name)}</td>
+            <td class="amt">₹${fmt(r.amount)}</td>
+          </tr>`);
+      }
+    }
+    return parts.join("");
   };
 
-  const contactBlockHtml = (align: "left" | "right") => {
-    const rows: string[] = [];
-    if (clinic?.phone) rows.push(contactRow(contactLine("PH:", clinic.phone)));
-    if (clinic?.email) rows.push(contactRow(contactLine("EMAIL:", clinic.email)));
-    if (clinic?.website) rows.push(contactRow(contactLine("WEB:", clinic.website)));
-    if (clinic?.gstin) rows.push(contactRow(contactLine("GSTIN:", clinic.gstin)));
-    if (rows.length === 0) return "";
-    return `<div style="text-align:${align}">${rows.join("")}</div>`;
-  };
+  const cancelledBlock = cancelled.length > 0 ? `
+    <div class="cancel-note">
+      Cancelled: ${esc(cancelled.map((t) => t.displayName ?? t.test?.name ?? "").filter(Boolean).join(", "))}
+    </div>` : "";
 
-  const finRow = (
-    label: string,
-    value: string,
-    rowOpts: { bold?: boolean; borderTop?: string; bg?: string; color?: string } = {},
-  ) => `
+  const discountAmt = Number(bill.discount || 0);
+  const discountRow = discountAmt > 0 ? `
     <tr>
-      <td style="padding:5px 8px;${rowOpts.borderTop ? `border-top:${rowOpts.borderTop};` : ""}${rowOpts.bg ? `background:${rowOpts.bg};` : ""}${rowOpts.bold ? "font-weight:800;" : "font-weight:500;"}color:${rowOpts.color ?? "#334155"};text-transform:uppercase;letter-spacing:0.03em;font-size:${totalPx}">${esc(label)}</td>
-      <td style="padding:5px 8px;text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums;${rowOpts.borderTop ? `border-top:${rowOpts.borderTop};` : ""}${rowOpts.bg ? `background:${rowOpts.bg};` : ""}${rowOpts.bold ? "font-weight:800;" : "font-weight:700;"};color:${rowOpts.color ?? "#0f172a"};font-size:${totalPx}">${value}</td>
-    </tr>`;
+      <td class="tot-label">Bill Discount:</td>
+      <td class="tot-val">₹${fmt(discountAmt)}</td>
+    </tr>` : "";
 
-  const page = (copyIdx: number) => {
-    const copyLabelText =
-      opts.copyLabel ??
-      (copies > 1
-        ? copyIdx === 0
-          ? "Patient Copy"
-          : "Office Copy"
-        : "");
-    const copyLabelBanner = copyLabelText
-      ? `<div style="text-align:right;font-size:${tinyPx};font-weight:800;color:#64748b;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px">${esc(copyLabelText)}</div>`
-      : "";
-    return `
-    <div class="receipt-shell">
-      ${copyLabelBanner}
-      <div class="receipt-main">
-      <table style="width:100%;border-collapse:collapse;margin-bottom:5px">
-        <tr>
-          <td style="vertical-align:top;padding:0;width:${addressRight ? "50%" : "62%"}">
-            ${logoImgHtml}
-            ${clinic?.name ? `<div style="font-size:${titleSize};font-weight:800;line-height:1.15;color:#0f172a;margin-bottom:2px">${esc(clinic.name)}</div>` : ""}
-            <div style="font-size:${bodyPx};color:#334155;font-weight:700;line-height:1.2">${esc(clinic?.tagline || "DIAGNOSTIC & PATHOLOGY SERVICES")}</div>
-            ${!addressRight ? addressLinesHtml("left") : ""}
-            ${!addressRight ? contactBlockHtml("left") : ""}
-          </td>
-          <td style="vertical-align:top;text-align:right;padding:0;width:${addressRight ? "50%" : "38%"}">
-            <div style="font-size:${titleSize};font-weight:800;letter-spacing:1.2px;text-transform:uppercase;color:#0f172a">${isCancelled ? "CANCELLED" : isUnconfirmedQr ? "AWAITING PAYMENT" : "INVOICE"}</div>
-            ${addressRight ? addressLinesHtml("right") : ""}
-            ${addressRight ? contactBlockHtml("right") : ""}
-          </td>
-        </tr>
-      </table>
+  const balAmt = Number(bill.balanceAmount || 0);
+  const balDueBg = isBW ? "#eee" : (isUnconfirmedQr ? "#fef3c7" : balAmt > 0 ? "#fef2f2" : "#f0fdf4");
+  const balDueColor = isBW ? "#000" : (isUnconfirmedQr ? "#b45309" : balAmt > 0 ? "#b91c1c" : "#15803d");
 
-      <div style="border-top:2px solid #000;border-bottom:2px solid #000;padding:2px 0;margin-bottom:5px"></div>
+  const qrBlock = (qrEnabled && qrDataUrl) ? `
+    <div class="qr-wrap">
+      <img src="${qrDataUrl}" alt="QR" width="70" height="70" />
+      <div class="qr-caption">Scan to verify</div>
+      ${isUnconfirmedQr ? `<div class="qr-warn">⚠ Unconfirmed QR</div>` : ""}
+      <div class="audit-token" title="Audit token">${esc(auditToken)}</div>
+    </div>` : `
+    <div class="audit-token" title="Audit token">${esc(auditToken)}</div>`;
 
-      ${provisionalReceipt ? `<div style="display:block;background:#fef3c7;color:#92400e;border:2px solid #f59e0b;border-radius:4px;padding:4px 8px;font-size:${tinyPx};font-weight:800;letter-spacing:0.03em;margin-bottom:8px;text-align:center;text-transform:uppercase">Provisional Receipt — Server Offline · Will Sync Automatically · QR Valid After Sync</div>` : ""}
-      ${reprintBy || reprintReason ? `<div style="display:inline-block;background:#f3f4f6;color:#4b5563;border:1px solid #d1d5db;border-radius:3px;padding:2px 8px;font-size:${tinyPx};font-weight:600;letter-spacing:0.02em;margin-bottom:8px">REPRINT${reprintBy ? ` &nbsp;&middot;&nbsp; ${esc(reprintBy)}` : ""}${reprintReason ? ` &nbsp;&middot;&nbsp; ${esc(reprintReason)}` : ""} &nbsp;&middot;&nbsp; ${esc(new Date().toLocaleDateString("en-IN"))}</div>` : ""}
+  const reprintBanner = (reprintBy || reprintReason) ? `
+    <div class="reprint-banner">
+      REPRINT${reprintBy ? ` · ${esc(reprintBy)}` : ""}${reprintReason ? ` · ${esc(reprintReason)}` : ""}
+      · ${esc(new Date().toLocaleDateString("en-IN"))}
+    </div>` : "";
 
-      <table style="width:100%;border-collapse:collapse;margin-bottom:4px;table-layout:fixed">
-        <colgroup><col style="width:58%"/><col style="width:42%"/></colgroup>
-        <tr>
-          <td style="vertical-align:top;padding:0;overflow-wrap:anywhere;word-break:break-word">
-            <div style="font-size:${patientNameSize};font-weight:800;line-height:1.25;color:#0f172a">${esc(`${bill.patient?.firstName ?? ""} ${bill.patient?.lastName ?? ""}`.trim().toUpperCase())}${ageGender ? ` <span style="font-weight:600;color:#475569">${esc(ageGender)}</span>` : ""}</div>
-            <div style="font-size:${patientNameSize};margin-top:3px;line-height:1.3;font-weight:800;color:#0f172a">
-              ${metaLabel("REF:", patientNameSize)} ${metaValue(rawDoctor ? (rawDoctor.match(/^\s*DR\.?\s*/i) ? rawDoctor.trim().toUpperCase() : "DR. " + rawDoctor.trim().toUpperCase()) : "SELF / WALK-IN", patientNameSize, 800)}
-            </div>
-          </td>
-          <td style="vertical-align:top;padding:0;position:relative">
-            <div style="visibility:hidden;pointer-events:none;font-size:${patientNameSize}" aria-hidden="true">
-              <div style="font-weight:800;line-height:1.25">&nbsp;</div>
-              <div style="margin-top:3px;line-height:1.3">&nbsp;</div>
-            </div>
-            <div style="position:absolute;inset:0;display:flex;flex-direction:column;text-align:right;white-space:nowrap;overflow:hidden">
-              <div style="flex:1 1 0;display:flex;align-items:flex-start;justify-content:flex-end;font-size:${patientNameSize};font-weight:800;line-height:1.1;color:#0f172a" data-bill-meta="date">${created.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }).toUpperCase()} &nbsp;${created.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: true }).toUpperCase()}</div>
-              <div style="flex:1 1 0;display:flex;align-items:center;justify-content:flex-end;font-size:${patientMetaSize};line-height:1.1;color:#0f172a" data-bill-meta="bill-no">${metaLabel("BILL NO:", patientMetaSize)} ${metaValue(billDigits, patientMetaSize, 800)}</div>
-              <div style="flex:1 1 0;display:flex;align-items:flex-end;justify-content:flex-end;font-size:${patientMetaSize};line-height:1.1;color:#0f172a" data-bill-meta="phone-id">${metaLabel("PH", patientMetaSize)} ${metaValue(bill.patient?.phone ?? "", patientMetaSize, 600)} · ${metaLabel("ID", patientMetaSize)} ${metaValue(bill.patient?.patientId ?? "", patientMetaSize, 600)}</div>
-            </div>
-          </td>
-        </tr>
-      </table>
+  const provisionalBanner = provisionalReceipt ? `
+    <div class="provisional-banner">
+      Provisional Receipt — Server Offline · Will Sync Automatically · QR Valid After Sync
+    </div>` : "";
 
-      <div style="border-bottom:1px solid #000;margin-bottom:6px"></div>
+  const queueTokenBlock = opts.showQueueToken && bill.tokenNo ? `
+    <div class="queue-token">
+      <div class="queue-label">QUEUE TOKEN</div>
+      <div class="queue-num">#${esc(String(bill.tokenNo))}</div>
+    </div>` : "";
 
-      ${opts.showQueueToken && bill.tokenNo ? `
-      <div style="text-align:center;background:#eff6ff;border:2px dashed #0c4a6e;border-radius:6px;padding:4px 8px;margin-bottom:6px;page-break-inside:avoid">
-        <div style="font-size:${tinyPx};font-weight:800;color:#0c4a6e;letter-spacing:0.5px">QUEUE TOKEN</div>
-        <div style="font-size:${parseInt(titleSize, 10) + 10}px;font-weight:900;color:#0c4a6e;line-height:1.1">#${esc(String(bill.tokenNo))}</div>
-      </div>` : ""}
-      ${opts.showQueueToken && bill.testTokens && bill.testTokens.length > 0 ? (() => {
+  const testTokensBlock = opts.showQueueToken && bill.testTokens && bill.testTokens.length > 0
+    ? (() => {
         const seen = new Set<string>();
         const deduped = bill.testTokens.filter((tt) => {
           const key = `${tt.department}::${tt.roomNumber}`;
@@ -553,93 +514,146 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
           return true;
         });
         return `
-      <div style="font-size:${tinyPx};margin-bottom:6px">
-        ${deduped.map((tt) => `<div><strong>${esc(tt.department)}</strong>: Token #${esc(String(tt.tokenNo))}${tt.roomNumber ? ` &middot; Room ${esc(tt.roomNumber)}` : ""}</div>`).join("")}
-      </div>`;
-      })() : ""}
+    <div class="test-tokens">
+      ${deduped.map((tt) => `<div><strong>${esc(tt.department)}</strong>: Token #${esc(String(tt.tokenNo))}${tt.roomNumber ? ` · Room ${esc(tt.roomNumber)}` : ""}</div>`).join("")}
+    </div>`;
+      })()
+    : "";
 
-      <table class="test-table" style="width:100%;border-collapse:collapse;font-size:${tablePx};margin-bottom:5px">
-        <thead>
+  const preparedBy = esc(
+    (bill.createdByName && String(bill.createdByName).trim()) ||
+    billedByName ||
+    "Staff",
+  );
+
+  const buildOneCopy = (copyIndex: number): string => {
+    const copyLabelText =
+      opts.copyLabel ??
+      (copies > 1
+        ? copyIndex === 0
+          ? "Patient Copy"
+          : "Office Copy"
+        : "");
+    return `
+<div class="receipt-shell hope-bill">
+  <div class="receipt-main">
+  ${copyLabelText ? `<div class="copy-tag">${esc(copyLabelText)}</div>` : ""}
+  ${provisionalBanner}
+  ${reprintBanner}
+
+  <table class="hdr-table">
+    <tr>
+      <td class="logo-cell">
+        ${clinic?.logoDataUrl
+          ? `<img src="${clinic.logoDataUrl}" alt="" class="logo-img" style="max-height:${logoH}px;max-width:${Math.round(logoH * 1.4)}px" />`
+          : `<div class="logo-fallback">${esc((clinic?.name || "C").slice(0, 1))}</div>`}
+      </td>
+      <td class="hdr-text">
+        <div class="clinic-name">${esc(clinic?.name || "Care Diagnostics")}</div>
+        ${clinic?.tagline ? `<div class="clinic-line">${esc(clinic.tagline)}</div>` : ""}
+        ${clinic?.address ? clinic.address.split(/\s*\n\s*/).filter(Boolean).map((line) => `<div class="clinic-line">${esc(line.trim())}</div>`).join("") : ""}
+        ${clinic?.email ? `<div class="clinic-line">${esc(clinic.email)}</div>` : ""}
+        ${clinic?.phone ? `<div class="clinic-line">Phone: ${esc(clinic.phone)}</div>` : ""}
+        ${clinic?.website ? `<div class="clinic-line">${esc(clinic.website)}</div>` : ""}
+        ${clinic?.gstin ? `<div class="clinic-line">GSTIN: ${esc(clinic.gstin)}</div>` : ""}
+      </td>
+    </tr>
+  </table>
+
+  <div class="title-bar">${esc(receiptTitle)}</div>
+
+  <table class="meta-table">
+    <tr>
+      <td class="meta-label">Date &amp; Time</td>
+      <td class="meta-val" data-bill-meta="date">${esc(dateTimeStr)}</td>
+      <td class="meta-label">Bill No.</td>
+      <td class="meta-val" data-bill-meta="bill-no">${esc(billDigits)}</td>
+    </tr>
+    <tr>
+      <td class="meta-label">UHID</td>
+      <td class="meta-val" data-bill-meta="phone-id">${esc(bill.patient?.patientId || "—")}</td>
+      <td class="meta-label">Patient</td>
+      <td class="meta-val">${esc(patientName)}</td>
+    </tr>
+    <tr>
+      <td class="meta-label">Gender / Age</td>
+      <td class="meta-val">${esc(ageGender || "—")}</td>
+      <td class="meta-label">Mobile</td>
+      <td class="meta-val">${esc(bill.patient?.phone || "—")}</td>
+    </tr>
+    <tr>
+      <td class="meta-label">Ref. By</td>
+      <td class="meta-val" colspan="3">${esc(doctorDisplay)}</td>
+    </tr>
+  </table>
+
+  ${queueTokenBlock}
+  ${testTokensBlock}
+
+  <table class="svc-table">
+    <thead>
+      <tr>
+        <th class="svc-name">Service</th>
+        <th class="svc-amt">Amount (Rs.)</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${renderServiceBody()}
+    </tbody>
+  </table>
+  ${cancelledBlock}
+
+  <table class="financial-block pay-summary">
+    <tr>
+      <td class="pay-left">
+        <div><span class="meta-label">Payment Mode:</span> ${esc(paymentModeLine)}</div>
+        ${qrBlock}
+      </td>
+      <td class="pay-right">
+        <table class="totals-grid totals-table">
           <tr>
-            <th style="padding:5px 8px;border:1px solid #000;background:#f0f0f0;text-align:center;font-weight:800;letter-spacing:0.03em">#</th>
-            ${showCode ? `<th style="padding:5px 8px;border:1px solid #000;background:#f0f0f0;text-align:left;font-weight:800;letter-spacing:0.03em">CODE</th>` : ""}
-            <th style="padding:5px 8px;border:1px solid #000;background:#f0f0f0;text-align:left;font-weight:800;letter-spacing:0.03em">TEST NAME</th>
-            ${showCategory ? `<th style="padding:5px 8px;border:1px solid #000;background:#f0f0f0;text-align:left;font-weight:800;letter-spacing:0.03em">CATEGORY</th>` : ""}
-            ${showTat ? `<th style="padding:5px 8px;border:1px solid #000;background:#f0f0f0;text-align:left;font-weight:800;letter-spacing:0.03em">TAT</th>` : ""}
-            <th style="padding:5px 8px;border:1px solid #000;background:#f0f0f0;text-align:right;font-weight:800;letter-spacing:0.03em">AMOUNT (₹)</th>
+            <td class="tot-label">Grand Total:</td>
+            <td class="tot-val">₹${fmt(bill.subtotal)}</td>
           </tr>
-        </thead>
-        <tbody>
-          ${testRows || `<tr><td colspan="${colCount}" style="padding:8px;text-align:center;color:#888;border:1px solid #000">No tests on this bill</td></tr>`}
-        </tbody>
-      </table>
-      ${cancelledRow}
-
-      <table class="financial-block" style="width:100%;border-collapse:separate;border-spacing:0;margin-top:5px;table-layout:fixed;page-break-inside:avoid;break-inside:avoid">
-        <colgroup>
-          <col style="width:${qrEnabled && qrDataUrl ? "18%" : "0"}"/>
-          <col style="width:${qrEnabled && qrDataUrl ? "42%" : "58%"}"/>
-          <col style="width:40%"/>
-        </colgroup>
-        <tbody>
-          <tr>
-            <td style="vertical-align:bottom;padding:0">
-              ${qrEnabled && qrDataUrl ? `
-              <img src="${qrDataUrl}" alt="QR" style="width:70px;height:70px;display:block"/>
-              <div style="font-size:${tinyPx};color:#64748b;margin-top:2px;font-weight:500">Scan to verify</div>
-              <div style="font-size:7px;color:#94a3b8;font-family:ui-monospace,Menlo,monospace;margin-top:3px;line-height:1.2;word-break:break-all;max-width:90px" title="Audit token">${esc(auditToken)}</div>` : ""}
-            </td>
-            <td style="vertical-align:top;padding:0 8px 0 0;font-size:${tinyPx}">
-              ${hasPayDetail ? `<div style="font-weight:700;color:#64748b;border-bottom:1px solid #cbd5e1;padding-bottom:2px;margin-bottom:3px;text-transform:uppercase;letter-spacing:0.4px;font-size:${Math.round(parseInt(tinyPx, 10) * 1.15)}px">PAYMENT DETAILS</div>
-                <table style="width:100%;border-collapse:collapse"><tbody>${payRows}</tbody></table>` : ""}
-              ${!(qrEnabled && qrDataUrl) ? `<div style="font-size:7px;color:#94a3b8;font-family:ui-monospace,Menlo,monospace;margin-top:6px;line-height:1.2;word-break:break-all" title="Audit token">${esc(auditToken)}</div>` : ""}
-            </td>
-            <td style="vertical-align:top;padding:0">
-              <table class="totals-grid" style="width:100%;border-collapse:collapse;font-size:${totalPx};table-layout:fixed">
-                <colgroup><col style="width:55%"/><col style="width:45%"/></colgroup>
-                <tbody>
-                  ${finRow("Subtotal", `₹${fmt(bill.subtotal)}`)}
-                  ${Number(bill.discount) > 0 ? finRow("Discount", `₹${fmt(bill.discount)}`) : ""}
-                  ${finRow("Total", `₹${fmt(bill.totalAmount)}`, { bold: true, borderTop: "2px solid #000" })}
-                  ${finRow("Paid", isUnconfirmedQr ? `${fmt(bill.totalAmount)} (Pending)` : `₹${fmt(bill.paidAmount)}`, { bold: true, borderTop: "1px solid #cbd5e1", color: statusColor(isUnconfirmedQr ? "#b45309" : "#15803d") })}
-                  ${finRow("Balance Due", isUnconfirmedQr ? "To Be Confirmed" : `₹${fmt(balAmt)}`, { bold: true, borderTop: "2px solid #000", bg: balDueBg, color: balDueColor })}
-                  ${cashAmt > 0 ? finRow("Cash", `₹${fmt(cashAmt)}`) : ""}
-                  ${upiAmt > 0 ? finRow("UPI", `₹${fmt(upiAmt)}`) : ""}
-                  ${cardAmt > 0 ? finRow("Card", `₹${fmt(cardAmt)}`) : ""}
-                  ${insAmt > 0 ? finRow("Insurance", `₹${fmt(insAmt)}`) : ""}
-                  ${chqAmt > 0 ? finRow("Cheque", `₹${fmt(chqAmt)}`) : ""}
-                </tbody>
-              </table>
-            </td>
+          ${discountRow}
+          <tr class="net-row">
+            <td class="tot-label">Net Amount:</td>
+            <td class="tot-val">₹${fmt(bill.totalAmount)}</td>
           </tr>
-        </tbody>
-      </table>
-
-      ${useCompactFooter ? `<div style="height:${Math.round(parseInt(footerPx, 10) * 0.35)}px"></div>` : ""}
-      </div>
-
-      <div class="receipt-footer" style="margin-top:auto;border-top:2px solid #000;padding-top:6px;text-align:center;page-break-inside:avoid;break-inside:avoid">
-        <div style="font-size:${footerPx};font-weight:700;color:#0f172a;margin-bottom:2px;text-transform:uppercase;letter-spacing:0.02em;line-height:1.3">${esc(clinic?.footerNote || bill.reportCollectionNote || "Thank you for choosing our diagnostic services. Please collect your report within 7 days.")}</div>
-        <div style="font-size:${tinyPx};color:#64748b;margin-bottom:6px;font-weight:500;letter-spacing:0.02em">THIS IS A COMPUTER-GENERATED INVOICE. NO SIGNATURE REQUIRED.</div>
-
-        <table style="width:100%;border-collapse:collapse;page-break-inside:avoid;break-inside:avoid">
           <tr>
-            <td style="text-align:left;padding:0;vertical-align:bottom;width:50%">
-              ${billedBySignatureUrl
-                ? `<img src="${billedBySignatureUrl}" alt="Signature" style="max-height:32px;max-width:130px;object-fit:contain;display:block;margin-bottom:2px"/>`
-                : `<div style="border-bottom:1px solid #94a3b8;width:130px;margin-bottom:2px;height:28px"></div>`}
-              <div style="font-size:${tinyPx};color:#64748b;font-weight:500;text-transform:uppercase;letter-spacing:0.03em">Authorised Signature</div>
-            </td>
-            <td style="text-align:right;padding:0;vertical-align:bottom;width:50%;font-size:${tinyPx}">
-              ${billedByName ? `<div>${metaLabel("Billed by:", tinyPx)} ${metaValue(billedByName, tinyPx, 600)}</div>` : ""}
-            </td>
+            <td class="tot-label">Paid:</td>
+            <td class="tot-val">${isUnconfirmedQr ? `${fmt(bill.totalAmount)} (Pending)` : `₹${fmt(bill.paidAmount)}`}</td>
+          </tr>
+          <tr>
+            <td class="tot-label" style="background:${balDueBg};color:${balDueColor}">Balance:</td>
+            <td class="tot-val" style="background:${balDueBg};color:${balDueColor}">${isUnconfirmedQr ? "To Be Confirmed" : `₹${fmt(balAmt)}`}</td>
           </tr>
         </table>
-      </div>
-    </div>`;
+      </td>
+    </tr>
+  </table>
+  </div>
+
+  <div class="receipt-footer">
+    <div class="footer-note">${esc(clinic?.footerNote || bill.reportCollectionNote || "Thank you for choosing our diagnostic services.")}</div>
+    <table class="sign-table">
+      <tr>
+        <td class="sign-left">
+          Prepared By: ${preparedBy}
+        </td>
+        <td class="sign-right">
+          ${billedBySignatureUrl
+            ? `<img src="${billedBySignatureUrl}" alt="Signature" class="sign-img" />`
+            : `<div class="sign-line"></div>`}
+          Authorised Signatory
+        </td>
+      </tr>
+    </table>
+  </div>
+</div>`;
   };
 
-  const pages = Array.from({ length: copies }).map((_, i) => page(i));
+  const pages = Array.from({ length: Math.max(1, copies) }, (_, i) => buildOneCopy(i));
 
   const shellMinHeight = useCompactFooter ? "" : "min-height: 100%;";
   const footerMargin = useCompactFooter ? "margin-top: 8px !important;" : "margin-top: auto !important;";
@@ -649,8 +663,15 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
     paper,
     safePaddingMm: marginMm,
     compactSlipOnA4: a4Page,
-    bodyFontSize: bodyPx,
+    bodyFontSize: "10px",
     extraStyles: `
+  body {
+    font-family: Verdana, Geneva, sans-serif;
+    font-size: 10px;
+    color: #000;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
   .receipt {
     display: flex;
     flex-direction: column;
@@ -660,6 +681,7 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
     ${shellMinHeight}
     display: flex;
     flex-direction: column;
+    box-sizing: border-box;
   }
   .receipt-main {
     width: 100%;
@@ -667,19 +689,270 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
   }
   .receipt-footer {
     ${footerMargin}
-  }
-  table { width: 100%; }
-  .test-table tbody tr:nth-child(even) td { background: #f8fafc; }
-  .financial-block, .totals-grid, .receipt-footer {
+    border-top: 1px solid ${border};
+    padding-top: 6px;
     page-break-inside: avoid;
     break-inside: avoid;
   }
-  .totals-grid td:last-child {
-    font-variant-numeric: tabular-nums;
+  .copy-tag {
     text-align: right;
+    font-size: 9px;
+    font-weight: bold;
+    color: ${ink};
+    margin-bottom: 2px;
+  }
+  .reprint-banner {
+    border: 1px solid ${border};
+    background: ${isBW ? "#eee" : "#fff3cd"};
+    color: ${isBW ? "#000" : "#856404"};
+    font-size: 9px;
+    font-weight: bold;
+    text-align: center;
+    padding: 3px 6px;
+    margin-bottom: 4px;
+  }
+  .provisional-banner {
+    background: ${isBW ? "#eee" : "#fef3c7"};
+    color: ${isBW ? "#000" : "#92400e"};
+    border: 2px solid ${isBW ? "#000" : "#f59e0b"};
+    padding: 4px 8px;
+    font-size: 9px;
+    font-weight: bold;
+    text-align: center;
+    text-transform: uppercase;
+    margin-bottom: 6px;
+  }
+  .hdr-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 4px;
+  }
+  .logo-cell {
+    width: 72px;
+    vertical-align: middle;
+    padding-right: 8px;
+  }
+  .logo-img {
+    object-fit: contain;
+    display: block;
+  }
+  .logo-fallback {
+    width: 56px;
+    height: 56px;
+    border: 1px solid ${border};
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 22px;
+    font-weight: bold;
+    color: ${ink};
+  }
+  .hdr-text {
+    text-align: center;
+    vertical-align: middle;
+  }
+  .clinic-name {
+    font-size: ${isA4Paper ? "20px" : "16px"};
+    font-weight: bold;
+    color: ${ink};
+    line-height: 1.2;
+  }
+  .clinic-line {
+    font-size: 9px;
+    line-height: 1.25;
+    margin-top: 1px;
+  }
+  .title-bar {
+    border: 1px solid ${border};
+    text-align: center;
+    font-weight: bold;
+    font-size: 12px;
+    padding: 3px 0;
+    margin: 4px 0 6px;
+    color: ${ink};
+    letter-spacing: 0.5px;
+  }
+  .meta-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 6px;
+    font-size: 10px;
+  }
+  .meta-table td {
+    padding: 2px 4px;
+    vertical-align: top;
+    border: none;
+  }
+  .meta-label {
+    font-weight: bold;
+    color: ${ink};
+    white-space: nowrap;
+    width: 18%;
+  }
+  .meta-val {
+    width: 32%;
+  }
+  .queue-token {
+    text-align: center;
+    border: 2px dashed ${border};
+    padding: 4px 8px;
+    margin-bottom: 6px;
+  }
+  .queue-label {
+    font-size: 9px;
+    font-weight: bold;
+    color: ${ink};
+  }
+  .queue-num {
+    font-size: 22px;
+    font-weight: 900;
+    color: ${ink};
+    line-height: 1.1;
+  }
+  .test-tokens {
+    font-size: 9px;
+    margin-bottom: 6px;
+  }
+  .svc-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 4px;
+    font-size: 10px;
+  }
+  .svc-table th,
+  .svc-table td {
+    border: 1px solid ${border};
+    padding: 3px 5px;
+  }
+  .svc-table th {
+    background: ${isBW ? "#eee" : "#f8f0f0"};
+    color: ${ink};
+    font-weight: bold;
+    text-align: left;
+  }
+  .svc-name { width: 78%; }
+  .svc-amt { width: 22%; text-align: right !important; }
+  .amt { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .cat-row td {
+    background: ${isBW ? "#f5f5f5" : "#faf5f5"};
+    font-size: 9px;
+  }
+  .cancel-note {
+    font-size: 8px;
+    color: ${isBW ? "#333" : "#b91c1c"};
+    margin: 2px 0 4px;
+  }
+  .pay-summary {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 4px;
+  }
+  .pay-left {
+    width: 48%;
+    vertical-align: top;
+    padding-right: 8px;
+    font-size: 10px;
+  }
+  .pay-right {
+    width: 52%;
+    vertical-align: top;
+  }
+  .totals-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 10px;
+  }
+  .totals-table td {
+    padding: 2px 4px;
+    border: none;
+  }
+  .tot-label {
+    font-weight: bold;
+    color: ${ink};
+    text-align: right;
+    width: 60%;
+  }
+  .tot-val {
+    text-align: right;
+    font-weight: bold;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+  .net-row .tot-label,
+  .net-row .tot-val {
+    font-size: 11px;
+    border-top: 1px solid ${border};
+    padding-top: 4px;
+  }
+  .qr-wrap {
+    margin-top: 6px;
+  }
+  .qr-wrap img {
+    width: 70px;
+    height: 70px;
+    display: block;
+  }
+  .qr-caption {
+    font-size: 8px;
+    color: #64748b;
+    margin-top: 2px;
+  }
+  .qr-warn {
+    font-size: 8px;
+    color: ${isBW ? "#000" : "#b45309"};
+    margin-top: 2px;
+  }
+  .audit-token {
+    font-size: 7px;
+    color: #94a3b8;
+    font-family: ui-monospace, Menlo, monospace;
+    margin-top: 3px;
+    line-height: 1.2;
+    word-break: break-all;
+    max-width: 120px;
+  }
+  .footer-note {
+    font-size: 9px;
+    text-align: center;
+    margin-bottom: 8px;
+  }
+  .sign-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 10px;
+    font-size: 10px;
+  }
+  .sign-left {
+    text-align: left;
+    vertical-align: bottom;
+    width: 50%;
+  }
+  .sign-right {
+    text-align: right;
+    vertical-align: bottom;
+    width: 50%;
+    font-weight: bold;
+    color: ${ink};
+  }
+  .sign-line {
+    border-bottom: 1px solid #94a3b8;
+    width: 130px;
+    height: 28px;
+    margin: 0 0 2px auto;
+  }
+  .sign-img {
+    max-height: 32px;
+    max-width: 130px;
+    object-fit: contain;
+    display: block;
+    margin: 0 0 2px auto;
+  }
+  .financial-block, .totals-grid, .receipt-footer, .hope-bill, .pay-summary, .sign-table {
+    page-break-inside: avoid;
+    break-inside: avoid;
   }
   @media print {
-    .financial-block, .totals-grid, .receipt-footer {
+    .financial-block, .totals-grid, .receipt-footer, .hope-bill, .pay-summary, .sign-table {
       page-break-inside: avoid !important;
       break-inside: avoid !important;
     }
@@ -692,8 +965,8 @@ export function buildClassicBillPrintHtml(opts: BuildPrintHtmlOpts): string {
 }
 
 // ── Unified bill print renderer ───────────────────────────────────────────
-// Single optimized template for all bill printing — the Classic layout,
-// tuned for A5 landscape on Epson L130 and similar ink tank printers.
+// Single optimized template for all bill printing — HOPE A5 portrait
+// geometry with CARE financial / QR / audit fields unchanged.
 export function buildBillPrintHtml(opts: BuildPrintHtmlOpts): string {
   return buildClassicBillPrintHtml(opts);
 }

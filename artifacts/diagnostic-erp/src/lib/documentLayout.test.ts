@@ -57,8 +57,8 @@ function baseOpts(overrides: Record<string, unknown> = {}) {
     bill: sampleBill(1),
     clinic: sampleClinic,
     paperSize: "A5" as const,
-    orientation: "landscape" as const,
-    pageCssSize: "A5 landscape",
+    orientation: "portrait" as const,
+    pageCssSize: "148mm 210mm",
     isBW: false,
     qrDataUrl: "data:image/png;base64,qr",
     showQr: true,
@@ -90,7 +90,7 @@ describe("document layout engine — page specifications", () => {
     expect(resolvePageLayout("A5-landscape").safePaddingMm).toBe(4);
     expect(resolvePageLayout("half-a4").safePaddingMm).toBe(4);
     expect(resolvePageLayout("A4").safePaddingMm).toBe(4);
-    expect(resolvePageLayout("A5-portrait").safePaddingMm).toBe(6);
+    expect(resolvePageLayout("A5-portrait").safePaddingMm).toBe(8);
   });
 
   test("generated CSS has no scale, zoom, or max-width centering", () => {
@@ -121,7 +121,7 @@ describe("document layout engine — bill renderers (unified Classic)", () => {
     expect((html.match(/class="care-doc-page receipt"/g) ?? []).length).toBe(2);
     expect(html).toContain("Patient Copy");
     expect(html).toContain("Office Copy");
-    const multiCss = documentLayoutCssForPaper("A5-landscape", null, false, true);
+    const multiCss = documentLayoutCssForPaper("A5-portrait", null, false, true);
     expect(multiCss).toContain("max-height: none");
     expect(multiCss).toContain("overflow: visible");
   });
@@ -133,44 +133,42 @@ describe("document layout engine — bill renderers (unified Classic)", () => {
     expect((html.match(/class="care-doc-page receipt"/g) ?? []).length).toBe(2);
   });
 
-  test("uses 210×148 @page matching pre-cut half A4 in the tray", () => {
+  test("uses 148×210 @page matching HOPE A5 portrait", () => {
     const html = buildBillPrintHtml(baseOpts());
-    expect(html).toContain("@page { size: 210mm 148mm; margin: 0; }");
+    expect(html).toContain("@page { size: 148mm 210mm; margin: 0; }");
     expect(html).not.toMatch(/@page \{ size: 210mm 297mm/);
     expect(html).not.toMatch(/@page \{ size: A5 landscape/);
     expect(html).toContain('class="care-doc-page receipt"');
-    expect(html).toContain("height: 148mm");
-    expect(html).toContain("max-height: 148mm");
+    expect(html).toContain("height: 210mm");
+    expect(html).toContain("width: 148mm");
   });
 
-  test("bill number renders under date/time in the patient meta block", () => {
+  test("bill number renders in HOPE meta grid with Receipt title", () => {
     const html = buildBillPrintHtml(baseOpts());
-    expect(html).toContain("BILL NO:");
+    expect(html).toContain("Bill No.");
     expect(html).toContain("2026001");
-    // Bill No. must appear after the patient date line, not in the header under INVOICE
-    const invoiceIdx = html.indexOf(">INVOICE<");
-    const billNoIdx = html.indexOf("BILL NO:");
-    const dateIdx = html.indexOf("01 AUG 2026");
-    expect(invoiceIdx).toBeGreaterThanOrEqual(0);
-    expect(dateIdx).toBeGreaterThan(invoiceIdx);
-    expect(billNoIdx).toBeGreaterThan(dateIdx);
+    expect(html).toContain(">Receipt<");
+    const titleIdx = html.indexOf(">Receipt<");
+    const billNoIdx = html.indexOf("Bill No.");
+    const dateIdx = html.indexOf("Date &amp; Time");
+    expect(titleIdx).toBeGreaterThanOrEqual(0);
+    expect(dateIdx).toBeGreaterThan(titleIdx);
+    expect(billNoIdx).toBeGreaterThan(titleIdx);
   });
 
-  test("date stays large; bill no / phone / id use a smaller meta size", () => {
-    const html = buildBillPrintHtml(baseOpts({ printPatientNameFontPx: 20 }));
-    const dateBlock = html.match(/font-size:(\d+)px[^>]*data-bill-meta="date"/);
-    const billBlock = html.match(/font-size:(\d+)px[^>]*data-bill-meta="bill-no"/);
-    const phoneBlock = html.match(/font-size:(\d+)px[^>]*data-bill-meta="phone-id"/);
-    expect(dateBlock?.[1]).toBe("20");
-    expect(Number(billBlock?.[1])).toBeLessThan(20);
-    expect(Number(phoneBlock?.[1])).toBe(Number(billBlock?.[1]));
-    expect(Number(billBlock?.[1])).toBe(14); // 20 * 0.72
+  test("HOPE meta labels are present (not modern INVOICE header)", () => {
+    const html = buildBillPrintHtml(baseOpts());
+    expect(html).toContain("UHID");
+    expect(html).toContain("Patient");
+    expect(html).toContain("Gender / Age");
+    expect(html).toContain("Mobile");
+    expect(html).toContain("Ref. By");
+    expect(html).not.toContain(">INVOICE<");
   });
 
   test("enterprise audit token is present on the bill", () => {
     const html = buildBillPrintHtml(baseOpts());
-    expect(html).toContain("title=\"Audit token\"");
-    // Token format: BILLNO-TIMESTAMP-TOTAL-OP-HASH
+    expect(html).toContain('title="Audit token"');
     expect(html).toMatch(/2026001-\d+-4900\.00-\d+-[0-9A-F]{8}/);
   });
 
@@ -181,17 +179,17 @@ describe("document layout engine — bill renderers (unified Classic)", () => {
     expect(html).toContain("receipt-footer");
   });
 
-  test("balance due uses alert styling when unpaid", () => {
+  test("balance row uses alert styling when unpaid", () => {
     const unpaid = buildBillPrintHtml(baseOpts({
       bill: sampleBill(1, { balanceAmount: 500, paidAmount: 4400 }),
     }));
-    expect(unpaid).toContain("#fef2f2"); // alert bg
-    expect(unpaid).toContain("#b91c1c"); // alert text
+    expect(unpaid).toContain("#fef2f2");
+    expect(unpaid).toContain("#b91c1c");
     const paid = buildBillPrintHtml(baseOpts({
       bill: sampleBill(1, { balanceAmount: 0, paidAmount: 4900 }),
     }));
-    expect(paid).toContain("#f0fdf4"); // settled bg
-    expect(paid).toContain("#15803d"); // settled text
+    expect(paid).toContain("#f0fdf4");
+    expect(paid).toContain("#15803d");
   });
 
   test("currency amounts always show two decimal places", () => {
@@ -201,47 +199,28 @@ describe("document layout engine — bill renderers (unified Classic)", () => {
     expect(html).toContain("1,500.00");
   });
 
-  test("muted metadata labels use uppercase PH / EMAIL / BILL NO", () => {
-    const html = buildBillPrintHtml(baseOpts({ headerLayout: "right" }));
-    expect(html).toContain("PH:");
-    expect(html).toContain("EMAIL:");
-    expect(html).toContain("BILL NO:");
-    expect(html).toContain("color:#64748b"); // muted label color
-  });
-
-  test("header layout 'right' puts address under invoice title; 'left' keeps it under clinic name", () => {
-    const right = buildBillPrintHtml(baseOpts({ headerLayout: "right" }));
-    const left = buildBillPrintHtml(baseOpts({ headerLayout: "left" }));
-    expect(right).toContain("Main Road, Deoghar");
-    expect(left).toContain("Main Road, Deoghar");
-    // Address on right: after INVOICE title, before patient Bill No.
-    const rightInvoiceIdx = right.indexOf(">INVOICE<");
-    const rightAddrIdx = right.indexOf("Main Road, Deoghar");
-    const rightBillIdx = right.indexOf("BILL NO:");
-    expect(rightAddrIdx).toBeGreaterThan(rightInvoiceIdx);
-    expect(rightBillIdx).toBeGreaterThan(rightAddrIdx);
-    // Address on left: under clinic name, before patient Bill No.
-    const leftBillIdx = left.indexOf("BILL NO:");
-    const leftAddrIdx = left.indexOf("Main Road, Deoghar");
-    expect(leftAddrIdx).toBeLessThan(leftBillIdx);
-  });
-
-  test("referring doctor matches patient name weight and size", () => {
+  test("CARE totals map to HOPE labels (Grand Total / Net / Paid / Balance)", () => {
     const html = buildBillPrintHtml(baseOpts());
-    // Doctor value uses font-weight 800 (same as patient name)
-    expect(html).toMatch(/REF:[\s\S]*?font-weight:800[\s\S]*?DR\.\s*SHARMA/);
+    expect(html).toContain("Grand Total:");
+    expect(html).toContain("Bill Discount:");
+    expect(html).toContain("Net Amount:");
+    expect(html).toContain("Paid:");
+    expect(html).toContain("Balance:");
+    expect(html).toContain("5,000.00");
+    expect(html).toContain("100.00");
+    expect(html).toContain("4,900.00");
   });
 
-  test("patient meta right stack is date, bill no, then phone/id", () => {
+  test("clinic address appears in centered HOPE header", () => {
     const html = buildBillPrintHtml(baseOpts());
-    const dateIdx = html.indexOf("01 AUG 2026");
-    const billIdx = html.indexOf("BILL NO:");
-    const phIdx = html.indexOf(">PH<");
-    const idIdx = html.indexOf(">ID<");
-    expect(dateIdx).toBeGreaterThanOrEqual(0);
-    expect(billIdx).toBeGreaterThan(dateIdx);
-    expect(phIdx).toBeGreaterThan(billIdx);
-    expect(idIdx).toBeGreaterThan(phIdx);
+    expect(html).toContain("Main Road, Deoghar");
+    expect(html).toContain("Care Diagnostics");
+    expect(html).toContain("care@example.com");
+  });
+
+  test("referring doctor appears under Ref. By", () => {
+    const html = buildBillPrintHtml(baseOpts());
+    expect(html).toMatch(/Ref\. By[\s\S]*?Dr\.\s*Sharma/i);
   });
 
   test("page padding is equal on left and right", () => {
@@ -253,7 +232,7 @@ describe("document layout engine — bill renderers (unified Classic)", () => {
 
   test("date renders exactly once on the bill", () => {
     const html = buildBillPrintHtml(baseOpts());
-    const matches = html.match(/01 AUG 2026/g) ?? [];
+    const matches = html.match(/01 Aug 2026/gi) ?? [];
     expect(matches.length).toBe(1);
   });
 
@@ -261,6 +240,8 @@ describe("document layout engine — bill renderers (unified Classic)", () => {
     const html = buildBillPrintHtml(baseOpts({ bill: sampleBill(count) }));
     expect(html).toContain("Magnetic Resonance");
     expect(html).toContain("care-doc-page");
+    expect(html).toContain("Service");
+    expect(html).toContain("Amount (Rs.)");
   });
 
   test("QR enabled and disabled", () => {
@@ -272,7 +253,8 @@ describe("document layout engine — bill renderers (unified Classic)", () => {
 
   test("signature line renders", () => {
     const html = buildBillPrintHtml(baseOpts());
-    expect(html).toContain("Authorised Signature");
+    expect(html).toContain("Authorised Signatory");
+    expect(html).toContain("Prepared By:");
   });
 
   test("reprint marker", () => {
@@ -286,10 +268,8 @@ describe("document layout engine — bill renderers (unified Classic)", () => {
   test("queue token box toggles with showQueueToken", () => {
     const on = buildBillPrintHtml(baseOpts({ showQueueToken: true }));
     const off = buildBillPrintHtml(baseOpts({ showQueueToken: false }));
-    // Big QUEUE TOKEN box only shows when showQueueToken is true
     expect(on).toContain("QUEUE TOKEN");
     expect(off).not.toContain("QUEUE TOKEN");
-    // Per-test department tokens also hidden when showQueueToken is false
     expect(off).not.toContain("Token #");
   });
 
@@ -299,16 +279,15 @@ describe("document layout engine — bill renderers (unified Classic)", () => {
       bill: sampleBill(3, {
         testTokens: [
           { department: "Pathology", roomNumber: "7", tokenNo: 5 },
-          { department: "Pathology", roomNumber: "7", tokenNo: 5 }, // Same room, same token
+          { department: "Pathology", roomNumber: "7", tokenNo: 5 },
           { department: "Radiology", roomNumber: "2", tokenNo: 3 },
         ],
       }),
     }));
-    // Count occurrences of each token line
     const pathologyMatches = html.match(/<strong>Pathology<\/strong>/g) ?? [];
     const radiologyMatches = html.match(/<strong>Radiology<\/strong>/g) ?? [];
-    expect(pathologyMatches.length).toBe(1); // One token for Pathology Room 7
-    expect(radiologyMatches.length).toBe(1); // One token for Radiology Room 2
+    expect(pathologyMatches.length).toBe(1);
+    expect(radiologyMatches.length).toBe(1);
   });
 
   test("large amounts and long names", () => {
@@ -325,38 +304,42 @@ describe("document layout engine — bill renderers (unified Classic)", () => {
     expect(html).toContain("Magnetic Resonance");
   });
 
-  test("classic format uses engine and percentage columns", () => {
+  test("classic format uses engine and HOPE totals table", () => {
     const html = buildBillPrintHtml(baseOpts());
-    expect(html).toContain("@page { size: 210mm 148mm; margin: 0; }");
+    expect(html).toContain("@page { size: 148mm 210mm; margin: 0; }");
     expect(html).toContain("care-doc-page");
     expect(html).toContain("totals-grid");
+    expect(html).toContain("hope-bill");
   });
 
-  test("retired format ids all render with the unified template", () => {
+  test("retired format ids all render with the unified HOPE template", () => {
     for (const _legacy of ["classic", "modern-landscape", "premium-a5", "designer-a", "designer-b", "designer-c"] as const) {
       const html = buildBillPrintHtml({
         ...baseOpts(),
         paperSize: "A5",
-        orientation: "landscape",
-        pageCssSize: "A5 landscape",
+        orientation: "portrait",
+        pageCssSize: "148mm 210mm",
       });
       expect(html).toMatch(/@page\s*\{[^}]*margin:\s*0/);
       expect(html).toContain("care-doc-page");
-      expect(html).toContain("210mm");
+      expect(html).toContain("148mm");
+      expect(html).toContain(">Receipt<");
     }
   });
 
-  test("A5 landscape page box does not exceed 210mm x 148mm", () => {
+  test("A5 portrait page box does not exceed 148mm x 210mm", () => {
     const html = buildBillPrintHtml(baseOpts());
-    expect(html).toContain("width: 210mm");
-    expect(html).toContain("height: 148mm");
-    expect(html).toContain("max-height: 148mm");
-    expect(html).toContain("padding-left: 4mm");
-    expect(html).toContain("padding-right: 4mm");
+    expect(html).toContain("width: 148mm");
+    expect(html).toContain("height: 210mm");
+    expect(html).toContain("padding-left: 8mm");
+    expect(html).toContain("padding-right: 8mm");
   });
 
-  test("half-sheet bills fill the 148 mm content box (footer pinned to bottom)", () => {
-    const html = buildBillPrintHtml(baseOpts({ bill: sampleBill(1) }));
+  test("half-sheet landscape bills still fill content box when opted in", () => {
+    const html = buildBillPrintHtml(baseOpts({
+      orientation: "landscape",
+      pageCssSize: "210mm 148mm",
+    }));
     expect(html).toContain("receipt-shell");
     expect(html).toContain("min-height: 100%");
     expect(html).toContain("margin-top: auto !important");
@@ -375,17 +358,17 @@ describe("document layout engine — bill renderers (unified Classic)", () => {
     expect(html).toContain("margin-top: 8px !important");
   });
 
-  test("long half-sheet bills also anchor footer at content bottom", () => {
+  test("long A5 portrait bills also anchor footer at content bottom", () => {
     const html = buildBillPrintHtml(baseOpts({ bill: sampleBill(10), compactFooterGap: false }));
     expect(html).toContain("receipt-shell");
     expect(html).toContain("min-height: 100%");
-    expect(html).toContain("margin-top: auto !important");
   });
 
-  test("TAT column appears when showTat is on", () => {
+  test("TAT annotates service name when showTat is on (no HOPE TAT column)", () => {
     const html = buildBillPrintHtml(
       baseOpts({
         showTat: true,
+        clinic: { ...sampleClinic, billShowCategory: false },
         bill: sampleBill(1, {
           order: {
             doctor: { name: "Dr. Test" },
@@ -400,20 +383,18 @@ describe("document layout engine — bill renderers (unified Classic)", () => {
         }),
       }),
     );
-    expect(html).toContain(">TAT<");
-    expect(html).toContain("4 hrs");
+    expect(html).toContain("CBC (4 hrs)");
+    expect(html).not.toContain(">TAT<");
   });
 
-  test("A5 portrait page box does not exceed 148mm x 210mm", () => {
+  test("A5 landscape page box still supported for legacy half-sheet callers", () => {
     const html = buildBillPrintHtml({
       ...baseOpts(),
-      orientation: "portrait",
-      pageCssSize: "A5 portrait",
+      orientation: "landscape",
+      pageCssSize: "210mm 148mm",
     });
-    expect(html).toContain("width: 148mm");
-    expect(html).toContain("height: 210mm");
-    expect(html).toContain("padding-left: 6mm");
-    expect(html).toContain("padding-right: 6mm");
+    expect(html).toContain("width: 210mm");
+    expect(html).toContain("height: 148mm");
   });
 
   test("A4 page box does not exceed 210mm x 297mm", () => {
@@ -426,8 +407,6 @@ describe("document layout engine — bill renderers (unified Classic)", () => {
     expect(html).toContain("height: 297mm");
     expect(html).toContain("padding-left: 4mm");
     expect(html).toContain("padding-right: 4mm");
-    expect(html).toContain("font-size:28px");
-    expect(html).toContain("font-size:20px");
   });
 
   test("no Electron print APIs in generated HTML", () => {

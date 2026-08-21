@@ -48,7 +48,8 @@ export const PAGE_SPECS: Record<PrintPaper, PageSpec> = {
     widthMm: 148,
     heightMm: 210,
     pageSizeCss: "148mm 210mm",
-    defaultSafePaddingMm: 6,
+    // HOPE legacy used @page margin ~5mm 10mm; equal internal padding ≈ 8mm.
+    defaultSafePaddingMm: 8,
   },
   "half-a4": {
     paper: "half-a4",
