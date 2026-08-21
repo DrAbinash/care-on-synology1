@@ -39,6 +39,13 @@ import {
   type PipelineStageResult,
   type SelfTestFinal,
 } from "./aiPipelineSelfTestLogic";
+import {
+  classifyContextBudgetCheck,
+  estimateVisionPromptTokens,
+  maxImagesForContextBudget,
+  parseOllamaContextExceeded,
+  resolveInteractiveDraftNumCtx,
+} from "./contextBudget";
 
 export type SelfTestStepStatus = "pending" | "running" | "pass" | "fail" | "skip";
 
@@ -543,6 +550,9 @@ async function runGenerateAiForTaskProbe(opts: {
   imageFetchMs: number;
   imageFetchOk: boolean;
   fullPipeline: boolean;
+  /** When undefined, omit num_ctx (legacy draft bug). When set, send options.num_ctx. */
+  numCtx?: number | null;
+  configuredNumCtx?: number | null;
 }): Promise<PathProbeResult> {
   const imageBytes = opts.images.reduce((s, i) => s + estimateBase64DecodedBytes(i), 0);
   if (!opts.imageFetchOk || opts.images.length === 0) {
@@ -581,19 +591,59 @@ async function runGenerateAiForTaskProbe(opts: {
       candidateCount: null,
       safeError: "image fetch failed",
       stages,
+      configuredNumCtx: opts.configuredNumCtx ?? null,
+      requestedNumCtx: opts.numCtx ?? null,
     };
   }
 
-  // Match /api/ai-reporting/draft: generateAiForTask with { model } only — no think flag.
   const t0 = Date.now();
-  const aiResult = await generateAiForTask("radiology_draft", DRAFT_PROMPT, opts.images, {
+  const callOpts: {
+    model: string;
+    endpointUrl: string;
+    numCtx?: number;
+  } = {
     model: opts.model,
     endpointUrl: opts.endpointUrl,
-  });
+  };
+  if (opts.numCtx != null && Number.isFinite(opts.numCtx)) {
+    callOpts.numCtx = Math.floor(opts.numCtx);
+  }
+  const aiResult = await generateAiForTask("radiology_draft", DRAFT_PROMPT, opts.images, callOpts);
   const elapsedMs = Date.now() - t0;
   const d = aiResult.diagnostics;
   const providerReturned = aiResult.success;
   const parsed = providerReturned ? parseDraftSections(aiResult.text ?? "") : null;
+  const ctxErr = parseOllamaContextExceeded(aiResult.error ?? d?.errorMessage ?? "");
+  const errorCode = d?.errorCode ?? (ctxErr ? "CONTEXT_BUDGET_EXCEEDED" : null);
+  const safeError = providerReturned
+    ? null
+    : errorCode === "CONTEXT_BUDGET_EXCEEDED"
+      ? `CONTEXT_BUDGET_EXCEEDED requestTokens=${d?.ollamaRequestTokens ?? ctxErr?.requestTokens} availableContext=${d?.ollamaAvailableContext ?? ctxErr?.availableContext}`
+      : (d?.errorMessage ?? aiResult.error ?? "provider failed").slice(0, 400);
+
+  const common = {
+    model: d?.model ?? opts.model,
+    endpoint: d?.resolvedEndpoint ?? opts.endpointUrl,
+    imageCount: d?.numberOfImages ?? opts.images.length,
+    totalImageBytes: d?.totalImageBytes ?? imageBytes,
+    requestBodyBytes: d?.requestBodyBytes ?? null,
+    elapsedMs,
+    httpStatus: d?.httpStatus ?? (providerReturned ? 200 : 502),
+    responseLength: d?.responseLength ?? (aiResult.text?.length ?? 0),
+    thinkSent: d?.thinkSent ?? false,
+    thinkValue: d?.thinkValue ?? null,
+    thinkingLength: d?.thinkingLength ?? null,
+    finishReason: d?.finishReason ?? null,
+    ollamaTotalDurationNs: d?.ollamaTotalDurationNs ?? null,
+    ollamaLoadDurationNs: d?.ollamaLoadDurationNs ?? null,
+    ollamaPromptEvalCount: d?.ollamaPromptEvalCount ?? null,
+    ollamaEvalCount: d?.ollamaEvalCount ?? null,
+    configuredNumCtx: opts.configuredNumCtx ?? null,
+    requestedNumCtx: d?.requestedNumCtx ?? opts.numCtx ?? null,
+    ollamaAvailableContext: d?.ollamaAvailableContext ?? ctxErr?.availableContext ?? null,
+    ollamaRequestTokens: d?.ollamaRequestTokens ?? ctxErr?.requestTokens ?? null,
+    errorCode,
+  };
 
   if (!opts.fullPipeline) {
     const stages = buildProviderOnlyStages({
@@ -602,31 +652,16 @@ async function runGenerateAiForTaskProbe(opts: {
       providerReturned,
       providerElapsedMs: elapsedMs,
       httpStatus: d?.httpStatus ?? null,
-      safeError: aiResult.error?.slice(0, 300) ?? null,
+      safeError,
     });
     return {
       label: opts.label,
       pass: providerReturned,
-      model: d?.model ?? opts.model,
-      endpoint: d?.resolvedEndpoint ?? opts.endpointUrl,
-      imageCount: d?.numberOfImages ?? opts.images.length,
-      totalImageBytes: d?.totalImageBytes ?? imageBytes,
-      requestBodyBytes: d?.requestBodyBytes ?? null,
-      elapsedMs,
-      httpStatus: d?.httpStatus ?? (providerReturned ? 200 : 502),
-      responseLength: d?.responseLength ?? (aiResult.text?.length ?? 0),
       parserSuccess: null,
       candidateCount: null,
-      safeError: providerReturned ? null : (d?.errorMessage ?? aiResult.error ?? "provider failed").slice(0, 300),
+      safeError,
       stages,
-      thinkSent: d?.thinkSent ?? false,
-      thinkValue: d?.thinkValue ?? null,
-      thinkingLength: d?.thinkingLength ?? null,
-      finishReason: d?.finishReason ?? null,
-      ollamaTotalDurationNs: d?.ollamaTotalDurationNs ?? null,
-      ollamaLoadDurationNs: d?.ollamaLoadDurationNs ?? null,
-      ollamaPromptEvalCount: d?.ollamaPromptEvalCount ?? null,
-      ollamaEvalCount: d?.ollamaEvalCount ?? null,
+      ...common,
     };
   }
 
@@ -638,7 +673,7 @@ async function runGenerateAiForTaskProbe(opts: {
     providerReturned,
     providerElapsedMs: elapsedMs,
     httpStatus: d?.httpStatus ?? null,
-    safeError: aiResult.error?.slice(0, 300) ?? null,
+    safeError,
     parserSuccess: providerReturned ? parserSuccess : null,
     candidateCount: providerReturned ? candidateCount : null,
     jsonParseOk: providerReturned ? (parsed?.jsonParseOk ?? null) : null,
@@ -647,30 +682,15 @@ async function runGenerateAiForTaskProbe(opts: {
   return {
     label: opts.label,
     pass,
-    model: d?.model ?? opts.model,
-    endpoint: d?.resolvedEndpoint ?? opts.endpointUrl,
-    imageCount: d?.numberOfImages ?? opts.images.length,
-    totalImageBytes: d?.totalImageBytes ?? imageBytes,
-    requestBodyBytes: d?.requestBodyBytes ?? null,
-    elapsedMs,
-    httpStatus: d?.httpStatus ?? (providerReturned ? 200 : 502),
-    responseLength: d?.responseLength ?? (aiResult.text?.length ?? 0),
     parserSuccess: providerReturned ? parserSuccess : null,
     candidateCount: providerReturned ? candidateCount : null,
     safeError: pass
       ? null
       : !providerReturned
-        ? (d?.errorMessage ?? aiResult.error ?? "provider failed").slice(0, 300)
+        ? safeError
         : "parser/final_shape failed — empty or unusable draft sections",
     stages,
-    thinkSent: d?.thinkSent ?? false,
-    thinkValue: d?.thinkValue ?? null,
-    thinkingLength: d?.thinkingLength ?? null,
-    finishReason: d?.finishReason ?? null,
-    ollamaTotalDurationNs: d?.ollamaTotalDurationNs ?? null,
-    ollamaLoadDurationNs: d?.ollamaLoadDurationNs ?? null,
-    ollamaPromptEvalCount: d?.ollamaPromptEvalCount ?? null,
-    ollamaEvalCount: d?.ollamaEvalCount ?? null,
+    ...common,
   };
 }
 
@@ -688,15 +708,17 @@ function probeToStep(probe: PathProbeResult, group: string, id: string, name: st
     elapsedMs: probe.elapsedMs,
     detail: [
       probe.pass ? "PASS" : "FAIL",
+      probe.errorCode === "CONTEXT_BUDGET_EXCEEDED" ? "CONTEXT_BUDGET_EXCEEDED" : null,
       `images=${probe.imageCount}`,
       `bytes=${probe.totalImageBytes}`,
       probe.requestBodyBytes != null ? `bodyBytes=${probe.requestBodyBytes}` : null,
+      `requestedNumCtx=${probe.requestedNumCtx ?? "NOT_SENT"}`,
+      probe.ollamaRequestTokens != null ? `requestTokens=${probe.ollamaRequestTokens}` : null,
+      probe.ollamaAvailableContext != null ? `availableCtx=${probe.ollamaAvailableContext}` : null,
       `HTTP ${probe.httpStatus ?? "?"}`,
       `respLen=${probe.responseLength}`,
       probe.parserSuccess != null ? `parser=${probe.parserSuccess}` : null,
       probe.candidateCount != null ? `candidates=${probe.candidateCount}` : null,
-      probe.thinkSent != null ? `thinkSent=${probe.thinkSent}` : null,
-      probe.thinkingLength != null ? `thinkingLen=${probe.thinkingLength}` : null,
       probe.safeError,
       stageHint || null,
     ]
@@ -736,14 +758,33 @@ async function executeSelfTest(job: JobRecord, opts: { studyInstanceUid?: string
     technical.orthancEndpoint = orthancBase;
     technical.provider = taskRoute?.provider ?? prov?.provider ?? "ollama";
     technical.taskRoute = taskRoute;
+    technical.configuredNumCtx = runtime.ollamaNumCtx;
     technical.draftPathThinkNote =
-      "POST /api/ai-reporting/draft calls generateAiForTask with { model } only — think is NOT sent (unlike overnight think:false).";
+      "POST /api/ai-reporting/draft now sends explicit options.num_ctx (previously omitted → Ollama ~4096 default).";
+    const draftCtxPlan = resolveInteractiveDraftNumCtx({
+      configuredNumCtx: runtime.ollamaNumCtx,
+      imageCount: 6,
+      draftNumCtxOverride: process.env.OLLAMA_DRAFT_NUM_CTX
+        ? Number(process.env.OLLAMA_DRAFT_NUM_CTX)
+        : null,
+    });
+    technical.interactiveDraftNumCtxPlan = draftCtxPlan;
+    const overnightBudget = maxImagesForContextBudget({
+      numCtx: runtime.ollamaNumCtx,
+      hardCap: 20,
+    });
+    technical.overnightImageBudget = {
+      ...overnightBudget,
+      estimatedTokensIf20: estimateVisionPromptTokens({ imageCount: 20 }),
+      estimatedTokensAtCap: estimateVisionPromptTokens({ imageCount: overnightBudget.maxImages }),
+      note: "Overnight was hard-capped at 20; now capped by context budget to avoid mass abandonments.",
+    };
     upsertStep(job, {
       id: "runtime",
       group: "Runtime",
       name: "CARE API runtime config",
       status: endpoint && orthancBase ? "pass" : "fail",
-      detail: `Ollama ${endpoint} · model ${model} · Orthanc ${orthancBase ?? "MISSING"} · provider ${technical.provider}`,
+      detail: `Ollama ${endpoint} · model ${model} · Orthanc ${orthancBase ?? "MISSING"} · configuredNumCtx=${runtime.ollamaNumCtx} · draftNumCtx→${draftCtxPlan.requestedNumCtx} · overnightMaxImages→${overnightBudget.maxImages}`,
     });
 
     upsertStep(job, {
@@ -961,7 +1002,14 @@ async function executeSelfTest(job: JobRecord, opts: { studyInstanceUid?: string
       note: "If thinkingLength>0 despite think:false or omitted, Ollama is still emitting thinking.",
     };
 
-    // C. Provider-only 1 image
+    // C. Provider-only 1 image (production-shaped num_ctx)
+    const prod1Ctx = resolveInteractiveDraftNumCtx({
+      configuredNumCtx: runtime.ollamaNumCtx,
+      imageCount: 1,
+      draftNumCtxOverride: process.env.OLLAMA_DRAFT_NUM_CTX
+        ? Number(process.env.OLLAMA_DRAFT_NUM_CTX)
+        : null,
+    });
     upsertStep(job, {
       id: "provider-1",
       group: "Provider-only",
@@ -977,34 +1025,131 @@ async function executeSelfTest(job: JobRecord, opts: { studyInstanceUid?: string
       imageFetchMs: fetched.fetchElapsedMs,
       imageFetchOk: true,
       fullPipeline: false,
+      numCtx: prod1Ctx.requestedNumCtx,
+      configuredNumCtx: runtime.ollamaNumCtx,
     });
     probes.push(p1);
     upsertStep(job, probeToStep(p1, "Provider-only", "provider-1", "generateAiForTask 1 image"));
 
-    // D. Provider-only up to 6
+    // D. Provider-only up to 6 — LEGACY (num_ctx NOT sent) to prove CONTEXT_BUDGET_EXCEEDED
     upsertStep(job, {
-      id: "provider-6",
-      group: "Provider-only",
-      name: `generateAiForTask ${img6.length} images`,
+      id: "provider-6-legacy",
+      group: "Context probes",
+      name: `6 images num_ctx=NOT_SENT (legacy)`,
       status: "running",
       detail: "…",
     });
-    const p6 = await runGenerateAiForTaskProbe({
-      label: `Provider-only ${img6.length} images`,
+    const p6legacy = await runGenerateAiForTaskProbe({
+      label: "Provider-only 6 images num_ctx=NOT_SENT",
       model,
       endpointUrl: endpoint,
       images: img6,
       imageFetchMs: fetched.fetchElapsedMs,
       imageFetchOk: true,
       fullPipeline: false,
+      numCtx: null,
+      configuredNumCtx: runtime.ollamaNumCtx,
+    });
+    probes.push(p6legacy);
+    upsertStep(
+      job,
+      probeToStep(p6legacy, "Context probes", "provider-6-legacy", "6 images num_ctx=NOT_SENT (legacy)"),
+    );
+
+    // E. 6 images + 8192
+    upsertStep(job, {
+      id: "provider-6-8192",
+      group: "Context probes",
+      name: "6 images num_ctx=8192",
+      status: "running",
+      detail: "…",
+    });
+    const p68192 = await runGenerateAiForTaskProbe({
+      label: "Provider-only 6 images num_ctx=8192",
+      model,
+      endpointUrl: endpoint,
+      images: img6,
+      imageFetchMs: fetched.fetchElapsedMs,
+      imageFetchOk: true,
+      fullPipeline: false,
+      numCtx: 8192,
+      configuredNumCtx: runtime.ollamaNumCtx,
+    });
+    probes.push(p68192);
+    upsertStep(job, probeToStep(p68192, "Context probes", "provider-6-8192", "6 images num_ctx=8192"));
+
+    // F. 6 images + 16384
+    upsertStep(job, {
+      id: "provider-6-16384",
+      group: "Context probes",
+      name: "6 images num_ctx=16384",
+      status: "running",
+      detail: "…",
+    });
+    const p616384 = await runGenerateAiForTaskProbe({
+      label: "Provider-only 6 images num_ctx=16384",
+      model,
+      endpointUrl: endpoint,
+      images: img6,
+      imageFetchMs: fetched.fetchElapsedMs,
+      imageFetchOk: true,
+      fullPipeline: false,
+      numCtx: 16384,
+      configuredNumCtx: runtime.ollamaNumCtx,
+    });
+    probes.push(p616384);
+    upsertStep(job, probeToStep(p616384, "Context probes", "provider-6-16384", "6 images num_ctx=16384"));
+
+    const prod6Ctx = resolveInteractiveDraftNumCtx({
+      configuredNumCtx: runtime.ollamaNumCtx,
+      imageCount: img6.length,
+      draftNumCtxOverride: process.env.OLLAMA_DRAFT_NUM_CTX
+        ? Number(process.env.OLLAMA_DRAFT_NUM_CTX)
+        : null,
+    });
+
+    // G. Provider-only 6 with production draft num_ctx
+    upsertStep(job, {
+      id: "provider-6",
+      group: "Provider-only",
+      name: `generateAiForTask ${img6.length} images (draft num_ctx=${prod6Ctx.requestedNumCtx})`,
+      status: "running",
+      detail: "…",
+    });
+    const p6 = await runGenerateAiForTaskProbe({
+      label: `Provider-only ${img6.length} images (production draft num_ctx)`,
+      model,
+      endpointUrl: endpoint,
+      images: img6,
+      imageFetchMs: fetched.fetchElapsedMs,
+      imageFetchOk: true,
+      fullPipeline: false,
+      numCtx: prod6Ctx.requestedNumCtx,
+      configuredNumCtx: runtime.ollamaNumCtx,
     });
     probes.push(p6);
     upsertStep(
       job,
-      probeToStep(p6, "Provider-only", "provider-6", `generateAiForTask ${img6.length} images`),
+      probeToStep(
+        p6,
+        "Provider-only",
+        "provider-6",
+        `generateAiForTask ${img6.length} images (draft num_ctx=${prod6Ctx.requestedNumCtx})`,
+      ),
     );
 
-    // E. Full CARE 1 image
+    technical.contextBudgetCheck = classifyContextBudgetCheck({
+      configuredNumCtx: runtime.ollamaNumCtx,
+      requestedNumCtx: prod6Ctx.requestedNumCtx,
+      availableContext: p6.ollamaAvailableContext ?? p6legacy.ollamaAvailableContext ?? null,
+      requestTokens: p6.ollamaRequestTokens ?? p6legacy.ollamaRequestTokens ?? null,
+      estimatedTokens: estimateVisionPromptTokens({
+        imageCount: img6.length,
+        promptLength: DRAFT_PROMPT.length,
+      }),
+    });
+
+    // H. Full CARE 1 image
     upsertStep(job, {
       id: "full-1",
       group: "Full CARE pipeline",
@@ -1020,15 +1165,17 @@ async function executeSelfTest(job: JobRecord, opts: { studyInstanceUid?: string
       imageFetchMs: fetched.fetchElapsedMs,
       imageFetchOk: true,
       fullPipeline: true,
+      numCtx: prod1Ctx.requestedNumCtx,
+      configuredNumCtx: runtime.ollamaNumCtx,
     });
     probes.push(f1);
     upsertStep(job, probeToStep(f1, "Full CARE pipeline", "full-1", "draft path 1 image"));
 
-    // F. Full CARE up to 6
+    // I. Full CARE up to 6 with production num_ctx
     upsertStep(job, {
       id: "full-6",
       group: "Full CARE pipeline",
-      name: `draft path ${img6.length} images`,
+      name: `draft path ${img6.length} images (num_ctx=${prod6Ctx.requestedNumCtx})`,
       status: "running",
       detail: "…",
     });
@@ -1040,15 +1187,26 @@ async function executeSelfTest(job: JobRecord, opts: { studyInstanceUid?: string
       imageFetchMs: fetched.fetchElapsedMs,
       imageFetchOk: true,
       fullPipeline: true,
+      numCtx: prod6Ctx.requestedNumCtx,
+      configuredNumCtx: runtime.ollamaNumCtx,
     });
     probes.push(f6);
     upsertStep(
       job,
-      probeToStep(f6, "Full CARE pipeline", "full-6", `draft path ${img6.length} images`),
+      probeToStep(
+        f6,
+        "Full CARE pipeline",
+        "full-6",
+        `draft path ${img6.length} images (num_ctx=${prod6Ctx.requestedNumCtx})`,
+      ),
     );
 
     job.probes = probes;
     job.stagesByProbe = Object.fromEntries(probes.map((p) => [p.label, p.stages]));
+
+    const contextBudgetExceeded =
+      p6legacy.errorCode === "CONTEXT_BUDGET_EXCEEDED" ||
+      Boolean(parseOllamaContextExceeded(p6legacy.safeError));
 
     const derived = deriveSelfTestFinal({
       noMri: false,
@@ -1058,6 +1216,9 @@ async function executeSelfTest(job: JobRecord, opts: { studyInstanceUid?: string
       providerOnly6Pass: p6.pass,
       fullCare1Pass: f1.pass,
       fullCare6Pass: f6.pass,
+      contextProbe8192Pass: p68192.pass,
+      contextProbe16384Pass: p616384.pass,
+      contextBudgetExceeded,
     });
     job.final = derived.final;
     job.summary = derived.summary;
@@ -1147,6 +1308,11 @@ export function formatSelfTestReport(result: AiPipelineSelfTestResult): string {
     lines.push(`  imageCount: ${p.imageCount}`);
     lines.push(`  totalImageBytes: ${p.totalImageBytes}`);
     lines.push(`  requestBodyBytes: ${p.requestBodyBytes}`);
+    lines.push(`  configuredNumCtx: ${p.configuredNumCtx}`);
+    lines.push(`  requestedNumCtx: ${p.requestedNumCtx ?? "NOT_SENT"}`);
+    lines.push(`  ollamaRequestTokens: ${p.ollamaRequestTokens}`);
+    lines.push(`  ollamaAvailableContext: ${p.ollamaAvailableContext}`);
+    lines.push(`  errorCode: ${p.errorCode}`);
     lines.push(`  elapsedMs: ${p.elapsedMs}`);
     lines.push(`  httpStatus: ${p.httpStatus}`);
     lines.push(`  responseLength: ${p.responseLength}`);

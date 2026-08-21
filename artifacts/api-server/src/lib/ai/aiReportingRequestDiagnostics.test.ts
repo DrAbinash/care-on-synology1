@@ -73,7 +73,8 @@ describe("aiReportingRequestDiagnostics", () => {
     expect(diag.timeoutStage).toBe("provider_http");
     expect(diag.timeoutMsConfigured).toBeNull();
     expect(diag.clinicOllamaTimeoutSeconds).toBe(30);
-    expect(diag.timeoutSourcesNote).toContain("NO AbortController");
+    expect(diag.timeoutSourcesNote).toContain("num_ctx must be explicit");
+    expect(diag.timeoutSourcesNote).toContain("CONTEXT_BUDGET_EXCEEDED");
     expect(JSON.stringify(diag)).not.toMatch(/base64|FINDINGS:|data:image/i);
   });
 });
