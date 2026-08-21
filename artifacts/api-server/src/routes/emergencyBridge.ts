@@ -9,10 +9,11 @@
  */
 import { Router, type Request, type Response, type NextFunction } from "express";
 import { createHash } from "node:crypto";
-import { parseEmergencyJson } from "@workspace/emergency-billing";
+import { parseEmergencyJson, PatientResolutionError, type EmergencyTransaction } from "@workspace/emergency-billing";
 import { getEmergencyNasConfig } from "../lib/emergencyNasClient";
 import { buildEmergencyMasterSnapshot } from "../lib/emergencyMasterSnapshot";
-import { importEmergencyTransactions, previewEmergencyTransactions } from "../lib/emergencyReconcile";
+import { importEmergencyTransactions, previewEmergencyTransactions, loadMatchCandidates } from "../lib/emergencyReconcile";
+import { enrichCandidates, importedCareBillId, resolveEmergencyPatient } from "../lib/emergencyPatientResolve";
 
 export const emergencyBridgeRouter = Router();
 
@@ -80,6 +81,10 @@ emergencyBridgeRouter.post("/import-json", requireEmergencyFetchToken, async (re
     res.status(400).json({ error: parsed.errors[0] || "No valid emergency transactions", errors: parsed.errors });
     return;
   }
+  const assignPatient =
+    req.body?.assignPatient && typeof req.body.assignPatient === "object" && !Array.isArray(req.body.assignPatient)
+      ? (req.body.assignPatient as Record<string, number>)
+      : undefined;
   try {
     const { result, batchUuid, preview } = await importEmergencyTransactions({
       transactions: parsed.pkg.transactions,
@@ -88,6 +93,7 @@ emergencyBridgeRouter.post("/import-json", requireEmergencyFetchToken, async (re
       importedByUserId: null,
       sourceNas: typeof req.body?.sourceDeviceId === "string" ? req.body.sourceDeviceId : "windows-emergency",
       onlySafe: req.body?.onlySafe !== false,
+      overrides: assignPatient ? { assignPatient } : undefined,
     });
     res.json({
       batchUuid,
@@ -102,6 +108,49 @@ emergencyBridgeRouter.post("/import-json", requireEmergencyFetchToken, async (re
       failureDetails: result.failureDetails,
     });
   } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+/**
+ * Same patient Resolve flow as CARE Settings → Emergency Billing, callable from
+ * the Windows emergency PC with the shared fetch token (no staff browser session).
+ */
+emergencyBridgeRouter.post("/resolve-patient", requireEmergencyFetchToken, async (req, res) => {
+  const t = req.body?.transaction as EmergencyTransaction | undefined;
+  const action = req.body?.action === "create_new" ? "create_new" : req.body?.action === "select_existing" ? "select_existing" : null;
+  if (!t?.emergencyTransactionUuid || !t.patient || !action) {
+    res.status(400).json({ error: "transaction and action (select_existing | create_new) are required" });
+    return;
+  }
+  try {
+    const careBillId = await importedCareBillId(t.emergencyTransactionUuid);
+    const candidates = await enrichCandidates(await loadMatchCandidates([t]));
+    const { resolution, decision } = await resolveEmergencyPatient({
+      transaction: t,
+      action,
+      carePatientId: req.body?.carePatientId != null ? Number(req.body.carePatientId) : null,
+      alreadyImported: careBillId != null,
+      careBillId,
+      candidates,
+      resolvedByStaffName: typeof req.body?.resolvedByStaffName === "string" ? req.body.resolvedByStaffName : "emergency-bridge",
+      resolvedByStaffId: null,
+    });
+    const { rows, summary } = await previewEmergencyTransactions([t]);
+    res.json({
+      ok: true,
+      resolution,
+      matchClass: decision.matchClass,
+      matchReason: decision.reason,
+      row: rows[0],
+      summary,
+    });
+  } catch (err) {
+    if (err instanceof PatientResolutionError) {
+      const status = err.code === "ALREADY_IMPORTED" ? 409 : 400;
+      res.status(status).json({ error: err.message, code: err.code, readOnly: err.code === "ALREADY_IMPORTED" });
+      return;
+    }
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }
 });

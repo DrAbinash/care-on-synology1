@@ -5141,10 +5141,10 @@ function BillingPrintTab() {
           use header, copies, QR/TAT columns, typography, and save-print workflow below. Half of A4 <em>is</em> A5 (210×148 mm).
         </p>
         <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1 text-xs">
-          <div><dt className="text-muted-foreground">Paper</dt><dd className="font-semibold">Half A4 / A5 · 210×148 mm</dd></div>
-          <div><dt className="text-muted-foreground">Job size sent to printer</dt><dd className="font-semibold">Half A4 · 210×148 mm</dd></div>
+          <div><dt className="text-muted-foreground">Paper</dt><dd className="font-semibold">Pre-cut half A4 / A5 · 210×148 mm</dd></div>
+          <div><dt className="text-muted-foreground">Job size sent to printer</dt><dd className="font-semibold">210×148 mm (matches cut sheet)</dd></div>
           <div><dt className="text-muted-foreground">Long bills</dt><dd className="font-semibold">Auto A4 from 8 tests</dd></div>
-          <div><dt className="text-muted-foreground">Content area</dt><dd className="font-semibold">Fills the half-sheet (no blank band below)</dd></div>
+          <div><dt className="text-muted-foreground">Content area</dt><dd className="font-semibold">Fills the cut sheet edge-to-edge</dd></div>
         </dl>
       </div>
 
@@ -5152,27 +5152,27 @@ function BillingPrintTab() {
         className="rounded-xl border border-amber-200 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-800 px-4 py-4 text-xs text-amber-950 dark:text-amber-100 leading-relaxed space-y-2 pointer-events-auto"
         data-testid="cursor-default-printer-paper"
       >
-        <p className="font-bold text-sm">How to set paper in the printer (Windows / browser print dialog)</p>
+        <p className="font-bold text-sm">How to set paper (pre-cut half A4 in the tray)</p>
         <ol className="list-decimal pl-4 space-y-1.5">
           <li>
-            <strong>Load the tray:</strong> cut A4 in half (210×148 mm) or use an A5 sheet. Put it in the tray
-            the same way as A4 — <strong>portrait, 210 mm across</strong> (short edge into the printer).
+            <strong>Load already-cut half A4</strong> (210×148 mm) the same way as A4 — <strong>210 mm across</strong> (short edge into the printer).
           </li>
           <li>
-            In the print dialog set <strong>Paper size = A4</strong> if using a full sheet you will cut in half, or the closest <strong>210×148 mm / A5</strong> preset if your driver offers it.
+            In the Epson/Windows printer preferences, create a <strong>User Defined</strong> paper: <strong>Width 210 mm × Height 148 mm</strong>. Name it e.g. “Half A4 Bill”.
           </li>
           <li>
-            Set <strong>Orientation = Portrait</strong>. Do not pick Landscape — that rotates the job and leaves a blank band on the right.
+            In the browser print dialog set <strong>Paper size = that User Defined 210×148</strong> (or the closest custom size). Do <strong>not</strong> leave Paper = A4 — that is what leaves blank space on the right and below.
           </li>
           <li>
             Set <strong>Scale = Actual size / 100%</strong>. Turn off “Fit to page” / “Shrink to fit”.
           </li>
           <li>
-            Set <strong>Margins = None</strong> (or Default). The bill already has its own inner padding.
+            Set <strong>Margins = None</strong>. The bill already has its own inner padding.
           </li>
         </ol>
         <p className="text-[11px] text-amber-800 dark:text-amber-200">
-          Epson / Brother ink-tank: keep <strong>Orientation = Portrait</strong> and <strong>Scale = 100%</strong>. The bill job is 210×148 mm — it should fill the half-sheet without a blank strip on the right or empty band below.
+          Epson L130 / ink-tank: Paper must be the <strong>210×148 custom size</strong>, Scale <strong>100%</strong>.
+          Blank on the right and below almost always means the dialog still has Paper = A4 while the sheet in the tray is already cut.
         </p>
       </div>
 

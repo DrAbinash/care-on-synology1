@@ -446,6 +446,7 @@ export function getAutoBillPaperSize(
 /** Pixel dimensions for on-screen bill previews (96 dpi, matches Settings live preview). */
 export function billPreviewPaperPx(pageOpts: BillPrintPageOpts): { w: number; h: number } {
   if (pageOpts.paperSize === "A4") return { w: 794, h: 1123 };
+  // Half-sheet content is always 210×148 (pre-cut A4 / A5 landscape).
   if (pageOpts.orientation === "landscape" || pageOpts.pageCssSize.includes("210mm 148mm")) {
     return { w: 794, h: 559 };
   }
@@ -456,7 +457,7 @@ export function getPaperSizeCss(size: BillPaperSize): { pageSize: string; width:
   switch (size) {
     case "A5-landscape":
     case "half-a4":
-      // Physical half-sheet — @page matches 210×148 mm (not full A4 height).
+      // Pre-cut half A4 in the tray — @page matches the physical sheet.
       return { pageSize: "210mm 148mm", width: "210mm", minHeight: "148mm", maxHeight: "148mm" };
     case "A5-portrait":
       return { pageSize: "A5 portrait", width: "148mm", minHeight: "210mm", maxHeight: "none" };
@@ -497,10 +498,11 @@ export function resolveBillPrintPageOpts(
   return {
     paperSize: "A5",
     orientation: "landscape",
-    compactFooterGap: testCount <= 4,
-    // @page matches physical half-sheet (210×148). Do not use full A4 @page —
-    // that leaves ~149 mm blank below on cut half-A4. Do not use named
-    // "A5 landscape" — pick Portrait in the print dialog.
+    // Fill the 148 mm sheet — pin footer to the bottom.
+    compactFooterGap: false,
+    // Exact mm for pre-cut half A4. Do not use full A4 @page (blank below on
+    // cut sheets) or named "A5 landscape". In the print dialog pick User
+    // Defined 210×148 — leaving Paper=A4 causes blank on the right and below.
     pageCssSize: "210mm 148mm",
   };
 }
