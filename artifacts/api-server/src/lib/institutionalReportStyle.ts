@@ -409,7 +409,7 @@ export function keyImageLayoutCss(style: InstitutionalReportStyle | null | undef
   const aspect = coerceKeyImageAspect(style?.keyImageAspect);
   if (aspect === "fill") {
     return `
-      .image-panel-side .image-cell { aspect-ratio: auto !important; flex: 1 1 0 !important; }
+      .image-panel-side .image-cell { aspect-ratio: auto !important; flex: 1 1 0 !important; width: 100% !important; max-width: none !important; }
       .image-viewport { aspect-ratio: auto !important; flex: 1 1 0 !important; min-height: 18mm !important; }
       .image-viewport .dicom-img { object-fit: ${fit} !important; }
     `;
@@ -417,10 +417,18 @@ export function keyImageLayoutCss(style: InstitutionalReportStyle | null | undef
   return `
       .content-area.has-side-images > .image-panel-side { vertical-align: top !important; height: auto !important; }
       .image-panel-side.image-panel-keyrail { height: auto !important; min-height: 0 !important; }
+      .image-panel-side[data-image-count="1"] { --ki-size: 48mm !important; }
+      .image-panel-side[data-image-count="2"] { --ki-size: 40mm !important; }
+      .image-panel-side[data-image-count="3"] { --ki-size: 34mm !important; }
+      .image-panel-side[data-image-count="4"] { --ki-size: 28mm !important; }
+      .image-panel-side[data-image-count="5"] { --ki-size: 24mm !important; }
+      .image-panel-side[data-image-count="6"] { --ki-size: 22mm !important; }
       .image-panel-side .image-cell {
         flex: 0 0 auto !important;
         aspect-ratio: 1 / 1 !important;
-        width: 100% !important;
+        width: min(100%, var(--ki-size, 48mm)) !important;
+        max-width: 100% !important;
+        align-self: flex-start !important;
       }
       .image-viewport {
         flex: 0 0 auto !important;

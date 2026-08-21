@@ -76,7 +76,7 @@ describe("institutionalReportStyle", () => {
       headerRuleColor: "navy",
     });
     expect(css).toContain("Georgia");
-    expect(css).toContain("font-size: 15px");
+    expect(css).toContain("font-size: 16px");
     expect(css).toContain("line-height: 1.7");
     expect(css).toContain("flex-direction: row-reverse");
     expect(css).toContain("justify-content: center");
@@ -89,6 +89,8 @@ describe("institutionalReportStyle", () => {
     expect(css).toContain("border-top: 5px solid #1e3a8a"); // extra navy rule
     expect(css).toMatch(/\.hdr-inner \.hdr-brand \{ text-align: right/);
     expect(css).toMatch(/\.hdr-address-bar \{ text-align: left/);
+    expect(css).toContain("aspect-ratio: 1 / 1");
+    expect(css).toContain("object-fit: contain");
   });
 
   it("hides header rule when disabled", () => {
@@ -98,9 +100,12 @@ describe("institutionalReportStyle", () => {
     expect(css).toContain(".hdr-rule { display: none");
   });
 
-  it("returns empty CSS when style is null", () => {
-    expect(buildInstitutionalStyleCss(null)).toBe("");
-    expect(buildInstitutionalStyleCss(undefined)).toBe("");
+  it("emits default square/contain + extreme-right layout CSS when style is null", () => {
+    const css = buildInstitutionalStyleCss(null);
+    expect(css).toContain("aspect-ratio: 1 / 1");
+    expect(css).toContain("object-fit: contain");
+    expect(css).toContain(".letterpad-demo .ld-right { text-align: right");
+    expect(buildInstitutionalStyleCss(undefined)).toContain("aspect-ratio: 1 / 1");
   });
 
   it("overrides image placement and signature on clinic-branded templates; letter-pad keeps logo left", () => {

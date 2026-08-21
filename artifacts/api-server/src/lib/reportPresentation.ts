@@ -818,9 +818,11 @@ export function renderReportDocument(
       flex: 0 0 auto;
       display: flex;
       flex-direction: column;
-      width: 100%;
+      width: min(100%, var(--ki-size, 48mm));
+      max-width: 100%;
       aspect-ratio: 1 / 1;
       min-height: 0;
+      align-self: flex-start;
     }
     .image-panel-side .image-caption { padding: 1px 5px; font-size: 6.5px; flex-shrink: 0; display: none; }
     .image-cell {
@@ -837,6 +839,14 @@ export function renderReportDocument(
     }` : ""}
     .dicom-img { width: 100%; max-height: 70mm; object-fit: contain; display: block; background: #000; }
     ${sidePanel ? `
+    /* Square ports sized by count so 1–6 fit page 1 with the report body
+       (full rail-width 1:1 cells overflow A4 and orphan the signature). */
+    .image-panel-side[data-image-count="1"] { --ki-size: 48mm; }
+    .image-panel-side[data-image-count="2"] { --ki-size: 40mm; }
+    .image-panel-side[data-image-count="3"] { --ki-size: 34mm; }
+    .image-panel-side[data-image-count="4"] { --ki-size: 28mm; }
+    .image-panel-side[data-image-count="5"] { --ki-size: 24mm; }
+    .image-panel-side[data-image-count="6"] { --ki-size: 22mm; }
     .image-viewport {
       position: relative; width: 100%; flex: 0 0 auto;
       aspect-ratio: 1 / 1; height: auto; min-height: 0;
