@@ -56,6 +56,7 @@ function baseOpts(overrides: Record<string, unknown> = {}) {
   return {
     bill: sampleBill(1),
     clinic: sampleClinic,
+    billFormat: "hope-a5" as const,
     paperSize: "A5" as const,
     orientation: "portrait" as const,
     pageCssSize: "148mm 210mm",
@@ -413,6 +414,49 @@ describe("document layout engine — bill renderers (unified Classic)", () => {
     const html = buildBillPrintHtml(baseOpts());
     expect(html).not.toContain("webContents.print");
     expect(html).not.toContain("printToPDF");
+  });
+});
+
+
+describe("document layout engine — CARE Invoice (classic)", () => {
+  test("classic format renders INVOICE layout on 210×148", () => {
+    const html = buildBillPrintHtml(baseOpts({
+      billFormat: "classic",
+      orientation: "landscape",
+      pageCssSize: "210mm 148mm",
+    }));
+    expect(html).toContain(">INVOICE<");
+    expect(html).toContain("Authorised Signature");
+    expect(html).toContain("BILL NO:");
+    expect(html).toContain("@page { size: 210mm 148mm; margin: 0; }");
+    expect(html).not.toContain("hope-bill");
+    expect(html).not.toContain(">Receipt<");
+  });
+
+  test("format from clinic settings selects classic without billFormat opt", () => {
+    const html = buildBillPrintHtml(baseOpts({
+      billFormat: undefined,
+      orientation: "landscape",
+      pageCssSize: "210mm 148mm",
+      clinic: {
+        ...sampleClinic,
+        billPrintSettingsJson: JSON.stringify({ defaultFormat: "classic" }),
+      },
+    }));
+    expect(html).toContain(">INVOICE<");
+  });
+
+  test("hope-a5 and classic share CARE totals fields", () => {
+    const hope = buildBillPrintHtml(baseOpts({ billFormat: "hope-a5" }));
+    const classic = buildBillPrintHtml(baseOpts({
+      billFormat: "classic",
+      orientation: "landscape",
+      pageCssSize: "210mm 148mm",
+    }));
+    expect(hope).toContain("4,900.00");
+    expect(classic).toContain("4,900.00");
+    expect(hope).toMatch(/2026001-\d+-4900\.00-\d+-[0-9A-F]{8}/);
+    expect(classic).toMatch(/2026001-\d+-4900\.00-\d+-[0-9A-F]{8}/);
   });
 });
 

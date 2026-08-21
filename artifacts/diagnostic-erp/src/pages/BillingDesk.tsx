@@ -1055,6 +1055,7 @@ export default function BillingDesk() {
                   // explicitly forced A4/half-A4.
                   const pageOpts = resolveBillPrintPageOpts(settings, updatedBill.order?.tests?.length || 1);
                   const html = buildBillPrintHtml({
+                    billFormat: settings.defaultFormat,
                     bill: billForPrint,
                     clinic: cachedClinic,
                     paperSize: pageOpts.paperSize,
@@ -1450,6 +1451,7 @@ export default function BillingDesk() {
         }).catch(() => "");
         const pageOpts = resolveBillPrintPageOpts(settings, updatedBill.order?.tests?.length || 1);
         const html = buildBillPrintHtml({
+          billFormat: settings.defaultFormat,
           bill: billForPrint,
           clinic: cachedClinic,
           paperSize: pageOpts.paperSize,
@@ -1838,6 +1840,7 @@ export default function BillingDesk() {
             };
             const pageOpts = resolveBillPrintPageOpts(settings, lastBillLocal.tests.length);
             const html = buildBillPrintHtml({
+              billFormat: settings.defaultFormat,
               bill: billForPrint,
               clinic: clinicForPrint,
               paperSize: pageOpts.paperSize,

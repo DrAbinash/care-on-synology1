@@ -283,6 +283,7 @@ export default function BillDetail({ id }: { id: number }) {
     const testCount = (bill.order?.tests ?? []).filter((t) => (t.status ?? "active") !== "cancelled").length;
     const pageOpts = resolveBillPrintPageOpts(settings, testCount);
     return buildBillPrintHtml({
+      billFormat: settings.defaultFormat,
       bill: bill as PrintBillData,
       clinic: clinic as PrintClinic,
       paperSize: pageOpts.paperSize,

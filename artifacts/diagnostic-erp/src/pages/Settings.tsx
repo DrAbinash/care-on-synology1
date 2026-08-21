@@ -3,7 +3,7 @@ import { Link, useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import QRCode from "qrcode";
 import { buildBillPrintHtml, type PrintBillData, type PrintClinic } from "@/lib/printBill";
-import { resolveBillPrintPageOpts, parseGlobalBillPrintSettings, billPrintCopiesForCopyType, applyCursorBillPrintLayout } from "@/lib/billPrintSettings";
+import { resolveBillPrintPageOpts, parseGlobalBillPrintSettings, billPrintCopiesForCopyType, applyCursorBillPrintLayout, BILL_FORMATS, normalizeBillFormat, paperSizeForBillFormat } from "@/lib/billPrintSettings";
 import { api, fetchApi, getStaffToken } from "@/lib/fetchApi";
 import { useSuperAdmin, getSuperAdminToken } from "@/hooks/useSuperAdmin";
 import PageHeader from "@/components/PageHeader";
@@ -1687,7 +1687,7 @@ function ClinicInfoTab() {
             </p>
           </div>
           <div className="rounded-lg border border-blue-200 bg-blue-50 dark:bg-blue-950/30 dark:border-blue-800 px-4 py-3 text-sm text-blue-800 dark:text-blue-300 leading-relaxed">
-            Open <strong>Settings → Billing Print</strong> for format, A5 portrait paper (HOPE layout), QR, TAT, columns, and live preview.
+            Open <strong>Settings → Billing Print</strong> for CARE Invoice or HOPE A5 format, QR, TAT, columns, and live preview.
             Clinic Info keeps logo, address, and identity only.
           </div>
           <button
@@ -4972,6 +4972,7 @@ function BillingPrintTab() {
     return buildBillPrintHtml({
       bill: BILL_PREVIEW_SAMPLE,
       clinic: clinicForPreview,
+      billFormat: deferredSettings.defaultFormat,
       paperSize: pageOpts.paperSize,
       orientation: pageOpts.orientation,
       pageCssSize: pageOpts.pageCssSize,
@@ -5122,29 +5123,31 @@ function BillingPrintTab() {
           {!isAdminUser && " Only an admin can change or unlock these settings."}
         </div>
       )}
-      {/* Cursor-default paper is code-owned — not a clinic slider. */}
+      {/* Format picks the template; paper size follows the format. */}
       <div
         className="rounded-xl border border-slate-300 bg-slate-50 dark:bg-slate-950/40 dark:border-slate-700 px-4 py-4 space-y-3 pointer-events-auto"
         data-testid="cursor-default-bill-print"
       >
         <div className="flex items-start justify-between gap-3">
           <div>
-            <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Bill print paper</p>
-            <h2 className="text-base font-bold text-slate-900 dark:text-slate-100">Cursor-default</h2>
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Bill print layout</p>
+            <h2 className="text-base font-bold text-slate-900 dark:text-slate-100">
+              {settings.defaultFormat === "hope-a5" ? "HOPE A5 Receipt" : "CARE Invoice"}
+            </h2>
           </div>
           <span className="shrink-0 rounded-full border border-slate-300 bg-white dark:bg-slate-900 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-600 dark:text-slate-300">
-            Not user-modifiable
+            {settings.defaultFormat === "hope-a5" ? "148×210 mm" : "210×148 mm"}
           </span>
         </div>
         <p className="text-xs text-slate-700 dark:text-slate-300 leading-relaxed">
-          Paper size is locked to this Cursor-default layout (HOPE A5 portrait). Clinics do not change paper here —
-          use header, copies, QR/TAT columns, typography, and save-print workflow below.
+          Choose CARE Invoice (previous layout) or HOPE A5 Receipt below. Paper size follows the format;
+          long bills still auto-switch to A4 from 8 tests.
         </p>
         <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1 text-xs">
-          <div><dt className="text-muted-foreground">Paper</dt><dd className="font-semibold">A5 portrait · 148×210 mm</dd></div>
-          <div><dt className="text-muted-foreground">Job size sent to printer</dt><dd className="font-semibold">148×210 mm</dd></div>
+          <div><dt className="text-muted-foreground">Active format</dt><dd className="font-semibold">{settings.defaultFormat === "hope-a5" ? "HOPE A5 Receipt" : "CARE Invoice"}</dd></div>
+          <div><dt className="text-muted-foreground">Job size sent to printer</dt><dd className="font-semibold">{settings.defaultFormat === "hope-a5" ? "148×210 mm" : "210×148 mm"}</dd></div>
           <div><dt className="text-muted-foreground">Long bills</dt><dd className="font-semibold">Auto A4 from 8 tests</dd></div>
-          <div><dt className="text-muted-foreground">Layout</dt><dd className="font-semibold">HOPE OPD receipt structure</dd></div>
+          <div><dt className="text-muted-foreground">Finance / QR / audit</dt><dd className="font-semibold">Identical on both</dd></div>
         </dl>
       </div>
 
@@ -5152,31 +5155,54 @@ function BillingPrintTab() {
         className="rounded-xl border border-amber-200 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-800 px-4 py-4 text-xs text-amber-950 dark:text-amber-100 leading-relaxed space-y-2 pointer-events-auto"
         data-testid="cursor-default-printer-paper"
       >
-        <p className="font-bold text-sm">How to set paper (A5 portrait in the tray)</p>
-        <ol className="list-decimal pl-4 space-y-1.5">
-          <li>
-            <strong>Load A5</strong> (148×210 mm) portrait — <strong>148 mm across</strong> (short edge into the printer), or use A5 stock your driver already knows.
-          </li>
-          <li>
-            In the Epson/Windows printer preferences, pick <strong>A5</strong> or create a <strong>User Defined</strong> paper: <strong>Width 148 mm × Height 210 mm</strong>. Name it e.g. “A5 Bill”.
-          </li>
-          <li>
-            In the browser print dialog set <strong>Paper size = A5 / 148×210</strong>. Do <strong>not</strong> leave Paper = A4 — that leaves blank space beside and below the receipt.
-          </li>
-          <li>
-            Set <strong>Scale = Actual size / 100%</strong>. Turn off “Fit to page” / “Shrink to fit”.
-          </li>
-          <li>
-            Set <strong>Margins = None</strong>. The bill already has its own inner padding.
-          </li>
-        </ol>
+        {settings.defaultFormat === "hope-a5" ? (
+          <>
+            <p className="font-bold text-sm">How to set paper (A5 portrait in the tray)</p>
+            <ol className="list-decimal pl-4 space-y-1.5">
+              <li>
+                <strong>Load A5</strong> (148×210 mm) portrait — <strong>148 mm across</strong> (short edge into the printer).
+              </li>
+              <li>
+                Create a <strong>User Defined</strong> paper if needed: <strong>Width 148 mm × Height 210 mm</strong>.
+              </li>
+              <li>
+                In the browser print dialog set <strong>Paper size = A5 / 148×210</strong>. Do <strong>not</strong> leave Paper = A4.
+              </li>
+              <li>Set <strong>Scale = 100%</strong> and <strong>Margins = None</strong>.</li>
+            </ol>
+          </>
+        ) : (
+          <>
+            <p className="font-bold text-sm">How to set paper (pre-cut half A4 / A5 landscape)</p>
+            <ol className="list-decimal pl-4 space-y-1.5">
+              <li>
+                <strong>Load already-cut half A4</strong> (210×148 mm) — <strong>210 mm across</strong> (short edge into the printer).
+              </li>
+              <li>
+                Create a <strong>User Defined</strong> paper: <strong>Width 210 mm × Height 148 mm</strong>.
+              </li>
+              <li>
+                In the browser print dialog set <strong>Paper size = that User Defined 210×148</strong>. Do <strong>not</strong> leave Paper = A4.
+              </li>
+              <li>Set <strong>Scale = 100%</strong> and <strong>Margins = None</strong>.</li>
+            </ol>
+          </>
+        )}
         <p className="text-[11px] text-amber-800 dark:text-amber-200">
-          Epson L130 / ink-tank: Paper must be <strong>A5 (148×210)</strong>, Scale <strong>100%</strong>, portrait.
-          Blank margins almost always mean the dialog still has Paper = A4.
+          Epson L130 / ink-tank: match the job size above, Scale <strong>100%</strong>. Blank margins usually mean Paper is still A4.
         </p>
       </div>
 
-      <SectionCard title="Format &amp; Copies" subtitle="Header placement and how many sheets print. Paper stays Cursor-default (above).">
+      <SectionCard title="Format &amp; Copies" subtitle="Pick CARE Invoice or HOPE A5, then header placement and copies.">
+        <SelectCard
+          label="Bill layout"
+          options={BILL_FORMATS.map((f) => ({ id: f.id, label: `${f.label} — ${f.hint}` }))}
+          value={normalizeBillFormat(settings.defaultFormat)}
+          onChange={(v) => {
+            const format = normalizeBillFormat(v);
+            update({ defaultFormat: format, defaultPaperSize: paperSizeForBillFormat(format) });
+          }}
+        />
         <SelectCard
           label="Header layout"
           options={headerLayouts}
@@ -5191,6 +5217,7 @@ function BillingPrintTab() {
         />
         <p className="text-[11px] text-muted-foreground -mt-2">
           Patient or office = 1 sheet. Both copies = patient + office (2 sheets in one print job).
+          Header layout mainly affects CARE Invoice; HOPE A5 uses a centered clinic header.
         </p>
       </SectionCard>
 
@@ -5230,7 +5257,7 @@ function BillingPrintTab() {
         </div>
         <NumberOverrideField
           label="Page Margin" unit="mm" min={2} max={25} sliderDefault={2}
-          value={settings.printMarginMm} defaultLabel="8mm A5 Portrait · 4mm A4 / half-sheet"
+          value={settings.printMarginMm} defaultLabel="4mm CARE Invoice / A4 · 8mm HOPE A5"
           onChange={(v) => update({ printMarginMm: v })}
         />
         <NumberOverrideField
@@ -5329,7 +5356,7 @@ function BillingPrintTab() {
           <button type="button" onClick={() => setPreviewVisible(false)} className="text-xs text-muted-foreground hover:text-foreground">Hide</button>
         </div>
         <p className="text-[11px] text-muted-foreground leading-relaxed">
-          Updates instantly as you change copies, header, or display options — paper is Cursor-default (HOPE A5 portrait). Sample data, not a real bill.
+          Updates instantly as you change format, copies, header, or display options. Sample data, not a real bill.
         </p>
         <label className="flex items-center gap-2 text-xs font-medium">
           <input
@@ -5366,7 +5393,11 @@ function BillingPrintTab() {
           </div>
         </div>
         <p className="text-[11px] text-center text-muted-foreground">
-          Cursor-default paper · A5 portrait (148×210 mm) · HOPE receipt layout
+          {settings.defaultFormat === "hope-a5"
+            ? "HOPE A5 Receipt · 148×210 mm"
+            : "CARE Invoice · 210×148 mm"}
+          {" · "}
+          {headerLayouts.find((f) => f.id === (settings.headerLayout ?? "right"))?.label ?? "Address on right"}
         </p>
       </div>
     ) : (

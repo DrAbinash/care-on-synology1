@@ -89,6 +89,7 @@ export function buildProvisionalBillPrintHtml(
   return buildBillPrintHtml({
     bill,
     clinic,
+    billFormat: settings.defaultFormat,
     paperSize: pageOpts.paperSize,
     orientation: pageOpts.orientation,
     pageCssSize: pageOpts.pageCssSize,
