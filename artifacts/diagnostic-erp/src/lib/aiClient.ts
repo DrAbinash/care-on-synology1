@@ -107,6 +107,14 @@ export const aiClient = {
     ops: Record<string, unknown>;
     effectivePolicy: Record<string, unknown>;
     backlogNote?: string;
+    legacyBacklog?: {
+      held: boolean;
+      holdBefore: string | null;
+      heldPending: number;
+      heldRetrying: number;
+      newEligible: number;
+      releasedAllowlistSize: number;
+    };
   }>(`/api/ai/overnight-ops`),
   saveOvernightOps: (body: {
     paused?: boolean;
@@ -115,7 +123,23 @@ export const aiClient = {
     visionCtx?: "current" | "4096" | "8192" | "16384";
     safeMode?: boolean;
     clearResourceStreak?: boolean;
+    legacyBacklogHold?: true;
   }) => api.put<{ ok: boolean; ops: Record<string, unknown> }>(`/api/ai/overnight-ops`, body),
+  legacyBacklogAction: (body:
+    | { action: "retry_selected"; jobIds: number[] }
+    | { action: "release_selected"; jobIds: number[] }
+    | { action: "release_recent"; limit?: number }
+    | { action: "release_all"; confirm: true }
+  ) =>
+    api.post<{
+      ok: boolean;
+      action: string;
+      ops: Record<string, unknown>;
+      legacyBacklog?: Record<string, unknown>;
+      releasedJobIds?: number[];
+      deleted?: number;
+      retry?: Record<string, unknown>;
+    }>(`/api/ai/overnight-ops/legacy-backlog`, body),
   recycleOllamaRunner: () =>
     api.post<Record<string, unknown>>(`/api/radiology-ollama/recycle-runner`, {}),
   queueSelected: (studyInstanceUids: string[], modalities?: Record<string, string | null>, retry?: boolean) =>

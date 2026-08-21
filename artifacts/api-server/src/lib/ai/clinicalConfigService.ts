@@ -20,8 +20,11 @@ import { normalizeAiModality } from "./modalityNormalize";
 import { parseStudyAgeWindow, type StudyAgeWindow } from "./studyAgeWindow";
 import {
   DEFAULT_OVERNIGHT_OPS,
+  addLegacyReleasedJobIds,
+  initializeLegacyBacklogCutover,
   mergeOvernightOpsPatch,
   parseOvernightOpsJson,
+  releaseAllLegacyBacklog,
   serializeOvernightOps,
   type OvernightOpsControls,
 } from "./overnightOpsControls";
@@ -89,10 +92,54 @@ function readOpsFromRow(row: Record<string, unknown> | null | undefined): Overni
   return parseOvernightOpsJson(row.overnightOpsJson ?? row.overnight_ops_json ?? "{}");
 }
 
+async function persistOvernightOpsPayload(
+  next: OvernightOpsControls,
+  updatedBy?: string | null,
+): Promise<void> {
+  const payload = serializeOvernightOps(next);
+  const [existing] = await db.select({ id: aiSchedulerConfigTable.id }).from(aiSchedulerConfigTable).limit(1);
+  if (existing) {
+    await db
+      .update(aiSchedulerConfigTable)
+      .set({
+        overnightOpsJson: payload,
+        updatedBy: updatedBy ?? null,
+      } as Partial<typeof aiSchedulerConfigTable.$inferInsert>)
+      .where(eq(aiSchedulerConfigTable.id, existing.id));
+  } else {
+    await db.insert(aiSchedulerConfigTable).values({
+      overnightOpsJson: payload,
+      updatedBy: updatedBy ?? undefined,
+    } as typeof aiSchedulerConfigTable.$inferInsert);
+  }
+}
+
+/**
+ * Load overnight ops. On first deployment of legacy-hold (no cutover marker),
+ * auto-initialize hold ON at NOW so pre-existing pending/retrying jobs do not
+ * compete with post-deploy validation. Restart-safe: cutover timestamp persists.
+ */
 export async function getOvernightOpsControls(): Promise<OvernightOpsControls> {
   try {
     const [row] = await db.select().from(aiSchedulerConfigTable).limit(1);
-    return readOpsFromRow(row as unknown as Record<string, unknown>);
+    const current = readOpsFromRow(row as unknown as Record<string, unknown>);
+    const { ops, initialized } = initializeLegacyBacklogCutover(current);
+    if (initialized) {
+      try {
+        await persistOvernightOpsPayload(ops, "legacy-cutover-init");
+        console.log(
+          "[ai] legacy backlog cutover initialized",
+          JSON.stringify({ legacyHoldBefore: ops.legacyHoldBefore, legacyBacklogHold: ops.legacyBacklogHold }),
+        );
+      } catch (err) {
+        // Column may be missing before db:push — still return in-memory cutover for this process.
+        console.warn(
+          "[ai] legacy backlog cutover init persist failed (run pnpm db:push if overnight_ops_json missing):",
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+    }
+    return ops;
   } catch {
     // Column may be missing before db:push — preserve production defaults.
     return { ...DEFAULT_OVERNIGHT_OPS };
@@ -105,23 +152,8 @@ export async function saveOvernightOpsControls(
 ): Promise<OvernightOpsControls> {
   const current = await getOvernightOpsControls();
   const next = mergeOvernightOpsPatch(current, patch, updatedBy ?? null);
-  const payload = serializeOvernightOps(next);
   try {
-    const [existing] = await db.select({ id: aiSchedulerConfigTable.id }).from(aiSchedulerConfigTable).limit(1);
-    if (existing) {
-      await db
-        .update(aiSchedulerConfigTable)
-        .set({
-          overnightOpsJson: payload,
-          updatedBy: updatedBy ?? null,
-        } as Partial<typeof aiSchedulerConfigTable.$inferInsert>)
-        .where(eq(aiSchedulerConfigTable.id, existing.id));
-    } else {
-      await db.insert(aiSchedulerConfigTable).values({
-        overnightOpsJson: payload,
-        updatedBy,
-      } as typeof aiSchedulerConfigTable.$inferInsert);
-    }
+    await persistOvernightOpsPayload(next, updatedBy ?? null);
   } catch (err) {
     throw new Error(
       `Failed to persist overnight ops controls (run pnpm db:push if overnight_ops_json is missing): ${
@@ -129,6 +161,49 @@ export async function saveOvernightOpsControls(
       }`,
     );
   }
+  return next;
+}
+
+/** Selective release: allowlist job ids (no row deletes). */
+export async function releaseLegacyBacklogSelected(
+  jobIds: number[],
+  updatedBy?: string,
+): Promise<OvernightOpsControls> {
+  const current = await getOvernightOpsControls();
+  const next = {
+    ...addLegacyReleasedJobIds(current, jobIds),
+    updatedBy: updatedBy ?? current.updatedBy,
+  };
+  await persistOvernightOpsPayload(next, updatedBy ?? null);
+  return next;
+}
+
+/** Add the N newest held (pre-cutover, not yet released) pending/retrying shadow jobs to allowlist. */
+export async function releaseLegacyBacklogRecent(
+  limit = 5,
+  updatedBy?: string,
+): Promise<{ ops: OvernightOpsControls; releasedJobIds: number[] }> {
+  const current = await getOvernightOpsControls();
+  const { listNewestHeldLegacyShadowJobIds } = await import("./legacyBacklogHold");
+  const ids = await listNewestHeldLegacyShadowJobIds(current, Math.max(1, Math.min(50, limit)));
+  const next = {
+    ...addLegacyReleasedJobIds(current, ids),
+    updatedBy: updatedBy ?? current.updatedBy,
+  };
+  await persistOvernightOpsPayload(next, updatedBy ?? null);
+  return { ops: next, releasedJobIds: ids };
+}
+
+/** Explicit confirmation required by caller — turns hold OFF; keeps cutover marker; no deletes. */
+export async function releaseAllLegacyBacklogHold(
+  updatedBy?: string,
+): Promise<OvernightOpsControls> {
+  const current = await getOvernightOpsControls();
+  const next = {
+    ...releaseAllLegacyBacklog(current),
+    updatedBy: updatedBy ?? current.updatedBy,
+  };
+  await persistOvernightOpsPayload(next, updatedBy ?? null);
   return next;
 }
 

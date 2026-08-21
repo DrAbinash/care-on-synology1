@@ -21,6 +21,8 @@ describe("overnightOpsControls", () => {
     expect(DEFAULT_OVERNIGHT_OPS.imageCap).toBe("auto");
     expect(DEFAULT_OVERNIGHT_OPS.visionCtx).toBe("current");
     expect(DEFAULT_OVERNIGHT_OPS.safeMode).toBe(false);
+    expect(DEFAULT_OVERNIGHT_OPS.legacyBacklogHold).toBe(false);
+    expect(DEFAULT_OVERNIGHT_OPS.legacyHoldBefore).toBeNull();
   });
 
   it("visionCtx=current does not force 16384", () => {

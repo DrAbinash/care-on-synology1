@@ -447,13 +447,24 @@ function OvernightVisionOpsPanel() {
     safeMode?: boolean;
     resourceFailStreak?: number;
     lastResourceFailCode?: string | null;
+    legacyBacklogHold?: boolean;
+    legacyHoldBefore?: string | null;
   };
   const policy = (data?.effectivePolicy ?? {}) as Record<string, unknown>;
+  const legacy = (data?.legacyBacklog ?? {}) as {
+    held?: boolean;
+    holdBefore?: string | null;
+    heldPending?: number;
+    heldRetrying?: number;
+    newEligible?: number;
+    releasedAllowlistSize?: number;
+  };
 
   const [paused, setPaused] = useState(false);
   const [imageCap, setImageCap] = useState("auto");
   const [visionCtx, setVisionCtx] = useState("current");
   const [safeMode, setSafeMode] = useState(false);
+  const [selectedJobIds, setSelectedJobIds] = useState("");
 
   useEffect(() => {
     if (!data?.ops) return;
@@ -462,6 +473,12 @@ function OvernightVisionOpsPanel() {
     setVisionCtx(String(ops.visionCtx ?? "current"));
     setSafeMode(Boolean(ops.safeMode));
   }, [data, ops.paused, ops.imageCap, ops.visionCtx, ops.safeMode]);
+
+  const parseJobIds = (): number[] =>
+    selectedJobIds
+      .split(/[,\s]+/)
+      .map((s) => Math.floor(Number(s.trim())))
+      .filter((n) => Number.isFinite(n) && n > 0);
 
   const saveOps = useMutation({
     mutationFn: () =>
@@ -478,6 +495,20 @@ function OvernightVisionOpsPanel() {
       toast({ title: "Overnight vision controls saved" });
     },
     onError: (e: Error) => toast({ title: "Save failed", description: e.message, variant: "destructive" }),
+  });
+
+  const legacyAction = useMutation({
+    mutationFn: (body: Parameters<typeof aiClient.legacyBacklogAction>[0]) =>
+      aiClient.legacyBacklogAction(body),
+    onSuccess: (r) => {
+      qc.invalidateQueries({ queryKey: ["ai-overnight-ops"] });
+      qc.invalidateQueries({ queryKey: ["ai-overnight-diagnostics"] });
+      toast({
+        title: `Legacy backlog: ${r.action}`,
+        description: r.deleted === 0 ? "No rows deleted." : undefined,
+      });
+    },
+    onError: (e: Error) => toast({ title: "Legacy backlog action failed", description: e.message, variant: "destructive" }),
   });
 
   const recycle = useMutation({
@@ -545,6 +576,75 @@ function OvernightVisionOpsPanel() {
         {ops.lastResourceFailCode ? ` (${ops.lastResourceFailCode})` : ""}
       </p>
       <p className="text-[10px] text-muted-foreground">{String(data?.backlogNote ?? "")}</p>
+
+      <div className="rounded-md border border-slate-300/80 bg-background/60 p-2.5 space-y-2" data-testid="legacy-backlog-hold">
+        <div className="font-semibold text-[11px]">
+          Legacy backlog: {legacy.held || ops.legacyBacklogHold ? "HELD" : "RELEASED"}
+        </div>
+        <p className="text-[10px] text-muted-foreground">
+          Cutover: {String(legacy.holdBefore ?? ops.legacyHoldBefore ?? "—")} · allowlist={String(legacy.releasedAllowlistSize ?? 0)}
+        </p>
+        <div className="grid grid-cols-3 gap-2 text-[10px]">
+          <div>Held pending: <strong>{String(legacy.heldPending ?? 0)}</strong></div>
+          <div>Held retrying: <strong>{String(legacy.heldRetrying ?? 0)}</strong></div>
+          <div>New eligible: <strong>{String(legacy.newEligible ?? 0)}</strong></div>
+        </div>
+        <div>
+          <Label className="text-[11px]">Selected job ids (comma-separated)</Label>
+          <input
+            className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-xs"
+            value={selectedJobIds}
+            onChange={(e) => setSelectedJobIds(e.target.value)}
+            placeholder="e.g. 12041, 12055"
+          />
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            className="gap-1.5"
+            disabled={legacyAction.isPending}
+            onClick={() => {
+              const jobIds = parseJobIds();
+              if (jobIds.length === 0) {
+                toast({ title: "Enter at least one job id", variant: "destructive" });
+                return;
+              }
+              legacyAction.mutate({ action: "retry_selected", jobIds });
+            }}
+          >
+            Retry selected
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            className="gap-1.5"
+            disabled={legacyAction.isPending}
+            onClick={() => legacyAction.mutate({ action: "release_recent", limit: 5 })}
+          >
+            Release recent eligible
+          </Button>
+          <Button
+            size="sm"
+            variant="destructive"
+            className="gap-1.5"
+            disabled={legacyAction.isPending}
+            onClick={() => {
+              if (
+                !window.confirm(
+                  "Release ALL legacy backlog? Pre-cutover pending/retrying jobs will become claimable on the next overnight tick. This does not delete any rows.",
+                )
+              ) {
+                return;
+              }
+              legacyAction.mutate({ action: "release_all", confirm: true });
+            }}
+          >
+            Release all legacy backlog
+          </Button>
+        </div>
+      </div>
+
       <div className="flex flex-wrap gap-2">
         <Button size="sm" className="gap-1.5" disabled={saveOps.isPending} onClick={() => saveOps.mutate()}>
           <Save className="h-3.5 w-3.5" /> Save vision controls
