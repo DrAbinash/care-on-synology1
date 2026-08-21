@@ -398,6 +398,12 @@ export const radiologyInstitutionalStylesTable = pgTable(
     signaturePosition: text("signature_position").notNull().default("right"),
     /** DICOM / key-image placement: inline | side-panel | end */
     imagePlacement: text("image_placement").notNull().default("inline"),
+    /** Key-image object-fit: contain | cover */
+    keyImageFit: text("key_image_fit").notNull().default("contain"),
+    /** Key-image port: square | fill */
+    keyImageAspect: text("key_image_aspect").notNull().default("square"),
+    /** AGE/SEX + DATE alignment: extreme_right | mid */
+    demographyAlign: text("demography_align").notNull().default("extreme_right"),
     /** Study title decoration: plain | underlined | bar */
     studyTitleStyle: text("study_title_style").notNull().default("underlined"),
     /** Logo box size: standard | large | xlarge */

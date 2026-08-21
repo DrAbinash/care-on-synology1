@@ -99,11 +99,16 @@ function cachePut(key: string, dataUrl: string): void {
 /** Server-vantage Orthanc base — same preference order as the diagnostics
  *  service: internal Docker name first, else configured DICOMweb root. */
 async function orthancServerBase(): Promise<string | null> {
-  const internal = process.env.ORTHANC_INTERNAL_URL?.replace(/\/+$/, "");
-  if (internal) return internal;
+  // Prefer container/LAN Orthanc (same order as pacsEnterprise + warmer).
+  const fromEnv = (process.env.ORTHANC_INTERNAL_URL || process.env.ORTHANC_URL || "")
+    .replace(/\/+$/, "");
+  if (fromEnv) return fromEnv;
   const cfg = await getRadiologyConfig();
-  const fromDicomWeb = cfg.orthanc.dicomWebUrl?.replace(/\/dicom-web\/?$/, "");
-  return fromDicomWeb ? fromDicomWeb.replace(/\/+$/, "") : null;
+  const fromDicomWeb = (cfg.orthanc.dicomWebUrl || "").replace(/\/dicom-web\/?$/, "").replace(/\/+$/, "");
+  // Browser-relative proxy paths (/api/radiology/dicom-web) are not reachable
+  // as a server-side Orthanc base — skip them so we don't silently no-op.
+  if (fromDicomWeb && /^https?:\/\//i.test(fromDicomWeb)) return fromDicomWeb;
+  return null;
 }
 
 function orthancAuthHeaders(): Record<string, string> {

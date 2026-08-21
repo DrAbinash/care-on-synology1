@@ -73,7 +73,7 @@ import { api } from "@/lib/fetchApi";
 import { readStaffSession, normalizeRole, isOwnerRole, isFeatureEnabled } from "@/lib/staffSession";
 import { saveRadiologyDraft, finalizeRadiologyReport } from "@/lib/radiologyReportLifecycle";
 import { exportRadiologyReportToWord, safeFileNamePart } from "@/lib/radiologyReportWordExport";
-import { exportRadiologyReportToPdf } from "@/lib/radiologyReportPdfExport";
+import { exportRadiologyReportToPdf, hydratePrintPreviewKeyImages } from "@/lib/radiologyReportPdfExport";
 import { activeStandardLetterhead, type PresentationTemplatesPayload } from "@/lib/careLetterpadChrome";
 import {
   buildPreviewHtml,
@@ -2066,17 +2066,28 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     try {
       const templateQs = reportLayoutTemplateQuery(reportLayout);
       const url = `/api/radiology/report-generator/drafts/${id}/print-preview?autoPrint=true&likeFinal=true&${templateQs}`;
-      const html = await api.get<string>(url);
+      let html = await api.get<string>(url);
+      if (typeof html !== "string" || !html.trim()) {
+        throw new Error("Empty print preview");
+      }
+      // If the API could not reach Orthanc, still show selected images via the
+      // same browser DICOMweb path the Selected images rail already uses.
+      html = await hydratePrintPreviewKeyImages(html, BROWSER_DICOMWEB_BASE, imageRefs);
+      w.document.open();
       w.document.write(html);
       w.document.close();
       w.focus();
-    } catch {
+    } catch (err) {
       w.close();
-      toast({ title: "Print preview failed", variant: "destructive" });
+      toast({
+        title: "Print preview failed",
+        description: err instanceof Error ? err.message : "Could not open print layout.",
+        variant: "destructive",
+      });
     } finally {
       setPrintingLikeFinal(false);
     }
-  }, [draftId, reportLayout, saveDraft, toast]);
+  }, [draftId, reportLayout, saveDraft, toast, imageRefs]);
 
   // ─── Teaching case save ─────────────────────────────────────────────────────
   const handleSaveTeachingCase = useCallback(async () => {
@@ -2916,17 +2927,44 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       />
                     )}
 
-                    {/* Study setup strip — regions / protocol / test name from DICOM */}
-                    {(studySetup.activeProtocol || studySetup.selectedTemplate || studySetup.studyRegions.length > 0) && (
-                      <div className="flex flex-wrap items-center gap-2 rounded-md border border-emerald-200/60 bg-gradient-to-r from-emerald-50/40 via-card to-emerald-50/20 px-2 py-1.5 text-[10px] shadow-sm" data-testid="study-setup-strip">
-                        {studySetup.availableRegions.length > 0 && (
+                    {/* Study setup strip — always visible for manual region/protocol
+                        override when auto-match fails (dropdowns, not summary-only). */}
+                    <div className="flex flex-wrap items-center gap-2 rounded-md border border-emerald-200/60 bg-gradient-to-r from-emerald-50/40 via-card to-emerald-50/20 px-2 py-1.5 text-[10px] shadow-sm" data-testid="study-setup-strip">
+                        <label className="inline-flex items-center gap-1 flex-wrap">
+                            <span className="font-semibold text-muted-foreground">Region</span>
+                            <select
+                              className="h-6 max-w-[11rem] rounded border bg-background px-1 text-[10px]"
+                              value={studySetup.matchedStudyRegion ?? ""}
+                              disabled={isLocked || isFinalized || studySetup.availableRegions.length === 0}
+                              onChange={(e) => {
+                                const name = e.target.value;
+                                studySetup.selectPrimaryRegion(name || null);
+                              }}
+                              data-testid="region-select"
+                              aria-label="Study region"
+                              title={studySetup.availableRegions.length === 0
+                                ? "No regions in Quick Select — configure in Radiology Settings"
+                                : "Select or override study region"}
+                            >
+                              <option value="">
+                                {studySetup.availableRegions.length === 0 ? "No regions configured" : "Select region…"}
+                              </option>
+                              {studySetup.availableRegions.map((r) => (
+                                <option key={r} value={r}>{r}</option>
+                              ))}
+                            </select>
+                        </label>
+                        {(studySetup.availableRegions.length > 0 || studySetup.studyRegions.length > 0) && (
                           <label className="inline-flex items-center gap-1 flex-wrap">
                             <span className="font-semibold text-muted-foreground">Regions</span>
                             <div className="inline-flex flex-wrap gap-0.5" role="group" aria-label="Study regions (multi-select)" data-testid="study-region-chips">
                               {(() => {
                                 const REGION_CHIP_LIMIT = 6;
-                                const primary = studySetup.availableRegions.slice(0, REGION_CHIP_LIMIT);
-                                const overflow = studySetup.availableRegions.slice(REGION_CHIP_LIMIT);
+                                const catalog = studySetup.availableRegions.length > 0
+                                  ? studySetup.availableRegions
+                                  : studySetup.studyRegions;
+                                const primary = catalog.slice(0, REGION_CHIP_LIMIT);
+                                const overflow = catalog.slice(REGION_CHIP_LIMIT);
                                 const extraSelected = studySetup.studyRegions.filter((r) => !primary.includes(r));
                                 const visible = [...primary, ...extraSelected];
                                 return (
@@ -3000,11 +3038,10 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                             )}
                           </label>
                         )}
-                        {studySetup.availableProtocols.length > 0 && (
-                          <select
+                        <select
                             className="h-6 max-w-[12rem] rounded border bg-background px-1 text-[10px]"
                             value={studySetup.activeProtocol?.id ?? ""}
-                            disabled={isLocked || isFinalized}
+                            disabled={isLocked || isFinalized || studySetup.availableProtocols.length === 0}
                             onChange={(e) => {
                               const id = Number(e.target.value);
                               const p = studySetup.availableProtocols.find((x) => x.id === id) ?? null;
@@ -3012,13 +3049,17 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                             }}
                             data-testid="protocol-select"
                             aria-label="Protocol"
+                            title={studySetup.availableProtocols.length === 0
+                              ? "No protocols in Quick Select — configure in Radiology Settings"
+                              : "Select or override protocol / technique template"}
                           >
-                            <option value="">Protocol…</option>
+                            <option value="">
+                              {studySetup.availableProtocols.length === 0 ? "No protocols configured" : "Protocol…"}
+                            </option>
                             {studySetup.availableProtocols.map((p) => (
                               <option key={p.id} value={p.id}>{p.name}{p.isDefault ? " ★" : ""}</option>
                             ))}
                           </select>
-                        )}
                         <button
                           type="button"
                           data-testid="protocol-add-title"
@@ -3072,7 +3113,6 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                           Re-apply defaults
                         </Button>
                       </div>
-                    )}
 
                     </div>
                     </ReportAccordionSection>
@@ -3100,28 +3140,61 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
 
                     {/* 5. TECHNIQUE — Quick Select + editor + dictation + protocol context */}
                     <ReportAccordionSection {...accordionProps("technique")}>
-                    {(studySetup.activeProtocol || studySetup.studyRegions.length > 0) && (
-                      <div className="mb-1.5 flex flex-wrap items-center gap-1.5 text-[10px] text-muted-foreground" data-testid="technique-protocol-context">
-                        {studySetup.studyRegions.length > 0 && (
-                          <span className="rounded border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 font-semibold text-emerald-900">
-                            {studySetup.studyRegions.join(" + ")}
-                          </span>
-                        )}
-                        {studySetup.activeProtocol && (
-                          <span className="rounded border border-violet-200 bg-violet-50 px-1.5 py-0.5 font-semibold text-violet-900">
-                            {studySetup.activeProtocol.name}
-                          </span>
-                        )}
-                        <button
-                          type="button"
-                          className="underline underline-offset-2 hover:text-foreground"
-                          onClick={() => setActiveReportSection("region")}
-                          title="Change region or protocol (Alt+3)"
+                    <div className="mb-1.5 flex flex-wrap items-center gap-1.5 text-[10px]" data-testid="technique-protocol-context">
+                      <label className="inline-flex items-center gap-1 text-muted-foreground">
+                        <span className="font-semibold">Region</span>
+                        <select
+                          className="h-6 max-w-[11rem] rounded border bg-background px-1 text-[10px]"
+                          value={studySetup.matchedStudyRegion ?? ""}
+                          disabled={isLocked || isFinalized || studySetup.availableRegions.length === 0}
+                          onChange={(e) => studySetup.selectPrimaryRegion(e.target.value || null)}
+                          data-testid="technique-region-select"
+                          title="Manual region override"
                         >
-                          change
-                        </button>
-                      </div>
-                    )}
+                          <option value="">
+                            {studySetup.availableRegions.length === 0 ? "No regions" : "Select region…"}
+                          </option>
+                          {studySetup.availableRegions.map((r) => (
+                            <option key={r} value={r}>{r}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="inline-flex items-center gap-1 text-muted-foreground">
+                        <span className="font-semibold">Protocol / technique</span>
+                        <select
+                          className="h-6 max-w-[14rem] rounded border bg-background px-1 text-[10px]"
+                          value={studySetup.activeProtocol?.id ?? ""}
+                          disabled={isLocked || isFinalized || studySetup.availableProtocols.length === 0}
+                          onChange={(e) => {
+                            const id = Number(e.target.value);
+                            const p = studySetup.availableProtocols.find((x) => x.id === id) ?? null;
+                            studySetup.requestProtocolChange(p);
+                          }}
+                          data-testid="technique-protocol-select"
+                          title="Manual protocol / technique override"
+                        >
+                          <option value="">
+                            {studySetup.availableProtocols.length === 0 ? "No protocols — set in Settings" : "Select protocol…"}
+                          </option>
+                          {studySetup.availableProtocols.map((p) => (
+                            <option key={p.id} value={p.id}>{p.name}{p.isDefault ? " ★" : ""}</option>
+                          ))}
+                        </select>
+                      </label>
+                      {studySetup.studyRegions.length > 0 && (
+                        <span className="rounded border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 font-semibold text-emerald-900">
+                          {studySetup.studyRegions.join(" + ")}
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        className="underline underline-offset-2 hover:text-foreground text-muted-foreground"
+                        onClick={() => setActiveReportSection("region")}
+                        title="Change region or protocol (Alt+3)"
+                      >
+                        regions
+                      </button>
+                    </div>
                     <div className="flex items-center gap-2" data-testid="canonical-technique-editor">
                       <div className="flex-1">
                         <FindingsEditor field="technique" label="Technique" minHeight="60px" placeholder="Modality, sequences, contrast..." />
@@ -3666,6 +3739,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       exportingPdf={exportingPdf}
                       printingLikeFinal={printingLikeFinal}
                       disabled={false}
+                      imageRefs={imageRefs}
+                      dicomWebBase={BROWSER_DICOMWEB_BASE}
                     />
                     </ReportAccordionSection>
                   </div>

@@ -200,12 +200,16 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     [modality, studyDescription, dicomBodyPart, studyRegions, regionOverrides, matchedStudyRegion],
   );
 
-  const availableProtocols = useMemo(
-    () => (quickSelectData?.protocols ?? [])
-      .filter((p) => p.isActive && studyRegions.includes(p.studyType))
-      .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name)),
-    [quickSelectData, studyRegions],
-  );
+  /** Protocols for the selected region(s). When no region is chosen yet, show
+   *  every active protocol so the radiologist can pick manually (selecting a
+   *  protocol then seeds the region from protocol.studyType). */
+  const availableProtocols = useMemo(() => {
+    const all = (quickSelectData?.protocols ?? [])
+      .filter((p) => p.isActive)
+      .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name));
+    if (studyRegions.length === 0) return all;
+    return all.filter((p) => studyRegions.includes(p.studyType));
+  }, [quickSelectData, studyRegions]);
 
   const selectedTemplate = useMemo(
     () => templates.find((t) => t.id === selectedTemplateId) ?? null,
@@ -283,8 +287,13 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
       setActiveProtocol(null);
       return;
     }
+    // Manual protocol pick before any region is resolved — seed the region
+    // so macros / templates / technique follow the chosen study type.
+    if (studyRegions.length === 0 && protocol.studyType?.trim()) {
+      setRegionOverrides([protocol.studyType.trim()]);
+    }
     applyProtocol(protocol, false);
-  }, [applyProtocol]);
+  }, [applyProtocol, studyRegions.length]);
 
   // Auto protocol once per study (after draft hydrate settles).
   useEffect(() => {
@@ -672,6 +681,22 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     setRegionOverrides(null);
   }, []);
 
+  /** Replace the region list with a single primary region (manual dropdown). */
+  const selectPrimaryRegion = useCallback((regionName: string | null) => {
+    if (disabled) return;
+    if (!regionName) {
+      setRegionOverrides(null);
+      return;
+    }
+    setRegionOverrides([regionName]);
+    const protocol = pickQuickProtocol(quickSelectData?.protocols ?? [], regionName);
+    if (protocol) applyProtocol(protocol, false);
+    const tab = quickSelectData?.tabs?.find((t) => t.name === regionName);
+    if (tab?.techniqueText) {
+      setters.mergeTechnique(tab.techniqueText, "protocol");
+    }
+  }, [disabled, quickSelectData, applyProtocol, setters]);
+
   return {
     studyHint,
     studyContext,
@@ -681,6 +706,7 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     regionOverrides,
     handleRegionToggle,
     resetRegionOverrides,
+    selectPrimaryRegion,
     availableRegions,
     availableProtocols,
     activeProtocol,
