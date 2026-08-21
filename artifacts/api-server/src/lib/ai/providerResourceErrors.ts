@@ -48,7 +48,7 @@ export function classifyResourceFailure(opts: {
   responseLength?: number | null;
   parserSuccess?: boolean | null;
   quarantined?: boolean | null;
-}): ClassifiedResourceFailure {
+}): GpuifiedResourceFailure {
   const msg = opts.errorMessage ?? "";
   const codeHint = opts.errorCode ?? "";
 

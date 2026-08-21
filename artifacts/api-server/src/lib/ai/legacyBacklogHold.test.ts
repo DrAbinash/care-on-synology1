@@ -9,6 +9,7 @@ import {
   resolveLegacyHoldClaimFilter,
   serializeOvernightOps,
   shouldBypassLegacyHoldForClaim,
+  type OvernightOpsControls,
 } from "./overnightOpsControls";
 
 describe("legacy backlog hold", () => {
@@ -59,7 +60,7 @@ describe("legacy backlog hold", () => {
   });
 
   it("released job id bypasses hold without deleting", () => {
-    let ops = {
+    let ops: OvernightOpsControls = {
       ...DEFAULT_OVERNIGHT_OPS,
       legacyBacklogHold: true,
       legacyHoldBefore: cutover.toISOString(),

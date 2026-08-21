@@ -307,8 +307,10 @@ describe.skipIf(!dbAvailable)("radiology job claim (FOR UPDATE SKIP LOCKED)", ()
       SELECT count(*)::int AS n FROM dicom_retry_queue
       WHERE id IN (${oldPending[0].id}, ${oldRetrying[0].id}, ${fresh[0].id})
     `);
-    const n = (remaining as { rows?: Array<{ n: number }> }).rows?.[0]?.n
-      ?? (Array.isArray(remaining) ? (remaining as Array<{ n: number }>)[0]?.n : 0);
+    const remainingRows = remaining as unknown as { rows?: Array<{ n: number }> } | Array<{ n: number }>;
+    const n = Array.isArray(remainingRows)
+      ? remainingRows[0]?.n
+      : remainingRows.rows?.[0]?.n;
     expect(n).toBe(3);
 
     await db.delete(dicomRetryQueueTable).where(eqCol(dicomRetryQueueTable.operationType, holdOp));

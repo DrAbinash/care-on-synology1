@@ -171,7 +171,7 @@ export const gatewayInferenceProvider: ShadowInferenceProvider = {
         prompt,
         promptVersion: P2_PROMPT_VERSION,
         images,
-        required: { vision: images.length > 0, structuredJson: true },
+        required: { vision: images.length > 0, groundedJson: true },
         timeoutMs: vision.policy.timeoutMs,
         maxAttempts: 1,
       },

@@ -239,7 +239,6 @@ aiClinicalRouter.post("/overnight-ops/legacy-backlog", async (req, res) => {
     releaseAllLegacyBacklogHold,
   } = await import("../lib/ai/clinicalConfigService");
   const { countLegacyBacklogHold } = await import("../lib/ai/legacyBacklogHold");
-  const { retryOvernightJobs } = await import("../lib/ai/overnightDraftQueue");
 
   if (parsed.data.action === "release_all") {
     const ops = await releaseAllLegacyBacklogHold(by);
