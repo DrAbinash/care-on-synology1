@@ -155,6 +155,86 @@ export async function unloadOllamaModel(opts: {
   }
 }
 
+function modelNameMatches(runnerName: string, target: string): boolean {
+  const a = runnerName.toLowerCase();
+  const b = target.toLowerCase();
+  return a === b || a.startsWith(`${b}:`) || b.startsWith(`${a}:`) || a.includes(b) || b.includes(a);
+}
+
+/** True when /api/ps shows no runner for the target model (or zero runners). */
+export function isModelAbsentFromPs(ps: OllamaPsSnapshot, model: string): boolean {
+  if (!ps.ok) return false;
+  if (ps.runnerCount === 0) return true;
+  return !ps.runners.some((r) => modelNameMatches(r.model, model));
+}
+
+/**
+ * Poll GET /api/ps until the model is absent (or timeout).
+ * Used by GPU/context clean-runner probes after unload.
+ */
+export async function waitUntilModelAbsent(opts: {
+  endpointUrl: string;
+  model: string;
+  timeoutMs?: number;
+  pollMs?: number;
+}): Promise<{
+  absent: boolean;
+  attempts: number;
+  elapsedMs: number;
+  lastPs: OllamaPsSnapshot;
+}> {
+  const timeoutMs = opts.timeoutMs ?? 20_000;
+  const pollMs = opts.pollMs ?? 500;
+  const t0 = Date.now();
+  let attempts = 0;
+  let lastPs = await fetchOllamaPs(opts.endpointUrl);
+  attempts += 1;
+  while (!isModelAbsentFromPs(lastPs, opts.model) && Date.now() - t0 < timeoutMs) {
+    await new Promise((r) => setTimeout(r, pollMs));
+    lastPs = await fetchOllamaPs(opts.endpointUrl);
+    attempts += 1;
+  }
+  return {
+    absent: isModelAbsentFromPs(lastPs, opts.model),
+    attempts,
+    elapsedMs: Date.now() - t0,
+    lastPs,
+  };
+}
+
+/** Unload then wait until /api/ps confirms the runner is gone. */
+export async function unloadAndWaitUntilAbsent(opts: {
+  endpointUrl: string;
+  model: string;
+  unloadTimeoutMs?: number;
+  waitTimeoutMs?: number;
+}): Promise<{
+  ok: boolean;
+  unload: Awaited<ReturnType<typeof unloadOllamaModel>>;
+  wait: Awaited<ReturnType<typeof waitUntilModelAbsent>>;
+  detail: string;
+}> {
+  const unload = await unloadOllamaModel({
+    endpointUrl: opts.endpointUrl,
+    model: opts.model,
+    timeoutMs: opts.unloadTimeoutMs,
+  });
+  const wait = await waitUntilModelAbsent({
+    endpointUrl: opts.endpointUrl,
+    model: opts.model,
+    timeoutMs: opts.waitTimeoutMs,
+  });
+  const ok = wait.absent;
+  return {
+    ok,
+    unload,
+    wait,
+    detail: ok
+      ? `unload+absent ok (${wait.elapsedMs}ms, ${wait.attempts} polls) · ${formatPsSummary(wait.lastPs)}`
+      : `unload ok=${unload.ok} but runner still present after ${wait.elapsedMs}ms · ${formatPsSummary(wait.lastPs)}`,
+  };
+}
+
 /** Compact one-line summary for step details / reports. */
 export function formatPsSummary(ps: OllamaPsSnapshot): string {
   if (!ps.ok) return `ps=FAIL(${ps.error ?? "unknown"})`;
