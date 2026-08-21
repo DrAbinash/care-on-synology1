@@ -8,6 +8,7 @@ export type RadiologyJobConsumerStatus =
   | "STOPPED"
   | "STALE"
   | "PEAK_HOLD"
+  | "HELD_LEGACY"
   | "STARVED";
 
 export type RadiologyJobConsumerHeartbeat = {
@@ -129,9 +130,29 @@ export function deriveRadiologyJobConsumerHealth(
     queueDepth: number;
     running: number;
     nightWindow: boolean;
+    /**
+     * Claimable (post–legacy-hold) due jobs. When provided, STARVED uses this
+     * instead of raw queueDepth / lastDueAi so held legacy backlog cannot
+     * paint the worker red.
+     */
+    eligibleDueAi?: number | null;
+    /** Pre-cutover held pending+retrying (informational). */
+    heldLegacyDue?: number | null;
   },
 ): { status: RadiologyJobConsumerStatus; detail: string } {
   const now = opts.now ?? new Date();
+  const eligibleDue =
+    opts.eligibleDueAi != null && Number.isFinite(opts.eligibleDueAi)
+      ? Math.max(0, Math.floor(opts.eligibleDueAi))
+      : null;
+  const heldLegacy =
+    opts.heldLegacyDue != null && Number.isFinite(opts.heldLegacyDue)
+      ? Math.max(0, Math.floor(opts.heldLegacyDue))
+      : 0;
+  // Prefer explicit eligible count; fall back to heartbeat lastDueAi then queueDepth.
+  const dueForStarve =
+    eligibleDue != null ? eligibleDue : (snap.lastDueAi ?? opts.queueDepth);
+
   if (!snap.registered) {
     return {
       status: "STOPPED",
@@ -172,17 +193,29 @@ export function deriveRadiologyJobConsumerHealth(
       detail: "Clinic peak hours — AI drain paused (concurrency 0); queued overnight jobs wait until peak ends",
     };
   }
+  // Held-only backlog is expected after cutover — not STARVED.
   if (
     opts.nightWindow
-    && opts.queueDepth > 0
+    && dueForStarve === 0
+    && heldLegacy > 0
     && opts.running === 0
-    && (snap.lastDueAi ?? 0) > 0
+    && !snap.lastAiBlocked
+  ) {
+    return {
+      status: "HELD_LEGACY",
+      detail: `HELD LEGACY — ${heldLegacy} pre-cutover job(s) held; 0 eligible to claim (expected, healthy)`,
+    };
+  }
+  if (
+    opts.nightWindow
+    && dueForStarve > 0
+    && opts.running === 0
     && !snap.lastAiBlocked
     && snap.lastRan === 0
   ) {
     return {
       status: "STARVED",
-      detail: `${snap.lastDueAi} due AI job(s) and running=0 after a live poll that claimed nothing — claim path did not start a shadow job`,
+      detail: `${dueForStarve} eligible due AI job(s) and running=0 after a live poll that claimed nothing — claim path did not start a shadow job`,
     };
   }
   return {

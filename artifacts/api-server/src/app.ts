@@ -4,6 +4,8 @@ import { existsSync } from "node:fs";
 import express, { type Express, type Request, type Response, type NextFunction } from "express";
 import cors from "cors";
 import pinoHttp from "pino-http";
+// Bind before routes module graph finishes constructing request handlers.
+import "./bootstrapLocalAi";
 import router from "./routes";
 import { logger } from "./lib/logger";
 import { errorHandler } from "./middleware/errorHandler";

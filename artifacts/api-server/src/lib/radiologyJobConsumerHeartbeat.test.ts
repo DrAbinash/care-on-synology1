@@ -75,7 +75,7 @@ describe("radiology job consumer heartbeat", () => {
     expect(r.status).toBe("PEAK_HOLD");
   });
 
-  it("is STARVED when a live night poll sees due AI jobs but running=0", () => {
+  it("is STARVED when a live night poll sees eligible due AI jobs but running=0", () => {
     markRadiologyJobConsumerRegistered(new Date("2026-08-17T20:00:00Z"));
     recordRadiologyJobCronTick({
       at: new Date("2026-08-17T20:01:00Z"),
@@ -88,10 +88,32 @@ describe("radiology job consumer heartbeat", () => {
       queueDepth: 3693,
       running: 0,
       nightWindow: true,
+      eligibleDueAi: 20,
+      heldLegacyDue: 0,
       now: new Date("2026-08-17T20:01:10Z"),
     });
     expect(r.status).toBe("STARVED");
-    expect(r.detail).toMatch(/due AI/i);
+    expect(r.detail).toMatch(/eligible/i);
+  });
+
+  it("is HELD_LEGACY (not STARVED) when only pre-cutover held jobs remain", () => {
+    markRadiologyJobConsumerRegistered(new Date("2026-08-17T20:00:00Z"));
+    recordRadiologyJobCronTick({
+      at: new Date("2026-08-17T20:01:00Z"),
+      peak: false,
+      aiBlocked: false,
+      dueAi: 0,
+      ran: 0,
+    });
+    const r = deriveRadiologyJobConsumerHealth(getRadiologyJobConsumerHeartbeat(), {
+      queueDepth: 2455,
+      running: 0,
+      nightWindow: true,
+      eligibleDueAi: 0,
+      heldLegacyDue: 2455,
+      now: new Date("2026-08-17T20:01:10Z"),
+    });
+    expect(r.status).toBe("HELD_LEGACY");
   });
 
   it("is HEALTHY when lastRan>0 even if due jobs remain (short fail is still progress)", () => {

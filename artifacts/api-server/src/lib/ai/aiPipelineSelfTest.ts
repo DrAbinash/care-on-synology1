@@ -1,13 +1,12 @@
 /**
  * One-click AI Pipeline Self-Test — diagnostic only.
  *
- * Probes (sequential):
- *   Direct /api/generate (1 img)
- *   Direct /api/chat production-shaped (1 img)
- *   Provider-only generateAiForTask (1 img) — stop before parser
- *   Provider-only generateAiForTask (up to 6 imgs)
- *   Full CARE draft path (1 img) — parse sections
- *   Full CARE draft path (up to 6 imgs)
+ * Probe order (fail-closed):
+ *   Endpoint resolution invariant (health = inference = overnight)
+ *   → Ollama health → Orthanc health → image fetch
+ *   → Direct 1-image /api/generate + /api/chat
+ *   → Provider 1-image → CARE 1-image
+ *   → only then context / residency / scaling probes
  *
  * Never creates/finalizes clinical reports, never bulk-enqueues.
  */
@@ -20,9 +19,11 @@ import {
   CANONICAL_LOCAL_CHAT_VISION_MODEL,
   CANONICAL_OLLAMA_ENDPOINT,
   estimateBase64DecodedBytes,
+  formatFetchNetworkError,
   generateAiForTask,
   loadProviderConfig,
   probeOllamaReachable,
+  resolveOllamaInferenceEndpoint,
   resolveTaskRoute,
 } from "@workspace/ai-providers";
 import { resolveLocalAiRuntime } from "../aiPipeline/runtimeConfig";
@@ -58,6 +59,8 @@ import {
 } from "./ollamaRunnerDiagnostics";
 import { summarizeVisionTokenBudget, suggestDiagnosticNumCtx } from "./visionImageTokens";
 import { auditOvernightImageSelection } from "./mriSeriesSelectionDesign";
+import { assertEndpointResolutionIdentity } from "./endpointResolutionInvariant";
+import { getOvernightVisionInferenceOptions } from "./overnightVisionConfig";
 
 export type SelfTestStepStatus = "pending" | "running" | "pass" | "fail" | "skip";
 
@@ -486,7 +489,9 @@ async function directGenerate(opts: {
       loadDurationNs: null,
       promptEvalCount: null,
       evalCount: null,
-      error: err instanceof Error ? err.message.slice(0, 300) : String(err).slice(0, 300),
+      error: err instanceof Error
+        ? formatFetchNetworkError(err, `${opts.endpoint.replace(/\/$/, "")}/api/generate`).slice(0, 300)
+        : String(err).slice(0, 300),
     };
   }
 }
@@ -593,7 +598,9 @@ async function directChatProductionShaped(opts: {
       loadDurationNs: null,
       promptEvalCount: null,
       evalCount: null,
-      error: err instanceof Error ? err.message.slice(0, 300) : String(err).slice(0, 300),
+      error: err instanceof Error
+        ? formatFetchNetworkError(err, `${opts.endpoint.replace(/\/$/, "")}/api/chat`).slice(0, 300)
+        : String(err).slice(0, 300),
     };
   }
 }
@@ -968,6 +975,67 @@ async function executeSelfTest(job: JobRecord, opts: { studyInstanceUid?: string
       detail: `Ollama ${endpoint} · model ${model} · Orthanc ${orthancBase ?? "MISSING"} · configuredNumCtx=${runtime.ollamaNumCtx} · draftNumCtx→${draftCtxPlan.requestedNumCtx} · overnightMaxImages→${overnightBudget.maxImages}`,
     });
 
+    // ── Fail-closed: health / inference / overnight must resolve identical endpoint ──
+    upsertStep(job, {
+      id: "endpoint-invariant",
+      group: "Runtime",
+      name: "Endpoint resolution invariant",
+      status: "running",
+      detail: "Comparing health / inference / overnight…",
+    });
+    const inferenceResolved = await resolveOllamaInferenceEndpoint();
+    const overnightVision = await getOvernightVisionInferenceOptions();
+    let providerMirrorEndpoint: string | null = null;
+    try {
+      const { getProviderEndpointUrl } = await import("@workspace/ai-providers");
+      providerMirrorEndpoint = (await getProviderEndpointUrl("ollama"))?.replace(/\/$/, "") || null;
+    } catch {
+      providerMirrorEndpoint = null;
+    }
+    const endpointInvariant = assertEndpointResolutionIdentity({
+      resolvedHealthEndpoint: endpoint,
+      resolvedInferenceEndpoint: inferenceResolved.endpointUrl,
+      resolvedOvernightEndpoint: overnightVision.endpointUrl,
+    });
+    const mirrorNorm = providerMirrorEndpoint?.replace(/\/$/, "").toLowerCase() ?? null;
+    const clinicNorm = endpoint.replace(/\/$/, "").toLowerCase();
+    technical.endpointResolution = {
+      resolvedHealthEndpoint: endpoint,
+      resolvedInferenceEndpoint: inferenceResolved.endpointUrl,
+      resolvedOvernightEndpoint: overnightVision.endpointUrl,
+      canonicalClinicEndpoint: endpoint,
+      providerMirrorEndpoint,
+      effectiveInferenceEndpoint: inferenceResolved.endpointUrl,
+      providerMirrorStatus:
+        mirrorNorm && mirrorNorm !== clinicNorm ? "STALE MIRROR — ignored" : mirrorNorm ? "in_sync" : "unavailable",
+      inferenceSource: inferenceResolved.source,
+      rejectedCandidate: inferenceResolved.rejectedCandidate,
+      rejectReason: inferenceResolved.rejectReason,
+      invariant: endpointInvariant,
+    };
+    if (!endpointInvariant.ok) {
+      upsertStep(job, {
+        id: "endpoint-invariant",
+        group: "Runtime",
+        name: "Endpoint resolution invariant",
+        status: "fail",
+        detail: `ENDPOINT_RESOLUTION_MISMATCH · health=${endpointInvariant.resolvedHealthEndpoint} · inference=${endpointInvariant.resolvedInferenceEndpoint} · overnight=${endpointInvariant.resolvedOvernightEndpoint}`,
+      });
+      job.final = "FAIL";
+      job.summary =
+        "FAIL — ENDPOINT_RESOLUTION_MISMATCH (aborted before image/GPU probes). " +
+        `health=${endpointInvariant.resolvedHealthEndpoint} inference=${endpointInvariant.resolvedInferenceEndpoint} overnight=${endpointInvariant.resolvedOvernightEndpoint}`;
+      job.technical = technical;
+      return;
+    }
+    upsertStep(job, {
+      id: "endpoint-invariant",
+      group: "Runtime",
+      name: "Endpoint resolution invariant",
+      status: "pass",
+      detail: `Identical endpoint ${endpoint}`,
+    });
+
     upsertStep(job, {
       id: "ollama-health",
       group: "Runtime",
@@ -1273,6 +1341,32 @@ async function executeSelfTest(job: JobRecord, opts: { studyInstanceUid?: string
 
     let gpuOomSeen = p1.errorCode === "GPU_OUT_OF_MEMORY";
 
+    // CARE 1-image — before any multi-image / context / residency scaling probes
+    upsertStep(job, {
+      id: "full-1",
+      group: "Full CARE pipeline",
+      name: "draft path 1 image",
+      status: "running",
+      detail: "…",
+    });
+    const f1 = await runGenerateAiForTaskProbe({
+      label: "Full CARE pipeline 1 image",
+      model,
+      endpointUrl: endpoint,
+      images: img1,
+      imageFetchMs: fetched.fetchElapsedMs,
+      imageFetchOk: true,
+      fullPipeline: true,
+      numCtx: prod1Ctx.requestedNumCtx,
+      configuredNumCtx: runtime.ollamaNumCtx,
+      infraPrompt: false,
+      captureRunners: true,
+      unloadBefore: true,
+    });
+    probes.push(f1);
+    upsertStep(job, probeToStep(f1, "Full CARE pipeline", "full-1", "draft path 1 image"));
+    gpuOomSeen = gpuOomSeen || f1.errorCode === "GPU_OUT_OF_MEMORY";
+
     // D. Provider-only up to 6 — LEGACY (num_ctx NOT sent) to prove CONTEXT_BUDGET_EXCEEDED
     upsertStep(job, {
       id: "provider-6-legacy",
@@ -1476,7 +1570,6 @@ async function executeSelfTest(job: JobRecord, opts: { studyInstanceUid?: string
       status: "running",
       detail: "resolveProductionOvernightVisionPolicy → preflight → gateway",
     });
-    const { getOvernightVisionInferenceOptions } = await import("./overnightVisionConfig");
     const { preflightReduceImagesForContext } = await import("./productionVisionPolicy");
     const { gatewayInferenceProvider } = await import("./gatewayInferenceProvider");
     const overnight = await getOvernightVisionInferenceOptions(true);
@@ -1680,30 +1773,7 @@ async function executeSelfTest(job: JobRecord, opts: { studyInstanceUid?: string
       }),
     });
 
-    // H. Full CARE 1 image — uses real DRAFT_PROMPT (clinical contract)
-    upsertStep(job, {
-      id: "full-1",
-      group: "Full CARE pipeline",
-      name: "draft path 1 image",
-      status: "running",
-      detail: "…",
-    });
-    const f1 = await runGenerateAiForTaskProbe({
-      label: "Full CARE pipeline 1 image",
-      model,
-      endpointUrl: endpoint,
-      images: img1,
-      imageFetchMs: fetched.fetchElapsedMs,
-      imageFetchOk: true,
-      fullPipeline: true,
-      numCtx: prod1Ctx.requestedNumCtx,
-      configuredNumCtx: runtime.ollamaNumCtx,
-      infraPrompt: false,
-      captureRunners: true,
-      unloadBefore: true,
-    });
-    probes.push(f1);
-    upsertStep(job, probeToStep(f1, "Full CARE pipeline", "full-1", "draft path 1 image"));
+    // H. Full CARE 1 image already ran before context/residency scaling (see above).
 
     // I. Full CARE up to 6 with production num_ctx
     let f6: PathProbeResult;
