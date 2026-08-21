@@ -46,6 +46,18 @@ import {
   parseOllamaContextExceeded,
   resolveInteractiveDraftNumCtx,
 } from "./contextBudget";
+import {
+  classifyResourceFailure,
+  parseGpuOutOfMemory,
+} from "./providerResourceErrors";
+import {
+  fetchOllamaPs,
+  formatPsSummary,
+  unloadOllamaModel,
+  type OllamaPsSnapshot,
+} from "./ollamaRunnerDiagnostics";
+import { summarizeVisionTokenBudget, suggestDiagnosticNumCtx } from "./visionImageTokens";
+import { auditOvernightImageSelection } from "./mriSeriesSelectionDesign";
 
 export type SelfTestStepStatus = "pending" | "running" | "pass" | "fail" | "skip";
 
@@ -79,8 +91,11 @@ const JOBS = new Map<string, JobRecord>();
 const JOB_TTL_MS = 60 * 60 * 1000;
 const MAX_JOBS = 20;
 
-const CONNECTIVITY_PROMPT =
-  "This is a connectivity test. Confirm that you can see and analyze the supplied medical image. Do not provide a diagnosis.";
+/** Short connectivity / residency probe — avoid burning hundreds of output tokens. */
+const INFRA_PROBE_PROMPT = [
+  "Infrastructure probe only. Look at the supplied medical image(s).",
+  'Return ONLY compact JSON, no other text: {"image_visible":true,"modality":"MRI"}',
+].join(" ");
 
 /** Same instruction block as POST /api/ai-reporting/draft (production-shaped). */
 const DRAFT_PROMPT = [
@@ -94,6 +109,9 @@ const DRAFT_PROMPT = [
   "",
   "This is a diagnostic self-test. Do not invent patient demographics.",
 ].join("\n");
+
+/** Cap diagnostic generation so infra probes stay cheap. */
+const INFRA_NUM_PREDICT = 48;
 
 function upsertStep(job: JobRecord, step: SelfTestStep): void {
   const idx = job.steps.findIndex((s) => s.id === step.id);
@@ -227,6 +245,8 @@ export interface SelectedImageMeta {
   instanceUid: string;
   seriesDescription: string;
   byteSize: number;
+  width: number | null;
+  height: number | null;
   selectionReason: string;
   jpegBase64: string;
 }
@@ -246,6 +266,12 @@ async function fetchDraftShapedImages(
   totalImageBytes: number;
   detail: string;
   fetchElapsedMs: number;
+  seriesForAudit: Array<{
+    seriesUid: string;
+    seriesNumber: number | null;
+    seriesDescription: string | null;
+    instanceCount: number;
+  }>;
 }> {
   const t0 = Date.now();
   const base = orthancBase.replace(/\/$/, "");
@@ -258,6 +284,12 @@ async function fetchDraftShapedImages(
     totalImageBytes: 0,
     detail: "fetch failed",
     fetchElapsedMs: 0,
+    seriesForAudit: [] as Array<{
+      seriesUid: string;
+      seriesNumber: number | null;
+      seriesDescription: string | null;
+      instanceCount: number;
+    }>,
   };
 
   const seriesResp = await fetch(`${dicomWeb}/studies/${encodeURIComponent(studyUid)}/series`, {
@@ -274,14 +306,21 @@ async function fetchDraftShapedImages(
   }
 
   const images: SelectedImageMeta[] = [];
+  const seriesForAudit: Array<{
+    seriesUid: string;
+    seriesNumber: number | null;
+    seriesDescription: string | null;
+    instanceCount: number;
+  }> = [];
   const cap = Math.min(maxImages, 20);
 
   for (const series of seriesList) {
-    if (images.length >= cap) break;
     const seriesUID = tagStr(series, "0020000E");
     if (!seriesUID) continue;
     const seriesDescription =
       tagStr(series, "0008103E") || tagStr(series, "00080060") || "series";
+    const seriesNumberRaw = tagStr(series, "00200011");
+    const seriesNumber = seriesNumberRaw ? Number(seriesNumberRaw) : null;
 
     const instancesResp = await fetch(
       `${dicomWeb}/studies/${encodeURIComponent(studyUid)}/series/${encodeURIComponent(seriesUID)}/instances`,
@@ -289,6 +328,13 @@ async function fetchDraftShapedImages(
     ).catch(() => null);
     if (!instancesResp?.ok) continue;
     const instances = (await instancesResp.json().catch(() => [])) as DcmEntry[];
+    seriesForAudit.push({
+      seriesUid: seriesUID,
+      seriesNumber: Number.isFinite(seriesNumber) ? seriesNumber : null,
+      seriesDescription: seriesDescription.slice(0, 120),
+      instanceCount: instances.length,
+    });
+    if (images.length >= cap) continue;
     if (!instances.length) continue;
 
     const midIdx = Math.floor(instances.length / 2);
@@ -306,12 +352,17 @@ async function fetchDraftShapedImages(
       const rawArr = new Uint8Array(await rendered.arrayBuffer());
       let b64: string;
       let byteLen = rawArr.byteLength;
+      let width: number | null = null;
+      let height: number | null = null;
       try {
         const sharp = (await import("sharp")).default;
         const resized = await sharp(rawArr)
           .resize({ width: 512, withoutEnlargement: true })
           .jpeg({ quality: 80 })
           .toBuffer();
+        const meta = await sharp(resized).metadata();
+        width = meta.width ?? null;
+        height = meta.height ?? null;
         b64 = resized.toString("base64");
         byteLen = resized.byteLength;
       } catch {
@@ -322,6 +373,8 @@ async function fetchDraftShapedImages(
         instanceUid: instanceUID,
         seriesDescription: seriesDescription.slice(0, 120),
         byteSize: byteLen,
+        width,
+        height,
         selectionReason: `middle slice of series (${midIdx + 1}/${instances.length} instances)`,
         jpegBase64: b64,
       });
@@ -340,6 +393,7 @@ async function fetchDraftShapedImages(
       ? `selected ${images.length}/${cap} (series available ${seriesList.length})`
       : "no rendered images",
     fetchElapsedMs: Date.now() - t0,
+    seriesForAudit,
   };
 }
 
@@ -363,10 +417,11 @@ async function directGenerate(opts: {
 }> {
   const body = {
     model: opts.model,
-    prompt: CONNECTIVITY_PROMPT,
+    prompt: INFRA_PROBE_PROMPT,
     images: [opts.jpegBase64],
     stream: false,
     think: false,
+    options: { num_predict: INFRA_NUM_PREDICT },
   };
   const bodyJson = JSON.stringify(body);
   const t0 = Date.now();
@@ -462,8 +517,9 @@ async function directChatProductionShaped(opts: {
   // Draft path currently omits `think` entirely (options = { model } only).
   const payload = buildOllamaChatPayload({
     model: opts.model,
-    prompt: CONNECTIVITY_PROMPT,
+    prompt: INFRA_PROBE_PROMPT,
     images: [opts.jpegBase64],
+    maxTokens: INFRA_NUM_PREDICT,
     ...(opts.matchDraftThink === false ? { think: false as const } : {}),
   });
   const thinkSent = Object.prototype.hasOwnProperty.call(payload, "think");
@@ -553,8 +609,21 @@ async function runGenerateAiForTaskProbe(opts: {
   /** When undefined, omit num_ctx (legacy draft bug). When set, send options.num_ctx. */
   numCtx?: number | null;
   configuredNumCtx?: number | null;
+  /** Use short INFRA_PROBE_PROMPT + tiny num_predict (default true for provider-only). */
+  infraPrompt?: boolean;
+  /** Capture /api/ps before & after; optional unload before request. */
+  captureRunners?: boolean;
+  unloadBefore?: boolean;
 }): Promise<PathProbeResult> {
+  const probeStartedAt = new Date().toISOString();
   const imageBytes = opts.images.reduce((s, i) => s + estimateBase64DecodedBytes(i), 0);
+  const useInfra = opts.infraPrompt ?? !opts.fullPipeline;
+  const prompt = useInfra ? INFRA_PROBE_PROMPT : DRAFT_PROMPT;
+  const estimatedRequestTokens = estimateVisionPromptTokens({
+    imageCount: opts.images.length,
+    promptLength: prompt.length,
+  });
+
   if (!opts.imageFetchOk || opts.images.length === 0) {
     const stages = opts.fullPipeline
       ? buildFullCareStages({
@@ -576,6 +645,7 @@ async function runGenerateAiForTaskProbe(opts: {
           httpStatus: null,
           safeError: "no images",
         });
+    const probeCompletedAt = new Date().toISOString();
     return {
       label: opts.label,
       pass: false,
@@ -593,14 +663,33 @@ async function runGenerateAiForTaskProbe(opts: {
       stages,
       configuredNumCtx: opts.configuredNumCtx ?? null,
       requestedNumCtx: opts.numCtx ?? null,
+      estimatedRequestTokens,
+      usableOutput: false,
+      timing: {
+        probeStartedAt,
+        providerRequestStartedAt: null,
+        providerCompletedAt: null,
+        probeCompletedAt,
+      },
     };
   }
 
-  const t0 = Date.now();
+  let runnersBefore: OllamaPsSnapshot | null = null;
+  let runnersAfter: OllamaPsSnapshot | null = null;
+  if (opts.captureRunners || opts.unloadBefore) {
+    runnersBefore = await fetchOllamaPs(opts.endpointUrl);
+  }
+  if (opts.unloadBefore) {
+    await unloadOllamaModel({ endpointUrl: opts.endpointUrl, model: opts.model });
+    runnersBefore = await fetchOllamaPs(opts.endpointUrl);
+  }
+
   const callOpts: {
     model: string;
     endpointUrl: string;
     numCtx?: number;
+    maxTokens?: number;
+    think?: boolean;
   } = {
     model: opts.model,
     endpointUrl: opts.endpointUrl,
@@ -608,19 +697,66 @@ async function runGenerateAiForTaskProbe(opts: {
   if (opts.numCtx != null && Number.isFinite(opts.numCtx)) {
     callOpts.numCtx = Math.floor(opts.numCtx);
   }
-  const aiResult = await generateAiForTask("radiology_draft", DRAFT_PROMPT, opts.images, callOpts);
+  if (useInfra) {
+    callOpts.maxTokens = INFRA_NUM_PREDICT;
+    callOpts.think = false;
+  }
+
+  const providerRequestStartedAt = new Date().toISOString();
+  const t0 = Date.now();
+  const aiResult = await generateAiForTask(
+    "radiology_draft",
+    prompt,
+    opts.images,
+    callOpts,
+  );
+  const providerCompletedAt = new Date().toISOString();
   const elapsedMs = Date.now() - t0;
+
+  if (opts.captureRunners || opts.unloadBefore) {
+    runnersAfter = await fetchOllamaPs(opts.endpointUrl);
+  }
+
   const d = aiResult.diagnostics;
   const providerReturned = aiResult.success;
-  const parsed = providerReturned ? parseDraftSections(aiResult.text ?? "") : null;
+  const parsed = providerReturned && !useInfra ? parseDraftSections(aiResult.text ?? "") : null;
   const ctxErr = parseOllamaContextExceeded(aiResult.error ?? d?.errorMessage ?? "");
-  const errorCode = d?.errorCode ?? (ctxErr ? "CONTEXT_BUDGET_EXCEEDED" : null);
+  const gpuErr = parseGpuOutOfMemory(aiResult.error ?? d?.errorMessage ?? "");
+  const classified = classifyResourceFailure({
+    success: providerReturned,
+    httpStatus: d?.httpStatus ?? null,
+    errorCode: d?.errorCode ?? (ctxErr ? "CONTEXT_BUDGET_EXCEEDED" : gpuErr ? "GPU_OUT_OF_MEMORY" : null),
+    errorMessage: aiResult.error ?? d?.errorMessage ?? null,
+    responseLength: d?.responseLength ?? (aiResult.text?.length ?? 0),
+    parserSuccess: parsed?.parserSuccess ?? null,
+  });
+  const errorCode =
+    classified.code === "OK" || classified.code === "UNKNOWN"
+      ? d?.errorCode ?? (ctxErr ? "CONTEXT_BUDGET_EXCEEDED" : gpuErr ? "GPU_OUT_OF_MEMORY" : null)
+      : classified.code;
+
+  let usableOutput: boolean | null = null;
+  if (providerReturned && useInfra) {
+    const text = (aiResult.text ?? "").trim();
+    usableOutput =
+      /"image_visible"\s*:\s*true/i.test(text) ||
+      (/image_visible/i.test(text) && text.length > 0) ||
+      text.length >= 8;
+  } else if (providerReturned && parsed) {
+    usableOutput = parsed.parserSuccess && parsed.candidateCount > 0;
+  } else {
+    usableOutput = false;
+  }
+
   const safeError = providerReturned
     ? null
     : errorCode === "CONTEXT_BUDGET_EXCEEDED"
       ? `CONTEXT_BUDGET_EXCEEDED requestTokens=${d?.ollamaRequestTokens ?? ctxErr?.requestTokens} availableContext=${d?.ollamaAvailableContext ?? ctxErr?.availableContext}`
-      : (d?.errorMessage ?? aiResult.error ?? "provider failed").slice(0, 400);
+      : errorCode === "GPU_OUT_OF_MEMORY"
+        ? `GPU_OUT_OF_MEMORY ${(aiResult.error ?? d?.errorMessage ?? "").slice(0, 220)}`
+        : (d?.errorMessage ?? aiResult.error ?? "provider failed").slice(0, 400);
 
+  const probeCompletedAt = new Date().toISOString();
   const common = {
     model: d?.model ?? opts.model,
     endpoint: d?.resolvedEndpoint ?? opts.endpointUrl,
@@ -643,6 +779,16 @@ async function runGenerateAiForTaskProbe(opts: {
     ollamaAvailableContext: d?.ollamaAvailableContext ?? ctxErr?.availableContext ?? null,
     ollamaRequestTokens: d?.ollamaRequestTokens ?? ctxErr?.requestTokens ?? null,
     errorCode,
+    estimatedRequestTokens,
+    usableOutput,
+    timing: {
+      probeStartedAt,
+      providerRequestStartedAt,
+      providerCompletedAt,
+      probeCompletedAt,
+    },
+    runnersBefore: runnersBefore ?? undefined,
+    runnersAfter: runnersAfter ?? undefined,
   };
 
   if (!opts.fullPipeline) {
@@ -656,7 +802,7 @@ async function runGenerateAiForTaskProbe(opts: {
     });
     return {
       label: opts.label,
-      pass: providerReturned,
+      pass: providerReturned && (usableOutput !== false),
       parserSuccess: null,
       candidateCount: null,
       safeError,
@@ -700,6 +846,12 @@ function probeToStep(probe: PathProbeResult, group: string, id: string, name: st
     .map((s) => `${s.id}: ${s.detail}`)
     .slice(0, 2)
     .join("; ");
+  const psBefore = probe.runnersBefore
+    ? formatPsSummary(probe.runnersBefore as OllamaPsSnapshot)
+    : null;
+  const psAfter = probe.runnersAfter
+    ? formatPsSummary(probe.runnersAfter as OllamaPsSnapshot)
+    : null;
   return {
     id,
     group,
@@ -708,23 +860,52 @@ function probeToStep(probe: PathProbeResult, group: string, id: string, name: st
     elapsedMs: probe.elapsedMs,
     detail: [
       probe.pass ? "PASS" : "FAIL",
-      probe.errorCode === "CONTEXT_BUDGET_EXCEEDED" ? "CONTEXT_BUDGET_EXCEEDED" : null,
+      probe.errorCode && probe.errorCode !== "OK" ? probe.errorCode : null,
       `images=${probe.imageCount}`,
       `bytes=${probe.totalImageBytes}`,
       probe.requestBodyBytes != null ? `bodyBytes=${probe.requestBodyBytes}` : null,
       `requestedNumCtx=${probe.requestedNumCtx ?? "NOT_SENT"}`,
+      probe.estimatedRequestTokens != null ? `estTokens=${probe.estimatedRequestTokens}` : null,
       probe.ollamaRequestTokens != null ? `requestTokens=${probe.ollamaRequestTokens}` : null,
       probe.ollamaAvailableContext != null ? `availableCtx=${probe.ollamaAvailableContext}` : null,
       `HTTP ${probe.httpStatus ?? "?"}`,
       `respLen=${probe.responseLength}`,
+      probe.ollamaEvalCount != null ? `eval=${probe.ollamaEvalCount}` : null,
+      probe.usableOutput != null ? `usable=${probe.usableOutput}` : null,
       probe.parserSuccess != null ? `parser=${probe.parserSuccess}` : null,
       probe.candidateCount != null ? `candidates=${probe.candidateCount}` : null,
+      probe.timing
+        ? `t0=${probe.timing.probeStartedAt} req=${probe.timing.providerRequestStartedAt} done=${probe.timing.providerCompletedAt} end=${probe.timing.probeCompletedAt}`
+        : null,
+      psBefore,
+      psAfter,
       probe.safeError,
       stageHint || null,
     ]
       .filter(Boolean)
       .join(" · "),
   };
+}
+
+/** Assert sequential await: previous probe completed before next started. */
+function assertSequentialProbeTimings(probes: PathProbeResult[]): {
+  ok: boolean;
+  violations: string[];
+} {
+  const violations: string[] = [];
+  for (let i = 1; i < probes.length; i++) {
+    const prev = probes[i - 1]!;
+    const cur = probes[i]!;
+    const prevEnd = prev.timing?.probeCompletedAt;
+    const curStart = cur.timing?.probeStartedAt;
+    if (!prevEnd || !curStart) continue;
+    if (new Date(curStart).getTime() < new Date(prevEnd).getTime()) {
+      violations.push(
+        `overlap: "${cur.label}" started ${curStart} before "${prev.label}" completed ${prevEnd}`,
+      );
+    }
+  }
+  return { ok: violations.length === 0, violations };
 }
 
 async function executeSelfTest(job: JobRecord, opts: { studyInstanceUid?: string }): Promise<void> {
@@ -882,17 +1063,44 @@ async function executeSelfTest(job: JobRecord, opts: { studyInstanceUid?: string
       detail: "Fetching up to 6 middle-slice JPEGs…",
     });
     const fetched = await fetchDraftShapedImages(orthancBase, study.studyInstanceUid, 6);
+    const visionTokenSummary = summarizeVisionTokenBudget({
+      imageCount: fetched.images.length,
+      dimensions: fetched.images.map((i) => ({
+        width: i.width,
+        height: i.height,
+        byteSize: i.byteSize,
+      })),
+    });
     technical.imageSelection = {
       seriesCount: fetched.seriesCount,
       selectedCount: fetched.images.length,
       totalImageBytes: fetched.totalImageBytes,
       perImageByteSizes: fetched.images.map((i) => i.byteSize),
+      perImageDimensions: fetched.images.map((i) => ({
+        width: i.width,
+        height: i.height,
+        bytes: i.byteSize,
+        seriesDescription: i.seriesDescription,
+      })),
       seriesDescriptions: fetched.images.map((i) => i.seriesDescription),
       selectionReasons: fetched.images.map((i) => i.selectionReason),
       seriesUids: fetched.images.map((i) => i.seriesUid),
       instanceUids: fetched.images.map((i) => i.instanceUid),
       fetchElapsedMs: fetched.fetchElapsedMs,
       detail: fetched.detail,
+      visionTokenSummary,
+      note: "JPEG byte size is not the context budget; see visionTokenSummary.",
+    };
+    technical.overnightSelectionAudit = auditOvernightImageSelection({
+      modality: study.modality,
+      contextBudgetMaxImages: overnightBudget.maxImages,
+      series: fetched.seriesForAudit,
+    });
+    technical.productionDefaultsUnchanged = {
+      interactiveDraftStillPrefers8192: true,
+      overnightConfiguredNumCtx: runtime.ollamaNumCtx,
+      numCtx16384NotForcedAsFix: true,
+      note: "Do NOT treat a single 16384 PASS after 8192 OOM as proof that 16384 is the correct default.",
     };
     upsertStep(job, {
       id: "image-fetch",
@@ -900,7 +1108,9 @@ async function executeSelfTest(job: JobRecord, opts: { studyInstanceUid?: string
       name: "Draft-shaped image selection",
       status: fetched.ok ? "pass" : "fail",
       detail: fetched.ok
-        ? `${fetched.images.length} images · ${Math.round(fetched.totalImageBytes / 1024)} KB total · ${fetched.seriesCount} series in study`
+        ? `${fetched.images.length} images · ${Math.round(fetched.totalImageBytes / 1024)} KB total · dims ${fetched.images
+            .map((i) => `${i.width ?? "?"}x${i.height ?? "?"}`)
+            .join(",")} · estTokens≈${visionTokenSummary.empiricalEstimateTokens} · ${fetched.seriesCount} series`
         : fetched.detail,
       elapsedMs: fetched.fetchElapsedMs,
     });
@@ -914,6 +1124,16 @@ async function executeSelfTest(job: JobRecord, opts: { studyInstanceUid?: string
     const img6 = fetched.images.map((i) => i.jpegBase64);
     const bytes1 = fetched.images[0]!.byteSize;
 
+    const baselinePs = await fetchOllamaPs(endpoint);
+    technical.ollamaPsBaseline = baselinePs;
+    upsertStep(job, {
+      id: "ollama-ps-baseline",
+      group: "Runtime",
+      name: "Ollama /api/ps baseline",
+      status: baselinePs.ok ? "pass" : "fail",
+      detail: formatPsSummary(baselinePs),
+    });
+
     // A. Direct /api/generate 1 image
     upsertStep(job, {
       id: "direct-generate",
@@ -922,7 +1142,9 @@ async function executeSelfTest(job: JobRecord, opts: { studyInstanceUid?: string
       status: "running",
       detail: "…",
     });
+    const genStarted = new Date().toISOString();
     const gen = await directGenerate({ endpoint, model, jpegBase64: img1[0]! });
+    const genDone = new Date().toISOString();
     const genProbe: PathProbeResult = {
       label: "Direct /api/generate 1 image",
       pass: gen.ok,
@@ -946,6 +1168,13 @@ async function executeSelfTest(job: JobRecord, opts: { studyInstanceUid?: string
       ollamaLoadDurationNs: gen.loadDurationNs,
       ollamaPromptEvalCount: gen.promptEvalCount,
       ollamaEvalCount: gen.evalCount,
+      usableOutput: gen.ok,
+      timing: {
+        probeStartedAt: genStarted,
+        providerRequestStartedAt: genStarted,
+        providerCompletedAt: genDone,
+        probeCompletedAt: genDone,
+      },
     };
     probes.push(genProbe);
     upsertStep(job, probeToStep(genProbe, "Direct Ollama", "direct-generate", "/api/generate 1 image"));
@@ -958,12 +1187,14 @@ async function executeSelfTest(job: JobRecord, opts: { studyInstanceUid?: string
       status: "running",
       detail: "…",
     });
+    const chatStarted = new Date().toISOString();
     const chat = await directChatProductionShaped({
       endpoint,
       model,
       jpegBase64: img1[0]!,
       matchDraftThink: true,
     });
+    const chatDone = new Date().toISOString();
     const chatProbe: PathProbeResult = {
       label: "Direct /api/chat 1 image (draft-shaped)",
       pass: chat.ok,
@@ -987,6 +1218,13 @@ async function executeSelfTest(job: JobRecord, opts: { studyInstanceUid?: string
       ollamaLoadDurationNs: chat.loadDurationNs,
       ollamaPromptEvalCount: chat.promptEvalCount,
       ollamaEvalCount: chat.evalCount,
+      usableOutput: chat.ok,
+      timing: {
+        probeStartedAt: chatStarted,
+        providerRequestStartedAt: chatStarted,
+        providerCompletedAt: chatDone,
+        probeCompletedAt: chatDone,
+      },
     };
     probes.push(chatProbe);
     upsertStep(
@@ -1002,7 +1240,7 @@ async function executeSelfTest(job: JobRecord, opts: { studyInstanceUid?: string
       note: "If thinkingLength>0 despite think:false or omitted, Ollama is still emitting thinking.",
     };
 
-    // C. Provider-only 1 image (production-shaped num_ctx)
+    // C. Provider-only 1 image (production-shaped num_ctx) — infra prompt
     const prod1Ctx = resolveInteractiveDraftNumCtx({
       configuredNumCtx: runtime.ollamaNumCtx,
       imageCount: 1,
@@ -1027,9 +1265,13 @@ async function executeSelfTest(job: JobRecord, opts: { studyInstanceUid?: string
       fullPipeline: false,
       numCtx: prod1Ctx.requestedNumCtx,
       configuredNumCtx: runtime.ollamaNumCtx,
+      infraPrompt: true,
+      captureRunners: true,
     });
     probes.push(p1);
     upsertStep(job, probeToStep(p1, "Provider-only", "provider-1", "generateAiForTask 1 image"));
+
+    let gpuOomSeen = p1.errorCode === "GPU_OUT_OF_MEMORY";
 
     // D. Provider-only up to 6 — LEGACY (num_ctx NOT sent) to prove CONTEXT_BUDGET_EXCEEDED
     upsertStep(job, {
@@ -1049,20 +1291,37 @@ async function executeSelfTest(job: JobRecord, opts: { studyInstanceUid?: string
       fullPipeline: false,
       numCtx: null,
       configuredNumCtx: runtime.ollamaNumCtx,
+      infraPrompt: true,
+      captureRunners: true,
     });
     probes.push(p6legacy);
     upsertStep(
       job,
       probeToStep(p6legacy, "Context probes", "provider-6-legacy", "6 images num_ctx=NOT_SENT (legacy)"),
     );
+    gpuOomSeen = gpuOomSeen || p6legacy.errorCode === "GPU_OUT_OF_MEMORY";
 
-    // E. 6 images + 8192
+    // E/F: unload before each num_ctx change so we can distinguish true OOM vs runner stacking.
+    // DO NOT conclude 16384 is the production fix from a PASS after residual 8192 OOM.
+    if (gpuOomSeen) {
+      const recoveredEarly = await unloadOllamaModel({ endpointUrl: endpoint, model });
+      upsertStep(job, {
+        id: "gpu-oom-recover-pre-ctx",
+        group: "Context probes",
+        name: "Unload before isolated ctx probes",
+        status: recoveredEarly.psAfter.runnerCount === 0 || recoveredEarly.ok ? "pass" : "fail",
+        detail: `${recoveredEarly.detail} · ${formatPsSummary(recoveredEarly.psAfter)}`,
+        elapsedMs: recoveredEarly.elapsedMs,
+      });
+      gpuOomSeen = false;
+    }
+
     upsertStep(job, {
       id: "provider-6-8192",
       group: "Context probes",
       name: "6 images num_ctx=8192",
       status: "running",
-      detail: "…",
+      detail: "unload→ps→request (isolated)",
     });
     const p68192 = await runGenerateAiForTaskProbe({
       label: "Provider-only 6 images num_ctx=8192",
@@ -1074,17 +1333,39 @@ async function executeSelfTest(job: JobRecord, opts: { studyInstanceUid?: string
       fullPipeline: false,
       numCtx: 8192,
       configuredNumCtx: runtime.ollamaNumCtx,
+      infraPrompt: true,
+      captureRunners: true,
+      unloadBefore: true,
     });
     probes.push(p68192);
     upsertStep(job, probeToStep(p68192, "Context probes", "provider-6-8192", "6 images num_ctx=8192"));
+    gpuOomSeen = p68192.errorCode === "GPU_OUT_OF_MEMORY";
 
-    // F. 6 images + 16384
+    if (gpuOomSeen) {
+      upsertStep(job, {
+        id: "gpu-oom-recover",
+        group: "Context probes",
+        name: "Recover Ollama runner after GPU OOM",
+        status: "running",
+        detail: "unload keep_alive=0…",
+      });
+      const recovered = await unloadOllamaModel({ endpointUrl: endpoint, model });
+      upsertStep(job, {
+        id: "gpu-oom-recover",
+        group: "Context probes",
+        name: "Recover Ollama runner after GPU OOM",
+        status: recovered.ok || recovered.psAfter.runnerCount === 0 ? "pass" : "fail",
+        detail: `${recovered.detail} · ${formatPsSummary(recovered.psAfter)}`,
+        elapsedMs: recovered.elapsedMs,
+      });
+    }
+
     upsertStep(job, {
       id: "provider-6-16384",
       group: "Context probes",
       name: "6 images num_ctx=16384",
       status: "running",
-      detail: "…",
+      detail: "unload→ps→request (isolated) — NOT a production default recommendation",
     });
     const p616384 = await runGenerateAiForTaskProbe({
       label: "Provider-only 6 images num_ctx=16384",
@@ -1096,9 +1377,111 @@ async function executeSelfTest(job: JobRecord, opts: { studyInstanceUid?: string
       fullPipeline: false,
       numCtx: 16384,
       configuredNumCtx: runtime.ollamaNumCtx,
+      infraPrompt: true,
+      captureRunners: true,
+      unloadBefore: true,
     });
     probes.push(p616384);
     upsertStep(job, probeToStep(p616384, "Context probes", "provider-6-16384", "6 images num_ctx=16384"));
+    gpuOomSeen = p616384.errorCode === "GPU_OUT_OF_MEMORY";
+
+    technical.ctx8192Vs16384 = {
+      hypothesis:
+        "If 8192 OOMs without unload but passes after unload (or 16384 only passes when prior runners freed), " +
+        "the anomaly is residual runner/KV residency — not proof that 16384 is safer/cheaper.",
+      probe8192: {
+        pass: p68192.pass,
+        errorCode: p68192.errorCode,
+        elapsedMs: p68192.elapsedMs,
+        runnersBefore: p68192.runnersBefore,
+        runnersAfter: p68192.runnersAfter,
+      },
+      probe16384: {
+        pass: p616384.pass,
+        errorCode: p616384.errorCode,
+        elapsedMs: p616384.elapsedMs,
+        runnersBefore: p616384.runnersBefore,
+        runnersAfter: p616384.runnersAfter,
+      },
+      productionDefaultChanged: false,
+    };
+
+    // ── Image-count scaling bench (1/2/3/4/6) — same MRI, sequential, unload between ──
+    const scaleCounts = [1, 2, 3, 4, 6].filter((n) => n <= img6.length);
+    const scalingResults: Array<Record<string, unknown>> = [];
+    let scalingStoppedForOom = false;
+
+    for (const n of scaleCounts) {
+      if (scalingStoppedForOom) {
+        upsertStep(job, {
+          id: `scale-${n}`,
+          group: "Scaling bench",
+          name: `${n} images`,
+          status: "skip",
+          detail: "SKIP — prior GPU_OUT_OF_MEMORY; refused to enlarge further",
+        });
+        scalingResults.push({ imageCount: n, skipped: true, reason: "GPU_OUT_OF_MEMORY" });
+        continue;
+      }
+
+      const slice = img6.slice(0, n);
+      const est = estimateVisionPromptTokens({
+        imageCount: n,
+        promptLength: INFRA_PROBE_PROMPT.length,
+      });
+      const numCtx = suggestDiagnosticNumCtx(est);
+      upsertStep(job, {
+        id: `scale-${n}`,
+        group: "Scaling bench",
+        name: `${n} images (num_ctx=${numCtx})`,
+        status: "running",
+        detail: `estTokens≈${est} · unload before request`,
+      });
+      const sp = await runGenerateAiForTaskProbe({
+        label: `Scaling bench ${n} images`,
+        model,
+        endpointUrl: endpoint,
+        images: slice,
+        imageFetchMs: fetched.fetchElapsedMs,
+        imageFetchOk: true,
+        fullPipeline: false,
+        numCtx,
+        configuredNumCtx: runtime.ollamaNumCtx,
+        infraPrompt: true,
+        captureRunners: true,
+        unloadBefore: true,
+      });
+      probes.push(sp);
+      upsertStep(
+        job,
+        probeToStep(sp, "Scaling bench", `scale-${n}`, `${n} images (num_ctx=${numCtx})`),
+      );
+      scalingResults.push({
+        imageCount: n,
+        imageBytes: slice.reduce((s, b) => s + estimateBase64DecodedBytes(b), 0),
+        estimatedRequestTokens: est,
+        requestedNumCtx: numCtx,
+        httpStatus: sp.httpStatus,
+        elapsedMs: sp.elapsedMs,
+        promptEvalCount: sp.ollamaPromptEvalCount,
+        evalCount: sp.ollamaEvalCount,
+        thinkingLength: sp.thinkingLength,
+        candidateCount: sp.candidateCount,
+        cudaOom: sp.errorCode === "GPU_OUT_OF_MEMORY",
+        errorCode: sp.errorCode,
+        usableOutput: sp.usableOutput,
+        dimensions: fetched.images.slice(0, n).map((i) => `${i.width ?? "?"}x${i.height ?? "?"}`),
+      });
+      if (sp.errorCode === "GPU_OUT_OF_MEMORY") {
+        scalingStoppedForOom = true;
+        await unloadOllamaModel({ endpointUrl: endpoint, model });
+      }
+    }
+    technical.imageCountScalingBench = {
+      results: scalingResults,
+      stoppedForGpuOom: scalingStoppedForOom,
+      note: "Diagnostic only; does not change production defaults.",
+    };
 
     const prod6Ctx = resolveInteractiveDraftNumCtx({
       configuredNumCtx: runtime.ollamaNumCtx,
@@ -1108,35 +1491,68 @@ async function executeSelfTest(job: JobRecord, opts: { studyInstanceUid?: string
         : null,
     });
 
-    // G. Provider-only 6 with production draft num_ctx
-    upsertStep(job, {
-      id: "provider-6",
-      group: "Provider-only",
-      name: `generateAiForTask ${img6.length} images (draft num_ctx=${prod6Ctx.requestedNumCtx})`,
-      status: "running",
-      detail: "…",
-    });
-    const p6 = await runGenerateAiForTaskProbe({
-      label: `Provider-only ${img6.length} images (production draft num_ctx)`,
-      model,
-      endpointUrl: endpoint,
-      images: img6,
-      imageFetchMs: fetched.fetchElapsedMs,
-      imageFetchOk: true,
-      fullPipeline: false,
-      numCtx: prod6Ctx.requestedNumCtx,
-      configuredNumCtx: runtime.ollamaNumCtx,
-    });
-    probes.push(p6);
-    upsertStep(
-      job,
-      probeToStep(
-        p6,
-        "Provider-only",
-        "provider-6",
-        `generateAiForTask ${img6.length} images (draft num_ctx=${prod6Ctx.requestedNumCtx})`,
-      ),
-    );
+    // G. Provider-only 6 with production draft num_ctx (skip if unrecovered OOM)
+    let p6: PathProbeResult;
+    if (scalingStoppedForOom || gpuOomSeen) {
+      p6 = {
+        label: `Provider-only ${img6.length} images (production draft num_ctx)`,
+        pass: false,
+        model,
+        endpoint,
+        imageCount: img6.length,
+        totalImageBytes: fetched.totalImageBytes,
+        requestBodyBytes: null,
+        elapsedMs: 0,
+        httpStatus: null,
+        responseLength: 0,
+        parserSuccess: null,
+        candidateCount: null,
+        safeError: "SKIPPED after GPU_OUT_OF_MEMORY — refused overlapping/enlarged residency risk",
+        stages: [],
+        errorCode: "GPU_OUT_OF_MEMORY",
+        requestedNumCtx: prod6Ctx.requestedNumCtx,
+        configuredNumCtx: runtime.ollamaNumCtx,
+      };
+      upsertStep(job, {
+        id: "provider-6",
+        group: "Provider-only",
+        name: `generateAiForTask ${img6.length} images (draft num_ctx=${prod6Ctx.requestedNumCtx})`,
+        status: "skip",
+        detail: p6.safeError!,
+      });
+    } else {
+      upsertStep(job, {
+        id: "provider-6",
+        group: "Provider-only",
+        name: `generateAiForTask ${img6.length} images (draft num_ctx=${prod6Ctx.requestedNumCtx})`,
+        status: "running",
+        detail: "…",
+      });
+      p6 = await runGenerateAiForTaskProbe({
+        label: `Provider-only ${img6.length} images (production draft num_ctx)`,
+        model,
+        endpointUrl: endpoint,
+        images: img6,
+        imageFetchMs: fetched.fetchElapsedMs,
+        imageFetchOk: true,
+        fullPipeline: false,
+        numCtx: prod6Ctx.requestedNumCtx,
+        configuredNumCtx: runtime.ollamaNumCtx,
+        infraPrompt: true,
+        captureRunners: true,
+        unloadBefore: true,
+      });
+      probes.push(p6);
+      upsertStep(
+        job,
+        probeToStep(
+          p6,
+          "Provider-only",
+          "provider-6",
+          `generateAiForTask ${img6.length} images (draft num_ctx=${prod6Ctx.requestedNumCtx})`,
+        ),
+      );
+    }
 
     technical.contextBudgetCheck = classifyContextBudgetCheck({
       configuredNumCtx: runtime.ollamaNumCtx,
@@ -1145,11 +1561,11 @@ async function executeSelfTest(job: JobRecord, opts: { studyInstanceUid?: string
       requestTokens: p6.ollamaRequestTokens ?? p6legacy.ollamaRequestTokens ?? null,
       estimatedTokens: estimateVisionPromptTokens({
         imageCount: img6.length,
-        promptLength: DRAFT_PROMPT.length,
+        promptLength: INFRA_PROBE_PROMPT.length,
       }),
     });
 
-    // H. Full CARE 1 image
+    // H. Full CARE 1 image — uses real DRAFT_PROMPT (clinical contract)
     upsertStep(job, {
       id: "full-1",
       group: "Full CARE pipeline",
@@ -1167,42 +1583,84 @@ async function executeSelfTest(job: JobRecord, opts: { studyInstanceUid?: string
       fullPipeline: true,
       numCtx: prod1Ctx.requestedNumCtx,
       configuredNumCtx: runtime.ollamaNumCtx,
+      infraPrompt: false,
+      captureRunners: true,
+      unloadBefore: true,
     });
     probes.push(f1);
     upsertStep(job, probeToStep(f1, "Full CARE pipeline", "full-1", "draft path 1 image"));
 
     // I. Full CARE up to 6 with production num_ctx
-    upsertStep(job, {
-      id: "full-6",
-      group: "Full CARE pipeline",
-      name: `draft path ${img6.length} images (num_ctx=${prod6Ctx.requestedNumCtx})`,
-      status: "running",
-      detail: "…",
-    });
-    const f6 = await runGenerateAiForTaskProbe({
-      label: `Full CARE pipeline ${img6.length} images`,
-      model,
-      endpointUrl: endpoint,
-      images: img6,
-      imageFetchMs: fetched.fetchElapsedMs,
-      imageFetchOk: true,
-      fullPipeline: true,
-      numCtx: prod6Ctx.requestedNumCtx,
-      configuredNumCtx: runtime.ollamaNumCtx,
-    });
-    probes.push(f6);
-    upsertStep(
-      job,
-      probeToStep(
-        f6,
-        "Full CARE pipeline",
-        "full-6",
-        `draft path ${img6.length} images (num_ctx=${prod6Ctx.requestedNumCtx})`,
-      ),
-    );
+    let f6: PathProbeResult;
+    if (f1.errorCode === "GPU_OUT_OF_MEMORY") {
+      await unloadOllamaModel({ endpointUrl: endpoint, model });
+      f6 = {
+        label: `Full CARE pipeline ${img6.length} images`,
+        pass: false,
+        model,
+        endpoint,
+        imageCount: img6.length,
+        totalImageBytes: fetched.totalImageBytes,
+        requestBodyBytes: null,
+        elapsedMs: 0,
+        httpStatus: null,
+        responseLength: 0,
+        parserSuccess: null,
+        candidateCount: null,
+        safeError: "SKIPPED after GPU_OUT_OF_MEMORY on 1-image full path",
+        stages: [],
+        errorCode: "GPU_OUT_OF_MEMORY",
+        requestedNumCtx: prod6Ctx.requestedNumCtx,
+      };
+      upsertStep(job, {
+        id: "full-6",
+        group: "Full CARE pipeline",
+        name: `draft path ${img6.length} images (num_ctx=${prod6Ctx.requestedNumCtx})`,
+        status: "skip",
+        detail: f6.safeError!,
+      });
+    } else {
+      upsertStep(job, {
+        id: "full-6",
+        group: "Full CARE pipeline",
+        name: `draft path ${img6.length} images (num_ctx=${prod6Ctx.requestedNumCtx})`,
+        status: "running",
+        detail: "…",
+      });
+      f6 = await runGenerateAiForTaskProbe({
+        label: `Full CARE pipeline ${img6.length} images`,
+        model,
+        endpointUrl: endpoint,
+        images: img6,
+        imageFetchMs: fetched.fetchElapsedMs,
+        imageFetchOk: true,
+        fullPipeline: true,
+        numCtx: prod6Ctx.requestedNumCtx,
+        configuredNumCtx: runtime.ollamaNumCtx,
+        infraPrompt: false,
+        captureRunners: true,
+        unloadBefore: true,
+      });
+      probes.push(f6);
+      upsertStep(
+        job,
+        probeToStep(
+          f6,
+          "Full CARE pipeline",
+          "full-6",
+          `draft path ${img6.length} images (num_ctx=${prod6Ctx.requestedNumCtx})`,
+        ),
+      );
+    }
 
     job.probes = probes;
     job.stagesByProbe = Object.fromEntries(probes.map((p) => [p.label, p.stages]));
+
+    const seq = assertSequentialProbeTimings(probes);
+    technical.sequentialProbeProof = seq;
+    if (!seq.ok) {
+      logger.error({ violations: seq.violations, selfTestId: job.id }, "self-test probe overlap detected");
+    }
 
     const contextBudgetExceeded =
       p6legacy.errorCode === "CONTEXT_BUDGET_EXCEEDED" ||
@@ -1221,7 +1679,9 @@ async function executeSelfTest(job: JobRecord, opts: { studyInstanceUid?: string
       contextBudgetExceeded,
     });
     job.final = derived.final;
-    job.summary = derived.summary;
+    job.summary = seq.ok
+      ? derived.summary
+      : `${derived.summary} · SEQUENTIAL_VIOLATION: ${seq.violations.join("; ")}`;
   } catch (err) {
     const msg = err instanceof Error ? err.message.slice(0, 300) : String(err).slice(0, 300);
     logger.error({ err, selfTestId: job.id }, "ai pipeline self-test crashed");
@@ -1313,6 +1773,8 @@ export function formatSelfTestReport(result: AiPipelineSelfTestResult): string {
     lines.push(`  ollamaRequestTokens: ${p.ollamaRequestTokens}`);
     lines.push(`  ollamaAvailableContext: ${p.ollamaAvailableContext}`);
     lines.push(`  errorCode: ${p.errorCode}`);
+    lines.push(`  usableOutput: ${p.usableOutput}`);
+    lines.push(`  estimatedRequestTokens: ${p.estimatedRequestTokens}`);
     lines.push(`  elapsedMs: ${p.elapsedMs}`);
     lines.push(`  httpStatus: ${p.httpStatus}`);
     lines.push(`  responseLength: ${p.responseLength}`);
@@ -1320,6 +1782,11 @@ export function formatSelfTestReport(result: AiPipelineSelfTestResult): string {
     lines.push(`  candidateCount: ${p.candidateCount}`);
     lines.push(`  thinkSent: ${p.thinkSent} thinkValue: ${p.thinkValue} thinkingLength: ${p.thinkingLength}`);
     lines.push(`  finishReason: ${p.finishReason}`);
+    if (p.timing) {
+      lines.push(
+        `  timing: started=${p.timing.probeStartedAt} req=${p.timing.providerRequestStartedAt} completed=${p.timing.providerCompletedAt} end=${p.timing.probeCompletedAt}`,
+      );
+    }
     lines.push(
       `  ollama: total_duration_ns=${p.ollamaTotalDurationNs} load_duration_ns=${p.ollamaLoadDurationNs} prompt_eval=${p.ollamaPromptEvalCount} eval=${p.ollamaEvalCount}`,
     );
@@ -1327,6 +1794,26 @@ export function formatSelfTestReport(result: AiPipelineSelfTestResult): string {
     for (const st of p.stages) {
       lines.push(`  stage ${st.id}: ${st.status.toUpperCase()} ${st.detail}${st.elapsedMs != null ? ` (${st.elapsedMs}ms)` : ""}`);
     }
+  }
+  if (result.technical?.sequentialProbeProof) {
+    lines.push("");
+    lines.push("=== SEQUENTIAL PROOF ===");
+    lines.push(JSON.stringify(result.technical.sequentialProbeProof, null, 2));
+  }
+  if (result.technical?.imageCountScalingBench) {
+    lines.push("");
+    lines.push("=== IMAGE COUNT SCALING BENCH ===");
+    lines.push(JSON.stringify(result.technical.imageCountScalingBench, null, 2));
+  }
+  if (result.technical?.ctx8192Vs16384) {
+    lines.push("");
+    lines.push("=== 8192 vs 16384 (do NOT treat 16384 PASS as production fix) ===");
+    lines.push(JSON.stringify(result.technical.ctx8192Vs16384, null, 2));
+  }
+  if (result.technical?.overnightSelectionAudit) {
+    lines.push("");
+    lines.push("=== OVERNIGHT SELECTION AUDIT ===");
+    lines.push(JSON.stringify(result.technical.overnightSelectionAudit, null, 2));
   }
   lines.push("");
   lines.push("=== TECHNICAL (PHI-safe) ===");
