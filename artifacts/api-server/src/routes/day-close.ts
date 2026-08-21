@@ -1290,6 +1290,7 @@ dayCloseRouter.get("/staff-status", async (req, res) => {
   }
 
   const lastOverall = await lastClosureBoundary();
+  const now = new Date();
 
   const activeUsers = await db
     .select({ id: usersTable.id, name: usersTable.name })
@@ -1311,32 +1312,76 @@ dayCloseRouter.get("/staff-status", async (req, res) => {
     if (!closeMap.has(c.userName)) closeMap.set(c.userName, c);
   }
 
-  const users = activeUsers.map((u) => {
+  // Live open-window totals (same window as GET /preview) so Exp. Cash /
+  // Exp. Digital for staff who have not closed match Per-Staff Collection.
+  // Previously open rows always showed ₹0 because only persisted closure
+  // rows were read — there is no expected_* until a close is written.
+  const liveWindow = await summarizeWindow(lastOverall, now);
+  const byStaffLive = new Map(
+    liveWindow.byStaff.map((s) => [s.userName, s] as const),
+  );
+
+  const users = await Promise.all(activeUsers.map(async (u) => {
     const close = closeMap.get(u.name);
+    const isReopened = close?.drawerStatus === "reopened";
+    const needsLiveExpected = !close || isReopened;
+
+    if (!needsLiveExpected && close) {
+      return {
+        userId:           u.id,
+        userName:         u.name,
+        isClosed:         true,
+        closedAt:         close.closedAt ?? null,
+        closureId:        close.id ?? null,
+        totalCollected:   n(close.totalActual),
+        totalBilled:      n(close.totalBilled),
+        variance:         n(close.variance),
+        drawerStatus:     close.drawerStatus ?? "closed",
+        expectedCash:     n(close.expectedCash),
+        actualCash:       n(close.actualCash),
+        cashVariance:     n(close.actualCash) - n(close.expectedCash),
+        expectedDigital:  n(close.expectedUpi) + n(close.expectedCard) + n(close.expectedCheque) + n(close.expectedOther),
+        actualDigital:    n(close.actualUpi) + n(close.actualCard) + n(close.actualCheque) + n(close.actualOther),
+        digitalVariance:
+          (n(close.actualUpi) + n(close.actualCard) + n(close.actualCheque) + n(close.actualOther))
+          - (n(close.expectedUpi) + n(close.expectedCard) + n(close.expectedCheque) + n(close.expectedOther)),
+        approvedByName:   close.approvedByName ?? null,
+        approvedAt:       close.approvedAt ?? null,
+        handoverNote:     close.notes ?? null,
+      };
+    }
+
+    // Reopened drawers use the personal window (after that close). Never-
+    // closed staff share the overall open window → byStaff from summarizeWindow.
+    let live = byStaffLive.get(u.name) ?? emptyTotals();
+    if (isReopened) {
+      const from = await userWindowBoundary(u.name);
+      const s = await summarizeUserWindow(u.name, from, now);
+      live = s.totals;
+    }
+    const expectedDigital = live.upi + live.card + live.cheque + live.other;
+
     return {
       userId:           u.id,
       userName:         u.name,
-      isClosed:         !!close,
-      closedAt:         close?.closedAt ?? null,
-      closureId:        close?.id ?? null,
-      totalCollected:   n(close?.totalActual),
-      totalBilled:      n(close?.totalBilled),
-      variance:         n(close?.variance),
-      drawerStatus:     close?.drawerStatus ?? "open",
-      expectedCash:     n(close?.expectedCash),
-      actualCash:       n(close?.actualCash),
-      cashVariance:     close ? n(close.actualCash) - n(close.expectedCash) : null,
-      expectedDigital:  close ? n(close.expectedUpi) + n(close.expectedCard) + n(close.expectedCheque) + n(close.expectedOther) : null,
-      actualDigital:    close ? n(close.actualUpi) + n(close.actualCard) + n(close.actualCheque) + n(close.actualOther) : null,
-      digitalVariance:  close
-        ? (n(close.actualUpi) + n(close.actualCard) + n(close.actualCheque) + n(close.actualOther))
-          - (n(close.expectedUpi) + n(close.expectedCard) + n(close.expectedCheque) + n(close.expectedOther))
-        : null,
-      approvedByName:   close?.approvedByName ?? null,
-      approvedAt:       close?.approvedAt ?? null,
-      handoverNote:     close?.notes ?? null,
+      isClosed:         false,
+      closedAt:         null,
+      closureId:        isReopened ? (close?.id ?? null) : null,
+      totalCollected:   live.total,
+      totalBilled:      0,
+      variance:         0,
+      drawerStatus:     isReopened ? "reopened" : "open",
+      expectedCash:     live.cash,
+      actualCash:       0,
+      cashVariance:     null,
+      expectedDigital,
+      actualDigital:    null,
+      digitalVariance:  null,
+      approvedByName:   null,
+      approvedAt:       null,
+      handoverNote:     isReopened ? (close?.notes ?? null) : null,
     };
-  });
+  }));
 
   res.json({ users, lastOverallClose: lastOverall });
 });
@@ -1398,27 +1443,87 @@ dayCloseRouter.get("/staff-preview/:userName", requireOwnerOrAdmin, async (req, 
 const AdminStaffCloseBody = UserCloseBody.extend({
   userName: z.string().trim().min(1).max(200),
 });
-dayCloseRouter.post("/staff-close", requireOwnerOrAdmin, async (req, res) => {
-  const parsed = AdminStaffCloseBody.safeParse(req.body);
-  if (!parsed.success) { res.status(400).json({ error: "Invalid request body" }); return; }
-  const { userName, actuals, varianceNote, notes, denominations } = parsed.data;
 
-  const session = (req as StaffAuthRequest).staffSession;
-  const adminName = session?.subjectName ?? "Admin";
-  const adminRole = session?.role ?? "admin";
-  const adminId = session?.subjectId ?? null;
+type AdminCloseActor = {
+  adminId: number | null;
+  adminName: string;
+  adminRole: string;
+};
 
-  const inserted = await db.transaction(async (tx) => {
-    // Same per-user advisory lock shape as /my-close so an admin close can
-    // never race with the staff member's own close.
+type AdminCloseActuals = {
+  cash: number; upi: number; card: number; cheque: number; other: number;
+};
+
+async function closeStaffDrawerOnBehalf(opts: {
+  userName: string;
+  actuals?: AdminCloseActuals;
+  /** When true, set actuals = lock-time expected method totals (balanced close). */
+  autoBalance?: boolean;
+  varianceNote: string;
+  notes: string;
+  denominations?: {
+    d500: number; d200: number; d100: number;
+    d50: number; d20: number; d10: number; coins: number;
+  };
+  actor: AdminCloseActor;
+  /** When true, skip if this staff already has a non-reopened close after last overall. */
+  skipIfAlreadyClosed?: boolean;
+}): Promise<
+  | { skipped: true; reason: string }
+  | {
+      skipped: false;
+      row: typeof userDayClosuresTable.$inferSelect;
+      bills: Awaited<ReturnType<typeof summarizeUserWindow>>["bills"];
+      suspenseTotal: number;
+      suspenseItems: Array<{ amount: number; rawMethod: string }>;
+      printActivity: StaffPrintActivity;
+    }
+> {
+  const { userName, varianceNote, notes, denominations, actor } = opts;
+
+  return db.transaction(async (tx) => {
     const lockId = BigInt(
       Math.abs(userName.split("").reduce((a, c) => ((a * 31 + c.charCodeAt(0)) | 0), 0)),
     );
     await tx.execute(sql`SELECT pg_advisory_xact_lock(${lockId})`);
 
+    if (opts.skipIfAlreadyClosed) {
+      const lastOverall = await lastClosureBoundary();
+      const [existing] = await tx
+        .select({
+          id: userDayClosuresTable.id,
+          drawerStatus: userDayClosuresTable.drawerStatus,
+          closedAt: userDayClosuresTable.closedAt,
+        })
+        .from(userDayClosuresTable)
+        .where(
+          lastOverall
+            ? and(
+                eq(userDayClosuresTable.userName, userName),
+                gt(userDayClosuresTable.closedAt, lastOverall),
+              )
+            : eq(userDayClosuresTable.userName, userName),
+        )
+        .orderBy(desc(userDayClosuresTable.closedAt))
+        .limit(1);
+      if (existing && existing.drawerStatus !== "reopened") {
+        return { skipped: true as const, reason: "already_closed" };
+      }
+    }
+
     const from = await userWindowBoundary(userName);
     const to = new Date();
     const s = await summarizeUserWindow(userName, from, to);
+
+    const actuals: AdminCloseActuals = opts.autoBalance
+      ? {
+          cash: s.totals.cash,
+          upi: s.totals.upi,
+          card: s.totals.card,
+          cheque: s.totals.cheque,
+          other: s.totals.other,
+        }
+      : (opts.actuals ?? { cash: 0, upi: 0, card: 0, cheque: 0, other: 0 });
 
     const totalExpected = s.totals.total;
     const totalActual = actuals.cash + actuals.upi + actuals.card + actuals.cheque + actuals.other;
@@ -1430,8 +1535,6 @@ dayCloseRouter.post("/staff-close", requireOwnerOrAdmin, async (req, res) => {
       timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit",
     }).format(to);
 
-    // userId resolved from the staff directory when the name matches, so the
-    // row links the same way a self-close does.
     const [staffRow] = await tx
       .select({ id: usersTable.id })
       .from(usersTable)
@@ -1475,20 +1578,53 @@ dayCloseRouter.post("/staff-close", requireOwnerOrAdmin, async (req, res) => {
     await tx.insert(drawerAuditLogTable).values({
       userClosureId: row.id,
       action: drawerStatus === "mismatch" ? "mismatch_detected" : "closed",
-      userId: adminId,
-      userName: adminName,
-      userRole: adminRole,
+      userId: actor.adminId,
+      userName: actor.adminName,
+      userRole: actor.adminRole,
       expectedTotal: String(totalExpected),
       actualTotal: String(totalActual),
       variance: String(variance),
-      reason: [`Closed by ${adminName} on behalf of ${userName} (cash handover)`, varianceNote].filter(Boolean).join(" — "),
+      reason: [`Closed by ${actor.adminName} on behalf of ${userName} (cash handover)`, varianceNote].filter(Boolean).join(" — "),
     });
 
-    return { row, bills: s.bills, suspenseTotal: s.suspenseTotal, suspenseItems: s.suspenseItems, printActivity: s.printActivity };
+    return {
+      skipped: false as const,
+      row,
+      bills: s.bills,
+      suspenseTotal: s.suspenseTotal,
+      suspenseItems: s.suspenseItems,
+      printActivity: s.printActivity,
+    };
   });
+}
+
+dayCloseRouter.post("/staff-close", requireOwnerOrAdmin, async (req, res) => {
+  const parsed = AdminStaffCloseBody.safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ error: "Invalid request body" }); return; }
+  const { userName, actuals, varianceNote, notes, denominations } = parsed.data;
+
+  const session = (req as StaffAuthRequest).staffSession;
+  const actor: AdminCloseActor = {
+    adminName: session?.subjectName ?? "Admin",
+    adminRole: session?.role ?? "admin",
+    adminId: session?.subjectId ?? null,
+  };
+
+  const inserted = await closeStaffDrawerOnBehalf({
+    userName,
+    actuals,
+    varianceNote,
+    notes,
+    denominations,
+    actor,
+  });
+  if (inserted.skipped) {
+    res.status(409).json({ error: "Staff drawer already closed" });
+    return;
+  }
 
   req.log?.info(
-    { closureId: inserted.row.id, userName, closedByAdmin: adminName, variance: inserted.row.variance, drawerStatus: inserted.row.drawerStatus },
+    { closureId: inserted.row.id, userName, closedByAdmin: actor.adminName, variance: inserted.row.variance, drawerStatus: inserted.row.drawerStatus },
     "Staff day closed by admin (handover)",
   );
   res.status(201).json({
@@ -1499,6 +1635,110 @@ dayCloseRouter.post("/staff-close", requireOwnerOrAdmin, async (req, res) => {
     suspenseItems: inserted.suspenseItems,
     printActivity: inserted.printActivity,
   });
+});
+
+// Bulk-close every open (or reopened) staff drawer, auto-balancing actuals to
+// each staff member's live expected method totals. Used when the owner has
+// already verified the aggregate cash and wants to advance all staff windows
+// without clicking Close one by one.
+const BulkStaffCloseBody = z.object({
+  notes: z.string().max(2000).default(""),
+});
+dayCloseRouter.post("/staff-close-all", requireOwnerOrAdmin, async (req, res) => {
+  const parsed = BulkStaffCloseBody.safeParse(req.body ?? {});
+  if (!parsed.success) { res.status(400).json({ error: "Invalid request body" }); return; }
+
+  const session = (req as StaffAuthRequest).staffSession;
+  const actor: AdminCloseActor = {
+    adminName: session?.subjectName ?? "Admin",
+    adminRole: session?.role ?? "admin",
+    adminId: session?.subjectId ?? null,
+  };
+
+  const lastOverall = await lastClosureBoundary();
+  const activeUsers = await db
+    .select({ id: usersTable.id, name: usersTable.name })
+    .from(usersTable)
+    .where(eq(usersTable.isActive, true));
+
+  const allUserCloses = await db
+    .select({
+      userName: userDayClosuresTable.userName,
+      drawerStatus: userDayClosuresTable.drawerStatus,
+      closedAt: userDayClosuresTable.closedAt,
+    })
+    .from(userDayClosuresTable)
+    .where(
+      lastOverall
+        ? gt(userDayClosuresTable.closedAt, lastOverall)
+        : sql`1=1`,
+    )
+    .orderBy(desc(userDayClosuresTable.closedAt));
+
+  const closeMap = new Map<string, (typeof allUserCloses)[number]>();
+  for (const c of allUserCloses) {
+    if (!closeMap.has(c.userName)) closeMap.set(c.userName, c);
+  }
+
+  const openNames = activeUsers
+    .filter((u) => {
+      const c = closeMap.get(u.name);
+      return !c || c.drawerStatus === "reopened";
+    })
+    .map((u) => u.name);
+
+  const results: Array<{
+    userName: string;
+    status: "closed" | "skipped" | "error";
+    closureId?: number;
+    totalExpected?: number;
+    totalActual?: number;
+    variance?: number;
+    drawerStatus?: string;
+    reason?: string;
+  }> = [];
+
+  for (const userName of openNames) {
+    try {
+      const inserted = await closeStaffDrawerOnBehalf({
+        userName,
+        autoBalance: true,
+        varianceNote: "",
+        notes: [
+          `Bulk closed by ${actor.adminName} (auto-balanced to expected)`,
+          parsed.data.notes,
+        ].filter(Boolean).join(" — "),
+        actor,
+        skipIfAlreadyClosed: true,
+      });
+      if (inserted.skipped) {
+        results.push({ userName, status: "skipped", reason: inserted.reason });
+        continue;
+      }
+      results.push({
+        userName,
+        status: "closed",
+        closureId: inserted.row.id,
+        totalExpected: n(inserted.row.totalExpected),
+        totalActual: n(inserted.row.totalActual),
+        variance: n(inserted.row.variance),
+        drawerStatus: inserted.row.drawerStatus,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unknown error";
+      req.log?.error({ err, userName }, "Bulk staff close failed for user");
+      results.push({ userName, status: "error", reason: message });
+    }
+  }
+
+  const closed = results.filter((r) => r.status === "closed").length;
+  const skipped = results.filter((r) => r.status === "skipped").length;
+  const errors = results.filter((r) => r.status === "error").length;
+  req.log?.info(
+    { closedByAdmin: actor.adminName, closed, skipped, errors, attempted: openNames.length },
+    "Bulk staff day close finished",
+  );
+  res.status(200).json({ closed, skipped, errors, results });
 });
 
 // Approve a mismatch — admin/owner only.
