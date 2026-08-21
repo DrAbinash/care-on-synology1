@@ -2,6 +2,7 @@
  * Pre-deploy verification for Ollama-backed auto AI report drafting.
  * Used by POST /api/radiology-ollama/verify and scripts/verify-ollama-ai-draft.mjs.
  */
+import { randomUUID } from "node:crypto";
 import { db } from "@workspace/db";
 import { clinicSettingsTable } from "@workspace/db";
 import { desc } from "drizzle-orm";
@@ -261,26 +262,47 @@ export async function runOllamaAiDraftVerify(opts: {
     const dead = await listDeadLetterJobs([AI_SHADOW_PIPELINE_JOB]);
     const failedDead = dead.filter((j) => j.failureReason);
     const hb = getRadiologyJobConsumerHeartbeat();
+    let eligibleDueAi = 0;
+    let heldLegacyDue = 0;
+    let holdLabel = "unknown";
+    try {
+      const { getOvernightQueueClassification } = await import("./overnightQueueClassification");
+      const c = await getOvernightQueueClassification();
+      eligibleDueAi = c.eligibleDue;
+      heldLegacyDue = c.heldLegacyDue;
+      holdLabel = c.held ? "HELD" : c.explicitlyReleased ? "RELEASED" : "RELEASED";
+    } catch {
+      eligibleDueAi = backlog.pending;
+      holdLabel = "unreadable";
+    }
     const consumer = deriveRadiologyJobConsumerHealth(hb, {
       queueDepth: backlog.pending,
       running: backlog.running,
       nightWindow: true,
+      eligibleDueAi,
+      heldLegacyDue,
     });
+    const workerPass =
+      consumer.status === "HEALTHY"
+      || consumer.status === "PEAK_HOLD"
+      || consumer.status === "HELD_LEGACY";
     const backlogUnhealthy = backlog.pending > 0 && backlog.running === 0
       && (consumer.status === "STOPPED" || consumer.status === "STALE" || consumer.status === "STARVED");
     add(checks, {
       group: "Queue",
       name: "Overnight worker",
-      status: consumer.status === "HEALTHY" || consumer.status === "PEAK_HOLD"
-        ? (consumer.status === "PEAK_HOLD" ? "WARNING" : "PASS")
+      status: workerPass
+        ? (consumer.status === "PEAK_HOLD" || consumer.status === "HELD_LEGACY" ? "WARNING" : "PASS")
         : "FAIL",
-      detail: `${consumer.status}: ${consumer.detail}. last poll ${hb.lastCronTickAt ?? "never"}; last claim ${hb.lastClaimedJobId ?? "none"}; lastRan ${hb.lastRan}; due/pending ${backlog.pending}; running ${backlog.running}`,
+      detail: `${consumer.status}: ${consumer.detail}. legacyHold=${holdLabel}; last poll ${hb.lastCronTickAt ?? "never"}; last claim ${hb.lastClaimedJobId ?? "none"}; lastRan ${hb.lastRan}; heldLegacy=${heldLegacyDue}; eligible=${eligibleDueAi}; running ${backlog.running}`,
       remediation: consumer.status === "HEALTHY"
         ? undefined
+        : consumer.status === "HELD_LEGACY"
+          ? "Legacy backlog is intentionally held — not starved. Release selected jobs only when ready to validate."
         : consumer.status === "PEAK_HOLD"
           ? "Clinic peak hours — overnight AI waits until peak ends (default 16:00 IST)"
           : consumer.status === "STARVED"
-            ? "Consumer polled but claimed nothing. Check next_retry_at, SKIP LOCKED, and GET /api/ai/overnight-diagnostics composition."
+            ? "Consumer polled but claimed nothing while eligible jobs exist. Check next_retry_at, SKIP LOCKED, and GET /api/ai/overnight-diagnostics composition."
             : "Redeploy CARE API so startRadiologyJobConsumer() runs before the ENABLE_SCHEDULERS block (a scheduler throw must not skip the drain).",
       blocking: consumer.status === "STOPPED" || consumer.status === "STALE" || consumer.status === "STARVED",
     });
@@ -329,4 +351,99 @@ export async function runOllamaAiDraftVerify(opts: {
           : `${pass} checks passed — Ollama auto AI draft path looks ready`,
     ranAt: new Date().toISOString(),
   };
+}
+
+// ── Async verify jobs (Full test must not hold Cloudflare/browser open) ───────
+
+export type OllamaVerifyJobStatus = "queued" | "running" | "completed";
+
+export interface OllamaVerifyJob extends OllamaVerifyResult {
+  id: string;
+  status: OllamaVerifyJobStatus;
+  progressLabel: string;
+  startedAt: string;
+  finishedAt: string | null;
+  runDraft: boolean;
+}
+
+type VerifyJobRecord = OllamaVerifyJob;
+
+const VERIFY_JOBS = new Map<string, VerifyJobRecord>();
+const VERIFY_JOB_TTL_MS = 60 * 60 * 1000;
+let latestVerifyJobId: string | null = null;
+
+function pruneVerifyJobs(): void {
+  const cutoff = Date.now() - VERIFY_JOB_TTL_MS;
+  for (const [id, job] of VERIFY_JOBS) {
+    const t = Date.parse(job.finishedAt ?? job.startedAt);
+    if (Number.isFinite(t) && t < cutoff && job.status === "completed") {
+      VERIFY_JOBS.delete(id);
+    }
+  }
+}
+
+export function getOllamaVerifyJob(id: string): OllamaVerifyJob | null {
+  const job = VERIFY_JOBS.get(id);
+  return job ?? null;
+}
+
+export function getLatestOllamaVerifyJob(): OllamaVerifyJob | null {
+  if (!latestVerifyJobId) return null;
+  return VERIFY_JOBS.get(latestVerifyJobId) ?? null;
+}
+
+/**
+ * Start verify immediately (<2s response). Long Ollama generation runs after return.
+ * Gateway 524 cannot terminate the in-process job.
+ */
+export function startOllamaAiDraftVerify(opts: {
+  runDraft?: boolean;
+} = {}): OllamaVerifyJob {
+  pruneVerifyJobs();
+  const runDraft = opts.runDraft === true;
+  const id = randomUUID();
+  const job: VerifyJobRecord = {
+    id,
+    status: "queued",
+    progressLabel: runDraft ? "Queued full Ollama verify…" : "Queued quick checks…",
+    startedAt: new Date().toISOString(),
+    finishedAt: null,
+    runDraft,
+    ok: false,
+    blockingFailed: false,
+    checks: [],
+    summary: "Queued…",
+    ranAt: new Date().toISOString(),
+  };
+  VERIFY_JOBS.set(id, job);
+  latestVerifyJobId = id;
+
+  setImmediate(() => {
+    void (async () => {
+      const current = VERIFY_JOBS.get(id);
+      if (!current) return;
+      current.status = "running";
+      current.progressLabel = runDraft
+        ? "Running full verify (Ollama generation may take >100s)…"
+        : "Running quick checks…";
+      try {
+        const result = await runOllamaAiDraftVerify({ runDraft });
+        Object.assign(current, result);
+        current.status = "completed";
+        current.progressLabel = "Completed";
+        current.finishedAt = new Date().toISOString();
+      } catch (err) {
+        current.status = "completed";
+        current.ok = false;
+        current.blockingFailed = true;
+        current.summary = `Verification failed: ${err instanceof Error ? err.message : String(err)}`;
+        current.checks = [];
+        current.ranAt = new Date().toISOString();
+        current.finishedAt = new Date().toISOString();
+        current.progressLabel = "Failed";
+      }
+    })();
+  });
+
+  return { ...job };
 }

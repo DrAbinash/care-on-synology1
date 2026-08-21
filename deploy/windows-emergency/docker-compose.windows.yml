@@ -1,0 +1,19 @@
+# Optional Windows Docker Desktop overrides.
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.windows.yml --env-file .env up -d --build
+#
+# Defaults to host port 8080 (no admin elevation for port 80).
+
+name: care-emergency
+
+services:
+  care-emergency-web:
+    ports:
+      - "${EMERGENCY_HTTP_BIND:-0.0.0.0}:${EMERGENCY_HTTP_PORT:-8080}:80"
+
+  care-emergency-api:
+    environment:
+      PRIMARY_CARE_URL: ${PRIMARY_CARE_URL:-}
+      EMERGENCY_DEVICE_ID: ${EMERGENCY_DEVICE_ID:-windows-emergency}
+      MASTER_PULL_INTERVAL_HOURS: ${MASTER_PULL_INTERVAL_HOURS:-6}
+      CARE_OFFLINE_GRACE_MS: ${CARE_OFFLINE_GRACE_MS:-90000}

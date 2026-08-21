@@ -1,7 +1,7 @@
 /**
  * Overnight AI Draft display-status mapper.
  *
- * Worklist `ai_draft_status` only stores NONE | PENDING | READY | ERROR.
+ * Worklist `ai_draft_status` stores NONE | PENDING | READY | EMPTY | QUARANTINED | ERROR.
  * PENDING is set at enqueue (markWorklistPending) and covers queued, running,
  * retrying, and failed-but-not-abandoned — so the worklist column alone cannot
  * tell a radiologist whether Ollama is actually processing a case.
@@ -10,7 +10,9 @@
  * pending | retrying | running | success | failed | abandoned, plus
  * created_at / started_at / completed_at / last_attempted_at / locked_at.
  *
- * This module derives QUEUED vs RUNNING vs STUCK from those fields.
+ * READY means usable clinical draft content — not merely job success.
+ * This module derives QUEUED vs RUNNING vs STUCK from job fields and trusts
+ * worklist clinicalStatus for READY / EMPTY / QUARANTINED.
  * It does not invent a new queue.
  */
 import { isStaleRunning, type RadiologyJobStatus } from "../radiologyJobRules";
@@ -22,7 +24,12 @@ export type OvernightDisplayStatus =
   | "RUNNING"
   | "RETRYING"
   | "READY"
+  | "EMPTY"
+  | "QUARANTINED"
   | "ERROR"
+  | "CONTEXT_LIMIT"
+  | "GPU_MEMORY"
+  | "PAUSED"
   | "STUCK"
   | "NONE";
 
@@ -73,16 +80,66 @@ export function canCancelOvernightJob(jobStatus: string | null | undefined): boo
 }
 
 export function canRetryOvernightJob(displayStatus: OvernightDisplayStatus): boolean {
-  return displayStatus === "ERROR";
+  return (
+    displayStatus === "ERROR" ||
+    displayStatus === "EMPTY" ||
+    displayStatus === "QUARANTINED" ||
+    displayStatus === "CONTEXT_LIMIT" ||
+    displayStatus === "GPU_MEMORY"
+  );
+}
+
+/**
+ * Refine a derived display status using the worklist ai_draft_json pointer.
+ * Legacy pipelines wrote READY even for empty drafts; when the pointer proves
+ * there is no usable content, surface EMPTY / QUARANTINED instead of READY.
+ * Resource failures must never display as READY or EMPTY.
+ */
+export function refineDisplayStatusFromAiDraftPointer(
+  status: OvernightDisplayStatus,
+  pointer: Record<string, unknown> | null | undefined,
+): OvernightDisplayStatus {
+  if (!pointer) return status;
+  const failureCode = typeof pointer.failureCode === "string" ? pointer.failureCode.toUpperCase() : "";
+  const emptyReason = typeof pointer.emptyReason === "string" ? pointer.emptyReason.toUpperCase() : "";
+  const code = failureCode || emptyReason;
+  if (code === "GPU_OUT_OF_MEMORY" || code.includes("GPU_OUT_OF_MEMORY")) return "GPU_MEMORY";
+  if (code === "CONTEXT_BUDGET_EXCEEDED" || code.includes("CONTEXT_BUDGET")) return "CONTEXT_LIMIT";
+  if (code.includes("OVERNIGHT AI PAUSED") || code === "PAUSED") return "PAUSED";
+
+  if (status !== "READY") return status;
+  const clinical = typeof pointer.clinicalStatus === "string" ? pointer.clinicalStatus.toUpperCase() : "";
+  if (clinical === "ERROR") {
+    if (code.includes("GPU")) return "GPU_MEMORY";
+    if (code.includes("CONTEXT")) return "CONTEXT_LIMIT";
+    return "ERROR";
+  }
+  if (clinical === "EMPTY") return "EMPTY";
+  if (clinical === "QUARANTINED") return "QUARANTINED";
+  if (clinical === "READY") return "READY";
+
+  const findingCount = typeof pointer.findingCount === "number" ? pointer.findingCount : 0;
+  const findingsEmpty =
+    pointer.findings == null
+    || (typeof pointer.findings === "string" && pointer.findings.trim() === "")
+    || (Array.isArray(pointer.findings) && pointer.findings.length === 0);
+  const impression = Array.isArray(pointer.impression)
+    ? pointer.impression.filter((s) => typeof s === "string" && s.trim().length > 0)
+    : [];
+  if (findingCount === 0 && findingsEmpty && impression.length === 0) {
+    const q = typeof pointer.quarantinedCount === "number" ? pointer.quarantinedCount : 0;
+    return q > 0 ? "QUARANTINED" : "EMPTY";
+  }
+  return "READY";
 }
 
 /**
  * Derive radiologist-facing status from worklist + latest shadow job.
  *
  * Priority: an in-flight job (running / pending / retrying / stale running)
- * wins over a READY worklist row (explicit retry). READY wins over a leftover
- * success job. Abandoned/failed jobs surface as ERROR even if the worklist
- * was left PENDING (overnight currently does not always write ERROR).
+ * wins over a terminal worklist row (explicit retry). Terminal clinical
+ * statuses on the worklist (READY / EMPTY / QUARANTINED / ERROR) win over a
+ * leftover job=success — job success alone must NOT imply READY.
  */
 export function deriveOvernightDisplayStatus(input: {
   worklistAiDraftStatus: string | null | undefined;
@@ -104,8 +161,16 @@ export function deriveOvernightDisplayStatus(input: {
   if (job === "pending") return "QUEUED";
 
   const wl = (input.worklistAiDraftStatus ?? "NONE").toUpperCase();
-  if (wl === "READY" || job === "success") return "READY";
-  if (job === "failed" || job === "abandoned" || wl === "ERROR") return "ERROR";
+  if (wl === "READY") return "READY";
+  if (wl === "EMPTY") return "EMPTY";
+  if (wl === "QUARANTINED") return "QUARANTINED";
+  if (wl === "ERROR") return "ERROR";
+  if (job === "failed" || job === "abandoned") return "ERROR";
+  // Legacy: job success with no clinical status yet — do not invent READY.
+  if (job === "success") {
+    if (wl === "PENDING" || wl === "NONE") return "EMPTY";
+    return "READY";
+  }
   if (wl === "PENDING") return "QUEUED";
   return "NONE";
 }
@@ -116,15 +181,18 @@ export function buildOvernightDisplay(input: {
   queuePosition?: number | null;
   now?: Date;
   staleMs?: number;
+  /** Parsed radiology_worklist.ai_draft_json — used to correct legacy empty READY. */
+  aiDraftPointer?: Record<string, unknown> | null;
 }): OvernightDisplay {
   const job = input.job;
-  const displayStatus = deriveOvernightDisplayStatus({
+  let displayStatus = deriveOvernightDisplayStatus({
     worklistAiDraftStatus: input.worklistAiDraftStatus,
     jobStatus: job?.jobStatus,
     lockedAt: job?.lockedAt,
     now: input.now,
     staleMs: input.staleMs,
   });
+  displayStatus = refineDisplayStatusFromAiDraftPointer(displayStatus, input.aiDraftPointer);
   return {
     displayStatus,
     jobId: job?.jobId ?? null,
@@ -153,12 +221,18 @@ export function overnightSortRank(status: OvernightDisplayStatus): number {
       return 1;
     case "ERROR":
     case "STUCK":
+    case "CONTEXT_LIMIT":
+    case "GPU_MEMORY":
+    case "PAUSED":
       return 2;
+    case "EMPTY":
+    case "QUARANTINED":
+      return 3;
     case "QUEUED":
     case "RETRYING":
-      return 3;
-    default:
       return 4;
+    default:
+      return 5;
   }
 }
 
@@ -181,13 +255,18 @@ function ts(v: string | null | undefined): number {
 
 /**
  * Overnight-only sort: RUNNING, then READY (newest completed first), then
- * ERROR/STUCK, then QUEUED/RETRYING in canonical FIFO (queue position / job id).
+ * ERROR/STUCK, then EMPTY/QUARANTINED, then QUEUED/RETRYING in FIFO.
  */
 export function compareOvernightDraftRows(a: OvernightSortRow, b: OvernightSortRow): number {
   const rank = overnightSortRank(a.displayStatus) - overnightSortRank(b.displayStatus);
   if (rank !== 0) return rank;
   switch (a.displayStatus) {
     case "READY":
+    case "EMPTY":
+    case "QUARANTINED":
+    case "CONTEXT_LIMIT":
+    case "GPU_MEMORY":
+    case "PAUSED":
       return ts(b.completedAt) - ts(a.completedAt) || ts(b.createdAt) - ts(a.createdAt);
     case "RUNNING":
       return ts(b.startedAt) - ts(a.startedAt);
@@ -209,7 +288,9 @@ export function compareOvernightDraftRows(a: OvernightSortRow, b: OvernightSortR
   }
 }
 
-export function overnightCountBucket(status: OvernightDisplayStatus): "queued" | "running" | "ready" | "errors" | null {
+export function overnightCountBucket(
+  status: OvernightDisplayStatus,
+): "queued" | "running" | "ready" | "empty" | "quarantined" | "errors" | null {
   switch (status) {
     case "QUEUED":
     case "RETRYING":
@@ -218,8 +299,15 @@ export function overnightCountBucket(status: OvernightDisplayStatus): "queued" |
       return "running";
     case "READY":
       return "ready";
+    case "EMPTY":
+      return "empty";
+    case "QUARANTINED":
+      return "quarantined";
     case "ERROR":
     case "STUCK":
+    case "CONTEXT_LIMIT":
+    case "GPU_MEMORY":
+    case "PAUSED":
       return "errors";
     default:
       return null;

@@ -66,6 +66,30 @@ describe("deriveOvernightDisplayStatus", () => {
     })).toBe("READY");
   });
 
+  it("maps EMPTY / QUARANTINED worklist statuses through", () => {
+    expect(deriveOvernightDisplayStatus({
+      worklistAiDraftStatus: "EMPTY",
+      jobStatus: "success",
+      lockedAt: null,
+      now: NOW,
+    })).toBe("EMPTY");
+    expect(deriveOvernightDisplayStatus({
+      worklistAiDraftStatus: "QUARANTINED",
+      jobStatus: "success",
+      lockedAt: null,
+      now: NOW,
+    })).toBe("QUARANTINED");
+  });
+
+  it("does not invent READY from job=success when worklist is still NONE", () => {
+    expect(deriveOvernightDisplayStatus({
+      worklistAiDraftStatus: "NONE",
+      jobStatus: "success",
+      lockedAt: null,
+      now: NOW,
+    })).toBe("EMPTY");
+  });
+
   it("prefers RUNNING over READY when an in-flight retry exists", () => {
     expect(deriveOvernightDisplayStatus({
       worklistAiDraftStatus: "READY",
@@ -102,11 +126,38 @@ describe("cancel / retry safety", () => {
     expect(canCancelOvernightJob("success")).toBe(false);
   });
 
-  it("allows retry only for ERROR, not STUCK or RUNNING", () => {
+  it("allows retry for ERROR, EMPTY, QUARANTINED — not STUCK or RUNNING", () => {
     expect(canRetryOvernightJob("ERROR")).toBe(true);
+    expect(canRetryOvernightJob("EMPTY")).toBe(true);
+    expect(canRetryOvernightJob("QUARANTINED")).toBe(true);
     expect(canRetryOvernightJob("STUCK")).toBe(false);
     expect(canRetryOvernightJob("RUNNING")).toBe(false);
     expect(canRetryOvernightJob("QUEUED")).toBe(false);
+  });
+});
+
+describe("refineDisplayStatusFromAiDraftPointer", () => {
+  it("corrects legacy empty READY pointer (draftId 19 shape) to EMPTY", async () => {
+    const { refineDisplayStatusFromAiDraftPointer } = await import("./overnightAiDraftStatus");
+    expect(refineDisplayStatusFromAiDraftPointer("READY", {
+      source: "ai_shadow",
+      draftId: 19,
+      version: 1,
+      findingCount: 0,
+      findings: "",
+      impression: [],
+      updatedAt: "2026-08-20T15:50:05.506Z",
+    })).toBe("EMPTY");
+  });
+
+  it("maps empty READY with quarantinedCount to QUARANTINED", async () => {
+    const { refineDisplayStatusFromAiDraftPointer } = await import("./overnightAiDraftStatus");
+    expect(refineDisplayStatusFromAiDraftPointer("READY", {
+      findingCount: 0,
+      findings: "",
+      impression: [],
+      quarantinedCount: 3,
+    })).toBe("QUARANTINED");
   });
 });
 

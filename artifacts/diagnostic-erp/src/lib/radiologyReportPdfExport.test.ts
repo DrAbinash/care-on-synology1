@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { buildFindingsText, fetchKeyImageDataUrls } from "./radiologyReportPdfExport";
+import { buildFindingsText, fetchKeyImageDataUrls, hydratePrintPreviewKeyImages } from "./radiologyReportPdfExport";
 import type { ReportImageRef } from "./reportImageRefs";
 
 describe("buildFindingsText", () => {
@@ -141,5 +141,58 @@ describe("fetchKeyImageDataUrls", () => {
     expect(calledUrls[0]).toContain("2.2.2.2");
     expect(calledUrls[1]).toContain("3.3.3.3");
     expect(calledUrls[2]).toContain("1.1.1.1");
+  });
+});
+
+describe("hydratePrintPreviewKeyImages", () => {
+  it("leaves HTML alone when dicom images are already inlined", async () => {
+    const html = `<div class="image-panel-side"><img class="dicom-img" src="data:image/jpeg;base64,AAA"/></div>`;
+    const fetchImpl = vi.fn();
+    const out = await hydratePrintPreviewKeyImages(html, "https://pacs.example/dicomweb", [makeRef()], { fetchImpl });
+    expect(out).toBe(html);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("injects a square key-images rail when the server returned no pixels", async () => {
+    const tinyJpeg =
+      "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAn/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIQAxAAAAGcP//Z";
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: true,
+      blob: async () => new Blob([Uint8Array.from([0xff, 0xd8, 0xff])], { type: "image/jpeg" }),
+    });
+    // Override blob→dataURL path by mocking FileReader is hard; instead stub fetchKeyImage
+    // via returning a real-looking response — FileReader may not exist in Node.
+    // Use a pre-resolved path: pass refs and a fetch that fails, then manually test rail builder.
+    const empty = `<div class="content-area"><div class="report-column"><p>Body</p></div></div><div class="sigs"></div>`;
+    // When fetch fails, HTML unchanged
+    const unchanged = await hydratePrintPreviewKeyImages(empty, "https://pacs.example/dicomweb", [makeRef()], {
+      fetchImpl: vi.fn().mockResolvedValue({ ok: false }),
+    });
+    expect(unchanged).toBe(empty);
+
+    // Simulate successful hydration by injecting with a custom fetch that returns a blob
+    // and a polyfilled FileReader if needed.
+    const OriginalFR = (globalThis as { FileReader?: typeof FileReader }).FileReader;
+    class FakeFileReader {
+      result: string | null = null;
+      onload: null | (() => void) = null;
+      onerror: null | (() => void) = null;
+      readAsDataURL(_blob: Blob) {
+        this.result = tinyJpeg;
+        queueMicrotask(() => this.onload?.());
+      }
+    }
+    (globalThis as { FileReader: unknown }).FileReader = FakeFileReader;
+    try {
+      const hydrated = await hydratePrintPreviewKeyImages(empty, "https://pacs.example/dicomweb", [makeRef()], {
+        fetchImpl,
+      });
+      expect(hydrated).toContain("image-panel-keyrail");
+      expect(hydrated).toContain("has-side-images");
+      expect(hydrated).toContain("dicom-img");
+      expect(hydrated).toContain(tinyJpeg);
+    } finally {
+      if (OriginalFR) (globalThis as { FileReader: unknown }).FileReader = OriginalFR;
+    }
   });
 });

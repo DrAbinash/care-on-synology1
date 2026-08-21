@@ -31,9 +31,18 @@ export async function runOvernightAiCanary(opts: { jobId?: number } = {}) {
     };
   }
   const before = await shadowQueueComposition();
+  let legacyHold: { holdBefore: string; releasedJobIds: number[] } | null = null;
+  if (opts.jobId == null) {
+    try {
+      const { getOvernightOpsControls } = await import("./clinicalConfigService");
+      const { resolveLegacyHoldClaimFilter } = await import("./overnightOpsControls");
+      legacyHold = resolveLegacyHoldClaimFilter(await getOvernightOpsControls());
+    } catch { /* no hold */ }
+  }
   const peek = await peekOvernightAiClaim({
     preferNewest: opts.jobId == null,
     jobId: opts.jobId,
+    legacyHold,
   });
   if (!peek) {
     return { ok: false, reason: "no_eligible_job", before };

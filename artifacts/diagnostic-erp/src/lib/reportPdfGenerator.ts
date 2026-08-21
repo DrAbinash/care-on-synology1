@@ -333,7 +333,7 @@ function drawNumberedImpression(
   return y;
 }
 
-/** Key images beside report text — extreme-right rail with a tight 2.5mm navy frame. */
+/** Key images beside report text — extreme-right rail, square ports, tight 2.5mm navy frame. */
 function drawSideRailKeyImages(
   doc: jsPDF,
   images: string[],
@@ -350,9 +350,11 @@ function drawSideRailKeyImages(
   const headingH = 5;
   const innerW = Math.max(10, railW - 2 * framePad);
   const avail = Math.max(20, contentBottom - startY - headingH - 2 * framePad);
-  const cellH = Math.min(34, Math.max(12, (avail - gap * Math.max(0, images.length - 1)) / images.length));
-  const stackH = headingH + images.filter(Boolean).length * cellH
-    + gap * Math.max(0, images.filter(Boolean).length - 1);
+  // Square cells sized to inner rail width; cap so they fit on page 1 with the report.
+  const square = Math.min(innerW, 32);
+  const maxCells = Math.max(1, Math.floor((avail + gap) / (square + gap)));
+  const shown = images.slice(0, Math.min(images.length, maxCells));
+  const stackH = headingH + shown.length * square + gap * Math.max(0, shown.length - 1);
   const frameH = stackH + 2 * framePad;
 
   // Tight navy panel — only as tall/wide as the image stack + frame pad (no empty blue band).
@@ -369,15 +371,24 @@ function drawSideRailKeyImages(
   doc.setTextColor(255, 255, 255);
   doc.text("KEY IMAGES", imgX, imgY + 3.2);
   imgY += headingH;
-  for (const img of images) {
+  for (const img of shown) {
     if (!img) continue;
     try {
       const ext = img.startsWith("data:image/jpeg") ? "JPEG" : "PNG";
-      doc.setDrawColor(255, 255, 255);
-      doc.setLineWidth(0.2);
-      doc.rect(imgX, imgY, innerW, cellH);
-      doc.addImage(img, ext, imgX, imgY, innerW, cellH);
-      imgY += cellH + gap;
+      // Square black port; letterbox the frame (contain) so MRI slices are not
+      // horizontally stretched to fill the rail width.
+      doc.setFillColor(0, 0, 0);
+      doc.rect(imgX, imgY, square, square, "F");
+      const props = doc.getImageProperties(img);
+      const iw = Math.max(1, props.width);
+      const ih = Math.max(1, props.height);
+      const scale = Math.min(square / iw, square / ih);
+      const dw = iw * scale;
+      const dh = ih * scale;
+      const ox = imgX + (square - dw) / 2;
+      const oy = imgY + (square - dh) / 2;
+      doc.addImage(img, ext, ox, oy, dw, dh);
+      imgY += square + gap;
     } catch { /* skip broken image */ }
   }
   return startY + frameH;
@@ -507,13 +518,15 @@ export function generateReportPDF(
         doc.setFont(font, "bold");
         doc.text("NAME:", leftX, cursor);
         doc.setFont(font, "normal");
-        doc.text(name, leftX + doc.getTextWidth("NAME: ") + 1, cursor);
+        doc.text(name, leftX + doc.getTextWidth("NAME: ") + 1, cursor, {
+          maxWidth: Math.max(40, rightEdge - leftX - 55),
+        });
       }
 
       if (ageSex) {
         doc.setFont(font, "bold");
-        const ageLabel = "AGE/SEX: ";
-        doc.text(ageLabel + ageSex, rightEdge, cursor, { align: "right" });
+        const full = `AGE/SEX: ${ageSex}`;
+        doc.text(full, rightEdge, cursor, { align: "right" });
       }
       if (name || ageSex) cursor += lineH + 0.8;
 
@@ -521,12 +534,15 @@ export function generateReportPDF(
         doc.setFont(font, "bold");
         doc.text("REFD. BY:", leftX, cursor);
         doc.setFont(font, "bold");
-        doc.text(refBy, leftX + doc.getTextWidth("REFD. BY: ") + 1, cursor);
+        doc.text(refBy, leftX + doc.getTextWidth("REFD. BY: ") + 1, cursor, {
+          maxWidth: Math.max(40, rightEdge - leftX - 45),
+        });
       }
 
       if (settings.header.showDate !== false && dateStr) {
         doc.setFont(font, "bold");
-        doc.text(`DATE: ${dateStr}`, rightEdge, cursor, { align: "right" });
+        const full = `DATE: ${dateStr}`;
+        doc.text(full, rightEdge, cursor, { align: "right" });
       }
       if (refBy || (settings.header.showDate !== false && dateStr)) cursor += lineH + 0.8;
       cursor += 1.5;

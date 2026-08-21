@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/dialog";
 import { FileDown, Printer, RefreshCw, Eye, Maximize2, ShieldCheck } from "lucide-react";
 import { api } from "@/lib/fetchApi";
+import { hydratePrintPreviewKeyImages } from "@/lib/radiologyReportPdfExport";
 import ReportLayoutQuickSelect, {
   type ReportLayoutKey,
   reportLayoutTemplateQuery,
@@ -100,6 +101,9 @@ export type ReportExportPanelProps = {
   exportingPdf?: boolean;
   printingLikeFinal?: boolean;
   disabled?: boolean;
+  /** Selected image refs — hydrate preview when Orthanc is unreachable from the API. */
+  imageRefs?: import("@/lib/reportImageRefs").ReportImageRef[];
+  dicomWebBase?: string | null;
 };
 
 export default function ReportExportPanel({
@@ -126,6 +130,8 @@ export default function ReportExportPanel({
   exportingPdf,
   printingLikeFinal,
   disabled,
+  imageRefs = [],
+  dicomWebBase = null,
 }: ReportExportPanelProps) {
   const [open, setOpen] = useState(true);
   const [previewRefresh, setPreviewRefresh] = useState(0);
@@ -180,8 +186,12 @@ export default function ReportExportPanel({
   }, [draftId, linkedReportId, reportLayout, impressionStyle]);
 
   const { data: serverHtml, isFetching: serverLoading, refetch } = useQuery<string>({
-    queryKey: ["report-export-server-preview", serverPreviewUrl, previewRefresh],
-    queryFn: () => api.get<string>(serverPreviewUrl!),
+    queryKey: ["report-export-server-preview", serverPreviewUrl, previewRefresh, imageRefs.map((r) => r.id).join(",")],
+    queryFn: async () => {
+      const raw = await api.get<string>(serverPreviewUrl!);
+      if (typeof raw !== "string") return "";
+      return hydratePrintPreviewKeyImages(raw, dicomWebBase, imageRefs);
+    },
     enabled: (open || enlarged) && !!serverPreviewUrl,
     staleTime: 15_000,
   });
@@ -448,7 +458,7 @@ export default function ReportExportPanel({
           </div>
           <div
             ref={enlargedScrollRef}
-            className="flex-1 min-h-0 overflow-y-scroll overflow-x-hidden rounded border bg-slate-100 p-3 overscroll-contain touch-pan-y"
+            className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden rounded border bg-slate-100 p-3 overscroll-contain touch-pan-y"
             data-testid="report-layout-preview-scroll"
           >
             {/* pointer-events-none: wheel/trackpad scroll the outer pane. Print
@@ -459,6 +469,7 @@ export default function ReportExportPanel({
               title="Enlarged report layout preview"
               srcDoc={displayHtml}
               className="bg-white shadow-md mx-auto border-0 pointer-events-none block"
+              data-testid="report-layout-preview-enlarged"
               style={{
                 zoom: previewZoom,
                 width: 794,
@@ -466,7 +477,6 @@ export default function ReportExportPanel({
                 minHeight: MIN_PREVIEW_PAGE_PX,
               }}
               onLoad={(e) => syncPreviewHeight(e.currentTarget)}
-              data-testid="report-layout-preview-enlarged"
               tabIndex={-1}
             />
           </div>

@@ -24,6 +24,14 @@ export interface InferenceProvenance {
   provider?: string | null;
   degraded: boolean;
   detail?: string;
+  /** When set, overnight must NOT treat this as EMPTY/READY — job fails permanently. */
+  resourceFailureCode?: "GPU_OUT_OF_MEMORY" | "CONTEXT_BUDGET_EXCEEDED" | "PROVIDER_TIMEOUT" | "PROVIDER_HTTP_ERROR" | null;
+  httpStatus?: number | null;
+  elapsedMs?: number | null;
+  requestedImages?: number | null;
+  selectedImages?: number | null;
+  numCtx?: number | null;
+  recoveredOnce?: boolean;
 }
 
 export interface ShadowInferenceOutput {

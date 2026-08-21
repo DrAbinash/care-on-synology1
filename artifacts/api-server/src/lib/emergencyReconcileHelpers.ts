@@ -1,5 +1,32 @@
 import { SOURCE, type EmergencyTransaction } from "@workspace/emergency-billing";
 
+/** Emergency phone-collision scope: day = only patients active on the clinic day (IST). */
+export type EmergencyPhoneMatchScope = "day" | "all";
+
+export function parseEmergencyPhoneMatchScope(raw: unknown): EmergencyPhoneMatchScope {
+  return raw === "all" ? "all" : "day";
+}
+
+/**
+ * Asia/Kolkata calendar-day bounds as UTC instants for the emergency bill's createdAt.
+ * Phone conflicts for emergency sync are scoped to this window by default.
+ */
+export function clinicDayBoundsIst(anchor: Date | string): { dayKey: string; startUtc: Date; endUtc: Date } {
+  const at = typeof anchor === "string" ? new Date(anchor) : anchor;
+  const safe = Number.isFinite(at.getTime()) ? at : new Date();
+  const fmt = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  const dayKey = fmt.format(safe); // YYYY-MM-DD
+  // IST = UTC+5:30 — day start 00:00 IST = previous day 18:30 UTC
+  const startUtc = new Date(`${dayKey}T00:00:00+05:30`);
+  const endUtc = new Date(startUtc.getTime() + 24 * 60 * 60 * 1000);
+  return { dayKey, startUtc, endUtc };
+}
+
 export function emergencyClientRef(uuid: string): string {
   return `emg:${uuid}`;
 }

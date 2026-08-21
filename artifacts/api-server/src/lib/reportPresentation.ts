@@ -713,7 +713,7 @@ export function renderReportDocument(
        right). Chromium print also treats a tall grid item with unbreakable
        children as one box and shoves it to the next page. A table row keeps
        the 70/30 split starting on page 1; each .image-cell stays unsplit;
-       viewport height is capped by count so 1–6 images fit the first page
+       square port size is capped by count so 1–6 images fit the first page
        without a float pagination bomb. */
     .content-area.has-side-images {
       display: table;
@@ -743,6 +743,10 @@ export function renderReportDocument(
       .content-area.has-side-images { display: table; width: 100%; }
       .image-panel-side { position: static; width: 30%; }
       .content-area.has-side-images .image-panel-side .image-grid { flex-direction: column; }
+      .content-area.has-side-images .image-panel-side .image-cell {
+        page-break-inside: auto;
+        break-inside: auto;
+      }
     }` : ""}
 
     /* ── Section headings + body slots ── */
@@ -803,9 +807,10 @@ export function renderReportDocument(
     .image-panel-side .image-grid {
       display: flex;
       flex-direction: column;
-      flex: 1 1 auto;
+      flex: 0 0 auto;
       gap: 6px;
       min-height: 0;
+      align-items: stretch;
     }
     .image-panel-side.image-panel-keyrail {
       display: inline-flex;
@@ -817,14 +822,24 @@ export function renderReportDocument(
       margin-left: auto; /* extreme right within the side column (align with DATE edge) */
       text-align: left;
       box-sizing: border-box;
+      align-self: start;
     }
     .image-panel-side .image-cell {
       flex: 0 0 auto;
       display: flex;
       flex-direction: column;
+      width: min(100%, var(--ki-size, 48mm));
+      max-width: 100%;
+      aspect-ratio: 1 / 1;
       min-height: 0;
+      align-self: flex-start;
+      /* Allow the side rail to paginate with the report column. Avoid on every
+         square cell made Chromium shove long classic reports to 3+ pages
+         (Arhan / PREVIEW-19: 6 images + long findings). */
+      break-inside: auto;
+      page-break-inside: auto;
     }
-    .image-panel-side .image-caption { padding: 1px 5px; font-size: 6.5px; flex-shrink: 0; }
+    .image-panel-side .image-caption { padding: 1px 5px; font-size: 6.5px; flex-shrink: 0; display: none; }
     .image-cell {
       margin: 0; border: 1px solid #e0e0e0; border-radius: 4px; overflow: hidden;
       background: #000; text-align: center;
@@ -839,8 +854,17 @@ export function renderReportDocument(
     }` : ""}
     .dicom-img { width: 100%; max-height: 70mm; object-fit: contain; display: block; background: #000; }
     ${sidePanel ? `
+    /* Square ports sized by count so 1–6 fit page 1 with the report body
+       (full rail-width 1:1 cells overflow A4 and orphan the signature). */
+    .image-panel-side[data-image-count="1"] { --ki-size: 48mm; }
+    .image-panel-side[data-image-count="2"] { --ki-size: 40mm; }
+    .image-panel-side[data-image-count="3"] { --ki-size: 32mm; }
+    .image-panel-side[data-image-count="4"] { --ki-size: 26mm; }
+    .image-panel-side[data-image-count="5"] { --ki-size: 22mm; }
+    .image-panel-side[data-image-count="6"] { --ki-size: 18mm; }
     .image-viewport {
-      position: relative; width: 100%; flex: 0 0 auto; min-height: 18mm; height: 28mm;
+      position: relative; width: 100%; flex: 0 0 auto;
+      aspect-ratio: 1 / 1; height: auto; min-height: 0;
       overflow: hidden; background: #000;
     }
     .image-viewport .image-framed {
@@ -850,10 +874,10 @@ export function renderReportDocument(
     }
     .image-viewport .dicom-img {
       width: 100%; height: 100%; max-height: none;
-      object-fit: var(--img-fit, cover); object-position: center;
+      object-fit: var(--img-fit, contain); object-position: center;
       display: block;
     }
-    /* Side-rail images sit in a tight navy frame on the extreme right (no empty band). */` : ""}
+    /* Extreme-right tight navy frame; square ports sized by --ki-size (no empty stretch). */` : ""}
     .image-panel-overflow { margin-top: 10px; }
     .image-caption {
       background: ${pal.accent}; color: #fff; font-weight: 600;
@@ -893,15 +917,15 @@ export function renderReportDocument(
     }
     .image-panel-keyrail .image-panel-heading { color: #fff; border-bottom-color: #3b82f6; letter-spacing: 0.12em; margin-bottom: 4px; }
     .image-panel-keyrail .image-caption { background: #1e3a8a; }
-    .image-panel-keyrail .image-grid { gap: 3px; width: 38mm; max-width: 38mm; }
-    .image-panel-keyrail .image-cell { width: 38mm; max-width: 38mm; }
+    .image-panel-keyrail .image-grid { gap: 3px; width: fit-content; max-width: 100%; }
     .letterpad .signame { color: #b91c1c; font-size: 11pt; }
     .letterpad .reportno { display: none; }
-    .letterpad-demo { width: 100%; border-collapse: collapse; margin: 2px 0 0; font-size: 11px; color: #111; text-transform: uppercase; }
+    .letterpad-demo { width: 100%; table-layout: fixed; border-collapse: collapse; margin: 2px 0 0; font-size: 11.5px; color: #111; text-transform: uppercase; }
     .letterpad-demo td { padding: 1px 0; vertical-align: top; }
-    .letterpad-demo .ld-left { text-align: left; width: 58%; }
-    .letterpad-demo .ld-right { text-align: right; width: 42%; }
+    .letterpad-demo .ld-left { text-align: left; width: 62%; padding-right: 10px; overflow-wrap: anywhere; word-break: break-word; }
+    .letterpad-demo .ld-right { text-align: right; width: 38%; white-space: nowrap; }
     .letterpad-demo-wrap { background: transparent; border: none; padding: 2px 0 0; border-radius: 0; margin-bottom: 0; }
+    .letterpad .body { font-size: 11.5px; }
     .letterpad-demo-rule { border: none; border-top: 2.2px solid #111; border-bottom: 0.9px solid #111; height: 3.2px; margin: 6px 0 8px; }
     .letterpad-sheet { width: 100%; border-collapse: collapse; }
     .letterpad-sheet > thead > tr > td,

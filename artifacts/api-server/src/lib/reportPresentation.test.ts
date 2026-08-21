@@ -438,11 +438,11 @@ describe("premium two-column print rail (page-1 images beside findings)", () => 
     expect(html).toContain("table-layout: fixed");
   });
 
-  it("fixed viewport + cover default; framing CSS variables are emitted", () => {
+  it("square viewport + contain default; framing CSS variables are emitted", () => {
     const html = renderReportDocument(baseModel({
       keyImages: [{ src: "data:image/jpeg;base64,AAA", caption: "T2", displayOrder: 0, framing: { zoom: 1.35, offsetX: -12, offsetY: 8, fitMode: "cover" } }],
     }), resolvePresentationTemplate("care-premium"));
-    expect(html).toContain("object-fit: var(--img-fit, cover)");
+    expect(html).toContain("object-fit: var(--img-fit, contain)");
     expect(html).toContain("--img-zoom:1.35");
     expect(html).toContain("--img-ox:-12%");
     expect(html).toContain("--img-oy:8%");
@@ -451,7 +451,10 @@ describe("premium two-column print rail (page-1 images beside findings)", () => 
     expect(html).toContain('data-image-count="1"');
     expect(html).toContain(".image-panel-side .image-grid");
     expect(html).toContain("flex-direction: column");
-    expect(html).toContain("flex: 1 1 0");
+    expect(html).toContain("aspect-ratio: 1 / 1");
+    expect(html).toContain("flex: 0 0 auto");
+    expect(html).toContain("--ki-size: 48mm");
+    expect(html).not.toContain(".image-viewport {\n      position: relative; width: 100%; flex: 1 1 0;");
   });
 
   it("7+ images keep 6 on the right rail and continue the rest below (no empty left column)", () => {
@@ -478,7 +481,7 @@ describe("premium two-column print rail (page-1 images beside findings)", () => 
     expect(html).not.toContain("KEY IMAGES");
   });
 
-  it("four images use a tight extreme-right key rail (not a stretched empty navy column)", () => {
+  it("four images use square extreme-right key rail with a tight navy frame", () => {
     const four = Array.from({ length: 4 }, (_, i) => ({
       src: `data:image/jpeg;base64,A${i}`, caption: `IMG ${i}`, displayOrder: i,
     }));
@@ -488,6 +491,9 @@ describe("premium two-column print rail (page-1 images beside findings)", () => 
     expect(html).toContain("vertical-align: top");
     expect(html).toContain("margin-left: auto");
     expect(html).toMatch(/padding:\s*2\.5mm/);
+    expect(html).toContain("aspect-ratio: 1 / 1");
+    expect(html).toContain("--ki-size: 26mm");
+    expect(html).not.toContain("vertical-align: stretch");
   });
 });
 

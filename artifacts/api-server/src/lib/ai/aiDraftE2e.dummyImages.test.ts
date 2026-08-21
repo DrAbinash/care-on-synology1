@@ -130,4 +130,74 @@ describe("AI draft E2E with dummy images", () => {
       .limit(1);
     expect(shadow?.id).toBeTruthy();
   }, 60_000);
+
+  it("marks worklist EMPTY (not READY) when inference yields zero usable content", async () => {
+    const emptyUid = `${UID}.empty`;
+    await db.insert(radiologyWorklistTable).values({
+      patientName: "E2E^AI^EMPTY",
+      modality: "MR",
+      studyDescription: "MRI BRAIN PLAIN",
+      studyInstanceUID: emptyUid,
+      accessionNumber: `ACC-AI-EMPTY-${Date.now()}`,
+      status: "STUDY_RECEIVED",
+      aiDraftStatus: "NONE",
+      dicomPatientId: "E2E-AI-EMPTY",
+    });
+
+    const emptyProvider: ShadowInferenceProvider = {
+      name: "e2e-empty",
+      async infer(input) {
+        return {
+          draft: {
+            studyContext: {
+              studyInstanceUid: input.studyInstanceUid,
+              modality: input.modality,
+              imageCount: input.imageAnchors.length,
+            },
+            findings: [],
+            measurements: [],
+            impression: [],
+          },
+          provenance: {
+            modelVersion: "e2e-empty-v1",
+            degraded: true,
+            detail: "empty — no findings",
+          },
+        };
+      },
+    };
+
+    const handler = makeAiShadowPipelineHandler({
+      listInstances: async () => [
+        { seriesUid: SERIES, sopUid: SOP, instanceNumber: 1, seriesNumber: 1 },
+      ],
+      renderAnchors: async () => [
+        {
+          seriesUid: SERIES,
+          sopUid: SOP,
+          frameNumber: 1,
+          imageData: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+        },
+      ],
+      provider: emptyProvider,
+    });
+
+    const result = await handler({
+      id: 999002,
+      payload: { studyInstanceUid: emptyUid, modality: "MR", radiologyStudyId: null },
+    } as unknown as RadiologyJobRow);
+    expect(result.ok).toBe(true);
+
+    const [wl] = await db
+      .select({
+        aiDraftStatus: radiologyWorklistTable.aiDraftStatus,
+        aiDraftJson: radiologyWorklistTable.aiDraftJson,
+      })
+      .from(radiologyWorklistTable)
+      .where(eq(radiologyWorklistTable.studyInstanceUID, emptyUid))
+      .limit(1);
+    expect(wl.aiDraftStatus).toBe("EMPTY");
+    expect(wl.aiDraftJson).toContain('"clinicalStatus":"EMPTY"');
+    expect(wl.aiDraftJson).not.toContain('"clinicalStatus":"READY"');
+  }, 60_000);
 });

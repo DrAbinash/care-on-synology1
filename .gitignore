@@ -108,3 +108,4 @@ __pycache__/
 ocr-worker/.venv/
 ocr-worker/.env
 
+legacy-reference/

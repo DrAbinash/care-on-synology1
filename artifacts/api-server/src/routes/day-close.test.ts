@@ -29,6 +29,8 @@ vi.mock("@workspace/db/schema", () => ({
   patientsTable: {},
   doctorsTable: {},
   ordersTable: {},
+  billAuditsTable: {},
+  voucherAuditsTable: {},
 }));
 
 import { classifyAndBucketPayments, splitCashExpenses, applyCashExpenses, maxBoundary } from "./day-close";

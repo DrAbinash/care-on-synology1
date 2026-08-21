@@ -10,6 +10,8 @@ const rootEnv = path.resolve(
 );
 dotenv.config({ path: rootEnv });
 
+// Bind clinic Ollama resolver before cron can claim overnight AI jobs.
+import "./bootstrapLocalAi";
 import { pool } from "@workspace/db";
 import { logger } from "./lib/logger";
 import { startCronScheduler } from "./cron";

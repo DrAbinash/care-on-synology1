@@ -10,13 +10,19 @@ import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import {
   Lock, RefreshCw, CheckCircle2, AlertTriangle, TrendingUp, Wallet,
-  ChevronDown, ChevronUp, Calculator, IndianRupee,
+  ChevronDown, ChevronUp, Calculator, IndianRupee, Printer,
 } from "lucide-react";
 import { Link } from "wouter";
 import { readStaffSession } from "@/lib/staffSession";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from "@/components/ui/dialog";
+import {
+  autoPrintStaffDayClose,
+  openStaffDayClosePrint,
+  type StaffPrintActivity,
+  type StaffSlipClinic,
+} from "@/lib/staffDayCloseSlip";
 
 type MethodTotals = {
   cash: number; upi: number; card: number; cheque: number; other: number;
@@ -36,9 +42,11 @@ type MyPreview = {
 
 type MyClose = {
   id: number;
+  userName?: string;
   closureDate: string;
   closedAt: string;
   coveredFromTs: string | null;
+  coveredToTs?: string | null;
   expectedCash: string; expectedUpi: string; expectedCard: string;
   expectedCheque: string; expectedOther: string;
   totalExpected: string;
@@ -58,6 +66,7 @@ type MyClose = {
     d50: number; d20: number; d10: number; coins: number;
   };
   denominationTotal: string | null;
+  printActivity?: StaffPrintActivity | null;
 };
 
 const DENOMS = [
@@ -111,6 +120,12 @@ export default function MyDayClose() {
     ...FINANCIAL_QUERY_OPTIONS,
   });
 
+  const clinicQ = useQuery<StaffSlipClinic>({
+    queryKey: ["clinic-settings"],
+    queryFn: () => api.get<StaffSlipClinic>("/api/clinic-settings/branding"),
+    staleTime: 60_000,
+  });
+
   // Post-closure activity — only fetched after a successful close to show the
   // "chocolate box" callout.
   type PostClosureActivity = {
@@ -131,6 +146,7 @@ export default function MyDayClose() {
   const [notes, setNotes] = useState("");
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [detailOpen, setDetailOpen] = useState<MyClose | null>(null);
+  const [printingId, setPrintingId] = useState<number | null>(null);
 
   // Denomination counting
   const [denomOpen, setDenomOpen] = useState(false);
@@ -198,7 +214,7 @@ export default function MyDayClose() {
         denominations: denomsPayload,
       });
     },
-    onSuccess: () => {
+    onSuccess: (closure) => {
       toast({ title: "Your day is closed", description: "New bills from this point count towards tomorrow." });
       setConfirmOpen(false);
       setVarianceNote("");
@@ -209,10 +225,40 @@ export default function MyDayClose() {
       qc.invalidateQueries({ queryKey: ["my-day-close-list"] });
       qc.invalidateQueries({ queryKey: ["day-close-staff-status"] });
       qc.invalidateQueries({ queryKey: ["my-drawer-status"] });
-      window.location.reload();
+      if (clinicQ.data?.dayCloseAutoPrint !== false) {
+        autoPrintStaffDayClose(
+          { ...closure, userName: closure.userName ?? myName },
+          clinicQ.data ?? {},
+          myName,
+        );
+      }
+      // Defer reload so the print window can open before the page unloads.
+      setTimeout(() => window.location.reload(), 600);
     },
     onError: (e: Error) => toast({ title: "Close failed", description: e.message, variant: "destructive" }),
   });
+
+  const printClosure = async (c: MyClose) => {
+    setPrintingId(c.id);
+    try {
+      const full = c.printActivity
+        ? c
+        : await api.get<MyClose>(`/api/day-close/my-closures/${c.id}/print-summary`);
+      openStaffDayClosePrint(
+        { ...full, userName: full.userName ?? myName },
+        clinicQ.data ?? {},
+        myName,
+      );
+    } catch (e) {
+      toast({
+        title: "Print failed",
+        description: e instanceof Error ? e.message : "Could not load print summary",
+        variant: "destructive",
+      });
+    } finally {
+      setPrintingId(null);
+    }
+  };
 
   const expected = previewQ.data?.expected;
 
@@ -647,6 +693,16 @@ export default function MyDayClose() {
                     </td>
                     <td className="text-right whitespace-nowrap">
                       <Button size="sm" variant="ghost" onClick={() => setDetailOpen(c)}>View</Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        disabled={printingId === c.id}
+                        onClick={() => printClosure(c)}
+                        title="Print day-close slip"
+                      >
+                        <Printer size={14} className="mr-1" />
+                        {printingId === c.id ? "…" : "Print"}
+                      </Button>
                     </td>
                   </tr>
                 );
@@ -784,6 +840,14 @@ export default function MyDayClose() {
             </div>
           )}
           <DialogFooter>
+            <Button
+              variant="outline"
+              disabled={!detailOpen || printingId === detailOpen.id}
+              onClick={() => detailOpen && printClosure(detailOpen)}
+            >
+              <Printer size={14} className="mr-2" />
+              {detailOpen && printingId === detailOpen.id ? "Loading…" : "Print"}
+            </Button>
             <Button onClick={() => setDetailOpen(null)}>Close</Button>
           </DialogFooter>
         </DialogContent>
