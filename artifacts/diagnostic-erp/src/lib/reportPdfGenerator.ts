@@ -333,7 +333,7 @@ function drawNumberedImpression(
   return y;
 }
 
-/** Key images beside report text (letter-pad side rail) — sized to fit without extra blank pages. */
+/** Key images beside report text (letter-pad side rail) — square ports, no stretch. */
 function drawSideRailKeyImages(
   doc: jsPDF,
   images: string[],
@@ -348,20 +348,34 @@ function drawSideRailKeyImages(
   const gap = 1.4;
   const headingH = 5;
   const avail = Math.max(20, contentBottom - startY - headingH);
-  const cellH = Math.min(34, Math.max(12, (avail - gap * Math.max(0, images.length - 1)) / images.length));
-  const imgW = railW - 0.5;
+  // Square cells sized to rail width; cap so they fit on page 1 with the report.
+  const square = Math.min(railW - 0.5, 32);
+  const maxCells = Math.max(1, Math.floor((avail + gap) / (square + gap)));
+  const shown = images.slice(0, Math.min(images.length, maxCells));
   let imgY = startY;
   doc.setFont(font, "bold");
   doc.setFontSize(headingSize - 0.5);
   doc.setTextColor(0, 0, 0);
   doc.text("KEY IMAGES", railX, imgY);
   imgY += headingH;
-  for (const img of images) {
+  for (const img of shown) {
     if (!img) continue;
     try {
       const ext = img.startsWith("data:image/jpeg") ? "JPEG" : "PNG";
-      doc.addImage(img, ext, railX, imgY, imgW, cellH);
-      imgY += cellH + gap;
+      // Square black port; letterbox the frame (contain) so MRI slices are not
+      // horizontally stretched to fill the rail width.
+      doc.setFillColor(0, 0, 0);
+      doc.rect(railX, imgY, square, square, "F");
+      const props = doc.getImageProperties(img);
+      const iw = Math.max(1, props.width);
+      const ih = Math.max(1, props.height);
+      const scale = Math.min(square / iw, square / ih);
+      const dw = iw * scale;
+      const dh = ih * scale;
+      const ox = railX + (square - dw) / 2;
+      const oy = imgY + (square - dh) / 2;
+      doc.addImage(img, ext, ox, oy, dw, dh);
+      imgY += square + gap;
     } catch { /* skip broken image */ }
   }
   return imgY;
@@ -471,7 +485,7 @@ export function generateReportPDF(
       doc.setFontSize(fs.patient);
       doc.setTextColor(0, 0, 0);
       const leftX = m.left;
-      const rightX = pageW / 2 + 4;
+      const rightEdge = pageW - m.right;
       const name = (report.patientName || "").trim().toUpperCase();
       const refBy = (report.referringDoctor || "").trim().toUpperCase();
       const ageSex = ageSexLine(report.age, report.sex).toUpperCase();
@@ -481,14 +495,16 @@ export function generateReportPDF(
         doc.setFont(font, "bold");
         doc.text("NAME:", leftX, cursor);
         doc.setFont(font, "normal");
-        doc.text(name, leftX + doc.getTextWidth("NAME: ") + 1, cursor);
+        doc.text(name, leftX + doc.getTextWidth("NAME: ") + 1, cursor, {
+          maxWidth: Math.max(40, rightEdge - leftX - 55),
+        });
       }
 
       if (ageSex) {
         doc.setFont(font, "bold");
-        doc.text("AGE/SEX:", rightX, cursor);
-        doc.setFont(font, "normal");
-        doc.text(ageSex, rightX + doc.getTextWidth("AGE/SEX: ") + 1, cursor);
+        const label = "AGE/SEX: ";
+        const full = `${label}${ageSex}`;
+        doc.text(full, rightEdge, cursor, { align: "right" });
       }
       if (name || ageSex) cursor += lineH + 0.8;
 
@@ -496,14 +512,15 @@ export function generateReportPDF(
         doc.setFont(font, "bold");
         doc.text("REFD. BY:", leftX, cursor);
         doc.setFont(font, "bold");
-        doc.text(refBy, leftX + doc.getTextWidth("REFD. BY: ") + 1, cursor);
+        doc.text(refBy, leftX + doc.getTextWidth("REFD. BY: ") + 1, cursor, {
+          maxWidth: Math.max(40, rightEdge - leftX - 45),
+        });
       }
 
       if (settings.header.showDate !== false && dateStr) {
         doc.setFont(font, "bold");
-        doc.text("DATE:", rightX, cursor);
-        doc.setFont(font, "normal");
-        doc.text(dateStr, rightX + doc.getTextWidth("DATE: ") + 1, cursor);
+        const full = `DATE: ${dateStr}`;
+        doc.text(full, rightEdge, cursor, { align: "right" });
       }
       if (refBy || (settings.header.showDate !== false && dateStr)) cursor += lineH + 0.8;
       cursor += 1.5;

@@ -91,6 +91,68 @@ export async function fetchKeyImageDataUrls(
   return dataUrls.filter((v): v is string => Boolean(v));
 }
 
+/** Build a CARE letter-pad key-images rail matching reportPresentation markup. */
+export function buildKeyImagesRailHtml(dataUrls: string[]): string {
+  const cells = dataUrls.map((src, i) => (
+    `<div class="image-cell"><div class="image-viewport"><div class="image-framed" style="--img-zoom:1;--img-ox:0%;--img-oy:0%;--img-fit:contain;"><img src="${src}" class="dicom-img" alt="Key image ${i + 1}"/></div></div></div>`
+  )).join("");
+  return `<div class="image-panel image-panel-side image-panel-keyrail" data-image-count="${dataUrls.length}"><div class="image-panel-heading">KEY IMAGES</div><div class="image-grid">${cells}</div></div>`;
+}
+
+/**
+ * When the server print-preview HTML has no inlined DICOM pixels (Orthanc
+ * unreachable from the API process) but the browser can reach DICOMweb, fetch
+ * thumbnails client-side and inject a square key-images rail so Print like
+ * final / Enlarge match the selected-images panel.
+ */
+export async function hydratePrintPreviewKeyImages(
+  html: string,
+  dicomWebBase: string | null,
+  refs: ReportImageRef[],
+  opts?: { limit?: number; size?: number; fetchImpl?: typeof fetch },
+): Promise<string> {
+  if (!html || !dicomWebBase || refs.length === 0) return html;
+  const alreadyInlined = (html.match(/class="dicom-img"[^>]*src="data:image/g) || []).length
+    + (html.match(/src="data:image[^"]*"[^>]*class="dicom-img"/g) || []).length;
+  if (alreadyInlined > 0) return html;
+
+  const urls = await fetchKeyImageDataUrls(dicomWebBase, refs, {
+    limit: opts?.limit ?? 6,
+    size: opts?.size ?? 800,
+    fetchImpl: opts?.fetchImpl,
+  });
+  if (urls.length === 0) return html;
+  const rail = buildKeyImagesRailHtml(urls);
+
+  if (/image-panel-side/.test(html)) {
+    const replaced = html.replace(
+      /<div class="image-panel image-panel-side[\s\S]*?<\/div>(?=\s*(?:<div class="sigs"|<\/div>\s*(?:<div class="sigs"|<\/td>|<div class="letterpad|<div class="ftr")))/,
+      rail,
+    );
+    if (replaced !== html) return replaced;
+  }
+
+  let out = html.includes("has-side-images")
+    ? html
+    : html.replace(/class="content-area([^"]*)"/, 'class="content-area has-side-images$1"');
+
+  if (/<\/div>\s*<\/div>\s*(?:<div class="sigs"|<\/td>)/.test(out) && out.includes("report-column")) {
+    const withRail = out.replace(
+      /(<\/div>)(\s*)(<\/div>\s*(?:<div class="sigs"|<\/td>))/ ,
+      `$1$2${rail}$3`,
+    );
+    // Only accept if we actually inserted the rail once near content-area.
+    if (withRail.includes("image-panel-keyrail") || withRail.includes('data-image-count=')) {
+      return withRail;
+    }
+  }
+
+  if (out.includes('<div class="sigs"')) {
+    return out.replace('<div class="sigs"', `${rail}<div class="sigs"`);
+  }
+  return `${out}${rail}`;
+}
+
 export interface RadiologyPdfExportInput {
   patientName: string;
   age: string;
