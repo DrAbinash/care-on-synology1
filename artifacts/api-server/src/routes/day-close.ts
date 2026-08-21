@@ -1,12 +1,13 @@
 import { Router } from "express";
 import { db, paymentsTable, dayClosuresTable, userDayClosuresTable, billsTable, usersTable, expensesTable, orderTestsTable, testsTable } from "@workspace/db";
-import { drawerAuditLogTable, patientsTable, doctorsTable, ordersTable } from "@workspace/db/schema";
-import { eq, and, gt, lte, desc, sql, inArray } from "drizzle-orm";
+import { drawerAuditLogTable, patientsTable, doctorsTable, ordersTable, billAuditsTable, voucherAuditsTable } from "@workspace/db/schema";
+import { eq, and, gt, lte, desc, sql, inArray, notInArray } from "drizzle-orm";
 import { z } from "zod";
 import type { Response, NextFunction } from "express";
 import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { classifyPaymentMethod, isPhysicalCash } from "../lib/paymentMethodClassifier";
 import { lastOverallClosureBoundary } from "../lib/closureBoundary";
+import { BILL_AUDIT_OPERATIONAL_CHANGE_TYPES } from "../lib/staffActivityAttribution";
 
 // Inline super-admin gate that works on the regular ERP staff session
 // (req.staffSession.role === "super_admin"). The site-wide
@@ -678,12 +679,59 @@ async function userWindowBoundary(userName: string): Promise<Date | null> {
   return maxBoundary(t1, t2);
 }
 
+/** Window-scoped activity for staff day-close print slips (no test-wise detail). */
+export type StaffPrintActivity = {
+  discountsGiven: number;
+  discountBills: Array<{
+    billId: number;
+    billNumber: string;
+    patientName: string;
+    totalAmount: number;
+    discountGiven: number;
+    grossAmount: number;
+    discountReason: string | null;
+    discountReasonNote: string | null;
+  }>;
+  billEdits: Array<{
+    id: number;
+    billId: number;
+    billNumber: string;
+    changeType: string;
+    reason: string;
+    oldValue: string | null;
+    newValue: string | null;
+    createdAt: string;
+  }>;
+  voucherEdits: Array<{
+    id: number;
+    voucherId: number;
+    voucherNumber: string;
+    changeType: string;
+    reason: string;
+    oldValue: string | null;
+    newValue: string | null;
+    createdAt: string;
+  }>;
+  expenseDetails: Array<{
+    id: number;
+    amount: number;
+    category: string;
+    description: string;
+    paymentMode: string;
+  }>;
+  totalExpenses: number;
+  cashExpenses: number;
+  digitalExpenses: number;
+};
+
 type UserSummary = {
   totals: MethodTotals;
   billsCount: number;
   totalBilled: number;
   totalDue: number;
   cashExpenses: number;
+  digitalExpenses: number;
+  totalExpenses: number;
   suspenseTotal: number;
   suspenseItems: Array<{ amount: number; rawMethod: string }>;
   bills: Array<{
@@ -694,12 +742,50 @@ type UserSummary = {
     paidAmount: number;
     balanceAmount: number;
     discount: number;
+    discountReason: string | null;
+    discountReasonNote: string | null;
     status: string;
     referringDoctor: string | null;
     createdByName: string;
     createdAt: string;
   }>;
+  printActivity: StaffPrintActivity;
 };
+
+function toIso(v: unknown): string {
+  if (v instanceof Date) return v.toISOString();
+  if (v == null) return "";
+  return String(v);
+}
+
+function buildStaffPrintActivity(s: Omit<UserSummary, "printActivity"> & {
+  expenseDetails: StaffPrintActivity["expenseDetails"];
+  billEdits: StaffPrintActivity["billEdits"];
+  voucherEdits: StaffPrintActivity["voucherEdits"];
+}): StaffPrintActivity {
+  const discountBills = s.bills
+    .filter((b) => b.discount > 0)
+    .map((b) => ({
+      billId: b.id,
+      billNumber: b.billNumber,
+      patientName: b.patientName,
+      totalAmount: b.totalAmount,
+      discountGiven: b.discount,
+      grossAmount: b.totalAmount + b.discount,
+      discountReason: b.discountReason,
+      discountReasonNote: b.discountReasonNote,
+    }));
+  return {
+    discountsGiven: discountBills.reduce((sum, b) => sum + b.discountGiven, 0),
+    discountBills,
+    billEdits: s.billEdits,
+    voucherEdits: s.voucherEdits,
+    expenseDetails: s.expenseDetails,
+    totalExpenses: s.totalExpenses,
+    cashExpenses: s.cashExpenses,
+    digitalExpenses: s.digitalExpenses,
+  };
+}
 
 async function summarizeUserWindow(
   userName: string,
@@ -729,7 +815,14 @@ async function summarizeUserWindow(
     ? and(eq(expensesTable.approvedBy, userName), gt(expensesTable.createdAt, from), lte(expensesTable.createdAt, to))
     : and(eq(expensesTable.approvedBy, userName), lte(expensesTable.createdAt, to));
   const expRows = await db
-    .select({ amount: expensesTable.amount, paymentMode: expensesTable.paymentMode })
+    .select({
+      id: expensesTable.id,
+      amount: expensesTable.amount,
+      category: expensesTable.category,
+      description: expensesTable.description,
+      paymentMode: expensesTable.paymentMode,
+      approvedBy: expensesTable.approvedBy,
+    })
     .from(expensesTable)
     .where(expWhere);
   // Reduce this cashier's expected physical cash by the cash expenses they
@@ -738,8 +831,16 @@ async function summarizeUserWindow(
   // so mutating `classified` here updates it. This previously inlined the
   // subtraction and applied it TWICE, which understated each cashier's expected
   // drawer cash and could mask a real shortfall as a false surplus.
-  const { cashExpenses, cashExpensesByApprover } = splitCashExpenses(expRows);
+  const { cashExpenses, digitalExpenses, cashExpensesByApprover } = splitCashExpenses(expRows);
   applyCashExpenses(classified, cashExpensesByApprover);
+  const expenseDetails = expRows.map((e) => ({
+    id: e.id,
+    amount: n(e.amount),
+    category: e.category ?? "General",
+    description: e.description ?? "",
+    paymentMode: (e.paymentMode ?? "cash").toLowerCase(),
+  }));
+  const totalExpenses = expenseDetails.reduce((s, e) => s + e.amount, 0);
 
   const bWhere = from
     ? and(
@@ -762,6 +863,8 @@ async function summarizeUserWindow(
       paidAmount: billsTable.paidAmount,
       balanceAmount: billsTable.balanceAmount,
       discount: billsTable.discount,
+      discountReason: billsTable.discountReason,
+      discountReasonNote: billsTable.discountReasonNote,
       status: billsTable.status,
       createdAt: billsTable.createdAt,
       createdByName: billsTable.createdByName,
@@ -783,21 +886,102 @@ async function summarizeUserWindow(
     paidAmount: n(b.paidAmount),
     balanceAmount: n(b.balanceAmount),
     discount: n(b.discount),
+    discountReason: b.discountReason ?? null,
+    discountReasonNote: b.discountReasonNote ?? null,
     status: b.status ?? "pending",
     referringDoctor: b.referringDoctor ?? null,
     createdByName: b.createdByName ?? "",
     createdAt: b.createdAt ? new Date(b.createdAt).toISOString() : "",
   }));
 
-  return {
+  // Bill / voucher edits by this staff inside the same close window
+  // (created_at), excluding operational audit types that flood "edits".
+  const auditTimeWhere = from
+    ? and(gt(billAuditsTable.createdAt, from), lte(billAuditsTable.createdAt, to))
+    : lte(billAuditsTable.createdAt, to);
+  const billEditsRaw = await db
+    .select({
+      id: billAuditsTable.id,
+      billId: billAuditsTable.billId,
+      reason: billAuditsTable.reason,
+      changeType: billAuditsTable.changeType,
+      oldValue: billAuditsTable.oldValue,
+      newValue: billAuditsTable.newValue,
+      createdAt: billAuditsTable.createdAt,
+      billNumber: billsTable.billNumber,
+    })
+    .from(billAuditsTable)
+    .leftJoin(billsTable, eq(billAuditsTable.billId, billsTable.id))
+    .where(and(
+      eq(billAuditsTable.editedBy, userName),
+      notInArray(billAuditsTable.changeType, [...BILL_AUDIT_OPERATIONAL_CHANGE_TYPES]),
+      auditTimeWhere,
+    ))
+    .orderBy(desc(billAuditsTable.createdAt))
+    .limit(100);
+
+  const voucherTimeWhere = from
+    ? and(gt(voucherAuditsTable.createdAt, from), lte(voucherAuditsTable.createdAt, to))
+    : lte(voucherAuditsTable.createdAt, to);
+  const voucherEditsRaw = await db
+    .select({
+      id: voucherAuditsTable.id,
+      voucherId: voucherAuditsTable.voucherId,
+      voucherNumber: voucherAuditsTable.voucherNumber,
+      reason: voucherAuditsTable.reason,
+      changeType: voucherAuditsTable.changeType,
+      oldValue: voucherAuditsTable.oldValue,
+      newValue: voucherAuditsTable.newValue,
+      createdAt: voucherAuditsTable.createdAt,
+    })
+    .from(voucherAuditsTable)
+    .where(and(
+      eq(voucherAuditsTable.editedBy, userName),
+      voucherTimeWhere,
+    ))
+    .orderBy(desc(voucherAuditsTable.createdAt))
+    .limit(100);
+
+  const billEdits = billEditsRaw.map((r) => ({
+    id: r.id,
+    billId: r.billId,
+    billNumber: r.billNumber ?? `#${r.billId}`,
+    changeType: r.changeType,
+    reason: r.reason,
+    oldValue: r.oldValue ?? null,
+    newValue: r.newValue ?? null,
+    createdAt: toIso(r.createdAt),
+  }));
+  const voucherEdits = voucherEditsRaw.map((r) => ({
+    id: r.id,
+    voucherId: r.voucherId,
+    voucherNumber: r.voucherNumber,
+    changeType: r.changeType,
+    reason: r.reason,
+    oldValue: r.oldValue ?? null,
+    newValue: r.newValue ?? null,
+    createdAt: toIso(r.createdAt),
+  }));
+
+  const base = {
     totals,
     billsCount:  bills.length,
     totalBilled: bills.reduce((s, b) => s + b.totalAmount, 0),
     totalDue:    bills.reduce((s, b) => s + b.balanceAmount, 0),
     cashExpenses,
+    digitalExpenses,
+    totalExpenses,
     suspenseTotal,
     suspenseItems,
     bills,
+    expenseDetails,
+    billEdits,
+    voucherEdits,
+  };
+
+  return {
+    ...base,
+    printActivity: buildStaffPrintActivity(base),
   };
 }
 
@@ -1045,7 +1229,7 @@ dayCloseRouter.post("/my-close", async (req, res) => {
       reason:        varianceNote || "",
     });
 
-    return { row, suspenseTotal: s.suspenseTotal, suspenseItems: s.suspenseItems };
+    return { row, suspenseTotal: s.suspenseTotal, suspenseItems: s.suspenseItems, printActivity: s.printActivity };
   });
 
   req.log?.info({ closureId: inserted.row.id, userName, variance: inserted.row.variance, drawerStatus: inserted.row.drawerStatus }, "User day closed");
@@ -1060,7 +1244,39 @@ dayCloseRouter.post("/my-close", async (req, res) => {
     suspenseTotal: inserted.suspenseTotal,
     suspenseCount: inserted.suspenseItems.length,
     suspenseItems: inserted.suspenseItems,
+    printActivity: inserted.printActivity,
   });
+});
+
+// Reprint payload for a past staff closure — accounts + denomination live on
+// the row; discounts/edits/voucher mods/expenses are recomputed for the
+// persisted coveredFromTs → coveredToTs window (same as close-time snapshot).
+dayCloseRouter.get("/my-closures/:id/print-summary", async (req, res) => {
+  const session = (req as StaffAuthRequest).staffSession;
+  const userName = session?.subjectName?.trim() ?? "";
+  const role = session?.role ?? "";
+  if (!userName) { res.status(401).json({ error: "Not authenticated" }); return; }
+
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) { res.status(400).json({ error: "Invalid id" }); return; }
+
+  const [row] = await db
+    .select()
+    .from(userDayClosuresTable)
+    .where(eq(userDayClosuresTable.id, id))
+    .limit(1);
+  if (!row) { res.status(404).json({ error: "Not found" }); return; }
+
+  const isOwner = OWNER_ROLES.has(role);
+  if (!isOwner && row.userName !== userName) {
+    res.status(403).json({ error: "Not your closure" });
+    return;
+  }
+
+  const from = row.coveredFromTs ? new Date(row.coveredFromTs) : null;
+  const to = new Date(row.coveredToTs);
+  const s = await summarizeUserWindow(row.userName, from, to);
+  res.json({ ...row, printActivity: s.printActivity });
 });
 
 // ── Admin actions on individual staff drawers ────────────────────────────────
@@ -1142,7 +1358,7 @@ dayCloseRouter.get("/staff-close-detail/:id", requireOwnerOrAdmin, async (req, r
   const from = row.coveredFromTs ? new Date(row.coveredFromTs) : null;
   const to = new Date(row.coveredToTs);
   const windowSummary = await summarizeUserWindow(row.userName, from, to);
-  res.json({ ...row, bills: windowSummary.bills });
+  res.json({ ...row, bills: windowSummary.bills, printActivity: windowSummary.printActivity });
 });
 
 // ── Admin-initiated per-staff close (cash handover one by one) ──────────────
@@ -1268,7 +1484,7 @@ dayCloseRouter.post("/staff-close", requireOwnerOrAdmin, async (req, res) => {
       reason: [`Closed by ${adminName} on behalf of ${userName} (cash handover)`, varianceNote].filter(Boolean).join(" — "),
     });
 
-    return { row, bills: s.bills, suspenseTotal: s.suspenseTotal, suspenseItems: s.suspenseItems };
+    return { row, bills: s.bills, suspenseTotal: s.suspenseTotal, suspenseItems: s.suspenseItems, printActivity: s.printActivity };
   });
 
   req.log?.info(
@@ -1281,6 +1497,7 @@ dayCloseRouter.post("/staff-close", requireOwnerOrAdmin, async (req, res) => {
     suspenseTotal: inserted.suspenseTotal,
     suspenseCount: inserted.suspenseItems.length,
     suspenseItems: inserted.suspenseItems,
+    printActivity: inserted.printActivity,
   });
 });
 
