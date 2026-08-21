@@ -985,15 +985,29 @@ async function executeSelfTest(job: JobRecord, opts: { studyInstanceUid?: string
     });
     const inferenceResolved = await resolveOllamaInferenceEndpoint();
     const overnightVision = await getOvernightVisionInferenceOptions();
+    let providerMirrorEndpoint: string | null = null;
+    try {
+      const { getProviderEndpointUrl } = await import("@workspace/ai-providers");
+      providerMirrorEndpoint = (await getProviderEndpointUrl("ollama"))?.replace(/\/$/, "") || null;
+    } catch {
+      providerMirrorEndpoint = null;
+    }
     const endpointInvariant = assertEndpointResolutionIdentity({
       resolvedHealthEndpoint: endpoint,
       resolvedInferenceEndpoint: inferenceResolved.endpointUrl,
       resolvedOvernightEndpoint: overnightVision.endpointUrl,
     });
+    const mirrorNorm = providerMirrorEndpoint?.replace(/\/$/, "").toLowerCase() ?? null;
+    const clinicNorm = endpoint.replace(/\/$/, "").toLowerCase();
     technical.endpointResolution = {
       resolvedHealthEndpoint: endpoint,
       resolvedInferenceEndpoint: inferenceResolved.endpointUrl,
       resolvedOvernightEndpoint: overnightVision.endpointUrl,
+      canonicalClinicEndpoint: endpoint,
+      providerMirrorEndpoint,
+      effectiveInferenceEndpoint: inferenceResolved.endpointUrl,
+      providerMirrorStatus:
+        mirrorNorm && mirrorNorm !== clinicNorm ? "STALE MIRROR — ignored" : mirrorNorm ? "in_sync" : "unavailable",
       inferenceSource: inferenceResolved.source,
       rejectedCandidate: inferenceResolved.rejectedCandidate,
       rejectReason: inferenceResolved.rejectReason,

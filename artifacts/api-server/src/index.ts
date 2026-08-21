@@ -16,6 +16,8 @@ const rootEnv = path.resolve(
 );
 dotenv.config({ path: rootEnv });
 
+// Bind clinic Ollama resolver before app/cron/worker side-effects can generate.
+import "./bootstrapLocalAi";
 import app from "./app";
 import { initializePluginLoader } from "./plugin-loader";
 initializePluginLoader(app);

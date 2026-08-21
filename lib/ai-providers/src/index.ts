@@ -72,6 +72,11 @@ export function bindOllamaRuntimeEndpointResolver(
   ollamaRuntimeEndpointResolver = fn;
 }
 
+/** True after api-server bootstrap binds resolveLocalAiRuntime into generate paths. */
+export function isOllamaRuntimeEndpointResolverBound(): boolean {
+  return ollamaRuntimeEndpointResolver != null;
+}
+
 /** Test helper — clears the production binder. */
 export function resetOllamaRuntimeEndpointResolverForTests(): void {
   ollamaRuntimeEndpointResolver = null;

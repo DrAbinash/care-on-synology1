@@ -4,6 +4,8 @@ import { existsSync } from "node:fs";
 import express, { type Express, type Request, type Response, type NextFunction } from "express";
 import cors from "cors";
 import pinoHttp from "pino-http";
+// Bind before routes module graph finishes constructing request handlers.
+import "./bootstrapLocalAi";
 import router from "./routes";
 import { logger } from "./lib/logger";
 import { errorHandler } from "./middleware/errorHandler";
@@ -11,11 +13,6 @@ import { dicomUploadLimiter } from "./middleware/rateLimits";
 import { dicomUploadsRouter } from "./routes/dicom-uploads";
 import { whatsappWebhookRouter } from "./routes/whatsapp";
 import { recordRequest } from "./lib/requestMetrics";
-import { bindCanonicalOllamaRuntimeResolver } from "./lib/ai/bindOllamaRuntime";
-
-// Bind Ollama generate paths to resolveLocalAiRuntime() before any route
-// handles traffic — clinic/runtime URL wins over stale provider-settings mirrors.
-bindCanonicalOllamaRuntimeResolver();
 
 // Helmet is loaded lazily so a missing optional dependency never crashes the
 // server. Production deployments should include it; dev environments can

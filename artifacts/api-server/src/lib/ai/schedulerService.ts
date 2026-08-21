@@ -36,9 +36,15 @@ import {
   shadowQueueComposition,
 } from "./overnightDraftQueue";
 import { compareOvernightDraftRows } from "./overnightAiDraftStatus";
-import { probeOllamaReachable } from "@workspace/ai-providers";
+import {
+  probeOllamaReachable,
+  getProviderEndpointUrl,
+  resolveOllamaInferenceEndpoint,
+  normalizeOllamaEndpointUrl,
+  isOllamaRuntimeEndpointResolverBound,
+  CANONICAL_LOCAL_CHAT_VISION_MODEL,
+} from "@workspace/ai-providers";
 import { resolveLocalAiRuntime } from "../aiPipeline/runtimeConfig";
-import { CANONICAL_LOCAL_CHAT_VISION_MODEL } from "../aiPipeline/canonicalLocalAi";
 
 function nowMinutesLocal(): number {
   // Clinic timezone (Asia/Kolkata) — never use container UTC wall-clock.
@@ -604,12 +610,35 @@ export async function getOvernightDiagnostics() {
   let localAiReachable = false;
   let localAiError: string | null = null;
   let model = CANONICAL_LOCAL_CHAT_VISION_MODEL;
+  let canonicalClinicEndpoint: string | null = null;
+  let providerMirrorEndpoint: string | null = null;
+  let effectiveInferenceEndpoint: string | null = null;
+  let providerMirrorStatus: "in_sync" | "STALE MIRROR — ignored" | "unavailable" = "unavailable";
   try {
     const runtime = await resolveLocalAiRuntime();
     model = runtime.localChatVisionModel;
+    canonicalClinicEndpoint = runtime.ollamaBaseUrl;
     const probe = await probeOllamaReachable(runtime.ollamaBaseUrl);
     localAiReachable = probe.reachable;
     localAiError = probe.error ?? null;
+    try {
+      providerMirrorEndpoint = (await getProviderEndpointUrl("ollama"))?.replace(/\/$/, "") || null;
+    } catch {
+      providerMirrorEndpoint = null;
+    }
+    const effective = await resolveOllamaInferenceEndpoint();
+    effectiveInferenceEndpoint = effective.endpointUrl;
+    const clinicNorm = normalizeOllamaEndpointUrl(canonicalClinicEndpoint || "").toLowerCase();
+    const mirrorNorm = providerMirrorEndpoint
+      ? normalizeOllamaEndpointUrl(providerMirrorEndpoint).toLowerCase()
+      : null;
+    if (!mirrorNorm) {
+      providerMirrorStatus = "unavailable";
+    } else if (mirrorNorm === clinicNorm) {
+      providerMirrorStatus = "in_sync";
+    } else {
+      providerMirrorStatus = "STALE MIRROR — ignored";
+    }
   } catch (err) {
     localAiError = err instanceof Error ? err.message : String(err);
   }
@@ -625,6 +654,11 @@ export async function getOvernightDiagnostics() {
     localAi: localAiReachable ? "reachable" : "unreachable",
     localAiError,
     model,
+    canonicalClinicEndpoint,
+    providerMirrorEndpoint,
+    effectiveInferenceEndpoint,
+    providerMirrorStatus,
+    ollamaRuntimeBinderBound: isOllamaRuntimeEndpointResolverBound(),
     concurrency: cfg.maxConcurrentJobs,
     queueDepth: stats.queueDepth,
     running: stats.running,

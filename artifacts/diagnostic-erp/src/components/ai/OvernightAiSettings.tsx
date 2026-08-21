@@ -338,6 +338,13 @@ export default function OvernightAiSettings() {
             <span>TZ: <strong className="text-foreground">{String(diagnostics.timezone ?? "Asia/Kolkata")}</strong></span>
             <span>Local AI: <strong className="text-foreground">{String(diagnostics.localAi ?? "—")}</strong></span>
             <span>Model: <strong className="text-foreground">{String(diagnostics.model ?? "qwen3-vl:8b")}</strong></span>
+            <span className="col-span-2 sm:col-span-3">Canonical clinic endpoint: <strong className="text-foreground font-mono">{String(diagnostics.canonicalClinicEndpoint ?? "—")}</strong></span>
+            <span className="col-span-2 sm:col-span-3">Provider mirror endpoint: <strong className="text-foreground font-mono">{String(diagnostics.providerMirrorEndpoint ?? "—")}</strong>
+              {String(diagnostics.providerMirrorStatus ?? "") === "STALE MIRROR — ignored" ? (
+                <span className="ml-2 text-amber-700 font-semibold">STALE MIRROR — ignored</span>
+              ) : null}
+            </span>
+            <span className="col-span-2 sm:col-span-3">Effective inference endpoint: <strong className="text-foreground font-mono">{String(diagnostics.effectiveInferenceEndpoint ?? "—")}</strong></span>
             <span>Queue depth: <strong className="text-foreground">{String(diagnostics.queueDepth ?? 0)}</strong></span>
             <span>Due now (eligible): <strong className="text-foreground">{String(diagnostics.dueNow ?? "—")}</strong></span>
             <span>Held legacy P/R: <strong className="text-foreground">{String(diagnostics.heldLegacyPending ?? 0)}/{String(diagnostics.heldLegacyRetrying ?? 0)}</strong></span>
