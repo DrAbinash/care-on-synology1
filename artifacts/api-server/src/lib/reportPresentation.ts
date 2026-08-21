@@ -736,6 +736,7 @@ export function renderReportDocument(
       page-break-inside: auto;
       break-inside: auto;
       height: auto;
+      text-align: right;
     }
     .content-area.has-side-images + .sigs { margin-top: 12px; }
     @media print {
@@ -812,10 +813,15 @@ export function renderReportDocument(
       align-items: stretch;
     }
     .image-panel-side.image-panel-keyrail {
-      display: flex;
+      display: inline-flex;
       flex-direction: column;
       height: auto;
       min-height: 0;
+      width: fit-content;
+      max-width: 100%;
+      margin-left: auto; /* extreme right within the side column (align with DATE edge) */
+      text-align: left;
+      box-sizing: border-box;
       align-self: start;
     }
     .image-panel-side .image-cell {
@@ -871,8 +877,7 @@ export function renderReportDocument(
       object-fit: var(--img-fit, contain); object-position: center;
       display: block;
     }
-    /* Square ports start at the top of the rail; do not stretch to fill the
-       report column (that caused thin “line” viewports and page-2 signatures). */` : ""}
+    /* Extreme-right tight navy frame; square ports sized by --ki-size (no empty stretch). */` : ""}
     .image-panel-overflow { margin-top: 10px; }
     .image-caption {
       background: ${pal.accent}; color: #fff; font-weight: 600;
@@ -900,9 +905,19 @@ export function renderReportDocument(
     .hdr-rule { border-top: 0.35mm solid #141414; margin: 2mm 0 0; }
     .letterpad-addr { color: #111; font-size: 9.5px; text-align: center; padding: 2px 12px 0; }
     .letterpad-contact { color: #111; font-size: 9px; text-align: center; padding: 2px 12px 6px; }
-    .image-panel-keyrail { background: #0f172a; color: #fff; padding: 8px 6px; border-radius: 4px; }
-    .image-panel-keyrail .image-panel-heading { color: #fff; border-bottom-color: #3b82f6; letter-spacing: 0.12em; }
+    .image-panel-keyrail {
+      background: #0f172a;
+      color: #fff;
+      /* Tight 2–3mm symmetrical frame around the image stack — no empty navy band */
+      padding: 2.5mm;
+      border: 0.35mm solid #3b82f6;
+      border-radius: 3px;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }
+    .image-panel-keyrail .image-panel-heading { color: #fff; border-bottom-color: #3b82f6; letter-spacing: 0.12em; margin-bottom: 4px; }
     .image-panel-keyrail .image-caption { background: #1e3a8a; }
+    .image-panel-keyrail .image-grid { gap: 3px; width: fit-content; max-width: 100%; }
     .letterpad .signame { color: #b91c1c; font-size: 11pt; }
     .letterpad .reportno { display: none; }
     .letterpad-demo { width: 100%; table-layout: fixed; border-collapse: collapse; margin: 2px 0 0; font-size: 11.5px; color: #111; text-transform: uppercase; }

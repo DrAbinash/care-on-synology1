@@ -333,7 +333,7 @@ function drawNumberedImpression(
   return y;
 }
 
-/** Key images beside report text (letter-pad side rail) — square ports, no stretch. */
+/** Key images beside report text — extreme-right rail, square ports, tight 2.5mm navy frame. */
 function drawSideRailKeyImages(
   doc: jsPDF,
   images: string[],
@@ -345,18 +345,31 @@ function drawSideRailKeyImages(
   headingSize: number,
 ): number {
   if (images.length === 0 || railW <= 8) return startY;
+  const framePad = 2.5; // 2–3mm symmetrical blue/navy border around the stack
   const gap = 1.4;
   const headingH = 5;
-  const avail = Math.max(20, contentBottom - startY - headingH);
-  // Square cells sized to rail width; cap so they fit on page 1 with the report.
-  const square = Math.min(railW - 0.5, 32);
+  const innerW = Math.max(10, railW - 2 * framePad);
+  const avail = Math.max(20, contentBottom - startY - headingH - 2 * framePad);
+  // Square cells sized to inner rail width; cap so they fit on page 1 with the report.
+  const square = Math.min(innerW, 32);
   const maxCells = Math.max(1, Math.floor((avail + gap) / (square + gap)));
   const shown = images.slice(0, Math.min(images.length, maxCells));
-  let imgY = startY;
+  const stackH = headingH + shown.length * square + gap * Math.max(0, shown.length - 1);
+  const frameH = stackH + 2 * framePad;
+
+  // Tight navy panel — only as tall/wide as the image stack + frame pad (no empty blue band).
+  doc.setFillColor(15, 23, 42); // #0f172a
+  doc.roundedRect(railX, startY, railW, frameH, 1.2, 1.2, "F");
+  doc.setDrawColor(59, 130, 246); // #3b82f6 accent edge
+  doc.setLineWidth(0.35);
+  doc.roundedRect(railX, startY, railW, frameH, 1.2, 1.2, "S");
+
+  let imgY = startY + framePad;
+  const imgX = railX + framePad;
   doc.setFont(font, "bold");
   doc.setFontSize(headingSize - 0.5);
-  doc.setTextColor(0, 0, 0);
-  doc.text("KEY IMAGES", railX, imgY);
+  doc.setTextColor(255, 255, 255);
+  doc.text("KEY IMAGES", imgX, imgY + 3.2);
   imgY += headingH;
   for (const img of shown) {
     if (!img) continue;
@@ -365,20 +378,20 @@ function drawSideRailKeyImages(
       // Square black port; letterbox the frame (contain) so MRI slices are not
       // horizontally stretched to fill the rail width.
       doc.setFillColor(0, 0, 0);
-      doc.rect(railX, imgY, square, square, "F");
+      doc.rect(imgX, imgY, square, square, "F");
       const props = doc.getImageProperties(img);
       const iw = Math.max(1, props.width);
       const ih = Math.max(1, props.height);
       const scale = Math.min(square / iw, square / ih);
       const dw = iw * scale;
       const dh = ih * scale;
-      const ox = railX + (square - dw) / 2;
+      const ox = imgX + (square - dw) / 2;
       const oy = imgY + (square - dh) / 2;
       doc.addImage(img, ext, ox, oy, dw, dh);
       imgY += square + gap;
     } catch { /* skip broken image */ }
   }
-  return imgY;
+  return startY + frameH;
 }
 
 export function generateReportPDF(
@@ -429,11 +442,21 @@ export function generateReportPDF(
         const aspect = CARE_LETTERHEAD_LOGO_SIZE.width / CARE_LETTERHEAD_LOGO_SIZE.height;
         logoH = logoMm;
         const logoW = Math.min(contentW * 0.52, logoH * aspect);
-        doc.addImage(CARE_LETTERHEAD_LOGO_DATA_URL, "PNG", leftX, cursor, logoW, logoH, undefined, "NONE");
+        // Prefer FAST compression — NONE can fail to embed on some jsPDF builds.
+        doc.addImage(CARE_LETTERHEAD_LOGO_DATA_URL, "PNG", leftX, cursor, logoW, logoH, undefined, "FAST");
         headerBottom = cursor + logoH;
         logoDrawn = true;
       } catch {
-        logoDrawn = false;
+        try {
+          const aspect = CARE_LETTERHEAD_LOGO_SIZE.width / CARE_LETTERHEAD_LOGO_SIZE.height;
+          logoH = logoMm;
+          const logoW = Math.min(contentW * 0.52, logoH * aspect);
+          doc.addImage(CARE_LETTERHEAD_LOGO_DATA_URL, "PNG", leftX, cursor, logoW, logoH);
+          headerBottom = cursor + logoH;
+          logoDrawn = true;
+        } catch {
+          logoDrawn = false;
+        }
       }
 
       if (!logoDrawn) {
@@ -485,7 +508,7 @@ export function generateReportPDF(
       doc.setFontSize(fs.patient);
       doc.setTextColor(0, 0, 0);
       const leftX = m.left;
-      const rightEdge = pageW - m.right;
+      const rightEdge = pageW - m.right; // extreme right — same edge as contact / key-image rail
       const name = (report.patientName || "").trim().toUpperCase();
       const refBy = (report.referringDoctor || "").trim().toUpperCase();
       const ageSex = ageSexLine(report.age, report.sex).toUpperCase();
@@ -502,8 +525,7 @@ export function generateReportPDF(
 
       if (ageSex) {
         doc.setFont(font, "bold");
-        const label = "AGE/SEX: ";
-        const full = `${label}${ageSex}`;
+        const full = `AGE/SEX: ${ageSex}`;
         doc.text(full, rightEdge, cursor, { align: "right" });
       }
       if (name || ageSex) cursor += lineH + 0.8;
@@ -553,8 +575,12 @@ export function generateReportPDF(
   const keyImageList = (report.keyImages ?? []).filter(Boolean);
   const sideRail =
     keyImageList.length > 0 && settings.show.keyImages;
-  const textW = sideRail ? contentW * 0.62 : contentW;
-  const railW = sideRail ? contentW - textW - 3 : 0;
+  // Extreme-right rail: image column ~38mm + 2.5mm frame each side ≈ 43mm, flush to right margin (same edge as DATE).
+  const framePadMm = 2.5;
+  const railImgW = 38;
+  const railW = sideRail ? railImgW + 2 * framePadMm : 0;
+  const railGap = 4;
+  const textW = sideRail ? Math.max(90, contentW - railW - railGap) : contentW;
   const railX = pageW - m.right - railW;
   let railStartY = 0;
   let railBottomY = 0;

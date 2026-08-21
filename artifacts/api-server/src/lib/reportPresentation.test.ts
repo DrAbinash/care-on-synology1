@@ -481,7 +481,7 @@ describe("premium two-column print rail (page-1 images beside findings)", () => 
     expect(html).not.toContain("KEY IMAGES");
   });
 
-  it("four images use square top-aligned side rail viewports", () => {
+  it("four images use square extreme-right key rail with a tight navy frame", () => {
     const four = Array.from({ length: 4 }, (_, i) => ({
       src: `data:image/jpeg;base64,A${i}`, caption: `IMG ${i}`, displayOrder: i,
     }));
@@ -489,6 +489,8 @@ describe("premium two-column print rail (page-1 images beside findings)", () => 
     expect(html).toContain('data-image-count="4"');
     expect(html).toContain(".image-panel-side.image-panel-keyrail");
     expect(html).toContain("vertical-align: top");
+    expect(html).toContain("margin-left: auto");
+    expect(html).toMatch(/padding:\s*2\.5mm/);
     expect(html).toContain("aspect-ratio: 1 / 1");
     expect(html).toContain("--ki-size: 26mm");
     expect(html).not.toContain("vertical-align: stretch");
