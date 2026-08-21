@@ -713,7 +713,7 @@ export function renderReportDocument(
        right). Chromium print also treats a tall grid item with unbreakable
        children as one box and shoves it to the next page. A table row keeps
        the 70/30 split starting on page 1; each .image-cell stays unsplit;
-       viewport height is capped by count so 1–6 images fit the first page
+       square port size is capped by count so 1–6 images fit the first page
        without a float pagination bomb. */
     .content-area.has-side-images {
       display: table;
@@ -742,6 +742,10 @@ export function renderReportDocument(
       .content-area.has-side-images { display: table; width: 100%; }
       .image-panel-side { position: static; width: 30%; }
       .content-area.has-side-images .image-panel-side .image-grid { flex-direction: column; }
+      .content-area.has-side-images .image-panel-side .image-cell {
+        page-break-inside: auto;
+        break-inside: auto;
+      }
     }` : ""}
 
     /* ── Section headings + body slots ── */
@@ -823,6 +827,11 @@ export function renderReportDocument(
       aspect-ratio: 1 / 1;
       min-height: 0;
       align-self: flex-start;
+      /* Allow the side rail to paginate with the report column. Avoid on every
+         square cell made Chromium shove long classic reports to 3+ pages
+         (Arhan / PREVIEW-19: 6 images + long findings). */
+      break-inside: auto;
+      page-break-inside: auto;
     }
     .image-panel-side .image-caption { padding: 1px 5px; font-size: 6.5px; flex-shrink: 0; display: none; }
     .image-cell {
@@ -843,10 +852,10 @@ export function renderReportDocument(
        (full rail-width 1:1 cells overflow A4 and orphan the signature). */
     .image-panel-side[data-image-count="1"] { --ki-size: 48mm; }
     .image-panel-side[data-image-count="2"] { --ki-size: 40mm; }
-    .image-panel-side[data-image-count="3"] { --ki-size: 34mm; }
-    .image-panel-side[data-image-count="4"] { --ki-size: 28mm; }
-    .image-panel-side[data-image-count="5"] { --ki-size: 24mm; }
-    .image-panel-side[data-image-count="6"] { --ki-size: 22mm; }
+    .image-panel-side[data-image-count="3"] { --ki-size: 32mm; }
+    .image-panel-side[data-image-count="4"] { --ki-size: 26mm; }
+    .image-panel-side[data-image-count="5"] { --ki-size: 22mm; }
+    .image-panel-side[data-image-count="6"] { --ki-size: 18mm; }
     .image-viewport {
       position: relative; width: 100%; flex: 0 0 auto;
       aspect-ratio: 1 / 1; height: auto; min-height: 0;
@@ -896,12 +905,12 @@ export function renderReportDocument(
     .image-panel-keyrail .image-caption { background: #1e3a8a; }
     .letterpad .signame { color: #b91c1c; font-size: 11pt; }
     .letterpad .reportno { display: none; }
-    .letterpad-demo { width: 100%; table-layout: fixed; border-collapse: collapse; margin: 2px 0 0; font-size: 12px; color: #111; text-transform: uppercase; }
+    .letterpad-demo { width: 100%; table-layout: fixed; border-collapse: collapse; margin: 2px 0 0; font-size: 11.5px; color: #111; text-transform: uppercase; }
     .letterpad-demo td { padding: 1px 0; vertical-align: top; }
     .letterpad-demo .ld-left { text-align: left; width: 62%; padding-right: 10px; overflow-wrap: anywhere; word-break: break-word; }
     .letterpad-demo .ld-right { text-align: right; width: 38%; white-space: nowrap; }
     .letterpad-demo-wrap { background: transparent; border: none; padding: 2px 0 0; border-radius: 0; margin-bottom: 0; }
-    .letterpad .body { font-size: 12.5px; }
+    .letterpad .body { font-size: 11.5px; }
     .letterpad-demo-rule { border: none; border-top: 2.2px solid #111; border-bottom: 0.9px solid #111; height: 3.2px; margin: 6px 0 8px; }
     .letterpad-sheet { width: 100%; border-collapse: collapse; }
     .letterpad-sheet > thead > tr > td,

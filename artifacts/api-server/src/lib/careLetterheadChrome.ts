@@ -145,13 +145,13 @@ export function letterPadErpPdfLockCss(chrome: CareLetterheadChrome = CARE_LETTE
     .letterpad .letterpad-demo-wrap { padding: 3.5mm 0 0 !important; }
     .letterpad .letterpad-demo {
       font-family: Helvetica, Arial, sans-serif !important;
-      font-size: 10.5pt !important;
+      font-size: 9.5pt !important;
       color: #000 !important;
       table-layout: fixed !important;
       width: 100% !important;
     }
     .letterpad .letterpad-demo .ld-right { text-align: right !important; white-space: nowrap !important; width: 38% !important; }
     .letterpad .letterpad-demo .ld-left { text-align: left !important; width: 62% !important; overflow-wrap: anywhere !important; }
-    .letterpad .body { font-size: 11pt !important; }
+    .letterpad .body { font-size: 10pt !important; }
   `;
 }

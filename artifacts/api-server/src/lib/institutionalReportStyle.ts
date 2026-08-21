@@ -178,9 +178,9 @@ export function coerceHeaderRuleColor(raw: unknown): HeaderRuleColor {
 }
 
 const FONT_PX: Record<FontSizePreset, string> = {
-  small: "12px",
-  standard: "14px",
-  large: "16px",
+  small: "11.5px",
+  standard: "13.5px",
+  large: "15.5px",
 };
 
 const MARGIN_CSS: Record<string, string> = {
@@ -419,10 +419,10 @@ export function keyImageLayoutCss(style: InstitutionalReportStyle | null | undef
       .image-panel-side.image-panel-keyrail { height: auto !important; min-height: 0 !important; }
       .image-panel-side[data-image-count="1"] { --ki-size: 48mm !important; }
       .image-panel-side[data-image-count="2"] { --ki-size: 40mm !important; }
-      .image-panel-side[data-image-count="3"] { --ki-size: 34mm !important; }
-      .image-panel-side[data-image-count="4"] { --ki-size: 28mm !important; }
-      .image-panel-side[data-image-count="5"] { --ki-size: 24mm !important; }
-      .image-panel-side[data-image-count="6"] { --ki-size: 22mm !important; }
+      .image-panel-side[data-image-count="3"] { --ki-size: 32mm !important; }
+      .image-panel-side[data-image-count="4"] { --ki-size: 26mm !important; }
+      .image-panel-side[data-image-count="5"] { --ki-size: 22mm !important; }
+      .image-panel-side[data-image-count="6"] { --ki-size: 18mm !important; }
       .image-panel-side .image-cell {
         flex: 0 0 auto !important;
         aspect-ratio: 1 / 1 !important;

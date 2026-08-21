@@ -490,7 +490,7 @@ describe("premium two-column print rail (page-1 images beside findings)", () => 
     expect(html).toContain(".image-panel-side.image-panel-keyrail");
     expect(html).toContain("vertical-align: top");
     expect(html).toContain("aspect-ratio: 1 / 1");
-    expect(html).toContain("--ki-size: 28mm");
+    expect(html).toContain("--ki-size: 26mm");
     expect(html).not.toContain("vertical-align: stretch");
   });
 });
