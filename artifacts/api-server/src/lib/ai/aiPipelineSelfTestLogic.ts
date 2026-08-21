@@ -19,6 +19,13 @@ export interface PipelineStageResult {
   detail: string;
 }
 
+export interface PathProbeTiming {
+  probeStartedAt: string;
+  providerRequestStartedAt: string | null;
+  providerCompletedAt: string | null;
+  probeCompletedAt: string;
+}
+
 export interface PathProbeResult {
   label: string;
   pass: boolean;
@@ -47,6 +54,12 @@ export interface PathProbeResult {
   ollamaAvailableContext?: number | null;
   ollamaRequestTokens?: number | null;
   errorCode?: string | null;
+  /** Compact infra probes: usable JSON sighting vs full clinical draft. */
+  usableOutput?: boolean | null;
+  estimatedRequestTokens?: number | null;
+  timing?: PathProbeTiming;
+  runnersBefore?: unknown;
+  runnersAfter?: unknown;
 }
 
 export type SelfTestFinal = "PASS" | "FAIL" | "PARTIAL" | "RUNNING" | "NO_MRI";

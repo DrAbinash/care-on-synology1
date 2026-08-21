@@ -359,6 +359,15 @@ export async function runNightBatch(
     return { considered: 0, enqueued: 0, overnightModalities: [] };
   }
   const cfg = await getSchedulerConfig();
+  if (cfg.overnightOps?.paused) {
+    return {
+      considered: 0,
+      enqueued: 0,
+      overnightModalities: [],
+      skippedWindow: true,
+      preview: undefined,
+    };
+  }
   if (!opts.forceOutsideWindow && !isWithinNightWindow(nowMinutesLocal(), cfg)) {
     return { considered: 0, enqueued: 0, skippedWindow: true, overnightModalities: [] };
   }
@@ -559,7 +568,14 @@ export async function getOvernightDiagnostics() {
     stats = await overnightQueueStats();
     dueAi = await countDueJobs(AI_SHADOW_PIPELINE_JOB);
     composition = await shadowQueueComposition();
-    claimPreview = await peekOvernightAiClaim({ preferNewest: false });
+    try {
+      const { getOvernightOpsControls } = await import("./clinicalConfigService");
+      const { resolveLegacyHoldClaimFilter } = await import("./overnightOpsControls");
+      const hold = resolveLegacyHoldClaimFilter(await getOvernightOpsControls());
+      claimPreview = await peekOvernightAiClaim({ preferNewest: false, legacyHold: hold });
+    } catch {
+      claimPreview = await peekOvernightAiClaim({ preferNewest: false });
+    }
   } catch (err) {
     logger.warn({ err }, "overnight diagnostics: queue stats unreadable");
   }

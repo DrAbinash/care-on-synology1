@@ -394,11 +394,27 @@ function classifyProviderError(err: unknown): {
     const aborted =
       name === "AbortError" ||
       /aborted|abort|timed out after|TimeoutError/i.test(msg);
+    if (aborted) {
+      return {
+        errorClass: name,
+        errorCode: "PROVIDER_TIMEOUT",
+        errorMessage: msg,
+        timeoutStage: "provider_http",
+      };
+    }
+    if (/cudaMalloc|out of memory|CUDA error|failed to allocate CUDA|ggml_cuda/i.test(msg)) {
+      return {
+        errorClass: "GpuOutOfMemory",
+        errorCode: "GPU_OUT_OF_MEMORY",
+        errorMessage: msg,
+        timeoutStage: null,
+      };
+    }
     return {
       errorClass: name,
-      errorCode: aborted ? "TIMEOUT_OR_ABORT" : name,
+      errorCode: name,
       errorMessage: msg,
-      timeoutStage: aborted ? "provider_http" : null,
+      timeoutStage: null,
     };
   }
   return {
@@ -427,6 +443,14 @@ function parseContextExceededFromOllamaDetail(detail: string): {
         : null,
     ollamaAvailableContext: availMatch ? Number(availMatch[1]) : null,
   };
+}
+
+/** Detect CUDA / GPU OOM in Ollama error bodies (must not become EMPTY). */
+function parseGpuOomFromOllamaDetail(detail: string): { errorCode: "GPU_OUT_OF_MEMORY" } | null {
+  if (!/cudaMalloc|out of memory|CUDA error|failed to allocate CUDA|ggml_cuda|gpu.?oom/i.test(detail)) {
+    return null;
+  }
+  return { errorCode: "GPU_OUT_OF_MEMORY" };
 }
 
 class OllamaProvider implements AiProvider {
@@ -496,6 +520,14 @@ class OllamaProvider implements AiProvider {
         const detail = await resp.text().catch(() => "");
         const errorMessage = `Ollama /api/chat ${resp.status}${detail ? `: ${detail.slice(0, 400)}` : ""}`;
         const ctxErr = parseContextExceededFromOllamaDetail(detail || errorMessage);
+        const gpuErr = parseGpuOomFromOllamaDetail(detail || errorMessage);
+        const errorCode =
+          ctxErr?.errorCode ?? gpuErr?.errorCode ?? `HTTP_${resp.status}`;
+        const errorClass = ctxErr
+          ? "ContextBudgetExceeded"
+          : gpuErr
+            ? "GpuOutOfMemory"
+            : "OllamaHttpError";
         return {
           text: "",
           success: false,
@@ -514,8 +546,8 @@ class OllamaProvider implements AiProvider {
             ollamaEvalCount: null,
             ollamaAvailableContext: ctxErr?.ollamaAvailableContext ?? null,
             ollamaRequestTokens: ctxErr?.ollamaRequestTokens ?? null,
-            errorClass: ctxErr ? "ContextBudgetExceeded" : "OllamaHttpError",
-            errorCode: ctxErr?.errorCode ?? `HTTP_${resp.status}`,
+            errorClass,
+            errorCode,
             errorMessage: errorMessage.slice(0, 400),
             timeoutStage: null,
           },

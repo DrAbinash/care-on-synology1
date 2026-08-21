@@ -252,13 +252,21 @@ export async function fireOvernightAiTick(opts: {
     dueAi: 0,
     ran: 0,
   });
+  let legacyHoldFilter: { holdBefore: string; releasedJobIds: number[] } | null = null;
   try {
     const { getOvernightVisionInferenceOptions } = await import("./lib/ai/overnightVisionConfig");
-    const { getSchedulerConfig } = await import("./lib/ai/clinicalConfigService");
+    const { getSchedulerConfig, getOvernightOpsControls } = await import("./lib/ai/clinicalConfigService");
+    const { resolveLegacyHoldClaimFilter } = await import("./lib/ai/overnightOpsControls");
     const vision = await getOvernightVisionInferenceOptions();
     const sched = await getSchedulerConfig();
+    if (vision.policy.overnightPaused && !(opts.canary === true && opts.jobId != null)) {
+      recordRadiologyJobCronTick({ peak, aiBlocked: true, dueAi: 0, ran: 0 });
+      return { requeuedStale: 0, ran: [], skipped: "overnight_paused" };
+    }
     aiMax = Math.max(1, Math.min(1, vision.concurrency, sched.maxConcurrentJobs));
-  } catch { /* keep 1 */ }
+    // Cutover auto-init happens in getOvernightOpsControls (first deploy of this feature).
+    legacyHoldFilter = resolveLegacyHoldClaimFilter(await getOvernightOpsControls());
+  } catch { /* keep 1 / no hold filter */ }
   try {
     const { AI_SHADOW_PIPELINE_JOB } = await import("./lib/ai/shadowPipeline");
     dueAi = await countDueJobs(AI_SHADOW_PIPELINE_JOB);
@@ -276,6 +284,8 @@ export async function fireOvernightAiTick(opts: {
         claimStrategy: "overnight_ai",
         jobId: opts.jobId,
         preferNewest: opts.canary === true && opts.jobId == null,
+        // Explicit jobId canary bypasses hold inside claimNextJob.
+        legacyHold: opts.jobId != null ? null : legacyHoldFilter,
         workerId: opts.canary ? `canary-${process.pid}` : `overnight-${process.pid}`,
       },
     );

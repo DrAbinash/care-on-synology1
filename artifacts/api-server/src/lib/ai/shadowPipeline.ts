@@ -78,6 +78,40 @@ export async function enqueueAiShadowJob(
   });
 }
 
+async function markWorklistResourceError(
+  studyInstanceUid: string,
+  failureCode: string,
+  detail: string,
+): Promise<void> {
+  try {
+    const pointer = {
+      source: "ai_shadow_resource_failure",
+      clinicalStatus: "ERROR",
+      failureCode,
+      emptyReason: failureCode,
+      emptyReasonLabel: detail.slice(0, 400),
+      findingCount: 0,
+      findings: "",
+      impression: [],
+      candidateCount: 0,
+      quarantinedCount: 0,
+      impressionCount: 0,
+      imageCount: 0,
+      degraded: true,
+      updatedAt: new Date().toISOString(),
+    };
+    await db
+      .update(radiologyWorklistTable)
+      .set({
+        aiDraftStatus: "ERROR",
+        aiDraftJson: JSON.stringify(pointer),
+      })
+      .where(eq(radiologyWorklistTable.studyInstanceUID, studyInstanceUid));
+  } catch {
+    /* best-effort */
+  }
+}
+
 export function makeAiShadowPipelineHandler(overrides: Partial<ShadowPipelineDeps> = {}): RadiologyJobHandler {
   const deps: ShadowPipelineDeps = { ...defaultDeps, ...overrides };
   return async (job) => {
@@ -149,21 +183,30 @@ export function makeAiShadowPipelineHandler(overrides: Partial<ShadowPipelineDep
       }
     }
 
-    // 2. Structured, modality-aware image selection (UID + frame provenance).
-    // Cap by context budget: live proof showed 6 images ≈ 6453 tokens; 20 images
-    // would exceed even num_ctx=16384 and drive overnight abandonments.
+    // 2. Canonical overnight vision policy (same as Production Auto Policy self-test).
     const modality = payload.modality ?? instances.find((i) => i.modality)?.modality ?? undefined;
     const { getOvernightVisionInferenceOptions } = await import("./overnightVisionConfig");
-    const { maxImagesForContextBudget } = await import("./contextBudget");
+    const { preflightReduceImagesForContext } = await import("./productionVisionPolicy");
+    const {
+      recordOvernightResourceFailure,
+      recordOvernightResourceSuccess,
+    } = await import("./overnightOpsControls");
+    const { saveOvernightOpsControls } = await import("./clinicalConfigService");
     const vision = await getOvernightVisionInferenceOptions();
-    const imageBudget = maxImagesForContextBudget({
-      numCtx: vision.numCtx,
-      hardCap: 20,
-    });
-    const anchors = selectImageAnchors(instances, {
+    const policy = vision.policy;
+
+    if (policy.overnightPaused) {
+      return {
+        ok: false,
+        detail: policy.pauseReason ?? "OVERNIGHT AI PAUSED — RESOURCE FAILURE",
+      };
+    }
+
+    const imageBudgetMax = policy.maxImages;
+    let anchors = selectImageAnchors(instances, {
       strategy: "modality-aware",
       modality: modality ?? undefined,
-      maxImages: imageBudget.maxImages,
+      maxImages: imageBudgetMax,
     });
 
     // 3. Manifest idempotency — inputHash on STABLE inputs (not the resolved model).
@@ -186,18 +229,101 @@ export function makeAiShadowPipelineHandler(overrides: Partial<ShadowPipelineDep
     }
 
     const startedAt = new Date();
-    const rendered = await deps.renderAnchors(uid, anchors);
+    let rendered = await deps.renderAnchors(uid, anchors);
     if (rendered.length === 0) {
       return { ok: false, detail: "could not render DICOM images for AI (Orthanc DICOMweb/preview failed — check ORTHANC_INTERNAL_URL and credentials)" };
     }
 
+    const requestedImages = rendered.length;
+    const preflight = preflightReduceImagesForContext({
+      requestedImages,
+      numCtx: policy.numCtx,
+      promptLength: 3500,
+      outputReserveTokens: 1024,
+      minImages: 1,
+    });
+    if (preflight.selectedImages < rendered.length) {
+      rendered = rendered.slice(0, preflight.selectedImages);
+      anchors = anchors.slice(0, preflight.selectedImages);
+    }
+    if (!preflight.fits && rendered.length <= 1) {
+      try {
+        const nextOps = recordOvernightResourceFailure(vision.ops, "CONTEXT_BUDGET_EXCEEDED");
+        await saveOvernightOpsControls(nextOps, "shadow-preflight");
+      } catch { /* best-effort */ }
+      await markWorklistResourceError(uid, "CONTEXT_BUDGET_EXCEEDED", preflight.reasonForReduction ?? "context preflight failed");
+      return {
+        ok: false,
+        detail: `CONTEXT_BUDGET_EXCEEDED requestedImages=${requestedImages} selectedImages=${preflight.selectedImages} num_ctx=${policy.numCtx} estTokens=${preflight.estimatedTokens}`,
+      };
+    }
+
     // 4. Inference via the AI Gateway seam (P2 / G7). Still shadow.
-    const { draft, provenance } = await deps.provider.infer({
+    let { draft, provenance } = await deps.provider.infer({
       studyInstanceUid: uid,
       modality: modality ?? undefined,
       imageAnchors: anchors,
       images: rendered,
     });
+
+    // One controlled recovery for GPU OOM / context: unload + fewer images, then stop.
+    // Any resourceFailureCode must NOT become EMPTY/READY via degraded empty drafts.
+    const resourceCode = provenance.resourceFailureCode;
+    if (resourceCode === "GPU_OUT_OF_MEMORY" || resourceCode === "CONTEXT_BUDGET_EXCEEDED") {
+      try {
+        const { unloadOllamaModel } = await import("./ollamaRunnerDiagnostics");
+        await unloadOllamaModel({ endpointUrl: policy.endpointUrl, model: policy.model });
+      } catch { /* best-effort recycle */ }
+
+      const reducedCount = Math.max(1, Math.floor(rendered.length / 2));
+      if (reducedCount < rendered.length || resourceCode === "GPU_OUT_OF_MEMORY") {
+        rendered = rendered.slice(0, Math.min(reducedCount, policy.safeMode ? 1 : reducedCount));
+        anchors = anchors.slice(0, rendered.length);
+        const second = await deps.provider.infer({
+          studyInstanceUid: uid,
+          modality: modality ?? undefined,
+          imageAnchors: anchors,
+          images: rendered,
+        });
+        draft = second.draft;
+        provenance = {
+          ...second.provenance,
+          recoveredOnce: true,
+          requestedImages,
+          selectedImages: rendered.length,
+          numCtx: policy.numCtx,
+        };
+      }
+    }
+
+    if (provenance.resourceFailureCode) {
+      const code = provenance.resourceFailureCode;
+      if (code === "GPU_OUT_OF_MEMORY" || code === "CONTEXT_BUDGET_EXCEEDED") {
+        try {
+          const nextOps = recordOvernightResourceFailure(
+            vision.ops,
+            code === "CONTEXT_BUDGET_EXCEEDED" ? "CONTEXT_BUDGET_EXCEEDED" : "GPU_OUT_OF_MEMORY",
+          );
+          await saveOvernightOpsControls(nextOps, "shadow-resource-fail");
+        } catch { /* best-effort */ }
+      }
+      await markWorklistResourceError(
+        uid,
+        code,
+        provenance.detail ?? code,
+      );
+      return {
+        ok: false,
+        detail: `${code}: ${provenance.detail ?? "provider resource/http failure"}`,
+      };
+    }
+
+    try {
+      const nextOps = recordOvernightResourceSuccess(vision.ops);
+      if (nextOps.resourceFailStreak !== vision.ops.resourceFailStreak) {
+        await saveOvernightOpsControls(nextOps, "shadow-success");
+      }
+    } catch { /* best-effort */ }
 
     // 5. Rules before AI (G9) — the deterministic Quality Engine over the draft.
     const quality = runDeterministicQuality(draft);
@@ -346,7 +472,7 @@ export function makeAiShadowPipelineHandler(overrides: Partial<ShadowPipelineDep
 
     return {
       ok: true,
-      detail: `shadow OK — rev ${snapshotRevision}, draft v${version} (#${draftRow.id}), manifest ${manifestRow.id}, valid ${gauntlet.valid.length}, quarantined ${gauntlet.quarantined.length}, degraded ${degraded}, images ${rendered.length}/${imageBudget.maxImages} (ctxBudget num_ctx=${vision.numCtx}), model ${provenance.modelVersion}`,
+      detail: `shadow OK — rev ${snapshotRevision}, draft v${version} (#${draftRow.id}), manifest ${manifestRow.id}, valid ${gauntlet.valid.length}, quarantined ${gauntlet.quarantined.length}, degraded ${degraded}, images ${rendered.length}/${policy.maxImages} (num_ctx=${policy.numCtx} ${policy.numCtxSource}; ${policy.imageCapReason}; preflight ${preflight.reasonForReduction ?? "no reduction"}; recovered=${Boolean(provenance.recoveredOnce)}), model ${provenance.modelVersion}`,
     };
   };
 }

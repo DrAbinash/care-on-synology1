@@ -11,6 +11,9 @@ export type OvernightDisplayStatus =
   | "EMPTY"
   | "QUARANTINED"
   | "ERROR"
+  | "CONTEXT_LIMIT"
+  | "GPU_MEMORY"
+  | "PAUSED"
   | "STUCK"
   | "NONE";
 
@@ -86,7 +89,15 @@ export function overnightStatusMatches(
   if (chip === "ready") return status === "READY";
   if (chip === "empty") return status === "EMPTY";
   if (chip === "quarantined") return status === "QUARANTINED";
-  if (chip === "error") return status === "ERROR" || status === "STUCK";
+  if (chip === "error") {
+    return (
+      status === "ERROR" ||
+      status === "STUCK" ||
+      status === "CONTEXT_LIMIT" ||
+      status === "GPU_MEMORY" ||
+      status === "PAUSED"
+    );
+  }
   return true;
 }
 
@@ -139,6 +150,9 @@ export const OVERNIGHT_STATUS_STYLE: Record<OvernightDisplayStatus, string> = {
   EMPTY: "bg-slate-50 text-slate-700 border-slate-300",
   QUARANTINED: "bg-amber-50 text-amber-900 border-amber-300",
   ERROR: "bg-red-50 text-red-700 border-red-200",
+  CONTEXT_LIMIT: "bg-orange-50 text-orange-900 border-orange-300",
+  GPU_MEMORY: "bg-rose-50 text-rose-900 border-rose-300",
+  PAUSED: "bg-yellow-50 text-yellow-900 border-yellow-300",
   STUCK: "bg-rose-50 text-rose-800 border-rose-300",
   NONE: "bg-gray-100 text-gray-600 border-gray-200",
 };
@@ -146,7 +160,15 @@ export const OVERNIGHT_STATUS_STYLE: Record<OvernightDisplayStatus, string> = {
 function rank(status: OvernightDisplayStatus): number {
   if (status === "RUNNING") return 0;
   if (status === "READY") return 1;
-  if (status === "ERROR" || status === "STUCK") return 2;
+  if (
+    status === "ERROR" ||
+    status === "STUCK" ||
+    status === "CONTEXT_LIMIT" ||
+    status === "GPU_MEMORY" ||
+    status === "PAUSED"
+  ) {
+    return 2;
+  }
   if (status === "EMPTY" || status === "QUARANTINED") return 3;
   if (status === "QUEUED" || status === "RETRYING") return 4;
   return 5;

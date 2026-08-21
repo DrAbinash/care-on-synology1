@@ -208,4 +208,111 @@ describe.skipIf(!dbAvailable)("radiology job claim (FOR UPDATE SKIP LOCKED)", ()
     expect(after.status).not.toBe("pending");
     expect(after.status).not.toBe("running");
   }, 60_000);
+
+  test("legacy hold: pre-cutover pending/retrying not claimed; post-cutover claimed; canary bypass; selective release; no delete", async () => {
+    const { db } = await import("@workspace/db");
+    const { dicomRetryQueueTable } = await import("@workspace/db/schema");
+    const { runRadiologyJobTick } = await import("./radiologyJobs");
+    const { sql, eq: eqCol } = await import("drizzle-orm");
+    const holdOp = `vitest_legacy_hold_${marker.slice(-8)}`;
+    const holdBefore = new Date("2026-08-21T10:00:00.000Z");
+    const oldPending = await db.insert(dicomRetryQueueTable).values({
+      operationType: holdOp,
+      entityType: "study",
+      payload: { marker: `${marker}-legacy-pending` },
+      idempotencyKey: `vitest:${marker}-legacy-pending`,
+      status: "pending",
+      nextRetryAt: new Date(),
+      maxRetries: 3,
+      createdAt: new Date("2026-08-20T08:00:00.000Z"),
+    }).returning({ id: dicomRetryQueueTable.id });
+    const oldRetrying = await db.insert(dicomRetryQueueTable).values({
+      operationType: holdOp,
+      entityType: "study",
+      payload: { marker: `${marker}-legacy-retrying` },
+      idempotencyKey: `vitest:${marker}-legacy-retrying`,
+      status: "retrying",
+      retryCount: 1,
+      nextRetryAt: new Date(),
+      maxRetries: 5,
+      createdAt: new Date("2026-08-20T09:00:00.000Z"),
+    }).returning({ id: dicomRetryQueueTable.id });
+    const fresh = await db.insert(dicomRetryQueueTable).values({
+      operationType: holdOp,
+      entityType: "study",
+      payload: { marker: `${marker}-post-cutover` },
+      idempotencyKey: `vitest:${marker}-post-cutover`,
+      status: "pending",
+      nextRetryAt: new Date(),
+      maxRetries: 3,
+      createdAt: new Date("2026-08-21T12:00:00.000Z"),
+    }).returning({ id: dicomRetryQueueTable.id });
+    ids.push(oldPending[0].id, oldRetrying[0].id, fresh[0].id);
+
+    const hold = { holdBefore: holdBefore.toISOString(), releasedJobIds: [] as number[] };
+
+    const blocked = await runRadiologyJobTick(
+      { [holdOp]: async () => ({ ok: true }) },
+      {
+        maxJobs: 5,
+        claimStrategy: "overnight_ai",
+        legacyHold: hold,
+        workerId: `vitest-${marker}-hold-block`,
+      },
+    );
+    // Only post-cutover should run among the three.
+    expect(blocked.ran.map((r) => r.id)).toEqual([fresh[0].id]);
+
+    const [pendingStill] = await db
+      .select({ status: dicomRetryQueueTable.status })
+      .from(dicomRetryQueueTable)
+      .where(eqCol(dicomRetryQueueTable.id, oldPending[0].id));
+    const [retryingStill] = await db
+      .select({ status: dicomRetryQueueTable.status })
+      .from(dicomRetryQueueTable)
+      .where(eqCol(dicomRetryQueueTable.id, oldRetrying[0].id));
+    expect(pendingStill.status).toBe("pending");
+    expect(retryingStill.status).toBe("retrying");
+
+    // Explicit canary jobId bypasses hold.
+    const canary = await runRadiologyJobTick(
+      { [holdOp]: async () => ({ ok: true, detail: "canary-legacy" }) },
+      {
+        maxJobs: 1,
+        jobId: oldPending[0].id,
+        legacyHold: hold,
+        workerId: `vitest-${marker}-hold-canary`,
+      },
+    );
+    expect(canary.ran[0]?.id).toBe(oldPending[0].id);
+
+    // Selective release: only allowlisted legacy retrying becomes claimable.
+    const releasedHold = {
+      holdBefore: holdBefore.toISOString(),
+      releasedJobIds: [oldRetrying[0].id],
+    };
+    const afterRelease = await runRadiologyJobTick(
+      { [holdOp]: async () => ({ ok: true }) },
+      {
+        maxJobs: 1,
+        claimStrategy: "overnight_ai",
+        legacyHold: releasedHold,
+        workerId: `vitest-${marker}-hold-release`,
+      },
+    );
+    expect(afterRelease.ran[0]?.id).toBe(oldRetrying[0].id);
+
+    // No row deletion — all three ids still exist.
+    const remaining = await db.execute(sql`
+      SELECT count(*)::int AS n FROM dicom_retry_queue
+      WHERE id IN (${oldPending[0].id}, ${oldRetrying[0].id}, ${fresh[0].id})
+    `);
+    const remainingRows = remaining as unknown as { rows?: Array<{ n: number }> } | Array<{ n: number }>;
+    const n = Array.isArray(remainingRows)
+      ? remainingRows[0]?.n
+      : remainingRows.rows?.[0]?.n;
+    expect(n).toBe(3);
+
+    await db.delete(dicomRetryQueueTable).where(eqCol(dicomRetryQueueTable.operationType, holdOp));
+  });
 });

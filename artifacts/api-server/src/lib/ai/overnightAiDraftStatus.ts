@@ -27,6 +27,9 @@ export type OvernightDisplayStatus =
   | "EMPTY"
   | "QUARANTINED"
   | "ERROR"
+  | "CONTEXT_LIMIT"
+  | "GPU_MEMORY"
+  | "PAUSED"
   | "STUCK"
   | "NONE";
 
@@ -77,20 +80,40 @@ export function canCancelOvernightJob(jobStatus: string | null | undefined): boo
 }
 
 export function canRetryOvernightJob(displayStatus: OvernightDisplayStatus): boolean {
-  return displayStatus === "ERROR" || displayStatus === "EMPTY" || displayStatus === "QUARANTINED";
+  return (
+    displayStatus === "ERROR" ||
+    displayStatus === "EMPTY" ||
+    displayStatus === "QUARANTINED" ||
+    displayStatus === "CONTEXT_LIMIT" ||
+    displayStatus === "GPU_MEMORY"
+  );
 }
 
 /**
  * Refine a derived display status using the worklist ai_draft_json pointer.
  * Legacy pipelines wrote READY even for empty drafts; when the pointer proves
  * there is no usable content, surface EMPTY / QUARANTINED instead of READY.
+ * Resource failures must never display as READY or EMPTY.
  */
 export function refineDisplayStatusFromAiDraftPointer(
   status: OvernightDisplayStatus,
   pointer: Record<string, unknown> | null | undefined,
 ): OvernightDisplayStatus {
-  if (status !== "READY" || !pointer) return status;
+  if (!pointer) return status;
+  const failureCode = typeof pointer.failureCode === "string" ? pointer.failureCode.toUpperCase() : "";
+  const emptyReason = typeof pointer.emptyReason === "string" ? pointer.emptyReason.toUpperCase() : "";
+  const code = failureCode || emptyReason;
+  if (code === "GPU_OUT_OF_MEMORY" || code.includes("GPU_OUT_OF_MEMORY")) return "GPU_MEMORY";
+  if (code === "CONTEXT_BUDGET_EXCEEDED" || code.includes("CONTEXT_BUDGET")) return "CONTEXT_LIMIT";
+  if (code.includes("OVERNIGHT AI PAUSED") || code === "PAUSED") return "PAUSED";
+
+  if (status !== "READY") return status;
   const clinical = typeof pointer.clinicalStatus === "string" ? pointer.clinicalStatus.toUpperCase() : "";
+  if (clinical === "ERROR") {
+    if (code.includes("GPU")) return "GPU_MEMORY";
+    if (code.includes("CONTEXT")) return "CONTEXT_LIMIT";
+    return "ERROR";
+  }
   if (clinical === "EMPTY") return "EMPTY";
   if (clinical === "QUARANTINED") return "QUARANTINED";
   if (clinical === "READY") return "READY";
@@ -141,7 +164,8 @@ export function deriveOvernightDisplayStatus(input: {
   if (wl === "READY") return "READY";
   if (wl === "EMPTY") return "EMPTY";
   if (wl === "QUARANTINED") return "QUARANTINED";
-  if (job === "failed" || job === "abandoned" || wl === "ERROR") return "ERROR";
+  if (wl === "ERROR") return "ERROR";
+  if (job === "failed" || job === "abandoned") return "ERROR";
   // Legacy: job success with no clinical status yet — do not invent READY.
   if (job === "success") {
     if (wl === "PENDING" || wl === "NONE") return "EMPTY";
@@ -197,6 +221,9 @@ export function overnightSortRank(status: OvernightDisplayStatus): number {
       return 1;
     case "ERROR":
     case "STUCK":
+    case "CONTEXT_LIMIT":
+    case "GPU_MEMORY":
+    case "PAUSED":
       return 2;
     case "EMPTY":
     case "QUARANTINED":
@@ -237,6 +264,9 @@ export function compareOvernightDraftRows(a: OvernightSortRow, b: OvernightSortR
     case "READY":
     case "EMPTY":
     case "QUARANTINED":
+    case "CONTEXT_LIMIT":
+    case "GPU_MEMORY":
+    case "PAUSED":
       return ts(b.completedAt) - ts(a.completedAt) || ts(b.createdAt) - ts(a.createdAt);
     case "RUNNING":
       return ts(b.startedAt) - ts(a.startedAt);
@@ -275,6 +305,9 @@ export function overnightCountBucket(
       return "quarantined";
     case "ERROR":
     case "STUCK":
+    case "CONTEXT_LIMIT":
+    case "GPU_MEMORY":
+    case "PAUSED":
       return "errors";
     default:
       return null;

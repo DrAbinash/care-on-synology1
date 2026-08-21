@@ -45,7 +45,7 @@ describe("OllamaProvider query diagnostics", () => {
     expect(result.diagnostics?.numberOfImages).toBe(1);
     expect(result.diagnostics?.timeoutMsConfigured).toBe(1000);
     expect(result.diagnostics?.timeoutStage).toBe("provider_http");
-    expect(result.diagnostics?.errorCode).toBe("TIMEOUT_OR_ABORT");
+    expect(result.diagnostics?.errorCode).toBe("PROVIDER_TIMEOUT");
     expect(result.diagnostics?.thinkSent).toBe(true);
     expect(result.diagnostics?.thinkValue).toBe(false);
     expect(JSON.stringify(result.diagnostics)).not.toMatch(/connectivity test/);
@@ -92,5 +92,28 @@ describe("OllamaProvider query diagnostics", () => {
     });
     const msg = (body.messages as Array<{ images?: string[] }>)[0];
     expect(msg?.images?.[0]).toBe("abcd");
+  });
+
+  it("classifies CUDA OOM HTTP 500 as GPU_OUT_OF_MEMORY (not EMPTY)", async () => {
+    const { createAiProvider } = await import("./index");
+    global.fetch = vi.fn(async () => ({
+      ok: false,
+      status: 500,
+      text: async () =>
+        "cudaMalloc failed: out of memory\nfailed to allocate CUDA buffer of size 1420000000",
+      json: async () => ({}),
+    })) as unknown as typeof fetch;
+
+    const provider = await createAiProvider("ollama", undefined, "http://172.16.1.140:11434");
+    const result = await provider!.query({
+      model: "qwen3-vl:8b",
+      prompt: "x",
+      images: ["aaaa"],
+      numCtx: 8192,
+    });
+    expect(result.success).toBe(false);
+    expect(result.diagnostics?.errorCode).toBe("GPU_OUT_OF_MEMORY");
+    expect(result.diagnostics?.errorClass).toBe("GpuOutOfMemory");
+    expect(result.diagnostics?.httpStatus).toBe(500);
   });
 });
