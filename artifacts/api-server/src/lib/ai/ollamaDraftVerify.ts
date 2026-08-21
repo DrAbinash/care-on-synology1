@@ -261,26 +261,45 @@ export async function runOllamaAiDraftVerify(opts: {
     const dead = await listDeadLetterJobs([AI_SHADOW_PIPELINE_JOB]);
     const failedDead = dead.filter((j) => j.failureReason);
     const hb = getRadiologyJobConsumerHeartbeat();
+    let eligibleDueAi = 0;
+    let heldLegacyDue = 0;
+    try {
+      const { getOvernightOpsControls } = await import("./clinicalConfigService");
+      const { countLegacyBacklogHold } = await import("./legacyBacklogHold");
+      const legacy = await countLegacyBacklogHold(await getOvernightOpsControls());
+      eligibleDueAi = legacy.newEligible;
+      heldLegacyDue = legacy.heldPending + legacy.heldRetrying;
+    } catch {
+      eligibleDueAi = backlog.pending;
+    }
     const consumer = deriveRadiologyJobConsumerHealth(hb, {
       queueDepth: backlog.pending,
       running: backlog.running,
       nightWindow: true,
+      eligibleDueAi,
+      heldLegacyDue,
     });
+    const workerPass =
+      consumer.status === "HEALTHY"
+      || consumer.status === "PEAK_HOLD"
+      || consumer.status === "HELD_LEGACY";
     const backlogUnhealthy = backlog.pending > 0 && backlog.running === 0
       && (consumer.status === "STOPPED" || consumer.status === "STALE" || consumer.status === "STARVED");
     add(checks, {
       group: "Queue",
       name: "Overnight worker",
-      status: consumer.status === "HEALTHY" || consumer.status === "PEAK_HOLD"
-        ? (consumer.status === "PEAK_HOLD" ? "WARNING" : "PASS")
+      status: workerPass
+        ? (consumer.status === "PEAK_HOLD" || consumer.status === "HELD_LEGACY" ? "WARNING" : "PASS")
         : "FAIL",
-      detail: `${consumer.status}: ${consumer.detail}. last poll ${hb.lastCronTickAt ?? "never"}; last claim ${hb.lastClaimedJobId ?? "none"}; lastRan ${hb.lastRan}; due/pending ${backlog.pending}; running ${backlog.running}`,
+      detail: `${consumer.status}: ${consumer.detail}. last poll ${hb.lastCronTickAt ?? "never"}; last claim ${hb.lastClaimedJobId ?? "none"}; lastRan ${hb.lastRan}; heldLegacy=${heldLegacyDue}; eligible=${eligibleDueAi}; running ${backlog.running}`,
       remediation: consumer.status === "HEALTHY"
         ? undefined
+        : consumer.status === "HELD_LEGACY"
+          ? "Legacy backlog is intentionally held — not starved. Release selected jobs only when ready to validate."
         : consumer.status === "PEAK_HOLD"
           ? "Clinic peak hours — overnight AI waits until peak ends (default 16:00 IST)"
           : consumer.status === "STARVED"
-            ? "Consumer polled but claimed nothing. Check next_retry_at, SKIP LOCKED, and GET /api/ai/overnight-diagnostics composition."
+            ? "Consumer polled but claimed nothing while eligible jobs exist. Check next_retry_at, SKIP LOCKED, and GET /api/ai/overnight-diagnostics composition."
             : "Redeploy CARE API so startRadiologyJobConsumer() runs before the ENABLE_SCHEDULERS block (a scheduler throw must not skip the drain).",
       blocking: consumer.status === "STOPPED" || consumer.status === "STALE" || consumer.status === "STARVED",
     });

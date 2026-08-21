@@ -30,6 +30,147 @@ function envOllamaEndpoint(): string {
   return (raw.replace(/\/$/, "") || CANONICAL_OLLAMA_ENDPOINT);
 }
 
+/** Normalize Ollama base URL for identity compares (trim + strip trailing slash). */
+export function normalizeOllamaEndpointUrl(url: string): string {
+  return (url ?? "").trim().replace(/\/+$/, "");
+}
+
+/**
+ * True for loopback Ollama URLs on non-standard ports (typical `listen(0)` /
+ * ephemeral test/mock servers). Standard local Ollama (`:11434`) is allowed.
+ * Production must never inherit these when a clinic LAN endpoint is configured.
+ */
+export function isEphemeralLoopbackOllamaUrl(url: string): boolean {
+  try {
+    const u = new URL(normalizeOllamaEndpointUrl(url));
+    const host = u.hostname.toLowerCase();
+    if (host !== "127.0.0.1" && host !== "localhost" && host !== "::1") return false;
+    const port = Number(u.port || (u.protocol === "https:" ? "443" : "80"));
+    return Number.isFinite(port) && port !== 11434 && port > 1024;
+  } catch {
+    return false;
+  }
+}
+
+export type OllamaRuntimeEndpoint = {
+  endpointUrl: string;
+  model?: string | null;
+};
+
+/**
+ * Bridge to the api-server's existing `resolveLocalAiRuntime()` — not a second
+ * resolver. When bound, all Ollama generate paths prefer clinic/runtime URL
+ * over stale `ai_provider_settings` / ephemeral loopback test URLs.
+ */
+let ollamaRuntimeEndpointResolver:
+  | (() => Promise<OllamaRuntimeEndpoint | null>)
+  | null = null;
+
+export function bindOllamaRuntimeEndpointResolver(
+  fn: (() => Promise<OllamaRuntimeEndpoint | null>) | null,
+): void {
+  ollamaRuntimeEndpointResolver = fn;
+}
+
+/** True after api-server bootstrap binds resolveLocalAiRuntime into generate paths. */
+export function isOllamaRuntimeEndpointResolverBound(): boolean {
+  return ollamaRuntimeEndpointResolver != null;
+}
+
+/** Test helper — clears the production binder. */
+export function resetOllamaRuntimeEndpointResolverForTests(): void {
+  ollamaRuntimeEndpointResolver = null;
+}
+
+/**
+ * Clinic/runtime URL wins over DB mirror, env, and ephemeral loopback test
+ * servers. Does not hard-code a LAN IP — caller supplies the clinic URL.
+ */
+export function preferClinicOllamaEndpoint(opts: {
+  clinicOrRuntimeUrl: string | null | undefined;
+  candidateUrl: string | null | undefined;
+  envFallback?: string;
+}): {
+  endpointUrl: string;
+  source: "clinic_runtime" | "candidate" | "env_canonical";
+  rejectedCandidate: string | null;
+  rejectReason: string | null;
+} {
+  const clinic = opts.clinicOrRuntimeUrl?.trim()
+    ? normalizeOllamaEndpointUrl(opts.clinicOrRuntimeUrl)
+    : null;
+  const candidate = opts.candidateUrl?.trim()
+    ? normalizeOllamaEndpointUrl(opts.candidateUrl)
+    : null;
+  const envFallback = normalizeOllamaEndpointUrl(opts.envFallback ?? envOllamaEndpoint());
+
+  if (clinic) {
+    if (candidate && candidate !== clinic) {
+      if (isEphemeralLoopbackOllamaUrl(candidate)) {
+        return {
+          endpointUrl: clinic,
+          source: "clinic_runtime",
+          rejectedCandidate: candidate,
+          rejectReason: "ephemeral_loopback_cannot_override_clinic",
+        };
+      }
+      return {
+        endpointUrl: clinic,
+        source: "clinic_runtime",
+        rejectedCandidate: candidate,
+        rejectReason: "clinic_settings_wins_over_provider_mirror",
+      };
+    }
+    return {
+      endpointUrl: clinic,
+      source: "clinic_runtime",
+      rejectedCandidate: null,
+      rejectReason: null,
+    };
+  }
+  if (candidate) {
+    return {
+      endpointUrl: candidate,
+      source: "candidate",
+      rejectedCandidate: null,
+      rejectReason: null,
+    };
+  }
+  return {
+    endpointUrl: envFallback,
+    source: "env_canonical",
+    rejectedCandidate: null,
+    rejectReason: null,
+  };
+}
+
+/** Flatten undici `fetch failed` + `cause` so ECONNREFUSED host:port is visible. */
+export function formatFetchNetworkError(err: unknown, intendedUrl?: string): string {
+  if (!(err instanceof Error)) return String(err).slice(0, 400);
+  const parts: string[] = [err.message || "unknown error"];
+  let cause: unknown = (err as Error & { cause?: unknown }).cause;
+  let depth = 0;
+  while (cause && depth < 4) {
+    if (cause instanceof Error) {
+      const c = cause as Error & { code?: string; address?: string; port?: number };
+      const addr =
+        c.address != null && c.port != null
+          ? `${c.address}:${c.port}`
+          : c.message;
+      parts.push(c.code ? `${c.code} ${addr}` : addr);
+      cause = (c as Error & { cause?: unknown }).cause;
+    } else {
+      parts.push(String(cause).slice(0, 120));
+      break;
+    }
+    depth += 1;
+  }
+  if (intendedUrl?.trim()) {
+    parts.push(`intended ${normalizeOllamaEndpointUrl(intendedUrl)}`);
+  }
+  return parts.filter(Boolean).join(" → ").slice(0, 400);
+}
+
 // ─── Types ──────────────────────────────────────────────────────────────────
 
 export interface AiProviderConfig {
@@ -382,7 +523,7 @@ export function estimateBase64DecodedBytes(b64OrDataUrl: string): number {
   return Math.max(0, Math.floor((raw.length * 3) / 4) - padding);
 }
 
-function classifyProviderError(err: unknown): {
+function classifyProviderError(err: unknown, intendedUrl?: string): {
   errorClass: string;
   errorCode: string | null;
   errorMessage: string;
@@ -390,7 +531,7 @@ function classifyProviderError(err: unknown): {
 } {
   if (err instanceof Error) {
     const name = err.name || "Error";
-    const msg = (err.message || "unknown error").slice(0, 300);
+    const msg = formatFetchNetworkError(err, intendedUrl);
     const aborted =
       name === "AbortError" ||
       /aborted|abort|timed out after|TimeoutError/i.test(msg);
@@ -410,9 +551,10 @@ function classifyProviderError(err: unknown): {
         timeoutStage: null,
       };
     }
+    const refused = /ECONNREFUSED/i.test(msg);
     return {
-      errorClass: name,
-      errorCode: name,
+      errorClass: refused ? "ConnectionRefused" : name,
+      errorCode: refused ? "ECONNREFUSED" : name,
       errorMessage: msg,
       timeoutStage: null,
     };
@@ -591,7 +733,7 @@ class OllamaProvider implements AiProvider {
         },
       };
     } catch (err: unknown) {
-      const classified = classifyProviderError(err);
+      const classified = classifyProviderError(err, `${base}/api/chat`);
       const elapsedMs = Date.now() - t0;
       return {
         text: "",
@@ -792,6 +934,44 @@ export async function createAiProviderFromDb(name: string): Promise<AiProvider |
 }
 
 /**
+ * Resolve the Ollama base URL the same way generateAiResponse does — clinic
+ * runtime (when bound) wins over ai_provider_settings / env / ephemeral loopback.
+ */
+export async function resolveOllamaInferenceEndpoint(opts?: {
+  endpointUrl?: string | null;
+}): Promise<{
+  endpointUrl: string;
+  source: "clinic_runtime" | "candidate" | "env_canonical";
+  rejectedCandidate: string | null;
+  rejectReason: string | null;
+}> {
+  let clinicRuntimeUrl: string | null = null;
+  if (ollamaRuntimeEndpointResolver) {
+    try {
+      const rt = await ollamaRuntimeEndpointResolver();
+      if (rt?.endpointUrl?.trim()) {
+        clinicRuntimeUrl = normalizeOllamaEndpointUrl(rt.endpointUrl);
+      }
+    } catch {
+      /* fall through */
+    }
+  }
+  const override = opts?.endpointUrl?.trim()
+    ? normalizeOllamaEndpointUrl(opts.endpointUrl)
+    : null;
+  let dbUrl: string | null = null;
+  try {
+    dbUrl = (await getProviderEndpointUrl("ollama"))?.replace(/\/$/, "") || null;
+  } catch {
+    dbUrl = null;
+  }
+  return preferClinicOllamaEndpoint({
+    clinicOrRuntimeUrl: clinicRuntimeUrl,
+    candidateUrl: override || dbUrl,
+  });
+}
+
+/**
  * Unified generate function that picks the provider from the database and
  * runs the query. Returns the result directly.
  */
@@ -817,14 +997,38 @@ export async function generateAiResponse(
 
   let provider: AiProvider | null = null;
   let resolvedEndpoint: string | null = null;
-  if (providerName === "ollama" && options?.endpointUrl?.trim()) {
-    resolvedEndpoint = options.endpointUrl.trim().replace(/\/$/, "");
+  let runtimeModelHint: string | null = null;
+
+  if (providerName === "ollama") {
+    let clinicRuntimeUrl: string | null = null;
+    if (ollamaRuntimeEndpointResolver) {
+      try {
+        const rt = await ollamaRuntimeEndpointResolver();
+        if (rt?.endpointUrl?.trim()) {
+          clinicRuntimeUrl = normalizeOllamaEndpointUrl(rt.endpointUrl);
+        }
+        if (rt?.model?.trim()) runtimeModelHint = rt.model.trim();
+      } catch {
+        // Resolver unavailable (tests / early boot) — fall through to override/DB/env.
+      }
+    }
+    const override = options?.endpointUrl?.trim()
+      ? normalizeOllamaEndpointUrl(options.endpointUrl)
+      : null;
+    let dbUrl: string | null = null;
+    try {
+      dbUrl = (await getProviderEndpointUrl("ollama"))?.replace(/\/$/, "") || null;
+    } catch {
+      dbUrl = null;
+    }
+    const preferred = preferClinicOllamaEndpoint({
+      clinicOrRuntimeUrl: clinicRuntimeUrl,
+      candidateUrl: override || dbUrl,
+    });
+    resolvedEndpoint = preferred.endpointUrl;
     provider = await createAiProvider("ollama", undefined, resolvedEndpoint);
   } else {
     provider = await createAiProviderFromDb(providerName);
-    if (providerName === "ollama") {
-      resolvedEndpoint = (await getProviderEndpointUrl("ollama"))?.replace(/\/$/, "") || envOllamaEndpoint();
-    }
   }
   if (!provider) {
     return {
@@ -854,6 +1058,9 @@ export async function generateAiResponse(
   // Model precedence: explicit option → admin-configured stored default →
   // canonical local chat/vision model for Ollama.
   let model = options?.model?.trim() || "";
+  if (!model && providerName === "ollama" && runtimeModelHint) {
+    model = runtimeModelHint;
+  }
   if (!model) {
     const cfg = await loadProviderConfig(providerName);
     model = cfg?.defaultModel ?? "";

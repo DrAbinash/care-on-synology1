@@ -269,7 +269,19 @@ export async function fireOvernightAiTick(opts: {
   } catch { /* keep 1 / no hold filter */ }
   try {
     const { AI_SHADOW_PIPELINE_JOB } = await import("./lib/ai/shadowPipeline");
-    dueAi = await countDueJobs(AI_SHADOW_PIPELINE_JOB);
+    // STARVED must use eligible (post–legacy-hold) due count — not raw backlog.
+    if (legacyHoldFilter) {
+      try {
+        const { getOvernightOpsControls } = await import("./lib/ai/clinicalConfigService");
+        const { countLegacyBacklogHold } = await import("./lib/ai/legacyBacklogHold");
+        const held = await countLegacyBacklogHold(await getOvernightOpsControls());
+        dueAi = held.newEligible;
+      } catch {
+        dueAi = await countDueJobs(AI_SHADOW_PIPELINE_JOB);
+      }
+    } else {
+      dueAi = await countDueJobs(AI_SHADOW_PIPELINE_JOB);
+    }
     if (aiBlocked) {
       recordRadiologyJobCronTick({ peak, aiBlocked: true, dueAi, ran: 0 });
       return { requeuedStale: 0, ran: [], skipped: "peak_hold" };
