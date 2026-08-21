@@ -26,6 +26,8 @@ export interface QueueStudy {
   reportId?: number | null;
   /** DICOM Study Instance UID — used by MRI warm-cache / OHIF prefetch. */
   studyInstanceUID?: string | null;
+  /** Referring / referral doctor — shown on Reading Queue cards. */
+  referringDoctor?: string | null;
   // M1.6A — assignment + lock fields (absent on pre-lock payloads).
   assignedRadiologist?: string | null;
   lockUserId?: number | null;
