@@ -190,6 +190,7 @@ export function makeAiShadowPipelineHandler(overrides: Partial<ShadowPipelineDep
     const {
       recordOvernightResourceFailure,
       recordOvernightResourceSuccess,
+      resourceStreakPatchFromOps,
     } = await import("./overnightOpsControls");
     const { saveOvernightOpsControls } = await import("./clinicalConfigService");
     const vision = await getOvernightVisionInferenceOptions();
@@ -249,7 +250,8 @@ export function makeAiShadowPipelineHandler(overrides: Partial<ShadowPipelineDep
     if (!preflight.fits && rendered.length <= 1) {
       try {
         const nextOps = recordOvernightResourceFailure(vision.ops, "CONTEXT_BUDGET_EXCEEDED");
-        await saveOvernightOpsControls(nextOps, "shadow-preflight");
+        // Never pass full ops object — protected hold fields must not be clobbered.
+        await saveOvernightOpsControls(resourceStreakPatchFromOps(nextOps), "shadow-preflight");
       } catch { /* best-effort */ }
       await markWorklistResourceError(uid, "CONTEXT_BUDGET_EXCEEDED", preflight.reasonForReduction ?? "context preflight failed");
       return {
@@ -304,7 +306,7 @@ export function makeAiShadowPipelineHandler(overrides: Partial<ShadowPipelineDep
             vision.ops,
             code === "CONTEXT_BUDGET_EXCEEDED" ? "CONTEXT_BUDGET_EXCEEDED" : "GPU_OUT_OF_MEMORY",
           );
-          await saveOvernightOpsControls(nextOps, "shadow-resource-fail");
+          await saveOvernightOpsControls(resourceStreakPatchFromOps(nextOps), "shadow-resource-fail");
         } catch { /* best-effort */ }
       }
       await markWorklistResourceError(
@@ -321,7 +323,7 @@ export function makeAiShadowPipelineHandler(overrides: Partial<ShadowPipelineDep
     try {
       const nextOps = recordOvernightResourceSuccess(vision.ops);
       if (nextOps.resourceFailStreak !== vision.ops.resourceFailStreak) {
-        await saveOvernightOpsControls(nextOps, "shadow-success");
+        await saveOvernightOpsControls(resourceStreakPatchFromOps(nextOps), "shadow-success");
       }
     } catch { /* best-effort */ }
 

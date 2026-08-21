@@ -38,7 +38,8 @@ async function loadOvernightOps(): Promise<OvernightOpsControls> {
     const { getOvernightOpsControls } = await import("./clinicalConfigService");
     return await getOvernightOpsControls();
   } catch {
-    return { ...DEFAULT_OVERNIGHT_OPS };
+    const { failSafeHeldOps } = await import("./overnightOpsControls");
+    return failSafeHeldOps(new Date(), "overnight-vision-ops-unreadable");
   }
 }
 
