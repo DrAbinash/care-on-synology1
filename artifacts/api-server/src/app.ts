@@ -11,6 +11,11 @@ import { dicomUploadLimiter } from "./middleware/rateLimits";
 import { dicomUploadsRouter } from "./routes/dicom-uploads";
 import { whatsappWebhookRouter } from "./routes/whatsapp";
 import { recordRequest } from "./lib/requestMetrics";
+import { bindCanonicalOllamaRuntimeResolver } from "./lib/ai/bindOllamaRuntime";
+
+// Bind Ollama generate paths to resolveLocalAiRuntime() before any route
+// handles traffic — clinic/runtime URL wins over stale provider-settings mirrors.
+bindCanonicalOllamaRuntimeResolver();
 
 // Helmet is loaded lazily so a missing optional dependency never crashes the
 // server. Production deployments should include it; dev environments can

@@ -22,7 +22,10 @@ export interface LegacyBacklogCounts {
   holdBefore: string | null;
   heldPending: number;
   heldRetrying: number;
+  /** @deprecated use eligiblePending + eligibleRetrying */
   newEligible: number;
+  eligiblePending: number;
+  eligibleRetrying: number;
   releasedAllowlistSize: number;
 }
 
@@ -47,12 +50,16 @@ export async function countLegacyBacklogHold(
         AND status IN ('pending', 'retrying')
     `);
     const row = executeRows<{ pending_due: number; retrying_due: number }>(res)[0];
+    const eligiblePending = row?.pending_due ?? 0;
+    const eligibleRetrying = row?.retrying_due ?? 0;
     return {
       held: false,
       holdBefore: ops.legacyHoldBefore,
       heldPending: 0,
       heldRetrying: 0,
-      newEligible: (row?.pending_due ?? 0) + (row?.retrying_due ?? 0),
+      newEligible: eligiblePending + eligibleRetrying,
+      eligiblePending,
+      eligibleRetrying,
       releasedAllowlistSize: ops.legacyReleasedJobIds.length,
     };
   }
@@ -80,10 +87,15 @@ export async function countLegacyBacklogHold(
           AND NOT (${releasedSql})
       )::int AS held_retrying,
       count(*) FILTER (
-        WHERE status IN ('pending', 'retrying')
+        WHERE status = 'pending'
           AND (next_retry_at IS NULL OR next_retry_at <= NOW())
           AND (created_at >= ${holdBefore} OR (${releasedSql}))
-      )::int AS new_eligible
+      )::int AS eligible_pending,
+      count(*) FILTER (
+        WHERE status = 'retrying'
+          AND (next_retry_at IS NULL OR next_retry_at <= NOW())
+          AND (created_at >= ${holdBefore} OR (${releasedSql}))
+      )::int AS eligible_retrying
     FROM dicom_retry_queue
     WHERE operation_type = ${AI_SHADOW_PIPELINE_JOB}
       AND status IN ('pending', 'retrying')
@@ -91,14 +103,19 @@ export async function countLegacyBacklogHold(
   const row = executeRows<{
     held_pending: number;
     held_retrying: number;
-    new_eligible: number;
+    eligible_pending: number;
+    eligible_retrying: number;
   }>(res)[0];
+  const eligiblePending = row?.eligible_pending ?? 0;
+  const eligibleRetrying = row?.eligible_retrying ?? 0;
   return {
     held: true,
     holdBefore: filter.holdBefore,
     heldPending: row?.held_pending ?? 0,
     heldRetrying: row?.held_retrying ?? 0,
-    newEligible: row?.new_eligible ?? 0,
+    newEligible: eligiblePending + eligibleRetrying,
+    eligiblePending,
+    eligibleRetrying,
     releasedAllowlistSize: released.length,
   };
 }

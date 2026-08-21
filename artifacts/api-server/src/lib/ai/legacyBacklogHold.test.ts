@@ -39,6 +39,19 @@ describe("legacy backlog hold", () => {
     expect(again.legacyReleasedJobIds).toEqual([42, 99]);
   });
 
+  it("release/hold helpers never imply row deletion (deleted count stays 0 in contract)", () => {
+    // Investigation must not mutate backlog — release actions are allowlist-only.
+    const ops: OvernightOpsControls = {
+      ...DEFAULT_OVERNIGHT_OPS,
+      legacyBacklogHold: true,
+      legacyHoldBefore: cutover.toISOString(),
+    };
+    const released = releaseAllLegacyBacklog(ops);
+    expect(released.legacyBacklogHold).toBe(false);
+    // Rows remain in dicom_retry_queue; this function only flips hold flags / allowlist.
+    expect(Object.keys(released)).not.toContain("deleted");
+  });
+
   it("holds pre-cutover pending/retrying; post-cutover is eligible", () => {
     const ops = {
       ...DEFAULT_OVERNIGHT_OPS,

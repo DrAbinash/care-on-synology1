@@ -564,6 +564,10 @@ export async function getOvernightDiagnostics() {
   let dueAi = 0;
   let composition: Awaited<ReturnType<typeof shadowQueueComposition>> | null = null;
   let claimPreview: Awaited<ReturnType<typeof peekOvernightAiClaim>> | null = null;
+  let heldLegacyPending = 0;
+  let heldLegacyRetrying = 0;
+  let eligiblePending = 0;
+  let eligibleRetrying = 0;
   try {
     stats = await overnightQueueStats();
     dueAi = await countDueJobs(AI_SHADOW_PIPELINE_JOB);
@@ -571,7 +575,16 @@ export async function getOvernightDiagnostics() {
     try {
       const { getOvernightOpsControls } = await import("./clinicalConfigService");
       const { resolveLegacyHoldClaimFilter } = await import("./overnightOpsControls");
-      const hold = resolveLegacyHoldClaimFilter(await getOvernightOpsControls());
+      const { countLegacyBacklogHold } = await import("./legacyBacklogHold");
+      const ops = await getOvernightOpsControls();
+      const hold = resolveLegacyHoldClaimFilter(ops);
+      const legacyCounts = await countLegacyBacklogHold(ops);
+      heldLegacyPending = legacyCounts.heldPending;
+      heldLegacyRetrying = legacyCounts.heldRetrying;
+      eligiblePending = legacyCounts.eligiblePending;
+      eligibleRetrying = legacyCounts.eligibleRetrying;
+      // dueNow for health = eligible only when hold is active
+      if (hold) dueAi = legacyCounts.newEligible;
       claimPreview = await peekOvernightAiClaim({ preferNewest: false, legacyHold: hold });
     } catch {
       claimPreview = await peekOvernightAiClaim({ preferNewest: false });
@@ -584,6 +597,8 @@ export async function getOvernightDiagnostics() {
     queueDepth: stats.queueDepth,
     running: stats.running,
     nightWindow,
+    eligibleDueAi: eligiblePending + eligibleRetrying,
+    heldLegacyDue: heldLegacyPending + heldLegacyRetrying,
   });
   const peak = isClinicPeakHours();
   let localAiReachable = false;
@@ -615,6 +630,10 @@ export async function getOvernightDiagnostics() {
     running: stats.running,
     abandoned: stats.abandoned,
     dueNow: dueAi,
+    heldLegacyPending,
+    heldLegacyRetrying,
+    eligiblePending,
+    eligibleRetrying,
     staleRunning: stats.staleRunning,
     oldestQueuedAt: stats.oldestQueuedAt,
     lastSuccessfulDraftAt: stats.lastSuccessfulDraftAt,
@@ -647,6 +666,11 @@ export async function getOvernightDiagnostics() {
     }),
     meaning: {
       queueDepth: "dicom_retry_queue rows with operation_type=ai_shadow_pipeline and status pending|retrying (all ages/modalities)",
+      dueNow: "eligible (post–legacy-hold) pending|retrying jobs that are due now",
+      heldLegacyPending: "pre-cutover pending rows excluded from claim (intentional hold)",
+      heldLegacyRetrying: "pre-cutover retrying rows excluded from claim (intentional hold)",
+      eligiblePending: "claimable pending rows (post-cutover or allowlisted)",
+      eligibleRetrying: "claimable retrying rows (post-cutover or allowlisted)",
       worklistQueued: "Overnight AI Drafts filter: worklist rows in the selected age chip whose latest shadow job maps to QUEUED (not the full backlog)",
     },
   };
@@ -670,6 +694,7 @@ function describeOvernightFirstStop(input: {
   if (!input.lastCronTickAt) return "drain_timer_registered_but_never_polled";
   if (input.consumer === "STALE") return "drain_tick_stale_or_hung";
   if (input.consumer === "STARVED") return "claim_returned_no_row_despite_due_jobs";
+  if (input.consumer === "HELD_LEGACY") return "legacy_backlog_held_no_eligible_due";
   if (input.dueNow === 0 && input.pending > 0) return "jobs_waiting_on_next_retry_at_backoff";
   if (input.lastRan > 0 && input.lastOutcome && input.lastOutcome !== "success") {
     return `handler_failed:${(input.lastError ?? input.lastOutcome).slice(0, 120)}`;

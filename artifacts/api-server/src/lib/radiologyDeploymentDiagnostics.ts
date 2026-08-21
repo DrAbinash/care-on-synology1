@@ -913,7 +913,10 @@ export async function runSystemDiagnostics(io: DiagnosticsIO = defaultDiagnostic
     running: 0,
     nightWindow: true,
   });
-  const overnightOk = overnightHealth.status === "HEALTHY" || overnightHealth.status === "PEAK_HOLD";
+  const overnightOk =
+    overnightHealth.status === "HEALTHY"
+    || overnightHealth.status === "PEAK_HOLD"
+    || overnightHealth.status === "HELD_LEGACY";
   checks.push(check("system.overnight_ai_consumer", "Overnight AI job consumer", overnightOk ? "PASS" : "FAIL",
     `${overnightHealth.status}: ${overnightHealth.detail}`, {
       fix: overnightOk ? undefined : "Redeploy CARE API so startRadiologyJobConsumer() runs outside the ENABLE_SCHEDULERS gate.",

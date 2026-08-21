@@ -329,7 +329,7 @@ export default function OvernightAiSettings() {
           <div className="font-semibold">Overnight AI diagnostics</div>
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-3 gap-y-0.5 text-muted-foreground">
             <span>Worker: <strong className={
-              String(diagnostics.worker) === "HEALTHY" ? "text-foreground"
+              String(diagnostics.worker) === "HEALTHY" || String(diagnostics.worker) === "HELD_LEGACY" ? "text-foreground"
                 : String(diagnostics.worker) === "PEAK_HOLD" ? "text-amber-700"
                 : "text-red-700"
             }>{String(diagnostics.worker ?? "—")}</strong></span>
@@ -339,7 +339,9 @@ export default function OvernightAiSettings() {
             <span>Local AI: <strong className="text-foreground">{String(diagnostics.localAi ?? "—")}</strong></span>
             <span>Model: <strong className="text-foreground">{String(diagnostics.model ?? "qwen3-vl:8b")}</strong></span>
             <span>Queue depth: <strong className="text-foreground">{String(diagnostics.queueDepth ?? 0)}</strong></span>
-            <span>Due now: <strong className="text-foreground">{String(diagnostics.dueNow ?? "—")}</strong></span>
+            <span>Due now (eligible): <strong className="text-foreground">{String(diagnostics.dueNow ?? "—")}</strong></span>
+            <span>Held legacy P/R: <strong className="text-foreground">{String(diagnostics.heldLegacyPending ?? 0)}/{String(diagnostics.heldLegacyRetrying ?? 0)}</strong></span>
+            <span>Eligible P/R: <strong className="text-foreground">{String(diagnostics.eligiblePending ?? 0)}/{String(diagnostics.eligibleRetrying ?? 0)}</strong></span>
             <span>Running: <strong className="text-foreground">{String(diagnostics.running ?? 0)}</strong></span>
             <span>Abandoned: <strong className="text-foreground">{String(diagnostics.abandoned ?? "—")}</strong></span>
             <span>Last poll: <strong className="text-foreground">{diagnostics.lastPoll ? String(diagnostics.lastPoll) : "never"}</strong></span>
