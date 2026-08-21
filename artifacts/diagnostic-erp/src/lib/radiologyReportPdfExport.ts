@@ -143,6 +143,10 @@ export async function exportRadiologyReportToPdf(input: RadiologyPdfExportInput)
     },
     {
       ...settings,
+      header: {
+        ...settings.header,
+        enabled: true, // letter-pad PDF must always show CARE logo + address chrome
+      },
       show: {
         ...settings.show,
         keyImages: keyImages.length > 0 || settings.show.keyImages,

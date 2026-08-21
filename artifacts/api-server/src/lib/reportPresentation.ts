@@ -729,13 +729,14 @@ export function renderReportDocument(
     }
     .content-area.has-side-images > .image-panel-side {
       display: table-cell;
-      vertical-align: stretch;
+      vertical-align: top;
       width: 30%;
       max-width: ${panelWidthMm}mm;
       margin: 0;
       page-break-inside: auto;
       break-inside: auto;
-      height: 100%;
+      height: auto;
+      text-align: right;
     }
     .content-area.has-side-images + .sigs { margin-top: 12px; }
     @media print {
@@ -807,13 +808,18 @@ export function renderReportDocument(
       min-height: 0;
     }
     .image-panel-side.image-panel-keyrail {
-      display: flex;
+      display: inline-flex;
       flex-direction: column;
-      height: 100%;
-      min-height: 100%;
+      height: auto;
+      min-height: 0;
+      width: fit-content;
+      max-width: 100%;
+      margin-left: auto; /* extreme right within the side column (align with DATE edge) */
+      text-align: left;
+      box-sizing: border-box;
     }
     .image-panel-side .image-cell {
-      flex: 1 1 0;
+      flex: 0 0 auto;
       display: flex;
       flex-direction: column;
       min-height: 0;
@@ -834,7 +840,7 @@ export function renderReportDocument(
     .dicom-img { width: 100%; max-height: 70mm; object-fit: contain; display: block; background: #000; }
     ${sidePanel ? `
     .image-viewport {
-      position: relative; width: 100%; flex: 1 1 0; min-height: 14mm;
+      position: relative; width: 100%; flex: 0 0 auto; min-height: 18mm; height: 28mm;
       overflow: hidden; background: #000;
     }
     .image-viewport .image-framed {
@@ -847,8 +853,7 @@ export function renderReportDocument(
       object-fit: var(--img-fit, cover); object-position: center;
       display: block;
     }
-    /* Side-rail images share the full column height evenly (1–6) so the dark
-       key-rail panel fills the right column without a blank band below. */` : ""}
+    /* Side-rail images sit in a tight navy frame on the extreme right (no empty band). */` : ""}
     .image-panel-overflow { margin-top: 10px; }
     .image-caption {
       background: ${pal.accent}; color: #fff; font-weight: 600;
@@ -876,15 +881,26 @@ export function renderReportDocument(
     .hdr-rule { border-top: 0.35mm solid #141414; margin: 2mm 0 0; }
     .letterpad-addr { color: #111; font-size: 9.5px; text-align: center; padding: 2px 12px 0; }
     .letterpad-contact { color: #111; font-size: 9px; text-align: center; padding: 2px 12px 6px; }
-    .image-panel-keyrail { background: #0f172a; color: #fff; padding: 8px 6px; border-radius: 4px; }
-    .image-panel-keyrail .image-panel-heading { color: #fff; border-bottom-color: #3b82f6; letter-spacing: 0.12em; }
+    .image-panel-keyrail {
+      background: #0f172a;
+      color: #fff;
+      /* Tight 2–3mm symmetrical frame around the image stack — no empty navy band */
+      padding: 2.5mm;
+      border: 0.35mm solid #3b82f6;
+      border-radius: 3px;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }
+    .image-panel-keyrail .image-panel-heading { color: #fff; border-bottom-color: #3b82f6; letter-spacing: 0.12em; margin-bottom: 4px; }
     .image-panel-keyrail .image-caption { background: #1e3a8a; }
+    .image-panel-keyrail .image-grid { gap: 3px; width: 38mm; max-width: 38mm; }
+    .image-panel-keyrail .image-cell { width: 38mm; max-width: 38mm; }
     .letterpad .signame { color: #b91c1c; font-size: 11pt; }
     .letterpad .reportno { display: none; }
     .letterpad-demo { width: 100%; border-collapse: collapse; margin: 2px 0 0; font-size: 11px; color: #111; text-transform: uppercase; }
     .letterpad-demo td { padding: 1px 0; vertical-align: top; }
     .letterpad-demo .ld-left { text-align: left; width: 58%; }
-    .letterpad-demo .ld-right { text-align: left; width: 42%; }
+    .letterpad-demo .ld-right { text-align: right; width: 42%; }
     .letterpad-demo-wrap { background: transparent; border: none; padding: 2px 0 0; border-radius: 0; margin-bottom: 0; }
     .letterpad-demo-rule { border: none; border-top: 2.2px solid #111; border-bottom: 0.9px solid #111; height: 3.2px; margin: 6px 0 8px; }
     .letterpad-sheet { width: 100%; border-collapse: collapse; }
