@@ -907,6 +907,25 @@ radiologyOllamaRouter.post("/pipeline-self-test", async (req, res): Promise<void
   }
 });
 
+// ── GET /pipeline-self-test/latest — reconnect after refresh ──────────────────
+radiologyOllamaRouter.get("/pipeline-self-test/latest", async (req, res): Promise<void> => {
+  const sReq = req as StaffAuthRequest;
+  if (!canUseAi(sReq)) {
+    res.status(403).json({ error: "Permission denied." });
+    return;
+  }
+  const { getLatestAiPipelineSelfTest, formatSelfTestReport } = await import("../lib/ai/aiPipelineSelfTest");
+  const job = getLatestAiPipelineSelfTest();
+  if (!job) {
+    res.status(404).json({ error: "No self-test job in this process yet." });
+    return;
+  }
+  res.json({
+    ...job,
+    diagnosticReport: formatSelfTestReport(job),
+  });
+});
+
 // ── GET /pipeline-self-test/:id — poll self-test status ───────────────────────
 radiologyOllamaRouter.get("/pipeline-self-test/:id", async (req, res): Promise<void> => {
   const sReq = req as StaffAuthRequest;
@@ -914,8 +933,8 @@ radiologyOllamaRouter.get("/pipeline-self-test/:id", async (req, res): Promise<v
     res.status(403).json({ error: "Permission denied." });
     return;
   }
-  // Avoid treating "studies" as an id if route order ever flips.
-  if (String(req.params.id) === "studies") {
+  // Avoid treating "studies" / "latest" as an id if route order ever flips.
+  if (String(req.params.id) === "studies" || String(req.params.id) === "latest") {
     res.status(404).json({ error: "Not found" });
     return;
   }
@@ -931,18 +950,30 @@ radiologyOllamaRouter.get("/pipeline-self-test/:id", async (req, res): Promise<v
   });
 });
 
-// ── POST /verify — pre-deploy Ollama auto-draft verification ─────────────────
+// ── POST /verify — pre-deploy Ollama auto-draft verification (async) ─────────
+// Full test (runDraft) must return jobId immediately — Ollama can exceed Cloudflare 524.
 radiologyOllamaRouter.post("/verify", async (req, res): Promise<void> => {
   const sReq = req as StaffAuthRequest;
   if (!canUseAi(sReq)) {
     res.status(403).json({ error: "Permission denied. Role needs ai_reporting.use permission." });
     return;
   }
-  const b = (req.body ?? {}) as { dryRun?: boolean; runDraft?: boolean };
+  const b = (req.body ?? {}) as { dryRun?: boolean; runDraft?: boolean; async?: boolean };
   const dryRun = Boolean(b.dryRun) || req.query.dryRun === "1";
+  const runDraft = !dryRun && b.runDraft !== false;
+  // Default async for full draft; allow sync only for quick dry-run (keeps old clients working).
+  const useAsync = b.async !== false && (runDraft || b.async === true || dryRun);
   try {
-    const { runOllamaAiDraftVerify } = await import("../lib/ai/ollamaDraftVerify");
-    const result = await runOllamaAiDraftVerify({ runDraft: !dryRun && b.runDraft !== false });
+    const {
+      startOllamaAiDraftVerify,
+      runOllamaAiDraftVerify,
+    } = await import("../lib/ai/ollamaDraftVerify");
+    if (useAsync) {
+      const job = startOllamaAiDraftVerify({ runDraft });
+      res.status(202).json(job);
+      return;
+    }
+    const result = await runOllamaAiDraftVerify({ runDraft });
     res.json(result);
   } catch (err: unknown) {
     res.status(500).json({
@@ -954,4 +985,39 @@ radiologyOllamaRouter.post("/verify", async (req, res): Promise<void> => {
       ranAt: new Date().toISOString(),
     });
   }
+});
+
+// ── GET /verify/:id — poll async verify job ───────────────────────────────────
+radiologyOllamaRouter.get("/verify/latest", async (req, res): Promise<void> => {
+  const sReq = req as StaffAuthRequest;
+  if (!canUseAi(sReq)) {
+    res.status(403).json({ error: "Permission denied." });
+    return;
+  }
+  const { getLatestOllamaVerifyJob } = await import("../lib/ai/ollamaDraftVerify");
+  const job = getLatestOllamaVerifyJob();
+  if (!job) {
+    res.status(404).json({ error: "No verify job in this process yet." });
+    return;
+  }
+  res.json(job);
+});
+
+radiologyOllamaRouter.get("/verify/:id", async (req, res): Promise<void> => {
+  const sReq = req as StaffAuthRequest;
+  if (!canUseAi(sReq)) {
+    res.status(403).json({ error: "Permission denied." });
+    return;
+  }
+  if (String(req.params.id) === "latest") {
+    res.status(404).json({ error: "Not found" });
+    return;
+  }
+  const { getOllamaVerifyJob } = await import("../lib/ai/ollamaDraftVerify");
+  const job = getOllamaVerifyJob(String(req.params.id));
+  if (!job) {
+    res.status(404).json({ error: "Verify job not found (expired or unknown id)." });
+    return;
+  }
+  res.json(job);
 });

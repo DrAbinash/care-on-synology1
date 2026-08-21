@@ -91,6 +91,7 @@ export interface AiPipelineSelfTestResult {
 type JobRecord = AiPipelineSelfTestResult & { _timer?: ReturnType<typeof setTimeout> };
 
 const JOBS = new Map<string, JobRecord>();
+let latestSelfTestId: string | null = null;
 const JOB_TTL_MS = 60 * 60 * 1000;
 const MAX_JOBS = 20;
 
@@ -1898,6 +1899,12 @@ export function getAiPipelineSelfTest(id: string): AiPipelineSelfTestResult | nu
   return rest;
 }
 
+/** Reconnect after refresh — active or most recent self-test in this process. */
+export function getLatestAiPipelineSelfTest(): AiPipelineSelfTestResult | null {
+  if (!latestSelfTestId) return null;
+  return getAiPipelineSelfTest(latestSelfTestId);
+}
+
 export function startAiPipelineSelfTest(opts: {
   studyInstanceUid?: string;
 } = {}): AiPipelineSelfTestResult {
@@ -1918,6 +1925,7 @@ export function startAiPipelineSelfTest(opts: {
     safety: selfTestSafetyContract(),
   };
   JOBS.set(id, job);
+  latestSelfTestId = id;
   setImmediate(() => {
     void executeSelfTest(job, opts);
   });

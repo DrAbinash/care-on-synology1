@@ -458,6 +458,7 @@ function OvernightVisionOpsPanel() {
     lastResourceFailCode?: string | null;
     legacyBacklogHold?: boolean;
     legacyHoldBefore?: string | null;
+    legacyHoldExplicitlyReleased?: boolean;
   };
   const policy = (data?.effectivePolicy ?? {}) as Record<string, unknown>;
   const legacy = (data?.legacyBacklog ?? {}) as {
@@ -589,9 +590,13 @@ function OvernightVisionOpsPanel() {
       <div className="rounded-md border border-slate-300/80 bg-background/60 p-2.5 space-y-2" data-testid="legacy-backlog-hold">
         <div className="font-semibold text-[11px]">
           Legacy backlog: {legacy.held || ops.legacyBacklogHold ? "HELD" : "RELEASED"}
+          {ops.legacyHoldExplicitlyReleased ? " (explicit release_all)" : ""}
         </div>
         <p className="text-[10px] text-muted-foreground">
           Cutover: {String(legacy.holdBefore ?? ops.legacyHoldBefore ?? "—")} · allowlist={String(legacy.releasedAllowlistSize ?? 0)}
+          {ops.legacyHoldExplicitlyReleased === false && ops.legacyHoldBefore
+            ? " · fail-safe: cutover without explicit release ⇒ HELD"
+            : ""}
         </p>
         <div className="grid grid-cols-3 gap-2 text-[10px]">
           <div>Held pending: <strong>{String(legacy.heldPending ?? 0)}</strong></div>

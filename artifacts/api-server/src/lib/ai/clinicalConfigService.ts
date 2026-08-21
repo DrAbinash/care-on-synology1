@@ -21,9 +21,11 @@ import { parseStudyAgeWindow, type StudyAgeWindow } from "./studyAgeWindow";
 import {
   DEFAULT_OVERNIGHT_OPS,
   addLegacyReleasedJobIds,
+  failSafeHeldOps,
   initializeLegacyBacklogCutover,
   mergeOvernightOpsPatch,
   parseOvernightOpsJson,
+  reenableLegacyBacklogHold,
   releaseAllLegacyBacklog,
   serializeOvernightOps,
   type OvernightOpsControls,
@@ -118,21 +120,43 @@ async function persistOvernightOpsPayload(
  * Load overnight ops. On first deployment of legacy-hold (no cutover marker),
  * auto-initialize hold ON at NOW so pre-existing pending/retrying jobs do not
  * compete with post-deploy validation. Restart-safe: cutover timestamp persists.
+ *
+ * FAIL-SAFE: unreadable / missing overnight_ops_json ⇒ in-memory HOLD (never RELEASED).
+ * Also re-persists canonical hold JSON when an older wipe left bare legacyBacklogHold:false.
  */
 export async function getOvernightOpsControls(): Promise<OvernightOpsControls> {
   try {
     const [row] = await db.select().from(aiSchedulerConfigTable).limit(1);
+    const rawStr = String(
+      (row as { overnightOpsJson?: string } | undefined)?.overnightOpsJson
+        ?? (row as { overnight_ops_json?: string } | undefined)?.overnight_ops_json
+        ?? "{}",
+    );
     const current = readOpsFromRow(row as unknown as Record<string, unknown>);
     const { ops, initialized } = initializeLegacyBacklogCutover(current);
-    if (initialized) {
+    const wipedHoldInStorage =
+      ops.legacyBacklogHold === true
+      && ops.legacyHoldBefore != null
+      && !ops.legacyHoldExplicitlyReleased
+      && !/"legacyBacklogHold"\s*:\s*true/.test(rawStr);
+    if (initialized || wipedHoldInStorage) {
       try {
-        await persistOvernightOpsPayload(ops, "legacy-cutover-init");
+        await persistOvernightOpsPayload(
+          ops,
+          initialized ? "legacy-cutover-init" : "legacy-hold-fail-safe-repair",
+        );
         console.log(
-          "[ai] legacy backlog cutover initialized",
-          JSON.stringify({ legacyHoldBefore: ops.legacyHoldBefore, legacyBacklogHold: ops.legacyBacklogHold }),
+          "[ai] legacy backlog hold state persisted",
+          JSON.stringify({
+            initialized,
+            wipedHoldInStorage,
+            legacyHoldBefore: ops.legacyHoldBefore,
+            legacyBacklogHold: ops.legacyBacklogHold,
+            legacyHoldExplicitlyReleased: ops.legacyHoldExplicitlyReleased,
+          }),
         );
       } catch (err) {
-        // Column may be missing before db:push — still return in-memory cutover for this process.
+        // Column may be missing before db:push — still return in-memory HOLD for this process.
         console.warn(
           "[ai] legacy backlog cutover init persist failed (run pnpm db:push if overnight_ops_json missing):",
           err instanceof Error ? err.message : String(err),
@@ -141,17 +165,25 @@ export async function getOvernightOpsControls(): Promise<OvernightOpsControls> {
     }
     return ops;
   } catch {
-    // Column may be missing before db:push — preserve production defaults.
-    return { ...DEFAULT_OVERNIGHT_OPS };
+    // Column / table unreadable — prefer HELD so pre-cutover jobs are not auto-claimed.
+    return failSafeHeldOps(new Date(), "fail-safe-hold-unreadable");
   }
 }
 
 export async function saveOvernightOpsControls(
   patch: Partial<OvernightOpsControls>,
   updatedBy?: string,
+  opts?: { allowLegacyHoldMutation?: boolean },
 ): Promise<OvernightOpsControls> {
   const current = await getOvernightOpsControls();
-  const next = mergeOvernightOpsPatch(current, patch, updatedBy ?? null);
+  // Re-enable hold only when caller explicitly sends legacyBacklogHold: true.
+  let base = current;
+  if (opts?.allowLegacyHoldMutation && patch.legacyBacklogHold === true) {
+    base = reenableLegacyBacklogHold(current);
+  }
+  const next = mergeOvernightOpsPatch(base, patch, updatedBy ?? null, {
+    allowLegacyHoldMutation: opts?.allowLegacyHoldMutation === true,
+  });
   try {
     await persistOvernightOpsPayload(next, updatedBy ?? null);
   } catch (err) {
@@ -205,6 +237,20 @@ export async function releaseAllLegacyBacklogHold(
   };
   await persistOvernightOpsPayload(next, updatedBy ?? null);
   return next;
+}
+
+/** Selective allowlist release — mutates protected legacyReleasedJobIds only. */
+export async function persistLegacyHoldMutation(
+  next: OvernightOpsControls,
+  updatedBy?: string,
+): Promise<OvernightOpsControls> {
+  const payload = {
+    ...next,
+    updatedBy: updatedBy ?? next.updatedBy,
+    updatedAt: new Date().toISOString(),
+  };
+  await persistOvernightOpsPayload(payload, updatedBy ?? null);
+  return payload;
 }
 
 export async function getSchedulerConfig(): Promise<SchedulerConfig> {
