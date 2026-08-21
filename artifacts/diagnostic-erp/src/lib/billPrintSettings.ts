@@ -187,7 +187,7 @@ export type BillPrintSettings = {
 export const GLOBAL_BILL_PRINT_DEFAULTS: BillPrintSettings = {
   defaultFormat: "classic",
   autoA4Threshold: 8,
-  defaultPaperSize: "A5-landscape",
+  defaultPaperSize: "A5-portrait",
   defaultCopyType: "patient",
   showQrCode: true,
   showTatOnBill: false,
@@ -224,13 +224,11 @@ export const GLOBAL_BILL_PRINT_DEFAULTS: BillPrintSettings = {
 };
 
 /**
- * Cursor-default bill paper — the only layout knob clinics cannot change.
- * Header, margins, fonts, copies, and QR/TAT remain Settings → Billing Print
- * controls. Changing `defaultPaperSize` / `autoA4Threshold` here is the only
- * way to retune the physical page.
+ * Cursor-default bill paper — HOPE A5 portrait (148×210 mm) for short bills.
+ * Long bills auto-switch to A4. Header/QR/copies remain Settings controls.
  */
 export const CURSOR_BILL_PRINT_LAYOUT = {
-  defaultPaperSize: "A5-landscape" as BillPaperSize,
+  defaultPaperSize: "A5-portrait" as BillPaperSize,
   autoA4Threshold: 8,
 };
 
@@ -446,10 +444,11 @@ export function getAutoBillPaperSize(
 /** Pixel dimensions for on-screen bill previews (96 dpi, matches Settings live preview). */
 export function billPreviewPaperPx(pageOpts: BillPrintPageOpts): { w: number; h: number } {
   if (pageOpts.paperSize === "A4") return { w: 794, h: 1123 };
-  // Half-sheet content is always 210×148 (pre-cut A4 / A5 landscape).
+  // Landscape half-sheet (legacy). Default short bills are A5 portrait 148×210.
   if (pageOpts.orientation === "landscape" || pageOpts.pageCssSize.includes("210mm 148mm")) {
     return { w: 794, h: 559 };
   }
+  // A5 portrait / HOPE (148×210)
   return { w: 559, h: 794 };
 }
 
@@ -460,7 +459,7 @@ export function getPaperSizeCss(size: BillPaperSize): { pageSize: string; width:
       // Pre-cut half A4 in the tray — @page matches the physical sheet.
       return { pageSize: "210mm 148mm", width: "210mm", minHeight: "148mm", maxHeight: "148mm" };
     case "A5-portrait":
-      return { pageSize: "A5 portrait", width: "148mm", minHeight: "210mm", maxHeight: "none" };
+      return { pageSize: "148mm 210mm", width: "148mm", minHeight: "210mm", maxHeight: "none" };
     case "A4":
     default:
       return { pageSize: "A4 portrait", width: "210mm", minHeight: "297mm", maxHeight: "none" };
@@ -479,8 +478,8 @@ export type BillPrintPageOpts = {
 
 /**
  * Map clinic Billing Print settings + test count → paper/orientation the HTML
- * renderer should declare. Paper is Cursor-default (half A4 / A5 landscape on
- * an A4 portrait @page). Long bills (≥ Cursor autoA4Threshold) switch to A4.
+ * renderer should declare. Short bills use HOPE A5 portrait (148×210).
+ * Long bills (≥ Cursor autoA4Threshold) switch to A4.
  */
 export function resolveBillPrintPageOpts(
   _settings: Pick<BillPrintSettings, "defaultPaperSize" | "autoA4Threshold"> | Partial<BillPrintSettings> | undefined,
@@ -497,13 +496,10 @@ export function resolveBillPrintPageOpts(
   }
   return {
     paperSize: "A5",
-    orientation: "landscape",
-    // Fill the 148 mm sheet — pin footer to the bottom.
+    orientation: "portrait",
     compactFooterGap: false,
-    // Exact mm for pre-cut half A4. Do not use full A4 @page (blank below on
-    // cut sheets) or named "A5 landscape". In the print dialog pick User
-    // Defined 210×148 — leaving Paper=A4 causes blank on the right and below.
-    pageCssSize: "210mm 148mm",
+    // HOPE legacy A5 portrait geometry (148×210 mm content page).
+    pageCssSize: "148mm 210mm",
   };
 }
 
