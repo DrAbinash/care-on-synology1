@@ -574,24 +574,22 @@ export async function getOvernightDiagnostics() {
   let heldLegacyRetrying = 0;
   let eligiblePending = 0;
   let eligibleRetrying = 0;
+  let legacyHoldState: "HELD" | "RELEASED" | "unknown" = "unknown";
   try {
     stats = await overnightQueueStats();
     dueAi = await countDueJobs(AI_SHADOW_PIPELINE_JOB);
     composition = await shadowQueueComposition();
     try {
-      const { getOvernightOpsControls } = await import("./clinicalConfigService");
-      const { resolveLegacyHoldClaimFilter } = await import("./overnightOpsControls");
-      const { countLegacyBacklogHold } = await import("./legacyBacklogHold");
-      const ops = await getOvernightOpsControls();
-      const hold = resolveLegacyHoldClaimFilter(ops);
-      const legacyCounts = await countLegacyBacklogHold(ops);
-      heldLegacyPending = legacyCounts.heldPending;
-      heldLegacyRetrying = legacyCounts.heldRetrying;
-      eligiblePending = legacyCounts.eligiblePending;
-      eligibleRetrying = legacyCounts.eligibleRetrying;
+      const { getOvernightQueueClassification } = await import("./overnightQueueClassification");
+      const c = await getOvernightQueueClassification();
+      heldLegacyPending = c.heldLegacyPending;
+      heldLegacyRetrying = c.heldLegacyRetrying;
+      eligiblePending = c.eligiblePending;
+      eligibleRetrying = c.eligibleRetrying;
+      legacyHoldState = c.held ? "HELD" : "RELEASED";
       // dueNow for health = eligible only when hold is active
-      if (hold) dueAi = legacyCounts.newEligible;
-      claimPreview = await peekOvernightAiClaim({ preferNewest: false, legacyHold: hold });
+      if (c.claimFilter) dueAi = c.eligibleDue;
+      claimPreview = await peekOvernightAiClaim({ preferNewest: false, legacyHold: c.claimFilter });
     } catch {
       claimPreview = await peekOvernightAiClaim({ preferNewest: false });
     }
@@ -668,6 +666,7 @@ export async function getOvernightDiagnostics() {
     heldLegacyRetrying,
     eligiblePending,
     eligibleRetrying,
+    legacyHoldState,
     staleRunning: stats.staleRunning,
     oldestQueuedAt: stats.oldestQueuedAt,
     lastSuccessfulDraftAt: stats.lastSuccessfulDraftAt,

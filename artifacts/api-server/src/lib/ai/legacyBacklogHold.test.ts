@@ -97,7 +97,7 @@ describe("legacy backlog hold", () => {
     expect(ops.legacyReleasedJobIds).toEqual([1, 2, 3]);
   });
 
-  it("release all turns hold off but keeps cutover marker", () => {
+  it("release all turns hold off but keeps cutover marker and sets explicit release", () => {
     const next = releaseAllLegacyBacklog({
       ...DEFAULT_OVERNIGHT_OPS,
       legacyBacklogHold: true,
@@ -105,6 +105,7 @@ describe("legacy backlog hold", () => {
       legacyReleasedJobIds: [1],
     });
     expect(next.legacyBacklogHold).toBe(false);
+    expect(next.legacyHoldExplicitlyReleased).toBe(true);
     expect(next.legacyHoldBefore).toBe(cutover.toISOString());
     expect(resolveLegacyHoldClaimFilter(next)).toBeNull();
   });
@@ -118,6 +119,16 @@ describe("legacy backlog hold", () => {
   it("parse defaults keep legacy hold off until cutover init", () => {
     expect(parseOvernightOpsJson("{}").legacyBacklogHold).toBe(false);
     expect(parseOvernightOpsJson("{}").legacyHoldBefore).toBeNull();
+    expect(parseOvernightOpsJson("{}").legacyHoldExplicitlyReleased).toBe(false);
     expect(DEFAULT_OVERNIGHT_OPS.legacyReleasedJobIds).toEqual([]);
+  });
+
+  it("bare hold:false with cutover (accidental wipe) fails safe to HELD", () => {
+    const ops = parseOvernightOpsJson({
+      legacyHoldBefore: cutover.toISOString(),
+      legacyBacklogHold: false,
+    });
+    expect(ops.legacyBacklogHold).toBe(true);
+    expect(resolveLegacyHoldClaimFilter(ops)).not.toBeNull();
   });
 });

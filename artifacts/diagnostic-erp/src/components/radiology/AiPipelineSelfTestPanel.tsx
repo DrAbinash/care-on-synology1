@@ -121,6 +121,24 @@ export function AiPipelineSelfTestPanel() {
       .catch(() => setStudies([]));
   }, []);
 
+  // Reconnect to active/latest self-test after refresh (server job survives browser 524).
+  useEffect(() => {
+    void api
+      .get<SelfTestResult>("/api/radiology-ollama/pipeline-self-test/latest")
+      .then((latest) => {
+        setResult(latest);
+        if (latest.status === "queued" || latest.status === "running") {
+          setBusy(true);
+          pollRef.current = setInterval(() => {
+            void refreshStatus(latest.id).catch(() => undefined);
+          }, 2000);
+        }
+      })
+      .catch(() => undefined);
+    // refreshStatus is stable enough for mount-only reconnect
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   async function refreshStatus(id: string) {
     const r = await api.get<SelfTestResult>(`/api/radiology-ollama/pipeline-self-test/${id}`);
     setResult(r);

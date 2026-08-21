@@ -145,14 +145,12 @@ aiClinicalRouter.put("/scheduler/config", async (req, res) => {
 /** Overnight vision ops — pause / safe mode / image cap / vision ctx (no Docker redeploy). */
 aiClinicalRouter.get("/overnight-ops", async (req, res) => {
   if (!requireAdmin(req, res)) return;
-  const { getOvernightOpsControls } = await import("../lib/ai/clinicalConfigService");
   const { getOvernightVisionInferenceOptions } = await import("../lib/ai/overnightVisionConfig");
-  const { countLegacyBacklogHold } = await import("../lib/ai/legacyBacklogHold");
-  const ops = await getOvernightOpsControls();
+  const { getOvernightQueueClassification } = await import("../lib/ai/overnightQueueClassification");
+  const c = await getOvernightQueueClassification();
   const vision = await getOvernightVisionInferenceOptions(true);
-  const legacyBacklog = await countLegacyBacklogHold(ops);
   res.json({
-    ops,
+    ops: c.ops,
     effectivePolicy: {
       model: vision.policy.model,
       endpointUrl: vision.policy.endpointUrl,
@@ -166,12 +164,24 @@ aiClinicalRouter.get("/overnight-ops", async (req, res) => {
       configuredNumCtx: vision.policy.configuredNumCtx,
       reason: vision.policy.reason,
     },
-    legacyBacklog,
+    legacyBacklog: c.legacy,
+    classification: {
+      held: c.held,
+      holdBefore: c.holdBefore,
+      explicitlyReleased: c.explicitlyReleased,
+      heldLegacyPending: c.heldLegacyPending,
+      heldLegacyRetrying: c.heldLegacyRetrying,
+      eligiblePending: c.eligiblePending,
+      eligibleRetrying: c.eligibleRetrying,
+      running: c.running,
+      queueDepth: c.queueDepth,
+    },
     backlogNote:
       "Deploy does NOT auto-retry abandoned ai_shadow_pipeline jobs. Abandoned stay abandoned. " +
       "Legacy backlog hold (auto-on at cutover) blocks pre-cutover pending/retrying from auto-claim; " +
       "post-cutover jobs may drain. Explicit canary/retry by jobId bypasses hold. " +
-      "Release all legacy backlog requires explicit confirmation — never automatic.",
+      "Release all legacy backlog requires explicit confirmation — never automatic. " +
+      "Fail-safe: cutover without legacyHoldExplicitlyReleased ⇒ HELD.",
   });
 });
 
@@ -202,7 +212,12 @@ aiClinicalRouter.put("/overnight-ops", async (req, res) => {
     patch.pauseReason = "OVERNIGHT AI PAUSED — operator";
   }
   delete patch.clearResourceStreak;
-  const ops = await saveOvernightOpsControls(patch as Parameters<typeof saveOvernightOpsControls>[0], staff(req)?.role);
+  const allowLegacyHoldMutation = parsed.data.legacyBacklogHold === true;
+  const ops = await saveOvernightOpsControls(
+    patch as Parameters<typeof saveOvernightOpsControls>[0],
+    staff(req)?.role,
+    { allowLegacyHoldMutation },
+  );
   console.log("[ai] overnight ops updated", JSON.stringify({ by: staff(req)?.role, ops }));
   res.json({ ok: true, ops });
 });
