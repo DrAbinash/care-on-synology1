@@ -54,9 +54,18 @@ import {
 import {
   fetchOllamaPs,
   formatPsSummary,
+  unloadAndWaitUntilAbsent,
   unloadOllamaModel,
   type OllamaPsSnapshot,
 } from "./ollamaRunnerDiagnostics";
+import {
+  decideGpuContextProbeAction,
+  formatGpuContextDiagnosticReport,
+  GPU_CONTEXT_CLEAN_RUNNER_MATRIX,
+  psSummaryOrNull,
+  type GpuContextHardStop,
+  type GpuContextProbeRow,
+} from "./gpuContextCleanRunner";
 import { summarizeVisionTokenBudget, suggestDiagnosticNumCtx } from "./visionImageTokens";
 import { auditOvernightImageSelection } from "./mriSeriesSelectionDesign";
 import { assertEndpointResolutionIdentity } from "./endpointResolutionInvariant";
@@ -684,12 +693,53 @@ async function runGenerateAiForTaskProbe(opts: {
 
   let runnersBefore: OllamaPsSnapshot | null = null;
   let runnersAfter: OllamaPsSnapshot | null = null;
+  let runnerClearedBeforeRequest: boolean | null = null;
+  let unloadWaitDetail: string | null = null;
   if (opts.captureRunners || opts.unloadBefore) {
     runnersBefore = await fetchOllamaPs(opts.endpointUrl);
   }
   if (opts.unloadBefore) {
-    await unloadOllamaModel({ endpointUrl: opts.endpointUrl, model: opts.model });
-    runnersBefore = await fetchOllamaPs(opts.endpointUrl);
+    const cleared = await unloadAndWaitUntilAbsent({
+      endpointUrl: opts.endpointUrl,
+      model: opts.model,
+    });
+    runnerClearedBeforeRequest = cleared.ok;
+    unloadWaitDetail = cleared.detail;
+    runnersBefore = cleared.wait.lastPs;
+    if (!cleared.ok) {
+      const probeCompletedAt = new Date().toISOString();
+      return {
+        label: opts.label,
+        pass: false,
+        model: opts.model,
+        endpoint: opts.endpointUrl,
+        imageCount: opts.images.length,
+        totalImageBytes: imageBytes,
+        requestBodyBytes: null,
+        elapsedMs: Date.now() - Date.parse(probeStartedAt),
+        httpStatus: null,
+        responseLength: 0,
+        parserSuccess: null,
+        candidateCount: null,
+        safeError: `STOP — runner not absent after unload (${cleared.detail})`,
+        stages: [],
+        configuredNumCtx: opts.configuredNumCtx ?? null,
+        requestedNumCtx: opts.numCtx ?? null,
+        estimatedRequestTokens,
+        usableOutput: false,
+        errorCode: "RUNNER_NOT_CLEARED",
+        timing: {
+          probeStartedAt,
+          providerRequestStartedAt: null,
+          providerCompletedAt: null,
+          probeCompletedAt,
+        },
+        runnersBefore: runnersBefore ?? undefined,
+        runnersAfter: runnersBefore ?? undefined,
+        runnerClearedBeforeRequest: false,
+        unloadWaitDetail,
+      };
+    }
   }
 
   const callOpts: {
@@ -797,6 +847,8 @@ async function runGenerateAiForTaskProbe(opts: {
     },
     runnersBefore: runnersBefore ?? undefined,
     runnersAfter: runnersAfter ?? undefined,
+    runnerClearedBeforeRequest,
+    unloadWaitDetail,
   };
 
   if (!opts.fullPipeline) {
@@ -895,6 +947,144 @@ function probeToStep(probe: PathProbeResult, group: string, id: string, name: st
   };
 }
 
+async function runGpuContextMatrixSection(opts: {
+  job: JobRecord;
+  probes: PathProbeResult[];
+  model: string;
+  endpoint: string;
+  img6: string[];
+  fetchElapsedMs: number;
+  configuredNumCtx: number;
+  worklistId?: number | null;
+  modality?: string | null;
+}): Promise<{ hardStop: GpuContextHardStop; rows: GpuContextProbeRow[]; report: string }> {
+  const { job, probes, model, endpoint, img6 } = opts;
+  const gpuRows: GpuContextProbeRow[] = [];
+  let gpuHardStop: GpuContextHardStop = "none";
+  for (const cell of GPU_CONTEXT_CLEAN_RUNNER_MATRIX) {
+    const decision = decideGpuContextProbeAction({
+      cell,
+      prior: gpuRows,
+      availableImageCount: img6.length,
+      hardStop: gpuHardStop,
+    });
+    gpuHardStop = decision.hardStop;
+    if (decision.action === "skip") {
+      upsertStep(job, {
+        id: cell.id,
+        group: "GPU/context clean runner",
+        name: `${cell.imageCount} img @${cell.numCtx}${cell.optional ? " (optional)" : ""}`,
+        status: "skip",
+        detail: decision.reason ?? "SKIP",
+      });
+      gpuRows.push({
+        id: cell.id,
+        imageCount: cell.imageCount,
+        numCtx: cell.numCtx,
+        optional: Boolean(cell.optional),
+        skipped: true,
+        skipReason: decision.reason,
+        pass: null,
+        httpStatus: null,
+        elapsedMs: null,
+        estimatedRequestTokens: null,
+        ollamaRequestTokens: null,
+        ollamaAvailableContext: null,
+        errorCode: null,
+        gpuOutOfMemory: false,
+        contextBudgetExceeded: false,
+        responseLength: null,
+        parserSuccess: null,
+        candidateCount: null,
+        usableOutput: null,
+        psBefore: null,
+        psAfter: null,
+        runnerClearedBeforeRequest: null,
+      });
+      continue;
+    }
+
+    upsertStep(job, {
+      id: cell.id,
+      group: "GPU/context clean runner",
+      name: `${cell.imageCount} img @${cell.numCtx}${cell.optional ? " (optional)" : ""}`,
+      status: "running",
+      detail: "unload → wait /api/ps absent → probe",
+    });
+    const slice = img6.slice(0, cell.imageCount);
+    const est = estimateVisionPromptTokens({
+      imageCount: cell.imageCount,
+      promptLength: INFRA_PROBE_PROMPT.length,
+    });
+    const gp = await runGenerateAiForTaskProbe({
+      label: `GPU/context ${cell.imageCount}@${cell.numCtx}`,
+      model,
+      endpointUrl: endpoint,
+      images: slice,
+      imageFetchMs: opts.fetchElapsedMs,
+      imageFetchOk: true,
+      fullPipeline: false,
+      numCtx: cell.numCtx,
+      configuredNumCtx: opts.configuredNumCtx,
+      infraPrompt: true,
+      captureRunners: true,
+      unloadBefore: true,
+    });
+    probes.push(gp);
+    upsertStep(
+      job,
+      probeToStep(gp, "GPU/context clean runner", cell.id, `${cell.imageCount} img @${cell.numCtx}`),
+    );
+    const row: GpuContextProbeRow = {
+      id: cell.id,
+      imageCount: cell.imageCount,
+      numCtx: cell.numCtx,
+      optional: Boolean(cell.optional),
+      skipped: false,
+      skipReason: null,
+      pass: gp.pass,
+      httpStatus: gp.httpStatus,
+      elapsedMs: gp.elapsedMs,
+      estimatedRequestTokens: gp.estimatedRequestTokens ?? est,
+      ollamaRequestTokens: gp.ollamaRequestTokens ?? null,
+      ollamaAvailableContext: gp.ollamaAvailableContext ?? null,
+      errorCode: gp.errorCode ?? null,
+      gpuOutOfMemory: gp.errorCode === "GPU_OUT_OF_MEMORY",
+      contextBudgetExceeded: gp.errorCode === "CONTEXT_BUDGET_EXCEEDED",
+      responseLength: gp.responseLength,
+      parserSuccess: gp.parserSuccess,
+      candidateCount: gp.candidateCount,
+      usableOutput: gp.usableOutput ?? null,
+      psBefore: psSummaryOrNull(gp.runnersBefore as OllamaPsSnapshot | undefined),
+      psAfter: psSummaryOrNull(gp.runnersAfter as OllamaPsSnapshot | undefined),
+      runnerClearedBeforeRequest: gp.runnerClearedBeforeRequest ?? null,
+    };
+    gpuRows.push(row);
+    if (gp.errorCode === "GPU_OUT_OF_MEMORY" || gp.errorCode === "RUNNER_NOT_CLEARED") {
+      gpuHardStop =
+        gp.errorCode === "RUNNER_NOT_CLEARED" ? "runner_not_cleared" : "gpu_out_of_memory";
+      try {
+        await unloadOllamaModel({ endpointUrl: endpoint, model });
+      } catch {
+        /* best-effort */
+      }
+    }
+  }
+
+  const report = formatGpuContextDiagnosticReport({
+    selfTestId: job.id,
+    model,
+    endpoint,
+    worklistId: opts.worklistId,
+    modality: opts.modality,
+    availableImageCount: img6.length,
+    hardStop: gpuHardStop,
+    rows: gpuRows,
+    productionDefaultsChanged: false,
+  });
+  return { hardStop: gpuHardStop, rows: gpuRows, report };
+}
+
 /** Assert sequential await: previous probe completed before next started. */
 function assertSequentialProbeTimings(probes: PathProbeResult[]): {
   ok: boolean;
@@ -916,7 +1106,10 @@ function assertSequentialProbeTimings(probes: PathProbeResult[]): {
   return { ok: violations.length === 0, violations };
 }
 
-async function executeSelfTest(job: JobRecord, opts: { studyInstanceUid?: string }): Promise<void> {
+async function executeSelfTest(
+  job: JobRecord,
+  opts: { studyInstanceUid?: string; suite?: "full" | "gpu_context" },
+): Promise<void> {
   job.status = "running";
   job.final = "RUNNING";
   const technical: Record<string, unknown> = {
@@ -1203,6 +1396,39 @@ async function executeSelfTest(job: JobRecord, opts: { studyInstanceUid?: string
       detail: formatPsSummary(baselinePs),
     });
 
+    // Operator path: GPU/context clean-runner only (paste report back for review).
+    if (opts.suite === "gpu_context") {
+      const { hardStop, rows, report } = await runGpuContextMatrixSection({
+        job,
+        probes,
+        model,
+        endpoint,
+        img6,
+        fetchElapsedMs: fetched.fetchElapsedMs,
+        configuredNumCtx: runtime.ollamaNumCtx,
+        worklistId: study.worklistId,
+        modality: study.modality,
+      });
+      technical.gpuContextCleanRunner = {
+        matrix: GPU_CONTEXT_CLEAN_RUNNER_MATRIX,
+        results: rows,
+        hardStop,
+        productionDefaultsChanged: false,
+        report,
+      };
+      technical.suite = "gpu_context";
+      technical.productionDefaultsUnchanged = {
+        ...((technical.productionDefaultsUnchanged as object) ?? {}),
+        gpuContextSuiteOnly: true,
+      };
+      const anyPass = rows.some((r) => !r.skipped && r.pass);
+      const anyOom = rows.some((r) => r.gpuOutOfMemory);
+      const anyCtx = rows.some((r) => r.contextBudgetExceeded);
+      job.final = anyOom || hardStop !== "none" ? "PARTIAL" : anyPass ? "PASS" : "FAIL";
+      job.summary = `GPU/context clean runner · hardStop=${hardStop} · OOM=${anyOom} · CTX=${anyCtx} · productionDefaultsChanged=false`;
+      return;
+    }
+
     // A. Direct /api/generate 1 image
     upsertStep(job, {
       id: "direct-generate",
@@ -1396,99 +1622,48 @@ async function executeSelfTest(job: JobRecord, opts: { studyInstanceUid?: string
     );
     gpuOomSeen = gpuOomSeen || p6legacy.errorCode === "GPU_OUT_OF_MEMORY";
 
-    // ── CLEAN isolated context proof (diagnostic only; unload between) ──
-    // A 1@8192  B 6@8192  C 1@16384  D 6@16384 — does NOT set production defaults.
-    const cleanCtxMatrix: Array<{ n: 1 | 6; numCtx: 8192 | 16384; id: string }> = [
-      { n: 1, numCtx: 8192, id: "clean-1-8192" },
-      { n: 6, numCtx: 8192, id: "clean-6-8192" },
-      { n: 1, numCtx: 16384, id: "clean-1-16384" },
-      { n: 6, numCtx: 16384, id: "clean-6-16384" },
-    ];
-    const cleanCtxResults: Array<Record<string, unknown>> = [];
-    let cleanStopped = false;
-    for (const cell of cleanCtxMatrix) {
-      if (cleanStopped) {
-        upsertStep(job, {
-          id: cell.id,
-          group: "Clean ctx proof",
-          name: `${cell.n} img @${cell.numCtx}`,
-          status: "skip",
-          detail: "SKIP — prior GPU_OUT_OF_MEMORY in clean matrix",
-        });
-        cleanCtxResults.push({ ...cell, skipped: true });
-        continue;
-      }
-      upsertStep(job, {
-        id: cell.id,
-        group: "Clean ctx proof",
-        name: `${cell.n} img @${cell.numCtx}`,
-        status: "running",
-        detail: "unload→ps→request",
-      });
-      const imgs = cell.n === 1 ? img1 : img6;
-      const cp = await runGenerateAiForTaskProbe({
-        label: `Clean ${cell.n} img num_ctx=${cell.numCtx}`,
-        model,
-        endpointUrl: endpoint,
-        images: imgs,
-        imageFetchMs: fetched.fetchElapsedMs,
-        imageFetchOk: true,
-        fullPipeline: false,
-        numCtx: cell.numCtx,
-        configuredNumCtx: runtime.ollamaNumCtx,
-        infraPrompt: true,
-        captureRunners: true,
-        unloadBefore: true,
-      });
-      probes.push(cp);
-      upsertStep(
-        job,
-        probeToStep(cp, "Clean ctx proof", cell.id, `${cell.n} img @${cell.numCtx}`),
-      );
-      cleanCtxResults.push({
-        imageCount: cell.n,
-        requestedNumCtx: cell.numCtx,
-        httpStatus: cp.httpStatus,
-        elapsedMs: cp.elapsedMs,
-        errorCode: cp.errorCode,
-        cudaOom: cp.errorCode === "GPU_OUT_OF_MEMORY",
-        contextExceeded: cp.errorCode === "CONTEXT_BUDGET_EXCEEDED",
-        responseReceived: Boolean(cp.pass),
-        runnersBefore: cp.runnersBefore,
-        runnersAfter: cp.runnersAfter,
-      });
-      if (cp.errorCode === "GPU_OUT_OF_MEMORY") {
-        cleanStopped = true;
-        await unloadOllamaModel({ endpointUrl: endpoint, model });
-      }
-    }
-    technical.cleanIsolatedContextProof = {
-      results: cleanCtxResults,
-      productionDefaultChanged: false,
-      note: "Diagnostic only — do not treat a 16384 PASS as the production fix.",
+    // ── GPU/CONTEXT CLEAN-RUNNER MATRIX (diagnostic only; no production default changes) ──
+    const {
+      hardStop: gpuHardStop,
+      rows: gpuRows,
+      report: gpuReport,
+    } = await runGpuContextMatrixSection({
+      job,
+      probes,
+      model,
+      endpoint,
+      img6,
+      fetchElapsedMs: fetched.fetchElapsedMs,
+      configuredNumCtx: runtime.ollamaNumCtx,
+      worklistId: study.worklistId,
+      modality: study.modality,
+    });
+    technical.gpuContextCleanRunner = {
+      matrix: GPU_CONTEXT_CLEAN_RUNNER_MATRIX,
+      results: gpuRows,
+      hardStop: gpuHardStop,
+      productionDefaultsChanged: false,
+      report: gpuReport,
     };
-
-    // Keep legacy labels for deriveSelfTestFinal compatibility
-    const p68192 = probes.find((p) => p.label.includes("num_ctx=8192") && p.imageCount === 6)
-      ?? probes.find((p) => p.label.includes("Clean 6 img num_ctx=8192"));
-    const p616384 = probes.find((p) => p.label.includes("num_ctx=16384") && p.imageCount === 6)
-      ?? probes.find((p) => p.label.includes("Clean 6 img num_ctx=16384"));
-
+    technical.cleanIsolatedContextProof = {
+      results: gpuRows,
+      productionDefaultChanged: false,
+      note: "Replaced by GPU/context clean runner matrix — diagnostic only.",
+    };
     technical.ctx8192Vs16384 = {
       hypothesis:
-        "If 8192 OOMs without unload but passes after unload (or 16384 only passes when prior runners freed), " +
-        "the anomaly is residual runner/KV residency — not proof that 16384 is safer/cheaper.",
-      cleanMatrix: cleanCtxResults,
+        "Clean unload→ps-absent probes isolate residency vs true OOM. Do not treat 16384 PASS as a production default.",
+      cleanMatrix: gpuRows,
       productionDefaultChanged: false,
     };
 
-    // Remove old E/F duplicate block — replaced by clean matrix above.
-    // (legacy provider-6-8192 / 16384 steps intentionally omitted)
+    const p68192 = probes.find((p) => p.label.includes("6@8192") || (p.label.includes("num_ctx=8192") && p.imageCount === 6));
+    const p616384 = probes.find((p) => p.label.includes("6@16384") || (p.label.includes("num_ctx=16384") && p.imageCount === 6));
 
-    // ── Image-count scaling bench (1/2/3/4/6) — same MRI, sequential, unload between ──
+    // ── Image-count scaling bench kept light (same MRI) — still unload between ──
     const scaleCounts = [1, 2, 3, 4, 6].filter((n) => n <= img6.length);
     const scalingResults: Array<Record<string, unknown>> = [];
-    let scalingStoppedForOom = false;
+    let scalingStoppedForOom = gpuHardStop === "gpu_out_of_memory";
 
     for (const n of scaleCounts) {
       if (scalingStoppedForOom) {
@@ -1514,7 +1689,7 @@ async function executeSelfTest(job: JobRecord, opts: { studyInstanceUid?: string
         group: "Scaling bench",
         name: `${n} images (num_ctx=${numCtx})`,
         status: "running",
-        detail: `estTokens≈${est} · unload before request`,
+        detail: `estTokens≈${est} · unload → ps absent before request`,
       });
       const sp = await runGenerateAiForTaskProbe({
         label: `Scaling bench ${n} images`,
@@ -1552,7 +1727,7 @@ async function executeSelfTest(job: JobRecord, opts: { studyInstanceUid?: string
         usableOutput: sp.usableOutput,
         dimensions: fetched.images.slice(0, n).map((i) => `${i.width ?? "?"}x${i.height ?? "?"}`),
       });
-      if (sp.errorCode === "GPU_OUT_OF_MEMORY") {
+      if (sp.errorCode === "GPU_OUT_OF_MEMORY" || sp.errorCode === "RUNNER_NOT_CLEARED") {
         scalingStoppedForOom = true;
         await unloadOllamaModel({ endpointUrl: endpoint, model });
       }
@@ -1702,7 +1877,7 @@ async function executeSelfTest(job: JobRecord, opts: { studyInstanceUid?: string
 
     // G. Provider-only 6 with production draft num_ctx (skip if unrecovered OOM)
     let p6: PathProbeResult;
-    if (scalingStoppedForOom || cleanStopped) {
+    if (scalingStoppedForOom || gpuHardStop === "gpu_out_of_memory" || gpuHardStop === "runner_not_cleared") {
       p6 = {
         label: `Provider-only ${img6.length} images (production draft num_ctx)`,
         pass: false,
@@ -1907,18 +2082,21 @@ export function getLatestAiPipelineSelfTest(): AiPipelineSelfTestResult | null {
 
 export function startAiPipelineSelfTest(opts: {
   studyInstanceUid?: string;
+  /** full = entire pipeline; gpu_context = clean-runner matrix only (paste-back diagnostics). */
+  suite?: "full" | "gpu_context";
 } = {}): AiPipelineSelfTestResult {
   pruneJobs();
   const id = randomUUID();
+  const suite = opts.suite === "gpu_context" ? "gpu_context" : "full";
   const job: JobRecord = {
     id,
     status: "queued",
     final: "RUNNING",
-    summary: "Queued…",
+    summary: suite === "gpu_context" ? "Queued GPU/context clean runner…" : "Queued…",
     steps: [],
     probes: [],
     stagesByProbe: {},
-    technical: {},
+    technical: { suite, productionDefaultsChanged: false },
     startedAt: new Date().toISOString(),
     finishedAt: null,
     progressLabel: "Queued",
@@ -1927,7 +2105,7 @@ export function startAiPipelineSelfTest(opts: {
   JOBS.set(id, job);
   latestSelfTestId = id;
   setImmediate(() => {
-    void executeSelfTest(job, opts);
+    void executeSelfTest(job, { studyInstanceUid: opts.studyInstanceUid, suite });
   });
   const { _timer: _t, ...rest } = job;
   return rest;
@@ -1992,6 +2170,12 @@ export function formatSelfTestReport(result: AiPipelineSelfTestResult): string {
     lines.push("");
     lines.push("=== SEQUENTIAL PROOF ===");
     lines.push(JSON.stringify(result.technical.sequentialProbeProof, null, 2));
+  }
+  if (result.technical?.gpuContextCleanRunner) {
+    lines.push("");
+    lines.push("=== GPU/CONTEXT CLEAN-RUNNER REPORT (copy this block) ===");
+    const g = result.technical.gpuContextCleanRunner as { report?: string };
+    lines.push(typeof g.report === "string" ? g.report : JSON.stringify(g, null, 2));
   }
   if (result.technical?.imageCountScalingBench) {
     lines.push("");
