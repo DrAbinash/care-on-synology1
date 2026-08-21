@@ -1570,7 +1570,6 @@ async function executeSelfTest(job: JobRecord, opts: { studyInstanceUid?: string
       status: "running",
       detail: "resolveProductionOvernightVisionPolicy → preflight → gateway",
     });
-    const { getOvernightVisionInferenceOptions } = await import("./overnightVisionConfig");
     const { preflightReduceImagesForContext } = await import("./productionVisionPolicy");
     const { gatewayInferenceProvider } = await import("./gatewayInferenceProvider");
     const overnight = await getOvernightVisionInferenceOptions(true);
