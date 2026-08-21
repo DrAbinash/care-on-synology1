@@ -80,6 +80,9 @@ describe.skipIf(!dbAvailable)("fireOvernightAiTick × failSafeHeldOps (unreadabl
         safeMode: false,
         overnightPaused: false,
         pauseReason: null,
+        maxTokens: 4096,
+        timeoutMs: 600_000,
+        ops: failSafe,
         reason: "test",
       },
     });
