@@ -893,11 +893,13 @@ radiologyOllamaRouter.post("/pipeline-self-test", async (req, res): Promise<void
     res.status(403).json({ error: "Permission denied. Role needs ai_reporting.use permission." });
     return;
   }
-  const b = (req.body ?? {}) as { studyInstanceUid?: string };
+  const b = (req.body ?? {}) as { studyInstanceUid?: string; suite?: string };
   try {
     const { startAiPipelineSelfTest } = await import("../lib/ai/aiPipelineSelfTest");
+    const suite = b.suite === "gpu_context" ? "gpu_context" : "full";
     const job = startAiPipelineSelfTest({
       studyInstanceUid: typeof b.studyInstanceUid === "string" ? b.studyInstanceUid : undefined,
+      suite,
     });
     res.status(202).json(job);
   } catch (err: unknown) {
@@ -920,9 +922,14 @@ radiologyOllamaRouter.get("/pipeline-self-test/latest", async (req, res): Promis
     res.status(404).json({ error: "No self-test job in this process yet." });
     return;
   }
+  const gpuReport =
+    job.technical && typeof (job.technical as { gpuContextCleanRunner?: { report?: string } }).gpuContextCleanRunner?.report === "string"
+      ? (job.technical as { gpuContextCleanRunner: { report: string } }).gpuContextCleanRunner.report
+      : null;
   res.json({
     ...job,
     diagnosticReport: formatSelfTestReport(job),
+    gpuContextDiagnosticReport: gpuReport,
   });
 });
 
@@ -944,9 +951,14 @@ radiologyOllamaRouter.get("/pipeline-self-test/:id", async (req, res): Promise<v
     res.status(404).json({ error: "Self-test job not found (expired or unknown id)." });
     return;
   }
+  const gpuReport =
+    job.technical && typeof (job.technical as { gpuContextCleanRunner?: { report?: string } }).gpuContextCleanRunner?.report === "string"
+      ? (job.technical as { gpuContextCleanRunner: { report: string } }).gpuContextCleanRunner.report
+      : null;
   res.json({
     ...job,
     diagnosticReport: formatSelfTestReport(job),
+    gpuContextDiagnosticReport: gpuReport,
   });
 });
 

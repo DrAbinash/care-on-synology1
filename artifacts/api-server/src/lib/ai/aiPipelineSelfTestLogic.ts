@@ -60,6 +60,9 @@ export interface PathProbeResult {
   timing?: PathProbeTiming;
   runnersBefore?: unknown;
   runnersAfter?: unknown;
+  /** After unload+wait: true when /api/ps confirms model absent before request. */
+  runnerClearedBeforeRequest?: boolean | null;
+  unloadWaitDetail?: string | null;
 }
 
 export type SelfTestFinal = "PASS" | "FAIL" | "PARTIAL" | "RUNNING" | "NO_MRI";

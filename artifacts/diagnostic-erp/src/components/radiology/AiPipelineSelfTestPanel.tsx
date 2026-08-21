@@ -61,6 +61,7 @@ interface SelfTestResult {
   finishedAt: string | null;
   progressLabel: string;
   diagnosticReport?: string;
+  gpuContextDiagnosticReport?: string | null;
   safety?: Record<string, unknown>;
 }
 
@@ -154,13 +155,14 @@ export function AiPipelineSelfTestPanel() {
     return r;
   }
 
-  async function startTest() {
+  async function startTest(suite: "full" | "gpu_context" = "full") {
     stopPoll();
     setBusy(true);
     setDetailsOpen(false);
     try {
       const started = await api.post<SelfTestResult>("/api/radiology-ollama/pipeline-self-test", {
         studyInstanceUid: studyUid.trim() || undefined,
+        suite,
       });
       setResult(started);
       pollRef.current = setInterval(() => {
@@ -197,6 +199,32 @@ export function AiPipelineSelfTestPanel() {
     }
   }
 
+  async function copyGpuContextReport() {
+    if (!result) return;
+    const fromApi = result.gpuContextDiagnosticReport;
+    const fromTech =
+      result.technical &&
+      typeof (result.technical as { gpuContextCleanRunner?: { report?: string } }).gpuContextCleanRunner?.report ===
+        "string"
+        ? (result.technical as { gpuContextCleanRunner: { report: string } }).gpuContextCleanRunner.report
+        : null;
+    const text = fromApi || fromTech;
+    if (!text) {
+      toast({
+        title: "GPU/context report not ready",
+        description: "Run GPU/context diagnostic (or full self-test) until the clean-runner matrix finishes.",
+        variant: "destructive",
+      });
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      toast({ title: "GPU/context diagnostic report copied" });
+    } catch {
+      toast({ title: "Copy failed", variant: "destructive" });
+    }
+  }
+
   const groups = result ? [...new Set(result.steps.map((s) => s.group))] : [];
   const finalMeta = result ? FINAL_BADGE[result.final] : null;
 
@@ -212,10 +240,9 @@ export function AiPipelineSelfTestPanel() {
             AI Pipeline Self-Test
           </h3>
           <p className="text-[11px] text-muted-foreground mt-0.5 max-w-xl">
-            One click: Orthanc MRI → 1 vs up to 6 images → direct{" "}
-            <code className="bg-muted px-1 rounded">/api/generate</code> +{" "}
-            <code className="bg-muted px-1 rounded">/api/chat</code> → provider-only → full CARE draft path.
-            Diagnostic only — no clinical report write.
+            Pick one real MRI. <strong>GPU/context diagnostic</strong> runs clean unload→/api/ps probes
+            (1–3@4096, 1@5120…8192, optional 1@16384) and stops on OOM / uncleared runner.
+            Does not change production defaults. Diagnostic only — no clinical report write.
           </p>
         </div>
         <div className="flex flex-wrap gap-1.5 shrink-0">
@@ -237,11 +264,23 @@ export function AiPipelineSelfTestPanel() {
             size="sm"
             className="h-8 text-xs gap-1"
             disabled={busy}
-            onClick={() => void startTest()}
+            onClick={() => void startTest("gpu_context")}
+            data-testid="ai-pipeline-self-test-gpu-context"
+          >
+            {busy ? <RefreshCw size={12} className="animate-spin" /> : <Play size={12} />}
+            {busy ? "Running…" : "GPU/context diagnostic"}
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="h-8 text-xs gap-1"
+            disabled={busy}
+            onClick={() => void startTest("full")}
             data-testid="ai-pipeline-self-test-run"
           >
             {busy ? <RefreshCw size={12} className="animate-spin" /> : <Play size={12} />}
-            {busy ? "Running…" : "Run AI Pipeline Self-Test"}
+            Full pipeline
           </Button>
         </div>
       </div>
@@ -298,17 +337,30 @@ export function AiPipelineSelfTestPanel() {
               {new Date(result.startedAt).toLocaleString()}
             </span>
             {result.status === "completed" && (
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                className="h-7 text-[10px] gap-1"
-                onClick={() => void copyReport()}
-                data-testid="ai-pipeline-self-test-copy"
-              >
-                <Copy size={11} />
-                Copy diagnostic report
-              </Button>
+              <>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="default"
+                  className="h-7 text-[10px] gap-1"
+                  onClick={() => void copyGpuContextReport()}
+                  data-testid="ai-pipeline-self-test-copy-gpu"
+                >
+                  <Copy size={11} />
+                  Copy GPU/context diagnostic report
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-[10px] gap-1"
+                  onClick={() => void copyReport()}
+                  data-testid="ai-pipeline-self-test-copy"
+                >
+                  <Copy size={11} />
+                  Copy full diagnostic report
+                </Button>
+              </>
             )}
           </div>
 
