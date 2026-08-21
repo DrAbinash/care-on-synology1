@@ -1301,110 +1301,94 @@ async function executeSelfTest(job: JobRecord, opts: { studyInstanceUid?: string
     );
     gpuOomSeen = gpuOomSeen || p6legacy.errorCode === "GPU_OUT_OF_MEMORY";
 
-    // E/F: unload before each num_ctx change so we can distinguish true OOM vs runner stacking.
-    // DO NOT conclude 16384 is the production fix from a PASS after residual 8192 OOM.
-    if (gpuOomSeen) {
-      const recoveredEarly = await unloadOllamaModel({ endpointUrl: endpoint, model });
+    // ── CLEAN isolated context proof (diagnostic only; unload between) ──
+    // A 1@8192  B 6@8192  C 1@16384  D 6@16384 — does NOT set production defaults.
+    const cleanCtxMatrix: Array<{ n: 1 | 6; numCtx: 8192 | 16384; id: string }> = [
+      { n: 1, numCtx: 8192, id: "clean-1-8192" },
+      { n: 6, numCtx: 8192, id: "clean-6-8192" },
+      { n: 1, numCtx: 16384, id: "clean-1-16384" },
+      { n: 6, numCtx: 16384, id: "clean-6-16384" },
+    ];
+    const cleanCtxResults: Array<Record<string, unknown>> = [];
+    let cleanStopped = false;
+    for (const cell of cleanCtxMatrix) {
+      if (cleanStopped) {
+        upsertStep(job, {
+          id: cell.id,
+          group: "Clean ctx proof",
+          name: `${cell.n} img @${cell.numCtx}`,
+          status: "skip",
+          detail: "SKIP — prior GPU_OUT_OF_MEMORY in clean matrix",
+        });
+        cleanCtxResults.push({ ...cell, skipped: true });
+        continue;
+      }
       upsertStep(job, {
-        id: "gpu-oom-recover-pre-ctx",
-        group: "Context probes",
-        name: "Unload before isolated ctx probes",
-        status: recoveredEarly.psAfter.runnerCount === 0 || recoveredEarly.ok ? "pass" : "fail",
-        detail: `${recoveredEarly.detail} · ${formatPsSummary(recoveredEarly.psAfter)}`,
-        elapsedMs: recoveredEarly.elapsedMs,
-      });
-      gpuOomSeen = false;
-    }
-
-    upsertStep(job, {
-      id: "provider-6-8192",
-      group: "Context probes",
-      name: "6 images num_ctx=8192",
-      status: "running",
-      detail: "unload→ps→request (isolated)",
-    });
-    const p68192 = await runGenerateAiForTaskProbe({
-      label: "Provider-only 6 images num_ctx=8192",
-      model,
-      endpointUrl: endpoint,
-      images: img6,
-      imageFetchMs: fetched.fetchElapsedMs,
-      imageFetchOk: true,
-      fullPipeline: false,
-      numCtx: 8192,
-      configuredNumCtx: runtime.ollamaNumCtx,
-      infraPrompt: true,
-      captureRunners: true,
-      unloadBefore: true,
-    });
-    probes.push(p68192);
-    upsertStep(job, probeToStep(p68192, "Context probes", "provider-6-8192", "6 images num_ctx=8192"));
-    gpuOomSeen = p68192.errorCode === "GPU_OUT_OF_MEMORY";
-
-    if (gpuOomSeen) {
-      upsertStep(job, {
-        id: "gpu-oom-recover",
-        group: "Context probes",
-        name: "Recover Ollama runner after GPU OOM",
+        id: cell.id,
+        group: "Clean ctx proof",
+        name: `${cell.n} img @${cell.numCtx}`,
         status: "running",
-        detail: "unload keep_alive=0…",
+        detail: "unload→ps→request",
       });
-      const recovered = await unloadOllamaModel({ endpointUrl: endpoint, model });
-      upsertStep(job, {
-        id: "gpu-oom-recover",
-        group: "Context probes",
-        name: "Recover Ollama runner after GPU OOM",
-        status: recovered.ok || recovered.psAfter.runnerCount === 0 ? "pass" : "fail",
-        detail: `${recovered.detail} · ${formatPsSummary(recovered.psAfter)}`,
-        elapsedMs: recovered.elapsedMs,
+      const imgs = cell.n === 1 ? img1 : img6;
+      const cp = await runGenerateAiForTaskProbe({
+        label: `Clean ${cell.n} img num_ctx=${cell.numCtx}`,
+        model,
+        endpointUrl: endpoint,
+        images: imgs,
+        imageFetchMs: fetched.fetchElapsedMs,
+        imageFetchOk: true,
+        fullPipeline: false,
+        numCtx: cell.numCtx,
+        configuredNumCtx: runtime.ollamaNumCtx,
+        infraPrompt: true,
+        captureRunners: true,
+        unloadBefore: true,
       });
+      probes.push(cp);
+      upsertStep(
+        job,
+        probeToStep(cp, "Clean ctx proof", cell.id, `${cell.n} img @${cell.numCtx}`),
+      );
+      cleanCtxResults.push({
+        imageCount: cell.n,
+        requestedNumCtx: cell.numCtx,
+        httpStatus: cp.httpStatus,
+        elapsedMs: cp.elapsedMs,
+        errorCode: cp.errorCode,
+        cudaOom: cp.errorCode === "GPU_OUT_OF_MEMORY",
+        contextExceeded: cp.errorCode === "CONTEXT_BUDGET_EXCEEDED",
+        responseReceived: Boolean(cp.pass),
+        runnersBefore: cp.runnersBefore,
+        runnersAfter: cp.runnersAfter,
+      });
+      if (cp.errorCode === "GPU_OUT_OF_MEMORY") {
+        cleanStopped = true;
+        await unloadOllamaModel({ endpointUrl: endpoint, model });
+      }
     }
+    technical.cleanIsolatedContextProof = {
+      results: cleanCtxResults,
+      productionDefaultChanged: false,
+      note: "Diagnostic only — do not treat a 16384 PASS as the production fix.",
+    };
 
-    upsertStep(job, {
-      id: "provider-6-16384",
-      group: "Context probes",
-      name: "6 images num_ctx=16384",
-      status: "running",
-      detail: "unload→ps→request (isolated) — NOT a production default recommendation",
-    });
-    const p616384 = await runGenerateAiForTaskProbe({
-      label: "Provider-only 6 images num_ctx=16384",
-      model,
-      endpointUrl: endpoint,
-      images: img6,
-      imageFetchMs: fetched.fetchElapsedMs,
-      imageFetchOk: true,
-      fullPipeline: false,
-      numCtx: 16384,
-      configuredNumCtx: runtime.ollamaNumCtx,
-      infraPrompt: true,
-      captureRunners: true,
-      unloadBefore: true,
-    });
-    probes.push(p616384);
-    upsertStep(job, probeToStep(p616384, "Context probes", "provider-6-16384", "6 images num_ctx=16384"));
-    gpuOomSeen = p616384.errorCode === "GPU_OUT_OF_MEMORY";
+    // Keep legacy labels for deriveSelfTestFinal compatibility
+    const p68192 = probes.find((p) => p.label.includes("num_ctx=8192") && p.imageCount === 6)
+      ?? probes.find((p) => p.label.includes("Clean 6 img num_ctx=8192"));
+    const p616384 = probes.find((p) => p.label.includes("num_ctx=16384") && p.imageCount === 6)
+      ?? probes.find((p) => p.label.includes("Clean 6 img num_ctx=16384"));
 
     technical.ctx8192Vs16384 = {
       hypothesis:
         "If 8192 OOMs without unload but passes after unload (or 16384 only passes when prior runners freed), " +
         "the anomaly is residual runner/KV residency — not proof that 16384 is safer/cheaper.",
-      probe8192: {
-        pass: p68192.pass,
-        errorCode: p68192.errorCode,
-        elapsedMs: p68192.elapsedMs,
-        runnersBefore: p68192.runnersBefore,
-        runnersAfter: p68192.runnersAfter,
-      },
-      probe16384: {
-        pass: p616384.pass,
-        errorCode: p616384.errorCode,
-        elapsedMs: p616384.elapsedMs,
-        runnersBefore: p616384.runnersBefore,
-        runnersAfter: p616384.runnersAfter,
-      },
+      cleanMatrix: cleanCtxResults,
       productionDefaultChanged: false,
     };
+
+    // Remove old E/F duplicate block — replaced by clean matrix above.
+    // (legacy provider-6-8192 / 16384 steps intentionally omitted)
 
     // ── Image-count scaling bench (1/2/3/4/6) — same MRI, sequential, unload between ──
     const scaleCounts = [1, 2, 3, 4, 6].filter((n) => n <= img6.length);
@@ -1468,6 +1452,7 @@ async function executeSelfTest(job: JobRecord, opts: { studyInstanceUid?: string
         thinkingLength: sp.thinkingLength,
         candidateCount: sp.candidateCount,
         cudaOom: sp.errorCode === "GPU_OUT_OF_MEMORY",
+        contextExceeded: sp.errorCode === "CONTEXT_BUDGET_EXCEEDED",
         errorCode: sp.errorCode,
         usableOutput: sp.usableOutput,
         dimensions: fetched.images.slice(0, n).map((i) => `${i.width ?? "?"}x${i.height ?? "?"}`),
@@ -1483,6 +1468,136 @@ async function executeSelfTest(job: JobRecord, opts: { studyInstanceUid?: string
       note: "Diagnostic only; does not change production defaults.",
     };
 
+    // ── PRODUCTION AUTO POLICY — exact overnight worker policy right now ──
+    upsertStep(job, {
+      id: "production-auto-policy",
+      group: "Production Auto Policy",
+      name: "overnight-identical policy probe",
+      status: "running",
+      detail: "resolveProductionOvernightVisionPolicy → preflight → gateway",
+    });
+    const { getOvernightVisionInferenceOptions } = await import("./overnightVisionConfig");
+    const { preflightReduceImagesForContext } = await import("./productionVisionPolicy");
+    const { gatewayInferenceProvider } = await import("./gatewayInferenceProvider");
+    const overnight = await getOvernightVisionInferenceOptions(true);
+    const policy = overnight.policy;
+    technical.productionAutoPolicyResolved = {
+      model: policy.model,
+      endpointUrl: policy.endpointUrl,
+      numCtx: policy.numCtx,
+      numCtxSource: policy.numCtxSource,
+      maxImages: policy.maxImages,
+      imageCapReason: policy.imageCapReason,
+      safeMode: policy.safeMode,
+      overnightPaused: policy.overnightPaused,
+      reason: policy.reason,
+      configuredNumCtx: policy.configuredNumCtx,
+    };
+    let prodPolicyPass = false;
+    let prodPolicyDetail = "";
+    if (policy.overnightPaused) {
+      prodPolicyDetail = `SKIPPED — overnight paused: ${policy.pauseReason}`;
+      upsertStep(job, {
+        id: "production-auto-policy",
+        group: "Production Auto Policy",
+        name: "overnight-identical policy probe",
+        status: "skip",
+        detail: prodPolicyDetail,
+      });
+    } else {
+      await unloadOllamaModel({ endpointUrl: policy.endpointUrl, model: policy.model });
+      const psBefore = await fetchOllamaPs(policy.endpointUrl);
+      let selected = fetched.images.slice(0, policy.maxImages);
+      const pre = preflightReduceImagesForContext({
+        requestedImages: selected.length,
+        numCtx: policy.numCtx,
+        promptLength: 3500,
+      });
+      selected = selected.slice(0, pre.selectedImages);
+      const anchors = selected.map((img, idx) => ({
+        seriesUid: img.seriesUid,
+        sopUid: img.instanceUid,
+        frameNumber: 1,
+        imageData: img.jpegBase64,
+      }));
+      const tProd0 = Date.now();
+      const out = await gatewayInferenceProvider.infer({
+        studyInstanceUid: study.studyInstanceUid,
+        modality: study.modality,
+        imageAnchors: anchors.map(({ seriesUid, sopUid, frameNumber }) => ({
+          seriesUid,
+          sopUid,
+          frameNumber,
+        })),
+        images: anchors,
+      });
+      const elapsed = Date.now() - tProd0;
+      const psAfter = await fetchOllamaPs(policy.endpointUrl);
+      const candidates = out.draft.findings.length + out.draft.impression.length;
+      const resourceFail = out.provenance.resourceFailureCode ?? null;
+      prodPolicyPass = !resourceFail && candidates > 0;
+      prodPolicyDetail = [
+        prodPolicyPass ? "PASS" : "FAIL",
+        `model=${policy.model}`,
+        `num_ctx=${policy.numCtx}`,
+        `requestedImages=${fetched.images.length}`,
+        `selectedImages=${selected.length}`,
+        `preflight=${pre.reasonForReduction ?? "none"}`,
+        `resource=${resourceFail ?? "none"}`,
+        `findings=${out.draft.findings.length}`,
+        `impression=${out.draft.impression.length}`,
+        `candidates=${candidates}`,
+        `elapsedMs=${elapsed}`,
+        formatPsSummary(psBefore),
+        formatPsSummary(psAfter),
+      ].join(" · ");
+      technical.productionAutoPolicyResult = {
+        pass: prodPolicyPass,
+        requestedImages: fetched.images.length,
+        selectedImages: selected.length,
+        preflight: pre,
+        resourceFailureCode: resourceFail,
+        findingCount: out.draft.findings.length,
+        impressionCount: out.draft.impression.length,
+        candidateCount: candidates,
+        elapsedMs: elapsed,
+        degraded: out.provenance.degraded,
+        detail: out.provenance.detail,
+        runnersBefore: psBefore,
+        runnersAfter: psAfter,
+      };
+      probes.push({
+        label: "PRODUCTION AUTO POLICY",
+        pass: prodPolicyPass,
+        model: policy.model,
+        endpoint: policy.endpointUrl,
+        imageCount: selected.length,
+        totalImageBytes: selected.reduce((s, i) => s + i.byteSize, 0),
+        requestBodyBytes: null,
+        elapsedMs: elapsed,
+        httpStatus: out.provenance.httpStatus ?? (prodPolicyPass ? 200 : 502),
+        responseLength: JSON.stringify(out.draft).length,
+        parserSuccess: candidates > 0,
+        candidateCount: candidates,
+        safeError: resourceFail ? `${resourceFail}: ${out.provenance.detail}` : null,
+        stages: [],
+        errorCode: resourceFail,
+        requestedNumCtx: policy.numCtx,
+        configuredNumCtx: policy.configuredNumCtx,
+        usableOutput: candidates > 0,
+        runnersBefore: psBefore,
+        runnersAfter: psAfter,
+      });
+      upsertStep(job, {
+        id: "production-auto-policy",
+        group: "Production Auto Policy",
+        name: "overnight-identical policy probe",
+        status: prodPolicyPass ? "pass" : "fail",
+        detail: prodPolicyDetail,
+        elapsedMs: elapsed,
+      });
+    }
+
     const prod6Ctx = resolveInteractiveDraftNumCtx({
       configuredNumCtx: runtime.ollamaNumCtx,
       imageCount: img6.length,
@@ -1493,7 +1608,7 @@ async function executeSelfTest(job: JobRecord, opts: { studyInstanceUid?: string
 
     // G. Provider-only 6 with production draft num_ctx (skip if unrecovered OOM)
     let p6: PathProbeResult;
-    if (scalingStoppedForOom || gpuOomSeen) {
+    if (scalingStoppedForOom || cleanStopped) {
       p6 = {
         label: `Provider-only ${img6.length} images (production draft num_ctx)`,
         pass: false,
@@ -1674,13 +1789,13 @@ async function executeSelfTest(job: JobRecord, opts: { studyInstanceUid?: string
       providerOnly6Pass: p6.pass,
       fullCare1Pass: f1.pass,
       fullCare6Pass: f6.pass,
-      contextProbe8192Pass: p68192.pass,
-      contextProbe16384Pass: p616384.pass,
+      contextProbe8192Pass: p68192?.pass ?? null,
+      contextProbe16384Pass: p616384?.pass ?? null,
       contextBudgetExceeded,
     });
     job.final = derived.final;
     job.summary = seq.ok
-      ? derived.summary
+      ? `${derived.summary}${prodPolicyPass ? " · Production Auto Policy PASS" : prodPolicyDetail ? ` · Production Auto Policy: ${prodPolicyDetail.slice(0, 120)}` : ""}`
       : `${derived.summary} · SEQUENTIAL_VIOLATION: ${seq.violations.join("; ")}`;
   } catch (err) {
     const msg = err instanceof Error ? err.message.slice(0, 300) : String(err).slice(0, 300);

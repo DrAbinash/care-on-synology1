@@ -257,6 +257,10 @@ export async function fireOvernightAiTick(opts: {
     const { getSchedulerConfig } = await import("./lib/ai/clinicalConfigService");
     const vision = await getOvernightVisionInferenceOptions();
     const sched = await getSchedulerConfig();
+    if (vision.policy.overnightPaused && !(opts.canary === true && opts.jobId != null)) {
+      recordRadiologyJobCronTick({ peak, aiBlocked: true, dueAi: 0, ran: 0 });
+      return { requeuedStale: 0, ran: [], skipped: "overnight_paused" };
+    }
     aiMax = Math.max(1, Math.min(1, vision.concurrency, sched.maxConcurrentJobs));
   } catch { /* keep 1 */ }
   try {

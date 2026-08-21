@@ -359,6 +359,15 @@ export async function runNightBatch(
     return { considered: 0, enqueued: 0, overnightModalities: [] };
   }
   const cfg = await getSchedulerConfig();
+  if (cfg.overnightOps?.paused) {
+    return {
+      considered: 0,
+      enqueued: 0,
+      overnightModalities: [],
+      skippedWindow: true,
+      preview: undefined,
+    };
+  }
   if (!opts.forceOutsideWindow && !isWithinNightWindow(nowMinutesLocal(), cfg)) {
     return { considered: 0, enqueued: 0, skippedWindow: true, overnightModalities: [] };
   }

@@ -28,13 +28,18 @@ export function computeBackoffMs(retryCount: number): number {
 export function isPermanentShadowFailure(error: string): boolean {
   const e = error.toLowerCase();
   return e.includes("invalid payload: studyinstanceuid required")
-    || e.includes("no dicom instances found");
+    || e.includes("no dicom instances found")
+    || e.includes("gpu_out_of_memory")
+    || e.includes("context_budget_exceeded")
+    || e.includes("overnight ai paused");
 }
 
 /** After a failed attempt: bounded retries, then dead-letter. NEVER an
  *  infinite retry — maxRetries is a hard ceiling.
  *  Permanently invalid studies stop quickly so they cannot occupy the single
- *  AI claim slot for hours while tonight's MRI waits. */
+ *  AI claim slot for hours while tonight's MRI waits.
+ *  Deterministic resource failures (GPU OOM / context budget) abandon immediately
+ *  — they must not enter the ordinary retry loop unchanged. */
 export function decideFailure(args: {
   retryCount: number;   // attempts already recorded BEFORE this failure
   maxRetries: number;
@@ -43,6 +48,9 @@ export function decideFailure(args: {
 }): { status: RadiologyJobStatus; retryCount: number; nextRetryAt: Date | null } {
   const retryCount = args.retryCount + 1;
   const err = args.error ?? "";
+  if (/GPU_OUT_OF_MEMORY|CONTEXT_BUDGET_EXCEEDED|OVERNIGHT AI PAUSED/i.test(err)) {
+    return { status: "abandoned", retryCount, nextRetryAt: null };
+  }
   const ceiling = /invalid payload: studyinstanceuid required/i.test(err)
     ? 1
     : /no dicom instances found/i.test(err)

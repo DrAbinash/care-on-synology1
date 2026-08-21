@@ -18,6 +18,13 @@ import { resolveAiEnablement, type AiPolicyRow, type Enablement } from "./aiPoli
 import type { SchedulerConfig, ModalityMode, DraftTiming } from "./aiScheduler";
 import { normalizeAiModality } from "./modalityNormalize";
 import { parseStudyAgeWindow, type StudyAgeWindow } from "./studyAgeWindow";
+import {
+  DEFAULT_OVERNIGHT_OPS,
+  mergeOvernightOpsPatch,
+  parseOvernightOpsJson,
+  serializeOvernightOps,
+  type OvernightOpsControls,
+} from "./overnightOpsControls";
 
 export { normalizeAiModality } from "./modalityNormalize";
 
@@ -70,10 +77,59 @@ export const DEFAULT_SCHEDULER: SchedulerConfig = {
   maxConcurrentJobs: 1, gpuLimitPercent: 90, cpuLimitPercent: 80,
   skipFinalizedReports: true, skipUnchangedStudies: true,
   studyAgeWindow: "all", studyAgeCustomFrom: null, studyAgeCustomTo: null,
+  overnightOps: { ...DEFAULT_OVERNIGHT_OPS },
 };
 
 function asDraftTiming(v: unknown): DraftTiming {
   return v === "scheduled" ? "scheduled" : "on_arrival";
+}
+
+function readOpsFromRow(row: Record<string, unknown> | null | undefined): OvernightOpsControls {
+  if (!row) return { ...DEFAULT_OVERNIGHT_OPS };
+  return parseOvernightOpsJson(row.overnightOpsJson ?? row.overnight_ops_json ?? "{}");
+}
+
+export async function getOvernightOpsControls(): Promise<OvernightOpsControls> {
+  try {
+    const [row] = await db.select().from(aiSchedulerConfigTable).limit(1);
+    return readOpsFromRow(row as unknown as Record<string, unknown>);
+  } catch {
+    // Column may be missing before db:push — preserve production defaults.
+    return { ...DEFAULT_OVERNIGHT_OPS };
+  }
+}
+
+export async function saveOvernightOpsControls(
+  patch: Partial<OvernightOpsControls>,
+  updatedBy?: string,
+): Promise<OvernightOpsControls> {
+  const current = await getOvernightOpsControls();
+  const next = mergeOvernightOpsPatch(current, patch, updatedBy ?? null);
+  const payload = serializeOvernightOps(next);
+  try {
+    const [existing] = await db.select({ id: aiSchedulerConfigTable.id }).from(aiSchedulerConfigTable).limit(1);
+    if (existing) {
+      await db
+        .update(aiSchedulerConfigTable)
+        .set({
+          overnightOpsJson: payload,
+          updatedBy: updatedBy ?? null,
+        } as Partial<typeof aiSchedulerConfigTable.$inferInsert>)
+        .where(eq(aiSchedulerConfigTable.id, existing.id));
+    } else {
+      await db.insert(aiSchedulerConfigTable).values({
+        overnightOpsJson: payload,
+        updatedBy,
+      } as typeof aiSchedulerConfigTable.$inferInsert);
+    }
+  } catch (err) {
+    throw new Error(
+      `Failed to persist overnight ops controls (run pnpm db:push if overnight_ops_json is missing): ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
+  return next;
 }
 
 export async function getSchedulerConfig(): Promise<SchedulerConfig> {
@@ -87,6 +143,7 @@ export async function getSchedulerConfig(): Promise<SchedulerConfig> {
     studyAgeWindow: parseStudyAgeWindow((row as { studyAgeWindow?: string }).studyAgeWindow),
     studyAgeCustomFrom: (row as { studyAgeCustomFrom?: Date | null }).studyAgeCustomFrom ?? null,
     studyAgeCustomTo: (row as { studyAgeCustomTo?: Date | null }).studyAgeCustomTo ?? null,
+    overnightOps: readOpsFromRow(row as unknown as Record<string, unknown>),
   };
 }
 

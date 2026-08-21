@@ -103,6 +103,21 @@ export const aiClient = {
   },
   previewNightBatch: () => api.get<Record<string, unknown>>(`/api/ai/scheduler/night-batch-preview`),
   getOvernightDiagnostics: () => api.get<Record<string, unknown>>(`/api/ai/overnight-diagnostics`),
+  getOvernightOps: () => api.get<{
+    ops: Record<string, unknown>;
+    effectivePolicy: Record<string, unknown>;
+    backlogNote?: string;
+  }>(`/api/ai/overnight-ops`),
+  saveOvernightOps: (body: {
+    paused?: boolean;
+    pauseReason?: string | null;
+    imageCap?: "auto" | "1" | "2" | "3" | "4" | "6";
+    visionCtx?: "current" | "4096" | "8192" | "16384";
+    safeMode?: boolean;
+    clearResourceStreak?: boolean;
+  }) => api.put<{ ok: boolean; ops: Record<string, unknown> }>(`/api/ai/overnight-ops`, body),
+  recycleOllamaRunner: () =>
+    api.post<Record<string, unknown>>(`/api/radiology-ollama/recycle-runner`, {}),
   queueSelected: (studyInstanceUids: string[], modalities?: Record<string, string | null>, retry?: boolean) =>
     api.post<{ queued: number; skipped: Array<{ uid: string; reason: string }> }>(`/api/ai/overnight/queue-selected`, {
       studyInstanceUids, modalities, retry,

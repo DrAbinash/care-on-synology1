@@ -142,6 +142,63 @@ aiClinicalRouter.put("/scheduler/config", async (req, res) => {
   res.json({ ok: true, config: await getSchedulerConfig() });
 });
 
+/** Overnight vision ops — pause / safe mode / image cap / vision ctx (no Docker redeploy). */
+aiClinicalRouter.get("/overnight-ops", async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const { getOvernightOpsControls } = await import("../lib/ai/clinicalConfigService");
+  const { getOvernightVisionInferenceOptions } = await import("../lib/ai/overnightVisionConfig");
+  const ops = await getOvernightOpsControls();
+  const vision = await getOvernightVisionInferenceOptions(true);
+  res.json({
+    ops,
+    effectivePolicy: {
+      model: vision.policy.model,
+      endpointUrl: vision.policy.endpointUrl,
+      numCtx: vision.policy.numCtx,
+      numCtxSource: vision.policy.numCtxSource,
+      maxImages: vision.policy.maxImages,
+      imageCapReason: vision.policy.imageCapReason,
+      safeMode: vision.policy.safeMode,
+      overnightPaused: vision.policy.overnightPaused,
+      pauseReason: vision.policy.pauseReason,
+      configuredNumCtx: vision.policy.configuredNumCtx,
+      reason: vision.policy.reason,
+    },
+    backlogNote:
+      "Deploy does NOT auto-retry abandoned ai_shadow_pipeline jobs. Pending/retrying due jobs continue on next tick unless Overnight AI is Paused. Abandoned stay abandoned until explicit retry.",
+  });
+});
+
+aiClinicalRouter.put("/overnight-ops", async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const parsed = z.object({
+    paused: z.boolean().optional(),
+    pauseReason: z.string().nullable().optional(),
+    imageCap: z.enum(["auto", "1", "2", "3", "4", "6"]).optional(),
+    visionCtx: z.enum(["current", "4096", "8192", "16384"]).optional(),
+    safeMode: z.boolean().optional(),
+    /** Clear resource-fail streak when resuming. */
+    clearResourceStreak: z.boolean().optional(),
+  }).safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ error: parsed.error.issues }); return; }
+  const { saveOvernightOpsControls } = await import("../lib/ai/clinicalConfigService");
+  const patch: Record<string, unknown> = { ...parsed.data };
+  if (parsed.data.paused === false) {
+    patch.pauseReason = null;
+    if (parsed.data.clearResourceStreak !== false) {
+      patch.resourceFailStreak = 0;
+      patch.lastResourceFailCode = null;
+    }
+  }
+  if (parsed.data.paused === true && !parsed.data.pauseReason) {
+    patch.pauseReason = "OVERNIGHT AI PAUSED — operator";
+  }
+  delete patch.clearResourceStreak;
+  const ops = await saveOvernightOpsControls(patch as Parameters<typeof saveOvernightOpsControls>[0], staff(req)?.role);
+  console.log("[ai] overnight ops updated", JSON.stringify({ by: staff(req)?.role, ops }));
+  res.json({ ok: true, ops });
+});
+
 /** One-shot save from Settings → Radiology → AI → Draft automation. */
 aiClinicalRouter.put("/draft-automation", async (req, res) => {
   if (!requireAdmin(req, res)) return;

@@ -322,6 +322,8 @@ export default function OvernightAiSettings() {
         )}
       </div>
 
+      <OvernightVisionOpsPanel />
+
       {diagnostics && (
         <div className="rounded-md border bg-muted/30 p-3 text-[11px] space-y-1" data-testid="overnight-ai-diagnostics">
           <div className="font-semibold">Overnight AI diagnostics</div>
@@ -428,3 +430,173 @@ export default function OvernightAiSettings() {
     </div>
   );
 }
+
+function OvernightVisionOpsPanel() {
+  const { toast } = useToast();
+  const qc = useQueryClient();
+  const { data } = useQuery({
+    queryKey: ["ai-overnight-ops"],
+    queryFn: () => aiClient.getOvernightOps(),
+    refetchInterval: 15_000,
+  });
+  const ops = (data?.ops ?? {}) as {
+    paused?: boolean;
+    pauseReason?: string | null;
+    imageCap?: string;
+    visionCtx?: string;
+    safeMode?: boolean;
+    resourceFailStreak?: number;
+    lastResourceFailCode?: string | null;
+  };
+  const policy = (data?.effectivePolicy ?? {}) as Record<string, unknown>;
+
+  const [paused, setPaused] = useState(false);
+  const [imageCap, setImageCap] = useState("auto");
+  const [visionCtx, setVisionCtx] = useState("current");
+  const [safeMode, setSafeMode] = useState(false);
+
+  useEffect(() => {
+    if (!data?.ops) return;
+    setPaused(Boolean(ops.paused));
+    setImageCap(String(ops.imageCap ?? "auto"));
+    setVisionCtx(String(ops.visionCtx ?? "current"));
+    setSafeMode(Boolean(ops.safeMode));
+  }, [data, ops.paused, ops.imageCap, ops.visionCtx, ops.safeMode]);
+
+  const saveOps = useMutation({
+    mutationFn: () =>
+      aiClient.saveOvernightOps({
+        paused,
+        imageCap: imageCap as "auto" | "1" | "2" | "3" | "4" | "6",
+        visionCtx: visionCtx as "current" | "4096" | "8192" | "16384",
+        safeMode,
+        clearResourceStreak: !paused,
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["ai-overnight-ops"] });
+      qc.invalidateQueries({ queryKey: ["ai-overnight-diagnostics"] });
+      toast({ title: "Overnight vision controls saved" });
+    },
+    onError: (e: Error) => toast({ title: "Save failed", description: e.message, variant: "destructive" }),
+  });
+
+  const recycle = useMutation({
+    mutationFn: () => aiClient.recycleOllamaRunner(),
+    onSuccess: (r) => {
+      toast({
+        title: r.ok ? "Qwen runner recycled" : "Recycle incomplete",
+        description: `${String(r.before ?? "")} → ${String(r.after ?? "")}`,
+      });
+    },
+    onError: (e: Error) => toast({ title: "Recycle failed", description: e.message, variant: "destructive" }),
+  });
+
+  return (
+    <div className="rounded-md border border-amber-200 bg-amber-50/40 dark:bg-amber-950/20 p-3 space-y-3" data-testid="overnight-vision-ops">
+      <div className="font-semibold text-sm">Overnight vision controls (no redeploy)</div>
+      {ops.paused ? (
+        <p className="text-[11px] text-amber-900 font-medium">
+          OVERNIGHT AI PAUSED — RESOURCE FAILURE{ops.pauseReason ? `: ${ops.pauseReason}` : ""}
+        </p>
+      ) : null}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-[11px]">
+        <label className="flex items-center gap-2">
+          <input type="checkbox" checked={paused} onChange={(e) => setPaused(e.target.checked)} />
+          <span>Overnight AI Paused</span>
+        </label>
+        <label className="flex items-center gap-2">
+          <input type="checkbox" checked={safeMode} onChange={(e) => setSafeMode(e.target.checked)} />
+          <span>AI Vision Safe Mode (1 image)</span>
+        </label>
+        <div>
+          <Label className="text-[11px]">Representative image cap</Label>
+          <select
+            className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-xs"
+            value={imageCap}
+            onChange={(e) => setImageCap(e.target.value)}
+          >
+            {["auto", "1", "2", "3", "4", "6"].map((v) => (
+              <option key={v} value={v}>{v === "auto" ? "Auto (context budget)" : v}</option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <Label className="text-[11px]">Vision context</Label>
+          <select
+            className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-xs"
+            value={visionCtx}
+            onChange={(e) => setVisionCtx(e.target.value)}
+          >
+            <option value="current">Current (env / runtime — unchanged)</option>
+            <option value="4096">4096</option>
+            <option value="8192">8192</option>
+            <option value="16384">16384</option>
+          </select>
+        </div>
+      </div>
+      {safeMode ? (
+        <p className="text-[10px] text-amber-900">
+          Safe Mode uses limited image representation and does not represent review of the complete MRI examination.
+        </p>
+      ) : null}
+      <p className="text-[10px] text-muted-foreground">
+        Effective now: model={String(policy.model ?? "—")} · num_ctx={String(policy.numCtx ?? "—")} ({String(policy.numCtxSource ?? "")}) ·
+        maxImages={String(policy.maxImages ?? "—")} · streak={String(ops.resourceFailStreak ?? 0)}
+        {ops.lastResourceFailCode ? ` (${ops.lastResourceFailCode})` : ""}
+      </p>
+      <p className="text-[10px] text-muted-foreground">{String(data?.backlogNote ?? "")}</p>
+      <div className="flex flex-wrap gap-2">
+        <Button size="sm" className="gap-1.5" disabled={saveOps.isPending} onClick={() => saveOps.mutate()}>
+          <Save className="h-3.5 w-3.5" /> Save vision controls
+        </Button>
+        {!paused && ops.paused === true ? null : null}
+        <Button
+          size="sm"
+          variant="outline"
+          className="gap-1.5"
+          disabled={saveOps.isPending}
+          onClick={() => {
+            aiClient
+              .saveOvernightOps({
+                paused: false,
+                imageCap: imageCap as "auto" | "1" | "2" | "3" | "4" | "6",
+                visionCtx: visionCtx as "current" | "4096" | "8192" | "16384",
+                safeMode,
+                clearResourceStreak: true,
+              })
+              .then(() => {
+                setPaused(false);
+                qc.invalidateQueries({ queryKey: ["ai-overnight-ops"] });
+                toast({ title: "Overnight AI resumed" });
+              })
+              .catch((e: Error) => toast({ title: "Resume failed", description: e.message, variant: "destructive" }));
+          }}
+        >
+          Resume
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          className="gap-1.5"
+          disabled={recycle.isPending}
+          onClick={() => recycle.mutate()}
+        >
+          <RefreshCw className={`h-3.5 w-3.5 ${recycle.isPending ? "animate-spin" : ""}`} />
+          Recycle qwen runner
+        </Button>
+        <Button
+          size="sm"
+          variant="secondary"
+          className="gap-1.5"
+          onClick={() => {
+            window.location.hash = "#ai-pipeline-self-test";
+            toast({ title: "Open AI Pipeline Self-Test from Local AI / Verify panels" });
+          }}
+        >
+          <Zap className="h-3.5 w-3.5" /> Run Self-Test
+        </Button>
+      </div>
+    </div>
+  );
+}
+

@@ -834,6 +834,39 @@ radiologyOllamaRouter.post("/multi-review/winner", async (req, res): Promise<voi
   res.json({ ok: true, audit });
 });
 
+// ── POST /recycle-runner — unload qwen (keep_alive=0); diagnostic/ops only ───
+radiologyOllamaRouter.post("/recycle-runner", async (req, res): Promise<void> => {
+  const sReq = req as StaffAuthRequest;
+  if (!canUseAi(sReq)) {
+    res.status(403).json({ error: "Permission denied." });
+    return;
+  }
+  try {
+    const { resolveLocalAiRuntime } = await import("../lib/aiPipeline/runtimeConfig");
+    const { fetchOllamaPs, unloadOllamaModel, formatPsSummary } = await import("../lib/ai/ollamaRunnerDiagnostics");
+    const runtime = await resolveLocalAiRuntime(true);
+    const before = await fetchOllamaPs(runtime.ollamaBaseUrl);
+    const unloaded = await unloadOllamaModel({
+      endpointUrl: runtime.ollamaBaseUrl,
+      model: runtime.localChatVisionModel,
+    });
+    res.json({
+      ok: unloaded.ok || unloaded.psAfter.runnerCount === 0,
+      model: runtime.localChatVisionModel,
+      endpoint: runtime.ollamaBaseUrl,
+      before: formatPsSummary(before),
+      after: formatPsSummary(unloaded.psAfter),
+      detail: unloaded.detail,
+      elapsedMs: unloaded.elapsedMs,
+      note: "Recycle is ops-only. It does not change overnight num_ctx defaults.",
+    });
+  } catch (err: unknown) {
+    res.status(500).json({
+      error: err instanceof Error ? err.message : "Failed to recycle Ollama runner",
+    });
+  }
+});
+
 // ── GET /pipeline-self-test/studies — recent MRI options for picker ───────────
 radiologyOllamaRouter.get("/pipeline-self-test/studies", async (req, res): Promise<void> => {
   const sReq = req as StaffAuthRequest;
