@@ -14,6 +14,7 @@ import {
   radiologistSubspecialtiesTable,
   radiologistWorkloadsTable,
   usersTable,
+  doctorsTable,
   radiologyReportVerificationsTable,
   radiologyCriticalFindingsTable,
   radiologyTatTrackingTable,
@@ -516,7 +517,11 @@ radiologyRouter.get("/pacs-worklist", async (req, res) => {
       aeTitle: radiologyWorklistTable.aeTitle,
       ipAddress: radiologyWorklistTable.ipAddress,
       port: radiologyWorklistTable.port,
-      referringDoctor: radiologyWorklistTable.referringDoctor,
+      referringDoctor: sql<string | null>`COALESCE(
+        NULLIF(TRIM(${radiologyWorklistTable.referringDoctor}), ''),
+        NULLIF(TRIM(${radiologyStudiesTable.referringDoctor}), ''),
+        NULLIF(TRIM(${doctorsTable.name}), '')
+      )`,
       weasisUrl: radiologyWorklistTable.weasisUrl,
       sourcePacs: radiologyWorklistTable.sourcePacs,
       sourceAeTitle: radiologyWorklistTable.sourceAeTitle,
@@ -602,6 +607,8 @@ radiologyRouter.get("/pacs-worklist", async (req, res) => {
         .leftJoin(patientsTable, eq(radiologyWorklistTable.patientId, patientsTable.id))
         .leftJoin(radiologyStudiesTable, eq(radiologyWorklistTable.studyId, radiologyStudiesTable.id))
         .leftJoin(billsTable, eq(radiologyStudiesTable.billId, billsTable.id))
+        .leftJoin(ordersTable, eq(billsTable.orderId, ordersTable.id))
+        .leftJoin(doctorsTable, eq(ordersTable.doctorId, doctorsTable.id))
         .leftJoin(testsTable, eq(radiologyStudiesTable.testId, testsTable.id))
         .where(conds.length > 0 ? and(...conds) : undefined)
         .orderBy(desc(radiologyWorklistTable.createdAt))

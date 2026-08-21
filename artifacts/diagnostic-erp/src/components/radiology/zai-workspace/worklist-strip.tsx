@@ -151,6 +151,16 @@ export function WorklistStrip({
                     <div className="mt-0.5 truncate text-[10px] text-muted-foreground">
                       {patient.age ? `${patient.age}${patient.sex}` : patient.sex} · {s.studyDescription} · {s.bodyPart}
                     </div>
+                    {patient.referringDoctor?.trim() ? (
+                      <div
+                        className="mt-0.5 truncate text-[10px] text-emerald-800/80"
+                        data-testid="queue-referring-doctor"
+                        title={`Ref: ${patient.referringDoctor.trim()}`}
+                      >
+                        <span className="font-semibold text-emerald-700/90">Ref:</span>{" "}
+                        {patient.referringDoctor.trim()}
+                      </div>
+                    ) : null}
                   </div>
                   <div className="flex flex-col items-end gap-1">
                     <span className={cn("rounded border px-1 py-0.5 text-[8.5px] font-bold tracking-wider", prio.t)}>{prio.l}</span>

@@ -30,6 +30,25 @@ describe("normalizeWorkspaceStudy", () => {
     expect(study!.priority).toBe("urgent");
   });
 
+  it("maps referringDoctor from flat pacs-worklist rows", () => {
+    const study = normalizeWorkspaceStudy({
+      id: 10,
+      patientName: "Sourav Kumar",
+      age: 28,
+      sex: "M",
+      referringDoctor: "Dr. Mehta",
+      modality: "MR",
+    });
+    expect(study!.patient.referringDoctor).toBe("Dr. Mehta");
+    expect(study!.patient.age).toBe(28);
+    expect(study!.patient.sex).toBe("M");
+  });
+
+  it("falls back to doctorName / referredBy aliases", () => {
+    expect(normalizeWorkspaceStudy({ id: 1, doctorName: "Dr. Rao" })!.patient.referringDoctor).toBe("Dr. Rao");
+    expect(normalizeWorkspaceStudy({ id: 2, referredBy: "Dr. Sen" })!.patient.referringDoctor).toBe("Dr. Sen");
+  });
+
   it("does not crash on missing patient / priority / modality", () => {
     const study = normalizeWorkspaceStudy({
       id: "99",

@@ -36,6 +36,12 @@ describe("Radiology Reporting Workspace handwritten notes", () => {
     expect(workspace).toContain('"today-yesterday"');
   });
 
+  it("reading queue cards show referring doctor", () => {
+    expect(strip).toContain('data-testid="queue-referring-doctor"');
+    expect(strip).toContain("patient.referringDoctor");
+    expect(strip).toContain("Ref:");
+  });
+
   it("DICOM viewer shows patient name", () => {
     expect(viewer).toContain("patientName");
     expect(viewer).toContain('data-testid="viewer-patient-name"');
