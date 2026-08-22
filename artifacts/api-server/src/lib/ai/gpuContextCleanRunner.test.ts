@@ -21,6 +21,7 @@ function emptyRow(partial: Partial<GpuContextProbeRow> & Pick<GpuContextProbeRow
     errorCode: null,
     gpuOutOfMemory: false,
     contextBudgetExceeded: false,
+    outputBudgetExhausted: false,
     responseLength: 20,
     parserSuccess: null,
     candidateCount: null,
@@ -33,26 +34,19 @@ function emptyRow(partial: Partial<GpuContextProbeRow> & Pick<GpuContextProbeRow
 }
 
 describe("GPU_CONTEXT_CLEAN_RUNNER_MATRIX", () => {
-  it("matches the CARE UI probe list (incl optional 16384)", () => {
+  it("matches the minimal benchmark (4096 1/2 img, 6144 1 img)", () => {
     expect(GPU_CONTEXT_CLEAN_RUNNER_MATRIX.map((c) => `${c.imageCount}@${c.numCtx}`)).toEqual([
       "1@4096",
       "2@4096",
-      "3@4096",
-      "1@5120",
       "1@6144",
-      "1@7168",
-      "1@8192",
-      "1@16384",
     ]);
-    expect(GPU_CONTEXT_CLEAN_RUNNER_MATRIX.filter((c) => c.optional).map((c) => c.numCtx)).toEqual([16384]);
+    expect(GPU_CONTEXT_CLEAN_RUNNER_MATRIX.filter((c) => c.optional).length).toBe(0);
   });
 });
 
 describe("decideGpuContextProbeAction", () => {
   const cell2 = GPU_CONTEXT_CLEAN_RUNNER_MATRIX[1]!;
-  const cell3 = GPU_CONTEXT_CLEAN_RUNNER_MATRIX[2]!;
-  const cell8192 = GPU_CONTEXT_CLEAN_RUNNER_MATRIX[6]!;
-  const cell16384 = GPU_CONTEXT_CLEAN_RUNNER_MATRIX[7]!;
+  const cell6144 = GPU_CONTEXT_CLEAN_RUNNER_MATRIX[2]!;
 
   it("stops remaining after GPU_OUT_OF_MEMORY", () => {
     const prior = [
@@ -95,7 +89,7 @@ describe("decideGpuContextProbeAction", () => {
     expect(skip2.action).toBe("skip");
     expect(skip2.hardStop).toBe("none");
     const runHigherCtx = decideGpuContextProbeAction({
-      cell: cell8192,
+      cell: cell6144,
       prior,
       availableImageCount: 6,
       hardStop: "none",
@@ -115,23 +109,13 @@ describe("decideGpuContextProbeAction", () => {
       }),
     ];
     const d = decideGpuContextProbeAction({
-      cell: cell3,
+      cell: cell6144,
       prior,
       availableImageCount: 6,
       hardStop: "none",
     });
     expect(d.action).toBe("skip");
     expect(d.hardStop).toBe("runner_not_cleared");
-  });
-
-  it("skips optional 16384 after hard stop", () => {
-    const d = decideGpuContextProbeAction({
-      cell: cell16384,
-      prior: [],
-      availableImageCount: 6,
-      hardStop: "gpu_out_of_memory",
-    });
-    expect(d.action).toBe("skip");
   });
 });
 

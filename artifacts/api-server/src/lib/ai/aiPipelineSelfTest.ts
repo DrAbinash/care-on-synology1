@@ -123,8 +123,8 @@ const DRAFT_PROMPT = [
   "This is a diagnostic self-test. Do not invent patient demographics.",
 ].join("\n");
 
-/** Cap diagnostic generation so infra probes stay cheap. */
-const INFRA_NUM_PREDICT = 48;
+/** Cap diagnostic generation — enough for infra JSON sighting with think:false. */
+const INFRA_NUM_PREDICT = 256;
 
 function upsertStep(job: JobRecord, step: SelfTestStep): void {
   const idx = job.steps.findIndex((s) => s.id === step.id);
@@ -506,13 +506,11 @@ async function directGenerate(opts: {
   }
 }
 
-/** Production-shaped /api/chat (same payload builder as OllamaProvider). */
+/** Production-shaped /api/chat (same payload builder as OllamaProvider + draft path). */
 async function directChatProductionShaped(opts: {
   endpoint: string;
   model: string;
   jpegBase64: string;
-  /** Match /api/ai-reporting/draft: think is NOT sent today. */
-  matchDraftThink?: boolean;
 }): Promise<{
   ok: boolean;
   httpStatus: number;
@@ -529,13 +527,13 @@ async function directChatProductionShaped(opts: {
   evalCount: number | null;
   error?: string;
 }> {
-  // Draft path currently omits `think` entirely (options = { model } only).
+  // Draft path sends explicit think:false for qwen3-vl (chain-of-thought must not eat output budget).
   const payload = buildOllamaChatPayload({
     model: opts.model,
     prompt: INFRA_PROBE_PROMPT,
     images: [opts.jpegBase64],
     maxTokens: INFRA_NUM_PREDICT,
-    ...(opts.matchDraftThink === false ? { think: false as const } : {}),
+    think: false,
   });
   const thinkSent = Object.prototype.hasOwnProperty.call(payload, "think");
   const thinkValue = thinkSent ? Boolean(payload.think) : null;
@@ -755,9 +753,9 @@ async function runGenerateAiForTaskProbe(opts: {
   if (opts.numCtx != null && Number.isFinite(opts.numCtx)) {
     callOpts.numCtx = Math.floor(opts.numCtx);
   }
+  callOpts.think = false;
   if (useInfra) {
     callOpts.maxTokens = INFRA_NUM_PREDICT;
-    callOpts.think = false;
   }
 
   const providerRequestStartedAt = new Date().toISOString();
@@ -787,6 +785,10 @@ async function runGenerateAiForTaskProbe(opts: {
     errorMessage: aiResult.error ?? d?.errorMessage ?? null,
     responseLength: d?.responseLength ?? (aiResult.text?.length ?? 0),
     parserSuccess: parsed?.parserSuccess ?? null,
+    thinkingLength: d?.thinkingLength ?? null,
+    evalCount: d?.ollamaEvalCount ?? null,
+    numPredict: callOpts.maxTokens ?? null,
+    finishReason: d?.finishReason ?? null,
   });
   const errorCode =
     classified.code === "OK" || classified.code === "UNKNOWN"
@@ -832,6 +834,7 @@ async function runGenerateAiForTaskProbe(opts: {
     ollamaLoadDurationNs: d?.ollamaLoadDurationNs ?? null,
     ollamaPromptEvalCount: d?.ollamaPromptEvalCount ?? null,
     ollamaEvalCount: d?.ollamaEvalCount ?? null,
+    requestNumPredict: callOpts.maxTokens ?? null,
     configuredNumCtx: opts.configuredNumCtx ?? null,
     requestedNumCtx: d?.requestedNumCtx ?? opts.numCtx ?? null,
     ollamaAvailableContext: d?.ollamaAvailableContext ?? ctxErr?.availableContext ?? null,
@@ -993,6 +996,7 @@ async function runGpuContextMatrixSection(opts: {
         errorCode: null,
         gpuOutOfMemory: false,
         contextBudgetExceeded: false,
+        outputBudgetExhausted: false,
         responseLength: null,
         parserSuccess: null,
         candidateCount: null,
@@ -1051,6 +1055,7 @@ async function runGpuContextMatrixSection(opts: {
       errorCode: gp.errorCode ?? null,
       gpuOutOfMemory: gp.errorCode === "GPU_OUT_OF_MEMORY",
       contextBudgetExceeded: gp.errorCode === "CONTEXT_BUDGET_EXCEEDED",
+      outputBudgetExhausted: gp.errorCode === "OUTPUT_BUDGET_EXHAUSTED",
       responseLength: gp.responseLength,
       parserSuccess: gp.parserSuccess,
       candidateCount: gp.candidateCount,
@@ -1464,6 +1469,7 @@ async function executeSelfTest(
       ollamaPromptEvalCount: gen.promptEvalCount,
       ollamaEvalCount: gen.evalCount,
       usableOutput: gen.ok,
+      requestNumPredict: INFRA_NUM_PREDICT,
       timing: {
         probeStartedAt: genStarted,
         providerRequestStartedAt: genStarted,
@@ -1474,11 +1480,11 @@ async function executeSelfTest(
     probes.push(genProbe);
     upsertStep(job, probeToStep(genProbe, "Direct Ollama", "direct-generate", "/api/generate 1 image"));
 
-    // B. Direct /api/chat production-shaped (think NOT sent — matches draft)
+    // B. Direct /api/chat production-shaped (think:false — matches draft path)
     upsertStep(job, {
       id: "direct-chat",
       group: "Direct Ollama",
-      name: "/api/chat 1 image (draft-shaped)",
+      name: "/api/chat 1 image (think:false)",
       status: "running",
       detail: "…",
     });
@@ -1487,11 +1493,10 @@ async function executeSelfTest(
       endpoint,
       model,
       jpegBase64: img1[0]!,
-      matchDraftThink: true,
     });
     const chatDone = new Date().toISOString();
     const chatProbe: PathProbeResult = {
-      label: "Direct /api/chat 1 image (draft-shaped)",
+      label: "Direct /api/chat 1 image (think:false)",
       pass: chat.ok,
       model,
       endpoint,
@@ -1514,6 +1519,7 @@ async function executeSelfTest(
       ollamaPromptEvalCount: chat.promptEvalCount,
       ollamaEvalCount: chat.evalCount,
       usableOutput: chat.ok,
+      requestNumPredict: INFRA_NUM_PREDICT,
       timing: {
         probeStartedAt: chatStarted,
         providerRequestStartedAt: chatStarted,
@@ -1524,15 +1530,18 @@ async function executeSelfTest(
     probes.push(chatProbe);
     upsertStep(
       job,
-      probeToStep(chatProbe, "Direct Ollama", "direct-chat", "/api/chat 1 image (draft-shaped)"),
+      probeToStep(chatProbe, "Direct Ollama", "direct-chat", "/api/chat 1 image (think:false)"),
     );
     technical.thinkBehavior = {
-      draftPathSendsThink: false,
+      draftPathSendsThinkFalse: true,
       directGenerateSentThinkFalse: true,
       directGenerateThinkingLength: gen.thinkingLength,
-      directChatDraftShapedThinkSent: chat.thinkSent,
+      directChatThinkSent: chat.thinkSent,
+      directChatThinkValue: chat.thinkValue,
       directChatThinkingLength: chat.thinkingLength,
-      note: "If thinkingLength>0 despite think:false or omitted, Ollama is still emitting thinking.",
+      infraNumPredict: INFRA_NUM_PREDICT,
+      note:
+        "Draft + self-test send think:false on /api/chat. OUTPUT_BUDGET_EXHAUSTED when eval hits num_predict with empty content.",
     };
 
     // C. Provider-only 1 image (production-shaped num_ctx) — infra prompt
@@ -2151,6 +2160,8 @@ export function formatSelfTestReport(result: AiPipelineSelfTestResult): string {
     lines.push(`  responseLength: ${p.responseLength}`);
     lines.push(`  parserSuccess: ${p.parserSuccess}`);
     lines.push(`  candidateCount: ${p.candidateCount}`);
+    lines.push(`  ollamaEvalCount: ${p.ollamaEvalCount}`);
+    lines.push(`  requestNumPredict: ${p.requestNumPredict ?? "—"}`);
     lines.push(`  thinkSent: ${p.thinkSent} thinkValue: ${p.thinkValue} thinkingLength: ${p.thinkingLength}`);
     lines.push(`  finishReason: ${p.finishReason}`);
     if (p.timing) {
