@@ -10,37 +10,49 @@ import {
   CommandShortcut,
 } from "@/components/ui/command";
 import {
-  BarChart2,
   ClipboardList,
   FileText,
+  FlaskConical,
   LayoutDashboard,
   Package,
+  Radio,
   Receipt,
   ScanSearch,
   Search,
   Settings2,
   TestTube,
   Users,
+  type LucideIcon,
 } from "lucide-react";
+import {
+  GLOBAL_COMMANDS,
+  commandSearchValue,
+  globalCommandGroups,
+  type GlobalCommandAction,
+} from "@/lib/globalCommandCatalog";
 
-const actions = [
-  { label: "Billing Desk", path: "/", group: "Core", icon: Receipt, hint: "Bill" },
-  { label: "Patients", path: "/patients", group: "Core", icon: Users, hint: "Patient list" },
-  { label: "Orders", path: "/orders", group: "Core", icon: ClipboardList, hint: "Orders" },
-  { label: "Reports", path: "/reports", group: "Core", icon: FileText, hint: "Reports" },
-  { label: "Samples", path: "/samples", group: "Lab", icon: TestTube, hint: "Lab" },
-  { label: "Radiology Worklist", path: "/radiology/worklist", group: "Radiology", icon: ScanSearch, hint: "Worklist" },
-  { label: "Reporting Workspace", path: "/radiology/reporting-workspace", group: "Radiology", icon: FileText, hint: "Report" },
-  { label: "Inventory", path: "/inventory", group: "Operations", icon: Package, hint: "Stock" },
-  { label: "My Daily Summary", path: "/my-daily-summary", group: "Analytics", icon: BarChart2, hint: "Today" },
-  { label: "Owner Dashboard", path: "/dashboard", group: "Analytics", icon: LayoutDashboard, hint: "Admin" },
-  { label: "Settings", path: "/settings", group: "Admin", icon: Settings2, hint: "Config" },
-];
+const GROUP_ICONS: Record<string, LucideIcon> = {
+  Core: Receipt,
+  Billing: Receipt,
+  Radiology: ScanSearch,
+  Lab: TestTube,
+  "Outsource Labs": FlaskConical,
+  "Front Desk": ClipboardList,
+  Staff: Users,
+  Administration: LayoutDashboard,
+  Operations: Package,
+  Settings: Settings2,
+  "Radiology Settings": Radio,
+};
+
+function actionIcon(action: GlobalCommandAction): LucideIcon {
+  return GROUP_ICONS[action.group] ?? FileText;
+}
 
 export default function GlobalCommandPalette() {
   const [, navigate] = useLocation();
   const [open, setOpen] = useState(false);
-  const groups = useMemo(() => Array.from(new Set(actions.map((a) => a.group))), []);
+  const groups = useMemo(() => globalCommandGroups(), []);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -71,18 +83,22 @@ export default function GlobalCommandPalette() {
         <span className="ml-1 rounded border px-1 py-0.5 text-[10px]">Ctrl K</span>
       </button>
       <CommandDialog open={open} onOpenChange={setOpen}>
-        <CommandInput placeholder="Search pages, modules, and workflows…" />
+        <CommandInput placeholder="Search pages, settings, radiology, billing…" />
         <CommandList>
           <CommandEmpty>No matching action.</CommandEmpty>
           {groups.map((group) => (
             <CommandGroup key={group} heading={group}>
-              {actions.filter((a) => a.group === group).map((action) => {
-                const Icon = action.icon;
+              {GLOBAL_COMMANDS.filter((a) => a.group === group).map((action) => {
+                const Icon = actionIcon(action);
                 return (
-                  <CommandItem key={action.path} value={`${action.label} ${action.hint}`} onSelect={() => go(action.path)}>
+                  <CommandItem
+                    key={action.id}
+                    value={commandSearchValue(action)}
+                    onSelect={() => go(action.path)}
+                  >
                     <Icon size={15} />
                     <span>{action.label}</span>
-                    <CommandShortcut>{action.hint}</CommandShortcut>
+                    {action.hint ? <CommandShortcut>{action.hint}</CommandShortcut> : null}
                   </CommandItem>
                 );
               })}
