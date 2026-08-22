@@ -148,6 +148,7 @@ function serialize(row: typeof queueDisplaySettingsTable.$inferSelect) {
     ledgerId: row.ledgerId,
     // Effective filter — blank DB value + roomKey "usg" must not mean "every department".
     departments: resolveQueueDisplayDepartments(row.roomKey, row.departments).join(","),
+    autoCompleteTokenOnDicom: row.autoCompleteTokenOnDicom,
   };
 }
 
@@ -236,7 +237,7 @@ const BOOL_FIELDS = [
   "showNextPatients", "showQrBooking", "showAnnouncement", "showPhone", "showWebsite",
   "showSlogan", "kioskWakeLock", "kioskAutoFullscreen", "kioskAutoReload", "kioskPreventExit",
   "showWaitEstimate", "voiceAnnouncementEnabled", "patientPingEnabled", "showMedia",
-  "quietHoursEnabled", "staffAlertEnabled",
+  "quietHoursEnabled", "staffAlertEnabled", "autoCompleteTokenOnDicom",
 ] as const;
 
 const LAYOUT_ORIENTATIONS = ["portrait", "landscape"] as const;

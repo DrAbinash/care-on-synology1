@@ -2,7 +2,7 @@
  * Post-DICOM intake automation — wires Orthanc arrival (#2) to queue + display (#3).
  *
  * When a study lands via POST /api/internal/radiology/studies and matches a
- * billed radiology_studies row:
+ * billed radiology_studies row (or a same-day USG token for the patient):
  *   • MWL scheduled procedure → COMPLETED + remove .wl from Orthanc folder
  *   • Patient queue token (test_tokens) → done + SSE push to waiting-room TVs
  *   • Radiology worklist UI → SSE push for instant refresh
@@ -13,12 +13,15 @@ import {
   radiologyScheduledProceduresTable,
   testTokensTable,
   billsTable,
+  queueDisplaySettingsTable,
 } from "@workspace/db/schema";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, sql, asc } from "drizzle-orm";
 import { logger } from "../logger";
 import { removeWorklistFile } from "./mwlWorklistWriter";
 import { queueBroadcaster } from "../queueBroadcast";
 import { radiologyBroadcaster } from "../radiologyBroadcast";
+import { isUltrasoundModality } from "../usgModality";
+import { resolveQueueDisplayDepartments } from "../queueDisplayDepartments";
 
 export type DicomIntakeAutomationInput = {
   worklistId: number;
@@ -26,8 +29,15 @@ export type DicomIntakeAutomationInput = {
   orderTestId?: number | null;
   billId?: number | null;
   department?: string | null;
+  patientId?: number | null;
+  modality?: string | null;
   previousStudyStatus?: string | null;
 };
+
+function todayTokenDate(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
 
 /** Mark MWL row complete and drop the Orthanc worklist file so the modality stops showing it. */
 export async function completeMwlOnIntake(accessionNumber: string | null | undefined): Promise<void> {
@@ -59,32 +69,119 @@ export async function completeMwlOnIntake(accessionNumber: string | null | undef
 }
 
 /**
+ * Whether any queue-display room that shows `department` has auto-complete enabled.
+ * USG defaults ON when no matching room row exists (the common USG-TV hack).
+ */
+export async function isAutoCompleteQueueEnabledForDepartment(department: string): Promise<boolean> {
+  const dept = (department ?? "").trim();
+  if (!dept) return false;
+
+  try {
+    const rows = await db
+      .select({
+        roomKey: queueDisplaySettingsTable.roomKey,
+        departments: queueDisplaySettingsTable.departments,
+        autoCompleteTokenOnDicom: queueDisplaySettingsTable.autoCompleteTokenOnDicom,
+      })
+      .from(queueDisplaySettingsTable);
+
+    const matching = rows.filter((r) =>
+      resolveQueueDisplayDepartments(r.roomKey, r.departments).includes(dept),
+    );
+    if (matching.length === 0) return dept === "USG";
+    return matching.some((r) => r.autoCompleteTokenOnDicom);
+  } catch (err) {
+    logger.warn({ err, department: dept }, "dicom-intake: auto-complete setting lookup failed — default USG on");
+    return dept === "USG";
+  }
+}
+
+/**
  * Auto-complete the billing desk queue token when the scan arrives in PACS.
  * Only transitions waiting/serving → done (never re-opens a done token).
  */
 export async function advanceQueueTokenOnIntake(opts: {
   orderTestId?: number | null;
   billId?: number | null;
+  patientId?: number | null;
+  department?: string | null;
 }): Promise<{ tokenId?: number; ledgerId?: number }> {
-  const { orderTestId, billId } = opts;
-  if (!orderTestId && !billId) return {};
+  const { orderTestId, billId, patientId, department } = opts;
+  if (!orderTestId && !billId && !(patientId && department)) return {};
+
+  const dept = (department ?? "").trim();
+  if (dept && !(await isAutoCompleteQueueEnabledForDepartment(dept))) {
+    logger.info({ department: dept }, "dicom-intake: auto-complete queue disabled for department");
+    return {};
+  }
 
   try {
-    const cond = orderTestId
-      ? eq(testTokensTable.orderTestId, orderTestId)
-      : eq(testTokensTable.billId, billId!);
+    const activeStatus = inArray(testTokensTable.status, ["waiting", "serving"]);
+    const tokenDate = todayTokenDate();
 
-    const [token] = await db
-      .select({
-        id: testTokensTable.id,
-        status: testTokensTable.status,
-        ledgerId: testTokensTable.ledgerId,
-        department: testTokensTable.department,
-        tokenNo: testTokensTable.tokenNo,
-      })
-      .from(testTokensTable)
-      .where(and(cond, inArray(testTokensTable.status, ["waiting", "serving"])))
-      .limit(1);
+    let token:
+      | {
+          id: number;
+          status: string;
+          ledgerId: number | null;
+          department: string;
+          tokenNo: number;
+        }
+      | undefined;
+
+    if (orderTestId) {
+      [token] = await db
+        .select({
+          id: testTokensTable.id,
+          status: testTokensTable.status,
+          ledgerId: testTokensTable.ledgerId,
+          department: testTokensTable.department,
+          tokenNo: testTokensTable.tokenNo,
+        })
+        .from(testTokensTable)
+        .where(and(eq(testTokensTable.orderTestId, orderTestId), activeStatus))
+        .limit(1);
+    }
+
+    if (!token && billId) {
+      [token] = await db
+        .select({
+          id: testTokensTable.id,
+          status: testTokensTable.status,
+          ledgerId: testTokensTable.ledgerId,
+          department: testTokensTable.department,
+          tokenNo: testTokensTable.tokenNo,
+        })
+        .from(testTokensTable)
+        .where(and(eq(testTokensTable.billId, billId), activeStatus))
+        .limit(1);
+    }
+
+    // USG hack: modality worklist unavailable — match today's token by patient + department.
+    if (!token && patientId && dept) {
+      [token] = await db
+        .select({
+          id: testTokensTable.id,
+          status: testTokensTable.status,
+          ledgerId: testTokensTable.ledgerId,
+          department: testTokensTable.department,
+          tokenNo: testTokensTable.tokenNo,
+        })
+        .from(testTokensTable)
+        .where(
+          and(
+            eq(testTokensTable.patientId, patientId),
+            eq(testTokensTable.department, dept),
+            eq(testTokensTable.tokenDate, tokenDate),
+            activeStatus,
+          ),
+        )
+        .orderBy(
+          sql`CASE WHEN ${testTokensTable.status} = 'serving' THEN 0 ELSE 1 END`,
+          asc(testTokensTable.tokenNo),
+        )
+        .limit(1);
+    }
 
     if (!token) return {};
 
@@ -104,7 +201,7 @@ export async function advanceQueueTokenOnIntake(opts: {
     );
     return { tokenId: updated.id, ledgerId };
   } catch (err) {
-    logger.warn({ err, orderTestId, billId }, "dicom-intake: advanceQueueTokenOnIntake failed (non-fatal)");
+    logger.warn({ err, orderTestId, billId, patientId, department }, "dicom-intake: advanceQueueTokenOnIntake failed (non-fatal)");
     return {};
   }
 }
@@ -129,11 +226,28 @@ async function ledgerIdFromBill(billId: number | null | undefined): Promise<numb
  * Call after worklist row is created/updated and radiology_studies is linked.
  */
 export async function runDicomIntakeAutomation(input: DicomIntakeAutomationInput): Promise<void> {
-  const { worklistId, accessionNumber, orderTestId, billId, previousStudyStatus } = input;
+  const {
+    worklistId,
+    accessionNumber,
+    orderTestId,
+    billId,
+    department,
+    patientId,
+    modality,
+    previousStudyStatus,
+  } = input;
 
   await completeMwlOnIntake(accessionNumber);
 
-  const tokenResult = await advanceQueueTokenOnIntake({ orderTestId, billId });
+  const tokenDepartment =
+    (department ?? "").trim() || (isUltrasoundModality(modality) ? "USG" : "");
+
+  const tokenResult = await advanceQueueTokenOnIntake({
+    orderTestId,
+    billId,
+    patientId,
+    department: tokenDepartment || undefined,
+  });
   if (!tokenResult.ledgerId && billId) {
     const ledgerId = await ledgerIdFromBill(billId);
     queueBroadcaster.broadcast(ledgerId);

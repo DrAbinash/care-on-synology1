@@ -7626,6 +7626,7 @@ type QueueDisplaySettingsForm = {
   staffAlertAfterMinutes: number;
   ledgerId: number;
   departments: string;
+  autoCompleteTokenOnDicom: boolean;
 };
 
 // Shows every configured room's TV online/offline status (via the heartbeat
@@ -8042,6 +8043,15 @@ function QueueDisplaySettingsTab() {
               </div>
             )}
             <ToggleRow label='Show estimated wait time (e.g. "~12 min wait")' checked={form.showWaitEstimate} onChange={(v) => setForm({ ...form, showWaitEstimate: v })} />
+            <ToggleRow
+              label="Auto-complete queue token when scan arrives (DICOM → ERP)"
+              checked={form.autoCompleteTokenOnDicom}
+              onChange={(v) => setForm({ ...form, autoCompleteTokenOnDicom: v })}
+            />
+            <p className="text-[11px] text-muted-foreground mb-3 -mt-1">
+              USG workaround when the machine cannot pull billing worklist: after Orthanc sends the study to ERP,
+              the patient&apos;s waiting/serving token for this room&apos;s department is marked done and the TV queue advances.
+            </p>
             <div className="flex items-center gap-2 mb-3">
               <Label className="text-xs w-40 shrink-0">Ledger / Book ID</Label>
               <Input type="number" min={1} value={form.ledgerId} onChange={(e) => setForm({ ...form, ledgerId: Number(e.target.value) || 1 })} className="w-24" />

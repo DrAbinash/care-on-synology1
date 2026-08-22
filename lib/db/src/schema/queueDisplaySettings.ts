@@ -99,6 +99,10 @@ export const queueDisplaySettingsTable = pgTable("queue_display_settings", {
   ledgerId: integer("ledger_id").notNull().default(1),
   departments: text("departments").notNull().default(""), // comma-separated, "" = all
 
+  // When ON, a billed patient's queue token for this room's department(s) is
+  // marked done after Orthanc→ERP DICOM intake (USG machine can't use MWL).
+  autoCompleteTokenOnDicom: boolean("auto_complete_token_on_dicom").notNull().default(true),
+
   // ── Wait-time estimate — computed server-side (read-only) from today's
   // completed test_tokens; this column is just the show/hide toggle.
   showWaitEstimate: boolean("show_wait_estimate").notNull().default(true),
