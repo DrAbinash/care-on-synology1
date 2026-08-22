@@ -305,11 +305,9 @@ const navItems: NavEntry[] = [
     icon: Settings2,
     label: "Settings",
     children: [
-      // General Settings hosts Integrations (Hope / Reception / Diagnostic) and
-      // Radiology Tools hub tabs — see Settings.tsx. Dedicated Radiology
-      // Settings Center remains the PACS/DICOM/AI configuration hub.
+      // General Settings — clinic, users, billing print, integrations hub, etc.
       { path: "/settings",                  icon: Settings2,      label: "General Settings" },
-      // Single radiology admin entry — USG, Quick Select, PACS, MWL, AI all live inside it.
+      // Single radiology admin entry — PACS, MWL, USG, Quick Select, AI, productivity flags.
       { path: "/settings/radiology",        icon: Radio,          label: "Radiology", ownerOnly: true },
       { path: "/settings/scanner",          icon: ScanLine,       label: "Scanner Settings", ownerOnly: true },
       { path: "/abdm-abha",                 icon: ShieldCheck,    label: "ABDM / ABHA", featureFlag: "ff_abdm_abha" },
