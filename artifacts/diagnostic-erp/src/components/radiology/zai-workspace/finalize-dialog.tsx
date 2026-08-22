@@ -1,23 +1,16 @@
-import { useState, useEffect } from "react";
-import { useWorkspace, useWorkspaceSelector } from "@/lib/zai-workspace/store";
-import { lookupProfile, formatSignOff } from "@/lib/zai-workspace/sign-off-profiles";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { Checkbox } from "@/components/ui/checkbox";
-import { AlertTriangle, ShieldCheck, Phone, MessageSquare, User, Clock } from "lucide-react";
-import { api } from "@/lib/fetchApi";
+/**
+ * FinalizeDialog — DISABLED.
+ *
+ * This component was a Z.ai workspace prototype finalize flow that bypasses the
+ * canonical finalizeReport pipeline (validation, quality gates, critical-finding
+ * checks, proper sign dialog, archive). The workspace's own finalizeReport +
+ * useFinalizeFlow + FinalizeSignDialog is the correct path.
+ *
+ * Keeping this file as a stub so imports don't break, but rendering nothing.
+ */
 export function FinalizeDialog() {
-  const open = useWorkspaceSelector(s => s.isFinalizing); const cancel = useWorkspaceSelector(s => s.cancelFinalize); const complete = useWorkspaceSelector(s => s.completeFinalize);
-  const study = useWorkspaceSelector(s => s.studies.find(x => x.id === s.activeStudyId)); const items = useWorkspaceSelector(s => s.copilotItems); const ack = useWorkspaceSelector(s => s.acknowledgedCopilotIds);
-  const profiles = useWorkspaceSelector(s => s.signOffProfiles);
-  const ft = useWorkspaceSelector(s => s.findingsText); const it = useWorkspaceSelector(s => s.impressionText); const rt = useWorkspaceSelector(s => s.recommendationText); const tt = useWorkspaceSelector(s => s.techniqueText);
-  const [critAcked, setCritAcked] = useState(false); const [notify, setNotify] = useState(true);
-  const critItems = items.filter(i => i.kind === "critical"); const hasCrit = critItems.length > 0; const allAcked = critItems.every(i => ack.has(i.id));
-  const biradsNeeded = study?.modality === "MG" && !/bi-rads/i.test(it);
-  const canSign = !biradsNeeded && (!hasCrit || (critAcked && allAcked));
-  const profile = study ? lookupProfile(profiles, study.modality) : null; const soText = profile ? formatSignOff(profile) : "Dr. Sugandha Priyadarshini, MD (Radiodiagnosis & Medical Imaging)";
-  useEffect(() => { if (open) { setCritAcked(false); setNotify(true); } }, [open]);
-  const handleSign = async () => { if (!study) return; try { const html = `<h2>${study.studyDescription}</h2><p><b>Findings:</b> ${ft}</p><p><b>Impression:</b> ${it}</p><p><b>Recommendation:</b> ${rt}</p>`; const r = await api.post<{ id: number }>("/api/patient-reports", { studyId: study.id, body: html, reportType: "radiology" }); if (profile?.signatureId) await api.post(`/api/patient-reports/${r.id}/sign`, { signatureId: profile.signatureId }); try { await api.post("/api/radiology/studies/archive", { studyId: study.id, reportHtml: html, signedAt: new Date().toISOString() }); } catch (e) { console.warn("[Finalize] archive:", e); } if (notify) { try { await api.post("/api/whatsapp/send", { to: study.patient.phone, message: `Report ready for ${study.patient.name} — ${study.studyDescription}.` }); } catch (e) { console.warn("[Finalize] wa:", e); } } complete(); } catch (e) { console.error("[Finalize]", e); alert("Finalize failed. Check console."); } };
-  return <Dialog open={open} onOpenChange={o => !o && cancel()}><DialogContent className="max-w-lg"><DialogHeader><DialogTitle className="flex items-center gap-2"><ShieldCheck className="h-4 w-4 text-emerald-600" /> Finalize & Sign</DialogTitle><DialogDescription>{study?.studyDescription} for {study?.patient.name} ({study?.patient.uhid})</DialogDescription></DialogHeader><div className="space-y-3">{hasCrit && <div className="rounded-lg border-2 border-rose-300 bg-rose-50 p-3"><div className="flex items-center gap-2 mb-2"><AlertTriangle className="h-4 w-4 text-rose-600" /><span className="text-sm font-bold text-rose-700">{critItems.length} critical finding{critItems.length === 1 ? "" : "s"}</span></div>{critItems.map(c => <div key={c.id} className="flex items-start gap-2 text-xs"><span className="font-mono text-rose-600 mt-0.5">•</span><div className="flex-1"><div className="font-semibold text-rose-800">{c.title}</div><div className="text-rose-700/80">{c.detail}</div>{!ack.has(c.id) ? <Button size="sm" variant="outline" className="h-6 mt-1 text-[10px] border-rose-300 text-rose-700 hover:bg-rose-100" onClick={() => useWorkspace.getState().acknowledgeCopilotItem(c.id)}>Mark communicated</Button> : <Badge variant="outline" className="bg-emerald-50 text-emerald-700 border-emerald-200">✓ Ack</Badge>}</div></div>)}<label className="flex items-start gap-2 mt-2 cursor-pointer"><Checkbox checked={critAcked} onCheckedChange={v => setCritAcked(v === true)} className="mt-0.5" /><span className="text-xs text-rose-800">I have communicated the critical finding(s) to {study?.patient.referringDoctor} and documented in the critical-results ledger.</span></label></div>}{biradsNeeded && <div className="rounded-lg border border-amber-300 bg-amber-50 p-3"><div className="flex items-center gap-2"><AlertTriangle className="h-4 w-4 text-amber-600" /><span className="text-sm font-bold text-amber-700">BI-RADS required</span></div></div>}<div className="rounded-lg border border-border bg-muted/30 p-2.5"><div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-1">Signed by</div><div className="text-sm font-semibold">{soText}</div><div className="text-[10px] text-muted-foreground">Auto-selected per modality ({study?.modality})</div></div><label className="flex items-center gap-2 cursor-pointer"><Checkbox checked={notify} onCheckedChange={v => setNotify(v === true)} /><span className="text-sm">Notify referring doctor ({study?.patient.referringDoctor}) via WhatsApp</span></label></div><DialogFooter><Button variant="ghost" onClick={cancel}>Cancel</Button><Button onClick={handleSign} disabled={!canSign} className="bg-emerald-600 hover:bg-emerald-700 disabled:bg-muted-foreground/30"><ShieldCheck className="h-3.5 w-3.5 mr-1" /> Sign & Finalize</Button></DialogFooter></DialogContent></Dialog>;
+  // No-op — the workspace's finalizeReport callback (passed to
+  // ReportExportPanel via onFinalize) handles everything.
+  return null;
 }
+

@@ -127,24 +127,24 @@ export function buildPreviewHtml(opts: BuildPreviewHtmlOpts): string {
     <ul style="margin:4px 0 0 18px;padding:0;">${orderedImageRefs.map((img, i) => `<li>Image ${i + 1}${img.isKeyImage ? " (KEY)" : ""}: ${escHtml(img.description)}</li>`).join("")}</ul>`
     : "";
 
-  return `<div style="font-family:Arial,sans-serif;font-size:13px;line-height:1.45;color:#111;max-width:720px;margin:0 auto;">
+  return `<div style="font-family:Arial,Helvetica,sans-serif;font-size:13pt;line-height:1.6;color:#111;width:100%;margin:0 auto;">
     ${headerHtml}
-    <hr style="border:none;border-top:2px solid #000;margin:6px 0;" />
-    <h2 style="text-align:center;text-decoration:underline;font-size:15px;margin:8px 0;break-after:avoid-page;page-break-after:avoid;"><strong>${escHtml(opts.studyName)}</strong></h2>
-    <h3 style="${hStyle(`${sp} 0 ${sp}`)}"><u>${fmtHeading("Technique", hc)}</u></h3>
-    <p style="margin:0 0 ${sp};">${escHtml(opts.technique)}</p>
-    ${opts.clinicalHistory ? `<h3 style="${hStyle(`${sp} 0 ${sp}`)}"><u>${fmtHeading("Clinical History", hc)}</u></h3><p style="margin:0 0 ${sp};">${escHtml(opts.clinicalHistory)}</p>` : ""}
-    <hr style="border:none;border-top:2px solid #000;margin:6px 0;" />
-    <h3 style="${hStyle(`${sp} 0 ${sp}`)}"><u>${fmtHeading("Findings / Observation", hc)}</u></h3>
+    <hr style="border:none;border-top:2px solid #000;margin:8px 0;" />
+    <h2 style="text-align:center;text-decoration:underline;font-size:16pt;margin:10px 0;break-after:avoid-page;page-break-after:avoid;"><strong>${escHtml(opts.studyName)}</strong></h2>
+    <h3 style="${hStyle(`${sp} 0 ${sp}`)}font-size:14pt;"><u>${fmtHeading("Technique", hc)}</u></h3>
+    <p style="margin:0 0 ${sp};font-size:13pt;">${escHtml(opts.technique)}</p>
+    ${opts.clinicalHistory ? `<h3 style="${hStyle(`${sp} 0 ${sp}`)}font-size:14pt;"><u>${fmtHeading("Clinical History", hc)}</u></h3><p style="margin:0 0 ${sp};font-size:13pt;">${escHtml(opts.clinicalHistory)}</p>` : ""}
+    <hr style="border:none;border-top:2px solid #000;margin:8px 0;" />
+    <h3 style="${hStyle(`${sp} 0 ${sp}`)}font-size:14pt;"><u>${fmtHeading("Findings / Observation", hc)}</u></h3>
     ${findingsHtml}
     ${imagesHtml}
-    <h3 style="${hStyle(`${sp2} 0 ${sp}`)}"><u>${fmtHeading("Impression", hc)}</u></h3>
+    <h3 style="${hStyle(`${sp2} 0 ${sp}`)}font-size:14pt;"><u>${fmtHeading("Impression", hc)}</u></h3>
     ${impressionHtml}
-    <h3 style="${hStyle(`${sp2} 0 ${sp}`)}"><u>${fmtHeading("Recommendation", hc)}</u></h3>
-    <p style="margin:0 0 ${sp};">${escHtml(opts.recommendation || "Please correlate with clinical findings.")}</p>
+    <h3 style="${hStyle(`${sp2} 0 ${sp}`)}font-size:14pt;"><u>${fmtHeading("Recommendation", hc)}</u></h3>
+    <p style="margin:0 0 ${sp};font-size:13pt;">${escHtml(opts.recommendation || "Please correlate with clinical findings.")}</p>
     <hr style="border:none;border-top:1px solid #999;margin:${sp2} 0 4px;" />
-    <p style="font-size:11px;color:#666;font-style:italic;margin:0;">Please correlate with clinical history and findings. Report issued by authorized radiologist only.</p>
-    ${opts.signerLine ? `<p style="text-align:right;margin:18px 0 0;font-size:12px;"><strong>${escHtml(opts.signerLine)}</strong></p>` : ""}
+    <p style="font-size:11pt;color:#666;font-style:italic;margin:0;">Please correlate with clinical history and findings. Report issued by authorized radiologist only.</p>
+    ${opts.signerLine ? `<p style="text-align:right;margin:18px 0 0;font-size:13pt;"><strong>${escHtml(opts.signerLine)}</strong></p>` : ""}
   </div>`.trim();
 }
 

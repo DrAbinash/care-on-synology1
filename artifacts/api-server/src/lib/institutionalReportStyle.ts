@@ -178,9 +178,9 @@ export function coerceHeaderRuleColor(raw: unknown): HeaderRuleColor {
 }
 
 const FONT_PX: Record<FontSizePreset, string> = {
-  small: "11.5px",
-  standard: "13.5px",
-  large: "15.5px",
+  small: "12.5px",
+  standard: "14px",
+  large: "16px",
 };
 
 const MARGIN_CSS: Record<string, string> = {

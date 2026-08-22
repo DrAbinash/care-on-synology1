@@ -43,20 +43,49 @@ export type PathologyIncoming = {
 };
 
 const ANATOMY_ALIASES: Array<{ key: string; re: RegExp }> = [
+  // Brain / CNS
   { key: "basal ganglia", re: /basal ganglia|putamen|caudate|globus pallidus|internal capsule/i },
   { key: "white matter", re: /white matter|fazekas|periventricular/i },
   { key: "mca", re: /\bmca\b|middle cerebral/i },
   { key: "ventricle", re: /ventricular system|ventricles|cisternal/i },
+  // Spine
   { key: "disc", re: /\bdisc\b|herniation|bulge/i },
   { key: "cord", re: /spinal cord|thecal sac|canal stenosis/i },
+  // Abdomen / USG organs
+  { key: "liver", re: /\bliver\b|hepatic|hepatomegaly/i },
+  { key: "gallbladder", re: /\bgallbladder\b|gall bladder|cholecyst/i },
+  { key: "cbd", re: /\bcbd\b|common bile duct|choledoch/i },
+  { key: "pancreas", re: /\bpancreas\b|pancreatic/i },
+  { key: "spleen", re: /\bspleen\b|splenic/i },
+  { key: "kidney", re: /\bkidney\b|renal|kidneys/i },
+  { key: "ureter", re: /\bureter\b|ureteric/i },
+  { key: "bladder", re: /\bbladder\b|urinary bladder|vesical/i },
+  { key: "prostate", re: /\bprostate\b|prostatic/i },
+  { key: "uterus", re: /\buterus\b|uterine|endometri/i },
+  { key: "ovary", re: /\bovary\b|ovarian|adnexa/i },
+  { key: "appendix", re: /\bappendix\b|appendiceal|vermiform/i },
+  { key: "bowel", re: /\bbowel\b|intestin|colon|sigmoid|rectum/i },
+  { key: "aorta", re: /\baorta\b|aortic/i },
+  { key: "thyroid", re: /\bthyroid\b|thyroidal/i },
+  { key: "breast", re: /\bbreast\b|mammary/i },
 ];
 
 const PATHOLOGY_TERMS = [
+  // Severe / acute
   "hemorrhage", "haemorrhage", "infarct", "restricted diffusion",
   "herniation", "stenosis", "fracture", "mass", "tumor", "tumour", "lesion",
+  // USG-common abnormalities
+  "fatty liver", "fatty infiltration", "hepatomegaly", "cholelithiasis",
+  "cholecystitis", "sludge", "polyp", "cyst", "calculus", "calculi",
+  "nephrolith", "nephrolithiasis", "hydronephrosis", "hydroureter",
+  "prostatomegaly", "pyelonephritis", "cystitis", "ascites",
+  "pleural effusion", " collection", "abscess", "pancreatitis",
+  "appendicitis", "obstruction", "perforation", "metastasis",
+  "cirrhosis", "fibrosis", "echogenic", "hypoechoic",
+  "hyperechoic", "heterogeneous", "focal", "nodule",
 ];
 
-const DENIAL = /\b(no|without|absence of|unremarkable|normal|not identified|not seen|free of)\b/i;
+const DENIAL = /\b(no|without|absence of|unremarkable|normal|not identified|not seen|free of|no evidence|no definite|no obvious|no apparent|no focal|no significant|no abnormal|no mass|no lesion|no collection|no effusion|no hernia|no fracture|no displacement)\b/i;
 
 export function inferOwnership(label: string, texts: string[]): PathologyOwnership {
   // Legacy fallback only — prefer explicit Quick Select / chocolate metadata.
@@ -107,6 +136,21 @@ function isManualSentence(sentence: string, provenance: FieldProvenanceMap | und
   const src = provenance?.[key];
   if (!src || src.length === 0) return false;
   return src.length === 1 && src[0] === "manual";
+}
+
+/** Template/protocol-sourced sentences should always be replaceable by pathology.
+ * Only purely manual sentences need the ambiguous/force guard.
+ */
+function isProtectedManualSentence(sentence: string, provenance: FieldProvenanceMap | undefined): boolean {
+  const key = normalizeForDedupe(sentence);
+  const src = provenance?.[key];
+  if (!src || src.length === 0) return false;
+  // If any source is manual AND no other source contributed, it's a protected manual edit.
+  // Template/protocol/quick-select-sourced sentences are always eligible for replacement.
+  if (src.length === 1 && src[0] === "manual") return true;
+  // If manual co-exists with other sources, the radiologist edited a template line — protect it.
+  if (src.includes("manual")) return true;
+  return false;
 }
 
 export function applySideToIncoming(incoming: PathologyIncoming, side: Side | ""): PathologyIncoming {
@@ -167,15 +211,24 @@ export function applyPathologyPatch(opts: {
     provenance: FieldProvenanceMap | undefined,
   ): { text: string; provenance: FieldProvenanceMap } => {
     const kept: string[] = [];
+    // Extract organ keys from incoming text for broad anatomical matching
+    const incomingOrgans = new Set<string>();
+    for (const a of ANATOMY_ALIASES) {
+      if (a.re.test(incomingHay)) incomingOrgans.add(a.key);
+    }
     for (const s of splitToSentences(existing)) {
       const owned = (baseline && s.includes(baseline))
         || sentenceMentions(s, keys)
-        || (asserted.length > 0 && deniesPathology(s, asserted));
+        || (asserted.length > 0 && deniesPathology(s, asserted))
+        // Broad organ match: if incoming text targets liver and existing sentence
+        // also mentions liver, replace the normal sentence (even without explicit ownership)
+        || (incomingOrgans.size > 0 && asserted.length > 0 &&
+            [...incomingOrgans].some((org) => sentenceMentions(s, [org])));
       if (!owned) {
         kept.push(s);
         continue;
       }
-      if (isManualSentence(s, provenance) && !opts.force) {
+      if (isProtectedManualSentence(s, provenance) && !opts.force) {
         ambiguous = true;
         kept.push(s);
         continue;
@@ -215,7 +268,12 @@ export function applyPathologyPatch(opts: {
     opts.provenance?.impression,
   );
   let impressionText = impression.text;
-  if (asserted.length > 0) {
+  // Strip normal impression lines whenever the incoming text contains
+  // abnormal content (pathology terms OR non-empty abnormal findings text
+  // that replaces template normals). Also strip when the patch replaced
+  // any existing sentences (indicating template normal was overridden).
+  const hasAbnormalContent = asserted.length > 0 || replacedSentences.length > 0;
+  if (hasAbnormalContent) {
     impressionText = stripNormalImpressionLines(
       splitToSentences(impressionText),
       { onlyIfAbnormal: true },

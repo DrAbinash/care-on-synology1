@@ -166,8 +166,8 @@ export function QuickSelectStrip({
               const ws = useWorkspace.getState();
               if (field === "findings" || field === "impression") {
                 const ownership = {
-                  anatomicalSection: tile.anatomicalSection,
-                  conflictGroup: tile.conflictGroup,
+                  anatomicalSection: tile.anatomicalSection || tile.scopeBodyPart || undefined,
+                  conflictGroup: tile.conflictGroup || tile.scopeBodyPart || undefined,
                   baselineReplaces: tile.baselineReplaces,
                 };
                 const templates = field === "findings"
@@ -179,6 +179,7 @@ export function QuickSelectStrip({
                   ownership,
                   source: "quick-select",
                   id: `qs-${tile.id}`,
+                  force: tile.category === "abnormal" || tile.category === "critical",
                 });
               } else {
                 ws.mergeField(field, tile.sentence, "quick-select");

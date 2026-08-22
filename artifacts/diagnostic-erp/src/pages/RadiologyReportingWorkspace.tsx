@@ -232,7 +232,6 @@ import {
   type FindingsToolId,
   type ReportSectionId,
 } from "@/lib/reportSectionAccordion";
-import { FinalizeDialog } from "@/components/radiology/zai-workspace/finalize-dialog";
 import { InterruptChannelCard } from "@/components/radiology/zai-workspace/interrupt-card";
 import { QuickSelectEditor } from "@/components/radiology/zai-workspace/quick-select-editor";
 import { MergePreviewDialog } from "@/components/radiology/zai-workspace/merge-preview-dialog";
@@ -269,7 +268,7 @@ import {
   Lock, AlertTriangle, ChevronLeft, ChevronRight, Pause, Clock, Sparkles, ShieldCheck,
   Brain, Activity, Zap, Share2, Eye, PanelLeftClose, PanelLeftOpen,
   PanelRightClose, PanelRightOpen,
-  CheckCircle2,
+  CheckCircle2, Save,
   Maximize2, Columns2, Monitor, Archive, Keyboard, AppWindow, MessageCircle, Hospital,
   Trash2, MonitorPlay, Plus,
 } from "lucide-react";
@@ -2511,6 +2510,14 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
               <span className={`text-[9px] font-mono px-1 rounded ${findingsPct >= 80 ? "bg-emerald-100 text-emerald-700" : "bg-muted text-muted-foreground"}`}
                 title="Findings completion (preload fires at 80%)">{findingsPct}%</span>
             )}
+            {/* Report flow progress dots — Technique → Findings → Impression → Recommendation */}
+            {(techniqueText.trim() || findingsText.trim() || impressionText.trim() || recommendationText.trim()) && (
+              <div className="flex items-center gap-0.5 ml-1" title="Report section progress">
+                {([['T', techniqueText], ['F', findingsText], ['I', impressionText], ['R', recommendationText]] as const).map(([l, v], i) => (
+                  <span key={l} className={`w-1.5 h-1.5 rounded-full ${v.trim() ? "bg-emerald-500" : "bg-muted-foreground/25"}`} title={`${l === 'T' ? 'Technique' : l === 'F' ? 'Findings' : l === 'I' ? 'Impression' : 'Recommendation'}${v.trim() ? ' ✓' : ' —'}`} />
+                ))}
+              </div>
+            )}
           </div>
         )}
         <div className="flex items-center gap-2 shrink-0 ml-3">
@@ -2525,7 +2532,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
           {voiceSession.enabled && <VoiceCommandBar voice={voiceSession} embedded />}
           {/* Save button */}
           <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => void saveDraft()} disabled={!isOnline}>
-            <ShieldCheck className="h-3.5 w-3.5 mr-1" /> Save
+            <Save className="h-3.5 w-3.5 mr-1" /> Save
           </Button>
           {/* WhatsApp share */}
           <Button
@@ -2649,6 +2656,36 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
               {verifyBusy ? "Verifying…" : "Verify"}
             </Button>
           )}
+          {/* Section progress indicator — guides the technique→findings→impression→recommendation flow */}
+          {(() => {
+            const statuses = sectionStatuses({
+              hasPatient: !!workflow.currentRow?.patientName,
+              refDoctor: (workflow.currentRow as any)?.referringDoctor,
+              regions: studySetup.studyRegions,
+              templateMismatch: studySetup.templateMismatch,
+              clinicalHistoryText,
+              techniqueText,
+              findingsText,
+              structured: useStructured,
+              structuredSectionCount: Object.keys(findingsMap).length,
+              impressionText,
+              recommendationText,
+              critical: isCritical,
+            });
+            const keySections: ReportSectionId[] = ["history", "technique", "findings", "impression", "recommendation"];
+            const doneCount = keySections.filter(s => statuses[s] === "done").length;
+            const totalCount = keySections.length;
+            const pct = Math.round((doneCount / totalCount) * 100);
+            const barColor = pct === 100 ? "bg-emerald-500" : pct >= 60 ? "bg-emerald-400" : pct >= 30 ? "bg-amber-400" : "bg-slate-300";
+            return (
+              <div className="flex items-center gap-1.5 mr-1" title={`${doneCount}/${totalCount} sections filled (${pct}%)`}>
+                <div className="w-16 h-1.5 rounded-full bg-slate-200 overflow-hidden">
+                  <div className={`h-full rounded-full ${barColor} transition-all duration-300`} style={{ width: `${pct}%` }} />
+                </div>
+                <span className="text-[9px] font-mono text-muted-foreground w-6 text-right">{pct}</span>
+              </div>
+            );
+          })()}
           {/* Finalize */}
           <Button size="sm" className="h-7 px-3 text-xs bg-emerald-600 hover:bg-emerald-700"
             onClick={finalizeReport} disabled={!studyId || isFinalized || isLocked || pcpndtBlocked}
@@ -3941,7 +3978,6 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         onResolve={finalizeFlow.resolve}
         onCancel={finalizeFlow.cancel}
       />
-      <FinalizeDialog />
       <InterruptChannelCard />
       <QuickSelectEditor />
 

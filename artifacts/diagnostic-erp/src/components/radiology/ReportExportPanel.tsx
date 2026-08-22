@@ -167,6 +167,12 @@ export default function ReportExportPanel({
     setEnlarged(true);
   };
 
+  /** Unified handler for all "Print Preview" / Enlarge triggers. */
+  const handlePrintPreviewOrEnlarge = (alsoOpenPanel = false) => {
+    if (alsoOpenPanel) setOpen(true);
+    if (onPrintLikeFinal) void onPrintLikeFinal(); else setEnlarged(true);
+  };
+
   const jumpToSection = (field: "clinicalHistory" | "technique" | "findings" | "impression" | "recommendation") => {
     onEditSection?.(field);
     setEditPickerOpen(false);
@@ -278,21 +284,18 @@ export default function ReportExportPanel({
             size="sm"
             variant="outline"
             className="h-6 text-[10px] px-2"
-            onClick={() => {
-              setOpen(true);
-              setEnlarged(true);
-            }}
-            title="Enlarge report preview to check layout and content before finalize"
+            onClick={() => handlePrintPreviewOrEnlarge(true)}
+            title="Open print preview in new window"
             data-testid="report-layout-preview-enlarge-header"
           >
             <Maximize2 className="h-3 w-3 mr-1" />
-            Enlarge
+            Print Preview
           </Button>
         </div>
       </div>
 
       {open && (
-        <div className="p-2 space-y-2">
+        <div className="p-2 space-y-2 flex flex-col flex-1 min-h-0">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-[10px] font-semibold text-muted-foreground shrink-0">Layout</span>
             <ReportLayoutQuickSelect
@@ -338,12 +341,12 @@ export default function ReportExportPanel({
                 size="sm"
                 variant="ghost"
                 className="h-6 text-[10px]"
-                title="Enlarge report preview to check layout before finalize"
-                onClick={() => setEnlarged(true)}
+                title="Open print preview in new window"
+                onClick={() => handlePrintPreviewOrEnlarge()}
                 data-testid="report-layout-preview-enlarge-btn"
               >
                 <Maximize2 className="h-3 w-3 mr-1" />
-                Enlarge
+                Print Preview
               </Button>
               {showServerLayout && (
                 <Button
@@ -378,7 +381,7 @@ export default function ReportExportPanel({
                 overflow:hidden on body, so iframe-internal scroll is unreliable. */}
             <div
               ref={inlineScrollRef}
-              className="h-64 overflow-y-scroll overflow-x-hidden rounded border bg-white overscroll-contain touch-pan-y"
+              className="flex-1 min-h-[280px] overflow-y-scroll overflow-x-hidden rounded border bg-white overscroll-contain touch-pan-y"
               data-testid="report-layout-preview-inline-scroll"
               onDoubleClick={handlePreviewDoubleClick}
               title={onEditSection
@@ -399,12 +402,12 @@ export default function ReportExportPanel({
             <button
               type="button"
               className="absolute bottom-2 right-2 z-10 text-[10px] font-medium px-1.5 py-0.5 rounded bg-slate-900/70 text-white hover:bg-slate-900 shadow-sm"
-              onClick={() => setEnlarged(true)}
-              title="Enlarge report preview — check layout and content before finalize"
+              onClick={() => handlePrintPreviewOrEnlarge()}
+              title="Open print preview in new window"
               data-testid="report-layout-preview-enlarge"
-              aria-label="Enlarge report preview"
+              aria-label="Print preview"
             >
-              Click to enlarge
+              Print Preview
             </button>
           </div>
         </div>

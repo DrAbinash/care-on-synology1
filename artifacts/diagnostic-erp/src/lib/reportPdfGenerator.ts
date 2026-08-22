@@ -78,7 +78,7 @@ const DEFAULT_SERVICES_ROW2 =
 export const DEFAULT_PRINT_SETTINGS: PrintSettings = {
   paperSize: "A4",
   orientation: "portrait",
-  fontSize: "small",
+  fontSize: "medium",
   fontFamily: "helvetica",
   margins: { top: 8, bottom: 30, left: 14, right: 14 },
   header: {

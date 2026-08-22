@@ -58,15 +58,19 @@ function pick(...vals: Array<unknown>): string {
 }
 
 function firstNonEmptyAge(...vals: Array<unknown>): string {
+  // Try parsing each value through dicomAgeToDisplay (handles "045Y" → "45 Yrs" etc.)
+  for (const v of vals) {
+    const raw = String(v ?? "").trim();
+    if (!raw) continue;
+    const parsed = dicomAgeToDisplay(raw);
+    if (parsed) return parsed;
+  }
+  // Fallback: accept any non-sentinel, non-zero, plausible-numeric ERP age
   for (const v of vals) {
     const s = String(v ?? "").trim();
-    // Reject bare "0" / "0 Yrs" so a blank ERP age field falls through to DICOM.
     if (!s || s === "0" || /^0\s*(yrs?|years?|mo|months?|d|days?)?$/i.test(s)) continue;
     const years = parseInt(s, 10);
-    // Sentinel DOB 1900-01-01 renders as ~126 Yrs in 2026 — never show that.
-    if (Number.isFinite(years) && /yrs?|years?/i.test(s) && !isPlausibleAgeYears(years)) continue;
-    if (Number.isFinite(years) && !/[a-z]/i.test(s) && !isPlausibleAgeYears(years) && years > 120) continue;
-    return s;
+    if (Number.isFinite(years) && !/[a-z]/i.test(s) && !isPlausibleAgeYears(years) && years <= 120) return s;
   }
   return "";
 }
@@ -326,11 +330,11 @@ export function buildDemographyHeaderHtml(d: ReportDemography): string {
     ? esc(d.patientName).toUpperCase()
     : "—";
   const refLine = hasDemographyValue(d.referringDoctor)
-    ? `<span style="font-size:12px;">REF. BY: <strong>${esc(d.referringDoctor).toUpperCase()}</strong></span>`
+    ? `<span style="font-size:13px;">REF. BY: <strong>${esc(d.referringDoctor).toUpperCase()}</strong></span>`
     : "";
   const ageSex = formatDemographyAgeSexLine(d.age, d.sex);
   const ageSexLine = ageSex
-    ? `<strong style="font-size:13px;">${esc(ageSex)}</strong>`
+    ? `<strong style="font-size:15px;">${esc(ageSex)}</strong>`
     : "";
   const metaParts: string[] = [];
   if (hasDemographyValue(d.dateOfBirth)) {
@@ -343,14 +347,14 @@ export function buildDemographyHeaderHtml(d: ReportDemography): string {
     metaParts.push(`ACC: <strong>${esc(d.accessionNumber)}</strong>`);
   }
   const metaLine = metaParts.length
-    ? `<span style="font-size:12px;">${metaParts.join(" · ")}</span>`
+    ? `<span style="font-size:13px;">${metaParts.join(" · ")}</span>`
     : "";
   const leftSub = refLine ? `<br/>${refLine}` : "";
   const rightSub = metaLine ? `<br/>${metaLine}` : "";
   return `
-<table style="width:100%;border-collapse:collapse;margin:0 0 4px;font-size:13px;">
+<table style="width:100%;border-collapse:collapse;margin:0 0 6px;font-size:14px;">
   <tr>
-    <td style="text-align:left;vertical-align:top;padding:0;"><strong style="font-size:14px;">${name}</strong>${leftSub}</td>
+    <td style="text-align:left;vertical-align:top;padding:0;"><strong style="font-size:16px;">${name}</strong>${leftSub}</td>
     <td style="text-align:right;vertical-align:top;padding:0;white-space:nowrap;">${ageSexLine}${rightSub}</td>
   </tr>
 </table>`.trim();
