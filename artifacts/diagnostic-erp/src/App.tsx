@@ -48,6 +48,17 @@ function AdminOnlySettings({ children }: { children: React.ReactNode }) {
   return <RedirectToUnifiedWorklist />;
 }
 
+/** Legacy General Settings tab strip used ?tab=radiology — canonical home is Settings → Radiology. */
+function SettingsPageOrRedirect() {
+  if (typeof window !== "undefined") {
+    const tab = new URLSearchParams(window.location.search).get("tab");
+    if (tab === "radiology" || tab === "radiology-tools") {
+      return <RedirectToRadiologySettings tab="productivity" />;
+    }
+  }
+  return <Settings />;
+}
+
 function OwnerOnlyPreserved({ children }: { children: React.ReactNode }) {
   const session = readStaffSession();
   const role = normalizeRole(session?.user?.role || "");
@@ -720,7 +731,7 @@ function Router() {
               <Route path="/settings/radiology/content-validator">
                 {() => <AdminOnlySettings><ClinicalContentValidatorPage /></AdminOnlySettings>}
               </Route>
-              <Route path="/settings" component={Settings} />
+              <Route path="/settings" component={SettingsPageOrRedirect} />
               <Route path="/settings/scanner">
                 {() => <AdminOnlySettings><ScannerSettings /></AdminOnlySettings>}
               </Route>

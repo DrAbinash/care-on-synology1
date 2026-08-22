@@ -3,13 +3,13 @@
  * /settings/radiology?tab=…
  */
 
-import { useEffect } from "react";
+import { useEffect, useLayoutEffect } from "react";
 import { useLocation } from "wouter";
 
 /** Replace current route with Settings → Radiology (optional tab). */
 export function RedirectToRadiologySettings({ tab }: { tab?: string }) {
   const [, navigate] = useLocation();
-  useEffect(() => {
+  useLayoutEffect(() => {
     const qs = tab ? `?tab=${encodeURIComponent(tab)}` : "";
     navigate(`/settings/radiology${qs}`, { replace: true });
   }, [navigate, tab]);

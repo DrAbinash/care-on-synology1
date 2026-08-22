@@ -8,8 +8,16 @@ const read = (rel: string) => readFileSync(path.join(root, rel), "utf8");
 describe("Radiology settings consolidation", () => {
   const app = read("src/App.tsx");
   const layout = read("src/components/Layout.tsx");
+  const settings = read("src/pages/Settings.tsx");
   const center = read("src/pages/RadiologySettingsCenter.tsx");
   const catalog = read("src/lib/settingsHubCatalog.ts");
+
+  it("General Settings no longer duplicates Radiology as a tab strip entry", () => {
+    expect(settings).not.toMatch(/\{ id: "radiology", label: "Radiology"/);
+    expect(settings).toContain("/settings/radiology?tab=productivity");
+    expect(app).toContain("SettingsPageOrRedirect");
+    expect(app).toContain('tab="productivity"');
+  });
 
   it("sidebar USG group no longer lists USG Admin / Quick Select settings", () => {
     expect(layout).not.toMatch(/path: "\/radiology\/usg-admin-settings"/);
@@ -27,8 +35,8 @@ describe("Radiology settings consolidation", () => {
     expect(app).toMatch(/agent-setup[\s\S]*tab="sync"/);
   });
 
-  it("Settings Center includes Overview, Sync, USG, Quick Select, Deployment tabs", () => {
-    for (const tab of ["overview", "sync", "usg-extraction", "quick-select", "deployment", "mwl"]) {
+  it("Settings Center includes Overview, Sync, USG, Quick Select, Deployment, Productivity tabs", () => {
+    for (const tab of ["overview", "sync", "usg-extraction", "quick-select", "deployment", "mwl", "productivity"]) {
       expect(center).toContain(`value="${tab}"`);
     }
     expect(center).toContain("RadiologyAdminOverviewPanel");

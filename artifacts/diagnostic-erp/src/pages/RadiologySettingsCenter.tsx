@@ -20,7 +20,7 @@ import {
   Network, Server, MonitorPlay, Radio, BrainCircuit,
   Wrench, Activity, ShieldAlert,
   RefreshCw, Save,
-  Zap, ShieldCheck, PlayCircle, Info, Palette, Mic, Waves, Cpu, BookOpen
+  Zap, ShieldCheck, PlayCircle, Info, Palette, Mic, Waves, Cpu, BookOpen, ScanLine
 } from "lucide-react";
 import type { UseMutationResult } from "@tanstack/react-query";
 // M1.6B2/B3 — voice layer settings (same pacs_settings persistence as this
@@ -55,6 +55,7 @@ import { RadiologyAdminOverviewPanel } from "@/components/radiology/RadiologyAdm
 import { RadiologyDeploymentPanel } from "@/components/radiology/RadiologyDeploymentPanel";
 import RadiologyQuickSelectSettings from "@/pages/RadiologyQuickSelectSettings";
 import { RadiologyCatalogPanel } from "@/pages/RadiologyCatalogAdmin";
+import RadiologyProductivityFlagsPanel from "@/components/radiology/RadiologyProductivityFlagsPanel";
 
 type Setting = { id: number; key: string; value: string | null; category: string; isSecret: boolean };
 type ServiceHealth = { name: string; endpoint: string; status: "green" | "yellow" | "red"; details: string };
@@ -206,7 +207,7 @@ export default function RadiologySettingsCenter() {
   const SETTINGS_TABS = [
     "overview", "general", "reading-suite", "network", "modalities", "pacs", "pacs-advanced", "viewers", "mwl",
     "sync", "reporting", "usg-extraction", "quick-select", "content-catalog", "style", "premium", "voice",
-    "diagnostics", "history", "deployment", "advanced",
+    "diagnostics", "history", "deployment", "productivity", "advanced",
   ] as const;
 
   const [activeTab, setActiveTab] = useState(() => {
@@ -216,6 +217,7 @@ export default function RadiologySettingsCenter() {
       // Aliases from old deep links
       if (t === "usg") return "usg-extraction";
       if (t === "dicom") return "mwl";
+      if (t === "radiology" || t === "radiology-tools") return "productivity";
     } catch { /* ignore */ }
     return "overview";
   });
@@ -228,6 +230,13 @@ export default function RadiologySettingsCenter() {
       window.history.replaceState({}, "", url.toString());
     } catch { /* ignore */ }
   }
+
+  useEffect(() => {
+    try {
+      const t = new URLSearchParams(window.location.search).get("tab");
+      if (t === "radiology" || t === "radiology-tools") goTab("productivity");
+    } catch { /* ignore */ }
+  }, []);
   const [detectedProfile, setDetectedProfile] = useState<"LAN" | "TAILSCALE" | "PUBLIC">("PUBLIC");
   const [profileOverride, setProfileOverride] = useState<"auto" | "LAN" | "TAILSCALE" | "PUBLIC">(() => {
     return (localStorage.getItem("pacs_network_profile") as any) || "auto";
@@ -487,6 +496,7 @@ export default function RadiologySettingsCenter() {
           <TabsTrigger value="diagnostics"><Activity size={14} className="mr-1.5" />Diagnostics</TabsTrigger>
           <TabsTrigger value="deployment"><ShieldAlert size={14} className="mr-1.5" />Deployment</TabsTrigger>
           <TabsTrigger value="general"><ShieldCheck size={14} className="mr-1.5" />General</TabsTrigger>
+          <TabsTrigger value="productivity"><ScanLine size={14} className="mr-1.5" />Productivity</TabsTrigger>
           <TabsTrigger value="reading-suite"><BookOpen size={14} className="mr-1.5" />Reading Suite</TabsTrigger>
           <TabsTrigger value="network"><Network size={14} className="mr-1.5" />Profiles</TabsTrigger>
           <TabsTrigger value="pacs-advanced"><Server size={14} className="mr-1.5" />PACS Full</TabsTrigger>
@@ -582,8 +592,8 @@ export default function RadiologySettingsCenter() {
               ))}
             </div>
             <div className="flex flex-wrap gap-2 pt-1">
-              <Button type="button" size="sm" variant="outline" className="h-7 text-[11px]" onClick={() => navigate("/settings?tab=radiology")}>
-                ERP Settings → Radiology
+              <Button type="button" size="sm" variant="outline" className="h-7 text-[11px]" onClick={() => goTab("productivity")}>
+                Device productivity flags
               </Button>
               <Button type="button" size="sm" variant="outline" className="h-7 text-[11px]" onClick={() => navigate("/settings?tab=feature-flags")}>
                 Server Feature Flags
@@ -1595,6 +1605,10 @@ export default function RadiologySettingsCenter() {
           <RadiologyDeploymentPanel />
         </TabsContent>
 
+        <TabsContent value="productivity" className="space-y-4" data-testid="settings-radiology-productivity">
+          <RadiologyProductivityFlagsPanel />
+        </TabsContent>
+
         {/* Tab content 9: Advanced */}
         <TabsContent value="advanced" className="space-y-4">
           <div className="rounded-xl border bg-card p-5 space-y-4">
@@ -1611,7 +1625,7 @@ export default function RadiologySettingsCenter() {
               Radiology admin tools (moved from sidebar)
             </h3>
             <p className="text-xs text-muted-foreground">
-              Deep tools keep their routes; discovery is here and under Settings → Radiology Tools.
+              Deep tools keep their routes; discovery is consolidated under Settings → Radiology.
             </p>
             <div className="flex flex-wrap gap-2">
               {[
@@ -1642,14 +1656,6 @@ export default function RadiologySettingsCenter() {
                 </Button>
               ))}
             </div>
-            <Button
-              size="sm"
-              variant="secondary"
-              className="h-8"
-              onClick={() => navigate("/settings?tab=radiology")}
-            >
-              Open Settings → Radiology Tools hub
-            </Button>
           </div>
 
           <div className="rounded-xl border bg-card p-5 space-y-4">
