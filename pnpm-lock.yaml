@@ -968,6 +968,52 @@ importers:
         specifier: 'catalog:'
         version: 3.25.76
 
+  artifacts/emergency-billing:
+    dependencies:
+      '@workspace/emergency-billing':
+        specifier: file:../../lib/emergency-billing
+        version: link:../../lib/emergency-billing
+      bcryptjs:
+        specifier: ^3.0.3
+        version: 3.0.3
+      cookie-parser:
+        specifier: ^1.4.7
+        version: 1.4.7
+      cors:
+        specifier: ^2.8.5
+        version: 2.8.6
+      express:
+        specifier: ^5.1.0
+        version: 5.2.1
+      pg:
+        specifier: ^8.20.0
+        version: 8.20.0
+    devDependencies:
+      '@types/cookie-parser':
+        specifier: ^1.4.9
+        version: 1.4.10(@types/express@5.0.6)
+      '@types/cors':
+        specifier: ^2.8.19
+        version: 2.8.19
+      '@types/express':
+        specifier: ^5.0.3
+        version: 5.0.6
+      '@types/node':
+        specifier: ^22.15.3
+        version: 22.19.17
+      '@types/pg':
+        specifier: ^8.15.5
+        version: 8.18.0
+      esbuild:
+        specifier: 0.27.3
+        version: 0.27.3
+      tsx:
+        specifier: ^4.21.0
+        version: 4.21.0
+      typescript:
+        specifier: ^5.9.2
+        version: 5.9.3
+
   artifacts/local-dicom-bridge:
     dependencies:
       dcmjs-dimse:
