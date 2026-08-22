@@ -582,8 +582,11 @@ router.post("/radiology/studies", async (req, res) => {
       }
     }
 
-    // 4. Matched by fallback demographics: patientId + studyDate + modality
+    // 4. Matched by fallback demographics: patientId + studyDate + modality (US aliases)
     if (!rStudy && resolvedPatientId && formattedStudyDate && modality) {
+      const modalityCond = isUltrasoundModality(modality)
+        ? sql`lower(${radiologyStudiesTable.modality}) IN ('us', 'usg', 'ultrasound') OR lower(${radiologyStudiesTable.department}) = 'usg'`
+        : sql`lower(${radiologyStudiesTable.modality}) = lower(${modality})`;
       const [row] = await db
         .select(studySelectFields)
         .from(radiologyStudiesTable)
@@ -591,13 +594,36 @@ router.post("/radiology/studies", async (req, res) => {
           and(
             eq(radiologyStudiesTable.patientId, resolvedPatientId),
             eq(radiologyStudiesTable.studyDate, formattedStudyDate),
-            sql`lower(${radiologyStudiesTable.modality}) = lower(${modality})`
-          )
+            modalityCond,
+          ),
         )
         .limit(1);
       if (row) {
         rStudy = row;
         matchMethod = "matched by fallback demographics";
+      }
+    }
+
+    // 5. USG without accession on DICOM: same patient, today's USG study still scheduled
+    if (!rStudy && resolvedPatientId && isUltrasoundModality(modality)) {
+      const studyDateCond = formattedStudyDate
+        ? eq(radiologyStudiesTable.studyDate, formattedStudyDate)
+        : eq(radiologyStudiesTable.studyDate, todayIST());
+      const [row] = await db
+        .select(studySelectFields)
+        .from(radiologyStudiesTable)
+        .where(
+          and(
+            eq(radiologyStudiesTable.patientId, resolvedPatientId),
+            studyDateCond,
+            eq(radiologyStudiesTable.department, "USG"),
+            inArray(radiologyStudiesTable.status, ["scheduled", "in_progress"]),
+          ),
+        )
+        .limit(1);
+      if (row) {
+        rStudy = row;
+        matchMethod = "matched by USG patient today";
       }
     }
 
@@ -843,18 +869,19 @@ router.post("/radiology/studies", async (req, res) => {
     }
 
     // Wire Orthanc arrival → queue token done + MWL cleanup + live UI refresh
-    if (rStudy) {
-      runDicomIntakeAutomation({
-        worklistId: row.id,
-        accessionNumber: rStudy.accessionNumber || accessionNumber,
-        orderTestId: rStudy.orderTestId,
-        billId: rStudy.billId,
-        department: rStudy.department,
-        previousStudyStatus,
-      }).catch((err: unknown) => {
-        logger.warn({ err, worklistId: row.id }, "dicom-intake automation failed silently");
-      });
-    }
+    runDicomIntakeAutomation({
+      worklistId: row.id,
+      accessionNumber: rStudy?.accessionNumber || accessionNumber,
+      orderTestId: rStudy?.orderTestId,
+      billId: rStudy?.billId,
+      department: rStudy?.department,
+      patientId: resolvedPatientId,
+      patientName,
+      modality,
+      previousStudyStatus,
+    }).catch((err: unknown) => {
+      logger.warn({ err, worklistId: row.id }, "dicom-intake automation failed silently");
+    });
 
     // DICOM → Ollama draft: enqueue per Settings → Radiology → AI (on arrival or scheduled).
     if (studyInstanceUID) {
