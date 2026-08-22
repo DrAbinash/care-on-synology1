@@ -8045,7 +8045,7 @@ function QueueDisplaySettingsTab() {
             <ToggleRow label='Show estimated wait time (e.g. "~12 min wait")' checked={form.showWaitEstimate} onChange={(v) => setForm({ ...form, showWaitEstimate: v })} />
             <ToggleRow
               label="Auto-complete queue token when scan arrives (DICOM → ERP)"
-              checked={form.autoCompleteTokenOnDicom}
+              checked={form.autoCompleteTokenOnDicom ?? true}
               onChange={(v) => setForm({ ...form, autoCompleteTokenOnDicom: v })}
             />
             <p className="text-[11px] text-muted-foreground mb-3 -mt-1">
