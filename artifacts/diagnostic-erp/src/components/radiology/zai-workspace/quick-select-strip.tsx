@@ -243,6 +243,7 @@ function QuickSelectTileBox({
             e.stopPropagation();
             onFav();
           }}
+          aria-label={tile.favorite ? "Remove from favorites" : "Add to favorites"}
           className={cn(
             "rounded-md p-0.5 hover:bg-white/70",
             tile.favorite ? "text-amber-500" : "text-slate-400 hover:text-amber-500",
@@ -255,6 +256,7 @@ function QuickSelectTileBox({
             e.stopPropagation();
             onEdit();
           }}
+          aria-label={`Edit ${tile.label}`}
           className="rounded-md p-0.5 text-slate-400 hover:bg-white/70 hover:text-slate-700"
         >
           <Pencil className="h-2.5 w-2.5" />

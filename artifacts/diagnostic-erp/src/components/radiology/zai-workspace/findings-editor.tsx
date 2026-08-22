@@ -224,6 +224,7 @@ export function FindingsEditor({
             onKeyDown={hk}
             placeholder={placeholder ?? "Begin typing..."}
             spellCheck={false}
+            aria-label={label}
             className="w-full resize-none border-0 bg-transparent px-3 py-2.5 text-sm leading-[1.6] text-foreground outline-none placeholder:text-muted-foreground/50"
             style={{ minHeight }}
             data-testid={`canonical-${field}-editor`}

@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useWorkspace, useWorkspaceSelector } from "@/lib/zai-workspace/store";
 import { patientAccent, modalityAccent } from "@/lib/zai-workspace/types";
 import { Clock, Lock, AlertTriangle, ChevronRight, Archive, Flame } from "lucide-react";
@@ -43,6 +44,10 @@ export function WorklistStrip({
   const completed = useWorkspaceSelector(s => s.completedStudyIds);
   const parked = useWorkspaceSelector(s => s.parkedStudyIds);
   const select = useWorkspaceSelector(s => s.selectStudy);
+  const MAX_VISIBLE = 50;
+  const [visibleCount, setVisibleCount] = useState(MAX_VISIBLE);
+  const visibleStudies = studies.slice(0, visibleCount);
+  const hasMore = studies.length > visibleCount;
 
   return (
     <div className="flex h-full flex-col">
@@ -115,7 +120,7 @@ export function WorklistStrip({
               <span className="text-[10px] text-emerald-600/60">Waiting for worklist…</span>
             </div>
           )}
-          {studies.map(s => {
+          {visibleStudies.map(s => {
             const patient = s.patient ?? { id: "0", name: "Unknown", age: 0, sex: "O" as const, uhid: "", referringDoctor: "" };
             const a = patientAccent(patient.id || "0");
             const isActive = s.id === activeId;
@@ -186,6 +191,15 @@ export function WorklistStrip({
               </button>
             );
           })}
+          {hasMore && (
+            <button
+              type="button"
+              onClick={() => setVisibleCount(c => c + MAX_VISIBLE)}
+              className="w-full rounded-lg border border-dashed border-emerald-300/60 bg-emerald-50/30 py-2 text-[11px] font-medium text-emerald-700/80 hover:bg-emerald-50/60 transition"
+            >
+              Show {Math.min(MAX_VISIBLE, studies.length - visibleCount)} more of {studies.length - visibleCount} remaining…
+            </button>
+          )}
         </div>
       </ScrollArea>
     </div>
