@@ -8050,7 +8050,8 @@ function QueueDisplaySettingsTab() {
             />
             <p className="text-[11px] text-muted-foreground mb-3 -mt-1">
               USG workaround when the machine cannot pull billing worklist: after Orthanc sends the study to ERP,
-              the patient&apos;s waiting/serving token for this room&apos;s department is marked done and the TV queue advances.
+              the patient&apos;s waiting/serving token is matched by <strong>name</strong> (not machine patient ID)
+              and marked done so the TV queue advances.
             </p>
             <div className="flex items-center gap-2 mb-3">
               <Label className="text-xs w-40 shrink-0">Ledger / Book ID</Label>

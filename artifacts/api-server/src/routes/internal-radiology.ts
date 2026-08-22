@@ -876,6 +876,7 @@ router.post("/radiology/studies", async (req, res) => {
       billId: rStudy?.billId,
       department: rStudy?.department,
       patientId: resolvedPatientId,
+      patientName,
       modality,
       previousStudyStatus,
     }).catch((err: unknown) => {
