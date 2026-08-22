@@ -49,6 +49,8 @@ export interface PathProbeResult {
   ollamaLoadDurationNs?: number | null;
   ollamaPromptEvalCount?: number | null;
   ollamaEvalCount?: number | null;
+  /** num_predict sent on the Ollama request (infra probes). */
+  requestNumPredict?: number | null;
   configuredNumCtx?: number | null;
   requestedNumCtx?: number | null;
   ollamaAvailableContext?: number | null;

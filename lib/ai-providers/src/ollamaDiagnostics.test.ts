@@ -72,7 +72,7 @@ describe("OllamaProvider query diagnostics", () => {
       model: "qwen3-vl:8b",
       prompt: "x",
       images: ["aaaa"],
-      // omit think — matches /api/ai-reporting/draft
+      // omit think — legacy path; draft now sends think:false explicitly
     });
     expect(result.success).toBe(true);
     expect(result.diagnostics?.thinkSent).toBe(false);

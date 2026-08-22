@@ -868,6 +868,7 @@ router.post("/draft", async (req, res): Promise<void> => {
           model,
           numCtx: draftCtx.requestedNumCtx,
           endpointUrl: runtime.ollamaBaseUrl,
+          think: false,
         }
       : { model };
   const aiResult = await generateAiForTask("radiology_draft", finalPrompt, images, ollamaOpts);

@@ -9,6 +9,7 @@ export const RESOURCE_FAILURE_CODES = [
   "PROVIDER_TIMEOUT",
   "PROVIDER_HTTP_ERROR",
   "PARSE_FAILED",
+  "OUTPUT_BUDGET_EXHAUSTED",
   "EMPTY_MODEL_OUTPUT",
   "QUARANTINED",
 ] as const;
@@ -25,6 +26,48 @@ export interface GpuifiedResourceFailure {
 
 const CUDA_OOM_RE =
   /cudaMalloc|out of memory|CUDA error|failed to allocate CUDA|ggml_cuda|gpu.?oom|VRAM/i;
+
+/**
+ * HTTP 200 with empty `message.content` but eval_count at num_predict — common on
+ * qwen3-vl when chain-of-thought consumed the output budget (even with think:false).
+ */
+export function detectOutputBudgetExhausted(opts: {
+  responseLength?: number | null;
+  thinkingLength?: number | null;
+  evalCount?: number | null;
+  numPredict?: number | null;
+  finishReason?: string | null;
+}): boolean {
+  const responseLength = opts.responseLength ?? 0;
+  if (responseLength > 0) return false;
+
+  const finish = (opts.finishReason ?? "").trim().toLowerCase();
+  if (finish === "length") return true;
+
+  const evalCount = opts.evalCount;
+  const numPredict = opts.numPredict;
+  if (
+    numPredict != null &&
+    numPredict > 0 &&
+    evalCount != null &&
+    evalCount >= numPredict
+  ) {
+    return true;
+  }
+
+  const thinkingLength = opts.thinkingLength ?? 0;
+  if (
+    thinkingLength > 0 &&
+    numPredict != null &&
+    numPredict > 0 &&
+    evalCount != null &&
+    evalCount >= numPredict - 1
+  ) {
+    return true;
+  }
+
+  return false;
+}
 
 /** Parse Ollama / CUDA OOM from HTTP body or thrown message (PHI-safe slice). */
 export function parseGpuOutOfMemory(errorMessage: string | null | undefined): {
@@ -48,6 +91,10 @@ export function classifyResourceFailure(opts: {
   responseLength?: number | null;
   parserSuccess?: boolean | null;
   quarantined?: boolean | null;
+  thinkingLength?: number | null;
+  evalCount?: number | null;
+  numPredict?: number | null;
+  finishReason?: string | null;
 }): GpuifiedResourceFailure {
   const msg = opts.errorMessage ?? "";
   const codeHint = opts.errorCode ?? "";
@@ -93,6 +140,29 @@ export function classifyResourceFailure(opts: {
       code: "PROVIDER_TIMEOUT",
       httpStatus: opts.httpStatus ?? null,
       detail: msg.slice(0, 300) || "provider timeout",
+      stopLargerProbes: false,
+    };
+  }
+
+  if (
+    codeHint === "OUTPUT_BUDGET_EXHAUSTED" ||
+    (opts.success &&
+      detectOutputBudgetExhausted({
+        responseLength: opts.responseLength,
+        thinkingLength: opts.thinkingLength,
+        evalCount: opts.evalCount,
+        numPredict: opts.numPredict,
+        finishReason: opts.finishReason,
+      }))
+  ) {
+    const evalCount = opts.evalCount ?? "—";
+    const numPredict = opts.numPredict ?? "—";
+    const thinkingLength = opts.thinkingLength ?? 0;
+    return {
+      code: "OUTPUT_BUDGET_EXHAUSTED",
+      httpStatus: opts.httpStatus ?? 200,
+      detail:
+        `num_predict budget exhausted with empty content (eval=${evalCount} num_predict=${numPredict} thinkingLen=${thinkingLength})`,
       stopLargerProbes: false,
     };
   }
