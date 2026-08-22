@@ -204,29 +204,45 @@ export default function RadiologySettingsCenter() {
   const [, navigate] = useLocation();
   const isAdmin = FULL_ACCESS_ROLES.has(normalizeRole(readStaffSession()?.user.role ?? ""));
 
+  const SETTINGS_TAB_ALIASES: Record<string, string> = {
+    general: "overview",
+    "reading-suite": "overview",
+    premium: "style",
+    usg: "usg-extraction",
+    dicom: "mwl",
+    radiology: "productivity",
+    "radiology-tools": "productivity",
+  };
+
   const SETTINGS_TABS = [
-    "overview", "general", "reading-suite", "network", "modalities", "pacs", "pacs-advanced", "viewers", "mwl",
-    "sync", "reporting", "usg-extraction", "quick-select", "content-catalog", "style", "premium", "voice",
+    "overview", "network", "modalities", "pacs", "pacs-advanced", "viewers", "mwl",
+    "sync", "reporting", "usg-extraction", "quick-select", "content-catalog", "style", "voice",
     "diagnostics", "history", "deployment", "productivity", "advanced",
+    // legacy ids kept for deep links — resolved via SETTINGS_TAB_ALIASES
+    "general", "reading-suite", "premium",
   ] as const;
+
+  function resolveRadiologyTab(raw: string | null | undefined): string {
+    if (!raw) return "overview";
+    if (SETTINGS_TAB_ALIASES[raw]) return SETTINGS_TAB_ALIASES[raw];
+    if ((SETTINGS_TABS as readonly string[]).includes(raw)) return raw;
+    return "overview";
+  }
 
   const [activeTab, setActiveTab] = useState(() => {
     try {
       const t = new URLSearchParams(window.location.search).get("tab");
-      if (t && (SETTINGS_TABS as readonly string[]).includes(t)) return t;
-      // Aliases from old deep links
-      if (t === "usg") return "usg-extraction";
-      if (t === "dicom") return "mwl";
-      if (t === "radiology" || t === "radiology-tools") return "productivity";
+      return resolveRadiologyTab(t);
     } catch { /* ignore */ }
     return "overview";
   });
 
   function goTab(tab: string) {
-    setActiveTab(tab);
+    const resolved = resolveRadiologyTab(tab);
+    setActiveTab(resolved);
     try {
       const url = new URL(window.location.href);
-      url.searchParams.set("tab", tab);
+      url.searchParams.set("tab", resolved);
       window.history.replaceState({}, "", url.toString());
     } catch { /* ignore */ }
   }
@@ -234,7 +250,9 @@ export default function RadiologySettingsCenter() {
   useEffect(() => {
     try {
       const t = new URLSearchParams(window.location.search).get("tab");
-      if (t === "radiology" || t === "radiology-tools") goTab("productivity");
+      const resolved = resolveRadiologyTab(t);
+      if (t && t !== resolved) goTab(t);
+      else if (t === "radiology" || t === "radiology-tools") goTab("productivity");
     } catch { /* ignore */ }
   }, []);
   const [detectedProfile, setDetectedProfile] = useState<"LAN" | "TAILSCALE" | "PUBLIC">("PUBLIC");
@@ -495,13 +513,9 @@ export default function RadiologySettingsCenter() {
           <TabsTrigger value="reporting"><BrainCircuit size={14} className="mr-1.5" />AI</TabsTrigger>
           <TabsTrigger value="diagnostics"><Activity size={14} className="mr-1.5" />Diagnostics</TabsTrigger>
           <TabsTrigger value="deployment"><ShieldAlert size={14} className="mr-1.5" />Deployment</TabsTrigger>
-          <TabsTrigger value="general"><ShieldCheck size={14} className="mr-1.5" />General</TabsTrigger>
           <TabsTrigger value="productivity"><ScanLine size={14} className="mr-1.5" />Productivity</TabsTrigger>
-          <TabsTrigger value="reading-suite"><BookOpen size={14} className="mr-1.5" />Reading Suite</TabsTrigger>
           <TabsTrigger value="network"><Network size={14} className="mr-1.5" />Profiles</TabsTrigger>
-          <TabsTrigger value="pacs-advanced"><Server size={14} className="mr-1.5" />PACS Full</TabsTrigger>
           <TabsTrigger value="style"><Palette size={14} className="mr-1.5" />Report Style</TabsTrigger>
-          <TabsTrigger value="premium"><Zap size={14} className="mr-1.5" />Premium</TabsTrigger>
           <TabsTrigger value="voice"><Mic size={14} className="mr-1.5" />Voice</TabsTrigger>
           <TabsTrigger value="history"><Info size={14} className="mr-1.5" />History</TabsTrigger>
           <TabsTrigger value="advanced"><ShieldAlert size={14} className="mr-1.5" />Advanced</TabsTrigger>
@@ -554,58 +568,22 @@ export default function RadiologySettingsCenter() {
               ))}
             </div>
           </div>
-        </TabsContent>
 
-        {/* Tab content 1: Network Profiles */}
-        {/* ── Phase E: GENERAL — plain-language everyday options ── */}
-        <TabsContent value="general" className="space-y-4">
-          <div className="rounded-xl border bg-card p-5 space-y-3" data-testid="radiology-settings-overview">
-            <div>
-              <h3 className="text-sm font-bold">Radiology Settings Center — start here</h3>
-              <p className="text-xs text-muted-foreground mt-1">
-                This is the main admin hub for PACS, viewers, MWL, report style, voice, and USG extraction.
-                Browser-only productivity toggles live under Settings → Radiology Flags; server roadmap switches under Feature Flags.
-              </p>
-            </div>
-            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-              {([
-                { tab: "network", title: "Network profiles", desc: "LAN / Tailscale / Public routing for Orthanc & viewers" },
-                { tab: "pacs", title: "PACS servers", desc: "Orthanc / Conquest endpoints and AE titles" },
-                { tab: "viewers", title: "Viewers", desc: "OHIF & Weasis launch URLs and diagnostics" },
-                { tab: "mwl", title: "DICOM & MWL", desc: "Modality worklist sync and status" },
-                { tab: "style", title: "Report style", desc: "Letterhead, fonts, and print chrome" },
-                { tab: "voice", title: "Voice", desc: "Dictation provider and radiologist prefs" },
-                { tab: "usg-extraction", title: "USG extraction", desc: "Measurement / SR extraction for ultrasound" },
-                { tab: "reporting", title: "AI & templates", desc: "AI reporting panels and template helpers" },
-                { tab: "diagnostics", title: "Diagnostics", desc: "Live health checks for PACS services" },
-              ] as const).map((card) => (
-                <button
-                  key={card.tab}
-                  type="button"
-                  onClick={() => goTab(card.tab)}
-                  className="text-left rounded-lg border bg-muted/20 hover:bg-muted/50 p-3 transition-colors"
-                  data-testid={`radiology-settings-goto-${card.tab}`}
-                >
-                  <div className="text-xs font-semibold">{card.title}</div>
-                  <div className="text-[11px] text-muted-foreground mt-0.5 leading-snug">{card.desc}</div>
-                </button>
-              ))}
-            </div>
-            <div className="flex flex-wrap gap-2 pt-1">
-              <Button type="button" size="sm" variant="outline" className="h-7 text-[11px]" onClick={() => goTab("productivity")}>
-                Device productivity flags
-              </Button>
-              <Button type="button" size="sm" variant="outline" className="h-7 text-[11px]" onClick={() => navigate("/settings?tab=feature-flags")}>
-                Server Feature Flags
-              </Button>
-              <Button type="button" size="sm" variant="outline" className="h-7 text-[11px]" onClick={() => navigate("/radiology/reporting-workspace")}>
-                Open Reporting Workspace
-              </Button>
-            </div>
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" size="sm" variant="outline" className="h-7 text-[11px]" onClick={() => goTab("productivity")}>
+              Device productivity flags
+            </Button>
+            <Button type="button" size="sm" variant="outline" className="h-7 text-[11px]" onClick={() => navigate("/settings?tab=feature-flags")}>
+              Server Feature Flags
+            </Button>
+            <Button type="button" size="sm" variant="outline" className="h-7 text-[11px]" onClick={() => navigate("/radiology/reporting-workspace")}>
+              Open Reporting Workspace
+            </Button>
           </div>
-          <div className="rounded-xl border bg-card p-5 space-y-4 max-w-2xl">
+
+          <div className="rounded-xl border bg-card p-5 space-y-4 max-w-2xl" data-testid="radiology-settings-overview">
             <h3 className="text-sm font-bold">General Radiology Options</h3>
-            <p className="text-xs text-muted-foreground">Everyday behavior of the Radiology module. Safe to change; takes effect immediately for new page loads.</p>
+            <p className="text-xs text-muted-foreground">Everyday module behaviour. Worklist / workspace safety toggles are in the Reading workflow section below.</p>
             <div className="space-y-1">
               <Label className="text-xs">Default Radiologist</Label>
               <Input
@@ -615,42 +593,15 @@ export default function RadiologySettingsCenter() {
                 onBlur={(e) => upsertSetting.mutate({ key: "default_radiologist", value: e.target.value, category: "radiology" })}
                 disabled={!isAdmin}
               />
-              <p className="text-[11px] text-muted-foreground">Shown as the pre-selected radiologist on new studies when none is assigned.</p>
-            </div>
-            <div className="flex items-center justify-between border rounded-lg p-3">
-              <div>
-                <Label className="text-xs font-semibold">Highlight Urgent / VIP studies</Label>
-                <p className="text-[11px] text-muted-foreground">Tints STAT / EMERGENCY / URGENT / VIP rows in the Worklist and Reading Room.</p>
-              </div>
-              <Switch checked={svOn("urgent_highlight_enabled")} disabled={!isAdmin}
-                onCheckedChange={(v) => upsertSetting.mutate({ key: "urgent_highlight_enabled", value: String(v), category: "radiology" })} />
-            </div>
-            <div className="flex items-center justify-between border rounded-lg p-3">
-              <div>
-                <Label className="text-xs font-semibold">Lock report after Final sign-off</Label>
-                <p className="text-[11px] text-muted-foreground">Moved to <button type="button" className="underline text-primary" onClick={() => goTab("reading-suite")}>Reading Suite</button> — default OFF for trial.</p>
-              </div>
-              <Switch checked={svOn("report_final_lock", false)} disabled={!isAdmin}
-                onCheckedChange={(v) => upsertSetting.mutate({ key: "report_final_lock", value: String(v), category: "radiology" })} />
-            </div>
-            <div className="space-y-1">
-              <Label className="text-xs">Aging alert after (hours)</Label>
-              <Input
-                type="number" min={1} max={72} className="h-8 text-sm w-32"
-                placeholder="4"
-                defaultValue={sv("radiology_aging_alert_hours", "4")}
-                onBlur={(e) => upsertSetting.mutate({ key: "radiology_aging_alert_hours", value: e.target.value.trim() || "4", category: "radiology" })}
-                disabled={!isAdmin}
-              />
-              <p className="text-[11px] text-muted-foreground">A red "waiting" badge appears on Worklist studies that haven't been finalized within this many hours — helps reception spot studies stuck in the queue.</p>
+              <p className="text-[11px] text-muted-foreground">Pre-selected radiologist on new studies when none is assigned.</p>
             </div>
           </div>
+
           <div className="rounded-xl border bg-card p-5 space-y-3 max-w-2xl" data-testid="name-gender-extras-panel">
             <h3 className="text-sm font-bold">Patient name → Sex suggestion</h3>
             <p className="text-xs text-muted-foreground">
               Bill Desk / Register / Patients / Kiosk pre-fill Sex from a bundled Indian first-name list.
               Add clinic-specific names here (one per line) when a local name is missing — no code deploy needed.
-              Unisex names should stay off both lists.
             </p>
             {(() => {
               const maleStored = sv("name_gender_male_extra", "");
@@ -707,24 +658,7 @@ export default function RadiologySettingsCenter() {
             })()}
           </div>
 
-          <div className="rounded-xl border bg-card p-4 space-y-2 max-w-2xl">
-            <h4 className="text-xs font-bold uppercase tracking-wide text-muted-foreground">Related settings</h4>
-            <div className="flex flex-wrap gap-2 text-sm">
-              <button type="button" className="text-primary hover:underline" onClick={() => goTab("quick-select")}>Quick Select</button>
-              <span className="text-muted-foreground">·</span>
-              <button type="button" className="text-primary hover:underline" onClick={() => goTab("usg-extraction")}>USG Settings</button>
-              <span className="text-muted-foreground">·</span>
-              <button type="button" className="text-primary hover:underline" onClick={() => goTab("advanced")}>HL7 / Advanced</button>
-              <span className="text-muted-foreground">·</span>
-              <a href="/radiology/structured-report-templates" className="text-primary hover:underline">Structured templates</a>
-              <span className="text-muted-foreground">·</span>
-              <a href="/radiology/normal-templates" className="text-primary hover:underline">Normal one-click templates</a>
-            </div>
-          </div>
-        </TabsContent>
-
-        <TabsContent value="reading-suite" className="space-y-4" data-testid="reading-suite-tab">
-          <div className="rounded-xl border bg-card p-5 space-y-2 max-w-3xl">
+          <div className="rounded-xl border bg-card p-5 space-y-2 max-w-3xl" data-testid="reading-suite-tab">
             <h3 className="text-sm font-bold flex items-center gap-2">
               <BookOpen size={16} className="text-sky-600" /> Reading Suite
             </h3>
@@ -864,8 +798,8 @@ export default function RadiologySettingsCenter() {
               ))}
             </div>
           </div>
+        
         </TabsContent>
-
         <TabsContent value="network" className="space-y-4">
           {/* Phase E: runtime overrides for the Phase B central network config.
               Saved to admin settings (category "viewer") — hydrated by
@@ -979,12 +913,26 @@ export default function RadiologySettingsCenter() {
               </div>
             </div>
           </div>
+          <div className="rounded-xl border bg-card p-5 flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-bold">Full PACS / DICOM configuration</h3>
+              <p className="text-xs text-muted-foreground mt-1">
+                Connection tests, routing rules, and the complete legacy PACS settings surface — embedded, not a separate nav entry.
+              </p>
+            </div>
+            <Button type="button" size="sm" variant="outline" onClick={() => goTab("pacs-advanced")} data-testid="radiology-open-pacs-full">
+              Open PACS Full settings
+            </Button>
+          </div>
         </TabsContent>
 
-        {/* PACS / DICOM (Full) — the complete PACS/DICOM/viewer/MWL/routing/
-            connection-test configuration, embedded from the former standalone
-            PacsSettings page (now retired) so there is ONE settings entry point. */}
-        <TabsContent value="pacs-advanced" className="space-y-4">
+        <TabsContent value="pacs-advanced" className="space-y-4" data-testid="settings-radiology-pacs-full">
+          <div className="rounded-lg border bg-muted/20 p-3 text-xs text-muted-foreground flex flex-wrap items-center justify-between gap-2">
+            <span>Full PACS / DICOM / routing configuration (legacy PacsSettings page, embedded).</span>
+            <Button type="button" size="sm" variant="outline" className="h-7 text-[11px]" onClick={() => goTab("pacs")}>
+              Back to PACS Server
+            </Button>
+          </div>
           <PacsSettings embedded />
         </TabsContent>
 
@@ -1469,6 +1417,45 @@ export default function RadiologySettingsCenter() {
         </TabsContent>
 
         <TabsContent value="style" className="space-y-4">
+
+          <div className="rounded-xl border bg-card p-5 space-y-3 max-w-3xl">
+            <h3 className="text-sm font-bold">Premium Report Presentation</h3>
+            <p className="text-xs text-muted-foreground">
+              Choose the clinic-wide report layout below. All print, PDF, and workspace preview surfaces use the same canonical server renderer. Radiologists can still compare layouts in the Reading Room preview without changing this default.
+            </p>
+            <ReportLayoutQuickSelect
+              value={activeReportLayout}
+              activeKey={activeReportLayout}
+              disabled={!isAdmin}
+              onChange={setActiveReportLayout}
+              className="max-w-md"
+            />
+            <div className="grid md:grid-cols-2 gap-2">
+              {([
+                ["premium_image_panel", "Image Panel", "Right-side representative DICOM images from Orthanc."],
+                ["premium_qr_verification", "QR Verification", "Printed QR code for report authenticity checks."],
+                ["premium_digital_signature", "Digital Signature", "Radiologist signature block on the final report."],
+                ["premium_journal_style", "Journal Style", "Academic journal-style typography."],
+                ["premium_structured_reports", "Structured Reports", "Section-structured findings layout."],
+                ["premium_multipage", "Multi-page Reports", "Allow reports to span multiple printed pages."],
+                ["premium_hospital_branding", "Hospital Branding", "Clinic logo and letterhead on premium reports."],
+                ["premium_themes", "Report Themes", "Allow selecting alternative premium themes."],
+              ] as const).map(([key, label, help]) => (
+                <div key={key} className="flex items-center justify-between border rounded-lg p-3">
+                  <div className="pr-3">
+                    <Label className="text-xs font-semibold">{label}</Label>
+                    <p className="text-[11px] text-muted-foreground">{help}</p>
+                  </div>
+                  <Switch
+                    checked={svOn(key, false)}
+                    disabled={!isAdmin}
+                    onCheckedChange={(v) => upsertSetting.mutate({ key, value: String(v), category: "premium" })}
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
+        
           {/* R1.2 — versioned enterprise template engine. Admins manage
               versions/activation/import/export; radiologists can preview. */}
           <PresentationTemplateManager isAdmin={isAdmin} />

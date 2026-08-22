@@ -35,6 +35,25 @@ describe("Radiology settings consolidation", () => {
     expect(app).toMatch(/agent-setup[\s\S]*tab="sync"/);
   });
 
+  it("Settings Center tab strip no longer duplicates General, Reading Suite, Premium, or PACS Full", () => {
+    expect(center).not.toMatch(/TabsTrigger value="general"/);
+    expect(center).not.toMatch(/TabsTrigger value="reading-suite"/);
+    expect(center).not.toMatch(/TabsTrigger value="premium"/);
+    expect(center).not.toMatch(/TabsTrigger value="pacs-advanced"/);
+    expect(center).toContain("SETTINGS_TAB_ALIASES");
+    expect(center).toContain('general: "overview"');
+    expect(center).toContain('premium: "style"');
+    expect(center).toContain("data-testid=\"radiology-open-pacs-full\"");
+  });
+
+  it("productivity panel only lists browser flags wired in the ERP UI", () => {
+    const panel = read("src/components/radiology/RadiologyProductivityFlagsPanel.tsx");
+    expect(panel).not.toContain("Show experimental");
+    expect(panel).not.toContain("radiologyQuickAdd");
+    expect(panel).toContain("radiologyMemoryEngine");
+    expect(panel).toContain("dicomImageIntelligence");
+  });
+
   it("Settings Center includes Overview, Sync, USG, Quick Select, Deployment, Productivity tabs", () => {
     for (const tab of ["overview", "sync", "usg-extraction", "quick-select", "deployment", "mwl", "productivity"]) {
       expect(center).toContain(`value="${tab}"`);
