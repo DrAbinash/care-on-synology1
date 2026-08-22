@@ -14,6 +14,7 @@ import {
   radiologistSubspecialtiesTable,
   radiologistWorkloadsTable,
   usersTable,
+  doctorsTable,
   radiologyReportVerificationsTable,
   radiologyCriticalFindingsTable,
   radiologyTatTrackingTable,
@@ -516,7 +517,11 @@ radiologyRouter.get("/pacs-worklist", async (req, res) => {
       aeTitle: radiologyWorklistTable.aeTitle,
       ipAddress: radiologyWorklistTable.ipAddress,
       port: radiologyWorklistTable.port,
-      referringDoctor: radiologyWorklistTable.referringDoctor,
+      referringDoctor: sql<string | null>`COALESCE(
+        NULLIF(TRIM(${radiologyWorklistTable.referringDoctor}), ''),
+        NULLIF(TRIM(${radiologyStudiesTable.referringDoctor}), ''),
+        NULLIF(TRIM(${doctorsTable.name}), '')
+      )`,
       weasisUrl: radiologyWorklistTable.weasisUrl,
       sourcePacs: radiologyWorklistTable.sourcePacs,
       sourceAeTitle: radiologyWorklistTable.sourceAeTitle,
@@ -602,6 +607,8 @@ radiologyRouter.get("/pacs-worklist", async (req, res) => {
         .leftJoin(patientsTable, eq(radiologyWorklistTable.patientId, patientsTable.id))
         .leftJoin(radiologyStudiesTable, eq(radiologyWorklistTable.studyId, radiologyStudiesTable.id))
         .leftJoin(billsTable, eq(radiologyStudiesTable.billId, billsTable.id))
+        .leftJoin(ordersTable, eq(billsTable.orderId, ordersTable.id))
+        .leftJoin(doctorsTable, eq(ordersTable.doctorId, doctorsTable.id))
         .leftJoin(testsTable, eq(radiologyStudiesTable.testId, testsTable.id))
         .where(conds.length > 0 ? and(...conds) : undefined)
         .orderBy(desc(radiologyWorklistTable.createdAt))
@@ -642,6 +649,29 @@ radiologyRouter.get("/pacs-worklist", async (req, res) => {
 
     req.log.info({ rowsReturned: filtered.length, rawRows: rows.length, status: status || "all", modality: modality || "all" }, "[pacs-worklist] query complete");
 
+    // Correct legacy empty READY pointers for ALL worklist views (not only overnight).
+    // Job completion used to write READY even with zero usable draft content.
+    const { refineDisplayStatusFromAiDraftPointer } = await import("../lib/ai/overnightAiDraftStatus.js");
+    filtered = filtered.map((r) => {
+      let pointer: Record<string, unknown> | null = null;
+      const raw = (r as { aiDraftJson?: string | null }).aiDraftJson;
+      if (typeof raw === "string" && raw.trim()) {
+        try {
+          const parsed = JSON.parse(raw) as unknown;
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            pointer = parsed as Record<string, unknown>;
+          }
+        } catch {
+          pointer = null;
+        }
+      }
+      const wl = ((r as { aiDraftStatus?: string | null }).aiDraftStatus ?? "NONE").toUpperCase();
+      if (wl !== "READY") return r;
+      const refined = refineDisplayStatusFromAiDraftPointer("READY", pointer);
+      if (refined === "READY") return r;
+      return { ...r, aiDraftStatus: refined };
+    });
+
     const overnightDrafts =
       req.query.overnightDrafts === "1" || req.query.overnightDrafts === "true";
     if (overnightDrafts) {
@@ -672,26 +702,46 @@ radiologyRouter.get("/pacs-worklist", async (req, res) => {
 
 /**
  * GET /api/radiology/pacs-worklist/:id/ai-draft
- * Retrieve the stored AI draft JSON for a worklist entry.
+ * Retrieve a radiologist-readable AI draft for a worklist entry.
+ * Hydrates from ai_shadow_drafts when available (authoritative grounded content);
+ * falls back to the compact radiology_worklist.ai_draft_json pointer/summary.
  */
 radiologyRouter.get("/pacs-worklist/:id/ai-draft", async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) { res.status(400).json({ error: "Invalid id" }); return; }
 
   const [row] = await db
-    .select({ aiDraftJson: radiologyWorklistTable.aiDraftJson, aiDraftStatus: radiologyWorklistTable.aiDraftStatus })
+    .select({
+      aiDraftJson: radiologyWorklistTable.aiDraftJson,
+      aiDraftStatus: radiologyWorklistTable.aiDraftStatus,
+      studyInstanceUID: radiologyWorklistTable.studyInstanceUID,
+    })
     .from(radiologyWorklistTable)
     .where(eq(radiologyWorklistTable.id, id))
     .limit(1);
 
   if (!row) { res.status(404).json({ error: "Not found" }); return; }
 
-  let draft: Record<string, unknown> | null = null;
+  let stored: Record<string, unknown> | null = null;
   try {
-    if (row.aiDraftJson) draft = JSON.parse(row.aiDraftJson) as Record<string, unknown>;
+    if (row.aiDraftJson) stored = JSON.parse(row.aiDraftJson) as Record<string, unknown>;
   } catch {
-    draft = null;
+    stored = null;
   }
+
+  let shadow = null;
+  const uid = (row.studyInstanceUID ?? "").trim();
+  if (uid) {
+    try {
+      const { getLatestDraftForStudy } = await import("../lib/ai/draftService.js");
+      shadow = await getLatestDraftForStudy(uid);
+    } catch {
+      shadow = null;
+    }
+  }
+
+  const { shapeWorklistAiDraftViewer } = await import("../lib/ai/worklistAiDraftViewer.js");
+  const draft = shapeWorklistAiDraftViewer({ stored, shadow });
 
   res.json({
     id,
@@ -1450,8 +1500,10 @@ radiologyRouter.get("/mri-warm-cache/status", async (_req, res) => {
 radiologyRouter.post("/mri-warm-cache/run", async (req, res) => {
   try {
     const { runMriWarmCache } = await import("../lib/pacs/mriStudyWarmer");
-    const force = (req.body as { force?: boolean } | undefined)?.force !== false;
-    const status = await runMriWarmCache({ force });
+    const body = (req.body ?? {}) as { force?: boolean; mode?: "today_yesterday" | "last_n" };
+    const force = body.force !== false;
+    const mode = body.mode === "last_n" || body.mode === "today_yesterday" ? body.mode : undefined;
+    const status = await runMriWarmCache({ force, mode });
     res.json(status);
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : "warm run failed" });
@@ -2384,7 +2436,8 @@ radiologyRouter.post("/chocolate-findings", async (req: StaffAuthRequest, res) =
   try {
     const body = req.body as Record<string, unknown>;
     const allowed = [
-      "modality", "bodyPart", "groupName", "shortName", "findingText", "impressionText", "isCritical", "sortOrder"
+      "modality", "bodyPart", "groupName", "shortName", "findingText", "impressionText", "isCritical", "sortOrder",
+      "clientKey", "anatomicalSection", "conflictGroup", "baselineReplaces", "supportsLaterality", "sectionsOwned",
     ];
     const values: Record<string, unknown> = {};
     for (const k of allowed) {
@@ -2404,7 +2457,8 @@ radiologyRouter.patch("/chocolate-findings/:id", async (req, res) => {
     if (!Number.isFinite(id)) { res.status(400).json({ error: "Invalid id" }); return; }
     const body = req.body as Record<string, unknown>;
     const allowed = [
-      "modality", "bodyPart", "groupName", "shortName", "findingText", "impressionText", "isCritical", "sortOrder"
+      "modality", "bodyPart", "groupName", "shortName", "findingText", "impressionText", "isCritical", "sortOrder",
+      "clientKey", "anatomicalSection", "conflictGroup", "baselineReplaces", "supportsLaterality", "sectionsOwned",
     ];
     const values: Record<string, unknown> = {};
     for (const k of allowed) {
@@ -2967,6 +3021,9 @@ radiologyRouter.put("/institutional-style", async (req, res) => {
       logoPosition: body.logoPosition || "left",
       signaturePosition: body.signaturePosition || "right",
       imagePlacement: body.imagePlacement || "inline",
+      keyImageFit: body.keyImageFit === "cover" ? "cover" : "contain",
+      keyImageAspect: body.keyImageAspect === "fill" ? "fill" : "square",
+      demographyAlign: body.demographyAlign === "mid" ? "mid" : "extreme_right",
       studyTitleStyle: body.studyTitleStyle || "underlined",
       logoScale: body.logoScale || "large",
       clinicNameScale: body.clinicNameScale || "large",

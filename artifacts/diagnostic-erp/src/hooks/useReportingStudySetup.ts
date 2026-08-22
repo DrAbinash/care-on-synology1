@@ -29,6 +29,8 @@ import { useWorkspace } from "@/lib/zai-workspace/store";
 import { mergeBlock } from "@/lib/quickFindingsMerge";
 import { mergeTechnique } from "@/lib/reportFieldMerge";
 import type { InsertSource } from "@/lib/reportFieldMerge";
+import { resolveChocolateOwnership } from "@/lib/chocolateMacroOwnership";
+import type { ChocolateTile } from "@/lib/findingsMacros";
 import type {
   QuickProtocol,
   QuickSelectData,
@@ -198,12 +200,16 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     [modality, studyDescription, dicomBodyPart, studyRegions, regionOverrides, matchedStudyRegion],
   );
 
-  const availableProtocols = useMemo(
-    () => (quickSelectData?.protocols ?? [])
-      .filter((p) => p.isActive && studyRegions.includes(p.studyType))
-      .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name)),
-    [quickSelectData, studyRegions],
-  );
+  /** Protocols for the selected region(s). When no region is chosen yet, show
+   *  every active protocol so the radiologist can pick manually (selecting a
+   *  protocol then seeds the region from protocol.studyType). */
+  const availableProtocols = useMemo(() => {
+    const all = (quickSelectData?.protocols ?? [])
+      .filter((p) => p.isActive)
+      .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name));
+    if (studyRegions.length === 0) return all;
+    return all.filter((p) => studyRegions.includes(p.studyType));
+  }, [quickSelectData, studyRegions]);
 
   const selectedTemplate = useMemo(
     () => templates.find((t) => t.id === selectedTemplateId) ?? null,
@@ -281,8 +287,13 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
       setActiveProtocol(null);
       return;
     }
+    // Manual protocol pick before any region is resolved — seed the region
+    // so macros / templates / technique follow the chosen study type.
+    if (studyRegions.length === 0 && protocol.studyType?.trim()) {
+      setRegionOverrides([protocol.studyType.trim()]);
+    }
     applyProtocol(protocol, false);
-  }, [applyProtocol]);
+  }, [applyProtocol, studyRegions.length]);
 
   // Auto protocol once per study (after draft hydrate settles).
   useEffect(() => {
@@ -466,9 +477,40 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     else structuredValuesRef.current.delete(f.id);
   }, []);
 
-  const applyChocolateTile = useCallback((text: string) => {
-    if (disabled || !text.trim()) return;
-    setters.mergeFindings(text, "macro");
+  const applyChocolateTile = useCallback((tile: ChocolateTile | { id?: string; label?: string; text: string }) => {
+    if (disabled || !tile.text.trim()) return;
+    const full = tile as ChocolateTile;
+    const resolved = resolveChocolateOwnership({
+      id: full.id ?? "legacy",
+      label: full.label,
+      anatomicalSection: full.anatomicalSection,
+      conflictGroup: full.conflictGroup,
+      baselineReplaces: full.baselineReplaces,
+      supportsLaterality: full.supportsLaterality,
+      sectionsOwned: full.sectionsOwned,
+      legacyAppend: full.legacyAppend,
+    });
+    if (resolved.mode === "legacy-append") {
+      setters.mergeFindings(tile.text, "macro");
+      return;
+    }
+    const ownership = resolved.ownership;
+    const sections = ownership.sectionsOwned ?? ["findings"];
+    const incoming: Record<string, string | undefined> = {};
+    if (sections.includes("findings")) incoming.findings = tile.text;
+    if (sections.includes("impression") && full.impressionText) incoming.impression = full.impressionText;
+    useWorkspace.getState().applyPathologyOverlay({
+      incoming,
+      templates: incoming,
+      ownership: {
+        anatomicalSection: ownership.anatomicalSection,
+        conflictGroup: ownership.conflictGroup,
+        baselineReplaces: ownership.baselineReplaces,
+      },
+      source: "macro",
+      side: ownership.supportsLaterality ? undefined : "",
+      id: full.id ? `choco-${full.id}` : undefined,
+    });
   }, [disabled, setters]);
 
   const selectTemplateManual = useCallback((id: number) => {
@@ -639,6 +681,22 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     setRegionOverrides(null);
   }, []);
 
+  /** Replace the region list with a single primary region (manual dropdown). */
+  const selectPrimaryRegion = useCallback((regionName: string | null) => {
+    if (disabled) return;
+    if (!regionName) {
+      setRegionOverrides(null);
+      return;
+    }
+    setRegionOverrides([regionName]);
+    const protocol = pickQuickProtocol(quickSelectData?.protocols ?? [], regionName);
+    if (protocol) applyProtocol(protocol, false);
+    const tab = quickSelectData?.tabs?.find((t) => t.name === regionName);
+    if (tab?.techniqueText) {
+      setters.mergeTechnique(tab.techniqueText, "protocol");
+    }
+  }, [disabled, quickSelectData, applyProtocol, setters]);
+
   return {
     studyHint,
     studyContext,
@@ -648,6 +706,7 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     regionOverrides,
     handleRegionToggle,
     resetRegionOverrides,
+    selectPrimaryRegion,
     availableRegions,
     availableProtocols,
     activeProtocol,

@@ -26,6 +26,8 @@ export interface SchedulerConfig {
   studyAgeWindow: "all" | "today" | "last_24h" | "last_48h" | "last_3d" | "last_7d" | "custom";
   studyAgeCustomFrom: Date | string | null;
   studyAgeCustomTo: Date | string | null;
+  /** Overnight vision ops (pause / safe mode / caps). Defaults preserve production. */
+  overnightOps?: import("./overnightOpsControls").OvernightOpsControls;
 }
 
 function toMinutes(hhmm: string): number {

@@ -57,6 +57,7 @@ describe("chocolate box add / edit from the workstation", () => {
       "Senile Changes",
       "Pituitary Tumor",
       "Normal Brain",
+      "Basal Ganglia Hemorrhage",
     ]);
   });
 

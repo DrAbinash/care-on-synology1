@@ -50,6 +50,12 @@ export const aiSchedulerConfigTable = pgTable("ai_scheduler_config", {
   studyAgeWindow: text("study_age_window").notNull().default("all"),
   studyAgeCustomFrom: timestamp("study_age_custom_from", { withTimezone: true }),
   studyAgeCustomTo: timestamp("study_age_custom_to", { withTimezone: true }),
+  /**
+   * Overnight vision ops controls (JSON). Defaults preserve current production:
+   * paused=false, imageCap=auto, visionCtx=current, safeMode=false.
+   * Mutable from Settings UI without Docker redeploy.
+   */
+  overnightOpsJson: text("overnight_ops_json").notNull().default("{}"),
   updatedBy: text("updated_by"),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });

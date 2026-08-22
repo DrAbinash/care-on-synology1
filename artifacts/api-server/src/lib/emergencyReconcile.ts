@@ -44,10 +44,13 @@ import { generateTestTokensForOrder } from "../routes/test-tokens";
 import { generateStudiesForOrder } from "../routes/radiology";
 import {
   buildEmergencyOrderNotes,
+  clinicDayBoundsIst,
   emergencyClientRef,
   emergencyOrderClientRef,
   mapEmergencyGender,
+  parseEmergencyPhoneMatchScope,
   synthesizeDob,
+  type EmergencyPhoneMatchScope,
 } from "./emergencyReconcileHelpers";
 
 import {
@@ -57,10 +60,13 @@ import {
 
 export {
   buildEmergencyOrderNotes,
+  clinicDayBoundsIst,
   emergencyClientRef,
   emergencyOrderClientRef,
   mapEmergencyGender,
+  parseEmergencyPhoneMatchScope,
   synthesizeDob,
+  type EmergencyPhoneMatchScope,
 } from "./emergencyReconcileHelpers";
 
 
@@ -75,7 +81,20 @@ function isUniqueViolation(err: unknown): boolean {
   return false;
 }
 
-export async function loadMatchCandidates(txns: EmergencyTransaction[]): Promise<MatchCandidate[]> {
+/**
+ * Load CARE patient candidates for emergency match.
+ * Diagnostic centers mostly register new patients; phone collisions against
+ * old chart records must not block emergency sync.
+ * - carePatientId / UHID: whole DB (identity from master sync / known UHID).
+ * - phone: only patients registered or billed/ordered on the same Asia/Kolkata
+ *   clinic day as the emergency bill (never whole-history phone search).
+ */
+export async function loadMatchCandidates(
+  txns: EmergencyTransaction[],
+  opts?: { phoneMatchScope?: EmergencyPhoneMatchScope },
+): Promise<MatchCandidate[]> {
+  // Always day-scope phones for emergency — "all" kept only for rare admin override tests.
+  const phoneMatchScope = opts?.phoneMatchScope ?? "day";
   const ids = [...new Set(txns.map((t) => t.patient.carePatientId).filter((n): n is number => Number.isInteger(n)))];
   const uhids = [...new Set(txns.map((t) => t.patient.uhid).filter((u): u is string => !!u))];
   const phones = [...new Set(txns.map((t) => t.patient.mobile).filter(Boolean))];
@@ -85,14 +104,45 @@ export async function loadMatchCandidates(txns: EmergencyTransaction[]): Promise
   if (ids.length) clauses.push(inArray(patientsTable.id, ids));
   if (uhids.length) clauses.push(inArray(patientsTable.patientId, uhids));
   if (phones.length) {
-    clauses.push(
-      or(
-        ...phones.map((p) => {
-          const digits = p.replace(/\D/g, "").slice(-10);
-          return sql`${patientsTable.phone} LIKE ${"%" + (digits || p) + "%"}`;
-        }),
-      )!,
-    );
+    const phoneOr = or(
+      ...phones.map((p) => {
+        const digits = p.replace(/\D/g, "").slice(-10);
+        return sql`${patientsTable.phone} LIKE ${"%" + (digits || p) + "%"}`;
+      }),
+    )!;
+    if (phoneMatchScope === "all") {
+      clauses.push(phoneOr);
+    } else {
+      const dayBounds = [
+        ...new Map(
+          txns.map((t) => {
+            const b = clinicDayBoundsIst(t.createdAt);
+            return [b.dayKey, b] as const;
+          }),
+        ).values(),
+      ];
+      const dayActivity = or(
+        ...dayBounds.map(
+          (b) => sql`(
+            (${patientsTable.createdAt} >= ${b.startUtc}
+              AND ${patientsTable.createdAt} < ${b.endUtc})
+            OR EXISTS (
+              SELECT 1 FROM orders o
+              WHERE o.patient_id = ${patientsTable.id}
+                AND o.created_at >= ${b.startUtc}
+                AND o.created_at < ${b.endUtc}
+            )
+            OR EXISTS (
+              SELECT 1 FROM bills b
+              WHERE b.patient_id = ${patientsTable.id}
+                AND b.created_at >= ${b.startUtc}
+                AND b.created_at < ${b.endUtc}
+            )
+          )`,
+        ),
+      )!;
+      clauses.push(and(phoneOr, dayActivity)!);
+    }
   }
   const rows = await db
     .select({
@@ -139,12 +189,16 @@ export async function alreadyImportedMap(uuids: string[]): Promise<Map<string, {
   return map;
 }
 
-export async function previewEmergencyTransactions(txns: EmergencyTransaction[]): Promise<{
+export async function previewEmergencyTransactions(
+  txns: EmergencyTransaction[],
+  opts?: { phoneMatchScope?: EmergencyPhoneMatchScope },
+): Promise<{
   rows: PreviewRow[];
   summary: ReconciliationSummary;
 }> {
+  const phoneMatchScope = opts?.phoneMatchScope ?? "day";
   const imported = await alreadyImportedMap(txns.map((t) => t.emergencyTransactionUuid));
-  const candidates = await enrichCandidates(await loadMatchCandidates(txns));
+  const candidates = await enrichCandidates(await loadMatchCandidates(txns, { phoneMatchScope }));
   const resolutions = await loadResolutions(txns.map((t) => t.emergencyTransactionUuid));
   const rows: PreviewRow[] = txns.map((t) => {
     const prior = imported.get(t.emergencyTransactionUuid);
@@ -163,6 +217,19 @@ export async function previewEmergencyTransactions(txns: EmergencyTransaction[])
     const stored = resolutions.get(t.emergencyTransactionUuid) ?? null;
     if (stored && !prior) {
       match = applyManualPatientResolution(match, stored);
+    }
+    // Phone collisions are same-clinic-day only (diagnostic walk-ins / dummy mobiles).
+    if (
+      phoneMatchScope === "day" &&
+      !stored &&
+      (match.matchClass === "CONFLICT" || match.matchClass === "PROBABLE_MATCH") &&
+      /phone/i.test(match.reason)
+    ) {
+      const dayKey = clinicDayBoundsIst(t.createdAt).dayKey;
+      match = {
+        ...match,
+        reason: `${match.reason} (same clinic day ${dayKey} IST — older CARE records ignored)`,
+      };
     }
     const chosen = match.candidates.find((c) => c.carePatientId === match.carePatientId) ?? match.candidates[0];
     const resolvedLabel = stored?.carePatientLabel
@@ -223,9 +290,12 @@ export async function importEmergencyTransactions(opts: {
   importedByUserId: number | null;
   sourceNas?: string | null;
   onlySafe?: boolean;
+  phoneMatchScope?: EmergencyPhoneMatchScope;
   overrides?: ImportOverrides;
 }): Promise<{ result: ImportBatchResult; batchUuid: string; preview: PreviewRow[] }> {
-  const { rows: preview } = await previewEmergencyTransactions(opts.transactions);
+  const { rows: preview } = await previewEmergencyTransactions(opts.transactions, {
+    phoneMatchScope: opts.phoneMatchScope ?? "day",
+  });
   const batchUuid = randomUUID();
   let result = emptyImportResult();
   const assign = opts.overrides?.assignPatient ?? {};

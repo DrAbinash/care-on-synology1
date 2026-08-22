@@ -3,7 +3,7 @@ import { Link, useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import QRCode from "qrcode";
 import { buildBillPrintHtml, type PrintBillData, type PrintClinic } from "@/lib/printBill";
-import { resolveBillPrintPageOpts, parseGlobalBillPrintSettings, billPrintCopiesForCopyType, applyCursorBillPrintLayout } from "@/lib/billPrintSettings";
+import { resolveBillPrintPageOpts, parseGlobalBillPrintSettings, billPrintCopiesForCopyType, applyCursorBillPrintLayout, BILL_FORMATS, normalizeBillFormat, paperSizeForBillFormat } from "@/lib/billPrintSettings";
 import { api, fetchApi, getStaffToken } from "@/lib/fetchApi";
 import { useSuperAdmin, getSuperAdminToken } from "@/hooks/useSuperAdmin";
 import PageHeader from "@/components/PageHeader";
@@ -37,6 +37,7 @@ import {
   INTEGRATIONS_OPS_LINKS,
   type SettingsHubLink,
 } from "@/lib/settingsHubCatalog";
+import { NameGenderExtrasPanel, pickNameGenderExtra } from "@/components/NameGenderExtrasPanel";
 
 type AppUser = {
   id: number; name: string; email: string; role: string;
@@ -1443,6 +1444,13 @@ function AppearanceTab() {
 
 function ClinicInfoTab() {
   const qc = useQueryClient();
+  const session = readStaffSession();
+  const isAdmin = session?.user.role === "admin" || session?.user.role === "super_admin";
+  const { data: pacsSettings } = useQuery<Array<{ key: string; value: string | null; category?: string }>>({
+    queryKey: ["pacs-settings"],
+    queryFn: () => api.get("/api/radiology/pacs-settings"),
+    staleTime: 5 * 60_000,
+  });
   const { data: settings, isLoading, error } = useQuery<ClinicSettings>({
     queryKey: ["clinic-settings"],
     queryFn: () => api.get("/api/clinic-settings"),
@@ -1585,6 +1593,14 @@ function ClinicInfoTab() {
       </div>
 
       <div className="space-y-4">
+        {isAdmin && (
+          <NameGenderExtrasPanel
+            maleStored={pickNameGenderExtra(pacsSettings, "name_gender_male_extra")}
+            femaleStored={pickNameGenderExtra(pacsSettings, "name_gender_female_extra")}
+            category="general"
+          />
+        )}
+
         <div className="bg-card border border-card-border rounded-xl p-5 space-y-4">
           <div>
             <h2 className="font-bold text-lg flex items-center gap-2"><User2 size={16} /> Patient Photo Capture</h2>
@@ -1613,7 +1629,7 @@ function ClinicInfoTab() {
             </p>
           </div>
           <div className="rounded-lg border border-blue-200 bg-blue-50 dark:bg-blue-950/30 dark:border-blue-800 px-4 py-3 text-sm text-blue-800 dark:text-blue-300 leading-relaxed">
-            Open <strong>Settings → Billing Print</strong> for format, half-A4 / A5 paper (recommended), QR, TAT, columns, and live preview.
+            Open <strong>Settings → Billing Print</strong> for CARE Invoice or HOPE A5 format, QR, TAT, columns, and live preview.
             Clinic Info keeps logo, address, and identity only.
           </div>
           <button
@@ -4898,6 +4914,7 @@ function BillingPrintTab() {
     return buildBillPrintHtml({
       bill: BILL_PREVIEW_SAMPLE,
       clinic: clinicForPreview,
+      billFormat: deferredSettings.defaultFormat,
       paperSize: pageOpts.paperSize,
       orientation: pageOpts.orientation,
       pageCssSize: pageOpts.pageCssSize,
@@ -5048,29 +5065,31 @@ function BillingPrintTab() {
           {!isAdminUser && " Only an admin can change or unlock these settings."}
         </div>
       )}
-      {/* Cursor-default paper is code-owned — not a clinic slider. */}
+      {/* Format picks the template; paper size follows the format. */}
       <div
         className="rounded-xl border border-slate-300 bg-slate-50 dark:bg-slate-950/40 dark:border-slate-700 px-4 py-4 space-y-3 pointer-events-auto"
         data-testid="cursor-default-bill-print"
       >
         <div className="flex items-start justify-between gap-3">
           <div>
-            <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Bill print paper</p>
-            <h2 className="text-base font-bold text-slate-900 dark:text-slate-100">Cursor-default</h2>
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Bill print layout</p>
+            <h2 className="text-base font-bold text-slate-900 dark:text-slate-100">
+              {settings.defaultFormat === "hope-a5" ? "HOPE A5 Receipt" : "CARE Invoice"}
+            </h2>
           </div>
           <span className="shrink-0 rounded-full border border-slate-300 bg-white dark:bg-slate-900 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-600 dark:text-slate-300">
-            Not user-modifiable
+            {settings.defaultFormat === "hope-a5" ? "148×210 mm" : "210×148 mm"}
           </span>
         </div>
         <p className="text-xs text-slate-700 dark:text-slate-300 leading-relaxed">
-          Paper size is locked to this Cursor-default layout. Clinics do not change paper here —
-          use header, copies, QR/TAT columns, typography, and save-print workflow below. Half of A4 <em>is</em> A5 (210×148 mm).
+          Choose CARE Invoice (previous layout) or HOPE A5 Receipt below. Paper size follows the format;
+          long bills still auto-switch to A4 from 8 tests.
         </p>
         <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1 text-xs">
-          <div><dt className="text-muted-foreground">Paper</dt><dd className="font-semibold">Half A4 / A5 · 210×148 mm</dd></div>
-          <div><dt className="text-muted-foreground">Job size sent to printer</dt><dd className="font-semibold">Half A4 · 210×148 mm</dd></div>
+          <div><dt className="text-muted-foreground">Active format</dt><dd className="font-semibold">{settings.defaultFormat === "hope-a5" ? "HOPE A5 Receipt" : "CARE Invoice"}</dd></div>
+          <div><dt className="text-muted-foreground">Job size sent to printer</dt><dd className="font-semibold">{settings.defaultFormat === "hope-a5" ? "148×210 mm" : "210×148 mm"}</dd></div>
           <div><dt className="text-muted-foreground">Long bills</dt><dd className="font-semibold">Auto A4 from 8 tests</dd></div>
-          <div><dt className="text-muted-foreground">Content area</dt><dd className="font-semibold">Fills the half-sheet (no blank band below)</dd></div>
+          <div><dt className="text-muted-foreground">Finance / QR / audit</dt><dd className="font-semibold">Identical on both</dd></div>
         </dl>
       </div>
 
@@ -5078,31 +5097,54 @@ function BillingPrintTab() {
         className="rounded-xl border border-amber-200 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-800 px-4 py-4 text-xs text-amber-950 dark:text-amber-100 leading-relaxed space-y-2 pointer-events-auto"
         data-testid="cursor-default-printer-paper"
       >
-        <p className="font-bold text-sm">How to set paper in the printer (Windows / browser print dialog)</p>
-        <ol className="list-decimal pl-4 space-y-1.5">
-          <li>
-            <strong>Load the tray:</strong> cut A4 in half (210×148 mm) or use an A5 sheet. Put it in the tray
-            the same way as A4 — <strong>portrait, 210 mm across</strong> (short edge into the printer).
-          </li>
-          <li>
-            In the print dialog set <strong>Paper size = A4</strong> if using a full sheet you will cut in half, or the closest <strong>210×148 mm / A5</strong> preset if your driver offers it.
-          </li>
-          <li>
-            Set <strong>Orientation = Portrait</strong>. Do not pick Landscape — that rotates the job and leaves a blank band on the right.
-          </li>
-          <li>
-            Set <strong>Scale = Actual size / 100%</strong>. Turn off “Fit to page” / “Shrink to fit”.
-          </li>
-          <li>
-            Set <strong>Margins = None</strong> (or Default). The bill already has its own inner padding.
-          </li>
-        </ol>
+        {settings.defaultFormat === "hope-a5" ? (
+          <>
+            <p className="font-bold text-sm">How to set paper (A5 portrait in the tray)</p>
+            <ol className="list-decimal pl-4 space-y-1.5">
+              <li>
+                <strong>Load A5</strong> (148×210 mm) portrait — <strong>148 mm across</strong> (short edge into the printer).
+              </li>
+              <li>
+                Create a <strong>User Defined</strong> paper if needed: <strong>Width 148 mm × Height 210 mm</strong>.
+              </li>
+              <li>
+                In the browser print dialog set <strong>Paper size = A5 / 148×210</strong>. Do <strong>not</strong> leave Paper = A4.
+              </li>
+              <li>Set <strong>Scale = 100%</strong> and <strong>Margins = None</strong>.</li>
+            </ol>
+          </>
+        ) : (
+          <>
+            <p className="font-bold text-sm">How to set paper (pre-cut half A4 / A5 landscape)</p>
+            <ol className="list-decimal pl-4 space-y-1.5">
+              <li>
+                <strong>Load already-cut half A4</strong> (210×148 mm) — <strong>210 mm across</strong> (short edge into the printer).
+              </li>
+              <li>
+                Create a <strong>User Defined</strong> paper: <strong>Width 210 mm × Height 148 mm</strong>.
+              </li>
+              <li>
+                In the browser print dialog set <strong>Paper size = that User Defined 210×148</strong>. Do <strong>not</strong> leave Paper = A4.
+              </li>
+              <li>Set <strong>Scale = 100%</strong> and <strong>Margins = None</strong>.</li>
+            </ol>
+          </>
+        )}
         <p className="text-[11px] text-amber-800 dark:text-amber-200">
-          Epson / Brother ink-tank: keep <strong>Orientation = Portrait</strong> and <strong>Scale = 100%</strong>. The bill job is 210×148 mm — it should fill the half-sheet without a blank strip on the right or empty band below.
+          Epson L130 / ink-tank: match the job size above, Scale <strong>100%</strong>. Blank margins usually mean Paper is still A4.
         </p>
       </div>
 
-      <SectionCard title="Format &amp; Copies" subtitle="Header placement and how many sheets print. Paper stays Cursor-default (above).">
+      <SectionCard title="Format &amp; Copies" subtitle="Pick CARE Invoice or HOPE A5, then header placement and copies.">
+        <SelectCard
+          label="Bill layout"
+          options={BILL_FORMATS.map((f) => ({ id: f.id, label: `${f.label} — ${f.hint}` }))}
+          value={normalizeBillFormat(settings.defaultFormat)}
+          onChange={(v) => {
+            const format = normalizeBillFormat(v);
+            update({ defaultFormat: format, defaultPaperSize: paperSizeForBillFormat(format) });
+          }}
+        />
         <SelectCard
           label="Header layout"
           options={headerLayouts}
@@ -5117,6 +5159,7 @@ function BillingPrintTab() {
         />
         <p className="text-[11px] text-muted-foreground -mt-2">
           Patient or office = 1 sheet. Both copies = patient + office (2 sheets in one print job).
+          Header layout mainly affects CARE Invoice; HOPE A5 uses a centered clinic header.
         </p>
       </SectionCard>
 
@@ -5156,7 +5199,7 @@ function BillingPrintTab() {
         </div>
         <NumberOverrideField
           label="Page Margin" unit="mm" min={2} max={25} sliderDefault={2}
-          value={settings.printMarginMm} defaultLabel="4mm Half A4/A4 · 6mm A5 Portrait"
+          value={settings.printMarginMm} defaultLabel="4mm CARE Invoice / A4 · 8mm HOPE A5"
           onChange={(v) => update({ printMarginMm: v })}
         />
         <NumberOverrideField
@@ -5166,7 +5209,7 @@ function BillingPrintTab() {
         />
         <div className="grid grid-cols-2 gap-x-4 gap-y-2">
           <NumberOverrideField
-            label="Title (INVOICE/RECEIPT)" unit="px" min={8} max={40} sliderDefault={19}
+            label="Title (Receipt)" unit="px" min={8} max={40} sliderDefault={19}
             value={settings.printTitleFontPx} defaultLabel="19px (A5) / 20px (A4)"
             onChange={(v) => update({ printTitleFontPx: v })}
           />
@@ -5255,7 +5298,7 @@ function BillingPrintTab() {
           <button type="button" onClick={() => setPreviewVisible(false)} className="text-xs text-muted-foreground hover:text-foreground">Hide</button>
         </div>
         <p className="text-[11px] text-muted-foreground leading-relaxed">
-          Updates instantly as you change copies, header, or display options — paper is Cursor-default (half A4 / A5). Sample data, not a real bill.
+          Updates instantly as you change format, copies, header, or display options. Sample data, not a real bill.
         </p>
         <label className="flex items-center gap-2 text-xs font-medium">
           <input
@@ -5292,7 +5335,11 @@ function BillingPrintTab() {
           </div>
         </div>
         <p className="text-[11px] text-center text-muted-foreground">
-          Cursor-default paper · Half A4 / A5 (210×148 mm) · {headerLayouts.find((f) => f.id === (settings.headerLayout ?? "right"))?.label ?? "Address on right"}
+          {settings.defaultFormat === "hope-a5"
+            ? "HOPE A5 Receipt · 148×210 mm"
+            : "CARE Invoice · 210×148 mm"}
+          {" · "}
+          {headerLayouts.find((f) => f.id === (settings.headerLayout ?? "right"))?.label ?? "Address on right"}
         </p>
       </div>
     ) : (
@@ -6955,6 +7002,7 @@ type QueueDisplaySettingsForm = {
   staffAlertAfterMinutes: number;
   ledgerId: number;
   departments: string;
+  autoCompleteTokenOnDicom: boolean;
 };
 
 // Shows every configured room's TV online/offline status (via the heartbeat
@@ -7371,6 +7419,16 @@ function QueueDisplaySettingsTab() {
               </div>
             )}
             <ToggleRow label='Show estimated wait time (e.g. "~12 min wait")' checked={form.showWaitEstimate} onChange={(v) => setForm({ ...form, showWaitEstimate: v })} />
+            <ToggleRow
+              label="Auto-complete queue token when scan arrives (DICOM → ERP)"
+              checked={form.autoCompleteTokenOnDicom ?? true}
+              onChange={(v) => setForm({ ...form, autoCompleteTokenOnDicom: v })}
+            />
+            <p className="text-[11px] text-muted-foreground mb-3 -mt-1">
+              USG workaround when the machine cannot pull billing worklist: after Orthanc sends the study to ERP,
+              the patient&apos;s waiting/serving token is matched by <strong>name</strong> (not machine patient ID)
+              and marked done so the TV queue advances.
+            </p>
             <div className="flex items-center gap-2 mb-3">
               <Label className="text-xs w-40 shrink-0">Ledger / Book ID</Label>
               <Input type="number" min={1} value={form.ledgerId} onChange={(e) => setForm({ ...form, ledgerId: Number(e.target.value) || 1 })} className="w-24" />

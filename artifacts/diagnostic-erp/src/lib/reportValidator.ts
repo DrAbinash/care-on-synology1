@@ -101,6 +101,9 @@ export function validateReport(report: ReportForValidation): string[] {
     warnings.push("Findings describe pathology but the Impression section is empty.");
   }
 
+  // 6b. Pathology merge contradictions (same validator — not a new AI service)
+  warnings.push(...pathologyMergeContradictionWarnings(findings, impressionText));
+
   // 6. Un-filled measurement placeholders left in the text
   if (findings.includes("{value}") || impressionText.includes("{value}")) {
     warnings.push("An un-filled measurement placeholder {value} is still present in the report.");
@@ -108,6 +111,39 @@ export function validateReport(report: ReportForValidation): string[] {
 
   warnings.push(...medicalConsistencyWarnings(report));
   warnings.push(...repeatedWordWarnings(findings));
+
+  return warnings;
+}
+
+function pathologyMergeContradictionWarnings(findings: string, impression: string): string[] {
+  const warnings: string[] = [];
+  const hay = `${findings}\n${impression}`;
+
+  const basalNormal =
+    /basal ganglia[^\n.]{0,80}\b(normal|unremarkable)/i.test(hay)
+    || /\b(normal|unremarkable)\b[^\n.]{0,80}basal ganglia/i.test(hay);
+  const basalBleed = /basal ganglia[^\n.]{0,100}\b(ha?emorrhage|hematoma)\b/i.test(hay)
+    || /\b(ha?emorrhage|hematoma)\b[^\n.]{0,100}basal ganglia/i.test(hay);
+  if (basalNormal && basalBleed) {
+    warnings.push("Possible contradiction: basal ganglia described as normal and as hemorrhage after merge.");
+  }
+
+  const noRestricted = /\bno restricted diffusion\b/i.test(hay)
+    || /\bno evidence of restricted diffusion\b/i.test(hay);
+  if (noRestricted && /\bacute (?:[a-z]+\s+){0,3}infarct\b/i.test(hay)) {
+    warnings.push("Possible contradiction: \"no restricted diffusion\" coexists with acute infarct wording.");
+  }
+
+  const fLeft = /\bleft\b/i.test(findings);
+  const fRight = /\bright\b/i.test(findings);
+  const iLeft = /\bleft\b/i.test(impression);
+  const iRight = /\bright\b/i.test(impression);
+  if (fLeft && !fRight && iRight && !iLeft) {
+    warnings.push('Laterality check: Findings say "left" but Impression says "right".');
+  }
+  if (fRight && !fLeft && iLeft && !iRight) {
+    warnings.push('Laterality check: Findings say "right" but Impression says "left".');
+  }
 
   return warnings;
 }

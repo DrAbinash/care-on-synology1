@@ -8,6 +8,7 @@ import { testsRouter } from "./tests";
 import { ordersRouter } from "./orders";
 import { billsRouter, paymentsRouter } from "./bills";
 import { emergencyBillingRouter } from "./emergencyBilling";
+import { emergencyBridgeRouter } from "./emergencyBridge";
 import { reportsRouter } from "./reports";
 import inventoryRouter from "./inventory";
 import inventoryDemandsRouter from "./inventoryDemands";
@@ -151,6 +152,7 @@ import { radiologyAnnotationsRouter } from "./radiologyAnnotations";
 import { radiologyOllamaRouter } from "./radiologyOllama";
 import { aiPipelineHealthRouter } from "./aiPipelineHealth";
 import { radiologySnippetsRouter } from "./radiologySnippets";
+import { radiologyReportFormatsRouter } from "./radiologyReportFormats";
 import { radiologyMyAnalyticsRouter } from "./radiologyMyAnalytics";
 import { bankingRouter, bankingWebhookRouter } from "./banking";
 import { syncRouter } from "./sync";
@@ -253,6 +255,9 @@ router.use(generalLimiter);
 // ─── Public / unauthenticated routes ─────────────────────────────────────────
 router.use(healthRouter);
 router.use(systemRouter);
+// Windows / DS225+ Emergency CARE → Main CARE bridge (fetch-token auth, not staff session).
+// Lets the emergency PC pull master snapshots and push JSON bills when Main CARE is back.
+router.use("/emergency-bridge", emergencyBridgeRouter);
 // Federated Radiology Service boundary API — API-key auth (X-Boundary-Key),
 // not staff session. Mounted before staff-auth routes so the radiology
 // service can reach it server-to-server without a staff login.
@@ -910,6 +915,14 @@ router.use(
   requireStaffAuth,
   requireStaffPermission("/radiology"),
   radiologySnippetsRouter,
+);
+
+// Whole-report formats (Z.ai ReportFormat library) — radiology_snippets type=report_format
+router.use(
+  "/radiology/report-formats",
+  requireStaffAuth,
+  requireStaffPermission("/radiology"),
+  radiologyReportFormatsRouter,
 );
 
 // Phase 4: Radiology Knowledge Platform — Master Templates, Personal Library, Knowledge Base

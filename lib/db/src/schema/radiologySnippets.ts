@@ -6,12 +6,13 @@ import { z } from "zod/v4";
 
 /**
  * Unified snippet store for radiology reporting.
- * Types: quick_add | smart_format | favorite | macro
+ * Types: quick_add | smart_format | favorite | macro | normal_template | report_format
  *
- * quick_add   — small reusable finding/impression line (one-click insert)
- * smart_format — full or partial structured report section (mergeable)
- * favorite    — user-saved reusable text block
- * macro       — typed shortcut expansion (e.g. "/brain_normal")
+ * quick_add      — small reusable finding/impression line (one-click insert)
+ * smart_format   — full or partial structured report section (mergeable)
+ * favorite       — user-saved reusable text block
+ * macro          — typed shortcut expansion (e.g. "/brain_normal")
+ * report_format  — Z.ai whole-report clinical library (5 sections; no demographics)
  */
 export const radiologySnippetsTable = pgTable(
   "radiology_snippets",
@@ -39,6 +40,8 @@ export const radiologySnippetsTable = pgTable(
     // ── Report content (varies by type) ──
     titleText: text("title_text"),
     // report title/procedure name
+    clinicalHistoryText: text("clinical_history_text"),
+    // whole-report Clinical History (report_format); never patient demographics
     techniqueText: text("technique_text"),
     // technique section
     findingsText: text("findings_text"),
@@ -47,6 +50,8 @@ export const radiologySnippetsTable = pgTable(
     // impression/conclusion
     adviceText: text("advice_text"),
     // recommendation / follow-up
+    usageCount: integer("usage_count").notNull().default(0),
+    // soft ranking for report_format / smart_format pickers
 
     // ── Quick add specific ──
     insertTarget: text("insert_target").default("findings"),

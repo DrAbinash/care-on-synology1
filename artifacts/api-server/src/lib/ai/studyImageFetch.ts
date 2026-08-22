@@ -1,106 +1,209 @@
 /**
- * Study image fetch — Orthanc DICOMweb access (Phase P1 / Gate G6).
+ * Study image fetch — Orthanc access for overnight AI drafts.
  *
- * The DB/network half of image selection (the pure selection lives in
- * studyImageSelection.ts). Reuses the same Orthanc DICOMweb pattern the legacy
- * radiologist AI-draft route uses; adds a full instance-manifest lister (for the
- * snapshot) and returns UID + frame provenance with every rendered image.
+ * Production Orthanc on the NAS is REST-first (RegisteredUsers + Docker
+ * hostname). Overnight jobs used to call unauthenticated DICOMweb on
+ * `pacs_settings.orthanc_base_url` only — that key is often empty, DICOMweb
+ * may be off, and 401/404 were treated as "study not arrived". Result: zero
+ * successful night drafts.
+ *
+ * Resolution order matches reportImages.ts (server vantage):
+ *   ORTHANC_INTERNAL_URL → orthanc_base_url → orthanc_url → dicomweb URL → ORTHANC_URL
+ * Auth: ORTHANC_USERNAME / ORTHANC_PASSWORD.
+ * Listing: DICOMweb QIDO, then Orthanc REST `/tools/find`.
+ * Render: DICOMweb `/rendered`, then REST `/instances/{id}/preview`.
  */
 import { db } from "@workspace/db";
 import { pacsSettingsTable } from "@workspace/db/schema";
-import { and, eq } from "drizzle-orm";
 import type { InstanceRef } from "./studySnapshot";
 import { selectImageAnchors, type ImageAnchor, type SelectedImage, type SelectionStrategy } from "./studyImageSelection";
+import {
+  TAG,
+  instancesFromDicomWeb,
+  instancesFromOrthancRest,
+  resolveOrthancBaseFromSources,
+  tagStr,
+  type DcmEntry,
+  type OrthancExpandedInstance,
+  type OrthancSeries,
+} from "./studyImageFetchCore";
 
-// DICOM tag keys used in QIDO responses.
-const TAG = {
-  seriesUid: "0020000E",
-  sopUid: "00080018",
-  modality: "00080060",
-  seriesNumber: "00200011",
-  instanceNumber: "00200013",
-  numberOfFrames: "00280008",
-} as const;
+export {
+  stripOrthancBase,
+  resolveOrthancBaseFromSources,
+  instancesFromDicomWeb,
+  instancesFromOrthancRest,
+} from "./studyImageFetchCore";
 
-type DcmTag = { Value?: Array<string | { Alphabetic?: string }> };
-type DcmEntry = Record<string, DcmTag>;
-
-function tagStr(e: DcmEntry, tag: string): string | undefined {
-  const v = e?.[tag]?.Value?.[0];
-  return typeof v === "string" ? v : undefined;
+export class OrthancImageFetchError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "OrthancImageFetchError";
+  }
 }
-function tagNum(e: DcmEntry, tag: string): number | undefined {
-  const s = tagStr(e, tag);
-  return s != null && s !== "" ? Number(s) : undefined;
+
+export function orthancAuthHeaders(): Record<string, string> {
+  const user = process.env.ORTHANC_USERNAME || "";
+  const pass = process.env.ORTHANC_PASSWORD || "";
+  if (!user || !pass) return {};
+  return { Authorization: "Basic " + Buffer.from(`${user}:${pass}`).toString("base64") };
 }
 
 async function getOrthancBaseUrl(): Promise<string | null> {
-  const [row] = await db
-    .select({ value: pacsSettingsTable.value })
-    .from(pacsSettingsTable)
-    .where(and(eq(pacsSettingsTable.key, "orthanc_base_url"), eq(pacsSettingsTable.category, "orthanc")))
-    .limit(1);
-  return row?.value ?? null;
+  const rows = await db
+    .select({ key: pacsSettingsTable.key, value: pacsSettingsTable.value, category: pacsSettingsTable.category })
+    .from(pacsSettingsTable);
+  const val = (key: string) => rows.find((r) => r.key === key)?.value ?? null;
+  return resolveOrthancBaseFromSources({
+    envInternal: process.env.ORTHANC_INTERNAL_URL,
+    envPublic: process.env.ORTHANC_URL,
+    orthancBaseUrl: val("orthanc_base_url"),
+    orthancUrl: val("orthanc_url"),
+    orthancDicomWebUrl: val("orthanc_dicomweb_url"),
+  });
 }
 
-/** List a study's full instance manifest via Orthanc DICOMweb QIDO. */
-export async function listStudyInstances(studyInstanceUID: string): Promise<InstanceRef[]> {
-  const base = await getOrthancBaseUrl();
-  if (!base) return [];
-  const dicomWebBase = `${base.replace(/\/$/, "")}/dicom-web`;
-  const headers = { Accept: "application/json" };
+type FetchLike = typeof fetch;
 
-  const seriesResp = await fetch(`${dicomWebBase}/studies/${studyInstanceUID}/series`, { headers }).catch(() => null);
-  if (!seriesResp?.ok) return [];
-  const seriesList = (await seriesResp.json().catch(() => [])) as DcmEntry[];
+function jsonHeaders(): Record<string, string> {
+  return { ...orthancAuthHeaders(), Accept: "application/json" };
+}
 
-  const out: InstanceRef[] = [];
+async function fetchJson(url: string, init: RequestInit, fetchImpl: FetchLike): Promise<{ ok: boolean; status: number; body: unknown }> {
+  const resp = await fetchImpl(url, { ...init, headers: { ...jsonHeaders(), ...(init.headers as Record<string, string> | undefined) } }).catch(() => null);
+  if (!resp) return { ok: false, status: 0, body: null };
+  const body = await resp.json().catch(() => null);
+  return { ok: resp.ok, status: resp.status, body };
+}
+
+async function listViaDicomWeb(base: string, studyInstanceUID: string, fetchImpl: FetchLike): Promise<InstanceRef[]> {
+  const dicomWebBase = `${base}/dicom-web`;
+  const seriesResp = await fetchJson(
+    `${dicomWebBase}/studies/${encodeURIComponent(studyInstanceUID)}/series`,
+    { headers: { Accept: "application/dicom+json, application/json" } },
+    fetchImpl,
+  );
+  if (seriesResp.status === 401 || seriesResp.status === 403) {
+    throw new OrthancImageFetchError("Orthanc auth failed — set ORTHANC_USERNAME/ORTHANC_PASSWORD to match orthanc.json");
+  }
+  if (!seriesResp.ok || !Array.isArray(seriesResp.body)) return [];
+  const seriesList = seriesResp.body as DcmEntry[];
+  const instanceLists: Array<{ seriesUid: string; instances: DcmEntry[] }> = [];
   for (const s of seriesList) {
     const seriesUid = tagStr(s, TAG.seriesUid);
     if (!seriesUid) continue;
-    const modality = tagStr(s, TAG.modality);
-    const seriesNumber = tagNum(s, TAG.seriesNumber);
-    const instResp = await fetch(
-      `${dicomWebBase}/studies/${studyInstanceUID}/series/${seriesUid}/instances`,
-      { headers },
-    ).catch(() => null);
-    if (!instResp?.ok) continue;
-    const insts = (await instResp.json().catch(() => [])) as DcmEntry[];
-    for (const inst of insts) {
-      const sopUid = tagStr(inst, TAG.sopUid);
-      if (!sopUid) continue;
-      out.push({
-        seriesUid,
-        sopUid,
-        modality,
-        seriesNumber,
-        instanceNumber: tagNum(inst, TAG.instanceNumber),
-        numberOfFrames: tagNum(inst, TAG.numberOfFrames),
-      });
-    }
+    const instResp = await fetchJson(
+      `${dicomWebBase}/studies/${encodeURIComponent(studyInstanceUID)}/series/${encodeURIComponent(seriesUid)}/instances`,
+      { headers: { Accept: "application/dicom+json, application/json" } },
+      fetchImpl,
+    );
+    if (!instResp.ok || !Array.isArray(instResp.body)) continue;
+    instanceLists.push({ seriesUid, instances: instResp.body as DcmEntry[] });
   }
-  return out;
+  return instancesFromDicomWeb(seriesList, instanceLists);
 }
 
-/** Render selected anchors to base64 JPEGs (WADO rendered + optional sharp resize). */
+async function listViaOrthancRest(base: string, studyInstanceUID: string, fetchImpl: FetchLike): Promise<InstanceRef[]> {
+  const findResp = await fetchJson(
+    `${base}/tools/find`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({
+        Level: "Instance",
+        Query: { StudyInstanceUID: studyInstanceUID },
+        Expand: true,
+      }),
+    },
+    fetchImpl,
+  );
+  if (findResp.status === 401 || findResp.status === 403) {
+    throw new OrthancImageFetchError("Orthanc auth failed — set ORTHANC_USERNAME/ORTHANC_PASSWORD to match orthanc.json");
+  }
+  if (!findResp.ok || !Array.isArray(findResp.body)) return [];
+  const instances = findResp.body as OrthancExpandedInstance[];
+  const seriesIds = [...new Set(instances.map((i) => i.ParentSeries).filter((id): id is string => !!id))];
+  const seriesById: Record<string, OrthancSeries> = {};
+  for (const id of seriesIds) {
+    const sResp = await fetchJson(`${base}/series/${encodeURIComponent(id)}`, {}, fetchImpl);
+    if (sResp.ok && sResp.body && typeof sResp.body === "object") {
+      seriesById[id] = sResp.body as OrthancSeries;
+    }
+  }
+  return instancesFromOrthancRest({ instances, seriesById });
+}
+
+/** List a study's instance manifest via DICOMweb, then Orthanc REST. */
+export async function listStudyInstances(studyInstanceUID: string, fetchImpl: FetchLike = fetch): Promise<InstanceRef[]> {
+  const base = await getOrthancBaseUrl();
+  if (!base) {
+    throw new OrthancImageFetchError(
+      "Orthanc URL not configured for overnight AI — set ORTHANC_INTERNAL_URL (or orthanc_url / orthanc_base_url)",
+    );
+  }
+  const viaDicomWeb = await listViaDicomWeb(base, studyInstanceUID, fetchImpl);
+  if (viaDicomWeb.length > 0) return viaDicomWeb;
+  return listViaOrthancRest(base, studyInstanceUID, fetchImpl);
+}
+
+async function renderViaDicomWeb(
+  base: string,
+  studyInstanceUID: string,
+  a: ImageAnchor,
+  fetchImpl: FetchLike,
+): Promise<Uint8Array | null> {
+  const url = `${base}/dicom-web/studies/${encodeURIComponent(studyInstanceUID)}/series/${encodeURIComponent(a.seriesUid)}/instances/${encodeURIComponent(a.sopUid)}/rendered`;
+  const r = await fetchImpl(url, { headers: { ...orthancAuthHeaders(), Accept: "image/jpeg" } }).catch(() => null);
+  if (!r?.ok) return null;
+  return new Uint8Array(await r.arrayBuffer());
+}
+
+async function renderViaOrthancPreview(
+  base: string,
+  a: ImageAnchor & { orthancInstanceId?: string },
+  fetchImpl: FetchLike,
+): Promise<Uint8Array | null> {
+  let instanceId = a.orthancInstanceId;
+  if (!instanceId) {
+    const found = await fetchJson(
+      `${base}/tools/find`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ Level: "Instance", Query: { SOPInstanceUID: a.sopUid }, Expand: false }),
+      },
+      fetchImpl,
+    );
+    if (found.ok && Array.isArray(found.body) && typeof found.body[0] === "string") {
+      instanceId = found.body[0];
+    }
+  }
+  if (!instanceId) return null;
+  const r = await fetchImpl(`${base}/instances/${encodeURIComponent(instanceId)}/preview`, {
+    headers: { ...orthancAuthHeaders(), Accept: "image/jpeg" },
+  }).catch(() => null);
+  if (!r?.ok) return null;
+  return new Uint8Array(await r.arrayBuffer());
+}
+
+/** Render selected anchors to base64 JPEGs (DICOMweb rendered, then Orthanc preview). */
 export async function renderAnchors(
   studyInstanceUID: string,
   anchors: ImageAnchor[],
   maxWidthPx = 512,
+  fetchImpl: FetchLike = fetch,
 ): Promise<SelectedImage[]> {
   const base = await getOrthancBaseUrl();
   if (!base) return [];
-  const dicomWebBase = `${base.replace(/\/$/, "")}/dicom-web`;
 
   const out: SelectedImage[] = [];
   for (const a of anchors) {
-    const r = await fetch(
-      `${dicomWebBase}/studies/${studyInstanceUID}/series/${a.seriesUid}/instances/${a.sopUid}/rendered`,
-      { headers: { Accept: "image/jpeg" } },
-    ).catch(() => null);
-    if (!r?.ok) continue;
+    let arr = await renderViaDicomWeb(base, studyInstanceUID, a, fetchImpl);
+    if (!arr || arr.length === 0) {
+      arr = await renderViaOrthancPreview(base, a, fetchImpl);
+    }
+    if (!arr || arr.length === 0) continue;
     try {
-      const arr = new Uint8Array(await r.arrayBuffer());
       let b64: string;
       try {
         const sharp = (await import("sharp")).default;

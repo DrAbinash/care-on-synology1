@@ -426,7 +426,7 @@ describe("premium two-column print rail (page-1 images beside findings)", () => 
   it("print keeps a 1-column image rail (not a 2-up gallery dumped after the text)", () => {
     const html = renderReportDocument(baseModel({ keyImages: images }), resolvePresentationTemplate("care-premium"));
     expect(html).not.toMatch(/\.image-panel-side\s*\{\s*float:\s*right/);
-    expect(html).toMatch(/@media print[\s\S]*?\.content-area.has-side-images \.image-panel-side \.image-grid\s*\{\s*grid-template-columns:\s*1fr/);
+    expect(html).toMatch(/@media print[\s\S]*?\.content-area.has-side-images \.image-panel-side \.image-grid\s*\{\s*flex-direction:\s*column/);
     expect(html).not.toMatch(/\.content-area.has-side-images \.image-panel-side \.image-grid\s*\{\s*grid-template-columns:\s*repeat\(2/);
   });
 
@@ -438,20 +438,23 @@ describe("premium two-column print rail (page-1 images beside findings)", () => 
     expect(html).toContain("table-layout: fixed");
   });
 
-  it("fixed 4:3 viewport + cover default; framing CSS variables are emitted", () => {
+  it("square viewport + contain default; framing CSS variables are emitted", () => {
     const html = renderReportDocument(baseModel({
       keyImages: [{ src: "data:image/jpeg;base64,AAA", caption: "T2", displayOrder: 0, framing: { zoom: 1.35, offsetX: -12, offsetY: 8, fitMode: "cover" } }],
     }), resolvePresentationTemplate("care-premium"));
-    expect(html).toContain("aspect-ratio: 4 / 3");
-    expect(html).toContain("object-fit: var(--img-fit, cover)");
+    expect(html).toContain("object-fit: var(--img-fit, contain)");
     expect(html).toContain("--img-zoom:1.35");
     expect(html).toContain("--img-ox:-12%");
     expect(html).toContain("--img-oy:8%");
     expect(html).toContain("object-fit:cover");
     expect(html).toContain("scale(1.35)");
     expect(html).toContain('data-image-count="1"');
-    expect(html).toContain('[data-image-count="1"] .image-viewport { height: 78mm;');
-    expect(html).toContain('[data-image-count="4"] .image-viewport { height: 30mm;');
+    expect(html).toContain(".image-panel-side .image-grid");
+    expect(html).toContain("flex-direction: column");
+    expect(html).toContain("aspect-ratio: 1 / 1");
+    expect(html).toContain("flex: 0 0 auto");
+    expect(html).toContain("--ki-size: 48mm");
+    expect(html).not.toContain(".image-viewport {\n      position: relative; width: 100%; flex: 1 1 0;");
   });
 
   it("7+ images keep 6 on the right rail and continue the rest below (no empty left column)", () => {
@@ -478,13 +481,19 @@ describe("premium two-column print rail (page-1 images beside findings)", () => 
     expect(html).not.toContain("KEY IMAGES");
   });
 
-  it("four images use the medium print viewport height", () => {
+  it("four images use square extreme-right key rail with a tight navy frame", () => {
     const four = Array.from({ length: 4 }, (_, i) => ({
       src: `data:image/jpeg;base64,A${i}`, caption: `IMG ${i}`, displayOrder: i,
     }));
     const html = renderReportDocument(baseModel({ keyImages: four }), resolvePresentationTemplate("care-premium"));
     expect(html).toContain('data-image-count="4"');
-    expect(html).toContain('[data-image-count="4"] .image-viewport { height: 30mm;');
+    expect(html).toContain(".image-panel-side.image-panel-keyrail");
+    expect(html).toContain("vertical-align: top");
+    expect(html).toContain("margin-left: auto");
+    expect(html).toMatch(/padding:\s*2\.5mm/);
+    expect(html).toContain("aspect-ratio: 1 / 1");
+    expect(html).toContain("--ki-size: 26mm");
+    expect(html).not.toContain("vertical-align: stretch");
   });
 });
 

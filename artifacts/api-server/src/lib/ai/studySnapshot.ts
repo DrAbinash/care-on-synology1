@@ -15,6 +15,8 @@ export interface InstanceRef {
   seriesNumber?: number;
   instanceNumber?: number;
   numberOfFrames?: number;
+  /** Orthanc REST instance id — used to render `/preview` when DICOMweb is off. */
+  orthancInstanceId?: string;
 }
 
 export interface SnapshotManifest {

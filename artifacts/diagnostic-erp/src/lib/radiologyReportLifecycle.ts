@@ -288,6 +288,7 @@ export async function finalizeRadiologyReport(
   }
 
   await api.post("/api/internal/radiology/report-status", {
+    worklistId: study.worklistId ?? undefined,
     accessionNumber: study.accessionNumber,
     studyInstanceUID: study.studyInstanceUID,
     status: "REPORT_FINAL",

@@ -28,5 +28,5 @@ wait_for_apt_lock() {
 }
 
 wait_for_apt_lock
-timeout 90 apt-get update -o Acquire::Retries=3
-timeout 90 apt-get install -y --no-install-recommends "$@"
+timeout 240 apt-get update -o Acquire::Retries=3
+timeout 240 apt-get install -y --no-install-recommends "$@"

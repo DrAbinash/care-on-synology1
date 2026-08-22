@@ -575,7 +575,7 @@ Staff: ${fmtCount(status.counts.staffCount)}`}</pre>
           <Button onClick={() => importSafe.mutate()} disabled={importSafe.isPending || s.safeToImport + s.alreadyImported === 0}>
             Import safe transactions
           </Button>
-          <p className="text-xs text-muted-foreground">PROBABLE / CONFLICT rows stay blocked until you click Resolve and choose a CARE patient (or create as new). Name-only is never merged. Already imported UUIDs cannot be resolved again.</p>
+          <p className="text-xs text-muted-foreground">PROBABLE / CONFLICT rows stay blocked until you click Resolve and choose a CARE patient (or create as new). Phone matches only consider patients registered or billed on the same clinic day (IST) — older charts and dummy mobiles from past days are ignored so emergency sync is not blocked. Name-only is never merged. Already imported UUIDs cannot be resolved again.</p>
           {lastImport && (
             <div className="rounded-lg border p-3 text-sm">
               Supplied {lastImport.supplied} · created {lastImport.created} · already imported {lastImport.alreadyReconciled} · duplicates {lastImport.duplicates} · conflicts {lastImport.conflicts} · review {lastImport.skippedReview} · failures {lastImport.failures}

@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import OvernightAiSettings from "@/components/ai/OvernightAiSettings";
 import { OllamaAiDraftVerifyPanel } from "@/components/radiology/OllamaAiDraftVerifyPanel";
+import { AiPipelineSelfTestPanel } from "@/components/radiology/AiPipelineSelfTestPanel";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface GlobalSettings {
@@ -796,6 +797,8 @@ export function AiReportingPanel() {
 
             <PipelineDiagnosticsPanel />
 
+            <AiPipelineSelfTestPanel />
+
             <OllamaAiDraftVerifyPanel />
 
             <div className="space-y-1.5">
@@ -847,6 +850,7 @@ export function AiReportingPanel() {
       {/* ── Overnight DICOM → Ollama drafts ── */}
       {activeSection === "overnight" && (
         <div className="space-y-4">
+          <AiPipelineSelfTestPanel />
           <OllamaAiDraftVerifyPanel />
           <OvernightAiSettings />
         </div>

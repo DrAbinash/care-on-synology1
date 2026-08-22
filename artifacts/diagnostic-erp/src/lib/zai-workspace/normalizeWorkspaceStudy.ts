@@ -66,16 +66,20 @@ export function normalizeWorkspaceStudy(raw: unknown): Study | null {
     id: asString(patientId, "0"),
     name: asString(nested?.name ?? r.patientName, "Unknown"),
     age: (() => {
-      const n = asNumber(nested?.age ?? r.patientAge, 0);
+      const n = asNumber(nested?.age ?? r.patientAge ?? r.age, 0);
       return n > 0 && n <= 120 ? n : 0;
     })(),
-    sex: asSex(nested?.sex ?? r.patientSex),
+    sex: asSex(nested?.sex ?? r.patientSex ?? r.sex),
     uhid: asString(nested?.uhid ?? r.uhid ?? r.patientId, ""),
     phone: nested?.phone != null || r.patientPhone != null
       ? asString(nested?.phone ?? r.patientPhone)
       : undefined,
     referringDoctor: asString(
-      nested?.referringDoctor ?? r.referringDoctor ?? r.referringPhysician,
+      nested?.referringDoctor
+        ?? r.referringDoctor
+        ?? r.referringPhysician
+        ?? r.doctorName
+        ?? r.referredBy,
       "",
     ),
   };

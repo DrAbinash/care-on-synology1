@@ -142,6 +142,160 @@ aiClinicalRouter.put("/scheduler/config", async (req, res) => {
   res.json({ ok: true, config: await getSchedulerConfig() });
 });
 
+/** Overnight vision ops — pause / safe mode / image cap / vision ctx (no Docker redeploy). */
+aiClinicalRouter.get("/overnight-ops", async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const { getOvernightVisionInferenceOptions } = await import("../lib/ai/overnightVisionConfig");
+  const { getOvernightQueueClassification } = await import("../lib/ai/overnightQueueClassification");
+  const c = await getOvernightQueueClassification();
+  const vision = await getOvernightVisionInferenceOptions(true);
+  res.json({
+    ops: c.ops,
+    effectivePolicy: {
+      model: vision.policy.model,
+      endpointUrl: vision.policy.endpointUrl,
+      numCtx: vision.policy.numCtx,
+      numCtxSource: vision.policy.numCtxSource,
+      maxImages: vision.policy.maxImages,
+      imageCapReason: vision.policy.imageCapReason,
+      safeMode: vision.policy.safeMode,
+      overnightPaused: vision.policy.overnightPaused,
+      pauseReason: vision.policy.pauseReason,
+      configuredNumCtx: vision.policy.configuredNumCtx,
+      reason: vision.policy.reason,
+    },
+    legacyBacklog: c.legacy,
+    classification: {
+      held: c.held,
+      holdBefore: c.holdBefore,
+      explicitlyReleased: c.explicitlyReleased,
+      heldLegacyPending: c.heldLegacyPending,
+      heldLegacyRetrying: c.heldLegacyRetrying,
+      eligiblePending: c.eligiblePending,
+      eligibleRetrying: c.eligibleRetrying,
+      running: c.running,
+      queueDepth: c.queueDepth,
+    },
+    backlogNote:
+      "Deploy does NOT auto-retry abandoned ai_shadow_pipeline jobs. Abandoned stay abandoned. " +
+      "Legacy backlog hold (auto-on at cutover) blocks pre-cutover pending/retrying from auto-claim; " +
+      "post-cutover jobs may drain. Explicit canary/retry by jobId bypasses hold. " +
+      "Release all legacy backlog requires explicit confirmation — never automatic. " +
+      "Fail-safe: cutover without legacyHoldExplicitlyReleased ⇒ HELD.",
+  });
+});
+
+aiClinicalRouter.put("/overnight-ops", async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const parsed = z.object({
+    paused: z.boolean().optional(),
+    pauseReason: z.string().nullable().optional(),
+    imageCap: z.enum(["auto", "1", "2", "3", "4", "6"]).optional(),
+    visionCtx: z.enum(["current", "4096", "8192", "16384"]).optional(),
+    safeMode: z.boolean().optional(),
+    /** Clear resource-fail streak when resuming. */
+    clearResourceStreak: z.boolean().optional(),
+    /** Re-enable hold only (turning hold OFF requires POST .../legacy-backlog release_all + confirm). */
+    legacyBacklogHold: z.literal(true).optional(),
+  }).safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ error: parsed.error.issues }); return; }
+  const { saveOvernightOpsControls } = await import("../lib/ai/clinicalConfigService");
+  const patch: Record<string, unknown> = { ...parsed.data };
+  if (parsed.data.paused === false) {
+    patch.pauseReason = null;
+    if (parsed.data.clearResourceStreak !== false) {
+      patch.resourceFailStreak = 0;
+      patch.lastResourceFailCode = null;
+    }
+  }
+  if (parsed.data.paused === true && !parsed.data.pauseReason) {
+    patch.pauseReason = "OVERNIGHT AI PAUSED — operator";
+  }
+  delete patch.clearResourceStreak;
+  const allowLegacyHoldMutation = parsed.data.legacyBacklogHold === true;
+  const ops = await saveOvernightOpsControls(
+    patch as Parameters<typeof saveOvernightOpsControls>[0],
+    staff(req)?.role,
+    { allowLegacyHoldMutation },
+  );
+  console.log("[ai] overnight ops updated", JSON.stringify({ by: staff(req)?.role, ops }));
+  res.json({ ok: true, ops });
+});
+
+/**
+ * Legacy backlog hold actions — never deletes rows.
+ * release_all requires confirm:true.
+ */
+aiClinicalRouter.post("/overnight-ops/legacy-backlog", async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const parsed = z.discriminatedUnion("action", [
+    z.object({
+      action: z.literal("retry_selected"),
+      jobIds: z.array(z.number().int().positive()).min(1).max(50),
+    }),
+    z.object({
+      action: z.literal("release_selected"),
+      jobIds: z.array(z.number().int().positive()).min(1).max(50),
+    }),
+    z.object({
+      action: z.literal("release_recent"),
+      limit: z.number().int().min(1).max(50).optional(),
+    }),
+    z.object({
+      action: z.literal("release_all"),
+      confirm: z.literal(true),
+    }),
+  ]).safeParse(req.body ?? {});
+  if (!parsed.success) { res.status(400).json({ error: parsed.error.issues }); return; }
+  const by = staff(req)?.role;
+  const {
+    releaseLegacyBacklogSelected,
+    releaseLegacyBacklogRecent,
+    releaseAllLegacyBacklogHold,
+  } = await import("../lib/ai/clinicalConfigService");
+  const { countLegacyBacklogHold } = await import("../lib/ai/legacyBacklogHold");
+
+  if (parsed.data.action === "release_all") {
+    const ops = await releaseAllLegacyBacklogHold(by);
+    const legacyBacklog = await countLegacyBacklogHold(ops);
+    console.log("[ai] legacy backlog released ALL", JSON.stringify({ by, holdBefore: ops.legacyHoldBefore }));
+    res.json({ ok: true, action: "release_all", ops, legacyBacklog, deleted: 0 });
+    return;
+  }
+  if (parsed.data.action === "release_recent") {
+    const { ops, releasedJobIds } = await releaseLegacyBacklogRecent(parsed.data.limit ?? 5, by);
+    const legacyBacklog = await countLegacyBacklogHold(ops);
+    res.json({ ok: true, action: "release_recent", ops, releasedJobIds, legacyBacklog, deleted: 0 });
+    return;
+  }
+  if (parsed.data.action === "release_selected") {
+    const ops = await releaseLegacyBacklogSelected(parsed.data.jobIds, by);
+    const legacyBacklog = await countLegacyBacklogHold(ops);
+    res.json({
+      ok: true,
+      action: "release_selected",
+      ops,
+      releasedJobIds: parsed.data.jobIds,
+      legacyBacklog,
+      deleted: 0,
+    });
+    return;
+  }
+  // retry_selected: allowlist + mark retryable (bypass hold for those ids; no deletes)
+  const ops = await releaseLegacyBacklogSelected(parsed.data.jobIds, by);
+  const retry = await retryOvernightJobs(parsed.data.jobIds);
+  const legacyBacklog = await countLegacyBacklogHold(ops);
+  res.json({
+    ok: true,
+    action: "retry_selected",
+    ops,
+    releasedJobIds: parsed.data.jobIds,
+    retry,
+    legacyBacklog,
+    deleted: 0,
+  });
+});
+
 /** One-shot save from Settings → Radiology → AI → Draft automation. */
 aiClinicalRouter.put("/draft-automation", async (req, res) => {
   if (!requireAdmin(req, res)) return;

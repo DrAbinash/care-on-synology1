@@ -244,23 +244,53 @@ export async function fireOvernightAiTick(opts: {
   const peak = isClinicPeakHours();
   let aiMax = 1;
   let dueAi = 0;
-  const aiBlocked = peak;
+  // Targeted canary (explicit jobId) is for ops/tests — run even during peak hold.
+  const aiBlocked = peak && !(opts.canary === true && opts.jobId != null);
   recordRadiologyJobCronTick({
     peak,
     aiBlocked,
     dueAi: 0,
     ran: 0,
   });
+  let legacyHoldFilter: { holdBefore: string; releasedJobIds: number[] } | null = null;
+  let opsLoadFailed = false;
   try {
     const { getOvernightVisionInferenceOptions } = await import("./lib/ai/overnightVisionConfig");
-    const { getSchedulerConfig } = await import("./lib/ai/clinicalConfigService");
+    const { getSchedulerConfig, getOvernightOpsControls } = await import("./lib/ai/clinicalConfigService");
+    const { resolveLegacyHoldClaimFilter } = await import("./lib/ai/overnightOpsControls");
     const vision = await getOvernightVisionInferenceOptions();
     const sched = await getSchedulerConfig();
+    if (vision.policy.overnightPaused && !(opts.canary === true && opts.jobId != null)) {
+      recordRadiologyJobCronTick({ peak, aiBlocked: true, dueAi: 0, ran: 0 });
+      return { requeuedStale: 0, ran: [], skipped: "overnight_paused" };
+    }
     aiMax = Math.max(1, Math.min(1, vision.concurrency, sched.maxConcurrentJobs));
-  } catch { /* keep 1 */ }
+    // Cutover auto-init happens in getOvernightOpsControls (first deploy of this feature).
+    legacyHoldFilter = resolveLegacyHoldClaimFilter(await getOvernightOpsControls());
+  } catch {
+    opsLoadFailed = true;
+  }
+  // Fail-closed: unreadable overnight ops must NOT auto-claim (prefer HELD).
+  // Explicit canary by jobId still allowed.
+  if (opsLoadFailed && opts.jobId == null) {
+    recordRadiologyJobCronTick({ peak, aiBlocked: true, dueAi: 0, ran: 0 });
+    return { requeuedStale: 0, ran: [], skipped: "ops_unreadable_fail_closed" };
+  }
   try {
     const { AI_SHADOW_PIPELINE_JOB } = await import("./lib/ai/shadowPipeline");
-    dueAi = await countDueJobs(AI_SHADOW_PIPELINE_JOB);
+    // STARVED must use eligible (post–legacy-hold) due count — not raw backlog.
+    if (legacyHoldFilter) {
+      try {
+        const { getOvernightOpsControls } = await import("./lib/ai/clinicalConfigService");
+        const { countLegacyBacklogHold } = await import("./lib/ai/legacyBacklogHold");
+        const held = await countLegacyBacklogHold(await getOvernightOpsControls());
+        dueAi = held.newEligible;
+      } catch {
+        dueAi = await countDueJobs(AI_SHADOW_PIPELINE_JOB);
+      }
+    } else {
+      dueAi = await countDueJobs(AI_SHADOW_PIPELINE_JOB);
+    }
     if (aiBlocked) {
       recordRadiologyJobCronTick({ peak, aiBlocked: true, dueAi, ran: 0 });
       return { requeuedStale: 0, ran: [], skipped: "peak_hold" };
@@ -275,6 +305,8 @@ export async function fireOvernightAiTick(opts: {
         claimStrategy: "overnight_ai",
         jobId: opts.jobId,
         preferNewest: opts.canary === true && opts.jobId == null,
+        // Explicit jobId canary bypasses hold inside claimNextJob.
+        legacyHold: opts.jobId != null ? null : legacyHoldFilter,
         workerId: opts.canary ? `canary-${process.pid}` : `overnight-${process.pid}`,
       },
     );

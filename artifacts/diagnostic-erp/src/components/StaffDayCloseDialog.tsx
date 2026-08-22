@@ -6,11 +6,18 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
-import { Lock, CheckCircle2, AlertTriangle, Receipt, Wallet } from "lucide-react";
+import { Lock, CheckCircle2, AlertTriangle, Receipt, Wallet, Printer } from "lucide-react";
 import { Link } from "wouter";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from "@/components/ui/dialog";
+import {
+  autoPrintStaffDayClose,
+  openStaffDayClosePrint,
+  type StaffPrintActivity,
+  type StaffSlipClinic,
+  type StaffSlipClosure,
+} from "@/lib/staffDayCloseSlip";
 
 type MethodTotals = {
   cash: number; upi: number; card: number; cheque: number; other: number;
@@ -41,16 +48,9 @@ type StaffPreview = {
   bills: StaffWindowBill[];
 };
 
-type StaffCloseResult = {
-  id: number;
-  userName: string;
-  closureDate: string;
-  totalExpected: string;
-  totalActual: string;
-  variance: string;
-  billsCount: number;
-  drawerStatus: string;
+type StaffCloseResult = StaffSlipClosure & {
   bills: StaffWindowBill[];
+  printActivity?: StaffPrintActivity | null;
 };
 
 const inr = (v: number) =>
@@ -128,6 +128,12 @@ export default function StaffDayCloseDialog({
     staleTime: 0,
   });
 
+  const clinicQ = useQuery<StaffSlipClinic>({
+    queryKey: ["clinic-settings"],
+    queryFn: () => api.get<StaffSlipClinic>("/api/clinic-settings/branding"),
+    staleTime: 60_000,
+  });
+
   const [actuals, setActuals] = useState({ cash: "", upi: "", card: "", cheque: "", other: "" });
   const [varianceNote, setVarianceNote] = useState("");
   const [notes, setNotes] = useState("");
@@ -176,6 +182,9 @@ export default function StaffDayCloseDialog({
       qc.invalidateQueries({ queryKey: ["day-close-preview"] });
       qc.invalidateQueries({ queryKey: ["day-close-list"] });
       qc.invalidateQueries({ queryKey: ["staff-day-close-preview", userName] });
+      if (clinicQ.data?.dayCloseAutoPrint !== false) {
+        autoPrintStaffDayClose(row, clinicQ.data ?? {}, row.userName);
+      }
     },
     onError: (e: Error) => toast({ title: "Close failed", description: e.message, variant: "destructive" }),
   });
@@ -233,6 +242,9 @@ export default function StaffDayCloseDialog({
             </div>
 
             <DialogFooter>
+              <Button variant="outline" onClick={() => openStaffDayClosePrint(justClosed, clinicQ.data ?? {}, justClosed.userName)}>
+                <Printer size={14} className="mr-2" /> Print
+              </Button>
               <Button onClick={() => close(false)}>Done</Button>
             </DialogFooter>
           </div>

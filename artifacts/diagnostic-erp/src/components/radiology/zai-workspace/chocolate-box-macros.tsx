@@ -19,10 +19,13 @@ import {
   listedChocolateBoxSets,
   loadChocolateTiles,
   resetChocolateTiles,
+  saveChocolateTiles,
   upsertChocolateTile,
   type ChocolateBoxSet,
   type ChocolateTile,
 } from "@/lib/findingsMacros";
+import { upsertChocolateTileOnServer } from "@/lib/chocolateMacrosApi";
+import type { MacroSectionsOwned } from "@/lib/chocolateMacroOwnership";
 
 const PALETTES = [
   "border-indigo-300 bg-gradient-to-br from-indigo-50 to-white text-indigo-900 hover:border-indigo-500 hover:shadow-indigo-200/50",
@@ -69,15 +72,70 @@ function MacroBoxEditor({
 }) {
   const [label, setLabel] = useState(state?.tile?.label ?? "");
   const [text, setText] = useState(state?.tile?.text ?? "");
+  const [impressionText, setImpressionText] = useState(state?.tile?.impressionText ?? "");
+  const [showOwnership, setShowOwnership] = useState(false);
+  const [anatomicalSection, setAnatomicalSection] = useState(state?.tile?.anatomicalSection ?? "");
+  const [conflictGroup, setConflictGroup] = useState(state?.tile?.conflictGroup ?? "");
+  const [baselineReplaces, setBaselineReplaces] = useState(state?.tile?.baselineReplaces ?? "");
+  const [supportsLaterality, setSupportsLaterality] = useState(Boolean(state?.tile?.supportsLaterality));
+  const [ownFindings, setOwnFindings] = useState(
+    !state?.tile?.sectionsOwned || state.tile.sectionsOwned.includes("findings"),
+  );
+  const [ownImpression, setOwnImpression] = useState(
+    Boolean(state?.tile?.sectionsOwned?.includes("impression")),
+  );
+  const [legacyAppend, setLegacyAppend] = useState(
+    state?.tile ? Boolean(state.tile.legacyAppend) : true,
+  );
   useEffect(() => {
     setLabel(state?.tile?.label ?? "");
     setText(state?.tile?.text ?? "");
+    setImpressionText(state?.tile?.impressionText ?? "");
+    setAnatomicalSection(state?.tile?.anatomicalSection ?? "");
+    setConflictGroup(state?.tile?.conflictGroup ?? "");
+    setBaselineReplaces(state?.tile?.baselineReplaces ?? "");
+    setSupportsLaterality(Boolean(state?.tile?.supportsLaterality));
+    setOwnFindings(!state?.tile?.sectionsOwned || state.tile.sectionsOwned.includes("findings"));
+    setOwnImpression(Boolean(state?.tile?.sectionsOwned?.includes("impression")));
+    setLegacyAppend(state?.tile ? Boolean(state.tile.legacyAppend) : true);
+    setShowOwnership(Boolean(
+      state?.tile?.anatomicalSection || state?.tile?.conflictGroup || state?.tile?.baselineReplaces,
+    ));
   }, [state]);
   if (!state) return null;
   const canSave = label.trim().length > 0 && text.trim().length > 0;
   const handleSave = () => {
     if (!canSave) return;
-    upsertChocolateTile(state.key, { id: state.tile?.id, label, text });
+    const sectionsOwned: MacroSectionsOwned = [];
+    if (ownFindings) sectionsOwned.push("findings");
+    if (ownImpression) sectionsOwned.push("impression");
+    const tile = upsertChocolateTile(state.key, {
+      id: state.tile?.id,
+      label,
+      text,
+      impressionText: impressionText.trim() || undefined,
+      anatomicalSection: anatomicalSection.trim() || undefined,
+      conflictGroup: conflictGroup.trim() || undefined,
+      baselineReplaces: baselineReplaces.trim() || undefined,
+      supportsLaterality,
+      sectionsOwned: sectionsOwned.length ? sectionsOwned : ["findings"],
+      legacyAppend: legacyAppend && !anatomicalSection.trim() && !conflictGroup.trim(),
+    });
+    void upsertChocolateTileOnServer(state.key, { ...tile, serverId: state.tile?.serverId })
+      .then((synced) => {
+        const tiles = loadChocolateTiles(state.key).map((t) =>
+          t.id === synced.id
+            ? {
+              ...t,
+              ...synced,
+              id: t.id,
+              serverId: synced.serverId,
+            }
+            : t,
+        );
+        saveChocolateTiles(state.key, tiles);
+      })
+      .catch(() => { /* offline — local cache remains */ });
     onClose();
   };
   return (
@@ -86,7 +144,7 @@ function MacroBoxEditor({
         <DialogHeader>
           <DialogTitle>{state.tile ? "Edit macro box" : "Add macro box"}</DialogTitle>
           <DialogDescription>
-            Clicking the box inserts this text into Findings. Use [brackets] for bits to overwrite.
+            Clicking the box inserts this text into Findings. Use [brackets] for bits to overwrite. Ownership uses the same fields as Quick Select.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-3">
@@ -117,6 +175,56 @@ function MacroBoxEditor({
               data-testid="chocolate-box-text"
             />
           </div>
+          <button
+            type="button"
+            className="text-[11px] font-semibold text-indigo-700 hover:underline"
+            onClick={() => setShowOwnership((v) => !v)}
+          >
+            {showOwnership ? "Hide ownership" : "Ownership (advanced)"}
+          </button>
+          {showOwnership && (
+            <div className="space-y-2 rounded-md border border-border bg-muted/20 p-2.5">
+              <div className="flex items-center gap-2 text-[11px]">
+                <input
+                  id="cb-legacy"
+                  type="checkbox"
+                  checked={legacyAppend}
+                  onChange={(e) => setLegacyAppend(e.target.checked)}
+                />
+                <Label htmlFor="cb-legacy" className="font-normal">Generic append-only (no anatomy replace)</Label>
+              </div>
+              <div>
+                <Label className="text-[10px] uppercase tracking-wider">anatomicalSection</Label>
+                <Input className="h-7 text-xs" value={anatomicalSection} onChange={(e) => { setAnatomicalSection(e.target.value); setLegacyAppend(false); }} placeholder="basal ganglia" />
+              </div>
+              <div>
+                <Label className="text-[10px] uppercase tracking-wider">conflictGroup</Label>
+                <Input className="h-7 text-xs" value={conflictGroup} onChange={(e) => { setConflictGroup(e.target.value); setLegacyAppend(false); }} placeholder="hemorrhage" />
+              </div>
+              <div>
+                <Label className="text-[10px] uppercase tracking-wider">baselineReplaces</Label>
+                <Input className="h-7 text-xs" value={baselineReplaces} onChange={(e) => setBaselineReplaces(e.target.value)} placeholder="Basal ganglia are normal" />
+              </div>
+              <div>
+                <Label className="text-[10px] uppercase tracking-wider">Impression text (optional)</Label>
+                <Textarea className="min-h-[56px] text-xs" value={impressionText} onChange={(e) => setImpressionText(e.target.value)} placeholder="Acute {side} basal ganglia hemorrhage." />
+              </div>
+              <div className="flex flex-wrap gap-3 text-[11px]">
+                <label className="inline-flex items-center gap-1.5">
+                  <input type="checkbox" checked={supportsLaterality} onChange={(e) => setSupportsLaterality(e.target.checked)} />
+                  supportsLaterality ({"{side}"})
+                </label>
+                <label className="inline-flex items-center gap-1.5">
+                  <input type="checkbox" checked={ownFindings} onChange={(e) => setOwnFindings(e.target.checked)} />
+                  Findings
+                </label>
+                <label className="inline-flex items-center gap-1.5">
+                  <input type="checkbox" checked={ownImpression} onChange={(e) => setOwnImpression(e.target.checked)} />
+                  Impression
+                </label>
+              </div>
+            </div>
+          )}
         </div>
         <DialogFooter className="gap-2">
           {state.tile && (
@@ -160,7 +268,7 @@ export function ChocolateBoxMacros({
   setKey: string;
   label: string;
   disabled?: boolean;
-  onInsert: (text: string) => void;
+  onInsert: (tile: ChocolateTile) => void;
 }) {
   const tiles = useChocolateTiles(setKey);
   const [editor, setEditor] = useState<EditorState | null>(null);
@@ -181,7 +289,7 @@ export function ChocolateBoxMacros({
               variant="outline"
               className={`h-7 pr-6 text-[10px] font-bold rounded-lg border shadow-sm hover:shadow-md hover:-translate-y-px transition-all ${PALETTES[i % PALETTES.length]}`}
               disabled={disabled}
-              onClick={() => onInsert(tile.text)}
+              onClick={() => onInsert(tile)}
               data-testid={`chocolate-box-tile-${tile.id}`}
               title={tile.text}
             >

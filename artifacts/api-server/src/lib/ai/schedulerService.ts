@@ -15,7 +15,7 @@ import { and, eq, desc, inArray, isNull, ne, sql } from "drizzle-orm";
 import { isFeatureEnabledServer } from "../featureFlags";
 import { AI_MASTER_FLAG, getSchedulerConfig, getModalityMode, getModalityPolicies, normalizeAiModality, DEFAULT_SCHEDULER } from "./clinicalConfigService";
 import { enqueueAiShadowJob, AI_SHADOW_PIPELINE_JOB } from "./shadowPipeline";
-import { jobBacklogCounts, listDeadLetterJobs, markJobRetryable, countDueJobs, peekOvernightAiClaim } from "../radiologyJobs";
+import { jobBacklogCounts, listDeadLetterJobs, markJobRetryable, countDueJobs, peekOvernightAiClaim, getRadiologyJobById } from "../radiologyJobs";
 import {
   deriveRadiologyJobConsumerHealth,
   getRadiologyJobConsumerHeartbeat,
@@ -36,9 +36,15 @@ import {
   shadowQueueComposition,
 } from "./overnightDraftQueue";
 import { compareOvernightDraftRows } from "./overnightAiDraftStatus";
-import { probeOllamaReachable } from "@workspace/ai-providers";
+import {
+  probeOllamaReachable,
+  getProviderEndpointUrl,
+  resolveOllamaInferenceEndpoint,
+  normalizeOllamaEndpointUrl,
+  isOllamaRuntimeEndpointResolverBound,
+  CANONICAL_LOCAL_CHAT_VISION_MODEL,
+} from "@workspace/ai-providers";
 import { resolveLocalAiRuntime } from "../aiPipeline/runtimeConfig";
-import { CANONICAL_LOCAL_CHAT_VISION_MODEL } from "../aiPipeline/canonicalLocalAi";
 
 function nowMinutesLocal(): number {
   // Clinic timezone (Asia/Kolkata) — never use container UTC wall-clock.
@@ -133,6 +139,12 @@ export async function scheduleStudy(opts: {
     modality: opts.modality ?? null,
     arrivalSignature: opts.arrivalSignature ?? (opts.forceNightWindow ? "overnight" : `${decision.mode}:${opts.manualRequest ? "manual" : "auto"}`),
   });
+  if (!res.created && res.id > 0) {
+    const existing = await getRadiologyJobById(res.id);
+    if (existing && (existing.status === "abandoned" || existing.status === "failed")) {
+      await markJobRetryable(existing.id);
+    }
+  }
   await markWorklistPending(opts.studyInstanceUid);
   return { enqueued: true, reason: decision.reason, jobId: res.id };
 }
@@ -148,11 +160,18 @@ export async function scheduleStudyOnDicomArrival(opts: {
 }): Promise<{ enqueued: boolean; reason: string }> {
   try {
     if (!opts.studyInstanceUid) return { enqueued: false, reason: "missing studyInstanceUid" };
+    const latest = await findLatestShadowJob(opts.studyInstanceUid);
+    const noDicomAbandoned = latest?.status === "abandoned"
+      && /no dicom instances found/i.test(latest.failureReason ?? "");
     const res = await scheduleStudy({
       studyInstanceUid: opts.studyInstanceUid,
       modality: opts.modality,
       priority: opts.priority ?? "routine",
       arrivalSignature: `dicom-arrival:${Date.now()}`,
+      // DICOM is stable now — enqueue even outside the night window and revive
+      // jobs that were abandoned while images were still transferring.
+      forceNightWindow: true,
+      forceRetry: noDicomAbandoned,
     });
     if (res.enqueued) {
       logger.info({ uid: opts.studyInstanceUid, modality: opts.modality, reason: res.reason }, "AI draft scheduled on DICOM arrival");
@@ -346,6 +365,15 @@ export async function runNightBatch(
     return { considered: 0, enqueued: 0, overnightModalities: [] };
   }
   const cfg = await getSchedulerConfig();
+  if (cfg.overnightOps?.paused) {
+    return {
+      considered: 0,
+      enqueued: 0,
+      overnightModalities: [],
+      skippedWindow: true,
+      preview: undefined,
+    };
+  }
   if (!opts.forceOutsideWindow && !isWithinNightWindow(nowMinutesLocal(), cfg)) {
     return { considered: 0, enqueued: 0, skippedWindow: true, overnightModalities: [] };
   }
@@ -542,11 +570,29 @@ export async function getOvernightDiagnostics() {
   let dueAi = 0;
   let composition: Awaited<ReturnType<typeof shadowQueueComposition>> | null = null;
   let claimPreview: Awaited<ReturnType<typeof peekOvernightAiClaim>> | null = null;
+  let heldLegacyPending = 0;
+  let heldLegacyRetrying = 0;
+  let eligiblePending = 0;
+  let eligibleRetrying = 0;
+  let legacyHoldState: "HELD" | "RELEASED" | "unknown" = "unknown";
   try {
     stats = await overnightQueueStats();
     dueAi = await countDueJobs(AI_SHADOW_PIPELINE_JOB);
     composition = await shadowQueueComposition();
-    claimPreview = await peekOvernightAiClaim({ preferNewest: false });
+    try {
+      const { getOvernightQueueClassification } = await import("./overnightQueueClassification");
+      const c = await getOvernightQueueClassification();
+      heldLegacyPending = c.heldLegacyPending;
+      heldLegacyRetrying = c.heldLegacyRetrying;
+      eligiblePending = c.eligiblePending;
+      eligibleRetrying = c.eligibleRetrying;
+      legacyHoldState = c.held ? "HELD" : "RELEASED";
+      // dueNow for health = eligible only when hold is active
+      if (c.claimFilter) dueAi = c.eligibleDue;
+      claimPreview = await peekOvernightAiClaim({ preferNewest: false, legacyHold: c.claimFilter });
+    } catch {
+      claimPreview = await peekOvernightAiClaim({ preferNewest: false });
+    }
   } catch (err) {
     logger.warn({ err }, "overnight diagnostics: queue stats unreadable");
   }
@@ -555,17 +601,42 @@ export async function getOvernightDiagnostics() {
     queueDepth: stats.queueDepth,
     running: stats.running,
     nightWindow,
+    eligibleDueAi: eligiblePending + eligibleRetrying,
+    heldLegacyDue: heldLegacyPending + heldLegacyRetrying,
   });
   const peak = isClinicPeakHours();
   let localAiReachable = false;
   let localAiError: string | null = null;
   let model = CANONICAL_LOCAL_CHAT_VISION_MODEL;
+  let canonicalClinicEndpoint: string | null = null;
+  let providerMirrorEndpoint: string | null = null;
+  let effectiveInferenceEndpoint: string | null = null;
+  let providerMirrorStatus: "in_sync" | "STALE MIRROR — ignored" | "unavailable" = "unavailable";
   try {
     const runtime = await resolveLocalAiRuntime();
     model = runtime.localChatVisionModel;
+    canonicalClinicEndpoint = runtime.ollamaBaseUrl;
     const probe = await probeOllamaReachable(runtime.ollamaBaseUrl);
     localAiReachable = probe.reachable;
     localAiError = probe.error ?? null;
+    try {
+      providerMirrorEndpoint = (await getProviderEndpointUrl("ollama"))?.replace(/\/$/, "") || null;
+    } catch {
+      providerMirrorEndpoint = null;
+    }
+    const effective = await resolveOllamaInferenceEndpoint();
+    effectiveInferenceEndpoint = effective.endpointUrl;
+    const clinicNorm = normalizeOllamaEndpointUrl(canonicalClinicEndpoint || "").toLowerCase();
+    const mirrorNorm = providerMirrorEndpoint
+      ? normalizeOllamaEndpointUrl(providerMirrorEndpoint).toLowerCase()
+      : null;
+    if (!mirrorNorm) {
+      providerMirrorStatus = "unavailable";
+    } else if (mirrorNorm === clinicNorm) {
+      providerMirrorStatus = "in_sync";
+    } else {
+      providerMirrorStatus = "STALE MIRROR — ignored";
+    }
   } catch (err) {
     localAiError = err instanceof Error ? err.message : String(err);
   }
@@ -581,11 +652,21 @@ export async function getOvernightDiagnostics() {
     localAi: localAiReachable ? "reachable" : "unreachable",
     localAiError,
     model,
+    canonicalClinicEndpoint,
+    providerMirrorEndpoint,
+    effectiveInferenceEndpoint,
+    providerMirrorStatus,
+    ollamaRuntimeBinderBound: isOllamaRuntimeEndpointResolverBound(),
     concurrency: cfg.maxConcurrentJobs,
     queueDepth: stats.queueDepth,
     running: stats.running,
     abandoned: stats.abandoned,
     dueNow: dueAi,
+    heldLegacyPending,
+    heldLegacyRetrying,
+    eligiblePending,
+    eligibleRetrying,
+    legacyHoldState,
     staleRunning: stats.staleRunning,
     oldestQueuedAt: stats.oldestQueuedAt,
     lastSuccessfulDraftAt: stats.lastSuccessfulDraftAt,
@@ -618,6 +699,11 @@ export async function getOvernightDiagnostics() {
     }),
     meaning: {
       queueDepth: "dicom_retry_queue rows with operation_type=ai_shadow_pipeline and status pending|retrying (all ages/modalities)",
+      dueNow: "eligible (post–legacy-hold) pending|retrying jobs that are due now",
+      heldLegacyPending: "pre-cutover pending rows excluded from claim (intentional hold)",
+      heldLegacyRetrying: "pre-cutover retrying rows excluded from claim (intentional hold)",
+      eligiblePending: "claimable pending rows (post-cutover or allowlisted)",
+      eligibleRetrying: "claimable retrying rows (post-cutover or allowlisted)",
       worklistQueued: "Overnight AI Drafts filter: worklist rows in the selected age chip whose latest shadow job maps to QUEUED (not the full backlog)",
     },
   };
@@ -641,6 +727,7 @@ function describeOvernightFirstStop(input: {
   if (!input.lastCronTickAt) return "drain_timer_registered_but_never_polled";
   if (input.consumer === "STALE") return "drain_tick_stale_or_hung";
   if (input.consumer === "STARVED") return "claim_returned_no_row_despite_due_jobs";
+  if (input.consumer === "HELD_LEGACY") return "legacy_backlog_held_no_eligible_due";
   if (input.dueNow === 0 && input.pending > 0) return "jobs_waiting_on_next_retry_at_backoff";
   if (input.lastRan > 0 && input.lastOutcome && input.lastOutcome !== "success") {
     return `handler_failed:${(input.lastError ?? input.lastOutcome).slice(0, 120)}`;

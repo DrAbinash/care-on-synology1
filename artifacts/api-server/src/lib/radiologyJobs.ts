@@ -50,6 +50,11 @@ export interface RadiologyTickOpts {
   jobId?: number;
   /** Canary: prefer newest eligible job. Ignored when jobId is set. */
   preferNewest?: boolean;
+  /**
+   * When set (and jobId is not), overnight_ai claims only jobs with
+   * created_at >= holdBefore OR id in releasedJobIds. Explicit jobId bypasses.
+   */
+  legacyHold?: { holdBefore: string; releasedJobIds: number[] } | null;
 }
 
 /** Idempotent enqueue: the same idempotency key never creates a second job.
@@ -113,7 +118,7 @@ function executeRows<T>(res: unknown): T[] {
 async function claimNextJob(
   workerId: string,
   handledTypes: string[],
-  opts: Pick<RadiologyTickOpts, "claimStrategy" | "jobId" | "preferNewest"> = {},
+  opts: Pick<RadiologyTickOpts, "claimStrategy" | "jobId" | "preferNewest" | "legacyHold"> = {},
 ): Promise<RadiologyJobRow | null> {
   if (handledTypes.length === 0) return null;
   return db.transaction(async (tx) => {
@@ -129,11 +134,27 @@ async function claimNextJob(
       claimedId = executeRows<{ id: number }>(res)[0]?.id ?? null;
     } else if (opts.claimStrategy === "overnight_ai") {
       const newest = opts.preferNewest === true;
+      const hold = opts.legacyHold ?? null;
+      const legacyHoldSql = hold
+        ? (() => {
+            const holdBefore = new Date(hold.holdBefore);
+            const released = hold.releasedJobIds;
+            const releasedSql =
+              released.length === 0
+                ? sql`false`
+                : sql`q.id IN (${sql.join(
+                    released.map((id) => sql`${id}`),
+                    sql`, `,
+                  )})`;
+            return sql`AND (q.created_at >= ${holdBefore} OR (${releasedSql}))`;
+          })()
+        : sql``;
       const res = await tx.execute(sql`
         SELECT q.id FROM dicom_retry_queue q
         WHERE q.status IN ('pending', 'retrying')
           AND q.operation_type IN (${sql.join(handledTypes.map((t) => sql`${t}`), sql`, `)})
           AND (q.next_retry_at IS NULL OR q.next_retry_at <= NOW())
+          ${legacyHoldSql}
           AND (
             q.payload->>'studyInstanceUid' IS NULL
             OR NOT EXISTS (
@@ -250,6 +271,7 @@ export async function runRadiologyJobTick(
     claimStrategy: opts.claimStrategy,
     jobId: opts.jobId,
     preferNewest: opts.preferNewest,
+    legacyHold: opts.jobId != null ? null : opts.legacyHold ?? null,
   };
 
   // Pre-compute which types are at capacity so we don't claim them.
@@ -409,7 +431,11 @@ export async function getRadiologyJobById(id: number): Promise<{
 }
 
 /** Read-only preview of which overnight AI row the next claim would take. Does not lock. */
-export async function peekOvernightAiClaim(opts: { preferNewest?: boolean; jobId?: number } = {}): Promise<{
+export async function peekOvernightAiClaim(opts: {
+  preferNewest?: boolean;
+  jobId?: number;
+  legacyHold?: { holdBefore: string; releasedJobIds: number[] } | null;
+} = {}): Promise<{
   id: number;
   status: string;
   retryCount: number;
@@ -433,6 +459,21 @@ export async function peekOvernightAiClaim(opts: { preferNewest?: boolean; jobId
     };
   }
   const newest = opts.preferNewest === true;
+  const hold = opts.legacyHold ?? null;
+  const legacyHoldSql = hold
+    ? (() => {
+        const holdBefore = new Date(hold.holdBefore);
+        const released = hold.releasedJobIds;
+        const releasedSql =
+          released.length === 0
+            ? sql`false`
+            : sql`q.id IN (${sql.join(
+                released.map((id) => sql`${id}`),
+                sql`, `,
+              )})`;
+        return sql`AND (q.created_at >= ${holdBefore} OR (${releasedSql}))`;
+      })()
+    : sql``;
   const res = await db.execute(sql`
     SELECT q.id, q.status, q.retry_count AS "retryCount",
            q.payload->>'modality' AS modality,
@@ -443,6 +484,7 @@ export async function peekOvernightAiClaim(opts: { preferNewest?: boolean; jobId
     WHERE q.status IN ('pending', 'retrying')
       AND q.operation_type = 'ai_shadow_pipeline'
       AND (q.next_retry_at IS NULL OR q.next_retry_at <= NOW())
+      ${legacyHoldSql}
       AND (
         q.payload->>'studyInstanceUid' IS NULL
         OR NOT EXISTS (

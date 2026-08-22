@@ -46,6 +46,12 @@ describe("detectGenderFromName — North / East Indian coverage", () => {
     expect(detectGenderFromName(name)).toBe(gender);
   });
 
+  test("skips B/O and S/O relation prefixes for Indian newborn / dependent names", () => {
+    expect(detectGenderFromName("B O Gunja Devi")).toBe("female");
+    expect(detectGenderFromName("B/O Rakhi Kumari")).toBe("female");
+    expect(detectGenderFromName("S/O Rahul Kumar")).toBe("male");
+  });
+
   test("still respects honorifics and known pan-India names", () => {
     expect(detectGenderFromName("Mrs Sunita Devi")).toBe("female");
     expect(detectGenderFromName("Rahul")).toBe("male");

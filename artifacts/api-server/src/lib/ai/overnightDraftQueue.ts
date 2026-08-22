@@ -117,6 +117,7 @@ export function queuePositionsByJobId(
 export async function enrichWorklistOvernightAi<T extends {
   studyInstanceUID?: string | null;
   aiDraftStatus?: string | null;
+  aiDraftJson?: string | null;
 }>(rows: T[], now = new Date()): Promise<Array<T & { overnightAi: OvernightDisplay; overnightEligible?: boolean }>> {
   const uids = rows.map((r) => r.studyInstanceUID).filter((u): u is string => !!u);
   const jobs = await listActiveShadowJobs(uids.length > 0 ? uids : undefined);
@@ -125,11 +126,23 @@ export async function enrichWorklistOvernightAi<T extends {
   return rows.map((r) => {
     const uid = r.studyInstanceUID ?? "";
     const job = uid ? byUid.get(uid) ?? null : null;
+    let aiDraftPointer: Record<string, unknown> | null = null;
+    if (typeof r.aiDraftJson === "string" && r.aiDraftJson.trim()) {
+      try {
+        const parsed = JSON.parse(r.aiDraftJson) as unknown;
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          aiDraftPointer = parsed as Record<string, unknown>;
+        }
+      } catch {
+        aiDraftPointer = null;
+      }
+    }
     const overnightAi = buildOvernightDisplay({
       worklistAiDraftStatus: r.aiDraftStatus,
       job,
       queuePosition: job?.jobId != null ? positions.get(job.jobId) ?? null : null,
       now,
+      aiDraftPointer,
     });
     return { ...r, overnightAi };
   });
@@ -149,11 +162,14 @@ export async function findInFlightShadowJob(studyInstanceUid: string): Promise<{
 export async function findLatestShadowJob(studyInstanceUid: string): Promise<{
   id: number;
   status: string;
+  failureReason: string | null;
 } | null> {
   const jobs = await listActiveShadowJobs([studyInstanceUid]);
   const map = pickLatestJobByUid(jobs);
   const snap = map.get(studyInstanceUid);
-  return snap?.jobId ? { id: snap.jobId, status: snap.jobStatus ?? "" } : null;
+  return snap?.jobId
+    ? { id: snap.jobId, status: snap.jobStatus ?? "", failureReason: snap.lastError ?? null }
+    : null;
 }
 
 export async function worklistIsReady(studyInstanceUid: string): Promise<boolean> {

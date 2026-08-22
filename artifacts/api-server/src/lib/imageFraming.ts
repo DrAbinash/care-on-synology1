@@ -20,7 +20,8 @@ export const DEFAULT_IMAGE_FRAMING: ImageFraming = {
   zoom: 1,
   offsetX: 0,
   offsetY: 0,
-  fitMode: "cover",
+  /** contain keeps square ports from horizontally stretching MRI frames. */
+  fitMode: "contain",
 };
 
 /** Images beyond this count continue below the two-column body, 2-up. */
@@ -46,7 +47,7 @@ export function parseImageFraming(raw: unknown): ImageFraming {
   } else if (raw && typeof raw === "object") {
     obj = raw as Record<string, unknown>;
   }
-  const fit = obj.fitMode === "contain" ? "contain" : "cover";
+  const fit = obj.fitMode === "cover" ? "cover" : "contain";
   return {
     zoom: clampZoom(typeof obj.zoom === "number" ? obj.zoom : 1),
     offsetX: clampOffset(typeof obj.offsetX === "number" ? obj.offsetX : 0),

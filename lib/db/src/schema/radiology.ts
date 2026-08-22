@@ -382,6 +382,15 @@ export const radiologyChocolateFindingsTable = pgTable(
     impressionText: text("impression_text"),
     isCritical: boolean("is_critical").notNull().default(false),
     sortOrder: integer("sort_order").notNull().default(0),
+    /** Client tile id from care-rad-chocolate-boxes / findingsMacros (dedupe/sync). */
+    clientKey: text("client_key"),
+    // Ownership — same vocabulary as radiology_quick_findings / pathologyPatch
+    anatomicalSection: text("anatomical_section").notNull().default(""),
+    conflictGroup: text("conflict_group").notNull().default(""),
+    baselineReplaces: text("baseline_replaces").notNull().default(""),
+    supportsLaterality: boolean("supports_laterality").notNull().default(false),
+    /** Comma list: findings,impression,recommendation (default findings). */
+    sectionsOwned: text("sections_owned").notNull().default("findings"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
   }

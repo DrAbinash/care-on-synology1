@@ -360,12 +360,15 @@ function normalizeToken(token: string): string {
 // treating the next token as the first name.
 const HONORIFIC_PREFIXES = new Set([
   "mr", "mrs", "ms", "miss", "dr", "shri", "smt", "kumari", "master", "baby",
+  // Indian relation prefixes: "B O Gunja Devi", "S/O Raju", "D/O Meena"
+  "b", "o", "bo", "b/o", "s", "d", "w", "so", "do", "wo", "s/o", "d/o", "w/o",
+  "s/o.", "d/o.", "w/o.", "b/o.",
 ]);
 
 const MALE_SET = new Set(MALE_NAMES);
 const FEMALE_SET = new Set(FEMALE_NAMES);
 
-/** Clinic-added names from Radiology Settings (`name_gender_male_extra` /
+/** Clinic-added names from General Settings → Clinic Info (`name_gender_male_extra` /
  *  `name_gender_female_extra` pacs_settings). Merged at lookup time so staff
  *  can teach unrecognized local names without a code deploy. */
 let EXTRA_MALE = new Set<string>();

@@ -45,6 +45,7 @@ import { runUsgExtraction, getUsgAdminSettings } from "../lib/usgExtractor";
 import { isUltrasoundModality, isObstetricUsgStudy } from "../lib/usgModality";
 import { checkPcpndtFormFCompliance, PCPNDT_OVERRIDE_ROLES } from "../lib/pcpndtCompliance";
 import { auditLog } from "../lib/audit";
+import { genderToDicomSex, sanitizeDicomSex } from "@workspace/pathology";
 import { calculateMatchScore, normalizeAccessionKey, type DicomInput, type BilledTestInput } from "../lib/pacs/matchingEngine";
 import { formatDicomPersonNameForDisplay, reconcileAccessionVsReferringDoctor } from "../lib/pacs/dicomNameNormalize";
 import { shouldFallbackToAccessionLookup, isWorklistUidRaceViolation } from "../lib/radiologyWorklistDedup";
@@ -419,7 +420,11 @@ router.post("/radiology/studies", async (req, res) => {
     const patientNameRaw = typeof b.patientName === "string" ? b.patientName.trim() : (typeof b.PatientName === "string" ? b.PatientName.trim() : "");
     const patientName = formatDicomPersonNameForDisplay(patientNameRaw) || patientNameRaw;
     const age = typeof b.age === "string" ? b.age.trim() || null : null;
-    const sex = typeof b.sex === "string" ? b.sex.trim() || null : null;
+    const sexRaw =
+      (typeof b.sex === "string" ? b.sex.trim() : "")
+      || (typeof b.patientSex === "string" ? b.patientSex.trim() : "")
+      || (typeof b.PatientSex === "string" ? b.PatientSex.trim() : "");
+    const sex = sexRaw ? sanitizeDicomSex(sexRaw) : null;
     const modality = typeof b.modality === "string" ? b.modality.trim() || "OT" : (typeof b.ModalitiesInStudy === "string" ? b.ModalitiesInStudy.trim() || "OT" : "OT");
     const studyDescription = typeof b.studyDescription === "string" ? b.studyDescription.trim() || null : (typeof b.StudyDescription === "string" ? b.StudyDescription.trim() || null : null);
     const studyDate = typeof b.studyDate === "string" ? b.studyDate.trim() || null : (typeof b.StudyDate === "string" ? b.StudyDate.trim() || null : null);
@@ -577,8 +582,11 @@ router.post("/radiology/studies", async (req, res) => {
       }
     }
 
-    // 4. Matched by fallback demographics: patientId + studyDate + modality
+    // 4. Matched by fallback demographics: patientId + studyDate + modality (US aliases)
     if (!rStudy && resolvedPatientId && formattedStudyDate && modality) {
+      const modalityCond = isUltrasoundModality(modality)
+        ? sql`lower(${radiologyStudiesTable.modality}) IN ('us', 'usg', 'ultrasound') OR lower(${radiologyStudiesTable.department}) = 'usg'`
+        : sql`lower(${radiologyStudiesTable.modality}) = lower(${modality})`;
       const [row] = await db
         .select(studySelectFields)
         .from(radiologyStudiesTable)
@@ -586,13 +594,36 @@ router.post("/radiology/studies", async (req, res) => {
           and(
             eq(radiologyStudiesTable.patientId, resolvedPatientId),
             eq(radiologyStudiesTable.studyDate, formattedStudyDate),
-            sql`lower(${radiologyStudiesTable.modality}) = lower(${modality})`
-          )
+            modalityCond,
+          ),
         )
         .limit(1);
       if (row) {
         rStudy = row;
         matchMethod = "matched by fallback demographics";
+      }
+    }
+
+    // 5. USG without accession on DICOM: same patient, today's USG study still scheduled
+    if (!rStudy && resolvedPatientId && isUltrasoundModality(modality)) {
+      const studyDateCond = formattedStudyDate
+        ? eq(radiologyStudiesTable.studyDate, formattedStudyDate)
+        : eq(radiologyStudiesTable.studyDate, todayIST());
+      const [row] = await db
+        .select(studySelectFields)
+        .from(radiologyStudiesTable)
+        .where(
+          and(
+            eq(radiologyStudiesTable.patientId, resolvedPatientId),
+            studyDateCond,
+            eq(radiologyStudiesTable.department, "USG"),
+            inArray(radiologyStudiesTable.status, ["scheduled", "in_progress"]),
+          ),
+        )
+        .limit(1);
+      if (row) {
+        rStudy = row;
+        matchMethod = "matched by USG patient today";
       }
     }
 
@@ -838,18 +869,19 @@ router.post("/radiology/studies", async (req, res) => {
     }
 
     // Wire Orthanc arrival → queue token done + MWL cleanup + live UI refresh
-    if (rStudy) {
-      runDicomIntakeAutomation({
-        worklistId: row.id,
-        accessionNumber: rStudy.accessionNumber || accessionNumber,
-        orderTestId: rStudy.orderTestId,
-        billId: rStudy.billId,
-        department: rStudy.department,
-        previousStudyStatus,
-      }).catch((err: unknown) => {
-        logger.warn({ err, worklistId: row.id }, "dicom-intake automation failed silently");
-      });
-    }
+    runDicomIntakeAutomation({
+      worklistId: row.id,
+      accessionNumber: rStudy?.accessionNumber || accessionNumber,
+      orderTestId: rStudy?.orderTestId,
+      billId: rStudy?.billId,
+      department: rStudy?.department,
+      patientId: resolvedPatientId,
+      patientName,
+      modality,
+      previousStudyStatus,
+    }).catch((err: unknown) => {
+      logger.warn({ err, worklistId: row.id }, "dicom-intake automation failed silently");
+    });
 
     // DICOM → Ollama draft: enqueue per Settings → Radiology → AI (on arrival or scheduled).
     if (studyInstanceUID) {
@@ -881,6 +913,8 @@ router.post("/radiology/studies", async (req, res) => {
 
 router.post("/radiology/report-status", async (req, res) => {
   const b = (req.body ?? {}) as {
+    /** radiology_worklist.id — preferred when accession/UID are missing or stale. */
+    worklistId?: number;
     studyId?: number;
     accessionNumber?: string;
     studyInstanceUID?: string;
@@ -898,9 +932,16 @@ router.post("/radiology/report-status", async (req, res) => {
     softFinalReason?: string;
   };
 
-  // Find worklist row
+  // Find worklist row — worklist id first (canonical workspace key), then UID/accession.
   let existing: typeof radiologyWorklistTable.$inferSelect | undefined;
-  if (b.studyInstanceUID) {
+  if (b.worklistId) {
+    const [row] = await db
+      .select()
+      .from(radiologyWorklistTable)
+      .where(eq(radiologyWorklistTable.id, b.worklistId));
+    existing = row;
+  }
+  if (!existing && b.studyInstanceUID) {
     const [row] = await db
       .select()
       .from(radiologyWorklistTable)
@@ -1855,12 +1896,9 @@ router.patch("/dicom/pull-jobs/:jobId", async (req, res) => {
 
 // ── Helpers: DICOM formatting ─────────────────────────────────────────────────
 
-// Map internal gender strings → DICOM sex codes M / F / O
+// Map internal gender strings → DICOM sex codes M / F / O (exact match only).
 function dicomSex(gender: string | null | undefined): "M" | "F" | "O" {
-  const g = (gender ?? "").toLowerCase().trim();
-  if (g === "male" || g === "m") return "M";
-  if (g === "female" || g === "f") return "F";
-  return "O";
+  return genderToDicomSex(gender) ?? "O";
 }
 
 // ISO date string (YYYY-MM-DD) or null → DICOM date string (YYYYMMDD) or null
@@ -2000,6 +2038,7 @@ router.get("/radiology/mwl-orders", async (req, res) => {
     patientId:               r.patientUhid ?? String(r.patientDbId ?? ""),
     patientName:             dicomPatientName(r.firstName, r.lastName),
     sex:                     dicomSex(r.gender),
+    patientSex:              dicomSex(r.gender),
     patientBirthDate:        dicomDate(r.dateOfBirth),
     phone:                   r.phone ?? null,
     // Study identification
@@ -2377,7 +2416,8 @@ router.get("/radiology/mwl", async (req, res) => {
     bodyPartExamined:            r.bodyPartExamined ?? "",
     patientName:                 (r.patientName ?? "").toUpperCase().replace(/\s+/g, "^"),
     patientId:                   r.patientId ?? "",
-    patientSex:                  r.patientSex ?? "",
+    patientSex:                  sanitizeDicomSex(r.patientSex) ?? "",
+    sex:                         sanitizeDicomSex(r.patientSex) ?? "",
     patientDob:                  (r.patientDob ?? "").replace(/-/g, ""),
     patientAge:                  r.patientAge ?? "",
     referringPhysicianName:      (r.referringDoctor ?? "").toUpperCase().replace(/\s+/g, "^"),

@@ -31,6 +31,9 @@ export type StyleSetting = {
   logoPosition: string;
   signaturePosition: string;
   imagePlacement: string;
+  keyImageFit: string;
+  keyImageAspect: string;
+  demographyAlign: string;
   studyTitleStyle: string;
   logoScale: string;
   clinicNameScale: string;
@@ -81,6 +84,9 @@ const PRESETS: Record<string, Partial<StyleSetting>> = {
     logoPosition: "left",
     signaturePosition: "right",
     imagePlacement: "inline",
+    keyImageFit: "contain",
+    keyImageAspect: "square",
+    demographyAlign: "extreme_right",
     studyTitleStyle: "underlined",
     logoScale: "large",
     clinicNameScale: "large",
@@ -117,6 +123,9 @@ const PRESETS: Record<string, Partial<StyleSetting>> = {
     logoPosition: "left",
     signaturePosition: "right",
     imagePlacement: "inline",
+    keyImageFit: "contain",
+    keyImageAspect: "square",
+    demographyAlign: "extreme_right",
     studyTitleStyle: "plain",
     logoScale: "standard",
     clinicNameScale: "standard",
@@ -153,6 +162,9 @@ const PRESETS: Record<string, Partial<StyleSetting>> = {
     logoPosition: "left",
     signaturePosition: "right",
     imagePlacement: "end",
+    keyImageFit: "contain",
+    keyImageAspect: "square",
+    demographyAlign: "extreme_right",
     studyTitleStyle: "underlined",
     logoScale: "xlarge",
     clinicNameScale: "xlarge",
@@ -189,6 +201,9 @@ const PRESETS: Record<string, Partial<StyleSetting>> = {
     logoPosition: "center",
     signaturePosition: "center",
     imagePlacement: "inline",
+    keyImageFit: "contain",
+    keyImageAspect: "square",
+    demographyAlign: "extreme_right",
     studyTitleStyle: "plain",
     logoScale: "large",
     clinicNameScale: "large",
@@ -228,6 +243,9 @@ export function RadiologyStylePanel() {
         logoPosition: styleSetting.logoPosition || "left",
         signaturePosition: styleSetting.signaturePosition || "right",
         imagePlacement: styleSetting.imagePlacement || "inline",
+        keyImageFit: styleSetting.keyImageFit || "contain",
+        keyImageAspect: styleSetting.keyImageAspect || "square",
+        demographyAlign: styleSetting.demographyAlign || "extreme_right",
         studyTitleStyle: styleSetting.studyTitleStyle || "underlined",
         logoScale: styleSetting.logoScale || "large",
         clinicNameScale: styleSetting.clinicNameScale || "large",
@@ -730,6 +748,54 @@ export function RadiologyStylePanel() {
               </div>
 
               <div className="space-y-2">
+                <Label htmlFor="key-image-aspect">Key Image Port</Label>
+                <Select
+                  value={formState.keyImageAspect || "square"}
+                  onValueChange={(v) => handleFieldChange("keyImageAspect", v)}
+                >
+                  <SelectTrigger id="key-image-aspect">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="square">Square (1:1, from top)</SelectItem>
+                    <SelectItem value="fill">Fill rail height</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="key-image-fit">Key Image Fit</Label>
+                <Select
+                  value={formState.keyImageFit || "contain"}
+                  onValueChange={(v) => handleFieldChange("keyImageFit", v)}
+                >
+                  <SelectTrigger id="key-image-fit">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="contain">Contain (no stretch)</SelectItem>
+                    <SelectItem value="cover">Cover (crop to fill)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="demography-align">AGE/SEX &amp; DATE Position</Label>
+                <Select
+                  value={formState.demographyAlign || "extreme_right"}
+                  onValueChange={(v) => handleFieldChange("demographyAlign", v)}
+                >
+                  <SelectTrigger id="demography-align">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="extreme_right">Extreme right</SelectItem>
+                    <SelectItem value="mid">Mid column</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
                 <Label htmlFor="print-layout">Paper &amp; Print Layout</Label>
                 <Select
                   value={formState.printLayout || "letterhead"}
@@ -851,6 +917,9 @@ export function RadiologyStylePanel() {
                   logoPosition: styleSetting.logoPosition || "left",
                   signaturePosition: styleSetting.signaturePosition || "right",
                   imagePlacement: styleSetting.imagePlacement || "inline",
+                  keyImageFit: styleSetting.keyImageFit || "contain",
+                  keyImageAspect: styleSetting.keyImageAspect || "square",
+                  demographyAlign: styleSetting.demographyAlign || "extreme_right",
                   studyTitleStyle: styleSetting.studyTitleStyle || "underlined",
                   logoScale: styleSetting.logoScale || "large",
                   clinicNameScale: styleSetting.clinicNameScale || "large",

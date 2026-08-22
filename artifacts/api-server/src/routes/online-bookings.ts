@@ -3,6 +3,9 @@ import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { FULL_ACCESS_ROLES, normalizeRole } from "../middleware/requireStaffAuth";
 import { db } from "@workspace/db";
 import { PaymentEngine } from "../lib/payments/PaymentEngine";
+import { resolveActiveGateway } from "../lib/payments/resolveActiveGateway";
+import { getIciciPublicBaseUrl } from "../lib/payments/iciciPublicBaseUrl";
+import { isReceptionPayAtCentre } from "../services/onlineBookingPayAtCentre";
 import {
   onlineBookingsTable,
   patientsTable,
@@ -11,7 +14,6 @@ import {
   clinicSettingsTable,
 } from "@workspace/db/schema";
 import { eq, desc, and, or, ilike, inArray } from "drizzle-orm";
-import crypto from "node:crypto";
 import { registerPatientSelfFlow } from "../services/self-registration";
 import {
   computeCatalogAmount,
@@ -239,12 +241,17 @@ onlineBookingsRouter.post("/:id/cancel", async (req, res): Promise<void> => {
   res.json(updated);
 });
 
+export { isReceptionPayAtCentre };
+
 // Extracted confirmation helper for reuse in public-booking (auto-confirm) and manual staff confirm
-export async function confirmBookingInternal(bookingId: number, staffName: string = "Super Admin"): Promise<{ booking: any; billId: number; patientId: number }> {
+export async function confirmBookingInternal(
+  bookingId: number,
+  staffName: string = "Super Admin",
+): Promise<{ booking: any; billId: number; patientId: number; dueAtCentre: boolean }> {
   const [booking] = await db.select().from(onlineBookingsTable).where(eq(onlineBookingsTable.id, bookingId)).limit(1);
   if (!booking) throw new Error("Booking not found");
   if (booking.status === "confirmed") {
-    return { booking, billId: booking.billId || 0, patientId: booking.patientId || 0 };
+    return { booking, billId: booking.billId || 0, patientId: booking.patientId || 0, dueAtCentre: false };
   }
 
   // Parse test and package IDs
@@ -260,12 +267,22 @@ export async function confirmBookingInternal(bookingId: number, staffName: strin
   const firstName = nameParts[0] || booking.name;
   const lastName = nameParts.slice(1).join(" ") || "";
 
-  // Determine gateway and payment reference from booking record
+  const payAtCentre = isReceptionPayAtCentre(booking);
+
+  // Determine gateway and payment reference from booking record.
+  // Pay-at-centre must NOT be labelled as ICICI/Razorpay/etc. Initiate-only
+  // stamps (e.g. iciciTransactionId = bookingRef from Share Link) are not settlement.
   let paymentMethod = "Online";
   let paymentRef = booking.bookingRef;
   let paymentNotes = `Paid online. Booking ref: ${booking.bookingRef}`;
+  let paymentAmount = Number(booking.totalAmount);
 
-  if (booking.razorpayPaymentId || booking.razorpayOrderId) {
+  if (payAtCentre) {
+    paymentMethod = "due";
+    paymentRef = booking.bookingRef;
+    paymentNotes = `Pay at centre. Collect at Billing Desk. Booking ref: ${booking.bookingRef}`;
+    paymentAmount = 0;
+  } else if (booking.razorpayPaymentId || booking.razorpayOrderId) {
     paymentMethod = "Online (Razorpay)";
     paymentRef = booking.razorpayPaymentId || booking.razorpayOrderId || booking.bookingRef;
     paymentNotes = `Paid online via Razorpay. Booking ref: ${booking.bookingRef}`;
@@ -281,12 +298,12 @@ export async function confirmBookingInternal(bookingId: number, staffName: strin
     paymentMethod = "Online (BharatPe)";
     paymentRef = booking.bharatpeProviderRefId || booking.bharatpeTransactionId || booking.bookingRef;
     paymentNotes = `Paid online via BharatPe. Booking ref: ${booking.bookingRef}`;
-  } else if (booking.iciciTransactionId || booking.iciciProviderRefId) {
+  } else if (booking.status === "paid" && (booking.iciciTransactionId || booking.iciciProviderRefId)) {
     paymentMethod = "Online (ICICI Orange Pay)";
     paymentRef = booking.iciciProviderRefId || booking.iciciTransactionId || booking.bookingRef;
     paymentNotes = `Paid online via ICICI Orange Pay. Booking ref: ${booking.bookingRef}`;
   } else {
-    // Self-declared QR / BharatPe booking
+    // Self-declared QR / BharatPe booking (website/kiosk staff-verified)
     if (staffName === "Super Admin") {
       paymentMethod = "Online (BharatPe - Unconfirmed)";
       paymentNotes = `Self-declared QR payment. Pending staff verification. Booking ref: ${booking.bookingRef}`;
@@ -307,9 +324,11 @@ export async function confirmBookingInternal(bookingId: number, staffName: strin
     packageIds,
     paymentMethod,
     paymentReference: paymentRef,
-    paymentAmount: Number(booking.totalAmount),
+    paymentAmount,
     isVip: !!booking.isVip,
-    notes: booking.notes || "",
+    notes: payAtCentre
+      ? [booking.notes, paymentNotes].filter(Boolean).join(" ").trim()
+      : booking.notes || "",
     email: booking.email || "",
     source: "online",
     createdByName: `Online Booking (${staffName})`,
@@ -318,7 +337,8 @@ export async function confirmBookingInternal(bookingId: number, staffName: strin
     doctorId: booking.referringDoctorId ?? null,
   });
 
-  // Mark booking confirmed
+  // Mark booking confirmed. Pay-at-centre must not keep initiate-only ICICI
+  // stamps (Share Link sets iciciTransactionId = bookingRef before money arrives).
   const [updated] = await db
     .update(onlineBookingsTable)
     .set({
@@ -327,11 +347,19 @@ export async function confirmBookingInternal(bookingId: number, staffName: strin
       billId: result.billId,
       confirmedByName: staffName,
       confirmedAt: new Date(),
+      ...(payAtCentre
+        ? { iciciTransactionId: null, iciciProviderRefId: null }
+        : {}),
     })
     .where(eq(onlineBookingsTable.id, booking.id))
     .returning();
 
-  return { booking: updated, billId: result.billId, patientId: result.patientDbId };
+  return {
+    booking: updated,
+    billId: result.billId,
+    patientId: result.patientDbId,
+    dueAtCentre: payAtCentre,
+  };
 }
 
 // POST /api/online-bookings/:id/confirm
@@ -349,7 +377,9 @@ onlineBookingsRouter.post("/:id/confirm", async (req: StaffAuthRequest, res): Pr
 });
 
 // POST /api/online-bookings/:id/payment-link
-// Creates a payment link for an existing booking using the active gateway.
+// Same PaymentEngine / active-gateway path as website booking. Failures are
+// 400 (not 502/503) so the ERP toast shows the gateway message instead of
+// "Server temporarily unavailable" — billing desk is unaffected.
 onlineBookingsRouter.post("/:id/payment-link", async (req, res): Promise<void> => {
   const id = Number(req.params.id);
   const [booking] = await db.select().from(onlineBookingsTable).where(eq(onlineBookingsTable.id, id)).limit(1);
@@ -363,108 +393,29 @@ onlineBookingsRouter.post("/:id/payment-link", async (req, res): Promise<void> =
     return;
   }
 
-  const base = `${req.protocol}://${req.get("host")}`;
-
-  // Determine active gateway
-  const bharatpeApiKey = process.env.BHARATPE_API_KEY || "";
-  const bharatpeApiSecret = process.env.BHARATPE_API_SECRET || "";
-  const bharatpeMerchantId = process.env.BHARATPE_MERCHANT_ID || (s?.bharatpeMerchantId ?? "");
-  const iciciMerchantId = process.env.ICICI_MERCHANT_ID || (s?.iciciMerchantId ?? "");
-  const iciciSecretKey = process.env.ICICI_SECRET_KEY || (s?.iciciSecretKey ?? "");
-  const iciciAggregatorId = process.env.ICICI_AGGREGATOR_ID || (s?.iciciAggregatorId ?? "");
-
-  // 1. Try BharatPe
-  if (s?.bharatpeEnabled && bharatpeMerchantId && bharatpeApiKey && bharatpeApiSecret) {
-    const amountPaise = Math.round(amount * 100);
-    const timestamp = String(Date.now());
-    const authPayload = `${bharatpeMerchantId}:${timestamp}`;
-    const authHash = crypto.createHmac("sha256", bharatpeApiSecret).update(authPayload).digest("hex");
-    const authToken = `${bharatpeApiKey}:${authHash}:${timestamp}`;
-    const isStaging = process.env.NODE_ENV !== "production";
-    const bpBase = isStaging ? "https://uat-api.bharatpe.in/api/v1" : "https://api.bharatpe.in/api/v1";
-    const callbackUrl = `${base}/api/public/booking/bharatpe-callback`;
-    const redirectUrl = `${base}/?booking=bharatpe_done&ref=${encodeURIComponent(booking.bookingRef)}`;
-
-    try {
-      const bpRes = await fetch(`${bpBase}/merchant/checkout/init`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json",
-          "X-API-KEY": bharatpeApiKey,
-          "X-MERCHANT-ID": bharatpeMerchantId,
-          Authorization: `Bearer ${authToken}`,
-        },
-        body: JSON.stringify({
-          merchantId: bharatpeMerchantId,
-          merchantTransactionId: booking.bookingRef,
-          amount: amountPaise,
-          currency: "INR",
-          customerName: booking.name.trim(),
-          customerMobile: booking.phone.replace(/\D/g, "").slice(-10),
-          customerEmail: booking.email?.trim() || "",
-          description: `Care Diagnostics booking ${booking.bookingRef}`,
-          callbackUrl,
-          redirectUrl,
-        }),
-      });
-      if (!bpRes.ok) {
-        const errText = await bpRes.text().catch(() => "");
-        res.status(502).json({ error: "BharatPe gateway error.", details: errText });
-        return;
-      }
-      const bpData = (await bpRes.json()) as { success: boolean; code: string; data?: { redirectUrl?: string; transactionId?: string } };
-      if (!bpData.success || !bpData.data?.redirectUrl) {
-        res.status(502).json({ error: "Could not initiate BharatPe payment.", code: bpData.code });
-        return;
-      }
-      res.json({ url: bpData.data.redirectUrl, linkId: bpData.data.transactionId || booking.bookingRef });
-      return;
-    } catch {
-      res.status(502).json({ error: "Could not connect to BharatPe." });
-      return;
-    }
+  const gateway = resolveActiveGateway(s || {});
+  if (!gateway) {
+    res.status(400).json({
+      error: "No payment gateway is configured. Use Pay at Centre, or enable the clinic gateway in Settings → Payments.",
+    });
+    return;
   }
 
-  // 2. Try ICICI (Orange Pay)
-  if (s?.iciciEnabled) {
-    try {
-      const result = await PaymentEngine.initiatePayment("icici", {
-        bookingRef: booking.bookingRef,
-        name: booking.name.trim(),
-        phone: booking.phone.trim(),
-        email: booking.email?.trim() || "",
-        amount,
-        returnUrl: `${base}/api/public/booking/icici-callback`,
-      });
+  const publicBase = gateway === "icici" || gateway === "hdfc"
+    ? getIciciPublicBaseUrl()
+    : `${req.protocol}://${req.get("host")}`;
 
-      if (!result.success) {
-        res.status(502).json({ error: "ICICI gateway error.", details: result.errorMessage });
-        return;
-      }
-
-      await db.update(onlineBookingsTable)
-        .set({
-          iciciTransactionId: booking.bookingRef,
-          iciciProviderRefId: result.rawResponse.tranCtx,
-        })
-        .where(eq(onlineBookingsTable.id, booking.id));
-
-      res.json({ url: result.redirectUrl, linkId: result.rawResponse.tranCtx });
-      return;
-    } catch (err: any) {
-      res.status(502).json({ error: err.message || "Could not connect to ICICI gateway." });
+  // Razorpay PaymentEngine is still a placeholder — keep the existing payment-links API.
+  if (gateway === "razorpay") {
+    const razorpayKeyId = process.env.RAZORPAY_KEY_ID || (s?.razorpayKeyId ?? "");
+    const razorpayKeySecret = process.env.RAZORPAY_KEY_SECRET || "";
+    if (!razorpayKeyId || !razorpayKeySecret) {
+      res.status(400).json({ error: "Razorpay is selected but credentials are missing. Use Pay at Centre." });
       return;
     }
-  }
-
-  // 3. Fallback to Razorpay
-  const razorpayKeyId = process.env.RAZORPAY_KEY_ID || (s?.razorpayKeyId ?? "");
-  const razorpayKeySecret = process.env.RAZORPAY_KEY_SECRET || "";
-  if (razorpayKeyId && razorpayKeySecret) {
     const amountPaise = Math.round(amount * 100);
     const auth = Buffer.from(`${razorpayKeyId}:${razorpayKeySecret}`).toString("base64");
-    const callbackUrl = `${base}/?booking=link_success&ref=${encodeURIComponent(booking.bookingRef)}`;
+    const callbackUrl = `${publicBase}/?booking=link_success&ref=${encodeURIComponent(booking.bookingRef)}`;
     try {
       const rpRes = await fetch("https://api.razorpay.com/v1/payment_links", {
         method: "POST",
@@ -487,17 +438,54 @@ onlineBookingsRouter.post("/:id/payment-link", async (req, res): Promise<void> =
       });
       if (!rpRes.ok) {
         const err = await rpRes.json().catch(() => ({}));
-        res.status(502).json({ error: "Razorpay error.", details: (err as { error?: { description?: string } }).error?.description });
+        const detail = (err as { error?: { description?: string } }).error?.description;
+        res.status(400).json({ error: detail || "Razorpay could not create a payment link. Use Pay at Centre." });
         return;
       }
       const data = (await rpRes.json()) as { short_url: string; id: string };
       res.json({ url: data.short_url, linkId: data.id });
       return;
     } catch {
-      res.status(502).json({ error: "Could not connect to Razorpay." });
+      res.status(400).json({ error: "Could not reach Razorpay. Use Pay at Centre, or try Share Link again." });
       return;
     }
   }
 
-  res.status(503).json({ error: "No payment gateway is configured. Enable BharatPe, ICICI (Orange Pay), or Razorpay in Settings." });
+  try {
+    const returnUrl = gateway === "icici" || gateway === "hdfc"
+      ? `${publicBase}/api/public/booking/icici-callback`
+      : gateway === "bharatpe"
+        ? `${publicBase}/api/public/booking/bharatpe-callback`
+        : `${publicBase}/api/public/booking/${gateway}-callback`;
+
+    const result = await PaymentEngine.initiatePayment(gateway, {
+      bookingRef: booking.bookingRef,
+      name: booking.name.trim(),
+      phone: booking.phone.trim(),
+      email: booking.email?.trim() || "",
+      amount,
+      returnUrl,
+    });
+
+    if (!result.success || !result.redirectUrl) {
+      res.status(400).json({
+        error: result.errorMessage || `${gateway} could not create a shareable payment link. Use Pay at Centre.`,
+      });
+      return;
+    }
+
+    if (gateway === "icici" || gateway === "hdfc") {
+      await db.update(onlineBookingsTable)
+        .set({
+          iciciTransactionId: booking.bookingRef,
+          iciciProviderRefId: result.rawResponse?.tranCtx ?? null,
+        })
+        .where(eq(onlineBookingsTable.id, booking.id));
+    }
+
+    res.json({ url: result.redirectUrl, linkId: result.gatewayTxnId || booking.bookingRef });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : "Could not create payment link";
+    res.status(400).json({ error: `${message}. Use Pay at Centre.` });
+  }
 });

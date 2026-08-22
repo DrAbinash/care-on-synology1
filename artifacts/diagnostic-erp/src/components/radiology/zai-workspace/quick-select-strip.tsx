@@ -163,7 +163,26 @@ export function QuickSelectStrip({
             tile={tile}
             field={field}
             onPick={() => {
-              useWorkspace.getState().mergeField(field, tile.sentence, "quick-select");
+              const ws = useWorkspace.getState();
+              if (field === "findings" || field === "impression") {
+                const ownership = {
+                  anatomicalSection: tile.anatomicalSection,
+                  conflictGroup: tile.conflictGroup,
+                  baselineReplaces: tile.baselineReplaces,
+                };
+                const templates = field === "findings"
+                  ? { findings: tile.sentence, impression: tile.impressionSentence }
+                  : { impression: tile.sentence };
+                ws.applyPathologyOverlay({
+                  incoming: templates,
+                  templates,
+                  ownership,
+                  source: "quick-select",
+                  id: `qs-${tile.id}`,
+                });
+              } else {
+                ws.mergeField(field, tile.sentence, "quick-select");
+              }
               incUsage(tile.id);
             }}
             onFav={() => toggleFav(tile.id)}

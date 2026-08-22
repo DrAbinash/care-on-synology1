@@ -45,7 +45,7 @@
 
 import { useEffect, useState, useMemo, useCallback, useRef } from "react";
 import { useLocation } from "wouter";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
 import {
   ResizableHandle, ResizablePanel, ResizablePanelGroup,
 } from "@/components/ui/resizable";
@@ -73,7 +73,7 @@ import { api } from "@/lib/fetchApi";
 import { readStaffSession, normalizeRole, isOwnerRole, isFeatureEnabled } from "@/lib/staffSession";
 import { saveRadiologyDraft, finalizeRadiologyReport } from "@/lib/radiologyReportLifecycle";
 import { exportRadiologyReportToWord, safeFileNamePart } from "@/lib/radiologyReportWordExport";
-import { exportRadiologyReportToPdf } from "@/lib/radiologyReportPdfExport";
+import { exportRadiologyReportToPdf, hydratePrintPreviewKeyImages } from "@/lib/radiologyReportPdfExport";
 import { activeStandardLetterhead, type PresentationTemplatesPayload } from "@/lib/careLetterpadChrome";
 import {
   buildPreviewHtml,
@@ -167,6 +167,10 @@ import StructuredFindingDialog from "@/components/radiology/StructuredFindingDia
 import { FindingsHighlightEditor } from "@/components/FindingsHighlightEditor";
 import ReportDemographyCard from "@/components/radiology/ReportDemographyCard";
 import ReferringDoctorQuickSelect from "@/components/ReferringDoctorQuickSelect";
+import ClinicalHistoryChipStrip from "@/components/radiology/ClinicalHistoryChipStrip";
+import StudyLocalFindingEditDialog, {
+  type StudyLocalTextOverride,
+} from "@/components/radiology/StudyLocalFindingEditDialog";
 import { ModuleErrorBoundary } from "@/components/ModuleErrorBoundary";
 import { useReportingStudySetup } from "@/hooks/useReportingStudySetup";
 import { Input } from "@/components/ui/input";
@@ -175,6 +179,7 @@ import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Textarea } from "@/components/ui/textarea";
 import { removeBlock, removeImpression } from "@/lib/quickFindingsMerge";
+import { inferOwnership, type PathologyIncoming } from "@/lib/pathologyPatch";
 import {
   provenanceMapToSegments,
   provenanceVisualKind,
@@ -183,12 +188,14 @@ import {
 import { generateLocalImpression } from "@/lib/generateLocalImpression";
 import { hasPhrase, appendClinicalPhrase, removeClinicalPhrase } from "@/lib/clinicalHistoryText";
 import type { Side } from "@/lib/sideSwap";
+import { applySide } from "@/lib/sideSwap";
 import {
   loadWorkspaceLayoutPrefs, saveWorkspaceLayoutPrefs,
   shouldShowEmbeddedViewer, fallbackModeWhenPopupBlocked, type WorkspaceLayoutMode,
 } from "@/lib/workspaceLayoutPrefs";
 import { isUltrasoundModality, isObstetricUsgStudy } from "@/lib/usgModality";
 import { prefetchMriStudies, prefetchNextMriStudy } from "@/lib/mriStudyPrefetch";
+import { mriWarmTargetsFromRows } from "@/lib/mriWarmScope";
 import { BROWSER_DICOMWEB_BASE } from "@/lib/browserDicomWeb";
 import type { ReportImageRef } from "@/lib/reportImageRefs";
 import { daysAgoISO, todayISO } from "@/lib/dateRangePresets";
@@ -443,6 +450,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const studyLock = useStudyLock(studyId, {
     enabled: Boolean(workflow.currentRow && workflow.currentRow.status !== "REPORT_FINAL" && workflow.currentRow.status !== "DELIVERED") as any,
   });
+  const isLocked = studyLock.status === "locked-by-other";
+  const lockLost = studyLock.status === "expired-lost" || studyLock.status === "connection-lost";
 
   // 3. Draft ID (server-side persistence)
   const { draftId, existingDraft, captureSavedDraftId, isLoadingExistingDraft } = useRadiologyDraftId(studyId ?? null);
@@ -490,14 +499,27 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
 
   const [qsExternalSearch, setQsExternalSearch] = useState<{ seq: number; term: string } | null>(null);
   const quickFindingTemplatesRef = useRef<QuickFinding[]>([]);
+  const studyTextOverridesRef = useRef<Map<number, StudyLocalTextOverride>>(new Map());
+  const [studyLocalEdit, setStudyLocalEdit] = useState<QuickFinding | null>(null);
   const selectedQuickIdsRef = useRef<Set<number>>(new Set());
   const handleQuickToggleRef = useRef<(finding: QuickFinding, nowSelected: boolean) => void>(() => {});
   const voiceParkReasonRef = useRef<string | null>(null);
 
   const focusReportField = useCallback((field: "findings" | "impression" | "technique" | "clinicalHistory" | "recommendation") => {
-    const el = document.querySelector(`[data-report-field="${field}"] textarea`) as HTMLTextAreaElement | null;
-    el?.focus();
-  }, []);
+    const sectionByField: Record<typeof field, ReportSectionId> = {
+      clinicalHistory: "history",
+      technique: "technique",
+      findings: "findings",
+      impression: "impression",
+      recommendation: "recommendation",
+    };
+    activateReportSection(sectionByField[field]);
+    window.setTimeout(() => {
+      const el = document.querySelector(`[data-report-field="${field}"] textarea`) as HTMLTextAreaElement | null;
+      el?.focus();
+      el?.scrollIntoView({ block: "center", behavior: "smooth" });
+    }, 50);
+  }, [activateReportSection]);
 
   const executeVoiceCommand = useCallback((parse: ParsedVoiceCommand): VoiceExecutionResult => {
     const intent = parse.intent;
@@ -774,6 +796,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   // Legacy clinic Quick Select + critical checklist
   const [selectedQuickIds, setSelectedQuickIds] = useState<Set<number>>(() => new Set());
   const [quickSide, setQuickSide] = useState<Side>("left");
+  const lastQuickRenderedRef = useRef<Map<number, PathologyIncoming>>(new Map());
+  const quickSideMountedRef = useRef(false);
   const [isCritical, setIsCritical] = useState(false);
   const [criticalNote, setCriticalNote] = useState("");
   const [checklistComm, setChecklistComm] = useState({ phoned: false, annotated: false, dispatched: false });
@@ -1202,32 +1226,103 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     try { localStorage.setItem("care_reading_queue_date", value); } catch { /* ignore */ }
   }, []);
 
-  /** Clinic Quick Select toggle — insert/remove exact template text (legacy merge safety). */
+  /** Clinic Quick Select — pathology patches over the whole report (ownership + laterality). */
   const handleQuickToggle = useCallback((finding: QuickFinding, nowSelected: boolean) => {
-    setSelectedQuickIds((prev) => {
-      const next = new Set(prev);
-      if (nowSelected) next.add(finding.id);
-      else next.delete(finding.id);
-      return next;
-    });
     const state = useWorkspace.getState();
     if (nowSelected) {
-      if (finding.findingText) state.mergeField("findings", finding.findingText, "quick-findings");
-      if (finding.impressionText) state.mergeField("impression", finding.impressionText, "quick-findings");
-      if (finding.techniqueText) state.mergeField("technique", finding.techniqueText, "quick-findings");
-      if (finding.recommendationText) state.mergeField("recommendation", finding.recommendationText, "quick-findings");
+      const templates: PathologyIncoming = {
+        findings: finding.findingText,
+        impression: finding.impressionText,
+        technique: finding.techniqueText,
+        recommendation: finding.recommendationText,
+      };
+      const ownership = {
+        anatomicalSection: finding.anatomicalSection,
+        conflictGroup: finding.conflictGroup,
+        baselineReplaces: finding.baselineReplaces,
+        ...((!finding.anatomicalSection && !finding.conflictGroup)
+          ? inferOwnership(finding.label, [finding.findingText, finding.impressionText])
+          : {}),
+      };
+      state.applyPathologyOverlay({
+        incoming: templates,
+        templates,
+        ownership,
+        source: "quick-findings",
+        side: quickSide,
+        id: `qf-${finding.id}`,
+      });
+      const applied = useWorkspace.getState().appliedPathologyPatches.find((p) => p.id === `qf-${finding.id}`);
+      lastQuickRenderedRef.current.set(finding.id, applied?.lastRendered ?? templates);
+      setSelectedQuickIds((prev) => {
+        const next = new Set(prev);
+        next.add(finding.id);
+        return next;
+      });
     } else {
-      if (finding.findingText) state.setField("findings", removeBlock(state.findingsText, finding.findingText));
-      if (finding.impressionText) {
+      const last = lastQuickRenderedRef.current.get(finding.id);
+      const findings = last?.findings || finding.findingText;
+      const impression = last?.impression || finding.impressionText;
+      const technique = last?.technique || finding.techniqueText;
+      const recommendation = last?.recommendation || finding.recommendationText;
+      if (findings) state.setField("findings", removeBlock(state.findingsText, findings));
+      if (impression) {
         const lines = state.impressionText.split("\n").filter(Boolean);
-        state.setField("impression", removeImpression(lines, finding.impressionText).join("\n"));
+        state.setField("impression", removeImpression(lines, impression).join("\n"));
       }
-      if (finding.techniqueText) state.setField("technique", removeBlock(state.techniqueText, finding.techniqueText));
-      if (finding.recommendationText) state.setField("recommendation", removeBlock(state.recommendationText, finding.recommendationText));
+      if (technique) state.setField("technique", removeBlock(state.techniqueText, technique));
+      if (recommendation) state.setField("recommendation", removeBlock(state.recommendationText, recommendation));
+      lastQuickRenderedRef.current.delete(finding.id);
+      setSelectedQuickIds((prev) => {
+        const next = new Set(prev);
+        next.delete(finding.id);
+        return next;
+      });
     }
-  }, []);
+  }, [quickSide]);
   handleQuickToggleRef.current = handleQuickToggle;
   selectedQuickIdsRef.current = selectedQuickIds;
+
+  useEffect(() => {
+    if (!quickSideMountedRef.current) {
+      quickSideMountedRef.current = true;
+      return;
+    }
+    useWorkspace.getState().relateralizePatches(quickSide);
+    for (const [id, prev] of lastQuickRenderedRef.current) {
+      lastQuickRenderedRef.current.set(id, {
+        findings: prev.findings ? applySide(prev.findings, quickSide) : prev.findings,
+        impression: prev.impression ? applySide(prev.impression, quickSide) : prev.impression,
+        technique: prev.technique,
+        recommendation: prev.recommendation,
+      });
+    }
+  }, [quickSide]);
+
+  const handleEditBeforeInsert = useCallback((finding: QuickFinding) => {
+    if (isLocked || isFinalized) return;
+    setStudyLocalEdit(finding);
+  }, [isLocked, isFinalized]);
+
+  const applyStudyLocalEdit = useCallback((override: StudyLocalTextOverride) => {
+    const f = studyLocalEdit;
+    if (!f) return;
+    studyTextOverridesRef.current.set(f.id, override);
+    setStudyLocalEdit(null);
+    const patched: QuickFinding = {
+      ...f,
+      findingText: override.finding,
+      impressionText: override.impression,
+      techniqueText: override.technique,
+      recommendationText: override.recommendation,
+    };
+    if (!selectedQuickIds.has(f.id)) {
+      handleQuickToggle(patched, true);
+    } else {
+      handleQuickToggle(f, false);
+      handleQuickToggle(patched, true);
+    }
+  }, [studyLocalEdit, selectedQuickIds, handleQuickToggle]);
 
   const appendFindings = useCallback((text: string) => {
     useWorkspace.getState().mergeField("findings", text, "companion");
@@ -1252,6 +1347,11 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     // setStudies is idempotent for equal content — safe against unstable [].
     setStudies(workflow.queue ?? []);
   }, [workflow.queue, setStudies]);
+
+  // Server-backed whole-report formats + chocolate macros (migrate localStorage once).
+  useEffect(() => {
+    void useWorkspace.getState().hydrateContentLibraries();
+  }, []);
 
   // ─── Auto-select first study ────────────────────────────────────────────────
   useEffect(() => {
@@ -1527,6 +1627,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
           worklistId: studyId,
           patientId: workflow.currentRow.patientId,
           accessionNumber: workflow.currentRow.accessionNumber ?? "",
+          studyInstanceUID: workflow.currentRow.studyInstanceUID ?? "",
           studyDescription: workflow.currentRow.studyDescription ?? "",
           modality: workflow.currentRow.modality ?? "",
         } as any),
@@ -1559,7 +1660,12 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       if (finalizeResult.signed) {
         toast({ title: "Report finalized & signed", description: `Report #${finalizeResult.reportId}` });
       } else if (finalizeResult.reportCreationSkipped) {
-        toast({ title: "Worklist marked final", description: `No patient report row created: ${finalizeResult.reportCreationSkipped}`, variant: "destructive" });
+        toast({
+          title: "Worklist marked final",
+          description: finalizeResult.reportCreationSkipped.includes("no patient")
+            ? "Study finalized on the worklist. No billed patient report row (expected until billing is linked)."
+            : `No patient report row created: ${finalizeResult.reportCreationSkipped}`,
+        });
       } else {
         toast({ title: "Report saved but NOT signed", description: finalizeResult.signError ?? "Sign error", variant: "destructive" });
       }
@@ -1663,6 +1769,11 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       // New features shortcuts
       if (e.ctrlKey && e.key === "k") { e.preventDefault(); useWorkspace.getState().toggleCommandPalette(); return; }
       if (e.ctrlKey && e.key === "Enter") { e.preventDefault(); finalizeReport(); return; }
+      if (e.ctrlKey && e.shiftKey && (e.key === "z" || e.key === "Z")) {
+        e.preventDefault();
+        useWorkspace.getState().undoLastPatch();
+        return;
+      }
       if (e.ctrlKey && (e.key === "i" || e.key === "I")) { e.preventDefault(); triggerAiImpression(); return; }
       if (e.ctrlKey && e.shiftKey && (e.key === "v" || e.key === "V")) {
         e.preventDefault();
@@ -1883,6 +1994,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         referringDoctor: canonicalDemography.referringDoctor,
         studyDate: canonicalDemography.studyDate,
         chrome: activeStandardLetterhead(presentationTemplates),
+        physicalLetterpad: true,
       });
     } catch (err) {
       toast({
@@ -1954,17 +2066,28 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     try {
       const templateQs = reportLayoutTemplateQuery(reportLayout);
       const url = `/api/radiology/report-generator/drafts/${id}/print-preview?autoPrint=true&likeFinal=true&${templateQs}`;
-      const html = await api.get<string>(url);
+      let html = await api.get<string>(url);
+      if (typeof html !== "string" || !html.trim()) {
+        throw new Error("Empty print preview");
+      }
+      // If the API could not reach Orthanc, still show selected images via the
+      // same browser DICOMweb path the Selected images rail already uses.
+      html = await hydratePrintPreviewKeyImages(html, BROWSER_DICOMWEB_BASE, imageRefs);
+      w.document.open();
       w.document.write(html);
       w.document.close();
       w.focus();
-    } catch {
+    } catch (err) {
       w.close();
-      toast({ title: "Print preview failed", variant: "destructive" });
+      toast({
+        title: "Print preview failed",
+        description: err instanceof Error ? err.message : "Could not open print layout.",
+        variant: "destructive",
+      });
     } finally {
       setPrintingLikeFinal(false);
     }
-  }, [draftId, reportLayout, saveDraft, toast]);
+  }, [draftId, reportLayout, saveDraft, toast, imageRefs]);
 
   // ─── Teaching case save ─────────────────────────────────────────────────────
   const handleSaveTeachingCase = useCallback(async () => {
@@ -2099,22 +2222,56 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   pcpndtBlockedRef.current = pcpndtBlocked;
   const pcpndtMissing = pcpndtCompliance?.errors ?? pcpndtCompliance?.missing ?? [];
 
-  // Warm MRI DICOMweb for the reporting queue (same path as embedded viewer).
+  // Warm MRI DICOMweb for Today & Yesterday MR studies (not the whole "All dates" queue).
+  const mriWarmBrowserTargets = useMemo(
+    () => mriWarmTargetsFromRows(workflow.fullQueue ?? workflow.queue ?? [], BROWSER_DICOMWEB_BASE),
+    [workflow.fullQueue, workflow.queue],
+  );
+
+  const { data: mriWarmStatus } = useQuery<{
+    running?: boolean;
+    lastWarmed?: number;
+    candidates?: number;
+    pausedForPeakHours?: boolean;
+    orthancReachable?: boolean | null;
+    lastRunAt?: string | null;
+  }>({
+    queryKey: ["mri-warm-cache-status"],
+    queryFn: () => api.get("/api/radiology/mri-warm-cache/status"),
+    refetchInterval: 30_000,
+    staleTime: 15_000,
+  });
+
+  const warmMriTodayYesterday = useMutation({
+    mutationFn: () => api.post("/api/radiology/mri-warm-cache/run", { force: true, mode: "today_yesterday" }),
+    onSuccess: () => {
+      prefetchMriStudies(mriWarmBrowserTargets);
+      void qc.invalidateQueries({ queryKey: ["mri-warm-cache-status"] });
+      toast({
+        title: "MRI warm started",
+        description: "Today & Yesterday MR studies are loading into Orthanc / DICOMweb cache.",
+      });
+    },
+    onError: (err: Error) => {
+      toast({ title: "MRI warm failed", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const mriWarmCountLabel = useMemo(() => {
+    const n = mriWarmBrowserTargets.length;
+    if (n === 0) return null;
+    return `${n} MR`;
+  }, [mriWarmBrowserTargets.length]);
+
   useEffect(() => {
-    const base = BROWSER_DICOMWEB_BASE;
-    const mriUids = (workflow.queue ?? [])
-      .filter((s: { modality?: string | null }) => {
-        const m = (s.modality ?? "").trim().toUpperCase();
-        return m === "MR" || m.startsWith("MR");
-      })
-      .map((s: { studyInstanceUID?: string | null }) => s.studyInstanceUID)
-      .filter((uid: string | null | undefined): uid is string => !!uid);
-    if (mriUids.length > 0) {
-      prefetchMriStudies(mriUids.map((uid) => ({ studyInstanceUID: uid, dicomWebBaseUrl: base })));
-    } else if (workflow.currentRow?.studyInstanceUID && isMriModality) {
-      prefetchMriStudies([{ studyInstanceUID: workflow.currentRow.studyInstanceUID, dicomWebBaseUrl: base }]);
+    if (mriWarmBrowserTargets.length === 0) {
+      if (workflow.currentRow?.studyInstanceUID && isMriModality) {
+        prefetchMriStudies([{ studyInstanceUID: workflow.currentRow.studyInstanceUID, dicomWebBaseUrl: BROWSER_DICOMWEB_BASE }]);
+      }
+      return;
     }
-  }, [workflow.queue, workflow.currentRow?.studyInstanceUID, isMriModality]);
+    prefetchMriStudies(mriWarmBrowserTargets);
+  }, [mriWarmBrowserTargets, workflow.currentRow?.studyInstanceUID, isMriModality]);
 
   useEffect(() => {
     if (!studyId) return;
@@ -2139,8 +2296,6 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const sessionMin = Math.floor((Date.now() - sessionStartedAt) / 60000);
   const showFatigue = sessionMin >= 90 && sessionMin % 90 < 2 && !useWorkspace.getState().fatigueCardDismissed;
   const findingsPct = study ? getFindingsCompletionPct(findingsText, study.modality) : 0;
-  const isLocked = studyLock.status === "locked-by-other";
-  const lockLost = studyLock.status === "expired-lost" || studyLock.status === "connection-lost";
 
   // ─── Collapsed-section summaries (orientation, not another card) ────────────
   const referringDoctorName = (workflow.currentRow as { referringDoctor?: string } | null)?.referringDoctor ?? null;
@@ -2573,6 +2728,9 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                   onModalityFilterChange={persistQueueModality}
                   datePreset={datePreset}
                   onDatePresetChange={persistDatePreset}
+                  onWarmMriTodayYesterday={() => warmMriTodayYesterday.mutate()}
+                  mriWarmBusy={warmMriTodayYesterday.isPending || !!mriWarmStatus?.running}
+                  mriWarmLabel={mriWarmCountLabel}
                 />
               )}
             </div>
@@ -2769,17 +2927,44 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       />
                     )}
 
-                    {/* Study setup strip — regions / protocol / test name from DICOM */}
-                    {(studySetup.activeProtocol || studySetup.selectedTemplate || studySetup.studyRegions.length > 0) && (
-                      <div className="flex flex-wrap items-center gap-2 rounded-md border border-emerald-200/60 bg-gradient-to-r from-emerald-50/40 via-card to-emerald-50/20 px-2 py-1.5 text-[10px] shadow-sm" data-testid="study-setup-strip">
-                        {studySetup.availableRegions.length > 0 && (
+                    {/* Study setup strip — always visible for manual region/protocol
+                        override when auto-match fails (dropdowns, not summary-only). */}
+                    <div className="flex flex-wrap items-center gap-2 rounded-md border border-emerald-200/60 bg-gradient-to-r from-emerald-50/40 via-card to-emerald-50/20 px-2 py-1.5 text-[10px] shadow-sm" data-testid="study-setup-strip">
+                        <label className="inline-flex items-center gap-1 flex-wrap">
+                            <span className="font-semibold text-muted-foreground">Region</span>
+                            <select
+                              className="h-6 max-w-[11rem] rounded border bg-background px-1 text-[10px]"
+                              value={studySetup.matchedStudyRegion ?? ""}
+                              disabled={isLocked || isFinalized || studySetup.availableRegions.length === 0}
+                              onChange={(e) => {
+                                const name = e.target.value;
+                                studySetup.selectPrimaryRegion(name || null);
+                              }}
+                              data-testid="region-select"
+                              aria-label="Study region"
+                              title={studySetup.availableRegions.length === 0
+                                ? "No regions in Quick Select — configure in Radiology Settings"
+                                : "Select or override study region"}
+                            >
+                              <option value="">
+                                {studySetup.availableRegions.length === 0 ? "No regions configured" : "Select region…"}
+                              </option>
+                              {studySetup.availableRegions.map((r) => (
+                                <option key={r} value={r}>{r}</option>
+                              ))}
+                            </select>
+                        </label>
+                        {(studySetup.availableRegions.length > 0 || studySetup.studyRegions.length > 0) && (
                           <label className="inline-flex items-center gap-1 flex-wrap">
                             <span className="font-semibold text-muted-foreground">Regions</span>
                             <div className="inline-flex flex-wrap gap-0.5" role="group" aria-label="Study regions (multi-select)" data-testid="study-region-chips">
                               {(() => {
                                 const REGION_CHIP_LIMIT = 6;
-                                const primary = studySetup.availableRegions.slice(0, REGION_CHIP_LIMIT);
-                                const overflow = studySetup.availableRegions.slice(REGION_CHIP_LIMIT);
+                                const catalog = studySetup.availableRegions.length > 0
+                                  ? studySetup.availableRegions
+                                  : studySetup.studyRegions;
+                                const primary = catalog.slice(0, REGION_CHIP_LIMIT);
+                                const overflow = catalog.slice(REGION_CHIP_LIMIT);
                                 const extraSelected = studySetup.studyRegions.filter((r) => !primary.includes(r));
                                 const visible = [...primary, ...extraSelected];
                                 return (
@@ -2853,11 +3038,10 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                             )}
                           </label>
                         )}
-                        {studySetup.availableProtocols.length > 0 && (
-                          <select
+                        <select
                             className="h-6 max-w-[12rem] rounded border bg-background px-1 text-[10px]"
                             value={studySetup.activeProtocol?.id ?? ""}
-                            disabled={isLocked || isFinalized}
+                            disabled={isLocked || isFinalized || studySetup.availableProtocols.length === 0}
                             onChange={(e) => {
                               const id = Number(e.target.value);
                               const p = studySetup.availableProtocols.find((x) => x.id === id) ?? null;
@@ -2865,13 +3049,17 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                             }}
                             data-testid="protocol-select"
                             aria-label="Protocol"
+                            title={studySetup.availableProtocols.length === 0
+                              ? "No protocols in Quick Select — configure in Radiology Settings"
+                              : "Select or override protocol / technique template"}
                           >
-                            <option value="">Protocol…</option>
+                            <option value="">
+                              {studySetup.availableProtocols.length === 0 ? "No protocols configured" : "Protocol…"}
+                            </option>
                             {studySetup.availableProtocols.map((p) => (
                               <option key={p.id} value={p.id}>{p.name}{p.isDefault ? " ★" : ""}</option>
                             ))}
                           </select>
-                        )}
                         <button
                           type="button"
                           data-testid="protocol-add-title"
@@ -2925,7 +3113,6 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                           Re-apply defaults
                         </Button>
                       </div>
-                    )}
 
                     </div>
                     </ReportAccordionSection>
@@ -2934,37 +3121,15 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                     <ReportAccordionSection {...accordionProps("history")}>
                     <div className="flex items-center gap-2">
                       <div className="flex-1 space-y-1.5">
-                        {clinicalHistoryChips.length > 0 && !isLocked && !isFinalized && (
-                          <div className="flex flex-wrap gap-1" data-testid="clinical-history-chips">
-                            {clinicalHistoryChips.map((chip) => {
-                              const active = hasPhrase(clinicalHistoryText, chip.insertedText);
-                              return (
-                                <button
-                                  key={chip.id}
-                                  type="button"
-                                  onClick={() => {
-                                    const state = useWorkspace.getState();
-                                    state.setField(
-                                      "clinicalHistory",
-                                      active
-                                        ? removeClinicalPhrase(state.clinicalHistoryText, chip.insertedText)
-                                        : appendClinicalPhrase(state.clinicalHistoryText, chip.insertedText),
-                                    );
-                                  }}
-                                  title={chip.insertedText}
-                                  aria-pressed={active}
-                                  className={`text-[10px] font-bold px-2.5 py-1 rounded-full border shadow-sm transition-all ${
-                                    active
-                                      ? "bg-gradient-to-br from-teal-500 to-cyan-600 text-white border-teal-600 shadow-teal-300/40"
-                                      : "bg-gradient-to-b from-teal-50 to-cyan-50/80 text-teal-900 border-teal-200 hover:border-teal-400 hover:shadow-md hover:-translate-y-px"
-                                  }`}
-                                >
-                                  {chip.displayLabel}
-                                </button>
-                              );
-                            })}
-                          </div>
-                        )}
+                        <ClinicalHistoryChipStrip
+                          chips={clinicalHistoryChips}
+                          studyRegions={studySetup.studyRegions}
+                          defaultStudyType={studySetup.studyRegions[0] || studySetup.matchedStudyRegion || "MRI Brain"}
+                          clinicalHistoryText={clinicalHistoryText}
+                          onClinicalHistoryChange={(next) => useWorkspace.getState().setField("clinicalHistory", next)}
+                          isOwner={isOwner}
+                          disabled={isLocked || isFinalized}
+                        />
                         <FindingsEditor field="clinicalHistory" label="Clinical History" minHeight="56px" placeholder="Presenting complaint and relevant history." />
                       </div>
                       {!isLocked && !isFinalized && (
@@ -2975,28 +3140,61 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
 
                     {/* 5. TECHNIQUE — Quick Select + editor + dictation + protocol context */}
                     <ReportAccordionSection {...accordionProps("technique")}>
-                    {(studySetup.activeProtocol || studySetup.studyRegions.length > 0) && (
-                      <div className="mb-1.5 flex flex-wrap items-center gap-1.5 text-[10px] text-muted-foreground" data-testid="technique-protocol-context">
-                        {studySetup.studyRegions.length > 0 && (
-                          <span className="rounded border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 font-semibold text-emerald-900">
-                            {studySetup.studyRegions.join(" + ")}
-                          </span>
-                        )}
-                        {studySetup.activeProtocol && (
-                          <span className="rounded border border-violet-200 bg-violet-50 px-1.5 py-0.5 font-semibold text-violet-900">
-                            {studySetup.activeProtocol.name}
-                          </span>
-                        )}
-                        <button
-                          type="button"
-                          className="underline underline-offset-2 hover:text-foreground"
-                          onClick={() => setActiveReportSection("region")}
-                          title="Change region or protocol (Alt+3)"
+                    <div className="mb-1.5 flex flex-wrap items-center gap-1.5 text-[10px]" data-testid="technique-protocol-context">
+                      <label className="inline-flex items-center gap-1 text-muted-foreground">
+                        <span className="font-semibold">Region</span>
+                        <select
+                          className="h-6 max-w-[11rem] rounded border bg-background px-1 text-[10px]"
+                          value={studySetup.matchedStudyRegion ?? ""}
+                          disabled={isLocked || isFinalized || studySetup.availableRegions.length === 0}
+                          onChange={(e) => studySetup.selectPrimaryRegion(e.target.value || null)}
+                          data-testid="technique-region-select"
+                          title="Manual region override"
                         >
-                          change
-                        </button>
-                      </div>
-                    )}
+                          <option value="">
+                            {studySetup.availableRegions.length === 0 ? "No regions" : "Select region…"}
+                          </option>
+                          {studySetup.availableRegions.map((r) => (
+                            <option key={r} value={r}>{r}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="inline-flex items-center gap-1 text-muted-foreground">
+                        <span className="font-semibold">Protocol / technique</span>
+                        <select
+                          className="h-6 max-w-[14rem] rounded border bg-background px-1 text-[10px]"
+                          value={studySetup.activeProtocol?.id ?? ""}
+                          disabled={isLocked || isFinalized || studySetup.availableProtocols.length === 0}
+                          onChange={(e) => {
+                            const id = Number(e.target.value);
+                            const p = studySetup.availableProtocols.find((x) => x.id === id) ?? null;
+                            studySetup.requestProtocolChange(p);
+                          }}
+                          data-testid="technique-protocol-select"
+                          title="Manual protocol / technique override"
+                        >
+                          <option value="">
+                            {studySetup.availableProtocols.length === 0 ? "No protocols — set in Settings" : "Select protocol…"}
+                          </option>
+                          {studySetup.availableProtocols.map((p) => (
+                            <option key={p.id} value={p.id}>{p.name}{p.isDefault ? " ★" : ""}</option>
+                          ))}
+                        </select>
+                      </label>
+                      {studySetup.studyRegions.length > 0 && (
+                        <span className="rounded border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 font-semibold text-emerald-900">
+                          {studySetup.studyRegions.join(" + ")}
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        className="underline underline-offset-2 hover:text-foreground text-muted-foreground"
+                        onClick={() => setActiveReportSection("region")}
+                        title="Change region or protocol (Alt+3)"
+                      >
+                        regions
+                      </button>
+                    </div>
                     <div className="flex items-center gap-2" data-testid="canonical-technique-editor">
                       <div className="flex-1">
                         <FindingsEditor field="technique" label="Technique" minHeight="60px" placeholder="Modality, sequences, contrast..." />
@@ -3216,6 +3414,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                             selectedIds={selectedQuickIds}
                             onToggle={handleQuickToggle}
                             onFindingClick={(f) => studySetup.handleFindingClick(f, selectedQuickIds, handleQuickToggle)}
+                            onEditBeforeInsert={handleEditBeforeInsert}
                             side={quickSide}
                             onSideChange={setQuickSide}
                             disabled={isLocked || isFinalized}
@@ -3532,10 +3731,16 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       onExportWord={handleExportWord}
                       onExportPdf={handleExportPdf}
                       onPrintLikeFinal={handlePrintLikeFinal}
+                      onEditSection={focusReportField}
+                      onFinalize={finalizeReport}
+                      finalizeDisabled={!studyId || isFinalized || isLocked || pcpndtBlocked}
+                      finalizeLabel={isFinalized ? "Signed" : "Finalize"}
                       exportingWord={exportingWord}
                       exportingPdf={exportingPdf}
                       printingLikeFinal={printingLikeFinal}
                       disabled={false}
+                      imageRefs={imageRefs}
+                      dicomWebBase={BROWSER_DICOMWEB_BASE}
                     />
                     </ReportAccordionSection>
                   </div>
@@ -3727,6 +3932,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         studyInstanceUid={workflow.currentRow?.studyInstanceUID ?? study?.studyInstanceUID ?? null}
         modality={workflow.currentRow?.modality ?? study?.modality ?? null}
         onInsertText={appendFindings}
+        preferOpen={typeof window !== "undefined" && new URLSearchParams(window.location.search).get("ai") === "1"}
       />
       <ZaiCommandPalette />
       <FinalizeSignDialog
@@ -3738,6 +3944,15 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       <FinalizeDialog />
       <InterruptChannelCard />
       <QuickSelectEditor />
+
+      {studyLocalEdit && (
+        <StudyLocalFindingEditDialog
+          finding={studyLocalEdit}
+          initial={studyTextOverridesRef.current.get(studyLocalEdit.id) ?? null}
+          onApply={applyStudyLocalEdit}
+          onCancel={() => setStudyLocalEdit(null)}
+        />
+      )}
       <MergePreviewDialog />
       <ConfirmOverwriteDialog />
       <SaveAsFormatDialog />

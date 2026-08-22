@@ -55,6 +55,12 @@ export function escHtml(v: string): string {
     .replaceAll('"', "&quot;");
 }
 
+function normalizeImpressionBullet(text: string): string {
+  const trimmed = text.trim();
+  const stripped = trimmed.replace(/^\s*(?:\d+[\.\)]\s+|[-•*]\s+)/, "").trim();
+  return stripped || trimmed;
+}
+
 export function fmtHeading(text: string, headingCase: ReportHeadingCase): string {
   if (headingCase === "all_caps") return text.toUpperCase();
   return text.replace(/\w\S*/g, (w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase());
@@ -98,7 +104,7 @@ export function buildPreviewHtml(opts: BuildPreviewHtmlOpts): string {
     findingsHtml = `<p style="margin:0 0 ${sp};">${escHtml(opts.rawFindings).replaceAll("\n", "<br/>") || "<em style='color:#aaa;'>No findings entered.</em>"}</p>`;
   }
 
-  const impressionBullets = opts.impression.filter(Boolean);
+  const impressionBullets = opts.impression.filter(Boolean).map(normalizeImpressionBullet);
   let impressionHtml = "";
   if (impressionBullets.length > 0) {
     const ist = opts.impressionStyle ?? "bulleted";

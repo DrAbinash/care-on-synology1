@@ -113,6 +113,7 @@ describe("reporting content wiring — one resolved context for all consumers", 
     expect(s.findingTileScopes).not.toContain("LS Spine");
     expect(s.findingTileScopes).not.toContain("Brain");
     expect(s.snippetScopes).not.toContain("LS Spine");
+    expect(s.formatBodyParts).toContain("Cervical Spine");
     expect(s.formatBodyParts).not.toContain("LS Spine");
     expect(s.formatBodyParts).not.toContain("Brain");
     expect(s.contentTypes).toEqual(["Cervical Spine", "Spine"]);

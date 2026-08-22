@@ -30,6 +30,147 @@ function envOllamaEndpoint(): string {
   return (raw.replace(/\/$/, "") || CANONICAL_OLLAMA_ENDPOINT);
 }
 
+/** Normalize Ollama base URL for identity compares (trim + strip trailing slash). */
+export function normalizeOllamaEndpointUrl(url: string): string {
+  return (url ?? "").trim().replace(/\/+$/, "");
+}
+
+/**
+ * True for loopback Ollama URLs on non-standard ports (typical `listen(0)` /
+ * ephemeral test/mock servers). Standard local Ollama (`:11434`) is allowed.
+ * Production must never inherit these when a clinic LAN endpoint is configured.
+ */
+export function isEphemeralLoopbackOllamaUrl(url: string): boolean {
+  try {
+    const u = new URL(normalizeOllamaEndpointUrl(url));
+    const host = u.hostname.toLowerCase();
+    if (host !== "127.0.0.1" && host !== "localhost" && host !== "::1") return false;
+    const port = Number(u.port || (u.protocol === "https:" ? "443" : "80"));
+    return Number.isFinite(port) && port !== 11434 && port > 1024;
+  } catch {
+    return false;
+  }
+}
+
+export type OllamaRuntimeEndpoint = {
+  endpointUrl: string;
+  model?: string | null;
+};
+
+/**
+ * Bridge to the api-server's existing `resolveLocalAiRuntime()` — not a second
+ * resolver. When bound, all Ollama generate paths prefer clinic/runtime URL
+ * over stale `ai_provider_settings` / ephemeral loopback test URLs.
+ */
+let ollamaRuntimeEndpointResolver:
+  | (() => Promise<OllamaRuntimeEndpoint | null>)
+  | null = null;
+
+export function bindOllamaRuntimeEndpointResolver(
+  fn: (() => Promise<OllamaRuntimeEndpoint | null>) | null,
+): void {
+  ollamaRuntimeEndpointResolver = fn;
+}
+
+/** True after api-server bootstrap binds resolveLocalAiRuntime into generate paths. */
+export function isOllamaRuntimeEndpointResolverBound(): boolean {
+  return ollamaRuntimeEndpointResolver != null;
+}
+
+/** Test helper — clears the production binder. */
+export function resetOllamaRuntimeEndpointResolverForTests(): void {
+  ollamaRuntimeEndpointResolver = null;
+}
+
+/**
+ * Clinic/runtime URL wins over DB mirror, env, and ephemeral loopback test
+ * servers. Does not hard-code a LAN IP — caller supplies the clinic URL.
+ */
+export function preferClinicOllamaEndpoint(opts: {
+  clinicOrRuntimeUrl: string | null | undefined;
+  candidateUrl: string | null | undefined;
+  envFallback?: string;
+}): {
+  endpointUrl: string;
+  source: "clinic_runtime" | "candidate" | "env_canonical";
+  rejectedCandidate: string | null;
+  rejectReason: string | null;
+} {
+  const clinic = opts.clinicOrRuntimeUrl?.trim()
+    ? normalizeOllamaEndpointUrl(opts.clinicOrRuntimeUrl)
+    : null;
+  const candidate = opts.candidateUrl?.trim()
+    ? normalizeOllamaEndpointUrl(opts.candidateUrl)
+    : null;
+  const envFallback = normalizeOllamaEndpointUrl(opts.envFallback ?? envOllamaEndpoint());
+
+  if (clinic) {
+    if (candidate && candidate !== clinic) {
+      if (isEphemeralLoopbackOllamaUrl(candidate)) {
+        return {
+          endpointUrl: clinic,
+          source: "clinic_runtime",
+          rejectedCandidate: candidate,
+          rejectReason: "ephemeral_loopback_cannot_override_clinic",
+        };
+      }
+      return {
+        endpointUrl: clinic,
+        source: "clinic_runtime",
+        rejectedCandidate: candidate,
+        rejectReason: "clinic_settings_wins_over_provider_mirror",
+      };
+    }
+    return {
+      endpointUrl: clinic,
+      source: "clinic_runtime",
+      rejectedCandidate: null,
+      rejectReason: null,
+    };
+  }
+  if (candidate) {
+    return {
+      endpointUrl: candidate,
+      source: "candidate",
+      rejectedCandidate: null,
+      rejectReason: null,
+    };
+  }
+  return {
+    endpointUrl: envFallback,
+    source: "env_canonical",
+    rejectedCandidate: null,
+    rejectReason: null,
+  };
+}
+
+/** Flatten undici `fetch failed` + `cause` so ECONNREFUSED host:port is visible. */
+export function formatFetchNetworkError(err: unknown, intendedUrl?: string): string {
+  if (!(err instanceof Error)) return String(err).slice(0, 400);
+  const parts: string[] = [err.message || "unknown error"];
+  let cause: unknown = (err as Error & { cause?: unknown }).cause;
+  let depth = 0;
+  while (cause && depth < 4) {
+    if (cause instanceof Error) {
+      const c = cause as Error & { code?: string; address?: string; port?: number };
+      const addr =
+        c.address != null && c.port != null
+          ? `${c.address}:${c.port}`
+          : c.message;
+      parts.push(c.code ? `${c.code} ${addr}` : addr);
+      cause = (c as Error & { cause?: unknown }).cause;
+    } else {
+      parts.push(String(cause).slice(0, 120));
+      break;
+    }
+    depth += 1;
+  }
+  if (intendedUrl?.trim()) {
+    parts.push(`intended ${normalizeOllamaEndpointUrl(intendedUrl)}`);
+  }
+  return parts.filter(Boolean).join(" → ").slice(0, 400);
+}
+
 // ─── Types ──────────────────────────────────────────────────────────────────
 
 export interface AiProviderConfig {
@@ -51,12 +192,64 @@ export interface AiQueryOptions {
   /** Ollama native `think` flag (false = no chain-of-thought when supported). */
   think?: boolean;
   temperature?: number;
+  /**
+   * Optional AbortController timeout for the provider HTTP call.
+   * When unset, the call has no provider-level AbortSignal (callers / proxies
+   * may still impose their own limits). Do not silently default this — draft
+   * vs radiology-ollama paths differ intentionally.
+   */
+  timeoutMs?: number;
+}
+
+/** PHI-safe provider call metadata — never include prompts, base64, or raw responses. */
+export interface AiQueryDiagnostics {
+  provider: string;
+  resolvedEndpoint?: string | null;
+  model?: string | null;
+  numberOfImages: number;
+  /** Approximate decoded image payload bytes (from base64 length), not pixels. */
+  totalImageBytes: number;
+  /** JSON body byte length sent to the provider (includes embedded base64 — size only). */
+  requestBodyBytes?: number | null;
+  promptLength: number;
+  startedAt: string;
+  elapsedMs: number;
+  httpStatus?: number | null;
+  responseLength: number;
+  finishReason?: string | null;
+  /** Whether `think` was included in the outbound Ollama body. */
+  thinkSent?: boolean | null;
+  /** Value of think when sent (null if not sent). */
+  thinkValue?: boolean | null;
+  /** Length of message.thinking if Ollama returned one (not the text). */
+  thinkingLength?: number | null;
+  /** Ollama timing/eval counters when present (nanoseconds for durations). */
+  ollamaTotalDurationNs?: number | null;
+  ollamaLoadDurationNs?: number | null;
+  ollamaPromptEvalCount?: number | null;
+  ollamaEvalCount?: number | null;
+  errorClass?: string | null;
+  errorCode?: string | null;
+  /** Safe truncated provider error (no PHI). */
+  errorMessage?: string | null;
+  /** Which stage timed out, if any (e.g. provider_http, gateway). */
+  timeoutStage?: string | null;
+  /** AbortSignal timeout configured for this call; null = none at provider layer. */
+  timeoutMsConfigured?: number | null;
+  /** options.num_ctx actually placed on the Ollama /api/chat body (null = not sent). */
+  requestedNumCtx?: number | null;
+  /** From Ollama exceed_context_size_error when present. */
+  ollamaAvailableContext?: number | null;
+  /** From Ollama exceed_context_size_error / n_prompt_tokens when present. */
+  ollamaRequestTokens?: number | null;
 }
 
 export interface AiQueryResult {
   text: string;
   success: boolean;
   error?: string;
+  /** PHI-safe call metadata for structured server logs. */
+  diagnostics?: AiQueryDiagnostics;
 }
 
 export interface AiProvider {
@@ -322,36 +515,249 @@ export function buildOllamaChatPayload(opts: AiQueryOptions): Record<string, unk
   return body;
 }
 
+/** Approximate decoded byte length of a base64 (or data-URL) image string. */
+export function estimateBase64DecodedBytes(b64OrDataUrl: string): number {
+  const raw = (b64OrDataUrl ?? "").replace(/^data:image\/[a-zA-Z0-9+.-]+;base64,/, "");
+  if (!raw) return 0;
+  const padding = raw.endsWith("==") ? 2 : raw.endsWith("=") ? 1 : 0;
+  return Math.max(0, Math.floor((raw.length * 3) / 4) - padding);
+}
+
+function classifyProviderError(err: unknown, intendedUrl?: string): {
+  errorClass: string;
+  errorCode: string | null;
+  errorMessage: string;
+  timeoutStage: string | null;
+} {
+  if (err instanceof Error) {
+    const name = err.name || "Error";
+    const msg = formatFetchNetworkError(err, intendedUrl);
+    const aborted =
+      name === "AbortError" ||
+      /aborted|abort|timed out after|TimeoutError/i.test(msg);
+    if (aborted) {
+      return {
+        errorClass: name,
+        errorCode: "PROVIDER_TIMEOUT",
+        errorMessage: msg,
+        timeoutStage: "provider_http",
+      };
+    }
+    if (/cudaMalloc|out of memory|CUDA error|failed to allocate CUDA|ggml_cuda/i.test(msg)) {
+      return {
+        errorClass: "GpuOutOfMemory",
+        errorCode: "GPU_OUT_OF_MEMORY",
+        errorMessage: msg,
+        timeoutStage: null,
+      };
+    }
+    const refused = /ECONNREFUSED/i.test(msg);
+    return {
+      errorClass: refused ? "ConnectionRefused" : name,
+      errorCode: refused ? "ECONNREFUSED" : name,
+      errorMessage: msg,
+      timeoutStage: null,
+    };
+  }
+  return {
+    errorClass: "UnknownError",
+    errorCode: null,
+    errorMessage: String(err).slice(0, 300),
+    timeoutStage: null,
+  };
+}
+
+function parseContextExceededFromOllamaDetail(detail: string): {
+  errorCode: string;
+  ollamaAvailableContext: number | null;
+  ollamaRequestTokens: number | null;
+} | null {
+  if (!/exceed_context_size_error|exceeds the available context size/i.test(detail)) return null;
+  const reqMatch = detail.match(/request\s*\((\d+)\s*tokens?\)/i);
+  const availMatch = detail.match(/available context size\s*\((\d+)\s*tokens?\)/i);
+  const promptTok = detail.match(/"n_prompt_tokens"\s*:\s*(\d+)/i);
+  return {
+    errorCode: "CONTEXT_BUDGET_EXCEEDED",
+    ollamaRequestTokens: reqMatch
+      ? Number(reqMatch[1])
+      : promptTok
+        ? Number(promptTok[1])
+        : null,
+    ollamaAvailableContext: availMatch ? Number(availMatch[1]) : null,
+  };
+}
+
+/** Detect CUDA / GPU OOM in Ollama error bodies (must not become EMPTY). */
+function parseGpuOomFromOllamaDetail(detail: string): { errorCode: "GPU_OUT_OF_MEMORY" } | null {
+  if (!/cudaMalloc|out of memory|CUDA error|failed to allocate CUDA|ggml_cuda|gpu.?oom/i.test(detail)) {
+    return null;
+  }
+  return { errorCode: "GPU_OUT_OF_MEMORY" };
+}
+
 class OllamaProvider implements AiProvider {
   config = BUILTIN_PROVIDER_CONFIGS.ollama;
   constructor(private endpointUrl: string) {}
 
   async query(opts: AiQueryOptions): Promise<AiQueryResult> {
+    const base = this.endpointUrl.replace(/\/$/, "");
+    const model = opts.model || CANONICAL_LOCAL_CHAT_VISION_MODEL;
+    const images = opts.images ?? [];
+    const totalImageBytes = images.reduce((sum, img) => sum + estimateBase64DecodedBytes(img), 0);
+    const startedAt = new Date().toISOString();
+    const t0 = Date.now();
+    const timeoutMsConfigured = opts.timeoutMs != null && Number.isFinite(opts.timeoutMs)
+      ? Math.max(1, Math.floor(opts.timeoutMs))
+      : null;
+    const requestedNumCtx =
+      opts.numCtx != null && Number.isFinite(opts.numCtx) ? Math.floor(opts.numCtx) : null;
+
+    const baseDiag = (): Omit<
+      AiQueryDiagnostics,
+      | "elapsedMs"
+      | "httpStatus"
+      | "responseLength"
+      | "finishReason"
+      | "errorClass"
+      | "errorCode"
+      | "errorMessage"
+      | "timeoutStage"
+      | "thinkingLength"
+      | "ollamaTotalDurationNs"
+      | "ollamaLoadDurationNs"
+      | "ollamaPromptEvalCount"
+      | "ollamaEvalCount"
+      | "ollamaAvailableContext"
+      | "ollamaRequestTokens"
+    > => ({
+      provider: "ollama",
+      resolvedEndpoint: base,
+      model,
+      numberOfImages: images.length,
+      totalImageBytes,
+      promptLength: (opts.prompt ?? "").length,
+      startedAt,
+      timeoutMsConfigured,
+      thinkSent: opts.think !== undefined,
+      thinkValue: opts.think !== undefined ? opts.think : null,
+      requestBodyBytes: null,
+      requestedNumCtx,
+    });
+
     try {
-      const base = this.endpointUrl.replace(/\/$/, "");
       const body = buildOllamaChatPayload(opts);
-      const resp = await fetch(`${base}/api/chat`, {
+      const bodyJson = JSON.stringify(body);
+      const requestBodyBytes = Buffer.byteLength(bodyJson, "utf8");
+      const init: RequestInit = {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
+        body: bodyJson,
+      };
+      if (timeoutMsConfigured != null) {
+        init.signal = AbortSignal.timeout(timeoutMsConfigured);
+      }
+      const resp = await fetch(`${base}/api/chat`, init);
+      const elapsedMs = Date.now() - t0;
       if (!resp.ok) {
         const detail = await resp.text().catch(() => "");
+        const errorMessage = `Ollama /api/chat ${resp.status}${detail ? `: ${detail.slice(0, 400)}` : ""}`;
+        const ctxErr = parseContextExceededFromOllamaDetail(detail || errorMessage);
+        const gpuErr = parseGpuOomFromOllamaDetail(detail || errorMessage);
+        const errorCode =
+          ctxErr?.errorCode ?? gpuErr?.errorCode ?? `HTTP_${resp.status}`;
+        const errorClass = ctxErr
+          ? "ContextBudgetExceeded"
+          : gpuErr
+            ? "GpuOutOfMemory"
+            : "OllamaHttpError";
         return {
           text: "",
           success: false,
-          error: `Ollama /api/chat ${resp.status}${detail ? `: ${detail.slice(0, 200)}` : ""}`,
+          error: errorMessage,
+          diagnostics: {
+            ...baseDiag(),
+            requestBodyBytes,
+            elapsedMs,
+            httpStatus: resp.status,
+            responseLength: 0,
+            finishReason: null,
+            thinkingLength: null,
+            ollamaTotalDurationNs: null,
+            ollamaLoadDurationNs: null,
+            ollamaPromptEvalCount: null,
+            ollamaEvalCount: null,
+            ollamaAvailableContext: ctxErr?.ollamaAvailableContext ?? null,
+            ollamaRequestTokens: ctxErr?.ollamaRequestTokens ?? null,
+            errorClass,
+            errorCode,
+            errorMessage: errorMessage.slice(0, 400),
+            timeoutStage: null,
+          },
         };
       }
       const data = (await resp.json()) as {
         message?: { content?: string; thinking?: string };
         response?: string;
+        done_reason?: string;
+        done?: boolean;
+        total_duration?: number;
+        load_duration?: number;
+        prompt_eval_count?: number;
+        eval_count?: number;
       };
       const raw = data.message?.content ?? data.response ?? "";
+      const thinkingRaw = data.message?.thinking ?? "";
       // Discard message.thinking (chain-of-thought) even if the model ignored think=false.
-      return { text: stripThinkBlocks(raw), success: true };
+      const text = stripThinkBlocks(raw);
+      return {
+        text,
+        success: true,
+        diagnostics: {
+          ...baseDiag(),
+          requestBodyBytes,
+          elapsedMs,
+          httpStatus: resp.status,
+          responseLength: text.length,
+          finishReason: data.done_reason ?? (data.done === false ? "incomplete" : data.done ? "stop" : null),
+          thinkingLength: thinkingRaw.length > 0 ? thinkingRaw.length : 0,
+          ollamaTotalDurationNs: typeof data.total_duration === "number" ? data.total_duration : null,
+          ollamaLoadDurationNs: typeof data.load_duration === "number" ? data.load_duration : null,
+          ollamaPromptEvalCount: typeof data.prompt_eval_count === "number" ? data.prompt_eval_count : null,
+          ollamaEvalCount: typeof data.eval_count === "number" ? data.eval_count : null,
+          ollamaAvailableContext: null,
+          ollamaRequestTokens: typeof data.prompt_eval_count === "number" ? data.prompt_eval_count : null,
+          errorClass: null,
+          errorCode: null,
+          errorMessage: null,
+          timeoutStage: null,
+        },
+      };
     } catch (err: unknown) {
-      return { text: "", success: false, error: err instanceof Error ? err.message : "Ollama error" };
+      const classified = classifyProviderError(err, `${base}/api/chat`);
+      const elapsedMs = Date.now() - t0;
+      return {
+        text: "",
+        success: false,
+        error: classified.errorMessage,
+        diagnostics: {
+          ...baseDiag(),
+          elapsedMs,
+          httpStatus: null,
+          responseLength: 0,
+          finishReason: null,
+          thinkingLength: null,
+          ollamaTotalDurationNs: null,
+          ollamaLoadDurationNs: null,
+          ollamaPromptEvalCount: null,
+          ollamaEvalCount: null,
+          ollamaAvailableContext: null,
+          ollamaRequestTokens: null,
+          errorClass: classified.errorClass,
+          errorCode: classified.errorCode,
+          errorMessage: classified.errorMessage,
+          timeoutStage: classified.timeoutStage,
+        },
+      };
     }
   }
 
@@ -528,6 +934,44 @@ export async function createAiProviderFromDb(name: string): Promise<AiProvider |
 }
 
 /**
+ * Resolve the Ollama base URL the same way generateAiResponse does — clinic
+ * runtime (when bound) wins over ai_provider_settings / env / ephemeral loopback.
+ */
+export async function resolveOllamaInferenceEndpoint(opts?: {
+  endpointUrl?: string | null;
+}): Promise<{
+  endpointUrl: string;
+  source: "clinic_runtime" | "candidate" | "env_canonical";
+  rejectedCandidate: string | null;
+  rejectReason: string | null;
+}> {
+  let clinicRuntimeUrl: string | null = null;
+  if (ollamaRuntimeEndpointResolver) {
+    try {
+      const rt = await ollamaRuntimeEndpointResolver();
+      if (rt?.endpointUrl?.trim()) {
+        clinicRuntimeUrl = normalizeOllamaEndpointUrl(rt.endpointUrl);
+      }
+    } catch {
+      /* fall through */
+    }
+  }
+  const override = opts?.endpointUrl?.trim()
+    ? normalizeOllamaEndpointUrl(opts.endpointUrl)
+    : null;
+  let dbUrl: string | null = null;
+  try {
+    dbUrl = (await getProviderEndpointUrl("ollama"))?.replace(/\/$/, "") || null;
+  } catch {
+    dbUrl = null;
+  }
+  return preferClinicOllamaEndpoint({
+    clinicOrRuntimeUrl: clinicRuntimeUrl,
+    candidateUrl: override || dbUrl,
+  });
+}
+
+/**
  * Unified generate function that picks the provider from the database and
  * runs the query. Returns the result directly.
  */
@@ -543,20 +987,80 @@ export async function generateAiResponse(
     temperature?: number;
     /** Override endpoint (Local AI runtime) — preferred for Ollama. */
     endpointUrl?: string;
+    /** Optional provider HTTP AbortSignal timeout (ms). */
+    timeoutMs?: number;
   },
 ): Promise<AiQueryResult> {
+  const imgs = images ?? [];
+  const startedAt = new Date().toISOString();
+  const totalImageBytes = imgs.reduce((sum, img) => sum + estimateBase64DecodedBytes(img), 0);
+
   let provider: AiProvider | null = null;
-  if (providerName === "ollama" && options?.endpointUrl?.trim()) {
-    provider = await createAiProvider("ollama", undefined, options.endpointUrl.trim().replace(/\/$/, ""));
+  let resolvedEndpoint: string | null = null;
+  let runtimeModelHint: string | null = null;
+
+  if (providerName === "ollama") {
+    let clinicRuntimeUrl: string | null = null;
+    if (ollamaRuntimeEndpointResolver) {
+      try {
+        const rt = await ollamaRuntimeEndpointResolver();
+        if (rt?.endpointUrl?.trim()) {
+          clinicRuntimeUrl = normalizeOllamaEndpointUrl(rt.endpointUrl);
+        }
+        if (rt?.model?.trim()) runtimeModelHint = rt.model.trim();
+      } catch {
+        // Resolver unavailable (tests / early boot) — fall through to override/DB/env.
+      }
+    }
+    const override = options?.endpointUrl?.trim()
+      ? normalizeOllamaEndpointUrl(options.endpointUrl)
+      : null;
+    let dbUrl: string | null = null;
+    try {
+      dbUrl = (await getProviderEndpointUrl("ollama"))?.replace(/\/$/, "") || null;
+    } catch {
+      dbUrl = null;
+    }
+    const preferred = preferClinicOllamaEndpoint({
+      clinicOrRuntimeUrl: clinicRuntimeUrl,
+      candidateUrl: override || dbUrl,
+    });
+    resolvedEndpoint = preferred.endpointUrl;
+    provider = await createAiProvider("ollama", undefined, resolvedEndpoint);
   } else {
     provider = await createAiProviderFromDb(providerName);
   }
   if (!provider) {
-    return { text: "", success: false, error: `Provider ${providerName} is not configured.` };
+    return {
+      text: "",
+      success: false,
+      error: `Provider ${providerName} is not configured.`,
+      diagnostics: {
+        provider: providerName,
+        resolvedEndpoint,
+        model: options?.model ?? null,
+        numberOfImages: imgs.length,
+        totalImageBytes,
+        promptLength: (prompt ?? "").length,
+        startedAt,
+        elapsedMs: 0,
+        httpStatus: null,
+        responseLength: 0,
+        finishReason: null,
+        errorClass: "ProviderNotConfigured",
+        errorCode: "PROVIDER_NOT_CONFIGURED",
+        errorMessage: `Provider ${providerName} is not configured.`,
+        timeoutStage: null,
+        timeoutMsConfigured: options?.timeoutMs ?? null,
+      },
+    };
   }
   // Model precedence: explicit option → admin-configured stored default →
   // canonical local chat/vision model for Ollama.
   let model = options?.model?.trim() || "";
+  if (!model && providerName === "ollama" && runtimeModelHint) {
+    model = runtimeModelHint;
+  }
   if (!model) {
     const cfg = await loadProviderConfig(providerName);
     model = cfg?.defaultModel ?? "";
@@ -564,15 +1068,42 @@ export async function generateAiResponse(
   if (!model && providerName === "ollama") {
     model = CANONICAL_LOCAL_CHAT_VISION_MODEL;
   }
-  return provider.query({
+  const result = await provider.query({
     model,
     prompt,
-    images: images ?? [],
+    images: imgs,
     maxTokens: options?.maxTokens,
     numCtx: options?.numCtx,
     think: options?.think,
     temperature: options?.temperature,
+    timeoutMs: options?.timeoutMs,
   });
+  // Ensure diagnostics always carry the resolved endpoint/model for this call.
+  if (!result.diagnostics) {
+    result.diagnostics = {
+      provider: providerName,
+      resolvedEndpoint,
+      model,
+      numberOfImages: imgs.length,
+      totalImageBytes,
+      promptLength: (prompt ?? "").length,
+      startedAt,
+      elapsedMs: 0,
+      httpStatus: null,
+      responseLength: (result.text ?? "").length,
+      finishReason: null,
+      errorClass: result.success ? null : "ProviderError",
+      errorCode: result.success ? null : "PROVIDER_ERROR",
+      errorMessage: result.error?.slice(0, 300) ?? null,
+      timeoutStage: null,
+      timeoutMsConfigured: options?.timeoutMs ?? null,
+    };
+  } else {
+    result.diagnostics.provider = result.diagnostics.provider || providerName;
+    result.diagnostics.resolvedEndpoint = result.diagnostics.resolvedEndpoint ?? resolvedEndpoint;
+    result.diagnostics.model = result.diagnostics.model ?? model;
+  }
+  return result;
 }
 
 // ─── Model Routing (Phase 4) ─────────────────────────────────────────────────
@@ -705,6 +1236,7 @@ export async function generateAiForTask(
     think?: boolean;
     temperature?: number;
     endpointUrl?: string;
+    timeoutMs?: number;
   },
 ): Promise<AiQueryResult> {
   const route = options?.provider ? null : await resolveTaskRoute(taskKey);
@@ -717,6 +1249,7 @@ export async function generateAiForTask(
     think: options?.think,
     temperature: options?.temperature,
     endpointUrl: options?.endpointUrl,
+    timeoutMs: options?.timeoutMs,
   });
 }
 

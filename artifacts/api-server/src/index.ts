@@ -16,6 +16,8 @@ const rootEnv = path.resolve(
 );
 dotenv.config({ path: rootEnv });
 
+// Bind clinic Ollama resolver before app/cron/worker side-effects can generate.
+import "./bootstrapLocalAi";
 import app from "./app";
 import { initializePluginLoader } from "./plugin-loader";
 initializePluginLoader(app);
@@ -2756,6 +2758,9 @@ async function runStartupMigrations(): Promise<void> {
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
+
+      -- USG TV queue: auto-complete token when DICOM lands (see migrations/add_queue_display_settings_auto_complete_on_dicom.sql)
+      ALTER TABLE queue_display_settings ADD COLUMN IF NOT EXISTS auto_complete_token_on_dicom BOOLEAN NOT NULL DEFAULT TRUE;
     `);
 
     logger.info("Startup migrations applied");

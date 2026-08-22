@@ -17,7 +17,7 @@
 // looked perfect. Always pass the server global here so the effective paper
 // size is the one the clinic actually configured.
 
-export type BillFormat = "classic";
+export type BillFormat = "classic" | "hope-a5";
 /** Retired format ids that may still appear in older clinic_settings JSON blobs. */
 export type LegacyBillFormat =
   | BillFormat
@@ -27,9 +27,28 @@ export type LegacyBillFormat =
   | "designer-b"
   | "designer-c";
 
-/** All bill printing uses the unified Classic template. */
-export function normalizeBillFormat(_raw: unknown): BillFormat {
+export const BILL_FORMATS: { id: BillFormat; label: string; hint: string }[] = [
+  {
+    id: "classic",
+    label: "CARE Invoice",
+    hint: "Half A4 / A5 landscape (210×148 mm) — previous CARE bill layout",
+  },
+  {
+    id: "hope-a5",
+    label: "HOPE A5 Receipt",
+    hint: "A5 portrait (148×210 mm) — HOPE OPD receipt structure",
+  },
+];
+
+/** Normalize saved / legacy format ids to one of the two live templates. */
+export function normalizeBillFormat(raw: unknown): BillFormat {
+  if (raw === "hope-a5") return "hope-a5";
   return "classic";
+}
+
+/** Paper that belongs with each presentation template. */
+export function paperSizeForBillFormat(format: BillFormat): BillPaperSize {
+  return format === "hope-a5" ? "A5-portrait" : "A5-landscape";
 }
 
 export type BillPaperSize = "A5-landscape" | "A5-portrait" | "half-a4" | "A4";
@@ -114,7 +133,7 @@ export function resolveBillPrintDelivery(
 export type UserRole = "reception" | "accounts" | "admin" | "supervisor" | "billing" | "lab" | "manager";
 
 export type BillPrintSettings = {
-  /** @deprecated Always normalized to "classic"; kept for legacy JSON blobs only. */
+  /** Presentation template: CARE Invoice (classic) or HOPE A5 receipt. */
   defaultFormat: BillFormat;
   // Auto paper size threshold: switch from A5 → A4 when tests >= this value
   autoA4Threshold: number;
@@ -224,20 +243,26 @@ export const GLOBAL_BILL_PRINT_DEFAULTS: BillPrintSettings = {
 };
 
 /**
- * Cursor-default bill paper — the only layout knob clinics cannot change.
- * Header, margins, fonts, copies, and QR/TAT remain Settings → Billing Print
- * controls. Changing `defaultPaperSize` / `autoA4Threshold` here is the only
- * way to retune the physical page.
+ * Cursor-owned layout knobs that clinics still cannot freely retune:
+ * auto-A4 threshold. Paper follows the selected bill format (classic →
+ * half A4 landscape, hope-a5 → A5 portrait).
  */
 export const CURSOR_BILL_PRINT_LAYOUT = {
-  defaultPaperSize: "A5-landscape" as BillPaperSize,
   autoA4Threshold: 8,
 };
 
 export type CursorBillPrintLayout = typeof CURSOR_BILL_PRINT_LAYOUT;
 
-export function applyCursorBillPrintLayout<T extends Partial<BillPrintSettings>>(settings: T): T & CursorBillPrintLayout {
-  return { ...settings, ...CURSOR_BILL_PRINT_LAYOUT };
+export function applyCursorBillPrintLayout<T extends Partial<BillPrintSettings>>(
+  settings: T,
+): T & { defaultFormat: BillFormat; defaultPaperSize: BillPaperSize; autoA4Threshold: number } {
+  const defaultFormat = normalizeBillFormat(settings.defaultFormat);
+  return {
+    ...settings,
+    defaultFormat,
+    defaultPaperSize: paperSizeForBillFormat(defaultFormat),
+    autoA4Threshold: CURSOR_BILL_PRINT_LAYOUT.autoA4Threshold,
+  };
 }
 
 export const ROLE_BILL_PRINT_DEFAULTS: Record<UserRole, Partial<BillPrintSettings>> = {
@@ -344,10 +369,7 @@ export function clearBillPrintSettingsOverride(userId = getUserId()): void {
 }
 
 function finalizeBillPrintSettings(settings: BillPrintSettings): BillPrintSettings {
-  return applyCursorBillPrintLayout({
-    ...settings,
-    defaultFormat: "classic",
-  });
+  return applyCursorBillPrintLayout(settings);
 }
 
 export function loadBillPrintSettings(global: Partial<BillPrintSettings> = {}): BillPrintSettings {
@@ -446,9 +468,11 @@ export function getAutoBillPaperSize(
 /** Pixel dimensions for on-screen bill previews (96 dpi, matches Settings live preview). */
 export function billPreviewPaperPx(pageOpts: BillPrintPageOpts): { w: number; h: number } {
   if (pageOpts.paperSize === "A4") return { w: 794, h: 1123 };
+  // Landscape half-sheet (legacy). Default short bills are A5 portrait 148×210.
   if (pageOpts.orientation === "landscape" || pageOpts.pageCssSize.includes("210mm 148mm")) {
     return { w: 794, h: 559 };
   }
+  // A5 portrait / HOPE (148×210)
   return { w: 559, h: 794 };
 }
 
@@ -456,10 +480,10 @@ export function getPaperSizeCss(size: BillPaperSize): { pageSize: string; width:
   switch (size) {
     case "A5-landscape":
     case "half-a4":
-      // Physical half-sheet — @page matches 210×148 mm (not full A4 height).
+      // Pre-cut half A4 in the tray — @page matches the physical sheet.
       return { pageSize: "210mm 148mm", width: "210mm", minHeight: "148mm", maxHeight: "148mm" };
     case "A5-portrait":
-      return { pageSize: "A5 portrait", width: "148mm", minHeight: "210mm", maxHeight: "none" };
+      return { pageSize: "148mm 210mm", width: "148mm", minHeight: "210mm", maxHeight: "none" };
     case "A4":
     default:
       return { pageSize: "A4 portrait", width: "210mm", minHeight: "297mm", maxHeight: "none" };
@@ -478,11 +502,11 @@ export type BillPrintPageOpts = {
 
 /**
  * Map clinic Billing Print settings + test count → paper/orientation the HTML
- * renderer should declare. Paper is Cursor-default (half A4 / A5 landscape on
- * an A4 portrait @page). Long bills (≥ Cursor autoA4Threshold) switch to A4.
+ * renderer should declare. Format drives short-bill paper (classic → 210×148
+ * landscape, hope-a5 → 148×210 portrait). Long bills auto-switch to A4.
  */
 export function resolveBillPrintPageOpts(
-  _settings: Pick<BillPrintSettings, "defaultPaperSize" | "autoA4Threshold"> | Partial<BillPrintSettings> | undefined,
+  settings: Pick<BillPrintSettings, "defaultPaperSize" | "autoA4Threshold" | "defaultFormat"> | Partial<BillPrintSettings> | undefined,
   testCount: number,
 ): BillPrintPageOpts {
   const threshold = CURSOR_BILL_PRINT_LAYOUT.autoA4Threshold;
@@ -494,26 +518,32 @@ export function resolveBillPrintPageOpts(
       pageCssSize: "A4 portrait",
     };
   }
+  const format = normalizeBillFormat(settings?.defaultFormat);
+  if (format === "hope-a5") {
+    return {
+      paperSize: "A5",
+      orientation: "portrait",
+      compactFooterGap: false,
+      pageCssSize: "148mm 210mm",
+    };
+  }
   return {
     paperSize: "A5",
     orientation: "landscape",
-    compactFooterGap: testCount <= 4,
-    // @page matches physical half-sheet (210×148). Do not use full A4 @page —
-    // that leaves ~149 mm blank below on cut half-A4. Do not use named
-    // "A5 landscape" — pick Portrait in the print dialog.
+    compactFooterGap: false,
     pageCssSize: "210mm 148mm",
   };
 }
 
 /**
- * Bill Detail reprint used to expose an A4/A5 toggle. Paper is now
- * Cursor-default only — manual / admin-lock overrides are ignored.
+ * Bill Detail reprint used to expose an A4/A5 toggle. Paper now follows the
+ * selected bill format — manual overrides are ignored.
  */
 export function applyManualBillPaperOverride(
-  _settings: Pick<BillPrintSettings, "defaultPaperSize" | "adminLock">,
+  settings: Pick<BillPrintSettings, "defaultFormat" | "defaultPaperSize" | "adminLock"> | Partial<BillPrintSettings>,
   _manualPaper: "A4" | "A5" | null | undefined,
 ): Pick<BillPrintSettings, "defaultPaperSize"> {
-  return { defaultPaperSize: CURSOR_BILL_PRINT_LAYOUT.defaultPaperSize };
+  return { defaultPaperSize: paperSizeForBillFormat(normalizeBillFormat(settings?.defaultFormat)) };
 }
 
 // ── Adaptive density class based on test count ──

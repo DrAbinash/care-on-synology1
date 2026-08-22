@@ -19,14 +19,20 @@ interface Props {
   modality: string | null;
   /** Optional hook for voice/editor integration: insert accepted AI text into the report. */
   onInsertText?: (text: string) => void;
+  /** When true (e.g. worklist deep-link ?ai=1), keep the panel expanded. */
+  preferOpen?: boolean;
 }
 
-export function AiDraftPanel({ studyInstanceUid, modality, onInsertText }: Props) {
+export function AiDraftPanel({ studyInstanceUid, modality, onInsertText, preferOpen = false }: Props) {
   const [enablement, setEnablement] = useState<AiEnablement | null>(null);
   const [draft, setDraft] = useState<AiWorkspaceDraft | null>(null);
   const [open, setOpen] = useState(true);
   const [busy, setBusy] = useState(false);
   const [handled, setHandled] = useState<Record<string, DraftAction>>({});
+
+  useEffect(() => {
+    if (preferOpen) setOpen(true);
+  }, [preferOpen, studyInstanceUid]);
 
   // Resolve enablement (gates the whole panel).
   useEffect(() => {

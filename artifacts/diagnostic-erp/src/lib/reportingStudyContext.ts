@@ -84,6 +84,20 @@ export function inheritedStudyTypes(region: string | null | undefined): string[]
   return [];
 }
 
+/**
+ * Map legacy picker aliases onto radiology_study_tabs.name.
+ * "C Spine" in the format dialog is the same region as "Cervical Spine".
+ */
+export function canonicalContentRegion(raw: string | null | undefined): string {
+  const t = (raw ?? "").trim();
+  if (!t) return "";
+  const l = t.toLowerCase().replace(/-/g, " ").replace(/\s+/g, " ");
+  if (l === "c spine" || l === "cervical" || l === "cspine") return "Cervical Spine";
+  if (l === "t spine" || l === "thoracic spine" || l === "dorsal") return "Dorsal Spine";
+  if (l === "l spine" || l === "lumbar spine" || l === "lumbosacral spine") return "LS Spine";
+  return t;
+}
+
 /** Visible region(s) plus inherited fallback keys, de-duplicated, primary first. */
 export function contentStudyTypes(regions: string[]): string[] {
   const out: string[] = [];

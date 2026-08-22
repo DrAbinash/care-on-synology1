@@ -6,8 +6,9 @@ import {
 } from "./imageFraming";
 
 describe("imageFraming", () => {
-  it("defaults cover/1/0/0 and clamps hostile values", () => {
+  it("defaults contain/1/0/0 and clamps hostile values", () => {
     expect(parseImageFraming(null)).toEqual(DEFAULT_IMAGE_FRAMING);
+    expect(DEFAULT_IMAGE_FRAMING.fitMode).toBe("contain");
     expect(parseImageFraming("{not json")).toEqual(DEFAULT_IMAGE_FRAMING);
     expect(parseImageFraming({ zoom: 99, offsetX: -500, fitMode: "contain" })).toEqual({
       zoom: 4, offsetX: -80, offsetY: 0, fitMode: "contain",

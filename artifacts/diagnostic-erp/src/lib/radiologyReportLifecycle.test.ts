@@ -74,6 +74,7 @@ describe("finalizeRadiologyReport — auto-sign identity safety", () => {
     expect(result.signed).toBe(true);
     expect(result.signError).toBeNull();
     expect(mockPost).toHaveBeenCalledWith("/api/patient-reports/99/sign", { signatureId: 1 });
+    expect(mockPost).toHaveBeenCalledWith("/api/internal/radiology/report-status", expect.objectContaining({ worklistId: 1 }));
   });
 
   it("auto-signs as Dr. Sugandha when she is among several active signatures", async () => {

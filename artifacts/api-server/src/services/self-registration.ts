@@ -196,6 +196,12 @@ export async function registerPatientSelfFlow(params: RegisterPatientSelfFlowPar
     // Bill numbers come from document_number_counters (atomic UPSERT) — same
     // allocator as POST /api/bills; no process-wide advisory lock.
     const billNumber = await generateBillNumber(ledgerId, tx);
+    const collected = Number.isFinite(paymentAmount) ? Math.max(0, paymentAmount) : 0;
+    const billStatus = collected <= 0.009
+      ? "pending"
+      : collected >= calculatedTotal - 0.01
+        ? "paid"
+        : "partial";
     const [bill] = await tx
       .insert(billsTable)
       .values({
@@ -206,24 +212,30 @@ export async function registerPatientSelfFlow(params: RegisterPatientSelfFlowPar
         discount: "0.00",
         taxAmount: "0.00",
         totalAmount: calculatedTotal.toFixed(2),
-        paidAmount: paymentAmount.toFixed(2),
-        balanceAmount: Math.max(0, calculatedTotal - paymentAmount).toFixed(2),
-        status: paymentAmount >= calculatedTotal ? "paid" : "partial",
+        paidAmount: collected.toFixed(2),
+        balanceAmount: Math.max(0, calculatedTotal - collected).toFixed(2),
+        status: billStatus,
         ledgerId,
         createdByName: createdByName || `${source === "kiosk" ? "Kiosk" : "Online"} Self-Registration`,
       })
       .returning();
 
-    const [payment] = await tx.insert(paymentsTable).values({
-      billId: bill.id,
-      amount: paymentAmount.toFixed(2),
-      method: paymentMethod,
-      referenceNumber: paymentReference,
-      recordedByName: source === "kiosk" ? "Kiosk" : "Online",
-      notes: `${source === "kiosk" ? "Kiosk" : "Online"} self-registration ${paymentMethod} payment`,
-    }).returning({ id: paymentsTable.id });
+    // Pay-at-centre / due bills must not insert a ₹0 payment or post a voucher.
+    // Money (and accounts) are recorded later at Billing Desk when staff collect.
+    let paymentId: number | null = null;
+    if (collected > 0.009) {
+      const [payment] = await tx.insert(paymentsTable).values({
+        billId: bill.id,
+        amount: collected.toFixed(2),
+        method: paymentMethod,
+        referenceNumber: paymentReference,
+        recordedByName: source === "kiosk" ? "Kiosk" : "Online",
+        notes: `${source === "kiosk" ? "Kiosk" : "Online"} self-registration ${paymentMethod} payment`,
+      }).returning({ id: paymentsTable.id });
+      paymentId = payment?.id ?? null;
+    }
 
-    return { billRow: bill, orderRow: ord, paymentId: payment?.id ?? null };
+    return { billRow: bill, orderRow: ord, paymentId };
   });
 
   // F2 — voucher the prepayment AT CAPTURE (IST-dated, method-correct account,

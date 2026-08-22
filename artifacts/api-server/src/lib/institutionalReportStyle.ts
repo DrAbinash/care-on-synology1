@@ -35,6 +35,15 @@ export type SignaturePosition = (typeof SIGNATURE_POSITIONS)[number];
 export const IMAGE_PLACEMENTS = ["inline", "side-panel", "end"] as const;
 export type ImagePlacement = (typeof IMAGE_PLACEMENTS)[number];
 
+export const KEY_IMAGE_FITS = ["contain", "cover"] as const;
+export type KeyImageFit = (typeof KEY_IMAGE_FITS)[number];
+
+export const KEY_IMAGE_ASPECTS = ["square", "fill"] as const;
+export type KeyImageAspect = (typeof KEY_IMAGE_ASPECTS)[number];
+
+export const DEMOGRAPHY_ALIGNS = ["extreme_right", "mid"] as const;
+export type DemographyAlign = (typeof DEMOGRAPHY_ALIGNS)[number];
+
 export const HEADING_STYLES = ["plain", "bold", "underlined", "bold_underlined"] as const;
 export type HeadingStyle = (typeof HEADING_STYLES)[number];
 
@@ -83,6 +92,12 @@ export interface InstitutionalReportStyle {
   logoPosition?: string | null;
   signaturePosition?: string | null;
   imagePlacement?: string | null;
+  /** Key-image object-fit inside the port: contain | cover */
+  keyImageFit?: string | null;
+  /** Key-image port shape: square (1:1) | fill (stretch to rail height) */
+  keyImageAspect?: string | null;
+  /** AGE/SEX + DATE: extreme_right | mid */
+  demographyAlign?: string | null;
   studyTitleStyle?: string | null;
   logoScale?: string | null;
   clinicNameScale?: string | null;
@@ -110,6 +125,18 @@ export function coerceSignaturePosition(raw: unknown): SignaturePosition {
 
 export function coerceImagePlacement(raw: unknown): ImagePlacement {
   return IMAGE_PLACEMENTS.includes(raw as ImagePlacement) ? (raw as ImagePlacement) : "inline";
+}
+
+export function coerceKeyImageFit(raw: unknown): KeyImageFit {
+  return KEY_IMAGE_FITS.includes(raw as KeyImageFit) ? (raw as KeyImageFit) : "contain";
+}
+
+export function coerceKeyImageAspect(raw: unknown): KeyImageAspect {
+  return KEY_IMAGE_ASPECTS.includes(raw as KeyImageAspect) ? (raw as KeyImageAspect) : "square";
+}
+
+export function coerceDemographyAlign(raw: unknown): DemographyAlign {
+  return DEMOGRAPHY_ALIGNS.includes(raw as DemographyAlign) ? (raw as DemographyAlign) : "extreme_right";
 }
 
 export function coerceHeadingStyle(raw: unknown): HeadingStyle {
@@ -151,9 +178,9 @@ export function coerceHeaderRuleColor(raw: unknown): HeaderRuleColor {
 }
 
 const FONT_PX: Record<FontSizePreset, string> = {
-  small: "11px",
-  standard: "13px",
-  large: "15px",
+  small: "11.5px",
+  standard: "13.5px",
+  large: "15.5px",
 };
 
 const MARGIN_CSS: Record<string, string> = {
@@ -376,6 +403,57 @@ function findingsEmphasisCss(emphasis: AbnormalEmphasis): string {
       }` : ""}`;
 }
 
+/** Key-image port shape + fit — Style settings override (defaults: square + contain). */
+export function keyImageLayoutCss(style: InstitutionalReportStyle | null | undefined): string {
+  const fit = coerceKeyImageFit(style?.keyImageFit);
+  const aspect = coerceKeyImageAspect(style?.keyImageAspect);
+  if (aspect === "fill") {
+    return `
+      .image-panel-side .image-cell { aspect-ratio: auto !important; flex: 1 1 0 !important; width: 100% !important; max-width: none !important; }
+      .image-viewport { aspect-ratio: auto !important; flex: 1 1 0 !important; min-height: 18mm !important; }
+      .image-viewport .dicom-img { object-fit: ${fit} !important; }
+    `;
+  }
+  return `
+      .content-area.has-side-images > .image-panel-side { vertical-align: top !important; height: auto !important; }
+      .image-panel-side.image-panel-keyrail { height: auto !important; min-height: 0 !important; }
+      .image-panel-side[data-image-count="1"] { --ki-size: 48mm !important; }
+      .image-panel-side[data-image-count="2"] { --ki-size: 40mm !important; }
+      .image-panel-side[data-image-count="3"] { --ki-size: 32mm !important; }
+      .image-panel-side[data-image-count="4"] { --ki-size: 26mm !important; }
+      .image-panel-side[data-image-count="5"] { --ki-size: 22mm !important; }
+      .image-panel-side[data-image-count="6"] { --ki-size: 18mm !important; }
+      .image-panel-side .image-cell {
+        flex: 0 0 auto !important;
+        aspect-ratio: 1 / 1 !important;
+        width: min(100%, var(--ki-size, 48mm)) !important;
+        max-width: 100% !important;
+        align-self: flex-start !important;
+      }
+      .image-viewport {
+        flex: 0 0 auto !important;
+        aspect-ratio: 1 / 1 !important;
+        height: auto !important;
+        min-height: 0 !important;
+      }
+      .image-viewport .dicom-img { object-fit: ${fit} !important; }
+    `;
+}
+
+/** AGE/SEX + DATE flush to the right edge of the demography block. */
+export function demographyAlignCss(style: InstitutionalReportStyle | null | undefined): string {
+  const align = coerceDemographyAlign(style?.demographyAlign);
+  if (align === "mid") {
+    return `
+      .letterpad-demo .ld-right { text-align: left !important; }
+    `;
+  }
+  return `
+      .letterpad-demo .ld-right { text-align: right !important; white-space: nowrap !important; }
+      .letterpad-demo .ld-left { text-align: left !important; }
+    `;
+}
+
 /**
  * Build the institutional customCss fragment appended last by renderReportDocument.
  * Always returns a string (may be empty when style is null).
@@ -384,7 +462,8 @@ export function buildInstitutionalStyleCss(
   style: InstitutionalReportStyle | null | undefined,
   opts?: { skipLetterheadChrome?: boolean },
 ): string {
-  if (!style) return "";
+  const layoutExtras = `${keyImageLayoutCss(style)}${demographyAlignCss(style)}`;
+  if (!style) return layoutExtras;
 
   const spacing = coerceSpacing(style.lineGap ?? style.spacing);
   const fontSize = coerceFontSize(style.fontSize);
@@ -446,6 +525,8 @@ export function buildInstitutionalStyleCss(
       ${skipChrome ? "" : headerRuleCss(ruleEnabled, ruleThickness, ruleColor)}
       ${signaturePositionCss(sigPos)}
       ${findingsEmphasisCss(abnormal)}
+      ${keyImageLayoutCss(style)}
+      ${demographyAlignCss(style)}
     `;
 
   if (style.printLayout === "half_page") {
@@ -576,4 +657,7 @@ export const DEFAULT_INSTITUTIONAL_STYLE = {
   showDigitalSignature: true,
   showTimestamp: true,
   showQrVerification: true,
+  keyImageFit: "contain",
+  keyImageAspect: "square",
+  demographyAlign: "extreme_right",
 } as const;

@@ -19,12 +19,27 @@
 // localStorage (with an in-memory fallback for tests / private mode).
 
 import type { ReportingStudyContext } from "./reportingStudyContext";
+import {
+  builtinOwnershipForTileId,
+  type ChocolateOwnership,
+  type MacroSectionsOwned,
+} from "./chocolateMacroOwnership";
 
 export type ChocolateTile = {
   id: string;
   label: string;
   text: string;
   custom?: boolean;
+  /** Server row id when synced to radiology_chocolate_findings. */
+  serverId?: number;
+  anatomicalSection?: string;
+  conflictGroup?: string;
+  baselineReplaces?: string;
+  supportsLaterality?: boolean;
+  sectionsOwned?: MacroSectionsOwned;
+  /** Append-only legacy/generic macro (no pathology replace). */
+  legacyAppend?: boolean;
+  impressionText?: string;
 };
 export type ChocolateBoxSet = { key: string; label: string; tiles: ChocolateTile[] };
 
@@ -38,21 +53,37 @@ const BRAIN_SET: ChocolateBoxSet = {
       id: "brain-infarct",
       label: "Infarct",
       text: "Focal area of restricted diffusion with corresponding T2/FLAIR hyperintensity in the [location], consistent with an acute infarct involving the [vascular territory] territory.",
+      impressionText: "Acute infarct in the [vascular territory] territory.",
+      ...builtinOwnershipForTileId("brain-infarct"),
     },
     {
       id: "brain-senile",
       label: "Senile Changes",
       text: "Mild age-related cerebral volume loss with prominence of the cortical sulci and ventricular system, in keeping with senile/involutional changes. No focal mass lesion or acute infarct.",
+      legacyAppend: true,
     },
     {
       id: "brain-pituitary",
       label: "Pituitary Tumor",
       text: "The pituitary gland is enlarged, measuring approximately [size] cm, with a [homogeneous/heterogeneous] lesion suggestive of a pituitary macroadenoma. [Optic chiasm/cavernous sinus] involvement [is/is not] noted.",
+      ...builtinOwnershipForTileId("brain-pituitary"),
     },
     {
       id: "brain-normal",
       label: "Normal Brain",
       text: "Grey-white matter differentiation is preserved. No focal cortical or subcortical signal abnormality, mass lesion, or acute infarct identified. Ventricles and sulci are normal for age.",
+      ...builtinOwnershipForTileId("brain-normal"),
+    },
+    {
+      id: "brain-basal-ganglia-hemorrhage",
+      label: "Basal Ganglia Hemorrhage",
+      text: "Acute intraparenchymal hemorrhage in the {side} basal ganglia with surrounding edema. Mass effect with midline shift of ___ mm.",
+      impressionText: "Acute {side} basal ganglia hemorrhage.",
+      anatomicalSection: "basal ganglia",
+      conflictGroup: "hemorrhage",
+      baselineReplaces: "Basal ganglia are normal",
+      supportsLaterality: true,
+      sectionsOwned: ["findings", "impression"],
     },
   ],
 };
@@ -63,16 +94,19 @@ const SPINE_COMMON_TILES: ChocolateTile[] = [
     id: "spine-disc-bulge",
     label: "Disc Bulge",
     text: "Diffuse disc bulge at the [Level] level indenting the anterior thecal sac, [with/without] impingement on the [exiting nerve root].",
+    ...builtinOwnershipForTileId("spine-disc-bulge"),
   },
   {
     id: "spine-desiccation",
     label: "Disc Desiccation",
     text: "Loss of normal T2 signal intensity (desiccation) of the intervertebral disc at [Level], in keeping with early degenerative disc disease.",
+    legacyAppend: true,
   },
   {
     id: "spine-normal",
     label: "Normal Spine",
     text: "Vertebral body heights and alignment are maintained throughout. No disc bulge, herniation, or significant canal/foraminal stenosis identified. Visualized cord/cauda equina and paraspinal soft tissues are unremarkable.",
+    ...builtinOwnershipForTileId("spine-normal"),
   },
 ];
 
@@ -187,9 +221,23 @@ export function defaultsForKey(key: string): ChocolateTile[] {
   return (catalogSetForKey(key)?.tiles ?? []).map((t) => ({ ...t }));
 }
 
+function hydrateTile(raw: Partial<ChocolateTile> & { id: string; label: string; text: string }): ChocolateTile {
+  const builtin = builtinOwnershipForTileId(raw.id);
+  return {
+    ...builtin,
+    ...raw,
+    anatomicalSection: raw.anatomicalSection ?? builtin?.anatomicalSection,
+    conflictGroup: raw.conflictGroup ?? builtin?.conflictGroup,
+    baselineReplaces: raw.baselineReplaces ?? builtin?.baselineReplaces,
+    supportsLaterality: raw.supportsLaterality ?? builtin?.supportsLaterality,
+    sectionsOwned: raw.sectionsOwned ?? builtin?.sectionsOwned,
+    legacyAppend: raw.legacyAppend ?? builtin?.legacyAppend,
+  };
+}
+
 export function loadChocolateTiles(key: string): ChocolateTile[] {
   const stored = readStore()[key];
-  if (Array.isArray(stored)) return stored.map((t) => ({ ...t }));
+  if (Array.isArray(stored)) return stored.map((t) => hydrateTile(t as ChocolateTile));
   return defaultsForKey(key);
 }
 
@@ -201,20 +249,50 @@ export function saveChocolateTiles(key: string, tiles: ChocolateTile[]): void {
 
 export function upsertChocolateTile(
   key: string,
-  input: { id?: string; label: string; text: string },
+  input: {
+    id?: string;
+    label: string;
+    text: string;
+    impressionText?: string;
+  } & ChocolateOwnership,
 ): ChocolateTile {
   const label = input.label.trim();
   const text = input.text.trim();
   const tiles = loadChocolateTiles(key);
+  const ownership: ChocolateOwnership = {
+    anatomicalSection: input.anatomicalSection,
+    conflictGroup: input.conflictGroup,
+    baselineReplaces: input.baselineReplaces,
+    supportsLaterality: input.supportsLaterality,
+    sectionsOwned: input.sectionsOwned,
+    legacyAppend: input.legacyAppend,
+  };
   if (input.id) {
     const i = tiles.findIndex((t) => t.id === input.id);
     if (i >= 0) {
-      tiles[i] = { ...tiles[i], label, text };
+      tiles[i] = {
+        ...tiles[i],
+        label,
+        text,
+        impressionText: input.impressionText ?? tiles[i].impressionText,
+        ...ownership,
+      };
       saveChocolateTiles(key, tiles);
       return tiles[i];
     }
   }
-  const next: ChocolateTile = { id: input.id || uid(), label, text, custom: true };
+  const next: ChocolateTile = {
+    id: input.id || uid(),
+    label,
+    text,
+    custom: true,
+    impressionText: input.impressionText,
+    ...ownership,
+    legacyAppend: ownership.legacyAppend ?? !(
+      (ownership.anatomicalSection ?? "").trim()
+      || (ownership.conflictGroup ?? "").trim()
+    ),
+  };
   tiles.push(next);
   saveChocolateTiles(key, tiles);
   return next;

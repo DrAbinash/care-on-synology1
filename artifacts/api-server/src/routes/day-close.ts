@@ -1,12 +1,13 @@
 import { Router } from "express";
 import { db, paymentsTable, dayClosuresTable, userDayClosuresTable, billsTable, usersTable, expensesTable, orderTestsTable, testsTable } from "@workspace/db";
-import { drawerAuditLogTable, patientsTable, doctorsTable, ordersTable } from "@workspace/db/schema";
-import { eq, and, gt, lte, desc, sql, inArray } from "drizzle-orm";
+import { drawerAuditLogTable, patientsTable, doctorsTable, ordersTable, billAuditsTable, voucherAuditsTable } from "@workspace/db/schema";
+import { eq, and, gt, lte, desc, sql, inArray, notInArray } from "drizzle-orm";
 import { z } from "zod";
 import type { Response, NextFunction } from "express";
 import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { classifyPaymentMethod, isPhysicalCash } from "../lib/paymentMethodClassifier";
 import { lastOverallClosureBoundary } from "../lib/closureBoundary";
+import { BILL_AUDIT_OPERATIONAL_CHANGE_TYPES } from "../lib/staffActivityAttribution";
 
 // Inline super-admin gate that works on the regular ERP staff session
 // (req.staffSession.role === "super_admin"). The site-wide
@@ -678,12 +679,59 @@ async function userWindowBoundary(userName: string): Promise<Date | null> {
   return maxBoundary(t1, t2);
 }
 
+/** Window-scoped activity for staff day-close print slips (no test-wise detail). */
+export type StaffPrintActivity = {
+  discountsGiven: number;
+  discountBills: Array<{
+    billId: number;
+    billNumber: string;
+    patientName: string;
+    totalAmount: number;
+    discountGiven: number;
+    grossAmount: number;
+    discountReason: string | null;
+    discountReasonNote: string | null;
+  }>;
+  billEdits: Array<{
+    id: number;
+    billId: number;
+    billNumber: string;
+    changeType: string;
+    reason: string;
+    oldValue: string | null;
+    newValue: string | null;
+    createdAt: string;
+  }>;
+  voucherEdits: Array<{
+    id: number;
+    voucherId: number;
+    voucherNumber: string;
+    changeType: string;
+    reason: string;
+    oldValue: string | null;
+    newValue: string | null;
+    createdAt: string;
+  }>;
+  expenseDetails: Array<{
+    id: number;
+    amount: number;
+    category: string;
+    description: string;
+    paymentMode: string;
+  }>;
+  totalExpenses: number;
+  cashExpenses: number;
+  digitalExpenses: number;
+};
+
 type UserSummary = {
   totals: MethodTotals;
   billsCount: number;
   totalBilled: number;
   totalDue: number;
   cashExpenses: number;
+  digitalExpenses: number;
+  totalExpenses: number;
   suspenseTotal: number;
   suspenseItems: Array<{ amount: number; rawMethod: string }>;
   bills: Array<{
@@ -694,12 +742,50 @@ type UserSummary = {
     paidAmount: number;
     balanceAmount: number;
     discount: number;
+    discountReason: string | null;
+    discountReasonNote: string | null;
     status: string;
     referringDoctor: string | null;
     createdByName: string;
     createdAt: string;
   }>;
+  printActivity: StaffPrintActivity;
 };
+
+function toIso(v: unknown): string {
+  if (v instanceof Date) return v.toISOString();
+  if (v == null) return "";
+  return String(v);
+}
+
+function buildStaffPrintActivity(s: Omit<UserSummary, "printActivity"> & {
+  expenseDetails: StaffPrintActivity["expenseDetails"];
+  billEdits: StaffPrintActivity["billEdits"];
+  voucherEdits: StaffPrintActivity["voucherEdits"];
+}): StaffPrintActivity {
+  const discountBills = s.bills
+    .filter((b) => b.discount > 0)
+    .map((b) => ({
+      billId: b.id,
+      billNumber: b.billNumber,
+      patientName: b.patientName,
+      totalAmount: b.totalAmount,
+      discountGiven: b.discount,
+      grossAmount: b.totalAmount + b.discount,
+      discountReason: b.discountReason,
+      discountReasonNote: b.discountReasonNote,
+    }));
+  return {
+    discountsGiven: discountBills.reduce((sum, b) => sum + b.discountGiven, 0),
+    discountBills,
+    billEdits: s.billEdits,
+    voucherEdits: s.voucherEdits,
+    expenseDetails: s.expenseDetails,
+    totalExpenses: s.totalExpenses,
+    cashExpenses: s.cashExpenses,
+    digitalExpenses: s.digitalExpenses,
+  };
+}
 
 async function summarizeUserWindow(
   userName: string,
@@ -729,7 +815,14 @@ async function summarizeUserWindow(
     ? and(eq(expensesTable.approvedBy, userName), gt(expensesTable.createdAt, from), lte(expensesTable.createdAt, to))
     : and(eq(expensesTable.approvedBy, userName), lte(expensesTable.createdAt, to));
   const expRows = await db
-    .select({ amount: expensesTable.amount, paymentMode: expensesTable.paymentMode })
+    .select({
+      id: expensesTable.id,
+      amount: expensesTable.amount,
+      category: expensesTable.category,
+      description: expensesTable.description,
+      paymentMode: expensesTable.paymentMode,
+      approvedBy: expensesTable.approvedBy,
+    })
     .from(expensesTable)
     .where(expWhere);
   // Reduce this cashier's expected physical cash by the cash expenses they
@@ -738,8 +831,16 @@ async function summarizeUserWindow(
   // so mutating `classified` here updates it. This previously inlined the
   // subtraction and applied it TWICE, which understated each cashier's expected
   // drawer cash and could mask a real shortfall as a false surplus.
-  const { cashExpenses, cashExpensesByApprover } = splitCashExpenses(expRows);
+  const { cashExpenses, digitalExpenses, cashExpensesByApprover } = splitCashExpenses(expRows);
   applyCashExpenses(classified, cashExpensesByApprover);
+  const expenseDetails = expRows.map((e) => ({
+    id: e.id,
+    amount: n(e.amount),
+    category: e.category ?? "General",
+    description: e.description ?? "",
+    paymentMode: (e.paymentMode ?? "cash").toLowerCase(),
+  }));
+  const totalExpenses = expenseDetails.reduce((s, e) => s + e.amount, 0);
 
   const bWhere = from
     ? and(
@@ -762,6 +863,8 @@ async function summarizeUserWindow(
       paidAmount: billsTable.paidAmount,
       balanceAmount: billsTable.balanceAmount,
       discount: billsTable.discount,
+      discountReason: billsTable.discountReason,
+      discountReasonNote: billsTable.discountReasonNote,
       status: billsTable.status,
       createdAt: billsTable.createdAt,
       createdByName: billsTable.createdByName,
@@ -783,21 +886,102 @@ async function summarizeUserWindow(
     paidAmount: n(b.paidAmount),
     balanceAmount: n(b.balanceAmount),
     discount: n(b.discount),
+    discountReason: b.discountReason ?? null,
+    discountReasonNote: b.discountReasonNote ?? null,
     status: b.status ?? "pending",
     referringDoctor: b.referringDoctor ?? null,
     createdByName: b.createdByName ?? "",
     createdAt: b.createdAt ? new Date(b.createdAt).toISOString() : "",
   }));
 
-  return {
+  // Bill / voucher edits by this staff inside the same close window
+  // (created_at), excluding operational audit types that flood "edits".
+  const auditTimeWhere = from
+    ? and(gt(billAuditsTable.createdAt, from), lte(billAuditsTable.createdAt, to))
+    : lte(billAuditsTable.createdAt, to);
+  const billEditsRaw = await db
+    .select({
+      id: billAuditsTable.id,
+      billId: billAuditsTable.billId,
+      reason: billAuditsTable.reason,
+      changeType: billAuditsTable.changeType,
+      oldValue: billAuditsTable.oldValue,
+      newValue: billAuditsTable.newValue,
+      createdAt: billAuditsTable.createdAt,
+      billNumber: billsTable.billNumber,
+    })
+    .from(billAuditsTable)
+    .leftJoin(billsTable, eq(billAuditsTable.billId, billsTable.id))
+    .where(and(
+      eq(billAuditsTable.editedBy, userName),
+      notInArray(billAuditsTable.changeType, [...BILL_AUDIT_OPERATIONAL_CHANGE_TYPES]),
+      auditTimeWhere,
+    ))
+    .orderBy(desc(billAuditsTable.createdAt))
+    .limit(100);
+
+  const voucherTimeWhere = from
+    ? and(gt(voucherAuditsTable.createdAt, from), lte(voucherAuditsTable.createdAt, to))
+    : lte(voucherAuditsTable.createdAt, to);
+  const voucherEditsRaw = await db
+    .select({
+      id: voucherAuditsTable.id,
+      voucherId: voucherAuditsTable.voucherId,
+      voucherNumber: voucherAuditsTable.voucherNumber,
+      reason: voucherAuditsTable.reason,
+      changeType: voucherAuditsTable.changeType,
+      oldValue: voucherAuditsTable.oldValue,
+      newValue: voucherAuditsTable.newValue,
+      createdAt: voucherAuditsTable.createdAt,
+    })
+    .from(voucherAuditsTable)
+    .where(and(
+      eq(voucherAuditsTable.editedBy, userName),
+      voucherTimeWhere,
+    ))
+    .orderBy(desc(voucherAuditsTable.createdAt))
+    .limit(100);
+
+  const billEdits = billEditsRaw.map((r) => ({
+    id: r.id,
+    billId: r.billId,
+    billNumber: r.billNumber ?? `#${r.billId}`,
+    changeType: r.changeType,
+    reason: r.reason,
+    oldValue: r.oldValue ?? null,
+    newValue: r.newValue ?? null,
+    createdAt: toIso(r.createdAt),
+  }));
+  const voucherEdits = voucherEditsRaw.map((r) => ({
+    id: r.id,
+    voucherId: r.voucherId,
+    voucherNumber: r.voucherNumber,
+    changeType: r.changeType,
+    reason: r.reason,
+    oldValue: r.oldValue ?? null,
+    newValue: r.newValue ?? null,
+    createdAt: toIso(r.createdAt),
+  }));
+
+  const base = {
     totals,
     billsCount:  bills.length,
     totalBilled: bills.reduce((s, b) => s + b.totalAmount, 0),
     totalDue:    bills.reduce((s, b) => s + b.balanceAmount, 0),
     cashExpenses,
+    digitalExpenses,
+    totalExpenses,
     suspenseTotal,
     suspenseItems,
     bills,
+    expenseDetails,
+    billEdits,
+    voucherEdits,
+  };
+
+  return {
+    ...base,
+    printActivity: buildStaffPrintActivity(base),
   };
 }
 
@@ -1045,7 +1229,7 @@ dayCloseRouter.post("/my-close", async (req, res) => {
       reason:        varianceNote || "",
     });
 
-    return { row, suspenseTotal: s.suspenseTotal, suspenseItems: s.suspenseItems };
+    return { row, suspenseTotal: s.suspenseTotal, suspenseItems: s.suspenseItems, printActivity: s.printActivity };
   });
 
   req.log?.info({ closureId: inserted.row.id, userName, variance: inserted.row.variance, drawerStatus: inserted.row.drawerStatus }, "User day closed");
@@ -1060,7 +1244,39 @@ dayCloseRouter.post("/my-close", async (req, res) => {
     suspenseTotal: inserted.suspenseTotal,
     suspenseCount: inserted.suspenseItems.length,
     suspenseItems: inserted.suspenseItems,
+    printActivity: inserted.printActivity,
   });
+});
+
+// Reprint payload for a past staff closure — accounts + denomination live on
+// the row; discounts/edits/voucher mods/expenses are recomputed for the
+// persisted coveredFromTs → coveredToTs window (same as close-time snapshot).
+dayCloseRouter.get("/my-closures/:id/print-summary", async (req, res) => {
+  const session = (req as StaffAuthRequest).staffSession;
+  const userName = session?.subjectName?.trim() ?? "";
+  const role = session?.role ?? "";
+  if (!userName) { res.status(401).json({ error: "Not authenticated" }); return; }
+
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) { res.status(400).json({ error: "Invalid id" }); return; }
+
+  const [row] = await db
+    .select()
+    .from(userDayClosuresTable)
+    .where(eq(userDayClosuresTable.id, id))
+    .limit(1);
+  if (!row) { res.status(404).json({ error: "Not found" }); return; }
+
+  const isOwner = OWNER_ROLES.has(role);
+  if (!isOwner && row.userName !== userName) {
+    res.status(403).json({ error: "Not your closure" });
+    return;
+  }
+
+  const from = row.coveredFromTs ? new Date(row.coveredFromTs) : null;
+  const to = new Date(row.coveredToTs);
+  const s = await summarizeUserWindow(row.userName, from, to);
+  res.json({ ...row, printActivity: s.printActivity });
 });
 
 // ── Admin actions on individual staff drawers ────────────────────────────────
@@ -1074,6 +1290,7 @@ dayCloseRouter.get("/staff-status", async (req, res) => {
   }
 
   const lastOverall = await lastClosureBoundary();
+  const now = new Date();
 
   const activeUsers = await db
     .select({ id: usersTable.id, name: usersTable.name })
@@ -1095,32 +1312,76 @@ dayCloseRouter.get("/staff-status", async (req, res) => {
     if (!closeMap.has(c.userName)) closeMap.set(c.userName, c);
   }
 
-  const users = activeUsers.map((u) => {
+  // Live open-window totals (same window as GET /preview) so Exp. Cash /
+  // Exp. Digital for staff who have not closed match Per-Staff Collection.
+  // Previously open rows always showed ₹0 because only persisted closure
+  // rows were read — there is no expected_* until a close is written.
+  const liveWindow = await summarizeWindow(lastOverall, now);
+  const byStaffLive = new Map(
+    liveWindow.byStaff.map((s) => [s.userName, s] as const),
+  );
+
+  const users = await Promise.all(activeUsers.map(async (u) => {
     const close = closeMap.get(u.name);
+    const isReopened = close?.drawerStatus === "reopened";
+    const needsLiveExpected = !close || isReopened;
+
+    if (!needsLiveExpected && close) {
+      return {
+        userId:           u.id,
+        userName:         u.name,
+        isClosed:         true,
+        closedAt:         close.closedAt ?? null,
+        closureId:        close.id ?? null,
+        totalCollected:   n(close.totalActual),
+        totalBilled:      n(close.totalBilled),
+        variance:         n(close.variance),
+        drawerStatus:     close.drawerStatus ?? "closed",
+        expectedCash:     n(close.expectedCash),
+        actualCash:       n(close.actualCash),
+        cashVariance:     n(close.actualCash) - n(close.expectedCash),
+        expectedDigital:  n(close.expectedUpi) + n(close.expectedCard) + n(close.expectedCheque) + n(close.expectedOther),
+        actualDigital:    n(close.actualUpi) + n(close.actualCard) + n(close.actualCheque) + n(close.actualOther),
+        digitalVariance:
+          (n(close.actualUpi) + n(close.actualCard) + n(close.actualCheque) + n(close.actualOther))
+          - (n(close.expectedUpi) + n(close.expectedCard) + n(close.expectedCheque) + n(close.expectedOther)),
+        approvedByName:   close.approvedByName ?? null,
+        approvedAt:       close.approvedAt ?? null,
+        handoverNote:     close.notes ?? null,
+      };
+    }
+
+    // Reopened drawers use the personal window (after that close). Never-
+    // closed staff share the overall open window → byStaff from summarizeWindow.
+    let live = byStaffLive.get(u.name) ?? emptyTotals();
+    if (isReopened) {
+      const from = await userWindowBoundary(u.name);
+      const s = await summarizeUserWindow(u.name, from, now);
+      live = s.totals;
+    }
+    const expectedDigital = live.upi + live.card + live.cheque + live.other;
+
     return {
       userId:           u.id,
       userName:         u.name,
-      isClosed:         !!close,
-      closedAt:         close?.closedAt ?? null,
-      closureId:        close?.id ?? null,
-      totalCollected:   n(close?.totalActual),
-      totalBilled:      n(close?.totalBilled),
-      variance:         n(close?.variance),
-      drawerStatus:     close?.drawerStatus ?? "open",
-      expectedCash:     n(close?.expectedCash),
-      actualCash:       n(close?.actualCash),
-      cashVariance:     close ? n(close.actualCash) - n(close.expectedCash) : null,
-      expectedDigital:  close ? n(close.expectedUpi) + n(close.expectedCard) + n(close.expectedCheque) + n(close.expectedOther) : null,
-      actualDigital:    close ? n(close.actualUpi) + n(close.actualCard) + n(close.actualCheque) + n(close.actualOther) : null,
-      digitalVariance:  close
-        ? (n(close.actualUpi) + n(close.actualCard) + n(close.actualCheque) + n(close.actualOther))
-          - (n(close.expectedUpi) + n(close.expectedCard) + n(close.expectedCheque) + n(close.expectedOther))
-        : null,
-      approvedByName:   close?.approvedByName ?? null,
-      approvedAt:       close?.approvedAt ?? null,
-      handoverNote:     close?.notes ?? null,
+      isClosed:         false,
+      closedAt:         null,
+      closureId:        isReopened ? (close?.id ?? null) : null,
+      totalCollected:   live.total,
+      totalBilled:      0,
+      variance:         0,
+      drawerStatus:     isReopened ? "reopened" : "open",
+      expectedCash:     live.cash,
+      actualCash:       0,
+      cashVariance:     null,
+      expectedDigital,
+      actualDigital:    null,
+      digitalVariance:  null,
+      approvedByName:   null,
+      approvedAt:       null,
+      handoverNote:     isReopened ? (close?.notes ?? null) : null,
     };
-  });
+  }));
 
   res.json({ users, lastOverallClose: lastOverall });
 });
@@ -1142,7 +1403,7 @@ dayCloseRouter.get("/staff-close-detail/:id", requireOwnerOrAdmin, async (req, r
   const from = row.coveredFromTs ? new Date(row.coveredFromTs) : null;
   const to = new Date(row.coveredToTs);
   const windowSummary = await summarizeUserWindow(row.userName, from, to);
-  res.json({ ...row, bills: windowSummary.bills });
+  res.json({ ...row, bills: windowSummary.bills, printActivity: windowSummary.printActivity });
 });
 
 // ── Admin-initiated per-staff close (cash handover one by one) ──────────────
@@ -1182,27 +1443,87 @@ dayCloseRouter.get("/staff-preview/:userName", requireOwnerOrAdmin, async (req, 
 const AdminStaffCloseBody = UserCloseBody.extend({
   userName: z.string().trim().min(1).max(200),
 });
-dayCloseRouter.post("/staff-close", requireOwnerOrAdmin, async (req, res) => {
-  const parsed = AdminStaffCloseBody.safeParse(req.body);
-  if (!parsed.success) { res.status(400).json({ error: "Invalid request body" }); return; }
-  const { userName, actuals, varianceNote, notes, denominations } = parsed.data;
 
-  const session = (req as StaffAuthRequest).staffSession;
-  const adminName = session?.subjectName ?? "Admin";
-  const adminRole = session?.role ?? "admin";
-  const adminId = session?.subjectId ?? null;
+type AdminCloseActor = {
+  adminId: number | null;
+  adminName: string;
+  adminRole: string;
+};
 
-  const inserted = await db.transaction(async (tx) => {
-    // Same per-user advisory lock shape as /my-close so an admin close can
-    // never race with the staff member's own close.
+type AdminCloseActuals = {
+  cash: number; upi: number; card: number; cheque: number; other: number;
+};
+
+async function closeStaffDrawerOnBehalf(opts: {
+  userName: string;
+  actuals?: AdminCloseActuals;
+  /** When true, set actuals = lock-time expected method totals (balanced close). */
+  autoBalance?: boolean;
+  varianceNote: string;
+  notes: string;
+  denominations?: {
+    d500: number; d200: number; d100: number;
+    d50: number; d20: number; d10: number; coins: number;
+  };
+  actor: AdminCloseActor;
+  /** When true, skip if this staff already has a non-reopened close after last overall. */
+  skipIfAlreadyClosed?: boolean;
+}): Promise<
+  | { skipped: true; reason: string }
+  | {
+      skipped: false;
+      row: typeof userDayClosuresTable.$inferSelect;
+      bills: Awaited<ReturnType<typeof summarizeUserWindow>>["bills"];
+      suspenseTotal: number;
+      suspenseItems: Array<{ amount: number; rawMethod: string }>;
+      printActivity: StaffPrintActivity;
+    }
+> {
+  const { userName, varianceNote, notes, denominations, actor } = opts;
+
+  return db.transaction(async (tx) => {
     const lockId = BigInt(
       Math.abs(userName.split("").reduce((a, c) => ((a * 31 + c.charCodeAt(0)) | 0), 0)),
     );
     await tx.execute(sql`SELECT pg_advisory_xact_lock(${lockId})`);
 
+    if (opts.skipIfAlreadyClosed) {
+      const lastOverall = await lastClosureBoundary();
+      const [existing] = await tx
+        .select({
+          id: userDayClosuresTable.id,
+          drawerStatus: userDayClosuresTable.drawerStatus,
+          closedAt: userDayClosuresTable.closedAt,
+        })
+        .from(userDayClosuresTable)
+        .where(
+          lastOverall
+            ? and(
+                eq(userDayClosuresTable.userName, userName),
+                gt(userDayClosuresTable.closedAt, lastOverall),
+              )
+            : eq(userDayClosuresTable.userName, userName),
+        )
+        .orderBy(desc(userDayClosuresTable.closedAt))
+        .limit(1);
+      if (existing && existing.drawerStatus !== "reopened") {
+        return { skipped: true as const, reason: "already_closed" };
+      }
+    }
+
     const from = await userWindowBoundary(userName);
     const to = new Date();
     const s = await summarizeUserWindow(userName, from, to);
+
+    const actuals: AdminCloseActuals = opts.autoBalance
+      ? {
+          cash: s.totals.cash,
+          upi: s.totals.upi,
+          card: s.totals.card,
+          cheque: s.totals.cheque,
+          other: s.totals.other,
+        }
+      : (opts.actuals ?? { cash: 0, upi: 0, card: 0, cheque: 0, other: 0 });
 
     const totalExpected = s.totals.total;
     const totalActual = actuals.cash + actuals.upi + actuals.card + actuals.cheque + actuals.other;
@@ -1214,8 +1535,6 @@ dayCloseRouter.post("/staff-close", requireOwnerOrAdmin, async (req, res) => {
       timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit",
     }).format(to);
 
-    // userId resolved from the staff directory when the name matches, so the
-    // row links the same way a self-close does.
     const [staffRow] = await tx
       .select({ id: usersTable.id })
       .from(usersTable)
@@ -1259,20 +1578,53 @@ dayCloseRouter.post("/staff-close", requireOwnerOrAdmin, async (req, res) => {
     await tx.insert(drawerAuditLogTable).values({
       userClosureId: row.id,
       action: drawerStatus === "mismatch" ? "mismatch_detected" : "closed",
-      userId: adminId,
-      userName: adminName,
-      userRole: adminRole,
+      userId: actor.adminId,
+      userName: actor.adminName,
+      userRole: actor.adminRole,
       expectedTotal: String(totalExpected),
       actualTotal: String(totalActual),
       variance: String(variance),
-      reason: [`Closed by ${adminName} on behalf of ${userName} (cash handover)`, varianceNote].filter(Boolean).join(" — "),
+      reason: [`Closed by ${actor.adminName} on behalf of ${userName} (cash handover)`, varianceNote].filter(Boolean).join(" — "),
     });
 
-    return { row, bills: s.bills, suspenseTotal: s.suspenseTotal, suspenseItems: s.suspenseItems };
+    return {
+      skipped: false as const,
+      row,
+      bills: s.bills,
+      suspenseTotal: s.suspenseTotal,
+      suspenseItems: s.suspenseItems,
+      printActivity: s.printActivity,
+    };
   });
+}
+
+dayCloseRouter.post("/staff-close", requireOwnerOrAdmin, async (req, res) => {
+  const parsed = AdminStaffCloseBody.safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ error: "Invalid request body" }); return; }
+  const { userName, actuals, varianceNote, notes, denominations } = parsed.data;
+
+  const session = (req as StaffAuthRequest).staffSession;
+  const actor: AdminCloseActor = {
+    adminName: session?.subjectName ?? "Admin",
+    adminRole: session?.role ?? "admin",
+    adminId: session?.subjectId ?? null,
+  };
+
+  const inserted = await closeStaffDrawerOnBehalf({
+    userName,
+    actuals,
+    varianceNote,
+    notes,
+    denominations,
+    actor,
+  });
+  if (inserted.skipped) {
+    res.status(409).json({ error: "Staff drawer already closed" });
+    return;
+  }
 
   req.log?.info(
-    { closureId: inserted.row.id, userName, closedByAdmin: adminName, variance: inserted.row.variance, drawerStatus: inserted.row.drawerStatus },
+    { closureId: inserted.row.id, userName, closedByAdmin: actor.adminName, variance: inserted.row.variance, drawerStatus: inserted.row.drawerStatus },
     "Staff day closed by admin (handover)",
   );
   res.status(201).json({
@@ -1281,7 +1633,112 @@ dayCloseRouter.post("/staff-close", requireOwnerOrAdmin, async (req, res) => {
     suspenseTotal: inserted.suspenseTotal,
     suspenseCount: inserted.suspenseItems.length,
     suspenseItems: inserted.suspenseItems,
+    printActivity: inserted.printActivity,
   });
+});
+
+// Bulk-close every open (or reopened) staff drawer, auto-balancing actuals to
+// each staff member's live expected method totals. Used when the owner has
+// already verified the aggregate cash and wants to advance all staff windows
+// without clicking Close one by one.
+const BulkStaffCloseBody = z.object({
+  notes: z.string().max(2000).default(""),
+});
+dayCloseRouter.post("/staff-close-all", requireOwnerOrAdmin, async (req, res) => {
+  const parsed = BulkStaffCloseBody.safeParse(req.body ?? {});
+  if (!parsed.success) { res.status(400).json({ error: "Invalid request body" }); return; }
+
+  const session = (req as StaffAuthRequest).staffSession;
+  const actor: AdminCloseActor = {
+    adminName: session?.subjectName ?? "Admin",
+    adminRole: session?.role ?? "admin",
+    adminId: session?.subjectId ?? null,
+  };
+
+  const lastOverall = await lastClosureBoundary();
+  const activeUsers = await db
+    .select({ id: usersTable.id, name: usersTable.name })
+    .from(usersTable)
+    .where(eq(usersTable.isActive, true));
+
+  const allUserCloses = await db
+    .select({
+      userName: userDayClosuresTable.userName,
+      drawerStatus: userDayClosuresTable.drawerStatus,
+      closedAt: userDayClosuresTable.closedAt,
+    })
+    .from(userDayClosuresTable)
+    .where(
+      lastOverall
+        ? gt(userDayClosuresTable.closedAt, lastOverall)
+        : sql`1=1`,
+    )
+    .orderBy(desc(userDayClosuresTable.closedAt));
+
+  const closeMap = new Map<string, (typeof allUserCloses)[number]>();
+  for (const c of allUserCloses) {
+    if (!closeMap.has(c.userName)) closeMap.set(c.userName, c);
+  }
+
+  const openNames = activeUsers
+    .filter((u) => {
+      const c = closeMap.get(u.name);
+      return !c || c.drawerStatus === "reopened";
+    })
+    .map((u) => u.name);
+
+  const results: Array<{
+    userName: string;
+    status: "closed" | "skipped" | "error";
+    closureId?: number;
+    totalExpected?: number;
+    totalActual?: number;
+    variance?: number;
+    drawerStatus?: string;
+    reason?: string;
+  }> = [];
+
+  for (const userName of openNames) {
+    try {
+      const inserted = await closeStaffDrawerOnBehalf({
+        userName,
+        autoBalance: true,
+        varianceNote: "",
+        notes: [
+          `Bulk closed by ${actor.adminName} (auto-balanced to expected)`,
+          parsed.data.notes,
+        ].filter(Boolean).join(" — "),
+        actor,
+        skipIfAlreadyClosed: true,
+      });
+      if (inserted.skipped) {
+        results.push({ userName, status: "skipped", reason: inserted.reason });
+        continue;
+      }
+      results.push({
+        userName,
+        status: "closed",
+        closureId: inserted.row.id,
+        totalExpected: n(inserted.row.totalExpected),
+        totalActual: n(inserted.row.totalActual),
+        variance: n(inserted.row.variance),
+        drawerStatus: inserted.row.drawerStatus,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unknown error";
+      req.log?.error({ err, userName }, "Bulk staff close failed for user");
+      results.push({ userName, status: "error", reason: message });
+    }
+  }
+
+  const closed = results.filter((r) => r.status === "closed").length;
+  const skipped = results.filter((r) => r.status === "skipped").length;
+  const errors = results.filter((r) => r.status === "error").length;
+  req.log?.info(
+    { closedByAdmin: actor.adminName, closed, skipped, errors, attempted: openNames.length },
+    "Bulk staff day close finished",
+  );
+  res.status(200).json({ closed, skipped, errors, results });
 });
 
 // Approve a mismatch — admin/owner only.

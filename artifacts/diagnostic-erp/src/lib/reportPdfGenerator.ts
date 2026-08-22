@@ -333,6 +333,67 @@ function drawNumberedImpression(
   return y;
 }
 
+/** Key images beside report text — extreme-right rail, square ports, tight 2.5mm navy frame. */
+function drawSideRailKeyImages(
+  doc: jsPDF,
+  images: string[],
+  railX: number,
+  railW: number,
+  startY: number,
+  contentBottom: number,
+  font: string,
+  headingSize: number,
+): number {
+  if (images.length === 0 || railW <= 8) return startY;
+  const framePad = 2.5; // 2–3mm symmetrical blue/navy border around the stack
+  const gap = 1.4;
+  const headingH = 5;
+  const innerW = Math.max(10, railW - 2 * framePad);
+  const avail = Math.max(20, contentBottom - startY - headingH - 2 * framePad);
+  // Square cells sized to inner rail width; cap so they fit on page 1 with the report.
+  const square = Math.min(innerW, 32);
+  const maxCells = Math.max(1, Math.floor((avail + gap) / (square + gap)));
+  const shown = images.slice(0, Math.min(images.length, maxCells));
+  const stackH = headingH + shown.length * square + gap * Math.max(0, shown.length - 1);
+  const frameH = stackH + 2 * framePad;
+
+  // Tight navy panel — only as tall/wide as the image stack + frame pad (no empty blue band).
+  doc.setFillColor(15, 23, 42); // #0f172a
+  doc.roundedRect(railX, startY, railW, frameH, 1.2, 1.2, "F");
+  doc.setDrawColor(59, 130, 246); // #3b82f6 accent edge
+  doc.setLineWidth(0.35);
+  doc.roundedRect(railX, startY, railW, frameH, 1.2, 1.2, "S");
+
+  let imgY = startY + framePad;
+  const imgX = railX + framePad;
+  doc.setFont(font, "bold");
+  doc.setFontSize(headingSize - 0.5);
+  doc.setTextColor(255, 255, 255);
+  doc.text("KEY IMAGES", imgX, imgY + 3.2);
+  imgY += headingH;
+  for (const img of shown) {
+    if (!img) continue;
+    try {
+      const ext = img.startsWith("data:image/jpeg") ? "JPEG" : "PNG";
+      // Square black port; letterbox the frame (contain) so MRI slices are not
+      // horizontally stretched to fill the rail width.
+      doc.setFillColor(0, 0, 0);
+      doc.rect(imgX, imgY, square, square, "F");
+      const props = doc.getImageProperties(img);
+      const iw = Math.max(1, props.width);
+      const ih = Math.max(1, props.height);
+      const scale = Math.min(square / iw, square / ih);
+      const dw = iw * scale;
+      const dh = ih * scale;
+      const ox = imgX + (square - dw) / 2;
+      const oy = imgY + (square - dh) / 2;
+      doc.addImage(img, ext, ox, oy, dw, dh);
+      imgY += square + gap;
+    } catch { /* skip broken image */ }
+  }
+  return startY + frameH;
+}
+
 export function generateReportPDF(
   report: ReportData,
   settings: PrintSettings,
@@ -381,11 +442,21 @@ export function generateReportPDF(
         const aspect = CARE_LETTERHEAD_LOGO_SIZE.width / CARE_LETTERHEAD_LOGO_SIZE.height;
         logoH = logoMm;
         const logoW = Math.min(contentW * 0.52, logoH * aspect);
-        doc.addImage(CARE_LETTERHEAD_LOGO_DATA_URL, "PNG", leftX, cursor, logoW, logoH, undefined, "NONE");
+        // Prefer FAST compression — NONE can fail to embed on some jsPDF builds.
+        doc.addImage(CARE_LETTERHEAD_LOGO_DATA_URL, "PNG", leftX, cursor, logoW, logoH, undefined, "FAST");
         headerBottom = cursor + logoH;
         logoDrawn = true;
       } catch {
-        logoDrawn = false;
+        try {
+          const aspect = CARE_LETTERHEAD_LOGO_SIZE.width / CARE_LETTERHEAD_LOGO_SIZE.height;
+          logoH = logoMm;
+          const logoW = Math.min(contentW * 0.52, logoH * aspect);
+          doc.addImage(CARE_LETTERHEAD_LOGO_DATA_URL, "PNG", leftX, cursor, logoW, logoH);
+          headerBottom = cursor + logoH;
+          logoDrawn = true;
+        } catch {
+          logoDrawn = false;
+        }
       }
 
       if (!logoDrawn) {
@@ -437,7 +508,7 @@ export function generateReportPDF(
       doc.setFontSize(fs.patient);
       doc.setTextColor(0, 0, 0);
       const leftX = m.left;
-      const rightX = pageW / 2 + 4;
+      const rightEdge = pageW - m.right; // extreme right — same edge as contact / key-image rail
       const name = (report.patientName || "").trim().toUpperCase();
       const refBy = (report.referringDoctor || "").trim().toUpperCase();
       const ageSex = ageSexLine(report.age, report.sex).toUpperCase();
@@ -447,14 +518,15 @@ export function generateReportPDF(
         doc.setFont(font, "bold");
         doc.text("NAME:", leftX, cursor);
         doc.setFont(font, "normal");
-        doc.text(name, leftX + doc.getTextWidth("NAME: ") + 1, cursor);
+        doc.text(name, leftX + doc.getTextWidth("NAME: ") + 1, cursor, {
+          maxWidth: Math.max(40, rightEdge - leftX - 55),
+        });
       }
 
       if (ageSex) {
         doc.setFont(font, "bold");
-        doc.text("AGE/SEX:", rightX, cursor);
-        doc.setFont(font, "normal");
-        doc.text(ageSex, rightX + doc.getTextWidth("AGE/SEX: ") + 1, cursor);
+        const full = `AGE/SEX: ${ageSex}`;
+        doc.text(full, rightEdge, cursor, { align: "right" });
       }
       if (name || ageSex) cursor += lineH + 0.8;
 
@@ -462,14 +534,15 @@ export function generateReportPDF(
         doc.setFont(font, "bold");
         doc.text("REFD. BY:", leftX, cursor);
         doc.setFont(font, "bold");
-        doc.text(refBy, leftX + doc.getTextWidth("REFD. BY: ") + 1, cursor);
+        doc.text(refBy, leftX + doc.getTextWidth("REFD. BY: ") + 1, cursor, {
+          maxWidth: Math.max(40, rightEdge - leftX - 45),
+        });
       }
 
       if (settings.header.showDate !== false && dateStr) {
         doc.setFont(font, "bold");
-        doc.text("DATE:", rightX, cursor);
-        doc.setFont(font, "normal");
-        doc.text(dateStr, rightX + doc.getTextWidth("DATE: ") + 1, cursor);
+        const full = `DATE: ${dateStr}`;
+        doc.text(full, rightEdge, cursor, { align: "right" });
       }
       if (refBy || (settings.header.showDate !== false && dateStr)) cursor += lineH + 0.8;
       cursor += 1.5;
@@ -499,6 +572,19 @@ export function generateReportPDF(
 
   const contentBottom = pageH - m.bottom - 18;
 
+  const keyImageList = (report.keyImages ?? []).filter(Boolean);
+  const sideRail =
+    keyImageList.length > 0 && settings.show.keyImages;
+  // Extreme-right rail: image column ~38mm + 2.5mm frame each side ≈ 43mm, flush to right margin (same edge as DATE).
+  const framePadMm = 2.5;
+  const railImgW = 38;
+  const railW = sideRail ? railImgW + 2 * framePadMm : 0;
+  const railGap = 4;
+  const textW = sideRail ? Math.max(90, contentW - railW - railGap) : contentW;
+  const railX = pageW - m.right - railW;
+  let railStartY = 0;
+  let railBottomY = 0;
+
   const ensureSpace = (needed: number) => {
     if (y + needed > contentBottom) {
       doc.addPage();
@@ -515,7 +601,7 @@ export function generateReportPDF(
         if (!report.clinicalHistory?.trim()) break;
         ensureSpace(12);
         y = drawSectionHeading(doc, "CLINICAL HISTORY:", m.left, y, font, fs.heading);
-        y = drawWrappedBody(doc, report.clinicalHistory.trim(), m.left, y, contentW, font, fs.body, lineH);
+        y = drawWrappedBody(doc, report.clinicalHistory.trim(), m.left, y, textW, font, fs.body, lineH);
         y += lineH * 0.55;
         break;
       }
@@ -523,7 +609,7 @@ export function generateReportPDF(
         if (!report.technique?.trim()) break;
         ensureSpace(12);
         y = drawSectionHeading(doc, "TECHNIQUE:", m.left, y, font, fs.heading);
-        y = drawWrappedBody(doc, report.technique.trim(), m.left, y, contentW, font, fs.body, lineH);
+        y = drawWrappedBody(doc, report.technique.trim(), m.left, y, textW, font, fs.body, lineH);
         y += lineH * 0.55;
         break;
       }
@@ -531,7 +617,7 @@ export function generateReportPDF(
         if (!report.comparison?.trim()) break;
         ensureSpace(12);
         y = drawSectionHeading(doc, "COMPARISON:", m.left, y, font, fs.heading);
-        y = drawWrappedBody(doc, report.comparison.trim(), m.left, y, contentW, font, fs.body, lineH);
+        y = drawWrappedBody(doc, report.comparison.trim(), m.left, y, textW, font, fs.body, lineH);
         y += lineH * 0.55;
         break;
       }
@@ -554,38 +640,21 @@ export function generateReportPDF(
       case "findings": {
         if (!report.findings?.trim()) break;
         ensureSpace(16);
+        if (sideRail && railStartY === 0) railStartY = y;
         y = drawSectionHeading(doc, "FINDINGS:", m.left, y, font, fs.heading);
-        y = drawFindingsBlock(doc, report.findings.trim(), m.left, y, contentW, font, fs.body, lineH);
+        y = drawFindingsBlock(doc, report.findings.trim(), m.left, y, textW, font, fs.body, lineH);
         y += lineH * 0.4;
         break;
       }
       case "keyImages": {
-        if (!report.keyImages || report.keyImages.length === 0) break;
-        const imgWidth = Math.min(contentW * 0.42, 70);
-        const imgHeight = 38;
-        const imgX = pageW - m.right - imgWidth;
-        let imgY = y;
-        for (const img of report.keyImages) {
-          if (!img) continue;
-          if (imgY + imgHeight > contentBottom) {
-            doc.addPage();
-            y = drawLetterPadChrome();
-            imgY = y;
-          }
-          try {
-            const ext = img.startsWith("data:image/jpeg") ? "JPEG" : "PNG";
-            doc.addImage(img, ext, imgX, imgY, imgWidth, imgHeight);
-            imgY += imgHeight + 4;
-          } catch { /* skip broken image */ }
-        }
-        y = imgY + 2;
+        // Side rail drawn once after the body loop (aligned with findings).
         break;
       }
       case "impression": {
         if (!report.impression?.trim()) break;
         ensureSpace(14);
         y = drawSectionHeading(doc, "IMPRESSION:", m.left, y, font, fs.heading);
-        y = drawNumberedImpression(doc, report.impression.trim(), m.left, y, contentW, font, fs.body, lineH);
+        y = drawNumberedImpression(doc, report.impression.trim(), m.left, y, textW, font, fs.body, lineH);
         y += lineH * 0.4;
         break;
       }
@@ -593,11 +662,19 @@ export function generateReportPDF(
         if (!report.recommendation?.trim()) break;
         ensureSpace(12);
         y = drawSectionHeading(doc, "RECOMMENDATION:", m.left, y, font, fs.heading);
-        y = drawWrappedBody(doc, report.recommendation.trim(), m.left, y, contentW, font, fs.body, lineH);
+        y = drawWrappedBody(doc, report.recommendation.trim(), m.left, y, textW, font, fs.body, lineH);
         y += lineH * 0.4;
         break;
       }
     }
+  }
+
+  if (sideRail) {
+    const railTop = railStartY > 0 ? railStartY : y;
+    railBottomY = drawSideRailKeyImages(
+      doc, keyImageList, railX, railW, railTop, contentBottom, font, fs.heading,
+    );
+    y = Math.max(y, railBottomY);
   }
 
   // ── SIGNATURE (right, doctor name in red) — sits under report body, not

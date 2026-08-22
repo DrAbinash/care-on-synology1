@@ -284,8 +284,11 @@ export default function Tests() {
         title="Test Catalog"
         subtitle={`${data?.total ?? 0} diagnostic tests`}
         actions={
-          <div className="flex gap-2">
+          <>
             <input ref={importInputRef} type="file" accept=".csv,text/csv" className="hidden" onChange={onImportFileChosen} />
+            <Button size="sm" className="order-first sm:order-last" onClick={() => { setEditTest(null); reset({ isActive: true }); setOpen(true); }}>
+              <Plus size={14} className="mr-1" /> Add Test
+            </Button>
             <Button size="sm" variant="outline" onClick={() => importInputRef.current?.click()} disabled={importing} title="Upload a CSV to add or update tests in bulk (matched by `code`)">
               <Upload size={14} className="mr-1" /> {importing ? "Importing…" : "Import CSV"}
             </Button>
@@ -298,10 +301,7 @@ export default function Tests() {
             <Button size="sm" variant="outline" onClick={() => setDupOpen(true)}>
               <AlertTriangle size={14} className="mr-1" /> Duplicates
             </Button>
-            <Button size="sm" onClick={() => { setEditTest(null); reset({ isActive: true }); setOpen(true); }}>
-              <Plus size={14} className="mr-1" /> Add Test
-            </Button>
-          </div>
+          </>
         }
       />
 

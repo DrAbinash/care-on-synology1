@@ -1,7 +1,8 @@
 /**
  * Pre-deploy Ollama auto AI draft verification — Settings → Radiology (ERP only).
+ * Full test is async (POST returns jobId; UI polls) so Cloudflare 524 cannot kill it.
  */
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { api } from "@/lib/fetchApi";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -23,11 +24,15 @@ export interface OllamaVerifyCheck {
 }
 
 export interface OllamaVerifyResult {
+  id?: string;
+  status?: "queued" | "running" | "completed";
+  progressLabel?: string;
   ok: boolean;
   blockingFailed?: boolean;
   checks: OllamaVerifyCheck[];
   summary: string;
   ranAt: string;
+  finishedAt?: string | null;
 }
 
 const STATUS_ICON: Record<OllamaVerifyStatus, typeof CheckCircle2> = {
@@ -56,24 +61,62 @@ export function OllamaAiDraftVerifyPanel({
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<OllamaVerifyResult | null>(null);
   const autoRan = useRef(false);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const stopPoll = useCallback(() => {
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => () => stopPoll(), [stopPoll]);
+
+  const refreshJob = useCallback(async (id: string) => {
+    const r = await api.get<OllamaVerifyResult>(`/api/radiology-ollama/verify/${id}`);
+    setResult(r);
+    if (r.status === "completed") {
+      stopPoll();
+      setBusy(false);
+      toast({
+        title: r.ok ? "Verification passed" : "Verification needs attention",
+        description: r.summary,
+        variant: r.ok ? "default" : "destructive",
+      });
+    }
+    return r;
+  }, [stopPoll, toast]);
 
   async function runVerify(dryRun: boolean, opts?: { silent?: boolean }) {
+    stopPoll();
     setBusy(true);
     try {
-      const r = await api.post<OllamaVerifyResult>("/api/radiology-ollama/verify", {
+      const started = await api.post<OllamaVerifyResult>("/api/radiology-ollama/verify", {
         dryRun,
         runDraft: !dryRun,
+        async: true,
       });
-      setResult(r);
-      if (!opts?.silent) {
-        toast({
-          title: r.ok ? "Verification passed" : "Verification needs attention",
-          description: r.summary,
-          variant: r.ok ? "default" : "destructive",
-        });
+      setResult(started);
+      if (started.id && started.status !== "completed") {
+        pollRef.current = setInterval(() => {
+          void refreshJob(started.id!).catch(() => {
+            /* keep polling — gateway timeout must not kill server job */
+          });
+        }, 2000);
+        void refreshJob(started.id);
+      } else {
+        setBusy(false);
+        if (!opts?.silent && started.status === "completed") {
+          toast({
+            title: started.ok ? "Verification passed" : "Verification needs attention",
+            description: started.summary,
+            variant: started.ok ? "default" : "destructive",
+          });
+        }
       }
-      return r;
+      return started;
     } catch (e: unknown) {
+      setBusy(false);
       if (!opts?.silent) {
         toast({
           title: "Verification failed",
@@ -82,16 +125,30 @@ export function OllamaAiDraftVerifyPanel({
         });
       }
       return null;
-    } finally {
-      setBusy(false);
     }
   }
 
   useEffect(() => {
     if (!autoRunOnMount || autoRan.current) return;
     autoRan.current = true;
-    void runVerify(true, { silent: true });
-  }, [autoRunOnMount]);
+    // Reconnect to in-flight/latest verify if present; otherwise quick dry-run.
+    void api
+      .get<OllamaVerifyResult>("/api/radiology-ollama/verify/latest")
+      .then((latest) => {
+        setResult(latest);
+        if (latest.status === "queued" || latest.status === "running") {
+          setBusy(true);
+          if (latest.id) {
+            pollRef.current = setInterval(() => {
+              void refreshJob(latest.id!).catch(() => undefined);
+            }, 2000);
+          }
+        }
+      })
+      .catch(() => {
+        void runVerify(true, { silent: true });
+      });
+  }, [autoRunOnMount, refreshJob]);
 
   const groups = result
     ? [...new Set(result.checks.map((c) => c.group))]
@@ -142,23 +199,26 @@ export function OllamaAiDraftVerifyPanel({
 
       {!compact && (
         <p className="text-[10px] text-muted-foreground">
-          Quick checks run automatically when you open this panel. <strong>Full test</strong> asks Ollama to
-          generate once (~30–120s) to confirm drafting works end-to-end.
+          Quick checks run automatically when you open this panel. <strong>Full test</strong> starts an async
+          server job and polls (Ollama may take &gt;100s) — the browser request never waits on inference.
         </p>
       )}
 
-      {busy && !result && (
+      {busy && (
         <div className="flex items-center gap-2 text-xs text-muted-foreground py-2">
           <RefreshCw size={14} className="animate-spin" />
-          Running verification…
+          {result?.progressLabel ?? "Running verification…"}
+          {result?.id ? <span className="font-mono text-[10px]">job {result.id.slice(0, 8)}</span> : null}
         </div>
       )}
 
-      {result && (
+      {result && result.checks.length > 0 && (
         <div className="space-y-3">
           <div className="flex flex-wrap items-center gap-2">
             <Badge variant={result.ok ? "default" : "destructive"} className="text-[10px]">
-              {result.ok ? "Ready to redeploy" : "Fix before redeploy"}
+              {result.status === "completed"
+                ? (result.ok ? "Ready to redeploy" : "Fix before redeploy")
+                : "Verification in progress"}
             </Badge>
             <span className="text-xs text-muted-foreground">{result.summary}</span>
             <span className="text-[10px] text-muted-foreground ml-auto">

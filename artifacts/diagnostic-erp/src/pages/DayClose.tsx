@@ -421,6 +421,8 @@ export default function DayClose() {
   const [staffReopenOpen, setStaffReopenOpen] = useState<StaffUserStatus | null>(null);
   const [staffReopenReason, setStaffReopenReason] = useState("");
   const [staffTableExpanded, setStaffTableExpanded] = useState(true);
+  const [bulkCloseOpen, setBulkCloseOpen] = useState(false);
+  const [bulkCloseNotes, setBulkCloseNotes] = useState("");
 
   // Banking day-close summary
   const [bankingOpen, setBankingOpen] = useState(false);
@@ -540,6 +542,29 @@ export default function DayClose() {
     onError: (e: Error) => toast({ title: "Reopen failed", description: e.message, variant: "destructive" }),
   });
 
+  type BulkCloseResult = {
+    closed: number;
+    skipped: number;
+    errors: number;
+    results: Array<{ userName: string; status: string; totalExpected?: number; reason?: string }>;
+  };
+  const bulkCloseMut = useMutation<BulkCloseResult>({
+    mutationFn: () =>
+      api.post<BulkCloseResult>("/api/day-close/staff-close-all", { notes: bulkCloseNotes }),
+    onSuccess: (data) => {
+      toast({
+        title: "Staff drawers closed",
+        description: `${data.closed} closed${data.skipped ? `, ${data.skipped} skipped` : ""}${data.errors ? `, ${data.errors} failed` : ""}.`,
+      });
+      setBulkCloseOpen(false);
+      setBulkCloseNotes("");
+      qc.invalidateQueries({ queryKey: ["day-close-staff-status"] });
+      qc.invalidateQueries({ queryKey: ["day-close-preview"] });
+    },
+    onError: (e: Error) => toast({ title: "Bulk close failed", description: e.message, variant: "destructive" }),
+  });
+
+  const openStaffCount = staffStatusQ.data?.users.filter((u) => !u.isClosed || u.drawerStatus === "reopened").length ?? 0;
   const expected = previewQ.data?.expected;
 
   return (
@@ -708,8 +733,25 @@ export default function DayClose() {
                   </table>
                 </div>
               )}
+              {staffStatusQ.data.users.some((u) => !u.isClosed || u.drawerStatus === "reopened") && (
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <Button
+                    size="sm"
+                    className="bg-blue-700 hover:bg-blue-800"
+                    onClick={() => setBulkCloseOpen(true)}
+                    disabled={bulkCloseMut.isPending}
+                  >
+                    <Lock size={12} className="mr-1.5" />
+                    Close All Open Staff ({openStaffCount})
+                  </Button>
+                  <p className="text-xs text-amber-600 flex items-center gap-1">
+                    <AlertTriangle size={12} />
+                    Auto-balances each drawer to system expected. Use per-row Close when you need to count cash individually.
+                  </p>
+                </div>
+              )}
               {staffStatusQ.data.users.some((u) => !u.isClosed) && (
-                <p className="text-xs text-amber-600 mt-3 flex items-center gap-1">
+                <p className="text-xs text-amber-600 mt-2 flex items-center gap-1">
                   <AlertTriangle size={12} />
                   Some staff have not closed their day. You can still close the overall day — their window will reset.
                 </p>
@@ -1359,6 +1401,56 @@ export default function DayClose() {
               onClick={() => approveOpen?.closureId && approveMut.mutate({ id: approveOpen.closureId, note: approveNote.trim() })}
             >
               {approveMut.isPending ? "Approving…" : "Approve Mismatch"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Bulk close all open staff drawers */}
+      <Dialog open={bulkCloseOpen} onOpenChange={setBulkCloseOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Lock className="text-blue-700" /> Close All Open Staff
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 text-sm">
+            <p>
+              This will close <strong>{openStaffCount}</strong> open staff drawer
+              {openStaffCount === 1 ? "" : "s"}, setting each person&apos;s counted
+              amounts equal to system expected (balanced).
+            </p>
+            <p className="text-xs text-muted-foreground">
+              Use per-row Close when you need to physically count and record a variance.
+              Overall Day Close (clinic) is separate and still required afterwards.
+            </p>
+            {(staffStatusQ.data?.users ?? [])
+              .filter((u) => !u.isClosed || u.drawerStatus === "reopened")
+              .map((u) => (
+                <div key={u.userId} className="flex justify-between text-xs border-b py-1 last:border-0">
+                  <span className="font-medium">{u.userName}</span>
+                  <span className="tabular-nums text-muted-foreground">
+                    Cash {inr(u.expectedCash)}
+                    {u.expectedDigital != null ? ` · Dig ${inr(u.expectedDigital)}` : ""}
+                  </span>
+                </div>
+              ))}
+            <Label>Notes (optional)</Label>
+            <Textarea
+              value={bulkCloseNotes}
+              onChange={(e) => setBulkCloseNotes(e.target.value)}
+              placeholder="e.g. End-of-day bulk close after cash handover verified."
+              rows={2}
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setBulkCloseOpen(false)}>Cancel</Button>
+            <Button
+              className="bg-blue-700 hover:bg-blue-800"
+              disabled={bulkCloseMut.isPending || openStaffCount === 0}
+              onClick={() => bulkCloseMut.mutate()}
+            >
+              {bulkCloseMut.isPending ? "Closing…" : `Confirm Close ${openStaffCount} Staff`}
             </Button>
           </DialogFooter>
         </DialogContent>

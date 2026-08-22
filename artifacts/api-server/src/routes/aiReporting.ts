@@ -36,6 +36,7 @@ import {
   aiNormalReportTemplatesTable,
   patientReportsTable,
   radiologyStudiesTable,
+  clinicSettingsTable,
 } from "@workspace/db";
 import { eq, and, desc, gte, lte, sql, inArray } from "drizzle-orm";
 import { type StaffAuthRequest, FULL_ACCESS_ROLES } from "../middleware/requireStaffAuth";
@@ -63,6 +64,14 @@ import {
 } from "@workspace/api-zod";
 import { AI_MASTER_FLAG, setMasterAiFlag } from "../lib/ai/clinicalConfigService";
 import { isFeatureEnabledServer } from "../lib/featureFlags";
+import {
+  buildAiReportingDraftDiagnostics,
+  buildParserMeta,
+  logAiReportingDraftDiagnostics,
+  newAiRequestId,
+} from "../lib/ai/aiReportingRequestDiagnostics";
+import { resolveInteractiveDraftNumCtx } from "../lib/ai/contextBudget";
+import { resolveLocalAiRuntime } from "../lib/aiPipeline/runtimeConfig";
 
 // ─── Prompt template presets ──────────────────────────────────────────────────
 export const AI_PROMPT_TEMPLATES: Record<string, string> = {
@@ -158,14 +167,27 @@ async function getGlobalSettings(): Promise<{
 }
 
 // Fetch JPEG thumbnails from Orthanc DICOMweb for a study.
+export type StudyImageFetchResult = {
+  images: string[];
+  seriesSelected: number;
+  imageByteSizes: number[];
+  totalImageBytes: number;
+};
+
 async function fetchStudyImages(opts: {
   studyInstanceUID: string;
   seriesUIDs?: string[];
   maxImages: number;
   maxWidthPx?: number;
-}): Promise<string[]> {
+}): Promise<StudyImageFetchResult> {
+  const empty: StudyImageFetchResult = {
+    images: [],
+    seriesSelected: 0,
+    imageByteSizes: [],
+    totalImageBytes: 0,
+  };
   const orthancBase = await getSetting("orthanc_base_url", "orthanc");
-  if (!orthancBase) return [];
+  if (!orthancBase) return empty;
 
   const base = orthancBase.replace(/\/$/, "");
   const dicomWebBase = `${base}/dicom-web`;
@@ -179,13 +201,13 @@ async function fetchStudyImages(opts: {
     `${dicomWebBase}/studies/${opts.studyInstanceUID}/series`,
     { headers: jsonHeaders },
   ).catch(() => null);
-  if (!seriesResp?.ok) return [];
+  if (!seriesResp?.ok) return empty;
 
   let seriesList: DcmEntry[] = [];
   try {
     seriesList = (await seriesResp.json()) as DcmEntry[];
   } catch {
-    return [];
+    return empty;
   }
 
   // Filter by requested seriesUIDs if provided
@@ -197,7 +219,9 @@ async function fetchStudyImages(opts: {
   }
 
   const images: string[] = [];
+  const imageByteSizes: number[] = [];
   const maxImages = Math.min(opts.maxImages, 20);
+  let seriesSelected = 0;
 
   for (const series of seriesList) {
     if (images.length >= maxImages) break;
@@ -236,6 +260,7 @@ async function fetchStudyImages(opts: {
       const arrayBuf = await rendered.arrayBuffer();
       const rawArr = new Uint8Array(arrayBuf as ArrayBuffer);
       let b64: string;
+      let byteLen = rawArr.byteLength;
 
       // Resize with sharp (optional — skip gracefully if unavailable)
       try {
@@ -246,18 +271,26 @@ async function fetchStudyImages(opts: {
           .jpeg({ quality: 80 })
           .toBuffer();
         b64 = resized.toString("base64");
+        byteLen = resized.byteLength;
       } catch {
         // sharp not available or failed — encode raw bytes
         b64 = Buffer.from(rawArr).toString("base64");
       }
 
       images.push(b64);
+      imageByteSizes.push(byteLen);
+      seriesSelected += 1;
     } catch {
       continue;
     }
   }
 
-  return images;
+  return {
+    images,
+    seriesSelected,
+    imageByteSizes,
+    totalImageBytes: imageByteSizes.reduce((a, b) => a + b, 0),
+  };
 }
 
 // ─── AI provider query functions ──────────────────────────────────────────────
@@ -601,12 +634,13 @@ router.post("/query", async (req, res): Promise<void> => {
   // maxImages 0 means an explicit text-only query: skip Orthanc entirely.
   let images: string[] = [];
   if (studyInstanceUID && maxImages > 0) {
-    images = await fetchStudyImages({
+    const fetched = await fetchStudyImages({
       studyInstanceUID,
       seriesUIDs: scope === "series" ? seriesUIDs : undefined,
       maxImages: Math.min(maxImages, 20),
       maxWidthPx: 512,
     });
+    images = fetched.images;
   }
 
   // Call AI provider via unified abstraction
@@ -655,6 +689,10 @@ router.post("/query", async (req, res): Promise<void> => {
  * as context and returns AI-generated draft sections.
  */
 router.post("/draft", async (req, res): Promise<void> => {
+  const requestId = newAiRequestId();
+  const routeStartedAt = new Date().toISOString();
+  const routeT0 = Date.now();
+
   const sReq = req as StaffAuthRequest;
   const globalSettings = await getGlobalSettings();
   if (!globalSettings.enabled) {
@@ -774,18 +812,66 @@ router.post("/draft", async (req, res): Promise<void> => {
     "IMPRESSION: (concise impression)\n" +
     "Do not include any other text or explanations.";
 
-  // Fetch images (optional)
+  // Clinic Local AI timeout (used by radiology-ollama — NOT applied on this path today).
+  let clinicOllamaTimeoutSeconds: number | null = null;
+  try {
+    const [clinicRow] = await db
+      .select({ timeout: clinicSettingsTable.ollamaTimeoutSeconds })
+      .from(clinicSettingsTable)
+      .orderBy(desc(clinicSettingsTable.id))
+      .limit(1);
+    clinicOllamaTimeoutSeconds = clinicRow?.timeout ?? 30;
+  } catch {
+    clinicOllamaTimeoutSeconds = 30;
+  }
+
+  // Fetch images (optional) — up to 6 middle-slice JPEGs across series
   let images: string[] = [];
+  let imageMeta = {
+    seriesSelected: 0,
+    imagesSelected: 0,
+    imageByteSizes: [] as number[],
+    totalImageBytes: 0,
+    fetchElapsedMs: 0,
+  };
   if (studyInstanceUID) {
-    images = await fetchStudyImages({
+    const fetchT0 = Date.now();
+    const fetched = await fetchStudyImages({
       studyInstanceUID,
       maxImages: 6,
       maxWidthPx: 512,
     });
+    images = fetched.images;
+    imageMeta = {
+      seriesSelected: fetched.seriesSelected,
+      imagesSelected: fetched.images.length,
+      imageByteSizes: fetched.imageByteSizes,
+      totalImageBytes: fetched.totalImageBytes,
+      fetchElapsedMs: Date.now() - fetchT0,
+    };
   }
 
-  // Call AI with fallback
-  const aiResult = await generateAiForTask("radiology_draft", finalPrompt, images, { model });
+  // Call AI — MUST send options.num_ctx. Live caredeoghar proved omitting it
+  // makes Ollama use ~4096 and reject 6-image MRI payloads (~6453 tokens).
+  const runtime = await resolveLocalAiRuntime(true);
+  const draftOverride = process.env.OLLAMA_DRAFT_NUM_CTX
+    ? Number(process.env.OLLAMA_DRAFT_NUM_CTX)
+    : null;
+  const draftCtx = resolveInteractiveDraftNumCtx({
+    configuredNumCtx: runtime.ollamaNumCtx,
+    imageCount: images.length,
+    draftNumCtxOverride: Number.isFinite(draftOverride) ? draftOverride : null,
+  });
+  const ollamaOpts =
+    providerName === "ollama"
+      ? {
+          model,
+          numCtx: draftCtx.requestedNumCtx,
+          endpointUrl: runtime.ollamaBaseUrl,
+          think: false,
+        }
+      : { model };
+  const aiResult = await generateAiForTask("radiology_draft", finalPrompt, images, ollamaOpts);
   const success = aiResult.success;
   const aiResponse = aiResult.text;
   const errorMsg = aiResult.error;
@@ -793,12 +879,32 @@ router.post("/draft", async (req, res): Promise<void> => {
   // Parse findings + impression from AI response
   let draftFindings = "";
   let draftImpression = "";
+  let parser = null as ReturnType<typeof buildParserMeta> | null;
   if (success && aiResponse) {
     const findingsMatch = aiResponse.match(/FINDINGS:?\s*([\s\S]*?)(?=IMPRESSION:|$)/i);
     const impressionMatch = aiResponse.match(/IMPRESSION:?\s*([\s\S]*?)$/i);
     draftFindings = findingsMatch?.[1]?.trim() ?? aiResponse.trim();
     draftImpression = impressionMatch?.[1]?.trim() ?? "";
+    parser = buildParserMeta(aiResponse, draftFindings, draftImpression);
   }
+
+  const diag = buildAiReportingDraftDiagnostics({
+    requestId,
+    worklistId: worklistId ?? null,
+    providerName,
+    model: model || null,
+    promptLength: finalPrompt.length,
+    startedAt: routeStartedAt,
+    imageMeta,
+    aiResult,
+    parser,
+    clinicOllamaTimeoutSeconds,
+    totalElapsedMs: Date.now() - routeT0,
+    configuredNumCtx: draftCtx.configuredNumCtx,
+    requestedNumCtx: draftCtx.requestedNumCtx,
+    numCtxReason: draftCtx.reason,
+  });
+  logAiReportingDraftDiagnostics(diag, success ? "info" : "error");
 
   // Save draft to DB
   let draftId: number | null = null;
@@ -842,7 +948,43 @@ router.post("/draft", async (req, res): Promise<void> => {
   }).catch(() => { /* non-critical */ });
 
   if (!success) {
-    res.status(502).json({ error: errorMsg ?? "AI provider error" }); return;
+    // Include PHI-safe diagnostic summary so operators see the real 502 cause
+    // without grepping only the pino HTTP line.
+    res.status(502).json({
+      error: errorMsg ?? "AI provider error",
+      requestId,
+      diagnostics: {
+        provider: diag.provider,
+        resolvedEndpoint: diag.resolvedEndpoint,
+        model: diag.model,
+        numberOfImages: diag.numberOfImages,
+        totalImageBytes: diag.totalImageBytes,
+        imageByteSizes: diag.imageByteSizes,
+        seriesSelected: diag.seriesSelected,
+        promptLength: diag.promptLength,
+        imageFetchElapsedMs: diag.imageFetchElapsedMs,
+        providerElapsedMs: diag.providerElapsedMs,
+        totalElapsedMs: diag.totalElapsedMs,
+        httpStatus: diag.httpStatus,
+        responseLength: diag.responseLength,
+        finishReason: diag.finishReason,
+        parserSuccess: diag.parserSuccess,
+        providerReturned: diag.providerReturned,
+        errorClass: diag.errorClass,
+        errorCode: diag.errorCode,
+        errorMessage: diag.errorMessage,
+        timeoutStage: diag.timeoutStage,
+        timeoutMsConfigured: diag.timeoutMsConfigured,
+        clinicOllamaTimeoutSeconds: diag.clinicOllamaTimeoutSeconds,
+        configuredNumCtx: diag.configuredNumCtx,
+        requestedNumCtx: diag.requestedNumCtx,
+        ollamaAvailableContext: diag.ollamaAvailableContext,
+        ollamaRequestTokens: diag.ollamaRequestTokens,
+        numCtxReason: diag.numCtxReason,
+        timeoutSourcesNote: diag.timeoutSourcesNote,
+      },
+    });
+    return;
   }
 
   res.json({
@@ -851,6 +993,7 @@ router.post("/draft", async (req, res): Promise<void> => {
     provider: providerName,
     model: model || null,
     draftId,
+    requestId,
     aiSafetyLabel: "AI Draft – Requires Radiologist Review",
   });
 });
@@ -950,11 +1093,12 @@ router.post("/image-review", async (req, res): Promise<void> => {
     "Return your findings as bullet points.";
 
   // Fetch images
-  const images = await fetchStudyImages({
+  const fetchedReview = await fetchStudyImages({
     studyInstanceUID,
     maxImages: 6,
     maxWidthPx: 512,
   });
+  const images = fetchedReview.images;
 
   if (images.length === 0) {
     res.status(400).json({ error: "No images available for this study." }); return;

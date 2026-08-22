@@ -1,6 +1,6 @@
 import type { Modality } from "./types";
 import type { QuickSelectTile, QuickSelectField } from "./types";
-import { contentStudyTypes, type ReportingStudyContext } from "@/lib/reportingStudyContext";
+import { canonicalContentRegion, contentStudyTypes, type ReportingStudyContext } from "@/lib/reportingStudyContext";
 const now = () => new Date().toISOString();
 const uid = () => `qs_${Date.now().toString(36)}_${Math.random().toString(36).slice(2,7)}`;
 function t(f: QuickSelectField, l: string, s: string, o: Partial<QuickSelectTile> = {}): QuickSelectTile { return { id: uid(), field: f, label: l, sentence: s, category: "normal", createdAt: now(), updatedAt: now(), ...o }; }
@@ -27,8 +27,9 @@ export const DEFAULT_QUICK_SELECT_TILES: QuickSelectTile[] = [
   t("findings","Normal brain parenchyma","Brain parenchyma shows normal signal intensity. No evidence of acute infarct, hemorrhage, or mass lesion.",{mnemonic:"nb",scopeModality:"MR",scopeBodyPart:"Brain",favorite:true}),
   t("findings","Normal ventricles","Ventricular system and cisternal spaces are normal in size and configuration. No midline shift.",{mnemonic:"nv",scopeModality:"MR",scopeBodyPart:"Brain",favorite:true}),
   t("findings","Glioma recurrence","Heterogeneously enhancing area in the right frontal operculum at the post-resection cavity, measuring approximately ___ × ___ × ___ cm, with surrounding T2/FLAIR hyperintensity suggestive of edema. Findings are concerning for tumor recurrence.",{mnemonic:"gr",scopeModality:"MR",scopeBodyPart:"Brain",category:"abnormal",favorite:true}),
-  t("findings","Acute infarct (DWI)","Restricted diffusion in the left MCA territory on DWI/ADC, consistent with acute infarct. No hemorrhagic transformation.",{mnemonic:"ai",scopeModality:"MR",scopeBodyPart:"Brain",category:"critical"}),
-  t("findings","Acute hemorrhage","Acute intraparenchymal hemorrhage in the right basal ganglia with intraventricular extension. Mass effect with midline shift of ___ mm to the left.",{mnemonic:"ah",scopeModality:"MR",scopeBodyPart:"Brain",category:"critical"}),
+  t("findings","Acute infarct (DWI)","Restricted diffusion in the {side} MCA territory on DWI/ADC, consistent with acute infarct. No hemorrhagic transformation.",{mnemonic:"ai",scopeModality:"MR",scopeBodyPart:"Brain",category:"critical",anatomicalSection:"mca",conflictGroup:"infarct",impressionSentence:"Acute {side} MCA territory infarct."}),
+  t("findings","Basal ganglia hemorrhage","Acute intraparenchymal hemorrhage in the {side} basal ganglia with intraventricular extension. Mass effect with midline shift of ___ mm.",{mnemonic:"ah",scopeModality:"MR",scopeBodyPart:"Brain",category:"critical",anatomicalSection:"basal ganglia",conflictGroup:"hemorrhage",impressionSentence:"Acute {side} basal ganglia hemorrhage."}),
+  t("findings","Acute hemorrhage","Acute intraparenchymal hemorrhage in the {side} basal ganglia with intraventricular extension. Mass effect with midline shift of ___ mm to the contralateral side.",{mnemonic:"ah2",scopeModality:"MR",scopeBodyPart:"Brain",category:"critical",anatomicalSection:"basal ganglia",conflictGroup:"hemorrhage",impressionSentence:"Acute {side} basal ganglia hemorrhage."}),
   t("findings","Fazekas 1","Few punctate T2/FLAIR hyperintense white matter lesions in bilateral periventricular and deep white matter, Fazekas grade 1. No confluent lesions.",{mnemonic:"f1",scopeModality:"MR",scopeBodyPart:"Brain",category:"abnormal"}),
   t("findings","Fazekas 2","Confluent T2/FLAIR hyperintense white matter lesions in bilateral periventricular and deep white matter, Fazekas grade 2.",{mnemonic:"f2",scopeModality:"MR",scopeBodyPart:"Brain",category:"abnormal"}),
   t("findings","Normal LS spine","Lumbar vertebrae show normal alignment and marrow signal. No spondylolisthesis. Disc spaces maintained.",{mnemonic:"nl",scopeModality:"MR",scopeBodyPart:"LS Spine",favorite:true}),
@@ -75,8 +76,8 @@ export function lookupTilesForContext(
     .filter((tile) => tile.field === field)
     .map((tile) => {
       if (tile.scopeModality && tile.scopeModality !== modality) return { tile, s: -1 };
-      if (tile.scopeBodyPart && !allowed.has(tile.scopeBodyPart.toLowerCase())) return { tile, s: -1 };
-      const exact = tile.scopeBodyPart && tile.scopeBodyPart.toLowerCase() === ctx.region!.toLowerCase();
+      if (tile.scopeBodyPart && !allowed.has((canonicalContentRegion(tile.scopeBodyPart) || tile.scopeBodyPart).toLowerCase())) return { tile, s: -1 };
+      const exact = tile.scopeBodyPart && (canonicalContentRegion(tile.scopeBodyPart) || tile.scopeBodyPart).toLowerCase() === ctx.region!.toLowerCase();
       const s = exact ? 100 : tile.scopeBodyPart ? 80 : tile.scopeModality === modality ? 50 : 10;
       return { tile, s };
     })
@@ -89,4 +90,4 @@ export function loadTiles(): QuickSelectTile[] { try { const r = localStorage.ge
 export function saveTiles(t: QuickSelectTile[]) { try { localStorage.setItem(SK, JSON.stringify(t)); } catch {} }
 export function createTile(i: Omit<QuickSelectTile, "id" | "createdAt" | "updatedAt">): QuickSelectTile { return { ...i, id: uid(), createdAt: now(), updatedAt: now(), custom: true }; }
 export function resetToDefaults(): QuickSelectTile[] { localStorage.removeItem(SK); return DEFAULT_QUICK_SELECT_TILES; }
-export const MODALITIES: Record<string, string[]> = { MR: ["Brain","LS Spine","C Spine","Thoracic Spine","Whole Spine","Shoulder","Knee"], CT: ["Brain","Chest","Abdomen","Neck","LS Spine","PNS","Pelvis"], XR: ["LS Spine","C Spine","Chest","Abdomen","Skull","PNS","Pelvis","KUB","Knee"], US: ["Abdomen","OB","KUB","Pelvis","Thyroid","Scrotum","Breast","Doppler"], MG: ["Breast"], DX: ["Chest","Abdomen"], NM: ["Whole Body","Bone"], PT: ["Whole Body"], DOPPLER: ["Carotid","Lower Limb","Upper Limb","Renal"], ECHO: ["Heart"], USG_OB: ["OB"] };
+export const MODALITIES: Record<string, string[]> = { MR: ["Brain","Cervical Spine","C Spine","LS Spine","Dorsal Spine","Thoracic Spine","Whole Spine","Shoulder","Knee"], CT: ["Brain","Chest","Abdomen","Neck","LS Spine","PNS","Pelvis"], XR: ["LS Spine","C Spine","Cervical Spine","Chest","Abdomen","Skull","PNS","Pelvis","KUB","Knee"], US: ["Abdomen","OB","KUB","Pelvis","Thyroid","Scrotum","Breast","Doppler"], MG: ["Breast"], DX: ["Chest","Abdomen"], NM: ["Whole Body","Bone"], PT: ["Whole Body"], DOPPLER: ["Carotid","Lower Limb","Upper Limb","Renal"], ECHO: ["Heart"], USG_OB: ["OB"] };

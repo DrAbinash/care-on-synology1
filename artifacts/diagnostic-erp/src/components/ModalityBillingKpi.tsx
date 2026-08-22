@@ -79,9 +79,10 @@ function fmtInr(n: number): string {
 type Props = {
   from: string;
   to: string;
+  hideHeader?: boolean;
 };
 
-export default function ModalityBillingKpi({ from, to }: Props) {
+export default function ModalityBillingKpi({ from, to, hideHeader = false }: Props) {
   const [selected, setSelected] = useState<ModalityBillingRow | null>(null);
 
   const { data, isLoading, isError } = useQuery<ModalityBillingSummary>({
@@ -103,7 +104,7 @@ export default function ModalityBillingKpi({ from, to }: Props) {
 
   if (isLoading) {
     return (
-      <div className="bg-white dark:bg-card border border-gray-200 dark:border-card-border rounded-xl p-4 shadow-sm">
+      <div className={hideHeader ? "p-4" : "bg-white dark:bg-card border border-gray-200 dark:border-card-border rounded-xl p-4 shadow-sm"}>
         <div className="h-24 bg-gray-100 dark:bg-muted/30 rounded-lg animate-pulse" />
       </div>
     );
@@ -116,9 +117,12 @@ export default function ModalityBillingKpi({ from, to }: Props) {
   return (
     <>
       <div
-        className="bg-white dark:bg-card border border-gray-200 dark:border-card-border rounded-xl p-4 shadow-sm space-y-3"
+        className={hideHeader
+          ? "p-4 space-y-3"
+          : "bg-white dark:bg-card border border-gray-200 dark:border-card-border rounded-xl p-4 shadow-sm space-y-3"}
         data-testid="modality-billing-kpi"
       >
+        {!hideHeader && (
         <div>
           <h3 className="text-sm font-bold text-gray-900 dark:text-foreground flex items-center gap-2">
             <ScanLine size={14} className="text-sky-600" />
@@ -128,6 +132,12 @@ export default function ModalityBillingKpi({ from, to }: Props) {
             {dateLabel} · clinic-wide · tap a modality to open bills
           </p>
         </div>
+        )}
+        {hideHeader && (
+          <p className="text-[11px] text-gray-500 dark:text-gray-400">
+            {dateLabel} · clinic-wide · tap a modality to open bills
+          </p>
+        )}
 
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
           {data.modalities.map((row) => (

@@ -834,18 +834,158 @@ radiologyOllamaRouter.post("/multi-review/winner", async (req, res): Promise<voi
   res.json({ ok: true, audit });
 });
 
-// ── POST /verify — pre-deploy Ollama auto-draft verification ─────────────────
+// ── POST /recycle-runner — unload qwen (keep_alive=0); diagnostic/ops only ───
+radiologyOllamaRouter.post("/recycle-runner", async (req, res): Promise<void> => {
+  const sReq = req as StaffAuthRequest;
+  if (!canUseAi(sReq)) {
+    res.status(403).json({ error: "Permission denied." });
+    return;
+  }
+  try {
+    const { resolveLocalAiRuntime } = await import("../lib/aiPipeline/runtimeConfig");
+    const { fetchOllamaPs, unloadOllamaModel, formatPsSummary } = await import("../lib/ai/ollamaRunnerDiagnostics");
+    const runtime = await resolveLocalAiRuntime(true);
+    const before = await fetchOllamaPs(runtime.ollamaBaseUrl);
+    const unloaded = await unloadOllamaModel({
+      endpointUrl: runtime.ollamaBaseUrl,
+      model: runtime.localChatVisionModel,
+    });
+    res.json({
+      ok: unloaded.ok || unloaded.psAfter.runnerCount === 0,
+      model: runtime.localChatVisionModel,
+      endpoint: runtime.ollamaBaseUrl,
+      before: formatPsSummary(before),
+      after: formatPsSummary(unloaded.psAfter),
+      detail: unloaded.detail,
+      elapsedMs: unloaded.elapsedMs,
+      note: "Recycle is ops-only. It does not change overnight num_ctx defaults.",
+    });
+  } catch (err: unknown) {
+    res.status(500).json({
+      error: err instanceof Error ? err.message : "Failed to recycle Ollama runner",
+    });
+  }
+});
+
+// ── GET /pipeline-self-test/studies — recent MRI options for picker ───────────
+radiologyOllamaRouter.get("/pipeline-self-test/studies", async (req, res): Promise<void> => {
+  const sReq = req as StaffAuthRequest;
+  if (!canUseAi(sReq)) {
+    res.status(403).json({ error: "Permission denied." });
+    return;
+  }
+  try {
+    const { listRecentMriStudies } = await import("../lib/ai/aiPipelineSelfTest");
+    const limit = Number(req.query.limit) || 20;
+    const studies = await listRecentMriStudies(limit);
+    res.json({ studies });
+  } catch (err: unknown) {
+    res.status(500).json({
+      error: err instanceof Error ? err.message : "Failed to list MRI studies",
+    });
+  }
+});
+
+// ── POST /pipeline-self-test — async one-click AI pipeline self-test ─────────
+radiologyOllamaRouter.post("/pipeline-self-test", async (req, res): Promise<void> => {
+  const sReq = req as StaffAuthRequest;
+  if (!canUseAi(sReq)) {
+    res.status(403).json({ error: "Permission denied. Role needs ai_reporting.use permission." });
+    return;
+  }
+  const b = (req.body ?? {}) as { studyInstanceUid?: string; suite?: string };
+  try {
+    const { startAiPipelineSelfTest } = await import("../lib/ai/aiPipelineSelfTest");
+    const suite = b.suite === "gpu_context" ? "gpu_context" : "full";
+    const job = startAiPipelineSelfTest({
+      studyInstanceUid: typeof b.studyInstanceUid === "string" ? b.studyInstanceUid : undefined,
+      suite,
+    });
+    res.status(202).json(job);
+  } catch (err: unknown) {
+    res.status(500).json({
+      error: err instanceof Error ? err.message : "Failed to start AI pipeline self-test",
+    });
+  }
+});
+
+// ── GET /pipeline-self-test/latest — reconnect after refresh ──────────────────
+radiologyOllamaRouter.get("/pipeline-self-test/latest", async (req, res): Promise<void> => {
+  const sReq = req as StaffAuthRequest;
+  if (!canUseAi(sReq)) {
+    res.status(403).json({ error: "Permission denied." });
+    return;
+  }
+  const { getLatestAiPipelineSelfTest, formatSelfTestReport } = await import("../lib/ai/aiPipelineSelfTest");
+  const job = getLatestAiPipelineSelfTest();
+  if (!job) {
+    res.status(404).json({ error: "No self-test job in this process yet." });
+    return;
+  }
+  const gpuReport =
+    job.technical && typeof (job.technical as { gpuContextCleanRunner?: { report?: string } }).gpuContextCleanRunner?.report === "string"
+      ? (job.technical as { gpuContextCleanRunner: { report: string } }).gpuContextCleanRunner.report
+      : null;
+  res.json({
+    ...job,
+    diagnosticReport: formatSelfTestReport(job),
+    gpuContextDiagnosticReport: gpuReport,
+  });
+});
+
+// ── GET /pipeline-self-test/:id — poll self-test status ───────────────────────
+radiologyOllamaRouter.get("/pipeline-self-test/:id", async (req, res): Promise<void> => {
+  const sReq = req as StaffAuthRequest;
+  if (!canUseAi(sReq)) {
+    res.status(403).json({ error: "Permission denied." });
+    return;
+  }
+  // Avoid treating "studies" / "latest" as an id if route order ever flips.
+  if (String(req.params.id) === "studies" || String(req.params.id) === "latest") {
+    res.status(404).json({ error: "Not found" });
+    return;
+  }
+  const { getAiPipelineSelfTest, formatSelfTestReport } = await import("../lib/ai/aiPipelineSelfTest");
+  const job = getAiPipelineSelfTest(String(req.params.id));
+  if (!job) {
+    res.status(404).json({ error: "Self-test job not found (expired or unknown id)." });
+    return;
+  }
+  const gpuReport =
+    job.technical && typeof (job.technical as { gpuContextCleanRunner?: { report?: string } }).gpuContextCleanRunner?.report === "string"
+      ? (job.technical as { gpuContextCleanRunner: { report: string } }).gpuContextCleanRunner.report
+      : null;
+  res.json({
+    ...job,
+    diagnosticReport: formatSelfTestReport(job),
+    gpuContextDiagnosticReport: gpuReport,
+  });
+});
+
+// ── POST /verify — pre-deploy Ollama auto-draft verification (async) ─────────
+// Full test (runDraft) must return jobId immediately — Ollama can exceed Cloudflare 524.
 radiologyOllamaRouter.post("/verify", async (req, res): Promise<void> => {
   const sReq = req as StaffAuthRequest;
   if (!canUseAi(sReq)) {
     res.status(403).json({ error: "Permission denied. Role needs ai_reporting.use permission." });
     return;
   }
-  const b = (req.body ?? {}) as { dryRun?: boolean; runDraft?: boolean };
+  const b = (req.body ?? {}) as { dryRun?: boolean; runDraft?: boolean; async?: boolean };
   const dryRun = Boolean(b.dryRun) || req.query.dryRun === "1";
+  const runDraft = !dryRun && b.runDraft !== false;
+  // Default async for full draft; allow sync only for quick dry-run (keeps old clients working).
+  const useAsync = b.async !== false && (runDraft || b.async === true || dryRun);
   try {
-    const { runOllamaAiDraftVerify } = await import("../lib/ai/ollamaDraftVerify");
-    const result = await runOllamaAiDraftVerify({ runDraft: !dryRun && b.runDraft !== false });
+    const {
+      startOllamaAiDraftVerify,
+      runOllamaAiDraftVerify,
+    } = await import("../lib/ai/ollamaDraftVerify");
+    if (useAsync) {
+      const job = startOllamaAiDraftVerify({ runDraft });
+      res.status(202).json(job);
+      return;
+    }
+    const result = await runOllamaAiDraftVerify({ runDraft });
     res.json(result);
   } catch (err: unknown) {
     res.status(500).json({
@@ -857,4 +997,39 @@ radiologyOllamaRouter.post("/verify", async (req, res): Promise<void> => {
       ranAt: new Date().toISOString(),
     });
   }
+});
+
+// ── GET /verify/:id — poll async verify job ───────────────────────────────────
+radiologyOllamaRouter.get("/verify/latest", async (req, res): Promise<void> => {
+  const sReq = req as StaffAuthRequest;
+  if (!canUseAi(sReq)) {
+    res.status(403).json({ error: "Permission denied." });
+    return;
+  }
+  const { getLatestOllamaVerifyJob } = await import("../lib/ai/ollamaDraftVerify");
+  const job = getLatestOllamaVerifyJob();
+  if (!job) {
+    res.status(404).json({ error: "No verify job in this process yet." });
+    return;
+  }
+  res.json(job);
+});
+
+radiologyOllamaRouter.get("/verify/:id", async (req, res): Promise<void> => {
+  const sReq = req as StaffAuthRequest;
+  if (!canUseAi(sReq)) {
+    res.status(403).json({ error: "Permission denied." });
+    return;
+  }
+  if (String(req.params.id) === "latest") {
+    res.status(404).json({ error: "Not found" });
+    return;
+  }
+  const { getOllamaVerifyJob } = await import("../lib/ai/ollamaDraftVerify");
+  const job = getOllamaVerifyJob(String(req.params.id));
+  if (!job) {
+    res.status(404).json({ error: "Verify job not found (expired or unknown id)." });
+    return;
+  }
+  res.json(job);
 });

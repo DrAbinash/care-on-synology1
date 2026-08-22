@@ -197,8 +197,11 @@ export default function Doctors() {
         title="Referring Doctors"
         subtitle={`${data?.total ?? 0} doctors`}
         actions={
-          <div className="flex gap-2">
+          <>
             <input ref={importInputRef} type="file" accept=".csv,text/csv" className="hidden" onChange={onImportFileChosen} />
+            <Button size="sm" className="order-first sm:order-last" onClick={() => { setOpen(true); reset(); }}>
+              <Plus size={14} className="mr-1" /> Add Doctor
+            </Button>
             <Button size="sm" variant="outline" onClick={() => importInputRef.current?.click()} disabled={importing} title="Upload a CSV to add or update doctors in bulk">
               <Upload size={14} className="mr-1" /> {importing ? "Importing…" : "Import CSV"}
             </Button>
@@ -208,10 +211,7 @@ export default function Doctors() {
             <Button size="sm" variant="outline" onClick={() => setDupOpen(true)} title="Find duplicate doctors">
               <AlertTriangle size={14} className="mr-1" /> Find Duplicates
             </Button>
-            <Button size="sm" onClick={() => { setOpen(true); reset(); }}>
-              <Plus size={14} className="mr-1" /> Add Doctor
-            </Button>
-          </div>
+          </>
         }
       />
 

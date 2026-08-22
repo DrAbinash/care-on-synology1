@@ -20,6 +20,7 @@ export function CommandPalette() {
     { id: "voice", label: "Toggle voice listen", icon: Mic, group: "Actions", action: () => {
       document.querySelector("[data-testid='voice-command-bar']")?.scrollIntoView({ block: "nearest", behavior: "smooth" });
     }, shortcut: "⌃⇧V" },
+    { id: "undo-patch", label: "Undo last Quick Select/Macro merge", detail: "Restore pre-merge report snapshot", icon: Save, group: "Actions", action: () => ws.undoLastPatch(), shortcut: "⌃⇧Z" },
     { id: "save-fmt", label: "Save as format", icon: Save, group: "Actions", action: () => ws.openSaveAsFormatDialog() },
     ...macros.slice(0, 6).map(m => ({ id: `m-${m.id}`, label: `:${m.trigger} — ${m.label}`, detail: m.template.slice(0, 60) + "...", icon: Plus, group: "Macros", action: () => ws.setField("findings", ws.findingsText.replace(/:[a-z][a-z0-9_]*$/i, "") + `:${m.trigger} `) })),
   ];
