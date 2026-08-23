@@ -28,15 +28,10 @@ async function staffLogin(page: import("@playwright/test").Page) {
 }
 
 async function selectStudyRegion(page: import("@playwright/test").Page, region: string) {
-  await page.getByRole("button", { name: /Region \/ Study \/ Protocol/i }).click();
-  await page.waitForTimeout(400);
-  const chips = page.getByTestId("study-region-chips").getByRole("button", { name: new RegExp(region, "i") });
-  if (await chips.count() > 0) {
-    await chips.first().click();
-  } else {
-    await page.getByTestId("region-select").selectOption(region, { force: true });
-  }
-  await page.waitForTimeout(800);
+  await page.getByTestId("study-setup-strip").waitFor({ state: "visible", timeout: 20_000 });
+  const regionSelect = page.getByTestId("region-select");
+  await regionSelect.selectOption(region);
+  await page.waitForTimeout(500);
 }
 
 const LS_NORMAL =

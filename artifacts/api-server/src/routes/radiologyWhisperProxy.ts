@@ -34,7 +34,7 @@ router.get("/health", (_req: Request, res: Response) => {
       model: null,
     });
   }
-  res.json({
+  return res.json({
     available: true,
     url: whisperUrl,
     model: process.env.WHISPER_MODEL || "base",
@@ -62,7 +62,8 @@ router.post("/transcribe", upload.single("audio"), async (req: Request, res: Res
 
     // Build form data for the Whisper instance
     const formData = new FormData();
-    formData.append("audio", new Blob([req.file.buffer], { type: req.file.mimetype }), req.file.originalname || "dictation.webm");
+    const audioBytes = new Uint8Array(req.file.buffer);
+    formData.append("audio", new Blob([audioBytes], { type: req.file.mimetype }), req.file.originalname || "dictation.webm");
     formData.append("model", model);
     formData.append("language", language);
 
@@ -94,7 +95,7 @@ router.post("/transcribe", upload.single("audio"), async (req: Request, res: Res
       });
     }
 
-    res.json({
+    return res.json({
       ok: true,
       text,
       language: result.language || language,
@@ -103,7 +104,7 @@ router.post("/transcribe", upload.single("audio"), async (req: Request, res: Res
     });
   } catch (err) {
     console.error("[whisper-proxy] Error:", err);
-    res.status(500).json({
+    return res.status(500).json({
       error: "Failed to transcribe audio via local Whisper.",
       detail: err instanceof Error ? err.message : String(err),
     });

@@ -338,7 +338,7 @@ router.get("/:packId", (req: Request, res: Response) => {
       return res.status(404).json({ error: `Pack '${req.params.packId}' not found` });
     }
     const tiles = pack.findings.map((f: any) => findingToTile(pack, f));
-    res.json({
+    return res.json({
       packId: pack.packId,
       study: pack.study,
       modality: modalityCode(pack.modality),
@@ -348,7 +348,7 @@ router.get("/:packId", (req: Request, res: Response) => {
     });
   } catch (err) {
     console.error(`[content-pack-tiles/${req.params.packId}] Error:`, err);
-    res.status(500).json({ error: "Failed to load pack" });
+    return res.status(500).json({ error: "Failed to load pack" });
   }
 });
 
