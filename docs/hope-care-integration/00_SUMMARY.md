@@ -5,7 +5,7 @@ HOPE Hospital → CARE Diagnostics. Built entirely on the CARE side (the writabl
 repo), 100% additive, feature-flagged OFF by default.
 
 See also: `01_AUDIT.md` · `02_ARCHITECTURE.md` (diagrams) · `03_API_CONTRACT.md` ·
-`04_HOPE_ADAPTER_REFERENCE.md`.
+`04_HOPE_ADAPTER_REFERENCE.md` · `05_ELECTRONIC_FILM_AND_IMAGING_AUDIT.md` (DicomToWindows + HOPE imaging audit, 2026-08-23).
 
 ---
 
