@@ -872,6 +872,39 @@ clinicSettingsRouter.post("/ollama", async (req, res) => {
     (update as any).ollamaFallbackUrl = raw || null;
   }
 
+  // ollamaComposerModel — task-specific text composer (does NOT affect vision model)
+  if (b.ollamaComposerModel !== undefined) {
+    update.ollamaComposerModel = b.ollamaComposerModel
+      ? String(b.ollamaComposerModel).trim()
+      : null;
+  }
+  if (b.ollamaComposerFallbackModel !== undefined) {
+    update.ollamaComposerFallbackModel = b.ollamaComposerFallbackModel
+      ? String(b.ollamaComposerFallbackModel).trim()
+      : null;
+  }
+  if (b.ollamaComposerNumCtx !== undefined) {
+    const n = Number(b.ollamaComposerNumCtx);
+    if (!Number.isInteger(n) || n < 2048 || n > 8192) {
+      res.status(400).json({ error: "ollamaComposerNumCtx must be 2048–8192" }); return;
+    }
+    update.ollamaComposerNumCtx = n;
+  }
+  if (b.ollamaComposerTemperature !== undefined) {
+    const t = Number(b.ollamaComposerTemperature);
+    if (!Number.isFinite(t) || t < 0 || t > 1) {
+      res.status(400).json({ error: "ollamaComposerTemperature must be 0–1" }); return;
+    }
+    update.ollamaComposerTemperature = String(t);
+  }
+  if (b.ollamaComposerTimeoutSeconds !== undefined) {
+    const n = Number(b.ollamaComposerTimeoutSeconds);
+    if (!Number.isInteger(n) || n < 10 || n > 120) {
+      res.status(400).json({ error: "ollamaComposerTimeoutSeconds must be 10–120" }); return;
+    }
+    update.ollamaComposerTimeoutSeconds = n;
+  }
+
   try {
     const rows = await db.update(clinicSettingsTable).set(update).where(eq(clinicSettingsTable.id, current.id)).returning();
     invalidateCached(CLINIC_SETTINGS_CACHE_KEY);
@@ -894,6 +927,8 @@ clinicSettingsRouter.post("/ollama", async (req, res) => {
         isEnabled: mergedEnabled,
       });
       invalidateLocalAiRuntimeCache();
+      const { invalidateComposerRuntimeCache } = await import("../lib/voiceReportComposer/runtimeConfig");
+      invalidateComposerRuntimeCache();
     } catch (syncErr) {
       console.warn("[POST /api/clinic-settings/ollama] provider sync warning:", syncErr);
     }

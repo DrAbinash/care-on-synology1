@@ -65,12 +65,25 @@ function firstNonEmptyAge(...vals: Array<unknown>): string {
     const parsed = dicomAgeToDisplay(raw);
     if (parsed) return parsed;
   }
-  // Fallback: accept any non-sentinel, non-zero, plausible-numeric ERP age
+  // Fallback: accept display ages ("34 Yrs", "6 Mo") and bare plausible year numbers
   for (const v of vals) {
     const s = String(v ?? "").trim();
     if (!s || s === "0" || /^0\s*(yrs?|years?|mo|months?|d|days?)?$/i.test(s)) continue;
+    const display = s.match(/^(\d+)\s*(yrs?|years?|mo|months?|d|days?)$/i);
+    if (display) {
+      const n = Number(display[1]);
+      const unit = display[2].toLowerCase();
+      if (unit.startsWith("y")) {
+        if (!isPlausibleAgeYears(n)) continue;
+        return `${n} Yrs`;
+      }
+      if (unit.startsWith("m")) return `${n} Mo`;
+      return `${n} D`;
+    }
     const years = parseInt(s, 10);
-    if (Number.isFinite(years) && !/[a-z]/i.test(s) && !isPlausibleAgeYears(years) && years <= 120) return s;
+    if (Number.isFinite(years) && !/[a-z]/i.test(s) && isPlausibleAgeYears(years)) {
+      return `${years} Yrs`;
+    }
   }
   return "";
 }

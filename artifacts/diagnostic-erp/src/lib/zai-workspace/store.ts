@@ -41,6 +41,8 @@ import {
   type ReportNarrative,
 } from "@/lib/pathologyPatch";
 import type { Side } from "@/lib/sideSwap";
+import { applyChangePlan } from "@/lib/voiceReportComposer/applyChangePlan";
+import type { VoiceChangePlan, VoiceObservation } from "@/lib/voiceReportComposer/types";
 
 export type EditorField = "findings" | "impression" | "recommendation" | "technique" | "clinicalHistory";
 export type RailStage = "orient" | "observe" | "measure" | "conclude" | "verify";
@@ -72,6 +74,8 @@ type PatchSnapshot = {
   recommendationText: string;
   fieldProvenance: FieldProvenanceState;
   appliedPathologyPatches: AppliedPathologyPatch[];
+  voiceComposerObservations: VoiceObservation[];
+  voiceComposerTranscriptHistory: string[];
 };
 
 function narrativeFromState(s: Pick<S, "clinicalHistoryText" | "techniqueText" | "findingsText" | "impressionText" | "recommendationText">): ReportNarrative {
@@ -113,6 +117,9 @@ interface S {
   pendingPathologyPatch: PendingPathologyPatch | null;
   lastPatchSnapshot: PatchSnapshot | null;
   appliedPathologyPatches: AppliedPathologyPatch[];
+  /** Active voice-composer observations for incremental dictation context. */
+  voiceComposerObservations: VoiceObservation[];
+  voiceComposerTranscriptHistory: string[];
   snippetMacros: SnippetMacro[]; macroEditorOpen: boolean; editingMacro: SnippetMacro | null;
   activeMacroPrompt: { macro: SnippetMacro; field: EditorField; startPos: number } | null;
   signOffProfiles: SignOffProfile[];
@@ -147,6 +154,8 @@ export type WorkspaceStore = S & {
   applySelectedFormats: () => void; confirmOverwriteAndApply: () => void; cancelOverwrite: () => void; applyMergedResult: () => void; cancelMerge: () => void;
   applyPathologyOverlay: (opts: PendingPathologyPatch & { force?: boolean }) => "applied" | "pending";
   undoLastPatch: () => boolean;
+  applyVoiceComposerPlan: (plan, transcript, opts?: { force?: boolean }) => "applied" | "blocked";
+  clearVoiceComposerSession: () => void;
   relateralizePatches: (side: Side) => void;
   saveAsFormat: (i: Omit<ReportFormat, "id" | "createdAt" | "updatedAt">) => void; deleteReportFormat: (id: string) => void;
   openSaveAsFormatDialog: () => void; closeSaveAsFormatDialog: () => void; resetReportFormatsToDefaults: () => void;
@@ -187,6 +196,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   reportFormats: typeof window !== "undefined" ? loadFormats() : DEFAULT_REPORT_FORMATS, selectedFormatIds: [], reportFormatPickerOpen: false,
   saveAsFormatDialogOpen: false, mergePreviewOpen: false, lastMergeResult: null, lastMergeFormats: null, confirmOverwriteOpen: false, pendingFormatIds: [],
   pendingPathologyPatch: null, lastPatchSnapshot: null, appliedPathologyPatches: [],
+  voiceComposerObservations: [], voiceComposerTranscriptHistory: [],
   snippetMacros: typeof window !== "undefined" ? loadMacros() : DEFAULT_SNIPPET_MACROS, macroEditorOpen: false, editingMacro: null, activeMacroPrompt: null,
   signOffProfiles: typeof window !== "undefined" ? loadProfiles() : DEFAULT_SIGN_OFF_PROFILES, preloadTriggered: false,
   reportingContext: EMPTY_REPORTING_STUDY_CONTEXT,
@@ -470,6 +480,8 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       recommendationText: get().recommendationText,
       fieldProvenance: { ...get().fieldProvenance },
       appliedPathologyPatches: get().appliedPathologyPatches.map((p) => ({ ...p })),
+      voiceComposerObservations: [...get().voiceComposerObservations],
+      voiceComposerTranscriptHistory: [...get().voiceComposerTranscriptHistory],
     };
     const result = overlayPathology({
       existing: narrativeFromState(get()),
@@ -514,11 +526,55 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       recommendationText: snap.recommendationText,
       fieldProvenance: snap.fieldProvenance,
       appliedPathologyPatches: snap.appliedPathologyPatches,
+      voiceComposerObservations: snap.voiceComposerObservations ?? [],
+      voiceComposerTranscriptHistory: snap.voiceComposerTranscriptHistory ?? [],
       lastPatchSnapshot: null,
       isDirty: true,
     });
     return true;
   },
+  applyVoiceComposerPlan: (plan, transcript, opts?: { force?: boolean }) => {
+    const snap: PatchSnapshot = {
+      clinicalHistoryText: get().clinicalHistoryText,
+      techniqueText: get().techniqueText,
+      findingsText: get().findingsText,
+      impressionText: get().impressionText,
+      recommendationText: get().recommendationText,
+      fieldProvenance: { ...get().fieldProvenance },
+      appliedPathologyPatches: get().appliedPathologyPatches.map((p) => ({ ...p })),
+      voiceComposerObservations: [...get().voiceComposerObservations],
+      voiceComposerTranscriptHistory: [...get().voiceComposerTranscriptHistory],
+    };
+    const result = applyChangePlan({
+      narrative: narrativeFromState(get()),
+      provenance: get().fieldProvenance,
+      plan,
+      activeObservations: get().voiceComposerObservations,
+      force: opts?.force,
+    });
+    if (!result.ok || !result.narrative || !result.provenance) {
+      return "blocked";
+    }
+    set({
+      clinicalHistoryText: result.narrative.clinicalHistory,
+      techniqueText: result.narrative.technique,
+      findingsText: result.narrative.findings,
+      impressionText: result.narrative.impression,
+      recommendationText: result.narrative.recommendation,
+      fieldProvenance: result.provenance,
+      isDirty: true,
+      lastPatchSnapshot: snap,
+      voiceComposerObservations: result.activeObservations ?? [],
+      voiceComposerTranscriptHistory: transcript
+        ? [...get().voiceComposerTranscriptHistory, transcript]
+        : get().voiceComposerTranscriptHistory,
+    });
+    return "applied";
+  },
+  clearVoiceComposerSession: () => set({
+    voiceComposerObservations: [],
+    voiceComposerTranscriptHistory: [],
+  }),
   relateralizePatches: (side) => {
     const patches = get().appliedPathologyPatches;
     if (!patches.length) return;

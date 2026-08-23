@@ -76,7 +76,7 @@ describe("institutionalReportStyle", () => {
       headerRuleColor: "navy",
     });
     expect(css).toContain("Georgia");
-    expect(css).toContain("font-size: 15.5px");
+    expect(css).toContain("font-size: 16px");
     expect(css).toContain("line-height: 1.7");
     expect(css).toContain("flex-direction: row-reverse");
     expect(css).toContain("justify-content: center");

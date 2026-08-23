@@ -337,11 +337,19 @@ export function AiReportingPanel() {
     primaryUrl: "http://172.16.1.140:11434",
     fallbackUrl: "",
     model: "qwen3-vl:8b",
+    composerModel: "",
+    composerFallbackModel: "",
+    composerNumCtx: 4096,
+    composerTemperature: 0.1,
+    composerTimeoutSeconds: 45,
+    knownModels: [] as string[],
     enabled: false,
     localOnly: true,
     timeoutSeconds: 30,
     auditEnabled: true,
   });
+  const [composerTestStatus, setComposerTestStatus] = useState<"idle" | "testing" | "ok" | "fail">("idle");
+  const [composerTestMsg, setComposerTestMsg] = useState("");
   const [localAiTestStatus, setLocalAiTestStatus] = useState<"idle" | "testing" | "ok" | "fail">("idle");
   const [localAiTestMsg, setLocalAiTestMsg] = useState("");
   const [localAiProbing, setLocalAiProbing] = useState(false);
@@ -384,11 +392,41 @@ export function AiReportingPanel() {
         setLocalAiTestMsg(
           `Connected to ${r.endpointUsed ?? localAi.primaryUrl} · model ${r.model ?? localAi.model} · ${r.models?.length ?? 0} models available.`,
         );
+        if (r.models?.length) {
+          setLocalAi((s) => ({ ...s, knownModels: r.models! }));
+        }
       } else {
         setLocalAiTestStatus("fail"); setLocalAiTestMsg(r.error ?? r.message ?? "Failed");
       }
     } catch (e: unknown) {
       setLocalAiTestStatus("fail"); setLocalAiTestMsg(e instanceof Error ? e.message : "Failed");
+    }
+  }
+
+  async function handleComposerTest() {
+    setComposerTestStatus("testing");
+    setComposerTestMsg("");
+    try {
+      const r = await api.post<{
+        ok: boolean;
+        error?: string;
+        model?: string;
+        schemaValid?: boolean;
+        latencyMs?: number;
+        changePlan?: unknown;
+      }>("/api/radiology/voice-report-composer/test", {
+        model: localAi.composerModel || undefined,
+      });
+      if (r.ok) {
+        setComposerTestStatus("ok");
+        setComposerTestMsg(`Schema valid · ${r.latencyMs ?? 0}ms · model ${r.model ?? localAi.composerModel}`);
+      } else {
+        setComposerTestStatus("fail");
+        setComposerTestMsg(r.error ?? "Test failed");
+      }
+    } catch (e: unknown) {
+      setComposerTestStatus("fail");
+      setComposerTestMsg(e instanceof Error ? e.message : "Test failed");
     }
   }
 
@@ -403,10 +441,14 @@ export function AiReportingPanel() {
         ollamaLocalOnly: localAi.localOnly,
         ollamaTimeoutSeconds: localAi.timeoutSeconds,
         ollamaAuditEnabled: localAi.auditEnabled,
+        ollamaComposerModel: localAi.composerModel || null,
+        ollamaComposerFallbackModel: localAi.composerFallbackModel || null,
+        ollamaComposerNumCtx: localAi.composerNumCtx,
+        ollamaComposerTemperature: localAi.composerTemperature,
+        ollamaComposerTimeoutSeconds: localAi.composerTimeoutSeconds,
       });
-      // Keep the shared clinic-settings cache in sync — RadiologySettingsCenter
-      // and any other consumer read from the same ["clinic-settings"] query key.
       void queryClient.invalidateQueries({ queryKey: ["clinic-settings"] });
+      void queryClient.invalidateQueries({ queryKey: ["voice-composer-config"] });
       toast({ title: "Local AI settings saved" });
     } catch (e: unknown) {
       toast({ title: "Save failed", description: e instanceof Error ? e.message : "Error", variant: "destructive" });
@@ -475,6 +517,12 @@ export function AiReportingPanel() {
     const cs = clinicSettingsData as {
       ollamaBaseUrl?: string | null; ollamaFallbackUrl?: string | null; ollamaModel?: string | null;
       ollamaEnabled?: boolean; ollamaLocalOnly?: boolean; ollamaTimeoutSeconds?: number; ollamaAuditEnabled?: boolean;
+      ollamaKnownModels?: string;
+      ollamaComposerModel?: string | null;
+      ollamaComposerFallbackModel?: string | null;
+      ollamaComposerNumCtx?: number;
+      ollamaComposerTemperature?: string | number;
+      ollamaComposerTimeoutSeconds?: number;
     };
     const rawModel = (cs.ollamaModel ?? localAi.model ?? "").trim();
     const model =
@@ -486,6 +534,19 @@ export function AiReportingPanel() {
       primaryUrl: cs.ollamaBaseUrl ?? s.primaryUrl,
       fallbackUrl: cs.ollamaFallbackUrl ?? s.fallbackUrl,
       model,
+      composerModel: cs.ollamaComposerModel ?? s.composerModel,
+      composerFallbackModel: cs.ollamaComposerFallbackModel ?? s.composerFallbackModel,
+      composerNumCtx: cs.ollamaComposerNumCtx ?? s.composerNumCtx,
+      composerTemperature: Number(cs.ollamaComposerTemperature ?? s.composerTemperature),
+      composerTimeoutSeconds: cs.ollamaComposerTimeoutSeconds ?? s.composerTimeoutSeconds,
+      knownModels: (() => {
+        try {
+          const parsed = JSON.parse(cs.ollamaKnownModels ?? "[]");
+          return Array.isArray(parsed) ? parsed.map(String) : s.knownModels;
+        } catch {
+          return s.knownModels;
+        }
+      })(),
       enabled: cs.ollamaEnabled ?? s.enabled,
       localOnly: cs.ollamaLocalOnly ?? s.localOnly,
       timeoutSeconds: cs.ollamaTimeoutSeconds ?? s.timeoutSeconds,
@@ -773,13 +834,16 @@ export function AiReportingPanel() {
             <h3 className="text-sm font-semibold flex items-center gap-2"><BrainCircuit size={14} /> Model & Options</h3>
 
             <div className="space-y-1.5">
-              <label className="text-xs font-semibold text-muted-foreground">Local chat/vision model (canonical)</label>
+              <label className="text-xs font-semibold text-muted-foreground">Vision / image model (overnight MRI, OCR vision)</label>
               <select
                 value={localAi.model}
                 onChange={(e) => setLocalAi((s) => ({ ...s, model: e.target.value }))}
                 className="w-full h-9 px-3 text-xs rounded-lg border bg-background font-mono"
               >
-                <option value="qwen3-vl:8b">qwen3-vl:8b — ONLY local chat/vision model (overnight, OCR, radiology)</option>
+                <option value="qwen3-vl:8b">qwen3-vl:8b — canonical vision model</option>
+                {localAi.knownModels.filter((m) => m !== "qwen3-vl:8b").map((m) => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
               </select>
               <input
                 type="text"
@@ -789,9 +853,62 @@ export function AiReportingPanel() {
                 className="w-full h-9 px-3 text-xs rounded-lg border bg-background font-mono"
               />
               <p className="text-[10px] text-muted-foreground">
-                Until architecture is stable, overnight MRI, OCR vision, Local AI panel, and Test Connection all use this same model via <code className="bg-muted px-1 rounded">resolveLocalAiRuntime()</code>.
-                Embeddings stay on <code className="bg-muted px-1 rounded">nomic-embed-text</code>. Paddle OCR is separate.
-                Diagnostics: <code className="bg-muted px-1 rounded">GET /api/ai-pipeline/health</code>
+                Overnight MRI, OCR vision, and Local AI panel use this model via <code className="bg-muted px-1 rounded">resolveLocalAiRuntime()</code>.
+                Does not change Report Composer.
+              </p>
+            </div>
+
+            <div className="space-y-1.5 border-t pt-4">
+              <label className="text-xs font-semibold text-muted-foreground">Report Composer model (voice dictation)</label>
+              <select
+                value={localAi.composerModel}
+                onChange={(e) => setLocalAi((s) => ({ ...s, composerModel: e.target.value }))}
+                className="w-full h-9 px-3 text-xs rounded-lg border bg-background font-mono"
+              >
+                <option value="">— Select installed model —</option>
+                {localAi.knownModels.map((m) => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+              </select>
+              <input
+                type="text"
+                value={localAi.composerModel}
+                onChange={(e) => setLocalAi((s) => ({ ...s, composerModel: e.target.value }))}
+                placeholder="e.g. qwen2.5:14b-instruct"
+                className="w-full h-9 px-3 text-xs rounded-lg border bg-background font-mono"
+              />
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-[10px] text-muted-foreground">Fallback model</label>
+                  <input
+                    type="text"
+                    value={localAi.composerFallbackModel}
+                    onChange={(e) => setLocalAi((s) => ({ ...s, composerFallbackModel: e.target.value }))}
+                    className="w-full h-8 px-2 text-xs rounded border bg-background font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] text-muted-foreground">Context (num_ctx)</label>
+                  <input
+                    type="number"
+                    min={2048}
+                    max={8192}
+                    step={512}
+                    value={localAi.composerNumCtx}
+                    onChange={(e) => setLocalAi((s) => ({ ...s, composerNumCtx: Number(e.target.value) }))}
+                    className="w-full h-8 px-2 text-xs rounded border bg-background"
+                  />
+                </div>
+              </div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <Button size="sm" variant="outline" className="h-7 text-xs gap-1" onClick={() => void handleComposerTest()}>
+                  <TestTube2 size={12} /> Test Composer
+                </Button>
+                {composerTestStatus === "ok" && <span className="text-xs text-green-600 flex items-center gap-1"><CheckCircle2 size={12} /> {composerTestMsg}</span>}
+                {composerTestStatus === "fail" && <span className="text-xs text-red-600 flex items-center gap-1"><XCircle size={12} /> {composerTestMsg}</span>}
+              </div>
+              <p className="text-[10px] text-muted-foreground">
+                Text-only report composition for voice dictation. Separate from vision model. Low temperature recommended.
               </p>
             </div>
 

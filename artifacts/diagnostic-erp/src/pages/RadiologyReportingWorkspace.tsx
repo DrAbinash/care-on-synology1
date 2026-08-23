@@ -136,6 +136,7 @@ import ComparisonPanel from "@/components/radiology/ComparisonPanel";
 import FollowUpPanel from "@/components/radiology/FollowUpPanel";
 import FinalizeSignDialog from "@/components/radiology/FinalizeSignDialog";
 import VoiceCommandBar from "@/components/radiology/VoiceCommandBar";
+import { useVoiceComposer } from "@/hooks/useVoiceComposer";
 import FieldCareMic from "@/components/radiology/FieldCareMic";
 import QuickFindingsPanel, { type QuickFinding } from "@/components/radiology/QuickFindingsPanel";
 import {
@@ -582,6 +583,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     }, 50);
   }, [activateReportSection]);
 
+  const voiceComposerComposeRef = useRef<(text: string, genImp?: boolean) => Promise<void>>(async () => {});
+
   const executeVoiceCommand = useCallback((parse: ParsedVoiceCommand): VoiceExecutionResult => {
     const intent = parse.intent;
     if (!intent) return { ok: false, message: "Nothing to execute" };
@@ -670,6 +673,10 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     }
 
     if (intent.type === "workflow") {
+      if (intent.command === "generate-impression") {
+        void voiceComposerComposeRef.current("generate impression", true);
+        return { ok: true, message: "Composing impression preview…" };
+      }
       if (intent.command === "park") voiceParkReasonRef.current = intent.reason ?? "";
       if (intent.command === "focus-findings") {
         focusReportField("findings");
@@ -1068,6 +1075,61 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     setters: studySetupSetters,
     onToast: (opts) => toast({ title: opts.title, description: opts.description, variant: opts.variant }),
   });
+
+  const { data: composerConfig } = useQuery<{ enabled: boolean; composerModel?: string }>({
+    queryKey: ["voice-composer-config"],
+    queryFn: () => api.get("/api/radiology/voice-report-composer/config"),
+    staleTime: 60_000,
+  });
+
+  const protectedQuickLabels = useMemo(() => {
+    const ids = selectedQuickIds;
+    return quickFindingTemplatesRef.current
+      .filter((f) => ids.has(f.id))
+      .map((f) => f.label);
+  }, [selectedQuickIds]);
+
+  const voiceComposer = useVoiceComposer({
+    enabled: composerConfig?.enabled ?? false,
+    modality: workflow.currentRow?.modality,
+    region: studySetup.matchedStudyRegion ?? studySetup.studyRegions[0],
+    reportTitle: workflow.currentRow?.studyDescription,
+    protectedQuickFindingLabels: protectedQuickLabels,
+  });
+
+  voiceComposerComposeRef.current = async (text, genImp) => {
+    await voiceComposer.compose(text, genImp);
+  };
+
+  useEffect(() => {
+    const pending = voiceSession.pending;
+    if (!composerConfig?.enabled || !pending?.editableText) return;
+    const intent = pending.parse.intent;
+    if (intent?.type !== "dictate" || intent.target !== "findings") return;
+    if (voiceComposer.preview?.transcript === pending.editableText) return;
+    void voiceComposer.compose(pending.editableText);
+  }, [
+    composerConfig?.enabled,
+    voiceSession.pending?.editableText,
+    voiceSession.pending?.parse.intent,
+    voiceComposer.preview?.transcript,
+  ]);
+
+  const applyVoiceComposerWithUndo = useCallback((force?: boolean) => {
+    const applied = voiceComposer.applyPreview(force ?? voiceComposer.preview?.hasConflicts ?? false);
+    if (applied) {
+      voiceSession.cancel();
+    }
+    return applied;
+  }, [voiceComposer, voiceSession]);
+
+  const insertRawDictation = useCallback(() => {
+    const text = voiceComposer.preview?.transcript ?? voiceSession.pending?.editableText ?? "";
+    if (!text.trim()) return;
+    useWorkspace.getState().mergeField("findings", text, "radiologist-voice");
+    voiceComposer.discardPreview();
+    voiceSession.cancel();
+  }, [voiceComposer, voiceSession]);
 
   const acceptStructuredImpressionCandidate = useCallback((text: string) => {
     const trimmed = text.trim();
@@ -2641,7 +2703,20 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
             <span className="text-emerald-600 font-semibold">{completedCount} signed</span>
           </div>
           {/* Existing VoiceCommandBar */}
-          {voiceSession.enabled && <VoiceCommandBar voice={voiceSession} embedded />}
+          {voiceSession.enabled && (
+            <VoiceCommandBar
+              voice={voiceSession}
+              embedded
+              composerPreview={voiceComposer.preview}
+              composerComposing={voiceComposer.composing}
+              composerError={voiceComposer.error}
+              phraseFallbackAvailable={voiceComposer.phraseFallbackAvailable}
+              onComposerApply={applyVoiceComposerWithUndo}
+              onComposerDiscard={voiceComposer.discardPreview}
+              onComposerPhraseFallback={() => void voiceComposer.requestPhraseFallback()}
+              onComposerEditRaw={insertRawDictation}
+            />
+          )}
           {/* Save button */}
           <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => void saveDraft()} disabled={!isOnline}>
             <Save className="h-3.5 w-3.5 mr-1" /> Save
