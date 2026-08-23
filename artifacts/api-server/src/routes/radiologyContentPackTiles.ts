@@ -19,7 +19,7 @@ import { Router, type Request, type Response } from "express";
 import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { join, basename, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import yaml from "js-yaml";
+import { parse as parseYaml } from "yaml";
 
 const router = Router();
 
@@ -99,7 +99,7 @@ function loadYamlPacks(): LoadedYamlPack[] {
   for (const file of files) {
     try {
       const raw = readFileSync(join(SEEDS_DIR, file), "utf-8");
-      const parsed = yaml.load(raw) as any;
+      const parsed = parseYaml(raw) as any;
       if (!parsed?.pack?.pack_id || !parsed?.findings) continue;
       packs.push({
         packId: parsed.pack.pack_id,
@@ -135,7 +135,7 @@ function loadSharedTemplates(): SharedTemplates {
   if (!existsSync(sharedFile)) return empty;
   try {
     const raw = readFileSync(sharedFile, "utf-8");
-    const parsed = yaml.load(raw) as any;
+    const parsed = parseYaml(raw) as any;
     const technique: SharedTemplates["technique"] = [];
     const clinicalDetails: SharedTemplates["clinicalDetails"] = [];
 
