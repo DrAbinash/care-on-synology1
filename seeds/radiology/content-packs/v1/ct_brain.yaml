@@ -35,7 +35,7 @@ findings:
     severity: null
     laterality: null
     measurements: []
-    keyboard_alias: [nct]
+    keyboard_aliases: [nct]
     combo_tiles: [combo.ctbr.trauma_neg]
     criticality: none
     normal_variant: true
@@ -53,9 +53,9 @@ findings:
     parameters: [param.size]
     severity: null
     laterality: lat.rlb
-    location_options: [loc.brain_sites]
+    location: [loc.brain_sites]
     measurements: [meas.abc2_volume, meas.midline_shift]
-    keyboard_alias: [ich]
+    keyboard_aliases: [ich]
     combo_tiles: []
     criticality: {critical: crit.ich}
     normal_variant: false
@@ -76,9 +76,9 @@ findings:
     parameters: [param.course]
     severity: null
     laterality: lat.rlb
-    location_options: [loc.brain_sites]
+    location: [loc.brain_sites]
     measurements: [meas.sdh_thickness, meas.midline_shift]
-    keyboard_alias: [sdh]
+    keyboard_aliases: [sdh]
     combo_tiles: [combo.ctbr.sdh_emergency]
     criticality: {critical: crit.sdh_edh}
     normal_variant: false
@@ -98,9 +98,9 @@ findings:
     parameters: []
     severity: null
     laterality: lat.rl
-    location_options: [loc.brain_sites]
+    location: [loc.brain_sites]
     measurements: [meas.sdh_thickness, meas.midline_shift]
-    keyboard_alias: [edh]
+    keyboard_aliases: [edh]
     combo_tiles: []
     criticality: {critical: crit.sdh_edh}
     normal_variant: false
@@ -119,9 +119,9 @@ findings:
     parameters: []
     severity: null
     laterality: null
-    location_options: [["sulci", "basal cisterns", "sylvian fissures", "interhemispheric fissure"]]
+    location: [["sulci", "basal cisterns", "sylvian fissures", "interhemispheric fissure"]]
     measurements: []
-    keyboard_alias: [sah]
+    keyboard_aliases: [sah]
     combo_tiles: []
     criticality: {critical: crit.ich}
     normal_variant: false
@@ -139,9 +139,9 @@ findings:
     parameters: [param.count, param.edema]
     severity: null
     laterality: lat.rlb
-    location_options: [loc.brain_sites]
+    location: [loc.brain_sites]
     measurements: [meas.midline_shift]
-    keyboard_alias: [con]
+    keyboard_aliases: [con]
     combo_tiles: [combo.ctbr.contusion_set]
     criticality: {critical: crit.ich}
     normal_variant: false
@@ -159,9 +159,9 @@ findings:
     parameters: []
     severity: null
     laterality: lat.rl
-    location_options: [loc.skull_bones]
+    location: [loc.skull_bones]
     measurements: []
-    keyboard_alias: [fx]
+    keyboard_aliases: [fx]
     combo_tiles: [combo.ctbr.contusion_set]
     criticality: significant
     normal_variant: false
@@ -179,9 +179,9 @@ findings:
     parameters: []
     severity: null
     laterality: lat.rl
-    location_options: [loc.vascular_territory]
+    location: [loc.vascular_territory]
     measurements: []
-    keyboard_alias: [inf]
+    keyboard_aliases: [inf]
     combo_tiles: [combo.ctbr.stroke_ct]
     criticality: {critical_if: "large territory", registry: crit.large_infarct}
     normal_variant: false
@@ -199,9 +199,9 @@ findings:
     parameters: []
     severity: null
     laterality: lat.rlb
-    location_options: [loc.brain_sites, loc.vascular_territory]
+    location: [loc.brain_sites, loc.vascular_territory]
     measurements: []
-    keyboard_alias: [cinf]
+    keyboard_aliases: [cinf]
     combo_tiles: []
     criticality: none
     normal_variant: false
@@ -219,7 +219,7 @@ findings:
     severity: null
     laterality: null
     measurements: []
-    keyboard_alias: [ede]
+    keyboard_aliases: [ede]
     combo_tiles: []
     criticality: {critical: crit.diffuse_edema}
     normal_variant: false
@@ -237,7 +237,7 @@ findings:
     severity: null
     laterality: lat.rl
     measurements: [meas.midline_shift]
-    keyboard_alias: [mls]
+    keyboard_aliases: [mls]
     combo_tiles: [combo.ctbr.sdh_emergency]
     criticality: {critical_if: ">= 5 mm", registry: crit.midline_shift}
     normal_variant: false
@@ -256,7 +256,7 @@ findings:
     severity: sev.hydro
     laterality: null
     measurements: [meas.evans_index]
-    keyboard_alias: [hcp]
+    keyboard_aliases: [hcp]
     combo_tiles: []
     criticality: significant
     normal_variant: false
@@ -274,7 +274,7 @@ findings:
     severity: null
     laterality: null
     measurements: []
-    keyboard_alias: [atr]
+    keyboard_aliases: [atr]
     combo_tiles: []
     criticality: none
     normal_variant: false
@@ -291,9 +291,9 @@ findings:
     parameters: [param.count]
     severity: null
     laterality: null
-    location_options: [loc.brain_sites]
+    location: [loc.brain_sites]
     measurements: []
-    keyboard_alias: [gran]
+    keyboard_aliases: [gran]
     combo_tiles: []
     criticality: none
     normal_variant: false
@@ -310,9 +310,9 @@ findings:
     parameters: []
     severity: null
     laterality: lat.rlb
-    location_options: [loc.pns_sinuses]
+    location: [loc.pns_sinuses]
     measurements: []
-    keyboard_alias: [mast]
+    keyboard_aliases: [mast]
     combo_tiles: []
     criticality: none
     normal_variant: false

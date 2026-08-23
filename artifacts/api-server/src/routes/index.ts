@@ -119,6 +119,8 @@ import { measurementRegistryRouter } from "./measurementRegistry";
 import { pathologyRegistryRouter } from "./pathologyRegistry";
 import radiologyQuickFindingsRouter from "./radiologyQuickFindings";
 import radiologyCatalogRouter from "./radiologyCatalog";
+import radiologyContentPackTilesRouter from "./radiologyContentPackTiles";
+import radiologyWhisperProxyRouter from "./radiologyWhisperProxy";
 import { db, clinicSettingsTable, ledgersTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { backupLimiter, exportLimiter, adminMutationLimiter, standardUploadLimiter, loginLimiter, generalLimiter, n8nAutomationLimiter } from "../middleware/rateLimits";
@@ -907,6 +909,23 @@ router.use(
   requireStaffAuth,
   requireStaffPermission("/radiology"),
   radiologyCatalogRouter,
+);
+
+// Radiology Content Pack Tiles — serves YAML content-pack findings as QuickSelectTiles
+// to the reporting workspace. NOT gated behind ff_radiology_catalog — reads seed YAML.
+router.use(
+  "/radiology/content-pack-tiles",
+  requireStaffAuth,
+  requireStaffPermission("/radiology"),
+  radiologyContentPackTilesRouter,
+);
+
+// Radiology Whisper Proxy — local STT for air-gapped deployments
+router.use(
+  "/radiology/whisper",
+  requireStaffAuth,
+  requireStaffPermission("/radiology"),
+  radiologyWhisperProxyRouter,
 );
 
 // Radiology Snippets — Quick Add, Smart Format, Favorites, Macros

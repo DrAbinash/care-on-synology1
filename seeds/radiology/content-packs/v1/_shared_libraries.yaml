@@ -152,6 +152,30 @@ normal_templates:
     are normal in size and echotexture with preserved corticomedullary differentiation; no
     calculus or hydronephrosis. Urinary bladder is normal. No free fluid or lymphadenopathy.
 
+# ── Technique templates ────────────────────────────────────────────────────────
+technique_templates:
+  tpl.technique.mri_brain: >-
+    MRI brain performed on {scanner_strength} scanner. Sequences: T1W, T2W, FLAIR, DWI, ADC, SWI.
+    Slice thickness: 5 mm. Contrast: {contrast_details}.
+  tpl.technique.mri_ls_spine: >-
+    MRI lumbo-sacral spine on {scanner_strength} scanner. Sagittal T1W, T2W; Axial T1W, T2W.
+    Slice thickness: 4 mm.
+  tpl.technique.ct_brain: >-
+    Non-contrast CT brain on {scanner_type}-slice scanner. Slice thickness: 5 mm.
+  tpl.technique.usg_abdomen: >-
+    Ultrasound abdomen on {scanner_model} with convex transducer (3-6 MHz). Patient supine.
+  tpl.technique.cxr: >-
+    Digital radiograph. PA view erect at full inspiration. {additional_views}.
+
+# ── Clinical details templates ────────────────────────────────────────────────
+clinical_details_templates:
+  tpl.clinical.mri_brain_headache: "Chronic headache. No history of trauma or focal deficit."
+  tpl.clinical.mri_brain_stroke: "Sudden onset {side}-sided weakness. Suspected acute stroke."
+  tpl.clinical.mri_ls_spine_backache: "Lower back pain with radiculopathy {side} lower limb."
+  tpl.clinical.ct_brain_trauma: "History of trauma. Loss of consciousness / vomiting / seizures."
+  tpl.clinical.usg_abdomen_pain: "Right upper quadrant pain. Suspected gallstone disease."
+  tpl.clinical.cxr_cough: "Cough with fever. Suspected respiratory infection."
+
 alias_rules:
   max_length: 4
   unique_within: study

@@ -5,6 +5,104 @@ const now = () => new Date().toISOString();
 const uid = () => `qs_${Date.now().toString(36)}_${Math.random().toString(36).slice(2,7)}`;
 function t(f: QuickSelectField, l: string, s: string, o: Partial<QuickSelectTile> = {}): QuickSelectTile { return { id: uid(), field: f, label: l, sentence: s, category: "normal", createdAt: now(), updatedAt: now(), ...o }; }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Content-pack tile merging — fetches per-study YAML content-pack tiles from the
+// backend and merges them with the hardcoded defaults below. The catalog tiles
+// take precedence (they're clinically authored per-study), but user-customized
+// tiles (saved in localStorage) always win.
+//
+// The fetch is lazy and cached for 5 minutes. On failure, falls back to defaults.
+// ─────────────────────────────────────────────────────────────────────────────
+let catalogTilesCache: QuickSelectTile[] | null = null;
+let catalogTilesFetchPromise: Promise<QuickSelectTile[]> | null = null;
+const CATALOG_CACHE_TTL_MS = 5 * 60 * 1000;
+let catalogFetchAt = 0;
+
+interface CatalogTileResponse {
+  tiles: Array<{
+    id: string; field: string; scopeModality?: string; scopeBodyPart?: string;
+    label: string; mnemonic?: string; category: string; sentence: string;
+    impressionSentence?: string; packId?: string; findingId?: string;
+  }>;
+  count: number;
+  packCount: number;
+}
+
+async function fetchCatalogTiles(): Promise<QuickSelectTile[]> {
+  if (catalogTilesCache && Date.now() - catalogFetchAt < CATALOG_CACHE_TTL_MS) {
+    return catalogTilesCache;
+  }
+  if (catalogTilesFetchPromise) return catalogTilesFetchPromise;
+  catalogTilesFetchPromise = (async () => {
+    try {
+      const res = await fetch("/api/radiology/content-pack-tiles", { credentials: "include" });
+      if (!res.ok) return catalogTilesCache || [];
+      const data: CatalogTileResponse = await res.json();
+      catalogTilesCache = (data.tiles || []).map((t) => ({
+        id: t.id,
+        field: t.field as QuickSelectField,
+        scopeModality: t.scopeModality as Modality | undefined,
+        scopeBodyPart: t.scopeBodyPart,
+        label: t.label,
+        mnemonic: t.mnemonic,
+        category: (t.category as "normal" | "abnormal" | "variant" | "critical") || "normal",
+        sentence: t.sentence,
+        impressionSentence: t.impressionSentence,
+        createdAt: now(),
+        updatedAt: now(),
+        // Mark as catalog-sourced so the UI can show a badge if needed
+        custom: false,
+      }));
+      catalogFetchAt = Date.now();
+      return catalogTilesCache;
+    } catch {
+      // Network error or server not ready — fall back to defaults silently
+      return catalogTilesCache || [];
+    } finally {
+      catalogTilesFetchPromise = null;
+    }
+  })();
+  return catalogTilesFetchPromise;
+}
+
+/**
+ * Get all tiles: user-saved (localStorage) merged with catalog tiles merged
+ * with defaults. User tiles take precedence, then catalog tiles, then defaults.
+ */
+export async function getAllTilesWithCatalog(): Promise<QuickSelectTile[]> {
+  const [userTiles, catalogTiles] = await Promise.all([
+    Promise.resolve(loadTiles()),
+    fetchCatalogTiles(),
+  ]);
+  // Deduplicate by label+field — user tiles win, then catalog, then defaults.
+  // We don't dedupe defaults against catalog by label because the catalog tiles
+  // have richer content (impression fragments, AI rules) and should replace
+  // the simpler hardcoded ones for the same study type.
+  const seen = new Set<string>();
+  const merged: QuickSelectTile[] = [];
+  // User tiles first (highest priority)
+  for (const t of userTiles) {
+    const key = `${t.field}:${t.label.toLowerCase()}`;
+    if (!seen.has(key)) { seen.add(key); merged.push(t); }
+  }
+  // Catalog tiles next
+  for (const t of catalogTiles) {
+    const key = `${t.field}:${t.label.toLowerCase()}`;
+    if (!seen.has(key)) { seen.add(key); merged.push(t); }
+  }
+  // Defaults last (lowest priority — only fill gaps not covered by catalog)
+  for (const t of DEFAULT_QUICK_SELECT_TILES) {
+    const key = `${t.field}:${t.label.toLowerCase()}`;
+    if (!seen.has(key)) { seen.add(key); merged.push(t); }
+  }
+  return merged;
+}
+
+/** Prefetch catalog tiles so they're warm when the workspace mounts. */
+export function prefetchCatalogTiles(): void {
+  void fetchCatalogTiles();
+}
+
 export const DEFAULT_QUICK_SELECT_TILES: QuickSelectTile[] = [
   t("clinicalHistory","Standard H&P","Patient presents with [symptom] for [duration]. No relevant past medical history.",{mnemonic:"hp"}),
   t("clinicalHistory","Trauma","History of trauma. Patient complains of pain and swelling at the site of injury.",{mnemonic:"tr"}),

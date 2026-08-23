@@ -8,6 +8,85 @@ export type Criticality = "normal" | "mild" | "moderate" | "severe" | "critical"
 export interface Patient { id: string; name: string; age: number; sex: "M" | "F" | "O"; uhid: string; phone?: string; referringDoctor: string; }
 export interface Study { id: string; accession: string; studyInstanceUID: string; patient: Patient; modality: Modality; bodyPart: string; studyDescription: string; clinicalHistory: string; status: StudyStatus; priority: Priority; receivedAt: string; lockedBy?: string; lockExpiresAt?: string; priorCount: number; criticalFlag: boolean; aiDraftReady: boolean; tatMinutes: number; slaMinutes: number; series: number; images: number; }
 export interface LintIssue { line: number; column: number; severity: "error" | "warning" | "info"; code: string; message: string; ruleId: string; fix?: string; }
+
+// ── Per-study AI rules from content packs ────────────────────────────────────
+// These are loaded from the YAML content packs and fed to runLintRules so the
+// gutter marks (◌ △ ✕) fire per-study rules like "PNS/orbits not commented"
+// or "acute infarct stated without diffusion descriptor" instead of just the
+// 4 generic hardcoded rules.
+
+export interface StudyCompletenessRule {
+  id: string;
+  glyph: "circle"; // ◌ — non-blocking nudge
+  rule: string;    // plain-English description (e.g. "PNS/orbits not commented")
+  message: string; // what to show in the gutter tooltip
+  /** Optional: only fire if this keyword is ABSENT from the text */
+  requiresAbsent?: string[];
+  /** Optional: only fire if this keyword IS present in the text */
+  requiresPresent?: string[];
+}
+
+export interface StudyContradictionRule {
+  id: string;
+  severity: "block" | "warn"; // ✕ block or △ warn
+  glyph: "X" | "triangle";
+  rule: string;
+  message: string;
+  /** Optional: fire if these keywords are ALL present */
+  requiresAll?: string[];
+  /** Optional: fire if any of these keywords are present */
+  requiresAny?: string[];
+  /** Optional: fire if ALL of these are absent */
+  requiresAbsent?: string[];
+}
+
+export interface StudyAiRules {
+  studyId: string;
+  completenessRules: StudyCompletenessRule[];
+  contradictionRules: StudyContradictionRule[];
+}
+
+// Cache of per-study rules loaded from the content-pack tiles API
+let studyRulesCache: Map<string, StudyAiRules> | null = null;
+
+/**
+ * Fetch per-study AI rules from the content-pack tiles endpoint.
+ * The rules are carried on each PackTile as completenessRules / contradictionRules.
+ * Cached for 5 minutes.
+ */
+export async function fetchStudyAiRules(modality?: string, bodyPart?: string): Promise<StudyAiRules[]> {
+  if (studyRulesCache && studyRulesCache.size > 0) return Array.from(studyRulesCache.values());
+  try {
+    const qs = new URLSearchParams();
+    if (modality) qs.set("modality", modality);
+    const res = await fetch(`/api/radiology/content-pack-tiles?${qs}`, { credentials: "include" });
+    if (!res.ok) return [];
+    const data = await res.json();
+    const rules: StudyAiRules[] = [];
+    const byPack = new Map<string, { completeness: StudyCompletenessRule[]; contradiction: StudyContradictionRule[] }>();
+    for (const tile of data.tiles || []) {
+      // The tile carries completenessRules/contradictionRules from the YAML finding
+      if (tile.completenessRules?.length || tile.contradictionRules?.length) {
+        const packId = tile.packId || "default";
+        if (!byPack.has(packId)) byPack.set(packId, { completeness: [], contradiction: [] });
+        const entry = byPack.get(packId)!;
+        if (tile.completenessRules) entry.completeness.push(...tile.completenessRules);
+        if (tile.contradictionRules) entry.contradiction.push(...tile.contradictionRules);
+      }
+    }
+    for (const [packId, { completeness, contradiction }] of byPack) {
+      rules.push({
+        studyId: packId,
+        completenessRules: completeness,
+        contradictionRules: contradiction,
+      });
+    }
+    studyRulesCache = new Map(rules.map(r => [r.studyId, r]));
+    return rules;
+  } catch {
+    return [];
+  }
+}
 export interface CopilotItem { id: string; kind: "critical" | "contradiction" | "suggestion" | "missing" | "measurement" | "recommendation" | "differential" | "ai-draft"; title: string; detail: string; insertText?: string; confidence: "low" | "medium" | "high"; band?: "routine" | "worth-a-look" | "attention"; source: string; }
 export interface PriorStudy { id: string; date: string; modality: Modality; description: string; impression: string; compatibilityScore: number; }
 export interface MeasurementRow { id: string; name: string; value: number; unit: string; priorValue?: number; delta?: number; source: "viewer" | "manual" | "ai"; inserted: boolean; }
@@ -48,8 +127,14 @@ export const CRITICAL_PATTERNS: { pattern: RegExp; phrase: string; severity: Cri
 ];
 
 // Lint rules — pure, runnable on every keystroke
-export function runLintRules(text: string, ctx: { modality: Modality; sex: "M" | "F" | "O" | undefined }): LintIssue[] {
+// Now accepts optional per-study rules from the YAML content packs.
+export function runLintRules(
+  text: string,
+  ctx: { modality: Modality; sex: "M" | "F" | "O" | undefined },
+  studyRules?: StudyAiRules[],
+): LintIssue[] {
   const issues: LintIssue[] = [];
+  const fullText = text;
   text.split("\n").forEach((line, idx) => {
     const ln = idx + 1;
     if (ctx.sex === "M" && /\b(uterus|ovary|cervix|endometrium)\b/i.test(line)) issues.push({ line:ln, column:0, severity:"error", code:"SEX_MISMATCH", message:"Female organ mentioned for male patient", ruleId:"laterality.sex-organ", fix:"Verify patient sex" });
@@ -58,6 +143,118 @@ export function runLintRules(text: string, ctx: { modality: Modality; sex: "M" |
     if (/___/.test(line)) { const col = line.indexOf("___"); issues.push({ line:ln, column:col, severity:"warning", code:"UNFILLED_PLACEHOLDER", message:"Measurement placeholder not filled", ruleId:"completeness.placeholder" }); }
     for (const { pattern, phrase } of CRITICAL_PATTERNS) { const m = pattern.exec(line); if (m) { const before = line.slice(Math.max(0,m.index-30), m.index); if (!/no |without |absence of |no evidence of /i.test(before)) { issues.push({ line:ln, column:m.index, severity:"error", code:"CRITICAL_FINDING", message:`Critical finding: ${phrase}`, ruleId:"critical.write-time" }); break; } } }
   });
+
+  // ── Per-study content-pack rules ──────────────────────────────────────────
+  // These fire against the FULL text (not per-line) because completeness rules
+  // like "PNS/orbits not commented" need to check the entire findings section.
+  if (studyRules && studyRules.length > 0) {
+    for (const study of studyRules) {
+      // Completeness rules (◌ — non-blocking nudge, severity "info")
+      for (const rule of study.completenessRules) {
+        const textLower = fullText.toLowerCase();
+        let shouldFire = true;
+        // requiresAbsent: fire only if these keywords are ABSENT
+        if (rule.requiresAbsent) {
+          for (const kw of rule.requiresAbsent) {
+            if (textLower.includes(kw.toLowerCase())) { shouldFire = false; break; }
+          }
+        }
+        // requiresPresent: fire only if these keywords ARE present
+        if (shouldFire && rule.requiresPresent) {
+          for (const kw of rule.requiresPresent) {
+            if (!textLower.includes(kw.toLowerCase())) { shouldFire = false; break; }
+          }
+        }
+        if (shouldFire) {
+          // Parse the plain-English rule for simple keyword-based heuristics
+          // e.g. "PNS/orbits not commented" → fire if "pns" not in text AND "orbit" not in text
+          const ruleText = (rule.rule || "").toLowerCase();
+          if (ruleText.includes("not commented") || ruleText.includes("not mentioned")) {
+            // Extract the subject — e.g. "pns/orbits" from "PNS/orbits not commented"
+            const subjectMatch = ruleText.match(/^([a-z\/\s]+?)\s+not\s+(commented|mentioned)/);
+            if (subjectMatch) {
+              const subjects = subjectMatch[1].split(/[\/\s]+/).filter(s => s.length > 2);
+              const anyPresent = subjects.some(s => textLower.includes(s));
+              if (!anyPresent && fullText.trim().length > 50) {
+                issues.push({
+                  line: 1, column: 0, severity: "info",
+                  code: "STUDY_COMPLETENESS",
+                  message: rule.message,
+                  ruleId: rule.id,
+                  fix: rule.message,
+                });
+              }
+            }
+          }
+        }
+      }
+
+      // Contradiction rules (✕ block or △ warn)
+      for (const rule of study.contradictionRules) {
+        const textLower = fullText.toLowerCase();
+        let shouldFire = true;
+        if (rule.requiresAll) {
+          for (const kw of rule.requiresAll) {
+            if (!textLower.includes(kw.toLowerCase())) { shouldFire = false; break; }
+          }
+        }
+        if (shouldFire && rule.requiresAny) {
+          shouldFire = rule.requiresAny.some(kw => textLower.includes(kw.toLowerCase()));
+        }
+        if (shouldFire && rule.requiresAbsent) {
+          for (const kw of rule.requiresAbsent) {
+            if (textLower.includes(kw.toLowerCase())) { shouldFire = false; break; }
+          }
+        }
+        if (shouldFire) {
+          // Parse the plain-English rule for common contradiction patterns
+          const ruleText = (rule.rule || "").toLowerCase();
+          // "acute infarct" without DWI/ADC descriptor
+          if (ruleText.includes("without dwi") && textLower.includes("acute infarct")) {
+            if (!textLower.includes("dwi") && !textLower.includes("diffusion") && !textLower.includes("adc")) {
+              issues.push({
+                line: 1, column: 0,
+                severity: rule.severity === "block" ? "error" : "warning",
+                code: "STUDY_CONTRADICTION",
+                message: rule.message,
+                ruleId: rule.id,
+              });
+            }
+          }
+          // "any abnormal finding present AND normal-study impression used"
+          if (ruleText.includes("normal-study impression") || ruleText.includes("normal impression")) {
+            const hasAbnormal = /abnormal|hemorrhage|infarct|tumor|mass|lesion|fracture|edema|hydrocephalus/i.test(fullText);
+            const hasNormalImpression = /no acute|normal study|no abnormality|no evidence of/i.test(fullText);
+            if (hasAbnormal && hasNormalImpression) {
+              issues.push({
+                line: 1, column: 0,
+                severity: rule.severity === "block" ? "error" : "warning",
+                code: "STUDY_CONTRADICTION",
+                message: rule.message,
+                ruleId: rule.id,
+              });
+            }
+          }
+          // "laterality != impression laterality" — check if findings say right but impression says left
+          if (ruleText.includes("laterality") || ruleText.includes("side differs")) {
+            const findingsRight = /\bright\b/i.test(fullText) && !/no |without |absence of /i.test(fullText.slice(0, fullText.toLowerCase().indexOf("right")));
+            const findingsLeft = /\bleft\b/i.test(fullText) && !/no |without |absence of /i.test(fullText.slice(0, fullText.toLowerCase().indexOf("left")));
+            const impressionRight = /\bright\b/i.test(fullText);
+            const impressionLeft = /\bleft\b/i.test(fullText);
+            if ((findingsRight && impressionLeft && !impressionRight) || (findingsLeft && impressionRight && !impressionLeft)) {
+              issues.push({
+                line: 1, column: 0,
+                severity: rule.severity === "block" ? "error" : "warning",
+                code: "STUDY_CONTRADICTION",
+                message: rule.message,
+                ruleId: rule.id,
+              });
+            }
+          }
+        }
+      }
+    }
+  }
   return issues;
 }
 

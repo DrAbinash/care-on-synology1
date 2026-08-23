@@ -33,6 +33,15 @@ function RedirectToWorkspace() {
   return null;
 }
 
+/** Redirect deprecated report routes to the canonical workspace. */
+function RedirectToReportWorkspace({ studyId }: { studyId?: string }) {
+  const [, navigate] = useLocation();
+  useEffect(() => {
+    navigate(studyId ? `/radiology/report/${studyId}` : "/radiology/worklist", { replace: true });
+  }, [navigate, studyId]);
+  return null;
+}
+
 /**
  * Phase D: owner-only wrapper for preserved/deprecated pages.
  * Normal staff are sent to the canonical Workspace; owners can still open the page.
@@ -461,39 +470,32 @@ function Router() {
               <Route path="/radiology/worklist" component={RadiologyWorklist} />
               {/* Hope OPD / partner deep-link → Reporting Workspace (or MRI worklist). */}
               <Route path="/radiology/open" component={RadiologyOpenRedirect} />
+              {/* DEPRECATED: /radiology/report-generator redirects to canonical workspace.
+                  Unique macro/key-image admin UI moved to /radiology/snippets. */}
               <Route path="/radiology/report-generator">
-                {() => <OwnerOnlyPreserved><RadiologyReportGen /></OwnerOnlyPreserved>}
+                {() => <RedirectToReportWorkspace />}
               </Route>
               <Route path="/radiology/report-generator/:studyId">
-                {(params) => <OwnerOnlyPreserved><RadiologyReportGen studyId={Number(params.studyId)} /></OwnerOnlyPreserved>}
+                {(params) => <RedirectToReportWorkspace studyId={params.studyId} />}
               </Route>
               <Route path="/radiology/report-builder" component={RadiologyReportBuilder} />
               <Route path="/radiology/findings-manager" component={RadiologyFindingsManager} />
 
-              {/* M1.1 canonical workspace consolidation (July 2026), RESTORED
-                  after the Radiology V2 merge briefly rerouted these to the
-                  cockpit (which lacked draft identity — every save created a
-                  new draft row and reopening a study dropped the draft).
-                  RadiologyReportingWorkspace is THE canonical radiology
-                  reporting page: it owns draft load/track/update-by-id
-                  (useRadiologyDraftId), M1.4 validation, the M1.2 launch
-                  pipeline, R1.1–R1.3 presentation/template/image-panel.
+              {/* M1.1 canonical workspace consolidation (July 2026).
+                  RadiologyReportingWorkspace is THE canonical radiology reporting page.
+
                   Route map:
                     /radiology/report/:studyId            → canonical (primary)
                     /radiology/reporting-workspace(/:id)  → canonical (named alias)
                     /radiology/unified-report/:worklistId → canonical (old URL kept)
-                    /radiology/report-legacy/:studyId     → redirect to canonical
-                    /radiology/cockpit                    → redirect to canonical
-                                                            (RadiologistCockpit removed;
-                                                            features merged into Workspace)
-                    /radiology/command-center(/:id)       → owner-only (preserved, V2)
-                    /radiology/legacy                     → owner-only (preserved, V2)
-                    /radiology/report-generator(/:id)     → RadiologyReportGenerator
-                                                            (deprecated; unique macro/
-                                                            key-image admin UI)
-                  The V2 worklist/settings consolidations (RedirectToUnifiedWorklist,
-                  AdminOnlySettings) are kept. The dead RadiologyReportUnified page
-                  (resurrected by the V2 merge) was removed again. */}
+                    /radiology/report-legacy/:studyId     → DEPRECATED, redirects to canonical
+                    /radiology/report-generator(/:id)     → DEPRECATED, redirects to canonical
+                                                            (unique macro/key-image admin UI
+                                                            moved to /radiology/snippets)
+
+                  Duplicate pages RadiologyReportUnified, RadiologyReportGenerator,
+                  and RadiologyReportEditor are deprecated. Their routes redirect
+                  to the canonical workspace so old bookmarks keep working. */}
               <Route path="/radiology/report/:studyId">
                 {(params) => <RadiologyReportingWorkspace studyId={Number(params.studyId)} />}
               </Route>
@@ -504,8 +506,9 @@ function Router() {
               <Route path="/radiology/usg/:studyId">
                 {(params) => <UsgCompanionWorkspace studyId={Number(params.studyId)} />}
               </Route>
+              {/* DEPRECATED: /radiology/report-legacy/:studyId now redirects to canonical workspace */}
               <Route path="/radiology/report-legacy/:studyId">
-                {(params) => <RadiologyReportEditor studyId={Number(params.studyId)} />}
+                {(params) => <RedirectToReportWorkspace studyId={params.studyId} />}
               </Route>
               <Route path="/radiology/reporting-workspace">
                 {() => <RadiologyReportingWorkspace />}

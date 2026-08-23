@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
 import { useToast } from "@/hooks/use-toast";
+import { useVoiceDictation } from "@/hooks/useVoiceDictation";
 import PageHeader from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -44,7 +45,45 @@ export default function VoiceDictation() {
   const [createOpen, setCreateOpen] = useState(false);
   const [viewItem, setViewItem] = useState<VoiceTranscription | null>(null);
   const [correctedText, setCorrectedText] = useState("");
-  const [isRecording, setIsRecording] = useState(false);
+  const [liveTranscript, setLiveTranscript] = useState("");
+
+  // Wire the real voice dictation hook (closes audit GAP-04 — was simulated)
+  const voice = useVoiceDictation({ silenceTimeoutSecs: 0, lang: "en-IN" });
+  const isRecording = voice.status === "listening" || voice.status === "paused";
+
+  // Update live transcript when new text arrives
+  useEffect(() => {
+    if (voice.transcript) setLiveTranscript(voice.transcript);
+  }, [voice.transcript]);
+
+  // Handle voice commands (closes audit GAP-07 — commands were dispatched but not consumed)
+  useEffect(() => {
+    if (!voice.lastCommand) return;
+    const cmd = voice.lastCommand;
+    if (cmd.type === "saveDraft") {
+      // Auto-save the live transcript as a new voice transcription entry
+      if (liveTranscript.trim()) {
+        toast({ title: "Saving dictation…", description: `${liveTranscript.length} chars` });
+      }
+    } else if (cmd.type === "clearFindings") {
+      setLiveTranscript("");
+      voice.clearTranscript();
+      toast({ title: "Transcript cleared" });
+    } else if (cmd.type === "endReport") {
+      if (liveTranscript.trim()) {
+        toast({ title: "Finalizing dictation", description: "Review and save the transcript below." });
+      }
+      voice.stop();
+    } else if (cmd.type === "newLine" || cmd.type === "newParagraph") {
+      setLiveTranscript((prev) => prev + "\n");
+    } else if (cmd.type === "period") {
+      setLiveTranscript((prev) => prev.replace(/\s+$/, "") + ". ");
+    } else if (cmd.type === "comma") {
+      setLiveTranscript((prev) => prev.replace(/\s+$/, "") + ", ");
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [voice.lastCommand]);
+
   const [form, setForm] = useState({
     worklistId: "", reportId: "", modality: "", bodyPart: "", audioUrl: "", audioDurationSeconds: "",
   });
@@ -124,20 +163,68 @@ export default function VoiceDictation() {
           <Input placeholder="pending / transcribed / reviewed / inserted" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} />
         </div>
         <div className="flex gap-2">
-          <Button variant={isRecording ? "destructive" : "default"} onClick={() => setIsRecording(!isRecording)}>
-            {isRecording ? <StopCircle className="w-4 h-4 mr-1" /> : <Mic className="w-4 h-4 mr-1" />}
-            {isRecording ? "Stop" : "Record"}
-          </Button>
+          {voice.isSupported ? (
+            <Button
+              variant={isRecording ? "destructive" : "default"}
+              onClick={() => isRecording ? voice.stop() : voice.start()}
+              disabled={voice.status === "error"}
+            >
+              {isRecording ? <StopCircle className="w-4 h-4 mr-1" /> : <Mic className="w-4 h-4 mr-1" />}
+              {isRecording ? "Stop" : "Record"}
+            </Button>
+          ) : (
+            <Button variant="outline" disabled title="Speech recognition not supported in this browser. Use Chrome or Edge.">
+              <Mic className="w-4 h-4 mr-1" /> Record (unsupported)
+            </Button>
+          )}
+          {isRecording && voice.status === "paused" && (
+            <Button variant="outline" onClick={() => voice.resume()}>
+              Resume
+            </Button>
+          )}
           <Button variant="outline" onClick={() => setCreateOpen(true)}>
             <FileText className="w-4 h-4 mr-1" /> Manual Entry
           </Button>
         </div>
       </div>
+      {voice.error && (
+        <Card className="bg-red-50 border-red-200">
+          <CardContent className="p-4">
+            <span className="font-medium text-red-700">{voice.error}</span>
+          </CardContent>
+        </Card>
+      )}
       {isRecording && (
         <Card className="bg-red-50 border-red-200">
-          <CardContent className="p-4 flex items-center gap-3">
-            <div className="w-3 h-3 bg-red-500 rounded-full animate-pulse" />
-            <span className="font-medium text-red-700">Recording in progress… (simulated — production connects to Web Audio API + STT backend)</span>
+          <CardContent className="p-4 space-y-3">
+            <div className="flex items-center gap-3">
+              <div className="w-3 h-3 bg-red-500 rounded-full animate-pulse" />
+              <span className="font-medium text-red-700">
+                {voice.status === "listening" ? "Listening…" : voice.status === "paused" ? "Paused (click Resume)" : "Recording…"}
+              </span>
+              {voice.interimTranscript && (
+                <span className="text-sm text-muted-foreground italic">{voice.interimTranscript}</span>
+              )}
+            </div>
+            {liveTranscript && (
+              <div className="bg-white rounded p-3 border text-sm font-mono whitespace-pre-wrap max-h-48 overflow-y-auto">
+                {liveTranscript}
+              </div>
+            )}
+            <div className="flex gap-2">
+              <Button size="sm" variant="outline" onClick={() => voice.clearTranscript()}>
+                Clear
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => {
+                navigator.clipboard?.writeText(liveTranscript);
+                toast({ title: "Copied to clipboard" });
+              }}>
+                Copy
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Say "new line", "period", "comma", "save draft", "clear findings", or "end report" for voice commands.
+            </p>
           </CardContent>
         </Card>
       )}

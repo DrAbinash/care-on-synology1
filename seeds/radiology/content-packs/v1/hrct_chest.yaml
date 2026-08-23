@@ -32,7 +32,7 @@ findings:
     parameters: []
     severity: null
     laterality: null
-    location_options: []
+    location: []
     measurements: []
     impression_fragment: "No significant abnormality in the lung parenchyma, airways, pleura or mediastinum."
     recommendation_code: []
@@ -52,7 +52,7 @@ findings:
     parameters: [param.lung_distribution]
     severity: null
     laterality: null
-    location_options: [loc.lung_lobes]
+    location: [loc.lung_lobes]
     measurements: [meas.cavity_wall]
     impression_fragment: "Active infective etiology, likely Koch's — sputum CBNAAT advised."
     recommendation_code: [rec.lab_sputum, rec.spec_pulmo]
@@ -73,7 +73,7 @@ findings:
     parameters: []
     severity: null
     laterality: null
-    location_options: [loc.lung_lobes]
+    location: [loc.lung_lobes]
     measurements: []
     impression_fragment: "Consolidation {location} — infective etiology likely."
     recommendation_code: [rec.clincorr, rec.fup_cxr2w]
@@ -91,7 +91,7 @@ findings:
     parameters: []
     severity: null
     laterality: null
-    location_options: []
+    location: []
     measurements: []
     impression_fragment: "Miliary pattern — disseminated Koch's to be excluded; urgent physician correlation advised."
     recommendation_code: [rec.lab_sputum, rec.spec_pulmo, rec.urgent]
@@ -109,7 +109,7 @@ findings:
     parameters: []
     severity: null
     laterality: null
-    location_options: [loc.lung_lobes]
+    location: [loc.lung_lobes]
     measurements: []
     impression_fragment: "Post-infective (old Koch's) sequelae {location}. No active lesion."
     recommendation_code: []
@@ -127,7 +127,7 @@ findings:
     parameters: [param.lung_distribution]
     severity: sev.extent_lung
     laterality: null
-    location_options: [loc.lung_lobes]
+    location: [loc.lung_lobes]
     measurements: [meas.ctss]
     impression_fragment: "Ground-glass opacities ({severity}) — viral/atypical infective etiology likely."
     recommendation_code: [rec.clincorr]
@@ -146,7 +146,7 @@ findings:
     parameters: []
     severity: null
     laterality: null
-    location_options: [loc.lung_lobes]
+    location: [loc.lung_lobes]
     measurements: []
     impression_fragment: "Crazy-paving pattern as described."
     recommendation_code: [rec.clincorr]
@@ -164,7 +164,7 @@ findings:
     parameters: []
     severity: sev.extent_lung
     laterality: null
-    location_options: []
+    location: []
     measurements: []
     impression_fragment: "UIP pattern of fibrosing ILD — pulmonology referral and PFT advised."
     recommendation_code: [rec.spec_pulmo, rec.pft]
@@ -184,7 +184,7 @@ findings:
     parameters: []
     severity: sev.extent_lung
     laterality: null
-    location_options: []
+    location: []
     measurements: []
     impression_fragment: "NSIP pattern ILD — pulmonology referral; connective-tissue workup as advised."
     recommendation_code: [rec.spec_pulmo, rec.pft]
@@ -202,7 +202,7 @@ findings:
     parameters: [param.bronchiectasis_type]
     severity: null
     laterality: null
-    location_options: [loc.lung_lobes]
+    location: [loc.lung_lobes]
     measurements: []
     impression_fragment: "{bronchiectasis_type} bronchiectasis {location}."
     recommendation_code: [rec.spec_pulmo]
@@ -220,7 +220,7 @@ findings:
     parameters: []
     severity: null
     laterality: null
-    location_options: []
+    location: []
     measurements: []
     impression_fragment: "Small-airway disease (air-trapping)."
     recommendation_code: [rec.pft]
@@ -239,7 +239,7 @@ findings:
     parameters: []
     severity: sev.extent_lung
     laterality: null
-    location_options: []
+    location: []
     measurements: []
     impression_fragment: "Emphysematous changes, {severity}."
     recommendation_code: [rec.pft]
@@ -257,7 +257,7 @@ findings:
     parameters: [param.nodule_character, param.margin]
     severity: null
     laterality: null
-    location_options: [loc.lung_lobes]
+    location: [loc.lung_lobes]
     measurements: [meas.nodule_avg]
     impression_fragment: "{nodule_character} pulmonary nodule ({nodule_avg}, {location}) — Fleischner-based follow-up as advised."
     recommendation_code: [rec.fleischner]
@@ -277,7 +277,7 @@ findings:
     parameters: [param.margin]
     severity: null
     laterality: null
-    location_options: [loc.lung_lobes]
+    location: [loc.lung_lobes]
     measurements: [meas.mass_size_2d, meas.node_short_axis]
     impression_fragment: "Suspicious {location} mass — CT-guided biopsy / PET-CT and oncology referral advised."
     recommendation_code: [rec.biopsy, rec.petct, rec.spec_onc]
@@ -297,7 +297,7 @@ findings:
     parameters: [param.size]
     severity: null
     laterality: null
-    location_options: [loc.lung_lobes]
+    location: [loc.lung_lobes]
     measurements: [meas.cavity_wall]
     impression_fragment: "Cavitary lesion {location} — infective (Koch's) vs neoplastic; sputum and further workup advised."
     recommendation_code: [rec.lab_sputum, rec.spec_pulmo]
@@ -315,7 +315,7 @@ findings:
     parameters: []
     severity: null
     laterality: null
-    location_options: [loc.node_stations]
+    location: [loc.node_stations]
     measurements: [meas.node_short_axis]
     impression_fragment: "Mediastinal lymphadenopathy as described — necrotic nodes favour Koch's."
     recommendation_code: [rec.clincorr]
@@ -333,7 +333,7 @@ findings:
     parameters: []
     severity: sev.effusion
     laterality: lat.rlb
-    location_options: []
+    location: []
     measurements: [meas.effusion_depth]
     impression_fragment: "{laterality} pleural effusion, {severity}."
     recommendation_code: [rec.clincorr]
@@ -351,7 +351,7 @@ findings:
     parameters: []
     severity: null
     laterality: null
-    location_options: []
+    location: []
     measurements: [meas.ctss]
     impression_fragment: "CT severity score {ctss}."
     recommendation_code: []

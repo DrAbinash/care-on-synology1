@@ -31,7 +31,7 @@ findings:
     parameters: []
     severity: null
     laterality: lat.rlb
-    location_options: []
+    location: []
     measurements: []
     impression_fragment: "No evidence of deep venous thrombosis in the {laterality} lower limb."
     recommendation_code: []
@@ -51,7 +51,7 @@ findings:
     parameters: [param.thrombus_age]
     severity: null
     laterality: lat.rl
-    location_options: [loc.venous_ll]
+    location: [loc.venous_ll]
     measurements: [meas.vein_diameter]
     impression_fragment: "Acute DVT involving {location} of the {laterality} lower limb — URGENT physician attention; findings communicated."
     recommendation_code: [rec.urgent]
@@ -72,7 +72,7 @@ findings:
     parameters: []
     severity: null
     laterality: lat.rl
-    location_options: [loc.venous_ll]
+    location: [loc.venous_ll]
     measurements: []
     impression_fragment: "Chronic (partially recanalized) DVT {location} — continue physician follow-up."
     recommendation_code: [rec.clincorr]
@@ -90,7 +90,7 @@ findings:
     parameters: []
     severity: null
     laterality: lat.rl
-    location_options: [loc.venous_ll]
+    location: [loc.venous_ll]
     measurements: []
     impression_fragment: "Isolated calf-vein DVT {laterality} — physician correlation for anticoagulation decision."
     recommendation_code: [rec.clincorr]
@@ -108,7 +108,7 @@ findings:
     parameters: []
     severity: null
     laterality: lat.rlb
-    location_options: []
+    location: []
     measurements: [meas.reflux_duration, meas.vein_diameter]
     impression_fragment: "{laterality} SFJ incompetence with significant GSV reflux — vascular surgical opinion advised."
     recommendation_code: [rec.spec_vasc]
@@ -128,7 +128,7 @@ findings:
     parameters: []
     severity: null
     laterality: lat.rlb
-    location_options: []
+    location: []
     measurements: [meas.reflux_duration, meas.vein_diameter]
     impression_fragment: "{laterality} SPJ/SSV incompetence."
     recommendation_code: [rec.spec_vasc]
@@ -146,7 +146,7 @@ findings:
     parameters: []
     severity: null
     laterality: lat.rl
-    location_options: []
+    location: []
     measurements: [meas.vein_diameter]
     impression_fragment: "Incompetent perforators — marked for surgery."
     recommendation_code: [rec.spec_vasc]
@@ -165,7 +165,7 @@ findings:
     parameters: []
     severity: null
     laterality: lat.rlb
-    location_options: []
+    location: []
     measurements: []
     impression_fragment: "Superficial varicosities as described."
     recommendation_code: []
@@ -183,7 +183,7 @@ findings:
     parameters: []
     severity: null
     laterality: lat.rlb
-    location_options: []
+    location: []
     measurements: [meas.abi]
     impression_fragment: "Normal arterial study of the {laterality} lower limb. ABI {abi}."
     recommendation_code: []
@@ -202,7 +202,7 @@ findings:
     parameters: [param.waveform]
     severity: null
     laterality: lat.rl
-    location_options: [loc.arterial_ll]
+    location: [loc.arterial_ll]
     measurements: [meas.psv, meas.abi]
     impression_fragment: "Dampened distal flow — significant proximal arterial disease."
     recommendation_code: [rec.spec_vasc, rec.cta]
@@ -220,7 +220,7 @@ findings:
     parameters: []
     severity: sev.stenosis_pct
     laterality: lat.rl
-    location_options: [loc.arterial_ll]
+    location: [loc.arterial_ll]
     measurements: [meas.psv]
     impression_fragment: "{severity} stenosis of {location}."
     recommendation_code: [rec.spec_vasc, rec.cta]
@@ -238,7 +238,7 @@ findings:
     parameters: []
     severity: null
     laterality: lat.rl
-    location_options: [loc.arterial_ll]
+    location: [loc.arterial_ll]
     measurements: [meas.abi]
     impression_fragment: "Occlusion of {location} — vascular surgery referral advised."
     recommendation_code: [rec.spec_vasc, rec.cta, rec.urgent]
@@ -256,7 +256,7 @@ findings:
     parameters: []
     severity: sev.abi
     laterality: null
-    location_options: []
+    location: []
     measurements: [meas.abi]
     impression_fragment: "ABI {abi} ({severity})."
     recommendation_code: []
@@ -275,7 +275,7 @@ findings:
     parameters: [param.size]
     severity: null
     laterality: lat.rl
-    location_options: []
+    location: []
     measurements: []
     impression_fragment: "{laterality} Baker's cyst (ruptured) — can mimic DVT clinically."
     recommendation_code: []
@@ -294,7 +294,7 @@ findings:
     parameters: []
     severity: null
     laterality: lat.rl
-    location_options: []
+    location: []
     measurements: []
     impression_fragment: "Cellulitis {laterality} — no DVT, no collection."
     recommendation_code: [rec.clincorr]
