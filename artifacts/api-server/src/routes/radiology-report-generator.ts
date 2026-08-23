@@ -2079,6 +2079,21 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
   }
   const template = applyInstitutionalTemplateOverrides(baseTemplate, instStyle);
 
+  // When the radiologist has disabled the letterpad header (for printing on
+  // pre-printed letterheads), suppress the CARE logo + address chrome.
+  try {
+    const userId = (req as unknown as { staffSession?: { subjectId?: string | number } }).staffSession?.subjectId;
+    if (userId) {
+      const [prefs] = await db.select({ showLetterpadHeader: radiologyReportPreferencesTable.showLetterpadHeader })
+        .from(radiologyReportPreferencesTable)
+        .where(eq(radiologyReportPreferencesTable.userId, Number(userId)))
+        .limit(1);
+      if (prefs && !prefs.showLetterpadHeader) {
+        template.headerCfg = { ...template.headerCfg, show: false, showLogo: false };
+      }
+    }
+  } catch { /* non-fatal: header shows as normal */ }
+
   // pacs letterhead scale + Style chrome apply to clinic-branded templates.
   // CARE letter-pad (Classic/Premium) reads logo/address from the template.
   let customCss = "";
@@ -2320,6 +2335,7 @@ const PreferencesSchema = z.object({
   headerLine2Custom: z.string().max(200).optional(),
   workspaceLayout: z.enum(["3_panel", "preview_first", "workflow"]),
   printMode: z.enum(["letterhead", "plain_paper"]).default("letterhead"),
+  showLetterpadHeader: z.boolean().default(true),
 });
 
 // GET /preferences — fetch preferences for the authenticated user
@@ -2340,6 +2356,7 @@ radiologyReportGeneratorRouter.get("/preferences", async (req: StaffAuthRequest,
       headerLine2Custom: null,
       workspaceLayout: "3_panel",
       printMode: "letterhead",
+      showLetterpadHeader: true,
     });
     return;
   }
@@ -2367,6 +2384,7 @@ radiologyReportGeneratorRouter.put("/preferences", async (req: StaffAuthRequest,
       headerLine2Custom: data.headerLine2Custom || null,
       workspaceLayout: data.workspaceLayout,
       printMode: data.printMode,
+      showLetterpadHeader: data.showLetterpadHeader,
     }).returning();
     res.status(201).json(row);
     return;
@@ -2383,6 +2401,7 @@ radiologyReportGeneratorRouter.put("/preferences", async (req: StaffAuthRequest,
       headerLine2Custom: data.headerLine2Custom || null,
       workspaceLayout: data.workspaceLayout,
       printMode: data.printMode,
+      showLetterpadHeader: data.showLetterpadHeader,
     })
     .where(eq(radiologyReportPreferencesTable.userId, Number(userId)))
     .returning();

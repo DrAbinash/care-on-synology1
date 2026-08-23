@@ -353,6 +353,10 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const [headingCase, setHeadingCase] = useState<ReportHeadingCase>("all_caps");
   const [sectionSpacing, setSectionSpacing] = useState<ReportSectionSpacing>("spaced");
   const [impressionStyle, setImpressionStyle] = useState<ReportImpressionStyle>("bulleted");
+  const [showLetterpadHeader, setShowLetterpadHeader] = useState(true);
+
+  // Sync report preferences from server (heading case, spacing, impression, header toggle).
+  // The server is the source of truth; local state is the working copy for the session.
   const [previewLayoutOverride, setPreviewLayoutOverride] = useState<ReportLayoutKey | null>(null);
   const [shortcutHelpOpen, setShortcutHelpOpen] = useState(false);
   const [confirmImpressionReplace, setConfirmImpressionReplace] = useState(false);
@@ -511,6 +515,50 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   });
 
   const [qsExternalSearch, setQsExternalSearch] = useState<{ seq: number; term: string } | null>(null);
+
+  // ─── Report preferences sync (server → local state) ───────────────────────
+  // Fetch once on mount; headingCase, sectionSpacing, impressionStyle, and
+  // showLetterpadHeader are kept in sync with the server row.
+  const prefsSyncedRef = useRef(false);
+  useQuery({
+    queryKey: ["report-prefs-sync"],
+    queryFn: async () => {
+      const prefs = await api.get("/api/radiology/report-generator/preferences") as Record<string, unknown>;
+      if (!prefs) return null;
+      if (prefs.headingCase) setHeadingCase(prefs.headingCase as ReportHeadingCase);
+      if (prefs.sectionSpacing) setSectionSpacing(prefs.sectionSpacing as ReportSectionSpacing);
+      if (prefs.impressionStyle) setImpressionStyle(prefs.impressionStyle as ReportImpressionStyle);
+      if (typeof prefs.showLetterpadHeader === "boolean") setShowLetterpadHeader(prefs.showLetterpadHeader);
+      return prefs;
+    },
+    staleTime: 60_000,
+    enabled: !prefsSyncedRef.current,
+  });
+  useEffect(() => { prefsSyncedRef.current = true; }, []);
+
+  // Persist showLetterpadHeader toggle to server (debounced)
+  // Send only the changed field; the server's PreferencesSchema requires
+  // all fields, but the PUT handler merges with existing row via .set().
+  // We send a partial PATCH-style payload — the route's Zod schema has
+  // .default() on every field so omitted fields fall through to defaults.
+  // However the PUT handler overwrites all fields, so we must send the full
+  // set. Read current prefs first, then merge.
+  const headerToggleTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  useEffect(() => {
+    if (!prefsSyncedRef.current) return; // don't persist before first sync
+    clearTimeout(headerToggleTimerRef.current);
+    headerToggleTimerRef.current = setTimeout(async () => {
+      try {
+        // Fetch current full prefs, merge the toggle, PUT back
+        const current = await api.get("/api/radiology/report-generator/preferences") as Record<string, unknown> | null;
+        await api.put("/api/radiology/report-generator/preferences", {
+          ...current,
+          showLetterpadHeader,
+        });
+      } catch { /* non-fatal */ }
+    }, 500);
+    return () => clearTimeout(headerToggleTimerRef.current);
+  }, [showLetterpadHeader]);
   const quickFindingTemplatesRef = useRef<QuickFinding[]>([]);
   const studyTextOverridesRef = useRef<Map<number, StudyLocalTextOverride>>(new Map());
   const [studyLocalEdit, setStudyLocalEdit] = useState<QuickFinding | null>(null);
@@ -2029,7 +2077,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         referringDoctor: canonicalDemography.referringDoctor,
         studyDate: canonicalDemography.studyDate,
         chrome: activeStandardLetterhead(presentationTemplates),
-        physicalLetterpad: true,
+        physicalLetterpad: !showLetterpadHeader,
       });
     } catch (err) {
       toast({
@@ -2040,7 +2088,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     } finally {
       setExportingWord(false);
     }
-  }, [workflow.currentRow, previewHtml, toast, reportLayout, draftId, canonicalDemography, presentationTemplates]);
+  }, [workflow.currentRow, previewHtml, toast, reportLayout, draftId, canonicalDemography, presentationTemplates, showLetterpadHeader]);
 
   const handleExportPdf = useCallback(async () => {
     setExportingPdf(true);
@@ -2067,6 +2115,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         imageRefs,
         clinic: clinicSettings ?? null,
         letterhead: activeStandardLetterhead(presentationTemplates),
+        showLetterpadHeader,
       });
     } catch (err) {
       toast({
@@ -2081,7 +2130,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     canonicalDemography, clinicalHistoryText, techniqueText, findingsText,
     impressionText, recommendationText, studyNameForExport, headingCase,
     imageRefs, clinicSettings, toast, workflow.currentRow,
-    useStructured, findingsMap, presentationTemplates,
+    useStructured, findingsMap, presentationTemplates, showLetterpadHeader,
   ]);
 
   const handlePrintLikeFinal = useCallback(async () => {
@@ -3824,6 +3873,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       disabled={false}
                       imageRefs={imageRefs}
                       dicomWebBase={BROWSER_DICOMWEB_BASE}
+                      showLetterpadHeader={showLetterpadHeader}
+                      onShowLetterpadHeaderChange={setShowLetterpadHeader}
                     />
                     </ReportAccordionSection>
                   </div>

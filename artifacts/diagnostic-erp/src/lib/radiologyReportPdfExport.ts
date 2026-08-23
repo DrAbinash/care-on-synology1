@@ -175,6 +175,8 @@ export interface RadiologyPdfExportInput {
   imageRefs: ReportImageRef[];
   clinic: PrintClinic;
   letterhead?: CareLetterpadChrome;
+  /** When false, the CARE letterpad header (logo + address) is omitted — for pre-printed letterheads. */
+  showLetterpadHeader?: boolean;
 }
 
 export async function exportRadiologyReportToPdf(input: RadiologyPdfExportInput): Promise<void> {
@@ -207,7 +209,12 @@ export async function exportRadiologyReportToPdf(input: RadiologyPdfExportInput)
       ...settings,
       header: {
         ...settings.header,
-        enabled: true, // letter-pad PDF must always show CARE logo + address chrome
+        enabled: input.showLetterpadHeader !== false, // respect toggle; default true
+      },
+      footer: {
+        ...settings.footer,
+        // Pre-printed letterheads also have the services bar + disclaimer pre-printed.
+        enabled: input.showLetterpadHeader !== false ? settings.footer.enabled : false,
       },
       show: {
         ...settings.show,

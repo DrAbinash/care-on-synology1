@@ -12,7 +12,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { FileDown, Printer, RefreshCw, Eye, Maximize2, ShieldCheck } from "lucide-react";
+import { FileDown, Printer, RefreshCw, Eye, Maximize2, ShieldCheck, ImageOff } from "lucide-react";
 import { api } from "@/lib/fetchApi";
 import { hydratePrintPreviewKeyImages } from "@/lib/radiologyReportPdfExport";
 import ReportLayoutQuickSelect, {
@@ -104,6 +104,9 @@ export type ReportExportPanelProps = {
   /** Selected image refs — hydrate preview when Orthanc is unreachable from the API. */
   imageRefs?: import("@/lib/reportImageRefs").ReportImageRef[];
   dicomWebBase?: string | null;
+  /** Toggle CARE letterpad header (logo + address) on/off for pre-printed letterheads. */
+  showLetterpadHeader?: boolean;
+  onShowLetterpadHeaderChange?: (v: boolean) => void;
 };
 
 export default function ReportExportPanel({
@@ -132,6 +135,8 @@ export default function ReportExportPanel({
   disabled,
   imageRefs = [],
   dicomWebBase = null,
+  showLetterpadHeader = true,
+  onShowLetterpadHeaderChange,
 }: ReportExportPanelProps) {
   const [open, setOpen] = useState(true);
   const [previewRefresh, setPreviewRefresh] = useState(0);
@@ -347,6 +352,18 @@ export default function ReportExportPanel({
               >
                 <Maximize2 className="h-3 w-3 mr-1" />
                 Print Preview
+              </Button>
+              <Button
+                size="sm"
+                variant={showLetterpadHeader ? "default" : "ghost"}
+                className="h-6 text-[10px]"
+                title={showLetterpadHeader ? "Hide letterpad header (for pre-printed letterheads)" : "Show letterpad header (logo + address)"}
+                onClick={() => onShowLetterpadHeaderChange?.(!showLetterpadHeader)}
+                aria-pressed={showLetterpadHeader}
+                data-testid="toggle-letterpad-header"
+              >
+                <ImageOff className={`h-3 w-3 mr-1 ${!showLetterpadHeader ? "text-amber-600" : ""}`} />
+                {showLetterpadHeader ? "Header ON" : "Header OFF"}
               </Button>
               {showServerLayout && (
                 <Button
