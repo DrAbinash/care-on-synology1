@@ -1,0 +1,65 @@
+services:
+  dicom-print-scp:
+    build: .
+    container_name: dicom-print-scp
+    restart: unless-stopped
+    ports:
+      - "104:104"
+      - "631:631"
+      - "8090:8090"
+    volumes:
+      - ./print-jobs:/data/print-jobs
+      - ./config:/data/config
+      # These folders start out empty, and mounting an empty folder over a
+      # path hides whatever the image put there. The container's entrypoint
+      # seeds /etc/cups back from its own copy on startup, so the printer you
+      # add through the CUPS web UI persists across rebuilds without leaving
+      # CUPS with no configuration to read on the very first run.
+      - ./cups-config:/etc/cups
+      - ./branding:/data/branding
+    environment:
+      DICOM_AET: PRINTSCP
+      DICOM_PORT: "104"
+      GAMMA: "2.0"
+      CONTRAST_LOW_PERCENTILE: "1.0"
+      CONTRAST_HIGH_PERCENTILE: "99.0"
+      PAGE_SIZE: A4
+      PAGE_ORIENTATION: PORTRAIT
+      LAYOUT_ROWS: "2"
+      LAYOUT_COLS: "3"
+      AUTO_FIT_LAYOUT: "true"
+      BATCH_GROUP_BY: auto
+      BATCH_IDLE_TIMEOUT_SECONDS: "60"
+      BACKGROUND_COLOR: WHITE
+      HEADER_LINE1: ""
+      HEADER_LINE2: ""
+      HEADER_LOGO_PATH: ""
+      HEADER_ALIGN: CENTER
+      HEADER_HEIGHT_MM: "14.0"
+      FOOTER_LINE1: ""
+      FOOTER_LINE2: ""
+      FOOTER_LOGO_PATH: ""
+      FOOTER_ALIGN: CENTER
+      FOOTER_HEIGHT_MM: "10.0"
+      BANNER_BACKGROUND_COLOR: BLACK
+      # Pull the clinic name/address/phone/email/logo from the ERP's own
+      # settings page instead of re-typing them above, so films and prints
+      # sent from the ERP always show the same letterhead. The HEADER_*/
+      # FOOTER_* values stay as the fallback. Example:
+      #   ERP_BRANDING_URL: "http://192.168.1.137:3000/api/clinic-settings/branding"
+      ERP_BRANDING_URL: ""
+      ERP_BRANDING_REFRESH_SECONDS: "300"
+      PRINT_METHOD: cups
+      CUPS_SERVER: localhost:631
+      CUPS_PRINTER_NAME: ""
+      # Set to "false" to skip CUPS entirely (only useful with
+      # PRINT_METHOD: jetdirect, or when you just want the rendered PDFs).
+      START_CUPS: "true"
+      # Print-from-app HTTP API (for the ERP/hospital web app to print
+      # directly, no DICOM modality involved). The API refuses every request
+      # until you set a real secret here - see the README before relying on it.
+      HTTP_PORT: "8090"
+      HTTP_BRIDGE_SECRET: ""
+      CAPTURE_MODE: CAPTURE_AND_PRINT
+      PRESERVE_CONSOLE_LAYOUT: "true"
+      CONFIG_DIR: /data/config
