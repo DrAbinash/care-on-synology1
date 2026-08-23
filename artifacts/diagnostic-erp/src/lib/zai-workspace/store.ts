@@ -154,9 +154,11 @@ export type WorkspaceStore = S & {
   applySelectedFormats: () => void; confirmOverwriteAndApply: () => void; cancelOverwrite: () => void; applyMergedResult: () => void; cancelMerge: () => void;
   applyPathologyOverlay: (opts: PendingPathologyPatch & { force?: boolean }) => "applied" | "pending";
   undoLastPatch: () => boolean;
-  applyVoiceComposerPlan: (plan, transcript, opts?: { force?: boolean }) => "applied" | "blocked";
+  applyVoiceComposerPlan: (plan: VoiceChangePlan, transcript: string, opts?: { force?: boolean }) => "applied" | "blocked";
   clearVoiceComposerSession: () => void;
   relateralizePatches: (side: Side) => void;
+  /** Host-injected hook for Ctrl+I / command palette — set by RadiologyReportingWorkspace. */
+  triggerAiImpression?: () => void | Promise<void>;
   saveAsFormat: (i: Omit<ReportFormat, "id" | "createdAt" | "updatedAt">) => void; deleteReportFormat: (id: string) => void;
   openSaveAsFormatDialog: () => void; closeSaveAsFormatDialog: () => void; resetReportFormatsToDefaults: () => void;
   /** Hydrate formats (+ chocolate macros) from server; migrate localStorage once. */
@@ -533,7 +535,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     });
     return true;
   },
-  applyVoiceComposerPlan: (plan, transcript, opts?: { force?: boolean }) => {
+  applyVoiceComposerPlan: (plan: VoiceChangePlan, transcript: string, opts?: { force?: boolean }) => {
     const snap: PatchSnapshot = {
       clinicalHistoryText: get().clinicalHistoryText,
       techniqueText: get().techniqueText,

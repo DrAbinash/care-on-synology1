@@ -90,8 +90,11 @@ function classify(intent: VoiceIntent, ctx: VoiceContext): VoiceSafetyClass {
           return "CONFIRM_REQUIRED";
         case "finalize":
           return "HIGH_RISK";
+        default:
+          return "SAFE_IMMEDIATE";
       }
   }
+  return "SAFE_IMMEDIATE";
 }
 
 function contextBlock(intent: VoiceIntent, ctx: VoiceContext): string | null {

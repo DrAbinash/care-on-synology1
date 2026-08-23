@@ -544,7 +544,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   // .default() on every field so omitted fields fall through to defaults.
   // However the PUT handler overwrites all fields, so we must send the full
   // set. Read current prefs first, then merge.
-  const headerToggleTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const headerToggleTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(() => {
     if (!prefsSyncedRef.current) return; // don't persist before first sync
     clearTimeout(headerToggleTimerRef.current);
@@ -1093,7 +1093,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     enabled: composerConfig?.enabled ?? false,
     modality: workflow.currentRow?.modality,
     region: studySetup.matchedStudyRegion ?? studySetup.studyRegions[0],
-    reportTitle: workflow.currentRow?.studyDescription,
+    reportTitle: workflow.currentRow?.studyDescription ?? undefined,
     protectedQuickFindingLabels: protectedQuickLabels,
   });
 
@@ -1995,6 +1995,11 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       if (res.impression) useWorkspace.getState().setGhostText(res.impression, "impression");
     } catch (err) { console.warn("[Workspace] AI impression:", err); }
   }, [workflow.currentRow]);
+
+  useEffect(() => {
+    useWorkspace.setState({ triggerAiImpression });
+    return () => useWorkspace.setState({ triggerAiImpression: undefined });
+  }, [triggerAiImpression]);
 
   // ─── Word/PDF export (legacy layout path + Classic/Premium) ────────────────
   const { data: presentationTemplates } = useQuery<PresentationTemplatesPayload>({
@@ -4118,7 +4123,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         <div className="flex items-center gap-2">
           {study?.criticalFlag && <Badge variant="outline" className="text-[9px] bg-rose-50 text-rose-700 border-rose-200"><AlertTriangle className="h-2.5 w-2.5 mr-0.5" />Critical</Badge>}
           {preloadTriggered && <Badge variant="outline" className="text-[9px] bg-sky-50 text-sky-700 border-sky-200"><Zap className="h-2.5 w-2.5 mr-0.5" />Preloaded</Badge>}
-          {(readingSession as any)?.autoAdvance && <Badge variant="outline" className="text-[9px] bg-emerald-50 text-emerald-700 border-emerald-200"><ChevronRight className="h-2.5 w-2.5 mr-0.5" />Auto-advance</Badge>}
+          {readingSession.enabled && <Badge variant="outline" className="text-[9px] bg-emerald-50 text-emerald-700 border-emerald-200"><ChevronRight className="h-2.5 w-2.5 mr-0.5" />Auto-advance</Badge>}
           <span className="text-emerald-600 font-semibold flex items-center gap-1"><CheckCircle2 className="h-3 w-3" /> Zero-Click Read Loop</span>
         </div>
       </footer>
@@ -4184,7 +4189,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
           <div className="flex items-center gap-2 rounded-full bg-gradient-to-r from-emerald-500 via-emerald-600 to-emerald-700 px-4 py-2 text-white shadow-2xl shadow-emerald-500/40 ring-2 ring-emerald-300/50">
             <ShieldCheck className="h-4 w-4" />
             <span className="text-sm font-semibold">Report signed & delivered</span>
-            {readingSession?.autoAdvance !== false && <><span className="text-[10px] opacity-80">· auto-advancing...</span>
+            {readingSession.enabled && <><span className="text-[10px] opacity-80">· auto-advancing...</span>
             <ChevronRight className="h-4 w-4 animate-pulse" /></>}
           </div>
         </div>
