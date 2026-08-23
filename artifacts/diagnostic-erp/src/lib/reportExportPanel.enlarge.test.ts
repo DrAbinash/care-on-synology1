@@ -10,7 +10,7 @@ const src = readFileSync(
 describe("ReportExportPanel — enlarge preview before finalize", () => {
   it("exposes a compact-preview enlarge control without a full-bleed overlay", () => {
     expect(src).toContain('data-testid="report-layout-preview-enlarge"');
-    expect(src).toContain("Click to enlarge");
+    expect(src).toContain("Print Preview");
     // Full-bleed overlay over the preview steals wheel → parent column scrolls.
     expect(src).not.toMatch(
       /report-layout-preview-inline-scroll[\s\S]{0,500}absolute inset-0[\s\S]{0,200}report-layout-preview-enlarge/,
@@ -26,7 +26,7 @@ describe("ReportExportPanel — enlarge preview before finalize", () => {
   it("exposes Enlarge actions in the toolbar", () => {
     expect(src).toContain('data-testid="report-layout-preview-enlarge-btn"');
     expect(src).toContain('data-testid="report-layout-preview-enlarge-header"');
-    expect(src).toMatch(/report-layout-preview-enlarge-header[\s\S]{0,400}Enlarge/);
+    expect(src).toMatch(/report-layout-preview-enlarge-header[\s\S]{0,400}Print Preview/);
   });
 
   it("keeps enlarged preview scroll on the outer pane (iframe does not eat wheel)", () => {

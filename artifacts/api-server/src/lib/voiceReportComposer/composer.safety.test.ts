@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { deterministicCompose } from "./composer";
 import { validateChangePlan } from "./validator";
 import { normalizeComposerTranscript, extractLevels } from "./transcriptNormalize";
+import { changePlan, observation } from "./schema";
 
 describe("voiceReportComposer safety", () => {
   const normalLs =
@@ -44,8 +45,8 @@ describe("voiceReportComposer safety", () => {
     const norm = normalizeComposerTranscript(
       "Diffuse disc bulge at L4-5 correction L3-4 and L4-5",
       [
-        { id: "a", concept: "disc_bulge", level: "L3-L4", findingsText: "bulge L3-4" },
-        { id: "b", concept: "disc_bulge", level: "L4-L5", findingsText: "bulge L4-5" },
+        observation({ id: "a", concept: "disc_bulge", level: "L3-L4", findingsText: "bulge L3-4" }),
+        observation({ id: "b", concept: "disc_bulge", level: "L4-L5", findingsText: "bulge L4-5" }),
       ],
     );
     expect(norm.clarificationRequired).toBeTruthy();
@@ -55,23 +56,20 @@ describe("voiceReportComposer safety", () => {
     const plan = deterministicCompose({
       transcript: "No hemorrhage.",
       region: "Brain",
-      priorObservations: [{
+      priorObservations: [observation({
         id: "h1",
         concept: "hemorrhage",
         findingsText: "Acute hemorrhage in basal ganglia.",
-      }],
+      })],
     });
     expect(plan?.observations[0]?.operation).toBe("remove");
   });
 
   it("normal findings cannot generate abnormal impression", () => {
     const v = validateChangePlan({
-      plan: {
-        operation: "report_change_plan",
-        observations: [],
+      plan: changePlan({
         impressionUpdate: "Diffuse disc bulge at L4-L5 with stenosis.",
-        uncertainties: [],
-      },
+      }),
       findingsText: normalLs,
       impressionText: "",
       generateImpressionOnly: true,
@@ -81,12 +79,9 @@ describe("voiceReportComposer safety", () => {
 
   it("impression laterality must match findings", () => {
     const v = validateChangePlan({
-      plan: {
-        operation: "report_change_plan",
-        observations: [],
+      plan: changePlan({
         impressionUpdate: "Left MCA territory infarct.",
-        uncertainties: [],
-      },
+      }),
       findingsText: "Right MCA territory restricted diffusion.",
       impressionText: "",
       generateImpressionOnly: true,

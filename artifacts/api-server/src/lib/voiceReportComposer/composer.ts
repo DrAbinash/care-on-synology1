@@ -4,7 +4,13 @@
 import { validateOllamaUrl } from "../ssrf/ollamaUrlGuard";
 import { buildComposerPrompt, type ComposerContextInput } from "./contextBuilder";
 import { catalogForPrompt, fillLevelInPhrase, matchCatalogPhrases } from "./phraseCatalog";
-import { parseChangePlanJson, type VoiceChangePlan, type VoiceObservation } from "./schema";
+import {
+  changePlan,
+  observation,
+  parseChangePlanJson,
+  type VoiceChangePlan,
+  type VoiceObservation,
+} from "./schema";
 import { validateChangePlan } from "./validator";
 import { buildDiagnostics, type ComposerDiagnostics } from "./diagnostics";
 import { extractLevels, normalizeComposerTranscript } from "./transcriptNormalize";
@@ -25,12 +31,7 @@ const SYNTHETIC_TEST_TRANSCRIPT =
 export function deterministicCompose(ctx: ComposerContextInput): VoiceChangePlan | null {
   const normalized = normalizeComposerTranscript(ctx.transcript, ctx.priorObservations);
   if (normalized.clarificationRequired) {
-    return {
-      operation: "report_change_plan",
-      observations: [],
-      uncertainties: [],
-      clarificationRequired: normalized.clarificationRequired,
-    };
+    return changePlan({ clarificationRequired: normalized.clarificationRequired });
   }
 
   const transcript = normalized.text.trim();
@@ -39,23 +40,18 @@ export function deterministicCompose(ctx: ComposerContextInput): VoiceChangePlan
   if (normalized.isNegation) {
     const last = ctx.priorObservations?.slice(-1)[0];
     if (!last) {
-      return {
-        operation: "report_change_plan",
-        observations: [],
-        uncertainties: [],
+      return changePlan({
         clarificationRequired: "Nothing to negate — no prior observation",
-      };
+      });
     }
-    return {
-      operation: "report_change_plan",
-      observations: [{
+    return changePlan({
+      observations: [observation({
         concept: last.concept,
         operation: "remove",
         targetObservationId: last.id,
         findingsText: last.findingsText,
-      }],
-      uncertainties: [],
-    };
+      })],
+    });
   }
 
   if (ctx.generateImpressionOnly) {
@@ -64,13 +60,10 @@ export function deterministicCompose(ctx: ComposerContextInput): VoiceChangePlan
       .map((s) => s.trim())
       .filter((s) => s && !/\b(normal|unremarkable|maintained|no acute)\b/i.test(s));
     if (!lines.length) return null;
-    return {
-      operation: "report_change_plan",
-      observations: [],
+    return changePlan({
       impressionUpdate: lines.slice(0, 4).join(" "),
-      uncertainties: [],
       clarificationRequired: null,
-    };
+    });
   }
 
   if (normalized.correctionLevel && ctx.priorObservations?.length) {
@@ -83,9 +76,8 @@ export function deterministicCompose(ctx: ComposerContextInput): VoiceChangePlan
       const findingsText = hit
         ? fillLevelInPhrase(hit.findingsText, normalized.correctionLevel)
         : transcript;
-      return {
-        operation: "report_change_plan",
-        observations: [{
+      return changePlan({
+        observations: [observation({
           id: target.id,
           concept: target.concept,
           level: normalized.correctionLevel,
@@ -94,9 +86,8 @@ export function deterministicCompose(ctx: ComposerContextInput): VoiceChangePlan
           targetObservationId: target.id,
           anatomicalSection: hit?.anatomicalSection ?? target.anatomicalSection,
           conflictGroup: hit?.conflictGroup ?? target.conflictGroup,
-        }],
-        uncertainties: [],
-      };
+        })],
+      });
     }
   }
 
@@ -107,7 +98,7 @@ export function deterministicCompose(ctx: ComposerContextInput): VoiceChangePlan
   for (const hit of catalogHits) {
     if (levels.length > 1 && /disc|bulge|desiccation/i.test(hit.concept)) {
       for (const lv of levels) {
-        observations.push({
+        observations.push(observation({
           id: `obs_${hit.concept}_${lv}`,
           concept: hit.concept,
           level: lv,
@@ -117,11 +108,11 @@ export function deterministicCompose(ctx: ComposerContextInput): VoiceChangePlan
           conflictGroup: `${hit.conflictGroup ?? hit.anatomicalSection}_${lv}`,
           baselineReplaces: hit.baselineReplaces,
           operation: "add",
-        });
+        }));
       }
     } else {
       const level = levels[0] ?? null;
-      observations.push({
+      observations.push(observation({
         id: `obs_${hit.concept}`,
         concept: hit.concept,
         level,
@@ -133,14 +124,14 @@ export function deterministicCompose(ctx: ComposerContextInput): VoiceChangePlan
           : hit.conflictGroup,
         baselineReplaces: hit.baselineReplaces,
         operation: "add",
-      });
+      }));
     }
   }
 
   if (/desiccation/i.test(transcript) && levels.length) {
     for (const lv of levels) {
       if (!observations.some((o) => o.level === lv && o.concept === "disc_desiccation")) {
-        observations.push({
+        observations.push(observation({
           id: `obs_desiccation_${lv}`,
           concept: "disc_desiccation",
           level: lv,
@@ -148,7 +139,7 @@ export function deterministicCompose(ctx: ComposerContextInput): VoiceChangePlan
           anatomicalSection: "disc",
           conflictGroup: `disc_${lv}`,
           operation: "add",
-        });
+        }));
       }
     }
   }
@@ -156,7 +147,7 @@ export function deterministicCompose(ctx: ComposerContextInput): VoiceChangePlan
   if (/modic/i.test(transcript) && levels.length) {
     const grade = transcript.match(/type\s*(I{1,3}|\d)/i)?.[1] ?? "II";
     for (const lv of levels) {
-      observations.push({
+      observations.push(observation({
         id: `obs_modic_${lv}`,
         concept: "modic_changes",
         level: lv,
@@ -164,22 +155,20 @@ export function deterministicCompose(ctx: ComposerContextInput): VoiceChangePlan
         anatomicalSection: "disc",
         conflictGroup: `modic_${lv}`,
         operation: "add",
-      });
+      }));
     }
   }
 
   if (!observations.length) return null;
 
-  return {
-    operation: "report_change_plan",
+  return changePlan({
     observations,
     removeConflictingBaselineConcepts: observations
       .map((o) => o.baselineReplaces)
       .filter(Boolean) as string[],
     impressionCandidates: observations.map((o) => o.impressionText).filter(Boolean) as string[],
-    uncertainties: [],
     clarificationRequired: null,
-  };
+  });
 }
 
 async function ollamaGenerateJson(

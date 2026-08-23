@@ -30,8 +30,28 @@ export const VoiceChangePlanSchema = z.object({
   clarificationRequired: z.string().nullable().optional(),
 });
 
-export type VoiceObservation = z.infer<typeof VoiceObservationSchema>;
-export type VoiceChangePlan = z.infer<typeof VoiceChangePlanSchema>;
+/** Parsed/normalized observation (defaults applied). */
+export type VoiceObservation = z.output<typeof VoiceObservationSchema>;
+/** Parsed/normalized change plan (defaults applied). */
+export type VoiceChangePlan = z.output<typeof VoiceChangePlanSchema>;
+/** Construction-friendly input — defaults filled by parse helpers. */
+export type VoiceObservationInput = z.input<typeof VoiceObservationSchema>;
+export type VoiceChangePlanInput = z.input<typeof VoiceChangePlanSchema>;
+
+export function observation(partial: VoiceObservationInput): VoiceObservation {
+  return VoiceObservationSchema.parse(partial);
+}
+
+export function changePlan(
+  partial: Omit<VoiceChangePlanInput, "operation"> & { operation?: "report_change_plan" },
+): VoiceChangePlan {
+  return VoiceChangePlanSchema.parse({
+    operation: "report_change_plan",
+    observations: [],
+    uncertainties: [],
+    ...partial,
+  });
+}
 
 export const VOICE_COMPOSER_JSON_SCHEMA = {
   type: "object",

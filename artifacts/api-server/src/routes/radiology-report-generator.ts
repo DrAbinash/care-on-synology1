@@ -2089,7 +2089,14 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
         .where(eq(radiologyReportPreferencesTable.userId, Number(userId)))
         .limit(1);
       if (prefs && !prefs.showLetterpadHeader) {
-        template.headerCfg = { ...template.headerCfg, show: false, showLogo: false };
+        template.headerCfg = {
+          show: false,
+          showLogo: false,
+          showTagline: template.headerCfg?.showTagline ?? false,
+          showContact: template.headerCfg?.showContact ?? false,
+          style: template.headerCfg?.style ?? "banded",
+          logoPosition: template.headerCfg?.logoPosition,
+        };
       }
     }
   } catch { /* non-fatal: header shows as normal */ }
