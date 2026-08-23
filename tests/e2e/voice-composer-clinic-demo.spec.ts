@@ -27,10 +27,18 @@ async function staffLogin(page: import("@playwright/test").Page) {
   await expect(page).not.toHaveURL(/staff-login/, { timeout: 15_000 });
 }
 
+async function openRegionSection(page: import("@playwright/test").Page) {
+  await page.getByTestId("report-section-region").waitFor({ state: "attached", timeout: 20_000 });
+  const regionBody = page.getByTestId("report-section-body-region");
+  if (!(await regionBody.isVisible())) {
+    await page.keyboard.press("Alt+3");
+    await expect(regionBody).toBeVisible({ timeout: 10_000 });
+  }
+}
+
 async function selectStudyRegion(page: import("@playwright/test").Page, region: string) {
-  await page.getByTestId("study-setup-strip").waitFor({ state: "visible", timeout: 20_000 });
-  const regionSelect = page.getByTestId("region-select");
-  await regionSelect.selectOption(region);
+  await openRegionSection(page);
+  await page.getByTestId("region-select").selectOption(region);
   await page.waitForTimeout(500);
 }
 
