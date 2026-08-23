@@ -152,6 +152,7 @@ const ScannerSettings = lazy(() => import("@/pages/ScannerSettings"));
 const RadiologyQuickSelectSettings = lazy(() => import("@/pages/RadiologyQuickSelectSettings"));
 const RadiologyOperationsDashboard = lazy(() => import("@/pages/RadiologyOperationsDashboard"));
 const OperationalHealth = lazy(() => import("@/pages/OperationalHealth"));
+const ElectronicFilmSettings = lazy(() => import("@/pages/ElectronicFilmSettings"));
 const RadiologyKnowledgePackManager = lazy(() => import("@/pages/RadiologyKnowledgePackManager"));
 const RadiologyCatalogAdmin = lazy(() => import("@/pages/RadiologyCatalogAdmin"));
 const ClinicalRecommendationRegistryManager = lazy(() => import("@/pages/ClinicalRecommendationRegistryManager"));
@@ -536,6 +537,9 @@ function Router() {
                   tab). Old bookmarks land on the hub. */}
               <Route path="/radiology/pacs-settings">
                 {() => <AdminOnlySettings><RadiologySettingsCenter /></AdminOnlySettings>}
+              </Route>
+              <Route path="/radiology/electronic-film-settings">
+                {() => <AdminOnlySettings><ElectronicFilmSettings /></AdminOnlySettings>}
               </Route>
               <Route path="/radiology/network-control-center" component={NetworkControlCenter} />
               <Route path="/radiology/pacs-logs" component={PacsLogs} />

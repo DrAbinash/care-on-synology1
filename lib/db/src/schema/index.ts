@@ -174,6 +174,7 @@ export * from "./serviceCatalogueMappings";
 export * from "./diagnosticReferrals";
 export * from "./integrationOutbox";
 export * from "./externalResultLinks";
+export * from "./electronicFilmArtifacts";
 // ── ABDM / ABHA national health stack integration (additive scaffold) ────────
 export * from "./abdm";
 // ── PCPNDT self-referral OPD auto-prescriptions ─────────────────────────────

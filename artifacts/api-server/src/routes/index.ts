@@ -133,6 +133,7 @@ import { uploadsRouter } from "./uploads";
 import { scansRouter } from "./scans";
 import { radiologyReportGeneratorRouter } from "./radiology-report-generator";
 import { radiologyReportAttachmentsRouter } from "./radiology-report-attachments";
+import electronicFilmRouter, { electronicFilmPublicRouter } from "./electronic-film";
 import { radiologyFindingLibraryRouter } from "./radiology-finding-library";
 import { structuredReportTemplatesRouter } from "./structuredReportTemplates";
 import { floorsRouter, roomsRouter, modalitiesRouter } from "./locations";
@@ -871,6 +872,15 @@ router.use(
   requireStaffAuth,
   requireStaffPermission("/radiology"),
   radiologyReportAttachmentsRouter,
+);
+
+router.use("/electronic-film/public", electronicFilmPublicRouter);
+
+router.use(
+  "/electronic-film",
+  requireStaffAuth,
+  requireStaffPermission("/radiology"),
+  electronicFilmRouter,
 );
 
 // Editable findings library (Report Builder) — add/modify/delete abnormal

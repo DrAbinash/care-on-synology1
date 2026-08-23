@@ -96,6 +96,7 @@ import {
   reportLayoutTemplateQuery,
 } from "@/components/radiology/ReportLayoutQuickSelect";
 import ReportExportPanel from "@/components/radiology/ReportExportPanel";
+import { ElectronicFilmPanel } from "@/components/radiology/ElectronicFilmPanel";
 import { validateReport, computeQualityScore } from "@/lib/reportValidator";
 import { logParityInDev } from "@/lib/reportQualityShadow";
 import { formatQualityAdvisoryForDialog } from "@/lib/reportQualityFinalize";
@@ -3927,6 +3928,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                     {/* 9. REPORT / LAYOUT / EXPORT — Classic/Premium, preview,
                          Enlarge, Word, PDF, print controls (unchanged renderer). */}
                     <ReportAccordionSection {...accordionProps("report")}>
+                    {studyId ? <div className="mb-2"><ElectronicFilmPanel studyId={studyId} /></div> : null}
                     <ReportExportPanel
                       draftId={draftId ?? null}
                       linkedReportId={linkedReportId}

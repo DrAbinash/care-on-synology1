@@ -15,6 +15,8 @@ import { dispatchPendingOutbox } from "./outbox";
 import { reconcileResults } from "./resultsEmitter";
 import { reconcileStatuses } from "./statusReconciler";
 import { escalateCriticalResults } from "./criticalEscalation";
+import { pollElectronicFilmJobs } from "../electronicFilm/poller";
+import { getElectronicFilmSettings } from "../electronicFilm/settings";
 
 let flagCache: { value: boolean; at: number } | null = null;
 export async function integrationEnabled(): Promise<boolean> {
@@ -56,11 +58,23 @@ export async function tickReconcile(): Promise<void> {
   }
 }
 
+export async function tickElectronicFilmPoll(): Promise<void> {
+  try {
+    const settings = await getElectronicFilmSettings();
+    if (!settings.integrationEnabled || !settings.autoImport) return;
+    const r = await pollElectronicFilmJobs();
+    if (r.discovered || r.imported || r.errors) console.log("[electronic-film] poll", r);
+  } catch (e) {
+    console.error("[electronic-film] poll failed:", (e as Error)?.message);
+  }
+}
+
 let started = false;
 export function startIntegrationScheduler(): void {
   if (started) return;
   started = true;
   cron.schedule("* * * * *", tickOutbox); // outbox dispatch — every minute
   cron.schedule("*/5 * * * *", tickReconcile); // results reconcile — every 5 min
-  console.log("[integration] scheduler started (outbox dispatch + results reconcile)");
+  cron.schedule("*/2 * * * *", tickElectronicFilmPoll); // electronic film poll — every 2 min
+  console.log("[integration] scheduler started (outbox dispatch + results reconcile + electronic film poll)");
 }
