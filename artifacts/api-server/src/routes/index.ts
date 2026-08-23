@@ -150,6 +150,7 @@ import { radiologyBrainIntelligenceRouter } from "./radiologyBrainIntelligence";
 import { radiologyTumorFollowupRouter } from "./radiologyTumorFollowup";
 import { radiologyAnnotationsRouter } from "./radiologyAnnotations";
 import { radiologyOllamaRouter } from "./radiologyOllama";
+import { voiceReportComposerRouter } from "./voiceReportComposer";
 import { aiPipelineHealthRouter } from "./aiPipelineHealth";
 import { radiologySnippetsRouter } from "./radiologySnippets";
 import { radiologyReportFormatsRouter } from "./radiologyReportFormats";
@@ -1000,6 +1001,7 @@ router.use("/radiology-tumor", requireStaffAuth, radiologyTumorFollowupRouter);
 // Phase 10C: AI Research Platform — Annotations, Ollama local models
 router.use("/radiology-annotations", requireStaffAuth, radiologyAnnotationsRouter);
 router.use("/radiology-ollama", requireStaffAuth, radiologyOllamaRouter);
+router.use("/radiology/voice-report-composer", requireStaffAuth, voiceReportComposerRouter);
 
 // AI endpoints — each sub-route applies its own requireStaffPermission matching
 // the data domain it accesses (patients PHI, billing records, or radiology

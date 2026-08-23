@@ -23,7 +23,8 @@ export type InsertSource =
   | "structured-template-candidate"
   | "macro"
   | "companion"
-  | "ai-draft";
+  | "ai-draft"
+  | "radiologist-voice";
 
 /** normalizeForDedupe(sentence) → contributing sources (deduped, stable order). */
 export type FieldProvenanceMap = Record<string, InsertSource[]>;
@@ -59,6 +60,7 @@ const SOURCE_ORDER: InsertSource[] = [
   "macro",
   "companion",
   "ai-draft",
+  "radiologist-voice",
 ];
 
 const SOURCE_LABELS: Record<InsertSource, string> = {
@@ -74,6 +76,7 @@ const SOURCE_LABELS: Record<InsertSource, string> = {
   macro: "Macro",
   companion: "Companion",
   "ai-draft": "AI Draft",
+  "radiologist-voice": "Voice (radiologist)",
 };
 
 /** Normalize for duplicate detection: lowercase, strip punctuation, collapse whitespace. */

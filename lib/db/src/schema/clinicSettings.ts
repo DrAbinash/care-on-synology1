@@ -252,6 +252,12 @@ export const clinicSettingsTable = pgTable("clinic_settings", {
   // Cached list of models pulled on the Ollama instance — synced server-side
   // so every clinic workstation shows the dropdown without needing to "Test Connection".
   ollamaKnownModels: text("ollama_known_models").notNull().default("[]"),
+  /** Task-specific text model for Voice Report Composer (does not affect vision/OCR). */
+  ollamaComposerModel: text("ollama_composer_model"),
+  ollamaComposerFallbackModel: text("ollama_composer_fallback_model"),
+  ollamaComposerNumCtx: integer("ollama_composer_num_ctx").notNull().default(4096),
+  ollamaComposerTemperature: numeric("ollama_composer_temperature", { precision: 4, scale: 2 }).notNull().default("0.10"),
+  ollamaComposerTimeoutSeconds: integer("ollama_composer_timeout_seconds").notNull().default(45),
 
   // Online booking granular settings (Phase 4)
   onlineBookingServices: text("online_booking_services").notNull().default("{\"opd\":true,\"emergency\":true,\"usg\":true,\"xray\":true,\"ct\":true,\"mri\":true,\"pathology\":true,\"packages\":true,\"home_collection\":true,\"doctor\":true}"),

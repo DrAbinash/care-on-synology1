@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import type { VoiceSession } from "@/hooks/useVoiceSession";
 import type { VoiceSafetyClass } from "@/lib/voiceSafetyPolicy";
+import VoiceComposerPreviewPanel from "@/components/radiology/VoiceComposerPreview";
 
 const SAFETY_CHIP: Record<VoiceSafetyClass, { label: string; cls: string }> = {
   SAFE_IMMEDIATE: { label: "safe", cls: "bg-slate-100 text-slate-700 border-slate-300" },
@@ -23,10 +24,22 @@ const SAFETY_CHIP: Record<VoiceSafetyClass, { label: string; cls: string }> = {
 export default function VoiceCommandBar({
   voice,
   embedded = false,
+  composerPreview,
+  composerComposing,
+  composerError,
+  onComposerApply,
+  onComposerDiscard,
+  onComposerEditRaw,
 }: {
   voice: VoiceSession;
   /** Render controls inline (no second full-width toolbar row). */
   embedded?: boolean;
+  composerPreview?: import("@/hooks/useVoiceComposer").VoiceComposerPreview | null;
+  composerComposing?: boolean;
+  composerError?: string | null;
+  onComposerApply?: () => void;
+  onComposerDiscard?: () => void;
+  onComposerEditRaw?: () => void;
 }) {
   const [helpOpen, setHelpOpen] = useState(false);
 
@@ -244,6 +257,18 @@ export default function VoiceCommandBar({
       )}
 
       {/* Help popover — the grammar, straight from the parser */}
+      {/* Voice Report Composer preview */}
+      {(composerPreview || composerComposing || composerError) && (
+        <VoiceComposerPreviewPanel
+          preview={composerPreview ?? null}
+          composing={composerComposing ?? false}
+          error={composerError ?? null}
+          onApply={() => onComposerApply?.()}
+          onDiscard={() => onComposerDiscard?.()}
+          onEditRaw={onComposerEditRaw}
+        />
+      )}
+
       {helpOpen && (
         <div className="px-3 py-2 border-t bg-background max-h-[220px] overflow-y-auto" data-testid="voice-help-panel">
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-1">
