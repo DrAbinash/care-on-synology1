@@ -6,35 +6,57 @@ import { buildComposerPrompt, type ComposerContextInput } from "./contextBuilder
 import { catalogForPrompt, fillLevelInPhrase, matchCatalogPhrases } from "./phraseCatalog";
 import { parseChangePlanJson, type VoiceChangePlan, type VoiceObservation } from "./schema";
 import { validateChangePlan } from "./validator";
+import { buildDiagnostics, type ComposerDiagnostics } from "./diagnostics";
+import { extractLevels, normalizeComposerTranscript } from "./transcriptNormalize";
 
 export type ComposeResult = {
   ok: boolean;
   plan?: VoiceChangePlan;
   error?: string;
-  diagnostics?: {
-    provider: "ollama";
-    model: string;
-    fallbackUsed?: boolean;
-    latencyMs: number;
-    validationMs: number;
-    transcript: string;
-  };
+  diagnostics?: ComposerDiagnostics;
 };
 
 const V1_REGIONS = /brain|ls spine|lumbo|lumbar spine/i;
 
-function levelFromTranscript(transcript: string): string | null {
-  const m = transcript.match(/\bL(\d)\s*[-–]\s*L(\d)\b/i) ?? transcript.match(/\bL(\d)-(\d)\b/i);
-  if (m) return `L${m[1]}-L${m[2]}`;
-  const single = transcript.match(/\bL(\d)\s*[-–]\s*(\d)\b/i);
-  if (single) return `L${single[1]}-L${single[2]}`;
-  return null;
-}
+const SYNTHETIC_TEST_TRANSCRIPT =
+  "Disc desiccation at L3-4 and L4-5 with mild diffuse disc bulge at L4-5.";
 
-/** Deterministic fallback when Ollama unavailable — spine/brain phrase patterns only. */
+/** Deterministic phrase catalog — tests/demo/explicit radiologist phrase fallback only. */
 export function deterministicCompose(ctx: ComposerContextInput): VoiceChangePlan | null {
-  const transcript = ctx.transcript.trim();
+  const normalized = normalizeComposerTranscript(ctx.transcript, ctx.priorObservations);
+  if (normalized.clarificationRequired) {
+    return {
+      operation: "report_change_plan",
+      observations: [],
+      uncertainties: [],
+      clarificationRequired: normalized.clarificationRequired,
+    };
+  }
+
+  const transcript = normalized.text.trim();
   if (!transcript) return null;
+
+  if (normalized.isNegation) {
+    const last = ctx.priorObservations?.slice(-1)[0];
+    if (!last) {
+      return {
+        operation: "report_change_plan",
+        observations: [],
+        uncertainties: [],
+        clarificationRequired: "Nothing to negate — no prior observation",
+      };
+    }
+    return {
+      operation: "report_change_plan",
+      observations: [{
+        concept: last.concept,
+        operation: "remove",
+        targetObservationId: last.id,
+        findingsText: last.findingsText,
+      }],
+      uncertainties: [],
+    };
+  }
 
   if (ctx.generateImpressionOnly) {
     const lines = (ctx.findingsText ?? "")
@@ -51,29 +73,72 @@ export function deterministicCompose(ctx: ComposerContextInput): VoiceChangePlan
     };
   }
 
-  const catalogHits = matchCatalogPhrases(transcript);
-  const observations: VoiceObservation[] = [];
-  const level = levelFromTranscript(transcript);
-
-  for (const hit of catalogHits) {
-    observations.push({
-      id: `obs_${hit.concept}`,
-      concept: hit.concept,
-      level,
-      findingsText: fillLevelInPhrase(hit.findingsText, level),
-      impressionText: hit.impressionText ? fillLevelInPhrase(hit.impressionText, level) : undefined,
-      anatomicalSection: hit.anatomicalSection,
-      conflictGroup: hit.conflictGroup,
-      baselineReplaces: hit.baselineReplaces,
-      operation: "add",
-    });
+  if (normalized.correctionLevel && ctx.priorObservations?.length) {
+    const target = ctx.priorObservations.find((o) =>
+      o.concept.includes("disc") || o.concept.includes("bulge"),
+    );
+    if (target) {
+      const catalogHits = matchCatalogPhrases(transcript);
+      const hit = catalogHits[0];
+      const findingsText = hit
+        ? fillLevelInPhrase(hit.findingsText, normalized.correctionLevel)
+        : transcript;
+      return {
+        operation: "report_change_plan",
+        observations: [{
+          id: target.id,
+          concept: target.concept,
+          level: normalized.correctionLevel,
+          findingsText,
+          operation: "update",
+          targetObservationId: target.id,
+          anatomicalSection: hit?.anatomicalSection ?? target.anatomicalSection,
+          conflictGroup: hit?.conflictGroup ?? target.conflictGroup,
+        }],
+        uncertainties: [],
+      };
+    }
   }
 
-  // Parse explicit levels in transcript for desiccation etc.
-  const levelMatches = [...transcript.matchAll(/\bL(\d)\s*[-–]\s*L(\d)\b/gi)];
-  if (/desiccation/i.test(transcript) && levelMatches.length) {
-    for (const m of levelMatches) {
-      const lv = `L${m[1]}-L${m[2]}`;
+  const catalogHits = matchCatalogPhrases(transcript);
+  const observations: VoiceObservation[] = [];
+  const levels = extractLevels(transcript);
+
+  for (const hit of catalogHits) {
+    if (levels.length > 1 && /disc|bulge|desiccation/i.test(hit.concept)) {
+      for (const lv of levels) {
+        observations.push({
+          id: `obs_${hit.concept}_${lv}`,
+          concept: hit.concept,
+          level: lv,
+          findingsText: fillLevelInPhrase(hit.findingsText, lv),
+          impressionText: hit.impressionText ? fillLevelInPhrase(hit.impressionText, lv) : undefined,
+          anatomicalSection: hit.anatomicalSection,
+          conflictGroup: `${hit.conflictGroup ?? hit.anatomicalSection}_${lv}`,
+          baselineReplaces: hit.baselineReplaces,
+          operation: "add",
+        });
+      }
+    } else {
+      const level = levels[0] ?? null;
+      observations.push({
+        id: `obs_${hit.concept}`,
+        concept: hit.concept,
+        level,
+        findingsText: fillLevelInPhrase(hit.findingsText, level),
+        impressionText: hit.impressionText ? fillLevelInPhrase(hit.impressionText, level) : undefined,
+        anatomicalSection: hit.anatomicalSection,
+        conflictGroup: level
+          ? `${hit.conflictGroup ?? hit.anatomicalSection}_${level}`
+          : hit.conflictGroup,
+        baselineReplaces: hit.baselineReplaces,
+        operation: "add",
+      });
+    }
+  }
+
+  if (/desiccation/i.test(transcript) && levels.length) {
+    for (const lv of levels) {
       if (!observations.some((o) => o.level === lv && o.concept === "disc_desiccation")) {
         observations.push({
           id: `obs_desiccation_${lv}`,
@@ -81,10 +146,25 @@ export function deterministicCompose(ctx: ComposerContextInput): VoiceChangePlan
           level: lv,
           findingsText: `Disc desiccation at ${lv} with reduced T2 signal.`,
           anatomicalSection: "disc",
-          conflictGroup: "disc",
+          conflictGroup: `disc_${lv}`,
           operation: "add",
         });
       }
+    }
+  }
+
+  if (/modic/i.test(transcript) && levels.length) {
+    const grade = transcript.match(/type\s*(I{1,3}|\d)/i)?.[1] ?? "II";
+    for (const lv of levels) {
+      observations.push({
+        id: `obs_modic_${lv}`,
+        concept: "modic_changes",
+        level: lv,
+        findingsText: `Modic type ${grade} endplate changes at ${lv}.`,
+        anatomicalSection: "disc",
+        conflictGroup: `modic_${lv}`,
+        operation: "add",
+      });
     }
   }
 
@@ -136,15 +216,53 @@ async function ollamaGenerateJson(
 
 export async function composeVoiceChangePlan(
   ctx: ComposerContextInput,
-  opts?: { allowDeterministicFallback?: boolean },
+  opts?: {
+    requestId?: string;
+    usePhraseFallback?: boolean;
+  },
 ): Promise<ComposeResult> {
   const t0 = Date.now();
+  const requestId = opts?.requestId ?? "local";
   const { resolveComposerRuntime } = await import("./runtimeConfig");
   const runtime = await resolveComposerRuntime();
 
-  if (!V1_REGIONS.test(ctx.region ?? "")) {
-    return { ok: false, error: "Voice composer V1 supports MRI Brain and LS Spine only" };
+  const region = ctx.region ?? "";
+  const transcriptLength = ctx.transcript.trim().length;
+
+  if (!V1_REGIONS.test(region)) {
+    return {
+      ok: false,
+      error: "Voice composer not yet supported for this study region (V1: MRI Brain and LS Spine only)",
+      diagnostics: buildDiagnostics({
+        requestId,
+        model: runtime.model || "none",
+        region,
+        transcriptLength,
+        latencyMs: Date.now() - t0,
+        validationOk: false,
+        endpointSource: runtime.endpointSource,
+      }),
+    };
   }
+
+  const normalized = normalizeComposerTranscript(ctx.transcript, ctx.priorObservations);
+  if (normalized.clarificationRequired) {
+    return {
+      ok: false,
+      error: normalized.clarificationRequired,
+      diagnostics: buildDiagnostics({
+        requestId,
+        model: runtime.model || "none",
+        region,
+        transcriptLength,
+        latencyMs: Date.now() - t0,
+        validationOk: false,
+        endpointSource: runtime.endpointSource,
+      }),
+    };
+  }
+
+  const effectiveCtx = { ...ctx, transcript: normalized.text };
 
   const validationInput = {
     findingsText: ctx.findingsText ?? "",
@@ -152,32 +270,93 @@ export async function composeVoiceChangePlan(
     generateImpressionOnly: ctx.generateImpressionOnly,
   };
 
-  if (!runtime.enabled || !runtime.model) {
-    if (opts?.allowDeterministicFallback) {
-      const det = deterministicCompose(ctx);
-      if (!det) return { ok: false, error: "Local composer unavailable — dictation preserved" };
-      const v = validateChangePlan({ plan: det, ...validationInput });
-      if (!v.ok) return { ok: false, error: v.reason ?? "Validation failed" };
+  if (opts?.usePhraseFallback) {
+    const det = deterministicCompose(effectiveCtx);
+    if (!det || det.clarificationRequired) {
       return {
-        ok: true,
-        plan: det,
-        diagnostics: {
-          provider: "ollama",
-          model: "deterministic",
+        ok: false,
+        error: det?.clarificationRequired ?? "Phrase fallback could not map dictation",
+        diagnostics: buildDiagnostics({
+          requestId,
+          model: "phrase_catalog",
+          region,
+          transcriptLength,
           latencyMs: Date.now() - t0,
-          validationMs: 0,
-          transcript: ctx.transcript,
-        },
+          validationOk: false,
+          phraseFallback: true,
+          endpointSource: runtime.endpointSource,
+        }),
       };
     }
-    return { ok: false, error: "Report Composer model not configured" };
+    const v = validateChangePlan({ plan: det, ...validationInput });
+    if (!v.ok) {
+      return {
+        ok: false,
+        error: v.reason ?? "Validation failed",
+        diagnostics: buildDiagnostics({
+          requestId,
+          model: "phrase_catalog",
+          region,
+          transcriptLength,
+          latencyMs: Date.now() - t0,
+          validationOk: false,
+          phraseFallback: true,
+          endpointSource: runtime.endpointSource,
+        }),
+      };
+    }
+    return {
+      ok: true,
+      plan: det,
+      diagnostics: buildDiagnostics({
+        requestId,
+        model: "phrase_catalog",
+        region,
+        transcriptLength,
+        latencyMs: Date.now() - t0,
+        validationOk: true,
+        schemaOk: true,
+        phraseFallback: true,
+        endpointSource: runtime.endpointSource,
+      }),
+    };
+  }
+
+  if (!runtime.enabled || !runtime.model) {
+    return {
+      ok: false,
+      error: "Report Composer model not configured — dictation preserved",
+      diagnostics: buildDiagnostics({
+        requestId,
+        model: "none",
+        region,
+        transcriptLength,
+        latencyMs: Date.now() - t0,
+        validationOk: false,
+        endpointSource: runtime.endpointSource,
+      }),
+    };
   }
 
   const guard = validateOllamaUrl(runtime.endpoint, runtime.localOnly);
-  if (!guard.ok) return { ok: false, error: guard.reason };
+  if (!guard.ok) {
+    return {
+      ok: false,
+      error: "Local composer unavailable — dictation preserved",
+      diagnostics: buildDiagnostics({
+        requestId,
+        model: runtime.model,
+        region,
+        transcriptLength,
+        latencyMs: Date.now() - t0,
+        validationOk: false,
+        endpointSource: runtime.endpointSource,
+      }),
+    };
+  }
 
-  const catalogBlock = catalogForPrompt(ctx.region ?? "");
-  const prompt = buildComposerPrompt(ctx, catalogBlock);
+  const catalogBlock = catalogForPrompt(region);
+  const prompt = buildComposerPrompt(effectiveCtx, catalogBlock);
   const endpoint = guard.url.origin;
 
   let raw = "";
@@ -186,75 +365,41 @@ export async function composeVoiceChangePlan(
 
   try {
     raw = await ollamaGenerateJson(endpoint, runtime.model, prompt, runtime);
-  } catch (primaryErr) {
+  } catch {
     if (runtime.fallbackModel) {
       try {
         raw = await ollamaGenerateJson(endpoint, runtime.fallbackModel, prompt, runtime);
         modelUsed = runtime.fallbackModel;
         fallbackUsed = true;
       } catch {
-        if (opts?.allowDeterministicFallback) {
-          const det = deterministicCompose(ctx);
-          if (det) {
-            const v = validateChangePlan({ plan: det, ...validationInput });
-            if (v.ok) {
-              return {
-                ok: true,
-                plan: det,
-                diagnostics: {
-                  provider: "ollama",
-                  model: "deterministic",
-                  latencyMs: Date.now() - t0,
-                  validationMs: 0,
-                  transcript: ctx.transcript,
-                },
-              };
-            }
-          }
-        }
         return {
           ok: false,
           error: "Local composer unavailable — dictation preserved",
-          diagnostics: {
-            provider: "ollama",
+          diagnostics: buildDiagnostics({
+            requestId,
             model: modelUsed,
-            fallbackUsed,
+            region,
+            transcriptLength,
             latencyMs: Date.now() - t0,
-            validationMs: 0,
-            transcript: ctx.transcript,
-          },
+            validationOk: false,
+            fallbackUsed,
+            endpointSource: runtime.endpointSource,
+          }),
         };
       }
     } else {
-      if (opts?.allowDeterministicFallback) {
-        const det = deterministicCompose(ctx);
-        if (det) {
-          const v = validateChangePlan({ plan: det, ...validationInput });
-          if (v.ok) {
-            return {
-              ok: true,
-              plan: det,
-              diagnostics: {
-                provider: "ollama",
-                model: "deterministic",
-                latencyMs: Date.now() - t0,
-                validationMs: 0,
-                transcript: ctx.transcript,
-              },
-            };
-          }
-        }
-      }
       return {
         ok: false,
         error: "Local composer unavailable — dictation preserved",
-        diagnostics: {
-          provider: "ollama",
+        diagnostics: buildDiagnostics({
+          requestId,
           model: modelUsed,
+          region,
+          transcriptLength,
           latencyMs: Date.now() - t0,
-          validationMs: 0,
-          transcript: ctx.transcript,
-        },
+          validationOk: false,
+          endpointSource: runtime.endpointSource,
+        }),
       };
     }
   }
@@ -265,14 +410,18 @@ export async function composeVoiceChangePlan(
     return {
       ok: false,
       error: "Invalid structured response — dictation preserved",
-      diagnostics: {
-        provider: "ollama",
+      diagnostics: buildDiagnostics({
+        requestId,
         model: modelUsed,
-        fallbackUsed,
+        region,
+        transcriptLength,
         latencyMs: tParse - t0,
         validationMs: 0,
-        transcript: ctx.transcript,
-      },
+        validationOk: false,
+        schemaOk: false,
+        fallbackUsed,
+        endpointSource: runtime.endpointSource,
+      }),
     };
   }
 
@@ -282,27 +431,37 @@ export async function composeVoiceChangePlan(
     return {
       ok: false,
       error: v.reason ?? "Validation failed",
-      diagnostics: {
-        provider: "ollama",
+      diagnostics: buildDiagnostics({
+        requestId,
         model: modelUsed,
-        fallbackUsed,
-        latencyMs: validationMs,
+        region,
+        transcriptLength,
+        latencyMs: Date.now() - t0,
         validationMs,
-        transcript: ctx.transcript,
-      },
+        validationOk: false,
+        schemaOk: true,
+        fallbackUsed,
+        endpointSource: runtime.endpointSource,
+      }),
     };
   }
 
   return {
     ok: true,
     plan,
-    diagnostics: {
-      provider: "ollama",
+    diagnostics: buildDiagnostics({
+      requestId,
       model: modelUsed,
-      fallbackUsed,
+      region,
+      transcriptLength,
       latencyMs: Date.now() - t0,
       validationMs,
-      transcript: ctx.transcript,
-    },
+      validationOk: true,
+      schemaOk: true,
+      fallbackUsed,
+      endpointSource: runtime.endpointSource,
+    }),
   };
 }
+
+export { SYNTHETIC_TEST_TRANSCRIPT };

@@ -3,9 +3,14 @@
  */
 import { Router } from "express";
 import { type StaffAuthRequest, FULL_ACCESS_ROLES } from "../middleware/requireStaffAuth";
-import { composeVoiceChangePlan, deterministicCompose } from "../lib/voiceReportComposer/composer";
+import {
+  composeVoiceChangePlan,
+  deterministicCompose,
+  SYNTHETIC_TEST_TRANSCRIPT,
+} from "../lib/voiceReportComposer/composer";
 import { resolveComposerRuntime } from "../lib/voiceReportComposer/runtimeConfig";
 import { validateChangePlan } from "../lib/voiceReportComposer/validator";
+import { newComposerRequestId } from "../lib/voiceReportComposer/diagnostics";
 import type { VoiceObservation } from "../lib/voiceReportComposer/schema";
 
 export const voiceReportComposerRouter = Router();
@@ -30,6 +35,7 @@ voiceReportComposerRouter.post("/compose", async (req, res): Promise<void> => {
     return;
   }
 
+  const requestId = newComposerRequestId();
   const priorObservations = Array.isArray(b.priorObservations)
     ? (b.priorObservations as VoiceObservation[])
     : undefined;
@@ -45,13 +51,17 @@ voiceReportComposerRouter.post("/compose", async (req, res): Promise<void> => {
     priorTranscript: b.priorTranscript ? String(b.priorTranscript) : undefined,
     priorObservations,
     generateImpressionOnly: b.generateImpressionOnly === true,
-  }, { allowDeterministicFallback: true });
+  }, {
+    requestId,
+    usePhraseFallback: b.usePhraseFallback === true,
+  });
 
   if (!result.ok) {
     res.json({
       ok: false,
       error: result.error,
       diagnostics: result.diagnostics,
+      phraseFallbackAvailable: !b.usePhraseFallback,
     });
     return;
   }
@@ -77,6 +87,7 @@ voiceReportComposerRouter.post("/compose", async (req, res): Promise<void> => {
       ok: false,
       error: clientValidation.reason ?? "Validation failed",
       diagnostics: result.diagnostics,
+      phraseFallbackAvailable: false,
     });
     return;
   }
@@ -87,77 +98,53 @@ voiceReportComposerRouter.post("/compose", async (req, res): Promise<void> => {
     diagnostics: result.diagnostics,
     provenance: {
       source: "radiologist-voice",
-      composer: "local_ai",
+      composer: result.diagnostics?.phraseFallback ? "phrase_catalog" : "local_ai",
       model: result.diagnostics?.model,
       fallbackUsed: result.diagnostics?.fallbackUsed ?? false,
+      requestId,
     },
   });
 });
 
-/** Safe test — no patient data. */
+/** Safe test — synthetic non-PHI transcript only. */
 voiceReportComposerRouter.post("/test", async (req, res): Promise<void> => {
   if (!canUse(req as StaffAuthRequest)) {
     res.status(403).json({ ok: false, error: "AI reporting permission required" });
     return;
   }
 
-  const b = (req.body ?? {}) as Record<string, unknown>;
-  const transcript =
-    String(b.transcript ?? "").trim() ||
-    "Disc desiccation at L3-4 and L4-5 with mild diffuse disc bulge at L4-5.";
-  const modelOverride = b.model ? String(b.model).trim() : undefined;
-
+  const requestId = newComposerRequestId();
   const runtime = await resolveComposerRuntime(true);
-  const region = String(b.region ?? "LS Spine");
-
+  const region = String((req.body as Record<string, unknown>)?.region ?? "LS Spine");
   const t0 = Date.now();
-  if (modelOverride) {
-    // Direct model test via compose path with temporary override isn't supported;
-    // use deterministic + schema validation for benchmark baseline.
-    const det = deterministicCompose({
-      transcript,
-      region,
-      findingsText: "Lumbar vertebrae show normal alignment and marrow signal. Disc spaces are maintained.",
-    });
-    const valid = det && validateChangePlan({
-      plan: det,
-      findingsText: "Lumbar vertebrae show normal alignment. Disc spaces are maintained.",
-      impressionText: "",
-    }).ok;
-    res.json({
-      ok: valid,
-      model: modelOverride,
-      schemaValid: valid,
-      latencyMs: Date.now() - t0,
-      changePlan: det,
-      message: valid ? "Schema validation passed (deterministic probe)" : "Schema validation failed",
-    });
-    return;
-  }
 
   const result = await composeVoiceChangePlan({
-    transcript,
+    transcript: SYNTHETIC_TEST_TRANSCRIPT,
     region,
     modality: "MR",
     findingsText: "Lumbar vertebrae show normal alignment and marrow signal. Disc spaces are maintained.",
-    generateImpressionOnly: b.generateImpressionOnly === true,
-  }, { allowDeterministicFallback: true });
+    generateImpressionOnly: (req.body as Record<string, unknown>)?.generateImpressionOnly === true,
+  }, { requestId });
 
   res.json({
     ok: result.ok,
+    endpoint: runtime.endpoint,
+    endpointSource: runtime.endpointSource,
     model: result.diagnostics?.model ?? runtime.model,
-    schemaValid: result.ok,
-    latencyMs: result.diagnostics?.latencyMs ?? Date.now() - t0,
-    validationMs: result.diagnostics?.validationMs ?? 0,
-    changePlan: result.plan,
-    error: result.error,
-    configured: runtime.enabled,
     visionModel: runtime.visionModel,
     composerModel: runtime.model,
+    configured: runtime.enabled,
+    schemaValid: result.diagnostics?.schemaOk ?? false,
+    validationOk: result.diagnostics?.validationOk ?? false,
+    latencyMs: result.diagnostics?.latencyMs ?? Date.now() - t0,
+    validationMs: result.diagnostics?.validationMs ?? 0,
+    requestId,
+    error: result.error,
+    phraseFallback: result.diagnostics?.phraseFallback ?? false,
   });
 });
 
-/** Admin benchmark — same transcript, two models (no auto winner). */
+/** Admin benchmark — deterministic catalog only (offline). */
 voiceReportComposerRouter.post("/benchmark", async (req, res): Promise<void> => {
   if (!canUse(req as StaffAuthRequest)) {
     res.status(403).json({ ok: false, error: "AI reporting permission required" });
@@ -165,9 +152,6 @@ voiceReportComposerRouter.post("/benchmark", async (req, res): Promise<void> => 
   }
 
   const b = (req.body ?? {}) as Record<string, unknown>;
-  const transcript =
-    String(b.transcript ?? "").trim() ||
-    "Disc desiccation at L3-4 and L4-5 with mild diffuse disc bulge at L4-5.";
   const models = Array.isArray(b.models) ? (b.models as string[]).slice(0, 2) : [];
   if (models.length < 2) {
     res.status(400).json({ ok: false, error: "Provide models array with 2 model names" });
@@ -180,18 +164,25 @@ voiceReportComposerRouter.post("/benchmark", async (req, res): Promise<void> => 
 
   const results = models.map((model) => {
     const t0 = Date.now();
-    const det = deterministicCompose({ transcript, region, findingsText });
-    const valid = det && validateChangePlan({ plan: det, findingsText, impressionText: "" }).ok;
+    const det = deterministicCompose({
+      transcript: SYNTHETIC_TEST_TRANSCRIPT,
+      region,
+      findingsText,
+    });
+    const valid = det && !det.clarificationRequired && validateChangePlan({
+      plan: det,
+      findingsText,
+      impressionText: "",
+    }).ok;
     return {
       model,
       latencyMs: Date.now() - t0,
       schemaValid: valid,
-      changePlan: det,
-      note: "Benchmark uses deterministic catalog for offline comparison; configure Ollama for live model runs",
+      note: "Offline phrase-catalog benchmark — live Ollama comparison requires configured endpoint",
     };
   });
 
-  res.json({ ok: true, transcript, results });
+  res.json({ ok: true, results });
 });
 
 voiceReportComposerRouter.get("/config", async (req, res): Promise<void> => {
@@ -202,6 +193,8 @@ voiceReportComposerRouter.get("/config", async (req, res): Promise<void> => {
   const runtime = await resolveComposerRuntime(true);
   res.json({
     enabled: runtime.enabled,
+    endpoint: runtime.endpoint,
+    endpointSource: runtime.endpointSource,
     visionModel: runtime.visionModel,
     composerModel: runtime.model,
     composerFallbackModel: runtime.fallbackModel,

@@ -67,6 +67,27 @@ function impressionIntroducesUnsupportedFinding(impression: string, findings: st
   return false;
 }
 
+function impressionLateralityMismatch(impression: string, findings: string): boolean {
+  const imp = impression.toLowerCase();
+  const find = findings.toLowerCase();
+  const impLeft = /\bleft\b/.test(imp);
+  const impRight = /\bright\b/.test(imp);
+  const findLeft = /\bleft\b/.test(find);
+  const findRight = /\bright\b/.test(find);
+  if (impLeft && findRight && !findLeft) return true;
+  if (impRight && findLeft && !findRight) return true;
+  return false;
+}
+
+function findingsContainAbnormality(findings: string): boolean {
+  const lower = findings.toLowerCase();
+  const terms = [
+    "bulge", "herniation", "stenosis", "infarct", "hemorrhage", "mass",
+    "desiccation", "fracture", "modic", "lordosis", "listhesis",
+  ];
+  return terms.some((t) => lower.includes(t));
+}
+
 function contradictsQuickFinding(observation: VoiceObservation, labels: string[]): boolean {
   const hay = `${observation.findingsText} ${observation.concept}`.toLowerCase();
   for (const label of labels) {
@@ -93,8 +114,16 @@ export function validateChangePlan(input: ComposerValidationInput): ComposerVali
   if (input.generateImpressionOnly) {
     const imp = plan.impressionUpdate?.trim();
     if (!imp) return { ok: false, reason: "No impression generated" };
+    if (!findingsContainAbnormality(input.findingsText)) {
+      if (impressionIntroducesUnsupportedFinding(imp, input.findingsText)) {
+        return { ok: false, reason: "Impression introduces finding not present in Findings" };
+      }
+    }
     if (impressionIntroducesUnsupportedFinding(imp, input.findingsText)) {
       return { ok: false, reason: "Impression introduces finding not present in Findings" };
+    }
+    if (impressionLateralityMismatch(imp, input.findingsText)) {
+      return { ok: false, reason: "Impression laterality does not match Findings" };
     }
     return { ok: true };
   }

@@ -25,11 +25,13 @@ export default function VoiceCommandBar({
   voice,
   embedded = false,
   composerPreview,
-  composerComposing,
-  composerError,
+  composing,
+  error,
+  phraseFallbackAvailable,
   onComposerApply,
   onComposerDiscard,
   onComposerEditRaw,
+  onComposerPhraseFallback,
 }: {
   voice: VoiceSession;
   /** Render controls inline (no second full-width toolbar row). */
@@ -37,9 +39,11 @@ export default function VoiceCommandBar({
   composerPreview?: import("@/hooks/useVoiceComposer").VoiceComposerPreview | null;
   composerComposing?: boolean;
   composerError?: string | null;
-  onComposerApply?: () => void;
+  phraseFallbackAvailable?: boolean;
+  onComposerApply?: (force?: boolean) => void;
   onComposerDiscard?: () => void;
   onComposerEditRaw?: () => void;
+  onComposerPhraseFallback?: () => void;
 }) {
   const [helpOpen, setHelpOpen] = useState(false);
 
@@ -263,9 +267,11 @@ export default function VoiceCommandBar({
           preview={composerPreview ?? null}
           composing={composerComposing ?? false}
           error={composerError ?? null}
-          onApply={() => onComposerApply?.()}
+          phraseFallbackAvailable={phraseFallbackAvailable}
+          onApply={(force) => onComposerApply?.(force)}
           onDiscard={() => onComposerDiscard?.()}
           onEditRaw={onComposerEditRaw}
+          onPhraseFallback={onComposerPhraseFallback}
         />
       )}
 

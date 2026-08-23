@@ -9,6 +9,8 @@ import {
 } from "../pathologyPatch";
 import {
   mergeReportFieldContentWithProvenance,
+  normalizeForDedupe,
+  splitToSentences,
   type FieldProvenanceMap,
   type InsertSource,
 } from "../reportFieldMerge";
@@ -28,9 +30,47 @@ export type ApplyChangePlanResult = {
   provenance?: NarrativeProvenance;
   replacedBaselines?: string[];
   addedObservations?: string[];
+  conflicts?: string[];
   error?: string;
   activeObservations?: VoiceObservation[];
 };
+
+export type ChangePreview = {
+  adds: string[];
+  removes: string[];
+  impression?: string;
+  untouched: string[];
+  conflicts: string[];
+  hasConflicts: boolean;
+};
+
+const PROTECTED_SOURCES: InsertSource[] = ["manual", "quick-findings", "quick-select"];
+
+function isProtectedSentence(sentence: string, provenance: FieldProvenanceMap | undefined): boolean {
+  const key = normalizeForDedupe(sentence);
+  if (!key || !provenance?.[key]) return false;
+  return provenance[key].some((s) => PROTECTED_SOURCES.includes(s));
+}
+
+export function detectProtectedConflicts(
+  plan: VoiceChangePlan,
+  findings: string,
+  provenance?: FieldProvenanceMap,
+): string[] {
+  const conflicts: string[] = [];
+  for (const obs of plan.observations) {
+    if (obs.operation === "remove") continue;
+    for (const s of splitToSentences(findings)) {
+      const owned =
+        (obs.baselineReplaces && s.includes(obs.baselineReplaces))
+        || (obs.findingsText && normalizeForDedupe(s) === normalizeForDedupe(obs.findingsText));
+      if (owned && isProtectedSentence(s, provenance)) {
+        conflicts.push(s);
+      }
+    }
+  }
+  return conflicts;
+}
 
 const VOICE_SOURCE: InsertSource = "radiologist-voice";
 
@@ -66,7 +106,7 @@ function removeObservationFromNarrative(
   };
 }
 
-export function applyChangePlan(input: ApplyChangePlanInput): ApplyChangePlanResult {
+export function applyChangePlan(input: ApplyChangePlanInput & { force?: boolean }): ApplyChangePlanResult {
   const source = input.source ?? VOICE_SOURCE;
   let narrative = { ...input.narrative };
   let provenance: NarrativeProvenance = {
@@ -82,6 +122,19 @@ export function applyChangePlan(input: ApplyChangePlanInput): ApplyChangePlanRes
 
   if (input.plan.clarificationRequired?.trim()) {
     return { ok: false, error: input.plan.clarificationRequired.trim() };
+  }
+
+  const conflicts = detectProtectedConflicts(
+    input.plan,
+    narrative.findings,
+    provenance.findings,
+  );
+  if (conflicts.length && !input.force) {
+    return {
+      ok: false,
+      error: "Cannot overwrite explicit manual or Quick Select finding",
+      conflicts,
+    };
   }
 
   // Impression-only update
@@ -205,16 +258,55 @@ export function applyChangePlan(input: ApplyChangePlanInput): ApplyChangePlanRes
   };
 }
 
+export function buildChangePreview(input: ApplyChangePlanInput): ChangePreview {
+  const beforeSentences = splitToSentences(input.narrative.findings);
+  const conflicts = detectProtectedConflicts(
+    input.plan,
+    input.narrative.findings,
+    input.provenance.findings,
+  );
+
+  if (input.plan.clarificationRequired?.trim()) {
+    return { adds: [], removes: [], untouched: beforeSentences, conflicts, hasConflicts: true };
+  }
+
+  const result = applyChangePlan({ ...input, force: true });
+  if (!result.ok || !result.narrative) {
+    return {
+      adds: [],
+      removes: [],
+      untouched: beforeSentences,
+      conflicts,
+      hasConflicts: conflicts.length > 0,
+    };
+  }
+
+  const afterSentences = splitToSentences(result.narrative.findings);
+  const removedSet = new Set((result.replacedBaselines ?? []).map(normalizeForDedupe));
+  const untouched = beforeSentences.filter((s) => {
+    const key = normalizeForDedupe(s);
+    return !removedSet.has(key) && afterSentences.some((a) => normalizeForDedupe(a) === key);
+  });
+
+  return {
+    adds: result.addedObservations ?? [],
+    removes: result.replacedBaselines ?? [],
+    impression: input.plan.impressionUpdate ?? input.plan.impressionCandidates?.[0],
+    untouched,
+    conflicts,
+    hasConflicts: conflicts.length > 0,
+  };
+}
+
 export function previewChangePlan(input: ApplyChangePlanInput): {
   adds: string[];
   removes: string[];
   impression?: string;
 } {
-  const result = applyChangePlan(input);
-  if (!result.ok) return { adds: [], removes: [] };
+  const preview = buildChangePreview(input);
   return {
-    adds: result.addedObservations ?? [],
-    removes: result.replacedBaselines ?? [],
-    impression: input.plan.impressionUpdate ?? input.plan.impressionCandidates?.[0],
+    adds: preview.adds,
+    removes: preview.removes,
+    impression: preview.impression,
   };
 }

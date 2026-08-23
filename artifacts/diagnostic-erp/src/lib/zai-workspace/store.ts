@@ -74,6 +74,8 @@ type PatchSnapshot = {
   recommendationText: string;
   fieldProvenance: FieldProvenanceState;
   appliedPathologyPatches: AppliedPathologyPatch[];
+  voiceComposerObservations: VoiceObservation[];
+  voiceComposerTranscriptHistory: string[];
 };
 
 function narrativeFromState(s: Pick<S, "clinicalHistoryText" | "techniqueText" | "findingsText" | "impressionText" | "recommendationText">): ReportNarrative {
@@ -152,7 +154,7 @@ export type WorkspaceStore = S & {
   applySelectedFormats: () => void; confirmOverwriteAndApply: () => void; cancelOverwrite: () => void; applyMergedResult: () => void; cancelMerge: () => void;
   applyPathologyOverlay: (opts: PendingPathologyPatch & { force?: boolean }) => "applied" | "pending";
   undoLastPatch: () => boolean;
-  applyVoiceComposerPlan: (plan: VoiceChangePlan, transcript?: string) => "applied" | "blocked";
+  applyVoiceComposerPlan: (plan, transcript, opts?: { force?: boolean }) => "applied" | "blocked";
   clearVoiceComposerSession: () => void;
   relateralizePatches: (side: Side) => void;
   saveAsFormat: (i: Omit<ReportFormat, "id" | "createdAt" | "updatedAt">) => void; deleteReportFormat: (id: string) => void;
@@ -478,6 +480,8 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       recommendationText: get().recommendationText,
       fieldProvenance: { ...get().fieldProvenance },
       appliedPathologyPatches: get().appliedPathologyPatches.map((p) => ({ ...p })),
+      voiceComposerObservations: [...get().voiceComposerObservations],
+      voiceComposerTranscriptHistory: [...get().voiceComposerTranscriptHistory],
     };
     const result = overlayPathology({
       existing: narrativeFromState(get()),
@@ -522,12 +526,14 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       recommendationText: snap.recommendationText,
       fieldProvenance: snap.fieldProvenance,
       appliedPathologyPatches: snap.appliedPathologyPatches,
+      voiceComposerObservations: snap.voiceComposerObservations ?? [],
+      voiceComposerTranscriptHistory: snap.voiceComposerTranscriptHistory ?? [],
       lastPatchSnapshot: null,
       isDirty: true,
     });
     return true;
   },
-  applyVoiceComposerPlan: (plan, transcript) => {
+  applyVoiceComposerPlan: (plan, transcript, opts?: { force?: boolean }) => {
     const snap: PatchSnapshot = {
       clinicalHistoryText: get().clinicalHistoryText,
       techniqueText: get().techniqueText,
@@ -536,12 +542,15 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       recommendationText: get().recommendationText,
       fieldProvenance: { ...get().fieldProvenance },
       appliedPathologyPatches: get().appliedPathologyPatches.map((p) => ({ ...p })),
+      voiceComposerObservations: [...get().voiceComposerObservations],
+      voiceComposerTranscriptHistory: [...get().voiceComposerTranscriptHistory],
     };
     const result = applyChangePlan({
       narrative: narrativeFromState(get()),
       provenance: get().fieldProvenance,
       plan,
       activeObservations: get().voiceComposerObservations,
+      force: opts?.force,
     });
     if (!result.ok || !result.narrative || !result.provenance) {
       return "blocked";

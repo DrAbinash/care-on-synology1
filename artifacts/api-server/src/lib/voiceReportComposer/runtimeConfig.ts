@@ -10,6 +10,7 @@ import { normalizeOllamaBaseUrl } from "../aiPipeline/canonicalLocalAi";
 export type ComposerRuntime = {
   enabled: boolean;
   endpoint: string;
+  endpointSource: string;
   model: string;
   fallbackModel: string | null;
   numCtx: number;
@@ -66,6 +67,7 @@ export async function resolveComposerRuntime(force = false): Promise<ComposerRun
   const value: ComposerRuntime = {
     enabled: localRuntime.ollamaEnabled && !!composerModel,
     endpoint: normalizeOllamaBaseUrl(localRuntime.ollamaBaseUrl),
+    endpointSource: localRuntime.ollamaUrlSource,
     model: composerModel ?? "",
     fallbackModel,
     numCtx,

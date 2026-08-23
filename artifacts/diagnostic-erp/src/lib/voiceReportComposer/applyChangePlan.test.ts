@@ -160,9 +160,20 @@ describe("voiceReportComposer applyChangePlan", () => {
     expect(result.ok).toBe(false);
   });
 
-  it("explicit manual finding cannot be overwritten", () => {
+  it("explicit manual finding blocks apply and surfaces conflict", () => {
     const manualSentence = "L4-L5 disc is normal — manually verified.";
     const prov = { findings: provenanceFromText(manualSentence, "manual") };
+    const plan = {
+      operation: "report_change_plan" as const,
+      observations: [{
+        concept: "disc_bulge",
+        findingsText: "Diffuse disc bulge at L4-L5.",
+        baselineReplaces: "L4-L5 disc is normal",
+        anatomicalSection: "disc",
+        conflictGroup: "disc",
+      }],
+      uncertainties: [],
+    };
     const result = applyChangePlan({
       narrative: {
         clinicalHistory: "",
@@ -172,19 +183,10 @@ describe("voiceReportComposer applyChangePlan", () => {
         recommendation: normalLs.recommendation,
       },
       provenance: prov,
-      plan: {
-        operation: "report_change_plan",
-        observations: [{
-          concept: "disc_bulge",
-          findingsText: "Diffuse disc bulge at L4-L5.",
-          baselineReplaces: "L4-L5 disc is normal",
-          anatomicalSection: "disc",
-          conflictGroup: "disc",
-        }],
-        uncertainties: [],
-      },
+      plan,
     });
-    expect(result.ok).toBe(true);
-    expect(result.narrative!.findings).toContain(manualSentence);
+    expect(result.ok).toBe(false);
+    expect(result.conflicts?.length).toBeGreaterThan(0);
+    expect(result.narrative).toBeUndefined();
   });
 });

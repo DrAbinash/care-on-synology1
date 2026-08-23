@@ -1115,8 +1115,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     voiceComposer.preview?.transcript,
   ]);
 
-  const applyVoiceComposerWithUndo = useCallback(() => {
-    const applied = voiceComposer.applyPreview();
+  const applyVoiceComposerWithUndo = useCallback((force?: boolean) => {
+    const applied = voiceComposer.applyPreview(force ?? voiceComposer.preview?.hasConflicts ?? false);
     if (applied) {
       voiceSession.cancel();
     }
@@ -2710,8 +2710,10 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
               composerPreview={voiceComposer.preview}
               composerComposing={voiceComposer.composing}
               composerError={voiceComposer.error}
+              phraseFallbackAvailable={voiceComposer.phraseFallbackAvailable}
               onComposerApply={applyVoiceComposerWithUndo}
               onComposerDiscard={voiceComposer.discardPreview}
+              onComposerPhraseFallback={() => void voiceComposer.requestPhraseFallback()}
               onComposerEditRaw={insertRawDictation}
             />
           )}

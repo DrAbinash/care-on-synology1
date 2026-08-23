@@ -28,19 +28,26 @@ export type VoiceChangePlan = {
 };
 
 export type VoiceComposerDiagnostics = {
+  requestId: string;
   provider: "ollama";
   model: string;
   fallbackUsed?: boolean;
+  endpointSource?: string;
+  region?: string;
+  transcriptLength: number;
   latencyMs: number;
   validationMs?: number;
-  transcript: string;
+  validationOk: boolean;
+  schemaOk?: boolean;
+  phraseFallback?: boolean;
 };
 
 export type VoiceComposerProvenance = {
   source: "radiologist-voice";
-  composer: "local_ai";
+  composer: "local_ai" | "phrase_catalog";
   model?: string;
   fallbackUsed?: boolean;
+  requestId?: string;
 };
 
 export type ComposeApiResponse = {
@@ -49,4 +56,5 @@ export type ComposeApiResponse = {
   error?: string;
   diagnostics?: VoiceComposerDiagnostics;
   provenance?: VoiceComposerProvenance;
+  phraseFallbackAvailable?: boolean;
 };

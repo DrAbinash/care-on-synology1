@@ -31,7 +31,12 @@ const CATALOG: CatalogPhrase[] = [
   },
   {
     concept: "disc_bulge",
-    patterns: [/disc bulge/i, /diffuse disc bulge/i, /broad-based disc bulge/i],
+    patterns: [
+      /disc bulge/i,
+      /diffuse disc bulge/i,
+      /diffuse bulges?/i,
+      /broad-based disc bulge/i,
+    ],
     findingsText: "Diffuse disc bulge at [Level] indenting the anterior thecal sac.",
     impressionText: "Diffuse disc bulge at [Level].",
     anatomicalSection: "disc",
