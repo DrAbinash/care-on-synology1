@@ -63,7 +63,7 @@ import { useLocalDraftBackup } from "@/hooks/useLocalDraftBackup";
 import { useVoiceSession } from "@/hooks/useVoiceSession";
 import { useCopilotLearning } from "@/hooks/useCopilotLearning";
 import { useCopilotPrefs } from "@/hooks/useCopilotPrefs";
-import { useRadiologyDraftId } from "@/hooks/useRadiologyDraftId";
+import { useRadiologyDraftId, type RadiologyDraftRow } from "@/hooks/useRadiologyDraftId";
 import { useRadiologyPalettePrefs } from "@/hooks/useRadiologyPalettePrefs";
 import { useFindingsMacroRecents } from "@/hooks/useFindingsMacroRecents";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
@@ -78,6 +78,11 @@ import {
   buildLivePrintBodyHtml,
   finalizePrintPreviewHtml,
 } from "@/lib/radiologyReportPrintLiveMerge";
+import {
+  canHydrateDraftForPatient,
+  shouldApplyAsyncStudyResult,
+  shouldCommitAutosave,
+} from "@/lib/radiologyWorkspaceSafety";
 import { activeStandardLetterhead, type PresentationTemplatesPayload } from "@/lib/careLetterpadChrome";
 import {
   buildPreviewHtml,
@@ -347,6 +352,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const leftPanelRef = useRef<ImperativePanelHandle>(null);
   const rightPanelRef = useRef<ImperativePanelHandle>(null);
   const hydratedDraftForStudyRef = useRef<number | null>(null);
+  const saveGenerationRef = useRef(0);
+  const studyIdRef = useRef<number | undefined>(undefined);
   const [draftHydratedStudyId, setDraftHydratedStudyId] = useState<number | null>(null);
   const commandDispatcherRef = useRef<{ dispatch: (cmd: string) => DispatchResult } | null>(null);
   const canVerifyRef = useRef(false);
@@ -981,8 +988,10 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     });
   }, [workspaceEntry?.autoLinkMeta, studyId, toast]);
 
-  // Reset structured state when switching studies
+  // Reset patient-specific editor state when switching studies
   useEffect(() => {
+    saveGenerationRef.current += 1;
+    studyIdRef.current = studyId;
     setFindingsMap({});
     setUseStructured(false);
     startReportUndoRef.current = null;
@@ -991,7 +1000,12 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     structuredTouchedRef.current = false;
     structuredFormatDrivingRef.current = false;
     lastStructuredFindingsLinesRef.current = {};
-  }, [studyId]);
+    setSelectedQuickIds(new Set());
+    setIsCritical(false);
+    setCriticalNote("");
+    setChecklistComm({ phoned: false, annotated: false, dispatched: false });
+    captureSavedDraftId(null);
+  }, [studyId, captureSavedDraftId]);
 
   // Keep findingsText in sync when structured cards drive the report
   useEffect(() => {
@@ -1528,6 +1542,12 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     if (sorted[0]) openStudy(sorted[0].id);
   }, [studies, activeStudyId, studyId, selectStudy, openStudy]);
 
+  // Reset hydrate marker when studyId changes (must run before the hydrate effect).
+  useEffect(() => {
+    hydratedDraftForStudyRef.current = null;
+    setDraftHydratedStudyId(null);
+  }, [studyId]);
+
   // ─── Hydrate editor when study changes ──────────────────────────────────────
   useEffect(() => {
     if (!studyId) return;
@@ -1535,9 +1555,18 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     if (hydratedDraftForStudyRef.current === studyId) return;
 
     if (existingDraft) {
+      if (!canHydrateDraftForPatient(existingDraft.patientId, workflow.currentRow?.patientId ?? null)) {
+        console.warn("[radiology-workspace] refusing to hydrate draft for a different patient");
+        hydratedDraftForStudyRef.current = studyId;
+        setDraftHydratedStudyId(studyId);
+        return;
+      }
       hydratedDraftForStudyRef.current = studyId;
       setDraftHydratedStudyId(studyId);
-      const draft = existingDraft as any;
+      const draft = existingDraft as RadiologyDraftRow & {
+        findings?: string | null;
+        technique?: string | null;
+      };
       // Normalize: API may return impression/recommendation as string[] or string
       const normStr = (v: unknown) => Array.isArray(v) ? v.join("\n") : (typeof v === "string" ? v : "");
       useWorkspace.getState().setEditorContent({
@@ -1560,6 +1589,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     hydratedDraftForStudyRef.current = studyId;
     setDraftHydratedStudyId(studyId);
     const row = workflow.currentRow;
+    const requestedStudyId = studyId;
     if (row) {
       api.post<{
         findings?: string;
@@ -1574,6 +1604,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         studyDescription: row.studyDescription,
         clinicalHistory: (row as { clinicalHistory?: string }).clinicalHistory,
       }).then((draft: any) => {
+        if (!shouldApplyAsyncStudyResult(requestedStudyId, studyIdRef.current)) return;
         if (!draft || typeof draft !== "object") return;
         const state = useWorkspace.getState();
         const normStr = (v: unknown) => Array.isArray(v) ? v.join("\n") : (typeof v === "string" ? v : "");
@@ -1593,7 +1624,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         if (!state.recommendationText.trim() && normStr(draft.recommendation)) state.setFieldIfEmpty("recommendation", normStr(draft.recommendation), "ai-draft");
         if (!state.techniqueText.trim() && normStr(draft.technique)) state.setFieldIfEmpty("technique", normStr(draft.technique), "ai-draft");
         if (!state.clinicalHistoryText.trim()) state.setField("clinicalHistory", (row as any).clinicalHistory ?? "");
-      }).catch((err) => {
+      }).catch(() => {
+        if (!shouldApplyAsyncStudyResult(requestedStudyId, studyIdRef.current)) return;
         // AI draft unavailable — still set clinical history from worklist
         const state = useWorkspace.getState();
         if (!state.clinicalHistoryText.trim()) {
@@ -1608,12 +1640,6 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       });
     }
   }, [studyId, existingDraft, isLoadingExistingDraft, workflow.currentRow]);
-
-  // Reset hydrate marker when studyId changes (before the hydrate effect).
-  useEffect(() => {
-    hydratedDraftForStudyRef.current = null;
-    setDraftHydratedStudyId(null);
-  }, [studyId]);
 
   // ─── Draft rescue registration (pre-redirect save on 401) ──────────────────
   useEffect(() => {
@@ -1658,14 +1684,18 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   // ─── Save draft (server-side) — returns draft id so Report Images can auto-ensure ─
   const saveDraft = useCallback(async (opts?: { silent?: boolean }): Promise<number | null> => {
     if (!studyId) return null;
+    const capturedStudyId = studyId;
+    const capturedGeneration = saveGenerationRef.current;
+    const capturedPatientId = workflow.currentRow?.patientId ?? null;
     const offlineMsg = offlineBlockMessage(isOnline, "save");
     if (offlineMsg) { toast({ title: "Offline", description: offlineMsg, variant: "destructive" }); return null; }
     try {
       const res = await retryWithBackoff(
         () => saveRadiologyDraft<{ success?: boolean; draft?: { id: number }; id?: number }>({
           id: draftId ?? undefined,
-          studyId,
-          worklistId: studyId,
+          studyId: capturedStudyId,
+          worklistId: capturedStudyId,
+          patientId: capturedPatientId,
           clinicalHistory: clinicalHistoryText,
           technique: techniqueText,
           rawFindings: findingsText,
@@ -1682,6 +1712,9 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         } as any),
         { shouldRetry: isTransientError },
       );
+      if (!shouldCommitAutosave(capturedStudyId, studyIdRef.current, capturedGeneration, saveGenerationRef.current)) {
+        return null;
+      }
       const id = res?.draft?.id ?? res?.id ?? null;
       if (id) captureSavedDraftId(id);
       setLastSavedAt(new Date());

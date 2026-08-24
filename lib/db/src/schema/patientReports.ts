@@ -23,7 +23,9 @@ export const patientReportsTable = pgTable(
     orderTestId: integer("order_test_id"),
     orderId: integer("order_id"),
     billId: integer("bill_id"),
-    studyId: integer("study_id"),                   // optional FK → radiology_studies
+    // Canonical radiology finalize stores radiology_worklist.id here (not
+    // radiology_studies.id). Readers must use resolveWorklistFromStudyRef().
+    studyId: integer("study_id"),
     title: text("title").notNull(),
     body: text("body").notNull().default(""),       // narrative text/HTML
     parameters: text("parameters"),                 // JSON: [{name,value,unit,refRange,flag}]

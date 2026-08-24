@@ -46,9 +46,11 @@ export function useRadiologyDraftId(studyId: number | null | undefined) {
   }, [studyId, existingDraft, isLoadingExistingDraft]);
 
   /** Call with the id returned by a successful save so the next save
-   *  updates this same row instead of creating another one. */
-  function captureSavedDraftId(id: number) {
+   *  updates this same row instead of creating another one.
+   *  Pass null when switching studies to drop Patient A's draft identity. */
+  function captureSavedDraftId(id: number | null) {
     setDraftId(id);
+    if (id == null) adoptedForRef.current = null;
   }
 
   return {

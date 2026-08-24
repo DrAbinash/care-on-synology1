@@ -47,6 +47,13 @@ import {
 import { asc } from "drizzle-orm";
 import { isFeatureEnabledServer } from "../lib/featureFlags";
 import {
+  RadiologyIdentityError,
+  bindRadiologyReportIdentity,
+  claimWorklistForFinalize,
+  isRadiologyReportType,
+  type BoundRadiologyIdentity,
+} from "../lib/radiologyIdentity";
+import {
   canStructuredSign,
   canStructuredVerify,
   SIGN_DENY_ROLES,
@@ -894,6 +901,10 @@ async function structuredFinalizeTransaction(
           .limit(1);
         worklist = (w as FinalWorklistRow | undefined) ?? null;
       }
+      const claimId = draft.worklistId ?? args.studyId;
+      if (claimId) {
+        await claimWorklistForFinalize(tx, claimId);
+      }
 
       // 4) Materialize truthful D1 findings via the catalog (D3.5). Without
       //    the catalog there is nothing to sign structurally — prepare will
@@ -1104,6 +1115,13 @@ async function structuredFinalizeTransaction(
         .update(radiologyReportDraftsTable)
         .set({ finalReportId: reportRow.id })
         .where(eq(radiologyReportDraftsTable.id, draft.id));
+
+      if (claimId) {
+        await tx
+          .update(radiologyWorklistTable)
+          .set({ reportId: reportRow.id, updatedAt: new Date() })
+          .where(eq(radiologyWorklistTable.id, claimId));
+      }
 
       return reportRow;
     });
@@ -1862,8 +1880,36 @@ async function resolveWorklistRowForPcpndtGuard(
 // ────────────────────────────────────────────────────────────────────────────
 patientReportsRouter.post("/", async (req, res) => {
   const b = (req.body ?? {}) as Record<string, unknown>;
-  const patientId = Number(b.patientId);
-  const testId = Number(b.testId);
+  const typeHint = String(b.type ?? "").toLowerCase();
+  const studyRef = b.studyId ? Number(b.studyId) : null;
+  const worklistIdIn = b.worklistId ? Number(b.worklistId) : null;
+  // Only bind when the client supplies a study/worklist reference. Study-less
+  // radiology (legacy / pathology-adjacent) keeps the pre-hardening path;
+  // workspace finalize always sends studyId/worklistId and must pass the gate.
+  const shouldBindRadiology = !!(studyRef || worklistIdIn);
+
+  let bound: BoundRadiologyIdentity | null = null;
+  if (shouldBindRadiology) {
+    try {
+      bound = await bindRadiologyReportIdentity({
+        studyRef,
+        worklistId: worklistIdIn,
+        patientId: b.patientId ? Number(b.patientId) : null,
+        testId: b.testId ? Number(b.testId) : null,
+        orderId: b.orderId ? Number(b.orderId) : null,
+        orderTestId: b.orderTestId ? Number(b.orderTestId) : null,
+      });
+    } catch (err) {
+      if (err instanceof RadiologyIdentityError) {
+        res.status(err.httpStatus).json({ error: err.message, code: err.code });
+        return;
+      }
+      throw err;
+    }
+  }
+
+  const patientId = bound ? bound.patientId : Number(b.patientId);
+  const testId = bound ? bound.testId : Number(b.testId);
   if (!patientId || !testId) {
     res.status(400).json({ error: "patientId and testId are required" });
     return;
@@ -1874,7 +1920,7 @@ patientReportsRouter.post("/", async (req, res) => {
     res.status(404).json({ error: "Patient or test not found" });
     return;
   }
-  const type = (String(b.type ?? "") || (test.department && /(USG|MRI|CT|X-?RAY|MAMMO|DEXA|RAD)/i.test(test.department) ? "radiology" : "pathology")).toLowerCase();
+  const type = (typeHint || (test.department && /(USG|MRI|CT|X-?RAY|MAMMO|DEXA|RAD)/i.test(test.department) ? "radiology" : "pathology")).toLowerCase();
 
   // PCPNDT server-side finalize gate. This is the actual content-persisting
   // write (creates the signed-eligible patient_reports row) — checking here,
@@ -1952,7 +1998,18 @@ patientReportsRouter.post("/", async (req, res) => {
   // real sign authority. Every ineligible/failed case falls through to the
   // legacy path below — flag OFF is byte-identical to the pre-D5 route.
   let structuredDiagnostics: Record<string, unknown> | null = null;
-  const studyIdNum = b.studyId ? Number(b.studyId) : null;
+  const studyIdNum = bound?.worklistId ?? (b.studyId ? Number(b.studyId) : null);
+  if (bound?.worklist.reportId) {
+    const [existingReport] = await db
+      .select()
+      .from(patientReportsTable)
+      .where(eq(patientReportsTable.id, bound.worklist.reportId))
+      .limit(1);
+    if (existingReport) {
+      res.status(200).json({ ...existingReport, idempotent: true });
+      return;
+    }
+  }
   if (type === "radiology" && studyIdNum && (await isFeatureEnabledServer("ff_radiology_structured_final"))) {
     const session = (req as StaffAuthRequest).staffSession;
     const authority = canStructuredSign(session ?? null);
@@ -1966,12 +2023,12 @@ patientReportsRouter.post("/", async (req, res) => {
         try {
           const outcome = await structuredFinalizeTransaction(req as StaffAuthRequest, {
             reportNumber,
-            studyId: studyIdNum,
+            studyId: bound?.worklistId ?? studyIdNum,
             patientId,
             testId,
-            orderTestId: b.orderTestId ? Number(b.orderTestId) : null,
-            orderId: b.orderId ? Number(b.orderId) : null,
-            billId: b.billId ? Number(b.billId) : null,
+            orderTestId: bound?.orderTestId ?? (b.orderTestId ? Number(b.orderTestId) : null),
+            orderId: bound?.orderId ?? (b.orderId ? Number(b.orderId) : null),
+            billId: bound?.billId ?? (b.billId ? Number(b.billId) : null),
             title: String(b.title ?? `${test.name} — Report`).trim(),
             parameters: typeof b.parameters === "string" ? b.parameters : (b.parameters ? JSON.stringify(b.parameters) : null),
             clientImpressionText: typeof b.impression === "string" ? b.impression : null,
@@ -1981,6 +2038,12 @@ patientReportsRouter.post("/", async (req, res) => {
             presetUsed,
           });
           if (outcome.kind === "signed") {
+            if (bound) {
+              await db
+                .update(radiologyWorklistTable)
+                .set({ reportId: outcome.row.id, updatedAt: new Date() })
+                .where(eq(radiologyWorklistTable.id, bound.worklistId));
+            }
             void freezeSignedReportPresentation(outcome.row.id);
             res.status(201).json({ ...outcome.row, structuredFinal: outcome.diagnostics });
             return;
@@ -2004,15 +2067,15 @@ patientReportsRouter.post("/", async (req, res) => {
   for (let attempt = 0; attempt < 3; attempt++) {
     const reportNumber = await nextReportNumber();
     try {
-      const [row] = await db.insert(patientReportsTable).values({
+      const insertValues = {
         reportNumber,
         type,
         patientId,
         testId,
-        orderTestId: b.orderTestId ? Number(b.orderTestId) : null,
-        orderId: b.orderId ? Number(b.orderId) : null,
-        billId: b.billId ? Number(b.billId) : null,
-        studyId: b.studyId ? Number(b.studyId) : null,
+        orderTestId: bound?.orderTestId ?? (b.orderTestId ? Number(b.orderTestId) : null),
+        orderId: bound?.orderId ?? (b.orderId ? Number(b.orderId) : null),
+        billId: bound?.billId ?? (b.billId ? Number(b.billId) : null),
+        studyId: bound?.worklistId ?? (b.studyId ? Number(b.studyId) : null),
         title: String(b.title ?? `${test.name} — Report`).trim(),
         body: typeof b.body === "string" ? b.body : "",
         parameters: typeof b.parameters === "string" ? b.parameters : (b.parameters ? JSON.stringify(b.parameters) : null),
@@ -2022,12 +2085,38 @@ patientReportsRouter.post("/", async (req, res) => {
         isCritical: b.isCritical === true,
         criticalNote: typeof b.criticalNote === "string" ? b.criticalNote : null,
         stylePresetUsed: presetUsed,
-      }).returning();
+      };
+      const row = bound
+        ? await db.transaction(async (tx) => {
+            await claimWorklistForFinalize(tx, bound!.worklistId);
+            const [created] = await tx.insert(patientReportsTable).values(insertValues).returning();
+            await tx
+              .update(radiologyWorklistTable)
+              .set({ reportId: created!.id, updatedAt: new Date() })
+              .where(eq(radiologyWorklistTable.id, bound!.worklistId));
+            return created!;
+          })
+        : (await db.insert(patientReportsTable).values(insertValues).returning())[0];
       // Legacy response is byte-identical when no structured attempt was made
       // (flag OFF); with the flag ON, fallback diagnostics ride along additively.
       res.status(201).json(structuredDiagnostics ? { ...row, structuredFinal: structuredDiagnostics } : row);
       return;
     } catch (err) {
+      if (err instanceof RadiologyIdentityError) {
+        if (err.code === "ALREADY_FINALIZED" && bound?.worklist.reportId) {
+          const [existingReport] = await db
+            .select()
+            .from(patientReportsTable)
+            .where(eq(patientReportsTable.id, bound.worklist.reportId))
+            .limit(1);
+          if (existingReport) {
+            res.status(200).json({ ...existingReport, idempotent: true });
+            return;
+          }
+        }
+        res.status(err.httpStatus).json({ error: err.message, code: err.code });
+        return;
+      }
       const msg = err instanceof Error ? err.message : String(err);
       if (!/duplicate key|unique/i.test(msg) || attempt === 2) {
         req.log?.error({ err }, "patient_reports insert failed");

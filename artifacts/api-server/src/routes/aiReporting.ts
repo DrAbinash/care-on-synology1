@@ -56,6 +56,7 @@ import {
   getDefaultProviderName,
 } from "@workspace/ai-providers";
 import { radiologyWorklistTable } from "@workspace/db/schema";
+import { RadiologyIdentityError, resolveAuthorizedStudyUid } from "../lib/radiologyIdentity";
 import { resolveTestModel } from "../lib/ai/testProviderModel";
 import {
   AiReportingQueryRequestSchema,
@@ -1122,14 +1123,24 @@ router.post("/image-review", async (req, res): Promise<void> => {
   }
 
   const user = sReq.staffSession!;
-  const { worklistId, studyInstanceUID, reportBody } = req.body as {
+  const { worklistId, studyInstanceUID: clientUid, reportBody } = req.body as {
     worklistId?: number;
     studyInstanceUID?: string;
     reportBody?: string;
   };
 
-  if (!studyInstanceUID) {
-    res.status(400).json({ error: "No studyInstanceUID provided." }); return;
+  let studyInstanceUID: string;
+  try {
+    studyInstanceUID = await resolveAuthorizedStudyUid({
+      worklistId: worklistId ?? null,
+      studyInstanceUID: clientUid ?? null,
+    });
+  } catch (err) {
+    if (err instanceof RadiologyIdentityError) {
+      res.status(err.httpStatus).json({ error: err.message, code: err.code });
+      return;
+    }
+    throw err;
   }
 
   // Resolve provider — prefer vision-capable models

@@ -78,6 +78,13 @@ import {
 import { reconcileAccessionVsReferringDoctor } from "../lib/pacs/dicomNameNormalize";
 import { isFeatureEnabledServer } from "../lib/featureFlags";
 import { checkWriteLock } from "../lib/studyLocks";
+import {
+  RadiologyIdentityError,
+  assertDraftWritable,
+  assertImageUidBelongsToDraft,
+  imageRefsLocked as draftImageRefsLocked,
+  resolveWorklistFromStudyRef,
+} from "../lib/radiologyIdentity";
 import { regenerateDraftStructuredJson } from "../lib/radiologyStructuredJsonCache";
 import {
   persistCareStructuredFormatState,
@@ -1517,12 +1524,41 @@ radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest,
     }
   }
 
+  try {
+    await assertDraftWritable({
+      draftId: id ?? null,
+      worklistId: rest.worklistId ?? null,
+      studyId: rest.studyId ?? null,
+      patientId: rest.patientId ?? null,
+    });
+  } catch (err) {
+    if (err instanceof RadiologyIdentityError) {
+      res.status(err.httpStatus).json({ success: false, error: err.message, code: err.code });
+      return;
+    }
+    throw err;
+  }
+
+  // Derive study/worklist/patient from the resolved worklist so a delayed
+  // Patient A autosave cannot write into Patient B's draft identity.
+  let studyId = rest.studyId ?? null;
+  let worklistId = rest.worklistId ?? null;
+  let patientId = rest.patientId ?? null;
+  const resolvedWorklist = worklistId
+    ? (await db.select().from(radiologyWorklistTable).where(eq(radiologyWorklistTable.id, worklistId)).limit(1))[0]
+    : await resolveWorklistFromStudyRef(studyId);
+  if (resolvedWorklist) {
+    worklistId = resolvedWorklist.id;
+    studyId = resolvedWorklist.id;
+    patientId = resolvedWorklist.patientId ?? patientId;
+  }
+
   // `rest.findings` (A3.1) is intentionally not read anywhere below —
   // accepted by the schema above, ignored by this handler until A3.2.
   const values = {
-    studyId: rest.studyId ?? null,
-    worklistId: rest.worklistId ?? null,
-    patientId: rest.patientId ?? null,
+    studyId,
+    worklistId,
+    patientId,
     templateId: rest.templateId ?? null,
     modality: rest.modality ?? null,
     studyName: rest.studyName ?? null,
@@ -1762,7 +1798,15 @@ radiologyReportGeneratorRouter.get("/drafts", async (req: Request, res: Response
     .orderBy(desc(radiologyReportDraftsTable.updatedAt))
     .limit(50);
 
-  res.json({ success: true, drafts: rows });
+  let drafts = rows;
+  if (studyId) {
+    const worklist = await resolveWorklistFromStudyRef(studyId);
+    if (worklist?.patientId) {
+      drafts = rows.filter((r) => r.patientId == null || r.patientId === worklist.patientId);
+    }
+  }
+
+  res.json({ success: true, drafts });
 });
 
 // ─── Ticket M1.4 — read-only workflow endpoints ──────────────────────────────
@@ -2515,10 +2559,7 @@ function isUniqueViolation(err: unknown): boolean {
  *  is part of what was signed: reject further mutation (the workspace panel
  *  is already read-only at that point; this closes the API path too). */
 async function imageRefsLocked(draftId: number): Promise<boolean> {
-  // Trial mode: allow image edits even after finalize. Hard lock can return later
-  // via Reading Suite settings; the UI already gates editing with report_final_lock.
-  void draftId;
-  return false;
+  return draftImageRefsLocked(draftId);
 }
 const LOCKED_MSG = "Report finalized — its images can no longer be modified";
 
@@ -2526,6 +2567,15 @@ radiologyReportGeneratorRouter.post("/image-references", async (req: StaffAuthRe
   const parsed = ImageRefSchema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ error: "Invalid body" }); return; }
   if (await imageRefsLocked(parsed.data.draftId)) { res.status(409).json({ error: LOCKED_MSG }); return; }
+  try {
+    await assertImageUidBelongsToDraft(parsed.data.draftId, parsed.data.studyInstanceUid);
+  } catch (err) {
+    if (err instanceof RadiologyIdentityError) {
+      res.status(err.httpStatus).json({ error: err.message, code: err.code });
+      return;
+    }
+    throw err;
+  }
   try {
     // Cap check + duplicate pre-check + insert run atomically under the same
     // per-draft advisory lock the reorder route takes, so concurrent POSTs

@@ -52,6 +52,12 @@ import { shouldFallbackToAccessionLookup, isWorklistUidRaceViolation } from "../
 import { radiologyOpenFallbackPath, resolveRadiologyOpen } from "../lib/resolveRadiologyOpen";
 import { runDicomIntakeAutomation } from "../lib/pacs/dicomIntakeAutomation";
 import { cancelRadiologyMwlByAccession } from "../lib/pacs/cancelRadiologyStudyFromMwl";
+import {
+  RadiologyIdentityError,
+  assertReportBelongsToWorklist,
+  matchAllowsFinalize,
+  pickUniqueRow,
+} from "../lib/radiologyIdentity";
 
 export async function runMatchingEngineForWorklist(worklistId: number): Promise<void> {
   const [row] = await db
@@ -321,6 +327,8 @@ async function requireStaffOrInternalAuth(
   }
 }
 
+// Staff JWT is accepted for worklist/report-status/ai-draft (Radiologist Cockpit).
+// DICOM intake is internal-key only — see POST /radiology/studies.
 router.use(requireStaffOrInternalAuth);
 
 
@@ -406,7 +414,7 @@ router.get("/patients/:patientId/contact", async (req, res) => {
 // Creates or updates a worklist entry. Deduplication via studyInstanceUID first,
 // then accessionNumber.
 
-router.post("/radiology/studies", async (req, res) => {
+router.post("/radiology/studies", requireInternalApiKey, async (req, res) => {
   const rawBody = req.body ?? {};
   logger.info({ body: rawBody }, "POST /api/internal/radiology/studies payload");
 
@@ -582,12 +590,13 @@ router.post("/radiology/studies", async (req, res) => {
       }
     }
 
-    // 4. Matched by fallback demographics: patientId + studyDate + modality (US aliases)
+    // 4. Unique-only demographic fallback: patientId + studyDate + modality.
+    // Multiple same-day same-modality studies must stay UNMATCHED (Match Center).
     if (!rStudy && resolvedPatientId && formattedStudyDate && modality) {
       const modalityCond = isUltrasoundModality(modality)
         ? sql`lower(${radiologyStudiesTable.modality}) IN ('us', 'usg', 'ultrasound') OR lower(${radiologyStudiesTable.department}) = 'usg'`
         : sql`lower(${radiologyStudiesTable.modality}) = lower(${modality})`;
-      const [row] = await db
+      const rows = await db
         .select(studySelectFields)
         .from(radiologyStudiesTable)
         .where(
@@ -596,20 +605,23 @@ router.post("/radiology/studies", async (req, res) => {
             eq(radiologyStudiesTable.studyDate, formattedStudyDate),
             modalityCond,
           ),
-        )
-        .limit(1);
-      if (row) {
-        rStudy = row;
-        matchMethod = "matched by fallback demographics";
+        );
+      const picked = pickUniqueRow(rows);
+      if (picked.status === "unique") {
+        rStudy = picked.row;
+        matchMethod = "matched by unique fallback demographics";
+      } else if (picked.status === "ambiguous") {
+        logger.warn({ count: picked.count, patientId: resolvedPatientId, formattedStudyDate, modality },
+          "PACS study link: ambiguous patient/date/modality match — leaving unmatched");
       }
     }
 
-    // 5. USG without accession on DICOM: same patient, today's USG study still scheduled
+    // 5. USG without accession: unique scheduled/in-progress USG for this patient today only.
     if (!rStudy && resolvedPatientId && isUltrasoundModality(modality)) {
       const studyDateCond = formattedStudyDate
         ? eq(radiologyStudiesTable.studyDate, formattedStudyDate)
         : eq(radiologyStudiesTable.studyDate, todayIST());
-      const [row] = await db
+      const rows = await db
         .select(studySelectFields)
         .from(radiologyStudiesTable)
         .where(
@@ -619,17 +631,20 @@ router.post("/radiology/studies", async (req, res) => {
             eq(radiologyStudiesTable.department, "USG"),
             inArray(radiologyStudiesTable.status, ["scheduled", "in_progress"]),
           ),
-        )
-        .limit(1);
-      if (row) {
-        rStudy = row;
-        matchMethod = "matched by USG patient today";
+        );
+      const picked = pickUniqueRow(rows);
+      if (picked.status === "unique") {
+        rStudy = picked.row;
+        matchMethod = "matched by unique USG patient today";
+      } else if (picked.status === "ambiguous") {
+        logger.warn({ count: picked.count, patientId: resolvedPatientId },
+          "PACS study link: multiple USG studies today — leaving unmatched");
       }
     }
 
-    // 5. Last safe fallback: patientName + studyDate + studyDescription
+    // 6. Unique-only fallback: patient + date + exact study description.
     if (!rStudy && resolvedPatientId && formattedStudyDate && studyDescription) {
-      const [row] = await db
+      const rows = await db
         .select(studySelectFields)
         .from(radiologyStudiesTable)
         .where(
@@ -638,11 +653,14 @@ router.post("/radiology/studies", async (req, res) => {
             eq(radiologyStudiesTable.studyDate, formattedStudyDate),
             sql`lower(${radiologyStudiesTable.studyDescription}) = lower(${studyDescription})`
           )
-        )
-        .limit(1);
-      if (row) {
-        rStudy = row;
-        matchMethod = "matched by fallback demographics";
+        );
+      const picked = pickUniqueRow(rows);
+      if (picked.status === "unique") {
+        rStudy = picked.row;
+        matchMethod = "matched by unique description fallback";
+      } else if (picked.status === "ambiguous") {
+        logger.warn({ count: picked.count, patientId: resolvedPatientId },
+          "PACS study link: ambiguous description match — leaving unmatched");
       }
     }
 
@@ -1085,6 +1103,43 @@ router.post("/radiology/report-status", async (req, res) => {
   const VALID_STATUSES = ["STUDY_RECEIVED", "AI_DRAFT_READY", "REPORT_IN_PROGRESS", "REPORT_FINAL", "DELIVERED"];
   const VALID_DELIVERY = ["READY_TO_SEND", "SENT"];
 
+  if (b.status === "REPORT_FINAL") {
+    if (!matchAllowsFinalize(existing)) {
+      res.status(409).json({
+        error: "Match Center identity is unresolved. Resolve GREEN or APPROVED before finalizing.",
+        code: "MATCH_GATE_BLOCKED",
+        worklistId: existing.id,
+        matchScore: existing.matchScore,
+        matchDecision: existing.matchDecision,
+      });
+      return;
+    }
+    if (existing.status === "REPORT_FINAL" || existing.status === "DELIVERED") {
+      if (b.reportId && existing.reportId && existing.reportId !== b.reportId) {
+        res.status(409).json({
+          error: "Worklist already has a different final report.",
+          code: "ALREADY_FINAL",
+          existingReportId: existing.reportId,
+        });
+        return;
+      }
+      res.json({ ...existing, success: true, idempotent: true });
+      return;
+    }
+  }
+
+  if (b.reportId) {
+    try {
+      await assertReportBelongsToWorklist(b.reportId, existing);
+    } catch (err) {
+      if (err instanceof RadiologyIdentityError) {
+        res.status(err.httpStatus).json({ error: err.message, code: err.code });
+        return;
+      }
+      throw err;
+    }
+  }
+
   const updates: Partial<typeof radiologyWorklistTable.$inferInsert> = { updatedAt: new Date() };
   if (b.status && VALID_STATUSES.includes(b.status)) updates.status = b.status;
   if (b.deliveryStatus && VALID_DELIVERY.includes(b.deliveryStatus)) updates.deliveryStatus = b.deliveryStatus;
@@ -1103,8 +1158,23 @@ router.post("/radiology/report-status", async (req, res) => {
   const [updated] = await db
     .update(radiologyWorklistTable)
     .set(updates)
-    .where(eq(radiologyWorklistTable.id, existing.id))
+    .where(
+      b.status === "REPORT_FINAL"
+        ? and(
+            eq(radiologyWorklistTable.id, existing.id),
+            sql`${radiologyWorklistTable.status} IS DISTINCT FROM 'REPORT_FINAL'`,
+          )
+        : eq(radiologyWorklistTable.id, existing.id),
+    )
     .returning();
+
+  if (b.status === "REPORT_FINAL" && !updated) {
+    res.status(409).json({
+      error: "Worklist already finalized (concurrent request).",
+      code: "ALREADY_FINAL",
+    });
+    return;
+  }
 
   const changes: string[] = [];
   if (b.status) changes.push(`status → ${b.status}`);

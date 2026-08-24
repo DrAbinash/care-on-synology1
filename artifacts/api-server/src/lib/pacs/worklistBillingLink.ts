@@ -14,8 +14,24 @@ import {
 import { eq, desc } from "drizzle-orm";
 import { sql } from "drizzle-orm";
 import { calculateMatchScore, normalizeAccessionKey } from "./matchingEngine";
+import { pickUniqueRow } from "../radiologyIdentity";
 
 const AUTO_LINK_MIN_POINTS = 45;
+/** Unique GREEN winner must beat the next eligible candidate by this gap. */
+const AUTO_LINK_UNIQUE_GAP = 20;
+
+export function selectUniqueAutoLinkCandidate(
+  candidates: Array<{ studyId: number; points: number; score: string }>,
+  minGap = AUTO_LINK_UNIQUE_GAP,
+): { studyId: number; points: number; score: string } | null {
+  const eligible = [...candidates].sort((a, b) => b.points - a.points);
+  if (eligible.length === 0) return null;
+  if (eligible.length === 1) return eligible[0]!;
+  const top = eligible[0]!;
+  const second = eligible[1]!;
+  if (top.score === "GREEN" && top.points - second.points >= minGap) return top;
+  return null;
+}
 
 export interface AutoLinkResult {
   linked: boolean;
@@ -48,7 +64,7 @@ export async function autoLinkBilledStudyForWorklist(
   // on the console was mistyped or auto-created a different patient.
   const accKey = normalizeAccessionKey(worklistItem.accessionNumber);
   if (accKey) {
-    const [byAcc] = await db
+    const accRows = await db
       .select({
         id: radiologyStudiesTable.id,
         patientId: radiologyStudiesTable.patientId,
@@ -57,8 +73,9 @@ export async function autoLinkBilledStudyForWorklist(
       .from(radiologyStudiesTable)
       .where(
         sql`lower(regexp_replace(coalesce(${radiologyStudiesTable.accessionNumber}, ''), '[^a-zA-Z0-9]', '', 'g')) = ${accKey}`,
-      )
-      .limit(1);
+      );
+    const uniqueAcc = pickUniqueRow(accRows);
+    const byAcc = uniqueAcc.status === "unique" ? uniqueAcc.row : null;
     if (byAcc) {
       await db
         .update(radiologyWorklistTable)
@@ -157,7 +174,7 @@ export async function autoLinkBilledStudyForWorklist(
     referringDoctor: worklistItem.referringDoctor,
   };
 
-  let best: { studyId: number; points: number; score: string } | null = null;
+  const eligible: { studyId: number; points: number; score: string }[] = [];
 
   for (const s of studies) {
     const match = calculateMatchScore(dicomInput, {
@@ -176,13 +193,17 @@ export async function autoLinkBilledStudyForWorklist(
 
     if (match.score === "RED") continue;
     if (match.points < AUTO_LINK_MIN_POINTS) continue;
-    if (!best || match.points > best.points) {
-      best = { studyId: s.id, points: match.points, score: match.score };
-    }
+    eligible.push({ studyId: s.id, points: match.points, score: match.score });
   }
 
+  const best = selectUniqueAutoLinkCandidate(eligible);
   if (!best) {
-    return { linked: false, reason: "no confident billed-study match (try DICOM Match Center)" };
+    return {
+      linked: false,
+      reason: eligible.length > 1
+        ? "ambiguous billed-study match (try DICOM Match Center)"
+        : "no confident billed-study match (try DICOM Match Center)",
+    };
   }
 
   const [study] = await db
