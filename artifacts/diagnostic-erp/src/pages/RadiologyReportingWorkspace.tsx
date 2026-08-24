@@ -160,6 +160,7 @@ import PriorComparisonToolbar from "@/components/radiology/PriorComparisonToolba
 import ViewerMeasurementsBanner from "@/components/radiology/ViewerMeasurementsBanner";
 import LegacyBox, { type LegacyBoxTab } from "@/components/radiology/LegacyBox";
 import { impressionMatchesStudyContext } from "@/lib/aiDraftStudyContext";
+import { AiDraftPanel } from "@/components/ai/AiDraftPanel";
 import { WhatsAppReportShareDialog } from "@/components/radiology/WhatsAppReportShareDialog";
 import UsgCompanionPanel from "@/components/radiology/UsgCompanionPanel";
 import MriReadinessStrip from "@/components/radiology/MriReadinessStrip";
