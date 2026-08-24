@@ -679,6 +679,18 @@ router.get("/studies/:studyInstanceUID/ohif-launch", async (req, res) => {
     return;
   }
   const requestedLevel: "study" | "series" | "sop" = sopInstanceUID ? "sop" : seriesInstanceUID ? "series" : "study";
+  const worklistIdRaw = typeof req.query.worklistId === "string" ? Number(req.query.worklistId) : NaN;
+  if (Number.isFinite(worklistIdRaw) && worklistIdRaw > 0) {
+    const [wl] = await db
+      .select({ id: radiologyWorklistTable.id, studyInstanceUID: radiologyWorklistTable.studyInstanceUID })
+      .from(radiologyWorklistTable)
+      .where(eq(radiologyWorklistTable.id, Math.trunc(worklistIdRaw)))
+      .limit(1);
+    if (!wl || (wl.studyInstanceUID && wl.studyInstanceUID !== studyInstanceUID)) {
+      res.status(409).json({ error: "StudyInstanceUID does not match the requested worklist study", code: "OHIF_STUDY_MISMATCH" });
+      return;
+    }
+  }
   const cfg = await getRadiologyConfig();
 
   const ohifBase = cfg.ohif.baseUrl;

@@ -5,7 +5,7 @@
 // ============================================================================
 import { Router } from "express";
 import { z } from "zod";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
   diagnosticReferralsTable,
@@ -234,7 +234,19 @@ integrationInboundRouter.post("/diagnostic-referrals/:uuid/acknowledge", require
   const [ref] = await db.select().from(diagnosticReferralsTable).where(eq(diagnosticReferralsTable.referralUuid, String(req.params.uuid))).limit(1);
   if (!ref || ref.sourceOrg.toUpperCase() !== req.integrationPartner!.sourceOrgCode.toUpperCase()) { res.status(404).json({ error: "Referral not found" }); return; }
   if (resultLinkId) {
-    await db.update(externalResultLinksTable).set({ criticalAckStatus: "acknowledged", criticalAckBy: typeof acknowledgedBy === "string" ? acknowledgedBy : "HOPE", criticalAckAt: new Date() }).where(eq(externalResultLinksTable.id, Number(resultLinkId)));
+    const [link] = await db
+      .select({ id: externalResultLinksTable.id, referralId: externalResultLinksTable.referralId })
+      .from(externalResultLinksTable)
+      .where(eq(externalResultLinksTable.id, Number(resultLinkId)))
+      .limit(1);
+    if (!link || link.referralId !== ref.id) {
+      res.status(409).json({ error: "resultLinkId does not belong to this referral", code: "RESULT_LINK_MISMATCH" });
+      return;
+    }
+    await db
+      .update(externalResultLinksTable)
+      .set({ criticalAckStatus: "acknowledged", criticalAckBy: typeof acknowledgedBy === "string" ? acknowledgedBy : "HOPE", criticalAckAt: new Date() })
+      .where(and(eq(externalResultLinksTable.id, link.id), eq(externalResultLinksTable.referralId, ref.id)));
   }
   await writeReferralEvent(db, { referralId: ref.id, eventType: "result.acknowledged", actorType: "partner", organisation: ref.sourceOrg, actorName: typeof acknowledgedBy === "string" ? acknowledgedBy : null, reason: typeof method === "string" ? method : null });
   res.json({ acknowledged: true });

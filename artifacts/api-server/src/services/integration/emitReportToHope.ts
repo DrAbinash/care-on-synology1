@@ -25,6 +25,19 @@ import { writeReferralEvent } from "./audit";
 import { assertTransition, canTransition, isReferralStatus } from "./referralStateMachine";
 import type { ReferralStatus } from "@workspace/db";
 
+export function pickExactHopeReferralOrderId(opts: {
+  reportOrderId: number | null;
+  billedStudyOrderId: number | null;
+}): number | null {
+  if (opts.reportOrderId && Number.isFinite(opts.reportOrderId) && opts.reportOrderId > 0) {
+    return Math.trunc(opts.reportOrderId);
+  }
+  if (opts.billedStudyOrderId && Number.isFinite(opts.billedStudyOrderId) && opts.billedStudyOrderId > 0) {
+    return Math.trunc(opts.billedStudyOrderId);
+  }
+  return null;
+}
+
 function carePublicBaseUrl(): string {
   return (process.env.PUBLIC_BASE_URL || process.env.APP_PUBLIC_URL || process.env.SITE_URL || "")
     .replace(/\/+$/, "");
@@ -48,6 +61,17 @@ async function resolveReportId(opts: {
       .where(eq(radiologyWorklistTable.id, Math.trunc(opts.worklistId)))
       .limit(1);
     if (wl?.reportId) return wl.reportId;
+    const worklistId = Math.trunc(opts.worklistId);
+    const [byWorklistId] = await db
+      .select({ id: patientReportsTable.id })
+      .from(patientReportsTable)
+      .where(and(
+        eq(patientReportsTable.studyId, worklistId),
+        inArray(patientReportsTable.status, ["pending_verification", "verified", "delivered"]),
+      ))
+      .orderBy(desc(patientReportsTable.id))
+      .limit(1);
+    if (byWorklistId) return byWorklistId.id;
     if (wl?.studyId) {
       const [rep] = await db
         .select({ id: patientReportsTable.id })
@@ -78,8 +102,21 @@ export async function emitReportToHope(opts: {
     return { ok: false, error: "Report not found for this study", code: "NOT_FOUND" };
   }
 
-  const [rep] = await db.select().from(patientReportsTable).where(eq(patientReportsTable.id, reportId)).limit(1);
-  if (!rep) return { ok: false, error: "Report not found", code: "NOT_FOUND" };
+  const [loaded] = await db.select().from(patientReportsTable).where(eq(patientReportsTable.id, reportId)).limit(1);
+  if (!loaded) return { ok: false, error: "Report not found", code: "NOT_FOUND" };
+  let rep = loaded;
+  for (let i = 0; i < 20; i++) {
+    const [amd] = await db
+      .select({ amendedReportId: patientReportAmendmentsTable.amendedReportId })
+      .from(patientReportAmendmentsTable)
+      .where(eq(patientReportAmendmentsTable.originalReportId, rep.id))
+      .orderBy(desc(patientReportAmendmentsTable.sequenceNumber))
+      .limit(1);
+    if (!amd) break;
+    const [next] = await db.select().from(patientReportsTable).where(eq(patientReportsTable.id, amd.amendedReportId)).limit(1);
+    if (!next) break;
+    rep = next;
+  }
 
   // Signed primary report is enough for Hope (pending_verification / verified / delivered).
   const signedEnough =
@@ -89,30 +126,34 @@ export async function emitReportToHope(opts: {
     return { ok: false, error: "Finalize and sign the report before sending to Hope", code: "NOT_SIGNED" };
   }
 
-  // Prefer referral by Care order; fall back to Care patient (Hope UHID link).
-  let [ref] = rep.orderId
-    ? await db.select().from(diagnosticReferralsTable).where(eq(diagnosticReferralsTable.careOrderId, rep.orderId)).orderBy(desc(diagnosticReferralsTable.id)).limit(1)
-    : [undefined];
-  if (!ref && rep.patientId) {
-    [ref] = await db
+  let billedOrderId: number | null = null;
+  if (opts.worklistId) {
+    const [wl] = await db
+      .select({ studyId: radiologyWorklistTable.studyId })
+      .from(radiologyWorklistTable)
+      .where(eq(radiologyWorklistTable.id, Math.trunc(opts.worklistId)))
+      .limit(1);
+    if (wl?.studyId) {
+      const [study] = await db
+        .select({ orderId: radiologyStudiesTable.orderId })
+        .from(radiologyStudiesTable)
+        .where(eq(radiologyStudiesTable.id, wl.studyId))
+        .limit(1);
+      billedOrderId = study?.orderId ?? null;
+    }
+  }
+  const exactOrderId = pickExactHopeReferralOrderId({
+    reportOrderId: rep.orderId ?? null,
+    billedStudyOrderId: billedOrderId,
+  });
+  let ref: typeof diagnosticReferralsTable.$inferSelect | undefined;
+  if (exactOrderId) {
+    const orderRefs = await db
       .select()
       .from(diagnosticReferralsTable)
-      .where(eq(diagnosticReferralsTable.carePatientId, rep.patientId))
-      .orderBy(desc(diagnosticReferralsTable.id))
-      .limit(1);
-  }
-  // Last resort: worklist → study → order → referral
-  if (!ref && opts.worklistId) {
-    const [wl] = await db.select({ studyId: radiologyWorklistTable.studyId }).from(radiologyWorklistTable).where(eq(radiologyWorklistTable.id, Math.trunc(opts.worklistId!))).limit(1);
-    if (wl?.studyId) {
-      const [study] = await db.select({ orderId: radiologyStudiesTable.orderId, patientId: radiologyStudiesTable.patientId }).from(radiologyStudiesTable).where(eq(radiologyStudiesTable.id, wl.studyId)).limit(1);
-      if (study?.orderId) {
-        [ref] = await db.select().from(diagnosticReferralsTable).where(eq(diagnosticReferralsTable.careOrderId, study.orderId)).orderBy(desc(diagnosticReferralsTable.id)).limit(1);
-      }
-      if (!ref && study?.patientId) {
-        [ref] = await db.select().from(diagnosticReferralsTable).where(eq(diagnosticReferralsTable.carePatientId, study.patientId)).orderBy(desc(diagnosticReferralsTable.id)).limit(1);
-      }
-    }
+      .where(eq(diagnosticReferralsTable.careOrderId, exactOrderId))
+      .orderBy(desc(diagnosticReferralsTable.id));
+    ref = orderRefs[0];
   }
 
   if (!ref) {

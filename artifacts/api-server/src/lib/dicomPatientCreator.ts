@@ -72,11 +72,13 @@ export async function findExistingPatient(
     if (byId) return byId;
   }
 
-  // 2. Name + DOB match (high confidence)
+  // 2. Name + DOB match (high confidence). Never merge on name alone —
+  // two real patients can share a name. Ambiguous name+DOB stays unmatched
+  // so Match Center can resolve it; a new intake row is created instead.
   const { firstName, lastName } = parseDicomName(demo.patientName);
   const dob = parseDicomDate(demo.dateOfBirth);
   if (firstName && lastName && dob) {
-    const [byNameDob] = await db
+    const byNameDob = await db
       .select()
       .from(patientsTable)
       .where(
@@ -85,24 +87,15 @@ export async function findExistingPatient(
           ilike(patientsTable.lastName, lastName),
           eq(patientsTable.dateOfBirth, dob),
         ),
-      )
-      .limit(1);
-    if (byNameDob) return byNameDob;
-  }
-
-  // 3. Name-only fuzzy match (lower confidence — warn in UI)
-  if (firstName && lastName) {
-    const [byName] = await db
-      .select()
-      .from(patientsTable)
-      .where(
-        and(
-          ilike(patientsTable.firstName, firstName),
-          ilike(patientsTable.lastName, lastName),
-        ),
-      )
-      .limit(1);
-    if (byName) return byName;
+      );
+    if (byNameDob.length === 1) {
+      const row = byNameDob[0]!;
+      const dicomSex = parseDicomSex(demo.sex);
+      if (demo.sex && row.gender && dicomSex !== "other" && row.gender !== dicomSex) {
+        return null;
+      }
+      return row;
+    }
   }
 
   return null;
