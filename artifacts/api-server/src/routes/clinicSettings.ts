@@ -904,6 +904,29 @@ clinicSettingsRouter.post("/ollama", async (req, res) => {
     }
     update.ollamaComposerTimeoutSeconds = n;
   }
+  if (b.reportComposerBackgroundEnabled !== undefined) {
+    update.reportComposerBackgroundEnabled = !!b.reportComposerBackgroundEnabled;
+  }
+  if (b.reportComposerReviewBeforeApply !== undefined) {
+    update.reportComposerReviewBeforeApply = !!b.reportComposerReviewBeforeApply;
+  }
+  if (b.reportComposerAutoCompose !== undefined) {
+    update.reportComposerAutoCompose = !!b.reportComposerAutoCompose;
+  }
+  if (b.reportComposerConcurrency !== undefined) {
+    const n = Number(b.reportComposerConcurrency);
+    if (!Number.isInteger(n) || n < 1 || n > 3) {
+      res.status(400).json({ error: "reportComposerConcurrency must be 1–3" }); return;
+    }
+    update.reportComposerConcurrency = n;
+  }
+  if (b.reportComposerSnapshotRetentionDays !== undefined) {
+    const n = Number(b.reportComposerSnapshotRetentionDays);
+    if (!Number.isInteger(n) || n < 1 || n > 90) {
+      res.status(400).json({ error: "reportComposerSnapshotRetentionDays must be 1–90" }); return;
+    }
+    update.reportComposerSnapshotRetentionDays = n;
+  }
 
   try {
     const rows = await db.update(clinicSettingsTable).set(update).where(eq(clinicSettingsTable.id, current.id)).returning();

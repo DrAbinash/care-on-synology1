@@ -73,7 +73,11 @@ import { api } from "@/lib/fetchApi";
 import { readStaffSession, normalizeRole, isOwnerRole, isFeatureEnabled } from "@/lib/staffSession";
 import { saveRadiologyDraft, finalizeRadiologyReport } from "@/lib/radiologyReportLifecycle";
 import { exportRadiologyReportToWord, safeFileNamePart } from "@/lib/radiologyReportWordExport";
-import { exportRadiologyReportToPdf, hydratePrintPreviewKeyImages } from "@/lib/radiologyReportPdfExport";
+import { exportRadiologyReportToPdf } from "@/lib/radiologyReportPdfExport";
+import {
+  buildLivePrintBodyHtml,
+  finalizePrintPreviewHtml,
+} from "@/lib/radiologyReportPrintLiveMerge";
 import {
   canHydrateDraftForPatient,
   shouldApplyAsyncStudyResult,
@@ -164,7 +168,10 @@ import {
 import PriorComparisonToolbar from "@/components/radiology/PriorComparisonToolbar";
 import ViewerMeasurementsBanner from "@/components/radiology/ViewerMeasurementsBanner";
 import LegacyBox, { type LegacyBoxTab } from "@/components/radiology/LegacyBox";
+import { impressionMatchesStudyContext } from "@/lib/aiDraftStudyContext";
 import { AiDraftPanel } from "@/components/ai/AiDraftPanel";
+import { ReportComposerAssistant } from "@/components/radiology/ReportComposerAssistant";
+import { useReportComposer } from "@/hooks/useReportComposer";
 import { WhatsAppReportShareDialog } from "@/components/radiology/WhatsAppReportShareDialog";
 import UsgCompanionPanel from "@/components/radiology/UsgCompanionPanel";
 import MriReadinessStrip from "@/components/radiology/MriReadinessStrip";
@@ -455,6 +462,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const clinicalHistoryText = useWorkspace((s: WorkspaceStore) => s.clinicalHistoryText);
   // Read-only: drives the collapsed Findings summary's "N assisted" count.
   const findingsProvenance = useWorkspace((s: WorkspaceStore) => s.fieldProvenance.findings);
+  const impressionProvenance = useWorkspace((s: WorkspaceStore) => s.fieldProvenance.impression);
   const isFinalized = useWorkspace((s: WorkspaceStore) => s.isFinalized);
   const isDirty = useWorkspace((s: WorkspaceStore) => s.isDirty);
   const preloadTriggered = useWorkspace((s: WorkspaceStore) => s.preloadTriggered);
@@ -1146,6 +1154,21 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     voiceSession.cancel();
   }, [voiceComposer, voiceSession]);
 
+  const [microInstruction, setMicroInstruction] = useState("");
+  const [aiFinalizeGate, setAiFinalizeGate] = useState<"idle" | "pending">("idle");
+  const aiFinalizeBypassRef = useRef(false);
+  const reportComposer = useReportComposer({
+    worklistId: studyId ?? null,
+    studyId: workflow.currentRow?.studyId ?? null,
+    reportId: linkedReportIdRef.current,
+    modality: workflow.currentRow?.modality ?? undefined,
+    region: studySetup.matchedStudyRegion ?? studySetup.studyRegions[0],
+    studyType: workflow.currentRow?.studyDescription ?? undefined,
+    protocol: undefined,
+    reportTitle: workflow.currentRow?.studyDescription ?? undefined,
+    isFinalized,
+  });
+
   const acceptStructuredImpressionCandidate = useCallback((text: string) => {
     const trimmed = text.trim();
     if (!trimmed) return;
@@ -1568,18 +1591,36 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     const row = workflow.currentRow;
     const requestedStudyId = studyId;
     if (row) {
-      api.post<{ findings: string; impression: string; recommendation: string; technique?: string }>("/api/ai-reporting/draft", {
-        worklistId: requestedStudyId,
+      api.post<{
+        findings?: string;
+        draft?: string;
+        impression?: string;
+        recommendation?: string;
+        technique?: string;
+      }>("/api/ai-reporting/draft", {
         studyInstanceUID: row.studyInstanceUID,
+        worklistId: (row as { worklistId?: number }).worklistId ?? (row as { id?: number }).id,
         modality: row.modality,
+        studyDescription: row.studyDescription,
+        clinicalHistory: (row as { clinicalHistory?: string }).clinicalHistory,
       }).then((draft: any) => {
         if (!shouldApplyAsyncStudyResult(requestedStudyId, studyIdRef.current)) return;
         if (!draft || typeof draft !== "object") return;
         const state = useWorkspace.getState();
         const normStr = (v: unknown) => Array.isArray(v) ? v.join("\n") : (typeof v === "string" ? v : "");
+        // API historically returned `draft` for findings; accept both keys.
+        const findings = normStr(draft.findings ?? draft.draft);
+        const impressionText = normalizeImpressionLines(draft.impression).join("\n");
+        const studyCtx = { modality: row.modality, studyDescription: row.studyDescription };
         // Fill-empty only so auto protocol/template win when AI is empty.
-        if (!state.findingsText.trim() && normStr(draft.findings)) state.setFieldIfEmpty("findings", normStr(draft.findings), "ai-draft");
-        if (!state.impressionText.trim() && draft.impression) state.setFieldIfEmpty("impression", normalizeImpressionLines(draft.impression).join("\n"), "ai-draft");
+        if (!state.findingsText.trim() && findings) state.setFieldIfEmpty("findings", findings, "ai-draft");
+        if (
+          !state.impressionText.trim()
+          && impressionText
+          && impressionMatchesStudyContext(impressionText, studyCtx)
+        ) {
+          state.setFieldIfEmpty("impression", impressionText, "ai-draft");
+        }
         if (!state.recommendationText.trim() && normStr(draft.recommendation)) state.setFieldIfEmpty("recommendation", normStr(draft.recommendation), "ai-draft");
         if (!state.techniqueText.trim() && normStr(draft.technique)) state.setFieldIfEmpty("technique", normStr(draft.technique), "ai-draft");
         if (!state.clinicalHistoryText.trim()) state.setField("clinicalHistory", (row as any).clinicalHistory ?? "");
@@ -1697,6 +1738,26 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       toast({ title: "Session expired", description: "Reload the page to sign in before finalizing.", variant: "destructive" });
       return;
     }
+
+    // Guard 10: pending AI proposals must never silently finalize
+    const pendingAi = reportComposer.job?.trackedChanges?.filter((c) => c.reviewState === "PENDING") ?? [];
+    if (
+      !aiFinalizeBypassRef.current &&
+      pendingAi.length > 0 &&
+      reportComposer.job &&
+      ["READY", "STALE_READY"].includes(reportComposer.job.status)
+    ) {
+      setAiFinalizeGate("pending");
+      toast({
+        title: "AI suggestions remain unreviewed",
+        description: `${pendingAi.length} AI change(s) pending. Review, or Reject remaining and continue.`,
+        variant: "destructive",
+      });
+      reportComposer.setReviewOpen(true);
+      return;
+    }
+    aiFinalizeBypassRef.current = false;
+    setAiFinalizeGate("idle");
 
     // 1. Save dirty state first (capture draft id for quality + validate-draft)
     let effectiveDraftId = draftId;
@@ -1887,7 +1948,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     } catch (err) {
       toast({ title: "Finalize failed", description: err instanceof Error ? err.message : "Unknown error", variant: "destructive" });
     }
-  }, [studyId, workflow, isOnline, findingsText, impressionText, recommendationText, techniqueText, clinicalHistoryText, studySetup.checklistPercent, saveDraft, finalizeFlow, draftBackup, qc, toast, isCritical, criticalNote, checklistComm, draftId, session]);
+  }, [studyId, workflow, isOnline, findingsText, impressionText, recommendationText, techniqueText, clinicalHistoryText, studySetup.checklistPercent, saveDraft, finalizeFlow, draftBackup, qc, toast, isCritical, criticalNote, checklistComm, draftId, session, reportComposer, sessionFresh]);
 
   // ─── Command dispatcher (single choke point for keyboard/voice/palette) ────
   const commandDispatcher = useMemo(() => createCommandDispatcher({
@@ -2121,6 +2182,25 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     return merged;
   }, [workflow.currentRow, patientMasterQ.data, demographyOverrides, doctorsCatalogQ.data]);
 
+  const livePrintBodyHtml = useMemo(
+    () =>
+      buildLivePrintBodyHtml({
+        clinicalHistory: clinicalHistoryText,
+        technique: techniqueText,
+        rawFindings: findingsText,
+        findingsMap: useStructured ? findingsMap : {},
+        useStructured,
+        impression: impressionText.split("\n").filter(Boolean),
+        recommendation: recommendationText,
+        impressionStyle,
+        headingCase,
+      }),
+    [
+      clinicalHistoryText, techniqueText, findingsText, findingsMap, useStructured,
+      impressionText, recommendationText, impressionStyle, headingCase,
+    ],
+  );
+
   const previewHtml = useMemo(
     () =>
       buildPreviewHtml({
@@ -2144,12 +2224,14 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         sectionSpacing,
         impressionStyle,
         signerLine,
+        findingsProvenance,
+        impressionProvenance,
       }),
     [
       canonicalDemography, studyNameForExport, techniqueText, clinicalHistoryText,
       findingsText, impressionText, recommendationText, imageRefs,
       headingCase, sectionSpacing, impressionStyle, signerLine, reportLayout,
-      useStructured, findingsMap,
+      useStructured, findingsMap, findingsProvenance, impressionProvenance,
     ],
   );
 
@@ -2160,13 +2242,24 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       // Prefer server-rendered letter-pad layout when a draft/report exists.
       if ((reportLayout === "care-premium" || reportLayout === "care-classic") && (draftId || linkedReportIdRef.current)) {
         try {
-          const templateQs = `template=${encodeURIComponent(reportLayout)}`;
+          await saveDraft({ silent: true });
+          const templateQs = reportLayoutTemplateQuery(reportLayout);
+          const styleQs = `impressionStyle=${encodeURIComponent(impressionStyle)}`;
           const reportId = linkedReportIdRef.current;
           const url = reportId
-            ? `/api/patient-reports/${reportId}/print?preview=true&${templateQs}`
-            : `/api/radiology/report-generator/drafts/${draftId}/print-preview?${templateQs}`;
+            ? `/api/patient-reports/${reportId}/print?preview=true&${templateQs}&${styleQs}`
+            : `/api/radiology/report-generator/drafts/${draftId}/print-preview?${templateQs}&${styleQs}`;
           const serverHtml = await api.get<string>(url);
-          if (typeof serverHtml === "string" && serverHtml.trim()) html = serverHtml;
+          if (typeof serverHtml === "string" && serverHtml.trim()) {
+            html = await finalizePrintPreviewHtml(serverHtml, {
+              livePrintBodyHtml,
+              findingsText,
+              impressionText,
+              dicomWebBase: BROWSER_DICOMWEB_BASE,
+              imageRefs,
+              includeProvenanceChrome: false,
+            });
+          }
         } catch {
           /* fall back to client previewHtml */
         }
@@ -2179,7 +2272,9 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         referringDoctor: canonicalDemography.referringDoctor,
         studyDate: canonicalDemography.studyDate,
         chrome: activeStandardLetterhead(presentationTemplates),
-        physicalLetterpad: !showLetterpadHeader,
+        // Word is finished on pre-printed letter-pad — always reserve top margin.
+        // (Header ON/OFF still controls the HTML/PDF letterhead chrome.)
+        physicalLetterpad: true,
       });
     } catch (err) {
       toast({
@@ -2190,7 +2285,11 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     } finally {
       setExportingWord(false);
     }
-  }, [workflow.currentRow, previewHtml, toast, reportLayout, draftId, canonicalDemography, presentationTemplates, showLetterpadHeader]);
+  }, [
+    workflow.currentRow, previewHtml, toast, reportLayout, draftId, canonicalDemography,
+    presentationTemplates, saveDraft, impressionStyle, livePrintBodyHtml, findingsText,
+    impressionText, imageRefs,
+  ]);
 
   const handleExportPdf = useCallback(async () => {
     setExportingPdf(true);
@@ -2251,14 +2350,21 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     }
     try {
       const templateQs = reportLayoutTemplateQuery(reportLayout);
-      const url = `/api/radiology/report-generator/drafts/${id}/print-preview?autoPrint=true&likeFinal=true&${templateQs}`;
+      const styleQs = `impressionStyle=${encodeURIComponent(impressionStyle)}`;
+      const url = `/api/radiology/report-generator/drafts/${id}/print-preview?autoPrint=true&likeFinal=true&${templateQs}&${styleQs}`;
       let html = await api.get<string>(url);
       if (typeof html !== "string" || !html.trim()) {
         throw new Error("Empty print preview");
       }
-      // If the API could not reach Orthanc, still show selected images via the
-      // same browser DICOMweb path the Selected images rail already uses.
-      html = await hydratePrintPreviewKeyImages(html, BROWSER_DICOMWEB_BASE, imageRefs);
+      // Merge unsaved editor text into server layout; hydrate key images client-side.
+      html = await finalizePrintPreviewHtml(html, {
+        livePrintBodyHtml,
+        findingsText,
+        impressionText,
+        dicomWebBase: BROWSER_DICOMWEB_BASE,
+        imageRefs,
+        includeProvenanceChrome: false,
+      });
       w.document.open();
       w.document.write(html);
       w.document.close();
@@ -2273,7 +2379,10 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     } finally {
       setPrintingLikeFinal(false);
     }
-  }, [draftId, reportLayout, saveDraft, toast, imageRefs]);
+  }, [
+    draftId, reportLayout, saveDraft, toast, imageRefs, impressionStyle,
+    livePrintBodyHtml, findingsText, impressionText,
+  ]);
 
   // ─── Teaching case save ─────────────────────────────────────────────────────
   const handleSaveTeachingCase = useCallback(async () => {
@@ -3991,6 +4100,12 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       dicomWebBase={BROWSER_DICOMWEB_BASE}
                       showLetterpadHeader={showLetterpadHeader}
                       onShowLetterpadHeaderChange={setShowLetterpadHeader}
+                      livePrintBodyHtml={livePrintBodyHtml}
+                      findingsText={findingsText}
+                      impressionText={impressionText}
+                      findingsProvenance={findingsProvenance}
+                      impressionProvenance={impressionProvenance}
+                      onEnsureDraftSaved={() => saveDraft({ silent: true })}
                     />
                     </ReportAccordionSection>
                   </div>
@@ -4184,6 +4299,70 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         onInsertText={appendFindings}
         preferOpen={typeof window !== "undefined" && new URLSearchParams(window.location.search).get("ai") === "1"}
       />
+      {/* Background text Report Composer — assistant artifact until Apply */}
+      <div className="fixed bottom-4 left-4 z-40 w-[min(420px,calc(100vw-2rem))] shadow-lg">
+        <ReportComposerAssistant
+          job={reportComposer.job}
+          busy={reportComposer.busy}
+          reviewOpen={reportComposer.reviewOpen}
+          showAiChanges={reportComposer.showAiChanges}
+          isFinalized={isFinalized}
+          onCompose={() => void reportComposer.composeFull()}
+          onImpression={() => void reportComposer.composeImpression()}
+          onToggleReview={reportComposer.setReviewOpen}
+          onToggleShowChanges={reportComposer.setShowAiChanges}
+          onAcceptChange={(id) => void reportComposer.acceptChange(id)}
+          onRejectChange={(id) => void reportComposer.rejectChange(id)}
+          onAcceptAll={() => void reportComposer.acceptAllPending()}
+          onRejectAll={() => void reportComposer.rejectAllPending()}
+          onApply={() => void reportComposer.applyAccepted()}
+          onDiscard={() => void reportComposer.discard()}
+          onRegenerate={() => void reportComposer.regenerate()}
+          microInstruction={microInstruction}
+          onMicroInstructionChange={setMicroInstruction}
+          onMicroSubmit={() => {
+            const instr = microInstruction.trim();
+            if (!instr) return;
+            const sel = typeof window !== "undefined" ? (window.getSelection()?.toString() ?? "") : "";
+            void reportComposer.microEdit(
+              /translat/i.test(instr) ? "TRANSLATE" : /shorten/i.test(instr) ? "SHORTEN" : /expand/i.test(instr) ? "EXPAND" : "REPHRASE",
+              sel || findingsText.slice(0, 800),
+              "FINDINGS",
+              instr,
+            );
+            setMicroInstruction("");
+          }}
+        />
+        {aiFinalizeGate === "pending" && (
+          <div className="mt-2 rounded-md border border-amber-300 bg-amber-50 p-2 text-[11px] space-y-1.5" data-testid="ai-finalize-gate">
+            <p className="font-semibold text-amber-950">AI suggestions remain unreviewed.</p>
+            <div className="flex flex-wrap gap-1.5">
+              <Button type="button" size="sm" className="h-7 text-[10px]" onClick={() => { reportComposer.setReviewOpen(true); }}>
+                Review
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="h-7 text-[10px]"
+                onClick={() => {
+                  void (async () => {
+                    await reportComposer.rejectAllPending();
+                    aiFinalizeBypassRef.current = true;
+                    setAiFinalizeGate("idle");
+                    void finalizeReport();
+                  })();
+                }}
+              >
+                Reject remaining and continue
+              </Button>
+              <Button type="button" size="sm" variant="ghost" className="h-7 text-[10px]" onClick={() => setAiFinalizeGate("idle")}>
+                Cancel finalize
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
       <ZaiCommandPalette />
       <FinalizeSignDialog
         open={finalizeFlow.open}

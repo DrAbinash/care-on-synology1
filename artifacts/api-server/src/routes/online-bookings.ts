@@ -23,6 +23,7 @@ import {
   parseIdList,
 } from "../services/onlineBookingCreate";
 import { BOOKING_SOURCES, parseBookingTimeSlots } from "../services/onlineBookingSlots";
+import { canConfirmOnlineBooking, rupeesToPaise } from "../lib/financialIntegrity";
 
 export const onlineBookingsRouter = Router();
 
@@ -247,6 +248,7 @@ export { isReceptionPayAtCentre };
 export async function confirmBookingInternal(
   bookingId: number,
   staffName: string = "Super Admin",
+  opts?: { autoConfirm?: boolean },
 ): Promise<{ booking: any; billId: number; patientId: number; dueAtCentre: boolean }> {
   const [booking] = await db.select().from(onlineBookingsTable).where(eq(onlineBookingsTable.id, bookingId)).limit(1);
   if (!booking) throw new Error("Booking not found");
@@ -267,7 +269,22 @@ export async function confirmBookingInternal(
   const firstName = nameParts[0] || booking.name;
   const lastName = nameParts.slice(1).join(" ") || "";
 
+  const autoConfirm = opts?.autoConfirm ?? (staffName === "Super Admin" || /webhook|reconcil/i.test(staffName));
   const payAtCentre = isReceptionPayAtCentre(booking);
+  const frozen = Number(booking.totalAmount);
+  // Staff desk/QR confirm of pending public booking asserts FULL frozen collection only.
+  const staffCollectedAmount =
+    !payAtCentre && !autoConfirm && booking.status !== "paid" && booking.status !== "confirmed"
+      ? frozen
+      : undefined;
+  const confirmGate = canConfirmOnlineBooking({
+    status: booking.status,
+    frozenAmount: booking.totalAmount,
+    payAtCentre,
+    autoConfirm,
+    staffCollectedAmount,
+  });
+  if (confirmGate) throw new Error(confirmGate);
 
   // Determine gateway and payment reference from booking record.
   // Pay-at-centre must NOT be labelled as ICICI/Razorpay/etc. Initiate-only
@@ -313,6 +330,14 @@ export async function confirmBookingInternal(
     }
   }
 
+  // Non-pay-at-centre always posts the frozen full amount; staff-assertion path must match.
+  if (!payAtCentre) {
+    paymentAmount = frozen;
+    if (staffCollectedAmount != null && rupeesToPaise(paymentAmount) !== rupeesToPaise(frozen)) {
+      throw new Error("Staff-confirmed online booking payment must equal the frozen booking amount");
+    }
+  }
+
   const result = await registerPatientSelfFlow({
     firstName,
     lastName,
@@ -335,6 +360,7 @@ export async function confirmBookingInternal(
     // Referring doctor captured at booking time → order.doctor_id, so the
     // referral shows up on the bill just like a Billing Desk referral.
     doctorId: booking.referringDoctorId ?? null,
+    authoritativeTotal: Number(booking.totalAmount),
   });
 
   // Mark booking confirmed. Pay-at-centre must not keep initiate-only ICICI
@@ -369,7 +395,7 @@ onlineBookingsRouter.post("/:id/confirm", async (req: StaffAuthRequest, res): Pr
   const staffName = req.staffSession?.subjectName || "Staff";
 
   try {
-    const result = await confirmBookingInternal(id, staffName);
+    const result = await confirmBookingInternal(id, staffName, { autoConfirm: false });
     res.json(result);
   } catch (err: any) {
     res.status(400).json({ error: err.message || "Failed to confirm booking" });
