@@ -172,10 +172,11 @@ export default function ReportExportPanel({
     setEnlarged(true);
   };
 
-  /** Unified handler for all "Print Preview" / Enlarge triggers. */
+  /** Print Preview opens the enlarged layout iframe — never auto-print.
+   *  "Print like final" is a separate button (onPrintLikeFinal). */
   const handlePrintPreviewOrEnlarge = (alsoOpenPanel = false) => {
     if (alsoOpenPanel) setOpen(true);
-    if (onPrintLikeFinal) void onPrintLikeFinal(); else setEnlarged(true);
+    setEnlarged(true);
   };
 
   const jumpToSection = (field: "clinicalHistory" | "technique" | "findings" | "impression" | "recommendation") => {
@@ -290,7 +291,7 @@ export default function ReportExportPanel({
             variant="outline"
             className="h-6 text-[10px] px-2"
             onClick={() => handlePrintPreviewOrEnlarge(true)}
-            title="Open print preview in new window"
+            title="Enlarge report layout preview (does not print)"
             data-testid="report-layout-preview-enlarge-header"
           >
             <Maximize2 className="h-3 w-3 mr-1" />
@@ -346,7 +347,7 @@ export default function ReportExportPanel({
                 size="sm"
                 variant="ghost"
                 className="h-6 text-[10px]"
-                title="Open print preview in new window"
+                title="Enlarge report layout preview (does not print)"
                 onClick={() => handlePrintPreviewOrEnlarge()}
                 data-testid="report-layout-preview-enlarge-btn"
               >

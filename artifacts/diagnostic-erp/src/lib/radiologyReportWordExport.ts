@@ -205,11 +205,11 @@ export async function exportRadiologyReportToWord(
   const blocks = parseReportHtmlToBlocks(html).filter((b) => !paragraphLooksLikeDemography(b));
   const children: InstanceType<typeof Paragraph>[] = [];
 
-  const runsFor = (segments: InlineSegment[]) =>
+  const runsFor = (segments: InlineSegment[], size = 24) =>
     segments.map((s) =>
       s.isBreak
         ? new TextRun({ text: "", break: 1 })
-        : new TextRun({ text: s.text, bold: s.bold, italics: s.italic }),
+        : new TextRun({ text: s.text, bold: s.bold, italics: s.italic, size }),
     );
 
   for (const block of blocks) {
@@ -221,8 +221,8 @@ export async function exportRadiologyReportToWord(
       }));
     } else if (block.type === "heading2") {
       children.push(new Paragraph({
-        spacing: { before: 160, after: 60 },
-        children: [new TextRun({ text: block.text, bold: true, size: 22, underline: {} })],
+        spacing: { before: 200, after: 80 },
+        children: [new TextRun({ text: block.text, bold: true, size: 26, underline: {} })],
       }));
     } else if (block.type === "divider") {
       children.push(new Paragraph({
@@ -231,15 +231,15 @@ export async function exportRadiologyReportToWord(
         children: [],
       }));
     } else if (block.type === "paragraph") {
-      children.push(new Paragraph({ spacing: { after: 100 }, children: runsFor(block.segments) }));
+      children.push(new Paragraph({ spacing: { after: 120 }, children: runsFor(block.segments, 24) }));
     } else if (block.type === "list") {
       block.items.forEach((item, i) => {
         const runs = block.ordered
-          ? [new TextRun({ text: `${i + 1}. ` }), ...runsFor(item)]
-          : runsFor(item);
+          ? [new TextRun({ text: `${i + 1}. `, size: 24 }), ...runsFor(item, 24)]
+          : runsFor(item, 24);
         children.push(new Paragraph({
           bullet: block.ordered ? undefined : { level: 0 },
-          spacing: { after: 40 },
+          spacing: { after: 60 },
           children: runs,
         }));
       });
@@ -257,6 +257,8 @@ export async function exportRadiologyReportToWord(
   const refBy = (letterhead?.referringDoctor || "").trim().toUpperCase();
   const dateStr = (letterhead?.studyDate || "").trim();
   const physicalLetterpad = letterhead?.physicalLetterpad !== false;
+  // Clinic Word workflow: leave ~42mm for pre-printed letter-pad and use
+  // readable body type (12pt). Embedded CARE chrome is only for digital Header ON.
 
   const demographyTable = new Table({
     width: { size: 9360, type: WidthType.DXA },
@@ -267,16 +269,16 @@ export async function exportRadiologyReportToWord(
             borders: noBorder,
             width: { size: 5400, type: WidthType.DXA },
             children: [new Paragraph({ children: [
-              new TextRun({ text: "NAME: ", bold: true, size: 20 }),
-              new TextRun({ text: name, size: 20 }),
+              new TextRun({ text: "NAME: ", bold: true, size: 22 }),
+              new TextRun({ text: name, size: 22 }),
             ] })],
           }),
           new TableCell({
             borders: noBorder,
             width: { size: 3960, type: WidthType.DXA },
             children: [new Paragraph({ children: [
-              new TextRun({ text: "AGE/SEX: ", bold: true, size: 20 }),
-              new TextRun({ text: ageSex, size: 20 }),
+              new TextRun({ text: "AGE/SEX: ", bold: true, size: 22 }),
+              new TextRun({ text: ageSex, size: 22 }),
             ] })],
           }),
         ],
@@ -287,16 +289,16 @@ export async function exportRadiologyReportToWord(
             borders: noBorder,
             width: { size: 5400, type: WidthType.DXA },
             children: [new Paragraph({ children: [
-              new TextRun({ text: "REFD. BY: ", bold: true, size: 20 }),
-              new TextRun({ text: refBy, size: 20 }),
+              new TextRun({ text: "REFD. BY: ", bold: true, size: 22 }),
+              new TextRun({ text: refBy, size: 22 }),
             ] })],
           }),
           new TableCell({
             borders: noBorder,
             width: { size: 3960, type: WidthType.DXA },
             children: [new Paragraph({ children: [
-              new TextRun({ text: "DATE: ", bold: true, size: 20 }),
-              new TextRun({ text: dateStr, size: 20 }),
+              new TextRun({ text: "DATE: ", bold: true, size: 22 }),
+              new TextRun({ text: dateStr, size: 22 }),
             ] })],
           }),
         ],
