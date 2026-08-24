@@ -99,22 +99,71 @@ export function buildKeyImagesRailHtml(dataUrls: string[]): string {
   return `<div class="image-panel image-panel-side image-panel-keyrail" data-image-count="${dataUrls.length}"><div class="image-panel-heading">KEY IMAGES</div><div class="image-grid">${cells}</div></div>`;
 }
 
+/** Count dicom-img tags that already carry a usable inlined data URL. */
+export function countInlinedDicomImages(html: string): number {
+  const srcFirst = html.match(/class="dicom-img"[^>]*src="(data:image[^"]*)"/g) || [];
+  const classSecond = html.match(/src="(data:image[^"]*)"[^>]*class="dicom-img"/g) || [];
+  const urls = [...srcFirst, ...classSecond]
+    .map((tag) => {
+      const m = tag.match(/src="(data:image[^"]*)"/);
+      return m?.[1] ?? "";
+    })
+    // Tiny / empty payloads are black squares in print — treat as not inlined.
+    .filter((src) => src.length > 64);
+  return urls.length;
+}
+
 /**
- * When the server print-preview HTML has no inlined DICOM pixels (Orthanc
- * unreachable from the API process) but the browser can reach DICOMweb, fetch
- * thumbnails client-side and inject a square key-images rail so Print like
- * final / Enlarge match the selected-images panel.
+ * Replace the first side-panel key-images block with `rail`, using a depth
+ * walk so nested </div>s inside image cells do not truncate the match
+ * (the previous non-greedy regex stopped at the KEY IMAGES heading close).
+ */
+export function replaceSideImagePanel(html: string, rail: string): string | null {
+  const start = html.search(/<div\b[^>]*\bimage-panel-side\b[^>]*>/);
+  if (start < 0) return null;
+  let i = start;
+  let depth = 0;
+  const openRe = /<div\b[^>]*>/gi;
+  const closeRe = /<\/div>/gi;
+  while (i < html.length) {
+    openRe.lastIndex = i;
+    closeRe.lastIndex = i;
+    const open = openRe.exec(html);
+    const close = closeRe.exec(html);
+    if (!close) return null;
+    if (open && open.index < close.index) {
+      depth += 1;
+      i = open.index + open[0].length;
+      continue;
+    }
+    depth -= 1;
+    i = close.index + close[0].length;
+    if (depth === 0) {
+      return html.slice(0, start) + rail + html.slice(i);
+    }
+  }
+  return null;
+}
+
+/**
+ * When the server print-preview HTML has no usable inlined DICOM pixels
+ * (Orthanc unreachable, empty placeholders, or black stub thumbs) but the
+ * browser can reach DICOMweb, fetch thumbnails client-side and inject / replace
+ * the key-images rail so Print Preview / Print like final match Selected images.
  */
 export async function hydratePrintPreviewKeyImages(
   html: string,
   dicomWebBase: string | null,
   refs: ReportImageRef[],
-  opts?: { limit?: number; size?: number; fetchImpl?: typeof fetch },
+  opts?: { limit?: number; size?: number; fetchImpl?: typeof fetch; force?: boolean },
 ): Promise<string> {
   if (!html || !dicomWebBase || refs.length === 0) return html;
-  const alreadyInlined = (html.match(/class="dicom-img"[^>]*src="data:image/g) || []).length
-    + (html.match(/src="data:image[^"]*"[^>]*class="dicom-img"/g) || []).length;
-  if (alreadyInlined > 0) return html;
+  const alreadyInlined = countInlinedDicomImages(html);
+  // Re-hydrate when the rail is missing pixels, or when fewer inlined images
+  // than selected refs (server budget/skip left black empty cells).
+  if (!opts?.force && alreadyInlined > 0 && alreadyInlined >= Math.min(refs.length, opts?.limit ?? 6)) {
+    return html;
+  }
 
   const urls = await fetchKeyImageDataUrls(dicomWebBase, refs, {
     limit: opts?.limit ?? 6,
@@ -125,11 +174,8 @@ export async function hydratePrintPreviewKeyImages(
   const rail = buildKeyImagesRailHtml(urls);
 
   if (/image-panel-side/.test(html)) {
-    const replaced = html.replace(
-      /<div class="image-panel image-panel-side[\s\S]*?<\/div>(?=\s*(?:<div class="sigs"|<\/div>\s*(?:<div class="sigs"|<\/td>|<div class="letterpad|<div class="ftr")))/,
-      rail,
-    );
-    if (replaced !== html) return replaced;
+    const replaced = replaceSideImagePanel(html, rail);
+    if (replaced) return replaced;
   }
 
   let out = html.includes("has-side-images")

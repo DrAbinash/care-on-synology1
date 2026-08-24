@@ -234,9 +234,11 @@ export async function resolveDraftKeyImages(draftId: number): Promise<ReportKeyI
   const out: ReportKeyImageModel[] = [];
   for (let i = 0; i < refs.length; i++) {
     const src = srcs[i];
-    if (!src) continue;
+    // Keep a placeholder cell when Orthanc is unreachable so the print HTML
+    // still exposes data-sop-instance-uid for browser-side hydrate. Empty src
+    // renders as a black square until the client fills pixels.
     out.push({
-      src,
+      src: src ?? "",
       caption: refs[i].description || "",
       displayOrder: refs[i].displayOrder ?? 0,
       sopInstanceUid: refs[i].sopInstanceUid,

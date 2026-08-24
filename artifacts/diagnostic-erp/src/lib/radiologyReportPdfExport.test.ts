@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { buildFindingsText, fetchKeyImageDataUrls, hydratePrintPreviewKeyImages } from "./radiologyReportPdfExport";
+import { buildFindingsText, fetchKeyImageDataUrls, hydratePrintPreviewKeyImages, replaceSideImagePanel, countInlinedDicomImages } from "./radiologyReportPdfExport";
 import type { ReportImageRef } from "./reportImageRefs";
 
 describe("buildFindingsText", () => {
@@ -145,12 +145,29 @@ describe("fetchKeyImageDataUrls", () => {
 });
 
 describe("hydratePrintPreviewKeyImages", () => {
-  it("leaves HTML alone when dicom images are already inlined", async () => {
-    const html = `<div class="image-panel-side"><img class="dicom-img" src="data:image/jpeg;base64,AAA"/></div>`;
+  it("leaves HTML alone when enough usable data URLs are already inlined", async () => {
+    const longJpeg =
+      "data:image/jpeg;base64," + "A".repeat(80);
+    const html = `<div class="image-panel image-panel-side"><div class="image-panel-heading">KEY IMAGES</div><div class="image-grid"><div class="image-cell"><img class="dicom-img" src="${longJpeg}"/></div></div></div>`;
     const fetchImpl = vi.fn();
     const out = await hydratePrintPreviewKeyImages(html, "https://pacs.example/dicomweb", [makeRef()], { fetchImpl });
     expect(out).toBe(html);
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("replaces a nested side-panel rail (not just the heading close)", () => {
+    const emptyRail =
+      `<div class="image-panel image-panel-side image-panel-keyrail" data-image-count="2">` +
+      `<div class="image-panel-heading">KEY IMAGES</div>` +
+      `<div class="image-grid"><div class="image-cell"><img class="dicom-img" src=""/></div>` +
+      `<div class="image-cell"><img class="dicom-img" src=""/></div></div></div>`;
+    const html = `<div class="content-area has-side-images"><div class="report-column"><p>Body</p></div>${emptyRail}</div><div class="sigs"></div>`;
+    const filled = "data:image/jpeg;base64," + "B".repeat(80);
+    const rail = `<div class="image-panel image-panel-side image-panel-keyrail" data-image-count="1"><div class="image-panel-heading">KEY IMAGES</div><div class="image-grid"><div class="image-cell"><img class="dicom-img" src="${filled}"/></div></div></div>`;
+    const out = replaceSideImagePanel(html, rail);
+    expect(out).toContain(filled);
+    expect(out).not.toContain('src=""');
+    expect(countInlinedDicomImages(out!)).toBe(1);
   });
 
   it("injects a square key-images rail when the server returned no pixels", async () => {

@@ -73,7 +73,11 @@ import { api } from "@/lib/fetchApi";
 import { readStaffSession, normalizeRole, isOwnerRole, isFeatureEnabled } from "@/lib/staffSession";
 import { saveRadiologyDraft, finalizeRadiologyReport } from "@/lib/radiologyReportLifecycle";
 import { exportRadiologyReportToWord, safeFileNamePart } from "@/lib/radiologyReportWordExport";
-import { exportRadiologyReportToPdf, hydratePrintPreviewKeyImages } from "@/lib/radiologyReportPdfExport";
+import { exportRadiologyReportToPdf } from "@/lib/radiologyReportPdfExport";
+import {
+  buildLivePrintBodyHtml,
+  finalizePrintPreviewHtml,
+} from "@/lib/radiologyReportPrintLiveMerge";
 import { activeStandardLetterhead, type PresentationTemplatesPayload } from "@/lib/careLetterpadChrome";
 import {
   buildPreviewHtml,
@@ -159,6 +163,7 @@ import {
 import PriorComparisonToolbar from "@/components/radiology/PriorComparisonToolbar";
 import ViewerMeasurementsBanner from "@/components/radiology/ViewerMeasurementsBanner";
 import LegacyBox, { type LegacyBoxTab } from "@/components/radiology/LegacyBox";
+import { impressionMatchesStudyContext } from "@/lib/aiDraftStudyContext";
 import { AiDraftPanel } from "@/components/ai/AiDraftPanel";
 import { WhatsAppReportShareDialog } from "@/components/radiology/WhatsAppReportShareDialog";
 import UsgCompanionPanel from "@/components/radiology/UsgCompanionPanel";
@@ -448,6 +453,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const clinicalHistoryText = useWorkspace((s: WorkspaceStore) => s.clinicalHistoryText);
   // Read-only: drives the collapsed Findings summary's "N assisted" count.
   const findingsProvenance = useWorkspace((s: WorkspaceStore) => s.fieldProvenance.findings);
+  const impressionProvenance = useWorkspace((s: WorkspaceStore) => s.fieldProvenance.impression);
   const isFinalized = useWorkspace((s: WorkspaceStore) => s.isFinalized);
   const isDirty = useWorkspace((s: WorkspaceStore) => s.isDirty);
   const preloadTriggered = useWorkspace((s: WorkspaceStore) => s.preloadTriggered);
@@ -1538,16 +1544,35 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     setDraftHydratedStudyId(studyId);
     const row = workflow.currentRow;
     if (row) {
-      api.post<{ findings: string; impression: string; recommendation: string; technique?: string }>("/api/ai-reporting/draft", {
+      api.post<{
+        findings?: string;
+        draft?: string;
+        impression?: string;
+        recommendation?: string;
+        technique?: string;
+      }>("/api/ai-reporting/draft", {
         studyInstanceUID: row.studyInstanceUID,
+        worklistId: (row as { worklistId?: number }).worklistId ?? (row as { id?: number }).id,
         modality: row.modality,
+        studyDescription: row.studyDescription,
+        clinicalHistory: (row as { clinicalHistory?: string }).clinicalHistory,
       }).then((draft: any) => {
         if (!draft || typeof draft !== "object") return;
         const state = useWorkspace.getState();
         const normStr = (v: unknown) => Array.isArray(v) ? v.join("\n") : (typeof v === "string" ? v : "");
+        // API historically returned `draft` for findings; accept both keys.
+        const findings = normStr(draft.findings ?? draft.draft);
+        const impressionText = normalizeImpressionLines(draft.impression).join("\n");
+        const studyCtx = { modality: row.modality, studyDescription: row.studyDescription };
         // Fill-empty only so auto protocol/template win when AI is empty.
-        if (!state.findingsText.trim() && normStr(draft.findings)) state.setFieldIfEmpty("findings", normStr(draft.findings), "ai-draft");
-        if (!state.impressionText.trim() && draft.impression) state.setFieldIfEmpty("impression", normalizeImpressionLines(draft.impression).join("\n"), "ai-draft");
+        if (!state.findingsText.trim() && findings) state.setFieldIfEmpty("findings", findings, "ai-draft");
+        if (
+          !state.impressionText.trim()
+          && impressionText
+          && impressionMatchesStudyContext(impressionText, studyCtx)
+        ) {
+          state.setFieldIfEmpty("impression", impressionText, "ai-draft");
+        }
         if (!state.recommendationText.trim() && normStr(draft.recommendation)) state.setFieldIfEmpty("recommendation", normStr(draft.recommendation), "ai-draft");
         if (!state.techniqueText.trim() && normStr(draft.technique)) state.setFieldIfEmpty("technique", normStr(draft.technique), "ai-draft");
         if (!state.clinicalHistoryText.trim()) state.setField("clinicalHistory", (row as any).clinicalHistory ?? "");
@@ -2087,6 +2112,25 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     return merged;
   }, [workflow.currentRow, patientMasterQ.data, demographyOverrides, doctorsCatalogQ.data]);
 
+  const livePrintBodyHtml = useMemo(
+    () =>
+      buildLivePrintBodyHtml({
+        clinicalHistory: clinicalHistoryText,
+        technique: techniqueText,
+        rawFindings: findingsText,
+        findingsMap: useStructured ? findingsMap : {},
+        useStructured,
+        impression: impressionText.split("\n").filter(Boolean),
+        recommendation: recommendationText,
+        impressionStyle,
+        headingCase,
+      }),
+    [
+      clinicalHistoryText, techniqueText, findingsText, findingsMap, useStructured,
+      impressionText, recommendationText, impressionStyle, headingCase,
+    ],
+  );
+
   const previewHtml = useMemo(
     () =>
       buildPreviewHtml({
@@ -2110,12 +2154,14 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         sectionSpacing,
         impressionStyle,
         signerLine,
+        findingsProvenance,
+        impressionProvenance,
       }),
     [
       canonicalDemography, studyNameForExport, techniqueText, clinicalHistoryText,
       findingsText, impressionText, recommendationText, imageRefs,
       headingCase, sectionSpacing, impressionStyle, signerLine, reportLayout,
-      useStructured, findingsMap,
+      useStructured, findingsMap, findingsProvenance, impressionProvenance,
     ],
   );
 
@@ -2126,13 +2172,24 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       // Prefer server-rendered letter-pad layout when a draft/report exists.
       if ((reportLayout === "care-premium" || reportLayout === "care-classic") && (draftId || linkedReportIdRef.current)) {
         try {
-          const templateQs = `template=${encodeURIComponent(reportLayout)}`;
+          await saveDraft({ silent: true });
+          const templateQs = reportLayoutTemplateQuery(reportLayout);
+          const styleQs = `impressionStyle=${encodeURIComponent(impressionStyle)}`;
           const reportId = linkedReportIdRef.current;
           const url = reportId
-            ? `/api/patient-reports/${reportId}/print?preview=true&${templateQs}`
-            : `/api/radiology/report-generator/drafts/${draftId}/print-preview?${templateQs}`;
+            ? `/api/patient-reports/${reportId}/print?preview=true&${templateQs}&${styleQs}`
+            : `/api/radiology/report-generator/drafts/${draftId}/print-preview?${templateQs}&${styleQs}`;
           const serverHtml = await api.get<string>(url);
-          if (typeof serverHtml === "string" && serverHtml.trim()) html = serverHtml;
+          if (typeof serverHtml === "string" && serverHtml.trim()) {
+            html = await finalizePrintPreviewHtml(serverHtml, {
+              livePrintBodyHtml,
+              findingsText,
+              impressionText,
+              dicomWebBase: BROWSER_DICOMWEB_BASE,
+              imageRefs,
+              includeProvenanceChrome: false,
+            });
+          }
         } catch {
           /* fall back to client previewHtml */
         }
@@ -2145,7 +2202,9 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         referringDoctor: canonicalDemography.referringDoctor,
         studyDate: canonicalDemography.studyDate,
         chrome: activeStandardLetterhead(presentationTemplates),
-        physicalLetterpad: !showLetterpadHeader,
+        // Word is finished on pre-printed letter-pad — always reserve top margin.
+        // (Header ON/OFF still controls the HTML/PDF letterhead chrome.)
+        physicalLetterpad: true,
       });
     } catch (err) {
       toast({
@@ -2156,7 +2215,11 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     } finally {
       setExportingWord(false);
     }
-  }, [workflow.currentRow, previewHtml, toast, reportLayout, draftId, canonicalDemography, presentationTemplates, showLetterpadHeader]);
+  }, [
+    workflow.currentRow, previewHtml, toast, reportLayout, draftId, canonicalDemography,
+    presentationTemplates, saveDraft, impressionStyle, livePrintBodyHtml, findingsText,
+    impressionText, imageRefs,
+  ]);
 
   const handleExportPdf = useCallback(async () => {
     setExportingPdf(true);
@@ -2217,14 +2280,21 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     }
     try {
       const templateQs = reportLayoutTemplateQuery(reportLayout);
-      const url = `/api/radiology/report-generator/drafts/${id}/print-preview?autoPrint=true&likeFinal=true&${templateQs}`;
+      const styleQs = `impressionStyle=${encodeURIComponent(impressionStyle)}`;
+      const url = `/api/radiology/report-generator/drafts/${id}/print-preview?autoPrint=true&likeFinal=true&${templateQs}&${styleQs}`;
       let html = await api.get<string>(url);
       if (typeof html !== "string" || !html.trim()) {
         throw new Error("Empty print preview");
       }
-      // If the API could not reach Orthanc, still show selected images via the
-      // same browser DICOMweb path the Selected images rail already uses.
-      html = await hydratePrintPreviewKeyImages(html, BROWSER_DICOMWEB_BASE, imageRefs);
+      // Merge unsaved editor text into server layout; hydrate key images client-side.
+      html = await finalizePrintPreviewHtml(html, {
+        livePrintBodyHtml,
+        findingsText,
+        impressionText,
+        dicomWebBase: BROWSER_DICOMWEB_BASE,
+        imageRefs,
+        includeProvenanceChrome: false,
+      });
       w.document.open();
       w.document.write(html);
       w.document.close();
@@ -2239,7 +2309,10 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     } finally {
       setPrintingLikeFinal(false);
     }
-  }, [draftId, reportLayout, saveDraft, toast, imageRefs]);
+  }, [
+    draftId, reportLayout, saveDraft, toast, imageRefs, impressionStyle,
+    livePrintBodyHtml, findingsText, impressionText,
+  ]);
 
   // ─── Teaching case save ─────────────────────────────────────────────────────
   const handleSaveTeachingCase = useCallback(async () => {
@@ -3957,6 +4030,12 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       dicomWebBase={BROWSER_DICOMWEB_BASE}
                       showLetterpadHeader={showLetterpadHeader}
                       onShowLetterpadHeaderChange={setShowLetterpadHeader}
+                      livePrintBodyHtml={livePrintBodyHtml}
+                      findingsText={findingsText}
+                      impressionText={impressionText}
+                      findingsProvenance={findingsProvenance}
+                      impressionProvenance={impressionProvenance}
+                      onEnsureDraftSaved={() => saveDraft({ silent: true })}
                     />
                     </ReportAccordionSection>
                   </div>
