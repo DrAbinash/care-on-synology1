@@ -2,6 +2,7 @@ import { describe, expect, test, afterEach, vi } from "vitest";
 import {
   GLOBAL_BILL_PRINT_DEFAULTS,
   CURSOR_BILL_PRINT_LAYOUT,
+  BILL_FORMATS,
   applyCursorBillPrintLayout,
   applyManualBillPaperOverride,
   clearBillPrintSettingsOverride,
@@ -59,8 +60,18 @@ describe("parseGlobalBillPrintSettings — server blob can never break printing"
   });
 });
 
+describe("BILL_FORMATS — settings UI options", () => {
+  test("includes classic, hope-a5, and a5-landscape", () => {
+    expect(BILL_FORMATS.map((f) => f.id)).toEqual(["classic", "hope-a5", "a5-landscape"]);
+    const a5Landscape = BILL_FORMATS.find((f) => f.id === "a5-landscape");
+    expect(a5Landscape?.label).toBe("A5 Landscape (Half A4)");
+    expect(a5Landscape?.hint).toContain("210×148 mm");
+  });
+});
+
 describe("normalizeBillFormat + paperSizeForBillFormat", () => {
-  test("hope-a5 stays hope-a5; everything else maps to classic", () => {
+  test("hope-a5 stays hope-a5; a5-landscape stays a5-landscape; everything else maps to classic", () => {
+    expect(normalizeBillFormat("a5-landscape")).toBe("a5-landscape");
     expect(normalizeBillFormat("hope-a5")).toBe("hope-a5");
     expect(normalizeBillFormat("classic")).toBe("classic");
     expect(normalizeBillFormat("modern-landscape")).toBe("classic");
@@ -70,6 +81,7 @@ describe("normalizeBillFormat + paperSizeForBillFormat", () => {
 
   test("paper follows format", () => {
     expect(paperSizeForBillFormat("classic")).toBe("A5-landscape");
+    expect(paperSizeForBillFormat("a5-landscape")).toBe("A5-landscape");
     expect(paperSizeForBillFormat("hope-a5")).toBe("A5-portrait");
   });
 });
@@ -81,6 +93,12 @@ describe("loadBillPrintSettings — format + paper merge", () => {
     expect(CURSOR_BILL_PRINT_LAYOUT.autoA4Threshold).toBe(8);
     const merged = loadBillPrintSettings();
     expect(merged.defaultFormat).toBe("classic");
+    expect(merged.defaultPaperSize).toBe("A5-landscape");
+  });
+
+  test("a5-landscape format forces A5-landscape paper", () => {
+    const merged = loadBillPrintSettings({ defaultFormat: "a5-landscape", defaultPaperSize: "A4" });
+    expect(merged.defaultFormat).toBe("a5-landscape");
     expect(merged.defaultPaperSize).toBe("A5-landscape");
   });
 
@@ -258,6 +276,14 @@ describe("resolveBillPrintCopyCount — physical copies", () => {
 });
 
 describe("resolveBillPrintPageOpts — format-driven paper", () => {
+  test("a5-landscape short bills use half A4 @page (210×148)", () => {
+    const opts = resolveBillPrintPageOpts({ defaultFormat: "a5-landscape" }, 1);
+    expect(opts.paperSize).toBe("A5");
+    expect(opts.orientation).toBe("landscape");
+    expect(opts.pageCssSize).toBe("210mm 148mm");
+    expect(opts.compactFooterGap).toBe(false);
+  });
+
   test("classic short bills use half A4 @page (210×148)", () => {
     const opts = resolveBillPrintPageOpts({ defaultFormat: "classic" }, 1);
     expect(opts.paperSize).toBe("A5");
@@ -272,8 +298,8 @@ describe("resolveBillPrintPageOpts — format-driven paper", () => {
     expect(opts.orientation).toBe("portrait");
   });
 
-  test("long bills (≥ Cursor autoA4Threshold) switch to A4 for either format", () => {
-    for (const format of ["classic", "hope-a5"] as const) {
+  test("long bills (≥ Cursor autoA4Threshold) switch to A4 for any format", () => {
+    for (const format of ["classic", "hope-a5", "a5-landscape"] as const) {
       const opts = resolveBillPrintPageOpts({ defaultFormat: format }, 12);
       expect(opts.paperSize).toBe("A4");
       expect(opts.pageCssSize).toBe("A4 portrait");
@@ -285,6 +311,8 @@ describe("applyManualBillPaperOverride — paper follows format", () => {
   test("manual A4 / A5 are ignored; format owns paper", () => {
     expect(applyManualBillPaperOverride({ defaultFormat: "classic" }, "A4").defaultPaperSize)
       .toBe("A5-landscape");
+    expect(applyManualBillPaperOverride({ defaultFormat: "a5-landscape" }, "A4").defaultPaperSize)
+      .toBe("A5-landscape");
     expect(applyManualBillPaperOverride({ defaultFormat: "hope-a5" }, "A4").defaultPaperSize)
       .toBe("A5-portrait");
   });
@@ -294,6 +322,8 @@ describe("applyManualBillPaperOverride — paper follows format", () => {
     expect(classic.defaultPaperSize).toBe("A5-landscape");
     expect(classic.printMarginMm).toBe(12);
     expect(classic.defaultCopyType).toBe("both");
+    const a5Landscape = applyCursorBillPrintLayout({ defaultFormat: "a5-landscape" as const, printMarginMm: 12 });
+    expect(a5Landscape.defaultPaperSize).toBe("A5-landscape");
     const hope = applyCursorBillPrintLayout({ defaultFormat: "hope-a5" as const, printMarginMm: 12 });
     expect(hope.defaultPaperSize).toBe("A5-portrait");
   });

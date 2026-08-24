@@ -5047,6 +5047,11 @@ function BillingPrintTab() {
 
   if (loading || !settings) return <div className="bg-card border border-card-border rounded-xl p-8 text-center text-muted-foreground">Loading billing print settings…</div>;
 
+  const activeBillFormat = normalizeBillFormat(settings.defaultFormat);
+  const activeFormatMeta = BILL_FORMATS.find((f) => f.id === activeBillFormat) ?? BILL_FORMATS[0];
+  const activeFormatPaper =
+    paperSizeForBillFormat(activeBillFormat) === "A5-portrait" ? "148×210 mm" : "210×148 mm";
+
   const previewNatural = PAPER_PX[settings.defaultPaperSize] ?? PAPER_PX["A5-portrait"];
   const previewBoxWidth = 300;
   const previewScale = previewBoxWidth / previewNatural.w;
@@ -5074,22 +5079,21 @@ function BillingPrintTab() {
           <div>
             <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Bill print layout</p>
             <h2 className="text-base font-bold text-slate-900 dark:text-slate-100">
-              {settings.defaultFormat === "hope-a5" ? "HOPE A5 Receipt" : "CARE Invoice"}
+              {activeFormatMeta.label}
             </h2>
           </div>
           <span className="shrink-0 rounded-full border border-slate-300 bg-white dark:bg-slate-900 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-600 dark:text-slate-300">
-            {settings.defaultFormat === "hope-a5" ? "148×210 mm" : "210×148 mm"}
+            {activeFormatPaper}
           </span>
         </div>
         <p className="text-xs text-slate-700 dark:text-slate-300 leading-relaxed">
-          Choose CARE Invoice (previous layout) or HOPE A5 Receipt below. Paper size follows the format;
-          long bills still auto-switch to A4 from 8 tests.
+          Choose a bill print format below. Paper size follows the format; long bills still auto-switch to A4 from 8 tests.
         </p>
         <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1 text-xs">
-          <div><dt className="text-muted-foreground">Active format</dt><dd className="font-semibold">{settings.defaultFormat === "hope-a5" ? "HOPE A5 Receipt" : "CARE Invoice"}</dd></div>
-          <div><dt className="text-muted-foreground">Job size sent to printer</dt><dd className="font-semibold">{settings.defaultFormat === "hope-a5" ? "148×210 mm" : "210×148 mm"}</dd></div>
+          <div><dt className="text-muted-foreground">Active format</dt><dd className="font-semibold">{activeFormatMeta.label}</dd></div>
+          <div><dt className="text-muted-foreground">Job size sent to printer</dt><dd className="font-semibold">{activeFormatPaper}</dd></div>
           <div><dt className="text-muted-foreground">Long bills</dt><dd className="font-semibold">Auto A4 from 8 tests</dd></div>
-          <div><dt className="text-muted-foreground">Finance / QR / audit</dt><dd className="font-semibold">Identical on both</dd></div>
+          <div><dt className="text-muted-foreground">Finance / QR / audit</dt><dd className="font-semibold">Identical on all formats</dd></div>
         </dl>
       </div>
 
@@ -5097,7 +5101,7 @@ function BillingPrintTab() {
         className="rounded-xl border border-amber-200 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-800 px-4 py-4 text-xs text-amber-950 dark:text-amber-100 leading-relaxed space-y-2 pointer-events-auto"
         data-testid="cursor-default-printer-paper"
       >
-        {settings.defaultFormat === "hope-a5" ? (
+        {activeBillFormat === "hope-a5" ? (
           <>
             <p className="font-bold text-sm">How to set paper (A5 portrait in the tray)</p>
             <ol className="list-decimal pl-4 space-y-1.5">
@@ -5135,7 +5139,7 @@ function BillingPrintTab() {
         </p>
       </div>
 
-      <SectionCard title="Format &amp; Copies" subtitle="Pick CARE Invoice or HOPE A5, then header placement and copies.">
+      <SectionCard title="Format &amp; Copies" subtitle="Pick a bill format, then header placement and copies.">
         <SelectCard
           label="Bill layout"
           options={BILL_FORMATS.map((f) => ({ id: f.id, label: `${f.label} — ${f.hint}` }))}
@@ -5335,9 +5339,7 @@ function BillingPrintTab() {
           </div>
         </div>
         <p className="text-[11px] text-center text-muted-foreground">
-          {settings.defaultFormat === "hope-a5"
-            ? "HOPE A5 Receipt · 148×210 mm"
-            : "CARE Invoice · 210×148 mm"}
+          {activeFormatMeta.label} · {activeFormatPaper}
           {" · "}
           {headerLayouts.find((f) => f.id === (settings.headerLayout ?? "right"))?.label ?? "Address on right"}
         </p>
