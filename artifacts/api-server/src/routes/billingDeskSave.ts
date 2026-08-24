@@ -45,6 +45,7 @@ billingDeskSaveRouter.post("/save", async (req: StaffAuthRequest, res) => {
       // Not in CreateOrderBody Zod schema — read from raw body in createOrderHandler
       // so VIP surcharge line prices pass the non-admin price ceiling.
       isVip: payload.isVip,
+      packageIds: payload.packageIds,
     };
 
     const orderCap = captureResponse();

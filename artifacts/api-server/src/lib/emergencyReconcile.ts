@@ -38,6 +38,7 @@ import {
 } from "@workspace/emergency-billing";
 import { generateOrderNumber } from "../routes/orders";
 import { generateBillNumber } from "../routes/bills";
+import { emergencyImportLinesReconcile } from "./financialIntegrity";
 import { getWalkInLedgerId } from "../routes/ledgers";
 import { autoVoucherForPayment } from "./auto-voucher";
 import { generateTestTokensForOrder } from "../routes/test-tokens";
@@ -414,12 +415,19 @@ async function importOneTransaction(opts: {
   const missing = serviceIds.filter((id) => !known.has(id));
   if (missing.length) throw new Error(`Unknown CARE service ids: ${missing.join(", ")}`);
 
+  const reconcileErr = emergencyImportLinesReconcile({
+    lines: t.lines.map((l) => ({ unitPrice: l.unitPrice, quantity: l.quantity })),
+    grossAmount: t.grossAmount,
+    discountAmount: t.discountAmount,
+    netAmount: t.netAmount,
+    amountReceived: t.amountReceived,
+    dueAmount: t.dueAmount,
+  });
+  if (reconcileErr) throw new Error(reconcileErr);
+
   const net = Number(t.netAmount);
   const received = Number(t.amountReceived);
   const due = Number(t.dueAmount);
-  if (Math.abs(net - received - due) > 0.05) {
-    throw new Error(`Due math mismatch: net ${net} received ${received} due ${due}`);
-  }
 
   const created = await db.transaction(async (tx) => {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('care_erp_emergency_import'))`);

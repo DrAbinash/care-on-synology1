@@ -8,6 +8,7 @@ import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { classifyPaymentMethod, isPhysicalCash } from "../lib/paymentMethodClassifier";
 import { lastOverallClosureBoundary } from "../lib/closureBoundary";
 import { BILL_AUDIT_OPERATIONAL_CHANGE_TYPES } from "../lib/staffActivityAttribution";
+import { isCollectiblePayment } from "../lib/financialIntegrity";
 
 // Inline super-admin gate that works on the regular ERP staff session
 // (req.staffSession.role === "super_admin"). The site-wide
@@ -218,6 +219,7 @@ async function summarizeWindow(from: Date | null, to: Date) {
       createdAt: paymentsTable.createdAt,
       recordedByName: paymentsTable.recordedByName,
       billId: paymentsTable.billId,
+      settlementStatus: paymentsTable.settlementStatus,
     })
     .from(paymentsTable)
     .where(paymentWhere);
@@ -255,8 +257,9 @@ async function summarizeWindow(from: Date | null, to: Date) {
     .from(expensesTable)
     .where(expenseWhere);
 
-  // Aggregate payments — delegates to the pure, unit-tested classifier above.
-  const classified = classifyAndBucketPayments(payRows);
+  // Aggregate payments — exclude non-collectible settlement statuses, then
+  // delegate to the pure, unit-tested classifier above.
+  const classified = classifyAndBucketPayments(payRows.filter(isCollectiblePayment));
   const { overall, byStaff, suspenseItems, totalSuspense } = classified;
 
   // Aggregate bills
@@ -797,13 +800,13 @@ async function summarizeUserWindow(
     : and(eq(paymentsTable.recordedByName, userName), lte(paymentsTable.createdAt, to));
 
   const payments = await db
-    .select({ id: paymentsTable.id, amount: paymentsTable.amount, method: paymentsTable.method, recordedByName: paymentsTable.recordedByName })
+    .select({ id: paymentsTable.id, amount: paymentsTable.amount, method: paymentsTable.method, recordedByName: paymentsTable.recordedByName, settlementStatus: paymentsTable.settlementStatus })
     .from(paymentsTable)
     .where(pWhere);
 
   // Same pure classifier used by the overall day-close path — single
   // source of truth for bucketing + suspense isolation.
-  const classified = classifyAndBucketPayments(payments);
+  const classified = classifyAndBucketPayments(payments.filter(isCollectiblePayment));
   const totals = classified.overall;
   const suspenseItems = classified.suspenseItems.map((s) => ({ amount: s.amount, rawMethod: s.rawMethod }));
   const suspenseTotal = classified.totalSuspense;
@@ -1894,6 +1897,7 @@ async function postClosureActivity(userName: string) {
         amount:    paymentsTable.amount,
         method:    paymentsTable.method,
         createdAt: paymentsTable.createdAt,
+        settlementStatus: paymentsTable.settlementStatus,
       })
       .from(paymentsTable)
       .where(and(
@@ -1904,14 +1908,15 @@ async function postClosureActivity(userName: string) {
       .limit(100),
   ]);
 
+  const collectiblePayments = payments.filter(isCollectiblePayment);
   const billTotal    = bills.reduce((s, b) => s + n(b.totalAmount), 0);
-  const paymentTotal = payments.reduce((s, p) => s + n(p.amount), 0);
+  const paymentTotal = collectiblePayments.reduce((s, p) => s + n(p.amount), 0);
 
   return {
     closedAt:     latestClose.closedAt,
     closureId:    latestClose.id,
     bills:        bills.map((b) => ({ ...b, totalAmount: n(b.totalAmount), paidAmount: n(b.paidAmount) })),
-    payments:     payments.map((p) => ({ ...p, amount: n(p.amount) })),
+    payments:     collectiblePayments.map((p) => ({ ...p, amount: n(p.amount) })),
     billTotal,
     paymentTotal,
   };
