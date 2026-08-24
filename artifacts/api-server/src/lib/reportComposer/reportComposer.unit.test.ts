@@ -4,7 +4,7 @@ import { computeSnapshotHashes, dedupeObservations, hashText } from "./snapshot"
 import { validateComposerOutput } from "./validateOutput";
 import { buildTrackedChanges, materializeAcceptedText } from "./trackedChanges";
 import { deterministicComposeFromSnapshot } from "./deterministicCompose";
-import type { ComposerInputSnapshot } from "./types";
+import { parseComposerSnapshot, type ComposerInputSnapshot } from "./types";
 
 describe("clinicalSignificance — deterministic", () => {
   it("flags laterality change", () => {
@@ -40,12 +40,12 @@ describe("clinicalSignificance — deterministic", () => {
 
 describe("snapshot immutability / hashing", () => {
   it("same content → same revision", () => {
-    const snap: ComposerInputSnapshot = {
+    const snap: ComposerInputSnapshot = parseComposerSnapshot({
       findings: "L4-5 bulge",
       impression: "Disc bulge",
       recommendation: "",
       observations: [{ concept: "bulge", findingsText: "L4-5 diffuse disc bulge", source: "quick-select", level: "L4-L5" }],
-    };
+    });
     const a = computeSnapshotHashes(snap);
     const b = computeSnapshotHashes({ ...snap });
     expect(a.reportRevision).toBe(b.reportRevision);
@@ -53,8 +53,8 @@ describe("snapshot immutability / hashing", () => {
   });
 
   it("edit changes revision", () => {
-    const a = computeSnapshotHashes({ findings: "L4-5", impression: "", recommendation: "", observations: [] });
-    const b = computeSnapshotHashes({ findings: "L3-4", impression: "", recommendation: "", observations: [] });
+    const a = computeSnapshotHashes(parseComposerSnapshot({ findings: "L4-5", impression: "", recommendation: "", observations: [] }));
+    const b = computeSnapshotHashes(parseComposerSnapshot({ findings: "L3-4", impression: "", recommendation: "", observations: [] }));
     expect(a.reportRevision).not.toBe(b.reportRevision);
   });
 
@@ -69,7 +69,7 @@ describe("snapshot immutability / hashing", () => {
 
 describe("validateComposerOutput — no invented pathology", () => {
   it("rejects unsupported hemorrhage in brain draft", () => {
-    const snap: ComposerInputSnapshot = {
+    const snap: ComposerInputSnapshot = parseComposerSnapshot({
       findings: "Fazekas 2 white matter changes. Prominent ventricles.",
       impression: "",
       recommendation: "",
@@ -77,7 +77,7 @@ describe("validateComposerOutput — no invented pathology", () => {
         { concept: "fazekas", findingsText: "Fazekas grade 2", source: "quick-select" },
         { concept: "ventricles", findingsText: "prominent ventricles/CSF spaces", source: "quick-select" },
       ],
-    };
+    });
     const v = validateComposerOutput(snap, {
       findings: snap.findings,
       impression: "Acute hemorrhage and infarct with Fazekas 2.",
@@ -90,7 +90,7 @@ describe("validateComposerOutput — no invented pathology", () => {
   });
 
   it("accepts grounded LS spine findings", () => {
-    const snap: ComposerInputSnapshot = {
+    const snap: ComposerInputSnapshot = parseComposerSnapshot({
       findings: "No significant disc bulge.",
       impression: "",
       recommendation: "",
@@ -98,7 +98,7 @@ describe("validateComposerOutput — no invented pathology", () => {
         { concept: "bulge", findingsText: "L4-5 diffuse disc bulge", source: "quick-select" },
         { concept: "desiccation", findingsText: "L5-S1 disc desiccation", source: "quick-select" },
       ],
-    };
+    });
     const draft = deterministicComposeFromSnapshot(snap, "FULL_REPORT");
     const v = validateComposerOutput(snap, draft);
     expect(v.ok).toBe(true);

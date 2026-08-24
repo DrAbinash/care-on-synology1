@@ -18,6 +18,7 @@ import {
   markComposeApplied,
 } from "./jobService";
 import { computeSnapshotHashes, hashText } from "./snapshot";
+import { parseComposerSnapshot } from "./types";
 
 function worklistSeed(marker: string, label: "A" | "B") {
   const uid = `1.2.840.vitest.compose.${marker}.${label}`;
@@ -67,13 +68,13 @@ describe.skipIf(!hasDatabaseUrl())("pre-deploy safety contracts — DB", () => {
     status?: string;
     trackedChangesJson?: string;
   }) {
-    const snapshot = {
+    const snapshot = parseComposerSnapshot({
       worklistId: opts.worklistId,
       findings: opts.findings,
       impression: "",
       recommendation: "",
       observations: [],
-    };
+    });
     const hashes = computeSnapshotHashes(snapshot);
     const [row] = await db
       .insert(aiReportComposeJobsTable)
@@ -113,7 +114,7 @@ describe.skipIf(!hasDatabaseUrl())("pre-deploy safety contracts — DB", () => {
 
   it("15. duplicate active identical jobs blocked by partial unique index", async () => {
     const findings = "Dedupe probe findings.";
-    const snapshot = { worklistId: worklistA, findings, impression: "", recommendation: "", observations: [] };
+    const snapshot = parseComposerSnapshot({ worklistId: worklistA, findings, impression: "", recommendation: "", observations: [] });
     const hashes = computeSnapshotHashes(snapshot);
     const base = {
       worklistId: worklistA,

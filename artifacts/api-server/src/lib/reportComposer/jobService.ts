@@ -32,6 +32,12 @@ import { buildTrackedChanges } from "./trackedChanges";
 
 export const AI_REPORT_COMPOSE_JOB = "ai_report_compose";
 
+function executeComposeRows<T>(res: unknown): T[] {
+  const withRows = res as { rows?: T[] };
+  if (Array.isArray(withRows.rows)) return withRows.rows;
+  return Array.isArray(res) ? (res as T[]) : [];
+}
+
 const ACTIVE = ["QUEUED", "COMPOSING"] as const;
 const TERMINAL_FOR_DEDUPE = ["QUEUED", "COMPOSING"] as const;
 
@@ -618,8 +624,7 @@ export async function composeDiagnostics() {
     WHERE created_at > now() - interval '7 days'
     GROUP BY status
   `);
-  const rows = (counts as { rows?: Array<{ status: string; c: number }> }).rows
-    ?? (Array.isArray(counts) ? (counts as Array<{ status: string; c: number }>) : []);
+  const rows = executeComposeRows<{ status: string; c: number }>(counts);
   const byStatus: Record<string, number> = {};
   for (const r of rows) byStatus[r.status] = r.c;
 

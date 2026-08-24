@@ -53,6 +53,12 @@ export const ComposerInputSnapshotSchema = z.object({
   jobKindHint: z.string().optional(),
 });
 
+export function parseComposerSnapshot(
+  input: z.input<typeof ComposerInputSnapshotSchema>,
+): ComposerInputSnapshot {
+  return ComposerInputSnapshotSchema.parse(input);
+}
+
 export type ComposerInputSnapshot = z.infer<typeof ComposerInputSnapshotSchema>;
 
 export const TrackedChangeReviewStates = ["PENDING", "ACCEPTED", "REJECTED", "EDITED"] as const;

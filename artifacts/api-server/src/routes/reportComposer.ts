@@ -43,7 +43,7 @@ function canUse(req: StaffAuthRequest): boolean {
 function staffMeta(req: StaffAuthRequest) {
   const s = req.staffSession;
   return {
-    createdBy: s?.username ?? s?.role ?? "staff",
+    createdBy: s?.subjectName ?? s?.role ?? "staff",
     createdByStaffId: s?.id ?? null,
   };
 }
