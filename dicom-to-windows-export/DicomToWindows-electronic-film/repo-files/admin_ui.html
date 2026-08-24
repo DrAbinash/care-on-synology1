@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DicomToWindows Admin</title>
+<style>
+:root{--bg:#0f172a;--card:#1e293b;--text:#e2e8f0;--muted:#94a3b8;--accent:#38bdf8;--ok:#22c55e;--warn:#f59e0b;--err:#ef4444;--border:#334155}
+*{box-sizing:border-box}body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--text);line-height:1.45}
+header{padding:1rem 1.25rem;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;gap:1rem}
+h1{font-size:1.15rem;margin:0}h2{font-size:1rem;margin:0 0 .75rem}
+nav{display:flex;flex-wrap:wrap;gap:.5rem;padding:.75rem 1.25rem;border-bottom:1px solid var(--border)}
+nav button{background:var(--card);color:var(--text);border:1px solid var(--border);padding:.45rem .75rem;border-radius:.4rem;cursor:pointer}
+nav button.active{background:var(--accent);color:#0f172a;border-color:var(--accent)}
+main{padding:1rem 1.25rem;max-width:1200px}
+.card{background:var(--card);border:1px solid var(--border);border-radius:.6rem;padding:1rem;margin-bottom:1rem}
+.grid{display:grid;gap:1rem;grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}
+label{display:block;font-size:.8rem;color:var(--muted);margin-bottom:.25rem}
+input,select,textarea{width:100%;padding:.5rem;border-radius:.35rem;border:1px solid var(--border);background:#0b1220;color:var(--text)}
+button.btn{background:var(--accent);color:#0f172a;border:none;padding:.55rem .9rem;border-radius:.35rem;cursor:pointer;font-weight:600}
+button.ghost{background:transparent;color:var(--text);border:1px solid var(--border)}
+.status{display:inline-block;padding:.15rem .45rem;border-radius:.3rem;font-size:.75rem;font-weight:600}
+.status.ok{background:#14532d;color:#86efac}.status.warn{background:#78350f;color:#fde68a}.status.err{background:#7f1d1d;color:#fecaca}
+table{width:100%;border-collapse:collapse;font-size:.85rem}
+th,td{padding:.45rem;border-bottom:1px solid var(--border);text-align:left;vertical-align:top}
+.muted{color:var(--muted)}.hidden{display:none !important}
+#loginScreen{max-width:360px;margin:4rem auto}
+.row{display:flex;gap:.75rem;flex-wrap:wrap;align-items:end}
+.row>*{flex:1}
+pre{background:#0b1220;padding:.75rem;border-radius:.4rem;overflow:auto;font-size:.75rem}
+img.preview{max-width:100%;border:1px solid var(--border);border-radius:.4rem}
+</style>
+</head>
+<body>
+<div id="loginScreen" class="card">
+  <h2>Admin Login</h2>
+  <p class="muted">Local bridge administration. First login sets the admin password.</p>
+  <label>Username</label><input id="loginUser" value="admin">
+  <label>Password</label><input id="loginPass" type="password">
+  <p><button class="btn" onclick="doLogin()">Sign in</button></p>
+  <p id="loginError" class="status err hidden"></p>
+</div>
+
+<div id="app" class="hidden">
+<header>
+  <h1>DICOM Print Bridge · Electronic Film Admin</h1>
+  <button class="ghost" onclick="logout()">Logout</button>
+</header>
+<nav id="tabs">
+  <button class="active" data-tab="dashboard">Dashboard</button>
+  <button data-tab="dicom">DICOM</button>
+  <button data-tab="film">Film / Layout</button>
+  <button data-tab="calibration">Calibration</button>
+  <button data-tab="branding">Branding</button>
+  <button data-tab="printer">Printer</button>
+  <button data-tab="storage">Storage</button>
+  <button data-tab="jobs">Job History</button>
+  <button data-tab="diagnostics">Diagnostics</button>
+  <button data-tab="backup">Backup</button>
+</nav>
+<main>
+<section id="tab-dashboard" class="tab">
+  <div class="grid" id="dashCards"></div>
+  <div class="card"><h2>Actions</h2>
+    <div class="row">
+      <button class="btn" onclick="testListener()">Test Listener</button>
+      <button class="btn" onclick="testCare()">Test CARE Connection</button>
+      <button class="btn" onclick="testPrinter()">Test Printer</button>
+      <button class="btn ghost" onclick="loadDashboard()">Refresh</button>
+    </div>
+    <p id="actionResult" class="muted"></p>
+  </div>
+</section>
+
+<section id="tab-dicom" class="tab hidden">
+  <div class="card">
+    <h2>DICOM Settings</h2>
+    <div class="grid">
+      <div><label>AE Title (≤16)</label><input id="dicomAet"></div>
+      <div><label>Port</label><input id="dicomPort" type="number"></div>
+      <div><label>Allowed Calling AE Titles (comma-separated)</label><input id="dicomAllowed"></div>
+      <div><label>Capture Mode</label>
+        <select id="captureMode">
+          <option value="CAPTURE_ONLY">CAPTURE_ONLY</option>
+          <option value="CAPTURE_AND_PRINT">CAPTURE_AND_PRINT</option>
+          <option value="PRINT_ONLY">PRINT_ONLY</option>
+        </select>
+      </div>
+    </div>
+    <div class="card" style="margin-top:1rem">
+      <h2>Add This Printer To Your Modality</h2>
+      <pre id="modalitySetup"></pre>
+      <button class="btn ghost" onclick="copyModalitySetup()">Copy Settings</button>
+    </div>
+    <p><button class="btn" onclick="saveDicomSettings()">Save Settings</button></p>
+  </div>
+</section>
+
+<section id="tab-film" class="tab hidden">
+  <div class="card">
+    <h2>Film / Layout</h2>
+    <div class="grid">
+      <div><label>Page Size</label><input id="pageSize"></div>
+      <div><label>Orientation</label><select id="pageOrientation"><option>AUTO</option><option>SCU</option><option>PORTRAIT</option><option>LANDSCAPE</option></select></div>
+      <div><label>Default Rows</label><input id="layoutRows" type="number"></div>
+      <div><label>Default Cols</label><input id="layoutCols" type="number"></div>
+      <div><label>Honor SCU Film Size</label><select id="honorFilmSize"><option value="true">Yes</option><option value="false">No</option></select></div>
+      <div><label>Preserve Console Layout</label><select id="preserveLayout"><option value="true">Yes</option><option value="false">No</option></select></div>
+      <div><label>Auto-fit</label><select id="autoFit"><option value="true">Yes</option><option value="false">No</option></select></div>
+      <div><label>Stretch To Fit</label><select id="stretchFit"><option value="false">No</option><option value="true">Yes</option></select></div>
+    </div>
+    <p><button class="btn" onclick="saveFilmSettings()">Save Settings</button></p>
+  </div>
+</section>
+
+<section id="tab-calibration" class="tab hidden">
+  <div class="card">
+    <h2>Image Calibration</h2>
+    <div class="grid">
+      <div><label>Enable Calibration</label><select id="enableCalib"><option value="true">On</option><option value="false">Off</option></select></div>
+      <div><label>Gamma</label><input id="gamma" type="number" step="0.1"></div>
+      <div><label>Brightness (-1..1)</label><input id="brightness" type="number" step="0.05"></div>
+      <div><label>Contrast</label><input id="contrast" type="number" step="0.05"></div>
+      <div><label>Sharpness</label><input id="sharpness" type="number" step="0.1"></div>
+      <div><label>Black Point %</label><input id="blackPoint" type="number" step="0.5"></div>
+      <div><label>White Point %</label><input id="whitePoint" type="number" step="0.5"></div>
+      <div><label>Invert Polarity</label><select id="invert"><option value="false">No</option><option value="true">Yes</option></select></div>
+    </div>
+    <p><button class="btn" onclick="saveCalibration()">Save</button> <button class="btn ghost" onclick="resetCalibration()">Reset Defaults</button></p>
+    <h2>Synthetic Preview</h2>
+    <img class="preview" id="calPreview" alt="Calibration preview">
+  </div>
+</section>
+
+<section id="tab-branding" class="tab hidden">
+  <div class="card">
+    <h2>Branding Source</h2>
+    <label><input type="radio" name="brandSrc" value="CARE"> CARE ERP</label>
+    <label><input type="radio" name="brandSrc" value="LOCAL"> Local Override</label>
+    <div class="grid" style="margin-top:.75rem">
+      <div><label>ERP Branding URL</label><input id="erpUrl"></div>
+      <div><label>Clinic Name</label><input id="clinicName"></div>
+      <div><label>Tagline</label><input id="clinicTagline"></div>
+      <div><label>Address 1</label><input id="addr1"></div>
+      <div><label>Address 2</label><input id="addr2"></div>
+      <div><label>City</label><input id="city"></div>
+      <div><label>State</label><input id="state"></div>
+      <div><label>PIN</label><input id="pin"></div>
+      <div><label>Phone</label><input id="phone"></div>
+      <div><label>Email</label><input id="email"></div>
+      <div><label>Website</label><input id="website"></div>
+      <div><label>Logo Path</label><input id="logoPath"></div>
+      <div><label>Header Line 1</label><input id="header1"></div>
+      <div><label>Header Line 2</label><input id="header2"></div>
+      <div><label>Footer Line 1</label><input id="footer1"></div>
+      <div><label>Footer Line 2</label><input id="footer2"></div>
+    </div>
+    <p><button class="btn" onclick="saveBranding()">Save Branding</button></p>
+  </div>
+</section>
+
+<section id="tab-printer" class="tab hidden">
+  <div class="card">
+    <h2>Physical Printer</h2>
+    <div class="grid">
+      <div><label>Print Method</label><select id="printMethod"><option>cups</option><option>jetdirect</option></select></div>
+      <div><label>CUPS Server</label><input id="cupsServer"></div>
+      <div><label>CUPS Queue</label><input id="cupsPrinter"></div>
+      <div><label>CUPS Media</label><input id="cupsMedia"></div>
+      <div><label>JetDirect Host</label><input id="jetHost"></div>
+      <div><label>JetDirect Port</label><input id="jetPort" type="number"></div>
+    </div>
+    <p class="muted">Test Printer checks queue reachability. A full CUPS test may physically print.</p>
+    <p><button class="btn" onclick="savePrinter()">Save</button> <button class="btn ghost" onclick="testPrinter()">Test Printer</button></p>
+  </div>
+</section>
+
+<section id="tab-storage" class="tab hidden">
+  <div class="card" id="storageCard"></div>
+</section>
+
+<section id="tab-jobs" class="tab hidden">
+  <div class="card"><h2>Print Jobs</h2><table id="jobsTable"><thead><tr>
+    <th>Time</th><th>Source</th><th>Calling AE</th><th>Patient</th><th>Pages</th><th>Capture</th><th>Print</th><th>Actions</th>
+  </tr></thead><tbody></tbody></table></div>
+</section>
+
+<section id="tab-diagnostics" class="tab hidden">
+  <div class="card">
+    <h2>Diagnostics</h2>
+    <pre id="diagReport"></pre>
+    <button class="btn" onclick="copyDiagnostics()">Copy Diagnostic Report</button>
+  </div>
+</section>
+
+<section id="tab-backup" class="tab hidden">
+  <div class="card">
+    <h2>Backup / Restore</h2>
+    <p><button class="btn" onclick="exportSettings(false)">Export Settings (no secrets)</button>
+    <button class="btn ghost" onclick="exportSettings(true)">Export With Secrets</button></p>
+    <label>Import JSON</label><textarea id="importJson" rows="8"></textarea>
+    <label><input type="checkbox" id="importSecrets"> Include secrets in import</label>
+    <p><button class="btn" onclick="importSettings()">Import Settings</button></p>
+    <h2>Presets</h2>
+    <div class="row">
+      <select id="presetSelect"></select>
+      <button class="btn ghost" onclick="applyPreset()">Apply Preset</button>
+    </div>
+  </div>
+</section>
+</main>
+</div>
+
+<script>
+let token='', csrf='';
+function show(id,on){document.getElementById(id).classList.toggle('hidden',!on)}
+async function api(path,opts={}){
+  opts.headers=opts.headers||{};
+  if(token) opts.headers['X-Admin-Session']=token;
+  if(csrf && opts.method==='POST') opts.headers['X-CSRF-Token']=csrf;
+  if(opts.body && typeof opts.body==='object'){opts.body=JSON.stringify(opts.body);opts.headers['Content-Type']='application/json'}
+  const r=await fetch(path,opts);
+  const t=await r.text();
+  try{return {ok:r.ok,status:r.status,data:JSON.parse(t)};}catch{return {ok:r.ok,status:r.status,data:t}}
+}
+async function doLogin(){
+  const res=await api('/admin/api/login',{method:'POST',body:{username:document.getElementById('loginUser').value,password:document.getElementById('loginPass').value}});
+  if(!res.ok){document.getElementById('loginError').textContent=res.data.error||'Login failed';show('loginError',true);return}
+  token=res.data.token;csrf=res.data.csrf;show('loginScreen',false);show('app',true);boot();
+}
+async function logout(){await api('/admin/api/logout',{method:'POST',body:{}});token='';csrf='';show('app',false);show('loginScreen',true)}
+function tab(name){
+  document.querySelectorAll('.tab').forEach(el=>el.classList.add('hidden'));
+  document.getElementById('tab-'+name).classList.remove('hidden');
+  document.querySelectorAll('#tabs button').forEach(b=>b.classList.toggle('active',b.dataset.tab===name));
+  if(name==='jobs') loadJobs();
+  if(name==='diagnostics') loadDiagnostics();
+  if(name==='storage') loadStorage();
+  if(name==='calibration') document.getElementById('calPreview').src='/admin/api/calibration-preview?'+Date.now();
+}
+document.getElementById('tabs').addEventListener('click',e=>{if(e.target.dataset.tab) tab(e.target.dataset.tab)});
+function card(title,val,cls=''){return `<div class="card"><div class="muted">${title}</div><div><span class="status ${cls}">${val}</span></div></div>`}
+async function loadDashboard(){
+  const res=await api('/admin/api/dashboard');
+  if(!res.ok)return;
+  const d=res.data;
+  document.getElementById('dashCards').innerHTML=[
+    card('Bridge Status',d.status||'RUNNING','ok'),
+    card('AE Title',d.aeTitle),
+    card('DICOM Port',d.dicomPort),
+    card('LAN IP',d.lanIp),
+    card('Capture Mode',d.captureMode),
+    card('CARE ERP',d.erpStatus,d.erpStatus==='CONNECTED'?'ok':(d.erpStatus==='NOT_CONFIGURED'?'warn':'err')),
+    card('Physical Printer',d.physicalPrinter?.status||'?',d.physicalPrinter?.status==='NORMAL'?'ok':'warn'),
+    card('Jobs',d.storage?.jobCount||0),
+  ].join('');
+  document.getElementById('modalitySetup').textContent=`AE Title: ${d.aeTitle}\nIP Address: ${d.lanIp}\nPort: ${d.dicomPort}\n\nConfigure your modality DICOM Print destination with these values. Use Verify/Echo to test connectivity before printing.`;
+}
+function copyModalitySetup(){navigator.clipboard.writeText(document.getElementById('modalitySetup').textContent)}
+async function testListener(){const r=await api('/admin/api/test-listener',{method:'POST',body:{}});document.getElementById('actionResult').textContent=JSON.stringify(r.data)}
+async function testCare(){const r=await api('/admin/api/test-care',{method:'POST',body:{}});document.getElementById('actionResult').textContent=JSON.stringify(r.data)}
+async function testPrinter(){const r=await api('/admin/api/test-printer',{method:'POST',body:{}});document.getElementById('actionResult').textContent=(r.data.warning||'')+' '+JSON.stringify(r.data)}
+async function loadSettings(){
+  const res=await api('/admin/api/settings'); if(!res.ok)return; const s=res.data.settings||[];
+  const map={}; s.forEach(x=>map[x.key]=x.effectiveValue);
+  const set=(id,v)=>{const el=document.getElementById(id); if(el) el.value=v??''};
+  set('dicomAet',map.DICOM_AET); set('dicomPort',map.DICOM_PORT); set('dicomAllowed',map.ALLOWED_CALLING_AETS);
+  set('captureMode',map.CAPTURE_MODE); set('pageSize',map.PAGE_SIZE); set('pageOrientation',map.PAGE_ORIENTATION);
+  set('layoutRows',map.LAYOUT_ROWS); set('layoutCols',map.LAYOUT_COLS);
+  set('honorFilmSize',map.HONOR_SCU_FILM_SIZE); set('preserveLayout',map.PRESERVE_CONSOLE_LAYOUT);
+  set('autoFit',map.AUTO_FIT_LAYOUT); set('stretchFit',map.STRETCH_TO_FIT);
+  set('enableCalib',map.ENABLE_CALIBRATION); set('gamma',map.GAMMA); set('brightness',map.BRIGHTNESS);
+  set('contrast',map.CONTRAST); set('sharpness',map.SHARPNESS); set('blackPoint',map.CONTRAST_LOW_PERCENTILE);
+  set('whitePoint',map.CONTRAST_HIGH_PERCENTILE); set('invert',map.INVERT_POLARITY);
+  set('erpUrl',map.ERP_BRANDING_URL); set('clinicName',map.CLINIC_NAME); set('clinicTagline',map.CLINIC_TAGLINE);
+  set('addr1',map.CLINIC_ADDRESS1); set('addr2',map.CLINIC_ADDRESS2); set('city',map.CLINIC_CITY);
+  set('state',map.CLINIC_STATE); set('pin',map.CLINIC_PIN); set('phone',map.CLINIC_PHONE);
+  set('email',map.CLINIC_EMAIL); set('website',map.CLINIC_WEBSITE); set('logoPath',map.CLINIC_LOGO_PATH);
+  set('header1',map.HEADER_LINE1); set('header2',map.HEADER_LINE2); set('footer1',map.FOOTER_LINE1); set('footer2',map.FOOTER_LINE2);
+  set('printMethod',map.PRINT_METHOD); set('cupsServer',map.CUPS_SERVER); set('cupsPrinter',map.CUPS_PRINTER_NAME);
+  set('cupsMedia',map.CUPS_MEDIA); set('jetHost',map.JETDIRECT_HOST); set('jetPort',map.JETDIRECT_PORT);
+  document.querySelectorAll('input[name=brandSrc]').forEach(r=>r.checked=r.value===map.BRANDING_SOURCE);
+  const ps=document.getElementById('presetSelect'); ps.innerHTML='';
+  Object.keys(res.data.presets||{}).forEach(k=>ps.innerHTML+=`<option value="${k}">${k}</option>`);
+}
+async function saveSettings(obj){const r=await api('/admin/api/settings',{method:'POST',body:{settings:obj}}); alert(JSON.stringify(r.data))}
+function saveDicomSettings(){saveSettings({DICOM_AET:document.getElementById('dicomAet').value,DICOM_PORT:+document.getElementById('dicomPort').value,ALLOWED_CALLING_AETS:document.getElementById('dicomAllowed').value,CAPTURE_MODE:document.getElementById('captureMode').value})}
+function saveFilmSettings(){saveSettings({PAGE_SIZE:document.getElementById('pageSize').value,PAGE_ORIENTATION:document.getElementById('pageOrientation').value,LAYOUT_ROWS:+document.getElementById('layoutRows').value,LAYOUT_COLS:+document.getElementById('layoutCols').value,HONOR_SCU_FILM_SIZE:document.getElementById('honorFilmSize').value==='true',PRESERVE_CONSOLE_LAYOUT:document.getElementById('preserveLayout').value==='true',AUTO_FIT_LAYOUT:document.getElementById('autoFit').value==='true',STRETCH_TO_FIT:document.getElementById('stretchFit').value==='true'})}
+function saveCalibration(){saveSettings({ENABLE_CALIBRATION:document.getElementById('enableCalib').value==='true',GAMMA:+document.getElementById('gamma').value,BRIGHTNESS:+document.getElementById('brightness').value,CONTRAST:+document.getElementById('contrast').value,SHARPNESS:+document.getElementById('sharpness').value,CONTRAST_LOW_PERCENTILE:+document.getElementById('blackPoint').value,CONTRAST_HIGH_PERCENTILE:+document.getElementById('whitePoint').value,INVERT_POLARITY:document.getElementById('invert').value==='true'})}
+function resetCalibration(){saveSettings({GAMMA:2.0,BRIGHTNESS:0,CONTRAST:1,SHARPNESS:0,CONTRAST_LOW_PERCENTILE:1,CONTRAST_HIGH_PERCENTILE:99,INVERT_POLARITY:false,ENABLE_CALIBRATION:true});loadSettings()}
+function saveBranding(){const src=document.querySelector('input[name=brandSrc]:checked').value;saveSettings({BRANDING_SOURCE:src,ERP_BRANDING_URL:document.getElementById('erpUrl').value,CLINIC_NAME:document.getElementById('clinicName').value,CLINIC_TAGLINE:document.getElementById('clinicTagline').value,CLINIC_ADDRESS1:document.getElementById('addr1').value,CLINIC_ADDRESS2:document.getElementById('addr2').value,CLINIC_CITY:document.getElementById('city').value,CLINIC_STATE:document.getElementById('state').value,CLINIC_PIN:document.getElementById('pin').value,CLINIC_PHONE:document.getElementById('phone').value,CLINIC_EMAIL:document.getElementById('email').value,CLINIC_WEBSITE:document.getElementById('website').value,CLINIC_LOGO_PATH:document.getElementById('logoPath').value,HEADER_LINE1:document.getElementById('header1').value,HEADER_LINE2:document.getElementById('header2').value,FOOTER_LINE1:document.getElementById('footer1').value,FOOTER_LINE2:document.getElementById('footer2').value})}
+function savePrinter(){saveSettings({PRINT_METHOD:document.getElementById('printMethod').value,CUPS_SERVER:document.getElementById('cupsServer').value,CUPS_PRINTER_NAME:document.getElementById('cupsPrinter').value,CUPS_MEDIA:document.getElementById('cupsMedia').value,JETDIRECT_HOST:document.getElementById('jetHost').value,JETDIRECT_PORT:+document.getElementById('jetPort').value})}
+async function loadJobs(){
+  const res=await api('/admin/api/jobs'); if(!res.ok)return;
+  const tb=document.querySelector('#jobsTable tbody'); tb.innerHTML='';
+  res.data.jobs.forEach(j=>{
+    const artifact=j.artifactPaths?.[0]||'';
+    const link=artifact?`<a href="/admin/api/artifact/${artifact.split('/').pop()}" target="_blank">Download</a>`:'';
+    tb.innerHTML+=`<tr><td>${j.receivedAt||''}</td><td>${j.source}</td><td>${j.sourceCallingAE||''}</td><td>${j.patientId||j.patientName||''}</td><td>${j.pages||0}</td><td>${j.captureStatus}</td><td>${j.physicalPrintStatus}</td><td>${link}</td></tr>`;
+  });
+}
+async function loadDiagnostics(){const r=await api('/admin/api/diagnostics');document.getElementById('diagReport').textContent=JSON.stringify(r.data,null,2)}
+function copyDiagnostics(){navigator.clipboard.writeText(document.getElementById('diagReport').textContent)}
+async function loadStorage(){const r=await api('/admin/api/dashboard');document.getElementById('storageCard').innerHTML='<pre>'+JSON.stringify(r.data.storage,null,2)+'</pre>'}
+async function exportSettings(secrets){const r=await api('/admin/api/export-settings',{method:'POST',body:{includeSecrets:secrets}});document.getElementById('importJson').value=JSON.stringify(r.data,null,2)}
+async function importSettings(){const include=document.getElementById('importSecrets').checked;const payload=JSON.parse(document.getElementById('importJson').value);payload.includeSecrets=include;const r=await api('/admin/api/import-settings',{method:'POST',body:payload});alert(JSON.stringify(r.data))}
+async function applyPreset(){const name=document.getElementById('presetSelect').value;const r=await api('/admin/api/apply-preset',{method:'POST',body:{name}});alert(JSON.stringify(r.data));loadSettings()}
+async function boot(){await loadSettings();await loadDashboard();tab('dashboard')}
+</script>
+</body>
+</html>
