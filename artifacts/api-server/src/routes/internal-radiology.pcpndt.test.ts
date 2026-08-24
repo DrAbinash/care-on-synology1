@@ -46,14 +46,31 @@ vi.mock("@workspace/db/schema", () => ({
   billsTable: TBL.bills,
   portalSessionsTable: TBL.portalSessions,
   usersTable: TBL.users,
+  formFRecordsTable: { __name: "form_f_records", patientId: "patient_id", createdAt: "created_at" },
+  auditLogsTable: { __name: "audit_logs", id: "id", chainHash: "chain_hash" },
 }));
 
 vi.mock("@workspace/db", () => ({
   db: {
     select: () => ({
-      from: (tbl: { __name?: string }) => ({
-        where: async () => (tbl?.__name === "radiology_worklist" && worklistRow ? [worklistRow] : []),
-      }),
+      from: (tbl: { __name?: string }) => {
+        const rows = () => {
+          if (tbl?.__name === "radiology_worklist" && worklistRow) return [worklistRow];
+          // No Form F rows → obstetric finalize stays blocked (expected by tests).
+          if (tbl?.__name === "form_f_records") return [];
+          return [];
+        };
+        return {
+          where: () => ({
+            then: (resolve: (v: unknown) => void) => resolve(rows()),
+            limit: async () => rows(),
+            orderBy: () => ({
+              limit: async () => rows(),
+              then: (resolve: (v: unknown) => void) => resolve(rows()),
+            }),
+          }),
+        };
+      },
     }),
     update: (tbl: { __name?: string }) => ({
       set: (v: Record<string, unknown>) => ({
@@ -61,6 +78,11 @@ vi.mock("@workspace/db", () => ({
           returning: async () => {
             if (tbl?.__name === "radiology_worklist") updatedValues = v;
             return [{ id: worklistRow?.id, ...v }];
+          },
+          // CAS path: update(...).set(...).where(... ) may be awaited without returning
+          then: (resolve: (v: unknown) => void) => {
+            if (tbl?.__name === "radiology_worklist") updatedValues = v as Record<string, unknown>;
+            resolve([{ id: worklistRow?.id, ...v }]);
           },
         }),
       }),
@@ -112,6 +134,8 @@ beforeEach(() => {
   worklistRow = {
     id: 9, modality: "MR", studyDescription: "LS Spine",
     accessionNumber: "ACC-1", studyInstanceUID: "1.2.3", studyId: 55,
+    matchScore: "GREEN", matchDecision: "PENDING", status: "STUDY_RECEIVED",
+    patientId: 12, reportId: null,
   };
   updatedValues = null;
   auditInserts = [];
@@ -140,7 +164,12 @@ describe("PCPNDT server-side finalize guard — POST /api/internal/radiology/rep
 
   test("every non-obstetric USG study type finalizes normally", async () => {
     for (const desc of ["KUB", "Thyroid", "Breast", "Scrotum", "Carotid Doppler", "TVS"]) {
-      worklistRow = { id: 9, modality: "USG", studyDescription: desc, accessionNumber: "ACC-1", studyInstanceUID: "1.2.3", studyId: 55 };
+      worklistRow = {
+        id: 9, modality: "USG", studyDescription: desc, accessionNumber: "ACC-1",
+        studyInstanceUID: "1.2.3", studyId: 55,
+        matchScore: "GREEN", matchDecision: "PENDING", status: "STUDY_RECEIVED",
+        patientId: 12, reportId: null,
+      };
       updatedValues = null;
       const res = await postReportStatus({ studyInstanceUID: "1.2.3", status: "REPORT_FINAL" });
       expect(res.statusCode, `${desc} should finalize`).toBe(200);

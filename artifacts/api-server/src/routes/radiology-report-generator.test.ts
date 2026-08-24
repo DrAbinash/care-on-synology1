@@ -92,24 +92,37 @@ vi.mock("@workspace/db", () => ({
       }
       return {
         from: () => ({
-          where: () => ({
-            // Two different callers share this no-projection chain shape:
-            //  - GET /drafts always chains .limit(50) before awaiting.
-            //  - A4's regenerateDraftStructuredJson and A5's single-draft
-            //    finding-rows lookup both await .orderBy() directly.
-            // Returning an object that is both a thenable (resolving to the
-            // FindingInstance rows) AND exposes .limit() (resolving to the
-            // drafts list) serves all three without needing to inspect
-            // which table was queried.
-            orderBy: () => ({
+          where: () => {
+            // Thenable for callers that await .where() directly; also expose
+            // .limit / .orderBy for identity helpers and GET /drafts.
+            const findingRows = () =>
+              cacheRegenShouldThrow
+                ? Promise.reject(new Error("simulated structured_json cache regeneration failure"))
+                : Promise.resolve(cacheFindingRows);
+            return {
               then: (resolve: (v: unknown) => void, reject: (e: unknown) => void) =>
-                (cacheRegenShouldThrow
-                  ? Promise.reject(new Error("simulated structured_json cache regeneration failure"))
-                  : Promise.resolve(cacheFindingRows)
-                ).then(resolve, reject),
-              limit: async () => selectDraftsResult,
-            }),
-          }),
+                findingRows().then(resolve, reject),
+              // radiologyIdentity assertDraftWritable / resolveWorklistFromStudyRef.
+              // Empty worklist → treat as writable. When an update target is
+              // staged, return a DRAFT row so ownership checks pass.
+              limit: async () =>
+                updateResult
+                  ? [{
+                      id: updateResult.id ?? 42,
+                      status: "DRAFT",
+                      finalReportId: null,
+                      worklistId: null,
+                      patientId: null,
+                      studyId: null,
+                    }]
+                  : [],
+              orderBy: () => ({
+                then: (resolve: (v: unknown) => void, reject: (e: unknown) => void) =>
+                  findingRows().then(resolve, reject),
+                limit: async () => selectDraftsResult,
+              }),
+            };
+          },
         }),
       };
     },

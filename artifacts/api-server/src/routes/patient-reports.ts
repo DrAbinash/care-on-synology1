@@ -1883,7 +1883,10 @@ patientReportsRouter.post("/", async (req, res) => {
   const typeHint = String(b.type ?? "").toLowerCase();
   const studyRef = b.studyId ? Number(b.studyId) : null;
   const worklistIdIn = b.worklistId ? Number(b.worklistId) : null;
-  const shouldBindRadiology = typeHint === "radiology" || !!studyRef || !!worklistIdIn;
+  // Only bind when the client supplies a study/worklist reference. Study-less
+  // radiology (legacy / pathology-adjacent) keeps the pre-hardening path;
+  // workspace finalize always sends studyId/worklistId and must pass the gate.
+  const shouldBindRadiology = !!(studyRef || worklistIdIn);
 
   let bound: BoundRadiologyIdentity | null = null;
   if (shouldBindRadiology) {
@@ -1918,13 +1921,6 @@ patientReportsRouter.post("/", async (req, res) => {
     return;
   }
   const type = (typeHint || (test.department && /(USG|MRI|CT|X-?RAY|MAMMO|DEXA|RAD)/i.test(test.department) ? "radiology" : "pathology")).toLowerCase();
-  if (isRadiologyReportType(type, test.department) && !bound) {
-    res.status(409).json({
-      error: "Radiology finalize requires a linked worklist/study. Open the study from the worklist.",
-      code: "WORKLIST_REQUIRED",
-    });
-    return;
-  }
 
   // PCPNDT server-side finalize gate. This is the actual content-persisting
   // write (creates the signed-eligible patient_reports row) — checking here,
