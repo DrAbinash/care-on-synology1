@@ -11,6 +11,7 @@ import {
 } from "@workspace/db/schema";
 import { and, eq, inArray } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
+import { hasDatabaseUrl } from "../../testSupport/apiTestApp";
 import {
   evaluateJobFreshness,
   getLatestComposeJob,
@@ -18,7 +19,22 @@ import {
 } from "./jobService";
 import { computeSnapshotHashes, hashText } from "./snapshot";
 
-describe("pre-deploy safety contracts — DB", () => {
+function worklistSeed(marker: string, label: "A" | "B") {
+  const uid = `1.2.840.vitest.compose.${marker}.${label}`;
+  return {
+    patientName: `Patient ${label} ${marker}`,
+    modality: "MR",
+    studyDescription: `MRI LS Spine ${label}`,
+    studyInstanceUID: uid,
+    accessionNumber: `ACC-COMP-${marker}-${label}`,
+    status: "STUDY_RECEIVED" as const,
+    aiDraftStatus: "NONE" as const,
+    aiComposeStatus: "NONE" as const,
+    dicomPatientId: `PDC-${marker}-${label}`,
+  };
+}
+
+describe.skipIf(!hasDatabaseUrl())("pre-deploy safety contracts — DB", () => {
   const marker = `vitest-pdc-${randomUUID().slice(0, 8)}`;
   let worklistA = 0;
   let worklistB = 0;
@@ -27,21 +43,11 @@ describe("pre-deploy safety contracts — DB", () => {
   beforeAll(async () => {
     const [a] = await db
       .insert(radiologyWorklistTable)
-      .values({
-        patientName: `Patient A ${marker}`,
-        modality: "MR",
-        studyDescription: "MRI LS Spine A",
-        status: "STUDY_RECEIVED",
-      })
+      .values(worklistSeed(marker, "A"))
       .returning();
     const [b] = await db
       .insert(radiologyWorklistTable)
-      .values({
-        patientName: `Patient B ${marker}`,
-        modality: "MR",
-        studyDescription: "MRI LS Spine B",
-        status: "STUDY_RECEIVED",
-      })
+      .values(worklistSeed(marker, "B"))
       .returning();
     worklistA = a.id;
     worklistB = b.id;

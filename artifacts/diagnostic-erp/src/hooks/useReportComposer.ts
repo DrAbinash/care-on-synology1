@@ -3,8 +3,9 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useToast } from "@/hooks/use-toast";
-import { useWorkspaceStore } from "@/lib/zai-workspace/store";
+import { useWorkspace } from "@/lib/zai-workspace/store";
 import { reportComposerApi, type JobKind } from "@/lib/reportComposer/api";
+import type { VoiceObservation } from "@/lib/voiceReportComposer/types";
 import {
   computeSnapshotHashes,
   materializeAcceptedText,
@@ -34,15 +35,15 @@ export function useReportComposer(opts: {
   const [showAiChanges, setShowAiChanges] = useState(true);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const findingsText = useWorkspaceStore((s) => s.findingsText);
-  const impressionText = useWorkspaceStore((s) => s.impressionText);
-  const recommendationText = useWorkspaceStore((s) => s.recommendationText);
-  const techniqueText = useWorkspaceStore((s) => s.techniqueText);
-  const clinicalHistoryText = useWorkspaceStore((s) => s.clinicalHistoryText);
-  const fieldProvenance = useWorkspaceStore((s) => s.fieldProvenance);
-  const voiceObs = useWorkspaceStore((s) => s.voiceComposerObservations);
-  const applyAiComposerAccepted = useWorkspaceStore((s) => s.applyAiComposerAccepted);
-  const undoLastPatch = useWorkspaceStore((s) => s.undoLastPatch);
+  const findingsText = useWorkspace((s) => s.findingsText);
+  const impressionText = useWorkspace((s) => s.impressionText);
+  const recommendationText = useWorkspace((s) => s.recommendationText);
+  const techniqueText = useWorkspace((s) => s.techniqueText);
+  const clinicalHistoryText = useWorkspace((s) => s.clinicalHistoryText);
+  const fieldProvenance = useWorkspace((s) => s.fieldProvenance);
+  const voiceObs = useWorkspace((s) => s.voiceComposerObservations);
+  const applyAiComposerAccepted = useWorkspace((s) => s.applyAiComposerAccepted);
+  const undoLastPatch = useWorkspace((s) => s.undoLastPatch);
 
   const stopPoll = useCallback(() => {
     if (pollRef.current) {
@@ -116,7 +117,7 @@ export function useReportComposer(opts: {
   }, [opts.worklistId, startPoll, stopPoll]);
 
   const buildSnapshot = useCallback(async (extra?: Partial<ComposerInputSnapshot>, jobKind?: JobKind): Promise<ComposerInputSnapshot> => {
-    const observations: ComposeObservation[] = (voiceObs ?? []).map((o) => ({
+    const observations: ComposeObservation[] = (voiceObs ?? []).map((o: VoiceObservation) => ({
       concept: o.concept,
       source: "voice" as const,
       level: o.level,
