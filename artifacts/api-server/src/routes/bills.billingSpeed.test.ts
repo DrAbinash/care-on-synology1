@@ -33,15 +33,19 @@ describe("billing speed invariants", () => {
     );
   });
 
-  test("bill create inserts payments after the short bill txn commits", () => {
+  test("bill create inserts payments inside the same bill-number transaction", () => {
     expect(billsSrc).toContain("validPaymentsInput");
-    expect(billsSrc).toContain("Payment rows after the bill txn commits");
-    expect(billsSrc).toMatch(/return \{ bill: billRow, pat: patRow \};\s*\}\);/);
+    // Payments are atomic with the bill insert (no post-commit second txn).
+    expect(billsSrc).not.toContain("Payment rows after the bill txn commits");
+    expect(billsSrc).toMatch(/insertedPayments\.push\(\{ amount: p\.amount/);
+    expect(billsSrc).toMatch(/return \{ bill: billRow, pat: patRow, payments: insertedPayments \}/);
     // No process-wide bill-number advisory lock (SEQUENCE nextval on base).
     const codeOnly = billsSrc.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
     expect(codeOnly).not.toContain("care_erp_bill_number");
-    const afterBillTxn = billsSrc.indexOf("Payment rows after the bill txn commits");
-    expect(afterBillTxn).toBeGreaterThan(0);
-    expect(billsSrc.slice(afterBillTxn, afterBillTxn + 800)).toContain("tx.insert(paymentsTable)");
+    // Payment inserts happen inside the create transaction body.
+    const txnStart = billsSrc.indexOf("const result = await db.transaction(async (tx) => {");
+    expect(txnStart).toBeGreaterThan(0);
+    const txnSlice = billsSrc.slice(txnStart, txnStart + 4500);
+    expect(txnSlice).toContain("tx.insert(paymentsTable)");
   });
 });

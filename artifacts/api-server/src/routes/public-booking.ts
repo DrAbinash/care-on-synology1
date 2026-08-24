@@ -38,6 +38,20 @@ import { autoVoucherForPayment } from "../lib/auto-voucher";
 import { getIciciPublicBaseUrl } from "../lib/payments/iciciPublicBaseUrl";
 import { assembleIciciRedirectUrl } from "../lib/payments/initiateIciciOrangePayment";
 import { resolveBillDeskCollector } from "../lib/payments/resolveBillDeskCollector";
+import { assertOnlineBookingFullPayment, paiseToRupees, rupeesToPaise } from "../lib/financialIntegrity";
+
+/** Canonical frozen amount stored on the booking (catalog / server-side). */
+function frozenBookingAmount(booking: { totalAmount: unknown }): number {
+  return paiseToRupees(rupeesToPaise(booking.totalAmount));
+}
+
+/** Returns null when captured payment matches the frozen booking amount. */
+function capturedMatchesFrozen(booking: { totalAmount: unknown }, captured: unknown): string | null {
+  return assertOnlineBookingFullPayment({
+    frozenAmount: frozenBookingAmount(booking),
+    capturedAmount: captured,
+  });
+}
 
 export const validateSelfRegistration = validateSelfRegistrationShared;
 
@@ -661,15 +675,16 @@ publicBookingRouter.post("/payu-initiate", createOrderLimiter, async (req, res):
     res.status(400).json({ error: "Please select at least one test or package." });
     return;
   }
-  const amount = Number(totalAmount);
-  if (!Number.isFinite(amount) || amount <= 0) {
-    res.status(400).json({ error: "Invalid total amount." });
-    return;
-  }
 
   const bookingRef = generateBookingRef();
   const booking = await reserveOrReject(req, res, { bookingRef, gateway: { payuTxnId: bookingRef } });
   if (!booking) return;
+  const amount = frozenBookingAmount(booking);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    await failPendingBooking(booking.id, "Invalid total amount.");
+    res.status(400).json({ error: "Invalid total amount." });
+    return;
+  }
 
   const base = getPublicBase(req as Parameters<typeof getPublicBase>[0]);
   const returnUrl = `${base}/api/public/booking/payu-callback`;
@@ -749,6 +764,13 @@ publicBookingRouter.post("/payu-success", async (req, res): Promise<void> => {
 
   if (booking.status === "paid" || booking.status === "confirmed") {
     res.redirect(getBookingConfirmationUrl(base, booking.bookingRef, "payu"));
+    return;
+  }
+
+  const payMismatch = capturedMatchesFrozen(booking, amount);
+  if (payMismatch) {
+    await failPendingBooking(booking.id, payMismatch);
+    res.redirect(getBookingConfirmationUrl(base, booking.bookingRef, "payu", true, "amount_mismatch"));
     return;
   }
 
@@ -837,15 +859,16 @@ publicBookingRouter.post("/phonepe-initiate", createOrderLimiter, async (req, re
     res.status(400).json({ error: "Please select at least one test or package." });
     return;
   }
-  const amount = Number(totalAmount);
-  if (!Number.isFinite(amount) || amount <= 0) {
-    res.status(400).json({ error: "Invalid total amount." });
-    return;
-  }
 
   const bookingRef = generateBookingRef();
   const booking = await reserveOrReject(req, res, { bookingRef, gateway: { phonepeTransactionId: bookingRef } });
   if (!booking) return;
+  const amount = frozenBookingAmount(booking);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    await failPendingBooking(booking.id, "Invalid total amount.");
+    res.status(400).json({ error: "Invalid total amount." });
+    return;
+  }
 
   const base = getPublicBase(req as Parameters<typeof getPublicBase>[0]);
   const returnUrl = `${base}/api/public/booking/phonepe-callback`;
@@ -917,6 +940,12 @@ publicBookingRouter.get("/phonepe-callback", async (req, res): Promise<void> => 
         .where(eq(onlineBookingsTable.phonepeTransactionId, merchantTransactionId))
         .limit(1);
       if (booking && booking.status === "pending_payment") {
+        const payMismatch = capturedMatchesFrozen(booking, frozenBookingAmount(booking));
+        if (payMismatch) {
+          await failPendingBooking(booking.id, payMismatch);
+          res.redirect(getBookingConfirmationUrl(base, merchantTransactionId, "phonepe", true, "amount_mismatch"));
+          return;
+        }
         await db.update(onlineBookingsTable)
           .set({ status: "paid", phonepeProviderRefId: statusData.data?.transactionId || booking.phonepeProviderRefId })
           .where(eq(onlineBookingsTable.id, booking.id));
@@ -991,15 +1020,16 @@ publicBookingRouter.post("/bharatpe-initiate", createOrderLimiter, async (req, r
     res.status(400).json({ error: "Please select at least one test or package." });
     return;
   }
-  const amount = Number(totalAmount);
-  if (!Number.isFinite(amount) || amount <= 0) {
-    res.status(400).json({ error: "Invalid total amount." });
-    return;
-  }
 
   const bookingRef = generateBookingRef();
   const booking = await reserveOrReject(req, res, { bookingRef, gateway: { bharatpeTransactionId: bookingRef } });
   if (!booking) return;
+  const amount = frozenBookingAmount(booking);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    await failPendingBooking(booking.id, "Invalid total amount.");
+    res.status(400).json({ error: "Invalid total amount." });
+    return;
+  }
 
   const base = getPublicBase(req as Parameters<typeof getPublicBase>[0]);
   const returnUrl = `${base}/api/public/booking/bharatpe-callback`;
@@ -1086,6 +1116,12 @@ publicBookingRouter.get("/bharatpe-callback", async (req, res): Promise<void> =>
         .where(eq(onlineBookingsTable.bharatpeTransactionId, merchantTransactionId))
         .limit(1);
       if (booking && booking.status === "pending_payment") {
+        const payMismatch = capturedMatchesFrozen(booking, frozenBookingAmount(booking));
+        if (payMismatch) {
+          await failPendingBooking(booking.id, payMismatch);
+          res.redirect(getBookingConfirmationUrl(base, merchantTransactionId, "bharatpe", true, "amount_mismatch"));
+          return;
+        }
         await db.update(onlineBookingsTable)
           .set({ status: "paid", bharatpeProviderRefId: statusData.data?.transactionId || booking.bharatpeProviderRefId })
           .where(eq(onlineBookingsTable.id, booking.id));
@@ -1186,15 +1222,16 @@ publicBookingRouter.post("/icici-initiate", createOrderLimiter, async (req, res)
     res.status(400).json({ error: "Please select at least one test or package." });
     return;
   }
-  const amount = Number(totalAmount);
-  if (!Number.isFinite(amount) || amount <= 0) {
-    res.status(400).json({ error: "Invalid total amount." });
-    return;
-  }
 
   const bookingRef = generateBookingRef();
   const booking = await reserveOrReject(req, res, { bookingRef, gateway: { iciciTransactionId: bookingRef } });
   if (!booking) return;
+  const amount = frozenBookingAmount(booking);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    await failPendingBooking(booking.id, "Invalid total amount.");
+    res.status(400).json({ error: "Invalid total amount." });
+    return;
+  }
 
   const base = getIciciPublicBaseUrl();
   const returnUrl = `${base}/api/public/booking/icici-callback`;
@@ -1457,10 +1494,16 @@ async function handleIciciCallback(req: any, res: any, queryOrBody: Record<strin
         payload: queryOrBody,
       },
       booking.name,
-      Number(booking.totalAmount)
+      frozenBookingAmount(booking)
     );
 
     if (verification.success && verification.status === "paid") {
+      const payMismatch = capturedMatchesFrozen(booking, frozenBookingAmount(booking));
+      if (payMismatch) {
+        await failPendingBooking(booking.id, payMismatch);
+        res.redirect(getBookingConfirmationUrl(base, booking.bookingRef, gateway, true, "amount_mismatch"));
+        return;
+      }
       await db.update(onlineBookingsTable)
         .set({ status: "paid", iciciProviderRefId: verification.providerRefId || booking.iciciProviderRefId })
         .where(eq(onlineBookingsTable.id, booking.id));
@@ -1641,15 +1684,16 @@ publicBookingRouter.post("/create-order", createOrderLimiter, async (req, res): 
     res.status(400).json({ error: "Please select at least one test or package." });
     return;
   }
-  const amount = Number(totalAmount);
-  if (!Number.isFinite(amount) || amount <= 0) {
-    res.status(400).json({ error: "Invalid total amount." });
-    return;
-  }
 
   const bookingRef = generateBookingRef();
   const booking = await reserveOrReject(req, res, { bookingRef });
   if (!booking) return;
+  const amount = frozenBookingAmount(booking);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    await failPendingBooking(booking.id, "Invalid total amount.");
+    res.status(400).json({ error: "Invalid total amount." });
+    return;
+  }
 
   const amountPaise = Math.round(amount * 100);
 
@@ -1721,6 +1765,13 @@ publicBookingRouter.post("/verify-payment", bookingLimiter, async (req, res): Pr
     return;
   }
 
+  const payMismatch = capturedMatchesFrozen(booking, frozenBookingAmount(booking));
+  if (payMismatch) {
+    await failPendingBooking(booking.id, payMismatch);
+    res.status(400).json({ error: payMismatch });
+    return;
+  }
+
   await db.update(onlineBookingsTable).set({ razorpayPaymentId, razorpaySignature, status: "paid" }).where(eq(onlineBookingsTable.id, booking.id));
   
   try {
@@ -1778,8 +1829,7 @@ publicBookingRouter.post("/qr-initiate", createOrderLimiter, async (req, res): P
     return;
   }
 
-  const amount = Number(totalAmount);
-  if (!selectedDate || !amount || amount <= 0) {
+  if (!selectedDate) {
     res.status(400).json({ error: "Please fill all required fields and select at least one test." });
     return;
   }
@@ -1788,6 +1838,12 @@ publicBookingRouter.post("/qr-initiate", createOrderLimiter, async (req, res): P
   const booking = await reserveOrReject(req, res);
   if (!booking) return;
   const bookingRef = booking.bookingRef;
+  const amount = frozenBookingAmount(booking);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    await failPendingBooking(booking.id, "Invalid total amount.");
+    res.status(400).json({ error: "Please fill all required fields and select at least one test." });
+    return;
+  }
 
   // Build a dynamic UPI intent URL for the exact amount
   const vpa = settings.upiVpa || settings.kioskUpiVpa || "";

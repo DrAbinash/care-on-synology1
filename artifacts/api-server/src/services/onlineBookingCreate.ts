@@ -33,6 +33,8 @@ import {
   slotMatchesSelectedModalities,
   validateSelfRegistration,
 } from "./onlineBookingSlots";
+import { moneyAdd } from "../lib/money";
+import { applyVipMultiplier, packageEffectivePrice } from "../lib/financialIntegrity";
 
 export { OnlineBookingError, parseBookingTimeSlots } from "./onlineBookingSlots";
 export type { BookingSource, BookingTimeSlotAvailability, BookingTimeSlotConfig };
@@ -217,11 +219,6 @@ export async function createPendingOnlineBooking(input: CreatePendingBookingInpu
     throw new OnlineBookingError("Please select at least one test or package.");
   }
 
-  const amount = Number(input.totalAmount);
-  if (!Number.isFinite(amount) || amount <= 0) {
-    throw new OnlineBookingError("Invalid total amount.");
-  }
-
   const settings = await loadSettings();
   const slots = parseBookingTimeSlots(settings?.bookingTimeSlots);
   const parsedSel = parseSlotSelection(input.timeSlot);
@@ -266,6 +263,12 @@ export async function createPendingOnlineBooking(input: CreatePendingBookingInpu
 
   const bookingRef = input.bookingRef || generateBookingRef();
   const vipOk = Boolean(input.isVip) && Boolean(settings?.vipQueueEnabled);
+  // Server catalog is authoritative — ignore client totalAmount for stored amount.
+  const catalogAmount = await computeCatalogAmount({ testIds, packageIds, isVip: vipOk });
+  const amount = catalogAmount;
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw new OnlineBookingError("Invalid total amount.");
+  }
   const referring = normalizeReferringDoctor(input.referringDoctorId, input.referringDoctorName);
 
   const inserted = await db.transaction(async (tx) => {
@@ -330,25 +333,33 @@ export async function computeCatalogAmount(params: {
   packageIds: number[];
   isVip: boolean;
 }): Promise<number> {
-  let total = 0;
+  const parts: number[] = [];
   if (params.testIds.length > 0) {
     const tests = await db
       .select({ id: testsTable.id, price: testsTable.price })
       .from(testsTable)
       .where(inArray(testsTable.id, params.testIds));
-    for (const t of tests) total += Number(t.price);
+    for (const t of tests) parts.push(Number(t.price));
   }
   if (params.packageIds.length > 0) {
     const pkgs = await db
-      .select({ id: packagesTable.id, price: packagesTable.price })
+      .select({
+        id: packagesTable.id,
+        price: packagesTable.price,
+        discountPct: packagesTable.discountPct,
+        discountAmount: packagesTable.discountAmount,
+      })
       .from(packagesTable)
       .where(inArray(packagesTable.id, params.packageIds));
-    for (const p of pkgs) total += Number(p.price);
+    for (const p of pkgs) {
+      parts.push(packageEffectivePrice(p));
+    }
   }
+  let total = moneyAdd(...parts);
   if (params.isVip) {
     const settings = await loadSettings();
     const pct = Number(settings?.vipPercentage || 50);
-    total += total * (pct / 100);
+    total = applyVipMultiplier(total, true, pct);
   }
-  return Math.round(total * 100) / 100;
+  return total;
 }

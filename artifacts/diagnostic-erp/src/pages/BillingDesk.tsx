@@ -1537,6 +1537,7 @@ export default function BillingDesk() {
         doctorId: doctorId ?? undefined,
         notes: notes || undefined,
         tests: selectedTests.map((t) => ({ testId: t.testId, price: t.price * vipMultiplier })),
+        packageIds: selectedPackages.map((p) => p.packageId),
         clientRef,
       };
 

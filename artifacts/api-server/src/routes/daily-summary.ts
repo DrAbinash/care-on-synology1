@@ -10,6 +10,7 @@ import { patientsTable } from "@workspace/db/schema";
 import { todayIST } from "../lib/istDate";
 import { classifyPaymentMethod, isDigitalSettlement, isPhysicalCash } from "../lib/paymentMethodClassifier";
 import { BILL_AUDIT_OPERATIONAL_CHANGE_TYPES } from "../lib/staffActivityAttribution";
+import { isCollectiblePayment } from "../lib/financialIntegrity";
 
 export const dailySummaryRouter: IRouter = Router();
 
@@ -67,14 +68,16 @@ dailySummaryRouter.get("/", async (req, res) => {
       recordedByName: paymentsTable.recordedByName,
       notes: paymentsTable.notes,
       createdAt: paymentsTable.createdAt,
+      settlementStatus: paymentsTable.settlementStatus,
     })
     .from(paymentsTable)
     .where(and(...paymentFilters))
     .orderBy(sql`${paymentsTable.createdAt} DESC`)
     .limit(500);
 
-  const paymentItems = allPaymentItems.filter((p) => Number(p.amount) > 0);
-  const refundItems = allPaymentItems.filter((p) => Number(p.amount) < 0);
+  const collectible = allPaymentItems.filter(isCollectiblePayment);
+  const paymentItems = collectible.filter((p) => Number(p.amount) > 0);
+  const refundItems = collectible.filter((p) => Number(p.amount) < 0);
 
   const billFilters = [gte(billsTable.createdAt, dayStart), lt(billsTable.createdAt, dayEnd)];
   if (staffName) billFilters.push(eq(billsTable.createdByName, staffName));

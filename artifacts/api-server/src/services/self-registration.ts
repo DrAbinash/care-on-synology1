@@ -20,6 +20,8 @@ import { calculateDobFromAge } from "../routes/public-booking";
 import { autoVoucherForPayment } from "../lib/auto-voucher";
 import { generateStudiesForOrder } from "../routes/radiology";
 import { nextPatientId } from "../lib/documentNumberCounters";
+import { moneyAdd, paiseToRupees, rupeesToPaise, scaleLinePaiseToTotal } from "../lib/money";
+import { applyVipMultiplier } from "../lib/financialIntegrity";
 
 /** UHID for kiosk / online self-registration — same SEQUENCE as Billing Desk. */
 export async function generatePatientId(): Promise<string> {
@@ -47,6 +49,8 @@ export interface RegisterPatientSelfFlowParams {
   // created order's doctor_id so the referral is tracked exactly like an
   // over-the-counter Billing Desk bill. Undefined/null for walk-in/self.
   doctorId?: number | null;
+  /** When set (online booking), scale line prices so Σ lines = frozen booking total. */
+  authoritativeTotal?: number;
 }
 
 export async function registerPatientSelfFlow(params: RegisterPatientSelfFlowParams) {
@@ -68,6 +72,7 @@ export async function registerPatientSelfFlow(params: RegisterPatientSelfFlowPar
     source,
     createdByName,
     doctorId = null,
+    authoritativeTotal,
   } = params;
 
   // Resolve package -> test IDs
@@ -153,17 +158,24 @@ export async function registerPatientSelfFlow(params: RegisterPatientSelfFlowPar
 
   // Determine VIP price multiplier if applicable
   const vipPct = settings?.vipPercentage ? Number(settings.vipPercentage) : 50.00;
-  const vipMultiplier = 1 + (vipPct / 100);
 
-  const testPrices = tests.map(t => {
-    let priceNum = Number(t.price);
-    if (isVip) {
-      priceNum = priceNum * vipMultiplier;
-    }
+  let testPrices = tests.map(t => {
+    const priceNum = applyVipMultiplier(t.price, isVip, vipPct);
     return { id: t.id, price: priceNum.toFixed(2) };
   });
 
-  const calculatedTotal = testPrices.reduce((sum, t) => sum + Number(t.price), 0);
+  if (authoritativeTotal != null && Number.isFinite(authoritativeTotal) && testPrices.length > 0) {
+    const scaled = scaleLinePaiseToTotal(
+      testPrices.map((tp) => rupeesToPaise(tp.price)),
+      authoritativeTotal,
+    );
+    testPrices = testPrices.map((tp, i) => ({
+      id: tp.id,
+      price: paiseToRupees(scaled[i] ?? 0).toFixed(2),
+    }));
+  }
+
+  const calculatedTotal = moneyAdd(...testPrices.map((t) => t.price));
 
   // Generate order number
   const stamp = `${new Date().getFullYear()}${String(new Date().getMonth() + 1).padStart(2, "0")}${String(new Date().getDate()).padStart(2, "0")}`;
