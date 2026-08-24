@@ -26,12 +26,14 @@ interface Props {
 export function AiDraftPanel({ studyInstanceUid, modality, onInsertText, preferOpen = false }: Props) {
   const [enablement, setEnablement] = useState<AiEnablement | null>(null);
   const [draft, setDraft] = useState<AiWorkspaceDraft | null>(null);
-  const [open, setOpen] = useState(true);
+  // Always start minimized — expands only for ?ai=1 / preferOpen. The panel is
+  // SHADOW/pilot feedback; it must not compete with the report editor by default.
+  const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [handled, setHandled] = useState<Record<string, DraftAction>>({});
 
   useEffect(() => {
-    if (preferOpen) setOpen(true);
+    setOpen(preferOpen === true);
   }, [preferOpen, studyInstanceUid]);
 
   // Resolve enablement (gates the whole panel).

@@ -70,7 +70,7 @@ const findingsEditor = readFileSync(
 );
 const previewHtml = readFileSync(resolve(ERP_SRC, "lib/radiologyReportPreviewHtml.ts"), "utf8");
 
-describe("Provenance visualization — editor only", () => {
+describe("Provenance visualization — editor + screen-only preview", () => {
   it("FindingsEditor renders provenance legend/map as editor-only", () => {
     expect(findingsEditor).toContain('data-editor-only="provenance"');
     expect(findingsEditor).toContain("provenance-legend");
@@ -88,8 +88,12 @@ describe("Provenance visualization — editor only", () => {
     expect(findingsEditor).not.toMatch(/fieldProvenance\[field\]\s*\?\?\s*\{\}/);
   });
 
-  it("preview HTML builder never references provenance", () => {
-    expect(previewHtml).not.toMatch(/provenance|quick-select|quick-findings|Source:/i);
+  it("preview HTML builder supports screen-only provenance tinting (stripped at print)", () => {
+    expect(previewHtml).toContain("PROVENANCE_PREVIEW_CSS");
+    expect(previewHtml).toContain("findingsProvenance");
+    expect(previewHtml).toContain("preview-provenance-legend");
+    expect(previewHtml).toContain("@media print");
+    expect(previewHtml).toContain("preview only — not printed");
   });
 });
 

@@ -17,7 +17,7 @@
 // looked perfect. Always pass the server global here so the effective paper
 // size is the one the clinic actually configured.
 
-export type BillFormat = "classic" | "hope-a5";
+export type BillFormat = "classic" | "hope-a5" | "a5-landscape";
 /** Retired format ids that may still appear in older clinic_settings JSON blobs. */
 export type LegacyBillFormat =
   | BillFormat
@@ -38,17 +38,25 @@ export const BILL_FORMATS: { id: BillFormat; label: string; hint: string }[] = [
     label: "HOPE A5 Receipt",
     hint: "A5 portrait (148×210 mm) — HOPE OPD receipt structure",
   },
+  {
+    id: "a5-landscape",
+    label: "A5 Landscape (Half A4)",
+    hint: "210×148 mm — half of A4 portrait, landscape receipt",
+  },
 ];
 
-/** Normalize saved / legacy format ids to one of the two live templates. */
+/** Normalize saved / legacy format ids to one of the live templates. */
 export function normalizeBillFormat(raw: unknown): BillFormat {
+  if (raw === "a5-landscape") return "a5-landscape";
   if (raw === "hope-a5") return "hope-a5";
   return "classic";
 }
 
 /** Paper that belongs with each presentation template. */
 export function paperSizeForBillFormat(format: BillFormat): BillPaperSize {
-  return format === "hope-a5" ? "A5-portrait" : "A5-landscape";
+  if (format === "hope-a5") return "A5-portrait";
+  if (format === "a5-landscape") return "A5-landscape";
+  return "A5-landscape";
 }
 
 export type BillPaperSize = "A5-landscape" | "A5-portrait" | "half-a4" | "A4";
@@ -133,7 +141,7 @@ export function resolveBillPrintDelivery(
 export type UserRole = "reception" | "accounts" | "admin" | "supervisor" | "billing" | "lab" | "manager";
 
 export type BillPrintSettings = {
-  /** Presentation template: CARE Invoice (classic) or HOPE A5 receipt. */
+  /** Presentation template: CARE Invoice, HOPE A5, or A5 Landscape receipt. */
   defaultFormat: BillFormat;
   // Auto paper size threshold: switch from A5 → A4 when tests >= this value
   autoA4Threshold: number;
@@ -244,8 +252,8 @@ export const GLOBAL_BILL_PRINT_DEFAULTS: BillPrintSettings = {
 
 /**
  * Cursor-owned layout knobs that clinics still cannot freely retune:
- * auto-A4 threshold. Paper follows the selected bill format (classic →
- * half A4 landscape, hope-a5 → A5 portrait).
+ * auto-A4 threshold. Paper follows the selected bill format (classic /
+ * a5-landscape → half A4 landscape, hope-a5 → A5 portrait).
  */
 export const CURSOR_BILL_PRINT_LAYOUT = {
   autoA4Threshold: 8,
@@ -502,8 +510,9 @@ export type BillPrintPageOpts = {
 
 /**
  * Map clinic Billing Print settings + test count → paper/orientation the HTML
- * renderer should declare. Format drives short-bill paper (classic → 210×148
- * landscape, hope-a5 → 148×210 portrait). Long bills auto-switch to A4.
+ * renderer should declare. Format drives short-bill paper (classic /
+ * a5-landscape → 210×148 landscape, hope-a5 → 148×210 portrait). Long bills
+ * auto-switch to A4.
  */
 export function resolveBillPrintPageOpts(
   settings: Pick<BillPrintSettings, "defaultPaperSize" | "autoA4Threshold" | "defaultFormat"> | Partial<BillPrintSettings> | undefined,
@@ -527,6 +536,7 @@ export function resolveBillPrintPageOpts(
       pageCssSize: "148mm 210mm",
     };
   }
+  // classic and a5-landscape share half A4 landscape (210×148 mm).
   return {
     paperSize: "A5",
     orientation: "landscape",

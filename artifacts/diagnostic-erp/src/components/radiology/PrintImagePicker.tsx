@@ -269,7 +269,7 @@ export default function PrintImagePicker({
         data-testid="print-picker-toggle"
       >
         <Printer size={14} className="text-emerald-600 shrink-0" />
-        <span className="text-xs font-semibold flex-1">Print images</span>
+        <span className="text-xs font-semibold flex-1">Print film (images only)</span>
         <span
           className={`h-1.5 w-1.5 rounded-full shrink-0 ${healthDotClass(health)}`}
           title={healthTooltip(health)}
@@ -296,7 +296,9 @@ export default function PrintImagePicker({
 
           {selected.size > 0 && (
             <div className="flex items-center gap-2 rounded-md border bg-emerald-50/50 px-2 py-1" data-testid="print-selection-bar">
-              <span className="text-[11px] text-muted-foreground flex-1">{selected.size} image(s) ready to print</span>
+              <span className="text-[11px] text-muted-foreground flex-1">
+                {selected.size} image(s) → photo paper (no report text — use Report layout &amp; export for body + KEY IMAGES)
+              </span>
               <label className="flex items-center gap-1 text-[11px] text-muted-foreground">
                 Copies
                 <Input
