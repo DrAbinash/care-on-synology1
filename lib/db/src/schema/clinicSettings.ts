@@ -258,6 +258,12 @@ export const clinicSettingsTable = pgTable("clinic_settings", {
   ollamaComposerNumCtx: integer("ollama_composer_num_ctx").notNull().default(4096),
   ollamaComposerTemperature: numeric("ollama_composer_temperature", { precision: 4, scale: 2 }).notNull().default("0.10"),
   ollamaComposerTimeoutSeconds: integer("ollama_composer_timeout_seconds").notNull().default(45),
+  /** Background AI Report Composer — radiologist-guided text composition (not overnight vision). */
+  reportComposerBackgroundEnabled: boolean("report_composer_background_enabled").notNull().default(true),
+  reportComposerReviewBeforeApply: boolean("report_composer_review_before_apply").notNull().default(true),
+  reportComposerAutoCompose: boolean("report_composer_auto_compose").notNull().default(false),
+  reportComposerConcurrency: integer("report_composer_concurrency").notNull().default(1),
+  reportComposerSnapshotRetentionDays: integer("report_composer_snapshot_retention_days").notNull().default(14),
 
   // Online booking granular settings (Phase 4)
   onlineBookingServices: text("online_booking_services").notNull().default("{\"opd\":true,\"emergency\":true,\"usg\":true,\"xray\":true,\"ct\":true,\"mri\":true,\"pathology\":true,\"packages\":true,\"home_collection\":true,\"doctor\":true}"),

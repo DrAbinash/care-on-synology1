@@ -163,6 +163,7 @@ export * from "./aiExecution";
 export * from "./aiModelCapabilities";
 export * from "./aiEvaluation";
 export * from "./aiClinicalConfig";
+export * from "./aiReportComposer";
 export * from "./aiInterop";
 export * from "./operationalHealthRuns";
 // ── HOPE → CARE diagnostic referral integration (additive; see

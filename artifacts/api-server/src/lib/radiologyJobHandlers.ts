@@ -31,8 +31,10 @@ import type { RadiologyJobHandler, RadiologyJobRow } from "./radiologyJobs";
 import { AI_SHADOW_PIPELINE_JOB, makeAiShadowPipelineHandler } from "./ai/shadowPipeline";
 import { gatewayInferenceProvider } from "./ai/gatewayInferenceProvider";
 import { MWL_WL_CLEANUP_JOB, mwlWlCleanupHandler } from "./pacs/mwlWlCleanup";
+import { AI_REPORT_COMPOSE_JOB, processComposeJob } from "./reportComposer/jobService";
 
 export { MWL_WL_CLEANUP_JOB };
+export { AI_REPORT_COMPOSE_JOB };
 export const REDELIVERY_SEND_JOB = "radiology_redelivery_send";
 export const PACS_REARCHIVE_JOB = "radiology_pacs_rearchive";
 
@@ -268,4 +270,13 @@ export const RADIOLOGY_JOB_HANDLERS: Record<string, RadiologyJobHandler> = {
   [AI_SHADOW_PIPELINE_JOB]: makeAiShadowPipelineHandler({ provider: gatewayInferenceProvider }),
   // MWL cancel cleanup — remove-only; never writeWorklistFile.
   [MWL_WL_CLEANUP_JOB]: mwlWlCleanupHandler,
+  // Background text report composition — NEVER on overnight vision tick.
+  [AI_REPORT_COMPOSE_JOB]: async (job) => {
+    const payload = (job.payload ?? {}) as { composeJobId?: number };
+    const composeJobId = Number(payload.composeJobId ?? job.entityId);
+    if (!Number.isInteger(composeJobId) || composeJobId <= 0) {
+      return { ok: false, detail: "invalid composeJobId" };
+    }
+    return processComposeJob(composeJobId);
+  },
 };

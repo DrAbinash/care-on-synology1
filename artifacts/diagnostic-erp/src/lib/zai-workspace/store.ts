@@ -155,6 +155,12 @@ export type WorkspaceStore = S & {
   applyPathologyOverlay: (opts: PendingPathologyPatch & { force?: boolean }) => "applied" | "pending";
   undoLastPatch: () => boolean;
   applyVoiceComposerPlan: (plan: VoiceChangePlan, transcript: string, opts?: { force?: boolean }) => "applied" | "blocked";
+  /** Apply accepted AI composer plain text in one atomic undo snapshot (Guard 9). */
+  applyAiComposerAccepted: (opts: {
+    findings: string;
+    impression: string;
+    recommendation: string;
+  }) => "applied";
   clearVoiceComposerSession: () => void;
   relateralizePatches: (side: Side) => void;
   /** Host-injected hook for Ctrl+I / command palette — set by RadiologyReportingWorkspace. */
@@ -570,6 +576,43 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       voiceComposerTranscriptHistory: transcript
         ? [...get().voiceComposerTranscriptHistory, transcript]
         : get().voiceComposerTranscriptHistory,
+    });
+    return "applied";
+  },
+  applyAiComposerAccepted: (opts) => {
+    const snap: PatchSnapshot = {
+      clinicalHistoryText: get().clinicalHistoryText,
+      techniqueText: get().techniqueText,
+      findingsText: get().findingsText,
+      impressionText: get().impressionText,
+      recommendationText: get().recommendationText,
+      fieldProvenance: { ...get().fieldProvenance },
+      appliedPathologyPatches: get().appliedPathologyPatches.map((p) => ({ ...p })),
+      voiceComposerObservations: [...get().voiceComposerObservations],
+      voiceComposerTranscriptHistory: [...get().voiceComposerTranscriptHistory],
+    };
+    const markField = (field: "findings" | "impression" | "recommendation", text: string): FieldProvenanceMap => {
+      const map: FieldProvenanceMap = { ...(get().fieldProvenance[field] ?? EMPTY_FIELD_PROVENANCE) };
+      for (const sent of text.split(/(?<=[.!?])\s+|\n+/).map((s) => s.trim()).filter(Boolean)) {
+        const key = normalizeForDedupe(sent);
+        if (!key) continue;
+        const prev = map[key] ?? [];
+        map[key] = prev.includes("ai-draft") ? prev : [...prev, "ai-draft"];
+      }
+      return map;
+    };
+    set({
+      findingsText: opts.findings,
+      impressionText: opts.impression,
+      recommendationText: opts.recommendation,
+      fieldProvenance: {
+        ...get().fieldProvenance,
+        findings: markField("findings", opts.findings),
+        impression: markField("impression", opts.impression),
+        recommendation: markField("recommendation", opts.recommendation),
+      },
+      isDirty: true,
+      lastPatchSnapshot: snap,
     });
     return "applied";
   },

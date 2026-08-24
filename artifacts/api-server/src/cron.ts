@@ -340,14 +340,19 @@ export async function fireOvernightAiTick(opts: {
 
 async function fireOtherRadiologyJobTick(): Promise<void> {
   const { AI_SHADOW_PIPELINE_JOB } = await import("./lib/ai/shadowPipeline");
+  const { AI_REPORT_COMPOSE_JOB } = await import("./lib/reportComposer/jobService");
   const others: typeof RADIOLOGY_JOB_HANDLERS = {};
   for (const [k, h] of Object.entries(RADIOLOGY_JOB_HANDLERS)) {
     if (k !== AI_SHADOW_PIPELINE_JOB) others[k] = h;
   }
   const peak = isClinicPeakHours();
+  // Text compose concurrency stays 1; never shares overnight vision lane.
   await runRadiologyJobTick(others, {
-    maxJobs: peak ? 1 : 3,
-    concurrencyByType: peak ? { [PACS_REARCHIVE_JOB]: 0 } : {},
+    maxJobs: peak ? 2 : 4,
+    concurrencyByType: {
+      ...(peak ? { [PACS_REARCHIVE_JOB]: 0 } : {}),
+      [AI_REPORT_COMPOSE_JOB]: 1,
+    },
     workerId: `radiology-other-${process.pid}`,
   });
 }

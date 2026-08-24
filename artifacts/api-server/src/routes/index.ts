@@ -154,6 +154,7 @@ import { radiologyTumorFollowupRouter } from "./radiologyTumorFollowup";
 import { radiologyAnnotationsRouter } from "./radiologyAnnotations";
 import { radiologyOllamaRouter } from "./radiologyOllama";
 import { voiceReportComposerRouter } from "./voiceReportComposer";
+import { reportComposerRouter } from "./reportComposer";
 import { aiPipelineHealthRouter } from "./aiPipelineHealth";
 import { radiologySnippetsRouter } from "./radiologySnippets";
 import { radiologyReportFormatsRouter } from "./radiologyReportFormats";
@@ -1031,6 +1032,7 @@ router.use("/radiology-tumor", requireStaffAuth, radiologyTumorFollowupRouter);
 router.use("/radiology-annotations", requireStaffAuth, radiologyAnnotationsRouter);
 router.use("/radiology-ollama", requireStaffAuth, radiologyOllamaRouter);
 router.use("/radiology/voice-report-composer", requireStaffAuth, voiceReportComposerRouter);
+router.use("/radiology/report-composer", requireStaffAuth, reportComposerRouter);
 
 // AI endpoints — each sub-route applies its own requireStaffPermission matching
 // the data domain it accesses (patients PHI, billing records, or radiology
