@@ -203,7 +203,7 @@ electronicFilmRouter.post("/:id/match", requireStaffAuth, async (req: StaffAuthR
     res.status(400).json({ error: "studyId required" });
     return;
   }
-  const result = await manualMatchFilm(id, parsed.data.studyId, req.staff?.name ?? req.staff?.username ?? "staff");
+  const result = await manualMatchFilm(id, parsed.data.studyId, req.staffSession?.subjectName ?? "staff");
   if (!result.ok) {
     res.status(400).json({ error: result.error });
     return;
