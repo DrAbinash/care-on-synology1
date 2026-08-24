@@ -165,6 +165,8 @@ import ViewerMeasurementsBanner from "@/components/radiology/ViewerMeasurementsB
 import LegacyBox, { type LegacyBoxTab } from "@/components/radiology/LegacyBox";
 import { impressionMatchesStudyContext } from "@/lib/aiDraftStudyContext";
 import { AiDraftPanel } from "@/components/ai/AiDraftPanel";
+import { ReportComposerAssistant } from "@/components/radiology/ReportComposerAssistant";
+import { useReportComposer } from "@/hooks/useReportComposer";
 import { WhatsAppReportShareDialog } from "@/components/radiology/WhatsAppReportShareDialog";
 import UsgCompanionPanel from "@/components/radiology/UsgCompanionPanel";
 import MriReadinessStrip from "@/components/radiology/MriReadinessStrip";
@@ -1138,6 +1140,21 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     voiceSession.cancel();
   }, [voiceComposer, voiceSession]);
 
+  const [microInstruction, setMicroInstruction] = useState("");
+  const [aiFinalizeGate, setAiFinalizeGate] = useState<"idle" | "pending">("idle");
+  const aiFinalizeBypassRef = useRef(false);
+  const reportComposer = useReportComposer({
+    worklistId: studyId ?? null,
+    studyId: workflow.currentRow?.studyId ?? null,
+    reportId: linkedReportIdRef.current,
+    modality: workflow.currentRow?.modality ?? undefined,
+    region: studySetup.matchedStudyRegion ?? studySetup.studyRegions[0],
+    studyType: workflow.currentRow?.studyDescription ?? undefined,
+    protocol: undefined,
+    reportTitle: workflow.currentRow?.studyDescription ?? undefined,
+    isFinalized,
+  });
+
   const acceptStructuredImpressionCandidate = useCallback((text: string) => {
     const trimmed = text.trim();
     if (!trimmed) return;
@@ -1689,6 +1706,26 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       return;
     }
 
+    // Guard 10: pending AI proposals must never silently finalize
+    const pendingAi = reportComposer.job?.trackedChanges?.filter((c) => c.reviewState === "PENDING") ?? [];
+    if (
+      !aiFinalizeBypassRef.current &&
+      pendingAi.length > 0 &&
+      reportComposer.job &&
+      ["READY", "STALE_READY"].includes(reportComposer.job.status)
+    ) {
+      setAiFinalizeGate("pending");
+      toast({
+        title: "AI suggestions remain unreviewed",
+        description: `${pendingAi.length} AI change(s) pending. Review, or Reject remaining and continue.`,
+        variant: "destructive",
+      });
+      reportComposer.setReviewOpen(true);
+      return;
+    }
+    aiFinalizeBypassRef.current = false;
+    setAiFinalizeGate("idle");
+
     // 1. Save dirty state first (capture draft id for quality + validate-draft)
     let effectiveDraftId = draftId;
     if (useWorkspace.getState().isDirty) {
@@ -1878,7 +1915,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     } catch (err) {
       toast({ title: "Finalize failed", description: err instanceof Error ? err.message : "Unknown error", variant: "destructive" });
     }
-  }, [studyId, workflow, isOnline, findingsText, impressionText, recommendationText, techniqueText, clinicalHistoryText, studySetup.checklistPercent, saveDraft, finalizeFlow, draftBackup, qc, toast, isCritical, criticalNote, checklistComm, draftId, session]);
+  }, [studyId, workflow, isOnline, findingsText, impressionText, recommendationText, techniqueText, clinicalHistoryText, studySetup.checklistPercent, saveDraft, finalizeFlow, draftBackup, qc, toast, isCritical, criticalNote, checklistComm, draftId, session, reportComposer, sessionFresh]);
 
   // ─── Command dispatcher (single choke point for keyboard/voice/palette) ────
   const commandDispatcher = useMemo(() => createCommandDispatcher({
@@ -4229,6 +4266,70 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         onInsertText={appendFindings}
         preferOpen={typeof window !== "undefined" && new URLSearchParams(window.location.search).get("ai") === "1"}
       />
+      {/* Background text Report Composer — assistant artifact until Apply */}
+      <div className="fixed bottom-4 left-4 z-40 w-[min(420px,calc(100vw-2rem))] shadow-lg">
+        <ReportComposerAssistant
+          job={reportComposer.job}
+          busy={reportComposer.busy}
+          reviewOpen={reportComposer.reviewOpen}
+          showAiChanges={reportComposer.showAiChanges}
+          isFinalized={isFinalized}
+          onCompose={() => void reportComposer.composeFull()}
+          onImpression={() => void reportComposer.composeImpression()}
+          onToggleReview={reportComposer.setReviewOpen}
+          onToggleShowChanges={reportComposer.setShowAiChanges}
+          onAcceptChange={(id) => void reportComposer.acceptChange(id)}
+          onRejectChange={(id) => void reportComposer.rejectChange(id)}
+          onAcceptAll={() => void reportComposer.acceptAllPending()}
+          onRejectAll={() => void reportComposer.rejectAllPending()}
+          onApply={() => void reportComposer.applyAccepted()}
+          onDiscard={() => void reportComposer.discard()}
+          onRegenerate={() => void reportComposer.regenerate()}
+          microInstruction={microInstruction}
+          onMicroInstructionChange={setMicroInstruction}
+          onMicroSubmit={() => {
+            const instr = microInstruction.trim();
+            if (!instr) return;
+            const sel = typeof window !== "undefined" ? (window.getSelection()?.toString() ?? "") : "";
+            void reportComposer.microEdit(
+              /translat/i.test(instr) ? "TRANSLATE" : /shorten/i.test(instr) ? "SHORTEN" : /expand/i.test(instr) ? "EXPAND" : "REPHRASE",
+              sel || findingsText.slice(0, 800),
+              "FINDINGS",
+              instr,
+            );
+            setMicroInstruction("");
+          }}
+        />
+        {aiFinalizeGate === "pending" && (
+          <div className="mt-2 rounded-md border border-amber-300 bg-amber-50 p-2 text-[11px] space-y-1.5" data-testid="ai-finalize-gate">
+            <p className="font-semibold text-amber-950">AI suggestions remain unreviewed.</p>
+            <div className="flex flex-wrap gap-1.5">
+              <Button type="button" size="sm" className="h-7 text-[10px]" onClick={() => { reportComposer.setReviewOpen(true); }}>
+                Review
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="h-7 text-[10px]"
+                onClick={() => {
+                  void (async () => {
+                    await reportComposer.rejectAllPending();
+                    aiFinalizeBypassRef.current = true;
+                    setAiFinalizeGate("idle");
+                    void finalizeReport();
+                  })();
+                }}
+              >
+                Reject remaining and continue
+              </Button>
+              <Button type="button" size="sm" variant="ghost" className="h-7 text-[10px]" onClick={() => setAiFinalizeGate("idle")}>
+                Cancel finalize
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
       <ZaiCommandPalette />
       <FinalizeSignDialog
         open={finalizeFlow.open}

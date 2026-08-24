@@ -59,9 +59,14 @@ export const radiologyWorklistTable = pgTable(
     lockTime: timestamp("lock_time", { withTimezone: true }),
     lockLastActivityAt: timestamp("lock_last_activity_at", { withTimezone: true }),
     lockWorkstation: text("lock_workstation"),
-    // AI draft state: NONE | PENDING | READY | ERROR
+    // AI draft state: NONE | PENDING | READY | ERROR (overnight VISION — do not reuse for text compose)
     aiDraftStatus: text("ai_draft_status").notNull().default("NONE"),
     aiDraftJson: text("ai_draft_json"),        // JSON of last AI draft payload
+    // Background AI Report Composer (text) — separate from overnight vision
+    // NONE | QUEUED | COMPOSING | READY | STALE_READY | FAILED | APPLIED | DISCARDED | CANCELLED | OBSOLETE
+    aiComposeStatus: text("ai_compose_status").notNull().default("NONE"),
+    aiComposeJobId: integer("ai_compose_job_id"),
+    aiComposeUpdatedAt: timestamp("ai_compose_updated_at", { withTimezone: true }),
     // Phase 11: Radiologist feedback on AI draft (thumbs up/down + text)
     aiFeedback: text("ai_feedback"),
     aiFeedbackAt: timestamp("ai_feedback_at", { withTimezone: true }),

@@ -342,12 +342,17 @@ export function AiReportingPanel() {
     composerNumCtx: 4096,
     composerTemperature: 0.1,
     composerTimeoutSeconds: 45,
+    backgroundEnabled: true,
+    reviewBeforeApply: true,
+    autoCompose: false,
+    concurrency: 1,
     knownModels: [] as string[],
     enabled: false,
     localOnly: true,
     timeoutSeconds: 30,
     auditEnabled: true,
   });
+  const [composerDiag, setComposerDiag] = useState<string>("");
   const [composerTestStatus, setComposerTestStatus] = useState<"idle" | "testing" | "ok" | "fail">("idle");
   const [composerTestMsg, setComposerTestMsg] = useState("");
   const [localAiTestStatus, setLocalAiTestStatus] = useState<"idle" | "testing" | "ok" | "fail">("idle");
@@ -446,6 +451,10 @@ export function AiReportingPanel() {
         ollamaComposerNumCtx: localAi.composerNumCtx,
         ollamaComposerTemperature: localAi.composerTemperature,
         ollamaComposerTimeoutSeconds: localAi.composerTimeoutSeconds,
+        reportComposerBackgroundEnabled: localAi.backgroundEnabled,
+        reportComposerReviewBeforeApply: localAi.reviewBeforeApply,
+        reportComposerAutoCompose: localAi.autoCompose,
+        reportComposerConcurrency: localAi.concurrency,
       });
       void queryClient.invalidateQueries({ queryKey: ["clinic-settings"] });
       void queryClient.invalidateQueries({ queryKey: ["voice-composer-config"] });
@@ -523,6 +532,10 @@ export function AiReportingPanel() {
       ollamaComposerNumCtx?: number;
       ollamaComposerTemperature?: string | number;
       ollamaComposerTimeoutSeconds?: number;
+      reportComposerBackgroundEnabled?: boolean;
+      reportComposerReviewBeforeApply?: boolean;
+      reportComposerAutoCompose?: boolean;
+      reportComposerConcurrency?: number;
     };
     const rawModel = (cs.ollamaModel ?? localAi.model ?? "").trim();
     const model =
@@ -539,6 +552,10 @@ export function AiReportingPanel() {
       composerNumCtx: cs.ollamaComposerNumCtx ?? s.composerNumCtx,
       composerTemperature: Number(cs.ollamaComposerTemperature ?? s.composerTemperature),
       composerTimeoutSeconds: cs.ollamaComposerTimeoutSeconds ?? s.composerTimeoutSeconds,
+      backgroundEnabled: cs.reportComposerBackgroundEnabled ?? s.backgroundEnabled,
+      reviewBeforeApply: cs.reportComposerReviewBeforeApply ?? s.reviewBeforeApply,
+      autoCompose: cs.reportComposerAutoCompose ?? s.autoCompose,
+      concurrency: cs.reportComposerConcurrency ?? s.concurrency,
       knownModels: (() => {
         try {
           const parsed = JSON.parse(cs.ollamaKnownModels ?? "[]");
@@ -910,6 +927,79 @@ export function AiReportingPanel() {
               <p className="text-[10px] text-muted-foreground">
                 Text-only report composition for voice dictation. Separate from vision model. Low temperature recommended.
               </p>
+            </div>
+
+            <div className="space-y-2 border-t pt-4" data-testid="background-composer-settings">
+              <p className="text-xs font-semibold">Background Report Composer</p>
+              <p className="text-[11px] text-muted-foreground">
+                Radiologist-guided text composition. Separate from overnight vision AI. Auto Compose stays OFF until clinic trusts the workflow.
+              </p>
+              <label className="flex items-center gap-2 text-xs">
+                <input type="checkbox" checked={localAi.backgroundEnabled} onChange={(e) => setLocalAi((s) => ({ ...s, backgroundEnabled: e.target.checked }))} />
+                Background composer enabled
+              </label>
+              <label className="flex items-center gap-2 text-xs">
+                <input type="checkbox" checked={localAi.reviewBeforeApply} onChange={(e) => setLocalAi((s) => ({ ...s, reviewBeforeApply: e.target.checked }))} />
+                Review before apply (recommended ON)
+              </label>
+              <label className="flex items-center gap-2 text-xs">
+                <input type="checkbox" checked={localAi.autoCompose} onChange={(e) => setLocalAi((s) => ({ ...s, autoCompose: e.target.checked }))} />
+                Auto compose (default OFF)
+              </label>
+              <div className="flex items-center gap-2">
+                <label className="text-[10px] text-muted-foreground">Concurrency</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={3}
+                  value={localAi.concurrency}
+                  onChange={(e) => setLocalAi((s) => ({ ...s, concurrency: Number(e.target.value) }))}
+                  className="w-16 h-8 px-2 text-xs rounded border bg-background"
+                />
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-xs"
+                  onClick={() => {
+                    void (async () => {
+                      try {
+                        const r = await api.post<Record<string, unknown>>("/api/radiology/report-composer/test", {});
+                        setComposerDiag(JSON.stringify(r, null, 2));
+                        toast({ title: r.ok ? "Composer self-test OK" : "Composer self-test issues", variant: r.ok ? undefined : "destructive" });
+                      } catch (e: unknown) {
+                        toast({ title: "Self-test failed", description: e instanceof Error ? e.message : String(e), variant: "destructive" });
+                      }
+                    })();
+                  }}
+                >
+                  Run Report Composer Test
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-xs"
+                  onClick={() => {
+                    void (async () => {
+                      try {
+                        const r = await api.get<Record<string, unknown>>("/api/radiology/report-composer/diagnostics");
+                        const text = JSON.stringify(r, null, 2);
+                        setComposerDiag(text);
+                        await navigator.clipboard.writeText(text);
+                        toast({ title: "Diagnostic report copied (PHI-safe)" });
+                      } catch (e: unknown) {
+                        toast({ title: "Diagnostics failed", description: e instanceof Error ? e.message : String(e), variant: "destructive" });
+                      }
+                    })();
+                  }}
+                >
+                  Copy Diagnostic Report
+                </Button>
+              </div>
+              {composerDiag && (
+                <pre className="max-h-40 overflow-auto rounded border bg-muted/30 p-2 text-[10px] font-mono whitespace-pre-wrap">{composerDiag}</pre>
+              )}
             </div>
 
             <PipelineDiagnosticsPanel />
