@@ -77,6 +77,14 @@ describe("ReportExportPanel — enlarge preview before finalize", () => {
     expect(src).toContain("handlePreviewDoubleClick");
     expect(src).toContain('data-testid="report-preview-edit-sections"');
     expect(src).toMatch(/onDoubleClick=\{handlePreviewDoubleClick\}/);
+    // Both compact and enlarged preview panes support double-click edit.
+    expect(src).toMatch(/report-layout-preview-scroll[\s\S]{0,120}onDoubleClick=\{handlePreviewDoubleClick\}/);
+  });
+
+  it("merges live editor body into server print preview", () => {
+    expect(src).toContain("finalizePrintPreviewHtml");
+    expect(src).toContain("livePrintBodyHtml");
+    expect(src).toContain("onEnsureDraftSaved");
   });
 
   it("exposes Finalize in the export toolbar and enlarged preview", () => {

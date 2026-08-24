@@ -14,7 +14,8 @@ import {
 } from "@/components/ui/dialog";
 import { FileDown, Printer, RefreshCw, Eye, Maximize2, ShieldCheck, ImageOff } from "lucide-react";
 import { api } from "@/lib/fetchApi";
-import { hydratePrintPreviewKeyImages } from "@/lib/radiologyReportPdfExport";
+import { finalizePrintPreviewHtml } from "@/lib/radiologyReportPrintLiveMerge";
+import type { FieldProvenanceMap } from "@/lib/reportFieldMerge";
 import ReportLayoutQuickSelect, {
   type ReportLayoutKey,
   reportLayoutTemplateQuery,
@@ -107,6 +108,14 @@ export type ReportExportPanelProps = {
   /** Toggle CARE letterpad header (logo + address) on/off for pre-printed letterheads. */
   showLetterpadHeader?: boolean;
   onShowLetterpadHeaderChange?: (v: boolean) => void;
+  /** Live editor body merged into server print HTML (unsaved typing still prints). */
+  livePrintBodyHtml?: string;
+  findingsText?: string;
+  impressionText?: string;
+  findingsProvenance?: FieldProvenanceMap;
+  impressionProvenance?: FieldProvenanceMap;
+  /** Save draft before fetching server print layout (keeps DB in sync). */
+  onEnsureDraftSaved?: () => Promise<number | null>;
 };
 
 export default function ReportExportPanel({
@@ -137,6 +146,12 @@ export default function ReportExportPanel({
   dicomWebBase = null,
   showLetterpadHeader = true,
   onShowLetterpadHeaderChange,
+  livePrintBodyHtml = "",
+  findingsText = "",
+  impressionText = "",
+  findingsProvenance,
+  impressionProvenance,
+  onEnsureDraftSaved,
 }: ReportExportPanelProps) {
   const [open, setOpen] = useState(true);
   const [previewRefresh, setPreviewRefresh] = useState(0);
@@ -198,11 +213,28 @@ export default function ReportExportPanel({
   }, [draftId, linkedReportId, reportLayout, impressionStyle]);
 
   const { data: serverHtml, isFetching: serverLoading, refetch } = useQuery<string>({
-    queryKey: ["report-export-server-preview", serverPreviewUrl, previewRefresh, imageRefs.map((r) => r.id).join(",")],
+    queryKey: [
+      "report-export-server-preview",
+      serverPreviewUrl,
+      previewRefresh,
+      imageRefs.map((r) => r.id).join(","),
+      livePrintBodyHtml,
+      findingsText,
+      impressionText,
+    ],
     queryFn: async () => {
+      await onEnsureDraftSaved?.();
       const raw = await api.get<string>(serverPreviewUrl!);
       if (typeof raw !== "string") return "";
-      return hydratePrintPreviewKeyImages(raw, dicomWebBase, imageRefs);
+      return finalizePrintPreviewHtml(raw, {
+        livePrintBodyHtml,
+        findingsText,
+        impressionText,
+        findingsProvenance,
+        impressionProvenance,
+        dicomWebBase,
+        imageRefs,
+      });
     },
     enabled: (open || enlarged) && !!serverPreviewUrl,
     staleTime: 15_000,
@@ -440,7 +472,7 @@ export default function ReportExportPanel({
             <DialogTitle className="text-base">Report preview</DialogTitle>
             <DialogDescription className="text-xs">
               Full-page layout and content as it will print. Review before finalize. Esc or ✕ to close.
-              {onEditSection ? " Double-click the compact preview to pick a section to edit." : ""}
+              {onEditSection ? " Double-click anywhere in the preview to pick a section to edit." : ""}
             </DialogDescription>
             {editPickerOpen && onEditSection && (
               <div className="flex flex-wrap gap-1 pt-1" data-testid="report-preview-edit-sections">
@@ -481,6 +513,8 @@ export default function ReportExportPanel({
             ref={enlargedScrollRef}
             className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden rounded border bg-slate-100 p-3 overscroll-contain touch-pan-y"
             data-testid="report-layout-preview-scroll"
+            onDoubleClick={handlePreviewDoubleClick}
+            title={onEditSection ? "Double-click to edit a section" : undefined}
           >
             {/* pointer-events-none: wheel/trackpad scroll the outer pane. Print
                 HTML often uses overflow:hidden on body, so iframe-internal
