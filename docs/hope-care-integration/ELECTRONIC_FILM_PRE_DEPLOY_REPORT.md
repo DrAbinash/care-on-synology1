@@ -47,13 +47,13 @@ Project A merged on GitHub `main` — not re-modified in this branch. Run Projec
 
 ```bash
 # Apply migration (idempotent)
-psql "$DATABASE_URL" -f migrations/electronic_film_artifacts.sql
+psql "$DATABASE_URL" -f migrations/hope_care_diagnostic_referral_integration_electronic_film.sql
 # Or: pnpm db:push
 ```
 
 ## O. KEY FILES
 
-- `migrations/electronic_film_artifacts.sql`
+- `migrations/hope_care_diagnostic_referral_integration_electronic_film.sql`
 - `lib/db/src/schema/electronicFilmArtifacts.ts`
 - `artifacts/api-server/src/services/electronicFilm/*`
 - `artifacts/api-server/src/routes/electronic-film.ts`
