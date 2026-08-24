@@ -460,6 +460,52 @@ describe("document layout engine — CARE Invoice (classic)", () => {
   });
 });
 
+describe("document layout engine — A5 Landscape (a5-landscape)", () => {
+  test("a5-landscape format renders compact layout on 210×148", () => {
+    const html = buildBillPrintHtml(baseOpts({
+      billFormat: "a5-landscape",
+      orientation: "landscape",
+      pageCssSize: "210mm 148mm",
+    }));
+    expect(html).toContain("a5-landscape-bill");
+    expect(html).toContain(">RECEIPT<");
+    expect(html).toContain("Authorised Signatory");
+    expect(html).toContain("@page { size: 210mm 148mm; margin: 0; }");
+    expect(html).not.toContain("hope-bill");
+    expect(html).not.toContain(">INVOICE<");
+  });
+
+  test("buildBillPrintHtml routes a5-landscape to the landscape renderer", () => {
+    const html = buildBillPrintHtml(baseOpts({
+      billFormat: "a5-landscape",
+      orientation: "landscape",
+      pageCssSize: "210mm 148mm",
+    }));
+    expect(html).toContain("a5-landscape-bill");
+    expect(html).not.toContain("hope-bill");
+  });
+
+  test("a5-landscape HTML does not use CSS transform rotate", () => {
+    const html = buildBillPrintHtml(baseOpts({
+      billFormat: "a5-landscape",
+      orientation: "landscape",
+      pageCssSize: "210mm 148mm",
+    }));
+    expect(html).not.toMatch(/transform:\s*rotate/i);
+  });
+
+  test("a5-landscape shares financial and audit fields with classic", () => {
+    const landscape = buildBillPrintHtml(baseOpts({
+      billFormat: "a5-landscape",
+      orientation: "landscape",
+      pageCssSize: "210mm 148mm",
+    }));
+    expect(landscape).toContain("4,900.00");
+    expect(landscape).toMatch(/2026001-\d+-4900\.00-\d+-[0-9A-F]{8}/);
+    expect(landscape).toContain("Scan to verify");
+  });
+});
+
 describe("print delivery module", () => {
   test("exports popup helpers without Electron APIs or hidden iframe print path", async () => {
     const mod = await import("./documentLayout/printDelivery");
