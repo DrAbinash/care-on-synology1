@@ -475,6 +475,7 @@ export async function markComposeApplied(opts: {
   const job = await getComposeJob(opts.jobId);
   if (!job) return { ok: false, error: "not_found" };
   if (!["READY", "STALE_READY"].includes(job.status)) return { ok: false, error: "not_ready" };
+  if (job.status === "STALE_READY") return { ok: false, error: "stale_ready" };
   const persisted = await loadPersistedReportToken(job.reportId);
   if (persisted.finalized) return { ok: false, error: "finalized" };
 

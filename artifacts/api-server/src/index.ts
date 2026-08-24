@@ -25,7 +25,7 @@ initializePluginLoader(app);
 import { logger } from "./lib/logger";
 import { reportWeakGuardedSecrets } from "./lib/secretStrength";
 import { NETWORK_LAN_HOST } from "./lib/networkDefaults";
-import { startCronScheduler, startRadiologyJobConsumer } from "./cron";
+import { startAiReportComposeJobConsumer, startCronScheduler, startRadiologyJobConsumer } from "./cron";
 import { startIntegrationScheduler } from "./services/integration/scheduler";
 import { ensureDefaultLedger } from "./routes/ledgers";
 import { backfillExpirePublicTokens } from "./routes/patient-reports";
@@ -2825,6 +2825,13 @@ const server = app.listen({ port, exclusive: true }, () => {
     startRadiologyJobConsumer();
   } catch (err) {
     logger.error({ err }, "Overnight AI consumer failed to register");
+  }
+
+  // Text report compose drain — same bootstrap requirement as overnight AI.
+  try {
+    startAiReportComposeJobConsumer();
+  } catch (err) {
+    logger.error({ err }, "AI report compose consumer failed to register");
   }
 
   // Cron schedulers must NOT run on autoscale deployments: containers can
