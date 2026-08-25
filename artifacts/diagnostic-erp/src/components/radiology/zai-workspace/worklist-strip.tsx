@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useWorkspace, useWorkspaceSelector } from "@/lib/zai-workspace/store";
 import { patientAccent, modalityAccent } from "@/lib/zai-workspace/types";
 import { Clock, Lock, AlertTriangle, ChevronRight, Archive, Flame } from "lucide-react";
@@ -14,7 +14,8 @@ const PR: Record<string, { l: string; t: string }> = {
 };
 const FALLBACK_PRIO = PR.routine;
 
-export type ReadingQueueDatePreset = "today-yesterday" | "today" | "all";
+export type ReadingQueueDatePreset = "today-yesterday" | "today" | "yesterday" | "all";
+export type ReadingQueueSort = "queue" | "name-az";
 
 export function WorklistStrip({
   onSelectStudy,
@@ -23,6 +24,8 @@ export function WorklistStrip({
   onModalityFilterChange,
   datePreset = "today-yesterday",
   onDatePresetChange,
+  sortMode = "queue",
+  onSortModeChange,
   onWarmMriTodayYesterday,
   mriWarmBusy,
   mriWarmLabel,
@@ -34,6 +37,8 @@ export function WorklistStrip({
   onModalityFilterChange?: (value: string) => void;
   datePreset?: ReadingQueueDatePreset;
   onDatePresetChange?: (value: ReadingQueueDatePreset) => void;
+  sortMode?: ReadingQueueSort;
+  onSortModeChange?: (value: ReadingQueueSort) => void;
   /** Touch Orthanc + browser DICOMweb for Today & Yesterday MR only. */
   onWarmMriTodayYesterday?: () => void;
   mriWarmBusy?: boolean;
@@ -46,8 +51,20 @@ export function WorklistStrip({
   const select = useWorkspaceSelector(s => s.selectStudy);
   const MAX_VISIBLE = 50;
   const [visibleCount, setVisibleCount] = useState(MAX_VISIBLE);
-  const visibleStudies = studies.slice(0, visibleCount);
-  const hasMore = studies.length > visibleCount;
+
+  const orderedStudies = useMemo(() => {
+    if (sortMode !== "name-az") return studies;
+    return [...studies].sort((a, b) => {
+      const an = (a.patient?.name ?? "").trim();
+      const bn = (b.patient?.name ?? "").trim();
+      const cmp = an.localeCompare(bn, undefined, { sensitivity: "base", numeric: true });
+      if (cmp !== 0) return cmp;
+      return String(a.id).localeCompare(String(b.id), undefined, { numeric: true });
+    });
+  }, [studies, sortMode]);
+
+  const visibleStudies = orderedStudies.slice(0, visibleCount);
+  const hasMore = orderedStudies.length > visibleCount;
 
   return (
     <div className="flex h-full flex-col">
@@ -94,9 +111,20 @@ export function WorklistStrip({
           >
             <option value="today-yesterday">Today &amp; Yesterday</option>
             <option value="today">Today</option>
+            <option value="yesterday">Yesterday</option>
             <option value="all">All dates</option>
           </select>
         </div>
+        <select
+          aria-label="Queue sort"
+          data-testid="reading-queue-sort"
+          className="h-6 w-full rounded border border-emerald-200/60 bg-background px-1 text-[10px] focus:border-emerald-400 focus:ring-1 focus:ring-emerald-300 outline-none"
+          value={sortMode}
+          onChange={(e) => onSortModeChange?.(e.target.value as ReadingQueueSort)}
+        >
+          <option value="queue">Sort: Queue order</option>
+          <option value="name-az">Sort: Name A–Z</option>
+        </select>
         {onWarmMriTodayYesterday ? (
           <button
             type="button"
@@ -114,7 +142,7 @@ export function WorklistStrip({
       </div>
       <ScrollArea className="flex-1">
         <div className="space-y-1 p-1.5">
-          {studies.length === 0 && (
+          {orderedStudies.length === 0 && (
             <div className="rounded border border-dashed border-emerald-300/60 bg-emerald-50/30 p-3 text-[11px] text-emerald-700/80 text-center mt-4">
               No studies in queue.<br />
               <span className="text-[10px] text-emerald-600/60">Waiting for worklist…</span>
@@ -197,7 +225,7 @@ export function WorklistStrip({
               onClick={() => setVisibleCount(c => c + MAX_VISIBLE)}
               className="w-full rounded-lg border border-dashed border-emerald-300/60 bg-emerald-50/30 py-2 text-[11px] font-medium text-emerald-700/80 hover:bg-emerald-50/60 transition"
             >
-              Show {Math.min(MAX_VISIBLE, studies.length - visibleCount)} more of {studies.length - visibleCount} remaining…
+              Show {Math.min(MAX_VISIBLE, orderedStudies.length - visibleCount)} more of {orderedStudies.length - visibleCount} remaining…
             </button>
           )}
         </div>

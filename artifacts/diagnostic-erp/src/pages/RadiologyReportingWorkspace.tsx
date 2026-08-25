@@ -222,7 +222,7 @@ import { daysAgoISO, todayISO } from "@/lib/dateRangePresets";
 import { useWorkspace, formatSignOff, lookupProfile, type WorkspaceStore } from "@/lib/zai-workspace/store";
 import { getFindingsCompletionPct, runLintRules, shouldPreloadNext } from "@/lib/zai-workspace/types";
 import type { Study, MeasurementRow, PriorStudy } from "@/lib/zai-workspace/types";
-import { WorklistStrip, type ReadingQueueDatePreset } from "@/components/radiology/zai-workspace/worklist-strip";
+import { WorklistStrip, type ReadingQueueDatePreset, type ReadingQueueSort } from "@/components/radiology/zai-workspace/worklist-strip";
 import { CopilotRail } from "@/components/radiology/zai-workspace/copilot-rail";
 import { FindingsEditor } from "@/components/radiology/zai-workspace/findings-editor";
 import { QuickSelectStrip } from "@/components/radiology/zai-workspace/quick-select-strip";
@@ -425,12 +425,20 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const [datePreset, setDatePreset] = useState<ReadingQueueDatePreset>(() => {
     try {
       const stored = localStorage.getItem("care_reading_queue_date");
-      if (stored === "today" || stored === "all" || stored === "today-yesterday") return stored;
+      if (stored === "today" || stored === "yesterday" || stored === "all" || stored === "today-yesterday") return stored;
     } catch { /* ignore */ }
     return "today-yesterday";
   });
+  const [queueSort, setQueueSort] = useState<ReadingQueueSort>(() => {
+    try {
+      const stored = localStorage.getItem("care_reading_queue_sort");
+      if (stored === "queue" || stored === "name-az") return stored;
+    } catch { /* ignore */ }
+    return "queue";
+  });
   const queueDateRange = useMemo(() => {
     if (datePreset === "today") return { from: todayISO(), to: todayISO() };
+    if (datePreset === "yesterday") return { from: daysAgoISO(1), to: daysAgoISO(1) };
     if (datePreset === "today-yesterday") return { from: daysAgoISO(1), to: todayISO() };
     return { from: "", to: "" };
   }, [datePreset]);
@@ -1172,6 +1180,16 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
 
   const [microInstruction, setMicroInstruction] = useState("");
   const [aiFinalizeGate, setAiFinalizeGate] = useState<"idle" | "pending">("idle");
+  const [aiAssistantMinimized, setAiAssistantMinimized] = useState(() => {
+    try { return localStorage.getItem("care_ai_assistant_minimized") === "1"; } catch { return false; }
+  });
+  const persistAiAssistantMinimized = (minimized: boolean) => {
+    setAiAssistantMinimized(minimized);
+    try {
+      if (minimized) localStorage.setItem("care_ai_assistant_minimized", "1");
+      else localStorage.removeItem("care_ai_assistant_minimized");
+    } catch { /* ignore */ }
+  };
   const aiFinalizeBypassRef = useRef(false);
   const reportComposer = useReportComposer({
     worklistId: studyId ?? null,
@@ -1415,6 +1433,11 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const persistDatePreset = useCallback((value: ReadingQueueDatePreset) => {
     setDatePreset(value);
     try { localStorage.setItem("care_reading_queue_date", value); } catch { /* ignore */ }
+  }, []);
+
+  const persistQueueSort = useCallback((value: ReadingQueueSort) => {
+    setQueueSort(value);
+    try { localStorage.setItem("care_reading_queue_sort", value); } catch { /* ignore */ }
   }, []);
 
   /** Clinic Quick Select — pathology patches over the whole report (ownership + laterality). */
@@ -3119,6 +3142,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                   onModalityFilterChange={persistQueueModality}
                   datePreset={datePreset}
                   onDatePresetChange={persistDatePreset}
+                  sortMode={queueSort}
+                  onSortModeChange={persistQueueSort}
                   onWarmMriTodayYesterday={() => warmMriTodayYesterday.mutate()}
                   mriWarmBusy={warmMriTodayYesterday.isPending || !!mriWarmStatus?.running}
                   mriWarmLabel={mriWarmCountLabel}
@@ -4335,13 +4360,15 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         preferOpen={typeof window !== "undefined" && new URLSearchParams(window.location.search).get("ai") === "1"}
       />
       {/* Background text Report Composer — assistant artifact until Apply */}
-      <div className="fixed bottom-4 left-4 z-40 w-[min(420px,calc(100vw-2rem))] shadow-lg">
+      <div className="fixed bottom-4 left-4 z-40 w-[min(420px,calc(100vw-2rem))] shadow-lg pointer-events-auto">
         <ReportComposerAssistant
           job={reportComposer.job}
           busy={reportComposer.busy}
           reviewOpen={reportComposer.reviewOpen}
           showAiChanges={reportComposer.showAiChanges}
           isFinalized={isFinalized}
+          minimized={aiAssistantMinimized}
+          onMinimizedChange={persistAiAssistantMinimized}
           onCompose={() => void reportComposer.composeFull()}
           onImpression={() => void reportComposer.composeImpression()}
           onToggleReview={reportComposer.setReviewOpen}
