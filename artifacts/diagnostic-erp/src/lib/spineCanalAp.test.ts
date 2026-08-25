@@ -32,7 +32,9 @@ describe("spineCanalAp", () => {
 
   it("builds 5 lumbar and 5 cervical levels", () => {
     expect(levelsForCanalSegment("lumbar")).toEqual(["L1-L2", "L2-L3", "L3-L4", "L4-L5", "L5-S1"]);
-    expect(levelsForCanalSegment("cervical")).toEqual(["C2-C3", "C3-C4", "C4-C5", "C5-C6", "C6-C7"]);
+    expect(levelsForCanalSegment("cervical")).toEqual([
+      "C1-C2", "C2-C3", "C3-C4", "C4-C5", "C5-C6", "C6-C7", "C7-T1",
+    ]);
   });
 
   it("formats findings table and PDF rows", () => {

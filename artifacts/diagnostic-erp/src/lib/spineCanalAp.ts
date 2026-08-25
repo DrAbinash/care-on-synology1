@@ -8,7 +8,10 @@
 import type { SpineSegment } from "@/lib/reportingStudyContext";
 
 export const LUMBAR_CANAL_LEVELS = ["L1-L2", "L2-L3", "L3-L4", "L4-L5", "L5-S1"] as const;
-export const CERVICAL_CANAL_LEVELS = ["C2-C3", "C3-C4", "C4-C5", "C5-C6", "C6-C7"] as const;
+/** Seven cervical disc levels (C1–C2 through C7–T1) for canal AP tables. */
+export const CERVICAL_CANAL_LEVELS = [
+  "C1-C2", "C2-C3", "C3-C4", "C4-C5", "C5-C6", "C6-C7", "C7-T1",
+] as const;
 
 export type CanalDiscLevel =
   | (typeof LUMBAR_CANAL_LEVELS)[number]
@@ -55,7 +58,7 @@ export function levelsForCanalSegment(segment: CanalSegment): readonly CanalDisc
 
 export function canalTableTitle(segment: CanalSegment): string {
   return segment === "cervical"
-    ? "CERVICAL CANAL AP DIAMETER AT C2 TO C7 LEVELS"
+    ? "CERVICAL CANAL AP DIAMETER AT C1 TO C7 LEVELS"
     : "LUMBAR CANAL AP DIAMETER AT L1 TO L5 LEVELS";
 }
 

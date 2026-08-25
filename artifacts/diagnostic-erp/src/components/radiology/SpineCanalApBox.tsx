@@ -253,7 +253,7 @@ export default function SpineCanalApBox({
               {levels.map((l) => (
                 <td key={l} className="border border-border p-0.5">
                   <Input
-                    className={`h-7 text-[11px] font-mono text-center px-1 ${
+                    className={`h-7 min-w-[2.75rem] w-full text-[11px] font-mono text-center px-0.5 ${
                       captureLevel === l ? "ring-2 ring-emerald-500" : ""
                     }`}
                     value={values[l] ?? ""}
@@ -263,9 +263,6 @@ export default function SpineCanalApBox({
                     data-testid={`canal-ap-${l}`}
                     onChange={(e) => setLevel(l, e.target.value)}
                     onBlur={() => commitLevel(l)}
-                    onFocus={() => {
-                      /* keep capture sticky until assigned */
-                    }}
                     onClick={() => {
                       if (captureLevel) setCaptureLevel(l);
                     }}

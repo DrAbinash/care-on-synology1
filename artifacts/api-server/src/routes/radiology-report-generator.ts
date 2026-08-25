@@ -2080,7 +2080,7 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
         .from(spinalMeasurementsTable)
         .where(eq(spinalMeasurementsTable.studyId, spinalStudyKey));
       const LUMBAR = ["L1-L2", "L2-L3", "L3-L4", "L4-L5", "L5-S1"];
-      const CERVICAL = ["C2-C3", "C3-C4", "C4-C5", "C5-C6", "C6-C7"];
+      const CERVICAL = ["C1-C2", "C2-C3", "C3-C4", "C4-C5", "C5-C6", "C6-C7", "C7-T1"];
       const byLevel = new Map(
         spinalRows
           .filter((r) => r.canalAP?.trim())
@@ -2096,7 +2096,7 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
           : [];
       if (levels.some((l) => byLevel.has(l))) {
         const title = levels[0].startsWith("C")
-          ? "CERVICAL CANAL AP DIAMETER AT C2 TO C7 LEVELS"
+          ? "CERVICAL CANAL AP DIAMETER AT C1 TO C7 LEVELS"
           : "LUMBAR CANAL AP DIAMETER AT L1 TO L5 LEVELS";
         const th = levels.map((l) => `<th style="border:1px solid #000;padding:2px 6px;font-size:11px;">${esc(l)}</th>`).join("");
         const td = levels
@@ -2972,7 +2972,7 @@ const SpinalMeasurementSchema = z.object({
   draftId: z.number().int().optional(),
   patientId: z.number().int().optional(),
   worklistId: z.number().int().optional(),
-  vertebraLevel: z.string().min(1).max(10),
+  vertebraLevel: z.string().min(1).max(12),
   canalAP: z.string().max(20).optional(),
   canalTransverse: z.string().max(20).optional(),
   canalArea: z.string().max(20).optional(),
