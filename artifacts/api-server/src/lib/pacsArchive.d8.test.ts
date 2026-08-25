@@ -13,6 +13,7 @@ let fetchCalls: { url: string; body: Record<string, unknown> }[];
 
 vi.mock("@workspace/db/schema", () => ({
   radiologyStudiesTable: { __name: "radiology_studies" },
+  radiologyWorklistTable: { __name: "radiology_worklist" },
   patientsTable: { __name: "patients" },
   patientReportsTable: { __name: "patient_reports" },
   radiologyAuditLogTable: { __name: "radiology_audit_log" },
@@ -27,6 +28,7 @@ vi.mock("@workspace/db", () => ({
         where: () => ({
           limit: async () => {
             if (tbl?.__name === "radiology_studies") return studyRow ? [studyRow] : [];
+            if (tbl?.__name === "radiology_worklist") return [{ id: 3629 }];
             if (tbl?.__name === "patients") return [{ id: 12, firstName: "Asha", lastName: "P", patientId: "PAT-1", gender: "F", dateOfBirth: null }];
             if (tbl?.__name === "patient_reports") return reportRow ? [reportRow] : [];
             return [];

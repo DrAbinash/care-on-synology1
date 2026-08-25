@@ -1004,8 +1004,24 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     setIsCritical(false);
     setCriticalNote("");
     setChecklistComm({ phoned: false, annotated: false, dispatched: false });
-    captureSavedDraftId(null);
-  }, [studyId, captureSavedDraftId]);
+    // Clear zustand editor unconditionally — worklist navigate() does not call
+    // selectStudy, so Patient A text must not linger on Patient B.
+    useWorkspace.setState({
+      findingsText: "",
+      impressionText: "",
+      recommendationText: "",
+      techniqueText: "",
+      clinicalHistoryText: "",
+      fieldProvenance: {},
+      isDirty: false,
+      isFinalized: false,
+      isFinalizing: false,
+      ghostText: null,
+      ghostTextTarget: null,
+    });
+    // Draft identity resets inside useRadiologyDraftId on studyId change —
+    // do not call captureSavedDraftId(null) here (that pattern caused React #185).
+  }, [studyId]);
 
   // Keep findingsText in sync when structured cards drive the report
   useEffect(() => {
@@ -1555,10 +1571,22 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     if (hydratedDraftForStudyRef.current === studyId) return;
 
     if (existingDraft) {
-      if (!canHydrateDraftForPatient(existingDraft.patientId, workflow.currentRow?.patientId ?? null)) {
+      const rowPatientId = workflow.currentRow?.patientId ?? null;
+      // Wait for worklist patient before deciding — do not mark hydrated yet.
+      if (existingDraft.patientId != null && rowPatientId == null) return;
+      if (!canHydrateDraftForPatient(existingDraft.patientId, rowPatientId)) {
         console.warn("[radiology-workspace] refusing to hydrate draft for a different patient");
         hydratedDraftForStudyRef.current = studyId;
         setDraftHydratedStudyId(studyId);
+        useWorkspace.setState({
+          findingsText: "",
+          impressionText: "",
+          recommendationText: "",
+          techniqueText: "",
+          clinicalHistoryText: "",
+          fieldProvenance: {},
+          isDirty: false,
+        });
         return;
       }
       hydratedDraftForStudyRef.current = studyId;
@@ -1639,7 +1667,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         }
       });
     }
-  }, [studyId, existingDraft, isLoadingExistingDraft, workflow.currentRow]);
+  }, [studyId, existingDraft, isLoadingExistingDraft, workflow.currentRow?.patientId, workflow.currentRow, toast]);
 
   // ─── Draft rescue registration (pre-redirect save on 401) ──────────────────
   useEffect(() => {
@@ -1724,7 +1752,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       toast({ title: "Save failed", description: err instanceof Error ? err.message : "Unknown error", variant: "destructive" });
       return null;
     }
-  }, [studyId, draftId, clinicalHistoryText, techniqueText, findingsText, impressionText, recommendationText, isOnline, captureSavedDraftId, toast, useStructured, findingsMap, structuredValues, studySetup.selectedTemplate]);
+  }, [studyId, draftId, clinicalHistoryText, techniqueText, findingsText, impressionText, recommendationText, isOnline, captureSavedDraftId, toast, useStructured, findingsMap, structuredValues, studySetup.selectedTemplate, workflow.currentRow?.patientId]);
   saveDraftRef.current = saveDraft;
 
   // ─── Finalize (sign + archive + notify) ─────────────────────────────────────
@@ -2694,8 +2722,15 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     }
     if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
     autoSaveTimerRef.current = setTimeout(() => {
+      const genAtSchedule = saveGenerationRef.current;
       setAutoSaveStatus("saving");
-      saveDraft({ silent: true }).then(() => setAutoSaveStatus("saved")).catch(() => setAutoSaveStatus("error"));
+      saveDraft({ silent: true }).then((id) => {
+        if (genAtSchedule !== saveGenerationRef.current) return;
+        setAutoSaveStatus(id != null ? "saved" : "error");
+      }).catch(() => {
+        if (genAtSchedule !== saveGenerationRef.current) return;
+        setAutoSaveStatus("error");
+      });
     }, 30_000);
     return () => { if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current); };
   }, [isDirty, isOnline, draftId, isFinalized, isMobile, findingsText, impressionText, techniqueText, recommendationText, clinicalHistoryText, saveDraft]);

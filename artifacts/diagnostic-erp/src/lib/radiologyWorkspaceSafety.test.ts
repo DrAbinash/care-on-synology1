@@ -16,6 +16,7 @@ describe("radiologyWorkspaceSafety", () => {
     expect(canHydrateDraftForPatient(1, 1)).toBe(true);
     expect(canHydrateDraftForPatient(1, 2)).toBe(false);
     expect(canHydrateDraftForPatient(null, 2)).toBe(true);
+    expect(canHydrateDraftForPatient(1, null)).toBe(false);
   });
 
   it("drops a delayed Patient A autosave after switching to B", () => {

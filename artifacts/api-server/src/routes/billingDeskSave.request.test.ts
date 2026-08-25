@@ -118,34 +118,38 @@ describe.skipIf(!dbAvailable)("POST /api/billing/save — request level", () => 
     expect(res.status).toBe(401);
   });
 
-  test("a non-admin desk role may bill a package/VIP line below catalogue price", async () => {
-    // The price-override guard used to require admin for ANY price != catalogue,
-    // which 403'd normal reception staff on package splits.
+  test("non-admin client under-price is ignored — server bills catalogue", async () => {
+    // #591: resolveStaffLinePrice is server-authoritative for non-admins.
+    // Client may send a lower line price (old package-split UX); the order
+    // still stores the catalogue ceiling, not the client amount.
     const res = await request(app)
       .post("/api/billing/save")
       .set("Authorization", `Bearer ${fx.token}`)
       .send(
         savePayload(randomUUID(), {
           tests: [{ testId: fx.testId, price: fx.testPrice / 2 }],
-          payments: [{ amount: fx.testPrice / 2, method: "cash" }],
+          payments: [{ amount: fx.testPrice, method: "cash" }],
         }),
       );
 
     expect(res.status).toBe(201);
-    expect(Number(res.body.totalAmount)).toBeCloseTo(fx.testPrice / 2, 2);
+    expect(Number(res.body.totalAmount)).toBeCloseTo(fx.testPrice, 2);
   });
 
-  test("still rejects a non-admin markup above the catalogue ceiling", async () => {
+  test("non-admin client markup is clamped to catalogue (not 403)", async () => {
+    // Non-admins cannot raise price; the server silently uses catalogue
+    // rather than rejecting the save (admin-only override path).
     const res = await request(app)
       .post("/api/billing/save")
       .set("Authorization", `Bearer ${fx.token}`)
       .send(
         savePayload(randomUUID(), {
           tests: [{ testId: fx.testId, price: fx.testPrice * 5 }],
-          payments: [],
+          payments: [{ amount: fx.testPrice, method: "cash" }],
         }),
       );
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(201);
+    expect(Number(res.body.totalAmount)).toBeCloseTo(fx.testPrice, 2);
   });
 });

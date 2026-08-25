@@ -1884,8 +1884,11 @@ patientReportsRouter.post("/", async (req, res) => {
   const studyRef = b.studyId ? Number(b.studyId) : null;
   const worklistIdIn = b.worklistId ? Number(b.worklistId) : null;
   // Only bind when the client supplies a study/worklist reference. Study-less
-  // radiology (legacy / pathology-adjacent) keeps the pre-hardening path;
-  // workspace finalize always sends studyId/worklistId and must pass the gate.
+  // radiology create (legacy / D5 fixtures / non-workspace tools) keeps the
+  // pre-hardening path intentionally — workspace finalize always sends
+  // studyId/worklistId and must pass the Match Center gate. Requiring bind for
+  // all type=radiology would break those study-less flows; do that as a
+  // separate product decision with fixture updates.
   const shouldBindRadiology = !!(studyRef || worklistIdIn);
 
   let bound: BoundRadiologyIdentity | null = null;
