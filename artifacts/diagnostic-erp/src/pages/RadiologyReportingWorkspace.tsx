@@ -168,6 +168,16 @@ import {
 } from "@/lib/structuredFormat";
 import PriorComparisonToolbar from "@/components/radiology/PriorComparisonToolbar";
 import ViewerMeasurementsBanner from "@/components/radiology/ViewerMeasurementsBanner";
+import { useViewerMeasurements } from "@/components/radiology/ViewerMeasurementsPanel";
+import { formatViewerMeasurementLabel } from "@/lib/formatViewerMeasurementLine";
+import { subscribeCareOhifBridge } from "@/lib/ohifViewerBridge";
+import {
+  canalApToPdfRows,
+  canalSegmentFromSpine,
+  discLevelFromLabel,
+  parseCanalApNumber,
+  resolveCanalSegment,
+} from "@/lib/spineCanalAp";
 import LegacyBox, { type LegacyBoxTab } from "@/components/radiology/LegacyBox";
 import { impressionMatchesStudyContext } from "@/lib/aiDraftStudyContext";
 import { AiDraftPanel } from "@/components/ai/AiDraftPanel";
@@ -2195,6 +2205,60 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     enabled: !!draftId,
   });
 
+  const viewerMeasurementsQ = useViewerMeasurements(workflow.currentRow?.studyInstanceUID);
+
+  // Bridge viewer_measurements → MEASURE rail (Zustand). Previously setMeasurements was never called.
+  useEffect(() => {
+    const rows = viewerMeasurementsQ.data ?? [];
+    const mapped = rows
+      .filter((m) => m.status !== "ignored")
+      .map((m) => {
+        const label =
+          discLevelFromLabel(m.measurementType)
+          ?? discLevelFromLabel(m.measurementId)
+          ?? formatViewerMeasurementLabel(m);
+        const num = Number(parseCanalApNumber(m.value) || m.value);
+        return {
+          id: `vm-${m.id}`,
+          name: label,
+          value: Number.isFinite(num) ? num : 0,
+          unit: m.unit || "mm",
+          source: "viewer" as const,
+          inserted: m.status === "imported",
+        };
+      });
+    useWorkspace.getState().setMeasurements(mapped);
+  }, [viewerMeasurementsQ.data]);
+
+  // OHIF postMessage → viewer_measurements / report image-references
+  useEffect(() => {
+    const uid = workflow.currentRow?.studyInstanceUID ?? null;
+    if (!uid) return;
+    return subscribeCareOhifBridge({
+      studyInstanceUID: uid,
+      patientId: workflow.currentRow?.patientId ?? null,
+      studyId: workflow.currentRow?.studyId ?? studyId ?? null,
+      draftId: draftId ?? null,
+      getImageRefs: () => imageRefs,
+      onMeasurementSaved: () => {
+        void qc.invalidateQueries({ queryKey: ["viewer-measurements", uid] });
+      },
+      onKeyImageSaved: () => {
+        void qc.invalidateQueries({ queryKey: ["report-image-references", draftId] });
+        toast({ title: "Key image added from viewer" });
+      },
+    });
+  }, [
+    workflow.currentRow?.studyInstanceUID,
+    workflow.currentRow?.patientId,
+    workflow.currentRow?.studyId,
+    studyId,
+    draftId,
+    imageRefs,
+    qc,
+    toast,
+  ]);
+
   const studyNameForExport = studySetup.testName
     ?? workflow.currentRow?.studyDescription
     ?? "Radiology Report";
@@ -2371,6 +2435,28 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const handleExportPdf = useCallback(async () => {
     setExportingPdf(true);
     try {
+      let measurements: Array<{ label: string; value: string }> = [];
+      const spinalKey = workflow.currentRow?.studyId ?? studyId;
+      if (spinalKey) {
+        try {
+          const rows = await api.get<Array<{ vertebraLevel: string; canalAP: string | null }>>(
+            `/api/radiology/report-generator/spinal-measurements?studyId=${spinalKey}`,
+          );
+          const values: Record<string, string> = {};
+          for (const r of rows) {
+            if (r.canalAP?.trim()) values[r.vertebraLevel] = r.canalAP.trim();
+          }
+          const hint = [
+            studySetup.matchedStudyRegion,
+            workflow.currentRow?.studyDescription,
+          ].filter(Boolean).join(" ");
+          const segment =
+            canalSegmentFromSpine(useWorkspace.getState().reportingContext.spineSegment)
+            ?? resolveCanalSegment(hint)
+            ?? (Object.keys(values).some((k) => k.startsWith("C")) ? "cervical" : "lumbar");
+          measurements = canalApToPdfRows(segment, values);
+        } catch { /* omit measurements section */ }
+      }
       await exportRadiologyReportToPdf({
         patientName: canonicalDemography.patientName,
         age: canonicalDemography.age,
@@ -2394,6 +2480,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         clinic: clinicSettings ?? null,
         letterhead: activeStandardLetterhead(presentationTemplates),
         showLetterpadHeader,
+        measurements,
       });
     } catch (err) {
       toast({
@@ -2409,6 +2496,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     impressionText, recommendationText, studyNameForExport, headingCase,
     imageRefs, clinicSettings, toast, workflow.currentRow,
     useStructured, findingsMap, presentationTemplates, showLetterpadHeader,
+    studyId, studySetup.matchedStudyRegion,
   ]);
 
   const handlePrintLikeFinal = useCallback(async () => {
@@ -3200,6 +3288,39 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       patientName={canonicalDemography.patientName || workflow.currentRow?.patientName || study?.patient?.name || null}
                       columnExpanded={viewerColumnExpanded}
                       onColumnExpandedChange={setViewerColumnExpanded}
+                      onAddCurrentFrameToReport={
+                        isLocked || isFinalized
+                          ? undefined
+                          : async (ref) => {
+                              let id = draftId;
+                              if (!id) id = await saveDraft({ silent: true });
+                              if (!id) {
+                                toast({ title: "Could not save draft", description: "Save a draft before adding key images.", variant: "destructive" });
+                                return;
+                              }
+                              try {
+                                const { buildImageRefPayload, nextDisplayOrder } = await import("@/lib/reportImageRefs");
+                                await api.post(
+                                  "/api/radiology/report-generator/image-references",
+                                  buildImageRefPayload({
+                                    draftId: id,
+                                    studyId: workflow.currentRow?.studyId ?? studyId ?? null,
+                                    studyInstanceUID: ref.studyInstanceUID,
+                                    seriesInstanceUID: ref.seriesInstanceUID,
+                                    sopInstanceUID: ref.sopInstanceUID,
+                                    frameNumber: ref.frameNumber,
+                                    caption: "Key image (viewer)",
+                                    displayOrder: nextDisplayOrder(imageRefs),
+                                    isKeyImage: true,
+                                  }),
+                                );
+                                void qc.invalidateQueries({ queryKey: ["report-image-references", id] });
+                                toast({ title: "Added to report image rail" });
+                              } catch (e) {
+                                toast({ title: "Could not add image", description: String(e), variant: "destructive" });
+                              }
+                            }
+                      }
                     />
                   </div>
                   {!viewerColumnExpanded && workflow.currentRow && (
@@ -4256,7 +4377,18 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                     </button>
                   ) : (
                     <>
-                  <CopilotRail />
+                  <CopilotRail
+                    spinalStudyId={workflow.currentRow?.studyId ?? studyId ?? null}
+                    draftId={draftId ?? null}
+                    patientId={workflow.currentRow?.patientId ?? null}
+                    worklistId={studyId ?? null}
+                    studyInstanceUID={workflow.currentRow?.studyInstanceUID ?? null}
+                    regionHint={[
+                      studySetup.matchedStudyRegion,
+                      workflow.currentRow?.studyDescription,
+                    ].filter(Boolean).join(" ") || null}
+                    measureDisabled={isLocked || isFinalized}
+                  />
                   {workflow.currentRow && (
                     <div className="border-t border-border p-2">
                       <ComparisonPanel

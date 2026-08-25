@@ -854,6 +854,7 @@ function buildClassicPatientHeaderHtml(input: {
     recommendation?: string;
     template: ReportTemplate;
     keyImages?: Array<{ imageUrl: string; caption: string; includeInReport: boolean }>;
+    measurements?: Array<{ label: string; value: string }>;
     preferences?: {
       headingCase?: "all_caps" | "title_case";
       sectionSpacing?: "spaced" | "compact";
@@ -1056,7 +1057,13 @@ function buildClassicPatientHeaderHtml(input: {
     };
 
     const renderMeasurements = () => {
-      return "";
+      const rows = input.measurements;
+      if (!rows?.length) return "";
+      const body = rows
+        .map((r) => `<tr><td style="border:1px solid #333;padding:2px 6px;">${escHtml(r.label)}</td><td style="border:1px solid #333;padding:2px 6px;">${escHtml(r.value)}</td></tr>`)
+        .join("");
+      return `<h3 style="margin:${sp2} 0 ${sp};">${fmtHeadingHtml("Measurements")}</h3>
+<table style="border-collapse:collapse;margin:0 0 ${sp};font-size:11px;"><thead><tr><th style="border:1px solid #333;padding:2px 6px;text-align:left;">Measurement</th><th style="border:1px solid #333;padding:2px 6px;text-align:left;">Value</th></tr></thead><tbody>${body}</tbody></table>`;
     };
 
     const renderCriticalCommunication = () => {
@@ -2059,10 +2066,56 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
   if (impressionBullets.length > 0) {
     impressionList = renderImpressionSectionHtml(impressionBullets, impressionStyle, esc);
   }
+
+  // Disc-level canal AP table from spinal_measurements (LS / cervical).
+  let spinalTableHtml = "";
+  const spinalStudyKey = draft.studyId ?? worklist?.studyId ?? null;
+  if (spinalStudyKey) {
+    try {
+      const spinalRows = await db
+        .select({
+          vertebraLevel: spinalMeasurementsTable.vertebraLevel,
+          canalAP: spinalMeasurementsTable.canalAP,
+        })
+        .from(spinalMeasurementsTable)
+        .where(eq(spinalMeasurementsTable.studyId, spinalStudyKey));
+      const LUMBAR = ["L1-L2", "L2-L3", "L3-L4", "L4-L5", "L5-S1"];
+      const CERVICAL = ["C1-C2", "C2-C3", "C3-C4", "C4-C5", "C5-C6", "C6-C7", "C7-T1"];
+      const byLevel = new Map(
+        spinalRows
+          .filter((r) => r.canalAP?.trim())
+          .map((r) => [r.vertebraLevel, r.canalAP!.trim()] as const),
+      );
+      const pick = (levels: string[]) => levels.filter((l) => byLevel.has(l));
+      const lumbarHit = pick(LUMBAR);
+      const cervicalHit = pick(CERVICAL);
+      const levels = lumbarHit.length >= cervicalHit.length && lumbarHit.length > 0
+        ? LUMBAR
+        : cervicalHit.length > 0
+          ? CERVICAL
+          : [];
+      if (levels.some((l) => byLevel.has(l))) {
+        const title = levels[0].startsWith("C")
+          ? "CERVICAL CANAL AP DIAMETER AT C1 TO C7 LEVELS"
+          : "LUMBAR CANAL AP DIAMETER AT L1 TO L5 LEVELS";
+        const th = levels.map((l) => `<th style="border:1px solid #000;padding:2px 6px;font-size:11px;">${esc(l)}</th>`).join("");
+        const td = levels
+          .map((l) => `<td style="border:1px solid #000;padding:2px 6px;text-align:center;font-size:11px;">${esc(byLevel.get(l) || "—")}</td>`)
+          .join("");
+        spinalTableHtml = `<div class="section-heading">${esc(title)}</div>
+<table style="border-collapse:collapse;margin:0 0 8px;width:auto;">
+  <thead><tr><th style="border:1px solid #000;padding:2px 6px;font-size:11px;">LEVEL</th>${th}</tr></thead>
+  <tbody><tr><td style="border:1px solid #000;padding:2px 6px;font-size:11px;">AP (mm)</td>${td}</tr></tbody>
+</table>`;
+      }
+    } catch { /* non-fatal */ }
+  }
+
   const bodyHtml = [
     draft.clinicalHistory?.trim() ? `<div class="section-heading">Clinical History</div><p>${esc(draft.clinicalHistory)}</p>` : "",
     techniqueHtml,
     sectionsHtml,
+    spinalTableHtml,
     impressionList,
     draft.recommendation?.trim() ? `<div class="section-heading">Recommendation</div><p>${esc(draft.recommendation)}</p>` : "",
   ].filter(Boolean).join("\n");
@@ -2919,7 +2972,7 @@ const SpinalMeasurementSchema = z.object({
   draftId: z.number().int().optional(),
   patientId: z.number().int().optional(),
   worklistId: z.number().int().optional(),
-  vertebraLevel: z.string().min(1).max(10),
+  vertebraLevel: z.string().min(1).max(12),
   canalAP: z.string().max(20).optional(),
   canalTransverse: z.string().max(20).optional(),
   canalArea: z.string().max(20).optional(),

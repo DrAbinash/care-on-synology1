@@ -229,11 +229,14 @@ export interface RadiologyPdfExportInput {
   letterhead?: CareLetterpadChrome;
   /** When false, the CARE letterpad header (logo + address) is omitted — for pre-printed letterheads. */
   showLetterpadHeader?: boolean;
+  /** Structured measurements (e.g. spine canal AP rows) for the MEASUREMENTS section. */
+  measurements?: Array<{ label: string; value: string }>;
 }
 
 export async function exportRadiologyReportToPdf(input: RadiologyPdfExportInput): Promise<void> {
   const keyImages = await fetchKeyImageDataUrls(input.dicomWebBase, input.imageRefs);
   const settings = loadPrintSettings();
+  const measurements = input.measurements?.filter((m) => m.label && m.value) ?? [];
   generateReportPDF(
     {
       patientName: input.patientName,
@@ -254,6 +257,7 @@ export async function exportRadiologyReportToPdf(input: RadiologyPdfExportInput)
       }),
       impression: input.impression.filter(Boolean).join("\n"),
       recommendation: input.recommendation || "Please correlate with clinical findings.",
+      measurements: measurements.length > 0 ? measurements : undefined,
       keyImages,
       reportTitle: input.studyName || "Radiology Report",
     },
@@ -270,6 +274,7 @@ export async function exportRadiologyReportToPdf(input: RadiologyPdfExportInput)
       },
       show: {
         ...settings.show,
+        measurements: measurements.length > 0 || settings.show.measurements,
         keyImages: keyImages.length > 0 || settings.show.keyImages,
       },
     },
