@@ -16,6 +16,10 @@ export function canHydrateDraftForPatient(
   draftPatientId: number | null | undefined,
   currentPatientId: number | null | undefined,
 ): boolean {
+  // Wait until the worklist patient is known before hydrating a draft that
+  // already carries a patientId — otherwise Patient A's draft can load while
+  // the row for B is still resolving.
+  if (draftPatientId != null && currentPatientId == null) return false;
   if (draftPatientId == null || currentPatientId == null) return true;
   return Number(draftPatientId) === Number(currentPatientId);
 }

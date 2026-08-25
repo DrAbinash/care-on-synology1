@@ -55,7 +55,9 @@ export function useRadiologyDraftId(studyId: number | null | undefined) {
    *  updates this same row instead of creating another one. */
   const captureSavedDraftId = useCallback((id: number) => {
     setDraftId(id);
-  }, []);
+    // Stamp adopt so a concurrent query adoption cannot clobber this save.
+    if (studyId) adoptedForRef.current = studyId;
+  }, [studyId]);
 
   return {
     draftId,
