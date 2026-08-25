@@ -128,15 +128,24 @@ export default function SpineCanalApBox({
   if (!segment || levels.length === 0) return null;
 
   function setLevel(level: string, raw: string) {
-    const cleaned = parseCanalApNumber(raw) || raw.replace(/[^\d.,\-]/g, "");
+    // Allow in-progress decimals ("11.") — only strip illegal chars while typing.
+    const cleaned = raw.replace(/[^\d.,\-]/g, "").replace(/,/g, ".");
     setValues((prev) => ({ ...prev, [level]: cleaned }));
+  }
+
+  function commitLevel(level: string) {
+    setValues((prev) => {
+      const parsed = parseCanalApNumber(prev[level] ?? "");
+      if (parsed === (prev[level] ?? "")) return prev;
+      return { ...prev, [level]: parsed };
+    });
   }
 
   async function saveAll() {
     setSaving(true);
     try {
       for (const level of levels) {
-        const canalAP = values[level]?.trim();
+        const canalAP = parseCanalApNumber(values[level] ?? "") || values[level]?.trim();
         if (!canalAP) continue;
         await api.post("/api/radiology/report-generator/spinal-measurements", {
           studyId,
@@ -253,6 +262,7 @@ export default function SpineCanalApBox({
                     inputMode="decimal"
                     data-testid={`canal-ap-${l}`}
                     onChange={(e) => setLevel(l, e.target.value)}
+                    onBlur={() => commitLevel(l)}
                     onFocus={() => {
                       /* keep capture sticky until assigned */
                     }}
