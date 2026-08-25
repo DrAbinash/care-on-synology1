@@ -379,8 +379,9 @@ export function resolveDisplayAge(
   patientMaster: { dateOfBirth?: string | null; ageValue?: number | null; ageUnit?: string | null } | null | undefined,
   dicomAge?: string | null,
 ): string {
-  const fromErp = firstNonEmptyAge(erp?.age, erp?.patientAge);
-  if (fromErp) return fromErp;
+  // Patient master (registration) wins when present — worklist/DICOM ages are
+  // often stale or wrong (e.g. modality age tag), which showed as incorrect
+  // AGE/SEX in the reporting demography block.
   if (patientMaster) {
     const fromMaster = formatAgeForPrint({
       ...patientMaster,
@@ -388,5 +389,7 @@ export function resolveDisplayAge(
     });
     if (fromMaster) return fromMaster;
   }
+  const fromErp = firstNonEmptyAge(erp?.age, erp?.patientAge);
+  if (fromErp) return fromErp;
   return dicomAgeToDisplay(dicomAge);
 }

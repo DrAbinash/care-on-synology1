@@ -517,7 +517,8 @@ export function generateReportPDF(
       if (name) {
         doc.setFont(font, "bold");
         doc.text("NAME:", leftX, cursor);
-        doc.setFont(font, "normal");
+        // Patient name always bold (clinic letter-pad convention).
+        doc.setFont(font, "bold");
         doc.text(name, leftX + doc.getTextWidth("NAME: ") + 1, cursor, {
           maxWidth: Math.max(40, rightEdge - leftX - 55),
         });
@@ -528,7 +529,7 @@ export function generateReportPDF(
         const full = `AGE/SEX: ${ageSex}`;
         doc.text(full, rightEdge, cursor, { align: "right" });
       }
-      if (name || ageSex) cursor += lineH + 0.8;
+      if (name || ageSex) cursor += lineH + 0.5;
 
       if (refBy) {
         doc.setFont(font, "bold");
@@ -544,15 +545,16 @@ export function generateReportPDF(
         const full = `DATE: ${dateStr}`;
         doc.text(full, rightEdge, cursor, { align: "right" });
       }
-      if (refBy || (settings.header.showDate !== false && dateStr)) cursor += lineH + 0.8;
-      cursor += 1.5;
+      if (refBy || (settings.header.showDate !== false && dateStr)) cursor += lineH + 0.4;
+      // Tight gap between REFD/DATE row and the double rule under demography.
+      cursor += 0.6;
 
       doc.setDrawColor(0);
       doc.setLineWidth(0.55);
       doc.line(m.left, cursor, pageW - m.right, cursor);
       doc.setLineWidth(0.25);
       doc.line(m.left, cursor + 1.1, pageW - m.right, cursor + 1.1);
-      cursor += 5;
+      cursor += 3.2;
     }
     return cursor;
   };
@@ -570,7 +572,10 @@ export function generateReportPDF(
   doc.line(pageW / 2 - titleW / 2, y + 0.9, pageW / 2 + titleW / 2, y + 0.9);
   y += lineH + 2.5;
 
-  const contentBottom = pageH - m.bottom - 18;
+  // Reserve a strip above the services bar for name + degree so signature
+  // never orphans alone onto page 2 (Gulu Devi / long MRI reports).
+  const SIG_RESERVE_MM = settings.signature.enabled ? 18 : 0;
+  const contentBottom = pageH - m.bottom - 18 - SIG_RESERVE_MM;
 
   const keyImageList = (report.keyImages ?? []).filter(Boolean);
   const sideRail =
@@ -584,11 +589,14 @@ export function generateReportPDF(
   const railX = pageW - m.right - railW;
   let railStartY = 0;
   let railBottomY = 0;
+  /** Page index (1-based) where the report body last drew — signature stays here. */
+  let bodyPage = 1;
 
   const ensureSpace = (needed: number) => {
     if (y + needed > contentBottom) {
       doc.addPage();
       y = drawLetterPadChrome();
+      bodyPage = doc.getNumberOfPages();
     }
   };
 
@@ -674,31 +682,35 @@ export function generateReportPDF(
     railBottomY = drawSideRailKeyImages(
       doc, keyImageList, railX, railW, railTop, contentBottom, font, fs.heading,
     );
-    y = Math.max(y, railBottomY);
+    // Do not let the rail push body Y into the signature reserve — images
+    // stay in the reserved column; signature stays above the blue footer.
+    y = Math.max(y, Math.min(railBottomY, contentBottom));
   }
 
-  // ── SIGNATURE (right, doctor name in red) — sits under report body, not
-  // forced to the page foot (that left a large empty dead zone on short reports).
+  // ── SIGNATURE — lower-right above the blue services bar on the body page.
+  // Never call ensureSpace here: that orphaned name/degree onto a blank page 2.
   if (settings.signature.enabled) {
     const sig = settings.signature;
-    ensureSpace(28);
-    y += 10;
+    doc.setPage(bodyPage);
+    const footerTop = pageH - m.bottom - 18;
+    const sigBlockH = sig.imageDataUrl ? 22 : 14;
+    const parkedY = footerTop - sigBlockH;
+    // Prefer flowing under content when there is room; otherwise park above footer.
+    let sigY = y + 6 <= parkedY ? y + 6 : parkedY;
     const sigRight = pageW - m.right;
 
     if (sig.imageDataUrl) {
       try {
-        doc.addImage(sig.imageDataUrl, "PNG", sigRight - 54, y, 36, 14);
-        y += 12;
+        doc.addImage(sig.imageDataUrl, "PNG", sigRight - 54, sigY, 36, 14);
+        sigY += 12;
       } catch { /* skip */ }
-    } else {
-      y += 6;
     }
 
     doc.setFont(font, "bold");
     doc.setFontSize(fs.body + 0.5);
     doc.setTextColor(185, 28, 28);
-    doc.text(sig.name, sigRight, y, { align: "right" });
-    y += lineH;
+    doc.text(sig.name, sigRight, sigY, { align: "right" });
+    sigY += lineH;
 
     doc.setTextColor(20, 20, 20);
     doc.setFont(font, "normal");
@@ -707,9 +719,9 @@ export function generateReportPDF(
     if (sig.showQualification && sig.qualification) details.push(sig.qualification);
     if (sig.showRegistrationNo && sig.registrationNo) details.push(`Reg. No: ${sig.registrationNo}`);
     if (details.length) {
-      doc.text(details.join(", "), sigRight, y, { align: "right" });
-      y += lineH;
+      doc.text(details.join(", "), sigRight, sigY, { align: "right" });
     }
+    y = Math.max(y, sigY);
   }
 
   // ── SERVICES BAR + DISCLAIMER (every page) — letter-pad two-row navy strip ──

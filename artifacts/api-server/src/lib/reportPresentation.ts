@@ -321,13 +321,13 @@ function letterpadPatientBlockHtml(rows: ReportPatientRow[]): string {
   const refDr = rowByLabel(rows, "referring doctor", "ref. doctor", "ref by", "ref. by", "refd. by");
   const dateRaw = rowByLabel(rows, "study date", "date");
   const dateStr = formatReportDateShort(dateRaw) || dateRaw;
-  const cell = (label: string, value: string) =>
+  const cell = (label: string, value: string, boldValue = false) =>
     value
-      ? `<strong>${escapeHtml(label)}</strong> ${escapeHtml(value)}`
+      ? `<strong>${escapeHtml(label)}</strong> ${boldValue ? `<strong>${escapeHtml(value)}</strong>` : escapeHtml(value)}`
       : "";
   return `<table class="letterpad-demo">
     <tr>
-      <td class="ld-left">${cell("NAME:", name)}</td>
+      <td class="ld-left">${cell("NAME:", name, true)}</td>
       <td class="ld-right">${cell("AGE/SEX:", ageSex)}</td>
     </tr>
     <tr>
@@ -389,10 +389,17 @@ function keyImagesHtml(
   placement: "inline" | "side-panel",
   opts: { heading?: string; extraClass?: string } = {},
 ): string {
-  if (images.length === 0) return "";
+  // Skip empty-src placeholders that paint a tall empty navy KEY IMAGES box
+  // when Orthanc hydrate has not filled pixels yet. Keep cells that have a
+  // data-URL or http(s) src; sop-only placeholders are omitted from print.
+  const printable = images.filter((img) => {
+    const src = String(img.src ?? "").trim();
+    return src.length > 32 || src.startsWith("data:") || /^https?:\/\//i.test(src);
+  });
+  if (printable.length === 0) return "";
   const heading = opts.heading ?? (placement === "side-panel" ? "KEY IMAGES" : "SELECTED IMAGES");
   const useViewport = placement === "side-panel";
-  const cells = [...images]
+  const cells = [...printable]
     .sort((a, b) => a.displayOrder - b.displayOrder)
     .map((img, i) => {
       const alt = escapeHtml(img.caption || `Image ${i + 1}`);
@@ -409,7 +416,7 @@ function keyImagesHtml(
     })
     .join("");
   const sideCls = placement === "side-panel" ? "image-panel-side image-panel-keyrail" : "image-panel-inline";
-  const countAttr = placement === "side-panel" ? ` data-image-count="${images.length}"` : "";
+  const countAttr = placement === "side-panel" ? ` data-image-count="${printable.length}"` : "";
   return `
       <div class="image-panel ${sideCls}${opts.extraClass ? ` ${opts.extraClass}` : ""}"${countAttr}>
         <div class="image-panel-heading">${heading}</div>
@@ -885,7 +892,7 @@ export function renderReportDocument(
     }
 
     /* ── Footer + signatures slots ── */
-    .sigs { display: flex; gap: 30px; justify-content: ${sigJustify}; margin-top: 26px; break-inside: avoid; page-break-after: avoid; clear: both; }
+    .sigs { display: flex; gap: 30px; justify-content: ${sigJustify}; margin-top: 10px; break-inside: avoid; page-break-after: avoid; clear: both; }
     .sigbox { ${slotCss(ty.signature)} width: 200px; text-align: center; }
     .sigbox .sigimg { height: 50px; display: flex; align-items: flex-end; justify-content: center; }
     .sigbox .sigimg img { max-height: 50px; max-width: 180px; object-fit: contain; }
@@ -926,14 +933,24 @@ export function renderReportDocument(
     .letterpad-demo .ld-right { text-align: right; width: 38%; white-space: nowrap; }
     .letterpad-demo-wrap { background: transparent; border: none; padding: 2px 0 0; border-radius: 0; margin-bottom: 0; }
     .letterpad .body { font-size: 11.5px; }
-    .letterpad-demo-rule { border: none; border-top: 2.2px solid #111; border-bottom: 0.9px solid #111; height: 3.2px; margin: 6px 0 8px; }
+    .letterpad-demo-rule { border: none; border-top: 2.2px solid #111; border-bottom: 0.9px solid #111; height: 3.2px; margin: 2px 0 4px; }
     .letterpad-sheet { width: 100%; border-collapse: collapse; }
     .letterpad-sheet > thead > tr > td,
     .letterpad-sheet > tbody > tr > td,
     .letterpad-sheet > tfoot > tr > td { padding: 0; border: none; vertical-align: top; }
-    .letterpad-services { background: #0f2d6e; color: #fff; text-align: center; padding: 6px 8px; font-size: 6.5px; font-weight: 700; letter-spacing: 0.04em; line-height: 1.45; margin-top: 14px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .letterpad-services { background: #0f2d6e; color: #fff; text-align: center; padding: 6px 8px; font-size: 6.5px; font-weight: 700; letter-spacing: 0.04em; line-height: 1.45; margin-top: 8px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     .letterpad-disclaimer { font-size: 7.5px; color: #334155; text-align: center; padding: 6px 12px 4px; font-style: italic; }
     .letterpad-footer-block { break-inside: avoid; page-break-inside: avoid; page-break-before: avoid; }
+    /* Keep radiologist name/degree with the body on page 1, just above footer. */
+    .letterpad .sigs {
+      margin-top: 6px;
+      justify-content: flex-end;
+      page-break-inside: avoid;
+      page-break-before: avoid;
+      break-before: avoid;
+    }
+    .letterpad .sigbox { text-align: right; margin-left: auto; }
+    .letterpad .sigline { display: none; }
     ` : ""}
 
     /* ── Print rules (Phase 7: widows/orphans, no split images, no blank pages) ── */

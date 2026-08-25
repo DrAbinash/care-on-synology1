@@ -26,6 +26,8 @@ interface Props {
    * instead of permanently occupying the editor's height.
    */
   hideQuickSelect?: boolean;
+  /** After a Quick Select tile is applied (e.g. silent draft persist). */
+  onQuickSelectPick?: (field: Props["field"]) => void;
 }
 
 const G: Record<string, string> = { error: "✕", warning: "△", info: "◌" };
@@ -71,6 +73,7 @@ export function FindingsEditor({
   minHeight = "200px",
   showGhost = false,
   hideQuickSelect = false,
+  onQuickSelectPick,
 }: Props) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const [provenanceOpen, setProvenanceOpen] = useState(false);
@@ -139,7 +142,7 @@ export function FindingsEditor({
 
   return (
     <div className="relative w-full" data-report-field={field} data-testid={`findings-editor-${field}`}>
-      {!hideQuickSelect && <QuickSelectStrip field={field} />}
+      {!hideQuickSelect && <QuickSelectStrip field={field} onAfterPick={onQuickSelectPick} />}
       <div className="flex items-center justify-between mb-1.5">
         <label className="text-xs font-semibold uppercase tracking-wide text-emerald-600/80">{label}</label>
         <div className="flex items-center gap-2 text-[10px] text-muted-foreground">

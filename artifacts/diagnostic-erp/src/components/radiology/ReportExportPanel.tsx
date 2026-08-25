@@ -108,6 +108,9 @@ export type ReportExportPanelProps = {
   /** Toggle CARE letterpad header (logo + address) on/off for pre-printed letterheads. */
   showLetterpadHeader?: boolean;
   onShowLetterpadHeaderChange?: (v: boolean) => void;
+  /** Body font size for PDF / print layout (manual A4 fit control). */
+  bodyFontSize?: "small" | "medium" | "large";
+  onBodyFontSizeChange?: (v: "small" | "medium" | "large") => void;
   /** Live editor body merged into server print HTML (unsaved typing still prints). */
   livePrintBodyHtml?: string;
   findingsText?: string;
@@ -146,6 +149,8 @@ export default function ReportExportPanel({
   dicomWebBase = null,
   showLetterpadHeader = true,
   onShowLetterpadHeaderChange,
+  bodyFontSize = "medium",
+  onBodyFontSizeChange,
   livePrintBodyHtml = "",
   findingsText = "",
   impressionText = "",
@@ -379,12 +384,15 @@ export default function ReportExportPanel({
                 size="sm"
                 variant="ghost"
                 className="h-6 text-[10px]"
-                title="Enlarge report layout preview (does not print)"
-                onClick={() => handlePrintPreviewOrEnlarge()}
-                data-testid="report-layout-preview-enlarge-btn"
+                title="Body font size for PDF / print (smaller fits more on one A4)"
+                onClick={() => {
+                  const next =
+                    bodyFontSize === "small" ? "medium" : bodyFontSize === "medium" ? "large" : "small";
+                  onBodyFontSizeChange?.(next);
+                }}
+                data-testid="report-layout-font-size"
               >
-                <Maximize2 className="h-3 w-3 mr-1" />
-                Print Preview
+                Font {bodyFontSize === "small" ? "S" : bodyFontSize === "large" ? "L" : "M"}
               </Button>
               <Button
                 size="sm"
@@ -451,13 +459,13 @@ export default function ReportExportPanel({
             </div>
             <button
               type="button"
-              className="absolute bottom-2 right-2 z-10 text-[10px] font-medium px-1.5 py-0.5 rounded bg-slate-900/70 text-white hover:bg-slate-900 shadow-sm"
+              className="absolute bottom-2 right-2 z-10 inline-flex items-center justify-center rounded bg-slate-900/70 p-1.5 text-white hover:bg-slate-900 shadow-sm"
               onClick={() => handlePrintPreviewOrEnlarge()}
               title="Open print preview in new window"
               data-testid="report-layout-preview-enlarge"
-              aria-label="Print preview"
+              aria-label="Print Preview"
             >
-              Print Preview
+              <Maximize2 className="h-3.5 w-3.5" />
             </button>
           </div>
         </div>
