@@ -227,11 +227,11 @@ export default function SpineCanalApBox({
             <Ruler className="h-3 w-3" />
             Canal AP
             <Badge variant="outline" className="text-[9px] h-4 px-1 border-emerald-300 text-emerald-700">
-              {segment === "cervical" ? "Cervical" : "LS Spine"}
+              {activeSegment === "cervical" ? "Cervical" : "LS Spine"}
             </Badge>
           </div>
           <p className="text-[9px] text-muted-foreground mt-0.5 leading-snug">
-            {canalTableTitle(segment)}. Enter mm or Pull from labeled viewer calipers. Capture assigns the latest viewer measure to a level.
+            {canalTableTitle(activeSegment)}. Enter mm or Pull from labeled viewer calipers. Capture assigns the latest viewer measure to a level.
           </p>
         </div>
       </div>
