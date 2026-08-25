@@ -98,6 +98,7 @@ import {
   type ReportDemography,
 } from "@/lib/reportDemography";
 import type { PrintClinic } from "@/lib/reportPdfGenerator";
+import { loadPrintSettings, savePrintSettings } from "@/lib/reportPdfGenerator";
 import {
   REPORT_LAYOUT_OPTIONS,
   type ReportLayoutKey,
@@ -370,6 +371,18 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const [sectionSpacing, setSectionSpacing] = useState<ReportSectionSpacing>("spaced");
   const [impressionStyle, setImpressionStyle] = useState<ReportImpressionStyle>("bulleted");
   const [showLetterpadHeader, setShowLetterpadHeader] = useState(true);
+  const [bodyFontSize, setBodyFontSize] = useState<"small" | "medium" | "large">(() => {
+    try {
+      const raw = localStorage.getItem("radiology_print_settings");
+      if (!raw) return "medium";
+      const parsed = JSON.parse(raw) as { fontSize?: string };
+      if (parsed.fontSize === "small" || parsed.fontSize === "medium" || parsed.fontSize === "large") {
+        return parsed.fontSize;
+      }
+    } catch { /* ignore */ }
+    return "medium";
+  });
+  const [allowEditSigned, setAllowEditSigned] = useState(false);
 
   // Sync report preferences from server (heading case, spacing, impression, header toggle).
   // The server is the source of truth; local state is the working copy for the session.
@@ -490,10 +503,20 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
 
   // 2. Study lock (claim/heartbeat/release)
   const studyLock = useStudyLock(studyId, {
-    enabled: Boolean(workflow.currentRow && workflow.currentRow.status !== "REPORT_FINAL" && workflow.currentRow.status !== "DELIVERED") as any,
+    enabled: Boolean(
+      workflow.currentRow
+      && (
+        allowEditSigned
+        || (workflow.currentRow.status !== "REPORT_FINAL" && workflow.currentRow.status !== "DELIVERED")
+      ),
+    ) as any,
   });
   const isLocked = studyLock.status === "locked-by-other";
   const lockLost = studyLock.status === "expired-lost" || studyLock.status === "connection-lost";
+  /** Trial-phase unlock: edit a signed report in place (editors + draft save). */
+  const contentLocked =
+    isLocked
+    || ((isFinalized || workflow.currentRow?.status === "REPORT_FINAL") && !allowEditSigned);
 
   // 3. Draft ID (server-side persistence)
   const { draftId, existingDraft, captureSavedDraftId, isLoadingExistingDraft } = useRadiologyDraftId(studyId ?? null);
@@ -509,7 +532,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       impression: [impressionText],
       recommendation: recommendationText,
     },
-    enabled: workflow.currentRow?.status !== "REPORT_FINAL",
+    enabled: allowEditSigned || workflow.currentRow?.status !== "REPORT_FINAL",
   });
 
   // 5. Finalize flow (promise-based sign dialog)
@@ -1313,7 +1336,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   ]);
 
   const handleStartReport = useCallback(() => {
-    if (studyLock.status === "locked-by-other" || isFinalized) return;
+    if (contentLocked) return;
     const fields = studySetupSetters.readFields();
     startReportUndoRef.current = {
       ...fields,
@@ -1334,7 +1357,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     }
     setCanUndoStartReport(true);
   }, [
-    studyLock.status, isFinalized, studySetupSetters, findingsMap, useStructured, studySetup,
+    contentLocked, studySetupSetters, findingsMap, useStructured, studySetup,
   ]);
 
   const undoStartReport = useCallback(() => {
@@ -1356,9 +1379,11 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   }, [studySetup, toast]);
 
   const handleGenerateLocalImpression = useCallback(() => {
-    if (studyLock.status === "locked-by-other" || isFinalized) return;
+    if (contentLocked) return;
+    // Always pass free-text findings so Generate Impression works even when
+    // structured cards are all marked Normal (common "not working" case).
     const lines = generateLocalImpression(
-      useStructured ? findingsMapToText(findingsMap) : findingsText,
+      findingsText || (useStructured ? findingsMapToText(findingsMap) : ""),
       useStructured ? findingsMap : undefined,
     );
     if (lines.length === 0) {
@@ -1371,13 +1396,13 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     }
     useWorkspace.getState().setField("impression", lines.join("\n"));
     toast({ title: "Impression generated", description: `${lines.length} point${lines.length > 1 ? "s" : ""} from findings` });
-  }, [studyLock.status, isFinalized, useStructured, findingsMap, findingsText, impressionText, toast]);
+  }, [contentLocked, useStructured, findingsMap, findingsText, impressionText, toast]);
 
   // Confirmed: replace impression
   const confirmedReplaceImpression = useCallback(() => {
     setConfirmImpressionReplace(false);
     const lines = generateLocalImpression(
-      useStructured ? findingsMapToText(findingsMap) : findingsText,
+      findingsText || (useStructured ? findingsMapToText(findingsMap) : ""),
       useStructured ? findingsMap : undefined,
     );
     useWorkspace.getState().setField("impression", lines.join("\n"));
@@ -1410,6 +1435,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     setCriticalNote("");
     setChecklistComm({ phoned: false, annotated: false, dispatched: false });
     setLastSavedAt(null);
+    setAllowEditSigned(false);
   }, [selectStudy, navigate]);
 
   const goNextStudy = useCallback(() => {
@@ -3065,7 +3091,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
           })()}
           {/* Finalize */}
           <Button size="sm" className="h-7 px-3 text-xs bg-emerald-600 hover:bg-emerald-700"
-            onClick={finalizeReport} disabled={!studyId || isFinalized || isLocked || pcpndtBlocked}
+            onClick={finalizeReport} disabled={!studyId || isLocked || (!allowEditSigned && (isFinalized || workflow.currentRow?.status === "REPORT_FINAL")) || pcpndtBlocked}
             title={pcpndtBlocked ? "Complete PCPNDT Form F before finalize" : undefined}>
             <ShieldCheck className="h-3.5 w-3.5 mr-1" />
             {isFinalized ? "Signed" : "Finalize"}
@@ -3613,7 +3639,13 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                     </div>
                     <div className="flex items-center gap-2" data-testid="canonical-technique-editor">
                       <div className="flex-1">
-                        <FindingsEditor field="technique" label="Technique" minHeight="60px" placeholder="Modality, sequences, contrast..." />
+                        <FindingsEditor
+                          field="technique"
+                          label="Technique"
+                          minHeight="60px"
+                          placeholder="Modality, sequences, contrast..."
+                          onQuickSelectPick={() => { void saveDraft({ silent: true }); }}
+                        />
                       </div>
                       {!isLocked && !isFinalized && (
                         <FieldCareMic voice={voiceSession} target="technique" />
@@ -3813,7 +3845,11 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       {/* Findings Quick Select — the full existing tile set,
                           scoped to the region chosen in the Region section */}
                       <FindingsToolDrawer id="quickSelect" active={activeFindingsTool === "quickSelect"}>
-                        <QuickSelectStrip field="findings" bodyPart={studySetup.matchedStudyRegion} />
+                        <QuickSelectStrip
+                          field="findings"
+                          bodyPart={studySetup.matchedStudyRegion}
+                          onAfterPick={() => { void saveDraft({ silent: true }); }}
+                        />
                       </FindingsToolDrawer>
 
                       {/* Quick Add / Clinic Quick Select — region-aware from the
@@ -4150,8 +4186,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       onPrintLikeFinal={handlePrintLikeFinal}
                       onEditSection={focusReportField}
                       onFinalize={finalizeReport}
-                      finalizeDisabled={!studyId || isFinalized || isLocked || pcpndtBlocked}
-                      finalizeLabel={isFinalized ? "Signed" : "Finalize"}
+                      finalizeDisabled={!studyId || isLocked || (!allowEditSigned && (isFinalized || workflow.currentRow?.status === "REPORT_FINAL")) || pcpndtBlocked}
+                      finalizeLabel={isFinalized && !allowEditSigned ? "Signed" : allowEditSigned ? "Re-finalize" : "Finalize"}
                       exportingWord={exportingWord}
                       exportingPdf={exportingPdf}
                       printingLikeFinal={printingLikeFinal}
@@ -4160,6 +4196,14 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       dicomWebBase={BROWSER_DICOMWEB_BASE}
                       showLetterpadHeader={showLetterpadHeader}
                       onShowLetterpadHeaderChange={setShowLetterpadHeader}
+                      bodyFontSize={bodyFontSize}
+                      onBodyFontSizeChange={(v) => {
+                        setBodyFontSize(v);
+                        try {
+                          const cur = loadPrintSettings();
+                          savePrintSettings({ ...cur, fontSize: v });
+                        } catch { /* ignore */ }
+                      }}
                       livePrintBodyHtml={livePrintBodyHtml}
                       findingsText={findingsText}
                       impressionText={impressionText}
@@ -4461,12 +4505,32 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       )}
 
       {/* ─── Zero-Click Read Loop success toast ─── */}
-      {isFinalized && (
+      {(isFinalized || workflow.currentRow?.status === "REPORT_FINAL") && (
         <div className="fixed bottom-16 left-1/2 -translate-x-1/2 z-30 animate-in slide-in-from-bottom-2">
           <div className="flex items-center gap-2 rounded-full bg-gradient-to-r from-emerald-500 via-emerald-600 to-emerald-700 px-4 py-2 text-white shadow-2xl shadow-emerald-500/40 ring-2 ring-emerald-300/50">
             <ShieldCheck className="h-4 w-4" />
-            <span className="text-sm font-semibold">Report signed & delivered</span>
-            {readingSession.enabled && <><span className="text-[10px] opacity-80">· auto-advancing...</span>
+            <span className="text-sm font-semibold">
+              {allowEditSigned ? "Trial edit unlocked" : "Report signed & delivered"}
+            </span>
+            {!allowEditSigned && (
+              <button
+                type="button"
+                className="ml-1 rounded-full bg-white/20 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide hover:bg-white/30"
+                data-testid="trial-edit-signed-report"
+                title="Unlock editors to fix this signed report (trial)"
+                onClick={() => {
+                  setAllowEditSigned(true);
+                  useWorkspace.setState({ isFinalized: false });
+                  toast({
+                    title: "Editing unlocked",
+                    description: "Trial mode — edit, save draft, and re-finalize when ready.",
+                  });
+                }}
+              >
+                Edit report
+              </button>
+            )}
+            {readingSession.enabled && !allowEditSigned && <><span className="text-[10px] opacity-80">· auto-advancing...</span>
             <ChevronRight className="h-4 w-4 animate-pulse" /></>}
           </div>
         </div>

@@ -89,8 +89,11 @@ describe("dicomAgeToDisplay", () => {
 });
 
 describe("resolveDisplayAge", () => {
-  it("ERP age wins over DICOM", () => {
+  it("ERP age wins over DICOM when master absent", () => {
     expect(resolveDisplayAge({ age: "50 Yrs" }, null, "050Y")).toBe("50 Yrs");
+  });
+  it("prefers patient-master age over worklist/ERP age", () => {
+    expect(resolveDisplayAge({ age: "12 Yrs" }, { ageValue: 60, ageUnit: "years" }, "012Y")).toBe("60 Yrs");
   });
   it("patient master ageValue wins over DICOM", () => {
     expect(resolveDisplayAge({ age: "" }, { ageValue: 8, ageUnit: "months" }, "050Y")).toBe("8 Mo");

@@ -159,9 +159,16 @@ export async function hydratePrintPreviewKeyImages(
 ): Promise<string> {
   if (!html || !dicomWebBase || refs.length === 0) return html;
   const alreadyInlined = countInlinedDicomImages(html);
-  // Re-hydrate when the rail is missing pixels, or when fewer inlined images
-  // than selected refs (server budget/skip left black empty cells).
-  if (!opts?.force && alreadyInlined > 0 && alreadyInlined >= Math.min(refs.length, opts?.limit ?? 6)) {
+  const pendingEmpty =
+    /dicom-img-pending|image-cell-pending|class="dicom-img"[^>]*src=""|src=""[^>]*class="dicom-img"/.test(html);
+  // Re-hydrate when the rail is missing pixels, has pending placeholders, or
+  // when fewer inlined images than selected refs (server budget/skip left blanks).
+  if (
+    !opts?.force
+    && !pendingEmpty
+    && alreadyInlined > 0
+    && alreadyInlined >= Math.min(refs.length, opts?.limit ?? 6)
+  ) {
     return html;
   }
 
@@ -187,7 +194,6 @@ export async function hydratePrintPreviewKeyImages(
       /(<\/div>)(\s*)(<\/div>\s*(?:<div class="sigs"|<\/td>))/ ,
       `$1$2${rail}$3`,
     );
-    // Only accept if we actually inserted the rail once near content-area.
     if (withRail.includes("image-panel-keyrail") || withRail.includes('data-image-count=')) {
       return withRail;
     }

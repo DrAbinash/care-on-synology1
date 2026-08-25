@@ -59,6 +59,7 @@ const LABELS: Record<QuickSelectField, string> = {
 export function QuickSelectStrip({
   field,
   bodyPart,
+  onAfterPick,
 }: {
   field: QuickSelectField;
   /**
@@ -69,6 +70,8 @@ export function QuickSelectStrip({
    * section makes the tiles follow that choice.
    */
   bodyPart?: string | null;
+  /** Fired after a tile is merged into the editor (e.g. silent draft save). */
+  onAfterPick?: (field: QuickSelectField) => void;
 }) {
   const tiles = useWorkspaceSelector((s) => s.quickSelectTiles);
   const study = useWorkspaceSelector((s) => s.studies.find((x) => x.id === s.activeStudyId));
@@ -185,6 +188,7 @@ export function QuickSelectStrip({
                 ws.mergeField(field, tile.sentence, "quick-select");
               }
               incUsage(tile.id);
+              onAfterPick?.(field);
             }}
             onFav={() => toggleFav(tile.id)}
             onEdit={() => openEditor(tile, field)}

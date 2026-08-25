@@ -23,10 +23,21 @@ describe("ReportExportPanel — enlarge preview before finalize", () => {
     expect(src).toContain("Review before finalize");
   });
 
-  it("exposes Enlarge actions in the toolbar", () => {
-    expect(src).toContain('data-testid="report-layout-preview-enlarge-btn"');
+  it("exposes a single labeled Print Preview in the header toolbar", () => {
     expect(src).toContain('data-testid="report-layout-preview-enlarge-header"');
     expect(src).toMatch(/report-layout-preview-enlarge-header[\s\S]{0,400}Print Preview/);
+    // Duplicate labeled Print Preview in the Layout row was removed (issue #7).
+    expect(src).not.toContain('data-testid="report-layout-preview-enlarge-btn"');
+  });
+
+  it("keeps an icon-only enlarge control on the compact preview", () => {
+    expect(src).toContain('data-testid="report-layout-preview-enlarge"');
+    expect(src).toContain('aria-label="Print Preview"');
+  });
+
+  it("exposes a manual body font-size control in Layout / Export", () => {
+    expect(src).toContain('data-testid="report-layout-font-size"');
+    expect(src).toContain("onBodyFontSizeChange");
   });
 
   it("Print Preview enlarges the iframe and does not invoke Print like final", () => {

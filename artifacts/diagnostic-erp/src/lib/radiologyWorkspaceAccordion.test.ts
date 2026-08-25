@@ -120,8 +120,8 @@ describe("Findings workspace — macros, hero editor, one drawer at a time", () 
 
   it("keeps the editor as the hero by moving its tile wall into a drawer", () => {
     expect(workspace).toContain("hideQuickSelect");
-    expect(findingsEditor).toContain("{!hideQuickSelect && <QuickSelectStrip field={field} />}");
-    expect(workspace).toContain('<QuickSelectStrip field="findings"');
+    expect(findingsEditor).toContain("{!hideQuickSelect && <QuickSelectStrip field={field} onAfterPick={onQuickSelectPick} />}");
+    expect(workspace).toMatch(/<QuickSelectStrip[\s\S]*?field="findings"/);
   });
 
   it("scopes Findings Quick Select tiles to the selected region", () => {
@@ -209,7 +209,7 @@ describe("Sources / provenance is compact and read-only", () => {
 });
 
 describe("no reporting feature was deleted by the re-layout", () => {
-  const preserved: Array<[string, string]> = [
+  const preserved: Array<[string, string | RegExp]> = [
     ["Demography card", "<ReportDemographyCard"],
     ["Referring doctor quick select", "<ReferringDoctorQuickSelect"],
     ["Start Report", 'data-testid="start-report-banner"'],
@@ -232,7 +232,7 @@ describe("no reporting feature was deleted by the re-layout", () => {
     ["Structured findings cards", 'data-testid="structured-findings-cards"'],
     ["Highlight editor", "<FindingsHighlightEditor"],
     ["Findings editor", 'field="findings"'],
-    ["Findings Quick Select", '<QuickSelectStrip field="findings"'],
+    ["Findings Quick Select", /<QuickSelectStrip[\s\S]*?field="findings"/],
     ["Quick Add / Clinic Quick Select", "<QuickFindingsPanel"],
     ["Structured format panel", "<StructuredFormatPanel"],
     ["Prior comparison", "<PriorComparisonToolbar"],
@@ -252,7 +252,8 @@ describe("no reporting feature was deleted by the re-layout", () => {
 
   for (const [feature, marker] of preserved) {
     it(`still mounts ${feature}`, () => {
-      expect(workspace).toContain(marker);
+      if (marker instanceof RegExp) expect(workspace).toMatch(marker);
+      else expect(workspace).toContain(marker);
     });
   }
 

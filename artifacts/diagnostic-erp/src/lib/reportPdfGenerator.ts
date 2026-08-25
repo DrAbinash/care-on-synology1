@@ -333,7 +333,7 @@ function drawNumberedImpression(
   return y;
 }
 
-/** Key images beside report text — extreme-right rail, square ports, tight 2.5mm navy frame. */
+/** Key images beside report text — extreme-right rail, square ports, equal frame pad. */
 function drawSideRailKeyImages(
   doc: jsPDF,
   images: string[],
@@ -345,27 +345,29 @@ function drawSideRailKeyImages(
   headingSize: number,
 ): number {
   if (images.length === 0 || railW <= 8) return startY;
-  const framePad = 2.5; // 2–3mm symmetrical blue/navy border around the stack
+  const framePad = 2.5; // equal L/R (and top/bottom) navy frame around the stack
   const gap = 1.4;
   const headingH = 5;
   const innerW = Math.max(10, railW - 2 * framePad);
   const avail = Math.max(20, contentBottom - startY - headingH - 2 * framePad);
-  // Square cells sized to inner rail width; cap so they fit on page 1 with the report.
+  // Cap square for page fit, then shrink the navy panel to that square so
+  // left/right framePad stay equal (no leftover blue band on the right).
   const square = Math.min(innerW, 32);
   const maxCells = Math.max(1, Math.floor((avail + gap) / (square + gap)));
   const shown = images.slice(0, Math.min(images.length, maxCells));
   const stackH = headingH + shown.length * square + gap * Math.max(0, shown.length - 1);
   const frameH = stackH + 2 * framePad;
+  const panelW = square + 2 * framePad;
+  const panelX = railX + Math.max(0, railW - panelW);
 
-  // Tight navy panel — only as tall/wide as the image stack + frame pad (no empty blue band).
   doc.setFillColor(15, 23, 42); // #0f172a
-  doc.roundedRect(railX, startY, railW, frameH, 1.2, 1.2, "F");
+  doc.roundedRect(panelX, startY, panelW, frameH, 1.2, 1.2, "F");
   doc.setDrawColor(59, 130, 246); // #3b82f6 accent edge
   doc.setLineWidth(0.35);
-  doc.roundedRect(railX, startY, railW, frameH, 1.2, 1.2, "S");
+  doc.roundedRect(panelX, startY, panelW, frameH, 1.2, 1.2, "S");
 
   let imgY = startY + framePad;
-  const imgX = railX + framePad;
+  const imgX = panelX + framePad;
   doc.setFont(font, "bold");
   doc.setFontSize(headingSize - 0.5);
   doc.setTextColor(255, 255, 255);
@@ -375,8 +377,6 @@ function drawSideRailKeyImages(
     if (!img) continue;
     try {
       const ext = img.startsWith("data:image/jpeg") ? "JPEG" : "PNG";
-      // Square black port; letterbox the frame (contain) so MRI slices are not
-      // horizontally stretched to fill the rail width.
       doc.setFillColor(0, 0, 0);
       doc.rect(imgX, imgY, square, square, "F");
       const props = doc.getImageProperties(img);
@@ -385,6 +385,7 @@ function drawSideRailKeyImages(
       const scale = Math.min(square / iw, square / ih);
       const dw = iw * scale;
       const dh = ih * scale;
+      // Center DICOM pixels inside the square port (equal letterbox if needed).
       const ox = imgX + (square - dw) / 2;
       const oy = imgY + (square - dh) / 2;
       doc.addImage(img, ext, ox, oy, dw, dh);
@@ -517,7 +518,8 @@ export function generateReportPDF(
       if (name) {
         doc.setFont(font, "bold");
         doc.text("NAME:", leftX, cursor);
-        doc.setFont(font, "normal");
+        // Patient name always bold (clinic letter-pad convention).
+        doc.setFont(font, "bold");
         doc.text(name, leftX + doc.getTextWidth("NAME: ") + 1, cursor, {
           maxWidth: Math.max(40, rightEdge - leftX - 55),
         });
@@ -528,7 +530,7 @@ export function generateReportPDF(
         const full = `AGE/SEX: ${ageSex}`;
         doc.text(full, rightEdge, cursor, { align: "right" });
       }
-      if (name || ageSex) cursor += lineH + 0.8;
+      if (name || ageSex) cursor += lineH + 0.5;
 
       if (refBy) {
         doc.setFont(font, "bold");
@@ -544,15 +546,16 @@ export function generateReportPDF(
         const full = `DATE: ${dateStr}`;
         doc.text(full, rightEdge, cursor, { align: "right" });
       }
-      if (refBy || (settings.header.showDate !== false && dateStr)) cursor += lineH + 0.8;
-      cursor += 1.5;
+      if (refBy || (settings.header.showDate !== false && dateStr)) cursor += lineH + 0.4;
+      // Tight gap between REFD/DATE row and the double rule under demography.
+      cursor += 0.6;
 
       doc.setDrawColor(0);
       doc.setLineWidth(0.55);
       doc.line(m.left, cursor, pageW - m.right, cursor);
       doc.setLineWidth(0.25);
       doc.line(m.left, cursor + 1.1, pageW - m.right, cursor + 1.1);
-      cursor += 5;
+      cursor += 3.2;
     }
     return cursor;
   };
@@ -570,7 +573,10 @@ export function generateReportPDF(
   doc.line(pageW / 2 - titleW / 2, y + 0.9, pageW / 2 + titleW / 2, y + 0.9);
   y += lineH + 2.5;
 
-  const contentBottom = pageH - m.bottom - 18;
+  // Reserve a strip above the services bar for name + degree so signature
+  // never orphans alone onto page 2 (Gulu Devi / long MRI reports).
+  const SIG_RESERVE_MM = settings.signature.enabled ? 18 : 0;
+  const contentBottom = pageH - m.bottom - 18 - SIG_RESERVE_MM;
 
   const keyImageList = (report.keyImages ?? []).filter(Boolean);
   const sideRail =
@@ -584,11 +590,14 @@ export function generateReportPDF(
   const railX = pageW - m.right - railW;
   let railStartY = 0;
   let railBottomY = 0;
+  /** Page index (1-based) where the report body last drew — signature stays here. */
+  let bodyPage = 1;
 
   const ensureSpace = (needed: number) => {
     if (y + needed > contentBottom) {
       doc.addPage();
       y = drawLetterPadChrome();
+      bodyPage = doc.getNumberOfPages();
     }
   };
 
@@ -674,31 +683,35 @@ export function generateReportPDF(
     railBottomY = drawSideRailKeyImages(
       doc, keyImageList, railX, railW, railTop, contentBottom, font, fs.heading,
     );
-    y = Math.max(y, railBottomY);
+    // Do not let the rail push body Y into the signature reserve — images
+    // stay in the reserved column; signature stays above the blue footer.
+    y = Math.max(y, Math.min(railBottomY, contentBottom));
   }
 
-  // ── SIGNATURE (right, doctor name in red) — sits under report body, not
-  // forced to the page foot (that left a large empty dead zone on short reports).
+  // ── SIGNATURE — lower-right above the blue services bar on the body page.
+  // Never call ensureSpace here: that orphaned name/degree onto a blank page 2.
   if (settings.signature.enabled) {
     const sig = settings.signature;
-    ensureSpace(28);
-    y += 10;
+    doc.setPage(bodyPage);
+    const footerTop = pageH - m.bottom - 18;
+    const sigBlockH = sig.imageDataUrl ? 22 : 14;
+    const parkedY = footerTop - sigBlockH;
+    // Prefer flowing under content when there is room; otherwise park above footer.
+    let sigY = y + 6 <= parkedY ? y + 6 : parkedY;
     const sigRight = pageW - m.right;
 
     if (sig.imageDataUrl) {
       try {
-        doc.addImage(sig.imageDataUrl, "PNG", sigRight - 54, y, 36, 14);
-        y += 12;
+        doc.addImage(sig.imageDataUrl, "PNG", sigRight - 54, sigY, 36, 14);
+        sigY += 12;
       } catch { /* skip */ }
-    } else {
-      y += 6;
     }
 
     doc.setFont(font, "bold");
     doc.setFontSize(fs.body + 0.5);
     doc.setTextColor(185, 28, 28);
-    doc.text(sig.name, sigRight, y, { align: "right" });
-    y += lineH;
+    doc.text(sig.name, sigRight, sigY, { align: "right" });
+    sigY += lineH;
 
     doc.setTextColor(20, 20, 20);
     doc.setFont(font, "normal");
@@ -707,9 +720,9 @@ export function generateReportPDF(
     if (sig.showQualification && sig.qualification) details.push(sig.qualification);
     if (sig.showRegistrationNo && sig.registrationNo) details.push(`Reg. No: ${sig.registrationNo}`);
     if (details.length) {
-      doc.text(details.join(", "), sigRight, y, { align: "right" });
-      y += lineH;
+      doc.text(details.join(", "), sigRight, sigY, { align: "right" });
     }
+    y = Math.max(y, sigY);
   }
 
   // ── SERVICES BAR + DISCLAIMER (every page) — letter-pad two-row navy strip ──

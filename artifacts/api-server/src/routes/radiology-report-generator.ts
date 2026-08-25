@@ -1962,11 +1962,36 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
 
   let catalogTestName: string | null = null;
   let patientUhid: string | null = null;
+  let patientAgeDisplay: string | null = null;
+  const formatMasterAge = (p: {
+    ageValue?: number | null;
+    ageUnit?: string | null;
+    dateOfBirth?: string | null;
+  } | null | undefined): string => {
+    if (!p) return "";
+    if (p.ageValue != null && p.ageValue > 0 && p.ageUnit) {
+      if (p.ageUnit === "years" && p.ageValue <= 120) return `${p.ageValue} Yrs`;
+      if (p.ageUnit === "months") return `${p.ageValue} Mo`;
+      if (p.ageUnit === "days") return `${p.ageValue} D`;
+    }
+    const dob = String(p.dateOfBirth ?? "").trim();
+    if (!dob || dob.startsWith("1900-01-01")) return "";
+    const d = new Date(dob);
+    if (Number.isNaN(d.getTime())) return "";
+    const now = new Date();
+    let y = now.getFullYear() - d.getFullYear();
+    const m = now.getMonth() - d.getMonth();
+    if (m < 0 || (m === 0 && now.getDate() < d.getDate())) y--;
+    return y > 0 && y <= 120 ? `${y} Yrs` : "";
+  };
   if (worklist?.studyId) {
     const [linked] = await db
       .select({
         testName: testsTable.name,
         uhid: patientsTable.patientId,
+        ageValue: patientsTable.ageValue,
+        ageUnit: patientsTable.ageUnit,
+        dateOfBirth: patientsTable.dateOfBirth,
       })
       .from(radiologyStudiesTable)
       .leftJoin(testsTable, eq(testsTable.id, radiologyStudiesTable.testId))
@@ -1975,13 +2000,20 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
       .limit(1);
     catalogTestName = linked?.testName ?? null;
     patientUhid = linked?.uhid ?? null;
+    patientAgeDisplay = formatMasterAge(linked) || null;
   } else if (worklist?.patientId) {
     const [pat] = await db
-      .select({ uhid: patientsTable.patientId })
+      .select({
+        uhid: patientsTable.patientId,
+        ageValue: patientsTable.ageValue,
+        ageUnit: patientsTable.ageUnit,
+        dateOfBirth: patientsTable.dateOfBirth,
+      })
       .from(patientsTable)
       .where(eq(patientsTable.id, worklist.patientId))
       .limit(1);
     patientUhid = pat?.uhid ?? null;
+    patientAgeDisplay = formatMasterAge(pat) || null;
   }
 
   const studyTitle = (
@@ -2084,7 +2116,11 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
     },
     patientRows: [
       { label: "Patient", value: worklist?.patientName ?? "" },
-      { label: "Age / Sex", value: [worklist?.age, worklist?.sex].filter(Boolean).join(" / ") },
+      {
+        label: "Age / Sex",
+        // Prefer patient-master age over raw worklist.age (often blank → "F" only).
+        value: [patientAgeDisplay || worklist?.age, worklist?.sex].filter(Boolean).join(" / "),
+      },
       { label: "UHID", value: patientUhid ?? "" },
       { label: "Study Date", value: formatReportDateShort(worklist?.studyDate ?? null) || formattedStudyDate },
       { label: "Referring Doctor", value: ids.referringDoctor },
