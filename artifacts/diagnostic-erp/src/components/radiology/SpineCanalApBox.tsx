@@ -126,6 +126,7 @@ export default function SpineCanalApBox({
   }, [captureLevel, viewerQ.data, toast]);
 
   if (!segment || levels.length === 0) return null;
+  const activeSegment: CanalSegment = segment;
 
   function setLevel(level: string, raw: string) {
     // Allow in-progress decimals ("11.") — only strip illegal chars while typing.
@@ -205,7 +206,7 @@ export default function SpineCanalApBox({
   }
 
   function insertIntoFindings() {
-    const text = formatCanalApTableText(segment, values);
+    const text = formatCanalApTableText(activeSegment, values);
     if (!levels.some((l) => values[l]?.trim())) {
       toast({ variant: "destructive", title: "No values to insert" });
       return;
@@ -218,7 +219,7 @@ export default function SpineCanalApBox({
     <div
       className="rounded-lg border border-emerald-300/70 bg-emerald-50/30 p-2.5 space-y-2"
       data-testid="spine-canal-ap-box"
-      data-segment={segment}
+      data-segment={activeSegment}
     >
       <div className="flex items-start justify-between gap-1">
         <div>
