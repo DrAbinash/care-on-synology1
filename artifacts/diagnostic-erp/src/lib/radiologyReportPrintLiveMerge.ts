@@ -23,6 +23,34 @@ import {
 } from "./reportFieldMerge";
 import { hydratePrintPreviewKeyImages } from "./radiologyReportPdfExport";
 import { PROVENANCE_PREVIEW_CSS } from "./radiologyReportPreviewHtml";
+import { CARE_LETTERHEAD_LOGO_DATA_URL } from "./careLetterheadLogo";
+
+/**
+ * Print popups / srcDoc iframes cannot resolve `/care-….png` relative paths.
+ * Always inline the bundled CARE letter-pad mark so logo shows in Print Preview
+ * and Print like final even when the API fell back to a relative URL.
+ */
+export function ensurePrintLetterpadLogo(html: string): string {
+  if (!html?.trim()) return html;
+  let out = html;
+  // Relative / empty logo src on letterpad header img
+  out = out.replace(
+    /(<img\b[^>]*\bclass="[^"]*\blogo\b[^"]*"[^>]*\bsrc=")(\/care-diagnostics-letterhead-logo\.png|\/[^"]*|)(")/gi,
+    `$1${CARE_LETTERHEAD_LOGO_DATA_URL}$3`,
+  );
+  out = out.replace(
+    /(<img\b[^>]*\bsrc=")(\/care-diagnostics-letterhead-logo\.png|)("[^>]*\bclass="[^"]*\blogo\b)/gi,
+    `$1${CARE_LETTERHEAD_LOGO_DATA_URL}$3`,
+  );
+  // Letterpad header present but logo img missing entirely (API could not read PNG).
+  if (!/\bclass="[^"]*\blogo\b/.test(out) && /letterpad-bill|class="hdr"/.test(out)) {
+    out = out.replace(
+      /(<div class="hdr-inner[^"]*letterpad-bill[^"]*">\s*)/i,
+      `$1<img class="logo" src="${CARE_LETTERHEAD_LOGO_DATA_URL}" alt="CARE DIAGNOSTICS"/>`,
+    );
+  }
+  return out;
+}
 
 export type LivePrintBodyInput = {
   clinicalHistory: string;
@@ -249,7 +277,8 @@ export async function finalizePrintPreviewHtml(
   opts: FinalizePrintPreviewOpts,
 ): Promise<string> {
   if (!serverHtml?.trim()) return serverHtml;
-  let html = mergeLiveBodyIntoPrintHtml(serverHtml, opts.livePrintBodyHtml);
+  let html = ensurePrintLetterpadLogo(serverHtml);
+  html = mergeLiveBodyIntoPrintHtml(html, opts.livePrintBodyHtml);
   if (opts.includeProvenanceChrome !== false) {
     html = injectProvenancePreviewChrome(html, {
       findingsText: opts.findingsText,

@@ -389,34 +389,36 @@ function keyImagesHtml(
   placement: "inline" | "side-panel",
   opts: { heading?: string; extraClass?: string } = {},
 ): string {
-  // Skip empty-src placeholders that paint a tall empty navy KEY IMAGES box
-  // when Orthanc hydrate has not filled pixels yet. Keep cells that have a
-  // data-URL or http(s) src; sop-only placeholders are omitted from print.
-  const printable = images.filter((img) => {
+  // Keep cells that have pixels OR a SOP uid (client hydrate fills empty src).
+  // Drop rows with neither — those only paint blank navy boxes.
+  const usable = images.filter((img) => {
     const src = String(img.src ?? "").trim();
-    return src.length > 32 || src.startsWith("data:") || /^https?:\/\//i.test(src);
+    const hasPixels = src.length > 64 || src.startsWith("data:image/");
+    return hasPixels || Boolean(img.sopInstanceUid?.trim());
   });
-  if (printable.length === 0) return "";
+  if (usable.length === 0) return "";
   const heading = opts.heading ?? (placement === "side-panel" ? "KEY IMAGES" : "SELECTED IMAGES");
   const useViewport = placement === "side-panel";
-  const cells = [...printable]
+  const cells = [...usable]
     .sort((a, b) => a.displayOrder - b.displayOrder)
     .map((img, i) => {
       const alt = escapeHtml(img.caption || `Image ${i + 1}`);
       const sop = img.sopInstanceUid ? ` data-sop-instance-uid="${escapeHtml(img.sopInstanceUid)}"` : "";
       const badge = img.isKeyImage ? `<span class="key-image-badge">★ KEY</span>` : "";
+      const src = String(img.src ?? "").trim();
+      const pending = src.length <= 64 && !src.startsWith("data:image/");
       const imgTag = useViewport
-        ? `<div class="image-viewport"><div class="image-framed" style="${framingInlineStyle(img.framing)};${framingImgInline(img.framing)}"><img src="${img.src}" class="dicom-img" alt="${alt}" /></div></div>`
-        : `<img src="${img.src}" class="dicom-img" alt="${alt}" />`;
+        ? `<div class="image-viewport"><div class="image-framed" style="${framingInlineStyle(img.framing)};${framingImgInline(img.framing)}"><img src="${pending ? "" : src}" class="dicom-img${pending ? " dicom-img-pending" : ""}" alt="${alt}" /></div></div>`
+        : `<img src="${pending ? "" : src}" class="dicom-img${pending ? " dicom-img-pending" : ""}" alt="${alt}" />`;
       return `
-        <figure class="image-cell"${sop}>
+        <figure class="image-cell${pending ? " image-cell-pending" : ""}"${sop}>
           ${badge}${imgTag}
           <figcaption class="image-caption">${alt}</figcaption>
         </figure>`;
     })
     .join("");
   const sideCls = placement === "side-panel" ? "image-panel-side image-panel-keyrail" : "image-panel-inline";
-  const countAttr = placement === "side-panel" ? ` data-image-count="${printable.length}"` : "";
+  const countAttr = placement === "side-panel" ? ` data-image-count="${usable.length}"` : "";
   return `
       <div class="image-panel ${sideCls}${opts.extraClass ? ` ${opts.extraClass}` : ""}"${countAttr}>
         <div class="image-panel-heading">${heading}</div>
@@ -565,7 +567,7 @@ export function renderReportDocument(
   const letterPadLogo = headerCfg.showLogo ? careLetterheadLogoDataUrl() : "";
   const letterPadHeaderHtml = headerCfg.show ? `<div class="hdr">
       <div class="hdr-inner logo-pos-left letterpad-bill">
-        ${letterPadLogo
+        ${headerCfg.showLogo
           ? `<img class="logo" src="${letterPadLogo}" alt="${escapeHtml(letterPadName)}"/>`
           : `<div class="hdr-brand"><div class="name">${escapeHtml(letterPadName)}</div></div>`}
         <div class="contact letterpad-addr-right">
@@ -827,22 +829,20 @@ export function renderReportDocument(
       width: fit-content;
       max-width: 100%;
       margin-left: auto; /* extreme right within the side column (align with DATE edge) */
-      text-align: left;
+      text-align: center;
       box-sizing: border-box;
       align-self: start;
+      align-items: center; /* equal L/R navy around the image stack */
     }
     .image-panel-side .image-cell {
       flex: 0 0 auto;
       display: flex;
       flex-direction: column;
-      width: min(100%, var(--ki-size, 48mm));
+      width: var(--ki-size, 48mm);
       max-width: 100%;
       aspect-ratio: 1 / 1;
       min-height: 0;
-      align-self: flex-start;
-      /* Allow the side rail to paginate with the report column. Avoid on every
-         square cell made Chromium shove long classic reports to 3+ pages
-         (Arhan / PREVIEW-19: 6 images + long findings). */
+      align-self: center;
       break-inside: auto;
       page-break-inside: auto;
     }
@@ -915,16 +915,29 @@ export function renderReportDocument(
     .image-panel-keyrail {
       background: #0f172a;
       color: #fff;
-      /* Tight 2–3mm symmetrical frame around the image stack — no empty navy band */
+      /* Equal 2.5mm frame on all sides — images centered in the navy rail */
       padding: 2.5mm;
       border: 0.35mm solid #3b82f6;
       border-radius: 3px;
       -webkit-print-color-adjust: exact;
       print-color-adjust: exact;
     }
-    .image-panel-keyrail .image-panel-heading { color: #fff; border-bottom-color: #3b82f6; letter-spacing: 0.12em; margin-bottom: 4px; }
+    .image-panel-keyrail .image-panel-heading {
+      color: #fff;
+      border-bottom-color: #3b82f6;
+      letter-spacing: 0.12em;
+      margin-bottom: 4px;
+      width: 100%;
+      text-align: center;
+    }
     .image-panel-keyrail .image-caption { background: #1e3a8a; }
-    .image-panel-keyrail .image-grid { gap: 3px; width: fit-content; max-width: 100%; }
+    .image-panel-keyrail .image-grid {
+      gap: 3px;
+      width: var(--ki-size, 48mm);
+      max-width: 100%;
+      align-items: center;
+      margin: 0 auto;
+    }
     .letterpad .signame { color: #b91c1c; font-size: 11pt; }
     .letterpad .reportno { display: none; }
     .letterpad-demo { width: 100%; table-layout: fixed; border-collapse: collapse; margin: 2px 0 0; font-size: 11.5px; color: #111; text-transform: uppercase; }

@@ -1339,7 +1339,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     }
     setCanUndoStartReport(true);
   }, [
-    studyLock.status, isFinalized, studySetupSetters, findingsMap, useStructured, studySetup,
+    contentLocked, studySetupSetters, findingsMap, useStructured, studySetup,
   ]);
 
   const undoStartReport = useCallback(() => {

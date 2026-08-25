@@ -333,7 +333,7 @@ function drawNumberedImpression(
   return y;
 }
 
-/** Key images beside report text — extreme-right rail, square ports, tight 2.5mm navy frame. */
+/** Key images beside report text — extreme-right rail, square ports, equal frame pad. */
 function drawSideRailKeyImages(
   doc: jsPDF,
   images: string[],
@@ -345,27 +345,29 @@ function drawSideRailKeyImages(
   headingSize: number,
 ): number {
   if (images.length === 0 || railW <= 8) return startY;
-  const framePad = 2.5; // 2–3mm symmetrical blue/navy border around the stack
+  const framePad = 2.5; // equal L/R (and top/bottom) navy frame around the stack
   const gap = 1.4;
   const headingH = 5;
   const innerW = Math.max(10, railW - 2 * framePad);
   const avail = Math.max(20, contentBottom - startY - headingH - 2 * framePad);
-  // Square cells sized to inner rail width; cap so they fit on page 1 with the report.
+  // Cap square for page fit, then shrink the navy panel to that square so
+  // left/right framePad stay equal (no leftover blue band on the right).
   const square = Math.min(innerW, 32);
   const maxCells = Math.max(1, Math.floor((avail + gap) / (square + gap)));
   const shown = images.slice(0, Math.min(images.length, maxCells));
   const stackH = headingH + shown.length * square + gap * Math.max(0, shown.length - 1);
   const frameH = stackH + 2 * framePad;
+  const panelW = square + 2 * framePad;
+  const panelX = railX + Math.max(0, railW - panelW);
 
-  // Tight navy panel — only as tall/wide as the image stack + frame pad (no empty blue band).
   doc.setFillColor(15, 23, 42); // #0f172a
-  doc.roundedRect(railX, startY, railW, frameH, 1.2, 1.2, "F");
+  doc.roundedRect(panelX, startY, panelW, frameH, 1.2, 1.2, "F");
   doc.setDrawColor(59, 130, 246); // #3b82f6 accent edge
   doc.setLineWidth(0.35);
-  doc.roundedRect(railX, startY, railW, frameH, 1.2, 1.2, "S");
+  doc.roundedRect(panelX, startY, panelW, frameH, 1.2, 1.2, "S");
 
   let imgY = startY + framePad;
-  const imgX = railX + framePad;
+  const imgX = panelX + framePad;
   doc.setFont(font, "bold");
   doc.setFontSize(headingSize - 0.5);
   doc.setTextColor(255, 255, 255);
@@ -375,8 +377,6 @@ function drawSideRailKeyImages(
     if (!img) continue;
     try {
       const ext = img.startsWith("data:image/jpeg") ? "JPEG" : "PNG";
-      // Square black port; letterbox the frame (contain) so MRI slices are not
-      // horizontally stretched to fill the rail width.
       doc.setFillColor(0, 0, 0);
       doc.rect(imgX, imgY, square, square, "F");
       const props = doc.getImageProperties(img);
@@ -385,6 +385,7 @@ function drawSideRailKeyImages(
       const scale = Math.min(square / iw, square / ih);
       const dw = iw * scale;
       const dh = ih * scale;
+      // Center DICOM pixels inside the square port (equal letterbox if needed).
       const ox = imgX + (square - dw) / 2;
       const oy = imgY + (square - dh) / 2;
       doc.addImage(img, ext, ox, oy, dw, dh);
