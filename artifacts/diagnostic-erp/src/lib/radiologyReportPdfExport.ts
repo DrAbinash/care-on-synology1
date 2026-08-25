@@ -145,6 +145,17 @@ export function replaceSideImagePanel(html: string, rail: string): string | null
   return null;
 }
 
+/** Drop empty/pending KEY IMAGES rails so print does not show a navy orphan strip. */
+export function stripEmptySideImagePanel(html: string): string {
+  if (!/image-panel-side/.test(html)) return html;
+  if (countInlinedDicomImages(html) > 0) return html;
+  const stripped = replaceSideImagePanel(html, "");
+  if (!stripped) return html;
+  return stripped
+    .replace(/\bhas-side-images\b/g, "")
+    .replace(/class="content-area\s+"/g, 'class="content-area"');
+}
+
 /**
  * When the server print-preview HTML has no usable inlined DICOM pixels
  * (Orthanc unreachable, empty placeholders, or black stub thumbs) but the
@@ -157,7 +168,11 @@ export async function hydratePrintPreviewKeyImages(
   refs: ReportImageRef[],
   opts?: { limit?: number; size?: number; fetchImpl?: typeof fetch; force?: boolean },
 ): Promise<string> {
-  if (!html || !dicomWebBase || refs.length === 0) return html;
+  if (!html) return html;
+  // No client images available — drop empty/pending navy rails (orphan page 2).
+  if (!dicomWebBase || refs.length === 0) {
+    return stripEmptySideImagePanel(html);
+  }
   const alreadyInlined = countInlinedDicomImages(html);
   const pendingEmpty =
     /dicom-img-pending|image-cell-pending|class="dicom-img"[^>]*src=""|src=""[^>]*class="dicom-img"/.test(html);
@@ -177,7 +192,10 @@ export async function hydratePrintPreviewKeyImages(
     size: opts?.size ?? 800,
     fetchImpl: opts?.fetchImpl,
   });
-  if (urls.length === 0) return html;
+  if (urls.length === 0) {
+    // Failed hydrate — do not leave a blank navy KEY IMAGES strip on page 2.
+    return stripEmptySideImagePanel(html);
+  }
   const rail = buildKeyImagesRailHtml(urls);
 
   if (/image-panel-side/.test(html)) {

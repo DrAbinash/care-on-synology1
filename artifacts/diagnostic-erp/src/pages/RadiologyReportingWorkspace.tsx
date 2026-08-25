@@ -2399,6 +2399,13 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
               dicomWebBase: BROWSER_DICOMWEB_BASE,
               imageRefs,
               includeProvenanceChrome: false,
+              demography: {
+                patientName: canonicalDemography.patientName,
+                age: canonicalDemography.age,
+                sex: canonicalDemography.sex,
+                referringDoctor: canonicalDemography.referringDoctor,
+                studyDate: canonicalDemography.studyDate,
+              },
             });
           }
         } catch {
@@ -2529,6 +2536,13 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         dicomWebBase: BROWSER_DICOMWEB_BASE,
         imageRefs,
         includeProvenanceChrome: false,
+        demography: {
+          patientName: canonicalDemography.patientName,
+          age: canonicalDemography.age,
+          sex: canonicalDemography.sex,
+          referringDoctor: canonicalDemography.referringDoctor,
+          studyDate: canonicalDemography.studyDate,
+        },
       });
       w.document.open();
       w.document.write(html);
@@ -2546,7 +2560,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     }
   }, [
     draftId, reportLayout, saveDraft, toast, imageRefs, impressionStyle,
-    livePrintBodyHtml, findingsText, impressionText,
+    livePrintBodyHtml, findingsText, impressionText, canonicalDemography,
   ]);
 
   // ─── Teaching case save ─────────────────────────────────────────────────────
@@ -4330,6 +4344,13 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       impressionText={impressionText}
                       findingsProvenance={findingsProvenance}
                       impressionProvenance={impressionProvenance}
+                      demography={{
+                        patientName: canonicalDemography.patientName,
+                        age: canonicalDemography.age,
+                        sex: canonicalDemography.sex,
+                        referringDoctor: canonicalDemography.referringDoctor,
+                        studyDate: canonicalDemography.studyDate,
+                      }}
                       onEnsureDraftSaved={() => saveDraft({ silent: true })}
                     />
                     </ReportAccordionSection>

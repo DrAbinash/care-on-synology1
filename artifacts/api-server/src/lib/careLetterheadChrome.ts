@@ -142,6 +142,14 @@ export function letterPadErpPdfLockCss(chrome: CareLetterheadChrome = CARE_LETTE
       margin: 2mm 0 0 !important;
       height: 0 !important;
     }
+    /* Kill presentation-template letter-spacing that turns CLINICAL into C L I N I C A L */
+    .letterpad .section-heading,
+    .letterpad .study-title-bar,
+    .letterpad .study-title,
+    .letterpad h3,
+    .letterpad .image-panel-heading {
+      letter-spacing: 0 !important;
+    }
     .letterpad .letterpad-demo-wrap { padding: 3.5mm 0 0 !important; }
     .letterpad .letterpad-demo {
       font-family: Helvetica, Arial, sans-serif !important;

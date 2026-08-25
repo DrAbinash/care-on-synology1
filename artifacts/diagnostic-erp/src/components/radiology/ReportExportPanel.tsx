@@ -117,6 +117,14 @@ export type ReportExportPanelProps = {
   impressionText?: string;
   findingsProvenance?: FieldProvenanceMap;
   impressionProvenance?: FieldProvenanceMap;
+  /** Client canonical demography — patches letterpad AGE/SEX + REFD. BY on preview. */
+  demography?: {
+    patientName?: string | null;
+    age?: string | null;
+    sex?: string | null;
+    referringDoctor?: string | null;
+    studyDate?: string | null;
+  };
   /** Save draft before fetching server print layout (keeps DB in sync). */
   onEnsureDraftSaved?: () => Promise<number | null>;
 };
@@ -156,6 +164,7 @@ export default function ReportExportPanel({
   impressionText = "",
   findingsProvenance,
   impressionProvenance,
+  demography,
   onEnsureDraftSaved,
 }: ReportExportPanelProps) {
   const [open, setOpen] = useState(true);
@@ -226,6 +235,11 @@ export default function ReportExportPanel({
       livePrintBodyHtml,
       findingsText,
       impressionText,
+      demography?.patientName,
+      demography?.age,
+      demography?.sex,
+      demography?.referringDoctor,
+      demography?.studyDate,
     ],
     queryFn: async () => {
       await onEnsureDraftSaved?.();
@@ -239,6 +253,7 @@ export default function ReportExportPanel({
         impressionProvenance,
         dicomWebBase,
         imageRefs,
+        demography,
       });
     },
     enabled: (open || enlarged) && !!serverPreviewUrl,

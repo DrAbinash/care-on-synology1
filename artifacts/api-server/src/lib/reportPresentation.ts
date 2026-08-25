@@ -208,8 +208,9 @@ export const PRESENTATION_TEMPLATES: PresentationTemplate[] = [
     typography: {
       header: { fontFamily: BASE_FONT, fontSize: "18pt", color: "#1e1b4b", fontWeight: "700", letterSpacing: "0.04em" },
       patientBlock: { fontFamily: BASE_FONT, fontSize: "8.5pt" },
-      studyTitle: { fontFamily: BASE_FONT, fontSize: "12pt", color: "#1e3a8a", fontWeight: "700", letterSpacing: "0.08em", textTransform: "uppercase" },
-      sectionHeading: { fontFamily: BASE_FONT, fontSize: "9.5pt", fontWeight: "700", letterSpacing: "0.1em", textTransform: "uppercase" },
+      // No letter-spacing — wide tracking turns CLINICAL into C L I N I C A L in print.
+      studyTitle: { fontFamily: BASE_FONT, fontSize: "12pt", color: "#1e3a8a", fontWeight: "700", textTransform: "uppercase" },
+      sectionHeading: { fontFamily: BASE_FONT, fontSize: "9.5pt", fontWeight: "700", textTransform: "uppercase" },
       body: { fontFamily: BASE_FONT, fontSize: "10pt", color: "#0f172a" },
       footer: { fontFamily: BASE_FONT, fontSize: "7.5pt", color: "#334155" },
       signature: { fontFamily: BASE_FONT, fontSize: "10pt" },
@@ -925,7 +926,7 @@ export function renderReportDocument(
     .image-panel-keyrail .image-panel-heading {
       color: #fff;
       border-bottom-color: #3b82f6;
-      letter-spacing: 0.12em;
+      letter-spacing: 0;
       margin-bottom: 4px;
       width: 100%;
       text-align: center;
