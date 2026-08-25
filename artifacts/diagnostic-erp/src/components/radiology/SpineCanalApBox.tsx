@@ -172,7 +172,7 @@ export default function SpineCanalApBox({
         .filter(Boolean)
         .join(" ");
       const level = discLevelFromLabel(label);
-      if (!level || !levels.includes(level as (typeof levels)[number])) continue;
+      if (!level || !(levels as readonly string[]).includes(level)) continue;
       const num = parseCanalApNumber(m.value);
       if (!num) continue;
       next[level] = num;
@@ -181,7 +181,7 @@ export default function SpineCanalApBox({
     // MEASURE rail Zustand rows
     for (const m of railMeasurements) {
       const level = discLevelFromLabel(m.name);
-      if (!level || !levels.includes(level as (typeof levels)[number])) continue;
+      if (!level || !(levels as readonly string[]).includes(level)) continue;
       next[level] = String(m.value);
       n++;
     }
