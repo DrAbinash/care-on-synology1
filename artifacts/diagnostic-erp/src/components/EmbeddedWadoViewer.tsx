@@ -83,7 +83,14 @@ const EmbeddedWadoViewer = forwardRef<EmbeddedViewerHandle, {
    */
   columnExpanded?: boolean;
   onColumnExpandedChange?: (expanded: boolean) => void;
-}>(function EmbeddedWadoViewer({ studyInstanceUID, accessionNumber, patientName, columnExpanded = false, onColumnExpandedChange }, ref) {
+  /** Frames mode: add the visible instance to the report image rail. */
+  onAddCurrentFrameToReport?: (ref: {
+    studyInstanceUID: string;
+    seriesInstanceUID: string;
+    sopInstanceUID: string;
+    frameNumber: number;
+  }) => void;
+}>(function EmbeddedWadoViewer({ studyInstanceUID, accessionNumber, patientName, columnExpanded = false, onColumnExpandedChange, onAddCurrentFrameToReport }, ref) {
   if (!studyInstanceUID) {
     return (
       <div className="flex flex-col items-center justify-center py-8 gap-2 text-muted-foreground text-sm">
@@ -101,19 +108,26 @@ const EmbeddedWadoViewer = forwardRef<EmbeddedViewerHandle, {
       controlRef={ref}
       columnExpanded={columnExpanded}
       onColumnExpandedChange={onColumnExpandedChange}
+      onAddCurrentFrameToReport={onAddCurrentFrameToReport}
     />
   );
 });
 
 export default EmbeddedWadoViewer;
 
-function ViewerContent({ studyInstanceUID, accessionNumber, patientName, controlRef, columnExpanded, onColumnExpandedChange }: {
+function ViewerContent({ studyInstanceUID, accessionNumber, patientName, controlRef, columnExpanded, onColumnExpandedChange, onAddCurrentFrameToReport }: {
   studyInstanceUID: string;
   accessionNumber?: string | null;
   patientName?: string | null;
   controlRef?: ForwardedRef<EmbeddedViewerHandle>;
   columnExpanded?: boolean;
   onColumnExpandedChange?: (expanded: boolean) => void;
+  onAddCurrentFrameToReport?: (ref: {
+    studyInstanceUID: string;
+    seriesInstanceUID: string;
+    sopInstanceUID: string;
+    frameNumber: number;
+  }) => void;
 }) {
   const [selectedSeriesUID, setSelectedSeriesUID] = useState<string | null>(null);
   const [selectedInstIdx, setSelectedInstIdx] = useState(0);
@@ -458,6 +472,23 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
               {instances.length > 0 ? `${selectedInstIdx + 1} / ${instances.length}` : "\u2014"}
             </span>
             <Button size="sm" variant="ghost" className="h-7 px-1.5 text-xs" onClick={nextFrame} disabled={selectedInstIdx >= instances.length - 1}><ChevronRight className="h-3.5 w-3.5" /></Button>
+            {onAddCurrentFrameToReport && selectedSeriesUID && instances[selectedInstIdx] && (
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 px-2 text-[10px] border-emerald-300 text-emerald-700"
+                data-testid="frames-add-to-report"
+                title="Add this frame to the report image rail"
+                onClick={() => onAddCurrentFrameToReport({
+                  studyInstanceUID,
+                  seriesInstanceUID: selectedSeriesUID,
+                  sopInstanceUID: instances[selectedInstIdx].uid,
+                  frameNumber: selectedInstIdx + 1,
+                })}
+              >
+                Add to report
+              </Button>
+            )}
             <div className="flex-1" />
             <span className="text-[10px] text-muted-foreground">B:{brightness}% C:{contrast}%</span>
             {bestOhifUrl && (
