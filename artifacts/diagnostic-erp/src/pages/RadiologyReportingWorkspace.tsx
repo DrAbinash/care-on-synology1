@@ -1004,8 +1004,10 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     setIsCritical(false);
     setCriticalNote("");
     setChecklistComm({ phoned: false, annotated: false, dispatched: false });
-    captureSavedDraftId(null);
-  }, [studyId, captureSavedDraftId]);
+    // Draft identity resets inside useRadiologyDraftId on studyId change —
+    // do not call captureSavedDraftId here (unstable fn + adoptedForRef clear
+    // caused React #185 maximum update depth).
+  }, [studyId]);
 
   // Keep findingsText in sync when structured cards drive the report
   useEffect(() => {
