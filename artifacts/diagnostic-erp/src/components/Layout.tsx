@@ -447,6 +447,24 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
+  // When leaving Reporting Workspace, clear workspace/viewer focus collapse so
+  // the app sidebar does not stay stuck collapsed on the next page.
+  useEffect(() => {
+    const onReporting = /\/radiology\/reporting-workspace/.test(location);
+    if (onReporting) return;
+    if (preWorkspaceFocusCollapsed.current !== null) {
+      const restore = preWorkspaceFocusCollapsed.current;
+      preWorkspaceFocusCollapsed.current = null;
+      setSidebarCollapsed(restore);
+    }
+    if (preViewerFocusCollapsed.current !== null) {
+      const restore = preViewerFocusCollapsed.current;
+      preViewerFocusCollapsed.current = null;
+      setSidebarCollapsed(restore);
+    }
+    setWorkspaceFocusActive(false);
+  }, [location]);
+
   // Pass the login-time DB value so the hook seeds localStorage on a fresh device.
   // Effective theme reads purely from localStorage (via userTheme) after seeding so
   // changes and resets take effect immediately without re-login.
@@ -623,7 +641,9 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const renderNavChild = (c: NavChild, onNavigate: () => void) => {
     if (!isSubGroup(c)) return renderNavLeaf(c, onNavigate);
     const subActive = c.children.some((leaf) => isLeafActive(leaf.path, location));
-    const subOpen = openGroups[c.id] ?? subActive;
+    // Nested groups (e.g. USG) open only when the user clicks — never auto-expand
+    // just because a leaf under them is the active route.
+    const subOpen = openGroups[c.id] === true;
     const SubIcon = c.icon;
     return (
       <div key={c.id}>
