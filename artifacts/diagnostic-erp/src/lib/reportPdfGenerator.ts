@@ -259,7 +259,8 @@ function drawWrappedBody(
   return y;
 }
 
-/** Findings may contain "LABEL: body" lines — bold the label like the letter pad. */
+/** Findings may contain "LABEL: body" lines — bold the label like the letter pad.
+ *  Also supports **bold** markdown spans and preserves s/o style slashes. */
 function drawFindingsBlock(
   doc: jsPDF,
   findings: string,
@@ -270,7 +271,8 @@ function drawFindingsBlock(
   bodySize: number,
   lineH: number,
 ): number {
-  const paragraphs = findings.split(/\n+/).map((p) => p.trim()).filter(Boolean);
+  const normalized = normalizeReportPlainText(findings);
+  const paragraphs = normalized.split(/\n+/).map((p) => p.trim()).filter(Boolean);
   for (const para of paragraphs) {
     const m = para.match(/^([A-Z][A-Z0-9 /&().-]{1,48}):\s*([\s\S]*)$/);
     if (m) {
@@ -281,24 +283,97 @@ function drawFindingsBlock(
       doc.setTextColor(0, 0, 0);
       doc.text(label, x, y);
       const labelW = doc.getTextWidth(label) + 1.2;
-      doc.setFont(font, "normal");
       if (rest) {
-        const lines = doc.splitTextToSize(rest, Math.max(20, maxW - labelW)) as string[];
-        doc.text(lines[0] ?? "", x + labelW, y);
-        y += lineH;
-        for (let i = 1; i < lines.length; i++) {
-          doc.text(lines[i], x, y);
-          y += lineH;
-        }
+        y = drawInlineMarkdown(doc, rest, x + labelW, y, Math.max(20, maxW - labelW), font, bodySize, lineH, x);
       } else {
         y += lineH;
       }
     } else {
-      y = drawWrappedBody(doc, para, x, y, maxW, font, bodySize, lineH);
+      y = drawInlineMarkdown(doc, para, x, y, maxW, font, bodySize, lineH, x);
     }
     y += lineH * 0.35;
   }
   return y;
+}
+
+/** Normalize unicode slash lookalikes so "s/o" stays "s/o". */
+export function normalizeReportPlainText(raw: string): string {
+  return String(raw ?? "")
+    .normalize("NFKC")
+    .replace(/[\u2215\u2044\uFF0F]/g, "/") // ∕ ⁄ ／ → /
+    .replace(/\u00A0/g, " ");
+}
+
+type InlineSeg = { text: string; bold: boolean };
+
+function parseInlineMarkdown(text: string): InlineSeg[] {
+  const segs: InlineSeg[] = [];
+  const re = /\*\*([^*]+)\*\*|__([^_]+)__/g;
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) != null) {
+    if (m.index > last) segs.push({ text: text.slice(last, m.index), bold: false });
+    segs.push({ text: m[1] ?? m[2] ?? "", bold: true });
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) segs.push({ text: text.slice(last), bold: false });
+  if (segs.length === 0) segs.push({ text, bold: false });
+  return segs.filter((s) => s.text.length > 0);
+}
+
+/** Draw a line with optional **bold** spans; wraps at maxW, continuing at indentX. */
+function drawInlineMarkdown(
+  doc: jsPDF,
+  text: string,
+  x: number,
+  y: number,
+  maxW: number,
+  font: string,
+  bodySize: number,
+  lineH: number,
+  indentX: number,
+): number {
+  const segs = parseInlineMarkdown(text);
+  let cx = x;
+  let lineStartX = x;
+  const lineMax = (start: number) => start === indentX ? maxW + (x - indentX) : maxW;
+
+  const emitWord = (word: string, bold: boolean) => {
+    doc.setFont(font, bold ? "bold" : "normal");
+    doc.setFontSize(bodySize);
+    doc.setTextColor(0, 0, 0);
+    const w = doc.getTextWidth(word);
+    const avail = lineMax(lineStartX) - (cx - lineStartX);
+    if (cx > lineStartX && w > avail + 0.01) {
+      y += lineH;
+      cx = indentX;
+      lineStartX = indentX;
+    }
+    doc.text(word, cx, y);
+    cx += w;
+  };
+
+  for (const seg of segs) {
+    const parts = seg.text.split(/(\s+)/);
+    for (const part of parts) {
+      if (!part) continue;
+      if (/^\s+$/.test(part)) {
+        doc.setFont(font, seg.bold ? "bold" : "normal");
+        const sw = doc.getTextWidth(part);
+        if (cx - lineStartX + sw > lineMax(lineStartX) && cx > lineStartX) {
+          y += lineH;
+          cx = indentX;
+          lineStartX = indentX;
+        } else {
+          doc.text(part, cx, y);
+          cx += sw;
+        }
+      } else {
+        emitWord(part, seg.bold);
+      }
+    }
+  }
+  return y + lineH;
 }
 
 function drawNumberedImpression(
@@ -555,41 +630,57 @@ export function generateReportPDF(
       doc.line(m.left, cursor, pageW - m.right, cursor);
       doc.setLineWidth(0.25);
       doc.line(m.left, cursor + 1.1, pageW - m.right, cursor + 1.1);
-      cursor += 3.2;
+      // Clear space under the double rule so the study title baseline cannot
+      // collide with the rules (title ink sits above the y baseline).
+      cursor += 7.2;
     }
     return cursor;
   };
 
   y = drawLetterPadChrome();
 
-  // ── STUDY TITLE (centered, underlined) ──
+  // Key-image rail starts just under AGE/SEX/DATE (demography), right column.
+  // Capture before the study title so images hug the demography block.
+  const demographyBottomY = y;
+  const keyImageList = (report.keyImages ?? []).filter(Boolean);
+  const sideRail =
+    keyImageList.length > 0 && settings.show.keyImages;
+  const framePadMm = 2.5;
+  const railImgW = 38;
+  const railW = sideRail ? railImgW + 2 * framePadMm : 0;
+  const railGap = 4;
+  // Study title uses full width; body text narrows when a rail is present.
+  const textW = sideRail ? Math.max(90, contentW - railW - railGap) : contentW;
+  const railX = pageW - m.right - railW;
+  let railBottomY = 0;
+
+  // ── STUDY TITLE (centered, underlined) — left of rail when images exist ──
   const title = (report.reportTitle || "Radiology Report").trim().toUpperCase();
   doc.setFont(font, "bold");
   doc.setFontSize(fs.title);
   doc.setTextColor(0, 0, 0);
-  doc.text(title, pageW / 2, y, { align: "center" });
-  const titleW = doc.getTextWidth(title);
+  // Title baseline after demography gap; center in the text column (not under rail).
+  const titleCenterX = sideRail ? m.left + textW / 2 : pageW / 2;
+  doc.text(title, titleCenterX, y, { align: "center", maxWidth: textW });
+  const titleW = Math.min(doc.getTextWidth(title), textW);
   doc.setLineWidth(0.45);
-  doc.line(pageW / 2 - titleW / 2, y + 0.9, pageW / 2 + titleW / 2, y + 0.9);
-  y += lineH + 2.5;
+  doc.line(titleCenterX - titleW / 2, y + 0.9, titleCenterX + titleW / 2, y + 0.9);
+  y += lineH + 3.2;
 
   // Reserve a strip above the services bar for name + degree so signature
   // never orphans alone onto page 2 (Gulu Devi / long MRI reports).
   const SIG_RESERVE_MM = settings.signature.enabled ? 18 : 0;
   const contentBottom = pageH - m.bottom - 18 - SIG_RESERVE_MM;
 
-  const keyImageList = (report.keyImages ?? []).filter(Boolean);
-  const sideRail =
-    keyImageList.length > 0 && settings.show.keyImages;
-  // Extreme-right rail: image column ~38mm + 2.5mm frame each side ≈ 43mm, flush to right margin (same edge as DATE).
-  const framePadMm = 2.5;
-  const railImgW = 38;
-  const railW = sideRail ? railImgW + 2 * framePadMm : 0;
-  const railGap = 4;
-  const textW = sideRail ? Math.max(90, contentW - railW - railGap) : contentW;
-  const railX = pageW - m.right - railW;
-  let railStartY = 0;
-  let railBottomY = 0;
+  // Draw KEY IMAGES on page 1 immediately (below demography / beside title+body).
+  if (sideRail) {
+    railBottomY = drawSideRailKeyImages(
+      doc, keyImageList, railX, railW, demographyBottomY, contentBottom, font, fs.heading,
+    );
+    // Body continues on page 1; rail must not move the text cursor.
+    void railBottomY;
+  }
+
   /** Page index (1-based) where the report body last drew — signature stays here. */
   let bodyPage = 1;
 
@@ -600,6 +691,8 @@ export function generateReportPDF(
       bodyPage = doc.getNumberOfPages();
     }
   };
+  /** Narrow beside rail on page 1; full width after page break. */
+  const colW = () => (sideRail && bodyPage === 1 ? textW : contentW);
 
   for (const section of settings.layout) {
     if (!settings.show[section]) continue;
@@ -610,7 +703,7 @@ export function generateReportPDF(
         if (!report.clinicalHistory?.trim()) break;
         ensureSpace(12);
         y = drawSectionHeading(doc, "CLINICAL HISTORY:", m.left, y, font, fs.heading);
-        y = drawWrappedBody(doc, report.clinicalHistory.trim(), m.left, y, textW, font, fs.body, lineH);
+        y = drawWrappedBody(doc, normalizeReportPlainText(report.clinicalHistory.trim()), m.left, y, colW(), font, fs.body, lineH);
         y += lineH * 0.55;
         break;
       }
@@ -618,7 +711,7 @@ export function generateReportPDF(
         if (!report.technique?.trim()) break;
         ensureSpace(12);
         y = drawSectionHeading(doc, "TECHNIQUE:", m.left, y, font, fs.heading);
-        y = drawWrappedBody(doc, report.technique.trim(), m.left, y, textW, font, fs.body, lineH);
+        y = drawWrappedBody(doc, normalizeReportPlainText(report.technique.trim()), m.left, y, colW(), font, fs.body, lineH);
         y += lineH * 0.55;
         break;
       }
@@ -626,7 +719,7 @@ export function generateReportPDF(
         if (!report.comparison?.trim()) break;
         ensureSpace(12);
         y = drawSectionHeading(doc, "COMPARISON:", m.left, y, font, fs.heading);
-        y = drawWrappedBody(doc, report.comparison.trim(), m.left, y, textW, font, fs.body, lineH);
+        y = drawWrappedBody(doc, normalizeReportPlainText(report.comparison.trim()), m.left, y, colW(), font, fs.body, lineH);
         y += lineH * 0.55;
         break;
       }
@@ -640,7 +733,10 @@ export function generateReportPDF(
           body: report.measurements.map((row) => [row.label, row.value]),
           styles: { fontSize: fs.body - 0.5, font, cellPadding: 1.1 },
           headStyles: { fillColor: [241, 245, 249], textColor: [0, 0, 0], fontStyle: "bold" },
-          margin: { left: m.left, right: m.right },
+          margin: {
+            left: m.left,
+            right: m.right + (sideRail && bodyPage === 1 ? railW + railGap : 0),
+          },
           tableWidth: "auto",
         });
         y = ((doc as unknown as { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY ?? y + 20) + 3;
@@ -649,21 +745,20 @@ export function generateReportPDF(
       case "findings": {
         if (!report.findings?.trim()) break;
         ensureSpace(16);
-        if (sideRail && railStartY === 0) railStartY = y;
         y = drawSectionHeading(doc, "FINDINGS:", m.left, y, font, fs.heading);
-        y = drawFindingsBlock(doc, report.findings.trim(), m.left, y, textW, font, fs.body, lineH);
+        y = drawFindingsBlock(doc, report.findings.trim(), m.left, y, colW(), font, fs.body, lineH);
         y += lineH * 0.4;
         break;
       }
       case "keyImages": {
-        // Side rail drawn once after the body loop (aligned with findings).
+        // Side rail already drawn on page 1 below demography.
         break;
       }
       case "impression": {
         if (!report.impression?.trim()) break;
         ensureSpace(14);
         y = drawSectionHeading(doc, "IMPRESSION:", m.left, y, font, fs.heading);
-        y = drawNumberedImpression(doc, report.impression.trim(), m.left, y, textW, font, fs.body, lineH);
+        y = drawNumberedImpression(doc, normalizeReportPlainText(report.impression.trim()), m.left, y, colW(), font, fs.body, lineH);
         y += lineH * 0.4;
         break;
       }
@@ -671,22 +766,15 @@ export function generateReportPDF(
         if (!report.recommendation?.trim()) break;
         ensureSpace(12);
         y = drawSectionHeading(doc, "RECOMMENDATION:", m.left, y, font, fs.heading);
-        y = drawWrappedBody(doc, report.recommendation.trim(), m.left, y, textW, font, fs.body, lineH);
+        y = drawWrappedBody(doc, normalizeReportPlainText(report.recommendation.trim()), m.left, y, colW(), font, fs.body, lineH);
         y += lineH * 0.4;
         break;
       }
     }
   }
 
-  if (sideRail) {
-    const railTop = railStartY > 0 ? railStartY : y;
-    railBottomY = drawSideRailKeyImages(
-      doc, keyImageList, railX, railW, railTop, contentBottom, font, fs.heading,
-    );
-    // Do not let the rail push body Y into the signature reserve — images
-    // stay in the reserved column; signature stays above the blue footer.
-    y = Math.max(y, Math.min(railBottomY, contentBottom));
-  }
+  // Do not re-draw the rail or push body Y from railBottomY — that parked
+  // images/impression overlaps onto page 2 in long reports.
 
   // ── SIGNATURE — lower-right above the blue services bar on the body page.
   // Never call ensureSpace here: that orphaned name/degree onto a blank page 2.

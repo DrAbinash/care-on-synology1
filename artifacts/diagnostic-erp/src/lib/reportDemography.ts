@@ -119,11 +119,29 @@ function titleCaseName(raw: string): string {
     .join(" ");
 }
 
+/** True for PACS/self-referral placeholders that must never print as REF. BY. */
+export function isJunkReferringDoctor(raw: string | null | undefined): boolean {
+  const s = String(raw ?? "")
+    .replace(/\^+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+  if (!s) return true;
+  // Strip leading Dr. for matching
+  const body = s.replace(/^dr\.?\s*/i, "").trim();
+  if (!body) return true;
+  if (/^(self|walk[\s-]*in|na|n\/a|none|-|—|–|\.)$/i.test(body)) return true;
+  // "SELF ONLINE", "SELF WB", "DR. SELF WB", "self referral", etc.
+  if (/^self(\s|$|[-_/])/i.test(body)) return true;
+  if (/\bself\b/.test(body) && /\b(online|wb|web|portal|app|referral)\b/.test(body)) return true;
+  return false;
+}
+
 /** "DR.SANJAY KUMAR MD" → "Dr. Sanjay Kumar, MD" */
 export function formatReferringDoctorDisplay(raw: string | null | undefined): string {
   const s = String(raw ?? "").replace(/\^+/g, " ").replace(/\s+/g, " ").trim();
   if (!s) return "";
-  if (/^(self|walk[\s-]*in|na|n\/a|none|-)$/i.test(s)) return s;
+  if (isJunkReferringDoctor(s)) return "";
 
   let body = s;
   let hadDr = false;
@@ -170,7 +188,8 @@ export function reconcileAccessionVsReferringDoctor(input: {
 }): { accessionNumber: string; referringDoctor: string } {
   const accession = String(input.accessionNumber ?? "").trim();
   let referring = String(input.referringDoctor ?? "").trim();
-  if (!referring && accessionLooksLikeReferringDoctor(accession)) {
+  if (isJunkReferringDoctor(referring)) referring = "";
+  if (!referring && accessionLooksLikeReferringDoctor(accession) && !isJunkReferringDoctor(accession)) {
     return { accessionNumber: "", referringDoctor: formatReferringDoctorDisplay(accession) };
   }
   if (referring) referring = formatReferringDoctorDisplay(referring);
@@ -239,7 +258,11 @@ export function mergeReportDemography(input: {
     accessionNumber: pick(erp.accessionNumber, dicom.accessionNumber, dicomMeta.AccessionNumber),
     studyDescription: pick(erp.studyDescription, erp.testName, dicom.studyDescription, dicomMeta.StudyDescription),
     studyDate: pick(erp.studyDate, dicom.studyDate, dicomMeta.StudyDate),
-    referringDoctor: pick(erp.referringDoctor, dicom.referringDoctor, dicomMeta.ReferringPhysicianName),
+    referringDoctor: pick(
+      isJunkReferringDoctor(erp.referringDoctor as string) ? "" : erp.referringDoctor,
+      isJunkReferringDoctor(dicom.referringDoctor as string) ? "" : dicom.referringDoctor,
+      isJunkReferringDoctor(dicomMeta.ReferringPhysicianName as string) ? "" : dicomMeta.ReferringPhysicianName,
+    ),
     dateOfBirth: isSentinelDob(pick(erp.dateOfBirth, dicomMeta.PatientBirthDate))
       ? ""
       : pick(erp.dateOfBirth, dicomMeta.PatientBirthDate),
@@ -371,6 +394,60 @@ export function buildDemographyHeaderHtml(d: ReportDemography): string {
     <td style="text-align:right;vertical-align:top;padding:0;white-space:nowrap;">${ageSexLine}${rightSub}</td>
   </tr>
 </table>`.trim();
+}
+
+/** CARE letter-pad demography table (NAME | AGE/SEX, REFD. BY | DATE). */
+export function buildLetterpadDemographyHtml(d: {
+  patientName?: string | null;
+  age?: string | null;
+  sex?: string | null;
+  referringDoctor?: string | null;
+  studyDate?: string | null;
+}): string {
+  const esc = escDemographyHtml;
+  const name = String(d.patientName ?? "").trim();
+  const ageSex = formatDemographyAgeSexLine(d.age, d.sex);
+  const ref = formatReferringDoctorDisplay(d.referringDoctor);
+  const dateStr = String(d.studyDate ?? "").trim();
+  const cell = (label: string, value: string, boldValue = false) =>
+    value
+      ? `<strong>${esc(label)}</strong> ${boldValue ? `<strong>${esc(value)}</strong>` : esc(value)}`
+      : "";
+  return `<table class="letterpad-demo">
+    <tr>
+      <td class="ld-left">${cell("NAME:", name.toUpperCase(), true)}</td>
+      <td class="ld-right">${cell("AGE/SEX:", ageSex.toUpperCase())}</td>
+    </tr>
+    <tr>
+      <td class="ld-left">${cell("REFD. BY:", ref.toUpperCase())}</td>
+      <td class="ld-right">${cell("DATE:", dateStr)}</td>
+    </tr>
+  </table>
+  <div class="letterpad-demo-rule"></div>`;
+}
+
+/**
+ * Replace server letterpad-demo block with client canonical demography so
+ * Print Preview / Print like final match PDF export (age + REF. BY).
+ */
+export function patchLetterpadDemographyHtml(
+  html: string,
+  d: {
+    patientName?: string | null;
+    age?: string | null;
+    sex?: string | null;
+    referringDoctor?: string | null;
+    studyDate?: string | null;
+  },
+): string {
+  if (!html?.includes("letterpad-demo")) return html;
+  const block = buildLetterpadDemographyHtml(d);
+  // Replace existing letterpad-demo table (+ optional rule) in one shot.
+  const replaced = html.replace(
+    /<table\b[^>]*\bletterpad-demo\b[^>]*>[\s\S]*?<\/table>\s*(?:<div class="letterpad-demo-rule"><\/div>)?/i,
+    block,
+  );
+  return replaced;
 }
 
 /** Resolve display age for a queue row + optional patient-master record. */

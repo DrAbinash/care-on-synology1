@@ -181,11 +181,23 @@ describe("hydratePrintPreviewKeyImages", () => {
     // via returning a real-looking response — FileReader may not exist in Node.
     // Use a pre-resolved path: pass refs and a fetch that fails, then manually test rail builder.
     const empty = `<div class="content-area"><div class="report-column"><p>Body</p></div></div><div class="sigs"></div>`;
-    // When fetch fails, HTML unchanged
+    // When fetch fails and there is no rail, HTML unchanged
     const unchanged = await hydratePrintPreviewKeyImages(empty, "https://pacs.example/dicomweb", [makeRef()], {
       fetchImpl: vi.fn().mockResolvedValue({ ok: false }),
     });
     expect(unchanged).toBe(empty);
+
+    // Pending empty rail + failed fetch → strip navy orphan strip
+    const pendingRail =
+      `<div class="content-area has-side-images"><div class="report-column"><p>Body</p></div>` +
+      `<div class="image-panel image-panel-side image-panel-keyrail" data-image-count="1">` +
+      `<div class="image-panel-heading">KEY IMAGES</div>` +
+      `<div class="image-grid"><div class="image-cell image-cell-pending"><img class="dicom-img dicom-img-pending" src=""/></div></div></div></div>`;
+    const stripped = await hydratePrintPreviewKeyImages(pendingRail, "https://pacs.example/dicomweb", [makeRef()], {
+      fetchImpl: vi.fn().mockResolvedValue({ ok: false }),
+    });
+    expect(stripped).not.toContain("image-panel-keyrail");
+    expect(stripped).not.toContain("has-side-images");
 
     // Simulate successful hydration by injecting with a custom fetch that returns a blob
     // and a polyfilled FileReader if needed.
