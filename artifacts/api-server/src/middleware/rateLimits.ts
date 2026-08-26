@@ -1,4 +1,5 @@
 import rateLimit from "express-rate-limit";
+import { bearerMatchesStrongInternalApiKey } from "../lib/internalApiKeyAuth";
 
 /**
  * Pre-configured rate limiters for high-risk and expensive endpoints.
@@ -77,6 +78,9 @@ export const n8nAutomationLimiter = rateLimit({
  * requireInternalApiKey / requireStaffOrInternalAuth at the route level in
  * internal-radiology.ts, internal-backup.ts, and hl7.ts.
  *
+ * Weak placeholder keys (e.g. "1234") do NOT bypass the limiter — only a strong
+ * configured INTERNAL_API_KEY does.
+ *
  * This does NOT weaken security: a request with a missing or wrong key
  * still counts against the public limiter's quota (so credential-guessing
  * traffic is still throttled), and every internal route still independently
@@ -84,11 +88,7 @@ export const n8nAutomationLimiter = rateLimit({
  * *rate limiter* applies, never whether the *request* is authorized.
  */
 export function hasValidInternalApiKey(req: import("express").Request): boolean {
-  const expected = process.env["INTERNAL_API_KEY"];
-  if (!expected) return false; // no key configured -> never skip, fail closed
-  const header = req.header("authorization") ?? "";
-  const provided = header.startsWith("Bearer ") ? header.slice(7) : "";
-  return provided.length > 0 && provided === expected;
+  return bearerMatchesStrongInternalApiKey(req);
 }
 
 /**

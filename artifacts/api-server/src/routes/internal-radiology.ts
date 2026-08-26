@@ -35,6 +35,7 @@ import {
 } from "@workspace/db/schema";
 import { and, eq, or, sql, inArray, gte, lte, desc, gt } from "drizzle-orm";
 import { logger } from "../lib/logger";
+import { requireInternalApiKey, safeEqual } from "../lib/internalApiKeyAuth";
 import { normalizeRole, type StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { checkWriteLock } from "../lib/studyLocks";
 import { todayIST } from "../lib/istDate";
@@ -201,37 +202,6 @@ const router = Router();
 // ── Auth ─────────────────────────────────────────────────────────────────────
 
 /**
- * Enforces INTERNAL_API_KEY authentication.
- * Used for all PACS automation endpoints (Conquest scripts, pull-agents, etc.).
- * These endpoints must never be callable from a browser staff session.
- */
-function requireInternalApiKey(req: Request, res: Response, next: NextFunction): void {
-  const expected = process.env["INTERNAL_API_KEY"];
-  if (!expected) {
-    if (process.env["NODE_ENV"] === "production") {
-      // In production the key MUST be set. Fail closed to prevent accidental
-      // exposure of internal endpoints on a misconfigured deployment.
-      logger.error("INTERNAL_API_KEY is not set in production — internal radiology endpoints are disabled");
-      res.status(503).json({
-        error: "Service unavailable: INTERNAL_API_KEY is not configured. Set this secret before using internal radiology endpoints.",
-      });
-      return;
-    }
-    // Development / staging: allow without key but log loudly.
-    logger.warn("INTERNAL_API_KEY not set — internal radiology endpoints are unprotected (non-production only)");
-    next();
-    return;
-  }
-  const header = req.header("authorization") ?? "";
-  const provided = header.startsWith("Bearer ") ? header.slice(7) : "";
-  if (provided !== expected) {
-    res.status(401).json({ error: "Unauthorized" });
-    return;
-  }
-  next();
-}
-
-/**
  * Accepts EITHER a valid INTERNAL_API_KEY bearer token OR a valid staff JWT.
  *
  * This middleware is ONLY applied to the three endpoints the Radiologist
@@ -261,7 +231,7 @@ async function requireStaffOrInternalAuth(
 
   // 1. Try INTERNAL_API_KEY first (fast — no DB query needed)
   const expectedKey = process.env["INTERNAL_API_KEY"];
-  if (expectedKey && provided === expectedKey) {
+  if (expectedKey && safeEqual(provided, expectedKey)) {
     next();
     return;
   }
