@@ -267,6 +267,7 @@ import {
 import { InterruptChannelCard } from "@/components/radiology/zai-workspace/interrupt-card";
 import { QuickSelectEditor } from "@/components/radiology/zai-workspace/quick-select-editor";
 import { MergePreviewDialog } from "@/components/radiology/zai-workspace/merge-preview-dialog";
+import { OwnershipTracePanel } from "@/components/radiology/zai-workspace/ownership-trace-panel";
 import { ConfirmOverwriteDialog } from "@/components/radiology/zai-workspace/confirm-overwrite-dialog";
 import { SaveAsFormatDialog } from "@/components/radiology/zai-workspace/save-as-format-dialog";
 import { resolvePrintedReportTitle } from "@/lib/zai-workspace/fullReportFormat";
@@ -493,6 +494,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const findingsText = useWorkspace((s: WorkspaceStore) => s.findingsText);
   const impressionText = useWorkspace((s: WorkspaceStore) => s.impressionText);
   const impressionNeedsRefresh = useWorkspace((s: WorkspaceStore) => s.impressionNeedsRefresh);
+  const ownershipReviewWarnings = useWorkspace((s: WorkspaceStore) => s.ownershipReviewWarnings);
+  const ledgerHydrationWarning = useWorkspace((s: WorkspaceStore) => s.ledgerHydrationWarning);
   const recommendationText = useWorkspace((s: WorkspaceStore) => s.recommendationText);
   const techniqueText = useWorkspace((s: WorkspaceStore) => s.techniqueText);
   const clinicalHistoryText = useWorkspace((s: WorkspaceStore) => s.clinicalHistoryText);
@@ -1674,10 +1677,14 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         setStructuredValues(restored.values);
       }
       const ledger = extractCareObservationLedger(draft.structuredJson);
-      if (ledger) {
-        useWorkspace.getState().hydrateObservationLedger(ledger);
-        const ids = selectedQuickFindingIds(useWorkspace.getState().appliedPathologyPatches.map((p) => p.id));
-        setSelectedQuickIds(new Set(ids));
+      const hydrated = useWorkspace.getState().hydrateObservationLedger(ledger);
+      const ids = selectedQuickFindingIds(useWorkspace.getState().appliedPathologyPatches.map((p) => p.id));
+      setSelectedQuickIds(new Set(ids));
+      if (hydrated.warning) {
+        toast({
+          title: "Opened as narrative-only",
+          description: hydrated.warning,
+        });
       }
       return;
     }
@@ -3977,6 +3984,28 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                          to the Quick Select drawer below (same component). */
                       <FindingsEditor field="findings" label="" minHeight="220px" placeholder="Type findings. Use :macro + Tab for snippets. Ctrl+Enter for AI ghost." showGhost hideQuickSelect />
                     )}
+                    {ledgerHydrationWarning && (
+                      <div
+                        data-testid="ledger-hydration-warning"
+                        className="mt-1.5 flex items-center justify-between gap-2 rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] text-amber-900"
+                      >
+                        <span>{ledgerHydrationWarning}</span>
+                        <button type="button" className="underline" onClick={() => useWorkspace.getState().dismissLedgerHydrationWarning()}>Dismiss</button>
+                      </div>
+                    )}
+                    {ownershipReviewWarnings.length > 0 && (
+                      <div
+                        data-testid="unowned-sibling-warning"
+                        className="mt-1.5 rounded-md border border-amber-200 bg-amber-50/80 px-2 py-1 text-[10px] text-amber-950"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-semibold">{ownershipReviewWarnings[0]?.hint}</span>
+                          <button type="button" className="underline" onClick={() => useWorkspace.getState().dismissOwnershipReview()}>Dismiss</button>
+                        </div>
+                        <p className="mt-0.5 text-amber-900/80">Kept as written — not deleted. Nearby sentence may now conflict.</p>
+                      </div>
+                    )}
+                    <OwnershipTracePanel />
 
                     {/* C. Assistance drawers — one at a time; every panel stays
                          mounted so search text, structured nav and drafts survive. */}

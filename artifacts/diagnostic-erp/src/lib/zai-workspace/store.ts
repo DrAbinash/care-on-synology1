@@ -57,8 +57,13 @@ import {
   refreshImpressionFromObservations,
   removeLedgerObservation,
   serializeObservationLedger,
-  deserializeObservationLedger,
+  parseObservationLedger,
+  reconstructProvenanceFromLedger,
+  logLedgerHydrationSafe,
+  detectUnownedSiblingConflicts,
+  UNOWNED_SIBLING_HINT,
   renderedInField,
+  type LedgerHydrationResult,
   type LedgerPatch,
   type SerializedObservationLedger,
 } from "@/lib/observationLedger";
@@ -238,6 +243,8 @@ interface S {
   lastPatchSnapshot: PatchSnapshot | null;
   appliedPathologyPatches: AppliedPathologyPatch[];
   impressionNeedsRefresh: boolean;
+  ownershipReviewWarnings: Array<{ sentence: string; token: string; hint: string }>;
+  ledgerHydrationWarning: string | null;
   /** Active voice-composer observations for incremental dictation context. */
   voiceComposerObservations: VoiceObservation[];
   voiceComposerTranscriptHistory: string[];
@@ -278,8 +285,10 @@ export type WorkspaceStore = S & {
   applyMacroBundle: (opts: { bundleId?: string; observations: Array<PendingPathologyPatch & { force?: boolean }> }) => "applied" | "pending";
   removeObservation: (id: string) => "removed" | "preserved-manual" | "no-op-unproven" | "missing";
   refreshImpressionFromLedger: () => void;
-  hydrateObservationLedger: (raw: unknown) => void;
+  hydrateObservationLedger: (raw: unknown) => LedgerHydrationResult;
   serializeObservationLedger: () => SerializedObservationLedger;
+  dismissOwnershipReview: () => void;
+  dismissLedgerHydrationWarning: () => void;
   undoLastPatch: () => boolean;
   applyVoiceComposerPlan: (plan: VoiceChangePlan, transcript: string, opts?: { force?: boolean }) => "applied" | "blocked";
   /** Apply accepted AI composer plain text in one atomic undo snapshot (Guard 9). */
@@ -332,6 +341,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   appliedFormatReportTitle: null,
   saveAsFormatDialogOpen: false, mergePreviewOpen: false, lastMergeResult: null, lastMergeFormats: null, confirmOverwriteOpen: false, pendingFormatIds: [],
   pendingPathologyPatch: null, lastPatchSnapshot: null, appliedPathologyPatches: [], impressionNeedsRefresh: false,
+  ownershipReviewWarnings: [], ledgerHydrationWarning: null,
   voiceComposerObservations: [], voiceComposerTranscriptHistory: [],
   snippetMacros: typeof window !== "undefined" ? loadMacros() : DEFAULT_SNIPPET_MACROS, macroEditorOpen: false, editingMacro: null, activeMacroPrompt: null,
   signOffProfiles: typeof window !== "undefined" ? loadProfiles() : DEFAULT_SIGN_OFF_PROFILES, preloadTriggered: false,
@@ -362,7 +372,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     }
     set({ studies: next });
   },
-  selectStudy: (id) => { const st = get().studies.find(s => s.id === id); if (!st) return; set({ activeStudyId: id, findingsText: "", impressionText: "", recommendationText: "", techniqueText: "", clinicalHistoryText: st.clinicalHistory || "", fieldProvenance: {}, measurements: [], priors: [], isDirty: false, isFinalized: false, isFinalizing: false, railStage: "orient", ghostText: null, ghostTextTarget: null, acknowledgedCopilotIds: new Set(), activeCopilotItem: null, voiceTranscript: "", voiceListening: false, selectedFormatIds: [], reportFormatPickerOpen: false, appliedFormatReportTitle: null, appliedPathologyPatches: [], impressionNeedsRefresh: false, lastPatchSnapshot: null, voiceComposerObservations: [], voiceComposerTranscriptHistory: [], criticalSlaStartedAt: null, criticalSlaEscalated: false, preloadTriggered: false, nextStudyPreloaded: false, reportingContext: EMPTY_REPORTING_STUDY_CONTEXT }); setTimeout(() => get().recomputeCopilot(), 0); },
+  selectStudy: (id) => { const st = get().studies.find(s => s.id === id); if (!st) return; set({ activeStudyId: id, findingsText: "", impressionText: "", recommendationText: "", techniqueText: "", clinicalHistoryText: st.clinicalHistory || "", fieldProvenance: {}, measurements: [], priors: [], isDirty: false, isFinalized: false, isFinalizing: false, railStage: "orient", ghostText: null, ghostTextTarget: null, acknowledgedCopilotIds: new Set(), activeCopilotItem: null, voiceTranscript: "", voiceListening: false, selectedFormatIds: [], reportFormatPickerOpen: false, appliedFormatReportTitle: null, appliedPathologyPatches: [], impressionNeedsRefresh: false, ownershipReviewWarnings: [], ledgerHydrationWarning: null, lastPatchSnapshot: null, voiceComposerObservations: [], voiceComposerTranscriptHistory: [], criticalSlaStartedAt: null, criticalSlaEscalated: false, preloadTriggered: false, nextStudyPreloaded: false, reportingContext: EMPTY_REPORTING_STUDY_CONTEXT }); setTimeout(() => get().recomputeCopilot(), 0); },
   setNextStudy: (id) => set({ nextStudyId: id }), markNextStudyPreloaded: () => set({ nextStudyPreloaded: true }),
   setField: (f, v, opts) => {
     const key = fieldTextKey(f);
@@ -716,6 +726,17 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       replacedBaseline: replaced,
       protected: false,
     };
+    const nextPatches = [...patches.filter((p) => p.id !== patchId), nextPatch];
+    const siblingHits = detectUnownedSiblingConflicts({
+      findings: result.narrative.findings,
+      incomingFindings: incoming.findings,
+      ownedLastRendered: nextPatches.map((p) => p.lastRendered.findings ?? ""),
+    });
+    const ownershipReviewWarnings = siblingHits.map((w) => ({
+      sentence: w.sentence,
+      token: w.token,
+      hint: UNOWNED_SIBLING_HINT,
+    }));
     if (result.ambiguous && !opts.force) {
       set({
         clinicalHistoryText: result.narrative.clinicalHistory,
@@ -726,7 +747,8 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         fieldProvenance: result.provenance,
         isDirty: true,
         lastPatchSnapshot: snap,
-        appliedPathologyPatches: [...patches.filter((p) => p.id !== patchId), nextPatch],
+        appliedPathologyPatches: nextPatches,
+        ownershipReviewWarnings,
         confirmOverwriteOpen: true,
         pendingPathologyPatch: { ...opts, incoming, templates, ownership, id: patchId },
       });
@@ -741,10 +763,11 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       fieldProvenance: result.provenance,
       isDirty: true,
       lastPatchSnapshot: snap,
-      appliedPathologyPatches: [...patches.filter((p) => p.id !== patchId), nextPatch],
+      appliedPathologyPatches: nextPatches,
+      ownershipReviewWarnings,
       impressionNeedsRefresh: impressionNeedsRefreshFromNarrative(
         result.narrative.impression,
-        [...patches.filter((p) => p.id !== patchId), nextPatch].map(toLedgerPatch),
+        nextPatches.map(toLedgerPatch),
         result.provenance.impression,
       ),
     });
@@ -796,10 +819,27 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     });
   },
   hydrateObservationLedger: (raw) => {
-    const rows = deserializeObservationLedger(raw);
-    if (!rows) return;
+    const parsed = parseObservationLedger(raw);
+    if (parsed.status === "absent") {
+      set({ appliedPathologyPatches: [], ledgerHydrationWarning: null });
+      return { ok: true, mode: "narrative-only", reason: "absent", patchCount: 0 };
+    }
+    if (parsed.status !== "restored") {
+      const result: LedgerHydrationResult = {
+        ok: false,
+        mode: "narrative-only",
+        reason: parsed.status,
+        patchCount: 0,
+        warning: "Observation ledger could not be restored. Report text is unchanged.",
+      };
+      logLedgerHydrationSafe(result);
+      set({ appliedPathologyPatches: [], ledgerHydrationWarning: result.warning ?? null });
+      return result;
+    }
+    const narrative = narrativeFromState(get());
+    const provenance = parsed.fieldProvenance ?? reconstructProvenanceFromLedger(narrative, parsed.patches);
     set({
-      appliedPathologyPatches: rows.map((p) => ({
+      appliedPathologyPatches: parsed.patches.map((p) => ({
         id: p.id,
         ownership: ownershipFromObservation(p.observation),
         templates: p.templates,
@@ -809,9 +849,24 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         replacedBaseline: p.replacedBaseline,
         protected: p.protected,
       })),
+      fieldProvenance: {
+        ...get().fieldProvenance,
+        findings: provenance.findings ?? get().fieldProvenance.findings,
+        impression: provenance.impression ?? get().fieldProvenance.impression,
+        technique: provenance.technique ?? get().fieldProvenance.technique,
+        recommendation: provenance.recommendation ?? get().fieldProvenance.recommendation,
+        clinicalHistory: provenance.clinicalHistory ?? get().fieldProvenance.clinicalHistory,
+      },
+      ledgerHydrationWarning: null,
     });
+    return { ok: true, mode: "restored", reason: "restored", patchCount: parsed.patches.length };
   },
-  serializeObservationLedger: () => serializeObservationLedger(get().appliedPathologyPatches.map(toLedgerPatch)),
+  serializeObservationLedger: () => serializeObservationLedger(
+    get().appliedPathologyPatches.map(toLedgerPatch),
+    get().fieldProvenance,
+  ),
+  dismissOwnershipReview: () => set({ ownershipReviewWarnings: [] }),
+  dismissLedgerHydrationWarning: () => set({ ledgerHydrationWarning: null }),
   removeObservation: (id) => {
     const patch = get().appliedPathologyPatches.find((p) => p.id === id);
     if (!patch) return "missing";
