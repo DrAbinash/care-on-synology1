@@ -30,7 +30,8 @@
 -- Replace YOUR_DOMAIN with your actual .replit.app domain (or custom domain).
 local ERP_URL     = "https://YOUR_DOMAIN.replit.app/api/internal/radiology/studies"
 
--- Must match the INTERNAL_API_KEY secret set in the ERP deployment.
+-- Must match the INTERNAL_API_KEY in the ERP .env (and care_erp_sync.py on NAS).
+-- Generate on the ERP host: bash scripts/rotate-internal-api-key.sh
 local ERP_API_KEY = "REPLACE_WITH_YOUR_INTERNAL_API_KEY"
 
 -- Set to true to write a debug line to ConquestDICOM.log on every call.
