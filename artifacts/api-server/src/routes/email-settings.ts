@@ -25,7 +25,7 @@ router.get("/", async (_req, res) => {
 
 router.post("/", async (req, res) => {
   const { smtpHost, smtpPort, smtpUser, smtpPassword, smtpSecure, fromAddress, fromName,
-    adminEmail, extraRecipients, billEditEnabled, dailySummaryEnabled, dailySummaryTimes } = req.body;
+    adminEmail, extraRecipients, billEditEnabled, dailySummaryEnabled, staffDayCloseEmailEnabled, dailySummaryTimes } = req.body;
 
   if (smtpHost) {
     const check = await resolveAndCheckHost(String(smtpHost));
@@ -51,6 +51,7 @@ router.post("/", async (req, res) => {
     extraRecipients: JSON.stringify(Array.isArray(extraRecipients) ? extraRecipients : []),
     billEditEnabled: billEditEnabled ?? true,
     dailySummaryEnabled: dailySummaryEnabled ?? true,
+    staffDayCloseEmailEnabled: staffDayCloseEmailEnabled ?? true,
     dailySummaryTimes: JSON.stringify(
       (() => {
         // "HH:MM" strings, in IST, up to 3 per day; falls back to the

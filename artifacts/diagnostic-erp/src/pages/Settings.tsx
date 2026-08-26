@@ -59,7 +59,7 @@ type EmailSettings = {
   smtpHost: string; smtpPort: string; smtpUser: string; smtpPassword: string;
   smtpSecure: boolean; fromAddress: string; fromName: string;
   adminEmail: string; extraRecipients: string;
-  billEditEnabled: boolean; dailySummaryEnabled: boolean;
+  billEditEnabled: boolean; dailySummaryEnabled: boolean; staffDayCloseEmailEnabled?: boolean;
   // Raw JSON array string as persisted server-side, e.g. '["09:00","17:00"]'.
   dailySummaryTimes: string;
   // Form-only fields: up to 3 discrete time inputs, derived from/converted
@@ -3759,6 +3759,7 @@ function EmailTab() {
   const smtpSecure = !!watch("smtpSecure");
   const billEditEnabled = watch("billEditEnabled") !== false;
   const dailySummaryEnabled = watch("dailySummaryEnabled") !== false;
+  const staffDayCloseEmailEnabled = watch("staffDayCloseEmailEnabled") !== false;
 
   return (
     <div className="grid grid-cols-1 gap-4">
@@ -3831,6 +3832,14 @@ function EmailTab() {
               <p className="text-[11px] text-muted-foreground mt-1">India Standard Time (IST). The first time is required; leave the 2nd/3rd blank to send once a day. Each configured time sends automatically, at most once per day.</p>
             </div>
           )}
+
+          <div className="border-t border-card-border pt-4 flex items-start justify-between gap-4">
+            <div>
+              <Label className="font-medium">Staff day-close reconciliation email</Label>
+              <p className="text-[11px] text-muted-foreground">Sends one email per drawer close — Vijay closes → Vijay&apos;s slip, Sanjeev closes later → Sanjeev&apos;s slip. Bulk close sends one email for each staff closed.</p>
+            </div>
+            <Toggle checked={staffDayCloseEmailEnabled} onChange={(v) => setValue("staffDayCloseEmailEnabled", v, { shouldDirty: true })} label="Toggle staff day-close emails" />
+          </div>
         </div>
 
         <div className="flex flex-wrap justify-end gap-2">
