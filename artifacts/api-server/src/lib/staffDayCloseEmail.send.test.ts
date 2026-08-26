@@ -82,10 +82,14 @@ describe("sendStaffDayCloseEmail", () => {
     await sendStaffDayCloseEmail({ ...basePayload, staffName: "Sanjeev", closureId: 11, drawerStatus: "balanced" });
 
     expect(sendMail).toHaveBeenCalledTimes(2);
-    expect(sendMail.mock.calls[0][0].subject).toContain("Vijay");
-    expect(sendMail.mock.calls[1][0].subject).toContain("Sanjeev");
-    expect(sendMail.mock.calls[0][0].html).toContain("Vijay");
-    expect(sendMail.mock.calls[1][0].html).toContain("Sanjeev");
+    expect(sendMail).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      subject: expect.stringContaining("Vijay"),
+      html: expect.stringContaining("Vijay"),
+    }));
+    expect(sendMail).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      subject: expect.stringContaining("Sanjeev"),
+      html: expect.stringContaining("Sanjeev"),
+    }));
   });
 
   test("skips when staff day-close email toggle is off", async () => {
