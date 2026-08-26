@@ -6,13 +6,9 @@ import {
 } from "@workspace/db/schema";
 import { and, asc, desc, eq, isNull, ilike, or, sql } from "drizzle-orm";
 import { queueBroadcaster } from "../lib/queueBroadcast";
+import { todayIST as todayISO } from "../lib/istDate";
 
 export const testTokensRouter: IRouter = Router();
-
-function todayISO(): string {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
 
 export { deriveBillTokenFromTestTokens } from "../lib/deriveBillToken";
 

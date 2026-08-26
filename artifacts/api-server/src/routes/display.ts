@@ -38,6 +38,7 @@ import { and, asc, desc, eq, inArray, isNotNull, isNull, or } from "drizzle-orm"
 import { requireStaffAuth } from "../middleware/requireStaffAuth";
 import { queueBroadcaster, type QueueUpdateEvent } from "../lib/queueBroadcast";
 import { withCache, TTL } from "../lib/ttlCache";
+import { todayIST as todayISO } from "../lib/istDate";
 
 export const displayRouter: IRouter = Router();
 
@@ -91,11 +92,6 @@ displayRouter.get("/token", requireStaffAuth, (_req, res): void => {
 });
 
 // ─── Shared helper: fetch queue data for a ledger + optional department filter ─
-
-function todayISO(): string {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
 
 async function fetchQueueData(opts: {
   ledgerId: number;
