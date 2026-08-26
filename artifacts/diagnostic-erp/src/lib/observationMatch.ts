@@ -14,6 +14,7 @@ export function normalizeContributionMatch(s: string): string {
     .replace(SMART_QUOTES, "'")
     .replace(SMART_DBL, '"')
     .replace(SMART_DASH, "-")
+    .replace(/-(?=\s|$)/g, ".")
     .replace(/\s+/g, " ")
     .trim()
     .toLowerCase()
@@ -38,7 +39,7 @@ export function fieldContainsContribution(fieldText: string, contribution: strin
   const lines = fieldText.split(/\n+/);
   for (const line of lines) {
     if (contributionsMatch(line, c)) return true;
-    const parts = line.split(/(?<=[.!?])\s+/);
+    const parts = line.split(/(?<=[.!?]|[\u2013\u2014-])\s+/);
     if (parts.some((p) => contributionsMatch(p, c))) return true;
   }
   return false;

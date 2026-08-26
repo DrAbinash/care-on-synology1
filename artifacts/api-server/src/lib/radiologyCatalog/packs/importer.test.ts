@@ -166,7 +166,7 @@ describe("K3 import — conflict_group maps onto quickFindingRows", () => {
 schema_version: "1.0.0"
 pack: { id: test.own, version: "1.0.0", modality: MR }
 categories:
-  - { key: crit, display_name: Critical }
+  - { key: critical, display_name: Critical }
 findings:
   - id_key: brain.hemorrhage
     display_name: Hemorrhage

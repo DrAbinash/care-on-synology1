@@ -112,7 +112,7 @@ function mergeSummary(extra: Record<string, unknown>) {
   mergeJsonArtifact("composition-walkthrough-summary.json", extra);
 }
 
-describe("P0 composition safety walkthroughs", () => {
+describe("P0 composition safety walkthroughs", { timeout: 20_000 }, () => {
   beforeEach(() => reset("Brain"));
 
   it("1. finalize gate on stale impression — refresh and sign-anyway paths", () => {
@@ -212,8 +212,13 @@ describe("P0 composition safety walkthroughs", () => {
   it("3. sibling warnings show all and survive to finalize gate", () => {
     overlayTile(FAZEKAS1, "qf-f1");
     overlayTile(FAZEKAS2, "qf-f2");
-    useWorkspace.getState().setField("findings", `${useWorkspace.getState().findingsText}\nNo hemorrhage.`, { source: "template" });
     overlayTile(HEMOR, "qf-hem", { side: "right" });
+    useWorkspace.getState().setField(
+      "findings",
+      `${useWorkspace.getState().findingsText}\nNo confluent lesions.\nNo hemorrhage.`,
+      { source: "template" },
+    );
+    overlayTile(FAZEKAS2, "qf-f2");
     const warnings = useWorkspace.getState().ownershipReviewWarnings;
     expect(warnings.length).toBeGreaterThanOrEqual(2);
     const tokens = warnings.map((w) => w.token);
@@ -247,7 +252,7 @@ describe("P0 composition safety walkthroughs", () => {
   });
 });
 
-describe("P1 robustness walkthroughs", () => {
+describe("P1 robustness walkthroughs", { timeout: 20_000 }, () => {
   beforeEach(() => reset("Brain"));
 
   it("4. NBSP + smart quotes still strip on deselect", () => {

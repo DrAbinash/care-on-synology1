@@ -495,6 +495,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const impressionText = useWorkspace((s: WorkspaceStore) => s.impressionText);
   const impressionNeedsRefresh = useWorkspace((s: WorkspaceStore) => s.impressionNeedsRefresh);
   const ownershipReviewWarnings = useWorkspace((s: WorkspaceStore) => s.ownershipReviewWarnings);
+  const ledgerHydrationWarning = useWorkspace((s: WorkspaceStore) => s.ledgerHydrationWarning);
   const appliedPathologyPatches = useWorkspace((s: WorkspaceStore) => s.appliedPathologyPatches);
   const recommendationText = useWorkspace((s: WorkspaceStore) => s.recommendationText);
   const techniqueText = useWorkspace((s: WorkspaceStore) => s.techniqueText);

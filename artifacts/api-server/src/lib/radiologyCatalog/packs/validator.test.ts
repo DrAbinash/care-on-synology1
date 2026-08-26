@@ -149,7 +149,7 @@ const OWNERSHIP_PACK = `
 schema_version: "1.0.0"
 pack: { id: test.own, version: "1.0.0" }
 categories:
-  - { key: crit, display_name: Critical }
+  - { key: critical, display_name: Critical }
   - { key: normal, display_name: Normal }
 findings:
   - id_key: brain.hemorrhage

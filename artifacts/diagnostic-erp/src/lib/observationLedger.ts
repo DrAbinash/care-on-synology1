@@ -36,6 +36,7 @@ export {
   fieldContainsContribution,
   contributionsMatch,
 } from "./observationMatch";
+export { contributionPresent, contributionProtected } from "./observationSlot";
 
 export type LedgerPatch = {
   id: string;

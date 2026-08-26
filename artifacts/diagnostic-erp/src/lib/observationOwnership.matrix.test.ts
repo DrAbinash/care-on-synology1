@@ -186,7 +186,8 @@ describe("ownership matrix — enriched DEFAULT_QUICK_SELECT_TILES", () => {
     );
     const outcome = useWorkspace.getState().removeObservation("qf-hydro");
     expect(outcome).toBe("removed");
-    expect(useWorkspace.getState().findingsText).toContain(hydro.baselineReplaces!);
+    expect(useWorkspace.getState().findingsText).toMatch(/Ventricular system and cisternal spaces are normal/i);
+    expect(useWorkspace.getState().findingsText).not.toMatch(/hydrocephalus/i);
   });
 
   it("every critical-category tile has conflictGroup (R6)", () => {
