@@ -189,15 +189,16 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
   /** Primary region (first selected) — drives default template / protocol pick. */
   const matchedStudyRegion = studyRegions[0] ?? null;
 
-  const studyContext: ReportingStudyContext = useMemo(
+    const studyContext: ReportingStudyContext = useMemo(
     () => buildReportingStudyContext({
       modality,
       studyDescription,
       dicomBodyPart,
       regions: studyRegions,
       source: regionOverrides ? "override" : (matchedStudyRegion ? "auto" : "unresolved"),
+      protocolName: activeProtocol?.name ?? null,
     }),
-    [modality, studyDescription, dicomBodyPart, studyRegions, regionOverrides, matchedStudyRegion],
+    [modality, studyDescription, dicomBodyPart, studyRegions, regionOverrides, matchedStudyRegion, activeProtocol?.name],
   );
 
   /** Protocols for the selected region(s). When no region is chosen yet, show

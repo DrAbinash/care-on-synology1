@@ -274,7 +274,7 @@ export async function exportRadiologyReportToPdf(input: RadiologyPdfExportInput)
         headingCase: input.headingCase,
       }),
       impression: input.impression.filter(Boolean).join("\n"),
-      recommendation: input.recommendation || "Please correlate with clinical findings.",
+      recommendation: input.recommendation?.trim() ?? "",
       measurements: measurements.length > 0 ? measurements : undefined,
       keyImages,
       reportTitle: input.studyName || "Radiology Report",

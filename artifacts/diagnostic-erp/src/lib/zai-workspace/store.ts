@@ -14,6 +14,7 @@ import {
   hydrateReportFormatsLibrary,
 } from "./reportFormatsApi";
 import { hydrateChocolateMacrosFromServer } from "@/lib/chocolateMacrosApi";
+import { shouldConfirmFormatOverwrite, clinicalFieldsFromFormat } from "./fullReportFormat";
 import { DEFAULT_SNIPPET_MACROS, lookupMacros, lookupMacrosForContext, loadMacros, saveMacros, createMacro } from "./snippet-macros-library";
 import { DEFAULT_SIGN_OFF_PROFILES, loadProfiles, saveProfiles, lookupProfile, formatSignOff, createProfile } from "./sign-off-profiles";
 import {
@@ -112,6 +113,8 @@ interface S {
   criticalSlaStartedAt: number | null; criticalSlaMinutes: number; criticalSlaEscalated: boolean;
   quickSelectTiles: QuickSelectTile[]; quickSelectEditorOpen: boolean; quickSelectEditingTile: QuickSelectTile | null; quickSelectEditorField: QuickSelectField | null;
   reportFormats: ReportFormat[]; selectedFormatIds: string[]; reportFormatPickerOpen: boolean;
+  /** Printed heading from the last applied Full Report Format (null = use fallback chain). */
+  appliedFormatReportTitle: string | null;
   saveAsFormatDialogOpen: boolean; mergePreviewOpen: boolean; lastMergeResult: MergeResult | null;
   lastMergeFormats: { a: ReportFormat; b: ReportFormat | null } | null; confirmOverwriteOpen: boolean; pendingFormatIds: string[];
   pendingPathologyPatch: PendingPathologyPatch | null;
@@ -151,7 +154,8 @@ export type WorkspaceStore = S & {
   saveQuickSelectTile: (i: Omit<QuickSelectTile, "id" | "createdAt" | "updatedAt"> & { id?: string }) => void; deleteQuickSelectTile: (id: string) => void;
   incrementTileUsage: (id: string) => void; toggleTileFavorite: (id: string) => void; resetQuickSelectToDefaults: () => void;
   toggleReportFormatPicker: () => void; setReportFormatPickerOpen: (o: boolean) => void; toggleFormatSelection: (id: string) => void; clearFormatSelection: () => void;
-  applySelectedFormats: () => void; confirmOverwriteAndApply: () => void; cancelOverwrite: () => void; applyMergedResult: () => void; cancelMerge: () => void;
+  applySelectedFormats: () => void; applyFormatById: (id: string) => void; confirmOverwriteAndApply: () => void; cancelOverwrite: () => void; applyMergedResult: () => void; cancelMerge: () => void;
+  toggleFormatFavorite: (id: string) => void;
   applyPathologyOverlay: (opts: PendingPathologyPatch & { force?: boolean }) => "applied" | "pending";
   undoLastPatch: () => boolean;
   applyVoiceComposerPlan: (plan: VoiceChangePlan, transcript: string, opts?: { force?: boolean }) => "applied" | "blocked";
@@ -202,6 +206,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   notification: null, criticalSlaStartedAt: null, criticalSlaMinutes: 15, criticalSlaEscalated: false,
   quickSelectTiles: typeof window !== "undefined" ? loadTiles() : DEFAULT_QUICK_SELECT_TILES, quickSelectEditorOpen: false, quickSelectEditingTile: null, quickSelectEditorField: null,
   reportFormats: typeof window !== "undefined" ? loadFormats() : DEFAULT_REPORT_FORMATS, selectedFormatIds: [], reportFormatPickerOpen: false,
+  appliedFormatReportTitle: null,
   saveAsFormatDialogOpen: false, mergePreviewOpen: false, lastMergeResult: null, lastMergeFormats: null, confirmOverwriteOpen: false, pendingFormatIds: [],
   pendingPathologyPatch: null, lastPatchSnapshot: null, appliedPathologyPatches: [],
   voiceComposerObservations: [], voiceComposerTranscriptHistory: [],
@@ -234,7 +239,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     }
     set({ studies: next });
   },
-  selectStudy: (id) => { const st = get().studies.find(s => s.id === id); if (!st) return; set({ activeStudyId: id, findingsText: "", impressionText: "", recommendationText: "", techniqueText: "", clinicalHistoryText: st.clinicalHistory || "", fieldProvenance: {}, measurements: [], priors: [], isDirty: false, isFinalized: false, isFinalizing: false, railStage: "orient", ghostText: null, ghostTextTarget: null, acknowledgedCopilotIds: new Set(), activeCopilotItem: null, voiceTranscript: "", voiceListening: false, selectedFormatIds: [], reportFormatPickerOpen: false, criticalSlaStartedAt: null, criticalSlaEscalated: false, preloadTriggered: false, nextStudyPreloaded: false, reportingContext: EMPTY_REPORTING_STUDY_CONTEXT }); setTimeout(() => get().recomputeCopilot(), 0); },
+  selectStudy: (id) => { const st = get().studies.find(s => s.id === id); if (!st) return; set({ activeStudyId: id, findingsText: "", impressionText: "", recommendationText: "", techniqueText: "", clinicalHistoryText: st.clinicalHistory || "", fieldProvenance: {}, measurements: [], priors: [], isDirty: false, isFinalized: false, isFinalizing: false, railStage: "orient", ghostText: null, ghostTextTarget: null, acknowledgedCopilotIds: new Set(), activeCopilotItem: null, voiceTranscript: "", voiceListening: false, selectedFormatIds: [], reportFormatPickerOpen: false, appliedFormatReportTitle: null, criticalSlaStartedAt: null, criticalSlaEscalated: false, preloadTriggered: false, nextStudyPreloaded: false, reportingContext: EMPTY_REPORTING_STUDY_CONTEXT }); setTimeout(() => get().recomputeCopilot(), 0); },
   setNextStudy: (id) => set({ nextStudyId: id }), markNextStudyPreloaded: () => set({ nextStudyPreloaded: true }),
   setField: (f, v, opts) => {
     const key = fieldTextKey(f);
@@ -435,13 +440,26 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     if (!ids.length) return;
     const fs = get().reportFormats.filter((f: ReportFormat) => ids.includes(f.id));
     if (!fs.length) return;
-    const { findingsText, impressionText, recommendationText, techniqueText, clinicalHistoryText } = get();
-    const formatsHaveHistory = fs.some((f) => (f.clinicalHistory ?? "").trim());
-    if (findingsText.trim() || impressionText.trim() || recommendationText.trim() || techniqueText.trim() || (formatsHaveHistory && clinicalHistoryText.trim())) {
+    const { findingsText, impressionText, recommendationText, techniqueText } = get();
+    if (shouldConfirmFormatOverwrite({
+      technique: techniqueText,
+      findings: findingsText,
+      impression: impressionText,
+      recommendation: recommendationText,
+    })) {
       set({ confirmOverwriteOpen: true, pendingFormatIds: ids, pendingPathologyPatch: null });
       return;
     }
     get().confirmOverwriteAndApply();
+  },
+  applyFormatById: (id) => {
+    set({ selectedFormatIds: [id] });
+    get().applySelectedFormats();
+  },
+  toggleFormatFavorite: (id) => {
+    const nf = get().reportFormats.map((x: ReportFormat) => x.id === id ? { ...x, favorite: !x.favorite, updatedAt: new Date().toISOString() } : x);
+    saveFormats(nf);
+    set({ reportFormats: nf });
   },
   confirmOverwriteAndApply: () => {
     const pendingPatch = get().pendingPathologyPatch;
@@ -456,16 +474,29 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     if (!fs.length) { set({ confirmOverwriteOpen: false, pendingFormatIds: [] }); return; }
     if (fs.length === 1) {
       const f = fs[0];
-      get().setField("technique", f.technique, { source: "template", replaceProvenance: true });
-      get().setField("findings", f.findings, { source: "template", replaceProvenance: true });
-      get().setField("impression", f.impression, { source: "template", replaceProvenance: true });
-      get().setField("recommendation", f.recommendation, { source: "template", replaceProvenance: true });
-      if ((f.clinicalHistory ?? "").trim()) {
-        get().setField("clinicalHistory", f.clinicalHistory, { source: "template", replaceProvenance: true });
+      const clinical = clinicalFieldsFromFormat(f);
+      get().setField("technique", clinical.technique, { source: "template", replaceProvenance: true });
+      get().setField("findings", clinical.findings, { source: "template", replaceProvenance: true });
+      get().setField("impression", clinical.impression, { source: "template", replaceProvenance: true });
+      get().setField("recommendation", clinical.recommendation, { source: "template", replaceProvenance: true });
+      if (clinical.clinicalHistory.trim()) {
+        get().setField("clinicalHistory", clinical.clinicalHistory, { source: "template", replaceProvenance: true });
       }
       const nf = get().reportFormats.map((x: ReportFormat) => x.id === f.id ? { ...x, usageCount: (x.usageCount ?? 0) + 1 } : x);
       saveFormats(nf);
-      set({ reportFormats: nf, confirmOverwriteOpen: false, pendingFormatIds: [], reportFormatPickerOpen: false, appliedPathologyPatches: [], lastPatchSnapshot: null });
+      set({
+        reportFormats: nf,
+        confirmOverwriteOpen: false,
+        pendingFormatIds: [],
+        reportFormatPickerOpen: false,
+        appliedPathologyPatches: [],
+        lastPatchSnapshot: null,
+        appliedFormatReportTitle: clinical.reportTitle || null,
+      });
+      get().pushNotification({
+        kind: "ledger",
+        text: "Full report applied. Review preview, then PDF / Print / Finalize.",
+      });
       void bumpReportFormatUsage(f.id);
       return;
     }
@@ -687,6 +718,10 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       reportFormatPickerOpen: false,
       appliedPathologyPatches: [],
       lastPatchSnapshot: null,
+      appliedFormatReportTitle:
+        (get().lastMergeFormats?.a?.reportTitle ?? "").trim()
+        || (get().lastMergeFormats?.b?.reportTitle ?? "").trim()
+        || null,
     });
     // Increment usage count
     const ids = get().selectedFormatIds;

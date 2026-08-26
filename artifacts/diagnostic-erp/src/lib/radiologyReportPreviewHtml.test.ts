@@ -49,6 +49,7 @@ describe("buildPreviewHtml", () => {
     });
     expect(html).toContain("REF. BY:");
     expect(html).not.toContain("ACC:");
+    expect(html).not.toMatch(/Recommendation/i);
   });
 
   it("formats headings by case preference", () => {

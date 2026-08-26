@@ -151,11 +151,13 @@ export function buildLivePrintBodyHtml(input: LivePrintBodyInput): string {
   const impressionHtml = renderImpressionSectionHtml(input.impression, ist);
   if (impressionHtml) parts.push(impressionHtml);
 
-  const rec = input.recommendation?.trim() || "Please correlate with clinical findings.";
-  parts.push(
-    `<div class="section-heading">${escHtml(fmtHeading("Recommendation", hc))}</div>`,
-    `<p>${formatPrintBodyHtml(rec)}</p>`,
-  );
+  const rec = input.recommendation?.trim();
+  if (rec) {
+    parts.push(
+      `<div class="section-heading">${escHtml(fmtHeading("Recommendation", hc))}</div>`,
+      `<p>${formatPrintBodyHtml(rec)}</p>`,
+    );
+  }
 
   return parts.join("\n");
 }

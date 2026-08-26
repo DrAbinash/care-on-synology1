@@ -267,6 +267,7 @@ import { QuickSelectEditor } from "@/components/radiology/zai-workspace/quick-se
 import { MergePreviewDialog } from "@/components/radiology/zai-workspace/merge-preview-dialog";
 import { ConfirmOverwriteDialog } from "@/components/radiology/zai-workspace/confirm-overwrite-dialog";
 import { SaveAsFormatDialog } from "@/components/radiology/zai-workspace/save-as-format-dialog";
+import { resolvePrintedReportTitle } from "@/lib/zai-workspace/fullReportFormat";
 import { ChocolateBoxMacros } from "@/components/radiology/zai-workspace/chocolate-box-macros";
 import { MacroEditorDialog } from "@/components/radiology/zai-workspace/macro-editor-dialog";
 import { MacroPromptPopover } from "@/components/radiology/zai-workspace/macro-prompt-popover";
@@ -492,6 +493,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const recommendationText = useWorkspace((s: WorkspaceStore) => s.recommendationText);
   const techniqueText = useWorkspace((s: WorkspaceStore) => s.techniqueText);
   const clinicalHistoryText = useWorkspace((s: WorkspaceStore) => s.clinicalHistoryText);
+  const appliedFormatReportTitle = useWorkspace((s: WorkspaceStore) => s.appliedFormatReportTitle);
   // Read-only: drives the collapsed Findings summary's "N assisted" count.
   const findingsProvenance = useWorkspace((s: WorkspaceStore) => s.fieldProvenance.findings);
   const impressionProvenance = useWorkspace((s: WorkspaceStore) => s.fieldProvenance.impression);
@@ -2260,9 +2262,12 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     toast,
   ]);
 
-  const studyNameForExport = studySetup.testName
-    ?? workflow.currentRow?.studyDescription
-    ?? "Radiology Report";
+  const studyNameForExport = resolvePrintedReportTitle(
+    appliedFormatReportTitle,
+    studySetup.testName
+      ?? workflow.currentRow?.studyDescription
+      ?? "Radiology Report",
+  );
 
   // ─── Canonical report demography (ERP > DICOM > manual override) ─────────
   const patientMasterQ = useQuery<{
@@ -2998,7 +3003,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
               style={{ background: study.modality === "MR" ? "oklch(0.55 0.18 280)" : study.modality === "CT" ? "oklch(0.55 0.18 220)" : study.modality === "US" ? "oklch(0.6 0.15 180)" : "oklch(0.6 0.12 60)" }}>
               {study.modality}
             </span>
-            <span className="text-xs font-semibold truncate">{studySetup.testName ?? study.studyDescription}</span>
+            <span className="text-xs font-semibold truncate">{studyNameForExport}</span>
             {studySetup.activeProtocol && (
               <Badge variant="outline" className="text-[9px] shrink-0" title="Auto-selected protocol from DICOM">
                 {studySetup.activeProtocol.name}
@@ -3663,9 +3668,9 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                             data-testid="protocol-title-input"
                           />
                         )}
-                        {studySetup.testName && (
-                          <span className="text-foreground" title="Test / template name from DICOM match">
-                            Test: <strong>{studySetup.testName}</strong>
+                        {(studyNameForExport || studySetup.testName) && (
+                          <span className="text-foreground" title="Test / template name from DICOM match or applied full report format">
+                            Test: <strong>{studyNameForExport}</strong>
                             {studySetup.templateMismatch ? " ⚠ region mismatch" : ""}
                           </span>
                         )}
