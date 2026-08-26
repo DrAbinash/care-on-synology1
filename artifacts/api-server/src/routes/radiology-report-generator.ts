@@ -88,6 +88,7 @@ import {
 import { regenerateDraftStructuredJson } from "../lib/radiologyStructuredJsonCache";
 import {
   persistCareStructuredFormatState,
+  persistCareObservationLedger,
 } from "../lib/persistCareStructuredFormatState";
 import {
   CARE_STRUCTURED_FORMAT_STATE_KIND,
@@ -1496,6 +1497,7 @@ const SaveDraftBody = z.object({
     ])),
     updatedAt: z.string().optional(),
   }).nullish(),
+  observationLedger: z.unknown().optional(),
 });
 
 radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest, res: Response) => {
@@ -1747,6 +1749,17 @@ radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest,
       formatStatePersistFailed = true;
       console.error(
         "[radiology-report-generator] structured format state persist failed:",
+        err,
+      );
+    }
+  }
+
+  if (draft?.id && rest.observationLedger != null) {
+    try {
+      await persistCareObservationLedger(draft.id, rest.observationLedger);
+    } catch (err) {
+      console.error(
+        "[radiology-report-generator] observation ledger persist failed (non-fatal):",
         err,
       );
     }
