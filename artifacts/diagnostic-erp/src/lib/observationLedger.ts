@@ -238,6 +238,8 @@ export type SerializedObservationLedger = {
     protected: boolean;
     lastRenderedHashes?: { findings?: string; impression?: string; recommendation?: string };
   }>;
+  /** Editor provenance — restored on reopen so deselect/protection still work. */
+  fieldProvenance?: NarrativeProvenance;
 };
 
 function hashText(s: string | undefined): string {
@@ -247,7 +249,10 @@ function hashText(s: string | undefined): string {
   return `${t.length}:${h.toString(16)}`;
 }
 
-export function serializeObservationLedger(patches: LedgerPatch[]): SerializedObservationLedger {
+export function serializeObservationLedger(
+  patches: LedgerPatch[],
+  fieldProvenance?: NarrativeProvenance,
+): SerializedObservationLedger {
   return {
     kind: OBSERVATION_LEDGER_KIND,
     version: 1,
@@ -265,27 +270,183 @@ export function serializeObservationLedger(patches: LedgerPatch[]): SerializedOb
         recommendation: hashText(p.lastRendered.recommendation),
       },
     })),
+    fieldProvenance: fieldProvenance && Object.keys(fieldProvenance).length > 0 ? fieldProvenance : undefined,
   };
 }
 
+function isValidLedgerPatch(raw: unknown): raw is LedgerPatch {
+  if (!raw || typeof raw !== "object") return false;
+  const row = raw as Record<string, unknown>;
+  if (typeof row.id !== "string" || !row.id.trim()) return false;
+  const obs = row.observation as Record<string, unknown> | undefined;
+  if (!obs || typeof obs !== "object") return false;
+  if (typeof obs.slotKey !== "string" || !obs.slotKey.trim()) return false;
+  return true;
+}
+
+function coerceLedgerPatch(raw: unknown): LedgerPatch | null {
+  if (!isValidLedgerPatch(raw)) return null;
+  const row = raw as LedgerPatch;
+  return {
+    id: row.id,
+    observation: row.observation,
+    templates: row.templates ?? {},
+    lastRendered: row.lastRendered ?? {},
+    replacedBaseline: row.replacedBaseline ?? { findings: [], impression: [] },
+    source: row.source,
+    protected: Boolean(row.protected),
+  };
+}
+
+export type LedgerParseStatus = "restored" | "absent" | "malformed" | "incompatible";
+
+export type ParsedObservationLedger = {
+  status: LedgerParseStatus;
+  patches: LedgerPatch[];
+  fieldProvenance?: NarrativeProvenance;
+};
+
+export function parseObservationLedger(raw: unknown): ParsedObservationLedger {
+  if (raw == null) return { status: "absent", patches: [] };
+  if (typeof raw !== "object") return { status: "malformed", patches: [] };
+  let rec = raw as Record<string, unknown>;
+  if (rec.careObservationLedger && typeof rec.careObservationLedger === "object") {
+    rec = rec.careObservationLedger as Record<string, unknown>;
+  }
+  if (rec.kind != null && rec.kind !== OBSERVATION_LEDGER_KIND) {
+    return { status: "malformed", patches: [] };
+  }
+  if (rec.kind === OBSERVATION_LEDGER_KIND && rec.version != null && rec.version !== 1) {
+    return { status: "incompatible", patches: [] };
+  }
+  if (rec.kind === OBSERVATION_LEDGER_KIND && !Array.isArray(rec.patches)) {
+    return { status: "malformed", patches: [] };
+  }
+  if (rec.kind !== OBSERVATION_LEDGER_KIND) {
+    return { status: "malformed", patches: [] };
+  }
+  const seen = new Set<string>();
+  const patches: LedgerPatch[] = [];
+  for (const row of rec.patches as unknown[]) {
+    const coerced = coerceLedgerPatch(row);
+    if (!coerced) continue;
+    if (seen.has(coerced.id)) continue;
+    seen.add(coerced.id);
+    patches.push(coerced);
+  }
+  if ((rec.patches as unknown[]).length > 0 && patches.length === 0) {
+    return { status: "malformed", patches: [] };
+  }
+  const fieldProvenance = rec.fieldProvenance && typeof rec.fieldProvenance === "object"
+    ? rec.fieldProvenance as NarrativeProvenance
+    : undefined;
+  return { status: "restored", patches, fieldProvenance };
+}
+
 export function deserializeObservationLedger(raw: unknown): LedgerPatch[] | null {
-  if (!raw || typeof raw !== "object") return null;
-  const rec = raw as Record<string, unknown>;
-  if (rec.kind !== OBSERVATION_LEDGER_KIND || rec.version !== 1) return null;
-  if (!Array.isArray(rec.patches)) return null;
-  return rec.patches.map((p) => {
-    const row = p as LedgerPatch;
-    return {
-      id: row.id,
-      observation: row.observation,
-      templates: row.templates ?? {},
-      lastRendered: row.lastRendered ?? {},
-      replacedBaseline: row.replacedBaseline ?? { findings: [], impression: [] },
-      source: row.source,
-      protected: Boolean(row.protected),
-    };
+  const parsed = parseObservationLedger(raw);
+  if (parsed.status !== "restored") return null;
+  return parsed.patches;
+}
+
+export type LedgerHydrationResult = {
+  ok: boolean;
+  mode: "restored" | "narrative-only";
+  reason: LedgerParseStatus;
+  patchCount: number;
+  warning?: string;
+};
+
+export function logLedgerHydrationSafe(result: LedgerHydrationResult): void {
+  if (result.ok) return;
+  console.warn("[care.observation_ledger] hydration failed; opening narrative-only", {
+    reason: result.reason,
+    patchCount: result.patchCount,
   });
 }
+
+export function reconstructProvenanceFromLedger(
+  narrative: ReportNarrative,
+  patches: LedgerPatch[],
+): NarrativeProvenance {
+  const build = (field: "findings" | "impression" | "technique" | "recommendation"): FieldProvenanceMap => {
+    const map: FieldProvenanceMap = {};
+    for (const s of splitToSentences(narrative[field])) {
+      const key = normalizeForDedupe(s);
+      if (!key) continue;
+      const owners = patches.filter((p) => contributionPresent(p.lastRendered[field] ?? "", s) || (p.lastRendered[field] ?? "").includes(s));
+      if (owners.length === 0) {
+        map[key] = ["template"];
+        continue;
+      }
+      const sources = new Set<InsertSource>();
+      for (const o of owners) {
+        if (o.protected) sources.add("manual");
+        if (o.source) sources.add(o.source);
+      }
+      map[key] = [...sources];
+    }
+    return map;
+  };
+  return {
+    clinicalHistory: provenanceFromText(narrative.clinicalHistory, "template"),
+    findings: build("findings"),
+    impression: build("impression"),
+    technique: build("technique"),
+    recommendation: build("recommendation"),
+  };
+}
+
+const SIBLING_STOP = new Set([
+  "lesion", "lesions", "signal", "normal", "abnormal", "intensity", "white", "matter",
+  "there", "this", "that", "with", "from", "into", "without", "showing", "appear",
+  "appearance", "grade", "space", "spaces", "system", "bilateral",
+]);
+const SIBLING_DENIAL =
+  /\b(no|without|absence of|not identified|not seen|free of|no evidence|no definite|no obvious|no apparent|no significant)\b/i;
+
+function assertedDistinctiveTokens(text: string): string[] {
+  const tokens = (text.toLowerCase().match(/[a-z]{6,}/g) ?? [])
+    .filter((t) => !SIBLING_STOP.has(t));
+  return [...new Set(tokens)].slice(0, 8);
+}
+
+export type UnownedSiblingWarning = { sentence: string; token: string };
+
+/**
+ * Conservative: warn only when leftover unowned text denies a distinctive
+ * token the new observation asserts. Never deletes the sentence.
+ */
+export function detectUnownedSiblingConflicts(opts: {
+  findings: string;
+  incomingFindings?: string;
+  ownedLastRendered: string[];
+}): UnownedSiblingWarning[] {
+  const incoming = (opts.incomingFindings ?? "").trim();
+  if (!incoming) return [];
+  const asserted = assertedDistinctiveTokens(incoming).filter((token) => {
+    const re = new RegExp(`\\b${token}\\b`, "i");
+    const idx = incoming.toLowerCase().search(re);
+    if (idx < 0) return false;
+    return !SIBLING_DENIAL.test(incoming.slice(Math.max(0, idx - 36), idx));
+  });
+  if (asserted.length === 0) return [];
+  const incomingSet = new Set(splitToSentences(incoming));
+  const ownedChunks = opts.ownedLastRendered.flatMap((t) => splitToSentences(t));
+  const out: UnownedSiblingWarning[] = [];
+  for (const s of splitToSentences(opts.findings)) {
+    if (incomingSet.has(s)) continue;
+    if (ownedChunks.some((c) => c === s || s.includes(c))) continue;
+    if (!SIBLING_DENIAL.test(s)) continue;
+    const token = asserted.find((t) => new RegExp(`\\b${t}\\b`, "i").test(s));
+    if (!token) continue;
+    out.push({ sentence: s, token });
+    if (out.length >= 2) break;
+  }
+  return out;
+}
+
+export const UNOWNED_SIBLING_HINT = "Review nearby unowned text after this finding changed.";
 
 export function extractCareObservationLedger(column: unknown): unknown {
   if (!column || typeof column !== "object") return null;
