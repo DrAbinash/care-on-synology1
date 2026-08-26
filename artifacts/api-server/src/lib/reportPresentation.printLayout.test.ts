@@ -17,7 +17,7 @@ import {
   type ReportKeyImageModel,
 } from "./reportPresentation";
 import { buildLetterheadScaleCss } from "./reportLetterheadScale";
-import { resolveArtifactDir } from "../../../../../tests/helpers/resolveTestArtifactDir";
+import { resolveArtifactDir } from "../../../../tests/helpers/resolveTestArtifactDir";
 
 const ARTIFACT_DIR = resolveArtifactDir();
 

@@ -9,7 +9,7 @@
  *   pnpm --filter @workspace/scripts run sync:quick-finding-ownership -- --apply
  */
 import "dotenv/config";
-import { DEFAULT_QUICK_SELECT_TILES } from "../../artifacts/diagnostic-erp/src/lib/zai-workspace/quick-select-library";
+import { DEFAULT_QUICK_SELECT_TILES } from "../../artifacts/diagnostic-erp/src/lib/zai-workspace/quick-select-tiles.data";
 
 export type OwnershipFill = {
   studyType: string;
