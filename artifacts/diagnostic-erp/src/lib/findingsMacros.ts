@@ -25,6 +25,20 @@ import {
   type MacroSectionsOwned,
 } from "./chocolateMacroOwnership";
 
+export type MacroObservationSpec = {
+  concept?: string;
+  conflictGroup?: string;
+  anatomicalSection?: string;
+  level?: string;
+  laterality?: string;
+  findingsText: string;
+  impressionText?: string;
+  recommendationText?: string;
+  baselineReplaces?: string;
+  supportsLaterality?: boolean;
+  sectionsOwned?: MacroSectionsOwned;
+};
+
 export type ChocolateTile = {
   id: string;
   label: string;
@@ -40,6 +54,8 @@ export type ChocolateTile = {
   /** Append-only legacy/generic macro (no pathology replace). */
   legacyAppend?: boolean;
   impressionText?: string;
+  /** Atomic observations sharing one bundleId when this macro is applied. */
+  observations?: MacroObservationSpec[];
 };
 export type ChocolateBoxSet = { key: string; label: string; tiles: ChocolateTile[] };
 
@@ -101,6 +117,47 @@ const SPINE_COMMON_TILES: ChocolateTile[] = [
     label: "Disc Desiccation",
     text: "Loss of normal T2 signal intensity (desiccation) of the intervertebral disc at [Level], in keeping with early degenerative disc disease.",
     legacyAppend: true,
+  },
+  {
+    id: "spine-degenerative",
+    label: "Degenerative Changes",
+    text: "Degenerative disc disease of the lumbar spine with disc desiccation, reduced disc height, marginal osteophytes, facet arthropathy, and endplate changes.",
+    impressionText: "Lumbar degenerative disc disease.",
+    observations: [
+      {
+        concept: "disc_signal",
+        conflictGroup: "disc_signal",
+        findingsText: "Lumbar discs show loss of T2 signal (desiccation).",
+        sectionsOwned: ["findings"],
+      },
+      {
+        concept: "disc_height",
+        conflictGroup: "disc_height",
+        level: "L4-L5",
+        findingsText: "Disc height is reduced at L4-L5.",
+        sectionsOwned: ["findings"],
+      },
+      {
+        concept: "osteophytes",
+        conflictGroup: "osteophytes",
+        findingsText: "Marginal osteophytes are present at the lumbar vertebral endplates.",
+        sectionsOwned: ["findings"],
+      },
+      {
+        concept: "facet_joint",
+        conflictGroup: "facet_joint",
+        level: "L4-L5",
+        findingsText: "Facet arthropathy at L4-L5.",
+        sectionsOwned: ["findings"],
+      },
+      {
+        concept: "endplate",
+        conflictGroup: "endplate",
+        level: "L4-L5",
+        findingsText: "Modic type endplate changes at L4-L5.",
+        sectionsOwned: ["findings"],
+      },
+    ],
   },
   {
     id: "spine-normal",
