@@ -126,7 +126,8 @@ export const CRITICAL_PATTERNS: { pattern: RegExp; phrase: string; severity: Cri
   { pattern: /acute hydrocephalus/i, phrase: "Acute hydrocephalus", severity: "critical" },
 ];
 
-// Lint rules — pure, runnable on every keystroke
+// Lint rules — pure. Callers should debounce or defer the input text
+// (see useDebouncedValue in findings editor / reporting workspace).
 // Now accepts optional per-study rules from the YAML content packs.
 export function runLintRules(
   text: string,

@@ -67,6 +67,7 @@ import { useRadiologyDraftId, type RadiologyDraftRow } from "@/hooks/useRadiolog
 import { useRadiologyPalettePrefs } from "@/hooks/useRadiologyPalettePrefs";
 import { useFindingsMacroRecents } from "@/hooks/useFindingsMacroRecents";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 
 // ─── Existing Care lib/services ────────────────────────────────────────────────
 import { api } from "@/lib/fetchApi";
@@ -2786,9 +2787,10 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       ),
     [findingsText, findingsProvenance],
   );
+  const findingsTextDebounced = useDebouncedValue(findingsText, 200);
   const findingsLintCount = useMemo(
-    () => (findingsText ? runLintRules(findingsText, { modality: study?.modality ?? "XR", sex: study?.patient?.sex }).length : 0),
-    [findingsText, study?.modality, study?.patient?.sex],
+    () => (findingsTextDebounced ? runLintRules(findingsTextDebounced, { modality: study?.modality ?? "XR", sex: study?.patient?.sex }).length : 0),
+    [findingsTextDebounced, study?.modality, study?.patient?.sex],
   );
   const reportLayoutLabel = REPORT_LAYOUT_OPTIONS.find((o) => o.key === reportLayout)?.label ?? "Classic";
   const sectionSummaries: Record<ReportSectionId, string> = {

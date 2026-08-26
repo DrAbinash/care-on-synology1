@@ -1,6 +1,7 @@
 import { useEffect, useRef, useMemo, useState } from "react";
 import { useWorkspaceSelector, EMPTY_FIELD_PROVENANCE } from "@/lib/zai-workspace/store";
 import { runLintRules, type LintIssue } from "@/lib/zai-workspace/types";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import {
   formatProvenanceHover,
   provenanceMapToSegments,
@@ -86,11 +87,12 @@ export function FindingsEditor({
   const setGhost = useWorkspaceSelector(s => s.setGhostText);
   const sid = useWorkspaceSelector(s => s.activeStudyId);
   const studies = useWorkspaceSelector(s => s.studies);
+  const valueDebounced = useDebouncedValue(value, 200);
   const issues: LintIssue[] = useMemo(() => {
-    if (!value) return [];
+    if (!valueDebounced) return [];
     const st = studies.find(s => s.id === sid);
-    return runLintRules(value, { modality: st?.modality ?? "XR", sex: st?.patient?.sex });
-  }, [value, sid, studies]);
+    return runLintRules(valueDebounced, { modality: st?.modality ?? "XR", sex: st?.patient?.sex });
+  }, [valueDebounced, sid, studies]);
 
   const segments = useMemo(
     () => provenanceMapToSegments(typeof value === "string" ? value : "", provenance),
