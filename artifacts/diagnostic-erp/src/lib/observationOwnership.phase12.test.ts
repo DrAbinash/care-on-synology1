@@ -581,6 +581,7 @@ describe("dual-format merge + whole spine AA–AJ", () => {
     expect(s.findingsText).toMatch(/CERVICAL SPINE SCREENING/);
     expect(s.findingsText).toMatch(/DORSAL SPINE SCREENING/);
     expect(s.findingsText).toMatch(/limited screening examination/i);
+    expect(s.findingsText.indexOf("Diffuse disc bulge at L4-L5")).toBeLessThan(s.findingsText.indexOf("CERVICAL SPINE SCREENING"));
   });
 
   it("AJ. screening abnormality reaches Impression only when significant", () => {

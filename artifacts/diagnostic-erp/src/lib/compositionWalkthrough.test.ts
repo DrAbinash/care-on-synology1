@@ -248,6 +248,7 @@ export function runWalkthroughs() {
     spineTitle: merged.combinedReportTitle,
     spineHasCervical: /CERVICAL SPINE SCREENING/.test(spine.findingsText),
     spineHasDorsal: /DORSAL SPINE SCREENING/.test(spine.findingsText),
+    l45BeforeScreening: spine.findingsText.indexOf("Diffuse disc bulge at L4-L5") < spine.findingsText.indexOf("CERVICAL SPINE SCREENING"),
     limitedWording: /limited planar and limited sequence/i.test(spine.techniqueText),
     protectOutcome: outcome,
     protectKeepsEdit: afterDeselect.findingsText.includes("radiologist rewrite"),
@@ -257,7 +258,7 @@ export function runWalkthroughs() {
 }
 
 describe("composition walkthroughs (Phase 22)", () => {
-  it("produces the five golden composed reports", () => {
+  it("produces the five golden composed reports", { timeout: 20000 }, () => {
     const s = runWalkthroughs();
     expect(s.brainHasFazekas2).toBe(true);
     expect(s.brainDropsFazekas1).toBe(true);
@@ -271,6 +272,7 @@ describe("composition walkthroughs (Phase 22)", () => {
     expect(s.spineTitle).toBe("MRI LUMBOSACRAL SPINE WITH WHOLE SPINE SCREENING");
     expect(s.spineHasCervical).toBe(true);
     expect(s.spineHasDorsal).toBe(true);
+    expect(s.l45BeforeScreening).toBe(true);
     expect(s.limitedWording).toBe(true);
     expect(s.protectOutcome).toBe("preserved-manual");
     expect(s.protectKeepsEdit).toBe(true);

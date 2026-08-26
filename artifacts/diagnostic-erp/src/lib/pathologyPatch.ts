@@ -189,6 +189,25 @@ export interface PathologyPatchResult {
   replacedSentences: string[];
 }
 
+const SCREENING_SECTION_BREAK =
+  /\n(?=CERVICAL SPINE SCREENING|DORSAL SPINE SCREENING|THORACIC SPINE SCREENING|WHOLE SPINE SCREENING)/;
+
+/** Keep detailed-study pathology in the detailed block, not after screening. */
+function placeIncomingBeforeScreening(fieldText: string, incoming: string | undefined): string {
+  const inc = (incoming ?? "").trim();
+  if (!inc || !fieldText.includes(inc)) return fieldText;
+  const br = fieldText.match(SCREENING_SECTION_BREAK);
+  if (!br || br.index == null) return fieldText;
+  const incAt = fieldText.lastIndexOf(inc);
+  if (incAt < br.index) return fieldText;
+  const without = `${fieldText.slice(0, incAt)}${fieldText.slice(incAt + inc.length)}`
+    .replace(/\n{3,}/g, "\n\n")
+    .trimEnd();
+  const nextBr = without.match(SCREENING_SECTION_BREAK);
+  if (!nextBr || nextBr.index == null) return fieldText;
+  return `${without.slice(0, nextBr.index).trimEnd()}\n${inc}${without.slice(nextBr.index)}`;
+}
+
 /**
  * Overlay pathology text onto a whole-report narrative.
  * Never drops unrelated sentences. Manual anatomy sentences are kept and
@@ -287,6 +306,10 @@ export function applyPathologyPatch(opts: {
     opts.incoming.findings,
     opts.provenance?.findings,
   );
+  const findingsPlaced = {
+    ...findings,
+    text: placeIncomingBeforeScreening(findings.text, opts.incoming.findings),
+  };
 
   const impressionIncoming = opts.incoming.impression ?? "";
   const impression = patchField(
@@ -332,14 +355,14 @@ export function applyPathologyPatch(opts: {
     narrative: {
       clinicalHistory: opts.existing.clinicalHistory,
       technique: technique.text,
-      findings: findings.text,
+      findings: findingsPlaced.text,
       impression: impressionText,
       recommendation: recommendation.text,
     },
     provenance: {
       clinicalHistory: opts.provenance?.clinicalHistory,
       technique: technique.provenance,
-      findings: findings.provenance,
+      findings: findingsPlaced.provenance,
       impression: impression.provenance,
       recommendation: recommendation.provenance,
     },
