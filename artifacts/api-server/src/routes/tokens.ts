@@ -9,6 +9,7 @@ import { Router, type IRouter, type Response } from "express";
 import { db } from "@workspace/db";
 import { tokensTable, patientsTable } from "@workspace/db/schema";
 import { and, desc, eq, isNull, or, sql } from "drizzle-orm";
+import { todayIST as todayISO } from "../lib/istDate";
 
 export const tokensRouter: IRouter = Router();
 
@@ -18,14 +19,6 @@ function addDeprecationHeaders(res: Response): void {
   res.setHeader("Deprecation", "true");
   res.setHeader("X-Deprecated-Endpoint", "/api/test-tokens");
   res.setHeader("X-Deprecation-Notice", DEPRECATION_NOTE);
-}
-
-function todayISO(): string {
-  const d = new Date();
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
 }
 
 function ledgerScope(ledgerId: number) {

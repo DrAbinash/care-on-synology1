@@ -6,6 +6,7 @@ import { usersTable } from "@workspace/db/schema";
 import { eq } from "drizzle-orm";
 import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { auditFromRequest } from "../lib/audit";
+import { invalidateStaffSessionsForUser } from "../lib/invalidateStaffSessions";
 
 // Records an account-administration event (create/edit/delete/password reset)
 // in the immutable audit trail. The acting user is taken from the staff
@@ -261,6 +262,11 @@ router.patch("/:id", async (req: StaffAuthRequest, res) => {
       res.status(404).json({ error: "User not found" });
       return;
     }
+    // Admin PIN reset / clear: revoke every staff session for the target so
+    // existing bearer tokens cannot outlive the credential change.
+    if (req.body.pin !== undefined) {
+      await invalidateStaffSessionsForUser(id);
+    }
     // Audit the sensitive parts of an account edit: role changes, PIN resets,
     // and activation toggles. These are the fields a security review cares
     // about; cosmetic edits (photo, theme) are intentionally not logged.
@@ -330,6 +336,10 @@ router.patch("/:id/password", async (req, res) => {
 
   const hashed = await bcrypt.hash(newPinStr, BCRYPT_ROUNDS);
   const [updated] = await db.update(usersTable).set({ pin: hashed }).where(eq(usersTable.id, id)).returning();
+  // Self PIN change: keep the caller's current session, revoke every other.
+  const auth = req.headers.authorization || "";
+  const keepToken = auth.startsWith("Bearer ") ? auth.slice(7).trim() : undefined;
+  await invalidateStaffSessionsForUser(id, keepToken ? { keepToken } : undefined);
   auditAccountAction(req as StaffAuthRequest, "password_change", id, `Changed PIN for "${updated.name}"`);
   res.json({ ...updated, pin: undefined, maxDiscount: updated.maxDiscount != null ? Number(updated.maxDiscount) : null });
   return;
