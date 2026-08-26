@@ -445,8 +445,27 @@ router.get("/voucher-audits", async (req, res) => {
 router.get("/ledger", async (req, res) => {
   const { accountId, from, to } = req.query as Record<string, string>;
 
-  const allAccounts = await db.select().from(accountsTable);
-  const allVouchers = await db.select().from(vouchersTable).orderBy(vouchersTable.date, vouchersTable.createdAt);
+  // Push date/entity filters into SQL (same pattern as /export/tally and the
+  // M4 trial-balance / P&L fixes). Avoid loading the entire vouchers table
+  // into Node just to discard rows in JavaScript.
+  const accountIdNum = accountId ? Number(accountId) : NaN;
+  const allAccounts = Number.isInteger(accountIdNum) && accountIdNum > 0
+    ? await db.select().from(accountsTable).where(eq(accountsTable.id, accountIdNum))
+    : await db.select().from(accountsTable);
+
+  let voucherQuery = db.select().from(vouchersTable).$dynamic();
+  const conditions = [];
+  if (from) conditions.push(gte(vouchersTable.date, from));
+  if (to) conditions.push(lte(vouchersTable.date, to));
+  if (Number.isInteger(accountIdNum) && accountIdNum > 0) {
+    const accountIdStr = String(accountIdNum);
+    conditions.push(or(
+      eq(vouchersTable.debitAccountId, accountIdStr),
+      eq(vouchersTable.creditAccountId, accountIdStr),
+    ));
+  }
+  if (conditions.length) voucherQuery = voucherQuery.where(and(...conditions));
+  const allVouchers = await voucherQuery.orderBy(vouchersTable.date, vouchersTable.createdAt);
 
   const ledger = allAccounts.map((account) => {
     const accIdStr = account.id.toString();
@@ -472,11 +491,6 @@ router.get("/ledger", async (req, res) => {
     }
 
     for (const v of allVouchers) {
-      const afterFrom = !from || v.date >= from;
-      const beforeTo = !to || v.date <= to;
-      if (accountId && accountId !== accIdStr) continue;
-      if (!afterFrom || !beforeTo) continue;
-
       const amt = Number(v.amount);
       const isDebit = v.debitAccountId === accIdStr;
       const isCredit = v.creditAccountId === accIdStr;
@@ -499,8 +513,7 @@ router.get("/ledger", async (req, res) => {
     return { account: { ...account, openingBalance: Number(account.openingBalance || 0) }, dr, cr, balance: dr - cr, entries };
   });
 
-  const filtered = accountId ? ledger.filter(l => l.account.id.toString() === accountId) : ledger;
-  res.json(filtered);
+  res.json(ledger);
   return;
 });
 
