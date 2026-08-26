@@ -72,6 +72,13 @@ export interface FindingDecl {
   ai_contradiction_rules?: AiContradictionRule[];
   ai_completeness_rules?: AiCompletenessRule[];
   status?: string;                          // draft|active|deprecated (default draft)
+  /** Slot-ownership exclusivity key (maps to radiology_quick_findings.conflict_group). */
+  conflict_group?: string;
+  baseline_replaces?: string;
+  anatomical_section?: string;
+  level?: string;
+  laterality?: string;
+  study_type?: string;
 }
 
 export interface PackMeta { id: string; version: string; modality?: string; title?: string; }
@@ -125,7 +132,10 @@ export type IssueCode =
   | "MISSING_AI_SECTION"
   | "IMMUTABLE_ID_KEY_VIOLATION"
   | "UNKNOWN_CATEGORY_REF"
-  | "IMPORT_ERROR";
+  | "IMPORT_ERROR"
+  | "MISSING_CONFLICT_GROUP"
+  | "CONFLICT_GROUP_TEXT_MISMATCH"
+  | "MISSING_BASELINE_REPLACES";
 
 export interface PackIssue {
   code: IssueCode;

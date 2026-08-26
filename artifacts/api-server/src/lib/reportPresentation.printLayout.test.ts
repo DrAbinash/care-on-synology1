@@ -5,8 +5,6 @@
  * key images sit on the RIGHT of page 1 instead of a blank-left page 2.
  */
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import sharp from "sharp";
 import { chromium } from "playwright";
@@ -19,18 +17,7 @@ import {
   type ReportKeyImageModel,
 } from "./reportPresentation";
 import { buildLetterheadScaleCss } from "./reportLetterheadScale";
-
-function resolveArtifactDir(): string {
-  const preferred = "/opt/cursor/artifacts";
-  try {
-    mkdirSync(preferred, { recursive: true });
-    return preferred;
-  } catch {
-    const fallback = join(tmpdir(), "premium-print-layout");
-    mkdirSync(fallback, { recursive: true });
-    return fallback;
-  }
-}
+import { resolveArtifactDir } from "../../../../../tests/helpers/resolveTestArtifactDir";
 
 const ARTIFACT_DIR = resolveArtifactDir();
 

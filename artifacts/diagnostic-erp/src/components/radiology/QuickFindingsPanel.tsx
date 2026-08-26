@@ -116,6 +116,8 @@ import { rankSuggestions, type LearnedPattern } from "@/lib/learningEngine";
 
 interface Props {
   selectedIds: Set<number>;
+  /** Ledger patches whose lastRendered is not in findings — chip shows "manual kept". */
+  blockedIds?: Set<number>;
   onToggle: (finding: QuickFinding, nowSelected: boolean) => void;
   /** Structured Finding Assistant: a finding with configured questions routes
    *  its click here (to open the compact dialog) instead of toggling directly.
@@ -173,7 +175,7 @@ const SIDES: Array<{ value: Side; label: string }> = [
 ];
 
 export default function QuickFindingsPanel({
-  selectedIds, onToggle, onFindingClick, onEditBeforeInsert, onMeasurement, side, onSideChange, disabled, initialStudyHint, isAdmin,
+  selectedIds, blockedIds, onToggle, onFindingClick, onEditBeforeInsert, onMeasurement, side, onSideChange, disabled, initialStudyHint, isAdmin,
   instances, onUpdateInstance, onAutoTechnique, onInsertNormals,
   activeProtocolId, onProtocolChange, onChecklistChange, onAcceptLearnedSuggestion,
   onFindingsLoaded, externalSearch, selectedRegions, onRegionToggle, compactRegions = false,
@@ -546,6 +548,7 @@ export default function QuickFindingsPanel({
 
   function FindingButton({ f, index }: { f: QuickFinding; index?: number }) {
     const selected = selectedIds.has(f.id);
+    const blocked = Boolean(selected && blockedIds?.has(f.id));
     const isFav = favoriteIds.has(f.id);
     const structured = isStructured(f);
     return (
@@ -562,29 +565,36 @@ export default function QuickFindingsPanel({
           className={[
             "flex-1 min-w-0 rounded-xl border px-2.5 py-2 text-left transition-all duration-150",
             "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/50",
-            selected
+            selected && !blocked
               ? "border-amber-500 bg-gradient-to-br from-amber-500 to-orange-600 text-white shadow-md shadow-amber-500/30"
-              : "border-amber-200 bg-gradient-to-br from-white via-amber-50/50 to-orange-50/40 hover:border-amber-400 hover:shadow-sm hover:shadow-amber-200/50 hover:-translate-y-px",
+              : blocked
+                ? "border-amber-400 bg-gradient-to-br from-amber-100 via-orange-50 to-white text-amber-950 shadow-sm"
+                : "border-amber-200 bg-gradient-to-br from-white via-amber-50/50 to-orange-50/40 hover:border-amber-400 hover:shadow-sm hover:shadow-amber-200/50 hover:-translate-y-px",
           ].join(" ")}
           title={
-            onEditBeforeInsert
-              ? `${f.label} — click to insert · double-click to edit for this study`
-              : structured
-                ? `${f.label} — set details${selected ? " (click to edit)" : ""}`
-                : (f.findingText || f.impressionText || f.label)
+            blocked
+              ? `${f.label} — manual kept (tile selected but text was not replaced)`
+              : onEditBeforeInsert
+                ? `${f.label} — click to insert · double-click to edit for this study`
+                : structured
+                  ? `${f.label} — set details${selected ? " (click to edit)" : ""}`
+                  : (f.findingText || f.impressionText || f.label)
           }
           data-testid={`quick-finding-${f.id}`}
+          data-chip-state={blocked ? "blocked-manual-kept" : selected ? "selected" : "idle"}
         >
           <div className="flex items-center gap-1.5 min-w-0">
             <span
               className={[
                 "flex h-4 w-4 shrink-0 items-center justify-center rounded border",
-                selected
-                  ? "border-primary-foreground/70 bg-primary-foreground/15"
-                  : "border-muted-foreground/35 bg-background",
+                blocked
+                  ? "border-amber-500 bg-amber-200"
+                  : selected
+                    ? "border-primary-foreground/70 bg-primary-foreground/15"
+                    : "border-muted-foreground/35 bg-background",
               ].join(" ")}
             >
-              {selected ? <Check size={10} strokeWidth={3} /> : <Zap size={10} className="text-muted-foreground" />}
+              {blocked ? <span className="h-2 w-2 rounded-full bg-amber-500" title="manual kept" /> : selected ? <Check size={10} strokeWidth={3} /> : <Zap size={10} className="text-muted-foreground" />}
             </span>
             <span className="truncate text-[12px] font-semibold leading-tight">{f.label}</span>
             {structured && (

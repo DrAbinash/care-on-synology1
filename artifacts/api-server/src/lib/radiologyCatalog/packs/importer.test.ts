@@ -160,6 +160,32 @@ describe("K3 import — extends & combo end to end", () => {
   });
 });
 
+describe("K3 import — conflict_group maps onto quickFindingRows", () => {
+  it("round-trip lands conflict_group on the mapped ownership row", async () => {
+    const pack = `
+schema_version: "1.0.0"
+pack: { id: test.own, version: "1.0.0", modality: MR }
+categories:
+  - { key: crit, display_name: Critical }
+findings:
+  - id_key: brain.hemorrhage
+    display_name: Hemorrhage
+    category: critical
+    default_sentence: "Acute intraparenchymal hemorrhage in the right basal ganglia."
+    impression_fragment: "Acute hemorrhage."
+    conflict_group: hemorrhage
+    anatomical_section: basal ganglia
+    study_type: Brain
+`;
+    const res = await runImport([load("own", pack)], repo, { prune: true });
+    expect(res.ok).toBe(true);
+    const row = res.quickFindingRows?.find((r) => r.label === "Hemorrhage");
+    expect(row?.conflictGroup).toBe("hemorrhage");
+    expect(row?.anatomicalSection).toBe("basal ganglia");
+    expect(row?.studyType).toBe("Brain");
+  });
+});
+
 describe("performance sanity — large catalog import", () => {
   it("dry-run + import of ~500 findings stays under budget and is idempotent", async () => {
     const findings = Array.from({ length: 500 }, (_, i) =>

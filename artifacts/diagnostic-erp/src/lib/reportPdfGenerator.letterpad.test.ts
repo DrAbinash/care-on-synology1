@@ -1,8 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { writeFileSync, existsSync, mkdirSync, readFileSync } from "fs";
+import { existsSync, readFileSync } from "fs";
 import { execFileSync } from "child_process";
+import { join } from "node:path";
 import { generateReportPDF, DEFAULT_PRINT_SETTINGS } from "./reportPdfGenerator";
 import { CARE_LETTERHEAD_LOGO_DATA_URL, CARE_LETTERHEAD_LOGO_SIZE } from "./careLetterheadLogo";
+import { resolveArtifactDir, writeTestArtifact } from "../../../../tests/helpers/resolveTestArtifactDir";
 
 describe("letter-pad PDF preview artifact", () => {
   it("builds a letter-pad style PDF without browser download", () => {
@@ -40,10 +42,9 @@ describe("letter-pad PDF preview artifact", () => {
       },
       { save: false },
     );
-    mkdirSync("/opt/cursor/artifacts", { recursive: true });
-    const out = "/opt/cursor/artifacts/letterpad-sample.pdf";
     const bytes = Buffer.from(doc.output("arraybuffer"));
-    writeFileSync(out, bytes);
+    const out = join(resolveArtifactDir(), "letterpad-sample.pdf");
+    writeTestArtifact("letterpad-sample.pdf", bytes);
     expect(existsSync(out)).toBe(true);
     expect(doc.getNumberOfPages()).toBeGreaterThanOrEqual(1);
 
@@ -95,9 +96,8 @@ describe("letter-pad PDF preview artifact", () => {
         },
       },
     );
-    mkdirSync("/opt/cursor/artifacts", { recursive: true });
-    const out = "/opt/cursor/artifacts/letterpad-template-chrome.pdf";
-    writeFileSync(out, Buffer.from(doc.output("arraybuffer")));
+    const out = join(resolveArtifactDir(), "letterpad-template-chrome.pdf");
+    writeTestArtifact("letterpad-template-chrome.pdf", Buffer.from(doc.output("arraybuffer")));
     const text = execFileSync("pdftotext", ["-layout", out, "-"], { encoding: "utf8" });
     expect(text).toContain("desk@caredeoghar.com");
     expect(text).toContain("www.example-clinic.in");

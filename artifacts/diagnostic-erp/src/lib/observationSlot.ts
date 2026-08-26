@@ -16,6 +16,7 @@ import {
   type InsertSource,
 } from "./reportFieldMerge";
 import type { PathologyIncoming, PathologyOwnership } from "./pathologyPatch";
+import { fieldContainsContribution } from "./observationMatch";
 
 export type ConceptResolutionSource = "explicit" | "conflictGroup" | "legacy-fallback" | "none";
 
@@ -100,9 +101,25 @@ const CONCEPT_CANON: Record<string, string> = {
   "disc_bulge": "disc_contour",
   "disc herniation": "disc_contour",
   "disc-herniation": "disc_contour",
+  herniation: "disc_contour",
+  protrusion: "disc_contour",
+  "disc protrusion": "disc_contour",
+  "disc-protrusion": "disc_contour",
   disc_signal: "disc_signal",
   desiccation: "disc_signal",
   disc_height: "disc_height",
+  "disc height": "disc_height",
+  canal_stenosis: "canal_stenosis",
+  "canal stenosis": "canal_stenosis",
+  spondylolisthesis: "spondylolisthesis",
+  listhesis: "spondylolisthesis",
+  meniscus: "meniscus",
+  rotator_cuff: "rotator_cuff",
+  "rotator cuff": "rotator_cuff",
+  orbital: "orbital",
+  orbit: "orbital",
+  sinus: "sinus",
+  sinuses: "sinus",
   osteophytes: "osteophytes",
   osteophyte: "osteophytes",
   facet_joint: "facet_joint",
@@ -113,6 +130,10 @@ const CONCEPT_CANON: Record<string, string> = {
   hemorrhage: "hemorrhage",
   haemorrhage: "hemorrhage",
   infarct: "infarct",
+  renal: "renal",
+  kidney: "renal",
+  hip: "hip",
+  menisci: "meniscus",
 };
 
 const CONCEPT_HINTS: Array<{ concept: string; re: RegExp }> = [
@@ -324,6 +345,21 @@ export function observationsMutuallyExclusive(
   return true;
 }
 
+/** Tokens that identify a concept in narrative text, including CONCEPT_CANON synonyms. */
+function conceptMatchTokens(concept: string): string[] {
+  const out: string[] = [];
+  const add = (raw: string) => {
+    const spaced = raw.replace(/[_-]+/g, " ").toLowerCase().trim();
+    if (spaced.length < 3 || isBroadAnatomy(spaced)) return;
+    if (!out.includes(spaced)) out.push(spaced);
+  };
+  add(concept);
+  for (const [k, v] of Object.entries(CONCEPT_CANON)) {
+    if (v === concept) add(k);
+  }
+  return out;
+}
+
 export function sentenceMatchesConcept(sentence: string, concept: string | null): boolean {
   if (!concept) return false;
   const s = sentence.toLowerCase();
@@ -334,8 +370,7 @@ export function sentenceMatchesConcept(sentence: string, concept: string | null)
   if (concept === "disc_contour") {
     return /\b(disc\s+)?(bulge|herniation|protrusion|prolapse)\b/i.test(sentence);
   }
-  const token = concept.replace(/_/g, " ");
-  return token.length >= 3 && s.includes(token);
+  return conceptMatchTokens(concept).some((token) => s.includes(token));
 }
 
 /** Laterality mentioned as a lesion side — not used as automatic mutex. */
@@ -379,9 +414,9 @@ export function sentenceOwnedBySlot(
 export function contributionPresent(fieldText: string, contribution: string | undefined): boolean {
   const c = (contribution ?? "").trim();
   if (!c) return false;
-  if (fieldText.includes(c)) return true;
+  if (fieldContainsContribution(fieldText, c)) return true;
   const parts = splitToSentences(c);
-  return parts.length > 1 && parts.every((s) => fieldText.includes(s));
+  return parts.length > 1 && parts.every((s) => fieldContainsContribution(fieldText, s) || fieldText.includes(s));
 }
 
 export function contributionProtected(
@@ -394,7 +429,7 @@ export function contributionProtected(
     const key = normalizeForDedupe(s);
     const src = provenance?.[key];
     if (!src || src.length === 0) return false;
-    return src.includes("manual");
+    return src.includes("manual") || src.includes("radiologist-voice");
   });
 }
 
@@ -444,4 +479,17 @@ export function toRuntimeObservation(input: {
     lastRendered: input.lastRendered,
     protected: Boolean(input.protected),
   };
+}
+
+const OBSERVATION_ROLES: ObservationRole[] = ["finding", "impression", "recommendation", "baseline", "screening"];
+const OBSERVATION_SPECIFICITIES: ObservationSpecificity[] = ["protocol", "study", "region", "family"];
+
+export function coerceObservationRole(raw: unknown): ObservationRole {
+  return OBSERVATION_ROLES.includes(raw as ObservationRole) ? (raw as ObservationRole) : "finding";
+}
+
+export function coerceObservationSpecificity(raw: unknown): ObservationSpecificity {
+  return OBSERVATION_SPECIFICITIES.includes(raw as ObservationSpecificity)
+    ? (raw as ObservationSpecificity)
+    : "study";
 }

@@ -144,3 +144,48 @@ describe("K1 validator — NO PARTIAL SUCCESS", () => {
     expect(r.ok).toBe(false);
   });
 });
+
+const OWNERSHIP_PACK = `
+schema_version: "1.0.0"
+pack: { id: test.own, version: "1.0.0" }
+categories:
+  - { key: crit, display_name: Critical }
+  - { key: normal, display_name: Normal }
+findings:
+  - id_key: brain.hemorrhage
+    display_name: Hemorrhage
+    category: critical
+    default_sentence: "Acute intraparenchymal hemorrhage in the right basal ganglia."
+    impression_fragment: "Acute hemorrhage."
+    conflict_group: hemorrhage
+  - id_key: brain.ventricles_normal
+    display_name: Normal ventricles
+    category: normal
+    default_sentence: "The ventricular system is normal."
+    impression_fragment: "Ventricles normal."
+    conflict_group: ventricular
+    baseline_replaces: "The ventricular system is normal."
+`;
+
+describe("K1 validator — slot ownership lints", () => {
+  it("a clean pack with conflict_group passes", () => {
+    const r = validatePacks([load("own", OWNERSHIP_PACK)]);
+    expect(r.ok).toBe(true);
+    expect(r.errors).toEqual([]);
+  });
+
+  it("critical/abnormal without conflict_group fails MISSING_CONFLICT_GROUP", () => {
+    const p = OWNERSHIP_PACK.replace("    conflict_group: hemorrhage\n", "");
+    expect(codes(validatePacks([load("m", p)]))).toContain("MISSING_CONFLICT_GROUP");
+  });
+
+  it("conflict_group tokens absent from default_sentence fail CONFLICT_GROUP_TEXT_MISMATCH", () => {
+    const p = OWNERSHIP_PACK.replace("conflict_group: hemorrhage", "conflict_group: canal_stenosis");
+    expect(codes(validatePacks([load("m", p)]))).toContain("CONFLICT_GROUP_TEXT_MISMATCH");
+  });
+
+  it("normal finding with conflict_group but no baseline_replaces fails MISSING_BASELINE_REPLACES", () => {
+    const p = OWNERSHIP_PACK.replace("    baseline_replaces: \"The ventricular system is normal.\"\n", "");
+    expect(codes(validatePacks([load("m", p)]))).toContain("MISSING_BASELINE_REPLACES");
+  });
+});

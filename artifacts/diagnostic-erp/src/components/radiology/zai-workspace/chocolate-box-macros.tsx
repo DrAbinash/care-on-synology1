@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Pencil, Plus, RotateCcw, Trash2 } from "lucide-react";
+import { Pencil, Plus, RotateCcw, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -13,6 +13,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
+import { useWorkspaceSelector } from "@/lib/zai-workspace/store";
 import {
   CHOCOLATE_BOX_CHANGED,
   deleteChocolateTile,
@@ -264,14 +265,28 @@ export function ChocolateBoxMacros({
   label,
   disabled,
   onInsert,
+  onRemoveBundle,
 }: {
   setKey: string;
   label: string;
   disabled?: boolean;
   onInsert: (tile: ChocolateTile) => void;
+  onRemoveBundle?: (bundleId: string) => void;
 }) {
   const tiles = useChocolateTiles(setKey);
   const [editor, setEditor] = useState<EditorState | null>(null);
+  const patches = useWorkspaceSelector((s) => s.appliedPathologyPatches);
+  const activeBundleByTile = new Map<string, string>();
+  for (const p of patches) {
+    const bid = p.observation?.bundleId ?? "";
+    const m = /^choco-(.+)-[a-z0-9]+$/i.exec(bid);
+    if (m) activeBundleByTile.set(m[1]!, bid);
+    else if (bid) {
+      // Test / non-timestamp bundle ids: match tile.id prefix.
+      const tileId = tiles.find((t) => bid === t.id || bid.startsWith(`choco-${t.id}`) || bid.startsWith(t.id))?.id;
+      if (tileId && !activeBundleByTile.has(tileId)) activeBundleByTile.set(tileId, bid);
+    }
+  }
   return (
     <div
       className="space-y-1.5 rounded-xl border border-indigo-200/70 bg-gradient-to-r from-indigo-50/80 via-violet-50/50 to-fuchsia-50/40 p-2 shadow-sm"
@@ -281,13 +296,15 @@ export function ChocolateBoxMacros({
         {label} macros
       </div>
       <div className="flex flex-wrap gap-1.5">
-        {tiles.map((tile, i) => (
-          <div key={tile.id} className="group relative">
+        {tiles.map((tile, i) => {
+          const bundleId = (tile.observations?.length ?? 0) > 0 ? activeBundleByTile.get(tile.id) : undefined;
+          return (
+          <div key={tile.id} className="group relative" data-testid={`chocolate-bundle-chip-${tile.id}`}>
             <Button
               type="button"
               size="sm"
               variant="outline"
-              className={`h-7 pr-6 text-[10px] font-bold rounded-lg border shadow-sm hover:shadow-md hover:-translate-y-px transition-all ${PALETTES[i % PALETTES.length]}`}
+              className={`h-7 ${bundleId ? "pr-10" : "pr-6"} text-[10px] font-bold rounded-lg border shadow-sm hover:shadow-md hover:-translate-y-px transition-all ${PALETTES[i % PALETTES.length]}`}
               disabled={disabled}
               onClick={() => onInsert(tile)}
               data-testid={`chocolate-box-tile-${tile.id}`}
@@ -295,6 +312,21 @@ export function ChocolateBoxMacros({
             >
               {tile.label}
             </Button>
+            {bundleId && onRemoveBundle && (
+              <button
+                type="button"
+                className="absolute right-5 top-1/2 -translate-y-1/2 rounded p-0.5 text-indigo-700 hover:bg-white/80"
+                title={`Deselect ${tile.label} bundle`}
+                data-testid={`chocolate-bundle-deselect-${tile.id}`}
+                disabled={disabled}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onRemoveBundle(bundleId);
+                }}
+              >
+                <X className="h-2.5 w-2.5" />
+              </button>
+            )}
             <button
               type="button"
               className="absolute right-0.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-indigo-400 opacity-70 hover:bg-white/80 hover:text-indigo-800 group-hover:opacity-100"
@@ -308,7 +340,8 @@ export function ChocolateBoxMacros({
               <Pencil className="h-2.5 w-2.5" />
             </button>
           </div>
-        ))}
+          );
+        })}
         <button
           type="button"
           onClick={() => setEditor({ key: setKey, tile: null })}

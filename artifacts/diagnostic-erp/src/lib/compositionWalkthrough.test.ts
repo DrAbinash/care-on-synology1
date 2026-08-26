@@ -1,10 +1,10 @@
 /**
  * Synthetic walkthroughs for canonical observation composition (Phase 22).
- * Writes HTML under /opt/cursor/artifacts when that dir exists.
+ * Writes HTML via resolveArtifactDir() (CARE_TEST_ARTIFACT_DIR → /opt/cursor/artifacts → tmpdir).
  *
  * Run: pnpm exec vitest run artifacts/diagnostic-erp/src/lib/compositionWalkthrough.test.ts
  */
-import { mkdirSync, writeFileSync } from "node:fs";
+import { writeTestArtifact, mergeJsonArtifact } from "../../../../tests/helpers/resolveTestArtifactDir";
 import { describe, expect, it } from "vitest";
 import { DEFAULT_REPORT_FORMATS } from "./zai-workspace/report-formats-library";
 import { DEFAULT_QUICK_SELECT_TILES } from "./zai-workspace/quick-select-library";
@@ -12,9 +12,6 @@ import { useWorkspace } from "./zai-workspace/store";
 import { mergeTwoFormats } from "./zai-workspace/types";
 import { buildReportingStudyContext } from "./reportingStudyContext";
 import { catalogSetForKey } from "./findingsMacros";
-
-const outDir = "/opt/cursor/artifacts";
-try { mkdirSync(outDir, { recursive: true }); } catch { /* ignore */ }
 
 function html(title: string, body: string): string {
   return `<!doctype html><html><head><meta charset="utf-8"><title>${title}</title>
@@ -228,11 +225,11 @@ export function runWalkthroughs() {
     section("Findings after deselect", afterDeselect.findingsText),
   ].join(""));
 
-  writeFileSync(`${outDir}/walkthrough-brain-fazekas.html`, brainHtml);
-  writeFileSync(`${outDir}/walkthrough-ls-levels.html`, lsHtml);
-  writeFileSync(`${outDir}/walkthrough-degenerative-macro.html`, degHtml);
-  writeFileSync(`${outDir}/walkthrough-ls-whole-spine.html`, spineHtml);
-  writeFileSync(`${outDir}/walkthrough-manual-protect.html`, protectHtml);
+  writeTestArtifact("walkthrough-brain-fazekas.html", brainHtml);
+  writeTestArtifact("walkthrough-ls-levels.html", lsHtml);
+  writeTestArtifact("walkthrough-degenerative-macro.html", degHtml);
+  writeTestArtifact("walkthrough-ls-whole-spine.html", spineHtml);
+  writeTestArtifact("walkthrough-manual-protect.html", protectHtml);
 
   const summary = {
     brainHasFazekas2: /Fazekas grade 2/i.test(brain.findingsText),
@@ -253,7 +250,7 @@ export function runWalkthroughs() {
     protectOutcome: outcome,
     protectKeepsEdit: afterDeselect.findingsText.includes("radiologist rewrite"),
   };
-  writeFileSync(`${outDir}/composition-walkthrough-summary.json`, JSON.stringify(summary, null, 2));
+  mergeJsonArtifact("composition-walkthrough-summary.json", summary);
   return summary;
 }
 
