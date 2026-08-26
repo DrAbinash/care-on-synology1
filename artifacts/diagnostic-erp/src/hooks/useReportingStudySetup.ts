@@ -449,23 +449,15 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     setStructuredDialog(null);
 
     const generated = generateStructuredFinding(f, values);
-    if (generated.finding?.trim()) {
-      setters.mergeFindings(generated.finding, "quick-findings");
-    }
-    if (generated.impression?.trim()) {
-      setters.mergeImpression(generated.impression, "quick-findings");
-    }
-    if (generated.technique?.trim()) {
-      setters.mergeTechnique(generated.technique, "quick-findings");
-    }
-    if (generated.recommendation?.trim()) {
-      setters.mergeRecommendation(generated.recommendation, "quick-findings");
-    }
-
-    if (!selectedIds.has(f.id)) {
-      // Mark selected without re-inserting static template text — generated already applied.
-      onToggle({ ...f, findingText: "", impressionText: "", techniqueText: "", recommendationText: "" }, true);
-    }
+    const patched: QuickFinding = {
+      ...f,
+      findingText: generated.finding ?? "",
+      impressionText: generated.impression ?? "",
+      techniqueText: generated.technique ?? "",
+      recommendationText: generated.recommendation ?? "",
+    };
+    if (selectedIds.has(f.id)) onToggle(f, false);
+    onToggle(patched, true);
   }, [structuredDialog, setters]);
 
   const removeStructuredFinding = useCallback((
@@ -481,6 +473,43 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
   const applyChocolateTile = useCallback((tile: ChocolateTile | { id?: string; label?: string; text: string }) => {
     if (disabled || !tile.text.trim()) return;
     const full = tile as ChocolateTile;
+    if (full.observations && full.observations.length > 0) {
+      const region = useWorkspace.getState().reportingContext.region ?? "";
+      const bundleId = `choco-${full.id ?? "bundle"}-${Date.now().toString(36)}`;
+      useWorkspace.getState().applyMacroBundle({
+        bundleId,
+        observations: full.observations.map((obs, i) => ({
+          incoming: {
+            findings: obs.findingsText,
+            impression: obs.impressionText,
+            recommendation: obs.recommendationText,
+          },
+          templates: {
+            findings: obs.findingsText,
+            impression: obs.impressionText,
+            recommendation: obs.recommendationText,
+          },
+          ownership: {
+            anatomicalSection: obs.anatomicalSection,
+            conflictGroup: obs.conflictGroup,
+            baselineReplaces: obs.baselineReplaces,
+            concept: obs.concept,
+          },
+          source: "macro" as const,
+          id: `${bundleId}-${obs.concept ?? i}`,
+          region,
+          concept: obs.concept,
+          level: obs.level,
+          laterality: obs.laterality,
+          label: full.label,
+          findingsText: obs.findingsText,
+          supportsLaterality: obs.supportsLaterality,
+          sectionsOwned: obs.sectionsOwned,
+          bundleId,
+        })),
+      });
+      return;
+    }
     const resolved = resolveChocolateOwnership({
       id: full.id ?? "legacy",
       label: full.label,
@@ -511,6 +540,10 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
       source: "macro",
       side: ownership.supportsLaterality ? undefined : "",
       id: full.id ? `choco-${full.id}` : undefined,
+      region: useWorkspace.getState().reportingContext.region ?? "",
+      label: full.label,
+      findingsText: tile.text,
+      supportsLaterality: ownership.supportsLaterality,
     });
   }, [disabled, setters]);
 

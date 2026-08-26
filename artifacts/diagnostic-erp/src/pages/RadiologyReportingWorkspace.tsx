@@ -208,8 +208,10 @@ import {
   AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle,
   AlertDialogDescription, AlertDialogFooter, AlertDialogAction, AlertDialogCancel,
 } from "@/components/ui/alert-dialog";
-import { removeBlock, removeImpression } from "@/lib/quickFindingsMerge";
-import { inferOwnership, type PathologyIncoming } from "@/lib/pathologyPatch";
+import { removeBlock } from "@/lib/quickFindingsMerge";
+import { type PathologyIncoming } from "@/lib/pathologyPatch";
+import { selectedQuickFindingIds } from "@/lib/observationSlot";
+import { extractCareObservationLedger } from "@/lib/observationLedger";
 import {
   provenanceMapToSegments,
   provenanceVisualKind,
@@ -490,6 +492,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const setStudies = useWorkspace((s: WorkspaceStore) => s.setStudies);
   const findingsText = useWorkspace((s: WorkspaceStore) => s.findingsText);
   const impressionText = useWorkspace((s: WorkspaceStore) => s.impressionText);
+  const impressionNeedsRefresh = useWorkspace((s: WorkspaceStore) => s.impressionNeedsRefresh);
   const recommendationText = useWorkspace((s: WorkspaceStore) => s.recommendationText);
   const techniqueText = useWorkspace((s: WorkspaceStore) => s.techniqueText);
   const clinicalHistoryText = useWorkspace((s: WorkspaceStore) => s.clinicalHistoryText);
@@ -1393,8 +1396,12 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
 
   const handleGenerateLocalImpression = useCallback(() => {
     if (contentLocked) return;
-    // Always pass free-text findings so Generate Impression works even when
-    // structured cards are all marked Normal (common "not working" case).
+    const store = useWorkspace.getState();
+    if (store.appliedPathologyPatches.length > 0) {
+      store.refreshImpressionFromLedger();
+      toast({ title: "Impression refreshed", description: "From active observations and remaining abnormal findings." });
+      return;
+    }
     const lines = generateLocalImpression(
       findingsText || (useStructured ? findingsMapToText(findingsMap) : ""),
       useStructured ? findingsMap : undefined,
@@ -1482,6 +1489,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   /** Clinic Quick Select — pathology patches over the whole report (ownership + laterality). */
   const handleQuickToggle = useCallback((finding: QuickFinding, nowSelected: boolean) => {
     const state = useWorkspace.getState();
+    const patchId = `qf-${finding.id}`;
     if (nowSelected) {
       const templates: PathologyIncoming = {
         findings: finding.findingText,
@@ -1493,9 +1501,6 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         anatomicalSection: finding.anatomicalSection,
         conflictGroup: finding.conflictGroup,
         baselineReplaces: finding.baselineReplaces,
-        ...((!finding.anatomicalSection && !finding.conflictGroup)
-          ? inferOwnership(finding.label, [finding.findingText, finding.impressionText])
-          : {}),
       };
       state.applyPathologyOverlay({
         incoming: templates,
@@ -1503,36 +1508,33 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         ownership,
         source: "quick-findings",
         side: quickSide,
-        id: `qf-${finding.id}`,
+        id: patchId,
+        region: finding.studyType,
+        label: finding.label,
+        catalogId: finding.id,
+        properties: finding.properties,
+        findingsText: finding.findingText,
       });
-      const applied = useWorkspace.getState().appliedPathologyPatches.find((p) => p.id === `qf-${finding.id}`);
-      lastQuickRenderedRef.current.set(finding.id, applied?.lastRendered ?? templates);
-      setSelectedQuickIds((prev) => {
-        const next = new Set(prev);
-        next.add(finding.id);
-        return next;
-      });
-    } else {
-      const last = lastQuickRenderedRef.current.get(finding.id);
-      const findings = last?.findings || finding.findingText;
-      const impression = last?.impression || finding.impressionText;
-      const technique = last?.technique || finding.techniqueText;
-      const recommendation = last?.recommendation || finding.recommendationText;
-      if (findings) state.setField("findings", removeBlock(state.findingsText, findings));
-      if (impression) {
-        const lines = state.impressionText.split("\n").filter(Boolean);
-        state.setField("impression", removeImpression(lines, impression).join("\n"));
+      const applied = useWorkspace.getState().appliedPathologyPatches.find((p) => p.id === patchId);
+      if (applied) lastQuickRenderedRef.current.set(finding.id, applied.lastRendered);
+      const ids = selectedQuickFindingIds(useWorkspace.getState().appliedPathologyPatches.map((p) => p.id));
+      setSelectedQuickIds(new Set(ids));
+      for (const id of lastQuickRenderedRef.current.keys()) {
+        if (!ids.includes(id)) lastQuickRenderedRef.current.delete(id);
       }
-      if (technique) state.setField("technique", removeBlock(state.techniqueText, technique));
-      if (recommendation) state.setField("recommendation", removeBlock(state.recommendationText, recommendation));
+    } else {
+      const outcome = state.removeObservation(patchId);
       lastQuickRenderedRef.current.delete(finding.id);
-      setSelectedQuickIds((prev) => {
-        const next = new Set(prev);
-        next.delete(finding.id);
-        return next;
-      });
+      const ids = selectedQuickFindingIds(useWorkspace.getState().appliedPathologyPatches.map((p) => p.id));
+      setSelectedQuickIds(new Set(ids));
+      if (outcome === "preserved-manual") {
+        toast({
+          title: "Selection cleared",
+          description: "Edited clinical text was kept.",
+        });
+      }
     }
-  }, [quickSide]);
+  }, [quickSide, toast]);
   handleQuickToggleRef.current = handleQuickToggle;
   selectedQuickIdsRef.current = selectedQuickIds;
 
@@ -1671,6 +1673,12 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         structuredTouchedRef.current = true;
         setStructuredValues(restored.values);
       }
+      const ledger = extractCareObservationLedger(draft.structuredJson);
+      if (ledger) {
+        useWorkspace.getState().hydrateObservationLedger(ledger);
+        const ids = selectedQuickFindingIds(useWorkspace.getState().appliedPathologyPatches.map((p) => p.id));
+        setSelectedQuickIds(new Set(ids));
+      }
       return;
     }
 
@@ -1799,6 +1807,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
               values: structuredValues,
             })
             : undefined,
+          observationLedger: useWorkspace.getState().serializeObservationLedger(),
         } as any),
         { shouldRetry: isTransientError },
       );
@@ -4168,17 +4177,28 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                         <div className="flex items-center justify-between gap-2">
                           <span className="text-[10px] font-semibold uppercase text-muted-foreground">Impression</span>
                           {!isLocked && !isFinalized && (
-                            <Button
+                            <div className="flex items-center gap-2">
+                              {impressionNeedsRefresh && (
+                                <span
+                                  data-testid="impression-needs-refresh"
+                                  className="rounded-full border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-amber-800"
+                                  title="Findings changed; impression contribution may be stale"
+                                >
+                                  Needs refresh
+                                </span>
+                              )}
+                              <Button
                               type="button"
                               size="sm"
                               variant="outline"
                               className="h-6 text-[10px]"
                               onClick={handleGenerateLocalImpression}
                               data-testid="generate-local-impression"
-                              title="Generate impression from findings (local, no AI)"
+                              title="Refresh / generate impression from active observations and remaining abnormal findings"
                             >
-                              <Sparkles size={11} className="mr-1" /> Generate Impression
+                              <Sparkles size={11} className="mr-1" /> {impressionNeedsRefresh ? "Refresh Impression" : "Generate Impression"}
                             </Button>
+                            </div>
                           )}
                         </div>
                         <FindingsEditor field="impression" label="" minHeight="100px" placeholder="Conclusion. Ctrl+I for AI impression." showGhost />

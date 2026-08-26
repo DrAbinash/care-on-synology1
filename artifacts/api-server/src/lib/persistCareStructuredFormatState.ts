@@ -23,3 +23,24 @@ export async function persistCareStructuredFormatState(
     .set({ structuredJson: next })
     .where(eq(radiologyReportDraftsTable.id, draftId));
 }
+
+export async function persistCareObservationLedger(
+  draftId: number,
+  ledger: unknown,
+): Promise<void> {
+  const [row] = await db
+    .select({ structuredJson: radiologyReportDraftsTable.structuredJson })
+    .from(radiologyReportDraftsTable)
+    .where(eq(radiologyReportDraftsTable.id, draftId))
+    .limit(1);
+
+  const next = composeStructuredJsonColumn({
+    existing: row?.structuredJson ?? null,
+    observationLedger: ledger,
+  });
+
+  await db
+    .update(radiologyReportDraftsTable)
+    .set({ structuredJson: next })
+    .where(eq(radiologyReportDraftsTable.id, draftId));
+}
