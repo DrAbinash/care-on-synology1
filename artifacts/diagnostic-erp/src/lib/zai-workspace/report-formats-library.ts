@@ -1,7 +1,8 @@
 import type { Modality, ReportFormat, MergeResult } from "./types";
 import { mergeTwoFormats } from "./types";
 import { canonicalContentRegion, contentStudyTypes, type ReportingStudyContext } from "@/lib/reportingStudyContext";
-import { formatsMissingOnServer, mergeAuthoritativeFormats } from "./reportFormatSync";
+import { formatsMissingOnServer, mergeAuthoritativeFormats, formatDedupeKey } from "./reportFormatSync";
+import { formatContextRank, type FormatLookupExtras } from "./fullReportFormat";
 
 const now = () => new Date().toISOString();
 const uid = () => `rf_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
@@ -11,7 +12,15 @@ function fmt(
   m: Modality,
   b: string,
   t: string[],
-  body: { clinicalHistory?: string; technique: string; findings: string; impression: string; recommendation: string },
+  body: {
+    clinicalHistory?: string;
+    technique: string;
+    findings: string;
+    impression: string;
+    recommendation: string;
+    reportTitle?: string;
+    protocolScope?: string;
+  },
   c = false,
 ): ReportFormat {
   return {
@@ -28,6 +37,8 @@ function fmt(
     findings: body.findings,
     impression: body.impression,
     recommendation: body.recommendation,
+    reportTitle: body.reportTitle ?? "",
+    protocolScope: body.protocolScope ?? "",
   };
 }
 
@@ -43,8 +54,11 @@ export function hydrateFormat(raw: Partial<ReportFormat> & { name: string }): Re
     findings: raw.findings ?? "",
     impression: raw.impression ?? "",
     recommendation: raw.recommendation ?? "",
+    reportTitle: raw.reportTitle ?? "",
+    protocolScope: raw.protocolScope ?? "",
     isCommon: raw.isCommon ?? false,
     custom: raw.custom,
+    favorite: raw.favorite,
     usageCount: raw.usageCount,
     createdAt: raw.createdAt ?? now(),
     updatedAt: raw.updatedAt ?? now(),
@@ -52,11 +66,13 @@ export function hydrateFormat(raw: Partial<ReportFormat> & { name: string }): Re
 }
 
 export const DEFAULT_REPORT_FORMATS: ReportFormat[] = [
-  fmt("MRI Brain — Normal", "MR", "Brain", ["normal"], { clinicalHistory: "MRI brain requested. Correlate with presenting symptoms.", technique: "MRI brain on 3T. T1W, T2W, FLAIR, DWI, ADC, post-contrast T1W GRE. 5 mm.", findings: "Brain parenchyma shows normal signal intensity. No acute infarct, hemorrhage, or mass lesion. Ventricular system and cisternal spaces are normal. No midline shift. Cortical sulci normal for age. Basal cisterns unremarkable. No restricted diffusion on DWI/ADC. Flow voids in major intracranial vessels are normal. Basal ganglia are normal in signal intensity.", impression: "Normal MRI brain. No acute intracranial abnormality.", recommendation: "Clinical correlation. Follow-up as clinically indicated." }, true),
-  fmt("MRI Brain — Fazekas 1", "MR", "Brain", ["white matter disease", "fazekas 1"], { technique: "MRI brain on 3T. T1W, T2W, FLAIR, DWI, ADC, post-contrast T1W GRE. 5 mm.", findings: "Few punctate T2/FLAIR hyperintense white matter lesions in bilateral periventricular and deep white matter, Fazekas grade 1. No confluent lesions. Brain parenchyma otherwise normal. No acute infarct, hemorrhage, or mass lesion. Ventricular system and cisternal spaces are normal. No midline shift. Cortical sulci normal for age. No restricted diffusion on DWI/ADC. Flow voids in major intracranial vessels are normal.", impression: "Mild chronic small vessel ischemic disease (Fazekas grade 1). No acute infarct or hemorrhage.", recommendation: "Clinical correlation. Control of vascular risk factors. Follow-up as clinically indicated." }, true),
+  fmt("MRI Brain — Normal", "MR", "Brain", ["normal"], { clinicalHistory: "MRI brain requested. Correlate with presenting symptoms.", technique: "MRI brain on 3T. T1W, T2W, FLAIR, DWI, ADC, post-contrast T1W GRE. 5 mm.", findings: "Brain parenchyma shows normal signal intensity. No acute infarct, hemorrhage, or mass lesion. Ventricular system and cisternal spaces are normal. No midline shift. Cortical sulci normal for age. Basal cisterns unremarkable. No restricted diffusion on DWI/ADC. Flow voids in major intracranial vessels are normal. Basal ganglia are normal in signal intensity.", impression: "Normal MRI brain. No acute intracranial abnormality.", recommendation: "Clinical correlation. Follow-up as clinically indicated.", reportTitle: "MRI BRAIN PLAIN" }, true),
+  fmt("MRI Brain — Fazekas 1", "MR", "Brain", ["white matter disease", "fazekas 1"], { technique: "MRI brain on 3T. T1W, T2W, FLAIR, DWI, ADC, post-contrast T1W GRE. 5 mm.", findings: "Few punctate T2/FLAIR hyperintense white matter lesions in bilateral periventricular and deep white matter, Fazekas grade 1. No confluent lesions. Brain parenchyma otherwise normal. No acute infarct, hemorrhage, or mass lesion. Ventricular system and cisternal spaces are normal. No midline shift. Cortical sulci normal for age. No restricted diffusion on DWI/ADC. Flow voids in major intracranial vessels are normal.", impression: "Mild chronic small vessel ischemic disease (Fazekas grade 1). No acute infarct or hemorrhage.", recommendation: "Clinical correlation. Control of vascular risk factors. Follow-up as clinically indicated.", reportTitle: "MRI BRAIN PLAIN" }, true),
+  fmt("MRI Brain — Fazekas Grade 1 + Senile Changes", "MR", "Brain", ["white matter disease", "fazekas 1", "senile", "atrophy"], { clinicalHistory: "MRI brain requested. Correlate with presenting symptoms.", technique: "MRI Brain was performed using the configured standard brain protocol on 3T. Multiplanar T1W, T2W, FLAIR, DWI, ADC and GRE/SWI sequences were obtained.", findings: "Mild age-related cerebral volume loss with prominence of the cortical sulci and ventricular system, in keeping with senile/involutional changes.\nFew punctate/periventricular T2/FLAIR hyperintense white matter foci in bilateral cerebral hemispheres, Fazekas grade 1. No confluent lesions.\nGrey-white matter differentiation is preserved. No focal cortical or subcortical signal abnormality, mass lesion, or acute infarct identified. No restricted diffusion on DWI/ADC. Basal ganglia are normal in signal intensity. Flow voids in major intracranial vessels are normal.", impression: "Mild chronic small vessel ischemic changes — Fazekas grade 1.\nMild age-related cerebral atrophic changes.", recommendation: "", reportTitle: "MRI BRAIN PLAIN", protocolScope: "Plain" }, true),
   fmt("MRI Brain — Glioma recurrence", "MR", "Brain", ["tumor", "glioma", "recurrence", "critical"], { technique: "MRI brain with contrast on 3T. T1W, T2W, FLAIR, DWI, ADC, post-contrast T1W GRE. 5 mm. IV: Gadobutrol 0.1 mmol/kg.", findings: "Heterogeneously enhancing area in the right frontal operculum at the post-resection cavity, measuring approximately ___ × ___ × ___ cm, with surrounding T2/FLAIR hyperintensity suggestive of edema. Findings are concerning for tumor recurrence. No new satellite lesions. No midline shift. Ventricular system is normal. Basal cisterns are unremarkable. No restricted diffusion on DWI/ADC. Flow voids in major intracranial vessels are normal.", impression: "Heterogeneously enhancing lesion in the right frontal operculum with surrounding edema. Findings are concerning for tumor recurrence. Recommend correlation with clinical status and oncology referral.", recommendation: "Urgent oncology referral. Recommend MRI brain with contrast and perfusion imaging in 6-8 weeks. Consider MR spectroscopy if clinically indicated." }, true),
   fmt("MRI Brain — Acute infarct (MCA)", "MR", "Brain", ["stroke", "infarct", "critical"], { technique: "MRI brain on 3T. T1W, T2W, FLAIR, DWI, ADC, GRE/SWI. 5 mm.", findings: "Restricted diffusion in the left middle cerebral artery territory on DWI/ADC, consistent with acute infarct. No hemorrhagic transformation. Mass effect minimal. Brain parenchyma otherwise normal. Ventricular system and cisternal spaces are normal. No midline shift. Flow voids: left MCA flow void absent, consistent with occlusion.", impression: "Acute left MCA territory infarct. No hemorrhagic transformation. ASPECTS: ___/10.", recommendation: "Immediate stroke team notification. If within thrombolysis window, consider IV tPA. MRA head and neck recommended." }, true),
-  fmt("MRI Cervical Spine — Normal", "MR", "Cervical Spine", ["normal"], { clinicalHistory: "MRI cervical spine requested. Correlate with neck pain or radiculopathy.", technique: "MRI cervical spine on 3T. Sagittal T1W, T2W; axial T1W, T2W. 3 mm.", findings: "Cervical vertebrae show normal alignment and marrow signal. Disc spaces are maintained. No cord compression. Spinal cord signal is normal. Prevertebral soft tissues are unremarkable.", impression: "Normal MRI cervical spine. No cord compression or significant disc herniation.", recommendation: "Clinical correlation. Follow-up as clinically indicated." }, true),
+  fmt("MRI Cervical Spine — Normal", "MR", "Cervical Spine", ["normal"], { clinicalHistory: "MRI cervical spine requested. Correlate with neck pain or radiculopathy.", technique: "MRI cervical spine on 3T. Sagittal T1W, T2W; axial T1W, T2W. 3 mm.", findings: "Cervical vertebrae show normal alignment and marrow signal. Disc spaces are maintained. No cord compression. Spinal cord signal is normal. Prevertebral soft tissues are unremarkable.", impression: "Normal MRI cervical spine. No cord compression or significant disc herniation.", recommendation: "Clinical correlation. Follow-up as clinically indicated.", reportTitle: "MRI CERVICAL SPINE" }, true),
+  fmt("MRI Cervical Spine — Screening", "MR", "Cervical Spine", ["screening"], { technique: "MRI cervical spine screening on 3T. Sagittal T1W, T2W; selected axial T2W.", findings: "Cervical vertebrae show normal alignment and marrow signal. Disc spaces are maintained. No cord compression. Spinal cord signal is normal. Prevertebral soft tissues are unremarkable.", impression: "Normal MRI cervical spine screening. No cord compression or significant disc herniation.", recommendation: "", reportTitle: "MRI CERVICAL SPINE SCREENING", protocolScope: "Screening" }, true),
   fmt("MRI LS Spine — Normal", "MR", "LS Spine", ["normal"], { technique: "MRI lumbo-sacral spine on 3T. Sagittal T1W, T2W; axial T1W, T2W. 4 mm.", findings: "Lumbar vertebrae show normal alignment and marrow signal. No spondylolisthesis. Disc spaces are maintained. No acute fracture. Conus medullaris at L1 with normal appearance. Cauda equina nerve roots are normally distributed. Paraspinal soft tissues are unremarkable. Sacroiliac joints are normal.", impression: "Normal MRI lumbo-sacral spine. No acute bony or disc abnormality.", recommendation: "Clinical correlation. Follow-up as clinically indicated." }, true),
   fmt("MRI LS Spine — Disc herniation L4-L5", "MR", "LS Spine", ["disc", "herniation"], { technique: "MRI lumbo-sacral spine on 3T. Sagittal T1W, T2W; axial T1W, T2W. 4 mm.", findings: "Broad-based disc bulge at L4-L5 with posterocentral-right paracentral protrusion causing indentation on the thecal sac and mild narrowing of bilateral neural foramina. No significant central canal stenosis. Lumbar vertebrae show normal alignment and marrow signal. No spondylolisthesis. L4-L5 disc shows mild desiccation with reduced T2 signal. Other disc spaces are maintained. Conus medullaris at L1 with normal appearance. Cauda equina nerve roots are normally distributed. Paraspinal soft tissues are unremarkable. Sacroiliac joints are normal.", impression: "Disc herniation at L4-L5 causing indentation on the thecal sac and mild narrowing of bilateral neural foramina. No significant central canal stenosis.", recommendation: "Conservative management with NSAIDs and physiotherapy. MRI if radicular symptoms persist. Surgical referral if neurological deficits develop." }, true),
   fmt("CT Brain — Normal", "CT", "Brain", ["normal"], { technique: "Non-contrast CT brain on 128-slice scanner. 5 mm. Axial sections from skull base to vertex.", findings: "Brain parenchyma shows normal attenuation. No acute hemorrhage or mass lesion. Ventricular system and cisternal spaces are normal. No midline shift. Cortical sulci normal for age. Basal cisterns are patent. Pineal and choroid plexus calcifications, normal for age. Bony calvarium is unremarkable.", impression: "Normal non-contrast CT brain. No acute intracranial abnormality.", recommendation: "Clinical correlation. Follow-up as clinically indicated." }, true),
@@ -85,9 +101,14 @@ export function lookupFormatsForContext(
   formats: ReportFormat[],
   m: Modality | undefined,
   ctx: ReportingStudyContext | null | undefined,
+  extras?: FormatLookupExtras,
 ): ReportFormat[] {
   if (!ctx?.region) return [];
   const allowed = new Set(contentStudyTypes(ctx.regions.length > 0 ? ctx.regions : [ctx.region]).map((s) => s.toLowerCase()));
+  const hay: FormatLookupExtras = {
+    protocolName: extras?.protocolName ?? ctx.protocolName,
+    studyDescription: extras?.studyDescription ?? ctx.studyDescription,
+  };
   return formats
     .filter((f) => {
       if (f.modality !== m) return false;
@@ -95,8 +116,10 @@ export function lookupFormatsForContext(
       return allowed.has(bp);
     })
     .sort((a, b) => {
-      if (a.isCommon !== b.isCommon) return a.isCommon ? -1 : 1;
-      return (b.usageCount ?? 0) - (a.usageCount ?? 0) || a.name.localeCompare(b.name);
+      const ra = formatContextRank(a, hay);
+      const rb = formatContextRank(b, hay);
+      if (ra !== rb) return rb - ra;
+      return a.name.localeCompare(b.name);
     });
 }
 
@@ -179,8 +202,26 @@ export function payloadForApi(f: Omit<ReportFormat, "id" | "createdAt" | "update
     findings: f.findings ?? "",
     impression: f.impression ?? "",
     recommendation: f.recommendation ?? "",
+    reportTitle: f.reportTitle ?? "",
+    protocolScope: f.protocolScope ?? "",
     isCommon: f.isCommon ?? false,
   };
+}
+
+export function overlayLocalFormatFlags(server: ReportFormat[], localCache: ReportFormat[]): ReportFormat[] {
+  if (localCache.length === 0) return server;
+  const byId = new Map(localCache.map((f) => [f.id, f]));
+  const byKey = new Map(localCache.map((f) => [formatDedupeKey(f), f]));
+  return server.map((f) => {
+    const loc = byId.get(f.id) ?? byKey.get(formatDedupeKey(f));
+    if (!loc) return f;
+    return {
+      ...f,
+      favorite: loc.favorite ?? f.favorite,
+      reportTitle: f.reportTitle || loc.reportTitle,
+      protocolScope: f.protocolScope || loc.protocolScope,
+    };
+  });
 }
 
 export { formatsMissingOnServer, mergeAuthoritativeFormats, mergeTwoFormats };

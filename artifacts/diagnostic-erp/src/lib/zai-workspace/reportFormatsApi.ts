@@ -11,6 +11,7 @@ import {
   hydrateFormat,
   isServerFormatsAuthoritative,
   markServerFormatsAuthoritative,
+  overlayLocalFormatFlags,
   payloadForApi,
   readLocalFormatsCache,
 } from "./report-formats-library";
@@ -26,9 +27,12 @@ type MigrateResponse = {
 
 function asFormats(items: unknown): ReportFormat[] {
   if (!Array.isArray(items)) return [];
-  return items
-    .filter((x): x is Partial<ReportFormat> & { name: string } => Boolean(x && typeof x === "object" && (x as ReportFormat).name))
-    .map((x) => hydrateFormat(x));
+  return overlayLocalFormatFlags(
+    items
+      .filter((x): x is Partial<ReportFormat> & { name: string } => Boolean(x && typeof x === "object" && (x as ReportFormat).name))
+      .map((x) => hydrateFormat(x)),
+    readLocalFormatsCache(),
+  );
 }
 
 /** Fetch server library; cache locally. Does not migrate. */

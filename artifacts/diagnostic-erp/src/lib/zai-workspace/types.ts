@@ -94,7 +94,28 @@ export interface CriticalFinding { id: string; studyId: string; phrase: string; 
 
 export type QuickSelectField = "clinicalHistory" | "technique" | "findings" | "impression" | "recommendation";
 export interface QuickSelectTile { id: string; field: QuickSelectField; scopeModality?: Modality; scopeBodyPart?: string; label: string; mnemonic?: string; category: "normal" | "abnormal" | "variant" | "critical"; sentence: string; impressionSentence?: string; favorite?: boolean; custom?: boolean; usageCount?: number; createdAt: string; updatedAt: string; anatomicalSection?: string; conflictGroup?: string; baselineReplaces?: string; }
-export interface ReportFormat { id: string; name: string; modality: Modality; bodyPart: string; diagnosisTags: string[]; clinicalHistory: string; technique: string; findings: string; impression: string; recommendation: string; isCommon: boolean; custom?: boolean; usageCount?: number; createdAt: string; updatedAt: string; }
+export interface ReportFormat {
+  id: string;
+  name: string;
+  modality: Modality;
+  bodyPart: string;
+  diagnosisTags: string[];
+  clinicalHistory: string;
+  technique: string;
+  findings: string;
+  impression: string;
+  recommendation: string;
+  /** Printed heading below demography (not the library display name). */
+  reportTitle?: string;
+  /** Optional protocol / sub-technique scope (e.g. Screening, Plain, Contrast). */
+  protocolScope?: string;
+  isCommon: boolean;
+  custom?: boolean;
+  favorite?: boolean;
+  usageCount?: number;
+  createdAt: string;
+  updatedAt: string;
+}
 export interface SnippetMacro { id: string; trigger: string; label: string; template: string; variables: { name: string; label: string; default?: string; options?: string[] }[]; scopeModality?: Modality; scopeBodyPart?: string; custom?: boolean; createdAt: string; updatedAt: string; }
 export interface SignOffProfile { id: string; modality: Modality; signerName: string; signerCredentials: string; isDefault?: boolean; signatureId?: string; createdAt: string; }
 

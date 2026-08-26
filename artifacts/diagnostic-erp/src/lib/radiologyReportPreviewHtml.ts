@@ -229,8 +229,8 @@ export function buildPreviewHtml(opts: BuildPreviewHtmlOpts): string {
     ${imagesHtml}
     <h3 style="${hStyle(`${sp2} 0 ${sp}`)}font-size:14pt;"><u>${fmtHeading("Impression", hc)}</u></h3>
     ${impressionHtml}
-    <h3 style="${hStyle(`${sp2} 0 ${sp}`)}font-size:14pt;"><u>${fmtHeading("Recommendation", hc)}</u></h3>
-    <p style="margin:0 0 ${sp};font-size:13pt;">${escHtml(opts.recommendation || "Please correlate with clinical findings.")}</p>
+    ${opts.recommendation?.trim() ? `<h3 style="${hStyle(`${sp2} 0 ${sp}`)}font-size:14pt;"><u>${fmtHeading("Recommendation", hc)}</u></h3>
+    <p style="margin:0 0 ${sp};font-size:13pt;">${escHtml(opts.recommendation.trim())}</p>` : ""}
     <hr style="border:none;border-top:1px solid #999;margin:${sp2} 0 4px;" />
     <p style="font-size:11pt;color:#666;font-style:italic;margin:0;">Please correlate with clinical history and findings. Report issued by authorized radiologist only.</p>
     ${opts.signerLine ? `<p style="text-align:right;margin:18px 0 0;font-size:13pt;"><strong>${escHtml(opts.signerLine)}</strong></p>` : ""}
