@@ -9,6 +9,10 @@ import { classifyPaymentMethod, isPhysicalCash } from "../lib/paymentMethodClass
 import { lastOverallClosureBoundary } from "../lib/closureBoundary";
 import { BILL_AUDIT_OPERATIONAL_CHANGE_TYPES } from "../lib/staffActivityAttribution";
 import { isCollectiblePayment } from "../lib/financialIntegrity";
+import { loadPostClosureActivity } from "../lib/postClosureActivity";
+import type { StaffPrintActivity } from "../lib/postClosureActivityTypes";
+import { sendStaffDayCloseEmail } from "../email";
+import { clinicSettingsTable } from "@workspace/db/schema";
 
 // Inline super-admin gate that works on the regular ERP staff session
 // (req.staffSession.role === "super_admin"). The site-wide
@@ -683,49 +687,7 @@ async function userWindowBoundary(userName: string): Promise<Date | null> {
 }
 
 /** Window-scoped activity for staff day-close print slips (no test-wise detail). */
-export type StaffPrintActivity = {
-  discountsGiven: number;
-  discountBills: Array<{
-    billId: number;
-    billNumber: string;
-    patientName: string;
-    totalAmount: number;
-    discountGiven: number;
-    grossAmount: number;
-    discountReason: string | null;
-    discountReasonNote: string | null;
-  }>;
-  billEdits: Array<{
-    id: number;
-    billId: number;
-    billNumber: string;
-    changeType: string;
-    reason: string;
-    oldValue: string | null;
-    newValue: string | null;
-    createdAt: string;
-  }>;
-  voucherEdits: Array<{
-    id: number;
-    voucherId: number;
-    voucherNumber: string;
-    changeType: string;
-    reason: string;
-    oldValue: string | null;
-    newValue: string | null;
-    createdAt: string;
-  }>;
-  expenseDetails: Array<{
-    id: number;
-    amount: number;
-    category: string;
-    description: string;
-    paymentMode: string;
-  }>;
-  totalExpenses: number;
-  cashExpenses: number;
-  digitalExpenses: number;
-};
+export type { StaffPrintActivity } from "../lib/postClosureActivityTypes";
 
 type UserSummary = {
   totals: MethodTotals;
@@ -1073,6 +1035,43 @@ dayCloseRouter.get("/my-drawer-status", async (req, res) => {
     return;
   }
 
+  // Reopened drawer — show live accumulating totals since the close boundary
+  // so My Daily Summary reflects post-reopen billing, not the frozen close row.
+  if (latestUserClose.drawerStatus === "reopened") {
+    const from = await userWindowBoundary(userName);
+    const to = new Date();
+    const s = await summarizeUserWindow(userName, from, to);
+    const expectedDigital = s.totals.upi + s.totals.card + s.totals.cheque + s.totals.other;
+    res.json({
+      drawerStatus: "reopened",
+      userName,
+      coveredFromTs: from,
+      coveredToTs: to,
+      expectedCash: s.totals.cash,
+      countedCash: n(latestUserClose.actualCash),
+      cashVariance: s.totals.cash - n(latestUserClose.actualCash),
+      expectedDigital,
+      countedDigital: n(latestUserClose.actualUpi) + n(latestUserClose.actualCard)
+        + n(latestUserClose.actualCheque) + n(latestUserClose.actualOther),
+      digitalVariance: expectedDigital - (
+        n(latestUserClose.actualUpi) + n(latestUserClose.actualCard)
+        + n(latestUserClose.actualCheque) + n(latestUserClose.actualOther)
+      ),
+      expectedTotal: s.totals.total,
+      actualTotal: n(latestUserClose.totalActual),
+      totalVariance: s.totals.total - n(latestUserClose.totalActual),
+      closedAt: latestUserClose.closedAt,
+      closedBy: latestUserClose.userName,
+      handoverNote: latestUserClose.notes || null,
+      approvedByName: latestUserClose.approvedByName ?? null,
+      approvalNote: latestUserClose.approvalNote ?? null,
+      closureId: latestUserClose.id,
+      suspenseTotal: s.suspenseTotal,
+      suspenseCount: s.suspenseItems.length,
+    });
+    return;
+  }
+
   const exp    = n(latestUserClose.totalExpected);
   const act    = n(latestUserClose.totalActual);
   const v      = n(latestUserClose.variance);
@@ -1147,6 +1146,48 @@ const UserCloseBody = z.object({
 
 function calcDenominationTotal(d: { d500:number; d200:number; d100:number; d50:number; d20:number; d10:number; coins:number }): number {
   return d.d500 * 500 + d.d200 * 200 + d.d100 * 100 + d.d50 * 50 + d.d20 * 20 + d.d10 * 10 + d.coins;
+}
+
+async function notifyStaffDayCloseEmail(args: {
+  row: typeof userDayClosuresTable.$inferSelect;
+  printActivity: StaffPrintActivity;
+}): Promise<void> {
+  const [clinic] = await db.select({ name: clinicSettingsTable.name }).from(clinicSettingsTable).limit(1);
+  const denoms = args.row.denominations as {
+    d500: number; d200: number; d100: number;
+    d50: number; d20: number; d10: number; coins: number;
+  } | null;
+
+  await sendStaffDayCloseEmail({
+    clinicName: clinic?.name || "Care Diagnostics",
+    staffName: args.row.userName,
+    closureDate: String(args.row.closureDate),
+    closedAt: new Date(args.row.closedAt),
+    coveredFromTs: args.row.coveredFromTs ? new Date(args.row.coveredFromTs) : null,
+    coveredToTs: new Date(args.row.coveredToTs),
+    totalBilled: n(args.row.totalBilled),
+    totalDue: n(args.row.totalDue),
+    totalExpected: n(args.row.totalExpected),
+    totalActual: n(args.row.totalActual),
+    variance: n(args.row.variance),
+    expectedCash: n(args.row.expectedCash),
+    expectedUpi: n(args.row.expectedUpi),
+    expectedCard: n(args.row.expectedCard),
+    expectedCheque: n(args.row.expectedCheque),
+    expectedOther: n(args.row.expectedOther),
+    actualCash: n(args.row.actualCash),
+    actualUpi: n(args.row.actualUpi),
+    actualCard: n(args.row.actualCard),
+    actualCheque: n(args.row.actualCheque),
+    actualOther: n(args.row.actualOther),
+    denominations: denoms,
+    denominationTotal: args.row.denominationTotal != null ? n(args.row.denominationTotal) : null,
+    varianceNote: args.row.varianceNote || undefined,
+    notes: args.row.notes || undefined,
+    drawerStatus: args.row.drawerStatus,
+    closureId: args.row.id,
+    printActivity: args.printActivity,
+  });
 }
 
 // Close: record the current user's day close snapshot.
@@ -1242,6 +1283,9 @@ dayCloseRouter.post("/my-close", async (req, res) => {
       "User day closed with unrecognized-method payments excluded from totals — needs admin correction",
     );
   }
+  void notifyStaffDayCloseEmail({ row: inserted.row, printActivity: inserted.printActivity }).catch((err) => {
+    req.log?.warn({ err, closureId: inserted.row.id }, "Staff day-close email failed (non-blocking)");
+  });
   res.status(201).json({
     ...inserted.row,
     suspenseTotal: inserted.suspenseTotal,
@@ -1630,6 +1674,9 @@ dayCloseRouter.post("/staff-close", requireOwnerOrAdmin, async (req, res) => {
     { closureId: inserted.row.id, userName, closedByAdmin: actor.adminName, variance: inserted.row.variance, drawerStatus: inserted.row.drawerStatus },
     "Staff day closed by admin (handover)",
   );
+  void notifyStaffDayCloseEmail({ row: inserted.row, printActivity: inserted.printActivity }).catch((err) => {
+    req.log?.warn({ err, closureId: inserted.row.id }, "Staff day-close email failed (non-blocking)");
+  });
   res.status(201).json({
     ...inserted.row,
     bills: inserted.bills,
@@ -1726,6 +1773,9 @@ dayCloseRouter.post("/staff-close-all", requireOwnerOrAdmin, async (req, res) =>
         totalActual: n(inserted.row.totalActual),
         variance: n(inserted.row.variance),
         drawerStatus: inserted.row.drawerStatus,
+      });
+      void notifyStaffDayCloseEmail({ row: inserted.row, printActivity: inserted.printActivity }).catch((err) => {
+        req.log?.warn({ err, closureId: inserted.row.id, userName }, "Staff day-close email failed (bulk, non-blocking)");
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unknown error";
@@ -1848,77 +1898,15 @@ dayCloseRouter.post("/staff-close/:id/reopen", requireSuperAdminStaff, async (re
  * the "Post-Closure Activity" callout shown to the staff member and admin.
  */
 async function postClosureActivity(userName: string) {
-  // Find the most recent ACTUAL close for this user (skip reopened rows).
-  const [latestClose] = await db
-    .select({
-      id:        userDayClosuresTable.id,
-      closedAt:  userDayClosuresTable.closedAt,
-      drawerStatus: userDayClosuresTable.drawerStatus,
-    })
-    .from(userDayClosuresTable)
-    .where(
-      and(
-        eq(userDayClosuresTable.userName, userName),
-        sql`${userDayClosuresTable.drawerStatus} != 'reopened'`
-      )
-    )
-    .orderBy(desc(userDayClosuresTable.closedAt))
-    .limit(1);
-
-  if (!latestClose) {
-    return { closedAt: null, bills: [], payments: [], billTotal: 0, paymentTotal: 0 };
-  }
-
-  const since = new Date(latestClose.closedAt);
-
-  const [bills, payments] = await Promise.all([
-    db
-      .select({
-        id:          billsTable.id,
-        billNumber:  billsTable.billNumber,
-        totalAmount: billsTable.totalAmount,
-        paidAmount:  billsTable.paidAmount,
-        status:      billsTable.status,
-        createdAt:   billsTable.createdAt,
-      })
-      .from(billsTable)
-      .where(and(
-        eq(billsTable.createdByName, userName),
-        gt(billsTable.createdAt, since),
-        sql`${billsTable.status} != 'cancelled'`,
-      ))
-      .orderBy(desc(billsTable.createdAt))
-      .limit(50),
-
-    db
-      .select({
-        id:        paymentsTable.id,
-        billId:    paymentsTable.billId,
-        amount:    paymentsTable.amount,
-        method:    paymentsTable.method,
-        createdAt: paymentsTable.createdAt,
-        settlementStatus: paymentsTable.settlementStatus,
-      })
-      .from(paymentsTable)
-      .where(and(
-        eq(paymentsTable.recordedByName, userName),
-        gt(paymentsTable.createdAt, since),
-      ))
-      .orderBy(desc(paymentsTable.createdAt))
-      .limit(100),
-  ]);
-
-  const collectiblePayments = payments.filter(isCollectiblePayment);
-  const billTotal    = bills.reduce((s, b) => s + n(b.totalAmount), 0);
-  const paymentTotal = collectiblePayments.reduce((s, p) => s + n(p.amount), 0);
-
+  const result = await loadPostClosureActivity(userName);
   return {
-    closedAt:     latestClose.closedAt,
-    closureId:    latestClose.id,
-    bills:        bills.map((b) => ({ ...b, totalAmount: n(b.totalAmount), paidAmount: n(b.paidAmount) })),
-    payments:     collectiblePayments.map((p) => ({ ...p, amount: n(p.amount) })),
-    billTotal,
-    paymentTotal,
+    closedAt: result.closedAt,
+    closureId: result.closureId,
+    drawerStatus: result.drawerStatus,
+    bills: result.bills,
+    payments: result.payments,
+    billTotal: result.billTotal,
+    paymentTotal: result.paymentTotal,
   };
 }
 

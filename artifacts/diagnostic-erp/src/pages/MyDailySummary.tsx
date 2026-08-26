@@ -1291,7 +1291,7 @@ function PostClosureActivityBox({ data }: { data: PostClosureActivity }) {
         </div>
         <div className="flex items-center gap-2 shrink-0">
           <span className="text-[10px] font-bold text-amber-700 dark:text-amber-400 uppercase">
-            These will be counted in the NEXT day's reconciliation
+            Next drawer close · after midnight → next day money flow
           </span>
           {expanded ? <ChevronRight size={14} className="text-amber-700 -rotate-90" /> : <ChevronRight size={14} className="text-amber-700 rotate-90" />}
         </div>
