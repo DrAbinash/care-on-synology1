@@ -12,6 +12,10 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import type { QuickFinding, QuickStudyTab } from "./QuickFindingsPanel";
+import {
+  conflictGroupWordsMissingFromText,
+  resolvedOwnershipMode,
+} from "@/lib/ownershipFieldValidation";
 
 type Draft = {
   id?: number;
@@ -22,6 +26,8 @@ type Draft = {
   techniqueText: string;
   recommendationText: string;
   anatomicalSection: string;
+  conflictGroup: string;
+  baselineReplaces: string;
   tags: string;
 };
 
@@ -35,6 +41,8 @@ function toDraft(f: QuickFinding | null, defaultStudy: string): Draft {
       techniqueText: "",
       recommendationText: "",
       anatomicalSection: "",
+      conflictGroup: "",
+      baselineReplaces: "",
       tags: "",
     };
   }
@@ -47,6 +55,8 @@ function toDraft(f: QuickFinding | null, defaultStudy: string): Draft {
     techniqueText: f.techniqueText,
     recommendationText: f.recommendationText,
     anatomicalSection: f.anatomicalSection,
+    conflictGroup: f.conflictGroup ?? "",
+    baselineReplaces: f.baselineReplaces ?? "",
     tags: f.tags,
   };
 }
@@ -79,6 +89,8 @@ export default function WorkspaceQuickFindingEditor({ finding, tabs, defaultStud
         techniqueText: draft.techniqueText,
         recommendationText: draft.recommendationText,
         anatomicalSection: draft.anatomicalSection,
+        conflictGroup: draft.conflictGroup,
+        baselineReplaces: draft.baselineReplaces,
         tags: draft.tags,
         isActive: true,
       };
@@ -174,6 +186,48 @@ export default function WorkspaceQuickFindingEditor({ finding, tabs, defaultStud
             <Input value={draft.tags} onChange={(e) => setDraft((d) => ({ ...d, tags: e.target.value }))} className="h-8 text-sm" placeholder="disc, stenosis" />
           </div>
         </div>
+        {(() => {
+          const missing = conflictGroupWordsMissingFromText(draft.conflictGroup, draft.findingText);
+          const resolved = resolvedOwnershipMode({
+            conflictGroup: draft.conflictGroup,
+            anatomicalSection: draft.anatomicalSection,
+            baselineReplaces: draft.baselineReplaces,
+            label: draft.label,
+            findingsText: draft.findingText,
+            region: draft.studyType,
+          });
+          return (
+            <div className="rounded-md border border-dashed p-2 space-y-2 bg-muted/10" data-testid="ownership-fields">
+              <div className="grid grid-cols-2 gap-2">
+                <div className="space-y-1">
+                  <Label className="text-[11px]">Conflict group</Label>
+                  <Input
+                    value={draft.conflictGroup}
+                    onChange={(e) => setDraft((d) => ({ ...d, conflictGroup: e.target.value }))}
+                    className="h-8 text-sm"
+                    placeholder="fazekas"
+                    data-testid="ownership-conflict-group"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-[11px]">Baseline replaces</Label>
+                  <Input
+                    value={draft.baselineReplaces}
+                    onChange={(e) => setDraft((d) => ({ ...d, baselineReplaces: e.target.value }))}
+                    className="h-8 text-sm"
+                    placeholder="No disc bulge."
+                  />
+                </div>
+              </div>
+              <p className="text-[10px]" data-testid="ownership-resolved-mode">Resolved: {resolved.label}</p>
+              {missing.length > 0 && (
+                <p className="text-[10px] text-amber-800" data-testid="ownership-r1-warning">
+                  conflictGroup words missing from finding text: {missing.join(", ")}
+                </p>
+              )}
+            </div>
+          );
+        })()}
         <div className="flex justify-end gap-2 pt-1">
           <Button type="button" size="sm" variant="ghost" className="h-7 text-xs" onClick={onClose}>Cancel</Button>
           <Button type="button" size="sm" className="h-7 text-xs" disabled={save.isPending} onClick={() => save.mutate()}>

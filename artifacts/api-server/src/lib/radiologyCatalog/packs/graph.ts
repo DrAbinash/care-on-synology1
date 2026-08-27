@@ -24,7 +24,15 @@ export interface NormFinding {
   parameters: NormParamBinding[]; severities: NormSeverity[]; locations: NormLocation[];
   measurements: NormMeasurement[]; recommendations: NormRecommendation[];
   included: string[];
-  meta: { criticals: string[]; template: string | null; source_pack: string };
+  meta: {
+    criticals: string[];
+    template: string | null;
+    source_pack: string;
+    conflict_group: string;
+    baseline_replaces: string;
+    anatomical_section: string;
+    study_type: string;
+  };
 }
 export interface NormalizedGraph {
   parameters: NormParam[];
@@ -116,7 +124,15 @@ export function buildNormalizedGraph(loaded: LoadedPack[]): NormalizedGraph {
       measurements: [...rb.measurements].map(([key, v]) => ({ key, label: v.label, unit: v.unit, min: v.min, max: v.max, sort_order: v.sort_order })),
       recommendations: [...rb.recommendations].map((code, i) => ({ code, text: reg.recommendations.get(code)?.text ?? code, priority: reg.recommendations.get(code)?.priority ?? null, sort_order: i })),
       included: [...(f.included_findings_ref ?? [])],
-      meta: { criticals: [...(f.criticals ?? [])].map((c) => stripPrefix(c, "crit")), template: f.template ? stripPrefix(f.template, "tpl") : null, source_pack: source },
+      meta: {
+        criticals: [...(f.criticals ?? [])].map((c) => stripPrefix(c, "crit")),
+        template: f.template ? stripPrefix(f.template, "tpl") : null,
+        source_pack: source,
+        conflict_group: f.conflict_group ?? "",
+        baseline_replaces: f.baseline_replaces ?? "",
+        anatomical_section: f.anatomical_section ?? "",
+        study_type: f.study_type ?? "",
+      },
     });
   }
 

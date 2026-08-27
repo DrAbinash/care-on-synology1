@@ -91,6 +91,15 @@ else
   ok ".env present (Hope integration keys ensured)"
 fi
 
+# ── Step 2c: Reject weak machine-to-machine secrets ───────────────────────────
+info "Checking guarded secrets in .env..."
+if command -v node >/dev/null 2>&1 && [ -f scripts/check-env-secrets.mjs ]; then
+  node scripts/check-env-secrets.mjs --file .env || fail "Weak INTERNAL_API_KEY / CRON_SECRET / WHATSAPP_AUTOMATION_SECRET in .env — run: bash scripts/rotate-internal-api-key.sh"
+  ok "Guarded secrets acceptable"
+else
+  warn "Skipping secret-strength check (node or scripts/check-env-secrets.mjs missing)"
+fi
+
 # ── Step 3: Build and start ───────────────────────────────────────────────────
 info "Building and starting containers (this takes 3-5 minutes)..."
 echo ""

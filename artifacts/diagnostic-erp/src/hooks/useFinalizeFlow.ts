@@ -21,6 +21,9 @@ export type FinalizePromptInput = {
   criticalSummary?: string;
   /** Canonical report-quality evaluation snapshot (workspace-finalize source). */
   qualityGate?: FinalizeQualityGate | null;
+  compositionImpressionNeedsRefresh?: boolean;
+  compositionSiblingWarnings?: Array<{ sentence: string; token: string; hint: string }>;
+  compositionStalePatchCount?: number;
 };
 
 export type FinalizePromptResult = {
@@ -28,6 +31,8 @@ export type FinalizePromptResult = {
   signatureId: number | null;
   criticalAcknowledged: boolean;
   notifyReferring: boolean;
+  impressionReviewedAnyway?: boolean;
+  impressionRefreshed?: boolean;
 };
 
 const CANCELLED: FinalizePromptResult = {

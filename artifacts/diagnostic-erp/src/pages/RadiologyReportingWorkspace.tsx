@@ -211,7 +211,7 @@ import {
 import { removeBlock } from "@/lib/quickFindingsMerge";
 import { type PathologyIncoming } from "@/lib/pathologyPatch";
 import { selectedQuickFindingIds } from "@/lib/observationSlot";
-import { extractCareObservationLedger } from "@/lib/observationLedger";
+import { collectCompositionFinalizeGate, extractCareObservationLedger, patchFindingsContributionBlocked } from "@/lib/observationLedger";
 import {
   provenanceMapToSegments,
   provenanceVisualKind,
@@ -496,6 +496,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const impressionNeedsRefresh = useWorkspace((s: WorkspaceStore) => s.impressionNeedsRefresh);
   const ownershipReviewWarnings = useWorkspace((s: WorkspaceStore) => s.ownershipReviewWarnings);
   const ledgerHydrationWarning = useWorkspace((s: WorkspaceStore) => s.ledgerHydrationWarning);
+  const appliedPathologyPatches = useWorkspace((s: WorkspaceStore) => s.appliedPathologyPatches);
   const recommendationText = useWorkspace((s: WorkspaceStore) => s.recommendationText);
   const techniqueText = useWorkspace((s: WorkspaceStore) => s.techniqueText);
   const clinicalHistoryText = useWorkspace((s: WorkspaceStore) => s.clinicalHistoryText);
@@ -1947,7 +1948,23 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       return as - bs;
     });
 
-    // 6. Prompt via finalize flow (quality gate + critical ack + signer)
+    const latest = useWorkspace.getState();
+    const siblingHits = collectCompositionFinalizeGate({
+      impressionNeedsRefresh: latest.impressionNeedsRefresh,
+      findings: latest.findingsText,
+      patches: latest.appliedPathologyPatches.map((p) => ({
+        id: p.id,
+        observation: p.observation as never,
+        templates: p.templates,
+        lastRendered: p.lastRendered,
+        replacedBaseline: p.replacedBaseline ?? { findings: [], impression: [] },
+        source: p.source,
+        protected: Boolean(p.protected),
+        stale: p.stale,
+      })),
+    });
+
+    // 6. Prompt via finalize flow (quality gate + critical ack + signer + composition gate)
     const result = await finalizeFlow.promptFinalize({
       identity: `${workflow.currentRow.patientName} — ${workflow.currentRow.studyDescription}`,
       validationSummary: (validationIssues.join("; ") + qualityAdvisory) as string,
@@ -1967,11 +1984,18 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         ...criticalHits.map(h => h.label),
         ...(isCritical && criticalNote ? [criticalNote] : []),
       ].filter(Boolean).join(", "),
+      compositionImpressionNeedsRefresh: latest.impressionNeedsRefresh,
+      compositionSiblingWarnings: siblingHits.siblingWarnings,
+      compositionStalePatchCount: siblingHits.stalePatchCount,
     });
 
     if (!result.confirmed) return;
 
-    // 7. Execute finalize
+    // 7. Execute finalize — read narrative AFTER refresh/ack so the signed payload matches the gate.
+    const signed = useWorkspace.getState();
+    const signedFindings = signed.findingsText;
+    const signedImpression = signed.impressionText;
+    const signedRecommendation = signed.recommendationText;
     try {
       const finalizeResult = await finalizeRadiologyReport(
         ({
@@ -1987,9 +2011,9 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
           title: workflow.currentRow?.studyDescription ?? "Report",
           htmlBody: (() => {
             const esc = (s: string) => s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;");
-            return `<h2>${esc(workflow.currentRow?.studyDescription ?? "Report")}</h2><p><b>Findings:</b> ${esc(findingsText).replace(/\n/g,"<br/>")}</p><p><b>Impression:</b> ${esc(impressionText).replace(/\n/g,"<br/>")}</p><p><b>Recommendation:</b> ${esc(recommendationText).replace(/\n/g,"<br/>")}</p>`;
+            return `<h2>${esc(workflow.currentRow?.studyDescription ?? "Report")}</h2><p><b>Findings:</b> ${esc(signedFindings).replace(/\n/g,"<br/>")}</p><p><b>Impression:</b> ${esc(signedImpression).replace(/\n/g,"<br/>")}</p><p><b>Recommendation:</b> ${esc(signedRecommendation).replace(/\n/g,"<br/>")}</p>`;
           })(),
-          impression: [impressionText],
+          impression: [signedImpression],
           isCritical: criticalMarked,
           criticalNote: criticalNote || (criticalHits.length > 0 ? criticalHits.map(h => h.label).join(", ") : null),
           createdBy: sessionFresh?.user?.name ?? undefined,
@@ -3857,6 +3881,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                         label={studySetup.chocolateBoxSet.label}
                         disabled={isLocked || isFinalized}
                         onInsert={studySetup.applyChocolateTile}
+                        onRemoveBundle={(bundleId) => useWorkspace.getState().removeMacroBundle(bundleId)}
                       />
                     )}
 
@@ -4003,6 +4028,15 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                           <button type="button" className="underline" onClick={() => useWorkspace.getState().dismissOwnershipReview()}>Dismiss</button>
                         </div>
                         <p className="mt-0.5 text-amber-900/80">Kept as written — not deleted. Nearby sentence may now conflict.</p>
+                        <ul className={`mt-1 space-y-0.5 ${ownershipReviewWarnings.length > 2 ? "max-h-16 overflow-y-auto" : ""}`}>
+                          {ownershipReviewWarnings.map((w, i) => (
+                            <li key={`${w.token}-${i}`} data-testid={`unowned-sibling-warning-${i}`}>
+                              <span className="font-semibold">“{w.token}”</span>
+                              {" — "}
+                              <span>{w.sentence}</span>
+                            </li>
+                          ))}
+                        </ul>
                       </div>
                     )}
                     <OwnershipTracePanel />
@@ -4044,6 +4078,13 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                           </div>
                           <QuickFindingsPanel
                             selectedIds={selectedQuickIds}
+                            blockedIds={new Set(
+                              appliedPathologyPatches
+                                .filter((p) => patchFindingsContributionBlocked(p, findingsText))
+                                .map((p) => /^qf-(\d+)$/.exec(p.id))
+                                .filter((m): m is RegExpExecArray => Boolean(m))
+                                .map((m) => Number(m[1])),
+                            )}
                             onToggle={handleQuickToggle}
                             onFindingClick={(f) => studySetup.handleFindingClick(f, selectedQuickIds, handleQuickToggle)}
                             onEditBeforeInsert={handleEditBeforeInsert}

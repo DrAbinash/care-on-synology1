@@ -20,13 +20,22 @@ import {
 } from "./reportPresentation";
 import { buildLetterheadScaleCss } from "./reportLetterheadScale";
 
+/**
+ * Same lookup as tests/helpers/resolveTestArtifactDir.
+ * Inlined: api-server `rootDir` is `src`, so importing that helper fails TS6059.
+ */
 function resolveArtifactDir(): string {
+  const env = (process.env.CARE_TEST_ARTIFACT_DIR ?? "").trim();
+  if (env) {
+    mkdirSync(env, { recursive: true });
+    return env;
+  }
   const preferred = "/opt/cursor/artifacts";
   try {
     mkdirSync(preferred, { recursive: true });
     return preferred;
   } catch {
-    const fallback = join(tmpdir(), "premium-print-layout");
+    const fallback = join(tmpdir(), "care-test-artifacts");
     mkdirSync(fallback, { recursive: true });
     return fallback;
   }

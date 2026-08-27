@@ -18,11 +18,25 @@ import type {
 } from "./pathologyPatch";
 import {
   buildCanonicalObservation,
+  coerceObservationRole,
+  coerceObservationSpecificity,
   contributionPresent,
   contributionProtected,
   type CanonicalObservation,
   type ObservationSlotInput,
 } from "./observationSlot";
+import {
+  contributionsMatch,
+  fieldContainsContribution,
+  normalizeContributionMatch,
+} from "./observationMatch";
+
+export {
+  normalizeContributionMatch,
+  fieldContainsContribution,
+  contributionsMatch,
+} from "./observationMatch";
+export { contributionPresent, contributionProtected } from "./observationSlot";
 
 export type LedgerPatch = {
   id: string;
@@ -32,17 +46,32 @@ export type LedgerPatch = {
   replacedBaseline: { findings: string[]; impression: string[] };
   source: InsertSource;
   protected: boolean;
+  /** Derived on hydrate — contribution missing and recorded hash disagrees with a fresh render. Never auto-deleted. */
+  stale?: boolean;
 };
 
 export type RemoveContributionOutcome = "removed" | "preserved-manual" | "no-op-unproven";
 
-/** Contribution as it actually appears after sentence split / merge. */
+/** Contribution as it actually appears after sentence split / merge (normalized match). */
 export function renderedInField(incoming: string | undefined, field: string): string {
   const c = (incoming ?? "").trim();
   if (!c) return "";
   if (field.includes(c)) return c;
-  const parts = splitToSentences(c).filter((s) => field.includes(s));
-  return parts.join("\n");
+  const parts = splitToSentences(c);
+  const found = parts
+    .map((part) => {
+      if (field.includes(part)) return part;
+      for (const s of splitToSentences(field)) {
+        if (contributionsMatch(s, part)) return s;
+      }
+      return "";
+    })
+    .filter(Boolean);
+  if (found.length > 0) return found.join("\n");
+  for (const s of splitToSentences(field)) {
+    if (contributionsMatch(s, c)) return s;
+  }
+  return "";
 }
 
 function contributionChunks(contribution: string): string[] {
@@ -52,6 +81,20 @@ function contributionChunks(contribution: string): string[] {
   return parts.length > 0 ? parts : [c];
 }
 
+function locateContributionInField(fieldText: string, contribution: string): string | null {
+  const c = contribution.trim();
+  if (!c) return null;
+  if (fieldText.includes(c)) return c;
+  for (const s of splitToSentences(fieldText)) {
+    if (contributionsMatch(s, c)) return s;
+  }
+  const chunks = contributionChunks(c);
+  if (chunks.length > 1 && chunks.every((chunk) => fieldContainsContribution(fieldText, chunk) || fieldText.includes(chunk))) {
+    return c;
+  }
+  return fieldContainsContribution(fieldText, c) ? c : null;
+}
+
 export function stripContribution(
   fieldText: string,
   contribution: string | undefined,
@@ -59,19 +102,22 @@ export function stripContribution(
 ): { text: string; outcome: RemoveContributionOutcome } {
   const c = (contribution ?? "").trim();
   if (!c) return { text: fieldText, outcome: "removed" };
-  if (!contributionPresent(fieldText, c)) {
+  const located = locateContributionInField(fieldText, c);
+  if (!located && !contributionPresent(fieldText, c)) {
     return { text: fieldText, outcome: "no-op-unproven" };
   }
-  const chunks = contributionChunks(c);
-  if (chunks.some((chunk) => contributionProtected(chunk, provenance)) || contributionProtected(c, provenance)) {
+  const chunks = contributionChunks(located ?? c);
+  if (chunks.some((chunk) => contributionProtected(chunk, provenance)) || contributionProtected(c, provenance) || contributionProtected(located ?? c, provenance)) {
     return { text: fieldText, outcome: "preserved-manual" };
   }
   let next = fieldText;
-  if (next.includes(c)) {
-    next = removeBlock(next, c);
+  const target = located ?? c;
+  if (next.includes(target)) {
+    next = removeBlock(next, target);
   } else {
     for (const chunk of chunks) {
-      next = removeBlock(next, chunk);
+      const hit = locateContributionInField(next, chunk);
+      next = hit ? removeBlock(next, hit) : next;
     }
   }
   return { text: next, outcome: next === fieldText ? "no-op-unproven" : "removed" };
@@ -243,7 +289,7 @@ export type SerializedObservationLedger = {
 };
 
 function hashText(s: string | undefined): string {
-  const t = (s ?? "").trim();
+  const t = normalizeContributionMatch(s ?? "");
   let h = 0;
   for (let i = 0; i < t.length; i++) h = (h * 31 + t.charCodeAt(i)) >>> 0;
   return `${t.length}:${h.toString(16)}`;
@@ -286,10 +332,16 @@ function isValidLedgerPatch(raw: unknown): raw is LedgerPatch {
 
 function coerceLedgerPatch(raw: unknown): LedgerPatch | null {
   if (!isValidLedgerPatch(raw)) return null;
-  const row = raw as LedgerPatch;
+  const row = raw as LedgerPatch & { lastRenderedHashes?: { findings?: string; impression?: string; recommendation?: string } };
+  const obs = row.observation;
+  const observation: CanonicalObservation = {
+    ...obs,
+    role: coerceObservationRole((obs as { role?: unknown }).role),
+    specificity: coerceObservationSpecificity((obs as { specificity?: unknown }).specificity),
+  };
   return {
     id: row.id,
-    observation: row.observation,
+    observation,
     templates: row.templates ?? {},
     lastRendered: row.lastRendered ?? {},
     replacedBaseline: row.replacedBaseline ?? { findings: [], impression: [] },
@@ -441,7 +493,35 @@ export function detectUnownedSiblingConflicts(opts: {
     const token = asserted.find((t) => new RegExp(`\\b${t}\\b`, "i").test(s));
     if (!token) continue;
     out.push({ sentence: s, token });
-    if (out.length >= 2) break;
+  }
+  return out;
+}
+
+/**
+ * Re-run sibling detection over the full active ledger (finalize + banner).
+ * Never deletes leftover sentences.
+ */
+export function detectUnownedSiblingConflictsForLedger(opts: {
+  findings: string;
+  patches: Array<{ lastRendered: { findings?: string }; protected?: boolean }>;
+}): UnownedSiblingWarning[] {
+  const ownedLastRendered = opts.patches.map((p) => p.lastRendered.findings ?? "");
+  const seen = new Set<string>();
+  const out: UnownedSiblingWarning[] = [];
+  for (const p of opts.patches) {
+    if (p.protected) continue;
+    const incoming = (p.lastRendered.findings ?? "").trim();
+    if (!incoming) continue;
+    for (const w of detectUnownedSiblingConflicts({
+      findings: opts.findings,
+      incomingFindings: incoming,
+      ownedLastRendered,
+    })) {
+      const key = `${w.token}::${normalizeContributionMatch(w.sentence)}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(w);
+    }
   }
   return out;
 }
@@ -475,12 +555,119 @@ export function impressionNeedsRefreshFromNarrative(
   provenance?: FieldProvenanceMap,
 ): boolean {
   for (const p of patches) {
+    if (p.stale && (p.lastRendered.findings ?? "").trim()) return true;
     const c = (p.lastRendered.impression ?? "").trim();
     if (!c) continue;
     if (p.protected || contributionProtected(c, provenance)) continue;
     if (!contributionPresent(impressionText, c)) return true;
   }
   return false;
+}
+
+export type CompositionFinalizeGateState = {
+  impressionNeedsRefresh: boolean;
+  siblingWarnings: Array<{ sentence: string; token: string; hint: string }>;
+  stalePatchCount: number;
+};
+
+export function collectCompositionFinalizeGate(opts: {
+  impressionNeedsRefresh: boolean;
+  findings: string;
+  patches: LedgerPatch[];
+}): CompositionFinalizeGateState {
+  const siblingWarnings = detectUnownedSiblingConflictsForLedger({
+    findings: opts.findings,
+    patches: opts.patches,
+  }).map((w) => ({ ...w, hint: UNOWNED_SIBLING_HINT }));
+  return {
+    impressionNeedsRefresh: opts.impressionNeedsRefresh,
+    siblingWarnings,
+    stalePatchCount: opts.patches.filter((p) => p.stale).length,
+  };
+}
+
+/** Stale impression blocks finalize unless refreshed or explicitly acknowledged. Sibling warnings never block. */
+export function compositionFinalizeAllowed(opts: {
+  impressionNeedsRefresh: boolean;
+  impressionRefreshed: boolean;
+  impressionReviewedAnyway: boolean;
+}): boolean {
+  if (!opts.impressionNeedsRefresh || opts.impressionRefreshed) return true;
+  return opts.impressionReviewedAnyway;
+}
+
+export function patchFindingsContributionBlocked(
+  patch: { lastRendered: { findings?: string } },
+  findingsText: string,
+): boolean {
+  const last = (patch.lastRendered.findings ?? "").trim();
+  if (!last) return false;
+  return !contributionPresent(findingsText, last);
+}
+
+export type LedgerHashRow = { findings?: string; impression?: string; recommendation?: string };
+
+/**
+ * Flag a restored patch stale when its lastRendered contribution is absent from
+ * the live narrative AND the recorded hash differs from a fresh render of that
+ * contribution. NEVER auto-deletes.
+ */
+export function reconcilePatchAgainstNarrative(
+  patch: LedgerPatch,
+  narrative: ReportNarrative,
+  recordedHashes?: LedgerHashRow,
+): LedgerPatch {
+  const fields: Array<"findings" | "impression"> = ["findings", "impression"];
+  let stale = false;
+  for (const field of fields) {
+    const last = (patch.lastRendered[field] ?? "").trim();
+    if (!last) continue;
+    const present = contributionPresent(narrative[field], last);
+    if (present) continue;
+    const recorded = recordedHashes?.[field];
+    const fresh = hashText(last);
+    if (!recorded || recorded !== fresh || recorded !== hashText(renderedInField(last, narrative[field]))) {
+      stale = true;
+    }
+  }
+  return stale ? { ...patch, stale: true } : patch;
+}
+
+export function extractRecordedHashes(raw: unknown): Map<string, LedgerHashRow> {
+  const out = new Map<string, LedgerHashRow>();
+  if (!raw || typeof raw !== "object") return out;
+  let rec = raw as Record<string, unknown>;
+  if (rec.careObservationLedger && typeof rec.careObservationLedger === "object") {
+    rec = rec.careObservationLedger as Record<string, unknown>;
+  }
+  if (!Array.isArray(rec.patches)) return out;
+  for (const row of rec.patches as Array<{ id?: string; lastRenderedHashes?: LedgerHashRow }>) {
+    if (row?.id && row.lastRenderedHashes) out.set(row.id, row.lastRenderedHashes);
+  }
+  return out;
+}
+
+export function stampVoiceAuthoredProvenance(
+  provenance: NarrativeProvenance,
+  written: { findings?: string; impression?: string; recommendation?: string; technique?: string },
+): NarrativeProvenance {
+  const stamp = (field: keyof typeof written, map: FieldProvenanceMap | undefined): FieldProvenanceMap => {
+    const next = { ...(map ?? {}) };
+    for (const s of splitToSentences(written[field] ?? "")) {
+      const key = normalizeForDedupe(s);
+      if (!key) continue;
+      const prev = next[key] ?? [];
+      next[key] = prev.includes("radiologist-voice") ? prev : [...prev, "radiologist-voice"];
+    }
+    return next;
+  };
+  return {
+    clinicalHistory: provenance.clinicalHistory,
+    findings: stamp("findings", provenance.findings),
+    impression: stamp("impression", provenance.impression),
+    technique: stamp("technique", provenance.technique),
+    recommendation: stamp("recommendation", provenance.recommendation),
+  };
 }
 
 export function refreshImpressionFromObservations(opts: {
