@@ -3545,7 +3545,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
 
                     {/* Study / Region + Report Format — ONE region truth, formats filtered by it. */}
                     <StudyRegionReportFormatSection
-                      availableRegions={studySetup.availableRegions}
+                      availableStudyTabs={studySetup.availableStudyTabs}
                       selectedRegion={studySetup.matchedStudyRegion}
                       autoDetectedRegion={studySetup.autoStudyRegion}
                       regionOverridden={studySetup.regionOverrides != null}

@@ -167,14 +167,22 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     staleTime: 5 * 60_000,
   });
 
-  const availableRegions = useMemo(() => {
-    const all = (quickSelectData?.tabs ?? [])
+  /** Server-backed Study Tabs for Section 1 (id + name). Authoritative catalog. */
+  const availableStudyTabs = useMemo(() => {
+    const active = (quickSelectData?.tabs ?? [])
       .filter((t) => t.isActive)
       .slice()
-      .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name))
-      .map((t) => t.name);
-    return filterRegionNamesForModality(all, modality);
+      .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name));
+    const allowedNames = new Set(filterRegionNamesForModality(active.map((t) => t.name), modality));
+    return active
+      .filter((t) => allowedNames.has(t.name))
+      .map((t) => ({ id: t.id, name: t.name }));
   }, [quickSelectData, modality]);
+
+  const availableRegions = useMemo(
+    () => availableStudyTabs.map((t) => t.name),
+    [availableStudyTabs],
+  );
 
   const autoStudyRegion = useMemo(
     () => matchStudyRegion(studyHint, availableRegions),
@@ -742,6 +750,7 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     resetRegionOverrides,
     selectPrimaryRegion,
     availableRegions,
+    availableStudyTabs,
     availableProtocols,
     activeProtocol,
     setActiveProtocol,

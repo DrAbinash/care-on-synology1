@@ -179,8 +179,10 @@ describe("Region context drives the Findings tools", () => {
     expect(setup).toContain("nextStudyRegions(studyRegions, regionName)");
     // Section 1 quick buttons + dropdown both call selectPrimaryRegion
     expect(workspace).toContain("onSelectRegion={studySetup.selectPrimaryRegion}");
-    expect(section1).toContain("onSelectRegion(r)");
+    expect(section1).toContain("onSelectRegion(t.name)");
     expect(section1).toContain('data-selected={selected ? "true" : "false"}');
+    expect(section1).toContain("availableStudyTabs");
+    expect(section1).toContain('data-testid="whole-report-format-select"');
   });
 
   it("Quick Add folds its region grid away but keeps cross-region access", () => {
