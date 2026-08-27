@@ -287,9 +287,9 @@ export async function createOrderHandler(req: StaffAuthRequest, res: Response): 
   // BOTH paths must verify each test id exists AND is active, otherwise we'd
   // accept orders for discontinued/unknown tests and silently fail at insert
   // time (or, worse, mis-charge the patient).
-  // Line prices are server-authoritative via resolveOrderLinePrices:
-  // packages allocate from package config; leftover tests use catalog (+ VIP);
-  // only admin/super_admin may override leftover prices.
+  // Line prices via resolveOrderLinePrices:
+  // packages allocate from package config; leftover/unpackaged tests honour
+  // desk floor/ceiling (non-admin may undercharge, markup → 403; admin any).
   let lineItems: { testId: number; price: string }[] = [];
   const validationIds = hasCustom ? customTests!.map((ct) => ct.testId) : (testIds ?? packageMemberIds);
   {
@@ -362,7 +362,9 @@ export async function createOrderHandler(req: StaffAuthRequest, res: Response): 
     vipPercent: vipPct,
   });
   if (resolved.error) {
-    res.status(400).json({
+    // PRICE_CEILING must stay 403 — billingDeskSave.request.test and desk UX
+    // treat markup above catalogue as a permission denial, not a bad request.
+    res.status(resolved.code === "PRICE_CEILING" ? 403 : 400).json({
       error: "Invalid request",
       details: [{ path: ["tests"], message: resolved.error }],
     });
