@@ -111,8 +111,13 @@ router.post("/tabs", requireAdminRole, async (req, res) => {
     return;
   }
   const sortOrder = Number.isFinite(Number(req.body?.sortOrder)) ? Number(req.body.sortOrder) : 0;
+  const techniqueText = typeof req.body?.techniqueText === "string" ? req.body.techniqueText : "";
+  const normalText = typeof req.body?.normalText === "string" ? req.body.normalText : "";
   try {
-    const [row] = await db.insert(radiologyStudyTabsTable).values({ name, sortOrder }).returning();
+    const [row] = await db
+      .insert(radiologyStudyTabsTable)
+      .values({ name, sortOrder, techniqueText, normalText })
+      .returning();
     invalidateCached(CACHE_KEY);
     res.status(201).json(row);
   } catch {
@@ -385,8 +390,6 @@ router.post("/clinical-history/restore-defaults", requireAdminRole, async (req, 
   res.json({ ok: true, restored: defaults.length });
 });
 
-export default router;
-
 // ── Protocols (admin write, staff read via the cached GET / above) ──────────
 router.post("/protocols", requireAdminRole, async (req, res) => {
   const name = String(req.body?.name ?? "").trim();
@@ -609,3 +612,5 @@ router.post("/learned-patterns", async (req, res) => {
     .returning();
   res.status(201).json(row);
 });
+
+export default router;

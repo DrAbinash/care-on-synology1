@@ -2,28 +2,26 @@
  * Section 1 — Study / Region + Whole Report Format.
  *
  * Single source of truth: onSelectRegion (studySetup.selectPrimaryRegion).
- * Quick buttons are a pencil-editable subset of the same dropdown catalog —
+ * Quick buttons are a pencil-editable subset of the Study / Region dropdown —
  * never a hard-coded region list.
- * Users can add a region to the dropdown from this UI (workspace-local).
+ * "+ Add" opens AddStudyRegionDialog (server Study Tab + children/ownership).
  */
 
 import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { Pencil, Plus, X } from "lucide-react";
+import { Pencil, Plus } from "lucide-react";
 import { useWorkspace, useWorkspaceSelector } from "@/lib/zai-workspace/store";
 import { lookupFormatsForPicker } from "@/lib/zai-workspace/report-formats-library";
 import type { ReportingStudyContext } from "@/lib/reportingStudyContext";
 import {
-  CUSTOM_REGIONS_STORAGE_KEY,
   QUICK_REGIONS_STORAGE_KEY,
-  addCustomRegion,
   mergeRegionCatalog,
-  normalizeRegionName,
   readStoredRegionList,
   resolveQuickRegions,
   toggleQuickRegionPick,
   writeStoredRegionList,
 } from "@/lib/workspaceRegionPrefs";
+import { AddStudyRegionDialog } from "./AddStudyRegionDialog";
 
 export type StudyRegionReportFormatSectionProps = {
   availableRegions: string[];
@@ -65,27 +63,19 @@ export function StudyRegionReportFormatSection({
   const appliedFormatReportTitle = useWorkspaceSelector((s) => s.appliedFormatReportTitle);
   const applyFormatById = useWorkspace((s) => s.applyFormatById);
 
-  const [customRegions, setCustomRegions] = useState<string[]>(() =>
-    readStoredRegionList(CUSTOM_REGIONS_STORAGE_KEY),
-  );
   const [quickPicks, setQuickPicks] = useState<string[]>(() =>
     readStoredRegionList(QUICK_REGIONS_STORAGE_KEY),
   );
   const [quickEditOpen, setQuickEditOpen] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
-  const [addValue, setAddValue] = useState("");
-
-  useEffect(() => {
-    writeStoredRegionList(CUSTOM_REGIONS_STORAGE_KEY, customRegions);
-  }, [customRegions]);
 
   useEffect(() => {
     writeStoredRegionList(QUICK_REGIONS_STORAGE_KEY, quickPicks);
   }, [quickPicks]);
 
   const catalog = useMemo(
-    () => mergeRegionCatalog(availableRegions, customRegions, selectedRegion),
-    [availableRegions, customRegions, selectedRegion],
+    () => mergeRegionCatalog(availableRegions, [], selectedRegion),
+    [availableRegions, selectedRegion],
   );
 
   const quickRegions = useMemo(
@@ -105,15 +95,11 @@ export function StudyRegionReportFormatSection({
 
   const formats = formatLookup.formats;
 
-  const commitAddRegion = () => {
-    const name = normalizeRegionName(addValue);
-    if (!name) return;
-    setCustomRegions((prev) => addCustomRegion(prev, name));
-    // Also pin into quick picks so it is immediately reachable
-    setQuickPicks((prev) => (prev.some((r) => r.toLowerCase() === name.toLowerCase()) ? prev : [...prev, name]));
-    onSelectRegion(name);
-    setAddValue("");
-    setAddOpen(false);
+  const handleRegionCreated = (regionName: string) => {
+    setQuickPicks((prev) =>
+      prev.some((r) => r.toLowerCase() === regionName.toLowerCase()) ? prev : [...prev, regionName],
+    );
+    onSelectRegion(regionName);
   };
 
   return (
@@ -145,9 +131,9 @@ export function StudyRegionReportFormatSection({
               type="button"
               disabled={disabled}
               className="inline-flex h-7 items-center gap-0.5 rounded border border-dashed border-emerald-400/70 px-1.5 text-[10px] font-semibold text-emerald-800 hover:bg-emerald-50"
-              title="Add a study / region to this dropdown"
+              title="Add a Study / Region to the clinic catalog (with children & ownership)"
               data-testid="study-region-add-toggle"
-              onClick={() => setAddOpen((v) => !v)}
+              onClick={() => setAddOpen(true)}
             >
               <Plus size={11} /> Add
             </button>
@@ -233,40 +219,6 @@ export function StudyRegionReportFormatSection({
         )}
       </div>
 
-      {addOpen && (
-        <div
-          className="flex flex-wrap items-center gap-1.5 rounded-md border border-emerald-200 bg-emerald-50/40 px-2 py-1.5"
-          data-testid="study-region-add-panel"
-        >
-          <input
-            className="h-7 min-w-[12rem] flex-1 rounded border bg-background px-2 text-[11px]"
-            placeholder="New study / region name (e.g. Knee)"
-            value={addValue}
-            disabled={disabled}
-            onChange={(e) => setAddValue(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") commitAddRegion();
-              if (e.key === "Escape") setAddOpen(false);
-            }}
-            autoFocus
-            data-testid="study-region-add-input"
-          />
-          <Button
-            type="button"
-            size="sm"
-            className="h-7 text-[10px]"
-            disabled={disabled || !normalizeRegionName(addValue)}
-            onClick={commitAddRegion}
-            data-testid="study-region-add-save"
-          >
-            Add to dropdown
-          </Button>
-          <button type="button" className="p-1 text-muted-foreground hover:text-foreground" onClick={() => setAddOpen(false)} aria-label="Cancel add">
-            <X size={12} />
-          </button>
-        </div>
-      )}
-
       <div className="flex flex-wrap items-center gap-1.5 px-0.5" data-testid="study-region-quick">
         <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mr-0.5">Quick</span>
         {quickRegions.length === 0 ? (
@@ -320,7 +272,7 @@ export function StudyRegionReportFormatSection({
               Tick regions from the Study / Region dropdown to show as quick buttons. Same selection state.
             </p>
             <button type="button" className="p-1 text-muted-foreground hover:text-foreground" onClick={() => setQuickEditOpen(false)} aria-label="Close quick editor">
-              <X size={12} />
+              ×
             </button>
           </div>
           {catalog.length === 0 ? (
@@ -355,6 +307,13 @@ export function StudyRegionReportFormatSection({
           Showing all {modality || "modality"} formats — region filter soft-matched.
         </p>
       )}
+
+      <AddStudyRegionDialog
+        open={addOpen}
+        onClose={() => setAddOpen(false)}
+        onCreated={handleRegionCreated}
+        modalityHint={modality}
+      />
     </div>
   );
 }
