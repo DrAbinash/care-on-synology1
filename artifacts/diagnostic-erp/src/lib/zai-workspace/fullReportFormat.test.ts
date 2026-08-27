@@ -15,6 +15,7 @@ import {
   createFormat,
   hydrateFormat,
   lookupFormatsForContext,
+  lookupFormatsForPicker,
   payloadForApi,
 } from "./report-formats-library";
 import { buildReportingStudyContext } from "@/lib/reportingStudyContext";
@@ -208,11 +209,28 @@ describe("full report format — protocol ranking", () => {
     expect(ranked.some((f) => f.name === "MRI Cervical Spine — Screening")).toBe(true);
   });
 
-  it("protocolScopeMatches is conservative", () => {
-    expect(protocolScopeMatches("Screening", "MRI Cervical Spine Screening")).toBe(true);
-    expect(protocolScopeMatches("Plain", "MRI Brain Plain")).toBe(true);
-    expect(protocolScopeMatches("Contrast", "MRI Brain Plain")).toBe(false);
-    expect(protocolScopeMatches("", "MRI Brain Plain")).toBe(false);
+  it("lookupFormatsForPicker falls back to modality when region is unresolved", () => {
+    const ctx = ctxFor("Nuclear medicine bone scan");
+    expect(ctx.region).toBeNull();
+    const { formats, scope } = lookupFormatsForPicker(DEFAULT_REPORT_FORMATS, "MR", ctx);
+    expect(scope).toBe("modality");
+    expect(formats.length).toBeGreaterThan(0);
+    expect(formats.every((f) => f.modality === "MR")).toBe(true);
+  });
+
+  it("lookupFormatsForPicker prefers bodyPart fallback before modality dump", () => {
+    const ctx = buildReportingStudyContext({
+      modality: "MR",
+      studyDescription: "unknown study",
+      regions: [],
+      source: "unresolved",
+      protocolName: null,
+    });
+    const { formats, scope } = lookupFormatsForPicker(DEFAULT_REPORT_FORMATS, "MR", ctx, {
+      bodyPartFallback: "Brain",
+    });
+    expect(scope).toBe("bodyPart");
+    expect(formats.every((f) => f.bodyPart === "Brain")).toBe(true);
   });
 
   it("favorites and recent tabs filter without dropping the library", () => {

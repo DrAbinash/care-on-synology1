@@ -1601,30 +1601,46 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   // useReportingWorkflow already owns the shared "radiology-pacs-worklist" query.
   // A second direct fetch used to overwrite nested `patient` with flat API rows
   // and crash WorklistStrip on `s.patient.id` a few seconds after load.
+  //
+  // Always include currentRow even when it falls outside modality/date scope —
+  // otherwise Orient → Full Report Formats sticks on "Select a study" while the
+  // editor still shows the open patient (currentRow comes from fullQueue).
   useEffect(() => {
-    // Always sync (including empty) so the strip clears when the queue is empty.
-    // setStudies is idempotent for equal content — safe against unstable [].
-    setStudies(workflow.queue ?? []);
-  }, [workflow.queue, setStudies]);
+    const q = workflow.queue ?? [];
+    const current = workflow.currentRow;
+    if (current && !q.some((s) => Number(s.id) === Number(current.id))) {
+      setStudies([current, ...q]);
+    } else {
+      setStudies(q);
+    }
+  }, [workflow.queue, workflow.currentRow, setStudies]);
 
   // Server-backed whole-report formats + chocolate macros (migrate localStorage once).
   useEffect(() => {
     void useWorkspace.getState().hydrateContentLibraries();
   }, []);
 
-  // ─── Auto-select first study ────────────────────────────────────────────────
+  // Keep zustand activeStudyId aligned with the URL study.
+  // Do NOT call selectStudy() here — it wipes editor text / reportingContext and
+  // races draft hydration. The studyId effect above already clears fields.
   useEffect(() => {
+    if (!studyId) return;
+    const sid = String(studyId);
+    if (activeStudyId === sid) return;
+    if (!studies.some((s: Study) => s.id === sid)) return;
+    useWorkspace.setState({ activeStudyId: sid, railStage: "orient" });
+  }, [studyId, studies, activeStudyId]);
+
+  // ─── Auto-open first study when the workspace has no URL study ─────────────
+  useEffect(() => {
+    if (studyId) return;
     if (studies.length === 0 || activeStudyId) return;
-    if (studyId) {
-      const match = studies.find((s: Study) => s.id === String(studyId));
-      if (match) { selectStudy(match.id); return; }
-    }
     const pr: Record<string, number> = { stat: 0, urgent: 1, routine: 2, vip: 1 };
     const sorted = [...studies].sort(
       (a: Study, b: Study) => ((pr[a.priority] ?? 2) - (pr[b.priority] ?? 2)) || (a.tatMinutes - b.tatMinutes),
     );
     if (sorted[0]) openStudy(sorted[0].id);
-  }, [studies, activeStudyId, studyId, selectStudy, openStudy]);
+  }, [studies, activeStudyId, studyId, openStudy]);
 
   // Reset hydrate marker when studyId changes (must run before the hydrate effect).
   useEffect(() => {
