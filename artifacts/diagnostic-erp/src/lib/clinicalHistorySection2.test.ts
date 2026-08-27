@@ -20,7 +20,7 @@ describe("Section 2 — Clinical History chips", () => {
     expect(strip).toContain('data-testid="history-edit-chips"');
     expect(strip).toContain("/api/radiology/quick-select/clinical-history");
     expect(strip).toContain("selectedStudyTabId");
-    expect(strip).toContain("c.studyType === catalogStudyType");
+    expect(strip).toContain("clinicalHistoryChipsForStudyTab");
     expect(strip).toContain("toggleHistoryChipContribution");
   });
 

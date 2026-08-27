@@ -28,6 +28,7 @@ import {
 import { asc, eq, and, ne } from "drizzle-orm";
 import { requireAdminRole, type StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { getCached, setCached, invalidateCached, TTL } from "../lib/ttlCache";
+import { resolveStudyTab, syncChildStudyTypeForTabRename } from "../lib/resolveStudyTab";
 import { CLINICAL_HISTORY_CHIP_DEFAULTS, PROTOCOL_DEFAULTS } from "../lib/radiologyReportingDefaults";
 
 // Clinical-history quick-select chips are intentionally UNLIMITED per study —
@@ -142,6 +143,9 @@ router.patch("/tabs/:id", requireAdminRole, async (req, res) => {
     if (!row) {
       res.status(404).json({ error: "Study tab not found" });
       return;
+    }
+    if (typeof updates.name === "string") {
+      await syncChildStudyTypeForTabRename(id, updates.name);
     }
     invalidateCached(CACHE_KEY);
     res.json(row);
@@ -313,16 +317,24 @@ router.delete("/measurements/:id", requireAdminRole, async (req, res) => {
 // many quick-insert chips as they like; the workspace strip wraps/scrolls.
 
 router.post("/clinical-history", requireAdminRole, async (req, res) => {
-  const studyType = String(req.body?.studyType ?? "").trim();
   const displayLabel = String(req.body?.displayLabel ?? "").trim();
-  if (!studyType || !displayLabel) {
-    res.status(400).json({ error: "studyType and displayLabel are required" });
+  if (!displayLabel) {
+    res.status(400).json({ error: "displayLabel is required" });
+    return;
+  }
+  const tab = await resolveStudyTab({
+    studyTabId: req.body?.studyTabId ?? req.body?.study_tab_id,
+    studyType: req.body?.studyType,
+  });
+  if (!tab) {
+    res.status(400).json({ error: "studyTabId or studyType must resolve to a Study Tab" });
     return;
   }
   const isActive = req.body?.isActive !== false;
   try {
     const [row] = await db.insert(radiologyClinicalHistoryChipsTable).values({
-      studyType,
+      studyType: tab.name,
+      studyTabId: tab.id,
       displayLabel,
       insertedText: typeof req.body?.insertedText === "string" ? req.body.insertedText : "",
       sortOrder: Number.isFinite(Number(req.body?.sortOrder)) ? Number(req.body.sortOrder) : 0,
@@ -347,7 +359,17 @@ router.patch("/clinical-history/:id", requireAdminRole, async (req, res) => {
     return;
   }
   const updates: Record<string, unknown> = { updatedAt: new Date() };
-  if (typeof req.body?.studyType === "string" && req.body.studyType.trim()) updates.studyType = req.body.studyType.trim();
+  const tab = await resolveStudyTab({
+    studyTabId: req.body?.studyTabId ?? req.body?.study_tab_id,
+    studyType: req.body?.studyType,
+  });
+  if (tab) {
+    updates.studyTabId = tab.id;
+    updates.studyType = tab.name;
+  } else if (typeof req.body?.studyType === "string" && req.body.studyType.trim()) {
+    // Legacy unresolved: keep text, clear broken id only if explicitly unmatched
+    updates.studyType = req.body.studyType.trim();
+  }
   if (typeof req.body?.displayLabel === "string" && req.body.displayLabel.trim()) updates.displayLabel = req.body.displayLabel.trim();
   if (typeof req.body?.insertedText === "string") updates.insertedText = req.body.insertedText;
   if (req.body?.sortOrder !== undefined) updates.sortOrder = Number(req.body.sortOrder) || 0;
@@ -379,11 +401,26 @@ router.post("/clinical-history/restore-defaults", requireAdminRole, async (req, 
   const studyType = typeof req.body?.studyType === "string" && req.body.studyType.trim() ? req.body.studyType.trim() : null;
   const defaults = studyType ? CLINICAL_HISTORY_CHIP_DEFAULTS.filter((c) => c.studyType === studyType) : CLINICAL_HISTORY_CHIP_DEFAULTS;
   for (const c of defaults) {
+    const tab = await resolveStudyTab({ studyType: c.studyType });
     await db.insert(radiologyClinicalHistoryChipsTable)
-      .values({ studyType: c.studyType, displayLabel: c.displayLabel, insertedText: c.insertedText, sortOrder: c.sortOrder, isActive: true, isSystem: true })
+      .values({
+        studyType: tab?.name ?? c.studyType,
+        studyTabId: tab?.id ?? null,
+        displayLabel: c.displayLabel,
+        insertedText: c.insertedText,
+        sortOrder: c.sortOrder,
+        isActive: true,
+        isSystem: true,
+      })
       .onConflictDoUpdate({
         target: [radiologyClinicalHistoryChipsTable.studyType, radiologyClinicalHistoryChipsTable.displayLabel],
-        set: { insertedText: c.insertedText, sortOrder: c.sortOrder, isActive: true, updatedAt: new Date() },
+        set: {
+          insertedText: c.insertedText,
+          sortOrder: c.sortOrder,
+          isActive: true,
+          studyTabId: tab?.id ?? null,
+          updatedAt: new Date(),
+        },
       });
   }
   invalidateCached(CACHE_KEY);
@@ -393,24 +430,31 @@ router.post("/clinical-history/restore-defaults", requireAdminRole, async (req, 
 // ── Protocols (admin write, staff read via the cached GET / above) ──────────
 router.post("/protocols", requireAdminRole, async (req, res) => {
   const name = String(req.body?.name ?? "").trim();
-  const studyType = String(req.body?.studyType ?? "").trim();
-  if (!name || !studyType) {
-    res.status(400).json({ error: "name and studyType are required" });
+  if (!name) {
+    res.status(400).json({ error: "name is required" });
     return;
   }
+  const tab = await resolveStudyTab({
+    studyTabId: req.body?.studyTabId ?? req.body?.study_tab_id,
+    studyType: req.body?.studyType,
+  });
+  if (!tab) {
+    res.status(400).json({ error: "studyTabId or studyType must resolve to a Study Tab" });
+    return;
+  }
+  const studyType = tab.name;
   const isDefault = req.body?.isDefault === true;
   try {
     const row = await db.transaction(async (tx) => {
-      // Only one default protocol per study region — clear any existing
-      // default in this study before marking the new one.
       if (isDefault) {
         await tx.update(radiologyProtocolsTable)
           .set({ isDefault: false, updatedAt: new Date() })
-          .where(eq(radiologyProtocolsTable.studyType, studyType));
+          .where(eq(radiologyProtocolsTable.studyTabId, tab.id));
       }
       const [r] = await tx.insert(radiologyProtocolsTable).values({
         name,
         studyType,
+        studyTabId: tab.id,
         modality: typeof req.body?.modality === "string" ? req.body.modality : "",
         checklistJson: typeof req.body?.checklistJson === "string" ? req.body.checklistJson : "[]",
         techniqueText: typeof req.body?.techniqueText === "string" ? req.body.techniqueText : "",
@@ -439,7 +483,16 @@ router.patch("/protocols/:id", requireAdminRole, async (req, res) => {
   }
   const updates: Record<string, unknown> = { updatedAt: new Date() };
   if (typeof req.body?.name === "string" && req.body.name.trim()) updates.name = req.body.name.trim();
-  if (typeof req.body?.studyType === "string" && req.body.studyType.trim()) updates.studyType = req.body.studyType.trim();
+  const tab = await resolveStudyTab({
+    studyTabId: req.body?.studyTabId ?? req.body?.study_tab_id,
+    studyType: req.body?.studyType,
+  });
+  if (tab) {
+    updates.studyTabId = tab.id;
+    updates.studyType = tab.name;
+  } else if (typeof req.body?.studyType === "string" && req.body.studyType.trim()) {
+    updates.studyType = req.body.studyType.trim();
+  }
   if (typeof req.body?.modality === "string") updates.modality = req.body.modality;
   if (typeof req.body?.checklistJson === "string") updates.checklistJson = req.body.checklistJson;
   if (typeof req.body?.techniqueText === "string") updates.techniqueText = req.body.techniqueText;
@@ -454,14 +507,18 @@ router.patch("/protocols/:id", requireAdminRole, async (req, res) => {
     const row = await db.transaction(async (tx) => {
       const [existing] = await tx.select().from(radiologyProtocolsTable).where(eq(radiologyProtocolsTable.id, id));
       if (!existing) return null;
-      // Enforce a single default per study region: if this update marks the
-      // protocol default, clear the flag on every other protocol in the same
-      // study (using the new study_type if it's being changed too).
       if (updates.isDefault === true) {
-        const studyType = typeof updates.studyType === "string" ? updates.studyType : existing.studyType;
-        await tx.update(radiologyProtocolsTable)
-          .set({ isDefault: false, updatedAt: new Date() })
-          .where(and(eq(radiologyProtocolsTable.studyType, studyType), ne(radiologyProtocolsTable.id, id)));
+        const studyTabId = typeof updates.studyTabId === "number" ? updates.studyTabId : existing.studyTabId;
+        if (studyTabId != null) {
+          await tx.update(radiologyProtocolsTable)
+            .set({ isDefault: false, updatedAt: new Date() })
+            .where(and(eq(radiologyProtocolsTable.studyTabId, studyTabId), ne(radiologyProtocolsTable.id, id)));
+        } else {
+          const studyType = typeof updates.studyType === "string" ? updates.studyType : existing.studyType;
+          await tx.update(radiologyProtocolsTable)
+            .set({ isDefault: false, updatedAt: new Date() })
+            .where(and(eq(radiologyProtocolsTable.studyType, studyType), ne(radiologyProtocolsTable.id, id)));
+        }
       }
       const [r] = await tx.update(radiologyProtocolsTable).set(updates).where(eq(radiologyProtocolsTable.id, id)).returning();
       return r;
@@ -509,6 +566,7 @@ router.post("/protocols/:id/duplicate", requireAdminRole, async (req, res) => {
   const [row] = await db.insert(radiologyProtocolsTable).values({
     name,
     studyType: src.studyType,
+    studyTabId: src.studyTabId,
     modality: src.modality,
     checklistJson: src.checklistJson,
     techniqueText: src.techniqueText,
@@ -532,24 +590,47 @@ router.post("/protocols/restore-defaults", requireAdminRole, async (req, res) =>
   const defaults = studyType ? PROTOCOL_DEFAULTS.filter((p) => p.studyType === studyType) : PROTOCOL_DEFAULTS;
   await db.transaction(async (tx) => {
     for (const p of defaults) {
+      const tab = await resolveStudyTab({ studyType: p.studyType });
       if (p.isDefault) {
-        await tx.update(radiologyProtocolsTable)
-          .set({ isDefault: false, updatedAt: new Date() })
-          .where(eq(radiologyProtocolsTable.studyType, p.studyType));
+        if (tab) {
+          await tx.update(radiologyProtocolsTable)
+            .set({ isDefault: false, updatedAt: new Date() })
+            .where(eq(radiologyProtocolsTable.studyTabId, tab.id));
+        } else {
+          await tx.update(radiologyProtocolsTable)
+            .set({ isDefault: false, updatedAt: new Date() })
+            .where(eq(radiologyProtocolsTable.studyType, p.studyType));
+        }
       }
       await tx.insert(radiologyProtocolsTable)
         .values({
-          name: p.name, studyType: p.studyType, modality: p.modality, checklistJson: p.checklistJson,
-          techniqueText: p.techniqueText, normalText: p.normalText, recommendationText: "",
-          requiredMeasurements: "", isGoldStandard: p.isGoldStandard, isDefault: p.isDefault,
-          sortOrder: p.sortOrder, isActive: true,
+          name: p.name,
+          studyType: tab?.name ?? p.studyType,
+          studyTabId: tab?.id ?? null,
+          modality: p.modality,
+          checklistJson: p.checklistJson,
+          techniqueText: p.techniqueText,
+          normalText: p.normalText,
+          recommendationText: "",
+          requiredMeasurements: "",
+          isGoldStandard: p.isGoldStandard,
+          isDefault: p.isDefault,
+          sortOrder: p.sortOrder,
+          isActive: true,
         })
         .onConflictDoUpdate({
           target: radiologyProtocolsTable.name,
           set: {
-            studyType: p.studyType, modality: p.modality, checklistJson: p.checklistJson,
-            techniqueText: p.techniqueText, normalText: p.normalText, isGoldStandard: p.isGoldStandard,
-            isDefault: p.isDefault, isActive: true, updatedAt: new Date(),
+            studyType: tab?.name ?? p.studyType,
+            studyTabId: tab?.id ?? null,
+            modality: p.modality,
+            checklistJson: p.checklistJson,
+            techniqueText: p.techniqueText,
+            normalText: p.normalText,
+            isGoldStandard: p.isGoldStandard,
+            isDefault: p.isDefault,
+            isActive: true,
+            updatedAt: new Date(),
           },
         });
     }

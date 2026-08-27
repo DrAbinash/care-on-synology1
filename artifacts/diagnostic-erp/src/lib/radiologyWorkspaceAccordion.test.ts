@@ -222,6 +222,12 @@ describe("no reporting feature was deleted by the re-layout", () => {
     'data-testid="study-region-quick"',
     'data-testid="reapply-defaults"',
   ]);
+  const techniqueStrip = read("components/radiology/TechniqueChoiceStrip.tsx");
+  const historyStrip = read("components/radiology/ClinicalHistoryChipStrip.tsx");
+  const section23Markers = new Set([
+    'data-testid="technique-choice-select"',
+    "ClinicalHistoryChipStrip",
+  ]);
   const preserved: Array<[string, string | RegExp]> = [
     ["Demography card", "<ReportDemographyCard"],
     ["Referring doctor quick select", "<ReferringDoctorQuickSelect"],
@@ -232,8 +238,8 @@ describe("no reporting feature was deleted by the re-layout", () => {
     ["Whole report format select", 'data-testid="whole-report-format-select"'],
     ["Region quick buttons", 'data-testid="study-region-quick"'],
     ["Unified Section 1 component", "StudyRegionReportFormatSection"],
-    ["Technique region select", 'data-testid="technique-region-select"'],
-    ["Technique protocol select", 'data-testid="technique-protocol-select"'],
+    ["Technique choice select", 'data-testid="technique-choice-select"'],
+    ["Technique editor", 'data-testid="canonical-technique-editor"'],
     ["Re-apply defaults", 'data-testid="reapply-defaults"'],
     ["MRI readiness", "<MriReadinessStrip"],
     ["Template mismatch + load", 'data-testid="load-correct-template"'],
@@ -264,7 +270,11 @@ describe("no reporting feature was deleted by the re-layout", () => {
 
   for (const [feature, marker] of preserved) {
     it(`still mounts ${feature}`, () => {
-      const src = typeof marker === "string" && section1Markers.has(marker) ? section1 : workspace;
+      let src = workspace;
+      if (typeof marker === "string" && section1Markers.has(marker)) src = section1;
+      else if (typeof marker === "string" && section23Markers.has(marker)) {
+        src = marker.includes("technique") ? techniqueStrip : historyStrip + workspace;
+      }
       if (marker instanceof RegExp) expect(src).toMatch(marker);
       else expect(src).toContain(marker);
     });
