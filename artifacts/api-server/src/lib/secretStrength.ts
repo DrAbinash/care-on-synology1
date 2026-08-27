@@ -42,7 +42,9 @@ const KNOWN_WEAK = new Set([
   "token", "bearer",
   "internal", "internalapikey",
   "cronsecret", "cron-secret", "cron_secret",
-  "todo", "tbd", "xxx", "none", "null", "undefined",
+  "replace_with_your_internal_api_key",
+  "your-internal-api-key-here",
+  "your-secure-internal-api-key-here",
 ]);
 
 export type SecretWeakness = {

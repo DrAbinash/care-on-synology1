@@ -1,59 +1,11 @@
-import { Router, type Request, type Response } from "express";
+import { Router, type Response } from "express";
 import { spawn } from "node:child_process";
-import crypto from "node:crypto";
 import { logger } from "../lib/logger";
-import { checkSecretStrength, weakSecretMessage } from "../lib/secretStrength";
+import { requireStrongInternalApiKey } from "../lib/internalApiKeyAuth";
 
 const router = Router();
 
-/** Constant-time string compare — same helper shape as plugin-loader.ts and
- *  requireSuperAdminUsb.ts, so secret comparison is uniform across the server. */
-function safeEqual(a: string, b: string): boolean {
-  const ab = Buffer.from(a);
-  const bb = Buffer.from(b);
-  if (ab.length !== bb.length) return false;
-  return crypto.timingSafeEqual(ab, bb);
-}
-
-/** Logged once per process so a hammering caller cannot flood the log. */
-let weakKeyLogged = false;
-
-function requireInternalApiKey(req: Request, res: Response, next: () => void): void {
-  const expected = process.env["INTERNAL_API_KEY"];
-  // Fail CLOSED in every environment. This endpoint streams full-database
-  // backups, so an unset key must never mean "no auth required": previously a
-  // box that was not explicitly NODE_ENV=production served backups to any
-  // caller that could reach the port. Matches internal-cron.ts, which has
-  // always returned 503 unconditionally when its secret is unset.
-  //
-  // A WEAK key is treated identically to a missing one. This router is mounted
-  // under the public /api/ prefix (routes/index.ts) with no IP allowlist, so
-  // the bearer token is the only thing in front of a full patient-database
-  // export. Production shipped with INTERNAL_API_KEY=1234, which the
-  // constant-time compare below accepted perfectly happily — the auth logic was
-  // never the problem, the value was, and nothing could tell the difference.
-  const weakness = checkSecretStrength(expected);
-  if (weakness) {
-    if (!weakKeyLogged) {
-      weakKeyLogged = true;
-      logger.error(weakSecretMessage("INTERNAL_API_KEY", weakness));
-    }
-    res.status(503).json({ error: weakSecretMessage("INTERNAL_API_KEY", weakness) });
-    return;
-  }
-  // checkSecretStrength returning null already guarantees a non-empty string,
-  // but it does not narrow the type the way the old `if (!expected)` did.
-  const key = expected as string;
-  const header = req.header("authorization") ?? "";
-  const provided = header.startsWith("Bearer ") ? header.slice(7) : "";
-  if (!safeEqual(provided, key)) {
-    res.status(401).json({ error: "Unauthorized" });
-    return;
-  }
-  next();
-}
-
-router.use(requireInternalApiKey);
+router.use(requireStrongInternalApiKey);
 
 // ─── GET /api/internal/backup/download ───────────────────────────────────────
 // Runs pg_dump on the live PostgreSQL database and streams the SQL as a
