@@ -6,7 +6,6 @@ import { regionSelectionAction } from "@/components/radiology/StudyRegionReportF
 import { lookupFormatsForPicker, DEFAULT_REPORT_FORMATS } from "@/lib/zai-workspace/report-formats-library";
 import { buildReportingStudyContext } from "@/lib/reportingStudyContext";
 import {
-  addCustomRegion,
   mergeRegionCatalog,
   resolveQuickRegions,
   toggleQuickRegionPick,
@@ -66,12 +65,25 @@ describe("Section 1 — Study / Region + Report Format unification", () => {
     expect(toggleQuickRegionPick([], "Brain")).toEqual(["Brain"]);
   });
 
-  it("UI can add a region into the Study / Region catalog", () => {
-    const custom = addCustomRegion(["Brain"], "  Knee  ");
-    expect(custom).toEqual(["Brain", "Knee"]);
-    const catalog = mergeRegionCatalog(["Brain", "Cervical Spine"], custom, null);
-    expect(catalog).toContain("Knee");
+  it("catalog merges server regions (selected region included even if not yet in list)", () => {
+    const catalog = mergeRegionCatalog(["Brain", "Cervical Spine"], [], "Knee MRI");
+    expect(catalog).toContain("Knee MRI");
     expect(catalog).toContain("Brain");
+  });
+
+  it("Add Study / Region opens ownership + children dialog (not name-only localStorage)", () => {
+    const section = read("components/radiology/StudyRegionReportFormatSection.tsx");
+    const dialog = read("components/radiology/AddStudyRegionDialog.tsx");
+    expect(section).toContain("AddStudyRegionDialog");
+    expect(section).toContain('data-testid="study-region-add-toggle"');
+    expect(section).not.toContain("addCustomRegion");
+    expect(section).not.toContain("CUSTOM_REGIONS_STORAGE_KEY");
+    expect(section).not.toContain("study-region-add-input");
+    expect(dialog).toContain('data-testid="add-study-region-dialog"');
+    expect(dialog).toContain('data-testid="add-study-region-children"');
+    expect(dialog).toContain("WorkspaceQuickFindingEditor");
+    expect(dialog).toContain("/api/radiology/quick-select/tabs");
+    expect(dialog).toContain("Ownership");
   });
 
   it("workspace Section 1 mounts editable quick + add-region UI", () => {
@@ -92,6 +104,16 @@ describe("Section 1 — Study / Region + Report Format unification", () => {
   });
 });
 
+describe("POST tabs accepts technique + normals (API)", () => {
+  it("route inserts techniqueText and normalText on create", () => {
+    const route = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), "../../../api-server/src/routes/radiologyQuickFindings.ts"),
+      "utf8",
+    );
+    // Create path must persist Abnormality Engine texts in one shot
+    expect(route).toMatch(/router\.post\("\/tabs"[\s\S]*techniqueText[\s\S]*normalText[\s\S]*\.returning\(\)/);
+  });
+});
 describe("workspaceRegionPrefs storage helpers", () => {
   const store: Record<string, string> = {};
   beforeEach(() => {
