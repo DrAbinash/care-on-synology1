@@ -83,10 +83,12 @@ describe("Study Tab ID — Technique / protocols", () => {
     expect(setup).toContain("Manual / draft Technique must survive Study Tab change");
     expect(setup).toContain("Fill-empty only: manual / draft Technique survives Study Tab change");
     expect(setup).toContain("Resolve Study Tab ID from the NEW name");
-    // selectPrimaryRegion must not call applyProtocol when technique already filled
-    const selectBlock = setup.slice(setup.indexOf("selectPrimaryRegion = useCallback"), setup.indexOf("return {"));
+    const start = setup.indexOf("const selectPrimaryRegion = useCallback");
+    const end = setup.indexOf("}, [disabled, quickSelectData, applyProtocol, setters]);", start);
+    const selectBlock = setup.slice(start, end);
     expect(selectBlock).toContain("setActiveProtocol(protocol)");
     expect(selectBlock).toMatch(/if \(!fields\.technique\.trim\(\)\)/);
+    expect(selectBlock).not.toContain("applyProtocol(protocol, false)");
   });
 });
 
