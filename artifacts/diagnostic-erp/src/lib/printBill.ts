@@ -1669,7 +1669,7 @@ export function buildA5LandscapeBillPrintHtml(opts: BuildPrintHtmlOpts): string 
 
 // ── Unified bill print renderer ───────────────────────────────────────────
 // Three presentation templates share CARE financial / QR / audit fields:
-//   classic       — CARE Invoice (half A4 / A5 landscape 210×148)
+//   classic       — CARE Invoice (A5 landscape 210×148)
 //   a5-landscape  — compact A5 Landscape receipt (210×148)
 //   hope-a5       — HOPE OPD Receipt (A5 portrait 148×210)
 export function buildBillPrintHtml(opts: BuildPrintHtmlOpts): string {
