@@ -10,7 +10,7 @@ _How to recover safely from failure states without losing patient, report, or bi
 ---
 
 ## A. Application rollback (bad release, schema is fine)
-1. `git reset --hard <previous-good-commit>` on `feature/website-login-redirection`.
+1. `git reset --hard <previous-good-commit>` on `main`.
 2. `docker compose up -d --build`.
 3. Verify: `pnpm operations:verify-deployment`. The additive-only schema means an older image runs against the newer schema safely.
 

@@ -12,9 +12,9 @@ _Exact steps to deploy CARE ERP on the Synology NAS (Container Manager / `docker
 ## 1. Standard deploy (automated)
 The repo ships `deploy-synology.sh`, which does exactly:
 ```sh
-git fetch origin feature/website-login-redirection
-git checkout feature/website-login-redirection
-git reset --hard origin/feature/website-login-redirection   # deploy tracks this branch
+git fetch origin main
+git checkout main
+git reset --hard origin/main   # deploy tracks main (default branch)
 export GIT_COMMIT=... GIT_BRANCH=... GIT_TAG=... BUILD_DATE=...   # version stamping
 node scripts/bump-build.cjs                                  # ERP_VERSION / BUILD_NUMBER
 sudo docker compose down --remove-orphans
@@ -24,6 +24,11 @@ Run it:
 ```sh
 ./deploy-synology.sh
 ```
+
+> **Why main:** Agent/PR work merges to GitHub `main`. The former deploy branch
+> `feature/website-login-redirection` no longer exists on the remote. If the NAS
+> script still fetched that name, deploy failed or reset to a stale local ref —
+> clinic CARE looked unchanged while `main` kept advancing.
 
 ## 2. What happens on `up` (do not intervene mid-sequence)
 ```
@@ -64,7 +69,7 @@ docker compose run --rm care-migrate pnpm --filter @workspace/db run phase-f:ass
 ## 6. Rollback
 Migrations are **forward-only** — there is no automatic data rollback. To roll back the application:
 1. Identify the previous good commit/tag (`/api/system/version` history, or `git log`).
-2. `git reset --hard <previous-commit>` on `feature/website-login-redirection`, then `docker compose up -d --build`.
+2. `git reset --hard <previous-commit>` on `main`, then `docker compose up -d --build`.
 3. The schema stays forward (idempotent, additive) — an older app image runs fine against the newer schema because migrations only ADD. If a specific migration must be neutralised, **remove its `migrations/*.sql` file** (removing a file never touches the DB) and write a compensating additive migration; never edit an already-applied migration.
 4. For data corruption, restore from backup — see `CARE_ERP_RECOVERY_GUIDE.md`.
 

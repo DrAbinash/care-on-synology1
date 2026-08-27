@@ -26,7 +26,7 @@ This is what turns "hours" into "minutes."
    ```sh
    git clone <your repo url> /volume1/docker/care-erp
    cd /volume1/docker/care-erp
-   git checkout feature/website-login-redirection
+   git checkout main
    ```
    (Or copy the folder from the primary. You need at least: `docker-compose.yml`, `Dockerfile`, `docker/`, `lib/db/drizzle`, `migrations/`, and the app source the Dockerfile builds.)
 3. **Copy `.env`** from the primary into this folder (same secrets — see the box above). Never commit it.
