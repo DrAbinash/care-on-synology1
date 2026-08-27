@@ -731,10 +731,13 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     const added = !studyRegions.includes(regionName);
     setRegionOverrides(next);
     if (!added) return;
-    const protocol = pickQuickProtocol(quickSelectData?.protocols ?? [], regionName, selectedStudyTabId);
-    if (protocol) applyProtocol(protocol, false);
+    const tabId = (quickSelectData?.tabs ?? []).find((t) => t.isActive && t.name === regionName)?.id ?? null;
+    const protocol = pickQuickProtocol(quickSelectData?.protocols ?? [], regionName, tabId);
+    const fields = setters.readFields();
+    // Multi-region add may accumulate technique via merge when field already has text.
+    if (protocol) applyProtocol(protocol, !fields.technique.trim());
     const tab = quickSelectData?.tabs?.find((t) => t.name === regionName);
-    if (tab?.techniqueText) {
+    if (tab?.techniqueText && !fields.technique.trim()) {
       setters.mergeTechnique(tab.techniqueText, "protocol");
     }
   }, [disabled, studyRegions, quickSelectData, applyProtocol, setters]);
@@ -751,11 +754,20 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
       return;
     }
     setRegionOverrides([regionName]);
-    const protocol = pickQuickProtocol(quickSelectData?.protocols ?? [], regionName, selectedStudyTabId);
-    if (protocol) applyProtocol(protocol, false);
-    const tab = quickSelectData?.tabs?.find((t) => t.name === regionName);
-    if (tab?.techniqueText) {
-      setters.mergeTechnique(tab.techniqueText, "protocol");
+    // Resolve Study Tab ID from the NEW name (selectedStudyTabId is still stale here).
+    const tabId = (quickSelectData?.tabs ?? []).find((t) => t.isActive && t.name === regionName)?.id ?? null;
+    const protocol = pickQuickProtocol(quickSelectData?.protocols ?? [], regionName, tabId);
+    const fields = setters.readFields();
+    // Fill-empty only: manual / draft Technique survives Study Tab change.
+    if (!fields.technique.trim()) {
+      if (protocol) applyProtocol(protocol, true);
+      else {
+        setActiveProtocol(null);
+        const tab = quickSelectData?.tabs?.find((t) => t.name === regionName);
+        if (tab?.techniqueText) setters.mergeTechnique(tab.techniqueText, "protocol");
+      }
+    } else {
+      setActiveProtocol(protocol);
     }
   }, [disabled, quickSelectData, applyProtocol, setters]);
 

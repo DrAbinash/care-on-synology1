@@ -81,8 +81,12 @@ describe("Study Tab ID — Technique / protocols", () => {
   it("region change fill-empty only — does not merge into existing Technique", () => {
     const setup = read("hooks/useReportingStudySetup.ts");
     expect(setup).toContain("Manual / draft Technique must survive Study Tab change");
-    expect(setup).toContain("if (!fields.technique.trim())");
-    expect(setup).toContain("setActiveProtocol(protocol)");
+    expect(setup).toContain("Fill-empty only: manual / draft Technique survives Study Tab change");
+    expect(setup).toContain("Resolve Study Tab ID from the NEW name");
+    // selectPrimaryRegion must not call applyProtocol when technique already filled
+    const selectBlock = setup.slice(setup.indexOf("selectPrimaryRegion = useCallback"), setup.indexOf("return {"));
+    expect(selectBlock).toContain("setActiveProtocol(protocol)");
+    expect(selectBlock).toMatch(/if \(!fields\.technique\.trim\(\)\)/);
   });
 });
 
