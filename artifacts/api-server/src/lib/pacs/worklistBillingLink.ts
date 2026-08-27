@@ -1,6 +1,11 @@
 /**
  * Auto-link a PACS worklist row to a billed radiology_studies row when the
  * patient was billed but intake never set radiology_worklist.study_id.
+ *
+ * Order:
+ * 1. Unique normalized accession (MWL work-id) → GREEN
+ * 2. Patient-scoped fuzzy score (same patientId) → unique GREEN winner
+ * 3. Cross-patient name ± referral (no-MWL clinic) → unique YELLOW + PENDING review
  */
 import { db } from "@workspace/db";
 import {
@@ -11,10 +16,16 @@ import {
   testsTable,
   billsTable,
 } from "@workspace/db/schema";
-import { eq, desc } from "drizzle-orm";
-import { sql } from "drizzle-orm";
-import { calculateMatchScore, normalizeAccessionKey } from "./matchingEngine";
+import { and, desc, eq, gte, lte, notInArray, sql } from "drizzle-orm";
+import { calculateMatchScore, normalizeAccessionKey, type DicomInput } from "./matchingEngine";
 import { pickUniqueRow } from "../radiologyIdentity";
+import {
+  NAME_REFERRAL_AUTO_DAY_RADIUS,
+  capNameReferralAutoScore,
+  rankBillCandidate,
+  selectUniqueNameReferralAutoLink,
+  studyDateSearchWindow,
+} from "./nameReferralLink";
 
 const AUTO_LINK_MIN_POINTS = 45;
 /** Unique GREEN winner must beat the next eligible candidate by this gap. */
@@ -39,6 +50,129 @@ export interface AutoLinkResult {
   matchPoints?: number;
   matchScore?: string;
   reason?: string;
+  method?: string;
+}
+
+type WorklistRow = typeof radiologyWorklistTable.$inferSelect;
+
+type StudyJoinRow = {
+  id: number;
+  accessionNumber: string;
+  modality: string;
+  studyDescription: string | null;
+  studyDate: string;
+  patientId: number;
+  referringDoctor: string | null;
+  patientName: string;
+  patientUHID: string | null;
+  age: string;
+  sex: string | null;
+  testName: string;
+  billNumber: string | null;
+};
+
+function dicomFromWorklist(worklistItem: WorklistRow): DicomInput {
+  return {
+    patientName: worklistItem.patientName,
+    dicomPatientId: worklistItem.dicomPatientId,
+    age: worklistItem.age,
+    sex: worklistItem.sex,
+    modality: worklistItem.modality,
+    studyDescription: worklistItem.studyDescription,
+    accessionNumber: worklistItem.accessionNumber ?? "",
+    studyDate: worklistItem.studyDate,
+    studyTime: null,
+    studyInstanceUID: worklistItem.studyInstanceUID,
+    referringDoctor: worklistItem.referringDoctor,
+  };
+}
+
+const studySelect = {
+  id: radiologyStudiesTable.id,
+  accessionNumber: radiologyStudiesTable.accessionNumber,
+  modality: radiologyStudiesTable.modality,
+  studyDescription: radiologyStudiesTable.studyDescription,
+  studyDate: radiologyStudiesTable.studyDate,
+  patientId: radiologyStudiesTable.patientId,
+  referringDoctor: radiologyStudiesTable.referringDoctor,
+  patientName: sql<string>`concat(${patientsTable.firstName}, ' ', ${patientsTable.lastName})`,
+  patientUHID: patientsTable.patientId,
+  age: sql<string>`concat(${patientsTable.ageValue}, ' ', ${patientsTable.ageUnit})`,
+  sex: patientsTable.gender,
+  testName: testsTable.name,
+  billNumber: billsTable.billNumber,
+};
+
+async function applyWorklistStudyLink(opts: {
+  worklistItem: WorklistRow;
+  studyId: number;
+  actor: string;
+  matchPoints: number;
+  matchScore: string;
+  method: string;
+  reason: string;
+}): Promise<AutoLinkResult> {
+  const [study] = await db
+    .select()
+    .from(radiologyStudiesTable)
+    .where(eq(radiologyStudiesTable.id, opts.studyId))
+    .limit(1);
+
+  if (!study) {
+    return { linked: false, reason: "matched study row missing" };
+  }
+
+  await db
+    .update(radiologyWorklistTable)
+    .set({
+      studyId: opts.studyId,
+      patientId: study.patientId,
+      updatedAt: new Date(),
+    })
+    .where(eq(radiologyWorklistTable.id, opts.worklistItem.id));
+
+  const studyUpdates: Partial<typeof radiologyStudiesTable.$inferInsert> = {
+    updatedAt: new Date(),
+    status: "acquired",
+    acquiredAt: new Date(),
+  };
+  if (opts.worklistItem.studyInstanceUID && !study.studyInstanceUid) {
+    studyUpdates.studyInstanceUid = opts.worklistItem.studyInstanceUID;
+  }
+  await db
+    .update(radiologyStudiesTable)
+    .set(studyUpdates)
+    .where(eq(radiologyStudiesTable.id, opts.studyId));
+
+  await db.insert(radiologyAuditLogTable).values({
+    worklistId: opts.worklistItem.id,
+    accessionNumber: opts.worklistItem.accessionNumber,
+    action: "AUTO_LINK_BILLED",
+    actor: opts.actor,
+    details: JSON.stringify({
+      studyId: opts.studyId,
+      matchPoints: opts.matchPoints,
+      matchScore: opts.matchScore,
+      method: opts.method,
+    }),
+  });
+
+  return {
+    linked: true,
+    studyId: opts.studyId,
+    matchPoints: opts.matchPoints,
+    matchScore: opts.matchScore,
+    reason: opts.reason,
+    method: opts.method,
+  };
+}
+
+async function alreadyLinkedStudyIds(): Promise<number[]> {
+  const rows = await db
+    .select({ studyId: radiologyWorklistTable.studyId })
+    .from(radiologyWorklistTable)
+    .where(sql`${radiologyWorklistTable.studyId} is not null`);
+  return rows.map((r) => r.studyId!).filter((id) => Number.isFinite(id));
 }
 
 export async function autoLinkBilledStudyForWorklist(
@@ -59,9 +193,7 @@ export async function autoLinkBilledStudyForWorklist(
     return { linked: true, studyId: worklistItem.studyId, reason: "already linked" };
   }
 
-  // Fast path: normalized accession is the MWL work-id. Prefer this over
-  // patient-scoped fuzzy match so rows with images still link when PatientID
-  // on the console was mistyped or auto-created a different patient.
+  // Fast path: normalized accession is the MWL work-id.
   const accKey = normalizeAccessionKey(worklistItem.accessionNumber);
   if (accKey) {
     const accRows = await db
@@ -77,107 +209,100 @@ export async function autoLinkBilledStudyForWorklist(
     const uniqueAcc = pickUniqueRow(accRows);
     const byAcc = uniqueAcc.status === "unique" ? uniqueAcc.row : null;
     if (byAcc) {
-      await db
-        .update(radiologyWorklistTable)
-        .set({
-          studyId: byAcc.id,
-          patientId: byAcc.patientId,
-          updatedAt: new Date(),
-        })
-        .where(eq(radiologyWorklistTable.id, worklistId));
-
-      const [study] = await db
-        .select()
-        .from(radiologyStudiesTable)
-        .where(eq(radiologyStudiesTable.id, byAcc.id))
-        .limit(1);
-      if (study) {
-        const studyUpdates: Partial<typeof radiologyStudiesTable.$inferInsert> = {
-          updatedAt: new Date(),
-          status: "acquired",
-          acquiredAt: new Date(),
-        };
-        if (worklistItem.studyInstanceUID && !study.studyInstanceUid) {
-          studyUpdates.studyInstanceUid = worklistItem.studyInstanceUID;
-        }
-        await db
-          .update(radiologyStudiesTable)
-          .set(studyUpdates)
-          .where(eq(radiologyStudiesTable.id, byAcc.id));
-      }
-
-      await db.insert(radiologyAuditLogTable).values({
-        worklistId,
-        accessionNumber: worklistItem.accessionNumber,
-        action: "AUTO_LINK_BILLED",
-        actor,
-        details: JSON.stringify({
-          studyId: byAcc.id,
-          matchPoints: 50,
-          matchScore: "GREEN",
-          method: "accession-normalized",
-        }),
-      });
-
-      return {
-        linked: true,
+      return applyWorklistStudyLink({
+        worklistItem,
         studyId: byAcc.id,
+        actor,
         matchPoints: 50,
         matchScore: "GREEN",
+        method: "accession-normalized",
         reason: "linked by accession number",
-      };
+      });
     }
   }
 
-  if (!worklistItem.patientId) {
-    return { linked: false, reason: "no patient linked on worklist row" };
+  const dicomInput = dicomFromWorklist(worklistItem);
+
+  // Patient-scoped fuzzy path (same ERP patientId on the worklist row).
+  if (worklistItem.patientId) {
+    const studies = await db
+      .select(studySelect)
+      .from(radiologyStudiesTable)
+      .innerJoin(patientsTable, eq(patientsTable.id, radiologyStudiesTable.patientId))
+      .innerJoin(testsTable, eq(testsTable.id, radiologyStudiesTable.testId))
+      .leftJoin(billsTable, eq(billsTable.id, radiologyStudiesTable.billId))
+      .where(eq(radiologyStudiesTable.patientId, worklistItem.patientId))
+      .orderBy(desc(radiologyStudiesTable.createdAt))
+      .limit(50);
+
+    const eligible: { studyId: number; points: number; score: string }[] = [];
+    for (const s of studies as StudyJoinRow[]) {
+      const match = calculateMatchScore(dicomInput, {
+        id: s.id,
+        patientId: s.patientId,
+        patientName: String(s.patientName || ""),
+        patientUHID: s.patientUHID,
+        age: String(s.age || ""),
+        sex: s.sex,
+        testName: s.testName,
+        modality: s.modality,
+        accessionNumber: s.accessionNumber,
+        billNumber: s.billNumber,
+        studyDate: s.studyDate,
+        referringDoctor: s.referringDoctor,
+      });
+      if (match.score === "RED") continue;
+      if (match.points < AUTO_LINK_MIN_POINTS) continue;
+      eligible.push({ studyId: s.id, points: match.points, score: match.score });
+    }
+
+    const best = selectUniqueAutoLinkCandidate(eligible);
+    if (best) {
+      return applyWorklistStudyLink({
+        worklistItem,
+        studyId: best.studyId,
+        actor,
+        matchPoints: best.points,
+        matchScore: best.score,
+        method: "patient-scoped-score",
+        reason: "auto-linked to billed study",
+      });
+    }
   }
 
-  const studies = await db
-    .select({
-      id: radiologyStudiesTable.id,
-      accessionNumber: radiologyStudiesTable.accessionNumber,
-      modality: radiologyStudiesTable.modality,
-      studyDescription: radiologyStudiesTable.studyDescription,
-      studyDate: radiologyStudiesTable.studyDate,
-      patientId: radiologyStudiesTable.patientId,
-      patientName: sql<string>`concat(${patientsTable.firstName}, ' ', ${patientsTable.lastName})`,
-      patientUHID: patientsTable.patientId,
-      age: sql<string>`concat(${patientsTable.ageValue}, ' ', ${patientsTable.ageUnit})`,
-      sex: patientsTable.gender,
-      testName: testsTable.name,
-      billNumber: billsTable.billNumber,
-    })
+  // Cross-patient name ± referral (no MWL / random modality PatientID).
+  const window = studyDateSearchWindow(worklistItem.studyDate, NAME_REFERRAL_AUTO_DAY_RADIUS);
+  if (!window) {
+    return {
+      linked: false,
+      reason: worklistItem.patientId
+        ? "no confident billed-study match (try DICOM Match Center)"
+        : "no study date for name±referral auto-link (try DICOM Match Center)",
+    };
+  }
+
+  const linkedIds = await alreadyLinkedStudyIds();
+  const dateCond = and(
+    gte(radiologyStudiesTable.studyDate, window.from),
+    lte(radiologyStudiesTable.studyDate, window.to),
+  );
+  const whereClause =
+    linkedIds.length > 0
+      ? and(dateCond, notInArray(radiologyStudiesTable.id, linkedIds))
+      : dateCond;
+
+  const nameStudies = await db
+    .select(studySelect)
     .from(radiologyStudiesTable)
     .innerJoin(patientsTable, eq(patientsTable.id, radiologyStudiesTable.patientId))
     .innerJoin(testsTable, eq(testsTable.id, radiologyStudiesTable.testId))
     .leftJoin(billsTable, eq(billsTable.id, radiologyStudiesTable.billId))
-    .where(eq(radiologyStudiesTable.patientId, worklistItem.patientId))
+    .where(whereClause)
     .orderBy(desc(radiologyStudiesTable.createdAt))
-    .limit(50);
+    .limit(300);
 
-  if (studies.length === 0) {
-    return { linked: false, reason: "no billed radiology studies for this patient" };
-  }
-
-  const dicomInput = {
-    patientName: worklistItem.patientName,
-    dicomPatientId: worklistItem.dicomPatientId,
-    age: worklistItem.age,
-    sex: worklistItem.sex,
-    modality: worklistItem.modality,
-    studyDescription: worklistItem.studyDescription,
-    accessionNumber: worklistItem.accessionNumber ?? "",
-    studyDate: worklistItem.studyDate,
-    studyTime: null,
-    studyInstanceUID: worklistItem.studyInstanceUID,
-    referringDoctor: worklistItem.referringDoctor,
-  };
-
-  const eligible: { studyId: number; points: number; score: string }[] = [];
-
-  for (const s of studies) {
-    const match = calculateMatchScore(dicomInput, {
+  const ranked = (nameStudies as StudyJoinRow[]).map((s) =>
+    rankBillCandidate(dicomInput, {
       id: s.id,
       patientId: s.patientId,
       patientName: String(s.patientName || ""),
@@ -189,72 +314,30 @@ export async function autoLinkBilledStudyForWorklist(
       accessionNumber: s.accessionNumber,
       billNumber: s.billNumber,
       studyDate: s.studyDate,
-    });
+      referringDoctor: s.referringDoctor,
+    }),
+  );
 
-    if (match.score === "RED") continue;
-    if (match.points < AUTO_LINK_MIN_POINTS) continue;
-    eligible.push({ studyId: s.id, points: match.points, score: match.score });
-  }
-
-  const best = selectUniqueAutoLinkCandidate(eligible);
-  if (!best) {
+  const nameBest = selectUniqueNameReferralAutoLink(ranked);
+  if (!nameBest) {
+    const eligibleCount = ranked.filter((r) => r.autoLinkEligible).length;
     return {
       linked: false,
-      reason: eligible.length > 1
-        ? "ambiguous billed-study match (try DICOM Match Center)"
-        : "no confident billed-study match (try DICOM Match Center)",
+      reason:
+        eligibleCount > 1
+          ? "ambiguous name±referral match (try DICOM Match Center)"
+          : "no confident name±referral match (try DICOM Match Center)",
     };
   }
 
-  const [study] = await db
-    .select()
-    .from(radiologyStudiesTable)
-    .where(eq(radiologyStudiesTable.id, best.studyId))
-    .limit(1);
-
-  if (!study) {
-    return { linked: false, reason: "matched study row missing" };
-  }
-
-  await db
-    .update(radiologyWorklistTable)
-    .set({
-      studyId: best.studyId,
-      patientId: study.patientId,
-      updatedAt: new Date(),
-    })
-    .where(eq(radiologyWorklistTable.id, worklistId));
-
-  const studyUpdates: Partial<typeof radiologyStudiesTable.$inferInsert> = {
-    updatedAt: new Date(),
-    status: "acquired",
-    acquiredAt: new Date(),
-  };
-  if (worklistItem.studyInstanceUID && !study.studyInstanceUid) {
-    studyUpdates.studyInstanceUid = worklistItem.studyInstanceUID;
-  }
-  await db
-    .update(radiologyStudiesTable)
-    .set(studyUpdates)
-    .where(eq(radiologyStudiesTable.id, best.studyId));
-
-  await db.insert(radiologyAuditLogTable).values({
-    worklistId,
-    accessionNumber: worklistItem.accessionNumber,
-    action: "AUTO_LINK_BILLED",
+  const capped = capNameReferralAutoScore(nameBest.score);
+  return applyWorklistStudyLink({
+    worklistItem,
+    studyId: nameBest.studyId,
     actor,
-    details: JSON.stringify({
-      studyId: best.studyId,
-      matchPoints: best.points,
-      matchScore: best.score,
-    }),
+    matchPoints: nameBest.points,
+    matchScore: capped,
+    method: "name-referral",
+    reason: "auto-linked by patient name ± referral (review in Match Center)",
   });
-
-  return {
-    linked: true,
-    studyId: best.studyId,
-    matchPoints: best.points,
-    matchScore: best.score,
-    reason: "auto-linked to billed study",
-  };
 }
