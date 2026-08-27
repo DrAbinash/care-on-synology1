@@ -32,8 +32,8 @@ describe("CARE financial integrity — exact money", () => {
   });
 });
 
-describe("1. catalog ₹1000 + client ₹1 is not billed at ₹1", () => {
-  it("non-admin staff is charged catalog, not the client rate", () => {
+describe("1. desk floor/ceiling — undercharge OK, markup rejected", () => {
+  it("non-admin may bill a package/VIP-style line below catalogue", () => {
     const resolved = resolveStaffLinePrice({
       catalogPrice: 1000,
       requestedPrice: 1,
@@ -41,7 +41,41 @@ describe("1. catalog ₹1000 + client ₹1 is not billed at ₹1", () => {
       isVip: false,
       vipPercent: 0,
     });
-    expect(resolved.price).toBe(1000);
+    expect(resolved.error).toBeUndefined();
+    expect(resolved.price).toBe(1);
+  });
+
+  it("non-admin markup above catalogue ceiling is rejected", () => {
+    const resolved = resolveStaffLinePrice({
+      catalogPrice: 1000,
+      requestedPrice: 5000,
+      isAdmin: false,
+      isVip: false,
+      vipPercent: 0,
+    });
+    expect(resolved.code).toBe("PRICE_CEILING");
+    expect(resolved.error).toMatch(/admin\/super-admin/i);
+  });
+
+  it("non-admin VIP may bill up to catalog × (1 + vip%)", () => {
+    const ok = resolveStaffLinePrice({
+      catalogPrice: 1000,
+      requestedPrice: 1500,
+      isAdmin: false,
+      isVip: true,
+      vipPercent: 50,
+    });
+    expect(ok.error).toBeUndefined();
+    expect(ok.price).toBe(1500);
+
+    const over = resolveStaffLinePrice({
+      catalogPrice: 1000,
+      requestedPrice: 1501,
+      isAdmin: false,
+      isVip: true,
+      vipPercent: 50,
+    });
+    expect(over.code).toBe("PRICE_CEILING");
   });
 
   it("admin override of ₹1 is an explicit privileged path", () => {

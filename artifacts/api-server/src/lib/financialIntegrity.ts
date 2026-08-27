@@ -194,24 +194,52 @@ export function applyVipMultiplier(price: unknown, isVip: boolean, vipPercent: u
   return moneyMax0(paiseToRupees(rupeesToPaise(price) + rupeesToPaise(moneyPercent(price, vipPercent))));
 }
 
+/**
+ * Desk line-price policy (reception / billing staff):
+ * - Admin/super_admin may set any non-negative price.
+ * - Non-admin may bill at or below catalog (+ VIP ceiling when isVip).
+ * - Non-admin markup above the ceiling is rejected (PRICE_CEILING → HTTP 403).
+ *
+ * Package component splits often land below catalog; that undercharge must be
+ * allowed. Online/public booking must NOT use this path for trust — those
+ * flows freeze amounts from catalog/packages separately.
+ */
 export function resolveStaffLinePrice(opts: {
   catalogPrice: unknown;
   requestedPrice: unknown;
   isAdmin: boolean;
   isVip: boolean;
   vipPercent: unknown;
-}): { price: number; error?: string } {
+}): { price: number; error?: string; code?: "PRICE_CEILING" | "INVALID_PRICE" } {
   const catalog = rupeesToPaise(opts.catalogPrice);
-  if (!Number.isFinite(catalog) || catalog < 0) return { price: 0, error: "Catalog price is invalid" };
+  if (!Number.isFinite(catalog) || catalog < 0) {
+    return { price: 0, error: "Catalog price is invalid", code: "INVALID_PRICE" };
+  }
   const ceiling = rupeesToPaise(applyVipMultiplier(opts.catalogPrice, opts.isVip, opts.vipPercent));
+  const requested = rupeesToPaise(opts.requestedPrice);
+  if (!Number.isFinite(requested) || requested < 0) {
+    return {
+      price: 0,
+      error: opts.isAdmin
+        ? "Override price must be a non-negative number"
+        : "Line price must be a non-negative number",
+      code: "INVALID_PRICE",
+    };
+  }
   if (opts.isAdmin) {
-    const requested = rupeesToPaise(opts.requestedPrice);
-    if (!Number.isFinite(requested) || requested < 0) {
-      return { price: 0, error: "Override price must be a non-negative number" };
-    }
     return { price: paiseToRupees(requested) };
   }
-  return { price: paiseToRupees(ceiling) };
+  // 1 paise tolerance matches legacy `requested - maxAllowed > 0.01`.
+  if (requested > ceiling + 1) {
+    return {
+      price: 0,
+      error:
+        "Only admin/super-admin may bill a test above its catalog price" +
+        (opts.isVip ? ` (VIP ceiling)` : ""),
+      code: "PRICE_CEILING",
+    };
+  }
+  return { price: paiseToRupees(requested) };
 }
 
 export function recomputedBillBalance(opts: {
@@ -233,8 +261,10 @@ export function parsePackageIds(raw: unknown): number[] {
 
 /**
  * Server-authoritative line prices for a diagnostic order.
- * Package groups are allocated from package configuration; leftover tests
- * use catalog (+ VIP). Admin may override leftover (and unpackaged) prices.
+ * Package groups are allocated from package configuration (client line
+ * prices for those members are ignored). Leftover / unpackaged tests use
+ * resolveStaffLinePrice: non-admin may undercharge up to the VIP/catalog
+ * ceiling; markup above the ceiling is rejected.
  */
 export function resolveOrderLinePrices(opts: {
   tests: Array<{ testId: number; requestedPrice: unknown }>;
@@ -247,7 +277,11 @@ export function resolveOrderLinePrices(opts: {
   isAdmin: boolean;
   isVip: boolean;
   vipPercent: unknown;
-}): { lines: Array<{ testId: number; price: number }>; error?: string } {
+}): {
+  lines: Array<{ testId: number; price: number }>;
+  error?: string;
+  code?: "PRICE_CEILING" | "INVALID_PRICE";
+} {
   const allocated = new Set<number>();
   const out: Array<{ testId: number; price: number }> = [];
 
@@ -278,12 +312,14 @@ export function resolveOrderLinePrices(opts: {
       isVip: opts.isVip,
       vipPercent: opts.vipPercent,
     });
-    if (resolved.error) return { lines: [], error: resolved.error };
+    if (resolved.error) return { lines: [], error: resolved.error, code: resolved.code };
     allocated.add(t.testId);
     out.push({ testId: t.testId, price: resolved.price });
   }
 
-  if (out.length === 0) return { lines: [], error: "No billable tests on this order" };
+  if (out.length === 0) {
+    return { lines: [], error: "No billable tests on this order", code: "INVALID_PRICE" };
+  }
   return { lines: out };
 }
 

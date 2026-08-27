@@ -118,27 +118,27 @@ describe.skipIf(!dbAvailable)("POST /api/billing/save — request level", () => 
     expect(res.status).toBe(401);
   });
 
-  test("non-admin client under-price is ignored — server bills catalogue", async () => {
-    // #591: resolveStaffLinePrice is server-authoritative for non-admins.
-    // Client may send a lower line price (old package-split UX); the order
-    // still stores the catalogue ceiling, not the client amount.
+  test("non-admin may undercharge a line at or below catalogue ceiling", async () => {
+    // Desk policy: package/VIP splits often land below catalogue; non-admins
+    // may bill the requested amount when it is ≤ the VIP/catalog ceiling.
+    const under = fx.testPrice / 2;
     const res = await request(app)
       .post("/api/billing/save")
       .set("Authorization", `Bearer ${fx.token}`)
       .send(
         savePayload(randomUUID(), {
-          tests: [{ testId: fx.testId, price: fx.testPrice / 2 }],
-          payments: [{ amount: fx.testPrice, method: "cash" }],
+          tests: [{ testId: fx.testId, price: under }],
+          payments: [{ amount: under, method: "cash" }],
         }),
       );
 
     expect(res.status).toBe(201);
-    expect(Number(res.body.totalAmount)).toBeCloseTo(fx.testPrice, 2);
+    expect(Number(res.body.totalAmount)).toBeCloseTo(under, 2);
   });
 
-  test("non-admin client markup is clamped to catalogue (not 403)", async () => {
-    // Non-admins cannot raise price; the server silently uses catalogue
-    // rather than rejecting the save (admin-only override path).
+  test("non-admin markup above catalogue ceiling is rejected with 403", async () => {
+    // Markup above catalogue/VIP ceiling is a permission denial (PRICE_CEILING),
+    // not a silent clamp to catalogue.
     const res = await request(app)
       .post("/api/billing/save")
       .set("Authorization", `Bearer ${fx.token}`)
@@ -149,7 +149,6 @@ describe.skipIf(!dbAvailable)("POST /api/billing/save — request level", () => 
         }),
       );
 
-    expect(res.status).toBe(201);
-    expect(Number(res.body.totalAmount)).toBeCloseTo(fx.testPrice, 2);
+    expect(res.status).toBe(403);
   });
 });
