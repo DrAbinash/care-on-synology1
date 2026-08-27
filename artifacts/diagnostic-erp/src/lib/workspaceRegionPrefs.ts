@@ -1,20 +1,85 @@
 /**
- * Workspace-local Study / Region preferences (UI only — no new backend).
- * Quick chips are a user-chosen subset of the Study / Region dropdown.
- * Custom regions extend the dropdown from the reporting workspace itself.
+ * Workspace-local Quick chip preferences for Section 1.
+ *
+ * Authoritative Study / Region catalog = server radiology_study_tabs only.
+ * LocalStorage stores personal Quick shortcut Study Tab IDs — never a parallel
+ * region catalog. Unpinning a Quick chip must not delete a Study Tab.
  */
 
-export const QUICK_REGIONS_STORAGE_KEY = "care_workspace_quick_regions_v1";
-export const CUSTOM_REGIONS_STORAGE_KEY = "care_workspace_custom_regions_v1";
+export const QUICK_STUDY_TAB_IDS_STORAGE_KEY = "care_workspace_quick_study_tab_ids_v1";
+
+/** Legacy name-based key from #615 — migrated once to IDs, then ignored. */
+export const LEGACY_QUICK_REGIONS_STORAGE_KEY = "care_workspace_quick_regions_v1";
+
+export type StudyTabRef = { id: number; name: string };
 
 export function normalizeRegionName(raw: string): string {
   return String(raw ?? "").replace(/\s+/g, " ").trim();
 }
 
-export function readStoredRegionList(key: string): string[] {
+export function readStoredQuickTabIds(): number[] {
   if (typeof window === "undefined") return [];
   try {
-    const raw = localStorage.getItem(key);
+    const raw = localStorage.getItem(QUICK_STUDY_TAB_IDS_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    const out: number[] = [];
+    const seen = new Set<number>();
+    for (const item of parsed) {
+      const id = Number(item);
+      if (!Number.isInteger(id) || id <= 0) continue;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      out.push(id);
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+export function writeStoredQuickTabIds(ids: number[]): void {
+  if (typeof window === "undefined") return;
+  const seen = new Set<number>();
+  const unique: number[] = [];
+  for (const item of ids) {
+    const id = Number(item);
+    if (!Number.isInteger(id) || id <= 0) continue;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    unique.push(id);
+  }
+  localStorage.setItem(QUICK_STUDY_TAB_IDS_STORAGE_KEY, JSON.stringify(unique));
+}
+
+/**
+ * One-time migration: map legacy Quick region *names* onto current Study Tab IDs.
+ * Does not invent tabs; drops names that are not in the server catalog.
+ */
+export function migrateLegacyQuickNamesToIds(
+  tabs: StudyTabRef[],
+  legacyNames: string[],
+): number[] {
+  const byName = new Map(tabs.map((t) => [t.name.toLowerCase(), t.id]));
+  const out: number[] = [];
+  const seen = new Set<number>();
+  for (const raw of legacyNames) {
+    const name = normalizeRegionName(raw);
+    if (!name) continue;
+    const id = byName.get(name.toLowerCase());
+    if (id == null) continue;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+  }
+  return out;
+}
+
+export function readLegacyQuickRegionNames(): string[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = localStorage.getItem(LEGACY_QUICK_REGIONS_STORAGE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
@@ -34,75 +99,41 @@ export function readStoredRegionList(key: string): string[] {
   }
 }
 
-export function writeStoredRegionList(key: string, regions: string[]): void {
+export function clearLegacyQuickRegionNames(): void {
   if (typeof window === "undefined") return;
-  const cleaned = regions
-    .map(normalizeRegionName)
-    .filter(Boolean);
-  const seen = new Set<string>();
-  const unique: string[] = [];
-  for (const name of cleaned) {
-    const k = name.toLowerCase();
-    if (seen.has(k)) continue;
-    seen.add(k);
-    unique.push(name);
-  }
-  localStorage.setItem(key, JSON.stringify(unique));
-}
-
-/** Merge server catalog + UI-added custom regions (+ currently selected). */
-export function mergeRegionCatalog(
-  serverRegions: string[],
-  customRegions: string[],
-  selectedRegion?: string | null,
-): string[] {
-  const out: string[] = [];
-  const seen = new Set<string>();
-  for (const name of [...serverRegions, ...customRegions, selectedRegion ?? ""]) {
-    const n = normalizeRegionName(name);
-    if (!n) continue;
-    const k = n.toLowerCase();
-    if (seen.has(k)) continue;
-    seen.add(k);
-    out.push(n);
-  }
-  return out;
+  localStorage.removeItem(LEGACY_QUICK_REGIONS_STORAGE_KEY);
+  // Also drop obsolete custom-region catalog key if present.
+  localStorage.removeItem("care_workspace_custom_regions_v1");
 }
 
 /**
- * Quick chips = user-picked subset of the catalog.
- * Drops names no longer in the catalog. Does not invent defaults.
+ * Resolve Quick chips from stored Study Tab IDs against the live server catalog.
+ * Drops IDs that no longer exist (deleted tabs). Never creates catalog entries.
  */
-export function resolveQuickRegions(catalog: string[], quickPicks: string[]): string[] {
-  const catalogKeys = new Map(catalog.map((r) => [r.toLowerCase(), r]));
-  const out: string[] = [];
-  const seen = new Set<string>();
-  for (const pick of quickPicks) {
-    const n = normalizeRegionName(pick);
-    if (!n) continue;
-    const canonical = catalogKeys.get(n.toLowerCase());
-    if (!canonical) continue;
-    const k = canonical.toLowerCase();
-    if (seen.has(k)) continue;
-    seen.add(k);
-    out.push(canonical);
+export function resolveQuickStudyTabs(tabs: StudyTabRef[], quickIds: number[]): StudyTabRef[] {
+  const byId = new Map(tabs.map((t) => [t.id, t]));
+  const out: StudyTabRef[] = [];
+  const seen = new Set<number>();
+  for (const id of quickIds) {
+    if (!Number.isInteger(id) || id <= 0) continue;
+    if (seen.has(id)) continue;
+    const tab = byId.get(id);
+    if (!tab) continue;
+    seen.add(id);
+    out.push(tab);
   }
   return out;
 }
 
-export function toggleQuickRegionPick(quickPicks: string[], region: string): string[] {
-  const name = normalizeRegionName(region);
-  if (!name) return quickPicks;
-  const key = name.toLowerCase();
-  const exists = quickPicks.some((r) => r.toLowerCase() === key);
-  if (exists) return quickPicks.filter((r) => r.toLowerCase() !== key);
-  return [...quickPicks, name];
+/** Pin or unpin a Study Tab ID as a Quick shortcut (never deletes the tab). */
+export function toggleQuickTabId(quickIds: number[], tabId: number): number[] {
+  if (!Number.isInteger(tabId) || tabId <= 0) return quickIds;
+  if (quickIds.includes(tabId)) return quickIds.filter((id) => id !== tabId);
+  return [...quickIds, tabId];
 }
 
-export function addCustomRegion(customRegions: string[], region: string): string[] {
-  const name = normalizeRegionName(region);
-  if (!name) return customRegions;
-  const key = name.toLowerCase();
-  if (customRegions.some((r) => r.toLowerCase() === key)) return customRegions;
-  return [...customRegions, name];
+export function pinQuickTabId(quickIds: number[], tabId: number): number[] {
+  if (!Number.isInteger(tabId) || tabId <= 0) return quickIds;
+  if (quickIds.includes(tabId)) return quickIds;
+  return [...quickIds, tabId];
 }

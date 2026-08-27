@@ -6,13 +6,21 @@ import { regionSelectionAction } from "@/components/radiology/StudyRegionReportF
 import { lookupFormatsForPicker, DEFAULT_REPORT_FORMATS } from "@/lib/zai-workspace/report-formats-library";
 import { buildReportingStudyContext } from "@/lib/reportingStudyContext";
 import {
-  mergeRegionCatalog,
-  resolveQuickRegions,
-  toggleQuickRegionPick,
+  migrateLegacyQuickNamesToIds,
+  pinQuickTabId,
+  resolveQuickStudyTabs,
+  toggleQuickTabId,
 } from "@/lib/workspaceRegionPrefs";
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (rel: string) => readFileSync(join(SRC, rel), "utf8");
+
+const TABS = [
+  { id: 1, name: "Brain" },
+  { id: 2, name: "Cervical Spine" },
+  { id: 3, name: "LS Spine" },
+  { id: 4, name: "Knee" },
+];
 
 describe("Section 1 — Study / Region + Report Format unification", () => {
   it("dropdown and quick buttons share the same selectPrimaryRegion action", () => {
@@ -54,49 +62,55 @@ describe("Section 1 — Study / Region + Report Format unification", () => {
     expect([...brainIds].filter((id) => lsIds.has(id)).length).toBe(0);
   });
 
-  it("quick regions are a user-picked subset of the dropdown catalog (not hard-coded)", () => {
-    const catalog = ["Brain", "Cervical Spine", "LS Spine", "Knee"];
-    expect(resolveQuickRegions(catalog, [])).toEqual([]);
-    expect(resolveQuickRegions(catalog, ["Cervical Spine", "Knee", "Gone"])).toEqual([
-      "Cervical Spine",
-      "Knee",
+  it("Quick chips resolve Study Tab IDs against the server catalog only", () => {
+    expect(resolveQuickStudyTabs(TABS, [])).toEqual([]);
+    expect(resolveQuickStudyTabs(TABS, [2, 4, 99])).toEqual([
+      { id: 2, name: "Cervical Spine" },
+      { id: 4, name: "Knee" },
     ]);
-    expect(toggleQuickRegionPick(["Brain"], "Brain")).toEqual([]);
-    expect(toggleQuickRegionPick([], "Brain")).toEqual(["Brain"]);
+    // Unpin never invents/deletes catalog entries — only removes the ID shortcut
+    expect(toggleQuickTabId([1, 2], 1)).toEqual([2]);
+    expect(toggleQuickTabId([2], 1)).toEqual([2, 1]);
+    expect(pinQuickTabId([2], 4)).toEqual([2, 4]);
+    expect(pinQuickTabId([2, 4], 4)).toEqual([2, 4]);
   });
 
-  it("catalog merges server regions (selected region included even if not yet in list)", () => {
-    const catalog = mergeRegionCatalog(["Brain", "Cervical Spine"], [], "Knee MRI");
-    expect(catalog).toContain("Knee MRI");
-    expect(catalog).toContain("Brain");
+  it("legacy Quick name prefs migrate to Study Tab IDs", () => {
+    expect(migrateLegacyQuickNamesToIds(TABS, ["Knee", "Gone", "Brain"])).toEqual([4, 1]);
   });
 
-  it("Add Study / Region opens ownership + children dialog (not name-only localStorage)", () => {
+  it("Add Study / Region opens ownership + children dialog (server catalog only)", () => {
     const section = read("components/radiology/StudyRegionReportFormatSection.tsx");
     const dialog = read("components/radiology/AddStudyRegionDialog.tsx");
+    const prefs = read("lib/workspaceRegionPrefs.ts");
     expect(section).toContain("AddStudyRegionDialog");
-    expect(section).toContain('data-testid="study-region-add-toggle"');
+    expect(section).toContain("availableStudyTabs");
+    expect(section).toContain('data-testid="whole-report-format-select"');
+    expect(section).toContain("lookupFormatsForPicker");
+    expect(section).toContain("pinQuickTabId");
+    expect(section).not.toContain("CUSTOM_REGIONS");
     expect(section).not.toContain("addCustomRegion");
-    expect(section).not.toContain("CUSTOM_REGIONS_STORAGE_KEY");
-    expect(section).not.toContain("study-region-add-input");
+    expect(section).not.toContain("mergeRegionCatalog");
     expect(dialog).toContain('data-testid="add-study-region-dialog"');
-    expect(dialog).toContain('data-testid="add-study-region-children"');
-    expect(dialog).toContain("WorkspaceQuickFindingEditor");
     expect(dialog).toContain("/api/radiology/quick-select/tabs");
-    expect(dialog).toContain("Ownership");
+    expect(prefs).toContain("QUICK_STUDY_TAB_IDS_STORAGE_KEY");
+    expect(prefs).toContain("resolveQuickStudyTabs");
+    expect(prefs).not.toContain("export function addCustomRegion");
+    expect(prefs).not.toContain("export function mergeRegionCatalog");
   });
 
   it("workspace Section 1 mounts editable quick + add-region UI", () => {
     const workspace = read("pages/RadiologyReportingWorkspace.tsx");
     const section = read("components/radiology/StudyRegionReportFormatSection.tsx");
     expect(workspace).toContain("StudyRegionReportFormatSection");
+    expect(workspace).toContain("availableStudyTabs={studySetup.availableStudyTabs}");
     expect(workspace).toContain("onSelectRegion={studySetup.selectPrimaryRegion}");
     expect(section).toContain('data-testid="study-region-select"');
     expect(section).toContain('data-testid="whole-report-format-select"');
     expect(section).toContain('data-testid="study-region-quick"');
     expect(section).toContain('data-testid="study-region-quick-edit"');
     expect(section).toContain('data-testid="study-region-add-toggle"');
-    expect(section).toContain("onSelectRegion(r)");
+    expect(section).toContain("onSelectRegion(t.name)");
     expect(section).not.toContain("QUICK_REGION_LIMIT");
     expect(section).not.toContain("More regions");
     expect(section).not.toContain("protocol-select");
@@ -104,17 +118,7 @@ describe("Section 1 — Study / Region + Report Format unification", () => {
   });
 });
 
-describe("POST tabs accepts technique + normals (API)", () => {
-  it("route inserts techniqueText and normalText on create", () => {
-    const route = readFileSync(
-      join(dirname(fileURLToPath(import.meta.url)), "../../../api-server/src/routes/radiologyQuickFindings.ts"),
-      "utf8",
-    );
-    // Create path must persist Abnormality Engine texts in one shot
-    expect(route).toMatch(/router\.post\("\/tabs"[\s\S]*techniqueText[\s\S]*normalText[\s\S]*\.returning\(\)/);
-  });
-});
-describe("workspaceRegionPrefs storage helpers", () => {
+describe("workspaceRegionPrefs Quick ID storage", () => {
   const store: Record<string, string> = {};
   beforeEach(() => {
     Object.keys(store).forEach((k) => delete store[k]);
@@ -123,7 +127,6 @@ describe("workspaceRegionPrefs storage helpers", () => {
       setItem: (k: string, v: string) => { store[k] = v; },
       removeItem: (k: string) => { delete store[k]; },
     };
-    // Helpers gate on `window` (Node vitest has none) — stub both.
     vi.stubGlobal("localStorage", localStorage);
     vi.stubGlobal("window", { localStorage });
   });
@@ -131,9 +134,14 @@ describe("workspaceRegionPrefs storage helpers", () => {
     vi.unstubAllGlobals();
   });
 
-  it("round-trips quick picks", async () => {
-    const { writeStoredRegionList, readStoredRegionList, QUICK_REGIONS_STORAGE_KEY } = await import("@/lib/workspaceRegionPrefs");
-    writeStoredRegionList(QUICK_REGIONS_STORAGE_KEY, ["Brain", "LS Spine", "Brain"]);
-    expect(readStoredRegionList(QUICK_REGIONS_STORAGE_KEY)).toEqual(["Brain", "LS Spine"]);
+  it("round-trips Quick Study Tab IDs", async () => {
+    const {
+      writeStoredQuickTabIds,
+      readStoredQuickTabIds,
+      QUICK_STUDY_TAB_IDS_STORAGE_KEY,
+    } = await import("@/lib/workspaceRegionPrefs");
+    writeStoredQuickTabIds([1, 3, 1, -2, 0]);
+    expect(readStoredQuickTabIds()).toEqual([1, 3]);
+    expect(JSON.parse(store[QUICK_STUDY_TAB_IDS_STORAGE_KEY])).toEqual([1, 3]);
   });
 });

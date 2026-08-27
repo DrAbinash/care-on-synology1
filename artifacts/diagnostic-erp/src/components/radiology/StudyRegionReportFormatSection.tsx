@@ -1,10 +1,10 @@
 /**
  * Section 1 — Study / Region + Whole Report Format.
  *
- * Single source of truth: onSelectRegion (studySetup.selectPrimaryRegion).
- * Quick buttons are a pencil-editable subset of the Study / Region dropdown —
- * never a hard-coded region list.
- * "+ Add" opens AddStudyRegionDialog (server Study Tab + children/ownership).
+ * Catalog: server radiology_study_tabs only (via availableStudyTabs).
+ * Quick: personal localStorage shortcuts by Study Tab ID (never a catalog).
+ * + Add: creates one real Study Tab, configures children, selects + pins Quick.
+ * Selection: dropdown and Quick both call onSelectRegion → selectPrimaryRegion.
  */
 
 import { useEffect, useMemo, useState } from "react";
@@ -14,17 +14,21 @@ import { useWorkspace, useWorkspaceSelector } from "@/lib/zai-workspace/store";
 import { lookupFormatsForPicker } from "@/lib/zai-workspace/report-formats-library";
 import type { ReportingStudyContext } from "@/lib/reportingStudyContext";
 import {
-  QUICK_REGIONS_STORAGE_KEY,
-  mergeRegionCatalog,
-  readStoredRegionList,
-  resolveQuickRegions,
-  toggleQuickRegionPick,
-  writeStoredRegionList,
+  type StudyTabRef,
+  clearLegacyQuickRegionNames,
+  migrateLegacyQuickNamesToIds,
+  pinQuickTabId,
+  readLegacyQuickRegionNames,
+  readStoredQuickTabIds,
+  resolveQuickStudyTabs,
+  toggleQuickTabId,
+  writeStoredQuickTabIds,
 } from "@/lib/workspaceRegionPrefs";
 import { AddStudyRegionDialog } from "./AddStudyRegionDialog";
 
 export type StudyRegionReportFormatSectionProps = {
-  availableRegions: string[];
+  /** Server-backed Study Tabs (canonical catalog for this modality). */
+  availableStudyTabs: StudyTabRef[];
   selectedRegion: string | null;
   autoDetectedRegion: string | null;
   regionOverridden: boolean;
@@ -43,7 +47,7 @@ export type StudyRegionReportFormatSectionProps = {
 };
 
 export function StudyRegionReportFormatSection({
-  availableRegions,
+  availableStudyTabs,
   selectedRegion,
   autoDetectedRegion,
   regionOverridden,
@@ -63,24 +67,40 @@ export function StudyRegionReportFormatSection({
   const appliedFormatReportTitle = useWorkspaceSelector((s) => s.appliedFormatReportTitle);
   const applyFormatById = useWorkspace((s) => s.applyFormatById);
 
-  const [quickPicks, setQuickPicks] = useState<string[]>(() =>
-    readStoredRegionList(QUICK_REGIONS_STORAGE_KEY),
-  );
+  const [quickIds, setQuickIds] = useState<number[]>(() => readStoredQuickTabIds());
+  const [legacyMigrated, setLegacyMigrated] = useState(false);
   const [quickEditOpen, setQuickEditOpen] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
 
+  // One-time: convert legacy name-based Quick prefs → Study Tab IDs.
   useEffect(() => {
-    writeStoredRegionList(QUICK_REGIONS_STORAGE_KEY, quickPicks);
-  }, [quickPicks]);
+    if (legacyMigrated) return;
+    if (availableStudyTabs.length === 0) return;
+    const existing = readStoredQuickTabIds();
+    if (existing.length > 0) {
+      setLegacyMigrated(true);
+      clearLegacyQuickRegionNames();
+      return;
+    }
+    const legacyNames = readLegacyQuickRegionNames();
+    if (legacyNames.length === 0) {
+      setLegacyMigrated(true);
+      clearLegacyQuickRegionNames();
+      return;
+    }
+    const migrated = migrateLegacyQuickNamesToIds(availableStudyTabs, legacyNames);
+    if (migrated.length > 0) setQuickIds(migrated);
+    clearLegacyQuickRegionNames();
+    setLegacyMigrated(true);
+  }, [availableStudyTabs, legacyMigrated]);
 
-  const catalog = useMemo(
-    () => mergeRegionCatalog(availableRegions, [], selectedRegion),
-    [availableRegions, selectedRegion],
-  );
+  useEffect(() => {
+    writeStoredQuickTabIds(quickIds);
+  }, [quickIds]);
 
-  const quickRegions = useMemo(
-    () => resolveQuickRegions(catalog, quickPicks),
-    [catalog, quickPicks],
+  const quickTabs = useMemo(
+    () => resolveQuickStudyTabs(availableStudyTabs, quickIds),
+    [availableStudyTabs, quickIds],
   );
 
   const formatLookup = useMemo(
@@ -95,11 +115,9 @@ export function StudyRegionReportFormatSection({
 
   const formats = formatLookup.formats;
 
-  const handleRegionCreated = (regionName: string) => {
-    setQuickPicks((prev) =>
-      prev.some((r) => r.toLowerCase() === regionName.toLowerCase()) ? prev : [...prev, regionName],
-    );
-    onSelectRegion(regionName);
+  const handleRegionCreated = (tab: StudyTabRef) => {
+    setQuickIds((prev) => pinQuickTabId(prev, tab.id));
+    onSelectRegion(tab.name);
   };
 
   return (
@@ -110,34 +128,22 @@ export function StudyRegionReportFormatSection({
       >
         <label className="inline-flex flex-col gap-0.5 min-w-[10rem]">
           <span className="font-semibold uppercase tracking-wider text-emerald-700/80">Study / Region</span>
-          <div className="flex items-center gap-1">
-            <select
-              className="h-7 min-w-[11rem] max-w-[16rem] rounded border bg-background px-1.5 text-[11px] font-medium"
-              value={selectedRegion ?? ""}
-              disabled={disabled}
-              onChange={(e) => onSelectRegion(e.target.value || null)}
-              data-testid="study-region-select"
-              aria-label="Study / Region"
-              title="Canonical study / region (single source of truth)"
-            >
-              <option value="">
-                {catalog.length === 0 ? "Add a region…" : "Select study / region…"}
-              </option>
-              {catalog.map((r) => (
-                <option key={r} value={r}>{r}</option>
-              ))}
-            </select>
-            <button
-              type="button"
-              disabled={disabled}
-              className="inline-flex h-7 items-center gap-0.5 rounded border border-dashed border-emerald-400/70 px-1.5 text-[10px] font-semibold text-emerald-800 hover:bg-emerald-50"
-              title="Add a Study / Region to the clinic catalog (with children & ownership)"
-              data-testid="study-region-add-toggle"
-              onClick={() => setAddOpen(true)}
-            >
-              <Plus size={11} /> Add
-            </button>
-          </div>
+          <select
+            className="h-7 min-w-[11rem] max-w-[16rem] rounded border bg-background px-1.5 text-[11px] font-medium"
+            value={selectedRegion ?? ""}
+            disabled={disabled}
+            onChange={(e) => onSelectRegion(e.target.value || null)}
+            data-testid="study-region-select"
+            aria-label="Study / Region"
+            title="Canonical Study Tab from clinic catalog (radiology_study_tabs)"
+          >
+            <option value="">
+              {availableStudyTabs.length === 0 ? "Add a Study Tab…" : "Select study / region…"}
+            </option>
+            {availableStudyTabs.map((t) => (
+              <option key={t.id} value={t.name} data-study-tab-id={t.id}>{t.name}</option>
+            ))}
+          </select>
         </label>
 
         <label className="inline-flex flex-col gap-0.5 min-w-[12rem] flex-1">
@@ -156,7 +162,7 @@ export function StudyRegionReportFormatSection({
             title={!selectedRegion
               ? "Select a Study / Region first"
               : formats.length === 0
-                ? "No whole-report formats for this region"
+                ? "No whole-report formats for this Study Tab"
                 : "Apply technique + findings + impression (+ history / recommendation) from a saved format"}
           >
             <option value="">
@@ -221,44 +227,55 @@ export function StudyRegionReportFormatSection({
 
       <div className="flex flex-wrap items-center gap-1.5 px-0.5" data-testid="study-region-quick">
         <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mr-0.5">Quick</span>
-        {quickRegions.length === 0 ? (
+        {quickTabs.length === 0 ? (
           <span className="text-[10px] text-muted-foreground" data-testid="study-region-quick-empty">
-            No quick regions yet — use the pencil to pick from the Study / Region list
+            No quick shortcuts yet — use the pencil to pin Study Tabs (unpin never deletes the tab)
           </span>
         ) : (
-          quickRegions.map((r) => {
-            const selected = selectedRegion === r;
+          quickTabs.map((t) => {
+            const selected = selectedRegion === t.name;
             return (
               <button
-                key={r}
+                key={t.id}
                 type="button"
                 disabled={disabled}
                 aria-pressed={selected}
-                data-testid={`study-region-quick-${r}`}
+                data-testid={`study-region-quick-${t.id}`}
+                data-study-tab-id={t.id}
                 data-selected={selected ? "true" : "false"}
-                title={`Select ${r} (same as Study / Region dropdown)`}
+                title={`Select ${t.name} (same as Study / Region dropdown)`}
                 className={[
                   "h-7 px-2 text-[10px] rounded-md border font-medium transition-colors",
                   selected
                     ? "bg-primary text-primary-foreground border-primary ring-2 ring-offset-1 ring-emerald-400"
                     : "bg-background text-muted-foreground border-border hover:bg-muted hover:text-foreground",
                 ].join(" ")}
-                onClick={() => onSelectRegion(r)}
+                onClick={() => onSelectRegion(t.name)}
               >
-                {r}
+                {t.name}
               </button>
             );
           })
         )}
         <button
           type="button"
-          disabled={disabled || catalog.length === 0}
+          disabled={disabled || availableStudyTabs.length === 0}
           className="inline-flex h-7 items-center gap-0.5 rounded border border-dashed px-1.5 text-[10px] text-muted-foreground hover:border-emerald-400 hover:text-emerald-800"
-          title="Edit which Study / Region values appear as quick buttons"
+          title="Choose which Study Tabs appear as Quick shortcuts (does not delete tabs)"
           data-testid="study-region-quick-edit"
           onClick={() => setQuickEditOpen((v) => !v)}
         >
-          <Pencil size={10} /> Edit quick
+          <Pencil size={10} /> Edit Quick
+        </button>
+        <button
+          type="button"
+          disabled={disabled}
+          className="inline-flex h-7 items-center gap-0.5 rounded border border-dashed border-emerald-400/70 px-1.5 text-[10px] font-semibold text-emerald-800 hover:bg-emerald-50"
+          title="Create a Study Tab in radiology_study_tabs (children optional)"
+          data-testid="study-region-add-toggle"
+          onClick={() => setAddOpen(true)}
+        >
+          <Plus size={11} /> Add
         </button>
       </div>
 
@@ -269,31 +286,31 @@ export function StudyRegionReportFormatSection({
         >
           <div className="flex items-center justify-between gap-2">
             <p className="text-[10px] text-muted-foreground">
-              Tick regions from the Study / Region dropdown to show as quick buttons. Same selection state.
+              Pin Study Tabs as Quick shortcuts. Unticking only removes the shortcut — the Study Tab stays in the catalog.
             </p>
             <button type="button" className="p-1 text-muted-foreground hover:text-foreground" onClick={() => setQuickEditOpen(false)} aria-label="Close quick editor">
               ×
             </button>
           </div>
-          {catalog.length === 0 ? (
-            <p className="text-[11px] text-muted-foreground">Add a region to the dropdown first.</p>
+          {availableStudyTabs.length === 0 ? (
+            <p className="text-[11px] text-muted-foreground">Create a Study Tab with + Add first.</p>
           ) : (
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-1 max-h-40 overflow-y-auto">
-              {catalog.map((r) => {
-                const on = quickPicks.some((p) => p.toLowerCase() === r.toLowerCase());
+              {availableStudyTabs.map((t) => {
+                const on = quickIds.includes(t.id);
                 return (
                   <label
-                    key={r}
+                    key={t.id}
                     className="inline-flex items-center gap-1.5 rounded border px-1.5 py-1 text-[11px] cursor-pointer hover:bg-muted/60"
-                    data-testid={`study-region-quick-pick-${r}`}
+                    data-testid={`study-region-quick-pick-${t.id}`}
                   >
                     <input
                       type="checkbox"
                       checked={on}
                       disabled={disabled}
-                      onChange={() => setQuickPicks((prev) => toggleQuickRegionPick(prev, r))}
+                      onChange={() => setQuickIds((prev) => toggleQuickTabId(prev, t.id))}
                     />
-                    <span className="truncate">{r}</span>
+                    <span className="truncate">{t.name}</span>
                   </label>
                 );
               })}

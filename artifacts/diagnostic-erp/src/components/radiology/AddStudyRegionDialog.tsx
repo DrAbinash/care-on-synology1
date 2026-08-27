@@ -1,10 +1,9 @@
 /**
  * Add Study / Region from Reporting Workspace Section 1.
  *
- * Creates a real radiology_study_tabs row (not a localStorage name), then lets
- * the doctor attach children (Quick Findings with Ownership, optional protocol /
- * history chip) so the region is usable in reporting — same model as Settings →
- * Quick Select.
+ * Creates one real radiology_study_tabs row (server catalog), then optionally
+ * configures children (technique/normals, findings + Ownership, protocol,
+ * history chip). Never writes a parallel localStorage catalog.
  */
 
 import { useMemo, useState } from "react";
@@ -36,8 +35,8 @@ type QuickSelectData = {
 export type AddStudyRegionDialogProps = {
   open: boolean;
   onClose: () => void;
-  /** After the region exists in the catalog and the user finishes. */
-  onCreated: (regionName: string) => void;
+  /** After the Study Tab exists in the server catalog and the user finishes. */
+  onCreated: (tab: { id: number; name: string }) => void;
   /** Prefer locking the new finding editor to this modality hint (display only). */
   modalityHint?: string | null;
 };
@@ -173,7 +172,7 @@ export function AddStudyRegionDialog({
 
   const finish = () => {
     if (!created) return;
-    onCreated(created.name);
+    onCreated({ id: created.id, name: created.name });
     handleClose();
   };
 
