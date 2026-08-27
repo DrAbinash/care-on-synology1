@@ -23,7 +23,7 @@ vi.mock("@workspace/db/schema", () => ({
   emailSettingsTable: {},
 }));
 
-import { sendStaffDayCloseEmail } from "../email";
+import { sendStaffDayCloseEmail, getAllRecipients } from "../email";
 
 const basePayload = {
   clinicName: "Care Diagnostics",
@@ -48,6 +48,9 @@ const basePayload = {
   actualOther: 0,
   closureId: 1,
   printActivity: {
+    dueReceived: 0,
+    cancelledBillsAmount: 0,
+    refundsAmount: 0,
     discountsGiven: 0,
     discountBills: [],
     billEdits: [],
@@ -108,5 +111,46 @@ describe("sendStaffDayCloseEmail", () => {
 
     await sendStaffDayCloseEmail({ ...basePayload, staffName: "Vijay" });
     expect(sendMail).not.toHaveBeenCalled();
+  });
+
+  test("sends when staffDayCloseEmailEnabled is undefined (default on)", async () => {
+    getSettings.mockResolvedValue([{
+      smtpHost: "smtp.test",
+      smtpPort: "587",
+      smtpUser: "user",
+      smtpPassword: "pass",
+      smtpSecure: false,
+      fromAddress: "erp@test.com",
+      fromName: "ERP",
+      adminEmail: "admin@test.com",
+      extraRecipients: "[]",
+    }]);
+    const result = await sendStaffDayCloseEmail({ ...basePayload, staffName: "Vijay" });
+    expect(result).toEqual({ sent: true, to: ["admin@test.com"] });
+    expect(sendMail).toHaveBeenCalledTimes(1);
+  });
+
+  test("returns skip reason when SMTP is missing instead of silently no-op", async () => {
+    getSettings.mockResolvedValue([{
+      smtpHost: "",
+      smtpPort: "587",
+      smtpUser: "",
+      smtpPassword: "",
+      smtpSecure: false,
+      fromAddress: "erp@test.com",
+      fromName: "ERP",
+      adminEmail: "admin@test.com",
+      extraRecipients: "[]",
+      staffDayCloseEmailEnabled: true,
+    }]);
+    const result = await sendStaffDayCloseEmail({ ...basePayload, staffName: "Vijay" });
+    expect(result.sent).toBe(false);
+    if (!result.sent) expect(result.reason).toMatch(/SMTP/i);
+    expect(sendMail).not.toHaveBeenCalled();
+  });
+
+  test("getAllRecipients accepts JSON array or comma-separated extras", () => {
+    expect(getAllRecipients({ adminEmail: "a@x.com", extraRecipients: '["b@x.com"]' })).toEqual(["a@x.com", "b@x.com"]);
+    expect(getAllRecipients({ adminEmail: "a@x.com", extraRecipients: "b@x.com, c@x.com" })).toEqual(["a@x.com", "b@x.com", "c@x.com"]);
   });
 });

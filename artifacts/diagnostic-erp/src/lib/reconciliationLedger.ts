@@ -8,10 +8,10 @@ export type ReconciliationLedgerInput = {
   periodLabel: string;
   grossBilledIncludingCancelled: number;
   oldDuesCollected: number;
-  cancelledOnMyBills: number;
+  cancelledAmount: number;
   cashRefunded: number;
   digitalRefunded: number;
-  refundsOnCancelledBillsCreatedInPeriod?: number;
+  refundsOnBillsCancelledByMe?: number;
   outstanding: number;
   digitalIn: number;
   cashIn: number;
@@ -45,10 +45,10 @@ export type ReconciliationLedger = {
 
 export function buildReconciliationLedger(input: ReconciliationLedgerInput): ReconciliationLedger {
   const totalRefunds = input.cashRefunded + input.digitalRefunded;
-  const refundsExcluded = input.refundsOnCancelledBillsCreatedInPeriod ?? 0;
+  const refundsExcluded = input.refundsOnBillsCancelledByMe ?? 0;
   const refundsForCollectible = Math.max(0, totalRefunds - refundsExcluded);
   const revenueTotal = input.grossBilledIncludingCancelled + input.oldDuesCollected;
-  const deductionsTotal = input.cancelledOnMyBills + refundsForCollectible + input.outstanding;
+  const deductionsTotal = input.cancelledAmount + refundsForCollectible + input.outstanding;
   const collectible = revenueTotal - deductionsTotal;
   const digitalNet = input.digitalIn - input.digitalRefunded;
   const expectedCash = collectible - digitalNet - input.cashExpenses;
@@ -62,7 +62,7 @@ export function buildReconciliationLedger(input: ReconciliationLedgerInput): Rec
     grossBills: input.grossBilledIncludingCancelled,
     oldDuesCollected: input.oldDuesCollected,
     revenueTotal,
-    cancelled: input.cancelledOnMyBills,
+    cancelled: input.cancelledAmount,
     refundsForCollectible,
     refundsExcluded,
     outstanding: input.outstanding,

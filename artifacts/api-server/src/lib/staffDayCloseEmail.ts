@@ -1,4 +1,5 @@
 import type { StaffPrintActivity } from "./postClosureActivityTypes";
+import { computeStaffSlipFormula } from "./staffSlipFormula";
 
 export type StaffDayCloseEmailPayload = {
   clinicName: string;
@@ -65,13 +66,13 @@ function fmtIst(iso: Date | null | undefined): string {
   });
 }
 
-function line(label: string, amount: number, hideZero = false): string {
-  if (hideZero && amount === 0) return "";
-  return `<tr><td style="padding:8px 10px;border-bottom:2px solid #000;font-weight:700;font-size:15px">${esc(label)}</td><td style="padding:8px 10px;border-bottom:2px solid #000;text-align:right;font-weight:800;font-size:15px;font-variant-numeric:tabular-nums">${esc(inr(amount))}</td></tr>`;
+function line(label: string, amount: number, opts?: { strong?: boolean }): string {
+  const border = opts?.strong ? "border-top:3px double #000;border-bottom:3px double #000;font-size:16px" : "border-bottom:2px solid #000;font-size:15px";
+  return `<tr><td style="padding:8px 10px;${border};font-weight:700">${esc(label)}</td><td style="padding:8px 10px;${border};text-align:right;font-weight:800;font-variant-numeric:tabular-nums">${esc(inr(amount))}</td></tr>`;
 }
 
-function methodRow(label: string, amount: number): string {
-  if (amount === 0) return "";
+function methodRow(label: string, amount: number, always = false): string {
+  if (!always && amount === 0) return "";
   return `<tr><td style="padding:6px 10px;border-bottom:1px solid #ccc;font-weight:700">${esc(label)}</td><td style="padding:6px 10px;border-bottom:1px solid #ccc;text-align:right;font-weight:800;font-variant-numeric:tabular-nums">${esc(inr(amount))}</td></tr>`;
 }
 
@@ -80,6 +81,15 @@ export function buildStaffDayCloseEmailHtml(p: StaffDayCloseEmailPayload): strin
   const activity = p.printActivity;
   const discounts = activity.discountsGiven;
   const editCount = activity.billEdits.length + activity.voucherEdits.length;
+  const formula = computeStaffSlipFormula({
+    billed: p.totalBilled,
+    duesCollected: activity.dueReceived ?? 0,
+    cancelledBills: activity.cancelledBillsAmount ?? 0,
+    refundsRecorded: activity.refundsAmount ?? 0,
+    refundsOnBillsICancelled: 0,
+    outstanding: p.totalDue,
+    expense: activity.totalExpenses ?? 0,
+  });
 
   const denomHtml = p.denominations
     ? DENOM_ROWS.filter(({ key }) => (p.denominations![key] ?? 0) > 0)
@@ -118,12 +128,16 @@ export function buildStaffDayCloseEmailHtml(p: StaffDayCloseEmailPayload): strin
       <td style="width:50%;vertical-align:top;padding-right:8px">
         <div style="font-size:13px;font-weight:900;text-transform:uppercase;border-bottom:3px solid #000;padding-bottom:4px;margin-bottom:6px">Summary</div>
         <table style="width:100%;border-collapse:collapse">
-          ${line("Total Bill Generated", p.totalBilled)}
-          ${line("Outstanding", p.totalDue, true)}
-          ${line("Discounts", discounts, true)}
-          ${line("Expected", p.totalExpected)}
-          ${methodRow("UPI", p.expectedUpi)}
-          ${methodRow("CASH", p.expectedCash)}
+          ${line("Total Bill Gen", formula.billed)}
+          ${line("Dues Collected", formula.duesCollected)}
+          ${line("Subtotal", formula.subtotal)}
+          ${line("Cancelled bills", formula.cancelledBills)}
+          ${line("Refunds", formula.refunds)}
+          ${line("Outstanding", formula.outstanding)}
+          ${line("Expense", formula.expense)}
+          ${line("Expected", formula.expected, { strong: true })}
+          ${methodRow("UPI", p.expectedUpi, true)}
+          ${methodRow("CASH", p.expectedCash, true)}
           ${methodRow("CARD", p.expectedCard)}
           ${methodRow("CHEQUE", p.expectedCheque)}
           ${methodRow("OTHER", p.expectedOther)}
@@ -137,26 +151,24 @@ export function buildStaffDayCloseEmailHtml(p: StaffDayCloseEmailPayload): strin
     </tr>
   </table>
 
-  <div style="border-top:3px solid #000;padding-top:8px;margin-bottom:10px">
-    <div style="font-weight:900;font-size:14px;text-transform:uppercase;margin-bottom:4px">Bills Edited / Modified</div>
-    <div style="font-weight:700">(Total No.) = <strong>${editCount}</strong></div>
-  </div>
-
   ${expenseHtml ? `
   <div style="border-top:3px solid #000;padding-top:8px;margin-bottom:10px">
-    <div style="font-weight:900;font-size:14px;text-transform:uppercase;margin-bottom:4px">Expenses</div>
+    <div style="font-weight:900;font-size:14px;text-transform:uppercase;margin-bottom:4px">Expense details</div>
     ${expenseHtml}
-    <div style="border-top:3px solid #000;margin-top:6px;padding-top:6px;text-align:right;font-weight:900">${esc(inr(activity.totalExpenses))}</div>
   </div>` : ""}
 
   <div style="border:3px solid #000;padding:10px;margin-top:12px;font-weight:800">
-    Counted: ${esc(inr(p.totalActual))} · Expected: ${esc(inr(p.totalExpected))} ·
+    Counted: ${esc(inr(p.totalActual))} · Expected: ${esc(inr(formula.expected))} ·
     <span style="color:${varianceColor}">${esc(varianceLabel)}</span>
   </div>
 
   ${p.varianceNote ? `<p style="margin:10px 0 0;font-weight:700"><strong>Variance note:</strong> ${esc(p.varianceNote)}</p>` : ""}
   ${p.notes ? `<p style="margin:8px 0 0;font-weight:700"><strong>Handover:</strong> ${esc(p.notes)}</p>` : ""}
 
+  <p style="margin:16px 0 0;font-size:13px;font-weight:800">
+    BILLS EDITED/MODIFIED → ${editCount}<br>
+    DISCOUNTS GIVEN → Rs. ${esc(inr(discounts))}
+  </p>
   <p style="margin:16px 0 0;font-size:11px;color:#666;text-align:center">
     Closure #${p.closureId}${p.drawerStatus ? ` · ${esc(p.drawerStatus)}` : ""} · Care Diagnostics ERP
   </p>

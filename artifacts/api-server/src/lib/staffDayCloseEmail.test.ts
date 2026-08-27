@@ -30,6 +30,9 @@ const sample: StaffDayCloseEmailPayload = {
   drawerStatus: "balanced",
   closureId: 42,
   printActivity: {
+    dueReceived: 0,
+    cancelledBillsAmount: 0,
+    refundsAmount: 0,
     discountsGiven: 850,
     discountBills: [],
     billEdits: [{ id: 9, billId: 1, billNumber: "B-1", changeType: "amount", reason: "correction", oldValue: "1000", newValue: "900", createdAt: "2026-08-21T10:00:00.000Z" }],
@@ -44,19 +47,45 @@ const sample: StaffDayCloseEmailPayload = {
 };
 
 describe("buildStaffDayCloseEmailHtml", () => {
-  test("mirrors A5 slip: summary, cash count, edits, expenses, balanced footer", () => {
+  test("mirrors A5 slip: formula, cash count, footer edits/discounts, balanced footer", () => {
     const html = buildStaffDayCloseEmailHtml(sample);
     expect(html).toContain("Staff Reconciliation");
     expect(html).toContain("CARE DIAGNOSTICS");
-    expect(html).toContain("Total Bill Generated");
+    expect(html).toContain("Total Bill Gen");
+    expect(html).toContain("Dues Collected");
+    expect(html).toContain("Cancelled bills");
     expect(html).toContain("Expected");
-    expect(html).not.toContain("Outstanding");
+    expect(html).toContain("Outstanding");
     expect(html).toContain("500 × 100");
-    expect(html).toContain("Bills Edited / Modified");
-    expect(html).toContain("(Total No.) = <strong>1</strong>");
-    expect(html).toContain("Expenses");
+    expect(html).toContain("BILLS EDITED/MODIFIED");
+    expect(html).toContain("DISCOUNTS GIVEN");
+    expect(html).toContain("Newspaper");
     expect(html).toContain("Balanced");
     expect(html).toContain("Closure #42");
+  });
+
+  test("Suraj arithmetic: billed + dues − refunds − outstanding = expected", () => {
+    const html = buildStaffDayCloseEmailHtml({
+      ...sample,
+      staffName: "SURAJ JHA",
+      totalBilled: 247775,
+      totalDue: 4700,
+      expectedUpi: 99075,
+      expectedCash: 173150,
+      printActivity: {
+        ...sample.printActivity,
+        dueReceived: 29700,
+        cancelledBillsAmount: 0,
+        refundsAmount: 550,
+        discountsGiven: 2375,
+        totalExpenses: 0,
+        expenseDetails: [],
+      },
+    });
+    expect(html).toContain("2,77,475.00"); // subtotal
+    expect(html).toContain("2,72,225.00"); // expected
+    expect(html).toContain("29,700.00");
+    expect(html).toContain("550.00");
   });
 
   test("shows variance when mismatch", () => {
