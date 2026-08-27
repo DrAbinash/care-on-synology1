@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { writeFileSync, mkdirSync } from "fs";
+import { writeTestArtifact } from "../../../../tests/helpers/resolveTestArtifactDir";
 import { generateReportPDF, DEFAULT_PRINT_SETTINGS } from "./reportPdfGenerator";
 
 /** Tiny gray JPEG as a key-image stand-in. */
@@ -51,10 +51,8 @@ describe("reportPdfGenerator — signature stays on body page", () => {
       { save: false },
     );
 
-    mkdirSync("/opt/cursor/artifacts", { recursive: true });
-    const out = "/opt/cursor/artifacts/gulu-devi-signature-fit.pdf";
     const bytes = Buffer.from(doc.output("arraybuffer"));
-    writeFileSync(out, bytes);
+    writeTestArtifact("gulu-devi-signature-fit.pdf", bytes);
 
     // Regression: Gulu Devi PDF had signature alone on page 2.
     expect(doc.getNumberOfPages()).toBe(1);

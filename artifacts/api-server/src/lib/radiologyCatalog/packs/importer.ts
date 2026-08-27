@@ -17,6 +17,7 @@ import { buildCatalogSnapshot } from "./snapshot";
 import { dryRunImport, type ImportPlan, type DryRunOptions } from "./dryRun";
 import { normalizeAlias, type LoadedPack, type ValidationResult } from "./types";
 import type { CatalogRepository } from "./repository";
+import { graphFindingToQuickFindingRow, type QuickFindingOwnershipRow } from "./quickFindingOwnership";
 
 export class ImportError extends Error {
   constructor(message: string, public detail?: unknown) { super(message); this.name = "ImportError"; }
@@ -28,6 +29,8 @@ export interface ImportResult {
   validation: ValidationResult;
   plan?: ImportPlan;
   error?: string;
+  /** Ownership columns mapped toward radiology_quick_findings.conflict_group. */
+  quickFindingRows?: QuickFindingOwnershipRow[];
 }
 
 type Maps = {
@@ -212,5 +215,5 @@ export async function runImport(loaded: LoadedPack[], repo: CatalogRepository, o
   } catch (err) {
     return { ok: false, phase: "applied", validation, plan, error: err instanceof Error ? err.message : String(err) };
   }
-  return { ok: true, phase: "applied", validation, plan };
+  return { ok: true, phase: "applied", validation, plan, quickFindingRows: graph.findings.map(graphFindingToQuickFindingRow) };
 }

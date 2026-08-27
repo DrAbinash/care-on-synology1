@@ -46,6 +46,7 @@ import { applyChangePlan } from "@/lib/voiceReportComposer/applyChangePlan";
 import type { VoiceChangePlan, VoiceObservation } from "@/lib/voiceReportComposer/types";
 import {
   buildCanonicalObservation,
+  contributionPresent,
   contributionProtected,
   observationsMutuallyExclusive,
   ownershipFromObservation,
@@ -60,9 +61,12 @@ import {
   parseObservationLedger,
   reconstructProvenanceFromLedger,
   logLedgerHydrationSafe,
-  detectUnownedSiblingConflicts,
+  detectUnownedSiblingConflictsForLedger,
   UNOWNED_SIBLING_HINT,
   renderedInField,
+  extractRecordedHashes,
+  reconcilePatchAgainstNarrative,
+  stampVoiceAuthoredProvenance,
   type LedgerHydrationResult,
   type LedgerPatch,
   type SerializedObservationLedger,
@@ -83,6 +87,7 @@ export type AppliedPathologyPatch = {
   observation?: CanonicalObservation;
   replacedBaseline?: { findings: string[]; impression: string[] };
   protected?: boolean;
+  stale?: boolean;
 };
 
 export type PendingPathologyPatch = {
@@ -151,6 +156,7 @@ function toLedgerPatch(p: AppliedPathologyPatch): LedgerPatch {
     replacedBaseline: p.replacedBaseline ?? { findings: [], impression: [] },
     source: p.source,
     protected: p.protected ?? false,
+    stale: p.stale,
   };
 }
 
@@ -283,6 +289,13 @@ export type WorkspaceStore = S & {
   toggleFormatFavorite: (id: string) => void;
   applyPathologyOverlay: (opts: PendingPathologyPatch & { force?: boolean }) => "applied" | "pending";
   applyMacroBundle: (opts: { bundleId?: string; observations: Array<PendingPathologyPatch & { force?: boolean }> }) => "applied" | "pending";
+  /**
+   * Bundle deselect: remove only this bundle's observations that are (a) not protected
+   * and (b) not superseded by a newer QS/voice observation on the same slotKey.
+   * Overridden slots keep the overriding observation's text and ownership.
+   * Non-overridden slots restore replacedBaseline, same as removeObservation.
+   */
+  removeMacroBundle: (bundleId: string) => "removed" | "preserved-manual" | "no-op-unproven" | "missing";
   removeObservation: (id: string) => "removed" | "preserved-manual" | "no-op-unproven" | "missing";
   refreshImpressionFromLedger: () => void;
   hydrateObservationLedger: (raw: unknown) => LedgerHydrationResult;
@@ -409,8 +422,8 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
           const lastF = patch.lastRendered.findings ?? "";
           const lastI = patch.lastRendered.impression ?? "";
           const lastR = patch.lastRendered.recommendation ?? "";
-          const missingFindings = Boolean(lastF.trim()) && !narrative.findings.includes(lastF.trim());
-          const missingImpression = Boolean(lastI.trim()) && !narrative.impression.includes(lastI.trim());
+          const missingFindings = Boolean(lastF.trim()) && !contributionPresent(narrative.findings, lastF);
+          const missingImpression = Boolean(lastI.trim()) && !contributionPresent(narrative.impression, lastI);
           const mutated = (f === "findings" && contributionMutated(prevText, v, lastF))
             || (f === "impression" && contributionMutated(prevText, v, lastI))
             || (f === "recommendation" && contributionMutated(prevText, v, lastR));
@@ -664,7 +677,34 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     const r = mergeTwoFormats(a, b);
     set({ lastMergeResult: r, lastMergeFormats: { a, b }, mergePreviewOpen: true, confirmOverwriteOpen: false, pendingFormatIds: [] });
   },
-  cancelOverwrite: () => set({ confirmOverwriteOpen: false, pendingFormatIds: [], pendingPathologyPatch: null }),
+  cancelOverwrite: () => {
+    const pendingPatch = get().pendingPathologyPatch;
+    if (pendingPatch) {
+      get().undoLastPatch();
+      const observation = observationFromPending(pendingPatch, get().reportingContext.region);
+      const patchId = pendingPatch.id || observation.id || `pending_${Date.now().toString(36)}`;
+      const templates = pendingPatch.templates ?? pendingPatch.incoming;
+      set({
+        appliedPathologyPatches: [
+          ...get().appliedPathologyPatches.filter((p) => p.id !== patchId),
+          {
+            id: patchId,
+            ownership: pendingPatch.ownership,
+            templates,
+            lastRendered: pendingPatch.incoming,
+            source: pendingPatch.source,
+            observation: { ...observation, id: patchId },
+            replacedBaseline: { findings: [], impression: [] },
+            protected: false,
+          },
+        ],
+        confirmOverwriteOpen: false,
+        pendingPathologyPatch: null,
+      });
+      return;
+    }
+    set({ confirmOverwriteOpen: false, pendingFormatIds: [], pendingPathologyPatch: null });
+  },
   applyPathologyOverlay: (opts) => {
     const templates = opts.templates ?? opts.incoming;
     const patchId = opts.id ?? `patch_${Date.now().toString(36)}`;
@@ -691,15 +731,10 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
 
     let narrative = narrativeFromState(get());
     let provenance = get().fieldProvenance;
-    let patches = get().appliedPathologyPatches.filter((p) => p.id !== patchId);
-    for (const sib of siblings) {
-      const removed = removeLedgerObservation(narrative, provenance, toLedgerPatch(sib));
-      if (removed.outcome !== "preserved-manual") {
-        narrative = removed.narrative;
-        provenance = { ...provenance, ...removed.provenance };
-      }
-      patches = patches.filter((p) => p.id !== sib.id);
-    }
+    // Drop mutex siblings from the ledger only. Do not pre-strip their
+    // sentences — structured overlay owns replacement and records
+    // replacedBaseline so deselect can restore a normal/baseline.
+    let patches = get().appliedPathologyPatches.filter((p) => p.id !== patchId && !siblings.some((s) => s.id === p.id));
 
     const result = overlayPathology({
       existing: narrative,
@@ -727,10 +762,9 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       protected: false,
     };
     const nextPatches = [...patches.filter((p) => p.id !== patchId), nextPatch];
-    const siblingHits = detectUnownedSiblingConflicts({
+    const siblingHits = detectUnownedSiblingConflictsForLedger({
       findings: result.narrative.findings,
-      incomingFindings: incoming.findings,
-      ownedLastRendered: nextPatches.map((p) => p.lastRendered.findings ?? ""),
+      patches: nextPatches.map(toLedgerPatch),
     });
     const ownershipReviewWarnings = siblingHits.map((w) => ({
       sentence: w.sentence,
@@ -794,6 +828,53 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     set({ lastPatchSnapshot: snap });
     return status;
   },
+  /**
+   * Bundle deselect: remove only this bundle's observations that are
+   * (a) not protected and (b) not superseded by a newer QS/voice observation
+   * on the same slotKey. Overridden slots keep the overriding observation's
+   * text and ownership; remaining bundle slots restore replacedBaseline,
+   * same as individual removeObservation. Never auto-deletes manual text.
+   */
+  removeMacroBundle: (bundleId) => {
+    const id = (bundleId ?? "").trim();
+    if (!id) return "missing";
+    const all = get().appliedPathologyPatches;
+    const bundle = all.filter((p) => (p.observation?.bundleId ?? "") === id);
+    if (bundle.length === 0) return "missing";
+    const others = all.filter((p) => (p.observation?.bundleId ?? "") !== id);
+    const snap: PatchSnapshot = {
+      clinicalHistoryText: get().clinicalHistoryText,
+      techniqueText: get().techniqueText,
+      findingsText: get().findingsText,
+      impressionText: get().impressionText,
+      recommendationText: get().recommendationText,
+      fieldProvenance: { ...get().fieldProvenance },
+      appliedPathologyPatches: all.map((p) => ({ ...p })),
+      voiceComposerObservations: [...get().voiceComposerObservations],
+      voiceComposerTranscriptHistory: [...get().voiceComposerTranscriptHistory],
+    };
+    let anyRemoved = false;
+    let anyPreserved = false;
+    for (const patch of bundle) {
+      if (patch.protected) {
+        anyPreserved = true;
+        continue;
+      }
+      const slot = patch.observation?.slotKey;
+      const overridden = Boolean(slot && others.some((o) => {
+        if (o.observation?.slotKey !== slot) return false;
+        return o.source === "quick-select" || o.source === "quick-findings" || o.source === "radiologist-voice";
+      }));
+      if (overridden) continue;
+      const outcome = get().removeObservation(patch.id);
+      if (outcome === "preserved-manual") anyPreserved = true;
+      if (outcome === "removed") anyRemoved = true;
+    }
+    set({ lastPatchSnapshot: snap, isDirty: true });
+    if (anyPreserved && !anyRemoved) return "preserved-manual";
+    if (anyRemoved) return "removed";
+    return "no-op-unproven";
+  },
   refreshImpressionFromLedger: () => {
     const patches = get().appliedPathologyPatches.map(toLedgerPatch);
     const remaining = generateLocalImpression(get().findingsText);
@@ -837,9 +918,20 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       return result;
     }
     const narrative = narrativeFromState(get());
-    const provenance = parsed.fieldProvenance ?? reconstructProvenanceFromLedger(narrative, parsed.patches);
+    const hashes = extractRecordedHashes(raw);
+    const reconciled = parsed.patches.map((p) => reconcilePatchAgainstNarrative(p, narrative, hashes.get(p.id)));
+    const staleCount = reconciled.filter((p) => p.stale).length;
+    const provenance = parsed.fieldProvenance ?? reconstructProvenanceFromLedger(narrative, reconciled);
+    const warning = staleCount > 0
+      ? "Some saved observations no longer match the report text. Narrative was not changed."
+      : null;
+    const impressionNeedsRefresh = impressionNeedsRefreshFromNarrative(
+      narrative.impression,
+      reconciled,
+      provenance.impression,
+    );
     set({
-      appliedPathologyPatches: parsed.patches.map((p) => ({
+      appliedPathologyPatches: reconciled.map((p) => ({
         id: p.id,
         ownership: ownershipFromObservation(p.observation),
         templates: p.templates,
@@ -848,6 +940,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         observation: p.observation,
         replacedBaseline: p.replacedBaseline,
         protected: p.protected,
+        stale: p.stale,
       })),
       fieldProvenance: {
         ...get().fieldProvenance,
@@ -857,9 +950,16 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         recommendation: provenance.recommendation ?? get().fieldProvenance.recommendation,
         clinicalHistory: provenance.clinicalHistory ?? get().fieldProvenance.clinicalHistory,
       },
-      ledgerHydrationWarning: null,
+      ledgerHydrationWarning: warning,
+      impressionNeedsRefresh,
     });
-    return { ok: true, mode: "restored", reason: "restored", patchCount: parsed.patches.length };
+    return {
+      ok: true,
+      mode: "restored",
+      reason: "restored",
+      patchCount: reconciled.length,
+      warning: warning ?? undefined,
+    };
   },
   serializeObservationLedger: () => serializeObservationLedger(
     get().appliedPathologyPatches.map(toLedgerPatch),
@@ -950,13 +1050,17 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         protected: false,
       };
     });
+    const written = {
+      findings: (result.activeObservations ?? []).map((o) => o.findingsText).filter(Boolean).join("\n"),
+      impression: (result.activeObservations ?? []).map((o) => o.impressionText).filter(Boolean).join("\n"),
+    };
     set({
       clinicalHistoryText: result.narrative.clinicalHistory,
       techniqueText: result.narrative.technique,
       findingsText: result.narrative.findings,
       impressionText: result.narrative.impression,
       recommendationText: result.narrative.recommendation,
-      fieldProvenance: result.provenance,
+      fieldProvenance: stampVoiceAuthoredProvenance(result.provenance, written),
       isDirty: true,
       lastPatchSnapshot: snap,
       voiceComposerObservations: result.activeObservations ?? [],

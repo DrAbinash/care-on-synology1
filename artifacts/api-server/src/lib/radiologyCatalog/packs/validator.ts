@@ -146,6 +146,23 @@ function checkFindings(ctx: Ctx, packs: { lp: LoadedPack; p: ContentPack }[]): v
         err(ctx, "INVALID_ENUM", `Invalid status "${f.status}"`, lp.source, `${base}.status`);
       }
 
+      const cat = (f.category ?? "").toLowerCase();
+      if ((cat === "critical" || cat === "abnormal") && !f.conflict_group) {
+        err(ctx, "MISSING_CONFLICT_GROUP", `critical/abnormal finding "${f.id_key}" must declare conflict_group`, lp.source, `${base}.conflict_group`);
+      }
+      if (f.conflict_group) {
+        const phrase = f.conflict_group.replace(/_/g, " ").toLowerCase();
+        const hay = (f.default_sentence ?? "").toLowerCase();
+        const tokens = phrase.split(/\s+/).filter((t) => t.length >= 3);
+        const ok = hay.includes(phrase) || tokens.every((t) => hay.includes(t));
+        if (!ok) {
+          err(ctx, "CONFLICT_GROUP_TEXT_MISMATCH", `conflict_group tokens must appear in default_sentence`, lp.source, `${base}.conflict_group`);
+        }
+      }
+      if (cat === "normal" && f.conflict_group && !f.baseline_replaces) {
+        err(ctx, "MISSING_BASELINE_REPLACES", `normal finding with conflict_group should declare baseline_replaces`, lp.source, `${base}.baseline_replaces`);
+      }
+
       // aliases (display aliases + keyboard alias) — global uniqueness (normalized)
       const aliases = [...(f.aliases ?? []), ...(f.keyboard_alias ? [f.keyboard_alias] : [])];
       for (const a of aliases) {

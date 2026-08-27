@@ -328,7 +328,12 @@ export function combinedFormatTitle(a: ReportFormat, b: ReportFormat): string | 
   return null;
 }
 
-function mergeTechniquePreservingScreening(a: string, b: string): { text: string; sentences: MergeSentence[] } {
+function mergeTechniquePreservingScreening(a: string, b: string, fa?: ReportFormat, fb?: ReportFormat): { text: string; sentences: MergeSentence[] } {
+  const taggedA = fa?.techniqueFragments?.length ? fa.techniqueFragments : null;
+  const taggedB = fb?.techniqueFragments?.length ? fb.techniqueFragments : null;
+  if (taggedA || taggedB) {
+    return mergeTechniqueFragments(taggedA ?? deriveTechniqueFragments(a), taggedB ?? deriveTechniqueFragments(b));
+  }
   const tA = a.trim();
   const tB = b.trim();
   const merged = mergeTechnique(tA, tB);
@@ -356,8 +361,64 @@ function mergeTechniquePreservingScreening(a: string, b: string): { text: string
   return { text, sentences };
 }
 
+const TECHNIQUE_PRESERVE =
+  /\b(mri|ct|t1w|t2w|stir|flair|dwi|adc|sagittal|axial|coronal|planar|sequence|screening|limited|3t|1\.5t)\b/i;
+
+export function deriveTechniqueFragments(technique: string): Array<{ text: string; dedupeKey: string; preserve: boolean }> {
+  return splitSentences(technique).map((text) => ({
+    text,
+    dedupeKey: norm(text).slice(0, 48) || text.slice(0, 32),
+    preserve: TECHNIQUE_PRESERVE.test(text),
+  }));
+}
+
+/**
+ * Union technique fragments by dedupeKey. Preserved sentences always survive.
+ * Order: detailed (non-screening) first, screening/limited fragments appended.
+ */
+export function mergeTechniqueFragments(
+  a: Array<{ text: string; dedupeKey: string; preserve?: boolean }>,
+  b: Array<{ text: string; dedupeKey: string; preserve?: boolean }>,
+): { text: string; sentences: MergeSentence[] } {
+  type Frag = { text: string; dedupeKey: string; preserve: boolean; source: MergeSentence["source"]; screening: boolean };
+  const tag = (list: typeof a, source: MergeSentence["source"]): Frag[] =>
+    list.map((f) => ({
+      text: f.text,
+      dedupeKey: f.dedupeKey || norm(f.text).slice(0, 48),
+      preserve: f.preserve !== false,
+      source,
+      screening: /screening|limited/i.test(f.text),
+    }));
+  const all = [...tag(a, "from-a"), ...tag(b, "from-b")];
+  const kept: Frag[] = [];
+  const seen = new Set<string>();
+  const detailed = all.filter((f) => !f.screening);
+  const screening = all.filter((f) => f.screening);
+  for (const f of [...detailed, ...screening]) {
+    const key = f.dedupeKey;
+    if (seen.has(key)) {
+      const existing = kept.find((k) => k.dedupeKey === key);
+      if (existing && f.preserve) existing.preserve = true;
+      continue;
+    }
+    // Drop only when a later duplicate key exists AND this fragment is not preserved.
+    const dup = all.filter((x) => x.dedupeKey === key);
+    if (!f.preserve && dup.some((d) => d.preserve && d.text !== f.text)) continue;
+    seen.add(key);
+    const alsoOther = all.some((x) => x.source !== f.source && x.dedupeKey === key);
+    kept.push({ ...f, source: alsoOther ? "common" : f.source });
+  }
+  for (const f of all) {
+    if (f.preserve && !kept.some((k) => k.dedupeKey === f.dedupeKey || norm(k.text) === norm(f.text))) {
+      kept.push(f);
+    }
+  }
+  const sentences: MergeSentence[] = kept.map((k) => ({ text: k.text, source: k.source }));
+  return { text: kept.map((k) => k.text).join(" "), sentences };
+}
+
 export function mergeTwoFormatsBySlot(a: ReportFormat, b: ReportFormat): MergeResult {
-  const tech = mergeTechniquePreservingScreening(a.technique ?? "", b.technique ?? "");
+  const tech = mergeTechniquePreservingScreening(a.technique ?? "", b.technique ?? "", a, b);
 
   const hm = mergeHistory(a.clinicalHistory ?? "", b.clinicalHistory ?? "");
   const tagged = mergeTagged(tagSentences(a, "from-a"), tagSentences(b, "from-b"));

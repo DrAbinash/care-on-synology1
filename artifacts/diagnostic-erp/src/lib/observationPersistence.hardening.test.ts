@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach } from "vitest";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { writeTestArtifact } from "../../../../tests/helpers/resolveTestArtifactDir";
 import { useWorkspace } from "./zai-workspace/store";
 import { DEFAULT_REPORT_FORMATS } from "./zai-workspace/report-formats-library";
 import { DEFAULT_QUICK_SELECT_TILES } from "./zai-workspace/quick-select-library";
@@ -190,9 +190,7 @@ describe("draft close/reopen persistence A–I", () => {
         protected: Boolean(p.protected),
       })),
     );
-    try {
-      mkdirSync("/opt/cursor/artifacts", { recursive: true });
-      writeFileSync("/opt/cursor/artifacts/persistence-reopen-proof.json", JSON.stringify({
+    writeTestArtifact("persistence-reopen-proof.json", JSON.stringify({
         findingsMatch: proof.findingsText === before.findings,
         impressionMatch: proof.impressionText === before.impression,
         recommendationMatch: proof.recommendationText === before.recommendation,
@@ -201,14 +199,13 @@ describe("draft close/reopen persistence A–I", () => {
         bundleIds: proof.appliedPathologyPatches.map((p) => p.observation?.bundleId).filter(Boolean),
         hydrate: hydrated,
       }, null, 2));
-      writeFileSync("/opt/cursor/artifacts/ownership-trace-example.json", trace);
-      writeFileSync("/opt/cursor/artifacts/persistence-reopen-proof.html", `<!doctype html><html><head><meta charset="utf-8"><title>Draft reopen proof</title>
+    writeTestArtifact("ownership-trace-example.json", trace);
+    writeTestArtifact("persistence-reopen-proof.html", `<!doctype html><html><head><meta charset="utf-8"><title>Draft reopen proof</title>
         <style>body{font-family:sans-serif;max-width:820px;margin:24px auto}pre{background:#f8fafc;border:1px solid #e2e8f0;padding:12px;white-space:pre-wrap}</style></head>
         <body><h1>Draft close → reopen</h1><h2>Findings (identical)</h2><pre>${proof.findingsText.replace(/</g,"&lt;")}</pre>
         <h2>Impression</h2><pre>${proof.impressionText.replace(/</g,"&lt;")}</pre>
         <h2>Recommendation</h2><pre>${proof.recommendationText.replace(/</g,"&lt;")}</pre>
         <h2>Slots</h2><pre>${proof.appliedPathologyPatches.map((p) => `${p.id} ${p.observation?.slotKey} protected=${p.protected}`).join("\n")}</pre></body></html>`);
-    } catch { /* artifacts dir optional */ }
   });
 
   it("F. deselect after reopen removes correct unedited contribution", () => {

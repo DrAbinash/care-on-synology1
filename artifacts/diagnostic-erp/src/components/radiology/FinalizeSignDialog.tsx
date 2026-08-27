@@ -17,10 +17,9 @@ import {
 import { Checkbox } from "@/components/ui/checkbox";
 import { AlertTriangle } from "lucide-react";
 import type { FinalizePromptInput, FinalizePromptResult } from "@/hooks/useFinalizeFlow";
-import {
-  computeUnresolvedBlockers,
-  type CanonicalQualityFinding,
-} from "@/lib/reportQualityFinalize";
+import { computeUnresolvedBlockers, type CanonicalQualityFinding } from "@/lib/reportQualityFinalize";
+import { CompositionFinalizeGate, compositionFinalizeAllowed } from "@/components/radiology/zai-workspace/finalize-dialog";
+import { useWorkspace } from "@/lib/zai-workspace/store";
 
 const SESSION_SIGNER_KEY = "radiology_finalize_signer_id";
 
@@ -87,11 +86,15 @@ export default function FinalizeSignDialog({ open, input, onResolve, onCancel }:
   const [criticalAck, setCriticalAck] = useState(false);
   const [notifyReferring, setNotifyReferring] = useState(false);
   const [rememberSigner, setRememberSigner] = useState(true);
+  const [impressionReviewedAnyway, setImpressionReviewedAnyway] = useState(false);
+  const [impressionRefreshed, setImpressionRefreshed] = useState(false);
 
   useEffect(() => {
     if (!open || !input) return;
     setCriticalAck(false);
     setNotifyReferring(input.criticalRequiresAck);
+    setImpressionReviewedAnyway(false);
+    setImpressionRefreshed(false);
     const remembered = loadSessionSignerId();
     if (multi) {
       const match = remembered && signatures.some((s) => s.id === remembered)
@@ -119,9 +122,15 @@ export default function FinalizeSignDialog({ open, input, onResolve, onCancel }:
   if (!input) return null;
 
   const needsSigner = multi || single != null;
+  const compositionOk = compositionFinalizeAllowed({
+    impressionNeedsRefresh: Boolean(input.compositionImpressionNeedsRefresh),
+    impressionRefreshed,
+    impressionReviewedAnyway,
+  });
   const canConfirm =
     (!input.criticalRequiresAck || criticalAck) &&
-    (!needsSigner || !!signerId || signatures.length === 0);
+    (!needsSigner || !!signerId || signatures.length === 0) &&
+    compositionOk;
 
   return (
     <Dialog open={open} onOpenChange={(v) => { if (!v) onCancel(); }}>
@@ -139,6 +148,21 @@ export default function FinalizeSignDialog({ open, input, onResolve, onCancel }:
           {input.unbilledNote}
           {"\n"}After finalizing, editing is disabled.
         </pre>
+
+        <CompositionFinalizeGate
+          gate={{
+            impressionNeedsRefresh: Boolean(input.compositionImpressionNeedsRefresh),
+            siblingWarnings: input.compositionSiblingWarnings ?? [],
+            stalePatchCount: input.compositionStalePatchCount ?? 0,
+          }}
+          impressionRefreshed={impressionRefreshed}
+          impressionReviewedAnyway={impressionReviewedAnyway}
+          onImpressionReviewedAnyway={setImpressionReviewedAnyway}
+          onRefreshImpression={() => {
+            useWorkspace.getState().refreshImpressionFromLedger();
+            setImpressionRefreshed(true);
+          }}
+        />
 
         {qualityGate && (
           <div className="space-y-3 rounded-md border border-indigo-200 bg-indigo-50/50 dark:bg-indigo-950/20 p-3">
@@ -235,6 +259,7 @@ export default function FinalizeSignDialog({ open, input, onResolve, onCancel }:
           <Button
             type="button"
             disabled={!canConfirm}
+            data-testid="finalize-confirm-sign"
             onClick={() => {
               const id = signerId ? Number(signerId) : null;
               if (id && rememberSigner) saveSessionSignerId(id);
@@ -243,6 +268,8 @@ export default function FinalizeSignDialog({ open, input, onResolve, onCancel }:
                 signatureId: id && Number.isInteger(id) ? id : null,
                 criticalAcknowledged: criticalAck,
                 notifyReferring,
+                impressionReviewedAnyway,
+                impressionRefreshed,
               });
             }}
           >
