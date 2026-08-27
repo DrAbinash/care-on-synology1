@@ -71,9 +71,11 @@ describe("Radiology Reporting Workspace handwritten notes", () => {
     expect(workspace).toContain('onEditSection={focusReportField}');
   });
 
-  it("protocol has + Add Title like History chips", () => {
-    expect(workspace).toContain('data-testid="protocol-add-title"');
-    expect(workspace).toContain('data-testid="protocol-title-input"');
+  it("Section 1 is Study / Region + Report Format (not competing Protocol UI)", () => {
+    expect(workspace).toContain("StudyRegionReportFormatSection");
+    expect(workspace).toContain("onSelectRegion={studySetup.selectPrimaryRegion}");
+    expect(workspace).not.toContain('data-testid="protocol-add-title"');
+    expect(workspace).not.toContain("More regions…");
   });
 
   it("Quick Add has + and a body-region fallback", () => {

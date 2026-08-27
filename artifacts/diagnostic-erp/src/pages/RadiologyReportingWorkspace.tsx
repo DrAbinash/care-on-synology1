@@ -193,6 +193,7 @@ import StructuredFindingDialog from "@/components/radiology/StructuredFindingDia
 import { FindingsHighlightEditor } from "@/components/FindingsHighlightEditor";
 import ReportDemographyCard from "@/components/radiology/ReportDemographyCard";
 import ReferringDoctorQuickSelect from "@/components/ReferringDoctorQuickSelect";
+import { StudyRegionReportFormatSection } from "@/components/radiology/StudyRegionReportFormatSection";
 import ClinicalHistoryChipStrip from "@/components/radiology/ClinicalHistoryChipStrip";
 import StudyLocalFindingEditDialog, {
   type StudyLocalTextOverride,
@@ -941,8 +942,6 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   // Viewer vertical enlarge (center column only) + left worklist collapse
   const [viewerColumnExpanded, setViewerColumnExpanded] = useState(false);
   const [reportImagesOpen, setReportImagesOpen] = useState(false);
-  const [protocolTitleOpen, setProtocolTitleOpen] = useState(false);
-  const [protocolTitle, setProtocolTitle] = useState("");
   const [leftCollapsed, setLeftCollapsed] = useState(false);
   const [rightCollapsed, setRightCollapsed] = useState(false);
   const [patientJumpFilter, setPatientJumpFilter] = useState("");
@@ -1299,31 +1298,6 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       .sort((a, b) => a.sortOrder - b.sortOrder || a.displayLabel.localeCompare(b.displayLabel)),
     [studySetup.quickSelectData, studySetup.studyRegions],
   );
-
-  const addProtocolTitle = useCallback(async () => {
-    const name = protocolTitle.trim();
-    if (!name) return;
-    useWorkspace.getState().mergeField("technique", `${name}.`, "protocol");
-    const studyType = studySetup.studyRegions[0] || studySetup.matchedStudyRegion || "MRI";
-    if (isOwner) {
-      try {
-        const row = await api.post<{ id: number; name: string }>("/api/radiology/quick-select/protocols", {
-          name,
-          studyType,
-          modality: workflow.currentRow?.modality ?? "",
-          techniqueText: `${name}.`,
-        });
-        void qc.invalidateQueries({ queryKey: ["radiology-quick-select"] });
-        const created = studySetup.availableProtocols.find((p) => p.id === row?.id)
-          ?? (row ? { ...row, studyType, modality: workflow.currentRow?.modality ?? "", checklistJson: "[]", techniqueText: `${name}.`, normalText: "", recommendationText: "", requiredMeasurements: "", isGoldStandard: false, isDefault: false, sortOrder: 0, isActive: true } : null);
-        if (created && "techniqueText" in created) studySetup.requestProtocolChange(created as typeof studySetup.availableProtocols[number]);
-      } catch {
-        toast({ title: "Title added to Technique", description: "Shared protocol save needs admin permission." });
-      }
-    }
-    setProtocolTitle("");
-    setProtocolTitleOpen(false);
-  }, [protocolTitle, isOwner, studySetup, workflow.currentRow?.modality, qc, toast]);
 
   const recommendationChips = useMemo<string[]>(() => {
     const raw = pacsSettingsRows?.find((r) => r.key === "report_recommendation_chips")?.value;
@@ -3501,10 +3475,9 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       )}
                     </ReportAccordionSection>
 
-                    {/* 3. REGION / STUDY / PROTOCOL — the ONE anatomical context
-                         selector. Everything downstream (macros, Quick Select,
-                         Quick Add, structured template, suggestions) reads the
-                         region chosen here. */}
+                    {/* 3. REGION / STUDY / REPORT FORMAT — one Study/Region truth +
+                         whole-report format filtered by that region. Protocol still
+                         auto-applies as metadata when region changes. */}
                     <ReportAccordionSection {...accordionProps("region")}>
                     <div className="space-y-2">
                     {/* One-click Start Report */}
@@ -3567,192 +3540,24 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       />
                     )}
 
-                    {/* Study setup strip — always visible for manual region/protocol
-                        override when auto-match fails (dropdowns, not summary-only). */}
-                    <div className="flex flex-wrap items-center gap-2 rounded-md border border-emerald-200/60 bg-gradient-to-r from-emerald-50/40 via-card to-emerald-50/20 px-2 py-1.5 text-[10px] shadow-sm" data-testid="study-setup-strip">
-                        <label className="inline-flex items-center gap-1 flex-wrap">
-                            <span className="font-semibold text-muted-foreground">Region</span>
-                            <select
-                              className="h-6 max-w-[11rem] rounded border bg-background px-1 text-[10px]"
-                              value={studySetup.matchedStudyRegion ?? ""}
-                              disabled={isLocked || isFinalized || studySetup.availableRegions.length === 0}
-                              onChange={(e) => {
-                                const name = e.target.value;
-                                studySetup.selectPrimaryRegion(name || null);
-                              }}
-                              data-testid="region-select"
-                              aria-label="Study region"
-                              title={studySetup.availableRegions.length === 0
-                                ? "No regions in Quick Select — configure in Radiology Settings"
-                                : "Select or override study region"}
-                            >
-                              <option value="">
-                                {studySetup.availableRegions.length === 0 ? "No regions configured" : "Select region…"}
-                              </option>
-                              {studySetup.availableRegions.map((r) => (
-                                <option key={r} value={r}>{r}</option>
-                              ))}
-                            </select>
-                        </label>
-                        {(studySetup.availableRegions.length > 0 || studySetup.studyRegions.length > 0) && (
-                          <label className="inline-flex items-center gap-1 flex-wrap">
-                            <span className="font-semibold text-muted-foreground">Regions</span>
-                            <div className="inline-flex flex-wrap gap-0.5" role="group" aria-label="Study regions (multi-select)" data-testid="study-region-chips">
-                              {(() => {
-                                const REGION_CHIP_LIMIT = 6;
-                                const catalog = studySetup.availableRegions.length > 0
-                                  ? studySetup.availableRegions
-                                  : studySetup.studyRegions;
-                                const primary = catalog.slice(0, REGION_CHIP_LIMIT);
-                                const overflow = catalog.slice(REGION_CHIP_LIMIT);
-                                const extraSelected = studySetup.studyRegions.filter((r) => !primary.includes(r));
-                                const visible = [...primary, ...extraSelected];
-                                return (
-                                  <>
-                                    {visible.map((r) => {
-                                      const on = studySetup.studyRegions.includes(r);
-                                      const isPrimary = on && studySetup.matchedStudyRegion === r;
-                                      const title = !on
-                                        ? `Add ${r} as primary (macros follow this)`
-                                        : isPrimary && studySetup.studyRegions.length > 1
-                                          ? `Remove ${r}`
-                                          : isPrimary
-                                            ? `Primary region — macros follow ${r}`
-                                            : `Make ${r} primary (macros follow this)`;
-                                      return (
-                                        <button
-                                          key={r}
-                                          type="button"
-                                          disabled={isLocked || isFinalized}
-                                          aria-pressed={on}
-                                          aria-current={isPrimary ? "true" : undefined}
-                                          data-primary={isPrimary ? "true" : undefined}
-                                          title={title}
-                                          className={`h-6 px-1.5 text-[10px] rounded border font-medium transition-colors ${
-                                            isPrimary
-                                              ? "bg-primary text-primary-foreground border-primary ring-2 ring-offset-1 ring-emerald-400"
-                                              : on
-                                                ? "bg-primary/75 text-primary-foreground border-primary"
-                                                : "bg-background text-muted-foreground border-border hover:bg-muted"
-                                          }`}
-                                          onClick={() => studySetup.handleRegionToggle(r)}
-                                        >
-                                          {r}
-                                        </button>
-                                      );
-                                    })}
-                                    {overflow.length > 0 && (
-                                      <select
-                                        aria-label="More study regions"
-                                        title="Add another region — its technique merges into Technique"
-                                        className="h-6 max-w-[9rem] text-[10px] rounded border bg-background px-1"
-                                        value=""
-                                        disabled={isLocked || isFinalized}
-                                        onChange={(e) => {
-                                          const name = e.target.value;
-                                          if (name) studySetup.handleRegionToggle(name);
-                                          e.currentTarget.value = "";
-                                        }}
-                                      >
-                                        <option value="">More regions…</option>
-                                        {overflow.map((r) => (
-                                          <option key={r} value={r}>
-                                            {studySetup.studyRegions.includes(r) ? "✓ " : "+ "}{r}
-                                          </option>
-                                        ))}
-                                      </select>
-                                    )}
-                                  </>
-                                );
-                              })()}
-                            </div>
-                            {studySetup.regionOverrides != null && (
-                              <button
-                                type="button"
-                                className="text-amber-600 underline text-[10px]"
-                                title={`Auto-detected: ${studySetup.autoStudyRegion ?? "none"}`}
-                                onClick={() => studySetup.resetRegionOverrides()}
-                              >
-                                reset
-                              </button>
-                            )}
-                          </label>
-                        )}
-                        <select
-                            className="h-6 max-w-[12rem] rounded border bg-background px-1 text-[10px]"
-                            value={studySetup.activeProtocol?.id ?? ""}
-                            disabled={isLocked || isFinalized || studySetup.availableProtocols.length === 0}
-                            onChange={(e) => {
-                              const id = Number(e.target.value);
-                              const p = studySetup.availableProtocols.find((x) => x.id === id) ?? null;
-                              studySetup.requestProtocolChange(p);
-                            }}
-                            data-testid="protocol-select"
-                            aria-label="Protocol"
-                            title={studySetup.availableProtocols.length === 0
-                              ? "No protocols in Quick Select — configure in Radiology Settings"
-                              : "Select or override protocol / technique template"}
-                          >
-                            <option value="">
-                              {studySetup.availableProtocols.length === 0 ? "No protocols configured" : "Protocol…"}
-                            </option>
-                            {studySetup.availableProtocols.map((p) => (
-                              <option key={p.id} value={p.id}>{p.name}{p.isDefault ? " ★" : ""}</option>
-                            ))}
-                          </select>
-                        <button
-                          type="button"
-                          data-testid="protocol-add-title"
-                          className="inline-flex items-center gap-0.5 h-6 px-1.5 text-[10px] rounded border border-dashed border-muted-foreground/40 text-muted-foreground hover:border-primary hover:text-primary"
-                          disabled={isLocked || isFinalized}
-                          onClick={() => setProtocolTitleOpen((v) => !v)}
-                          title="Add a protocol title (like History chips)"
-                        >
-                          <Plus size={10} /> Add Title
-                        </button>
-                        {protocolTitleOpen && (
-                          <input
-                            className="h-6 w-36 rounded border px-1.5 text-[10px] bg-background"
-                            placeholder="Protocol title"
-                            value={protocolTitle}
-                            onChange={(e) => setProtocolTitle(e.target.value)}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter") void addProtocolTitle();
-                              if (e.key === "Escape") setProtocolTitleOpen(false);
-                            }}
-                            autoFocus
-                            data-testid="protocol-title-input"
-                          />
-                        )}
-                        {(studyNameForExport || studySetup.testName) && (
-                          <span className="text-foreground" title="Test / template name from DICOM match or applied full report format">
-                            Test: <strong>{studyNameForExport}</strong>
-                            {studySetup.templateMismatch ? " ⚠ region mismatch" : ""}
-                          </span>
-                        )}
-                        {(studySetup.templateMismatch || !studySetup.activeProtocol) && studySetup.studyRegions[0] && (
-                          <span className="inline-flex items-center gap-0.5 text-amber-600">
-                            <AlertTriangle size={11} />
-                            {studySetup.templateMismatch ? "template mismatch" : "protocol not applied"}
-                          </span>
-                        )}
-                        {studySetup.activeProtocol && (
-                          <span className="text-muted-foreground">
-                            Checklist {studySetup.checklistPercent}%
-                          </span>
-                        )}
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="outline"
-                          className="h-6 text-[10px] ml-auto"
-                          disabled={isLocked || isFinalized || studySetup.studyRegions.length === 0}
-                          onClick={() => studySetup.reapplyDefaults()}
-                          data-testid="reapply-defaults"
-                        >
-                          Re-apply defaults
-                        </Button>
-                      </div>
+                    {/* Study / Region + Report Format — ONE region truth, formats filtered by it. */}
+                    <StudyRegionReportFormatSection
+                      availableRegions={studySetup.availableRegions}
+                      selectedRegion={studySetup.matchedStudyRegion}
+                      autoDetectedRegion={studySetup.autoStudyRegion}
+                      regionOverridden={studySetup.regionOverrides != null}
+                      onSelectRegion={studySetup.selectPrimaryRegion}
+                      onResetAutoRegion={studySetup.resetRegionOverrides}
+                      reportingContext={studySetup.studyContext}
+                      modality={workflow.currentRow?.modality ?? null}
+                      bodyPartFallback={studySetup.matchedStudyRegion}
+                      studyDescription={workflow.currentRow?.studyDescription ?? null}
+                      disabled={isLocked || isFinalized}
+                      testName={studyNameForExport || studySetup.testName}
+                      activeProtocolName={studySetup.activeProtocol?.name ?? null}
+                      onReapplyDefaults={() => studySetup.reapplyDefaults()}
+                      canReapplyDefaults={studySetup.studyRegions.length > 0}
+                    />
 
                     </div>
                     </ReportAccordionSection>
@@ -4152,7 +3957,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                             No structured format for this template. Pick a template in
                             {" "}
                             <button type="button" className="underline underline-offset-2" onClick={() => setActiveReportSection("region")}>
-                              Region / Study / Protocol
+                              Region / Study / Report Format
                             </button>
                             .
                           </p>

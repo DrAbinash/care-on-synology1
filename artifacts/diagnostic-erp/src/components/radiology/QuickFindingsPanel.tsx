@@ -160,7 +160,7 @@ interface Props {
   /** Parent-owned region toggle — merges technique across regions. */
   onRegionToggle?: (regionName: string) => void;
   /**
-   * The workspace already owns the region in its Region / Study / Protocol
+   * The workspace already owns the region in its Region / Study / Report Format
    * section, so the panel collapses its own region grid to a single
    * "Region — Brain · Change region" line. Every region control is still here,
    * one click behind "Change region".
