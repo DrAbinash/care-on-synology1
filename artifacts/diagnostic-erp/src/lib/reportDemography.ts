@@ -203,21 +203,67 @@ function nameKey(raw: string): string {
   return raw.toLowerCase().replace(/^dr\.?\s*/i, "").replace(/[^a-z]/g, "");
 }
 
-/** If a unique doctor-catalog name matches, use it (usually includes degree). */
+/** Strip degree tokens so "Dr. Sanjay Kumar, MD" and "SANJAY KUMAR" share a key. */
+function stripDegreeTokens(raw: string): string {
+  return String(raw ?? "").replace(/\b(md|mbbs|ms|mch|m\.ch|dnb|dm|frcr|frcs|frcp|mrcp|dmrd|fcps)\b/gi, " ");
+}
+
+export type DoctorCatalogRow = { name: string; degree?: string | null };
+
+/** Build catalog labels from Settings → Doctors (name + degree column). */
+export function doctorCatalogLabels(
+  doctors: DoctorCatalogRow[] | null | undefined,
+): string[] {
+  if (!doctors?.length) return [];
+  return doctors
+    .map((d) => formatDoctorWithDegree(d.name, d.degree))
+    .filter((label) => label.length > 0);
+}
+
+/**
+ * If a unique Settings → Doctors row matches, return that label (includes degree).
+ * Prefer exact name-key match; only then allow unique prefix/contains matches.
+ * Ambiguous matches leave the current string unchanged.
+ */
 export function enrichReferringDoctorFromCatalog(
   current: string,
   catalogNames: string[] | null | undefined,
 ): string {
   const cur = String(current ?? "").trim();
   if (!cur || !catalogNames?.length) return cur;
-  const key = nameKey(cur.replace(DEGREE_RE, ""));
-  if (key.length < 6) return cur;
-  const hits = catalogNames.filter((n) => {
-    const k = nameKey(n.replace(DEGREE_RE, ""));
-    return k === key || k.includes(key) || key.includes(k);
-  });
-  if (hits.length !== 1) return cur;
-  return formatReferringDoctorDisplay(hits[0]!);
+  const key = nameKey(stripDegreeTokens(cur));
+  if (key.length < 3) return cur;
+
+  const scored = catalogNames
+    .map((n) => {
+      const label = String(n ?? "").trim();
+      if (!label) return null;
+      const k = nameKey(stripDegreeTokens(label));
+      if (!k) return null;
+      let score = 0;
+      if (k === key) score = 100;
+      else if (k.startsWith(key) || key.startsWith(k)) score = 50;
+      else if (k.includes(key) || key.includes(k)) score = 25;
+      return score > 0 ? { label, score } : null;
+    })
+    .filter((x): x is { label: string; score: number } => x != null);
+
+  const exact = scored.filter((x) => x.score === 100);
+  if (exact.length === 1) return formatReferringDoctorDisplay(exact[0]!.label);
+  if (exact.length > 1) return cur;
+
+  const strong = scored.filter((x) => x.score >= 50);
+  if (strong.length === 1) return formatReferringDoctorDisplay(strong[0]!.label);
+
+  return cur;
+}
+
+/** Enrich from structured doctors-master rows (Settings → Doctors). */
+export function enrichReferringDoctorFromDoctors(
+  current: string,
+  doctors: DoctorCatalogRow[] | null | undefined,
+): string {
+  return enrichReferringDoctorFromCatalog(current, doctorCatalogLabels(doctors));
 }
 
 /**

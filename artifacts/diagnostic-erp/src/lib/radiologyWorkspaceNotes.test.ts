@@ -55,9 +55,13 @@ describe("Radiology Reporting Workspace handwritten notes", () => {
   it("referring doctor quick select exposes add box and pencil editor with catalog degrees", () => {
     expect(refDoc).toContain('data-testid="ref-doctor-add-box"');
     expect(refDoc).toContain('data-testid="ref-doctor-edit-degrees"');
+    expect(refDoc).toContain('data-testid="ref-doctor-current-with-degree"');
     expect(refDoc).toContain('placeholder="Add doctor…');
     expect(refDoc).toContain("formatDoctorWithDegree");
-    expect(workspace).toContain("formatDoctorWithDegree");
+    expect(refDoc).toContain("enrichReferringDoctorFromDoctors");
+    expect(workspace).toContain("doctorCatalogLabels");
+    expect(workspace).toContain("doctorsCatalog=");
+    expect(workspace).toContain("canonicalDemography.referringDoctor");
     expect(doctorsPage).toContain('register("degree")');
     expect(doctorsPage).toContain('regEdit("degree")');
   });
