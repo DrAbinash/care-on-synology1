@@ -33,13 +33,6 @@ export const ERP_PUBLIC_PROBE_FAILED_KEY = "erp_public_probe_failed";
 /** Fired after a background login-page connectivity probe finishes. */
 export const ERP_CONNECTIVITY_PROBE_DONE_EVENT = "erp-connectivity-probe-done";
 
-/** Probe the ERP SPA shell — same path Synology/nginx always expose as /erp/. */
-function erpShellProbeUrl(origin: string): string {
-  const root = origin.replace(/\/+$/, "");
-  const shell = `${getErpBasePath()}index.html`.replace(/\/{2,}/g, "/");
-  return `${root}${shell}`;
-}
-
 const PROBE_TIMEOUT_MS = 4_000;
 const PROBE_RETRIES = 3;
 const PROBE_RETRY_DELAY_MS = 800;
@@ -91,9 +84,22 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
+/** Build the ERP SPA shell probe URL for an origin (host or host+base path). */
+export function buildErpShellProbeUrl(origin: string): string {
+  const basePath = getErpBasePath();
+  const baseNoSlash = basePath.replace(/\/$/, "");
+  let root = origin.replace(/\/+$/, "");
+  // Origins from erpPublicOrigin()/erpLanOriginForHost() already include /erp.
+  if (root.endsWith(baseNoSlash)) {
+    return `${root}/index.html`;
+  }
+  const shell = `${basePath}index.html`.replace(/\/{2,}/g, "/");
+  return `${root}${shell}`;
+}
+
 /** Probe whether the ERP SPA shell is reachable on this origin. */
 export async function probeErpOrigin(origin: string, timeoutMs = PROBE_TIMEOUT_MS): Promise<boolean> {
-  const url = erpShellProbeUrl(origin);
+  const url = buildErpShellProbeUrl(origin);
   try {
     const controller = new AbortController();
     const timer = window.setTimeout(() => controller.abort(), timeoutMs);

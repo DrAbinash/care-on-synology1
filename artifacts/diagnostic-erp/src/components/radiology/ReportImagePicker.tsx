@@ -80,9 +80,19 @@ export default function ReportImagePicker({
     setEffectiveDraftId(draftId);
   }, [draftId]);
 
+  // Drop queued picks when the open study changes — never flush Patient A's
+  // SOP UIDs onto Patient B's draft.
+  useEffect(() => {
+    setPending([]);
+    setSeries([]);
+    setInstances([]);
+    setOpenSeries(null);
+    setSeriesError(null);
+  }, [studyInstanceUID, studyId]);
+
   useQuery<LaunchData>({
-    queryKey: ["viewer-launch", studyInstanceUID],
-    queryFn: () => api.get(`/api/radiology/studies/${encodeURIComponent(studyInstanceUID!)}/ohif-launch`),
+    queryKey: ["viewer-launch", studyInstanceUID, studyId],
+    queryFn: () => api.get(`/api/radiology/studies/${encodeURIComponent(studyInstanceUID!)}/ohif-launch${studyId ? `?worklistId=${studyId}` : ""}`),
     enabled: !!studyInstanceUID,
     staleTime: 5 * 60_000,
   });

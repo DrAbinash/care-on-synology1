@@ -67,6 +67,7 @@ const CFG = {
   iciciSecret: process.env.ICICI_SECRET_KEY || "",
   iciciMerchant: process.env.ICICI_MERCHANT_ID || "",
   n8n: process.env.N8N_URL || "",
+  internalApiKey: process.env.INTERNAL_API_KEY || "",
 };
 
 async function httpProbe(url, { path = "", ms = 5000, expectJson = false } = {}) {
@@ -83,6 +84,20 @@ async function httpProbe(url, { path = "", ms = 5000, expectJson = false } = {})
 }
 
 async function main() {
+  // ── SECURITY: machine-to-machine secrets ───────────────────────────────────
+  const weakReason = (() => {
+    const MIN = 16;
+    const WEAK = new Set(["1234", "changeme", "password", "secret", "test", "default", "replace_with_your_internal_api_key"]);
+    const s = (CFG.internalApiKey || "").trim();
+    if (!s) return "not set";
+    if (WEAK.has(s.toLowerCase())) return "well-known placeholder";
+    if (s.length < MIN) return `only ${s.length} chars`;
+    return null;
+  })();
+  if (!CFG.internalApiKey) add("Security", "INTERNAL_API_KEY", W, "not set — DICOM/HL7 internal routes fail closed in production", { remediation: "Set INTERNAL_API_KEY in .env (openssl rand -base64 32) and match care_erp_sync.py" });
+  else if (weakReason) add("Security", "INTERNAL_API_KEY", W, `weak (${weakReason}) — full DB export blocked; rotate before DICOM intake is hardened`, { remediation: "bash scripts/rotate-internal-api-key.sh && update care_erp_sync.py ERP_INTERNAL_API_KEY" });
+  else add("Security", "INTERNAL_API_KEY", P, "strong key configured (value not shown)");
+
   // ── DATABASE ───────────────────────────────────────────────────────────────
   let client = null;
   if (!CFG.db) {

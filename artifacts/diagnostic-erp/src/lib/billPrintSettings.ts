@@ -31,7 +31,7 @@ export const BILL_FORMATS: { id: BillFormat; label: string; hint: string }[] = [
   {
     id: "classic",
     label: "CARE Invoice",
-    hint: "Half A4 / A5 landscape (210×148 mm) — previous CARE bill layout",
+    hint: "A5 landscape (210×148 mm) — previous CARE bill layout",
   },
   {
     id: "hope-a5",
@@ -40,8 +40,8 @@ export const BILL_FORMATS: { id: BillFormat; label: string; hint: string }[] = [
   },
   {
     id: "a5-landscape",
-    label: "A5 Landscape (Half A4)",
-    hint: "210×148 mm — half of A4 portrait, landscape receipt",
+    label: "A5 Landscape",
+    hint: "A5 landscape (210×148 mm) — compact receipt",
   },
 ];
 
@@ -253,7 +253,7 @@ export const GLOBAL_BILL_PRINT_DEFAULTS: BillPrintSettings = {
 /**
  * Cursor-owned layout knobs that clinics still cannot freely retune:
  * auto-A4 threshold. Paper follows the selected bill format (classic /
- * a5-landscape → half A4 landscape, hope-a5 → A5 portrait).
+ * a5-landscape → A5 landscape, hope-a5 → A5 portrait).
  */
 export const CURSOR_BILL_PRINT_LAYOUT = {
   autoA4Threshold: 8,
@@ -477,7 +477,7 @@ export function getAutoBillPaperSize(
 export function billPreviewPaperPx(pageOpts: BillPrintPageOpts): { w: number; h: number } {
   if (pageOpts.paperSize === "A4") return { w: 794, h: 1123 };
   // Landscape half-sheet (legacy). Default short bills are A5 portrait 148×210.
-  if (pageOpts.orientation === "landscape" || pageOpts.pageCssSize.includes("210mm 148mm")) {
+  if (pageOpts.orientation === "landscape" || pageOpts.pageCssSize.includes("210mm 148mm") || pageOpts.pageCssSize === "A5 landscape") {
     return { w: 794, h: 559 };
   }
   // A5 portrait / HOPE (148×210)
@@ -488,10 +488,10 @@ export function getPaperSizeCss(size: BillPaperSize): { pageSize: string; width:
   switch (size) {
     case "A5-landscape":
     case "half-a4":
-      // Pre-cut half A4 in the tray — @page matches the physical sheet.
-      return { pageSize: "210mm 148mm", width: "210mm", minHeight: "148mm", maxHeight: "148mm" };
+      // Named ISO size so Chrome/Epson pick A5, not A4 landscape.
+      return { pageSize: "A5 landscape", width: "210mm", minHeight: "148mm", maxHeight: "148mm" };
     case "A5-portrait":
-      return { pageSize: "148mm 210mm", width: "148mm", minHeight: "210mm", maxHeight: "none" };
+      return { pageSize: "A5 portrait", width: "148mm", minHeight: "210mm", maxHeight: "none" };
     case "A4":
     default:
       return { pageSize: "A4 portrait", width: "210mm", minHeight: "297mm", maxHeight: "none" };
@@ -533,15 +533,15 @@ export function resolveBillPrintPageOpts(
       paperSize: "A5",
       orientation: "portrait",
       compactFooterGap: false,
-      pageCssSize: "148mm 210mm",
+      pageCssSize: "A5 portrait",
     };
   }
-  // classic and a5-landscape share half A4 landscape (210×148 mm).
+  // classic and a5-landscape share A5 landscape (210×148 mm).
   return {
     paperSize: "A5",
     orientation: "landscape",
     compactFooterGap: false,
-    pageCssSize: "210mm 148mm",
+    pageCssSize: "A5 landscape",
   };
 }
 

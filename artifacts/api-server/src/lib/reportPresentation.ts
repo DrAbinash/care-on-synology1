@@ -208,8 +208,9 @@ export const PRESENTATION_TEMPLATES: PresentationTemplate[] = [
     typography: {
       header: { fontFamily: BASE_FONT, fontSize: "18pt", color: "#1e1b4b", fontWeight: "700", letterSpacing: "0.04em" },
       patientBlock: { fontFamily: BASE_FONT, fontSize: "8.5pt" },
-      studyTitle: { fontFamily: BASE_FONT, fontSize: "12pt", color: "#1e3a8a", fontWeight: "700", letterSpacing: "0.08em", textTransform: "uppercase" },
-      sectionHeading: { fontFamily: BASE_FONT, fontSize: "9.5pt", fontWeight: "700", letterSpacing: "0.1em", textTransform: "uppercase" },
+      // No letter-spacing — wide tracking turns CLINICAL into C L I N I C A L in print.
+      studyTitle: { fontFamily: BASE_FONT, fontSize: "12pt", color: "#1e3a8a", fontWeight: "700", textTransform: "uppercase" },
+      sectionHeading: { fontFamily: BASE_FONT, fontSize: "9.5pt", fontWeight: "700", textTransform: "uppercase" },
       body: { fontFamily: BASE_FONT, fontSize: "10pt", color: "#0f172a" },
       footer: { fontFamily: BASE_FONT, fontSize: "7.5pt", color: "#334155" },
       signature: { fontFamily: BASE_FONT, fontSize: "10pt" },
@@ -321,13 +322,13 @@ function letterpadPatientBlockHtml(rows: ReportPatientRow[]): string {
   const refDr = rowByLabel(rows, "referring doctor", "ref. doctor", "ref by", "ref. by", "refd. by");
   const dateRaw = rowByLabel(rows, "study date", "date");
   const dateStr = formatReportDateShort(dateRaw) || dateRaw;
-  const cell = (label: string, value: string) =>
+  const cell = (label: string, value: string, boldValue = false) =>
     value
-      ? `<strong>${escapeHtml(label)}</strong> ${escapeHtml(value)}`
+      ? `<strong>${escapeHtml(label)}</strong> ${boldValue ? `<strong>${escapeHtml(value)}</strong>` : escapeHtml(value)}`
       : "";
   return `<table class="letterpad-demo">
     <tr>
-      <td class="ld-left">${cell("NAME:", name)}</td>
+      <td class="ld-left">${cell("NAME:", name, true)}</td>
       <td class="ld-right">${cell("AGE/SEX:", ageSex)}</td>
     </tr>
     <tr>
@@ -389,27 +390,36 @@ function keyImagesHtml(
   placement: "inline" | "side-panel",
   opts: { heading?: string; extraClass?: string } = {},
 ): string {
-  if (images.length === 0) return "";
+  // Keep cells that have pixels OR a SOP uid (client hydrate fills empty src).
+  // Drop rows with neither — those only paint blank navy boxes.
+  const usable = images.filter((img) => {
+    const src = String(img.src ?? "").trim();
+    const hasPixels = src.length > 64 || src.startsWith("data:image/");
+    return hasPixels || Boolean(img.sopInstanceUid?.trim());
+  });
+  if (usable.length === 0) return "";
   const heading = opts.heading ?? (placement === "side-panel" ? "KEY IMAGES" : "SELECTED IMAGES");
   const useViewport = placement === "side-panel";
-  const cells = [...images]
+  const cells = [...usable]
     .sort((a, b) => a.displayOrder - b.displayOrder)
     .map((img, i) => {
       const alt = escapeHtml(img.caption || `Image ${i + 1}`);
       const sop = img.sopInstanceUid ? ` data-sop-instance-uid="${escapeHtml(img.sopInstanceUid)}"` : "";
       const badge = img.isKeyImage ? `<span class="key-image-badge">★ KEY</span>` : "";
+      const src = String(img.src ?? "").trim();
+      const pending = src.length <= 64 && !src.startsWith("data:image/");
       const imgTag = useViewport
-        ? `<div class="image-viewport"><div class="image-framed" style="${framingInlineStyle(img.framing)};${framingImgInline(img.framing)}"><img src="${img.src}" class="dicom-img" alt="${alt}" /></div></div>`
-        : `<img src="${img.src}" class="dicom-img" alt="${alt}" />`;
+        ? `<div class="image-viewport"><div class="image-framed" style="${framingInlineStyle(img.framing)};${framingImgInline(img.framing)}"><img src="${pending ? "" : src}" class="dicom-img${pending ? " dicom-img-pending" : ""}" alt="${alt}" /></div></div>`
+        : `<img src="${pending ? "" : src}" class="dicom-img${pending ? " dicom-img-pending" : ""}" alt="${alt}" />`;
       return `
-        <figure class="image-cell"${sop}>
+        <figure class="image-cell${pending ? " image-cell-pending" : ""}"${sop}>
           ${badge}${imgTag}
           <figcaption class="image-caption">${alt}</figcaption>
         </figure>`;
     })
     .join("");
   const sideCls = placement === "side-panel" ? "image-panel-side image-panel-keyrail" : "image-panel-inline";
-  const countAttr = placement === "side-panel" ? ` data-image-count="${images.length}"` : "";
+  const countAttr = placement === "side-panel" ? ` data-image-count="${usable.length}"` : "";
   return `
       <div class="image-panel ${sideCls}${opts.extraClass ? ` ${opts.extraClass}` : ""}"${countAttr}>
         <div class="image-panel-heading">${heading}</div>
@@ -558,7 +568,7 @@ export function renderReportDocument(
   const letterPadLogo = headerCfg.showLogo ? careLetterheadLogoDataUrl() : "";
   const letterPadHeaderHtml = headerCfg.show ? `<div class="hdr">
       <div class="hdr-inner logo-pos-left letterpad-bill">
-        ${letterPadLogo
+        ${headerCfg.showLogo
           ? `<img class="logo" src="${letterPadLogo}" alt="${escapeHtml(letterPadName)}"/>`
           : `<div class="hdr-brand"><div class="name">${escapeHtml(letterPadName)}</div></div>`}
         <div class="contact letterpad-addr-right">
@@ -820,22 +830,20 @@ export function renderReportDocument(
       width: fit-content;
       max-width: 100%;
       margin-left: auto; /* extreme right within the side column (align with DATE edge) */
-      text-align: left;
+      text-align: center;
       box-sizing: border-box;
       align-self: start;
+      align-items: center; /* equal L/R navy around the image stack */
     }
     .image-panel-side .image-cell {
       flex: 0 0 auto;
       display: flex;
       flex-direction: column;
-      width: min(100%, var(--ki-size, 48mm));
+      width: var(--ki-size, 48mm);
       max-width: 100%;
       aspect-ratio: 1 / 1;
       min-height: 0;
-      align-self: flex-start;
-      /* Allow the side rail to paginate with the report column. Avoid on every
-         square cell made Chromium shove long classic reports to 3+ pages
-         (Arhan / PREVIEW-19: 6 images + long findings). */
+      align-self: center;
       break-inside: auto;
       page-break-inside: auto;
     }
@@ -885,7 +893,7 @@ export function renderReportDocument(
     }
 
     /* ── Footer + signatures slots ── */
-    .sigs { display: flex; gap: 30px; justify-content: ${sigJustify}; margin-top: 26px; break-inside: avoid; page-break-after: avoid; clear: both; }
+    .sigs { display: flex; gap: 30px; justify-content: ${sigJustify}; margin-top: 10px; break-inside: avoid; page-break-after: avoid; clear: both; }
     .sigbox { ${slotCss(ty.signature)} width: 200px; text-align: center; }
     .sigbox .sigimg { height: 50px; display: flex; align-items: flex-end; justify-content: center; }
     .sigbox .sigimg img { max-height: 50px; max-width: 180px; object-fit: contain; }
@@ -908,16 +916,29 @@ export function renderReportDocument(
     .image-panel-keyrail {
       background: #0f172a;
       color: #fff;
-      /* Tight 2–3mm symmetrical frame around the image stack — no empty navy band */
+      /* Equal 2.5mm frame on all sides — images centered in the navy rail */
       padding: 2.5mm;
       border: 0.35mm solid #3b82f6;
       border-radius: 3px;
       -webkit-print-color-adjust: exact;
       print-color-adjust: exact;
     }
-    .image-panel-keyrail .image-panel-heading { color: #fff; border-bottom-color: #3b82f6; letter-spacing: 0.12em; margin-bottom: 4px; }
+    .image-panel-keyrail .image-panel-heading {
+      color: #fff;
+      border-bottom-color: #3b82f6;
+      letter-spacing: 0;
+      margin-bottom: 4px;
+      width: 100%;
+      text-align: center;
+    }
     .image-panel-keyrail .image-caption { background: #1e3a8a; }
-    .image-panel-keyrail .image-grid { gap: 3px; width: fit-content; max-width: 100%; }
+    .image-panel-keyrail .image-grid {
+      gap: 3px;
+      width: var(--ki-size, 48mm);
+      max-width: 100%;
+      align-items: center;
+      margin: 0 auto;
+    }
     .letterpad .signame { color: #b91c1c; font-size: 11pt; }
     .letterpad .reportno { display: none; }
     .letterpad-demo { width: 100%; table-layout: fixed; border-collapse: collapse; margin: 2px 0 0; font-size: 11.5px; color: #111; text-transform: uppercase; }
@@ -926,14 +947,24 @@ export function renderReportDocument(
     .letterpad-demo .ld-right { text-align: right; width: 38%; white-space: nowrap; }
     .letterpad-demo-wrap { background: transparent; border: none; padding: 2px 0 0; border-radius: 0; margin-bottom: 0; }
     .letterpad .body { font-size: 11.5px; }
-    .letterpad-demo-rule { border: none; border-top: 2.2px solid #111; border-bottom: 0.9px solid #111; height: 3.2px; margin: 6px 0 8px; }
+    .letterpad-demo-rule { border: none; border-top: 2.2px solid #111; border-bottom: 0.9px solid #111; height: 3.2px; margin: 2px 0 4px; }
     .letterpad-sheet { width: 100%; border-collapse: collapse; }
     .letterpad-sheet > thead > tr > td,
     .letterpad-sheet > tbody > tr > td,
     .letterpad-sheet > tfoot > tr > td { padding: 0; border: none; vertical-align: top; }
-    .letterpad-services { background: #0f2d6e; color: #fff; text-align: center; padding: 6px 8px; font-size: 6.5px; font-weight: 700; letter-spacing: 0.04em; line-height: 1.45; margin-top: 14px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .letterpad-services { background: #0f2d6e; color: #fff; text-align: center; padding: 6px 8px; font-size: 6.5px; font-weight: 700; letter-spacing: 0.04em; line-height: 1.45; margin-top: 8px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     .letterpad-disclaimer { font-size: 7.5px; color: #334155; text-align: center; padding: 6px 12px 4px; font-style: italic; }
     .letterpad-footer-block { break-inside: avoid; page-break-inside: avoid; page-break-before: avoid; }
+    /* Keep radiologist name/degree with the body on page 1, just above footer. */
+    .letterpad .sigs {
+      margin-top: 6px;
+      justify-content: flex-end;
+      page-break-inside: avoid;
+      page-break-before: avoid;
+      break-before: avoid;
+    }
+    .letterpad .sigbox { text-align: right; margin-left: auto; }
+    .letterpad .sigline { display: none; }
     ` : ""}
 
     /* ── Print rules (Phase 7: widows/orphans, no split images, no blank pages) ── */

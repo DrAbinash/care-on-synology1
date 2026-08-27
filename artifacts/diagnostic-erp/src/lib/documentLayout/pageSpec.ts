@@ -21,17 +21,17 @@ export type PageSpec = {
 };
 
 /**
- * Half of A4 is A5: 210 mm × 148 mm (pre-cut A4 loaded in the tray).
+ * Half of A4 is A5: 210 mm × 148 mm (A5 landscape).
  *
- * `@page` MUST match the physical sheet (210×148). Sending A4 (210×297) when
- * the tray already holds cut half-sheets leaves blank space below (and can
- * shrink/offset the receipt). Named `A5 landscape` is avoided — use exact mm.
+ * `@page` uses the ISO named size (`A5 landscape` / `A5 portrait`) so Chrome's
+ * print dialog selects A5 instead of falling back to A4 landscape. Exact mm
+ * sizes (210mm 148mm) look like A4-width to many Epson/Chrome combinations and
+ * both CARE Invoice and HOPE receipts then print on A4 landscape.
  *
- * Printer dialog: select a User Defined / custom paper of 210×148 mm (not A4).
- * If the dialog still says Paper=A4, Chrome fits the half-sheet job onto a
- * full A4 frame and you get blank bands on the right and below.
+ * Content boxes still use exact millimetres (widthMm / heightMm).
+ * Printer dialog: Paper = A5, Scale = 100%, Margins = None.
  */
-export const HALF_A4_TRAY_PAGE_CSS = "210mm 148mm";
+export const HALF_A4_TRAY_PAGE_CSS = "A5 landscape";
 
 /** Canonical page specifications — exact physical dimensions in mm. */
 export const PAGE_SPECS: Record<PrintPaper, PageSpec> = {
@@ -47,7 +47,7 @@ export const PAGE_SPECS: Record<PrintPaper, PageSpec> = {
     paper: "A5-portrait",
     widthMm: 148,
     heightMm: 210,
-    pageSizeCss: "148mm 210mm",
+    pageSizeCss: "A5 portrait",
     // HOPE legacy used @page margin ~5mm 10mm; equal internal padding ≈ 8mm.
     defaultSafePaddingMm: 8,
   },
@@ -62,7 +62,7 @@ export const PAGE_SPECS: Record<PrintPaper, PageSpec> = {
     paper: "A4",
     widthMm: 210,
     heightMm: 297,
-    pageSizeCss: "210mm 297mm",
+    pageSizeCss: "A4 portrait",
     defaultSafePaddingMm: 4,
   },
 };

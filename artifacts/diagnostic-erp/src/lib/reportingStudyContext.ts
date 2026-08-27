@@ -39,6 +39,8 @@ export type ReportingStudyContext = {
   family: ReportingFamily;
   spineSegment: SpineSegment | null;
   source: ReportingSource;
+  /** Active protocol / sub-technique name when known (format ranking only). */
+  protocolName: string | null;
 };
 
 export function familyFromRegion(region: string | null | undefined): ReportingFamily {
@@ -147,6 +149,7 @@ export function buildReportingStudyContext(input: {
   dicomBodyPart?: string | null;
   regions: string[];
   source: ReportingSource;
+  protocolName?: string | null;
 }): ReportingStudyContext {
   const regions = input.regions.filter(Boolean);
   const region = regions[0] ?? null;
@@ -162,6 +165,7 @@ export function buildReportingStudyContext(input: {
     family: familyFromRegion(region),
     spineSegment: spineSegmentFromRegion(region),
     source,
+    protocolName: input.protocolName ?? null,
   };
 }
 
@@ -182,5 +186,6 @@ export function reportingContextEqual(
     && a.modality === b.modality
     && a.source === b.source
     && a.bodyPart === b.bodyPart
+    && a.protocolName === b.protocolName
   );
 }

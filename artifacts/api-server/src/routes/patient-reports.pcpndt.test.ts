@@ -126,20 +126,23 @@ vi.mock("@workspace/db", () => ({
     }),
     update: () => ({ set: () => ({ where: async () => undefined }) }),
     transaction: async (fn: (tx: unknown) => Promise<unknown>) => {
-      // Used by lib/audit's hash-chained auditLog() (advisory lock + read
-      // last chainHash + insert) — needed here because the PCPNDT override
-      // path writes a pcpndt_override_finalize audit row. The D5 structured
-      // path never runs in this file (flags are always OFF), so a working
-      // transaction stub is safe.
+      // Used by lib/audit's hash-chained auditLog() AND by radiology identity
+      // claimWorklistForFinalize + patient_reports insert on finalize.
       const tx = {
         execute: async () => [{}],
         select: (_proj?: unknown) => ({ from: (tbl: { __name?: string }) => makeSelectChain(tbl) }),
         insert: (tbl: { __name?: string }) => ({
-          values: async (v: Record<string, unknown>) => {
+          values: (v: Record<string, unknown>) => {
+            if (tbl?.__name === "patient_reports") legacyInsertValues.push(v);
             if (tbl?.__name === "audit_logs") auditInsertValues.push(v);
-            return undefined;
+            const row = { id: 101, ...v };
+            return {
+              returning: async () => [row],
+              then: (resolve: (x: unknown) => void) => resolve(undefined),
+            };
           },
         }),
+        update: () => ({ set: () => ({ where: async () => undefined }) }),
       };
       return fn(tx);
     },
@@ -216,7 +219,7 @@ const BASE_BODY = {
 
 beforeEach(() => {
   flags = { ff_radiology_structured_final: false, ff_radiology_catalog: false };
-  worklistRow = { id: 9, studyId: 55, modality: "USG", studyDescription: "Whole Abdomen", accessionNumber: "ACC-1", studyInstanceUID: "1.2.3" };
+  worklistRow = { id: 9, studyId: 55, modality: "USG", studyDescription: "Whole Abdomen", accessionNumber: "ACC-1", studyInstanceUID: "1.2.3" , matchScore: "GREEN", matchDecision: "PENDING", status: "STUDY_RECEIVED", reportId: null, patientId: 12 };
   legacyInsertValues = [];
   formFRow = null; // no Form F on file — obstetric finalizes must be refused
   auditInsertValues = [];
@@ -231,7 +234,7 @@ describe("PCPNDT server-side finalize guard — POST /api/patient-reports", () =
 
   test("every non-obstetric USG study type finalizes normally", async () => {
     for (const desc of ["KUB", "Thyroid", "Breast", "Scrotum", "Carotid Doppler", "TVS"]) {
-      worklistRow = { id: 9, studyId: 55, modality: "USG", studyDescription: desc, accessionNumber: "ACC-1", studyInstanceUID: "1.2.3" };
+      worklistRow = { id: 9, studyId: 55, modality: "USG", studyDescription: desc, accessionNumber: "ACC-1", studyInstanceUID: "1.2.3" , matchScore: "GREEN", matchDecision: "PENDING", status: "STUDY_RECEIVED", reportId: null, patientId: 12 };
       legacyInsertValues = [];
       const res = await postCreate({ ...BASE_BODY, studyId: 9 });
       expect(res.statusCode, `${desc} should create a report row`).toBe(201);
@@ -240,21 +243,21 @@ describe("PCPNDT server-side finalize guard — POST /api/patient-reports", () =
   });
 
   test("MRI finalizes normally, unaffected by the guard", async () => {
-    worklistRow = { id: 9, studyId: 55, modality: "MR", studyDescription: "LS Spine", accessionNumber: "ACC-1", studyInstanceUID: "1.2.3" };
+    worklistRow = { id: 9, studyId: 55, modality: "MR", studyDescription: "LS Spine", accessionNumber: "ACC-1", studyInstanceUID: "1.2.3" , matchScore: "GREEN", matchDecision: "PENDING", status: "STUDY_RECEIVED", reportId: null, patientId: 12 };
     const res = await postCreate({ ...BASE_BODY, testId: 3 });
     expect(res.statusCode).toBe(201);
     expect(legacyInsertValues).toHaveLength(1);
   });
 
   test("CT finalizes normally, unaffected by the guard", async () => {
-    worklistRow = { id: 9, studyId: 55, modality: "CT", studyDescription: "Chest CT", accessionNumber: "ACC-1", studyInstanceUID: "1.2.3" };
+    worklistRow = { id: 9, studyId: 55, modality: "CT", studyDescription: "Chest CT", accessionNumber: "ACC-1", studyInstanceUID: "1.2.3" , matchScore: "GREEN", matchDecision: "PENDING", status: "STUDY_RECEIVED", reportId: null, patientId: 12 };
     const res = await postCreate(BASE_BODY);
     expect(res.statusCode).toBe(201);
     expect(legacyInsertValues).toHaveLength(1);
   });
 
   test("obstetric USG is rejected with 409 pcpndt_compliance_required — NO report row is created or signed", async () => {
-    worklistRow = { id: 9, studyId: 55, modality: "USG", studyDescription: "Obstetric Growth Scan", accessionNumber: "ACC-1", studyInstanceUID: "1.2.3" };
+    worklistRow = { id: 9, studyId: 55, modality: "USG", studyDescription: "Obstetric Growth Scan", accessionNumber: "ACC-1", studyInstanceUID: "1.2.3" , matchScore: "GREEN", matchDecision: "PENDING", status: "STUDY_RECEIVED", reportId: null, patientId: 12 };
     const res = await postCreate(BASE_BODY);
     expect(res.statusCode).toBe(409);
     expect(res.body.error).toBe("pcpndt_compliance_required");
@@ -263,14 +266,14 @@ describe("PCPNDT server-side finalize guard — POST /api/patient-reports", () =
   });
 
   test("fetal-pattern USG under any US-family modality spelling is rejected", async () => {
-    worklistRow = { id: 9, studyId: 55, modality: "Doppler", studyDescription: "Fetal Anomaly Scan", accessionNumber: "ACC-1", studyInstanceUID: "1.2.3" };
+    worklistRow = { id: 9, studyId: 55, modality: "Doppler", studyDescription: "Fetal Anomaly Scan", accessionNumber: "ACC-1", studyInstanceUID: "1.2.3" , matchScore: "GREEN", matchDecision: "PENDING", status: "STUDY_RECEIVED", reportId: null, patientId: 12 };
     const res = await postCreate(BASE_BODY);
     expect(res.statusCode).toBe(409);
     expect(legacyInsertValues).toHaveLength(0);
   });
 
   test("a client that omits/lies about modality in `parameters` still gets blocked — the guard reads the DB worklist row, not client-supplied parameters", async () => {
-    worklistRow = { id: 9, studyId: 55, modality: "USG", studyDescription: "Obstetric Growth Scan", accessionNumber: "ACC-1", studyInstanceUID: "1.2.3" };
+    worklistRow = { id: 9, studyId: 55, modality: "USG", studyDescription: "Obstetric Growth Scan", accessionNumber: "ACC-1", studyInstanceUID: "1.2.3" , matchScore: "GREEN", matchDecision: "PENDING", status: "STUDY_RECEIVED", reportId: null, patientId: 12 };
     const res = await postCreate({
       ...BASE_BODY,
       // A hand-crafted call lying about the study to try to bypass the guard.
@@ -281,7 +284,7 @@ describe("PCPNDT server-side finalize guard — POST /api/patient-reports", () =
   });
 
   test("pathology (non-radiology) report creation is completely unaffected, even against the SAME obstetric worklist row", async () => {
-    worklistRow = { id: 9, studyId: 55, modality: "USG", studyDescription: "Obstetric Growth Scan", accessionNumber: "ACC-1", studyInstanceUID: "1.2.3" };
+    worklistRow = { id: 9, studyId: 55, modality: "USG", studyDescription: "Obstetric Growth Scan", accessionNumber: "ACC-1", studyInstanceUID: "1.2.3" , matchScore: "GREEN", matchDecision: "PENDING", status: "STUDY_RECEIVED", reportId: null, patientId: 12 };
     const res = await postCreate({ ...BASE_BODY, type: "pathology" });
     expect(res.statusCode).toBe(201);
     expect(legacyInsertValues).toHaveLength(1);
@@ -305,7 +308,7 @@ describe("PCPNDT server-side finalize guard — POST /api/patient-reports", () =
 
 // ── Roadmap §1.4 step 2+4 — the guard is now a real compliance GATE ─────────
 describe("PCPNDT gate — compliant obstetric studies finalize; override is audited", () => {
-  const OBSTETRIC_ROW = { id: 9, studyId: 55, modality: "USG", studyDescription: "Obstetric Growth Scan", accessionNumber: "ACC-1", studyInstanceUID: "1.2.3" };
+  const OBSTETRIC_ROW = { id: 9, studyId: 55, modality: "USG", studyDescription: "Obstetric Growth Scan", accessionNumber: "ACC-1", studyInstanceUID: "1.2.3" , matchScore: "GREEN", matchDecision: "PENDING", status: "STUDY_RECEIVED", reportId: null, patientId: 12 };
 
   test("obstetric USG with a COMPLETE, ID-verified Form F finalizes normally (no false-block)", async () => {
     worklistRow = OBSTETRIC_ROW;

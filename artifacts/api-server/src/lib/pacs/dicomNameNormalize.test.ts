@@ -115,4 +115,17 @@ describe("accessionLooksLikeReferringDoctor / reconcileAccessionVsReferringDocto
   test("formatReferringDoctorDisplay prefixes Dr. and keeps degree", () => {
     expect(formatReferringDoctorDisplay("Sanjay Kumar MD")).toMatch(/Dr\.\s.*MD/);
   });
+
+  test("blanks junk SELF / walk-in referring doctors", () => {
+    expect(formatReferringDoctorDisplay("DR. SELF ONLINE")).toBe("");
+    expect(formatReferringDoctorDisplay("DR. SELF WB")).toBe("");
+    expect(formatReferringDoctorDisplay("SELF")).toBe("");
+    expect(formatReferringDoctorDisplay("walk-in")).toBe("");
+    const r = reconcileAccessionVsReferringDoctor({
+      accessionNumber: "ACC-1",
+      referringDoctor: "DR. SELF WB",
+    });
+    expect(r.referringDoctor).toBe("");
+    expect(r.accessionNumber).toBe("ACC-1");
+  });
 });

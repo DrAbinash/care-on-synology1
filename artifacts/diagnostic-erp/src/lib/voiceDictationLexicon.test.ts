@@ -33,4 +33,8 @@ describe("voice dictation enhancements", () => {
     expect(applyRadiologyVoiceLexicon("t1 and stir")).toMatch(/T1/);
     expect(applyRadiologyVoiceLexicon("t1 and stir")).toMatch(/STIR/);
   });
+
+  it("lexicon turns spoken slash into / for s/o", () => {
+    expect(applyRadiologyVoiceLexicon("s slash o hypertension")).toBe("s/o hypertension");
+  });
 });

@@ -1,4 +1,4 @@
-import { mergeTechnique } from "@/lib/reportFieldMerge";
+import { mergeTwoFormatsBySlot } from "@/lib/formatSlotMerge";
 
 export type Modality = "XR" | "CT" | "MR" | "US" | "MG" | "DX" | "NM" | "PT" | "DOPPLER" | "ECHO" | "USG_OB";
 export type StudyStatus = "received" | "in_progress" | "draft" | "prelim" | "final" | "amended";
@@ -93,8 +93,35 @@ export interface MeasurementRow { id: string; name: string; value: number; unit:
 export interface CriticalFinding { id: string; studyId: string; phrase: string; severity: Criticality; detectedAt: string; acknowledgedBy?: string; acknowledgedAt?: string; notifiedRecipient?: string; notifiedMethod?: "phone" | "whatsapp" | "in-person" | "email"; }
 
 export type QuickSelectField = "clinicalHistory" | "technique" | "findings" | "impression" | "recommendation";
-export interface QuickSelectTile { id: string; field: QuickSelectField; scopeModality?: Modality; scopeBodyPart?: string; label: string; mnemonic?: string; category: "normal" | "abnormal" | "variant" | "critical"; sentence: string; impressionSentence?: string; favorite?: boolean; custom?: boolean; usageCount?: number; createdAt: string; updatedAt: string; anatomicalSection?: string; conflictGroup?: string; baselineReplaces?: string; }
-export interface ReportFormat { id: string; name: string; modality: Modality; bodyPart: string; diagnosisTags: string[]; clinicalHistory: string; technique: string; findings: string; impression: string; recommendation: string; isCommon: boolean; custom?: boolean; usageCount?: number; createdAt: string; updatedAt: string; }
+export interface QuickSelectTile { id: string; field: QuickSelectField; scopeModality?: Modality; scopeBodyPart?: string; label: string; mnemonic?: string; category: "normal" | "abnormal" | "variant" | "critical"; sentence: string; impressionSentence?: string; favorite?: boolean; custom?: boolean; usageCount?: number; createdAt: string; updatedAt: string; anatomicalSection?: string; conflictGroup?: string; baselineReplaces?: string; properties?: string; }
+export interface ReportFormat {
+  id: string;
+  name: string;
+  modality: Modality;
+  bodyPart: string;
+  diagnosisTags: string[];
+  clinicalHistory: string;
+  technique: string;
+  findings: string;
+  impression: string;
+  recommendation: string;
+  /** Printed heading below demography (not the library display name). */
+  reportTitle?: string;
+  /** Optional protocol / sub-technique scope (e.g. Screening, Plain, Contrast). */
+  protocolScope?: string;
+  /**
+   * Technique fragment merge markers. Untagged formats fall back to regex
+   * screening re-attachment. Tagged sentences union by dedupeKey; preserve
+   * flagged fragments always survive.
+   */
+  techniqueFragments?: Array<{ text: string; dedupeKey: string; preserve?: boolean }>;
+  isCommon: boolean;
+  custom?: boolean;
+  favorite?: boolean;
+  usageCount?: number;
+  createdAt: string;
+  updatedAt: string;
+}
 export interface SnippetMacro { id: string; trigger: string; label: string; template: string; variables: { name: string; label: string; default?: string; options?: string[] }[]; scopeModality?: Modality; scopeBodyPart?: string; custom?: boolean; createdAt: string; updatedAt: string; }
 export interface SignOffProfile { id: string; modality: Modality; signerName: string; signerCredentials: string; isDefault?: boolean; signatureId?: string; createdAt: string; }
 
@@ -126,7 +153,8 @@ export const CRITICAL_PATTERNS: { pattern: RegExp; phrase: string; severity: Cri
   { pattern: /acute hydrocephalus/i, phrase: "Acute hydrocephalus", severity: "critical" },
 ];
 
-// Lint rules — pure, runnable on every keystroke
+// Lint rules — pure. Callers should debounce or defer the input text
+// (see useDebouncedValue in findings editor / reporting workspace).
 // Now accepts optional per-study rules from the YAML content packs.
 export function runLintRules(
   text: string,
@@ -289,37 +317,9 @@ export function computeQualityScore(ctx: { findingsText: string; impressionText:
 // Merge algorithm
 export interface MergeSentence { text: string; source: "common" | "from-a" | "from-b"; }
 export interface MergeFieldResult { text: string; sentences: MergeSentence[]; common: number; addedFromA: number; addedFromB: number; discarded: string[]; }
-export interface MergeResult { clinicalHistory: string; clinicalHistorySentences: MergeSentence[]; technique: string; techniqueSentences: MergeSentence[]; findings: string; impression: string; recommendation: string; findingsMerged: MergeFieldResult; impressionMerged: MergeFieldResult; recommendationMerged: MergeFieldResult; stats: { commonSentencesDiscarded: number; addedFromA: number; addedFromB: number; totalFinal: number; }; }
-function splitSentences(t: string): string[] { return t?.trim() ? t.replace(/\s+/g," ").trim().split(/(?<=[.!?])\s+(?=[A-Z])|(?<=[.!?])$/).map(s=>s.trim()).filter(Boolean) : []; }
-function norm(s: string): string { return s.toLowerCase().replace(/\s+/g," ").replace(/___+/g,"___").replace(/[^a-z0-9\s]/g,"").trim(); }
-function mergeField(fa: string, fb: string): MergeFieldResult {
-  const sa = splitSentences(fa), sb = splitSentences(fb), nbSet = new Set(sb.map(norm));
-  const sentences: MergeSentence[] = [], discarded: string[] = [], seen = new Set<string>();
-  let common=0, a=0, b=0;
-  for (const s of sa) { const n = norm(s); if (nbSet.has(n)) { sentences.push({text:s,source:"common"}); seen.add(n); common++; for (const bs of sb) if (norm(bs)===n) discarded.push(bs); } else { sentences.push({text:s,source:"from-a"}); seen.add(n); a++; } }
-  for (const s of sb) { const n = norm(s); if (!seen.has(n)) { sentences.push({text:s,source:"from-b"}); seen.add(n); b++; } }
-  return { text: sentences.map(s=>s.text).join(" "), sentences, common, addedFromA:a, addedFromB:b, discarded };
-}
+export interface MergeResult { clinicalHistory: string; clinicalHistorySentences: MergeSentence[]; technique: string; techniqueSentences: MergeSentence[]; findings: string; impression: string; recommendation: string; findingsMerged: MergeFieldResult; impressionMerged: MergeFieldResult; recommendationMerged: MergeFieldResult; stats: { commonSentencesDiscarded: number; addedFromA: number; addedFromB: number; totalFinal: number; }; combinedReportTitle?: string | null; }
 export function mergeTwoFormats(a: ReportFormat, b: ReportFormat): MergeResult {
-  const tA = a.technique.trim(), tB = b.technique.trim();
-  const technique = mergeTechnique(tA, tB);
-  const sameTech = technique === tA || technique === tB || norm(tA) === norm(tB);
-  const techniqueSentences: MergeSentence[] = sameTech
-    ? [{ text: technique, source: "common" }]
-    : splitSentences(technique).map((text) => ({ text, source: "common" as const }));
-  const hm = mergeField(a.clinicalHistory ?? "", b.clinicalHistory ?? "");
-  const fm = mergeField(a.findings, b.findings), im = mergeField(a.impression, b.impression), rm = mergeField(a.recommendation, b.recommendation);
-  return {
-    clinicalHistory: hm.text, clinicalHistorySentences: hm.sentences,
-    technique, techniqueSentences, findings: fm.text, impression: im.text, recommendation: rm.text,
-    findingsMerged: fm, impressionMerged: im, recommendationMerged: rm,
-    stats: {
-      commonSentencesDiscarded: hm.common+fm.common+im.common+rm.common,
-      addedFromA: hm.addedFromA+fm.addedFromA+im.addedFromA+rm.addedFromA,
-      addedFromB: hm.addedFromB+fm.addedFromB+im.addedFromB+rm.addedFromB,
-      totalFinal: hm.sentences.length+fm.sentences.length+im.sentences.length+rm.sentences.length,
-    },
-  };
+  return mergeTwoFormatsBySlot(a, b);
 }
 
 // Snippet macro expansion

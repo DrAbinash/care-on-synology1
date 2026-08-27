@@ -23,6 +23,35 @@ import {
 } from "./reportFieldMerge";
 import { hydratePrintPreviewKeyImages } from "./radiologyReportPdfExport";
 import { PROVENANCE_PREVIEW_CSS } from "./radiologyReportPreviewHtml";
+import { CARE_LETTERHEAD_LOGO_DATA_URL } from "./careLetterheadLogo";
+import { patchLetterpadDemographyHtml } from "./reportDemography";
+
+/**
+ * Print popups / srcDoc iframes cannot resolve `/care-….png` relative paths.
+ * Always inline the bundled CARE letter-pad mark so logo shows in Print Preview
+ * and Print like final even when the API fell back to a relative URL.
+ */
+export function ensurePrintLetterpadLogo(html: string): string {
+  if (!html?.trim()) return html;
+  let out = html;
+  // Relative / empty logo src on letterpad header img
+  out = out.replace(
+    /(<img\b[^>]*\bclass="[^"]*\blogo\b[^"]*"[^>]*\bsrc=")(\/care-diagnostics-letterhead-logo\.png|\/[^"]*|)(")/gi,
+    `$1${CARE_LETTERHEAD_LOGO_DATA_URL}$3`,
+  );
+  out = out.replace(
+    /(<img\b[^>]*\bsrc=")(\/care-diagnostics-letterhead-logo\.png|)("[^>]*\bclass="[^"]*\blogo\b)/gi,
+    `$1${CARE_LETTERHEAD_LOGO_DATA_URL}$3`,
+  );
+  // Letterpad header present but logo img missing entirely (API could not read PNG).
+  if (!/\bclass="[^"]*\blogo\b/.test(out) && /letterpad-bill|class="hdr"/.test(out)) {
+    out = out.replace(
+      /(<div class="hdr-inner[^"]*letterpad-bill[^"]*">\s*)/i,
+      `$1<img class="logo" src="${CARE_LETTERHEAD_LOGO_DATA_URL}" alt="CARE DIAGNOSTICS"/>`,
+    );
+  }
+  return out;
+}
 
 export type LivePrintBodyInput = {
   clinicalHistory: string;
@@ -42,6 +71,30 @@ function normalizeImpressionBullet(text: string): string {
   return stripped || trimmed;
 }
 
+/** Preserve s/o slash; collapse unicode slash lookalikes. */
+function normalizePrintPlainText(raw: string): string {
+  return String(raw ?? "")
+    .normalize("NFKC")
+    .replace(/[\u2215\u2044\uFF0F]/g, "/")
+    .replace(/\u00A0/g, " ");
+}
+
+/** Escape HTML then honour **bold** / __bold__ markdown for print findings. */
+export function formatPrintBodyHtml(text: string): string {
+  const normalized = normalizePrintPlainText(text);
+  const parts: string[] = [];
+  const re = /\*\*([^*]+)\*\*|__([^_]+)__/g;
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(normalized)) != null) {
+    if (m.index > last) parts.push(escHtml(normalized.slice(last, m.index)));
+    parts.push(`<strong>${escHtml(m[1] ?? m[2] ?? "")}</strong>`);
+    last = m.index + m[0].length;
+  }
+  if (last < normalized.length) parts.push(escHtml(normalized.slice(last)));
+  return parts.join("").replaceAll("\n", "<br/>");
+}
+
 function renderImpressionSectionHtml(
   bullets: string[],
   style: ReportImpressionStyle,
@@ -50,12 +103,12 @@ function renderImpressionSectionHtml(
   if (items.length === 0) return "";
   const heading = `<div class="section-heading">Impression</div>`;
   if (style === "numbered") {
-    return `${heading}<ol>${items.map((b) => `<li>${escHtml(b)}</li>`).join("")}</ol>`;
+    return `${heading}<ol>${items.map((b) => `<li>${formatPrintBodyHtml(b)}</li>`).join("")}</ol>`;
   }
   if (style === "plain") {
-    return `${heading}<p>${items.map((b) => escHtml(b)).join("; ")}</p>`;
+    return `${heading}<p>${items.map((b) => formatPrintBodyHtml(b)).join("; ")}</p>`;
   }
-  return `${heading}<ul>${items.map((b) => `<li>${escHtml(b)}</li>`).join("")}</ul>`;
+  return `${heading}<ul>${items.map((b) => `<li>${formatPrintBodyHtml(b)}</li>`).join("")}</ul>`;
 }
 
 /** Body sections in the same shape as GET …/print-preview (reportPresentation). */
@@ -67,13 +120,13 @@ export function buildLivePrintBodyHtml(input: LivePrintBodyInput): string {
   if (input.clinicalHistory?.trim()) {
     parts.push(
       `<div class="section-heading">${escHtml(fmtHeading("Clinical History", hc))}</div>`,
-      `<p>${escHtml(input.clinicalHistory.trim())}</p>`,
+      `<p>${formatPrintBodyHtml(input.clinicalHistory.trim())}</p>`,
     );
   }
   if (input.technique?.trim()) {
     parts.push(
       `<div class="section-heading">${escHtml(fmtHeading("Technique", hc))}</div>`,
-      `<p>${escHtml(input.technique.trim())}</p>`,
+      `<p>${formatPrintBodyHtml(input.technique.trim())}</p>`,
     );
   }
 
@@ -84,25 +137,27 @@ export function buildLivePrintBodyHtml(input: LivePrintBodyInput): string {
       if (!text) continue;
       findingsParts.push(
         `<div class="section-heading">${escHtml(fmtHeading(name, hc))}</div>`,
-        `<p>${escHtml(text).replaceAll("\n", "<br/>")}</p>`,
+        `<p>${formatPrintBodyHtml(text)}</p>`,
       );
     }
     if (findingsParts.length > 0) parts.push(...findingsParts);
   } else if (input.rawFindings?.trim()) {
     parts.push(
       `<div class="section-heading">${escHtml(fmtHeading("Findings", hc))}</div>`,
-      `<p>${escHtml(input.rawFindings.trim()).replaceAll("\n", "<br/>")}</p>`,
+      `<p>${formatPrintBodyHtml(input.rawFindings.trim())}</p>`,
     );
   }
 
   const impressionHtml = renderImpressionSectionHtml(input.impression, ist);
   if (impressionHtml) parts.push(impressionHtml);
 
-  const rec = input.recommendation?.trim() || "Please correlate with clinical findings.";
-  parts.push(
-    `<div class="section-heading">${escHtml(fmtHeading("Recommendation", hc))}</div>`,
-    `<p>${escHtml(rec)}</p>`,
-  );
+  const rec = input.recommendation?.trim();
+  if (rec) {
+    parts.push(
+      `<div class="section-heading">${escHtml(fmtHeading("Recommendation", hc))}</div>`,
+      `<p>${formatPrintBodyHtml(rec)}</p>`,
+    );
+  }
 
   return parts.join("\n");
 }
@@ -241,6 +296,14 @@ export type FinalizePrintPreviewOpts = {
   imageRefs: ReportImageRef[];
   /** Screen preview only — skip for Word export and browser print. */
   includeProvenanceChrome?: boolean;
+  /** Client canonical demography — patches letterpad AGE/SEX + REFD. BY. */
+  demography?: {
+    patientName?: string | null;
+    age?: string | null;
+    sex?: string | null;
+    referringDoctor?: string | null;
+    studyDate?: string | null;
+  };
 };
 
 /** Server print HTML + live body + provenance chrome + client key-image hydrate. */
@@ -249,7 +312,11 @@ export async function finalizePrintPreviewHtml(
   opts: FinalizePrintPreviewOpts,
 ): Promise<string> {
   if (!serverHtml?.trim()) return serverHtml;
-  let html = mergeLiveBodyIntoPrintHtml(serverHtml, opts.livePrintBodyHtml);
+  let html = ensurePrintLetterpadLogo(serverHtml);
+  if (opts.demography) {
+    html = patchLetterpadDemographyHtml(html, opts.demography);
+  }
+  html = mergeLiveBodyIntoPrintHtml(html, opts.livePrintBodyHtml);
   if (opts.includeProvenanceChrome !== false) {
     html = injectProvenancePreviewChrome(html, {
       findingsText: opts.findingsText,

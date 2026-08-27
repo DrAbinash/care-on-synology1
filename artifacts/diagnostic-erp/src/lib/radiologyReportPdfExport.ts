@@ -145,6 +145,17 @@ export function replaceSideImagePanel(html: string, rail: string): string | null
   return null;
 }
 
+/** Drop empty/pending KEY IMAGES rails so print does not show a navy orphan strip. */
+export function stripEmptySideImagePanel(html: string): string {
+  if (!/image-panel-side/.test(html)) return html;
+  if (countInlinedDicomImages(html) > 0) return html;
+  const stripped = replaceSideImagePanel(html, "");
+  if (!stripped) return html;
+  return stripped
+    .replace(/\bhas-side-images\b/g, "")
+    .replace(/class="content-area\s+"/g, 'class="content-area"');
+}
+
 /**
  * When the server print-preview HTML has no usable inlined DICOM pixels
  * (Orthanc unreachable, empty placeholders, or black stub thumbs) but the
@@ -157,11 +168,22 @@ export async function hydratePrintPreviewKeyImages(
   refs: ReportImageRef[],
   opts?: { limit?: number; size?: number; fetchImpl?: typeof fetch; force?: boolean },
 ): Promise<string> {
-  if (!html || !dicomWebBase || refs.length === 0) return html;
+  if (!html) return html;
+  // No client images available — drop empty/pending navy rails (orphan page 2).
+  if (!dicomWebBase || refs.length === 0) {
+    return stripEmptySideImagePanel(html);
+  }
   const alreadyInlined = countInlinedDicomImages(html);
-  // Re-hydrate when the rail is missing pixels, or when fewer inlined images
-  // than selected refs (server budget/skip left black empty cells).
-  if (!opts?.force && alreadyInlined > 0 && alreadyInlined >= Math.min(refs.length, opts?.limit ?? 6)) {
+  const pendingEmpty =
+    /dicom-img-pending|image-cell-pending|class="dicom-img"[^>]*src=""|src=""[^>]*class="dicom-img"/.test(html);
+  // Re-hydrate when the rail is missing pixels, has pending placeholders, or
+  // when fewer inlined images than selected refs (server budget/skip left blanks).
+  if (
+    !opts?.force
+    && !pendingEmpty
+    && alreadyInlined > 0
+    && alreadyInlined >= Math.min(refs.length, opts?.limit ?? 6)
+  ) {
     return html;
   }
 
@@ -170,7 +192,10 @@ export async function hydratePrintPreviewKeyImages(
     size: opts?.size ?? 800,
     fetchImpl: opts?.fetchImpl,
   });
-  if (urls.length === 0) return html;
+  if (urls.length === 0) {
+    // Failed hydrate — do not leave a blank navy KEY IMAGES strip on page 2.
+    return stripEmptySideImagePanel(html);
+  }
   const rail = buildKeyImagesRailHtml(urls);
 
   if (/image-panel-side/.test(html)) {
@@ -187,7 +212,6 @@ export async function hydratePrintPreviewKeyImages(
       /(<\/div>)(\s*)(<\/div>\s*(?:<div class="sigs"|<\/td>))/ ,
       `$1$2${rail}$3`,
     );
-    // Only accept if we actually inserted the rail once near content-area.
     if (withRail.includes("image-panel-keyrail") || withRail.includes('data-image-count=')) {
       return withRail;
     }
@@ -223,11 +247,14 @@ export interface RadiologyPdfExportInput {
   letterhead?: CareLetterpadChrome;
   /** When false, the CARE letterpad header (logo + address) is omitted — for pre-printed letterheads. */
   showLetterpadHeader?: boolean;
+  /** Structured measurements (e.g. spine canal AP rows) for the MEASUREMENTS section. */
+  measurements?: Array<{ label: string; value: string }>;
 }
 
 export async function exportRadiologyReportToPdf(input: RadiologyPdfExportInput): Promise<void> {
   const keyImages = await fetchKeyImageDataUrls(input.dicomWebBase, input.imageRefs);
   const settings = loadPrintSettings();
+  const measurements = input.measurements?.filter((m) => m.label && m.value) ?? [];
   generateReportPDF(
     {
       patientName: input.patientName,
@@ -247,7 +274,8 @@ export async function exportRadiologyReportToPdf(input: RadiologyPdfExportInput)
         headingCase: input.headingCase,
       }),
       impression: input.impression.filter(Boolean).join("\n"),
-      recommendation: input.recommendation || "Please correlate with clinical findings.",
+      recommendation: input.recommendation?.trim() ?? "",
+      measurements: measurements.length > 0 ? measurements : undefined,
       keyImages,
       reportTitle: input.studyName || "Radiology Report",
     },
@@ -264,6 +292,7 @@ export async function exportRadiologyReportToPdf(input: RadiologyPdfExportInput)
       },
       show: {
         ...settings.show,
+        measurements: measurements.length > 0 || settings.show.measurements,
         keyImages: keyImages.length > 0 || settings.show.keyImages,
       },
     },

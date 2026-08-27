@@ -927,6 +927,21 @@ clinicSettingsRouter.post("/ollama", async (req, res) => {
     }
     update.reportComposerSnapshotRetentionDays = n;
   }
+  // Cached list from last Ollama /api/tags probe — powers Local AI dropdowns (not a model allow-list).
+  if (b.ollamaKnownModels !== undefined) {
+    if (typeof b.ollamaKnownModels !== "string") {
+      res.status(400).json({ error: "ollamaKnownModels must be a JSON string" }); return;
+    }
+    try {
+      const parsed = JSON.parse(b.ollamaKnownModels);
+      if (!Array.isArray(parsed) || !parsed.every((x) => typeof x === "string")) {
+        res.status(400).json({ error: "ollamaKnownModels must be a JSON array of strings" }); return;
+      }
+      update.ollamaKnownModels = b.ollamaKnownModels;
+    } catch {
+      res.status(400).json({ error: "ollamaKnownModels must be valid JSON" }); return;
+    }
+  }
 
   try {
     const rows = await db.update(clinicSettingsTable).set(update).where(eq(clinicSettingsTable.id, current.id)).returning();

@@ -14,14 +14,14 @@ import { dicomUploadsRouter } from "./routes/dicom-uploads";
 import { whatsappWebhookRouter } from "./routes/whatsapp";
 import { recordRequest } from "./lib/requestMetrics";
 
-// Helmet is loaded lazily so a missing optional dependency never crashes the
-// server. Production deployments should include it; dev environments can
-// skip it (CSP would otherwise break Vite HMR).
+// Helmet is required in production. In dev it is optional so a missing
+// install (or CSP that would break Vite HMR) never blocks local work —
+// baseline headers below still apply when Helmet is skipped.
 let helmet: typeof import("helmet").default | undefined;
 try {
   helmet = (await import("helmet")).default;
 } catch {
-  // Helmet not installed — security headers fall back to manual sets below.
+  helmet = undefined;
 }
 
 const artifactDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -29,6 +29,12 @@ const artifactDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 const app: Express = express();
 
 const isProd = process.env.NODE_ENV === "production";
+
+if (isProd && !helmet) {
+  throw new Error(
+    "helmet is required in production but failed to load. Install the helmet dependency before starting the API.",
+  );
+}
 
 // Replit's hosting proxy (and most cloud hosts) terminates TLS upstream and
 // forwards the real client IP via X-Forwarded-For. Without this setting,
@@ -59,7 +65,6 @@ app.use(
   }),
 );
 // Production security headers via Helmet (disabled in dev so Vite HMR works).
-// If Helmet is unavailable, we still set a few critical headers manually below.
 if (isProd && helmet) {
   app.use(
     helmet({
@@ -67,6 +72,16 @@ if (isProd && helmet) {
       crossOriginEmbedderPolicy: false, // Required for Google Fonts / external assets
     }),
   );
+} else {
+  // Dev / Helmet-skipped fallback: always set the critical browser headers
+  // Helmet would have provided (minus CSP, which breaks Vite HMR).
+  app.use((_req: Request, res: Response, next: NextFunction) => {
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("X-Frame-Options", "DENY");
+    res.setHeader("Referrer-Policy", "no-referrer");
+    res.setHeader("X-DNS-Prefetch-Control", "off");
+    next();
+  });
 }
 
 // Gzip / brotli compression for API JSON responses and static assets.

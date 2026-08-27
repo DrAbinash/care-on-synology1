@@ -29,11 +29,15 @@ describe("Radiology Reporting Workspace handwritten notes", () => {
     expect(strip).toContain('data-testid="reading-queue-modality"');
     expect(strip).toContain('data-testid="reading-queue-date"');
     expect(strip).toContain('data-testid="reading-queue-next"');
+    expect(strip).toContain('data-testid="reading-queue-sort"');
     expect(strip).toContain('data-testid="warm-mri-today-yesterday"');
+    expect(strip).toContain('value="yesterday"');
+    expect(strip).toContain('value="name-az"');
     expect(workspace).toContain('modalityFilter: queueModality');
     expect(workspace).toContain("onNextStudy={goNextStudy}");
     expect(workspace).toContain("onWarmMriTodayYesterday");
     expect(workspace).toContain('"today-yesterday"');
+    expect(workspace).toContain("sortMode={queueSort}");
   });
 
   it("reading queue cards show referring doctor", () => {

@@ -18,11 +18,21 @@ import {
 import { applySide, type Side } from "./sideSwap";
 import { fillTemplate, type AbnormalityInstance } from "./abnormalityEngine";
 import { stripNormalImpressionLines } from "./quickFindingsMerge";
+import {
+  buildCanonicalObservation,
+  hasStructuredOwnership,
+  sentenceOwnedBySlot,
+} from "./observationSlot";
 
 export type PathologyOwnership = {
   anatomicalSection?: string;
   conflictGroup?: string;
   baselineReplaces?: string;
+  /** Resolved slot concept — distinct from conflictGroup. */
+  concept?: string | null;
+  level?: string;
+  laterality?: string;
+  slotKey?: string;
 };
 
 export type ReportNarrative = {
@@ -141,7 +151,7 @@ function isManualSentence(sentence: string, provenance: FieldProvenanceMap | und
 /** Template/protocol-sourced sentences should always be replaceable by pathology.
  * Only purely manual sentences need the ambiguous/force guard.
  */
-function isProtectedManualSentence(sentence: string, provenance: FieldProvenanceMap | undefined): boolean {
+export function isProtectedManualSentence(sentence: string, provenance: FieldProvenanceMap | undefined): boolean {
   const key = normalizeForDedupe(sentence);
   const src = provenance?.[key];
   if (!src || src.length === 0) return false;
@@ -179,6 +189,25 @@ export interface PathologyPatchResult {
   replacedSentences: string[];
 }
 
+const SCREENING_SECTION_BREAK =
+  /\n(?=CERVICAL SPINE SCREENING|DORSAL SPINE SCREENING|THORACIC SPINE SCREENING|WHOLE SPINE SCREENING)/;
+
+/** Keep detailed-study pathology in the detailed block, not after screening. */
+function placeIncomingBeforeScreening(fieldText: string, incoming: string | undefined): string {
+  const inc = (incoming ?? "").trim();
+  if (!inc || !fieldText.includes(inc)) return fieldText;
+  const br = fieldText.match(SCREENING_SECTION_BREAK);
+  if (!br || br.index == null) return fieldText;
+  const incAt = fieldText.lastIndexOf(inc);
+  if (incAt < br.index) return fieldText;
+  const without = `${fieldText.slice(0, incAt)}${fieldText.slice(incAt + inc.length)}`
+    .replace(/\n{3,}/g, "\n\n")
+    .trimEnd();
+  const nextBr = without.match(SCREENING_SECTION_BREAK);
+  if (!nextBr || nextBr.index == null) return fieldText;
+  return `${without.slice(0, nextBr.index).trimEnd()}\n${inc}${without.slice(nextBr.index)}`;
+}
+
 /**
  * Overlay pathology text onto a whole-report narrative.
  * Never drops unrelated sentences. Manual anatomy sentences are kept and
@@ -198,6 +227,17 @@ export function applyPathologyPatch(opts: {
     opts.incoming.findings, opts.incoming.impression,
     opts.incoming.technique, opts.incoming.recommendation,
   ].filter(Boolean).join("\n");
+  const slotObs = buildCanonicalObservation({
+    concept: opts.ownership.concept,
+    conflictGroup: opts.ownership.conflictGroup,
+    anatomicalSection: opts.ownership.anatomicalSection,
+    baselineReplaces: opts.ownership.baselineReplaces,
+    level: opts.ownership.level,
+    laterality: opts.ownership.laterality,
+  });
+  // Structured replace only when a concept resolved. A slotKey of `region|*|*|*`
+  // is identity, not ownership — unowned findings keep the legacy pathology path.
+  const structured = hasStructuredOwnership(slotObs);
   const keys = anatomyKeys(opts.ownership, incomingHay);
   const asserted = assertedPathology(incomingHay);
   const baseline = (opts.ownership.baselineReplaces ?? "").trim();
@@ -211,18 +251,25 @@ export function applyPathologyPatch(opts: {
     provenance: FieldProvenanceMap | undefined,
   ): { text: string; provenance: FieldProvenanceMap } => {
     const kept: string[] = [];
-    // Extract organ keys from incoming text for broad anatomical matching
     const incomingOrgans = new Set<string>();
-    for (const a of ANATOMY_ALIASES) {
-      if (a.re.test(incomingHay)) incomingOrgans.add(a.key);
+    if (!structured) {
+      for (const a of ANATOMY_ALIASES) {
+        if (a.re.test(incomingHay)) incomingOrgans.add(a.key);
+      }
     }
     for (const s of splitToSentences(existing)) {
-      const owned = (baseline && s.includes(baseline))
-        || sentenceMentions(s, keys)
-        || (asserted.length > 0 && deniesPathology(s, asserted))
-        // Broad organ match: if incoming text targets liver and existing sentence
-        // also mentions liver, replace the normal sentence (even without explicit ownership)
-        || (incomingOrgans.size > 0 && asserted.length > 0 &&
+      const owned = structured
+        ? sentenceOwnedBySlot(s, {
+          concept: slotObs.concept ?? opts.ownership.concept ?? null,
+          level: slotObs.level || opts.ownership.level || "",
+          laterality: slotObs.laterality || opts.ownership.laterality || "",
+          anatomicalSection: slotObs.anatomicalSection,
+          baselineReplaces: baseline,
+        })
+        : (baseline && s.includes(baseline))
+          || sentenceMentions(s, keys)
+          || (asserted.length > 0 && deniesPathology(s, asserted))
+          || (incomingOrgans.size > 0 && asserted.length > 0 &&
             [...incomingOrgans].some((org) => sentenceMentions(s, [org])));
       if (!owned) {
         kept.push(s);
@@ -259,6 +306,10 @@ export function applyPathologyPatch(opts: {
     opts.incoming.findings,
     opts.provenance?.findings,
   );
+  const findingsPlaced = {
+    ...findings,
+    text: placeIncomingBeforeScreening(findings.text, opts.incoming.findings),
+  };
 
   const impressionIncoming = opts.incoming.impression ?? "";
   const impression = patchField(
@@ -304,14 +355,14 @@ export function applyPathologyPatch(opts: {
     narrative: {
       clinicalHistory: opts.existing.clinicalHistory,
       technique: technique.text,
-      findings: findings.text,
+      findings: findingsPlaced.text,
       impression: impressionText,
       recommendation: recommendation.text,
     },
     provenance: {
       clinicalHistory: opts.provenance?.clinicalHistory,
       technique: technique.provenance,
-      findings: findings.provenance,
+      findings: findingsPlaced.provenance,
       impression: impression.provenance,
       recommendation: recommendation.provenance,
     },

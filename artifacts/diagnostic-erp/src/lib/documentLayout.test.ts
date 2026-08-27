@@ -70,10 +70,10 @@ function baseOpts(overrides: Record<string, unknown> = {}) {
 
 describe("document layout engine — page specifications", () => {
   test.each([
-    ["A5-landscape", "210mm 148mm", 210, 148],
-    ["A5-portrait", "148mm 210mm", 148, 210],
-    ["half-a4", "210mm 148mm", 210, 148],
-    ["A4", "210mm 297mm", 210, 297],
+    ["A5-landscape", "A5 landscape", 210, 148],
+    ["A5-portrait", "A5 portrait", 148, 210],
+    ["half-a4", "A5 landscape", 210, 148],
+    ["A4", "A4 portrait", 210, 297],
   ] as const)("paper %s has exact mm dimensions", (paper, css, w, h) => {
     expect(PAGE_SPECS[paper].pageSizeCss).toBe(css);
     expect(PAGE_SPECS[paper].widthMm).toBe(w);
@@ -134,11 +134,11 @@ describe("document layout engine — bill renderers (unified Classic)", () => {
     expect((html.match(/class="care-doc-page receipt"/g) ?? []).length).toBe(2);
   });
 
-  test("uses 148×210 @page matching HOPE A5 portrait", () => {
+  test("uses named A5 portrait @page so Chrome selects A5, not A4 landscape", () => {
     const html = buildBillPrintHtml(baseOpts());
-    expect(html).toContain("@page { size: 148mm 210mm; margin: 0; }");
+    expect(html).toContain("@page { size: A5 portrait; margin: 0; }");
     expect(html).not.toMatch(/@page \{ size: 210mm 297mm/);
-    expect(html).not.toMatch(/@page \{ size: A5 landscape/);
+    expect(html).not.toMatch(/@page \{ size: A4/);
     expect(html).toContain('class="care-doc-page receipt"');
     expect(html).toContain("height: 210mm");
     expect(html).toContain("width: 148mm");
@@ -307,7 +307,7 @@ describe("document layout engine — bill renderers (unified Classic)", () => {
 
   test("classic format uses engine and HOPE totals table", () => {
     const html = buildBillPrintHtml(baseOpts());
-    expect(html).toContain("@page { size: 148mm 210mm; margin: 0; }");
+    expect(html).toContain("@page { size: A5 portrait; margin: 0; }");
     expect(html).toContain("care-doc-page");
     expect(html).toContain("totals-grid");
     expect(html).toContain("hope-bill");
@@ -428,9 +428,25 @@ describe("document layout engine — CARE Invoice (classic)", () => {
     expect(html).toContain(">INVOICE<");
     expect(html).toContain("Authorised Signature");
     expect(html).toContain("BILL NO:");
-    expect(html).toContain("@page { size: 210mm 148mm; margin: 0; }");
+    expect(html).toContain("@page { size: A5 landscape; margin: 0; }");
+    expect(html).not.toMatch(/@page \{ size: 210mm 148mm/);
+    expect(html).not.toMatch(/@page \{ size: A4/);
     expect(html).not.toContain("hope-bill");
     expect(html).not.toContain(">Receipt<");
+  });
+
+  test("classic + named A5 landscape @page so Chrome selects A5, not A4 landscape", () => {
+    const html = buildBillPrintHtml(baseOpts({
+      billFormat: "classic",
+      orientation: "landscape",
+      pageCssSize: "A5 landscape",
+    }));
+    expect(html).toContain("@page { size: A5 landscape; margin: 0; }");
+    expect(html).not.toMatch(/@page \{ size: 210mm 148mm/);
+    expect(html).not.toMatch(/@page \{ size: A4/);
+    expect(html).toContain("width: 210mm");
+    expect(html).toContain("height: 148mm");
+    expect(html).toContain(">INVOICE<");
   });
 
   test("format from clinic settings selects classic without billFormat opt", () => {
@@ -470,7 +486,9 @@ describe("document layout engine — A5 Landscape (a5-landscape)", () => {
     expect(html).toContain("a5-landscape-bill");
     expect(html).toContain(">RECEIPT<");
     expect(html).toContain("Authorised Signatory");
-    expect(html).toContain("@page { size: 210mm 148mm; margin: 0; }");
+    expect(html).toContain("@page { size: A5 landscape; margin: 0; }");
+    expect(html).not.toMatch(/@page \{ size: 210mm 148mm/);
+    expect(html).not.toMatch(/@page \{ size: A4/);
     expect(html).not.toContain("hope-bill");
     expect(html).not.toContain(">INVOICE<");
   });

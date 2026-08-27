@@ -36,6 +36,7 @@ import {
 } from "@workspace/db/schema";
 import { and, asc, desc, eq, gte, ilike, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import crypto from "node:crypto";
+import { todayIST } from "../lib/istDate";
 import { FULL_ACCESS_ROLES, type StaffAuthRequest } from "../middleware/requireStaffAuth.js";
 import { computeStudyPriority } from "../lib/studyPriorityEngine";
 import { getLockTtlSeconds } from "../lib/studyLocks";
@@ -48,7 +49,12 @@ import { generateAiEnhancement, getAiEnhancement, acceptAiEnhancement, rejectAiE
 import { syncStudyToSite, getMultiSiteWorklist, getSites } from "../lib/multiSiteWorklist";
 import { decideRouting, getRoutingStats } from "../lib/dicomRoutingOptimizer";
 import { runMatchingEngineForWorklist } from "./internal-radiology";
-import { calculateMatchScore } from "../lib/pacs/matchingEngine";
+import {
+  NAME_REFERRAL_SUGGEST_DAY_RADIUS,
+  pickNameReferralSuggestions,
+  rankBillCandidate,
+  studyDateSearchWindow,
+} from "../lib/pacs/nameReferralLink";
 import { DEFAULT_INSTITUTIONAL_STYLE } from "../lib/institutionalReportStyle.js";
 import { publishRadiologyStudyToMwl } from "../lib/pacs/publishRadiologyStudyToMwl";
 import { cancelRadiologyMwlByAccession } from "../lib/pacs/cancelRadiologyStudyFromMwl";
@@ -90,13 +96,11 @@ function isSchemaDriftError(err: unknown): boolean {
 }
 
 function todayISO(): string {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  return todayIST();
 }
 
 function compactToday(): string {
-  const d = new Date();
-  return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
+  return todayIST().replace(/-/g, "");
 }
 
 // Computes the next accession number candidate for a (date, modality) pair by
@@ -2658,70 +2662,144 @@ radiologyRouter.get("/pacs-worklist/:id/matching-candidates", async (req, res) =
       return;
     }
 
-    const studies = await db
-      .select({
-        id: radiologyStudiesTable.id,
-        accessionNumber: radiologyStudiesTable.accessionNumber,
-        status: radiologyStudiesTable.status,
-        modality: radiologyStudiesTable.modality,
-        studyDescription: radiologyStudiesTable.studyDescription,
-        studyDate: radiologyStudiesTable.studyDate,
-        patientId: radiologyStudiesTable.patientId,
-        patientName: sql`concat(${patientsTable.firstName}, ' ', ${patientsTable.lastName})`,
-        patientUHID: patientsTable.patientId,
-        age: sql`concat(${patientsTable.ageValue}, ' ', ${patientsTable.ageUnit})`,
-        sex: patientsTable.gender,
-        testName: testsTable.name,
-        billNumber: billsTable.billNumber,
-      })
+    const dicomInput = {
+      patientName: worklistItem.patientName,
+      dicomPatientId: worklistItem.dicomPatientId,
+      age: worklistItem.age,
+      sex: worklistItem.sex,
+      modality: worklistItem.modality,
+      studyDescription: worklistItem.studyDescription,
+      accessionNumber: worklistItem.accessionNumber ?? "",
+      studyDate: worklistItem.studyDate,
+      studyTime: null,
+      studyInstanceUID: worklistItem.studyInstanceUID,
+      referringDoctor: worklistItem.referringDoctor,
+    };
+
+    const studyCols = {
+      id: radiologyStudiesTable.id,
+      accessionNumber: radiologyStudiesTable.accessionNumber,
+      status: radiologyStudiesTable.status,
+      modality: radiologyStudiesTable.modality,
+      studyDescription: radiologyStudiesTable.studyDescription,
+      studyDate: radiologyStudiesTable.studyDate,
+      patientId: radiologyStudiesTable.patientId,
+      referringDoctor: radiologyStudiesTable.referringDoctor,
+      patientName: sql`concat(${patientsTable.firstName}, ' ', ${patientsTable.lastName})`,
+      patientUHID: patientsTable.patientId,
+      age: sql`concat(${patientsTable.ageValue}, ' ', ${patientsTable.ageUnit})`,
+      sex: patientsTable.gender,
+      testName: testsTable.name,
+      billNumber: billsTable.billNumber,
+    };
+
+    // Date-window pool (name±referral suggestions) + recent pool (manual search).
+    const window = studyDateSearchWindow(
+      worklistItem.studyDate,
+      NAME_REFERRAL_SUGGEST_DAY_RADIUS,
+    );
+    const byDate = window
+      ? await db
+          .select(studyCols)
+          .from(radiologyStudiesTable)
+          .innerJoin(patientsTable, eq(patientsTable.id, radiologyStudiesTable.patientId))
+          .innerJoin(testsTable, eq(testsTable.id, radiologyStudiesTable.testId))
+          .leftJoin(billsTable, eq(billsTable.id, radiologyStudiesTable.billId))
+          .where(
+            and(
+              gte(radiologyStudiesTable.studyDate, window.from),
+              lte(radiologyStudiesTable.studyDate, window.to),
+            ),
+          )
+          .orderBy(desc(radiologyStudiesTable.createdAt))
+          .limit(300)
+      : [];
+
+    const recent = await db
+      .select(studyCols)
       .from(radiologyStudiesTable)
       .innerJoin(patientsTable, eq(patientsTable.id, radiologyStudiesTable.patientId))
       .innerJoin(testsTable, eq(testsTable.id, radiologyStudiesTable.testId))
       .leftJoin(billsTable, eq(billsTable.id, radiologyStudiesTable.billId))
       .orderBy(desc(radiologyStudiesTable.createdAt))
-      .limit(100);
+      .limit(150);
 
-    const candidates = studies.map(s => {
-      const dicomInput = {
-        patientName: worklistItem.patientName,
-        dicomPatientId: worklistItem.dicomPatientId,
-        age: worklistItem.age,
-        sex: worklistItem.sex,
-        modality: worklistItem.modality,
-        studyDescription: worklistItem.studyDescription,
-        accessionNumber: worklistItem.accessionNumber ?? "",
-        studyDate: worklistItem.studyDate,
-        studyTime: null,
-        studyInstanceUID: worklistItem.studyInstanceUID,
-        referringDoctor: worklistItem.referringDoctor,
-      };
+    const byId = new Map<number, (typeof recent)[number]>();
+    for (const s of [...byDate, ...recent]) byId.set(s.id, s);
+    const studies = [...byId.values()];
 
+    const ranked = studies.map((s) => {
       const billInput = {
         id: s.id,
         patientId: s.patientId,
         patientName: String(s.patientName || ""),
-        patientUHID: s.patientUHID,
+        patientUHID: s.patientUHID as string | null,
         age: String(s.age || ""),
-        sex: s.sex,
+        sex: s.sex as string | null,
         testName: s.testName,
         modality: s.modality,
         accessionNumber: s.accessionNumber,
-        billNumber: s.billNumber,
+        billNumber: s.billNumber as string | null,
         studyDate: s.studyDate,
+        referringDoctor: s.referringDoctor as string | null,
       };
-
-      const match = calculateMatchScore(dicomInput, billInput);
+      const rank = rankBillCandidate(dicomInput, billInput);
       return {
-        study: s,
-        matchScore: match.score,
-        matchPoints: match.points,
-        matchReasons: match.reasons,
-        matchWarnings: match.warnings,
+        study: {
+          ...s,
+          patientName: billInput.patientName,
+          age: billInput.age,
+          referringDoctor: billInput.referringDoctor,
+        },
+        matchScore: rank.score,
+        matchPoints: rank.points,
+        matchReasons: rank.reasons,
+        matchWarnings: rank.warnings,
+        nameSimilarity: rank.nameSimilarity,
+        referringDoctorSimilarity: rank.referringDoctorSimilarity,
+        lane: rank.lane,
+        suggestable: rank.suggestable,
+        autoLinkEligible: rank.autoLinkEligible,
       };
     });
 
-    candidates.sort((a, b) => b.matchPoints - a.matchPoints);
-    res.json({ success: true, candidates });
+    ranked.sort((a, b) => {
+      // Prefer name±referral suggestions when the intake row is still unlinked.
+      if (!worklistItem.studyId) {
+        const as = a.suggestable && a.lane === "name_referral" ? 1 : 0;
+        const bs = b.suggestable && b.lane === "name_referral" ? 1 : 0;
+        if (bs !== as) return bs - as;
+      }
+      return b.matchPoints - a.matchPoints;
+    });
+
+    const suggestionRanks = pickNameReferralSuggestions(
+      ranked.map((c) => ({
+        studyId: c.study.id,
+        points: c.matchPoints,
+        score: c.matchScore,
+        reasons: c.matchReasons,
+        warnings: c.matchWarnings,
+        nameSimilarity: c.nameSimilarity,
+        referringDoctorSimilarity: c.referringDoctorSimilarity,
+        lane: c.lane,
+        suggestable: c.suggestable,
+        autoLinkEligible: c.autoLinkEligible,
+      })),
+      5,
+    );
+    const suggestionIds = new Set(suggestionRanks.map((s) => s.studyId));
+    const suggestions = ranked.filter((c) => suggestionIds.has(c.study.id));
+
+    res.json({
+      success: true,
+      candidates: ranked,
+      suggestions,
+      lanes: {
+        idKeys: "Accession / UHID / PatientID",
+        nameReferral: "Patient name ± referring doctor (no-MWL)",
+      },
+    });
   } catch (err: any) {
     logger.error({ err }, "Error in matching-candidates");
     res.status(500).json({ error: err.message });

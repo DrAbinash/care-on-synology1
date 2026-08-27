@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
 import {
@@ -38,6 +38,12 @@ export function useRadiologyDraftId(studyId: number | null | undefined) {
     enabled: !!studyId,
   });
 
+  // Study switch: drop Patient A's draft id immediately, then adopt B's once loaded.
+  useEffect(() => {
+    adoptedForRef.current = null;
+    setDraftId(null);
+  }, [studyId]);
+
   useEffect(() => {
     if (!studyId || isLoadingExistingDraft) return;
     if (adoptedForRef.current === studyId) return; // already adopted for this study — a save's captureSavedDraftId always wins from here on
@@ -47,9 +53,11 @@ export function useRadiologyDraftId(studyId: number | null | undefined) {
 
   /** Call with the id returned by a successful save so the next save
    *  updates this same row instead of creating another one. */
-  function captureSavedDraftId(id: number) {
+  const captureSavedDraftId = useCallback((id: number) => {
     setDraftId(id);
-  }
+    // Stamp adopt so a concurrent query adoption cannot clobber this save.
+    if (studyId) adoptedForRef.current = studyId;
+  }, [studyId]);
 
   return {
     draftId,

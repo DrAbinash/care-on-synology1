@@ -8,6 +8,7 @@ import { db } from "@workspace/db";
 import { hl7IntegrationSettingsTable, hl7MessagesTable } from "@workspace/db";
 import { eq, desc } from "drizzle-orm";
 import { type StaffAuthRequest } from "../middleware/requireStaffAuth";
+import { requireInternalApiKey } from "../lib/internalApiKeyAuth";
 
 export const hl7Router = Router();
 export const hl7InternalRouter = Router();
@@ -105,13 +106,8 @@ hl7Router.post("/test", async (req, res): Promise<void> => {
 
 // ─── POST /api/internal/hl7/inbound ─────────────────────────────────────────
 // Authenticated via INTERNAL_API_KEY bearer token (same as internal radiology routes).
+hl7InternalRouter.use(requireInternalApiKey);
 hl7InternalRouter.post("/inbound", async (req, res): Promise<void> => {
-  const authHeader = req.headers["authorization"];
-  const expectedKey = process.env["INTERNAL_API_KEY"];
-  if (!expectedKey || authHeader !== `Bearer ${expectedKey}`) {
-    res.status(401).json({ error: "Unauthorized" }); return;
-  }
-
   const [settings] = await db.select().from(hl7IntegrationSettingsTable).limit(1);
   if (!settings?.isEnabled) {
     res.status(503).json({ error: "HL7 integration is disabled" }); return;

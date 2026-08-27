@@ -56,8 +56,9 @@ bootstrap; Care registers the partner whenever its API starts with the env above
 
 1. **Container Manager → Project**
 2. Select the project (`care-on-synology1` / `hope-erp` — whatever you named it)
-3. Pull latest code into that folder (Git Server / File Station sync / your usual
-   method so `docker-compose.yml` and source match the branch you deploy)
+3. Pull latest **`main`** into that folder (preferred: SSH `bash deploy-synology.sh`, which
+   hard-resets to `origin/main`; or Git Server / File Station sync so
+   `docker-compose.yml` and source match `main`)
 4. Click **Build** (or **Action → Build** / **Recreate**)  
    - Prefer **Build** so images rebuild from the new code  
    - Leave “clean build” / recreate volumes **off** unless you intend to wipe DB

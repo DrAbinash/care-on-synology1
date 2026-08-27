@@ -18,6 +18,8 @@ export function applyRadiologyVoiceLexicon(text: string): string {
     .replace(/\bsemicolon\b/gi, ";")
     .replace(/\bhyphen\b/gi, "-")
     .replace(/\bdash\b/gi, "—")
+    // Spoken slash so "s slash o" keeps "/" (not glued "so")
+    .replace(/\bslash\b/gi, "/")
     // MRI / modality sequences
     .replace(/\bt[- ]?1[- ]?w\b/gi, "T1W")
     .replace(/\bt[- ]?2[- ]?w\b/gi, "T2W")
@@ -48,7 +50,8 @@ export function applyRadiologyVoiceLexicon(text: string): string {
     .replace(/\bgrade (three|3)\b/gi, "Grade 3")
     .replace(/\bgrade (four|4)\b/gi, "Grade 4")
     // Spacing cleanup after substitutions
-    .replace(/ +([.,;:])/g, "$1")
+    .replace(/ +([.,;:/])/g, "$1")
+    .replace(/([\/]) +/g, "$1")
     .replace(/[ \t]+/g, " ")
     .replace(/ *\n */g, "\n")
     .trim();

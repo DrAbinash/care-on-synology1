@@ -5,6 +5,7 @@ import { useMemo, useState, useRef, useEffect } from "react";
 import { Plus, Pencil, Star, Search, X, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { patchFindingsContributionBlocked } from "@/lib/observationLedger";
 
 const CAT_DOT: Record<string, string> = {
   normal: "bg-emerald-500 shadow-emerald-400/50",
@@ -59,6 +60,7 @@ const LABELS: Record<QuickSelectField, string> = {
 export function QuickSelectStrip({
   field,
   bodyPart,
+  onAfterPick,
 }: {
   field: QuickSelectField;
   /**
@@ -69,6 +71,8 @@ export function QuickSelectStrip({
    * section makes the tiles follow that choice.
    */
   bodyPart?: string | null;
+  /** Fired after a tile is merged into the editor (e.g. silent draft save). */
+  onAfterPick?: (field: QuickSelectField) => void;
 }) {
   const tiles = useWorkspaceSelector((s) => s.quickSelectTiles);
   const study = useWorkspaceSelector((s) => s.studies.find((x) => x.id === s.activeStudyId));
@@ -166,8 +170,8 @@ export function QuickSelectStrip({
               const ws = useWorkspace.getState();
               if (field === "findings" || field === "impression") {
                 const ownership = {
-                  anatomicalSection: tile.anatomicalSection || tile.scopeBodyPart || undefined,
-                  conflictGroup: tile.conflictGroup || tile.scopeBodyPart || undefined,
+                  anatomicalSection: tile.anatomicalSection || undefined,
+                  conflictGroup: tile.conflictGroup || undefined,
                   baselineReplaces: tile.baselineReplaces,
                 };
                 const templates = field === "findings"
@@ -179,12 +183,17 @@ export function QuickSelectStrip({
                   ownership,
                   source: "quick-select",
                   id: `qs-${tile.id}`,
+                  region: tile.scopeBodyPart,
+                  label: tile.label,
+                  findingsText: tile.sentence,
+                  supportsLaterality: /\{side\}/i.test(`${tile.sentence} ${tile.impressionSentence ?? ""}`),
                   force: tile.category === "abnormal" || tile.category === "critical",
                 });
               } else {
                 ws.mergeField(field, tile.sentence, "quick-select");
               }
               incUsage(tile.id);
+              onAfterPick?.(field);
             }}
             onFav={() => toggleFav(tile.id)}
             onEdit={() => openEditor(tile, field)}
@@ -217,17 +226,22 @@ function QuickSelectTileBox({
   onEdit: () => void;
 }) {
   const cat = tile.category in CAT_TILE ? tile.category : "normal";
+  const patch = useWorkspaceSelector((s) => s.appliedPathologyPatches.find((p) => p.id === `qs-${tile.id}`));
+  const findings = useWorkspaceSelector((s) => s.findingsText);
+  const blockedChip = Boolean(patch && field === "findings" && patchFindingsContributionBlocked(patch, findings));
   return (
     <div
       className={cn(
         "group relative inline-flex cursor-pointer items-center gap-1.5 rounded-xl border px-2.5 py-1.5 text-[10.5px] transition duration-150",
         CAT_TILE[cat],
+        blockedChip && "ring-1 ring-amber-400",
       )}
       onClick={onPick}
-      title={tile.sentence}
+      title={blockedChip ? `${tile.sentence} — manual kept` : tile.sentence}
       data-testid={`qs-tile-${field}-${tile.id}`}
+      data-chip-state={blockedChip ? "blocked-manual-kept" : patch ? "selected" : "idle"}
     >
-      <span className={cn("h-2 w-2 flex-none rounded-full shadow-sm", CAT_DOT[cat])} />
+      <span className={cn("h-2 w-2 flex-none rounded-full shadow-sm", blockedChip ? "bg-amber-400 shadow-amber-300/60" : CAT_DOT[cat])} />
       <span className="max-w-[150px] truncate font-bold tracking-tight">{tile.label}</span>
       {tile.mnemonic && (
         <span className={cn("rounded-md border px-1 font-mono text-[8px] uppercase", CAT_BADGE[cat])}>

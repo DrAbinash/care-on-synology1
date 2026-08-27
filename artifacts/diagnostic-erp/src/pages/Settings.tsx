@@ -59,7 +59,7 @@ type EmailSettings = {
   smtpHost: string; smtpPort: string; smtpUser: string; smtpPassword: string;
   smtpSecure: boolean; fromAddress: string; fromName: string;
   adminEmail: string; extraRecipients: string;
-  billEditEnabled: boolean; dailySummaryEnabled: boolean;
+  billEditEnabled: boolean; dailySummaryEnabled: boolean; staffDayCloseEmailEnabled?: boolean;
   // Raw JSON array string as persisted server-side, e.g. '["09:00","17:00"]'.
   dailySummaryTimes: string;
   // Form-only fields: up to 3 discrete time inputs, derived from/converted
@@ -3759,6 +3759,7 @@ function EmailTab() {
   const smtpSecure = !!watch("smtpSecure");
   const billEditEnabled = watch("billEditEnabled") !== false;
   const dailySummaryEnabled = watch("dailySummaryEnabled") !== false;
+  const staffDayCloseEmailEnabled = watch("staffDayCloseEmailEnabled") !== false;
 
   return (
     <div className="grid grid-cols-1 gap-4">
@@ -3831,6 +3832,14 @@ function EmailTab() {
               <p className="text-[11px] text-muted-foreground mt-1">India Standard Time (IST). The first time is required; leave the 2nd/3rd blank to send once a day. Each configured time sends automatically, at most once per day.</p>
             </div>
           )}
+
+          <div className="border-t border-card-border pt-4 flex items-start justify-between gap-4">
+            <div>
+              <Label className="font-medium">Staff day-close reconciliation email</Label>
+              <p className="text-[11px] text-muted-foreground">Sends one email per drawer close — Vijay closes → Vijay&apos;s slip, Sanjeev closes later → Sanjeev&apos;s slip. Bulk close sends one email for each staff closed.</p>
+            </div>
+            <Toggle checked={staffDayCloseEmailEnabled} onChange={(v) => setValue("staffDayCloseEmailEnabled", v, { shouldDirty: true })} label="Toggle staff day-close emails" />
+          </div>
         </div>
 
         <div className="flex flex-wrap justify-end gap-2">
@@ -5103,39 +5112,33 @@ function BillingPrintTab() {
       >
         {activeBillFormat === "hope-a5" ? (
           <>
-            <p className="font-bold text-sm">How to set paper (A5 portrait in the tray)</p>
+            <p className="font-bold text-sm">How to set paper (A5 portrait)</p>
             <ol className="list-decimal pl-4 space-y-1.5">
               <li>
-                <strong>Load A5</strong> (148×210 mm) portrait — <strong>148 mm across</strong> (short edge into the printer).
+                <strong>Load A5</strong> (148×210 mm) — short edge into the printer.
               </li>
               <li>
-                Create a <strong>User Defined</strong> paper if needed: <strong>Width 148 mm × Height 210 mm</strong>.
-              </li>
-              <li>
-                In the browser print dialog set <strong>Paper size = A5 / 148×210</strong>. Do <strong>not</strong> leave Paper = A4.
+                In the browser print dialog set <strong>Paper size = A5</strong> and <strong>Orientation = Portrait</strong>. Do <strong>not</strong> pick A4.
               </li>
               <li>Set <strong>Scale = 100%</strong> and <strong>Margins = None</strong>.</li>
             </ol>
           </>
         ) : (
           <>
-            <p className="font-bold text-sm">How to set paper (pre-cut half A4 / A5 landscape)</p>
+            <p className="font-bold text-sm">How to set paper (A5 landscape)</p>
             <ol className="list-decimal pl-4 space-y-1.5">
               <li>
-                <strong>Load already-cut half A4</strong> (210×148 mm) — <strong>210 mm across</strong> (short edge into the printer).
+                <strong>Load A5</strong> (210×148 mm) — or a pre-cut half of A4.
               </li>
               <li>
-                Create a <strong>User Defined</strong> paper: <strong>Width 210 mm × Height 148 mm</strong>.
-              </li>
-              <li>
-                In the browser print dialog set <strong>Paper size = that User Defined 210×148</strong>. Do <strong>not</strong> leave Paper = A4.
+                In the browser print dialog set <strong>Paper size = A5</strong> and <strong>Orientation = Landscape</strong>. Do <strong>not</strong> pick A4.
               </li>
               <li>Set <strong>Scale = 100%</strong> and <strong>Margins = None</strong>.</li>
             </ol>
           </>
         )}
         <p className="text-[11px] text-amber-800 dark:text-amber-200">
-          Epson L130 / ink-tank: match the job size above, Scale <strong>100%</strong>. Blank margins usually mean Paper is still A4.
+          Epson L130 / ink-tank: pick <strong>A5</strong>, Scale <strong>100%</strong>. Blank extra margins mean Paper is still A4.
         </p>
       </div>
 

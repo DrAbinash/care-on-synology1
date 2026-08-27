@@ -2,7 +2,7 @@
  * AI Report Assistant — compact panel inside existing Reporting Workspace.
  * Review colors are render-time only; clinical text stays plain (Guard 4).
  */
-import { Bot, Check, Loader2, RefreshCw, Trash2, X, Eye, EyeOff, AlertTriangle } from "lucide-react";
+import { Bot, Check, Loader2, RefreshCw, Trash2, X, Eye, EyeOff, AlertTriangle, Minus, Maximize2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { ComposeJobView, TrackedChange } from "@/lib/reportComposer/types";
 import { AI_COMPOSE_STATUS_STYLE } from "@/lib/reportComposer/types";
@@ -13,6 +13,8 @@ type Props = {
   reviewOpen: boolean;
   showAiChanges: boolean;
   isFinalized: boolean;
+  minimized?: boolean;
+  onMinimizedChange?: (minimized: boolean) => void;
   onCompose: () => void;
   onImpression: () => void;
   onToggleReview: (open: boolean) => void;
@@ -113,6 +115,23 @@ export function ReportComposerAssistant(props: Props) {
     ["READY"].includes(props.job.status) &&
     !props.isFinalized;
 
+  if (props.minimized) {
+    return (
+      <button
+        type="button"
+        className="inline-flex items-center gap-2 rounded-full border border-sky-300 bg-sky-50 px-3 py-2 text-xs font-semibold text-sky-900 shadow-md hover:bg-sky-100"
+        data-testid="ai-report-assistant-minimized"
+        title="Expand AI Report Assistant"
+        onClick={() => props.onMinimizedChange?.(false)}
+      >
+        <Bot className="h-3.5 w-3.5" />
+        AI Assistant
+        {props.job ? statusBadge(props.job.status) : null}
+        <Maximize2 className="h-3 w-3 opacity-70" />
+      </button>
+    );
+  }
+
   return (
     <div
       className="rounded-xl border border-sky-200 bg-gradient-to-r from-sky-50/80 to-white dark:from-sky-950/20 dark:to-background p-3 space-y-2"
@@ -128,7 +147,20 @@ export function ReportComposerAssistant(props: Props) {
             </p>
           </div>
         </div>
-        {props.job ? statusBadge(props.job.status) : statusBadge("NONE")}
+        <div className="flex items-center gap-1 shrink-0">
+          {props.job ? statusBadge(props.job.status) : statusBadge("NONE")}
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className="h-7 w-7 p-0"
+            title="Minimize"
+            data-testid="ai-report-assistant-minimize"
+            onClick={() => props.onMinimizedChange?.(true)}
+          >
+            <Minus className="h-3.5 w-3.5" />
+          </Button>
+        </div>
       </div>
 
       <div className="flex flex-wrap gap-1.5">

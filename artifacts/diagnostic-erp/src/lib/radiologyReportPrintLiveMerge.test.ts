@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { provenanceFromText } from "./reportFieldMerge";
 import {
   buildLivePrintBodyHtml,
+  formatPrintBodyHtml,
   injectProvenancePreviewChrome,
   mergeLiveBodyIntoPrintHtml,
   replacePrintBodyDiv,
@@ -27,6 +28,24 @@ describe("radiologyReportPrintLiveMerge", () => {
     expect(body).toContain("Impression");
     expect(body).toContain("Normal CT brain study.");
     expect(body).toContain("RECOMMENDATION");
+  });
+
+  it("formatPrintBodyHtml keeps s/o slash and renders **bold**", () => {
+    expect(formatPrintBodyHtml("s\u2215o hypertension")).toContain("s/o hypertension");
+    expect(formatPrintBodyHtml("Disc **bulge** at L4-L5")).toBe("Disc <strong>bulge</strong> at L4-L5");
+  });
+
+  it("buildLivePrintBodyHtml honours bold markdown in findings", () => {
+    const body = buildLivePrintBodyHtml({
+      clinicalHistory: "",
+      technique: "",
+      rawFindings: "s/o **disc bulge**",
+      findingsMap: {},
+      useStructured: false,
+      impression: [],
+      recommendation: "",
+    });
+    expect(body).toContain("s/o <strong>disc bulge</strong>");
   });
 
   it("replacePrintBodyDiv handles nested section-heading divs", () => {

@@ -4,8 +4,9 @@
  */
 import { expect, test } from "@playwright/test";
 import path from "node:path";
+import { resolveArtifactDir } from "../helpers/resolveTestArtifactDir";
 
-const ARTIFACTS = "/opt/cursor/artifacts";
+const ARTIFACTS = resolveArtifactDir();
 
 test.use({ video: "on", viewport: { width: 1600, height: 900 } });
 test.setTimeout(120_000);

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import {
+  buildErpShellProbeUrl,
   buildLanFailoverOptions,
   buildLanFailoverUrl,
   buildLanStaffLoginUrl,
@@ -94,5 +95,20 @@ describe("erpConnectivity URL helpers", () => {
     expect(getLastWorkingLanHost()).toBe("172.16.1.139");
     const options = buildLanFailoverOptions();
     expect(options[0]?.host).toBe("172.16.1.139");
+  });
+
+  it("does not double /erp when probing origins that already include the base path", () => {
+    expect(buildErpShellProbeUrl("https://caredeoghar.com/erp")).toBe(
+      "https://caredeoghar.com/erp/index.html",
+    );
+    expect(buildErpShellProbeUrl("http://172.16.1.139:8888/erp/")).toBe(
+      "http://172.16.1.139:8888/erp/index.html",
+    );
+    const base = getErpBasePath().replace(/\/$/, "");
+    if (base && base !== "/") {
+      expect(buildErpShellProbeUrl(`http://172.16.1.139:8888${base}`)).toBe(
+        `http://172.16.1.139:8888${base}/index.html`,
+      );
+    }
   });
 });

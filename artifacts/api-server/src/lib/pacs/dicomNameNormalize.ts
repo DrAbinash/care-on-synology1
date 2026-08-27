@@ -182,12 +182,32 @@ export function accessionLooksLikeReferringDoctor(raw: string | null | undefined
   return false;
 }
 
+/**
+ * True for PACS/self-referral placeholders that must never print as REF. BY
+ * (e.g. "DR. SELF ONLINE", "DR. SELF WB", "walk-in").
+ */
+export function isJunkReferringDoctor(raw: string | null | undefined): boolean {
+  const s = String(raw ?? "")
+    .replace(/\^+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+  if (!s) return true;
+  const body = s.replace(/^dr\.?\s*/i, "").trim();
+  if (!body) return true;
+  if (/^(self|walk[\s-]*in|na|n\/a|none|-|—|–|\.)$/i.test(body)) return true;
+  if (/^self(\s|$|[-_/])/i.test(body)) return true;
+  if (/\bself\b/.test(body) && /\b(online|wb|web|portal|app|referral)\b/.test(body)) return true;
+  return false;
+}
+
 /** Display form for a referring doctor: "Dr. Sanjay Kumar, MD". */
 export function formatReferringDoctorDisplay(raw: string | null | undefined): string {
   const s = String(raw ?? "").trim();
   if (!s) return "";
-  if (/^(self|walk[\s-]*in|na|n\/a|none|-)$/i.test(s)) return s;
+  if (isJunkReferringDoctor(s)) return "";
   const formatted = formatDicomPersonNameForDisplay(s) || s.replace(/\^+/g, " ").replace(/\s+/g, " ").trim();
+  if (!formatted || isJunkReferringDoctor(formatted)) return "";
   if (/^dr\.?\s/i.test(formatted)) {
     return formatted.replace(/^dr\.?\s+/i, "Dr. ");
   }
@@ -204,7 +224,12 @@ export function reconcileAccessionVsReferringDoctor(input: {
 }): { accessionNumber: string; referringDoctor: string } {
   const accession = String(input.accessionNumber ?? "").trim();
   let referring = String(input.referringDoctor ?? "").trim();
-  if (!referring && accessionLooksLikeReferringDoctor(accession)) {
+  if (isJunkReferringDoctor(referring)) referring = "";
+  if (
+    !referring
+    && accessionLooksLikeReferringDoctor(accession)
+    && !isJunkReferringDoctor(accession)
+  ) {
     referring = formatReferringDoctorDisplay(accession);
     return { accessionNumber: "", referringDoctor: referring };
   }
