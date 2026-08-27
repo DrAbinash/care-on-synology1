@@ -79,6 +79,7 @@ export type QuickProtocol = {
   id: number;
   name: string;
   studyType: string;
+  studyTabId?: number | null;
   modality: string;
   checklistJson: string;
   techniqueText: string;
@@ -92,10 +93,12 @@ export type QuickProtocol = {
 };
 
 // Clinical History quick-select chip — short label shown on the chip, longer
-// insertedText dropped into the Clinical History field. Study-specific.
+// insertedText dropped into the Clinical History field. Authoritative link:
+// studyTabId → radiology_study_tabs.id (studyType is denormalized display).
 export type QuickClinicalHistoryChip = {
   id: number;
   studyType: string;
+  studyTabId?: number | null;
   displayLabel: string;
   insertedText: string;
   sortOrder: number;

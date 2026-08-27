@@ -209,16 +209,25 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     [modality, studyDescription, dicomBodyPart, studyRegions, regionOverrides, matchedStudyRegion, activeProtocol?.name],
   );
 
-  /** Protocols for the selected region(s). When no region is chosen yet, show
-   *  every active protocol so the radiologist can pick manually (selecting a
-   *  protocol then seeds the region from protocol.studyType). */
+  /** Canonical Study Tab id for the primary selected region (Section 1). */
+  const selectedStudyTabId = useMemo(() => {
+    const name = matchedStudyRegion;
+    if (!name) return null;
+    return (quickSelectData?.tabs ?? []).find((t) => t.isActive && t.name === name)?.id ?? null;
+  }, [quickSelectData, matchedStudyRegion]);
+
+  /** Techniques/protocols for the selected Study Tab (ID first; name fallback). */
   const availableProtocols = useMemo(() => {
     const all = (quickSelectData?.protocols ?? [])
       .filter((p) => p.isActive)
       .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name));
+    if (selectedStudyTabId != null) {
+      const byId = all.filter((p) => p.studyTabId === selectedStudyTabId);
+      if (byId.length > 0) return byId;
+    }
     if (studyRegions.length === 0) return all;
-    return all.filter((p) => studyRegions.includes(p.studyType));
-  }, [quickSelectData, studyRegions]);
+    return all.filter((p) => studyRegions.includes(p.studyType) && p.studyTabId == null);
+  }, [quickSelectData, studyRegions, selectedStudyTabId]);
 
   const selectedTemplate = useMemo(
     () => templates.find((t) => t.id === selectedTemplateId) ?? null,
@@ -301,7 +310,9 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     if (studyRegions.length === 0 && protocol.studyType?.trim()) {
       setRegionOverrides([protocol.studyType.trim()]);
     }
-    applyProtocol(protocol, false);
+    // Explicit Technique dropdown / Edit save: use safe replace (empty or prior
+    // auto-insert → replace; otherwise merge — never silent wipe of manual text).
+    applyProtocol(protocol, true);
   }, [applyProtocol, studyRegions.length]);
 
   // Auto protocol once per study (after draft hydrate settles).
@@ -311,14 +322,15 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     autoProtocolForStudyRef.current = studyId;
     const fields = setters.readFields();
     if (fields.technique.trim()) return;
-    const protocol = pickQuickProtocol(quickSelectData.protocols, matchedStudyRegion);
+    const protocol = pickQuickProtocol(quickSelectData.protocols, matchedStudyRegion, selectedStudyTabId);
     if (protocol) applyProtocol(protocol, true);
   }, [
     studyId, quickSelectData, isLoadingExistingDraft, draftHydrated, existingDraft,
-    matchedStudyRegion, applyProtocol, setters,
+    matchedStudyRegion, selectedStudyTabId, applyProtocol, setters,
   ]);
 
-  // Region override: switch the protocol selector without replacing typed technique.
+  // Region override: switch Technique dropdown; fill Technique only when empty.
+  // Manual / draft Technique must survive Study Tab change (no silent merge).
   useEffect(() => {
     if (!studyId || !quickSelectData || !draftHydrated) return;
     if (!matchedStudyRegion) return;
@@ -326,10 +338,18 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     const isFirst = lastRegionForProtocolRef.current == null;
     lastRegionForProtocolRef.current = matchedStudyRegion;
     if (isFirst) return;
-    const protocol = pickQuickProtocol(quickSelectData.protocols, matchedStudyRegion);
-    if (protocol) applyProtocol(protocol, false);
-    else setActiveProtocol(null);
-  }, [studyId, quickSelectData, draftHydrated, matchedStudyRegion, applyProtocol]);
+    const protocol = pickQuickProtocol(quickSelectData.protocols, matchedStudyRegion, selectedStudyTabId);
+    if (!protocol) {
+      setActiveProtocol(null);
+      return;
+    }
+    const fields = setters.readFields();
+    if (!fields.technique.trim()) {
+      applyProtocol(protocol, true);
+    } else {
+      setActiveProtocol(protocol);
+    }
+  }, [studyId, quickSelectData, draftHydrated, matchedStudyRegion, selectedStudyTabId, applyProtocol, setters]);
 
   // Keep the workspace store's reporting context in lockstep so snippet /
   // format / Quick Select tile lookups consume the same resolved identity.
@@ -592,7 +612,7 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
       if (!ok) return;
     }
     studyRegions.forEach((region, i) => {
-      const protocol = pickQuickProtocol(quickSelectData?.protocols ?? [], region);
+      const protocol = pickQuickProtocol(quickSelectData?.protocols ?? [], region, selectedStudyTabId);
       if (protocol) applyProtocol(protocol, i === 0);
       else if (i === 0) setActiveProtocol(null);
     });
@@ -601,7 +621,7 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     if (match) selectTemplateManual(match.id);
     onToast?.({
       title: "Study setup applied",
-      description: `${quickSelectData ? (pickQuickProtocol(quickSelectData.protocols, primary)?.name ?? "Protocol") : "Protocol"} · ${match?.templateName ?? "template"}`,
+      description: `${quickSelectData ? (pickQuickProtocol(quickSelectData.protocols, primary, selectedStudyTabId)?.name ?? "Protocol") : "Protocol"} · ${match?.templateName ?? "template"}`,
     });
   }, [
     disabled, studyRegions, matchedStudyRegion, quickSelectData, applyProtocol,
@@ -624,16 +644,16 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
 
     let mergedTechnique = "";
     for (const region of studyRegions) {
-      const protocol = pickQuickProtocol(quickSelectData?.protocols ?? [], region);
+      const protocol = pickQuickProtocol(quickSelectData?.protocols ?? [], region, selectedStudyTabId);
       if (protocol?.techniqueText) mergedTechnique = mergeTechnique(mergedTechnique, protocol.techniqueText);
       const tab = quickSelectData?.tabs?.find((t) => t.name === region);
       if (tab?.techniqueText) mergedTechnique = mergeTechnique(mergedTechnique, tab.techniqueText);
     }
-    const primaryProtocol = pickQuickProtocol(quickSelectData?.protocols ?? [], studyRegions[0]!);
+    const primaryProtocol = pickQuickProtocol(quickSelectData?.protocols ?? [], studyRegions[0]!, selectedStudyTabId);
     if (primaryProtocol) {
       applyProtocol(primaryProtocol, true);
       for (const region of studyRegions.slice(1)) {
-        const protocol = pickQuickProtocol(quickSelectData?.protocols ?? [], region);
+        const protocol = pickQuickProtocol(quickSelectData?.protocols ?? [], region, selectedStudyTabId);
         if (protocol) applyProtocol(protocol, false);
       }
     }
@@ -711,7 +731,7 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     const added = !studyRegions.includes(regionName);
     setRegionOverrides(next);
     if (!added) return;
-    const protocol = pickQuickProtocol(quickSelectData?.protocols ?? [], regionName);
+    const protocol = pickQuickProtocol(quickSelectData?.protocols ?? [], regionName, selectedStudyTabId);
     if (protocol) applyProtocol(protocol, false);
     const tab = quickSelectData?.tabs?.find((t) => t.name === regionName);
     if (tab?.techniqueText) {
@@ -731,7 +751,7 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
       return;
     }
     setRegionOverrides([regionName]);
-    const protocol = pickQuickProtocol(quickSelectData?.protocols ?? [], regionName);
+    const protocol = pickQuickProtocol(quickSelectData?.protocols ?? [], regionName, selectedStudyTabId);
     if (protocol) applyProtocol(protocol, false);
     const tab = quickSelectData?.tabs?.find((t) => t.name === regionName);
     if (tab?.techniqueText) {
@@ -752,6 +772,7 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     availableRegions,
     availableStudyTabs,
     availableProtocols,
+    selectedStudyTabId,
     activeProtocol,
     setActiveProtocol,
     applyProtocol,

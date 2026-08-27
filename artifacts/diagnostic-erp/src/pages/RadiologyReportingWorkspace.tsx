@@ -195,6 +195,7 @@ import ReportDemographyCard from "@/components/radiology/ReportDemographyCard";
 import ReferringDoctorQuickSelect from "@/components/ReferringDoctorQuickSelect";
 import { StudyRegionReportFormatSection } from "@/components/radiology/StudyRegionReportFormatSection";
 import ClinicalHistoryChipStrip from "@/components/radiology/ClinicalHistoryChipStrip";
+import TechniqueChoiceStrip from "@/components/radiology/TechniqueChoiceStrip";
 import StudyLocalFindingEditDialog, {
   type StudyLocalTextOverride,
 } from "@/components/radiology/StudyLocalFindingEditDialog";
@@ -3608,70 +3609,26 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                     </div>
                     </ReportAccordionSection>
 
-                    {/* 5. TECHNIQUE — Quick Select + editor + dictation + protocol context */}
+                    {/* 5. TECHNIQUE — Study Tab technique choices + one editable field */}
                     <ReportAccordionSection {...accordionProps("technique")}>
-                    <div className="mb-1.5 flex flex-wrap items-center gap-1.5 text-[10px]" data-testid="technique-protocol-context">
-                      <label className="inline-flex items-center gap-1 text-muted-foreground">
-                        <span className="font-semibold">Region</span>
-                        <select
-                          className="h-6 max-w-[11rem] rounded border bg-background px-1 text-[10px]"
-                          value={studySetup.matchedStudyRegion ?? ""}
-                          disabled={isLocked || isFinalized || studySetup.availableRegions.length === 0}
-                          onChange={(e) => studySetup.selectPrimaryRegion(e.target.value || null)}
-                          data-testid="technique-region-select"
-                          title="Manual region override"
-                        >
-                          <option value="">
-                            {studySetup.availableRegions.length === 0 ? "No regions" : "Select region…"}
-                          </option>
-                          {studySetup.availableRegions.map((r) => (
-                            <option key={r} value={r}>{r}</option>
-                          ))}
-                        </select>
-                      </label>
-                      <label className="inline-flex items-center gap-1 text-muted-foreground">
-                        <span className="font-semibold">Protocol / technique</span>
-                        <select
-                          className="h-6 max-w-[14rem] rounded border bg-background px-1 text-[10px]"
-                          value={studySetup.activeProtocol?.id ?? ""}
-                          disabled={isLocked || isFinalized || studySetup.availableProtocols.length === 0}
-                          onChange={(e) => {
-                            const id = Number(e.target.value);
-                            const p = studySetup.availableProtocols.find((x) => x.id === id) ?? null;
-                            studySetup.requestProtocolChange(p);
-                          }}
-                          data-testid="technique-protocol-select"
-                          title="Manual protocol / technique override"
-                        >
-                          <option value="">
-                            {studySetup.availableProtocols.length === 0 ? "No protocols — set in Settings" : "Select protocol…"}
-                          </option>
-                          {studySetup.availableProtocols.map((p) => (
-                            <option key={p.id} value={p.id}>{p.name}{p.isDefault ? " ★" : ""}</option>
-                          ))}
-                        </select>
-                      </label>
-                      {studySetup.studyRegions.length > 0 && (
-                        <span className="rounded border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 font-semibold text-emerald-900">
-                          {studySetup.studyRegions.join(" + ")}
-                        </span>
-                      )}
-                      <button
-                        type="button"
-                        className="underline underline-offset-2 hover:text-foreground text-muted-foreground"
-                        onClick={() => setActiveReportSection("region")}
-                        title="Change region or protocol (Alt+3)"
-                      >
-                        regions
-                      </button>
-                    </div>
-                    <div className="flex items-center gap-2" data-testid="canonical-technique-editor">
+                    <TechniqueChoiceStrip
+                      protocols={studySetup.quickSelectData?.protocols ?? []}
+                      studyTabs={clinicalHistoryStudyTabs}
+                      selectedStudyTabId={studySetup.selectedStudyTabId}
+                      selectedStudyTabName={studySetup.matchedStudyRegion}
+                      activeProtocolId={studySetup.activeProtocol?.id ?? null}
+                      onSelectProtocol={(p) => studySetup.requestProtocolChange(p)}
+                      isOwner={isOwner}
+                      disabled={isLocked || isFinalized}
+                    />
+                    <div className="flex items-center gap-2 mt-1.5" data-testid="canonical-technique-editor">
                       <div className="flex-1">
                         <FindingsEditor
                           field="technique"
                           label="Technique"
                           minHeight="60px"
                           placeholder="Modality, sequences, contrast..."
+                          hideQuickSelect
                           onQuickSelectPick={() => { void saveDraft({ silent: true }); }}
                         />
                       </div>

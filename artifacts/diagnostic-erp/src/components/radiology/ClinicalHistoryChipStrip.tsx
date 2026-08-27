@@ -1,10 +1,10 @@
 /**
  * Server-backed Clinical History chips for Reporting Workspace Section 2.
  *
- * Chips belong to a Study Tab via studyType === radiology_study_tabs.name
- * (catalog identity resolved through Study Tab id → name). Clicking merges
- * into the single clinicalHistory field; toggle-off removes only an exact
- * prior contribution. Laterality uses `{side}` + existing fillTemplate.
+ * Chips belong to a Study Tab via study_tab_id (authoritative). studyType is
+ * denormalized for display/legacy. Clicking merges into the single
+ * clinicalHistory field; toggle-off removes only an exact prior contribution.
+ * Laterality uses `{side}` + existing fillTemplate.
  */
 
 import { useMemo, useState } from "react";
@@ -23,6 +23,7 @@ import {
   toggleHistoryChipContribution,
   type Side,
 } from "@/lib/clinicalHistoryText";
+import { clinicalHistoryChipsForStudyTab } from "@/lib/pickQuickProtocol";
 
 type ChipDraft = {
   id?: number;
@@ -107,19 +108,27 @@ export default function ClinicalHistoryChipStrip({
     return null;
   }, [studyTabs, selectedStudyTabId, selectedStudyTabName]);
 
-  const catalogStudyType = selectedTab?.name ?? null;
+  const catalogStudyType = selectedTab?.name ?? selectedStudyTabName ?? null;
 
-  const visible = useMemo(() => {
-    if (!catalogStudyType) return [];
-    return chips
-      .filter((c) => c.isActive && c.studyType === catalogStudyType)
-      .slice()
-      .sort((a, b) => a.sortOrder - b.sortOrder || a.displayLabel.localeCompare(b.displayLabel));
-  }, [chips, catalogStudyType]);
+  const { matched: visible, unresolvedLegacy } = useMemo(() => {
+    if (selectedStudyTabId == null && !catalogStudyType) {
+      return { matched: [] as QuickClinicalHistoryChip[], unresolvedLegacy: [] as QuickClinicalHistoryChip[] };
+    }
+    const result = clinicalHistoryChipsForStudyTab(chips, selectedStudyTabId, catalogStudyType);
+    return {
+      matched: result.matched
+        .slice()
+        .sort((a, b) => a.sortOrder - b.sortOrder || a.displayLabel.localeCompare(b.displayLabel)),
+      unresolvedLegacy: result.unresolvedLegacy,
+    };
+  }, [chips, selectedStudyTabId, catalogStudyType]);
 
   const saveMut = useMutation({
     mutationFn: (draft: ChipDraft) => {
+      const byName = studyTabs.find((t) => t.name === draft.studyType.trim());
+      const studyTabId = selectedStudyTabId ?? byName?.id ?? undefined;
       const body = {
+        studyTabId,
         studyType: draft.studyType.trim(),
         displayLabel: draft.displayLabel.trim(),
         insertedText: draft.insertedText.trim() || draft.displayLabel.trim(),
@@ -161,7 +170,7 @@ export default function ClinicalHistoryChipStrip({
   });
 
   const openNew = () => {
-    if (!catalogStudyType) {
+    if (selectedStudyTabId == null || !catalogStudyType) {
       toast({
         title: "Select a Study / Region first",
         description: "History choices belong to the current Study Tab.",
@@ -209,8 +218,9 @@ export default function ClinicalHistoryChipStrip({
                   type="button"
                   disabled={disabled}
                   data-testid={`history-chip-${chip.id}`}
-                  data-study-tab-id={selectedTab?.id ?? undefined}
+                  data-study-tab-id={chip.studyTabId ?? selectedTab?.id ?? undefined}
                   data-study-type={chip.studyType}
+                  data-legacy={!chip.studyTabId ? "true" : "false"}
                   onClick={() => applyChip(chip)}
                   title={chip.insertedText}
                   aria-pressed={active}
@@ -283,7 +293,8 @@ export default function ClinicalHistoryChipStrip({
             <p className="text-[10px] text-muted-foreground">
               History choices for Study Tab{" "}
               <strong className="text-foreground">{catalogStudyType ?? "—"}</strong>
-              {selectedTab ? ` (id ${selectedTab.id})` : ""} — server catalog, not localStorage.
+              {selectedTab ? ` (id ${selectedTab.id})` : ""} — linked by Study Tab ID.
+              {unresolvedLegacy.length > 0 ? ` · ${unresolvedLegacy.length} legacy unmatched by name` : ""}
             </p>
             <button type="button" className="p-1 text-muted-foreground" onClick={() => { setManageOpen(false); setEditing(null); }} aria-label="Close">
               <X size={12} />
