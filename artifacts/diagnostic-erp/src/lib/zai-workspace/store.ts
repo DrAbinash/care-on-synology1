@@ -15,6 +15,7 @@ import {
 } from "./reportFormatsApi";
 import { hydrateChocolateMacrosFromServer } from "@/lib/chocolateMacrosApi";
 import { shouldConfirmFormatOverwrite, clinicalFieldsFromFormat } from "./fullReportFormat";
+import { appendClinicalPhrase } from "@/lib/clinicalHistoryText";
 import { DEFAULT_SNIPPET_MACROS, lookupMacros, lookupMacrosForContext, loadMacros, saveMacros, createMacro } from "./snippet-macros-library";
 import { DEFAULT_SIGN_OFF_PROFILES, loadProfiles, saveProfiles, lookupProfile, formatSignOff, createProfile } from "./sign-off-profiles";
 import {
@@ -653,7 +654,17 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       get().setField("impression", clinical.impression, { source: "template", replaceProvenance: true });
       get().setField("recommendation", clinical.recommendation, { source: "template", replaceProvenance: true });
       if (clinical.clinicalHistory.trim()) {
-        get().setField("clinicalHistory", clinical.clinicalHistory, { source: "template", replaceProvenance: true });
+        // Patient/worklist/manual Hx wins: merge format phrase (no duplicate), never replace.
+        const cur = get().clinicalHistoryText;
+        const phrase = clinical.clinicalHistory.trim();
+        if (!cur.trim()) {
+          get().setField("clinicalHistory", phrase, { source: "template", replaceProvenance: true });
+        } else {
+          const merged = appendClinicalPhrase(cur, phrase);
+          if (merged !== cur) {
+            get().setField("clinicalHistory", merged, { source: "template" });
+          }
+        }
       }
       const nf = get().reportFormats.map((x: ReportFormat) => x.id === f.id ? { ...x, usageCount: (x.usageCount ?? 0) + 1 } : x);
       saveFormats(nf);

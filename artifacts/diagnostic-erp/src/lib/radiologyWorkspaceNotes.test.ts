@@ -66,11 +66,13 @@ describe("Radiology Reporting Workspace handwritten notes", () => {
     expect(doctorsPage).toContain('regEdit("degree")');
   });
 
-  it("History section saves server chips via + Add Title pencil editor", () => {
+  it("History section saves server chips via + Add / Edit for the Study Tab", () => {
     const historyStrip = read("components/radiology/ClinicalHistoryChipStrip.tsx");
-    expect(historyStrip).toContain('data-testid="history-add-title"');
+    expect(historyStrip).toContain('data-testid="history-add-chip"');
+    expect(historyStrip).toContain('data-testid="history-edit-chips"');
     expect(historyStrip).toContain("/api/radiology/quick-select/clinical-history");
     expect(historyStrip).toContain('queryKey: ["radiology-quick-select"]');
+    expect(historyStrip).toContain("selectedStudyTabId");
     expect(workspace).toContain("ClinicalHistoryChipStrip");
     expect(workspace).toContain('onEditSection={focusReportField}');
   });

@@ -1294,10 +1294,25 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
 
   const clinicalHistoryChips = useMemo(
     () => (studySetup.quickSelectData?.clinicalHistory ?? [])
-      .filter((c) => c.isActive && studySetup.studyRegions.includes(c.studyType))
+      .filter((c) => c.isActive)
+      .slice()
       .sort((a, b) => a.sortOrder - b.sortOrder || a.displayLabel.localeCompare(b.displayLabel)),
-    [studySetup.quickSelectData, studySetup.studyRegions],
+    [studySetup.quickSelectData],
   );
+
+  const clinicalHistoryStudyTabs = useMemo(
+    () => (studySetup.quickSelectData?.tabs ?? [])
+      .filter((t) => t.isActive)
+      .map((t) => ({ id: t.id, name: t.name })),
+    [studySetup.quickSelectData],
+  );
+
+  const selectedClinicalHistoryTab = useMemo(() => {
+    const name = studySetup.matchedStudyRegion;
+    if (!name) return null;
+    return clinicalHistoryStudyTabs.find((t) => t.name === name) ?? null;
+  }, [clinicalHistoryStudyTabs, studySetup.matchedStudyRegion]);
+
 
   const recommendationChips = useMemo<string[]>(() => {
     const raw = pacsSettingsRows?.find((r) => r.key === "report_recommendation_chips")?.value;
@@ -3571,14 +3586,21 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       <div className="flex-1 space-y-1.5">
                         <ClinicalHistoryChipStrip
                           chips={clinicalHistoryChips}
-                          studyRegions={studySetup.studyRegions}
-                          defaultStudyType={studySetup.studyRegions[0] || studySetup.matchedStudyRegion || "MRI Brain"}
+                          studyTabs={clinicalHistoryStudyTabs}
+                          selectedStudyTabId={selectedClinicalHistoryTab?.id ?? null}
+                          selectedStudyTabName={studySetup.matchedStudyRegion}
                           clinicalHistoryText={clinicalHistoryText}
                           onClinicalHistoryChange={(next) => useWorkspace.getState().setField("clinicalHistory", next)}
                           isOwner={isOwner}
                           disabled={isLocked || isFinalized}
                         />
-                        <FindingsEditor field="clinicalHistory" label="Clinical History" minHeight="56px" placeholder="Presenting complaint and relevant history." />
+                        <FindingsEditor
+                          field="clinicalHistory"
+                          label="Clinical History"
+                          minHeight="56px"
+                          placeholder="Presenting complaint and relevant history."
+                          hideQuickSelect
+                        />
                       </div>
                       {!isLocked && !isFinalized && (
                         <FieldCareMic voice={voiceSession} target="clinicalHistory" />
@@ -4035,16 +4057,19 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                                     : undefined
                                 }
                                 onSuggestHistory={
-                                  clinicalHistoryChips.length > 0
+                                  clinicalHistoryChips.some((c) => c.studyType === studySetup.matchedStudyRegion)
                                     ? () => {
                                         if (isLocked || isFinalized) return;
                                         const state = useWorkspace.getState();
+                                        const region = studySetup.matchedStudyRegion;
                                         state.setField(
                                           "clinicalHistory",
-                                          clinicalHistoryChips.reduce(
-                                            (acc, chip) => (hasPhrase(acc, chip.insertedText) ? acc : appendClinicalPhrase(acc, chip.insertedText)),
-                                            state.clinicalHistoryText,
-                                          ),
+                                          clinicalHistoryChips
+                                            .filter((c) => c.studyType === region)
+                                            .reduce(
+                                              (acc, chip) => (hasPhrase(acc, chip.insertedText) ? acc : appendClinicalPhrase(acc, chip.insertedText)),
+                                              state.clinicalHistoryText,
+                                            ),
                                         );
                                       }
                                     : undefined
