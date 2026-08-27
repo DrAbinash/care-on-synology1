@@ -103,6 +103,16 @@ export function lookupFormats(formats: ReportFormat[], m: Modality | undefined, 
   });
 }
 
+function sortFormatsForContext(formats: ReportFormat[], hay: FormatLookupExtras): ReportFormat[] {
+  return [...formats].sort((a, b) => {
+    const ra = formatContextRank(a, hay);
+    const rb = formatContextRank(b, hay);
+    if (ra !== rb) return rb - ra;
+    if (a.isCommon !== b.isCommon) return a.isCommon ? -1 : 1;
+    return (b.usageCount ?? 0) - (a.usageCount ?? 0) || a.name.localeCompare(b.name);
+  });
+}
+
 export function lookupFormatsForContext(
   formats: ReportFormat[],
   m: Modality | undefined,
@@ -115,18 +125,44 @@ export function lookupFormatsForContext(
     protocolName: extras?.protocolName ?? ctx.protocolName,
     studyDescription: extras?.studyDescription ?? ctx.studyDescription,
   };
-  return formats
-    .filter((f) => {
+  return sortFormatsForContext(
+    formats.filter((f) => {
       if (f.modality !== m) return false;
       const bp = (canonicalContentRegion(f.bodyPart) || f.bodyPart).toLowerCase();
       return allowed.has(bp);
-    })
-    .sort((a, b) => {
-      const ra = formatContextRank(a, hay);
-      const rb = formatContextRank(b, hay);
-      if (ra !== rb) return rb - ra;
-      return a.name.localeCompare(b.name);
-    });
+    }),
+    hay,
+  );
+}
+
+/**
+ * Picker-facing lookup: prefer region-scoped formats, then study bodyPart,
+ * then modality-wide. Never returns [] solely because DICOM region is unresolved —
+ * that made Orient → Full Report Formats look like "nothing changed" after #600.
+ */
+export function lookupFormatsForPicker(
+  formats: ReportFormat[],
+  m: Modality | undefined,
+  ctx: ReportingStudyContext | null | undefined,
+  extras?: FormatLookupExtras & { bodyPartFallback?: string | null },
+): { formats: ReportFormat[]; scope: "region" | "bodyPart" | "modality" | "none" } {
+  const scoped = lookupFormatsForContext(formats, m, ctx, extras);
+  if (scoped.length > 0) return { formats: scoped, scope: "region" };
+
+  const hay: FormatLookupExtras = {
+    protocolName: extras?.protocolName ?? ctx?.protocolName,
+    studyDescription: extras?.studyDescription ?? ctx?.studyDescription,
+  };
+  const bp = (extras?.bodyPartFallback || "").trim();
+  if (m && bp) {
+    const byPart = lookupFormats(formats, m, bp);
+    if (byPart.length > 0) return { formats: sortFormatsForContext(byPart, hay), scope: "bodyPart" };
+  }
+  if (m) {
+    const byMod = formats.filter((f) => f.modality === m);
+    if (byMod.length > 0) return { formats: sortFormatsForContext(byMod, hay), scope: "modality" };
+  }
+  return { formats: [], scope: "none" };
 }
 
 const SK = "zai-rad-reportformats-v1";
