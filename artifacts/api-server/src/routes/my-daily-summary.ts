@@ -6,7 +6,7 @@ import { FULL_ACCESS_ROLES, requireAdminRole } from "../middleware/requireStaffA
 import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { getTransporter, getEmailSettings } from "../email";
 import { classifyPaymentMethod, isPhysicalCash, isDigitalSettlement } from "../lib/paymentMethodClassifier";
-import { computeRefundsOnCancelledBillsCreatedInPeriod, computeCollectibleForReconciliation } from "../lib/dailySummaryCollectible";
+import { computeRefundsOnBillsCancelledByMe, computeCollectibleForReconciliation } from "../lib/dailySummaryCollectible";
 import { buildStaffActivityRows, BILL_AUDIT_OPERATIONAL_CHANGE_TYPES } from "../lib/staffActivityAttribution";
 import { buildBillingVsPacsSummary } from "../lib/pacs/billingVsPacsSummary";
 import {
@@ -434,15 +434,16 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
     .filter((p) => p.billStatus !== "cancelled")
     .reduce((s, p) => s + Math.abs(Number(p.amount)), 0);
   const refundsWithoutCancellationCount = refundItems.filter((p) => p.billStatus !== "cancelled").length;
-  // Refunds on bills created in this period that are now cancelled — already
-  // removed from collectible via cancelledOnMyBills; exclude from refund
-  // deduction so same-day cancel+refund does not double-subtract.
-  const refundsOnCancelledBillsCreatedInPeriod = computeRefundsOnCancelledBillsCreatedInPeriod(
+  // Refunds this staff recorded on bills they cancelled — already removed from
+  // collectible via cancelledAmount; exclude so cancel+refund does not double-subtract.
+  const cancelledByMeIds = cancelledByMe.map((r) => r.id);
+  const refundsOnBillsCancelledByMe = computeRefundsOnBillsCancelledByMe(
     knownRefundItems,
-    start,
-    end,
+    cancelledByMeIds,
   );
-  // Bills CANCELLED BY this staff (informational — accountability of canceller)
+  // Alias kept for older clients; semantics now follow canceller, not creator.
+  const refundsOnCancelledBillsCreatedInPeriod = refundsOnBillsCancelledByMe;
+  // Bills CANCELLED BY this staff (accountability of canceller)
   const cancelledAmount = cancelledByMe.reduce((s, r) => s + Number(r.totalAmount), 0);
   // FIXED: cashCollection now subtracts cash refunds (was previously gross cash in)
   const cashCollection = cashIn - cashRefunded;
@@ -624,13 +625,14 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
       refundsWithoutCancellationAmount,
       refundsWithoutCancellationCount,
       refundsOnCancelledBillsCreatedInPeriod,
+      refundsOnBillsCancelledByMe,
       collectible: computeCollectibleForReconciliation({
         grossBilledIncludingCancelled,
         duesCollectedTotal,
-        cancelledOnMyBills,
+        cancelledAmount,
         cashRefunded,
         digitalRefunded,
-        refundsOnCancelledBillsCreatedInPeriod,
+        refundsOnBillsCancelledByMe,
         outstanding,
       }),
       cancelledAmount,
@@ -1050,6 +1052,7 @@ myDailySummaryRouter.get("/drilldown", async (req: StaffAuthRequest, res) => {
         .select({
           amount: paymentsTable.amount,
           method: paymentsTable.method,
+          billId: paymentsTable.billId,
           billStatus: billsTable.status,
           billCreatedAt: billsTable.createdAt,
         })
@@ -1080,8 +1083,16 @@ myDailySummaryRouter.get("/drilldown", async (req: StaffAuthRequest, res) => {
       const cashExpenses = Number(expRows.rows[0]?.cash_expenses ?? 0);
       const digitalExpenses = Number(expRows.rows[0]?.digital_expenses ?? 0);
       const billsIncl = billsInRange.reduce((s, r) => s + Number(r.totalAmount), 0);
-      const cancelledOnBills = billsInRange.filter((r) => r.status === "cancelled").reduce((s, r) => s + Number(r.totalAmount), 0);
       const outstandingBills = billsInRange.filter((r) => r.status !== "cancelled").reduce((s, r) => s + Number(r.balanceAmount ?? 0), 0);
+      const cancelledInWindow = await db
+        .select({ id: billsTable.id, totalAmount: billsTable.totalAmount })
+        .from(billsTable)
+        .where(and(
+          gte(billsTable.cancelledAt, start),
+          lt(billsTable.cancelledAt, end),
+          ...(staffName !== null ? [eq(billsTable.cancelledByName, staffName)] : []),
+        ));
+      const cancelledByStaff = cancelledInWindow.reduce((s, r) => s + Number(r.totalAmount), 0);
 
       if (type === "expectedPhysicalCash") {
         result = {
@@ -1112,29 +1123,28 @@ myDailySummaryRouter.get("/drilldown", async (req: StaffAuthRequest, res) => {
             ...(staffName !== null ? [eq(paymentsTable.recordedByName, staffName)] : []),
           ));
         const duesCollectedTotal = duesPaymentRowsForCollectible.reduce((s, r) => s + Number(r.paymentAmount), 0);
-        const refundsOnCancelledBillsCreatedInPeriod = computeRefundsOnCancelledBillsCreatedInPeriod(
-          cashPayments.map((p) => ({ amount: p.amount, billStatus: p.billStatus, billCreatedAt: p.billCreatedAt })),
-          start,
-          end,
+        const refundsOnBillsCancelledByMe = computeRefundsOnBillsCancelledByMe(
+          cashPayments.map((p) => ({ amount: p.amount, billId: p.billId, billStatus: p.billStatus, billCreatedAt: p.billCreatedAt })),
+          cancelledInWindow.map((r) => r.id),
         );
         const collectibleAmount = computeCollectibleForReconciliation({
           grossBilledIncludingCancelled: billsIncl,
           duesCollectedTotal,
-          cancelledOnMyBills: cancelledOnBills,
+          cancelledAmount: cancelledByStaff,
           cashRefunded,
           digitalRefunded,
-          refundsOnCancelledBillsCreatedInPeriod,
+          refundsOnBillsCancelledByMe,
           outstanding: outstandingBills,
         });
-        const refundsForCollectible = Math.max(0, cashRefunded + digitalRefunded - refundsOnCancelledBillsCreatedInPeriod);
+        const refundsForCollectible = Math.max(0, cashRefunded + digitalRefunded - refundsOnBillsCancelledByMe);
         result = {
           label: "Collectible Amount — Breakdown",
           columns: ["Component", "Amount"],
           rows: [
             ["Total Bills Generated (incl. cancelled)", billsIncl],
             ["+ Old Dues Collected", duesCollectedTotal],
-            ["− Cancelled Bills", -cancelledOnBills],
-            ["− Refunds (excl. same-period cancel+refund)", -refundsForCollectible],
+            ["− Cancelled Bills (by this staff)", -cancelledByStaff],
+            ["− Refunds (excl. refunds on bills this staff cancelled)", -refundsForCollectible],
             ["− Outstanding / Dues", -outstandingBills],
             ["= Collectible Amount", collectibleAmount],
           ],

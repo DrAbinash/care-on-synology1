@@ -10,6 +10,9 @@ export type StaffSlipClinic = {
 };
 
 export type StaffPrintActivity = {
+  dueReceived?: number;
+  cancelledBillsAmount?: number;
+  refundsAmount?: number;
   discountsGiven: number;
   discountBills: Array<{
     billId: number;
@@ -143,6 +146,9 @@ function fmtIstTime(iso: string | null | undefined): string {
 
 function emptyActivity(): StaffPrintActivity {
   return {
+    dueReceived: 0,
+    cancelledBillsAmount: 0,
+    refundsAmount: 0,
     discountsGiven: 0,
     discountBills: [],
     billEdits: [],
@@ -154,14 +160,13 @@ function emptyActivity(): StaffPrintActivity {
   };
 }
 
-function summaryLine(label: string, amount: number, opts?: { strong?: boolean; hideZero?: boolean }): string {
-  if (opts?.hideZero && amount === 0) return "";
-  const cls = opts?.strong ? "line strong" : "line";
+function summaryLine(label: string, amount: number, opts?: { strong?: boolean; subtotal?: boolean }): string {
+  const cls = opts?.strong ? "line strong" : opts?.subtotal ? "line subtotal" : "line";
   return `<div class="${cls}"><span class="lbl">${esc(label)}</span><span class="val">${esc(inr(amount))}</span></div>`;
 }
 
-function methodLine(label: string, amount: number): string {
-  if (amount === 0) return "";
+function methodLine(label: string, amount: number, always = false): string {
+  if (!always && amount === 0) return "";
   return `<div class="line method"><span class="lbl">${esc(label)}</span><span class="val">${esc(inr(amount))}</span></div>`;
 }
 
@@ -178,11 +183,14 @@ export function buildStaffDayCloseSlipHtml(
     : `<div class="logo-ph">LOGO</div>`;
 
   const totalBilled = n(c.totalBilled);
-  const totalDue = n(c.totalDue);
-  const totalExpected = n(c.totalExpected);
+  const outstanding = n(c.totalDue);
   const discounts = n(activity.discountsGiven);
-  const refunds = n(c.totalRefunds);
-  const dueReceived = n(c.dueReceived);
+  const refunds = n(activity.refundsAmount ?? c.totalRefunds);
+  const duesCollected = n(activity.dueReceived ?? c.dueReceived);
+  const cancelledBills = n(activity.cancelledBillsAmount);
+  const expense = n(activity.totalExpenses);
+  const subtotal = totalBilled + duesCollected;
+  const expected = subtotal - cancelledBills - refunds - outstanding - expense;
   const variance = n(c.variance);
 
   const closedAt = c.coveredToTs ?? c.closedAt;
@@ -218,8 +226,8 @@ export function buildStaffDayCloseSlipHtml(
     .join("");
 
   const methodBlock = [
-    methodLine("UPI", n(c.expectedUpi)),
-    methodLine("CASH", n(c.expectedCash)),
+    methodLine("UPI", n(c.expectedUpi), true),
+    methodLine("CASH", n(c.expectedCash), true),
     methodLine("CARD", n(c.expectedCard)),
     methodLine("CHEQUE", n(c.expectedCheque)),
     methodLine("OTHER", n(c.expectedOther)),
@@ -254,11 +262,11 @@ export function buildStaffDayCloseSlipHtml(
     padding-bottom: 6px;
     margin-bottom: 6px;
   }
-  .logo { width: 52px; height: 52px; object-fit: contain; flex-shrink: 0; }
+  .logo { width: 90px; height: 90px; object-fit: contain; flex-shrink: 0; }
   .logo-ph {
-    width: 52px; height: 52px; border: 2px solid #000;
+    width: 90px; height: 90px; border: 2px solid #000;
     display: flex; align-items: center; justify-content: center;
-    font-size: 10px; font-weight: 800; flex-shrink: 0;
+    font-size: 12px; font-weight: 800; flex-shrink: 0;
   }
   .brand { flex: 1; text-align: center; }
   .brand h1 { margin: 0; font-size: 22px; font-weight: 900; letter-spacing: 0.04em; }
@@ -290,9 +298,16 @@ export function buildStaffDayCloseSlipHtml(
     font-weight: 700;
     border-bottom: 1px solid #ccc;
   }
+  .line.subtotal {
+    border-top: 1px solid #000;
+    border-bottom: 1px solid #000;
+    margin-top: 2px;
+    padding-top: 3px;
+    font-weight: 800;
+  }
   .line.strong {
-    border-top: 2px solid #000;
-    border-bottom: 2px solid #000;
+    border-top: 3px double #000;
+    border-bottom: 3px double #000;
     margin-top: 4px;
     padding-top: 4px;
     font-size: 15px;
@@ -357,9 +372,16 @@ export function buildStaffDayCloseSlipHtml(
     margin-top: 10px;
     padding-top: 6px;
     border-top: 2px solid #000;
+    font-size: 12px;
+    font-weight: 800;
+    text-align: left;
+  }
+  .footer .meta {
     font-size: 11px;
     font-weight: 700;
     text-align: center;
+    margin-top: 8px;
+    color: #333;
   }
 </style></head><body>
 <div class="slip">
@@ -376,12 +398,14 @@ export function buildStaffDayCloseSlipHtml(
   <div class="cols">
     <div class="col">
       <div class="col-h">Summary</div>
-      ${summaryLine("Total Bill Generated", totalBilled)}
-      ${summaryLine("Outstanding", totalDue, { hideZero: true })}
-      ${summaryLine("Due Received", dueReceived, { hideZero: true })}
-      ${summaryLine("Discounts", discounts, { hideZero: true })}
-      ${summaryLine("REFUNDS", refunds, { hideZero: true })}
-      ${summaryLine("Expected", totalExpected, { strong: true })}
+      ${summaryLine("Total Bill Gen", totalBilled)}
+      ${summaryLine("Dues Collected", duesCollected)}
+      ${summaryLine("Subtotal", subtotal, { subtotal: true })}
+      ${summaryLine("Cancelled bills", cancelledBills)}
+      ${summaryLine("Refunds", refunds)}
+      ${summaryLine("Outstanding", outstanding)}
+      ${summaryLine("Expense", expense)}
+      ${summaryLine("Expected", expected, { strong: true })}
       ${methodBlock}
     </div>
     <div class="col">
@@ -390,16 +414,10 @@ export function buildStaffDayCloseSlipHtml(
     </div>
   </div>
 
-  <div class="section">
-    <div class="section-h">Bills Edited / Modified</div>
-    <div class="expense">(Total No.) = <strong>${editCount}</strong>${editCount === 0 ? " — none" : ""}</div>
-  </div>
-
   ${activity.expenseDetails.length > 0 ? `
   <div class="section">
-    <div class="section-h">Expenses</div>
+    <div class="section-h">Expense details</div>
     ${expenseLines}
-    <div class="exp-total">${esc(inr(activity.totalExpenses))}</div>
   </div>` : ""}
 
   ${varianceHtml}
@@ -407,8 +425,12 @@ export function buildStaffDayCloseSlipHtml(
   ${c.notes ? `<div class="note">${esc(c.notes)}</div>` : ""}
 
   <div class="footer">
-    Closure #${c.id}${c.drawerStatus ? ` · ${esc(c.drawerStatus)}` : ""}
-    · Printed ${esc(new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" }))} IST
+    <div>BILLS EDITED/MODIFIED → ${editCount}</div>
+    <div>DISCOUNTS GIVEN → Rs. ${esc(inr(discounts))}</div>
+    <div class="meta">
+      Closure #${c.id}${c.drawerStatus ? ` · ${esc(c.drawerStatus)}` : ""}
+      · Printed ${esc(new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" }))} IST
+    </div>
   </div>
 </div>
 </body></html>`;

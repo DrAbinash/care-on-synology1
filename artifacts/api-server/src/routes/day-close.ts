@@ -11,7 +11,8 @@ import { BILL_AUDIT_OPERATIONAL_CHANGE_TYPES } from "../lib/staffActivityAttribu
 import { isCollectiblePayment } from "../lib/financialIntegrity";
 import { loadPostClosureActivity } from "../lib/postClosureActivity";
 import type { StaffPrintActivity } from "../lib/postClosureActivityTypes";
-import { sendStaffDayCloseEmail } from "../email";
+import { computeStaffSlipFormula } from "../lib/staffSlipFormula";
+import { sendStaffDayCloseEmail, type StaffDayCloseEmailResult } from "../email";
 import { clinicSettingsTable } from "@workspace/db/schema";
 
 // Inline super-admin gate that works on the regular ERP staff session
@@ -694,6 +695,9 @@ type UserSummary = {
   billsCount: number;
   totalBilled: number;
   totalDue: number;
+  dueReceived: number;
+  cancelledBillsAmount: number;
+  refundsAmount: number;
   cashExpenses: number;
   digitalExpenses: number;
   totalExpenses: number;
@@ -729,7 +733,7 @@ function buildStaffPrintActivity(s: Omit<UserSummary, "printActivity"> & {
   voucherEdits: StaffPrintActivity["voucherEdits"];
 }): StaffPrintActivity {
   const discountBills = s.bills
-    .filter((b) => b.discount > 0)
+    .filter((b) => b.discount > 0 && b.status !== "cancelled")
     .map((b) => ({
       billId: b.id,
       billNumber: b.billNumber,
@@ -741,6 +745,9 @@ function buildStaffPrintActivity(s: Omit<UserSummary, "printActivity"> & {
       discountReasonNote: b.discountReasonNote,
     }));
   return {
+    dueReceived: s.dueReceived,
+    cancelledBillsAmount: s.cancelledBillsAmount,
+    refundsAmount: s.refundsAmount,
     discountsGiven: discountBills.reduce((sum, b) => sum + b.discountGiven, 0),
     discountBills,
     billEdits: s.billEdits,
@@ -762,7 +769,14 @@ async function summarizeUserWindow(
     : and(eq(paymentsTable.recordedByName, userName), lte(paymentsTable.createdAt, to));
 
   const payments = await db
-    .select({ id: paymentsTable.id, amount: paymentsTable.amount, method: paymentsTable.method, recordedByName: paymentsTable.recordedByName, settlementStatus: paymentsTable.settlementStatus })
+    .select({
+      id: paymentsTable.id,
+      billId: paymentsTable.billId,
+      amount: paymentsTable.amount,
+      method: paymentsTable.method,
+      recordedByName: paymentsTable.recordedByName,
+      settlementStatus: paymentsTable.settlementStatus,
+    })
     .from(paymentsTable)
     .where(pWhere);
 
@@ -807,17 +821,16 @@ async function summarizeUserWindow(
   }));
   const totalExpenses = expenseDetails.reduce((s, e) => s + e.amount, 0);
 
+  // Include cancelled bills in gross billed. Outstanding uses non-cancelled only.
   const bWhere = from
     ? and(
         eq(billsTable.createdByName, userName),
         gt(billsTable.createdAt, from),
         lte(billsTable.createdAt, to),
-        sql`${billsTable.status} != 'cancelled'`,
       )
     : and(
         eq(billsTable.createdByName, userName),
         lte(billsTable.createdAt, to),
-        sql`${billsTable.status} != 'cancelled'`,
       );
 
   const billRows = await db
@@ -858,6 +871,68 @@ async function summarizeUserWindow(
     createdByName: b.createdByName ?? "",
     createdAt: b.createdAt ? new Date(b.createdAt).toISOString() : "",
   }));
+  const activeBills = bills.filter((b) => b.status !== "cancelled");
+
+  // Bills this staff cancelled in the window (any original createdAt).
+  const cancelWhere = from
+    ? and(
+        eq(billsTable.cancelledByName, userName),
+        gt(billsTable.cancelledAt, from),
+        lte(billsTable.cancelledAt, to),
+      )
+    : and(
+        eq(billsTable.cancelledByName, userName),
+        lte(billsTable.cancelledAt, to),
+      );
+  const cancelledByMeRows = await db
+    .select({ id: billsTable.id, totalAmount: billsTable.totalAmount })
+    .from(billsTable)
+    .where(cancelWhere);
+  const cancelledBillIds = new Set(cancelledByMeRows.map((r) => r.id));
+  const cancelledBillsAmount = cancelledByMeRows.reduce((s, r) => s + n(r.totalAmount), 0);
+
+  // Dues collected: this staff's positive payments in the window on bills
+  // created at or before the previous close (from). First-ever close has
+  // no prior window, so dues are 0 — those bills are in totalBilled.
+  const collectiblePays = payments.filter(isCollectiblePayment);
+  let dueReceived = 0;
+  if (from) {
+    const dueCandidateIds = [...new Set(
+      collectiblePays
+        .filter((p) => n(p.amount) > 0 && p.billId != null)
+        .map((p) => p.billId as number),
+    )];
+    if (dueCandidateIds.length > 0) {
+      const dueBills = await db
+        .select({ id: billsTable.id, createdAt: billsTable.createdAt })
+        .from(billsTable)
+        .where(inArray(billsTable.id, dueCandidateIds));
+      const priorIds = new Set(
+        dueBills
+          .filter((b) => b.createdAt && new Date(b.createdAt) <= from)
+          .map((b) => b.id),
+      );
+      dueReceived = collectiblePays
+        .filter((p) => n(p.amount) > 0 && priorIds.has(p.billId))
+        .reduce((s, p) => s + n(p.amount), 0);
+    }
+  }
+
+  const refundsRecorded = collectiblePays
+    .filter((p) => n(p.amount) < 0)
+    .reduce((s, p) => s + Math.abs(n(p.amount)), 0);
+  const refundsOnBillsICancelled = collectiblePays
+    .filter((p) => n(p.amount) < 0 && cancelledBillIds.has(p.billId))
+    .reduce((s, p) => s + Math.abs(n(p.amount)), 0);
+  const formula = computeStaffSlipFormula({
+    billed: bills.reduce((s, b) => s + b.totalAmount, 0),
+    duesCollected: dueReceived,
+    cancelledBills: cancelledBillsAmount,
+    refundsRecorded,
+    refundsOnBillsICancelled,
+    outstanding: activeBills.reduce((s, b) => s + b.balanceAmount, 0),
+    expense: totalExpenses,
+  });
 
   // Bill / voucher edits by this staff inside the same close window
   // (created_at), excluding operational audit types that flood "edits".
@@ -931,8 +1006,11 @@ async function summarizeUserWindow(
   const base = {
     totals,
     billsCount:  bills.length,
-    totalBilled: bills.reduce((s, b) => s + b.totalAmount, 0),
-    totalDue:    bills.reduce((s, b) => s + b.balanceAmount, 0),
+    totalBilled: formula.billed,
+    totalDue:    formula.outstanding,
+    dueReceived: formula.duesCollected,
+    cancelledBillsAmount: formula.cancelledBills,
+    refundsAmount: formula.refunds,
     cashExpenses,
     digitalExpenses,
     totalExpenses,
@@ -971,6 +1049,9 @@ dayCloseRouter.get("/my-preview", async (req, res) => {
     paymentsCount: s.totals.count,
     totalBilled:   s.totalBilled,
     totalDue:      s.totalDue,
+    dueReceived:   s.dueReceived,
+    cancelledBillsAmount: s.cancelledBillsAmount,
+    refundsAmount: s.refundsAmount,
     cashExpenses:  s.cashExpenses,
     // Suspense/exception bucket — unrecognized payment methods, excluded
     // from `expected` above. See LOCKED BUSINESS RULE #6.
@@ -1148,17 +1229,36 @@ function calcDenominationTotal(d: { d500:number; d200:number; d100:number; d50:n
   return d.d500 * 500 + d.d200 * 200 + d.d100 * 100 + d.d50 * 50 + d.d20 * 20 + d.d10 * 10 + d.coins;
 }
 
+async function sendDayCloseEmailSafe(
+  req: { log?: { warn?: (obj: unknown, msg: string) => void; info?: (obj: unknown, msg: string) => void } },
+  args: { row: typeof userDayClosuresTable.$inferSelect; printActivity: StaffPrintActivity },
+): Promise<{ emailSent: boolean; emailSkipReason?: string }> {
+  try {
+    const result = await notifyStaffDayCloseEmail(args);
+    if (result.sent) {
+      req.log?.info?.({ closureId: args.row.id, to: result.to }, "Staff day-close email sent");
+      return { emailSent: true };
+    }
+    req.log?.warn?.({ closureId: args.row.id, reason: result.reason }, "Staff day-close email skipped");
+    return { emailSent: false, emailSkipReason: result.reason };
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : "Email send failed";
+    req.log?.warn?.({ err, closureId: args.row.id }, "Staff day-close email failed (non-blocking)");
+    return { emailSent: false, emailSkipReason: reason };
+  }
+}
+
 async function notifyStaffDayCloseEmail(args: {
   row: typeof userDayClosuresTable.$inferSelect;
   printActivity: StaffPrintActivity;
-}): Promise<void> {
+}): Promise<StaffDayCloseEmailResult> {
   const [clinic] = await db.select({ name: clinicSettingsTable.name }).from(clinicSettingsTable).limit(1);
   const denoms = args.row.denominations as {
     d500: number; d200: number; d100: number;
     d50: number; d20: number; d10: number; coins: number;
   } | null;
 
-  await sendStaffDayCloseEmail({
+  return sendStaffDayCloseEmail({
     clinicName: clinic?.name || "Care Diagnostics",
     staffName: args.row.userName,
     closureDate: String(args.row.closureDate),
@@ -1283,15 +1383,16 @@ dayCloseRouter.post("/my-close", async (req, res) => {
       "User day closed with unrecognized-method payments excluded from totals — needs admin correction",
     );
   }
-  void notifyStaffDayCloseEmail({ row: inserted.row, printActivity: inserted.printActivity }).catch((err) => {
-    req.log?.warn({ err, closureId: inserted.row.id }, "Staff day-close email failed (non-blocking)");
-  });
+  const email = await sendDayCloseEmailSafe(req, { row: inserted.row, printActivity: inserted.printActivity });
   res.status(201).json({
     ...inserted.row,
     suspenseTotal: inserted.suspenseTotal,
     suspenseCount: inserted.suspenseItems.length,
     suspenseItems: inserted.suspenseItems,
     printActivity: inserted.printActivity,
+    dueReceived: inserted.printActivity.dueReceived,
+    totalRefunds: inserted.printActivity.refundsAmount,
+    ...email,
   });
 });
 
@@ -1323,7 +1424,12 @@ dayCloseRouter.get("/my-closures/:id/print-summary", async (req, res) => {
   const from = row.coveredFromTs ? new Date(row.coveredFromTs) : null;
   const to = new Date(row.coveredToTs);
   const s = await summarizeUserWindow(row.userName, from, to);
-  res.json({ ...row, printActivity: s.printActivity });
+  res.json({
+    ...row,
+    printActivity: s.printActivity,
+    dueReceived: s.dueReceived,
+    totalRefunds: s.refundsAmount,
+  });
 });
 
 // ── Admin actions on individual staff drawers ────────────────────────────────
@@ -1450,7 +1556,13 @@ dayCloseRouter.get("/staff-close-detail/:id", requireOwnerOrAdmin, async (req, r
   const from = row.coveredFromTs ? new Date(row.coveredFromTs) : null;
   const to = new Date(row.coveredToTs);
   const windowSummary = await summarizeUserWindow(row.userName, from, to);
-  res.json({ ...row, bills: windowSummary.bills, printActivity: windowSummary.printActivity });
+  res.json({
+    ...row,
+    bills: windowSummary.bills,
+    printActivity: windowSummary.printActivity,
+    dueReceived: windowSummary.dueReceived,
+    totalRefunds: windowSummary.refundsAmount,
+  });
 });
 
 // ── Admin-initiated per-staff close (cash handover one by one) ──────────────
@@ -1474,6 +1586,9 @@ dayCloseRouter.get("/staff-preview/:userName", requireOwnerOrAdmin, async (req, 
     paymentsCount: s.totals.count,
     totalBilled: s.totalBilled,
     totalDue: s.totalDue,
+    dueReceived: s.dueReceived,
+    cancelledBillsAmount: s.cancelledBillsAmount,
+    refundsAmount: s.refundsAmount,
     cashExpenses: s.cashExpenses,
     suspenseTotal: s.suspenseTotal,
     suspenseCount: s.suspenseItems.length,
@@ -1674,9 +1789,7 @@ dayCloseRouter.post("/staff-close", requireOwnerOrAdmin, async (req, res) => {
     { closureId: inserted.row.id, userName, closedByAdmin: actor.adminName, variance: inserted.row.variance, drawerStatus: inserted.row.drawerStatus },
     "Staff day closed by admin (handover)",
   );
-  void notifyStaffDayCloseEmail({ row: inserted.row, printActivity: inserted.printActivity }).catch((err) => {
-    req.log?.warn({ err, closureId: inserted.row.id }, "Staff day-close email failed (non-blocking)");
-  });
+  const email = await sendDayCloseEmailSafe(req, { row: inserted.row, printActivity: inserted.printActivity });
   res.status(201).json({
     ...inserted.row,
     bills: inserted.bills,
@@ -1684,6 +1797,9 @@ dayCloseRouter.post("/staff-close", requireOwnerOrAdmin, async (req, res) => {
     suspenseCount: inserted.suspenseItems.length,
     suspenseItems: inserted.suspenseItems,
     printActivity: inserted.printActivity,
+    dueReceived: inserted.printActivity.dueReceived,
+    totalRefunds: inserted.printActivity.refundsAmount,
+    ...email,
   });
 });
 
@@ -1746,6 +1862,8 @@ dayCloseRouter.post("/staff-close-all", requireOwnerOrAdmin, async (req, res) =>
     variance?: number;
     drawerStatus?: string;
     reason?: string;
+    emailSent?: boolean;
+    emailSkipReason?: string;
   }> = [];
 
   for (const userName of openNames) {
@@ -1765,6 +1883,7 @@ dayCloseRouter.post("/staff-close-all", requireOwnerOrAdmin, async (req, res) =>
         results.push({ userName, status: "skipped", reason: inserted.reason });
         continue;
       }
+      const email = await sendDayCloseEmailSafe(req, { row: inserted.row, printActivity: inserted.printActivity });
       results.push({
         userName,
         status: "closed",
@@ -1773,9 +1892,8 @@ dayCloseRouter.post("/staff-close-all", requireOwnerOrAdmin, async (req, res) =>
         totalActual: n(inserted.row.totalActual),
         variance: n(inserted.row.variance),
         drawerStatus: inserted.row.drawerStatus,
-      });
-      void notifyStaffDayCloseEmail({ row: inserted.row, printActivity: inserted.printActivity }).catch((err) => {
-        req.log?.warn({ err, closureId: inserted.row.id, userName }, "Staff day-close email failed (bulk, non-blocking)");
+        emailSent: email.emailSent,
+        emailSkipReason: email.emailSkipReason,
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unknown error";

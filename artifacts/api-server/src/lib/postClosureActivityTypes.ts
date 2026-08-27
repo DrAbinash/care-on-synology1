@@ -1,5 +1,14 @@
 /** Shared between day-close routes and staff day-close email builder. */
 export type StaffPrintActivity = {
+  /** Payments in this window on bills created before the window (old dues). */
+  dueReceived: number;
+  /** Bills this staff cancelled in the window (any original bill date). */
+  cancelledBillsAmount: number;
+  /**
+   * Refunds this staff recorded in the window, excluding auto-refunds on bills
+   * they themselves cancelled (those are already in cancelledBillsAmount).
+   */
+  refundsAmount: number;
   discountsGiven: number;
   discountBills: Array<{
     billId: number;

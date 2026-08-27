@@ -31,6 +31,9 @@ const sample: StaffSlipClosure = {
   denominations: { d500: 100, d200: 0, d100: 0, d50: 0, d20: 0, d10: 0, coins: 0 },
   denominationTotal: "50000",
   printActivity: {
+    dueReceived: 0,
+    cancelledBillsAmount: 0,
+    refundsAmount: 0,
     discountsGiven: 850,
     discountBills: [{
       billId: 1,
@@ -55,40 +58,66 @@ const sample: StaffSlipClosure = {
 };
 
 describe("buildStaffDayCloseSlipHtml", () => {
-  test("A5 compact slip: logo, summary, denominations, hide zero rows", () => {
+  test("A5 compact slip: large logo, formula lines always shown, footer edits/discounts", () => {
     const html = buildStaffDayCloseSlipHtml(
       sample,
       { name: "Care Diagnostics", logoDataUrl: "data:image/png;base64,abc" },
       "Alice",
     );
     expect(html).toContain("@page { size: 148mm 210mm");
+    expect(html).toContain("width: 90px");
     expect(html).toContain("Staff Reconciliation");
     expect(html).toContain("CARE DIAGNOSTICS");
-    expect(html).toContain("Total Bill Generated");
+    expect(html).toContain("Total Bill Gen");
+    expect(html).toContain("Dues Collected");
+    expect(html).toContain("Cancelled bills");
+    expect(html).toContain("Outstanding");
+    expect(html).toContain("Refunds");
+    expect(html).toContain("Expense");
     expect(html).toContain("Expected");
-    expect(html).not.toContain("Outstanding");
-    expect(html).not.toContain("REFUNDS");
     expect(html).toContain("500 × 100");
     expect(html).not.toContain("200 ×");
-    expect(html).toContain("Discounts");
     expect(html).toContain("UPI");
     expect(html).toContain("CASH");
-    expect(html).not.toContain("Method Reconciliation");
-    expect(html).not.toContain("Accounts Summary");
-    expect(html).toContain("Bills Edited / Modified");
-    expect(html).toContain("(Total No.) = <strong>1</strong>");
-    expect(html).toContain("Expenses");
+    expect(html).toContain("BILLS EDITED/MODIFIED → 1");
+    expect(html).toContain("DISCOUNTS GIVEN → Rs.");
     expect(html).toContain("Newspaper");
     expect(html).toContain("Tea");
     expect(html).not.toContain("Test Wise Collection");
+    expect(html).not.toContain("Method Reconciliation");
   });
 
-  test("shows outstanding and refunds when non-zero", () => {
+  test("Suraj handwritten arithmetic: 247775 + 29700 − 550 − 4700 = 272225", () => {
     const html = buildStaffDayCloseSlipHtml(
-      { ...sample, totalDue: "500", totalRefunds: "200" },
-      { name: "Care" },
+      {
+        ...sample,
+        userName: "SURAJ JHA",
+        totalBilled: 247775,
+        totalDue: 4700,
+        expectedUpi: 99075,
+        expectedCash: 173150,
+        printActivity: {
+          ...sample.printActivity!,
+          dueReceived: 29700,
+          cancelledBillsAmount: 0,
+          refundsAmount: 550,
+          discountsGiven: 2375,
+          totalExpenses: 0,
+          expenseDetails: [],
+          billEdits: [],
+        },
+      },
+      { name: "Care Diagnostics" },
+      "SURAJ JHA",
     );
-    expect(html).toContain("Outstanding");
-    expect(html).toContain("REFUNDS");
+    expect(html).toContain("2,47,775.00");
+    expect(html).toContain("29,700.00");
+    expect(html).toContain("2,77,475.00");
+    expect(html).toContain("550.00");
+    expect(html).toContain("4,700.00");
+    expect(html).toContain("2,72,225.00");
+    expect(html).toContain("99,075.00");
+    expect(html).toContain("1,73,150.00");
+    expect(html).toContain("DISCOUNTS GIVEN → Rs. 2,375.00");
   });
 });

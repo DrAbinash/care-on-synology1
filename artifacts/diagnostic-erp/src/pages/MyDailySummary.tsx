@@ -37,7 +37,9 @@ type MyDailySummarySummary = {
   refundAmount: number;
   refundsWithoutCancellationAmount: number;
   refundsWithoutCancellationCount: number;
-  /** Refunds on bills created this period that are cancelled — excluded from collectible (already in cancelledOnMyBills). */
+  /** Refunds this staff recorded on bills they cancelled — excluded from collectible. */
+  refundsOnBillsCancelledByMe?: number;
+  /** Refunds on bills created this period that are cancelled — alias of canceller-scoped exclusion. */
   refundsOnCancelledBillsCreatedInPeriod: number;
   /** Server-computed collectible — prefer over local recompute. */
   collectible?: number;
@@ -70,6 +72,20 @@ type MyDailySummarySummary = {
   suspenseRefundCount?: number;
   suspenseRefundAmount?: number;
 };
+
+/** Billing collectible follows who cancelled, not who created. */
+function collectibleParts(s: MyDailySummarySummary) {
+  const cancelled = s.cancelledAmount;
+  const refundsExcluded = s.refundsOnBillsCancelledByMe ?? s.refundsOnCancelledBillsCreatedInPeriod ?? 0;
+  const totalRefunds = s.cashRefunded + s.digitalRefunded;
+  const refundsForCollectible = Math.max(0, totalRefunds - refundsExcluded);
+  const collectibleLocal = s.grossBilledIncludingCancelled
+    + s.duesCollectedTotal
+    - cancelled
+    - refundsForCollectible
+    - s.outstanding;
+  return { cancelled, refundsExcluded, totalRefunds, refundsForCollectible, collectibleLocal };
+}
 
 type MyDailySummaryData = {
   staffName: string;
@@ -760,8 +776,8 @@ function ASectionDivider({ color }: { color: "emerald" | "slate" | "red" | "blue
 //   Gross Bills Generated (post-discount)
 //   + Old Dues Collected
 //   = Total Revenue Activity
-//   − Cancelled Bills (of bills created in THIS window — see note below)
-//   − Today's Refunds (cash + digital)
+//   − Cancelled Bills (cancelled BY this staff today — any original bill date)
+//   − Today's Refunds (excluding auto-refunds on bills this staff cancelled)
 //   − Outstanding Dues
 //   = Collectible Amount
 //   − Digital Collection (net of digital refunds)   → went to bank
@@ -775,16 +791,10 @@ function ASectionDivider({ color }: { color: "emerald" | "slate" | "red" | "blue
 //   physicalCashInHand, that's a bug in this cross-check, not a real cash
 //   shortage — treat physicalCashInHand as correct.
 //
-//   FIXED BUG (this cross-check previously disagreed with physicalCashInHand):
-//   "Cancelled Bills" must use cancelledOnMyBills (bills created in this
-//   window that were also cancelled), NOT cancelledAmount (bills cancelled in
-//   this window regardless of creation date). Every other term here
-//   (grossBilledIncludingCancelled, duesCollectedTotal) is scoped by bill
-//   CREATION date, so subtracting cancelledAmount double-subtracted a bill
-//   created on an earlier day and cancelled today: never added into this
-//   window's billing, yet still subtracted as both a "cancellation" and
-//   (via its auto-generated refund) a "refund" — producing a false "Short"
-//   mismatch alert for an old bill cancelled today.
+//   OWNERSHIP: cancellation belongs to whoever cancelled (cancelledByName),
+//   not whoever created the bill. Vijay creates+collects ₹3400; Abinash
+//   cancels and pays the refund → Abinash's Cancelled Bills / expected cash,
+//   not Vijay's. An old bill cancelled today also hits the canceller's today.
 //
 // ATTRIBUTION RULE (confirmed correct in backend):
 //   cashIn          = SUM(payments.amount > 0) WHERE recordedByName = thisStaff
@@ -813,31 +823,9 @@ function UnifiedReconciliationPanel({
   const [digitalExpanded, setDigitalExpanded] = useState(false);
   const [discountExpanded, setDiscountExpanded] = useState(false);
 
-  // ── Formula (all arithmetic verified against backend physicalCashInHand) ──
-  // Uses cancelledOnMyBills (bills created in this window that were also
-  // cancelled), NOT cancelledAmount (bills cancelled in this window
-  // regardless of when created) — the rest of this formula is entirely
-  // creation-date scoped (grossBilledIncludingCancelled, duesCollectedTotal),
-  // so subtracting cancelledAmount double-counted a bill created on an
-  // earlier day and cancelled today: it was never added into this
-  // window's billing, yet was still subtracted as both a "cancellation"
-  // and (via its auto-generated refund) a "refund" — a real incident that
-  // produced a false "Short" mismatch alert for an old bill cancelled today.
-  //
-  // Same-day cancel+refund on bills created in this window: cancelledOnMyBills
-  // already removes the bill total; refundsOnCancelledBillsCreatedInPeriod
-  // (from API) is subtracted from totalRefunds so we do not double-hit.
-  // Cross-staff: refunds are attributed to whoever recorded them; billing
-  // metrics follow bill creator — individual staff views may still disagree
-  // when User B refunds User A's bill (clinic aggregate balances).
-  const totalRefunds   = s.cashRefunded + s.digitalRefunded;
-  const refundsExcludedFromCollectible = s.refundsOnCancelledBillsCreatedInPeriod ?? 0;
-  const refundsForCollectible = Math.max(0, totalRefunds - refundsExcludedFromCollectible);
-  const collectibleLocal = s.grossBilledIncludingCancelled
-                        + s.duesCollectedTotal
-                        - s.cancelledOnMyBills
-                        - refundsForCollectible
-                        - s.outstanding;
+  // Cancelled Bills = bills this staff cancelled today (any original date).
+  // Refunds on those same bills are excluded so cancel+auto-refund is one hit.
+  const { cancelled, refundsExcluded: refundsExcludedFromCollectible, refundsForCollectible, collectibleLocal } = collectibleParts(s);
   const collectible    = s.collectible ?? collectibleLocal;
   const netDigital     = s.digitalIn - s.digitalRefunded;
   const expectedCash   = collectible - netDigital - s.cashExpenses;
@@ -851,10 +839,10 @@ function UnifiedReconciliationPanel({
     periodLabel,
     grossBilledIncludingCancelled: s.grossBilledIncludingCancelled,
     oldDuesCollected: s.duesCollectedTotal,
-    cancelledOnMyBills: s.cancelledOnMyBills,
+    cancelledAmount: s.cancelledAmount,
     cashRefunded: s.cashRefunded,
     digitalRefunded: s.digitalRefunded,
-    refundsOnCancelledBillsCreatedInPeriod: s.refundsOnCancelledBillsCreatedInPeriod,
+    refundsOnBillsCancelledByMe: s.refundsOnBillsCancelledByMe ?? s.refundsOnCancelledBillsCreatedInPeriod,
     outstanding: s.outstanding,
     digitalIn: s.digitalIn,
     cashIn: s.cashIn,
@@ -1047,20 +1035,20 @@ function UnifiedReconciliationPanel({
           </span>
         </div>
 
-        <ARow label="Cancelled Bills" value={s.cancelledOnMyBills} sign="−" indent highlight="red"
-              note="Today's bills that were cancelled (old bills cancelled today are not listed here)" />
+        <ARow label="Cancelled Bills" value={cancelled} sign="−" indent highlight="red"
+              note="Bills this staff cancelled today (including older bills)" />
         <ARow label="Refunds" value={refundsForCollectible} sign="−" indent highlight="red"
               note={
                 refundsExcludedFromCollectible > 0
                   ? `Money given back today, excluding ${fmt(refundsExcludedFromCollectible)} already counted under Cancelled Bills`
-                  : "Money given back today (includes refunds on old bills cancelled today)"
+                  : "Money given back today that is not already in Cancelled Bills"
               } />
         <ARow label="Outstanding Dues" value={s.outstanding} sign="−" indent highlight="red" note="balance on today's bills" />
 
         <ASectionDivider color="blue" />
         <ARow label="Collectible Amount" value={collectible} sign="=" bold highlight="blue" />
         <p className="px-3 pb-1 text-[10px] text-muted-foreground leading-snug">
-          Billing follows who created the bill; cash and refunds follow who recorded them. Individual staff views can differ — clinic total should still balance.
+          Cancellation belongs to whoever cancelled, not whoever created the bill. Cash and refunds follow who recorded them.
         </p>
 
         {/* ══ SECTION C: COLLECTION SPLIT ════════════════════════════════════ */}
@@ -1796,16 +1784,10 @@ export default function MyDailySummary() {
   const exportConfig = useMemo<ExportConfig | null>(() => {
     if (!s || !data) return null;
 
-    // Use the SAME formula as UnifiedReconciliationPanel — must match exactly.
-    const totalRefunds     = s.cashRefunded + s.digitalRefunded;
-    const refundsExcluded  = s.refundsOnCancelledBillsCreatedInPeriod ?? 0;
-    const refundsForCollectible = Math.max(0, totalRefunds - refundsExcluded);
-    const collectibleLocal = s.grossBilledIncludingCancelled
-                           + s.duesCollectedTotal
-                           - s.cancelledOnMyBills
-                           - refundsForCollectible
-                           - s.outstanding;
-    const collectible      = s.collectible ?? collectibleLocal;
+    const parts = collectibleParts(s);
+    const collectible      = s.collectible ?? parts.collectibleLocal;
+    const totalRefunds     = parts.totalRefunds;
+    const refundsForCollectible = parts.refundsForCollectible;
     const netDigital       = s.digitalIn - s.digitalRefunded;
     const expectedCash     = collectible - netDigital - s.cashExpenses;
     const mismatch         = expectedCash - s.physicalCashInHand;
@@ -1837,7 +1819,7 @@ export default function MyDailySummary() {
         title: "Deductions (Expense)",
         layout: "half",
         metrics: [
-          ["Cancelled Bills", amt(s.cancelledOnMyBills)],
+          ["Cancelled Bills", amt(parts.cancelled)],
           ["Refunds (Cash)", amt(s.cashRefunded)],
           ["Refunds (Digital)", amt(s.digitalRefunded)],
           ["Total Refunds", amt(totalRefunds)],
@@ -1951,10 +1933,10 @@ export default function MyDailySummary() {
           periodLabel: from === to ? from : `${from} to ${to}`,
           grossBilledIncludingCancelled: s.grossBilledIncludingCancelled,
           oldDuesCollected: s.duesCollectedTotal,
-          cancelledOnMyBills: s.cancelledOnMyBills,
+          cancelledAmount: s.cancelledAmount,
           cashRefunded: s.cashRefunded,
           digitalRefunded: s.digitalRefunded,
-          refundsOnCancelledBillsCreatedInPeriod: s.refundsOnCancelledBillsCreatedInPeriod,
+          refundsOnBillsCancelledByMe: s.refundsOnBillsCancelledByMe ?? s.refundsOnCancelledBillsCreatedInPeriod,
           outstanding: s.outstanding,
           digitalIn: s.digitalIn,
           cashIn: s.cashIn,
@@ -2198,13 +2180,11 @@ export default function MyDailySummary() {
       {s && (
         <>
           {(() => {
-            const totalRefunds = s.cashRefunded + s.digitalRefunded;
-            const refundsExcluded = s.refundsOnCancelledBillsCreatedInPeriod ?? 0;
-            const refundsForCollectible = Math.max(0, totalRefunds - refundsExcluded);
+            const parts = collectibleParts(s);
+            const totalRefunds = parts.totalRefunds;
+            const refundsForCollectible = parts.refundsForCollectible;
             const cancelLinkedRefunds = Math.max(0, totalRefunds - s.refundsWithoutCancellationAmount);
-            const collectibleLocal = s.grossBilledIncludingCancelled + s.duesCollectedTotal
-              - s.cancelledOnMyBills - refundsForCollectible - s.outstanding;
-            const collectible = s.collectible ?? collectibleLocal;
+            const collectible = s.collectible ?? parts.collectibleLocal;
             const totalBillsCount = (s.billCount ?? 0) + (s.cancelledByOthersCount ?? 0) + (s.cancelledBySelfCount ?? 0);
             const avgBillValue = totalBillsCount > 0 ? s.grossBilledIncludingCancelled / totalBillsCount : 0;
             return (
@@ -2337,8 +2317,8 @@ export default function MyDailySummary() {
                         <MiniKpi
                           icon={RotateCcw}
                           label="Cancellations (₹)"
-                          value={fmt(s.cancelledOnMyBills)}
-                          sub="Of bills created in this period"
+                          value={fmt(s.cancelledAmount)}
+                          sub="Cancelled by this staff today"
                           theme="pink"
                           onClick={() => setDrilldownType("cancellations")}
                         />

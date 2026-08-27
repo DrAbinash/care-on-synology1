@@ -3,13 +3,17 @@
  *
  * physicalCashInHand (cash in − cash refunds − expenses) is authoritative.
  * The billing-side collectible is a cross-check and must not double-subtract
- * when a bill created in the period is cancelled AND refunded the same period:
- * cancelledOnMyBills already removes the bill total; refunds on those bills
- * must not reduce collectible again.
+ * when this staff cancels a bill AND records the auto-refund: cancelledAmount
+ * already removes the bill total; refunds on bills they cancelled must not
+ * reduce collectible again.
+ *
+ * Ownership: cancellation belongs to whoever cancelled (cancelledByName),
+ * not whoever created the bill.
  */
 
 export type CollectibleRefundRow = {
   amount: number | string;
+  billId?: number | null;
   billStatus: string | null;
   billCreatedAt: Date | string | null;
 };
@@ -25,7 +29,10 @@ export function isBillCreatedInPeriod(
   return created >= periodStart && created < periodEnd;
 }
 
-/** Refunds on bills created in-period that are now cancelled (already in cancelledOnMyBills). */
+/**
+ * @deprecated Prefer computeRefundsOnBillsCancelledByMe. Kept for older
+ * call sites that still key off bill creation date.
+ */
 export function computeRefundsOnCancelledBillsCreatedInPeriod(
   refunds: CollectibleRefundRow[],
   periodStart: Date,
@@ -40,24 +47,40 @@ export function computeRefundsOnCancelledBillsCreatedInPeriod(
     .reduce((s, p) => s + Math.abs(Number(p.amount)), 0);
 }
 
+/** Refunds this staff recorded on bills they cancelled (already in cancelledAmount). */
+export function computeRefundsOnBillsCancelledByMe(
+  refunds: CollectibleRefundRow[],
+  cancelledBillIds: Iterable<number>,
+): number {
+  const ids = cancelledBillIds instanceof Set ? cancelledBillIds : new Set(cancelledBillIds);
+  return refunds
+    .filter((p) => {
+      if (Number(p.amount) >= -0.0001) return false;
+      if (p.billId == null) return false;
+      return ids.has(p.billId);
+    })
+    .reduce((s, p) => s + Math.abs(Number(p.amount)), 0);
+}
+
 export function computeCollectibleForReconciliation(opts: {
   grossBilledIncludingCancelled: number;
   duesCollectedTotal: number;
-  cancelledOnMyBills: number;
+  /** Bills this staff cancelled in the window (any original bill date). */
+  cancelledAmount: number;
   cashRefunded: number;
   digitalRefunded: number;
-  refundsOnCancelledBillsCreatedInPeriod: number;
+  refundsOnBillsCancelledByMe: number;
   outstanding: number;
 }): number {
   const totalRefunds = opts.cashRefunded + opts.digitalRefunded;
   const refundsForCollectible = Math.max(
     0,
-    totalRefunds - opts.refundsOnCancelledBillsCreatedInPeriod,
+    totalRefunds - opts.refundsOnBillsCancelledByMe,
   );
   return (
     opts.grossBilledIncludingCancelled
     + opts.duesCollectedTotal
-    - opts.cancelledOnMyBills
+    - opts.cancelledAmount
     - refundsForCollectible
     - opts.outstanding
   );
