@@ -4,7 +4,7 @@ import { buildFormFPrintHtml } from "./formFPrintHtml";
 describe("buildFormFPrintHtml", () => {
   test("uses full A4 portrait @page (210×297 mm)", () => {
     const html = buildFormFPrintHtml('<div id="formf-print">FORM F</div>');
-    expect(html).toContain("@page { size: 210mm 297mm; margin: 0; }");
+    expect(html).toContain("@page { size: A4 portrait; margin: 0; }");
     expect(html).toContain("height: 297mm");
     expect(html).not.toContain("height: 148mm");
     expect(html).toContain('id="formf-print"');

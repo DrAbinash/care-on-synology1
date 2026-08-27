@@ -15,6 +15,7 @@ import {
   resolveBillPrintCopyCount,
   resolveBillPrintDelivery,
   resolveBillPrintPageOpts,
+  getPaperSizeCss,
   saveBillPrintSettings,
 } from "./billPrintSettings";
 
@@ -64,7 +65,8 @@ describe("BILL_FORMATS — settings UI options", () => {
   test("includes classic, hope-a5, and a5-landscape", () => {
     expect(BILL_FORMATS.map((f) => f.id)).toEqual(["classic", "hope-a5", "a5-landscape"]);
     const a5Landscape = BILL_FORMATS.find((f) => f.id === "a5-landscape");
-    expect(a5Landscape?.label).toBe("A5 Landscape (Half A4)");
+    expect(a5Landscape?.label).toBe("A5 Landscape");
+    expect(a5Landscape?.hint).toContain("A5 landscape");
     expect(a5Landscape?.hint).toContain("210×148 mm");
   });
 });
@@ -276,25 +278,25 @@ describe("resolveBillPrintCopyCount — physical copies", () => {
 });
 
 describe("resolveBillPrintPageOpts — format-driven paper", () => {
-  test("a5-landscape short bills use half A4 @page (210×148)", () => {
+  test("a5-landscape short bills use A5 landscape @page", () => {
     const opts = resolveBillPrintPageOpts({ defaultFormat: "a5-landscape" }, 1);
     expect(opts.paperSize).toBe("A5");
     expect(opts.orientation).toBe("landscape");
-    expect(opts.pageCssSize).toBe("210mm 148mm");
+    expect(opts.pageCssSize).toBe("A5 landscape");
     expect(opts.compactFooterGap).toBe(false);
   });
 
-  test("classic short bills use half A4 @page (210×148)", () => {
+  test("classic short bills use A5 landscape @page", () => {
     const opts = resolveBillPrintPageOpts({ defaultFormat: "classic" }, 1);
     expect(opts.paperSize).toBe("A5");
     expect(opts.orientation).toBe("landscape");
-    expect(opts.pageCssSize).toBe("210mm 148mm");
+    expect(opts.pageCssSize).toBe("A5 landscape");
     expect(opts.compactFooterGap).toBe(false);
   });
 
-  test("hope-a5 short bills use A5 portrait @page (148×210)", () => {
+  test("hope-a5 short bills use A5 portrait @page", () => {
     const opts = resolveBillPrintPageOpts({ defaultFormat: "hope-a5" }, 3);
-    expect(opts.pageCssSize).toBe("148mm 210mm");
+    expect(opts.pageCssSize).toBe("A5 portrait");
     expect(opts.orientation).toBe("portrait");
   });
 
@@ -304,6 +306,25 @@ describe("resolveBillPrintPageOpts — format-driven paper", () => {
       expect(opts.paperSize).toBe("A4");
       expect(opts.pageCssSize).toBe("A4 portrait");
     }
+  });
+});
+
+describe("getPaperSizeCss — named ISO sizes for Chrome print dialog", () => {
+  test("A5 landscape and half-a4 emit named A5 landscape, not 210mm 148mm", () => {
+    expect(getPaperSizeCss("A5-landscape").pageSize).toBe("A5 landscape");
+    expect(getPaperSizeCss("half-a4").pageSize).toBe("A5 landscape");
+    expect(getPaperSizeCss("A5-landscape").width).toBe("210mm");
+    expect(getPaperSizeCss("A5-landscape").minHeight).toBe("148mm");
+  });
+
+  test("A5 portrait emits named A5 portrait, not 148mm 210mm", () => {
+    expect(getPaperSizeCss("A5-portrait").pageSize).toBe("A5 portrait");
+    expect(getPaperSizeCss("A5-portrait").width).toBe("148mm");
+    expect(getPaperSizeCss("A5-portrait").minHeight).toBe("210mm");
+  });
+
+  test("A4 emits named A4 portrait", () => {
+    expect(getPaperSizeCss("A4").pageSize).toBe("A4 portrait");
   });
 });
 

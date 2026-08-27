@@ -5112,39 +5112,33 @@ function BillingPrintTab() {
       >
         {activeBillFormat === "hope-a5" ? (
           <>
-            <p className="font-bold text-sm">How to set paper (A5 portrait in the tray)</p>
+            <p className="font-bold text-sm">How to set paper (A5 portrait)</p>
             <ol className="list-decimal pl-4 space-y-1.5">
               <li>
-                <strong>Load A5</strong> (148×210 mm) portrait — <strong>148 mm across</strong> (short edge into the printer).
+                <strong>Load A5</strong> (148×210 mm) — short edge into the printer.
               </li>
               <li>
-                Create a <strong>User Defined</strong> paper if needed: <strong>Width 148 mm × Height 210 mm</strong>.
-              </li>
-              <li>
-                In the browser print dialog set <strong>Paper size = A5 / 148×210</strong>. Do <strong>not</strong> leave Paper = A4.
+                In the browser print dialog set <strong>Paper size = A5</strong> and <strong>Orientation = Portrait</strong>. Do <strong>not</strong> pick A4.
               </li>
               <li>Set <strong>Scale = 100%</strong> and <strong>Margins = None</strong>.</li>
             </ol>
           </>
         ) : (
           <>
-            <p className="font-bold text-sm">How to set paper (pre-cut half A4 / A5 landscape)</p>
+            <p className="font-bold text-sm">How to set paper (A5 landscape)</p>
             <ol className="list-decimal pl-4 space-y-1.5">
               <li>
-                <strong>Load already-cut half A4</strong> (210×148 mm) — <strong>210 mm across</strong> (short edge into the printer).
+                <strong>Load A5</strong> (210×148 mm) — or a pre-cut half of A4.
               </li>
               <li>
-                Create a <strong>User Defined</strong> paper: <strong>Width 210 mm × Height 148 mm</strong>.
-              </li>
-              <li>
-                In the browser print dialog set <strong>Paper size = that User Defined 210×148</strong>. Do <strong>not</strong> leave Paper = A4.
+                In the browser print dialog set <strong>Paper size = A5</strong> and <strong>Orientation = Landscape</strong>. Do <strong>not</strong> pick A4.
               </li>
               <li>Set <strong>Scale = 100%</strong> and <strong>Margins = None</strong>.</li>
             </ol>
           </>
         )}
         <p className="text-[11px] text-amber-800 dark:text-amber-200">
-          Epson L130 / ink-tank: match the job size above, Scale <strong>100%</strong>. Blank margins usually mean Paper is still A4.
+          Epson L130 / ink-tank: pick <strong>A5</strong>, Scale <strong>100%</strong>. Blank extra margins mean Paper is still A4.
         </p>
       </div>
 

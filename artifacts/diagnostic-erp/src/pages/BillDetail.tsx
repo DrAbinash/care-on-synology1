@@ -637,6 +637,22 @@ export default function BillDetail({ id }: { id: number }) {
   const canEdit = bill.status !== "paid" && bill.status !== "cancelled" && (!session || hasSubPermission(session, "/billing", "edit"));
   const canReprint = !session || hasSubPermission(session, "/billing", "reprint");
   const canRefund = !session || hasSubPermission(session, "/billing", "refund");
+  const printPageOpts = resolveBillPrintPageOpts(
+    billPrintSettings,
+    (bill.order?.tests ?? []).filter((t) => (t.status ?? "active") !== "cancelled").length,
+  );
+  const printerPaperLabel =
+    printPageOpts.paperSize === "A4"
+      ? "A4 portrait"
+      : printPageOpts.orientation === "landscape"
+        ? "A5 landscape"
+        : "A5 portrait";
+  const printerDialogHint =
+    printPageOpts.paperSize === "A4"
+      ? "A4 · Portrait · Scale 100%"
+      : printPageOpts.orientation === "landscape"
+        ? "A5 · Landscape · Scale 100%"
+        : "A5 · Portrait · Scale 100%";
   const superSub = watchSuperEdit("subtotal");
   const superDisc = watchSuperEdit("discount");
   const superTax = watchSuperEdit("taxAmount");
@@ -707,11 +723,11 @@ export default function BillDetail({ id }: { id: number }) {
             </div>
             <div
               className="flex items-center gap-1 border border-border rounded-md px-1 py-0.5 text-xs"
-              title="Paper is Cursor-default (half A4 / A5). Set the printer dialog to A4 portrait, 100% scale."
+              title={`Load ${printPageOpts.paperSize === "A4" ? "A4" : "A5"} in the tray. Printer dialog: ${printerDialogHint}.`}
             >
               <span className="text-muted-foreground px-1">Paper:</span>
               <span className="px-2 py-0.5 rounded bg-muted text-muted-foreground font-medium">
-                Cursor-default (half A4 / A5)
+                {printerPaperLabel}
               </span>
             </div>
             {canReprint && (
@@ -1047,8 +1063,8 @@ export default function BillDetail({ id }: { id: number }) {
               </p>
             </div>
             <div className="text-xs text-muted-foreground">
-            Paper: <strong>Cursor-default (half A4 / A5)</strong>
-            {" — printer dialog: A4 · Portrait · Actual size 100%"}
+            Paper: <strong>{printerPaperLabel}</strong>
+            {` — printer dialog: ${printerDialogHint}`}
             </div>
             <div className="flex justify-end gap-2 pt-2">
               <Button type="button" variant="outline" onClick={() => setReprintOpen(false)}>Cancel</Button>
