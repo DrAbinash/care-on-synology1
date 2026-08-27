@@ -9,6 +9,8 @@ import {
   formatReferringDoctorDisplay,
   formatDoctorWithDegree,
   enrichReferringDoctorFromCatalog,
+  enrichReferringDoctorFromDoctors,
+  doctorCatalogLabels,
   dicomAgeToDisplay,
   resolveDisplayAge,
   isJunkReferringDoctor,
@@ -151,6 +153,31 @@ describe("reconcileAccessionVsReferringDoctor", () => {
       ["Dr. Sanjay Kumar, MD"],
     );
     expect(enriched).toContain("MD");
+  });
+
+  it("prefers exact catalog match when fuzzy would hit multiple doctors", () => {
+    const enriched = enrichReferringDoctorFromCatalog("Sanjay Kumar", [
+      "Dr. Sanjay Kumar, MD",
+      "Dr. Sanjay Kumar Singh, MS",
+    ]);
+    expect(enriched).toBe("Dr. Sanjay Kumar, MD");
+  });
+
+  it("pulls degree from Settings → Doctors structured rows", () => {
+    const enriched = enrichReferringDoctorFromDoctors("DR.SANJAY KUMAR", [
+      { name: "Dr. Sanjay Kumar", degree: "MD, DMRD" },
+      { name: "Dr. Other", degree: "MS" },
+    ]);
+    expect(enriched).toMatch(/Sanjay Kumar/i);
+    expect(enriched).toMatch(/MD/);
+    expect(enriched).toMatch(/DMRD/);
+  });
+
+  it("doctorCatalogLabels joins name + degree without duplicating", () => {
+    expect(doctorCatalogLabels([
+      { name: "Dr. Sanjay Kumar", degree: "MD" },
+      { name: "Dr. Sanjay Kumar, MD", degree: "MD" },
+    ])).toEqual(["Dr. Sanjay Kumar, MD", "Dr. Sanjay Kumar, MD"]);
   });
 
   it("appends doctors-master degree without duplicating tokens already in the name", () => {

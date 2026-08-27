@@ -95,7 +95,7 @@ import {
 import {
   mergeReportDemography,
   resolveDisplayAge,
-  formatDoctorWithDegree,
+  doctorCatalogLabels,
   type ReportDemography,
 } from "@/lib/reportDemography";
 import type { PrintClinic } from "@/lib/reportPdfGenerator";
@@ -2380,7 +2380,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       },
       dicom: (row?.dicomMetadata as Record<string, unknown> | undefined) ?? {},
       overrides: demographyOverrides,
-      referringDoctorCatalog: (doctorsCatalogQ.data ?? []).map((d) => formatDoctorWithDegree(d.name, d.degree)),
+      referringDoctorCatalog: doctorCatalogLabels(doctorsCatalogQ.data ?? []),
     });
     return merged;
   }, [workflow.currentRow, patientMasterQ.data, demographyOverrides, doctorsCatalogQ.data]);
@@ -2837,7 +2837,9 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const findingsPct = study ? getFindingsCompletionPct(findingsText, study.modality) : 0;
 
   // ─── Collapsed-section summaries (orientation, not another card) ────────────
-  const referringDoctorName = (workflow.currentRow as { referringDoctor?: string } | null)?.referringDoctor ?? null;
+  // Always use catalog-enriched REF. BY (Settings → Doctors degree), not the raw
+  // worklist string which often lacks qualification.
+  const referringDoctorName = canonicalDemography.referringDoctor || null;
   const findingsAssistedCount = useMemo(
     () =>
       countAssisted(
@@ -3493,7 +3495,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                         <div className="space-y-1" data-testid="ref-dr-block">
                           <ReferringDoctorQuickSelect
                             worklistId={studyId ?? 0}
-                            currentName={(workflow.currentRow as any)?.referringDoctor}
+                            currentName={canonicalDemography.referringDoctor || (workflow.currentRow as { referringDoctor?: string } | null)?.referringDoctor}
+                            doctorsCatalog={doctorsCatalogQ.data ?? []}
                           />
                         </div>
                       ) : (
