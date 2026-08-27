@@ -1,7 +1,10 @@
 /**
- * Server-backed clinical history chips in the Reporting Workspace History section.
- * Toggle inserts/removes phrases; + Add Title opens an inline pencil editor that
- * saves to /api/radiology/quick-select/clinical-history (admin/owner only).
+ * Server-backed Clinical History chips for Reporting Workspace Section 2.
+ *
+ * Chips belong to a Study Tab via studyType === radiology_study_tabs.name
+ * (catalog identity resolved through Study Tab id → name). Clicking merges
+ * into the single clinicalHistory field; toggle-off removes only an exact
+ * prior contribution. Laterality uses `{side}` + existing fillTemplate.
  */
 
 import { useMemo, useState } from "react";
@@ -13,8 +16,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
-import type { QuickClinicalHistoryChip } from "@/components/radiology/QuickFindingsPanel";
-import { appendClinicalPhrase, hasPhrase, removeClinicalPhrase } from "@/lib/clinicalHistoryText";
+import type { QuickClinicalHistoryChip, QuickStudyTab } from "@/components/radiology/QuickFindingsPanel";
+import {
+  hasHistoryChipContribution,
+  historyTemplateNeedsSide,
+  toggleHistoryChipContribution,
+  type Side,
+} from "@/lib/clinicalHistoryText";
 
 type ChipDraft = {
   id?: number;
@@ -23,21 +31,60 @@ type ChipDraft = {
   insertedText: string;
   sortOrder: number;
   isActive: boolean;
+  supportsLaterality: boolean;
 };
+
+function toDraft(chip: QuickClinicalHistoryChip | null, studyType: string): ChipDraft {
+  if (!chip) {
+    return {
+      studyType,
+      displayLabel: "",
+      insertedText: "",
+      sortOrder: 0,
+      isActive: true,
+      supportsLaterality: false,
+    };
+  }
+  return {
+    id: chip.id,
+    studyType: chip.studyType,
+    displayLabel: chip.displayLabel,
+    insertedText: chip.insertedText,
+    sortOrder: chip.sortOrder,
+    isActive: chip.isActive,
+    supportsLaterality: historyTemplateNeedsSide(chip.insertedText),
+  };
+}
+
+function withLateralityFlag(draft: ChipDraft): ChipDraft {
+  let inserted = draft.insertedText.trim() || draft.displayLabel.trim();
+  const needs = historyTemplateNeedsSide(inserted);
+  if (draft.supportsLaterality && !needs) {
+    // Prefer a natural "{side} …" lead-in when enabling laterality.
+    inserted = inserted.replace(/^(the\s+)?/i, "{side} ");
+  }
+  if (!draft.supportsLaterality && needs) {
+    inserted = inserted.replace(/\{side\}\s*/gi, "").replace(/\s{2,}/g, " ").trim();
+  }
+  return { ...draft, insertedText: inserted };
+}
 
 export default function ClinicalHistoryChipStrip({
   chips,
-  studyRegions,
-  defaultStudyType,
+  studyTabs,
+  selectedStudyTabId,
+  selectedStudyTabName,
   clinicalHistoryText,
   onClinicalHistoryChange,
   isOwner,
   disabled,
 }: {
+  /** Full clinic catalog (all Study Tabs); filtering is by selected tab. */
   chips: QuickClinicalHistoryChip[];
-  studyRegions: string[];
-  /** Used when no study region is picked yet (empty worklist / new chip). */
-  defaultStudyType?: string;
+  studyTabs: Pick<QuickStudyTab, "id" | "name">[];
+  /** Canonical Study Tab id from Section 1 (null when unresolved). */
+  selectedStudyTabId: number | null;
+  selectedStudyTabName: string | null;
   clinicalHistoryText: string;
   onClinicalHistoryChange: (next: string) => void;
   isOwner: boolean;
@@ -46,25 +93,67 @@ export default function ClinicalHistoryChipStrip({
   const { toast } = useToast();
   const qc = useQueryClient();
   const [editing, setEditing] = useState<ChipDraft | null>(null);
+  const [manageOpen, setManageOpen] = useState(false);
+  const [pendingSideChipId, setPendingSideChipId] = useState<number | null>(null);
 
-  const visible = useMemo(
-    () => chips.filter((c) => c.isActive && studyRegions.includes(c.studyType)),
-    [chips, studyRegions],
-  );
+  const selectedTab = useMemo(() => {
+    if (selectedStudyTabId != null) {
+      const byId = studyTabs.find((t) => t.id === selectedStudyTabId);
+      if (byId) return byId;
+    }
+    if (selectedStudyTabName) {
+      return studyTabs.find((t) => t.name === selectedStudyTabName) ?? null;
+    }
+    return null;
+  }, [studyTabs, selectedStudyTabId, selectedStudyTabName]);
+
+  const catalogStudyType = selectedTab?.name ?? null;
+
+  const visible = useMemo(() => {
+    if (!catalogStudyType) return [];
+    return chips
+      .filter((c) => c.isActive && c.studyType === catalogStudyType)
+      .slice()
+      .sort((a, b) => a.sortOrder - b.sortOrder || a.displayLabel.localeCompare(b.displayLabel));
+  }, [chips, catalogStudyType]);
 
   const saveMut = useMutation({
-    mutationFn: (draft: ChipDraft) =>
-      draft.id
-        ? api.patch(`/api/radiology/quick-select/clinical-history/${draft.id}`, draft)
-        : api.post("/api/radiology/quick-select/clinical-history", draft),
+    mutationFn: (draft: ChipDraft) => {
+      const body = {
+        studyType: draft.studyType.trim(),
+        displayLabel: draft.displayLabel.trim(),
+        insertedText: draft.insertedText.trim() || draft.displayLabel.trim(),
+        sortOrder: draft.sortOrder,
+        isActive: draft.isActive,
+      };
+      return draft.id
+        ? api.patch(`/api/radiology/quick-select/clinical-history/${draft.id}`, body)
+        : api.post("/api/radiology/quick-select/clinical-history", body);
+    },
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["radiology-quick-select"] });
       setEditing(null);
-      toast({ title: "Clinical history chip saved" });
+      toast({ title: "Clinical history choice saved" });
     },
     onError: (err: unknown) => {
       toast({
-        title: "Could not save chip",
+        title: "Could not save history choice",
+        description: err instanceof Error ? err.message : "Admin permission may be required.",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const deactivateMut = useMutation({
+    mutationFn: (chip: QuickClinicalHistoryChip) =>
+      api.patch(`/api/radiology/quick-select/clinical-history/${chip.id}`, { isActive: false }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["radiology-quick-select"] });
+      toast({ title: "History choice deactivated" });
+    },
+    onError: (err: unknown) => {
+      toast({
+        title: "Could not deactivate",
         description: err instanceof Error ? err.message : "Admin permission may be required.",
         variant: "destructive",
       });
@@ -72,145 +161,236 @@ export default function ClinicalHistoryChipStrip({
   });
 
   const openNew = () => {
-    const studyType = studyRegions[0] ?? defaultStudyType ?? "MRI Brain";
-    setEditing({
-      studyType,
-      displayLabel: "",
-      insertedText: "",
-      sortOrder: 0,
-      isActive: true,
-    });
+    if (!catalogStudyType) {
+      toast({
+        title: "Select a Study / Region first",
+        description: "History choices belong to the current Study Tab.",
+        variant: "destructive",
+      });
+      return;
+    }
+    setManageOpen(true);
+    setEditing(toDraft(null, catalogStudyType));
   };
 
   const openEdit = (chip: QuickClinicalHistoryChip) => {
-    setEditing({
-      id: chip.id,
-      studyType: chip.studyType,
-      displayLabel: chip.displayLabel,
-      insertedText: chip.insertedText,
-      sortOrder: chip.sortOrder,
-      isActive: chip.isActive,
-    });
+    setManageOpen(true);
+    setEditing(toDraft(chip, chip.studyType));
+  };
+
+  const applyChip = (chip: QuickClinicalHistoryChip, side: Side | "" = "") => {
+    const result = toggleHistoryChipContribution(clinicalHistoryText, chip.insertedText, side);
+    if (result.needsSide) {
+      setPendingSideChipId(chip.id);
+      return;
+    }
+    setPendingSideChipId(null);
+    if (result.next !== clinicalHistoryText) onClinicalHistoryChange(result.next);
   };
 
   return (
     <div className="space-y-1.5" data-testid="clinical-history-chips">
-      <div className="flex flex-wrap gap-1 items-center">
-        {visible.map((chip) => {
-          const active = hasPhrase(clinicalHistoryText, chip.insertedText);
-          return (
-            <span key={chip.id} className="inline-flex items-center max-w-[12rem]">
-              <button
-                type="button"
-                disabled={disabled}
-                onClick={() => {
-                  onClinicalHistoryChange(
-                    active
-                      ? removeClinicalPhrase(clinicalHistoryText, chip.insertedText)
-                      : appendClinicalPhrase(clinicalHistoryText, chip.insertedText),
-                  );
-                }}
-                title={chip.insertedText}
-                aria-pressed={active}
-                className={[
-                  "truncate rounded-l border px-2 py-1 text-[10px] font-bold shadow-sm transition-all",
-                  active
-                    ? "border-teal-600 bg-gradient-to-br from-teal-500 to-cyan-600 text-white"
-                    : "border-teal-200 bg-gradient-to-b from-teal-50 to-cyan-50/80 text-teal-900 hover:border-teal-400",
-                  disabled ? "opacity-60" : "",
-                ].join(" ")}
-              >
-                {chip.displayLabel}
-              </button>
-              {isOwner && !disabled ? (
+      <div className="flex flex-wrap gap-1 items-center" data-testid="clinical-history-chip-row">
+        {!catalogStudyType ? (
+          <span className="text-[10px] text-muted-foreground" data-testid="clinical-history-chips-empty-region">
+            Select a Study / Region to show history choices
+          </span>
+        ) : visible.length === 0 ? (
+          <span className="text-[10px] text-muted-foreground" data-testid="clinical-history-chips-empty">
+            No history choices for {catalogStudyType} yet
+          </span>
+        ) : (
+          visible.map((chip) => {
+            const active = hasHistoryChipContribution(clinicalHistoryText, chip.insertedText);
+            const needsSide = historyTemplateNeedsSide(chip.insertedText);
+            return (
+              <span key={chip.id} className="inline-flex flex-col items-stretch max-w-[14rem]">
                 <button
                   type="button"
-                  title="Edit chip"
-                  data-testid={`history-chip-edit-${chip.id}`}
+                  disabled={disabled}
+                  data-testid={`history-chip-${chip.id}`}
+                  data-study-tab-id={selectedTab?.id ?? undefined}
+                  data-study-type={chip.studyType}
+                  onClick={() => applyChip(chip)}
+                  title={chip.insertedText}
+                  aria-pressed={active}
                   className={[
-                    "rounded-r border border-l-0 px-1 py-1 text-teal-800",
-                    active ? "border-teal-600 bg-teal-600 text-white" : "border-teal-200 bg-teal-50 hover:bg-teal-100",
+                    "truncate rounded border px-2 py-1 text-[10px] font-bold shadow-sm transition-all",
+                    active
+                      ? "border-teal-600 bg-gradient-to-br from-teal-500 to-cyan-600 text-white"
+                      : "border-teal-200 bg-gradient-to-b from-teal-50 to-cyan-50/80 text-teal-900 hover:border-teal-400",
+                    disabled ? "opacity-60" : "",
                   ].join(" ")}
-                  onClick={() => openEdit(chip)}
                 >
-                  <Pencil size={9} />
+                  {chip.displayLabel}{needsSide ? " · side" : ""}
                 </button>
-              ) : null}
-            </span>
-          );
-        })}
+                {pendingSideChipId === chip.id && !disabled ? (
+                  <div className="mt-0.5 flex gap-0.5" data-testid={`history-chip-side-${chip.id}`}>
+                    {(["right", "left", "bilateral"] as Side[]).map((s) => (
+                      <button
+                        key={s}
+                        type="button"
+                        className="rounded border px-1.5 py-0.5 text-[9px] font-semibold capitalize hover:bg-muted"
+                        onClick={() => applyChip(chip, s)}
+                      >
+                        {s === "bilateral" ? "Bilat" : s}
+                      </button>
+                    ))}
+                    <button
+                      type="button"
+                      className="rounded px-1 text-[9px] text-muted-foreground"
+                      onClick={() => setPendingSideChipId(null)}
+                    >
+                      ×
+                    </button>
+                  </div>
+                ) : null}
+              </span>
+            );
+          })
+        )}
+
         {isOwner && !disabled ? (
-          <button
-            type="button"
-            data-testid="history-add-title"
-            className="inline-flex items-center gap-0.5 rounded border border-dashed border-teal-300/80 px-2 py-1 text-[10px] font-semibold text-teal-800 hover:border-teal-500 hover:bg-teal-50"
-            onClick={openNew}
-            title="Add a shared history chip for this study region"
-          >
-            <Plus size={10} /> Add Title
-          </button>
+          <>
+            <button
+              type="button"
+              data-testid="history-add-chip"
+              className="inline-flex items-center gap-0.5 rounded border border-dashed border-teal-300/80 px-2 py-1 text-[10px] font-semibold text-teal-800 hover:border-teal-500 hover:bg-teal-50"
+              onClick={openNew}
+              title="Add a reusable history choice for this Study Tab"
+            >
+              <Plus size={10} /> Add
+            </button>
+            <button
+              type="button"
+              data-testid="history-edit-chips"
+              className="inline-flex items-center gap-0.5 rounded border border-dashed px-1.5 py-1 text-[10px] text-muted-foreground hover:border-teal-400 hover:text-teal-800"
+              onClick={() => {
+                setManageOpen((v) => !v);
+                setEditing(null);
+              }}
+              title="Edit history choices for this Study Tab"
+            >
+              <Pencil size={10} /> Edit
+            </button>
+          </>
         ) : null}
       </div>
 
-      {editing && (
-        <div className="rounded-lg border bg-background p-2 shadow-sm space-y-2" data-testid="history-chip-editor">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-            <div>
-              <Label className="text-[10px] uppercase tracking-wide">Study / region</Label>
-              <Input
-                value={editing.studyType}
-                onChange={(e) => setEditing({ ...editing, studyType: e.target.value })}
-                className="h-7 text-xs mt-0.5"
-                list="history-chip-regions"
-              />
-              <datalist id="history-chip-regions">
-                {studyRegions.map((r) => (
-                  <option key={r} value={r} />
-                ))}
-              </datalist>
+      {manageOpen && isOwner && !disabled && (
+        <div className="rounded-md border bg-card p-2 space-y-2 shadow-sm" data-testid="history-chip-manager">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-[10px] text-muted-foreground">
+              History choices for Study Tab{" "}
+              <strong className="text-foreground">{catalogStudyType ?? "—"}</strong>
+              {selectedTab ? ` (id ${selectedTab.id})` : ""} — server catalog, not localStorage.
+            </p>
+            <button type="button" className="p-1 text-muted-foreground" onClick={() => { setManageOpen(false); setEditing(null); }} aria-label="Close">
+              <X size={12} />
+            </button>
+          </div>
+
+          {visible.length > 0 && !editing ? (
+            <ul className="space-y-1 max-h-28 overflow-y-auto">
+              {visible.map((chip) => (
+                <li key={chip.id} className="flex items-center gap-1 text-[10px] rounded border px-1.5 py-1">
+                  <span className="flex-1 truncate font-medium">{chip.displayLabel}</span>
+                  <span className="text-muted-foreground truncate max-w-[40%]">{chip.insertedText}</span>
+                  <button type="button" className="underline" onClick={() => openEdit(chip)}>Edit</button>
+                  <button
+                    type="button"
+                    className="text-destructive underline"
+                    onClick={() => deactivateMut.mutate(chip)}
+                  >
+                    Remove
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+
+          {editing && (
+            <div className="space-y-2 rounded border bg-muted/20 p-2" data-testid="history-chip-editor">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <div>
+                  <Label className="text-[10px] uppercase tracking-wide">Study Tab</Label>
+                  <select
+                    className="mt-0.5 h-7 w-full rounded border bg-background px-1.5 text-xs"
+                    value={editing.studyType}
+                    onChange={(e) => setEditing({ ...editing, studyType: e.target.value })}
+                    data-testid="history-chip-study-type"
+                  >
+                    {studyTabs.map((t) => (
+                      <option key={t.id} value={t.name}>{t.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <Label className="text-[10px] uppercase tracking-wide">Chip label</Label>
+                  <Input
+                    value={editing.displayLabel}
+                    onChange={(e) => setEditing({ ...editing, displayLabel: e.target.value })}
+                    className="h-7 text-xs mt-0.5"
+                    placeholder="Neck pain"
+                    autoFocus
+                    data-testid="history-chip-label"
+                  />
+                </div>
+              </div>
+              <div>
+                <Label className="text-[10px] uppercase tracking-wide">Inserted text</Label>
+                <Textarea
+                  value={editing.insertedText}
+                  onChange={(e) => setEditing({
+                    ...editing,
+                    insertedText: e.target.value,
+                    supportsLaterality: historyTemplateNeedsSide(e.target.value),
+                  })}
+                  className="min-h-[44px] text-xs mt-0.5"
+                  placeholder="Neck pain."
+                  data-testid="history-chip-inserted"
+                />
+              </div>
+              <label className="inline-flex items-center gap-1.5 text-[10px]">
+                <input
+                  type="checkbox"
+                  checked={editing.supportsLaterality}
+                  onChange={(e) => setEditing(withLateralityFlag({ ...editing, supportsLaterality: e.target.checked }))}
+                  data-testid="history-chip-laterality"
+                />
+                Supports laterality ({"{side}"} in inserted text)
+              </label>
+              <div className="flex justify-end gap-1">
+                <Button type="button" size="sm" variant="ghost" className="h-7 text-[10px]" onClick={() => setEditing(null)}>
+                  Cancel
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  className="h-7 text-[10px]"
+                  disabled={!editing.studyType.trim() || !editing.displayLabel.trim() || saveMut.isPending}
+                  data-testid="history-chip-save"
+                  onClick={() => {
+                    const next = withLateralityFlag(editing);
+                    const label = next.displayLabel.trim();
+                    saveMut.mutate({
+                      ...next,
+                      displayLabel: label,
+                      insertedText: next.insertedText.trim() || label,
+                    });
+                  }}
+                >
+                  <Save size={12} className="mr-1" /> Save
+                </Button>
+              </div>
             </div>
-            <div>
-              <Label className="text-[10px] uppercase tracking-wide">Display label (chip)</Label>
-              <Input
-                value={editing.displayLabel}
-                onChange={(e) => setEditing({ ...editing, displayLabel: e.target.value })}
-                className="h-7 text-xs mt-0.5"
-                placeholder="Headache"
-                autoFocus
-              />
-            </div>
-          </div>
-          <div>
-            <Label className="text-[10px] uppercase tracking-wide">Inserted text (full phrase)</Label>
-            <Textarea
-              value={editing.insertedText}
-              onChange={(e) => setEditing({ ...editing, insertedText: e.target.value })}
-              className="min-h-[48px] text-xs mt-0.5"
-              placeholder="Sudden onset weakness with suspected cerebrovascular event."
-            />
-          </div>
-          <div className="flex justify-end gap-1">
-            <Button type="button" size="sm" variant="ghost" className="h-7 text-[10px]" onClick={() => setEditing(null)}>
-              <X size={12} className="mr-1" /> Cancel
+          )}
+
+          {!editing && catalogStudyType ? (
+            <Button type="button" size="sm" variant="outline" className="h-7 text-[10px]" onClick={openNew}>
+              <Plus size={11} className="mr-1" /> Add history choice
             </Button>
-            <Button
-              type="button"
-              size="sm"
-              className="h-7 text-[10px]"
-              disabled={!editing.studyType.trim() || !editing.displayLabel.trim() || saveMut.isPending}
-              onClick={() => {
-                const label = editing.displayLabel.trim();
-                const inserted = editing.insertedText.trim() || label;
-                saveMut.mutate({
-                  ...editing,
-                  displayLabel: label,
-                  insertedText: inserted,
-                });
-              }}
-            >
-              <Save size={12} className="mr-1" /> Save
-            </Button>
-          </div>
+          ) : null}
         </div>
       )}
     </div>
