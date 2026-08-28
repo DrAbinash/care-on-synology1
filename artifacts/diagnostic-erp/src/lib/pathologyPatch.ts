@@ -12,6 +12,8 @@ import {
   mergeReportFieldContentWithProvenance,
   normalizeForDedupe,
   splitToSentences,
+  fuzzySentenceSimilarity,
+  isLightSentenceEdit,
   type FieldProvenanceMap,
   type InsertSource,
 } from "./reportFieldMerge";
@@ -148,19 +150,28 @@ function isManualSentence(sentence: string, provenance: FieldProvenanceMap | und
   return src.length === 1 && src[0] === "manual";
 }
 
+/** Fuzzy threshold for lightly edited owned baseline sentences. */
+const FUZZY_OWNED_BASELINE_THRESHOLD = 0.65;
+
 /** Template/protocol-sourced sentences should always be replaceable by pathology.
- * Only purely manual sentences need the ambiguous/force guard.
+ * Purely manual or materially rewritten sentences need the ambiguous/force guard,
+ * unless they fuzzy-match the owned baseline (descriptor tweak).
  */
-export function isProtectedManualSentence(sentence: string, provenance: FieldProvenanceMap | undefined): boolean {
+export function isProtectedManualSentence(
+  sentence: string,
+  provenance: FieldProvenanceMap | undefined,
+  opts?: { baselineReplaces?: string },
+): boolean {
+  const baseline = (opts?.baselineReplaces ?? "").trim();
+  if (baseline && (fuzzySentenceSimilarity(sentence, baseline) >= FUZZY_OWNED_BASELINE_THRESHOLD
+    || isLightSentenceEdit(baseline, sentence))) {
+    return false;
+  }
   const key = normalizeForDedupe(sentence);
   const src = provenance?.[key];
   if (!src || src.length === 0) return false;
-  // If any source is manual AND no other source contributed, it's a protected manual edit.
-  // Template/protocol/quick-select-sourced sentences are always eligible for replacement.
-  if (src.length === 1 && src[0] === "manual") return true;
-  // If manual co-exists with other sources, the radiologist edited a template line — protect it.
-  if (src.includes("manual")) return true;
-  return false;
+  if (src.some((s) => s !== "manual")) return false;
+  return true;
 }
 
 export function applySideToIncoming(incoming: PathologyIncoming, side: Side | ""): PathologyIncoming {
@@ -275,7 +286,7 @@ export function applyPathologyPatch(opts: {
         kept.push(s);
         continue;
       }
-      if (isProtectedManualSentence(s, provenance) && !opts.force) {
+      if (isProtectedManualSentence(s, provenance, { baselineReplaces: baseline }) && !opts.force) {
         ambiguous = true;
         kept.push(s);
         continue;

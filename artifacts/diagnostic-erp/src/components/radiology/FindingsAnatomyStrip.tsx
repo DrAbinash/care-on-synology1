@@ -1,19 +1,14 @@
 /**
- * Section 4 — compact anatomy-grouped Quick Findings strip.
- *
- * Findings are scoped by study_tab_id (authoritative) with legacy name fallback.
- * Within the selected Study Tab, buttons group by anatomicalSection; within each
- * anatomy, conflictGroup drives modality-aware sub-rows (DISC / CANAL / ROOT…).
- * Clicks route through the parent's pathology overlay (same path as Clinic QS).
+ * Section 4 — clinic Quick Findings tiles for the active anatomy group.
+ * Anatomy chip navigation lives in FindingsAnatomyChips (above Quick Select wall).
  */
 
-import { useEffect, useMemo, useState } from "react";
-import { Check, Zap } from "lucide-react";
+import { useMemo } from "react";
+import { Check } from "lucide-react";
 import type { QuickFinding } from "@/components/radiology/QuickFindingsPanel";
 import { quickFindingsForStudyTab } from "@/lib/pickQuickProtocol";
 import { parseQuestions } from "@/lib/structuredFindings";
-
-const OTHER_SECTION = "General";
+import { groupByAnatomy, groupByConflict } from "@/lib/findingsAnatomyGroups";
 
 function formatGroupLabel(raw: string): string {
   const t = raw.trim();
@@ -22,43 +17,11 @@ function formatGroupLabel(raw: string): string {
   return t.replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-function groupByAnatomy(findings: QuickFinding[]): Array<[string, QuickFinding[]]> {
-  const groups = new Map<string, QuickFinding[]>();
-  for (const f of findings) {
-    const key = (f.anatomicalSection ?? "").trim() || OTHER_SECTION;
-    const arr = groups.get(key) ?? [];
-    arr.push(f);
-    groups.set(key, arr);
-  }
-  return [...groups.entries()].sort((a, b) => {
-    const sa = Math.min(...a[1].map((x) => x.sortOrder));
-    const sb = Math.min(...b[1].map((x) => x.sortOrder));
-    if (sa !== sb) return sa - sb;
-    if (a[0] === OTHER_SECTION) return 1;
-    if (b[0] === OTHER_SECTION) return -1;
-    return a[0].localeCompare(b[0]);
-  });
-}
-
-function groupByConflict(findings: QuickFinding[]): Array<[string, QuickFinding[]]> {
-  const groups = new Map<string, QuickFinding[]>();
-  for (const f of findings) {
-    const key = (f.conflictGroup ?? "").trim() || (f.category ?? "").trim() || "Findings";
-    const arr = groups.get(key) ?? [];
-    arr.push(f);
-    groups.set(key, arr);
-  }
-  return [...groups.entries()].sort((a, b) => {
-    const sa = Math.min(...a[1].map((x) => x.sortOrder));
-    const sb = Math.min(...b[1].map((x) => x.sortOrder));
-    return sa - sb || a[0].localeCompare(b[0]);
-  });
-}
-
 export default function FindingsAnatomyStrip({
   findings,
   selectedStudyTabId,
   selectedStudyTabName,
+  activeAnatomy,
   selectedIds,
   blockedIds,
   onToggle,
@@ -68,6 +31,7 @@ export default function FindingsAnatomyStrip({
   findings: QuickFinding[];
   selectedStudyTabId: number | null;
   selectedStudyTabName: string | null;
+  activeAnatomy: string | null;
   selectedIds: Set<number>;
   blockedIds?: Set<number>;
   onToggle: (finding: QuickFinding, nowSelected: boolean) => void;
@@ -81,23 +45,10 @@ export default function FindingsAnatomyStrip({
 
   const anatomyGroups = useMemo(() => groupByAnatomy(regionFindings), [regionFindings]);
 
-  const [activeAnatomy, setActiveAnatomy] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (anatomyGroups.length === 0) {
-      setActiveAnatomy(null);
-      return;
-    }
-    setActiveAnatomy((prev) => {
-      if (prev && anatomyGroups.some(([k]) => k === prev)) return prev;
-      return anatomyGroups[0][0];
-    });
-  }, [anatomyGroups, selectedStudyTabId]);
-
   const activeFindings = useMemo(() => {
-    if (!activeAnatomy) return [];
+    if (!activeAnatomy) return regionFindings;
     return anatomyGroups.find(([k]) => k === activeAnatomy)?.[1] ?? [];
-  }, [anatomyGroups, activeAnatomy]);
+  }, [anatomyGroups, activeAnatomy, regionFindings]);
 
   const conflictGroups = useMemo(() => groupByConflict(activeFindings), [activeFindings]);
 
@@ -124,45 +75,21 @@ export default function FindingsAnatomyStrip({
     );
   }
 
+  if (activeFindings.length === 0) {
+    return (
+      <p className="text-[10px] text-muted-foreground px-1" data-testid="findings-anatomy-strip">
+        No findings for {activeAnatomy ?? "selected anatomy"}.
+      </p>
+    );
+  }
+
   return (
     <div
       className="flex flex-col gap-1.5 rounded-xl border border-amber-200/80 bg-gradient-to-br from-amber-50/60 via-white to-orange-50/40 p-2 shadow-sm"
       data-testid="findings-anatomy-strip"
       data-study-tab-id={selectedStudyTabId ?? undefined}
+      data-active-anatomy={activeAnatomy ?? undefined}
     >
-      <div className="flex items-center gap-1.5">
-        <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-gradient-to-br from-amber-500 to-orange-600 text-white shadow-sm">
-          <Zap size={10} />
-        </span>
-        <span className="text-[10px] font-bold uppercase tracking-wide text-amber-950">
-          Findings{selectedStudyTabName ? ` — ${selectedStudyTabName}` : ""}
-        </span>
-      </div>
-
-      <div className="flex flex-wrap gap-1" data-testid="findings-anatomy-chips">
-        <span className="self-center text-[9px] font-semibold uppercase text-muted-foreground mr-0.5">Anatomy</span>
-        {anatomyGroups.map(([section]) => {
-          const active = section === activeAnatomy;
-          return (
-            <button
-              key={section}
-              type="button"
-              disabled={disabled}
-              onClick={() => setActiveAnatomy(section)}
-              className={[
-                "text-[10px] font-semibold px-2 py-0.5 rounded-md border transition-colors",
-                active
-                  ? "bg-gradient-to-br from-violet-500 to-fuchsia-600 text-white border-violet-600 shadow-sm"
-                  : "bg-white text-violet-900 border-violet-200 hover:border-violet-400 hover:bg-violet-50",
-              ].join(" ")}
-              data-testid={`findings-anatomy-${section.replace(/\s+/g, "-").toLowerCase()}`}
-            >
-              {section}
-            </button>
-          );
-        })}
-      </div>
-
       {conflictGroups.map(([group, items]) => (
         <div key={group} className="flex flex-wrap items-center gap-1" data-testid={`findings-conflict-${group.replace(/\s+/g, "-").toLowerCase()}`}>
           <span className="text-[9px] font-bold uppercase text-amber-800/80 min-w-[3.5rem] shrink-0">

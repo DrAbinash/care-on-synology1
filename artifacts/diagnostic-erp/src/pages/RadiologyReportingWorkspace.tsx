@@ -197,6 +197,7 @@ import { StudyRegionReportFormatSection } from "@/components/radiology/StudyRegi
 import ClinicalHistoryChipStrip from "@/components/radiology/ClinicalHistoryChipStrip";
 import TechniqueChoiceStrip from "@/components/radiology/TechniqueChoiceStrip";
 import FindingsAnatomyStrip from "@/components/radiology/FindingsAnatomyStrip";
+import FindingsAnatomyChips from "@/components/radiology/FindingsAnatomyChips";
 import StudyLocalFindingEditDialog, {
   type StudyLocalTextOverride,
 } from "@/components/radiology/StudyLocalFindingEditDialog";
@@ -426,6 +427,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   // deliberately independent of the major accordion.
   const [activeReportSection, setActiveReportSection] = useState<ReportSectionId | null>("findings");
   const [activeFindingsTool, setActiveFindingsTool] = useState<FindingsToolId | null>(null);
+  /** Shared anatomy chip selection — filters clinic tiles + Quick Select wall. */
+  const [activeFindingsAnatomy, setActiveFindingsAnatomy] = useState<string | null>(null);
   const activateReportSection = useCallback((id: ReportSectionId) => {
     setActiveReportSection((cur) => nextActiveSection(cur, id));
   }, []);
@@ -3717,6 +3720,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                         findings={studySetup.quickSelectData?.findings ?? []}
                         selectedStudyTabId={studySetup.selectedStudyTabId}
                         selectedStudyTabName={studySetup.matchedStudyRegion}
+                        activeAnatomy={activeFindingsAnatomy}
                         selectedIds={selectedQuickIds}
                         blockedIds={new Set(
                           appliedPathologyPatches
@@ -3905,9 +3909,19 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       {/* Findings Quick Select — the full existing tile set,
                           scoped to the region chosen in the Region section */}
                       <FindingsToolDrawer id="quickSelect" active={activeFindingsTool === "quickSelect"}>
+                        <FindingsAnatomyChips
+                          findings={studySetup.quickSelectData?.findings ?? []}
+                          selectedStudyTabId={studySetup.selectedStudyTabId}
+                          selectedStudyTabName={studySetup.matchedStudyRegion}
+                          activeAnatomy={activeFindingsAnatomy}
+                          onAnatomyChange={setActiveFindingsAnatomy}
+                          disabled={isLocked || isFinalized}
+                          sticky
+                        />
                         <QuickSelectStrip
                           field="findings"
                           bodyPart={studySetup.matchedStudyRegion}
+                          anatomyFilter={activeFindingsAnatomy}
                           onAfterPick={() => { void saveDraft({ silent: true }); }}
                         />
                       </FindingsToolDrawer>

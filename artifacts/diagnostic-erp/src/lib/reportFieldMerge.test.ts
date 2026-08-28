@@ -6,11 +6,13 @@ import {
   mergeSentences,
   normalizeForDedupe,
   reconcileProvenanceAfterManualEdit,
+  fuzzySentenceSimilarity,
   formatProvenanceHover,
   provenanceVisualKind,
   provenanceFromText,
   type FieldProvenanceMap,
 } from "./reportFieldMerge";
+import { applyPathologyPatch, isProtectedManualSentence } from "./pathologyPatch";
 import { buildPreviewHtml } from "./radiologyReportPreviewHtml";
 
 describe("normalizeForDedupe", () => {
@@ -222,7 +224,7 @@ describe("provenance — Quick Select / Quick Findings / merged", () => {
 });
 
 describe("provenance — manual edits remain safe", () => {
-  it("marks changed sentences as manual without rewriting clinical text", () => {
+  it("inherits provenance for lightly edited owned sentences via fuzzy match", () => {
     const text = "Disc desiccation at L4-L5.\nNo cord compression.";
     const provenance: FieldProvenanceMap = {
       [normalizeForDedupe("Disc desiccation at L4-L5.")]: ["quick-select"],
@@ -230,8 +232,8 @@ describe("provenance — manual edits remain safe", () => {
     };
     const edited = "Disc desiccation with annular tear at L4-L5.\nNo cord compression.";
     const next = reconcileProvenanceAfterManualEdit(text, edited, provenance);
-    expect(edited).toContain("annular tear"); // clinical text unchanged by reconcile
-    expect(next[normalizeForDedupe("Disc desiccation with annular tear at L4-L5.")]).toEqual(["manual"]);
+    expect(edited).toContain("annular tear");
+    expect(next[normalizeForDedupe("Disc desiccation with annular tear at L4-L5.")]).toEqual(["manual", "quick-select"]);
     expect(next[normalizeForDedupe("No cord compression.")]).toEqual(["quick-findings"]);
   });
 
@@ -341,5 +343,49 @@ describe("structured-template provenance (P1)", () => {
       "structured-template",
       "ai-draft",
     ]);
+  });
+});
+
+describe("fuzzy provenance for lightly edited owned blocks", () => {
+  it("scores similar sentences above threshold", () => {
+    const base = "Basal ganglia are unremarkable.";
+    const edited = "Basal ganglia are largely unremarkable.";
+    expect(fuzzySentenceSimilarity(base, edited)).toBeGreaterThanOrEqual(0.65);
+  });
+
+  it("allows pathology replace when baseline was lightly edited", () => {
+    const baseline = "Basal ganglia are unremarkable.";
+    const edited = "Basal ganglia are largely unremarkable.";
+    expect(isProtectedManualSentence(edited, { [normalizeForDedupe(edited)]: ["manual"] }, { baselineReplaces: baseline })).toBe(false);
+  });
+
+  it("replaces lightly edited owned normal without ambiguous block", () => {
+    const baseline = "Basal ganglia are unremarkable in signal intensity.";
+    const edited = "Basal ganglia are largely unremarkable in signal intensity.";
+    const result = applyPathologyPatch({
+      existing: {
+        clinicalHistory: "",
+        technique: "",
+        findings: `${edited}\nVentricles are normal.`,
+        impression: "Normal MRI brain.",
+        recommendation: "",
+      },
+      incoming: {
+        findings: "Acute intraparenchymal hemorrhage in the right basal ganglia.",
+        impression: "Acute right basal ganglia hemorrhage.",
+      },
+      ownership: {
+        anatomicalSection: "basal ganglia",
+        conflictGroup: "hemorrhage",
+        baselineReplaces: baseline,
+      },
+      provenance: {
+        findings: provenanceFromText(edited, "manual"),
+      },
+      source: "quick-select",
+    });
+    expect(result.ambiguous).toBe(false);
+    expect(result.narrative.findings.toLowerCase()).toContain("hemorrhage");
+    expect(result.narrative.findings).toContain("Ventricles are normal.");
   });
 });

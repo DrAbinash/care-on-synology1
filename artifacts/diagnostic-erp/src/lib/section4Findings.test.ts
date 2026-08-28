@@ -71,10 +71,17 @@ describe("Section 4 — study_tab_id scoping", () => {
 describe("Section 4 — anatomy grouping UI wiring", () => {
   it("FindingsAnatomyStrip groups by anatomicalSection + conflictGroup", () => {
     const strip = read("components/radiology/FindingsAnatomyStrip.tsx");
-    expect(strip).toContain("quickFindingsForStudyTab");
     expect(strip).toContain("groupByAnatomy");
     expect(strip).toContain("groupByConflict");
-    expect(strip).toContain('data-testid="findings-anatomy-chips"');
+    expect(strip).toContain("activeAnatomy");
+  });
+
+  it("sticky anatomy chips sit above Quick Select tile wall", () => {
+    const workspace = read("pages/RadiologyReportingWorkspace.tsx");
+    const chips = read("components/radiology/FindingsAnatomyChips.tsx");
+    expect(workspace).toContain("FindingsAnatomyChips");
+    expect(workspace).toContain("anatomyFilter={activeFindingsAnatomy}");
+    expect(chips).toContain('data-testid="findings-anatomy-chips-bar"');
   });
 
   it("workspace wires anatomy strip above the Findings editor", () => {
@@ -329,6 +336,8 @@ describe("Section 4 — migration + API", () => {
     const sql = readFileSync(join(ROOT, "migrations/z_add_study_tab_id_quick_findings.sql"), "utf8");
     expect(sql).toContain("radiology_quick_findings");
     expect(sql).toContain("study_tab_id");
+    expect(sql).toContain("radiology_quick_findings_study_tab_label_uq");
+    expect(sql).toContain("radiology_quick_findings_legacy_study_label_uq");
     expect(sql).not.toMatch(/DELETE FROM radiology_quick_findings/i);
   });
 

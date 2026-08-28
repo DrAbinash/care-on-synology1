@@ -75,7 +75,8 @@ export const radiologyQuickFindingsTable = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
   },
   (t) => ({
-    studyLabelUq: uniqueIndex("radiology_quick_findings_study_label_uq").on(t.studyType, t.label),
+    studyTabLabelUq: uniqueIndex("radiology_quick_findings_study_tab_label_uq").on(t.studyTabId, t.label),
+    legacyStudyLabelUq: uniqueIndex("radiology_quick_findings_legacy_study_label_uq").on(t.studyType, t.label),
     byStudy: index("radiology_quick_findings_study_idx").on(t.studyType, t.isActive, t.sortOrder),
     byStudyTab: index("radiology_quick_findings_study_tab_idx").on(t.studyTabId, t.isActive, t.sortOrder),
   }),
