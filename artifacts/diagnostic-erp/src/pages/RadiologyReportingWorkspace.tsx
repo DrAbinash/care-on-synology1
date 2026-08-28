@@ -196,6 +196,8 @@ import ReferringDoctorQuickSelect from "@/components/ReferringDoctorQuickSelect"
 import { StudyRegionReportFormatSection } from "@/components/radiology/StudyRegionReportFormatSection";
 import ClinicalHistoryChipStrip from "@/components/radiology/ClinicalHistoryChipStrip";
 import TechniqueChoiceStrip from "@/components/radiology/TechniqueChoiceStrip";
+import FindingsAnatomyStrip from "@/components/radiology/FindingsAnatomyStrip";
+import FindingsAnatomyChips from "@/components/radiology/FindingsAnatomyChips";
 import StudyLocalFindingEditDialog, {
   type StudyLocalTextOverride,
 } from "@/components/radiology/StudyLocalFindingEditDialog";
@@ -425,6 +427,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   // deliberately independent of the major accordion.
   const [activeReportSection, setActiveReportSection] = useState<ReportSectionId | null>("findings");
   const [activeFindingsTool, setActiveFindingsTool] = useState<FindingsToolId | null>(null);
+  /** Shared anatomy chip selection — filters clinic tiles + Quick Select wall. */
+  const [activeFindingsAnatomy, setActiveFindingsAnatomy] = useState<string | null>(null);
   const activateReportSection = useCallback((id: ReportSectionId) => {
     setActiveReportSection((cur) => nextActiveSection(cur, id));
   }, []);
@@ -1524,7 +1528,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         source: "quick-findings",
         side: quickSide,
         id: patchId,
-        region: finding.studyType,
+        region: studySetup.matchedStudyRegion ?? finding.studyType,
         label: finding.label,
         catalogId: finding.id,
         properties: finding.properties,
@@ -1549,7 +1553,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         });
       }
     }
-  }, [quickSide, toast]);
+  }, [quickSide, toast, studySetup.matchedStudyRegion]);
   handleQuickToggleRef.current = handleQuickToggle;
   selectedQuickIdsRef.current = selectedQuickIds;
 
@@ -3711,6 +3715,26 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       />
                     )}
 
+                    {!useStructured && (
+                      <FindingsAnatomyStrip
+                        findings={studySetup.quickSelectData?.findings ?? []}
+                        selectedStudyTabId={studySetup.selectedStudyTabId}
+                        selectedStudyTabName={studySetup.matchedStudyRegion}
+                        activeAnatomy={activeFindingsAnatomy}
+                        selectedIds={selectedQuickIds}
+                        blockedIds={new Set(
+                          appliedPathologyPatches
+                            .filter((p) => patchFindingsContributionBlocked(p, findingsText))
+                            .map((p) => /^qf-(\d+)$/.exec(p.id))
+                            .filter((m): m is RegExpExecArray => Boolean(m))
+                            .map((m) => Number(m[1])),
+                        )}
+                        onToggle={handleQuickToggle}
+                        onFindingClick={(f) => studySetup.handleFindingClick(f, selectedQuickIds, handleQuickToggle)}
+                        disabled={isLocked || isFinalized}
+                      />
+                    )}
+
                     {studySetup.templateMismatch && (
                       <div className="flex flex-wrap items-center gap-2 p-2 rounded-md border border-amber-300 bg-amber-50 text-[11px] text-amber-900" data-testid="template-mismatch-banner">
                         <AlertTriangle size={14} className="shrink-0" />
@@ -3885,9 +3909,19 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       {/* Findings Quick Select — the full existing tile set,
                           scoped to the region chosen in the Region section */}
                       <FindingsToolDrawer id="quickSelect" active={activeFindingsTool === "quickSelect"}>
+                        <FindingsAnatomyChips
+                          findings={studySetup.quickSelectData?.findings ?? []}
+                          selectedStudyTabId={studySetup.selectedStudyTabId}
+                          selectedStudyTabName={studySetup.matchedStudyRegion}
+                          activeAnatomy={activeFindingsAnatomy}
+                          onAnatomyChange={setActiveFindingsAnatomy}
+                          disabled={isLocked || isFinalized}
+                          sticky
+                        />
                         <QuickSelectStrip
                           field="findings"
                           bodyPart={studySetup.matchedStudyRegion}
+                          anatomyFilter={activeFindingsAnatomy}
                           onAfterPick={() => { void saveDraft({ silent: true }); }}
                         />
                       </FindingsToolDrawer>
@@ -3932,6 +3966,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                             }}
                             onFindingsLoaded={(findings) => { quickFindingTemplatesRef.current = findings; }}
                             externalSearch={qsExternalSearch}
+                            selectedStudyTabId={studySetup.selectedStudyTabId}
+                            selectedStudyTabName={studySetup.matchedStudyRegion}
                           />
                         </div>
                       </FindingsToolDrawer>

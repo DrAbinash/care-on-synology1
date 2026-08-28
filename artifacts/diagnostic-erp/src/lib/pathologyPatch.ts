@@ -12,6 +12,8 @@ import {
   mergeReportFieldContentWithProvenance,
   normalizeForDedupe,
   splitToSentences,
+  fuzzySentenceSimilarity,
+  isLightSentenceEdit,
   type FieldProvenanceMap,
   type InsertSource,
 } from "./reportFieldMerge";
@@ -148,19 +150,64 @@ function isManualSentence(sentence: string, provenance: FieldProvenanceMap | und
   return src.length === 1 && src[0] === "manual";
 }
 
-/** Template/protocol-sourced sentences should always be replaceable by pathology.
- * Only purely manual sentences need the ambiguous/force guard.
+/** Fuzzy threshold for lightly edited owned baseline sentences. */
+const FUZZY_OWNED_BASELINE_THRESHOLD = 0.65;
+
+/**
+ * True when `sentence` is only a small clinical descriptor tweak of `baseline`
+ * (e.g. "unremarkable" → "largely unremarkable"). Authorship annotations
+ * ("— radiologist rewrite", "kept manual") are NOT descriptor tweaks.
  */
-export function isProtectedManualSentence(sentence: string, provenance: FieldProvenanceMap | undefined): boolean {
+function isDescriptorOnlyBaselineEdit(baseline: string, sentence: string): boolean {
+  if (!(
+    fuzzySentenceSimilarity(sentence, baseline) >= FUZZY_OWNED_BASELINE_THRESHOLD
+    || isLightSentenceEdit(baseline, sentence)
+  )) {
+    return false;
+  }
+  if (/\b(radiologist|rewrite|kept manual|do not overwrite|don'?t overwrite)\b/i.test(sentence)
+    && !/\b(radiologist|rewrite|kept manual|do not overwrite|don'?t overwrite)\b/i.test(baseline)) {
+    return false;
+  }
+  // New em-dash / en-dash annotation clause → radiologist authorship, not a descriptor.
+  if (/[—–].{6,}/.test(sentence) && !/[—–].{6,}/.test(baseline)) {
+    return false;
+  }
+  const baseTokens = new Set(normalizeForDedupe(baseline).split(" ").filter((t) => t.length > 2));
+  const nextTokens = new Set(normalizeForDedupe(sentence).split(" ").filter((t) => t.length > 2));
+  let added = 0;
+  for (const t of nextTokens) if (!baseTokens.has(t)) added++;
+  return added <= 3;
+}
+
+/** Template/protocol-sourced sentences should always be replaceable by pathology.
+ * Purely manual or materially rewritten sentences need the ambiguous/force guard.
+ * Section 4: a small descriptor tweak of an owned baseline may still sync.
+ * Radiologist-authored edits (including light QS-chip edits that stamp `manual`)
+ * stay protected so re-select opens the overwrite dialog.
+ */
+export function isProtectedManualSentence(
+  sentence: string,
+  provenance: FieldProvenanceMap | undefined,
+  opts?: { baselineReplaces?: string },
+): boolean {
+  const baseline = (opts?.baselineReplaces ?? "").trim();
   const key = normalizeForDedupe(sentence);
   const src = provenance?.[key];
+  const hasRadiologistAuthorship = Boolean(
+    src?.includes("manual") || src?.includes("radiologist-voice"),
+  );
+
+  // Owned-baseline descriptor tweaks remain replaceable (Section 4).
+  if (baseline && isDescriptorOnlyBaselineEdit(baseline, sentence)) {
+    return false;
+  }
+
+  // Any radiologist authorship signal protects the sentence.
+  if (hasRadiologistAuthorship) return true;
+
   if (!src || src.length === 0) return false;
-  // If any source is manual AND no other source contributed, it's a protected manual edit.
-  // Template/protocol/quick-select-sourced sentences are always eligible for replacement.
-  if (src.length === 1 && src[0] === "manual") return true;
-  // If manual co-exists with other sources, the radiologist edited a template line — protect it.
-  if (src.includes("manual")) return true;
-  return false;
+  return src.every((s) => s === "manual" || s === "radiologist-voice");
 }
 
 export function applySideToIncoming(incoming: PathologyIncoming, side: Side | ""): PathologyIncoming {
@@ -275,7 +322,7 @@ export function applyPathologyPatch(opts: {
         kept.push(s);
         continue;
       }
-      if (isProtectedManualSentence(s, provenance) && !opts.force) {
+      if (isProtectedManualSentence(s, provenance, { baselineReplaces: baseline }) && !opts.force) {
         ambiguous = true;
         kept.push(s);
         continue;

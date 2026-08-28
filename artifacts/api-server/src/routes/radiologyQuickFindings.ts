@@ -172,15 +172,23 @@ router.delete("/tabs/:id", requireAdminRole, async (req, res) => {
 
 // ── Findings (admin) ─────────────────────────────────────────────────────────
 router.post("/findings", requireAdminRole, async (req, res) => {
-  const studyType = String(req.body?.studyType ?? "").trim();
   const label = String(req.body?.label ?? "").trim();
-  if (!studyType || !label) {
-    res.status(400).json({ error: "studyType and label are required" });
+  if (!label) {
+    res.status(400).json({ error: "label is required" });
+    return;
+  }
+  const tab = await resolveStudyTab({
+    studyTabId: req.body?.studyTabId ?? req.body?.study_tab_id,
+    studyType: req.body?.studyType,
+  });
+  if (!tab) {
+    res.status(400).json({ error: "studyTabId or studyType must resolve to a Study Tab" });
     return;
   }
   try {
     const [row] = await db.insert(radiologyQuickFindingsTable).values({
-      studyType,
+      studyType: tab.name,
+      studyTabId: tab.id,
       label,
       findingText: typeof req.body?.findingText === "string" ? req.body.findingText : "",
       impressionText: typeof req.body?.impressionText === "string" ? req.body.impressionText : "",
@@ -211,8 +219,22 @@ router.patch("/findings/:id", requireAdminRole, async (req, res) => {
     res.status(400).json({ error: "Invalid id" });
     return;
   }
+  const [existing] = await db.select().from(radiologyQuickFindingsTable).where(eq(radiologyQuickFindingsTable.id, id));
+  if (!existing) {
+    res.status(404).json({ error: "Quick finding not found" });
+    return;
+  }
   const updates: Record<string, unknown> = { updatedAt: new Date() };
-  if (typeof req.body?.studyType === "string" && req.body.studyType.trim()) updates.studyType = req.body.studyType.trim();
+  const tab = await resolveStudyTab({
+    studyTabId: req.body?.studyTabId ?? req.body?.study_tab_id,
+    studyType: req.body?.studyType,
+  });
+  if (tab) {
+    updates.studyTabId = tab.id;
+    updates.studyType = tab.name;
+  } else if (typeof req.body?.studyType === "string" && req.body.studyType.trim()) {
+    updates.studyType = req.body.studyType.trim();
+  }
   if (typeof req.body?.label === "string" && req.body.label.trim()) updates.label = req.body.label.trim();
   if (typeof req.body?.findingText === "string") updates.findingText = req.body.findingText;
   if (typeof req.body?.impressionText === "string") updates.impressionText = req.body.impressionText;

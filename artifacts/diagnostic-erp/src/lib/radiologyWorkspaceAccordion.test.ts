@@ -247,6 +247,8 @@ describe("no reporting feature was deleted by the re-layout", () => {
     ["Clinical history editor", 'field="clinicalHistory"'],
     ["Technique editor", 'data-testid="canonical-technique-editor"'],
     ["Region macros", "<ChocolateBoxMacros"],
+    ["Anatomy-grouped findings", "<FindingsAnatomyStrip"],
+    ["Sticky anatomy chips", "<FindingsAnatomyChips"],
     ["Structured findings cards", 'data-testid="structured-findings-cards"'],
     ["Highlight editor", "<FindingsHighlightEditor"],
     ["Findings editor", 'field="findings"'],

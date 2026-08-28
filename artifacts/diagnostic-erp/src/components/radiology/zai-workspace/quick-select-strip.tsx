@@ -6,6 +6,7 @@ import { Plus, Pencil, Star, Search, X, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { patchFindingsContributionBlocked } from "@/lib/observationLedger";
+import { tileMatchesAnatomy } from "@/components/radiology/FindingsAnatomyChips";
 
 const CAT_DOT: Record<string, string> = {
   normal: "bg-emerald-500 shadow-emerald-400/50",
@@ -61,6 +62,7 @@ export function QuickSelectStrip({
   field,
   bodyPart,
   compact,
+  anatomyFilter,
   onAfterPick,
 }: {
   field: QuickSelectField;
@@ -74,6 +76,8 @@ export function QuickSelectStrip({
   bodyPart?: string | null;
   /** Compact chrome for Impression / Recommendation sections (Sections 5–6). */
   compact?: boolean;
+  /** When set, only tiles whose anatomicalSection matches this anatomy chip. */
+  anatomyFilter?: string | null;
   /** Fired after a tile is merged into the editor (e.g. silent draft save). */
   onAfterPick?: (field: QuickSelectField) => void;
 }) {
@@ -92,15 +96,19 @@ export function QuickSelectStrip({
     [tiles, field, study?.modality, reportingContext],
   );
   const filtered = useMemo(() => {
-    if (!search.trim()) return scoped;
+    let pool = scoped;
+    if (anatomyFilter && field === "findings") {
+      pool = pool.filter((t) => tileMatchesAnatomy(t.anatomicalSection, anatomyFilter));
+    }
+    if (!search.trim()) return pool;
     const q = search.toLowerCase();
-    return scoped.filter(
+    return pool.filter(
       (t) =>
         t.label.toLowerCase().includes(q) ||
         t.sentence.toLowerCase().includes(q) ||
         (t.mnemonic ?? "").toLowerCase().includes(q),
     );
-  }, [scoped, search]);
+  }, [scoped, search, anatomyFilter, field]);
   useEffect(() => {
     if (showSearch) setTimeout(() => ref.current?.focus(), 50);
   }, [showSearch]);

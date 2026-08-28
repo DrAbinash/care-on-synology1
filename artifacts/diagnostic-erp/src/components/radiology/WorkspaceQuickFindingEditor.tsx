@@ -65,10 +65,11 @@ interface Props {
   finding: QuickFinding | null;
   tabs: QuickStudyTab[];
   defaultStudyType: string;
+  selectedStudyTabId?: number | null;
   onClose: () => void;
 }
 
-export default function WorkspaceQuickFindingEditor({ finding, tabs, defaultStudyType, onClose }: Props) {
+export default function WorkspaceQuickFindingEditor({ finding, tabs, defaultStudyType, selectedStudyTabId, onClose }: Props) {
   const { toast } = useToast();
   const qc = useQueryClient();
   const [draft, setDraft] = useState<Draft>(() => toDraft(finding, defaultStudyType));
@@ -81,7 +82,10 @@ export default function WorkspaceQuickFindingEditor({ finding, tabs, defaultStud
 
   const save = useMutation({
     mutationFn: async () => {
+      const byName = tabs.find((t) => t.name === draft.studyType.trim());
+      const studyTabId = selectedStudyTabId ?? finding?.studyTabId ?? byName?.id ?? undefined;
       const body = {
+        studyTabId,
         studyType: draft.studyType.trim(),
         label: draft.label.trim(),
         findingText: draft.findingText,

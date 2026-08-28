@@ -95,6 +95,12 @@ describe("migration + API study_tab_id", () => {
     expect(sql).not.toMatch(/DELETE FROM radiology_clinical_history_chips/i);
   });
 
+  it("quick findings migration backfills study_tab_id", () => {
+    const sql = readFileSync(join(ROOT, "migrations/zzzzz_add_study_tab_id_quick_findings.sql"), "utf8");
+    expect(sql).toContain("radiology_quick_findings");
+    expect(sql).toContain("study_tab_id");
+  });
+
   it("API create/update resolve Study Tab ID and sync rename", () => {
     const route = readFileSync(join(ROOT, "artifacts/api-server/src/routes/radiologyQuickFindings.ts"), "utf8");
     expect(route).toContain("resolveStudyTab");

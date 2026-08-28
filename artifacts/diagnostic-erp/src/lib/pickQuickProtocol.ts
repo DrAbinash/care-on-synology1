@@ -90,3 +90,29 @@ export function clinicalHistoryChipsForStudyTab<T extends { studyTabId?: number 
 export function normalizeTechniqueName(name: string): string {
   return name.trim().toLowerCase();
 }
+
+/** Quick findings for a Study Tab (ID first; legacy name fallback). */
+export function quickFindingsForStudyTab<T extends { studyTabId?: number | null; studyType: string; isActive: boolean; sortOrder?: number; label?: string }>(
+  findings: T[],
+  studyTabId: number | null | undefined,
+  studyRegionName?: string | null,
+): { matched: T[]; unresolvedLegacy: T[] } {
+  const active = findings.filter((f) => f.isActive);
+  if (studyTabId != null && Number.isInteger(studyTabId) && studyTabId > 0) {
+    const matched = active.filter((f) => f.studyTabId === studyTabId);
+    if (matched.length > 0) {
+      return {
+        matched: matched.slice().sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0) || String(a.label ?? "").localeCompare(String(b.label ?? ""))),
+        unresolvedLegacy: [],
+      };
+    }
+  }
+  if (studyRegionName) {
+    const legacy = active.filter((f) => f.studyType === studyRegionName && f.studyTabId == null);
+    return {
+      matched: legacy.slice().sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0) || String(a.label ?? "").localeCompare(String(b.label ?? ""))),
+      unresolvedLegacy: legacy,
+    };
+  }
+  return { matched: [], unresolvedLegacy: [] };
+}
