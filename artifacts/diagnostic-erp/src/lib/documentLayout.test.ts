@@ -658,6 +658,81 @@ describe("document layout engine — CARE Sage (care-sage)", () => {
   });
 });
 
+describe("document layout engine — CARE Sage Sleeping (care-sage-sleeping)", () => {
+  const sleepingOpts = (overrides: Record<string, unknown> = {}) => baseOpts({
+    billFormat: "care-sage-sleeping",
+    orientation: "portrait",
+    pageCssSize: "A5 portrait",
+    ...overrides,
+  });
+
+  test("care-sage-sleeping renders the status-edge receipt on 148×210", () => {
+    const html = buildBillPrintHtml(sleepingOpts());
+    expect(html).toContain("care-sage-sleeping-bill");
+    expect(html).toContain("sage-edge");
+    expect(html).toContain(">RECEIPT<");
+    expect(html).toContain("Authorised Signatory");
+    expect(html).toContain("@page { size: A5 portrait; margin: 0; }");
+    expect(html).not.toMatch(/@page \{ size: A4/);
+    expect(html).not.toContain("a5-landscape-bill");
+    expect(html).not.toContain("hope-bill");
+    expect(html).not.toContain(">INVOICE<");
+  });
+
+  test("feed-safe geometry: footer and tear guides stay inside the top 148 mm", () => {
+    const html = buildBillPrintHtml(sleepingOpts());
+    expect(html).toContain("sage-tear-v");
+    expect(html).toContain("sage-tear-h");
+    expect(html).toContain("tear — 148 mm");
+    // Safe-zone shell: min-height 144mm − 5mm default A5-portrait padding.
+    expect(html).toContain("min-height: 139mm;");
+  });
+
+  test("long bills (7 tests) drop the tear guides but stay on A5 portrait", () => {
+    const html = buildBillPrintHtml(sleepingOpts({ bill: sampleBill(7) }));
+    expect(html).not.toContain("sage-tear-h");
+    expect(html).not.toContain("sage-tear-v");
+    expect(html).toContain("@page { size: A5 portrait; margin: 0; }");
+  });
+
+  test("settled bill prints in peaceful green with a PAID check", () => {
+    const html = buildBillPrintHtml(sleepingOpts());
+    expect(html).toContain("#15803d");
+    expect(html).toContain("#f0fdf4");
+    expect(html).toContain("Paid ✓");
+    expect(html).not.toContain("#b91c1c");
+  });
+
+  test("balance-due bill prints in red without the PAID check", () => {
+    const html = buildBillPrintHtml(sleepingOpts({
+      bill: sampleBill(1, { paidAmount: 1000, balanceAmount: 3900 }),
+    }));
+    expect(html).toContain("#b91c1c");
+    expect(html).toContain("#fef2f2");
+    expect(html).not.toContain("Paid ✓");
+  });
+
+  test("B&W mode keeps the layout readable with neutral ink", () => {
+    const html = buildBillPrintHtml(sleepingOpts({ isBW: true }));
+    expect(html).not.toContain("#15803d");
+    expect(html).not.toContain("#b91c1c");
+    expect(html).toContain("#64748b"); // neutral grey status edge
+    expect(html).toContain("Paid");
+  });
+
+  test("care-sage-sleeping shares financial and audit fields with the other templates", () => {
+    const html = buildBillPrintHtml(sleepingOpts());
+    expect(html).toContain("4,900.00");
+    expect(html).toMatch(/2026001-\d+-4900\.00-\d+-[0-9A-F]{8}/);
+    expect(html).toContain("Scan to verify");
+  });
+
+  test("care-sage-sleeping HTML does not use CSS transform rotate", () => {
+    const html = buildBillPrintHtml(sleepingOpts());
+    expect(html).not.toMatch(/transform:\s*rotate/i);
+  });
+});
+
 describe("print delivery module", () => {
   test("exports popup helpers without Electron APIs or hidden iframe print path", async () => {
     const mod = await import("./documentLayout/printDelivery");
