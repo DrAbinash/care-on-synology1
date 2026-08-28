@@ -62,6 +62,11 @@ describe("RadiologyReportingWorkspace — consolidation contracts", () => {
       /mergeField\("impression",\s*\w+,\s*"structured-template-candidate"\)/,
     );
   });
+
+  it("avoids unstable zustand selector fallback for technique provenance (React #185)", () => {
+    expect(workspace).toContain("EMPTY_FIELD_PROVENANCE");
+    expect(workspace).not.toMatch(/fieldProvenance\.technique\s*\?\?\s*\{\}/);
+  });
 });
 
 const findingsEditor = readFileSync(

@@ -42,11 +42,12 @@ export default function FindingsAnatomyChips({
 
   useEffect(() => {
     if (anatomyGroups.length === 0) {
-      onAnatomyChange(null);
+      if (activeAnatomy !== null) onAnatomyChange(null);
       return;
     }
     if (activeAnatomy && anatomyGroups.some(([k]) => k === activeAnatomy)) return;
-    onAnatomyChange(anatomyGroups[0]![0]);
+    const next = anatomyGroups[0]![0];
+    if (activeAnatomy !== next) onAnatomyChange(next);
   }, [anatomyGroups, selectedStudyTabId, activeAnatomy, onAnatomyChange]);
 
   useEffect(() => {

@@ -525,7 +525,26 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       isDirty: true,
     });
   },
-  setMeasurements: (m) => set({ measurements: m }), setPriors: (p) => set({ priors: p }),
+  setMeasurements: (m) => {
+    const prev = get().measurements;
+    if (
+      prev.length === m.length
+      && prev.every((p, i) => {
+        const n = m[i]!;
+        return p.id === n.id
+          && p.name === n.name
+          && p.value === n.value
+          && p.unit === n.unit
+          && p.priorValue === n.priorValue
+          && p.delta === n.delta
+          && p.source === n.source
+          && p.inserted === n.inserted;
+      })
+    ) {
+      return;
+    }
+    set({ measurements: m });
+  }, setPriors: (p) => set({ priors: p }),
   insertMeasurement: (id) => {
     const ms = get().measurements.map(m => m.id === id ? { ...m, inserted: true } : m);
     const m = ms.find(x => x.id === id);

@@ -241,7 +241,7 @@ import type { ReportImageRef } from "@/lib/reportImageRefs";
 import { daysAgoISO, todayISO } from "@/lib/dateRangePresets";
 
 // ─── New Z.ai workspace components ─────────────────────────────────────────────
-import { useWorkspace, formatSignOff, lookupProfile, type WorkspaceStore } from "@/lib/zai-workspace/store";
+import { useWorkspace, formatSignOff, lookupProfile, EMPTY_FIELD_PROVENANCE, type WorkspaceStore } from "@/lib/zai-workspace/store";
 import { getFindingsCompletionPct, runLintRules, shouldPreloadNext } from "@/lib/zai-workspace/types";
 import type { Study, MeasurementRow, PriorStudy } from "@/lib/zai-workspace/types";
 import { WorklistStrip, type ReadingQueueDatePreset, type ReadingQueueSort } from "@/components/radiology/zai-workspace/worklist-strip";
@@ -325,6 +325,9 @@ const DEFAULT_RECOMMENDATION_CHIPS: string[] = [
   "Specialist / surgical consultation is recommended.",
   "No further imaging is required at present.",
 ];
+
+/** Stable empty catalog — avoid `?? []` props that retrigger anatomy effects every render. */
+const EMPTY_QUICK_FINDINGS: QuickFinding[] = [];
 
 const RECOMMENDATION_CHIP_ALIASES: Record<string, string[]> = {
   "Clinical correlation is recommended.": [
@@ -514,7 +517,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   // Read-only: drives the collapsed Findings summary's "N assisted" count.
   const findingsProvenance = useWorkspace((s: WorkspaceStore) => s.fieldProvenance.findings);
   const impressionProvenance = useWorkspace((s: WorkspaceStore) => s.fieldProvenance.impression);
-  const techniqueProvenance = useWorkspace((s: WorkspaceStore) => s.fieldProvenance.technique ?? {});
+  const techniqueProvenance = useWorkspace((s: WorkspaceStore) => s.fieldProvenance.technique ?? EMPTY_FIELD_PROVENANCE);
   const isFinalized = useWorkspace((s: WorkspaceStore) => s.isFinalized);
   const isDirty = useWorkspace((s: WorkspaceStore) => s.isDirty);
   const preloadTriggered = useWorkspace((s: WorkspaceStore) => s.preloadTriggered);
@@ -1061,6 +1064,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     structuredFormatDrivingRef.current = false;
     lastStructuredFindingsLinesRef.current = {};
     setSelectedQuickIds(new Set());
+    setActiveFindingsAnatomy(null);
     setIsCritical(false);
     setCriticalNote("");
     setChecklistComm({ phoned: false, annotated: false, dispatched: false });
@@ -1160,7 +1164,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         clinicalHistory: s.clinicalHistoryText,
       };
     },
-    readTechniqueProvenance: () => useWorkspace.getState().fieldProvenance.technique ?? {},
+    readTechniqueProvenance: () => useWorkspace.getState().fieldProvenance.technique ?? EMPTY_FIELD_PROVENANCE,
   }), []);
 
   const studySetup = useReportingStudySetup({
@@ -1342,6 +1346,19 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     const pathology = collectPathologyRecommendationChips(appliedPathologyPatches);
     return mergeRecommendationChipLists(base, pathology);
   }, [pacsSettingsRows, appliedPathologyPatches]);
+
+  const blockedQuickFindingIds = useMemo(
+    () => new Set(
+      appliedPathologyPatches
+        .filter((p) => patchFindingsContributionBlocked(p, findingsText))
+        .map((p) => /^qf-(\d+)$/.exec(p.id))
+        .filter((m): m is RegExpExecArray => Boolean(m))
+        .map((m) => Number(m[1])),
+    ),
+    [appliedPathologyPatches, findingsText],
+  );
+
+  const catalogQuickFindings = studySetup.quickSelectData?.findings ?? EMPTY_QUICK_FINDINGS;
 
   const reportNeedsStart = useMemo(() => {
     const region = studySetup.matchedStudyRegion ?? studySetup.studyRegions[0];
@@ -3717,18 +3734,12 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
 
                     {!useStructured && (
                       <FindingsAnatomyStrip
-                        findings={studySetup.quickSelectData?.findings ?? []}
+                        findings={catalogQuickFindings}
                         selectedStudyTabId={studySetup.selectedStudyTabId}
                         selectedStudyTabName={studySetup.matchedStudyRegion}
                         activeAnatomy={activeFindingsAnatomy}
                         selectedIds={selectedQuickIds}
-                        blockedIds={new Set(
-                          appliedPathologyPatches
-                            .filter((p) => patchFindingsContributionBlocked(p, findingsText))
-                            .map((p) => /^qf-(\d+)$/.exec(p.id))
-                            .filter((m): m is RegExpExecArray => Boolean(m))
-                            .map((m) => Number(m[1])),
-                        )}
+                        blockedIds={blockedQuickFindingIds}
                         onToggle={handleQuickToggle}
                         onFindingClick={(f) => studySetup.handleFindingClick(f, selectedQuickIds, handleQuickToggle)}
                         disabled={isLocked || isFinalized}
@@ -3910,7 +3921,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                           scoped to the region chosen in the Region section */}
                       <FindingsToolDrawer id="quickSelect" active={activeFindingsTool === "quickSelect"}>
                         <FindingsAnatomyChips
-                          findings={studySetup.quickSelectData?.findings ?? []}
+                          findings={catalogQuickFindings}
                           selectedStudyTabId={studySetup.selectedStudyTabId}
                           selectedStudyTabName={studySetup.matchedStudyRegion}
                           activeAnatomy={activeFindingsAnatomy}
@@ -3938,13 +3949,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                           </div>
                           <QuickFindingsPanel
                             selectedIds={selectedQuickIds}
-                            blockedIds={new Set(
-                              appliedPathologyPatches
-                                .filter((p) => patchFindingsContributionBlocked(p, findingsText))
-                                .map((p) => /^qf-(\d+)$/.exec(p.id))
-                                .filter((m): m is RegExpExecArray => Boolean(m))
-                                .map((m) => Number(m[1])),
-                            )}
+                            blockedIds={blockedQuickFindingIds}
                             onToggle={handleQuickToggle}
                             onFindingClick={(f) => studySetup.handleFindingClick(f, selectedQuickIds, handleQuickToggle)}
                             onEditBeforeInsert={handleEditBeforeInsert}
