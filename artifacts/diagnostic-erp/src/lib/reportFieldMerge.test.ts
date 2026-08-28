@@ -359,6 +359,17 @@ describe("fuzzy provenance for lightly edited owned blocks", () => {
     expect(isProtectedManualSentence(edited, { [normalizeForDedupe(edited)]: ["manual"] }, { baselineReplaces: baseline })).toBe(false);
   });
 
+  it("protects radiologist authorship annotations even when they still match the baseline lightly", () => {
+    const baseline = "Ventricular system and cisternal spaces are normal in size and configuration. No midline shift.";
+    const edited = "Ventricular system and cisternal spaces are normal in size — kept manual. No midline shift.";
+    expect(isProtectedManualSentence(edited, { [normalizeForDedupe(edited)]: ["manual", "quick-select"] }, { baselineReplaces: baseline })).toBe(true);
+  });
+
+  it("protects radiologist rewrite of a QS chip that has no baselineReplaces", () => {
+    const edited = "Few punctate T2/FLAIR hyperintense white matter lesions in bilateral periventricular and deep white matter, Fazekas grade 1 — radiologist rewrite. No confluent lesions.";
+    expect(isProtectedManualSentence(edited, { [normalizeForDedupe(edited)]: ["manual", "quick-select"] })).toBe(true);
+  });
+
   it("replaces lightly edited owned normal without ambiguous block", () => {
     const baseline = "Basal ganglia are unremarkable in signal intensity.";
     const edited = "Basal ganglia are largely unremarkable in signal intensity.";
