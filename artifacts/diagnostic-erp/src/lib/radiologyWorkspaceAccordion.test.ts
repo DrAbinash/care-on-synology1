@@ -34,7 +34,9 @@ describe("main reporting pane — progressive accordion", () => {
     ]) {
       expect(workspace).toContain(`accordionProps("${id}")`);
     }
-    expect(workspace).toContain('data-testid="report-section-accordion"');
+    // R2 continuous canvas is the primary pane; accordion section chrome remains inside it.
+    expect(workspace).toContain('data-testid="reporting-canvas-r2"');
+    expect(workspace).toContain("continuous: true");
   });
 
   it("keeps the clinical top-to-bottom order", () => {
@@ -61,18 +63,21 @@ describe("main reporting pane — progressive accordion", () => {
   });
 
   it("collapsing is visual only — children stay mounted so state survives", () => {
-    // The section body is always rendered; only its container is display:none.
-    expect(accordion).toMatch(/active \? "min-h-0 flex-1 overflow-y-auto[^"]*" : "hidden"/);
+    // Continuous mode keeps bodies visible; legacy mode still hides with `hidden`
+    // (display:none) so editors/drawers never unmount.
+    expect(accordion).toMatch(/showBody \? "[^"]*" : "hidden"/);
     expect(accordion).toContain("{children}");
+    expect(accordion).toContain("continuous");
     // Guard against a regression to conditional rendering.
     expect(accordion).not.toMatch(/\{active && children\}/);
     expect(accordion).not.toMatch(/\{!collapsed && children\}/);
+    expect(accordion).not.toMatch(/\{showBody && children\}/);
   });
 
   it("the active section owns the remaining height and scrolls internally", () => {
+    // Legacy (non-continuous) active section still flex-grows; R2 continuous uses page scroll.
     expect(accordion).toContain("min-h-0 flex-1 border-emerald-300/80");
     expect(accordion).toContain("overflow-y-auto");
-    // The pane itself is viewport-height, not one long scrolling form.
     expect(workspace).toContain('className="flex flex-1 min-w-0 flex-col min-h-0"');
   });
 

@@ -17,6 +17,8 @@ import {
 } from "./reportFieldMerge";
 import type { PathologyIncoming, PathologyOwnership } from "./pathologyPatch";
 import { fieldContainsContribution } from "./observationMatch";
+import type { ObservationAnchor } from "./observationAnchor";
+import { coerceObservationAnchor } from "./observationAnchor";
 
 export type ConceptResolutionSource = "explicit" | "conflictGroup" | "legacy-fallback" | "none";
 
@@ -49,6 +51,10 @@ export type ObservationSlotInput = {
   state?: string | null;
   severity?: string | null;
   measurement?: string | null;
+  /** Creation-time image provenance (optional; old drafts omit). */
+  anchor?: ObservationAnchor | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
 };
 
 /** Runtime observation. `concept` is resolved; `conflictGroup` is the raw catalog field. */
@@ -73,6 +79,10 @@ export type CanonicalObservation = {
   sectionsOwned: MacroSectionOwned[];
   role: ObservationRole;
   specificity: ObservationSpecificity;
+  /** Optional creation-time FRAMES/OHIF provenance snapshot. */
+  anchor?: ObservationAnchor;
+  createdAt?: string;
+  updatedAt?: string;
 };
 
 export const SLOT_WILDCARD = "*";
@@ -111,6 +121,15 @@ const CONCEPT_CANON: Record<string, string> = {
   "disc height": "disc_height",
   canal_stenosis: "canal_stenosis",
   "canal stenosis": "canal_stenosis",
+  foraminal_stenosis: "foraminal_stenosis",
+  "foraminal stenosis": "foraminal_stenosis",
+  "foraminal narrowing": "foraminal_stenosis",
+  root_contact: "root_contact",
+  "root contact": "root_contact",
+  root_compression: "root_contact",
+  "nerve root": "root_contact",
+  canal_ap: "canal_ap",
+  "canal ap": "canal_ap",
   spondylolisthesis: "spondylolisthesis",
   listhesis: "spondylolisthesis",
   meniscus: "meniscus",
@@ -125,6 +144,7 @@ const CONCEPT_CANON: Record<string, string> = {
   facet_joint: "facet_joint",
   facet: "facet_joint",
   endplate: "endplate",
+  modic: "endplate",
   senile_atrophy: "senile_atrophy",
   senile: "senile_atrophy",
   hemorrhage: "hemorrhage",
@@ -313,6 +333,9 @@ export function buildCanonicalObservation(input: ObservationSlotInput): Canonica
     sectionsOwned: input.sectionsOwned?.length ? input.sectionsOwned : ["findings"],
     role: input.role ?? "finding",
     specificity: input.specificity ?? "region",
+    ...(input.anchor ? { anchor: coerceObservationAnchor(input.anchor) } : {}),
+    ...(input.createdAt ? { createdAt: input.createdAt } : {}),
+    ...(input.updatedAt ? { updatedAt: input.updatedAt } : {}),
   };
 }
 
