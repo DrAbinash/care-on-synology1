@@ -172,6 +172,18 @@ import ViewerMeasurementsBanner from "@/components/radiology/ViewerMeasurementsB
 import { useViewerMeasurements } from "@/components/radiology/ViewerMeasurementsPanel";
 import { formatViewerMeasurementLabel } from "@/lib/formatViewerMeasurementLine";
 import { subscribeCareOhifBridge } from "@/lib/ohifViewerBridge";
+import { viewportToAnchor } from "@/lib/observationAnchor";
+import { isMriLumbarReportingContext } from "@/lib/mriLumbarRegions";
+import {
+  AnchorRail,
+  CoverageCockpit,
+  GhostLayer,
+  MriLumbarCanvas,
+  ObservationLedgerPanel,
+  ContradictionBanner,
+  ImpressionStaleBanner,
+} from "@/components/radiology/reporting-canvas";
+import { defaultCoverageMarks } from "@/lib/coverageMarks";
 import {
   canalApToPdfRows,
   canalSegmentFromSpine,
@@ -510,6 +522,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const ownershipReviewWarnings = useWorkspace((s: WorkspaceStore) => s.ownershipReviewWarnings);
   const ledgerHydrationWarning = useWorkspace((s: WorkspaceStore) => s.ledgerHydrationWarning);
   const appliedPathologyPatches = useWorkspace((s: WorkspaceStore) => s.appliedPathologyPatches);
+  const activeAnchor = useWorkspace((s: WorkspaceStore) => s.activeAnchor);
+  const coverageMarks = useWorkspace((s: WorkspaceStore) => s.coverageMarks);
   const recommendationText = useWorkspace((s: WorkspaceStore) => s.recommendationText);
   const techniqueText = useWorkspace((s: WorkspaceStore) => s.techniqueText);
   const clinicalHistoryText = useWorkspace((s: WorkspaceStore) => s.clinicalHistoryText);
@@ -2338,6 +2352,9 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         void qc.invalidateQueries({ queryKey: ["report-image-references", draftId] });
         toast({ title: "Key image added from viewer" });
       },
+      onActiveAnchor: (ctx) => {
+        useWorkspace.getState().setActiveAnchor(viewportToAnchor(ctx));
+      },
     });
   }, [
     workflow.currentRow?.studyInstanceUID,
@@ -2950,6 +2967,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       status: sectionStatus[id],
       active: activeReportSection === id,
       onActivate: activateReportSection,
+      /** R2 primary: continuous canvas — all sections visible in one scroll. */
+      continuous: true as const,
     };
   };
 
@@ -3399,6 +3418,9 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       patientName={canonicalDemography.patientName || workflow.currentRow?.patientName || study?.patient?.name || null}
                       columnExpanded={viewerColumnExpanded}
                       onColumnExpandedChange={setViewerColumnExpanded}
+                      onViewportContextChange={(ctx) => {
+                        useWorkspace.getState().setActiveAnchor(ctx ? viewportToAnchor(ctx) : null);
+                      }}
                       onAddCurrentFrameToReport={
                         isLocked || isFinalized
                           ? undefined
@@ -3500,14 +3522,13 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                     )}
                   </div>
 
-                  {/* ── Progressive accordion: one active major section at a time.
-                       Collapsed sections keep their children MOUNTED (hidden), so
-                       editors, drawers and panels never lose state. ── */}
+                  {/* Reporting Canvas R2 — continuous primary layout (accordion chrome retained for rollback). */}
                   <div
                     className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto p-3"
-                    data-testid="report-section-accordion"
+                    data-testid="reporting-canvas-r2"
                     onMouseDown={enterReportingFocusMode}
                   >
+                    <AnchorRail anchor={activeAnchor} />
                     {/* 1. DEMOGRAPHY — canonical, editable, feeds all outputs */}
                     <ReportAccordionSection {...accordionProps("demography")}>
                       {workflow.currentRow ? (
@@ -3731,6 +3752,59 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                         onRemoveBundle={(bundleId) => useWorkspace.getState().removeMacroBundle(bundleId)}
                       />
                     )}
+
+                    {isMriLumbarReportingContext({
+                      modality: workflow.currentRow?.modality,
+                      region: studySetup.matchedStudyRegion,
+                      family: studySetup.studyContext?.family,
+                      spineSegment: studySetup.studyContext?.spineSegment,
+                    }) && (
+                      <MriLumbarCanvas
+                        patches={appliedPathologyPatches}
+                        disabled={isLocked || isFinalized}
+                        onFocusRegion={(key) => {
+                          useWorkspace.getState().setCoverageMark(key, "viewed");
+                        }}
+                        onApplyLevel={(level, regionKey, _sel, composed) => {
+                          useWorkspace.getState().applyPathologyOverlay({
+                            id: `r2-ls-${level.replace(/\s+/g, "")}-${composed.concept}`,
+                            incoming: { findings: composed.findings, impression: composed.impression },
+                            templates: { findings: composed.findings, impression: composed.impression },
+                            ownership: {
+                              anatomicalSection: level,
+                              conflictGroup: composed.concept,
+                              baselineReplaces:
+                                "Normal disc height and signal. No disc herniation. Neural foramina patent. No spinal canal stenosis.",
+                              concept: composed.concept,
+                              level,
+                              laterality: composed.laterality,
+                            },
+                            source: "structured-template",
+                            region: studySetup.matchedStudyRegion ?? "LS Spine",
+                            level,
+                            laterality: composed.laterality,
+                            concept: composed.concept,
+                            severity: composed.severity,
+                            label: `${level} ${composed.concept}`,
+                            findingsText: composed.findings,
+                          });
+                          useWorkspace.getState().setCoverageMark(regionKey, "partial");
+                        }}
+                      />
+                    )}
+
+                    <ObservationLedgerPanel
+                      patches={appliedPathologyPatches}
+                      findingsText={findingsText}
+                      selectedId={null}
+                      onSelect={() => {}}
+                    />
+                    <GhostLayer
+                      contradictionHints={validateReport({
+                        findings: findingsText,
+                        impression: impressionText.split(/\n+/).map((s) => s.trim()).filter(Boolean),
+                      }).filter((w) => /contradict|mismatch|severity|stenosis|moderate|severe/i.test(w)).slice(0, 3)}
+                    />
 
                     {!useStructured && (
                       <FindingsAnatomyStrip
@@ -4112,6 +4186,17 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
 
                     {/* 7. IMPRESSION — Quick Select + editor + Generate + dictation */}
                     <ReportAccordionSection {...accordionProps("impression")}>
+                      <ImpressionStaleBanner
+                        needsRefresh={impressionNeedsRefresh}
+                        disabled={isLocked || isFinalized}
+                        onRefresh={() => useWorkspace.getState().refreshImpressionFromLedger()}
+                      />
+                      <ContradictionBanner
+                        warnings={validateReport({
+                          findings: findingsText,
+                          impression: impressionText.split(/\n+/).map((s) => s.trim()).filter(Boolean),
+                        }).filter((w) => /contradict|mismatch|severity|stenosis|moderate|severe|laterality/i.test(w))}
+                      />
                     <div className="flex items-center gap-2">
                       <div className="flex-1 space-y-1.5">
                         <div className="flex items-center justify-between gap-2">
@@ -4298,6 +4383,23 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                     {/* 9. REPORT / LAYOUT / EXPORT — Classic/Premium, preview,
                          Enlarge, Word, PDF, print controls (unchanged renderer). */}
                     <ReportAccordionSection {...accordionProps("report")}>
+                      {isMriLumbarReportingContext({
+                        modality: workflow.currentRow?.modality,
+                        region: studySetup.matchedStudyRegion,
+                        family: studySetup.studyContext?.family,
+                        spineSegment: studySetup.studyContext?.spineSegment,
+                      }) && (
+                        <CoverageCockpit
+                          marks={coverageMarks.length > 0 ? coverageMarks : defaultCoverageMarks()}
+                          disabled={isLocked || isFinalized}
+                          onJump={(key) => {
+                            useWorkspace.getState().setCoverageMark(key, "viewed");
+                            document.getElementById(`r2-region-${key}`)?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+                          }}
+                          onMarkReviewed={(key) => useWorkspace.getState().setCoverageMark(key, "reviewed")}
+                          onWaive={(key, reason) => useWorkspace.getState().setCoverageMark(key, "waived", reason)}
+                        />
+                      )}
                     {studyId ? <div className="mb-2"><ElectronicFilmPanel studyId={studyId} /></div> : null}
                     <ReportExportPanel
                       draftId={draftId ?? null}
