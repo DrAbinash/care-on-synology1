@@ -6,14 +6,22 @@ import { composeLumbarLevelNarrative } from "@/lib/mriLumbarRegions";
 
 export function MriLumbarCanvas({
   patches,
+  findingsText,
   disabled,
   focusedRegionKey,
+  highlightedLevel,
+  canalApByLevel,
   onFocusRegion,
   onApplyLevel,
+  onInsertRegionPhrase,
 }: {
   patches: AppliedPathologyPatch[];
+  findingsText?: string;
   disabled?: boolean;
   focusedRegionKey?: string | null;
+  /** Level label to highlight from ledger click (e.g. L4-L5). */
+  highlightedLevel?: string | null;
+  canalApByLevel?: Record<string, number | null | undefined>;
   onFocusRegion: (key: string) => void;
   onApplyLevel: (
     level: string,
@@ -21,6 +29,7 @@ export function MriLumbarCanvas({
     sel: LumbarLevelSelection,
     composed: ReturnType<typeof composeLumbarLevelNarrative>,
   ) => void;
+  onInsertRegionPhrase?: (regionKey: string, phrase: string, concept: string) => void;
 }) {
   return (
     <div className="space-y-1.5" data-testid="mri-lumbar-canvas">
@@ -29,7 +38,7 @@ export function MriLumbarCanvas({
           MRI Lumbar Region Canvas
         </h3>
         <span className="text-[8px] text-muted-foreground">
-          Level = clinical choice · Anchor = image provenance
+          Anatomical subregions · Study Tab remains LS Spine
         </span>
       </div>
       <div className="grid gap-1.5 sm:grid-cols-1">
@@ -42,9 +51,17 @@ export function MriLumbarCanvas({
             <MriLumbarLevelBlock
               region={region}
               patches={patches}
+              findingsText={findingsText}
               disabled={disabled}
+              highlighted={Boolean(
+                highlightedLevel
+                && region.kind === "disc-level"
+                && region.label.toUpperCase() === highlightedLevel.toUpperCase(),
+              )}
+              canalApMm={canalApByLevel?.[region.label] ?? null}
               onFocus={() => onFocusRegion(region.key)}
               onApply={(sel, composed) => onApplyLevel(region.label, region.key, sel, composed)}
+              onInsertRegionPhrase={onInsertRegionPhrase}
             />
           </div>
         ))}

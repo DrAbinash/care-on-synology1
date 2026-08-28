@@ -12,11 +12,16 @@ import { ContradictionBanner, ImpressionStaleBanner } from "./ContradictionBanne
 import { GhostLayer } from "./GhostLayer";
 import { defaultCoverageMarks, markRegionViewed } from "@/lib/coverageMarks";
 import {
-  composeLumbarLevelNarrative,
   isMriLumbarReportingContext,
   type LumbarLevelSelection,
 } from "@/lib/mriLumbarRegions";
+import {
+  buildLumbarLevelApplyBundle,
+  deriveCanvasNarrativeState,
+  ledgerSeverityContradiction,
+} from "@/lib/mriLumbarLevelState";
 import { validateReport } from "@/lib/reportValidator";
+import { normalizeLevel } from "@/lib/observationSlot";
 
 export type ReportingCanvasSlots = {
   studyHeader: ReactNode;
@@ -40,6 +45,9 @@ export default function ReportingCanvas({
   region,
   family,
   spineSegment,
+  protocolName,
+  studyDescription,
+  seriesHints,
 }: {
   slots: ReportingCanvasSlots;
   disabled?: boolean;
@@ -47,6 +55,9 @@ export default function ReportingCanvas({
   region?: string | null;
   family?: string | null;
   spineSegment?: string | null;
+  protocolName?: string | null;
+  studyDescription?: string | null;
+  seriesHints?: string[];
 }) {
   const activeAnchor = useWorkspace((s) => s.activeAnchor);
   const patches = useWorkspace((s) => s.appliedPathologyPatches);
@@ -57,17 +68,27 @@ export default function ReportingCanvas({
   const recommendationText = useWorkspace((s) => s.recommendationText);
   const impressionNeedsRefresh = useWorkspace((s) => s.impressionNeedsRefresh);
   const coverageMarks = useWorkspace((s) => s.coverageMarks);
+  const appliedFormatName = useWorkspace((s) => s.appliedFormatName);
+  const appliedFormatReportTitle = useWorkspace((s) => s.appliedFormatReportTitle);
   const setCoverageMark = useWorkspace((s) => s.setCoverageMark);
   const refreshImpression = useWorkspace((s) => s.refreshImpressionFromLedger);
+  const applyMacroBundle = useWorkspace((s) => s.applyMacroBundle);
   const applyOverlay = useWorkspace((s) => s.applyPathologyOverlay);
 
   const [viewMode, setViewMode] = useState<CanvasViewMode>("split");
   const [focusedRegion, setFocusedRegion] = useState<string | null>(null);
   const [selectedLedgerId, setSelectedLedgerId] = useState<string | null>(null);
 
-  const isLumbar = isMriLumbarReportingContext({ modality, region, family, spineSegment });
+  const isLumbar = isMriLumbarReportingContext({
+    modality,
+    region,
+    family,
+    spineSegment,
+    protocolName,
+    studyDescription,
+  });
 
-  const marks = coverageMarks.length > 0 ? coverageMarks : defaultCoverageMarks();
+  const marks = coverageMarks.length > 0 ? coverageMarks : defaultCoverageMarks(region);
 
   const validationWarnings = useMemo(() => {
     const warnings = validateReport({
@@ -77,11 +98,26 @@ export default function ReportingCanvas({
       clinicalHistory: clinicalHistoryText,
       recommendation: recommendationText,
     });
-    return warnings.filter(
-      (w) =>
-        /contradict|mismatch|severity|laterality|stenosis|hemorrhage|infarct|moderate|severe|L\d/i.test(w),
-    );
-  }, [findingsText, impressionText, techniqueText, clinicalHistoryText, recommendationText]);
+    const structured = ledgerSeverityContradiction(patches, impressionText);
+    return [
+      ...structured,
+      ...warnings.filter(
+        (w) =>
+          /contradict|mismatch|severity|laterality|stenosis|hemorrhage|infarct|moderate|severe|L\d/i.test(w),
+      ),
+    ];
+  }, [findingsText, impressionText, techniqueText, clinicalHistoryText, recommendationText, patches]);
+
+  const narrativeState = useMemo(
+    () => deriveCanvasNarrativeState({ findingsText, patches, isLumbar }),
+    [findingsText, patches, isLumbar],
+  );
+
+  const highlightedLevel = useMemo(() => {
+    if (!selectedLedgerId) return null;
+    const p = patches.find((x) => x.id === selectedLedgerId);
+    return normalizeLevel(p?.observation?.level ?? p?.ownership.anatomicalSection ?? "") || null;
+  }, [selectedLedgerId, patches]);
 
   const onFocusRegion = useCallback((key: string) => {
     setFocusedRegion(key);
@@ -95,36 +131,35 @@ export default function ReportingCanvas({
   const onApplyLevel = useCallback((
     level: string,
     regionKey: string,
-    _sel: LumbarLevelSelection,
-    composed: ReturnType<typeof composeLumbarLevelNarrative>,
+    sel: LumbarLevelSelection,
+    _composed: ReturnType<typeof import("@/lib/mriLumbarRegions").composeLumbarLevelNarrative>,
   ) => {
-    const patchId = `r2-ls-${level.replace(/\s+/g, "")}-${composed.concept}`;
+    const { bundleId, observations } = buildLumbarLevelApplyBundle({
+      level,
+      sel,
+      region: region ?? "LS Spine",
+    });
+    if (observations.length === 0) return;
+    applyMacroBundle({ bundleId, observations });
+    setCoverageMark(regionKey, "partial");
+  }, [applyMacroBundle, region, setCoverageMark]);
+
+  const onInsertRegionPhrase = useCallback((regionKey: string, phrase: string, concept: string) => {
     applyOverlay({
-      id: patchId,
-      incoming: {
-        findings: composed.findings,
-        impression: composed.impression,
-      },
-      templates: {
-        findings: composed.findings,
-        impression: composed.impression,
-      },
+      id: `r2-region-${regionKey}-${concept}`,
+      incoming: { findings: phrase },
+      templates: { findings: phrase },
       ownership: {
-        anatomicalSection: level,
-        conflictGroup: composed.concept,
-        baselineReplaces: "Normal disc height and signal. No disc herniation. Neural foramina patent. No spinal canal stenosis.",
-        concept: composed.concept,
-        level,
-        laterality: composed.laterality,
+        anatomicalSection: regionKey,
+        conflictGroup: concept,
+        concept,
+        baselineReplaces: "",
       },
       source: "structured-template",
       region: region ?? "LS Spine",
-      level,
-      laterality: composed.laterality,
-      concept: composed.concept,
-      severity: composed.severity,
-      label: `${level} ${composed.concept}`,
-      findingsText: composed.findings,
+      concept,
+      label: `${regionKey} ${concept}`,
+      findingsText: phrase,
     });
     setCoverageMark(regionKey, "partial");
   }, [applyOverlay, region, setCoverageMark]);
@@ -136,9 +171,28 @@ export default function ReportingCanvas({
     <div className="flex flex-col gap-3" data-testid="reporting-canvas-r2">
       {slots.studyHeader}
 
+      {(appliedFormatName || appliedFormatReportTitle) ? (
+        <div
+          className="rounded border border-slate-200 bg-slate-50 px-2 py-1 text-[10px] text-slate-800"
+          data-testid="r2-applied-format"
+        >
+          <span className="font-semibold">Format:</span>{" "}
+          {appliedFormatName ?? appliedFormatReportTitle}
+          {patches.some((p) => !p.stale) ? (
+            <span className="ml-1 text-amber-800">· modified</span>
+          ) : null}
+        </div>
+      ) : null}
+
       <AnchorRail
         anchor={activeAnchor}
-        seriesHints={activeAnchor?.seriesDescription ? [activeAnchor.seriesDescription] : undefined}
+        seriesHints={
+          seriesHints && seriesHints.length > 0
+            ? seriesHints
+            : activeAnchor?.seriesDescription
+              ? [activeAnchor.seriesDescription]
+              : undefined
+        }
       />
 
       <section className="space-y-1" data-testid="r2-technique-block">
@@ -146,13 +200,25 @@ export default function ReportingCanvas({
         {slots.technique}
       </section>
 
+      {narrativeState.banner ? (
+        <div
+          className="rounded-md border border-indigo-200 bg-indigo-50/70 px-2 py-1.5 text-[10px] text-indigo-950"
+          data-testid="r2-unstructured-narrative-banner"
+        >
+          {narrativeState.banner}
+        </div>
+      ) : null}
+
       {isLumbar ? (
         <MriLumbarCanvas
           patches={patches}
+          findingsText={findingsText}
           disabled={disabled}
           focusedRegionKey={focusedRegion}
+          highlightedLevel={highlightedLevel}
           onFocusRegion={onFocusRegion}
           onApplyLevel={onApplyLevel}
+          onInsertRegionPhrase={onInsertRegionPhrase}
         />
       ) : (
         <div

@@ -76,7 +76,16 @@ import { generateLocalImpression } from "@/lib/generateLocalImpression";
 import type { ObservationAnchor } from "@/lib/observationAnchor";
 import { anchorsEqual } from "@/lib/observationAnchor";
 import type { CoverageMark } from "@/lib/coverageMarks";
-import { coverageMarksEqual, defaultCoverageMarks, setCoverageStatus, parseCoverageMarks, COVERAGE_ENVELOPE_KEY } from "@/lib/coverageMarks";
+import {
+  coverageMarksEqual,
+  defaultCoverageMarks,
+  setCoverageStatus,
+  parseCoverageMarks,
+  filterCoverageForScope,
+  serializeCoverageEnvelope,
+  COVERAGE_ENVELOPE_KEY,
+} from "@/lib/coverageMarks";
+import { coverageScopeKey } from "@/lib/mriLumbarLevelState";
 
 function parseCoverageFromRaw(raw: unknown): CoverageMark[] | null {
   return parseCoverageMarks(raw);
@@ -85,6 +94,10 @@ function parseCoverageFromRaw(raw: unknown): CoverageMark[] | null {
 function hydrateCoverageFromLedgerRaw(raw: unknown): CoverageMark[] | null {
   if (!raw || typeof raw !== "object") return null;
   const rec = raw as Record<string, unknown>;
+  // Prefer full envelope (scoped) when present
+  if (rec[COVERAGE_ENVELOPE_KEY] != null || rec.careCoverageByScope != null) {
+    return parseCoverageMarks(rec);
+  }
   if (rec.careCoverageMarks != null) return parseCoverageMarks(rec.careCoverageMarks);
   return null;
 }
@@ -283,8 +296,14 @@ interface S {
   impressionNeedsRefresh: boolean;
   /** Live FRAMES/OHIF viewport context — ephemeral; stamped onto new observations only. */
   activeAnchor: ObservationAnchor | null;
-  /** Advisory coverage marks (MRI lumbar). Never a finalize hard gate. */
+  /** Expected study UID for activeAnchor rejection across study switches. */
+  activeStudyInstanceUID: string | null;
+  /** Advisory coverage marks for the active Study Tab scope. Never a finalize hard gate. */
   coverageMarks: CoverageMark[];
+  /** Coverage bags keyed by Study Tab / reporting region. */
+  coverageByScope: Record<string, CoverageMark[]>;
+  /** Format name last applied (display); title remains appliedFormatReportTitle. */
+  appliedFormatName: string | null;
   ownershipReviewWarnings: Array<{ sentence: string; token: string; hint: string }>;
   ledgerHydrationWarning: string | null;
   /** Active voice-composer observations for incremental dictation context. */
@@ -394,7 +413,8 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   appliedFormatReportTitle: null,
   saveAsFormatDialogOpen: false, mergePreviewOpen: false, lastMergeResult: null, lastMergeFormats: null, confirmOverwriteOpen: false, pendingFormatIds: [],
   pendingPathologyPatch: null, lastPatchSnapshot: null, appliedPathologyPatches: [], impressionNeedsRefresh: false,
-  activeAnchor: null, coverageMarks: [],
+  activeAnchor: null, activeStudyInstanceUID: null, coverageMarks: [], coverageByScope: {},
+  appliedFormatName: null,
   ownershipReviewWarnings: [], ledgerHydrationWarning: null,
   voiceComposerObservations: [], voiceComposerTranscriptHistory: [],
   snippetMacros: typeof window !== "undefined" ? loadMacros() : DEFAULT_SNIPPET_MACROS, macroEditorOpen: false, editingMacro: null, activeMacroPrompt: null,
@@ -426,7 +446,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     }
     set({ studies: next });
   },
-  selectStudy: (id) => { const st = get().studies.find(s => s.id === id); if (!st) return; set({ activeStudyId: id, findingsText: "", impressionText: "", recommendationText: "", techniqueText: "", clinicalHistoryText: st.clinicalHistory || "", fieldProvenance: {}, measurements: [], priors: [], isDirty: false, isFinalized: false, isFinalizing: false, railStage: "orient", ghostText: null, ghostTextTarget: null, acknowledgedCopilotIds: new Set(), activeCopilotItem: null, voiceTranscript: "", voiceListening: false, selectedFormatIds: [], reportFormatPickerOpen: false, appliedFormatReportTitle: null, appliedPathologyPatches: [], impressionNeedsRefresh: false, activeAnchor: null, coverageMarks: [], ownershipReviewWarnings: [], ledgerHydrationWarning: null, lastPatchSnapshot: null, voiceComposerObservations: [], voiceComposerTranscriptHistory: [], criticalSlaStartedAt: null, criticalSlaEscalated: false, preloadTriggered: false, nextStudyPreloaded: false, reportingContext: EMPTY_REPORTING_STUDY_CONTEXT }); setTimeout(() => get().recomputeCopilot(), 0); },
+  selectStudy: (id) => { const st = get().studies.find(s => s.id === id); if (!st) return; set({ activeStudyId: id, findingsText: "", impressionText: "", recommendationText: "", techniqueText: "", clinicalHistoryText: st.clinicalHistory || "", fieldProvenance: {}, measurements: [], priors: [], isDirty: false, isFinalized: false, isFinalizing: false, railStage: "orient", ghostText: null, ghostTextTarget: null, acknowledgedCopilotIds: new Set(), activeCopilotItem: null, voiceTranscript: "", voiceListening: false, selectedFormatIds: [], reportFormatPickerOpen: false, appliedFormatReportTitle: null, appliedPathologyPatches: [], impressionNeedsRefresh: false, activeAnchor: null, activeStudyInstanceUID: st.studyInstanceUID ?? null, coverageMarks: [], coverageByScope: {}, appliedFormatName: null, ownershipReviewWarnings: [], ledgerHydrationWarning: null, lastPatchSnapshot: null, voiceComposerObservations: [], voiceComposerTranscriptHistory: [], criticalSlaStartedAt: null, criticalSlaEscalated: false, preloadTriggered: false, nextStudyPreloaded: false, reportingContext: EMPTY_REPORTING_STUDY_CONTEXT }); setTimeout(() => get().recomputeCopilot(), 0); },
   setNextStudy: (id) => set({ nextStudyId: id }), markNextStudyPreloaded: () => set({ nextStudyPreloaded: true }),
   setField: (f, v, opts) => {
     const key = fieldTextKey(f);
@@ -727,18 +747,21 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       }
       const nf = get().reportFormats.map((x: ReportFormat) => x.id === f.id ? { ...x, usageCount: (x.usageCount ?? 0) + 1 } : x);
       saveFormats(nf);
+      // Mark prior ledger contributions stale — do not silently delete rows.
+      const stalePatches = get().appliedPathologyPatches.map((p) => ({ ...p, stale: true as const }));
       set({
         reportFormats: nf,
         confirmOverwriteOpen: false,
         pendingFormatIds: [],
         reportFormatPickerOpen: false,
-        appliedPathologyPatches: [],
+        appliedPathologyPatches: stalePatches,
         lastPatchSnapshot: null,
         appliedFormatReportTitle: clinical.reportTitle || null,
+        appliedFormatName: f.name || null,
       });
       get().pushNotification({
         kind: "ledger",
-        text: "Full report applied. Review preview, then PDF / Print / Finalize.",
+        text: "Full report applied. Prior structured contributions marked stale for review.",
       });
       void bumpReportFormatUsage(f.id);
       return;
@@ -1032,24 +1055,51 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       warning: warning ?? undefined,
     };
   },
-  serializeObservationLedger: () => serializeObservationLedger(
-    get().appliedPathologyPatches.map(toLedgerPatch),
-    get().fieldProvenance,
-    get().coverageMarks.length > 0 ? { [COVERAGE_ENVELOPE_KEY]: get().coverageMarks } : undefined,
-  ),
+  serializeObservationLedger: () => {
+    const scope = coverageScopeKey(get().reportingContext.region);
+    const byScope = { ...get().coverageByScope, [scope]: get().coverageMarks };
+    return serializeObservationLedger(
+      get().appliedPathologyPatches.map(toLedgerPatch),
+      get().fieldProvenance,
+      get().coverageMarks.length > 0
+        ? serializeCoverageEnvelope(get().coverageMarks, { scopeKey: scope, byScope })
+        : undefined,
+    );
+  },
   setActiveAnchor: (anchor) => {
     if (anchorsEqual(get().activeAnchor, anchor)) return;
+    const expected = get().activeStudyInstanceUID;
+    if (
+      anchor
+      && expected
+      && anchor.studyInstanceUID
+      && anchor.studyInstanceUID !== expected
+    ) {
+      return;
+    }
     set({ activeAnchor: anchor });
   },
   setCoverageMark: (regionKey, status, reason) => {
-    const base = get().coverageMarks.length ? get().coverageMarks : defaultCoverageMarks();
-    const next = setCoverageStatus(base, regionKey, status, reason);
+    const scope = coverageScopeKey(get().reportingContext.region);
+    const base = get().coverageMarks.length ? get().coverageMarks : defaultCoverageMarks(scope);
+    const next = setCoverageStatus(base, regionKey, status, reason, scope);
     if (coverageMarksEqual(get().coverageMarks, next)) return;
-    set({ coverageMarks: next, isDirty: true });
+    const byScope = { ...get().coverageByScope, [scope]: next };
+    set({
+      coverageMarks: next,
+      coverageByScope: byScope,
+      isDirty: status === "reviewed" || status === "waived" || status === "partial" || get().isDirty,
+    });
   },
   hydrateCoverageMarks: (raw) => {
     const parsed = parseCoverageFromRaw(raw);
-    if (parsed) set({ coverageMarks: parsed });
+    if (!parsed) return;
+    const scope = coverageScopeKey(get().reportingContext.region);
+    const scoped = filterCoverageForScope(parsed, scope);
+    set({
+      coverageMarks: scoped,
+      coverageByScope: { ...get().coverageByScope, [scope]: scoped },
+    });
   },
   serializeCoverageMarks: () => get().coverageMarks,
   dismissOwnershipReview: () => set({ ownershipReviewWarnings: [] }),
@@ -1359,7 +1409,16 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   triggerPreload: () => set({ preloadTriggered: true }), resetPreload: () => set({ preloadTriggered: false, nextStudyPreloaded: false }),
   setReportingContext: (ctx) => {
     if (reportingContextEqual(get().reportingContext, ctx)) return;
-    set({ reportingContext: ctx });
+    const prevScope = coverageScopeKey(get().reportingContext.region);
+    const nextScope = coverageScopeKey(ctx.region);
+    const byScope = { ...get().coverageByScope, [prevScope]: get().coverageMarks };
+    const nextMarks = filterCoverageForScope(byScope[nextScope] ?? [], nextScope);
+    // Region change: swap coverage scope; do not leak LS marks into Brain UI.
+    set({
+      reportingContext: ctx,
+      coverageByScope: { ...byScope, [nextScope]: nextMarks },
+      coverageMarks: nextMarks,
+    });
   },
 } as WorkspaceStore);
 

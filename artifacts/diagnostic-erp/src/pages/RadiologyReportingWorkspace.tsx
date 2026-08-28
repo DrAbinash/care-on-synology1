@@ -174,6 +174,7 @@ import { formatViewerMeasurementLabel } from "@/lib/formatViewerMeasurementLine"
 import { subscribeCareOhifBridge } from "@/lib/ohifViewerBridge";
 import { viewportToAnchor } from "@/lib/observationAnchor";
 import { isMriLumbarReportingContext } from "@/lib/mriLumbarRegions";
+import { buildLumbarLevelApplyBundle, deriveCanvasNarrativeState, ledgerSeverityContradiction } from "@/lib/mriLumbarLevelState";
 import {
   AnchorRail,
   CoverageCockpit,
@@ -528,6 +529,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const techniqueText = useWorkspace((s: WorkspaceStore) => s.techniqueText);
   const clinicalHistoryText = useWorkspace((s: WorkspaceStore) => s.clinicalHistoryText);
   const appliedFormatReportTitle = useWorkspace((s: WorkspaceStore) => s.appliedFormatReportTitle);
+  const appliedFormatName = useWorkspace((s: WorkspaceStore) => s.appliedFormatName);
   // Read-only: drives the collapsed Findings summary's "N assisted" count.
   const findingsProvenance = useWorkspace((s: WorkspaceStore) => s.fieldProvenance.findings);
   const impressionProvenance = useWorkspace((s: WorkspaceStore) => s.fieldProvenance.impression);
@@ -1676,6 +1678,17 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     if (!studies.some((s: Study) => s.id === sid)) return;
     useWorkspace.setState({ activeStudyId: sid, railStage: "orient" });
   }, [studyId, studies, activeStudyId]);
+
+  // Bind activeAnchor rejection to the open study's DICOM UID (study-switch safety).
+  useEffect(() => {
+    const uid = workflow.currentRow?.studyInstanceUID ?? null;
+    const prev = useWorkspace.getState().activeStudyInstanceUID;
+    if (prev === uid) return;
+    useWorkspace.setState({
+      activeStudyInstanceUID: uid,
+      activeAnchor: null,
+    });
+  }, [workflow.currentRow?.studyInstanceUID]);
 
   // ─── Auto-open first study when the workspace has no URL study ─────────────
   useEffect(() => {
@@ -3758,39 +3771,76 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       region: studySetup.matchedStudyRegion,
                       family: studySetup.studyContext?.family,
                       spineSegment: studySetup.studyContext?.spineSegment,
+                      protocolName: studySetup.activeProtocol?.name ?? null,
+                      studyDescription: workflow.currentRow?.studyDescription ?? null,
                     }) && (
-                      <MriLumbarCanvas
-                        patches={appliedPathologyPatches}
-                        disabled={isLocked || isFinalized}
-                        onFocusRegion={(key) => {
-                          useWorkspace.getState().setCoverageMark(key, "viewed");
-                        }}
-                        onApplyLevel={(level, regionKey, _sel, composed) => {
-                          useWorkspace.getState().applyPathologyOverlay({
-                            id: `r2-ls-${level.replace(/\s+/g, "")}-${composed.concept}`,
-                            incoming: { findings: composed.findings, impression: composed.impression },
-                            templates: { findings: composed.findings, impression: composed.impression },
-                            ownership: {
-                              anatomicalSection: level,
-                              conflictGroup: composed.concept,
-                              baselineReplaces:
-                                "Normal disc height and signal. No disc herniation. Neural foramina patent. No spinal canal stenosis.",
-                              concept: composed.concept,
+                      <>
+                        {(appliedFormatReportTitle || appliedFormatName) ? (
+                          <div
+                            className="mb-1.5 rounded border border-slate-200 bg-slate-50 px-2 py-1 text-[10px] text-slate-800"
+                            data-testid="r2-applied-format"
+                          >
+                            <span className="font-semibold">Format:</span>{" "}
+                            {appliedFormatName ?? appliedFormatReportTitle}
+                            {appliedPathologyPatches.some((p) => !p.stale) ? (
+                              <span className="ml-1 text-amber-800">· modified</span>
+                            ) : null}
+                          </div>
+                        ) : null}
+                        <MriLumbarCanvas
+                          patches={appliedPathologyPatches}
+                          findingsText={findingsText}
+                          disabled={isLocked || isFinalized}
+                          onFocusRegion={(key) => {
+                            useWorkspace.getState().setCoverageMark(key, "viewed");
+                          }}
+                          onApplyLevel={(level, regionKey, sel) => {
+                            const { bundleId, observations } = buildLumbarLevelApplyBundle({
                               level,
-                              laterality: composed.laterality,
-                            },
-                            source: "structured-template",
-                            region: studySetup.matchedStudyRegion ?? "LS Spine",
-                            level,
-                            laterality: composed.laterality,
-                            concept: composed.concept,
-                            severity: composed.severity,
-                            label: `${level} ${composed.concept}`,
-                            findingsText: composed.findings,
-                          });
-                          useWorkspace.getState().setCoverageMark(regionKey, "partial");
-                        }}
-                      />
+                              sel,
+                              region: studySetup.matchedStudyRegion ?? "LS Spine",
+                            });
+                            if (observations.length === 0) return;
+                            useWorkspace.getState().applyMacroBundle({ bundleId, observations });
+                            useWorkspace.getState().setCoverageMark(regionKey, "partial");
+                          }}
+                          onInsertRegionPhrase={(regionKey, phrase, concept) => {
+                            useWorkspace.getState().applyPathologyOverlay({
+                              id: `r2-region-${regionKey}-${concept}`,
+                              incoming: { findings: phrase },
+                              templates: { findings: phrase },
+                              ownership: {
+                                anatomicalSection: regionKey,
+                                conflictGroup: concept,
+                                concept,
+                                baselineReplaces: "",
+                              },
+                              source: "structured-template",
+                              region: studySetup.matchedStudyRegion ?? "LS Spine",
+                              concept,
+                              label: `${regionKey} ${concept}`,
+                              findingsText: phrase,
+                            });
+                            useWorkspace.getState().setCoverageMark(regionKey, "partial");
+                          }}
+                        />
+                        {deriveCanvasNarrativeState({
+                          findingsText,
+                          patches: appliedPathologyPatches,
+                          isLumbar: true,
+                        }).banner ? (
+                          <div
+                            className="mt-1.5 rounded-md border border-indigo-200 bg-indigo-50/70 px-2 py-1.5 text-[10px] text-indigo-950"
+                            data-testid="r2-unstructured-narrative-banner"
+                          >
+                            {deriveCanvasNarrativeState({
+                              findingsText,
+                              patches: appliedPathologyPatches,
+                              isLumbar: true,
+                            }).banner}
+                          </div>
+                        ) : null}
+                      </>
                     )}
 
                     <ObservationLedgerPanel
