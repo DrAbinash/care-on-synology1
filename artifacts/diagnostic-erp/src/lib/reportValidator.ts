@@ -115,6 +115,23 @@ export function validateReport(report: ReportForValidation): string[] {
   return warnings;
 }
 
+function extractSeverity(text: string): string | null {
+  const m = text.match(/\b(mild|moderate|severe)\b/i);
+  return m ? m[1]!.toLowerCase() : null;
+}
+
+function extractSpinalLevel(text: string): string | null {
+  const m = text.match(/\b([LCST]\d{1,2}[-–][LCST]\d{1,2})\b/i);
+  return m ? m[1]!.toUpperCase().replace("–", "-") : null;
+}
+
+function sharesAnatomyContext(a: string, b: string): boolean {
+  const terms = ["stenosis", "disc", "herniation", "bulge", "protrusion", "canal", "foraminal"];
+  const al = a.toLowerCase();
+  const bl = b.toLowerCase();
+  return terms.some((t) => al.includes(t) && bl.includes(t));
+}
+
 function pathologyMergeContradictionWarnings(findings: string, impression: string): string[] {
   const warnings: string[] = [];
   const hay = `${findings}\n${impression}`;
@@ -132,6 +149,32 @@ function pathologyMergeContradictionWarnings(findings: string, impression: strin
     || /\bno evidence of restricted diffusion\b/i.test(hay);
   if (noRestricted && /\bacute (?:[a-z]+\s+){0,3}infarct\b/i.test(hay)) {
     warnings.push("Possible contradiction: \"no restricted diffusion\" coexists with acute infarct wording.");
+  }
+
+  const noIchFindings = /\bno (?:acute )?(?:intracranial )?(?:ha?emorrhage|ich)\b/i.test(findings)
+    || /\bno evidence of (?:acute )?(?:intracranial )?(?:ha?emorrhage|ich)\b/i.test(findings);
+  const ichImpression = /\b(ha?emorrhage|hematoma|ich)\b/i.test(impression)
+    && !/\bno (?:acute )?(?:intracranial )?(?:ha?emorrhage|ich)\b/i.test(impression);
+  if (noIchFindings && ichImpression) {
+    warnings.push("Possible contradiction: Findings deny intracranial hemorrhage but Impression mentions hemorrhage.");
+  }
+
+  const normalImpression = /\b(normal (?:mri|ct|study)|no acute abnormality|unremarkable study)\b/i.test(impression);
+  const pathologyFindings = PATHOLOGY_WORDS.some((w) => findings.toLowerCase().includes(w));
+  if (normalImpression && pathologyFindings) {
+    warnings.push("Possible contradiction: Impression reads normal but Findings describe significant pathology.");
+  }
+
+  const fSev = extractSeverity(findings);
+  const iSev = extractSeverity(impression);
+  if (fSev && iSev && fSev !== iSev && sharesAnatomyContext(findings, impression)) {
+    warnings.push(`Possible severity mismatch: Findings say "${fSev}" but Impression says "${iSev}".`);
+  }
+
+  const fLevel = extractSpinalLevel(findings);
+  const iLevel = extractSpinalLevel(impression);
+  if (fLevel && iLevel && fLevel !== iLevel && sharesAnatomyContext(findings, impression)) {
+    warnings.push(`Possible level mismatch: Findings mention ${fLevel} but Impression mentions ${iLevel}.`);
   }
 
   const fLeft = /\bleft\b/i.test(findings);

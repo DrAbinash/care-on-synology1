@@ -220,6 +220,10 @@ import {
   type InsertSource,
 } from "@/lib/reportFieldMerge";
 import { generateLocalImpression } from "@/lib/generateLocalImpression";
+import {
+  collectPathologyRecommendationChips,
+  mergeRecommendationChipLists,
+} from "@/lib/impressionRecommendationWiring";
 import { hasPhrase, appendClinicalPhrase, removeClinicalPhrase } from "@/lib/clinicalHistoryText";
 import type { Side } from "@/lib/sideSwap";
 import { applySide } from "@/lib/sideSwap";
@@ -1317,17 +1321,19 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
 
   const recommendationChips = useMemo<string[]>(() => {
     const raw = pacsSettingsRows?.find((r) => r.key === "report_recommendation_chips")?.value;
+    let base = DEFAULT_RECOMMENDATION_CHIPS;
     if (raw) {
       try {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed)) {
           const chips = parsed.map((x) => String(x).trim()).filter(Boolean);
-          if (chips.length > 0) return chips;
+          if (chips.length > 0) base = chips;
         }
       } catch { /* fall back */ }
     }
-    return DEFAULT_RECOMMENDATION_CHIPS;
-  }, [pacsSettingsRows]);
+    const pathology = collectPathologyRecommendationChips(appliedPathologyPatches);
+    return mergeRecommendationChipLists(base, pathology);
+  }, [pacsSettingsRows, appliedPathologyPatches]);
 
   const reportNeedsStart = useMemo(() => {
     const region = studySetup.matchedStudyRegion ?? studySetup.studyRegions[0];
@@ -1411,6 +1417,17 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     useWorkspace.getState().setField("impression", lines.join("\n"));
     toast({ title: "Impression generated", description: `${lines.length} point${lines.length > 1 ? "s" : ""} from findings` });
   }, [contentLocked, useStructured, findingsMap, findingsText, impressionText, toast]);
+
+  const handleRefreshImpressionFromFindings = useCallback(() => {
+    if (contentLocked) return;
+    const store = useWorkspace.getState();
+    if (store.appliedPathologyPatches.length > 0) {
+      store.refreshImpressionFromLedger();
+      toast({ title: "Impression refreshed from findings" });
+      return;
+    }
+    handleGenerateLocalImpression();
+  }, [contentLocked, handleGenerateLocalImpression, toast]);
 
   // Confirmed: replace impression
   const confirmedReplaceImpression = useCallback(() => {
@@ -4055,28 +4072,49 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                           {!isLocked && !isFinalized && (
                             <div className="flex items-center gap-2">
                               {impressionNeedsRefresh && (
-                                <span
-                                  data-testid="impression-needs-refresh"
-                                  className="rounded-full border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-amber-800"
-                                  title="Findings changed; impression contribution may be stale"
-                                >
-                                  Needs refresh
-                                </span>
+                                <div className="flex items-center gap-1.5" data-testid="impression-needs-refresh">
+                                  <span
+                                    className="text-[10px] font-medium text-amber-800"
+                                    title="Findings changed; linked impression contribution may be stale"
+                                  >
+                                    ⚠ Impression needs refresh
+                                  </span>
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-6 border-amber-300 bg-amber-50 text-[10px] text-amber-900 hover:bg-amber-100"
+                                    onClick={handleRefreshImpressionFromFindings}
+                                    data-testid="refresh-impression-from-finding"
+                                  >
+                                    Refresh from Finding
+                                  </Button>
+                                </div>
                               )}
-                              <Button
-                              type="button"
-                              size="sm"
-                              variant="outline"
-                              className="h-6 text-[10px]"
-                              onClick={handleGenerateLocalImpression}
-                              data-testid="generate-local-impression"
-                              title="Refresh / generate impression from active observations and remaining abnormal findings"
-                            >
-                              <Sparkles size={11} className="mr-1" /> {impressionNeedsRefresh ? "Refresh Impression" : "Generate Impression"}
-                            </Button>
+                              {!impressionNeedsRefresh && (
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="outline"
+                                  className="h-6 text-[10px]"
+                                  onClick={handleGenerateLocalImpression}
+                                  data-testid="generate-local-impression"
+                                  title="Generate impression from remaining abnormal findings"
+                                >
+                                  <Sparkles size={11} className="mr-1" /> Generate Impression
+                                </Button>
+                              )}
                             </div>
                           )}
                         </div>
+                        {!isLocked && !isFinalized && (
+                          <QuickSelectStrip
+                            field="impression"
+                            bodyPart={studySetup.matchedStudyRegion}
+                            compact
+                            onAfterPick={() => { void saveDraft({ silent: true }); }}
+                          />
+                        )}
                         <FindingsEditor field="impression" label="" minHeight="100px" placeholder="Conclusion. Ctrl+I for AI impression." showGhost />
                       </div>
                       {!isLocked && !isFinalized && (
@@ -4106,6 +4144,14 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                     <ReportAccordionSection {...accordionProps("recommendation")}>
                     <div className="flex items-center gap-2">
                       <div className="flex-1 space-y-1.5">
+                        {!isLocked && !isFinalized && (
+                          <QuickSelectStrip
+                            field="recommendation"
+                            bodyPart={studySetup.matchedStudyRegion}
+                            compact
+                            onAfterPick={() => { void saveDraft({ silent: true }); }}
+                          />
+                        )}
                         {recommendationChips.length > 0 && !isLocked && !isFinalized && (
                           <div className="flex flex-wrap gap-1" data-testid="recommendation-chips">
                             {recommendationChips.map((chip, i) => {

@@ -60,6 +60,7 @@ const LABELS: Record<QuickSelectField, string> = {
 export function QuickSelectStrip({
   field,
   bodyPart,
+  compact,
   onAfterPick,
 }: {
   field: QuickSelectField;
@@ -71,6 +72,8 @@ export function QuickSelectStrip({
    * section makes the tiles follow that choice.
    */
   bodyPart?: string | null;
+  /** Compact chrome for Impression / Recommendation sections (Sections 5–6). */
+  compact?: boolean;
   /** Fired after a tile is merged into the editor (e.g. silent draft save). */
   onAfterPick?: (field: QuickSelectField) => void;
 }) {
@@ -104,7 +107,7 @@ export function QuickSelectStrip({
 
   if (!study) {
     return (
-      <div className="mb-2 text-[10px] text-muted-foreground">
+      <div className={cn("text-[10px] text-muted-foreground", compact ? "mb-1" : "mb-2")}>
         <span className={cn("font-bold uppercase tracking-wider", FIELD_ACCENT[field])}>
           {LABELS[field]} Quick Select · select a study
         </span>
@@ -113,18 +116,29 @@ export function QuickSelectStrip({
   }
 
   return (
-    <div className="mb-2.5 rounded-xl border border-white/60 bg-gradient-to-r from-white/80 via-slate-50/40 to-white/80 p-2 shadow-sm shadow-slate-200/40">
-      <div className="mb-1.5 flex items-center justify-between gap-2">
+    <div
+      className={cn(
+        compact
+          ? "mb-1.5 rounded-lg border border-slate-200/80 bg-slate-50/50 p-1.5"
+          : "mb-2.5 rounded-xl border border-white/60 bg-gradient-to-r from-white/80 via-slate-50/40 to-white/80 p-2 shadow-sm shadow-slate-200/40",
+      )}
+      data-testid={`quick-select-strip-${field}${compact ? "-compact" : ""}`}
+    >
+      <div className={cn("flex items-center justify-between gap-2", compact ? "mb-1" : "mb-1.5")}>
         <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
           <span className={cn("font-bold uppercase tracking-wider", FIELD_ACCENT[field])}>
-            {LABELS[field]} Quick Select
+            {compact ? LABELS[field] : `${LABELS[field]} Quick Select`}
           </span>
-          <span className={cn("rounded-full border px-1.5 py-0.5 font-mono text-[9px] font-semibold", FIELD_PILL[field])}>
-            {study.modality} · {reportingContext.region || scopeBodyPart || "unresolved"}
-          </span>
-          <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[9px] font-medium text-slate-600">
-            {scoped.length} tiles
-          </span>
+          {!compact && (
+            <>
+              <span className={cn("rounded-full border px-1.5 py-0.5 font-mono text-[9px] font-semibold", FIELD_PILL[field])}>
+                {study.modality} · {reportingContext.region || scopeBodyPart || "unresolved"}
+              </span>
+              <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[9px] font-medium text-slate-600">
+                {scoped.length} tiles
+              </span>
+            </>
+          )}
         </div>
         <div className="flex items-center gap-0.5">
           {showSearch ? (
@@ -149,18 +163,32 @@ export function QuickSelectStrip({
               </button>
             </div>
           ) : (
-            <Button
-              size="sm"
-              variant="ghost"
-              className="h-7 px-2 text-[10px] hover:bg-violet-50 hover:text-violet-700"
-              onClick={() => setShowSearch(true)}
-            >
-              <Search className="h-3 w-3" />
-            </Button>
+            <>
+              {!compact && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 px-2 text-[10px] hover:bg-violet-50 hover:text-violet-700"
+                  onClick={() => setShowSearch(true)}
+                >
+                  <Search className="h-3 w-3" />
+                </Button>
+              )}
+              <button
+                type="button"
+                onClick={() => openEditor(null, field)}
+                className="inline-flex h-6 items-center gap-0.5 rounded-md border border-dashed border-violet-300/80 px-1.5 text-[9px] font-semibold text-violet-700 hover:bg-violet-50"
+                title={`Add / edit ${LABELS[field]} tiles`}
+                data-testid={`qs-edit-${field}`}
+              >
+                <Plus className="h-2.5 w-2.5" />
+                <Pencil className="h-2.5 w-2.5" />
+              </button>
+            </>
           )}
         </div>
       </div>
-      <div className="flex max-h-[104px] flex-wrap gap-1.5 overflow-y-auto pr-1">
+      <div className={cn("flex flex-wrap gap-1 overflow-y-auto pr-1", compact ? "max-h-[72px]" : "max-h-[104px] gap-1.5")}>
         {filtered.map((tile) => (
           <QuickSelectTileBox
             key={tile.id}
@@ -199,14 +227,16 @@ export function QuickSelectStrip({
             onEdit={() => openEditor(tile, field)}
           />
         ))}
-        <button
-          onClick={() => openEditor(null, field)}
-          className="inline-flex items-center gap-1 rounded-xl border-2 border-dashed border-violet-300/70 bg-gradient-to-br from-violet-50 to-fuchsia-50/50 px-2.5 py-1.5 text-[10.5px] font-semibold text-violet-700 transition hover:border-violet-500 hover:bg-violet-100/80 hover:text-violet-900"
-        >
-          <Plus className="h-3 w-3" />
-          <span>Add tile</span>
-          <ChevronRight className="h-2.5 w-2.5 opacity-50" />
-        </button>
+        {!compact && (
+          <button
+            onClick={() => openEditor(null, field)}
+            className="inline-flex items-center gap-1 rounded-xl border-2 border-dashed border-violet-300/70 bg-gradient-to-br from-violet-50 to-fuchsia-50/50 px-2.5 py-1.5 text-[10.5px] font-semibold text-violet-700 transition hover:border-violet-500 hover:bg-violet-100/80 hover:text-violet-900"
+          >
+            <Plus className="h-3 w-3" />
+            <span>Add tile</span>
+            <ChevronRight className="h-2.5 w-2.5 opacity-50" />
+          </button>
+        )}
       </div>
     </div>
   );
