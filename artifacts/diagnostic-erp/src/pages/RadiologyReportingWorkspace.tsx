@@ -3847,7 +3847,13 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       patches={appliedPathologyPatches}
                       findingsText={findingsText}
                       selectedId={null}
-                      onSelect={() => {}}
+                      onSelect={(id) => {
+                        const p = useWorkspace.getState().appliedPathologyPatches.find((x) => x.id === id);
+                        const level = (p?.observation?.level ?? p?.ownership.anatomicalSection ?? "").trim();
+                        if (level) {
+                          document.getElementById(`r2-region-${level}`)?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+                        }
+                      }}
                     />
                     <GhostLayer
                       contradictionHints={validateReport({
