@@ -17,6 +17,8 @@ import {
 } from "./reportFieldMerge";
 import type { PathologyIncoming, PathologyOwnership } from "./pathologyPatch";
 import { fieldContainsContribution } from "./observationMatch";
+import type { ObservationAnchor } from "./observationAnchor";
+import { coerceObservationAnchor } from "./observationAnchor";
 
 export type ConceptResolutionSource = "explicit" | "conflictGroup" | "legacy-fallback" | "none";
 
@@ -49,6 +51,10 @@ export type ObservationSlotInput = {
   state?: string | null;
   severity?: string | null;
   measurement?: string | null;
+  /** Creation-time image provenance (optional; old drafts omit). */
+  anchor?: ObservationAnchor | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
 };
 
 /** Runtime observation. `concept` is resolved; `conflictGroup` is the raw catalog field. */
@@ -73,6 +79,10 @@ export type CanonicalObservation = {
   sectionsOwned: MacroSectionOwned[];
   role: ObservationRole;
   specificity: ObservationSpecificity;
+  /** Optional creation-time FRAMES/OHIF provenance snapshot. */
+  anchor?: ObservationAnchor;
+  createdAt?: string;
+  updatedAt?: string;
 };
 
 export const SLOT_WILDCARD = "*";
@@ -313,6 +323,9 @@ export function buildCanonicalObservation(input: ObservationSlotInput): Canonica
     sectionsOwned: input.sectionsOwned?.length ? input.sectionsOwned : ["findings"],
     role: input.role ?? "finding",
     specificity: input.specificity ?? "region",
+    ...(input.anchor ? { anchor: coerceObservationAnchor(input.anchor) } : {}),
+    ...(input.createdAt ? { createdAt: input.createdAt } : {}),
+    ...(input.updatedAt ? { updatedAt: input.updatedAt } : {}),
   };
 }
 

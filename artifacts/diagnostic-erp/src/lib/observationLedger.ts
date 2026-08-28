@@ -25,6 +25,7 @@ import {
   type CanonicalObservation,
   type ObservationSlotInput,
 } from "./observationSlot";
+import { coerceObservationAnchor } from "./observationAnchor";
 import {
   contributionsMatch,
   fieldContainsContribution,
@@ -286,6 +287,12 @@ export type SerializedObservationLedger = {
   }>;
   /** Editor provenance — restored on reopen so deselect/protection still work. */
   fieldProvenance?: NarrativeProvenance;
+  /**
+   * Optional advisory coverage marks (Reporting Canvas R2).
+   * Additive — old drafts without this field hydrate normally.
+   * Never used as a finalize hard gate.
+   */
+  careCoverageMarks?: unknown;
 };
 
 function hashText(s: string | undefined): string {
@@ -298,6 +305,7 @@ function hashText(s: string | undefined): string {
 export function serializeObservationLedger(
   patches: LedgerPatch[],
   fieldProvenance?: NarrativeProvenance,
+  careCoverageMarks?: unknown,
 ): SerializedObservationLedger {
   return {
     kind: OBSERVATION_LEDGER_KIND,
@@ -317,6 +325,7 @@ export function serializeObservationLedger(
       },
     })),
     fieldProvenance: fieldProvenance && Object.keys(fieldProvenance).length > 0 ? fieldProvenance : undefined,
+    ...(careCoverageMarks != null ? { careCoverageMarks } : {}),
   };
 }
 
@@ -338,6 +347,15 @@ function coerceLedgerPatch(raw: unknown): LedgerPatch | null {
     ...obs,
     role: coerceObservationRole((obs as { role?: unknown }).role),
     specificity: coerceObservationSpecificity((obs as { specificity?: unknown }).specificity),
+    ...(coerceObservationAnchor((obs as { anchor?: unknown }).anchor)
+      ? { anchor: coerceObservationAnchor((obs as { anchor?: unknown }).anchor) }
+      : {}),
+    ...((obs as { createdAt?: unknown }).createdAt && typeof (obs as { createdAt?: unknown }).createdAt === "string"
+      ? { createdAt: (obs as { createdAt: string }).createdAt }
+      : {}),
+    ...((obs as { updatedAt?: unknown }).updatedAt && typeof (obs as { updatedAt?: unknown }).updatedAt === "string"
+      ? { updatedAt: (obs as { updatedAt: string }).updatedAt }
+      : {}),
   };
   return {
     id: row.id,
