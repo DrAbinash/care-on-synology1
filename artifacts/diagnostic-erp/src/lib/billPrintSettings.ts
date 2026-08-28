@@ -17,7 +17,7 @@
 // looked perfect. Always pass the server global here so the effective paper
 // size is the one the clinic actually configured.
 
-export type BillFormat = "classic" | "classic-portrait" | "hope-a5" | "a5-landscape";
+export type BillFormat = "classic" | "classic-portrait" | "hope-a5" | "a5-landscape" | "care-sage";
 /** Retired format ids that may still appear in older clinic_settings JSON blobs. */
 export type LegacyBillFormat =
   | BillFormat
@@ -48,11 +48,17 @@ export const BILL_FORMATS: { id: BillFormat; label: string; hint: string }[] = [
     label: "A5 Landscape",
     hint: "A5 landscape (210×148 mm) — compact receipt",
   },
+  {
+    id: "care-sage",
+    label: "CARE Sage",
+    hint: "A5 landscape (210×148 mm) — status-edge receipt, settled bills print in green",
+  },
 ];
 
 /** Normalize saved / legacy format ids to one of the live templates. */
 export function normalizeBillFormat(raw: unknown): BillFormat {
   if (raw === "a5-landscape") return "a5-landscape";
+  if (raw === "care-sage") return "care-sage";
   if (raw === "hope-a5") return "hope-a5";
   if (raw === "classic-portrait") return "classic-portrait";
   return "classic";
@@ -61,6 +67,7 @@ export function normalizeBillFormat(raw: unknown): BillFormat {
 /** Paper that belongs with each presentation template. */
 export function paperSizeForBillFormat(format: BillFormat): BillPaperSize {
   if (format === "hope-a5" || format === "classic-portrait") return "A5-portrait";
+  if (format === "care-sage") return "A5-landscape";
   if (format === "a5-landscape") return "A5-landscape";
   return "A5-landscape";
 }
@@ -542,7 +549,7 @@ export function resolveBillPrintPageOpts(
       pageCssSize: "A5 portrait",
     };
   }
-  // classic and a5-landscape share A5 landscape (210×148 mm).
+  // classic, care-sage and a5-landscape share A5 landscape (210×148 mm).
   return {
     paperSize: "A5",
     orientation: "landscape",

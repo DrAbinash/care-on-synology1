@@ -581,6 +581,83 @@ describe("document layout engine — A5 Landscape (a5-landscape)", () => {
   });
 });
 
+describe("document layout engine — CARE Sage (care-sage)", () => {
+  test("care-sage renders the status-edge receipt on 210×148", () => {
+    const html = buildBillPrintHtml(baseOpts({
+      billFormat: "care-sage",
+      orientation: "landscape",
+      pageCssSize: "210mm 148mm",
+    }));
+    expect(html).toContain("care-sage-bill");
+    expect(html).toContain("sage-edge");
+    expect(html).toContain(">RECEIPT<");
+    expect(html).toContain("Authorised Signatory");
+    expect(html).toContain("@page { size: A5 landscape; margin: 0; }");
+    expect(html).not.toMatch(/@page \{ size: 210mm 148mm/);
+    expect(html).not.toMatch(/@page \{ size: A4/);
+    expect(html).not.toContain("a5-landscape-bill");
+    expect(html).not.toContain("hope-bill");
+    expect(html).not.toContain(">INVOICE<");
+  });
+
+  test("settled bill prints in peaceful green with a PAID check", () => {
+    const html = buildBillPrintHtml(baseOpts({
+      billFormat: "care-sage",
+      orientation: "landscape",
+      pageCssSize: "210mm 148mm",
+    }));
+    expect(html).toContain("#15803d");
+    expect(html).toContain("#f0fdf4");
+    expect(html).toContain("Paid ✓");
+    expect(html).not.toContain("#b91c1c");
+  });
+
+  test("balance-due bill prints in red without the PAID check", () => {
+    const html = buildBillPrintHtml(baseOpts({
+      billFormat: "care-sage",
+      orientation: "landscape",
+      pageCssSize: "210mm 148mm",
+      bill: sampleBill(1, { paidAmount: 1000, balanceAmount: 3900 }),
+    }));
+    expect(html).toContain("#b91c1c");
+    expect(html).toContain("#fef2f2");
+    expect(html).not.toContain("Paid ✓");
+  });
+
+  test("B&W mode keeps the layout readable with neutral ink", () => {
+    const html = buildBillPrintHtml(baseOpts({
+      billFormat: "care-sage",
+      orientation: "landscape",
+      pageCssSize: "210mm 148mm",
+      isBW: true,
+    }));
+    expect(html).not.toContain("#15803d");
+    expect(html).not.toContain("#b91c1c");
+    expect(html).toContain("#64748b"); // neutral grey status edge
+    expect(html).toContain("Paid");
+  });
+
+  test("care-sage shares financial and audit fields with the other templates", () => {
+    const html = buildBillPrintHtml(baseOpts({
+      billFormat: "care-sage",
+      orientation: "landscape",
+      pageCssSize: "210mm 148mm",
+    }));
+    expect(html).toContain("4,900.00");
+    expect(html).toMatch(/2026001-\d+-4900\.00-\d+-[0-9A-F]{8}/);
+    expect(html).toContain("Scan to verify");
+  });
+
+  test("care-sage HTML does not use CSS transform rotate", () => {
+    const html = buildBillPrintHtml(baseOpts({
+      billFormat: "care-sage",
+      orientation: "landscape",
+      pageCssSize: "210mm 148mm",
+    }));
+    expect(html).not.toMatch(/transform:\s*rotate/i);
+  });
+});
+
 describe("print delivery module", () => {
   test("exports popup helpers without Electron APIs or hidden iframe print path", async () => {
     const mod = await import("./documentLayout/printDelivery");
