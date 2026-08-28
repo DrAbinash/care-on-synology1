@@ -36,9 +36,35 @@ describe("Section 4 — study_tab_id scoping", () => {
     expect(matched.some((f) => f.studyTabId === 4)).toBe(false);
   });
 
-  it("preserves unresolved legacy rows via name fallback", () => {
+  it("rename-safe: findings stay attached by study_tab_id after Study Tab rename", () => {
+    const renamed = FINDINGS.slice(0, 2).map((f) => ({ ...f, studyType: "Brain MRI (renamed)" }));
+    const { matched } = quickFindingsForStudyTab([...renamed, ...FINDINGS.slice(2)], 4, "Brain MRI (renamed)");
+    expect(matched.map((f) => f.id)).toEqual([1, 2]);
+  });
+
+  it("legacy name-only finding still resolves when study_tab_id is null", () => {
     const { matched } = quickFindingsForStudyTab(FINDINGS, null, "Old Brain");
     expect(matched.map((f) => f.id)).toEqual([4]);
+  });
+
+  it("unresolved legacy rows are preserved but not cross-contaminate other tabs", () => {
+    const cervical = quickFindingsForStudyTab(FINDINGS, 3, "Cervical Spine");
+    expect(cervical.matched.some((f) => f.id === 4)).toBe(false);
+    const legacy = quickFindingsForStudyTab(FINDINGS, null, "Old Brain");
+    expect(legacy.matched.map((f) => f.id)).toEqual([4]);
+    expect(legacy.unresolvedLegacy.map((f) => f.id)).toEqual([4]);
+  });
+
+  it("selecting L4-5 anatomy shows only L4-5 findings (filter focus, no report mutation)", () => {
+    const spine = [
+      { id: 10, studyType: "LS Spine", studyTabId: 5, label: "Normal", anatomicalSection: "L4-5", conflictGroup: "disc", isActive: true, sortOrder: 1 },
+      { id: 11, studyType: "LS Spine", studyTabId: 5, label: "Extrusion", anatomicalSection: "L4-5", conflictGroup: "disc", isActive: true, sortOrder: 2 },
+      { id: 12, studyType: "LS Spine", studyTabId: 5, label: "Bulge", anatomicalSection: "L3-4", conflictGroup: "disc", isActive: true, sortOrder: 1 },
+    ];
+    const { matched } = quickFindingsForStudyTab(spine, 5, "Renamed LS Spine");
+    const l45 = matched.filter((f) => f.anatomicalSection === "L4-5");
+    expect(l45.map((f) => f.label)).toEqual(["Normal", "Extrusion"]);
+    expect(l45.some((f) => f.anatomicalSection === "L3-4")).toBe(false);
   });
 });
 
@@ -311,6 +337,11 @@ describe("Section 4 — migration + API", () => {
     expect(route).toContain('router.post("/findings"');
     expect(route).toContain("studyTabId: tab.id");
     expect(route).toContain("resolveStudyTab");
+  });
+
+  it("Study Tab rename sync updates quick_findings study_type", () => {
+    const resolve = readFileSync(join(ROOT, "artifacts/api-server/src/lib/resolveStudyTab.ts"), "utf8");
+    expect(resolve).toContain("radiology_quick_findings");
   });
 
   it("finding editor saves studyTabId", () => {
