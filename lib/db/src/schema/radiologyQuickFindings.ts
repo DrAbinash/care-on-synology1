@@ -152,7 +152,7 @@ export const radiologyProtocolsTable = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
   },
   (t) => ({
-    nameUq: uniqueIndex("radiology_protocols_name_uq").on(t.name),
+    // Uniqueness: (study_tab_id, lower(trim(name))) — see zzzzz_protocol_study_tab_name_uq.sql
     byStudy: index("radiology_protocols_study_idx").on(t.studyType, t.isActive, t.sortOrder),
     byStudyTab: index("radiology_protocols_study_tab_idx").on(t.studyTabId, t.isActive, t.sortOrder),
   }),
