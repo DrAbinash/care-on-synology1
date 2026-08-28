@@ -107,7 +107,10 @@ export function QuickSelectStrip({
 
   if (!study) {
     return (
-      <div className={cn("text-[10px] text-muted-foreground", compact ? "mb-1" : "mb-2")}>
+      <div
+        className={cn("text-[10px] text-muted-foreground", compact ? "mb-1" : "mb-2")}
+        data-testid={`quick-select-strip-${field}${compact ? "-compact" : ""}`}
+      >
         <span className={cn("font-bold uppercase tracking-wider", FIELD_ACCENT[field])}>
           {LABELS[field]} Quick Select · select a study
         </span>
