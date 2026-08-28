@@ -62,20 +62,24 @@ describe("parseGlobalBillPrintSettings — server blob can never break printing"
 });
 
 describe("BILL_FORMATS — settings UI options", () => {
-  test("includes classic, hope-a5, and a5-landscape", () => {
-    expect(BILL_FORMATS.map((f) => f.id)).toEqual(["classic", "hope-a5", "a5-landscape"]);
+  test("includes classic, classic-portrait, hope-a5, and a5-landscape", () => {
+    expect(BILL_FORMATS.map((f) => f.id)).toEqual(["classic", "classic-portrait", "hope-a5", "a5-landscape"]);
     const a5Landscape = BILL_FORMATS.find((f) => f.id === "a5-landscape");
     expect(a5Landscape?.label).toBe("A5 Landscape");
     expect(a5Landscape?.hint).toContain("A5 landscape");
     expect(a5Landscape?.hint).toContain("210×148 mm");
+    const classicPortrait = BILL_FORMATS.find((f) => f.id === "classic-portrait");
+    expect(classicPortrait?.label).toBe("CARE Invoice (A5 Portrait)");
+    expect(classicPortrait?.hint).toContain("148×210 mm");
   });
 });
 
 describe("normalizeBillFormat + paperSizeForBillFormat", () => {
-  test("hope-a5 stays hope-a5; a5-landscape stays a5-landscape; everything else maps to classic", () => {
+  test("hope-a5 stays hope-a5; a5-landscape stays a5-landscape; classic-portrait stays; everything else maps to classic", () => {
     expect(normalizeBillFormat("a5-landscape")).toBe("a5-landscape");
     expect(normalizeBillFormat("hope-a5")).toBe("hope-a5");
     expect(normalizeBillFormat("classic")).toBe("classic");
+    expect(normalizeBillFormat("classic-portrait")).toBe("classic-portrait");
     expect(normalizeBillFormat("modern-landscape")).toBe("classic");
     expect(normalizeBillFormat("designer-a")).toBe("classic");
     expect(normalizeBillFormat(undefined)).toBe("classic");
@@ -85,6 +89,7 @@ describe("normalizeBillFormat + paperSizeForBillFormat", () => {
     expect(paperSizeForBillFormat("classic")).toBe("A5-landscape");
     expect(paperSizeForBillFormat("a5-landscape")).toBe("A5-landscape");
     expect(paperSizeForBillFormat("hope-a5")).toBe("A5-portrait");
+    expect(paperSizeForBillFormat("classic-portrait")).toBe("A5-portrait");
   });
 });
 
@@ -107,6 +112,12 @@ describe("loadBillPrintSettings — format + paper merge", () => {
   test("hope-a5 format forces A5-portrait paper", () => {
     const merged = loadBillPrintSettings({ defaultFormat: "hope-a5", defaultPaperSize: "A4" });
     expect(merged.defaultFormat).toBe("hope-a5");
+    expect(merged.defaultPaperSize).toBe("A5-portrait");
+  });
+
+  test("classic-portrait format forces A5-portrait paper", () => {
+    const merged = loadBillPrintSettings({ defaultFormat: "classic-portrait", defaultPaperSize: "A4" });
+    expect(merged.defaultFormat).toBe("classic-portrait");
     expect(merged.defaultPaperSize).toBe("A5-portrait");
   });
 
@@ -300,8 +311,16 @@ describe("resolveBillPrintPageOpts — format-driven paper", () => {
     expect(opts.orientation).toBe("portrait");
   });
 
+  test("classic-portrait short bills use A5 portrait @page", () => {
+    const opts = resolveBillPrintPageOpts({ defaultFormat: "classic-portrait" }, 1);
+    expect(opts.paperSize).toBe("A5");
+    expect(opts.orientation).toBe("portrait");
+    expect(opts.pageCssSize).toBe("A5 portrait");
+    expect(opts.compactFooterGap).toBe(false);
+  });
+
   test("long bills (≥ Cursor autoA4Threshold) switch to A4 for any format", () => {
-    for (const format of ["classic", "hope-a5", "a5-landscape"] as const) {
+    for (const format of ["classic", "classic-portrait", "hope-a5", "a5-landscape"] as const) {
       const opts = resolveBillPrintPageOpts({ defaultFormat: format }, 12);
       expect(opts.paperSize).toBe("A4");
       expect(opts.pageCssSize).toBe("A4 portrait");
@@ -336,6 +355,8 @@ describe("applyManualBillPaperOverride — paper follows format", () => {
       .toBe("A5-landscape");
     expect(applyManualBillPaperOverride({ defaultFormat: "hope-a5" }, "A4").defaultPaperSize)
       .toBe("A5-portrait");
+    expect(applyManualBillPaperOverride({ defaultFormat: "classic-portrait" }, "A4").defaultPaperSize)
+      .toBe("A5-portrait");
   });
 
   test("applyCursorBillPrintLayout syncs paper to format and keeps margin/copy settings", () => {
@@ -347,5 +368,7 @@ describe("applyManualBillPaperOverride — paper follows format", () => {
     expect(a5Landscape.defaultPaperSize).toBe("A5-landscape");
     const hope = applyCursorBillPrintLayout({ defaultFormat: "hope-a5" as const, printMarginMm: 12 });
     expect(hope.defaultPaperSize).toBe("A5-portrait");
+    const classicPortrait = applyCursorBillPrintLayout({ defaultFormat: "classic-portrait" as const, printMarginMm: 12 });
+    expect(classicPortrait.defaultPaperSize).toBe("A5-portrait");
   });
 });
