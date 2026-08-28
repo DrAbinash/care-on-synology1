@@ -9,6 +9,8 @@ import {
 } from "lucide-react";
 import { BROWSER_DICOMWEB_BASE, dicomWebFetch, withDicomWebAuth } from "@/lib/browserDicomWeb";
 import { planStudyLaunch, localStorageRouteCache, type StudyLaunchResult } from "@/lib/studyLaunchService";
+import type { ViewportContext } from "@/lib/observationAnchor";
+import { viewportContextsEqual } from "@/lib/observationAnchor";
 
 interface Series {
   uid: string;
@@ -90,7 +92,9 @@ const EmbeddedWadoViewer = forwardRef<EmbeddedViewerHandle, {
     sopInstanceUID: string;
     frameNumber: number;
   }) => void;
-}>(function EmbeddedWadoViewer({ studyInstanceUID, accessionNumber, patientName, columnExpanded = false, onColumnExpandedChange, onAddCurrentFrameToReport }, ref) {
+  /** FRAMES-first live viewport context for Reporting Canvas R2 activeAnchor. */
+  onViewportContextChange?: (ctx: ViewportContext | null) => void;
+}>(function EmbeddedWadoViewer({ studyInstanceUID, accessionNumber, patientName, columnExpanded = false, onColumnExpandedChange, onAddCurrentFrameToReport, onViewportContextChange }, ref) {
   if (!studyInstanceUID) {
     return (
       <div className="flex flex-col items-center justify-center py-8 gap-2 text-muted-foreground text-sm">
@@ -109,13 +113,14 @@ const EmbeddedWadoViewer = forwardRef<EmbeddedViewerHandle, {
       columnExpanded={columnExpanded}
       onColumnExpandedChange={onColumnExpandedChange}
       onAddCurrentFrameToReport={onAddCurrentFrameToReport}
+      onViewportContextChange={onViewportContextChange}
     />
   );
 });
 
 export default EmbeddedWadoViewer;
 
-function ViewerContent({ studyInstanceUID, accessionNumber, patientName, controlRef, columnExpanded, onColumnExpandedChange, onAddCurrentFrameToReport }: {
+function ViewerContent({ studyInstanceUID, accessionNumber, patientName, controlRef, columnExpanded, onColumnExpandedChange, onAddCurrentFrameToReport, onViewportContextChange }: {
   studyInstanceUID: string;
   accessionNumber?: string | null;
   patientName?: string | null;
@@ -128,6 +133,7 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
     sopInstanceUID: string;
     frameNumber: number;
   }) => void;
+  onViewportContextChange?: (ctx: ViewportContext | null) => void;
 }) {
   const [selectedSeriesUID, setSelectedSeriesUID] = useState<string | null>(null);
   const [selectedInstIdx, setSelectedInstIdx] = useState(0);
@@ -232,6 +238,34 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
 
   useEffect(() => { fetchSeries(); }, [fetchSeries]);
   useEffect(() => { fetchInstances(); }, [fetchInstances]);
+
+  // Emit live FRAMES viewport context (no poll; skip identical payloads).
+  const lastViewportRef = useRef<ViewportContext | null>(null);
+  useEffect(() => {
+    if (!onViewportContextChange) return;
+    const seriesMeta = series.find((s) => s.uid === selectedSeriesUID);
+    const inst = instances[selectedInstIdx];
+    if (!selectedSeriesUID || !inst) {
+      if (lastViewportRef.current !== null) {
+        lastViewportRef.current = null;
+        onViewportContextChange(null);
+      }
+      return;
+    }
+    const next: ViewportContext = {
+      studyInstanceUID,
+      seriesInstanceUID: selectedSeriesUID,
+      sopInstanceUID: inst.uid,
+      frameNumber: selectedInstIdx + 1,
+      instanceNumber: inst.instanceNumber ?? selectedInstIdx + 1,
+      seriesDescription: seriesMeta?.description ?? undefined,
+      totalFrames: instances.length || seriesMeta?.numInstances || undefined,
+      viewer: "frames",
+    };
+    if (viewportContextsEqual(lastViewportRef.current, next)) return;
+    lastViewportRef.current = next;
+    onViewportContextChange(next);
+  }, [onViewportContextChange, studyInstanceUID, selectedSeriesUID, selectedInstIdx, series, instances]);
 
   // Load frame image
   useEffect(() => {

@@ -5110,7 +5110,7 @@ function BillingPrintTab() {
         className="rounded-xl border border-amber-200 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-800 px-4 py-4 text-xs text-amber-950 dark:text-amber-100 leading-relaxed space-y-2 pointer-events-auto"
         data-testid="cursor-default-printer-paper"
       >
-        {activeBillFormat === "hope-a5" ? (
+        {activeBillFormat === "hope-a5" || activeBillFormat === "classic-portrait" ? (
           <>
             <p className="font-bold text-sm">How to set paper (A5 portrait)</p>
             <ol className="list-decimal pl-4 space-y-1.5">

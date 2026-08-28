@@ -476,6 +476,63 @@ describe("document layout engine — CARE Invoice (classic)", () => {
   });
 });
 
+describe("document layout engine — CARE Invoice A5 Portrait (classic-portrait)", () => {
+  test("classic-portrait renders same INVOICE layout on 148×210", () => {
+    const html = buildBillPrintHtml(baseOpts({
+      billFormat: "classic-portrait",
+      orientation: "portrait",
+      pageCssSize: "A5 portrait",
+    }));
+    expect(html).toContain(">INVOICE<");
+    expect(html).toContain("Authorised Signature");
+    expect(html).toContain("BILL NO:");
+    expect(html).toContain("@page { size: A5 portrait; margin: 0; }");
+    expect(html).toContain("width: 148mm");
+    expect(html).toContain("height: 210mm");
+    expect(html).not.toMatch(/@page \{ size: A5 landscape/);
+    expect(html).not.toMatch(/@page \{ size: A4/);
+    expect(html).not.toContain("hope-bill");
+    expect(html).not.toContain(">Receipt<");
+  });
+
+  test("classic-portrait and classic share CARE Invoice markup, opposite paper", () => {
+    const landscape = buildBillPrintHtml(baseOpts({
+      billFormat: "classic",
+      orientation: "landscape",
+      pageCssSize: "A5 landscape",
+    }));
+    const portrait = buildBillPrintHtml(baseOpts({
+      billFormat: "classic-portrait",
+      orientation: "portrait",
+      pageCssSize: "A5 portrait",
+    }));
+    expect(landscape).toContain(">INVOICE<");
+    expect(portrait).toContain(">INVOICE<");
+    expect(landscape).toContain("@page { size: A5 landscape; margin: 0; }");
+    expect(portrait).toContain("@page { size: A5 portrait; margin: 0; }");
+    expect(landscape).toContain("width: 210mm");
+    expect(landscape).toContain("height: 148mm");
+    expect(portrait).toContain("width: 148mm");
+    expect(portrait).toContain("height: 210mm");
+    expect(portrait).toContain("4,900.00");
+    expect(landscape).toContain("4,900.00");
+  });
+
+  test("format from clinic settings selects classic-portrait without billFormat opt", () => {
+    const html = buildBillPrintHtml(baseOpts({
+      billFormat: undefined,
+      orientation: "portrait",
+      pageCssSize: "A5 portrait",
+      clinic: {
+        ...sampleClinic,
+        billPrintSettingsJson: JSON.stringify({ defaultFormat: "classic-portrait" }),
+      },
+    }));
+    expect(html).toContain(">INVOICE<");
+    expect(html).toContain("@page { size: A5 portrait; margin: 0; }");
+  });
+});
+
 describe("document layout engine — A5 Landscape (a5-landscape)", () => {
   test("a5-landscape format renders compact layout on 210×148", () => {
     const html = buildBillPrintHtml(baseOpts({

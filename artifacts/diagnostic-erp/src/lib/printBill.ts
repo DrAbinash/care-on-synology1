@@ -1,6 +1,6 @@
-// Bill receipt printing — CARE Invoice (classic), HOPE A5, A5 Landscape, and
-// CARE Sage templates. CARE owns finance / QR / audit; format is selected in
-// Billing Print settings.
+// Bill receipt printing — CARE Invoice (classic / classic-portrait), HOPE A5,
+// A5 Landscape, and CARE Sage templates. CARE owns finance / QR / audit;
+// format is selected in Billing Print settings.
 
 import { resolveBillLogoHeightPx } from "./billPrintSettings";
 
@@ -227,7 +227,7 @@ export type BuildPrintHtmlOpts = {
   bill: PrintBillData;
   clinic: PrintClinic;
   /** Presentation template; falls back to clinic billPrintSettingsJson.defaultFormat. */
-  billFormat?: "classic" | "hope-a5" | "a5-landscape" | "care-sage" | null;
+  billFormat?: "classic" | "classic-portrait" | "hope-a5" | "a5-landscape" | "care-sage" | null;
   paperSize: "A4" | "A5";
   // A5 sheets can be fed to the printer either way — most B&W desktop/thermal
   // printers used at billing counters default to landscape A5. Optional and
@@ -2021,16 +2021,18 @@ export function buildSageBillPrintHtml(opts: BuildPrintHtmlOpts): string {
 }
 
 // ── Unified bill print renderer ───────────────────────────────────────────
-// Four presentation templates share CARE financial / QR / audit fields:
-//   classic       — CARE Invoice (A5 landscape 210×148)
-//   a5-landscape  — compact A5 Landscape receipt (210×148)
-//   hope-a5       — HOPE OPD Receipt (A5 portrait 148×210)
-//   care-sage     — CARE Sage status-edge receipt (A5 landscape 210×148)
+// Presentation templates share CARE financial / QR / audit fields:
+//   classic            — CARE Invoice (A5 landscape 210×148)
+//   classic-portrait   — CARE Invoice (A5 portrait 148×210) — same layout
+//   a5-landscape       — compact A5 Landscape receipt (210×148)
+//   hope-a5            — HOPE OPD Receipt (A5 portrait 148×210)
+//   care-sage          — CARE Sage status-edge receipt (A5 landscape 210×148)
 export function buildBillPrintHtml(opts: BuildPrintHtmlOpts): string {
   const fromClinic = parseGlobalBillPrintSettings(opts.clinic?.billPrintSettingsJson);
   const format = normalizeBillFormat(opts.billFormat ?? fromClinic.defaultFormat);
   if (format === "a5-landscape") return buildA5LandscapeBillPrintHtml(opts);
   if (format === "care-sage") return buildSageBillPrintHtml(opts);
   if (format === "hope-a5") return buildHopeA5BillPrintHtml(opts);
+  // classic + classic-portrait share the CARE Invoice HTML; page size comes from opts.
   return buildClassicBillPrintHtml(opts);
 }

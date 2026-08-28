@@ -17,7 +17,7 @@
 // looked perfect. Always pass the server global here so the effective paper
 // size is the one the clinic actually configured.
 
-export type BillFormat = "classic" | "hope-a5" | "a5-landscape" | "care-sage";
+export type BillFormat = "classic" | "classic-portrait" | "hope-a5" | "a5-landscape" | "care-sage";
 /** Retired format ids that may still appear in older clinic_settings JSON blobs. */
 export type LegacyBillFormat =
   | BillFormat
@@ -32,6 +32,11 @@ export const BILL_FORMATS: { id: BillFormat; label: string; hint: string }[] = [
     id: "classic",
     label: "CARE Invoice",
     hint: "A5 landscape (210×148 mm) — previous CARE bill layout",
+  },
+  {
+    id: "classic-portrait",
+    label: "CARE Invoice (A5 Portrait)",
+    hint: "A5 portrait (148×210 mm) — same CARE Invoice layout, opposite orientation",
   },
   {
     id: "hope-a5",
@@ -55,12 +60,13 @@ export function normalizeBillFormat(raw: unknown): BillFormat {
   if (raw === "a5-landscape") return "a5-landscape";
   if (raw === "care-sage") return "care-sage";
   if (raw === "hope-a5") return "hope-a5";
+  if (raw === "classic-portrait") return "classic-portrait";
   return "classic";
 }
 
 /** Paper that belongs with each presentation template. */
 export function paperSizeForBillFormat(format: BillFormat): BillPaperSize {
-  if (format === "hope-a5") return "A5-portrait";
+  if (format === "hope-a5" || format === "classic-portrait") return "A5-portrait";
   if (format === "care-sage") return "A5-landscape";
   if (format === "a5-landscape") return "A5-landscape";
   return "A5-landscape";
@@ -518,8 +524,8 @@ export type BillPrintPageOpts = {
 /**
  * Map clinic Billing Print settings + test count → paper/orientation the HTML
  * renderer should declare. Format drives short-bill paper (classic /
- * a5-landscape → 210×148 landscape, hope-a5 → 148×210 portrait). Long bills
- * auto-switch to A4.
+ * a5-landscape → 210×148 landscape, classic-portrait / hope-a5 → 148×210 portrait).
+ * Long bills auto-switch to A4.
  */
 export function resolveBillPrintPageOpts(
   settings: Pick<BillPrintSettings, "defaultPaperSize" | "autoA4Threshold" | "defaultFormat"> | Partial<BillPrintSettings> | undefined,
@@ -535,7 +541,7 @@ export function resolveBillPrintPageOpts(
     };
   }
   const format = normalizeBillFormat(settings?.defaultFormat);
-  if (format === "hope-a5") {
+  if (format === "hope-a5" || format === "classic-portrait") {
     return {
       paperSize: "A5",
       orientation: "portrait",
