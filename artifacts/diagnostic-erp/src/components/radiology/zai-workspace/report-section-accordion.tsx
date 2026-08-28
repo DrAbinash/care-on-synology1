@@ -44,6 +44,12 @@ interface SectionProps {
   onActivate: (id: ReportSectionId) => void;
   /** Small controls kept on the header row (visible when expanded). */
   headerExtra?: ReactNode;
+  /**
+   * Reporting Canvas R2 — continuous scroll layout. Body always visible;
+   * accordion chrome becomes a compact sticky label. Legacy accordion
+   * components remain for git rollback when continuous is false.
+   */
+  continuous?: boolean;
   children: ReactNode;
 }
 
@@ -57,44 +63,49 @@ export function ReportAccordionSection({
   active,
   onActivate,
   headerExtra,
+  continuous = false,
   children,
 }: SectionProps) {
+  const showBody = continuous || active;
   return (
     <section
       data-testid={`report-section-${id}`}
-      data-active={active ? "true" : "false"}
+      data-active={showBody ? "true" : "false"}
+      data-continuous={continuous ? "true" : "false"}
       className={cn(
         "flex flex-col rounded-lg border bg-card/60 transition-colors",
-        active
-          ? "min-h-0 flex-1 border-emerald-300/80 bg-card shadow-sm shadow-emerald-100/60"
-          : "shrink-0 border-border/60 hover:border-emerald-200",
+        continuous
+          ? "shrink-0 border-border/50 bg-card/80"
+          : active
+            ? "min-h-0 flex-1 border-emerald-300/80 bg-card shadow-sm shadow-emerald-100/60"
+            : "shrink-0 border-border/60 hover:border-emerald-200",
       )}
     >
       <div className="flex shrink-0 items-center gap-1.5 pr-2">
         <button
           type="button"
           onClick={() => onActivate(id)}
-          aria-expanded={active}
+          aria-expanded={showBody}
           aria-controls={`report-section-body-${id}`}
           data-testid={`report-section-header-${id}`}
           className="flex min-w-0 flex-1 items-center gap-1.5 rounded-lg px-2 py-1.5 text-left hover:bg-emerald-50/60"
-          title={active ? `Collapse ${label} (Alt+${index})` : `Open ${label} (Alt+${index})`}
+          title={continuous ? label : active ? `Collapse ${label} (Alt+${index})` : `Open ${label} (Alt+${index})`}
         >
           <span className={cn("h-3.5 w-1 shrink-0 rounded-full", ACCENT_BAR[accent])} aria-hidden />
-          {active ? (
+          {!continuous && (active ? (
             <ChevronDown size={12} className="shrink-0 text-emerald-600" />
           ) : (
             <ChevronRight size={12} className="shrink-0 text-muted-foreground" />
-          )}
+          ))}
           <span
             className={cn(
               "shrink-0 text-[10px] font-bold uppercase tracking-wide",
-              active ? "text-emerald-900" : "text-muted-foreground",
+              showBody ? "text-emerald-900" : "text-muted-foreground",
             )}
           >
             {label}
           </span>
-          {!active && (
+          {!showBody && (
             <span
               className="min-w-0 flex-1 truncate text-[11px] text-foreground/70"
               data-testid={`report-section-summary-${id}`}
@@ -109,14 +120,15 @@ export function ReportAccordionSection({
           ) : null}
           <span className="shrink-0 font-mono text-[9px] text-muted-foreground/50">⌥{index}</span>
         </button>
-        {active && headerExtra}
+        {showBody && headerExtra}
       </div>
       <div
         id={`report-section-body-${id}`}
         data-testid={`report-section-body-${id}`}
-        aria-hidden={!active}
+        aria-hidden={!showBody}
         className={cn(
-          active ? "min-h-0 flex-1 overflow-y-auto px-2.5 pb-2.5 pt-0.5" : "hidden",
+          showBody ? "min-h-0 overflow-y-visible px-2.5 pb-2.5 pt-0.5" : "hidden",
+          continuous ? "" : active ? "flex-1 overflow-y-auto" : "",
         )}
       >
         {children}
