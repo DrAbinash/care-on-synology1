@@ -62,18 +62,23 @@ describe("parseGlobalBillPrintSettings — server blob can never break printing"
 });
 
 describe("BILL_FORMATS — settings UI options", () => {
-  test("includes classic, hope-a5, and a5-landscape", () => {
-    expect(BILL_FORMATS.map((f) => f.id)).toEqual(["classic", "hope-a5", "a5-landscape"]);
+  test("includes classic, hope-a5, a5-landscape, and care-sage", () => {
+    expect(BILL_FORMATS.map((f) => f.id)).toEqual(["classic", "hope-a5", "a5-landscape", "care-sage"]);
     const a5Landscape = BILL_FORMATS.find((f) => f.id === "a5-landscape");
     expect(a5Landscape?.label).toBe("A5 Landscape");
     expect(a5Landscape?.hint).toContain("A5 landscape");
     expect(a5Landscape?.hint).toContain("210×148 mm");
+    const sage = BILL_FORMATS.find((f) => f.id === "care-sage");
+    expect(sage?.label).toBe("CARE Sage");
+    expect(sage?.hint).toContain("A5 landscape");
+    expect(sage?.hint).toContain("210×148 mm");
   });
 });
 
 describe("normalizeBillFormat + paperSizeForBillFormat", () => {
   test("hope-a5 stays hope-a5; a5-landscape stays a5-landscape; everything else maps to classic", () => {
     expect(normalizeBillFormat("a5-landscape")).toBe("a5-landscape");
+    expect(normalizeBillFormat("care-sage")).toBe("care-sage");
     expect(normalizeBillFormat("hope-a5")).toBe("hope-a5");
     expect(normalizeBillFormat("classic")).toBe("classic");
     expect(normalizeBillFormat("modern-landscape")).toBe("classic");
@@ -84,6 +89,7 @@ describe("normalizeBillFormat + paperSizeForBillFormat", () => {
   test("paper follows format", () => {
     expect(paperSizeForBillFormat("classic")).toBe("A5-landscape");
     expect(paperSizeForBillFormat("a5-landscape")).toBe("A5-landscape");
+    expect(paperSizeForBillFormat("care-sage")).toBe("A5-landscape");
     expect(paperSizeForBillFormat("hope-a5")).toBe("A5-portrait");
   });
 });
@@ -301,7 +307,7 @@ describe("resolveBillPrintPageOpts — format-driven paper", () => {
   });
 
   test("long bills (≥ Cursor autoA4Threshold) switch to A4 for any format", () => {
-    for (const format of ["classic", "hope-a5", "a5-landscape"] as const) {
+    for (const format of ["classic", "hope-a5", "a5-landscape", "care-sage"] as const) {
       const opts = resolveBillPrintPageOpts({ defaultFormat: format }, 12);
       expect(opts.paperSize).toBe("A4");
       expect(opts.pageCssSize).toBe("A4 portrait");
