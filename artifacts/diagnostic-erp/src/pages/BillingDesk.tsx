@@ -2347,7 +2347,8 @@ export default function BillingDesk() {
   // ──────────────────────────────────────────────────────────────────────────
 
   const deskClass = [
-    "h-full max-w-full overflow-x-hidden flex flex-col overflow-hidden bg-gradient-to-br from-sky-50 via-white to-violet-50 dark:from-slate-900 dark:via-slate-900 dark:to-slate-900",
+    // Mobile: one page scroll (patient → payment). Desktop: split panes with internal scroll.
+    "h-full max-w-full min-w-0 flex flex-col overflow-y-auto overflow-x-hidden lg:overflow-hidden bg-gradient-to-br from-sky-50 via-white to-violet-50 dark:from-slate-900 dark:via-slate-900 dark:to-slate-900",
     denseTestList  ? "billing-dense"     : "",
     largeFont      ? "billing-large-font": "",
     isCompact      ? "billing-compact"   : "",
@@ -2507,11 +2508,11 @@ export default function BillingDesk() {
           Left  65%  — Patient · Doctor · Tests
           Right 35%  — Selected · Summary · Payment · Print
       ═══════════════════════════════════════════════════════ */}
-      <div className="flex-1 flex flex-col lg:flex-row overflow-hidden min-h-0">
+      <div className="flex-1 flex flex-col lg:flex-row min-h-0 lg:overflow-hidden">
 
         {/* ▌LEFT COLUMN ▌─────────────────────────────────── */}
         <div className="w-full lg:w-[65%] lg:border-r border-[#dde3ec] flex flex-col min-h-0">
-          <div ref={stepContentRef} className="flex-1 min-h-0 overflow-y-auto p-2.5 space-y-2.5">
+          <div ref={stepContentRef} className="p-2.5 space-y-2.5 lg:flex-1 lg:min-h-0 lg:overflow-y-auto">
 
             {/* ── PATIENT ─────────────────────────────────── */}
             {(!isStepped || currentStep === 1) && (
@@ -2998,7 +2999,7 @@ export default function BillingDesk() {
 
         {/* ▌RIGHT COLUMN ▌────────────────────────────────── */}
         <div className="w-full lg:w-[35%] flex flex-col min-h-0 lg:min-h-0 bg-gradient-to-b from-indigo-50/70 to-emerald-50/50 dark:from-slate-850 dark:to-slate-850">
-          <div className="min-h-0 lg:flex-1 lg:overflow-y-auto flex flex-col">
+          <div className="flex flex-col lg:flex-1 lg:min-h-0 lg:overflow-y-auto">
 
             {/* ── SELECTED TESTS ───────────────────────── */}
             <div className={`${cardCls} mx-2.5 mt-2.5 flex-shrink-0`}>
