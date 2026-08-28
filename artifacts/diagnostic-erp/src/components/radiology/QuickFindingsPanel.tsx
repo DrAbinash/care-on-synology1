@@ -11,6 +11,7 @@ import { parseQuestions } from "@/lib/structuredFindings";
 import { computeChecklistStatus, summarizeChecklist, parseChecklist } from "@/lib/checklistEngine";
 import { filterRegionNamesForModality, matchStudyRegion } from "@/lib/studyRegion";
 import { contentStudyTypes } from "@/lib/reportingStudyContext";
+import { quickFindingsForStudyTab } from "@/lib/pickQuickProtocol";
 import WorkspaceQuickFindingEditor from "./WorkspaceQuickFindingEditor";
 
 /**
@@ -34,6 +35,7 @@ import WorkspaceQuickFindingEditor from "./WorkspaceQuickFindingEditor";
 export type QuickFinding = {
   id: number;
   studyType: string;
+  studyTabId?: number | null;
   label: string;
   findingText: string;
   impressionText: string;
@@ -169,6 +171,9 @@ interface Props {
    * one click behind "Change region".
    */
   compactRegions?: boolean;
+  /** Authoritative Study Tab from Section 1 — scopes findings by study_tab_id. */
+  selectedStudyTabId?: number | null;
+  selectedStudyTabName?: string | null;
 }
 
 const SIDES: Array<{ value: Side; label: string }> = [
@@ -182,6 +187,7 @@ export default function QuickFindingsPanel({
   instances, onUpdateInstance, onAutoTechnique, onInsertNormals,
   activeProtocolId, onProtocolChange, onChecklistChange, onAcceptLearnedSuggestion,
   onFindingsLoaded, externalSearch, selectedRegions, onRegionToggle, compactRegions = false,
+  selectedStudyTabId, selectedStudyTabName,
 }: Props) {
   const qc = useQueryClient();
   const searchRef = useRef<HTMLInputElement>(null);
@@ -349,9 +355,22 @@ export default function QuickFindingsPanel({
   const visibleFindings = useMemo(() => {
     if (!data) return [];
     const tabOrder = activeTabs.map((t) => t.name);
-    const pool = searchLower
-      ? data.findings.filter((f) => f.isActive && matchesSearch(f))
-      : data.findings.filter((f) => f.isActive && contentTabs.has(f.studyType));
+    if (searchLower) {
+      return data.findings
+        .filter((f) => f.isActive && matchesSearch(f))
+        .sort((a, b) => {
+          const ta = tabOrder.indexOf(a.studyType);
+          const tb = tabOrder.indexOf(b.studyType);
+          if (ta !== tb) return ta - tb;
+          return a.sortOrder - b.sortOrder;
+        });
+    }
+    if (selectedStudyTabId != null || selectedStudyTabName) {
+      const regionName = selectedStudyTabName ?? [...effectiveTabs][0] ?? null;
+      const { matched } = quickFindingsForStudyTab(data.findings, selectedStudyTabId ?? null, regionName);
+      return matched;
+    }
+    const pool = data.findings.filter((f) => f.isActive && contentTabs.has(f.studyType));
     return pool.sort((a, b) => {
       const ta = tabOrder.indexOf(a.studyType);
       const tb = tabOrder.indexOf(b.studyType);
@@ -359,7 +378,7 @@ export default function QuickFindingsPanel({
       return a.sortOrder - b.sortOrder;
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, effectiveTabs, contentTabs, activeTabs, searchLower]);
+  }, [data, effectiveTabs, contentTabs, activeTabs, searchLower, selectedStudyTabId, selectedStudyTabName]);
 
   // Favorites strip: this radiologist's pinned buttons, always shown first.
   const favoriteFindings = useMemo(
@@ -937,6 +956,7 @@ export default function QuickFindingsPanel({
           finding={catalogEditor === "new" ? null : catalogEditor}
           tabs={activeTabs}
           defaultStudyType={[...effectiveTabs][0] ?? activeTabs[0]?.name ?? ""}
+          selectedStudyTabId={selectedStudyTabId}
           onClose={() => setCatalogEditor(null)}
         />
       )}

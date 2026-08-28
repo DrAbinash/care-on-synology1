@@ -31,9 +31,9 @@ export const radiologyQuickFindingsTable = pgTable(
   "radiology_quick_findings",
   {
     id: serial("id").primaryKey(),
-    // References the tab by name (not FK) so tabs can be renamed/re-seeded
-    // without cascading deletes wiping a radiologist's configured buttons.
+    // Denormalized display / legacy name. Authoritative link: study_tab_id.
     studyType: text("study_type").notNull(),
+    studyTabId: integer("study_tab_id"),              // FK-soft → radiology_study_tabs.id
     label: text("label").notNull(),
     findingText: text("finding_text").notNull().default(""),
     impressionText: text("impression_text").notNull().default(""),
@@ -77,6 +77,7 @@ export const radiologyQuickFindingsTable = pgTable(
   (t) => ({
     studyLabelUq: uniqueIndex("radiology_quick_findings_study_label_uq").on(t.studyType, t.label),
     byStudy: index("radiology_quick_findings_study_idx").on(t.studyType, t.isActive, t.sortOrder),
+    byStudyTab: index("radiology_quick_findings_study_tab_idx").on(t.studyTabId, t.isActive, t.sortOrder),
   }),
 );
 

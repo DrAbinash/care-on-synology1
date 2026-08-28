@@ -44,4 +44,9 @@ export async function syncChildStudyTypeForTabRename(tabId: number, newName: str
     SET study_type = ${name}, updated_at = NOW()
     WHERE study_tab_id = ${tabId}
   `);
+  await db.execute(sql`
+    UPDATE radiology_quick_findings
+    SET study_type = ${name}, updated_at = NOW()
+    WHERE study_tab_id = ${tabId}
+  `);
 }
