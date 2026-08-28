@@ -1,6 +1,7 @@
 -- Section 3 Technique: scope protocol name uniqueness per Study Tab (not global).
 -- Safe migration — backfill study_tab_id, drop global name unique, add scoped uniques.
 -- Unresolved legacy rows (study_tab_id NULL) keep (study_type, normalized name) uniqueness.
+-- Filename zzzzz_* so this runs AFTER content-pack seeds that still use ON CONFLICT (name).
 
 ALTER TABLE radiology_protocols
   ADD COLUMN IF NOT EXISTS study_tab_id integer;

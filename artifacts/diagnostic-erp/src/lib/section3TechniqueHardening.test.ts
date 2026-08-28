@@ -145,7 +145,7 @@ describe("Section 3 Technique hardening", () => {
     const route = readFileSync(join(ROOT, "artifacts/api-server/src/routes/radiologyQuickFindings.ts"), "utf8");
     expect(route).toContain("findProtocolByScopedName");
     expect(route).not.toContain("target: radiologyProtocolsTable.name");
-    const sql = readFileSync(join(ROOT, "migrations/z_protocol_study_tab_name_uq.sql"), "utf8");
+    const sql = readFileSync(join(ROOT, "migrations/zzzzz_protocol_study_tab_name_uq.sql"), "utf8");
     expect(sql).toContain("DROP INDEX IF EXISTS radiology_protocols_name_uq");
     expect(sql).toContain("radiology_protocols_study_tab_name_uq");
   });

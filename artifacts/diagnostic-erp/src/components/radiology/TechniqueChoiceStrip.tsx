@@ -211,7 +211,7 @@ export default function TechniqueChoiceStrip({
               type="button"
               className="inline-flex h-7 items-center gap-0.5 rounded border border-dashed px-1.5 text-[10px] text-muted-foreground hover:border-teal-400 hover:text-teal-800"
               data-testid="technique-edit"
-              onClick={openEdit}
+              onClick={() => openEdit()}
               title="Edit selected Technique"
             >
               <Pencil size={10} /> Edit
