@@ -1,6 +1,6 @@
 /**
  * Pick the best Quick Protocol / Technique for a Study Tab.
- * Prefer studyTabId match; fall back to denormalized studyType name for legacy rows.
+ * Prefer studyTabId match; merge legacy name-only rows so migrated data stays visible.
  * Priority: isDefault → isGoldStandard → lowest sortOrder → name.
  */
 
@@ -16,20 +16,42 @@ export type QuickProtocolPick = {
   isActive: boolean;
 };
 
+export type ProtocolsForStudyTabResult<T extends QuickProtocolPick> = {
+  /** ID-matched + legacy name fallback (deduped by id). */
+  matched: T[];
+  /** Legacy rows with study_tab_id NULL matched only by studyType name. */
+  unresolvedLegacy: T[];
+};
+
 export function protocolsForStudyTab<T extends QuickProtocolPick>(
   protocols: T[],
   studyTabId: number | null | undefined,
   studyRegionName?: string | null,
 ): T[] {
+  return protocolsForStudyTabDetailed(protocols, studyTabId, studyRegionName).matched;
+}
+
+export function protocolsForStudyTabDetailed<T extends QuickProtocolPick>(
+  protocols: T[],
+  studyTabId: number | null | undefined,
+  studyRegionName?: string | null,
+): ProtocolsForStudyTabResult<T> {
   const active = protocols.filter((p) => p.isActive);
-  if (studyTabId != null && Number.isInteger(studyTabId) && studyTabId > 0) {
-    const byId = active.filter((p) => p.studyTabId === studyTabId);
-    if (byId.length > 0) return byId;
+  const byId =
+    studyTabId != null && Number.isInteger(studyTabId) && studyTabId > 0
+      ? active.filter((p) => p.studyTabId === studyTabId)
+      : [];
+  const legacy = studyRegionName
+    ? active.filter((p) => p.studyTabId == null && p.studyType === studyRegionName)
+    : [];
+  const seen = new Set<number>();
+  const matched: T[] = [];
+  for (const p of [...byId, ...legacy]) {
+    if (seen.has(p.id)) continue;
+    seen.add(p.id);
+    matched.push(p);
   }
-  if (studyRegionName) {
-    return active.filter((p) => p.studyType === studyRegionName && (p.studyTabId == null || studyTabId == null));
-  }
-  return [];
+  return { matched, unresolvedLegacy: legacy };
 }
 
 export function pickQuickProtocol<T extends QuickProtocolPick>(
@@ -62,4 +84,9 @@ export function clinicalHistoryChipsForStudyTab<T extends { studyTabId?: number 
     return { matched: legacy, unresolvedLegacy: legacy };
   }
   return { matched: [], unresolvedLegacy: [] };
+}
+
+/** Normalized name key for per–Study Tab duplicate checks (matches API migration). */
+export function normalizeTechniqueName(name: string): string {
+  return name.trim().toLowerCase();
 }

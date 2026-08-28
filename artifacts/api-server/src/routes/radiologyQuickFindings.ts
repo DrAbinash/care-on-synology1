@@ -25,10 +25,15 @@ import {
   radiologyLearnedPatternsTable,
   radiologyClinicalHistoryChipsTable,
 } from "@workspace/db/schema";
-import { asc, eq, and, ne } from "drizzle-orm";
+import { asc, eq, and, ne, isNull } from "drizzle-orm";
 import { requireAdminRole, type StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { getCached, setCached, invalidateCached, TTL } from "../lib/ttlCache";
 import { resolveStudyTab, syncChildStudyTypeForTabRename } from "../lib/resolveStudyTab";
+import {
+  duplicateProtocolErrorPayload,
+  findProtocolByScopedName,
+  normalizeProtocolName,
+} from "../lib/protocolName";
 import { CLINICAL_HISTORY_CHIP_DEFAULTS, PROTOCOL_DEFAULTS } from "../lib/radiologyReportingDefaults";
 
 // Clinical-history quick-select chips are intentionally UNLIMITED per study —
@@ -444,6 +449,16 @@ router.post("/protocols", requireAdminRole, async (req, res) => {
   }
   const studyType = tab.name;
   const isDefault = req.body?.isDefault === true;
+  const duplicate = await findProtocolByScopedName({ name, studyTabId: tab.id, studyType });
+  if (duplicate) {
+    res.status(409).json(duplicateProtocolErrorPayload({
+      name,
+      studyTabId: tab.id,
+      studyType,
+      existingId: duplicate.id,
+    }));
+    return;
+  }
   try {
     const row = await db.transaction(async (tx) => {
       if (isDefault) {
@@ -470,8 +485,9 @@ router.post("/protocols", requireAdminRole, async (req, res) => {
     });
     invalidateCached(CACHE_KEY);
     res.status(201).json(row);
-  } catch {
-    res.status(409).json({ error: "A protocol with that name already exists" });
+  } catch (err) {
+    console.error("[quick-select] protocol create failed:", err);
+    res.status(500).json({ error: "Could not create protocol" });
   }
 });
 
@@ -479,6 +495,11 @@ router.patch("/protocols/:id", requireAdminRole, async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id <= 0) {
     res.status(400).json({ error: "Invalid id" });
+    return;
+  }
+  const [existingRow] = await db.select().from(radiologyProtocolsTable).where(eq(radiologyProtocolsTable.id, id));
+  if (!existingRow) {
+    res.status(404).json({ error: "Protocol not found" });
     return;
   }
   const updates: Record<string, unknown> = { updatedAt: new Date() };
@@ -503,6 +524,26 @@ router.patch("/protocols/:id", requireAdminRole, async (req, res) => {
   if (typeof req.body?.isDefault === "boolean") updates.isDefault = req.body.isDefault;
   if (req.body?.sortOrder !== undefined) updates.sortOrder = Number(req.body.sortOrder) || 0;
   if (typeof req.body?.isActive === "boolean") updates.isActive = req.body.isActive;
+
+  const nextName = typeof updates.name === "string" ? updates.name : existingRow.name;
+  const nextTabId = typeof updates.studyTabId === "number" ? updates.studyTabId : existingRow.studyTabId;
+  const nextStudyType = typeof updates.studyType === "string" ? updates.studyType : existingRow.studyType;
+  const duplicate = await findProtocolByScopedName({
+    name: nextName,
+    studyTabId: nextTabId,
+    studyType: nextStudyType,
+    excludeId: id,
+  });
+  if (duplicate) {
+    res.status(409).json(duplicateProtocolErrorPayload({
+      name: nextName,
+      studyTabId: nextTabId,
+      studyType: nextStudyType,
+      existingId: duplicate.id,
+    }));
+    return;
+  }
+
   try {
     const row = await db.transaction(async (tx) => {
       const [existing] = await tx.select().from(radiologyProtocolsTable).where(eq(radiologyProtocolsTable.id, id));
@@ -529,8 +570,9 @@ router.patch("/protocols/:id", requireAdminRole, async (req, res) => {
     }
     invalidateCached(CACHE_KEY);
     res.json(row);
-  } catch {
-    res.status(409).json({ error: "A protocol with that name already exists" });
+  } catch (err) {
+    console.error("[quick-select] protocol patch failed:", err);
+    res.status(500).json({ error: "Could not update protocol" });
   }
 });
 
@@ -559,10 +601,16 @@ router.post("/protocols/:id/duplicate", requireAdminRole, async (req, res) => {
     return;
   }
   const existingNames = new Set(
-    (await db.select({ name: radiologyProtocolsTable.name }).from(radiologyProtocolsTable)).map((r) => r.name),
+    (await db
+      .select({ name: radiologyProtocolsTable.name, studyTabId: radiologyProtocolsTable.studyTabId })
+      .from(radiologyProtocolsTable))
+      .filter((r) => r.studyTabId === src.studyTabId)
+      .map((r) => normalizeProtocolName(r.name)),
   );
   let name = `${src.name} (copy)`;
-  for (let n = 2; existingNames.has(name); n++) name = `${src.name} (copy ${n})`;
+  for (let n = 2; existingNames.has(normalizeProtocolName(name)); n++) {
+    name = `${src.name} (copy ${n})`;
+  }
   const [row] = await db.insert(radiologyProtocolsTable).values({
     name,
     studyType: src.studyType,
@@ -591,38 +639,29 @@ router.post("/protocols/restore-defaults", requireAdminRole, async (req, res) =>
   await db.transaction(async (tx) => {
     for (const p of defaults) {
       const tab = await resolveStudyTab({ studyType: p.studyType });
+      const studyTabId = tab?.id ?? null;
+      const studyTypeName = tab?.name ?? p.studyType;
       if (p.isDefault) {
-        if (tab) {
+        if (studyTabId != null) {
           await tx.update(radiologyProtocolsTable)
             .set({ isDefault: false, updatedAt: new Date() })
-            .where(eq(radiologyProtocolsTable.studyTabId, tab.id));
+            .where(eq(radiologyProtocolsTable.studyTabId, studyTabId));
         } else {
           await tx.update(radiologyProtocolsTable)
             .set({ isDefault: false, updatedAt: new Date() })
-            .where(eq(radiologyProtocolsTable.studyType, p.studyType));
+            .where(and(eq(radiologyProtocolsTable.studyType, studyTypeName), isNull(radiologyProtocolsTable.studyTabId)));
         }
       }
-      await tx.insert(radiologyProtocolsTable)
-        .values({
-          name: p.name,
-          studyType: tab?.name ?? p.studyType,
-          studyTabId: tab?.id ?? null,
-          modality: p.modality,
-          checklistJson: p.checklistJson,
-          techniqueText: p.techniqueText,
-          normalText: p.normalText,
-          recommendationText: "",
-          requiredMeasurements: "",
-          isGoldStandard: p.isGoldStandard,
-          isDefault: p.isDefault,
-          sortOrder: p.sortOrder,
-          isActive: true,
-        })
-        .onConflictDoUpdate({
-          target: radiologyProtocolsTable.name,
-          set: {
-            studyType: tab?.name ?? p.studyType,
-            studyTabId: tab?.id ?? null,
+      const existing = await findProtocolByScopedName({
+        name: p.name,
+        studyTabId,
+        studyType: studyTypeName,
+      });
+      if (existing) {
+        await tx.update(radiologyProtocolsTable)
+          .set({
+            studyType: studyTypeName,
+            studyTabId,
             modality: p.modality,
             checklistJson: p.checklistJson,
             techniqueText: p.techniqueText,
@@ -631,8 +670,26 @@ router.post("/protocols/restore-defaults", requireAdminRole, async (req, res) =>
             isDefault: p.isDefault,
             isActive: true,
             updatedAt: new Date(),
-          },
-        });
+          })
+          .where(eq(radiologyProtocolsTable.id, existing.id));
+      } else {
+        await tx.insert(radiologyProtocolsTable)
+          .values({
+            name: p.name,
+            studyType: studyTypeName,
+            studyTabId,
+            modality: p.modality,
+            checklistJson: p.checklistJson,
+            techniqueText: p.techniqueText,
+            normalText: p.normalText,
+            recommendationText: "",
+            requiredMeasurements: "",
+            isGoldStandard: p.isGoldStandard,
+            isDefault: p.isDefault,
+            sortOrder: p.sortOrder,
+            isActive: true,
+          });
+      }
     }
   });
   invalidateCached(CACHE_KEY);

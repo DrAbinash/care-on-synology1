@@ -6,14 +6,23 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Pencil, Plus, Save, X } from "lucide-react";
-import { api } from "@/lib/fetchApi";
+import { api, isHttpError } from "@/lib/fetchApi";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import type { QuickProtocol, QuickStudyTab } from "@/components/radiology/QuickFindingsPanel";
-import { protocolsForStudyTab } from "@/lib/pickQuickProtocol";
+import { protocolsForStudyTabDetailed } from "@/lib/pickQuickProtocol";
+import type { TechniqueRegionMismatch } from "@/hooks/useReportingStudySetup";
+
+type DuplicateProtocolError = {
+  code?: string;
+  error?: string;
+  existingId?: number;
+  name?: string;
+  studyType?: string;
+};
 
 type TechniqueDraft = {
   id?: number;
@@ -33,6 +42,8 @@ export default function TechniqueChoiceStrip({
   selectedStudyTabName,
   activeProtocolId,
   onSelectProtocol,
+  techniqueMismatch,
+  onLoadCurrentDefault,
   isOwner,
   disabled,
 }: {
@@ -42,19 +53,25 @@ export default function TechniqueChoiceStrip({
   selectedStudyTabName: string | null;
   activeProtocolId: number | null;
   onSelectProtocol: (protocol: QuickProtocol | null) => void;
+  techniqueMismatch?: TechniqueRegionMismatch | null;
+  onLoadCurrentDefault?: () => void;
   isOwner: boolean;
   disabled?: boolean;
 }) {
   const { toast } = useToast();
   const qc = useQueryClient();
   const [editing, setEditing] = useState<TechniqueDraft | null>(null);
+  const [duplicateError, setDuplicateError] = useState<DuplicateProtocolError | null>(null);
 
-  const choices = useMemo(
+  const { matched: choices, unresolvedLegacy } = useMemo(
     () =>
-      protocolsForStudyTab(protocols, selectedStudyTabId, selectedStudyTabName)
-        .slice()
-        .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name)),
+      protocolsForStudyTabDetailed(protocols, selectedStudyTabId, selectedStudyTabName),
     [protocols, selectedStudyTabId, selectedStudyTabName],
+  );
+
+  const sortedChoices = useMemo(
+    () => choices.slice().sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name)),
+    [choices],
   );
 
   const saveMut = useMutation({
@@ -76,10 +93,18 @@ export default function TechniqueChoiceStrip({
     onSuccess: (row: QuickProtocol) => {
       void qc.invalidateQueries({ queryKey: ["radiology-quick-select"] });
       setEditing(null);
+      setDuplicateError(null);
       toast({ title: "Technique saved" });
       if (row?.id) onSelectProtocol(row);
     },
     onError: (err: unknown) => {
+      if (isHttpError(err) && err.status === 409) {
+        const body = err.details as DuplicateProtocolError | undefined;
+        if (body?.code === "DUPLICATE_PROTOCOL_NAME") {
+          setDuplicateError(body);
+          return;
+        }
+      }
       toast({
         title: "Could not save Technique",
         description: err instanceof Error ? err.message : "Admin permission may be required.",
@@ -98,14 +123,18 @@ export default function TechniqueChoiceStrip({
       studyTabId: selectedStudyTabId,
       studyType: selectedStudyTabName,
       techniqueText: "",
-      isDefault: choices.length === 0,
+      isDefault: sortedChoices.length === 0,
       isActive: true,
       sortOrder: 0,
     });
+    setDuplicateError(null);
   };
 
-  const openEdit = () => {
-    const current = choices.find((p) => p.id === activeProtocolId) ?? choices.find((p) => p.isDefault) ?? choices[0];
+  const openEdit = (protocol?: QuickProtocol) => {
+    const current = protocol
+      ?? sortedChoices.find((p) => p.id === activeProtocolId)
+      ?? sortedChoices.find((p) => p.isDefault)
+      ?? sortedChoices[0];
     if (!current) {
       openNew();
       return;
@@ -120,6 +149,24 @@ export default function TechniqueChoiceStrip({
       isActive: current.isActive,
       sortOrder: current.sortOrder,
     });
+    setDuplicateError(null);
+  };
+
+  const openDuplicateExisting = () => {
+    if (!duplicateError?.existingId) return;
+    const existing = sortedChoices.find((p) => p.id === duplicateError.existingId)
+      ?? protocols.find((p) => p.id === duplicateError.existingId);
+    if (existing) openEdit(existing);
+  };
+
+  const saveAsVariant = () => {
+    if (!editing) return;
+    setEditing({
+      ...editing,
+      id: undefined,
+      name: `${editing.name.trim()} (variant)`,
+    });
+    setDuplicateError(null);
   };
 
   return (
@@ -130,10 +177,10 @@ export default function TechniqueChoiceStrip({
           <select
             className="h-7 min-w-[12rem] max-w-[22rem] rounded border bg-background px-1.5 text-[11px] font-medium text-foreground"
             value={activeProtocolId ?? ""}
-            disabled={disabled || choices.length === 0}
+            disabled={disabled || sortedChoices.length === 0}
             onChange={(e) => {
               const id = Number(e.target.value);
-              const p = choices.find((x) => x.id === id) ?? null;
+              const p = sortedChoices.find((x) => x.id === id) ?? null;
               onSelectProtocol(p);
             }}
             data-testid="technique-choice-select"
@@ -142,17 +189,22 @@ export default function TechniqueChoiceStrip({
             <option value="">
               {!selectedStudyTabId
                 ? "Select Study / Region first…"
-                : choices.length === 0
+                : sortedChoices.length === 0
                   ? "No techniques — Add one"
                   : "Select technique…"}
             </option>
-            {choices.map((p) => (
-              <option key={p.id} value={p.id} data-study-tab-id={p.studyTabId ?? undefined}>
-                {p.name}{p.isDefault ? " ★" : ""}
+            {sortedChoices.map((p) => (
+              <option key={p.id} value={p.id} data-study-tab-id={p.studyTabId ?? undefined} data-legacy={!p.studyTabId ? "true" : "false"}>
+                {p.name}{p.isDefault ? " ★" : ""}{!p.studyTabId ? " · legacy" : ""}
               </option>
             ))}
           </select>
         </label>
+        {unresolvedLegacy.length > 0 ? (
+          <span className="text-[9px] text-amber-700" data-testid="technique-legacy-count">
+            {unresolvedLegacy.length} legacy
+          </span>
+        ) : null}
         {isOwner && !disabled ? (
           <>
             <button
@@ -177,6 +229,43 @@ export default function TechniqueChoiceStrip({
         ) : null}
       </div>
 
+      {techniqueMismatch && !disabled ? (
+        <div
+          className="flex flex-wrap items-center gap-2 rounded border border-amber-300/80 bg-amber-50/80 px-2 py-1 text-[10px] text-amber-950"
+          data-testid="technique-region-mismatch"
+        >
+          <span>
+            Technique belongs to <strong>{techniqueMismatch.originStudyTabName}</strong>
+          </span>
+          {onLoadCurrentDefault ? (
+            <button
+              type="button"
+              className="rounded border border-amber-400 bg-white px-1.5 py-0.5 font-semibold hover:bg-amber-100"
+              data-testid="technique-load-current-default"
+              onClick={onLoadCurrentDefault}
+            >
+              Load {techniqueMismatch.currentStudyTabName} default
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+
+      {duplicateError && editing ? (
+        <div className="rounded border border-destructive/40 bg-destructive/5 px-2 py-1.5 text-[10px] text-destructive" data-testid="technique-duplicate-error">
+          <p>{duplicateError.error ?? "A Technique with that name already exists for this Study Tab."}</p>
+          <div className="mt-1 flex flex-wrap gap-2">
+            {duplicateError.existingId ? (
+              <button type="button" className="underline font-semibold" data-testid="technique-duplicate-edit" onClick={openDuplicateExisting}>
+                Edit existing
+              </button>
+            ) : null}
+            <button type="button" className="underline font-semibold" data-testid="technique-duplicate-variant" onClick={saveAsVariant}>
+              Save as variant
+            </button>
+          </div>
+        </div>
+      ) : null}
+
       {editing && (
         <div className="rounded-md border bg-card p-2 space-y-2 shadow-sm" data-testid="technique-editor">
           <div className="flex items-center justify-between">
@@ -193,7 +282,10 @@ export default function TechniqueChoiceStrip({
               <Input
                 className="h-7 text-xs mt-0.5"
                 value={editing.name}
-                onChange={(e) => setEditing({ ...editing, name: e.target.value })}
+                onChange={(e) => {
+                  setEditing({ ...editing, name: e.target.value });
+                  setDuplicateError(null);
+                }}
                 placeholder="Standard MRI Cervical Spine"
                 data-testid="technique-editor-name"
                 autoFocus

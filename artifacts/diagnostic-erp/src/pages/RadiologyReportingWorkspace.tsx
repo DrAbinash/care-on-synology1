@@ -510,6 +510,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   // Read-only: drives the collapsed Findings summary's "N assisted" count.
   const findingsProvenance = useWorkspace((s: WorkspaceStore) => s.fieldProvenance.findings);
   const impressionProvenance = useWorkspace((s: WorkspaceStore) => s.fieldProvenance.impression);
+  const techniqueProvenance = useWorkspace((s: WorkspaceStore) => s.fieldProvenance.technique ?? {});
   const isFinalized = useWorkspace((s: WorkspaceStore) => s.isFinalized);
   const isDirty = useWorkspace((s: WorkspaceStore) => s.isDirty);
   const preloadTriggered = useWorkspace((s: WorkspaceStore) => s.preloadTriggered);
@@ -1155,6 +1156,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         clinicalHistory: s.clinicalHistoryText,
       };
     },
+    readTechniqueProvenance: () => useWorkspace.getState().fieldProvenance.technique ?? {},
   }), []);
 
   const studySetup = useReportingStudySetup({
@@ -1167,6 +1169,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     existingDraft,
     disabled: studyLock.status === "locked-by-other",
     setters: studySetupSetters,
+    techniqueText,
+    techniqueProvenance,
     onToast: (opts) => toast({ title: opts.title, description: opts.description, variant: opts.variant }),
   });
 
@@ -3635,6 +3639,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       selectedStudyTabName={studySetup.matchedStudyRegion}
                       activeProtocolId={studySetup.activeProtocol?.id ?? null}
                       onSelectProtocol={(p) => studySetup.requestProtocolChange(p)}
+                      techniqueMismatch={studySetup.techniqueMismatch}
+                      onLoadCurrentDefault={studySetup.loadCurrentRegionDefaultTechnique}
                       isOwner={isOwner}
                       disabled={isLocked || isFinalized}
                     />

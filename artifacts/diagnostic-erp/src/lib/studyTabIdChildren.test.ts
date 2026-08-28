@@ -54,9 +54,9 @@ describe("Study Tab ID — Clinical History", () => {
 });
 
 describe("Study Tab ID — Technique / protocols", () => {
-  it("lists techniques for Study Tab ID only", () => {
+  it("lists techniques for Study Tab ID and merges legacy name fallback", () => {
     const cervical = protocolsForStudyTab(PROTOCOLS, 3, "Cervical Spine");
-    expect(cervical.map((p) => p.id)).toEqual([10]);
+    expect(cervical.map((p) => p.id)).toEqual([10, 12]);
     const brain = protocolsForStudyTab(PROTOCOLS, 4, "Brain");
     expect(brain.map((p) => p.id)).toEqual([11]);
   });
@@ -78,17 +78,11 @@ describe("Study Tab ID — Technique / protocols", () => {
     expect(strip).toContain("/api/radiology/quick-select/protocols");
   });
 
-  it("region change fill-empty only — does not merge into existing Technique", () => {
+  it("region change uses provenance-aware auto-replace", () => {
     const setup = read("hooks/useReportingStudySetup.ts");
-    expect(setup).toContain("Manual / draft Technique must survive Study Tab change");
-    expect(setup).toContain("Fill-empty only: manual / draft Technique survives Study Tab change");
-    expect(setup).toContain("Resolve Study Tab ID from the NEW name");
-    const start = setup.indexOf("const selectPrimaryRegion = useCallback");
-    const end = setup.indexOf("}, [disabled, quickSelectData, applyProtocol, setters]);", start);
-    const selectBlock = setup.slice(start, end);
-    expect(selectBlock).toContain("setActiveProtocol(protocol)");
-    expect(selectBlock).toMatch(/if \(!fields\.technique\.trim\(\)\)/);
-    expect(selectBlock).not.toContain("applyProtocol(protocol, false)");
+    expect(setup).toContain("syncTechniqueOnRegionChange");
+    expect(setup).toContain("shouldAutoReplaceTechniqueOnRegionChange");
+    expect(setup).toContain("loadCurrentRegionDefaultTechnique");
   });
 });
 
