@@ -96,7 +96,7 @@ describe("migration + API study_tab_id", () => {
   });
 
   it("quick findings migration backfills study_tab_id", () => {
-    const sql = readFileSync(join(ROOT, "migrations/z_add_study_tab_id_quick_findings.sql"), "utf8");
+    const sql = readFileSync(join(ROOT, "migrations/zzzzz_add_study_tab_id_quick_findings.sql"), "utf8");
     expect(sql).toContain("radiology_quick_findings");
     expect(sql).toContain("study_tab_id");
   });

@@ -333,7 +333,7 @@ describe("Section 4 — undo + draft persistence wiring", () => {
 
 describe("Section 4 — migration + API", () => {
   it("migration backfills quick_findings study_tab_id without deleting unmatched rows", () => {
-    const sql = readFileSync(join(ROOT, "migrations/z_add_study_tab_id_quick_findings.sql"), "utf8");
+    const sql = readFileSync(join(ROOT, "migrations/zzzzz_add_study_tab_id_quick_findings.sql"), "utf8");
     expect(sql).toContain("radiology_quick_findings");
     expect(sql).toContain("study_tab_id");
     expect(sql).toContain("radiology_quick_findings_study_tab_label_uq");

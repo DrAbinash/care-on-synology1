@@ -1,6 +1,8 @@
 -- Section 4 Findings: scope Quick Findings to Study Tab ID (mirrors PR #621 protocol pattern).
 -- study_type remains denormalized display; study_tab_id is authoritative after backfill.
 -- Unresolved legacy rows (study_tab_id NULL) are preserved — not deleted.
+-- Filename zzzzz_* so this runs AFTER content-pack seeds that still use
+-- ON CONFLICT (study_type, label).
 
 ALTER TABLE radiology_quick_findings
   ADD COLUMN IF NOT EXISTS study_tab_id integer;
