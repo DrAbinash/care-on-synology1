@@ -7,7 +7,8 @@ import {
 } from "./quickSelectSlots";
 
 describe("quickSelectSlots (API)", () => {
-  test("accepts legacy 8 and new 12 slot payloads", () => {
+  test("accepts legacy 6/8 and new 12 slot payloads", () => {
+    expect(isValidQuickSelectIds(JSON.stringify(Array(6).fill(null)))).toBe(true);
     expect(isValidQuickSelectIds(JSON.stringify(Array(8).fill(null)))).toBe(true);
     expect(isValidQuickSelectIds(JSON.stringify(Array(12).fill(null)))).toBe(true);
     expect(isValidQuickSelectIds(JSON.stringify(Array(2).fill(1)))).toBe(false);

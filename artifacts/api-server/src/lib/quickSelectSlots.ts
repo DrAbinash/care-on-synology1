@@ -1,7 +1,7 @@
 /** Shared Billing Desk / Online Booking quick-select slot layout (tests & doctors). */
 
 export const QUICK_SELECT_SLOT_COUNT = 12;
-export const QUICK_SELECT_LEGACY_SLOT_COUNT = 8;
+export const QUICK_SELECT_LEGACY_SLOT_COUNTS = [6, 8] as const;
 export const QUICK_SELECT_MAX_PAYLOAD = 400;
 
 export const DEFAULT_QUICK_SELECT_IDS = JSON.stringify(
@@ -15,7 +15,7 @@ export function isValidQuickSelectIds(value: string): boolean {
     if (!Array.isArray(parsed)) return false;
     if (
       parsed.length !== QUICK_SELECT_SLOT_COUNT &&
-      parsed.length !== QUICK_SELECT_LEGACY_SLOT_COUNT
+      !(QUICK_SELECT_LEGACY_SLOT_COUNTS as readonly number[]).includes(parsed.length)
     ) {
       return false;
     }

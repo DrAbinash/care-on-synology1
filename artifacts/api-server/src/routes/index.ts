@@ -1,4 +1,5 @@
 import { Router, type IRouter } from "express";
+import { normalizeQuickSelectIdsJson } from "../lib/quickSelectSlots";
 import healthRouter from "./health";
 import systemRouter from "./system";
 import { patientsRouter } from "./patients";
@@ -609,7 +610,7 @@ router.get("/clinic-settings/branding", async (_req, res) => {
       logoDataUrl: null, footerNote: "", billPrintCopies: 1, billDefaultPaperSize: "A5",
       billPrintSettingsJson: "{}",
       billShowCode: false, billShowCategory: false, qrOnBillEnabled: true, showTatOnBill: false,
-      dayCloseAutoPrint: true, quickTestIds: "[null,null,null,null,null,null]", formFTestIds: "[]",
+      dayCloseAutoPrint: true, quickTestIds: "[null,null,null,null,null,null,null,null,null,null,null,null]", formFTestIds: "[]",
       formFBillingPrompt: false, formFAddressRequired: true, formFGuardianRequired: true,
       patientPhoneRequired: true,
     });
@@ -639,7 +640,8 @@ router.get("/clinic-settings/branding", async (_req, res) => {
     qrOnBillEnabled: row.qrOnBillEnabled ?? true,
     showTatOnBill: row.showTatOnBill ?? false,
     dayCloseAutoPrint: row.dayCloseAutoPrint ?? true,
-    quickTestIds: row.quickTestIds ?? "[null,null,null,null,null,null]",
+    quickTestIds: normalizeQuickSelectIdsJson(row.quickTestIds),
+    quickDoctorIds: normalizeQuickSelectIdsJson(row.quickDoctorIds),
     formFTestIds: row.formFTestIds ?? "[]",
     formFBillingPrompt: row.formFBillingPrompt ?? false,
     formFAddressRequired: row.formFAddressRequired ?? true,
