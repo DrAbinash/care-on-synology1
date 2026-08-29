@@ -8,9 +8,16 @@ import {
   Layers, Maximize2, Minimize2, Expand, Shrink, AlertTriangle, RefreshCw, ExternalLink,
 } from "lucide-react";
 import { BROWSER_DICOMWEB_BASE, dicomWebFetch, withDicomWebAuth } from "@/lib/browserDicomWeb";
-import { planStudyLaunch, localStorageRouteCache, type StudyLaunchResult } from "@/lib/studyLaunchService";
+import { planStudyLaunch, localStorageRouteCache, type StudyLaunchResult, type NetworkMode } from "@/lib/studyLaunchService";
 import type { ViewportContext } from "@/lib/observationAnchor";
 import { viewportContextsEqual } from "@/lib/observationAnchor";
+import {
+  embedNetworkModeOptions,
+  readViewerNetworkMode,
+  writeViewerNetworkMode,
+  VIEWER_NETWORK_MODE_EVENT,
+} from "@/lib/viewerNetworkPreference";
+import { prefetchActiveStudySeries } from "@/lib/mriStudyPrefetch";
 
 interface Series {
   uid: string;
@@ -177,6 +184,14 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
     },
     staleTime: 60_000,
   });
+  // Staff-selectable OHIF path — LAN default (AUTO was unreliable once Tailscale
+  // was linked). Shared localStorage key with Open Study panel.
+  const [networkMode, setNetworkMode] = useState<NetworkMode>(() => readViewerNetworkMode());
+  useEffect(() => {
+    const sync = () => setNetworkMode(readViewerNetworkMode());
+    window.addEventListener(VIEWER_NETWORK_MODE_EVENT, sync as EventListener);
+    return () => window.removeEventListener(VIEWER_NETWORK_MODE_EVENT, sync as EventListener);
+  }, []);
   // undefined = not yet planned (probing in flight); null = planned but no
   // usable route; StudyLaunchResult = plan complete (success or typed failure).
   const [embedPlan, setEmbedPlan] = useState<StudyLaunchResult | null | undefined>(undefined);
@@ -185,17 +200,21 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
     let cancelled = false;
     setEmbedPlan(undefined);
     planStudyLaunch(
-      { studyInstanceUID, accessionNumber: accessionNumber ?? null, viewer: "OHIF", requestedMode: "AUTO" },
+      { studyInstanceUID, accessionNumber: accessionNumber ?? null, viewer: "OHIF", requestedMode: networkMode },
       viewerSettings,
       { pageIsHttps: window.location.protocol === "https:", cache: localStorageRouteCache() },
     ).then((res) => { if (!cancelled) setEmbedPlan(res); });
     return () => { cancelled = true; };
-  }, [studyInstanceUID, accessionNumber, viewerSettings]);
+  }, [studyInstanceUID, accessionNumber, viewerSettings, networkMode]);
   // Best URL to hand to "open in new tab" — new-tab navigation isn't subject
-  // to mixed-content blocking, so prefer whatever network was auto-detected
-  // (may be reachable over Tailscale/Cloudflare even when LAN isn't), falling
-  // back to the legacy static LAN URL.
+  // to mixed-content blocking, so prefer the selected network route, falling
+  // back to the legacy static LAN URL from /ohif-launch.
   const bestOhifUrl = embedPlan?.finalLaunchUrl ?? launchData?.ohifUrl ?? null;
+
+  const chooseNetworkMode = (next: NetworkMode) => {
+    writeViewerNetworkMode(next);
+    setNetworkMode(next);
+  };
 
   // Same-origin ERP proxy — works on LAN, Tailscale, and public HTTPS alike.
   const dicomWebBase = BROWSER_DICOMWEB_BASE;
@@ -266,6 +285,13 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
     lastViewportRef.current = next;
     onViewportContextChange(next);
   }, [onViewportContextChange, studyInstanceUID, selectedSeriesUID, selectedInstIdx, series, instances]);
+
+  // Warm every series (metadata + first frame) for the open study so switching
+  // sequences in Frames / next OHIF load hits Orthanc + browser HTTP cache.
+  useEffect(() => {
+    if (!studyInstanceUID) return;
+    prefetchActiveStudySeries({ studyInstanceUID, dicomWebBaseUrl: dicomWebBase });
+  }, [studyInstanceUID, dicomWebBase]);
 
   // Load frame image
   useEffect(() => {
@@ -357,6 +383,28 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
         <div className="flex items-center gap-1">
           {/* OHIF ⇄ Frames toggle — Weasis is a desktop app and launches via
               open-in-new-tab / external tools; it cannot render inside the page. */}
+          <div
+            className="flex items-center rounded-md border overflow-hidden text-[11px]"
+            data-testid="viewer-network-toggle"
+            title="OHIF network path — LAN is fastest on the clinic floor"
+            onClick={(e) => e.stopPropagation()}
+            onDoubleClick={(e) => e.stopPropagation()}
+          >
+            {embedNetworkModeOptions().map((opt, i) => (
+              <button
+                key={opt.id}
+                type="button"
+                onClick={() => chooseNetworkMode(opt.id)}
+                className={`px-2 py-1 transition-colors ${i > 0 ? "border-l" : ""} ${
+                  networkMode === opt.id ? "bg-emerald-600 text-white font-medium" : "hover:bg-muted"
+                }`}
+                title={opt.hint}
+                data-testid={`viewer-network-${opt.id.toLowerCase()}`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
           <div className="flex items-center rounded-md border overflow-hidden text-[11px]" data-testid="viewer-mode-toggle">
             <button
               type="button"
@@ -375,6 +423,16 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
               Frames
             </button>
           </div>
+          {viewMode === "OHIF" && embedPlan?.selectedNetworkMode && (
+            <Badge
+              variant="outline"
+              className="text-[10px] h-5 px-1.5 border-emerald-300 text-emerald-800 bg-emerald-50"
+              data-testid="viewer-network-badge"
+              title={embedPlan.selectedBaseUrl ?? undefined}
+            >
+              via {embedPlan.selectedNetworkMode}
+            </Badge>
+          )}
           {viewMode === "OHIF" && bestOhifUrl && (
             <Button size="sm" variant="ghost" className="h-7 w-7 p-0" title="Open OHIF in a new tab"
               onClick={(e) => { e.stopPropagation(); window.open(bestOhifUrl, "_blank"); }}
@@ -406,13 +464,14 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
       </div>
 
       {viewMode === "OHIF" ? (
-        /* ── In-page OHIF view box — network-aware: auto-probes LAN/Tailscale/
-           Cloudflare/Public (same logic the "Open Study" launch button uses)
-           and embeds whichever configured route is actually reachable AND
-           https-compatible with this page. ───────────────────────────────── */
+        /* ── In-page OHIF view box — uses staff-selected LAN / Tailscale / Auto
+           route (same studyLaunchService as Open Study). LAN is the default. ─ */
         embedPlan === undefined ? (
           <div className="flex-1 min-h-0 flex items-center justify-center gap-2 bg-black text-white/50 text-sm">
-            <RefreshCw className="h-4 w-4 animate-spin" /> Detecting best viewer route…
+            <RefreshCw className="h-4 w-4 animate-spin" />
+            {networkMode === "AUTO"
+              ? "Detecting best viewer route…"
+              : `Connecting via ${networkMode === "TAILSCALE" ? "Tailscale" : networkMode}…`}
           </div>
         ) : embedPlan?.success && embedPlan.finalLaunchUrl ? (
           <iframe

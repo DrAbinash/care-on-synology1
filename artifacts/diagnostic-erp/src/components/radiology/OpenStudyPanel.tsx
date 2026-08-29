@@ -14,8 +14,8 @@ import {
   type ConcreteMode,
   type ViewerType,
   CONCRETE_MODES,
-  isConcreteMode,
 } from "@/lib/studyLaunchService";
+import { readViewerNetworkMode, writeViewerNetworkMode, VIEWER_NETWORK_MODE_KEY, VIEWER_NETWORK_MODE_EVENT } from "@/lib/viewerNetworkPreference";
 import { recordSuccessfulLaunch, recordFailedLaunch } from "@/lib/viewerService";
 
 /**
@@ -34,7 +34,7 @@ export interface OpenStudyIdentity {
   worklistId: number | null;
 }
 
-const MODE_OVERRIDE_KEY = "viewer_network_mode_override";
+const MODE_OVERRIDE_KEY = VIEWER_NETWORK_MODE_KEY;
 
 const MODE_BADGE: Record<ConcreteMode, string> = {
   LAN: "bg-green-100 text-green-800 border-green-300",
@@ -110,10 +110,7 @@ export default function OpenStudyPanel({ study, isAdmin, onLaunchStateChange }: 
     staleTime: 60_000,
   });
 
-  const [mode, setMode] = useState<NetworkMode>(() => {
-    const stored = typeof window !== "undefined" ? localStorage.getItem(MODE_OVERRIDE_KEY) : null;
-    return stored === "AUTO" || (stored && isConcreteMode(stored)) ? (stored as NetworkMode) : "AUTO";
-  });
+  const [mode, setMode] = useState<NetworkMode>(() => readViewerNetworkMode());
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<StudyLaunchResult | null>(null);
   const [showDiag, setShowDiag] = useState(false);
@@ -130,6 +127,20 @@ export default function OpenStudyPanel({ study, isAdmin, onLaunchStateChange }: 
     setPacsCheck(null);
   }, [study.studyInstanceUID]);
 
+  // Keep Open Study selector in sync when the embedded viewer changes mode.
+  useEffect(() => {
+    const sync = () => setMode(readViewerNetworkMode());
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === MODE_OVERRIDE_KEY) sync();
+    };
+    window.addEventListener("storage", onStorage);
+    window.addEventListener(VIEWER_NETWORK_MODE_EVENT, sync as EventListener);
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener(VIEWER_NETWORK_MODE_EVENT, sync as EventListener);
+    };
+  }, []);
+
   // M1.5 — mirror launch state up to the workflow controller.
   useEffect(() => {
     onLaunchStateChange?.({ busy, lastResult: result });
@@ -139,12 +150,8 @@ export default function OpenStudyPanel({ study, isAdmin, onLaunchStateChange }: 
   const defaultViewer: ViewerType = settings["default_viewer"] === "OHIF" ? "OHIF" : "WEASIS";
 
   function chooseMode(next: NetworkMode) {
+    writeViewerNetworkMode(next);
     setMode(next);
-    try {
-      localStorage.setItem(MODE_OVERRIDE_KEY, next);
-    } catch {
-      /* private mode */
-    }
   }
 
   async function launch(viewer: ViewerType, opts: { skipModes?: ConcreteMode[]; requestedMode?: NetworkMode } = {}) {
@@ -235,7 +242,7 @@ export default function OpenStudyPanel({ study, isAdmin, onLaunchStateChange }: 
             variant="ghost"
             className="h-7 px-1.5 text-[10px] gap-0.5 text-muted-foreground"
             onClick={() => setShowNetwork((v) => !v)}
-            title="Network route (default AUTO — silent probe)"
+            title="Network route — LAN default (fastest on clinic floor)"
             data-testid="btn-toggle-network"
           >
             <Route size={12} />
