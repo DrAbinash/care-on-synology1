@@ -1043,6 +1043,7 @@ export default function Accounting() {
                     {profitLoss.income.length === 0 ? <div className="p-6 text-center text-muted-foreground text-sm">No income entries</div> : (
                       <div className="w-full max-w-full min-w-0 overflow-x-auto overscroll-x-contain touch-pan-x">
                       <table className="w-full text-sm"><tbody>{profitLoss.income.map((r, i) => (<tr key={i} className="border-b border-card-border last:border-0 hover:bg-muted/20"><td className="px-4 py-2.5 font-medium">{r.name}</td><td className="px-4 py-2.5 text-xs text-muted-foreground">{r.group}</td><td className="px-4 py-2.5 text-right text-green-700 font-semibold">{inr(r.amount)}</td></tr>))}</tbody></table>
+                      </div>
                     )}
                   </div>
                   <div className="bg-card border border-card-border rounded-xl overflow-hidden">
@@ -1051,6 +1052,7 @@ export default function Accounting() {
                       <p className="font-bold text-red-700">{inr(profitLoss.totalExpenses)}</p>
                     </div>
                     {profitLoss.expenses.length === 0 ? <div className="p-6 text-center text-muted-foreground text-sm">No expense entries</div> : (
+                      <div className="w-full max-w-full min-w-0 overflow-x-auto overscroll-x-contain touch-pan-x">
                       <table className="w-full text-sm"><tbody>{profitLoss.expenses.map((r, i) => (<tr key={i} className="border-b border-card-border last:border-0 hover:bg-muted/20"><td className="px-4 py-2.5 font-medium">{r.name}</td><td className="px-4 py-2.5 text-xs text-muted-foreground">{r.group}</td><td className="px-4 py-2.5 text-right text-red-600 font-semibold">{inr(r.amount)}</td></tr>))}</tbody></table>
                       </div>
                     )}
@@ -1089,11 +1091,13 @@ export default function Accounting() {
                     {balanceSheet.assets.length === 0 ? <div className="p-6 text-center text-muted-foreground text-sm">No asset accounts</div> : (
                       <div className="w-full max-w-full min-w-0 overflow-x-auto overscroll-x-contain touch-pan-x">
                       <table className="w-full text-sm"><tbody>{balanceSheet.assets.map((r, i) => (<tr key={i} className="border-b border-card-border last:border-0 hover:bg-muted/20"><td className="px-4 py-2.5 font-medium">{r.name}</td><td className="px-4 py-2.5 text-xs text-muted-foreground">{r.group}</td><td className="px-4 py-2.5 text-right font-semibold">{inr(r.amount)}</td></tr>))}</tbody></table>
+                      </div>
                     )}
                   </div>
                   <div className="bg-card border border-card-border rounded-xl overflow-hidden">
                     <div className="bg-purple-50 border-b border-card-border px-4 py-3 flex justify-between"><p className="font-semibold text-purple-800 text-sm">Liabilities &amp; Capital</p><p className="font-bold text-purple-700">{inr(balanceSheet.totalLiabilities)}</p></div>
                     {balanceSheet.liabilities.length === 0 ? <div className="p-6 text-center text-muted-foreground text-sm">No liability accounts</div> : (
+                      <div className="w-full max-w-full min-w-0 overflow-x-auto overscroll-x-contain touch-pan-x">
                       <table className="w-full text-sm"><tbody>{balanceSheet.liabilities.map((r, i) => (<tr key={i} className="border-b border-card-border last:border-0 hover:bg-muted/20"><td className="px-4 py-2.5 font-medium">{r.name}</td><td className="px-4 py-2.5 text-xs text-muted-foreground">{r.group}</td><td className="px-4 py-2.5 text-right font-semibold">{inr(r.amount)}</td></tr>))}</tbody></table>
                       </div>
                     )}

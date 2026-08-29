@@ -700,6 +700,7 @@ function DuplicatesDialog({ open, onOpenChange }: { open: boolean; onOpenChange:
                       ))}
                     </tbody>
                   </table>
+                  </div>
                 </div>
               ))}
             </div>
