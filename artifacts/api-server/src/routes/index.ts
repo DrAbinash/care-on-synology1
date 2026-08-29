@@ -287,9 +287,10 @@ router.use("/internal/automations/whatsapp", n8nAutomationLimiter, internalAutom
 // Called by Conquest PACS scripts and other server-to-server automations.
 // Internal backup download — streams pg_dump output for off-site replication.
 router.use("/internal/backup", internalBackupRouter);
-router.use("/internal", internalRadiologyRouter); // [ZONE: radiology] name is generic, content is 100% radiology (DICOM agent callbacks)
-// CARE Reporting Studio bridge — x-api-key = REPORTING_STUDIO_API_KEY (not staff session).
+// CARE Reporting Studio bridge — must mount BEFORE /internal catch-all
+// (internalRadiologyRouter applies requireStaffOrInternalAuth to every path).
 router.use("/internal/reporting-studio", internalReportingStudioRouter);
+router.use("/internal", internalRadiologyRouter); // [ZONE: radiology] name is generic, content is 100% radiology (DICOM agent callbacks)
 router.use("/portal", portalRouter);
 router.use("/display", displayRouter);
 router.use("/settings/queue-display", queueDisplaySettingsRouter);
