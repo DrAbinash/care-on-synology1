@@ -20,7 +20,7 @@ import {
   emptyQuickSelectIds,
   parseQuickSelectIds,
 } from "@/lib/quickSelectSlots";
-import { Search, UserPlus, CreditCard, Building2, Stethoscope, Pencil } from "lucide-react";
+import { Search, UserPlus, CreditCard, Building2, Stethoscope, Pencil, MessageCircle } from "lucide-react";
 
 type PatientHit = {
   id: number;
@@ -52,6 +52,7 @@ type Booking = {
   bookingRef: string;
   totalAmount: string;
   status: string;
+  phone?: string;
 };
 
 function todayISO() {
@@ -689,10 +690,11 @@ export function NewOnlineBookingDialog({
             <Building2 size={14} className="mr-1" /> Pay at Centre
           </Button>
           <Button
+            className="bg-emerald-600 hover:bg-emerald-700"
             disabled={!canSave || createBooking.isPending || (slotFull && !overrideCapacity)}
             onClick={() => createBooking.mutate("link")}
           >
-            <CreditCard size={14} className="mr-1" /> {createBooking.isPending ? "Saving…" : "Save & Share Payment Link"}
+            <MessageCircle size={14} className="mr-1" /> {createBooking.isPending ? "Saving…" : "Save & Share Payment Link"}
           </Button>
         </DialogFooter>
       </DialogContent>

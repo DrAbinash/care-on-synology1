@@ -5,6 +5,7 @@ import { db } from "@workspace/db";
 import { PaymentEngine } from "../lib/payments/PaymentEngine";
 import { resolveActiveGateway } from "../lib/payments/resolveActiveGateway";
 import { getIciciPublicBaseUrl } from "../lib/payments/iciciPublicBaseUrl";
+import { shareableOnlineBookingPaymentUrl } from "../lib/payments/shareableOnlineBookingPaymentUrl";
 import { isReceptionPayAtCentre } from "../services/onlineBookingPayAtCentre";
 import {
   onlineBookingsTable,
@@ -509,7 +510,16 @@ onlineBookingsRouter.post("/:id/payment-link", async (req, res): Promise<void> =
         .where(eq(onlineBookingsTable.id, booking.id));
     }
 
-    res.json({ url: result.redirectUrl, linkId: result.gatewayTxnId || booking.bookingRef });
+    // ICICI/HDFC: share the bank-whitelisted bridge URL (same as Billing Desk QR),
+    // not the raw HPP redirect — phones opening pgpay.icicibank.com directly often
+    // fail domain validation, so staff resorted to pasting QR screenshots.
+    const shareUrl = shareableOnlineBookingPaymentUrl(
+      gateway,
+      booking.bookingRef,
+      result.redirectUrl,
+    );
+
+    res.json({ url: shareUrl, linkId: result.gatewayTxnId || booking.bookingRef });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "Could not create payment link";
     res.status(400).json({ error: `${message}. Use Pay at Centre.` });
