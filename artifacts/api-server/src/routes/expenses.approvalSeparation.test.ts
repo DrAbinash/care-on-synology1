@@ -68,8 +68,13 @@ describe("expenses.ts enforces the toggle on both create and edit", () => {
   });
 
   test("create rejects self-approval only when the toggle is off", () => {
+    expect(expenses).toContain("const approvedByInput = typeof approvedBy === \"string\" ? approvedBy.trim() || null : null;");
+    expect(expenses).toContain("const allowSelf = await isSelfApprovalAllowed();");
     expect(expenses).toContain(
-      "if (approvedBy && !(await isSelfApprovalAllowed()) && sameActor(approvedBy, createdBy)) {",
+      "if (approvedByInput && !allowSelf && sameActor(approvedByInput, createdBy)) {",
+    );
+    expect(expenses).toContain(
+      "const resolvedApprovedBy = approvedByInput ?? (allowSelf && createdBy ? createdBy : null);",
     );
   });
 

@@ -152,14 +152,14 @@ advancedDashboardRouter.get("/", async (req: StaffAuthRequest, res) => {
   // day-close). expense_date is editable and would move cash across days.
   const cashExpRaw = await db.execute<{ staff_name: string; cash_expenses: string }>(sql`
     SELECT
-      COALESCE(approved_by, 'Unknown') AS staff_name,
+      COALESCE(NULLIF(TRIM(approved_by), ''), NULLIF(TRIM(created_by), ''), 'Unknown') AS staff_name,
       COALESCE(SUM(amount::numeric) FILTER (
         WHERE LOWER(COALESCE(NULLIF(TRIM(payment_mode), ''), 'cash')) = 'cash'
       ), 0)::text AS cash_expenses
     FROM expenses
     WHERE created_at >= ${start} AND created_at <= ${end}
-    ${staffFilter ? sql`AND approved_by = ${staffFilter}` : sql``}
-    GROUP BY COALESCE(approved_by, 'Unknown')
+    ${staffFilter ? sql`AND COALESCE(NULLIF(TRIM(approved_by), ''), NULLIF(TRIM(created_by), '')) = ${staffFilter}` : sql``}
+    GROUP BY COALESCE(NULLIF(TRIM(approved_by), ''), NULLIF(TRIM(created_by), ''), 'Unknown')
   `);
 
   // ── Merge into staff comparison map ─────────────────────────────────────
@@ -268,7 +268,7 @@ advancedDashboardRouter.get("/", async (req: StaffAuthRequest, res) => {
       ), 0)::text AS cash_expenses
     FROM expenses
     WHERE created_at >= ${start} AND created_at <= ${end}
-    ${staffFilter ? sql`AND approved_by = ${staffFilter}` : sql``}
+    ${staffFilter ? sql`AND COALESCE(NULLIF(TRIM(approved_by), ''), NULLIF(TRIM(created_by), '')) = ${staffFilter}` : sql``}
   `);
 
   const pendingReportsRaw = await db.execute<{ count: string }>(sql`

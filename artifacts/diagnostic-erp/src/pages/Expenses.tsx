@@ -14,6 +14,7 @@ import {
 import PageHeader from "@/components/PageHeader";
 import DocumentScanCapture from "@/components/DocumentScanCapture";
 import BillReceiptScannerPanel from "@/components/BillReceiptScannerPanel";
+import { readStaffSession } from "@/lib/staffSession";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -95,6 +96,12 @@ const EMPTY_FORM = {
   notes: "",
 };
 
+/** New expense form — default Approved By to the logged-in staff (cash drawer owner). */
+function emptyExpenseForm() {
+  const name = readStaffSession()?.user?.name?.trim() || "";
+  return { ...EMPTY_FORM, expenseDate: new Date().toISOString().slice(0, 10), approvedBy: name };
+}
+
 export default function Expenses() {
   const { toast } = useToast();
   const qc = useQueryClient();
@@ -106,7 +113,7 @@ export default function Expenses() {
   const [to, setTo] = useState("");
   const [showForm, setShowForm] = useState(false);
   const [editExp, setEditExp] = useState<Expense | null>(null);
-  const [form, setForm] = useState({ ...EMPTY_FORM });
+  const [form, setForm] = useState(() => emptyExpenseForm());
   // Scanned (enhanced) receipt image data-URL, persisted with a new expense for audit.
   const [receiptImage, setReceiptImage] = useState("");
   // Receipt viewer: the image is fetched on demand (never in the list response).
@@ -150,7 +157,7 @@ export default function Expenses() {
       onSuccess: () => {
         invalidateExpenses();
         setShowForm(false);
-        setForm({ ...EMPTY_FORM });
+        setForm(emptyExpenseForm());
         setReceiptImage("");
         toast({ title: "Expense recorded" });
       },
@@ -239,7 +246,7 @@ export default function Expenses() {
         title="Expense Management"
         subtitle="Track and manage operational expenses"
         actions={
-          <Button className="w-full sm:w-auto" onClick={() => { setShowForm(true); setForm({ ...EMPTY_FORM }); }}>
+          <Button className="w-full sm:w-auto" onClick={() => { setShowForm(true); setForm(emptyExpenseForm()); }}>
             <Plus size={15} className="mr-1.5" /> Add Expense
           </Button>
         }
@@ -633,8 +640,12 @@ export default function Expenses() {
                 <Input
                   value={form.approvedBy}
                   onChange={(e) => setForm({ ...form, approvedBy: e.target.value })}
-                  placeholder="Approver name"
+                  placeholder="Defaults to you (cash drawer owner)"
+                  title="Cash expenses reduce this person's drawer on My Daily Summary"
                 />
+                <p className="text-[10px] text-muted-foreground">
+                  Cash expenses hit this name&apos;s My Daily Summary / day-close drawer. Leave as your name when you paid cash out.
+                </p>
               </div>
               <div className="col-span-2 space-y-1.5">
                 <Label>Notes</Label>
