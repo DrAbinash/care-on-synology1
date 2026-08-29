@@ -581,10 +581,10 @@ export default function DayClose() {
 
       {/* ── Staff Drawer Close Reconciliation Table (owner/admin only) ─────── */}
       {isOwner && staffStatusQ.data && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base flex items-center gap-2">
-              <Users size={16} /> Staff Drawer Close Status
+        <Card className="min-w-0 max-w-full overflow-hidden">
+          <CardHeader className="min-w-0">
+            <CardTitle className="text-base flex items-center gap-2 flex-wrap min-w-0">
+              <Users size={16} className="flex-shrink-0" /> <span className="min-w-0">Staff Drawer Close Status</span>
               {(() => {
                 const users = staffStatusQ.data.users;
                 const closed = users.filter((u) => u.isClosed).length;
@@ -615,11 +615,11 @@ export default function DayClose() {
             </CardTitle>
           </CardHeader>
           {staffTableExpanded && (
-            <CardContent>
+            <CardContent className="min-w-0">
               {staffStatusQ.data.users.length === 0 ? (
                 <p className="text-sm text-muted-foreground">No active staff accounts found.</p>
               ) : (
-                <div className="overflow-x-auto -mx-1 px-1">
+                <div className="w-full max-w-full min-w-0 overflow-x-auto overscroll-x-contain touch-pan-x -mx-1 px-1">
                   <table className="w-full text-sm min-w-[56rem]">
                     <thead className="text-left text-xs text-muted-foreground uppercase border-b bg-muted/30">
                       <tr>
@@ -941,10 +941,10 @@ export default function DayClose() {
 
       {/* Per-staff breakdown */}
       {(previewQ.data?.byStaff?.length ?? 0) > 0 && (
-        <Card>
+        <Card className="min-w-0 max-w-full overflow-hidden">
           <CardHeader><CardTitle className="text-base">Per-Staff Collection (Open Window)</CardTitle></CardHeader>
-          <CardContent>
-            <div className="overflow-x-auto -mx-1 px-1">
+          <CardContent className="min-w-0">
+            <div className="w-full max-w-full min-w-0 overflow-x-auto overscroll-x-contain touch-pan-x -mx-1 px-1">
               <table className="w-full text-sm min-w-[40rem]">
                 <thead className="text-left text-xs text-muted-foreground uppercase border-b">
                   <tr>
@@ -979,10 +979,10 @@ export default function DayClose() {
       )}
 
       {/* Past closures */}
-      <Card>
+      <Card className="min-w-0 max-w-full overflow-hidden">
         <CardHeader><CardTitle className="text-base">Past Closures</CardTitle></CardHeader>
-        <CardContent>
-          <div className="overflow-x-auto -mx-1 px-1">
+        <CardContent className="min-w-0">
+          <div className="w-full max-w-full min-w-0 overflow-x-auto overscroll-x-contain touch-pan-x -mx-1 px-1">
             <table className="w-full text-sm min-w-[44rem]">
               <thead className="text-left text-xs text-muted-foreground uppercase border-b">
                 <tr>

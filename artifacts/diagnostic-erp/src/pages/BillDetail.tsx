@@ -931,6 +931,7 @@ export default function BillDetail({ id }: { id: number }) {
             {!bill.payments?.length ? (
               <div className="p-8 text-center text-sm text-muted-foreground">No payments recorded yet</div>
             ) : (
+              <div className="w-full max-w-full min-w-0 overflow-x-auto overscroll-x-contain touch-pan-x">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="text-left text-xs text-muted-foreground border-b border-border bg-muted/30">
@@ -960,6 +961,7 @@ export default function BillDetail({ id }: { id: number }) {
                   ))}
                 </tbody>
               </table>
+              </div>
             )}
           </div>
         </div>
@@ -1818,6 +1820,7 @@ function TestsTable({
       </div>
 
       <div className="bg-card border border-card-border rounded-xl shadow-sm overflow-hidden">
+        <div className="w-full max-w-full min-w-0 overflow-x-auto overscroll-x-contain touch-pan-x">
         <table className="w-full text-sm">
           <thead>
             <tr className="text-left text-xs text-muted-foreground border-b border-border bg-muted/30">
@@ -1911,6 +1914,7 @@ function TestsTable({
             })}
           </tbody>
         </table>
+        </div>
       </div>
 
       {/* Floating action bar for multi-select */}

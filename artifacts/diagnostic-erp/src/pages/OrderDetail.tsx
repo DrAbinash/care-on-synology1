@@ -134,6 +134,7 @@ export default function OrderDetail({ id }: { id: number }) {
         <div>
           <h2 className="text-sm font-semibold text-foreground mb-3">Tests Ordered</h2>
           <div className="bg-card border border-card-border rounded-xl shadow-sm overflow-hidden">
+            <div className="w-full max-w-full min-w-0 overflow-x-auto overscroll-x-contain touch-pan-x">
             <table className="w-full text-sm">
               <thead>
                 <tr className="text-left text-xs text-muted-foreground border-b border-border bg-muted/30">
@@ -162,6 +163,7 @@ export default function OrderDetail({ id }: { id: number }) {
                 </tr>
               </tfoot>
             </table>
+            </div>
           </div>
         </div>
       </div>

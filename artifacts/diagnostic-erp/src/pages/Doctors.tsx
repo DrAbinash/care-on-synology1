@@ -293,7 +293,7 @@ export default function Doctors() {
 
       {/* Add Doctor Dialog */}
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="max-w-md">
+        <DialogContent className="max-w-md max-h-[min(90dvh,100%)] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Add Referring Doctor</DialogTitle>
           </DialogHeader>
@@ -350,7 +350,7 @@ export default function Doctors() {
 
       {/* Edit Doctor Dialog */}
       <Dialog open={!!editingDoctor} onOpenChange={(v) => { if (!v) setEditingDoctor(null); }}>
-        <DialogContent className="max-w-md">
+        <DialogContent className="max-w-md max-h-[min(90dvh,100%)] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Edit Doctor — {editingDoctor?.name}</DialogTitle>
           </DialogHeader>
