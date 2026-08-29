@@ -94,6 +94,7 @@ import { verifyRouter } from "./verify";
 import internalCronRouter from "./internal-cron";
 import internalAutomationsWhatsappRouter from "./internal-automations-whatsapp";
 import internalRadiologyRouter from "./internal-radiology";
+import internalReportingStudioRouter from "./internal-reporting-studio";
 import dicomAgentRouter from "./dicom-agent";
 import { publicBookingRouter } from "./public-booking";
 import { mobileConfigRouter } from "./mobileConfig";
@@ -287,6 +288,9 @@ router.use("/internal/automations/whatsapp", n8nAutomationLimiter, internalAutom
 // Called by Conquest PACS scripts and other server-to-server automations.
 // Internal backup download — streams pg_dump output for off-site replication.
 router.use("/internal/backup", internalBackupRouter);
+// CARE Reporting Studio bridge — must mount BEFORE /internal catch-all
+// (internalRadiologyRouter applies requireStaffOrInternalAuth to every path).
+router.use("/internal/reporting-studio", internalReportingStudioRouter);
 router.use("/internal", internalRadiologyRouter); // [ZONE: radiology] name is generic, content is 100% radiology (DICOM agent callbacks)
 router.use("/portal", portalRouter);
 router.use("/display", displayRouter);

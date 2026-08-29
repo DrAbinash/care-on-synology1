@@ -274,6 +274,10 @@ services:
       # the unified Admin -> Integrations -> WhatsApp settings page) — it
       # must be set here or n8n can never reach the dispatch/health endpoints.
       WHATSAPP_AUTOMATION_SECRET: ${WHATSAPP_AUTOMATION_SECRET:-}
+      # Static key for CARE Reporting Studio server-to-server bridge
+      # (GET/POST /api/internal/reporting-studio/*). Sent as x-api-key.
+      # Unset → those endpoints return 503. Generate: openssl rand -hex 24
+      REPORTING_STUDIO_API_KEY: ${REPORTING_STUDIO_API_KEY:-}
       # Age in hours after which the dead-man alert fires (default 26).
       BACKUP_DEADMAN_MAX_AGE_HOURS: ${BACKUP_DEADMAN_MAX_AGE_HOURS:-}
       # Dedicated backup encryption key (lib/backupCrypto.ts resolveBackupPassphrase).
