@@ -10,6 +10,7 @@ describe("OnlineBookings share payment link UX", () => {
     expect(src).toContain('data-testid="booking-share-link-dialog"');
     expect(src).toContain("text-emerald-700");
     expect(src).toContain("bookingWhatsAppPaymentUrl");
+    expect(src).toContain("copyTextRobust");
     expect(src).toContain("do not paste a screenshot");
     expect(src).not.toMatch(/Share Link[\s\S]{0,80}destructive/);
   });

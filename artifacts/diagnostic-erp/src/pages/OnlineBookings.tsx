@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { Link } from "wouter";
 import { NewOnlineBookingDialog } from "./NewOnlineBookingDialog";
+import { copyTextRobust } from "@/lib/copyTextRobust";
 
 function bookingWhatsAppPaymentUrl(phone: string, bookingRef: string, paymentUrl: string) {
   const digits = phone.replace(/\D/g, "");
@@ -104,15 +105,10 @@ export default function OnlineBookingsPage() {
     if (!r.url) {
       throw new Error("Payment link created but no URL was returned");
     }
-    let copied = false;
-    try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(r.url);
-        copied = true;
-      }
-    } catch {
-      copied = false;
-    }
+    // Always open the dialog with the real URL. On http://NAS clipboard often
+    // fails — never claim "copied" unless copyTextRobust actually succeeded
+    // (otherwise staff paste a leftover screenshot).
+    const copied = await copyTextRobust(r.url);
     setShareLink({
       url: r.url,
       bookingRef: booking.bookingRef,
@@ -526,12 +522,16 @@ export default function OnlineBookingsPage() {
                   variant="outline"
                   className="text-emerald-700 border-emerald-300"
                   onClick={async () => {
-                    try {
-                      await navigator.clipboard.writeText(shareLink.url);
+                    const ok = await copyTextRobust(shareLink.url);
+                    if (ok) {
                       setShareLink({ ...shareLink, copied: true });
-                      toast({ title: "Copied", description: "Payment link copied as text." });
-                    } catch {
-                      toast({ title: "Copy failed", description: "Select the URL and copy manually.", variant: "destructive" });
+                      toast({ title: "Copied", description: "Payment link copied as text — paste into WhatsApp." });
+                    } else {
+                      toast({
+                        title: "Copy failed",
+                        description: "Select the URL above and press Ctrl+C (LAN HTTP may block auto-copy).",
+                        variant: "destructive",
+                      });
                     }
                   }}
                 >
