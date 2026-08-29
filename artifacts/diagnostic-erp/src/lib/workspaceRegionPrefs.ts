@@ -137,3 +137,32 @@ export function pinQuickTabId(quickIds: number[], tabId: number): number[] {
   if (quickIds.includes(tabId)) return quickIds;
   return [...quickIds, tabId];
 }
+
+/** Last-chosen Study Tab family for cascading Region → Sub-region picker. */
+export function lastStudyFamilyStorageKey(modality: string | null | undefined): string {
+  const m = (modality ?? "").trim().toUpperCase() || "ANY";
+  return `careLastStudyFamily:${m}`;
+}
+
+export function readLastStudyFamily(modality: string | null | undefined): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(lastStudyFamilyStorageKey(modality));
+    const v = String(raw ?? "").trim();
+    return v || null;
+  } catch {
+    return null;
+  }
+}
+
+export function writeLastStudyFamily(modality: string | null | undefined, family: string | null): void {
+  if (typeof window === "undefined") return;
+  try {
+    const key = lastStudyFamilyStorageKey(modality);
+    const v = String(family ?? "").trim();
+    if (!v) localStorage.removeItem(key);
+    else localStorage.setItem(key, v);
+  } catch {
+    /* ignore */
+  }
+}

@@ -17,6 +17,7 @@ import {
 import {
   deriveLevelBlockDisplay,
   deriveLumbarLevelSelection,
+  lumbarLevelApplyHasContent,
 } from "@/lib/mriLumbarLevelState";
 import type { AppliedPathologyPatch } from "@/lib/zai-workspace/store";
 import { formatAnchorChip } from "@/lib/observationAnchor";
@@ -27,6 +28,7 @@ export function MriLumbarLevelBlock({
   findingsText,
   disabled,
   highlighted,
+  forceOpen,
   onApply,
   onFocus,
   onInsertRegionPhrase,
@@ -37,6 +39,8 @@ export function MriLumbarLevelBlock({
   findingsText?: string;
   disabled?: boolean;
   highlighted?: boolean;
+  /** When set by canvas keyboard nav, forces editor open/closed. */
+  forceOpen?: boolean | null;
   onApply: (sel: LumbarLevelSelection, composed: ReturnType<typeof composeLumbarLevelNarrative>) => void;
   onFocus?: () => void;
   /** Non-disc regions: insert a short owned phrase via parent. */
@@ -45,6 +49,51 @@ export function MriLumbarLevelBlock({
   canalApMm?: number | null;
 }) {
   const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    if (forceOpen == null) return;
+    setOpen(forceOpen);
+  }, [forceOpen]);
+
+  // Number keys (from canvas) cycle chips within row N (1-based) while editor is open.
+  useEffect(() => {
+    if (!open || disabled || region.kind !== "disc-level") return;
+    const onCycle = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ regionKey: string; digit: number }>).detail;
+      if (!detail || detail.regionKey !== region.key) return;
+      const digit = detail.digit;
+      setSel((s) => {
+        if (digit === 1) {
+          const ids = DISC_MORPHOLOGY_OPTIONS.map((o) => o.id);
+          const i = ids.indexOf(s.morphology as typeof ids[number]);
+          return { ...s, morphology: ids[(i + 1) % ids.length] as LumbarLevelSelection["morphology"] };
+        }
+        if (digit === 2) {
+          const ids = LATERALITY_OPTIONS.map((o) => o.id);
+          const i = ids.indexOf(s.laterality as typeof ids[number]);
+          return { ...s, laterality: ids[(i + 1) % ids.length] as LumbarLevelSelection["laterality"] };
+        }
+        if (digit === 3) {
+          const ids = CANAL_STENOSIS_OPTIONS.map((o) => o.id);
+          const i = ids.indexOf(s.canal as typeof ids[number]);
+          return { ...s, canal: ids[(i + 1) % ids.length] as LumbarLevelSelection["canal"] };
+        }
+        if (digit === 4) {
+          const ids = FORAMINAL_SEVERITY_OPTIONS.map((o) => o.id);
+          const i = ids.indexOf(s.foraminalSeverity as typeof ids[number]);
+          return { ...s, foraminalSeverity: ids[(i + 1) % ids.length] as LumbarLevelSelection["foraminalSeverity"] };
+        }
+        if (digit === 5) {
+          const ids = MODIC_OPTIONS.map((o) => o.id);
+          const i = ids.indexOf(s.modic as typeof ids[number]);
+          return { ...s, modic: ids[(i + 1) % ids.length] as LumbarLevelSelection["modic"] };
+        }
+        return s;
+      });
+    };
+    window.addEventListener("r2-cycle-chip", onCycle as EventListener);
+    return () => window.removeEventListener("r2-cycle-chip", onCycle as EventListener);
+  }, [open, disabled, region.key, region.kind]);
   const display = useMemo(
     () => deriveLevelBlockDisplay(patches, region.label, findingsText ?? "", []),
     [patches, region.label, findingsText],
@@ -349,7 +398,7 @@ export function MriLumbarLevelBlock({
           </div>
           <button
             type="button"
-            disabled={disabled || (!sel.morphology && !sel.desiccation && !sel.reducedHeight && !sel.canal && !sel.modic && !sel.rootContact)}
+            disabled={disabled || !lumbarLevelApplyHasContent(sel)}
             className="h-7 rounded-md bg-amber-600 px-2 text-[10px] font-semibold text-white disabled:opacity-40"
             onClick={() => {
               onApply(sel, preview);
@@ -386,7 +435,7 @@ function regionQuickPhrases(key: string): Array<{ id: string; label: string; phr
     case "posterior-elements":
       return [
         { id: "facet", label: "Facet OA", phrase: "Facet arthropathy is noted.", concept: "facet_joint" },
-        { id: "lfh", label: "LF hypertrophy", phrase: "Ligamentum flavum hypertrophy is noted.", concept: "facet_joint" },
+        { id: "lfh", label: "LF hypertrophy", phrase: "Ligamentum flavum hypertrophy is noted.", concept: "ligamentum_flavum" },
       ];
     case "paraspinal":
       return [

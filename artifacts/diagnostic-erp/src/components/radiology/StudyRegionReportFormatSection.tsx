@@ -1,6 +1,7 @@
 /**
  * Section 1 — Study / Region + Whole Report Format.
  *
+ * Cascading picker: Region (family) → Sub-region / Study → Report Format.
  * Catalog: server radiology_study_tabs only (via availableStudyTabs).
  * Quick: personal localStorage shortcuts by Study Tab ID (never a catalog).
  * + Add: creates one real Study Tab, configures children, selects + pins Quick.
@@ -13,15 +14,18 @@ import { Pencil, Plus } from "lucide-react";
 import { useWorkspace, useWorkspaceSelector } from "@/lib/zai-workspace/store";
 import { lookupFormatsForPicker } from "@/lib/zai-workspace/report-formats-library";
 import type { ReportingStudyContext } from "@/lib/reportingStudyContext";
+import { groupStudyTabsByFamily, studyTabFamily } from "@/lib/studyRegion";
 import {
   type StudyTabRef,
   clearLegacyQuickRegionNames,
   migrateLegacyQuickNamesToIds,
   pinQuickTabId,
+  readLastStudyFamily,
   readLegacyQuickRegionNames,
   readStoredQuickTabIds,
   resolveQuickStudyTabs,
   toggleQuickTabId,
+  writeLastStudyFamily,
   writeStoredQuickTabIds,
 } from "@/lib/workspaceRegionPrefs";
 import { AddStudyRegionDialog } from "./AddStudyRegionDialog";
@@ -71,6 +75,60 @@ export function StudyRegionReportFormatSection({
   const [legacyMigrated, setLegacyMigrated] = useState(false);
   const [quickEditOpen, setQuickEditOpen] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
+  const [selectedFamily, setSelectedFamily] = useState<string>("");
+  const [showAllModalityFormats, setShowAllModalityFormats] = useState(false);
+
+  const familyGroups = useMemo(
+    () => groupStudyTabsByFamily(availableStudyTabs),
+    [availableStudyTabs],
+  );
+
+  const familyOptions = useMemo(
+    () => familyGroups.map((g) => g.family),
+    [familyGroups],
+  );
+
+  const tabsInFamily = useMemo(() => {
+    if (!selectedFamily) return [];
+    return familyGroups.find((g) => g.family === selectedFamily)?.tabs ?? [];
+  }, [familyGroups, selectedFamily]);
+
+  // Sync family from external region (auto-detect / Quick / + Add). Persist last family.
+  useEffect(() => {
+    if (selectedRegion) {
+      const fam = studyTabFamily(selectedRegion);
+      if (familyOptions.includes(fam)) {
+        setSelectedFamily(fam);
+        writeLastStudyFamily(modality, fam);
+        return;
+      }
+    }
+    // No region yet — preselect persisted family only if it still exists for this modality.
+    if (!selectedFamily) {
+      const stored = readLastStudyFamily(modality);
+      if (stored && familyOptions.includes(stored)) {
+        setSelectedFamily(stored);
+      }
+    }
+  }, [selectedRegion, availableStudyTabs, modality, familyOptions]); // eslint-disable-line react-hooks/exhaustive-deps -- selectedFamily intentional omit: do not fight manual family while region unchanged
+
+  // Single-tab family → auto-select that Study Tab.
+  useEffect(() => {
+    if (!selectedFamily) return;
+    if (tabsInFamily.length !== 1) return;
+    const only = tabsInFamily[0];
+    if (selectedRegion === only.name) return;
+    // Only auto-select when current region is empty or outside this family.
+    if (selectedRegion && studyTabFamily(selectedRegion) === selectedFamily) return;
+    if (!selectedRegion || studyTabFamily(selectedRegion) !== selectedFamily) {
+      onSelectRegion(only.name);
+    }
+  }, [selectedFamily, tabsInFamily, selectedRegion, onSelectRegion]);
+
+  // Reset modality-wide opt-in when region/family changes.
+  useEffect(() => {
+    setShowAllModalityFormats(false);
+  }, [selectedRegion, selectedFamily]);
 
   // One-time: convert legacy name-based Quick prefs → Study Tab IDs.
   useEffect(() => {
@@ -113,12 +171,39 @@ export function StudyRegionReportFormatSection({
     [reportFormats, modality, reportingContext, studyDescription, bodyPartFallback, selectedRegion],
   );
 
-  const formats = formatLookup.formats;
+  const modalityFormatCount = useMemo(() => {
+    const m = (modality ?? "").trim();
+    if (!m) return 0;
+    return reportFormats.filter((f) => f.modality === m).length;
+  }, [reportFormats, modality]);
+
+  // Never silently dump modality-wide formats into the dropdown.
+  const scopedFormats =
+    formatLookup.scope === "modality" ? [] : formatLookup.formats;
+  const formats =
+    showAllModalityFormats && formatLookup.scope === "modality"
+      ? formatLookup.formats
+      : scopedFormats;
+  const showingModalityOptIn = showAllModalityFormats && formatLookup.scope === "modality";
+
+  const handleFamilyChange = (family: string) => {
+    setSelectedFamily(family);
+    if (family) writeLastStudyFamily(modality, family);
+    // Choosing a family only filters dropdown 2 — do not call onSelectRegion yet
+    // unless the family has exactly one tab (handled by effect above).
+    if (selectedRegion && family && studyTabFamily(selectedRegion) !== family) {
+      // Clear stale sub-region so the user must pick within the new family.
+      onSelectRegion(null);
+    }
+  };
 
   const handleRegionCreated = (tab: StudyTabRef) => {
     setQuickIds((prev) => pinQuickTabId(prev, tab.id));
+    setSelectedFamily(studyTabFamily(tab.name));
     onSelectRegion(tab.name);
   };
+
+  const modalityLabel = (modality || "modality").trim() || "modality";
 
   return (
     <div className="space-y-2" data-testid="study-region-report-format-section">
@@ -126,21 +211,45 @@ export function StudyRegionReportFormatSection({
         className="flex flex-wrap items-end gap-x-3 gap-y-2 rounded-md border border-emerald-200/60 bg-gradient-to-r from-emerald-50/40 via-card to-emerald-50/20 px-2.5 py-2 text-[10px] shadow-sm"
         data-testid="study-setup-strip"
       >
+        <label className="inline-flex flex-col gap-0.5 min-w-[8.5rem]">
+          <span className="font-semibold uppercase tracking-wider text-emerald-700/80">Region</span>
+          <select
+            className="h-7 min-w-[9rem] max-w-[14rem] rounded border bg-background px-1.5 text-[11px] font-medium"
+            value={selectedFamily}
+            disabled={disabled || familyOptions.length === 0}
+            onChange={(e) => handleFamilyChange(e.target.value)}
+            data-testid="study-region-family-select"
+            aria-label="Region family"
+            title="Body-part family (Brain, Spine, …) — filters Sub-region / Study"
+          >
+            <option value="">
+              {familyOptions.length === 0 ? "Add a Study Tab…" : "Select region…"}
+            </option>
+            {familyOptions.map((fam) => (
+              <option key={fam} value={fam}>{fam}</option>
+            ))}
+          </select>
+        </label>
+
         <label className="inline-flex flex-col gap-0.5 min-w-[10rem]">
-          <span className="font-semibold uppercase tracking-wider text-emerald-700/80">Study / Region</span>
+          <span className="font-semibold uppercase tracking-wider text-emerald-700/80">Sub-region / Study</span>
           <select
             className="h-7 min-w-[11rem] max-w-[16rem] rounded border bg-background px-1.5 text-[11px] font-medium"
             value={selectedRegion ?? ""}
-            disabled={disabled}
+            disabled={disabled || !selectedFamily}
             onChange={(e) => onSelectRegion(e.target.value || null)}
             data-testid="study-region-select"
-            aria-label="Study / Region"
+            aria-label="Sub-region / Study"
             title="Canonical Study Tab from clinic catalog (radiology_study_tabs)"
           >
             <option value="">
-              {availableStudyTabs.length === 0 ? "Add a Study Tab…" : "Select study / region…"}
+              {!selectedFamily
+                ? "Select a region first…"
+                : tabsInFamily.length === 0
+                  ? "No studies in this region"
+                  : "Select study / region…"}
             </option>
-            {availableStudyTabs.map((t) => (
+            {tabsInFamily.map((t) => (
               <option key={t.id} value={t.name} data-study-tab-id={t.id}>{t.name}</option>
             ))}
           </select>
@@ -169,7 +278,7 @@ export function StudyRegionReportFormatSection({
               {!selectedRegion
                 ? "Select region first…"
                 : formats.length === 0
-                  ? "No formats for this region"
+                  ? "No formats for this sub-region yet"
                   : appliedFormatReportTitle
                     ? `Applied: ${appliedFormatReportTitle} — pick another…`
                     : `Report format (${formats.length})…`}
@@ -225,6 +334,25 @@ export function StudyRegionReportFormatSection({
         )}
       </div>
 
+      {formatLookup.scope === "modality" && selectedRegion && !showAllModalityFormats && modalityFormatCount > 0 ? (
+        <div className="px-0.5" data-testid="format-modality-reveal">
+          <button
+            type="button"
+            className="text-[10px] text-amber-800 underline"
+            data-testid="format-show-all-modality"
+            onClick={() => setShowAllModalityFormats(true)}
+          >
+            Show all {modalityLabel} formats ({modalityFormatCount})
+          </button>
+        </div>
+      ) : null}
+
+      {showingModalityOptIn && (
+        <p className="text-[10px] text-amber-800 px-0.5" data-testid="format-scope-hint">
+          Showing all {modalityLabel} formats — opt-in (not region-filtered).
+        </p>
+      )}
+
       <div className="flex flex-wrap items-center gap-1.5 px-0.5" data-testid="study-region-quick">
         <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mr-0.5">Quick</span>
         {quickTabs.length === 0 ? (
@@ -243,7 +371,7 @@ export function StudyRegionReportFormatSection({
                 data-testid={`study-region-quick-${t.id}`}
                 data-study-tab-id={t.id}
                 data-selected={selected ? "true" : "false"}
-                title={`Select ${t.name} (same as Study / Region dropdown)`}
+                title={`Select ${t.name} (same as Sub-region / Study dropdown)`}
                 className={[
                   "h-7 px-2 text-[10px] rounded-md border font-medium transition-colors",
                   selected
@@ -317,12 +445,6 @@ export function StudyRegionReportFormatSection({
             </div>
           )}
         </div>
-      )}
-
-      {formatLookup.scope === "modality" && selectedRegion && (
-        <p className="text-[10px] text-amber-800 px-0.5" data-testid="format-scope-hint">
-          Showing all {modality || "modality"} formats — region filter soft-matched.
-        </p>
       )}
 
       <AddStudyRegionDialog

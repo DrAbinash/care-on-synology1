@@ -14,6 +14,7 @@ import {
   type LumbarLevelSelection,
 } from "@/lib/mriLumbarRegions";
 import { normalizeLevel } from "@/lib/observationSlot";
+import { splitToSentences } from "@/lib/reportFieldMerge";
 
 /** Per-level baseline from CARE LS structured format (LEVEL_NORMAL). */
 export const LS_LEVEL_DISC_BASELINE =
@@ -25,6 +26,20 @@ export const LS_LEVEL_ROOT_BASELINE = "No nerve root contact or compression.";
 export const LS_LEVEL_FORAMINAL_BASELINE = "Neural foramina patent.";
 export const LS_LEVEL_SIGNAL_BASELINE = "Disc signal is preserved.";
 export const LS_LEVEL_HEIGHT_BASELINE = "Disc height is preserved.";
+
+/** True when Apply would emit at least one observation (incl. foraminal / AP-only). */
+export function lumbarLevelApplyHasContent(sel: LumbarLevelSelection): boolean {
+  return !!(
+    sel.morphology
+    || sel.desiccation
+    || sel.reducedHeight
+    || sel.canal
+    || sel.modic
+    || sel.rootContact
+    || sel.foraminalSeverity
+    || sel.canalApMm != null
+  );
+}
 
 export type LevelBlockDisplayKind =
   | "structured"
@@ -80,8 +95,8 @@ export function deriveLumbarLevelSelection(
   for (const p of rows) {
     const concept = (p.observation?.concept ?? p.ownership.concept ?? p.ownership.conflictGroup ?? "").toLowerCase();
     const findings = (p.lastRendered.findings ?? p.templates.findings ?? "").toLowerCase();
-    const lat = (p.observation?.laterality ?? p.ownership.laterality ?? "").toLowerCase();
-    const sev = (p.observation?.severity ?? "").toLowerCase();
+    const lat = (p.observation?.laterality || p.ownership.laterality || "").toLowerCase();
+    const sev = (p.observation?.severity || "").toLowerCase();
 
     if (concept === "disc_contour" || /bulge|protrusion|extrusion|sequestration|herniation|no disc herniation|disc height and signal/.test(findings)) {
       if (/sequestration/.test(findings)) sel.morphology = "sequestration";
@@ -126,7 +141,7 @@ export function deriveLumbarLevelSelection(
       sel.rootContact = true;
       const rootMatch = findings.match(/\b(L\d|S1)\b/i);
       if (rootMatch) sel.rootLevel = rootMatch[1]!.toUpperCase();
-      const state = (p.observation?.state ?? "").toLowerCase();
+      const state = (p.observation?.state || "").toLowerCase();
       if (state.includes("compress") || /compression|impingement/.test(findings)) {
         sel.rootRelation = "compression";
       } else {
@@ -147,7 +162,7 @@ export function deriveLumbarLevelSelection(
       const m = findings.match(/(\d+(?:\.\d+)?)\s*mm/);
       if (m) sel.canalApMm = Number(m[1]);
     }
-    const meas = (p.observation?.measurement ?? "").trim();
+    const meas = (p.observation?.measurement || "").trim();
     if (meas && concept === "canal_ap") {
       const n = Number(meas.replace(/[^\d.]/g, ""));
       if (Number.isFinite(n)) sel.canalApMm = n;
@@ -502,24 +517,68 @@ export function ledgerSeverityContradiction(
   impressionText: string,
 ): string[] {
   const warnings: string[] = [];
-  const imp = (impressionText ?? "").toLowerCase();
+  const sentences = splitToSentences(impressionText ?? "").map((s) => s.toLowerCase());
   for (const p of patches) {
     if (p.stale) continue;
     const concept = p.observation?.concept ?? "";
     if (concept !== "canal_stenosis") continue;
     const level = p.observation?.level ?? p.ownership.anatomicalSection ?? "";
-    const sev = (p.observation?.severity ?? "").toLowerCase();
+    const sev = (p.observation?.severity || "").toLowerCase();
     if (!level || !sev) continue;
     const lvl = level.toLowerCase();
-    if (!imp.includes(lvl.replace(/-/g, "")) && !imp.includes(level.toLowerCase())) continue;
-    for (const other of ["mild", "moderate", "severe"] as const) {
-      if (other === sev) continue;
-      if (imp.includes(`${other} canal`) || imp.includes(`${other} ${level.toLowerCase()}`) || (imp.includes(other) && imp.includes("stenosis") && imp.includes(level.toLowerCase()))) {
-        warnings.push(
-          `Structured mismatch: Findings ledger has ${sev} canal stenosis at ${level} but Impression mentions ${other}.`,
-        );
+    const lvlCompact = lvl.replace(/-/g, "");
+    for (const sentence of sentences) {
+      const hasLevel = sentence.includes(lvl) || sentence.includes(lvlCompact);
+      if (!hasLevel) continue;
+      for (const other of ["mild", "moderate", "severe"] as const) {
+        if (other === sev) continue;
+        const hasOtherSev =
+          sentence.includes(`${other} canal`)
+          || sentence.includes(`${other} ${lvl}`)
+          || (sentence.includes(other) && sentence.includes("stenosis"));
+        if (hasOtherSev) {
+          warnings.push(
+            `Structured mismatch: Findings ledger has ${sev} canal stenosis at ${level} but Impression mentions ${other}.`,
+          );
+        }
       }
     }
+  }
+  return warnings;
+}
+
+/**
+ * Structured-vs-structured: AP canal < 10 mm coexisting with canal stenosis
+ * marked none/mild at the same level is clinically inconsistent.
+ */
+export function structuredCanalApContradiction(patches: AppliedPathologyPatch[]): string[] {
+  const warnings: string[] = [];
+  const byLevel = new Map<string, { ap: number | null; canalSev: string | null; levelLabel: string }>();
+
+  for (const p of patches) {
+    if (p.stale) continue;
+    const level = (p.observation?.level || p.ownership.anatomicalSection || "").trim();
+    if (!level) continue;
+    const key = levelKey(level) || level.toUpperCase();
+    const slot = byLevel.get(key) ?? { ap: null, canalSev: null, levelLabel: level };
+    const concept = (p.observation?.concept || p.ownership.concept || "").toLowerCase();
+    if (concept === "canal_ap" || concept === "canal_ap_diameter") {
+      const raw = p.observation?.measurement || "";
+      const n = Number(String(raw).replace(/,/g, "").match(/-?\d+(?:\.\d+)?/)?.[0] ?? NaN);
+      if (Number.isFinite(n)) slot.ap = n;
+    }
+    if (concept === "canal_stenosis") {
+      slot.canalSev = (p.observation?.severity || "").toLowerCase() || "none";
+    }
+    byLevel.set(key, slot);
+  }
+
+  for (const slot of byLevel.values()) {
+    if (slot.ap == null || !(slot.ap < 10)) continue;
+    if (slot.canalSev !== "none" && slot.canalSev !== "mild") continue;
+    warnings.push(
+      `Structured mismatch: AP canal ${slot.ap} mm at ${slot.levelLabel} coexists with canal stenosis marked ${slot.canalSev}.`,
+    );
   }
   return warnings;
 }

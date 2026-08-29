@@ -1,5 +1,6 @@
 import type { CoverageMark, CoverageStatus } from "@/lib/coverageMarks";
 import { MRI_LUMBAR_ALL_REGIONS } from "@/lib/mriLumbarRegions";
+import { formatAnchorChip } from "@/lib/observationAnchor";
 
 const STATUS_STYLE: Record<CoverageStatus, string> = {
   unopened: "bg-slate-100 text-slate-600 border-slate-200",
@@ -54,7 +55,11 @@ export function CoverageCockpit({
                 className="font-semibold hover:underline"
                 disabled={disabled}
                 onClick={() => onJump(r.key)}
-                title="Jump to region"
+                title={
+                  m?.anchorHint
+                    ? `${status === "reviewed" ? "Reviewed on" : status === "waived" ? "Waived ·" : "Viewed on"} ${formatAnchorChip(m.anchorHint)}`
+                    : "Jump to region"
+                }
               >
                 {r.label}
               </button>
