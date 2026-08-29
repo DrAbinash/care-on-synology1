@@ -14,6 +14,7 @@ import {
 import PageHeader from "@/components/PageHeader";
 import DocumentScanCapture from "@/components/DocumentScanCapture";
 import BillReceiptScannerPanel from "@/components/BillReceiptScannerPanel";
+import { readStaffSession } from "@/lib/staffSession";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -95,6 +96,12 @@ const EMPTY_FORM = {
   notes: "",
 };
 
+/** New expense form — default Approved By to the logged-in staff (cash drawer owner). */
+function emptyExpenseForm() {
+  const name = readStaffSession()?.user?.name?.trim() || "";
+  return { ...EMPTY_FORM, expenseDate: new Date().toISOString().slice(0, 10), approvedBy: name };
+}
+
 export default function Expenses() {
   const { toast } = useToast();
   const qc = useQueryClient();
@@ -106,7 +113,7 @@ export default function Expenses() {
   const [to, setTo] = useState("");
   const [showForm, setShowForm] = useState(false);
   const [editExp, setEditExp] = useState<Expense | null>(null);
-  const [form, setForm] = useState({ ...EMPTY_FORM });
+  const [form, setForm] = useState(() => emptyExpenseForm());
   // Scanned (enhanced) receipt image data-URL, persisted with a new expense for audit.
   const [receiptImage, setReceiptImage] = useState("");
   // Receipt viewer: the image is fetched on demand (never in the list response).
@@ -150,7 +157,7 @@ export default function Expenses() {
       onSuccess: () => {
         invalidateExpenses();
         setShowForm(false);
-        setForm({ ...EMPTY_FORM });
+        setForm(emptyExpenseForm());
         setReceiptImage("");
         toast({ title: "Expense recorded" });
       },
@@ -234,12 +241,12 @@ export default function Expenses() {
   const hasFilters = categoryFilter !== "all" || paymentFilter !== "all" || from || to || search;
 
   return (
-    <div className="w-full max-w-full overflow-x-hidden">
+    <div className="w-full max-w-full min-w-0">
       <PageHeader
         title="Expense Management"
         subtitle="Track and manage operational expenses"
         actions={
-          <Button className="w-full sm:w-auto" onClick={() => { setShowForm(true); setForm({ ...EMPTY_FORM }); }}>
+          <Button className="w-full sm:w-auto" onClick={() => { setShowForm(true); setForm(emptyExpenseForm()); }}>
             <Plus size={15} className="mr-1.5" /> Add Expense
           </Button>
         }
@@ -363,7 +370,7 @@ export default function Expenses() {
                 </Button>
               </div>
             ) : (
-              <div className="overflow-x-auto">
+              <div className="w-full max-w-full min-w-0 overflow-x-auto overscroll-x-contain touch-pan-x">
               <table className="w-full text-sm min-w-[640px]">
                 <thead className="border-b border-card-border bg-muted/30">
                   <tr>
@@ -495,7 +502,7 @@ export default function Expenses() {
 
       {/* SCANNER TAB */}
       {activeTab === "scanner" && (
-        <div className="space-y-4 max-w-full overflow-x-hidden">
+        <div className="space-y-4 max-w-full min-w-0">
           <div className="bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-indigo-950/30 dark:to-blue-950/30 border border-indigo-200 dark:border-indigo-800 rounded-xl p-4 sm:p-5">
             <h2 className="font-bold text-lg flex items-center gap-2"><ScanLine size={18} className="text-indigo-600" /> AI-Powered Bill / Receipt Scanner</h2>
             <p className="text-sm text-muted-foreground mt-1">Scan physical bills with your phone camera or upload an image to auto-capture expense details.</p>
@@ -633,8 +640,12 @@ export default function Expenses() {
                 <Input
                   value={form.approvedBy}
                   onChange={(e) => setForm({ ...form, approvedBy: e.target.value })}
-                  placeholder="Approver name"
+                  placeholder="Defaults to you (cash drawer owner)"
+                  title="Cash expenses reduce this person's drawer on My Daily Summary"
                 />
+                <p className="text-[10px] text-muted-foreground">
+                  Cash expenses hit this name&apos;s My Daily Summary / day-close drawer. Leave as your name when you paid cash out.
+                </p>
               </div>
               <div className="col-span-2 space-y-1.5">
                 <Label>Notes</Label>

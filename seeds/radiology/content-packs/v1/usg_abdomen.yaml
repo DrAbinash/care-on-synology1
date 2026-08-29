@@ -37,7 +37,7 @@ findings:
     severity: null
     laterality: null
     measurements: []
-    keyboard_alias: [nab]
+    keyboard_aliases: [nab]
     combo_tiles: [combo.usab.wa_male_neg]
     criticality: none
     normal_variant: true
@@ -56,7 +56,7 @@ findings:
     severity: sev.fatty_liver
     laterality: null
     measurements: [meas.liver_span]
-    keyboard_alias: [fl1, fl2, fl3]
+    keyboard_aliases: [fl1, fl2, fl3]
     combo_tiles: [combo.usab.fl_rest_normal, combo.usab.fl_hm, combo.usab.fl2_chole]
     criticality: none
     normal_variant: false
@@ -75,7 +75,7 @@ findings:
     severity: null
     laterality: null
     measurements: [meas.liver_span]
-    keyboard_alias: [hm]
+    keyboard_aliases: [hm]
     combo_tiles: [combo.usab.fl_hm]
     criticality: none
     normal_variant: false
@@ -94,7 +94,7 @@ findings:
     severity: null
     laterality: null
     measurements: [meas.liver_span, meas.portal_vein]
-    keyboard_alias: [cld]
+    keyboard_aliases: [cld]
     combo_tiles: [combo.usab.cld_portal]
     criticality: significant
     normal_variant: false
@@ -112,9 +112,9 @@ findings:
     parameters: [param.size]
     severity: null
     laterality: null
-    location_options: [loc.liver]
+    location: [loc.liver]
     measurements: []
-    keyboard_alias: [lcy]
+    keyboard_aliases: [lcy]
     combo_tiles: []
     criticality: none
     normal_variant: true
@@ -131,9 +131,9 @@ findings:
     parameters: [param.size]
     severity: null
     laterality: null
-    location_options: [loc.liver]
+    location: [loc.liver]
     measurements: []
-    keyboard_alias: [lhem]
+    keyboard_aliases: [lhem]
     combo_tiles: []
     criticality: none
     normal_variant: false
@@ -150,9 +150,9 @@ findings:
     parameters: [param.count, param.echotexture, param.size, param.margin]
     severity: null
     laterality: null
-    location_options: [loc.liver]
+    location: [loc.liver]
     measurements: []
-    keyboard_alias: [fll]
+    keyboard_aliases: [fll]
     combo_tiles: []
     criticality: significant
     normal_variant: false
@@ -170,7 +170,7 @@ findings:
     severity: null
     laterality: null
     measurements: [meas.calculus_size, meas.gb_wall]
-    keyboard_alias: [chole]
+    keyboard_aliases: [chole]
     combo_tiles: [combo.usab.chole_rest_normal, combo.usab.fl2_chole]
     criticality: none
     normal_variant: false
@@ -189,7 +189,7 @@ findings:
     severity: null
     laterality: null
     measurements: []
-    keyboard_alias: [slg]
+    keyboard_aliases: [slg]
     combo_tiles: []
     criticality: none
     normal_variant: false
@@ -207,7 +207,7 @@ findings:
     severity: null
     laterality: null
     measurements: [meas.gb_wall]
-    keyboard_alias: [gbwt]
+    keyboard_aliases: [gbwt]
     combo_tiles: [combo.usab.acute_abd]
     criticality: significant
     normal_variant: false
@@ -226,7 +226,7 @@ findings:
     severity: null
     laterality: null
     measurements: [meas.calculus_size]
-    keyboard_alias: [gbp]
+    keyboard_aliases: [gbp]
     combo_tiles: []
     criticality: none
     normal_variant: false
@@ -244,7 +244,7 @@ findings:
     severity: null
     laterality: null
     measurements: [meas.cbd]
-    keyboard_alias: [cbd]
+    keyboard_aliases: [cbd]
     combo_tiles: []
     criticality: significant
     normal_variant: false
@@ -263,7 +263,7 @@ findings:
     severity: null
     laterality: null
     measurements: []
-    keyboard_alias: [pno]
+    keyboard_aliases: [pno]
     combo_tiles: []
     criticality: none
     normal_variant: true
@@ -281,7 +281,7 @@ findings:
     severity: null
     laterality: null
     measurements: [meas.spleen_span]
-    keyboard_alias: [sm]
+    keyboard_aliases: [sm]
     combo_tiles: [combo.usab.cld_portal]
     criticality: none
     normal_variant: false
@@ -299,9 +299,9 @@ findings:
     parameters: []
     severity: null
     laterality: lat.rlb
-    location_options: [loc.renal_calculus]
+    location: [loc.renal_calculus]
     measurements: [meas.calculus_size]
-    keyboard_alias: [rcal, lcal]
+    keyboard_aliases: [rcal, lcal]
     combo_tiles: [combo.usab.calc_hn]
     criticality: none
     normal_variant: false
@@ -320,7 +320,7 @@ findings:
     severity: sev.hydro
     laterality: lat.rlb
     measurements: []
-    keyboard_alias: [hn1, hn2, hn3]
+    keyboard_aliases: [hn1, hn2, hn3]
     combo_tiles: [combo.usab.calc_hn]
     criticality: significant
     normal_variant: false
@@ -338,9 +338,9 @@ findings:
     parameters: [param.size]
     severity: null
     laterality: lat.rlb
-    location_options: [loc.renal_pole]
+    location: [loc.renal_pole]
     measurements: []
-    keyboard_alias: [rcy]
+    keyboard_aliases: [rcy]
     combo_tiles: []
     criticality: none
     normal_variant: true
@@ -358,7 +358,7 @@ findings:
     severity: sev.mrd
     laterality: null
     measurements: [meas.kidney_size]
-    keyboard_alias: [mrd1, mrd2, mrd3]
+    keyboard_aliases: [mrd1, mrd2, mrd3]
     combo_tiles: []
     criticality: significant
     normal_variant: false
@@ -377,7 +377,7 @@ findings:
     severity: null
     laterality: null
     measurements: []
-    keyboard_alias: [cys]
+    keyboard_aliases: [cys]
     combo_tiles: []
     criticality: none
     normal_variant: false
@@ -395,7 +395,7 @@ findings:
     severity: sev.prostate
     laterality: null
     measurements: [meas.prostate_volume, meas.pvr]
-    keyboard_alias: [pros1, pros2, pros3]
+    keyboard_aliases: [pros1, pros2, pros3]
     combo_tiles: [combo.usab.bph_screen, combo.usab.wa_male_neg]
     criticality: none
     normal_variant: false
@@ -415,7 +415,7 @@ findings:
     severity: null
     laterality: null
     measurements: [meas.et]
-    keyboard_alias: [blk]
+    keyboard_aliases: [blk]
     combo_tiles: [combo.usab.gyn_screen]
     criticality: none
     normal_variant: false
@@ -433,7 +433,7 @@ findings:
     severity: null
     laterality: null
     measurements: [meas.et]
-    keyboard_alias: [fib]
+    keyboard_aliases: [fib]
     combo_tiles: [combo.usab.gyn_screen]
     criticality: none
     normal_variant: false
@@ -451,7 +451,7 @@ findings:
     severity: null
     laterality: lat.rlb
     measurements: []
-    keyboard_alias: [ova]
+    keyboard_aliases: [ova]
     combo_tiles: []
     criticality: none
     normal_variant: false
@@ -469,7 +469,7 @@ findings:
     severity: null
     laterality: null
     measurements: []
-    keyboard_alias: [pco]
+    keyboard_aliases: [pco]
     combo_tiles: [combo.usab.pcod_screen]
     criticality: none
     normal_variant: false
@@ -487,7 +487,7 @@ findings:
     severity: sev.ascites
     laterality: null
     measurements: []
-    keyboard_alias: [asc]
+    keyboard_aliases: [asc]
     combo_tiles: [combo.usab.cld_portal]
     criticality: significant
     normal_variant: false
@@ -505,7 +505,7 @@ findings:
     severity: null
     laterality: null
     measurements: [meas.node_short_axis]
-    keyboard_alias: [msn]
+    keyboard_aliases: [msn]
     combo_tiles: []
     criticality: none
     normal_variant: false
@@ -523,7 +523,7 @@ findings:
     severity: null
     laterality: null
     measurements: [meas.appendix_diam]
-    keyboard_alias: [app]
+    keyboard_aliases: [app]
     combo_tiles: [combo.usab.acute_abd]
     criticality: significant
     normal_variant: false

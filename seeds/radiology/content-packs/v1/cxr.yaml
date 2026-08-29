@@ -31,7 +31,7 @@ findings:
     parameters: []
     severity: null
     laterality: null
-    location_options: []
+    location: []
     measurements: []
     impression_fragment: "No significant abnormality detected."
     recommendation_code: []
@@ -52,7 +52,7 @@ findings:
     parameters: []
     severity: null
     laterality: null
-    location_options: [loc.lung_zones]
+    location: [loc.lung_zones]
     measurements: []
     impression_fragment: "{location} consolidation — infective etiology likely."
     recommendation_code: [rec.clincorr, rec.fup_cxr2w]
@@ -71,7 +71,7 @@ findings:
     parameters: []
     severity: null
     laterality: null
-    location_options: [loc.lung_zones]
+    location: [loc.lung_zones]
     measurements: []
     impression_fragment: "Patchy infiltrates {location} — infective etiology likely."
     recommendation_code: [rec.clincorr, rec.fup_cxr2w]
@@ -89,7 +89,7 @@ findings:
     parameters: []
     severity: null
     laterality: null
-    location_options: [loc.lung_zones]
+    location: [loc.lung_zones]
     measurements: []
     impression_fragment: "Fibrocalcific changes {location} — sequelae of old healed Koch's. No active lesion."
     recommendation_code: []
@@ -108,7 +108,7 @@ findings:
     parameters: []
     severity: null
     laterality: null
-    location_options: [loc.lung_zones]
+    location: [loc.lung_zones]
     measurements: []
     impression_fragment: "Active Koch's to be excluded — sputum CBNAAT advised."
     recommendation_code: [rec.lab_sputum, rec.hrct]
@@ -128,7 +128,7 @@ findings:
     parameters: []
     severity: null
     laterality: null
-    location_options: []
+    location: []
     measurements: []
     impression_fragment: "Miliary pattern — disseminated Koch's to be excluded; urgent physician correlation."
     recommendation_code: [rec.lab_sputum, rec.hrct, rec.urgent]
@@ -146,7 +146,7 @@ findings:
     parameters: []
     severity: sev.effusion
     laterality: lat.rlb
-    location_options: []
+    location: []
     measurements: []
     impression_fragment: "{laterality} pleural effusion, {severity}."
     recommendation_code: [rec.clincorr]
@@ -164,7 +164,7 @@ findings:
     parameters: []
     severity: null
     laterality: lat.rlb
-    location_options: []
+    location: []
     measurements: []
     impression_fragment: "Blunted {laterality} CP angle — minimal effusion/thickening."
     recommendation_code: []
@@ -182,7 +182,7 @@ findings:
     parameters: []
     severity: sev.ptx
     laterality: lat.rl
-    location_options: []
+    location: []
     measurements: []
     impression_fragment: "{laterality} pneumothorax ({severity}) — URGENT attention advised."
     recommendation_code: [rec.urgent]
@@ -201,7 +201,7 @@ findings:
     parameters: []
     severity: null
     laterality: null
-    location_options: []
+    location: []
     measurements: [meas.ctr]
     impression_fragment: "Cardiomegaly — echocardiographic correlation suggested."
     recommendation_code: [rec.echo_corr]
@@ -221,7 +221,7 @@ findings:
     parameters: []
     severity: null
     laterality: null
-    location_options: []
+    location: []
     measurements: []
     impression_fragment: "Features of pulmonary venous congestion — clinical/echo correlation."
     recommendation_code: [rec.echo_corr, rec.clincorr]
@@ -239,7 +239,7 @@ findings:
     parameters: []
     severity: null
     laterality: null
-    location_options: []
+    location: []
     measurements: []
     impression_fragment: "Hyperinflated lungs — COPD; PFT correlation advised."
     recommendation_code: [rec.pft]
@@ -258,7 +258,7 @@ findings:
     parameters: [param.size, param.margin]
     severity: null
     laterality: null
-    location_options: [loc.lung_zones]
+    location: [loc.lung_zones]
     measurements: []
     impression_fragment: "{location} nodule/mass — HRCT chest advised for characterization."
     recommendation_code: [rec.hrct]
@@ -276,7 +276,7 @@ findings:
     parameters: []
     severity: null
     laterality: lat.rl
-    location_options: []
+    location: []
     measurements: []
     impression_fragment: "{laterality} rib fracture(s) as described."
     recommendation_code: [rec.clincorr]
@@ -295,7 +295,7 @@ findings:
     parameters: []
     severity: null
     laterality: null
-    location_options: []
+    location: []
     measurements: []
     impression_fragment: "Pneumoperitoneum — SURGICAL EMERGENCY; findings communicated."
     recommendation_code: [rec.urgent, rec.spec_surg]
@@ -314,7 +314,7 @@ findings:
     parameters: [param.tube_position]
     severity: null
     laterality: null
-    location_options: []
+    location: []
     measurements: []
     impression_fragment: "Support device — {tube_position}."
     recommendation_code: []

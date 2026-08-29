@@ -118,6 +118,7 @@ vi.mock("@workspace/db", () => {
       insert: (tbl: { __name?: string }) => ({
         values: (v: unknown) => {
           if (tbl?.__name === "patient_reports" && failReportInsertInTx) {
+            failReportInsertInTx = false; // fail structured attempt once; legacy claim insert must succeed
             return {
               returning: async () => { throw new Error("simulated patient_reports insert failure"); },
               then: (_r: unknown, reject: (e: unknown) => void) => reject(new Error("simulated patient_reports insert failure")),
@@ -137,6 +138,7 @@ vi.mock("@workspace/db", () => {
         }),
       }),
       __staged: staged,
+      __execCount: () => execCount,
     };
     return tx;
   };
@@ -284,7 +286,7 @@ beforeEach(() => {
     createdBy: "Dr. Rao", createdAt: new Date("2026-07-10T09:00:00Z"), updatedAt: new Date("2026-07-10T09:05:00Z"),
   };
   instanceRows = [{ id: 1, draftId: 700, findingId: 1, anatomicZoneId: null, structureId: null, category: "", modality: "MRI", structuredJson: { side: "left" }, catalogVersion: "0", source: "quickselect", confirmed: false, confirmedBy: null, confirmedAt: null }];
-  worklistRow = { id: 9, patientId: 12, studyInstanceUID: "1.2.3", accessionNumber: "ACC-1", studyDate: "20260710", studyDescription: "LS Spine", referringDoctor: "dr_mehta", assignedRadiologist: "Dr. Rao" };
+  worklistRow = { id: 9, patientId: 12, studyInstanceUID: "1.2.3", accessionNumber: "ACC-1", studyDate: "20260710", studyDescription: "LS Spine", referringDoctor: "dr_mehta", assignedRadiologist: "Dr. Rao", matchScore: "GREEN", matchDecision: "PENDING", status: "STUDY_RECEIVED", reportId: null };
   committedWrites = [];
   txAttempts = 0;
   failReportInsertInTx = false;
@@ -294,6 +296,12 @@ beforeEach(() => {
 
 const committed = (table: string) => committedWrites.filter((w) => w.table === table);
 
+/** Legacy finalize now inserts inside the identity-claim transaction when a study/worklist is bound. */
+function legacyReportValues(): Record<string, unknown>[] {
+  const fromTx = committed("patient_reports").map((w) => w.values as Record<string, unknown>);
+  return [...legacyInsertValues, ...fromTx];
+}
+
 // ── Flag OFF — exact legacy behavior ─────────────────────────────────────────
 
 describe("D5 — flag OFF is byte-identical legacy", () => {
@@ -301,10 +309,13 @@ describe("D5 — flag OFF is byte-identical legacy", () => {
     flags.ff_radiology_structured_final = false;
     const res = await postCreate(CREATE_BODY, RADIOLOGIST);
     expect(res.statusCode).toBe(201);
-    expect(txAttempts).toBe(0);
+    // Identity CAS wraps radiology finalize in a short claim transaction even
+    // when structured D5 signing is OFF — structured prepare must still never run.
+    expect(txAttempts).toBeGreaterThanOrEqual(1);
     expect(prepareCalls).toHaveLength(0);
-    expect(legacyInsertValues).toHaveLength(1);
-    const v = legacyInsertValues[0];
+    expect(legacyInsertValues).toHaveLength(0); // insert happens inside the claim txn
+    expect(committed("patient_reports")).toHaveLength(1);
+    const v = committed("patient_reports")[0]!.values as Record<string, unknown>;
     expect(v.body).toBe("LEGACY CLIENT BODY TEXT");
     expect(v.createdBy).toBe("Evil Spoofed Author"); // legacy contract untouched
     expect("structuredJson" in v).toBe(false);
@@ -314,7 +325,7 @@ describe("D5 — flag OFF is byte-identical legacy", () => {
   });
 
   test("non-radiology and study-less radiology reports never attempt the structured path (flag ON)", async () => {
-    await postCreate({ ...CREATE_BODY, type: "pathology" }, RADIOLOGIST);
+    await postCreate({ ...CREATE_BODY, type: "pathology", studyId: undefined }, RADIOLOGIST);
     await postCreate({ ...CREATE_BODY, studyId: undefined }, RADIOLOGIST);
     expect(txAttempts).toBe(0);
     expect(legacyInsertValues).toHaveLength(2);
@@ -392,24 +403,25 @@ describe("D5 — sign authority (Phase 5)", () => {
   test("typist is denied structured signing even with the :sign grant — legacy proceeds unchanged", async () => {
     const res = await postCreate(CREATE_BODY, { ...TYPIST, permissions: ["/reports", "/reports:sign"] });
     expect(res.statusCode).toBe(201);
-    expect(txAttempts).toBe(0); // never even opens the transaction
-    expect(legacyInsertValues).toHaveLength(1);
-    expect(legacyInsertValues[0].createdBy).toBe("Evil Spoofed Author"); // legacy contract
+    expect(prepareCalls).toHaveLength(0); // never enters structured prepare
+    const legacy = legacyReportValues();
+    expect(legacy).toHaveLength(1);
+    expect(legacy[0]!.createdBy).toBe("Evil Spoofed Author"); // legacy contract
     expect(res.body.structuredFinal.signed).toBe(false);
     expect(String(res.body.structuredFinal.reason)).toContain("typist");
   });
 
   test("bare /reports module permission is NOT sign authority — legacy fallback with reason", async () => {
     const res = await postCreate(CREATE_BODY, NO_SIGN);
-    expect(txAttempts).toBe(0);
-    expect(legacyInsertValues).toHaveLength(1);
+    expect(prepareCalls).toHaveLength(0);
+    expect(legacyReportValues()).toHaveLength(1);
     expect(String(res.body.structuredFinal.reason)).toContain("missing_sign_permission");
   });
 
   test("missing session → structured denied, legacy proceeds", async () => {
     const res = await postCreate(CREATE_BODY, undefined);
-    expect(txAttempts).toBe(0);
-    expect(legacyInsertValues).toHaveLength(1);
+    expect(prepareCalls).toHaveLength(0);
+    expect(legacyReportValues()).toHaveLength(1);
     expect(res.body.structuredFinal.signed).toBe(false);
   });
 });
@@ -421,44 +433,45 @@ describe("D5 — safe fallbacks", () => {
     draftRow = null;
     const res = await postCreate(CREATE_BODY, RADIOLOGIST);
     expect(res.statusCode).toBe(201);
-    expect(committedWrites).toHaveLength(0); // nothing from the structured tx survived
-    expect(legacyInsertValues).toHaveLength(1);
+    expect(committed("audit_logs")).toHaveLength(0); // structured finalize audit did not commit
+    expect(legacyReportValues()).toHaveLength(1);
     expect(res.body.structuredFinal.reason).toBe("no_draft_for_study");
   });
 
   test("clinical divergence → structured cutover aborted, legacy body signed, mismatch recorded", async () => {
     prepareResult = okPrepare({ equivalence: { verdict: "clinical_divergence", differences: [{ section: "findings", draft: ["a"], d4: ["b"] }], staleDraft: false } });
     const res = await postCreate(CREATE_BODY, RADIOLOGIST);
-    expect(committed("patient_reports")).toHaveLength(0);
     expect(committed("audit_logs")).toHaveLength(0);
-    expect(legacyInsertValues).toHaveLength(1);
-    expect(legacyInsertValues[0].body).toBe("LEGACY CLIENT BODY TEXT"); // exactly what the radiologist approved
-    expect("structuredJson" in legacyInsertValues[0]).toBe(false);      // divergent structured content is NOT signed
+    const legacy = legacyReportValues();
+    expect(legacy).toHaveLength(1);
+    expect(legacy[0]!.body).toBe("LEGACY CLIENT BODY TEXT"); // exactly what the radiologist approved
+    expect("structuredJson" in legacy[0]!).toBe(false);      // divergent structured content is NOT signed
     expect(res.body.structuredFinal.reason).toBe("clinical_divergence");
   });
 
   test("prepare validation failure → fallback, no structured writes", async () => {
     prepareResult = { ok: false, stage: "validation_failed", validationErrors: [{ rule: "R8", severity: "error", path: "$", message: "x" }] };
     const res = await postCreate(CREATE_BODY, RADIOLOGIST);
-    expect(committedWrites).toHaveLength(0);
-    expect(legacyInsertValues).toHaveLength(1);
+    expect(committed("audit_logs")).toHaveLength(0);
+    expect(legacyReportValues()).toHaveLength(1);
     expect(res.body.structuredFinal.reason).toBe("prepare_validation_failed");
   });
 
   test("renderer produced an empty body → fallback (an envelope can never be a signed body)", async () => {
     prepareResult = { ok: false, stage: "render_empty" };
     const res = await postCreate(CREATE_BODY, RADIOLOGIST);
-    expect(committedWrites).toHaveLength(0);
-    expect(legacyInsertValues).toHaveLength(1);
+    expect(committed("audit_logs")).toHaveLength(0);
+    expect(legacyReportValues()).toHaveLength(1);
     expect(res.body.structuredFinal.reason).toBe("prepare_render_empty");
   });
 
   test("authoritative (post-audit-row) validation failure → audit row rolled back too, legacy fallback", async () => {
     authoritativeValidationOk = false;
     const res = await postCreate(CREATE_BODY, RADIOLOGIST);
-    expect(committed("audit_logs")).toHaveLength(0);      // rolled back with the tx
-    expect(committed("patient_reports")).toHaveLength(0); // no partial signed state
-    expect(legacyInsertValues).toHaveLength(1);
+    expect(committed("audit_logs")).toHaveLength(0);      // rolled back with the structured tx
+    const legacy = legacyReportValues();
+    expect(legacy).toHaveLength(1);
+    expect("structuredJson" in legacy[0]!).toBe(false);
     expect(res.body.structuredFinal.reason).toBe("d1_validation_failed");
   });
 
@@ -466,8 +479,8 @@ describe("D5 — safe fallbacks", () => {
     failReportInsertInTx = true;
     const res = await postCreate(CREATE_BODY, RADIOLOGIST);
     expect(res.statusCode).toBe(201);
-    expect(committedWrites).toHaveLength(0); // audit row + snapshot all rolled back
-    expect(legacyInsertValues).toHaveLength(1);
+    expect(committed("audit_logs")).toHaveLength(0); // structured audit rolled back
+    expect(legacyReportValues()).toHaveLength(1);
     expect(res.body.structuredFinal.reason).toBe("structured_txn_failed");
   });
 });

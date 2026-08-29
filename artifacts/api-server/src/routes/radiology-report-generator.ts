@@ -78,9 +78,17 @@ import {
 import { reconcileAccessionVsReferringDoctor } from "../lib/pacs/dicomNameNormalize";
 import { isFeatureEnabledServer } from "../lib/featureFlags";
 import { checkWriteLock } from "../lib/studyLocks";
+import {
+  RadiologyIdentityError,
+  assertDraftWritable,
+  assertImageUidBelongsToDraft,
+  imageRefsLocked as draftImageRefsLocked,
+  resolveWorklistFromStudyRef,
+} from "../lib/radiologyIdentity";
 import { regenerateDraftStructuredJson } from "../lib/radiologyStructuredJsonCache";
 import {
   persistCareStructuredFormatState,
+  persistCareObservationLedger,
 } from "../lib/persistCareStructuredFormatState";
 import {
   CARE_STRUCTURED_FORMAT_STATE_KIND,
@@ -847,6 +855,7 @@ function buildClassicPatientHeaderHtml(input: {
     recommendation?: string;
     template: ReportTemplate;
     keyImages?: Array<{ imageUrl: string; caption: string; includeInReport: boolean }>;
+    measurements?: Array<{ label: string; value: string }>;
     preferences?: {
       headingCase?: "all_caps" | "title_case";
       sectionSpacing?: "spaced" | "compact";
@@ -1049,7 +1058,13 @@ function buildClassicPatientHeaderHtml(input: {
     };
 
     const renderMeasurements = () => {
-      return "";
+      const rows = input.measurements;
+      if (!rows?.length) return "";
+      const body = rows
+        .map((r) => `<tr><td style="border:1px solid #333;padding:2px 6px;">${escHtml(r.label)}</td><td style="border:1px solid #333;padding:2px 6px;">${escHtml(r.value)}</td></tr>`)
+        .join("");
+      return `<h3 style="margin:${sp2} 0 ${sp};">${fmtHeadingHtml("Measurements")}</h3>
+<table style="border-collapse:collapse;margin:0 0 ${sp};font-size:11px;"><thead><tr><th style="border:1px solid #333;padding:2px 6px;text-align:left;">Measurement</th><th style="border:1px solid #333;padding:2px 6px;text-align:left;">Value</th></tr></thead><tbody>${body}</tbody></table>`;
     };
 
     const renderCriticalCommunication = () => {
@@ -1482,6 +1497,7 @@ const SaveDraftBody = z.object({
     ])),
     updatedAt: z.string().optional(),
   }).nullish(),
+  observationLedger: z.unknown().optional(),
 });
 
 radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest, res: Response) => {
@@ -1517,12 +1533,41 @@ radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest,
     }
   }
 
+  try {
+    await assertDraftWritable({
+      draftId: id ?? null,
+      worklistId: rest.worklistId ?? null,
+      studyId: rest.studyId ?? null,
+      patientId: rest.patientId ?? null,
+    });
+  } catch (err) {
+    if (err instanceof RadiologyIdentityError) {
+      res.status(err.httpStatus).json({ success: false, error: err.message, code: err.code });
+      return;
+    }
+    throw err;
+  }
+
+  // Derive study/worklist/patient from the resolved worklist so a delayed
+  // Patient A autosave cannot write into Patient B's draft identity.
+  let studyId = rest.studyId ?? null;
+  let worklistId = rest.worklistId ?? null;
+  let patientId = rest.patientId ?? null;
+  const resolvedWorklist = worklistId
+    ? (await db.select().from(radiologyWorklistTable).where(eq(radiologyWorklistTable.id, worklistId)).limit(1))[0]
+    : await resolveWorklistFromStudyRef(studyId);
+  if (resolvedWorklist) {
+    worklistId = resolvedWorklist.id;
+    studyId = resolvedWorklist.id;
+    patientId = resolvedWorklist.patientId ?? patientId;
+  }
+
   // `rest.findings` (A3.1) is intentionally not read anywhere below —
   // accepted by the schema above, ignored by this handler until A3.2.
   const values = {
-    studyId: rest.studyId ?? null,
-    worklistId: rest.worklistId ?? null,
-    patientId: rest.patientId ?? null,
+    studyId,
+    worklistId,
+    patientId,
     templateId: rest.templateId ?? null,
     modality: rest.modality ?? null,
     studyName: rest.studyName ?? null,
@@ -1709,6 +1754,17 @@ radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest,
     }
   }
 
+  if (draft?.id && rest.observationLedger != null) {
+    try {
+      await persistCareObservationLedger(draft.id, rest.observationLedger);
+    } catch (err) {
+      console.error(
+        "[radiology-report-generator] observation ledger persist failed (non-fatal):",
+        err,
+      );
+    }
+  }
+
   res.json({ success: true, draft, formatStatePersistFailed });
 });
 
@@ -1762,7 +1818,15 @@ radiologyReportGeneratorRouter.get("/drafts", async (req: Request, res: Response
     .orderBy(desc(radiologyReportDraftsTable.updatedAt))
     .limit(50);
 
-  res.json({ success: true, drafts: rows });
+  let drafts = rows;
+  if (studyId) {
+    const worklist = await resolveWorklistFromStudyRef(studyId);
+    if (worklist?.patientId) {
+      drafts = rows.filter((r) => r.patientId == null || r.patientId === worklist.patientId);
+    }
+  }
+
+  res.json({ success: true, drafts });
 });
 
 // ─── Ticket M1.4 — read-only workflow endpoints ──────────────────────────────
@@ -1918,11 +1982,36 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
 
   let catalogTestName: string | null = null;
   let patientUhid: string | null = null;
+  let patientAgeDisplay: string | null = null;
+  const formatMasterAge = (p: {
+    ageValue?: number | null;
+    ageUnit?: string | null;
+    dateOfBirth?: string | null;
+  } | null | undefined): string => {
+    if (!p) return "";
+    if (p.ageValue != null && p.ageValue > 0 && p.ageUnit) {
+      if (p.ageUnit === "years" && p.ageValue <= 120) return `${p.ageValue} Yrs`;
+      if (p.ageUnit === "months") return `${p.ageValue} Mo`;
+      if (p.ageUnit === "days") return `${p.ageValue} D`;
+    }
+    const dob = String(p.dateOfBirth ?? "").trim();
+    if (!dob || dob.startsWith("1900-01-01")) return "";
+    const d = new Date(dob);
+    if (Number.isNaN(d.getTime())) return "";
+    const now = new Date();
+    let y = now.getFullYear() - d.getFullYear();
+    const m = now.getMonth() - d.getMonth();
+    if (m < 0 || (m === 0 && now.getDate() < d.getDate())) y--;
+    return y > 0 && y <= 120 ? `${y} Yrs` : "";
+  };
   if (worklist?.studyId) {
     const [linked] = await db
       .select({
         testName: testsTable.name,
         uhid: patientsTable.patientId,
+        ageValue: patientsTable.ageValue,
+        ageUnit: patientsTable.ageUnit,
+        dateOfBirth: patientsTable.dateOfBirth,
       })
       .from(radiologyStudiesTable)
       .leftJoin(testsTable, eq(testsTable.id, radiologyStudiesTable.testId))
@@ -1931,13 +2020,20 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
       .limit(1);
     catalogTestName = linked?.testName ?? null;
     patientUhid = linked?.uhid ?? null;
+    patientAgeDisplay = formatMasterAge(linked) || null;
   } else if (worklist?.patientId) {
     const [pat] = await db
-      .select({ uhid: patientsTable.patientId })
+      .select({
+        uhid: patientsTable.patientId,
+        ageValue: patientsTable.ageValue,
+        ageUnit: patientsTable.ageUnit,
+        dateOfBirth: patientsTable.dateOfBirth,
+      })
       .from(patientsTable)
       .where(eq(patientsTable.id, worklist.patientId))
       .limit(1);
     patientUhid = pat?.uhid ?? null;
+    patientAgeDisplay = formatMasterAge(pat) || null;
   }
 
   const studyTitle = (
@@ -1983,10 +2079,56 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
   if (impressionBullets.length > 0) {
     impressionList = renderImpressionSectionHtml(impressionBullets, impressionStyle, esc);
   }
+
+  // Disc-level canal AP table from spinal_measurements (LS / cervical).
+  let spinalTableHtml = "";
+  const spinalStudyKey = draft.studyId ?? worklist?.studyId ?? null;
+  if (spinalStudyKey) {
+    try {
+      const spinalRows = await db
+        .select({
+          vertebraLevel: spinalMeasurementsTable.vertebraLevel,
+          canalAP: spinalMeasurementsTable.canalAP,
+        })
+        .from(spinalMeasurementsTable)
+        .where(eq(spinalMeasurementsTable.studyId, spinalStudyKey));
+      const LUMBAR = ["L1-L2", "L2-L3", "L3-L4", "L4-L5", "L5-S1"];
+      const CERVICAL = ["C1-C2", "C2-C3", "C3-C4", "C4-C5", "C5-C6", "C6-C7", "C7-T1"];
+      const byLevel = new Map(
+        spinalRows
+          .filter((r) => r.canalAP?.trim())
+          .map((r) => [r.vertebraLevel, r.canalAP!.trim()] as const),
+      );
+      const pick = (levels: string[]) => levels.filter((l) => byLevel.has(l));
+      const lumbarHit = pick(LUMBAR);
+      const cervicalHit = pick(CERVICAL);
+      const levels = lumbarHit.length >= cervicalHit.length && lumbarHit.length > 0
+        ? LUMBAR
+        : cervicalHit.length > 0
+          ? CERVICAL
+          : [];
+      if (levels.some((l) => byLevel.has(l))) {
+        const title = levels[0].startsWith("C")
+          ? "CERVICAL CANAL AP DIAMETER AT C1 TO C7 LEVELS"
+          : "LUMBAR CANAL AP DIAMETER AT L1 TO L5 LEVELS";
+        const th = levels.map((l) => `<th style="border:1px solid #000;padding:2px 6px;font-size:11px;">${esc(l)}</th>`).join("");
+        const td = levels
+          .map((l) => `<td style="border:1px solid #000;padding:2px 6px;text-align:center;font-size:11px;">${esc(byLevel.get(l) || "—")}</td>`)
+          .join("");
+        spinalTableHtml = `<div class="section-heading">${esc(title)}</div>
+<table style="border-collapse:collapse;margin:0 0 8px;width:auto;">
+  <thead><tr><th style="border:1px solid #000;padding:2px 6px;font-size:11px;">LEVEL</th>${th}</tr></thead>
+  <tbody><tr><td style="border:1px solid #000;padding:2px 6px;font-size:11px;">AP (mm)</td>${td}</tr></tbody>
+</table>`;
+      }
+    } catch { /* non-fatal */ }
+  }
+
   const bodyHtml = [
     draft.clinicalHistory?.trim() ? `<div class="section-heading">Clinical History</div><p>${esc(draft.clinicalHistory)}</p>` : "",
     techniqueHtml,
     sectionsHtml,
+    spinalTableHtml,
     impressionList,
     draft.recommendation?.trim() ? `<div class="section-heading">Recommendation</div><p>${esc(draft.recommendation)}</p>` : "",
   ].filter(Boolean).join("\n");
@@ -2040,7 +2182,11 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
     },
     patientRows: [
       { label: "Patient", value: worklist?.patientName ?? "" },
-      { label: "Age / Sex", value: [worklist?.age, worklist?.sex].filter(Boolean).join(" / ") },
+      {
+        label: "Age / Sex",
+        // Prefer patient-master age over raw worklist.age (often blank → "F" only).
+        value: [patientAgeDisplay || worklist?.age, worklist?.sex].filter(Boolean).join(" / "),
+      },
       { label: "UHID", value: patientUhid ?? "" },
       { label: "Study Date", value: formatReportDateShort(worklist?.studyDate ?? null) || formattedStudyDate },
       { label: "Referring Doctor", value: ids.referringDoctor },
@@ -2078,6 +2224,28 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
     instStyle = null;
   }
   const template = applyInstitutionalTemplateOverrides(baseTemplate, instStyle);
+
+  // When the radiologist has disabled the letterpad header (for printing on
+  // pre-printed letterheads), suppress the CARE logo + address chrome.
+  try {
+    const userId = (req as unknown as { staffSession?: { subjectId?: string | number } }).staffSession?.subjectId;
+    if (userId) {
+      const [prefs] = await db.select({ showLetterpadHeader: radiologyReportPreferencesTable.showLetterpadHeader })
+        .from(radiologyReportPreferencesTable)
+        .where(eq(radiologyReportPreferencesTable.userId, Number(userId)))
+        .limit(1);
+      if (prefs && !prefs.showLetterpadHeader) {
+        template.headerCfg = {
+          show: false,
+          showLogo: false,
+          showTagline: template.headerCfg?.showTagline ?? false,
+          showContact: template.headerCfg?.showContact ?? false,
+          style: template.headerCfg?.style ?? "banded",
+          logoPosition: template.headerCfg?.logoPosition,
+        };
+      }
+    }
+  } catch { /* non-fatal: header shows as normal */ }
 
   // pacs letterhead scale + Style chrome apply to clinic-branded templates.
   // CARE letter-pad (Classic/Premium) reads logo/address from the template.
@@ -2320,6 +2488,7 @@ const PreferencesSchema = z.object({
   headerLine2Custom: z.string().max(200).optional(),
   workspaceLayout: z.enum(["3_panel", "preview_first", "workflow"]),
   printMode: z.enum(["letterhead", "plain_paper"]).default("letterhead"),
+  showLetterpadHeader: z.boolean().default(true),
 });
 
 // GET /preferences — fetch preferences for the authenticated user
@@ -2340,6 +2509,7 @@ radiologyReportGeneratorRouter.get("/preferences", async (req: StaffAuthRequest,
       headerLine2Custom: null,
       workspaceLayout: "3_panel",
       printMode: "letterhead",
+      showLetterpadHeader: true,
     });
     return;
   }
@@ -2367,6 +2537,7 @@ radiologyReportGeneratorRouter.put("/preferences", async (req: StaffAuthRequest,
       headerLine2Custom: data.headerLine2Custom || null,
       workspaceLayout: data.workspaceLayout,
       printMode: data.printMode,
+      showLetterpadHeader: data.showLetterpadHeader,
     }).returning();
     res.status(201).json(row);
     return;
@@ -2383,6 +2554,7 @@ radiologyReportGeneratorRouter.put("/preferences", async (req: StaffAuthRequest,
       headerLine2Custom: data.headerLine2Custom || null,
       workspaceLayout: data.workspaceLayout,
       printMode: data.printMode,
+      showLetterpadHeader: data.showLetterpadHeader,
     })
     .where(eq(radiologyReportPreferencesTable.userId, Number(userId)))
     .returning();
@@ -2489,10 +2661,7 @@ function isUniqueViolation(err: unknown): boolean {
  *  is part of what was signed: reject further mutation (the workspace panel
  *  is already read-only at that point; this closes the API path too). */
 async function imageRefsLocked(draftId: number): Promise<boolean> {
-  // Trial mode: allow image edits even after finalize. Hard lock can return later
-  // via Reading Suite settings; the UI already gates editing with report_final_lock.
-  void draftId;
-  return false;
+  return draftImageRefsLocked(draftId);
 }
 const LOCKED_MSG = "Report finalized — its images can no longer be modified";
 
@@ -2500,6 +2669,15 @@ radiologyReportGeneratorRouter.post("/image-references", async (req: StaffAuthRe
   const parsed = ImageRefSchema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ error: "Invalid body" }); return; }
   if (await imageRefsLocked(parsed.data.draftId)) { res.status(409).json({ error: LOCKED_MSG }); return; }
+  try {
+    await assertImageUidBelongsToDraft(parsed.data.draftId, parsed.data.studyInstanceUid);
+  } catch (err) {
+    if (err instanceof RadiologyIdentityError) {
+      res.status(err.httpStatus).json({ error: err.message, code: err.code });
+      return;
+    }
+    throw err;
+  }
   try {
     // Cap check + duplicate pre-check + insert run atomically under the same
     // per-draft advisory lock the reorder route takes, so concurrent POSTs
@@ -2807,7 +2985,7 @@ const SpinalMeasurementSchema = z.object({
   draftId: z.number().int().optional(),
   patientId: z.number().int().optional(),
   worklistId: z.number().int().optional(),
-  vertebraLevel: z.string().min(1).max(10),
+  vertebraLevel: z.string().min(1).max(12),
   canalAP: z.string().max(20).optional(),
   canalTransverse: z.string().max(20).optional(),
   canalArea: z.string().max(20).optional(),

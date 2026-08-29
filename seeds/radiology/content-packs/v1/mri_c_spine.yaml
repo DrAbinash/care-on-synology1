@@ -33,7 +33,7 @@ findings:
     severity: null
     laterality: null
     measurements: []
-    keyboard_alias: [ncs]
+    keyboard_aliases: [ncs]
     combo_tiles: []
     criticality: none
     normal_variant: true
@@ -51,7 +51,7 @@ findings:
     severity: null
     laterality: null
     measurements: []
-    keyboard_alias: [cspond]
+    keyboard_aliases: [cspond]
     combo_tiles: [combo.mrcs.spond_strc, combo.mrcs.doc_classic]
     criticality: none
     normal_variant: false
@@ -69,7 +69,7 @@ findings:
     severity: null
     laterality: null
     measurements: []
-    keyboard_alias: [strc]
+    keyboard_aliases: [strc]
     combo_tiles: [combo.mrcs.spond_strc]
     criticality: none
     normal_variant: false
@@ -86,9 +86,9 @@ findings:
     parameters: [param.cord_ladder]
     severity: sev.canal
     laterality: null
-    location_options: [loc.spine_cervical.discs]
+    location: [loc.spine_cervical.discs]
     measurements: [meas.canal_ap, meas.cord_ap]
-    keyboard_alias: [doc]              # -> doc34, doc45, doc56, doc67
+    keyboard_aliases: [doc]              # -> doc34, doc45, doc56, doc67
     combo_tiles: [combo.mrcs.doc_classic]
     criticality: none
     normal_variant: false
@@ -108,9 +108,9 @@ findings:
     parameters: [param.disc_zone, param.cord_ladder, param.root_involvement, param.size]
     severity: null
     laterality: null
-    location_options: [loc.spine_cervical.discs, loc.root_map]
+    location: [loc.spine_cervical.discs, loc.root_map]
     measurements: [meas.canal_ap]
-    keyboard_alias: [cpv]             # -> cpv56, cpv67
+    keyboard_aliases: [cpv]             # -> cpv56, cpv67
     combo_tiles: []
     criticality: none
     normal_variant: false
@@ -128,9 +128,9 @@ findings:
     parameters: []
     severity: sev.canal
     laterality: lat.rlb
-    location_options: [loc.spine_cervical.discs]
+    location: [loc.spine_cervical.discs]
     measurements: []
-    keyboard_alias: [uv]              # -> uv56, uv67
+    keyboard_aliases: [uv]              # -> uv56, uv67
     combo_tiles: []
     criticality: none
     normal_variant: false
@@ -147,9 +147,9 @@ findings:
     parameters: [param.root_involvement]
     severity: sev.canal
     laterality: lat.rlb
-    location_options: [loc.spine_cervical.discs, loc.root_map]
+    location: [loc.spine_cervical.discs, loc.root_map]
     measurements: []
-    keyboard_alias: [cfn]            # -> cfn56, cfn67
+    keyboard_aliases: [cfn]            # -> cfn56, cfn67
     combo_tiles: [combo.mrcs.doc_classic]
     criticality: none
     normal_variant: false
@@ -167,9 +167,9 @@ findings:
     parameters: []
     severity: null
     laterality: null
-    location_options: [loc.spine_cervical.discs]
+    location: [loc.spine_cervical.discs]
     measurements: [meas.cord_ap]
-    keyboard_alias: [myl]
+    keyboard_aliases: [myl]
     combo_tiles: []
     criticality: {critical_if: "acute/progressive deficit in indication", registry: crit.cord_compression}
     normal_variant: false
@@ -188,9 +188,9 @@ findings:
     parameters: []
     severity: null
     laterality: null
-    location_options: [loc.spine_cervical.vertebrae]
+    location: [loc.spine_cervical.vertebrae]
     measurements: []
-    keyboard_alias: [opll]
+    keyboard_aliases: [opll]
     combo_tiles: []
     criticality: significant
     normal_variant: false

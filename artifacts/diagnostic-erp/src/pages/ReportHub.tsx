@@ -3,6 +3,7 @@ import { api } from "@/lib/fetchApi";
 import { useToast } from "@/hooks/use-toast";
 import { useListPatients } from "@workspace/api-client-react";
 import PageHeader from "@/components/PageHeader";
+import { MobileTableScroll } from "@/components/MobileTableScroll";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -362,8 +363,9 @@ export default function ReportHub() {
         </TabsList>
 
         <TabsContent value={tab} className="mt-3">
-          <div className="rounded-xl border border-slate-200 dark:border-border bg-white dark:bg-card shadow-sm overflow-hidden">
-            <table className="w-full text-sm">
+          <div className="rounded-xl border border-slate-200 dark:border-border bg-white dark:bg-card shadow-sm overflow-hidden min-w-0 max-w-full">
+            <MobileTableScroll>
+            <table className="w-full text-sm min-w-[44rem]">
               <thead className="bg-slate-50 dark:bg-muted/50 border-b border-slate-200 dark:border-border">
                 <tr className="text-left">
                   <th className="px-3 py-2 font-semibold">Report #</th>
@@ -428,6 +430,7 @@ export default function ReportHub() {
                 ))}
               </tbody>
             </table>
+            </MobileTableScroll>
           </div>
         </TabsContent>
       </Tabs>

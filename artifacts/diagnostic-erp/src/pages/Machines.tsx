@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import PageHeader from "@/components/PageHeader";
+import { MobileTableScroll } from "@/components/MobileTableScroll";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -1088,8 +1089,9 @@ export default function Machines() {
                   <h3 className="font-semibold text-sm flex items-center gap-1.5"><AlertTriangle size={15} /> Breakdown Log</h3>
                   <Button size="sm" variant="outline" onClick={() => openCreateBreakdown(detail.machine.id)}><Plus size={13} className="mr-1" /> Log Breakdown</Button>
                 </div>
-                <div className="bg-muted/20 border border-border rounded-lg overflow-hidden">
-                  <table className="w-full text-xs">
+                <div className="bg-muted/20 border border-border rounded-lg overflow-hidden min-w-0 max-w-full">
+                  <MobileTableScroll>
+                  <table className="w-full text-xs min-w-[44rem]">
                     <thead className="bg-muted/40 text-left"><tr>
                       <th className="px-2 py-1.5">Reported</th><th className="px-2 py-1.5">Description</th>
                       <th className="px-2 py-1.5">Severity</th><th className="px-2 py-1.5">Status</th>
@@ -1117,6 +1119,7 @@ export default function Machines() {
                         ))}
                     </tbody>
                   </table>
+                  </MobileTableScroll>
                 </div>
               </div>
 
@@ -1126,8 +1129,9 @@ export default function Machines() {
                   <h3 className="font-semibold text-sm flex items-center gap-1.5"><History size={15} /> Service History & Calibration</h3>
                   <Button size="sm" variant="outline" onClick={() => openCreateService(detail.machine.id)}><Plus size={13} className="mr-1" /> Add Service</Button>
                 </div>
-                <div className="bg-muted/20 border border-border rounded-lg overflow-hidden">
-                  <table className="w-full text-xs">
+                <div className="bg-muted/20 border border-border rounded-lg overflow-hidden min-w-0 max-w-full">
+                  <MobileTableScroll>
+                  <table className="w-full text-xs min-w-[44rem]">
                     <thead className="bg-muted/40 text-left"><tr>
                       <th className="px-2 py-1.5">Date</th><th className="px-2 py-1.5">Type</th>
                       <th className="px-2 py-1.5">Engineer / Vendor</th><th className="px-2 py-1.5">Next Due</th>
@@ -1159,6 +1163,7 @@ export default function Machines() {
                         ))}
                     </tbody>
                   </table>
+                  </MobileTableScroll>
                 </div>
               </div>
             </>

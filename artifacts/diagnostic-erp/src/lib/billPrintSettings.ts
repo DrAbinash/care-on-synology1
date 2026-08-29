@@ -17,7 +17,7 @@
 // looked perfect. Always pass the server global here so the effective paper
 // size is the one the clinic actually configured.
 
-export type BillFormat = "classic" | "hope-a5";
+export type BillFormat = "classic" | "classic-portrait" | "hope-a5" | "a5-landscape" | "care-sage" | "care-sage-sleeping";
 /** Retired format ids that may still appear in older clinic_settings JSON blobs. */
 export type LegacyBillFormat =
   | BillFormat
@@ -31,24 +31,51 @@ export const BILL_FORMATS: { id: BillFormat; label: string; hint: string }[] = [
   {
     id: "classic",
     label: "CARE Invoice",
-    hint: "Half A4 / A5 landscape (210×148 mm) — previous CARE bill layout",
+    hint: "A5 landscape (210×148 mm) — previous CARE bill layout",
+  },
+  {
+    id: "classic-portrait",
+    label: "CARE Invoice (A5 Portrait)",
+    hint: "A5 portrait (148×210 mm) — same CARE Invoice layout, opposite orientation",
   },
   {
     id: "hope-a5",
     label: "HOPE A5 Receipt",
     hint: "A5 portrait (148×210 mm) — HOPE OPD receipt structure",
   },
+  {
+    id: "a5-landscape",
+    label: "A5 Landscape",
+    hint: "A5 landscape (210×148 mm) — compact receipt",
+  },
+  {
+    id: "care-sage",
+    label: "CARE Sage",
+    hint: "A5 landscape (210×148 mm) — status-edge receipt, settled bills print in green",
+  },
+  {
+    id: "care-sage-sleeping",
+    label: "CARE Sage Sleeping",
+    hint: "A5 portrait (148×210 mm) — feed-safe status-edge receipt, prints full-size whichever edge goes in first",
+  },
 ];
 
-/** Normalize saved / legacy format ids to one of the two live templates. */
+/** Normalize saved / legacy format ids to one of the live templates. */
 export function normalizeBillFormat(raw: unknown): BillFormat {
+  if (raw === "a5-landscape") return "a5-landscape";
+  if (raw === "care-sage") return "care-sage";
+  if (raw === "care-sage-sleeping") return "care-sage-sleeping";
   if (raw === "hope-a5") return "hope-a5";
+  if (raw === "classic-portrait") return "classic-portrait";
   return "classic";
 }
 
 /** Paper that belongs with each presentation template. */
 export function paperSizeForBillFormat(format: BillFormat): BillPaperSize {
-  return format === "hope-a5" ? "A5-portrait" : "A5-landscape";
+  if (format === "hope-a5" || format === "classic-portrait" || format === "care-sage-sleeping") return "A5-portrait";
+  if (format === "care-sage") return "A5-landscape";
+  if (format === "a5-landscape") return "A5-landscape";
+  return "A5-landscape";
 }
 
 export type BillPaperSize = "A5-landscape" | "A5-portrait" | "half-a4" | "A4";
@@ -133,7 +160,7 @@ export function resolveBillPrintDelivery(
 export type UserRole = "reception" | "accounts" | "admin" | "supervisor" | "billing" | "lab" | "manager";
 
 export type BillPrintSettings = {
-  /** Presentation template: CARE Invoice (classic) or HOPE A5 receipt. */
+  /** Presentation template: CARE Invoice, HOPE A5, or A5 Landscape receipt. */
   defaultFormat: BillFormat;
   // Auto paper size threshold: switch from A5 → A4 when tests >= this value
   autoA4Threshold: number;
@@ -244,8 +271,9 @@ export const GLOBAL_BILL_PRINT_DEFAULTS: BillPrintSettings = {
 
 /**
  * Cursor-owned layout knobs that clinics still cannot freely retune:
- * auto-A4 threshold. Paper follows the selected bill format (classic →
- * half A4 landscape, hope-a5 → A5 portrait).
+ * auto-A4 threshold. Paper follows the selected bill format (classic /
+ * a5-landscape / care-sage → A5 landscape, hope-a5 / care-sage-sleeping →
+ * A5 portrait).
  */
 export const CURSOR_BILL_PRINT_LAYOUT = {
   autoA4Threshold: 8,
@@ -469,7 +497,7 @@ export function getAutoBillPaperSize(
 export function billPreviewPaperPx(pageOpts: BillPrintPageOpts): { w: number; h: number } {
   if (pageOpts.paperSize === "A4") return { w: 794, h: 1123 };
   // Landscape half-sheet (legacy). Default short bills are A5 portrait 148×210.
-  if (pageOpts.orientation === "landscape" || pageOpts.pageCssSize.includes("210mm 148mm")) {
+  if (pageOpts.orientation === "landscape" || pageOpts.pageCssSize.includes("210mm 148mm") || pageOpts.pageCssSize === "A5 landscape") {
     return { w: 794, h: 559 };
   }
   // A5 portrait / HOPE (148×210)
@@ -480,10 +508,10 @@ export function getPaperSizeCss(size: BillPaperSize): { pageSize: string; width:
   switch (size) {
     case "A5-landscape":
     case "half-a4":
-      // Pre-cut half A4 in the tray — @page matches the physical sheet.
-      return { pageSize: "210mm 148mm", width: "210mm", minHeight: "148mm", maxHeight: "148mm" };
+      // Named ISO size so Chrome/Epson pick A5, not A4 landscape.
+      return { pageSize: "A5 landscape", width: "210mm", minHeight: "148mm", maxHeight: "148mm" };
     case "A5-portrait":
-      return { pageSize: "148mm 210mm", width: "148mm", minHeight: "210mm", maxHeight: "none" };
+      return { pageSize: "A5 portrait", width: "148mm", minHeight: "210mm", maxHeight: "none" };
     case "A4":
     default:
       return { pageSize: "A4 portrait", width: "210mm", minHeight: "297mm", maxHeight: "none" };
@@ -502,8 +530,9 @@ export type BillPrintPageOpts = {
 
 /**
  * Map clinic Billing Print settings + test count → paper/orientation the HTML
- * renderer should declare. Format drives short-bill paper (classic → 210×148
- * landscape, hope-a5 → 148×210 portrait). Long bills auto-switch to A4.
+ * renderer should declare. Format drives short-bill paper (classic /
+ * a5-landscape / care-sage → 210×148 landscape, classic-portrait / hope-a5 /
+ * care-sage-sleeping → 148×210 portrait). Long bills auto-switch to A4.
  */
 export function resolveBillPrintPageOpts(
   settings: Pick<BillPrintSettings, "defaultPaperSize" | "autoA4Threshold" | "defaultFormat"> | Partial<BillPrintSettings> | undefined,
@@ -519,19 +548,20 @@ export function resolveBillPrintPageOpts(
     };
   }
   const format = normalizeBillFormat(settings?.defaultFormat);
-  if (format === "hope-a5") {
+  if (format === "hope-a5" || format === "classic-portrait" || format === "care-sage-sleeping") {
     return {
       paperSize: "A5",
       orientation: "portrait",
       compactFooterGap: false,
-      pageCssSize: "148mm 210mm",
+      pageCssSize: "A5 portrait",
     };
   }
+  // classic, care-sage and a5-landscape share A5 landscape (210×148 mm).
   return {
     paperSize: "A5",
     orientation: "landscape",
     compactFooterGap: false,
-    pageCssSize: "210mm 148mm",
+    pageCssSize: "A5 landscape",
   };
 }
 

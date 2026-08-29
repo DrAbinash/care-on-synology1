@@ -177,11 +177,13 @@ export class NetworkError extends Error {
 /** HTTP error with a status the server actually returned (4xx/5xx after retries). */
 export class HttpError extends Error {
   readonly status: number;
+  readonly details?: unknown;
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, details?: unknown) {
     super(message);
     this.name = "HttpError";
     this.status = status;
+    this.details = details;
   }
 }
 
@@ -291,6 +293,12 @@ async function fetchWithRetry(path: string, init?: RequestInit): Promise<Respons
       }
 
       const text = await res.text();
+      let details: unknown;
+      try {
+        details = JSON.parse(text);
+      } catch {
+        details = undefined;
+      }
       const message = sanitizeApiErrorMessage(text, res.status, res.statusText);
 
       // NAS reboot / container restart / Cloudflare tunnel down: reverse proxy
@@ -310,7 +318,7 @@ async function fetchWithRetry(path: string, init?: RequestInit): Promise<Respons
       if (res.status === 401 && (isSessionAuthPath(path) || isSessionDeadMessage(message))) {
         handleSessionExpiry();
       }
-      throw new HttpError(message, res.status);
+      throw new HttpError(message, res.status, details);
     }
 
     return res;

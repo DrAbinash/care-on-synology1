@@ -35,7 +35,7 @@ findings:
     severity: null
     laterality: null
     measurements: []
-    keyboard_alias: [nls]
+    keyboard_aliases: [nls]
     combo_tiles: []
     criticality: none
     normal_variant: true
@@ -53,7 +53,7 @@ findings:
     severity: null
     laterality: null
     measurements: []
-    keyboard_alias: [spond]
+    keyboard_aliases: [spond]
     combo_tiles: [combo.mrls.spond_strl, combo.mrls.pivd_classic]
     criticality: none
     normal_variant: false
@@ -71,7 +71,7 @@ findings:
     severity: null
     laterality: null
     measurements: []
-    keyboard_alias: [strl]
+    keyboard_aliases: [strl]
     combo_tiles: [combo.mrls.spond_strl]
     criticality: none
     normal_variant: false
@@ -88,9 +88,9 @@ findings:
     parameters: []
     severity: null
     laterality: null
-    location_options: [loc.spine_lumbar.discs]
+    location: [loc.spine_lumbar.discs]
     measurements: []
-    keyboard_alias: [des]
+    keyboard_aliases: [des]
     combo_tiles: []
     criticality: none
     normal_variant: false
@@ -107,9 +107,9 @@ findings:
     parameters: []
     severity: null
     laterality: null
-    location_options: [loc.spine_lumbar.discs]
+    location: [loc.spine_lumbar.discs]
     measurements: [meas.canal_ap]
-    keyboard_alias: [db]                 # level-slotted stem -> db34, db45, db5s1
+    keyboard_aliases: [db]                 # level-slotted stem -> db34, db45, db5s1
     combo_tiles: []
     criticality: none
     normal_variant: false
@@ -126,9 +126,9 @@ findings:
     parameters: [param.disc_zone, param.root_involvement, param.size]
     severity: sev.canal
     laterality: null
-    location_options: [loc.spine_lumbar.discs, loc.root_map]
+    location: [loc.spine_lumbar.discs, loc.root_map]
     measurements: [meas.canal_ap]
-    keyboard_alias: [pv]                 # -> pv34, pv45, pv5s1
+    keyboard_aliases: [pv]                 # -> pv34, pv45, pv5s1
     combo_tiles: [combo.mrls.pivd_classic, combo.mrls.pivd_5s1, combo.mrls.two_level]
     criticality: none
     normal_variant: false
@@ -148,9 +148,9 @@ findings:
     parameters: [param.disc_zone, param.size]
     severity: sev.canal
     laterality: null
-    location_options: [loc.spine_lumbar.discs, loc.root_map]
+    location: [loc.spine_lumbar.discs, loc.root_map]
     measurements: [meas.canal_ap]
-    keyboard_alias: [ex]                 # -> ex45, ex5s1
+    keyboard_aliases: [ex]                 # -> ex45, ex5s1
     combo_tiles: []
     criticality: significant
     normal_variant: false
@@ -168,9 +168,9 @@ findings:
     parameters: []
     severity: null
     laterality: null
-    location_options: [loc.spine_lumbar.discs]
+    location: [loc.spine_lumbar.discs]
     measurements: []
-    keyboard_alias: [af]
+    keyboard_aliases: [af]
     combo_tiles: []
     criticality: none
     normal_variant: false
@@ -187,9 +187,9 @@ findings:
     parameters: []
     severity: sev.canal
     laterality: null
-    location_options: [loc.spine_lumbar.discs]
+    location: [loc.spine_lumbar.discs]
     measurements: [meas.canal_ap]
-    keyboard_alias: [cs]                 # -> cs34, cs45, cs5s1
+    keyboard_aliases: [cs]                 # -> cs34, cs45, cs5s1
     combo_tiles: [combo.mrls.pivd_classic]
     criticality: {significant_if: "severe"}
     normal_variant: false
@@ -207,9 +207,9 @@ findings:
     parameters: [param.root_involvement]
     severity: sev.canal
     laterality: lat.rlb
-    location_options: [loc.spine_lumbar.discs, loc.root_map]
+    location: [loc.spine_lumbar.discs, loc.root_map]
     measurements: []
-    keyboard_alias: [fn]                 # -> fn45, fn5s1
+    keyboard_aliases: [fn]                 # -> fn45, fn5s1
     combo_tiles: [combo.mrls.pivd_5s1]
     criticality: none
     normal_variant: false
@@ -227,9 +227,9 @@ findings:
     parameters: []
     severity: null
     laterality: null
-    location_options: [loc.spine_lumbar.discs]
+    location: [loc.spine_lumbar.discs]
     measurements: []
-    keyboard_alias: [lff]
+    keyboard_aliases: [lff]
     combo_tiles: []
     criticality: none
     normal_variant: false
@@ -246,9 +246,9 @@ findings:
     parameters: []
     severity: sev.meyerding
     laterality: null
-    location_options: [loc.spine_lumbar.vertebrae]
+    location: [loc.spine_lumbar.vertebrae]
     measurements: [meas.listhesis_mm]
-    keyboard_alias: [lith]              # -> lith45, lith5s1
+    keyboard_aliases: [lith]              # -> lith45, lith5s1
     combo_tiles: [combo.mrls.listhesis_set]
     criticality: none
     normal_variant: false
@@ -266,9 +266,9 @@ findings:
     parameters: []
     severity: sev.modic
     laterality: null
-    location_options: [loc.spine_lumbar.discs]
+    location: [loc.spine_lumbar.discs]
     measurements: []
-    keyboard_alias: [mod1, mod2, mod3]
+    keyboard_aliases: [mod1, mod2, mod3]
     combo_tiles: []
     criticality: none
     normal_variant: false
@@ -285,9 +285,9 @@ findings:
     parameters: [param.size]
     severity: null
     laterality: null
-    location_options: [loc.spine_lumbar.vertebrae]
+    location: [loc.spine_lumbar.vertebrae]
     measurements: []
-    keyboard_alias: [hem]
+    keyboard_aliases: [hem]
     combo_tiles: []
     criticality: none
     normal_variant: true
@@ -304,9 +304,9 @@ findings:
     parameters: [param.course]
     severity: null
     laterality: null
-    location_options: [loc.spine_lumbar.vertebrae]
+    location: [loc.spine_lumbar.vertebrae]
     measurements: []
-    keyboard_alias: [col]
+    keyboard_aliases: [col]
     combo_tiles: [combo.mrls.osteoporotic]
     criticality: significant
     normal_variant: false
@@ -325,9 +325,9 @@ findings:
     parameters: []
     severity: null
     laterality: null
-    location_options: [loc.spine_lumbar.discs]
+    location: [loc.spine_lumbar.discs]
     measurements: []
-    keyboard_alias: [sch]
+    keyboard_aliases: [sch]
     combo_tiles: []
     criticality: none
     normal_variant: true
@@ -344,9 +344,9 @@ findings:
     parameters: [param.size]
     severity: null
     laterality: null
-    location_options: [loc.spine_lumbar.vertebrae]
+    location: [loc.spine_lumbar.vertebrae]
     measurements: []
-    keyboard_alias: [tar]
+    keyboard_aliases: [tar]
     combo_tiles: []
     criticality: none
     normal_variant: true

@@ -1,5 +1,5 @@
 import { Router, type Response } from "express";
-import { db, ordersTable, orderTestsTable, testsTable, patientsTable, doctorsTable, clinicSettingsTable } from "@workspace/db";
+import { db, ordersTable, orderTestsTable, testsTable, patientsTable, doctorsTable, clinicSettingsTable, packagesTable, packageTestsTable } from "@workspace/db";
 import { eq, and, sql, desc, gte, lte, inArray } from "drizzle-orm";
 import {
   ListOrdersQueryParams,
@@ -13,6 +13,12 @@ import { getSlowThresholdMs } from "../lib/requestMetrics";
 import { nextDocumentCounter, istYearMonth, syncOrderNumberSeqForward } from "../lib/documentNumberCounters";
 import { FULL_ACCESS_ROLES } from "../middleware/requireStaffAuth";
 import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
+import { moneyAdd } from "../lib/money";
+import {
+  parsePackageIds,
+  packageEffectivePrice,
+  resolveOrderLinePrices,
+} from "../lib/financialIntegrity";
 
 export const ordersRouter = Router();
 
@@ -136,13 +142,14 @@ export async function createOrderHandler(req: StaffAuthRequest, res: Response): 
   }
   const { patientId, doctorId, testIds, tests: customTests, notes, clientRef } = parsed.data;
   const startedAt = Date.now();
+  const packageIdsEarly = parsePackageIds((req.body as { packageIds?: unknown })?.packageIds);
 
   const probeByClientRef = () =>
     db.select().from(ordersTable).where(eq(ordersTable.clientRef, clientRef!)).limit(1);
 
   const hasCustom = !!customTests && customTests.length > 0;
   const hasLegacy = !!testIds && testIds.length > 0;
-  if (!hasCustom && !hasLegacy) {
+  if (!hasCustom && !hasLegacy && packageIdsEarly.length === 0) {
     // Idempotency still wins over body validation (matching the original
     // check order): a retry carrying a known clientRef but a degraded body
     // must replay the existing order, not 400.
@@ -158,7 +165,7 @@ export async function createOrderHandler(req: StaffAuthRequest, res: Response): 
       details: [
         {
           path: ["tests"],
-          message: "At least one of `tests` or `testIds` must be provided with one or more items.",
+          message: "At least one of `tests`, `testIds`, or `packageIds` must be provided with one or more items.",
         },
       ],
     });
@@ -171,7 +178,56 @@ export async function createOrderHandler(req: StaffAuthRequest, res: Response): 
   // so serial awaits here directly delay the receipt print. The idempotency
   // result is checked first, then validation results in the original order
   // (patient → doctor → tests), so error precedence is unchanged.
-  const requestedTestIds = hasCustom ? customTests!.map((ct) => ct.testId) : testIds!;
+  const packageIds = packageIdsEarly;
+  const rawIsVip = !!(req.body as { isVip?: unknown })?.isVip;
+  const isFullAccess = FULL_ACCESS_ROLES.has(req.staffSession?.role ?? "");
+
+  // Expand package membership so catalog lookup covers package component tests.
+  let packageTestRows: Array<{
+    packageId: number;
+    testId: number;
+    discountPct: string | null;
+    discountAmount: string | null;
+  }> = [];
+  let packageRows: Array<{
+    id: number;
+    price: string;
+    discountPct: string | null;
+    discountAmount: string | null;
+  }> = [];
+  if (packageIds.length > 0) {
+    [packageRows, packageTestRows] = await Promise.all([
+      db
+        .select({
+          id: packagesTable.id,
+          price: packagesTable.price,
+          discountPct: packagesTable.discountPct,
+          discountAmount: packagesTable.discountAmount,
+        })
+        .from(packagesTable)
+        .where(inArray(packagesTable.id, packageIds)),
+      db
+        .select({
+          packageId: packageTestsTable.packageId,
+          testId: packageTestsTable.testId,
+          discountPct: packageTestsTable.discountPct,
+          discountAmount: packageTestsTable.discountAmount,
+        })
+        .from(packageTestsTable)
+        .where(inArray(packageTestsTable.packageId, packageIds)),
+    ]);
+  }
+
+  const packageMemberIds = packageTestRows.map((pt) => pt.testId);
+  const baseTestIds = hasCustom ? customTests!.map((ct) => ct.testId) : (testIds ?? []);
+  const requestedTestIds = [...new Set([...baseTestIds, ...packageMemberIds])];
+  if (requestedTestIds.length === 0) {
+    res.status(400).json({
+      error: "Invalid request",
+      details: [{ path: ["packageIds"], message: "No billable tests could be resolved from the selected packages." }],
+    });
+    return;
+  }
   const [existingByRef, patientRows, doctorRows, testRows] = await Promise.all([
     // ── Idempotency probe (duplicate bill / connectivity retry fix) ────────
     // If the client sent a clientRef UUID and an order already exists with
@@ -231,17 +287,20 @@ export async function createOrderHandler(req: StaffAuthRequest, res: Response): 
   // BOTH paths must verify each test id exists AND is active, otherwise we'd
   // accept orders for discontinued/unknown tests and silently fail at insert
   // time (or, worse, mis-charge the patient).
+  // Line prices via resolveOrderLinePrices:
+  // packages allocate from package config; leftover/unpackaged tests honour
+  // desk floor/ceiling (non-admin may undercharge, markup → 403; admin any).
   let lineItems: { testId: number; price: string }[] = [];
-  if (hasCustom) {
-    const requestedIds = requestedTestIds;
-    const missing = requestedIds.filter((id) => !testMap.has(id));
-    const inactive = requestedIds.filter((id) => testMap.get(id) && !testMap.get(id)!.isActive);
+  const validationIds = hasCustom ? customTests!.map((ct) => ct.testId) : (testIds ?? packageMemberIds);
+  {
+    const missing = validationIds.filter((id) => !testMap.has(id));
+    const inactive = validationIds.filter((id) => testMap.get(id) && !testMap.get(id)!.isActive);
     if (missing.length > 0 || inactive.length > 0) {
       res.status(400).json({
         error: "Invalid request",
         details: [
           {
-            path: ["tests"],
+            path: [hasCustom ? "tests" : hasLegacy ? "testIds" : "packageIds"],
             message:
               missing.length > 0
                 ? `One or more testIds do not refer to an existing test: ${missing.join(", ")}`
@@ -251,80 +310,69 @@ export async function createOrderHandler(req: StaffAuthRequest, res: Response): 
       });
       return;
     }
-    // PRICE OVERRIDE GUARD: admin/super_admin may set any price. Regular staff
-    // may bill at/below catalog (package line splits) and, when isVip is true,
-    // up to catalog × (1 + clinic vip%). Markup above that ceiling is rejected.
-    const isFullAccess = FULL_ACCESS_ROLES.has(req.staffSession?.role ?? "");
-    if (!isFullAccess) {
-      const rawIsVip = !!(req.body as { isVip?: unknown })?.isVip;
-      let vipPct = 0;
-      if (rawIsVip) {
-        const [cfg] = await db
-          .select({ vipPercentage: clinicSettingsTable.vipPercentage })
-          .from(clinicSettingsTable)
-          .limit(1);
-        vipPct = Number(cfg?.vipPercentage ?? 50);
-        if (!Number.isFinite(vipPct) || vipPct < 0) vipPct = 50;
-      }
-      const mismatched = customTests!.filter((ct) => {
-        const catalogPrice = Number(testMap.get(ct.testId)?.price ?? NaN);
-        if (!Number.isFinite(catalogPrice)) return false;
-        const requested = Number(ct.price);
-        if (!Number.isFinite(requested) || requested < 0) return true;
-        const maxAllowed = catalogPrice * (1 + (rawIsVip ? vipPct : 0) / 100);
-        return requested - maxAllowed > 0.01;
-      });
-      if (mismatched.length > 0) {
-        res.status(403).json({
-          error: "Invalid request",
-          details: [
-            {
-              path: ["tests"],
-              message:
-                "Only admin/super-admin may bill a test above its catalog price" +
-                (rawIsVip ? ` (VIP ceiling ${vipPct}%)` : "") +
-                ". " +
-                mismatched
-                  .map((ct) => `testId=${ct.testId} requested=₹${Number(ct.price).toFixed(2)} catalog=₹${Number(testMap.get(ct.testId)?.price ?? 0).toFixed(2)}`)
-                  .join("; "),
-            },
-          ],
-        });
-        return;
-      }
-    }
-    lineItems = customTests!.map((ct) => ({ testId: ct.testId, price: String(ct.price) }));
-  } else {
-    const tests = testRows;
-    if (tests.length !== testIds!.length) {
-      res.status(400).json({
-        error: "Invalid request",
-        details: [
-          {
-            path: ["testIds"],
-            message: "One or more testIds do not refer to an existing test.",
-          },
-        ],
-      });
-      return;
-    }
-    const inactive = tests.filter((t) => !t.isActive).map((t) => t.id);
-    if (inactive.length > 0) {
-      res.status(400).json({
-        error: "Invalid request",
-        details: [
-          {
-            path: ["testIds"],
-            message: `One or more testIds refer to discontinued (inactive) tests: ${inactive.join(", ")}`,
-          },
-        ],
-      });
-      return;
-    }
-    lineItems = tests.map((t) => ({ testId: t.id, price: t.price }));
   }
 
-  const totalAmount = lineItems.reduce((sum, t) => sum + Number(t.price), 0);
+  let vipPct = 0;
+  if (rawIsVip) {
+    const [cfg] = await db
+      .select({ vipPercentage: clinicSettingsTable.vipPercentage })
+      .from(clinicSettingsTable)
+      .limit(1);
+    vipPct = Number(cfg?.vipPercentage ?? 50);
+    if (!Number.isFinite(vipPct) || vipPct < 0) vipPct = 50;
+  }
+
+  const catalogByTestId = new Map<number, unknown>(
+    [...testMap.entries()].map(([id, row]) => [id, row.price]),
+  );
+
+  const packageGroups = packageIds.map((pkgId) => {
+    const pkg = packageRows.find((p) => p.id === pkgId);
+    const members = packageTestRows.filter((pt) => pt.packageId === pkgId);
+    const componentDiscounts = new Map(
+      members.map((m) => [
+        m.testId,
+        { discountPct: m.discountPct, discountAmount: m.discountAmount },
+      ]),
+    );
+    return {
+      testIds: members.map((m) => m.testId),
+      effectivePrice: pkg ? packageEffectivePrice(pkg) : 0,
+      componentDiscounts,
+    };
+  });
+
+  const priceTests = hasCustom
+    ? customTests!.map((ct) => ({ testId: ct.testId, requestedPrice: ct.price }))
+    : (testIds ?? []).map((id) => ({ testId: id, requestedPrice: testMap.get(id)?.price ?? 0 }));
+
+  // Include package-only members not already listed so allocation covers them.
+  for (const id of packageMemberIds) {
+    if (!priceTests.some((t) => t.testId === id)) {
+      priceTests.push({ testId: id, requestedPrice: testMap.get(id)?.price ?? 0 });
+    }
+  }
+
+  const resolved = resolveOrderLinePrices({
+    tests: priceTests,
+    catalogByTestId,
+    packageGroups,
+    isAdmin: isFullAccess,
+    isVip: rawIsVip,
+    vipPercent: vipPct,
+  });
+  if (resolved.error) {
+    // PRICE_CEILING must stay 403 — billingDeskSave.request.test and desk UX
+    // treat markup above catalogue as a permission denial, not a bad request.
+    res.status(resolved.code === "PRICE_CEILING" ? 403 : 400).json({
+      error: "Invalid request",
+      details: [{ path: ["tests"], message: resolved.error }],
+    });
+    return;
+  }
+  lineItems = resolved.lines.map((l) => ({ testId: l.testId, price: String(l.price) }));
+
+  const totalAmount = moneyAdd(...lineItems.map((t) => t.price));
 
   // Resolve ledger from doctor (fallback: default ledger 1)
   const ledgerId = resolvedDoctor?.ledgerId ?? 1;

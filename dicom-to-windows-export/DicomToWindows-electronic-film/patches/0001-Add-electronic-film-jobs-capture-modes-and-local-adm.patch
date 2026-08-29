@@ -1,0 +1,2866 @@
+From 4779c0cc49a45e2d396305eaeb0f87f2376f3781 Mon Sep 17 00:00:00 2001
+From: Cursor Agent <cursoragent@cursor.com>
+Date: Sun, 23 Aug 2026 19:57:29 +0000
+Subject: [PATCH] Add electronic film jobs, capture modes, and local admin UI
+
+Extend the existing DICOM Print SCP without replacing it: persistent
+electronic film job storage, PHI-safe identity audit, capture-only and
+capture-and-print modes with separate status tracking, console layout
+preservation with multi-page spill, expanded calibration and per-modality
+profiles, config persistence with ENV precedence, admin dashboard at /admin,
+and CARE job/artifact APIs. Includes tests and deployment documentation.
+---
+ Dockerfile                     |   2 +-
+ ELECTRONIC_FILM_DELIVERABLE.md | 227 ++++++++++++++++
+ README.md                      |  24 ++
+ admin_auth.py                  | 120 +++++++++
+ admin_routes.py                | 374 +++++++++++++++++++++++++++
+ admin_ui.html                  | 311 ++++++++++++++++++++++
+ config_store.py                | 416 +++++++++++++++++++++++++++++
+ docker-compose.yml             |   4 +
+ identity_audit.py              | 128 +++++++++
+ image_profiles.py              | 148 +++++++++++
+ job_store.py                   | 159 ++++++++++++
+ server.py                      | 460 +++++++++++++++++++++++++++------
+ tests/test_bridge.py           | 116 +++++++++
+ 13 files changed, 2411 insertions(+), 78 deletions(-)
+ create mode 100644 ELECTRONIC_FILM_DELIVERABLE.md
+ create mode 100644 admin_auth.py
+ create mode 100644 admin_routes.py
+ create mode 100644 admin_ui.html
+ create mode 100644 config_store.py
+ create mode 100644 identity_audit.py
+ create mode 100644 image_profiles.py
+ create mode 100644 job_store.py
+ create mode 100644 tests/test_bridge.py
+
+diff --git a/Dockerfile b/Dockerfile
+index c5d6d15..147ee0d 100644
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -62,7 +62,7 @@ WORKDIR /app
+ COPY requirements.txt .
+ RUN pip install --no-cache-dir -r requirements.txt
+ 
+-COPY server.py .
++COPY server.py config_store.py job_store.py identity_audit.py image_profiles.py admin_auth.py admin_routes.py admin_ui.html .
+ COPY docker-entrypoint.sh /app/docker-entrypoint.sh
+ 
+ # Strip CRs defensively: cloning this repo on Windows without the shipped
+diff --git a/ELECTRONIC_FILM_DELIVERABLE.md b/ELECTRONIC_FILM_DELIVERABLE.md
+new file mode 100644
+index 0000000..56a4c96
+--- /dev/null
++++ b/ELECTRONIC_FILM_DELIVERABLE.md
+@@ -0,0 +1,227 @@
++# Electronic Film + Admin UI — Implementation Deliverable
++
++## 1. Existing Architecture Discovered
++
++Single-container Python bridge (`server.py` ~2900 lines) with:
++
++| Component | Status | Location |
++|-----------|--------|----------|
++| DICOM Print SCP (pynetdicom) | EXISTING | `server.py` — `build_ae()`, N-service handlers |
++| C-ECHO / Verification | EXISTING | `handle_echo()` |
++| N-CREATE Film Session / Film Box / Image Boxes | EXISTING | `_create_film_session()`, `_create_film_box()` |
++| N-SET Image Box pixel data | EXISTING | `_set_image_box()` |
++| N-ACTION print trigger | EXISTING | `handle_action()` → `_print_film_box()` |
++| N-DELETE cascade | EXISTING | `handle_delete()` |
++| N-GET Printer status | EXISTING | `handle_get()` |
++| Image decode (grayscale/color/YBR) | EXISTING | `decode_image_box_pixels()` |
++| Gamma + percentile calibration | EXISTING (extended) | `calibrate_grayscale/color` → `image_profiles.calibrate_frame()` |
++| Page layout / letterhead | EXISTING | `render_page()`, `render_banner()` |
++| PDF/PNG artifact save | EXISTING | `save_pages()` |
++| CUPS / JetDirect physical print | EXISTING | `spool_print_job()` |
++| ERP HTTP print API | EXISTING (extended) | `_PrintBridgeHTTPHandler` |
++| ERP branding pull | EXISTING | `fetch_erp_branding()` |
++| In-memory job status (1h) | PARTIAL | `PrintJobStatusRecord` |
++| ENV-only configuration | EXISTING | module-level `_env_*` readers |
++| Admin UI | MISSING → **ADDED** | `/admin`, `admin_ui.html` |
++| Persistent electronic film jobs | MISSING → **ADDED** | `job_store.py` |
++| Capture modes | MISSING → **ADDED** | `CAPTURE_MODE` |
++| Identity audit | MISSING → **ADDED** | `identity_audit.py` |
++| Config persistence | MISSING → **ADDED** | `config_store.py` |
++
++## 2. What Was Already Built vs Added
++
++**Reused unchanged core:** DICOM association handling, Film Session/Box/Image Box lifecycle, pixel decoding, CUPS/JetDirect, ERP HTTP print POST, ERP branding thread, batch flush housekeeping.
++
++**Added:**
++- `config_store.py` — ENV > CONFIG > defaults precedence
++- `job_store.py` — persistent electronic film job JSON + index
++- `identity_audit.py` — PHI-safe tag presence audit
++- `image_profiles.py` — brightness/contrast/sharpness/invert + per-modality profiles
++- `admin_auth.py` — PBKDF2 sessions, CSRF, login rate limiting
++- `admin_routes.py` + `admin_ui.html` — local admin dashboard
++- Capture mode separation (capture vs physical print status)
++- Console layout preservation + multi-page spill (no overflow drop when `PRESERVE_CONSOLE_LAYOUT=true`)
++- Extended APIs: job list, artifact download, admin settings
++
++## 3. DICOM Print Lifecycle
++
++```
++MRI SCU → Association (EVT_ACCEPTED logged)
++       → C-ECHO (optional)
++       → N-CREATE Film Session
++       → N-CREATE Film Box (ImageDisplayFormat → rows×cols)
++       → N-SET Image Box(es) with pixel data
++       → N-ACTION Film Box (Action Type 1 = Print)
++       → N-ACTION success returned immediately
++       → Background: render → save PDF/PNG → optional physical print
++       → N-DELETE (session/box cleanup)
++```
++
++## 4. Electronic Film Lifecycle
++
++```
++N-ACTION → _print_film_box()
++        → process_print_job() [ThreadPoolExecutor]
++        → job_store.create_job() [pending]
++        → render_page() per page group
++        → save_pages() → OUTPUT_DIR/print_YYYYMMDD-HHMMSS_*.pdf
++        → job_store.update_job(captureStatus=captured)
++        → optional spool_print_job() → physicalPrintStatus printed|failed
++```
++
++Job metadata: `/data/print-jobs/jobs/{jobKey}.json` + `index.json`
++
++## 5. Capture Modes
++
++| Mode | Electronic Film | Physical Print | DICOM N-ACTION |
++|------|-----------------|----------------|----------------|
++| `CAPTURE_ONLY` | Always | Skipped | Success if capture succeeds |
++| `CAPTURE_AND_PRINT` | Always | Attempted; failure does not erase capture | Success if capture succeeds |
++| `PRINT_ONLY` | Saved then printed | Required for job success | Fails if print fails |
++
++## 6. Console Layout Fidelity
++
++When `PRESERVE_CONSOLE_LAYOUT=true` (default in persisted config):
++- Uses Film Box `ImageDisplayFormat` rows×cols (not modality default grid)
++- Image order by `ImageBoxPosition`
++- Overflow images spill to additional pages (not dropped)
++- `HONOR_SCU_FILM_SIZE` obeys `FilmSizeID` when enabled
++- `BATCH_GROUP_BY=auto` only applies when `PRESERVE_CONSOLE_LAYOUT=false` (legacy GE P1 batching)
++
++Unsupported DICOM print attributes (Magnification Type, Border Density, etc.) are not rewritten silently — identity audit captures what arrived; unsupported layout attrs are logged at Film Box creation.
++
++## 7. Image Processing / Calibration
++
++Pipeline in `image_profiles.calibrate_frame()`:
++1. Percentile stretch (black/white point)
++2. Gamma
++3. Brightness offset
++4. Contrast multiplier
++5. Sharpness (unsharp mask via Gaussian)
++6. Invert polarity
++
++Per-modality overrides via `MODALITY_PROFILES` JSON in config. Admin UI exposes global controls + synthetic grayscale preview (`/admin/api/calibration-preview`).
++
++## 8. Admin UI Architecture
++
++- Served from same HTTP server on `HTTP_PORT` (default 8090)
++- URL: `http://<bridge-ip>:8090/admin`
++- Static single-page `admin_ui.html` + JSON API under `/admin/api/*`
++- Auth: session cookie + `X-Admin-Session`, CSRF on writes
++- First login sets password if `ADMIN_PASSWORD_HASH` empty
++
++Pages: Dashboard, DICOM, Film/Layout, Calibration, Branding, Printer, Storage, Job History, Diagnostics, Backup/Presets.
++
++## 9. Config Precedence / Persistence
++
++```
++ENV (docker-compose / Container Manager)  — highest, unchanged deployments work
++    ↓
++/data/config/config.json (operator saves via Admin)
++    ↓
++Built-in defaults (config_store.DEFAULTS)
++```
++
++Each setting shows source: ENV | CONFIG | DEFAULT. Restart required: `DICOM_AET`, `DICOM_PORT`, `ALLOWED_CALLING_AETS`, `HTTP_PORT`. Other settings live-apply via `reload_live_config()`.
++
++Docker volume: `./config:/data/config`
++
++## 10. Branding
++
++`BRANDING_SOURCE`: `CARE` (ERP_BRANDING_URL) or `LOCAL` (clinic fields + HEADER_*/FOOTER_*). Effective source shown in Admin. ERP unreachable → local fallback fields used; not silently merged.
++
++## 11. Security
++
++- Admin login required (PBKDF2-SHA256 password hash)
++- Session tokens + CSRF on POST
++- Login rate limiting (5 attempts / 5 min per client)
++- `HTTP_BRIDGE_SECRET` masked in settings export/UI
++- No pixel data / full datasets in diagnostics
++- Identity audit redacts PHI in displayed values
++
++## 12. Job / Artifact API (CARE integration)
++
++| Endpoint | Auth | Purpose |
++|----------|------|---------|
++| `GET /api/v1/health` | None | Liveness + printer + capture mode |
++| `GET /api/v1/print-jobs` | Bearer | List persistent jobs |
++| `GET /api/v1/print-jobs/{jobKey}` | Bearer | Job metadata + identity audit |
++| `GET /api/v1/print-jobs/{jobKey}/artifact` | Bearer | PDF/PNG download |
++| `POST /api/v1/print-jobs` | Bearer | ERP print (unchanged) |
++
++Auto-match keys: `StudyInstanceUID` > `AccessionNumber`. PatientName alone never auto-matches. `identitySummary.status`: `MATCHABLE` | `UNMATCHED`.
++
++## 13. Files Changed
++
++**New:** `config_store.py`, `job_store.py`, `identity_audit.py`, `image_profiles.py`, `admin_auth.py`, `admin_routes.py`, `admin_ui.html`, `tests/test_bridge.py`, `ELECTRONIC_FILM_DELIVERABLE.md`
++
++**Modified:** `server.py`, `Dockerfile`, `docker-compose.yml`
++
++## 14. Tests / Results
++
++```
++python3 -m unittest tests.test_bridge -v
++→ 10 tests OK (config precedence, AE/port validation, identity audit, calibration, job store, auth, path safety)
++```
++
++Smoke test: `GET /admin` → 200, `GET /api/v1/health` → 200 with `captureMode`.
++
++## 15. Docker / Deployment
++
++- New volume: `./config:/data/config`
++- New env: `CAPTURE_MODE`, `PRESERVE_CONSOLE_LAYOUT`, `CONFIG_DIR`
++- Dockerfile copies all Python modules + `admin_ui.html`
++
++## 16. Regression Risks
++
++- Existing ENV-only docker-compose deployments: **no change required**
++- `BATCH_GROUP_BY=auto` in compose still works when `PRESERVE_CONSOLE_LAYOUT=false`
++- ERP HTTP print API: backward compatible
++- DICOM N-ACTION still returns success before background work completes
++
++## 17. ONE-TIME LIVE TEST (UIH MRI → PRINTSCP)
++
++After deploy, configure MRI DICOM Print destination:
++- AE Title: `PRINTSCP` (or your `DICOM_AET`)
++- IP: bridge LAN IP
++- Port: `104`
++
++Print a composed film from UIH console.
++
++**Expect in Admin UI (Dashboard):**
++- Bridge Status: RUNNING
++- Last Association: calling AE from MRI
++- Last inbound film / Last successful capture: new job entry
++- Capture mode shown (CAPTURE_AND_PRINT or CAPTURE_ONLY)
++
++**Expect in Job History:**
++- Source: DICOM
++- Calling AE: MRI SCU title
++- Pages/layout from console ImageDisplayFormat
++- Capture status: captured
++- Physical print: printed | skipped | failed (per mode)
++- Download link for PDF artifact
++
++**Expect in Identity Audit (job detail JSON):**
++- Table of tags: PatientID, StudyInstanceUID, AccessionNumber, etc.
++- Present? / redacted value / dataset source
++- `identitySummary.recommendedAutoMatchKey` if UIH sent StudyInstanceUID or AccessionNumber
++
++**Expect artifact:**
++- `/data/print-jobs/print_*.pdf` matching console layout (rows×cols per page)
++
++**Physical printer (if CAPTURE_AND_PRINT + CUPS configured):**
++- Sheet prints; failure still leaves electronic film captured
++
++## 18. UNKNOWN Until Live Test
++
++- Which patient/study tags UIH MRI actually sends in Film Session vs Film Box vs Image Box N-SET
++- Whether UIH sends StudyInstanceUID or AccessionNumber in print datasets
++- UIH-specific FilmSizeID / orientation strings
++- Whether UIH uses session-level or per-film-box N-ACTION
++
++## 19. Verdict
++
++**SAFE FOR CLINIC TEST** — core DICOM Print SCP preserved; electronic film + admin are additive. Run one UIH film with identity audit before enabling CARE auto-match.
++
++**DO NOT MERGE automatically** (per project instructions).
+diff --git a/README.md b/README.md
+index 2cdd7b0..bce48e4 100644
+--- a/README.md
++++ b/README.md
+@@ -719,6 +719,30 @@ whatever it names and the next print job should go through.
+ 
+ ---
+ 
++## Part 4B — Admin UI & Electronic Film (v1.1)
++
++Open **`http://<bridge-ip>:8090/admin`** in a browser on your LAN.
++
++- **First login:** username `admin` (or `ADMIN_USERNAME`). If no password was
++  set yet, enter a new password (≥8 characters) — it is hashed and stored in
++  `/data/config/config.json`.
++- **Dashboard:** bridge status, DICOM listener, CARE ERP reachability, capture
++  mode, physical printer, last association, last capture/print.
++- **Settings** persist to `/data/config/config.json` (mount `./config` in
++  docker-compose). Environment variables still win when set (existing
++  deployments unchanged).
++- **Capture modes:** `CAPTURE_ONLY` (electronic film only), `CAPTURE_AND_PRINT`
++  (film + physical; print failure does not erase film), `PRINT_ONLY` (legacy).
++- **Identity audit:** each DICOM job records which tags (StudyInstanceUID,
++  AccessionNumber, PatientID, etc.) were present — PHI-safe redacted values
++  for troubleshooting UIH/console behavior before CARE auto-match.
++- **CARE API:** `GET /api/v1/print-jobs`, `GET /api/v1/print-jobs/{jobKey}`,
++  `GET /api/v1/print-jobs/{jobKey}/artifact` (Bearer `HTTP_BRIDGE_SECRET`).
++
++See `ELECTRONIC_FILM_DELIVERABLE.md` for full architecture and live-test checklist.
++
++---
++
+ ## Part 5 — What this does and doesn't do (scope notes)
+ 
+ - Supports both **Basic Grayscale** (`1.2.840.10008.5.1.1.9`) and **Basic
+diff --git a/admin_auth.py b/admin_auth.py
+new file mode 100644
+index 0000000..e969a72
+--- /dev/null
++++ b/admin_auth.py
+@@ -0,0 +1,120 @@
++"""Lightweight admin authentication for the local Admin UI."""
++from __future__ import annotations
++
++import hashlib
++import hmac
++import secrets
++import threading
++import time
++from typing import Optional
++
++import config_store
++
++_LOCK = threading.RLock()
++_SESSIONS: dict[str, float] = {}
++_LOGIN_ATTEMPTS: dict[str, list[float]] = {}
++_SESSION_TTL_SECONDS = 8 * 3600
++_MAX_LOGIN_ATTEMPTS = 5
++_LOGIN_WINDOW_SECONDS = 300
++_CSRF_TOKENS: dict[str, str] = {}
++
++
++def _hash_password(password: str, salt: Optional[str] = None) -> str:
++    salt = salt or secrets.token_hex(16)
++    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 120000)
++    return f"pbkdf2_sha256${salt}${digest.hex()}"
++
++
++def verify_password(password: str, stored: str) -> bool:
++    if not stored or not password:
++        return False
++    try:
++        algo, salt, digest_hex = stored.split("$", 2)
++        if algo != "pbkdf2_sha256":
++            return False
++        check = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 120000).hex()
++        return hmac.compare_digest(check, digest_hex)
++    except ValueError:
++        return False
++
++
++def set_password(password: str) -> str:
++    if len(password) < 8:
++        raise ValueError("password must be at least 8 characters")
++    hashed = _hash_password(password)
++    config_store.update({"ADMIN_PASSWORD_HASH": hashed})
++    return hashed
++
++
++def _rate_limited(client_id: str) -> bool:
++    now = time.time()
++    with _LOCK:
++        attempts = _LOGIN_ATTEMPTS.get(client_id, [])
++        attempts = [t for t in attempts if now - t < _LOGIN_WINDOW_SECONDS]
++        _LOGIN_ATTEMPTS[client_id] = attempts
++        return len(attempts) >= _MAX_LOGIN_ATTEMPTS
++
++
++def _record_attempt(client_id: str) -> None:
++    with _LOCK:
++        _LOGIN_ATTEMPTS.setdefault(client_id, []).append(time.time())
++
++
++def login(username: str, password: str, client_id: str = "default") -> Optional[str]:
++    if _rate_limited(client_id):
++        return None
++    expected_user = str(config_store.get("ADMIN_USERNAME") or "admin")
++    stored_hash = str(config_store.get("ADMIN_PASSWORD_HASH") or "")
++    if username != expected_user:
++        _record_attempt(client_id)
++        return None
++    if not stored_hash:
++        # First-time bootstrap: accept any password >= 8 chars and persist hash
++        if len(password) < 8:
++            _record_attempt(client_id)
++            return None
++        set_password(password)
++        stored_hash = str(config_store.get("ADMIN_PASSWORD_HASH"))
++    if not verify_password(password, stored_hash):
++        _record_attempt(client_id)
++        return None
++    token = secrets.token_urlsafe(32)
++    csrf = secrets.token_urlsafe(24)
++    with _LOCK:
++        _SESSIONS[token] = time.time()
++        _CSRF_TOKENS[token] = csrf
++    return token
++
++
++def logout(token: str) -> None:
++    with _LOCK:
++        _SESSIONS.pop(token, None)
++        _CSRF_TOKENS.pop(token, None)
++
++
++def validate_session(token: str) -> bool:
++    if not token:
++        return False
++    now = time.time()
++    with _LOCK:
++        created = _SESSIONS.get(token)
++        if created is None:
++            return False
++        if now - created > _SESSION_TTL_SECONDS:
++            _SESSIONS.pop(token, None)
++            _CSRF_TOKENS.pop(token, None)
++            return False
++        return True
++
++
++def get_csrf(token: str) -> str:
++    with _LOCK:
++        return _CSRF_TOKENS.get(token, "")
++
++
++def validate_csrf(token: str, csrf: str) -> bool:
++    if not token or not csrf:
++        return False
++    with _LOCK:
++        expected = _CSRF_TOKENS.get(token, "")
++        return bool(expected) and hmac.compare_digest(expected, csrf)
+diff --git a/admin_routes.py b/admin_routes.py
+new file mode 100644
+index 0000000..bc7402a
+--- /dev/null
++++ b/admin_routes.py
+@@ -0,0 +1,374 @@
++"""Admin UI routes and API handlers."""
++from __future__ import annotations
++
++import json
++import os
++import platform
++import socket
++import subprocess
++import sys
++import urllib.request
++from datetime import datetime
++from http import HTTPStatus
++from pathlib import Path
++from typing import Any, Callable, Optional
++
++import admin_auth
++import config_store
++import image_profiles
++import job_store
++from identity_audit import summarize_identity
++
++_CTX: dict[str, Any] = {}
++
++
++def init(context: dict[str, Any]) -> None:
++    global _CTX
++    _CTX = context
++
++
++def _read_admin_ui() -> bytes:
++    path = Path(__file__).with_name("admin_ui.html")
++    return path.read_bytes()
++
++
++def _json_response(handler, status: int, payload: dict) -> None:
++    body = json.dumps(payload).encode("utf-8")
++    handler.send_response(status)
++    handler.send_header("Content-Type", "application/json")
++    handler.send_header("Content-Length", str(len(body)))
++    handler.end_headers()
++    try:
++        handler.wfile.write(body)
++    except (BrokenPipeError, ConnectionResetError):
++        pass
++
++
++def _session_token(handler) -> str:
++    cookie = handler.headers.get("Cookie", "")
++    for part in cookie.split(";"):
++        part = part.strip()
++        if part.startswith("admin_session="):
++            return part.split("=", 1)[1].strip()
++    return handler.headers.get("X-Admin-Session", "").strip()
++
++
++def _require_admin(handler) -> bool:
++    token = _session_token(handler)
++    if admin_auth.validate_session(token):
++        handler._admin_token = token  # type: ignore[attr-defined]
++        return True
++    _json_response(handler, HTTPStatus.UNAUTHORIZED, {"error": "login required"})
++    return False
++
++
++def _require_csrf(handler) -> bool:
++    token = getattr(handler, "_admin_token", "")
++    csrf = handler.headers.get("X-CSRF-Token", "")
++    if admin_auth.validate_csrf(token, csrf):
++        return True
++    _json_response(handler, HTTPStatus.FORBIDDEN, {"error": "invalid CSRF token"})
++    return False
++
++
++def _lan_ip() -> str:
++    try:
++        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
++            s.connect(("8.8.8.8", 80))
++            return s.getsockname()[0]
++    except OSError:
++        return "127.0.0.1"
++
++
++def _git_commit() -> str:
++    try:
++        result = subprocess.run(
++            ["git", "rev-parse", "--short", "HEAD"],
++            capture_output=True, text=True, timeout=3,
++            cwd=str(Path(__file__).parent),
++        )
++        if result.returncode == 0:
++            return result.stdout.strip()
++    except Exception:
++        pass
++    return os.environ.get("GIT_COMMIT", "unknown")
++
++
++def dashboard_payload() -> dict[str, Any]:
++    printer_status_fn: Callable = _CTX.get("check_printer_status", lambda: ("UNKNOWN", ""))
++    status, info = printer_status_fn()
++    capture_mode = str(config_store.get("CAPTURE_MODE"))
++    erp_url = str(config_store.get("ERP_BRANDING_URL") or "")
++    erp_status = "NOT_CONFIGURED"
++    erp_last_sync = _CTX.get("erp_last_sync", "")
++    if erp_url:
++        try:
++            with urllib.request.urlopen(erp_url, timeout=3) as resp:
++                erp_status = "CONNECTED" if resp.status == 200 else "FAILED"
++        except Exception:
++            erp_status = "FAILED"
++    stats = job_store.storage_stats()
++    jobs = job_store.list_jobs(limit=1)
++    last_job = jobs[0] if jobs else None
++    return {
++        "status": _CTX.get("bridge_status", "RUNNING"),
++        "aeTitle": config_store.get("DICOM_AET"),
++        "dicomPort": config_store.get("DICOM_PORT"),
++        "lanIp": _lan_ip(),
++        "allowedCallingAes": config_store.get("ALLOWED_CALLING_AETS"),
++        "captureMode": capture_mode,
++        "httpPort": config_store.get("HTTP_PORT"),
++        "erpBrandingUrl": erp_url,
++        "erpStatus": erp_status,
++        "erpLastSync": erp_last_sync,
++        "brandingSource": config_store.get("BRANDING_SOURCE"),
++        "outputDir": stats.get("outputDir"),
++        "physicalPrinter": {
++            "method": config_store.get("PRINT_METHOD"),
++            "cupsPrinter": config_store.get("CUPS_PRINTER_NAME"),
++            "jetdirectHost": config_store.get("JETDIRECT_HOST"),
++            "status": status,
++            "info": info,
++        },
++        "lastAssociation": _CTX.get("last_association"),
++        "lastInboundFilm": last_job,
++        "lastSuccessfulCapture": _CTX.get("last_successful_capture"),
++        "lastPhysicalPrint": _CTX.get("last_physical_print"),
++        "lastError": _CTX.get("last_error"),
++        "storage": stats,
++    }
++
++
++def diagnostic_report() -> dict[str, Any]:
++    stats = job_store.storage_stats()
++    printer_status_fn: Callable = _CTX.get("check_printer_status", lambda: ("UNKNOWN", ""))
++    status, info = printer_status_fn()
++    return {
++        "generatedAt": datetime.now().isoformat(),
++        "version": _CTX.get("version", "1.1.0"),
++        "gitCommit": _git_commit(),
++        "python": sys.version.split()[0],
++        "platform": platform.platform(),
++        "dicom": {
++            "aeTitle": config_store.get("DICOM_AET"),
++            "port": config_store.get("DICOM_PORT"),
++            "listenerStatus": _CTX.get("bridge_status", "RUNNING"),
++            "allowedCallingAes": config_store.get("ALLOWED_CALLING_AETS"),
++            "recentAssociations": _CTX.get("recent_associations", []),
++        },
++        "captureMode": config_store.get("CAPTURE_MODE"),
++        "careReachability": dashboard_payload().get("erpStatus"),
++        "printer": {"status": status, "info": info, "method": config_store.get("PRINT_METHOD")},
++        "outputDirWritable": stats.get("writable"),
++        "diskUsageBytes": stats.get("diskUsageBytes"),
++        "dependencies": {
++            "pydicom": _CTX.get("pydicom_version", ""),
++            "pynetdicom": _CTX.get("pynetdicom_version", ""),
++            "numpy": _CTX.get("numpy_version", ""),
++            "opencv": _CTX.get("opencv_version", ""),
++            "pillow": _CTX.get("pillow_version", ""),
++        },
++        "recentErrors": _CTX.get("recent_errors", []),
++        "settings": config_store.effective_settings(),
++    }
++
++
++def handle_admin_get(handler, path: str) -> bool:
++    if path == "/admin":
++        body = _read_admin_ui()
++        handler.send_response(HTTPStatus.OK)
++        handler.send_header("Content-Type", "text/html; charset=utf-8")
++        handler.send_header("Content-Length", str(len(body)))
++        handler.end_headers()
++        try:
++            handler.wfile.write(body)
++        except (BrokenPipeError, ConnectionResetError):
++            pass
++        return True
++
++    if path == "/admin/api/login":
++        _json_response(handler, HTTPStatus.METHOD_NOT_ALLOWED, {"error": "use POST"})
++        return True
++
++    if path.startswith("/admin/api/"):
++        sub = path[len("/admin/api/"):]
++        if sub == "dashboard":
++            if not _require_admin(handler):
++                return True
++            _json_response(handler, HTTPStatus.OK, dashboard_payload())
++            return True
++        if sub == "settings":
++            if not _require_admin(handler):
++                return True
++            _json_response(handler, HTTPStatus.OK, {
++                "settings": config_store.effective_settings(),
++                "presets": config_store.list_presets(),
++            })
++            return True
++        if sub == "jobs":
++            if not _require_admin(handler):
++                return True
++            _json_response(handler, HTTPStatus.OK, {"jobs": job_store.list_jobs(limit=200)})
++            return True
++        if sub.startswith("jobs/"):
++            if not _require_admin(handler):
++                return True
++            job_key = sub[len("jobs/"):]
++            record = job_store.get_job(job_key)
++            if not record:
++                _json_response(handler, HTTPStatus.NOT_FOUND, {"error": "unknown job"})
++                return True
++            _json_response(handler, HTTPStatus.OK, record)
++            return True
++        if sub == "diagnostics":
++            if not _require_admin(handler):
++                return True
++            _json_response(handler, HTTPStatus.OK, diagnostic_report())
++            return True
++        if sub == "calibration-preview":
++            if not _require_admin(handler):
++                return True
++            preview = image_profiles.synthetic_grayscale_preview()
++            from PIL import Image
++            from io import BytesIO
++            buf = BytesIO()
++            Image.fromarray(preview).save(buf, format="PNG")
++            data = buf.getvalue()
++            handler.send_response(HTTPStatus.OK)
++            handler.send_header("Content-Type", "image/png")
++            handler.send_header("Content-Length", str(len(data)))
++            handler.end_headers()
++            handler.wfile.write(data)
++            return True
++        if sub.startswith("artifact/"):
++            if not _require_admin(handler):
++                return True
++            name = sub[len("artifact/"):]
++            base = Path(config_store.get("OUTPUT_DIR"))
++            candidate = (base / name).resolve()
++            if not str(candidate).startswith(str(base.resolve())) or not candidate.is_file():
++                _json_response(handler, HTTPStatus.NOT_FOUND, {"error": "artifact not found"})
++                return True
++            data = candidate.read_bytes()
++            ctype = "application/pdf" if candidate.suffix.lower() == ".pdf" else "image/png"
++            handler.send_response(HTTPStatus.OK)
++            handler.send_header("Content-Type", ctype)
++            handler.send_header("Content-Length", str(len(data)))
++            handler.end_headers()
++            handler.wfile.write(data)
++            return True
++        _json_response(handler, HTTPStatus.NOT_FOUND, {"error": "not found"})
++        return True
++    return False
++
++
++def handle_admin_post(handler, path: str, payload: dict) -> bool:
++    if path == "/admin/api/login":
++        username = str(payload.get("username", ""))
++        password = str(payload.get("password", ""))
++        client_id = handler.address_string()
++        token = admin_auth.login(username, password, client_id)
++        if not token:
++            _json_response(handler, HTTPStatus.UNAUTHORIZED, {"error": "invalid credentials or rate limited"})
++            return True
++        csrf = admin_auth.get_csrf(token)
++        _json_response(handler, HTTPStatus.OK, {"token": token, "csrf": csrf})
++        return True
++
++    if not path.startswith("/admin/api/"):
++        return False
++
++    sub = path[len("/admin/api/"):]
++    if sub == "logout":
++        admin_auth.logout(_session_token(handler))
++        _json_response(handler, HTTPStatus.OK, {"ok": True})
++        return True
++
++    if not _require_admin(handler):
++        return True
++    if not _require_csrf(handler):
++        return True
++
++    if sub == "settings":
++        updates = payload.get("settings", payload)
++        if not isinstance(updates, dict):
++            _json_response(handler, HTTPStatus.BAD_REQUEST, {"error": "settings must be an object"})
++            return True
++        if "ADMIN_PASSWORD" in updates and updates["ADMIN_PASSWORD"]:
++            admin_auth.set_password(str(updates.pop("ADMIN_PASSWORD")))
++        result = config_store.update(updates)
++        reload_fn = _CTX.get("reload_live_config")
++        if reload_fn:
++            reload_fn()
++        _json_response(handler, HTTPStatus.OK, result)
++        return True
++
++    if sub == "test-listener":
++        port = int(config_store.get("DICOM_PORT"))
++        try:
++            with socket.create_connection(("127.0.0.1", port), timeout=2):
++                _json_response(handler, HTTPStatus.OK, {"ok": True, "message": f"DICOM port {port} reachable"})
++        except OSError as exc:
++            _json_response(handler, HTTPStatus.OK, {"ok": False, "message": str(exc)})
++        return True
++
++    if sub == "test-care":
++        url = str(payload.get("url") or config_store.get("ERP_BRANDING_URL") or "")
++        if not url:
++            _json_response(handler, HTTPStatus.BAD_REQUEST, {"error": "ERP URL not configured"})
++            return True
++        try:
++            with urllib.request.urlopen(url, timeout=5) as resp:
++                _json_response(handler, HTTPStatus.OK, {"ok": resp.status == 200, "status": resp.status})
++        except Exception as exc:
++            _json_response(handler, HTTPStatus.OK, {"ok": False, "error": str(exc)})
++        return True
++
++    if sub == "test-printer":
++        printer_status_fn: Callable = _CTX.get("check_printer_status", lambda: ("UNKNOWN", ""))
++        status, info = printer_status_fn()
++        _json_response(handler, HTTPStatus.OK, {
++            "ok": status == "NORMAL",
++            "status": status,
++            "info": info,
++            "warning": "This may physically print if you run a separate print test from CUPS.",
++        })
++        return True
++
++    if sub == "export-settings":
++        include_secrets = bool(payload.get("includeSecrets"))
++        _json_response(handler, HTTPStatus.OK, config_store.export_settings(include_secrets))
++        return True
++
++    if sub == "import-settings":
++        include_secrets = bool(payload.get("includeSecrets"))
++        result = config_store.import_settings(payload, include_secrets)
++        reload_fn = _CTX.get("reload_live_config")
++        if reload_fn:
++            reload_fn()
++        _json_response(handler, HTTPStatus.OK, result)
++        return True
++
++    if sub == "apply-preset":
++        name = str(payload.get("name", ""))
++        try:
++            result = config_store.apply_preset(name)
++            reload_fn = _CTX.get("reload_live_config")
++            if reload_fn:
++                reload_fn()
++            _json_response(handler, HTTPStatus.OK, result)
++        except ValueError as exc:
++            _json_response(handler, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
++        return True
++
++    if sub == "save-preset":
++        name = str(payload.get("name", ""))
++        try:
++            config_store.save_preset(name)
++            _json_response(handler, HTTPStatus.OK, {"ok": True})
++        except ValueError as exc:
++            _json_response(handler, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
++        return True
++
++    _json_response(handler, HTTPStatus.NOT_FOUND, {"error": "not found"})
++    return True
+diff --git a/admin_ui.html b/admin_ui.html
+new file mode 100644
+index 0000000..a3bdbe5
+--- /dev/null
++++ b/admin_ui.html
+@@ -0,0 +1,311 @@
++<!DOCTYPE html>
++<html lang="en">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<title>DicomToWindows Admin</title>
++<style>
++:root{--bg:#0f172a;--card:#1e293b;--text:#e2e8f0;--muted:#94a3b8;--accent:#38bdf8;--ok:#22c55e;--warn:#f59e0b;--err:#ef4444;--border:#334155}
++*{box-sizing:border-box}body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--text);line-height:1.45}
++header{padding:1rem 1.25rem;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;gap:1rem}
++h1{font-size:1.15rem;margin:0}h2{font-size:1rem;margin:0 0 .75rem}
++nav{display:flex;flex-wrap:wrap;gap:.5rem;padding:.75rem 1.25rem;border-bottom:1px solid var(--border)}
++nav button{background:var(--card);color:var(--text);border:1px solid var(--border);padding:.45rem .75rem;border-radius:.4rem;cursor:pointer}
++nav button.active{background:var(--accent);color:#0f172a;border-color:var(--accent)}
++main{padding:1rem 1.25rem;max-width:1200px}
++.card{background:var(--card);border:1px solid var(--border);border-radius:.6rem;padding:1rem;margin-bottom:1rem}
++.grid{display:grid;gap:1rem;grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}
++label{display:block;font-size:.8rem;color:var(--muted);margin-bottom:.25rem}
++input,select,textarea{width:100%;padding:.5rem;border-radius:.35rem;border:1px solid var(--border);background:#0b1220;color:var(--text)}
++button.btn{background:var(--accent);color:#0f172a;border:none;padding:.55rem .9rem;border-radius:.35rem;cursor:pointer;font-weight:600}
++button.ghost{background:transparent;color:var(--text);border:1px solid var(--border)}
++.status{display:inline-block;padding:.15rem .45rem;border-radius:.3rem;font-size:.75rem;font-weight:600}
++.status.ok{background:#14532d;color:#86efac}.status.warn{background:#78350f;color:#fde68a}.status.err{background:#7f1d1d;color:#fecaca}
++table{width:100%;border-collapse:collapse;font-size:.85rem}
++th,td{padding:.45rem;border-bottom:1px solid var(--border);text-align:left;vertical-align:top}
++.muted{color:var(--muted)}.hidden{display:none !important}
++#loginScreen{max-width:360px;margin:4rem auto}
++.row{display:flex;gap:.75rem;flex-wrap:wrap;align-items:end}
++.row>*{flex:1}
++pre{background:#0b1220;padding:.75rem;border-radius:.4rem;overflow:auto;font-size:.75rem}
++img.preview{max-width:100%;border:1px solid var(--border);border-radius:.4rem}
++</style>
++</head>
++<body>
++<div id="loginScreen" class="card">
++  <h2>Admin Login</h2>
++  <p class="muted">Local bridge administration. First login sets the admin password.</p>
++  <label>Username</label><input id="loginUser" value="admin">
++  <label>Password</label><input id="loginPass" type="password">
++  <p><button class="btn" onclick="doLogin()">Sign in</button></p>
++  <p id="loginError" class="status err hidden"></p>
++</div>
++
++<div id="app" class="hidden">
++<header>
++  <h1>DICOM Print Bridge · Electronic Film Admin</h1>
++  <button class="ghost" onclick="logout()">Logout</button>
++</header>
++<nav id="tabs">
++  <button class="active" data-tab="dashboard">Dashboard</button>
++  <button data-tab="dicom">DICOM</button>
++  <button data-tab="film">Film / Layout</button>
++  <button data-tab="calibration">Calibration</button>
++  <button data-tab="branding">Branding</button>
++  <button data-tab="printer">Printer</button>
++  <button data-tab="storage">Storage</button>
++  <button data-tab="jobs">Job History</button>
++  <button data-tab="diagnostics">Diagnostics</button>
++  <button data-tab="backup">Backup</button>
++</nav>
++<main>
++<section id="tab-dashboard" class="tab">
++  <div class="grid" id="dashCards"></div>
++  <div class="card"><h2>Actions</h2>
++    <div class="row">
++      <button class="btn" onclick="testListener()">Test Listener</button>
++      <button class="btn" onclick="testCare()">Test CARE Connection</button>
++      <button class="btn" onclick="testPrinter()">Test Printer</button>
++      <button class="btn ghost" onclick="loadDashboard()">Refresh</button>
++    </div>
++    <p id="actionResult" class="muted"></p>
++  </div>
++</section>
++
++<section id="tab-dicom" class="tab hidden">
++  <div class="card">
++    <h2>DICOM Settings</h2>
++    <div class="grid">
++      <div><label>AE Title (≤16)</label><input id="dicomAet"></div>
++      <div><label>Port</label><input id="dicomPort" type="number"></div>
++      <div><label>Allowed Calling AE Titles (comma-separated)</label><input id="dicomAllowed"></div>
++      <div><label>Capture Mode</label>
++        <select id="captureMode">
++          <option value="CAPTURE_ONLY">CAPTURE_ONLY</option>
++          <option value="CAPTURE_AND_PRINT">CAPTURE_AND_PRINT</option>
++          <option value="PRINT_ONLY">PRINT_ONLY</option>
++        </select>
++      </div>
++    </div>
++    <div class="card" style="margin-top:1rem">
++      <h2>Add This Printer To Your Modality</h2>
++      <pre id="modalitySetup"></pre>
++      <button class="btn ghost" onclick="copyModalitySetup()">Copy Settings</button>
++    </div>
++    <p><button class="btn" onclick="saveDicomSettings()">Save Settings</button></p>
++  </div>
++</section>
++
++<section id="tab-film" class="tab hidden">
++  <div class="card">
++    <h2>Film / Layout</h2>
++    <div class="grid">
++      <div><label>Page Size</label><input id="pageSize"></div>
++      <div><label>Orientation</label><select id="pageOrientation"><option>AUTO</option><option>SCU</option><option>PORTRAIT</option><option>LANDSCAPE</option></select></div>
++      <div><label>Default Rows</label><input id="layoutRows" type="number"></div>
++      <div><label>Default Cols</label><input id="layoutCols" type="number"></div>
++      <div><label>Honor SCU Film Size</label><select id="honorFilmSize"><option value="true">Yes</option><option value="false">No</option></select></div>
++      <div><label>Preserve Console Layout</label><select id="preserveLayout"><option value="true">Yes</option><option value="false">No</option></select></div>
++      <div><label>Auto-fit</label><select id="autoFit"><option value="true">Yes</option><option value="false">No</option></select></div>
++      <div><label>Stretch To Fit</label><select id="stretchFit"><option value="false">No</option><option value="true">Yes</option></select></div>
++    </div>
++    <p><button class="btn" onclick="saveFilmSettings()">Save Settings</button></p>
++  </div>
++</section>
++
++<section id="tab-calibration" class="tab hidden">
++  <div class="card">
++    <h2>Image Calibration</h2>
++    <div class="grid">
++      <div><label>Enable Calibration</label><select id="enableCalib"><option value="true">On</option><option value="false">Off</option></select></div>
++      <div><label>Gamma</label><input id="gamma" type="number" step="0.1"></div>
++      <div><label>Brightness (-1..1)</label><input id="brightness" type="number" step="0.05"></div>
++      <div><label>Contrast</label><input id="contrast" type="number" step="0.05"></div>
++      <div><label>Sharpness</label><input id="sharpness" type="number" step="0.1"></div>
++      <div><label>Black Point %</label><input id="blackPoint" type="number" step="0.5"></div>
++      <div><label>White Point %</label><input id="whitePoint" type="number" step="0.5"></div>
++      <div><label>Invert Polarity</label><select id="invert"><option value="false">No</option><option value="true">Yes</option></select></div>
++    </div>
++    <p><button class="btn" onclick="saveCalibration()">Save</button> <button class="btn ghost" onclick="resetCalibration()">Reset Defaults</button></p>
++    <h2>Synthetic Preview</h2>
++    <img class="preview" id="calPreview" alt="Calibration preview">
++  </div>
++</section>
++
++<section id="tab-branding" class="tab hidden">
++  <div class="card">
++    <h2>Branding Source</h2>
++    <label><input type="radio" name="brandSrc" value="CARE"> CARE ERP</label>
++    <label><input type="radio" name="brandSrc" value="LOCAL"> Local Override</label>
++    <div class="grid" style="margin-top:.75rem">
++      <div><label>ERP Branding URL</label><input id="erpUrl"></div>
++      <div><label>Clinic Name</label><input id="clinicName"></div>
++      <div><label>Tagline</label><input id="clinicTagline"></div>
++      <div><label>Address 1</label><input id="addr1"></div>
++      <div><label>Address 2</label><input id="addr2"></div>
++      <div><label>City</label><input id="city"></div>
++      <div><label>State</label><input id="state"></div>
++      <div><label>PIN</label><input id="pin"></div>
++      <div><label>Phone</label><input id="phone"></div>
++      <div><label>Email</label><input id="email"></div>
++      <div><label>Website</label><input id="website"></div>
++      <div><label>Logo Path</label><input id="logoPath"></div>
++      <div><label>Header Line 1</label><input id="header1"></div>
++      <div><label>Header Line 2</label><input id="header2"></div>
++      <div><label>Footer Line 1</label><input id="footer1"></div>
++      <div><label>Footer Line 2</label><input id="footer2"></div>
++    </div>
++    <p><button class="btn" onclick="saveBranding()">Save Branding</button></p>
++  </div>
++</section>
++
++<section id="tab-printer" class="tab hidden">
++  <div class="card">
++    <h2>Physical Printer</h2>
++    <div class="grid">
++      <div><label>Print Method</label><select id="printMethod"><option>cups</option><option>jetdirect</option></select></div>
++      <div><label>CUPS Server</label><input id="cupsServer"></div>
++      <div><label>CUPS Queue</label><input id="cupsPrinter"></div>
++      <div><label>CUPS Media</label><input id="cupsMedia"></div>
++      <div><label>JetDirect Host</label><input id="jetHost"></div>
++      <div><label>JetDirect Port</label><input id="jetPort" type="number"></div>
++    </div>
++    <p class="muted">Test Printer checks queue reachability. A full CUPS test may physically print.</p>
++    <p><button class="btn" onclick="savePrinter()">Save</button> <button class="btn ghost" onclick="testPrinter()">Test Printer</button></p>
++  </div>
++</section>
++
++<section id="tab-storage" class="tab hidden">
++  <div class="card" id="storageCard"></div>
++</section>
++
++<section id="tab-jobs" class="tab hidden">
++  <div class="card"><h2>Print Jobs</h2><table id="jobsTable"><thead><tr>
++    <th>Time</th><th>Source</th><th>Calling AE</th><th>Patient</th><th>Pages</th><th>Capture</th><th>Print</th><th>Actions</th>
++  </tr></thead><tbody></tbody></table></div>
++</section>
++
++<section id="tab-diagnostics" class="tab hidden">
++  <div class="card">
++    <h2>Diagnostics</h2>
++    <pre id="diagReport"></pre>
++    <button class="btn" onclick="copyDiagnostics()">Copy Diagnostic Report</button>
++  </div>
++</section>
++
++<section id="tab-backup" class="tab hidden">
++  <div class="card">
++    <h2>Backup / Restore</h2>
++    <p><button class="btn" onclick="exportSettings(false)">Export Settings (no secrets)</button>
++    <button class="btn ghost" onclick="exportSettings(true)">Export With Secrets</button></p>
++    <label>Import JSON</label><textarea id="importJson" rows="8"></textarea>
++    <label><input type="checkbox" id="importSecrets"> Include secrets in import</label>
++    <p><button class="btn" onclick="importSettings()">Import Settings</button></p>
++    <h2>Presets</h2>
++    <div class="row">
++      <select id="presetSelect"></select>
++      <button class="btn ghost" onclick="applyPreset()">Apply Preset</button>
++    </div>
++  </div>
++</section>
++</main>
++</div>
++
++<script>
++let token='', csrf='';
++function show(id,on){document.getElementById(id).classList.toggle('hidden',!on)}
++async function api(path,opts={}){
++  opts.headers=opts.headers||{};
++  if(token) opts.headers['X-Admin-Session']=token;
++  if(csrf && opts.method==='POST') opts.headers['X-CSRF-Token']=csrf;
++  if(opts.body && typeof opts.body==='object'){opts.body=JSON.stringify(opts.body);opts.headers['Content-Type']='application/json'}
++  const r=await fetch(path,opts);
++  const t=await r.text();
++  try{return {ok:r.ok,status:r.status,data:JSON.parse(t)};}catch{return {ok:r.ok,status:r.status,data:t}}
++}
++async function doLogin(){
++  const res=await api('/admin/api/login',{method:'POST',body:{username:document.getElementById('loginUser').value,password:document.getElementById('loginPass').value}});
++  if(!res.ok){document.getElementById('loginError').textContent=res.data.error||'Login failed';show('loginError',true);return}
++  token=res.data.token;csrf=res.data.csrf;show('loginScreen',false);show('app',true);boot();
++}
++async function logout(){await api('/admin/api/logout',{method:'POST',body:{}});token='';csrf='';show('app',false);show('loginScreen',true)}
++function tab(name){
++  document.querySelectorAll('.tab').forEach(el=>el.classList.add('hidden'));
++  document.getElementById('tab-'+name).classList.remove('hidden');
++  document.querySelectorAll('#tabs button').forEach(b=>b.classList.toggle('active',b.dataset.tab===name));
++  if(name==='jobs') loadJobs();
++  if(name==='diagnostics') loadDiagnostics();
++  if(name==='storage') loadStorage();
++  if(name==='calibration') document.getElementById('calPreview').src='/admin/api/calibration-preview?'+Date.now();
++}
++document.getElementById('tabs').addEventListener('click',e=>{if(e.target.dataset.tab) tab(e.target.dataset.tab)});
++function card(title,val,cls=''){return `<div class="card"><div class="muted">${title}</div><div><span class="status ${cls}">${val}</span></div></div>`}
++async function loadDashboard(){
++  const res=await api('/admin/api/dashboard');
++  if(!res.ok)return;
++  const d=res.data;
++  document.getElementById('dashCards').innerHTML=[
++    card('Bridge Status',d.status||'RUNNING','ok'),
++    card('AE Title',d.aeTitle),
++    card('DICOM Port',d.dicomPort),
++    card('LAN IP',d.lanIp),
++    card('Capture Mode',d.captureMode),
++    card('CARE ERP',d.erpStatus,d.erpStatus==='CONNECTED'?'ok':(d.erpStatus==='NOT_CONFIGURED'?'warn':'err')),
++    card('Physical Printer',d.physicalPrinter?.status||'?',d.physicalPrinter?.status==='NORMAL'?'ok':'warn'),
++    card('Jobs',d.storage?.jobCount||0),
++  ].join('');
++  document.getElementById('modalitySetup').textContent=`AE Title: ${d.aeTitle}\nIP Address: ${d.lanIp}\nPort: ${d.dicomPort}\n\nConfigure your modality DICOM Print destination with these values. Use Verify/Echo to test connectivity before printing.`;
++}
++function copyModalitySetup(){navigator.clipboard.writeText(document.getElementById('modalitySetup').textContent)}
++async function testListener(){const r=await api('/admin/api/test-listener',{method:'POST',body:{}});document.getElementById('actionResult').textContent=JSON.stringify(r.data)}
++async function testCare(){const r=await api('/admin/api/test-care',{method:'POST',body:{}});document.getElementById('actionResult').textContent=JSON.stringify(r.data)}
++async function testPrinter(){const r=await api('/admin/api/test-printer',{method:'POST',body:{}});document.getElementById('actionResult').textContent=(r.data.warning||'')+' '+JSON.stringify(r.data)}
++async function loadSettings(){
++  const res=await api('/admin/api/settings'); if(!res.ok)return; const s=res.data.settings||[];
++  const map={}; s.forEach(x=>map[x.key]=x.effectiveValue);
++  const set=(id,v)=>{const el=document.getElementById(id); if(el) el.value=v??''};
++  set('dicomAet',map.DICOM_AET); set('dicomPort',map.DICOM_PORT); set('dicomAllowed',map.ALLOWED_CALLING_AETS);
++  set('captureMode',map.CAPTURE_MODE); set('pageSize',map.PAGE_SIZE); set('pageOrientation',map.PAGE_ORIENTATION);
++  set('layoutRows',map.LAYOUT_ROWS); set('layoutCols',map.LAYOUT_COLS);
++  set('honorFilmSize',map.HONOR_SCU_FILM_SIZE); set('preserveLayout',map.PRESERVE_CONSOLE_LAYOUT);
++  set('autoFit',map.AUTO_FIT_LAYOUT); set('stretchFit',map.STRETCH_TO_FIT);
++  set('enableCalib',map.ENABLE_CALIBRATION); set('gamma',map.GAMMA); set('brightness',map.BRIGHTNESS);
++  set('contrast',map.CONTRAST); set('sharpness',map.SHARPNESS); set('blackPoint',map.CONTRAST_LOW_PERCENTILE);
++  set('whitePoint',map.CONTRAST_HIGH_PERCENTILE); set('invert',map.INVERT_POLARITY);
++  set('erpUrl',map.ERP_BRANDING_URL); set('clinicName',map.CLINIC_NAME); set('clinicTagline',map.CLINIC_TAGLINE);
++  set('addr1',map.CLINIC_ADDRESS1); set('addr2',map.CLINIC_ADDRESS2); set('city',map.CLINIC_CITY);
++  set('state',map.CLINIC_STATE); set('pin',map.CLINIC_PIN); set('phone',map.CLINIC_PHONE);
++  set('email',map.CLINIC_EMAIL); set('website',map.CLINIC_WEBSITE); set('logoPath',map.CLINIC_LOGO_PATH);
++  set('header1',map.HEADER_LINE1); set('header2',map.HEADER_LINE2); set('footer1',map.FOOTER_LINE1); set('footer2',map.FOOTER_LINE2);
++  set('printMethod',map.PRINT_METHOD); set('cupsServer',map.CUPS_SERVER); set('cupsPrinter',map.CUPS_PRINTER_NAME);
++  set('cupsMedia',map.CUPS_MEDIA); set('jetHost',map.JETDIRECT_HOST); set('jetPort',map.JETDIRECT_PORT);
++  document.querySelectorAll('input[name=brandSrc]').forEach(r=>r.checked=r.value===map.BRANDING_SOURCE);
++  const ps=document.getElementById('presetSelect'); ps.innerHTML='';
++  Object.keys(res.data.presets||{}).forEach(k=>ps.innerHTML+=`<option value="${k}">${k}</option>`);
++}
++async function saveSettings(obj){const r=await api('/admin/api/settings',{method:'POST',body:{settings:obj}}); alert(JSON.stringify(r.data))}
++function saveDicomSettings(){saveSettings({DICOM_AET:document.getElementById('dicomAet').value,DICOM_PORT:+document.getElementById('dicomPort').value,ALLOWED_CALLING_AETS:document.getElementById('dicomAllowed').value,CAPTURE_MODE:document.getElementById('captureMode').value})}
++function saveFilmSettings(){saveSettings({PAGE_SIZE:document.getElementById('pageSize').value,PAGE_ORIENTATION:document.getElementById('pageOrientation').value,LAYOUT_ROWS:+document.getElementById('layoutRows').value,LAYOUT_COLS:+document.getElementById('layoutCols').value,HONOR_SCU_FILM_SIZE:document.getElementById('honorFilmSize').value==='true',PRESERVE_CONSOLE_LAYOUT:document.getElementById('preserveLayout').value==='true',AUTO_FIT_LAYOUT:document.getElementById('autoFit').value==='true',STRETCH_TO_FIT:document.getElementById('stretchFit').value==='true'})}
++function saveCalibration(){saveSettings({ENABLE_CALIBRATION:document.getElementById('enableCalib').value==='true',GAMMA:+document.getElementById('gamma').value,BRIGHTNESS:+document.getElementById('brightness').value,CONTRAST:+document.getElementById('contrast').value,SHARPNESS:+document.getElementById('sharpness').value,CONTRAST_LOW_PERCENTILE:+document.getElementById('blackPoint').value,CONTRAST_HIGH_PERCENTILE:+document.getElementById('whitePoint').value,INVERT_POLARITY:document.getElementById('invert').value==='true'})}
++function resetCalibration(){saveSettings({GAMMA:2.0,BRIGHTNESS:0,CONTRAST:1,SHARPNESS:0,CONTRAST_LOW_PERCENTILE:1,CONTRAST_HIGH_PERCENTILE:99,INVERT_POLARITY:false,ENABLE_CALIBRATION:true});loadSettings()}
++function saveBranding(){const src=document.querySelector('input[name=brandSrc]:checked').value;saveSettings({BRANDING_SOURCE:src,ERP_BRANDING_URL:document.getElementById('erpUrl').value,CLINIC_NAME:document.getElementById('clinicName').value,CLINIC_TAGLINE:document.getElementById('clinicTagline').value,CLINIC_ADDRESS1:document.getElementById('addr1').value,CLINIC_ADDRESS2:document.getElementById('addr2').value,CLINIC_CITY:document.getElementById('city').value,CLINIC_STATE:document.getElementById('state').value,CLINIC_PIN:document.getElementById('pin').value,CLINIC_PHONE:document.getElementById('phone').value,CLINIC_EMAIL:document.getElementById('email').value,CLINIC_WEBSITE:document.getElementById('website').value,CLINIC_LOGO_PATH:document.getElementById('logoPath').value,HEADER_LINE1:document.getElementById('header1').value,HEADER_LINE2:document.getElementById('header2').value,FOOTER_LINE1:document.getElementById('footer1').value,FOOTER_LINE2:document.getElementById('footer2').value})}
++function savePrinter(){saveSettings({PRINT_METHOD:document.getElementById('printMethod').value,CUPS_SERVER:document.getElementById('cupsServer').value,CUPS_PRINTER_NAME:document.getElementById('cupsPrinter').value,CUPS_MEDIA:document.getElementById('cupsMedia').value,JETDIRECT_HOST:document.getElementById('jetHost').value,JETDIRECT_PORT:+document.getElementById('jetPort').value})}
++async function loadJobs(){
++  const res=await api('/admin/api/jobs'); if(!res.ok)return;
++  const tb=document.querySelector('#jobsTable tbody'); tb.innerHTML='';
++  res.data.jobs.forEach(j=>{
++    const artifact=j.artifactPaths?.[0]||'';
++    const link=artifact?`<a href="/admin/api/artifact/${artifact.split('/').pop()}" target="_blank">Download</a>`:'';
++    tb.innerHTML+=`<tr><td>${j.receivedAt||''}</td><td>${j.source}</td><td>${j.sourceCallingAE||''}</td><td>${j.patientId||j.patientName||''}</td><td>${j.pages||0}</td><td>${j.captureStatus}</td><td>${j.physicalPrintStatus}</td><td>${link}</td></tr>`;
++  });
++}
++async function loadDiagnostics(){const r=await api('/admin/api/diagnostics');document.getElementById('diagReport').textContent=JSON.stringify(r.data,null,2)}
++function copyDiagnostics(){navigator.clipboard.writeText(document.getElementById('diagReport').textContent)}
++async function loadStorage(){const r=await api('/admin/api/dashboard');document.getElementById('storageCard').innerHTML='<pre>'+JSON.stringify(r.data.storage,null,2)+'</pre>'}
++async function exportSettings(secrets){const r=await api('/admin/api/export-settings',{method:'POST',body:{includeSecrets:secrets}});document.getElementById('importJson').value=JSON.stringify(r.data,null,2)}
++async function importSettings(){const include=document.getElementById('importSecrets').checked;const payload=JSON.parse(document.getElementById('importJson').value);payload.includeSecrets=include;const r=await api('/admin/api/import-settings',{method:'POST',body:payload});alert(JSON.stringify(r.data))}
++async function applyPreset(){const name=document.getElementById('presetSelect').value;const r=await api('/admin/api/apply-preset',{method:'POST',body:{name}});alert(JSON.stringify(r.data));loadSettings()}
++async function boot(){await loadSettings();await loadDashboard();tab('dashboard')}
++</script>
++</body>
++</html>
+diff --git a/config_store.py b/config_store.py
+new file mode 100644
+index 0000000..7f5ab15
+--- /dev/null
++++ b/config_store.py
+@@ -0,0 +1,416 @@
++"""Persisted operator configuration with ENV precedence.
++
++Precedence model (highest wins):
++  1. Environment variables (existing docker-compose / Container Manager deployments)
++  2. Persisted operator configuration (/data/config/config.json)
++  3. Built-in defaults
++
++Settings marked restart_required cannot be changed at runtime without restarting
++the container process (DICOM listener bind, HTTP listen port).
++"""
++from __future__ import annotations
++
++import json
++import os
++import re
++import threading
++from copy import deepcopy
++from pathlib import Path
++from typing import Any, Optional
++
++CONFIG_DIR = Path(os.environ.get("CONFIG_DIR", "/data/config"))
++CONFIG_FILE = CONFIG_DIR / "config.json"
++PRESETS_FILE = CONFIG_DIR / "presets.json"
++
++_LOCK = threading.RLock()
++
++# restart_required: DICOM listener + HTTP bind
++RESTART_REQUIRED_KEYS = frozenset({
++    "DICOM_AET", "DICOM_PORT", "ALLOWED_CALLING_AETS", "HTTP_PORT",
++})
++
++# live_apply: reloaded into runtime without restart
++LIVE_APPLY_KEYS = frozenset({
++    "CAPTURE_MODE", "GAMMA", "CONTRAST_LOW_PERCENTILE", "CONTRAST_HIGH_PERCENTILE",
++    "ENABLE_CALIBRATION", "BRIGHTNESS", "CONTRAST", "SHARPNESS", "INVERT_POLARITY",
++    "PAGE_SIZE", "PAGE_ORIENTATION", "HONOR_SCU_FILM_SIZE", "DPI", "MARGIN_MM",
++    "GUTTER_MM", "LAYOUT_ROWS", "LAYOUT_COLS", "STRETCH_TO_FIT", "AUTO_FIT_LAYOUT",
++    "BACKGROUND_COLOR", "BATCH_GROUP_BY", "BATCH_IDLE_TIMEOUT_SECONDS",
++    "HONOR_SCU_LAYOUT", "PRESERVE_CONSOLE_LAYOUT",
++    "HEADER_LINE1", "HEADER_LINE2", "HEADER_LOGO_PATH", "HEADER_ALIGN", "HEADER_HEIGHT_MM",
++    "FOOTER_LINE1", "FOOTER_LINE2", "FOOTER_LOGO_PATH", "FOOTER_ALIGN", "FOOTER_HEIGHT_MM",
++    "BANNER_BACKGROUND_COLOR", "SHOW_PATIENT_BANNER", "PATIENT_BANNER_HEIGHT_MM",
++    "SHOW_IMAGE_LABELS", "IMAGE_LABEL_HEIGHT_MM", "BRANDING_SOURCE",
++    "ERP_BRANDING_URL", "ERP_BRANDING_REFRESH_SECONDS", "ERP_BRANDING_TIMEOUT_SECONDS",
++    "CLINIC_NAME", "CLINIC_TAGLINE", "CLINIC_ADDRESS1", "CLINIC_ADDRESS2",
++    "CLINIC_CITY", "CLINIC_STATE", "CLINIC_PIN", "CLINIC_PHONE", "CLINIC_ALT_PHONE",
++    "CLINIC_EMAIL", "CLINIC_WEBSITE", "CLINIC_LOGO_PATH",
++    "OUTPUT_DIR", "OUTPUT_FORMAT", "JOB_RETENTION_DAYS",
++    "PRINT_METHOD", "CUPS_SERVER", "CUPS_PRINTER_NAME", "CUPS_MEDIA",
++    "JETDIRECT_HOST", "JETDIRECT_PORT", "START_CUPS",
++    "HTTP_BRIDGE_SECRET", "ADMIN_USERNAME", "ADMIN_PASSWORD_HASH",
++    "SESSION_TTL_MINUTES", "LOG_LEVEL",
++})
++
++SECRET_KEYS = frozenset({
++    "HTTP_BRIDGE_SECRET", "ADMIN_PASSWORD_HASH", "ADMIN_PASSWORD",
++})
++
++DEFAULTS: dict[str, Any] = {
++    "DICOM_AET": "PRINTSCP",
++    "DICOM_PORT": 104,
++    "ALLOWED_CALLING_AETS": "",
++    "CAPTURE_MODE": "CAPTURE_AND_PRINT",
++    "GAMMA": 2.0,
++    "CONTRAST_LOW_PERCENTILE": 1.0,
++    "CONTRAST_HIGH_PERCENTILE": 99.0,
++    "ENABLE_CALIBRATION": True,
++    "BRIGHTNESS": 0.0,
++    "CONTRAST": 1.0,
++    "SHARPNESS": 0.0,
++    "INVERT_POLARITY": False,
++    "PAGE_SIZE": "A4",
++    "PAGE_ORIENTATION": "AUTO",
++    "HONOR_SCU_FILM_SIZE": False,
++    "HONOR_SCU_LAYOUT": True,
++    "PRESERVE_CONSOLE_LAYOUT": True,
++    "DPI": 300,
++    "MARGIN_MM": 5.0,
++    "GUTTER_MM": 2.0,
++    "LAYOUT_ROWS": 2,
++    "LAYOUT_COLS": 3,
++    "STRETCH_TO_FIT": False,
++    "AUTO_FIT_LAYOUT": True,
++    "BACKGROUND_COLOR": "WHITE",
++    "BATCH_GROUP_BY": "session",
++    "BATCH_IDLE_TIMEOUT_SECONDS": 60,
++    "HEADER_LINE1": "",
++    "HEADER_LINE2": "",
++    "HEADER_LOGO_PATH": "",
++    "HEADER_ALIGN": "CENTER",
++    "HEADER_HEIGHT_MM": 14.0,
++    "FOOTER_LINE1": "",
++    "FOOTER_LINE2": "",
++    "FOOTER_LOGO_PATH": "",
++    "FOOTER_ALIGN": "CENTER",
++    "FOOTER_HEIGHT_MM": 10.0,
++    "BANNER_BACKGROUND_COLOR": "BLACK",
++    "SHOW_PATIENT_BANNER": True,
++    "PATIENT_BANNER_HEIGHT_MM": 6.0,
++    "SHOW_IMAGE_LABELS": True,
++    "IMAGE_LABEL_HEIGHT_MM": 4.5,
++    "BRANDING_SOURCE": "LOCAL",
++    "ERP_BRANDING_URL": "",
++    "ERP_BRANDING_REFRESH_SECONDS": 300,
++    "ERP_BRANDING_TIMEOUT_SECONDS": 5,
++    "CLINIC_NAME": "",
++    "CLINIC_TAGLINE": "",
++    "CLINIC_ADDRESS1": "",
++    "CLINIC_ADDRESS2": "",
++    "CLINIC_CITY": "",
++    "CLINIC_STATE": "",
++    "CLINIC_PIN": "",
++    "CLINIC_PHONE": "",
++    "CLINIC_ALT_PHONE": "",
++    "CLINIC_EMAIL": "",
++    "CLINIC_WEBSITE": "",
++    "CLINIC_LOGO_PATH": "",
++    "OUTPUT_DIR": "/data/print-jobs",
++    "OUTPUT_FORMAT": "pdf",
++    "JOB_RETENTION_DAYS": 30,
++    "PRINT_METHOD": "cups",
++    "CUPS_SERVER": "localhost:631",
++    "CUPS_PRINTER_NAME": "",
++    "CUPS_MEDIA": "",
++    "JETDIRECT_HOST": "",
++    "JETDIRECT_PORT": 9100,
++    "START_CUPS": True,
++    "HTTP_PORT": 8090,
++    "HTTP_BRIDGE_SECRET": "",
++    "ADMIN_USERNAME": "admin",
++    "ADMIN_PASSWORD_HASH": "",
++    "SESSION_TTL_MINUTES": 120,
++    "LOG_LEVEL": "INFO",
++    "MODALITY_PROFILES": {},
++}
++
++BUILTIN_PRESETS: dict[str, dict[str, Any]] = {
++    "default": {},
++    "mri": {
++        "LAYOUT_ROWS": 2, "LAYOUT_COLS": 3, "GAMMA": 2.2,
++        "MODALITY_PROFILES": {"MRI": {"gamma": 2.2, "brightness": 0.05}},
++    },
++    "ct": {
++        "LAYOUT_ROWS": 2, "LAYOUT_COLS": 4, "GAMMA": 2.0,
++        "MODALITY_PROFILES": {"CT": {"gamma": 2.0, "contrast": 1.1}},
++    },
++    "usg": {
++        "LAYOUT_ROWS": 2, "LAYOUT_COLS": 3, "GAMMA": 1.8,
++        "MODALITY_PROFILES": {"USG": {"gamma": 1.8, "brightness": 0.1}},
++    },
++    "xray": {
++        "LAYOUT_ROWS": 1, "LAYOUT_COLS": 2, "GAMMA": 2.4,
++        "MODALITY_PROFILES": {"XR": {"gamma": 2.4, "contrast": 1.15}},
++    },
++    "physical_film": {"PAGE_SIZE": "14X17", "HONOR_SCU_FILM_SIZE": True},
++    "paper_print": {"PAGE_SIZE": "A4", "PAGE_ORIENTATION": "PORTRAIT"},
++}
++
++_persisted: dict[str, Any] = {}
++_presets: dict[str, dict[str, Any]] = deepcopy(BUILTIN_PRESETS)
++
++
++def _coerce(key: str, value: Any) -> Any:
++    default = DEFAULTS.get(key)
++    if value is None:
++        return default
++    if isinstance(default, bool):
++        if isinstance(value, bool):
++            return value
++        return str(value).strip().lower() in ("1", "true", "yes", "on")
++    if isinstance(default, int) and not isinstance(default, bool):
++        try:
++            return int(value)
++        except (TypeError, ValueError):
++            return default
++    if isinstance(default, float):
++        try:
++            return float(value)
++        except (TypeError, ValueError):
++            return default
++    if isinstance(default, dict):
++        return value if isinstance(value, dict) else default
++    return str(value).strip() if value is not None else default
++
++
++def _env_present(key: str) -> bool:
++    return os.environ.get(key) not in (None, "")
++
++
++def _read_persisted() -> dict[str, Any]:
++    if not CONFIG_FILE.exists():
++        return {}
++    try:
++        data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
++        return data if isinstance(data, dict) else {}
++    except (OSError, json.JSONDecodeError):
++        return {}
++
++
++def _write_persisted(data: dict[str, Any]) -> None:
++    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
++    CONFIG_FILE.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
++
++
++def load() -> None:
++    """Load persisted config from disk into memory."""
++    global _persisted, _presets
++    with _LOCK:
++        _persisted = _read_persisted()
++        if PRESETS_FILE.exists():
++            try:
++                raw = json.loads(PRESETS_FILE.read_text(encoding="utf-8"))
++                if isinstance(raw, dict):
++                    _presets = {**BUILTIN_PRESETS, **raw}
++            except (OSError, json.JSONDecodeError):
++                _presets = deepcopy(BUILTIN_PRESETS)
++        else:
++            _presets = deepcopy(BUILTIN_PRESETS)
++
++
++def overlay_env_from_persisted() -> None:
++    """For keys not set in ENV, overlay persisted values into os.environ at startup."""
++    load()
++    with _LOCK:
++        for key, default in DEFAULTS.items():
++            if _env_present(key):
++                continue
++            if key in _persisted and _persisted[key] not in (None, ""):
++                value = _persisted[key]
++                if isinstance(value, (dict, list)):
++                    os.environ[key] = json.dumps(value)
++                else:
++                    os.environ[key] = str(value)
++
++
++def get(key: str) -> Any:
++    with _LOCK:
++        if _env_present(key):
++            return _coerce(key, os.environ.get(key))
++        if key in _persisted:
++            return _coerce(key, _persisted[key])
++        return deepcopy(DEFAULTS.get(key))
++
++
++def get_source(key: str) -> str:
++    with _LOCK:
++        if _env_present(key):
++            return "ENV"
++        if key in _persisted:
++            return "CONFIG"
++        return "DEFAULT"
++
++
++def effective_settings(keys: Optional[list[str]] = None) -> list[dict[str, Any]]:
++    """Return effective values with metadata for admin UI."""
++    target = keys or sorted(set(DEFAULTS.keys()))
++    out = []
++    for key in target:
++        if key not in DEFAULTS:
++            continue
++        out.append({
++            "key": key,
++            "value": mask_secret(key, get(key)),
++            "effectiveValue": mask_secret(key, get(key)),
++            "source": get_source(key),
++            "restartRequired": key in RESTART_REQUIRED_KEYS,
++            "liveApply": key in LIVE_APPLY_KEYS,
++            "isSecret": key in SECRET_KEYS,
++        })
++    return out
++
++
++def mask_secret(key: str, value: Any) -> Any:
++    if key not in SECRET_KEYS or not value:
++        return value
++    text = str(value)
++    if len(text) <= 4:
++        return "****"
++    return text[:2] + "****" + text[-2:]
++
++
++def update(updates: dict[str, Any], from_preset: str = "") -> dict[str, Any]:
++    """Persist operator updates. ENV-sourced keys are not overwritten in file."""
++    load()
++    restart_needed = []
++    applied = []
++    skipped_env = []
++    with _LOCK:
++        for key, value in updates.items():
++            if key not in DEFAULTS:
++                continue
++            if _env_present(key):
++                skipped_env.append(key)
++                continue
++            _persisted[key] = value
++            applied.append(key)
++            if key in RESTART_REQUIRED_KEYS:
++                restart_needed.append(key)
++            elif key in LIVE_APPLY_KEYS:
++                if isinstance(value, (dict, list)):
++                    os.environ[key] = json.dumps(value)
++                else:
++                    os.environ[key] = str(value)
++        _write_persisted(_persisted)
++    return {
++        "applied": applied,
++        "skippedEnv": skipped_env,
++        "restartRequired": restart_needed,
++        "fromPreset": from_preset or None,
++    }
++
++
++def export_settings(include_secrets: bool = False) -> dict[str, Any]:
++    load()
++    with _LOCK:
++        data = deepcopy(_persisted)
++        if not include_secrets:
++            for key in SECRET_KEYS:
++                data.pop(key, None)
++                data.pop("ADMIN_PASSWORD", None)
++        return {"version": 1, "settings": data, "presets": _presets}
++
++
++def import_settings(payload: dict[str, Any], include_secrets: bool = False) -> dict[str, Any]:
++    settings = payload.get("settings") if isinstance(payload, dict) else None
++    if not isinstance(settings, dict):
++        raise ValueError("import payload must contain a settings object")
++    filtered = {}
++    for key, value in settings.items():
++        if key not in DEFAULTS:
++            continue
++        if key in SECRET_KEYS and not include_secrets:
++            continue
++        filtered[key] = value
++    result = update(filtered)
++    presets = payload.get("presets")
++    if isinstance(presets, dict):
++        with _LOCK:
++            _presets.update(presets)
++            PRESETS_FILE.parent.mkdir(parents=True, exist_ok=True)
++            PRESETS_FILE.write_text(json.dumps(_presets, indent=2) + "\n", encoding="utf-8")
++    return result
++
++
++def list_presets() -> dict[str, dict[str, Any]]:
++    load()
++    with _LOCK:
++        return deepcopy(_presets)
++
++
++def apply_preset(name: str) -> dict[str, Any]:
++    load()
++    with _LOCK:
++        preset = _presets.get(name)
++        if preset is None:
++            raise ValueError(f"unknown preset: {name}")
++        if name == "default" and not preset:
++            # reset to defaults except secrets
++            to_clear = [k for k in _persisted.keys() if k not in SECRET_KEYS]
++            for k in to_clear:
++                _persisted.pop(k, None)
++            _write_persisted(_persisted)
++            return {"applied": [], "fromPreset": name}
++        return update(preset, from_preset=name)
++
++
++def save_preset(name: str, label: str = "") -> None:
++    if name == "default":
++        raise ValueError("cannot overwrite built-in default preset")
++    if not re.match(r"^[a-z0-9_]+$", name):
++        raise ValueError("preset name must be lowercase alphanumeric/underscore")
++    load()
++    with _LOCK:
++        snapshot = {}
++        for key in LIVE_APPLY_KEYS:
++            if not _env_present(key) and key in _persisted:
++                snapshot[key] = _persisted[key]
++        _presets[name] = snapshot
++        PRESETS_FILE.parent.mkdir(parents=True, exist_ok=True)
++        PRESETS_FILE.write_text(json.dumps(_presets, indent=2) + "\n", encoding="utf-8")
++
++
++def validate_ae_title(value: str) -> str:
++    text = str(value or "").strip()[:16]
++    if not text:
++        raise ValueError("AE Title is required")
++    if not re.match(r"^[A-Za-z0-9 _]+$", text):
++        raise ValueError("AE Title must use A-Z, 0-9, space, underscore only")
++    return text
++
++
++def validate_port(value: Any) -> int:
++    port = int(value)
++    if port < 1 or port > 65535:
++        raise ValueError("port must be between 1 and 65535")
++    return port
++
++
++def validate_allowed_aets(value: str) -> list[str]:
++    items = [a.strip()[:16] for a in str(value or "").split(",") if a.strip()]
++    for item in items:
++        if not re.match(r"^[A-Za-z0-9 _]+$", item):
++            raise ValueError(f"invalid calling AE title: {item}")
++    return items
++
++
++def validate_safe_path(path_str: str, base: Path) -> Path:
++    candidate = Path(path_str).resolve()
++    base_resolved = base.resolve()
++    if not str(candidate).startswith(str(base_resolved)):
++        raise ValueError("path must stay within the allowed base directory")
++    return candidate
++
++
++# Load on import
++load()
+diff --git a/docker-compose.yml b/docker-compose.yml
+index 271db49..34ecc0f 100644
+--- a/docker-compose.yml
++++ b/docker-compose.yml
+@@ -9,6 +9,7 @@ services:
+       - "8090:8090"
+     volumes:
+       - ./print-jobs:/data/print-jobs
++      - ./config:/data/config
+       # These folders start out empty, and mounting an empty folder over a
+       # path hides whatever the image put there. The container's entrypoint
+       # seeds /etc/cups back from its own copy on startup, so the printer you
+@@ -59,3 +60,6 @@ services:
+       # until you set a real secret here - see the README before relying on it.
+       HTTP_PORT: "8090"
+       HTTP_BRIDGE_SECRET: ""
++      CAPTURE_MODE: CAPTURE_AND_PRINT
++      PRESERVE_CONSOLE_LAYOUT: "true"
++      CONFIG_DIR: /data/config
+diff --git a/identity_audit.py b/identity_audit.py
+new file mode 100644
+index 0000000..ae63324
+--- /dev/null
++++ b/identity_audit.py
+@@ -0,0 +1,128 @@
++"""PHI-safe Electronic Film identity audit for DICOM Print datasets."""
++from __future__ import annotations
++
++import re
++from typing import Any, Optional
++
++from pydicom.dataset import Dataset
++
++AUDIT_TAGS = [
++    ("PatientID", (0x0010, 0x0020)),
++    ("PatientName", (0x0010, 0x0010)),
++    ("AccessionNumber", (0x0008, 0x0050)),
++    ("StudyInstanceUID", (0x0020, 0x000D)),
++    ("SeriesInstanceUID", (0x0020, 0x000E)),
++    ("SOPInstanceUID", (0x0008, 0x0018)),
++    ("StudyID", (0x0020, 0x0010)),
++    ("RequestedProcedureID", (0x0040, 0x1001)),
++    ("Modality", (0x0008, 0x0060)),
++    ("StudyDate", (0x0008, 0x0020)),
++]
++
++
++def _redact_value(tag_name: str, value: Any) -> str:
++    text = str(value).strip()
++    if not text:
++        return ""
++    if tag_name.endswith("UID"):
++        if len(text) <= 8:
++            return text[:2] + "…"
++        return text[:6] + "…" + text[-4:]
++    if tag_name == "PatientName":
++        parts = text.replace("^", " ").split()
++        if not parts:
++            return "…"
++        return parts[0][:1] + "…" if len(parts[0]) > 1 else parts[0]
++    if tag_name == "PatientID":
++        if len(text) <= 3:
++            return "…"
++        return text[:2] + "…" + text[-1:]
++    if tag_name == "StudyDate" and re.fullmatch(r"\d{8}", text):
++        return text[:4] + "…"
++    if len(text) <= 4:
++        return text
++    return text[:2] + "…" + text[-2:]
++
++
++def _tag_present(ds: Optional[Dataset], tag_name: str, tag_tuple: tuple[int, int]) -> tuple[bool, str]:
++    if ds is None:
++        return False, ""
++    value = ds.get(tag_tuple)
++    if value is None or str(value).strip() == "":
++        # pydicom attribute access fallback
++        value = getattr(ds, tag_name, None)
++    if value is None or str(value).strip() == "":
++        return False, ""
++    return True, _redact_value(tag_name, value)
++
++
++def audit_dataset(ds: Optional[Dataset], source: str) -> list[dict[str, Any]]:
++    rows = []
++    for tag_name, tag_tuple in AUDIT_TAGS:
++        present, redacted = _tag_present(ds, tag_name, tag_tuple)
++        rows.append({
++            "tag": tag_name,
++            "present": present,
++            "source": source if present else "",
++            "value": redacted if present else "",
++        })
++    return rows
++
++
++def audit_film_session(attrs: Dataset, calling_ae: str = "") -> dict[str, Any]:
++    return {
++        "level": "FilmSession",
++        "callingAE": calling_ae or "",
++        "tags": audit_dataset(attrs, "FilmSession AttributeList"),
++    }
++
++
++def audit_film_box(attrs: Dataset) -> dict[str, Any]:
++    return {
++        "level": "FilmBox",
++        "tags": audit_dataset(attrs, "FilmBox AttributeList"),
++    }
++
++
++def audit_image_box(mods: Dataset, seq_item: Optional[Dataset] = None) -> dict[str, Any]:
++    mods_tags = audit_dataset(mods, "ImageBox ModificationList")
++    seq_tags = audit_dataset(seq_item, "ImageSequence Item") if seq_item else []
++    merged = {row["tag"]: row for row in mods_tags}
++    for row in seq_tags:
++        if row["present"]:
++            merged[row["tag"]] = row
++    return {
++        "level": "ImageBox",
++        "tags": [merged.get(tag_name, {
++            "tag": tag_name, "present": False, "source": "", "value": "",
++        }) for tag_name, _ in AUDIT_TAGS],
++    }
++
++
++def summarize_identity(audits: list[dict[str, Any]]) -> dict[str, Any]:
++    """Extract best available deterministic match keys without fabricating."""
++    found: dict[str, str] = {}
++    for audit in audits:
++        for row in audit.get("tags", []):
++            if not row.get("present"):
++                continue
++            tag = row["tag"]
++            if tag in ("StudyInstanceUID", "AccessionNumber", "PatientID", "PatientName"):
++                found.setdefault(tag, row.get("value", ""))
++    study_uid_present = "StudyInstanceUID" in found
++    accession_present = "AccessionNumber" in found
++    patient_id_present = "PatientID" in found
++    auto_match_key = None
++    if study_uid_present:
++        auto_match_key = "StudyInstanceUID"
++    elif accession_present:
++        auto_match_key = "AccessionNumber"
++    return {
++        "studyInstanceUIDPresent": study_uid_present,
++        "accessionNumberPresent": accession_present,
++        "patientIdPresent": patient_id_present,
++        "patientNamePresent": "PatientName" in found,
++        "recommendedAutoMatchKey": auto_match_key,
++        "wouldAutoMatch": auto_match_key is not None,
++        "status": "MATCHABLE" if auto_match_key else "UNMATCHED",
++    }
+diff --git a/image_profiles.py b/image_profiles.py
+new file mode 100644
+index 0000000..3c742da
+--- /dev/null
++++ b/image_profiles.py
+@@ -0,0 +1,148 @@
++"""Per-modality image processing profiles and extended calibration."""
++from __future__ import annotations
++
++import json
++import os
++from typing import Any, Optional
++
++import cv2
++import numpy as np
++
++import config_store
++
++MODALITY_ALIASES = {
++    "US": "USG", "USG": "USG", "IVUS": "USG",
++    "ECHO": "ECHO", "EC": "ECHO",
++    "CT": "CT",
++    "MR": "MRI", "MRI": "MRI",
++    "CR": "XR", "DX": "XR", "XR": "XR", "RG": "XR", "RF": "XR", "XA": "XR",
++}
++
++
++def _parse_profiles() -> dict[str, dict[str, Any]]:
++    raw = config_store.get("MODALITY_PROFILES")
++    if isinstance(raw, dict):
++        return raw
++    env = os.environ.get("MODALITY_PROFILES", "")
++    if env:
++        try:
++            parsed = json.loads(env)
++            if isinstance(parsed, dict):
++                return parsed
++        except json.JSONDecodeError:
++            pass
++    profiles: dict[str, dict[str, Any]] = {}
++    for key, value in os.environ.items():
++        if not key.startswith("LAYOUT_"):
++            continue
++        name = key[len("LAYOUT_"):].upper()
++        if name in ("ROWS", "COLS"):
++            continue
++    return profiles
++
++
++def normalize_modality(modality: str) -> str:
++    text = str(modality or "").strip().upper()
++    return MODALITY_ALIASES.get(text, text)
++
++
++def get_profile(modality: str) -> dict[str, Any]:
++    profiles = _parse_profiles()
++    key = normalize_modality(modality)
++    profile = profiles.get(key, {})
++    return {
++        "brightness": float(profile.get("brightness", config_store.get("BRIGHTNESS"))),
++        "contrast": float(profile.get("contrast", config_store.get("CONTRAST"))),
++        "gamma": float(profile.get("gamma", config_store.get("GAMMA"))),
++        "sharpness": float(profile.get("sharpness", config_store.get("SHARPNESS"))),
++        "blackPoint": float(profile.get("blackPoint", config_store.get("CONTRAST_LOW_PERCENTILE"))),
++        "whitePoint": float(profile.get("whitePoint", config_store.get("CONTRAST_HIGH_PERCENTILE"))),
++        "invert": bool(profile.get("invert", config_store.get("INVERT_POLARITY"))),
++        "layoutRows": int(profile.get("layoutRows", config_store.get("LAYOUT_ROWS"))),
++        "layoutCols": int(profile.get("layoutCols", config_store.get("LAYOUT_COLS"))),
++        "pageSize": str(profile.get("pageSize", config_store.get("PAGE_SIZE"))),
++    }
++
++
++def layout_for_modality(modality: str, default_rows: int, default_cols: int) -> tuple[int, int]:
++    profile = get_profile(modality)
++    rows = max(1, int(profile.get("layoutRows", default_rows)))
++    cols = max(1, int(profile.get("layoutCols", default_cols)))
++    return rows, cols
++
++
++def _percentile_bounds(values: np.ndarray, lo_pct: float, hi_pct: float) -> tuple[float, float]:
++    lo, hi = np.percentile(values, [lo_pct, hi_pct])
++    if hi <= lo:
++        hi = float(values.max())
++        lo = 0.0
++    if hi <= lo:
++        hi = lo + 1.0
++    return float(lo), float(hi)
++
++
++def _apply_sharpness(arr: np.ndarray, amount: float) -> np.ndarray:
++    if amount <= 0:
++        return arr
++    amount = min(amount, 2.0)
++    blurred = cv2.GaussianBlur(arr, (0, 0), sigmaX=1.0)
++    sharpened = cv2.addWeighted(arr, 1.0 + amount, blurred, -amount, 0)
++    return np.clip(sharpened, 0, 255).astype(np.uint8)
++
++
++def calibrate_frame(
++    arr: np.ndarray,
++    is_color: bool,
++    modality: str = "",
++    enable: Optional[bool] = None,
++) -> np.ndarray:
++    """Apply global + per-modality calibration to a frame."""
++    if enable is None:
++        enable = bool(config_store.get("ENABLE_CALIBRATION"))
++    profile = get_profile(modality)
++    gamma = max(0.01, profile["gamma"])
++    lo_pct = min(max(profile["blackPoint"], 0.0), 49.0)
++    hi_pct = min(max(profile["whitePoint"], 51.0), 100.0)
++    brightness = float(profile["brightness"])
++    contrast = max(0.1, float(profile["contrast"]))
++    sharpness = max(0.0, float(profile["sharpness"]))
++    invert = bool(profile["invert"])
++
++    if not enable:
++        out = arr.astype(np.uint8) if arr.dtype == np.uint8 else np.clip(arr, 0, 255).astype(np.uint8)
++    else:
++        arr_f = arr.astype(np.float32)
++        if is_color and arr_f.ndim == 3:
++            luminance = cv2.cvtColor(np.clip(arr_f, 0, 255).astype(np.uint8), cv2.COLOR_RGB2GRAY).astype(np.float32)
++            lo, hi = _percentile_bounds(luminance, lo_pct, hi_pct)
++            stretched = np.clip((arr_f - lo) / (hi - lo), 0.0, 1.0)
++            corrected = np.power(stretched, 1.0 / gamma)
++            out = np.clip(corrected * 255.0, 0, 255).astype(np.uint8)
++        else:
++            channel = arr_f if arr_f.ndim == 2 else arr_f[..., 0]
++            lo, hi = _percentile_bounds(channel, lo_pct, hi_pct)
++            stretched = np.clip((arr_f - lo) / (hi - lo), 0.0, 1.0)
++            corrected = np.power(stretched, 1.0 / gamma)
++            out = np.clip(corrected * 255.0, 0, 255).astype(np.uint8)
++
++    if brightness != 0:
++        out = np.clip(out.astype(np.float32) + brightness * 255.0, 0, 255).astype(np.uint8)
++    if contrast != 1.0:
++        out = np.clip((out.astype(np.float32) - 127.5) * contrast + 127.5, 0, 255).astype(np.uint8)
++    if sharpness > 0:
++        out = _apply_sharpness(out, sharpness)
++    if invert:
++        out = 255 - out
++    return out
++
++
++def synthetic_grayscale_preview(width: int = 512, height: int = 256) -> np.ndarray:
++    """Synthetic grayscale ramp for calibration preview — no patient pixels."""
++    ramp = np.linspace(0, 255, width, dtype=np.uint8)
++    tile = np.tile(ramp, (height, 1))
++    # Step wedge patches for calibration preview
++    for i, level in enumerate([32, 64, 128, 192]):
++        x0 = int(width * (i + 1) / 5)
++        x1 = x0 + width // 8
++        tile[height // 4: height // 4 + height // 2, x0:x1] = level
++    return calibrate_frame(tile, False, modality="", enable=True)
+diff --git a/job_store.py b/job_store.py
+new file mode 100644
+index 0000000..062251f
+--- /dev/null
++++ b/job_store.py
+@@ -0,0 +1,159 @@
++"""Persistent Electronic Film job storage."""
++from __future__ import annotations
++
++import json
++import os
++import re
++import threading
++from dataclasses import asdict, dataclass, field
++from datetime import datetime
++from pathlib import Path
++from typing import Any, Optional
++
++import config_store
++
++_LOCK = threading.RLock()
++_INDEX: dict[str, dict[str, Any]] = {}
++
++
++@dataclass
++class ElectronicFilmJob:
++    jobKey: str
++    source: str  # DICOM | ERP
++    sourceCallingAE: str = ""
++    filmSessionUID: str = ""
++    filmBoxUIDs: list[str] = field(default_factory=list)
++    receivedAt: str = ""
++    completedAt: str = ""
++    imageCount: int = 0
++    layoutRows: int = 0
++    layoutCols: int = 0
++    filmSize: str = ""
++    filmOrientation: str = ""
++    artifactPaths: list[str] = field(default_factory=list)
++    artifactFormat: str = ""
++    captureStatus: str = "pending"  # pending | captured | failed
++    physicalPrintStatus: str = "skipped"  # skipped | pending | printed | failed
++    captureError: str = ""
++    physicalPrintError: str = ""
++    patientId: str = ""
++    patientName: str = ""
++    accessionNumber: str = ""
++    studyInstanceUID: str = ""
++    modality: str = ""
++    pages: int = 0
++    copies: int = 1
++    identityAudit: list[dict[str, Any]] = field(default_factory=list)
++    identitySummary: dict[str, Any] = field(default_factory=dict)
++    unsupportedAttributes: list[str] = field(default_factory=list)
++
++    def to_dict(self) -> dict[str, Any]:
++        return asdict(self)
++
++
++def _jobs_dir() -> Path:
++    output = Path(config_store.get("OUTPUT_DIR"))
++    jobs = output / "jobs"
++    jobs.mkdir(parents=True, exist_ok=True)
++    return jobs
++
++
++def _index_path() -> Path:
++    return _jobs_dir() / "index.json"
++
++
++def _safe_job_key(job_key: str) -> str:
++    return re.sub(r"[^A-Za-z0-9._:-]", "_", job_key)[:120]
++
++
++def load_index() -> None:
++    global _INDEX
++    path = _index_path()
++    if not path.exists():
++        _INDEX = {}
++        return
++    if not path.exists():
++        _INDEX = {}
++        return
++    try:
++        raw = json.loads(path.read_text(encoding="utf-8"))
++        _INDEX = raw if isinstance(raw, dict) else {}
++    except (OSError, json.JSONDecodeError):
++        _INDEX = {}
++
++
++def _save_index() -> None:
++    path = _index_path()
++    path.write_text(json.dumps(_INDEX, indent=2) + "\n", encoding="utf-8")
++
++
++def create_job(job: ElectronicFilmJob) -> ElectronicFilmJob:
++    with _LOCK:
++        load_index()
++        now = datetime.now().isoformat()
++        if not job.receivedAt:
++            job.receivedAt = now
++        key = _safe_job_key(job.jobKey)
++        job.jobKey = key
++        data = job.to_dict()
++        _INDEX[key] = data
++        job_path = _jobs_dir() / f"{key}.json"
++        job_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
++        _save_index()
++        return job
++
++
++def update_job(job_key: str, **fields: Any) -> Optional[dict[str, Any]]:
++    with _LOCK:
++        load_index()
++        key = _safe_job_key(job_key)
++        record = _INDEX.get(key)
++        if record is None:
++            return None
++        record.update(fields)
++        if fields.get("captureStatus") == "captured" or fields.get("physicalPrintStatus") == "printed":
++            record["completedAt"] = datetime.now().isoformat()
++        _INDEX[key] = record
++        job_path = _jobs_dir() / f"{key}.json"
++        job_path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
++        _save_index()
++        return record
++
++
++def get_job(job_key: str) -> Optional[dict[str, Any]]:
++    with _LOCK:
++        load_index()
++        return _INDEX.get(_safe_job_key(job_key))
++
++
++def list_jobs(limit: int = 100, source: Optional[str] = None) -> list[dict[str, Any]]:
++    with _LOCK:
++        load_index()
++        rows = list(_INDEX.values())
++        if source:
++            rows = [r for r in rows if r.get("source") == source]
++        rows.sort(key=lambda r: r.get("receivedAt", ""), reverse=True)
++        return rows[:limit]
++
++
++def storage_stats() -> dict[str, Any]:
++    output = Path(config_store.get("OUTPUT_DIR"))
++    jobs_dir = output / "jobs"
++    artifact_files = []
++    if output.exists():
++        for pattern in ("*.pdf", "*.png"):
++            artifact_files.extend(output.glob(pattern))
++    total_bytes = sum(p.stat().st_size for p in artifact_files if p.is_file())
++    oldest = min(artifact_files, key=lambda p: p.stat().st_mtime) if artifact_files else None
++    newest = max(artifact_files, key=lambda p: p.stat().st_mtime) if artifact_files else None
++    return {
++        "outputDir": str(output),
++        "writable": output.exists() and os.access(output, os.W_OK),
++        "jobCount": len(_INDEX),
++        "artifactCount": len(artifact_files),
++        "diskUsageBytes": total_bytes,
++        "oldestArtifact": oldest.name if oldest else None,
++        "newestArtifact": newest.name if newest else None,
++    }
++
++
+diff --git a/server.py b/server.py
+index f6bb366..af6afd0 100644
+--- a/server.py
++++ b/server.py
+@@ -155,6 +155,9 @@ job can be spooled.
+ 
+ from __future__ import annotations
+ 
++import config_store as _config_store
++_config_store.overlay_env_from_persisted()
++
+ import base64
+ import binascii
+ import hmac
+@@ -173,7 +176,7 @@ from datetime import datetime, timedelta
+ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+ from io import BytesIO
+ from pathlib import Path
+-from typing import Optional
++from typing import Any, Optional
+ import urllib.request
+ from urllib.parse import unquote
+ 
+@@ -198,6 +201,11 @@ from pynetdicom.sop_class import (
+     Verification,
+ )
+ 
++import admin_routes
++import identity_audit
++import image_profiles
++import job_store
++from job_store import ElectronicFilmJob
+ 
+ # =============================================================================
+ # Configuration
+@@ -251,6 +259,16 @@ GAMMA = max(0.01, _env_float("GAMMA", 2.0))
+ CONTRAST_LOW_PCT = min(max(_env_float("CONTRAST_LOW_PERCENTILE", 1.0), 0.0), 49.0)
+ CONTRAST_HIGH_PCT = min(max(_env_float("CONTRAST_HIGH_PERCENTILE", 99.0), 51.0), 100.0)
+ ENABLE_CALIBRATION = _env_bool("ENABLE_CALIBRATION", True)
++CAPTURE_MODE = _env_str("CAPTURE_MODE", "CAPTURE_AND_PRINT").strip().upper()
++if CAPTURE_MODE not in ("CAPTURE_ONLY", "CAPTURE_AND_PRINT", "PRINT_ONLY"):
++    CAPTURE_MODE = "CAPTURE_AND_PRINT"
++BRIGHTNESS = _env_float("BRIGHTNESS", 0.0)
++CONTRAST = max(0.1, _env_float("CONTRAST", 1.0))
++SHARPNESS = max(0.0, _env_float("SHARPNESS", 0.0))
++INVERT_POLARITY = _env_bool("INVERT_POLARITY", False)
++HONOR_SCU_LAYOUT = _env_bool("HONOR_SCU_LAYOUT", True)
++PRESERVE_CONSOLE_LAYOUT = _env_bool("PRESERVE_CONSOLE_LAYOUT", True)
++BRANDING_SOURCE = _env_str("BRANDING_SOURCE", "LOCAL").strip().upper()
+ 
+ PAGE_SIZE = _env_str("PAGE_SIZE", "A4").strip().upper()
+ # Validated against _PAGE_SIZES_MM once that table is defined, below.
+@@ -481,6 +499,99 @@ logging.basicConfig(
+ )
+ log = logging.getLogger("dicom-print-scp")
+ 
++# Runtime diagnostics / admin dashboard context (PHI-safe)
++RECENT_ASSOCIATIONS: list[dict] = []
++RECENT_ERRORS: list[str] = []
++LAST_ASSOCIATION: Optional[dict] = None
++LAST_SUCCESSFUL_CAPTURE: Optional[dict] = None
++LAST_PHYSICAL_PRINT: Optional[dict] = None
++LAST_ERROR: Optional[str] = None
++ERP_LAST_SYNC: str = ""
++BRIDGE_STATUS = "RUNNING"
++IDENTITY_AUDIT_BUFFER: list[dict] = []
++
++
++def reload_live_config() -> None:
++    """Reload live-apply settings from config_store into module globals."""
++    global GAMMA, CONTRAST_LOW_PCT, CONTRAST_HIGH_PCT, ENABLE_CALIBRATION
++    global CAPTURE_MODE, BRIGHTNESS, CONTRAST, SHARPNESS, INVERT_POLARITY
++    global PAGE_SIZE, PAGE_ORIENTATION, HONOR_SCU_FILM_SIZE, HONOR_SCU_LAYOUT, PRESERVE_CONSOLE_LAYOUT
++    global DPI, MARGIN_MM, GUTTER_MM, LAYOUT_ROWS, LAYOUT_COLS, STRETCH_TO_FIT, AUTO_FIT_LAYOUT
++    global BACKGROUND_COLOR, BATCH_GROUP_BY, BATCH_IDLE_TIMEOUT_SECONDS, BRANDING_SOURCE
++    global HEADER_LINE1, HEADER_LINE2, HEADER_LOGO_PATH, HEADER_ALIGN, HEADER_HEIGHT_MM
++    global FOOTER_LINE1, FOOTER_LINE2, FOOTER_LOGO_PATH, FOOTER_ALIGN, FOOTER_HEIGHT_MM
++    global BANNER_BACKGROUND_COLOR, SHOW_PATIENT_BANNER, PATIENT_BANNER_HEIGHT_MM
++    global SHOW_IMAGE_LABELS, IMAGE_LABEL_HEIGHT_MM, ERP_BRANDING_URL
++    global ERP_BRANDING_REFRESH_SECONDS, ERP_BRANDING_TIMEOUT_SECONDS
++    global OUTPUT_DIR, OUTPUT_FORMAT, JOB_RETENTION_DAYS, PRINT_METHOD, CUPS_SERVER
++    global CUPS_PRINTER_NAME, CUPS_MEDIA, JETDIRECT_HOST, JETDIRECT_PORT, HTTP_BRIDGE_SECRET
++    global MAX_IMAGES_PER_PAGE, MODALITY_LAYOUTS
++
++    GAMMA = max(0.01, float(_config_store.get("GAMMA")))
++    CONTRAST_LOW_PCT = min(max(float(_config_store.get("CONTRAST_LOW_PERCENTILE")), 0.0), 49.0)
++    CONTRAST_HIGH_PCT = min(max(float(_config_store.get("CONTRAST_HIGH_PERCENTILE")), 51.0), 100.0)
++    ENABLE_CALIBRATION = bool(_config_store.get("ENABLE_CALIBRATION"))
++    CAPTURE_MODE = str(_config_store.get("CAPTURE_MODE")).upper()
++    BRIGHTNESS = float(_config_store.get("BRIGHTNESS"))
++    CONTRAST = max(0.1, float(_config_store.get("CONTRAST")))
++    SHARPNESS = max(0.0, float(_config_store.get("SHARPNESS")))
++    INVERT_POLARITY = bool(_config_store.get("INVERT_POLARITY"))
++    PAGE_SIZE = normalize_page_size(str(_config_store.get("PAGE_SIZE")), "A4")
++    PAGE_ORIENTATION = str(_config_store.get("PAGE_ORIENTATION")).upper()
++    HONOR_SCU_FILM_SIZE = bool(_config_store.get("HONOR_SCU_FILM_SIZE"))
++    HONOR_SCU_LAYOUT = bool(_config_store.get("HONOR_SCU_LAYOUT"))
++    PRESERVE_CONSOLE_LAYOUT = bool(_config_store.get("PRESERVE_CONSOLE_LAYOUT"))
++    DPI = max(72, int(_config_store.get("DPI")))
++    MARGIN_MM = max(0.0, float(_config_store.get("MARGIN_MM")))
++    GUTTER_MM = max(0.0, float(_config_store.get("GUTTER_MM")))
++    LAYOUT_ROWS = max(1, int(_config_store.get("LAYOUT_ROWS")))
++    LAYOUT_COLS = max(1, int(_config_store.get("LAYOUT_COLS")))
++    STRETCH_TO_FIT = bool(_config_store.get("STRETCH_TO_FIT"))
++    AUTO_FIT_LAYOUT = bool(_config_store.get("AUTO_FIT_LAYOUT"))
++    BACKGROUND_COLOR = str(_config_store.get("BACKGROUND_COLOR")).upper()
++    BATCH_GROUP_BY = str(_config_store.get("BATCH_GROUP_BY")).lower()
++    BATCH_IDLE_TIMEOUT_SECONDS = max(5, int(_config_store.get("BATCH_IDLE_TIMEOUT_SECONDS")))
++    BRANDING_SOURCE = str(_config_store.get("BRANDING_SOURCE")).upper()
++    HEADER_LINE1 = str(_config_store.get("HEADER_LINE1") or "").strip()
++    HEADER_LINE2 = str(_config_store.get("HEADER_LINE2") or "").strip()
++    HEADER_LOGO_PATH = str(_config_store.get("HEADER_LOGO_PATH") or "").strip()
++    HEADER_ALIGN = str(_config_store.get("HEADER_ALIGN")).upper()
++    HEADER_HEIGHT_MM = max(0.0, float(_config_store.get("HEADER_HEIGHT_MM")))
++    FOOTER_LINE1 = str(_config_store.get("FOOTER_LINE1") or "").strip()
++    FOOTER_LINE2 = str(_config_store.get("FOOTER_LINE2") or "").strip()
++    FOOTER_LOGO_PATH = str(_config_store.get("FOOTER_LOGO_PATH") or "").strip()
++    FOOTER_ALIGN = str(_config_store.get("FOOTER_ALIGN")).upper()
++    FOOTER_HEIGHT_MM = max(0.0, float(_config_store.get("FOOTER_HEIGHT_MM")))
++    BANNER_BACKGROUND_COLOR = str(_config_store.get("BANNER_BACKGROUND_COLOR")).upper()
++    SHOW_PATIENT_BANNER = bool(_config_store.get("SHOW_PATIENT_BANNER"))
++    PATIENT_BANNER_HEIGHT_MM = max(0.0, float(_config_store.get("PATIENT_BANNER_HEIGHT_MM")))
++    SHOW_IMAGE_LABELS = bool(_config_store.get("SHOW_IMAGE_LABELS"))
++    IMAGE_LABEL_HEIGHT_MM = max(0.0, float(_config_store.get("IMAGE_LABEL_HEIGHT_MM")))
++    ERP_BRANDING_URL = str(_config_store.get("ERP_BRANDING_URL") or "").strip()
++    ERP_BRANDING_REFRESH_SECONDS = max(30, int(_config_store.get("ERP_BRANDING_REFRESH_SECONDS")))
++    ERP_BRANDING_TIMEOUT_SECONDS = max(1, int(_config_store.get("ERP_BRANDING_TIMEOUT_SECONDS")))
++    OUTPUT_DIR = Path(str(_config_store.get("OUTPUT_DIR")))
++    OUTPUT_FORMAT = str(_config_store.get("OUTPUT_FORMAT")).lower()
++    JOB_RETENTION_DAYS = int(_config_store.get("JOB_RETENTION_DAYS"))
++    PRINT_METHOD = str(_config_store.get("PRINT_METHOD")).lower()
++    CUPS_SERVER = str(_config_store.get("CUPS_SERVER"))
++    CUPS_PRINTER_NAME = str(_config_store.get("CUPS_PRINTER_NAME") or "").strip()
++    CUPS_MEDIA = str(_config_store.get("CUPS_MEDIA") or "").strip()
++    JETDIRECT_HOST = str(_config_store.get("JETDIRECT_HOST") or "").strip()
++    JETDIRECT_PORT = int(_config_store.get("JETDIRECT_PORT"))
++    HTTP_BRIDGE_SECRET = str(_config_store.get("HTTP_BRIDGE_SECRET") or "").strip()
++    MODALITY_LAYOUTS = _parse_modality_layouts()
++    MAX_IMAGES_PER_PAGE = LAYOUT_ROWS * LAYOUT_COLS
++
++
++def _record_error(message: str) -> None:
++    global LAST_ERROR
++    LAST_ERROR = message[:500]
++    RECENT_ERRORS.append(f"{datetime.now().isoformat()} {message[:200]}")
++    if len(RECENT_ERRORS) > 50:
++        RECENT_ERRORS.pop(0)
++    _sync_bridge_runtime()
++
+ 
+ # =============================================================================
+ # Data model
+@@ -1073,6 +1184,9 @@ def refresh_erp_branding(log_success: bool = False) -> bool:
+     with _ERP_BRANDING_LOCK:
+         _ERP_BRANDING.clear()
+         _ERP_BRANDING.update(banners)
++    global ERP_LAST_SYNC
++    ERP_LAST_SYNC = datetime.now().isoformat()
++    _sync_bridge_runtime()
+     if log_success:
+         log.info(
+             "Clinic branding loaded from the ERP: header=%r/%r, logo=%s, footer=%r",
+@@ -1173,6 +1287,7 @@ def render_page(
+     patient_label: str = "",
+     labels: Optional[list[str]] = None,
+     page_size: str = "",
++    modality: str = "",
+ ) -> Image.Image:
+     """Render one page. `header`/`footer` (keys: line1, line2, logo, align) override the
+     HEADER_*/FOOTER_* env config for this page only - used by the HTTP print API so an ERP
+@@ -1281,8 +1396,8 @@ def render_page(
+             break
+ 
+         if ENABLE_CALIBRATION:
+-            calibrated = (calibrate_color if is_color else calibrate_grayscale)(
+-                arr, GAMMA, CONTRAST_LOW_PCT, CONTRAST_HIGH_PCT
++            calibrated = image_profiles.calibrate_frame(
++                arr, is_color, modality=modality, enable=True,
+             )
+         else:
+             calibrated = normalize_bit_depth(arr)
+@@ -1430,6 +1545,13 @@ def process_print_job(
+     patient_label: str = "",
+     image_labels: Optional[list[list[str]]] = None,
+     page_size: str = "",
++    source: str = "ERP",
++    source_calling_ae: str = "",
++    film_session_uid: str = "",
++    film_box_uids: Optional[list[str]] = None,
++    identity_audits: Optional[list[dict]] = None,
++    patient_info: Optional[PatientInfo] = None,
++    modality: str = "",
+ ) -> None:
+     """Render and print one job. `page_groups`/`color_flag_groups` are lists of
+     per-page image lists - the DICOM print path always submits a single page
+@@ -1441,18 +1563,45 @@ def process_print_job(
+     word on whether a job actually printed.
+     """
+     total_images = sum(len(page) for page in page_groups)
++    _mark_job_queued(job_key, pages=len(page_groups), images=total_images, copies=copies)
+     _mark_job_processing(job_key, pages=len(page_groups), images=total_images, copies=copies)
++
++    identity_summary = identity_audit.summarize_identity(identity_audits or [])
++    ef_job = ElectronicFilmJob(
++        jobKey=job_key,
++        source=source,
++        sourceCallingAE=source_calling_ae,
++        filmSessionUID=film_session_uid,
++        filmBoxUIDs=film_box_uids or [],
++        imageCount=total_images,
++        layoutRows=max_rows or LAYOUT_ROWS,
++        layoutCols=max_cols or LAYOUT_COLS,
++        filmSize=normalize_page_size(page_size, PAGE_SIZE),
++        filmOrientation=orientation_hint,
++        artifactFormat=OUTPUT_FORMAT,
++        captureStatus="pending",
++        physicalPrintStatus="skipped" if CAPTURE_MODE == "CAPTURE_ONLY" else "pending",
++        copies=copies,
++        pages=len(page_groups),
++        identityAudit=identity_audits or [],
++        identitySummary=identity_summary,
++        modality=modality or (patient_info.modality if patient_info else ""),
++        patientId=patient_info.patient_id if patient_info else "",
++        patientName=patient_info.name if patient_info else "",
++    )
++    job_store.create_job(ef_job)
++
+     try:
+         log.info(
+-            "Rendering print job %s: %d page(s), %d image(s) total, %d cop%s",
+-            job_key, len(page_groups), total_images, copies, "y" if copies == 1 else "ies",
++            "Rendering print job %s: %d page(s), %d image(s) total, %d cop%s (mode=%s)",
++            job_key, len(page_groups), total_images, copies, "y" if copies == 1 else "ies", CAPTURE_MODE,
+         )
+-        page_size = normalize_page_size(page_size, PAGE_SIZE)
++        page_size_eff = normalize_page_size(page_size, PAGE_SIZE)
+         canvases = [
+             render_page(images, flags, orientation_hint, header=header, footer=footer,
+                         max_rows=max_rows, max_cols=max_cols, patient_label=patient_label,
+                         labels=(image_labels[index] if image_labels and index < len(image_labels) else None),
+-                        page_size=page_size)
++                        page_size=page_size_eff, modality=modality)
+             for index, (images, flags) in enumerate(zip(page_groups, color_flag_groups))
+         ]
+ 
+@@ -1462,19 +1611,98 @@ def process_print_job(
+         out_paths = save_pages(canvases, out_path)
+         log.info("Saved %d rendered page file(s): %s", len(out_paths), ", ".join(p.name for p in out_paths))
+ 
+-        for page_path in out_paths:
+-            spool_print_job(page_path, copies, page_size)
+-        log.info("Print job %s dispatched successfully (%d file(s) sent to the printer)", job_key, len(out_paths))
++        global LAST_SUCCESSFUL_CAPTURE
++        LAST_SUCCESSFUL_CAPTURE = {
++            "jobKey": job_key,
++            "at": datetime.now().isoformat(),
++            "artifacts": [str(p) for p in out_paths],
++        }
++        job_store.update_job(
++            job_key,
++            captureStatus="captured",
++            artifactPaths=[str(p) for p in out_paths],
++            pages=len(out_paths),
++        )
+         _mark_job_completed(job_key)
++
++        if CAPTURE_MODE == "CAPTURE_ONLY":
++            log.info("Capture-only mode: electronic film saved for job %s (no physical print)", job_key)
++            return
++
++        print_error = None
++        for page_path in out_paths:
++            try:
++                spool_print_job(page_path, copies, page_size_eff)
++            except Exception as exc:
++                print_error = str(exc)
++                log.exception("Physical print failed for %s", page_path)
++                break
++
++        if print_error:
++            job_store.update_job(job_key, physicalPrintStatus="failed", physicalPrintError=print_error[:500])
++            _record_error(f"Physical print failed for {job_key}: {print_error}")
++            if CAPTURE_MODE == "PRINT_ONLY":
++                _mark_job_failed(job_key, print_error)
++            else:
++                log.warning("Physical print failed but electronic film captured for %s", job_key)
++        else:
++            global LAST_PHYSICAL_PRINT
++            LAST_PHYSICAL_PRINT = {"jobKey": job_key, "at": datetime.now().isoformat()}
++            job_store.update_job(job_key, physicalPrintStatus="printed")
++            log.info("Print job %s dispatched successfully (%d file(s) sent to the printer)", job_key, len(out_paths))
+     except Exception as exc:
+         log.exception("Print job %s failed", job_key)
++        job_store.update_job(job_key, captureStatus="failed", captureError=str(exc)[:500])
+         _mark_job_failed(job_key, str(exc))
++        _record_error(f"Job {job_key} failed: {exc}")
+ 
+ 
+ # =============================================================================
+ # DICOM N-service handlers
+ # =============================================================================
+ 
++BRIDGE_RUNTIME: dict[str, Any] = {
++    "bridge_status": "RUNNING",
++    "last_association": None,
++    "last_successful_capture": None,
++    "last_physical_print": None,
++    "last_error": None,
++    "erp_last_sync": "",
++    "recent_associations": [],
++    "recent_errors": [],
++}
++
++
++def _sync_bridge_runtime() -> None:
++    BRIDGE_RUNTIME.update({
++        "bridge_status": BRIDGE_STATUS,
++        "last_association": LAST_ASSOCIATION,
++        "last_successful_capture": LAST_SUCCESSFUL_CAPTURE,
++        "last_physical_print": LAST_PHYSICAL_PRINT,
++        "last_error": LAST_ERROR,
++        "erp_last_sync": ERP_LAST_SYNC,
++        "recent_associations": list(RECENT_ASSOCIATIONS),
++        "recent_errors": list(RECENT_ERRORS),
++    })
++
++
++def handle_assoc_accepted(event) -> int:
++    global LAST_ASSOCIATION
++    caller = str(event.assoc.requestor.ae_title or "").strip()
++    entry = {
++        "at": datetime.now().isoformat(),
++        "callingAE": caller,
++        "calledAE": AE_TITLE,
++    }
++    LAST_ASSOCIATION = entry
++    RECENT_ASSOCIATIONS.append(entry)
++    if len(RECENT_ASSOCIATIONS) > 20:
++        RECENT_ASSOCIATIONS.pop(0)
++    _sync_bridge_runtime()
++    log.info("Association accepted from calling AE %s", caller or "?")
++    return 0x0000
++
++
+ def handle_echo(event) -> int:
+     return 0x0000
+ 
+@@ -1604,6 +1832,9 @@ def _create_film_session(uid: str, attrs: Dataset, calling_ae: str):
+             calling_ae=calling_ae,
+             patient_key=_extract_patient_key(attrs),
+         )
++    session_audit = identity_audit.audit_film_session(attrs, calling_ae)
++    IDENTITY_AUDIT_BUFFER.append(session_audit)
++    log.info("Film Session identity audit: %s", json.dumps(session_audit.get("tags", [])[:3]))
+     log.info("Film Session created: %s (copies=%d, calling AE=%s)", uid, copies, calling_ae or "?")
+ 
+     resp = Dataset()
+@@ -1666,6 +1897,9 @@ def _create_film_box(event, uid: str, attrs: Dataset):
+         FILM_BOXES[uid] = box
+         session.film_box_uids.append(uid)
+ 
++    box_audit = identity_audit.audit_film_box(attrs)
++    IDENTITY_AUDIT_BUFFER.append(box_audit)
++
+     log.info(
+         "Film Box created: %s (%dx%d grid, %d image box(es), FilmSizeID=%s, session=%s)",
+         uid, rows, cols, box_count, box.film_size_id or "(none)", session_uid,
+@@ -1740,6 +1974,8 @@ def _set_image_box(image_box: ImageBoxRecord, mods: Dataset):
+ 
+     patient = _extract_patient_info(seq_item, mods)
+     label = _extract_image_label(seq_item, mods)
++    img_audit = identity_audit.audit_image_box(mods, seq_item)
++    IDENTITY_AUDIT_BUFFER.append(img_audit)
+ 
+     with _STATE_LOCK:
+         image_box.array = array
+@@ -1837,18 +2073,16 @@ def _print_film_box(film_box: FilmBoxRecord, action_type: Optional[int]):
+             log.warning("Film Box %s has no Image Box pixel data to print", film_box.sop_instance_uid)
+             return 0x0000, None
+ 
+-        # Patient identity and modality come from whichever Image Boxes
+-        # carried the tags; the modality also selects the page grid.
+         patient = PatientInfo()
+         for box in filled:
+             if box.patient:
+                 patient = patient.merged_with(box.patient)
+-        page_rows, page_cols = layout_for_modality(patient.modality)
+-        page_capacity = page_rows * page_cols
+ 
+-        # The Film Box may name a film size (14INX17IN and friends). Obeying it
+-        # is opt-in: a department that stocks one film size wants every sheet on
+-        # that stock regardless of what a modality asks for.
++        if PRESERVE_CONSOLE_LAYOUT or HONOR_SCU_LAYOUT:
++            page_rows, page_cols = film_box.rows, film_box.cols
++        else:
++            page_rows, page_cols = layout_for_modality(patient.modality)
++
+         film_size = ""
+         if HONOR_SCU_FILM_SIZE and film_box.film_size_id:
+             film_size = normalize_page_size(film_box.film_size_id)
+@@ -1858,32 +2092,10 @@ def _print_film_box(film_box: FilmBoxRecord, action_type: Optional[int]):
+                     film_box.sop_instance_uid, film_box.film_size_id, PAGE_SIZE,
+                 )
+ 
+-        if BATCH_GROUP_BY == "session":
+-            # Legacy mode: this Film Box's own images are the whole page,
+-            # printed immediately, never combined with any other session.
+-            to_print = filled[:page_capacity]
+-            dropped = len(filled) - len(to_print)
+-            if dropped > 0:
+-                log.warning(
+-                    "Film Box %s: %d image(s) exceed the %d-image page layout (%dx%d); dropping %d",
+-                    film_box.sop_instance_uid, len(filled), page_capacity, page_rows, page_cols, dropped,
+-                )
+-            if not to_print:
+-                return 0x0000, None
+-            images_snapshot = [b.array.copy() for b in to_print]
+-            color_flags = [b.is_color for b in to_print]
+-            labels = [b.label for b in to_print]
+-            job_key = session.sop_instance_uid
+-            copies = session.number_of_copies
+-            orientation_hint = film_box.orientation
+-            batch_rows, batch_cols = page_rows, page_cols
+-            patient_label = patient.label()
+-            job_page_size = film_size
+-        else:
+-            # Default "auto" mode: fold into a cross-session batch keyed by
+-            # patient (if known) or by calling AE Title + recent activity,
+-            # and only actually render+print once the batch is full or (via
+-            # the background flush thread) has gone idle.
++        use_auto_batch = BATCH_GROUP_BY == "auto" and not PRESERVE_CONSOLE_LAYOUT
++
++        if use_auto_batch:
++            page_capacity = page_rows * page_cols
+             patient_key = film_box.patient_key or session.patient_key
+             is_color = filled[0].is_color
+             batch = _find_or_create_batch_locked(
+@@ -1891,17 +2103,24 @@ def _print_film_box(film_box: FilmBoxRecord, action_type: Optional[int]):
+                 max_rows=page_rows, max_cols=page_cols,
+             )
+             batch.patient = batch.patient.merged_with(patient)
+-
+             room_left = batch.capacity - len(batch.images)
+             to_add = filled[: max(0, room_left)]
+             dropped = len(filled) - len(to_add)
+             if dropped > 0:
+                 log.warning(
+-                    "Batch %s: %d image(s) exceed the %d-image page layout (%dx%d); "
+-                    "dropping the extra %d instead of starting another page",
+-                    batch.batch_key, len(filled), batch.capacity,
+-                    batch.max_rows or LAYOUT_ROWS, batch.max_cols or LAYOUT_COLS, dropped,
++                    "Batch %s: %d overflow image(s) from Film Box %s will print on a follow-on page",
++                    batch.batch_key, dropped, film_box.sop_instance_uid,
+                 )
++                overflow = filled[len(to_add):]
++                for box in overflow:
++                    overflow_key = f"{batch.batch_key}:overflow:{film_box.sop_instance_uid}"
++                    overflow_batch = _find_or_create_batch_locked(
++                        session.calling_ae, patient_key, is_color, session.number_of_copies,
++                        film_box.orientation, max_rows=page_rows, max_cols=page_cols,
++                    )
++                    overflow_batch.images.append(
++                        BatchImage(array=box.array.copy(), is_color=box.is_color, label=box.label)
++                    )
+             for box in to_add:
+                 batch.images.append(
+                     BatchImage(array=box.array.copy(), is_color=box.is_color, label=box.label)
+@@ -1911,17 +2130,8 @@ def _print_film_box(film_box: FilmBoxRecord, action_type: Optional[int]):
+             batch.orientation_hint = film_box.orientation
+             if film_size:
+                 batch.page_size = film_size
+-
+-            log.info(
+-                "Batch %s: %d/%d image(s) accumulated (Film Box %s contributed %d)",
+-                batch.batch_key, len(batch.images), batch.capacity, film_box.sop_instance_uid, len(to_add),
+-            )
+-
+             if len(batch.images) < batch.capacity:
+-                # Not full yet - wait for more presses or the idle-timeout
+-                # flush thread; nothing to render right now.
+                 return 0x0000, None
+-
+             images_snapshot = [im.array for im in batch.images]
+             color_flags = [im.is_color for im in batch.images]
+             labels = [im.label for im in batch.images]
+@@ -1931,12 +2141,40 @@ def _print_film_box(film_box: FilmBoxRecord, action_type: Optional[int]):
+             batch_rows, batch_cols = batch.max_rows, batch.max_cols
+             patient_label = batch.patient.label()
+             job_page_size = batch.page_size
++            page_groups = [images_snapshot]
++            color_groups = [color_flags]
++            label_groups = [labels]
+             del BATCHES[batch.batch_key]
++        else:
++            page_capacity = max(1, page_rows * page_cols)
++            all_images = [b.array.copy() for b in filled]
++            all_colors = [b.is_color for b in filled]
++            all_labels = [b.label for b in filled]
++            page_groups, color_groups, label_groups = [], [], []
++            for start in range(0, len(all_images), page_capacity):
++                page_groups.append(all_images[start:start + page_capacity])
++                color_groups.append(all_colors[start:start + page_capacity])
++                label_groups.append(all_labels[start:start + page_capacity])
++            job_key = f"dicom:{film_box.sop_instance_uid}"
++            copies = session.number_of_copies
++            orientation_hint = film_box.orientation
++            batch_rows, batch_cols = page_rows, page_cols
++            patient_label = patient.label()
++            job_page_size = film_size
++
++        audits = list(IDENTITY_AUDIT_BUFFER)
++        IDENTITY_AUDIT_BUFFER.clear()
++        calling_ae = session.calling_ae
++        session_uid = session.sop_instance_uid
++        box_uid = film_box.sop_instance_uid
+ 
+     _PRINT_EXECUTOR.submit(
+-        process_print_job, job_key, [images_snapshot], [color_flags], copies, orientation_hint,
+-        max_rows=batch_rows or None, max_cols=batch_cols or None, patient_label=patient_label,
+-        image_labels=[labels], page_size=job_page_size,
++        process_print_job, job_key, page_groups, color_groups, copies, orientation_hint,
++        max_rows=batch_rows, max_cols=batch_cols, patient_label=patient_label,
++        image_labels=label_groups, page_size=job_page_size,
++        source="DICOM", source_calling_ae=calling_ae,
++        film_session_uid=session_uid, film_box_uids=[box_uid],
++        identity_audits=audits, patient_info=patient, modality=patient.modality,
+     )
+     return 0x0000, None
+ 
+@@ -2232,6 +2470,10 @@ class _PrintBridgeHTTPHandler(BaseHTTPRequestHandler):
+     def do_GET(self) -> None:
+         path = self.path.split("?")[0].rstrip("/")
+ 
++        if path == "/admin" or path.startswith("/admin/api/"):
++            if admin_routes.handle_admin_get(self, path):
++                return
++
+         if path == "/api/v1/health":
+             status, info = check_printer_status()
+             self._send_json(200, {
+@@ -2239,37 +2481,81 @@ class _PrintBridgeHTTPHandler(BaseHTTPRequestHandler):
+                 "printerStatus": status,
+                 "printerInfo": info,
+                 "printMethod": PRINT_METHOD,
++                "captureMode": CAPTURE_MODE,
+                 "layout": {"rows": LAYOUT_ROWS, "cols": LAYOUT_COLS},
+                 "httpApiEnabled": bool(HTTP_BRIDGE_SECRET),
++                "bridgeStatus": BRIDGE_STATUS,
+             })
+             return
+ 
++        if path == "/api/v1/print-jobs":
++            if not HTTP_BRIDGE_SECRET or not self._authorized():
++                self._send_json(401, {"error": "missing or invalid Authorization bearer token"})
++                return
++            self._send_json(200, {"jobs": job_store.list_jobs(limit=100)})
++            return
++
+         if path.startswith("/api/v1/print-jobs/"):
+             if not HTTP_BRIDGE_SECRET or not self._authorized():
+                 self._send_json(401, {"error": "missing or invalid Authorization bearer token"})
+                 return
+-            job_key = unquote(path[len("/api/v1/print-jobs/"):])
++            remainder = unquote(path[len("/api/v1/print-jobs/"):])
++            if remainder.endswith("/artifact"):
++                job_key = remainder[:-len("/artifact")]
++                record = job_store.get_job(job_key)
++                if not record or not record.get("artifactPaths"):
++                    self._send_json(404, {"error": "artifact not found"})
++                    return
++                artifact = Path(record["artifactPaths"][0])
++                if not artifact.is_file():
++                    self._send_json(404, {"error": "artifact file missing"})
++                    return
++                data = artifact.read_bytes()
++                ctype = "application/pdf" if artifact.suffix.lower() == ".pdf" else "image/png"
++                self.send_response(200)
++                self.send_header("Content-Type", ctype)
++                self.send_header("Content-Length", str(len(data)))
++                self.end_headers()
++                self.wfile.write(data)
++                return
++            job_key = remainder
++            persistent = job_store.get_job(job_key)
+             with _JOB_STATUS_LOCK:
+                 record = PRINT_JOB_STATUS.get(job_key)
+-            if record is None:
++            if persistent is None and record is None:
+                 self._send_json(404, {"error": "unknown job key"})
+                 return
+-            self._send_json(200, {
+-                "jobKey": record.job_key,
+-                "status": record.status,
+-                "pages": record.pages,
+-                "images": record.images,
+-                "copies": record.copies,
+-                "error": record.error,
+-                "createdAt": record.created_at.isoformat(),
+-                "updatedAt": record.updated_at.isoformat(),
+-            })
++            payload = {"jobKey": job_key}
++            if persistent:
++                payload.update(persistent)
++            if record:
++                payload.update({
++                    "status": record.status,
++                    "pages": record.pages,
++                    "images": record.images,
++                    "copies": record.copies,
++                    "error": record.error,
++                    "createdAt": record.created_at.isoformat(),
++                    "updatedAt": record.updated_at.isoformat(),
++                })
++            self._send_json(200, payload)
+             return
+ 
+         self._send_json(404, {"error": "not found"})
+ 
+     def do_POST(self) -> None:
+-        if self.path.split("?")[0].rstrip("/") != "/api/v1/print-jobs":
++        path = self.path.split("?")[0].rstrip("/")
++        if path == "/admin/api/login" or (path.startswith("/admin/api/") and path != "/admin/api/login"):
++            content_length = int(self.headers.get("Content-Length", "0") or 0)
++            raw_body = self.rfile.read(content_length) if content_length > 0 else b"{}"
++            try:
++                payload = json.loads(raw_body.decode("utf-8") or "{}")
++            except json.JSONDecodeError:
++                payload = {}
++            if admin_routes.handle_admin_post(self, path, payload):
++                return
++
++        if path != "/api/v1/print-jobs":
+             self._send_json(404, {"error": "not found"})
+             return
+ 
+@@ -2355,17 +2641,21 @@ class _PrintBridgeHTTPHandler(BaseHTTPRequestHandler):
+         # belong to one patient - the bridge prints what it is given.
+         patient_label = ""
+         patient_field = payload.get("patient")
++        erp_patient: Optional[PatientInfo] = None
++        erp_modality = ""
+         if isinstance(patient_field, dict):
+             def _field(name: str) -> str:
+                 value = patient_field.get(name)
+                 return str(value).strip() if value not in (None, "") else ""
+ 
+-            patient_label = PatientInfo(
++            erp_patient = PatientInfo(
+                 name=_field("name"),
+                 patient_id=_field("id"),
+                 study_date=_field("studyDate"),
+                 modality=_field("modality").upper(),
+-            ).label()
++            )
++            erp_modality = erp_patient.modality
++            patient_label = erp_patient.label()
+ 
+         # Unlike the DICOM path (where extra images past the grid are dropped -
+         # a physical modality's button presses are inherently ambiguous about
+@@ -2401,6 +2691,7 @@ class _PrintBridgeHTTPHandler(BaseHTTPRequestHandler):
+         _PRINT_EXECUTOR.submit(
+             process_print_job, job_key, page_groups, color_flag_groups, copies, orientation_hint,
+             header, footer, max_rows, max_cols, patient_label, label_groups, req_page_size,
++            source="ERP", patient_info=erp_patient, modality=erp_modality,
+         )
+ 
+         log.info(
+@@ -2461,6 +2752,7 @@ def build_ae() -> tuple[AE, list]:
+     ae.maximum_associations = 8
+ 
+     handlers = [
++        (evt.EVT_ACCEPTED, handle_assoc_accepted),
+         (evt.EVT_C_ECHO, handle_echo),
+         (evt.EVT_N_CREATE, handle_create),
+         (evt.EVT_N_SET, handle_set),
+@@ -2526,15 +2818,29 @@ def _log_startup_banner() -> None:
+         log.info("  JetDirect target=%s:%d", JETDIRECT_HOST or "(not set!)", JETDIRECT_PORT)
+     log.info("Output directory: %s (%s, retained %d days)", OUTPUT_DIR, OUTPUT_FORMAT.upper(), JOB_RETENTION_DAYS)
+     log.info(
+-        "HTTP print API: %s on port %d",
++        "HTTP print API: %s on port %d | Admin UI: http://<host>:%d/admin",
+         "enabled" if HTTP_BRIDGE_SECRET else "listening but DISABLED (set HTTP_BRIDGE_SECRET to enable)",
+-        HTTP_PORT,
++        HTTP_PORT, HTTP_PORT,
+     )
++    log.info("Capture mode: %s | Preserve console layout: %s", CAPTURE_MODE, PRESERVE_CONSOLE_LAYOUT)
+     log.info("=" * 72)
+ 
+ 
+ def main() -> None:
+     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
++    Path(_config_store.CONFIG_DIR).mkdir(parents=True, exist_ok=True)
++    _sync_bridge_runtime()
++    admin_routes.init({
++        **BRIDGE_RUNTIME,
++        "check_printer_status": check_printer_status,
++        "reload_live_config": reload_live_config,
++        "version": "1.1.0",
++        "pydicom_version": __import__("pydicom").__version__,
++        "pynetdicom_version": __import__("pynetdicom").__version__,
++        "numpy_version": np.__version__,
++        "opencv_version": cv2.__version__,
++        "pillow_version": Image.__version__,
++    })
+     _log_startup_banner()
+ 
+     if PRINT_METHOD == "cups" and not CUPS_PRINTER_NAME:
+diff --git a/tests/test_bridge.py b/tests/test_bridge.py
+new file mode 100644
+index 0000000..bbbe96a
+--- /dev/null
++++ b/tests/test_bridge.py
+@@ -0,0 +1,116 @@
++"""Tests for DicomToWindows electronic film enhancements."""
++from __future__ import annotations
++
++import json
++import os
++import tempfile
++import unittest
++from pathlib import Path
++
++import numpy as np
++
++import config_store
++import identity_audit
++import image_profiles
++import job_store
++import admin_auth
++from pydicom.dataset import Dataset
++
++
++class ConfigStoreTests(unittest.TestCase):
++    def setUp(self):
++        self.tmp = tempfile.TemporaryDirectory()
++        config_store.CONFIG_DIR = Path(self.tmp.name)
++        config_store.CONFIG_FILE = config_store.CONFIG_DIR / "config.json"
++        config_store.load()
++
++    def tearDown(self):
++        self.tmp.cleanup()
++
++    def test_env_precedence(self):
++        os.environ["GAMMA"] = "3.1"
++        config_store.update({"GAMMA": 1.5})
++        self.assertEqual(config_store.get_source("GAMMA"), "ENV")
++        self.assertEqual(float(config_store.get("GAMMA")), 3.1)
++        del os.environ["GAMMA"]
++
++    def test_persisted_when_env_missing(self):
++        key = "HTTP_PORT"
++        os.environ.pop(key, None)
++        config_store.update({key: 8091})
++        self.assertEqual(config_store.get_source(key), "CONFIG")
++        self.assertEqual(int(config_store.get(key)), 8091)
++
++    def test_ae_validation(self):
++        self.assertEqual(config_store.validate_ae_title("PRINTSCP"), "PRINTSCP")
++        with self.assertRaises(ValueError):
++            config_store.validate_ae_title("bad-ae!")
++
++    def test_port_validation(self):
++        self.assertEqual(config_store.validate_port(104), 104)
++        with self.assertRaises(ValueError):
++            config_store.validate_port(70000)
++
++    def test_unsafe_path_rejection(self):
++        base = Path(self.tmp.name)
++        with self.assertRaises(ValueError):
++            config_store.validate_safe_path("/etc/passwd", base)
++
++
++class IdentityAuditTests(unittest.TestCase):
++    def test_summarize_matchable_by_study_uid(self):
++        ds = Dataset()
++        ds.StudyInstanceUID = "1.2.3.4.5"
++        audit = identity_audit.audit_film_session(ds, "MRI_SCU")
++        summary = identity_audit.summarize_identity([audit])
++        self.assertTrue(summary["studyInstanceUIDPresent"])
++        self.assertEqual(summary["recommendedAutoMatchKey"], "StudyInstanceUID")
++        self.assertEqual(summary["status"], "MATCHABLE")
++
++    def test_unmatched_without_deterministic_key(self):
++        ds = Dataset()
++        ds.PatientName = "TEST^PATIENT"
++        audit = identity_audit.audit_film_session(ds, "MRI_SCU")
++        summary = identity_audit.summarize_identity([audit])
++        self.assertFalse(summary["wouldAutoMatch"])
++
++
++class ImageProfileTests(unittest.TestCase):
++    def test_calibrate_and_preview(self):
++        arr = np.linspace(0, 255, 256, dtype=np.uint8).reshape(16, 16)
++        out = image_profiles.calibrate_frame(arr, False, modality="MRI")
++        self.assertEqual(out.shape, arr.shape)
++        preview = image_profiles.synthetic_grayscale_preview(128, 64)
++        self.assertEqual(preview.shape, (64, 128))
++
++
++class JobStoreTests(unittest.TestCase):
++    def setUp(self):
++        self.tmp = tempfile.TemporaryDirectory()
++        config_store.CONFIG_DIR = Path(self.tmp.name)
++        config_store.CONFIG_FILE = config_store.CONFIG_DIR / "config.json"
++        if "OUTPUT_DIR" in os.environ:
++            del os.environ["OUTPUT_DIR"]
++        config_store._persisted["OUTPUT_DIR"] = str(Path(self.tmp.name) / "out")
++        job_store.load_index()
++
++    def tearDown(self):
++        self.tmp.cleanup()
++
++    def test_create_and_list_jobs(self):
++        from job_store import ElectronicFilmJob
++        job = ElectronicFilmJob(jobKey="test-job", source="DICOM", imageCount=2, captureStatus="captured")
++        job_store.create_job(job)
++        rows = job_store.list_jobs()
++        self.assertTrue(any(r["jobKey"] == "test-job" for r in rows))
++
++
++class AdminAuthTests(unittest.TestCase):
++    def test_password_hash_roundtrip(self):
++        hashed = admin_auth._hash_password("testpassword123")
++        self.assertTrue(admin_auth.verify_password("testpassword123", hashed))
++        self.assertFalse(admin_auth.verify_password("wrong", hashed))
++
++
++if __name__ == "__main__":
++    unittest.main()
+-- 
+2.43.0
+

@@ -45,6 +45,7 @@ import {
   type OvernightDisplayStatus,
   type OvernightStatusChip,
 } from "@/lib/overnightAiDraft";
+import { AI_COMPOSE_STATUS_STYLE, AI_COMPOSE_SORT_RANK } from "@/lib/reportComposer/types";
 import {
   normalizeWorklistAiDraftViewer,
   type WorklistAiDraftViewerPayload,
@@ -74,6 +75,9 @@ type WorklistEntry = {
   aiDraftStatus: string;
   overnightAi?: OvernightAiPayload;
   overnightEligible?: boolean;
+  /** Background text Report Composer — separate from overnight vision aiDraftStatus */
+  aiComposeStatus?: string;
+  aiComposeJobId?: number | null;
   reportId: number | null;
   deliveryStatus: string | null;
   uhid?: string | null;        // Phase C: ERP UHID via patients join
@@ -747,6 +751,8 @@ export default function RadiologyWorklist() {
   });
   const [lockFilter, setLockFilter] = useState("all");
   const [aiDraftFilter, setAiDraftFilter] = useState<"all" | "overnight">("all");
+  const [aiComposeFilter, setAiComposeFilter] = useState<"all" | "ready" | "processing" | "failed" | "none">("all");
+  const [sortAiCompose, setSortAiCompose] = useState(false);
   const [overnightAgeChip, setOvernightAgeChip] = useState<OvernightAgeChip>("last_24h");
   const [overnightStatusChip, setOvernightStatusChip] = useState<OvernightStatusChip>("all");
   const [selectedOvernightIds, setSelectedOvernightIds] = useState<Set<number>>(new Set());
@@ -1113,6 +1119,14 @@ export default function RadiologyWorklist() {
       })) return false;
     }
 
+    if (aiComposeFilter !== "all") {
+      const st = (e.aiComposeStatus ?? "NONE").toUpperCase();
+      if (aiComposeFilter === "ready" && st !== "READY" && st !== "STALE_READY") return false;
+      if (aiComposeFilter === "processing" && st !== "QUEUED" && st !== "COMPOSING") return false;
+      if (aiComposeFilter === "failed" && st !== "FAILED") return false;
+      if (aiComposeFilter === "none" && st !== "NONE") return false;
+    }
+
     // Client-side date-range filter (IST calendar day), keyed off study received time.
     // Overnight AI Drafts uses its own study-age chips; custom chip reuses these dates.
     if (!overnightMode || overnightAgeChip === "custom") {
@@ -1137,6 +1151,14 @@ export default function RadiologyWorklist() {
   const overnightFiltered = overnightMode
     ? [...filtered].sort(compareOvernightWorklistRows)
     : filtered;
+
+  const composeSorted = sortAiCompose
+    ? [...overnightFiltered].sort((a, b) => {
+        const ra = AI_COMPOSE_SORT_RANK[(a.aiComposeStatus ?? "NONE").toUpperCase()] ?? 99;
+        const rb = AI_COMPOSE_SORT_RANK[(b.aiComposeStatus ?? "NONE").toUpperCase()] ?? 99;
+        return ra - rb;
+      })
+    : overnightFiltered;
 
   const aiDraftCounts = useMemo(() => {
     let ready = 0, empty = 0, quarantined = 0, error = 0, processing = 0, queued = 0, running = 0;
@@ -1174,7 +1196,7 @@ export default function RadiologyWorklist() {
   // Rows to render in table — real rows + optional sentinel
   const tableRows = [
     ...(showSentinel ? [SENTINEL_ROW] : []),
-    ...overnightFiltered,
+    ...composeSorted,
   ];
 
   // /api/patient-reports/:id/print is staff-authed (Authorization: Bearer
@@ -1491,6 +1513,31 @@ export default function RadiologyWorklist() {
               >
                 <Sparkles className="h-3 w-3" />
                 Overnight AI
+              </button>
+              <Select value={aiComposeFilter} onValueChange={(v) => setAiComposeFilter(v as typeof aiComposeFilter)}>
+                <SelectTrigger className="h-7 w-[130px] text-xs" data-testid="ai-compose-filter">
+                  <SelectValue placeholder="AI Report" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">AI Report: All</SelectItem>
+                  <SelectItem value="ready">AI Ready</SelectItem>
+                  <SelectItem value="processing">AI Processing</SelectItem>
+                  <SelectItem value="failed">AI Failed</SelectItem>
+                  <SelectItem value="none">Not requested</SelectItem>
+                </SelectContent>
+              </Select>
+              <button
+                type="button"
+                data-testid="sort-ai-compose"
+                onClick={() => setSortAiCompose((v) => !v)}
+                className={`inline-flex items-center gap-1 h-7 px-2 rounded-md border text-[11px] font-medium transition shrink-0 ${
+                  sortAiCompose
+                    ? "border-emerald-500 bg-emerald-600 text-white"
+                    : "border-border bg-background text-muted-foreground hover:bg-muted"
+                }`}
+                title="Explicit Sort AI status: READY → COMPOSING → QUEUED → FAILED/STALE. Does not change global clinical ordering when off."
+              >
+                Sort AI status
               </button>
               <span
                 className="text-[10px] text-muted-foreground whitespace-nowrap hidden lg:inline"
@@ -2021,16 +2068,27 @@ export default function RadiologyWorklist() {
                           {entry.id === -1 ? (
                             <span className="text-xs text-muted-foreground">—</span>
                           ) : (
-                            <OvernightAiDraftCell
-                              entry={entry}
-                              overnightMode={overnightMode}
-                              onViewDraft={() => viewAiDraft(entry.id)}
-                              onHelpful={() => submitFeedback(entry.id, "helpful")}
-                              onNeedsImprovement={() => submitFeedback(entry.id, "needs_improvement")}
-                              onRetry={entry.overnightAi?.canRetry && entry.overnightAi.jobId
-                                ? () => { void aiClient.retryOvernightJobs([entry.overnightAi!.jobId as number]).then(() => refetch()); }
-                                : undefined}
-                            />
+                            <div className="flex flex-col gap-1 items-start">
+                              <OvernightAiDraftCell
+                                entry={entry}
+                                overnightMode={overnightMode}
+                                onViewDraft={() => viewAiDraft(entry.id)}
+                                onHelpful={() => submitFeedback(entry.id, "helpful")}
+                                onNeedsImprovement={() => submitFeedback(entry.id, "needs_improvement")}
+                                onRetry={entry.overnightAi?.canRetry && entry.overnightAi.jobId
+                                  ? () => { void aiClient.retryOvernightJobs([entry.overnightAi!.jobId as number]).then(() => refetch()); }
+                                  : undefined}
+                              />
+                              {entry.aiComposeStatus && entry.aiComposeStatus !== "NONE" && (
+                                <span
+                                  className={`inline-flex items-center rounded border px-1.5 py-0.5 text-[10px] font-semibold ${AI_COMPOSE_STATUS_STYLE[entry.aiComposeStatus]?.color ?? AI_COMPOSE_STATUS_STYLE.NONE.color}`}
+                                  title="Background AI Report Composer (text)"
+                                  data-testid="ai-compose-badge"
+                                >
+                                  {AI_COMPOSE_STATUS_STYLE[entry.aiComposeStatus]?.label ?? entry.aiComposeStatus}
+                                </span>
+                              )}
+                            </div>
                           )}
                         </td>
                         )}

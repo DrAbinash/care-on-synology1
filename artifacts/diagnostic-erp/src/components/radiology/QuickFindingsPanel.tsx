@@ -11,6 +11,7 @@ import { parseQuestions } from "@/lib/structuredFindings";
 import { computeChecklistStatus, summarizeChecklist, parseChecklist } from "@/lib/checklistEngine";
 import { filterRegionNamesForModality, matchStudyRegion } from "@/lib/studyRegion";
 import { contentStudyTypes } from "@/lib/reportingStudyContext";
+import { quickFindingsForStudyTab } from "@/lib/pickQuickProtocol";
 import WorkspaceQuickFindingEditor from "./WorkspaceQuickFindingEditor";
 
 /**
@@ -34,6 +35,7 @@ import WorkspaceQuickFindingEditor from "./WorkspaceQuickFindingEditor";
 export type QuickFinding = {
   id: number;
   studyType: string;
+  studyTabId?: number | null;
   label: string;
   findingText: string;
   impressionText: string;
@@ -79,6 +81,7 @@ export type QuickProtocol = {
   id: number;
   name: string;
   studyType: string;
+  studyTabId?: number | null;
   modality: string;
   checklistJson: string;
   techniqueText: string;
@@ -92,10 +95,12 @@ export type QuickProtocol = {
 };
 
 // Clinical History quick-select chip — short label shown on the chip, longer
-// insertedText dropped into the Clinical History field. Study-specific.
+// insertedText dropped into the Clinical History field. Authoritative link:
+// studyTabId → radiology_study_tabs.id (studyType is denormalized display).
 export type QuickClinicalHistoryChip = {
   id: number;
   studyType: string;
+  studyTabId?: number | null;
   displayLabel: string;
   insertedText: string;
   sortOrder: number;
@@ -116,6 +121,8 @@ import { rankSuggestions, type LearnedPattern } from "@/lib/learningEngine";
 
 interface Props {
   selectedIds: Set<number>;
+  /** Ledger patches whose lastRendered is not in findings — chip shows "manual kept". */
+  blockedIds?: Set<number>;
   onToggle: (finding: QuickFinding, nowSelected: boolean) => void;
   /** Structured Finding Assistant: a finding with configured questions routes
    *  its click here (to open the compact dialog) instead of toggling directly.
@@ -158,12 +165,15 @@ interface Props {
   /** Parent-owned region toggle — merges technique across regions. */
   onRegionToggle?: (regionName: string) => void;
   /**
-   * The workspace already owns the region in its Region / Study / Protocol
+   * The workspace already owns the region in its Region / Study / Report Format
    * section, so the panel collapses its own region grid to a single
    * "Region — Brain · Change region" line. Every region control is still here,
    * one click behind "Change region".
    */
   compactRegions?: boolean;
+  /** Authoritative Study Tab from Section 1 — scopes findings by study_tab_id. */
+  selectedStudyTabId?: number | null;
+  selectedStudyTabName?: string | null;
 }
 
 const SIDES: Array<{ value: Side; label: string }> = [
@@ -173,10 +183,11 @@ const SIDES: Array<{ value: Side; label: string }> = [
 ];
 
 export default function QuickFindingsPanel({
-  selectedIds, onToggle, onFindingClick, onEditBeforeInsert, onMeasurement, side, onSideChange, disabled, initialStudyHint, isAdmin,
+  selectedIds, blockedIds, onToggle, onFindingClick, onEditBeforeInsert, onMeasurement, side, onSideChange, disabled, initialStudyHint, isAdmin,
   instances, onUpdateInstance, onAutoTechnique, onInsertNormals,
   activeProtocolId, onProtocolChange, onChecklistChange, onAcceptLearnedSuggestion,
   onFindingsLoaded, externalSearch, selectedRegions, onRegionToggle, compactRegions = false,
+  selectedStudyTabId, selectedStudyTabName,
 }: Props) {
   const qc = useQueryClient();
   const searchRef = useRef<HTMLInputElement>(null);
@@ -344,9 +355,22 @@ export default function QuickFindingsPanel({
   const visibleFindings = useMemo(() => {
     if (!data) return [];
     const tabOrder = activeTabs.map((t) => t.name);
-    const pool = searchLower
-      ? data.findings.filter((f) => f.isActive && matchesSearch(f))
-      : data.findings.filter((f) => f.isActive && contentTabs.has(f.studyType));
+    if (searchLower) {
+      return data.findings
+        .filter((f) => f.isActive && matchesSearch(f))
+        .sort((a, b) => {
+          const ta = tabOrder.indexOf(a.studyType);
+          const tb = tabOrder.indexOf(b.studyType);
+          if (ta !== tb) return ta - tb;
+          return a.sortOrder - b.sortOrder;
+        });
+    }
+    if (selectedStudyTabId != null || selectedStudyTabName) {
+      const regionName = selectedStudyTabName ?? [...effectiveTabs][0] ?? null;
+      const { matched } = quickFindingsForStudyTab(data.findings, selectedStudyTabId ?? null, regionName);
+      return matched;
+    }
+    const pool = data.findings.filter((f) => f.isActive && contentTabs.has(f.studyType));
     return pool.sort((a, b) => {
       const ta = tabOrder.indexOf(a.studyType);
       const tb = tabOrder.indexOf(b.studyType);
@@ -354,7 +378,7 @@ export default function QuickFindingsPanel({
       return a.sortOrder - b.sortOrder;
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, effectiveTabs, contentTabs, activeTabs, searchLower]);
+  }, [data, effectiveTabs, contentTabs, activeTabs, searchLower, selectedStudyTabId, selectedStudyTabName]);
 
   // Favorites strip: this radiologist's pinned buttons, always shown first.
   const favoriteFindings = useMemo(
@@ -546,6 +570,7 @@ export default function QuickFindingsPanel({
 
   function FindingButton({ f, index }: { f: QuickFinding; index?: number }) {
     const selected = selectedIds.has(f.id);
+    const blocked = Boolean(selected && blockedIds?.has(f.id));
     const isFav = favoriteIds.has(f.id);
     const structured = isStructured(f);
     return (
@@ -562,29 +587,36 @@ export default function QuickFindingsPanel({
           className={[
             "flex-1 min-w-0 rounded-xl border px-2.5 py-2 text-left transition-all duration-150",
             "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/50",
-            selected
+            selected && !blocked
               ? "border-amber-500 bg-gradient-to-br from-amber-500 to-orange-600 text-white shadow-md shadow-amber-500/30"
-              : "border-amber-200 bg-gradient-to-br from-white via-amber-50/50 to-orange-50/40 hover:border-amber-400 hover:shadow-sm hover:shadow-amber-200/50 hover:-translate-y-px",
+              : blocked
+                ? "border-amber-400 bg-gradient-to-br from-amber-100 via-orange-50 to-white text-amber-950 shadow-sm"
+                : "border-amber-200 bg-gradient-to-br from-white via-amber-50/50 to-orange-50/40 hover:border-amber-400 hover:shadow-sm hover:shadow-amber-200/50 hover:-translate-y-px",
           ].join(" ")}
           title={
-            onEditBeforeInsert
-              ? `${f.label} — click to insert · double-click to edit for this study`
-              : structured
-                ? `${f.label} — set details${selected ? " (click to edit)" : ""}`
-                : (f.findingText || f.impressionText || f.label)
+            blocked
+              ? `${f.label} — manual kept (tile selected but text was not replaced)`
+              : onEditBeforeInsert
+                ? `${f.label} — click to insert · double-click to edit for this study`
+                : structured
+                  ? `${f.label} — set details${selected ? " (click to edit)" : ""}`
+                  : (f.findingText || f.impressionText || f.label)
           }
           data-testid={`quick-finding-${f.id}`}
+          data-chip-state={blocked ? "blocked-manual-kept" : selected ? "selected" : "idle"}
         >
           <div className="flex items-center gap-1.5 min-w-0">
             <span
               className={[
                 "flex h-4 w-4 shrink-0 items-center justify-center rounded border",
-                selected
-                  ? "border-primary-foreground/70 bg-primary-foreground/15"
-                  : "border-muted-foreground/35 bg-background",
+                blocked
+                  ? "border-amber-500 bg-amber-200"
+                  : selected
+                    ? "border-primary-foreground/70 bg-primary-foreground/15"
+                    : "border-muted-foreground/35 bg-background",
               ].join(" ")}
             >
-              {selected ? <Check size={10} strokeWidth={3} /> : <Zap size={10} className="text-muted-foreground" />}
+              {blocked ? <span className="h-2 w-2 rounded-full bg-amber-500" title="manual kept" /> : selected ? <Check size={10} strokeWidth={3} /> : <Zap size={10} className="text-muted-foreground" />}
             </span>
             <span className="truncate text-[12px] font-semibold leading-tight">{f.label}</span>
             {structured && (
@@ -924,6 +956,7 @@ export default function QuickFindingsPanel({
           finding={catalogEditor === "new" ? null : catalogEditor}
           tabs={activeTabs}
           defaultStudyType={[...effectiveTabs][0] ?? activeTabs[0]?.name ?? ""}
+          selectedStudyTabId={selectedStudyTabId}
           onClose={() => setCatalogEditor(null)}
         />
       )}

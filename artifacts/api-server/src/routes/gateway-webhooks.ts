@@ -42,6 +42,7 @@ import { autoVoucherForPayment } from "../lib/auto-voucher";
 import { PaymentEngine } from "../lib/payments/PaymentEngine";
 import { resolveBillDeskCollectorFromTxnRef } from "../lib/payments/resolveBillDeskCollectorFromDb";
 import { requireStaffAuth, type StaffAuthRequest } from "../middleware/requireStaffAuth";
+import { paiseToRupees, rupeesToPaise } from "../lib/money";
 
 export const gatewayWebhookRouter = Router();
 
@@ -284,8 +285,8 @@ gatewayWebhookRouter.post("/icici-webhook", async (req, res): Promise<void> => {
     return;
   }
 
-  const amount = parseFloat(rawAmount) || 0;
-  if (amount <= 0) {
+  const amount = paiseToRupees(rupeesToPaise(rawAmount));
+  if (!Number.isFinite(amount) || amount <= 0) {
     logger.warn({ merchantTxnNo, rawAmount }, "[icici-webhook] Amount is zero or invalid — skipping");
     return;
   }
@@ -421,8 +422,8 @@ gatewayWebhookRouter.post("/hdfc-webhook", async (req, res): Promise<void> => {
     return;
   }
 
-  const amount = parseFloat(rawAmount) || 0;
-  if (amount <= 0) {
+  const amount = paiseToRupees(rupeesToPaise(rawAmount));
+  if (!Number.isFinite(amount) || amount <= 0) {
     logger.warn({ orderId, rawAmount }, "[hdfc-webhook] Amount is zero or invalid — skipping");
     return;
   }

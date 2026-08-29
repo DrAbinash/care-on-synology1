@@ -197,8 +197,11 @@ export default function Doctors() {
         title="Referring Doctors"
         subtitle={`${data?.total ?? 0} doctors`}
         actions={
-          <div className="flex gap-2">
+          <>
             <input ref={importInputRef} type="file" accept=".csv,text/csv" className="hidden" onChange={onImportFileChosen} />
+            <Button size="sm" className="order-first sm:order-last" onClick={() => { setOpen(true); reset(); }}>
+              <Plus size={14} className="mr-1" /> Add Doctor
+            </Button>
             <Button size="sm" variant="outline" onClick={() => importInputRef.current?.click()} disabled={importing} title="Upload a CSV to add or update doctors in bulk">
               <Upload size={14} className="mr-1" /> {importing ? "Importing…" : "Import CSV"}
             </Button>
@@ -208,10 +211,7 @@ export default function Doctors() {
             <Button size="sm" variant="outline" onClick={() => setDupOpen(true)} title="Find duplicate doctors">
               <AlertTriangle size={14} className="mr-1" /> Find Duplicates
             </Button>
-            <Button size="sm" onClick={() => { setOpen(true); reset(); }}>
-              <Plus size={14} className="mr-1" /> Add Doctor
-            </Button>
-          </div>
+          </>
         }
       />
 
@@ -293,7 +293,7 @@ export default function Doctors() {
 
       {/* Add Doctor Dialog */}
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="max-w-md">
+        <DialogContent className="max-w-md max-h-[min(90dvh,100%)] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Add Referring Doctor</DialogTitle>
           </DialogHeader>
@@ -350,7 +350,7 @@ export default function Doctors() {
 
       {/* Edit Doctor Dialog */}
       <Dialog open={!!editingDoctor} onOpenChange={(v) => { if (!v) setEditingDoctor(null); }}>
-        <DialogContent className="max-w-md">
+        <DialogContent className="max-w-md max-h-[min(90dvh,100%)] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Edit Doctor — {editingDoctor?.name}</DialogTitle>
           </DialogHeader>
@@ -530,6 +530,7 @@ function DuplicatesDialog({ open, onOpenChange }: { open: boolean; onOpenChange:
                     {g.name}
                     <span className="text-muted-foreground font-normal text-xs">({g.doctors.length} entries with same name)</span>
                   </div>
+                  <div className="w-full max-w-full min-w-0 overflow-x-auto overscroll-x-contain touch-pan-x">
                   <table className="w-full text-sm">
                     <thead className="bg-muted/20">
                       <tr>
@@ -569,6 +570,7 @@ function DuplicatesDialog({ open, onOpenChange }: { open: boolean; onOpenChange:
                       ))}
                     </tbody>
                   </table>
+                  </div>
                 </div>
               ))}
             </div>

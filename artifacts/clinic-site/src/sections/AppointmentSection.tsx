@@ -77,7 +77,22 @@ export default function AppointmentSection({ section, settings }: { section: Sec
   const [catFilter, setCatFilter] = useState("all");
   const urlChecked = useRef(false);
 
-  const [pd, setPd] = useState({ name: "", phone: "", email: "", date: "", timeSlot: "", notes: "", isVip: false, ageValue: "", ageUnit: "years", gender: "", referringDoctorId: null as number | null, referringDoctorName: "", slotModality: "" });
+  const [pd, setPd] = useState({
+    name: "",
+    phone: "",
+    email: "",
+    // Default visit date to today — age is the only patient demographic; DOB is not collected.
+    date: new Date().toISOString().slice(0, 10),
+    timeSlot: "",
+    notes: "",
+    isVip: false,
+    ageValue: "",
+    ageUnit: "years",
+    gender: "",
+    referringDoctorId: null as number | null,
+    referringDoctorName: "",
+    slotModality: "",
+  });
   const [errFields, setErrFields] = useState<string[]>([]);
   const [selTests, setSelTests] = useState<Set<number>>(new Set());
   const [selPkgs, setSelPkgs] = useState<Set<number>>(new Set());

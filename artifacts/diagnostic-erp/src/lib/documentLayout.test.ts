@@ -70,10 +70,10 @@ function baseOpts(overrides: Record<string, unknown> = {}) {
 
 describe("document layout engine — page specifications", () => {
   test.each([
-    ["A5-landscape", "210mm 148mm", 210, 148],
-    ["A5-portrait", "148mm 210mm", 148, 210],
-    ["half-a4", "210mm 148mm", 210, 148],
-    ["A4", "210mm 297mm", 210, 297],
+    ["A5-landscape", "A5 landscape", 210, 148],
+    ["A5-portrait", "A5 portrait", 148, 210],
+    ["half-a4", "A5 landscape", 210, 148],
+    ["A4", "A4 portrait", 210, 297],
   ] as const)("paper %s has exact mm dimensions", (paper, css, w, h) => {
     expect(PAGE_SPECS[paper].pageSizeCss).toBe(css);
     expect(PAGE_SPECS[paper].widthMm).toBe(w);
@@ -134,11 +134,11 @@ describe("document layout engine — bill renderers (unified Classic)", () => {
     expect((html.match(/class="care-doc-page receipt"/g) ?? []).length).toBe(2);
   });
 
-  test("uses 148×210 @page matching HOPE A5 portrait", () => {
+  test("uses named A5 portrait @page so Chrome selects A5, not A4 landscape", () => {
     const html = buildBillPrintHtml(baseOpts());
-    expect(html).toContain("@page { size: 148mm 210mm; margin: 0; }");
+    expect(html).toContain("@page { size: A5 portrait; margin: 0; }");
     expect(html).not.toMatch(/@page \{ size: 210mm 297mm/);
-    expect(html).not.toMatch(/@page \{ size: A5 landscape/);
+    expect(html).not.toMatch(/@page \{ size: A4/);
     expect(html).toContain('class="care-doc-page receipt"');
     expect(html).toContain("height: 210mm");
     expect(html).toContain("width: 148mm");
@@ -307,7 +307,7 @@ describe("document layout engine — bill renderers (unified Classic)", () => {
 
   test("classic format uses engine and HOPE totals table", () => {
     const html = buildBillPrintHtml(baseOpts());
-    expect(html).toContain("@page { size: 148mm 210mm; margin: 0; }");
+    expect(html).toContain("@page { size: A5 portrait; margin: 0; }");
     expect(html).toContain("care-doc-page");
     expect(html).toContain("totals-grid");
     expect(html).toContain("hope-bill");
@@ -428,9 +428,25 @@ describe("document layout engine — CARE Invoice (classic)", () => {
     expect(html).toContain(">INVOICE<");
     expect(html).toContain("Authorised Signature");
     expect(html).toContain("BILL NO:");
-    expect(html).toContain("@page { size: 210mm 148mm; margin: 0; }");
+    expect(html).toContain("@page { size: A5 landscape; margin: 0; }");
+    expect(html).not.toMatch(/@page \{ size: 210mm 148mm/);
+    expect(html).not.toMatch(/@page \{ size: A4/);
     expect(html).not.toContain("hope-bill");
     expect(html).not.toContain(">Receipt<");
+  });
+
+  test("classic + named A5 landscape @page so Chrome selects A5, not A4 landscape", () => {
+    const html = buildBillPrintHtml(baseOpts({
+      billFormat: "classic",
+      orientation: "landscape",
+      pageCssSize: "A5 landscape",
+    }));
+    expect(html).toContain("@page { size: A5 landscape; margin: 0; }");
+    expect(html).not.toMatch(/@page \{ size: 210mm 148mm/);
+    expect(html).not.toMatch(/@page \{ size: A4/);
+    expect(html).toContain("width: 210mm");
+    expect(html).toContain("height: 148mm");
+    expect(html).toContain(">INVOICE<");
   });
 
   test("format from clinic settings selects classic without billFormat opt", () => {
@@ -457,6 +473,263 @@ describe("document layout engine — CARE Invoice (classic)", () => {
     expect(classic).toContain("4,900.00");
     expect(hope).toMatch(/2026001-\d+-4900\.00-\d+-[0-9A-F]{8}/);
     expect(classic).toMatch(/2026001-\d+-4900\.00-\d+-[0-9A-F]{8}/);
+  });
+});
+
+describe("document layout engine — CARE Invoice A5 Portrait (classic-portrait)", () => {
+  test("classic-portrait renders same INVOICE layout on 148×210", () => {
+    const html = buildBillPrintHtml(baseOpts({
+      billFormat: "classic-portrait",
+      orientation: "portrait",
+      pageCssSize: "A5 portrait",
+    }));
+    expect(html).toContain(">INVOICE<");
+    expect(html).toContain("Authorised Signature");
+    expect(html).toContain("BILL NO:");
+    expect(html).toContain("@page { size: A5 portrait; margin: 0; }");
+    expect(html).toContain("width: 148mm");
+    expect(html).toContain("height: 210mm");
+    expect(html).not.toMatch(/@page \{ size: A5 landscape/);
+    expect(html).not.toMatch(/@page \{ size: A4/);
+    expect(html).not.toContain("hope-bill");
+    expect(html).not.toContain(">Receipt<");
+  });
+
+  test("classic-portrait and classic share CARE Invoice markup, opposite paper", () => {
+    const landscape = buildBillPrintHtml(baseOpts({
+      billFormat: "classic",
+      orientation: "landscape",
+      pageCssSize: "A5 landscape",
+    }));
+    const portrait = buildBillPrintHtml(baseOpts({
+      billFormat: "classic-portrait",
+      orientation: "portrait",
+      pageCssSize: "A5 portrait",
+    }));
+    expect(landscape).toContain(">INVOICE<");
+    expect(portrait).toContain(">INVOICE<");
+    expect(landscape).toContain("@page { size: A5 landscape; margin: 0; }");
+    expect(portrait).toContain("@page { size: A5 portrait; margin: 0; }");
+    expect(landscape).toContain("width: 210mm");
+    expect(landscape).toContain("height: 148mm");
+    expect(portrait).toContain("width: 148mm");
+    expect(portrait).toContain("height: 210mm");
+    expect(portrait).toContain("4,900.00");
+    expect(landscape).toContain("4,900.00");
+  });
+
+  test("format from clinic settings selects classic-portrait without billFormat opt", () => {
+    const html = buildBillPrintHtml(baseOpts({
+      billFormat: undefined,
+      orientation: "portrait",
+      pageCssSize: "A5 portrait",
+      clinic: {
+        ...sampleClinic,
+        billPrintSettingsJson: JSON.stringify({ defaultFormat: "classic-portrait" }),
+      },
+    }));
+    expect(html).toContain(">INVOICE<");
+    expect(html).toContain("@page { size: A5 portrait; margin: 0; }");
+  });
+});
+
+describe("document layout engine — A5 Landscape (a5-landscape)", () => {
+  test("a5-landscape format renders compact layout on 210×148", () => {
+    const html = buildBillPrintHtml(baseOpts({
+      billFormat: "a5-landscape",
+      orientation: "landscape",
+      pageCssSize: "210mm 148mm",
+    }));
+    expect(html).toContain("a5-landscape-bill");
+    expect(html).toContain(">RECEIPT<");
+    expect(html).toContain("Authorised Signatory");
+    expect(html).toContain("@page { size: A5 landscape; margin: 0; }");
+    expect(html).not.toMatch(/@page \{ size: 210mm 148mm/);
+    expect(html).not.toMatch(/@page \{ size: A4/);
+    expect(html).not.toContain("hope-bill");
+    expect(html).not.toContain(">INVOICE<");
+  });
+
+  test("buildBillPrintHtml routes a5-landscape to the landscape renderer", () => {
+    const html = buildBillPrintHtml(baseOpts({
+      billFormat: "a5-landscape",
+      orientation: "landscape",
+      pageCssSize: "210mm 148mm",
+    }));
+    expect(html).toContain("a5-landscape-bill");
+    expect(html).not.toContain("hope-bill");
+  });
+
+  test("a5-landscape HTML does not use CSS transform rotate", () => {
+    const html = buildBillPrintHtml(baseOpts({
+      billFormat: "a5-landscape",
+      orientation: "landscape",
+      pageCssSize: "210mm 148mm",
+    }));
+    expect(html).not.toMatch(/transform:\s*rotate/i);
+  });
+
+  test("a5-landscape shares financial and audit fields with classic", () => {
+    const landscape = buildBillPrintHtml(baseOpts({
+      billFormat: "a5-landscape",
+      orientation: "landscape",
+      pageCssSize: "210mm 148mm",
+    }));
+    expect(landscape).toContain("4,900.00");
+    expect(landscape).toMatch(/2026001-\d+-4900\.00-\d+-[0-9A-F]{8}/);
+    expect(landscape).toContain("Scan to verify");
+  });
+});
+
+describe("document layout engine — CARE Sage (care-sage)", () => {
+  test("care-sage renders the status-edge receipt on 210×148", () => {
+    const html = buildBillPrintHtml(baseOpts({
+      billFormat: "care-sage",
+      orientation: "landscape",
+      pageCssSize: "210mm 148mm",
+    }));
+    expect(html).toContain("care-sage-bill");
+    expect(html).toContain("sage-edge");
+    expect(html).toContain(">RECEIPT<");
+    expect(html).toContain("Authorised Signatory");
+    expect(html).toContain("@page { size: A5 landscape; margin: 0; }");
+    expect(html).not.toMatch(/@page \{ size: 210mm 148mm/);
+    expect(html).not.toMatch(/@page \{ size: A4/);
+    expect(html).not.toContain("a5-landscape-bill");
+    expect(html).not.toContain("hope-bill");
+    expect(html).not.toContain(">INVOICE<");
+  });
+
+  test("settled bill prints in peaceful green with a PAID check", () => {
+    const html = buildBillPrintHtml(baseOpts({
+      billFormat: "care-sage",
+      orientation: "landscape",
+      pageCssSize: "210mm 148mm",
+    }));
+    expect(html).toContain("#15803d");
+    expect(html).toContain("#f0fdf4");
+    expect(html).toContain("Paid ✓");
+    expect(html).not.toContain("#b91c1c");
+  });
+
+  test("balance-due bill prints in red without the PAID check", () => {
+    const html = buildBillPrintHtml(baseOpts({
+      billFormat: "care-sage",
+      orientation: "landscape",
+      pageCssSize: "210mm 148mm",
+      bill: sampleBill(1, { paidAmount: 1000, balanceAmount: 3900 }),
+    }));
+    expect(html).toContain("#b91c1c");
+    expect(html).toContain("#fef2f2");
+    expect(html).not.toContain("Paid ✓");
+  });
+
+  test("B&W mode keeps the layout readable with neutral ink", () => {
+    const html = buildBillPrintHtml(baseOpts({
+      billFormat: "care-sage",
+      orientation: "landscape",
+      pageCssSize: "210mm 148mm",
+      isBW: true,
+    }));
+    expect(html).not.toContain("#15803d");
+    expect(html).not.toContain("#b91c1c");
+    expect(html).toContain("#64748b"); // neutral grey status edge
+    expect(html).toContain("Paid");
+  });
+
+  test("care-sage shares financial and audit fields with the other templates", () => {
+    const html = buildBillPrintHtml(baseOpts({
+      billFormat: "care-sage",
+      orientation: "landscape",
+      pageCssSize: "210mm 148mm",
+    }));
+    expect(html).toContain("4,900.00");
+    expect(html).toMatch(/2026001-\d+-4900\.00-\d+-[0-9A-F]{8}/);
+    expect(html).toContain("Scan to verify");
+  });
+
+  test("care-sage HTML does not use CSS transform rotate", () => {
+    const html = buildBillPrintHtml(baseOpts({
+      billFormat: "care-sage",
+      orientation: "landscape",
+      pageCssSize: "210mm 148mm",
+    }));
+    expect(html).not.toMatch(/transform:\s*rotate/i);
+  });
+});
+
+describe("document layout engine — CARE Sage Sleeping (care-sage-sleeping)", () => {
+  const sleepingOpts = (overrides: Record<string, unknown> = {}) => baseOpts({
+    billFormat: "care-sage-sleeping",
+    orientation: "portrait",
+    pageCssSize: "A5 portrait",
+    ...overrides,
+  });
+
+  test("care-sage-sleeping renders the status-edge receipt on 148×210", () => {
+    const html = buildBillPrintHtml(sleepingOpts());
+    expect(html).toContain("care-sage-sleeping-bill");
+    expect(html).toContain("sage-edge");
+    expect(html).toContain(">RECEIPT<");
+    expect(html).toContain("Authorised Signatory");
+    expect(html).toContain("@page { size: A5 portrait; margin: 0; }");
+    expect(html).not.toMatch(/@page \{ size: A4/);
+    expect(html).not.toContain("a5-landscape-bill");
+    expect(html).not.toContain("hope-bill");
+    expect(html).not.toContain(">INVOICE<");
+  });
+
+  test("feed-safe geometry: footer and tear guides stay inside the top 148 mm", () => {
+    const html = buildBillPrintHtml(sleepingOpts());
+    expect(html).toContain("sage-tear-v");
+    expect(html).toContain("sage-tear-h");
+    expect(html).toContain("tear — 148 mm");
+    // Safe-zone shell: min-height 144mm − 5mm default A5-portrait padding.
+    expect(html).toContain("min-height: 139mm;");
+  });
+
+  test("long bills (7 tests) drop the tear guides but stay on A5 portrait", () => {
+    const html = buildBillPrintHtml(sleepingOpts({ bill: sampleBill(7) }));
+    expect(html).not.toContain("sage-tear-h");
+    expect(html).not.toContain("sage-tear-v");
+    expect(html).toContain("@page { size: A5 portrait; margin: 0; }");
+  });
+
+  test("settled bill prints in peaceful green with a PAID check", () => {
+    const html = buildBillPrintHtml(sleepingOpts());
+    expect(html).toContain("#15803d");
+    expect(html).toContain("#f0fdf4");
+    expect(html).toContain("Paid ✓");
+    expect(html).not.toContain("#b91c1c");
+  });
+
+  test("balance-due bill prints in red without the PAID check", () => {
+    const html = buildBillPrintHtml(sleepingOpts({
+      bill: sampleBill(1, { paidAmount: 1000, balanceAmount: 3900 }),
+    }));
+    expect(html).toContain("#b91c1c");
+    expect(html).toContain("#fef2f2");
+    expect(html).not.toContain("Paid ✓");
+  });
+
+  test("B&W mode keeps the layout readable with neutral ink", () => {
+    const html = buildBillPrintHtml(sleepingOpts({ isBW: true }));
+    expect(html).not.toContain("#15803d");
+    expect(html).not.toContain("#b91c1c");
+    expect(html).toContain("#64748b"); // neutral grey status edge
+    expect(html).toContain("Paid");
+  });
+
+  test("care-sage-sleeping shares financial and audit fields with the other templates", () => {
+    const html = buildBillPrintHtml(sleepingOpts());
+    expect(html).toContain("4,900.00");
+    expect(html).toMatch(/2026001-\d+-4900\.00-\d+-[0-9A-F]{8}/);
+    expect(html).toContain("Scan to verify");
+  });
+
+  test("care-sage-sleeping HTML does not use CSS transform rotate", () => {
+    const html = buildBillPrintHtml(sleepingOpts());
+    expect(html).not.toMatch(/transform:\s*rotate/i);
   });
 });
 

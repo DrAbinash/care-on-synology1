@@ -63,10 +63,28 @@ import {
   RefundBillBody,
 } from "@workspace/api-zod";
 import { orderTestsTable, testsTable, doctorsTable, clinicSettingsTable } from "@workspace/db";
+import { vouchersTable } from "@workspace/db/schema";
 import { sanitizePatient } from "./patients";
 import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { FULL_ACCESS_ROLES, requireStaffSubPermission } from "../middleware/requireStaffAuth";
 import { getWalkInLedgerId } from "./ledgers";
+import {
+  billBalanceFromParts,
+  billTotalFromParts,
+  moneyAdd,
+  moneyMax0,
+  moneySub,
+  paiseToRupees,
+  rupeesToPaise,
+  scaleLinePaiseToTotal,
+} from "../lib/money";
+import {
+  assertDiscountNotBelowCollected,
+  assertNonNegativePayment,
+  assertPaymentWithinOutstanding,
+  isCollectiblePayment,
+  recomputedBillBalance,
+} from "../lib/financialIntegrity";
 
 export const billsRouter = Router();
 export const paymentsRouter = Router();
@@ -764,11 +782,11 @@ export async function createBillHandler(req: StaffAuthRequest, res: Response): P
   }
 
   const taxAmount = 0;
-  const totalAmount = subtotal - discountAmt + taxAmount;
+  const totalAmount = billTotalFromParts(subtotal, discountAmt, taxAmount);
 
   const inlinePayPreview = (inlinePayments as Array<{ amount: number; method?: string }>)
     .filter((p) => Number.isFinite(p.amount) && p.amount > 0 && p.method !== "online");
-  const inlinePaidPreview = inlinePayPreview.reduce((s, p) => s + p.amount, 0);
+  const inlinePaidPreview = moneyAdd(...inlinePayPreview.map((p) => p.amount));
   if (inlinePaidPreview > totalAmount + 0.01) {
     res.status(400).json({
       error: `Payment total (₹${inlinePaidPreview.toFixed(2)}) cannot exceed bill net total (₹${totalAmount.toFixed(2)})`,
@@ -776,16 +794,13 @@ export async function createBillHandler(req: StaffAuthRequest, res: Response): P
     return;
   }
 
-  // Short first transaction: allocate number + insert bill (+ ledger backfills
-  // + create audit). Payment rows run in a follow-up transaction so the first
-  // txn stays brief (SEQUENCE nextval is concurrent; keeping payments out still
-  // shrinks lock/row hold time on the new bill and returns the pool connection
-  // sooner under concurrent desk saves).
+  // Single transaction: allocate number + insert bill + inline payments (atomic).
+  // Do NOT insert payments in a second post-commit txn (would double-pay on retry).
   const txStartedAt = Date.now();
   const validPaymentsInput = (inlinePayments as Array<{ amount: number; method?: string; referenceNumber?: string; notes?: string }>)
     .filter((p) => Number.isFinite(p.amount) && p.amount > 0 && p.method !== "online");
-  const paidAmountInline = validPaymentsInput.reduce((s, p) => s + p.amount, 0);
-  const balanceAmountInline = Math.max(0, totalAmount - paidAmountInline);
+  const paidAmountInline = moneyAdd(...validPaymentsInput.map((p) => p.amount));
+  const balanceAmountInline = billBalanceFromParts(totalAmount, paidAmountInline, 0);
   const billStatus = paidAmountInline >= totalAmount - 0.01 ? "paid" : paidAmountInline > 0 ? "partial" : "pending";
 
   function isBillNumberUniqueViolation(err: unknown): boolean {
@@ -876,6 +891,7 @@ export async function createBillHandler(req: StaffAuthRequest, res: Response): P
   let bill: typeof billsTable.$inferSelect | undefined;
   let pat: typeof patientPreload = patientPreload;
   let lastUniqueErr: unknown;
+  let txPayments: Array<{ amount: number; method?: string; paymentId: number }> = [];
   for (let attempt = 0; attempt < 5; attempt++) {
     try {
       const result = await db.transaction(async (tx) => {
@@ -923,10 +939,32 @@ export async function createBillHandler(req: StaffAuthRequest, res: Response): P
           newValue: `total=₹${totalAmount.toFixed(2)}; status=${billStatus}`,
         });
 
-        return { bill: billRow, pat: patRow };
+        const insertedPayments: Array<{ amount: number; method?: string; paymentId: number }> = [];
+        for (const p of validPaymentsInput) {
+          const [insertedPaymentRow] = await tx.insert(paymentsTable).values({
+            billId: billRow.id,
+            amount: p.amount.toFixed(2),
+            method: p.method || "cash",
+            referenceNumber: p.referenceNumber ?? null,
+            notes: p.notes ?? null,
+            recordedByName: actorName || null,
+          }).returning();
+          insertedPayments.push({ amount: p.amount, method: p.method, paymentId: insertedPaymentRow.id });
+          await tx.insert(billAuditsTable).values({
+            billId: billRow.id,
+            editedBy: actorName || "system",
+            reason: "Payment collected",
+            changeType: "payment_collected",
+            oldValue: null,
+            newValue: `amount=₹${p.amount.toFixed(2)}; method=${p.method || "cash"}`,
+          });
+        }
+
+        return { bill: billRow, pat: patRow, payments: insertedPayments };
       });
       bill = result.bill;
       pat = result.pat;
+      txPayments = result.payments;
       lastUniqueErr = undefined;
       break;
     } catch (err) {
@@ -948,58 +986,6 @@ export async function createBillHandler(req: StaffAuthRequest, res: Response): P
     const message = lastUniqueErr instanceof Error ? lastUniqueErr.message : "Could not allocate a unique bill number";
     res.status(500).json({ error: message });
     return;
-  }
-
-  // Payment rows after the bill txn commits — concurrent saves can allocate
-  // the next bill number while these inserts run.
-  let txPayments: Array<{ amount: number; method?: string; paymentId: number }> = [];
-  if (validPaymentsInput.length > 0) {
-    try {
-      txPayments = await db.transaction(async (tx) => {
-        const insertedPayments: Array<{ amount: number; method?: string; paymentId: number }> = [];
-        for (const p of validPaymentsInput) {
-          const [insertedPaymentRow] = await tx.insert(paymentsTable).values({
-            billId: bill.id,
-            amount: p.amount.toFixed(2),
-            method: p.method || "cash",
-            referenceNumber: p.referenceNumber ?? null,
-            notes: p.notes ?? null,
-            recordedByName: actorName || null,
-          }).returning();
-          insertedPayments.push({ amount: p.amount, method: p.method, paymentId: insertedPaymentRow.id });
-          await tx.insert(billAuditsTable).values({
-            billId: bill.id,
-            editedBy: actorName || "system",
-            reason: "Payment collected",
-            changeType: "payment_collected",
-            oldValue: null,
-            newValue: `amount=₹${p.amount.toFixed(2)}; method=${p.method || "cash"}`,
-          });
-        }
-        return insertedPayments;
-      });
-    } catch (err) {
-      // Rare: bill row exists with paid totals but payment rows failed.
-      // Roll the bill back to unpaid so desk can re-collect via payment POST
-      // instead of leaving a paid bill with no payment ledger rows.
-      // Do NOT rethrow — that became an opaque Express 500 without billId
-      // (and orphaned the order when called via /api/billing/save).
-      req.log?.error?.({ err, billId: bill.id }, "Bill created but payment insert failed — resetting bill to pending");
-      await db.update(billsTable).set({
-        paidAmount: "0.00",
-        balanceAmount: totalAmount.toFixed(2),
-        status: "pending",
-      }).where(eq(billsTable.id, bill.id)).catch(() => { /* best-effort */ });
-      res.status(500).json({
-        error: "Bill created but payment recording failed — reopen the bill to collect payment",
-        billId: bill.id,
-        billNumber: bill.billNumber,
-        orderId,
-        paymentsFailed: true,
-        clientRef: clientRef ?? null,
-      });
-      return;
-    }
   }
 
   const txnDoneAt = Date.now();
@@ -1418,10 +1404,20 @@ billsRouter.put("/:id", requireStaffSubPermission("/billing", "edit"), async (re
       }
     }
 
-    const newTotal = subtotal - newDiscount + taxAmount;
+    const newTotal = billTotalFromParts(subtotal, newDiscount, taxAmount);
     const paidAmount = Number(existingBill.paidAmount);
+    const discountGate = assertDiscountNotBelowCollected({
+      subtotal,
+      discount: newDiscount,
+      tax: taxAmount,
+      collectedNet: paidAmount,
+    });
+    if (discountGate) {
+      res.status(400).json({ error: discountGate });
+      return;
+    }
     const refundAmount = Number(existingBill.refundAmount || 0);
-    const newBalance = Math.max(0, Math.round((newTotal - paidAmount - refundAmount) * 100) / 100);
+    const newBalance = billBalanceFromParts(newTotal, paidAmount, refundAmount);
     updateData.discount = String(newDiscount);
     updateData.totalAmount = String(newTotal);
     updateData.balanceAmount = String(newBalance);
@@ -1714,11 +1710,11 @@ billsRouter.post("/:id/cancel", requireStaffSubPermission("/billing", "delete"),
     let cancelRefundPaymentId: number | null = null;
     if (autoRefundParsed.success && autoRefundParsed.data.autoRefund) {
       const currentPaid = Number(bill.paidAmount);
-      if (currentPaid > 0.0001) {
+      if (rupeesToPaise(currentPaid) > 0) {
         refundMethod = autoRefundParsed.data.autoRefund.method.trim().toLowerCase();
-        refundedAmount = Math.round(currentPaid * 100) / 100;
+        refundedAmount = paiseToRupees(rupeesToPaise(currentPaid));
         const currentRefund = Number(bill.refundAmount);
-        const newRefund = Math.round((currentRefund + refundedAmount) * 100) / 100;
+        const newRefund = moneyAdd(currentRefund, refundedAmount);
         const [cancelRefundRow] = await tx.insert(paymentsTable).values({
           billId: id,
           amount: String(-refundedAmount),
@@ -1853,8 +1849,8 @@ billsRouter.post("/:id/refund", requireStaffSubPermission("/billing", "refund"),
     return;
   }
 
-  // Round to 2 decimals to avoid float comparison surprises (₹).
-  const amount = Math.round(rawAmount * 100) / 100;
+  // Normalize to 2-decimal rupees via paise (avoids float comparison surprises).
+  const amount = paiseToRupees(rupeesToPaise(rawAmount));
 
   // Serialize concurrent refunds against this bill: lock the row, re-read latest
   // values inside the transaction, then validate + write atomically. This
@@ -1868,15 +1864,15 @@ billsRouter.post("/:id/refund", requireStaffSubPermission("/billing", "refund"),
     const currentTotal = Number(bill.totalAmount);
     const currentRefund = Number(bill.refundAmount);
 
-    if (amount > currentPaid + 0.0001) {
+    if (rupeesToPaise(amount) > rupeesToPaise(currentPaid)) {
       throw Object.assign(
         new Error(`Refund (₹${amount.toFixed(2)}) cannot exceed amount currently paid (₹${currentPaid.toFixed(2)})`),
         { httpStatus: 400 },
       );
     }
 
-    const newPaid = Math.max(0, Math.round((currentPaid - amount) * 100) / 100);
-    const newRefund = Math.round((currentRefund + amount) * 100) / 100;
+    const newPaid = moneyMax0(moneySub(currentPaid, amount));
+    const newRefund = moneyAdd(currentRefund, amount);
     // FIX: totalAmount is NEVER mutated by a refund — it preserves the original
     // billed amount for historical revenue accuracy.
     // balance_amount = total − paid − refund  ← true net money still owed.
@@ -1885,14 +1881,14 @@ billsRouter.post("/:id/refund", requireStaffSubPermission("/billing", "refund"),
     //   • Dues filter (balance > 0) correctly excludes fully-settled refund bills.
     //   • Add-payment guard uses the correct remaining payable amount.
     //   • Daily-summary outstanding = SUM(balance) is correct without adjustment.
-    const newBalance = Math.max(0, Math.round((currentTotal - newPaid - newRefund) * 100) / 100);
+    const newBalance = billBalanceFromParts(currentTotal, newPaid, newRefund);
     // Status: paid when net owed (total − refund) is fully collected.
-    const netOwed = Math.max(0, Math.round((currentTotal - newRefund) * 100) / 100);
+    const netOwed = moneyMax0(moneySub(currentTotal, newRefund));
     const newStatus = bill.status === "cancelled"
       ? "cancelled"
-      : newPaid <= 0
+      : rupeesToPaise(newPaid) <= 0
         ? "pending"
-        : newPaid < netOwed
+        : rupeesToPaise(newPaid) < rupeesToPaise(netOwed)
           ? "partial"
           : "paid";
 
@@ -2026,13 +2022,21 @@ billsRouter.post("/:id/change-doctor", async (req: StaffAuthRequest, res) => {
 
   const isSelf = newDoctorId === 0 || newDoctorId === null;
   const [newDoctor] = isSelf
-    ? [{ name: "Walk-in / Self" }]
-    : await db.select({ name: doctorsTable.name }).from(doctorsTable).where(eq(doctorsTable.id, newDoctorId as number));
+    ? [{ name: "Walk-in / Self", ledgerId: null as number | null }]
+    : await db.select({ name: doctorsTable.name, ledgerId: doctorsTable.ledgerId }).from(doctorsTable).where(eq(doctorsTable.id, newDoctorId as number));
   if (!isSelf && !newDoctor) { res.status(400).json({ error: "New doctor not found" }); return; }
 
+  const nextLedgerId = isSelf
+    ? await getWalkInLedgerId()
+    : (newDoctor?.ledgerId ?? await getWalkInLedgerId());
+
   await db.transaction(async (tx) => {
-    // Update the order (doctor lives on the order, not the bill)
-    await tx.update(ordersTable).set({ doctorId: isSelf ? null : newDoctorId }).where(eq(ordersTable.id, bill.orderId));
+    // Update the order (doctor lives on the order, not the bill) + ledger routing
+    await tx.update(ordersTable).set({
+      doctorId: isSelf ? null : newDoctorId,
+      ledgerId: nextLedgerId,
+    }).where(eq(ordersTable.id, bill.orderId));
+    await tx.update(billsTable).set({ ledgerId: nextLedgerId }).where(eq(billsTable.id, id));
 
     // Audit
     await tx.insert(billAuditsTable).values({
@@ -2045,7 +2049,8 @@ billsRouter.post("/:id/change-doctor", async (req: StaffAuthRequest, res) => {
     });
   });
 
-  res.json(await buildBill(bill));
+  const [freshBill] = await db.select().from(billsTable).where(eq(billsTable.id, id));
+  res.json(await buildBill(freshBill ?? bill));
 });
 
 // Helper: verify super admin session token
@@ -2092,19 +2097,52 @@ billsRouter.patch("/:id/super-edit", async (req, res) => {
   const newSubtotal  = subtotal  !== undefined ? Number(subtotal)  : Number(bill.subtotal);
   const newDiscount  = discount  !== undefined ? Number(discount)  : Number(bill.discount);
   const newTaxAmount = taxAmount !== undefined ? Number(taxAmount) : Number(bill.taxAmount);
-  const newTotal     = newSubtotal - newDiscount + newTaxAmount;
   const paidAmount   = Number(bill.paidAmount);
-  // FIX: include refundAmount in balance calculation — balance = total − paid − refund
-  // (same invariant enforced by the refund route; without this, super-editing a
-  // refunded bill overstates the outstanding balance by the refund amount).
-  const refundAmount = Number(bill.refundAmount ?? 0);
-  const newBalance   = newTotal - paidAmount - refundAmount;
+  const discountGate = assertDiscountNotBelowCollected({
+    subtotal: newSubtotal,
+    discount: newDiscount,
+    tax: newTaxAmount,
+    collectedNet: paidAmount,
+  });
+  if (discountGate) {
+    res.status(400).json({ error: discountGate });
+    return;
+  }
+  const { total: newTotal, balance: newBalance } = recomputedBillBalance({
+    subtotal: newSubtotal,
+    discount: newDiscount,
+    tax: newTaxAmount,
+    paid: paidAmount,
+    refund: Number(bill.refundAmount ?? 0),
+  });
   // Status: paid when net owed (total − refund) is fully collected.
+  const refundAmount = Number(bill.refundAmount ?? 0);
   const netOwed    = Math.max(0, newTotal - refundAmount);
   const newStatus    = newBalance <= 0 && paidAmount > 0 ? "paid"
                      : paidAmount > 0 && paidAmount < netOwed ? "partial"
                      : paidAmount > 0 ? "paid"
                      : "pending";
+
+  // When subtotal changes, scale active order_tests so Σ lines = new subtotal.
+  if (newSubtotal !== Number(bill.subtotal)) {
+    const otRows = await db.select({ id: orderTestsTable.id, price: orderTestsTable.price, status: orderTestsTable.status })
+      .from(orderTestsTable).where(eq(orderTestsTable.orderId, bill.orderId));
+    const active = otRows.filter((r) => r.status !== "cancelled");
+    if (active.length > 0) {
+      const scaled = scaleLinePaiseToTotal(
+        active.map((r) => rupeesToPaise(r.price)),
+        newSubtotal,
+      );
+      for (let i = 0; i < active.length; i++) {
+        await db.update(orderTestsTable)
+          .set({ price: paiseToRupees(scaled[i] ?? 0).toFixed(2) })
+          .where(eq(orderTestsTable.id, active[i].id));
+      }
+      await db.update(ordersTable)
+        .set({ totalAmount: newSubtotal.toFixed(2) })
+        .where(eq(ordersTable.id, bill.orderId));
+    }
+  }
 
   const [updated] = await db.update(billsTable).set({
     subtotal:      String(newSubtotal),
@@ -2189,10 +2227,21 @@ billsRouter.delete("/:id", async (req, res) => {
     newValue: null,
   });
 
-  // Delete payments + bill, reset order, renumber later bills — all in one
-  // transaction. Otherwise a partial failure (e.g. mid-renumber) leaves the
-  // sequence with gaps or duplicate numbers and an inconsistent order status.
+  // Delete vouchers + cancel order_tests + delete payments + bill, reset order,
+  // renumber later bills — all in one transaction. Otherwise a partial failure
+  // (e.g. mid-renumber) leaves the sequence with gaps or duplicate numbers and
+  // an inconsistent order status. Hard DELETE stays allowed for superadmin.
   await db.transaction(async (tx) => {
+    await tx.delete(vouchersTable).where(eq(vouchersTable.billId, id));
+    await tx.update(orderTestsTable).set({
+      status: "cancelled",
+      cancellationReason: "bill_deleted",
+      cancelledAt: new Date(),
+      cancelledByName: userName,
+    }).where(eq(orderTestsTable.orderId, bill.orderId));
+    // Nullable FKs with ON DELETE NO ACTION — clear before hard-deleting the bill.
+    await tx.update(formFRecordsTable).set({ billId: null }).where(eq(formFRecordsTable.billId, id));
+    await tx.update(testTokensTable).set({ billId: null }).where(eq(testTokensTable.billId, id));
     await tx.delete(paymentsTable).where(eq(paymentsTable.billId, id));
     await tx.delete(billsTable).where(eq(billsTable.id, id));
     await tx.update(ordersTable).set({ status: "pending" }).where(eq(ordersTable.id, bill.orderId));
@@ -2363,20 +2412,22 @@ billsRouter.post("/:id/cancel-test", async (req: StaffAuthRequest, res) => {
     } as Partial<typeof orderTestsTable.$inferSelect>).where(eq(orderTestsTable.id, otId));
 
     // Recalculate totals from remaining active tests
-    const newSubtotal = remainingActive.reduce((sum, t) => sum + Number(t.price), 0);
+    const newSubtotal = remainingActive.reduce((sum, t) => moneyAdd(sum, t.price), 0);
     const oldDiscount = Number(bill.discount);
-    const newDiscount = Math.min(oldDiscount, newSubtotal); // cap discount at new subtotal
-    const newTotal = Math.max(0, Math.round((newSubtotal - newDiscount + Number(bill.taxAmount)) * 100) / 100);
+    const newDiscount = moneyMax0(
+      paiseToRupees(Math.min(rupeesToPaise(oldDiscount), rupeesToPaise(newSubtotal))),
+    );
+    const newTotal = billTotalFromParts(newSubtotal, newDiscount, bill.taxAmount);
     const newPaid = Number(bill.paidAmount);
     const refundAmount = Number(bill.refundAmount || 0);
-    const newBalance = Math.max(0, Math.round((newTotal - newPaid - refundAmount) * 100) / 100);
+    const newBalance = billBalanceFromParts(newTotal, newPaid, refundAmount);
     const newStatus = newBalance <= 0 && newPaid > 0 ? "paid"
       : newPaid > 0 ? "partial"
       : "pending";
 
     const [updated] = await tx.update(billsTable).set({
-      subtotal: String(Math.round(newSubtotal * 100) / 100),
-      discount: String(Math.round(newDiscount * 100) / 100),
+      subtotal: String(newSubtotal),
+      discount: String(newDiscount),
       totalAmount: String(newTotal),
       balanceAmount: String(newBalance),
       status: newStatus,
@@ -2465,10 +2516,12 @@ billsRouter.post("/:id/cancel-refund-tests", async (req: StaffAuthRequest, res) 
     }
 
     // Recalculate bill totals from remaining active tests
-    const newSubtotal = remainingActive.reduce((sum, t) => sum + Number(t.price), 0);
+    const newSubtotal = remainingActive.reduce((sum, t) => moneyAdd(sum, t.price), 0);
     const oldDiscount = Number(bill.discount);
-    const newDiscount = Math.min(oldDiscount, newSubtotal);
-    const newTotal = Math.max(0, Math.round((newSubtotal - newDiscount + Number(bill.taxAmount)) * 100) / 100);
+    const newDiscount = moneyMax0(
+      paiseToRupees(Math.min(rupeesToPaise(oldDiscount), rupeesToPaise(newSubtotal))),
+    );
+    const newTotal = billTotalFromParts(newSubtotal, newDiscount, bill.taxAmount);
     const oldPaid = Number(bill.paidAmount);
     const oldRefund = Number(bill.refundAmount);
 
@@ -2477,13 +2530,17 @@ billsRouter.post("/:id/cancel-refund-tests", async (req: StaffAuthRequest, res) 
     let refundPaymentId: number | null = null;
 
     // If overpaid after removing tests, auto-refund the excess
-    if (oldPaid > newTotal + 0.0001) {
-      refundedAmount = Math.round((oldPaid - newTotal) * 100) / 100;
+    if (rupeesToPaise(oldPaid) > rupeesToPaise(newTotal)) {
+      refundedAmount = paiseToRupees(rupeesToPaise(oldPaid) - rupeesToPaise(newTotal));
       const method = (refundMethod ?? "cash").trim().toLowerCase();
-      const newRefund = Math.round((oldRefund + refundedAmount) * 100) / 100;
-      const newPaid = Math.max(0, Math.round((oldPaid - refundedAmount) * 100) / 100);
-      const newBalance = Math.max(0, Math.round((newTotal - newPaid - newRefund) * 100) / 100);
-      const newStatus = newPaid <= 0 ? "pending" : newPaid < newTotal ? "partial" : "paid";
+      const newRefund = moneyAdd(oldRefund, refundedAmount);
+      const newPaid = moneyMax0(moneySub(oldPaid, refundedAmount));
+      const newBalance = billBalanceFromParts(newTotal, newPaid, newRefund);
+      const newStatus = rupeesToPaise(newPaid) <= 0
+        ? "pending"
+        : rupeesToPaise(newPaid) < rupeesToPaise(newTotal)
+          ? "partial"
+          : "paid";
 
       const [refundRow] = await tx.insert(paymentsTable).values({
         billId: id,
@@ -2496,8 +2553,8 @@ billsRouter.post("/:id/cancel-refund-tests", async (req: StaffAuthRequest, res) 
       refundPaymentId = refundRow.id;
 
       await tx.update(billsTable).set({
-        subtotal: String(Math.round(newSubtotal * 100) / 100),
-        discount: String(Math.round(newDiscount * 100) / 100),
+        subtotal: String(newSubtotal),
+        discount: String(newDiscount),
         totalAmount: String(newTotal),
         paidAmount: String(newPaid),
         refundAmount: String(newRefund),
@@ -2508,12 +2565,16 @@ billsRouter.post("/:id/cancel-refund-tests", async (req: StaffAuthRequest, res) 
       refundRecorded = true;
     } else {
       const newPaid = oldPaid;
-      const newBalance = Math.max(0, Math.round((newTotal - newPaid - oldRefund) * 100) / 100);
-      const newStatus = newPaid <= 0 ? "pending" : newPaid < newTotal ? "partial" : "paid";
+      const newBalance = billBalanceFromParts(newTotal, newPaid, oldRefund);
+      const newStatus = rupeesToPaise(newPaid) <= 0
+        ? "pending"
+        : rupeesToPaise(newPaid) < rupeesToPaise(newTotal)
+          ? "partial"
+          : "paid";
 
       await tx.update(billsTable).set({
-        subtotal: String(Math.round(newSubtotal * 100) / 100),
-        discount: String(Math.round(newDiscount * 100) / 100),
+        subtotal: String(newSubtotal),
+        discount: String(newDiscount),
         totalAmount: String(newTotal),
         balanceAmount: String(newBalance),
         status: newStatus,
@@ -2599,8 +2660,9 @@ paymentsRouter.post("/", async (req, res) => {
   const { billId, amount, method, referenceNumber, notes } = parsed.data;
   const actorName = (req as StaffAuthRequest).staffSession?.subjectName?.trim();
 
-  if (!Number.isFinite(amount) || amount <= 0) {
-    res.status(400).json({ error: "Payment amount must be greater than zero. Use the refund endpoint to process refunds." });
+  const negErr = assertNonNegativePayment(amount);
+  if (negErr) {
+    res.status(400).json({ error: negErr });
     return;
   }
 
@@ -2624,12 +2686,33 @@ paymentsRouter.post("/", async (req, res) => {
 
       if (!bill) throw Object.assign(new Error("Bill not found"), { httpStatus: 404 });
 
-      const currentBalance = Number(bill.balanceAmount);
-      if (amount > currentBalance + 0.01) {
-        throw Object.assign(
-          new Error(`Payment amount (₹${amount.toFixed(2)}) exceeds outstanding balance (₹${currentBalance.toFixed(2)})`),
-          { httpStatus: 400 },
-        );
+      // Idempotent on referenceNumber + collectible settlement
+      if (referenceNumber) {
+        const existing = await tx
+          .select()
+          .from(paymentsTable)
+          .where(and(eq(paymentsTable.billId, billId), eq(paymentsTable.referenceNumber, referenceNumber)))
+          .limit(5);
+        const hit = existing.find((p) => isCollectiblePayment(p));
+        if (hit) {
+          return {
+            inserted: hit,
+            paid: Number(bill.paidAmount),
+            billNumber: bill.billNumber,
+            patientName: null as string | null,
+            idempotent: true,
+          };
+        }
+      }
+
+      const outstanding = billBalanceFromParts(
+        bill.totalAmount,
+        bill.paidAmount,
+        bill.refundAmount ?? 0,
+      );
+      const withinErr = assertPaymentWithinOutstanding(amount, outstanding);
+      if (withinErr) {
+        throw Object.assign(new Error(withinErr), { httpStatus: 400 });
       }
 
       const [inserted] = await tx.insert(paymentsTable).values({
@@ -2641,9 +2724,14 @@ paymentsRouter.post("/", async (req, res) => {
         recordedByName: actorName || null,
       }).returning();
 
-      const paid = Number(bill.paidAmount) + amount;
-      const existingRefund = Number(bill.refundAmount ?? 0);
-      const balance = Number(bill.totalAmount) - paid - existingRefund;
+      const paid = moneyAdd(bill.paidAmount, amount);
+      const { balance } = recomputedBillBalance({
+        subtotal: bill.subtotal,
+        discount: bill.discount,
+        tax: bill.taxAmount,
+        paid,
+        refund: bill.refundAmount ?? 0,
+      });
       const newStatus = balance <= 0 ? "paid" : paid > 0 ? "partial" : bill.status;
 
       await tx.update(billsTable).set({
@@ -2665,6 +2753,7 @@ paymentsRouter.post("/", async (req, res) => {
         paid,
         billNumber: bill.billNumber,
         patientName: patientRow ? `${patientRow.firstName} ${patientRow.lastName}`.trim() : null,
+        idempotent: false,
       };
     });
 
@@ -2672,6 +2761,11 @@ paymentsRouter.post("/", async (req, res) => {
     newPaidAmount = txResult.paid;
     voucherBillNumber = txResult.billNumber;
     voucherPatientName = txResult.patientName;
+
+    if (txResult.idempotent) {
+      res.status(200).json({ ...payment, amount: Number(payment.amount), _idempotent: true });
+      return;
+    }
   } catch (err: any) {
     const status = err.httpStatus ?? 500;
     res.status(status).json({ error: err.message });
@@ -2742,9 +2836,9 @@ billsRouter.post("/:id/swap-test", async (req: StaffAuthRequest, res) => {
     }
 
     const oldTestName = otRow.displayName || (await tx.select({ name: testsTable.name }).from(testsTable).where(eq(testsTable.id, otRow.testId)).then(r => r[0]?.name ?? "Unknown"));
-    const oldPrice = Number(otRow.price);
-    const newPrice = Number(newTest.price);
-    const priceDiff = newPrice - oldPrice;
+    const oldPrice = paiseToRupees(rupeesToPaise(otRow.price));
+    const newPrice = paiseToRupees(rupeesToPaise(newTest.price));
+    const priceDiff = moneySub(newPrice, oldPrice);
 
     // 4) Update the orderTest row with new testId and price
     await tx.update(orderTestsTable).set({
@@ -2756,7 +2850,7 @@ billsRouter.post("/:id/swap-test", async (req: StaffAuthRequest, res) => {
     // 5) Recalculate order total
     const allTests = await tx.select().from(orderTestsTable).where(eq(orderTestsTable.orderId, bill.orderId));
     const activeTests = allTests.filter((t) => t.status !== "cancelled");
-    const newOrderTotal = activeTests.reduce((s, t) => s + Number(t.price), 0);
+    const newOrderTotal = activeTests.reduce((s, t) => moneyAdd(s, t.price), 0);
     await tx.update(ordersTable).set({
       totalAmount: newOrderTotal.toFixed(2),
       updatedAt: new Date(),
@@ -2766,15 +2860,20 @@ billsRouter.post("/:id/swap-test", async (req: StaffAuthRequest, res) => {
     // cancel-test and cancel-refund-tests already use below; this endpoint
     // was missing all three, so swapping to a cheaper test could leave
     // oldDiscount exceeding the new subtotal and drive totalAmount negative.
-    const oldSubtotal = Number(bill.subtotal);
     const oldDiscount = Number(bill.discount);
     const newSubtotal = newOrderTotal;
-    const newDiscount = Math.min(oldDiscount, newSubtotal); // cap discount at new subtotal
-    const newTotal = Math.max(0, Math.round((newSubtotal - newDiscount + Number(bill.taxAmount)) * 100) / 100);
+    const newDiscount = moneyMax0(
+      paiseToRupees(Math.min(rupeesToPaise(oldDiscount), rupeesToPaise(newSubtotal))),
+    );
+    const newTotal = billTotalFromParts(newSubtotal, newDiscount, bill.taxAmount);
     const paidAmount = Number(bill.paidAmount);
     const refundAmount = Number(bill.refundAmount || 0);
-    const newBalance = Math.max(0, Math.round((newTotal - paidAmount - refundAmount) * 100) / 100);
-    const newStatus = newBalance <= 0.01 && paidAmount > 0 ? "paid" : paidAmount > 0 ? "partial" : "pending";
+    const newBalance = billBalanceFromParts(newTotal, paidAmount, refundAmount);
+    const newStatus = rupeesToPaise(newBalance) <= 1 && rupeesToPaise(paidAmount) > 0
+      ? "paid"
+      : rupeesToPaise(paidAmount) > 0
+        ? "partial"
+        : "pending";
 
     await tx.update(billsTable).set({
       subtotal: newSubtotal.toFixed(2),
@@ -2797,7 +2896,7 @@ billsRouter.post("/:id/swap-test", async (req: StaffAuthRequest, res) => {
 
     // 8) If price increased, record a payment (auto-collect extra)
     let extraPayment: { amount: number; method: string; paymentId: number } | null = null;
-    if (priceDiff > 0.01) {
+    if (rupeesToPaise(priceDiff) > 1) {
       const method = (req.body.extraPaymentMethod as string) || "cash";
       const [extraPaymentRow] = await tx.insert(paymentsTable).values({
         billId: id,
@@ -2807,9 +2906,13 @@ billsRouter.post("/:id/swap-test", async (req: StaffAuthRequest, res) => {
         recordedByName: performedBy,
       }).returning();
       extraPayment = { amount: priceDiff, method, paymentId: extraPaymentRow.id };
-      const newPaid = Math.round((paidAmount + priceDiff) * 100) / 100;
-      const newBalAfterPay = Math.max(0, newTotal - newPaid - refundAmount);
-      const newStatAfterPay = newBalAfterPay <= 0.01 && newPaid > 0 ? "paid" : newPaid > 0 ? "partial" : "pending";
+      const newPaid = moneyAdd(paidAmount, priceDiff);
+      const newBalAfterPay = billBalanceFromParts(newTotal, newPaid, refundAmount);
+      const newStatAfterPay = rupeesToPaise(newBalAfterPay) <= 1 && rupeesToPaise(newPaid) > 0
+        ? "paid"
+        : rupeesToPaise(newPaid) > 0
+          ? "partial"
+          : "pending";
       await tx.update(billsTable).set({
         paidAmount: newPaid.toFixed(2),
         balanceAmount: newBalAfterPay.toFixed(2),
@@ -2829,8 +2932,8 @@ billsRouter.post("/:id/swap-test", async (req: StaffAuthRequest, res) => {
 
     // 9) If price decreased, record a refund
     let refundInfo: { amount: number; method: string; paymentId: number } | null = null;
-    if (priceDiff < -0.01) {
-      const refundAmt = Math.abs(priceDiff);
+    if (rupeesToPaise(priceDiff) < -1) {
+      const refundAmt = paiseToRupees(Math.abs(rupeesToPaise(priceDiff)));
       const method = (req.body.refundMethod as string) || "cash";
       const [refundRow] = await tx.insert(paymentsTable).values({
         billId: id,
@@ -2841,10 +2944,14 @@ billsRouter.post("/:id/swap-test", async (req: StaffAuthRequest, res) => {
       }).returning();
       refundInfo = { amount: refundAmt, method, paymentId: refundRow.id };
       const currentRefund = Number(bill.refundAmount);
-      const newRefund = Math.round((currentRefund + refundAmt) * 100) / 100;
-      const newPaidAfterRefund = Math.max(0, Math.round((paidAmount - refundAmt) * 100) / 100);
-      const newBalAfterRefund = Math.max(0, newTotal - newPaidAfterRefund - newRefund);
-      const newStatAfterRefund = newBalAfterRefund <= 0.01 && newPaidAfterRefund > 0 ? "paid" : newPaidAfterRefund > 0 ? "partial" : "pending";
+      const newRefund = moneyAdd(currentRefund, refundAmt);
+      const newPaidAfterRefund = moneyMax0(moneySub(paidAmount, refundAmt));
+      const newBalAfterRefund = billBalanceFromParts(newTotal, newPaidAfterRefund, newRefund);
+      const newStatAfterRefund = rupeesToPaise(newBalAfterRefund) <= 1 && rupeesToPaise(newPaidAfterRefund) > 0
+        ? "paid"
+        : rupeesToPaise(newPaidAfterRefund) > 0
+          ? "partial"
+          : "pending";
       await tx.update(billsTable).set({
         paidAmount: newPaidAfterRefund.toFixed(2),
         refundAmount: newRefund.toFixed(2),

@@ -10,7 +10,7 @@ const src = readFileSync(
 describe("ReportExportPanel — enlarge preview before finalize", () => {
   it("exposes a compact-preview enlarge control without a full-bleed overlay", () => {
     expect(src).toContain('data-testid="report-layout-preview-enlarge"');
-    expect(src).toContain("Click to enlarge");
+    expect(src).toContain("Print Preview");
     // Full-bleed overlay over the preview steals wheel → parent column scrolls.
     expect(src).not.toMatch(
       /report-layout-preview-inline-scroll[\s\S]{0,500}absolute inset-0[\s\S]{0,200}report-layout-preview-enlarge/,
@@ -23,10 +23,31 @@ describe("ReportExportPanel — enlarge preview before finalize", () => {
     expect(src).toContain("Review before finalize");
   });
 
-  it("exposes Enlarge actions in the toolbar", () => {
-    expect(src).toContain('data-testid="report-layout-preview-enlarge-btn"');
+  it("exposes a single labeled Print Preview in the header toolbar", () => {
     expect(src).toContain('data-testid="report-layout-preview-enlarge-header"');
-    expect(src).toMatch(/report-layout-preview-enlarge-header[\s\S]{0,400}Enlarge/);
+    expect(src).toMatch(/report-layout-preview-enlarge-header[\s\S]{0,400}Print Preview/);
+    // Duplicate labeled Print Preview in the Layout row was removed (issue #7).
+    expect(src).not.toContain('data-testid="report-layout-preview-enlarge-btn"');
+  });
+
+  it("keeps an icon-only enlarge control on the compact preview", () => {
+    expect(src).toContain('data-testid="report-layout-preview-enlarge"');
+    expect(src).toContain('aria-label="Print Preview"');
+  });
+
+  it("exposes a manual body font-size control in Layout / Export", () => {
+    expect(src).toContain('data-testid="report-layout-font-size"');
+    expect(src).toContain("onBodyFontSizeChange");
+  });
+
+  it("Print Preview enlarges the iframe and does not invoke Print like final", () => {
+    expect(src).toContain("handlePrintPreviewOrEnlarge");
+    expect(src).toMatch(/handlePrintPreviewOrEnlarge[\s\S]*?setEnlarged\(true\)/);
+    // Regression: Print Preview previously called onPrintLikeFinal, so both
+    // buttons produced the same auto-print window.
+    expect(src).not.toMatch(
+      /handlePrintPreviewOrEnlarge[\s\S]{0,200}onPrintLikeFinal/,
+    );
   });
 
   it("keeps enlarged preview scroll on the outer pane (iframe does not eat wheel)", () => {
@@ -67,6 +88,14 @@ describe("ReportExportPanel — enlarge preview before finalize", () => {
     expect(src).toContain("handlePreviewDoubleClick");
     expect(src).toContain('data-testid="report-preview-edit-sections"');
     expect(src).toMatch(/onDoubleClick=\{handlePreviewDoubleClick\}/);
+    // Both compact and enlarged preview panes support double-click edit.
+    expect(src).toMatch(/report-layout-preview-scroll[\s\S]{0,120}onDoubleClick=\{handlePreviewDoubleClick\}/);
+  });
+
+  it("merges live editor body into server print preview", () => {
+    expect(src).toContain("finalizePrintPreviewHtml");
+    expect(src).toContain("livePrintBodyHtml");
+    expect(src).toContain("onEnsureDraftSaved");
   });
 
   it("exposes Finalize in the export toolbar and enlarged preview", () => {

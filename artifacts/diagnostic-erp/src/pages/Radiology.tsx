@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardTitle, CardDescription, CardHeader } from "@/components/ui/card";
 import {
-  Radio, Tv2, FileText, Settings, Activity, FilePen, ShieldAlert,
+  Tv2, FileText, Settings, Activity, FilePen, ShieldAlert,
   ListChecks, Heart, Baby, CheckCircle2, ArrowRight, ChevronDown, ChevronUp,
   Layers, Server, Globe,
 } from "lucide-react";
@@ -97,17 +97,10 @@ const SPECIALTY: ToolItem[] = [
 
 const ADMIN: ToolItem[] = [
   {
-    name: "Radiology Settings Center",
+    name: "Radiology Settings",
     path: "/settings/radiology",
-    description: "PACS, Orthanc, viewers, MWL, style, voice.",
+    description: "PACS, Orthanc, viewers, MWL, style, voice, productivity flags.",
     icon: Settings,
-    badge: "Admin",
-  },
-  {
-    name: "ERP Settings → Radiology",
-    path: "/settings?tab=radiology",
-    description: "Tools hub + browser device flags.",
-    icon: Radio,
     badge: "Admin",
   },
   {

@@ -8,6 +8,12 @@ import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { classifyPaymentMethod, isPhysicalCash } from "../lib/paymentMethodClassifier";
 import { lastOverallClosureBoundary } from "../lib/closureBoundary";
 import { BILL_AUDIT_OPERATIONAL_CHANGE_TYPES } from "../lib/staffActivityAttribution";
+import { isCollectiblePayment } from "../lib/financialIntegrity";
+import { loadPostClosureActivity } from "../lib/postClosureActivity";
+import type { StaffPrintActivity } from "../lib/postClosureActivityTypes";
+import { computeStaffSlipFormula } from "../lib/staffSlipFormula";
+import { sendStaffDayCloseEmail, type StaffDayCloseEmailResult } from "../email";
+import { clinicSettingsTable } from "@workspace/db/schema";
 
 // Inline super-admin gate that works on the regular ERP staff session
 // (req.staffSession.role === "super_admin"). The site-wide
@@ -82,7 +88,12 @@ type TestSummary = { testId: number; testName: string; category: string; count: 
 // here exactly once.
 
 export type PaymentLike = { id: number; amount: string | number; method: string | null; recordedByName?: string | null };
-export type ExpenseLike = { amount: string | number; paymentMode: string | null; approvedBy?: string | null };
+export type ExpenseLike = {
+  amount: string | number;
+  paymentMode: string | null;
+  approvedBy?: string | null;
+  createdBy?: string | null;
+};
 
 export type SuspenseItem = { id: number; amount: number; rawMethod: string; recordedByName: string | null };
 
@@ -163,7 +174,8 @@ export function splitCashExpenses(expRows: ExpenseLike[]): {
   const cashExpensesByApprover = new Map<string, number>();
   for (const e of expRows) {
     if (!isCashExpense(e.paymentMode)) continue;
-    const approver = (e.approvedBy ?? "").trim();
+    // Prefer approved_by; fall back to created_by (legacy blank Approved By).
+    const approver = (e.approvedBy ?? "").trim() || (e.createdBy ?? "").trim();
     if (!approver) continue;
     cashExpensesByApprover.set(approver, (cashExpensesByApprover.get(approver) ?? 0) + n(e.amount));
   }
@@ -218,6 +230,7 @@ async function summarizeWindow(from: Date | null, to: Date) {
       createdAt: paymentsTable.createdAt,
       recordedByName: paymentsTable.recordedByName,
       billId: paymentsTable.billId,
+      settlementStatus: paymentsTable.settlementStatus,
     })
     .from(paymentsTable)
     .where(paymentWhere);
@@ -251,12 +264,14 @@ async function summarizeWindow(from: Date | null, to: Date) {
       createdAt: expensesTable.createdAt,
       paymentMode: expensesTable.paymentMode,
       approvedBy: expensesTable.approvedBy,
+      createdBy: expensesTable.createdBy,
     })
     .from(expensesTable)
     .where(expenseWhere);
 
-  // Aggregate payments — delegates to the pure, unit-tested classifier above.
-  const classified = classifyAndBucketPayments(payRows);
+  // Aggregate payments — exclude non-collectible settlement statuses, then
+  // delegate to the pure, unit-tested classifier above.
+  const classified = classifyAndBucketPayments(payRows.filter(isCollectiblePayment));
   const { overall, byStaff, suspenseItems, totalSuspense } = classified;
 
   // Aggregate bills
@@ -680,55 +695,16 @@ async function userWindowBoundary(userName: string): Promise<Date | null> {
 }
 
 /** Window-scoped activity for staff day-close print slips (no test-wise detail). */
-export type StaffPrintActivity = {
-  discountsGiven: number;
-  discountBills: Array<{
-    billId: number;
-    billNumber: string;
-    patientName: string;
-    totalAmount: number;
-    discountGiven: number;
-    grossAmount: number;
-    discountReason: string | null;
-    discountReasonNote: string | null;
-  }>;
-  billEdits: Array<{
-    id: number;
-    billId: number;
-    billNumber: string;
-    changeType: string;
-    reason: string;
-    oldValue: string | null;
-    newValue: string | null;
-    createdAt: string;
-  }>;
-  voucherEdits: Array<{
-    id: number;
-    voucherId: number;
-    voucherNumber: string;
-    changeType: string;
-    reason: string;
-    oldValue: string | null;
-    newValue: string | null;
-    createdAt: string;
-  }>;
-  expenseDetails: Array<{
-    id: number;
-    amount: number;
-    category: string;
-    description: string;
-    paymentMode: string;
-  }>;
-  totalExpenses: number;
-  cashExpenses: number;
-  digitalExpenses: number;
-};
+export type { StaffPrintActivity } from "../lib/postClosureActivityTypes";
 
 type UserSummary = {
   totals: MethodTotals;
   billsCount: number;
   totalBilled: number;
   totalDue: number;
+  dueReceived: number;
+  cancelledBillsAmount: number;
+  refundsAmount: number;
   cashExpenses: number;
   digitalExpenses: number;
   totalExpenses: number;
@@ -764,7 +740,7 @@ function buildStaffPrintActivity(s: Omit<UserSummary, "printActivity"> & {
   voucherEdits: StaffPrintActivity["voucherEdits"];
 }): StaffPrintActivity {
   const discountBills = s.bills
-    .filter((b) => b.discount > 0)
+    .filter((b) => b.discount > 0 && b.status !== "cancelled")
     .map((b) => ({
       billId: b.id,
       billNumber: b.billNumber,
@@ -776,6 +752,9 @@ function buildStaffPrintActivity(s: Omit<UserSummary, "printActivity"> & {
       discountReasonNote: b.discountReasonNote,
     }));
   return {
+    dueReceived: s.dueReceived,
+    cancelledBillsAmount: s.cancelledBillsAmount,
+    refundsAmount: s.refundsAmount,
     discountsGiven: discountBills.reduce((sum, b) => sum + b.discountGiven, 0),
     discountBills,
     billEdits: s.billEdits,
@@ -797,23 +776,31 @@ async function summarizeUserWindow(
     : and(eq(paymentsTable.recordedByName, userName), lte(paymentsTable.createdAt, to));
 
   const payments = await db
-    .select({ id: paymentsTable.id, amount: paymentsTable.amount, method: paymentsTable.method, recordedByName: paymentsTable.recordedByName })
+    .select({
+      id: paymentsTable.id,
+      billId: paymentsTable.billId,
+      amount: paymentsTable.amount,
+      method: paymentsTable.method,
+      recordedByName: paymentsTable.recordedByName,
+      settlementStatus: paymentsTable.settlementStatus,
+    })
     .from(paymentsTable)
     .where(pWhere);
 
   // Same pure classifier used by the overall day-close path — single
   // source of truth for bucketing + suspense isolation.
-  const classified = classifyAndBucketPayments(payments);
+  const classified = classifyAndBucketPayments(payments.filter(isCollectiblePayment));
   const totals = classified.overall;
   const suspenseItems = classified.suspenseItems.map((s) => ({ amount: s.amount, rawMethod: s.rawMethod }));
   const suspenseTotal = classified.totalSuspense;
 
   // Subtract THIS staff's own cash expenses (Cash Attribution Rule: an
-  // expense reduces the physical cash of the staff who approved it, same
-  // posting-date rule as summarizeWindow — created_at, not expense_date).
+  // expense reduces the physical cash of the drawer owner — approved_by, or
+  // created_by when Approved By was left blank). Posting clock = created_at.
+  const ownerMatch = sql`COALESCE(NULLIF(TRIM(${expensesTable.approvedBy}), ''), NULLIF(TRIM(${expensesTable.createdBy}), '')) = ${userName}`;
   const expWhere = from
-    ? and(eq(expensesTable.approvedBy, userName), gt(expensesTable.createdAt, from), lte(expensesTable.createdAt, to))
-    : and(eq(expensesTable.approvedBy, userName), lte(expensesTable.createdAt, to));
+    ? and(ownerMatch, gt(expensesTable.createdAt, from), lte(expensesTable.createdAt, to))
+    : and(ownerMatch, lte(expensesTable.createdAt, to));
   const expRows = await db
     .select({
       id: expensesTable.id,
@@ -822,6 +809,7 @@ async function summarizeUserWindow(
       description: expensesTable.description,
       paymentMode: expensesTable.paymentMode,
       approvedBy: expensesTable.approvedBy,
+      createdBy: expensesTable.createdBy,
     })
     .from(expensesTable)
     .where(expWhere);
@@ -842,17 +830,16 @@ async function summarizeUserWindow(
   }));
   const totalExpenses = expenseDetails.reduce((s, e) => s + e.amount, 0);
 
+  // Include cancelled bills in gross billed. Outstanding uses non-cancelled only.
   const bWhere = from
     ? and(
         eq(billsTable.createdByName, userName),
         gt(billsTable.createdAt, from),
         lte(billsTable.createdAt, to),
-        sql`${billsTable.status} != 'cancelled'`,
       )
     : and(
         eq(billsTable.createdByName, userName),
         lte(billsTable.createdAt, to),
-        sql`${billsTable.status} != 'cancelled'`,
       );
 
   const billRows = await db
@@ -893,6 +880,68 @@ async function summarizeUserWindow(
     createdByName: b.createdByName ?? "",
     createdAt: b.createdAt ? new Date(b.createdAt).toISOString() : "",
   }));
+  const activeBills = bills.filter((b) => b.status !== "cancelled");
+
+  // Bills this staff cancelled in the window (any original createdAt).
+  const cancelWhere = from
+    ? and(
+        eq(billsTable.cancelledByName, userName),
+        gt(billsTable.cancelledAt, from),
+        lte(billsTable.cancelledAt, to),
+      )
+    : and(
+        eq(billsTable.cancelledByName, userName),
+        lte(billsTable.cancelledAt, to),
+      );
+  const cancelledByMeRows = await db
+    .select({ id: billsTable.id, totalAmount: billsTable.totalAmount })
+    .from(billsTable)
+    .where(cancelWhere);
+  const cancelledBillIds = new Set(cancelledByMeRows.map((r) => r.id));
+  const cancelledBillsAmount = cancelledByMeRows.reduce((s, r) => s + n(r.totalAmount), 0);
+
+  // Dues collected: this staff's positive payments in the window on bills
+  // created at or before the previous close (from). First-ever close has
+  // no prior window, so dues are 0 — those bills are in totalBilled.
+  const collectiblePays = payments.filter(isCollectiblePayment);
+  let dueReceived = 0;
+  if (from) {
+    const dueCandidateIds = [...new Set(
+      collectiblePays
+        .filter((p) => n(p.amount) > 0 && p.billId != null)
+        .map((p) => p.billId as number),
+    )];
+    if (dueCandidateIds.length > 0) {
+      const dueBills = await db
+        .select({ id: billsTable.id, createdAt: billsTable.createdAt })
+        .from(billsTable)
+        .where(inArray(billsTable.id, dueCandidateIds));
+      const priorIds = new Set(
+        dueBills
+          .filter((b) => b.createdAt && new Date(b.createdAt) <= from)
+          .map((b) => b.id),
+      );
+      dueReceived = collectiblePays
+        .filter((p) => n(p.amount) > 0 && priorIds.has(p.billId))
+        .reduce((s, p) => s + n(p.amount), 0);
+    }
+  }
+
+  const refundsRecorded = collectiblePays
+    .filter((p) => n(p.amount) < 0)
+    .reduce((s, p) => s + Math.abs(n(p.amount)), 0);
+  const refundsOnBillsICancelled = collectiblePays
+    .filter((p) => n(p.amount) < 0 && cancelledBillIds.has(p.billId))
+    .reduce((s, p) => s + Math.abs(n(p.amount)), 0);
+  const formula = computeStaffSlipFormula({
+    billed: bills.reduce((s, b) => s + b.totalAmount, 0),
+    duesCollected: dueReceived,
+    cancelledBills: cancelledBillsAmount,
+    refundsRecorded,
+    refundsOnBillsICancelled,
+    outstanding: activeBills.reduce((s, b) => s + b.balanceAmount, 0),
+    expense: totalExpenses,
+  });
 
   // Bill / voucher edits by this staff inside the same close window
   // (created_at), excluding operational audit types that flood "edits".
@@ -966,8 +1015,11 @@ async function summarizeUserWindow(
   const base = {
     totals,
     billsCount:  bills.length,
-    totalBilled: bills.reduce((s, b) => s + b.totalAmount, 0),
-    totalDue:    bills.reduce((s, b) => s + b.balanceAmount, 0),
+    totalBilled: formula.billed,
+    totalDue:    formula.outstanding,
+    dueReceived: formula.duesCollected,
+    cancelledBillsAmount: formula.cancelledBills,
+    refundsAmount: formula.refunds,
     cashExpenses,
     digitalExpenses,
     totalExpenses,
@@ -1006,6 +1058,9 @@ dayCloseRouter.get("/my-preview", async (req, res) => {
     paymentsCount: s.totals.count,
     totalBilled:   s.totalBilled,
     totalDue:      s.totalDue,
+    dueReceived:   s.dueReceived,
+    cancelledBillsAmount: s.cancelledBillsAmount,
+    refundsAmount: s.refundsAmount,
     cashExpenses:  s.cashExpenses,
     // Suspense/exception bucket — unrecognized payment methods, excluded
     // from `expected` above. See LOCKED BUSINESS RULE #6.
@@ -1064,6 +1119,43 @@ dayCloseRouter.get("/my-drawer-status", async (req, res) => {
       approvalNote: null,
       // Suspense/exception bucket — unrecognized payment methods, already
       // excluded from expectedCash/expectedDigital above. LOCKED RULE #6.
+      suspenseTotal: s.suspenseTotal,
+      suspenseCount: s.suspenseItems.length,
+    });
+    return;
+  }
+
+  // Reopened drawer — show live accumulating totals since the close boundary
+  // so My Daily Summary reflects post-reopen billing, not the frozen close row.
+  if (latestUserClose.drawerStatus === "reopened") {
+    const from = await userWindowBoundary(userName);
+    const to = new Date();
+    const s = await summarizeUserWindow(userName, from, to);
+    const expectedDigital = s.totals.upi + s.totals.card + s.totals.cheque + s.totals.other;
+    res.json({
+      drawerStatus: "reopened",
+      userName,
+      coveredFromTs: from,
+      coveredToTs: to,
+      expectedCash: s.totals.cash,
+      countedCash: n(latestUserClose.actualCash),
+      cashVariance: s.totals.cash - n(latestUserClose.actualCash),
+      expectedDigital,
+      countedDigital: n(latestUserClose.actualUpi) + n(latestUserClose.actualCard)
+        + n(latestUserClose.actualCheque) + n(latestUserClose.actualOther),
+      digitalVariance: expectedDigital - (
+        n(latestUserClose.actualUpi) + n(latestUserClose.actualCard)
+        + n(latestUserClose.actualCheque) + n(latestUserClose.actualOther)
+      ),
+      expectedTotal: s.totals.total,
+      actualTotal: n(latestUserClose.totalActual),
+      totalVariance: s.totals.total - n(latestUserClose.totalActual),
+      closedAt: latestUserClose.closedAt,
+      closedBy: latestUserClose.userName,
+      handoverNote: latestUserClose.notes || null,
+      approvedByName: latestUserClose.approvedByName ?? null,
+      approvalNote: latestUserClose.approvalNote ?? null,
+      closureId: latestUserClose.id,
       suspenseTotal: s.suspenseTotal,
       suspenseCount: s.suspenseItems.length,
     });
@@ -1144,6 +1236,67 @@ const UserCloseBody = z.object({
 
 function calcDenominationTotal(d: { d500:number; d200:number; d100:number; d50:number; d20:number; d10:number; coins:number }): number {
   return d.d500 * 500 + d.d200 * 200 + d.d100 * 100 + d.d50 * 50 + d.d20 * 20 + d.d10 * 10 + d.coins;
+}
+
+async function sendDayCloseEmailSafe(
+  req: { log?: { warn?: (obj: unknown, msg: string) => void; info?: (obj: unknown, msg: string) => void } },
+  args: { row: typeof userDayClosuresTable.$inferSelect; printActivity: StaffPrintActivity },
+): Promise<{ emailSent: boolean; emailSkipReason?: string }> {
+  try {
+    const result = await notifyStaffDayCloseEmail(args);
+    if (result.sent) {
+      req.log?.info?.({ closureId: args.row.id, to: result.to }, "Staff day-close email sent");
+      return { emailSent: true };
+    }
+    req.log?.warn?.({ closureId: args.row.id, reason: result.reason }, "Staff day-close email skipped");
+    return { emailSent: false, emailSkipReason: result.reason };
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : "Email send failed";
+    req.log?.warn?.({ err, closureId: args.row.id }, "Staff day-close email failed (non-blocking)");
+    return { emailSent: false, emailSkipReason: reason };
+  }
+}
+
+async function notifyStaffDayCloseEmail(args: {
+  row: typeof userDayClosuresTable.$inferSelect;
+  printActivity: StaffPrintActivity;
+}): Promise<StaffDayCloseEmailResult> {
+  const [clinic] = await db.select({ name: clinicSettingsTable.name }).from(clinicSettingsTable).limit(1);
+  const denoms = args.row.denominations as {
+    d500: number; d200: number; d100: number;
+    d50: number; d20: number; d10: number; coins: number;
+  } | null;
+
+  return sendStaffDayCloseEmail({
+    clinicName: clinic?.name || "Care Diagnostics",
+    staffName: args.row.userName,
+    closureDate: String(args.row.closureDate),
+    closedAt: new Date(args.row.closedAt),
+    coveredFromTs: args.row.coveredFromTs ? new Date(args.row.coveredFromTs) : null,
+    coveredToTs: new Date(args.row.coveredToTs),
+    totalBilled: n(args.row.totalBilled),
+    totalDue: n(args.row.totalDue),
+    totalExpected: n(args.row.totalExpected),
+    totalActual: n(args.row.totalActual),
+    variance: n(args.row.variance),
+    expectedCash: n(args.row.expectedCash),
+    expectedUpi: n(args.row.expectedUpi),
+    expectedCard: n(args.row.expectedCard),
+    expectedCheque: n(args.row.expectedCheque),
+    expectedOther: n(args.row.expectedOther),
+    actualCash: n(args.row.actualCash),
+    actualUpi: n(args.row.actualUpi),
+    actualCard: n(args.row.actualCard),
+    actualCheque: n(args.row.actualCheque),
+    actualOther: n(args.row.actualOther),
+    denominations: denoms,
+    denominationTotal: args.row.denominationTotal != null ? n(args.row.denominationTotal) : null,
+    varianceNote: args.row.varianceNote || undefined,
+    notes: args.row.notes || undefined,
+    drawerStatus: args.row.drawerStatus,
+    closureId: args.row.id,
+    printActivity: args.printActivity,
+  });
 }
 
 // Close: record the current user's day close snapshot.
@@ -1239,12 +1392,16 @@ dayCloseRouter.post("/my-close", async (req, res) => {
       "User day closed with unrecognized-method payments excluded from totals — needs admin correction",
     );
   }
+  const email = await sendDayCloseEmailSafe(req, { row: inserted.row, printActivity: inserted.printActivity });
   res.status(201).json({
     ...inserted.row,
     suspenseTotal: inserted.suspenseTotal,
     suspenseCount: inserted.suspenseItems.length,
     suspenseItems: inserted.suspenseItems,
     printActivity: inserted.printActivity,
+    dueReceived: inserted.printActivity.dueReceived,
+    totalRefunds: inserted.printActivity.refundsAmount,
+    ...email,
   });
 });
 
@@ -1276,7 +1433,12 @@ dayCloseRouter.get("/my-closures/:id/print-summary", async (req, res) => {
   const from = row.coveredFromTs ? new Date(row.coveredFromTs) : null;
   const to = new Date(row.coveredToTs);
   const s = await summarizeUserWindow(row.userName, from, to);
-  res.json({ ...row, printActivity: s.printActivity });
+  res.json({
+    ...row,
+    printActivity: s.printActivity,
+    dueReceived: s.dueReceived,
+    totalRefunds: s.refundsAmount,
+  });
 });
 
 // ── Admin actions on individual staff drawers ────────────────────────────────
@@ -1403,7 +1565,13 @@ dayCloseRouter.get("/staff-close-detail/:id", requireOwnerOrAdmin, async (req, r
   const from = row.coveredFromTs ? new Date(row.coveredFromTs) : null;
   const to = new Date(row.coveredToTs);
   const windowSummary = await summarizeUserWindow(row.userName, from, to);
-  res.json({ ...row, bills: windowSummary.bills, printActivity: windowSummary.printActivity });
+  res.json({
+    ...row,
+    bills: windowSummary.bills,
+    printActivity: windowSummary.printActivity,
+    dueReceived: windowSummary.dueReceived,
+    totalRefunds: windowSummary.refundsAmount,
+  });
 });
 
 // ── Admin-initiated per-staff close (cash handover one by one) ──────────────
@@ -1427,6 +1595,9 @@ dayCloseRouter.get("/staff-preview/:userName", requireOwnerOrAdmin, async (req, 
     paymentsCount: s.totals.count,
     totalBilled: s.totalBilled,
     totalDue: s.totalDue,
+    dueReceived: s.dueReceived,
+    cancelledBillsAmount: s.cancelledBillsAmount,
+    refundsAmount: s.refundsAmount,
     cashExpenses: s.cashExpenses,
     suspenseTotal: s.suspenseTotal,
     suspenseCount: s.suspenseItems.length,
@@ -1627,6 +1798,7 @@ dayCloseRouter.post("/staff-close", requireOwnerOrAdmin, async (req, res) => {
     { closureId: inserted.row.id, userName, closedByAdmin: actor.adminName, variance: inserted.row.variance, drawerStatus: inserted.row.drawerStatus },
     "Staff day closed by admin (handover)",
   );
+  const email = await sendDayCloseEmailSafe(req, { row: inserted.row, printActivity: inserted.printActivity });
   res.status(201).json({
     ...inserted.row,
     bills: inserted.bills,
@@ -1634,6 +1806,9 @@ dayCloseRouter.post("/staff-close", requireOwnerOrAdmin, async (req, res) => {
     suspenseCount: inserted.suspenseItems.length,
     suspenseItems: inserted.suspenseItems,
     printActivity: inserted.printActivity,
+    dueReceived: inserted.printActivity.dueReceived,
+    totalRefunds: inserted.printActivity.refundsAmount,
+    ...email,
   });
 });
 
@@ -1696,6 +1871,8 @@ dayCloseRouter.post("/staff-close-all", requireOwnerOrAdmin, async (req, res) =>
     variance?: number;
     drawerStatus?: string;
     reason?: string;
+    emailSent?: boolean;
+    emailSkipReason?: string;
   }> = [];
 
   for (const userName of openNames) {
@@ -1715,6 +1892,7 @@ dayCloseRouter.post("/staff-close-all", requireOwnerOrAdmin, async (req, res) =>
         results.push({ userName, status: "skipped", reason: inserted.reason });
         continue;
       }
+      const email = await sendDayCloseEmailSafe(req, { row: inserted.row, printActivity: inserted.printActivity });
       results.push({
         userName,
         status: "closed",
@@ -1723,6 +1901,8 @@ dayCloseRouter.post("/staff-close-all", requireOwnerOrAdmin, async (req, res) =>
         totalActual: n(inserted.row.totalActual),
         variance: n(inserted.row.variance),
         drawerStatus: inserted.row.drawerStatus,
+        emailSent: email.emailSent,
+        emailSkipReason: email.emailSkipReason,
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unknown error";
@@ -1845,75 +2025,15 @@ dayCloseRouter.post("/staff-close/:id/reopen", requireSuperAdminStaff, async (re
  * the "Post-Closure Activity" callout shown to the staff member and admin.
  */
 async function postClosureActivity(userName: string) {
-  // Find the most recent ACTUAL close for this user (skip reopened rows).
-  const [latestClose] = await db
-    .select({
-      id:        userDayClosuresTable.id,
-      closedAt:  userDayClosuresTable.closedAt,
-      drawerStatus: userDayClosuresTable.drawerStatus,
-    })
-    .from(userDayClosuresTable)
-    .where(
-      and(
-        eq(userDayClosuresTable.userName, userName),
-        sql`${userDayClosuresTable.drawerStatus} != 'reopened'`
-      )
-    )
-    .orderBy(desc(userDayClosuresTable.closedAt))
-    .limit(1);
-
-  if (!latestClose) {
-    return { closedAt: null, bills: [], payments: [], billTotal: 0, paymentTotal: 0 };
-  }
-
-  const since = new Date(latestClose.closedAt);
-
-  const [bills, payments] = await Promise.all([
-    db
-      .select({
-        id:          billsTable.id,
-        billNumber:  billsTable.billNumber,
-        totalAmount: billsTable.totalAmount,
-        paidAmount:  billsTable.paidAmount,
-        status:      billsTable.status,
-        createdAt:   billsTable.createdAt,
-      })
-      .from(billsTable)
-      .where(and(
-        eq(billsTable.createdByName, userName),
-        gt(billsTable.createdAt, since),
-        sql`${billsTable.status} != 'cancelled'`,
-      ))
-      .orderBy(desc(billsTable.createdAt))
-      .limit(50),
-
-    db
-      .select({
-        id:        paymentsTable.id,
-        billId:    paymentsTable.billId,
-        amount:    paymentsTable.amount,
-        method:    paymentsTable.method,
-        createdAt: paymentsTable.createdAt,
-      })
-      .from(paymentsTable)
-      .where(and(
-        eq(paymentsTable.recordedByName, userName),
-        gt(paymentsTable.createdAt, since),
-      ))
-      .orderBy(desc(paymentsTable.createdAt))
-      .limit(100),
-  ]);
-
-  const billTotal    = bills.reduce((s, b) => s + n(b.totalAmount), 0);
-  const paymentTotal = payments.reduce((s, p) => s + n(p.amount), 0);
-
+  const result = await loadPostClosureActivity(userName);
   return {
-    closedAt:     latestClose.closedAt,
-    closureId:    latestClose.id,
-    bills:        bills.map((b) => ({ ...b, totalAmount: n(b.totalAmount), paidAmount: n(b.paidAmount) })),
-    payments:     payments.map((p) => ({ ...p, amount: n(p.amount) })),
-    billTotal,
-    paymentTotal,
+    closedAt: result.closedAt,
+    closureId: result.closureId,
+    drawerStatus: result.drawerStatus,
+    bills: result.bills,
+    payments: result.payments,
+    billTotal: result.billTotal,
+    paymentTotal: result.paymentTotal,
   };
 }
 

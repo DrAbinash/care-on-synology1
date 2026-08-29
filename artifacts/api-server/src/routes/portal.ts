@@ -24,6 +24,7 @@ import { eq, and, desc, gt, sql, count, or } from "drizzle-orm";
 import { sanitizePatient } from "./patients";
 import { requireStaffAuth, requireStaffPermission, normalizeRole, invalidateStaffAuthCache } from "../middleware/requireStaffAuth";
 import { auditFromRequest } from "../lib/audit";
+import { invalidateStaffSessionsForUser } from "../lib/invalidateStaffSessions";
 
 export const portalRouter = Router();
 
@@ -588,6 +589,11 @@ portalRouter.post("/staff-change-pin", async (req, res) => {
     .update(usersTable)
     .set({ pin: hashed, mustChangePin: false })
     .where(eq(usersTable.id, user.id));
+
+  // Credential change: revoke every other staff session so a previously
+  // stolen bearer token cannot outlive the PIN that authorized it. Keep the
+  // caller's current token so they are not bounced mid first-login flow.
+  await invalidateStaffSessionsForUser(user.id, { keepToken: token });
 
   // Audit the credential change. The PIN value itself is never logged — only
   // the fact that this user changed their own PIN, with IP/user-agent.

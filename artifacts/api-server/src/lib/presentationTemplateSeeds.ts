@@ -69,8 +69,8 @@ export const PRESENTATION_TEMPLATE_SEEDS: TemplateVersionRecord[] = [
     typography: {
       header: { fontFamily: SEGOE, fontSize: "18pt", color: "#1e1b4b", fontWeight: "700", letterSpacing: "0.04em" },
       patientBlock: { fontFamily: SEGOE, fontSize: "8.5pt" },
-      studyTitle: { fontFamily: SEGOE, fontSize: "12pt", color: "#1e3a8a", fontWeight: "700", letterSpacing: "0.08em", textTransform: "uppercase" },
-      sectionHeading: { fontFamily: SEGOE, fontSize: "9.5pt", fontWeight: "700", letterSpacing: "0.1em", textTransform: "uppercase" },
+      studyTitle: { fontFamily: SEGOE, fontSize: "12pt", color: "#1e3a8a", fontWeight: "700", textTransform: "uppercase" },
+      sectionHeading: { fontFamily: SEGOE, fontSize: "9.5pt", fontWeight: "700", textTransform: "uppercase" },
       body: { fontFamily: SEGOE, fontSize: "10pt", color: "#0f172a" },
       footer: { fontFamily: SEGOE, fontSize: "7.5pt", color: "#334155" },
       signature: { fontFamily: SEGOE, fontSize: "10pt" },

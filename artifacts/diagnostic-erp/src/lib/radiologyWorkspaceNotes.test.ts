@@ -29,11 +29,15 @@ describe("Radiology Reporting Workspace handwritten notes", () => {
     expect(strip).toContain('data-testid="reading-queue-modality"');
     expect(strip).toContain('data-testid="reading-queue-date"');
     expect(strip).toContain('data-testid="reading-queue-next"');
+    expect(strip).toContain('data-testid="reading-queue-sort"');
     expect(strip).toContain('data-testid="warm-mri-today-yesterday"');
+    expect(strip).toContain('value="yesterday"');
+    expect(strip).toContain('value="name-az"');
     expect(workspace).toContain('modalityFilter: queueModality');
     expect(workspace).toContain("onNextStudy={goNextStudy}");
     expect(workspace).toContain("onWarmMriTodayYesterday");
     expect(workspace).toContain('"today-yesterday"');
+    expect(workspace).toContain("sortMode={queueSort}");
   });
 
   it("reading queue cards show referring doctor", () => {
@@ -51,25 +55,33 @@ describe("Radiology Reporting Workspace handwritten notes", () => {
   it("referring doctor quick select exposes add box and pencil editor with catalog degrees", () => {
     expect(refDoc).toContain('data-testid="ref-doctor-add-box"');
     expect(refDoc).toContain('data-testid="ref-doctor-edit-degrees"');
+    expect(refDoc).toContain('data-testid="ref-doctor-current-with-degree"');
     expect(refDoc).toContain('placeholder="Add doctor…');
     expect(refDoc).toContain("formatDoctorWithDegree");
-    expect(workspace).toContain("formatDoctorWithDegree");
+    expect(refDoc).toContain("enrichReferringDoctorFromDoctors");
+    expect(workspace).toContain("doctorCatalogLabels");
+    expect(workspace).toContain("doctorsCatalog=");
+    expect(workspace).toContain("canonicalDemography.referringDoctor");
     expect(doctorsPage).toContain('register("degree")');
     expect(doctorsPage).toContain('regEdit("degree")');
   });
 
-  it("History section saves server chips via + Add Title pencil editor", () => {
+  it("History section saves server chips via + Add / Edit for the Study Tab", () => {
     const historyStrip = read("components/radiology/ClinicalHistoryChipStrip.tsx");
-    expect(historyStrip).toContain('data-testid="history-add-title"');
+    expect(historyStrip).toContain('data-testid="history-add-chip"');
+    expect(historyStrip).toContain('data-testid="history-edit-chips"');
     expect(historyStrip).toContain("/api/radiology/quick-select/clinical-history");
     expect(historyStrip).toContain('queryKey: ["radiology-quick-select"]');
+    expect(historyStrip).toContain("selectedStudyTabId");
     expect(workspace).toContain("ClinicalHistoryChipStrip");
     expect(workspace).toContain('onEditSection={focusReportField}');
   });
 
-  it("protocol has + Add Title like History chips", () => {
-    expect(workspace).toContain('data-testid="protocol-add-title"');
-    expect(workspace).toContain('data-testid="protocol-title-input"');
+  it("Section 1 is Study / Region + Report Format (not competing Protocol UI)", () => {
+    expect(workspace).toContain("StudyRegionReportFormatSection");
+    expect(workspace).toContain("onSelectRegion={studySetup.selectPrimaryRegion}");
+    expect(workspace).not.toContain('data-testid="protocol-add-title"');
+    expect(workspace).not.toContain("More regions…");
   });
 
   it("Quick Add has + and a body-region fallback", () => {

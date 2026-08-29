@@ -37,7 +37,7 @@ findings:
     parameters: []
     severity: null
     laterality: null
-    location_options: []
+    location: []
     measurements: []
     impression_fragment: "BI-RADS 1 — Negative. Routine screening as per age."
     recommendation_code: []
@@ -57,7 +57,7 @@ findings:
     parameters: []
     severity: sev.acr_density
     laterality: null
-    location_options: []
+    location: []
     measurements: []
     impression_fragment: null
     recommendation_code: []
@@ -75,7 +75,7 @@ findings:
     parameters: [param.mass_shape, param.margin]
     severity: null
     laterality: null
-    location_options: [loc.breast_locator]
+    location: [loc.breast_locator]
     measurements: [meas.mass_size_2d]
     impression_fragment: "Benign-appearing mass {location} — likely fibroadenoma."
     recommendation_code: [rec.usg_corr]
@@ -93,7 +93,7 @@ findings:
     parameters: [param.mass_shape, param.margin]
     severity: null
     laterality: null
-    location_options: [loc.breast_locator]
+    location: [loc.breast_locator]
     measurements: [meas.mass_size_2d]
     impression_fragment: "Suspicious mass {location} — see BI-RADS assessment."
     recommendation_code: [rec.biopsy]
@@ -112,7 +112,7 @@ findings:
     parameters: [param.calc_morphology]
     severity: null
     laterality: null
-    location_options: [loc.breast_locator]
+    location: [loc.breast_locator]
     measurements: []
     impression_fragment: "Typically benign calcifications."
     recommendation_code: []
@@ -130,7 +130,7 @@ findings:
     parameters: [param.calc_morphology, param.calc_distribution]
     severity: null
     laterality: null
-    location_options: [loc.breast_locator]
+    location: [loc.breast_locator]
     measurements: []
     impression_fragment: "Suspicious microcalcifications {location} — see BI-RADS assessment."
     recommendation_code: [rec.biopsy]
@@ -149,7 +149,7 @@ findings:
     parameters: [param.change]
     severity: null
     laterality: null
-    location_options: [loc.breast_locator]
+    location: [loc.breast_locator]
     measurements: []
     impression_fragment: "Asymmetry {location} — see BI-RADS assessment."
     recommendation_code: [rec.usg_corr]
@@ -167,7 +167,7 @@ findings:
     parameters: []
     severity: null
     laterality: null
-    location_options: [loc.breast_locator]
+    location: [loc.breast_locator]
     measurements: []
     impression_fragment: "Architectural distortion {location} — see BI-RADS assessment."
     recommendation_code: [rec.biopsy]
@@ -185,7 +185,7 @@ findings:
     parameters: []
     severity: null
     laterality: lat.rl
-    location_options: []
+    location: []
     measurements: []
     impression_fragment: "Associated skin/nipple change {laterality} — see BI-RADS assessment."
     recommendation_code: []
@@ -203,7 +203,7 @@ findings:
     parameters: []
     severity: null
     laterality: lat.rlb
-    location_options: []
+    location: []
     measurements: [meas.node_short_axis]
     impression_fragment: "{laterality} axillary lymphadenopathy — suspicious morphology."
     recommendation_code: []
@@ -221,7 +221,7 @@ findings:
     parameters: []
     severity: null
     laterality: null
-    location_options: [loc.breast_locator]
+    location: [loc.breast_locator]
     measurements: []
     impression_fragment: "Stable post-surgical changes."
     recommendation_code: []
@@ -239,7 +239,7 @@ findings:
     parameters: []
     severity: null
     laterality: null
-    location_options: [loc.breast_locator]
+    location: [loc.breast_locator]
     measurements: []
     impression_fragment: null
     recommendation_code: []
@@ -257,7 +257,7 @@ findings:
     parameters: []
     severity: sev.birads
     laterality: null
-    location_options: []
+    location: []
     measurements: []
     impression_fragment: "BI-RADS {severity} — {bound management line}."
     recommendation_code: []

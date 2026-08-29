@@ -58,15 +58,32 @@ function pick(...vals: Array<unknown>): string {
 }
 
 function firstNonEmptyAge(...vals: Array<unknown>): string {
+  // Try parsing each value through dicomAgeToDisplay (handles "045Y" → "45 Yrs" etc.)
+  for (const v of vals) {
+    const raw = String(v ?? "").trim();
+    if (!raw) continue;
+    const parsed = dicomAgeToDisplay(raw);
+    if (parsed) return parsed;
+  }
+  // Fallback: accept display ages ("34 Yrs", "6 Mo") and bare plausible year numbers
   for (const v of vals) {
     const s = String(v ?? "").trim();
-    // Reject bare "0" / "0 Yrs" so a blank ERP age field falls through to DICOM.
     if (!s || s === "0" || /^0\s*(yrs?|years?|mo|months?|d|days?)?$/i.test(s)) continue;
+    const display = s.match(/^(\d+)\s*(yrs?|years?|mo|months?|d|days?)$/i);
+    if (display) {
+      const n = Number(display[1]);
+      const unit = display[2].toLowerCase();
+      if (unit.startsWith("y")) {
+        if (!isPlausibleAgeYears(n)) continue;
+        return `${n} Yrs`;
+      }
+      if (unit.startsWith("m")) return `${n} Mo`;
+      return `${n} D`;
+    }
     const years = parseInt(s, 10);
-    // Sentinel DOB 1900-01-01 renders as ~126 Yrs in 2026 — never show that.
-    if (Number.isFinite(years) && /yrs?|years?/i.test(s) && !isPlausibleAgeYears(years)) continue;
-    if (Number.isFinite(years) && !/[a-z]/i.test(s) && !isPlausibleAgeYears(years) && years > 120) continue;
-    return s;
+    if (Number.isFinite(years) && !/[a-z]/i.test(s) && isPlausibleAgeYears(years)) {
+      return `${years} Yrs`;
+    }
   }
   return "";
 }
@@ -102,11 +119,29 @@ function titleCaseName(raw: string): string {
     .join(" ");
 }
 
+/** True for PACS/self-referral placeholders that must never print as REF. BY. */
+export function isJunkReferringDoctor(raw: string | null | undefined): boolean {
+  const s = String(raw ?? "")
+    .replace(/\^+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+  if (!s) return true;
+  // Strip leading Dr. for matching
+  const body = s.replace(/^dr\.?\s*/i, "").trim();
+  if (!body) return true;
+  if (/^(self|walk[\s-]*in|na|n\/a|none|-|—|–|\.)$/i.test(body)) return true;
+  // "SELF ONLINE", "SELF WB", "DR. SELF WB", "self referral", etc.
+  if (/^self(\s|$|[-_/])/i.test(body)) return true;
+  if (/\bself\b/.test(body) && /\b(online|wb|web|portal|app|referral)\b/.test(body)) return true;
+  return false;
+}
+
 /** "DR.SANJAY KUMAR MD" → "Dr. Sanjay Kumar, MD" */
 export function formatReferringDoctorDisplay(raw: string | null | undefined): string {
   const s = String(raw ?? "").replace(/\^+/g, " ").replace(/\s+/g, " ").trim();
   if (!s) return "";
-  if (/^(self|walk[\s-]*in|na|n\/a|none|-)$/i.test(s)) return s;
+  if (isJunkReferringDoctor(s)) return "";
 
   let body = s;
   let hadDr = false;
@@ -153,7 +188,8 @@ export function reconcileAccessionVsReferringDoctor(input: {
 }): { accessionNumber: string; referringDoctor: string } {
   const accession = String(input.accessionNumber ?? "").trim();
   let referring = String(input.referringDoctor ?? "").trim();
-  if (!referring && accessionLooksLikeReferringDoctor(accession)) {
+  if (isJunkReferringDoctor(referring)) referring = "";
+  if (!referring && accessionLooksLikeReferringDoctor(accession) && !isJunkReferringDoctor(accession)) {
     return { accessionNumber: "", referringDoctor: formatReferringDoctorDisplay(accession) };
   }
   if (referring) referring = formatReferringDoctorDisplay(referring);
@@ -167,21 +203,67 @@ function nameKey(raw: string): string {
   return raw.toLowerCase().replace(/^dr\.?\s*/i, "").replace(/[^a-z]/g, "");
 }
 
-/** If a unique doctor-catalog name matches, use it (usually includes degree). */
+/** Strip degree tokens so "Dr. Sanjay Kumar, MD" and "SANJAY KUMAR" share a key. */
+function stripDegreeTokens(raw: string): string {
+  return String(raw ?? "").replace(/\b(md|mbbs|ms|mch|m\.ch|dnb|dm|frcr|frcs|frcp|mrcp|dmrd|fcps)\b/gi, " ");
+}
+
+export type DoctorCatalogRow = { name: string; degree?: string | null };
+
+/** Build catalog labels from Settings → Doctors (name + degree column). */
+export function doctorCatalogLabels(
+  doctors: DoctorCatalogRow[] | null | undefined,
+): string[] {
+  if (!doctors?.length) return [];
+  return doctors
+    .map((d) => formatDoctorWithDegree(d.name, d.degree))
+    .filter((label) => label.length > 0);
+}
+
+/**
+ * If a unique Settings → Doctors row matches, return that label (includes degree).
+ * Prefer exact name-key match; only then allow unique prefix/contains matches.
+ * Ambiguous matches leave the current string unchanged.
+ */
 export function enrichReferringDoctorFromCatalog(
   current: string,
   catalogNames: string[] | null | undefined,
 ): string {
   const cur = String(current ?? "").trim();
   if (!cur || !catalogNames?.length) return cur;
-  const key = nameKey(cur.replace(DEGREE_RE, ""));
-  if (key.length < 6) return cur;
-  const hits = catalogNames.filter((n) => {
-    const k = nameKey(n.replace(DEGREE_RE, ""));
-    return k === key || k.includes(key) || key.includes(k);
-  });
-  if (hits.length !== 1) return cur;
-  return formatReferringDoctorDisplay(hits[0]!);
+  const key = nameKey(stripDegreeTokens(cur));
+  if (key.length < 3) return cur;
+
+  const scored = catalogNames
+    .map((n) => {
+      const label = String(n ?? "").trim();
+      if (!label) return null;
+      const k = nameKey(stripDegreeTokens(label));
+      if (!k) return null;
+      let score = 0;
+      if (k === key) score = 100;
+      else if (k.startsWith(key) || key.startsWith(k)) score = 50;
+      else if (k.includes(key) || key.includes(k)) score = 25;
+      return score > 0 ? { label, score } : null;
+    })
+    .filter((x): x is { label: string; score: number } => x != null);
+
+  const exact = scored.filter((x) => x.score === 100);
+  if (exact.length === 1) return formatReferringDoctorDisplay(exact[0]!.label);
+  if (exact.length > 1) return cur;
+
+  const strong = scored.filter((x) => x.score >= 50);
+  if (strong.length === 1) return formatReferringDoctorDisplay(strong[0]!.label);
+
+  return cur;
+}
+
+/** Enrich from structured doctors-master rows (Settings → Doctors). */
+export function enrichReferringDoctorFromDoctors(
+  current: string,
+  doctors: DoctorCatalogRow[] | null | undefined,
+): string {
+  return enrichReferringDoctorFromCatalog(current, doctorCatalogLabels(doctors));
 }
 
 /**
@@ -222,7 +304,11 @@ export function mergeReportDemography(input: {
     accessionNumber: pick(erp.accessionNumber, dicom.accessionNumber, dicomMeta.AccessionNumber),
     studyDescription: pick(erp.studyDescription, erp.testName, dicom.studyDescription, dicomMeta.StudyDescription),
     studyDate: pick(erp.studyDate, dicom.studyDate, dicomMeta.StudyDate),
-    referringDoctor: pick(erp.referringDoctor, dicom.referringDoctor, dicomMeta.ReferringPhysicianName),
+    referringDoctor: pick(
+      isJunkReferringDoctor(erp.referringDoctor as string) ? "" : erp.referringDoctor,
+      isJunkReferringDoctor(dicom.referringDoctor as string) ? "" : dicom.referringDoctor,
+      isJunkReferringDoctor(dicomMeta.ReferringPhysicianName as string) ? "" : dicomMeta.ReferringPhysicianName,
+    ),
     dateOfBirth: isSentinelDob(pick(erp.dateOfBirth, dicomMeta.PatientBirthDate))
       ? ""
       : pick(erp.dateOfBirth, dicomMeta.PatientBirthDate),
@@ -326,11 +412,11 @@ export function buildDemographyHeaderHtml(d: ReportDemography): string {
     ? esc(d.patientName).toUpperCase()
     : "—";
   const refLine = hasDemographyValue(d.referringDoctor)
-    ? `<span style="font-size:12px;">REF. BY: <strong>${esc(d.referringDoctor).toUpperCase()}</strong></span>`
+    ? `<span style="font-size:13px;">REF. BY: <strong>${esc(d.referringDoctor).toUpperCase()}</strong></span>`
     : "";
   const ageSex = formatDemographyAgeSexLine(d.age, d.sex);
   const ageSexLine = ageSex
-    ? `<strong style="font-size:13px;">${esc(ageSex)}</strong>`
+    ? `<strong style="font-size:15px;">${esc(ageSex)}</strong>`
     : "";
   const metaParts: string[] = [];
   if (hasDemographyValue(d.dateOfBirth)) {
@@ -343,17 +429,71 @@ export function buildDemographyHeaderHtml(d: ReportDemography): string {
     metaParts.push(`ACC: <strong>${esc(d.accessionNumber)}</strong>`);
   }
   const metaLine = metaParts.length
-    ? `<span style="font-size:12px;">${metaParts.join(" · ")}</span>`
+    ? `<span style="font-size:13px;">${metaParts.join(" · ")}</span>`
     : "";
   const leftSub = refLine ? `<br/>${refLine}` : "";
   const rightSub = metaLine ? `<br/>${metaLine}` : "";
   return `
-<table style="width:100%;border-collapse:collapse;margin:0 0 4px;font-size:13px;">
+<table style="width:100%;border-collapse:collapse;margin:0 0 6px;font-size:14px;">
   <tr>
-    <td style="text-align:left;vertical-align:top;padding:0;"><strong style="font-size:14px;">${name}</strong>${leftSub}</td>
+    <td style="text-align:left;vertical-align:top;padding:0;"><strong style="font-size:16px;">${name}</strong>${leftSub}</td>
     <td style="text-align:right;vertical-align:top;padding:0;white-space:nowrap;">${ageSexLine}${rightSub}</td>
   </tr>
 </table>`.trim();
+}
+
+/** CARE letter-pad demography table (NAME | AGE/SEX, REFD. BY | DATE). */
+export function buildLetterpadDemographyHtml(d: {
+  patientName?: string | null;
+  age?: string | null;
+  sex?: string | null;
+  referringDoctor?: string | null;
+  studyDate?: string | null;
+}): string {
+  const esc = escDemographyHtml;
+  const name = String(d.patientName ?? "").trim();
+  const ageSex = formatDemographyAgeSexLine(d.age, d.sex);
+  const ref = formatReferringDoctorDisplay(d.referringDoctor);
+  const dateStr = String(d.studyDate ?? "").trim();
+  const cell = (label: string, value: string, boldValue = false) =>
+    value
+      ? `<strong>${esc(label)}</strong> ${boldValue ? `<strong>${esc(value)}</strong>` : esc(value)}`
+      : "";
+  return `<table class="letterpad-demo">
+    <tr>
+      <td class="ld-left">${cell("NAME:", name.toUpperCase(), true)}</td>
+      <td class="ld-right">${cell("AGE/SEX:", ageSex.toUpperCase())}</td>
+    </tr>
+    <tr>
+      <td class="ld-left">${cell("REFD. BY:", ref.toUpperCase())}</td>
+      <td class="ld-right">${cell("DATE:", dateStr)}</td>
+    </tr>
+  </table>
+  <div class="letterpad-demo-rule"></div>`;
+}
+
+/**
+ * Replace server letterpad-demo block with client canonical demography so
+ * Print Preview / Print like final match PDF export (age + REF. BY).
+ */
+export function patchLetterpadDemographyHtml(
+  html: string,
+  d: {
+    patientName?: string | null;
+    age?: string | null;
+    sex?: string | null;
+    referringDoctor?: string | null;
+    studyDate?: string | null;
+  },
+): string {
+  if (!html?.includes("letterpad-demo")) return html;
+  const block = buildLetterpadDemographyHtml(d);
+  // Replace existing letterpad-demo table (+ optional rule) in one shot.
+  const replaced = html.replace(
+    /<table\b[^>]*\bletterpad-demo\b[^>]*>[\s\S]*?<\/table>\s*(?:<div class="letterpad-demo-rule"><\/div>)?/i,
+    block,
+  );
+  return replaced;
 }
 
 /** Resolve display age for a queue row + optional patient-master record. */
@@ -362,8 +502,9 @@ export function resolveDisplayAge(
   patientMaster: { dateOfBirth?: string | null; ageValue?: number | null; ageUnit?: string | null } | null | undefined,
   dicomAge?: string | null,
 ): string {
-  const fromErp = firstNonEmptyAge(erp?.age, erp?.patientAge);
-  if (fromErp) return fromErp;
+  // Patient master (registration) wins when present — worklist/DICOM ages are
+  // often stale or wrong (e.g. modality age tag), which showed as incorrect
+  // AGE/SEX in the reporting demography block.
   if (patientMaster) {
     const fromMaster = formatAgeForPrint({
       ...patientMaster,
@@ -371,5 +512,7 @@ export function resolveDisplayAge(
     });
     if (fromMaster) return fromMaster;
   }
+  const fromErp = firstNonEmptyAge(erp?.age, erp?.patientAge);
+  if (fromErp) return fromErp;
   return dicomAgeToDisplay(dicomAge);
 }

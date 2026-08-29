@@ -29,19 +29,22 @@ echo -e "${BOLD}============================================================${NC
 echo ""
 
 # ── Step 1: Pull latest code ─────────────────────────────────────────────────
-# Always deploy from feature/website-login-redirection, regardless of
-# whatever branch happens to already be checked out on this machine (a
-# leftover topic-branch checkout — e.g. from testing a PR before it merged —
-# used to silently "succeed" a plain `git pull` with nothing new to fetch,
-# permanently deploying stale code with no visible error).
-info "Pulling latest updates from GitHub..."
+# Always deploy from main. The old deploy branch
+# feature/website-login-redirection was deleted after the default branch moved
+# to main; leaving the script on that name made `git fetch` fail (set -e) or
+# reset to a stale local ref — so Synology kept serving old CARE while GitHub
+# main received weeks of radiology / billing merges with "nothing changed" in
+# the clinic. A leftover topic-branch checkout used to silently "succeed" a
+# plain `git pull` the same way; hard-reset to origin/main prevents that.
+DEPLOY_BRANCH="main"
+info "Pulling latest updates from GitHub (origin/${DEPLOY_BRANCH})..."
 CURRENT_BRANCH=$(git branch --show-current 2>/dev/null || echo "")
-if [ "$CURRENT_BRANCH" != "feature/website-login-redirection" ]; then
-  warn "On branch '${CURRENT_BRANCH:-detached HEAD}', not feature/website-login-redirection — switching."
+if [ "$CURRENT_BRANCH" != "$DEPLOY_BRANCH" ]; then
+  warn "On branch '${CURRENT_BRANCH:-detached HEAD}', not ${DEPLOY_BRANCH} — switching."
 fi
-git fetch origin feature/website-login-redirection
-git checkout feature/website-login-redirection 2>/dev/null || git checkout -B feature/website-login-redirection origin/feature/website-login-redirection
-git reset --hard origin/feature/website-login-redirection
+git fetch origin "$DEPLOY_BRANCH"
+git checkout "$DEPLOY_BRANCH" 2>/dev/null || git checkout -B "$DEPLOY_BRANCH" "origin/${DEPLOY_BRANCH}"
+git reset --hard "origin/${DEPLOY_BRANCH}"
 ok "Code updated: $(git log -1 --format='%h — %s')"
 
 # ── Step 2: Set version metadata ─────────────────────────────────────────────
@@ -89,6 +92,15 @@ else
   ensure_env_key "HOPE_CARE_INTEGRATION_FORCE" "1"
   ensure_env_key "HOPE_PARTNER_KEY" "intgk_8ffb1b9c5b982148cfbe89448064cc4986b172bea48fe73b0f622f4a192da7e7"
   ok ".env present (Hope integration keys ensured)"
+fi
+
+# ── Step 2c: Reject weak machine-to-machine secrets ───────────────────────────
+info "Checking guarded secrets in .env..."
+if command -v node >/dev/null 2>&1 && [ -f scripts/check-env-secrets.mjs ]; then
+  node scripts/check-env-secrets.mjs --file .env || fail "Weak INTERNAL_API_KEY / CRON_SECRET / WHATSAPP_AUTOMATION_SECRET in .env — run: bash scripts/rotate-internal-api-key.sh"
+  ok "Guarded secrets acceptable"
+else
+  warn "Skipping secret-strength check (node or scripts/check-env-secrets.mjs missing)"
 fi
 
 # ── Step 3: Build and start ───────────────────────────────────────────────────

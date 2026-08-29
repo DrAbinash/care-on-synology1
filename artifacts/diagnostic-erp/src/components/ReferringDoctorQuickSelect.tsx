@@ -1,5 +1,6 @@
 /**
  * One-tap referring-doctor chips for Radiology Reporting Workspace.
+ * Degrees come from Settings → Doctors (doctors.degree).
  */
 
 import { useMemo, useState } from "react";
@@ -7,7 +8,11 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
 import { useToast } from "@/hooks/use-toast";
 import { Plus, Search, X, Pencil } from "lucide-react";
-import { formatDoctorWithDegree } from "@/lib/reportDemography";
+import {
+  formatDoctorWithDegree,
+  enrichReferringDoctorFromDoctors,
+  type DoctorCatalogRow,
+} from "@/lib/reportDemography";
 
 type Doctor = { id: number; name: string; degree?: string | null };
 type Frequent = { name: string; count: number };
@@ -22,8 +27,9 @@ function matchKey(name: string): string {
     .trim();
 }
 
-function shortLabel(name: string): string {
-  return name.replace(/^dr\.?\s*/i, "").replace(/,\s*[A-Z.]+(?:\s*,\s*[A-Z.]+)*\s*$/i, "").trim() || name;
+/** Keep degree on chip labels — Settings → Doctors is the source of truth. */
+function chipLabel(name: string): string {
+  return name.replace(/^dr\.?\s*/i, "").trim() || name;
 }
 
 function catalogLabel(doc: Doctor): string {
@@ -33,17 +39,26 @@ function catalogLabel(doc: Doctor): string {
 function findCatalogDoctor(doctors: Doctor[], name: string): Doctor | undefined {
   const key = matchKey(name);
   if (!key) return undefined;
-  return doctors.find((d) => matchKey(catalogLabel(d)) === key || matchKey(d.name) === key);
+  const exact = doctors.filter((d) => matchKey(catalogLabel(d)) === key || matchKey(d.name) === key);
+  if (exact.length === 1) return exact[0];
+  if (exact.length > 1) return exact[0];
+  return doctors.find((d) => {
+    const k = matchKey(d.name);
+    return k === key || (key.length >= 3 && (k.includes(key) || key.includes(k)));
+  });
 }
 
 export default function ReferringDoctorQuickSelect({
   worklistId,
   currentName,
   disabled,
+  doctorsCatalog,
 }: {
   worklistId: number;
   currentName: string | null | undefined;
   disabled?: boolean;
+  /** Optional prefetched Settings → Doctors rows from the parent workspace. */
+  doctorsCatalog?: DoctorCatalogRow[];
 }) {
   const { toast } = useToast();
   const qc = useQueryClient();
@@ -60,17 +75,26 @@ export default function ReferringDoctorQuickSelect({
     staleTime: 5 * 60_000,
   });
 
-  const { data: doctors = [] } = useQuery<Doctor[]>({
+  const { data: doctorsFetched = [] } = useQuery<Doctor[]>({
     queryKey: ["doctors-list"],
     queryFn: () => api.get<{ doctors: Doctor[] }>("/api/doctors").then((d) => d.doctors ?? []),
     staleTime: 5 * 60_000,
   });
+
+  const doctors: Doctor[] = doctorsFetched.length
+    ? doctorsFetched
+    : (doctorsCatalog ?? []).map((d, i) => ({ id: -(i + 1), name: d.name, degree: d.degree }));
 
   const { data: frequent } = useQuery<{ doctors: Frequent[] }>({
     queryKey: ["frequent-referring-doctors"],
     queryFn: () => api.get("/api/radiology/frequent-referring-doctors?limit=12"),
     staleTime: 5 * 60_000,
   });
+
+  const displayCurrent = useMemo(
+    () => enrichReferringDoctorFromDoctors(currentName || "", doctors),
+    [currentName, doctors],
+  );
 
   const chips = useMemo(() => {
     const out: { name: string; source: "quick" | "frequent"; doctorId?: number }[] = [];
@@ -180,9 +204,9 @@ export default function ReferringDoctorQuickSelect({
     const trimmed = raw.trim();
     if (!trimmed) return;
     const match = findCatalogDoctor(doctors, trimmed);
-    const label = match ? catalogLabel(match) : trimmed;
+    const label = match ? catalogLabel(match) : enrichReferringDoctorFromDoctors(trimmed, doctors) || trimmed;
     setMut.mutate(label);
-    if (pinIfCatalog && match) pinQuickDoctor.mutate(match.id);
+    if (pinIfCatalog && match && match.id > 0) pinQuickDoctor.mutate(match.id);
   };
 
   const openEditor = (name: string) => {
@@ -196,26 +220,36 @@ export default function ReferringDoctorQuickSelect({
     const trimmed = editValue.trim();
     if (!trimmed) return;
     const match = findCatalogDoctor(doctors, editingName ?? trimmed);
-    if (match) {
+    if (match && match.id > 0) {
       const plainName = trimmed.replace(/,\s*[A-Z.]+(?:\s*,\s*[A-Z.]+)*\s*$/i, "").replace(/^dr\.?\s*/i, "").trim() || match.name;
       await updateDoctorMut.mutateAsync({ id: match.id, name: plainName, degree: editDegree });
       setMut.mutate(formatDoctorWithDegree(plainName, editDegree.trim() || null));
     } else {
-      setMut.mutate(trimmed);
+      setMut.mutate(enrichReferringDoctorFromDoctors(trimmed, doctors) || trimmed);
     }
     setEditingName(null);
   };
 
-  const currentKey = matchKey(currentName || "");
+  const currentKey = matchKey(displayCurrent || currentName || "");
   const busy = disabled || setMut.isPending;
 
   return (
     <div className="col-span-2 mt-0.5 space-y-1.5" data-testid="ref-doctor-quick-select">
+      {displayCurrent ? (
+        <div className="text-[11px] font-medium text-foreground" data-testid="ref-doctor-current-with-degree">
+          <span className="text-muted-foreground font-normal">Ref. by:</span>{" "}
+          <span className="uppercase">{displayCurrent}</span>
+        </div>
+      ) : (
+        <div className="text-[11px] text-muted-foreground" data-testid="ref-doctor-current-empty">
+          Ref. by: not set — pick a doctor (degree from Settings → Doctors)
+        </div>
+      )}
       <div className="flex flex-wrap gap-1 items-center">
         {chips.map((c) => {
           const selected = currentKey !== "" && matchKey(c.name) === currentKey;
           return (
-            <span key={`${c.source}:${c.name}`} className="inline-flex items-center max-w-[11rem]">
+            <span key={`${c.source}:${c.name}`} className="inline-flex items-center max-w-[14rem]">
               <button
                 type="button"
                 disabled={busy}
@@ -224,17 +258,17 @@ export default function ReferringDoctorQuickSelect({
                   if (!selected) setMut.mutate(c.name);
                 }}
                 className={[
-                  "max-w-[9.5rem] truncate rounded-l border px-1.5 py-0.5 text-[10px] font-medium transition-colors",
+                  "max-w-[12rem] truncate rounded-l border px-1.5 py-0.5 text-[10px] font-medium transition-colors",
                   selected ? "border-sky-600 bg-sky-600 text-white" : "border-sky-200 bg-sky-50 text-sky-900 hover:border-sky-400 hover:bg-sky-100",
                   busy ? "opacity-60" : "",
                 ].join(" ")}
               >
-                {shortLabel(c.name)}
+                {chipLabel(c.name)}
               </button>
               <button
                 type="button"
                 disabled={busy}
-                title="Edit name / degrees"
+                title="Edit name / degrees (Settings → Doctors)"
                 data-testid="ref-doctor-edit-degrees"
                 className={[
                   "rounded-r border border-l-0 px-1 py-0.5",
@@ -277,7 +311,7 @@ export default function ReferringDoctorQuickSelect({
           <Search size={10} />
           More
         </button>
-        {currentName ? (
+        {displayCurrent || currentName ? (
           <button type="button" disabled={busy} onClick={() => setMut.mutate("")} className="inline-flex items-center gap-0.5 px-1 py-0.5 text-[10px] text-muted-foreground hover:text-foreground">
             <X size={10} /> Clear
           </button>
@@ -288,7 +322,7 @@ export default function ReferringDoctorQuickSelect({
         <div className="rounded border bg-background p-1.5 shadow-sm space-y-1.5" data-testid="ref-doctor-edit-panel">
           <input className="h-7 w-full rounded border px-2 text-xs" value={editValue} onChange={(e) => setEditValue(e.target.value)} autoFocus />
           {findCatalogDoctor(doctors, editingName) ? (
-            <input className="h-7 w-full rounded border px-2 text-xs" placeholder="Degree (MD, MBBS, DNB…)" value={editDegree} onChange={(e) => setEditDegree(e.target.value)} />
+            <input className="h-7 w-full rounded border px-2 text-xs" placeholder="Degree (MD, MBBS, DNB…)" value={editDegree} onChange={(e) => setEditDegree(e.target.value)} data-testid="ref-doctor-degree-input" />
           ) : null}
           <div className="flex justify-end gap-1">
             <button type="button" className="text-[10px] px-1.5 py-0.5" onClick={() => setEditingName(null)}>Cancel</button>
@@ -310,7 +344,7 @@ export default function ReferringDoctorQuickSelect({
                   disabled={busy}
                   onClick={() => {
                     setMut.mutate(label);
-                    pinQuickDoctor.mutate(d.id);
+                    if (d.id > 0) pinQuickDoctor.mutate(d.id);
                     setSearchOpen(false);
                     setSearch("");
                   }}

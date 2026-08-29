@@ -1,6 +1,7 @@
 import { useEffect, useRef, useMemo, useState } from "react";
 import { useWorkspaceSelector, EMPTY_FIELD_PROVENANCE } from "@/lib/zai-workspace/store";
 import { runLintRules, type LintIssue } from "@/lib/zai-workspace/types";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import {
   formatProvenanceHover,
   provenanceMapToSegments,
@@ -26,6 +27,8 @@ interface Props {
    * instead of permanently occupying the editor's height.
    */
   hideQuickSelect?: boolean;
+  /** After a Quick Select tile is applied (e.g. silent draft persist). */
+  onQuickSelectPick?: (field: Props["field"]) => void;
 }
 
 const G: Record<string, string> = { error: "✕", warning: "△", info: "◌" };
@@ -71,6 +74,7 @@ export function FindingsEditor({
   minHeight = "200px",
   showGhost = false,
   hideQuickSelect = false,
+  onQuickSelectPick,
 }: Props) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const [provenanceOpen, setProvenanceOpen] = useState(false);
@@ -83,11 +87,12 @@ export function FindingsEditor({
   const setGhost = useWorkspaceSelector(s => s.setGhostText);
   const sid = useWorkspaceSelector(s => s.activeStudyId);
   const studies = useWorkspaceSelector(s => s.studies);
+  const valueDebounced = useDebouncedValue(value, 200);
   const issues: LintIssue[] = useMemo(() => {
-    if (!value) return [];
+    if (!valueDebounced) return [];
     const st = studies.find(s => s.id === sid);
-    return runLintRules(value, { modality: st?.modality ?? "XR", sex: st?.patient?.sex });
-  }, [value, sid, studies]);
+    return runLintRules(valueDebounced, { modality: st?.modality ?? "XR", sex: st?.patient?.sex });
+  }, [valueDebounced, sid, studies]);
 
   const segments = useMemo(
     () => provenanceMapToSegments(typeof value === "string" ? value : "", provenance),
@@ -139,7 +144,7 @@ export function FindingsEditor({
 
   return (
     <div className="relative w-full" data-report-field={field} data-testid={`findings-editor-${field}`}>
-      {!hideQuickSelect && <QuickSelectStrip field={field} />}
+      {!hideQuickSelect && <QuickSelectStrip field={field} onAfterPick={onQuickSelectPick} />}
       <div className="flex items-center justify-between mb-1.5">
         <label className="text-xs font-semibold uppercase tracking-wide text-emerald-600/80">{label}</label>
         <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
@@ -224,6 +229,7 @@ export function FindingsEditor({
             onKeyDown={hk}
             placeholder={placeholder ?? "Begin typing..."}
             spellCheck={false}
+            aria-label={label}
             className="w-full resize-none border-0 bg-transparent px-3 py-2.5 text-sm leading-[1.6] text-foreground outline-none placeholder:text-muted-foreground/50"
             style={{ minHeight }}
             data-testid={`canonical-${field}-editor`}

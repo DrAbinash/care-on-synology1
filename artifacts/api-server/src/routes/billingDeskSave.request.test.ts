@@ -118,31 +118,34 @@ describe.skipIf(!dbAvailable)("POST /api/billing/save — request level", () => 
     expect(res.status).toBe(401);
   });
 
-  test("a non-admin desk role may bill a package/VIP line below catalogue price", async () => {
-    // The price-override guard used to require admin for ANY price != catalogue,
-    // which 403'd normal reception staff on package splits.
+  test("non-admin may undercharge a line at or below catalogue ceiling", async () => {
+    // Desk policy: package/VIP splits often land below catalogue; non-admins
+    // may bill the requested amount when it is ≤ the VIP/catalog ceiling.
+    const under = fx.testPrice / 2;
     const res = await request(app)
       .post("/api/billing/save")
       .set("Authorization", `Bearer ${fx.token}`)
       .send(
         savePayload(randomUUID(), {
-          tests: [{ testId: fx.testId, price: fx.testPrice / 2 }],
-          payments: [{ amount: fx.testPrice / 2, method: "cash" }],
+          tests: [{ testId: fx.testId, price: under }],
+          payments: [{ amount: under, method: "cash" }],
         }),
       );
 
     expect(res.status).toBe(201);
-    expect(Number(res.body.totalAmount)).toBeCloseTo(fx.testPrice / 2, 2);
+    expect(Number(res.body.totalAmount)).toBeCloseTo(under, 2);
   });
 
-  test("still rejects a non-admin markup above the catalogue ceiling", async () => {
+  test("non-admin markup above catalogue ceiling is rejected with 403", async () => {
+    // Markup above catalogue/VIP ceiling is a permission denial (PRICE_CEILING),
+    // not a silent clamp to catalogue.
     const res = await request(app)
       .post("/api/billing/save")
       .set("Authorization", `Bearer ${fx.token}`)
       .send(
         savePayload(randomUUID(), {
           tests: [{ testId: fx.testId, price: fx.testPrice * 5 }],
-          payments: [],
+          payments: [{ amount: fx.testPrice, method: "cash" }],
         }),
       );
 

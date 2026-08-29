@@ -52,4 +52,16 @@ describe("structured_json envelope (A4 cache + format values)", () => {
     expect(extractA4Cache(col)).toBeNull();
     expect(extractCareStructuredFormat(col)).toEqual(FORMAT);
   });
+
+  it("preserves observation ledger on the envelope without dropping A4 cache", () => {
+    const ledger = { kind: "care.observation_ledger.v1", version: 1, patches: [] };
+    const col = composeStructuredJsonColumn({
+      existing: CACHE,
+      formatState: FORMAT,
+      observationLedger: ledger,
+    });
+    expect(extractA4Cache(col)).toEqual(CACHE);
+    expect(extractCareStructuredFormat(col)).toEqual(FORMAT);
+    expect((col as { careObservationLedger?: unknown }).careObservationLedger).toEqual(ledger);
+  });
 });

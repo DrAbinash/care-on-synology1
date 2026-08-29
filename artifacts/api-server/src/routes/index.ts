@@ -1,4 +1,5 @@
 import { Router, type IRouter } from "express";
+import { normalizeQuickSelectIdsJson } from "../lib/quickSelectSlots";
 import healthRouter from "./health";
 import systemRouter from "./system";
 import { patientsRouter } from "./patients";
@@ -93,6 +94,7 @@ import { verifyRouter } from "./verify";
 import internalCronRouter from "./internal-cron";
 import internalAutomationsWhatsappRouter from "./internal-automations-whatsapp";
 import internalRadiologyRouter from "./internal-radiology";
+import internalReportingStudioRouter from "./internal-reporting-studio";
 import dicomAgentRouter from "./dicom-agent";
 import { publicBookingRouter } from "./public-booking";
 import { mobileConfigRouter } from "./mobileConfig";
@@ -119,6 +121,8 @@ import { measurementRegistryRouter } from "./measurementRegistry";
 import { pathologyRegistryRouter } from "./pathologyRegistry";
 import radiologyQuickFindingsRouter from "./radiologyQuickFindings";
 import radiologyCatalogRouter from "./radiologyCatalog";
+import radiologyContentPackTilesRouter from "./radiologyContentPackTiles";
+import radiologyWhisperProxyRouter from "./radiologyWhisperProxy";
 import { db, clinicSettingsTable, ledgersTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { backupLimiter, exportLimiter, adminMutationLimiter, standardUploadLimiter, loginLimiter, generalLimiter, n8nAutomationLimiter } from "../middleware/rateLimits";
@@ -131,6 +135,7 @@ import { uploadsRouter } from "./uploads";
 import { scansRouter } from "./scans";
 import { radiologyReportGeneratorRouter } from "./radiology-report-generator";
 import { radiologyReportAttachmentsRouter } from "./radiology-report-attachments";
+import electronicFilmRouter, { electronicFilmPublicRouter } from "./electronic-film";
 import { radiologyFindingLibraryRouter } from "./radiology-finding-library";
 import { structuredReportTemplatesRouter } from "./structuredReportTemplates";
 import { floorsRouter, roomsRouter, modalitiesRouter } from "./locations";
@@ -150,6 +155,8 @@ import { radiologyBrainIntelligenceRouter } from "./radiologyBrainIntelligence";
 import { radiologyTumorFollowupRouter } from "./radiologyTumorFollowup";
 import { radiologyAnnotationsRouter } from "./radiologyAnnotations";
 import { radiologyOllamaRouter } from "./radiologyOllama";
+import { voiceReportComposerRouter } from "./voiceReportComposer";
+import { reportComposerRouter } from "./reportComposer";
 import { aiPipelineHealthRouter } from "./aiPipelineHealth";
 import { radiologySnippetsRouter } from "./radiologySnippets";
 import { radiologyReportFormatsRouter } from "./radiologyReportFormats";
@@ -281,6 +288,9 @@ router.use("/internal/automations/whatsapp", n8nAutomationLimiter, internalAutom
 // Called by Conquest PACS scripts and other server-to-server automations.
 // Internal backup download — streams pg_dump output for off-site replication.
 router.use("/internal/backup", internalBackupRouter);
+// CARE Reporting Studio bridge — must mount BEFORE /internal catch-all
+// (internalRadiologyRouter applies requireStaffOrInternalAuth to every path).
+router.use("/internal/reporting-studio", internalReportingStudioRouter);
 router.use("/internal", internalRadiologyRouter); // [ZONE: radiology] name is generic, content is 100% radiology (DICOM agent callbacks)
 router.use("/portal", portalRouter);
 router.use("/display", displayRouter);
@@ -604,7 +614,7 @@ router.get("/clinic-settings/branding", async (_req, res) => {
       logoDataUrl: null, footerNote: "", billPrintCopies: 1, billDefaultPaperSize: "A5",
       billPrintSettingsJson: "{}",
       billShowCode: false, billShowCategory: false, qrOnBillEnabled: true, showTatOnBill: false,
-      dayCloseAutoPrint: true, quickTestIds: "[null,null,null,null,null,null]", formFTestIds: "[]",
+      dayCloseAutoPrint: true, quickTestIds: "[null,null,null,null,null,null,null,null,null,null,null,null]", formFTestIds: "[]",
       formFBillingPrompt: false, formFAddressRequired: true, formFGuardianRequired: true,
       patientPhoneRequired: true,
     });
@@ -634,7 +644,8 @@ router.get("/clinic-settings/branding", async (_req, res) => {
     qrOnBillEnabled: row.qrOnBillEnabled ?? true,
     showTatOnBill: row.showTatOnBill ?? false,
     dayCloseAutoPrint: row.dayCloseAutoPrint ?? true,
-    quickTestIds: row.quickTestIds ?? "[null,null,null,null,null,null]",
+    quickTestIds: normalizeQuickSelectIdsJson(row.quickTestIds),
+    quickDoctorIds: normalizeQuickSelectIdsJson(row.quickDoctorIds),
     formFTestIds: row.formFTestIds ?? "[]",
     formFBillingPrompt: row.formFBillingPrompt ?? false,
     formFAddressRequired: row.formFAddressRequired ?? true,
@@ -870,6 +881,15 @@ router.use(
   radiologyReportAttachmentsRouter,
 );
 
+router.use("/electronic-film/public", electronicFilmPublicRouter);
+
+router.use(
+  "/electronic-film",
+  requireStaffAuth,
+  requireStaffPermission("/radiology"),
+  electronicFilmRouter,
+);
+
 // Editable findings library (Report Builder) — add/modify/delete abnormal
 // findings per modality + organ; seeded once from the mined house catalogue.
 router.use(
@@ -907,6 +927,23 @@ router.use(
   requireStaffAuth,
   requireStaffPermission("/radiology"),
   radiologyCatalogRouter,
+);
+
+// Radiology Content Pack Tiles — serves YAML content-pack findings as QuickSelectTiles
+// to the reporting workspace. NOT gated behind ff_radiology_catalog — reads seed YAML.
+router.use(
+  "/radiology/content-pack-tiles",
+  requireStaffAuth,
+  requireStaffPermission("/radiology"),
+  radiologyContentPackTilesRouter,
+);
+
+// Radiology Whisper Proxy — local STT for air-gapped deployments
+router.use(
+  "/radiology/whisper",
+  requireStaffAuth,
+  requireStaffPermission("/radiology"),
+  radiologyWhisperProxyRouter,
 );
 
 // Radiology Snippets — Quick Add, Smart Format, Favorites, Macros
@@ -1000,6 +1037,8 @@ router.use("/radiology-tumor", requireStaffAuth, radiologyTumorFollowupRouter);
 // Phase 10C: AI Research Platform — Annotations, Ollama local models
 router.use("/radiology-annotations", requireStaffAuth, radiologyAnnotationsRouter);
 router.use("/radiology-ollama", requireStaffAuth, radiologyOllamaRouter);
+router.use("/radiology/voice-report-composer", requireStaffAuth, voiceReportComposerRouter);
+router.use("/radiology/report-composer", requireStaffAuth, reportComposerRouter);
 
 // AI endpoints — each sub-route applies its own requireStaffPermission matching
 // the data domain it accesses (patients PHI, billing records, or radiology

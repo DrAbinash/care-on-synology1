@@ -6,7 +6,8 @@ import { FULL_ACCESS_ROLES, requireAdminRole } from "../middleware/requireStaffA
 import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { getTransporter, getEmailSettings } from "../email";
 import { classifyPaymentMethod, isPhysicalCash, isDigitalSettlement } from "../lib/paymentMethodClassifier";
-import { computeRefundsOnCancelledBillsCreatedInPeriod, computeCollectibleForReconciliation } from "../lib/dailySummaryCollectible";
+import { expenseDrawerOwnerEquals, expenseDrawerOwnerSql } from "../lib/expenseCashAttribution";
+import { computeRefundsOnBillsCancelledByMe, computeCollectibleForReconciliation } from "../lib/dailySummaryCollectible";
 import { buildStaffActivityRows, BILL_AUDIT_OPERATIONAL_CHANGE_TYPES } from "../lib/staffActivityAttribution";
 import { buildBillingVsPacsSummary } from "../lib/pacs/billingVsPacsSummary";
 import {
@@ -131,8 +132,14 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
       createdByName: billsTable.createdByName,
       cancelledByName: billsTable.cancelledByName,
       cancelledAt: billsTable.cancelledAt,
+      patientFirstName: patientsTable.firstName,
+      patientLastName: patientsTable.lastName,
+      referringDoctor: doctorsTable.name,
     })
     .from(billsTable)
+    .leftJoin(patientsTable, eq(billsTable.patientId, patientsTable.id))
+    .leftJoin(ordersTable, eq(billsTable.orderId, ordersTable.id))
+    .leftJoin(doctorsTable, eq(ordersTable.doctorId, doctorsTable.id))
     .where(and(
       gte(billsTable.cancelledAt, start),
       lt(billsTable.cancelledAt, end),
@@ -144,15 +151,22 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
     .select({
       id: paymentsTable.id,
       billId: paymentsTable.billId,
+      billNumber: billsTable.billNumber,
       amount: paymentsTable.amount,
       method: paymentsTable.method,
       recordedByName: paymentsTable.recordedByName,
       createdAt: paymentsTable.createdAt,
       billCreatedAt: billsTable.createdAt,
       billStatus: billsTable.status,
+      patientFirstName: patientsTable.firstName,
+      patientLastName: patientsTable.lastName,
+      referringDoctor: doctorsTable.name,
     })
     .from(paymentsTable)
     .innerJoin(billsTable, eq(paymentsTable.billId, billsTable.id))
+    .leftJoin(patientsTable, eq(billsTable.patientId, patientsTable.id))
+    .leftJoin(ordersTable, eq(billsTable.orderId, ordersTable.id))
+    .leftJoin(doctorsTable, eq(ordersTable.doctorId, doctorsTable.id))
     .where(and(
       gte(paymentsTable.createdAt, start),
       lt(paymentsTable.createdAt, end),
@@ -316,7 +330,29 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
       COALESCE(SUM(amount::numeric) FILTER (WHERE LOWER(payment_mode) <> 'cash'), 0)::text AS digital_expenses
     FROM expenses
     WHERE created_at >= ${start.toISOString()} AND created_at < ${end.toISOString()}
-    ${staffName !== null ? sql`AND approved_by = ${staffName}` : sql``}
+    ${staffName !== null ? expenseDrawerOwnerEquals(staffName) : sql``}
+  `);
+
+  // Line items for Cash Expenses expand (same window / approved_by filter as cash_expenses).
+  const cashExpenseRows = await db.execute<{
+    expense_id: string;
+    category: string;
+    description: string;
+    amount: string;
+    payment_mode: string;
+    paid_to: string | null;
+    approved_by: string | null;
+    created_by: string | null;
+    created_at: string;
+  }>(sql`
+    SELECT expense_id, category, description, amount::text AS amount, payment_mode, paid_to,
+           approved_by, created_by, created_at::text AS created_at
+    FROM expenses
+    WHERE created_at >= ${start.toISOString()} AND created_at < ${end.toISOString()}
+      AND LOWER(payment_mode) = 'cash'
+      ${staffName !== null ? expenseDrawerOwnerEquals(staffName) : sql``}
+    ORDER BY created_at DESC
+    LIMIT 200
   `);
 
   // ── Compute summary ─────────────────────────────────────────────────────
@@ -434,15 +470,16 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
     .filter((p) => p.billStatus !== "cancelled")
     .reduce((s, p) => s + Math.abs(Number(p.amount)), 0);
   const refundsWithoutCancellationCount = refundItems.filter((p) => p.billStatus !== "cancelled").length;
-  // Refunds on bills created in this period that are now cancelled — already
-  // removed from collectible via cancelledOnMyBills; exclude from refund
-  // deduction so same-day cancel+refund does not double-subtract.
-  const refundsOnCancelledBillsCreatedInPeriod = computeRefundsOnCancelledBillsCreatedInPeriod(
+  // Refunds this staff recorded on bills they cancelled — already removed from
+  // collectible via cancelledAmount; exclude so cancel+refund does not double-subtract.
+  const cancelledByMeIds = cancelledByMe.map((r) => r.id);
+  const refundsOnBillsCancelledByMe = computeRefundsOnBillsCancelledByMe(
     knownRefundItems,
-    start,
-    end,
+    cancelledByMeIds,
   );
-  // Bills CANCELLED BY this staff (informational — accountability of canceller)
+  // Alias kept for older clients; semantics now follow canceller, not creator.
+  const refundsOnCancelledBillsCreatedInPeriod = refundsOnBillsCancelledByMe;
+  // Bills CANCELLED BY this staff (accountability of canceller)
   const cancelledAmount = cancelledByMe.reduce((s, r) => s + Number(r.totalAmount), 0);
   // FIXED: cashCollection now subtracts cash refunds (was previously gross cash in)
   const cashCollection = cashIn - cashRefunded;
@@ -512,15 +549,16 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
     const digitalExpPerPerson: Record<string, number> = {};
     const expRows = await db.execute<ExpRow>(sql`
       SELECT
-        approved_by,
+        ${expenseDrawerOwnerSql()} AS approved_by,
         COALESCE(SUM(amount::numeric) FILTER (WHERE LOWER(payment_mode) = 'cash'), 0)::text AS cash,
         COALESCE(SUM(amount::numeric) FILTER (WHERE LOWER(payment_mode) <> 'cash'), 0)::text AS digital
       FROM expenses
       WHERE created_at >= ${start.toISOString()} AND created_at < ${end.toISOString()}
-        AND approved_by IS NOT NULL
-      GROUP BY approved_by
+        AND ${expenseDrawerOwnerSql()} IS NOT NULL
+      GROUP BY ${expenseDrawerOwnerSql()}
     `);
     for (const r of expRows.rows) {
+      if (!r.approved_by) continue;
       cashExpPerPerson[r.approved_by] = Number(r.cash);
       digitalExpPerPerson[r.approved_by] = Number(r.digital);
     }
@@ -624,13 +662,14 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
       refundsWithoutCancellationAmount,
       refundsWithoutCancellationCount,
       refundsOnCancelledBillsCreatedInPeriod,
+      refundsOnBillsCancelledByMe,
       collectible: computeCollectibleForReconciliation({
         grossBilledIncludingCancelled,
         duesCollectedTotal,
-        cancelledOnMyBills,
+        cancelledAmount,
         cashRefunded,
         digitalRefunded,
-        refundsOnCancelledBillsCreatedInPeriod,
+        refundsOnBillsCancelledByMe,
         outstanding,
       }),
       cancelledAmount,
@@ -742,6 +781,11 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
       billNumber: r.billNumber,
       totalAmount: Number(r.totalAmount),
       originalCreator: r.createdByName ?? "Unknown",
+      cancelledByName: r.cancelledByName ?? null,
+      patientName: r.patientFirstName
+        ? `${r.patientFirstName} ${r.patientLastName ?? ""}`.trim()
+        : "Unknown",
+      referringDoctor: r.referringDoctor ?? null,
       cancelledAt:
         r.cancelledAt instanceof Date ? r.cancelledAt.toISOString() : String(r.cancelledAt ?? ""),
     })),
@@ -794,16 +838,33 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
       createdAt:
         r.createdAt instanceof Date ? r.createdAt.toISOString() : String(r.createdAt),
     })),
-    refunds: refundItems.slice(0, 50).map((p) => ({
+    refunds: refundItems.slice(0, 100).map((p) => ({
       id: p.id,
       billId: p.billId,
+      billNumber: p.billNumber ?? `#${p.billId}`,
       amount: Number(p.amount),
       method: formatMethod(p.method),
       recordedBy: p.recordedByName ?? null,
+      patientName: p.patientFirstName
+        ? `${p.patientFirstName} ${p.patientLastName ?? ""}`.trim()
+        : "Unknown",
+      referringDoctor: p.referringDoctor ?? null,
+      billStatus: p.billStatus ?? null,
       createdAt:
         p.createdAt instanceof Date ? p.createdAt.toISOString() : String(p.createdAt),
       billCreatedAt:
         p.billCreatedAt instanceof Date ? p.billCreatedAt.toISOString() : String(p.billCreatedAt),
+    })),
+    cashExpenseItems: cashExpenseRows.rows.map((r) => ({
+      expenseId: r.expense_id,
+      category: r.category,
+      description: r.description,
+      amount: Number(r.amount),
+      paymentMode: r.payment_mode,
+      paidTo: r.paid_to ?? null,
+      approvedBy: (r.approved_by || r.created_by || null),
+      createdBy: r.created_by ?? null,
+      createdAt: r.created_at,
     })),
   });
 });
@@ -1018,7 +1079,7 @@ myDailySummaryRouter.get("/drilldown", async (req: StaffAuthRequest, res) => {
     }
 
     case "totalExpenses": {
-      const expenseFilter = staffName !== null ? sql`AND approved_by = ${staffName}` : sql``;
+      const expenseFilter = staffName !== null ? expenseDrawerOwnerEquals(staffName) : sql``;
       const expenseRows = await db.execute<{
         expense_id: string; category: string; description: string;
         amount: string; payment_mode: string; paid_to: string | null; created_at: string;
@@ -1050,6 +1111,7 @@ myDailySummaryRouter.get("/drilldown", async (req: StaffAuthRequest, res) => {
         .select({
           amount: paymentsTable.amount,
           method: paymentsTable.method,
+          billId: paymentsTable.billId,
           billStatus: billsTable.status,
           billCreatedAt: billsTable.createdAt,
         })
@@ -1068,7 +1130,7 @@ myDailySummaryRouter.get("/drilldown", async (req: StaffAuthRequest, res) => {
         .reduce((s, p) => s + Number(p.amount), 0);
       const digitalRefunded = cashPayments.filter((p) => Number(p.amount) < 0 && classifyPaymentMethod(p.method).isKnown && isDigitalSettlement(p.method))
         .reduce((s, p) => s + Math.abs(Number(p.amount)), 0);
-      const expFilter = staffName !== null ? sql`AND approved_by = ${staffName}` : sql``;
+      const expFilter = staffName !== null ? expenseDrawerOwnerEquals(staffName) : sql``;
       const expRows = await db.execute<{ cash_expenses: string; digital_expenses: string }>(sql`
         SELECT
           COALESCE(SUM(amount::numeric) FILTER (WHERE LOWER(payment_mode) = 'cash'), 0)::text AS cash_expenses,
@@ -1080,8 +1142,16 @@ myDailySummaryRouter.get("/drilldown", async (req: StaffAuthRequest, res) => {
       const cashExpenses = Number(expRows.rows[0]?.cash_expenses ?? 0);
       const digitalExpenses = Number(expRows.rows[0]?.digital_expenses ?? 0);
       const billsIncl = billsInRange.reduce((s, r) => s + Number(r.totalAmount), 0);
-      const cancelledOnBills = billsInRange.filter((r) => r.status === "cancelled").reduce((s, r) => s + Number(r.totalAmount), 0);
       const outstandingBills = billsInRange.filter((r) => r.status !== "cancelled").reduce((s, r) => s + Number(r.balanceAmount ?? 0), 0);
+      const cancelledInWindow = await db
+        .select({ id: billsTable.id, totalAmount: billsTable.totalAmount })
+        .from(billsTable)
+        .where(and(
+          gte(billsTable.cancelledAt, start),
+          lt(billsTable.cancelledAt, end),
+          ...(staffName !== null ? [eq(billsTable.cancelledByName, staffName)] : []),
+        ));
+      const cancelledByStaff = cancelledInWindow.reduce((s, r) => s + Number(r.totalAmount), 0);
 
       if (type === "expectedPhysicalCash") {
         result = {
@@ -1112,29 +1182,28 @@ myDailySummaryRouter.get("/drilldown", async (req: StaffAuthRequest, res) => {
             ...(staffName !== null ? [eq(paymentsTable.recordedByName, staffName)] : []),
           ));
         const duesCollectedTotal = duesPaymentRowsForCollectible.reduce((s, r) => s + Number(r.paymentAmount), 0);
-        const refundsOnCancelledBillsCreatedInPeriod = computeRefundsOnCancelledBillsCreatedInPeriod(
-          cashPayments.map((p) => ({ amount: p.amount, billStatus: p.billStatus, billCreatedAt: p.billCreatedAt })),
-          start,
-          end,
+        const refundsOnBillsCancelledByMe = computeRefundsOnBillsCancelledByMe(
+          cashPayments.map((p) => ({ amount: p.amount, billId: p.billId, billStatus: p.billStatus, billCreatedAt: p.billCreatedAt })),
+          cancelledInWindow.map((r) => r.id),
         );
         const collectibleAmount = computeCollectibleForReconciliation({
           grossBilledIncludingCancelled: billsIncl,
           duesCollectedTotal,
-          cancelledOnMyBills: cancelledOnBills,
+          cancelledAmount: cancelledByStaff,
           cashRefunded,
           digitalRefunded,
-          refundsOnCancelledBillsCreatedInPeriod,
+          refundsOnBillsCancelledByMe,
           outstanding: outstandingBills,
         });
-        const refundsForCollectible = Math.max(0, cashRefunded + digitalRefunded - refundsOnCancelledBillsCreatedInPeriod);
+        const refundsForCollectible = Math.max(0, cashRefunded + digitalRefunded - refundsOnBillsCancelledByMe);
         result = {
           label: "Collectible Amount — Breakdown",
           columns: ["Component", "Amount"],
           rows: [
             ["Total Bills Generated (incl. cancelled)", billsIncl],
             ["+ Old Dues Collected", duesCollectedTotal],
-            ["− Cancelled Bills", -cancelledOnBills],
-            ["− Refunds (excl. same-period cancel+refund)", -refundsForCollectible],
+            ["− Cancelled Bills (by this staff)", -cancelledByStaff],
+            ["− Refunds (excl. refunds on bills this staff cancelled)", -refundsForCollectible],
             ["− Outstanding / Dues", -outstandingBills],
             ["= Collectible Amount", collectibleAmount],
           ],

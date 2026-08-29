@@ -139,6 +139,7 @@ const REVIEWED_NOT_PERSONAL: Array<{ file: string; localPath: string; reason: st
   { file: "risMonitoring.ts", localPath: "/audit-export", reason: "admin-only (requireAdmin) shared audit-log export, response scoped only by from/to/user/studyId query params, not caller identity; subjectId appears only in a fire-and-forget audit-log write issued AFTER res.send(csv) has already sent the response" },
   { file: "patient-reports.ts", localPath: "/:id/print", reason: "report-scoped HTML identical for every staff caller (router-level requireStaffAuth gates access); subjectId appears only as the actor identity in the D8 requested-vs-delivered delivery audit record — the response never varies by caller" },
   { file: "patient-reports.ts", localPath: "/:id/pdf", reason: "same as /:id/print — report-scoped HTML; subjectId only feeds the D8 delivery audit record, never the response body" },
+  { file: "radiology-report-generator.ts", localPath: "/drafts/:id/print-preview", reason: "draft-scoped preview HTML shared across staff viewing the draft; subjectId only reads the caller's letterpad-header preference (pre-printed paper chrome) and does not scope clinical content" },
 ];
 
 function loadServiceWorkerSandbox(): Record<string, any> {

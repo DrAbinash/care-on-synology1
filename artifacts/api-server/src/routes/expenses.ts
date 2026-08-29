@@ -138,12 +138,18 @@ router.post("/", async (req, res) => {
   // actors in bills.ts. This is what the approval-separation check below
   // compares approvedBy against.
   const createdBy = (req as StaffAuthRequest).staffSession?.subjectName?.trim() || null;
+  const approvedByInput = typeof approvedBy === "string" ? approvedBy.trim() || null : null;
+  const allowSelf = await isSelfApprovalAllowed();
 
-  if (approvedBy && !(await isSelfApprovalAllowed()) && sameActor(approvedBy, createdBy)) {
+  if (approvedByInput && !allowSelf && sameActor(approvedByInput, createdBy)) {
     return res.status(400).json({
       error: "Self-approval is currently disabled. This expense must be approved by someone other than its creator.",
     });
   }
+
+  // Default drawer owner = session creator when Approved By was left blank
+  // (and self-approval is allowed). Read paths also COALESCE to created_by.
+  const resolvedApprovedBy = approvedByInput ?? (allowSelf && createdBy ? createdBy : null);
 
   // Optional scanned receipt image (data URL). Read directly from the body —
   // it's not part of the generated CreateExpenseBody schema (which strips it),
@@ -166,7 +172,7 @@ router.post("/", async (req, res) => {
       expenseDate,
       paymentMode: paymentMode || "cash",
       paidTo: paidTo ?? null,
-      approvedBy: approvedBy ?? null,
+      approvedBy: resolvedApprovedBy,
       createdBy,
       notes: notes ?? null,
       receiptImageUrl,
@@ -180,7 +186,7 @@ router.post("/", async (req, res) => {
     paymentMode: paymentMode || "cash",
     category,
     description,
-    performedBy: approvedBy ?? null,
+    performedBy: resolvedApprovedBy ?? createdBy ?? null,
   }).catch(() => {/* already logged inside */});
 
   return res.status(201).json(toNum(expense as unknown as Record<string, unknown>));

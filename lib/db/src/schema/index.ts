@@ -163,6 +163,7 @@ export * from "./aiExecution";
 export * from "./aiModelCapabilities";
 export * from "./aiEvaluation";
 export * from "./aiClinicalConfig";
+export * from "./aiReportComposer";
 export * from "./aiInterop";
 export * from "./operationalHealthRuns";
 // ── HOPE → CARE diagnostic referral integration (additive; see
@@ -174,6 +175,7 @@ export * from "./serviceCatalogueMappings";
 export * from "./diagnosticReferrals";
 export * from "./integrationOutbox";
 export * from "./externalResultLinks";
+export * from "./electronicFilmArtifacts";
 // ── ABDM / ABHA national health stack integration (additive scaffold) ────────
 export * from "./abdm";
 // ── PCPNDT self-referral OPD auto-prescriptions ─────────────────────────────

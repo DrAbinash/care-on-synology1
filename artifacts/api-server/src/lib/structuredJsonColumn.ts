@@ -23,6 +23,7 @@ export type StructuredJsonEnvelope = {
   kind: typeof STRUCTURED_JSON_ENVELOPE_KIND;
   a4Cache: unknown[] | null;
   careStructuredFormat: CareStructuredFormatState | null;
+  careObservationLedger?: unknown;
 };
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -54,6 +55,13 @@ export function extractCareStructuredFormat(column: unknown): CareStructuredForm
   return null;
 }
 
+export function extractCareObservationLedger(column: unknown): unknown {
+  if (!isRecord(column)) return null;
+  if (isStructuredJsonEnvelope(column)) return column.careObservationLedger ?? null;
+  if (column.careObservationLedger) return column.careObservationLedger;
+  return null;
+}
+
 /**
  * Compose the column value. `undefined` means "keep whatever was in existing".
  * When there is no format state, returns the legacy A4 shape (array | null)
@@ -63,13 +71,19 @@ export function composeStructuredJsonColumn(opts: {
   existing: unknown;
   a4Cache?: unknown[] | null;
   formatState?: CareStructuredFormatState | null;
+  observationLedger?: unknown;
 }): unknown {
   const a4 = opts.a4Cache !== undefined ? opts.a4Cache : extractA4Cache(opts.existing);
   const format = opts.formatState !== undefined ? opts.formatState : extractCareStructuredFormat(opts.existing);
-  if (!format) return a4 ?? null;
-  return {
+  const ledger = opts.observationLedger !== undefined
+    ? opts.observationLedger
+    : extractCareObservationLedger(opts.existing);
+  if (!format && !ledger) return a4 ?? null;
+  const env: StructuredJsonEnvelope = {
     kind: STRUCTURED_JSON_ENVELOPE_KIND,
     a4Cache: a4 ?? null,
     careStructuredFormat: format,
-  } satisfies StructuredJsonEnvelope;
+  };
+  if (ledger) env.careObservationLedger = ledger;
+  return env;
 }

@@ -46,6 +46,7 @@ let radiologyJobConsumerStarted = false;
 let overnightAiTickInFlight = false;
 let overnightAiInterval: ReturnType<typeof setInterval> | null = null;
 let otherRadiologyJobsStarted = false;
+let aiReportComposeConsumerStarted = false;
 // Track already-fired events per day to avoid double-firing
 const firedToday = new Set<string>();
 
@@ -70,6 +71,7 @@ export function startCronScheduler() {
   scheduleFeedbackInvites();
   scheduleOpsAnomalyScan();
   startRadiologyJobConsumer();
+  startAiReportComposeJobConsumer();
   startOtherRadiologyJobConsumer();
   scheduleAuditChainVerify();
   scheduleQueueDisplayAlerts();
@@ -197,6 +199,47 @@ export function startRadiologyJobConsumer(): void {
   });
   scheduleAiSchedulerModes();
   console.log("[cron] overnight AI consumer registered (8s first poll, then every 60s; independent of ENABLE_SCHEDULERS)");
+}
+
+/**
+ * Background text report composition — MUST run even when ENABLE_SCHEDULERS is
+ * unset (same class of bootstrap gap as overnight AI). Drains ai_report_compose
+ * only; never shares the overnight vision lane.
+ */
+export function startAiReportComposeJobConsumer(): void {
+  if (aiReportComposeConsumerStarted) return;
+  aiReportComposeConsumerStarted = true;
+  const run = () => {
+    void fireAiReportComposeTick().catch((err) => {
+      console.error("[cron] ai report compose tick failed:", err);
+    });
+  };
+  setTimeout(run, 10_000).unref?.();
+  cron.schedule("* * * * *", async () => {
+    try {
+      await fireAiReportComposeTick();
+    } catch (err) {
+      console.error("[cron] ai report compose cron tick failed:", err);
+    }
+  });
+  console.log("[cron] ai report compose consumer registered (independent of ENABLE_SCHEDULERS)");
+}
+
+async function fireAiReportComposeTick(): Promise<void> {
+  const { AI_REPORT_COMPOSE_JOB } = await import("./lib/reportComposer/jobService");
+  const handler = RADIOLOGY_JOB_HANDLERS[AI_REPORT_COMPOSE_JOB];
+  if (!handler) {
+    console.error("[cron] ai_report_compose handler missing from RADIOLOGY_JOB_HANDLERS");
+    return;
+  }
+  await runRadiologyJobTick(
+    { [AI_REPORT_COMPOSE_JOB]: handler },
+    {
+      maxJobs: 2,
+      concurrencyByType: { [AI_REPORT_COMPOSE_JOB]: 1 },
+      workerId: `ai-report-compose-${process.pid}`,
+    },
+  );
 }
 
 /** Non-AI dicom_retry_queue types (restore-verify, redelivery, PACS). ENABLE_SCHEDULERS only. */
@@ -340,14 +383,18 @@ export async function fireOvernightAiTick(opts: {
 
 async function fireOtherRadiologyJobTick(): Promise<void> {
   const { AI_SHADOW_PIPELINE_JOB } = await import("./lib/ai/shadowPipeline");
+  const { AI_REPORT_COMPOSE_JOB } = await import("./lib/reportComposer/jobService");
   const others: typeof RADIOLOGY_JOB_HANDLERS = {};
   for (const [k, h] of Object.entries(RADIOLOGY_JOB_HANDLERS)) {
-    if (k !== AI_SHADOW_PIPELINE_JOB) others[k] = h;
+    // Overnight vision + text compose have dedicated always-on consumers.
+    if (k !== AI_SHADOW_PIPELINE_JOB && k !== AI_REPORT_COMPOSE_JOB) others[k] = h;
   }
   const peak = isClinicPeakHours();
   await runRadiologyJobTick(others, {
-    maxJobs: peak ? 1 : 3,
-    concurrencyByType: peak ? { [PACS_REARCHIVE_JOB]: 0 } : {},
+    maxJobs: peak ? 2 : 4,
+    concurrencyByType: {
+      ...(peak ? { [PACS_REARCHIVE_JOB]: 0 } : {}),
+    },
     workerId: `radiology-other-${process.pid}`,
   });
 }

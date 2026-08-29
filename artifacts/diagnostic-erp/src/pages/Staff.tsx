@@ -109,8 +109,8 @@ function EmployeesTab() {
         <Button onClick={() => setCreateOpen(true)}><Plus size={14} className="mr-1.5" />Add Staff</Button>
       </div>
 
-      <div className="rounded-lg border bg-card overflow-hidden">
-        <table className="w-full text-sm">
+      <div className="rounded-lg border bg-card min-w-0 max-w-full overflow-x-auto overscroll-x-contain touch-pan-x">
+        <table className="w-full text-sm min-w-[40rem]">
           <thead className="bg-muted/40 text-xs uppercase tracking-wide text-muted-foreground">
             <tr>
               <th className="text-left px-3 py-2.5">Code</th>
@@ -342,8 +342,8 @@ function AdvancesPanel({ staffId }: { staffId: number }) {
         </div>
       </div>
 
-      <div className="rounded-lg border max-h-64 overflow-auto">
-        <table className="w-full text-sm">
+      <div className="rounded-lg border max-h-64 min-w-0 overflow-auto overscroll-contain touch-pan-x">
+        <table className="w-full text-sm min-w-[32rem]">
           <thead className="bg-muted/40 text-xs uppercase text-muted-foreground"><tr>
             <th className="px-2 py-2 text-left">Date</th><th className="text-right px-2">Amount</th><th className="text-right px-2">Recovered</th><th className="px-2">Status</th><th className="px-2 text-left">Reason</th><th></th>
           </tr></thead>
@@ -442,8 +442,8 @@ function SalaryPanel({ staff }: { staff: Staff }) {
         </div>
       </div>
 
-      <div className="rounded-lg border max-h-56 overflow-auto">
-        <table className="w-full text-sm">
+      <div className="rounded-lg border max-h-56 min-w-0 max-w-full overflow-x-auto overflow-y-auto overscroll-x-contain touch-pan-x">
+        <table className="w-full text-sm min-w-[36rem]">
           <thead className="bg-muted/40 text-xs uppercase text-muted-foreground"><tr>
             <th className="px-2 py-2 text-left">Month</th><th className="px-2 text-right">Base</th><th className="px-2 text-right">Bonus</th><th className="px-2 text-right">Ded.</th><th className="px-2 text-right">Adv.</th><th className="px-2 text-right">Net</th><th className="px-2">Date</th>
           </tr></thead>
@@ -533,6 +533,7 @@ function BiometricPanel({ staff }: { staff: Staff }) {
         </Button>
       </div>
       <div className="rounded-lg border">
+        <div className="w-full max-w-full min-w-0 overflow-x-auto overscroll-x-contain touch-pan-x">
         <table className="w-full text-sm">
           <thead className="bg-muted/40 text-xs uppercase text-muted-foreground"><tr>
             <th className="px-2 py-2 text-left">Device</th><th className="px-2 text-left">Enrolled</th><th className="px-2 text-left">Last Used</th><th></th>
@@ -549,6 +550,7 @@ function BiometricPanel({ staff }: { staff: Staff }) {
             ))}
           </tbody>
         </table>
+        </div>
       </div>
     </div>
   );
@@ -607,8 +609,8 @@ function AttendanceTab() {
         <Label className="text-xs">From</Label><Input className="w-[160px]" type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
         <Label className="text-xs">To</Label><Input className="w-[160px]" type="date" value={to} onChange={(e) => setTo(e.target.value)} />
       </div>
-      <div className="rounded-lg border bg-card overflow-hidden">
-        <table className="w-full text-sm">
+      <div className="rounded-lg border bg-card min-w-0 max-w-full overflow-x-auto overscroll-x-contain touch-pan-x">
+        <table className="w-full text-sm min-w-[40rem]">
           <thead className="bg-muted/40 text-xs uppercase text-muted-foreground"><tr>
             <th className="px-3 py-2 text-left">Date</th><th className="px-3 text-left">Staff</th><th className="px-3 text-left">Role</th>
             <th className="px-3 text-left">Punch In</th><th className="px-3 text-left">Punch Out</th><th className="px-3 text-left">Source</th>

@@ -1,4 +1,4 @@
-import { mergeTechnique } from "@/lib/reportFieldMerge";
+import { mergeTwoFormatsBySlot } from "@/lib/formatSlotMerge";
 
 export type Modality = "XR" | "CT" | "MR" | "US" | "MG" | "DX" | "NM" | "PT" | "DOPPLER" | "ECHO" | "USG_OB";
 export type StudyStatus = "received" | "in_progress" | "draft" | "prelim" | "final" | "amended";
@@ -8,14 +8,120 @@ export type Criticality = "normal" | "mild" | "moderate" | "severe" | "critical"
 export interface Patient { id: string; name: string; age: number; sex: "M" | "F" | "O"; uhid: string; phone?: string; referringDoctor: string; }
 export interface Study { id: string; accession: string; studyInstanceUID: string; patient: Patient; modality: Modality; bodyPart: string; studyDescription: string; clinicalHistory: string; status: StudyStatus; priority: Priority; receivedAt: string; lockedBy?: string; lockExpiresAt?: string; priorCount: number; criticalFlag: boolean; aiDraftReady: boolean; tatMinutes: number; slaMinutes: number; series: number; images: number; }
 export interface LintIssue { line: number; column: number; severity: "error" | "warning" | "info"; code: string; message: string; ruleId: string; fix?: string; }
+
+// ── Per-study AI rules from content packs ────────────────────────────────────
+// These are loaded from the YAML content packs and fed to runLintRules so the
+// gutter marks (◌ △ ✕) fire per-study rules like "PNS/orbits not commented"
+// or "acute infarct stated without diffusion descriptor" instead of just the
+// 4 generic hardcoded rules.
+
+export interface StudyCompletenessRule {
+  id: string;
+  glyph: "circle"; // ◌ — non-blocking nudge
+  rule: string;    // plain-English description (e.g. "PNS/orbits not commented")
+  message: string; // what to show in the gutter tooltip
+  /** Optional: only fire if this keyword is ABSENT from the text */
+  requiresAbsent?: string[];
+  /** Optional: only fire if this keyword IS present in the text */
+  requiresPresent?: string[];
+}
+
+export interface StudyContradictionRule {
+  id: string;
+  severity: "block" | "warn"; // ✕ block or △ warn
+  glyph: "X" | "triangle";
+  rule: string;
+  message: string;
+  /** Optional: fire if these keywords are ALL present */
+  requiresAll?: string[];
+  /** Optional: fire if any of these keywords are present */
+  requiresAny?: string[];
+  /** Optional: fire if ALL of these are absent */
+  requiresAbsent?: string[];
+}
+
+export interface StudyAiRules {
+  studyId: string;
+  completenessRules: StudyCompletenessRule[];
+  contradictionRules: StudyContradictionRule[];
+}
+
+// Cache of per-study rules loaded from the content-pack tiles API
+let studyRulesCache: Map<string, StudyAiRules> | null = null;
+
+/**
+ * Fetch per-study AI rules from the content-pack tiles endpoint.
+ * The rules are carried on each PackTile as completenessRules / contradictionRules.
+ * Cached for 5 minutes.
+ */
+export async function fetchStudyAiRules(modality?: string, bodyPart?: string): Promise<StudyAiRules[]> {
+  if (studyRulesCache && studyRulesCache.size > 0) return Array.from(studyRulesCache.values());
+  try {
+    const qs = new URLSearchParams();
+    if (modality) qs.set("modality", modality);
+    const res = await fetch(`/api/radiology/content-pack-tiles?${qs}`, { credentials: "include" });
+    if (!res.ok) return [];
+    const data = await res.json();
+    const rules: StudyAiRules[] = [];
+    const byPack = new Map<string, { completeness: StudyCompletenessRule[]; contradiction: StudyContradictionRule[] }>();
+    for (const tile of data.tiles || []) {
+      // The tile carries completenessRules/contradictionRules from the YAML finding
+      if (tile.completenessRules?.length || tile.contradictionRules?.length) {
+        const packId = tile.packId || "default";
+        if (!byPack.has(packId)) byPack.set(packId, { completeness: [], contradiction: [] });
+        const entry = byPack.get(packId)!;
+        if (tile.completenessRules) entry.completeness.push(...tile.completenessRules);
+        if (tile.contradictionRules) entry.contradiction.push(...tile.contradictionRules);
+      }
+    }
+    for (const [packId, { completeness, contradiction }] of byPack) {
+      rules.push({
+        studyId: packId,
+        completenessRules: completeness,
+        contradictionRules: contradiction,
+      });
+    }
+    studyRulesCache = new Map(rules.map(r => [r.studyId, r]));
+    return rules;
+  } catch {
+    return [];
+  }
+}
 export interface CopilotItem { id: string; kind: "critical" | "contradiction" | "suggestion" | "missing" | "measurement" | "recommendation" | "differential" | "ai-draft"; title: string; detail: string; insertText?: string; confidence: "low" | "medium" | "high"; band?: "routine" | "worth-a-look" | "attention"; source: string; }
 export interface PriorStudy { id: string; date: string; modality: Modality; description: string; impression: string; compatibilityScore: number; }
 export interface MeasurementRow { id: string; name: string; value: number; unit: string; priorValue?: number; delta?: number; source: "viewer" | "manual" | "ai"; inserted: boolean; }
 export interface CriticalFinding { id: string; studyId: string; phrase: string; severity: Criticality; detectedAt: string; acknowledgedBy?: string; acknowledgedAt?: string; notifiedRecipient?: string; notifiedMethod?: "phone" | "whatsapp" | "in-person" | "email"; }
 
 export type QuickSelectField = "clinicalHistory" | "technique" | "findings" | "impression" | "recommendation";
-export interface QuickSelectTile { id: string; field: QuickSelectField; scopeModality?: Modality; scopeBodyPart?: string; label: string; mnemonic?: string; category: "normal" | "abnormal" | "variant" | "critical"; sentence: string; impressionSentence?: string; favorite?: boolean; custom?: boolean; usageCount?: number; createdAt: string; updatedAt: string; anatomicalSection?: string; conflictGroup?: string; baselineReplaces?: string; }
-export interface ReportFormat { id: string; name: string; modality: Modality; bodyPart: string; diagnosisTags: string[]; clinicalHistory: string; technique: string; findings: string; impression: string; recommendation: string; isCommon: boolean; custom?: boolean; usageCount?: number; createdAt: string; updatedAt: string; }
+export interface QuickSelectTile { id: string; field: QuickSelectField; scopeModality?: Modality; scopeBodyPart?: string; label: string; mnemonic?: string; category: "normal" | "abnormal" | "variant" | "critical"; sentence: string; impressionSentence?: string; favorite?: boolean; custom?: boolean; usageCount?: number; createdAt: string; updatedAt: string; anatomicalSection?: string; conflictGroup?: string; baselineReplaces?: string; properties?: string; }
+export interface ReportFormat {
+  id: string;
+  name: string;
+  modality: Modality;
+  bodyPart: string;
+  diagnosisTags: string[];
+  clinicalHistory: string;
+  technique: string;
+  findings: string;
+  impression: string;
+  recommendation: string;
+  /** Printed heading below demography (not the library display name). */
+  reportTitle?: string;
+  /** Optional protocol / sub-technique scope (e.g. Screening, Plain, Contrast). */
+  protocolScope?: string;
+  /**
+   * Technique fragment merge markers. Untagged formats fall back to regex
+   * screening re-attachment. Tagged sentences union by dedupeKey; preserve
+   * flagged fragments always survive.
+   */
+  techniqueFragments?: Array<{ text: string; dedupeKey: string; preserve?: boolean }>;
+  isCommon: boolean;
+  custom?: boolean;
+  favorite?: boolean;
+  usageCount?: number;
+  createdAt: string;
+  updatedAt: string;
+}
 export interface SnippetMacro { id: string; trigger: string; label: string; template: string; variables: { name: string; label: string; default?: string; options?: string[] }[]; scopeModality?: Modality; scopeBodyPart?: string; custom?: boolean; createdAt: string; updatedAt: string; }
 export interface SignOffProfile { id: string; modality: Modality; signerName: string; signerCredentials: string; isDefault?: boolean; signatureId?: string; createdAt: string; }
 
@@ -47,9 +153,16 @@ export const CRITICAL_PATTERNS: { pattern: RegExp; phrase: string; severity: Cri
   { pattern: /acute hydrocephalus/i, phrase: "Acute hydrocephalus", severity: "critical" },
 ];
 
-// Lint rules — pure, runnable on every keystroke
-export function runLintRules(text: string, ctx: { modality: Modality; sex: "M" | "F" | "O" | undefined }): LintIssue[] {
+// Lint rules — pure. Callers should debounce or defer the input text
+// (see useDebouncedValue in findings editor / reporting workspace).
+// Now accepts optional per-study rules from the YAML content packs.
+export function runLintRules(
+  text: string,
+  ctx: { modality: Modality; sex: "M" | "F" | "O" | undefined },
+  studyRules?: StudyAiRules[],
+): LintIssue[] {
   const issues: LintIssue[] = [];
+  const fullText = text;
   text.split("\n").forEach((line, idx) => {
     const ln = idx + 1;
     if (ctx.sex === "M" && /\b(uterus|ovary|cervix|endometrium)\b/i.test(line)) issues.push({ line:ln, column:0, severity:"error", code:"SEX_MISMATCH", message:"Female organ mentioned for male patient", ruleId:"laterality.sex-organ", fix:"Verify patient sex" });
@@ -58,6 +171,118 @@ export function runLintRules(text: string, ctx: { modality: Modality; sex: "M" |
     if (/___/.test(line)) { const col = line.indexOf("___"); issues.push({ line:ln, column:col, severity:"warning", code:"UNFILLED_PLACEHOLDER", message:"Measurement placeholder not filled", ruleId:"completeness.placeholder" }); }
     for (const { pattern, phrase } of CRITICAL_PATTERNS) { const m = pattern.exec(line); if (m) { const before = line.slice(Math.max(0,m.index-30), m.index); if (!/no |without |absence of |no evidence of /i.test(before)) { issues.push({ line:ln, column:m.index, severity:"error", code:"CRITICAL_FINDING", message:`Critical finding: ${phrase}`, ruleId:"critical.write-time" }); break; } } }
   });
+
+  // ── Per-study content-pack rules ──────────────────────────────────────────
+  // These fire against the FULL text (not per-line) because completeness rules
+  // like "PNS/orbits not commented" need to check the entire findings section.
+  if (studyRules && studyRules.length > 0) {
+    for (const study of studyRules) {
+      // Completeness rules (◌ — non-blocking nudge, severity "info")
+      for (const rule of study.completenessRules) {
+        const textLower = fullText.toLowerCase();
+        let shouldFire = true;
+        // requiresAbsent: fire only if these keywords are ABSENT
+        if (rule.requiresAbsent) {
+          for (const kw of rule.requiresAbsent) {
+            if (textLower.includes(kw.toLowerCase())) { shouldFire = false; break; }
+          }
+        }
+        // requiresPresent: fire only if these keywords ARE present
+        if (shouldFire && rule.requiresPresent) {
+          for (const kw of rule.requiresPresent) {
+            if (!textLower.includes(kw.toLowerCase())) { shouldFire = false; break; }
+          }
+        }
+        if (shouldFire) {
+          // Parse the plain-English rule for simple keyword-based heuristics
+          // e.g. "PNS/orbits not commented" → fire if "pns" not in text AND "orbit" not in text
+          const ruleText = (rule.rule || "").toLowerCase();
+          if (ruleText.includes("not commented") || ruleText.includes("not mentioned")) {
+            // Extract the subject — e.g. "pns/orbits" from "PNS/orbits not commented"
+            const subjectMatch = ruleText.match(/^([a-z\/\s]+?)\s+not\s+(commented|mentioned)/);
+            if (subjectMatch) {
+              const subjects = subjectMatch[1].split(/[\/\s]+/).filter(s => s.length > 2);
+              const anyPresent = subjects.some(s => textLower.includes(s));
+              if (!anyPresent && fullText.trim().length > 50) {
+                issues.push({
+                  line: 1, column: 0, severity: "info",
+                  code: "STUDY_COMPLETENESS",
+                  message: rule.message,
+                  ruleId: rule.id,
+                  fix: rule.message,
+                });
+              }
+            }
+          }
+        }
+      }
+
+      // Contradiction rules (✕ block or △ warn)
+      for (const rule of study.contradictionRules) {
+        const textLower = fullText.toLowerCase();
+        let shouldFire = true;
+        if (rule.requiresAll) {
+          for (const kw of rule.requiresAll) {
+            if (!textLower.includes(kw.toLowerCase())) { shouldFire = false; break; }
+          }
+        }
+        if (shouldFire && rule.requiresAny) {
+          shouldFire = rule.requiresAny.some(kw => textLower.includes(kw.toLowerCase()));
+        }
+        if (shouldFire && rule.requiresAbsent) {
+          for (const kw of rule.requiresAbsent) {
+            if (textLower.includes(kw.toLowerCase())) { shouldFire = false; break; }
+          }
+        }
+        if (shouldFire) {
+          // Parse the plain-English rule for common contradiction patterns
+          const ruleText = (rule.rule || "").toLowerCase();
+          // "acute infarct" without DWI/ADC descriptor
+          if (ruleText.includes("without dwi") && textLower.includes("acute infarct")) {
+            if (!textLower.includes("dwi") && !textLower.includes("diffusion") && !textLower.includes("adc")) {
+              issues.push({
+                line: 1, column: 0,
+                severity: rule.severity === "block" ? "error" : "warning",
+                code: "STUDY_CONTRADICTION",
+                message: rule.message,
+                ruleId: rule.id,
+              });
+            }
+          }
+          // "any abnormal finding present AND normal-study impression used"
+          if (ruleText.includes("normal-study impression") || ruleText.includes("normal impression")) {
+            const hasAbnormal = /abnormal|hemorrhage|infarct|tumor|mass|lesion|fracture|edema|hydrocephalus/i.test(fullText);
+            const hasNormalImpression = /no acute|normal study|no abnormality|no evidence of/i.test(fullText);
+            if (hasAbnormal && hasNormalImpression) {
+              issues.push({
+                line: 1, column: 0,
+                severity: rule.severity === "block" ? "error" : "warning",
+                code: "STUDY_CONTRADICTION",
+                message: rule.message,
+                ruleId: rule.id,
+              });
+            }
+          }
+          // "laterality != impression laterality" — check if findings say right but impression says left
+          if (ruleText.includes("laterality") || ruleText.includes("side differs")) {
+            const findingsRight = /\bright\b/i.test(fullText) && !/no |without |absence of /i.test(fullText.slice(0, fullText.toLowerCase().indexOf("right")));
+            const findingsLeft = /\bleft\b/i.test(fullText) && !/no |without |absence of /i.test(fullText.slice(0, fullText.toLowerCase().indexOf("left")));
+            const impressionRight = /\bright\b/i.test(fullText);
+            const impressionLeft = /\bleft\b/i.test(fullText);
+            if ((findingsRight && impressionLeft && !impressionRight) || (findingsLeft && impressionRight && !impressionLeft)) {
+              issues.push({
+                line: 1, column: 0,
+                severity: rule.severity === "block" ? "error" : "warning",
+                code: "STUDY_CONTRADICTION",
+                message: rule.message,
+                ruleId: rule.id,
+              });
+            }
+          }
+        }
+      }
+    }
+  }
   return issues;
 }
 
@@ -92,37 +317,9 @@ export function computeQualityScore(ctx: { findingsText: string; impressionText:
 // Merge algorithm
 export interface MergeSentence { text: string; source: "common" | "from-a" | "from-b"; }
 export interface MergeFieldResult { text: string; sentences: MergeSentence[]; common: number; addedFromA: number; addedFromB: number; discarded: string[]; }
-export interface MergeResult { clinicalHistory: string; clinicalHistorySentences: MergeSentence[]; technique: string; techniqueSentences: MergeSentence[]; findings: string; impression: string; recommendation: string; findingsMerged: MergeFieldResult; impressionMerged: MergeFieldResult; recommendationMerged: MergeFieldResult; stats: { commonSentencesDiscarded: number; addedFromA: number; addedFromB: number; totalFinal: number; }; }
-function splitSentences(t: string): string[] { return t?.trim() ? t.replace(/\s+/g," ").trim().split(/(?<=[.!?])\s+(?=[A-Z])|(?<=[.!?])$/).map(s=>s.trim()).filter(Boolean) : []; }
-function norm(s: string): string { return s.toLowerCase().replace(/\s+/g," ").replace(/___+/g,"___").replace(/[^a-z0-9\s]/g,"").trim(); }
-function mergeField(fa: string, fb: string): MergeFieldResult {
-  const sa = splitSentences(fa), sb = splitSentences(fb), nbSet = new Set(sb.map(norm));
-  const sentences: MergeSentence[] = [], discarded: string[] = [], seen = new Set<string>();
-  let common=0, a=0, b=0;
-  for (const s of sa) { const n = norm(s); if (nbSet.has(n)) { sentences.push({text:s,source:"common"}); seen.add(n); common++; for (const bs of sb) if (norm(bs)===n) discarded.push(bs); } else { sentences.push({text:s,source:"from-a"}); seen.add(n); a++; } }
-  for (const s of sb) { const n = norm(s); if (!seen.has(n)) { sentences.push({text:s,source:"from-b"}); seen.add(n); b++; } }
-  return { text: sentences.map(s=>s.text).join(" "), sentences, common, addedFromA:a, addedFromB:b, discarded };
-}
+export interface MergeResult { clinicalHistory: string; clinicalHistorySentences: MergeSentence[]; technique: string; techniqueSentences: MergeSentence[]; findings: string; impression: string; recommendation: string; findingsMerged: MergeFieldResult; impressionMerged: MergeFieldResult; recommendationMerged: MergeFieldResult; stats: { commonSentencesDiscarded: number; addedFromA: number; addedFromB: number; totalFinal: number; }; combinedReportTitle?: string | null; }
 export function mergeTwoFormats(a: ReportFormat, b: ReportFormat): MergeResult {
-  const tA = a.technique.trim(), tB = b.technique.trim();
-  const technique = mergeTechnique(tA, tB);
-  const sameTech = technique === tA || technique === tB || norm(tA) === norm(tB);
-  const techniqueSentences: MergeSentence[] = sameTech
-    ? [{ text: technique, source: "common" }]
-    : splitSentences(technique).map((text) => ({ text, source: "common" as const }));
-  const hm = mergeField(a.clinicalHistory ?? "", b.clinicalHistory ?? "");
-  const fm = mergeField(a.findings, b.findings), im = mergeField(a.impression, b.impression), rm = mergeField(a.recommendation, b.recommendation);
-  return {
-    clinicalHistory: hm.text, clinicalHistorySentences: hm.sentences,
-    technique, techniqueSentences, findings: fm.text, impression: im.text, recommendation: rm.text,
-    findingsMerged: fm, impressionMerged: im, recommendationMerged: rm,
-    stats: {
-      commonSentencesDiscarded: hm.common+fm.common+im.common+rm.common,
-      addedFromA: hm.addedFromA+fm.addedFromA+im.addedFromA+rm.addedFromA,
-      addedFromB: hm.addedFromB+fm.addedFromB+im.addedFromB+rm.addedFromB,
-      totalFinal: hm.sentences.length+fm.sentences.length+im.sentences.length+rm.sentences.length,
-    },
-  };
+  return mergeTwoFormatsBySlot(a, b);
 }
 
 // Snippet macro expansion

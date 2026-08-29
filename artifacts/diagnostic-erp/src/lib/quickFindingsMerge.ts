@@ -45,7 +45,7 @@ export function removeImpression(lines: string[], line: string): string[] {
 
 /** Heuristic: template / protocol “normal study” impression lines. */
 const NORMAL_IMPRESSION_RE =
-  /\b(no significant (abnormality|intracranial|pathology)|within normal limits|unremarkable|appears? normal|normal (mri|ct|usg|ultrasound|study|brain|scan)|no (focal|acute|significant) (lesion|abnormality)|all imaged structures are within normal)\b/i;
+  /\b(no significant (abnormality|intracranial|pathology)|within normal limits|unremarkable|appears? normal|normal (mri|ct|usg|ultrasound|study|brain|scan)|no (focal|acute|significant) (lesion|abnormality)|all imaged structures are within normal|no definite (abnormality|evidence of|sign of|focus)|no (obvious|apparent) (abnormality|pathology))\b/i;
 
 export function isNormalImpressionLine(line: string): boolean {
   const t = line.trim();

@@ -2,8 +2,13 @@ import { Router } from "express";
 import { db, staffQuickDoctorsTable, clinicSettingsTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
+import {
+  DEFAULT_QUICK_SELECT_IDS,
+  isValidQuickSelectIds,
+  normalizeQuickSelectIdsJson,
+} from "../lib/quickSelectSlots";
 
-// Per-staff Billing Desk Quick Doctor slot layout.
+// Per-staff Billing Desk / Online Booking Quick Doctor slot layout.
 //
 // Mounted at /api/my/quick-doctors behind requireStaffAuth ONLY (see
 // routes/index.ts) — no module permission is required beyond being a
@@ -12,23 +17,6 @@ import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
 // (populated by requireStaffAuth from the verified session token) — the
 // request body's staffId, if any, is ignored, so one staff member can never
 // read or overwrite another's layout.
-
-const DEFAULT_QUICK_DOCTOR_IDS = "[null,null,null,null,null,null,null,null]";
-const MAX_PAYLOAD_LENGTH = 260;
-
-function isValidQuickDoctorIds(value: string): boolean {
-  if (value.length > MAX_PAYLOAD_LENGTH) return false;
-  try {
-    const parsed = JSON.parse(value);
-    return (
-      Array.isArray(parsed) &&
-      parsed.length === 8 &&
-      parsed.every((v) => v === null || (typeof v === "number" && Number.isInteger(v) && v > 0))
-    );
-  } catch {
-    return false;
-  }
-}
 
 const staffQuickDoctorsRouter = Router();
 
@@ -42,7 +30,7 @@ staffQuickDoctorsRouter.get("/", async (req, res) => {
     .limit(1);
 
   if (own) {
-    res.json({ quickDoctorIds: own.quickDoctorIds });
+    res.json({ quickDoctorIds: normalizeQuickSelectIdsJson(own.quickDoctorIds) });
     return;
   }
 
@@ -56,7 +44,11 @@ staffQuickDoctorsRouter.get("/", async (req, res) => {
     .from(clinicSettingsTable)
     .limit(1);
 
-  res.json({ quickDoctorIds: clinic?.quickDoctorIds ?? DEFAULT_QUICK_DOCTOR_IDS });
+  res.json({
+    quickDoctorIds: normalizeQuickSelectIdsJson(
+      clinic?.quickDoctorIds ?? DEFAULT_QUICK_SELECT_IDS,
+    ),
+  });
 });
 
 staffQuickDoctorsRouter.put("/", async (req, res) => {
@@ -64,20 +56,25 @@ staffQuickDoctorsRouter.put("/", async (req, res) => {
   const body = (req.body ?? {}) as Record<string, unknown>;
   const quickDoctorIds = body.quickDoctorIds;
 
-  if (typeof quickDoctorIds !== "string" || !isValidQuickDoctorIds(quickDoctorIds)) {
-    res.status(400).json({ error: "quickDoctorIds must be a JSON-stringified array of exactly 8 entries (positive integer doctor id or null)" });
+  if (typeof quickDoctorIds !== "string" || !isValidQuickSelectIds(quickDoctorIds)) {
+    res.status(400).json({
+      error:
+        "quickDoctorIds must be a JSON-stringified array of 8 or 12 entries (positive integer doctor id or null)",
+    });
     return;
   }
 
+  const normalized = normalizeQuickSelectIdsJson(quickDoctorIds);
+
   await db
     .insert(staffQuickDoctorsTable)
-    .values({ staffId, quickDoctorIds })
+    .values({ staffId, quickDoctorIds: normalized })
     .onConflictDoUpdate({
       target: staffQuickDoctorsTable.staffId,
-      set: { quickDoctorIds, updatedAt: new Date() },
+      set: { quickDoctorIds: normalized, updatedAt: new Date() },
     });
 
-  res.json({ ok: true, quickDoctorIds });
+  res.json({ ok: true, quickDoctorIds: normalized });
 });
 
 export default staffQuickDoctorsRouter;

@@ -99,37 +99,108 @@ export function buildKeyImagesRailHtml(dataUrls: string[]): string {
   return `<div class="image-panel image-panel-side image-panel-keyrail" data-image-count="${dataUrls.length}"><div class="image-panel-heading">KEY IMAGES</div><div class="image-grid">${cells}</div></div>`;
 }
 
+/** Count dicom-img tags that already carry a usable inlined data URL. */
+export function countInlinedDicomImages(html: string): number {
+  const srcFirst = html.match(/class="dicom-img"[^>]*src="(data:image[^"]*)"/g) || [];
+  const classSecond = html.match(/src="(data:image[^"]*)"[^>]*class="dicom-img"/g) || [];
+  const urls = [...srcFirst, ...classSecond]
+    .map((tag) => {
+      const m = tag.match(/src="(data:image[^"]*)"/);
+      return m?.[1] ?? "";
+    })
+    // Tiny / empty payloads are black squares in print — treat as not inlined.
+    .filter((src) => src.length > 64);
+  return urls.length;
+}
+
 /**
- * When the server print-preview HTML has no inlined DICOM pixels (Orthanc
- * unreachable from the API process) but the browser can reach DICOMweb, fetch
- * thumbnails client-side and inject a square key-images rail so Print like
- * final / Enlarge match the selected-images panel.
+ * Replace the first side-panel key-images block with `rail`, using a depth
+ * walk so nested </div>s inside image cells do not truncate the match
+ * (the previous non-greedy regex stopped at the KEY IMAGES heading close).
+ */
+export function replaceSideImagePanel(html: string, rail: string): string | null {
+  const start = html.search(/<div\b[^>]*\bimage-panel-side\b[^>]*>/);
+  if (start < 0) return null;
+  let i = start;
+  let depth = 0;
+  const openRe = /<div\b[^>]*>/gi;
+  const closeRe = /<\/div>/gi;
+  while (i < html.length) {
+    openRe.lastIndex = i;
+    closeRe.lastIndex = i;
+    const open = openRe.exec(html);
+    const close = closeRe.exec(html);
+    if (!close) return null;
+    if (open && open.index < close.index) {
+      depth += 1;
+      i = open.index + open[0].length;
+      continue;
+    }
+    depth -= 1;
+    i = close.index + close[0].length;
+    if (depth === 0) {
+      return html.slice(0, start) + rail + html.slice(i);
+    }
+  }
+  return null;
+}
+
+/** Drop empty/pending KEY IMAGES rails so print does not show a navy orphan strip. */
+export function stripEmptySideImagePanel(html: string): string {
+  if (!/image-panel-side/.test(html)) return html;
+  if (countInlinedDicomImages(html) > 0) return html;
+  const stripped = replaceSideImagePanel(html, "");
+  if (!stripped) return html;
+  return stripped
+    .replace(/\bhas-side-images\b/g, "")
+    .replace(/class="content-area\s+"/g, 'class="content-area"');
+}
+
+/**
+ * When the server print-preview HTML has no usable inlined DICOM pixels
+ * (Orthanc unreachable, empty placeholders, or black stub thumbs) but the
+ * browser can reach DICOMweb, fetch thumbnails client-side and inject / replace
+ * the key-images rail so Print Preview / Print like final match Selected images.
  */
 export async function hydratePrintPreviewKeyImages(
   html: string,
   dicomWebBase: string | null,
   refs: ReportImageRef[],
-  opts?: { limit?: number; size?: number; fetchImpl?: typeof fetch },
+  opts?: { limit?: number; size?: number; fetchImpl?: typeof fetch; force?: boolean },
 ): Promise<string> {
-  if (!html || !dicomWebBase || refs.length === 0) return html;
-  const alreadyInlined = (html.match(/class="dicom-img"[^>]*src="data:image/g) || []).length
-    + (html.match(/src="data:image[^"]*"[^>]*class="dicom-img"/g) || []).length;
-  if (alreadyInlined > 0) return html;
+  if (!html) return html;
+  // No client images available — drop empty/pending navy rails (orphan page 2).
+  if (!dicomWebBase || refs.length === 0) {
+    return stripEmptySideImagePanel(html);
+  }
+  const alreadyInlined = countInlinedDicomImages(html);
+  const pendingEmpty =
+    /dicom-img-pending|image-cell-pending|class="dicom-img"[^>]*src=""|src=""[^>]*class="dicom-img"/.test(html);
+  // Re-hydrate when the rail is missing pixels, has pending placeholders, or
+  // when fewer inlined images than selected refs (server budget/skip left blanks).
+  if (
+    !opts?.force
+    && !pendingEmpty
+    && alreadyInlined > 0
+    && alreadyInlined >= Math.min(refs.length, opts?.limit ?? 6)
+  ) {
+    return html;
+  }
 
   const urls = await fetchKeyImageDataUrls(dicomWebBase, refs, {
     limit: opts?.limit ?? 6,
     size: opts?.size ?? 800,
     fetchImpl: opts?.fetchImpl,
   });
-  if (urls.length === 0) return html;
+  if (urls.length === 0) {
+    // Failed hydrate — do not leave a blank navy KEY IMAGES strip on page 2.
+    return stripEmptySideImagePanel(html);
+  }
   const rail = buildKeyImagesRailHtml(urls);
 
   if (/image-panel-side/.test(html)) {
-    const replaced = html.replace(
-      /<div class="image-panel image-panel-side[\s\S]*?<\/div>(?=\s*(?:<div class="sigs"|<\/div>\s*(?:<div class="sigs"|<\/td>|<div class="letterpad|<div class="ftr")))/,
-      rail,
-    );
-    if (replaced !== html) return replaced;
+    const replaced = replaceSideImagePanel(html, rail);
+    if (replaced) return replaced;
   }
 
   let out = html.includes("has-side-images")
@@ -141,7 +212,6 @@ export async function hydratePrintPreviewKeyImages(
       /(<\/div>)(\s*)(<\/div>\s*(?:<div class="sigs"|<\/td>))/ ,
       `$1$2${rail}$3`,
     );
-    // Only accept if we actually inserted the rail once near content-area.
     if (withRail.includes("image-panel-keyrail") || withRail.includes('data-image-count=')) {
       return withRail;
     }
@@ -175,11 +245,16 @@ export interface RadiologyPdfExportInput {
   imageRefs: ReportImageRef[];
   clinic: PrintClinic;
   letterhead?: CareLetterpadChrome;
+  /** When false, the CARE letterpad header (logo + address) is omitted — for pre-printed letterheads. */
+  showLetterpadHeader?: boolean;
+  /** Structured measurements (e.g. spine canal AP rows) for the MEASUREMENTS section. */
+  measurements?: Array<{ label: string; value: string }>;
 }
 
 export async function exportRadiologyReportToPdf(input: RadiologyPdfExportInput): Promise<void> {
   const keyImages = await fetchKeyImageDataUrls(input.dicomWebBase, input.imageRefs);
   const settings = loadPrintSettings();
+  const measurements = input.measurements?.filter((m) => m.label && m.value) ?? [];
   generateReportPDF(
     {
       patientName: input.patientName,
@@ -199,7 +274,8 @@ export async function exportRadiologyReportToPdf(input: RadiologyPdfExportInput)
         headingCase: input.headingCase,
       }),
       impression: input.impression.filter(Boolean).join("\n"),
-      recommendation: input.recommendation || "Please correlate with clinical findings.",
+      recommendation: input.recommendation?.trim() ?? "",
+      measurements: measurements.length > 0 ? measurements : undefined,
       keyImages,
       reportTitle: input.studyName || "Radiology Report",
     },
@@ -207,10 +283,16 @@ export async function exportRadiologyReportToPdf(input: RadiologyPdfExportInput)
       ...settings,
       header: {
         ...settings.header,
-        enabled: true, // letter-pad PDF must always show CARE logo + address chrome
+        enabled: input.showLetterpadHeader !== false, // respect toggle; default true
+      },
+      footer: {
+        ...settings.footer,
+        // Pre-printed letterheads also have the services bar + disclaimer pre-printed.
+        enabled: input.showLetterpadHeader !== false ? settings.footer.enabled : false,
       },
       show: {
         ...settings.show,
+        measurements: measurements.length > 0 || settings.show.measurements,
         keyImages: keyImages.length > 0 || settings.show.keyImages,
       },
     },

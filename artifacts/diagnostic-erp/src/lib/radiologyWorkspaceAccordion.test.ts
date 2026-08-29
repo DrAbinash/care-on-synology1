@@ -6,6 +6,7 @@ const ERP_SRC = resolve(__dirname, "..");
 const read = (rel: string) => readFileSync(resolve(ERP_SRC, rel), "utf8");
 
 const workspace = read("pages/RadiologyReportingWorkspace.tsx");
+const section1 = read("components/radiology/StudyRegionReportFormatSection.tsx");
 const accordion = read("components/radiology/zai-workspace/report-section-accordion.tsx");
 const findingsEditor = read("components/radiology/zai-workspace/findings-editor.tsx");
 const quickFindings = read("components/radiology/QuickFindingsPanel.tsx");
@@ -33,7 +34,10 @@ describe("main reporting pane — progressive accordion", () => {
     ]) {
       expect(workspace).toContain(`accordionProps("${id}")`);
     }
-    expect(workspace).toContain('data-testid="report-section-accordion"');
+    // Progressive accordion remains the live pane (R2 pieces sit inside Findings).
+    expect(workspace).toContain('data-testid="reporting-canvas-r2"');
+    expect(workspace).toContain('data-report-accordion="progressive"');
+    expect(workspace).not.toContain("continuous: true");
   });
 
   it("keeps the clinical top-to-bottom order", () => {
@@ -60,18 +64,19 @@ describe("main reporting pane — progressive accordion", () => {
   });
 
   it("collapsing is visual only — children stay mounted so state survives", () => {
-    // The section body is always rendered; only its container is display:none.
+    // Progressive mode hides inactive bodies with `hidden` (display:none);
+    // children stay mounted so editors/drawers never lose state.
     expect(accordion).toMatch(/active \? "min-h-0 flex-1 overflow-y-auto[^"]*" : "hidden"/);
     expect(accordion).toContain("{children}");
     // Guard against a regression to conditional rendering.
     expect(accordion).not.toMatch(/\{active && children\}/);
     expect(accordion).not.toMatch(/\{!collapsed && children\}/);
+    expect(accordion).not.toMatch(/\{showBody && children\}/);
   });
 
   it("the active section owns the remaining height and scrolls internally", () => {
     expect(accordion).toContain("min-h-0 flex-1 border-emerald-300/80");
     expect(accordion).toContain("overflow-y-auto");
-    // The pane itself is viewport-height, not one long scrolling form.
     expect(workspace).toContain('className="flex flex-1 min-w-0 flex-col min-h-0"');
   });
 
@@ -120,8 +125,8 @@ describe("Findings workspace — macros, hero editor, one drawer at a time", () 
 
   it("keeps the editor as the hero by moving its tile wall into a drawer", () => {
     expect(workspace).toContain("hideQuickSelect");
-    expect(findingsEditor).toContain("{!hideQuickSelect && <QuickSelectStrip field={field} />}");
-    expect(workspace).toContain('<QuickSelectStrip field="findings"');
+    expect(findingsEditor).toContain("{!hideQuickSelect && <QuickSelectStrip field={field} onAfterPick={onQuickSelectPick} />}");
+    expect(workspace).toMatch(/<QuickSelectStrip[\s\S]*?field="findings"/);
   });
 
   it("scopes Findings Quick Select tiles to the selected region", () => {
@@ -176,7 +181,12 @@ describe("Region context drives the Findings tools", () => {
     const setup = read("../src/hooks/useReportingStudySetup.ts");
     expect(setup).toContain("resolvedChocolateBoxSet(studyContext)");
     expect(setup).toContain("nextStudyRegions(studyRegions, regionName)");
-    expect(workspace).toContain('data-primary={isPrimary ? "true" : undefined}');
+    // Section 1 quick buttons + dropdown both call selectPrimaryRegion
+    expect(workspace).toContain("onSelectRegion={studySetup.selectPrimaryRegion}");
+    expect(section1).toContain("onSelectRegion(t.name)");
+    expect(section1).toContain('data-selected={selected ? "true" : "false"}');
+    expect(section1).toContain("availableStudyTabs");
+    expect(section1).toContain('data-testid="whole-report-format-select"');
   });
 
   it("Quick Add folds its region grid away but keeps cross-region access", () => {
@@ -209,19 +219,31 @@ describe("Sources / provenance is compact and read-only", () => {
 });
 
 describe("no reporting feature was deleted by the re-layout", () => {
-  const preserved: Array<[string, string]> = [
+  const section1Markers = new Set([
+    'data-testid="study-setup-strip"',
+    'data-testid="study-region-select"',
+    'data-testid="whole-report-format-select"',
+    'data-testid="study-region-quick"',
+    'data-testid="reapply-defaults"',
+  ]);
+  const techniqueStrip = read("components/radiology/TechniqueChoiceStrip.tsx");
+  const historyStrip = read("components/radiology/ClinicalHistoryChipStrip.tsx");
+  const section23Markers = new Set([
+    'data-testid="technique-choice-select"',
+    "ClinicalHistoryChipStrip",
+  ]);
+  const preserved: Array<[string, string | RegExp]> = [
     ["Demography card", "<ReportDemographyCard"],
     ["Referring doctor quick select", "<ReferringDoctorQuickSelect"],
     ["Start Report", 'data-testid="start-report-banner"'],
     ["Undo Start Report", "undoStartReport"],
     ["Study setup strip", 'data-testid="study-setup-strip"'],
-    ["Region select", 'data-testid="region-select"'],
-    ["Region chips", 'data-testid="study-region-chips"'],
-    ["More regions", "More regions…"],
-    ["Protocol select", 'data-testid="protocol-select"'],
-    ["Technique region select", 'data-testid="technique-region-select"'],
-    ["Technique protocol select", 'data-testid="technique-protocol-select"'],
-    ["Add Title", 'data-testid="protocol-add-title"'],
+    ["Study / Region select", 'data-testid="study-region-select"'],
+    ["Whole report format select", 'data-testid="whole-report-format-select"'],
+    ["Region quick buttons", 'data-testid="study-region-quick"'],
+    ["Unified Section 1 component", "StudyRegionReportFormatSection"],
+    ["Technique choice select", 'data-testid="technique-choice-select"'],
+    ["Technique editor", 'data-testid="canonical-technique-editor"'],
     ["Re-apply defaults", 'data-testid="reapply-defaults"'],
     ["MRI readiness", "<MriReadinessStrip"],
     ["Template mismatch + load", 'data-testid="load-correct-template"'],
@@ -229,10 +251,12 @@ describe("no reporting feature was deleted by the re-layout", () => {
     ["Clinical history editor", 'field="clinicalHistory"'],
     ["Technique editor", 'data-testid="canonical-technique-editor"'],
     ["Region macros", "<ChocolateBoxMacros"],
+    ["Anatomy-grouped findings", "<FindingsAnatomyStrip"],
+    ["Sticky anatomy chips", "<FindingsAnatomyChips"],
     ["Structured findings cards", 'data-testid="structured-findings-cards"'],
     ["Highlight editor", "<FindingsHighlightEditor"],
     ["Findings editor", 'field="findings"'],
-    ["Findings Quick Select", '<QuickSelectStrip field="findings"'],
+    ["Findings Quick Select", /<QuickSelectStrip[\s\S]*?field="findings"/],
     ["Quick Add / Clinic Quick Select", "<QuickFindingsPanel"],
     ["Structured format panel", "<StructuredFormatPanel"],
     ["Prior comparison", "<PriorComparisonToolbar"],
@@ -252,7 +276,13 @@ describe("no reporting feature was deleted by the re-layout", () => {
 
   for (const [feature, marker] of preserved) {
     it(`still mounts ${feature}`, () => {
-      expect(workspace).toContain(marker);
+      let src = workspace;
+      if (typeof marker === "string" && section1Markers.has(marker)) src = section1;
+      else if (typeof marker === "string" && section23Markers.has(marker)) {
+        src = marker.includes("technique") ? techniqueStrip : historyStrip + workspace;
+      }
+      if (marker instanceof RegExp) expect(src).toMatch(marker);
+      else expect(src).toContain(marker);
     });
   }
 

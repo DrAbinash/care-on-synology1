@@ -14,6 +14,12 @@ import StructuredQuestionsEditor from "@/components/radiology/StructuredQuestion
 import { ChocolateBoxSettingsPanel } from "@/components/radiology/zai-workspace/chocolate-box-macros";
 import { buildReportingStudyContext } from "@/lib/reportingStudyContext";
 import { chocolateBoxSetFor } from "@/lib/findingsMacros";
+import {
+  conflictGroupWordsMissingFromText,
+  enrichmentDiff,
+  ownershipSnapshotFromTile,
+  resolvedOwnershipMode,
+} from "@/lib/ownershipFieldValidation";
 
 /**
  * Radiology Quick Select — admin configuration page.
@@ -242,6 +248,8 @@ export default function RadiologyQuickSelectSettings() {
         subtitle="Configure study tabs and one-click finding buttons for the reporting workspace"
       />
 
+      <OwnershipDiffReport findings={data?.findings ?? []} />
+
       <ChocolateBoxSettingsPanel />
 
       {/* ── Study tabs ─────────────────────────────────────────────────── */}
@@ -427,6 +435,16 @@ export default function RadiologyQuickSelectSettings() {
               <p className="md:col-span-3 text-[10px] text-muted-foreground">
                 In structured mode, selecting this finding replaces the matching template section's normal text with the finding text (anatomical order + conflict resolution are automatic). Leave the section blank to append to free-text findings instead. Use <span className="font-mono">{"{key}"}</span> to pull in a question&rsquo;s value, and <span className="font-mono">[ &hellip; {"{key}"} &hellip; ]</span> for a clause that drops when the value is Normal/None. Set the Anatomical section to <span className="font-mono">{"{level}"}</span> to map one finding to the chosen level&rsquo;s section.
               </p>
+              {editingFinding.conflictGroup.trim() && editingFinding.findingText && (
+                <OwnershipLiveHints
+                  conflictGroup={editingFinding.conflictGroup}
+                  findingText={editingFinding.findingText}
+                  anatomicalSection={editingFinding.anatomicalSection}
+                  baselineReplaces={editingFinding.baselineReplaces}
+                  label={editingFinding.label}
+                  studyType={editingFinding.studyType}
+                />
+              )}
             </div>
             {/* ── Structured Finding Assistant — configurable questions ─────── */}
             <StructuredQuestionsEditor
@@ -777,6 +795,81 @@ export default function RadiologyQuickSelectSettings() {
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+const OWNERSHIP_SNAP_KEY = "care-qs-ownership-snapshot-v1";
+
+function OwnershipLiveHints(props: {
+  conflictGroup: string;
+  findingText: string;
+  anatomicalSection: string;
+  baselineReplaces: string;
+  label: string;
+  studyType: string;
+}) {
+  const missing = conflictGroupWordsMissingFromText(props.conflictGroup, props.findingText);
+  const resolved = resolvedOwnershipMode({
+    conflictGroup: props.conflictGroup,
+    anatomicalSection: props.anatomicalSection,
+    baselineReplaces: props.baselineReplaces,
+    label: props.label,
+    findingsText: props.findingText,
+    region: props.studyType,
+  });
+  return (
+    <div className="md:col-span-3 space-y-1" data-testid="ownership-live-hints">
+      <p className="text-[10px]" data-testid="ownership-resolved-mode">Resolved: {resolved.label}</p>
+      {missing.length > 0 && (
+        <p className="text-[10px] text-amber-800" data-testid="ownership-r1-warning">
+          conflictGroup words missing from finding text: {missing.join(", ")}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function OwnershipDiffReport({ findings }: { findings: QuickFinding[] }) {
+  const next = findings.map((f) => ownershipSnapshotFromTile({
+    studyType: f.studyType,
+    label: f.label,
+    findingText: f.findingText,
+    conflictGroup: f.conflictGroup,
+    anatomicalSection: f.anatomicalSection,
+    baselineReplaces: f.baselineReplaces,
+    properties: f.properties,
+  }));
+  let prev: ReturnType<typeof ownershipSnapshotFromTile>[] = [];
+  try {
+    const raw = localStorage.getItem(OWNERSHIP_SNAP_KEY);
+    if (raw) prev = JSON.parse(raw);
+  } catch { /* ignore */ }
+  const rows = enrichmentDiff(prev, next);
+  return (
+    <div className="rounded-xl border bg-card shadow-sm p-4 space-y-2" data-testid="ownership-enrichment-diff">
+      <div className="flex items-center justify-between gap-2">
+        <h3 className="text-sm font-semibold">Ownership enrichment diff</h3>
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-7 text-[11px]"
+          onClick={() => {
+            try { localStorage.setItem(OWNERSHIP_SNAP_KEY, JSON.stringify(next)); } catch { /* ignore */ }
+          }}
+        >
+          Mark batch reviewed
+        </Button>
+      </div>
+      {rows.length === 0 ? (
+        <p className="text-xs text-muted-foreground">No ownership mode changes since the last reviewed snapshot.</p>
+      ) : (
+        <ul className="text-xs space-y-1 max-h-40 overflow-y-auto">
+          {rows.map((r) => (
+            <li key={r.key} data-testid="ownership-diff-row">{r.label}: {r.from} → {r.to}</li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

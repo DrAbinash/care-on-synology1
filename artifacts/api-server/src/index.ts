@@ -25,7 +25,7 @@ initializePluginLoader(app);
 import { logger } from "./lib/logger";
 import { reportWeakGuardedSecrets } from "./lib/secretStrength";
 import { NETWORK_LAN_HOST } from "./lib/networkDefaults";
-import { startCronScheduler, startRadiologyJobConsumer } from "./cron";
+import { startAiReportComposeJobConsumer, startCronScheduler, startRadiologyJobConsumer } from "./cron";
 import { startIntegrationScheduler } from "./services/integration/scheduler";
 import { ensureDefaultLedger } from "./routes/ledgers";
 import { backfillExpirePublicTokens } from "./routes/patient-reports";
@@ -2758,6 +2758,9 @@ async function runStartupMigrations(): Promise<void> {
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
+
+      -- USG TV queue: auto-complete token when DICOM lands (see migrations/add_queue_display_settings_auto_complete_on_dicom.sql)
+      ALTER TABLE queue_display_settings ADD COLUMN IF NOT EXISTS auto_complete_token_on_dicom BOOLEAN NOT NULL DEFAULT TRUE;
     `);
 
     logger.info("Startup migrations applied");
@@ -2822,6 +2825,13 @@ const server = app.listen({ port, exclusive: true }, () => {
     startRadiologyJobConsumer();
   } catch (err) {
     logger.error({ err }, "Overnight AI consumer failed to register");
+  }
+
+  // Text report compose drain — same bootstrap requirement as overnight AI.
+  try {
+    startAiReportComposeJobConsumer();
+  } catch (err) {
+    logger.error({ err }, "AI report compose consumer failed to register");
   }
 
   // Cron schedulers must NOT run on autoscale deployments: containers can

@@ -68,11 +68,17 @@ type CandidateStudy = {
     sex: string;
     testName: string;
     billNumber: string | null;
+    referringDoctor?: string | null;
   };
   matchScore: "GREEN" | "YELLOW" | "RED";
   matchPoints: number;
   matchReasons: string[];
   matchWarnings: string[];
+  nameSimilarity?: number;
+  referringDoctorSimilarity?: number;
+  lane?: "id_keys" | "name_referral";
+  suggestable?: boolean;
+  autoLinkEligible?: boolean;
 };
 
 type MatchListFilter = "all" | "unbilled" | "needs_review" | "resolved";
@@ -142,12 +148,21 @@ export default function MyCollection() {
     ?? worklist.find((item) => item.id === selectedId)
     ?? worklist[0];
 
-  const { data: candidatesData } = useQuery<{ candidates: CandidateStudy[] }>({
+  const { data: candidatesData } = useQuery<{
+    candidates: CandidateStudy[];
+    suggestions?: CandidateStudy[];
+  }>({
     queryKey: ["/api/radiology/pacs-worklist", selectedItem?.id, "matching-candidates"],
     queryFn: () => api.get(`/api/radiology/pacs-worklist/${selectedItem.id}/matching-candidates`),
     enabled: !!selectedItem?.id,
   });
 
+  const nameReferralSuggestions = useMemo(() => {
+    if (candidatesData?.suggestions?.length) return candidatesData.suggestions;
+    return (candidatesData?.candidates ?? []).filter(
+      (c) => c.suggestable && c.lane === "name_referral",
+    ).slice(0, 5);
+  }, [candidatesData]);
   const linkMutation = useMutation({
     mutationFn: ({ worklistId, studyId }: { worklistId: number; studyId: number }) =>
       api.post(`/api/radiology/pacs-worklist/${worklistId}/link-study`, { studyId }),
@@ -225,7 +240,7 @@ export default function MyCollection() {
               {listCounts.unbilled} PACS scan{listCounts.unbilled === 1 ? "" : "s"} not linked to a billed study in ERP
             </p>
             <p className="text-xs text-orange-800/90 dark:text-orange-300/90 mt-1">
-              Images can already be in Orthanc — this flag means the intake row has no <code className="text-[10px]">study_id</code> link to the bill&apos;s radiology order (usually accession / MWL mismatch). Use <strong>Link Correct Study</strong> or Worklist → Auto-link bills.
+              Images can already be in Orthanc — this flag means the intake row has no <code className="text-[10px]">study_id</code> link to the bill&apos;s radiology order (usually accession / MWL mismatch). When MWL is offline, use the <strong>name ± referral</strong> suggestions on each row, or <strong>Link Correct Study</strong>.
             </p>
           </div>
           {listFilter !== "unbilled" && (
@@ -481,12 +496,73 @@ export default function MyCollection() {
                         </div>
                       </>
                     ) : (
-                      <div className="flex flex-col items-center justify-center gap-3 py-6 text-center">
-                        <Link2 className="h-8 w-8 text-rose-400 stroke-[1.5]" />
-                        <span className="font-medium text-rose-500">Not linked to a billed study</span>
-                        <p className="text-[11px] text-slate-500 max-w-sm">
-                          Orthanc may already have this study&apos;s images. The ERP link is missing: DICOM accession / PatientID from the scanner did not match the bill&apos;s MWL accession (<code className="text-[10px]">ACC-…</code>). Use <strong>Link Correct Study</strong> below, or confirm the modality queried MWL before scanning.
-                        </p>
+                      <div className="flex flex-col gap-3 py-2">
+                        <div className="flex flex-col items-center justify-center gap-2 text-center">
+                          <Link2 className="h-8 w-8 text-rose-400 stroke-[1.5]" />
+                          <span className="font-medium text-rose-500">Not linked to a billed study</span>
+                          <p className="text-[11px] text-slate-500 max-w-sm">
+                            Accession / modality PatientID did not match ERP. Below is the <strong>name ± referral</strong> lane (same-day bills). Conflicts stay for manual pick.
+                          </p>
+                        </div>
+
+                        {nameReferralSuggestions.length > 0 ? (
+                          <div className="rounded-lg border border-indigo-200 dark:border-indigo-900/50 bg-indigo-50/60 dark:bg-indigo-950/20 p-2.5 flex flex-col gap-2">
+                            <div className="text-[10px] font-bold uppercase tracking-wider text-indigo-700 dark:text-indigo-300">
+                              Suggested bills — patient name ± referral
+                            </div>
+                            {nameReferralSuggestions.map((cand) => (
+                              <div
+                                key={cand.study.id}
+                                className="rounded-md border border-indigo-100 dark:border-indigo-900/40 bg-white dark:bg-slate-950 p-2.5 flex items-start justify-between gap-2"
+                              >
+                                <div className="min-w-0 flex-1 text-[11px] space-y-1">
+                                  <div className="flex flex-wrap items-center gap-1.5">
+                                    <span className="font-semibold text-slate-900 dark:text-slate-100 truncate">
+                                      {cand.study.patientName}
+                                    </span>
+                                    <Badge variant="outline" className="text-[10px]">{cand.study.patientUHID}</Badge>
+                                    <Badge className={getScoreBadgeColor(cand.matchScore)}>
+                                      {cand.matchScore} ({cand.matchPoints})
+                                    </Badge>
+                                    {cand.autoLinkEligible && (
+                                      <Badge className="bg-amber-100 text-amber-900 text-[10px]">unique-ready</Badge>
+                                    )}
+                                  </div>
+                                  <div className="text-slate-500 dark:text-slate-400">
+                                    {cand.study.testName} · {cand.study.modality} · {cand.study.studyDate}
+                                  </div>
+                                  <div className="text-slate-500 dark:text-slate-400">
+                                    Acc {cand.study.accessionNumber}
+                                    {cand.study.referringDoctor ? ` · Ref ${cand.study.referringDoctor}` : ""}
+                                  </div>
+                                  <div className="text-[10px] text-indigo-700 dark:text-indigo-300 font-medium">
+                                    Name {Math.round((cand.nameSimilarity ?? 0) * 100)}%
+                                    {typeof cand.referringDoctorSimilarity === "number" && cand.referringDoctorSimilarity > 0
+                                      ? ` · Doctor ${Math.round(cand.referringDoctorSimilarity * 100)}%`
+                                      : ""}
+                                  </div>
+                                </div>
+                                <Button
+                                  size="sm"
+                                  className="shrink-0 gap-1"
+                                  disabled={linkMutation.isPending}
+                                  onClick={() =>
+                                    linkMutation.mutate({
+                                      worklistId: selectedItem.id,
+                                      studyId: cand.study.id,
+                                    })
+                                  }
+                                >
+                                  <Link2 className="h-3.5 w-3.5" /> Link
+                                </Button>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="text-[11px] text-center text-slate-500">
+                            No same-day name±referral candidates yet. Use <strong>Link Correct Study</strong> to search the order book.
+                          </p>
+                        )}
                       </div>
                     )}
                   </CardContent>
@@ -694,12 +770,33 @@ export default function MyCollection() {
                         <Badge className={getScoreBadgeColor(cand.matchScore)}>
                           {cand.matchScore} ({cand.matchPoints} pts)
                         </Badge>
+                        {cand.lane === "name_referral" && (
+                          <Badge variant="outline" className="text-[10px] border-indigo-300 text-indigo-700">
+                            name±referral
+                          </Badge>
+                        )}
+                        {cand.lane === "id_keys" && (
+                          <Badge variant="outline" className="text-[10px] border-emerald-300 text-emerald-700">
+                            ID keys
+                          </Badge>
+                        )}
                       </div>
                       <div className="text-slate-500 dark:text-slate-400 grid grid-cols-2 gap-y-1">
                         <span><strong>Test:</strong> {cand.study.testName}</span>
                         <span><strong>Accession:</strong> {cand.study.accessionNumber}</span>
                         <span><strong>Modality:</strong> {cand.study.modality}</span>
                         <span><strong>Bill Date:</strong> {cand.study.studyDate}</span>
+                        {cand.study.referringDoctor ? (
+                          <span className="col-span-2"><strong>Referral:</strong> {cand.study.referringDoctor}</span>
+                        ) : null}
+                        {typeof cand.nameSimilarity === "number" ? (
+                          <span className="col-span-2">
+                            Name {Math.round(cand.nameSimilarity * 100)}%
+                            {typeof cand.referringDoctorSimilarity === "number" && cand.referringDoctorSimilarity > 0
+                              ? ` · Doctor ${Math.round(cand.referringDoctorSimilarity * 100)}%`
+                              : ""}
+                          </span>
+                        ) : null}
                       </div>
                       {cand.matchWarnings.length > 0 && (
                         <div className="text-[11px] text-rose-500 font-medium flex items-center gap-1 mt-1">

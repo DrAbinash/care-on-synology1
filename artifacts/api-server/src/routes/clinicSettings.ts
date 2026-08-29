@@ -9,6 +9,11 @@ import {
 } from "../middleware/commissionVisibility";
 import { FULL_ACCESS_ROLES, normalizeRole, type StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { sanitizeBookingTimeSlots, OnlineBookingError } from "../services/onlineBookingSlots";
+import {
+  DEFAULT_QUICK_SELECT_IDS,
+  isValidQuickSelectIds,
+  normalizeQuickSelectIdsJson,
+} from "../lib/quickSelectSlots";
 
 const CLINIC_SETTINGS_CACHE_KEY = "clinic-settings:v1";
 
@@ -36,7 +41,7 @@ async function getOrCreate() {
       logoDataUrl: null,
       footerNote: "Thank you for choosing our diagnostic services.",
       formFTestIds: "[]",
-      quickTestIds: "[null,null,null,null,null,null]",
+      quickTestIds: DEFAULT_QUICK_SELECT_IDS,
       patientPhotoEnabled: false,
       showTatOnBill: false,
       billPrintCopies: 1,
@@ -211,8 +216,8 @@ clinicSettingsRouter.get("/branding", async (_req, res) => {
     qrOnBillEnabled: row.qrOnBillEnabled ?? true,
     showTatOnBill: row.showTatOnBill ?? false,
     dayCloseAutoPrint: row.dayCloseAutoPrint ?? true,
-    quickTestIds: row.quickTestIds ?? "[null,null,null,null,null,null,null,null]",
-    quickDoctorIds: row.quickDoctorIds ?? "[null,null,null,null,null,null,null,null]",
+    quickTestIds: normalizeQuickSelectIdsJson(row.quickTestIds),
+    quickDoctorIds: normalizeQuickSelectIdsJson(row.quickDoctorIds),
     formFTestIds: row.formFTestIds ?? "[]",
     formFBillingPrompt: row.formFBillingPrompt ?? false,
     formFAddressRequired: row.formFAddressRequired ?? true,
@@ -696,27 +701,12 @@ clinicSettingsRouter.put("/", async (req, res) => {
     return;
   }
   if (typeof update.quickTestIds === "string") {
-    if (update.quickTestIds.length > 260) {
-      console.warn("[PUT /api/clinic-settings] rejected 400:", "quickTestIds payload too large", "| received body keys:", Object.keys(body));
-      res.status(400).json({ error: "quickTestIds payload too large" });
+    if (!isValidQuickSelectIds(update.quickTestIds)) {
+      console.warn("[PUT /api/clinic-settings] rejected 400:", "quickTestIds must be an array of 8 or 12 entries (positive integer test id or null)", "| received body keys:", Object.keys(body));
+      res.status(400).json({ error: "quickTestIds must be an array of 8 or 12 entries (positive integer test id or null)" });
       return;
     }
-    try {
-      const parsed = JSON.parse(update.quickTestIds);
-      if (
-        !Array.isArray(parsed) ||
-        parsed.length !== 8 ||
-        !parsed.every((v) => v === null || (typeof v === "number" && Number.isInteger(v) && v > 0))
-      ) {
-        console.warn("[PUT /api/clinic-settings] rejected 400:", "quickTestIds must be an array of exactly 8 entries (positive integer test id or null)", "| received body keys:", Object.keys(body));
-        res.status(400).json({ error: "quickTestIds must be an array of exactly 8 entries (positive integer test id or null)" });
-        return;
-      }
-    } catch {
-      console.warn("[PUT /api/clinic-settings] rejected 400:", "quickTestIds must be valid JSON", "| received body keys:", Object.keys(body));
-      res.status(400).json({ error: "quickTestIds must be valid JSON" });
-      return;
-    }
+    update.quickTestIds = normalizeQuickSelectIdsJson(update.quickTestIds);
   } else if (typeof update.quickTestIds === "undefined") {
     // If quickTestIds is undefined (which happens when tabs send only their own fields),
     // don't validate it — let it pass through so it won't be overwritten to invalid state
@@ -726,27 +716,12 @@ clinicSettingsRouter.put("/", async (req, res) => {
   }
 
   if (typeof update.quickDoctorIds === "string") {
-    if (update.quickDoctorIds.length > 260) {
-      console.warn("[PUT /api/clinic-settings] rejected 400:", "quickDoctorIds payload too large", "| received body keys:", Object.keys(body));
-      res.status(400).json({ error: "quickDoctorIds payload too large" });
+    if (!isValidQuickSelectIds(update.quickDoctorIds)) {
+      console.warn("[PUT /api/clinic-settings] rejected 400:", "quickDoctorIds must be an array of 8 or 12 entries (positive integer doctor id or null)", "| received body keys:", Object.keys(body));
+      res.status(400).json({ error: "quickDoctorIds must be an array of 8 or 12 entries (positive integer doctor id or null)" });
       return;
     }
-    try {
-      const parsed = JSON.parse(update.quickDoctorIds);
-      if (
-        !Array.isArray(parsed) ||
-        parsed.length !== 8 ||
-        !parsed.every((v) => v === null || (typeof v === "number" && Number.isInteger(v) && v > 0))
-      ) {
-        console.warn("[PUT /api/clinic-settings] rejected 400:", "quickDoctorIds must be an array of exactly 8 entries (positive integer doctor id or null)", "| received body keys:", Object.keys(body));
-        res.status(400).json({ error: "quickDoctorIds must be an array of exactly 8 entries (positive integer doctor id or null)" });
-        return;
-      }
-    } catch {
-      console.warn("[PUT /api/clinic-settings] rejected 400:", "quickDoctorIds must be valid JSON", "| received body keys:", Object.keys(body));
-      res.status(400).json({ error: "quickDoctorIds must be valid JSON" });
-      return;
-    }
+    update.quickDoctorIds = normalizeQuickSelectIdsJson(update.quickDoctorIds);
   } else if (typeof update.quickDoctorIds === "undefined") {
     // Same grace handling as quickTestIds above — Settings tabs and the
     // Billing Desk quick-slot picker each send only their own fields.
@@ -872,6 +847,77 @@ clinicSettingsRouter.post("/ollama", async (req, res) => {
     (update as any).ollamaFallbackUrl = raw || null;
   }
 
+  // ollamaComposerModel — task-specific text composer (does NOT affect vision model)
+  if (b.ollamaComposerModel !== undefined) {
+    update.ollamaComposerModel = b.ollamaComposerModel
+      ? String(b.ollamaComposerModel).trim()
+      : null;
+  }
+  if (b.ollamaComposerFallbackModel !== undefined) {
+    update.ollamaComposerFallbackModel = b.ollamaComposerFallbackModel
+      ? String(b.ollamaComposerFallbackModel).trim()
+      : null;
+  }
+  if (b.ollamaComposerNumCtx !== undefined) {
+    const n = Number(b.ollamaComposerNumCtx);
+    if (!Number.isInteger(n) || n < 2048 || n > 8192) {
+      res.status(400).json({ error: "ollamaComposerNumCtx must be 2048–8192" }); return;
+    }
+    update.ollamaComposerNumCtx = n;
+  }
+  if (b.ollamaComposerTemperature !== undefined) {
+    const t = Number(b.ollamaComposerTemperature);
+    if (!Number.isFinite(t) || t < 0 || t > 1) {
+      res.status(400).json({ error: "ollamaComposerTemperature must be 0–1" }); return;
+    }
+    update.ollamaComposerTemperature = String(t);
+  }
+  if (b.ollamaComposerTimeoutSeconds !== undefined) {
+    const n = Number(b.ollamaComposerTimeoutSeconds);
+    if (!Number.isInteger(n) || n < 10 || n > 120) {
+      res.status(400).json({ error: "ollamaComposerTimeoutSeconds must be 10–120" }); return;
+    }
+    update.ollamaComposerTimeoutSeconds = n;
+  }
+  if (b.reportComposerBackgroundEnabled !== undefined) {
+    update.reportComposerBackgroundEnabled = !!b.reportComposerBackgroundEnabled;
+  }
+  if (b.reportComposerReviewBeforeApply !== undefined) {
+    update.reportComposerReviewBeforeApply = !!b.reportComposerReviewBeforeApply;
+  }
+  if (b.reportComposerAutoCompose !== undefined) {
+    update.reportComposerAutoCompose = !!b.reportComposerAutoCompose;
+  }
+  if (b.reportComposerConcurrency !== undefined) {
+    const n = Number(b.reportComposerConcurrency);
+    if (!Number.isInteger(n) || n < 1 || n > 3) {
+      res.status(400).json({ error: "reportComposerConcurrency must be 1–3" }); return;
+    }
+    update.reportComposerConcurrency = n;
+  }
+  if (b.reportComposerSnapshotRetentionDays !== undefined) {
+    const n = Number(b.reportComposerSnapshotRetentionDays);
+    if (!Number.isInteger(n) || n < 1 || n > 90) {
+      res.status(400).json({ error: "reportComposerSnapshotRetentionDays must be 1–90" }); return;
+    }
+    update.reportComposerSnapshotRetentionDays = n;
+  }
+  // Cached list from last Ollama /api/tags probe — powers Local AI dropdowns (not a model allow-list).
+  if (b.ollamaKnownModels !== undefined) {
+    if (typeof b.ollamaKnownModels !== "string") {
+      res.status(400).json({ error: "ollamaKnownModels must be a JSON string" }); return;
+    }
+    try {
+      const parsed = JSON.parse(b.ollamaKnownModels);
+      if (!Array.isArray(parsed) || !parsed.every((x) => typeof x === "string")) {
+        res.status(400).json({ error: "ollamaKnownModels must be a JSON array of strings" }); return;
+      }
+      update.ollamaKnownModels = b.ollamaKnownModels;
+    } catch {
+      res.status(400).json({ error: "ollamaKnownModels must be valid JSON" }); return;
+    }
+  }
+
   try {
     const rows = await db.update(clinicSettingsTable).set(update).where(eq(clinicSettingsTable.id, current.id)).returning();
     invalidateCached(CLINIC_SETTINGS_CACHE_KEY);
@@ -894,6 +940,8 @@ clinicSettingsRouter.post("/ollama", async (req, res) => {
         isEnabled: mergedEnabled,
       });
       invalidateLocalAiRuntimeCache();
+      const { invalidateComposerRuntimeCache } = await import("../lib/voiceReportComposer/runtimeConfig");
+      invalidateComposerRuntimeCache();
     } catch (syncErr) {
       console.warn("[POST /api/clinic-settings/ollama] provider sync warning:", syncErr);
     }

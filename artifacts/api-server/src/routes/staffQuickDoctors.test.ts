@@ -89,7 +89,9 @@ function makeRes() {
   return res;
 }
 
-const VALID = JSON.stringify([1, null, 2, null, null, null, null, null]);
+const VALID_8 = JSON.stringify([1, null, 2, null, null, null, null, null]);
+const VALID_12 = JSON.stringify([1, null, 2, null, null, null, null, null, null, null, null, null]);
+const DEFAULT_12 = "[null,null,null,null,null,null,null,null,null,null,null,null]";
 
 describe("GET/PUT /api/my/quick-doctors — per-staff personal layout, no /settings.clinic permission required", () => {
   beforeEach(() => {
@@ -104,12 +106,12 @@ describe("GET/PUT /api/my/quick-doctors — per-staff personal layout, no /setti
     // Note: no permission/role field on the request at all — this endpoint
     // never checks one. requireStaffAuth (mounted in routes/index.ts) is the
     // only gate, and it does not require any module permission.
-    const req = makeReq(42, { quickDoctorIds: VALID });
+    const req = makeReq(42, { quickDoctorIds: VALID_8 });
     const res = makeRes();
     await handler(req, res);
     expect(res.statusCode).toBe(200);
-    expect(res.body).toEqual({ ok: true, quickDoctorIds: VALID });
-    expect(insertCalls).toEqual([{ staffId: 42, quickDoctorIds: VALID }]);
+    expect(res.body).toEqual({ ok: true, quickDoctorIds: VALID_12 });
+    expect(insertCalls).toEqual([{ staffId: 42, quickDoctorIds: VALID_12 }]);
   });
 
   test("saving does not accept or use a client-supplied staffId — always the session's own subjectId", async () => {
@@ -117,11 +119,11 @@ describe("GET/PUT /api/my/quick-doctors — per-staff personal layout, no /setti
     const handler = getHandler(router, "put");
     // Attacker/buggy-client attempt: body claims to be staff 99, but the
     // authenticated session is staff 7.
-    const req = makeReq(7, { staffId: 99, quickDoctorIds: VALID });
+    const req = makeReq(7, { staffId: 99, quickDoctorIds: VALID_8 });
     const res = makeRes();
     await handler(req, res);
     expect(res.statusCode).toBe(200);
-    expect(insertCalls).toEqual([{ staffId: 7, quickDoctorIds: VALID }]);
+    expect(insertCalls).toEqual([{ staffId: 7, quickDoctorIds: VALID_12 }]);
     expect(rowsByStaffId.has(99)).toBe(false);
   });
 
@@ -132,17 +134,19 @@ describe("GET/PUT /api/my/quick-doctors — per-staff personal layout, no /setti
 
     const aliceIds = JSON.stringify([1, null, null, null, null, null, null, null]);
     const bobIds = JSON.stringify([null, 2, null, null, null, null, null, null]);
+    const aliceNorm = JSON.stringify([1, null, null, null, null, null, null, null, null, null, null, null]);
+    const bobNorm = JSON.stringify([null, 2, null, null, null, null, null, null, null, null, null, null]);
 
     await putHandler(makeReq(1, { quickDoctorIds: aliceIds }), makeRes());
     await putHandler(makeReq(2, { quickDoctorIds: bobIds }), makeRes());
 
     const aliceRes = makeRes();
     await getHandlerFn(makeReq(1), aliceRes);
-    expect(aliceRes.body).toEqual({ quickDoctorIds: aliceIds });
+    expect(aliceRes.body).toEqual({ quickDoctorIds: aliceNorm });
 
     const bobRes = makeRes();
     await getHandlerFn(makeReq(2), bobRes);
-    expect(bobRes.body).toEqual({ quickDoctorIds: bobIds });
+    expect(bobRes.body).toEqual({ quickDoctorIds: bobNorm });
   });
 
   test("GET bootstraps from the legacy clinic-wide default when no personal row exists yet", async () => {
@@ -151,7 +155,9 @@ describe("GET/PUT /api/my/quick-doctors — per-staff personal layout, no /setti
     const handler = getHandler(router, "get");
     const res = makeRes();
     await handler(makeReq(3), res);
-    expect(res.body).toEqual({ quickDoctorIds: clinicRow.quickDoctorIds });
+    expect(res.body).toEqual({
+      quickDoctorIds: JSON.stringify([5, null, null, null, null, null, null, null, null, null, null, null]),
+    });
   });
 
   test("GET falls back to the all-null default when neither a personal row nor a clinic default exists", async () => {
@@ -159,14 +165,23 @@ describe("GET/PUT /api/my/quick-doctors — per-staff personal layout, no /setti
     const handler = getHandler(router, "get");
     const res = makeRes();
     await handler(makeReq(3), res);
-    expect(res.body).toEqual({ quickDoctorIds: "[null,null,null,null,null,null,null,null]" });
+    expect(res.body).toEqual({ quickDoctorIds: DEFAULT_12 });
+  });
+
+  test("accepts a 12-slot payload for three-row quick select grids", async () => {
+    const { default: router } = await import("./staffQuickDoctors");
+    const handler = getHandler(router, "put");
+    const res = makeRes();
+    await handler(makeReq(1, { quickDoctorIds: VALID_12 }), res);
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toEqual({ ok: true, quickDoctorIds: VALID_12 });
   });
 
   test("rejects a malformed quickDoctorIds payload with 400 (same contract as the legacy clinic-settings field)", async () => {
     const { default: router } = await import("./staffQuickDoctors");
     const handler = getHandler(router, "put");
     const res = makeRes();
-    await handler(makeReq(1, { quickDoctorIds: JSON.stringify([1, 2]) }), res); // only 2 entries, not 8
+    await handler(makeReq(1, { quickDoctorIds: JSON.stringify([1, 2]) }), res); // only 2 entries, not 8/12
     expect(res.statusCode).toBe(400);
     expect(insertCalls).toEqual([]);
   });

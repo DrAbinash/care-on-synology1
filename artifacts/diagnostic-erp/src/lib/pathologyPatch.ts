@@ -12,17 +12,29 @@ import {
   mergeReportFieldContentWithProvenance,
   normalizeForDedupe,
   splitToSentences,
+  fuzzySentenceSimilarity,
+  isLightSentenceEdit,
   type FieldProvenanceMap,
   type InsertSource,
 } from "./reportFieldMerge";
 import { applySide, type Side } from "./sideSwap";
 import { fillTemplate, type AbnormalityInstance } from "./abnormalityEngine";
 import { stripNormalImpressionLines } from "./quickFindingsMerge";
+import {
+  buildCanonicalObservation,
+  hasStructuredOwnership,
+  sentenceOwnedBySlot,
+} from "./observationSlot";
 
 export type PathologyOwnership = {
   anatomicalSection?: string;
   conflictGroup?: string;
   baselineReplaces?: string;
+  /** Resolved slot concept — distinct from conflictGroup. */
+  concept?: string | null;
+  level?: string;
+  laterality?: string;
+  slotKey?: string;
 };
 
 export type ReportNarrative = {
@@ -43,20 +55,49 @@ export type PathologyIncoming = {
 };
 
 const ANATOMY_ALIASES: Array<{ key: string; re: RegExp }> = [
+  // Brain / CNS
   { key: "basal ganglia", re: /basal ganglia|putamen|caudate|globus pallidus|internal capsule/i },
   { key: "white matter", re: /white matter|fazekas|periventricular/i },
   { key: "mca", re: /\bmca\b|middle cerebral/i },
   { key: "ventricle", re: /ventricular system|ventricles|cisternal/i },
+  // Spine
   { key: "disc", re: /\bdisc\b|herniation|bulge/i },
   { key: "cord", re: /spinal cord|thecal sac|canal stenosis/i },
+  // Abdomen / USG organs
+  { key: "liver", re: /\bliver\b|hepatic|hepatomegaly/i },
+  { key: "gallbladder", re: /\bgallbladder\b|gall bladder|cholecyst/i },
+  { key: "cbd", re: /\bcbd\b|common bile duct|choledoch/i },
+  { key: "pancreas", re: /\bpancreas\b|pancreatic/i },
+  { key: "spleen", re: /\bspleen\b|splenic/i },
+  { key: "kidney", re: /\bkidney\b|renal|kidneys/i },
+  { key: "ureter", re: /\bureter\b|ureteric/i },
+  { key: "bladder", re: /\bbladder\b|urinary bladder|vesical/i },
+  { key: "prostate", re: /\bprostate\b|prostatic/i },
+  { key: "uterus", re: /\buterus\b|uterine|endometri/i },
+  { key: "ovary", re: /\bovary\b|ovarian|adnexa/i },
+  { key: "appendix", re: /\bappendix\b|appendiceal|vermiform/i },
+  { key: "bowel", re: /\bbowel\b|intestin|colon|sigmoid|rectum/i },
+  { key: "aorta", re: /\baorta\b|aortic/i },
+  { key: "thyroid", re: /\bthyroid\b|thyroidal/i },
+  { key: "breast", re: /\bbreast\b|mammary/i },
 ];
 
 const PATHOLOGY_TERMS = [
+  // Severe / acute
   "hemorrhage", "haemorrhage", "infarct", "restricted diffusion",
   "herniation", "stenosis", "fracture", "mass", "tumor", "tumour", "lesion",
+  // USG-common abnormalities
+  "fatty liver", "fatty infiltration", "hepatomegaly", "cholelithiasis",
+  "cholecystitis", "sludge", "polyp", "cyst", "calculus", "calculi",
+  "nephrolith", "nephrolithiasis", "hydronephrosis", "hydroureter",
+  "prostatomegaly", "pyelonephritis", "cystitis", "ascites",
+  "pleural effusion", " collection", "abscess", "pancreatitis",
+  "appendicitis", "obstruction", "perforation", "metastasis",
+  "cirrhosis", "fibrosis", "echogenic", "hypoechoic",
+  "hyperechoic", "heterogeneous", "focal", "nodule",
 ];
 
-const DENIAL = /\b(no|without|absence of|unremarkable|normal|not identified|not seen|free of)\b/i;
+const DENIAL = /\b(no|without|absence of|unremarkable|normal|not identified|not seen|free of|no evidence|no definite|no obvious|no apparent|no focal|no significant|no abnormal|no mass|no lesion|no collection|no effusion|no hernia|no fracture|no displacement)\b/i;
 
 export function inferOwnership(label: string, texts: string[]): PathologyOwnership {
   // Legacy fallback only — prefer explicit Quick Select / chocolate metadata.
@@ -109,6 +150,66 @@ function isManualSentence(sentence: string, provenance: FieldProvenanceMap | und
   return src.length === 1 && src[0] === "manual";
 }
 
+/** Fuzzy threshold for lightly edited owned baseline sentences. */
+const FUZZY_OWNED_BASELINE_THRESHOLD = 0.65;
+
+/**
+ * True when `sentence` is only a small clinical descriptor tweak of `baseline`
+ * (e.g. "unremarkable" → "largely unremarkable"). Authorship annotations
+ * ("— radiologist rewrite", "kept manual") are NOT descriptor tweaks.
+ */
+function isDescriptorOnlyBaselineEdit(baseline: string, sentence: string): boolean {
+  if (!(
+    fuzzySentenceSimilarity(sentence, baseline) >= FUZZY_OWNED_BASELINE_THRESHOLD
+    || isLightSentenceEdit(baseline, sentence)
+  )) {
+    return false;
+  }
+  if (/\b(radiologist|rewrite|kept manual|do not overwrite|don'?t overwrite)\b/i.test(sentence)
+    && !/\b(radiologist|rewrite|kept manual|do not overwrite|don'?t overwrite)\b/i.test(baseline)) {
+    return false;
+  }
+  // New em-dash / en-dash annotation clause → radiologist authorship, not a descriptor.
+  if (/[—–].{6,}/.test(sentence) && !/[—–].{6,}/.test(baseline)) {
+    return false;
+  }
+  const baseTokens = new Set(normalizeForDedupe(baseline).split(" ").filter((t) => t.length > 2));
+  const nextTokens = new Set(normalizeForDedupe(sentence).split(" ").filter((t) => t.length > 2));
+  let added = 0;
+  for (const t of nextTokens) if (!baseTokens.has(t)) added++;
+  return added <= 3;
+}
+
+/** Template/protocol-sourced sentences should always be replaceable by pathology.
+ * Purely manual or materially rewritten sentences need the ambiguous/force guard.
+ * Section 4: a small descriptor tweak of an owned baseline may still sync.
+ * Radiologist-authored edits (including light QS-chip edits that stamp `manual`)
+ * stay protected so re-select opens the overwrite dialog.
+ */
+export function isProtectedManualSentence(
+  sentence: string,
+  provenance: FieldProvenanceMap | undefined,
+  opts?: { baselineReplaces?: string },
+): boolean {
+  const baseline = (opts?.baselineReplaces ?? "").trim();
+  const key = normalizeForDedupe(sentence);
+  const src = provenance?.[key];
+  const hasRadiologistAuthorship = Boolean(
+    src?.includes("manual") || src?.includes("radiologist-voice"),
+  );
+
+  // Owned-baseline descriptor tweaks remain replaceable (Section 4).
+  if (baseline && isDescriptorOnlyBaselineEdit(baseline, sentence)) {
+    return false;
+  }
+
+  // Any radiologist authorship signal protects the sentence.
+  if (hasRadiologistAuthorship) return true;
+
+  if (!src || src.length === 0) return false;
+  return src.every((s) => s === "manual" || s === "radiologist-voice");
+}
+
 export function applySideToIncoming(incoming: PathologyIncoming, side: Side | ""): PathologyIncoming {
   if (!side) return incoming;
   const inst: AbnormalityInstance = {
@@ -135,6 +236,25 @@ export interface PathologyPatchResult {
   replacedSentences: string[];
 }
 
+const SCREENING_SECTION_BREAK =
+  /\n(?=CERVICAL SPINE SCREENING|DORSAL SPINE SCREENING|THORACIC SPINE SCREENING|WHOLE SPINE SCREENING)/;
+
+/** Keep detailed-study pathology in the detailed block, not after screening. */
+function placeIncomingBeforeScreening(fieldText: string, incoming: string | undefined): string {
+  const inc = (incoming ?? "").trim();
+  if (!inc || !fieldText.includes(inc)) return fieldText;
+  const br = fieldText.match(SCREENING_SECTION_BREAK);
+  if (!br || br.index == null) return fieldText;
+  const incAt = fieldText.lastIndexOf(inc);
+  if (incAt < br.index) return fieldText;
+  const without = `${fieldText.slice(0, incAt)}${fieldText.slice(incAt + inc.length)}`
+    .replace(/\n{3,}/g, "\n\n")
+    .trimEnd();
+  const nextBr = without.match(SCREENING_SECTION_BREAK);
+  if (!nextBr || nextBr.index == null) return fieldText;
+  return `${without.slice(0, nextBr.index).trimEnd()}\n${inc}${without.slice(nextBr.index)}`;
+}
+
 /**
  * Overlay pathology text onto a whole-report narrative.
  * Never drops unrelated sentences. Manual anatomy sentences are kept and
@@ -154,6 +274,17 @@ export function applyPathologyPatch(opts: {
     opts.incoming.findings, opts.incoming.impression,
     opts.incoming.technique, opts.incoming.recommendation,
   ].filter(Boolean).join("\n");
+  const slotObs = buildCanonicalObservation({
+    concept: opts.ownership.concept,
+    conflictGroup: opts.ownership.conflictGroup,
+    anatomicalSection: opts.ownership.anatomicalSection,
+    baselineReplaces: opts.ownership.baselineReplaces,
+    level: opts.ownership.level,
+    laterality: opts.ownership.laterality,
+  });
+  // Structured replace only when a concept resolved. A slotKey of `region|*|*|*`
+  // is identity, not ownership — unowned findings keep the legacy pathology path.
+  const structured = hasStructuredOwnership(slotObs);
   const keys = anatomyKeys(opts.ownership, incomingHay);
   const asserted = assertedPathology(incomingHay);
   const baseline = (opts.ownership.baselineReplaces ?? "").trim();
@@ -167,15 +298,31 @@ export function applyPathologyPatch(opts: {
     provenance: FieldProvenanceMap | undefined,
   ): { text: string; provenance: FieldProvenanceMap } => {
     const kept: string[] = [];
+    const incomingOrgans = new Set<string>();
+    if (!structured) {
+      for (const a of ANATOMY_ALIASES) {
+        if (a.re.test(incomingHay)) incomingOrgans.add(a.key);
+      }
+    }
     for (const s of splitToSentences(existing)) {
-      const owned = (baseline && s.includes(baseline))
-        || sentenceMentions(s, keys)
-        || (asserted.length > 0 && deniesPathology(s, asserted));
+      const owned = structured
+        ? sentenceOwnedBySlot(s, {
+          concept: slotObs.concept ?? opts.ownership.concept ?? null,
+          level: slotObs.level || opts.ownership.level || "",
+          laterality: slotObs.laterality || opts.ownership.laterality || "",
+          anatomicalSection: slotObs.anatomicalSection,
+          baselineReplaces: baseline,
+        })
+        : (baseline && s.includes(baseline))
+          || sentenceMentions(s, keys)
+          || (asserted.length > 0 && deniesPathology(s, asserted))
+          || (incomingOrgans.size > 0 && asserted.length > 0 &&
+            [...incomingOrgans].some((org) => sentenceMentions(s, [org])));
       if (!owned) {
         kept.push(s);
         continue;
       }
-      if (isManualSentence(s, provenance) && !opts.force) {
+      if (isProtectedManualSentence(s, provenance, { baselineReplaces: baseline }) && !opts.force) {
         ambiguous = true;
         kept.push(s);
         continue;
@@ -206,6 +353,10 @@ export function applyPathologyPatch(opts: {
     opts.incoming.findings,
     opts.provenance?.findings,
   );
+  const findingsPlaced = {
+    ...findings,
+    text: placeIncomingBeforeScreening(findings.text, opts.incoming.findings),
+  };
 
   const impressionIncoming = opts.incoming.impression ?? "";
   const impression = patchField(
@@ -215,7 +366,12 @@ export function applyPathologyPatch(opts: {
     opts.provenance?.impression,
   );
   let impressionText = impression.text;
-  if (asserted.length > 0) {
+  // Strip normal impression lines whenever the incoming text contains
+  // abnormal content (pathology terms OR non-empty abnormal findings text
+  // that replaces template normals). Also strip when the patch replaced
+  // any existing sentences (indicating template normal was overridden).
+  const hasAbnormalContent = asserted.length > 0 || replacedSentences.length > 0;
+  if (hasAbnormalContent) {
     impressionText = stripNormalImpressionLines(
       splitToSentences(impressionText),
       { onlyIfAbnormal: true },
@@ -246,14 +402,14 @@ export function applyPathologyPatch(opts: {
     narrative: {
       clinicalHistory: opts.existing.clinicalHistory,
       technique: technique.text,
-      findings: findings.text,
+      findings: findingsPlaced.text,
       impression: impressionText,
       recommendation: recommendation.text,
     },
     provenance: {
       clinicalHistory: opts.provenance?.clinicalHistory,
       technique: technique.provenance,
-      findings: findings.provenance,
+      findings: findingsPlaced.provenance,
       impression: impression.provenance,
       recommendation: recommendation.provenance,
     },

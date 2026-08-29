@@ -3,13 +3,34 @@ import {
   mergeReportDemography,
   buildDemographyHeaderHtml,
   buildClassicDemographyHeaderHtml,
+  buildLetterpadDemographyHtml,
+  patchLetterpadDemographyHtml,
   reconcileAccessionVsReferringDoctor,
   formatReferringDoctorDisplay,
   formatDoctorWithDegree,
   enrichReferringDoctorFromCatalog,
+  enrichReferringDoctorFromDoctors,
+  doctorCatalogLabels,
   dicomAgeToDisplay,
   resolveDisplayAge,
+  isJunkReferringDoctor,
 } from "./reportDemography";
+
+describe("isJunkReferringDoctor", () => {
+  it("rejects self-referral placeholders", () => {
+    expect(isJunkReferringDoctor("DR. SELF ONLINE")).toBe(true);
+    expect(isJunkReferringDoctor("DR. SELF WB")).toBe(true);
+    expect(isJunkReferringDoctor("SELF")).toBe(true);
+    expect(isJunkReferringDoctor("self referral")).toBe(true);
+    expect(isJunkReferringDoctor("walk-in")).toBe(true);
+    expect(isJunkReferringDoctor("Dr. Surya Udai Singh")).toBe(false);
+  });
+
+  it("formatReferringDoctorDisplay blanks junk", () => {
+    expect(formatReferringDoctorDisplay("DR. SELF WB")).toBe("");
+    expect(formatReferringDoctorDisplay("DR. SELF ONLINE")).toBe("");
+  });
+});
 
 describe("mergeReportDemography — ERP > DICOM > manual override", () => {
   it("prefers ERP demographics over DICOM", () => {
@@ -89,8 +110,11 @@ describe("dicomAgeToDisplay", () => {
 });
 
 describe("resolveDisplayAge", () => {
-  it("ERP age wins over DICOM", () => {
+  it("ERP age wins over DICOM when master absent", () => {
     expect(resolveDisplayAge({ age: "50 Yrs" }, null, "050Y")).toBe("50 Yrs");
+  });
+  it("prefers patient-master age over worklist/ERP age", () => {
+    expect(resolveDisplayAge({ age: "12 Yrs" }, { ageValue: 60, ageUnit: "years" }, "012Y")).toBe("60 Yrs");
   });
   it("patient master ageValue wins over DICOM", () => {
     expect(resolveDisplayAge({ age: "" }, { ageValue: 8, ageUnit: "months" }, "050Y")).toBe("8 Mo");
@@ -129,6 +153,31 @@ describe("reconcileAccessionVsReferringDoctor", () => {
       ["Dr. Sanjay Kumar, MD"],
     );
     expect(enriched).toContain("MD");
+  });
+
+  it("prefers exact catalog match when fuzzy would hit multiple doctors", () => {
+    const enriched = enrichReferringDoctorFromCatalog("Sanjay Kumar", [
+      "Dr. Sanjay Kumar, MD",
+      "Dr. Sanjay Kumar Singh, MS",
+    ]);
+    expect(enriched).toBe("Dr. Sanjay Kumar, MD");
+  });
+
+  it("pulls degree from Settings → Doctors structured rows", () => {
+    const enriched = enrichReferringDoctorFromDoctors("DR.SANJAY KUMAR", [
+      { name: "Dr. Sanjay Kumar", degree: "MD, DMRD" },
+      { name: "Dr. Other", degree: "MS" },
+    ]);
+    expect(enriched).toMatch(/Sanjay Kumar/i);
+    expect(enriched).toMatch(/MD/);
+    expect(enriched).toMatch(/DMRD/);
+  });
+
+  it("doctorCatalogLabels joins name + degree without duplicating", () => {
+    expect(doctorCatalogLabels([
+      { name: "Dr. Sanjay Kumar", degree: "MD" },
+      { name: "Dr. Sanjay Kumar, MD", degree: "MD" },
+    ])).toEqual(["Dr. Sanjay Kumar, MD", "Dr. Sanjay Kumar, MD"]);
   });
 
   it("appends doctors-master degree without duplicating tokens already in the name", () => {
@@ -217,5 +266,40 @@ describe("buildDemographyHeaderHtml — full row", () => {
     expect(html).toContain("34 Yrs / F");
     expect(html).toContain("1992-01-01");
     expect(html).toContain("2026-08-13");
+  });
+});
+
+describe("letterpad demography patch", () => {
+  it("buildLetterpadDemographyHtml blanks junk REF and includes age", () => {
+    const html = buildLetterpadDemographyHtml({
+      patientName: "Renu Keshri",
+      age: "52 Yrs",
+      sex: "F",
+      referringDoctor: "DR. SELF WB",
+      studyDate: "13/08/2026",
+    });
+    expect(html).toContain("RENU KESHRI");
+    expect(html).toContain("52 YRS / F");
+    expect(html).not.toContain("SELF");
+    expect(html).toContain("13/08/2026");
+  });
+
+  it("patchLetterpadDemographyHtml replaces server AGE/SEX and REFD. BY", () => {
+    const server = `<div class="letterpad-demo-wrap"><table class="letterpad-demo">
+      <tr><td class="ld-left"><strong>NAME:</strong> <strong>RENU</strong></td>
+      <td class="ld-right"><strong>AGE/SEX:</strong> F</td></tr>
+      <tr><td class="ld-left"><strong>REFD. BY:</strong> DR. SELF WB</td>
+      <td class="ld-right"><strong>DATE:</strong> 13/08/2026</td></tr>
+    </table><div class="letterpad-demo-rule"></div></div>`;
+    const out = patchLetterpadDemographyHtml(server, {
+      patientName: "Renu Keshri",
+      age: "52 Yrs",
+      sex: "F",
+      referringDoctor: "Dr. Surya Udai Singh",
+      studyDate: "13/08/2026",
+    });
+    expect(out).toContain("52 YRS / F");
+    expect(out).toContain("SURYA UDAI SINGH");
+    expect(out).not.toContain("SELF");
   });
 });

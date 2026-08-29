@@ -28,15 +28,11 @@ import { testTokensTable, patientsTable, queueDisplaySettingsTable } from "@work
 import { and, asc, desc, eq, inArray, isNull, or } from "drizzle-orm";
 import { getWhatsAppService } from "../services/whatsapp/WhatsAppService";
 import { resolveQueueDisplayDepartments } from "./queueDisplayDepartments";
+import { todayIST as todayISO } from "./istDate";
 
 // Keyed by `${date}:${tokenId}` so a restart just means a token might be
 // pinged again — never a crash, never a duplicate financial/audit record.
 const pingedTokens = new Set<string>();
-
-function todayISO(): string {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
 
 // Pure (exported for tests and for the settings UI's "send test ping" action
 // in routes/queueDisplaySettings.ts, so a test message is worded IDENTICALLY

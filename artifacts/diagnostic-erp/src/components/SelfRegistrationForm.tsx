@@ -156,6 +156,16 @@ export const SelfRegistrationForm: React.FC<SelfRegistrationFormProps> = ({
   const [notes, setNotes] = useState(initialValues.notes || "");
   const [isVip, setIsVip] = useState(!!initialValues.isVip);
 
+  // When visit date is pre-filled (e.g. today), refresh slot occupancy once on mount.
+  const dateChangeOnMount = useRef(onDateChange);
+  dateChangeOnMount.current = onDateChange;
+  useEffect(() => {
+    if (isKiosk) return;
+    const d = initialValues.date || "";
+    if (/^\d{4}-\d{2}-\d{2}$/.test(d)) dateChangeOnMount.current?.(d);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only for initial visit date
+  }, []);
+
   const [error, setError] = useState("");
   const [errFields, setErrFields] = useState<string[]>([]);
 
@@ -576,31 +586,45 @@ export const SelfRegistrationForm: React.FC<SelfRegistrationFormProps> = ({
         ))}
       </div>
 
-      <input
-        className="input-soft"
-        type="date"
-        required
-        value={date}
-        onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
-          setDate(e.target.value);
-          onDateChange?.(e.target.value);
-        }}
-        min={new Date().toISOString().slice(0, 10)}
-      />
+      {/* Visit scheduling — labeled so the native date input is not mistaken for DOB.
+          Patient age (above) is the only demographic age/DOB input; server derives DOB from age. */}
+      <div>
+        <label htmlFor="pd-visitDate" style={{ display: "block", marginBottom: "0.25rem", fontSize: "0.9rem", fontWeight: 500 }}>
+          Preferred visit date
+        </label>
+        <input
+          id="pd-visitDate"
+          className="input-soft"
+          type="date"
+          required
+          value={date}
+          onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+            setDate(e.target.value);
+            onDateChange?.(e.target.value);
+          }}
+          min={new Date().toISOString().slice(0, 10)}
+        />
+      </div>
 
-      <select
-        className="input-soft"
-        required
-        value={timeSlot}
-        onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setTimeSlot(e.target.value)}
-      >
-        <option value="">Select time slot</option>
-        {slotOptions.map((s) => (
-          <option key={slotOptionValue(s)} value={slotOptionValue(s)} disabled={s.available === false}>
-            {s.label}{s.remaining != null ? ` (${s.remaining} left)` : ""}{s.available === false ? " — full" : ""}
-          </option>
-        ))}
-      </select>
+      <div>
+        <label htmlFor="pd-timeSlot" style={{ display: "block", marginBottom: "0.25rem", fontSize: "0.9rem", fontWeight: 500 }}>
+          Time slot
+        </label>
+        <select
+          id="pd-timeSlot"
+          className="input-soft"
+          required
+          value={timeSlot}
+          onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setTimeSlot(e.target.value)}
+        >
+          <option value="">Select time slot</option>
+          {slotOptions.map((s) => (
+            <option key={slotOptionValue(s)} value={slotOptionValue(s)} disabled={s.available === false}>
+              {s.label}{s.remaining != null ? ` (${s.remaining} left)` : ""}{s.available === false ? " — full" : ""}
+            </option>
+          ))}
+        </select>
+      </div>
 
       {renderDoctorPicker({ fieldClass: "", labelClass: "", inputClass: "input-soft", labelStyle: { display: "block", marginBottom: "0.25rem", fontSize: "0.9rem", fontWeight: 500 } })}
 

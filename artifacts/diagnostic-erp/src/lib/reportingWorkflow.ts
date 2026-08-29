@@ -17,6 +17,8 @@
  *  response — the full row passes through untouched). */
 export interface QueueStudy {
   id: number;
+  /** FK → radiology_studies.id when worklist row is linked to a billed study. */
+  studyId?: number | null;
   patientId: number | null;
   patientName: string;
   modality: string;

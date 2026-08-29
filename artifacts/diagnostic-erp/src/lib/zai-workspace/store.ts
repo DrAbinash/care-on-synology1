@@ -14,6 +14,8 @@ import {
   hydrateReportFormatsLibrary,
 } from "./reportFormatsApi";
 import { hydrateChocolateMacrosFromServer } from "@/lib/chocolateMacrosApi";
+import { shouldConfirmFormatOverwrite, clinicalFieldsFromFormat } from "./fullReportFormat";
+import { appendClinicalPhrase } from "@/lib/clinicalHistoryText";
 import { DEFAULT_SNIPPET_MACROS, lookupMacros, lookupMacrosForContext, loadMacros, saveMacros, createMacro } from "./snippet-macros-library";
 import { DEFAULT_SIGN_OFF_PROFILES, loadProfiles, saveProfiles, lookupProfile, formatSignOff, createProfile } from "./sign-off-profiles";
 import {
@@ -41,6 +43,65 @@ import {
   type ReportNarrative,
 } from "@/lib/pathologyPatch";
 import type { Side } from "@/lib/sideSwap";
+import { applyChangePlan } from "@/lib/voiceReportComposer/applyChangePlan";
+import type { VoiceChangePlan, VoiceObservation } from "@/lib/voiceReportComposer/types";
+import {
+  buildCanonicalObservation,
+  contributionPresent,
+  contributionProtected,
+  observationsMutuallyExclusive,
+  ownershipFromObservation,
+  type CanonicalObservation,
+} from "@/lib/observationSlot";
+import {
+  impressionNeedsRefreshFromNarrative,
+  observationInputFromVoice,
+  refreshImpressionFromObservations,
+  removeLedgerObservation,
+  serializeObservationLedger,
+  parseObservationLedger,
+  reconstructProvenanceFromLedger,
+  logLedgerHydrationSafe,
+  detectUnownedSiblingConflictsForLedger,
+  UNOWNED_SIBLING_HINT,
+  renderedInField,
+  extractRecordedHashes,
+  reconcilePatchAgainstNarrative,
+  stampVoiceAuthoredProvenance,
+  type LedgerHydrationResult,
+  type LedgerPatch,
+  type SerializedObservationLedger,
+} from "@/lib/observationLedger";
+import { generateLocalImpression } from "@/lib/generateLocalImpression";
+import type { ObservationAnchor } from "@/lib/observationAnchor";
+import { anchorsEqual } from "@/lib/observationAnchor";
+import type { CoverageMark } from "@/lib/coverageMarks";
+import {
+  coverageMarksEqual,
+  defaultCoverageMarks,
+  setCoverageStatus,
+  markRegionViewed,
+  parseCoverageMarks,
+  filterCoverageForScope,
+  serializeCoverageEnvelope,
+  COVERAGE_ENVELOPE_KEY,
+} from "@/lib/coverageMarks";
+import { coverageScopeKey } from "@/lib/mriLumbarLevelState";
+
+function parseCoverageFromRaw(raw: unknown): CoverageMark[] | null {
+  return parseCoverageMarks(raw);
+}
+
+function hydrateCoverageFromLedgerRaw(raw: unknown): CoverageMark[] | null {
+  if (!raw || typeof raw !== "object") return null;
+  const rec = raw as Record<string, unknown>;
+  // Prefer full envelope (scoped) when present
+  if (rec[COVERAGE_ENVELOPE_KEY] != null || rec.careCoverageByScope != null) {
+    return parseCoverageMarks(rec);
+  }
+  if (rec.careCoverageMarks != null) return parseCoverageMarks(rec.careCoverageMarks);
+  return null;
+}
 
 export type EditorField = "findings" | "impression" | "recommendation" | "technique" | "clinicalHistory";
 export type RailStage = "orient" | "observe" | "measure" | "conclude" | "verify";
@@ -53,6 +114,10 @@ export type AppliedPathologyPatch = {
   templates: PathologyIncoming;
   lastRendered: PathologyIncoming;
   source: InsertSource;
+  observation?: CanonicalObservation;
+  replacedBaseline?: { findings: string[]; impression: string[] };
+  protected?: boolean;
+  stale?: boolean;
 };
 
 export type PendingPathologyPatch = {
@@ -62,6 +127,24 @@ export type PendingPathologyPatch = {
   side?: Side | "";
   templates?: PathologyIncoming;
   id?: string;
+  region?: string;
+  concept?: string | null;
+  level?: string;
+  laterality?: string;
+  label?: string;
+  catalogId?: number | string;
+  properties?: string;
+  supportsLaterality?: boolean;
+  findingsText?: string;
+  bundleId?: string;
+  sectionsOwned?: CanonicalObservation["sectionsOwned"];
+  role?: CanonicalObservation["role"];
+  specificity?: CanonicalObservation["specificity"];
+  /** Optional explicit anchor; when omitted, store stamps activeAnchor at apply time. */
+  anchor?: ObservationAnchor | null;
+  severity?: string;
+  state?: string;
+  measurement?: string;
 };
 
 type PatchSnapshot = {
@@ -72,6 +155,8 @@ type PatchSnapshot = {
   recommendationText: string;
   fieldProvenance: FieldProvenanceState;
   appliedPathologyPatches: AppliedPathologyPatch[];
+  voiceComposerObservations: VoiceObservation[];
+  voiceComposerTranscriptHistory: string[];
 };
 
 function narrativeFromState(s: Pick<S, "clinicalHistoryText" | "techniqueText" | "findingsText" | "impressionText" | "recommendationText">): ReportNarrative {
@@ -86,6 +171,100 @@ function narrativeFromState(s: Pick<S, "clinicalHistoryText" | "techniqueText" |
 
 /** Stable empty provenance — never use inline `?? {}` inside zustand selectors (React #185). */
 export const EMPTY_FIELD_PROVENANCE: FieldProvenanceMap = {};
+
+function toLedgerPatch(p: AppliedPathologyPatch): LedgerPatch {
+  const observation = p.observation ?? buildCanonicalObservation({
+    id: p.id,
+    conflictGroup: p.ownership.conflictGroup,
+    anatomicalSection: p.ownership.anatomicalSection,
+    baselineReplaces: p.ownership.baselineReplaces,
+    concept: p.ownership.concept,
+    level: p.ownership.level,
+    laterality: p.ownership.laterality,
+    source: p.source,
+  });
+  return {
+    id: p.id,
+    observation,
+    templates: p.templates,
+    lastRendered: p.lastRendered,
+    replacedBaseline: p.replacedBaseline ?? { findings: [], impression: [] },
+    source: p.source,
+    protected: p.protected ?? false,
+    stale: p.stale,
+  };
+}
+
+function observationFromPending(
+  opts: PendingPathologyPatch,
+  reportingRegion: string | null,
+  activeAnchor?: ObservationAnchor | null,
+): CanonicalObservation {
+  const templates = opts.templates ?? opts.incoming;
+  const metaMissing = !(opts.ownership.anatomicalSection || opts.ownership.conflictGroup || opts.ownership.baselineReplaces || opts.concept);
+  const inferred = metaMissing
+    ? inferOwnership(opts.label ?? "", [templates.findings ?? "", templates.impression ?? ""])
+    : {};
+  const ownership = { ...inferred, ...opts.ownership };
+  const now = new Date().toISOString();
+  const stampAnchor = opts.anchor === null
+    ? undefined
+    : (opts.anchor ?? activeAnchor ?? undefined);
+  return buildCanonicalObservation({
+    id: opts.id,
+    catalogId: opts.catalogId,
+    region: opts.region || reportingRegion || "",
+    concept: opts.concept ?? ownership.concept,
+    conflictGroup: ownership.conflictGroup,
+    anatomicalSection: ownership.anatomicalSection,
+    baselineReplaces: ownership.baselineReplaces,
+    label: opts.label,
+    findingsText: opts.findingsText ?? templates.findings,
+    level: opts.level ?? ownership.level,
+    laterality: opts.laterality ?? opts.side,
+    supportsLaterality: opts.supportsLaterality,
+    properties: opts.properties,
+    source: opts.source,
+    bundleId: opts.bundleId,
+    sectionsOwned: opts.sectionsOwned,
+    role: opts.role,
+    specificity: opts.specificity,
+    severity: opts.severity,
+    state: opts.state,
+    measurement: opts.measurement,
+    impressionText: templates.impression,
+    recommendationText: templates.recommendation,
+    anchor: stampAnchor,
+    createdAt: now,
+    updatedAt: now,
+  });
+}
+
+function splitReplacedByField(replaced: string[], existing: ReportNarrative): { findings: string[]; impression: string[] } {
+  const findings: string[] = [];
+  const impression: string[] = [];
+  for (const s of replaced) {
+    if (existing.findings.includes(s)) findings.push(s);
+    else if (existing.impression.includes(s)) impression.push(s);
+    else findings.push(s);
+  }
+  return { findings, impression };
+}
+
+function contributionMutated(prevField: string, nextField: string, lastRendered: string | undefined): boolean {
+  const last = (lastRendered ?? "").trim();
+  if (!last) return false;
+  if (!nextField.includes(last)) {
+    const parts = last.split(/\n+/).map((s) => s.trim()).filter(Boolean);
+    if (!(parts.length > 1 && parts.every((s) => nextField.includes(s)))) return true;
+  }
+  const idx = nextField.indexOf(last);
+  if (idx >= 0) {
+    const after = nextField.slice(idx + last.length);
+    if (after.trim() && !after.startsWith("\n")) return true;
+  }
+  return false;
+}
 
 function fieldProvenanceEqual(a: FieldProvenanceMap | undefined, b: FieldProvenanceMap): boolean {
   if (!a || Object.keys(a).length === 0) return Object.keys(b).length === 0;
@@ -108,11 +287,29 @@ interface S {
   criticalSlaStartedAt: number | null; criticalSlaMinutes: number; criticalSlaEscalated: boolean;
   quickSelectTiles: QuickSelectTile[]; quickSelectEditorOpen: boolean; quickSelectEditingTile: QuickSelectTile | null; quickSelectEditorField: QuickSelectField | null;
   reportFormats: ReportFormat[]; selectedFormatIds: string[]; reportFormatPickerOpen: boolean;
+  /** Printed heading from the last applied Full Report Format (null = use fallback chain). */
+  appliedFormatReportTitle: string | null;
   saveAsFormatDialogOpen: boolean; mergePreviewOpen: boolean; lastMergeResult: MergeResult | null;
   lastMergeFormats: { a: ReportFormat; b: ReportFormat | null } | null; confirmOverwriteOpen: boolean; pendingFormatIds: string[];
   pendingPathologyPatch: PendingPathologyPatch | null;
   lastPatchSnapshot: PatchSnapshot | null;
   appliedPathologyPatches: AppliedPathologyPatch[];
+  impressionNeedsRefresh: boolean;
+  /** Live FRAMES/OHIF viewport context — ephemeral; stamped onto new observations only. */
+  activeAnchor: ObservationAnchor | null;
+  /** Expected study UID for activeAnchor rejection across study switches. */
+  activeStudyInstanceUID: string | null;
+  /** Advisory coverage marks for the active Study Tab scope. Never a finalize hard gate. */
+  coverageMarks: CoverageMark[];
+  /** Coverage bags keyed by Study Tab / reporting region. */
+  coverageByScope: Record<string, CoverageMark[]>;
+  /** Format name last applied (display); title remains appliedFormatReportTitle. */
+  appliedFormatName: string | null;
+  ownershipReviewWarnings: Array<{ sentence: string; token: string; hint: string }>;
+  ledgerHydrationWarning: string | null;
+  /** Active voice-composer observations for incremental dictation context. */
+  voiceComposerObservations: VoiceObservation[];
+  voiceComposerTranscriptHistory: string[];
   snippetMacros: SnippetMacro[]; macroEditorOpen: boolean; editingMacro: SnippetMacro | null;
   activeMacroPrompt: { macro: SnippetMacro; field: EditorField; startPos: number } | null;
   signOffProfiles: SignOffProfile[];
@@ -144,10 +341,41 @@ export type WorkspaceStore = S & {
   saveQuickSelectTile: (i: Omit<QuickSelectTile, "id" | "createdAt" | "updatedAt"> & { id?: string }) => void; deleteQuickSelectTile: (id: string) => void;
   incrementTileUsage: (id: string) => void; toggleTileFavorite: (id: string) => void; resetQuickSelectToDefaults: () => void;
   toggleReportFormatPicker: () => void; setReportFormatPickerOpen: (o: boolean) => void; toggleFormatSelection: (id: string) => void; clearFormatSelection: () => void;
-  applySelectedFormats: () => void; confirmOverwriteAndApply: () => void; cancelOverwrite: () => void; applyMergedResult: () => void; cancelMerge: () => void;
+  applySelectedFormats: () => void; applyFormatById: (id: string) => void; confirmOverwriteAndApply: () => void; cancelOverwrite: () => void; applyMergedResult: () => void; cancelMerge: () => void;
+  toggleFormatFavorite: (id: string) => void;
   applyPathologyOverlay: (opts: PendingPathologyPatch & { force?: boolean }) => "applied" | "pending";
+  applyMacroBundle: (opts: { bundleId?: string; observations: Array<PendingPathologyPatch & { force?: boolean }> }) => "applied" | "pending";
+  /**
+   * Bundle deselect: remove only this bundle's observations that are (a) not protected
+   * and (b) not superseded by a newer QS/voice observation on the same slotKey.
+   * Overridden slots keep the overriding observation's text and ownership.
+   * Non-overridden slots restore replacedBaseline, same as removeObservation.
+   */
+  removeMacroBundle: (bundleId: string) => "removed" | "preserved-manual" | "no-op-unproven" | "missing";
+  removeObservation: (id: string) => "removed" | "preserved-manual" | "no-op-unproven" | "missing";
+  refreshImpressionFromLedger: () => void;
+  hydrateObservationLedger: (raw: unknown) => LedgerHydrationResult;
+  serializeObservationLedger: () => SerializedObservationLedger;
+  setActiveAnchor: (anchor: ObservationAnchor | null) => void;
+  setCoverageMark: (regionKey: string, status: CoverageMark["status"], reason?: string) => void;
+  /** Focus / jump: promote unopened → viewed only; never downgrade or dirty. */
+  touchCoverageViewed: (regionKey: string) => void;
+  hydrateCoverageMarks: (raw: unknown) => void;
+  serializeCoverageMarks: () => CoverageMark[];
+  dismissOwnershipReview: () => void;
+  dismissLedgerHydrationWarning: () => void;
   undoLastPatch: () => boolean;
+  applyVoiceComposerPlan: (plan: VoiceChangePlan, transcript: string, opts?: { force?: boolean }) => "applied" | "blocked";
+  /** Apply accepted AI composer plain text in one atomic undo snapshot (Guard 9). */
+  applyAiComposerAccepted: (opts: {
+    findings: string;
+    impression: string;
+    recommendation: string;
+  }) => "applied";
+  clearVoiceComposerSession: () => void;
   relateralizePatches: (side: Side) => void;
+  /** Host-injected hook for Ctrl+I / command palette — set by RadiologyReportingWorkspace. */
+  triggerAiImpression?: () => void | Promise<void>;
   saveAsFormat: (i: Omit<ReportFormat, "id" | "createdAt" | "updatedAt">) => void; deleteReportFormat: (id: string) => void;
   openSaveAsFormatDialog: () => void; closeSaveAsFormatDialog: () => void; resetReportFormatsToDefaults: () => void;
   /** Hydrate formats (+ chocolate macros) from server; migrate localStorage once. */
@@ -185,8 +413,13 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   notification: null, criticalSlaStartedAt: null, criticalSlaMinutes: 15, criticalSlaEscalated: false,
   quickSelectTiles: typeof window !== "undefined" ? loadTiles() : DEFAULT_QUICK_SELECT_TILES, quickSelectEditorOpen: false, quickSelectEditingTile: null, quickSelectEditorField: null,
   reportFormats: typeof window !== "undefined" ? loadFormats() : DEFAULT_REPORT_FORMATS, selectedFormatIds: [], reportFormatPickerOpen: false,
+  appliedFormatReportTitle: null,
   saveAsFormatDialogOpen: false, mergePreviewOpen: false, lastMergeResult: null, lastMergeFormats: null, confirmOverwriteOpen: false, pendingFormatIds: [],
-  pendingPathologyPatch: null, lastPatchSnapshot: null, appliedPathologyPatches: [],
+  pendingPathologyPatch: null, lastPatchSnapshot: null, appliedPathologyPatches: [], impressionNeedsRefresh: false,
+  activeAnchor: null, activeStudyInstanceUID: null, coverageMarks: [], coverageByScope: {},
+  appliedFormatName: null,
+  ownershipReviewWarnings: [], ledgerHydrationWarning: null,
+  voiceComposerObservations: [], voiceComposerTranscriptHistory: [],
   snippetMacros: typeof window !== "undefined" ? loadMacros() : DEFAULT_SNIPPET_MACROS, macroEditorOpen: false, editingMacro: null, activeMacroPrompt: null,
   signOffProfiles: typeof window !== "undefined" ? loadProfiles() : DEFAULT_SIGN_OFF_PROFILES, preloadTriggered: false,
   reportingContext: EMPTY_REPORTING_STUDY_CONTEXT,
@@ -216,7 +449,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     }
     set({ studies: next });
   },
-  selectStudy: (id) => { const st = get().studies.find(s => s.id === id); if (!st) return; set({ activeStudyId: id, findingsText: "", impressionText: "", recommendationText: "", techniqueText: "", clinicalHistoryText: st.clinicalHistory || "", fieldProvenance: {}, measurements: [], priors: [], isDirty: false, isFinalized: false, isFinalizing: false, railStage: "orient", ghostText: null, ghostTextTarget: null, acknowledgedCopilotIds: new Set(), activeCopilotItem: null, voiceTranscript: "", voiceListening: false, selectedFormatIds: [], reportFormatPickerOpen: false, criticalSlaStartedAt: null, criticalSlaEscalated: false, preloadTriggered: false, nextStudyPreloaded: false, reportingContext: EMPTY_REPORTING_STUDY_CONTEXT }); setTimeout(() => get().recomputeCopilot(), 0); },
+  selectStudy: (id) => { const st = get().studies.find(s => s.id === id); if (!st) return; set({ activeStudyId: id, findingsText: "", impressionText: "", recommendationText: "", techniqueText: "", clinicalHistoryText: st.clinicalHistory || "", fieldProvenance: {}, measurements: [], priors: [], isDirty: false, isFinalized: false, isFinalizing: false, railStage: "orient", ghostText: null, ghostTextTarget: null, acknowledgedCopilotIds: new Set(), activeCopilotItem: null, voiceTranscript: "", voiceListening: false, selectedFormatIds: [], reportFormatPickerOpen: false, appliedFormatReportTitle: null, appliedPathologyPatches: [], impressionNeedsRefresh: false, activeAnchor: null, activeStudyInstanceUID: st.studyInstanceUID ?? null, coverageMarks: [], coverageByScope: {}, appliedFormatName: null, ownershipReviewWarnings: [], ledgerHydrationWarning: null, lastPatchSnapshot: null, voiceComposerObservations: [], voiceComposerTranscriptHistory: [], criticalSlaStartedAt: null, criticalSlaEscalated: false, preloadTriggered: false, nextStudyPreloaded: false, reportingContext: EMPTY_REPORTING_STUDY_CONTEXT }); setTimeout(() => get().recomputeCopilot(), 0); },
   setNextStudy: (id) => set({ nextStudyId: id }), markNextStudyPreloaded: () => set({ nextStudyPreloaded: true }),
   setField: (f, v, opts) => {
     const key = fieldTextKey(f);
@@ -237,7 +470,34 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       [key]: v,
       fieldProvenance: { ...get().fieldProvenance, [f]: nextProv },
     };
+    if (f === "findings" && (opts?.source === "manual" || !opts?.source)) {
+      p.impressionNeedsRefresh = true;
+    }
+    if (f === "impression" && opts?.source && opts.source !== "manual") {
+      p.impressionNeedsRefresh = false;
+    }
     set(p);
+    if (opts?.source === "manual" || !opts?.source) {
+      const narrative = narrativeFromState(get());
+      const prov = get().fieldProvenance;
+      set({
+        appliedPathologyPatches: get().appliedPathologyPatches.map((patch) => {
+          if (patch.protected) return patch;
+          const lastF = patch.lastRendered.findings ?? "";
+          const lastI = patch.lastRendered.impression ?? "";
+          const lastR = patch.lastRendered.recommendation ?? "";
+          const missingFindings = Boolean(lastF.trim()) && !contributionPresent(narrative.findings, lastF);
+          const missingImpression = Boolean(lastI.trim()) && !contributionPresent(narrative.impression, lastI);
+          const mutated = (f === "findings" && contributionMutated(prevText, v, lastF))
+            || (f === "impression" && contributionMutated(prevText, v, lastI))
+            || (f === "recommendation" && contributionMutated(prevText, v, lastR));
+          const manual = contributionProtected(lastF, prov.findings)
+            || contributionProtected(lastI, prov.impression)
+            || contributionProtected(lastR, prov.recommendation);
+          return { ...patch, protected: Boolean(patch.protected || missingFindings || missingImpression || mutated || manual) };
+        }),
+      });
+    }
     if (f === "findings" || f === "impression" || f === "recommendation") {
       const d = detectMacroTrigger(v, scopedSnippetMacros(get));
       if (d) set({ activeMacroPrompt: { macro: d.macro, field: f, startPos: d.startPos } });
@@ -328,7 +588,26 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       isDirty: true,
     });
   },
-  setMeasurements: (m) => set({ measurements: m }), setPriors: (p) => set({ priors: p }),
+  setMeasurements: (m) => {
+    const prev = get().measurements;
+    if (
+      prev.length === m.length
+      && prev.every((p, i) => {
+        const n = m[i]!;
+        return p.id === n.id
+          && p.name === n.name
+          && p.value === n.value
+          && p.unit === n.unit
+          && p.priorValue === n.priorValue
+          && p.delta === n.delta
+          && p.source === n.source
+          && p.inserted === n.inserted;
+      })
+    ) {
+      return;
+    }
+    set({ measurements: m });
+  }, setPriors: (p) => set({ priors: p }),
   insertMeasurement: (id) => {
     const ms = get().measurements.map(m => m.id === id ? { ...m, inserted: true } : m);
     const m = ms.find(x => x.id === id);
@@ -395,7 +674,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   toggleVoiceBar: () => set({ showVoiceBar: !get().showVoiceBar }), setVoiceListening: (o) => set({ voiceListening: o }), setVoiceTranscript: (t) => set({ voiceTranscript: t }), setVoiceProvider: (p) => set({ voiceProvider: p }),
   parkStudy: () => { const id = get().activeStudyId; if (!id) return; const pk = new Set(get().parkedStudyIds); pk.add(id); set({ parkedStudyIds: pk }); get().advanceToNextStudy(); },
   startFinalize: () => set({ isFinalizing: true }),
-  completeFinalize: () => { const id = get().activeStudyId; if (!id) { set({ isFinalizing: false }); return; } const c = new Set(get().completedStudyIds); c.add(id); set({ isFinalizing: false, isFinalized: true, completedStudyIds: c, lastSignAt: Date.now(), criticalSlaStartedAt: null, criticalSlaEscalated: false }); setTimeout(() => get().advanceToNextStudy(), 1800); },
+  completeFinalize: () => { const id = get().activeStudyId; if (!id) { set({ isFinalizing: false }); return; } const c = new Set(get().completedStudyIds); c.add(id); set({ isFinalizing: false, isFinalized: true, completedStudyIds: c, lastSignAt: Date.now(), criticalSlaStartedAt: null, criticalSlaEscalated: false }); /* Navigation after finalize is handled by the workspace page (React Router navigate),  not here — the store has no router access. */ },
   cancelFinalize: () => set({ isFinalizing: false }),
   advanceToNextStudy: () => { const { studies, completedStudyIds, activeStudyId, nextStudyId, nextStudyPreloaded } = get(); if (nextStudyId && nextStudyPreloaded) { get().selectStudy(nextStudyId); set({ nextStudyId: null, nextStudyPreloaded: false }); return; } const r = studies.filter(s => !completedStudyIds.has(s.id) && s.id !== activeStudyId); const pr: Record<string, number> = { stat: 0, urgent: 1, routine: 2, vip: 1 }; r.sort((a, b) => ((pr[a.priority] ?? 2) - (pr[b.priority] ?? 2)) || (a.tatMinutes - b.tatMinutes)); if (r[0]) get().selectStudy(r[0].id); else set({ activeStudyId: null, findingsText: "", impressionText: "", recommendationText: "", fieldProvenance: {} }); },
   dismissFatigueCard: () => set({ fatigueCardDismissed: true }),
@@ -417,13 +696,26 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     if (!ids.length) return;
     const fs = get().reportFormats.filter((f: ReportFormat) => ids.includes(f.id));
     if (!fs.length) return;
-    const { findingsText, impressionText, recommendationText, techniqueText, clinicalHistoryText } = get();
-    const formatsHaveHistory = fs.some((f) => (f.clinicalHistory ?? "").trim());
-    if (findingsText.trim() || impressionText.trim() || recommendationText.trim() || techniqueText.trim() || (formatsHaveHistory && clinicalHistoryText.trim())) {
+    const { findingsText, impressionText, recommendationText, techniqueText } = get();
+    if (shouldConfirmFormatOverwrite({
+      technique: techniqueText,
+      findings: findingsText,
+      impression: impressionText,
+      recommendation: recommendationText,
+    })) {
       set({ confirmOverwriteOpen: true, pendingFormatIds: ids, pendingPathologyPatch: null });
       return;
     }
     get().confirmOverwriteAndApply();
+  },
+  applyFormatById: (id) => {
+    set({ selectedFormatIds: [id] });
+    get().applySelectedFormats();
+  },
+  toggleFormatFavorite: (id) => {
+    const nf = get().reportFormats.map((x: ReportFormat) => x.id === id ? { ...x, favorite: !x.favorite, updatedAt: new Date().toISOString() } : x);
+    saveFormats(nf);
+    set({ reportFormats: nf });
   },
   confirmOverwriteAndApply: () => {
     const pendingPatch = get().pendingPathologyPatch;
@@ -438,16 +730,42 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     if (!fs.length) { set({ confirmOverwriteOpen: false, pendingFormatIds: [] }); return; }
     if (fs.length === 1) {
       const f = fs[0];
-      get().setField("technique", f.technique, { source: "template", replaceProvenance: true });
-      get().setField("findings", f.findings, { source: "template", replaceProvenance: true });
-      get().setField("impression", f.impression, { source: "template", replaceProvenance: true });
-      get().setField("recommendation", f.recommendation, { source: "template", replaceProvenance: true });
-      if ((f.clinicalHistory ?? "").trim()) {
-        get().setField("clinicalHistory", f.clinicalHistory, { source: "template", replaceProvenance: true });
+      const clinical = clinicalFieldsFromFormat(f);
+      get().setField("technique", clinical.technique, { source: "template", replaceProvenance: true });
+      get().setField("findings", clinical.findings, { source: "template", replaceProvenance: true });
+      get().setField("impression", clinical.impression, { source: "template", replaceProvenance: true });
+      get().setField("recommendation", clinical.recommendation, { source: "template", replaceProvenance: true });
+      if (clinical.clinicalHistory.trim()) {
+        // Patient/worklist/manual Hx wins: merge format phrase (no duplicate), never replace.
+        const cur = get().clinicalHistoryText;
+        const phrase = clinical.clinicalHistory.trim();
+        if (!cur.trim()) {
+          get().setField("clinicalHistory", phrase, { source: "template", replaceProvenance: true });
+        } else {
+          const merged = appendClinicalPhrase(cur, phrase);
+          if (merged !== cur) {
+            get().setField("clinicalHistory", merged, { source: "template" });
+          }
+        }
       }
       const nf = get().reportFormats.map((x: ReportFormat) => x.id === f.id ? { ...x, usageCount: (x.usageCount ?? 0) + 1 } : x);
       saveFormats(nf);
-      set({ reportFormats: nf, confirmOverwriteOpen: false, pendingFormatIds: [], reportFormatPickerOpen: false, appliedPathologyPatches: [], lastPatchSnapshot: null });
+      // Mark prior ledger contributions stale — do not silently delete rows.
+      const stalePatches = get().appliedPathologyPatches.map((p) => ({ ...p, stale: true as const }));
+      set({
+        reportFormats: nf,
+        confirmOverwriteOpen: false,
+        pendingFormatIds: [],
+        reportFormatPickerOpen: false,
+        appliedPathologyPatches: stalePatches,
+        lastPatchSnapshot: null,
+        appliedFormatReportTitle: clinical.reportTitle || null,
+        appliedFormatName: f.name || null,
+      });
+      get().pushNotification({
+        kind: "ledger",
+        text: "Full report applied. Prior structured contributions marked stale for review.",
+      });
       void bumpReportFormatUsage(f.id);
       return;
     }
@@ -455,13 +773,40 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     const r = mergeTwoFormats(a, b);
     set({ lastMergeResult: r, lastMergeFormats: { a, b }, mergePreviewOpen: true, confirmOverwriteOpen: false, pendingFormatIds: [] });
   },
-  cancelOverwrite: () => set({ confirmOverwriteOpen: false, pendingFormatIds: [], pendingPathologyPatch: null }),
+  cancelOverwrite: () => {
+    const pendingPatch = get().pendingPathologyPatch;
+    if (pendingPatch) {
+      get().undoLastPatch();
+      const observation = observationFromPending(pendingPatch, get().reportingContext.region, get().activeAnchor);
+      const patchId = pendingPatch.id || observation.id || `pending_${Date.now().toString(36)}`;
+      const templates = pendingPatch.templates ?? pendingPatch.incoming;
+      set({
+        appliedPathologyPatches: [
+          ...get().appliedPathologyPatches.filter((p) => p.id !== patchId),
+          {
+            id: patchId,
+            ownership: pendingPatch.ownership,
+            templates,
+            lastRendered: pendingPatch.incoming,
+            source: pendingPatch.source,
+            observation: { ...observation, id: patchId },
+            replacedBaseline: { findings: [], impression: [] },
+            protected: false,
+          },
+        ],
+        confirmOverwriteOpen: false,
+        pendingPathologyPatch: null,
+      });
+      return;
+    }
+    set({ confirmOverwriteOpen: false, pendingFormatIds: [], pendingPathologyPatch: null });
+  },
   applyPathologyOverlay: (opts) => {
     const templates = opts.templates ?? opts.incoming;
-    const ownership = (opts.ownership.anatomicalSection || opts.ownership.conflictGroup || opts.ownership.baselineReplaces)
-      ? opts.ownership
-      : inferOwnership("", [templates.findings ?? "", templates.impression ?? ""]);
-    const incoming = applySideToIncoming(templates, opts.side ?? "");
+    const patchId = opts.id ?? `patch_${Date.now().toString(36)}`;
+    const observation = observationFromPending({ ...opts, id: patchId }, get().reportingContext.region, get().activeAnchor);
+    const ownership = ownershipFromObservation(observation);
+    const incoming = applySideToIncoming(templates, observation.supportsLaterality ? (opts.side ?? "") : "");
     const snap: PatchSnapshot = {
       clinicalHistoryText: get().clinicalHistoryText,
       techniqueText: get().techniqueText,
@@ -470,16 +815,75 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       recommendationText: get().recommendationText,
       fieldProvenance: { ...get().fieldProvenance },
       appliedPathologyPatches: get().appliedPathologyPatches.map((p) => ({ ...p })),
+      voiceComposerObservations: [...get().voiceComposerObservations],
+      voiceComposerTranscriptHistory: [...get().voiceComposerTranscriptHistory],
     };
+
+    const siblings = get().appliedPathologyPatches.filter((p) => {
+      if (p.id === patchId) return false;
+      const other = toLedgerPatch(p).observation;
+      return observationsMutuallyExclusive(observation, other);
+    });
+
+    let narrative = narrativeFromState(get());
+    let provenance = get().fieldProvenance;
+    // Drop mutex siblings from the ledger only. Do not pre-strip their
+    // sentences — structured overlay owns replacement and records
+    // replacedBaseline so deselect can restore a normal/baseline.
+    let patches = get().appliedPathologyPatches.filter((p) => p.id !== patchId && !siblings.some((s) => s.id === p.id));
+
     const result = overlayPathology({
-      existing: narrativeFromState(get()),
+      existing: narrative,
       incoming,
       ownership,
-      provenance: get().fieldProvenance,
+      provenance,
       source: opts.source,
       force: opts.force,
     });
-    const patchId = opts.id ?? `patch_${Date.now().toString(36)}`;
+    const replaced = splitReplacedByField(result.replacedSentences, narrative);
+    const lastRendered: PathologyIncoming = {
+      findings: renderedInField(incoming.findings, result.narrative.findings) || incoming.findings,
+      impression: renderedInField(incoming.impression, result.narrative.impression) || incoming.impression,
+      technique: renderedInField(incoming.technique, result.narrative.technique) || incoming.technique,
+      recommendation: renderedInField(incoming.recommendation, result.narrative.recommendation) || incoming.recommendation,
+    };
+    const nextPatch: AppliedPathologyPatch = {
+      id: patchId,
+      ownership,
+      templates,
+      lastRendered,
+      source: opts.source,
+      observation,
+      replacedBaseline: replaced,
+      protected: false,
+    };
+    const nextPatches = [...patches.filter((p) => p.id !== patchId), nextPatch];
+    const siblingHits = detectUnownedSiblingConflictsForLedger({
+      findings: result.narrative.findings,
+      patches: nextPatches.map(toLedgerPatch),
+    });
+    const ownershipReviewWarnings = siblingHits.map((w) => ({
+      sentence: w.sentence,
+      token: w.token,
+      hint: UNOWNED_SIBLING_HINT,
+    }));
+    if (result.ambiguous && !opts.force) {
+      set({
+        clinicalHistoryText: result.narrative.clinicalHistory,
+        techniqueText: result.narrative.technique,
+        findingsText: result.narrative.findings,
+        impressionText: result.narrative.impression,
+        recommendationText: result.narrative.recommendation,
+        fieldProvenance: result.provenance,
+        isDirty: true,
+        lastPatchSnapshot: snap,
+        appliedPathologyPatches: nextPatches,
+        ownershipReviewWarnings,
+        confirmOverwriteOpen: true,
+        pendingPathologyPatch: { ...opts, incoming, templates, ownership, id: patchId },
+      });
+      return "pending";
+    }
     set({
       clinicalHistoryText: result.narrative.clinicalHistory,
       techniqueText: result.narrative.technique,
@@ -489,19 +893,259 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       fieldProvenance: result.provenance,
       isDirty: true,
       lastPatchSnapshot: snap,
-      appliedPathologyPatches: [
-        ...get().appliedPathologyPatches.filter((p) => p.id !== patchId),
-        { id: patchId, ownership, templates, lastRendered: incoming, source: opts.source },
-      ],
+      appliedPathologyPatches: nextPatches,
+      ownershipReviewWarnings,
+      impressionNeedsRefresh: impressionNeedsRefreshFromNarrative(
+        result.narrative.impression,
+        nextPatches.map(toLedgerPatch),
+        result.provenance.impression,
+      ),
     });
-    if (result.ambiguous && !opts.force) {
-      set({
-        confirmOverwriteOpen: true,
-        pendingPathologyPatch: { ...opts, incoming, templates, ownership, id: patchId },
-      });
-      return "pending";
-    }
     return "applied";
+  },
+  applyMacroBundle: (opts) => {
+    const bundleId = opts.bundleId || `bundle_${Date.now().toString(36)}`;
+    let status: "applied" | "pending" = "applied";
+    const snap: PatchSnapshot = {
+      clinicalHistoryText: get().clinicalHistoryText,
+      techniqueText: get().techniqueText,
+      findingsText: get().findingsText,
+      impressionText: get().impressionText,
+      recommendationText: get().recommendationText,
+      fieldProvenance: { ...get().fieldProvenance },
+      appliedPathologyPatches: get().appliedPathologyPatches.map((p) => ({ ...p })),
+      voiceComposerObservations: [...get().voiceComposerObservations],
+      voiceComposerTranscriptHistory: [...get().voiceComposerTranscriptHistory],
+    };
+    for (const obs of opts.observations) {
+      const r = get().applyPathologyOverlay({ ...obs, bundleId, id: obs.id ?? `${bundleId}-${obs.concept ?? obs.label ?? "obs"}` });
+      if (r === "pending") status = "pending";
+    }
+    set({ lastPatchSnapshot: snap });
+    return status;
+  },
+  /**
+   * Bundle deselect: remove only this bundle's observations that are
+   * (a) not protected and (b) not superseded by a newer QS/voice observation
+   * on the same slotKey. Overridden slots keep the overriding observation's
+   * text and ownership; remaining bundle slots restore replacedBaseline,
+   * same as individual removeObservation. Never auto-deletes manual text.
+   */
+  removeMacroBundle: (bundleId) => {
+    const id = (bundleId ?? "").trim();
+    if (!id) return "missing";
+    const all = get().appliedPathologyPatches;
+    const bundle = all.filter((p) => (p.observation?.bundleId ?? "") === id);
+    if (bundle.length === 0) return "missing";
+    const others = all.filter((p) => (p.observation?.bundleId ?? "") !== id);
+    const snap: PatchSnapshot = {
+      clinicalHistoryText: get().clinicalHistoryText,
+      techniqueText: get().techniqueText,
+      findingsText: get().findingsText,
+      impressionText: get().impressionText,
+      recommendationText: get().recommendationText,
+      fieldProvenance: { ...get().fieldProvenance },
+      appliedPathologyPatches: all.map((p) => ({ ...p })),
+      voiceComposerObservations: [...get().voiceComposerObservations],
+      voiceComposerTranscriptHistory: [...get().voiceComposerTranscriptHistory],
+    };
+    let anyRemoved = false;
+    let anyPreserved = false;
+    for (const patch of bundle) {
+      if (patch.protected) {
+        anyPreserved = true;
+        continue;
+      }
+      const slot = patch.observation?.slotKey;
+      const overridden = Boolean(slot && others.some((o) => {
+        if (o.observation?.slotKey !== slot) return false;
+        return o.source === "quick-select" || o.source === "quick-findings" || o.source === "radiologist-voice";
+      }));
+      if (overridden) continue;
+      const outcome = get().removeObservation(patch.id);
+      if (outcome === "preserved-manual") anyPreserved = true;
+      if (outcome === "removed") anyRemoved = true;
+    }
+    set({ lastPatchSnapshot: snap, isDirty: true });
+    if (anyPreserved && !anyRemoved) return "preserved-manual";
+    if (anyRemoved) return "removed";
+    return "no-op-unproven";
+  },
+  refreshImpressionFromLedger: () => {
+    const patches = get().appliedPathologyPatches.map(toLedgerPatch);
+    const remaining = generateLocalImpression(get().findingsText);
+    const next = refreshImpressionFromObservations({
+      currentImpression: get().impressionText,
+      patches,
+      remainingAbnormalLines: remaining,
+      provenance: get().fieldProvenance.impression,
+    });
+    const nextProv = { ...(get().fieldProvenance.impression ?? EMPTY_FIELD_PROVENANCE) };
+    for (const s of next.split(/\n+/).map((x) => x.trim()).filter(Boolean)) {
+      const key = normalizeForDedupe(s);
+      if (!key) continue;
+      if (nextProv[key]?.includes("manual")) continue;
+      const prev = nextProv[key] ?? [];
+      nextProv[key] = prev.includes("quick-findings") ? prev : [...prev, "quick-findings"];
+    }
+    set({
+      impressionText: next,
+      fieldProvenance: { ...get().fieldProvenance, impression: nextProv },
+      impressionNeedsRefresh: false,
+      isDirty: true,
+    });
+  },
+  hydrateObservationLedger: (raw) => {
+    const parsed = parseObservationLedger(raw);
+    if (parsed.status === "absent") {
+      set({ appliedPathologyPatches: [], ledgerHydrationWarning: null });
+      return { ok: true, mode: "narrative-only", reason: "absent", patchCount: 0 };
+    }
+    if (parsed.status !== "restored") {
+      const result: LedgerHydrationResult = {
+        ok: false,
+        mode: "narrative-only",
+        reason: parsed.status,
+        patchCount: 0,
+        warning: "Observation ledger could not be restored. Report text is unchanged.",
+      };
+      logLedgerHydrationSafe(result);
+      set({ appliedPathologyPatches: [], ledgerHydrationWarning: result.warning ?? null });
+      return result;
+    }
+    const narrative = narrativeFromState(get());
+    const hashes = extractRecordedHashes(raw);
+    const reconciled = parsed.patches.map((p) => reconcilePatchAgainstNarrative(p, narrative, hashes.get(p.id)));
+    const staleCount = reconciled.filter((p) => p.stale).length;
+    const provenance = parsed.fieldProvenance ?? reconstructProvenanceFromLedger(narrative, reconciled);
+    const warning = staleCount > 0
+      ? "Some saved observations no longer match the report text. Narrative was not changed."
+      : null;
+    const impressionNeedsRefresh = impressionNeedsRefreshFromNarrative(
+      narrative.impression,
+      reconciled,
+      provenance.impression,
+    );
+    set({
+      appliedPathologyPatches: reconciled.map((p) => ({
+        id: p.id,
+        ownership: ownershipFromObservation(p.observation),
+        templates: p.templates,
+        lastRendered: p.lastRendered,
+        source: p.source,
+        observation: p.observation,
+        replacedBaseline: p.replacedBaseline,
+        protected: p.protected,
+        stale: p.stale,
+      })),
+      fieldProvenance: {
+        ...get().fieldProvenance,
+        findings: provenance.findings ?? get().fieldProvenance.findings,
+        impression: provenance.impression ?? get().fieldProvenance.impression,
+        technique: provenance.technique ?? get().fieldProvenance.technique,
+        recommendation: provenance.recommendation ?? get().fieldProvenance.recommendation,
+        clinicalHistory: provenance.clinicalHistory ?? get().fieldProvenance.clinicalHistory,
+      },
+      ledgerHydrationWarning: warning,
+      impressionNeedsRefresh,
+      ...(hydrateCoverageFromLedgerRaw(raw) ? { coverageMarks: hydrateCoverageFromLedgerRaw(raw)! } : {}),
+    });
+    return {
+      ok: true,
+      mode: "restored",
+      reason: "restored",
+      patchCount: reconciled.length,
+      warning: warning ?? undefined,
+    };
+  },
+  serializeObservationLedger: () => {
+    const scope = coverageScopeKey(get().reportingContext.region);
+    const byScope = { ...get().coverageByScope, [scope]: get().coverageMarks };
+    return serializeObservationLedger(
+      get().appliedPathologyPatches.map(toLedgerPatch),
+      get().fieldProvenance,
+      get().coverageMarks.length > 0
+        ? serializeCoverageEnvelope(get().coverageMarks, { scopeKey: scope, byScope })
+        : undefined,
+    );
+  },
+  setActiveAnchor: (anchor) => {
+    if (anchorsEqual(get().activeAnchor, anchor)) return;
+    const expected = get().activeStudyInstanceUID;
+    if (
+      anchor
+      && expected
+      && anchor.studyInstanceUID
+      && anchor.studyInstanceUID !== expected
+    ) {
+      return;
+    }
+    set({ activeAnchor: anchor });
+  },
+  setCoverageMark: (regionKey, status, reason) => {
+    const scope = coverageScopeKey(get().reportingContext.region);
+    const base = get().coverageMarks.length ? get().coverageMarks : defaultCoverageMarks(scope);
+    const next = setCoverageStatus(base, regionKey, status, reason, scope);
+    if (coverageMarksEqual(get().coverageMarks, next)) return;
+    const byScope = { ...get().coverageByScope, [scope]: next };
+    set({
+      coverageMarks: next,
+      coverageByScope: byScope,
+      isDirty: status === "reviewed" || status === "waived" || status === "partial" || get().isDirty,
+    });
+  },
+  touchCoverageViewed: (regionKey) => {
+    const scope = coverageScopeKey(get().reportingContext.region);
+    const base = get().coverageMarks.length ? get().coverageMarks : defaultCoverageMarks(scope);
+    const next = markRegionViewed(base, regionKey, get().activeAnchor);
+    if (coverageMarksEqual(get().coverageMarks, next)) return;
+    const byScope = { ...get().coverageByScope, [scope]: next };
+    set({
+      coverageMarks: next,
+      coverageByScope: byScope,
+      // Focus alone never dirties the report.
+    });
+  },
+  hydrateCoverageMarks: (raw) => {
+    const parsed = parseCoverageFromRaw(raw);
+    if (!parsed) return;
+    const scope = coverageScopeKey(get().reportingContext.region);
+    const scoped = filterCoverageForScope(parsed, scope);
+    set({
+      coverageMarks: scoped,
+      coverageByScope: { ...get().coverageByScope, [scope]: scoped },
+    });
+  },
+  serializeCoverageMarks: () => get().coverageMarks,
+  dismissOwnershipReview: () => set({ ownershipReviewWarnings: [] }),
+  dismissLedgerHydrationWarning: () => set({ ledgerHydrationWarning: null }),
+  removeObservation: (id) => {
+    const patch = get().appliedPathologyPatches.find((p) => p.id === id);
+    if (!patch) return "missing";
+    const snap: PatchSnapshot = {
+      clinicalHistoryText: get().clinicalHistoryText,
+      techniqueText: get().techniqueText,
+      findingsText: get().findingsText,
+      impressionText: get().impressionText,
+      recommendationText: get().recommendationText,
+      fieldProvenance: { ...get().fieldProvenance },
+      appliedPathologyPatches: get().appliedPathologyPatches.map((p) => ({ ...p })),
+      voiceComposerObservations: [...get().voiceComposerObservations],
+      voiceComposerTranscriptHistory: [...get().voiceComposerTranscriptHistory],
+    };
+    const result = removeLedgerObservation(narrativeFromState(get()), get().fieldProvenance, toLedgerPatch(patch));
+    set({
+      clinicalHistoryText: result.narrative.clinicalHistory,
+      techniqueText: result.narrative.technique,
+      findingsText: result.narrative.findings,
+      impressionText: result.narrative.impression,
+      recommendationText: result.narrative.recommendation,
+      fieldProvenance: result.provenance,
+      appliedPathologyPatches: get().appliedPathologyPatches.filter((p) => p.id !== id),
+      lastPatchSnapshot: snap,
+      isDirty: true,
+    });
+    return result.outcome;
   },
   undoLastPatch: () => {
     const snap = get().lastPatchSnapshot;
@@ -514,11 +1158,113 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       recommendationText: snap.recommendationText,
       fieldProvenance: snap.fieldProvenance,
       appliedPathologyPatches: snap.appliedPathologyPatches,
+      voiceComposerObservations: snap.voiceComposerObservations ?? [],
+      voiceComposerTranscriptHistory: snap.voiceComposerTranscriptHistory ?? [],
       lastPatchSnapshot: null,
       isDirty: true,
     });
     return true;
   },
+  applyVoiceComposerPlan: (plan: VoiceChangePlan, transcript: string, opts?: { force?: boolean }) => {
+    const snap: PatchSnapshot = {
+      clinicalHistoryText: get().clinicalHistoryText,
+      techniqueText: get().techniqueText,
+      findingsText: get().findingsText,
+      impressionText: get().impressionText,
+      recommendationText: get().recommendationText,
+      fieldProvenance: { ...get().fieldProvenance },
+      appliedPathologyPatches: get().appliedPathologyPatches.map((p) => ({ ...p })),
+      voiceComposerObservations: [...get().voiceComposerObservations],
+      voiceComposerTranscriptHistory: [...get().voiceComposerTranscriptHistory],
+    };
+    const result = applyChangePlan({
+      narrative: narrativeFromState(get()),
+      provenance: get().fieldProvenance,
+      plan,
+      activeObservations: get().voiceComposerObservations,
+      force: opts?.force,
+    });
+    if (!result.ok || !result.narrative || !result.provenance) {
+      return "blocked";
+    }
+    const region = get().reportingContext.region || "";
+    const kept = get().appliedPathologyPatches.filter((p) => !p.id.startsWith("voice-"));
+    const voicePatches: AppliedPathologyPatch[] = (result.activeObservations ?? []).map((obs) => {
+      const observation = buildCanonicalObservation(observationInputFromVoice(obs, region));
+      return {
+        id: observation.id || `voice-${obs.concept ?? "obs"}`,
+        ownership: ownershipFromObservation(observation),
+        templates: { findings: obs.findingsText, impression: obs.impressionText },
+        lastRendered: { findings: obs.findingsText, impression: obs.impressionText },
+        source: "radiologist-voice",
+        observation,
+        replacedBaseline: { findings: [], impression: [] },
+        protected: false,
+      };
+    });
+    const written = {
+      findings: (result.activeObservations ?? []).map((o) => o.findingsText).filter(Boolean).join("\n"),
+      impression: (result.activeObservations ?? []).map((o) => o.impressionText).filter(Boolean).join("\n"),
+    };
+    set({
+      clinicalHistoryText: result.narrative.clinicalHistory,
+      techniqueText: result.narrative.technique,
+      findingsText: result.narrative.findings,
+      impressionText: result.narrative.impression,
+      recommendationText: result.narrative.recommendation,
+      fieldProvenance: stampVoiceAuthoredProvenance(result.provenance, written),
+      isDirty: true,
+      lastPatchSnapshot: snap,
+      voiceComposerObservations: result.activeObservations ?? [],
+      voiceComposerTranscriptHistory: transcript
+        ? [...get().voiceComposerTranscriptHistory, transcript]
+        : get().voiceComposerTranscriptHistory,
+      appliedPathologyPatches: [...kept, ...voicePatches],
+    });
+    return "applied";
+  },
+  applyAiComposerAccepted: (opts) => {
+    const snap: PatchSnapshot = {
+      clinicalHistoryText: get().clinicalHistoryText,
+      techniqueText: get().techniqueText,
+      findingsText: get().findingsText,
+      impressionText: get().impressionText,
+      recommendationText: get().recommendationText,
+      fieldProvenance: { ...get().fieldProvenance },
+      appliedPathologyPatches: get().appliedPathologyPatches.map((p) => ({ ...p })),
+      voiceComposerObservations: [...get().voiceComposerObservations],
+      voiceComposerTranscriptHistory: [...get().voiceComposerTranscriptHistory],
+    };
+    const markField = (field: "findings" | "impression" | "recommendation", text: string): FieldProvenanceMap => {
+      const map: FieldProvenanceMap = { ...(get().fieldProvenance[field] ?? EMPTY_FIELD_PROVENANCE) };
+      for (const sent of text.split(/(?<=[.!?])\s+|\n+/).map((s) => s.trim()).filter(Boolean)) {
+        const key = normalizeForDedupe(sent);
+        if (!key) continue;
+        const prev = map[key] ?? [];
+        map[key] = prev.includes("ai-draft") ? prev : [...prev, "ai-draft"];
+      }
+      return map;
+    };
+    set({
+      findingsText: opts.findings,
+      impressionText: opts.impression,
+      recommendationText: opts.recommendation,
+      fieldProvenance: {
+        ...get().fieldProvenance,
+        findings: markField("findings", opts.findings),
+        impression: markField("impression", opts.impression),
+        recommendation: markField("recommendation", opts.recommendation),
+      },
+      isDirty: true,
+      lastPatchSnapshot: snap,
+    });
+    return "applied";
+  },
+  clearVoiceComposerSession: () => set({
+    voiceComposerObservations: [],
+    voiceComposerTranscriptHistory: [],
+    appliedPathologyPatches: get().appliedPathologyPatches.filter((p) => !p.id.startsWith("voice-")),
+  }),
   relateralizePatches: (side) => {
     const patches = get().appliedPathologyPatches;
     if (!patches.length) return;
@@ -527,12 +1273,21 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     let technique = get().techniqueText;
     let recommendation = get().recommendationText;
     const nextPatches = patches.map((p) => {
+      if (p.observation && !p.observation.supportsLaterality) return p;
       const next = applySideToIncoming(p.templates, side);
       findings = relateralizeOwnedText(findings, p.lastRendered.findings ?? "", next.findings ?? "");
       impression = relateralizeOwnedText(impression, p.lastRendered.impression ?? "", next.impression ?? "");
       technique = relateralizeOwnedText(technique, p.lastRendered.technique ?? "", next.technique ?? "");
       recommendation = relateralizeOwnedText(recommendation, p.lastRendered.recommendation ?? "", next.recommendation ?? "");
-      return { ...p, lastRendered: next };
+      const observation = p.observation
+        ? buildCanonicalObservation({
+          ...p.observation,
+          laterality: side,
+          supportsLaterality: true,
+          id: p.observation.id,
+        })
+        : p.observation;
+      return { ...p, lastRendered: next, observation };
     });
     set({
       findingsText: findings,
@@ -586,6 +1341,12 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       reportFormatPickerOpen: false,
       appliedPathologyPatches: [],
       lastPatchSnapshot: null,
+      impressionNeedsRefresh: false,
+      appliedFormatReportTitle:
+        r.combinedReportTitle
+        || (get().lastMergeFormats?.a?.reportTitle ?? "").trim()
+        || (get().lastMergeFormats?.b?.reportTitle ?? "").trim()
+        || null,
     });
     // Increment usage count
     const ids = get().selectedFormatIds;
@@ -663,7 +1424,16 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   triggerPreload: () => set({ preloadTriggered: true }), resetPreload: () => set({ preloadTriggered: false, nextStudyPreloaded: false }),
   setReportingContext: (ctx) => {
     if (reportingContextEqual(get().reportingContext, ctx)) return;
-    set({ reportingContext: ctx });
+    const prevScope = coverageScopeKey(get().reportingContext.region);
+    const nextScope = coverageScopeKey(ctx.region);
+    const byScope = { ...get().coverageByScope, [prevScope]: get().coverageMarks };
+    const nextMarks = filterCoverageForScope(byScope[nextScope] ?? [], nextScope);
+    // Region change: swap coverage scope; do not leak LS marks into Brain UI.
+    set({
+      reportingContext: ctx,
+      coverageByScope: { ...byScope, [nextScope]: nextMarks },
+      coverageMarks: nextMarks,
+    });
   },
 } as WorkspaceStore);
 

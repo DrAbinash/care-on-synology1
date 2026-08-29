@@ -334,14 +334,27 @@ export function AiReportingPanel() {
 
   // Local AI settings state
   const [localAi, setLocalAi] = useState({
-    primaryUrl: "http://172.16.1.140:11434",
+    primaryUrl: "",
     fallbackUrl: "",
-    model: "qwen3-vl:8b",
+    model: "",
+    composerModel: "",
+    composerFallbackModel: "",
+    composerNumCtx: 4096,
+    composerTemperature: 0.1,
+    composerTimeoutSeconds: 45,
+    backgroundEnabled: true,
+    reviewBeforeApply: true,
+    autoCompose: false,
+    concurrency: 1,
+    knownModels: [] as string[],
     enabled: false,
     localOnly: true,
     timeoutSeconds: 30,
     auditEnabled: true,
   });
+  const [composerDiag, setComposerDiag] = useState<string>("");
+  const [composerTestStatus, setComposerTestStatus] = useState<"idle" | "testing" | "ok" | "fail">("idle");
+  const [composerTestMsg, setComposerTestMsg] = useState("");
   const [localAiTestStatus, setLocalAiTestStatus] = useState<"idle" | "testing" | "ok" | "fail">("idle");
   const [localAiTestMsg, setLocalAiTestMsg] = useState("");
   const [localAiProbing, setLocalAiProbing] = useState(false);
@@ -384,11 +397,79 @@ export function AiReportingPanel() {
         setLocalAiTestMsg(
           `Connected to ${r.endpointUsed ?? localAi.primaryUrl} · model ${r.model ?? localAi.model} · ${r.models?.length ?? 0} models available.`,
         );
+        if (r.models?.length) {
+          setLocalAi((s) => ({ ...s, knownModels: r.models! }));
+        }
       } else {
         setLocalAiTestStatus("fail"); setLocalAiTestMsg(r.error ?? r.message ?? "Failed");
       }
     } catch (e: unknown) {
       setLocalAiTestStatus("fail"); setLocalAiTestMsg(e instanceof Error ? e.message : "Failed");
+    }
+  }
+
+  /** Fill the Composer / Vision dropdowns from Ollama /api/tags without requiring a chat probe. */
+  async function handleRefreshInstalledModels() {
+    setLocalAiProbing(true);
+    try {
+      const r = await api.post<{
+        ok: boolean;
+        error?: string;
+        models?: string[];
+        endpointUsed?: string;
+        message?: string;
+      }>(
+        "/api/radiology-ollama/test",
+        { baseUrl: localAi.primaryUrl, model: localAi.model || undefined, allowLocal: localAi.localOnly },
+      );
+      if (r.ok && r.models?.length) {
+        setLocalAi((s) => ({ ...s, knownModels: r.models! }));
+        toast({
+          title: `${r.models.length} model(s) from Ollama`,
+          description: r.endpointUsed ?? localAi.primaryUrl,
+        });
+      } else {
+        toast({
+          title: "Could not list models",
+          description: r.error ?? r.message ?? "Run Test Connection first, or check Ollama is reachable.",
+          variant: "destructive",
+        });
+      }
+    } catch (e: unknown) {
+      toast({
+        title: "Could not list models",
+        description: e instanceof Error ? e.message : "Failed",
+        variant: "destructive",
+      });
+    } finally {
+      setLocalAiProbing(false);
+    }
+  }
+
+  async function handleComposerTest() {
+    setComposerTestStatus("testing");
+    setComposerTestMsg("");
+    try {
+      const r = await api.post<{
+        ok: boolean;
+        error?: string;
+        model?: string;
+        schemaValid?: boolean;
+        latencyMs?: number;
+        changePlan?: unknown;
+      }>("/api/radiology/voice-report-composer/test", {
+        model: localAi.composerModel || undefined,
+      });
+      if (r.ok) {
+        setComposerTestStatus("ok");
+        setComposerTestMsg(`Schema valid · ${r.latencyMs ?? 0}ms · model ${r.model ?? localAi.composerModel}`);
+      } else {
+        setComposerTestStatus("fail");
+        setComposerTestMsg(r.error ?? "Test failed");
+      }
+    } catch (e: unknown) {
+      setComposerTestStatus("fail");
+      setComposerTestMsg(e instanceof Error ? e.message : "Test failed");
     }
   }
 
@@ -403,10 +484,19 @@ export function AiReportingPanel() {
         ollamaLocalOnly: localAi.localOnly,
         ollamaTimeoutSeconds: localAi.timeoutSeconds,
         ollamaAuditEnabled: localAi.auditEnabled,
+        ollamaComposerModel: localAi.composerModel || null,
+        ollamaComposerFallbackModel: localAi.composerFallbackModel || null,
+        ollamaComposerNumCtx: localAi.composerNumCtx,
+        ollamaComposerTemperature: localAi.composerTemperature,
+        ollamaComposerTimeoutSeconds: localAi.composerTimeoutSeconds,
+        reportComposerBackgroundEnabled: localAi.backgroundEnabled,
+        reportComposerReviewBeforeApply: localAi.reviewBeforeApply,
+        reportComposerAutoCompose: localAi.autoCompose,
+        reportComposerConcurrency: localAi.concurrency,
+        ollamaKnownModels: JSON.stringify(localAi.knownModels ?? []),
       });
-      // Keep the shared clinic-settings cache in sync — RadiologySettingsCenter
-      // and any other consumer read from the same ["clinic-settings"] query key.
       void queryClient.invalidateQueries({ queryKey: ["clinic-settings"] });
+      void queryClient.invalidateQueries({ queryKey: ["voice-composer-config"] });
       toast({ title: "Local AI settings saved" });
     } catch (e: unknown) {
       toast({ title: "Save failed", description: e instanceof Error ? e.message : "Error", variant: "destructive" });
@@ -475,17 +565,42 @@ export function AiReportingPanel() {
     const cs = clinicSettingsData as {
       ollamaBaseUrl?: string | null; ollamaFallbackUrl?: string | null; ollamaModel?: string | null;
       ollamaEnabled?: boolean; ollamaLocalOnly?: boolean; ollamaTimeoutSeconds?: number; ollamaAuditEnabled?: boolean;
+      ollamaKnownModels?: string;
+      ollamaComposerModel?: string | null;
+      ollamaComposerFallbackModel?: string | null;
+      ollamaComposerNumCtx?: number;
+      ollamaComposerTemperature?: string | number;
+      ollamaComposerTimeoutSeconds?: number;
+      reportComposerBackgroundEnabled?: boolean;
+      reportComposerReviewBeforeApply?: boolean;
+      reportComposerAutoCompose?: boolean;
+      reportComposerConcurrency?: number;
     };
     const rawModel = (cs.ollamaModel ?? localAi.model ?? "").trim();
-    const model =
-      rawModel === "qwen3:8b" || rawModel === "qwen3:8b-instruct" || rawModel === "qwen2.5-vl:7b" || rawModel === "qwen2-vl:7b"
-        ? "qwen3-vl:8b"
-        : (rawModel || "qwen3-vl:8b");
+    // Keep saved clinic value as-is (legacy aliases are normalized only on server save).
+    const model = rawModel;
     setLocalAi((s) => ({
       ...s,
       primaryUrl: cs.ollamaBaseUrl ?? s.primaryUrl,
       fallbackUrl: cs.ollamaFallbackUrl ?? s.fallbackUrl,
       model,
+      composerModel: cs.ollamaComposerModel ?? s.composerModel,
+      composerFallbackModel: cs.ollamaComposerFallbackModel ?? s.composerFallbackModel,
+      composerNumCtx: cs.ollamaComposerNumCtx ?? s.composerNumCtx,
+      composerTemperature: Number(cs.ollamaComposerTemperature ?? s.composerTemperature),
+      composerTimeoutSeconds: cs.ollamaComposerTimeoutSeconds ?? s.composerTimeoutSeconds,
+      backgroundEnabled: cs.reportComposerBackgroundEnabled ?? s.backgroundEnabled,
+      reviewBeforeApply: cs.reportComposerReviewBeforeApply ?? s.reviewBeforeApply,
+      autoCompose: cs.reportComposerAutoCompose ?? s.autoCompose,
+      concurrency: cs.reportComposerConcurrency ?? s.concurrency,
+      knownModels: (() => {
+        try {
+          const parsed = JSON.parse(cs.ollamaKnownModels ?? "[]");
+          return Array.isArray(parsed) ? parsed.map(String) : s.knownModels;
+        } catch {
+          return s.knownModels;
+        }
+      })(),
       enabled: cs.ollamaEnabled ?? s.enabled,
       localOnly: cs.ollamaLocalOnly ?? s.localOnly,
       timeoutSeconds: cs.ollamaTimeoutSeconds ?? s.timeoutSeconds,
@@ -751,9 +866,25 @@ export function AiReportingPanel() {
                 {localAiTestStatus === "testing" ? <RefreshCw size={11} className="animate-spin" /> : <TestTube2 size={11} />}
                 Test Primary
               </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 text-xs gap-1"
+                disabled={localAiProbing}
+                onClick={() => void handleRefreshInstalledModels()}
+                data-testid="refresh-ollama-models"
+              >
+                {localAiProbing ? <RefreshCw size={11} className="animate-spin" /> : <RefreshCw size={11} />}
+                Refresh installed models
+              </Button>
               {localAiTestStatus === "ok" && <span className="flex items-center gap-1 text-xs text-green-600"><CheckCircle2 size={12} /> {localAiTestMsg}</span>}
               {localAiTestStatus === "fail" && <span className="flex items-center gap-1 text-xs text-red-600"><XCircle size={12} /> {localAiTestMsg}</span>}
             </div>
+            {localAi.knownModels.length > 0 && (
+              <p className="text-[10px] text-muted-foreground">
+                {localAi.knownModels.length} installed model(s) loaded for the dropdowns below (from Ollama, not hard-coded).
+              </p>
+            )}
 
             {localAiProbeResult.length > 0 && (
               <div className="space-y-1">
@@ -773,26 +904,190 @@ export function AiReportingPanel() {
             <h3 className="text-sm font-semibold flex items-center gap-2"><BrainCircuit size={14} /> Model & Options</h3>
 
             <div className="space-y-1.5">
-              <label className="text-xs font-semibold text-muted-foreground">Local chat/vision model (canonical)</label>
+              <label className="text-xs font-semibold text-muted-foreground">Vision / image model (overnight MRI, OCR vision)</label>
               <select
                 value={localAi.model}
                 onChange={(e) => setLocalAi((s) => ({ ...s, model: e.target.value }))}
                 className="w-full h-9 px-3 text-xs rounded-lg border bg-background font-mono"
               >
-                <option value="qwen3-vl:8b">qwen3-vl:8b — ONLY local chat/vision model (overnight, OCR, radiology)</option>
+                <option value="">— Select installed model —</option>
+                {Array.from(new Set([
+                  ...localAi.knownModels,
+                  ...(localAi.model ? [localAi.model] : []),
+                ])).sort().map((m) => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
               </select>
               <input
                 type="text"
                 value={localAi.model}
-                onChange={(e) => setLocalAi((s) => ({ ...s, model: e.target.value || "qwen3-vl:8b" }))}
-                placeholder="qwen3-vl:8b"
+                onChange={(e) => setLocalAi((s) => ({ ...s, model: e.target.value }))}
+                placeholder="Installed Ollama vision model name"
                 className="w-full h-9 px-3 text-xs rounded-lg border bg-background font-mono"
               />
               <p className="text-[10px] text-muted-foreground">
-                Until architecture is stable, overnight MRI, OCR vision, Local AI panel, and Test Connection all use this same model via <code className="bg-muted px-1 rounded">resolveLocalAiRuntime()</code>.
-                Embeddings stay on <code className="bg-muted px-1 rounded">nomic-embed-text</code>. Paddle OCR is separate.
-                Diagnostics: <code className="bg-muted px-1 rounded">GET /api/ai-pipeline/health</code>
+                Overnight MRI, OCR vision, and Local AI panel use this model via <code className="bg-muted px-1 rounded">resolveLocalAiRuntime()</code>.
+                Does not change Report Composer. Options come from Refresh installed models / Test Primary.
               </p>
+            </div>
+
+            <div className="space-y-1.5 border-t pt-4">
+              <label className="text-xs font-semibold text-muted-foreground">Report Composer model (voice dictation)</label>
+              <select
+                value={localAi.composerModel}
+                onChange={(e) => setLocalAi((s) => ({ ...s, composerModel: e.target.value }))}
+                className="w-full h-9 px-3 text-xs rounded-lg border bg-background font-mono"
+                data-testid="composer-model-select"
+              >
+                <option value="">— Select installed model —</option>
+                {Array.from(new Set([
+                  ...localAi.knownModels,
+                  ...(localAi.composerModel ? [localAi.composerModel] : []),
+                ])).sort().map((m) => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+              </select>
+              <input
+                type="text"
+                value={localAi.composerModel}
+                onChange={(e) => setLocalAi((s) => ({ ...s, composerModel: e.target.value }))}
+                placeholder="Type any installed Ollama text model"
+                className="w-full h-9 px-3 text-xs rounded-lg border bg-background font-mono"
+                data-testid="composer-model-input"
+              />
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-[10px] text-muted-foreground">Fallback model</label>
+                  <input
+                    type="text"
+                    value={localAi.composerFallbackModel}
+                    onChange={(e) => setLocalAi((s) => ({ ...s, composerFallbackModel: e.target.value }))}
+                    placeholder="(none)"
+                    className="w-full h-8 px-2 text-xs rounded border bg-background font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] text-muted-foreground">Context (num_ctx) — composer only</label>
+                  <input
+                    type="number"
+                    min={2048}
+                    max={8192}
+                    step={512}
+                    value={localAi.composerNumCtx}
+                    onChange={(e) => setLocalAi((s) => ({ ...s, composerNumCtx: Number(e.target.value) }))}
+                    className="w-full h-8 px-2 text-xs rounded border bg-background"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] text-muted-foreground">Temperature</label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={localAi.composerTemperature}
+                    onChange={(e) => setLocalAi((s) => ({ ...s, composerTemperature: Number(e.target.value) }))}
+                    className="w-full h-8 px-2 text-xs rounded border bg-background"
+                    data-testid="composer-temperature"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] text-muted-foreground">Timeout (sec)</label>
+                  <input
+                    type="number"
+                    min={10}
+                    max={120}
+                    step={5}
+                    value={localAi.composerTimeoutSeconds}
+                    onChange={(e) => setLocalAi((s) => ({ ...s, composerTimeoutSeconds: Number(e.target.value) }))}
+                    className="w-full h-8 px-2 text-xs rounded border bg-background"
+                    data-testid="composer-timeout"
+                  />
+                </div>
+              </div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <Button size="sm" variant="outline" className="h-7 text-xs gap-1" onClick={() => void handleComposerTest()}>
+                  <TestTube2 size={12} /> Test Composer
+                </Button>
+                {composerTestStatus === "ok" && <span className="text-xs text-green-600 flex items-center gap-1"><CheckCircle2 size={12} /> {composerTestMsg}</span>}
+                {composerTestStatus === "fail" && <span className="text-xs text-red-600 flex items-center gap-1"><XCircle size={12} /> {composerTestMsg}</span>}
+              </div>
+              <p className="text-[10px] text-muted-foreground">
+                Text-only report composition for voice dictation. Separate from vision model. Composer num_ctx does not change global OLLAMA_NUM_CTX.
+              </p>
+            </div>
+
+            <div className="space-y-2 border-t pt-4" data-testid="background-composer-settings">
+              <p className="text-xs font-semibold">Background Report Composer</p>
+              <p className="text-[11px] text-muted-foreground">
+                Radiologist-guided text composition. Separate from overnight vision AI. Auto Compose stays OFF until clinic trusts the workflow.
+              </p>
+              <label className="flex items-center gap-2 text-xs">
+                <input type="checkbox" checked={localAi.backgroundEnabled} onChange={(e) => setLocalAi((s) => ({ ...s, backgroundEnabled: e.target.checked }))} />
+                Background composer enabled
+              </label>
+              <label className="flex items-center gap-2 text-xs">
+                <input type="checkbox" checked={localAi.reviewBeforeApply} onChange={(e) => setLocalAi((s) => ({ ...s, reviewBeforeApply: e.target.checked }))} />
+                Review before apply (recommended ON)
+              </label>
+              <label className="flex items-center gap-2 text-xs">
+                <input type="checkbox" checked={localAi.autoCompose} onChange={(e) => setLocalAi((s) => ({ ...s, autoCompose: e.target.checked }))} />
+                Auto compose (default OFF)
+              </label>
+              <div className="flex items-center gap-2">
+                <label className="text-[10px] text-muted-foreground">Concurrency</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={3}
+                  value={localAi.concurrency}
+                  onChange={(e) => setLocalAi((s) => ({ ...s, concurrency: Number(e.target.value) }))}
+                  className="w-16 h-8 px-2 text-xs rounded border bg-background"
+                />
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-xs"
+                  onClick={() => {
+                    void (async () => {
+                      try {
+                        const r = await api.post<Record<string, unknown>>("/api/radiology/report-composer/test", {});
+                        setComposerDiag(JSON.stringify(r, null, 2));
+                        toast({ title: r.ok ? "Composer self-test OK" : "Composer self-test issues", variant: r.ok ? undefined : "destructive" });
+                      } catch (e: unknown) {
+                        toast({ title: "Self-test failed", description: e instanceof Error ? e.message : String(e), variant: "destructive" });
+                      }
+                    })();
+                  }}
+                >
+                  Run Report Composer Test
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-xs"
+                  onClick={() => {
+                    void (async () => {
+                      try {
+                        const r = await api.get<Record<string, unknown>>("/api/radiology/report-composer/diagnostics");
+                        const text = JSON.stringify(r, null, 2);
+                        setComposerDiag(text);
+                        await navigator.clipboard.writeText(text);
+                        toast({ title: "Diagnostic report copied (PHI-safe)" });
+                      } catch (e: unknown) {
+                        toast({ title: "Diagnostics failed", description: e instanceof Error ? e.message : String(e), variant: "destructive" });
+                      }
+                    })();
+                  }}
+                >
+                  Copy Diagnostic Report
+                </Button>
+              </div>
+              {composerDiag && (
+                <pre className="max-h-40 overflow-auto rounded border bg-muted/30 p-2 text-[10px] font-mono whitespace-pre-wrap">{composerDiag}</pre>
+              )}
             </div>
 
             <PipelineDiagnosticsPanel />

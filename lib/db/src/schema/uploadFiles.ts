@@ -35,13 +35,15 @@ export type UploadFile = typeof uploadFilesTable.$inferSelect;
 export type InsertUploadFile = z.infer<typeof insertUploadFileSchema>;
 
 // Safe MIME whitelist for general uploads (NOT DICOM)
+// SVG intentionally excluded: image/svg+xml can carry <script>, <use>, and
+// inline event handlers. With CSP disabled on the API, serving uploaded SVGs
+// is a stored XSS vector. Website photo uploads already reject SVG.
 export const SAFE_MIME_TYPES = new Set([
   "image/jpeg",
   "image/png",
   "image/webp",
   "image/heic",
   "image/heif",
-  "image/svg+xml",
   "application/pdf",
   "text/plain",
   "text/csv",

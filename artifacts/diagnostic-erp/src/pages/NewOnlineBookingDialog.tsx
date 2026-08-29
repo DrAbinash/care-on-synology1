@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -14,7 +14,13 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { readStaffSession, FULL_ACCESS_ROLES, normalizeRole } from "@/lib/staffSession";
 import { detectGenderFromName } from "@/lib/nameGender";
-import { Search, UserPlus, CreditCard, Building2, Stethoscope } from "lucide-react";
+import {
+  QUICK_SELECT_GRID_CLASS,
+  QUICK_SELECT_SLOT_COUNT,
+  emptyQuickSelectIds,
+  parseQuickSelectIds,
+} from "@/lib/quickSelectSlots";
+import { Search, UserPlus, CreditCard, Building2, Stethoscope, Pencil, MessageCircle } from "lucide-react";
 
 type PatientHit = {
   id: number;
@@ -46,6 +52,7 @@ type Booking = {
   bookingRef: string;
   totalAmount: string;
   status: string;
+  phone?: string;
 };
 
 function todayISO() {
@@ -58,19 +65,6 @@ function slotKey(s: SlotOpt) {
   return s.modality ? `${s.modality}::${s.value}` : s.value;
 }
 
-function parseIdSlots(raw: string | undefined, size: number): (number | null)[] {
-  try {
-    const arr = JSON.parse(raw ?? "[]");
-    const out: (number | null)[] = Array.isArray(arr)
-      ? arr.slice(0, size).map((v: unknown) => (typeof v === "number" ? v : null))
-      : [];
-    while (out.length < size) out.push(null);
-    return out;
-  } catch {
-    return Array.from({ length: size }, () => null);
-  }
-}
-
 export function NewOnlineBookingDialog({
   open,
   onClose,
@@ -81,6 +75,7 @@ export function NewOnlineBookingDialog({
   onCreated: (booking: Booking, paymentChoice: "link" | "pay_at_centre") => void;
 }) {
   const { toast } = useToast();
+  const queryClient = useQueryClient();
   const session = readStaffSession();
   const isAdmin = FULL_ACCESS_ROLES.has(normalizeRole(session?.user?.role || ""));
 
@@ -111,6 +106,11 @@ export function NewOnlineBookingDialog({
   const [testQuery, setTestQuery] = useState("");
   const [doctorId, setDoctorId] = useState<number | null>(null);
   const [doctorSearch, setDoctorSearch] = useState("");
+  const [quickDoctorIds, setQuickDoctorIds] = useState<(number | null)[]>(() => emptyQuickSelectIds());
+  const [quickDoctorPickerSlot, setQuickDoctorPickerSlot] = useState<number | null>(null);
+  const [quickDoctorPickerSearch, setQuickDoctorPickerSearch] = useState("");
+  const [quickTestPickerSlot, setQuickTestPickerSlot] = useState<number | null>(null);
+  const [quickTestPickerSearch, setQuickTestPickerSearch] = useState("");
 
   useEffect(() => {
     const t = setTimeout(() => setDebounced(search.trim()), 250);
@@ -182,6 +182,49 @@ export function NewOnlineBookingDialog({
   const doctors = doctorsPayload?.doctors ?? [];
   const phoneRequired = clinic?.patientPhoneRequired ?? true;
 
+  const quickTestIds = useMemo(
+    () => parseQuickSelectIds(clinic?.quickTestIds),
+    [clinic?.quickTestIds],
+  );
+
+  useEffect(() => {
+    if (!myQuick?.quickDoctorIds) return;
+    setQuickDoctorIds(parseQuickSelectIds(myQuick.quickDoctorIds));
+  }, [myQuick?.quickDoctorIds]);
+
+  const saveQuickTestsMut = useMutation({
+    mutationFn: (ids: (number | null)[]) =>
+      api.put("/api/clinic-settings", { quickTestIds: JSON.stringify(ids) }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["clinic-settings"] }),
+    onError: () => toast({ title: "Failed to save quick test", variant: "destructive" }),
+  });
+
+  const saveQuickDoctorsMut = useMutation({
+    mutationFn: (ids: (number | null)[]) =>
+      api.put("/api/my/quick-doctors", { quickDoctorIds: JSON.stringify(ids) }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["my-quick-doctors"] }),
+    onError: () => toast({ title: "Failed to save quick doctor", variant: "destructive" }),
+  });
+
+  function assignQuickTestSlot(slotIdx: number, testId: number | null) {
+    const latest = queryClient.getQueryData<{ quickTestIds?: string }>(["clinic-settings"]);
+    const current = parseQuickSelectIds(latest?.quickTestIds ?? clinic?.quickTestIds);
+    const next = [...current];
+    while (next.length < QUICK_SELECT_SLOT_COUNT) next.push(null);
+    next[slotIdx] = testId;
+    saveQuickTestsMut.mutate(next);
+  }
+
+  function assignQuickDoctorSlot(slotIdx: number, id: number | null) {
+    setQuickDoctorIds((current) => {
+      const next = [...current];
+      while (next.length < QUICK_SELECT_SLOT_COUNT) next.push(null);
+      next[slotIdx] = id;
+      saveQuickDoctorsMut.mutate(next);
+      return next;
+    });
+  }
+
   const testIdsCsv = [...selTests].join(",");
   const pkgIdsCsv = [...selPkgs].join(",");
   const { data: liveSlots } = useQuery<{ slots: SlotOpt[] }>({
@@ -194,30 +237,28 @@ export function NewOnlineBookingDialog({
   const tests = catalog?.tests ?? [];
   const pkgs = catalog?.packages ?? [];
 
-  const quickTests = useMemo(() => {
-    const ids = parseIdSlots(clinic?.quickTestIds, 8);
-    const catalogIds = new Set(tests.map((t) => t.id));
-    const out: CatalogTest[] = [];
-    for (const id of ids) {
-      if (id == null || !catalogIds.has(id)) continue;
-      const t = tests.find((x) => x.id === id);
-      if (t && !out.some((x) => x.id === t.id)) out.push(t);
-      if (out.length >= 5) break;
-    }
-    return out;
-  }, [clinic?.quickTestIds, tests]);
+  function toggleTest(id: number) {
+    setSelTests((prev) => {
+      const n = new Set(prev);
+      if (n.has(id)) n.delete(id);
+      else n.add(id);
+      return n;
+    });
+  }
 
-  const quickDoctors = useMemo(() => {
-    const ids = parseIdSlots(myQuick?.quickDoctorIds, 8);
-    const out: Doctor[] = [];
-    for (const id of ids) {
-      if (id == null) continue;
-      const d = doctors.find((x) => x.id === id);
-      if (d && !out.some((x) => x.id === d.id)) out.push(d);
-      if (out.length >= 5) break;
+  function handleQuickTestClick(slotIdx: number) {
+    const id = quickTestIds[slotIdx];
+    if (id == null) {
+      setQuickTestPickerSlot(slotIdx);
+      return;
     }
-    return out;
-  }, [myQuick?.quickDoctorIds, doctors]);
+    const t = tests.find((x) => x.id === id);
+    if (t) toggleTest(t.id);
+    else {
+      toast({ title: "Saved test no longer in online catalogue — please reassign" });
+      setQuickTestPickerSlot(slotIdx);
+    }
+  }
 
   const filteredDoctors = useMemo(() => {
     const q = doctorSearch.trim().toLowerCase();
@@ -316,15 +357,10 @@ export function NewOnlineBookingDialog({
     });
   }
 
-  function toggleTest(id: number) {
-    const n = new Set(selTests);
-    if (n.has(id)) n.delete(id); else n.add(id);
-    setSelTests(n);
-  }
-
   return (
+    <>
     <Dialog open={open} onOpenChange={(v) => { if (!v) onClose(); }}>
-      <DialogContent className="max-w-5xl w-[min(95vw,64rem)] max-h-[90vh] overflow-y-auto">
+      <DialogContent className="max-w-5xl w-[min(95vw,64rem)] max-h-[90vh] overflow-y-auto" data-testid="new-online-booking-dialog">
         <DialogHeader>
           <DialogTitle>New Online Booking</DialogTitle>
         </DialogHeader>
@@ -459,28 +495,48 @@ export function NewOnlineBookingDialog({
 
           <div>
             <Label className="flex items-center gap-1"><Stethoscope size={13} /> Referring doctor</Label>
-            {quickDoctors.length > 0 && (
-              <div className="grid grid-cols-2 sm:grid-cols-5 gap-1.5 mt-1.5">
-                {quickDoctors.map((d) => {
-                  const selected = doctorId === d.id;
-                  return (
+            {/* 12 quick slots — 3 rows × 4 cols; pencil edits a slot assignment. */}
+            <div className={`${QUICK_SELECT_GRID_CLASS} mt-1.5`} data-testid="booking-quick-doctors">
+              {quickDoctorIds.map((docId, idx) => {
+                const doc = docId != null ? doctors.find((d) => d.id === docId) : null;
+                const isSelected = !!doc && doctorId === doc.id;
+                return (
+                  <div key={idx} className="relative group">
                     <button
-                      key={d.id}
                       type="button"
-                      title={d.name}
-                      onClick={() => setDoctorId(selected ? null : d.id)}
-                      className={`w-full px-2 py-1.5 rounded-md text-[11px] font-semibold border truncate ${
-                        selected
-                          ? "bg-violet-600 text-white border-transparent"
-                          : "bg-violet-50 border-violet-300 text-violet-700 hover:bg-violet-100"
+                      onClick={() => {
+                        if (doc) setDoctorId(isSelected ? null : doc.id);
+                        else setQuickDoctorPickerSlot(idx);
+                      }}
+                      onContextMenu={(e) => { e.preventDefault(); setQuickDoctorPickerSlot(idx); }}
+                      title={doc ? doc.name : "Click to assign a doctor to this slot"}
+                      className={`w-full px-2 py-1.5 rounded-md text-[11px] font-semibold border truncate ${doc ? "pr-6" : ""} ${
+                        doc
+                          ? isSelected
+                            ? "bg-violet-600 text-white border-transparent"
+                            : "bg-violet-50 border-violet-300 text-violet-700 hover:bg-violet-100"
+                          : "bg-muted/40 border-dashed border-muted-foreground/30 text-muted-foreground hover:border-violet-300 hover:text-violet-600"
                       }`}
                     >
-                      {d.name}
+                      {doc ? doc.name : `+ Slot ${idx + 1}`}
                     </button>
-                  );
-                })}
-              </div>
-            )}
+                    {doc && (
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); setQuickDoctorPickerSlot(idx); }}
+                        className={`absolute top-1/2 right-1 -translate-y-1/2 rounded p-0.5 transition-colors ${
+                          isSelected ? "text-white/70 hover:text-white hover:bg-white/20" : "text-violet-400 hover:text-violet-700 hover:bg-violet-100"
+                        }`}
+                        title="Edit this slot — assign a different doctor"
+                        aria-label={`Edit doctor slot ${idx + 1}`}
+                      >
+                        <Pencil size={10} />
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
             <div className="relative mt-1.5">
               <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
               <Input
@@ -515,28 +571,43 @@ export function NewOnlineBookingDialog({
 
           <div>
             <Label>Investigations</Label>
-            {quickTests.length > 0 && (
-              <div className="grid grid-cols-2 sm:grid-cols-5 gap-1.5 mt-1.5 mb-2">
-                {quickTests.map((t) => {
-                  const selected = selTests.has(t.id);
-                  return (
+            {/* 12 quick slots — 3 rows × 4 cols; pencil edits a slot assignment. */}
+            <div className={`${QUICK_SELECT_GRID_CLASS} mt-1.5 mb-2`} data-testid="booking-quick-tests">
+              {quickTestIds.map((slot, idx) => {
+                const test = slot != null ? tests.find((t) => t.id === slot) : null;
+                const selected = !!test && selTests.has(test.id);
+                return (
+                  <div key={idx} className="relative group">
                     <button
-                      key={t.id}
                       type="button"
-                      title={t.name}
-                      onClick={() => toggleTest(t.id)}
-                      className={`w-full px-2 py-1.5 rounded-md text-[11px] font-semibold border truncate ${
-                        selected
-                          ? "bg-emerald-50 border-emerald-300 text-emerald-700"
-                          : "bg-teal-50 border-teal-300 text-teal-700 hover:bg-teal-100"
+                      onClick={() => handleQuickTestClick(idx)}
+                      onContextMenu={(e) => { e.preventDefault(); setQuickTestPickerSlot(idx); }}
+                      title={test ? test.name : "Click to assign a test to this slot"}
+                      className={`w-full px-2 py-1.5 rounded-md text-[11px] font-semibold border truncate ${test ? "pr-6" : ""} ${
+                        test
+                          ? selected
+                            ? "bg-emerald-50 border-emerald-300 text-emerald-700"
+                            : "bg-teal-50 border-teal-300 text-teal-700 hover:bg-teal-100"
+                          : "bg-muted/40 border-dashed border-muted-foreground/30 text-muted-foreground hover:border-teal-300 hover:text-teal-600"
                       }`}
                     >
-                      {t.name}
+                      {test ? test.name : `+ Slot ${idx + 1}`}
                     </button>
-                  );
-                })}
-              </div>
-            )}
+                    {test && (
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); setQuickTestPickerSlot(idx); }}
+                        className="absolute top-1/2 right-1 -translate-y-1/2 rounded p-0.5 text-teal-400 hover:text-teal-700 hover:bg-teal-50 transition-colors"
+                        title="Edit this slot — assign a different test"
+                        aria-label={`Edit investigation slot ${idx + 1}`}
+                      >
+                        <Pencil size={10} />
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
             <Input className="mt-1 mb-2" placeholder="Search tests…" value={testQuery} onChange={(e) => setTestQuery(e.target.value)} />
             <div className="border rounded-lg max-h-40 overflow-y-auto divide-y">
               {filteredTests.map((t) => (
@@ -619,13 +690,119 @@ export function NewOnlineBookingDialog({
             <Building2 size={14} className="mr-1" /> Pay at Centre
           </Button>
           <Button
+            className="bg-emerald-600 hover:bg-emerald-700"
             disabled={!canSave || createBooking.isPending || (slotFull && !overrideCapacity)}
             onClick={() => createBooking.mutate("link")}
           >
-            <CreditCard size={14} className="mr-1" /> {createBooking.isPending ? "Saving…" : "Save & Share Payment Link"}
+            <MessageCircle size={14} className="mr-1" /> {createBooking.isPending ? "Saving…" : "Save & Share Payment Link"}
           </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
+
+    <Dialog open={quickDoctorPickerSlot !== null} onOpenChange={(o) => { if (!o) { setQuickDoctorPickerSlot(null); setQuickDoctorPickerSearch(""); } }}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle className="text-base font-bold">Configure Quick Doctor Slot {(quickDoctorPickerSlot ?? 0) + 1}</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-3 py-2">
+          <Input
+            autoFocus
+            placeholder="Search doctor…"
+            value={quickDoctorPickerSearch}
+            onChange={(e) => setQuickDoctorPickerSearch(e.target.value)}
+            className="h-9"
+          />
+          <div className="max-h-60 overflow-y-auto space-y-1">
+            {doctors
+              .filter((d) => !quickDoctorPickerSearch || d.name.toLowerCase().includes(quickDoctorPickerSearch.toLowerCase()))
+              .slice(0, 20)
+              .map((d) => (
+                <button
+                  key={d.id}
+                  type="button"
+                  className="w-full text-left px-3 py-2 rounded border hover:bg-muted/40 text-sm flex items-center gap-2"
+                  onClick={() => {
+                    if (quickDoctorPickerSlot !== null) assignQuickDoctorSlot(quickDoctorPickerSlot, d.id);
+                    setQuickDoctorPickerSlot(null);
+                    setQuickDoctorPickerSearch("");
+                  }}
+                >
+                  <Stethoscope size={12} className="text-violet-600" />
+                  <span className="flex-1">{d.name}</span>
+                </button>
+              ))}
+            {doctors.filter((d) => !quickDoctorPickerSearch || d.name.toLowerCase().includes(quickDoctorPickerSearch.toLowerCase())).length === 0 && (
+              <div className="px-3 py-2 text-sm text-muted-foreground">No doctor found</div>
+            )}
+          </div>
+          {quickDoctorPickerSlot !== null && quickDoctorIds[quickDoctorPickerSlot] != null && (
+            <button
+              type="button"
+              className="text-xs text-red-500 hover:underline"
+              onClick={() => {
+                if (quickDoctorPickerSlot !== null) assignQuickDoctorSlot(quickDoctorPickerSlot, null);
+                setQuickDoctorPickerSlot(null);
+              }}
+            >
+              Clear this slot
+            </button>
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
+
+    <Dialog open={quickTestPickerSlot !== null} onOpenChange={(o) => { if (!o) { setQuickTestPickerSlot(null); setQuickTestPickerSearch(""); } }}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle className="text-base font-bold">Configure Quick Slot {(quickTestPickerSlot ?? 0) + 1}</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-3 py-2">
+          <Input
+            autoFocus
+            placeholder="Search test…"
+            value={quickTestPickerSearch}
+            onChange={(e) => setQuickTestPickerSearch(e.target.value)}
+            className="h-9"
+          />
+          <div className="max-h-60 overflow-y-auto space-y-1">
+            {tests
+              .filter((t) => !quickTestPickerSearch || t.name.toLowerCase().includes(quickTestPickerSearch.toLowerCase()))
+              .slice(0, 20)
+              .map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  className="w-full text-left px-3 py-2 rounded border hover:bg-muted/40 text-sm flex items-center justify-between"
+                  onClick={() => {
+                    if (quickTestPickerSlot !== null) assignQuickTestSlot(quickTestPickerSlot, t.id);
+                    setQuickTestPickerSlot(null);
+                    setQuickTestPickerSearch("");
+                  }}
+                >
+                  <span>{t.name}</span>
+                  <span className="font-semibold">₹{Number(t.price).toLocaleString("en-IN")}</span>
+                </button>
+              ))}
+            {tests.filter((t) => !quickTestPickerSearch || t.name.toLowerCase().includes(quickTestPickerSearch.toLowerCase())).length === 0 && (
+              <div className="px-3 py-2 text-sm text-muted-foreground">No test found in online catalogue</div>
+            )}
+          </div>
+          {quickTestPickerSlot !== null && quickTestIds[quickTestPickerSlot] != null && (
+            <button
+              type="button"
+              className="text-xs text-red-500 hover:underline"
+              onClick={() => {
+                if (quickTestPickerSlot !== null) assignQuickTestSlot(quickTestPickerSlot, null);
+                setQuickTestPickerSlot(null);
+              }}
+            >
+              Clear this slot
+            </button>
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
+    </>
   );
 }

@@ -132,6 +132,9 @@ export const radiologyReportPreferencesTable = pgTable(
     workspaceLayout: text("workspace_layout").notNull().default("3_panel"),
     // Print mode: "letterhead" | "plain_paper"
     printMode: text("print_mode").notNull().default("letterhead"),
+    // Show CARE letterpad header (logo + address) in PDF/Word/Print exports.
+    // When false, the output has no header chrome — for printing on pre-printed letterheads.
+    showLetterpadHeader: boolean("show_letterpad_header").notNull().default(true),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true })
       .notNull()

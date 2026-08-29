@@ -1,12 +1,19 @@
 import { Router } from "express";
 import { db, ordersTable, patientsTable, billsTable, paymentsTable, orderTestsTable, testsTable, samplesTable, sampleTestAssignmentsTable } from "@workspace/db";
 import { accountsTable, vouchersTable } from "@workspace/db/schema";
+import { INVALID_COLLECTION_STATUSES, isCollectiblePayment } from "../lib/financialIntegrity";
 import { eq, sql, gte, lte, and, desc, isNotNull, isNull, inArray, type SQL } from "drizzle-orm";
 import { z } from "zod/v4";
 import { GetRevenueReportQueryParams } from "@workspace/api-zod";
 import { renderHtmlToPdf } from "../lib/htmlToPdf";
 
 export const reportsRouter = Router();
+
+/** SQL filter matching INVALID_COLLECTION_STATUSES for revenue aggregates. */
+const INVALID_COLLECTION_SQL = sql`COALESCE(${paymentsTable.settlementStatus}, '') NOT IN (${sql.join(
+  [...INVALID_COLLECTION_STATUSES].map((s) => sql`${s}`),
+  sql`, `,
+)})`;
 
 // ─── Reusable query validation ──────────────────────────────────────────────
 
@@ -122,9 +129,9 @@ reportsRouter.get("/dashboard", async (_req, res) => {
     db.select({ count: sql<number>`count(*)` }).from(patientsTable),
     db.select({ count: sql<number>`count(*)` }).from(ordersTable).where(and(gte(ordersTable.createdAt, today), lte(ordersTable.createdAt, endOfDay))),
     db.select({ count: sql<number>`count(*)` }).from(ordersTable).where(eq(ordersTable.status, "pending")),
-    db.select({ sum: sql<number>`coalesce(sum(amount), 0)` }).from(paymentsTable).where(and(gte(paymentsTable.createdAt, today), lte(paymentsTable.createdAt, endOfDay))),
-    db.select({ sum: sql<number>`coalesce(sum(amount), 0)` }).from(paymentsTable),
-    db.select({ sum: sql<number>`coalesce(sum(amount), 0)` }).from(paymentsTable).where(gte(paymentsTable.createdAt, startOfMonth)),
+    db.select({ sum: sql<number>`coalesce(sum(amount), 0)` }).from(paymentsTable).where(and(gte(paymentsTable.createdAt, today), lte(paymentsTable.createdAt, endOfDay), INVALID_COLLECTION_SQL)),
+    db.select({ sum: sql<number>`coalesce(sum(amount), 0)` }).from(paymentsTable).where(INVALID_COLLECTION_SQL),
+    db.select({ sum: sql<number>`coalesce(sum(amount), 0)` }).from(paymentsTable).where(and(gte(paymentsTable.createdAt, startOfMonth), INVALID_COLLECTION_SQL)),
     db.select({ sum: sql<number>`coalesce(sum(balance_amount), 0)` }).from(billsTable).where(sql`status IN ('pending','partial')`),
     db.select({ sum: sql<number>`coalesce(sum(balance_amount), 0)` }).from(billsTable).where(and(sql`status IN ('pending','partial')`, gte(billsTable.createdAt, today), lte(billsTable.createdAt, endOfDay))),
     db.select({ count: sql<number>`count(*)` }).from(ordersTable).where(eq(ordersTable.status, "completed")),
@@ -229,6 +236,7 @@ reportsRouter.get("/revenue", async (req, res) => {
       COALESCE(SUM(amount), 0) as revenue,
       COUNT(*) as orders
     FROM payments
+    WHERE COALESCE(settlement_status, '') NOT IN ('superseded','void','failed','reversed','cancelled','refund_failed')
     GROUP BY ${sql.raw(groupBy)}
     ORDER BY ${sql.raw(groupBy)} DESC
     LIMIT ${limit}
@@ -337,8 +345,9 @@ reportsRouter.get("/income-expense", async (req, res) => {
   const { fromIso, toIso, fromDate, toDate } = range;
 
   // Payments received (income by day + method)
-  const payments = await db.select().from(paymentsTable)
+  const paymentsRaw = await db.select().from(paymentsTable)
     .where(and(gte(paymentsTable.createdAt, fromDate), lte(paymentsTable.createdAt, toDate)));
+  const payments = paymentsRaw.filter(isCollectiblePayment);
 
   // Vouchers that are expenses — vouchers.date is stored as text (YYYY-MM-DD),
   // so compare against ISO strings, not Date objects.
@@ -442,7 +451,7 @@ reportsRouter.get("/payment-methods", async (req, res) => {
   if (!range) { res.status(400).json({ error: "Invalid range: 'from' must be on or before 'to'" }); return; }
   const { fromDate, toDate } = range;
 
-  const payments = await db.select({
+  const paymentsRaw = await db.select({
     payment: paymentsTable, bill: billsTable, patient: patientsTable,
   })
     .from(paymentsTable)
@@ -450,6 +459,7 @@ reportsRouter.get("/payment-methods", async (req, res) => {
     .leftJoin(patientsTable, eq(billsTable.patientId, patientsTable.id))
     .where(and(gte(paymentsTable.createdAt, fromDate), lte(paymentsTable.createdAt, toDate)))
     .orderBy(desc(paymentsTable.createdAt));
+  const payments = paymentsRaw.filter((row) => isCollectiblePayment(row.payment));
 
   const byMethod: Record<string, { method: string; count: number; total: number; transactions: typeof payments }> = {};
   for (const row of payments) {
@@ -502,7 +512,7 @@ reportsRouter.get("/daily-summary", async (req, res) => {
   const date = q.data.date || new Date().toISOString().split("T")[0];
   const { fromDate, toDate } = istDayBounds(date);
 
-  const [bills, payments, orders, expenseVouchers] = await Promise.all([
+  const [bills, paymentsRaw, orders, expenseVouchers] = await Promise.all([
     db.select({ b: billsTable, p: patientsTable })
       .from(billsTable)
       .leftJoin(patientsTable, eq(billsTable.patientId, patientsTable.id))
@@ -517,6 +527,8 @@ reportsRouter.get("/daily-summary", async (req, res) => {
       .leftJoin(accountsTable, sql`${vouchersTable.debitAccountId}::integer = ${accountsTable.id}`)
       .where(and(gte(vouchersTable.date, date), lte(vouchersTable.date, date))),
   ]);
+
+  const payments = paymentsRaw.filter(isCollectiblePayment);
 
   const activeBills = bills.filter((r) => r.b.status !== "cancelled");
   const totalBilled   = activeBills.reduce((s, r) => s + Number(r.b.totalAmount), 0);
@@ -610,10 +622,11 @@ reportsRouter.get("/daily-summary/pdf", async (req, res) => {
   const date = q.data.date || new Date().toISOString().split("T")[0];
   const { fromDate, toDate } = istDayBounds(date);
 
-  const [bills, payments] = await Promise.all([
+  const [bills, paymentsRaw] = await Promise.all([
     db.select({ b: billsTable }).from(billsTable).where(and(gte(billsTable.createdAt, fromDate), lte(billsTable.createdAt, toDate))),
     db.select().from(paymentsTable).where(and(gte(paymentsTable.createdAt, fromDate), lte(paymentsTable.createdAt, toDate))),
   ]);
+  const payments = paymentsRaw.filter(isCollectiblePayment);
 
   const activeBills = bills.filter((r) => r.b.status !== "cancelled");
   const totalBilled = activeBills.reduce((s, r) => s + Number(r.b.totalAmount), 0);

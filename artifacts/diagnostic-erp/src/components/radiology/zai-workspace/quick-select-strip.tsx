@@ -5,6 +5,8 @@ import { useMemo, useState, useRef, useEffect } from "react";
 import { Plus, Pencil, Star, Search, X, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { patchFindingsContributionBlocked } from "@/lib/observationLedger";
+import { tileMatchesAnatomy } from "@/components/radiology/FindingsAnatomyChips";
 
 const CAT_DOT: Record<string, string> = {
   normal: "bg-emerald-500 shadow-emerald-400/50",
@@ -59,6 +61,9 @@ const LABELS: Record<QuickSelectField, string> = {
 export function QuickSelectStrip({
   field,
   bodyPart,
+  compact,
+  anatomyFilter,
+  onAfterPick,
 }: {
   field: QuickSelectField;
   /**
@@ -69,6 +74,12 @@ export function QuickSelectStrip({
    * section makes the tiles follow that choice.
    */
   bodyPart?: string | null;
+  /** Compact chrome for Impression / Recommendation sections (Sections 5–6). */
+  compact?: boolean;
+  /** When set, only tiles whose anatomicalSection matches this anatomy chip. */
+  anatomyFilter?: string | null;
+  /** Fired after a tile is merged into the editor (e.g. silent draft save). */
+  onAfterPick?: (field: QuickSelectField) => void;
 }) {
   const tiles = useWorkspaceSelector((s) => s.quickSelectTiles);
   const study = useWorkspaceSelector((s) => s.studies.find((x) => x.id === s.activeStudyId));
@@ -85,22 +96,29 @@ export function QuickSelectStrip({
     [tiles, field, study?.modality, reportingContext],
   );
   const filtered = useMemo(() => {
-    if (!search.trim()) return scoped;
+    let pool = scoped;
+    if (anatomyFilter && field === "findings") {
+      pool = pool.filter((t) => tileMatchesAnatomy(t.anatomicalSection, anatomyFilter));
+    }
+    if (!search.trim()) return pool;
     const q = search.toLowerCase();
-    return scoped.filter(
+    return pool.filter(
       (t) =>
         t.label.toLowerCase().includes(q) ||
         t.sentence.toLowerCase().includes(q) ||
         (t.mnemonic ?? "").toLowerCase().includes(q),
     );
-  }, [scoped, search]);
+  }, [scoped, search, anatomyFilter, field]);
   useEffect(() => {
     if (showSearch) setTimeout(() => ref.current?.focus(), 50);
   }, [showSearch]);
 
   if (!study) {
     return (
-      <div className="mb-2 text-[10px] text-muted-foreground">
+      <div
+        className={cn("text-[10px] text-muted-foreground", compact ? "mb-1" : "mb-2")}
+        data-testid={`quick-select-strip-${field}${compact ? "-compact" : ""}`}
+      >
         <span className={cn("font-bold uppercase tracking-wider", FIELD_ACCENT[field])}>
           {LABELS[field]} Quick Select · select a study
         </span>
@@ -109,18 +127,29 @@ export function QuickSelectStrip({
   }
 
   return (
-    <div className="mb-2.5 rounded-xl border border-white/60 bg-gradient-to-r from-white/80 via-slate-50/40 to-white/80 p-2 shadow-sm shadow-slate-200/40">
-      <div className="mb-1.5 flex items-center justify-between gap-2">
+    <div
+      className={cn(
+        compact
+          ? "mb-1.5 rounded-lg border border-slate-200/80 bg-slate-50/50 p-1.5"
+          : "mb-2.5 rounded-xl border border-white/60 bg-gradient-to-r from-white/80 via-slate-50/40 to-white/80 p-2 shadow-sm shadow-slate-200/40",
+      )}
+      data-testid={`quick-select-strip-${field}${compact ? "-compact" : ""}`}
+    >
+      <div className={cn("flex items-center justify-between gap-2", compact ? "mb-1" : "mb-1.5")}>
         <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
           <span className={cn("font-bold uppercase tracking-wider", FIELD_ACCENT[field])}>
-            {LABELS[field]} Quick Select
+            {compact ? LABELS[field] : `${LABELS[field]} Quick Select`}
           </span>
-          <span className={cn("rounded-full border px-1.5 py-0.5 font-mono text-[9px] font-semibold", FIELD_PILL[field])}>
-            {study.modality} · {reportingContext.region || scopeBodyPart || "unresolved"}
-          </span>
-          <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[9px] font-medium text-slate-600">
-            {scoped.length} tiles
-          </span>
+          {!compact && (
+            <>
+              <span className={cn("rounded-full border px-1.5 py-0.5 font-mono text-[9px] font-semibold", FIELD_PILL[field])}>
+                {study.modality} · {reportingContext.region || scopeBodyPart || "unresolved"}
+              </span>
+              <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[9px] font-medium text-slate-600">
+                {scoped.length} tiles
+              </span>
+            </>
+          )}
         </div>
         <div className="flex items-center gap-0.5">
           {showSearch ? (
@@ -145,18 +174,32 @@ export function QuickSelectStrip({
               </button>
             </div>
           ) : (
-            <Button
-              size="sm"
-              variant="ghost"
-              className="h-7 px-2 text-[10px] hover:bg-violet-50 hover:text-violet-700"
-              onClick={() => setShowSearch(true)}
-            >
-              <Search className="h-3 w-3" />
-            </Button>
+            <>
+              {!compact && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 px-2 text-[10px] hover:bg-violet-50 hover:text-violet-700"
+                  onClick={() => setShowSearch(true)}
+                >
+                  <Search className="h-3 w-3" />
+                </Button>
+              )}
+              <button
+                type="button"
+                onClick={() => openEditor(null, field)}
+                className="inline-flex h-6 items-center gap-0.5 rounded-md border border-dashed border-violet-300/80 px-1.5 text-[9px] font-semibold text-violet-700 hover:bg-violet-50"
+                title={`Add / edit ${LABELS[field]} tiles`}
+                data-testid={`qs-edit-${field}`}
+              >
+                <Plus className="h-2.5 w-2.5" />
+                <Pencil className="h-2.5 w-2.5" />
+              </button>
+            </>
           )}
         </div>
       </div>
-      <div className="flex max-h-[104px] flex-wrap gap-1.5 overflow-y-auto pr-1">
+      <div className={cn("flex flex-wrap gap-1 overflow-y-auto pr-1", compact ? "max-h-[72px]" : "max-h-[104px] gap-1.5")}>
         {filtered.map((tile) => (
           <QuickSelectTileBox
             key={tile.id}
@@ -166,8 +209,8 @@ export function QuickSelectStrip({
               const ws = useWorkspace.getState();
               if (field === "findings" || field === "impression") {
                 const ownership = {
-                  anatomicalSection: tile.anatomicalSection,
-                  conflictGroup: tile.conflictGroup,
+                  anatomicalSection: tile.anatomicalSection || undefined,
+                  conflictGroup: tile.conflictGroup || undefined,
                   baselineReplaces: tile.baselineReplaces,
                 };
                 const templates = field === "findings"
@@ -179,24 +222,32 @@ export function QuickSelectStrip({
                   ownership,
                   source: "quick-select",
                   id: `qs-${tile.id}`,
+                  region: tile.scopeBodyPart,
+                  label: tile.label,
+                  findingsText: tile.sentence,
+                  supportsLaterality: /\{side\}/i.test(`${tile.sentence} ${tile.impressionSentence ?? ""}`),
+                  force: tile.category === "abnormal" || tile.category === "critical",
                 });
               } else {
                 ws.mergeField(field, tile.sentence, "quick-select");
               }
               incUsage(tile.id);
+              onAfterPick?.(field);
             }}
             onFav={() => toggleFav(tile.id)}
             onEdit={() => openEditor(tile, field)}
           />
         ))}
-        <button
-          onClick={() => openEditor(null, field)}
-          className="inline-flex items-center gap-1 rounded-xl border-2 border-dashed border-violet-300/70 bg-gradient-to-br from-violet-50 to-fuchsia-50/50 px-2.5 py-1.5 text-[10.5px] font-semibold text-violet-700 transition hover:border-violet-500 hover:bg-violet-100/80 hover:text-violet-900"
-        >
-          <Plus className="h-3 w-3" />
-          <span>Add tile</span>
-          <ChevronRight className="h-2.5 w-2.5 opacity-50" />
-        </button>
+        {!compact && (
+          <button
+            onClick={() => openEditor(null, field)}
+            className="inline-flex items-center gap-1 rounded-xl border-2 border-dashed border-violet-300/70 bg-gradient-to-br from-violet-50 to-fuchsia-50/50 px-2.5 py-1.5 text-[10.5px] font-semibold text-violet-700 transition hover:border-violet-500 hover:bg-violet-100/80 hover:text-violet-900"
+          >
+            <Plus className="h-3 w-3" />
+            <span>Add tile</span>
+            <ChevronRight className="h-2.5 w-2.5 opacity-50" />
+          </button>
+        )}
       </div>
     </div>
   );
@@ -216,17 +267,22 @@ function QuickSelectTileBox({
   onEdit: () => void;
 }) {
   const cat = tile.category in CAT_TILE ? tile.category : "normal";
+  const patch = useWorkspaceSelector((s) => s.appliedPathologyPatches.find((p) => p.id === `qs-${tile.id}`));
+  const findings = useWorkspaceSelector((s) => s.findingsText);
+  const blockedChip = Boolean(patch && field === "findings" && patchFindingsContributionBlocked(patch, findings));
   return (
     <div
       className={cn(
         "group relative inline-flex cursor-pointer items-center gap-1.5 rounded-xl border px-2.5 py-1.5 text-[10.5px] transition duration-150",
         CAT_TILE[cat],
+        blockedChip && "ring-1 ring-amber-400",
       )}
       onClick={onPick}
-      title={tile.sentence}
+      title={blockedChip ? `${tile.sentence} — manual kept` : tile.sentence}
       data-testid={`qs-tile-${field}-${tile.id}`}
+      data-chip-state={blockedChip ? "blocked-manual-kept" : patch ? "selected" : "idle"}
     >
-      <span className={cn("h-2 w-2 flex-none rounded-full shadow-sm", CAT_DOT[cat])} />
+      <span className={cn("h-2 w-2 flex-none rounded-full shadow-sm", blockedChip ? "bg-amber-400 shadow-amber-300/60" : CAT_DOT[cat])} />
       <span className="max-w-[150px] truncate font-bold tracking-tight">{tile.label}</span>
       {tile.mnemonic && (
         <span className={cn("rounded-md border px-1 font-mono text-[8px] uppercase", CAT_BADGE[cat])}>
@@ -242,6 +298,7 @@ function QuickSelectTileBox({
             e.stopPropagation();
             onFav();
           }}
+          aria-label={tile.favorite ? "Remove from favorites" : "Add to favorites"}
           className={cn(
             "rounded-md p-0.5 hover:bg-white/70",
             tile.favorite ? "text-amber-500" : "text-slate-400 hover:text-amber-500",
@@ -254,6 +311,7 @@ function QuickSelectTileBox({
             e.stopPropagation();
             onEdit();
           }}
+          aria-label={`Edit ${tile.label}`}
           className="rounded-md p-0.5 text-slate-400 hover:bg-white/70 hover:text-slate-700"
         >
           <Pencil className="h-2.5 w-2.5" />

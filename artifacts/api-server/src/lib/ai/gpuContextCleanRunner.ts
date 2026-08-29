@@ -15,8 +15,15 @@ export interface GpuContextProbeCell {
   optional?: boolean;
 }
 
-/** Exact CARE UI matrix the operator runs on one real MRI. */
+/** Minimal GPU/context benchmark — diagnostic only (4096 1/2 img, then 6144 1 img). */
 export const GPU_CONTEXT_CLEAN_RUNNER_MATRIX: readonly GpuContextProbeCell[] = [
+  { id: "gpu-1-4096", imageCount: 1, numCtx: 4096 },
+  { id: "gpu-2-4096", imageCount: 2, numCtx: 4096 },
+  { id: "gpu-1-6144", imageCount: 1, numCtx: 6144 },
+] as const;
+
+/** Extended matrix for ops who need full ctx sweep (not run by default gpu_context suite). */
+export const GPU_CONTEXT_EXTENDED_MATRIX: readonly GpuContextProbeCell[] = [
   { id: "gpu-1-4096", imageCount: 1, numCtx: 4096 },
   { id: "gpu-2-4096", imageCount: 2, numCtx: 4096 },
   { id: "gpu-3-4096", imageCount: 3, numCtx: 4096 },
@@ -43,6 +50,7 @@ export interface GpuContextProbeRow {
   errorCode: string | null;
   gpuOutOfMemory: boolean;
   contextBudgetExceeded: boolean;
+  outputBudgetExhausted: boolean;
   responseLength: number | null;
   parserSuccess: boolean | null;
   candidateCount: number | null;
@@ -171,9 +179,11 @@ export function formatGpuContextDiagnosticReport(opts: {
         ? "GPU_OOM"
         : r.contextBudgetExceeded
           ? "CTX_EXCEEDED"
-          : r.pass
-            ? "PASS"
-            : "FAIL";
+          : r.outputBudgetExhausted
+            ? "OUT_BUDGET"
+            : r.pass
+              ? "PASS"
+              : "FAIL";
     lines.push(
       [
         r.id,
@@ -199,7 +209,7 @@ export function formatGpuContextDiagnosticReport(opts: {
   lines.push("Notes:");
   lines.push("- Each probe: unload → wait /api/ps absent → request → capture /api/ps after.");
   lines.push("- Stop on GPU_OUT_OF_MEMORY or uncleared runner; skip useless larger N@same ctx after CONTEXT_BUDGET_EXCEEDED.");
-  lines.push("- Optional 1@16384 runs only when required cells did not hard-stop.");
+  lines.push("- Minimal benchmark: 1@4096, 2@4096, 1@6144 (extended matrix available as GPU_CONTEXT_EXTENDED_MATRIX).");
   return lines.join("\n");
 }
 

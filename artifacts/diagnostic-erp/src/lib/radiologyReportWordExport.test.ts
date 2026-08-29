@@ -220,3 +220,21 @@ describe("safeFileNamePart", () => {
     expect(safeFileNamePart(long).length).toBeLessThanOrEqual(80);
   });
 });
+
+describe("Word export letterpad + body fonts (clinic sample contract)", () => {
+  test("body TextRuns use 12pt (size 24) and workspace always requests physical letterpad", () => {
+    const { readFileSync } = require("node:fs") as typeof import("node:fs");
+    const { resolve } = require("node:path") as typeof import("node:path");
+    const wordSrc = readFileSync(resolve(__dirname, "./radiologyReportWordExport.ts"), "utf8");
+    const workspaceSrc = readFileSync(
+      resolve(__dirname, "../pages/RadiologyReportingWorkspace.tsx"),
+      "utf8",
+    );
+    // Body paragraphs / list items must set half-points explicitly (Word default
+    // ~11pt looked tiny next to the clinic CT Brain .doc sample).
+    expect(wordSrc).toMatch(/runsFor\(block\.segments,\s*24\)/);
+    expect(wordSrc).toMatch(/convertMillimetersToTwip\(42\)/);
+    // Header ON/OFF must not strip the pre-printed letter-pad top margin on Word.
+    expect(workspaceSrc).toMatch(/physicalLetterpad:\s*true/);
+  });
+});

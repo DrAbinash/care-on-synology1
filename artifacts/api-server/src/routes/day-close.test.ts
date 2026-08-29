@@ -149,6 +149,23 @@ describe("splitCashExpenses", () => {
     expect(result.cashExpensesByApprover.get("Alice")).toBe(100);
     expect(result.cashExpensesByApprover.get("Bob")).toBe(50);
   });
+
+  test("blank approvedBy falls back to createdBy for drawer attribution", () => {
+    const result = splitCashExpenses([
+      { amount: "2200", paymentMode: "cash", approvedBy: null, createdBy: "Dr Abinash Kumar" },
+      { amount: "325", paymentMode: "cash", approvedBy: "", createdBy: "Dr Abinash Kumar" },
+    ]);
+    expect(result.cashExpenses).toBe(2525);
+    expect(result.cashExpensesByApprover.get("Dr Abinash Kumar")).toBe(2525);
+  });
+
+  test("blank approvedBy with no createdBy stays orphaned from per-staff map", () => {
+    const result = splitCashExpenses([
+      { amount: "40", paymentMode: "cash", approvedBy: null, createdBy: null },
+    ]);
+    expect(result.cashExpenses).toBe(40);
+    expect(result.cashExpensesByApprover.size).toBe(0);
+  });
 });
 
 describe("applyCashExpenses — CRITICAL FIX: Expected Cash = Cash In − Cash Refunded − Cash Expenses", () => {

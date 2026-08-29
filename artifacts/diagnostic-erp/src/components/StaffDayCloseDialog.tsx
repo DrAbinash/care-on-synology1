@@ -51,6 +51,8 @@ type StaffPreview = {
 type StaffCloseResult = StaffSlipClosure & {
   bills: StaffWindowBill[];
   printActivity?: StaffPrintActivity | null;
+  emailSent?: boolean;
+  emailSkipReason?: string;
 };
 
 const inr = (v: number) =>
@@ -173,9 +175,13 @@ export default function StaffDayCloseDialog({
         notes,
       }),
     onSuccess: (row) => {
+      const emailNote = row.emailSent === false
+        ? ` Email was not sent: ${row.emailSkipReason || "check Email Settings."}`
+        : "";
       toast({
         title: `${row.userName}'s day closed`,
-        description: nv(row.variance) === 0 ? "Balanced." : `Variance: ${inr(nv(row.variance))}`,
+        description: (nv(row.variance) === 0 ? "Balanced." : `Variance: ${inr(nv(row.variance))}`) + emailNote,
+        variant: row.emailSent === false ? "destructive" : undefined,
       });
       setJustClosed(row);
       qc.invalidateQueries({ queryKey: ["day-close-staff-status"] });

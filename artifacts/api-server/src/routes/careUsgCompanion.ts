@@ -32,7 +32,7 @@ import {
   type UsgMeasurement,
   type UsgDopplerMeasurement,
 } from "@workspace/db/schema";
-import { and, desc, eq, isNotNull, sql } from "drizzle-orm";
+import { and, desc, eq, isNotNull, or, sql } from "drizzle-orm";
 import { logger } from "../lib/logger";
 import {
   detectStudyType,
@@ -153,7 +153,20 @@ router.get("/study/:studyInstanceUID", async (req, res) => {
         studyDate: radiologyStudiesTable.studyDate,
       })
         .from(patientReportsTable)
-        .leftJoin(radiologyStudiesTable, eq(patientReportsTable.studyId, radiologyStudiesTable.id))
+        // Workspace finalize stores worklist.id on patient_reports.study_id;
+        // legacy rows may still store radiology_studies.id.
+        .leftJoin(
+          radiologyWorklistTable,
+          eq(patientReportsTable.studyId, radiologyWorklistTable.id),
+        )
+        .leftJoin(
+          radiologyStudiesTable,
+          or(
+            eq(radiologyWorklistTable.studyId, radiologyStudiesTable.id),
+            // Legacy: patient_reports.study_id stored billed radiology_studies.id
+            eq(patientReportsTable.studyId, radiologyStudiesTable.id),
+          ),
+        )
         .where(and(eq(patientReportsTable.patientId, patientId), eq(patientReportsTable.type, "radiology")))
         .orderBy(desc(patientReportsTable.createdAt))
         .limit(30);

@@ -184,6 +184,13 @@ export async function dispatchPendingOutbox(opts: { limit?: number; workerId?: s
         await db.update(integrationOutboxTable).set({ status: "sent", attempts: attemptNo, sentAt: new Date(), lastError: null, lockedAt: null, lockedBy: null }).where(eq(integrationOutboxTable.id, row.id));
         // Mark any result link delivered.
         await db.update(externalResultLinksTable).set({ deliveredAt: new Date() }).where(eq(externalResultLinksTable.emittedOutboxId, row.id)).catch(() => {});
+        if (row.eventType === "diagnostic_electronic_film.available") {
+          const payload = row.payload as { careFilmArtifactId?: number };
+          if (payload?.careFilmArtifactId) {
+            const { markFilmHopeSent } = await import("../electronicFilm/hopeEmitter.js");
+            await markFilmHopeSent(payload.careFilmArtifactId).catch(() => {});
+          }
+        }
       } else {
         failed++;
         const isDead = attemptNo >= row.maxAttempts;

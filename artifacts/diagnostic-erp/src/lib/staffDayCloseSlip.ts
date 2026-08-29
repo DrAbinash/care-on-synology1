@@ -1,12 +1,18 @@
 /**
- * Staff / My Day Close print slip — accounts reconciliation + denomination
- * + discounts / bill edits / voucher mods / expenses for the close window.
- * Deliberately omits test-wise collection (admin all-staff slip only).
+ * Staff / My Day Close print slip — compact A5 reconciliation receipt
+ * (matches handwritten clinic slip: bold type, two-column summary + denominations).
  */
 
-export type StaffSlipClinic = { name?: string; dayCloseAutoPrint?: boolean };
+export type StaffSlipClinic = {
+  name?: string;
+  logoDataUrl?: string | null;
+  dayCloseAutoPrint?: boolean;
+};
 
 export type StaffPrintActivity = {
+  dueReceived?: number;
+  cancelledBillsAmount?: number;
+  refundsAmount?: number;
   discountsGiven: number;
   discountBills: Array<{
     billId: number;
@@ -77,6 +83,10 @@ export type StaffSlipClosure = {
   varianceNote?: string | null;
   notes?: string | null;
   drawerStatus?: string;
+  /** Optional — when supplied, shown on slip; hidden when zero. */
+  totalRefunds?: string | number;
+  /** Optional — dues collected against older bills in this window; hidden when zero. */
+  dueReceived?: string | number;
   denominations?: null | {
     d500: number; d200: number; d100: number;
     d50: number; d20: number; d10: number; coins: number;
@@ -86,13 +96,13 @@ export type StaffSlipClosure = {
 };
 
 const DENOM_ROWS = [
-  { key: "d500" as const, label: "₹500", value: 500 },
-  { key: "d200" as const, label: "₹200", value: 200 },
-  { key: "d100" as const, label: "₹100", value: 100 },
-  { key: "d50" as const, label: "₹50", value: 50 },
-  { key: "d20" as const, label: "₹20", value: 20 },
-  { key: "d10" as const, label: "₹10", value: 10 },
-  { key: "coins" as const, label: "Coins / <₹10", value: 1 },
+  { key: "d500" as const, label: "500", value: 500 },
+  { key: "d200" as const, label: "200", value: 200 },
+  { key: "d100" as const, label: "100", value: 100 },
+  { key: "d50" as const, label: "50", value: 50 },
+  { key: "d20" as const, label: "20", value: 20 },
+  { key: "d10" as const, label: "10", value: 10 },
+  { key: "coins" as const, label: "Coins", value: 1 },
 ];
 
 function n(v: unknown): number {
@@ -109,23 +119,36 @@ function esc(s: unknown): string {
 
 function inr(v: number): string {
   return new Intl.NumberFormat("en-IN", {
-    style: "currency",
-    currency: "INR",
+    minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   }).format(v);
 }
 
-function fmtIst(iso: string | null | undefined): string {
-  if (!iso) return "Beginning of records";
-  return new Date(iso).toLocaleString("en-IN", {
-    dateStyle: "medium",
-    timeStyle: "short",
+function fmtIstDate(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  return new Date(iso).toLocaleDateString("en-IN", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    timeZone: "Asia/Kolkata",
+  });
+}
+
+function fmtIstTime(iso: string | null | undefined): string {
+  if (!iso) return "";
+  return new Date(iso).toLocaleTimeString("en-IN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: true,
     timeZone: "Asia/Kolkata",
   });
 }
 
 function emptyActivity(): StaffPrintActivity {
   return {
+    dueReceived: 0,
+    cancelledBillsAmount: 0,
+    refundsAmount: 0,
     discountsGiven: 0,
     discountBills: [],
     billEdits: [],
@@ -137,6 +160,16 @@ function emptyActivity(): StaffPrintActivity {
   };
 }
 
+function summaryLine(label: string, amount: number, opts?: { strong?: boolean; subtotal?: boolean }): string {
+  const cls = opts?.strong ? "line strong" : opts?.subtotal ? "line subtotal" : "line";
+  return `<div class="${cls}"><span class="lbl">${esc(label)}</span><span class="val">${esc(inr(amount))}</span></div>`;
+}
+
+function methodLine(label: string, amount: number, always = false): string {
+  if (!always && amount === 0) return "";
+  return `<div class="line method"><span class="lbl">${esc(label)}</span><span class="val">${esc(inr(amount))}</span></div>`;
+}
+
 export function buildStaffDayCloseSlipHtml(
   c: StaffSlipClosure,
   clinic: StaffSlipClinic,
@@ -144,191 +177,262 @@ export function buildStaffDayCloseSlipHtml(
 ): string {
   const activity = c.printActivity ?? emptyActivity();
   const who = staffLabel || c.userName || "Staff";
-  const expectedCash = n(c.expectedCash);
-  const actualCash = n(c.actualCash);
-  const expectedDigital =
-    n(c.expectedUpi) + n(c.expectedCard) + n(c.expectedCheque) + n(c.expectedOther);
-  const actualDigital =
-    n(c.actualUpi) + n(c.actualCard) + n(c.actualCheque) + n(c.actualOther);
-  const variance = n(c.variance);
-  const varianceLabel =
-    variance === 0
-      ? `<span style="color:#166534">Balanced</span>`
-      : `<span style="color:#991b1b">${esc(variance < 0 ? "−" : "+")}${esc(inr(Math.abs(variance)))}</span>`;
+  const clinicName = (clinic?.name || "CARE DIAGNOSTICS").toUpperCase();
+  const logoHtml = clinic?.logoDataUrl
+    ? `<img class="logo" src="${esc(clinic.logoDataUrl)}" alt="" />`
+    : `<div class="logo-ph">LOGO</div>`;
 
-  const methodRows = (
-    [
-      ["Cash", n(c.expectedCash), n(c.actualCash)],
-      ["UPI", n(c.expectedUpi), n(c.actualUpi)],
-      ["Card", n(c.expectedCard), n(c.actualCard)],
-      ["Cheque", n(c.expectedCheque), n(c.actualCheque)],
-      ["Other", n(c.expectedOther), n(c.actualOther)],
-    ] as const
-  )
-    .map(([label, e, a]) => {
-      const d = a - e;
-      const dLabel = d === 0 ? "—" : inr(d);
-      const color = d === 0 ? "" : d < 0 ? "color:#991b1b" : "color:#b45309";
-      return `<tr><td>${esc(label)}</td><td>${esc(inr(e))}</td><td>${esc(inr(a))}</td><td style="${color}">${esc(dLabel)}</td></tr>`;
-    })
-    .join("");
+  const totalBilled = n(c.totalBilled);
+  const outstanding = n(c.totalDue);
+  const discounts = n(activity.discountsGiven);
+  const refunds = n(activity.refundsAmount ?? c.totalRefunds);
+  const duesCollected = n(activity.dueReceived ?? c.dueReceived);
+  const cancelledBills = n(activity.cancelledBillsAmount);
+  const expense = n(activity.totalExpenses);
+  const subtotal = totalBilled + duesCollected;
+  const expected = subtotal - cancelledBills - refunds - outstanding - expense;
+  const variance = n(c.variance);
+
+  const closedAt = c.coveredToTs ?? c.closedAt;
+  const headerWhen = `${fmtIstDate(closedAt)} ${fmtIstTime(closedAt)}`.trim();
+  const windowFrom = fmtIstDate(c.coveredFromTs);
+  const windowTo = fmtIstTime(closedAt);
 
   const denoms = c.denominations;
-  const denomRows = denoms
+  const denomLines = denoms
     ? DENOM_ROWS.filter(({ key }) => n(denoms[key]) > 0)
         .map(({ key, label, value }) => {
           const count = n(denoms[key]);
-          const line = key === "coins" ? count : count * value;
-          return `<tr><td>${esc(label)}</td><td>${count}</td><td>${esc(inr(line))}</td></tr>`;
+          const lineTotal = key === "coins" ? count : count * value;
+          if (key === "coins") {
+            return `<div class="denom">${esc(label)} = ${esc(inr(lineTotal))}</div>`;
+          }
+          return `<div class="denom">${esc(label)} × ${count} = ${esc(inr(lineTotal))}</div>`;
         })
         .join("")
     : "";
 
-  const discountRows = activity.discountBills
-    .map(
-      (b) =>
-        `<tr><td>${esc(b.billNumber)}</td><td>${esc(b.patientName)}</td><td>${esc(inr(b.grossAmount))}</td><td>${esc(inr(b.discountGiven))}</td><td>${esc(b.discountReason || "—")}${b.discountReasonNote ? ` <span style="color:#64748b">(${esc(b.discountReasonNote)})</span>` : ""}</td></tr>`,
-    )
+  const denomTotal = n(c.denominationTotal);
+  const denomBlock = denomLines
+    ? `${denomLines}<div class="denom total">${esc(inr(denomTotal))}</div>`
+    : `<div class="denom muted">—</div>`;
+
+  const editCount = activity.billEdits.length + activity.voucherEdits.length;
+  const expenseLines = activity.expenseDetails
+    .map((e, i) => {
+      const label = [e.category, e.description].filter(Boolean).join(" — ") || "Expense";
+      return `<div class="expense"><span class="exp-no">${i + 1}.</span> ${esc(label)} <span class="exp-amt">Rs. ${esc(inr(e.amount))}</span></div>`;
+    })
     .join("");
 
-  const editRows = activity.billEdits
-    .map(
-      (e) =>
-        `<tr><td>${esc(e.billNumber)}</td><td>${esc(e.changeType)}</td><td>${esc(e.reason)}</td><td style="font-size:10px">${esc(e.oldValue ?? "—")} → ${esc(e.newValue ?? "—")}</td></tr>`,
-    )
-    .join("");
+  const methodBlock = [
+    methodLine("UPI", n(c.expectedUpi), true),
+    methodLine("CASH", n(c.expectedCash), true),
+    methodLine("CARD", n(c.expectedCard)),
+    methodLine("CHEQUE", n(c.expectedCheque)),
+    methodLine("OTHER", n(c.expectedOther)),
+  ].join("");
 
-  const voucherRows = activity.voucherEdits
-    .map(
-      (e) =>
-        `<tr><td>${esc(e.voucherNumber)}</td><td>${esc(e.changeType)}</td><td>${esc(e.reason)}</td><td style="font-size:10px">${esc(e.oldValue ?? "—")} → ${esc(e.newValue ?? "—")}</td></tr>`,
-    )
-    .join("");
+  const varianceHtml =
+    variance === 0
+      ? `<div class="note ok">Balanced — no variance</div>`
+      : `<div class="note warn">Variance ${variance < 0 ? "short" : "surplus"}: ${esc(inr(Math.abs(variance)))}</div>`;
 
-  const expenseRows = activity.expenseDetails
-    .map(
-      (e) =>
-        `<tr><td>${esc(e.category)}</td><td>${esc(e.description || "—")}</td><td>${esc(e.paymentMode)}</td><td>${esc(inr(e.amount))}</td></tr>`,
-    )
-    .join("");
-
-  return `<!doctype html><html><head><meta charset="utf-8"><title>Staff Day Close ${esc(c.closureDate)} — ${esc(who)}</title>
-  <style>
-    @page { size: A4 portrait; margin: 10mm; }
-    body { font-family: Arial, sans-serif; color:#1a1a2e; margin:0; padding:0; font-size:12px; }
-    .header { text-align:center; padding:8px 0; border-bottom:3px solid #1e3a5f; margin-bottom:12px; }
-    .header h1 { font-size:20px; margin:0; color:#1e3a5f; }
-    .header .subtitle { font-size:12px; color:#64748b; margin-top:2px; }
-    .section-title { background:#1e3a5f; color:#fff; font-size:12px; font-weight:700; padding:6px 10px; margin:16px 0 0; border-radius:4px 4px 0 0; }
-    .table { width:100%; border-collapse:collapse; }
-    .table th { background:#f1f5f9; padding:6px 8px; text-align:left; font-size:11px; font-weight:700; border-bottom:2px solid #e2e8f0; }
-    .table td { padding:6px 8px; border-bottom:1px solid #f1f5f9; }
-    .table td:last-child, .table th:last-child { text-align:right; }
-    .two-col { display:flex; gap:16px; margin-top:8px; }
-    .col { flex:1; }
-    .col-table { width:100%; border-collapse:collapse; }
-    .col-table th { background:#f1f5f9; padding:5px 8px; text-align:left; font-size:11px; font-weight:700; border-bottom:2px solid #e2e8f0; }
-    .col-table td { padding:5px 8px; border-bottom:1px solid #f1f5f9; }
-    .col-table td:last-child { text-align:right; font-weight:600; }
-    .grand-row td { border-top:2px solid #1e3a5f; padding-top:6px; font-weight:700; font-size:13px; }
-    .note { margin-top:8px; padding:6px; background:#fef9e7; border:1px dashed #d97706; font-size:11px; border-radius:4px; }
-    .footer { margin-top:12px; text-align:center; font-size:10px; color:#666; padding-top:8px; border-top:1px solid #eee; }
-    .muted { color:#888; text-align:center; padding:8px; }
-  </style></head><body>
-
-  <div class="header">
-    <h1>${esc(clinic?.name || "Diagnostic Centre")}</h1>
-    <div class="subtitle">Staff Day Close Reconciliation &middot; ${esc(c.closureDate)}</div>
-    <div class="subtitle">${esc(who)} &middot; ${esc(fmtIst(c.coveredFromTs))} &rarr; ${esc(fmtIst(c.coveredToTs ?? c.closedAt))}</div>
+  return `<!doctype html><html><head><meta charset="utf-8"><title>Staff Reconciliation ${esc(c.closureDate)}</title>
+<style>
+  @page { size: 148mm 210mm; margin: 6mm; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: Arial, Helvetica, sans-serif;
+    color: #000;
+    margin: 0;
+    padding: 0;
+    font-size: 15px;
+    font-weight: 600;
+    line-height: 1.35;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  .slip { width: 100%; max-width: 136mm; margin: 0 auto; }
+  .top {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    border-bottom: 3px solid #000;
+    padding-bottom: 6px;
+    margin-bottom: 6px;
+  }
+  .logo { width: 90px; height: 90px; object-fit: contain; flex-shrink: 0; }
+  .logo-ph {
+    width: 90px; height: 90px; border: 2px solid #000;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 12px; font-weight: 800; flex-shrink: 0;
+  }
+  .brand { flex: 1; text-align: center; }
+  .brand h1 { margin: 0; font-size: 22px; font-weight: 900; letter-spacing: 0.04em; }
+  .brand .sub { font-size: 13px; font-weight: 700; margin-top: 2px; }
+  .brand .who { font-size: 14px; font-weight: 800; margin-top: 4px; text-transform: uppercase; }
+  .brand .when { font-size: 12px; font-weight: 700; color: #222; }
+  .cols {
+    display: flex;
+    gap: 10px;
+    border-bottom: 3px solid #000;
+    padding-bottom: 8px;
+    margin-bottom: 8px;
+  }
+  .col { flex: 1; min-width: 0; }
+  .col-h {
+    font-size: 13px;
+    font-weight: 900;
+    text-transform: uppercase;
+    border-bottom: 2px solid #000;
+    padding-bottom: 3px;
+    margin-bottom: 5px;
+  }
+  .line {
+    display: flex;
+    justify-content: space-between;
+    gap: 6px;
+    padding: 2px 0;
+    font-size: 14px;
+    font-weight: 700;
+    border-bottom: 1px solid #ccc;
+  }
+  .line.subtotal {
+    border-top: 1px solid #000;
+    border-bottom: 1px solid #000;
+    margin-top: 2px;
+    padding-top: 3px;
+    font-weight: 800;
+  }
+  .line.strong {
+    border-top: 3px double #000;
+    border-bottom: 3px double #000;
+    margin-top: 4px;
+    padding-top: 4px;
+    font-size: 15px;
+    font-weight: 900;
+  }
+  .line.method { font-size: 14px; font-weight: 800; }
+  .lbl { flex: 1; }
+  .val { white-space: nowrap; font-variant-numeric: tabular-nums; text-align: right; }
+  .denom {
+    font-size: 14px;
+    font-weight: 800;
+    padding: 2px 0;
+    font-variant-numeric: tabular-nums;
+    border-bottom: 1px dashed #999;
+  }
+  .denom.total {
+    border-top: 2px solid #000;
+    border-bottom: none;
+    margin-top: 4px;
+    padding-top: 4px;
+    font-size: 16px;
+    font-weight: 900;
+    text-align: right;
+  }
+  .denom.muted { color: #666; font-weight: 700; }
+  .section {
+    margin-top: 8px;
+    padding-top: 4px;
+    border-top: 2px solid #000;
+  }
+  .section-h {
+    font-size: 14px;
+    font-weight: 900;
+    text-transform: uppercase;
+    margin-bottom: 4px;
+  }
+  .expense {
+    font-size: 14px;
+    font-weight: 700;
+    padding: 2px 0 2px 8px;
+  }
+  .exp-no { font-weight: 900; }
+  .exp-amt { float: right; font-weight: 900; font-variant-numeric: tabular-nums; }
+  .exp-total {
+    border-top: 2px solid #000;
+    margin-top: 4px;
+    padding-top: 4px;
+    font-size: 15px;
+    font-weight: 900;
+    text-align: right;
+  }
+  .note {
+    margin-top: 8px;
+    padding: 5px 6px;
+    border: 2px solid #000;
+    font-size: 13px;
+    font-weight: 800;
+  }
+  .note.ok { background: #f0fdf4; }
+  .note.warn { background: #fef2f2; }
+  .footer {
+    margin-top: 10px;
+    padding-top: 6px;
+    border-top: 2px solid #000;
+    font-size: 12px;
+    font-weight: 800;
+    text-align: left;
+  }
+  .footer .meta {
+    font-size: 11px;
+    font-weight: 700;
+    text-align: center;
+    margin-top: 8px;
+    color: #333;
+  }
+</style></head><body>
+<div class="slip">
+  <div class="top">
+    ${logoHtml}
+    <div class="brand">
+      <h1>${esc(clinicName)}</h1>
+      <div class="sub">Staff Reconciliation</div>
+      <div class="who">${esc(who)}</div>
+      <div class="when">${esc(headerWhen)}${windowFrom !== fmtIstDate(closedAt) ? ` · from ${esc(windowFrom)} ${esc(windowTo)}` : ""}</div>
+    </div>
   </div>
 
-  <div class="two-col">
+  <div class="cols">
     <div class="col">
-      <div class="section-title">Accounts Summary</div>
-      <table class="col-table">
-        <tbody>
-          <tr><td>Bills Created</td><td>${c.billsCount}</td></tr>
-          <tr><td>Payments</td><td>${c.paymentsCount}</td></tr>
-          <tr><td>Total Billed</td><td>${esc(inr(n(c.totalBilled)))}</td></tr>
-          <tr><td>Outstanding</td><td>${esc(inr(n(c.totalDue)))}</td></tr>
-          <tr><td>Discounts Given</td><td>${esc(inr(activity.discountsGiven))}</td></tr>
-          <tr><td>Total Expenses</td><td>${esc(inr(activity.totalExpenses))}</td></tr>
-          <tr class="grand-row"><td>Expected Collected</td><td>${esc(inr(n(c.totalExpected)))}</td></tr>
-          <tr><td>Actual Counted</td><td>${esc(inr(n(c.totalActual)))}</td></tr>
-          <tr><td>Variance</td><td>${varianceLabel}</td></tr>
-        </tbody>
-      </table>
+      <div class="col-h">Summary</div>
+      ${summaryLine("Total Bill Gen", totalBilled)}
+      ${summaryLine("Dues Collected", duesCollected)}
+      ${summaryLine("Subtotal", subtotal, { subtotal: true })}
+      ${summaryLine("Cancelled bills", cancelledBills)}
+      ${summaryLine("Refunds", refunds)}
+      ${summaryLine("Outstanding", outstanding)}
+      ${summaryLine("Expense", expense)}
+      ${summaryLine("Expected", expected, { strong: true })}
+      ${methodBlock}
     </div>
     <div class="col">
-      <div class="section-title">Cash Reconciliation</div>
-      <table class="col-table">
-        <tbody>
-          <tr><td>Expected Cash</td><td>${esc(inr(expectedCash))}</td></tr>
-          <tr><td>Actual Cash</td><td>${esc(inr(actualCash))}</td></tr>
-          <tr><td>Cash Variance</td><td style="color:${actualCash - expectedCash === 0 ? "#166534" : "#991b1b"}">${esc(inr(actualCash - expectedCash))}</td></tr>
-          <tr><td>Expected Digital</td><td>${esc(inr(expectedDigital))}</td></tr>
-          <tr><td>Actual Digital</td><td>${esc(inr(actualDigital))}</td></tr>
-          <tr class="grand-row"><td>Total Actual</td><td>${esc(inr(n(c.totalActual)))}</td></tr>
-        </tbody>
-      </table>
+      <div class="col-h">Cash Count</div>
+      ${denomBlock}
     </div>
   </div>
 
-  <div class="section-title">Method Reconciliation</div>
-  <table class="table">
-    <thead><tr><th>Method</th><th>Expected</th><th>Actual</th><th>Diff</th></tr></thead>
-    <tbody>
-      ${methodRows}
-      <tr class="grand-row"><td>Total</td><td>${esc(inr(n(c.totalExpected)))}</td><td>${esc(inr(n(c.totalActual)))}</td><td>${varianceLabel}</td></tr>
-    </tbody>
-  </table>
+  ${activity.expenseDetails.length > 0 ? `
+  <div class="section">
+    <div class="section-h">Expense details</div>
+    ${expenseLines}
+  </div>` : ""}
 
-  <div class="section-title">Denomination Count</div>
-  <table class="table">
-    <thead><tr><th>Denomination</th><th>Count</th><th>Amount</th></tr></thead>
-    <tbody>
-      ${denomRows || `<tr><td colspan="3" class="muted">No denomination count recorded</td></tr>`}
-      ${denomRows ? `<tr class="grand-row"><td colspan="2">Denomination Total</td><td>${esc(inr(n(c.denominationTotal)))}</td></tr>` : ""}
-    </tbody>
-  </table>
+  ${varianceHtml}
+  ${c.varianceNote ? `<div class="note">${esc(c.varianceNote)}</div>` : ""}
+  ${c.notes ? `<div class="note">${esc(c.notes)}</div>` : ""}
 
-  <div class="section-title">Discounts</div>
-  <table class="table">
-    <thead><tr><th>Bill #</th><th>Patient</th><th>Gross</th><th>Discount</th><th>Reason</th></tr></thead>
-    <tbody>
-      ${discountRows || `<tr><td colspan="5" class="muted">No discounts in this window</td></tr>`}
-      ${discountRows ? `<tr class="grand-row"><td colspan="3">Total Discounts</td><td>${esc(inr(activity.discountsGiven))}</td><td></td></tr>` : ""}
-    </tbody>
-  </table>
-
-  <div class="section-title">Bill Edits / Modifications</div>
-  <table class="table">
-    <thead><tr><th>Bill #</th><th>Type</th><th>Reason</th><th>Change</th></tr></thead>
-    <tbody>
-      ${editRows || `<tr><td colspan="4" class="muted">No bill edits in this window</td></tr>`}
-    </tbody>
-  </table>
-
-  <div class="section-title">Voucher Modifications</div>
-  <table class="table">
-    <thead><tr><th>Voucher #</th><th>Type</th><th>Reason</th><th>Change</th></tr></thead>
-    <tbody>
-      ${voucherRows || `<tr><td colspan="4" class="muted">No voucher modifications in this window</td></tr>`}
-    </tbody>
-  </table>
-
-  <div class="section-title">Expenses</div>
-  <table class="table">
-    <thead><tr><th>Category</th><th>Description</th><th>Mode</th><th>Amount</th></tr></thead>
-    <tbody>
-      ${expenseRows || `<tr><td colspan="4" class="muted">No expenses in this window</td></tr>`}
-      ${expenseRows ? `<tr class="grand-row"><td colspan="3">Total (Cash ${esc(inr(activity.cashExpenses))} / Digital ${esc(inr(activity.digitalExpenses))})</td><td>${esc(inr(activity.totalExpenses))}</td></tr>` : ""}
-    </tbody>
-  </table>
-
-  ${c.varianceNote ? `<div class="note"><strong>Variance Note:</strong> ${esc(c.varianceNote)}</div>` : ""}
-  ${c.notes ? `<div class="note"><strong>Handover Notes:</strong> ${esc(c.notes)}</div>` : ""}
-  <div class="footer">Printed ${esc(new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" }))} IST &middot; Staff Closure #${c.id}${c.drawerStatus ? ` &middot; ${esc(c.drawerStatus)}` : ""}</div>
+  <div class="footer">
+    <div>BILLS EDITED/MODIFIED → ${editCount}</div>
+    <div>DISCOUNTS GIVEN → Rs. ${esc(inr(discounts))}</div>
+    <div class="meta">
+      Closure #${c.id}${c.drawerStatus ? ` · ${esc(c.drawerStatus)}` : ""}
+      · Printed ${esc(new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" }))} IST
+    </div>
+  </div>
+</div>
 </body></html>`;
 }
 
@@ -338,7 +442,7 @@ export function openStaffDayClosePrint(
   staffLabel?: string,
 ): Window | null {
   const html = buildStaffDayCloseSlipHtml(c, clinic, staffLabel);
-  const w = window.open("", "_blank", "width=900,height=800");
+  const w = window.open("", "_blank", "width=520,height=760");
   if (!w) {
     alert("Pop-up blocked. Allow pop-ups to print the day-close slip.");
     return null;

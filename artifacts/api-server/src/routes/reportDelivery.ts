@@ -16,6 +16,7 @@ import {
 } from "@workspace/db";
 import { eq, desc, and } from "drizzle-orm";
 import { type StaffAuthRequest } from "../middleware/requireStaffAuth";
+import { resolveWorklistFromStudyRef } from "../lib/radiologyIdentity";
 
 export const reportDeliveryRouter = Router();
 
@@ -77,11 +78,7 @@ reportDeliveryRouter.post("/send", async (req, res): Promise<void> => {
   if (report && (report.type === "radiology" || report.studyId)) {
     const rStudyId = report.studyId;
     if (rStudyId) {
-      const [worklistRow] = await db
-        .select()
-        .from(radiologyWorklistTable)
-        .where(eq(radiologyWorklistTable.studyId, rStudyId))
-        .limit(1);
+      const worklistRow = await resolveWorklistFromStudyRef(rStudyId);
 
       if (!worklistRow) {
         res.status(400).json({

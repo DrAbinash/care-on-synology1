@@ -13,6 +13,7 @@ export const emailSettingsTable = pgTable("email_settings", {
   extraRecipients: text("extra_recipients").notNull().default("[]"),
   billEditEnabled: boolean("bill_edit_enabled").notNull().default(true),
   dailySummaryEnabled: boolean("daily_summary_enabled").notNull().default(true),
+  staffDayCloseEmailEnabled: boolean("staff_day_close_email_enabled").notNull().default(true),
   // JSON array of up to 3 "HH:MM" strings (IST), e.g. '["09:00","14:00","20:00"]".
   // Replaces the old single dailySummaryTime column so admins can schedule
   // multiple sends per day.

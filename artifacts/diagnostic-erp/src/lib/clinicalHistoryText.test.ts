@@ -1,15 +1,13 @@
 import { describe, it, expect } from "vitest";
-import { appendClinicalPhrase, removeClinicalPhrase, hasPhrase } from "./clinicalHistoryText";
-
-// Tests for the Clinical History quick-select chip text model.
-// Invariants:
-//   1. A chip's exact phrase is never inserted twice (duplicate-safe).
-//   2. Toggling a chip OFF removes exactly what it inserted, tidying only the
-//      seam — line breaks and spacing typed elsewhere survive.
-//   3. Manually typed history always survives insert + remove round-trips, and
-//      an edited-away phrase is never force-removed.
-//   4. "present" and "removable" use the same exact match, so a highlighted
-//      chip can always be toggled back off.
+import {
+  appendClinicalPhrase,
+  removeClinicalPhrase,
+  hasPhrase,
+  historyTemplateNeedsSide,
+  resolveHistoryPhrase,
+  hasHistoryChipContribution,
+  toggleHistoryChipContribution,
+} from "./clinicalHistoryText";
 
 describe("appendClinicalPhrase", () => {
   it("inserts into an empty field", () => {
@@ -52,7 +50,6 @@ describe("removeClinicalPhrase", () => {
   });
 
   it("preserves an intentional blank line elsewhere in the field", () => {
-    // The removed phrase is at the end; the paragraph break must survive.
     expect(removeClinicalPhrase("History:\n\nKnown hypertensive. Headache.", "Headache."))
       .toBe("History:\n\nKnown hypertensive.");
   });
@@ -85,8 +82,36 @@ describe("hasPhrase", () => {
   it("detects an exact inserted phrase and matches removal semantics", () => {
     expect(hasPhrase("Headache. Vomiting.", "Vomiting.")).toBe(true);
     expect(hasPhrase("Headache.", "Seizure.")).toBe(false);
-    // present ⇔ removable: if hasPhrase is true, removeClinicalPhrase changes it.
     const text = "Headache. Vomiting.";
     expect(removeClinicalPhrase(text, "Vomiting.")).not.toBe(text);
+  });
+});
+
+describe("laterality history chips", () => {
+  it("detects {side} templates and resolves them", () => {
+    expect(historyTemplateNeedsSide("{side} upper limb weakness.")).toBe(true);
+    expect(historyTemplateNeedsSide("Neck pain.")).toBe(false);
+    expect(resolveHistoryPhrase("{side} upper limb weakness.", "right")).toMatch(/right upper limb weakness/i);
+  });
+
+  it("toggle asks for side then inserts; toggle off removes only that contribution", () => {
+    const tpl = "{side} upper limb radiculopathy.";
+    const ask = toggleHistoryChipContribution("", tpl);
+    expect(ask.needsSide).toBe(true);
+    expect(ask.next).toBe("");
+
+    const inserted = toggleHistoryChipContribution("Neck pain.", tpl, "right");
+    expect(inserted.needsSide).toBe(false);
+    expect(inserted.next).toMatch(/Neck pain\..*right upper limb radiculopathy/i);
+    expect(hasHistoryChipContribution(inserted.next, tpl)).toBe(true);
+
+    const removed = toggleHistoryChipContribution(inserted.next, tpl);
+    expect(removed.next).toBe("Neck pain.");
+  });
+
+  it("preserves manual text when laterality phrase was edited", () => {
+    const tpl = "{side} upper limb weakness.";
+    const edited = "Severe right upper limb weakness for 3 months.";
+    expect(hasHistoryChipContribution(edited, tpl)).toBe(false);
   });
 });

@@ -37,7 +37,7 @@ findings:
     parameters: []
     severity: null
     laterality: null
-    location_options: []
+    location: []
     measurements: []
     impression_fragment: "No calculus or hydronephrosis in either kidney. Bladder and visualized ureters unremarkable."
     recommendation_code: []
@@ -58,7 +58,7 @@ findings:
     parameters: []
     severity: sev.hydro
     laterality: lat.rl
-    location_options: [loc.renal_calculus]
+    location: [loc.renal_calculus]
     measurements: [meas.calculus_size]
     impression_fragment: "{laterality} {location} calculus ({calculus_size}) with {severity} proximal hydroureteronephrosis."
     recommendation_code: [rec.spec_uro, rec.ctkub, rec.lab_urine]
@@ -79,7 +79,7 @@ findings:
     parameters: []
     severity: sev.hydro
     laterality: lat.rl
-    location_options: []
+    location: []
     measurements: [meas.calculus_size]
     impression_fragment: "{laterality} VUJ calculus ({calculus_size}) with {severity} hydroureteronephrosis."
     recommendation_code: [rec.spec_uro, rec.lab_urine]
@@ -98,7 +98,7 @@ findings:
     parameters: []
     severity: sev.hydro
     laterality: lat.rlb
-    location_options: [loc.renal_calculus]
+    location: [loc.renal_calculus]
     measurements: [meas.calculus_size]
     impression_fragment: "{laterality} hydroureteronephrosis — obstruction at {location}."
     recommendation_code: [rec.ctkub, rec.spec_uro]
@@ -117,7 +117,7 @@ findings:
     parameters: []
     severity: sev.hydro
     laterality: lat.rl
-    location_options: []
+    location: []
     measurements: []
     impression_fragment: "?Pyonephrosis {laterality} — URGENT urology referral advised."
     recommendation_code: [rec.urgent, rec.spec_uro]
@@ -136,7 +136,7 @@ findings:
     parameters: []
     severity: null
     laterality: lat.rl
-    location_options: []
+    location: []
     measurements: []
     impression_fragment: "Perinephric fluid {laterality} — forniceal rupture likely; urgent urology opinion advised."
     recommendation_code: [rec.urgent, rec.spec_uro]
@@ -154,7 +154,7 @@ findings:
     parameters: []
     severity: null
     laterality: lat.rlb
-    location_options: []
+    location: []
     measurements: []
     impression_fragment: "{laterality} DJ stent in situ; no residual calculus."
     recommendation_code: [rec.spec_uro]
@@ -172,7 +172,7 @@ findings:
     parameters: []
     severity: null
     laterality: null
-    location_options: []
+    location: []
     measurements: []
     impression_fragment: "Cystitis — urine routine correlation advised."
     recommendation_code: [rec.lab_urine]

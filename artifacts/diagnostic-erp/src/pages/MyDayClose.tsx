@@ -67,6 +67,8 @@ type MyClose = {
   };
   denominationTotal: string | null;
   printActivity?: StaffPrintActivity | null;
+  emailSent?: boolean;
+  emailSkipReason?: string;
 };
 
 const DENOMS = [
@@ -215,7 +217,15 @@ export default function MyDayClose() {
       });
     },
     onSuccess: (closure) => {
-      toast({ title: "Your day is closed", description: "New bills from this point count towards tomorrow." });
+      if (closure.emailSent === false) {
+        toast({
+          title: "Day closed, but email was not sent",
+          description: closure.emailSkipReason || "Check Settings → Email (SMTP, admin email, and staff day-close toggle).",
+          variant: "destructive",
+        });
+      } else {
+        toast({ title: "Your day is closed", description: "New bills from this point count towards tomorrow." });
+      }
       setConfirmOpen(false);
       setVarianceNote("");
       setNotes("");

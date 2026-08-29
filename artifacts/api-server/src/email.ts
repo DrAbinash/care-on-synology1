@@ -1,6 +1,7 @@
 import nodemailer from "nodemailer";
 import { db } from "@workspace/db";
 import { emailSettingsTable } from "@workspace/db/schema";
+import { buildStaffDayCloseEmailHtml, type StaffDayCloseEmailPayload } from "./lib/staffDayCloseEmail";
 
 export async function getEmailSettings() {
   const [settings] = await db.select().from(emailSettingsTable).limit(1);
@@ -19,10 +20,22 @@ export async function getTransporter() {
 }
 
 export function getAllRecipients(settings: { adminEmail: string; extraRecipients: string }) {
-  const extra: string[] = JSON.parse(settings.extraRecipients || "[]");
-  const all = [settings.adminEmail, ...extra].filter(Boolean);
+  let extra: string[] = [];
+  const raw = settings.extraRecipients || "[]";
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) extra = parsed.map((v) => String(v));
+    else if (typeof parsed === "string") extra = parsed.split(",");
+  } catch {
+    extra = String(raw).split(",");
+  }
+  const all = [settings.adminEmail, ...extra].map((s) => String(s).trim()).filter(Boolean);
   return [...new Set(all)];
 }
+
+export type StaffDayCloseEmailResult =
+  | { sent: true; to: string[] }
+  | { sent: false; reason: string };
 
 export async function sendBillEditEmail(params: {
   billNumber: string;
@@ -627,4 +640,32 @@ export async function sendReportEmail(params: {
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : "Send failed" };
   }
+}
+
+export async function sendStaffDayCloseEmail(payload: StaffDayCloseEmailPayload): Promise<StaffDayCloseEmailResult> {
+  const s = await getEmailSettings();
+  // Default ON when the column is missing/undefined (older settings rows).
+  if (!s) return { sent: false, reason: "Email settings are not configured" };
+  if (s.staffDayCloseEmailEnabled === false) {
+    return { sent: false, reason: "Staff day-close emails are turned off in Settings" };
+  }
+
+  const transport = await getTransporter();
+  if (!transport) return { sent: false, reason: "SMTP is not configured (host and user required)" };
+
+  const recipients = getAllRecipients(s);
+  if (recipients.length === 0) {
+    return { sent: false, reason: "No email recipients — set an admin email in Settings" };
+  }
+
+  const html = buildStaffDayCloseEmailHtml(payload);
+  const subject = `[Staff Day Close] ${payload.staffName} — ${payload.closureDate} (${payload.drawerStatus ?? "closed"})`;
+
+  await transport.sendMail({
+    from: `"${s.fromName}" <${s.fromAddress}>`,
+    to: recipients.join(", "),
+    subject,
+    html,
+  });
+  return { sent: true, to: recipients };
 }

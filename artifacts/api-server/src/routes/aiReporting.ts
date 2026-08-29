@@ -56,6 +56,7 @@ import {
   getDefaultProviderName,
 } from "@workspace/ai-providers";
 import { radiologyWorklistTable } from "@workspace/db/schema";
+import { RadiologyIdentityError, resolveAuthorizedStudyUid } from "../lib/radiologyIdentity";
 import { resolveTestModel } from "../lib/ai/testProviderModel";
 import {
   AiReportingQueryRequestSchema,
@@ -72,6 +73,12 @@ import {
 } from "../lib/ai/aiReportingRequestDiagnostics";
 import { resolveInteractiveDraftNumCtx } from "../lib/ai/contextBudget";
 import { resolveLocalAiRuntime } from "../lib/aiPipeline/runtimeConfig";
+import {
+  impressionMatchesStudyContext,
+  resolveBuiltinPromptForStudy,
+  studyLooksLikeBrain,
+  studyLooksLikeChest,
+} from "../lib/aiDraftStudyContext";
 
 // ─── Prompt template presets ──────────────────────────────────────────────────
 export const AI_PROMPT_TEMPLATES: Record<string, string> = {
@@ -705,14 +712,16 @@ router.post("/draft", async (req, res): Promise<void> => {
   const user = sReq.staffSession!;
   const {
     worklistId,
-    modality,
-    studyDescription,
+    studyInstanceUID: studyInstanceUIDBody,
+    modality: modalityBody,
+    studyDescription: studyDescriptionBody,
     reportBody,
     impression,
     clinicalHistory,
     provider: providerReq,
   } = req.body as {
     worklistId?: number;
+    studyInstanceUID?: string;
     modality?: string;
     studyDescription?: string;
     reportBody?: string;
@@ -721,24 +730,50 @@ router.post("/draft", async (req, res): Promise<void> => {
     provider?: string;
   };
 
-  // Look up worklist for study metadata
-  let studyInstanceUID: string | undefined;
+  // Look up worklist for study metadata — accept worklistId OR studyInstanceUID
+  // (workspace autofill historically sent only studyInstanceUID + modality).
+  let studyInstanceUID: string | undefined = studyInstanceUIDBody?.trim() || undefined;
   let accessionNumber: string | undefined;
   let patientId: number | undefined;
+  let modality = modalityBody?.trim() || undefined;
+  let studyDescription = studyDescriptionBody?.trim() || undefined;
   if (worklistId) {
     const wl = await db
       .select({
         studyInstanceUID: radiologyWorklistTable.studyInstanceUID,
         accessionNumber: radiologyWorklistTable.accessionNumber,
         patientId: radiologyWorklistTable.patientId,
+        modality: radiologyWorklistTable.modality,
+        studyDescription: radiologyWorklistTable.studyDescription,
       })
       .from(radiologyWorklistTable)
       .where(eq(radiologyWorklistTable.id, worklistId))
       .limit(1);
     if (wl[0]) {
-      studyInstanceUID = wl[0].studyInstanceUID ?? undefined;
+      studyInstanceUID = wl[0].studyInstanceUID ?? studyInstanceUID;
       accessionNumber = wl[0].accessionNumber ?? undefined;
       patientId = wl[0].patientId ?? undefined;
+      modality = modality || (wl[0].modality ?? undefined);
+      studyDescription = studyDescription || (wl[0].studyDescription ?? undefined);
+    }
+  } else if (studyInstanceUID) {
+    const wl = await db
+      .select({
+        studyInstanceUID: radiologyWorklistTable.studyInstanceUID,
+        accessionNumber: radiologyWorklistTable.accessionNumber,
+        patientId: radiologyWorklistTable.patientId,
+        modality: radiologyWorklistTable.modality,
+        studyDescription: radiologyWorklistTable.studyDescription,
+      })
+      .from(radiologyWorklistTable)
+      .where(eq(radiologyWorklistTable.studyInstanceUID, studyInstanceUID))
+      .orderBy(desc(radiologyWorklistTable.id))
+      .limit(1);
+    if (wl[0]) {
+      accessionNumber = wl[0].accessionNumber ?? undefined;
+      patientId = wl[0].patientId ?? undefined;
+      modality = modality || (wl[0].modality ?? undefined);
+      studyDescription = studyDescription || (wl[0].studyDescription ?? undefined);
     }
   }
 
@@ -754,25 +789,11 @@ router.post("/draft", async (req, res): Promise<void> => {
   }
   const model = taskRoute?.model ?? provConfig.defaultModel ?? "";
 
-  // Build prompt: prefer DB-backed template by modality, then fallback
+  // Build prompt: prefer study-specific templates. NEVER pick the first active
+  // row for bare modality alone — that silently applied CT Chest prompts to
+  // CT Brain (Devansh Kumar: "Normal chest radiograph…" on NCCT brain).
   let finalPrompt = "";
-  if (modality) {
-    const dbTpl = await db
-      .select({ promptContent: aiPromptTemplatesTable.promptContent, name: aiPromptTemplatesTable.name })
-      .from(aiPromptTemplatesTable)
-      .where(
-        and(
-          eq(aiPromptTemplatesTable.modality, modality),
-          eq(aiPromptTemplatesTable.isActive, true),
-        ),
-      )
-      .orderBy(aiPromptTemplatesTable.id)
-      .limit(1);
-    if (dbTpl[0]?.promptContent) {
-      finalPrompt = dbTpl[0].promptContent;
-    }
-  }
-  if (!finalPrompt && studyDescription) {
+  if (studyDescription) {
     const dbTpl = await db
       .select({ promptContent: aiPromptTemplatesTable.promptContent })
       .from(aiPromptTemplatesTable)
@@ -785,8 +806,30 @@ router.post("/draft", async (req, res): Promise<void> => {
       .limit(1);
     if (dbTpl[0]?.promptContent) finalPrompt = dbTpl[0].promptContent;
   }
-  if (!finalPrompt && modality && AI_PROMPT_TEMPLATES[modality + " " + (studyDescription ?? "")]) {
-    finalPrompt = AI_PROMPT_TEMPLATES[modality + " " + (studyDescription ?? "")];
+  if (!finalPrompt) {
+    const builtin = resolveBuiltinPromptForStudy(AI_PROMPT_TEMPLATES, modality, studyDescription);
+    if (builtin) finalPrompt = builtin;
+  }
+  if (!finalPrompt && modality && studyDescription) {
+    const dbTpl = await db
+      .select({ promptContent: aiPromptTemplatesTable.promptContent, name: aiPromptTemplatesTable.name })
+      .from(aiPromptTemplatesTable)
+      .where(
+        and(
+          eq(aiPromptTemplatesTable.modality, modality),
+          eq(aiPromptTemplatesTable.isActive, true),
+        ),
+      )
+      .orderBy(aiPromptTemplatesTable.id);
+    const descLower = studyDescription.toLowerCase();
+    const matched = dbTpl.find((t) => {
+      const n = (t.name ?? "").toLowerCase();
+      if (!n) return false;
+      if (studyLooksLikeBrain(studyDescription) && studyLooksLikeBrain(n)) return true;
+      if (studyLooksLikeChest(studyDescription, modality) && studyLooksLikeChest(n, modality)) return true;
+      return descLower.includes(n) || n.includes(descLower);
+    });
+    if (matched?.promptContent) finalPrompt = matched.promptContent;
   }
   if (!finalPrompt) {
     finalPrompt = globalSettings.defaultPrompt || "Provide a detailed radiology report based on the findings provided.";
@@ -806,8 +849,14 @@ router.post("/draft", async (req, res): Promise<void> => {
   if (studyDescription?.trim()) {
     finalPrompt += `\n\nStudy: ${studyDescription.trim()}`;
   }
+  if (modality?.trim()) {
+    finalPrompt += `\nModality: ${modality.trim()}`;
+  }
   finalPrompt += "\n\n=== INSTRUCTION ===\n" +
-    "Generate a refined radiology report. Return ONLY two sections:\n" +
+    "Generate a refined radiology report for THIS study only.\n" +
+    "Do NOT use wording from a different modality or body region " +
+    "(e.g. never write 'chest radiograph' for a CT/MRI brain).\n" +
+    "Return ONLY two sections:\n" +
     "FINDINGS: (structured findings)\n" +
     "IMPRESSION: (concise impression)\n" +
     "Do not include any other text or explanations.";
@@ -868,6 +917,7 @@ router.post("/draft", async (req, res): Promise<void> => {
           model,
           numCtx: draftCtx.requestedNumCtx,
           endpointUrl: runtime.ollamaBaseUrl,
+          think: false,
         }
       : { model };
   const aiResult = await generateAiForTask("radiology_draft", finalPrompt, images, ollamaOpts);
@@ -884,6 +934,13 @@ router.post("/draft", async (req, res): Promise<void> => {
     const impressionMatch = aiResponse.match(/IMPRESSION:?\s*([\s\S]*?)$/i);
     draftFindings = findingsMatch?.[1]?.trim() ?? aiResponse.trim();
     draftImpression = impressionMatch?.[1]?.trim() ?? "";
+    // Drop cross-modality garbage (chest radiograph on CT Brain, etc.)
+    if (
+      draftImpression
+      && !impressionMatchesStudyContext(draftImpression, { modality, studyDescription })
+    ) {
+      draftImpression = "";
+    }
     parser = buildParserMeta(aiResponse, draftFindings, draftImpression);
   }
 
@@ -987,6 +1044,8 @@ router.post("/draft", async (req, res): Promise<void> => {
   }
 
   res.json({
+    // `findings` is the workspace autofill key; `draft` kept for older clients.
+    findings: draftFindings,
     draft: draftFindings,
     impression: draftImpression,
     provider: providerName,
@@ -1064,14 +1123,24 @@ router.post("/image-review", async (req, res): Promise<void> => {
   }
 
   const user = sReq.staffSession!;
-  const { worklistId, studyInstanceUID, reportBody } = req.body as {
+  const { worklistId, studyInstanceUID: clientUid, reportBody } = req.body as {
     worklistId?: number;
     studyInstanceUID?: string;
     reportBody?: string;
   };
 
-  if (!studyInstanceUID) {
-    res.status(400).json({ error: "No studyInstanceUID provided." }); return;
+  let studyInstanceUID: string;
+  try {
+    studyInstanceUID = await resolveAuthorizedStudyUid({
+      worklistId: worklistId ?? null,
+      studyInstanceUID: clientUid ?? null,
+    });
+  } catch (err) {
+    if (err instanceof RadiologyIdentityError) {
+      res.status(err.httpStatus).json({ error: err.message, code: err.code });
+      return;
+    }
+    throw err;
   }
 
   // Resolve provider — prefer vision-capable models

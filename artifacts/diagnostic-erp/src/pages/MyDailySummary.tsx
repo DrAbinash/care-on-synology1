@@ -37,7 +37,9 @@ type MyDailySummarySummary = {
   refundAmount: number;
   refundsWithoutCancellationAmount: number;
   refundsWithoutCancellationCount: number;
-  /** Refunds on bills created this period that are cancelled — excluded from collectible (already in cancelledOnMyBills). */
+  /** Refunds this staff recorded on bills they cancelled — excluded from collectible. */
+  refundsOnBillsCancelledByMe?: number;
+  /** Refunds on bills created this period that are cancelled — alias of canceller-scoped exclusion. */
   refundsOnCancelledBillsCreatedInPeriod: number;
   /** Server-computed collectible — prefer over local recompute. */
   collectible?: number;
@@ -70,6 +72,20 @@ type MyDailySummarySummary = {
   suspenseRefundCount?: number;
   suspenseRefundAmount?: number;
 };
+
+/** Billing collectible follows who cancelled, not who created. */
+function collectibleParts(s: MyDailySummarySummary) {
+  const cancelled = s.cancelledAmount;
+  const refundsExcluded = s.refundsOnBillsCancelledByMe ?? s.refundsOnCancelledBillsCreatedInPeriod ?? 0;
+  const totalRefunds = s.cashRefunded + s.digitalRefunded;
+  const refundsForCollectible = Math.max(0, totalRefunds - refundsExcluded);
+  const collectibleLocal = s.grossBilledIncludingCancelled
+    + s.duesCollectedTotal
+    - cancelled
+    - refundsForCollectible
+    - s.outstanding;
+  return { cancelled, refundsExcluded, totalRefunds, refundsForCollectible, collectibleLocal };
+}
 
 type MyDailySummaryData = {
   staffName: string;
@@ -164,9 +180,13 @@ type MyDailySummaryData = {
   refunds: {
     id: number;
     billId: number;
+    billNumber?: string;
     amount: number;
     method: string;
     recordedBy: string | null;
+    patientName?: string;
+    referringDoctor?: string | null;
+    billStatus?: string | null;
     createdAt: string;
     billCreatedAt: string;
   }[];
@@ -175,7 +195,21 @@ type MyDailySummaryData = {
     billNumber: string;
     totalAmount: number;
     originalCreator: string;
+    cancelledByName?: string | null;
+    patientName?: string;
+    referringDoctor?: string | null;
     cancelledAt: string;
+  }[];
+  cashExpenseItems?: {
+    expenseId: string;
+    category: string;
+    description: string;
+    amount: number;
+    paymentMode: string;
+    paidTo: string | null;
+    approvedBy: string | null;
+    createdBy?: string | null;
+    createdAt: string;
   }[];
   discountBills: {
     billId: number;
@@ -751,6 +785,197 @@ function ASectionDivider({ color }: { color: "emerald" | "slate" | "red" | "blue
   return <div className={`border-t ${cls[color]} mx-3`} />;
 }
 
+
+type ReconAggPair = [string, number];
+type ReconBillLine = {
+  key: string | number;
+  billId?: number;
+  billNumber?: string;
+  primary: string;
+  amount: number;
+  meta?: string | null;
+};
+
+/** Aggregate amount by a string key (staff / referral / category). */
+function aggregateByKey<T>(
+  rows: T[],
+  keyOf: (row: T) => string,
+  amountOf: (row: T) => number,
+): ReconAggPair[] {
+  const map = new Map<string, number>();
+  for (const row of rows) {
+    const k = keyOf(row) || "Unknown";
+    map.set(k, (map.get(k) ?? 0) + amountOf(row));
+  }
+  return Array.from(map.entries()).sort((a, b) => b[1] - a[1]);
+}
+
+const RECON_ACCENT = {
+  amber: {
+    row: "bg-amber-50/80 dark:bg-amber-950/25",
+    label: "text-amber-700 dark:text-amber-400",
+    value: "text-amber-600 dark:text-amber-400",
+    border: "border-amber-200 dark:border-amber-800",
+    divide: "divide-amber-200 dark:divide-amber-800",
+    title: "text-amber-700 dark:text-amber-400",
+  },
+  red: {
+    row: "bg-red-50/50 dark:bg-red-950/20",
+    label: "text-red-700 dark:text-red-400",
+    value: "text-red-600 dark:text-red-400",
+    border: "border-red-200 dark:border-red-800",
+    divide: "divide-red-200 dark:divide-red-800",
+    title: "text-red-700 dark:text-red-400",
+  },
+  emerald: {
+    row: "bg-emerald-50/50 dark:bg-emerald-950/20",
+    label: "text-emerald-800 dark:text-emerald-400",
+    value: "text-emerald-700 dark:text-emerald-400",
+    border: "border-emerald-200 dark:border-emerald-800",
+    divide: "divide-emerald-200 dark:divide-emerald-800",
+    title: "text-emerald-800 dark:text-emerald-400",
+  },
+} as const;
+
+type ReconAccent = keyof typeof RECON_ACCENT;
+
+/** Expandable reconciliation line + By Staff / By Referral / Individual Bills panel (mirrors Discounts Given). */
+function ExpandableReconRow({
+  label,
+  value,
+  sign,
+  note,
+  accent,
+  expanded,
+  onToggle,
+  canExpand,
+  byStaff,
+  byReferral,
+  byReferralTitle = "By Referral Doctor",
+  individuals,
+  emptyHint,
+  indent,
+}: {
+  label: string;
+  value: number;
+  sign?: "+" | "−" | "=" | "  ";
+  note?: string;
+  accent: ReconAccent;
+  expanded: boolean;
+  onToggle: () => void;
+  canExpand: boolean;
+  byStaff: ReconAggPair[];
+  byReferral: ReconAggPair[];
+  byReferralTitle?: string;
+  individuals: ReconBillLine[];
+  emptyHint?: string;
+  indent?: boolean;
+}) {
+  const a = RECON_ACCENT[accent];
+  const hasDetail = byStaff.length > 0 || byReferral.length > 0 || individuals.length > 0;
+  const clickable = canExpand && (hasDetail || value > 0);
+  const slug = label.toLowerCase().replace(/\s+/g, "-");
+
+  return (
+    <>
+      <div
+        className={`flex items-center justify-between py-[3px] px-3 ${a.row} ${clickable ? "cursor-pointer group" : ""}`}
+        onClick={() => clickable && onToggle()}
+        title={clickable ? "Click to expand drill-down" : undefined}
+        data-testid={`recon-expand-${slug}`}
+        data-expanded={expanded ? "true" : "false"}
+      >
+        <span className={`text-[12px] font-semibold ${a.label} ${indent ? "pl-4" : ""} flex items-center gap-1.5 min-w-0 flex-1 pr-2`}>
+          {sign && (
+            <span className="inline-block w-3 text-center text-gray-400 dark:text-gray-500 mr-1 shrink-0 font-normal">
+              {sign}
+            </span>
+          )}
+          {label}
+          {note && (
+            <span className="text-[10px] font-normal opacity-80 truncate">
+              {note}
+            </span>
+          )}
+        </span>
+        <div className="flex items-center gap-1.5 shrink-0">
+          <span className={`text-[13px] tabular-nums font-bold ${a.value}`}>
+            {fmt(value)}
+          </span>
+          {clickable && (
+            expanded
+              ? <ChevronUp size={11} className={a.value} />
+              : <ChevronDown size={11} className={a.value} />
+          )}
+        </div>
+      </div>
+
+      {canExpand && expanded && hasDetail && (
+        <div className={`mx-3 mb-1 border ${a.border} rounded-lg overflow-hidden`} data-testid={`recon-drilldown-${slug}`}>
+          {(byStaff.length > 0 || byReferral.length > 0) && (
+            <div className={`grid grid-cols-2 ${a.divide} divide-x`}>
+              <div className="p-2">
+                <p className={`text-[10px] font-bold ${a.title} uppercase tracking-wide mb-1`}>By Staff</p>
+                {byStaff.length === 0 ? (
+                  <p className="text-[10px] text-muted-foreground italic">—</p>
+                ) : byStaff.map(([name, amt]) => (
+                  <div key={name} className="flex justify-between items-center py-0.5">
+                    <span className="text-[11px] text-gray-600 dark:text-gray-400 truncate">{name}</span>
+                    <span className={`text-[11px] tabular-nums font-semibold ${a.value} ml-2 shrink-0`}>{fmt(amt)}</span>
+                  </div>
+                ))}
+              </div>
+              <div className="p-2">
+                <p className={`text-[10px] font-bold ${a.title} uppercase tracking-wide mb-1`}>{byReferralTitle}</p>
+                {byReferral.length === 0 ? (
+                  <p className="text-[10px] text-muted-foreground italic">—</p>
+                ) : byReferral.map(([doc, amt]) => (
+                  <div key={doc} className="flex justify-between items-center py-0.5">
+                    <span className="text-[11px] text-gray-600 dark:text-gray-400 truncate">{doc}</span>
+                    <span className={`text-[11px] tabular-nums font-semibold ${a.value} ml-2 shrink-0`}>{fmt(amt)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {individuals.length > 0 && (
+            <div className={`border-t ${a.border} px-2 py-1`}>
+              <p className={`text-[10px] font-bold ${a.title} uppercase tracking-wide mb-1`}>
+                {byStaff.length || byReferral.length ? "Individual Bills" : "Line Items"}
+              </p>
+              <div className="max-h-36 overflow-y-auto space-y-0.5">
+                {individuals.map((b) => (
+                  <div key={b.key} className="flex items-center gap-2 text-[11px]">
+                    {b.billId != null && b.billNumber ? (
+                      <Link href={`/billing/${b.billId}`} className="text-blue-600 dark:text-blue-400 hover:underline font-medium shrink-0">
+                        {b.billNumber}
+                      </Link>
+                    ) : b.billNumber ? (
+                      <span className="font-medium shrink-0 text-gray-700 dark:text-gray-300">{b.billNumber}</span>
+                    ) : null}
+                    <span className="text-gray-600 dark:text-gray-400 truncate flex-1">{b.primary}</span>
+                    <span className={`tabular-nums font-semibold ${a.value} shrink-0`}>{fmt(b.amount)}</span>
+                    {b.meta ? (
+                      <span className="text-gray-400 dark:text-gray-500 shrink-0 hidden sm:inline">{b.meta}</span>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+      {canExpand && expanded && !hasDetail && (
+        <div className="px-3 py-0.5">
+          <span className={`text-[10px] italic pl-4 ${a.label} opacity-70`}>
+            {emptyHint ?? "No line items for this period"}
+          </span>
+        </div>
+      )}
+    </>
+  );
+}
+
 // ─── Unified Daily Financial Reconciliation Panel (Bloomberg-density) ─────────
 //
 // Replaces: DailyFinancialReconciliation + "My Billing" card + "My Cashbox" card
@@ -760,8 +985,8 @@ function ASectionDivider({ color }: { color: "emerald" | "slate" | "red" | "blue
 //   Gross Bills Generated (post-discount)
 //   + Old Dues Collected
 //   = Total Revenue Activity
-//   − Cancelled Bills (of bills created in THIS window — see note below)
-//   − Today's Refunds (cash + digital)
+//   − Cancelled Bills (cancelled BY this staff today — any original bill date)
+//   − Today's Refunds (excluding auto-refunds on bills this staff cancelled)
 //   − Outstanding Dues
 //   = Collectible Amount
 //   − Digital Collection (net of digital refunds)   → went to bank
@@ -775,16 +1000,10 @@ function ASectionDivider({ color }: { color: "emerald" | "slate" | "red" | "blue
 //   physicalCashInHand, that's a bug in this cross-check, not a real cash
 //   shortage — treat physicalCashInHand as correct.
 //
-//   FIXED BUG (this cross-check previously disagreed with physicalCashInHand):
-//   "Cancelled Bills" must use cancelledOnMyBills (bills created in this
-//   window that were also cancelled), NOT cancelledAmount (bills cancelled in
-//   this window regardless of creation date). Every other term here
-//   (grossBilledIncludingCancelled, duesCollectedTotal) is scoped by bill
-//   CREATION date, so subtracting cancelledAmount double-subtracted a bill
-//   created on an earlier day and cancelled today: never added into this
-//   window's billing, yet still subtracted as both a "cancellation" and
-//   (via its auto-generated refund) a "refund" — producing a false "Short"
-//   mismatch alert for an old bill cancelled today.
+//   OWNERSHIP: cancellation belongs to whoever cancelled (cancelledByName),
+//   not whoever created the bill. Vijay creates+collects ₹3400; Abinash
+//   cancels and pays the refund → Abinash's Cancelled Bills / expected cash,
+//   not Vijay's. An old bill cancelled today also hits the canceller's today.
 //
 // ATTRIBUTION RULE (confirmed correct in backend):
 //   cashIn          = SUM(payments.amount > 0) WHERE recordedByName = thisStaff
@@ -797,6 +1016,11 @@ function UnifiedReconciliationPanel({
   summary: s,
   byMethod,
   discountBills,
+  duesBills,
+  outstandingBills,
+  cancelledByMe,
+  refunds,
+  cashExpenseItems,
   isOwner,
   exportConfig,
   staffName,
@@ -805,6 +1029,11 @@ function UnifiedReconciliationPanel({
   summary: MyDailySummarySummary;
   byMethod: Record<string, number>;
   discountBills: MyDailySummaryData["discountBills"];
+  duesBills: MyDailySummaryData["duesBills"];
+  outstandingBills: MyDailySummaryData["outstandingBills"];
+  cancelledByMe: MyDailySummaryData["cancelledByMe"];
+  refunds: MyDailySummaryData["refunds"];
+  cashExpenseItems: NonNullable<MyDailySummaryData["cashExpenseItems"]>;
   isOwner: boolean;
   exportConfig: ExportConfig | null;
   staffName: string;
@@ -812,32 +1041,15 @@ function UnifiedReconciliationPanel({
 }) {
   const [digitalExpanded, setDigitalExpanded] = useState(false);
   const [discountExpanded, setDiscountExpanded] = useState(false);
+  const [duesExpanded, setDuesExpanded] = useState(false);
+  const [cancelledExpanded, setCancelledExpanded] = useState(false);
+  const [refundsExpanded, setRefundsExpanded] = useState(false);
+  const [outstandingExpanded, setOutstandingExpanded] = useState(false);
+  const [expensesExpanded, setExpensesExpanded] = useState(false);
 
-  // ── Formula (all arithmetic verified against backend physicalCashInHand) ──
-  // Uses cancelledOnMyBills (bills created in this window that were also
-  // cancelled), NOT cancelledAmount (bills cancelled in this window
-  // regardless of when created) — the rest of this formula is entirely
-  // creation-date scoped (grossBilledIncludingCancelled, duesCollectedTotal),
-  // so subtracting cancelledAmount double-counted a bill created on an
-  // earlier day and cancelled today: it was never added into this
-  // window's billing, yet was still subtracted as both a "cancellation"
-  // and (via its auto-generated refund) a "refund" — a real incident that
-  // produced a false "Short" mismatch alert for an old bill cancelled today.
-  //
-  // Same-day cancel+refund on bills created in this window: cancelledOnMyBills
-  // already removes the bill total; refundsOnCancelledBillsCreatedInPeriod
-  // (from API) is subtracted from totalRefunds so we do not double-hit.
-  // Cross-staff: refunds are attributed to whoever recorded them; billing
-  // metrics follow bill creator — individual staff views may still disagree
-  // when User B refunds User A's bill (clinic aggregate balances).
-  const totalRefunds   = s.cashRefunded + s.digitalRefunded;
-  const refundsExcludedFromCollectible = s.refundsOnCancelledBillsCreatedInPeriod ?? 0;
-  const refundsForCollectible = Math.max(0, totalRefunds - refundsExcludedFromCollectible);
-  const collectibleLocal = s.grossBilledIncludingCancelled
-                        + s.duesCollectedTotal
-                        - s.cancelledOnMyBills
-                        - refundsForCollectible
-                        - s.outstanding;
+  // Cancelled Bills = bills this staff cancelled today (any original date).
+  // Refunds on those same bills are excluded so cancel+auto-refund is one hit.
+  const { cancelled, refundsExcluded: refundsExcludedFromCollectible, refundsForCollectible, collectibleLocal } = collectibleParts(s);
   const collectible    = s.collectible ?? collectibleLocal;
   const netDigital     = s.digitalIn - s.digitalRefunded;
   const expectedCash   = collectible - netDigital - s.cashExpenses;
@@ -851,10 +1063,10 @@ function UnifiedReconciliationPanel({
     periodLabel,
     grossBilledIncludingCancelled: s.grossBilledIncludingCancelled,
     oldDuesCollected: s.duesCollectedTotal,
-    cancelledOnMyBills: s.cancelledOnMyBills,
+    cancelledAmount: s.cancelledAmount,
     cashRefunded: s.cashRefunded,
     digitalRefunded: s.digitalRefunded,
-    refundsOnCancelledBillsCreatedInPeriod: s.refundsOnCancelledBillsCreatedInPeriod,
+    refundsOnBillsCancelledByMe: s.refundsOnBillsCancelledByMe ?? s.refundsOnCancelledBillsCreatedInPeriod,
     outstanding: s.outstanding,
     digitalIn: s.digitalIn,
     cashIn: s.cashIn,
@@ -878,24 +1090,72 @@ function UnifiedReconciliationPanel({
   // Per-staff discount (owner only)
   const byStaffDiscount = useMemo(() => {
     if (!isOwner || !discountBills.length) return [];
-    const map = new Map<string, number>();
-    for (const b of discountBills) {
-      const k = b.createdByName ?? "Unknown";
-      map.set(k, (map.get(k) ?? 0) + b.discountGiven);
-    }
-    return Array.from(map.entries()).sort((a, b) => b[1] - a[1]);
+    return aggregateByKey(discountBills, (b) => b.createdByName ?? "Unknown", (b) => b.discountGiven);
   }, [discountBills, isOwner]);
 
   // Per-doctor discount (owner only)
   const byDoctorDiscount = useMemo(() => {
     if (!isOwner || !discountBills.length) return [];
-    const map = new Map<string, number>();
-    for (const b of discountBills) {
-      const k = b.referringDoctor ?? "No referral";
-      map.set(k, (map.get(k) ?? 0) + b.discountGiven);
-    }
-    return Array.from(map.entries()).sort((a, b) => b[1] - a[1]);
+    return aggregateByKey(discountBills, (b) => b.referringDoctor ?? "No referral", (b) => b.discountGiven);
   }, [discountBills, isOwner]);
+
+  const cancelledIds = useMemo(() => new Set(cancelledByMe.map((c) => c.id)), [cancelledByMe]);
+
+  // Refunds that count toward collectible (exclude cancel-linked auto-refunds).
+  const refundsForPanel = useMemo(() => {
+    return refunds
+      .filter((r) => !cancelledIds.has(r.billId))
+      .map((r) => ({ ...r, absAmount: Math.abs(Number(r.amount)) }));
+  }, [refunds, cancelledIds]);
+
+  const duesByStaff = useMemo(
+    () => (isOwner ? aggregateByKey(duesBills, (b) => b.createdByName ?? "Unknown", (b) => b.duesCollected) : []),
+    [duesBills, isOwner],
+  );
+  const duesByDoctor = useMemo(
+    () => (isOwner ? aggregateByKey(duesBills, (b) => b.referringDoctor ?? "No referral", (b) => b.duesCollected) : []),
+    [duesBills, isOwner],
+  );
+  const cancelledByStaff = useMemo(
+    () => (isOwner
+      ? aggregateByKey(cancelledByMe, (b) => b.cancelledByName ?? b.originalCreator ?? "Unknown", (b) => b.totalAmount)
+      : []),
+    [cancelledByMe, isOwner],
+  );
+  const cancelledByDoctor = useMemo(
+    () => (isOwner
+      ? aggregateByKey(cancelledByMe, (b) => b.referringDoctor ?? "No referral", (b) => b.totalAmount)
+      : []),
+    [cancelledByMe, isOwner],
+  );
+  const refundsByStaff = useMemo(
+    () => (isOwner ? aggregateByKey(refundsForPanel, (b) => b.recordedBy ?? "Unknown", (b) => b.absAmount) : []),
+    [refundsForPanel, isOwner],
+  );
+  const refundsByDoctor = useMemo(
+    () => (isOwner
+      ? aggregateByKey(refundsForPanel, (b) => b.referringDoctor ?? "No referral", (b) => b.absAmount)
+      : []),
+    [refundsForPanel, isOwner],
+  );
+  const outstandingByStaff = useMemo(
+    () => (isOwner ? aggregateByKey(outstandingBills, (b) => b.createdByName ?? "Unknown", (b) => b.outstanding) : []),
+    [outstandingBills, isOwner],
+  );
+  const outstandingByDoctor = useMemo(
+    () => (isOwner
+      ? aggregateByKey(outstandingBills, (b) => b.referringDoctor ?? "No referral", (b) => b.outstanding)
+      : []),
+    [outstandingBills, isOwner],
+  );
+  const expensesByStaff = useMemo(
+    () => (isOwner ? aggregateByKey(cashExpenseItems, (b) => b.approvedBy ?? "Unknown", (b) => b.amount) : []),
+    [cashExpenseItems, isOwner],
+  );
+  const expensesByCategory = useMemo(
+    () => aggregateByKey(cashExpenseItems, (b) => b.category || "Uncategorized", (b) => b.amount),
+    [cashExpenseItems],
+  );
 
   return (
     <div className="bg-white dark:bg-card border border-gray-200 dark:border-card-border rounded-xl shadow-sm overflow-hidden">
@@ -1035,7 +1295,27 @@ function UnifiedReconciliationPanel({
           </div>
         )}
 
-        <ARow label="Old Dues Collected" value={s.duesCollectedTotal} sign="+" note="payments on prior-day bills" />
+        <ExpandableReconRow
+          label="Old Dues Collected"
+          value={s.duesCollectedTotal}
+          sign="+"
+          note="· payments on prior-day bills"
+          accent="emerald"
+          expanded={duesExpanded}
+          onToggle={() => setDuesExpanded((e) => !e)}
+          canExpand={isOwner || duesBills.length > 0}
+          byStaff={duesByStaff}
+          byReferral={duesByDoctor}
+          individuals={duesBills.map((b) => ({
+            key: b.billId,
+            billId: b.billId,
+            billNumber: b.billNumber,
+            primary: b.patientName,
+            amount: b.duesCollected,
+            meta: b.referringDoctor,
+          }))}
+          indent
+        />
 
         <ASectionDivider color="emerald" />
         <ARow label="Total Revenue Activity" value={s.grossBilledIncludingCancelled + s.duesCollectedTotal} sign="=" bold highlight="green" />
@@ -1047,20 +1327,79 @@ function UnifiedReconciliationPanel({
           </span>
         </div>
 
-        <ARow label="Cancelled Bills" value={s.cancelledOnMyBills} sign="−" indent highlight="red"
-              note="Today's bills that were cancelled (old bills cancelled today are not listed here)" />
-        <ARow label="Refunds" value={refundsForCollectible} sign="−" indent highlight="red"
-              note={
-                refundsExcludedFromCollectible > 0
-                  ? `Money given back today, excluding ${fmt(refundsExcludedFromCollectible)} already counted under Cancelled Bills`
-                  : "Money given back today (includes refunds on old bills cancelled today)"
-              } />
-        <ARow label="Outstanding Dues" value={s.outstanding} sign="−" indent highlight="red" note="balance on today's bills" />
+        <ExpandableReconRow
+          label="Cancelled Bills"
+          value={cancelled}
+          sign="−"
+          note="· cancelled today (incl. older bills)"
+          accent="red"
+          expanded={cancelledExpanded}
+          onToggle={() => setCancelledExpanded((e) => !e)}
+          canExpand={isOwner || cancelledByMe.length > 0}
+          byStaff={cancelledByStaff}
+          byReferral={cancelledByDoctor}
+          individuals={cancelledByMe.map((b) => ({
+            key: b.id,
+            billId: b.id,
+            billNumber: b.billNumber,
+            primary: b.patientName ?? b.originalCreator,
+            amount: b.totalAmount,
+            meta: b.referringDoctor ?? `Created by ${b.originalCreator}`,
+          }))}
+          indent
+        />
+        <ExpandableReconRow
+          label="Refunds"
+          value={refundsForCollectible}
+          sign="−"
+          note={
+            refundsExcludedFromCollectible > 0
+              ? `· excl. ${fmt(refundsExcludedFromCollectible)} already in Cancelled`
+              : "· not already in Cancelled Bills"
+          }
+          accent="red"
+          expanded={refundsExpanded}
+          onToggle={() => setRefundsExpanded((e) => !e)}
+          canExpand={isOwner || refundsForPanel.length > 0}
+          byStaff={refundsByStaff}
+          byReferral={refundsByDoctor}
+          individuals={refundsForPanel.map((r) => ({
+            key: r.id,
+            billId: r.billId,
+            billNumber: r.billNumber ?? `#${r.billId}`,
+            primary: r.patientName ?? r.recordedBy ?? "Refund",
+            amount: r.absAmount,
+            meta: r.method,
+          }))}
+          indent
+        />
+        <ExpandableReconRow
+          label="Outstanding Dues"
+          value={s.outstanding}
+          sign="−"
+          note="· balance on today's bills"
+          accent="red"
+          expanded={outstandingExpanded}
+          onToggle={() => setOutstandingExpanded((e) => !e)}
+          canExpand={isOwner || outstandingBills.length > 0}
+          byStaff={outstandingByStaff}
+          byReferral={outstandingByDoctor}
+          individuals={outstandingBills.map((b) => ({
+            key: b.billId,
+            billId: b.billId,
+            billNumber: b.billNumber,
+            primary: b.patientName,
+            amount: b.outstanding,
+            meta: b.referringDoctor,
+          }))}
+          indent
+        />
+
 
         <ASectionDivider color="blue" />
         <ARow label="Collectible Amount" value={collectible} sign="=" bold highlight="blue" />
         <p className="px-3 pb-1 text-[10px] text-muted-foreground leading-snug">
-          Billing follows who created the bill; cash and refunds follow who recorded them. Individual staff views can differ — clinic total should still balance.
+          Cancellation belongs to whoever cancelled, not whoever created the bill. Cash and refunds follow who recorded them.
         </p>
 
         {/* ══ SECTION C: COLLECTION SPLIT ════════════════════════════════════ */}
@@ -1115,8 +1454,27 @@ function UnifiedReconciliationPanel({
           </div>
         )}
 
-        <ARow label="Cash Expenses" value={s.cashExpenses} sign="−" indent highlight="red"
-              note="cash paid out by this staff" />
+        <ExpandableReconRow
+          label="Cash Expenses"
+          value={s.cashExpenses}
+          sign="−"
+          note="· cash paid out by this staff"
+          accent="red"
+          expanded={expensesExpanded}
+          onToggle={() => setExpensesExpanded((e) => !e)}
+          canExpand={isOwner || cashExpenseItems.length > 0}
+          byStaff={expensesByStaff}
+          byReferral={expensesByCategory}
+          byReferralTitle="By Category"
+          individuals={cashExpenseItems.map((e) => ({
+            key: e.expenseId,
+            billNumber: e.expenseId,
+            primary: e.description || e.category,
+            amount: e.amount,
+            meta: e.paidTo ? `Paid to ${e.paidTo}` : e.approvedBy,
+          }))}
+          indent
+        />
 
         {/* ══ FINAL: EXPECTED CASH ════════════════════════════════════════════ */}
         <ASectionDivider color="slate" />
@@ -1291,7 +1649,7 @@ function PostClosureActivityBox({ data }: { data: PostClosureActivity }) {
         </div>
         <div className="flex items-center gap-2 shrink-0">
           <span className="text-[10px] font-bold text-amber-700 dark:text-amber-400 uppercase">
-            These will be counted in the NEXT day's reconciliation
+            Next drawer close · after midnight → next day money flow
           </span>
           {expanded ? <ChevronRight size={14} className="text-amber-700 -rotate-90" /> : <ChevronRight size={14} className="text-amber-700 rotate-90" />}
         </div>
@@ -1796,16 +2154,10 @@ export default function MyDailySummary() {
   const exportConfig = useMemo<ExportConfig | null>(() => {
     if (!s || !data) return null;
 
-    // Use the SAME formula as UnifiedReconciliationPanel — must match exactly.
-    const totalRefunds     = s.cashRefunded + s.digitalRefunded;
-    const refundsExcluded  = s.refundsOnCancelledBillsCreatedInPeriod ?? 0;
-    const refundsForCollectible = Math.max(0, totalRefunds - refundsExcluded);
-    const collectibleLocal = s.grossBilledIncludingCancelled
-                           + s.duesCollectedTotal
-                           - s.cancelledOnMyBills
-                           - refundsForCollectible
-                           - s.outstanding;
-    const collectible      = s.collectible ?? collectibleLocal;
+    const parts = collectibleParts(s);
+    const collectible      = s.collectible ?? parts.collectibleLocal;
+    const totalRefunds     = parts.totalRefunds;
+    const refundsForCollectible = parts.refundsForCollectible;
     const netDigital       = s.digitalIn - s.digitalRefunded;
     const expectedCash     = collectible - netDigital - s.cashExpenses;
     const mismatch         = expectedCash - s.physicalCashInHand;
@@ -1837,7 +2189,7 @@ export default function MyDailySummary() {
         title: "Deductions (Expense)",
         layout: "half",
         metrics: [
-          ["Cancelled Bills", amt(s.cancelledOnMyBills)],
+          ["Cancelled Bills", amt(parts.cancelled)],
           ["Refunds (Cash)", amt(s.cashRefunded)],
           ["Refunds (Digital)", amt(s.digitalRefunded)],
           ["Total Refunds", amt(totalRefunds)],
@@ -1951,10 +2303,10 @@ export default function MyDailySummary() {
           periodLabel: from === to ? from : `${from} to ${to}`,
           grossBilledIncludingCancelled: s.grossBilledIncludingCancelled,
           oldDuesCollected: s.duesCollectedTotal,
-          cancelledOnMyBills: s.cancelledOnMyBills,
+          cancelledAmount: s.cancelledAmount,
           cashRefunded: s.cashRefunded,
           digitalRefunded: s.digitalRefunded,
-          refundsOnCancelledBillsCreatedInPeriod: s.refundsOnCancelledBillsCreatedInPeriod,
+          refundsOnBillsCancelledByMe: s.refundsOnBillsCancelledByMe ?? s.refundsOnCancelledBillsCreatedInPeriod,
           outstanding: s.outstanding,
           digitalIn: s.digitalIn,
           cashIn: s.cashIn,
@@ -2198,13 +2550,11 @@ export default function MyDailySummary() {
       {s && (
         <>
           {(() => {
-            const totalRefunds = s.cashRefunded + s.digitalRefunded;
-            const refundsExcluded = s.refundsOnCancelledBillsCreatedInPeriod ?? 0;
-            const refundsForCollectible = Math.max(0, totalRefunds - refundsExcluded);
+            const parts = collectibleParts(s);
+            const totalRefunds = parts.totalRefunds;
+            const refundsForCollectible = parts.refundsForCollectible;
             const cancelLinkedRefunds = Math.max(0, totalRefunds - s.refundsWithoutCancellationAmount);
-            const collectibleLocal = s.grossBilledIncludingCancelled + s.duesCollectedTotal
-              - s.cancelledOnMyBills - refundsForCollectible - s.outstanding;
-            const collectible = s.collectible ?? collectibleLocal;
+            const collectible = s.collectible ?? parts.collectibleLocal;
             const totalBillsCount = (s.billCount ?? 0) + (s.cancelledByOthersCount ?? 0) + (s.cancelledBySelfCount ?? 0);
             const avgBillValue = totalBillsCount > 0 ? s.grossBilledIncludingCancelled / totalBillsCount : 0;
             return (
@@ -2337,8 +2687,8 @@ export default function MyDailySummary() {
                         <MiniKpi
                           icon={RotateCcw}
                           label="Cancellations (₹)"
-                          value={fmt(s.cancelledOnMyBills)}
-                          sub="Of bills created in this period"
+                          value={fmt(s.cancelledAmount)}
+                          sub="Cancelled by this staff today"
                           theme="pink"
                           onClick={() => setDrilldownType("cancellations")}
                         />
@@ -2432,6 +2782,11 @@ export default function MyDailySummary() {
             summary={s}
             byMethod={data.byMethod}
             discountBills={data.discountBills}
+            duesBills={data.duesBills}
+            outstandingBills={data.outstandingBills}
+            cancelledByMe={data.cancelledByMe}
+            refunds={data.refunds}
+            cashExpenseItems={data.cashExpenseItems ?? []}
             isOwner={isOwner}
             exportConfig={exportConfig}
             staffName={data.staffName}

@@ -80,9 +80,19 @@ export default function ReportImagePicker({
     setEffectiveDraftId(draftId);
   }, [draftId]);
 
+  // Drop queued picks when the open study changes — never flush Patient A's
+  // SOP UIDs onto Patient B's draft.
+  useEffect(() => {
+    setPending([]);
+    setSeries([]);
+    setInstances([]);
+    setOpenSeries(null);
+    setSeriesError(null);
+  }, [studyInstanceUID, studyId]);
+
   useQuery<LaunchData>({
-    queryKey: ["viewer-launch", studyInstanceUID],
-    queryFn: () => api.get(`/api/radiology/studies/${encodeURIComponent(studyInstanceUID!)}/ohif-launch`),
+    queryKey: ["viewer-launch", studyInstanceUID, studyId],
+    queryFn: () => api.get(`/api/radiology/studies/${encodeURIComponent(studyInstanceUID!)}/ohif-launch${studyId ? `?worklistId=${studyId}` : ""}`),
     enabled: !!studyInstanceUID,
     staleTime: 5 * 60_000,
   });
@@ -302,13 +312,13 @@ export default function ReportImagePicker({
                           <button
                             key={inst.uid}
                             type="button"
-                            className={`relative h-24 rounded overflow-hidden border-2 bg-black ${selected ? "border-blue-500" : "border-transparent hover:border-muted-foreground/40"}`}
+                            className={`relative h-24 w-full rounded overflow-hidden bg-black p-0.5 ${selected ? "ring-2 ring-blue-400/60 ring-inset border-2 border-blue-500" : "border-2 border-transparent hover:border-muted-foreground/40"}`}
                             onClick={() => selectInstance(s, inst)}
                             title={`Image ${inst.instanceNumber ?? ""}${selected ? " (selected — click to remove)" : ""}`}
                             data-testid={`instance-thumb-${inst.uid}`}
                           >
-                            {thumb && <img src={thumb} alt="" className="h-full w-full object-contain" loading="lazy" />}
-                            {selected && <span className="absolute top-0 right-0 h-3 w-3 rounded-full bg-blue-500 text-white text-[8px] leading-3 text-center">✓</span>}
+                            {thumb && <img src={thumb} alt="" className="h-full w-full object-contain rounded-sm" loading="lazy" />}
+                            {selected && <span className="absolute top-0.5 right-0.5 h-3.5 w-3.5 rounded-full bg-blue-500 text-white text-[8px] leading-3.5 text-center font-bold shadow-sm">✓</span>}
                           </button>
                         );
                       })}

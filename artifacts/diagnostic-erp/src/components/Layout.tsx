@@ -305,11 +305,9 @@ const navItems: NavEntry[] = [
     icon: Settings2,
     label: "Settings",
     children: [
-      // General Settings hosts Integrations (Hope / Reception / Diagnostic) and
-      // Radiology Tools hub tabs — see Settings.tsx. Dedicated Radiology
-      // Settings Center remains the PACS/DICOM/AI configuration hub.
+      // General Settings — clinic, users, billing print, integrations hub, etc.
       { path: "/settings",                  icon: Settings2,      label: "General Settings" },
-      // Single radiology admin entry — USG, Quick Select, PACS, MWL, AI all live inside it.
+      // Single radiology admin entry — PACS, MWL, USG, Quick Select, AI, productivity flags.
       { path: "/settings/radiology",        icon: Radio,          label: "Radiology", ownerOnly: true },
       { path: "/settings/scanner",          icon: ScanLine,       label: "Scanner Settings", ownerOnly: true },
       { path: "/abdm-abha",                 icon: ShieldCheck,    label: "ABDM / ABHA", featureFlag: "ff_abdm_abha" },
@@ -448,6 +446,24 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       window.removeEventListener("care:workspace-focus", onWorkspaceFocus);
     };
   }, []);
+
+  // When leaving Reporting Workspace, clear workspace/viewer focus collapse so
+  // the app sidebar does not stay stuck collapsed on the next page.
+  useEffect(() => {
+    const onReporting = /\/radiology\/reporting-workspace/.test(location);
+    if (onReporting) return;
+    if (preWorkspaceFocusCollapsed.current !== null) {
+      const restore = preWorkspaceFocusCollapsed.current;
+      preWorkspaceFocusCollapsed.current = null;
+      setSidebarCollapsed(restore);
+    }
+    if (preViewerFocusCollapsed.current !== null) {
+      const restore = preViewerFocusCollapsed.current;
+      preViewerFocusCollapsed.current = null;
+      setSidebarCollapsed(restore);
+    }
+    setWorkspaceFocusActive(false);
+  }, [location]);
 
   // Pass the login-time DB value so the hook seeds localStorage on a fresh device.
   // Effective theme reads purely from localStorage (via userTheme) after seeding so
@@ -625,7 +641,9 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const renderNavChild = (c: NavChild, onNavigate: () => void) => {
     if (!isSubGroup(c)) return renderNavLeaf(c, onNavigate);
     const subActive = c.children.some((leaf) => isLeafActive(leaf.path, location));
-    const subOpen = openGroups[c.id] ?? subActive;
+    // Nested groups (e.g. USG) open only when the user clicks — never auto-expand
+    // just because a leaf under them is the active route.
+    const subOpen = openGroups[c.id] === true;
     const SubIcon = c.icon;
     return (
       <div key={c.id}>
@@ -1457,7 +1475,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         )}
 
         {/* Page content — flex column so pages using h-full (Match Center, Worklist, Billing Desk) fill the pane */}
-        <main className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden flex flex-col">
+        <main className="flex-1 min-h-0 min-w-0 overflow-y-auto overflow-x-auto flex flex-col">
           {children}
         </main>
       </div>

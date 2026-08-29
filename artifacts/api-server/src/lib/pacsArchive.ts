@@ -1,12 +1,13 @@
 import { db } from "@workspace/db";
 import {
   radiologyStudiesTable,
+  radiologyWorklistTable,
   patientsTable,
   patientReportsTable,
   radiologyAuditLogTable,
   radiologyPacsArchiveRevisionsTable,
 } from "@workspace/db/schema";
-import { and, eq, ne } from "drizzle-orm";
+import { and, eq, inArray, ne } from "drizzle-orm";
 import { chromium } from "playwright";
 import { buildReportArtifact, type ReportArtifact } from "../routes/patient-reports.js";
 import { logger } from "./logger.js";
@@ -98,14 +99,25 @@ export async function archiveReportToPacs(
     // the chain to the latest signed version (default) — the archived PDF can
     // never silently be a superseded report, and an explicitly historical
     // archive carries the superseded watermark baked into its HTML.
+    //
+    // Workspace finalize stores radiology_worklist.id on patient_reports.study_id;
+    // legacy rows may still store radiology_studies.id. This archive entrypoint
+    // always receives the billed study id — look up both namespaces.
     let htmlContent = "";
     let artifact: ReportArtifact | null = null;
+    const [worklistForStudy] = await db
+      .select({ id: radiologyWorklistTable.id })
+      .from(radiologyWorklistTable)
+      .where(eq(radiologyWorklistTable.studyId, studyId))
+      .limit(1);
+    const reportStudyIds = worklistForStudy?.id != null
+      ? [worklistForStudy.id, studyId]
+      : [studyId];
     const [report] = await db
       .select()
       .from(patientReportsTable)
-      .where(eq(patientReportsTable.studyId, studyId))
+      .where(inArray(patientReportsTable.studyId, reportStudyIds))
       .limit(1);
-
     if (report) {
       artifact = await buildReportArtifact(report.id, { surface: "pacs", versionMode: opts.versionMode });
       htmlContent = artifact?.html || "";

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { buildFindingsText, fetchKeyImageDataUrls, hydratePrintPreviewKeyImages } from "./radiologyReportPdfExport";
+import { buildFindingsText, fetchKeyImageDataUrls, hydratePrintPreviewKeyImages, replaceSideImagePanel, countInlinedDicomImages } from "./radiologyReportPdfExport";
 import type { ReportImageRef } from "./reportImageRefs";
 
 describe("buildFindingsText", () => {
@@ -145,12 +145,29 @@ describe("fetchKeyImageDataUrls", () => {
 });
 
 describe("hydratePrintPreviewKeyImages", () => {
-  it("leaves HTML alone when dicom images are already inlined", async () => {
-    const html = `<div class="image-panel-side"><img class="dicom-img" src="data:image/jpeg;base64,AAA"/></div>`;
+  it("leaves HTML alone when enough usable data URLs are already inlined", async () => {
+    const longJpeg =
+      "data:image/jpeg;base64," + "A".repeat(80);
+    const html = `<div class="image-panel image-panel-side"><div class="image-panel-heading">KEY IMAGES</div><div class="image-grid"><div class="image-cell"><img class="dicom-img" src="${longJpeg}"/></div></div></div>`;
     const fetchImpl = vi.fn();
     const out = await hydratePrintPreviewKeyImages(html, "https://pacs.example/dicomweb", [makeRef()], { fetchImpl });
     expect(out).toBe(html);
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("replaces a nested side-panel rail (not just the heading close)", () => {
+    const emptyRail =
+      `<div class="image-panel image-panel-side image-panel-keyrail" data-image-count="2">` +
+      `<div class="image-panel-heading">KEY IMAGES</div>` +
+      `<div class="image-grid"><div class="image-cell"><img class="dicom-img" src=""/></div>` +
+      `<div class="image-cell"><img class="dicom-img" src=""/></div></div></div>`;
+    const html = `<div class="content-area has-side-images"><div class="report-column"><p>Body</p></div>${emptyRail}</div><div class="sigs"></div>`;
+    const filled = "data:image/jpeg;base64," + "B".repeat(80);
+    const rail = `<div class="image-panel image-panel-side image-panel-keyrail" data-image-count="1"><div class="image-panel-heading">KEY IMAGES</div><div class="image-grid"><div class="image-cell"><img class="dicom-img" src="${filled}"/></div></div></div>`;
+    const out = replaceSideImagePanel(html, rail);
+    expect(out).toContain(filled);
+    expect(out).not.toContain('src=""');
+    expect(countInlinedDicomImages(out!)).toBe(1);
   });
 
   it("injects a square key-images rail when the server returned no pixels", async () => {
@@ -164,11 +181,23 @@ describe("hydratePrintPreviewKeyImages", () => {
     // via returning a real-looking response — FileReader may not exist in Node.
     // Use a pre-resolved path: pass refs and a fetch that fails, then manually test rail builder.
     const empty = `<div class="content-area"><div class="report-column"><p>Body</p></div></div><div class="sigs"></div>`;
-    // When fetch fails, HTML unchanged
+    // When fetch fails and there is no rail, HTML unchanged
     const unchanged = await hydratePrintPreviewKeyImages(empty, "https://pacs.example/dicomweb", [makeRef()], {
       fetchImpl: vi.fn().mockResolvedValue({ ok: false }),
     });
     expect(unchanged).toBe(empty);
+
+    // Pending empty rail + failed fetch → strip navy orphan strip
+    const pendingRail =
+      `<div class="content-area has-side-images"><div class="report-column"><p>Body</p></div>` +
+      `<div class="image-panel image-panel-side image-panel-keyrail" data-image-count="1">` +
+      `<div class="image-panel-heading">KEY IMAGES</div>` +
+      `<div class="image-grid"><div class="image-cell image-cell-pending"><img class="dicom-img dicom-img-pending" src=""/></div></div></div></div>`;
+    const stripped = await hydratePrintPreviewKeyImages(pendingRail, "https://pacs.example/dicomweb", [makeRef()], {
+      fetchImpl: vi.fn().mockResolvedValue({ ok: false }),
+    });
+    expect(stripped).not.toContain("image-panel-keyrail");
+    expect(stripped).not.toContain("has-side-images");
 
     // Simulate successful hydration by injecting with a custom fetch that returns a blob
     // and a polyfilled FileReader if needed.

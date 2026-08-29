@@ -1,0 +1,418 @@
+From 712413d25f91716e7aaf8cc5f402de8ffe908b03 Mon Sep 17 00:00:00 2001
+From: Cursor Agent <cursoragent@cursor.com>
+Date: Sat, 29 Aug 2026 14:18:55 +0000
+Subject: [PATCH 2/2] Fix mobile Day Close swipe and Add Doctor Save button
+
+Root cause for Day Close: ModuleErrorBoundary used overflow-x-hidden on
+every route, so wide tables were clipped and could not scroll sideways
+even when a page wrapped them in overflow-x-auto.
+
+- ModuleErrorBoundary: overflow-x-auto + min-w-0
+- Dialog/AlertDialog: max-h 90dvh + overflow-y-auto so Add Doctor Save
+  is reachable on mobile
+- DayClose/Staff/Accounting/BillDetail/PatientDetail/OrderDetail:
+  constrained horizontal scroll wrappers with touch-pan-x
+---
+ .../src/components/ModuleErrorBoundary.tsx    | 11 +++++----
+ .../src/components/ui/alert-dialog.tsx        |  2 +-
+ .../src/components/ui/dialog.tsx              |  4 +++-
+ .../diagnostic-erp/src/pages/Accounting.tsx   | 16 ++++++++++++-
+ .../diagnostic-erp/src/pages/BillDetail.tsx   |  4 ++++
+ .../diagnostic-erp/src/pages/DayClose.tsx     | 24 +++++++++----------
+ .../diagnostic-erp/src/pages/Doctors.tsx      |  4 ++--
+ .../diagnostic-erp/src/pages/OrderDetail.tsx  |  2 ++
+ .../src/pages/PatientDetail.tsx               |  2 ++
+ artifacts/diagnostic-erp/src/pages/Staff.tsx  | 14 ++++++-----
+ 10 files changed, 55 insertions(+), 28 deletions(-)
+
+diff --git a/artifacts/diagnostic-erp/src/components/ModuleErrorBoundary.tsx b/artifacts/diagnostic-erp/src/components/ModuleErrorBoundary.tsx
+index 98061104..c332cd8e 100644
+--- a/artifacts/diagnostic-erp/src/components/ModuleErrorBoundary.tsx
++++ b/artifacts/diagnostic-erp/src/components/ModuleErrorBoundary.tsx
+@@ -128,12 +128,13 @@ export class ModuleErrorBoundary extends React.Component<Props, State> {
+         </div>
+       );
+     }
+-    // overflow-y-auto (not overflow-hidden): document-style pages such as
+-    // My Daily Summary are taller than the pane. overflow-hidden clipped them
+-    // so they appeared cut off and could not scroll. Workspace pages that
+-    // use h-full plus their own overflow still fill this sized parent.
++    // overflow-y-auto: document-style pages taller than the pane must scroll.
++    // overflow-x-auto (not overflow-x-hidden): wide Day Close / Staff tables
++    // must be able to scroll sideways on mobile — overflow-x-hidden clipped
++    // them so Counted Cash / Actions stayed unreachable.
++    // Workspace pages that use h-full plus their own overflow still fill this sized parent.
+     return (
+-      <div className="h-full min-h-0 flex-1 flex flex-col w-full overflow-y-auto overflow-x-hidden">
++      <div className="h-full min-h-0 flex-1 flex flex-col w-full min-w-0 overflow-y-auto overflow-x-auto">
+         {this.props.children}
+       </div>
+     );
+diff --git a/artifacts/diagnostic-erp/src/components/ui/alert-dialog.tsx b/artifacts/diagnostic-erp/src/components/ui/alert-dialog.tsx
+index fa2b4429..43e7f143 100644
+--- a/artifacts/diagnostic-erp/src/components/ui/alert-dialog.tsx
++++ b/artifacts/diagnostic-erp/src/components/ui/alert-dialog.tsx
+@@ -34,7 +34,7 @@ const AlertDialogContent = React.forwardRef<
+     <AlertDialogPrimitive.Content
+       ref={ref}
+       className={cn(
+-        "fixed left-[50%] top-[50%] z-50 grid w-full max-w-lg translate-x-[-50%] translate-y-[-50%] gap-4 border bg-background p-6 shadow-lg duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:slide-out-to-left-1/2 data-[state=closed]:slide-out-to-top-[48%] data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-[48%] sm:rounded-lg",
++        "fixed left-[50%] top-[50%] z-50 grid w-full max-w-lg max-h-[min(90dvh,100%)] translate-x-[-50%] translate-y-[-50%] gap-4 overflow-y-auto overscroll-contain border bg-background p-6 shadow-lg duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:slide-out-to-left-1/2 data-[state=closed]:slide-out-to-top-[48%] data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-[48%] sm:rounded-lg",
+         className
+       )}
+       {...props}
+diff --git a/artifacts/diagnostic-erp/src/components/ui/dialog.tsx b/artifacts/diagnostic-erp/src/components/ui/dialog.tsx
+index 9dbeaa09..e6e3bb5d 100644
+--- a/artifacts/diagnostic-erp/src/components/ui/dialog.tsx
++++ b/artifacts/diagnostic-erp/src/components/ui/dialog.tsx
+@@ -36,7 +36,9 @@ const DialogContent = React.forwardRef<
+     <DialogPrimitive.Content
+       ref={ref}
+       className={cn(
+-        "fixed left-[50%] top-[50%] z-50 grid w-full max-w-lg translate-x-[-50%] translate-y-[-50%] gap-4 border bg-background p-6 shadow-lg duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:slide-out-to-left-1/2 data-[state=closed]:slide-out-to-top-[48%] data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-[48%] sm:rounded-lg",
++        // max-h + overflow-y-auto: tall forms (Add Doctor, Staff, Settings)
++        // must scroll on mobile so Save/Cancel stay reachable.
++        "fixed left-[50%] top-[50%] z-50 grid w-full max-w-lg max-h-[min(90dvh,100%)] translate-x-[-50%] translate-y-[-50%] gap-4 overflow-y-auto overscroll-contain border bg-background p-6 shadow-lg duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:slide-out-to-left-1/2 data-[state=closed]:slide-out-to-top-[48%] data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-[48%] sm:rounded-lg",
+         className
+       )}
+       {...props}
+diff --git a/artifacts/diagnostic-erp/src/pages/Accounting.tsx b/artifacts/diagnostic-erp/src/pages/Accounting.tsx
+index d5e6086b..82973ca7 100644
+--- a/artifacts/diagnostic-erp/src/pages/Accounting.tsx
++++ b/artifacts/diagnostic-erp/src/pages/Accounting.tsx
+@@ -436,7 +436,7 @@ export default function Accounting() {
+   // ── Render ───────────────────────────────────────────────────────────────────
+ 
+   return (
+-    <div className="pb-8">
++    <div className="pb-8 min-w-0 max-w-full">
+       <PageHeader
+         title="Accounting"
+         subtitle="Double-entry bookkeeping · Tally-compatible"
+@@ -525,6 +525,7 @@ export default function Accounting() {
+               <div className="text-center py-12 text-muted-foreground">No vouchers found</div>
+             ) : (
+               <div className="bg-card border border-card-border rounded-xl overflow-hidden">
++                <div className="w-full max-w-full min-w-0 overflow-x-auto overscroll-x-contain touch-pan-x">
+                 <table className="w-full text-sm">
+                   <thead className="bg-muted/50 border-b border-card-border">
+                     <tr>
+@@ -626,6 +627,7 @@ export default function Accounting() {
+                     </tr>
+                   </tfoot>
+                 </table>
++                </div>
+               </div>
+             )}
+           </TabsContent>
+@@ -644,6 +646,7 @@ export default function Accounting() {
+               <div className="text-center py-12 text-muted-foreground">No accounts. Add your first account to get started.</div>
+             ) : (
+               <div className="bg-card border border-card-border rounded-xl overflow-hidden">
++                <div className="w-full max-w-full min-w-0 overflow-x-auto overscroll-x-contain touch-pan-x">
+                 <table className="w-full text-sm">
+                   <thead className="bg-muted/50 border-b border-card-border">
+                     <tr>
+@@ -687,6 +690,7 @@ export default function Accounting() {
+                     ))}
+                   </tbody>
+                 </table>
++                </div>
+               </div>
+             )}
+           </TabsContent>
+@@ -923,6 +927,7 @@ export default function Accounting() {
+                       </div>
+                       {expanded && l.entries.length > 0 && (
+                         <div className="border-t border-card-border">
++                          <div className="w-full max-w-full min-w-0 overflow-x-auto overscroll-x-contain touch-pan-x">
+                           <table className="w-full text-xs">
+                             <thead className="bg-muted/50">
+                               <tr>
+@@ -949,6 +954,7 @@ export default function Accounting() {
+                               ))}
+                             </tbody>
+                           </table>
++                          </div>
+                         </div>
+                       )}
+                     </div>
+@@ -982,6 +988,7 @@ export default function Accounting() {
+ 
+             {trialBalance && (
+               <div className="bg-card border border-card-border rounded-xl overflow-hidden">
++                <div className="w-full max-w-full min-w-0 overflow-x-auto overscroll-x-contain touch-pan-x">
+                 <table className="w-full text-sm">
+                   <thead className="bg-muted/50 border-b border-card-border">
+                     <tr>
+@@ -1009,6 +1016,7 @@ export default function Accounting() {
+                     </tr>
+                   </tfoot>
+                 </table>
++                </div>
+               </div>
+             )}
+           </TabsContent>
+@@ -1033,6 +1041,7 @@ export default function Accounting() {
+                       <p className="font-bold text-green-700">{inr(profitLoss.totalIncome)}</p>
+                     </div>
+                     {profitLoss.income.length === 0 ? <div className="p-6 text-center text-muted-foreground text-sm">No income entries</div> : (
++                      <div className="w-full max-w-full min-w-0 overflow-x-auto overscroll-x-contain touch-pan-x">
+                       <table className="w-full text-sm"><tbody>{profitLoss.income.map((r, i) => (<tr key={i} className="border-b border-card-border last:border-0 hover:bg-muted/20"><td className="px-4 py-2.5 font-medium">{r.name}</td><td className="px-4 py-2.5 text-xs text-muted-foreground">{r.group}</td><td className="px-4 py-2.5 text-right text-green-700 font-semibold">{inr(r.amount)}</td></tr>))}</tbody></table>
+                     )}
+                   </div>
+@@ -1043,6 +1052,7 @@ export default function Accounting() {
+                     </div>
+                     {profitLoss.expenses.length === 0 ? <div className="p-6 text-center text-muted-foreground text-sm">No expense entries</div> : (
+                       <table className="w-full text-sm"><tbody>{profitLoss.expenses.map((r, i) => (<tr key={i} className="border-b border-card-border last:border-0 hover:bg-muted/20"><td className="px-4 py-2.5 font-medium">{r.name}</td><td className="px-4 py-2.5 text-xs text-muted-foreground">{r.group}</td><td className="px-4 py-2.5 text-right text-red-600 font-semibold">{inr(r.amount)}</td></tr>))}</tbody></table>
++                      </div>
+                     )}
+                   </div>
+                 </div>
+@@ -1077,6 +1087,7 @@ export default function Accounting() {
+                   <div className="bg-card border border-card-border rounded-xl overflow-hidden">
+                     <div className="bg-blue-50 border-b border-card-border px-4 py-3 flex justify-between"><p className="font-semibold text-blue-800 text-sm">Assets</p><p className="font-bold text-blue-700">{inr(balanceSheet.totalAssets)}</p></div>
+                     {balanceSheet.assets.length === 0 ? <div className="p-6 text-center text-muted-foreground text-sm">No asset accounts</div> : (
++                      <div className="w-full max-w-full min-w-0 overflow-x-auto overscroll-x-contain touch-pan-x">
+                       <table className="w-full text-sm"><tbody>{balanceSheet.assets.map((r, i) => (<tr key={i} className="border-b border-card-border last:border-0 hover:bg-muted/20"><td className="px-4 py-2.5 font-medium">{r.name}</td><td className="px-4 py-2.5 text-xs text-muted-foreground">{r.group}</td><td className="px-4 py-2.5 text-right font-semibold">{inr(r.amount)}</td></tr>))}</tbody></table>
+                     )}
+                   </div>
+@@ -1084,6 +1095,7 @@ export default function Accounting() {
+                     <div className="bg-purple-50 border-b border-card-border px-4 py-3 flex justify-between"><p className="font-semibold text-purple-800 text-sm">Liabilities &amp; Capital</p><p className="font-bold text-purple-700">{inr(balanceSheet.totalLiabilities)}</p></div>
+                     {balanceSheet.liabilities.length === 0 ? <div className="p-6 text-center text-muted-foreground text-sm">No liability accounts</div> : (
+                       <table className="w-full text-sm"><tbody>{balanceSheet.liabilities.map((r, i) => (<tr key={i} className="border-b border-card-border last:border-0 hover:bg-muted/20"><td className="px-4 py-2.5 font-medium">{r.name}</td><td className="px-4 py-2.5 text-xs text-muted-foreground">{r.group}</td><td className="px-4 py-2.5 text-right font-semibold">{inr(r.amount)}</td></tr>))}</tbody></table>
++                      </div>
+                     )}
+                   </div>
+                 </div>
+@@ -1134,6 +1146,7 @@ export default function Accounting() {
+               </div>
+             ) : (
+               <div className="bg-card border border-card-border rounded-xl overflow-hidden">
++                <div className="w-full max-w-full min-w-0 overflow-x-auto overscroll-x-contain touch-pan-x">
+                 <table className="w-full text-sm">
+                   <thead className="bg-muted/50 border-b border-card-border">
+                     <tr>
+@@ -1162,6 +1175,7 @@ export default function Accounting() {
+                     ))}
+                   </tbody>
+                 </table>
++                </div>
+               </div>
+             )}
+           </TabsContent>
+diff --git a/artifacts/diagnostic-erp/src/pages/BillDetail.tsx b/artifacts/diagnostic-erp/src/pages/BillDetail.tsx
+index c0f15b16..179f9085 100644
+--- a/artifacts/diagnostic-erp/src/pages/BillDetail.tsx
++++ b/artifacts/diagnostic-erp/src/pages/BillDetail.tsx
+@@ -931,6 +931,7 @@ export default function BillDetail({ id }: { id: number }) {
+             {!bill.payments?.length ? (
+               <div className="p-8 text-center text-sm text-muted-foreground">No payments recorded yet</div>
+             ) : (
++              <div className="w-full max-w-full min-w-0 overflow-x-auto overscroll-x-contain touch-pan-x">
+               <table className="w-full text-sm">
+                 <thead>
+                   <tr className="text-left text-xs text-muted-foreground border-b border-border bg-muted/30">
+@@ -960,6 +961,7 @@ export default function BillDetail({ id }: { id: number }) {
+                   ))}
+                 </tbody>
+               </table>
++              </div>
+             )}
+           </div>
+         </div>
+@@ -1818,6 +1820,7 @@ function TestsTable({
+       </div>
+ 
+       <div className="bg-card border border-card-border rounded-xl shadow-sm overflow-hidden">
++        <div className="w-full max-w-full min-w-0 overflow-x-auto overscroll-x-contain touch-pan-x">
+         <table className="w-full text-sm">
+           <thead>
+             <tr className="text-left text-xs text-muted-foreground border-b border-border bg-muted/30">
+@@ -1911,6 +1914,7 @@ function TestsTable({
+             })}
+           </tbody>
+         </table>
++        </div>
+       </div>
+ 
+       {/* Floating action bar for multi-select */}
+diff --git a/artifacts/diagnostic-erp/src/pages/DayClose.tsx b/artifacts/diagnostic-erp/src/pages/DayClose.tsx
+index 4870d599..cb1bcc98 100644
+--- a/artifacts/diagnostic-erp/src/pages/DayClose.tsx
++++ b/artifacts/diagnostic-erp/src/pages/DayClose.tsx
+@@ -581,10 +581,10 @@ export default function DayClose() {
+ 
+       {/* ── Staff Drawer Close Reconciliation Table (owner/admin only) ─────── */}
+       {isOwner && staffStatusQ.data && (
+-        <Card>
+-          <CardHeader>
+-            <CardTitle className="text-base flex items-center gap-2">
+-              <Users size={16} /> Staff Drawer Close Status
++        <Card className="min-w-0 max-w-full overflow-hidden">
++          <CardHeader className="min-w-0">
++            <CardTitle className="text-base flex items-center gap-2 flex-wrap min-w-0">
++              <Users size={16} className="flex-shrink-0" /> <span className="min-w-0">Staff Drawer Close Status</span>
+               {(() => {
+                 const users = staffStatusQ.data.users;
+                 const closed = users.filter((u) => u.isClosed).length;
+@@ -615,11 +615,11 @@ export default function DayClose() {
+             </CardTitle>
+           </CardHeader>
+           {staffTableExpanded && (
+-            <CardContent>
++            <CardContent className="min-w-0">
+               {staffStatusQ.data.users.length === 0 ? (
+                 <p className="text-sm text-muted-foreground">No active staff accounts found.</p>
+               ) : (
+-                <div className="overflow-x-auto -mx-1 px-1">
++                <div className="w-full max-w-full min-w-0 overflow-x-auto overscroll-x-contain touch-pan-x -mx-1 px-1">
+                   <table className="w-full text-sm min-w-[56rem]">
+                     <thead className="text-left text-xs text-muted-foreground uppercase border-b bg-muted/30">
+                       <tr>
+@@ -941,10 +941,10 @@ export default function DayClose() {
+ 
+       {/* Per-staff breakdown */}
+       {(previewQ.data?.byStaff?.length ?? 0) > 0 && (
+-        <Card>
++        <Card className="min-w-0 max-w-full overflow-hidden">
+           <CardHeader><CardTitle className="text-base">Per-Staff Collection (Open Window)</CardTitle></CardHeader>
+-          <CardContent>
+-            <div className="overflow-x-auto -mx-1 px-1">
++          <CardContent className="min-w-0">
++            <div className="w-full max-w-full min-w-0 overflow-x-auto overscroll-x-contain touch-pan-x -mx-1 px-1">
+               <table className="w-full text-sm min-w-[40rem]">
+                 <thead className="text-left text-xs text-muted-foreground uppercase border-b">
+                   <tr>
+@@ -979,10 +979,10 @@ export default function DayClose() {
+       )}
+ 
+       {/* Past closures */}
+-      <Card>
++      <Card className="min-w-0 max-w-full overflow-hidden">
+         <CardHeader><CardTitle className="text-base">Past Closures</CardTitle></CardHeader>
+-        <CardContent>
+-          <div className="overflow-x-auto -mx-1 px-1">
++        <CardContent className="min-w-0">
++          <div className="w-full max-w-full min-w-0 overflow-x-auto overscroll-x-contain touch-pan-x -mx-1 px-1">
+             <table className="w-full text-sm min-w-[44rem]">
+               <thead className="text-left text-xs text-muted-foreground uppercase border-b">
+                 <tr>
+diff --git a/artifacts/diagnostic-erp/src/pages/Doctors.tsx b/artifacts/diagnostic-erp/src/pages/Doctors.tsx
+index ffe3d8c4..cdc32b0b 100644
+--- a/artifacts/diagnostic-erp/src/pages/Doctors.tsx
++++ b/artifacts/diagnostic-erp/src/pages/Doctors.tsx
+@@ -293,7 +293,7 @@ export default function Doctors() {
+ 
+       {/* Add Doctor Dialog */}
+       <Dialog open={open} onOpenChange={setOpen}>
+-        <DialogContent className="max-w-md">
++        <DialogContent className="max-w-md max-h-[min(90dvh,100%)] overflow-y-auto">
+           <DialogHeader>
+             <DialogTitle>Add Referring Doctor</DialogTitle>
+           </DialogHeader>
+@@ -350,7 +350,7 @@ export default function Doctors() {
+ 
+       {/* Edit Doctor Dialog */}
+       <Dialog open={!!editingDoctor} onOpenChange={(v) => { if (!v) setEditingDoctor(null); }}>
+-        <DialogContent className="max-w-md">
++        <DialogContent className="max-w-md max-h-[min(90dvh,100%)] overflow-y-auto">
+           <DialogHeader>
+             <DialogTitle>Edit Doctor — {editingDoctor?.name}</DialogTitle>
+           </DialogHeader>
+diff --git a/artifacts/diagnostic-erp/src/pages/OrderDetail.tsx b/artifacts/diagnostic-erp/src/pages/OrderDetail.tsx
+index e3b38567..0df8353d 100644
+--- a/artifacts/diagnostic-erp/src/pages/OrderDetail.tsx
++++ b/artifacts/diagnostic-erp/src/pages/OrderDetail.tsx
+@@ -134,6 +134,7 @@ export default function OrderDetail({ id }: { id: number }) {
+         <div>
+           <h2 className="text-sm font-semibold text-foreground mb-3">Tests Ordered</h2>
+           <div className="bg-card border border-card-border rounded-xl shadow-sm overflow-hidden">
++            <div className="w-full max-w-full min-w-0 overflow-x-auto overscroll-x-contain touch-pan-x">
+             <table className="w-full text-sm">
+               <thead>
+                 <tr className="text-left text-xs text-muted-foreground border-b border-border bg-muted/30">
+@@ -162,6 +163,7 @@ export default function OrderDetail({ id }: { id: number }) {
+                 </tr>
+               </tfoot>
+             </table>
++            </div>
+           </div>
+         </div>
+       </div>
+diff --git a/artifacts/diagnostic-erp/src/pages/PatientDetail.tsx b/artifacts/diagnostic-erp/src/pages/PatientDetail.tsx
+index 552c66d6..8e8314bc 100644
+--- a/artifacts/diagnostic-erp/src/pages/PatientDetail.tsx
++++ b/artifacts/diagnostic-erp/src/pages/PatientDetail.tsx
+@@ -328,6 +328,7 @@ export default function PatientDetail({ id }: { id: number }) {
+             {!history?.orders?.length ? (
+               <div className="p-8 text-center text-sm text-muted-foreground">No orders yet</div>
+             ) : (
++              <div className="w-full max-w-full min-w-0 overflow-x-auto overscroll-x-contain touch-pan-x">
+               <table className="w-full text-sm">
+                 <thead>
+                   <tr className="text-left text-xs text-muted-foreground border-b border-slate-200 dark:border-border bg-slate-50 dark:bg-muted/30">
+@@ -354,6 +355,7 @@ export default function PatientDetail({ id }: { id: number }) {
+                   ))}
+                 </tbody>
+               </table>
++              </div>
+             )}
+           </div>
+         </div>
+diff --git a/artifacts/diagnostic-erp/src/pages/Staff.tsx b/artifacts/diagnostic-erp/src/pages/Staff.tsx
+index d596c2bd..d1d817e0 100644
+--- a/artifacts/diagnostic-erp/src/pages/Staff.tsx
++++ b/artifacts/diagnostic-erp/src/pages/Staff.tsx
+@@ -109,8 +109,8 @@ function EmployeesTab() {
+         <Button onClick={() => setCreateOpen(true)}><Plus size={14} className="mr-1.5" />Add Staff</Button>
+       </div>
+ 
+-      <div className="rounded-lg border bg-card overflow-hidden">
+-        <table className="w-full text-sm">
++      <div className="rounded-lg border bg-card min-w-0 max-w-full overflow-x-auto overscroll-x-contain touch-pan-x">
++        <table className="w-full text-sm min-w-[40rem]">
+           <thead className="bg-muted/40 text-xs uppercase tracking-wide text-muted-foreground">
+             <tr>
+               <th className="text-left px-3 py-2.5">Code</th>
+@@ -342,8 +342,8 @@ function AdvancesPanel({ staffId }: { staffId: number }) {
+         </div>
+       </div>
+ 
+-      <div className="rounded-lg border max-h-64 overflow-auto">
+-        <table className="w-full text-sm">
++      <div className="rounded-lg border max-h-64 min-w-0 overflow-auto overscroll-contain touch-pan-x">
++        <table className="w-full text-sm min-w-[32rem]">
+           <thead className="bg-muted/40 text-xs uppercase text-muted-foreground"><tr>
+             <th className="px-2 py-2 text-left">Date</th><th className="text-right px-2">Amount</th><th className="text-right px-2">Recovered</th><th className="px-2">Status</th><th className="px-2 text-left">Reason</th><th></th>
+           </tr></thead>
+@@ -533,6 +533,7 @@ function BiometricPanel({ staff }: { staff: Staff }) {
+         </Button>
+       </div>
+       <div className="rounded-lg border">
++        <div className="w-full max-w-full min-w-0 overflow-x-auto overscroll-x-contain touch-pan-x">
+         <table className="w-full text-sm">
+           <thead className="bg-muted/40 text-xs uppercase text-muted-foreground"><tr>
+             <th className="px-2 py-2 text-left">Device</th><th className="px-2 text-left">Enrolled</th><th className="px-2 text-left">Last Used</th><th></th>
+@@ -549,6 +550,7 @@ function BiometricPanel({ staff }: { staff: Staff }) {
+             ))}
+           </tbody>
+         </table>
++        </div>
+       </div>
+     </div>
+   );
+@@ -607,8 +609,8 @@ function AttendanceTab() {
+         <Label className="text-xs">From</Label><Input className="w-[160px]" type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
+         <Label className="text-xs">To</Label><Input className="w-[160px]" type="date" value={to} onChange={(e) => setTo(e.target.value)} />
+       </div>
+-      <div className="rounded-lg border bg-card overflow-hidden">
+-        <table className="w-full text-sm">
++      <div className="rounded-lg border bg-card min-w-0 max-w-full overflow-x-auto overscroll-x-contain touch-pan-x">
++        <table className="w-full text-sm min-w-[40rem]">
+           <thead className="bg-muted/40 text-xs uppercase text-muted-foreground"><tr>
+             <th className="px-3 py-2 text-left">Date</th><th className="px-3 text-left">Staff</th><th className="px-3 text-left">Role</th>
+             <th className="px-3 text-left">Punch In</th><th className="px-3 text-left">Punch Out</th><th className="px-3 text-left">Source</th>
+-- 
+2.43.0
+

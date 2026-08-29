@@ -23,7 +23,8 @@ export type InsertSource =
   | "structured-template-candidate"
   | "macro"
   | "companion"
-  | "ai-draft";
+  | "ai-draft"
+  | "radiologist-voice";
 
 /** normalizeForDedupe(sentence) → contributing sources (deduped, stable order). */
 export type FieldProvenanceMap = Record<string, InsertSource[]>;
@@ -59,6 +60,7 @@ const SOURCE_ORDER: InsertSource[] = [
   "macro",
   "companion",
   "ai-draft",
+  "radiologist-voice",
 ];
 
 const SOURCE_LABELS: Record<InsertSource, string> = {
@@ -74,6 +76,7 @@ const SOURCE_LABELS: Record<InsertSource, string> = {
   macro: "Macro",
   companion: "Companion",
   "ai-draft": "AI Draft",
+  "radiologist-voice": "Voice (radiologist)",
 };
 
 /** Normalize for duplicate detection: lowercase, strip punctuation, collapse whitespace. */
@@ -166,7 +169,7 @@ export function provenanceMapToSegments(
  * Never rewrites clinical text.
  */
 export function reconcileProvenanceAfterManualEdit(
-  _previousText: string,
+  previousText: string,
   nextText: string,
   previousProvenance: FieldProvenanceMap,
 ): FieldProvenanceMap {
@@ -174,8 +177,13 @@ export function reconcileProvenanceAfterManualEdit(
   for (const s of splitToSentences(nextText)) {
     const key = normalizeForDedupe(s);
     if (!key) continue;
-    const prev = previousProvenance[key];
-    out[key] = prev && prev.length > 0 ? sortSources(prev) : ["manual"];
+    const exact = previousProvenance[key];
+    if (exact && exact.length > 0) {
+      out[key] = sortSources(exact);
+      continue;
+    }
+    const fuzzy = findFuzzyProvenanceMatch(s, previousText, previousProvenance);
+    out[key] = fuzzy ?? ["manual"];
   }
   return out;
 }
@@ -234,6 +242,48 @@ function jaccard(a: Set<string>, b: Set<string>): number {
   let inter = 0;
   for (const t of a) if (b.has(t)) inter++;
   return inter / (a.size + b.size - inter);
+}
+
+/** Lightweight similarity for lightly edited owned sentences (descriptor tweaks). */
+export const FUZZY_PROVENANCE_THRESHOLD = 0.72;
+
+export function fuzzySentenceSimilarity(a: string, b: string): number {
+  return jaccard(tokenSet(a), tokenSet(b));
+}
+
+/** True when `next` is a light edit of `prev` (added descriptor words, same core). */
+export function isLightSentenceEdit(prev: string, next: string): boolean {
+  if (fuzzySentenceSimilarity(prev, next) >= FUZZY_PROVENANCE_THRESHOLD) return true;
+  const shorter = normalizeForDedupe(prev).split(" ").filter((w) => w.length > 1);
+  const longer = normalizeForDedupe(next).split(" ").filter((w) => w.length > 1);
+  if (shorter.length < 3) return false;
+  return shorter.every((w) => longer.includes(w));
+}
+
+/**
+ * When a radiologist lightly edits an owned sentence, inherit prior provenance
+ * from the closest previous sentence instead of treating it as purely manual.
+ */
+export function findFuzzyProvenanceMatch(
+  sentence: string,
+  previousText: string,
+  previousProvenance: FieldProvenanceMap,
+  minScore = FUZZY_PROVENANCE_THRESHOLD,
+): InsertSource[] | null {
+  let best: InsertSource[] | null = null;
+  let bestScore = 0;
+  for (const prev of splitToSentences(previousText)) {
+    const pk = normalizeForDedupe(prev);
+    const prov = previousProvenance[pk];
+    if (!prov || prov.every((s) => s === "manual")) continue;
+    const score = fuzzySentenceSimilarity(sentence, prev);
+    const light = isLightSentenceEdit(prev, sentence);
+    if ((score >= minScore || light) && (light || score > bestScore)) {
+      bestScore = Math.max(bestScore, score);
+      best = sortSources([...prov, "manual"]);
+    }
+  }
+  return best;
 }
 
 /** Two MRI technique paragraphs that paraphrase the same scan → keep one. */

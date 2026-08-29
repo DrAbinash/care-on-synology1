@@ -19,7 +19,8 @@ import { applyRadiologyVoiceLexicon } from "./voiceDictationLexicon";
 export type VoiceWorkflowCommand =
   | "save" | "finalize" | "verify" | "next" | "previous" | "park" | "unpark"
   | "refresh" | "reload-current" | "open-viewer"
-  | "focus-findings" | "focus-impression" | "focus-quick-search" | "close-panel";
+  | "focus-findings" | "focus-impression" | "focus-quick-search" | "close-panel"
+  | "generate-impression";
 
 export type DictationTarget =
   | "findings"
@@ -129,6 +130,7 @@ const RULES: Rule[] = [
   { category: "Workflow", example: "focus impression", pattern: /^(focus (on )?impression|go to impression|impression field)$/, build: () => ({ type: "workflow", command: "focus-impression" }) },
   { category: "Workflow", example: "focus quick search", pattern: /^(focus )?(quick ?search|open search|search)$/, build: () => ({ type: "workflow", command: "focus-quick-search" }) },
   { category: "Workflow", example: "close panel", pattern: /^close( (the )?(panel|preview|diagnostics))?$/, build: () => ({ type: "workflow", command: "close-panel" }) },
+  { category: "Workflow", example: "generate impression", pattern: /^(generate impression|create impression|write impression)$/, build: () => ({ type: "workflow", command: "generate-impression" }) },
 
   // Text entry — dictation into report fields (append by default; replace
   // needs the explicit word AND downstream confirmation).
@@ -267,7 +269,7 @@ export function describeIntent(intent: VoiceIntent): string {
         refresh: "Refresh queue", "reload-current": "Reload current study",
         "open-viewer": "Open study in viewer", "focus-findings": "Focus findings",
         "focus-impression": "Focus impression", "focus-quick-search": "Focus quick search",
-        "close-panel": "Close panel",
+        "close-panel": "Close panel", "generate-impression": "Generate impression",
       };
       return labels[intent.command] + (intent.reason ? ` — reason: ${intent.reason}` : "");
     }

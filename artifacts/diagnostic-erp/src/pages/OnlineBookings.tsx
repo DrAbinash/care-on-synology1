@@ -14,10 +14,21 @@ import {
 } from "@/components/ui/dialog";
 import {
   Search, RefreshCw, CheckCircle2, XCircle, Eye, Globe, Star,
-  CreditCard, Phone, Calendar, FileText, User, Clock, Plus,
+  CreditCard, Phone, Calendar, FileText, User, Clock, Plus, Copy, MessageCircle,
 } from "lucide-react";
 import { Link } from "wouter";
 import { NewOnlineBookingDialog } from "./NewOnlineBookingDialog";
+import { copyTextRobust } from "@/lib/copyTextRobust";
+
+function bookingWhatsAppPaymentUrl(phone: string, bookingRef: string, paymentUrl: string) {
+  const digits = phone.replace(/\D/g, "");
+  const withCountry = digits.length === 10 ? `91${digits}` : digits;
+  const text = `Care Diagnostics — payment link for booking ${bookingRef}:\n${paymentUrl}`;
+  return withCountry
+    ? `https://wa.me/${withCountry}?text=${encodeURIComponent(text)}`
+    : `https://wa.me/?text=${encodeURIComponent(text)}`;
+}
+
 
 type OnlineBooking = {
   id: number;
@@ -75,6 +86,37 @@ export default function OnlineBookingsPage() {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [cancelOpen, setCancelOpen] = useState(false);
   const [newOpen, setNewOpen] = useState(false);
+  const [shareLink, setShareLink] = useState<{
+    url: string;
+    bookingRef: string;
+    phone: string;
+    copied: boolean;
+  } | null>(null);
+
+  async function createAndShowPaymentShare(booking: {
+    id: number;
+    bookingRef: string;
+    phone: string;
+  }) {
+    const r = await api.post<{ url: string; linkId: string }>(
+      `/api/online-bookings/${booking.id}/payment-link`,
+      {},
+    );
+    if (!r.url) {
+      throw new Error("Payment link created but no URL was returned");
+    }
+    // Always open the dialog with the real URL. On http://NAS clipboard often
+    // fails — never claim "copied" unless copyTextRobust actually succeeded
+    // (otherwise staff paste a leftover screenshot).
+    const copied = await copyTextRobust(r.url);
+    setShareLink({
+      url: r.url,
+      bookingRef: booking.bookingRef,
+      phone: booking.phone,
+      copied,
+    });
+    return { url: r.url, copied };
+  }
 
   const { data, isFetching, refetch } = useQuery<{ bookings: OnlineBooking[] }>({
     queryKey: ["online-bookings", status, search],
@@ -265,18 +307,23 @@ export default function OnlineBookingsPage() {
                         {b.status === "pending_payment" && (
                           <Button
                             size="sm" variant="outline"
-                            className="h-7 px-2 text-xs"
+                            className="h-7 px-2 text-xs text-emerald-700 border-emerald-300 hover:bg-emerald-50"
+                            data-testid="booking-share-link"
                             onClick={async () => {
                               try {
-                                const r = await api.post<{ url: string; linkId: string }>(`/api/online-bookings/${b.id}/payment-link`, {});
-                                if (r.url && navigator.clipboard) await navigator.clipboard.writeText(r.url);
-                                toast({ title: "Payment link created", description: r.url ? "Link copied to clipboard. Share via WhatsApp or SMS." : "Link created but not copied." });
+                                const { copied } = await createAndShowPaymentShare(b);
+                                toast({
+                                  title: "Payment link ready",
+                                  description: copied
+                                    ? "Link copied — open WhatsApp from the dialog to send it (do not paste a screenshot)."
+                                    : "Copy failed — use Copy or WhatsApp in the dialog.",
+                                });
                               } catch (e: unknown) {
                                 toast({ title: "Error", description: (e as { message?: string }).message || "Could not create link", variant: "destructive" });
                               }
                             }}
                           >
-                            <CreditCard size={12} className="mr-1" /> Share Link
+                            <MessageCircle size={12} className="mr-1" /> Share Link
                           </Button>
                         )}
                         {b.status === "confirmed" && b.billId && (
@@ -423,13 +470,16 @@ export default function OnlineBookingsPage() {
           setNewOpen(false);
           if (paymentChoice === "link") {
             try {
-              const r = await api.post<{ url: string; linkId: string }>(`/api/online-bookings/${booking.id}/payment-link`, {});
-              if (r.url && navigator.clipboard) await navigator.clipboard.writeText(r.url);
+              const { copied } = await createAndShowPaymentShare({
+                id: booking.id,
+                bookingRef: booking.bookingRef,
+                phone: booking.phone || "",
+              });
               toast({
                 title: "Booking saved · payment link ready",
-                description: r.url
-                  ? `${booking.bookingRef} · Link copied to clipboard. Share via WhatsApp or SMS.`
-                  : `${booking.bookingRef} created.`,
+                description: copied
+                  ? `${booking.bookingRef} · Link copied. Use WhatsApp in the dialog to send the URL (not a screenshot).`
+                  : `${booking.bookingRef} · Use Copy or WhatsApp in the dialog.`,
               });
             } catch (e: unknown) {
               toast({
@@ -445,6 +495,66 @@ export default function OnlineBookingsPage() {
           }
         }}
       />
+
+      <Dialog open={shareLink !== null} onOpenChange={(o) => { if (!o) setShareLink(null); }}>
+        <DialogContent className="max-w-md" data-testid="booking-share-link-dialog">
+          <DialogHeader>
+            <DialogTitle>Share payment link</DialogTitle>
+          </DialogHeader>
+          {shareLink && (
+            <div className="space-y-3 text-sm">
+              <p className="text-muted-foreground">
+                Booking <span className="font-semibold text-foreground">{shareLink.bookingRef}</span>
+                {shareLink.copied ? " · URL copied to clipboard" : " · copy the URL below"}
+              </p>
+              <Input
+                readOnly
+                value={shareLink.url}
+                className="font-mono text-xs"
+                onFocus={(e) => e.target.select()}
+              />
+              <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1.5">
+                Send this URL in WhatsApp — do not paste a screenshot of a QR code.
+              </p>
+              <DialogFooter className="flex-col sm:flex-row gap-2 sm:justify-between">
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="text-emerald-700 border-emerald-300"
+                  onClick={async () => {
+                    const ok = await copyTextRobust(shareLink.url);
+                    if (ok) {
+                      setShareLink({ ...shareLink, copied: true });
+                      toast({ title: "Copied", description: "Payment link copied as text — paste into WhatsApp." });
+                    } else {
+                      toast({
+                        title: "Copy failed",
+                        description: "Select the URL above and press Ctrl+C (LAN HTTP may block auto-copy).",
+                        variant: "destructive",
+                      });
+                    }
+                  }}
+                >
+                  <Copy size={14} className="mr-1" /> Copy link
+                </Button>
+                <Button
+                  type="button"
+                  className="bg-emerald-600 hover:bg-emerald-700"
+                  onClick={() => {
+                    window.open(
+                      bookingWhatsAppPaymentUrl(shareLink.phone, shareLink.bookingRef, shareLink.url),
+                      "_blank",
+                      "noopener,noreferrer",
+                    );
+                  }}
+                >
+                  <MessageCircle size={14} className="mr-1" /> WhatsApp
+                </Button>
+              </DialogFooter>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

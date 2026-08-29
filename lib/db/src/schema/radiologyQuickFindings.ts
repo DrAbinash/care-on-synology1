@@ -31,9 +31,9 @@ export const radiologyQuickFindingsTable = pgTable(
   "radiology_quick_findings",
   {
     id: serial("id").primaryKey(),
-    // References the tab by name (not FK) so tabs can be renamed/re-seeded
-    // without cascading deletes wiping a radiologist's configured buttons.
+    // Denormalized display / legacy name. Authoritative link: study_tab_id.
     studyType: text("study_type").notNull(),
+    studyTabId: integer("study_tab_id"),              // FK-soft → radiology_study_tabs.id
     label: text("label").notNull(),
     findingText: text("finding_text").notNull().default(""),
     impressionText: text("impression_text").notNull().default(""),
@@ -75,8 +75,10 @@ export const radiologyQuickFindingsTable = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
   },
   (t) => ({
-    studyLabelUq: uniqueIndex("radiology_quick_findings_study_label_uq").on(t.studyType, t.label),
+    studyTabLabelUq: uniqueIndex("radiology_quick_findings_study_tab_label_uq").on(t.studyTabId, t.label),
+    legacyStudyLabelUq: uniqueIndex("radiology_quick_findings_legacy_study_label_uq").on(t.studyType, t.label),
     byStudy: index("radiology_quick_findings_study_idx").on(t.studyType, t.isActive, t.sortOrder),
+    byStudyTab: index("radiology_quick_findings_study_tab_idx").on(t.studyTabId, t.isActive, t.sortOrder),
   }),
 );
 
@@ -123,19 +125,17 @@ export const radiologyQuickFavoritesTable = pgTable(
 export type RadiologyMeasurement = typeof radiologyQuickMeasurementsTable.$inferSelect;
 export type RadiologyQuickFavorite = typeof radiologyQuickFavoritesTable.$inferSelect;
 
-// ── Protocol Engine (Phase 5) ─────────────────────────────────────────────────
-// A Protocol is an indication-specific preset within a body region
-// (radiology_study_tabs) — e.g. "MRI Brain Trauma" vs "MRI Brain Stroke"
-// both live under the Brain region but carry their own checklist, normal
-// paragraph, technique, and recommendation. References the region by name
-// (not FK), matching the existing radiology_quick_findings.study_type
-// pattern so tab renames never cascade-delete a protocol.
+// A Protocol is an indication-specific Technique preset within a body region
+// (radiology_study_tabs) — e.g. "MRI Brain Trauma" vs "MRI Brain Stroke".
+// Authoritative link: study_tab_id → radiology_study_tabs.id.
+// study_type remains as a denormalized display/legacy name.
 export const radiologyProtocolsTable = pgTable(
   "radiology_protocols",
   {
     id: serial("id").primaryKey(),
     name: text("name").notNull(),                 // "MRI Brain Trauma"
-    studyType: text("study_type").notNull(),       // region, e.g. "Brain"
+    studyType: text("study_type").notNull(),       // denormalized region name
+    studyTabId: integer("study_tab_id"),           // FK-soft → radiology_study_tabs.id
     modality: text("modality").notNull().default(""), // MRI/CT/USG/XR/Mammo/Doppler
     checklistJson: text("checklist_json").notNull().default("[]"),
     techniqueText: text("technique_text").notNull().default(""),
@@ -154,8 +154,9 @@ export const radiologyProtocolsTable = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
   },
   (t) => ({
-    nameUq: uniqueIndex("radiology_protocols_name_uq").on(t.name),
+    // Uniqueness: (study_tab_id, lower(trim(name))) — see zzzzz_protocol_study_tab_name_uq.sql
     byStudy: index("radiology_protocols_study_idx").on(t.studyType, t.isActive, t.sortOrder),
+    byStudyTab: index("radiology_protocols_study_tab_idx").on(t.studyTabId, t.isActive, t.sortOrder),
   }),
 );
 
@@ -183,20 +184,14 @@ export const radiologyLearnedPatternsTable = pgTable(
 export type RadiologyProtocol = typeof radiologyProtocolsTable.$inferSelect;
 export type RadiologyLearnedPattern = typeof radiologyLearnedPatternsTable.$inferSelect;
 
-// ── Clinical History Quick Select ─────────────────────────────────────────────
-// Study-specific quick-select chips shown beside the Clinical History heading
-// in the Reporting Workspace. Clicking a chip inserts its (usually longer)
-// insertedText into the Clinical History field. A short displayLabel appears
-// on the chip. Keyed by studyType (region name, e.g. "Brain", "Cervical Spine",
-// "LS Spine") — by name, not FK, matching the radiology_quick_findings pattern
-// so region renames never cascade-delete a radiologist's configured chips.
-// Created by migrations/z_add_radiology_clinical_history_and_protocol_default.sql
-// (idempotent: CREATE TABLE IF NOT EXISTS + seeded defaults ON CONFLICT DO NOTHING).
+// Clinical History chips belong to a Study Tab by study_tab_id (authoritative).
+// study_type remains as denormalized display / legacy migration text.
 export const radiologyClinicalHistoryChipsTable = pgTable(
   "radiology_clinical_history_chips",
   {
     id: serial("id").primaryKey(),
-    studyType: text("study_type").notNull(),          // region, e.g. "Brain"
+    studyType: text("study_type").notNull(),          // denormalized region name
+    studyTabId: integer("study_tab_id"),              // FK-soft → radiology_study_tabs.id
     displayLabel: text("display_label").notNull(),      // "Headache" (chip text)
     insertedText: text("inserted_text").notNull().default(""), // "Headache." (inserted)
     sortOrder: integer("sort_order").notNull().default(0),
@@ -208,6 +203,7 @@ export const radiologyClinicalHistoryChipsTable = pgTable(
   (t) => ({
     studyLabelUq: uniqueIndex("radiology_clinical_history_chips_study_label_uq").on(t.studyType, t.displayLabel),
     byStudy: index("radiology_clinical_history_chips_study_idx").on(t.studyType, t.isActive, t.sortOrder),
+    byStudyTab: index("radiology_clinical_history_chips_study_tab_idx").on(t.studyTabId, t.isActive, t.sortOrder),
   }),
 );
 
