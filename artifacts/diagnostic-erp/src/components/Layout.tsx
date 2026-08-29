@@ -1475,7 +1475,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         )}
 
         {/* Page content — flex column so pages using h-full (Match Center, Worklist, Billing Desk) fill the pane */}
-        <main className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden flex flex-col">
+        <main className="flex-1 min-h-0 min-w-0 overflow-y-auto overflow-x-auto flex flex-col">
           {children}
         </main>
       </div>

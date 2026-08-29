@@ -328,6 +328,7 @@ export default function PatientDetail({ id }: { id: number }) {
             {!history?.orders?.length ? (
               <div className="p-8 text-center text-sm text-muted-foreground">No orders yet</div>
             ) : (
+              <div className="w-full max-w-full min-w-0 overflow-x-auto overscroll-x-contain touch-pan-x">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="text-left text-xs text-muted-foreground border-b border-slate-200 dark:border-border bg-slate-50 dark:bg-muted/30">
@@ -354,6 +355,7 @@ export default function PatientDetail({ id }: { id: number }) {
                   ))}
                 </tbody>
               </table>
+              </div>
             )}
           </div>
         </div>

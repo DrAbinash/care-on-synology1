@@ -7,6 +7,7 @@ import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
 import PageHeader from "@/components/PageHeader";
+import { MobileTableScroll } from "@/components/MobileTableScroll";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -111,8 +112,9 @@ export default function AiPipelineManager() {
         </div>
 
         {/* Job Table */}
-        <div className="rounded-xl border border-slate-800 bg-slate-900/60 overflow-hidden">
-          <table className="w-full text-sm">
+        <div className="rounded-xl border border-slate-800 bg-slate-900/60 overflow-hidden min-w-0 max-w-full">
+          <MobileTableScroll>
+          <table className="w-full text-sm min-w-[56rem]">
             <thead>
               <tr className="border-b border-slate-800 bg-slate-900/80 text-slate-400 text-left">
                 <th className="px-4 py-3">Study ID</th>
@@ -165,6 +167,7 @@ export default function AiPipelineManager() {
               )}
             </tbody>
           </table>
+          </MobileTableScroll>
         </div>
       </div>
     </div>

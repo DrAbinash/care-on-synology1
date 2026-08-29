@@ -568,7 +568,7 @@ export default function DayClose() {
   const expected = previewQ.data?.expected;
 
   return (
-    <div className="p-4 md:p-6 space-y-6 max-w-6xl mx-auto">
+    <div className="p-4 md:p-6 space-y-6 max-w-6xl mx-auto min-w-0">
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <div>
           <h1 className="text-2xl font-bold flex items-center gap-2"><Lock size={20} /> Day Close / Cash Drawer</h1>
@@ -581,10 +581,10 @@ export default function DayClose() {
 
       {/* ── Staff Drawer Close Reconciliation Table (owner/admin only) ─────── */}
       {isOwner && staffStatusQ.data && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base flex items-center gap-2">
-              <Users size={16} /> Staff Drawer Close Status
+        <Card className="min-w-0 max-w-full overflow-hidden">
+          <CardHeader className="min-w-0">
+            <CardTitle className="text-base flex items-center gap-2 flex-wrap min-w-0">
+              <Users size={16} className="flex-shrink-0" /> <span className="min-w-0">Staff Drawer Close Status</span>
               {(() => {
                 const users = staffStatusQ.data.users;
                 const closed = users.filter((u) => u.isClosed).length;
@@ -615,24 +615,24 @@ export default function DayClose() {
             </CardTitle>
           </CardHeader>
           {staffTableExpanded && (
-            <CardContent>
+            <CardContent className="min-w-0">
               {staffStatusQ.data.users.length === 0 ? (
                 <p className="text-sm text-muted-foreground">No active staff accounts found.</p>
               ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
+                <div className="w-full max-w-full min-w-0 overflow-x-auto overscroll-x-contain touch-pan-x -mx-1 px-1">
+                  <table className="w-full text-sm min-w-[56rem]">
                     <thead className="text-left text-xs text-muted-foreground uppercase border-b bg-muted/30">
                       <tr>
-                        <th className="px-3 py-2">Staff</th>
-                        <th className="px-3 py-2 text-right">Exp. Cash</th>
-                        <th className="px-3 py-2 text-right">Counted Cash</th>
-                        <th className="px-3 py-2 text-right">Cash Var.</th>
-                        <th className="px-3 py-2 text-right">Exp. Digital</th>
-                        <th className="px-3 py-2 text-right">Counted Dig.</th>
-                        <th className="px-3 py-2 text-right">Dig. Var.</th>
-                        <th className="px-3 py-2">Status</th>
-                        <th className="px-3 py-2">Closed At</th>
-                        <th className="px-3 py-2 text-right">Actions</th>
+                        <th className="px-3 py-2 whitespace-nowrap">Staff</th>
+                        <th className="px-3 py-2 text-right whitespace-nowrap">Exp. Cash</th>
+                        <th className="px-3 py-2 text-right whitespace-nowrap">Counted Cash</th>
+                        <th className="px-3 py-2 text-right whitespace-nowrap">Cash Var.</th>
+                        <th className="px-3 py-2 text-right whitespace-nowrap">Exp. Digital</th>
+                        <th className="px-3 py-2 text-right whitespace-nowrap">Counted Dig.</th>
+                        <th className="px-3 py-2 text-right whitespace-nowrap">Dig. Var.</th>
+                        <th className="px-3 py-2 whitespace-nowrap">Status</th>
+                        <th className="px-3 py-2 whitespace-nowrap">Closed At</th>
+                        <th className="px-3 py-2 text-right whitespace-nowrap">Actions</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -800,8 +800,8 @@ export default function DayClose() {
               either total.
             </p>
             {previewQ.data?.suspenseItems && previewQ.data.suspenseItems.length > 0 && (
-              <div className="rounded-md border border-amber-200 dark:border-amber-800 overflow-hidden">
-                <table className="w-full text-xs">
+              <div className="rounded-md border border-amber-200 dark:border-amber-800 overflow-x-auto">
+                <table className="w-full text-xs min-w-[24rem]">
                   <thead className="bg-amber-100/60 dark:bg-amber-900/30 text-amber-800 dark:text-amber-400">
                     <tr>
                       <th className="text-left px-2 py-1 font-medium">Amount</th>
@@ -941,42 +941,63 @@ export default function DayClose() {
 
       {/* Per-staff breakdown */}
       {(previewQ.data?.byStaff?.length ?? 0) > 0 && (
-        <Card>
+        <Card className="min-w-0 max-w-full overflow-hidden">
           <CardHeader><CardTitle className="text-base">Per-Staff Collection (Open Window)</CardTitle></CardHeader>
-          <CardContent>
-            <table className="w-full text-sm">
-              <thead className="text-left text-xs text-muted-foreground uppercase border-b">
-                <tr><th className="py-2">Staff</th><th>Cash</th><th>UPI</th><th>Card</th><th>Cheque</th><th>Other</th><th>Count</th><th className="text-right">Total</th></tr>
-              </thead>
-              <tbody>
-                {previewQ.data!.byStaff.map((s) => (
-                  <tr key={`${s.userId ?? "u"}-${s.userName}`} className="border-b last:border-b-0">
-                    <td className="py-2 font-medium">{s.userName}</td>
-                    <td>{inr(s.cash)}</td>
-                    <td>{inr(s.upi)}</td>
-                    <td>{inr(s.card)}</td>
-                    <td>{inr(s.cheque)}</td>
-                    <td>{inr(s.other)}</td>
-                    <td>{s.count}</td>
-                    <td className="text-right font-semibold">{inr(s.total)}</td>
+          <CardContent className="min-w-0">
+            <div className="w-full max-w-full min-w-0 overflow-x-auto overscroll-x-contain touch-pan-x -mx-1 px-1">
+              <table className="w-full text-sm min-w-[40rem]">
+                <thead className="text-left text-xs text-muted-foreground uppercase border-b">
+                  <tr>
+                    <th className="py-2 whitespace-nowrap">Staff</th>
+                    <th className="whitespace-nowrap">Cash</th>
+                    <th className="whitespace-nowrap">UPI</th>
+                    <th className="whitespace-nowrap">Card</th>
+                    <th className="whitespace-nowrap">Cheque</th>
+                    <th className="whitespace-nowrap">Other</th>
+                    <th className="whitespace-nowrap">Count</th>
+                    <th className="text-right whitespace-nowrap">Total</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {previewQ.data!.byStaff.map((s) => (
+                    <tr key={`${s.userId ?? "u"}-${s.userName}`} className="border-b last:border-b-0">
+                      <td className="py-2 font-medium whitespace-nowrap">{s.userName}</td>
+                      <td className="tabular-nums whitespace-nowrap">{inr(s.cash)}</td>
+                      <td className="tabular-nums whitespace-nowrap">{inr(s.upi)}</td>
+                      <td className="tabular-nums whitespace-nowrap">{inr(s.card)}</td>
+                      <td className="tabular-nums whitespace-nowrap">{inr(s.cheque)}</td>
+                      <td className="tabular-nums whitespace-nowrap">{inr(s.other)}</td>
+                      <td className="whitespace-nowrap">{s.count}</td>
+                      <td className="text-right font-semibold tabular-nums whitespace-nowrap">{inr(s.total)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </CardContent>
         </Card>
       )}
 
       {/* Past closures */}
-      <Card>
+      <Card className="min-w-0 max-w-full overflow-hidden">
         <CardHeader><CardTitle className="text-base">Past Closures</CardTitle></CardHeader>
-        <CardContent>
-          <table className="w-full text-sm">
-            <thead className="text-left text-xs text-muted-foreground uppercase border-b">
-              <tr><th className="py-2">Date</th><th>Closed At</th><th>By</th><th>Bills</th><th>Total</th><th>Variance</th><th>Status</th><th className="text-right">Actions</th></tr>
-            </thead>
-            <tbody>
-              {(closuresQ.data ?? []).map((c) => {
+        <CardContent className="min-w-0">
+          <div className="w-full max-w-full min-w-0 overflow-x-auto overscroll-x-contain touch-pan-x -mx-1 px-1">
+            <table className="w-full text-sm min-w-[44rem]">
+              <thead className="text-left text-xs text-muted-foreground uppercase border-b">
+                <tr>
+                  <th className="py-2 whitespace-nowrap">Date</th>
+                  <th className="whitespace-nowrap">Closed At</th>
+                  <th className="whitespace-nowrap">By</th>
+                  <th className="whitespace-nowrap">Bills</th>
+                  <th className="whitespace-nowrap">Total</th>
+                  <th className="whitespace-nowrap">Variance</th>
+                  <th className="whitespace-nowrap">Status</th>
+                  <th className="text-right whitespace-nowrap">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(closuresQ.data ?? []).map((c) => {
                 const v = n(c.variance);
                 return (
                   <tr key={c.id} className="border-b last:border-b-0">
@@ -1010,6 +1031,7 @@ export default function DayClose() {
               )}
             </tbody>
           </table>
+          </div>
         </CardContent>
       </Card>
 

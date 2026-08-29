@@ -1,0 +1,235 @@
+From 7345d34fe2794f424c6640df839dc496bcfedf3f Mon Sep 17 00:00:00 2001
+From: Cursor Agent <cursoragent@cursor.com>
+Date: Fri, 28 Aug 2026 20:22:12 +0000
+Subject: [PATCH 1/2] Fix mobile scroll on Billing Desk and Day Close pages
+
+Billing Desk: on mobile, use one vertical page scroll so Payment is
+reachable; keep split-pane internal scroll only at lg+.
+
+Day Close: add min-w-0 and overflow-x-auto wrappers on wide staff and
+closure tables so Counted Cash / Actions columns are not clipped.
+
+Layout: allow horizontal scroll on main instead of clipping overflow-x.
+Daily Summary: min-w-0 on page root (same flex shrink fix).
+---
+ .../diagnostic-erp/src/components/Layout.tsx  |   2 +-
+ .../diagnostic-erp/src/pages/BillingDesk.tsx  |   9 +-
+ .../diagnostic-erp/src/pages/DailySummary.tsx |   2 +-
+ .../diagnostic-erp/src/pages/DayClose.tsx     | 100 +++++++++++-------
+ 4 files changed, 68 insertions(+), 45 deletions(-)
+
+diff --git a/artifacts/diagnostic-erp/src/components/Layout.tsx b/artifacts/diagnostic-erp/src/components/Layout.tsx
+index e12f9cbb..8ce5f954 100644
+--- a/artifacts/diagnostic-erp/src/components/Layout.tsx
++++ b/artifacts/diagnostic-erp/src/components/Layout.tsx
+@@ -1475,7 +1475,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
+         )}
+ 
+         {/* Page content — flex column so pages using h-full (Match Center, Worklist, Billing Desk) fill the pane */}
+-        <main className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden flex flex-col">
++        <main className="flex-1 min-h-0 min-w-0 overflow-y-auto overflow-x-auto flex flex-col">
+           {children}
+         </main>
+       </div>
+diff --git a/artifacts/diagnostic-erp/src/pages/BillingDesk.tsx b/artifacts/diagnostic-erp/src/pages/BillingDesk.tsx
+index 9f96c93e..56f68672 100644
+--- a/artifacts/diagnostic-erp/src/pages/BillingDesk.tsx
++++ b/artifacts/diagnostic-erp/src/pages/BillingDesk.tsx
+@@ -2347,7 +2347,8 @@ export default function BillingDesk() {
+   // ──────────────────────────────────────────────────────────────────────────
+ 
+   const deskClass = [
+-    "h-full max-w-full overflow-x-hidden flex flex-col overflow-hidden bg-gradient-to-br from-sky-50 via-white to-violet-50 dark:from-slate-900 dark:via-slate-900 dark:to-slate-900",
++    // Mobile: one page scroll (patient → payment). Desktop: split panes with internal scroll.
++    "h-full max-w-full min-w-0 flex flex-col overflow-y-auto overflow-x-hidden lg:overflow-hidden bg-gradient-to-br from-sky-50 via-white to-violet-50 dark:from-slate-900 dark:via-slate-900 dark:to-slate-900",
+     denseTestList  ? "billing-dense"     : "",
+     largeFont      ? "billing-large-font": "",
+     isCompact      ? "billing-compact"   : "",
+@@ -2507,11 +2508,11 @@ export default function BillingDesk() {
+           Left  65%  — Patient · Doctor · Tests
+           Right 35%  — Selected · Summary · Payment · Print
+       ═══════════════════════════════════════════════════════ */}
+-      <div className="flex-1 flex flex-col lg:flex-row overflow-hidden min-h-0">
++      <div className="flex-1 flex flex-col lg:flex-row min-h-0 lg:overflow-hidden">
+ 
+         {/* ▌LEFT COLUMN ▌─────────────────────────────────── */}
+         <div className="w-full lg:w-[65%] lg:border-r border-[#dde3ec] flex flex-col min-h-0">
+-          <div ref={stepContentRef} className="flex-1 min-h-0 overflow-y-auto p-2.5 space-y-2.5">
++          <div ref={stepContentRef} className="p-2.5 space-y-2.5 lg:flex-1 lg:min-h-0 lg:overflow-y-auto">
+ 
+             {/* ── PATIENT ─────────────────────────────────── */}
+             {(!isStepped || currentStep === 1) && (
+@@ -2998,7 +2999,7 @@ export default function BillingDesk() {
+ 
+         {/* ▌RIGHT COLUMN ▌────────────────────────────────── */}
+         <div className="w-full lg:w-[35%] flex flex-col min-h-0 lg:min-h-0 bg-gradient-to-b from-indigo-50/70 to-emerald-50/50 dark:from-slate-850 dark:to-slate-850">
+-          <div className="min-h-0 lg:flex-1 lg:overflow-y-auto flex flex-col">
++          <div className="flex flex-col lg:flex-1 lg:min-h-0 lg:overflow-y-auto">
+ 
+             {/* ── SELECTED TESTS ───────────────────────── */}
+             <div className={`${cardCls} mx-2.5 mt-2.5 flex-shrink-0`}>
+diff --git a/artifacts/diagnostic-erp/src/pages/DailySummary.tsx b/artifacts/diagnostic-erp/src/pages/DailySummary.tsx
+index 08d37f40..5d66e5cd 100644
+--- a/artifacts/diagnostic-erp/src/pages/DailySummary.tsx
++++ b/artifacts/diagnostic-erp/src/pages/DailySummary.tsx
+@@ -474,7 +474,7 @@ export default function DailySummary() {
+   const physicalFormula = `Physical Cash in Hand = ${inr(rec.cashCollection)} − ${inr(summary.cashRefunded ?? 0)} − ${inr(rec.cashExpenses)} = ${inr(physicalCash)}`;
+ 
+   return (
+-    <div className="p-4 sm:p-6 space-y-4 sm:space-y-6 max-w-5xl mx-auto">
++    <div className="p-4 sm:p-6 space-y-4 sm:space-y-6 max-w-5xl mx-auto min-w-0">
+       <PageHeader
+         title="Daily Summary"
+         subtitle={`Collections & expenses for ${staffFilter === "all" ? "all staff" : staffFilter} on ${date}`}
+diff --git a/artifacts/diagnostic-erp/src/pages/DayClose.tsx b/artifacts/diagnostic-erp/src/pages/DayClose.tsx
+index b50244df..4870d599 100644
+--- a/artifacts/diagnostic-erp/src/pages/DayClose.tsx
++++ b/artifacts/diagnostic-erp/src/pages/DayClose.tsx
+@@ -568,7 +568,7 @@ export default function DayClose() {
+   const expected = previewQ.data?.expected;
+ 
+   return (
+-    <div className="p-4 md:p-6 space-y-6 max-w-6xl mx-auto">
++    <div className="p-4 md:p-6 space-y-6 max-w-6xl mx-auto min-w-0">
+       <div className="flex items-center justify-between gap-3 flex-wrap">
+         <div>
+           <h1 className="text-2xl font-bold flex items-center gap-2"><Lock size={20} /> Day Close / Cash Drawer</h1>
+@@ -619,20 +619,20 @@ export default function DayClose() {
+               {staffStatusQ.data.users.length === 0 ? (
+                 <p className="text-sm text-muted-foreground">No active staff accounts found.</p>
+               ) : (
+-                <div className="overflow-x-auto">
+-                  <table className="w-full text-sm">
++                <div className="overflow-x-auto -mx-1 px-1">
++                  <table className="w-full text-sm min-w-[56rem]">
+                     <thead className="text-left text-xs text-muted-foreground uppercase border-b bg-muted/30">
+                       <tr>
+-                        <th className="px-3 py-2">Staff</th>
+-                        <th className="px-3 py-2 text-right">Exp. Cash</th>
+-                        <th className="px-3 py-2 text-right">Counted Cash</th>
+-                        <th className="px-3 py-2 text-right">Cash Var.</th>
+-                        <th className="px-3 py-2 text-right">Exp. Digital</th>
+-                        <th className="px-3 py-2 text-right">Counted Dig.</th>
+-                        <th className="px-3 py-2 text-right">Dig. Var.</th>
+-                        <th className="px-3 py-2">Status</th>
+-                        <th className="px-3 py-2">Closed At</th>
+-                        <th className="px-3 py-2 text-right">Actions</th>
++                        <th className="px-3 py-2 whitespace-nowrap">Staff</th>
++                        <th className="px-3 py-2 text-right whitespace-nowrap">Exp. Cash</th>
++                        <th className="px-3 py-2 text-right whitespace-nowrap">Counted Cash</th>
++                        <th className="px-3 py-2 text-right whitespace-nowrap">Cash Var.</th>
++                        <th className="px-3 py-2 text-right whitespace-nowrap">Exp. Digital</th>
++                        <th className="px-3 py-2 text-right whitespace-nowrap">Counted Dig.</th>
++                        <th className="px-3 py-2 text-right whitespace-nowrap">Dig. Var.</th>
++                        <th className="px-3 py-2 whitespace-nowrap">Status</th>
++                        <th className="px-3 py-2 whitespace-nowrap">Closed At</th>
++                        <th className="px-3 py-2 text-right whitespace-nowrap">Actions</th>
+                       </tr>
+                     </thead>
+                     <tbody>
+@@ -800,8 +800,8 @@ export default function DayClose() {
+               either total.
+             </p>
+             {previewQ.data?.suspenseItems && previewQ.data.suspenseItems.length > 0 && (
+-              <div className="rounded-md border border-amber-200 dark:border-amber-800 overflow-hidden">
+-                <table className="w-full text-xs">
++              <div className="rounded-md border border-amber-200 dark:border-amber-800 overflow-x-auto">
++                <table className="w-full text-xs min-w-[24rem]">
+                   <thead className="bg-amber-100/60 dark:bg-amber-900/30 text-amber-800 dark:text-amber-400">
+                     <tr>
+                       <th className="text-left px-2 py-1 font-medium">Amount</th>
+@@ -944,25 +944,36 @@ export default function DayClose() {
+         <Card>
+           <CardHeader><CardTitle className="text-base">Per-Staff Collection (Open Window)</CardTitle></CardHeader>
+           <CardContent>
+-            <table className="w-full text-sm">
+-              <thead className="text-left text-xs text-muted-foreground uppercase border-b">
+-                <tr><th className="py-2">Staff</th><th>Cash</th><th>UPI</th><th>Card</th><th>Cheque</th><th>Other</th><th>Count</th><th className="text-right">Total</th></tr>
+-              </thead>
+-              <tbody>
+-                {previewQ.data!.byStaff.map((s) => (
+-                  <tr key={`${s.userId ?? "u"}-${s.userName}`} className="border-b last:border-b-0">
+-                    <td className="py-2 font-medium">{s.userName}</td>
+-                    <td>{inr(s.cash)}</td>
+-                    <td>{inr(s.upi)}</td>
+-                    <td>{inr(s.card)}</td>
+-                    <td>{inr(s.cheque)}</td>
+-                    <td>{inr(s.other)}</td>
+-                    <td>{s.count}</td>
+-                    <td className="text-right font-semibold">{inr(s.total)}</td>
++            <div className="overflow-x-auto -mx-1 px-1">
++              <table className="w-full text-sm min-w-[40rem]">
++                <thead className="text-left text-xs text-muted-foreground uppercase border-b">
++                  <tr>
++                    <th className="py-2 whitespace-nowrap">Staff</th>
++                    <th className="whitespace-nowrap">Cash</th>
++                    <th className="whitespace-nowrap">UPI</th>
++                    <th className="whitespace-nowrap">Card</th>
++                    <th className="whitespace-nowrap">Cheque</th>
++                    <th className="whitespace-nowrap">Other</th>
++                    <th className="whitespace-nowrap">Count</th>
++                    <th className="text-right whitespace-nowrap">Total</th>
+                   </tr>
+-                ))}
+-              </tbody>
+-            </table>
++                </thead>
++                <tbody>
++                  {previewQ.data!.byStaff.map((s) => (
++                    <tr key={`${s.userId ?? "u"}-${s.userName}`} className="border-b last:border-b-0">
++                      <td className="py-2 font-medium whitespace-nowrap">{s.userName}</td>
++                      <td className="tabular-nums whitespace-nowrap">{inr(s.cash)}</td>
++                      <td className="tabular-nums whitespace-nowrap">{inr(s.upi)}</td>
++                      <td className="tabular-nums whitespace-nowrap">{inr(s.card)}</td>
++                      <td className="tabular-nums whitespace-nowrap">{inr(s.cheque)}</td>
++                      <td className="tabular-nums whitespace-nowrap">{inr(s.other)}</td>
++                      <td className="whitespace-nowrap">{s.count}</td>
++                      <td className="text-right font-semibold tabular-nums whitespace-nowrap">{inr(s.total)}</td>
++                    </tr>
++                  ))}
++                </tbody>
++              </table>
++            </div>
+           </CardContent>
+         </Card>
+       )}
+@@ -971,12 +982,22 @@ export default function DayClose() {
+       <Card>
+         <CardHeader><CardTitle className="text-base">Past Closures</CardTitle></CardHeader>
+         <CardContent>
+-          <table className="w-full text-sm">
+-            <thead className="text-left text-xs text-muted-foreground uppercase border-b">
+-              <tr><th className="py-2">Date</th><th>Closed At</th><th>By</th><th>Bills</th><th>Total</th><th>Variance</th><th>Status</th><th className="text-right">Actions</th></tr>
+-            </thead>
+-            <tbody>
+-              {(closuresQ.data ?? []).map((c) => {
++          <div className="overflow-x-auto -mx-1 px-1">
++            <table className="w-full text-sm min-w-[44rem]">
++              <thead className="text-left text-xs text-muted-foreground uppercase border-b">
++                <tr>
++                  <th className="py-2 whitespace-nowrap">Date</th>
++                  <th className="whitespace-nowrap">Closed At</th>
++                  <th className="whitespace-nowrap">By</th>
++                  <th className="whitespace-nowrap">Bills</th>
++                  <th className="whitespace-nowrap">Total</th>
++                  <th className="whitespace-nowrap">Variance</th>
++                  <th className="whitespace-nowrap">Status</th>
++                  <th className="text-right whitespace-nowrap">Actions</th>
++                </tr>
++              </thead>
++              <tbody>
++                {(closuresQ.data ?? []).map((c) => {
+                 const v = n(c.variance);
+                 return (
+                   <tr key={c.id} className="border-b last:border-b-0">
+@@ -1010,6 +1031,7 @@ export default function DayClose() {
+               )}
+             </tbody>
+           </table>
++          </div>
+         </CardContent>
+       </Card>
+ 
+-- 
+2.43.0
+

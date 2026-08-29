@@ -474,7 +474,7 @@ export default function DailySummary() {
   const physicalFormula = `Physical Cash in Hand = ${inr(rec.cashCollection)} − ${inr(summary.cashRefunded ?? 0)} − ${inr(rec.cashExpenses)} = ${inr(physicalCash)}`;
 
   return (
-    <div className="p-4 sm:p-6 space-y-4 sm:space-y-6 max-w-5xl mx-auto">
+    <div className="p-4 sm:p-6 space-y-4 sm:space-y-6 max-w-5xl mx-auto min-w-0">
       <PageHeader
         title="Daily Summary"
         subtitle={`Collections & expenses for ${staffFilter === "all" ? "all staff" : staffFilter} on ${date}`}

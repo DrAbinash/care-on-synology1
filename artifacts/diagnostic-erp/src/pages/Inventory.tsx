@@ -3,6 +3,7 @@ import { loadReportOrientation, persistReportOrientation, type PaperOrientation 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
 import PageHeader from "@/components/PageHeader";
+import { MobileTableScroll } from "@/components/MobileTableScroll";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -1207,7 +1208,8 @@ export default function Inventory() {
             {history.length === 0 ? (
               <p className="text-center py-8 text-muted-foreground text-sm">No transactions yet</p>
             ) : (
-              <table className="w-full text-sm">
+              <MobileTableScroll>
+              <table className="w-full text-sm min-w-[40rem]">
                 <thead>
                   <tr className="border-b border-card-border text-xs text-muted-foreground uppercase">
                     <th className="text-left py-2">Date</th>
@@ -1239,6 +1241,7 @@ export default function Inventory() {
                   ))}
                 </tbody>
               </table>
+              </MobileTableScroll>
             )}
           </DialogContent>
         </Dialog>

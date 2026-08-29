@@ -234,7 +234,7 @@ export default function Expenses() {
   const hasFilters = categoryFilter !== "all" || paymentFilter !== "all" || from || to || search;
 
   return (
-    <div className="w-full max-w-full overflow-x-hidden">
+    <div className="w-full max-w-full min-w-0">
       <PageHeader
         title="Expense Management"
         subtitle="Track and manage operational expenses"
@@ -363,7 +363,7 @@ export default function Expenses() {
                 </Button>
               </div>
             ) : (
-              <div className="overflow-x-auto">
+              <div className="w-full max-w-full min-w-0 overflow-x-auto overscroll-x-contain touch-pan-x">
               <table className="w-full text-sm min-w-[640px]">
                 <thead className="border-b border-card-border bg-muted/30">
                   <tr>
@@ -495,7 +495,7 @@ export default function Expenses() {
 
       {/* SCANNER TAB */}
       {activeTab === "scanner" && (
-        <div className="space-y-4 max-w-full overflow-x-hidden">
+        <div className="space-y-4 max-w-full min-w-0">
           <div className="bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-indigo-950/30 dark:to-blue-950/30 border border-indigo-200 dark:border-indigo-800 rounded-xl p-4 sm:p-5">
             <h2 className="font-bold text-lg flex items-center gap-2"><ScanLine size={18} className="text-indigo-600" /> AI-Powered Bill / Receipt Scanner</h2>
             <p className="text-sm text-muted-foreground mt-1">Scan physical bills with your phone camera or upload an image to auto-capture expense details.</p>
