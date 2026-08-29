@@ -7,6 +7,7 @@ import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
 import PageHeader from "@/components/PageHeader";
+import { MobileTableScroll } from "@/components/MobileTableScroll";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -99,12 +100,13 @@ export default function StorageLifecycle() {
         </div>
 
         {/* Tier Table */}
-        <div className="rounded-xl border border-slate-800 bg-slate-900/60 overflow-hidden">
+        <div className="rounded-xl border border-slate-800 bg-slate-900/60 overflow-hidden min-w-0 max-w-full">
           <div className="px-4 py-3 border-b border-slate-800 bg-slate-900/80 flex items-center gap-2">
             <Archive className="w-4 h-4 text-cyan-400" />
             <span className="text-sm font-semibold text-slate-200">Recent Tier Migrations</span>
           </div>
-          <table className="w-full text-sm">
+          <MobileTableScroll>
+          <table className="w-full text-sm min-w-[52rem]">
             <thead>
               <tr className="border-b border-slate-800 bg-slate-900/80 text-slate-400 text-left">
                 <th className="px-4 py-3">Study ID</th>
@@ -141,6 +143,7 @@ export default function StorageLifecycle() {
               )}
             </tbody>
           </table>
+          </MobileTableScroll>
         </div>
       </div>
     </div>

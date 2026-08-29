@@ -530,6 +530,7 @@ function DuplicatesDialog({ open, onOpenChange }: { open: boolean; onOpenChange:
                     {g.name}
                     <span className="text-muted-foreground font-normal text-xs">({g.doctors.length} entries with same name)</span>
                   </div>
+                  <div className="w-full max-w-full min-w-0 overflow-x-auto overscroll-x-contain touch-pan-x">
                   <table className="w-full text-sm">
                     <thead className="bg-muted/20">
                       <tr>
@@ -569,6 +570,7 @@ function DuplicatesDialog({ open, onOpenChange }: { open: boolean; onOpenChange:
                       ))}
                     </tbody>
                   </table>
+                  </div>
                 </div>
               ))}
             </div>

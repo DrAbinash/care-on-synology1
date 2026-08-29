@@ -2,6 +2,7 @@ import { useState, useMemo, useEffect, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
 import PageHeader from "@/components/PageHeader";
+import { MobileTableScroll } from "@/components/MobileTableScroll";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -229,8 +230,9 @@ export default function HRFormsPage() {
         <Button onClick={() => setPickStaffOpen(true)}><Plus size={14} className="mr-1.5" />New HR Form</Button>
       </div>
 
-      <div className="rounded-lg border bg-card overflow-hidden">
-        <table className="w-full text-sm">
+      <div className="rounded-lg border bg-card overflow-hidden min-w-0 max-w-full">
+        <MobileTableScroll>
+        <table className="w-full text-sm min-w-[44rem]">
           <thead className="bg-muted/40 text-xs uppercase tracking-wide text-muted-foreground">
             <tr>
               <th className="text-left px-3 py-2.5">Form #</th>
@@ -263,6 +265,7 @@ export default function HRFormsPage() {
             ))}
           </tbody>
         </table>
+        </MobileTableScroll>
       </div>
 
       {pickStaffOpen && (

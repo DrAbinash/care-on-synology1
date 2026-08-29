@@ -442,8 +442,8 @@ function SalaryPanel({ staff }: { staff: Staff }) {
         </div>
       </div>
 
-      <div className="rounded-lg border max-h-56 overflow-auto">
-        <table className="w-full text-sm">
+      <div className="rounded-lg border max-h-56 min-w-0 max-w-full overflow-x-auto overflow-y-auto overscroll-x-contain touch-pan-x">
+        <table className="w-full text-sm min-w-[36rem]">
           <thead className="bg-muted/40 text-xs uppercase text-muted-foreground"><tr>
             <th className="px-2 py-2 text-left">Month</th><th className="px-2 text-right">Base</th><th className="px-2 text-right">Bonus</th><th className="px-2 text-right">Ded.</th><th className="px-2 text-right">Adv.</th><th className="px-2 text-right">Net</th><th className="px-2">Date</th>
           </tr></thead>
