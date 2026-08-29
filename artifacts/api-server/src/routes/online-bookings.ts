@@ -5,6 +5,11 @@ import { db } from "@workspace/db";
 import { PaymentEngine } from "../lib/payments/PaymentEngine";
 import { resolveActiveGateway } from "../lib/payments/resolveActiveGateway";
 import { getIciciPublicBaseUrl } from "../lib/payments/iciciPublicBaseUrl";
+import { shareableOnlineBookingPaymentUrl } from "../lib/payments/shareableOnlineBookingPaymentUrl";
+import {
+  findReusableIciciPaymentSession,
+  isDuplicateOrReuseableInitiateError,
+} from "../lib/payments/reuseIciciPaymentSession";
 import { isReceptionPayAtCentre } from "../services/onlineBookingPayAtCentre";
 import {
   onlineBookingsTable,
@@ -12,6 +17,7 @@ import {
   testsTable,
   packagesTable,
   clinicSettingsTable,
+  paymentLogsTable,
 } from "@workspace/db/schema";
 import { eq, desc, and, or, ilike, inArray } from "drizzle-orm";
 import { registerPatientSelfFlow } from "../services/self-registration";
@@ -478,6 +484,20 @@ onlineBookingsRouter.post("/:id/payment-link", async (req, res): Promise<void> =
   }
 
   try {
+    // Re-share: if this booking already has a live ICICI/HDFC session, return
+    // the bridge URL without calling initiateSale again (avoids P1006 / duplicate txn).
+    if (gateway === "icici" || gateway === "hdfc") {
+      const existing = await findReusableIciciPaymentSession(booking.bookingRef);
+      if (existing) {
+        res.json({
+          url: shareableOnlineBookingPaymentUrl(gateway, booking.bookingRef, existing.redirectUrl),
+          linkId: booking.bookingRef,
+          reused: true,
+        });
+        return;
+      }
+    }
+
     const returnUrl = gateway === "icici" || gateway === "hdfc"
       ? `${publicBase}/api/public/booking/icici-callback`
       : gateway === "bharatpe"
@@ -494,6 +514,24 @@ onlineBookingsRouter.post("/:id/payment-link", async (req, res): Promise<void> =
     });
 
     if (!result.success || !result.redirectUrl) {
+      if (gateway === "icici" || gateway === "hdfc") {
+        const existing = await findReusableIciciPaymentSession(booking.bookingRef);
+        if (existing) {
+          res.json({
+            url: shareableOnlineBookingPaymentUrl(gateway, booking.bookingRef, existing.redirectUrl),
+            linkId: booking.bookingRef,
+            reused: true,
+          });
+          return;
+        }
+        if (isDuplicateOrReuseableInitiateError(result.errorMessage)) {
+          res.status(400).json({
+            error:
+              "Payment session could not be recreated (gateway code P1006 / duplicate). Use Pay at Centre, or ask the patient to open the previous WhatsApp link.",
+          });
+          return;
+        }
+      }
       res.status(400).json({
         error: result.errorMessage || `${gateway} could not create a shareable payment link. Use Pay at Centre.`,
       });
@@ -507,11 +545,56 @@ onlineBookingsRouter.post("/:id/payment-link", async (req, res): Promise<void> =
           iciciProviderRefId: result.rawResponse?.tranCtx ?? null,
         })
         .where(eq(onlineBookingsTable.id, booking.id));
+
+      // Stamp redirectUrl onto the payment log so the public bridge can open HPP
+      // (same pattern as Billing Desk Orange Pay QR).
+      try {
+        const [logRow] = await db
+          .select({ id: paymentLogsTable.id, requestPayload: paymentLogsTable.requestPayload })
+          .from(paymentLogsTable)
+          .where(eq(paymentLogsTable.bookingRef, booking.bookingRef))
+          .orderBy(desc(paymentLogsTable.createdAt))
+          .limit(1);
+        if (logRow) {
+          let existingPayload: Record<string, unknown> = {};
+          try {
+            existingPayload = JSON.parse(logRow.requestPayload || "{}");
+          } catch { /* ignore */ }
+          await db.update(paymentLogsTable)
+            .set({
+              requestPayload: JSON.stringify({
+                ...existingPayload,
+                redirectUrl: result.redirectUrl,
+              }),
+            })
+            .where(eq(paymentLogsTable.id, logRow.id));
+        }
+      } catch { /* bridge can still use responsePayload.tranCtx */ }
     }
 
-    res.json({ url: result.redirectUrl, linkId: result.gatewayTxnId || booking.bookingRef });
+    // ICICI/HDFC: share the bank-whitelisted bridge URL (same as Billing Desk QR),
+    // not the raw HPP redirect — phones opening pgpay.icicibank.com directly often
+    // fail domain validation, so staff resort to pasting QR screenshots.
+    const shareUrl = shareableOnlineBookingPaymentUrl(
+      gateway,
+      booking.bookingRef,
+      result.redirectUrl,
+    );
+
+    res.json({ url: shareUrl, linkId: result.gatewayTxnId || booking.bookingRef });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "Could not create payment link";
+    if ((gateway === "icici" || gateway === "hdfc") && isDuplicateOrReuseableInitiateError(message)) {
+      const existing = await findReusableIciciPaymentSession(booking.bookingRef).catch(() => null);
+      if (existing) {
+        res.json({
+          url: shareableOnlineBookingPaymentUrl(gateway, booking.bookingRef, existing.redirectUrl),
+          linkId: booking.bookingRef,
+          reused: true,
+        });
+        return;
+      }
+    }
     res.status(400).json({ error: `${message}. Use Pay at Centre.` });
   }
 });

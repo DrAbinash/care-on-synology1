@@ -3,6 +3,12 @@ import "@/styles/billingDeskModern.css"; // Modern Pro skin (presentation only)
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import QRCode from "qrcode";
 import { api, isQueueableBillingError } from "@/lib/fetchApi";
+import {
+  QUICK_SELECT_GRID_CLASS,
+  QUICK_SELECT_SLOT_COUNT,
+  emptyQuickSelectIds,
+  parseQuickSelectIds,
+} from "@/lib/quickSelectSlots";
 import { FINANCIAL_QUERY_OPTIONS } from "@/lib/queryConfig";
 import { isClinicPeakHours } from "@/lib/clinicPeakHours";
 import { enqueueBill, QueuedForSyncError } from "@/lib/offlineBillingQueue";
@@ -1156,21 +1162,15 @@ export default function BillingDesk() {
   }, [needsDicom, selectedTests.map((t) => t.testId).join(","), doctorId]);
 
 
-  // ── Quick Test Tabs (8 customizable slots) ─────────
-  const quickTestIds: (number | null)[] = useMemo(() => {
-    try {
-      const arr = JSON.parse(clinic?.quickTestIds ?? "[null,null,null,null,null,null,null,null]");
-      const out: (number | null)[] = Array.isArray(arr)
-        ? arr.slice(0, 8).map((v: unknown) => (typeof v === "number" ? v : null))
-        : [];
-      while (out.length < 8) out.push(null);
-      return out;
-    } catch { return [null, null, null, null, null, null, null, null]; }
-  }, [clinic?.quickTestIds]);
+  // ── Quick Test Tabs (12 customizable slots — 3×4) ─
+  const quickTestIds: (number | null)[] = useMemo(
+    () => parseQuickSelectIds(clinic?.quickTestIds),
+    [clinic?.quickTestIds],
+  );
   const [quickPickerSlot, setQuickPickerSlot] = useState<number | null>(null);
   const [quickPickerSearch, setQuickPickerSearch] = useState("");
 
-  // ── Quick Doctor Slots (8 slots, per-STAFF-MEMBER layout — each user has
+  // ── Quick Doctor Slots (12 slots, per-STAFF-MEMBER layout — each user has
   // their own; server is the source of truth, localStorage is only a fast
   // first-paint cache). Was previously synced from clinic-wide
   // clinic.quickDoctorIds via PUT /api/clinic-settings, which (a) the public
@@ -1186,13 +1186,8 @@ export default function BillingDesk() {
   const [quickDoctorIds, setQuickDoctorIds] = useState<(number | null)[]>(() => {
     try {
       const stored = localStorage.getItem("billingDesk:quickDoctors");
-      const arr = stored ? JSON.parse(stored) : [null, null, null, null, null, null, null, null];
-      const out: (number | null)[] = Array.isArray(arr)
-        ? arr.slice(0, 8).map((v: unknown) => (typeof v === "number" ? v : null))
-        : [];
-      while (out.length < 8) out.push(null);
-      return out;
-    } catch { return [null, null, null, null, null, null, null, null]; }
+      return parseQuickSelectIds(stored);
+    } catch { return emptyQuickSelectIds(); }
   });
   // Sync from the server once the caller's own quick-doctor layout loads —
   // this is the actual saved configuration (assignQuickDoctorSlot below
@@ -1201,15 +1196,9 @@ export default function BillingDesk() {
   // slots even though the configuration was successfully saved earlier.
   useEffect(() => {
     if (!myQuickDoctors?.quickDoctorIds) return;
-    try {
-      const arr = JSON.parse(myQuickDoctors.quickDoctorIds);
-      if (Array.isArray(arr)) {
-        const out = arr.slice(0, 8).map((v: unknown) => (typeof v === "number" ? v : null));
-        while (out.length < 8) out.push(null);
-        setQuickDoctorIds(out);
-        localStorage.setItem("billingDesk:quickDoctors", JSON.stringify(out));
-      }
-    } catch { /* keep current state on parse failure */ }
+    const out = parseQuickSelectIds(myQuickDoctors.quickDoctorIds);
+    setQuickDoctorIds(out);
+    localStorage.setItem("billingDesk:quickDoctors", JSON.stringify(out));
   }, [myQuickDoctors?.quickDoctorIds]);
   const [quickDoctorPickerSlot, setQuickDoctorPickerSlot] = useState<number | null>(null);
   const [quickDoctorPickerSearch, setQuickDoctorPickerSearch] = useState("");
@@ -2033,17 +2022,9 @@ export default function BillingDesk() {
   function assignQuickSlot(slotIdx: number, testId: number | null) {
     // Read latest cached settings to avoid clobbering concurrent updates
     const latest = queryClient.getQueryData<{ quickTestIds?: string }>(["clinic-settings"]);
-    let current: (number | null)[];
-    try {
-      const arr = JSON.parse(latest?.quickTestIds ?? "[null,null,null,null,null,null,null,null]");
-      current = Array.isArray(arr)
-        ? arr.slice(0, 8).map((v: unknown) => (typeof v === "number" ? v : null))
-        : [null, null, null, null, null, null, null, null];
-      while (current.length < 8) current.push(null);
-    } catch {
-      current = [null, null, null, null, null, null, null, null];
-    }
+    const current = parseQuickSelectIds(latest?.quickTestIds ?? clinic?.quickTestIds);
     const next = [...current];
+    while (next.length < QUICK_SELECT_SLOT_COUNT) next.push(null);
     next[slotIdx] = testId;
     saveQuickTestsMut.mutate(next);
   }
@@ -2082,7 +2063,7 @@ export default function BillingDesk() {
     // update made so far in this session, avoiding the stale-read race.
     setQuickDoctorIds((current) => {
       const next = [...current];
-      while (next.length < 8) next.push(null);
+      while (next.length < QUICK_SELECT_SLOT_COUNT) next.push(null);
       next[slotIdx] = doctorId;
       localStorage.setItem("billingDesk:quickDoctors", JSON.stringify(next));
       saveQuickDoctorsMut.mutate(next);
@@ -2730,14 +2711,14 @@ export default function BillingDesk() {
               )}
               {!doctorCollapsed && (
               <div className="p-3 space-y-2">
-                {/* Quick doctor slots — 8 fixed-size slots, same symmetrical grid
+                {/* Quick doctor slots — 12 fixed-size slots (3 rows × 4), same symmetrical grid
                     pattern as Investigations quick slots below. Every box is
                     identical width; long doctor names truncate with an
                     ellipsis (full name still shown on hover via title).
                     Click a filled slot to select that doctor for this bill.
                     Click an empty (dashed) slot, or right-click any slot, to
                     assign/change which doctor lives there. */}
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+                <div className={QUICK_SELECT_GRID_CLASS} data-testid="billing-quick-doctors">
                     {quickDoctorIds.map((docId, idx) => {
                       const doc = docId != null ? doctors.find((d) => d.id === docId) : null;
                       const isSelected = !!doc && doctorId === doc.id;
@@ -2855,11 +2836,11 @@ export default function BillingDesk() {
               {SH("Investigations", <FlaskConical size={11} />, "teal")}
               <div className="p-3 space-y-2">
 
-                {/* Quick Test Slots — 8 fixed-size slots in a symmetrical grid.
+                {/* Quick Test Slots — 12 fixed-size slots (3 rows × 4) in a symmetrical grid.
                     Every box is identical width; long test names truncate
                     with an ellipsis (full name still shown on hover via title). */}
                 {showQuickTestsSetting && (
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+                  <div className={QUICK_SELECT_GRID_CLASS} data-testid="billing-quick-tests">
                     {quickTestIds.map((slot, idx) => {
                       const test = slot != null ? allTests.find((t) => t.id === slot) : null;
                       return (
