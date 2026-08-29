@@ -131,6 +131,11 @@ const GUARDED_SECRETS: ReadonlyArray<{ name: string; stillExposed: string }> = [
     name: "WHATSAPP_AUTOMATION_SECRET",
     stillExposed: "n8n's WhatsApp automation triggers (/api/internal/automations/whatsapp/*) are blocked while weak.",
   },
+  {
+    name: "REPORTING_STUDIO_API_KEY",
+    stillExposed:
+      "CARE Reporting Studio bridge (/api/internal/reporting-studio/*) remains reachable with this value — rotate and update Studio Settings → Integrations.",
+  },
 ];
 
 /**

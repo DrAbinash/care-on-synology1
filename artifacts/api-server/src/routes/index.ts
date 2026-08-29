@@ -93,6 +93,7 @@ import { verifyRouter } from "./verify";
 import internalCronRouter from "./internal-cron";
 import internalAutomationsWhatsappRouter from "./internal-automations-whatsapp";
 import internalRadiologyRouter from "./internal-radiology";
+import internalReportingStudioRouter from "./internal-reporting-studio";
 import dicomAgentRouter from "./dicom-agent";
 import { publicBookingRouter } from "./public-booking";
 import { mobileConfigRouter } from "./mobileConfig";
@@ -287,6 +288,8 @@ router.use("/internal/automations/whatsapp", n8nAutomationLimiter, internalAutom
 // Internal backup download — streams pg_dump output for off-site replication.
 router.use("/internal/backup", internalBackupRouter);
 router.use("/internal", internalRadiologyRouter); // [ZONE: radiology] name is generic, content is 100% radiology (DICOM agent callbacks)
+// CARE Reporting Studio bridge — x-api-key = REPORTING_STUDIO_API_KEY (not staff session).
+router.use("/internal/reporting-studio", internalReportingStudioRouter);
 router.use("/portal", portalRouter);
 router.use("/display", displayRouter);
 router.use("/settings/queue-display", queueDisplaySettingsRouter);
