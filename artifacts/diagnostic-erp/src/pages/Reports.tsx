@@ -8,6 +8,7 @@ import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
 // Module A (compliance): commission report query removed — moved to Super Admin Portal.
 import PageHeader from "@/components/PageHeader";
+import { MobileTableScroll } from "@/components/MobileTableScroll";
 import {
   BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, Legend, PieChart, Pie, Cell,
@@ -495,8 +496,9 @@ export default function Reports() {
                 )}
 
                 {/* Daily Table */}
-                <div className="bg-card border border-card-border rounded-xl overflow-hidden">
-                  <table className="w-full text-sm">
+                <div className="bg-card border border-card-border rounded-xl overflow-hidden min-w-0 max-w-full">
+                  <MobileTableScroll>
+                  <table className="w-full text-sm min-w-[44rem]">
                     <thead className="bg-muted/50 border-b border-card-border">
                       <tr>
                         <th className="text-left px-4 py-3 text-xs font-semibold text-muted-foreground">Date</th>
@@ -534,6 +536,7 @@ export default function Reports() {
                       </tr>
                     </tbody>
                   </table>
+                  </MobileTableScroll>
                 </div>
 
                 {/* User-wise income breakdown — who collected how much */}
@@ -543,7 +546,8 @@ export default function Reports() {
                       <h3 className="text-sm font-semibold">Income by User</h3>
                       <p className="text-xs text-muted-foreground mt-0.5">Payments collected by each staff member in this date range</p>
                     </div>
-                    <table className="w-full text-sm">
+                    <MobileTableScroll>
+                    <table className="w-full text-sm min-w-[40rem]">
                       <thead className="bg-muted/50 border-b border-card-border">
                         <tr>
                           <th className="text-left px-4 py-3 text-xs font-semibold text-muted-foreground">User</th>
@@ -569,6 +573,7 @@ export default function Reports() {
                         ))}
                       </tbody>
                     </table>
+                    </MobileTableScroll>
                   </div>
                 )}
               </div>
@@ -782,8 +787,9 @@ function OutsourcedReportTab({ dateFrom, dateTo, setDateFrom, setDateTo }: {
         ) : rows.length === 0 ? (
           <div className="text-center py-8 text-muted-foreground text-sm">No outsourced samples in this date range</div>
         ) : (
-          <div className="border border-card-border rounded-lg overflow-hidden">
-            <table className="w-full text-xs">
+          <div className="border border-card-border rounded-lg overflow-hidden min-w-0 max-w-full">
+            <MobileTableScroll>
+            <table className="w-full text-xs min-w-[44rem]">
               <thead className="bg-muted/60"><tr>
                 <th className="text-left px-3 py-2 font-semibold">Barcode</th>
                 <th className="text-left px-3 py-2 font-semibold">Patient</th>
@@ -815,6 +821,7 @@ function OutsourcedReportTab({ dateFrom, dateTo, setDateFrom, setDateTo }: {
                 ))}
               </tbody>
             </table>
+            </MobileTableScroll>
           </div>
         )}
       </div>

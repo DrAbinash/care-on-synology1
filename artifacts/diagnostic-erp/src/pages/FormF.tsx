@@ -11,6 +11,7 @@ import {
   ChevronDown, ExternalLink
 } from "lucide-react";
 import IdCardScanPanel from "@/components/IdCardScanPanel";
+import { MobileTableScroll } from "@/components/MobileTableScroll";
 import FormFMonthlyRegister from "@/components/FormFMonthlyRegister";
 import FormFSelfReferralOpdRegister from "@/components/FormFSelfReferralOpdRegister";
 import IdScanCapturePanel from "@/components/IdScanCapturePanel";
@@ -1776,7 +1777,8 @@ export default function FormF() {
                     </button>
                   ))}
                 </div>
-                <table className="w-full text-xs">
+                <MobileTableScroll>
+                <table className="w-full text-xs min-w-[44rem]">
                   <thead className="bg-gray-50 border-b border-gray-100">
                     <tr>
                       <th className="text-left px-4 py-2.5 font-semibold text-gray-600">Billing Date</th>
@@ -1827,6 +1829,7 @@ export default function FormF() {
                     ))}
                   </tbody>
                 </table>
+                </MobileTableScroll>
               </div>
             )}
 
@@ -1915,7 +1918,8 @@ export default function FormF() {
               ) : records.length === 0 ? (
                 <div className="p-8 text-center text-sm text-gray-400">No records found. {listSearch ? "Try a different search." : "Save a Form F to see it here."}</div>
               ) : (
-                <table className="w-full text-xs">
+                <MobileTableScroll>
+                <table className="w-full text-xs min-w-[48rem]">
                   <thead className="bg-gray-50 border-b border-gray-100">
                     <tr>
                       <th className="text-left px-3 py-2.5 font-semibold text-gray-600">Date</th>
@@ -1955,6 +1959,7 @@ export default function FormF() {
                     ))}
                   </tbody>
                 </table>
+                </MobileTableScroll>
               )}
             </div>
           </div>

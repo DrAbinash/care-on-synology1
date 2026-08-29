@@ -7,6 +7,7 @@ import { resolveBillPrintPageOpts, parseGlobalBillPrintSettings, billPrintCopies
 import { api, fetchApi, getStaffToken } from "@/lib/fetchApi";
 import { useSuperAdmin, getSuperAdminToken } from "@/hooks/useSuperAdmin";
 import PageHeader from "@/components/PageHeader";
+import { MobileTableScroll } from "@/components/MobileTableScroll";
 import { PortalLoginBackgroundSettings } from "@/components/PortalLoginBackgroundSettings";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -616,8 +617,9 @@ function UsersTab({ qc }: { qc: ReturnType<typeof useQueryClient> }) {
         ) : users.length === 0 ? (
           <div className="text-center py-16 text-muted-foreground"><User2 size={36} className="mx-auto mb-3 opacity-30" /><p>No users yet. Add your first user to get started.</p></div>
         ) : (
-          <div className="bg-card border border-card-border rounded-xl overflow-hidden">
-            <table className="w-full text-sm">
+          <div className="bg-card border border-card-border rounded-xl overflow-hidden min-w-0 max-w-full">
+            <MobileTableScroll>
+            <table className="w-full text-sm min-w-[44rem]">
               <thead className="bg-muted/50 border-b border-card-border">
                 <tr>
                   <th className="text-left px-4 py-3 text-xs font-semibold uppercase text-muted-foreground">Name</th>
@@ -670,6 +672,7 @@ function UsersTab({ qc }: { qc: ReturnType<typeof useQueryClient> }) {
                 })}
               </tbody>
             </table>
+            </MobileTableScroll>
           </div>
         )}
         <div className="bg-muted/30 border border-card-border rounded-xl p-4">
@@ -3583,8 +3586,9 @@ function OnlineBookingTab() {
         ) : !bookingsData?.bookings || bookingsData.bookings.length === 0 ? (
           <div className="text-center py-8 text-muted-foreground">No online bookings or transactions found.</div>
         ) : (
-          <div className="border border-card-border rounded-lg overflow-hidden">
-            <table className="w-full text-xs text-left">
+          <div className="border border-card-border rounded-lg overflow-hidden min-w-0 max-w-full">
+            <MobileTableScroll>
+            <table className="w-full text-xs text-left min-w-[44rem]">
               <thead className="bg-muted/50 border-b border-card-border">
                 <tr>
                   <th className="p-3 font-semibold text-muted-foreground">Date & Time</th>
@@ -3687,6 +3691,7 @@ function OnlineBookingTab() {
                 })()}
               </tbody>
             </table>
+            </MobileTableScroll>
           </div>
         )}
       </div>
@@ -6252,8 +6257,9 @@ function DepartmentsTab() {
         </div>
         <Button onClick={() => { reset(); setOpen(true); }}><Plus size={14} className="mr-1" /> Add Department</Button>
       </div>
-      <div className="bg-card border border-border rounded-xl overflow-hidden">
-        <table className="w-full text-sm">
+      <div className="bg-card border border-border rounded-xl overflow-hidden min-w-0 max-w-full">
+        <MobileTableScroll>
+        <table className="w-full text-sm min-w-[48rem]">
           <thead className="bg-muted/40">
             <tr className="text-left">
               <th className="px-3 py-2 font-medium text-xs">Name</th>
@@ -6292,6 +6298,7 @@ function DepartmentsTab() {
                 ))}
           </tbody>
         </table>
+        </MobileTableScroll>
       </div>
 
       <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) reset(); }}>
@@ -6586,8 +6593,9 @@ function BranchesTab() {
         </div>
         <Button onClick={() => { reset(); setOpen(true); }}><Plus size={14} className="mr-1" /> Add Branch</Button>
       </div>
-      <div className="bg-card border border-border rounded-xl overflow-hidden">
-        <table className="w-full text-sm">
+      <div className="bg-card border border-border rounded-xl overflow-hidden min-w-0 max-w-full">
+        <MobileTableScroll>
+        <table className="w-full text-sm min-w-[44rem]">
           <thead className="bg-muted/40">
             <tr className="text-left">
               <th className="px-3 py-2 font-medium text-xs">Code</th>
@@ -6627,6 +6635,7 @@ function BranchesTab() {
                 ))}
           </tbody>
         </table>
+        </MobileTableScroll>
       </div>
 
       <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) reset(); }}>
@@ -6799,7 +6808,8 @@ function BackupTab() {
           <h4 className="font-medium text-sm">Backup History</h4>
           <span className="text-[11px] text-muted-foreground">last 50 runs</span>
         </div>
-        <table className="w-full text-sm">
+        <MobileTableScroll>
+        <table className="w-full text-sm min-w-[40rem]">
           <thead className="bg-muted/40">
             <tr className="text-left">
               <th className="px-3 py-2 font-medium text-xs">When</th>
@@ -6827,6 +6837,7 @@ function BackupTab() {
               ))}
           </tbody>
         </table>
+        </MobileTableScroll>
       </div>
     </div>
   );

@@ -3,7 +3,6 @@ import { resolve, join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const pagesDir = resolve(__dirname);
-const componentsDir = resolve(__dirname, "../components");
 
 function read(rel: string) {
   return readFileSync(resolve(__dirname, rel), "utf8");
@@ -37,6 +36,8 @@ function wideTablesLackingScrollWrapper(src: string, file: string): string[] {
     const after = src.slice(m.index, m.index + 1200);
     // Print/export HTML templates (not rendered in the ERP scroll shell).
     if (/class="table"/.test(after.slice(0, 80))) continue;
+    // Inline-style print preview tables in Form F (not ERP data grids).
+    if (/style=\{\{[^}]*width:\s*["']100%/.test(after.slice(0, 120))) continue;
     const isWide =
       /min-w-\[[^\]]+\]/.test(after) ||
       (after.match(/<th\b/g)?.length ?? 0) >= 7;
@@ -109,79 +110,19 @@ describe("mobile scroll — patch-hardened pages", () => {
 });
 
 describe("mobile scroll — all ERP pages with wide tables", () => {
-  const allowlist = new Set([
-    "MyDayClose.tsx:803",
-    "RadiologyWorklist.tsx",
-    "RadiologyReportingWorkspace.tsx",
-    // Admin / settings mega-pages — tracked backlog (shell fix unblocks most).
-    "Settings.tsx",
-    "Reports.tsx",
-    "Machines.tsx",
-    "Inventory.tsx",
-    "FormF.tsx",
-  ]);
-
-  const criticalPages = new Set([
-    ...PATCH_HARDENED_PAGES,
-    "Expenses.tsx",
-    "Patients.tsx",
-    "Orders.tsx",
-    "Payments.tsx",
-    "Dues.tsx",
-    "MyDayClose.tsx",
-    "Tests.tsx",
-    "AcquisitionGateway.tsx",
-    "AiPipelineManager.tsx",
-    "AiAuditLog.tsx",
-    "AiPipelineManager.tsx",
-    "AiPromptEffectiveness.tsx",
-    "AiQualityScores.tsx",
-    "HRForms.tsx",
-    "MwlManager.tsx",
-    "ReportHub.tsx",
-    "StorageLifecycle.tsx",
-    "Billing.tsx",
-    "Dashboard.tsx",
-    "OnlineBookings.tsx",
-    "OperationalHealth.tsx",
-    "OutsourceLedger.tsx",
-    "OutsourceWorklist.tsx",
-    "OutsourcedCostReport.tsx",
-    "PacsArchiveLifecycle.tsx",
-    "PathologyRegistry.tsx",
-    "Samples.tsx",
-    "MeasurementRegistryManager.tsx",
-    "MwlDashboard.tsx",
-    "NetworkControlCenter.tsx",
-    "DicomNodes.tsx",
-    "RadiologyLegacy.tsx",
-  ]);
-
   const pageFiles = listPageFiles();
   const failures: string[] = [];
-  const criticalFailures: string[] = [];
 
   for (const file of pageFiles) {
     const src = readFileSync(join(pagesDir, file), "utf8");
-    for (const issue of wideTablesLackingScrollWrapper(src, file)) {
-      const key = issue;
-      const fileOnly = file;
-      if (allowlist.has(key) || allowlist.has(fileOnly)) continue;
-      failures.push(issue);
-      if (criticalPages.has(file)) criticalFailures.push(issue);
-    }
+    failures.push(...wideTablesLackingScrollWrapper(src, file));
   }
 
-  it("critical ERP pages: every wide <table> has a horizontal scroll wrapper", () => {
+  it("every wide <table> on every ERP page has a horizontal scroll wrapper", () => {
     expect(
-      criticalFailures,
-      `Critical wide tables missing horizontal scroll wrapper:\n${criticalFailures.join("\n")}`,
+      failures,
+      `Wide tables missing horizontal scroll wrapper:\n${failures.join("\n")}`,
     ).toEqual([]);
-  });
-
-  it("full audit backlog count stays bounded", () => {
-    // Settings/Reports/Machines/Inventory/FormF are allowlisted; this guards regressions elsewhere.
-    expect(failures.length).toBeLessThanOrEqual(0);
   });
 });
 
