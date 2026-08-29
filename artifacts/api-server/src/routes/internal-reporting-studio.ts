@@ -119,13 +119,9 @@ async function nextReportNumber(): Promise<string> {
   const d = new Date();
   const stamp = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
   const prefix = `RPT-${stamp}-`;
-  const result = await db.execute(sql`
+  const [{ n = 0 }] = await db.execute<{ n: number }>(sql`
     SELECT COUNT(*)::int AS n FROM patient_reports WHERE report_number LIKE ${prefix + "%"}
-  `);
-  const rows = (Array.isArray(result) ? result : (result as { rows?: Array<{ n: number }> }).rows ?? []) as Array<{
-    n: number;
-  }>;
-  const n = Number(rows[0]?.n ?? 0);
+  `).then((r) => (Array.isArray(r) ? r : (r as { rows: unknown[] }).rows ?? [])) as unknown as [{ n: number }];
   return `${prefix}${String(n + 1).padStart(3, "0")}`;
 }
 
