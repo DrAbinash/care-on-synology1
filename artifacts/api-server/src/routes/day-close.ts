@@ -88,7 +88,12 @@ type TestSummary = { testId: number; testName: string; category: string; count: 
 // here exactly once.
 
 export type PaymentLike = { id: number; amount: string | number; method: string | null; recordedByName?: string | null };
-export type ExpenseLike = { amount: string | number; paymentMode: string | null; approvedBy?: string | null };
+export type ExpenseLike = {
+  amount: string | number;
+  paymentMode: string | null;
+  approvedBy?: string | null;
+  createdBy?: string | null;
+};
 
 export type SuspenseItem = { id: number; amount: number; rawMethod: string; recordedByName: string | null };
 
@@ -169,7 +174,8 @@ export function splitCashExpenses(expRows: ExpenseLike[]): {
   const cashExpensesByApprover = new Map<string, number>();
   for (const e of expRows) {
     if (!isCashExpense(e.paymentMode)) continue;
-    const approver = (e.approvedBy ?? "").trim();
+    // Prefer approved_by; fall back to created_by (legacy blank Approved By).
+    const approver = (e.approvedBy ?? "").trim() || (e.createdBy ?? "").trim();
     if (!approver) continue;
     cashExpensesByApprover.set(approver, (cashExpensesByApprover.get(approver) ?? 0) + n(e.amount));
   }
@@ -258,6 +264,7 @@ async function summarizeWindow(from: Date | null, to: Date) {
       createdAt: expensesTable.createdAt,
       paymentMode: expensesTable.paymentMode,
       approvedBy: expensesTable.approvedBy,
+      createdBy: expensesTable.createdBy,
     })
     .from(expensesTable)
     .where(expenseWhere);
@@ -788,11 +795,12 @@ async function summarizeUserWindow(
   const suspenseTotal = classified.totalSuspense;
 
   // Subtract THIS staff's own cash expenses (Cash Attribution Rule: an
-  // expense reduces the physical cash of the staff who approved it, same
-  // posting-date rule as summarizeWindow — created_at, not expense_date).
+  // expense reduces the physical cash of the drawer owner — approved_by, or
+  // created_by when Approved By was left blank). Posting clock = created_at.
+  const ownerMatch = sql`COALESCE(NULLIF(TRIM(${expensesTable.approvedBy}), ''), NULLIF(TRIM(${expensesTable.createdBy}), '')) = ${userName}`;
   const expWhere = from
-    ? and(eq(expensesTable.approvedBy, userName), gt(expensesTable.createdAt, from), lte(expensesTable.createdAt, to))
-    : and(eq(expensesTable.approvedBy, userName), lte(expensesTable.createdAt, to));
+    ? and(ownerMatch, gt(expensesTable.createdAt, from), lte(expensesTable.createdAt, to))
+    : and(ownerMatch, lte(expensesTable.createdAt, to));
   const expRows = await db
     .select({
       id: expensesTable.id,
@@ -801,6 +809,7 @@ async function summarizeUserWindow(
       description: expensesTable.description,
       paymentMode: expensesTable.paymentMode,
       approvedBy: expensesTable.approvedBy,
+      createdBy: expensesTable.createdBy,
     })
     .from(expensesTable)
     .where(expWhere);

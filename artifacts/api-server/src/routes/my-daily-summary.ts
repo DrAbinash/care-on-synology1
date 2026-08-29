@@ -6,6 +6,7 @@ import { FULL_ACCESS_ROLES, requireAdminRole } from "../middleware/requireStaffA
 import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { getTransporter, getEmailSettings } from "../email";
 import { classifyPaymentMethod, isPhysicalCash, isDigitalSettlement } from "../lib/paymentMethodClassifier";
+import { expenseDrawerOwnerEquals, expenseDrawerOwnerSql } from "../lib/expenseCashAttribution";
 import { computeRefundsOnBillsCancelledByMe, computeCollectibleForReconciliation } from "../lib/dailySummaryCollectible";
 import { buildStaffActivityRows, BILL_AUDIT_OPERATIONAL_CHANGE_TYPES } from "../lib/staffActivityAttribution";
 import { buildBillingVsPacsSummary } from "../lib/pacs/billingVsPacsSummary";
@@ -329,7 +330,7 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
       COALESCE(SUM(amount::numeric) FILTER (WHERE LOWER(payment_mode) <> 'cash'), 0)::text AS digital_expenses
     FROM expenses
     WHERE created_at >= ${start.toISOString()} AND created_at < ${end.toISOString()}
-    ${staffName !== null ? sql`AND approved_by = ${staffName}` : sql``}
+    ${staffName !== null ? expenseDrawerOwnerEquals(staffName) : sql``}
   `);
 
   // Line items for Cash Expenses expand (same window / approved_by filter as cash_expenses).
@@ -341,13 +342,15 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
     payment_mode: string;
     paid_to: string | null;
     approved_by: string | null;
+    created_by: string | null;
     created_at: string;
   }>(sql`
-    SELECT expense_id, category, description, amount::text AS amount, payment_mode, paid_to, approved_by, created_at::text AS created_at
+    SELECT expense_id, category, description, amount::text AS amount, payment_mode, paid_to,
+           approved_by, created_by, created_at::text AS created_at
     FROM expenses
     WHERE created_at >= ${start.toISOString()} AND created_at < ${end.toISOString()}
       AND LOWER(payment_mode) = 'cash'
-      ${staffName !== null ? sql`AND approved_by = ${staffName}` : sql``}
+      ${staffName !== null ? expenseDrawerOwnerEquals(staffName) : sql``}
     ORDER BY created_at DESC
     LIMIT 200
   `);
@@ -546,15 +549,16 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
     const digitalExpPerPerson: Record<string, number> = {};
     const expRows = await db.execute<ExpRow>(sql`
       SELECT
-        approved_by,
+        ${expenseDrawerOwnerSql()} AS approved_by,
         COALESCE(SUM(amount::numeric) FILTER (WHERE LOWER(payment_mode) = 'cash'), 0)::text AS cash,
         COALESCE(SUM(amount::numeric) FILTER (WHERE LOWER(payment_mode) <> 'cash'), 0)::text AS digital
       FROM expenses
       WHERE created_at >= ${start.toISOString()} AND created_at < ${end.toISOString()}
-        AND approved_by IS NOT NULL
-      GROUP BY approved_by
+        AND ${expenseDrawerOwnerSql()} IS NOT NULL
+      GROUP BY ${expenseDrawerOwnerSql()}
     `);
     for (const r of expRows.rows) {
+      if (!r.approved_by) continue;
       cashExpPerPerson[r.approved_by] = Number(r.cash);
       digitalExpPerPerson[r.approved_by] = Number(r.digital);
     }
@@ -858,7 +862,8 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
       amount: Number(r.amount),
       paymentMode: r.payment_mode,
       paidTo: r.paid_to ?? null,
-      approvedBy: r.approved_by ?? null,
+      approvedBy: (r.approved_by || r.created_by || null),
+      createdBy: r.created_by ?? null,
       createdAt: r.created_at,
     })),
   });
@@ -1074,7 +1079,7 @@ myDailySummaryRouter.get("/drilldown", async (req: StaffAuthRequest, res) => {
     }
 
     case "totalExpenses": {
-      const expenseFilter = staffName !== null ? sql`AND approved_by = ${staffName}` : sql``;
+      const expenseFilter = staffName !== null ? expenseDrawerOwnerEquals(staffName) : sql``;
       const expenseRows = await db.execute<{
         expense_id: string; category: string; description: string;
         amount: string; payment_mode: string; paid_to: string | null; created_at: string;
@@ -1125,7 +1130,7 @@ myDailySummaryRouter.get("/drilldown", async (req: StaffAuthRequest, res) => {
         .reduce((s, p) => s + Number(p.amount), 0);
       const digitalRefunded = cashPayments.filter((p) => Number(p.amount) < 0 && classifyPaymentMethod(p.method).isKnown && isDigitalSettlement(p.method))
         .reduce((s, p) => s + Math.abs(Number(p.amount)), 0);
-      const expFilter = staffName !== null ? sql`AND approved_by = ${staffName}` : sql``;
+      const expFilter = staffName !== null ? expenseDrawerOwnerEquals(staffName) : sql``;
       const expRows = await db.execute<{ cash_expenses: string; digital_expenses: string }>(sql`
         SELECT
           COALESCE(SUM(amount::numeric) FILTER (WHERE LOWER(payment_mode) = 'cash'), 0)::text AS cash_expenses,

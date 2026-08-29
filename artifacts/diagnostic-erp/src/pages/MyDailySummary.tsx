@@ -208,6 +208,7 @@ type MyDailySummaryData = {
     paymentMode: string;
     paidTo: string | null;
     approvedBy: string | null;
+    createdBy?: string | null;
     createdAt: string;
   }[];
   discountBills: {
