@@ -39,6 +39,14 @@ const SHORTCUT_GROUPS: Array<{ title: string; rows: Array<{ keys: string; action
     ],
   },
   {
+    title: "MRI Lumbar Canvas",
+    rows: [
+      { keys: "↑ / ↓", action: "Move focus between level blocks" },
+      { keys: "Enter", action: "Open / close focused level editor" },
+      { keys: "1–5", action: "Cycle chips in Disc / Side / Canal / Foram / Modic rows" },
+    ],
+  },
+  {
     title: "Voice",
     rows: [
       { keys: "Ctrl + Space", action: "Toggle voice dictation" },

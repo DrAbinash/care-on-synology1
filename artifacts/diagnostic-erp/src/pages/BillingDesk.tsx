@@ -3931,7 +3931,11 @@ export default function BillingDesk() {
               Print Preview
               <div className="ml-auto flex gap-2">
                 <Button size="sm" variant="outline" onClick={() => setPrintPreviewOpen(false)}>Close</Button>
-                <Button size="sm" onClick={() => { writeAndPrint(null, printPreviewHtml); setPrintPreviewOpen(false); }}>
+                <Button
+                  size="sm"
+                  title="Tick 'Background graphics' in the print dialog for the green status edge"
+                  onClick={() => { writeAndPrint(null, printPreviewHtml); setPrintPreviewOpen(false); }}
+                >
                   <Printer size={14} className="mr-1" /> Print
                 </Button>
               </div>

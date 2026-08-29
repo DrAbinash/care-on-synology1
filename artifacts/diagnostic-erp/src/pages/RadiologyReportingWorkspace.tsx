@@ -174,7 +174,7 @@ import { formatViewerMeasurementLabel } from "@/lib/formatViewerMeasurementLine"
 import { subscribeCareOhifBridge } from "@/lib/ohifViewerBridge";
 import { viewportToAnchor } from "@/lib/observationAnchor";
 import { isMriLumbarReportingContext } from "@/lib/mriLumbarRegions";
-import { buildLumbarLevelApplyBundle, deriveCanvasNarrativeState, ledgerSeverityContradiction } from "@/lib/mriLumbarLevelState";
+import { buildLumbarLevelApplyBundle, deriveCanvasNarrativeState, ledgerSeverityContradiction, structuredCanalApContradiction } from "@/lib/mriLumbarLevelState";
 import {
   AnchorRail,
   CoverageCockpit,
@@ -525,6 +525,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const appliedPathologyPatches = useWorkspace((s: WorkspaceStore) => s.appliedPathologyPatches);
   const activeAnchor = useWorkspace((s: WorkspaceStore) => s.activeAnchor);
   const coverageMarks = useWorkspace((s: WorkspaceStore) => s.coverageMarks);
+  const workspaceMeasurements = useWorkspace((s: WorkspaceStore) => s.measurements);
   const recommendationText = useWorkspace((s: WorkspaceStore) => s.recommendationText);
   const techniqueText = useWorkspace((s: WorkspaceStore) => s.techniqueText);
   const clinicalHistoryText = useWorkspace((s: WorkspaceStore) => s.clinicalHistoryText);
@@ -2348,6 +2349,19 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     useWorkspace.getState().setMeasurements(mapped);
   }, [viewerMeasurementsQ.data]);
 
+  const canalApByLevel = useMemo(() => {
+    const out: Record<string, number | null> = {};
+    for (const m of workspaceMeasurements) {
+      const level =
+        discLevelFromLabel(m.name)
+        ?? discLevelFromLabel(String(m.id ?? ""));
+      if (!level) continue;
+      const raw = typeof m.value === "number" ? m.value : Number(parseCanalApNumber(String(m.value ?? "")) || m.value);
+      if (Number.isFinite(raw)) out[level] = raw;
+    }
+    return out;
+  }, [workspaceMeasurements]);
+
   // OHIF postMessage → viewer_measurements / report image-references
   useEffect(() => {
     const uid = workflow.currentRow?.studyInstanceUID ?? null;
@@ -3792,8 +3806,9 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                           patches={appliedPathologyPatches}
                           findingsText={findingsText}
                           disabled={isLocked || isFinalized}
+                          canalApByLevel={canalApByLevel}
                           onFocusRegion={(key) => {
-                            useWorkspace.getState().setCoverageMark(key, "viewed");
+                            useWorkspace.getState().touchCoverageViewed(key);
                           }}
                           onApplyLevel={(level, regionKey, sel) => {
                             const { bundleId, observations } = buildLumbarLevelApplyBundle({
@@ -3857,10 +3872,14 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       }}
                     />
                     <GhostLayer
-                      contradictionHints={validateReport({
-                        findings: findingsText,
-                        impression: impressionText.split(/\n+/).map((s) => s.trim()).filter(Boolean),
-                      }).filter((w) => /contradict|mismatch|severity|stenosis|moderate|severe/i.test(w)).slice(0, 3)}
+                      contradictionHints={[
+                        ...structuredCanalApContradiction(appliedPathologyPatches),
+                        ...ledgerSeverityContradiction(appliedPathologyPatches, impressionText),
+                        ...validateReport({
+                          findings: findingsText,
+                          impression: impressionText.split(/\n+/).map((s) => s.trim()).filter(Boolean),
+                        }).filter((w) => /contradict|mismatch|severity|stenosis|moderate|severe/i.test(w)),
+                      ].slice(0, 5)}
                     />
 
                     {!useStructured && (
@@ -4249,10 +4268,14 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                         onRefresh={() => useWorkspace.getState().refreshImpressionFromLedger()}
                       />
                       <ContradictionBanner
-                        warnings={validateReport({
-                          findings: findingsText,
-                          impression: impressionText.split(/\n+/).map((s) => s.trim()).filter(Boolean),
-                        }).filter((w) => /contradict|mismatch|severity|stenosis|moderate|severe|laterality/i.test(w))}
+                        warnings={[
+                          ...structuredCanalApContradiction(appliedPathologyPatches),
+                          ...ledgerSeverityContradiction(appliedPathologyPatches, impressionText),
+                          ...validateReport({
+                            findings: findingsText,
+                            impression: impressionText.split(/\n+/).map((s) => s.trim()).filter(Boolean),
+                          }).filter((w) => /contradict|mismatch|severity|stenosis|moderate|severe|laterality/i.test(w)),
+                        ]}
                       />
                     <div className="flex items-center gap-2">
                       <div className="flex-1 space-y-1.5">
@@ -4450,7 +4473,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                           marks={coverageMarks.length > 0 ? coverageMarks : defaultCoverageMarks()}
                           disabled={isLocked || isFinalized}
                           onJump={(key) => {
-                            useWorkspace.getState().setCoverageMark(key, "viewed");
+                            useWorkspace.getState().touchCoverageViewed(key);
                             document.getElementById(`r2-region-${key}`)?.scrollIntoView({ behavior: "smooth", block: "nearest" });
                           }}
                           onMarkReviewed={(key) => useWorkspace.getState().setCoverageMark(key, "reviewed")}

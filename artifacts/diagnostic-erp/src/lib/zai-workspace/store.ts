@@ -80,6 +80,7 @@ import {
   coverageMarksEqual,
   defaultCoverageMarks,
   setCoverageStatus,
+  markRegionViewed,
   parseCoverageMarks,
   filterCoverageForScope,
   serializeCoverageEnvelope,
@@ -357,6 +358,8 @@ export type WorkspaceStore = S & {
   serializeObservationLedger: () => SerializedObservationLedger;
   setActiveAnchor: (anchor: ObservationAnchor | null) => void;
   setCoverageMark: (regionKey: string, status: CoverageMark["status"], reason?: string) => void;
+  /** Focus / jump: promote unopened → viewed only; never downgrade or dirty. */
+  touchCoverageViewed: (regionKey: string) => void;
   hydrateCoverageMarks: (raw: unknown) => void;
   serializeCoverageMarks: () => CoverageMark[];
   dismissOwnershipReview: () => void;
@@ -1089,6 +1092,18 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       coverageMarks: next,
       coverageByScope: byScope,
       isDirty: status === "reviewed" || status === "waived" || status === "partial" || get().isDirty,
+    });
+  },
+  touchCoverageViewed: (regionKey) => {
+    const scope = coverageScopeKey(get().reportingContext.region);
+    const base = get().coverageMarks.length ? get().coverageMarks : defaultCoverageMarks(scope);
+    const next = markRegionViewed(base, regionKey, get().activeAnchor);
+    if (coverageMarksEqual(get().coverageMarks, next)) return;
+    const byScope = { ...get().coverageByScope, [scope]: next };
+    set({
+      coverageMarks: next,
+      coverageByScope: byScope,
+      // Focus alone never dirties the report.
     });
   },
   hydrateCoverageMarks: (raw) => {

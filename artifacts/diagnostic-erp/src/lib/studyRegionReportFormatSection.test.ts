@@ -99,6 +99,19 @@ describe("Section 1 — Study / Region + Report Format unification", () => {
     expect(prefs).not.toContain("export function mergeRegionCatalog");
   });
 
+  it("cascading Region → Sub-region selects + opt-in modality formats", () => {
+    const section = read("components/radiology/StudyRegionReportFormatSection.tsx");
+    expect(section).toContain('data-testid="study-region-family-select"');
+    expect(section).toContain('data-testid="study-region-select"');
+    expect(section).toContain("groupStudyTabsByFamily");
+    expect(section).toContain("studyTabFamily");
+    expect(section).toContain('data-testid="format-show-all-modality"');
+    expect(section).toContain("showAllModalityFormats");
+    expect(section).toContain('formatLookup.scope === "modality" ? []');
+    expect(section).toContain("writeLastStudyFamily");
+    expect(section).toContain("regionSelectionAction");
+  });
+
   it("workspace Section 1 mounts editable quick + add-region UI", () => {
     const workspace = read("pages/RadiologyReportingWorkspace.tsx");
     const section = read("components/radiology/StudyRegionReportFormatSection.tsx");
@@ -106,6 +119,7 @@ describe("Section 1 — Study / Region + Report Format unification", () => {
     expect(workspace).toContain("availableStudyTabs={studySetup.availableStudyTabs}");
     expect(workspace).toContain("onSelectRegion={studySetup.selectPrimaryRegion}");
     expect(section).toContain('data-testid="study-region-select"');
+    expect(section).toContain('data-testid="study-region-family-select"');
     expect(section).toContain('data-testid="whole-report-format-select"');
     expect(section).toContain('data-testid="study-region-quick"');
     expect(section).toContain('data-testid="study-region-quick-edit"');

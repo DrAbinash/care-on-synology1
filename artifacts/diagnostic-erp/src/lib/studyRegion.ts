@@ -94,3 +94,143 @@ export function nextStudyRegions(current: string[], regionName: string): string[
   if (idx > 0) return [regionName, ...current.filter((r) => r !== regionName)];
   return [regionName, ...current];
 }
+
+/** Body-part family display name for cascading Study / Region picker. */
+export type StudyTabFamily = string;
+
+export const STUDY_TAB_FAMILY_ORDER: readonly StudyTabFamily[] = [
+  "Brain",
+  "Spine",
+  "Head & Neck",
+  "Chest",
+  "Abdomen & Pelvis",
+  "Extremities & Joints",
+  "Breast",
+  "Other",
+] as const;
+
+/** Strip leading modality prefixes before body-part keyword matching. */
+export function stripStudyTabModalityPrefix(name: string): string {
+  return String(name ?? "")
+    .trim()
+    .replace(/^(MRI|MR|CT|HRCT|X-RAY|USG|US|DOPPLER)\b[\s:_-]*/i, "")
+    .trim();
+}
+
+/**
+ * For combined study names ("Brain + Cervical Spine"), the first primary
+ * segment after prefix-stripping wins so classification stays deterministic.
+ */
+function primaryStudyTabSegment(remainder: string): string {
+  const parts = remainder.split(/\s*[+/&]\s*/).map((p) => p.trim()).filter(Boolean);
+  return parts[0] || remainder;
+}
+
+/**
+ * Classify a study-tab name into a body-part family.
+ * Spine is checked before Brain on the primary segment so mixed keyword
+ * leftovers do not flip; combined names use the first segment after strip.
+ */
+export function studyTabFamily(name: string): StudyTabFamily {
+  const stripped = stripStudyTabModalityPrefix(name);
+  const primary = primaryStudyTabSegment(stripped || String(name ?? "").trim());
+  const t = primary.toLowerCase();
+  const rawUpper = String(name ?? "").toUpperCase();
+
+  // Spine first (deterministic vs Brain for leftover multi-keyword strings)
+  if (
+    rawUpper.includes("SCREENING_WHOLE_SPINE")
+    || /\bspine\b/.test(t)
+    || /\bcervical\b/.test(t)
+    || /\bdorsal\b/.test(t)
+    || /\bthoracic\b/.test(t)
+    || /\blumbar\b/.test(t)
+    || /\bls\b/.test(t)
+    || /\bsacrum\b/.test(t)
+    || /\bsacroiliac\b/.test(t)
+  ) {
+    return "Spine";
+  }
+
+  if (
+    /\bbrain\b/.test(t)
+    || /\bpituitary\b/.test(t)
+    || /\bcereb/.test(t)
+    || /\bmra\b/.test(t)
+    || /\bskull\b/.test(t)
+    || /stroke\s+protocol/.test(t)
+  ) {
+    return "Brain";
+  }
+
+  if (
+    /\bpns\b/.test(t)
+    || /\bsinus/.test(t)
+    || /\borbit/.test(t)
+    || /\bneck\b/.test(t)
+    || /\bface\b/.test(t)
+    || /\btmj\b/.test(t)
+    || /\bnasopharynx\b/.test(t)
+  ) {
+    return "Head & Neck";
+  }
+
+  if (/\bchest\b/.test(t) || /\bthorax\b/.test(t) || /\bhrct\b/.test(t)) {
+    return "Chest";
+  }
+
+  if (
+    /\babdomen\b/.test(t)
+    || /\babdominal\b/.test(t)
+    || /\bkub\b/.test(t)
+    || /\brenal\b/.test(t)
+    || /\burinary\b/.test(t)
+    || /\bbladder\b/.test(t)
+    || /\bprostate\b/.test(t)
+    || /\bobstetric/.test(t)
+    || /\bob\b/.test(t)
+    || /\bpelvis\b/.test(t)
+    || /\bliver\b/.test(t)
+    || /\bhepat/.test(t)
+  ) {
+    return "Abdomen & Pelvis";
+  }
+
+  if (
+    /\bknee\b/.test(t)
+    || /\bshoulder\b/.test(t)
+    || /\bhip\b/.test(t)
+    || /\bwrist\b/.test(t)
+    || /\bankle\b/.test(t)
+    || /\belbow\b/.test(t)
+    || /\bhand\b/.test(t)
+    || /\bfoot\b/.test(t)
+    || /\bjoint\b/.test(t)
+  ) {
+    return "Extremities & Joints";
+  }
+
+  if (/\bbreast\b/.test(t) || /\bmammog/.test(t)) {
+    return "Breast";
+  }
+
+  return "Other";
+}
+
+export type StudyTabRefLike = { id: number; name: string };
+
+/** Group study tabs by body-part family; omit empty families; preserve display order. */
+export function groupStudyTabsByFamily(
+  tabs: StudyTabRefLike[],
+): Array<{ family: StudyTabFamily; tabs: StudyTabRefLike[] }> {
+  const buckets = new Map<StudyTabFamily, StudyTabRefLike[]>();
+  for (const family of STUDY_TAB_FAMILY_ORDER) buckets.set(family, []);
+  for (const tab of tabs) {
+    const family = studyTabFamily(tab.name);
+    const list = buckets.get(family) ?? buckets.get("Other")!;
+    list.push(tab);
+  }
+  return STUDY_TAB_FAMILY_ORDER
+    .map((family) => ({ family, tabs: buckets.get(family) ?? [] }))
+    .filter((g) => g.tabs.length > 0);
+}

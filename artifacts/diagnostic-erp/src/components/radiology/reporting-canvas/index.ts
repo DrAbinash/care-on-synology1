@@ -1,4 +1,3 @@
-export { default as ReportingCanvas } from "./ReportingCanvas";
 export { ActiveAnchorChip } from "./ActiveAnchorChip";
 export { AnchorRail } from "./AnchorRail";
 export { CoverageCockpit } from "./CoverageCockpit";

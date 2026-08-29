@@ -1844,6 +1844,7 @@ export function buildSageBillPrintHtml(opts: BuildPrintHtmlOpts): string {
 
     return `
     <div class="receipt-shell care-sage-bill">
+      <div class="sage-print-hint" data-testid="sage-background-graphics-hint">Tick &lsquo;Background graphics&rsquo; in the print dialog for the green status edge</div>
       <div class="sage-edge"></div>
       <div class="receipt-main">
       ${provisionalReceipt ? `<div style="background:#fef3c7;color:#92400e;border:1px solid #f59e0b;padding:2px 6px;font-size:${tinyPx};font-weight:800;text-align:center;text-transform:uppercase;margin-bottom:3px">Provisional Receipt — Server Offline · Will Sync Automatically · QR Valid After Sync</div>` : ""}
@@ -1995,6 +1996,18 @@ export function buildSageBillPrintHtml(opts: BuildPrintHtmlOpts): string {
     width: 2.2mm;
     background: ${stEdge};
   }
+  .sage-print-hint {
+    position: relative;
+    z-index: 2;
+    margin: 0 0 3px;
+    padding: 3px 6px;
+    font-size: 9px;
+    font-weight: 700;
+    color: #065f46;
+    background: #ecfdf5;
+    border: 1px solid #a7f3d0;
+    border-radius: 3px;
+  }
   .sage-tests td {
     border-bottom: 1px solid #e2e8f0;
   }
@@ -2009,6 +2022,7 @@ export function buildSageBillPrintHtml(opts: BuildPrintHtmlOpts): string {
     break-inside: avoid;
   }
   @media print {
+    .sage-print-hint { display: none !important; }
     .financial-block, .totals-grid, .receipt-footer {
       page-break-inside: avoid !important;
       break-inside: avoid !important;
@@ -2210,6 +2224,7 @@ export function buildSageSleepingBillPrintHtml(opts: BuildPrintHtmlOpts): string
 
     return `
     <div class="receipt-shell care-sage-sleeping-bill">
+      <div class="sage-print-hint" data-testid="sage-background-graphics-hint">Tick &lsquo;Background graphics&rsquo; in the print dialog for the green status edge</div>
       <div class="sage-edge"></div>
       ${showTearGuides ? `<div class="sage-tear-v"></div>` : ""}
       <div class="receipt-main">
@@ -2403,6 +2418,18 @@ export function buildSageSleepingBillPrintHtml(opts: BuildPrintHtmlOpts): string
     text-transform: uppercase;
     white-space: nowrap;
   }` : ""}
+  .sage-print-hint {
+    position: relative;
+    z-index: 2;
+    margin: 0 0 3px;
+    padding: 3px 6px;
+    font-size: 9px;
+    font-weight: 700;
+    color: #065f46;
+    background: #ecfdf5;
+    border: 1px solid #a7f3d0;
+    border-radius: 3px;
+  }
   .sage-tests td {
     border-bottom: 1px solid #e2e8f0;
   }
@@ -2417,6 +2444,7 @@ export function buildSageSleepingBillPrintHtml(opts: BuildPrintHtmlOpts): string
     break-inside: avoid;
   }
   @media print {
+    .sage-print-hint { display: none !important; }
     .financial-block, .totals-grid, .receipt-footer {
       page-break-inside: avoid !important;
       break-inside: avoid !important;

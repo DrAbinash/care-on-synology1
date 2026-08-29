@@ -9,8 +9,10 @@ import {
   deriveLevelBlockDisplay,
   deriveLumbarLevelSelection,
   ledgerSeverityContradiction,
+  lumbarLevelApplyHasContent,
   narrativeMentionsLevel,
   patchesForLumbarLevel,
+  structuredCanalApContradiction,
   summarizeLumbarLevelLines,
   coverageScopeKey,
 } from "./mriLumbarLevelState";
@@ -156,6 +158,25 @@ describe("R2 coverage scoping + study switch", () => {
     expect(parsed?.find((m) => m.regionKey === "L4-L5")?.status).toBe("reviewed");
     expect(coverageScopeKey("LS Spine")).toBe("LS Spine");
     expect(filterCoverageForScope(parsed!, "Brain").find((m) => m.regionKey === "L4-L5")?.status).not.toBe("reviewed");
+  });
+
+  it("touchCoverageViewed never downgrades reviewed and never dirties", () => {
+    useWorkspace.getState().setCoverageMark("L3-L4", "reviewed");
+    useWorkspace.setState({ isDirty: false });
+    useWorkspace.getState().touchCoverageViewed("L3-L4");
+    expect(useWorkspace.getState().coverageMarks.find((m) => m.regionKey === "L3-L4")?.status).toBe("reviewed");
+    expect(useWorkspace.getState().isDirty).toBe(false);
+  });
+
+  it("touchCoverageViewed promotes unopened → viewed without dirty", () => {
+    useWorkspace.setState({
+      coverageMarks: defaultCoverageMarks("LS Spine"),
+      isDirty: false,
+    });
+    expect(useWorkspace.getState().coverageMarks.find((m) => m.regionKey === "L3-L4")?.status).toBe("unopened");
+    useWorkspace.getState().touchCoverageViewed("L3-L4");
+    expect(useWorkspace.getState().coverageMarks.find((m) => m.regionKey === "L3-L4")?.status).toBe("viewed");
+    expect(useWorkspace.getState().isDirty).toBe(false);
   });
 });
 
@@ -368,6 +389,81 @@ describe("R2 atomic level editor + hydration", () => {
       "Severe L3-L4 canal stenosis.",
     );
     expect(warnings.some((w) => /moderate.*severe|severe/i.test(w))).toBe(true);
+  });
+
+  it("cross-level impression severities do not false-positive", () => {
+    const a = buildLumbarLevelApplyBundle({
+      level: "L3-L4",
+      sel: { canal: "mild" },
+      region: "LS Spine",
+    });
+    const b = buildLumbarLevelApplyBundle({
+      level: "L4-L5",
+      sel: { canal: "severe" },
+      region: "LS Spine",
+    });
+    useWorkspace.getState().applyMacroBundle({ bundleId: a.bundleId, observations: a.observations });
+    useWorkspace.getState().applyMacroBundle({ bundleId: b.bundleId, observations: b.observations });
+    const warnings = ledgerSeverityContradiction(
+      useWorkspace.getState().appliedPathologyPatches,
+      "Mild canal stenosis at L3-L4. Severe canal stenosis at L4-L5.",
+    );
+    expect(warnings).toEqual([]);
+  });
+
+  it("Apply has content for foraminal-only and AP-only selections", () => {
+    expect(lumbarLevelApplyHasContent({ foraminalSeverity: "mild" })).toBe(true);
+    expect(lumbarLevelApplyHasContent({ canalApMm: 9.2 })).toBe(true);
+    expect(lumbarLevelApplyHasContent({})).toBe(false);
+  });
+
+  it("facet OA and LF hypertrophy coexist as separate concepts", () => {
+    useWorkspace.getState().applyPathologyOverlay({
+      id: "r2-ls-L4-L5-facet_joint-na",
+      incoming: { findings: "Facet arthropathy is noted." },
+      templates: { findings: "Facet arthropathy is noted." },
+      ownership: {
+        anatomicalSection: "L4-L5",
+        conflictGroup: "facet_joint",
+        concept: "facet_joint",
+        baselineReplaces: "",
+      },
+      source: "structured-template",
+      region: "LS Spine",
+      concept: "facet_joint",
+      label: "Facet OA",
+      findingsText: "Facet arthropathy is noted.",
+    });
+    useWorkspace.getState().applyPathologyOverlay({
+      id: "r2-ls-L4-L5-ligamentum_flavum-na",
+      incoming: { findings: "Ligamentum flavum hypertrophy is noted." },
+      templates: { findings: "Ligamentum flavum hypertrophy is noted." },
+      ownership: {
+        anatomicalSection: "L4-L5",
+        conflictGroup: "ligamentum_flavum",
+        concept: "ligamentum_flavum",
+        baselineReplaces: "",
+      },
+      source: "structured-template",
+      region: "LS Spine",
+      concept: "ligamentum_flavum",
+      label: "LF hypertrophy",
+      findingsText: "Ligamentum flavum hypertrophy is noted.",
+    });
+    const patches = useWorkspace.getState().appliedPathologyPatches.filter((p) => !p.stale);
+    expect(patches.some((p) => (p.observation?.concept ?? p.ownership.concept) === "facet_joint")).toBe(true);
+    expect(patches.some((p) => (p.observation?.concept ?? p.ownership.concept) === "ligamentum_flavum")).toBe(true);
+  });
+
+  it("AP canal < 10 mm contradicts mild/none canal stenosis at same level", () => {
+    const { observations } = buildLumbarLevelApplyBundle({
+      level: "L4-L5",
+      sel: { canal: "mild", canalApMm: 8.5 },
+      region: "LS Spine",
+    });
+    useWorkspace.getState().applyMacroBundle({ bundleId: "ap-vs-mild", observations });
+    const warnings = structuredCanalApContradiction(useWorkspace.getState().appliedPathologyPatches);
+    expect(warnings.some((w) => /AP canal 8\.5 mm/i.test(w) && /mild/i.test(w))).toBe(true);
   });
 
   it("narrativeMentionsLevel helper", () => {
