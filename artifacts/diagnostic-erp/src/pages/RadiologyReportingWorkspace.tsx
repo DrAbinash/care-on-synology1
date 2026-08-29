@@ -2980,8 +2980,6 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       status: sectionStatus[id],
       active: activeReportSection === id,
       onActivate: activateReportSection,
-      /** R2 primary: continuous canvas — all sections visible in one scroll. */
-      continuous: true as const,
     };
   };
 
@@ -3535,10 +3533,13 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                     )}
                   </div>
 
-                  {/* Reporting Canvas R2 — continuous primary layout (accordion chrome retained for rollback). */}
+                  {/* Reporting pane — progressive accordion (one active section).
+                      R2 lumbar canvas / ledger live inside Findings; sections still
+                      auto-collapse when another header is activated. */}
                   <div
                     className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto p-3"
                     data-testid="reporting-canvas-r2"
+                    data-report-accordion="progressive"
                     onMouseDown={enterReportingFocusMode}
                   >
                     <AnchorRail anchor={activeAnchor} />

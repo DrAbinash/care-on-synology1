@@ -19,6 +19,9 @@ import {
  *     no effect re-runs / re-inserts text on expand.
  *  2. The active section is the flex-grower and scrolls internally, so the pane
  *     is viewport-height instead of one endless page.
+ *
+ * Optional `continuous` keeps every body visible (legacy R2 experiment). The
+ * live workspace uses progressive accordion (`continuous` unset/false).
  */
 
 const ACCENT_BAR: Record<ReportSectionAccent, string> = {
@@ -45,9 +48,8 @@ interface SectionProps {
   /** Small controls kept on the header row (visible when expanded). */
   headerExtra?: ReactNode;
   /**
-   * Reporting Canvas R2 — continuous scroll layout. Body always visible;
-   * accordion chrome becomes a compact sticky label. Legacy accordion
-   * components remain for git rollback when continuous is false.
+   * When true, every section body stays visible (no collapse). Unused by the
+   * live workspace — progressive accordion is the default.
    */
   continuous?: boolean;
   children: ReactNode;
@@ -127,8 +129,9 @@ export function ReportAccordionSection({
         data-testid={`report-section-body-${id}`}
         aria-hidden={!showBody}
         className={cn(
-          showBody ? "min-h-0 overflow-y-visible px-2.5 pb-2.5 pt-0.5" : "hidden",
-          continuous ? "" : active ? "flex-1 overflow-y-auto" : "",
+          continuous
+            ? (showBody ? "min-h-0 overflow-y-visible px-2.5 pb-2.5 pt-0.5" : "hidden")
+            : (active ? "min-h-0 flex-1 overflow-y-auto px-2.5 pb-2.5 pt-0.5" : "hidden"),
         )}
       >
         {children}
