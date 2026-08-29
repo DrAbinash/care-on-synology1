@@ -131,8 +131,14 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
       createdByName: billsTable.createdByName,
       cancelledByName: billsTable.cancelledByName,
       cancelledAt: billsTable.cancelledAt,
+      patientFirstName: patientsTable.firstName,
+      patientLastName: patientsTable.lastName,
+      referringDoctor: doctorsTable.name,
     })
     .from(billsTable)
+    .leftJoin(patientsTable, eq(billsTable.patientId, patientsTable.id))
+    .leftJoin(ordersTable, eq(billsTable.orderId, ordersTable.id))
+    .leftJoin(doctorsTable, eq(ordersTable.doctorId, doctorsTable.id))
     .where(and(
       gte(billsTable.cancelledAt, start),
       lt(billsTable.cancelledAt, end),
@@ -144,15 +150,22 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
     .select({
       id: paymentsTable.id,
       billId: paymentsTable.billId,
+      billNumber: billsTable.billNumber,
       amount: paymentsTable.amount,
       method: paymentsTable.method,
       recordedByName: paymentsTable.recordedByName,
       createdAt: paymentsTable.createdAt,
       billCreatedAt: billsTable.createdAt,
       billStatus: billsTable.status,
+      patientFirstName: patientsTable.firstName,
+      patientLastName: patientsTable.lastName,
+      referringDoctor: doctorsTable.name,
     })
     .from(paymentsTable)
     .innerJoin(billsTable, eq(paymentsTable.billId, billsTable.id))
+    .leftJoin(patientsTable, eq(billsTable.patientId, patientsTable.id))
+    .leftJoin(ordersTable, eq(billsTable.orderId, ordersTable.id))
+    .leftJoin(doctorsTable, eq(ordersTable.doctorId, doctorsTable.id))
     .where(and(
       gte(paymentsTable.createdAt, start),
       lt(paymentsTable.createdAt, end),
@@ -317,6 +330,26 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
     FROM expenses
     WHERE created_at >= ${start.toISOString()} AND created_at < ${end.toISOString()}
     ${staffName !== null ? sql`AND approved_by = ${staffName}` : sql``}
+  `);
+
+  // Line items for Cash Expenses expand (same window / approved_by filter as cash_expenses).
+  const cashExpenseRows = await db.execute<{
+    expense_id: string;
+    category: string;
+    description: string;
+    amount: string;
+    payment_mode: string;
+    paid_to: string | null;
+    approved_by: string | null;
+    created_at: string;
+  }>(sql`
+    SELECT expense_id, category, description, amount::text AS amount, payment_mode, paid_to, approved_by, created_at::text AS created_at
+    FROM expenses
+    WHERE created_at >= ${start.toISOString()} AND created_at < ${end.toISOString()}
+      AND LOWER(payment_mode) = 'cash'
+      ${staffName !== null ? sql`AND approved_by = ${staffName}` : sql``}
+    ORDER BY created_at DESC
+    LIMIT 200
   `);
 
   // ── Compute summary ─────────────────────────────────────────────────────
@@ -744,6 +777,11 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
       billNumber: r.billNumber,
       totalAmount: Number(r.totalAmount),
       originalCreator: r.createdByName ?? "Unknown",
+      cancelledByName: r.cancelledByName ?? null,
+      patientName: r.patientFirstName
+        ? `${r.patientFirstName} ${r.patientLastName ?? ""}`.trim()
+        : "Unknown",
+      referringDoctor: r.referringDoctor ?? null,
       cancelledAt:
         r.cancelledAt instanceof Date ? r.cancelledAt.toISOString() : String(r.cancelledAt ?? ""),
     })),
@@ -796,16 +834,32 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
       createdAt:
         r.createdAt instanceof Date ? r.createdAt.toISOString() : String(r.createdAt),
     })),
-    refunds: refundItems.slice(0, 50).map((p) => ({
+    refunds: refundItems.slice(0, 100).map((p) => ({
       id: p.id,
       billId: p.billId,
+      billNumber: p.billNumber ?? `#${p.billId}`,
       amount: Number(p.amount),
       method: formatMethod(p.method),
       recordedBy: p.recordedByName ?? null,
+      patientName: p.patientFirstName
+        ? `${p.patientFirstName} ${p.patientLastName ?? ""}`.trim()
+        : "Unknown",
+      referringDoctor: p.referringDoctor ?? null,
+      billStatus: p.billStatus ?? null,
       createdAt:
         p.createdAt instanceof Date ? p.createdAt.toISOString() : String(p.createdAt),
       billCreatedAt:
         p.billCreatedAt instanceof Date ? p.billCreatedAt.toISOString() : String(p.billCreatedAt),
+    })),
+    cashExpenseItems: cashExpenseRows.rows.map((r) => ({
+      expenseId: r.expense_id,
+      category: r.category,
+      description: r.description,
+      amount: Number(r.amount),
+      paymentMode: r.payment_mode,
+      paidTo: r.paid_to ?? null,
+      approvedBy: r.approved_by ?? null,
+      createdAt: r.created_at,
     })),
   });
 });

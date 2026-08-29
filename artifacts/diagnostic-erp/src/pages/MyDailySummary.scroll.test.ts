@@ -62,3 +62,23 @@ describe("My Daily Summary — secondary boxes sit below Discounts Given", () =>
     expect(peak).toBeGreaterThan(imagingBilled);
   });
 });
+
+describe("My Daily Summary — recon row expanders mirror Discounts Given", () => {
+  it("exposes expandable drilldowns for dues, cancel, refund, outstanding, expenses", () => {
+    expect(pageSrc).toContain("function ExpandableReconRow");
+    expect(pageSrc).toContain('data-testid={`recon-expand-${slug}`}');
+    for (const label of [
+      "Old Dues Collected",
+      "Cancelled Bills",
+      "Refunds",
+      "Outstanding Dues",
+      "Cash Expenses",
+    ]) {
+      expect(pageSrc).toContain(`label="${label}"`);
+    }
+    expect(pageSrc).toContain("byReferralTitle=\"By Category\"");
+    expect(pageSrc).toContain("cashExpenseItems={data.cashExpenseItems ?? []}");
+    expect(pageSrc).toContain("duesBills={data.duesBills}");
+    expect(pageSrc).toContain("cancelledByMe={data.cancelledByMe}");
+  });
+});
