@@ -220,7 +220,9 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
       name: "",
       phone: "",
       email: "",
-      date: mode === "qr" ? todayStr : "",
+      // Default visit date to today so the unlabeled native date input is never
+      // mistaken for a required DOB field left blank (age alone is the demographic).
+      date: todayStr,
       timeSlot: mode === "qr" ? "07:00 – 10:00" : "",
       notes: initialNotes,
       isVip: false,
