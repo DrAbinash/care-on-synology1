@@ -248,14 +248,38 @@ export function enrichReferringDoctorFromCatalog(
     })
     .filter((x): x is { label: string; score: number } => x != null);
 
+  // Catalog labels are already formatDoctorWithDegree(name, degree) — return
+  // them as-is. Re-running formatReferringDoctorDisplay would treat words inside
+  // the degree (e.g. "DM Neurology", "MD Radiodiagnosis") as name tokens and
+  // drop/mangle the Settings → Doctors degree column.
   const exact = scored.filter((x) => x.score === 100);
-  if (exact.length === 1) return formatReferringDoctorDisplay(exact[0]!.label);
+  if (exact.length === 1) return exact[0]!.label;
   if (exact.length > 1) return cur;
 
   const strong = scored.filter((x) => x.score >= 50);
-  if (strong.length === 1) return formatReferringDoctorDisplay(strong[0]!.label);
+  if (strong.length === 1) return strong[0]!.label;
+
+  // Unique contains-match: DICOM often appends specialty ("SHIVANGI NEUROLOGY")
+  // while Settings → Doctors stores the short name + degree separately.
+  const weak = scored.filter((x) => x.score >= 25);
+  if (weak.length === 1) return weak[0]!.label;
 
   return cur;
+}
+
+/** Look up Settings → Doctors degree for a radiologist / doctor display name. */
+export function resolveDoctorDegreeFromCatalog(
+  name: string,
+  doctors: DoctorCatalogRow[] | null | undefined,
+): string {
+  const key = nameKey(stripDegreeTokens(name));
+  if (!key || key.length < 3 || !doctors?.length) return "";
+  const matches = doctors.filter((d) => {
+    const k = nameKey(stripDegreeTokens(d.name));
+    return k && (k === key || k.startsWith(key) || key.startsWith(k));
+  });
+  if (matches.length !== 1) return "";
+  return String(matches[0]!.degree ?? "").replace(/\s+/g, " ").trim();
 }
 
 /** Enrich from structured doctors-master rows (Settings → Doctors). */

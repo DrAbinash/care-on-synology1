@@ -19,6 +19,7 @@ import {
   parseMeasurementPt,
   type CareLetterpadChrome,
 } from "./careLetterpadChrome";
+import { resolveDoctorDegreeFromCatalog } from "./reportDemography";
 
 export type PrintSettings = {
   paperSize: "A4" | "A5" | "Letter";
@@ -80,7 +81,8 @@ export const DEFAULT_PRINT_SETTINGS: PrintSettings = {
   orientation: "portrait",
   fontSize: "medium",
   fontFamily: "helvetica",
-  margins: { top: 8, bottom: 30, left: 14, right: 14 },
+  // Tight letter-pad margins — blue services bar + disclaimer sit near the page edge.
+  margins: { top: 4, bottom: 14, left: 8, right: 8 },
   header: {
     enabled: true,
     title: "CARE DIAGNOSTICS",
@@ -296,12 +298,45 @@ function drawFindingsBlock(
   return y;
 }
 
+/**
+ * Collapse text that was stored with a space between every letter
+ * ("A d e t a i l e d" → "Adetailed"). Multi-space gaps are treated as
+ * word boundaries so "A d e t a i l e d   c o n t r a s t" → "Adetailed contrast".
+ * Processes each line independently so a normal first sentence does not block
+ * collapse of a letter-spaced second sentence.
+ */
+export function collapseSpacedOutLetters(raw: string): string {
+  return String(raw ?? "")
+    .split("\n")
+    .map((line) =>
+      line
+        .split(/ {2,}/)
+        .map((chunk) => {
+          const t = chunk.trim();
+          if (!t) return "";
+          const m = /^(?:[A-Za-z0-9]\s)+[A-Za-z0-9]([.,;:!?]*)$/.exec(t);
+          if (m) {
+            const punct = m[1] ?? "";
+            return t.slice(0, t.length - punct.length).replace(/\s+/g, "") + punct;
+          }
+          return chunk;
+        })
+        .filter(Boolean)
+        .join(" "),
+    )
+    .join("\n");
+}
+
 /** Normalize unicode slash lookalikes so "s/o" stays "s/o". */
 export function normalizeReportPlainText(raw: string): string {
-  return String(raw ?? "")
-    .normalize("NFKC")
-    .replace(/[\u2215\u2044\uFF0F]/g, "/") // ∕ ⁄ ／ → /
-    .replace(/\u00A0/g, " ");
+  // Collapse letter-spaced runs BEFORE squeezing multi-spaces — multi-space is
+  // the word boundary in "A d e t a i l e d   c o n t r a s t".
+  return collapseSpacedOutLetters(
+    String(raw ?? "")
+      .normalize("NFKC")
+      .replace(/[\u2215\u2044\uFF0F]/g, "/") // ∕ ⁄ ／ → /
+      .replace(/\u00A0/g, " "),
+  ).replace(/[ \t]{2,}/g, " ").trim();
 }
 
 type InlineSeg = { text: string; bold: boolean };
@@ -474,7 +509,12 @@ export function generateReportPDF(
   report: ReportData,
   settings: PrintSettings,
   clinic: PrintClinic,
-  opts?: { save?: boolean; letterhead?: CareLetterpadChrome },
+  opts?: {
+    save?: boolean;
+    letterhead?: CareLetterpadChrome;
+    /** Settings → Doctors rows — used to resolve signature degree by name. */
+    doctorsCatalog?: Array<{ name: string; degree?: string | null }>;
+  },
 ): jsPDF {
   const fmt = settings.paperSize;
   const sizes: Record<string, number[]> = {
@@ -668,9 +708,11 @@ export function generateReportPDF(
   y += lineH + 3.2;
 
   // Reserve a strip above the services bar for name + degree so signature
-  // never orphans alone onto page 2 (Gulu Devi / long MRI reports).
-  const SIG_RESERVE_MM = settings.signature.enabled ? 18 : 0;
-  const contentBottom = pageH - m.bottom - 18 - SIG_RESERVE_MM;
+  // never orphans alone onto page 2 and never overlaps the KEY IMAGES rail.
+  const SIG_RESERVE_MM = settings.signature.enabled ? 12 : 0;
+  // Services bar is parked near the page edge (barH 10 + discPad 4).
+  const FOOTER_STACK_MM = 14;
+  const contentBottom = pageH - FOOTER_STACK_MM - SIG_RESERVE_MM;
 
   // Draw KEY IMAGES on page 1 immediately (below demography / beside title+body).
   if (sideRail) {
@@ -776,16 +818,30 @@ export function generateReportPDF(
   // Do not re-draw the rail or push body Y from railBottomY — that parked
   // images/impression overlaps onto page 2 in long reports.
 
-  // ── SIGNATURE — lower-right above the blue services bar on the body page.
-  // Never call ensureSpace here: that orphaned name/degree onto a blank page 2.
+  // ── SIGNATURE — flush right, immediately above the blue services bar.
+  // Never flow under mid-page content beside the KEY IMAGES rail (that overlaps
+  // the image stack). Never call ensureSpace here: that orphaned name/degree
+  // onto a blank page 2.
   if (settings.signature.enabled) {
-    const sig = settings.signature;
+    const sig = { ...settings.signature };
+    // Prefer Settings → Doctors.degree when the signing name uniquely matches.
+    const catalogDegree = resolveDoctorDegreeFromCatalog(sig.name, opts?.doctorsCatalog);
+    if (catalogDegree) sig.qualification = catalogDegree;
+    else if (!sig.qualification?.trim() && pad.credentials) sig.qualification = pad.credentials;
+
     doc.setPage(bodyPage);
-    const footerTop = pageH - m.bottom - 18;
-    const sigBlockH = sig.imageDataUrl ? 22 : 14;
-    const parkedY = footerTop - sigBlockH;
-    // Prefer flowing under content when there is room; otherwise park above footer.
-    let sigY = y + 6 <= parkedY ? y + 6 : parkedY;
+    // Blue bar sits near the page bottom; signature stays just above it.
+    const barH = 10;
+    const discPad = 4; // mm reserved under the bar for the disclaimer line
+    const footerTop = pageH - barH - discPad;
+    const hasDetails =
+      (sig.showQualification && !!sig.qualification) ||
+      (sig.showRegistrationNo && !!sig.registrationNo);
+    // Name + optional degree baselines; last line sits ~1.0mm above the blue bar.
+    const GAP_ABOVE_BAR_MM = 1.0;
+    const textBlockH = lineH + (hasDetails ? lineH : 0);
+    const imageH = sig.imageDataUrl ? 12 : 0;
+    let sigY = footerTop - GAP_ABOVE_BAR_MM - textBlockH - imageH;
     const sigRight = pageW - m.right;
 
     if (sig.imageDataUrl) {
@@ -809,6 +865,7 @@ export function generateReportPDF(
     if (sig.showRegistrationNo && sig.registrationNo) details.push(`Reg. No: ${sig.registrationNo}`);
     if (details.length) {
       doc.text(details.join(", "), sigRight, sigY, { align: "right" });
+      sigY += lineH;
     }
     y = Math.max(y, sigY);
   }
@@ -824,26 +881,30 @@ export function generateReportPDF(
       .map((s) => s.trim())
       .filter(Boolean);
     const barH = serviceLines.length > 1 ? 10 : 7;
-    const barY = pageH - m.bottom + 1;
+    const discPad = 4;
+    // Park the navy strip near the physical page bottom (signature rides above it).
+    const barY = pageH - barH - discPad;
     if (settings.footer.enabled && serviceLines.length > 0) {
-      doc.setFillColor(15, 45, 110);
+      // Same bar height; larger bold white type for print clarity on the navy strip.
+      doc.setFillColor(10, 50, 130); // richer navy — prints clearer than near-black blue
       doc.rect(0, barY, pageW, barH, "F");
       doc.setFont(font, "bold");
-      doc.setFontSize(5.4);
+      doc.setFontSize(serviceLines.length > 1 ? 7.0 : 7.5);
       doc.setTextColor(255, 255, 255);
-      const rowGap = serviceLines.length > 1 ? 3.6 : 0;
-      const startY = barY + (serviceLines.length > 1 ? 3.6 : 4.5);
+      const rowGap = serviceLines.length > 1 ? 3.8 : 0;
+      // Vertically center the two rows inside the fixed bar height.
+      const startY = barY + (serviceLines.length > 1 ? 3.8 : 4.6);
       serviceLines.forEach((line, idx) => {
-        doc.text(line, pageW / 2, startY + idx * rowGap, { align: "center", maxWidth: pageW - 6 });
+        doc.text(line, pageW / 2, startY + idx * rowGap, { align: "center", maxWidth: pageW - 5 });
       });
     }
     if (settings.footer.enabled && (pad.disclaimer || settings.footer.disclaimer)) {
       doc.setFont(font, "normal");
-      doc.setFontSize(fs.disclaimer - 0.3);
+      doc.setFontSize(fs.disclaimer - 0.5);
       doc.setTextColor(30, 30, 30);
-      const discY = barY + barH + 3.0;
+      const discY = barY + barH + 2.0;
       const discLines = doc.splitTextToSize(pad.disclaimer || settings.footer.disclaimer, contentW) as string[];
-      doc.text(discLines, pageW / 2, discY, { align: "center" });
+      doc.text(discLines.slice(0, 2), pageW / 2, discY, { align: "center" });
     }
     if (settings.footer.enabled && settings.footer.showPageNumber) {
       doc.setFont(font, "normal");

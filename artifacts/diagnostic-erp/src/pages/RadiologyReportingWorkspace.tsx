@@ -2698,6 +2698,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         letterhead: activeStandardLetterhead(presentationTemplates),
         showLetterpadHeader,
         measurements,
+        doctorsCatalog: doctorsCatalogQ.data ?? [],
       });
     } catch (err) {
       toast({
@@ -2713,7 +2714,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     impressionText, recommendationText, studyNameForExport, headingCase,
     imageRefs, frozenKeyImages, clinicSettings, toast, workflow.currentRow,
     useStructured, findingsMap, presentationTemplates, showLetterpadHeader,
-    studyId, studySetup.matchedStudyRegion,
+    studyId, studySetup.matchedStudyRegion, doctorsCatalogQ.data,
   ]);
 
   const handlePrintLikeFinal = useCallback(async () => {

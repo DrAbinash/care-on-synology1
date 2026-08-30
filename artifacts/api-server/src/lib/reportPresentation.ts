@@ -199,7 +199,7 @@ export const PRESENTATION_TEMPLATES: PresentationTemplate[] = [
       sectionBg: "#f8fafc", sectionBorder: "#e2e8f0",
       labelColor: "#64748b", valueColor: "#111111", impressionBg: "#fef9c3",
     },
-    layout: { imagePlacement: "side-panel", patientBlockStyle: "stacked", pageMargins: "12mm 14mm" },
+    layout: { imagePlacement: "side-panel", patientBlockStyle: "stacked", pageMargins: "4mm 6mm" },
   },
   {
     id: "care-premium",
@@ -221,7 +221,7 @@ export const PRESENTATION_TEMPLATES: PresentationTemplate[] = [
       sectionBg: "#f8fafc", sectionBorder: "#cbd5e1",
       labelColor: "#64748b", valueColor: "#0f172a", impressionBg: "#eff6ff",
     },
-    layout: { imagePlacement: "side-panel", patientBlockStyle: "table", pageMargins: "10mm 12mm" },
+    layout: { imagePlacement: "side-panel", patientBlockStyle: "table", pageMargins: "4mm 6mm" },
   },
   // Future template ids (R1.2+): "care-v2", "hope", "government",
   // "teleradiology", "patient-copy", "referrer-copy" — register here with
@@ -596,14 +596,19 @@ export function renderReportDocument(
     </div>
     ${model.clinic.address ? `<div class="hdr-address-bar">${escapeHtml(model.clinic.address)}</div>` : ""}
     <hr class="hdr-rule" />` : "";
-  const letterPadFooterHtml = footerCfg.show ? `<div class="letterpad-footer-block">
-    <div class="letterpad-services">${escapeHtml(pad.servicesRow1)}<br/>${escapeHtml(pad.servicesRow2)}</div>
-    <div class="letterpad-disclaimer">${escapeHtml(pad.disclaimer)}</div>
-  </div>` : "";
   const classicFooterHtml = footerCfg.show ? `<div class="ftr">${escapeHtml(model.footerNote ?? "")} • ${escapeHtml(model.typeLabel)} • ${escapeHtml(model.statusLabel)} • Generated ${escapeHtml(model.generatedAtLabel)}</div>` : "";
   const letterPadSignatures = model.signatures.filter((s) => s.name || s.imageDataUrl).length > 0
     ? model.signatures
     : [{ name: pad.radiologist, qualification: pad.credentials, label: "Signed:", whenLabel: "" }];
+  // Letter-pad: signature sits in the footer block, immediately above the blue bar.
+  const letterPadSigHtml = signatureCfg.show
+    ? `<div class="sigs">${signaturesHtml(letterPadSignatures, signatureCfg.showImage)}</div>`
+    : "";
+  const letterPadFooterHtml = footerCfg.show ? `<div class="letterpad-footer-block">
+    ${letterPadSigHtml}
+    <div class="letterpad-services">${escapeHtml(pad.servicesRow1)}<br/>${escapeHtml(pad.servicesRow2)}</div>
+    <div class="letterpad-disclaimer">${escapeHtml(pad.disclaimer)}</div>
+  </div>` : letterPadSigHtml;
 
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -622,7 +627,7 @@ export function renderReportDocument(
     @media screen {
       html, body { background: #94a3b8; }
       .report-wrapper {
-        max-width: 210mm; min-height: 297mm; margin: 12px auto; padding: 0;
+        max-width: 210mm; min-height: 297mm; margin: 0 auto; padding: 0;
         box-shadow: 0 4px 24px rgba(15, 23, 42, 0.28);
       }
     }
@@ -952,19 +957,52 @@ export function renderReportDocument(
     .letterpad-sheet > thead > tr > td,
     .letterpad-sheet > tbody > tr > td,
     .letterpad-sheet > tfoot > tr > td { padding: 0; border: none; vertical-align: top; }
-    .letterpad-services { background: #0f2d6e; color: #fff; text-align: center; padding: 6px 8px; font-size: 6.5px; font-weight: 700; letter-spacing: 0.04em; line-height: 1.45; margin-top: 8px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-    .letterpad-disclaimer { font-size: 7.5px; color: #334155; text-align: center; padding: 6px 12px 4px; font-style: italic; }
+    .letterpad-services {
+      background: #0a3282;
+      color: #ffffff;
+      text-align: center;
+      /* Same strip height as before: smaller padding, larger type for print clarity */
+      padding: 3px 6px;
+      font-size: 8.5px;
+      font-weight: 800;
+      letter-spacing: 0.02em;
+      line-height: 1.25;
+      margin-top: 1mm;
+      text-rendering: geometricPrecision;
+      -webkit-font-smoothing: antialiased;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }
+    .letterpad-disclaimer { font-size: 7px; color: #334155; text-align: center; padding: 2px 8px 1px; font-style: italic; }
     .letterpad-footer-block { break-inside: avoid; page-break-inside: avoid; page-break-before: avoid; }
-    /* Keep radiologist name/degree with the body on page 1, just above footer. */
+    /* Signature flush above the blue services bar (right lowermost). */
     .letterpad .sigs {
-      margin-top: 6px;
+      margin-top: 0;
+      margin-bottom: 0.4mm;
+      padding-top: 1mm;
       justify-content: flex-end;
       page-break-inside: avoid;
       page-break-before: avoid;
       break-before: avoid;
+      clear: both;
+      position: relative;
+      z-index: 2;
     }
-    .letterpad .sigbox { text-align: right; margin-left: auto; }
+    .letterpad .sigbox { text-align: right; margin-left: auto; margin-bottom: 0; padding-bottom: 0; }
     .letterpad .sigline { display: none; }
+    .letterpad .signame { letter-spacing: 0 !important; line-height: 1.15; }
+    .letterpad .sigmeta { letter-spacing: 0 !important; word-spacing: normal !important; line-height: 1.15; margin: 0; }
+    /* Stretch sheet so tfoot (signature + blue bar + disclaimer) sits at page bottom. */
+    .letterpad-sheet { width: 100%; border-collapse: collapse; }
+    @media print {
+      /* Printable area ≈ 297mm − 4mm top − 3mm bottom */
+      .letterpad-sheet { min-height: 290mm; height: 290mm; }
+      .letterpad-sheet > tbody > tr > td { height: 100%; vertical-align: top; }
+      .letterpad-sheet > tfoot > tr > td { vertical-align: bottom; padding-bottom: 0; }
+      .letterpad-footer-block { margin-top: 0; margin-bottom: 0; }
+      .letterpad-services { margin-top: 0.3mm; }
+      .letterpad-disclaimer { padding: 1px 6px 0; }
+    }
     ` : ""}
 
     /* ── Print rules (Phase 7: widows/orphans, no split images, no blank pages) ── */
@@ -1004,7 +1042,7 @@ export function renderReportDocument(
       ${sidePanel ? railBlock : ""}
     </div>
     ${overflowBlock}
-    ${signatureCfg.show ? `<div class="sigs">${signaturesHtml(letterPad ? letterPadSignatures : model.signatures, signatureCfg.showImage)}</div>` : ""}
+    ${letterPad ? "" : (signatureCfg.show ? `<div class="sigs">${signaturesHtml(model.signatures, signatureCfg.showImage)}</div>` : "")}
     ${qrHtml}
     ${letterPad ? `</td></tr></tbody><tfoot><tr><td>${letterPadFooterHtml}</td></tr></tfoot></table>` : classicFooterHtml}
   </div>

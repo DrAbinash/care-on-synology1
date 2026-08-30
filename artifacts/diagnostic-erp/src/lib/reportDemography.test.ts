@@ -10,6 +10,7 @@ import {
   formatDoctorWithDegree,
   enrichReferringDoctorFromCatalog,
   enrichReferringDoctorFromDoctors,
+  resolveDoctorDegreeFromCatalog,
   doctorCatalogLabels,
   dicomAgeToDisplay,
   resolveDisplayAge,
@@ -161,6 +162,27 @@ describe("reconcileAccessionVsReferringDoctor", () => {
       "Dr. Sanjay Kumar Singh, MS",
     ]);
     expect(enriched).toBe("Dr. Sanjay Kumar, MD");
+  });
+
+  it("keeps multi-word Settings → Doctors degree intact (no re-parse)", () => {
+    const enriched = enrichReferringDoctorFromCatalog("DR. SHIVANGI NEUROLOGY", [
+      "Dr. Shivangi, DM Neurology",
+    ]);
+    expect(enriched).toBe("Dr. Shivangi, DM Neurology");
+  });
+
+  it("unique contains-match still pulls Settings → Doctors degree", () => {
+    const enriched = enrichReferringDoctorFromDoctors("DR.SHIVANGI NEUROLOGY", [
+      { name: "Dr. Shivangi", degree: "DM (Neurology)" },
+    ]);
+    expect(enriched).toContain("DM (Neurology)");
+    expect(enriched).not.toMatch(/Shivangi Neurology,/i);
+  });
+
+  it("resolveDoctorDegreeFromCatalog returns Settings → Doctors.degree", () => {
+    expect(resolveDoctorDegreeFromCatalog("Dr. Sugandha Priyadarshini", [
+      { name: "Dr. Sugandha Priyadarshini", degree: "MD (Radiodiagnosis & Imaging)" },
+    ])).toBe("MD (Radiodiagnosis & Imaging)");
   });
 
   it("pulls degree from Settings → Doctors structured rows", () => {

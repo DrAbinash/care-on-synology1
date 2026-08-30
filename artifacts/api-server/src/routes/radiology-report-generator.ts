@@ -50,6 +50,7 @@ import {
   pacsSettingsTable,
   testsTable,
   signaturesTable,
+  doctorsTable,
 } from "@workspace/db/schema";
 import { eq, and, desc, isNull, asc, ilike, or, inArray, sql } from "drizzle-orm";
 import { requireAdminRole, type StaffAuthRequest } from "../middleware/requireStaffAuth";
@@ -57,6 +58,11 @@ import {
   escapeHtml, renderReportDocument, formatReportDate, formatReportDateShort,
   type ReportDocumentModel, type ReportKeyImageModel,
 } from "../lib/reportPresentation";
+import {
+  collapseSpacedOutLetters,
+  enrichReferringDoctorWithDegree,
+  resolveDoctorDegreeFromRows,
+} from "../lib/doctorDegreeLookup";
 import { resolveTemplateForRender } from "../lib/presentationTemplateStore";
 import { parseImageFraming, serializeImageFraming } from "../lib/imageFraming";
 import {
@@ -2244,7 +2250,9 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
     sectionsHtml,
     spinalTableHtml,
     impressionList,
-    draft.recommendation?.trim() ? `<div class="section-heading">Recommendation</div><p>${esc(draft.recommendation)}</p>` : "",
+    draft.recommendation?.trim()
+      ? `<div class="section-heading">Recommendation</div><p>${esc(collapseSpacedOutLetters(draft.recommendation))}</p>`
+      : "",
   ].filter(Boolean).join("\n");
 
   let keyImages: ReportKeyImageModel[] = [];
@@ -2265,14 +2273,24 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
       accessionNumber: worklist?.accessionNumber ?? "",
       referringDoctor: worklist?.referringDoctor ?? "",
     });
+
+    let doctorsMaster: Array<{ name: string; degree: string | null }> = [];
+    try {
+      doctorsMaster = await db
+        .select({ name: doctorsTable.name, degree: doctorsTable.degree })
+        .from(doctorsTable);
+    } catch { doctorsMaster = []; }
+    const referringWithDegree = enrichReferringDoctorWithDegree(ids.referringDoctor, doctorsMaster);
+
     let previewSignatures: ReportDocumentModel["signatures"] = [];
     try {
       const rows = await db.select().from(signaturesTable).where(eq(signaturesTable.isActive, true));
       const sig = rows.find((s) => /sugandha/i.test(s.name)) ?? rows[0];
       if (sig) {
+        const catalogDegree = resolveDoctorDegreeFromRows(sig.name, doctorsMaster);
         previewSignatures = [{
           name: sig.name,
-          qualification: sig.qualification || null,
+          qualification: catalogDegree || sig.qualification || null,
           role: sig.role ?? null,
           registrationNo: sig.registrationNo || null,
           imageDataUrl: sig.imageDataUrl ?? null,
@@ -2280,9 +2298,11 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
           whenLabel: "",
         }];
       } else {
+        const fallbackName = "Dr. Sugandha Priyadarshini";
+        const catalogDegree = resolveDoctorDegreeFromRows(fallbackName, doctorsMaster);
         previewSignatures = [{
-          name: "Dr. Sugandha Priyadarshini",
-          qualification: "MD (Radiodiagnosis & Medical Imaging)",
+          name: fallbackName,
+          qualification: catalogDegree || "MD (Radiodiagnosis & Medical Imaging)",
           label: "Signed:",
           whenLabel: "",
         }];
@@ -2312,7 +2332,7 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
       },
       { label: "UHID", value: patientUhid ?? "" },
       { label: "Study Date", value: formatReportDateShort(worklist?.studyDate ?? null) || formattedStudyDate },
-      { label: "Referring Doctor", value: ids.referringDoctor },
+      { label: "Referring Doctor", value: referringWithDegree },
       { label: "Accession No.", value: ids.accessionNumber },
       { label: "Test", value: catalogTestName ?? draft.studyName ?? "" },
       { label: "Modality", value: draft.modality ?? worklist?.modality ?? "" },
