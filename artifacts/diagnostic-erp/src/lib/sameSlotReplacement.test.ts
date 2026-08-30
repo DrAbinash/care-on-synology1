@@ -218,7 +218,7 @@ describe("same-slot applyPathologyOverlay (store)", () => {
     vi.unstubAllGlobals();
   });
 
-  it("L4-L5 mild → moderate updates same observation id; no duplicate", () => {
+  it("L4-L5 mild → moderate uses incoming id; remaps measurements; no duplicate", () => {
     useWorkspace.getState().applyPathologyOverlay({
       id: "O123",
       incoming: { findings: "Mild diffuse disc bulge at L4-L5.", impression: "Mild disc bulge at L4-L5." },
@@ -260,16 +260,16 @@ describe("same-slot applyPathologyOverlay (store)", () => {
     });
     const after = useWorkspace.getState().appliedPathologyPatches;
     expect(after).toHaveLength(1);
-    expect(after[0]!.id).toBe("O123");
-    expect(after[0]!.observation?.id).toBe("O123");
+    expect(after[0]!.id).toBe("qf-new-moderate");
+    expect(after[0]!.observation?.id).toBe("qf-new-moderate");
     expect(after[0]!.observation?.severity).toBe("moderate");
     expect(after[0]!.observation?.anchor?.sopInstanceUID).toBe("1.2.3.4.5");
     expect(after[0]!.observation?.anchor?.frameNumber).toBe(12);
     expect(useWorkspace.getState().findingsText).toMatch(/Moderate diffuse disc bulge/i);
     expect(useWorkspace.getState().findingsText).not.toMatch(/Mild diffuse disc bulge/i);
-    // Measurement + viewer annotation still linked to O123
+    // Measurement + viewer annotation remapped onto incoming survivor id
     const meas = useWorkspace.getState().structuredViewerMeasurements.items[0];
-    expect(meas?.observationId).toBe("O123");
+    expect(meas?.observationId).toBe("qf-new-moderate");
     expect(meas?.viewerAnnotationId).toBe("ann-9");
   });
 
@@ -291,7 +291,7 @@ describe("same-slot applyPathologyOverlay (store)", () => {
     expect(useWorkspace.getState().selectedObservationId).toBe("O1");
   });
 
-  it("manual observation requires confirmation; cancel restores; replace keeps id", () => {
+  it("manual observation requires confirmation; cancel restores; replace uses incoming id", () => {
     useWorkspace.getState().applyPathologyOverlay({
       id: "O-man",
       incoming: { findings: "Mild diffuse disc bulge at L4-L5." },
@@ -322,7 +322,8 @@ describe("same-slot applyPathologyOverlay (store)", () => {
       severity: "moderate",
     });
     expect(useWorkspace.getState().confirmOverwriteOpen).toBe(true);
-    expect(useWorkspace.getState().appliedPathologyPatches[0]!.id).toBe("O-man");
+    expect(useWorkspace.getState().pendingPathologyPatch?.vacatedObservationId).toBe("O-man");
+    expect(useWorkspace.getState().appliedPathologyPatches[0]!.id).toBe("O-new");
 
     useWorkspace.getState().cancelOverwrite();
     expect(useWorkspace.getState().confirmOverwriteOpen).toBe(false);
@@ -343,7 +344,7 @@ describe("same-slot applyPathologyOverlay (store)", () => {
     useWorkspace.getState().confirmOverwriteAndApply();
     expect(useWorkspace.getState().confirmOverwriteOpen).toBe(false);
     expect(useWorkspace.getState().appliedPathologyPatches).toHaveLength(1);
-    expect(useWorkspace.getState().appliedPathologyPatches[0]!.id).toBe("O-man");
+    expect(useWorkspace.getState().appliedPathologyPatches[0]!.id).toBe("O-new2");
     expect(useWorkspace.getState().findingsText).toMatch(/Moderate diffuse/i);
   });
 
