@@ -93,6 +93,8 @@ export interface EmbeddedViewerHandle {
   }) => boolean;
   /** OHIF iframe contentWindow when OHIF mode is active (cross-origin OK for postMessage). */
   getOhifWindow: () => Window | null;
+  /** Live OHIF launch URL used by the iframe (for origin allowlist / outbound targetOrigin). */
+  getOhifLaunchUrl: () => string | null;
 }
 
 const EmbeddedWadoViewer = forwardRef<EmbeddedViewerHandle, {
@@ -417,6 +419,7 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
       return Boolean(anchor.seriesInstanceUID);
     },
     getOhifWindow: () => ohifIframeRef.current?.contentWindow ?? null,
+    getOhifLaunchUrl: () => bestOhifUrl,
   }));
 
   // Escape exits near-fullscreen overlay (column expand is restored via its own control).

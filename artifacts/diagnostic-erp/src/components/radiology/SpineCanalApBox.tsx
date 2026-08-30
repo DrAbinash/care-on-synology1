@@ -16,6 +16,7 @@ import { useViewerMeasurements } from "@/components/radiology/ViewerMeasurements
 import { formatViewerMeasurementLabel } from "@/lib/formatViewerMeasurementLine";
 import {
   applyCanalApValue,
+  armCanalCapture,
   canalSegmentBadge,
   canalTableTitle,
   discLevelFromLabel,
@@ -24,11 +25,13 @@ import {
   levelsForCanalSegment,
   markCanalApManualOverride,
   parseCanalApNumber,
+  pickEligibleCanalCaptureRow,
   resolveActiveCanalSegment,
   type CanalApCellProvenance,
+  type CanalCaptureArm,
   type CanalSegment,
 } from "@/lib/spineCanalAp";
-import { shouldAutoPopulateCanal } from "@/lib/structuredViewerMeasurements";
+import { annotationIdFromCoordinates, shouldAutoPopulateCanal } from "@/lib/structuredViewerMeasurements";
 import { ArrowDownToLine, CornerUpRight, RefreshCw, Ruler, Save } from "lucide-react";
 
 export interface SpineCanalApBoxProps {
@@ -93,8 +96,23 @@ export default function SpineCanalApBox({
   const [loading, setLoading] = useState(false);
   const [captureLevel, setCaptureLevel] = useState<string | null>(null);
   const consumedViewerRowIdsRef = useRef<Set<number>>(new Set());
+  const captureArmRef = useRef<CanalCaptureArm | null>(null);
 
   const viewerQ = useViewerMeasurements(studyInstanceUID);
+
+  function armCaptureForLevel(level: string | null) {
+    if (!level) {
+      captureArmRef.current = null;
+      setCaptureLevel(null);
+      return;
+    }
+    captureArmRef.current = armCanalCapture(
+      level,
+      viewerQ.data ?? [],
+      annotationIdFromCoordinates,
+    );
+    setCaptureLevel(level);
+  }
 
   const load = useCallback(async () => {
     if (!studyId || !segment) return;
@@ -124,17 +142,21 @@ export default function SpineCanalApBox({
   useEffect(() => {
     if (measurementIntent !== "CANAL_AP" || !canalIntentLevel || !segment) return;
     if (!isLevelInSegment(segment, canalIntentLevel)) return;
-    setCaptureLevel(canalIntentLevel);
+    armCaptureForLevel(canalIntentLevel);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- arm from intent bar only when level changes
   }, [measurementIntent, canalIntentLevel, segment]);
 
-  // When capture mode is on, assign the newest *unconsumed* viewer measurement to that level.
+  // When capture mode is on, assign only a row NEWER than the arm watermark.
   useEffect(() => {
     if (disabled || !captureLevel || !viewerQ.data?.length || !segment) return;
-    const pending = [...viewerQ.data]
-      .filter((m) => m.status !== "ignored")
-      .filter((m) => !consumedViewerRowIdsRef.current.has(m.id))
-      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-    const newest = pending[0];
+    const arm = captureArmRef.current;
+    if (!arm || arm.level !== captureLevel) return;
+    const newest = pickEligibleCanalCaptureRow(
+      arm,
+      viewerQ.data,
+      annotationIdFromCoordinates,
+      consumedViewerRowIdsRef.current,
+    );
     if (!newest) return;
     const num = parseCanalApNumber(newest.value);
     if (!num) return;
@@ -149,10 +171,11 @@ export default function SpineCanalApBox({
         title: `${captureLevel} is manually edited`,
         description: "Use Refresh from viewer to replace the override.",
       });
-      setCaptureLevel(null);
+      armCaptureForLevel(null);
       return;
     }
     consumedViewerRowIdsRef.current.add(newest.id);
+    const trueAnn = annotationIdFromCoordinates(newest.imageCoordinates);
     setValues((prev) => ({ ...prev, [captureLevel]: applied.value }));
     setCanalApCellProvenance(captureLevel, {
       ...applied.provenance,
@@ -163,10 +186,12 @@ export default function SpineCanalApBox({
       frameNumber: newest.frameNumber ?? null,
       viewer: newest.viewerName ?? "viewer",
       capturedAt: newest.createdAt ?? new Date().toISOString(),
-      annotationId: newest.id != null ? String(newest.id) : null,
+      annotationId: trueAnn,
+      viewerMeasurementRowId: newest.id,
       measurementId: newest.measurementId ?? null,
     });
-    setCaptureLevel(null);
+    // Disarm after one successful consume — re-arm required for another update.
+    armCaptureForLevel(null);
     toast({
       title: `Assigned ${captureLevel}`,
       description: `${num} mm from viewer measurement`,
@@ -416,7 +441,7 @@ export default function SpineCanalApBox({
                       onChange={(e) => setLevel(l, e.target.value)}
                       onBlur={() => commitLevel(l)}
                       onClick={() => {
-                        if (captureLevel) setCaptureLevel(l);
+                        if (captureLevel) armCaptureForLevel(l);
                         setCanalIntentLevel(l);
                       }}
                     />
@@ -454,7 +479,7 @@ export default function SpineCanalApBox({
             }`}
             data-testid={`canal-capture-${l}`}
             onClick={() => {
-              setCaptureLevel((cur) => (cur === l ? null : l));
+              armCaptureForLevel(captureLevel === l ? null : l);
               setCanalIntentLevel(l);
             }}
           >

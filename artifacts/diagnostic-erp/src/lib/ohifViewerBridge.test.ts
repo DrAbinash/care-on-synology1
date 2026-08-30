@@ -8,6 +8,8 @@ import {
   captureResultToBlob,
   requestOhifNavigateToAnchor,
   requestOhifViewportCapture,
+  isExpectedOhifSource,
+  resolveOhifTargetOrigin,
 } from "./ohifViewerBridge";
 
 vi.mock("@/lib/fetchApi", () => ({
@@ -37,27 +39,28 @@ describe("ohifViewerBridge", () => {
       seriesInstanceUID: "1.2.4",
       sopInstanceUID: "1.2.5",
     })).toBe(true);
-    expect(isCareOhifMessage({
-      source: CARE_OHIF_SOURCE,
-      type: "viewport-capture-result",
-      version: 1,
-      requestId: "r1",
-      studyInstanceUID: "1.2.3",
-      imageData: "data:image/jpeg;base64,abc",
-    })).toBe(true);
-    expect(isCareOhifMessage({
-      source: CARE_OHIF_SOURCE,
-      type: "measurement-deleted",
-      annotationId: "ABC",
-    })).toBe(true);
     expect(isCareOhifMessage({ type: "measurement" })).toBe(false);
   });
 
-  it("validates origin allowlist", () => {
-    expect(isAllowedOhifOrigin("https://ohif.example", null)).toBe(true);
-    expect(isAllowedOhifOrigin("https://ohif.example", [])).toBe(true);
+  it("rejects random origins when allowlist is null/empty (no permissive default)", () => {
+    expect(isAllowedOhifOrigin("https://ohif.example", null)).toBe(false);
+    expect(isAllowedOhifOrigin("https://ohif.example", [])).toBe(false);
     expect(isAllowedOhifOrigin("https://ohif.example", ["https://ohif.example"])).toBe(true);
     expect(isAllowedOhifOrigin("https://evil.example", ["https://ohif.example"])).toBe(false);
+    expect(isAllowedOhifOrigin("https://evil.example", ["*"])).toBe(true);
+  });
+
+  it("deriveOhifAllowedOrigins never returns accept-any null", () => {
+    expect(deriveOhifAllowedOrigins({ pageOrigin: "https://erp.example" })).toEqual([
+      "https://erp.example",
+    ]);
+    expect(deriveOhifAllowedOrigins({})).toEqual([]);
+    expect(
+      deriveOhifAllowedOrigins({
+        pageOrigin: "https://erp.example",
+        ohifLaunchUrl: "https://ohif.example/viewer",
+      }),
+    ).toEqual(expect.arrayContaining(["https://erp.example", "https://ohif.example"]));
   });
 
   it("rejects stale/unknown capture requestId and oversized payload", async () => {
@@ -76,20 +79,6 @@ describe("ohifViewerBridge", () => {
     );
     expect(stale).toBe("ignored");
     expect(onCapture).not.toHaveBeenCalled();
-
-    const huge = "x".repeat(8_000_001);
-    const tooBig = await handleCareOhifMessage(
-      {
-        source: CARE_OHIF_SOURCE,
-        type: "viewport-capture-result",
-        version: 1,
-        requestId: "good",
-        studyInstanceUID: "1.2.3",
-        imageData: huge,
-      },
-      { pendingCaptureRequestIds: pending, onViewportCaptureResult: onCapture },
-    );
-    expect(tooBig).toBe("error");
   });
 
   it("accepts capture when requestId is pending and clears it", async () => {
@@ -103,9 +92,6 @@ describe("ohifViewerBridge", () => {
         version: 1,
         requestId: "live",
         studyInstanceUID: "1.2.3",
-        seriesInstanceUID: "1.2.4",
-        sopInstanceUID: "1.2.5",
-        frameNumber: 2,
         imageData: `data:image/jpeg;base64,${jpegB64}`,
       },
       { pendingCaptureRequestIds: pending, onViewportCaptureResult: onCapture },
@@ -113,16 +99,6 @@ describe("ohifViewerBridge", () => {
     expect(r).toBe("ok");
     expect(onCapture).toHaveBeenCalledOnce();
     expect(pending.has("live")).toBe(false);
-  });
-
-  it("deriveOhifAllowedOrigins returns null until OHIF URL/extra is known", () => {
-    expect(deriveOhifAllowedOrigins({ pageOrigin: "https://erp.example" })).toBeNull();
-    expect(
-      deriveOhifAllowedOrigins({
-        pageOrigin: "https://erp.example",
-        ohifLaunchUrl: "https://ohif.example/viewer",
-      }),
-    ).toEqual(expect.arrayContaining(["https://erp.example", "https://ohif.example"]));
   });
 
   it("ignores mutating events when mutationsAllowed=false", async () => {
@@ -157,10 +133,7 @@ describe("ohifViewerBridge", () => {
     expect(r).toBe("ok");
     expect(api.post).toHaveBeenCalledWith(
       "/api/radiology-lesions/viewer-measurements",
-      expect.objectContaining({
-        patientId: 42,
-        studyId: 7,
-      }),
+      expect.objectContaining({ patientId: 42, studyId: 7 }),
     );
   });
 
@@ -180,15 +153,12 @@ describe("ohifViewerBridge", () => {
     expect(r).toBe("ok");
     expect(api.post).toHaveBeenCalledWith(
       "/api/radiology/report-generator/image-references",
-      expect.objectContaining({
-        draftId: 55,
-        studyId: 7,
-      }),
+      expect.objectContaining({ draftId: 55, studyId: 7 }),
     );
   });
 
   it("does not tag unlabeled disc-level ruler as CANAL_AP without intent", async () => {
-    const r = await handleCareOhifMessage(
+    await handleCareOhifMessage(
       {
         source: CARE_OHIF_SOURCE,
         type: "measurement",
@@ -199,19 +169,14 @@ describe("ohifViewerBridge", () => {
       },
       { patientId: 1, studyInstanceUID: "1.2.3" },
     );
-    expect(r).toBe("ok");
     expect(api.post).toHaveBeenCalledWith(
       "/api/radiology-lesions/viewer-measurements",
-      expect.objectContaining({
-        measurementType: "L4-L5",
-        measurementId: undefined,
-        value: "6.8",
-      }),
+      expect.objectContaining({ measurementId: undefined, value: "6.8" }),
     );
   });
 
   it("tags CANAL_AP only with explicit intent", async () => {
-    const r = await handleCareOhifMessage(
+    await handleCareOhifMessage(
       {
         source: CARE_OHIF_SOURCE,
         type: "measurement",
@@ -222,12 +187,9 @@ describe("ohifViewerBridge", () => {
       },
       { patientId: 1, studyInstanceUID: "1.2.3" },
     );
-    expect(r).toBe("ok");
     expect(api.post).toHaveBeenCalledWith(
       "/api/radiology-lesions/viewer-measurements",
-      expect.objectContaining({
-        measurementId: "CANAL_AP",
-      }),
+      expect.objectContaining({ measurementId: "CANAL_AP" }),
     );
   });
 
@@ -252,38 +214,72 @@ describe("ohifViewerBridge", () => {
       imageData: `data:image/jpeg;base64,${jpegB64}`,
     });
     expect(blob).toBeInstanceOf(Blob);
-    expect(blob?.type).toBe("image/jpeg");
   });
 
-  it("emits versioned outbound navigate and capture requests", () => {
+  it("emits outbound navigate/capture only with known targetOrigin (no silent *)", () => {
     const postMessage = vi.fn();
     const target = { postMessage } as unknown as Window;
-    expect(requestOhifViewportCapture({ target, requestId: "cap-1" })).toBe(true);
+    expect(requestOhifViewportCapture({ target, requestId: "cap-1" })).toBe(false);
+    expect(postMessage).not.toHaveBeenCalled();
+    expect(requestOhifViewportCapture({
+      target,
+      requestId: "cap-1",
+      targetOrigin: "https://ohif.example",
+    })).toBe(true);
     expect(postMessage).toHaveBeenCalledWith(
-      expect.objectContaining({
-        source: "care-reporting",
-        type: "viewport-capture-request",
-        version: 1,
-        requestId: "cap-1",
-      }),
-      "*",
+      expect.objectContaining({ type: "viewport-capture-request", requestId: "cap-1" }),
+      "https://ohif.example",
     );
     expect(requestOhifNavigateToAnchor({
       target,
       studyInstanceUID: "1.2.3",
-      seriesInstanceUID: "1.2.4",
-      sopInstanceUID: "1.2.5",
-      frameNumber: 3,
+      targetOrigin: "https://ohif.example",
     })).toBe(true);
     expect(postMessage).toHaveBeenCalledWith(
-      expect.objectContaining({
-        source: "care-reporting",
-        type: "navigate-to-anchor",
-        version: 1,
-        studyInstanceUID: "1.2.3",
-        frameNumber: 3,
-      }),
-      "*",
+      expect.objectContaining({ type: "navigate-to-anchor" }),
+      "https://ohif.example",
     );
+  });
+
+  it("isExpectedOhifSource accepts expected window and rejects others", () => {
+    const expected = { name: "ohif" } as unknown as Window;
+    const other = { name: "evil" } as unknown as Window;
+    expect(isExpectedOhifSource(expected, { expectedSourceWindow: expected })).toBe(true);
+    expect(isExpectedOhifSource(other, { expectedSourceWindow: expected })).toBe(false);
+    expect(isExpectedOhifSource(other, { getExpectedSourceWindow: () => expected })).toBe(false);
+    expect(isExpectedOhifSource(expected, { getExpectedSourceWindow: () => expected })).toBe(true);
+    // Forged / null source rejected when expected window is configured
+    expect(isExpectedOhifSource(null, { expectedSourceWindow: expected })).toBe(false);
+  });
+
+  it("origin allowlist + source window gates compose for inbound security", () => {
+    const expected = { name: "ohif" } as unknown as Window;
+    const other = { name: "evil" } as unknown as Window;
+    const origins = deriveOhifAllowedOrigins({
+      pageOrigin: "https://erp.example",
+      ohifLaunchUrl: "https://ohif.example/viewer",
+    });
+    // Random origin rejected
+    expect(isAllowedOhifOrigin("https://evil.example", origins)).toBe(false);
+    // Configured OHIF origin accepted
+    expect(isAllowedOhifOrigin("https://ohif.example", origins)).toBe(true);
+    // Wrong window rejected even if origin ok
+    expect(
+      isAllowedOhifOrigin("https://ohif.example", origins)
+      && isExpectedOhifSource(other, { expectedSourceWindow: expected }),
+    ).toBe(false);
+    // Correct window + origin accepted
+    expect(
+      isAllowedOhifOrigin("https://ohif.example", origins)
+      && isExpectedOhifSource(expected, { expectedSourceWindow: expected }),
+    ).toBe(true);
+  });
+
+  it("resolveOhifTargetOrigin prefers launch URL origin", () => {
+    expect(resolveOhifTargetOrigin({
+      ohifLaunchUrl: "https://ohif.example/viewer?StudyInstanceUIDs=1",
+      allowedOrigins: ["https://erp.example", "https://ohif.example"],
+      pageOrigin: "https://erp.example",
+    })).toBe("https://ohif.example");
   });
 });

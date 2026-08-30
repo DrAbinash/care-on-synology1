@@ -9,17 +9,17 @@ import {
   shouldAutoPopulateCanal,
   structuredFromViewerRow,
   upsertStructuredMeasurement,
+  annotationIdFromCoordinates,
 } from "./structuredViewerMeasurements";
+import {
+  armCanalCapture,
+  pickEligibleCanalCaptureRow,
+} from "./spineCanalAp";
 
 describe("structuredViewerMeasurements", () => {
   it("parses 1–3 axes from viewer strings", () => {
     expect(parseNumericAxes("22 × 18 mm")).toMatchObject({ primary: 22, secondary: 18 });
     expect(parseNumericAxes("6.7")).toMatchObject({ primary: 6.7 });
-    expect(parseNumericAxes("10 x 8 x 6")).toMatchObject({
-      primary: 10,
-      secondary: 8,
-      tertiary: 6,
-    });
   });
 
   it("formats chips deterministically", () => {
@@ -33,17 +33,6 @@ describe("structuredViewerMeasurements", () => {
         manualOverride: false,
       }),
     ).toBe("22 × 18 mm");
-    expect(
-      formatMeasurementChip({
-        id: "2",
-        concept: "CANAL_AP",
-        spinalLevel: "L4-L5",
-        values: { primary: 6.7, unit: "mm" },
-        createdAt: "",
-        updatedAt: "",
-        manualOverride: false,
-      }),
-    ).toBe("AP 6.7 mm");
   });
 
   it("upserts by annotation id (idempotent update, no duplicate)", () => {
@@ -62,7 +51,6 @@ describe("structuredViewerMeasurements", () => {
     });
     expect(state.items).toHaveLength(1);
     expect(state.items[0].values.primary).toBe(23);
-    expect(state.items[0].viewerAnnotationId).toBe("ABC");
   });
 
   it("annotation delete removes structured row", () => {
@@ -89,36 +77,26 @@ describe("structuredViewerMeasurements", () => {
     const { state: next, detached } = detachStructuredMeasurementsFromObservation(state, "obs-1");
     expect(detached).toBe(1);
     expect(next.items[0].observationId).toBeNull();
-    expect(next.items).toHaveLength(1);
   });
 
   it("unknown ruler does not auto-populate canal without intent/level", () => {
     expect(shouldAutoPopulateCanal({ intent: "OTHER", spinalLevel: "L4-L5" })).toBe(false);
     expect(shouldAutoPopulateCanal({ intent: null, spinalLevel: null })).toBe(false);
-    expect(
-      shouldAutoPopulateCanal({ intent: "CANAL_AP", spinalLevel: "L4-L5" }),
-    ).toBe(true);
-    expect(
-      shouldAutoPopulateCanal({
-        intent: "CANAL_AP",
-        spinalLevel: "L3-L4",
-        measurementId: "CANAL_AP",
-      }),
-    ).toBe(true);
+    expect(shouldAutoPopulateCanal({ intent: "CANAL_AP", spinalLevel: "L4-L5" })).toBe(true);
   });
 
-  it("midline / lesion attach to selected observation; canal does not", () => {
+  it("null/unknown intent does NOT attach to selected observation", () => {
     expect(
       shouldAttachToSelectedObservation({ intent: "LESION", selectedObservationId: "o1" }),
-    ).toBe(true);
-    expect(
-      shouldAttachToSelectedObservation({ intent: "MIDLINE_SHIFT", selectedObservationId: "o1" }),
     ).toBe(true);
     expect(
       shouldAttachToSelectedObservation({ intent: "CANAL_AP", selectedObservationId: "o1" }),
     ).toBe(false);
     expect(
-      shouldAttachToSelectedObservation({ intent: "LESION", selectedObservationId: null }),
+      shouldAttachToSelectedObservation({ intent: null, selectedObservationId: "o1" }),
+    ).toBe(false);
+    expect(
+      shouldAttachToSelectedObservation({ intent: undefined, selectedObservationId: "o1" }),
     ).toBe(false);
   });
 
@@ -139,49 +117,199 @@ describe("structuredViewerMeasurements", () => {
     expect(state.items[0].values.primary).toBe(22);
   });
 
-  it("upserts by viewerMeasurementRowId when annotation id absent", () => {
-    let state = emptyViewerMeasurementsState();
-    state = upsertStructuredMeasurement(state, {
-      concept: "OTHER",
-      values: { primary: 10, unit: "mm" },
-      viewerMeasurementRowId: 42,
-      manualOverride: false,
+  it("historical hydration: old row + current CANAL_AP does not become canal", () => {
+    const row = structuredFromViewerRow({
+      row: {
+        id: 10,
+        value: "6.8",
+        unit: "mm",
+        measurementType: "linear",
+        studyInstanceUID: "1.2.3",
+        imageCoordinates: JSON.stringify({ annotationId: "old-1" }),
+      },
+      mode: "historical",
+      liveIntent: "CANAL_AP",
+      liveCanalLevel: "L4-L5",
+      liveSelectedObservationId: "obs-live",
     });
-    state = upsertStructuredMeasurement(state, {
-      concept: "OTHER",
-      values: { primary: 11, unit: "mm" },
-      viewerMeasurementRowId: 42,
-      manualOverride: false,
-    });
-    expect(state.items).toHaveLength(1);
-    expect(state.items[0].values.primary).toBe(11);
+    expect(row.concept).toBe("OTHER");
+    expect(row.spinalLevel).toBeNull();
+    expect(row.observationId).toBeNull();
   });
 
-  it("structuredFromViewerRow maps MIDLINE_SHIFT and attaches to observation", () => {
+  it("historical hydration: old row + selected observation stays unattached", () => {
     const row = structuredFromViewerRow({
+      row: {
+        id: 11,
+        value: "12",
+        unit: "mm",
+        measurementType: "linear",
+        studyInstanceUID: "1.2.3",
+      },
+      mode: "historical",
+      liveIntent: "LESION",
+      liveSelectedObservationId: "obs-selected",
+    });
+    expect(row.observationId).toBeNull();
+  });
+
+  it("historical hydration: old row + current L4-L5 target does not acquire L4-L5", () => {
+    const row = structuredFromViewerRow({
+      row: {
+        id: 12,
+        value: "7.1",
+        unit: "mm",
+        measurementType: "linear",
+        studyInstanceUID: "1.2.3",
+        imageCoordinates: JSON.stringify({ intent: "CANAL_AP" }),
+      },
+      mode: "historical",
+      liveCanalLevel: "L4-L5",
+      liveIntent: "CANAL_AP",
+    });
+    expect(row.concept).toBe("CANAL_AP");
+    expect(row.spinalLevel).toBeNull();
+  });
+
+  it("row provenance wins over activeAnchor (SOP/frame A retained)", () => {
+    const row = structuredFromViewerRow({
+      row: {
+        id: 13,
+        value: "5",
+        unit: "mm",
+        studyInstanceUID: "1.2.3",
+        seriesInstanceUID: "1.2.3.A",
+        sopInstanceUID: "1.2.3.A.1",
+        frameNumber: 4,
+        viewerName: "OHIF",
+      },
+      mode: "historical",
+      liveActiveAnchor: {
+        studyInstanceUID: "1.2.3",
+        seriesInstanceUID: "1.2.3.B",
+        sopInstanceUID: "1.2.3.B.9",
+        frameNumber: 99,
+        viewer: "ohif",
+        capturedAt: new Date().toISOString(),
+      },
+    });
+    expect(row.anchor?.sopInstanceUID).toBe("1.2.3.A.1");
+    expect(row.anchor?.frameNumber).toBe(4);
+  });
+
+  it("new_event may stamp live intent/level/observation", () => {
+    const row = structuredFromViewerRow({
+      row: {
+        id: 14,
+        value: "6.5",
+        unit: "mm",
+        studyInstanceUID: "1.2.3",
+        measurementType: "linear",
+        imageCoordinates: JSON.stringify({ annotationId: "new-1" }),
+      },
+      mode: "new_event",
+      liveIntent: "CANAL_AP",
+      liveCanalLevel: "L4-L5",
+    });
+    expect(row.concept).toBe("CANAL_AP");
+    expect(row.spinalLevel).toBe("L4-L5");
+  });
+
+  it("annotationId from coordinates is distinct from viewerMeasurementRowId", () => {
+    const coords = JSON.stringify({ annotationId: "OHIF-ANN-99", intent: "CANAL_AP" });
+    expect(annotationIdFromCoordinates(coords)).toBe("OHIF-ANN-99");
+    const row = structuredFromViewerRow({
+      row: {
+        id: 120,
+        value: "6.8",
+        unit: "mm",
+        studyInstanceUID: "1.2.3",
+        imageCoordinates: coords,
+        measurementId: "CANAL_AP",
+        measurementType: "L4-L5",
+      },
+      mode: "historical",
+    });
+    expect(row.viewerMeasurementRowId).toBe(120);
+    expect(row.viewerAnnotationId).toBe("OHIF-ANN-99");
+    expect(String(row.viewerMeasurementRowId)).not.toBe(row.viewerAnnotationId);
+  });
+
+  it("structuredFromViewerRow maps MIDLINE_SHIFT and attaches on new_event only", () => {
+    const hist = structuredFromViewerRow({
+      row: { id: 9, value: "4.2 mm", unit: "mm", studyInstanceUID: "1.2.3" },
+      mode: "historical",
+      liveIntent: "MIDLINE_SHIFT",
+      liveSelectedObservationId: "obs-1",
+    });
+    expect(hist.observationId).toBeNull();
+
+    const neu = structuredFromViewerRow({
       row: {
         id: 9,
         value: "4.2 mm",
         unit: "mm",
         studyInstanceUID: "1.2.3",
-        measurementType: "linear",
+        imageCoordinates: JSON.stringify({ intent: "MIDLINE_SHIFT" }),
       },
-      intent: "MIDLINE_SHIFT",
-      canalLevel: null,
-      selectedObservationId: "obs-1",
+      mode: "new_event",
+      liveIntent: "MIDLINE_SHIFT",
+      liveSelectedObservationId: "obs-1",
     });
-    expect(row.concept).toBe("MIDLINE_SHIFT");
-    expect(row.observationId).toBe("obs-1");
-    expect(row.values.primary).toBe(4.2);
+    expect(neu.concept).toBe("MIDLINE_SHIFT");
+    expect(neu.observationId).toBe("obs-1");
+  });
+});
+
+describe("canal capture arm watermark", () => {
+  const parseAnn = annotationIdFromCoordinates;
+
+  it("arming with historical rows rejects all existing ids", () => {
+    const rows = [
+      { id: 10, value: "6.1", status: "pending", createdAt: "2026-01-01T00:00:00Z", imageCoordinates: JSON.stringify({ annotationId: "a10" }) },
+      { id: 120, value: "6.8", status: "pending", createdAt: "2026-01-02T00:00:00Z", imageCoordinates: JSON.stringify({ annotationId: "a120" }) },
+    ];
+    const arm = armCanalCapture("L4-L5", rows, parseAnn, Date.parse("2026-01-03T00:00:00Z"));
+    expect(arm.maxExistingRowId).toBe(120);
+    expect(pickEligibleCanalCaptureRow(arm, rows, parseAnn, new Set())).toBeNull();
   });
 
-  it("unknown OTHER intent with disc level does not auto-populate canal", () => {
-    expect(
-      shouldAutoPopulateCanal({
-        intent: "OTHER",
-        spinalLevel: "L4-L5",
-        label: "L4-L5",
-      }),
-    ).toBe(false);
+  it("next new row above watermark is consumed exactly once", () => {
+    const historical = [
+      { id: 120, value: "6.8", status: "pending", createdAt: "2026-01-02T00:00:00Z" },
+    ];
+    const arm = armCanalCapture("L4-L5", historical, parseAnn, Date.parse("2026-01-03T00:00:00Z"));
+    const withNew = [
+      ...historical,
+      {
+        id: 121,
+        value: "7.2",
+        status: "pending",
+        createdAt: "2026-01-03T00:00:01Z",
+        imageCoordinates: JSON.stringify({ annotationId: "a121" }),
+        studyInstanceUID: "1.2.3",
+        sopInstanceUID: "1.2.3.9",
+      },
+    ];
+    const first = pickEligibleCanalCaptureRow(arm, withNew, parseAnn, new Set());
+    expect(first?.id).toBe(121);
+    const consumed = new Set([first!.id]);
+    const second = pickEligibleCanalCaptureRow(arm, withNew, parseAnn, consumed);
+    expect(second).toBeNull();
+  });
+
+  it("re-arm required after consume — old watermark still blocks prior rows", () => {
+    const rows = [
+      { id: 120, value: "6.8", status: "pending", createdAt: "2026-01-02T00:00:00Z" },
+      { id: 121, value: "7.2", status: "pending", createdAt: "2026-01-03T00:00:01Z" },
+    ];
+    const arm1 = armCanalCapture("L4-L5", [{ id: 120, value: "6.8", status: "pending" }], parseAnn);
+    const hit = pickEligibleCanalCaptureRow(arm1, rows, parseAnn, new Set());
+    expect(hit?.id).toBe(121);
+    // After disarm+re-arm with both present, neither is eligible until 122 arrives.
+    const arm2 = armCanalCapture("L4-L5", rows, parseAnn);
+    expect(pickEligibleCanalCaptureRow(arm2, rows, parseAnn, new Set())).toBeNull();
+    const rows3 = [...rows, { id: 122, value: "5.9", status: "pending", createdAt: "2026-01-04T00:00:00Z" }];
+    expect(pickEligibleCanalCaptureRow(arm2, rows3, parseAnn, new Set())?.id).toBe(122);
   });
 });

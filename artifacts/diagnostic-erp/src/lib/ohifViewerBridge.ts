@@ -13,8 +13,8 @@
  *   { source: "care-reporting", type: "viewport-capture-request", version: 1, requestId }
  *   { source: "care-reporting", type: "navigate-to-anchor", version: 1, …UIDs }
  *
- * Security: validate event.origin against allowlist when configured; always
- * validate source + type + requestId for capture results. No iframe DOM access.
+ * Security: validate event.origin against allowlist; validate event.source against
+ * the OHIF iframe Window when known. No iframe DOM access.
  */
 
 import { api } from "@/lib/fetchApi";
@@ -112,22 +112,31 @@ export function isCareOhifMessage(data: unknown): data is CareOhifMessage {
   );
 }
 
-/** Optional origin allowlist — empty means accept any (dev / same-host embeds). */
+/**
+ * Origin allowlist check.
+ * Empty / null allowlist → reject (no silent accept-any production default).
+ * Explicit "*" entry is allowed for tests / explicit dev config only.
+ */
 export function isAllowedOhifOrigin(origin: string, allowlist: string[] | null | undefined): boolean {
-  if (!allowlist || allowlist.length === 0) return true;
+  if (!allowlist || allowlist.length === 0) return false;
   return allowlist.some((o) => o === origin || o === "*");
 }
 
 /**
  * Build an OHIF postMessage origin allowlist.
- * Returns null when OHIF origin is unknown (dev: accept any) so we do not
- * accidentally block a cross-origin iframe before its launch URL is known.
+ * Never returns null as an "accept any" signal.
+ * - Prefer real OHIF launch URL origin + page origin + extras.
+ * - When launch URL unknown: page origin only (same-origin embeds).
+ * - When nothing known: empty array (reject until source window + origin resolve).
  */
 export function deriveOhifAllowedOrigins(opts: {
   pageOrigin?: string | null;
   ohifLaunchUrl?: string | null;
   extraOrigins?: string[] | null;
-}): string[] | null {
+  /** When true, include explicit "*" (tests / explicit VITE_OHIF_ALLOW_ANY=1). */
+  allowAny?: boolean;
+}): string[] {
+  if (opts.allowAny) return ["*"];
   const out = new Set<string>();
   const page = (opts.pageOrigin || "").trim();
   if (page) out.add(page);
@@ -143,10 +152,33 @@ export function deriveOhifAllowedOrigins(opts: {
     const t = (e || "").trim();
     if (t) out.add(t);
   }
-  if (!launch && (!opts.extraOrigins || opts.extraOrigins.length === 0)) {
-    return null;
+  return [...out];
+}
+
+/** Prefer known OHIF origin for outbound postMessage; never invent "*". */
+export function resolveOhifTargetOrigin(opts: {
+  ohifLaunchUrl?: string | null;
+  allowedOrigins?: string[] | null;
+  pageOrigin?: string | null;
+}): string | null {
+  const launch = (opts.ohifLaunchUrl || "").trim();
+  if (launch) {
+    try {
+      return new URL(launch).origin;
+    } catch {
+      /* fall through */
+    }
   }
-  return out.size > 0 ? [...out] : null;
+  const list = opts.allowedOrigins ?? [];
+  const nonWild = list.filter((o) => o && o !== "*");
+  if (nonWild.length === 1) return nonWild[0];
+  const page = (opts.pageOrigin || "").trim();
+  if (page && nonWild.includes(page) && nonWild.length <= 2) {
+    const other = nonWild.find((o) => o !== page);
+    if (other) return other;
+  }
+  if (nonWild.length > 0) return nonWild[0];
+  return null;
 }
 
 export function ohifActiveAnchorToViewport(msg: CareOhifActiveAnchorMessage): ViewportContext {
@@ -173,10 +205,33 @@ export type OhifBridgeContext = {
   pendingCaptureRequestIds?: Set<string>;
   onViewportCaptureResult?: (msg: CareOhifViewportCaptureResult) => void | Promise<void>;
   onMeasurementDeleted?: (annotationId: string) => void;
+  /** Origin allowlist — empty rejects all. */
   allowedOrigins?: string[] | null;
+  /**
+   * Expected OHIF iframe Window. When set, inbound care-ohif events must have
+   * ev.source === this window (or the live getter result).
+   */
+  expectedSourceWindow?: Window | null;
+  /** Prefer getter so the live iframe Window is checked on each message. */
+  getExpectedSourceWindow?: () => Window | null | undefined;
   /** When false, ignore mutating OHIF events (measurement/key-image/capture/delete). */
   mutationsAllowed?: boolean;
 };
+
+export function isExpectedOhifSource(
+  evSource: MessageEventSource | null,
+  ctx: Pick<OhifBridgeContext, "expectedSourceWindow" | "getExpectedSourceWindow">,
+): boolean {
+  const expected =
+    ctx.getExpectedSourceWindow?.()
+    ?? ctx.expectedSourceWindow
+    ?? null;
+  if (!expected) {
+    // No iframe Window yet — origin allowlist alone must be non-permissive.
+    return true;
+  }
+  return evSource === expected;
+}
 
 export async function handleCareOhifMessage(
   msg: CareOhifMessage,
@@ -307,7 +362,8 @@ export function subscribeCareOhifBridge(
   const handler = (ev: MessageEvent) => {
     if (!isAllowedOhifOrigin(ev.origin, ctx.allowedOrigins)) return;
     if (!isCareOhifMessage(ev.data)) return;
-    // Prefer event.source Window for capture replies; we do not touch iframe DOM.
+    // Mandatory source-window check for all care-ohif event types when known.
+    if (!isExpectedOhifSource(ev.source, ctx)) return;
     void handleCareOhifMessage(ev.data, ctx);
   };
   window.addEventListener("message", handler);
@@ -318,9 +374,11 @@ export function subscribeCareOhifBridge(
 export function requestOhifViewportCapture(opts: {
   target: Window | null | undefined;
   requestId: string;
-  targetOrigin?: string;
+  targetOrigin?: string | null;
 }): boolean {
   if (!opts.target || !opts.requestId) return false;
+  const origin = (opts.targetOrigin || "").trim();
+  if (!origin) return false; // refuse silent "*"
   opts.target.postMessage(
     {
       source: CARE_REPORTING_SOURCE,
@@ -328,7 +386,7 @@ export function requestOhifViewportCapture(opts: {
       version: 1,
       requestId: opts.requestId,
     },
-    opts.targetOrigin || "*",
+    origin,
   );
   return true;
 }
@@ -340,9 +398,11 @@ export function requestOhifNavigateToAnchor(opts: {
   seriesInstanceUID?: string | null;
   sopInstanceUID?: string | null;
   frameNumber?: number | null;
-  targetOrigin?: string;
+  targetOrigin?: string | null;
 }): boolean {
   if (!opts.target || !opts.studyInstanceUID) return false;
+  const origin = (opts.targetOrigin || "").trim();
+  if (!origin) return false;
   opts.target.postMessage(
     {
       source: CARE_REPORTING_SOURCE,
@@ -353,7 +413,7 @@ export function requestOhifNavigateToAnchor(opts: {
       sopInstanceUID: opts.sopInstanceUID ?? undefined,
       frameNumber: opts.frameNumber ?? undefined,
     },
-    opts.targetOrigin || "*",
+    origin,
   );
   return true;
 }

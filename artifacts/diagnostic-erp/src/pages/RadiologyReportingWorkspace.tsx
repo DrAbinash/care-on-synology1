@@ -156,6 +156,7 @@ import {
   extractCareCanalApProvenance,
   structuredFromViewerRow,
   formatMeasurementChip,
+  annotationIdFromCoordinates,
 } from "@/lib/structuredViewerMeasurements";
 import type { CanalApProvenanceMap } from "@/lib/spineCanalAp";
 import ComparisonPanel from "@/components/radiology/ComparisonPanel";
@@ -185,7 +186,7 @@ import PriorComparisonToolbar from "@/components/radiology/PriorComparisonToolba
 import ViewerMeasurementsBanner from "@/components/radiology/ViewerMeasurementsBanner";
 import { useViewerMeasurements } from "@/components/radiology/ViewerMeasurementsPanel";
 import { formatViewerMeasurementLabel } from "@/lib/formatViewerMeasurementLine";
-import { subscribeCareOhifBridge, captureResultToBlob, requestOhifNavigateToAnchor, requestOhifViewportCapture, deriveOhifAllowedOrigins } from "@/lib/ohifViewerBridge";
+import { subscribeCareOhifBridge, captureResultToBlob, requestOhifNavigateToAnchor, requestOhifViewportCapture, deriveOhifAllowedOrigins, resolveOhifTargetOrigin } from "@/lib/ohifViewerBridge";
 import { viewportToAnchor } from "@/lib/observationAnchor";
 import { isMriLumbarReportingContext } from "@/lib/mriLumbarRegions";
 import { buildLumbarLevelApplyBundle, deriveCanvasNarrativeState, ledgerSeverityContradiction, structuredCanalApContradiction } from "@/lib/mriLumbarLevelState";
@@ -2408,9 +2409,17 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const viewerMeasurementsQ = useViewerMeasurements(workflow.currentRow?.studyInstanceUID);
 
   // Bridge viewer_measurements → MEASURE rail (Zustand) + structured measurements.
-  // Harden: only apply *current* Measure intent to NEW rows; never reclassify existing ones.
+  // Historical hydration never uses live Measure toolbar / selection / activeAnchor.
+  // Only rows first seen after the initial hydrate are treated as new_event.
+  const knownViewerRowIdsRef = useRef<Set<number>>(new Set());
+  const viewerHydratedStudyUidRef = useRef<string | null>(null);
   useEffect(() => {
     if (isLocked || isFinalized) return;
+    const uid = workflow.currentRow?.studyInstanceUID ?? null;
+    if (uid !== viewerHydratedStudyUidRef.current) {
+      knownViewerRowIdsRef.current = new Set();
+      viewerHydratedStudyUidRef.current = uid;
+    }
     const rows = viewerMeasurementsQ.data ?? [];
     const mapped = rows
       .filter((m) => m.status !== "ignored")
@@ -2433,45 +2442,33 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
 
     const store = useWorkspace.getState();
     const existingItems = store.structuredViewerMeasurements.items;
+    const seenBefore = knownViewerRowIdsRef.current;
+    const initialPass = seenBefore.size === 0;
     for (const m of rows) {
       if (m.status === "ignored") continue;
-      let ann: { annotationId?: string; intent?: string } | null = null;
-      try {
-        ann = m.imageCoordinates ? JSON.parse(m.imageCoordinates) as { annotationId?: string; intent?: string } : null;
-      } catch {
-        ann = null;
-      }
       const prior = existingItems.find(
         (x) =>
           x.viewerMeasurementRowId === m.id
-          || (ann?.annotationId && x.viewerAnnotationId === ann.annotationId),
+          || (() => {
+            const ann = annotationIdFromCoordinates(m.imageCoordinates);
+            return Boolean(ann && x.viewerAnnotationId === ann);
+          })(),
       );
-      const intentFromRow =
-        (ann?.intent === "CANAL_AP"
-          || ann?.intent === "LESION"
-          || ann?.intent === "MIDLINE_SHIFT"
-          || ann?.intent === "OTHER")
-          ? ann.intent
-          : null;
-      const intent = prior
-        ? (intentFromRow ?? (typeof prior.concept === "string" ? prior.concept as import("@/lib/structuredViewerMeasurements").MeasurementIntent : null))
-        : (intentFromRow ?? store.measurementIntent);
+      const isNewEvent = !initialPass && !seenBefore.has(m.id) && !prior;
+      const mode = isNewEvent ? "new_event" as const : "historical" as const;
       const payload = structuredFromViewerRow({
         row: m,
-        intent,
-        canalLevel: prior?.spinalLevel ?? store.canalIntentLevel,
-        selectedObservationId: prior?.observationId ?? store.selectedObservationId,
-        activeAnchor: store.activeAnchor,
+        mode,
+        liveIntent: isNewEvent ? store.measurementIntent : null,
+        liveCanalLevel: isNewEvent ? store.canalIntentLevel : null,
+        liveSelectedObservationId: isNewEvent ? store.selectedObservationId : null,
+        liveActiveAnchor: isNewEvent ? store.activeAnchor : null,
+        prior: prior ?? null,
       });
-      if (prior) {
-        payload.concept = prior.concept;
-        payload.observationId = prior.observationId ?? payload.observationId;
-        payload.spinalLevel = prior.spinalLevel ?? payload.spinalLevel;
-        payload.manualOverride = prior.manualOverride;
-      }
       store.upsertStructuredViewerMeasurement(payload);
+      seenBefore.add(m.id);
     }
-  }, [viewerMeasurementsQ.data, isLocked, isFinalized]);
+  }, [viewerMeasurementsQ.data, isLocked, isFinalized, workflow.currentRow?.studyInstanceUID]);
 
   const canalApByLevel = useMemo(() => {
     const out: Record<string, number | null> = {};
@@ -2488,26 +2485,38 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
 
   // OHIF postMessage → viewer_measurements / report image-references / capture
   const ohifCapturePendingRef = useRef<Set<string>>(new Set());
+  const ohifTargetOriginRef = useRef<string | null>(null);
   const captionRefreshInFlightRef = useRef<Set<number>>(new Set());
   useEffect(() => {
     const uid = workflow.currentRow?.studyInstanceUID ?? null;
     if (!uid) return;
     const mutationsAllowed = !(isLocked || isFinalized);
+    const liveLaunchUrl =
+      embeddedViewerRef.current?.getOhifLaunchUrl?.()
+      || (typeof window !== "undefined" ? window.localStorage.getItem("care_ohif_launch_url") : null);
+    const viteExtras =
+      typeof import.meta !== "undefined"
+      && typeof (import.meta as ImportMeta & { env?: { VITE_OHIF_ALLOWED_ORIGINS?: string } }).env?.VITE_OHIF_ALLOWED_ORIGINS === "string"
+        ? (import.meta as ImportMeta & { env: { VITE_OHIF_ALLOWED_ORIGINS: string } }).env.VITE_OHIF_ALLOWED_ORIGINS
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean)
+        : null;
+    const allowAny =
+      typeof import.meta !== "undefined"
+      && (import.meta as ImportMeta & { env?: { VITE_OHIF_ALLOW_ANY?: string } }).env?.VITE_OHIF_ALLOW_ANY === "1";
     const ohifOrigins = deriveOhifAllowedOrigins({
       pageOrigin: typeof window !== "undefined" ? window.location.origin : null,
-      ohifLaunchUrl:
-        typeof window !== "undefined"
-          ? (window.localStorage.getItem("care_ohif_launch_url") || null)
-          : null,
-      extraOrigins:
-        typeof import.meta !== "undefined"
-          && typeof (import.meta as ImportMeta & { env?: { VITE_OHIF_ALLOWED_ORIGINS?: string } }).env?.VITE_OHIF_ALLOWED_ORIGINS === "string"
-          ? (import.meta as ImportMeta & { env: { VITE_OHIF_ALLOWED_ORIGINS: string } }).env.VITE_OHIF_ALLOWED_ORIGINS
-              .split(",")
-              .map((s) => s.trim())
-              .filter(Boolean)
-          : null,
+      ohifLaunchUrl: liveLaunchUrl,
+      extraOrigins: viteExtras,
+      allowAny,
     });
+    ohifTargetOriginRef.current = resolveOhifTargetOrigin({
+      ohifLaunchUrl: liveLaunchUrl,
+      allowedOrigins: ohifOrigins,
+      pageOrigin: typeof window !== "undefined" ? window.location.origin : null,
+    });
+
     return subscribeCareOhifBridge({
       studyInstanceUID: uid,
       patientId: workflow.currentRow?.patientId ?? null,
@@ -2517,6 +2526,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       pendingCaptureRequestIds: ohifCapturePendingRef.current,
       mutationsAllowed,
       allowedOrigins: ohifOrigins,
+      getExpectedSourceWindow: () => embeddedViewerRef.current?.getOhifWindow?.() ?? null,
       onMeasurementSaved: () => {
         if (!mutationsAllowed) return;
         void qc.invalidateQueries({ queryKey: ["viewer-measurements", uid] });
@@ -3743,7 +3753,18 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                               const requestId = `cap_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
                               ohifCapturePendingRef.current.add(requestId);
                               const win = embeddedViewerRef.current?.getOhifWindow?.();
-                              const ok = requestOhifViewportCapture({ target: win, requestId });
+                              let targetOrigin = ohifTargetOriginRef.current;
+                              if (!targetOrigin) {
+                                const launch = embeddedViewerRef.current?.getOhifLaunchUrl?.();
+                                if (launch) {
+                                  try { targetOrigin = new URL(launch).origin; } catch { /* ignore */ }
+                                }
+                              }
+                              const ok = requestOhifViewportCapture({
+                                target: win,
+                                requestId,
+                                targetOrigin,
+                              });
                               if (!ok) {
                                 ohifCapturePendingRef.current.delete(requestId);
                                 toast({
@@ -4297,6 +4318,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                               seriesInstanceUID: a.seriesInstanceUID,
                               sopInstanceUID: a.sopInstanceUID,
                               frameNumber: a.frameNumber,
+                              targetOrigin: ohifTargetOriginRef.current,
                             });
                           }
                         }
@@ -5042,6 +5064,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                           seriesInstanceUID: prov.seriesInstanceUID,
                           sopInstanceUID: prov.sopInstanceUID,
                           frameNumber: prov.frameNumber,
+                          targetOrigin: ohifTargetOriginRef.current,
                         });
                         if (sent) {
                           toast({

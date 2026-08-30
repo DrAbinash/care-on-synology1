@@ -1,6 +1,10 @@
 /**
  * Structured viewer measurements — draft-scoped model persisted in structured_json
  * (care.viewer_measurements.v1). Idempotent on viewerAnnotationId.
+ *
+ * Ingest modes:
+ *   - historical: bulk hydration/refetch — never uses live Measure toolbar state
+ *   - new_event: immediate post-measurement path — may stamp live intent/level/obs
  */
 
 import type { ObservationAnchor } from "@/lib/observationAnchor";
@@ -13,6 +17,8 @@ export type MeasurementIntent =
   | "LESION"
   | "MIDLINE_SHIFT"
   | "OTHER";
+
+export type ViewerRowIngestMode = "historical" | "new_event";
 
 export type StructuredMeasurementValue = {
   /** Primary linear dimension (mm) or first axis. */
@@ -46,6 +52,21 @@ export type ViewerMeasurementsState = {
   kind: typeof CARE_VIEWER_MEASUREMENTS_KIND;
   version: 1;
   items: StructuredMeasurement[];
+};
+
+export type ViewerMeasurementApiRow = {
+  id: number;
+  measurementType?: string | null;
+  measurementId?: string | null;
+  value: string;
+  unit?: string | null;
+  studyInstanceUID?: string | null;
+  seriesInstanceUID?: string | null;
+  sopInstanceUID?: string | null;
+  frameNumber?: number | null;
+  viewerName?: string | null;
+  imageCoordinates?: string | null;
+  createdAt?: string;
 };
 
 export function emptyViewerMeasurementsState(): ViewerMeasurementsState {
@@ -118,7 +139,6 @@ export function upsertStructuredMeasurement(
     if (idx >= 0) {
       const prev = items[idx];
       if (prev.manualOverride && incoming.manualOverride !== false) {
-        // Keep manual; still refresh anchor/provenance lightly
         items[idx] = {
           ...prev,
           updatedAt: now,
@@ -216,13 +236,17 @@ export function shouldAutoPopulateCanal(opts: {
 }): boolean {
   if (opts.intent === "CANAL_AP" && opts.spinalLevel) return true;
   if (opts.measurementId === "CANAL_AP" && opts.spinalLevel) return true;
-  // Labeled caliper with explicit disc level but no OTHER/LESION intent
   if (!opts.intent || opts.intent === "CANAL_AP") {
     if (opts.spinalLevel && opts.label && /canal|ap\b/i.test(opts.label)) return true;
   }
   return false;
 }
 
+/**
+ * Attach to selected observation only for explicit lesion-like intents.
+ * Unknown/null intent must NOT attach (historical hydration safety).
+ * New-event path stamps observationId explicitly at creation when intended.
+ */
 export function shouldAttachToSelectedObservation(opts: {
   intent: MeasurementIntent | null | undefined;
   selectedObservationId: string | null | undefined;
@@ -231,10 +255,8 @@ export function shouldAttachToSelectedObservation(opts: {
   if (opts.intent === "LESION" || opts.intent === "MIDLINE_SHIFT" || opts.intent === "OTHER") {
     return true;
   }
-  // Canal AP is report/table level by default — not observation-bound
   if (opts.intent === "CANAL_AP") return false;
-  // Unknown intent with selection: attach as lesion-like dimension (conservative)
-  return opts.intent == null;
+  return false;
 }
 
 /** Extract care.viewer_measurements.v1 from draft structured_json (envelope or bare). */
@@ -266,49 +288,117 @@ export function annotationIdFromCoordinates(raw: string | null | undefined): str
   }
 }
 
+/** Parse explicit CARE intent from imageCoordinates (persisted at event time). */
+export function intentFromCoordinates(raw: string | null | undefined): MeasurementIntent | null {
+  if (!raw) return null;
+  try {
+    const o = JSON.parse(raw) as { intent?: unknown };
+    const i = o.intent;
+    if (i === "CANAL_AP" || i === "LESION" || i === "MIDLINE_SHIFT" || i === "OTHER") return i;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/** Intent from persisted row only — never live toolbar state. */
+export function resolvePersistedIntent(row: ViewerMeasurementApiRow): MeasurementIntent | null {
+  const fromCoords = intentFromCoordinates(row.imageCoordinates);
+  if (fromCoords) return fromCoords;
+  if (row.measurementId === "CANAL_AP") return "CANAL_AP";
+  return null;
+}
+
+/** Disc level from persisted row labels only. */
+export function resolvePersistedCanalLevel(row: ViewerMeasurementApiRow): string | null {
+  const label = [row.measurementId, row.measurementType].filter(Boolean).join(" ");
+  return discLevelFromLabel(label) || discLevelFromLabel(row.measurementType) || null;
+}
+
+/** Build DICOM anchor from the row itself (canonical provenance). */
+export function rowDerivedAnchor(row: ViewerMeasurementApiRow): ObservationAnchor | null {
+  if (!row.studyInstanceUID) return null;
+  return {
+    studyInstanceUID: row.studyInstanceUID,
+    seriesInstanceUID: row.seriesInstanceUID ?? undefined,
+    sopInstanceUID: row.sopInstanceUID ?? undefined,
+    frameNumber: row.frameNumber ?? undefined,
+    viewer: (row.viewerName?.toLowerCase().includes("ohif") ? "ohif" : "frames") as "ohif" | "frames",
+    capturedAt: row.createdAt || new Date().toISOString(),
+  };
+}
+
 /**
- * Build a structured measurement upsert payload from a viewer_measurements API row
- * + current CARE measure intent / selection.
+ * Build a structured measurement upsert payload from a viewer_measurements API row.
+ *
+ * mode=historical: never uses live Measure toolbar / selected observation / activeAnchor.
+ * mode=new_event: may stamp live intent/level/observation; activeAnchor only if row lacks SOP/series.
  */
 export function structuredFromViewerRow(opts: {
-  row: {
-    id: number;
-    measurementType?: string | null;
-    measurementId?: string | null;
-    value: string;
-    unit?: string | null;
-    studyInstanceUID?: string | null;
-    seriesInstanceUID?: string | null;
-    sopInstanceUID?: string | null;
-    frameNumber?: number | null;
-    viewerName?: string | null;
-    imageCoordinates?: string | null;
-    createdAt?: string;
-  };
-  intent: MeasurementIntent | null;
-  canalLevel: string | null;
-  selectedObservationId: string | null;
-  activeAnchor?: ObservationAnchor | null;
+  row: ViewerMeasurementApiRow;
+  mode: ViewerRowIngestMode;
+  /** Live Measure intent — new_event only. */
+  liveIntent?: MeasurementIntent | null;
+  /** Live canal target level — new_event only. */
+  liveCanalLevel?: string | null;
+  /** Live selected observation — new_event only. */
+  liveSelectedObservationId?: string | null;
+  /** Live viewport — new_event fallback only when row has no image UIDs. */
+  liveActiveAnchor?: ObservationAnchor | null;
+  /** Prior structured row when updating an already-known measurement. */
+  prior?: StructuredMeasurement | null;
 }): Omit<StructuredMeasurement, "id" | "createdAt" | "updatedAt"> & {
   id?: string;
   createdAt?: string;
 } {
   const axes = parseNumericAxes(opts.row.value);
   const label = [opts.row.measurementId, opts.row.measurementType].filter(Boolean).join(" ");
-  const fromLabel = discLevelFromLabel(label);
+  const persistedIntent = resolvePersistedIntent(opts.row);
+  const fromLabel = resolvePersistedCanalLevel(opts.row);
+
+  const intent: MeasurementIntent | null =
+    opts.mode === "new_event"
+      ? (persistedIntent ?? opts.liveIntent ?? null)
+      : persistedIntent;
+
   const spinalLevel =
-    opts.intent === "CANAL_AP"
-      ? (opts.canalLevel || fromLabel)
+    opts.mode === "new_event" && intent === "CANAL_AP"
+      ? (fromLabel || opts.liveCanalLevel || null)
       : fromLabel;
+
   const concept: MeasurementIntent | string =
-    opts.intent
+    opts.prior?.concept
+    ?? intent
     ?? (opts.row.measurementId === "CANAL_AP" ? "CANAL_AP" : "OTHER");
+
+  const liveObs =
+    opts.mode === "new_event" ? (opts.liveSelectedObservationId ?? null) : null;
   const attach = shouldAttachToSelectedObservation({
-    intent: opts.intent,
-    selectedObservationId: opts.selectedObservationId,
+    intent,
+    selectedObservationId: liveObs,
   });
+  const observationId =
+    opts.prior?.observationId
+    ?? (attach ? liveObs : null);
+
+  const fromRow = rowDerivedAnchor(opts.row);
+  let anchor: ObservationAnchor | null = fromRow;
+  if (
+    !fromRow
+    && opts.mode === "new_event"
+    && opts.liveActiveAnchor
+    && (!opts.liveActiveAnchor.studyInstanceUID
+      || !opts.row.studyInstanceUID
+      || opts.liveActiveAnchor.studyInstanceUID === opts.row.studyInstanceUID)
+  ) {
+    // Proven new event with no row SOP/series — allow live viewport fallback.
+    if (!opts.row.sopInstanceUID && !opts.row.seriesInstanceUID) {
+      anchor = opts.liveActiveAnchor;
+    }
+  }
+
   return {
-    concept,
+    concept: opts.prior?.concept ?? concept,
     toolType: opts.row.measurementType ?? null,
     values: {
       primary: axes.primary ?? null,
@@ -317,24 +407,13 @@ export function structuredFromViewerRow(opts: {
       raw: axes.raw || String(opts.row.value),
       unit: opts.row.unit || "mm",
     },
-    spinalLevel: spinalLevel ?? null,
-    observationId: attach ? opts.selectedObservationId : null,
-    anchor: opts.activeAnchor ?? (
-      opts.row.studyInstanceUID
-        ? {
-            studyInstanceUID: opts.row.studyInstanceUID,
-            seriesInstanceUID: opts.row.seriesInstanceUID ?? undefined,
-            sopInstanceUID: opts.row.sopInstanceUID ?? undefined,
-            frameNumber: opts.row.frameNumber ?? undefined,
-            viewer: (opts.row.viewerName?.toLowerCase().includes("ohif") ? "ohif" : "frames") as "ohif" | "frames",
-            capturedAt: opts.row.createdAt || new Date().toISOString(),
-          }
-        : null
-    ),
+    spinalLevel: opts.prior?.spinalLevel ?? spinalLevel ?? null,
+    observationId,
+    anchor,
     viewerAnnotationId: annotationIdFromCoordinates(opts.row.imageCoordinates),
     viewerMeasurementRowId: opts.row.id,
     label: label || null,
     createdAt: opts.row.createdAt,
-    manualOverride: false,
+    manualOverride: opts.prior?.manualOverride ?? false,
   };
 }

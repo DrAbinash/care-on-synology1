@@ -294,6 +294,7 @@ describe("M1.6B2 — voice layer stays canonical", () => {
     expect(viewer).toContain("resetView");
     expect(viewer).toContain("goToAnchor");
     expect(viewer).toContain("getOhifWindow");
+    expect(viewer).toContain("getOhifLaunchUrl");
   });
 
   it("voice quick-search drives the panel's ONE search state via externalSearch (legacy)", () => {

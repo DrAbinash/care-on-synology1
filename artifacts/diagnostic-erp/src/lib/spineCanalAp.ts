@@ -228,7 +228,10 @@ export type CanalApCellProvenance = {
   value: string;
   unit: "mm";
   measurementId?: string | null;
+  /** True OHIF/Cornerstone annotation id (never the viewer_measurements DB row id). */
   annotationId?: string | null;
+  /** viewer_measurements.id when the value came from a DB row. */
+  viewerMeasurementRowId?: number | null;
   studyInstanceUID?: string | null;
   seriesInstanceUID?: string | null;
   sopInstanceUID?: string | null;
@@ -238,6 +241,80 @@ export type CanalApCellProvenance = {
   capturedAt?: string | null;
   manualOverride: boolean;
 };
+
+/** Arm watermark so "next measurement" cannot consume pre-existing rows. */
+export type CanalCaptureArm = {
+  level: string;
+  /** Only rows with id > maxExistingRowId are eligible. */
+  maxExistingRowId: number;
+  /** Annotation ids already present when armed (also excluded). */
+  existingAnnotationIds: string[];
+  armedAtMs: number;
+};
+
+export type CanalCaptureCandidate = {
+  id: number;
+  status?: string | null;
+  value: string;
+  createdAt?: string | null;
+  imageCoordinates?: string | null;
+  studyInstanceUID?: string | null;
+  seriesInstanceUID?: string | null;
+  sopInstanceUID?: string | null;
+  frameNumber?: number | null;
+  viewerName?: string | null;
+  measurementId?: string | null;
+};
+
+/** Snapshot max existing row id + annotation ids when arming a canal capture level. */
+export function armCanalCapture(
+  level: string,
+  rows: CanalCaptureCandidate[],
+  parseAnnotationId: (raw: string | null | undefined) => string | null,
+  nowMs: number = Date.now(),
+): CanalCaptureArm {
+  let maxId = 0;
+  const anns: string[] = [];
+  for (const r of rows) {
+    if (typeof r.id === "number" && r.id > maxId) maxId = r.id;
+    const a = parseAnnotationId(r.imageCoordinates);
+    if (a) anns.push(a);
+  }
+  return {
+    level,
+    maxExistingRowId: maxId,
+    existingAnnotationIds: anns,
+    armedAtMs: nowMs,
+  };
+}
+
+/**
+ * Pick the newest eligible viewer row for an armed capture.
+ * Historical rows (id ≤ watermark or known annotation) never qualify.
+ */
+export function pickEligibleCanalCaptureRow(
+  arm: CanalCaptureArm,
+  rows: CanalCaptureCandidate[],
+  parseAnnotationId: (raw: string | null | undefined) => string | null,
+  consumedIds: ReadonlySet<number>,
+): CanalCaptureCandidate | null {
+  const existingAnns = new Set(arm.existingAnnotationIds);
+  const eligible = rows
+    .filter((m) => m.status !== "ignored")
+    .filter((m) => !consumedIds.has(m.id))
+    .filter((m) => m.id > arm.maxExistingRowId)
+    .filter((m) => {
+      const a = parseAnnotationId(m.imageCoordinates);
+      return !a || !existingAnns.has(a);
+    })
+    .sort((a, b) => {
+      const tb = Date.parse(b.createdAt || "") || 0;
+      const ta = Date.parse(a.createdAt || "") || 0;
+      if (tb !== ta) return tb - ta;
+      return b.id - a.id;
+    });
+  return eligible[0] ?? null;
+}
 
 export type CanalApProvenanceMap = Record<string, CanalApCellProvenance>;
 
