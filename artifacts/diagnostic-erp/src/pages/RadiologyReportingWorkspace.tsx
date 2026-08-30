@@ -157,6 +157,7 @@ import {
   structuredFromViewerRow,
   formatMeasurementChip,
   annotationIdFromCoordinates,
+  classifyViewerRowIngestMode,
 } from "@/lib/structuredViewerMeasurements";
 import type { CanalApProvenanceMap } from "@/lib/spineCanalAp";
 import ComparisonPanel from "@/components/radiology/ComparisonPanel";
@@ -2410,16 +2411,22 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
 
   // Bridge viewer_measurements → MEASURE rail (Zustand) + structured measurements.
   // Historical hydration never uses live Measure toolbar / selection / activeAnchor.
-  // Only rows first seen after the initial hydrate are treated as new_event.
+  // Only rows first seen AFTER the study's first successful query resolution are new_event.
   const knownViewerRowIdsRef = useRef<Set<number>>(new Set());
   const viewerHydratedStudyUidRef = useRef<string | null>(null);
+  const viewerHydrationCompleteRef = useRef(false);
   useEffect(() => {
     if (isLocked || isFinalized) return;
     const uid = workflow.currentRow?.studyInstanceUID ?? null;
     if (uid !== viewerHydratedStudyUidRef.current) {
       knownViewerRowIdsRef.current = new Set();
+      viewerHydrationCompleteRef.current = false;
       viewerHydratedStudyUidRef.current = uid;
     }
+    // Wait for the first successful resolution (data may be []). While loading /
+    // undefined, do not mark hydration complete and do not ingest.
+    if (!viewerMeasurementsQ.isSuccess) return;
+
     const rows = viewerMeasurementsQ.data ?? [];
     const mapped = rows
       .filter((m) => m.status !== "ignored")
@@ -2443,9 +2450,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     const store = useWorkspace.getState();
     const existingItems = store.structuredViewerMeasurements.items;
     const seenBefore = knownViewerRowIdsRef.current;
-    const initialPass = seenBefore.size === 0;
+    const hydrationComplete = viewerHydrationCompleteRef.current;
     for (const m of rows) {
-      if (m.status === "ignored") continue;
       const prior = existingItems.find(
         (x) =>
           x.viewerMeasurementRowId === m.id
@@ -2454,8 +2460,16 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
             return Boolean(ann && x.viewerAnnotationId === ann);
           })(),
       );
-      const isNewEvent = !initialPass && !seenBefore.has(m.id) && !prior;
-      const mode = isNewEvent ? "new_event" as const : "historical" as const;
+      const mode = classifyViewerRowIngestMode({
+        hydrationComplete,
+        rowId: m.id,
+        knownRowIds: seenBefore,
+        hasPriorStructured: Boolean(prior),
+      });
+      // Track every row id from the successful response (including ignored).
+      seenBefore.add(m.id);
+      if (m.status === "ignored") continue;
+      const isNewEvent = mode === "new_event";
       const payload = structuredFromViewerRow({
         row: m,
         mode,
@@ -2466,9 +2480,16 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         prior: prior ?? null,
       });
       store.upsertStructuredViewerMeasurement(payload);
-      seenBefore.add(m.id);
     }
-  }, [viewerMeasurementsQ.data, isLocked, isFinalized, workflow.currentRow?.studyInstanceUID]);
+    // First successful resolution — even [] or ignored-only — completes hydration.
+    viewerHydrationCompleteRef.current = true;
+  }, [
+    viewerMeasurementsQ.data,
+    viewerMeasurementsQ.isSuccess,
+    isLocked,
+    isFinalized,
+    workflow.currentRow?.studyInstanceUID,
+  ]);
 
   const canalApByLevel = useMemo(() => {
     const out: Record<string, number | null> = {};

@@ -20,6 +20,25 @@ export type MeasurementIntent =
 
 export type ViewerRowIngestMode = "historical" | "new_event";
 
+/**
+ * Classify a viewer_measurements row for structured ingest.
+ *
+ * hydrationComplete must flip true only after the study's FIRST successful
+ * query resolution (including empty [] or ignored-only). Do not infer from
+ * knownRowIds.size — an empty first fetch leaves the set empty and would
+ * otherwise mis-label the first real measurement as historical.
+ */
+export function classifyViewerRowIngestMode(opts: {
+  hydrationComplete: boolean;
+  rowId: number;
+  knownRowIds: ReadonlySet<number>;
+  hasPriorStructured: boolean;
+}): ViewerRowIngestMode {
+  if (!opts.hydrationComplete) return "historical";
+  if (opts.knownRowIds.has(opts.rowId) || opts.hasPriorStructured) return "historical";
+  return "new_event";
+}
+
 export type StructuredMeasurementValue = {
   /** Primary linear dimension (mm) or first axis. */
   primary?: number | null;

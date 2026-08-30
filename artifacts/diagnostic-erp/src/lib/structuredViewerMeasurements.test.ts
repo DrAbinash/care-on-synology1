@@ -10,11 +10,37 @@ import {
   structuredFromViewerRow,
   upsertStructuredMeasurement,
   annotationIdFromCoordinates,
+  classifyViewerRowIngestMode,
 } from "./structuredViewerMeasurements";
 import {
   armCanalCapture,
   pickEligibleCanalCaptureRow,
 } from "./spineCanalAp";
+
+/** Simulate workspace hydration gate across successive successful query results. */
+function simulateHydrationPasses(
+  passes: Array<Array<{ id: number; status?: string }>>,
+): Array<{ rowId: number; mode: "historical" | "new_event"; hydrationCompleteBefore: boolean }> {
+  const known = new Set<number>();
+  let hydrationComplete = false;
+  const out: Array<{ rowId: number; mode: "historical" | "new_event"; hydrationCompleteBefore: boolean }> = [];
+  for (const rows of passes) {
+    const before = hydrationComplete;
+    for (const m of rows) {
+      const mode = classifyViewerRowIngestMode({
+        hydrationComplete,
+        rowId: m.id,
+        knownRowIds: known,
+        hasPriorStructured: false,
+      });
+      known.add(m.id);
+      if (m.status === "ignored") continue;
+      out.push({ rowId: m.id, mode, hydrationCompleteBefore: before });
+    }
+    hydrationComplete = true;
+  }
+  return out;
+}
 
 describe("structuredViewerMeasurements", () => {
   it("parses 1–3 axes from viewer strings", () => {
@@ -258,6 +284,85 @@ describe("structuredViewerMeasurements", () => {
     });
     expect(neu.concept).toBe("MIDLINE_SHIFT");
     expect(neu.observationId).toBe("obs-1");
+  });
+});
+
+describe("viewer row hydration gate (empty first success)", () => {
+  it("classifyViewerRowIngestMode does not use Set.size as hydration marker", () => {
+    const emptyKnown = new Set<number>();
+    expect(classifyViewerRowIngestMode({
+      hydrationComplete: false,
+      rowId: 1,
+      knownRowIds: emptyKnown,
+      hasPriorStructured: false,
+    })).toBe("historical");
+    expect(classifyViewerRowIngestMode({
+      hydrationComplete: true,
+      rowId: 1,
+      knownRowIds: emptyKnown,
+      hasPriorStructured: false,
+    })).toBe("new_event");
+  });
+
+  it("initial successful query [] → hydration complete → first later row is new_event with CANAL_AP+L4-L5", () => {
+    const events = simulateHydrationPasses([
+      [], // first successful fetch empty
+      [{ id: 1, status: "pending" }],
+    ]);
+    expect(events).toHaveLength(1);
+    expect(events[0].hydrationCompleteBefore).toBe(true);
+    expect(events[0].mode).toBe("new_event");
+
+    const stamped = structuredFromViewerRow({
+      row: {
+        id: 1,
+        value: "6.8",
+        unit: "mm",
+        studyInstanceUID: "1.2.3",
+        measurementType: "linear",
+        imageCoordinates: JSON.stringify({ annotationId: "first" }),
+      },
+      mode: events[0].mode,
+      liveIntent: "CANAL_AP",
+      liveCanalLevel: "L4-L5",
+    });
+    expect(stamped.concept).toBe("CANAL_AP");
+    expect(stamped.spinalLevel).toBe("L4-L5");
+  });
+
+  it("initial successful query with only ignored rows → first later pending row is new_event", () => {
+    const events = simulateHydrationPasses([
+      [{ id: 5, status: "ignored" }, { id: 6, status: "ignored" }],
+      [{ id: 5, status: "ignored" }, { id: 6, status: "ignored" }, { id: 7, status: "pending" }],
+    ]);
+    expect(events).toHaveLength(1);
+    expect(events[0].rowId).toBe(7);
+    expect(events[0].hydrationCompleteBefore).toBe(true);
+    expect(events[0].mode).toBe("new_event");
+
+    const stamped = structuredFromViewerRow({
+      row: {
+        id: 7,
+        value: "7.1",
+        unit: "mm",
+        studyInstanceUID: "1.2.3",
+        measurementType: "linear",
+      },
+      mode: events[0].mode,
+      liveIntent: "CANAL_AP",
+      liveCanalLevel: "L4-L5",
+    });
+    expect(stamped.concept).toBe("CANAL_AP");
+    expect(stamped.spinalLevel).toBe("L4-L5");
+  });
+
+  it("rows present in the first successful response stay historical", () => {
+    const events = simulateHydrationPasses([
+      [{ id: 10, status: "pending" }, { id: 11, status: "pending" }],
+      [{ id: 10, status: "pending" }, { id: 11, status: "pending" }, { id: 12, status: "pending" }],
+    ]);
+    expect(events.filter((e) => e.rowId === 10 || e.rowId === 11).every((e) => e.mode === "historical")).toBe(true);
+    expect(events.find((e) => e.rowId === 12)?.mode).toBe("new_event");
   });
 });
 
