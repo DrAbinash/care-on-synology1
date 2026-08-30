@@ -58,9 +58,18 @@ export function WholeReportFormatControl({
     [reportFormats, effectiveModality, reportingContext, studyDescription, bodyPartFallback, activeStudy],
   );
 
-  // Prefer region-scoped formats; when unresolved, allow modality-wide so
-  // one-click can still set reporting region from format.bodyPart.
-  const formats = formatLookup.formats;
+  // Primary one-click selector must include cross-region formats for this modality
+  // so Format can establish reporting region (Brain → LS Spine) without a prior
+  // region pick. Region-scoped hits stay ranked first via formatContextRank.
+  const formats = useMemo(() => {
+    if (!effectiveModality) return formatLookup.formats;
+    if (formatLookup.scope === "modality") return formatLookup.formats;
+    const allModality = reportFormats.filter((f) => f.modality === effectiveModality);
+    if (allModality.length <= formatLookup.formats.length) return formatLookup.formats;
+    const preferred = new Set(formatLookup.formats.map((f) => f.id));
+    const rest = allModality.filter((f) => !preferred.has(f.id));
+    return [...formatLookup.formats, ...rest];
+  }, [effectiveModality, formatLookup, reportFormats]);
   const locked = Boolean(disabled || isFinalized);
   const appliedLabel = appliedFormatName || appliedFormatReportTitle;
 
