@@ -4,7 +4,7 @@
 import { describe, expect, it, beforeAll, afterAll } from "vitest";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { randomUUID, randomFillSync } from "node:crypto";
 import sharp from "sharp";
 import { db } from "@workspace/db";
 import { radiologyReportDraftsTable, radiologyReportKeyImagesTable } from "@workspace/db/schema";
@@ -35,6 +35,14 @@ const TINY_JPEG = Buffer.from(
   "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAn/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIQAxAAAAGcP//Z",
   "base64",
 );
+
+async function makeNoisyPngOver1_5MB(): Promise<Buffer> {
+  const width = 800;
+  const height = 800;
+  const raw = Buffer.alloc(width * height * 3);
+  randomFillSync(raw);
+  return sharp(raw, { raw: { width, height, channels: 3 } }).png().toBuffer();
+}
 
 describe("frozenKeyImages helpers", () => {
   it("buildObservationCaption matches client caption rules", () => {
@@ -68,17 +76,8 @@ describe("frozenKeyImages helpers", () => {
     await fs.mkdir(FROZEN_KEY_IMAGE_DIR, { recursive: true });
     const name = `${randomUUID()}.png`;
     const abs = path.join(FROZEN_KEY_IMAGE_DIR, name);
-    // Large-ish RGB buffer → well over 1.5 MB as PNG before normalize
-    await sharp({
-      create: {
-        width: 2400,
-        height: 1800,
-        channels: 3,
-        background: { r: 40, g: 80, b: 120 },
-      },
-    })
-      .png()
-      .toFile(abs);
+    const png = await makeNoisyPngOver1_5MB();
+    await fs.writeFile(abs, png);
     const before = (await fs.stat(abs)).size;
     expect(before).toBeGreaterThan(1_500_000);
 
@@ -305,16 +304,7 @@ describe.skipIf(!hasDb)("frozenKeyImages DB", () => {
   it(">1.5MB valid file still prints after normalization", async () => {
     const name = `${randomUUID()}.png`;
     const abs = path.join(FROZEN_KEY_IMAGE_DIR, name);
-    await sharp({
-      create: {
-        width: 2200,
-        height: 1600,
-        channels: 3,
-        background: { r: 10, g: 20, b: 30 },
-      },
-    })
-      .png()
-      .toFile(abs);
+    await fs.writeFile(abs, await makeNoisyPngOver1_5MB());
     expect((await fs.stat(abs)).size).toBeGreaterThan(1_500_000);
 
     const norm = await normalizeKeyImageForPrint(abs);

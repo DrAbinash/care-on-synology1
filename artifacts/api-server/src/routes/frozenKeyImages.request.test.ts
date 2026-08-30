@@ -4,7 +4,7 @@
 import { describe, expect, it, beforeAll, afterAll } from "vitest";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { randomUUID, randomFillSync } from "node:crypto";
 import sharp from "sharp";
 import request from "supertest";
 import type { Express } from "express";
@@ -23,6 +23,14 @@ const JPEG_1X1 = Buffer.from(
   "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAn/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIQAxAAAAGcP//Z",
   "base64",
 );
+
+async function makeNoisyPngOver1_5MB(): Promise<Buffer> {
+  const width = 800;
+  const height = 800;
+  const raw = Buffer.alloc(width * height * 3);
+  randomFillSync(raw);
+  return sharp(raw, { raw: { width, height, channels: 3 } }).png().toBuffer();
+}
 
 const dbReady = hasDatabaseUrl();
 
@@ -189,17 +197,8 @@ describe.skipIf(!dbReady)("frozen key-images API", () => {
   });
 
   it("accepts large PNG and stores normalized printable JPEG", async () => {
-    const big = await sharp({
-      create: {
-        width: 2000,
-        height: 1500,
-        channels: 3,
-        background: { r: 90, g: 40, b: 10 },
-      },
-    })
-      .png()
-      .toBuffer();
-    expect(big.length).toBeGreaterThan(1_000_000);
+    const big = await makeNoisyPngOver1_5MB();
+    expect(big.length).toBeGreaterThan(1_500_000);
 
     const res = await request(app)
       .post("/api/radiology/report-generator/key-images")

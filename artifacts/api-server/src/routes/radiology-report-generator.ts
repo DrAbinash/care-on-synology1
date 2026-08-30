@@ -193,11 +193,13 @@ async function assertObservationBelongsToDraft(draftId: number, observationId: s
     .where(eq(radiologyReportDraftsTable.id, draftId))
     .limit(1);
   if (!draft?.structuredJson) return;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(draft.structuredJson);
-  } catch {
-    return;
+  let parsed: unknown = draft.structuredJson;
+  if (typeof parsed === "string") {
+    try {
+      parsed = JSON.parse(parsed);
+    } catch {
+      return;
+    }
   }
   if (!parsed || typeof parsed !== "object") return;
   const root = parsed as Record<string, unknown>;

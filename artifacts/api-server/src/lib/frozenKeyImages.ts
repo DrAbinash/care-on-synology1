@@ -160,11 +160,12 @@ async function fileToDataUrl(diskPath: string): Promise<FileLoadResult> {
 
     if (buf.length > FROZEN_PRINT_MAX_INLINE_BYTES) {
       try {
-        buf = await sharp(buf, { failOn: "none" })
+        const resized = await sharp(buf, { failOn: "none" })
           .rotate()
           .resize({ width: 1400, height: 1400, fit: "inside", withoutEnlargement: true })
           .jpeg({ quality: 72, mozjpeg: true })
           .toBuffer();
+        buf = Buffer.from(resized);
       } catch {
         return { ok: false, reason: "unreadable" };
       }
