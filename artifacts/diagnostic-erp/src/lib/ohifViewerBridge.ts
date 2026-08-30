@@ -200,7 +200,8 @@ export async function handleCareOhifMessage(
     const level = discLevelFromLabel(label);
     const value = parseCanalApNumber(String(msg.value)) || String(msg.value);
     const intent = msg.intent;
-    const isCanal = intent === "CANAL_AP" || (!!level && (!intent || intent === "CANAL_AP"));
+    // Explicit OTHER/LESION/MIDLINE never auto-classified as canal; unlabeled + disc level may be.
+    const isCanal = intent === "CANAL_AP" || (!intent && !!level);
     const coords = JSON.stringify({
       annotationId: msg.annotationId ?? null,
       intent: intent ?? null,
