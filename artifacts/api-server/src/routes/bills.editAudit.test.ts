@@ -5,16 +5,16 @@ import { dirname, join } from "node:path";
 
 // Finance-audit gap #1 — PUT /bills/:id audit-actor integrity.
 //
-// The bill-edit handler audits status/discount changes into bill_audits. It
+// The bill-edit handler audits discount/due-date changes into bill_audits. It
 // used to take the audit actor from the client body (`editedBy`) AND gate the
 // whole audit block on `if (editedBy && reason)`, so a caller could either
 // spoof the actor or skip auditing a financial change entirely by omitting the
 // field. This source-contract test pins the hardened wiring: the actor is
-// derived from the authenticated session and a real status/discount change is
+// derived from the authenticated session and a real discount change is
 // always audited.
 //
-// Source-contract style (no DB): asserts against the handler source region so a
-// regression that re-introduces client-trusted / skippable auditing fails CI.
+// Status transitions were removed from UpdateBillBody (P0-1) — cancel/payment/
+// refund use dedicated routes. Source-contract style (no DB).
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const src = readFileSync(join(__dirname, "bills.ts"), "utf8");
@@ -36,23 +36,28 @@ describe("PUT /bills/:id — audit actor comes from the session, not the client 
     expect(region).toContain("const editActor = req.staffSession?.subjectName?.trim()");
   });
 
-  test("status/discount audit rows are written under the session-derived actor", () => {
-    // Both audited change types must stamp editActor.
-    const stamped = region.match(/editedBy: editActor/g) ?? [];
-    expect(stamped.length).toBeGreaterThanOrEqual(2);
-    // The bill-edit email notification also reports the session actor.
+  test("discount audit rows are written under the session-derived actor", () => {
+    expect(region).toContain("editedBy: editActor");
     expect(region).toContain("editedBy: editActor,");
   });
 
   test("the audit block is no longer gated on a client-supplied editedBy", () => {
-    // The old, skippable gate must be gone: omitting editedBy must not be able
-    // to suppress the audit of a real financial change.
     expect(region).not.toContain("if (editedBy && reason)");
     expect(region).not.toMatch(/const \{ editedBy, reason \} = req\.body;/);
   });
 
   test("reason falls back to a default so an audit row is never blocked", () => {
     expect(region).toContain('const editReason = (req.body?.reason as string | undefined)?.trim() || "bill edit";');
+  });
+
+  test("P0-1: generic PUT does not write bill status", () => {
+    expect(region).not.toMatch(/if \(status !== undefined\) updateData\.status/);
+    expect(region).toContain("const { discount, dueDate } = bodyParsed.data");
+  });
+
+  test("P0-1: empty update (stripped status-only body) is a no-op, not a 500", () => {
+    expect(region).toContain("if (Object.keys(updateData).length === 0)");
+    expect(region).toContain("await buildBill(existingBill)");
   });
 });
 
@@ -70,20 +75,18 @@ describe("PUT /bills/:id — post-close edits are flagged", () => {
     expect(region).toContain("isBeforeClosureBoundary(new Date(updated.createdAt), boundary)");
   });
 
-  test("the warning is computed only when status/discount actually changed", () => {
-    expect(region).toContain("if (statusChanged || discountChanged) {");
+  test("the warning is computed when discount or dueDate actually changed", () => {
+    expect(region).toContain("if (discountChanged || dueDateChanged) {");
   });
 
   test("a post-close edit is recorded in the audit reason", () => {
     expect(region).toContain("closedPeriodWarning?.billCreatedBeforeClose");
     expect(region).toContain("post-close edit: period closed at");
-    // Audit rows carry the annotated reason.
     expect(region).toContain("reason: auditReason");
   });
 
   test("the notice is advisory — it is returned, never thrown or blocking", () => {
     expect(region).toContain("res.json({ ...(await buildBill(updated)), closedPeriodWarning });");
-    // The closure lookup must not be able to fail the edit.
     expect(region).toContain("Closed-period check failed — edit still succeeded, notice omitted");
   });
 });

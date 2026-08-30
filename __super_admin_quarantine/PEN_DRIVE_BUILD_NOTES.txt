@@ -16,6 +16,14 @@ Copy onto the pen drive (TOP level):
   superadmin.pin   (existing — optional)
   READ_ME_FIRST.txt
 
+2026-08-30 — P0-3 full_payment_collected after refund:
+  Referral Report + Doctor Ledger pass bill totalAmount into
+  computeCommissionHold. Eligibility uses net paidAmount vs total
+  (paidAmount is already decremented on refund); balanceAmount alone
+  stays 0 after refunds and must not release commission.
+  Rebuild both plugin files and copy onto the pen drive. Requires
+  matching care-api deploy with the same commissionCalc fix.
+
 2026-08-01 — Referral report search + commission wiring:
   Searchable/scrollable doctor picker on Referral Report + Commission Rules
   (fixes list "not moving"). Matching hardened: coerce string testIds,

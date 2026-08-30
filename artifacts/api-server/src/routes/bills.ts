@@ -1369,7 +1369,10 @@ billsRouter.put("/:id", requireStaffSubPermission("/billing", "edit"), async (re
     res.status(400).json({ error: "Invalid request" });
     return;
   }
-  const { discount, status, dueDate } = bodyParsed.data;
+  // Status transitions are intentionally excluded from UpdateBillBody — use
+  // POST /:id/cancel, payment collection, or POST /:id/refund so cascade /
+  // audit / accounting side effects always run.
+  const { discount, dueDate } = bodyParsed.data;
 
   const [existingBill] = await db.select().from(billsTable).where(eq(billsTable.id, paramsParsed.data.id));
   if (!existingBill) {
@@ -1378,7 +1381,6 @@ billsRouter.put("/:id", requireStaffSubPermission("/billing", "edit"), async (re
   }
 
   const updateData: Record<string, unknown> = {};
-  if (status !== undefined) updateData.status = status;
   if (dueDate !== undefined) updateData.dueDate = dueDate;
   if (discount !== undefined) {
     const newDiscount = Number(discount);
@@ -1423,6 +1425,14 @@ billsRouter.put("/:id", requireStaffSubPermission("/billing", "edit"), async (re
     updateData.balanceAmount = String(newBalance);
   }
 
+  // Status (and any other unknown keys) are stripped by UpdateBillBody. An
+  // empty set would throw drizzle "No values to set" → HTTP 500; treat as a
+  // no-op so a stale client sending only `status` cannot mutate or crash.
+  if (Object.keys(updateData).length === 0) {
+    res.json({ ...(await buildBill(existingBill)), closedPeriodWarning: null });
+    return;
+  }
+
   const [updated] = await db.update(billsTable).set(updateData).where(eq(billsTable.id, paramsParsed.data.id)).returning();
 
   // Always-on advisory audit: a discount edit that exceeds 50% of the active
@@ -1456,16 +1466,16 @@ billsRouter.put("/:id", requireStaffSubPermission("/billing", "edit"), async (re
   // Audit trail + email notification.
   // The actor is taken from the authenticated session, never trusted from the
   // request body. Previously the whole block was gated on a client-supplied
-  // `editedBy`, so a bill status/discount change could be misattributed (spoofed
+  // `editedBy`, so a bill discount change could be misattributed (spoofed
   // editedBy) or — worse — skip auditing entirely simply by omitting the field.
-  // A real status/discount change is now ALWAYS audited under the session actor;
+  // A real discount change is now ALWAYS audited under the session actor;
   // `reason` falls back to a default when the caller omits one.
   const editActor = req.staffSession?.subjectName?.trim()
     || (req.body?.editedBy as string | undefined)?.trim()
     || (req.staffSession ? `staff:${req.staffSession.id}` : "unknown");
   const editReason = (req.body?.reason as string | undefined)?.trim() || "bill edit";
-  const statusChanged   = status !== undefined && status !== existingBill.status;
   const discountChanged = discount !== undefined && String(discount) !== existingBill.discount;
+  const dueDateChanged = dueDate !== undefined && dueDate !== existingBill.dueDate;
 
   // Post-close edit notice — reuses the SAME boundary helpers as /:id/cancel
   // and /:id/refund, which already surface this for money-moving operations.
@@ -1475,7 +1485,7 @@ billsRouter.put("/:id", requireStaffSubPermission("/billing", "edit"), async (re
   // stamped into the audit reason so the trail itself records that the edit
   // landed on a closed period.
   let closedPeriodWarning: { billCreatedBeforeClose: boolean; lastClosureAt: string | null } | null = null;
-  if (statusChanged || discountChanged) {
+  if (discountChanged || dueDateChanged) {
     try {
       const boundary = await lastOverallClosureBoundary();
       closedPeriodWarning = {
@@ -1494,13 +1504,20 @@ billsRouter.put("/:id", requireStaffSubPermission("/billing", "edit"), async (re
     const auditEntries: { billId: number; editedBy: string; reason: string; changeType: string; oldValue: string | null; newValue: string | null }[] = [];
     const emailChanges: { field: string; from: string | null; to: string | null }[] = [];
 
-    if (statusChanged) {
-      auditEntries.push({ billId: paramsParsed.data.id, editedBy: editActor, reason: auditReason, changeType: "status", oldValue: existingBill.status, newValue: status });
-      emailChanges.push({ field: "Status", from: existingBill.status, to: status });
-    }
     if (discountChanged) {
       auditEntries.push({ billId: paramsParsed.data.id, editedBy: editActor, reason: auditReason, changeType: "discount", oldValue: existingBill.discount, newValue: String(discount) });
       emailChanges.push({ field: "Discount (₹)", from: existingBill.discount, to: String(discount) });
+    }
+    if (dueDateChanged) {
+      auditEntries.push({
+        billId: paramsParsed.data.id,
+        editedBy: editActor,
+        reason: auditReason,
+        changeType: "due_date",
+        oldValue: existingBill.dueDate ?? null,
+        newValue: dueDate ?? null,
+      });
+      emailChanges.push({ field: "Due date", from: existingBill.dueDate ?? null, to: dueDate ?? null });
     }
     if (auditEntries.length > 0) {
       await db.insert(billAuditsTable).values(auditEntries);

@@ -408,8 +408,16 @@ export function computeCommissionHold(opts: {
   cfg: EligibilityConfig;
   hasBill: boolean;
   billStatus: string | null;
+  /** Net retained collection (refunds already decrement this — do NOT subtract refundAmount again). */
   paidAmount: number;
+  /**
+   * Patient balance (total − paid − refund). Correct for dues UI, but NOT a
+   * proxy for "full payment collected": after a full pay + refund, balance can
+   * still be 0 while net retained collection is below the bill total.
+   */
   balanceAmount: number;
+  /** Bill totalAmount — used by full_payment_collected against net paidAmount. */
+  totalAmount: number;
   reportFinalized: boolean;
   reportDelivered: boolean;
   commissionAmount: number;
@@ -426,13 +434,16 @@ export function computeCommissionHold(opts: {
     case "report_delivered":
       return opts.reportDelivered ? { held: false, reason: null } : { held: true, reason: "Report not delivered" };
     case "min_amount_collected":
+      // paidAmount is already net of refunds — correct collection semantic.
       return opts.paidAmount + 0.005 >= opts.cfg.minAmount
         ? { held: false, reason: null }
         : { held: true, reason: `Collected ${rs(opts.paidAmount)} < min ${rs(opts.cfg.minAmount)}` };
     case "full_payment_collected":
-      return opts.balanceAmount <= 0.005
+      // Use net paidAmount vs totalAmount. balanceAmount alone is wrong after
+      // refunds (balance stays 0 while retained collection drops below total).
+      return opts.paidAmount + 0.005 >= opts.totalAmount
         ? { held: false, reason: null }
-        : { held: true, reason: `Outstanding dues ${rs(opts.balanceAmount)}` };
+        : { held: true, reason: `Collected ${rs(opts.paidAmount)} < bill total ${rs(opts.totalAmount)}` };
     case "collected_ge_commission":
       return opts.paidAmount + 0.005 >= opts.commissionAmount
         ? { held: false, reason: null }

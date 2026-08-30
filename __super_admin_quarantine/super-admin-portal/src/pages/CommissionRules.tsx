@@ -60,7 +60,7 @@ const ELIGIBILITY_OPTIONS: { value: EligibilityPolicy; label: string; descriptio
   { value: "report_finalized", label: "Report Finalized", description: "Payable once every test's report is verified / finalized." },
   { value: "report_delivered", label: "Report Delivered", description: "Payable once every test's report is delivered to the patient." },
   { value: "min_amount_collected", label: "Minimum Amount Collected", description: "Payable once collections on the bill reach the minimum amount set below." },
-  { value: "full_payment_collected", label: "Full Payment Collected", description: "Payable only once the bill is fully paid (no outstanding dues).", recommended: true },
+  { value: "full_payment_collected", label: "Full Payment Collected", description: "Payable only once net collection (paid after refunds) covers the bill total — not merely when patient balance is zero.", recommended: true },
   { value: "collected_ge_commission", label: "Collected ≥ Commission", description: "Payable once collections on the bill cover at least the commission amount." },
 ];
 

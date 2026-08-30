@@ -46,7 +46,7 @@ type PaymentForm = {
 
 type EditForm = {
   discount: number;
-  status: string;
+  dueDate: string;
   editedBy: string;
   reason: string;
 };
@@ -117,7 +117,6 @@ type BillAudit = {
 };
 
 const PAYMENT_METHODS = ["cash", "card", "upi", "insurance", "cheque"];
-const BILL_STATUSES = ["pending", "partial", "paid", "cancelled"];
 
 // ─── Print helpers ────────────────────────────────────────────────────────
 // We render the receipt into a freshly-opened popup window using a fully-
@@ -464,8 +463,8 @@ export default function BillDetail({ id }: { id: number }) {
   });
 
   const { register, handleSubmit, reset, setValue, watch } = useForm<PaymentForm>({ defaultValues: { method: "cash" } });
-  const { register: regEdit, handleSubmit: handleEdit, reset: resetEdit, setValue: setEditVal, watch: watchEdit } = useForm<EditForm>({
-    defaultValues: { discount: 0, status: "pending", editedBy: "", reason: "" },
+  const { register: regEdit, handleSubmit: handleEdit, reset: resetEdit } = useForm<EditForm>({
+    defaultValues: { discount: 0, dueDate: "", editedBy: "", reason: "" },
   });
   const { register: regSuperEdit, handleSubmit: handleSuperEdit, reset: resetSuperEdit, watch: watchSuperEdit } = useForm<SuperEditForm>({
     defaultValues: { subtotal: 0, discount: 0, taxAmount: 0, reason: "" },
@@ -495,7 +494,7 @@ export default function BillDetail({ id }: { id: number }) {
   const onEditSubmit = handleEdit((d) => {
     updateBill.mutate({
       discount: Number(d.discount),
-      status: d.status,
+      dueDate: d.dueDate?.trim() ? d.dueDate.trim() : null,
       editedBy: d.editedBy,
       reason: d.reason,
     });
@@ -597,7 +596,7 @@ export default function BillDetail({ id }: { id: number }) {
 
   const openEdit = () => {
     if (!bill) return;
-    resetEdit({ discount: bill.discount, status: bill.status, editedBy: "", reason: "" });
+    resetEdit({ discount: bill.discount, dueDate: bill.dueDate ?? "", editedBy: "", reason: "" });
     setEditOpen(true);
   };
 
@@ -1148,13 +1147,11 @@ export default function BillDetail({ id }: { id: number }) {
               <p className="text-xs text-muted-foreground mt-1">Current: {formatCurrency(bill.discount)}</p>
             </div>
             <div>
-              <Label>Bill Status</Label>
-              <Select defaultValue={bill.status} onValueChange={(v) => setEditVal("status", v)}>
-                <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {BILL_STATUSES.map(s => <SelectItem key={s} value={s} className="capitalize">{s}</SelectItem>)}
-                </SelectContent>
-              </Select>
+              <Label>Due date</Label>
+              <Input type="date" {...regEdit("dueDate")} className="mt-1" />
+              <p className="text-xs text-muted-foreground mt-1">
+                Status changes (paid / cancelled) use Refund / Cancel — not this form — so payment and cascade rules always run.
+              </p>
             </div>
             <div className="border-t border-border pt-4 space-y-3">
               <p className="text-xs font-semibold uppercase text-muted-foreground">Edit Reason (Required for audit)</p>
@@ -1164,7 +1161,7 @@ export default function BillDetail({ id }: { id: number }) {
               </div>
               <div>
                 <Label>Reason for Edit *</Label>
-                <Input {...regEdit("reason", { required: true })} className="mt-1" placeholder="e.g., Applied loyalty discount, Status correction" />
+                <Input {...regEdit("reason", { required: true })} className="mt-1" placeholder="e.g., Applied loyalty discount" />
               </div>
             </div>
             <div className="flex justify-end gap-2 pt-2">

@@ -1,0 +1,27 @@
+SUPER ADMIN PEN DRIVE — P0-3 COMMISSION REFUND FIX (2026-08-30)
+================================================================
+
+Contents (NO secrets — keep your existing key/pin):
+  superadmin-api.js   <- rebuilt with totalAmount eligibility for full_payment_collected
+  superadmin-ui.js    <- current UI bundle (eligibility maths live in the API plugin)
+  INSTALL.txt         <- this file
+
+INSTALL
+  1. Deploy/merge care-api with PR #650 (commissionCalc + cron totalAmount) first.
+  2. On the pen drive TOP level, replace:
+       superadmin-api.js
+       superadmin-ui.js
+     Keep your existing superadmin.key and superadmin.pin unchanged.
+  3. On a billing PC: plug in the drive, open ERP, Ctrl+Shift+K (or portal pair)
+     so the new superadmin-api.js is uploaded to the server.
+  4. Open Referral Report / Doctor Due for last month — refunded bills should
+     no longer stay "eligible" merely because patient balance is ₹0.
+
+WHAT CHANGED
+  full_payment_collected now requires net paidAmount >= bill totalAmount.
+  paidAmount is already reduced on refund; do not subtract refundAmount again.
+  Already-paid/frozen commission lines are not clawed back.
+
+REQUIRES
+  Matching care-api on the NAS (same commissionCalc). API-only deploy fixes
+  hourly reconcile; this zip fixes Super Admin Referral / Doctor Ledger screens.

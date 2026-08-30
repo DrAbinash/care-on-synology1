@@ -128,16 +128,24 @@ async function computeEarned(opts: { from?: string; to?: string; doctorId?: numb
   // Bill payment state per order (for payment-based eligibility policies).
   // Billed + non-cancelled only — unbilled duplicates never enter earned totals.
   const billsForOrders = orderIds.length
-    ? await db.select({ orderId: billsTable.orderId, status: billsTable.status, paidAmount: billsTable.paidAmount, balanceAmount: billsTable.balanceAmount, discount: billsTable.discount })
+    ? await db.select({
+        orderId: billsTable.orderId,
+        status: billsTable.status,
+        paidAmount: billsTable.paidAmount,
+        balanceAmount: billsTable.balanceAmount,
+        totalAmount: billsTable.totalAmount,
+        discount: billsTable.discount,
+      })
         .from(billsTable).where(inArray(billsTable.orderId, orderIds))
     : [];
   const billByOrderRaw = indexCommissionBillsByOrderId(billsForOrders);
-  const billByOrderId = new Map<number, { status: string | null; paid: number; balance: number; discount: number }>();
+  const billByOrderId = new Map<number, { status: string | null; paid: number; balance: number; total: number; discount: number }>();
   for (const [oid, b] of billByOrderRaw) {
     billByOrderId.set(oid, {
       status: b.status ?? null,
       paid: Number(b.paidAmount ?? 0),
       balance: Number(b.balanceAmount ?? 0),
+      total: Number(b.totalAmount ?? 0),
       discount: Number(b.discount ?? 0),
     });
   }
@@ -208,6 +216,7 @@ async function computeEarned(opts: { from?: string; to?: string; doctorId?: numb
         billStatus: bill?.status ?? null,
         paidAmount: bill?.paid ?? 0,
         balanceAmount: bill?.balance ?? 0,
+        totalAmount: bill?.total ?? 0,
         reportFinalized: rep?.finalized ?? false,
         reportDelivered: rep?.delivered ?? false,
         commissionAmount: liveNet,
