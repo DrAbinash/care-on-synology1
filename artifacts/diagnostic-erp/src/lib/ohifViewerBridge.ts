@@ -276,7 +276,7 @@ export async function handleCareOhifMessage(
     }
   }
 
-  const draftId = msg.draftId ?? ctx.draftId;
+  const draftId = ctx.draftId;
   if (!draftId) return "error";
   try {
     const refs = ctx.getImageRefs?.() ?? [];

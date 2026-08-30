@@ -164,6 +164,29 @@ describe("ohifViewerBridge", () => {
     );
   });
 
+  it("binds key-image draftId from CARE context, ignoring hostile message override", async () => {
+    const r = await handleCareOhifMessage(
+      {
+        source: CARE_OHIF_SOURCE,
+        type: "key-image",
+        studyInstanceUID: "1.2.3",
+        seriesInstanceUID: "1.2.3.4",
+        sopInstanceUID: "1.2.3.4.5",
+        draftId: 9999,
+        studyId: 888,
+      },
+      { patientId: 42, studyId: 7, draftId: 55, studyInstanceUID: "1.2.3", getImageRefs: () => [] },
+    );
+    expect(r).toBe("ok");
+    expect(api.post).toHaveBeenCalledWith(
+      "/api/radiology/report-generator/image-references",
+      expect.objectContaining({
+        draftId: 55,
+        studyId: 7,
+      }),
+    );
+  });
+
   it("does not tag unlabeled disc-level ruler as CANAL_AP without intent", async () => {
     const r = await handleCareOhifMessage(
       {
