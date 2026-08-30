@@ -1,6 +1,6 @@
-import { build as esbuild } from "esbuild";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import fs from "node:fs/promises";
@@ -10,6 +10,11 @@ const execPromise = promisify(exec);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..");
 const API_DIR = path.resolve(REPO_ROOT, "artifacts/api-server");
+
+// Quarantine folder is outside the pnpm workspace — resolve esbuild from
+// api-server's installed deps.
+const requireFromApi = createRequire(path.join(API_DIR, "package.json"));
+const { build: esbuild } = requireFromApi("esbuild");
 
 // ─── Put back exactly what we overwrote ──────────────────────────────────────
 // This build temporarily writes real source into artifacts/api-server/src, then

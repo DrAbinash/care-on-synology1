@@ -1024,14 +1024,25 @@ export async function computeReferralReport(q: { from?: string; to?: string; doc
 
   const billsForOrders = orderIds.length
     ? await db
-        .select({ orderId: billsTable.orderId, billNumber: billsTable.billNumber, discount: billsTable.discount, subtotal: billsTable.subtotal, status: billsTable.status, paidAmount: billsTable.paidAmount, balanceAmount: billsTable.balanceAmount })
+        .select({
+          orderId: billsTable.orderId,
+          billNumber: billsTable.billNumber,
+          discount: billsTable.discount,
+          subtotal: billsTable.subtotal,
+          status: billsTable.status,
+          paidAmount: billsTable.paidAmount,
+          balanceAmount: billsTable.balanceAmount,
+          // Needed for full_payment_collected: paidAmount is net of refunds;
+          // balance alone stays 0 after a refund and must not gate eligibility.
+          totalAmount: billsTable.totalAmount,
+        })
         .from(billsTable).where(inArray(billsTable.orderId, orderIds))
     : [];
 
   // Billed + non-cancelled only. Unbilled duplicate orders must not generate
   // commission rows (they previously appeared as held "Not billed" lines).
   const billByOrderRaw = indexCommissionBillsByOrderId(billsForOrders);
-  const billByOrderId = new Map<number, { billNumber: string; discount: number; subtotal: number; status: string | null; paid: number; balance: number }>();
+  const billByOrderId = new Map<number, { billNumber: string; discount: number; subtotal: number; status: string | null; paid: number; balance: number; total: number }>();
   for (const [oid, b] of billByOrderRaw) {
     billByOrderId.set(oid, {
       billNumber: b.billNumber,
@@ -1040,6 +1051,7 @@ export async function computeReferralReport(q: { from?: string; to?: string; doc
       status: b.status ?? null,
       paid: Number(b.paidAmount ?? 0),
       balance: Number(b.balanceAmount ?? 0),
+      total: Number(b.totalAmount ?? 0),
     });
   }
 
@@ -1143,6 +1155,7 @@ export async function computeReferralReport(q: { from?: string; to?: string; doc
         billStatus: bill?.status ?? null,
         paidAmount: bill?.paid ?? 0,
         balanceAmount: bill?.balance ?? 0,
+        totalAmount: bill?.total ?? 0,
         reportFinalized: rep?.finalized ?? false,
         reportDelivered: rep?.delivered ?? false,
         commissionAmount: net,
