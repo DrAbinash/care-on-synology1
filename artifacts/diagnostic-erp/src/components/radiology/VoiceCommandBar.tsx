@@ -32,6 +32,8 @@ export default function VoiceCommandBar({
   onComposerDiscard,
   onComposerEditRaw,
   onComposerPhraseFallback,
+  onAddAsFinding,
+  onAddAsNote,
 }: {
   voice: VoiceSession;
   /** Render controls inline (no second full-width toolbar row). */
@@ -44,6 +46,10 @@ export default function VoiceCommandBar({
   onComposerDiscard?: () => void;
   onComposerEditRaw?: () => void;
   onComposerPhraseFallback?: () => void;
+  /** Prefill Finding Composer from dictation (review required — does not auto-commit). */
+  onAddAsFinding?: () => void;
+  /** Insert transcript as protected free-text note (no same-slot). */
+  onAddAsNote?: () => void;
 }) {
   const [helpOpen, setHelpOpen] = useState(false);
 
@@ -259,6 +265,37 @@ export default function VoiceCommandBar({
           </div>
         </div>
       )}
+
+      {/* Dictation destinations: structured review vs free-text note */}
+      {(onAddAsFinding || onAddAsNote) && (voice.pending?.editableText || composerPreview?.transcript) ? (
+        <div className="flex items-center gap-1.5 px-1 py-0.5" data-testid="dictation-destinations">
+          <span className="text-[9px] uppercase tracking-wider text-muted-foreground shrink-0">Dictate</span>
+          {onAddAsFinding ? (
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-6 text-[10px] px-1.5"
+              data-testid="dictate-add-as-finding"
+              onClick={() => onAddAsFinding()}
+              title="Review as structured finding in the composer (not auto-committed)"
+            >
+              Add as Finding
+            </Button>
+          ) : null}
+          {onAddAsNote ? (
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-6 text-[10px] px-1.5"
+              data-testid="dictate-add-as-note"
+              onClick={() => onAddAsNote()}
+              title="Insert as protected free-text note"
+            >
+              Add as Note
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
 
       {/* Help popover — the grammar, straight from the parser */}
       {/* Voice Report Composer preview */}

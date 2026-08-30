@@ -194,12 +194,20 @@ import { buildLumbarLevelApplyBundle, deriveCanvasNarrativeState, ledgerSeverity
 import {
   AnchorRail,
   CoverageCockpit,
+  FindingComposer,
   GhostLayer,
   MriLumbarCanvas,
   ObservationLedgerPanel,
   ContradictionBanner,
   ImpressionStaleBanner,
+  useFindingComposerDraft,
 } from "@/components/radiology/reporting-canvas";
+import {
+  buildComposerCatalog,
+  draftFromObservation,
+  emptyComposerDraft,
+  proposeComposerFromTranscript,
+} from "@/lib/findingComposerModel";
 import { defaultCoverageMarks } from "@/lib/coverageMarks";
 import {
   canalApToPdfRows,
@@ -1218,6 +1226,24 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     onToast: (opts) => toast({ title: opts.title, description: opts.description, variant: opts.variant }),
   });
 
+  const composerRegion = studySetup.matchedStudyRegion ?? studySetup.studyRegions[0] ?? "LS Spine";
+  const [composerDraft, setComposerDraft] = useFindingComposerDraft(composerRegion);
+  const [composerBanner, setComposerBanner] = useState<string | null>(null);
+  const [composerQuickFindings, setComposerQuickFindings] = useState<QuickFinding[]>([]);
+
+  const openComposerForObservation = useCallback((observationId: string) => {
+    const patch = useWorkspace.getState().appliedPathologyPatches.find((p) => p.id === observationId);
+    if (!patch) return;
+    const catalog = buildComposerCatalog(
+      composerQuickFindings.length ? composerQuickFindings : quickFindingTemplatesRef.current,
+      composerRegion,
+    );
+    setComposerDraft(draftFromObservation(patch, catalog, composerRegion));
+    setComposerBanner(null);
+    useWorkspace.getState().setSelectedObservationId(observationId);
+    activateReportSection("findings");
+  }, [composerQuickFindings, composerRegion, activateReportSection]);
+
   const { data: composerConfig } = useQuery<{ enabled: boolean; composerModel?: string }>({
     queryKey: ["voice-composer-config"],
     queryFn: () => api.get("/api/radiology/voice-report-composer/config"),
@@ -1272,6 +1298,51 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     voiceComposer.discardPreview();
     voiceSession.cancel();
   }, [voiceComposer, voiceSession]);
+
+  const dictationTranscript = useCallback(() => {
+    return (
+      voiceComposer.preview?.transcript
+      ?? voiceSession.pending?.editableText
+      ?? ""
+    ).trim();
+  }, [voiceComposer.preview?.transcript, voiceSession.pending?.editableText]);
+
+  const dictateAddAsNote = useCallback(() => {
+    if (isLocked || isFinalized) return;
+    const text = dictationTranscript();
+    if (!text) return;
+    useWorkspace.getState().mergeField("findings", text, "radiologist-voice");
+    voiceComposer.discardPreview();
+    voiceSession.cancel();
+    setComposerBanner(null);
+  }, [dictationTranscript, isLocked, isFinalized, voiceComposer, voiceSession]);
+
+  const dictateAddAsFinding = useCallback(() => {
+    if (isLocked || isFinalized) return;
+    const text = dictationTranscript();
+    if (!text) return;
+    const catalog = buildComposerCatalog(
+      composerQuickFindings.length ? composerQuickFindings : quickFindingTemplatesRef.current,
+      composerRegion,
+    );
+    const proposal = proposeComposerFromTranscript(text, catalog, composerRegion);
+    if (proposal.confidence === "high" && proposal.catalogKey) {
+      setComposerDraft({
+        ...emptyComposerDraft(composerRegion),
+        ...proposal.draft,
+        catalogKey: proposal.catalogKey,
+        region: composerRegion,
+        editingId: null,
+      });
+      setComposerBanner("From dictation — review in the composer, then Add Finding. Not committed yet.");
+    } else {
+      setComposerDraft(emptyComposerDraft(composerRegion));
+      setComposerBanner("Dictation could not be mapped confidently — use Add as Note, or pick a finding in the composer.");
+    }
+    activateReportSection("findings");
+  }, [
+    dictationTranscript, isLocked, isFinalized, composerQuickFindings, composerRegion, activateReportSection,
+  ]);
 
   const [microInstruction, setMicroInstruction] = useState("");
   const [aiFinalizeGate, setAiFinalizeGate] = useState<"idle" | "pending">("idle");
@@ -3512,6 +3583,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
               onComposerDiscard={voiceComposer.discardPreview}
               onComposerPhraseFallback={() => void voiceComposer.requestPhraseFallback()}
               onComposerEditRaw={insertRawDictation}
+              onAddAsFinding={dictateAddAsFinding}
+              onAddAsNote={dictateAddAsNote}
             />
           )}
           {/* Save button */}
@@ -4307,12 +4380,31 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       </>
                     )}
 
+                    <FindingComposer
+                      region={composerRegion}
+                      quickFindings={composerQuickFindings.length ? composerQuickFindings : quickFindingTemplatesRef.current}
+                      draft={composerDraft}
+                      onDraftChange={(d) => {
+                        setComposerDraft(d);
+                        if (!d.editingId) setComposerBanner(null);
+                      }}
+                      disabled={isLocked || isFinalized}
+                      banner={composerBanner}
+                      onApplied={(status) => {
+                        if (status === "applied") setComposerBanner(null);
+                        if (status === "pending") {
+                          toast({ title: "Confirm replacement", description: "Same-slot finding needs confirmation." });
+                        }
+                      }}
+                    />
+
                     <ObservationLedgerPanel
                       patches={appliedPathologyPatches}
                       findingsText={findingsText}
                       selectedId={selectedObservationId}
                       keyImageCounts={keyImageCounts}
                       measurementChips={measurementChips}
+                      impressionDisabled={isLocked || isFinalized}
                       onOpenKeyImages={(id) => {
                         setKeyImageFilterObsId(id);
                         useWorkspace.getState().setSelectedObservationId(id);
@@ -4343,6 +4435,13 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                               targetOrigin: ohifTargetOriginRef.current,
                             });
                           }
+                        }
+                      }}
+                      onEdit={openComposerForObservation}
+                      onToggleImpression={(id, include) => {
+                        const r = useWorkspace.getState().setObservationImpressionParticipation(id, include);
+                        if (r === "blocked") {
+                          toast({ title: "Report is finalized", variant: "destructive" });
                         }
                       }}
                       onSelect={(id) => {
@@ -4602,7 +4701,10 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                             onAcceptLearnedSuggestion={(text) => {
                               useWorkspace.getState().mergeField("recommendation", text, "quick-findings");
                             }}
-                            onFindingsLoaded={(findings) => { quickFindingTemplatesRef.current = findings; }}
+                            onFindingsLoaded={(findings) => {
+                              quickFindingTemplatesRef.current = findings;
+                              setComposerQuickFindings(findings);
+                            }}
                             externalSearch={qsExternalSearch}
                             selectedStudyTabId={studySetup.selectedStudyTabId}
                             selectedStudyTabName={studySetup.matchedStudyRegion}
