@@ -81,9 +81,10 @@ export function normalizeTranscript(raw: string): string {
     .trim();
 }
 
-/** Conservative dictation-text normalization (Phase 9): radiology lexicon,
- *  spoken punctuation, optional first-capital + terminal period. Never
- *  reinterprets clinical meaning beyond known spoken aliases. */
+/** Conservative dictation-text normalization (Phase 9 + voice hardening):
+ *  spinal levels, measurements, context-aware punctuation, radiology vocab.
+ *  Never reinterprets clinical meaning beyond known spoken aliases.
+ *  Preserves raw vs normalized via normalizeRadiologyDictation when needed. */
 export function normalizeDictationText(text: string, opts: { autoPunctuation: boolean }): string {
   let out = applyRadiologyVoiceLexicon(text);
   if (opts.autoPunctuation && out) {

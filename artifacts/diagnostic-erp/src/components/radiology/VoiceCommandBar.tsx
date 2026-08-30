@@ -53,20 +53,13 @@ export default function VoiceCommandBar({
 }) {
   const [helpOpen, setHelpOpen] = useState(false);
 
-  const statusText = !voice.enabled
-    ? "Voice unavailable"
-    : voice.trouble
-      ? voice.trouble.kind === "permission" ? "Mic permission denied"
-        : voice.trouble.kind === "offline" ? "Offline"
-        : "Error"
-      : voice.phase === "listening" ? "Listening…"
-      : voice.phase === "processing" ? "Processing…"
-      : "Ready";
-
-  const statusCls = !voice.enabled || voice.trouble
+  const statusText = voice.statusLabel;
+  const statusCls = !voice.enabled || voice.uiState === "unsupported" || voice.uiState === "error"
     ? "bg-red-50 text-red-800 border-red-300"
-    : voice.phase === "listening" ? "bg-green-100 text-green-800 border-green-300"
-    : voice.phase === "processing" ? "bg-blue-50 text-blue-800 border-blue-300"
+    : voice.uiState === "listening" || voice.uiState === "requesting-permission"
+      ? "bg-green-100 text-green-800 border-green-300"
+    : voice.uiState === "processing" ? "bg-blue-50 text-blue-800 border-blue-300"
+    : voice.uiState === "ready" ? "bg-emerald-50 text-emerald-900 border-emerald-300"
     : "bg-slate-100 text-slate-700 border-slate-300";
 
   const controls = (
@@ -123,12 +116,12 @@ export default function VoiceCommandBar({
           className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 border text-[10px] font-semibold shrink-0 ${statusCls}`}
           title={voice.providerLabel}
         >
-          {voice.phase === "listening" && (
+          {voice.phase === "listening" || voice.phase === "requesting-permission" ? (
             <span className="relative flex h-1.5 w-1.5">
               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-500 opacity-75" />
               <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-red-600" />
             </span>
-          )}
+          ) : null}
           {voice.phase === "processing" && <Loader2 size={9} className="animate-spin" />}
           {statusText}
         </span>
@@ -244,6 +237,12 @@ export default function VoiceCommandBar({
               placeholder="Edit the dictated text before inserting…"
             />
           )}
+          {voice.pending.rawTranscript && voice.pending.editableText != null
+            && voice.pending.rawTranscript.trim() !== voice.pending.editableText.trim() ? (
+            <div className="text-[10px] text-muted-foreground" data-testid="voice-raw-transcript">
+              Raw STT: “{voice.pending.rawTranscript}”
+            </div>
+          ) : null}
           <div className="flex items-center gap-2">
             {!voice.pending.verdict.blocked && voice.pending.parse.intent && (
               <Button size="sm" className="h-6 text-[10px] gap-1" data-testid="voice-confirm"

@@ -593,6 +593,8 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     setTimeout(() => get().recomputeCopilot(), 0);
   },
   mergeField: (f, incoming, source) => {
+    // Store-level guard: voice notes must never land on a finalized report.
+    if (get().isFinalized && source === "radiologist-voice") return;
     const key = fieldTextKey(f);
     const existing = get()[key];
     const existingProvenance = get().fieldProvenance[f] ?? EMPTY_FIELD_PROVENANCE;

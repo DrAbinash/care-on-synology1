@@ -22,11 +22,12 @@ import {
   evaluateVoiceCommand, shouldAuditVoiceCommand,
   type VoiceContext, type VoiceSafetyVerdict,
 } from "@/lib/voiceSafetyPolicy";
-import { isStaleVoiceResult, type VoiceCaptureBinding } from "@/lib/voiceSessionState";
+import { isStaleVoiceResult, deriveVoiceUiState, voiceUiStatusLabel, type VoiceCaptureBinding } from "@/lib/voiceSessionState";
 import {
   createVoiceProvider, resolveProviderChoice, isWebSpeechSupported, isInjectedProviderPresent,
   type TranscriptionSession, type VoiceProviderKind, type VoiceSettings, type TranscribeCapabilities,
 } from "@/lib/voiceTranscription";
+import { normalizeRadiologyDictation } from "@/lib/voiceDictationNormalize";
 
 export type VoiceAuditOutcome = "executed" | "cancelled" | "rejected";
 
@@ -42,8 +43,10 @@ export interface VoicePending {
   parse: ParsedVoiceCommand;
   verdict: VoiceSafetyVerdict;
   /** Editable text for dictation intents (Phase 9: transcript stays editable
-   *  before insertion). */
+   *  before insertion). Normalized for display; raw is on parse.rawTranscript. */
   editableText: string | null;
+  /** Un-normalized engine transcript for the active dictation session. */
+  rawTranscript?: string | null;
 }
 
 export interface UseVoiceSessionOptions {
@@ -57,11 +60,14 @@ export interface UseVoiceSessionOptions {
    *  command dispatcher; edits go through the same setters buttons use. */
   execute: (parse: ParsedVoiceCommand) => VoiceExecutionResult;
   onAudit: (commandType: "finalize" | "verify", outcome: VoiceAuditOutcome) => void;
-  /** Optional AI polish for dictation text before the confirm preview opens. */
+  /**
+   * Optional polish for dictation text. Prefer deterministic normalization
+   * only — do NOT wire an autonomous rewriting model here for clinical safety.
+   */
   cleanupDictation?: (raw: string) => Promise<string>;
 }
 
-export type VoicePhase = "idle" | "listening" | "processing";
+export type VoicePhase = "idle" | "requesting-permission" | "listening" | "processing";
 export type VoiceTrouble = { kind: "permission" | "offline" | "error"; message: string } | null;
 
 export function useVoiceSession(options: UseVoiceSessionOptions) {
@@ -201,14 +207,14 @@ export function useVoiceSession(options: UseVoiceSessionOptions) {
       return;
     }
     if (mode === "dictation") {
-      // Dictation mode: the whole utterance is text for the selected editor;
-      // ALWAYS previewed + editable before insertion (Phase 9), append-only.
-      // Optional AI cleanup runs before the preview so radiologists edit polished text.
-      const baseText = normalizeDictationText(transcript, { autoPunctuation: current.settings.autoPunctuation });
+      // Dictation mode: whole utterance → deterministic normalize → editable preview.
+      // NEVER auto-submit. Optional cleanupDictation must stay conservative (no AI rewrite).
+      const { rawTranscript, normalizedTranscript } = normalizeRadiologyDictation(transcript);
+      const baseText = normalizeDictationText(normalizedTranscript, { autoPunctuation: current.settings.autoPunctuation });
       const openDictationPreview = (text: string) => {
         const parse: ParsedVoiceCommand = {
-          rawTranscript: transcript,
-          normalizedTranscript: transcript,
+          rawTranscript,
+          normalizedTranscript: text,
           intent: { type: "dictate", target: dictationTarget, mode: "append", text },
           parameters: { text },
           confidenceBand: "CLEAR",
@@ -216,7 +222,7 @@ export function useVoiceSession(options: UseVoiceSessionOptions) {
           parseErrors: [],
         };
         const verdict = evaluateVoiceCommand(parse, current.getContext());
-        setPending({ parse, verdict, editableText: text });
+        setPending({ parse, verdict, editableText: text, rawTranscript });
         setPhase("idle");
         setFeedback(null);
       };
@@ -237,6 +243,7 @@ export function useVoiceSession(options: UseVoiceSessionOptions) {
   }, [mode, dictationTarget, handleParsed]);
 
   const startListening = useCallback((trigger: "ptt" | "toggle") => {
+    // Double-click / rapid Start must never create two recognizers.
     if (!enabled || !providerKind || sessionRef.current) return;
     // A fresh capture supersedes any open preview.
     setPending((prev) => {
@@ -246,6 +253,8 @@ export function useVoiceSession(options: UseVoiceSessionOptions) {
     setTrouble(null);
     setFeedback(null);
     setLastTranscript("");
+    setInterim("");
+    setPhase("requesting-permission");
     nonceRef.current += 1;
     const bound: VoiceCaptureBinding = { studyId: optsRef.current.studyId ?? null, nonce: nonceRef.current };
     bindingRef.current = bound;
@@ -280,6 +289,7 @@ export function useVoiceSession(options: UseVoiceSessionOptions) {
   }, [enabled, providerKind, handleFinalTranscript, auditIfNeeded]);
 
   const stopListening = useCallback(() => {
+    // Explicit Stop terminates recognition; provider prevents auto-restart.
     sessionRef.current?.stop();
   }, []);
 
@@ -335,13 +345,19 @@ export function useVoiceSession(options: UseVoiceSessionOptions) {
       return;
     }
     if (mode === "dictation") {
-      const text = normalizeDictationText(transcript, { autoPunctuation: current.settings.autoPunctuation });
+      const { rawTranscript, normalizedTranscript } = normalizeRadiologyDictation(transcript);
+      const text = normalizeDictationText(normalizedTranscript, { autoPunctuation: current.settings.autoPunctuation });
       const dictParse: ParsedVoiceCommand = {
-        rawTranscript: transcript, normalizedTranscript: transcript,
+        rawTranscript, normalizedTranscript: text,
         intent: { type: "dictate", target: dictationTarget, mode: "append", text },
         parameters: { text }, confidenceBand: "CLEAR", alternatives: [], parseErrors: [],
       };
-      setPending({ parse: dictParse, verdict: evaluateVoiceCommand(dictParse, current.getContext()), editableText: text });
+      setPending({
+        parse: dictParse,
+        verdict: evaluateVoiceCommand(dictParse, current.getContext()),
+        editableText: text,
+        rawTranscript,
+      });
       return;
     }
     handleParsed(parse);
@@ -440,11 +456,12 @@ export function useVoiceSession(options: UseVoiceSessionOptions) {
     });
   }, []);
 
-  // Study switch: abort capture, drop previews — stale results must never
-  // land on the next patient (Phase 5). Nonce bump makes in-flight results stale.
+  // Study switch: abort capture, drop previews — Patient A's dictation must
+  // never silently enter Patient B's report (P0).
   const prevStudyRef = useRef(studyId);
   useEffect(() => {
     if (prevStudyRef.current === studyId) return;
+    const hadUnsaved = pendingRef.current != null || Boolean(sessionRef.current);
     prevStudyRef.current = studyId;
     sessionRef.current?.abort();
     sessionRef.current = null;
@@ -457,20 +474,32 @@ export function useVoiceSession(options: UseVoiceSessionOptions) {
     setAsleep(false);
     asleepRef.current = false;
     setPending(null);
-    setFeedback(null);
+    setTrouble(null);
+    setFeedback(hadUnsaved ? "Study changed — previous dictation discarded" : null);
     setLastUndo(null);
   }, [studyId]);
 
-  // Abort on unmount.
+  // Abort on unmount — no auto-restart after teardown.
   useEffect(() => () => { sessionRef.current?.abort(); }, []);
 
-  const capturing = phase === "listening" || phase === "processing";
+  const capturing = phase === "listening" || phase === "processing" || phase === "requesting-permission";
+
+  const uiState = deriveVoiceUiState({
+    enabled,
+    providerKind,
+    phase,
+    trouble,
+    hasPendingPreview: pending != null,
+  });
+  const statusLabel = voiceUiStatusLabel(uiState, trouble?.kind);
 
   return {
     enabled,
     providerKind,
     providerLabel: providerKind ? createVoiceProvider(providerKind).label : "No provider available",
     phase,
+    uiState,
+    statusLabel,
     capturing,
     captureTrigger,
     trouble,
