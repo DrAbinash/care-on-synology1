@@ -89,7 +89,7 @@ export function letterPadErpPdfLockCss(chrome: CareLetterheadChrome = CARE_LETTE
   const addrPt = chrome.addressFontSize || CARE_LETTERPAD.addressFontSize;
   return `
     /* Presentation-template letter-pad header (Radiology Settings → Report Style) */
-    @page { margin: 8mm 14mm 12mm 14mm !important; }
+    @page { margin: 4mm 6mm 8mm 6mm !important; }
     .letterpad .hdr {
       padding: 0 !important;
       gap: 0 !important;
@@ -147,8 +147,16 @@ export function letterPadErpPdfLockCss(chrome: CareLetterheadChrome = CARE_LETTE
     .letterpad .study-title-bar,
     .letterpad .study-title,
     .letterpad h3,
-    .letterpad .image-panel-heading {
+    .letterpad .image-panel-heading,
+    .letterpad .body,
+    .letterpad .body p,
+    .letterpad .body span {
       letter-spacing: 0 !important;
+      word-spacing: normal !important;
+    }
+    .letterpad .body {
+      text-align: left !important;
+      white-space: pre-wrap !important;
     }
     .letterpad .letterpad-demo-wrap { padding: 3.5mm 0 0 !important; }
     .letterpad .letterpad-demo {

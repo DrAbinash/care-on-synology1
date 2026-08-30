@@ -249,6 +249,8 @@ export interface RadiologyPdfExportInput {
   showLetterpadHeader?: boolean;
   /** Structured measurements (e.g. spine canal AP rows) for the MEASUREMENTS section. */
   measurements?: Array<{ label: string; value: string }>;
+  /** Settings → Doctors master — signature degree + REF. BY enrichment. */
+  doctorsCatalog?: Array<{ name: string; degree?: string | null }>;
 }
 
 export async function exportRadiologyReportToPdf(input: RadiologyPdfExportInput): Promise<void> {
@@ -297,6 +299,6 @@ export async function exportRadiologyReportToPdf(input: RadiologyPdfExportInput)
       },
     },
     input.clinic,
-    { letterhead: input.letterhead },
+    { letterhead: input.letterhead, doctorsCatalog: input.doctorsCatalog },
   );
 }

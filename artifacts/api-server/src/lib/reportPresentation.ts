@@ -199,7 +199,7 @@ export const PRESENTATION_TEMPLATES: PresentationTemplate[] = [
       sectionBg: "#f8fafc", sectionBorder: "#e2e8f0",
       labelColor: "#64748b", valueColor: "#111111", impressionBg: "#fef9c3",
     },
-    layout: { imagePlacement: "side-panel", patientBlockStyle: "stacked", pageMargins: "12mm 14mm" },
+    layout: { imagePlacement: "side-panel", patientBlockStyle: "stacked", pageMargins: "4mm 6mm" },
   },
   {
     id: "care-premium",
@@ -221,7 +221,7 @@ export const PRESENTATION_TEMPLATES: PresentationTemplate[] = [
       sectionBg: "#f8fafc", sectionBorder: "#cbd5e1",
       labelColor: "#64748b", valueColor: "#0f172a", impressionBg: "#eff6ff",
     },
-    layout: { imagePlacement: "side-panel", patientBlockStyle: "table", pageMargins: "10mm 12mm" },
+    layout: { imagePlacement: "side-panel", patientBlockStyle: "table", pageMargins: "4mm 6mm" },
   },
   // Future template ids (R1.2+): "care-v2", "hope", "government",
   // "teleradiology", "patient-copy", "referrer-copy" — register here with
@@ -622,7 +622,7 @@ export function renderReportDocument(
     @media screen {
       html, body { background: #94a3b8; }
       .report-wrapper {
-        max-width: 210mm; min-height: 297mm; margin: 12px auto; padding: 0;
+        max-width: 210mm; min-height: 297mm; margin: 0 auto; padding: 0;
         box-shadow: 0 4px 24px rgba(15, 23, 42, 0.28);
       }
     }
@@ -957,14 +957,20 @@ export function renderReportDocument(
     .letterpad-footer-block { break-inside: avoid; page-break-inside: avoid; page-break-before: avoid; }
     /* Keep radiologist name/degree with the body on page 1, just above footer. */
     .letterpad .sigs {
-      margin-top: 6px;
+      margin-top: auto;
+      margin-bottom: 2mm;
       justify-content: flex-end;
       page-break-inside: avoid;
       page-break-before: avoid;
       break-before: avoid;
+      clear: both;
+      position: relative;
+      z-index: 2;
     }
     .letterpad .sigbox { text-align: right; margin-left: auto; }
     .letterpad .sigline { display: none; }
+    .letterpad .signame { letter-spacing: 0 !important; }
+    .letterpad .sigmeta { letter-spacing: 0 !important; word-spacing: normal !important; }
     ` : ""}
 
     /* ── Print rules (Phase 7: widows/orphans, no split images, no blank pages) ── */

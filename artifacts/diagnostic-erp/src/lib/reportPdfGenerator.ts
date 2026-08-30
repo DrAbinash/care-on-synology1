@@ -19,6 +19,7 @@ import {
   parseMeasurementPt,
   type CareLetterpadChrome,
 } from "./careLetterpadChrome";
+import { resolveDoctorDegreeFromCatalog } from "./reportDemography";
 
 export type PrintSettings = {
   paperSize: "A4" | "A5" | "Letter";
@@ -80,7 +81,8 @@ export const DEFAULT_PRINT_SETTINGS: PrintSettings = {
   orientation: "portrait",
   fontSize: "medium",
   fontFamily: "helvetica",
-  margins: { top: 8, bottom: 30, left: 14, right: 14 },
+  // Tight letter-pad margins — leave only enough bottom for services bar + disclaimer.
+  margins: { top: 4, bottom: 22, left: 8, right: 8 },
   header: {
     enabled: true,
     title: "CARE DIAGNOSTICS",
@@ -296,12 +298,45 @@ function drawFindingsBlock(
   return y;
 }
 
+/**
+ * Collapse text that was stored with a space between every letter
+ * ("A d e t a i l e d" → "Adetailed"). Multi-space gaps are treated as
+ * word boundaries so "A d e t a i l e d   c o n t r a s t" → "Adetailed contrast".
+ * Processes each line independently so a normal first sentence does not block
+ * collapse of a letter-spaced second sentence.
+ */
+export function collapseSpacedOutLetters(raw: string): string {
+  return String(raw ?? "")
+    .split("\n")
+    .map((line) =>
+      line
+        .split(/ {2,}/)
+        .map((chunk) => {
+          const t = chunk.trim();
+          if (!t) return "";
+          const m = /^(?:[A-Za-z0-9]\s)+[A-Za-z0-9]([.,;:!?]*)$/.exec(t);
+          if (m) {
+            const punct = m[1] ?? "";
+            return t.slice(0, t.length - punct.length).replace(/\s+/g, "") + punct;
+          }
+          return chunk;
+        })
+        .filter(Boolean)
+        .join(" "),
+    )
+    .join("\n");
+}
+
 /** Normalize unicode slash lookalikes so "s/o" stays "s/o". */
 export function normalizeReportPlainText(raw: string): string {
-  return String(raw ?? "")
-    .normalize("NFKC")
-    .replace(/[\u2215\u2044\uFF0F]/g, "/") // ∕ ⁄ ／ → /
-    .replace(/\u00A0/g, " ");
+  // Collapse letter-spaced runs BEFORE squeezing multi-spaces — multi-space is
+  // the word boundary in "A d e t a i l e d   c o n t r a s t".
+  return collapseSpacedOutLetters(
+    String(raw ?? "")
+      .normalize("NFKC")
+      .replace(/[\u2215\u2044\uFF0F]/g, "/") // ∕ ⁄ ／ → /
+      .replace(/\u00A0/g, " "),
+  ).replace(/[ \t]{2,}/g, " ").trim();
 }
 
 type InlineSeg = { text: string; bold: boolean };
@@ -474,7 +509,12 @@ export function generateReportPDF(
   report: ReportData,
   settings: PrintSettings,
   clinic: PrintClinic,
-  opts?: { save?: boolean; letterhead?: CareLetterpadChrome },
+  opts?: {
+    save?: boolean;
+    letterhead?: CareLetterpadChrome;
+    /** Settings → Doctors rows — used to resolve signature degree by name. */
+    doctorsCatalog?: Array<{ name: string; degree?: string | null }>;
+  },
 ): jsPDF {
   const fmt = settings.paperSize;
   const sizes: Record<string, number[]> = {
@@ -668,9 +708,9 @@ export function generateReportPDF(
   y += lineH + 3.2;
 
   // Reserve a strip above the services bar for name + degree so signature
-  // never orphans alone onto page 2 (Gulu Devi / long MRI reports).
-  const SIG_RESERVE_MM = settings.signature.enabled ? 18 : 0;
-  const contentBottom = pageH - m.bottom - 18 - SIG_RESERVE_MM;
+  // never orphans alone onto page 2 and never overlaps the KEY IMAGES rail.
+  const SIG_RESERVE_MM = settings.signature.enabled ? 20 : 0;
+  const contentBottom = pageH - m.bottom + 1 - SIG_RESERVE_MM;
 
   // Draw KEY IMAGES on page 1 immediately (below demography / beside title+body).
   if (sideRail) {
@@ -776,16 +816,23 @@ export function generateReportPDF(
   // Do not re-draw the rail or push body Y from railBottomY — that parked
   // images/impression overlaps onto page 2 in long reports.
 
-  // ── SIGNATURE — lower-right above the blue services bar on the body page.
-  // Never call ensureSpace here: that orphaned name/degree onto a blank page 2.
+  // ── SIGNATURE — always right-lowermost just above the blue services bar.
+  // Never flow under mid-page content beside the KEY IMAGES rail (that overlaps
+  // the image stack). Never call ensureSpace here: that orphaned name/degree
+  // onto a blank page 2.
   if (settings.signature.enabled) {
-    const sig = settings.signature;
+    const sig = { ...settings.signature };
+    // Prefer Settings → Doctors.degree when the signing name uniquely matches.
+    const catalogDegree = resolveDoctorDegreeFromCatalog(sig.name, opts?.doctorsCatalog);
+    if (catalogDegree) sig.qualification = catalogDegree;
+    else if (!sig.qualification?.trim() && pad.credentials) sig.qualification = pad.credentials;
+
     doc.setPage(bodyPage);
-    const footerTop = pageH - m.bottom - 18;
+    const footerTop = pageH - m.bottom + 1; // top edge of navy services bar
     const sigBlockH = sig.imageDataUrl ? 22 : 14;
-    const parkedY = footerTop - sigBlockH;
-    // Prefer flowing under content when there is room; otherwise park above footer.
-    let sigY = y + 6 <= parkedY ? y + 6 : parkedY;
+    const parkedY = footerTop - sigBlockH - 2;
+    // Always park above the blue bar on the right — never mid-rail.
+    let sigY = parkedY;
     const sigRight = pageW - m.right;
 
     if (sig.imageDataUrl) {
