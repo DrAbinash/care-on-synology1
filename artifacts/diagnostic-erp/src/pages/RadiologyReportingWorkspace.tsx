@@ -185,7 +185,7 @@ import PriorComparisonToolbar from "@/components/radiology/PriorComparisonToolba
 import ViewerMeasurementsBanner from "@/components/radiology/ViewerMeasurementsBanner";
 import { useViewerMeasurements } from "@/components/radiology/ViewerMeasurementsPanel";
 import { formatViewerMeasurementLabel } from "@/lib/formatViewerMeasurementLine";
-import { subscribeCareOhifBridge, captureResultToBlob, requestOhifNavigateToAnchor } from "@/lib/ohifViewerBridge";
+import { subscribeCareOhifBridge, captureResultToBlob, requestOhifNavigateToAnchor, requestOhifViewportCapture } from "@/lib/ohifViewerBridge";
 import { viewportToAnchor } from "@/lib/observationAnchor";
 import { isMriLumbarReportingContext } from "@/lib/mriLumbarRegions";
 import { buildLumbarLevelApplyBundle, deriveCanvasNarrativeState, ledgerSeverityContradiction, structuredCanalApContradiction } from "@/lib/mriLumbarLevelState";
@@ -3659,6 +3659,32 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                         useWorkspace.getState().setActiveAnchor(ctx ? viewportToAnchor(ctx) : null);
                       }}
                       captureBusy={captureBusy}
+                      onRequestOhifAnnotatedCapture={
+                        isLocked || isFinalized
+                          ? undefined
+                          : () => {
+                              const requestId = `cap_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+                              ohifCapturePendingRef.current.add(requestId);
+                              const win = embeddedViewerRef.current?.getOhifWindow?.();
+                              const ok = requestOhifViewportCapture({ target: win, requestId });
+                              if (!ok) {
+                                ohifCapturePendingRef.current.delete(requestId);
+                                toast({
+                                  title: "OHIF capture unavailable",
+                                  description: "OHIF iframe is not ready. Switch to Frames or open OHIF in a new tab.",
+                                  variant: "destructive",
+                                });
+                                return;
+                              }
+                              toast({
+                                title: "Annotated capture requested",
+                                description: "Waiting for CARE OHIF extension. Falls back to Frames/upload if unsupported.",
+                              });
+                              window.setTimeout(() => {
+                                ohifCapturePendingRef.current.delete(requestId);
+                              }, 60_000);
+                            }
+                      }
                       onCaptureViewport={
                         isLocked || isFinalized
                           ? undefined

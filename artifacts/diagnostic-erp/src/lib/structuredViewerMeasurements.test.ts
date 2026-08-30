@@ -7,6 +7,7 @@ import {
   removeStructuredMeasurementByAnnotation,
   shouldAttachToSelectedObservation,
   shouldAutoPopulateCanal,
+  structuredFromViewerRow,
   upsertStructuredMeasurement,
 } from "./structuredViewerMeasurements";
 
@@ -154,5 +155,33 @@ describe("structuredViewerMeasurements", () => {
     });
     expect(state.items).toHaveLength(1);
     expect(state.items[0].values.primary).toBe(11);
+  });
+
+  it("structuredFromViewerRow maps MIDLINE_SHIFT and attaches to observation", () => {
+    const row = structuredFromViewerRow({
+      row: {
+        id: 9,
+        value: "4.2 mm",
+        unit: "mm",
+        studyInstanceUID: "1.2.3",
+        measurementType: "linear",
+      },
+      intent: "MIDLINE_SHIFT",
+      canalLevel: null,
+      selectedObservationId: "obs-1",
+    });
+    expect(row.concept).toBe("MIDLINE_SHIFT");
+    expect(row.observationId).toBe("obs-1");
+    expect(row.values.primary).toBe(4.2);
+  });
+
+  it("unknown OTHER intent with disc level does not auto-populate canal", () => {
+    expect(
+      shouldAutoPopulateCanal({
+        intent: "OTHER",
+        spinalLevel: "L4-L5",
+        label: "L4-L5",
+      }),
+    ).toBe(false);
   });
 });

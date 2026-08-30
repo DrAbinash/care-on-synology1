@@ -36,6 +36,29 @@ export function canalSegmentFromSpine(segment: SpineSegment | null | undefined):
   return null;
 }
 
+/** Resolve which canal table to show — force dorsal overrides inferred LS/cervical. */
+export function resolveActiveCanalSegment(opts: {
+  spineSegment?: SpineSegment | null;
+  regionHint?: string | null;
+  reportingRegion?: string | null;
+  studyDescription?: string | null;
+  regions?: string[] | null;
+  forceDorsal?: boolean;
+}): CanalSegment | null {
+  if (opts.forceDorsal) return "dorsal";
+  const fromCtx = canalSegmentFromSpine(opts.spineSegment);
+  if (fromCtx) return fromCtx;
+  const hay = [
+    opts.regionHint,
+    opts.reportingRegion,
+    opts.studyDescription,
+    ...(opts.regions ?? []),
+  ]
+    .filter(Boolean)
+    .join(" ");
+  return resolveCanalSegment(hay);
+}
+
 /** Resolve LS / cervical / dorsal from region / study description / protocol text. */
 export function resolveCanalSegment(haystack: string | null | undefined): CanalSegment | null {
   const h = (haystack ?? "").toLowerCase();

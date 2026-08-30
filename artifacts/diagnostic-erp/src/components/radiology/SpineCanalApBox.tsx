@@ -17,7 +17,6 @@ import { formatViewerMeasurementLabel } from "@/lib/formatViewerMeasurementLine"
 import {
   applyCanalApValue,
   canalSegmentBadge,
-  canalSegmentFromSpine,
   canalTableTitle,
   discLevelFromLabel,
   formatCanalApTableText,
@@ -25,10 +24,11 @@ import {
   levelsForCanalSegment,
   markCanalApManualOverride,
   parseCanalApNumber,
-  resolveCanalSegment,
+  resolveActiveCanalSegment,
   type CanalApCellProvenance,
   type CanalSegment,
 } from "@/lib/spineCanalAp";
+import { shouldAutoPopulateCanal } from "@/lib/structuredViewerMeasurements";
 import { ArrowDownToLine, CornerUpRight, RefreshCw, Ruler, Save } from "lucide-react";
 
 export interface SpineCanalApBoxProps {
@@ -73,20 +73,14 @@ export default function SpineCanalApBox({
   const setCanalApProvenance = useWorkspaceSelector((s) => s.setCanalApProvenance);
 
   const segment: CanalSegment | null = useMemo(() => {
-    const fromCtx = canalSegmentFromSpine(reportingContext.spineSegment);
-    if (fromCtx) return fromCtx;
-    const hay = [
+    return resolveActiveCanalSegment({
+      spineSegment: reportingContext.spineSegment,
       regionHint,
-      reportingContext.region,
-      reportingContext.studyDescription,
-      ...(reportingContext.regions ?? []),
-    ]
-      .filter(Boolean)
-      .join(" ");
-    const resolved = resolveCanalSegment(hay);
-    if (resolved) return resolved;
-    if (forceShowDorsal) return "dorsal";
-    return null;
+      reportingRegion: reportingContext.region,
+      studyDescription: reportingContext.studyDescription,
+      regions: reportingContext.regions,
+      forceDorsal: Boolean(forceShowDorsal),
+    });
   }, [reportingContext, regionHint, forceShowDorsal]);
 
   const levels = useMemo(
@@ -204,7 +198,14 @@ export default function SpineCanalApBox({
           .filter(Boolean)
           .join(" ");
         const disc = discLevelFromLabel(label);
-        return disc === level || measurementIntent === "CANAL_AP";
+        // Never write a different disc level into this cell.
+        if (disc && disc !== level) return false;
+        if (disc === level) return true;
+        // Unlabeled: only when this level is the active Canal AP target.
+        return (
+          measurementIntent === "CANAL_AP"
+          && (canalIntentLevel === level || captureLevel === level)
+        );
       })
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
     const newest = candidates[0];
@@ -274,6 +275,16 @@ export default function SpineCanalApBox({
         .join(" ");
       const level = discLevelFromLabel(label);
       if (!level || !(levels as readonly string[]).includes(level)) continue;
+      if (
+        !shouldAutoPopulateCanal({
+          intent: measurementIntent,
+          spinalLevel: level,
+          measurementId: m.measurementId,
+          label,
+        })
+      ) {
+        continue;
+      }
       const num = parseCanalApNumber(m.value);
       if (!num) continue;
       const applied = applyCanalApValue({
@@ -302,6 +313,15 @@ export default function SpineCanalApBox({
     for (const m of railMeasurements) {
       const level = discLevelFromLabel(m.name);
       if (!level || !(levels as readonly string[]).includes(level)) continue;
+      if (
+        !shouldAutoPopulateCanal({
+          intent: measurementIntent,
+          spinalLevel: level,
+          label: m.name,
+        })
+      ) {
+        continue;
+      }
       const applied = applyCanalApValue({
         level,
         nextValue: String(m.value),

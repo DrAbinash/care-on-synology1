@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, beforeEach } from "vitest";
 import {
   isCareOhifMessage,
   CARE_OHIF_SOURCE,
@@ -9,7 +9,19 @@ import {
   requestOhifViewportCapture,
 } from "./ohifViewerBridge";
 
+vi.mock("@/lib/fetchApi", () => ({
+  api: {
+    post: vi.fn(async () => ({})),
+  },
+}));
+
+import { api } from "@/lib/fetchApi";
+
 describe("ohifViewerBridge", () => {
+  beforeEach(() => {
+    vi.mocked(api.post).mockClear();
+  });
+
   it("accepts measurement, key-image, capture, and delete contracts", () => {
     expect(isCareOhifMessage({
       source: CARE_OHIF_SOURCE,
@@ -77,6 +89,73 @@ describe("ohifViewerBridge", () => {
       { pendingCaptureRequestIds: pending, onViewportCaptureResult: onCapture },
     );
     expect(tooBig).toBe("error");
+  });
+
+  it("accepts capture when requestId is pending and clears it", async () => {
+    const pending = new Set<string>(["live"]);
+    const onCapture = vi.fn(async () => undefined);
+    const jpegB64 = btoa("fakejpeg");
+    const r = await handleCareOhifMessage(
+      {
+        source: CARE_OHIF_SOURCE,
+        type: "viewport-capture-result",
+        version: 1,
+        requestId: "live",
+        studyInstanceUID: "1.2.3",
+        seriesInstanceUID: "1.2.4",
+        sopInstanceUID: "1.2.5",
+        frameNumber: 2,
+        imageData: `data:image/jpeg;base64,${jpegB64}`,
+      },
+      { pendingCaptureRequestIds: pending, onViewportCaptureResult: onCapture },
+    );
+    expect(r).toBe("ok");
+    expect(onCapture).toHaveBeenCalledOnce();
+    expect(pending.has("live")).toBe(false);
+  });
+
+  it("does not tag unlabeled disc-level ruler as CANAL_AP without intent", async () => {
+    const r = await handleCareOhifMessage(
+      {
+        source: CARE_OHIF_SOURCE,
+        type: "measurement",
+        studyInstanceUID: "1.2.3",
+        label: "L4-L5",
+        value: 6.8,
+        unit: "mm",
+      },
+      { patientId: 1, studyInstanceUID: "1.2.3" },
+    );
+    expect(r).toBe("ok");
+    expect(api.post).toHaveBeenCalledWith(
+      "/api/radiology-lesions/viewer-measurements",
+      expect.objectContaining({
+        measurementType: "L4-L5",
+        measurementId: undefined,
+        value: "6.8",
+      }),
+    );
+  });
+
+  it("tags CANAL_AP only with explicit intent", async () => {
+    const r = await handleCareOhifMessage(
+      {
+        source: CARE_OHIF_SOURCE,
+        type: "measurement",
+        studyInstanceUID: "1.2.3",
+        label: "L4-L5",
+        value: 6.8,
+        intent: "CANAL_AP",
+      },
+      { patientId: 1, studyInstanceUID: "1.2.3" },
+    );
+    expect(r).toBe("ok");
+    expect(api.post).toHaveBeenCalledWith(
+      "/api/radiology-lesions/viewer-measurements",
+      expect.objectContaining({
+        measurementId: "CANAL_AP",
+      }),
+    );
   });
 
   it("measurement-deleted notifies callback", async () => {

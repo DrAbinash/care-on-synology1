@@ -8,6 +8,7 @@ import {
   Layers, Maximize2, Minimize2, Expand, Shrink, AlertTriangle, RefreshCw, ExternalLink, Camera,
 } from "lucide-react";
 import { captureFramesViewport } from "@/lib/framesViewportCapture";
+import { framesAnchorStudyAllowed } from "@/lib/framesJumpBack";
 import { BROWSER_DICOMWEB_BASE, dicomWebFetch, withDicomWebAuth } from "@/lib/browserDicomWeb";
 import { planStudyLaunch, localStorageRouteCache, type StudyLaunchResult, type NetworkMode } from "@/lib/studyLaunchService";
 import type { ViewportContext } from "@/lib/observationAnchor";
@@ -125,7 +126,9 @@ const EmbeddedWadoViewer = forwardRef<EmbeddedViewerHandle, {
     context: ViewportContext;
   }) => void | Promise<void>;
   captureBusy?: boolean;
-}>(function EmbeddedWadoViewer({ studyInstanceUID, accessionNumber, patientName, columnExpanded = false, onColumnExpandedChange, onAddCurrentFrameToReport, onViewportContextChange, onCaptureViewport, captureBusy }, ref) {
+  /** Ask CARE OHIF extension for annotated viewport capture (parent registers requestId). */
+  onRequestOhifAnnotatedCapture?: () => void;
+}>(function EmbeddedWadoViewer({ studyInstanceUID, accessionNumber, patientName, columnExpanded = false, onColumnExpandedChange, onAddCurrentFrameToReport, onViewportContextChange, onCaptureViewport, captureBusy, onRequestOhifAnnotatedCapture }, ref) {
   if (!studyInstanceUID) {
     return (
       <div className="flex flex-col items-center justify-center py-8 gap-2 text-muted-foreground text-sm">
@@ -147,13 +150,14 @@ const EmbeddedWadoViewer = forwardRef<EmbeddedViewerHandle, {
       onViewportContextChange={onViewportContextChange}
       onCaptureViewport={onCaptureViewport}
       captureBusy={captureBusy}
+      onRequestOhifAnnotatedCapture={onRequestOhifAnnotatedCapture}
     />
   );
 });
 
 export default EmbeddedWadoViewer;
 
-function ViewerContent({ studyInstanceUID, accessionNumber, patientName, controlRef, columnExpanded, onColumnExpandedChange, onAddCurrentFrameToReport, onViewportContextChange, onCaptureViewport, captureBusy }: {
+function ViewerContent({ studyInstanceUID, accessionNumber, patientName, controlRef, columnExpanded, onColumnExpandedChange, onAddCurrentFrameToReport, onViewportContextChange, onCaptureViewport, captureBusy, onRequestOhifAnnotatedCapture }: {
   studyInstanceUID: string;
   accessionNumber?: string | null;
   patientName?: string | null;
@@ -174,6 +178,7 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
     context: ViewportContext;
   }) => void | Promise<void>;
   captureBusy?: boolean;
+  onRequestOhifAnnotatedCapture?: () => void;
 }) {
   const [selectedSeriesUID, setSelectedSeriesUID] = useState<string | null>(null);
   const [selectedInstIdx, setSelectedInstIdx] = useState(0);
@@ -376,11 +381,7 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
     zoomOut,
     resetView,
     goToAnchor: (anchor) => {
-      if (
-        anchor.studyInstanceUID
-        && studyInstanceUID
-        && anchor.studyInstanceUID !== studyInstanceUID
-      ) {
+      if (!framesAnchorStudyAllowed(studyInstanceUID, anchor.studyInstanceUID)) {
         return false;
       }
       if (anchor.seriesInstanceUID) {
@@ -551,10 +552,27 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
         ) : embedPlan?.success && embedPlan.finalLaunchUrl ? (
           <div className="flex-1 min-h-0 flex flex-col bg-black">
             <div
-              className="shrink-0 px-2 py-1 text-[10px] text-amber-100/90 bg-amber-950/80 border-b border-amber-800/50"
+              className="shrink-0 px-2 py-1 text-[10px] text-amber-100/90 bg-amber-950/80 border-b border-amber-800/50 flex items-center justify-between gap-2"
               data-testid="ohif-capture-fallback-hint"
             >
-              Annotated OHIF capture requires the CARE OHIF extension (viewport-capture protocol). Without it, switch to Frames for viewport capture, save the DICOM frame, or upload a screenshot.
+              <span>
+                Annotated OHIF capture requires the CARE OHIF extension (viewport-capture protocol). Without it, switch to Frames for viewport capture, save the DICOM frame, or upload a screenshot.
+              </span>
+              {onRequestOhifAnnotatedCapture ? (
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  className="h-6 shrink-0 text-[10px]"
+                  disabled={captureBusy}
+                  data-testid="ohif-request-annotated-capture"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onRequestOhifAnnotatedCapture();
+                  }}
+                >
+                  Request annotated capture
+                </Button>
+              ) : null}
             </div>
             <iframe
               ref={ohifIframeRef}

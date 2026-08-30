@@ -3,7 +3,7 @@
  */
 import { useWorkspaceSelector } from "@/lib/zai-workspace/store";
 import type { MeasurementIntent } from "@/lib/structuredViewerMeasurements";
-import { levelsForCanalSegment, canalSegmentFromSpine, resolveCanalSegment } from "@/lib/spineCanalAp";
+import { levelsForCanalSegment, resolveActiveCanalSegment } from "@/lib/spineCanalAp";
 import { cn } from "@/lib/utils";
 
 const INTENTS: Array<{ id: MeasurementIntent; label: string }> = [
@@ -28,12 +28,20 @@ export function MeasureIntentBar({
   const dorsalForced = useWorkspaceSelector((s) => s.dorsalCanalForced);
   const setDorsalForced = useWorkspaceSelector((s) => s.setDorsalCanalForced);
 
-  const segment =
-    canalSegmentFromSpine(reportingContext.spineSegment)
-    ?? resolveCanalSegment(
-      [regionHint, reportingContext.region, reportingContext.studyDescription].filter(Boolean).join(" "),
-    )
-    ?? (dorsalForced ? "dorsal" : null);
+  const naturalSegment = resolveActiveCanalSegment({
+    spineSegment: reportingContext.spineSegment,
+    regionHint,
+    reportingRegion: reportingContext.region,
+    studyDescription: reportingContext.studyDescription,
+    forceDorsal: false,
+  });
+  const segment = resolveActiveCanalSegment({
+    spineSegment: reportingContext.spineSegment,
+    regionHint,
+    reportingRegion: reportingContext.region,
+    studyDescription: reportingContext.studyDescription,
+    forceDorsal: dorsalForced,
+  });
 
   const levels = segment ? levelsForCanalSegment(segment) : [];
 
@@ -60,7 +68,7 @@ export function MeasureIntentBar({
             {i.label}
           </button>
         ))}
-        {!segment || segment === "dorsal" ? null : (
+        {naturalSegment === "dorsal" ? null : (
           <button
             type="button"
             disabled={disabled}

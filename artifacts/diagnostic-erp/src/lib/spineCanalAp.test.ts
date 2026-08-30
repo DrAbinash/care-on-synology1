@@ -14,6 +14,7 @@ import {
   normalizeDiscLevel,
   parseCanalApNumber,
   pickPrintCanalSegment,
+  resolveActiveCanalSegment,
   resolveCanalSegment,
 } from "./spineCanalAp";
 
@@ -120,8 +121,35 @@ describe("spineCanalAp — common engine", () => {
     expect("provenance" in refreshed && refreshed.provenance.manualOverride).toBe(false);
   });
 
-  it("viewer apply without override writes value", () => {
-    const r = applyCanalApValue({ level: "L4-L5", nextValue: "6.8 mm" });
+  it("forceDorsal overrides lumbar/cervical inference", () => {
+    expect(
+      resolveActiveCanalSegment({
+        spineSegment: "lumbar",
+        regionHint: "MRI LS Spine",
+        forceDorsal: true,
+      }),
+    ).toBe("dorsal");
+    expect(
+      resolveActiveCanalSegment({
+        spineSegment: "lumbar",
+        regionHint: "MRI LS Spine",
+        forceDorsal: false,
+      }),
+    ).toBe("lumbar");
+    expect(
+      resolveActiveCanalSegment({
+        regionHint: "Brain",
+        forceDorsal: false,
+      }),
+    ).toBeNull();
+  });
+
+  it("L4-L5 apply does not mutate L3-L4 value map", () => {
+    const values: Record<string, string> = { "L3-L4": "12.0" };
+    const r = applyCanalApValue({ level: "L4-L5", nextValue: "6.8" });
     expect("value" in r && r.value).toBe("6.8");
+    if ("value" in r) values["L4-L5"] = r.value;
+    expect(values["L3-L4"]).toBe("12.0");
+    expect(values["L4-L5"]).toBe("6.8");
   });
 });

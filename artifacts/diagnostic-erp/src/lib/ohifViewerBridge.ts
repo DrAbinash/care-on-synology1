@@ -200,8 +200,8 @@ export async function handleCareOhifMessage(
     const level = discLevelFromLabel(label);
     const value = parseCanalApNumber(String(msg.value)) || String(msg.value);
     const intent = msg.intent;
-    // Explicit OTHER/LESION/MIDLINE never auto-classified as canal; unlabeled + disc level may be.
-    const isCanal = intent === "CANAL_AP" || (!intent && !!level);
+    // Explicit Canal AP intent only — never infer canal from a bare disc-level label.
+    const isCanal = intent === "CANAL_AP";
     const coords = JSON.stringify({
       annotationId: msg.annotationId ?? null,
       intent: intent ?? null,
@@ -217,7 +217,7 @@ export async function handleCareOhifMessage(
         frameNumber: msg.frameNumber,
         viewerName: "OHIF",
         measurementType: level || msg.measurementType || label || "linear",
-        measurementId: isCanal && level ? "CANAL_AP" : undefined,
+        measurementId: isCanal ? "CANAL_AP" : undefined,
         value,
         unit: msg.unit || "mm",
         imageCoordinates: coords,
