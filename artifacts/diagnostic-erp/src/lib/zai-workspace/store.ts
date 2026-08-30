@@ -14,7 +14,13 @@ import {
   hydrateReportFormatsLibrary,
 } from "./reportFormatsApi";
 import { hydrateChocolateMacrosFromServer } from "@/lib/chocolateMacrosApi";
-import { shouldConfirmFormatOverwrite, clinicalFieldsFromFormat } from "./fullReportFormat";
+import {
+  analyzeFormatOverwrite,
+  clinicalFieldsFromFormat,
+  resolveReportingRegionForFormat,
+  type FormatOverwriteAnalysis,
+} from "./fullReportFormat";
+import { getFormatApplyBridge } from "./formatApplyBridge";
 import { appendClinicalPhrase } from "@/lib/clinicalHistoryText";
 import { DEFAULT_SNIPPET_MACROS, lookupMacros, lookupMacrosForContext, loadMacros, saveMacros, createMacro } from "./snippet-macros-library";
 import { DEFAULT_SIGN_OFF_PROFILES, loadProfiles, saveProfiles, lookupProfile, formatSignOff, createProfile } from "./sign-off-profiles";
@@ -88,6 +94,7 @@ import {
   emptyViewerMeasurementsState,
   upsertStructuredMeasurement,
   detachStructuredMeasurementsFromObservation,
+  remapStructuredMeasurementsObservationId,
   type MeasurementIntent,
   type ViewerMeasurementsState,
   type StructuredMeasurement,
@@ -162,6 +169,12 @@ export type PendingPathologyPatch = {
   severity?: string;
   state?: string;
   measurement?: string;
+  /**
+   * When a composer slot-change targets an occupied sibling and needs confirm,
+   * remember the observation being vacated so force-confirm can remove it and
+   * remap evidence (measurements / key images) onto the survivor.
+   */
+  vacatedObservationId?: string;
 };
 
 type PatchSnapshot = {
@@ -308,6 +321,10 @@ interface S {
   appliedFormatReportTitle: string | null;
   saveAsFormatDialogOpen: boolean; mergePreviewOpen: boolean; lastMergeResult: MergeResult | null;
   lastMergeFormats: { a: ReportFormat; b: ReportFormat | null } | null; confirmOverwriteOpen: boolean; pendingFormatIds: string[];
+  /** Provenance + region analysis for the pending format overwrite dialog. */
+  pendingFormatOverwrite: FormatOverwriteAnalysis | null;
+  /** Region to apply atomically with format content (null = keep current). */
+  pendingFormatRegion: string | null;
   pendingPathologyPatch: PendingPathologyPatch | null;
   lastPatchSnapshot: PatchSnapshot | null;
   appliedPathologyPatches: AppliedPathologyPatch[];
@@ -384,11 +401,11 @@ export type WorkspaceStore = S & {
    * Non-overridden slots restore replacedBaseline, same as removeObservation.
    */
   removeMacroBundle: (bundleId: string) => "removed" | "preserved-manual" | "no-op-unproven" | "missing";
-  removeObservation: (id: string) => "removed" | "preserved-manual" | "no-op-unproven" | "missing";
+  removeObservation: (id: string, opts?: { remapEvidenceTo?: string | null }) => "removed" | "preserved-manual" | "no-op-unproven" | "missing";
   /**
    * Composer / dictation-confirmed commit — always via applyPathologyOverlay (same-slot).
    * When editingId's clinical slot changes to an occupied sibling, updates that sibling
-   * and removes the previous observation (evidence on the old id is detached safely).
+   * and removes the previous observation after remapping evidence onto the survivor.
    * Same-slot edits preserve observation id + evidence.
    */
   applyComposerFinding: (opts: PendingPathologyPatch & {
@@ -477,6 +494,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   reportFormats: typeof window !== "undefined" ? loadFormats() : DEFAULT_REPORT_FORMATS, selectedFormatIds: [], reportFormatPickerOpen: false,
   appliedFormatReportTitle: null,
   saveAsFormatDialogOpen: false, mergePreviewOpen: false, lastMergeResult: null, lastMergeFormats: null, confirmOverwriteOpen: false, pendingFormatIds: [],
+  pendingFormatOverwrite: null, pendingFormatRegion: null,
   pendingPathologyPatch: null, lastPatchSnapshot: null, appliedPathologyPatches: [], impressionNeedsRefresh: false,
   activeAnchor: null, selectedObservationId: null,
   measurementIntent: null, canalIntentLevel: null,
@@ -759,23 +777,54 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   toggleFormatSelection: (id) => { const c = get().selectedFormatIds; if (c.includes(id)) set({ selectedFormatIds: c.filter(x => x !== id) }); else if (c.length < 2) set({ selectedFormatIds: [...c, id] }); },
   clearFormatSelection: () => set({ selectedFormatIds: [] }),
   applySelectedFormats: () => {
+    if (get().isFinalized) return;
     const ids = get().selectedFormatIds;
     if (!ids.length) return;
     const fs = get().reportFormats.filter((f: ReportFormat) => ids.includes(f.id));
     if (!fs.length) return;
-    const { findingsText, impressionText, recommendationText, techniqueText } = get();
-    if (shouldConfirmFormatOverwrite({
+    const bridge = getFormatApplyBridge();
+    const availableRegions = bridge?.availableRegions() ?? [];
+    const currentRegion = bridge?.currentRegion() ?? get().reportingContext.region ?? null;
+    let pendingRegion: string | null = null;
+    if (fs.length === 1) {
+      const resolved = resolveReportingRegionForFormat(fs[0]!, availableRegions);
+      if (resolved.status === "resolved") {
+        pendingRegion = resolved.region;
+      }
+      // ambiguous / unresolved → keep current region (fail safe, no silent pick)
+    }
+    const {
+      findingsText, impressionText, recommendationText, techniqueText, fieldProvenance,
+    } = get();
+    const analysis = analyzeFormatOverwrite({
       technique: techniqueText,
       findings: findingsText,
       impression: impressionText,
       recommendation: recommendationText,
-    })) {
-      set({ confirmOverwriteOpen: true, pendingFormatIds: ids, pendingPathologyPatch: null });
+      fieldProvenance: {
+        technique: fieldProvenance.technique,
+        findings: fieldProvenance.findings,
+        impression: fieldProvenance.impression,
+        recommendation: fieldProvenance.recommendation,
+      },
+      currentRegion,
+      resolvedRegion: pendingRegion,
+    });
+    if (analysis.requiresConfirmation) {
+      set({
+        confirmOverwriteOpen: true,
+        pendingFormatIds: ids,
+        pendingFormatOverwrite: analysis,
+        pendingFormatRegion: pendingRegion,
+        pendingPathologyPatch: null,
+      });
       return;
     }
+    set({ pendingFormatIds: ids, pendingFormatOverwrite: analysis, pendingFormatRegion: pendingRegion });
     get().confirmOverwriteAndApply();
   },
   applyFormatById: (id) => {
+    if (get().isFinalized) return;
     set({ selectedFormatIds: [id] });
     get().applySelectedFormats();
   },
@@ -787,17 +836,44 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   confirmOverwriteAndApply: () => {
     const pendingPatch = get().pendingPathologyPatch;
     if (pendingPatch) {
+      const vacatedId = (pendingPatch.vacatedObservationId ?? "").trim() || null;
+      const survivorId = (pendingPatch.id ?? "").trim() || null;
       get().undoLastPatch();
       get().applyPathologyOverlay({ ...pendingPatch, force: true });
+      if (vacatedId && survivorId && vacatedId !== survivorId) {
+        const stillVacated = get().appliedPathologyPatches.some((p) => p.id === vacatedId);
+        if (stillVacated) {
+          get().removeObservation(vacatedId, { remapEvidenceTo: survivorId });
+        }
+      }
       set({ confirmOverwriteOpen: false, pendingPathologyPatch: null });
+      return;
+    }
+    if (get().isFinalized) {
+      set({
+        confirmOverwriteOpen: false,
+        pendingFormatIds: [],
+        pendingFormatOverwrite: null,
+        pendingFormatRegion: null,
+      });
       return;
     }
     const ids = get().pendingFormatIds.length ? get().pendingFormatIds : get().selectedFormatIds;
     const fs = get().reportFormats.filter((f: ReportFormat) => ids.includes(f.id));
-    if (!fs.length) { set({ confirmOverwriteOpen: false, pendingFormatIds: [] }); return; }
+    const pendingRegion = get().pendingFormatRegion;
+    if (!fs.length) {
+      set({
+        confirmOverwriteOpen: false,
+        pendingFormatIds: [],
+        pendingFormatOverwrite: null,
+        pendingFormatRegion: null,
+      });
+      return;
+    }
     if (fs.length === 1) {
-      const f = fs[0];
+      const f = fs[0]!;
       const clinical = clinicalFieldsFromFormat(f);
+      // Content first, then region — format technique wins over region protocol sync.
       get().setField("technique", clinical.technique, { source: "template", replaceProvenance: true });
       get().setField("findings", clinical.findings, { source: "template", replaceProvenance: true });
       get().setField("impression", clinical.impression, { source: "template", replaceProvenance: true });
@@ -823,12 +899,19 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         reportFormats: nf,
         confirmOverwriteOpen: false,
         pendingFormatIds: [],
+        pendingFormatOverwrite: null,
+        pendingFormatRegion: null,
         reportFormatPickerOpen: false,
         appliedPathologyPatches: stalePatches,
         lastPatchSnapshot: null,
         appliedFormatReportTitle: clinical.reportTitle || null,
         appliedFormatName: f.name || null,
       });
+      // Reporting context only — never mutate DICOM / ERP identity fields.
+      if (pendingRegion) {
+        getFormatApplyBridge()?.applyReportingRegion(pendingRegion);
+      }
+      getFormatApplyBridge()?.invalidatePendingAutosave?.();
       get().pushNotification({
         kind: "ledger",
         text: "Full report applied. Prior structured contributions marked stale for review.",
@@ -837,8 +920,16 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       return;
     }
     const [a, b] = fs;
-    const r = mergeTwoFormats(a, b);
-    set({ lastMergeResult: r, lastMergeFormats: { a, b }, mergePreviewOpen: true, confirmOverwriteOpen: false, pendingFormatIds: [] });
+    const r = mergeTwoFormats(a!, b!);
+    set({
+      lastMergeResult: r,
+      lastMergeFormats: { a: a!, b: b! },
+      mergePreviewOpen: true,
+      confirmOverwriteOpen: false,
+      pendingFormatIds: [],
+      pendingFormatOverwrite: null,
+      pendingFormatRegion: null,
+    });
   },
   cancelOverwrite: () => {
     const pendingPatch = get().pendingPathologyPatch;
@@ -874,7 +965,14 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       });
       return;
     }
-    set({ confirmOverwriteOpen: false, pendingFormatIds: [], pendingPathologyPatch: null });
+    // Cancel preserves current region and report body (no apply).
+    set({
+      confirmOverwriteOpen: false,
+      pendingFormatIds: [],
+      pendingFormatOverwrite: null,
+      pendingFormatRegion: null,
+      pendingPathologyPatch: null,
+    });
   },
   applyPathologyOverlay: (opts) => {
     if (get().isFinalized) return "applied";
@@ -1322,19 +1420,21 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         incomingObs,
       );
       if (siblings.length > 0) {
-        // Occupied: apply toward sibling id; then remove the old observation.
+        const survivorId = siblings[0]!.id;
+        // Occupied: apply toward sibling id; stash vacated id for confirm path.
         const status = get().applyPathologyOverlay({
           ...opts,
-          id: siblings[0]!.id,
+          id: survivorId,
           force: opts.force,
+          vacatedObservationId: editingId!,
         });
-        if (status === "applied" || (status === "pending" && opts.force)) {
-          // After conflict resolve (force), drop the vacated observation.
-          if (opts.force || status === "applied") {
-            const stillThere = get().appliedPathologyPatches.some((p) => p.id === editingId);
-            if (stillThere) get().removeObservation(editingId!);
+        if (status === "applied") {
+          const stillThere = get().appliedPathologyPatches.some((p) => p.id === editingId);
+          if (stillThere) {
+            get().removeObservation(editingId!, { remapEvidenceTo: survivorId });
           }
         }
+        // pending: vacatedObservationId rides on pendingPathologyPatch for confirmOverwriteAndApply
         return status;
       }
       // Empty target slot: move in place (preserve id + evidence), but strip
@@ -1349,6 +1449,9 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         );
         if (stripped.outcome === "removed") {
           set({ findingsText: stripped.text });
+        } else if (contributionPresent(get().findingsText, oldFindings)) {
+          // Manual / unproven — do not silently leave contradictory levels.
+          return "blocked";
         }
       }
       const oldImp = (existing.lastRendered.impression ?? "").trim();
@@ -1361,6 +1464,8 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         if (strippedImp.outcome === "removed") {
           set({ impressionText: strippedImp.text });
         }
+      } else if (oldImp && contributionProtected(oldImp, get().fieldProvenance.impression)) {
+        return "blocked";
       }
     }
 
@@ -1447,9 +1552,10 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     return "applied";
   },
 
-  removeObservation: (id) => {
+  removeObservation: (id, opts) => {
     const patch = get().appliedPathologyPatches.find((p) => p.id === id);
     if (!patch) return "missing";
+    const remapTo = (opts?.remapEvidenceTo ?? "").trim() || null;
     const snap: PatchSnapshot = {
       clinicalHistoryText: get().clinicalHistoryText,
       techniqueText: get().techniqueText,
@@ -1462,10 +1568,12 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       voiceComposerTranscriptHistory: [...get().voiceComposerTranscriptHistory],
     };
     const result = removeLedgerObservation(narrativeFromState(get()), get().fieldProvenance, toLedgerPatch(patch));
-    const detachedMs = detachStructuredMeasurementsFromObservation(
-      get().structuredViewerMeasurements,
-      id,
-    );
+    let nextMs = get().structuredViewerMeasurements;
+    if (remapTo) {
+      nextMs = remapStructuredMeasurementsObservationId(nextMs, id, remapTo).state;
+    } else {
+      nextMs = detachStructuredMeasurementsFromObservation(nextMs, id).state;
+    }
     set({
       clinicalHistoryText: result.narrative.clinicalHistory,
       techniqueText: result.narrative.technique,
@@ -1474,13 +1582,21 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       recommendationText: result.narrative.recommendation,
       fieldProvenance: result.provenance,
       appliedPathologyPatches: get().appliedPathologyPatches.filter((p) => p.id !== id),
-      selectedObservationId: get().selectedObservationId === id ? null : get().selectedObservationId,
-      structuredViewerMeasurements: detachedMs.state,
+      selectedObservationId: get().selectedObservationId === id
+        ? (remapTo || null)
+        : get().selectedObservationId,
+      structuredViewerMeasurements: nextMs,
       lastPatchSnapshot: snap,
       isDirty: true,
     });
     if (typeof window !== "undefined") {
-      window.dispatchEvent(new CustomEvent("care:observation-removed", { detail: { observationId: id } }));
+      if (remapTo) {
+        window.dispatchEvent(new CustomEvent("care:observation-reassigned", {
+          detail: { fromObservationId: id, toObservationId: remapTo },
+        }));
+      } else {
+        window.dispatchEvent(new CustomEvent("care:observation-removed", { detail: { observationId: id } }));
+      }
     }
     return result.outcome;
   },

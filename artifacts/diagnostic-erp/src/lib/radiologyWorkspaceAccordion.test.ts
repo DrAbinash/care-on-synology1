@@ -186,7 +186,12 @@ describe("Region context drives the Findings tools", () => {
     expect(section1).toContain("onSelectRegion(t.name)");
     expect(section1).toContain('data-selected={selected ? "true" : "false"}');
     expect(section1).toContain("availableStudyTabs");
-    expect(section1).toContain('data-testid="whole-report-format-select"');
+    expect(workspace).toContain("WholeReportFormatControl");
+    expect(workspace).toContain('data-testid="report-format-primary-slot"');
+    const formatSlot = workspace.indexOf("report-format-primary-slot");
+    const technique = workspace.indexOf('accordionProps("technique")');
+    expect(formatSlot).toBeGreaterThan(0);
+    expect(technique).toBeGreaterThan(formatSlot);
   });
 
   it("Quick Add folds its region grid away but keeps cross-region access", () => {
@@ -222,9 +227,12 @@ describe("no reporting feature was deleted by the re-layout", () => {
   const section1Markers = new Set([
     'data-testid="study-setup-strip"',
     'data-testid="study-region-select"',
-    'data-testid="whole-report-format-select"',
     'data-testid="study-region-quick"',
     'data-testid="reapply-defaults"',
+  ]);
+  const formatControl = read("components/radiology/WholeReportFormatControl.tsx");
+  const formatControlMarkers = new Set([
+    'data-testid="whole-report-format-select"',
   ]);
   const techniqueStrip = read("components/radiology/TechniqueChoiceStrip.tsx");
   const historyStrip = read("components/radiology/ClinicalHistoryChipStrip.tsx");
@@ -240,8 +248,10 @@ describe("no reporting feature was deleted by the re-layout", () => {
     ["Study setup strip", 'data-testid="study-setup-strip"'],
     ["Study / Region select", 'data-testid="study-region-select"'],
     ["Whole report format select", 'data-testid="whole-report-format-select"'],
+    ["Primary format slot", 'data-testid="report-format-primary-slot"'],
     ["Region quick buttons", 'data-testid="study-region-quick"'],
     ["Unified Section 1 component", "StudyRegionReportFormatSection"],
+    ["WholeReportFormatControl", "WholeReportFormatControl"],
     ["Technique choice select", 'data-testid="technique-choice-select"'],
     ["Technique editor", 'data-testid="canonical-technique-editor"'],
     ["Re-apply defaults", 'data-testid="reapply-defaults"'],
@@ -278,6 +288,7 @@ describe("no reporting feature was deleted by the re-layout", () => {
     it(`still mounts ${feature}`, () => {
       let src = workspace;
       if (typeof marker === "string" && section1Markers.has(marker)) src = section1;
+      else if (typeof marker === "string" && formatControlMarkers.has(marker)) src = formatControl;
       else if (typeof marker === "string" && section23Markers.has(marker)) {
         src = marker.includes("technique") ? techniqueStrip : historyStrip + workspace;
       }

@@ -243,6 +243,24 @@ export function detachStructuredMeasurementsFromObservation(
   return { state: { ...state, items }, detached };
 }
 
+/** Move soft measurement links from one observation to another (slot-displace merge). */
+export function remapStructuredMeasurementsObservationId(
+  state: ViewerMeasurementsState,
+  fromObservationId: string,
+  toObservationId: string,
+): { state: ViewerMeasurementsState; remapped: number } {
+  if (!fromObservationId || !toObservationId || fromObservationId === toObservationId) {
+    return { state, remapped: 0 };
+  }
+  let remapped = 0;
+  const items = state.items.map((x) => {
+    if (x.observationId !== fromObservationId) return x;
+    remapped += 1;
+    return { ...x, observationId: toObservationId, updatedAt: new Date().toISOString() };
+  });
+  return { state: { ...state, items }, remapped };
+}
+
 /**
  * Decide whether a viewer measurement may auto-populate a canal cell / field.
  * Unknown rulers without explicit CANAL_AP intent → no auto-populate.

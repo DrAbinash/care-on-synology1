@@ -4,6 +4,13 @@ import { Button } from "@/components/ui/button";
 import { AlertTriangle, FileText } from "lucide-react";
 import { useMemo } from "react";
 
+const SECTION_LABEL: Record<string, string> = {
+  technique: "Technique",
+  findings: "Findings",
+  impression: "Impression",
+  recommendation: "Recommendation",
+};
+
 export function ConfirmOverwriteDialog() {
   const open = useWorkspaceSelector((s) => s.confirmOverwriteOpen);
   const confirm = useWorkspaceSelector((s) => s.confirmOverwriteAndApply);
@@ -11,8 +18,11 @@ export function ConfirmOverwriteDialog() {
   const pendingIds = useWorkspaceSelector((s) => s.pendingFormatIds);
   const pendingPatch = useWorkspaceSelector((s) => s.pendingPathologyPatch);
   const patches = useWorkspaceSelector((s) => s.appliedPathologyPatches);
+  const analysis = useWorkspaceSelector((s) => s.pendingFormatOverwrite);
   const allF = useWorkspaceSelector((s) => s.reportFormats);
   const formats = useMemo(() => allF.filter((f) => pendingIds.includes(f.id)), [allF, pendingIds]);
+  const formatName = formats.length === 1 ? formats[0]!.name : null;
+  const confirming = analysis?.confirmingSections ?? [];
 
   const sameSlot = useMemo(() => {
     if (!pendingPatch?.id) return null;
@@ -28,11 +38,15 @@ export function ConfirmOverwriteDialog() {
 
   const title = pendingPatch && sameSlot
     ? `${sameSlot.level ? `${sameSlot.level} ` : ""}${sameSlot.concept || "finding"} already exists`
-    : "Overwrite existing content?";
+    : pendingPatch
+      ? "Overwrite existing content?"
+      : formatName
+        ? `Apply “${formatName}”?`
+        : "Overwrite existing content?";
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && cancel()}>
-      <DialogContent className="max-w-md" data-testid="confirm-overwrite-dialog">
+      <DialogContent className="max-w-md" data-testid={pendingPatch ? "confirm-overwrite-dialog" : "confirm-format-overwrite-dialog"}>
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <AlertTriangle className="h-4 w-4 text-amber-600" /> {title}
@@ -40,7 +54,7 @@ export function ConfirmOverwriteDialog() {
           <DialogDescription>
             {pendingPatch
               ? "Manually edited content will be replaced only if you confirm. Unrelated text is kept."
-              : "The editor has content. Applying will replace it."}
+              : "Manual or ambiguous sections will be replaced. Patient and DICOM identity stay unchanged."}
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-2">
@@ -61,17 +75,38 @@ export function ConfirmOverwriteDialog() {
                   <div data-testid="same-slot-new">{sameSlot.newText}</div>
                 </div>
               ) : null}
+              {pendingPatch.vacatedObservationId ? (
+                <div className="text-[10px] text-amber-800/90" data-testid="same-slot-vacate-note">
+                  Replacing will remove the previous observation row. Linked measurements move to this finding when possible; otherwise they detach.
+                </div>
+              ) : null}
             </div>
           ) : (
             <div className="rounded-md border border-amber-300 bg-amber-50 p-2.5 text-xs text-amber-800">
               {pendingPatch
                 ? "This merge may replace a manually edited anatomy/pathology sentence. Unrelated text is kept. Confirm to overwrite the owned block."
-                : <>Applying <b>{formats.length} format{formats.length === 1 ? "" : "s"}</b> will overwrite clinical editor fields. Patient header, demographics and images stay dynamic.</>}
-              {!pendingPatch && (
-                <div className="mt-1 text-[10px] text-amber-700/80 italic">
-                  Tip: Cancel and &quot;Save as Format&quot; first to preserve current work.
-                </div>
-              )}
+                : (
+                  <>
+                    {analysis?.regionChanging && analysis.regionFrom && analysis.regionTo ? (
+                      <div className="mb-1.5" data-testid="confirm-format-region-change">
+                        <span className="font-semibold">Reporting region:</span>{" "}
+                        {analysis.regionFrom} → {analysis.regionTo}
+                      </div>
+                    ) : null}
+                    {confirming.length > 0 ? (
+                      <div data-testid="confirm-format-manual-sections">
+                        <div className="font-semibold mb-0.5">Manually edited / ambiguous sections that will be replaced:</div>
+                        <ul className="list-disc pl-4">
+                          {confirming.map((s) => (
+                            <li key={s}>{SECTION_LABEL[s] ?? s}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : (
+                      <>Applying <b>{formats.length} format{formats.length === 1 ? "" : "s"}</b> will overwrite clinical editor fields.</>
+                    )}
+                  </>
+                )}
             </div>
           )}
           {formats.length > 0 && !pendingPatch && (
@@ -88,11 +123,19 @@ export function ConfirmOverwriteDialog() {
           )}
         </div>
         <DialogFooter>
-          <Button variant="ghost" onClick={cancel} data-testid="confirm-overwrite-cancel">
+          <Button
+            variant="ghost"
+            onClick={cancel}
+            data-testid={pendingPatch ? "confirm-overwrite-cancel" : "confirm-format-cancel"}
+          >
             {pendingPatch ? "Keep existing" : "Cancel"}
           </Button>
-          <Button onClick={confirm} className="bg-amber-600 hover:bg-amber-700" data-testid="confirm-overwrite-replace">
-            {pendingPatch ? "Replace" : "Overwrite & apply"}
+          <Button
+            onClick={confirm}
+            className="bg-amber-600 hover:bg-amber-700"
+            data-testid={pendingPatch ? "confirm-overwrite-replace" : "confirm-format-apply"}
+          >
+            {pendingPatch ? "Replace" : "Apply Format"}
           </Button>
         </DialogFooter>
       </DialogContent>

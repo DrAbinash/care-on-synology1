@@ -67,6 +67,11 @@ export type FindingComposerDraft = {
   /** Optional free overrides after template fill. */
   findingsOverride?: string;
   impressionOverride?: string;
+  /**
+   * When set, draft was prefaced from this exact dictation transcript.
+   * If the live transcript diverges, workspace clears the proposal (no silent commit).
+   */
+  sourceTranscript?: string | null;
 };
 
 export type ComposerVisibleControls = {
@@ -98,7 +103,10 @@ const FAZEKAS_GRADES = ["1", "2", "3"] as const;
 export function observationIncludesInImpression(
   patch: Pick<AppliedPathologyPatch, "lastRendered" | "templates">,
 ): boolean {
-  return Boolean((patch.lastRendered.impression ?? patch.templates.impression ?? "").trim());
+  // Authoritative CARE semantic (collectImpressionContributions / refresh):
+  // only non-empty lastRendered.impression participates. templates.impression
+  // alone must NOT count — that misclassifies stale/cleared participation.
+  return Boolean((patch.lastRendered.impression ?? "").trim());
 }
 
 export function levelsForReportingRegion(region: string | null | undefined): string[] {
@@ -531,7 +539,8 @@ export function pendingFromComposerDraft(
     technique: phrase.technique || undefined,
     recommendation: phrase.recommendation || undefined,
   };
-  const id = draft.editingId || `composer-${entry.key}-${Date.now().toString(36)}`;
+  const id = draft.editingId
+    || `composer-${entry.key}-${normalizeLevel(draft.level) || "x"}-${normalizeLaterality(draft.laterality) || "x"}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
   return {
     id,
     incoming,
