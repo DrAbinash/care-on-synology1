@@ -957,7 +957,22 @@ export function renderReportDocument(
     .letterpad-sheet > thead > tr > td,
     .letterpad-sheet > tbody > tr > td,
     .letterpad-sheet > tfoot > tr > td { padding: 0; border: none; vertical-align: top; }
-    .letterpad-services { background: #0f2d6e; color: #fff; text-align: center; padding: 6px 8px; font-size: 6.5px; font-weight: 700; letter-spacing: 0.04em; line-height: 1.45; margin-top: 1mm; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .letterpad-services {
+      background: #0a3282;
+      color: #ffffff;
+      text-align: center;
+      /* Same strip height as before: smaller padding, larger type for print clarity */
+      padding: 3px 6px;
+      font-size: 8.5px;
+      font-weight: 800;
+      letter-spacing: 0.02em;
+      line-height: 1.25;
+      margin-top: 1mm;
+      text-rendering: geometricPrecision;
+      -webkit-font-smoothing: antialiased;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }
     .letterpad-disclaimer { font-size: 7.5px; color: #334155; text-align: center; padding: 6px 12px 4px; font-style: italic; }
     .letterpad-footer-block { break-inside: avoid; page-break-inside: avoid; page-break-before: avoid; }
     /* Signature flush above the blue services bar (right lowermost). */

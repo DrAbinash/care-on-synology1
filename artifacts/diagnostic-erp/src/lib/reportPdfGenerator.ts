@@ -878,15 +878,17 @@ export function generateReportPDF(
     const barH = serviceLines.length > 1 ? 10 : 7;
     const barY = pageH - m.bottom + 1;
     if (settings.footer.enabled && serviceLines.length > 0) {
-      doc.setFillColor(15, 45, 110);
+      // Same bar height; larger bold white type for print clarity on the navy strip.
+      doc.setFillColor(10, 50, 130); // richer navy — prints clearer than near-black blue
       doc.rect(0, barY, pageW, barH, "F");
       doc.setFont(font, "bold");
-      doc.setFontSize(5.4);
+      doc.setFontSize(serviceLines.length > 1 ? 7.0 : 7.5);
       doc.setTextColor(255, 255, 255);
-      const rowGap = serviceLines.length > 1 ? 3.6 : 0;
-      const startY = barY + (serviceLines.length > 1 ? 3.6 : 4.5);
+      const rowGap = serviceLines.length > 1 ? 3.8 : 0;
+      // Vertically center the two rows inside the fixed bar height.
+      const startY = barY + (serviceLines.length > 1 ? 3.8 : 4.6);
       serviceLines.forEach((line, idx) => {
-        doc.text(line, pageW / 2, startY + idx * rowGap, { align: "center", maxWidth: pageW - 6 });
+        doc.text(line, pageW / 2, startY + idx * rowGap, { align: "center", maxWidth: pageW - 5 });
       });
     }
     if (settings.footer.enabled && (pad.disclaimer || settings.footer.disclaimer)) {
