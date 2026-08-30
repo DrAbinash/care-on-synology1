@@ -973,13 +973,13 @@ export function renderReportDocument(
       -webkit-print-color-adjust: exact;
       print-color-adjust: exact;
     }
-    .letterpad-disclaimer { font-size: 7.5px; color: #334155; text-align: center; padding: 6px 12px 4px; font-style: italic; }
+    .letterpad-disclaimer { font-size: 7px; color: #334155; text-align: center; padding: 2px 8px 1px; font-style: italic; }
     .letterpad-footer-block { break-inside: avoid; page-break-inside: avoid; page-break-before: avoid; }
     /* Signature flush above the blue services bar (right lowermost). */
     .letterpad .sigs {
       margin-top: 0;
-      margin-bottom: 0.5mm;
-      padding-top: 2mm;
+      margin-bottom: 0.4mm;
+      padding-top: 1mm;
       justify-content: flex-end;
       page-break-inside: avoid;
       page-break-before: avoid;
@@ -992,6 +992,17 @@ export function renderReportDocument(
     .letterpad .sigline { display: none; }
     .letterpad .signame { letter-spacing: 0 !important; line-height: 1.15; }
     .letterpad .sigmeta { letter-spacing: 0 !important; word-spacing: normal !important; line-height: 1.15; margin: 0; }
+    /* Stretch sheet so tfoot (signature + blue bar + disclaimer) sits at page bottom. */
+    .letterpad-sheet { width: 100%; border-collapse: collapse; }
+    @media print {
+      /* Printable area ≈ 297mm − 4mm top − 3mm bottom */
+      .letterpad-sheet { min-height: 290mm; height: 290mm; }
+      .letterpad-sheet > tbody > tr > td { height: 100%; vertical-align: top; }
+      .letterpad-sheet > tfoot > tr > td { vertical-align: bottom; padding-bottom: 0; }
+      .letterpad-footer-block { margin-top: 0; margin-bottom: 0; }
+      .letterpad-services { margin-top: 0.3mm; }
+      .letterpad-disclaimer { padding: 1px 6px 0; }
+    }
     ` : ""}
 
     /* ── Print rules (Phase 7: widows/orphans, no split images, no blank pages) ── */

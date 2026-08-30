@@ -89,7 +89,7 @@ export function letterPadErpPdfLockCss(chrome: CareLetterheadChrome = CARE_LETTE
   const addrPt = chrome.addressFontSize || CARE_LETTERPAD.addressFontSize;
   return `
     /* Presentation-template letter-pad header (Radiology Settings → Report Style) */
-    @page { margin: 4mm 6mm 8mm 6mm !important; }
+    @page { margin: 4mm 6mm 3mm 6mm !important; }
     .letterpad .hdr {
       padding: 0 !important;
       gap: 0 !important;
