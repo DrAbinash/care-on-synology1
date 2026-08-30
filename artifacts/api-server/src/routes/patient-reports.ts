@@ -68,7 +68,10 @@ import {
   renderReportDocument,
   type ReportDocumentModel, type ReportKeyImageModel, type ReportParameterRow, type ReportSignatureModel,
 } from "../lib/reportPresentation";
-import { resolveReportPrintKeyImages } from "../lib/frozenKeyImages";
+import {
+  resolveReportPrintKeyImagesDetailed,
+  frozenIntegrityBannerHtml,
+} from "../lib/frozenKeyImages";
 import {
   REPORT_HEADER_SCALE_KEY,
   REPORT_LOGO_SCALE_KEY,
@@ -2708,17 +2711,22 @@ async function renderReportVersionHtml(reportId: number, autoPrint: boolean, use
   // through the presentation layer unchanged.
   const safeguards = version ? versionSafeguardHtml(version) : { banner: "", watermark: "" };
 
-  // R1.1 — selected key images resolve from persisted DICOM references
-  // (draft → final_report_id linkage; amendments share the root's draft).
-  // Failure-tolerant: a slow/absent PACS never blocks printing.
+  // R1.1 / Phase 1 — prefer frozen viewport key images; legacy Orthanc only
+  // when no includeInReport frozen rows exist. Missing frozen files never
+  // silently fall back to live PACS pixels.
   let keyImages: ReportKeyImageModel[] = [];
+  let frozenIntegrityExtra = "";
   if (r.type === "radiology") {
     try {
-      keyImages = await resolveReportPrintKeyImages([
+      const resolved = await resolveReportPrintKeyImagesDetailed([
         version?.rootReportId ?? reportId,
         version?.resolvedReportId ?? reportId,
         reportId,
       ]);
+      keyImages = resolved.images;
+      if (resolved.source === "frozen" && !resolved.integrityOk) {
+        frozenIntegrityExtra = frozenIntegrityBannerHtml(resolved.unavailableFrozenCount);
+      }
     } catch { keyImages = []; }
   }
 
@@ -2753,7 +2761,7 @@ async function renderReportVersionHtml(reportId: number, autoPrint: boolean, use
       { label: "Type", value: r.type.toUpperCase() },
       { label: "Status", value: r.status.replace(/_/g, " ").toUpperCase() },
     ],
-    safeguardBannerHtml: safeguards.banner,
+    safeguardBannerHtml: [safeguards.banner, frozenIntegrityExtra].filter(Boolean).join(""),
     safeguardWatermarkHtml: safeguards.watermark,
     isCritical: r.isCritical,
     criticalNote: r.criticalNote,

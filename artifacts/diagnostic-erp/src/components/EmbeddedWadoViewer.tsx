@@ -108,7 +108,6 @@ const EmbeddedWadoViewer = forwardRef<EmbeddedViewerHandle, {
    */
   onCaptureViewport?: (payload: {
     blob: Blob;
-    thumbnailBlob: Blob;
     mimeType: string;
     snapshotJson: string;
     context: ViewportContext;
@@ -158,7 +157,6 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
   onViewportContextChange?: (ctx: ViewportContext | null) => void;
   onCaptureViewport?: (payload: {
     blob: Blob;
-    thumbnailBlob: Blob;
     mimeType: string;
     snapshotJson: string;
     context: ViewportContext;
@@ -185,6 +183,7 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
 
   const dragRef = useRef({ dragging: false, startX: 0, startY: 0, startPanX: 0, startPanY: 0 });
   const imgRef = useRef<HTMLImageElement>(null);
+  const framesViewportRef = useRef<HTMLDivElement>(null);
 
   const { data: launchData } = useQuery<ViewerLaunchData>({
     queryKey: ["viewer-launch", studyInstanceUID],
@@ -666,12 +665,14 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
                 disabled={!!captureBusy || !frameUrl}
                 onClick={async () => {
                   const img = imgRef.current;
-                  if (!img || !img.complete || !img.naturalWidth) return;
+                  const viewport = framesViewportRef.current;
+                  if (!img || !viewport || !img.complete || !img.naturalWidth) return;
                   const seriesMeta = series.find((s) => s.uid === selectedSeriesUID);
                   const inst = instances[selectedInstIdx];
                   try {
                     const result = await captureFramesViewport({
                       img,
+                      viewport,
                       zoom,
                       panX,
                       panY,
@@ -691,7 +692,6 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
                     };
                     await onCaptureViewport({
                       blob: result.blob,
-                      thumbnailBlob: result.thumbnailBlob,
                       mimeType: result.mimeType,
                       snapshotJson: JSON.stringify(result.snapshot),
                       context,
@@ -714,8 +714,10 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
             )}
           </div>
 
-          {/* Canvas */}
+          {/* Canvas — FRAMES viewport (overflow-hidden). Capture uses this rect. */}
           <div
+            ref={framesViewportRef}
+            data-testid="frames-viewport"
             className="flex-1 relative overflow-hidden bg-black flex items-center justify-center cursor-grab active:cursor-grabbing"
             onDoubleClick={() => setIsExpanded((v) => !v)}
             onMouseDown={handleMouseDown}
@@ -737,7 +739,7 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
                 src={frameUrl}
                 alt="DICOM frame"
                 className="max-w-none select-none"
-                style={{ transform: imageTransform, filter: imageFilter }}
+                style={{ transform: imageTransform, transformOrigin: "50% 50%", filter: imageFilter }}
                 draggable={false}
               />
             ) : (

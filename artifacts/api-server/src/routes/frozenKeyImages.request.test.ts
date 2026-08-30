@@ -1,9 +1,11 @@
 /**
- * Request-level tests for frozen key-image API (finalize lock, MIME, detach).
+ * Request-level tests for frozen key-image API (finalize lock, MIME, detach, auth, provenance).
  */
 import { describe, expect, it, beforeAll, afterAll } from "vitest";
 import { promises as fs } from "node:fs";
+import path from "node:path";
 import { randomUUID } from "node:crypto";
+import sharp from "sharp";
 import request from "supertest";
 import type { Express } from "express";
 import { db } from "@workspace/db";
@@ -29,7 +31,9 @@ describe.skipIf(!dbReady)("frozen key-images API", () => {
   const marker = `fki-${randomUUID().slice(0, 8)}`;
   const token = `vitest-token-${randomUUID()}`;
   let draftId = 0;
+  let otherDraftId = 0;
   let imageId = 0;
+  let otherImageId = 0;
   let userId = 0;
   const cleanupImageIds: number[] = [];
 
@@ -68,6 +72,31 @@ describe.skipIf(!dbReady)("frozen key-images API", () => {
       })
       .returning();
     draftId = draft.id;
+
+    const [other] = await db
+      .insert(radiologyReportDraftsTable)
+      .values({
+        status: "DRAFT",
+        studyName: "Other draft",
+        modality: "CT",
+        rawFindings: "y",
+        impression: "[]",
+      })
+      .returning();
+    otherDraftId = other.id;
+
+    const [otherImg] = await db
+      .insert(radiologyReportKeyImagesTable)
+      .values({
+        draftId: otherDraftId,
+        imageUrl: `/uploads/radiology-key-images/${randomUUID()}.jpg`,
+        thumbnailUrl: `/uploads/radiology-key-images/${randomUUID()}.jpg`,
+        caption: "other",
+        sourceType: "UPLOAD",
+      })
+      .returning();
+    otherImageId = otherImg.id;
+    cleanupImageIds.push(otherImageId);
   });
 
   afterAll(async () => {
@@ -76,6 +105,9 @@ describe.skipIf(!dbReady)("frozen key-images API", () => {
     }
     if (draftId) {
       await db.delete(radiologyReportDraftsTable).where(eq(radiologyReportDraftsTable.id, draftId));
+    }
+    if (otherDraftId) {
+      await db.delete(radiologyReportDraftsTable).where(eq(radiologyReportDraftsTable.id, otherDraftId));
     }
     if (userId) {
       await db.delete(portalSessionsTable).where(eq(portalSessionsTable.token, token));
@@ -95,7 +127,36 @@ describe.skipIf(!dbReady)("frozen key-images API", () => {
     expect([400, 500]).toContain(res.status);
   });
 
-  it("accepts JPEG viewport capture with provenance", async () => {
+  it("rejects malformed viewportSnapshotJson", async () => {
+    const res = await request(app)
+      .post("/api/radiology/report-generator/key-images")
+      .set("Authorization", `Bearer ${token}`)
+      .field("draftId", String(draftId))
+      .field("viewportSnapshotJson", "{broken")
+      .attach("image", JPEG_1X1, { filename: "cap.jpg", contentType: "image/jpeg" });
+    expect(res.status).toBe(400);
+    expect(String(res.body.error)).toMatch(/viewportSnapshotJson/i);
+  });
+
+  it("rejects invalid DICOM UID / viewer", async () => {
+    const badUid = await request(app)
+      .post("/api/radiology/report-generator/key-images")
+      .set("Authorization", `Bearer ${token}`)
+      .field("draftId", String(draftId))
+      .field("studyInstanceUID", "not a uid!!!")
+      .attach("image", JPEG_1X1, { filename: "cap.jpg", contentType: "image/jpeg" });
+    expect(badUid.status).toBe(400);
+
+    const badViewer = await request(app)
+      .post("/api/radiology/report-generator/key-images")
+      .set("Authorization", `Bearer ${token}`)
+      .field("draftId", String(draftId))
+      .field("viewer", "evil")
+      .attach("image", JPEG_1X1, { filename: "cap.jpg", contentType: "image/jpeg" });
+    expect(badViewer.status).toBe(400);
+  });
+
+  it("accepts JPEG viewport capture with provenance and normalizes to jpg", async () => {
     const res = await request(app)
       .post("/api/radiology/report-generator/key-images")
       .set("Authorization", `Bearer ${token}`)
@@ -122,6 +183,56 @@ describe.skipIf(!dbReady)("frozen key-images API", () => {
     expect(res.body.item?.imageUrl).toMatch(/^\/uploads\/radiology-key-images\/.+\.jpg$/);
     imageId = res.body.item.id;
     cleanupImageIds.push(imageId);
+
+    const disk = path.join(FROZEN_KEY_IMAGE_DIR, path.basename(res.body.item.imageUrl));
+    await expect(fs.access(disk)).resolves.toBeUndefined();
+  });
+
+  it("accepts large PNG and stores normalized printable JPEG", async () => {
+    const big = await sharp({
+      create: {
+        width: 2000,
+        height: 1500,
+        channels: 3,
+        background: { r: 90, g: 40, b: 10 },
+      },
+    })
+      .png()
+      .toBuffer();
+    expect(big.length).toBeGreaterThan(1_000_000);
+
+    const res = await request(app)
+      .post("/api/radiology/report-generator/key-images")
+      .set("Authorization", `Bearer ${token}`)
+      .field("draftId", String(draftId))
+      .field("sourceType", "VIEWPORT_CAPTURE")
+      .field("viewer", "frames")
+      .field("caption", "large")
+      .attach("image", big, { filename: "big.png", contentType: "image/png" });
+
+    expect(res.status).toBe(201);
+    cleanupImageIds.push(res.body.item.id);
+    expect(res.body.item.imageUrl).toMatch(/\.jpg$/);
+    const disk = path.join(FROZEN_KEY_IMAGE_DIR, path.basename(res.body.item.imageUrl));
+    const st = await fs.stat(disk);
+    expect(st.size).toBeLessThan(2_500_000);
+    expect(st.size).toBeGreaterThan(5000);
+  });
+
+  it("GET unknown draftId returns 404", async () => {
+    const res = await request(app)
+      .get("/api/radiology/report-generator/key-images?draftId=999999991")
+      .set("Authorization", `Bearer ${token}`);
+    expect(res.status).toBe(404);
+  });
+
+  it("reorder rejects foreign orderedIds", async () => {
+    const res = await request(app)
+      .post("/api/radiology/report-generator/key-images/reorder")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ draftId, orderedIds: [imageId, otherImageId] });
+    expect(res.status).toBe(400);
+    expect(String(res.body.error)).toMatch(/orderedIds/i);
   });
 
   it("detach observation preserves row", async () => {
