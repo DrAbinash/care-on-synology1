@@ -77,6 +77,15 @@ import type { ObservationAnchor } from "@/lib/observationAnchor";
 import { anchorsEqual } from "@/lib/observationAnchor";
 import type { CoverageMark } from "@/lib/coverageMarks";
 import {
+  emptyViewerMeasurementsState,
+  upsertStructuredMeasurement,
+  detachStructuredMeasurementsFromObservation,
+  type MeasurementIntent,
+  type ViewerMeasurementsState,
+  type StructuredMeasurement,
+} from "@/lib/structuredViewerMeasurements";
+import type { CanalApProvenanceMap, CanalApCellProvenance } from "@/lib/spineCanalAp";
+import {
   coverageMarksEqual,
   defaultCoverageMarks,
   setCoverageStatus,
@@ -299,6 +308,19 @@ interface S {
   activeAnchor: ObservationAnchor | null;
   /** Selected ledger observation for key-image attach (Reporting Canvas R2). */
   selectedObservationId: string | null;
+  /**
+   * Explicit MEASURE intent — radiologist chooses Canal AP / Lesion / Midline / Other
+   * before the next viewer caliper is classified. Never infer blindly.
+   */
+  measurementIntent: MeasurementIntent | null;
+  /** Disc level selected for Canal AP intent (e.g. L4-L5). */
+  canalIntentLevel: string | null;
+  /** Draft-scoped structured viewer measurements (care.viewer_measurements.v1). */
+  structuredViewerMeasurements: ViewerMeasurementsState;
+  /** Force-show dorsal canal table when radiologist explicitly activates it. */
+  dorsalCanalForced: boolean;
+  /** Canal AP cell provenance (manualOverride + DICOM UIDs) — draft-scoped. */
+  canalApProvenance: CanalApProvenanceMap;
   /** Expected study UID for activeAnchor rejection across study switches. */
   activeStudyInstanceUID: string | null;
   /** Advisory coverage marks for the active Study Tab scope. Never a finalize hard gate. */
@@ -360,6 +382,19 @@ export type WorkspaceStore = S & {
   serializeObservationLedger: () => SerializedObservationLedger;
   setActiveAnchor: (anchor: ObservationAnchor | null) => void;
   setSelectedObservationId: (id: string | null) => void;
+  setMeasurementIntent: (intent: MeasurementIntent | null) => void;
+  setCanalIntentLevel: (level: string | null) => void;
+  setStructuredViewerMeasurements: (s: ViewerMeasurementsState) => void;
+  upsertStructuredViewerMeasurement: (
+    m: Omit<StructuredMeasurement, "id" | "createdAt" | "updatedAt"> & {
+      id?: string;
+      createdAt?: string;
+      updatedAt?: string;
+    },
+  ) => void;
+  setDorsalCanalForced: (v: boolean) => void;
+  setCanalApProvenance: (m: CanalApProvenanceMap) => void;
+  setCanalApCellProvenance: (level: string, p: CanalApCellProvenance | null) => void;
   setCoverageMark: (regionKey: string, status: CoverageMark["status"], reason?: string) => void;
   /** Focus / jump: promote unopened → viewed only; never downgrade or dirty. */
   touchCoverageViewed: (regionKey: string) => void;
@@ -419,7 +454,12 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   appliedFormatReportTitle: null,
   saveAsFormatDialogOpen: false, mergePreviewOpen: false, lastMergeResult: null, lastMergeFormats: null, confirmOverwriteOpen: false, pendingFormatIds: [],
   pendingPathologyPatch: null, lastPatchSnapshot: null, appliedPathologyPatches: [], impressionNeedsRefresh: false,
-  activeAnchor: null, selectedObservationId: null, activeStudyInstanceUID: null, coverageMarks: [], coverageByScope: {},
+  activeAnchor: null, selectedObservationId: null,
+  measurementIntent: null, canalIntentLevel: null,
+  structuredViewerMeasurements: emptyViewerMeasurementsState(),
+  dorsalCanalForced: false,
+  canalApProvenance: {},
+  activeStudyInstanceUID: null, coverageMarks: [], coverageByScope: {},
   appliedFormatName: null,
   ownershipReviewWarnings: [], ledgerHydrationWarning: null,
   voiceComposerObservations: [], voiceComposerTranscriptHistory: [],
@@ -452,7 +492,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     }
     set({ studies: next });
   },
-  selectStudy: (id) => { const st = get().studies.find(s => s.id === id); if (!st) return; set({ activeStudyId: id, findingsText: "", impressionText: "", recommendationText: "", techniqueText: "", clinicalHistoryText: st.clinicalHistory || "", fieldProvenance: {}, measurements: [], priors: [], isDirty: false, isFinalized: false, isFinalizing: false, railStage: "orient", ghostText: null, ghostTextTarget: null, acknowledgedCopilotIds: new Set(), activeCopilotItem: null, voiceTranscript: "", voiceListening: false, selectedFormatIds: [], reportFormatPickerOpen: false, appliedFormatReportTitle: null, appliedPathologyPatches: [], impressionNeedsRefresh: false, activeAnchor: null, selectedObservationId: null, activeStudyInstanceUID: st.studyInstanceUID ?? null, coverageMarks: [], coverageByScope: {}, appliedFormatName: null, ownershipReviewWarnings: [], ledgerHydrationWarning: null, lastPatchSnapshot: null, voiceComposerObservations: [], voiceComposerTranscriptHistory: [], criticalSlaStartedAt: null, criticalSlaEscalated: false, preloadTriggered: false, nextStudyPreloaded: false, reportingContext: EMPTY_REPORTING_STUDY_CONTEXT }); setTimeout(() => get().recomputeCopilot(), 0); },
+  selectStudy: (id) => { const st = get().studies.find(s => s.id === id); if (!st) return; set({ activeStudyId: id, findingsText: "", impressionText: "", recommendationText: "", techniqueText: "", clinicalHistoryText: st.clinicalHistory || "", fieldProvenance: {}, measurements: [], priors: [], isDirty: false, isFinalized: false, isFinalizing: false, railStage: "orient", ghostText: null, ghostTextTarget: null, acknowledgedCopilotIds: new Set(), activeCopilotItem: null, voiceTranscript: "", voiceListening: false, selectedFormatIds: [], reportFormatPickerOpen: false, appliedFormatReportTitle: null, appliedPathologyPatches: [], impressionNeedsRefresh: false, activeAnchor: null, selectedObservationId: null, measurementIntent: null, canalIntentLevel: null, structuredViewerMeasurements: emptyViewerMeasurementsState(), dorsalCanalForced: false, canalApProvenance: {}, activeStudyInstanceUID: st.studyInstanceUID ?? null, coverageMarks: [], coverageByScope: {}, appliedFormatName: null, ownershipReviewWarnings: [], ledgerHydrationWarning: null, lastPatchSnapshot: null, voiceComposerObservations: [], voiceComposerTranscriptHistory: [], criticalSlaStartedAt: null, criticalSlaEscalated: false, preloadTriggered: false, nextStudyPreloaded: false, reportingContext: EMPTY_REPORTING_STUDY_CONTEXT }); setTimeout(() => get().recomputeCopilot(), 0); },
   setNextStudy: (id) => set({ nextStudyId: id }), markNextStudyPreloaded: () => set({ nextStudyPreloaded: true }),
   setField: (f, v, opts) => {
     const key = fieldTextKey(f);
@@ -1089,6 +1129,28 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     if (get().selectedObservationId === id) return;
     set({ selectedObservationId: id });
   },
+  setMeasurementIntent: (intent) => {
+    if (get().measurementIntent === intent) return;
+    set({ measurementIntent: intent });
+  },
+  setCanalIntentLevel: (level) => {
+    if (get().canalIntentLevel === level) return;
+    set({ canalIntentLevel: level });
+  },
+  setStructuredViewerMeasurements: (s) => set({ structuredViewerMeasurements: s }),
+  upsertStructuredViewerMeasurement: (m) => {
+    set({
+      structuredViewerMeasurements: upsertStructuredMeasurement(get().structuredViewerMeasurements, m),
+    });
+  },
+  setDorsalCanalForced: (v) => set({ dorsalCanalForced: v }),
+  setCanalApProvenance: (m) => set({ canalApProvenance: m }),
+  setCanalApCellProvenance: (level, p) => {
+    const next = { ...get().canalApProvenance };
+    if (!p) delete next[level];
+    else next[level] = p;
+    set({ canalApProvenance: next });
+  },
   setCoverageMark: (regionKey, status, reason) => {
     const scope = coverageScopeKey(get().reportingContext.region);
     const base = get().coverageMarks.length ? get().coverageMarks : defaultCoverageMarks(scope);
@@ -1141,6 +1203,10 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       voiceComposerTranscriptHistory: [...get().voiceComposerTranscriptHistory],
     };
     const result = removeLedgerObservation(narrativeFromState(get()), get().fieldProvenance, toLedgerPatch(patch));
+    const detachedMs = detachStructuredMeasurementsFromObservation(
+      get().structuredViewerMeasurements,
+      id,
+    );
     set({
       clinicalHistoryText: result.narrative.clinicalHistory,
       techniqueText: result.narrative.technique,
@@ -1150,6 +1216,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       fieldProvenance: result.provenance,
       appliedPathologyPatches: get().appliedPathologyPatches.filter((p) => p.id !== id),
       selectedObservationId: get().selectedObservationId === id ? null : get().selectedObservationId,
+      structuredViewerMeasurements: detachedMs.state,
       lastPatchSnapshot: snap,
       isDirty: true,
     });

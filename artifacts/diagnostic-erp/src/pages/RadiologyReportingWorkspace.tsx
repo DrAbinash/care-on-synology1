@@ -149,7 +149,17 @@ import FrozenKeyImagesRail, {
   useFrozenKeyImages,
   frozenKeyImagesQueryKey,
 } from "@/components/radiology/FrozenKeyImagesRail";
-import { buildObservationKeyImageCaption } from "@/lib/keyImageCaption";
+import { buildObservationKeyImageCaption, maybeRefreshCaption } from "@/lib/keyImageCaption";
+import {
+  removeStructuredMeasurementByAnnotation,
+  extractCareViewerMeasurements,
+  extractCareCanalApProvenance,
+  structuredFromViewerRow,
+  formatMeasurementChip,
+  annotationIdFromCoordinates,
+  classifyViewerRowIngestMode,
+} from "@/lib/structuredViewerMeasurements";
+import type { CanalApProvenanceMap } from "@/lib/spineCanalAp";
 import ComparisonPanel from "@/components/radiology/ComparisonPanel";
 import FollowUpPanel from "@/components/radiology/FollowUpPanel";
 import FinalizeSignDialog from "@/components/radiology/FinalizeSignDialog";
@@ -177,7 +187,7 @@ import PriorComparisonToolbar from "@/components/radiology/PriorComparisonToolba
 import ViewerMeasurementsBanner from "@/components/radiology/ViewerMeasurementsBanner";
 import { useViewerMeasurements } from "@/components/radiology/ViewerMeasurementsPanel";
 import { formatViewerMeasurementLabel } from "@/lib/formatViewerMeasurementLine";
-import { subscribeCareOhifBridge } from "@/lib/ohifViewerBridge";
+import { subscribeCareOhifBridge, captureResultToBlob, requestOhifNavigateToAnchor, requestOhifViewportCapture, deriveOhifAllowedOrigins, resolveOhifTargetOrigin } from "@/lib/ohifViewerBridge";
 import { viewportToAnchor } from "@/lib/observationAnchor";
 import { isMriLumbarReportingContext } from "@/lib/mriLumbarRegions";
 import { buildLumbarLevelApplyBundle, deriveCanvasNarrativeState, ledgerSeverityContradiction, structuredCanalApContradiction } from "@/lib/mriLumbarLevelState";
@@ -1764,6 +1774,14 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       }
       const ledger = extractCareObservationLedger(draft.structuredJson);
       const hydrated = useWorkspace.getState().hydrateObservationLedger(ledger);
+      const restoredMs = extractCareViewerMeasurements(draft.structuredJson);
+      if (restoredMs) {
+        useWorkspace.getState().setStructuredViewerMeasurements(restoredMs);
+      }
+      const restoredCanal = extractCareCanalApProvenance(draft.structuredJson);
+      if (restoredCanal) {
+        useWorkspace.getState().setCanalApProvenance(restoredCanal as CanalApProvenanceMap);
+      }
       const ids = selectedQuickFindingIds(useWorkspace.getState().appliedPathologyPatches.map((p) => p.id));
       setSelectedQuickIds(new Set(ids));
       if (hydrated.warning) {
@@ -1901,6 +1919,13 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
             })
             : undefined,
           observationLedger: useWorkspace.getState().serializeObservationLedger(),
+          viewerMeasurements: (() => {
+            const s = useWorkspace.getState().structuredViewerMeasurements;
+            // Harden: bound payload size for draft structured_json.
+            if (!s?.items || s.items.length <= 400) return s;
+            return { ...s, items: s.items.slice(-400) };
+          })(),
+          canalApProvenance: useWorkspace.getState().canalApProvenance,
         } as any),
         { shouldRetry: isTransientError },
       );
@@ -2343,6 +2368,18 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     }
     return counts;
   }, [frozenKeyImages]);
+  const structuredViewerMeasurements = useWorkspace((s: WorkspaceStore) => s.structuredViewerMeasurements);
+  const measurementChips = useMemo(() => {
+    const chips: Record<string, string> = {};
+    for (const m of structuredViewerMeasurements.items) {
+      if (!m.observationId) continue;
+      const chip = formatMeasurementChip(m);
+      if (!chip) continue;
+      // Prefer newest / last-written chip per observation
+      chips[m.observationId] = chip;
+    }
+    return chips;
+  }, [structuredViewerMeasurements]);
   const observationLabels = useMemo(() => {
     const labels: Record<string, string> = {};
     for (const p of appliedPathologyPatches) {
@@ -2372,8 +2409,24 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
 
   const viewerMeasurementsQ = useViewerMeasurements(workflow.currentRow?.studyInstanceUID);
 
-  // Bridge viewer_measurements → MEASURE rail (Zustand). Previously setMeasurements was never called.
+  // Bridge viewer_measurements → MEASURE rail (Zustand) + structured measurements.
+  // Historical hydration never uses live Measure toolbar / selection / activeAnchor.
+  // Only rows first seen AFTER the study's first successful query resolution are new_event.
+  const knownViewerRowIdsRef = useRef<Set<number>>(new Set());
+  const viewerHydratedStudyUidRef = useRef<string | null>(null);
+  const viewerHydrationCompleteRef = useRef(false);
   useEffect(() => {
+    if (isLocked || isFinalized) return;
+    const uid = workflow.currentRow?.studyInstanceUID ?? null;
+    if (uid !== viewerHydratedStudyUidRef.current) {
+      knownViewerRowIdsRef.current = new Set();
+      viewerHydrationCompleteRef.current = false;
+      viewerHydratedStudyUidRef.current = uid;
+    }
+    // Wait for the first successful resolution (data may be []). While loading /
+    // undefined, do not mark hydration complete and do not ingest.
+    if (!viewerMeasurementsQ.isSuccess) return;
+
     const rows = viewerMeasurementsQ.data ?? [];
     const mapped = rows
       .filter((m) => m.status !== "ignored")
@@ -2393,7 +2446,50 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         };
       });
     useWorkspace.getState().setMeasurements(mapped);
-  }, [viewerMeasurementsQ.data]);
+
+    const store = useWorkspace.getState();
+    const existingItems = store.structuredViewerMeasurements.items;
+    const seenBefore = knownViewerRowIdsRef.current;
+    const hydrationComplete = viewerHydrationCompleteRef.current;
+    for (const m of rows) {
+      const prior = existingItems.find(
+        (x) =>
+          x.viewerMeasurementRowId === m.id
+          || (() => {
+            const ann = annotationIdFromCoordinates(m.imageCoordinates);
+            return Boolean(ann && x.viewerAnnotationId === ann);
+          })(),
+      );
+      const mode = classifyViewerRowIngestMode({
+        hydrationComplete,
+        rowId: m.id,
+        knownRowIds: seenBefore,
+        hasPriorStructured: Boolean(prior),
+      });
+      // Track every row id from the successful response (including ignored).
+      seenBefore.add(m.id);
+      if (m.status === "ignored") continue;
+      const isNewEvent = mode === "new_event";
+      const payload = structuredFromViewerRow({
+        row: m,
+        mode,
+        liveIntent: isNewEvent ? store.measurementIntent : null,
+        liveCanalLevel: isNewEvent ? store.canalIntentLevel : null,
+        liveSelectedObservationId: isNewEvent ? store.selectedObservationId : null,
+        liveActiveAnchor: isNewEvent ? store.activeAnchor : null,
+        prior: prior ?? null,
+      });
+      store.upsertStructuredViewerMeasurement(payload);
+    }
+    // First successful resolution — even [] or ignored-only — completes hydration.
+    viewerHydrationCompleteRef.current = true;
+  }, [
+    viewerMeasurementsQ.data,
+    viewerMeasurementsQ.isSuccess,
+    isLocked,
+    isFinalized,
+    workflow.currentRow?.studyInstanceUID,
+  ]);
 
   const canalApByLevel = useMemo(() => {
     const out: Record<string, number | null> = {};
@@ -2408,25 +2504,129 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     return out;
   }, [workspaceMeasurements]);
 
-  // OHIF postMessage → viewer_measurements / report image-references
+  // OHIF postMessage → viewer_measurements / report image-references / capture
+  const ohifCapturePendingRef = useRef<Set<string>>(new Set());
+  const ohifTargetOriginRef = useRef<string | null>(null);
+  const captionRefreshInFlightRef = useRef<Set<number>>(new Set());
   useEffect(() => {
     const uid = workflow.currentRow?.studyInstanceUID ?? null;
     if (!uid) return;
+    const mutationsAllowed = !(isLocked || isFinalized);
+    const liveLaunchUrl =
+      embeddedViewerRef.current?.getOhifLaunchUrl?.()
+      || (typeof window !== "undefined" ? window.localStorage.getItem("care_ohif_launch_url") : null);
+    const viteExtras =
+      typeof import.meta !== "undefined"
+      && typeof (import.meta as ImportMeta & { env?: { VITE_OHIF_ALLOWED_ORIGINS?: string } }).env?.VITE_OHIF_ALLOWED_ORIGINS === "string"
+        ? (import.meta as ImportMeta & { env: { VITE_OHIF_ALLOWED_ORIGINS: string } }).env.VITE_OHIF_ALLOWED_ORIGINS
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean)
+        : null;
+    const allowAny =
+      typeof import.meta !== "undefined"
+      && (import.meta as ImportMeta & { env?: { VITE_OHIF_ALLOW_ANY?: string } }).env?.VITE_OHIF_ALLOW_ANY === "1";
+    const ohifOrigins = deriveOhifAllowedOrigins({
+      pageOrigin: typeof window !== "undefined" ? window.location.origin : null,
+      ohifLaunchUrl: liveLaunchUrl,
+      extraOrigins: viteExtras,
+      allowAny,
+    });
+    ohifTargetOriginRef.current = resolveOhifTargetOrigin({
+      ohifLaunchUrl: liveLaunchUrl,
+      allowedOrigins: ohifOrigins,
+      pageOrigin: typeof window !== "undefined" ? window.location.origin : null,
+    });
+
     return subscribeCareOhifBridge({
       studyInstanceUID: uid,
       patientId: workflow.currentRow?.patientId ?? null,
       studyId: workflow.currentRow?.studyId ?? studyId ?? null,
       draftId: draftId ?? null,
       getImageRefs: () => imageRefs,
+      pendingCaptureRequestIds: ohifCapturePendingRef.current,
+      mutationsAllowed,
+      allowedOrigins: ohifOrigins,
+      getExpectedSourceWindow: () => embeddedViewerRef.current?.getOhifWindow?.() ?? null,
       onMeasurementSaved: () => {
+        if (!mutationsAllowed) return;
         void qc.invalidateQueries({ queryKey: ["viewer-measurements", uid] });
       },
       onKeyImageSaved: () => {
+        if (!mutationsAllowed) return;
         void qc.invalidateQueries({ queryKey: ["report-image-references", draftId] });
         toast({ title: "Key image added from viewer" });
       },
       onActiveAnchor: (ctx) => {
         useWorkspace.getState().setActiveAnchor(viewportToAnchor(ctx));
+      },
+      onMeasurementDeleted: (annotationId) => {
+        if (!mutationsAllowed) return;
+        const store = useWorkspace.getState();
+        const prev = store.structuredViewerMeasurements;
+        const hit = prev.items.find((x) => x.viewerAnnotationId === annotationId);
+        store.setStructuredViewerMeasurements(
+          removeStructuredMeasurementByAnnotation(prev, annotationId),
+        );
+        // Persist ignore so refetch does not rehydrate the deleted annotation.
+        if (hit?.viewerMeasurementRowId) {
+          void api
+            .patch(`/api/radiology-lesions/viewer-measurements/${hit.viewerMeasurementRowId}`, {
+              status: "ignored",
+            })
+            .then(() => qc.invalidateQueries({ queryKey: ["viewer-measurements", uid] }))
+            .catch(() => undefined);
+        }
+      },
+      onViewportCaptureResult: async (msg) => {
+        if (!mutationsAllowed) return;
+        const blob = captureResultToBlob(msg);
+        if (!blob) {
+          toast({
+            title: "OHIF capture failed",
+            description: "Annotated image payload was unreadable.",
+            variant: "destructive",
+          });
+          return;
+        }
+        let id = draftId;
+        if (!id) id = await saveDraft({ silent: true });
+        if (!id) {
+          toast({ title: "Could not save draft for capture", variant: "destructive" });
+          return;
+        }
+        const selectedId = useWorkspace.getState().selectedObservationId;
+        const selectedPatch = selectedId
+          ? useWorkspace.getState().appliedPathologyPatches.find((p) => p.id === selectedId)
+          : null;
+        const caption = selectedPatch
+          ? buildObservationKeyImageCaption({
+              level: selectedPatch.observation?.level,
+              laterality: selectedPatch.observation?.laterality,
+              concept: selectedPatch.observation?.concept,
+              region: selectedPatch.observation?.region,
+              lastRenderedFindings: selectedPatch.lastRendered.findings,
+            })
+          : "Key image (OHIF annotated capture)";
+        const fd = new FormData();
+        fd.append("image", blob, "ohif-capture.jpg");
+        fd.append("draftId", String(id));
+        fd.append("sourceType", "VIEWPORT_CAPTURE");
+        fd.append("caption", caption);
+        fd.append("captionManual", "false");
+        fd.append("includeInReport", "true");
+        fd.append("viewer", "ohif");
+        if (selectedId) fd.append("observationId", selectedId);
+        if (msg.studyInstanceUID) fd.append("studyInstanceUID", msg.studyInstanceUID);
+        if (msg.seriesInstanceUID) fd.append("seriesInstanceUID", msg.seriesInstanceUID);
+        if (msg.sopInstanceUID) fd.append("sopInstanceUID", msg.sopInstanceUID);
+        if (msg.frameNumber != null) fd.append("frameNumber", String(msg.frameNumber));
+        if (msg.annotations != null) {
+          fd.append("annotationMetadataJson", JSON.stringify(msg.annotations).slice(0, 8000));
+        }
+        await uploadFrozenKeyImage(fd);
+        void qc.invalidateQueries({ queryKey: frozenKeyImagesQueryKey(id) });
+        toast({ title: "Annotated key image captured from OHIF" });
       },
     });
   }, [
@@ -2438,6 +2638,54 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     imageRefs,
     qc,
     toast,
+    saveDraft,
+    isLocked,
+    isFinalized,
+  ]);
+
+  // Caption refresh: linked observation text changed + captionManual=false → refresh.
+  // Harden: skip images already in-flight to avoid PUT storms.
+  useEffect(() => {
+    if (!draftId || isLocked || isFinalized) return;
+    const items = frozenKeyImagesQ.data?.items ?? [];
+    const patches = useWorkspace.getState().appliedPathologyPatches;
+    for (const img of items) {
+      if (!img.observationId || img.captionManual) continue;
+      if (captionRefreshInFlightRef.current.has(img.id)) continue;
+      const patch = patches.find((p) => p.id === img.observationId);
+      if (!patch) continue;
+      const next = buildObservationKeyImageCaption({
+        level: patch.observation?.level,
+        laterality: patch.observation?.laterality,
+        concept: patch.observation?.concept,
+        region: patch.observation?.region,
+        lastRenderedFindings: patch.lastRendered.findings,
+      });
+      const refreshed = maybeRefreshCaption({
+        captionManual: Boolean(img.captionManual),
+        currentCaption: img.caption || "",
+        nextAutoCaption: next,
+      });
+      if (refreshed === (img.caption || "")) continue;
+      captionRefreshInFlightRef.current.add(img.id);
+      void api
+        .put(`/api/radiology/report-generator/key-images/${img.id}`, {
+          caption: refreshed,
+          captionManual: false,
+        })
+        .then(() => qc.invalidateQueries({ queryKey: frozenKeyImagesQueryKey(draftId) }))
+        .catch(() => undefined)
+        .finally(() => {
+          captionRefreshInFlightRef.current.delete(img.id);
+        });
+    }
+  }, [
+    draftId,
+    isLocked,
+    isFinalized,
+    appliedPathologyPatches,
+    frozenKeyImagesQ.data,
+    qc,
   ]);
 
   const studyNameForExport = resolvePrintedReportTitle(
@@ -3520,6 +3768,43 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                         useWorkspace.getState().setActiveAnchor(ctx ? viewportToAnchor(ctx) : null);
                       }}
                       captureBusy={captureBusy}
+                      onRequestOhifAnnotatedCapture={
+                        isLocked || isFinalized
+                          ? undefined
+                          : () => {
+                              const requestId = `cap_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+                              ohifCapturePendingRef.current.add(requestId);
+                              const win = embeddedViewerRef.current?.getOhifWindow?.();
+                              let targetOrigin = ohifTargetOriginRef.current;
+                              if (!targetOrigin) {
+                                const launch = embeddedViewerRef.current?.getOhifLaunchUrl?.();
+                                if (launch) {
+                                  try { targetOrigin = new URL(launch).origin; } catch { /* ignore */ }
+                                }
+                              }
+                              const ok = requestOhifViewportCapture({
+                                target: win,
+                                requestId,
+                                targetOrigin,
+                              });
+                              if (!ok) {
+                                ohifCapturePendingRef.current.delete(requestId);
+                                toast({
+                                  title: "OHIF capture unavailable",
+                                  description: "OHIF iframe is not ready. Switch to Frames or open OHIF in a new tab.",
+                                  variant: "destructive",
+                                });
+                                return;
+                              }
+                              toast({
+                                title: "Annotated capture requested",
+                                description: "Waiting for CARE OHIF extension. Falls back to Frames/upload if unsupported.",
+                              });
+                              window.setTimeout(() => {
+                                ohifCapturePendingRef.current.delete(requestId);
+                              }, 60_000);
+                            }
+                      }
                       onCaptureViewport={
                         isLocked || isFinalized
                           ? undefined
@@ -4027,9 +4312,38 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       findingsText={findingsText}
                       selectedId={selectedObservationId}
                       keyImageCounts={keyImageCounts}
+                      measurementChips={measurementChips}
                       onOpenKeyImages={(id) => {
                         setKeyImageFilterObsId(id);
                         useWorkspace.getState().setSelectedObservationId(id);
+                      }}
+                      onJumpToMeasurement={(id) => {
+                        const m = useWorkspace.getState().structuredViewerMeasurements.items
+                          .find((x) => x.observationId === id && x.anchor);
+                        const a = m?.anchor;
+                        if (!a) {
+                          toast({ title: "No source image for this measurement" });
+                          return;
+                        }
+                        const framesOk = embeddedViewerRef.current?.goToAnchor({
+                          studyInstanceUID: a.studyInstanceUID,
+                          seriesInstanceUID: a.seriesInstanceUID,
+                          sopInstanceUID: a.sopInstanceUID,
+                          frameNumber: a.frameNumber,
+                        });
+                        if (!framesOk) {
+                          const win = embeddedViewerRef.current?.getOhifWindow?.();
+                          if (a.studyInstanceUID) {
+                            requestOhifNavigateToAnchor({
+                              target: win,
+                              studyInstanceUID: a.studyInstanceUID,
+                              seriesInstanceUID: a.seriesInstanceUID,
+                              sopInstanceUID: a.sopInstanceUID,
+                              frameNumber: a.frameNumber,
+                              targetOrigin: ohifTargetOriginRef.current,
+                            });
+                          }
+                        }
                       }}
                       onSelect={(id) => {
                         useWorkspace.getState().setSelectedObservationId(id);
@@ -4756,6 +5070,37 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       workflow.currentRow?.studyDescription,
                     ].filter(Boolean).join(" ") || null}
                     measureDisabled={isLocked || isFinalized}
+                    onJumpToCanalProvenance={(prov) => {
+                      const ok = embeddedViewerRef.current?.goToAnchor({
+                        studyInstanceUID: prov.studyInstanceUID,
+                        seriesInstanceUID: prov.seriesInstanceUID,
+                        sopInstanceUID: prov.sopInstanceUID,
+                        frameNumber: prov.frameNumber,
+                      });
+                      if (ok) return;
+                      const win = embeddedViewerRef.current?.getOhifWindow?.();
+                      if (prov.studyInstanceUID && win) {
+                        const sent = requestOhifNavigateToAnchor({
+                          target: win,
+                          studyInstanceUID: prov.studyInstanceUID,
+                          seriesInstanceUID: prov.seriesInstanceUID,
+                          sopInstanceUID: prov.sopInstanceUID,
+                          frameNumber: prov.frameNumber,
+                          targetOrigin: ohifTargetOriginRef.current,
+                        });
+                        if (sent) {
+                          toast({
+                            title: "Navigate requested in OHIF",
+                            description: "Requires CARE OHIF extension support for navigate-to-anchor.",
+                          });
+                          return;
+                        }
+                      }
+                      toast({
+                        title: "Source image unavailable",
+                        description: "FRAMES could not locate that series/frame in the loaded study.",
+                      });
+                    }}
                   />
                   {workflow.currentRow && (
                     <div className="border-t border-border p-2">

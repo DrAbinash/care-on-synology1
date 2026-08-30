@@ -470,15 +470,26 @@ radiologyLesionsRouter.post("/viewer-measurements", async (req, res) => {
   const isArray = Array.isArray(body);
   const items = isArray ? body : [body];
 
+  function annotationIdFromCoords(raw: string | null | undefined): string | null {
+    if (!raw) return null;
+    try {
+      const o = JSON.parse(raw) as { annotationId?: unknown };
+      const id = typeof o.annotationId === "string" ? o.annotationId.trim() : "";
+      return id || null;
+    } catch {
+      return null;
+    }
+  }
+
   try {
-    const rows = [];
+    const out = [];
     for (const item of items) {
       const parsed = createViewerMeasurementSchema.safeParse(item);
       if (!parsed.success) {
         return res.status(400).json({ error: "Invalid input data", details: parsed.error.flatten() });
       }
       const data = parsed.data;
-      rows.push({
+      const rowValues = {
         patientId: data.patientId,
         studyId: data.studyId || null,
         orderId: data.orderId || null,
@@ -488,8 +499,6 @@ radiologyLesionsRouter.post("/viewer-measurements", async (req, res) => {
         frameNumber: data.frameNumber ?? 1,
         viewerName: data.viewerName,
         measurementType: data.measurementType,
-        // Canonical registry identity when the exporting bridge knows the
-        // concept (DICOM SR / AI / manual pick); validated against the registry.
         measurementId: data.measurementId && getMeasurement(data.measurementId) ? data.measurementId : null,
         value: data.value,
         unit: data.unit,
@@ -497,15 +506,44 @@ radiologyLesionsRouter.post("/viewer-measurements", async (req, res) => {
         imageCoordinates: data.imageCoordinates || null,
         confidence: data.confidence != null ? data.confidence : 1.0,
         status: data.status || "pending",
-      });
+        updatedAt: new Date(),
+      };
+
+      // Idempotent upsert when OHIF/CARE annotationId is present in imageCoordinates.
+      const ann = annotationIdFromCoords(data.imageCoordinates);
+      if (ann) {
+        const candidates = await db
+          .select()
+          .from(viewerMeasurementsTable)
+          .where(eq(viewerMeasurementsTable.studyInstanceUID, data.studyInstanceUID))
+          .orderBy(desc(viewerMeasurementsTable.id))
+          .limit(80);
+        const hit = candidates.find((c) => annotationIdFromCoords(c.imageCoordinates) === ann);
+        if (hit) {
+          // Harden: deleted annotations are PATCHed to status=ignored. A stale
+          // OHIF re-post must not rehydrate them on refetch.
+          if (hit.status === "ignored") {
+            out.push(hit);
+            continue;
+          }
+          const [updated] = await db
+            .update(viewerMeasurementsTable)
+            .set(rowValues)
+            .where(eq(viewerMeasurementsTable.id, hit.id))
+            .returning();
+          out.push(updated);
+          continue;
+        }
+      }
+
+      const [inserted] = await db
+        .insert(viewerMeasurementsTable)
+        .values(rowValues)
+        .returning();
+      out.push(inserted);
     }
 
-    const inserted = await db
-      .insert(viewerMeasurementsTable)
-      .values(rows)
-      .returning();
-
-    return res.status(201).json({ measurements: inserted, count: inserted.length });
+    return res.status(201).json({ measurements: out, count: out.length });
   } catch (err) {
     req.log.error({ err }, "viewer-measurements: save failed");
     return res.status(500).json({ error: "Failed to save viewer measurements" });

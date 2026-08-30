@@ -8,6 +8,7 @@ import {
   Layers, Maximize2, Minimize2, Expand, Shrink, AlertTriangle, RefreshCw, ExternalLink, Camera,
 } from "lucide-react";
 import { captureFramesViewport } from "@/lib/framesViewportCapture";
+import { framesAnchorStudyAllowed } from "@/lib/framesJumpBack";
 import { BROWSER_DICOMWEB_BASE, dicomWebFetch, withDicomWebAuth } from "@/lib/browserDicomWeb";
 import { planStudyLaunch, localStorageRouteCache, type StudyLaunchResult, type NetworkMode } from "@/lib/studyLaunchService";
 import type { ViewportContext } from "@/lib/observationAnchor";
@@ -80,6 +81,20 @@ export interface EmbeddedViewerHandle {
   zoomIn: () => void;
   zoomOut: () => void;
   resetView: () => void;
+  /**
+   * FRAMES jump-back: select series/SOP/frame from provenance.
+   * Returns false when UIDs are missing or not found in the loaded study.
+   */
+  goToAnchor: (anchor: {
+    studyInstanceUID?: string | null;
+    seriesInstanceUID?: string | null;
+    sopInstanceUID?: string | null;
+    frameNumber?: number | null;
+  }) => boolean;
+  /** OHIF iframe contentWindow when OHIF mode is active (cross-origin OK for postMessage). */
+  getOhifWindow: () => Window | null;
+  /** Live OHIF launch URL used by the iframe (for origin allowlist / outbound targetOrigin). */
+  getOhifLaunchUrl: () => string | null;
 }
 
 const EmbeddedWadoViewer = forwardRef<EmbeddedViewerHandle, {
@@ -113,7 +128,9 @@ const EmbeddedWadoViewer = forwardRef<EmbeddedViewerHandle, {
     context: ViewportContext;
   }) => void | Promise<void>;
   captureBusy?: boolean;
-}>(function EmbeddedWadoViewer({ studyInstanceUID, accessionNumber, patientName, columnExpanded = false, onColumnExpandedChange, onAddCurrentFrameToReport, onViewportContextChange, onCaptureViewport, captureBusy }, ref) {
+  /** Ask CARE OHIF extension for annotated viewport capture (parent registers requestId). */
+  onRequestOhifAnnotatedCapture?: () => void;
+}>(function EmbeddedWadoViewer({ studyInstanceUID, accessionNumber, patientName, columnExpanded = false, onColumnExpandedChange, onAddCurrentFrameToReport, onViewportContextChange, onCaptureViewport, captureBusy, onRequestOhifAnnotatedCapture }, ref) {
   if (!studyInstanceUID) {
     return (
       <div className="flex flex-col items-center justify-center py-8 gap-2 text-muted-foreground text-sm">
@@ -135,13 +152,14 @@ const EmbeddedWadoViewer = forwardRef<EmbeddedViewerHandle, {
       onViewportContextChange={onViewportContextChange}
       onCaptureViewport={onCaptureViewport}
       captureBusy={captureBusy}
+      onRequestOhifAnnotatedCapture={onRequestOhifAnnotatedCapture}
     />
   );
 });
 
 export default EmbeddedWadoViewer;
 
-function ViewerContent({ studyInstanceUID, accessionNumber, patientName, controlRef, columnExpanded, onColumnExpandedChange, onAddCurrentFrameToReport, onViewportContextChange, onCaptureViewport, captureBusy }: {
+function ViewerContent({ studyInstanceUID, accessionNumber, patientName, controlRef, columnExpanded, onColumnExpandedChange, onAddCurrentFrameToReport, onViewportContextChange, onCaptureViewport, captureBusy, onRequestOhifAnnotatedCapture }: {
   studyInstanceUID: string;
   accessionNumber?: string | null;
   patientName?: string | null;
@@ -162,6 +180,7 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
     context: ViewportContext;
   }) => void | Promise<void>;
   captureBusy?: boolean;
+  onRequestOhifAnnotatedCapture?: () => void;
 }) {
   const [selectedSeriesUID, setSelectedSeriesUID] = useState<string | null>(null);
   const [selectedInstIdx, setSelectedInstIdx] = useState(0);
@@ -184,6 +203,7 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
   const dragRef = useRef({ dragging: false, startX: 0, startY: 0, startPanX: 0, startPanY: 0 });
   const imgRef = useRef<HTMLImageElement>(null);
   const framesViewportRef = useRef<HTMLDivElement>(null);
+  const ohifIframeRef = useRef<HTMLIFrameElement>(null);
 
   const { data: launchData } = useQuery<ViewerLaunchData>({
     queryKey: ["viewer-launch", studyInstanceUID],
@@ -232,6 +252,14 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
   // to mixed-content blocking, so prefer the selected network route, falling
   // back to the legacy static LAN URL from /ohif-launch.
   const bestOhifUrl = embedPlan?.finalLaunchUrl ?? launchData?.ohifUrl ?? null;
+  useEffect(() => {
+    if (!bestOhifUrl) return;
+    try {
+      localStorage.setItem("care_ohif_launch_url", bestOhifUrl);
+    } catch {
+      /* private mode */
+    }
+  }, [bestOhifUrl]);
 
   const chooseNetworkMode = (next: NetworkMode) => {
     writeViewerNetworkMode(next);
@@ -356,7 +384,43 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
   const prevFrame = () => setSelectedInstIdx((i) => Math.max(i - 1, 0));
 
   // M1.6B2 — same setters the toolbar buttons call, nothing more.
-  useImperativeHandle(controlRef, () => ({ nextFrame, prevFrame, zoomIn, zoomOut, resetView }));
+  useImperativeHandle(controlRef, () => ({
+    nextFrame,
+    prevFrame,
+    zoomIn,
+    zoomOut,
+    resetView,
+    goToAnchor: (anchor) => {
+      if (!framesAnchorStudyAllowed(studyInstanceUID, anchor.studyInstanceUID)) {
+        return false;
+      }
+      if (anchor.seriesInstanceUID) {
+        const seriesHit = series.find((s) => s.uid === anchor.seriesInstanceUID);
+        if (!seriesHit) return false;
+        if (selectedSeriesUID !== anchor.seriesInstanceUID) {
+          setSelectedSeriesUID(anchor.seriesInstanceUID);
+        }
+      }
+      if (anchor.sopInstanceUID) {
+        const idx = instances.findIndex((i) => i.uid === anchor.sopInstanceUID);
+        if (idx >= 0) {
+          setSelectedInstIdx(idx);
+          return true;
+        }
+        // Series may still be loading — remember intent via frameNumber fallback
+      }
+      if (anchor.frameNumber != null && Number.isFinite(anchor.frameNumber)) {
+        const idx = Math.max(0, Math.min(instances.length - 1, Math.floor(anchor.frameNumber) - 1));
+        if (instances.length > 0) {
+          setSelectedInstIdx(idx);
+          return true;
+        }
+      }
+      return Boolean(anchor.seriesInstanceUID);
+    },
+    getOhifWindow: () => ohifIframeRef.current?.contentWindow ?? null,
+    getOhifLaunchUrl: () => bestOhifUrl,
+  }));
 
   // Escape exits near-fullscreen overlay (column expand is restored via its own control).
   useEffect(() => {
@@ -499,12 +563,30 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
         ) : embedPlan?.success && embedPlan.finalLaunchUrl ? (
           <div className="flex-1 min-h-0 flex flex-col bg-black">
             <div
-              className="shrink-0 px-2 py-1 text-[10px] text-amber-100/90 bg-amber-950/80 border-b border-amber-800/50"
+              className="shrink-0 px-2 py-1 text-[10px] text-amber-100/90 bg-amber-950/80 border-b border-amber-800/50 flex items-center justify-between gap-2"
               data-testid="ohif-capture-fallback-hint"
             >
-              Annotated OHIF capture is not available in this viewer mode. Switch to Frames for viewport capture, save the DICOM frame, or upload a screenshot.
+              <span>
+                Annotated OHIF capture requires the CARE OHIF extension (viewport-capture protocol). Without it, switch to Frames for viewport capture, save the DICOM frame, or upload a screenshot.
+              </span>
+              {onRequestOhifAnnotatedCapture ? (
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  className="h-6 shrink-0 text-[10px]"
+                  disabled={captureBusy}
+                  data-testid="ohif-request-annotated-capture"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onRequestOhifAnnotatedCapture();
+                  }}
+                >
+                  Request annotated capture
+                </Button>
+              ) : null}
             </div>
             <iframe
+              ref={ohifIframeRef}
               title="OHIF viewer"
               src={embedPlan.finalLaunchUrl}
               className="flex-1 w-full min-h-0 h-full border-0 bg-black"
@@ -579,6 +661,7 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
              than showing a dead end; "open in new tab" always works even if
              embedding doesn't. */
           <iframe
+            ref={ohifIframeRef}
             title="OHIF viewer"
             src={bestOhifUrl}
             className="flex-1 w-full min-h-0 h-full border-0 bg-black"

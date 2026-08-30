@@ -12,6 +12,8 @@ export function ObservationLedgerPanel({
   onSelect,
   keyImageCounts,
   onOpenKeyImages,
+  measurementChips,
+  onJumpToMeasurement,
 }: {
   patches: AppliedPathologyPatch[];
   findingsText: string;
@@ -20,6 +22,9 @@ export function ObservationLedgerPanel({
   /** Map observationId → attached frozen key image count. */
   keyImageCounts?: Record<string, number>;
   onOpenKeyImages?: (observationId: string) => void;
+  /** Map observationId → compact measurement chip text (e.g. "22 × 18 mm"). */
+  measurementChips?: Record<string, string>;
+  onJumpToMeasurement?: (observationId: string) => void;
 }) {
   return (
     <div className="rounded-lg border border-slate-200 bg-white" data-testid="observation-ledger-panel">
@@ -39,6 +44,7 @@ export function ObservationLedgerPanel({
               && findingsText.toLowerCase().includes((p.lastRendered.findings ?? "").slice(0, 40).toLowerCase()),
             );
             const imgCount = keyImageCounts?.[p.id] ?? 0;
+            const measChip = measurementChips?.[p.id];
             return (
               <button
                 key={p.id}
@@ -74,28 +80,52 @@ export function ObservationLedgerPanel({
                       <span>{obs.severity}</span>
                     </>
                   ) : null}
-                  {imgCount > 0 ? (
-                    <span
-                      role="link"
-                      tabIndex={0}
-                      className="ml-auto rounded bg-sky-100 px-1 text-[8px] font-bold text-sky-800"
-                      data-testid={`ledger-key-image-badge-${p.id}`}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onOpenKeyImages?.(p.id);
-                      }}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" || e.key === " ") {
-                          e.preventDefault();
+                  <span className="ml-auto flex items-center gap-1">
+                    {measChip ? (
+                      <span
+                        className="rounded bg-emerald-100 px-1 text-[8px] font-bold text-emerald-800"
+                        data-testid={`ledger-measurement-badge-${p.id}`}
+                        title="Linked measurement"
+                        role="link"
+                        tabIndex={0}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onJumpToMeasurement?.(p.id);
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            onJumpToMeasurement?.(p.id);
+                          }
+                        }}
+                      >
+                        📏 {measChip}
+                      </span>
+                    ) : null}
+                    {imgCount > 0 ? (
+                      <span
+                        role="link"
+                        tabIndex={0}
+                        className="rounded bg-sky-100 px-1 text-[8px] font-bold text-sky-800"
+                        data-testid={`ledger-key-image-badge-${p.id}`}
+                        onClick={(e) => {
                           e.stopPropagation();
                           onOpenKeyImages?.(p.id);
-                        }
-                      }}
-                      title="Show attached key images"
-                    >
-                      📷 {imgCount}
-                    </span>
-                  ) : null}
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            onOpenKeyImages?.(p.id);
+                          }
+                        }}
+                        title="Show attached key images"
+                      >
+                        📷 {imgCount}
+                      </span>
+                    ) : null}
+                  </span>
                 </div>
                 <div className="mt-0.5 flex flex-wrap gap-1 text-[8px] text-slate-500">
                   <span>src: {p.source}</span>

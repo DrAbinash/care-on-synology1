@@ -44,3 +44,27 @@ export async function persistCareObservationLedger(
     .set({ structuredJson: next })
     .where(eq(radiologyReportDraftsTable.id, draftId));
 }
+
+/** Persist draft-scoped structured viewer measurements + optional canal provenance. */
+export async function persistCareViewerMeasurements(
+  draftId: number,
+  viewerMeasurements?: unknown,
+  canalApProvenance?: unknown,
+): Promise<void> {
+  const [row] = await db
+    .select({ structuredJson: radiologyReportDraftsTable.structuredJson })
+    .from(radiologyReportDraftsTable)
+    .where(eq(radiologyReportDraftsTable.id, draftId))
+    .limit(1);
+
+  const next = composeStructuredJsonColumn({
+    existing: row?.structuredJson ?? null,
+    ...(viewerMeasurements !== undefined ? { viewerMeasurements } : {}),
+    ...(canalApProvenance !== undefined ? { canalApProvenance } : {}),
+  });
+
+  await db
+    .update(radiologyReportDraftsTable)
+    .set({ structuredJson: next })
+    .where(eq(radiologyReportDraftsTable.id, draftId));
+}
