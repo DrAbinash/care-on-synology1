@@ -1,5 +1,7 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import {
+  analyzeFormatOverwrite,
+  classifyFormatSection,
   clinicalFieldsFromFormat,
   clinicalSavePayload,
   editorHasMeaningfulReportText,
@@ -8,8 +10,10 @@ import {
   payloadContainsDemography,
   protocolScopeMatches,
   resolvePrintedReportTitle,
+  resolveReportingRegionForFormat,
   shouldConfirmFormatOverwrite,
 } from "./fullReportFormat";
+import { setFormatApplyBridge } from "./formatApplyBridge";
 import {
   DEFAULT_REPORT_FORMATS,
   createFormat,
@@ -344,5 +348,266 @@ describe("full report format — workspace apply", () => {
     expect(s.techniqueText).toBe(brain.technique);
     expect(s.recommendationText).toBe(brain.recommendation);
     expect(s.appliedFormatReportTitle).toBe("MRI BRAIN PLAIN");
+  });
+});
+
+describe("one-click format — reporting region resolve", () => {
+  const CATALOG = ["Brain", "Cervical Spine", "LS Spine", "Knee", "Dorsal Spine"];
+
+  it("LS Spine / Cervical / Brain formats map via explicit bodyPart", () => {
+    const ls = DEFAULT_REPORT_FORMATS.find((f) => f.bodyPart === "LS Spine")!;
+    const cerv = DEFAULT_REPORT_FORMATS.find((f) => f.bodyPart === "Cervical Spine")!;
+    const brain = DEFAULT_REPORT_FORMATS.find((f) => f.bodyPart === "Brain")!;
+    expect(resolveReportingRegionForFormat(ls, CATALOG)).toEqual({ status: "resolved", region: "LS Spine" });
+    expect(resolveReportingRegionForFormat(cerv, CATALOG)).toEqual({ status: "resolved", region: "Cervical Spine" });
+    expect(resolveReportingRegionForFormat(brain, CATALOG)).toEqual({ status: "resolved", region: "Brain" });
+  });
+
+  it("ambiguous / empty bodyPart does not silently choose", () => {
+    expect(resolveReportingRegionForFormat({ name: "Mystery", bodyPart: "" }, CATALOG)).toEqual({
+      status: "unresolved",
+    });
+    expect(resolveReportingRegionForFormat({ name: "Orbit", bodyPart: "Not A Region" }, CATALOG)).toEqual({
+      status: "unresolved",
+    });
+  });
+
+  it("canonical aliases resolve (C Spine → Cervical Spine)", () => {
+    expect(resolveReportingRegionForFormat({ name: "C", bodyPart: "C Spine" }, CATALOG)).toEqual({
+      status: "resolved",
+      region: "Cervical Spine",
+    });
+  });
+});
+
+describe("one-click format — provenance-aware overwrite", () => {
+  it("classifies blank / template / manual / ambiguous", () => {
+    expect(classifyFormatSection("", undefined)).toBe("blank");
+    expect(classifyFormatSection("Normal MRI.", provenanceFromText("Normal MRI.", "template"))).toBe("template");
+    expect(classifyFormatSection("I typed this.", provenanceFromText("I typed this.", "manual"))).toBe("manual");
+    expect(classifyFormatSection("Orphan text.", {})).toBe("ambiguous");
+  });
+
+  it("generated/template report applies without confirmation", () => {
+    const analysis = analyzeFormatOverwrite({
+      technique: "Protocol technique.",
+      findings: "Template findings.",
+      impression: "Template impression.",
+      recommendation: "",
+      fieldProvenance: {
+        technique: provenanceFromText("Protocol technique.", "protocol"),
+        findings: provenanceFromText("Template findings.", "template"),
+        impression: provenanceFromText("Template impression.", "template"),
+      },
+      currentRegion: "Brain",
+      resolvedRegion: "LS Spine",
+    });
+    expect(analysis.requiresConfirmation).toBe(false);
+    expect(analysis.regionChanging).toBe(true);
+    expect(shouldConfirmFormatOverwrite({
+      technique: analysis.sections[0] ? "Protocol technique." : "",
+      findings: "Template findings.",
+      impression: "Template impression.",
+      recommendation: "",
+      fieldProvenance: {
+        technique: provenanceFromText("Protocol technique.", "protocol"),
+        findings: provenanceFromText("Template findings.", "template"),
+        impression: provenanceFromText("Template impression.", "template"),
+      },
+    })).toBe(false);
+  });
+
+  it("manual content requires confirmation and lists sections", () => {
+    const analysis = analyzeFormatOverwrite({
+      technique: "",
+      findings: "Radiologist wrote this.",
+      impression: "Also mine.",
+      recommendation: "",
+      fieldProvenance: {
+        findings: provenanceFromText("Radiologist wrote this.", "manual"),
+        impression: provenanceFromText("Also mine.", "manual"),
+      },
+      currentRegion: "Brain",
+      resolvedRegion: "LS Spine",
+    });
+    expect(analysis.requiresConfirmation).toBe(true);
+    expect(analysis.confirmingSections).toEqual(["findings", "impression"]);
+    expect(analysis.regionFrom).toBe("Brain");
+    expect(analysis.regionTo).toBe("LS Spine");
+  });
+});
+
+describe("one-click format — apply + region bridge + cancel", () => {
+  let appliedRegion: string | null = null;
+  let autosaveBumps = 0;
+
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) }));
+    appliedRegion = null;
+    autosaveBumps = 0;
+    setFormatApplyBridge({
+      availableRegions: () => ["Brain", "Cervical Spine", "LS Spine", "Knee"],
+      currentRegion: () => appliedRegion ?? "Brain",
+      applyReportingRegion: (r) => { appliedRegion = r; },
+      invalidatePendingAutosave: () => { autosaveBumps += 1; },
+    });
+    useWorkspace.setState({
+      findingsText: "",
+      impressionText: "",
+      recommendationText: "",
+      techniqueText: "",
+      clinicalHistoryText: "",
+      appliedFormatReportTitle: null,
+      appliedFormatName: null,
+      selectedFormatIds: [],
+      confirmOverwriteOpen: false,
+      pendingFormatIds: [],
+      pendingFormatOverwrite: null,
+      pendingFormatRegion: null,
+      reportFormats: DEFAULT_REPORT_FORMATS,
+      fieldProvenance: {},
+      appliedPathologyPatches: [],
+      isFinalized: false,
+    });
+  });
+
+  afterEach(() => {
+    setFormatApplyBridge(null);
+    vi.unstubAllGlobals();
+  });
+
+  it("LS Spine format sets reporting region to LS Spine without confirm on blank report", () => {
+    const f = DEFAULT_REPORT_FORMATS.find((x) => x.name === "MRI LS Spine — Normal")!;
+    useWorkspace.getState().applyFormatById(f.id);
+    const s = useWorkspace.getState();
+    expect(s.confirmOverwriteOpen).toBe(false);
+    expect(appliedRegion).toBe("LS Spine");
+    expect(s.findingsText).toBe(f.findings);
+    expect(s.appliedFormatName).toBe(f.name);
+    expect(autosaveBumps).toBe(1);
+  });
+
+  it("Cervical / Brain formats set matching reporting regions", () => {
+    const cerv = DEFAULT_REPORT_FORMATS.find((x) => x.name === "MRI Cervical Spine — Normal")!;
+    useWorkspace.getState().applyFormatById(cerv.id);
+    expect(appliedRegion).toBe("Cervical Spine");
+    const brain = DEFAULT_REPORT_FORMATS.find((x) => x.name === "MRI Brain — Normal")!;
+    useWorkspace.getState().applyFormatById(brain.id);
+    expect(appliedRegion).toBe("Brain");
+  });
+
+  it("ambiguous bodyPart keeps current region", () => {
+    appliedRegion = "Brain";
+    const orphan = createFormat(clinicalSavePayload({
+      name: "Ambiguous Format",
+      modality: "MR",
+      bodyPart: "",
+      diagnosisTags: [],
+      clinicalHistory: "",
+      technique: "t",
+      findings: "f",
+      impression: "i",
+      recommendation: "",
+    }));
+    useWorkspace.setState({ reportFormats: [...DEFAULT_REPORT_FORMATS, orphan] });
+    useWorkspace.getState().applyFormatById(orphan.id);
+    expect(appliedRegion).toBe("Brain");
+    expect(useWorkspace.getState().findingsText).toBe("f");
+  });
+
+  it("reporting-region change does not alter DICOM/ERP identity on studies", () => {
+    const before = {
+      studies: [{
+        id: "s1",
+        studyInstanceUID: "1.2.3",
+        modality: "MR" as const,
+        patient: { id: "P1", name: "Ada", age: "40", sex: "F" as const },
+        accessionNumber: "ACC-1",
+      }],
+    };
+    useWorkspace.setState({
+      studies: before.studies as never,
+      activeStudyId: "s1",
+    });
+    const f = DEFAULT_REPORT_FORMATS.find((x) => x.name === "MRI LS Spine — Normal")!;
+    useWorkspace.getState().applyFormatById(f.id);
+    const st = useWorkspace.getState().studies.find((s) => s.id === "s1")!;
+    expect(st.studyInstanceUID).toBe("1.2.3");
+    expect(st.patient?.id).toBe("P1");
+    expect(st.patient?.name).toBe("Ada");
+    expect(st.accessionNumber).toBe("ACC-1");
+    expect(st.modality).toBe("MR");
+  });
+
+  it("manual content + region change shows confirmation; cancel preserves both", () => {
+    appliedRegion = "Brain";
+    useWorkspace.getState().setField("findings", "Manual brain findings.");
+    const f = DEFAULT_REPORT_FORMATS.find((x) => x.name === "MRI LS Spine — Normal")!;
+    useWorkspace.getState().applyFormatById(f.id);
+    const pending = useWorkspace.getState();
+    expect(pending.confirmOverwriteOpen).toBe(true);
+    expect(pending.pendingFormatOverwrite?.regionChanging).toBe(true);
+    expect(pending.pendingFormatOverwrite?.confirmingSections).toContain("findings");
+    expect(pending.findingsText).toBe("Manual brain findings.");
+    expect(appliedRegion).toBe("Brain");
+    pending.cancelOverwrite();
+    expect(useWorkspace.getState().confirmOverwriteOpen).toBe(false);
+    expect(useWorkspace.getState().findingsText).toBe("Manual brain findings.");
+    expect(appliedRegion).toBe("Brain");
+  });
+
+  it("confirm changes region and applies format content atomically", () => {
+    appliedRegion = "Brain";
+    useWorkspace.getState().setField("findings", "Manual brain findings.");
+    const f = DEFAULT_REPORT_FORMATS.find((x) => x.name === "MRI LS Spine — Normal")!;
+    useWorkspace.getState().applyFormatById(f.id);
+    useWorkspace.getState().confirmOverwriteAndApply();
+    expect(appliedRegion).toBe("LS Spine");
+    expect(useWorkspace.getState().findingsText).toBe(f.findings);
+    expect(useWorkspace.getState().appliedFormatName).toBe(f.name);
+  });
+
+  it("template/generated content auto-applies without confirmation", () => {
+    useWorkspace.getState().setField("findings", "Prior format findings.", { source: "template", replaceProvenance: true });
+    const f = DEFAULT_REPORT_FORMATS.find((x) => x.name === "MRI LS Spine — Normal")!;
+    useWorkspace.getState().applyFormatById(f.id);
+    expect(useWorkspace.getState().confirmOverwriteOpen).toBe(false);
+    expect(useWorkspace.getState().findingsText).toBe(f.findings);
+    expect(appliedRegion).toBe("LS Spine");
+  });
+
+  it("observation ledger patches are marked stale, not deleted", () => {
+    useWorkspace.setState({
+      appliedPathologyPatches: [{
+        id: "p1",
+        ownership: { anatomicalSection: "disc", conflictGroup: "g" },
+        templates: { findings: "old" },
+        lastRendered: { findings: "old" },
+        source: "quick-select",
+        observation: { id: "p1" } as never,
+        replacedBaseline: { findings: [], impression: [] },
+        protected: false,
+        stale: false,
+      }],
+    });
+    const f = DEFAULT_REPORT_FORMATS.find((x) => x.name === "MRI Brain — Normal")!;
+    useWorkspace.getState().applyFormatById(f.id);
+    const patches = useWorkspace.getState().appliedPathologyPatches;
+    expect(patches).toHaveLength(1);
+    expect(patches[0]!.stale).toBe(true);
+  });
+
+  it("finalized reports cannot apply formats", () => {
+    useWorkspace.setState({ isFinalized: true, findingsText: "" });
+    const f = DEFAULT_REPORT_FORMATS.find((x) => x.name === "MRI Brain — Normal")!;
+    useWorkspace.getState().applyFormatById(f.id);
+    expect(useWorkspace.getState().findingsText).toBe("");
+    expect(appliedRegion).toBeNull();
+  });
+
+  it("autosave invalidation runs after successful apply", () => {
+    const f = DEFAULT_REPORT_FORMATS.find((x) => x.name === "MRI Brain — Normal")!;
+    useWorkspace.getState().applyFormatById(f.id);
+    expect(autosaveBumps).toBe(1);
   });
 });

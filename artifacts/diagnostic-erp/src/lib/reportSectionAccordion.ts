@@ -35,7 +35,7 @@ export interface ReportSectionMeta {
 export const REPORT_SECTIONS: readonly ReportSectionMeta[] = [
   { id: "demography", label: "Demography", accent: "slate" },
   { id: "refDoctor", label: "Ref. Doctor", accent: "sky" },
-  { id: "region", label: "Region / Study / Report Format", accent: "emerald" },
+  { id: "region", label: "Region / Study", accent: "emerald" },
   { id: "history", label: "History", accent: "teal" },
   { id: "technique", label: "Technique", accent: "violet" },
   { id: "findings", label: "Findings", accent: "emerald" },
@@ -47,7 +47,7 @@ export const REPORT_SECTIONS: readonly ReportSectionMeta[] = [
 /**
  * Accordion transition. Clicking a different header moves focus there;
  * clicking the header of the already-open section collapses everything, which
- * gives an at-a-glance overview of all nine summaries.
+ * gives an at-a-glance overview of all section summaries.
  */
 export function nextActiveSection(
   current: ReportSectionId | null,

@@ -85,8 +85,8 @@ describe("Section 1 — Study / Region + Report Format unification", () => {
     const prefs = read("lib/workspaceRegionPrefs.ts");
     expect(section).toContain("AddStudyRegionDialog");
     expect(section).toContain("availableStudyTabs");
-    expect(section).toContain('data-testid="whole-report-format-select"');
-    expect(section).toContain("lookupFormatsForPicker");
+    expect(section).not.toContain('data-testid="whole-report-format-select"');
+    expect(section).not.toContain("lookupFormatsForPicker");
     expect(section).toContain("pinQuickTabId");
     expect(section).not.toContain("CUSTOM_REGIONS");
     expect(section).not.toContain("addCustomRegion");
@@ -99,28 +99,38 @@ describe("Section 1 — Study / Region + Report Format unification", () => {
     expect(prefs).not.toContain("export function mergeRegionCatalog");
   });
 
-  it("cascading Region → Sub-region selects + opt-in modality formats", () => {
+  it("cascading Region → Sub-region selects (format lives in WholeReportFormatControl)", () => {
     const section = read("components/radiology/StudyRegionReportFormatSection.tsx");
     expect(section).toContain('data-testid="study-region-family-select"');
     expect(section).toContain('data-testid="study-region-select"');
     expect(section).toContain("groupStudyTabsByFamily");
     expect(section).toContain("studyTabFamily");
-    expect(section).toContain('data-testid="format-show-all-modality"');
-    expect(section).toContain("showAllModalityFormats");
-    expect(section).toContain('formatLookup.scope === "modality" ? []');
+    expect(section).not.toContain('data-testid="format-show-all-modality"');
     expect(section).toContain("writeLastStudyFamily");
     expect(section).toContain("regionSelectionAction");
   });
 
-  it("workspace Section 1 mounts editable quick + add-region UI", () => {
+  it("workspace mounts first-class Report Format before Technique; region strip has no format select", () => {
     const workspace = read("pages/RadiologyReportingWorkspace.tsx");
     const section = read("components/radiology/StudyRegionReportFormatSection.tsx");
+    const formatControl = read("components/radiology/WholeReportFormatControl.tsx");
+    expect(workspace).toContain("WholeReportFormatControl");
+    expect(workspace).toContain('data-testid="report-format-primary-slot"');
     expect(workspace).toContain("StudyRegionReportFormatSection");
     expect(workspace).toContain("availableStudyTabs={studySetup.availableStudyTabs}");
     expect(workspace).toContain("onSelectRegion={studySetup.selectPrimaryRegion}");
+    expect(workspace).toContain("setFormatApplyBridge");
+    expect(formatControl).toContain('data-testid="whole-report-format-select"');
+    expect(formatControl).toContain('data-testid="r2-applied-format"');
+    expect(formatControl).toContain("applyFormatById");
+    // Primary format selector appears before Technique accordion in source order.
+    const formatIdx = workspace.indexOf("report-format-primary-slot");
+    const techniqueIdx = workspace.indexOf('accordionProps("technique")');
+    expect(formatIdx).toBeGreaterThan(0);
+    expect(techniqueIdx).toBeGreaterThan(formatIdx);
     expect(section).toContain('data-testid="study-region-select"');
     expect(section).toContain('data-testid="study-region-family-select"');
-    expect(section).toContain('data-testid="whole-report-format-select"');
+    expect(section).not.toContain('data-testid="whole-report-format-select"');
     expect(section).toContain('data-testid="study-region-quick"');
     expect(section).toContain('data-testid="study-region-quick-edit"');
     expect(section).toContain('data-testid="study-region-add-toggle"');

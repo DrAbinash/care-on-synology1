@@ -223,6 +223,8 @@ import { FindingsHighlightEditor } from "@/components/FindingsHighlightEditor";
 import ReportDemographyCard from "@/components/radiology/ReportDemographyCard";
 import ReferringDoctorQuickSelect from "@/components/ReferringDoctorQuickSelect";
 import { StudyRegionReportFormatSection } from "@/components/radiology/StudyRegionReportFormatSection";
+import { WholeReportFormatControl } from "@/components/radiology/WholeReportFormatControl";
+import { setFormatApplyBridge } from "@/lib/zai-workspace/formatApplyBridge";
 import ClinicalHistoryChipStrip from "@/components/radiology/ClinicalHistoryChipStrip";
 import TechniqueChoiceStrip from "@/components/radiology/TechniqueChoiceStrip";
 import FindingsAnatomyStrip from "@/components/radiology/FindingsAnatomyStrip";
@@ -1086,6 +1088,28 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       description: `Auto-linked to study #${meta.studyId}${meta.matchScore ? ` (${meta.matchScore} match)` : ""}.`,
     });
   }, [workspaceEntry?.autoLinkMeta, studyId, toast]);
+
+  // Whole-report format apply bridge: region sync + autosave generation bump.
+  // Format apply never mutates DICOM/ERP identity — only CARE reporting region.
+  useEffect(() => {
+    setFormatApplyBridge({
+      availableRegions: () => studySetup.availableRegions,
+      currentRegion: () => studySetup.matchedStudyRegion,
+      applyReportingRegion: (regionName) => {
+        studySetup.selectPrimaryRegion(regionName);
+      },
+      invalidatePendingAutosave: () => {
+        // Bump generation so any in-flight silent save from pre-format text is discarded.
+        // The autosave effect also clears/reschedules when technique/findings deps change.
+        saveGenerationRef.current += 1;
+      },
+    });
+    return () => setFormatApplyBridge(null);
+  }, [
+    studySetup.availableRegions,
+    studySetup.matchedStudyRegion,
+    studySetup.selectPrimaryRegion,
+  ]);
 
   // Reset patient-specific editor state when switching studies
   useEffect(() => {
@@ -4018,6 +4042,19 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       )}
                     </ReportAccordionSection>
 
+                    {/* Report Format — first-class one-click whole-report control.
+                        Below demography / study context; before Region and Technique.
+                        Same Zustand apply engine as the right-rail picker. */}
+                    <div className="px-0.5" data-testid="report-format-primary-slot">
+                      <WholeReportFormatControl
+                        reportingContext={studySetup.studyContext}
+                        modality={workflow.currentRow?.modality ?? null}
+                        bodyPartFallback={studySetup.matchedStudyRegion}
+                        studyDescription={workflow.currentRow?.studyDescription ?? null}
+                        disabled={isLocked || isFinalized}
+                      />
+                    </div>
+
                     {/* 2. REFERRING DOCTOR — current doctor, edit, quick chips, add */}
                     <ReportAccordionSection {...accordionProps("refDoctor")}>
                       {workflow.currentRow ? (
@@ -4033,9 +4070,9 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       )}
                     </ReportAccordionSection>
 
-                    {/* 3. REGION / STUDY / REPORT FORMAT — one Study/Region truth +
-                         whole-report format filtered by that region. Protocol still
-                         auto-applies as metadata when region changes. */}
+                    {/* 3. REGION / STUDY — one Study/Region truth. Protocol still
+                         auto-applies as metadata when region changes. Format apply
+                         is first-class above (WholeReportFormatControl). */}
                     <ReportAccordionSection {...accordionProps("region")}>
                     <div className="space-y-2">
                     {/* One-click Start Report */}
@@ -4098,7 +4135,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       />
                     )}
 
-                    {/* Study / Region + Report Format — ONE region truth, formats filtered by it. */}
+                    {/* Study / Region — ONE region truth (format lives above). */}
                     <StudyRegionReportFormatSection
                       availableStudyTabs={studySetup.availableStudyTabs}
                       selectedRegion={studySetup.matchedStudyRegion}
@@ -4106,10 +4143,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       regionOverridden={studySetup.regionOverrides != null}
                       onSelectRegion={studySetup.selectPrimaryRegion}
                       onResetAutoRegion={studySetup.resetRegionOverrides}
-                      reportingContext={studySetup.studyContext}
                       modality={workflow.currentRow?.modality ?? null}
-                      bodyPartFallback={studySetup.matchedStudyRegion}
-                      studyDescription={workflow.currentRow?.studyDescription ?? null}
                       disabled={isLocked || isFinalized}
                       testName={studyNameForExport || studySetup.testName}
                       activeProtocolName={studySetup.activeProtocol?.name ?? null}
@@ -4241,7 +4275,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                         {(appliedFormatReportTitle || appliedFormatName) ? (
                           <div
                             className="mb-1.5 rounded border border-slate-200 bg-slate-50 px-2 py-1 text-[10px] text-slate-800"
-                            data-testid="r2-applied-format"
+                            data-testid="r2-applied-format-lumbar"
                           >
                             <span className="font-semibold">Format:</span>{" "}
                             {appliedFormatName ?? appliedFormatReportTitle}
