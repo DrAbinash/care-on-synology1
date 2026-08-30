@@ -170,9 +170,8 @@ export type PendingPathologyPatch = {
   state?: string;
   measurement?: string;
   /**
-   * When a composer slot-change targets an occupied sibling and needs confirm,
-   * remember the observation being vacated so force-confirm can remove it and
-   * remap evidence (measurements / key images) onto the survivor.
+   * Same-slot / composer slot-change: observation being vacated so force-confirm
+   * or cancel can remap evidence (measurements / key images) onto the survivor.
    */
   vacatedObservationId?: string;
 };
@@ -936,28 +935,31 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     if (pendingPatch) {
       get().undoLastPatch();
       const patchId = pendingPatch.id || `pending_${Date.now().toString(36)}`;
-      // Same-slot update: undo already restored the prior observation with this id.
-      // Do not re-insert the pending row (that would orphan mild text under a moderate lastRendered).
-      const restoredSameSlot = get().appliedPathologyPatches.some((p) => p.id === patchId);
-      if (!restoredSameSlot) {
+      const vacatedId = (pendingPatch.vacatedObservationId ?? "").trim();
+      // Same-slot update: undo restored the vacated sibling. Do not re-insert the
+      // incoming survivor id (that would leave mild text under a moderate chip).
+      if (!vacatedId) {
         // Legacy QS ambiguous path: keep the chip selected but blocked from narrative.
-        const observation = observationFromPending(pendingPatch, get().reportingContext.region, get().activeAnchor);
-        const templates = pendingPatch.templates ?? pendingPatch.incoming;
-        set({
-          appliedPathologyPatches: [
-            ...get().appliedPathologyPatches.filter((p) => p.id !== patchId),
-            {
-              id: patchId,
-              ownership: pendingPatch.ownership,
-              templates,
-              lastRendered: pendingPatch.incoming,
-              source: pendingPatch.source,
-              observation: { ...observation, id: patchId },
-              replacedBaseline: { findings: [], impression: [] },
-              protected: false,
-            },
-          ],
-        });
+        const restoredIncoming = get().appliedPathologyPatches.some((p) => p.id === patchId);
+        if (!restoredIncoming) {
+          const observation = observationFromPending(pendingPatch, get().reportingContext.region, get().activeAnchor);
+          const templates = pendingPatch.templates ?? pendingPatch.incoming;
+          set({
+            appliedPathologyPatches: [
+              ...get().appliedPathologyPatches.filter((p) => p.id !== patchId),
+              {
+                id: patchId,
+                ownership: pendingPatch.ownership,
+                templates,
+                lastRendered: pendingPatch.incoming,
+                source: pendingPatch.source,
+                observation: { ...observation, id: patchId },
+                replacedBaseline: { findings: [], impression: [] },
+                protected: false,
+              },
+            ],
+          });
+        }
       }
       set({
         confirmOverwriteOpen: false,
@@ -989,7 +991,8 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       observation.supportsLaterality ? (opts.side ?? "") : "",
     );
 
-    // Same-slot plan — reuse CARE mutex identity; preserve observation id when updating.
+    // Same-slot plan — CARE mutex identity. Incoming id is the survivor so Quick
+    // Select selection / deselect-by-tile stay correct; evidence remaps onto it.
     const slotSiblings = findSameSlotSiblings(
       get().appliedPathologyPatches.filter((p) => p.id !== draftId),
       observation,
@@ -1015,12 +1018,17 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       return "applied";
     }
 
-    const stableId = plan.action === "update" ? plan.existingId : draftId;
+    const vacatedId = plan.action === "update" ? plan.existingId : null;
+    const stableId = draftId;
     if (plan.action === "update") {
-      observation = mergeObservationInPlace(plan.existing.observation, {
-        ...observation,
-        id: plan.existingId,
-      });
+      // Keep anchor / createdAt / measurement string from vacated sibling; use incoming id.
+      observation = {
+        ...mergeObservationInPlace(plan.existing.observation, {
+          ...observation,
+          id: stableId,
+        }),
+        id: stableId,
+      };
     } else {
       observation = { ...observation, id: stableId };
     }
@@ -1057,9 +1065,23 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // Drop same-slot siblings from the ledger only. Do not pre-strip their
     // sentences — structured overlay owns replacement and records
     // replacedBaseline so deselect can restore a normal/baseline.
-    // CRITICAL: do NOT invent a new observation id when updating a slot —
-    // measurements / key images / anchors are keyed by observation id.
+    // Incoming id is the survivor; remap measurements / key images onto it.
     let patches = get().appliedPathologyPatches.filter((p) => !dropIds.has(p.id));
+
+    let nextMeasurements = get().structuredViewerMeasurements;
+    if (vacatedId && vacatedId !== stableId) {
+      const remapped = remapStructuredMeasurementsObservationId(
+        nextMeasurements,
+        vacatedId,
+        stableId,
+      );
+      nextMeasurements = remapped.state;
+      if (typeof window !== "undefined" && remapped.remapped > 0) {
+        window.dispatchEvent(new CustomEvent("care:observation-reassigned", {
+          detail: { fromObservationId: vacatedId, toObservationId: stableId },
+        }));
+      }
+    }
 
     const needsSlotConfirm = plan.action === "update" && plan.requiresConfirmation && !opts.force;
 
@@ -1110,6 +1132,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         isDirty: true,
         lastPatchSnapshot: snap,
         appliedPathologyPatches: nextPatches,
+        structuredViewerMeasurements: nextMeasurements,
         ownershipReviewWarnings,
         confirmOverwriteOpen: true,
         pendingPathologyPatch: {
@@ -1118,6 +1141,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
           templates,
           ownership,
           id: stableId,
+          ...(vacatedId && vacatedId !== stableId ? { vacatedObservationId: vacatedId } : {}),
           // Same-slot confirm copy (consumed by ConfirmOverwriteDialog).
           ...(plan.action === "update"
             ? {
@@ -1142,6 +1166,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       isDirty: true,
       lastPatchSnapshot: snap,
       appliedPathologyPatches: nextPatches,
+      structuredViewerMeasurements: nextMeasurements,
       ownershipReviewWarnings,
       selectedObservationId: stableId,
       impressionNeedsRefresh: impressionNeedsRefreshFromNarrative(
@@ -1167,7 +1192,20 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       voiceComposerTranscriptHistory: [...get().voiceComposerTranscriptHistory],
     };
     for (const obs of opts.observations) {
-      const r = get().applyPathologyOverlay({ ...obs, bundleId, id: obs.id ?? `${bundleId}-${obs.concept ?? obs.label ?? "obs"}` });
+      // Severity/level-block updates should reuse an existing same-slot id so QS
+      // selection and linked measurements stay on the original observation.
+      const fallbackId = obs.id ?? `${bundleId}-${obs.concept ?? obs.label ?? "obs"}`;
+      const probe = observationFromPending(
+        { ...obs, id: fallbackId, bundleId },
+        get().reportingContext.region,
+        get().activeAnchor,
+      );
+      const siblings = findSameSlotSiblings(
+        get().appliedPathologyPatches.filter((p) => p.id !== fallbackId),
+        probe,
+      );
+      const id = siblings[0]?.id ?? fallbackId;
+      const r = get().applyPathologyOverlay({ ...obs, bundleId, id });
       if (r === "pending") status = "pending";
     }
     set({ lastPatchSnapshot: snap });
